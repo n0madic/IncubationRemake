@@ -15,6 +15,10 @@ half, `aUnitMap.cpp` the visibility half.
 checks the derived arithmetic; `tools/trace_names.py` recovers the function
 names §1 relies on.
 
+The computer player that drives all of this — which enemy it shoots at, where
+it walks, and what the eleven AI orders in a `.lev` mean — is
+[`23-ai-system.md`](23-ai-system.md).
+
 ---
 
 ## 1. Reading the binary: the trace-macro convention
@@ -60,6 +64,14 @@ call X ; [add esp,imm] ; test eax,eax ; jcc  ->  push FILE; push LINE; push NAME
   `aGetCtrlMapElmentPtr` (2), `aGetCtrlElementPtr` (2) and
   `aGetHexMapElementPtr` (1). Majority over the call sites settles all 23
   ambiguous targets; `--all` shows the losing names.
+
+A third failure mode is a name attached to a function in a **different source
+module** altogether. `aMain.cpp:922` guards a call to `0x0040B4D0` with the name
+`aInitAISystem`, but that function's own `CHECK` reports `aAnimations.cpp:411`,
+it touches none of the AI's globals, and `aMain` never calls the AI module's
+init because there is none — [`23` §1](23-ai-system.md) works it through. When a
+name and a `__FILE__` disagree, the `__FILE__` is the one to trust: it is
+`__FILE__`, not a string someone typed.
 
 A copy-paste of the **enclosing** function's name also happens, and it is
 informative rather than noise. `0x0046CCA0` reports `aExecuteFight` at two
@@ -368,7 +380,8 @@ this engine is binary.
 
 `mode` is the one place the engine gives itself a discount: a **neutral** unit
 (`player == 0xFF`) whose primary order is not 9, `Clever small units`
-([`10` §5.6](10-lev-mission-format.md)), gets the single-ray form. Everything
+([`10` §5.6](10-lev-mission-format.md), [`23` §3.2](23-ai-system.md)), gets the
+single-ray form. Everything
 the player controls, and every alien on the "clever" order, gets the two- or
 four-ray form.
 

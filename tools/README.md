@@ -44,6 +44,7 @@ combat_tables.py      decode the combat/LOS tables in Incubation.exe (docs/22)
 sav_tables.py         verify the save-game layout against the writer/reader chains
 sav_parse.py          parse a save game; extract its embedded .lev (docs/11)
 typ_parse.py          parse OBJECT.TYP, the lost exporter's config (docs/30 2.11)
+ai_tables.py          decode the AI turn: orders, move map, targeting (docs/23)
 ```
 
 ## Corpus checks
@@ -69,6 +70,7 @@ python3 tools/trace_names.py     --check gog_incubation             # 324 + 146 
 python3 tools/sav_tables.py      --check gog_incubation             # 69 checks
 python3 tools/sav_parse.py       gog_incubation --selftest          # 31 map sizes
 python3 tools/typ_parse.py       --check gog_incubation             # 18 checks
+python3 tools/ai_tables.py       --check gog_incubation             # 77 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -111,6 +113,10 @@ python3 tools/sav_parse.py gog_incubation/Work/Saves/_0_.sav --json
 python3 tools/sav_parse.py gog_incubation/Work/Saves/_0_.sav --lev tools/out/save0.lev
 python3 tools/sav_tables.py --layout
 python3 tools/typ_parse.py gog_incubation/Video/Dialog_03/Objects/OBJECT.TYP
+
+# the AI's order and level tables, planner horizons and hit-probability bands
+python3 tools/ai_tables.py --orders gog_incubation
+python3 tools/ai_tables.py --json   gog_incubation
 ```
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;

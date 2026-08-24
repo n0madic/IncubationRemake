@@ -1139,7 +1139,9 @@ came out of. All 98 shipped calls use adjacent tile pairs and unit type 50
 Makes `tries` attempts; each picks a random tile with
 `x' ∈ [x, x+w)`, `y' ∈ [y, y+h)` (`0x00463870`, see below), and if that cell
 has `+0x13 == 255`, control-map type 0 or 1, and a height of exactly
-`height · 160`, sets it alight (`0x0042fcb0(x', y', 2)`).
+`height · 160`, sets it alight (`0x0042fcb0(x', y', 2)` — the *glow* phase,
+`GLOW1/2.3DI`; the flames proper are `0x0042f840`, `A_FIRE1/2/3.3DI`, and are
+what sets `cell[+0x10] = 1`, see [`23` §7.1](23-ai-system.md)).
 `_C_116.lcl` uses `SetGroundFire (12,29,0,1,1,255);` — a 1×1 area with 255
 tries, i.e. "set this one tile on fire, retrying until it takes" — and
 `_S_007.lcl` `SetGroundFire (12,13,0,9,14,5);` scatters five fires over a
@@ -1149,7 +1151,11 @@ tries, i.e. "set this one tile on fire, retrying until it takes" — and
 `0x00470790`**. Runs the bomber fly-past (`0x00415e90(b)` then
 `0x004160f0(x, y, w, h, a)`), then makes **60** attempts at a random tile in
 the `w × h` block anchored at `(x, y)`; every attempt that lands on a cell with
-no unit and `+0x10 == 255` cratters it (`0x0042fa70`). The corpus always passes
+no unit and `+0x10 == 255` **lays a mine** there (`0x0042fa70`, which inserts
+`A_MINE.3DI` and sets `cell[+0x10] = 2`). Earlier editions of this document
+glossed that call as cratering the tile; the model name settles it, and the
+move map's rule agrees — a mine blocks every mover except player 255
+([`23` §7.3](23-ai-system.md)). The corpus always passes
 seven arguments where the handler reads six; the seventh is discarded.
 **Arguments 5 and 6 (`a`, `b`) are UNVERIFIED** — observed values are `a = 20`
 in all four call sites and `b = 0`; they reach `0x004160f0`'s fifth parameter

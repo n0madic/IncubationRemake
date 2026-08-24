@@ -60,12 +60,15 @@ of scope.
 
 ### Behaviour, not formats
 
-One spec in the set describes no file at all.
+Two specs in the set describe no file at all.
 [`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
 between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
-records turn into a resolved shot and into fog of war. It exists because a
-loader that reads every byte of every format still cannot play a turn.
-`combat_tables.py` and `trace_names.py` are its checks.
+records turn into a resolved shot and into fog of war.
+[`23-ai-system.md`](23-ai-system.md) is the opponent: what the eleven AI orders
+in a `.lev` unit record actually do, how the move map is flooded and costed,
+and how a target is chosen. Both exist because a loader that reads every byte
+of every format still cannot play a turn — nor be played against.
+`combat_tables.py`, `ai_tables.py` and `trace_names.py` are their checks.
 
 **`DATA/Misc/Rec_0.dat` is dead data.** No executable or DLL in the release
 contains the string `Rec_`, and `Incubation.exe` contains no `.dat` literal at
@@ -187,6 +190,7 @@ python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
 python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
 python3 tools/sav_parse.py    gog_incubation --selftest # 31 map sizes
 python3 tools/typ_parse.py    --check gog_incubation     # 18 checks
+python3 tools/ai_tables.py    --check gog_incubation     # 77 checks
 ```
 
 Outputs (sprites, map renders, textures) are written under `tools/out/`.
@@ -219,6 +223,7 @@ still open:**
 | [11](11-save-game-format.md) | 4 | ViewPlayer's 1100 bytes, twenty offsets that no code compares against a literal, the hard-coded slot 32 — all three want one real save; the fourth is closed by enumeration |
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
 | [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
+| [23](23-ai-system.md) | 0 | all five closed; `+0x10` is fire / a mine / a shield, named by the models their makers insert; the cover score's out-of-bounds read is heap history and cancels in the maximiser; `aInitAISystem` does not exist; the planner and the fire routine share one twelve-value selector; and the loop's counters are a local and a parameter, which no mechanism in these binaries could have preserved |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, and two raised by the leaked exporter config (§2.11): what `SORT_OBJECT` selected — the one item here with an untraced lead — and whether `DETAIL_METHODE`'s numbering is the engine's |
 | [31](31-prototyp-geometry.md) | 2 | what a Voodoo did with Glide blend factor `0xf`; runtime rasteriser confirmation |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |

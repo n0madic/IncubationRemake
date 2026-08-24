@@ -180,7 +180,7 @@ named from `fcn.0042ed60` (the per-turn cell-effect tick), `fcn.0042f410` and
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|
-| `+0x00` | `u8` | Cell state. `1` in every shipped cell. At runtime the engine also writes `2` ("selected" — the LCL area commands act on `== 2`), `10` and `0x3C` as movement overlays (§4.5). The band `0x50`–`0x5E`, which `fcn.0042f7d0` refuses to overwrite, is the **attack scratchpad**: `0x50`–`0x55` mark the cells a weapon covers and `0x5A`–`0x5D` record what happened there, see [`22` §7.2](22-combat-and-visibility.md) | confirmed |
+| `+0x00` | `u8` | Cell state. `1` in every shipped cell. At runtime the engine also writes `2` ("selected" — the LCL area commands act on `== 2`), `10`, `0x3C` and `0x64` as movement overlays (§4.5), and `30`–`34` as the AI's target overlay, one band per hit-probability bracket ([`23` §6](23-ai-system.md)). The band `0x50`–`0x5E`, which `fcn.0042f7d0` refuses to overwrite, is the **attack scratchpad**: `0x50`–`0x55` mark the cells a weapon covers and `0x5A`–`0x5D` record what happened there, see [`22` §7.2](22-combat-and-visibility.md). [`23` §10](23-ai-system.md) tabulates every band | confirmed |
 | `+0x01` | `i32` | **Height**, world units. Identical to the `z` of the linked land object — 184162/184162 cells | confirmed |
 | `+0x05` | `u16` | **Land-object link** — index into block 3. Equals `y*width + x` in every shipped file | confirmed |
 | `+0x07` | `i16` | **Unit link** — index into the UnitMap, `0xFFFF` when the field is empty | confirmed |
@@ -269,7 +269,9 @@ The LCL commands `SetCtrlMapType` / `GetCtrlMapType` read and write this byte:
 
 Cells that carry an action-point id in the range 80–85 (`0x50`–`0x55`) are
 numbered consecutively in row-major order at `+0x14`; every other cell holds
-`0xFF`. Corpus-wide this holds for all 307 marked cells, with no ordering
+`0xFF`. The game's own legend calls that band **VictoryPoints** and marks it
+*"only Multiplayer"* (§4.6); the ordinal below is the observed use of the same
+cells. Corpus-wide this holds for all 307 marked cells, with no ordering
 violations, and only ids 80–85 (plus five cells with id 0) appear on them.
 
 The multiplayer maps make the meaning plain: `_M_010` … `_M_036` carry exactly
@@ -308,7 +310,7 @@ not a parse error. A remake must model unit footprints accordingly; the type
 table byte at `Info.lcl` column 14 (`1` for `Tr'Yn`, `Al'Coo`, `ComBot`) is what
 the engine tests for it.
 
-### 4.5 Movement overlays — cell state `10` and `0x3C`
+### 4.5 Movement overlays — cell state `10`, `0x3C` and `0x64`
 
 When a unit is selected, `fcn.00430a40` (the range builder, used by the UI and
 by the AI alike) seeds the unit's own cell with **`10`** (`0x00430AFA`) and then
@@ -324,7 +326,7 @@ transient overlays; neither ever reaches a `.lev`.
 |---|---|
 | the field is empty | `+0x07 == 0xFFFF` |
 | field type is Undefined, Free Place or Ladder | `+0x0D` ∈ {0, 1, 8} |
-| no action point in the reserved band | `+0x0B` ∉ `0x50`–`0x59` |
+| not a VictoryPoint (§4.6) | `+0x0B` ∉ `0x50`–`0x59` |
 | no effect running | `+0x10` ∉ {1, 2} |
 | within the warp range | `fcn.0044ae10(...) <= range` |
 
@@ -344,8 +346,107 @@ The **warp range** is `fcn.00475380(unit)`:
 * **0** otherwise, in which case `fcn.00430ee0` returns immediately and no
   cell is marked.
 
+A third value joins them once a destination has been chosen. `fcn.004305e0`
+walks the map back from the target to the unit, marking each cell of the
+resulting path with **`0x64`** (100) and then resetting every cell that is not
+on it to state `1` with `+0x0C` cleared — so after it runs the grid holds the
+path and nothing else. [`23` §8](23-ai-system.md) works through the walk, and
+[`23` §7](23-ai-system.md) through the fill's cost and passability rules.
+
 This is what the AI's `MoveUnit` selector byte tests; see
 [`20-lcl-language.md`](20-lcl-language.md) §5.
+
+---
+
+### 4.6 The action-point legend — **[code] `0x0046838D`…`0x00468787`**
+
+`Info.lcl` never names an action point and the editor's own field is a plain
+number, so until now `+0x0B` was documented only as "the scripts'
+general-purpose per-tile store" ([`21` §8](21-info-lcl-schema.md)). It is not
+only that: **`Incubation.exe` carries the developers' own names for 38 of its
+values**, as a list of literals pushed one after another from `0x0046838D` to
+`0x00468787`. Seven of the 45 pushes are section headings, so the block is a
+legend for a picker, not a lookup table — the retail binary ships a map editor
+(the same cluster fills two AI-order list boxes, §5.6, and `0x0041CDD5` /
+`0x0041CEF2` are its "+5" and "+1" buttons for this very field, guarded at 249
+and 254).
+
+| Value | The developers' name | Cells in the corpus |
+|---|---|---|
+| 0 | *empty* | 179083 |
+| | ***Placefields*** | |
+| 1 | placefield of player 0 | 1620 |
+| 2 | placefield of player 1 | 574 |
+| 3 | placefield of player 2 | 573 |
+| 4 | placefield of player 3 | 558 |
+| | ***Supplyboxes*** | |
+| 10 | random | 1 |
+| 11 | nothing | 2 |
+| 12 | full munition | 160 |
+| 13 | equipmentpoints 50 | 169 |
+| 14 | light/heavy weapon | 7 |
+| 15 | condition | 8 |
+| 16 | technical | 4 |
+| 17 | equipmentpoints 20 | 93 |
+| 18 | equipmentpoints 10 | 40 |
+| | ***Doors*** | |
+| 30 | standard Door — OPEN | 17 |
+| 31 | standard Door — CLOSED | 278 |
+| 32 | jammed Door — OPEN | **0** |
+| 33 | jammed Door — CLOSED | 8 |
+| | ***BUTTONS & LEVERS*** | |
+| 34 | button a | 28 |
+| 35 | button b | 2 |
+| 36 | lever up | 70 |
+| 37 | lever down | 1 |
+| | ***EQUIPMENT*** | |
+| 38 | absorber | 13 |
+| 39 | crowbar | 3 |
+| 40 | cooler | 6 |
+| 42 | explosionpack | 5 |
+| | ***MISC*** | |
+| 70 | entry point | 209 |
+| 71 | destroyed entry point | 1 |
+| | ***Victorypoints (only Multiplayer)*** | |
+| 80 | VictoryPoint A — neutral | 72 |
+| 81 | VictoryPoint A — player 1 | 189 |
+| 82 | VictoryPoint A — player 2 | 1 |
+| 83 | VictoryPoint A — player 3 | 1 |
+| 84 | VictoryPoint A — player 4 | 1 |
+| 85 | VictoryPoint B — neutral | 57 |
+| 86 … 89 | VictoryPoint B — player 1 … 4 | **0** |
+
+Value 41 is skipped and 5–9, 19–29, 41, 43–69, 72–79 and 90+ are not in the
+legend at all — those are the range the scripts use freely, which is why the
+corpus also holds runs like 50–69, 90–99, 100–133 and 210–216, one cell each.
+
+**The engine hard-codes ten of these values, and only ten.** Sweeping `.text`
+for every comparison against `cell[+0x0B]`:
+
+| Value | Where | What it does |
+|---|---|---|
+| 1 | `0x004190B9`, `0x004191F5`, `0x00431118` | the editor and the deployment pass |
+| 10 | `0x00418BDC`, `0x0046DD28`, `0x0047A5BD` | `aExecuteUse` — picking a supply box up |
+| 12 | `0x00455695` | *full munition* |
+| **31** | `0x0040A65F`, `0x0040A9CD` | **the AI, and nothing else** — see [`23` §3.2](23-ai-system.md) |
+| 70 | `0x0047B463` | entry point |
+| 71 | `0x004418F5`, `0x00441A03` | `InsertUnit` refuses to spawn here ([`21` §8](21-info-lcl-schema.md)) |
+| 80 | `0x00418340`, `0x00430F4D` | the editor; and the base of the warp exclusion band (§4.5) |
+| 85 | `0x0046E9D4` | VictoryPoint B |
+| 249, 254 | `0x0041CDD5`, `0x0041CEF2` | not values — the editor's `+= 5` and `+= 1` overflow guards |
+
+Two entries settle questions the other documents had left open. **71 is
+"destroyed entry point"**, which is exactly why `InsertUnit` refuses it. And
+**31 is "standard Door — CLOSED"**, tested at two sites that are both inside
+the AI turn: `0x0040A600` steps up to such a cell and plays `aDoorOpenSequence`
+(`0x00410A20`), and the AI's planner has a whole selector for finding one.
+**The computer opens doors; the jammed pair 32/33 it never touches.**
+
+The `0x50`–`0x59` band §4.5 excludes from warp targets is therefore
+**VictoryPoints**, not deployment fields. §4.2's reading of `+0x14` is
+unaffected — its evidence is the multiplayer start layouts, and the same cells
+being both the start areas and the scoring areas is what the heading
+*"only Multiplayer"* implies.
 
 ---
 
@@ -410,7 +511,7 @@ static `FP` at (73,45) sits next to edit 1217 at (88,45), which
 | `+0x36` | `u8` | **Front armour**, cached. Used when the attacker is *not* firing along the defender's own facing ([`22` §7.4](22-combat-and-visibility.md)) | recomputed by `fcn.00475490` (§5.4) | confirmed |
 | `+0x37` | `u8` | **Rear armour**, cached. Used when the attacker's facing is within one octant of the defender's own — a 135° rear arc | recomputed by `fcn.004754F0` (§5.4) | confirmed |
 | `+0x38` | `u8` | **Decorations awarded** — campaign state, see §5.11. `0` in every shipped record | — | confirmed |
-| `+0x39` | `u8` | Runtime; cleared by the stat recompute `fcn.004759E0`. `0` in every shipped record | — | high |
+| `+0x39` | `u8` | **"this unit has acted"** — set to `3` by the AI's fire routine (`fcn.0040A440`) and its interaction routine (`fcn.0040A600`), read by `aAISystemControl`'s epilogue to decide whether to end the unit's turn ([`23` §3.3](23-ai-system.md)); cleared by the stat recompute `fcn.004759E0`. `0` in every shipped record | — | confirmed |
 | `+0x3A` | `u8` | **Damage absorption** — `4` when equipment 18 (`Damage Absorber`) is carried, else `0` (`fcn.00475580`). Exactly the two units that carry it hold `4`; six further records hold stale 123/126 | — | confirmed |
 | `+0x3D` | `u8` | **Ammo** left in the magazine | edit 1231 (`MUN`); `fcn.0046b450` subtracts the weapon's *mun per fight* | confirmed |
 | `+0x3E` | `u8` | **Weapon heat**, see §5.12; incremented by one per attack up to the weapon's cap, and the overheat roll fires when it reaches it ([`22` §8](22-combat-and-visibility.md)). `0` in every shipped record | — | confirmed |
@@ -623,6 +724,12 @@ and the engine's AI turn loop `fcn.00409940` switches on the same byte:
 | 10 | `Disturb` | 72 |
 
 No shipped record holds a value outside 0–10 in either slot.
+
+**What each order actually does** is [`23` §3](23-ai-system.md): every handler
+is itself a switch on a search-radius counter that `aAISystemControl` widens
+from 0 to 5, and the eleven arms plus their six level tables are read out
+there. Order 8 does nothing at all inside the turn loop, orders 1 and 2 share
+one block, and order 6's parameter is a trigger radius in fields.
 
 The parameter is order-specific. Two uses are readable:
 

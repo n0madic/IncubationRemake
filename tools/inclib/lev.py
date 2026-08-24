@@ -256,7 +256,9 @@ class Cell:
     decal_flag: int      # +0x12 u8, runtime state
     decal_state: int     # +0x13 u8, runtime state, 0xFF = idle
     start_index: int     # +0x14 u8, deployment-field ordinal, 0xFF = not one
-                         #   (set on cells whose action point is 80..85)
+                         #   (set on cells whose action point is 80..85, the
+                         #   band the game's own legend calls "Victorypoints
+                         #   (only Multiplayer)" -- see docs/10 4.2 and 4.6)
     raw: bytes
 
     @property

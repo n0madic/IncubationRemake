@@ -65,7 +65,7 @@ SetCtrlMapInfo ( 7,  7,   255, 40,  "Enormous Obs");
 | Offset | Size | Argument | Field | Status |
 | --- | --- | --- | --- | --- |
 | +0x00 | 1 | 2 (`num[1]`) | `type` | read by `0x0042f6d0(cell)`, which returns it for the cell's control-map type byte |
-| +0x01 | 1 | 3 (`num[2]`) | **`delay` — movement cost** | confirmed: `0x0046e220`, the unit-walk routine, subtracts `record[+0x01]` (plus a per-step constant) from the mover's remaining movement points at every step; `0x0042f6b0` returns it and `0x0046fc90` / `0x0046ff20` / `0x00479c60` treat **255 as "not enterable"** |
+| +0x01 | 1 | 3 (`num[2]`) | **`delay` — movement cost**; one step costs `delay + 1` | confirmed: `0x0046e220`, the unit-walk routine, subtracts `record[+0x01]` (plus a per-step constant) from the mover's remaining movement points at every step; `0x0042f6b0` returns it and `0x0046fc90` / `0x0046ff20` / `0x00479c60` treat **255 as "not enterable"**. `aBuildMoveMap` reads it at `0x00430D10` and the per-step constant is visibly `dec al`, so the cost of entering a field is `delay + 1` — see [`23` §7.4](23-ai-system.md), which also covers the ladder-to-ladder case and the height limit |
 | +0x02 | 1 | 4 (`num[3]`) | `cover` percentage | **never read — in either shipped binary.** See 2.1 below; the name is the authors', taken from the `Info.lcl` header comment, and the field is dead code |
 | +0x03 | 20 | 5 (`str[0]`) | name | read by exactly one caller — the debug/cheat overlay at `0x0041af01`, which prints `"ElementType: (%d)-%s"` |
 
@@ -181,7 +181,7 @@ Shipped ids: 0, 1, 3..19. Id 2 is missing.
 
 The record carries no behaviour column: an item's effect is hard-coded against
 its **id**, which the engine reads as `unit[+0x21 + id]` in the carried-equipment
-bitmap ([`10` §5.4](10-lev-mission-format.md)). Nine ids have a decoded effect;
+bitmap ([`10` §5.4](10-lev-mission-format.md)). Ten ids have a decoded effect;
 the pairing is exact in every case, in that the shipped name and the coded effect
 agree.
 
@@ -192,6 +192,7 @@ agree.
 | 3 | `Light Stimulant` | sets `unit[+0x58] = 1` | `0x00475320` |
 | 4 | `Heavy Stimulant` | sets `unit[+0x58] = 2` | `0x00475320` |
 | 5 | `Target System` | doubles the weapon's hit quote, capped at 100 | `0x004752E0` |
+| 7 | `Jet Pack` | **warping** — `0x00475380` returns a range of 5 while the unit has movement points left, which `0x00430EE0` turns into the `0x3C` overlay. `Info.lcl` annotates the line itself `* warp & scan`; 5 of the 1863 placed units carry it | `0x00475380`, [`10` §4.5](10-lev-mission-format.md) |
 | 8 | `Banner` | doubles the hit chance of **every friendly unit within `distance < 4`** | `0x0046FAD0` |
 | 10–13 | the four armours | raise the cached front/rear armour `unit[+0x36]`/`+0x37` | `0x00475490`, `0x004754F0` |
 | 18 | `Damage Absorber` | four charges in `unit[+0x3A]`; each spent charge nullifies one hit entirely | `0x00475590`, `0x004755B0` |
@@ -447,7 +448,7 @@ All seventeen values, with the shipped carriers:
 | 12 | `Barrel` x3, `Parabomb` | **explodes when hit** — damage forced to 255 and the eight neighbours marked for a secondary blast | `0x0046B450`, `aExecuteBomb`, `aPlayFightAnimation` |
 | 13 | `Case` | destroyed by any hit — damage forced to 255 | `0x0046B450`, `aPlayFightAnimation` |
 | 14 | `War'Coo`, `Norc'Yn` x3 | **cannot move** — `aBuildMoveMap` returns an empty map | `0x00430A70` |
-| 15 | `Ray'Coo` | **can warp**: `0x00430EE0` marks every free, walkable field within distance 7 with cell state `0x3C`, the warp overlay of [`10` §4.5](10-lev-mission-format.md) | `0x00430E5C` |
+| 15 | `Ray'Coo` | **can warp**: `0x00430EE0` marks every free, walkable field within distance 7 with cell state `0x3C`, the warp overlay of [`10` §4.5](10-lev-mission-format.md). Equipment id 7, the `Jet Pack`, is the other way to reach the same code, at range 5 | `0x00430E5C` |
 | 16 | `Bea'Coo` | **explodes when killed** — the eight neighbours are marked for a secondary blast | `0x0046B450`, `0x0040DCCD` |
 
 Seven values (3, 4, 5, 7, 8, 10, 11) are implemented and unused: no shipped
@@ -733,21 +734,24 @@ stride of `0x17`, which is what fixes the record size.
 
 | Offset | Size | Field | Evidence |
 | --- | --- | --- | --- |
-| +0x00 | 1 | unknown state byte | `0x0046ef50` sets it to 1 on the source cell of a jump move; the AI's move dispatcher compares it against `0x3c` (`0x0040abc7`) to choose walk vs jump. **Meaning UNVERIFIED** |
+| +0x00 | 1 | **cell state / overlay** | `0x0046ef50` sets it to 1 on the source cell of a jump move; the AI's move dispatcher compares it against `0x3c` (`0x0040abc7`) to choose walk vs jump. Every band it takes is tabulated in [`23` §10](23-ai-system.md) |
 | +0x01 | 4 | height, in units of 160 (`0xa0`) per level | `GetHeight` divides by 160, `SetHeight` multiplies |
 | +0x05 | 2 | object/element index | `SetHeight` uses it to update a second record; `0x00404c40` resolves it |
 | +0x07 | 2 | unit index, `0xffff` = empty | `NoUnitOnField`, `UnitOnField` |
 | +0x09 | 1 | **the cell's own x** | every whole-map scan reads it instead of computing it (`0x0046fc30`, `0x0046ff20`, `0x00413500`) |
 | +0x0a | 1 | **the cell's own y** | same |
-| +0x0b | 1 | **action point** (`ActPt`) | `GetActPt`/`SetActPt` |
+| +0x0b | 1 | **action point** (`ActPt`) | `GetActPt`/`SetActPt`. `Incubation.exe` carries the developers' names for 38 of its values and the engine hard-codes ten — `31` is *standard Door — CLOSED*, which the AI's `0x0040A600` opens; `71` is *destroyed entry point*, which is why `InsertUnit` refuses it; `80`–`89` are the multiplayer victory points, which refuse a warp target. Full legend: [`10` §4.6](10-lev-mission-format.md) |
+| +0x0c | 1 | **scratch, two uses** | the damage this cell's unit just took ([`22` §2.2](22-combat-and-visibility.md)); and, while a move map is up, the **movement points left on arrival** — `aBuildMoveMap` writes it and `0x004305E0` climbs the gradient back to the mover ([`23` §7](23-ai-system.md)) |
 | +0x0d | 1 | control-map type | `GetCtrlMapType`/`SetCtrlMapType` |
-| +0x0f, +0x10 | 1+1 | a second object slot — id and "in use" (`0xff` = empty) | `Platform` and `GrowingLand` move/clear them via `0x00404c00` / `0x00406960` |
+| +0x0f, +0x10 | 1+1 | a transient obstacle — object slot and **kind** (`0xff` = none) | `Platform` and `GrowingLand` move/clear them via `0x00404c00` / `0x00406960`. The kind is `1` burning ground (`A_FIRE1/2/3.3DI`), `2` a mine (`A_MINE.3DI`), `3` a shield (`A_SHILD.3DI`), named by the models their three makers insert; `aBuildMoveMap` then refuses to move a unit standing in a shield, refuses entry into fire, and refuses entry into a mine unless the mover's player is `255`. `0xff` in every shipped cell because the byte is created during play. See [`23` §7.1](23-ai-system.md) |
 | +0x13 | 1 | unknown, `0xff` = free | `SetGroundFire` refuses a cell whose `+0x13` is not `0xff` |
 | +0x14 | 1 | unknown, `0xff` = free | `MoveObjects`/`GrowingLand` require it |
 
-`ActPt` doubles as the scripts' general-purpose per-tile store. Value `71`
-(`'G'`) is special to the engine: `InsertUnit` refuses to spawn on a cell whose
-`ActPt` is 71. Control-map type **4** (`Deep Hole`) is what `Platform`,
+`ActPt` doubles as the scripts' general-purpose per-tile store *outside* the 38
+values the engine's own legend names ([`10` §4.6](10-lev-mission-format.md)).
+Value `71` (`'G'`) is special to the engine: `InsertUnit` refuses to spawn on a
+cell whose `ActPt` is 71 — the legend calls it *destroyed entry point*, which is
+exactly the refusal. Control-map type **4** (`Deep Hole`) is what `Platform`,
 `FootBridge`, `FootBridge2` and `GroundUnit` write into a cell they have
 emptied, and **2** (`Wall`) is what `FallingSpores` and `GrowingLand` write
 into one they have filled.
