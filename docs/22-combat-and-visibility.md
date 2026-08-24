@@ -178,11 +178,22 @@ The signature is `(base, span)` and not `(min, max)`, which changes what every
 call below means.
 
 Two counters — `0x00514080` calls, `0x00514084` running sum — are updated on
-every draw and read by nothing. Instrumentation left in the release build.
+every draw and **read by nothing**. Byte-scanning `.text` for their addresses
+finds three references each, and every one lies inside `aRandom` or
+`aRandomize`: the read in `mov edx, [0x514084]; add edx, eax; mov [0x514084],
+edx` is the accumulate's own. Nothing outside `0x00463820..0x004638D5` touches
+them, so they cannot be feeding a debug overlay or a log. `iDesigner.exe` ships
+the same generator at `0x0042D980`, counters at `0x004C4BF0`/`0x004C4BF4`, with
+the same result. Balance instrumentation whose consumer was cut.
 
 The `line`/`file` arguments are the same debug pair as §1 and are ignored.
 
 ### 3.1 Seeding — **[code] `0x00463820`**
+
+All four globals live in the **uninitialised tail of `.data`** in both binaries
+— past the end of the section's raw data, so the loader zeroes them — which is
+what makes the next paragraph a statement about the shipped product rather than
+about one build.
 
 ```c
 void aRandomize(double seed) {          /* 0x00463820 */
@@ -192,8 +203,8 @@ void aRandomize(double seed) {          /* 0x00463820 */
 }
 ```
 
-This matters for a remake, because **the seed is 0 in the image and 0 is a
-fixed point of the generator**: `fmod(0 * 62089911, 2147483647)` is 0 forever,
+This matters for a remake, because **the seed starts at 0 and 0 is a fixed
+point of the generator**: `fmod(0 * 62089911, 2147483647)` is 0 forever,
 so an unseeded `aRandom(base, span)` returns `base` on every call. Three
 callers seed it:
 
@@ -207,6 +218,11 @@ callers seed it:
 at the top of the function and never reassigned, so the value really is the
 32-bit tick count. In the modes it does not cover, the menu's fixed 1.0 stands
 and **a mission plays out identically every time it is loaded**.
+
+`iDesigner.exe` has **no seeder at all**: the only two references to its seed
+(`0x004C4BE8`) are `aRandom`'s own `fld`/`fst`, and the global is in the
+uninitialised tail of `.data`. The editor's generator therefore never leaves
+zero, and every `aRandom(base, span)` in it returns `base`.
 
 ---
 
@@ -555,8 +571,9 @@ hit chance**.
 Special cases applied before the roll, keyed on `unitType[+0x07]` of the
 **target**:
 
-`+0x07` is `SetUnitInfo`'s **special** column, values 0..16
-([`21` §5](21-info-lcl-schema.md)); four of them steer the resolver:
+`+0x07` is `SetUnitInfo`'s **special** column, an enumerator 0..16 whose
+seventeen values are tabulated in [`21` §5](21-info-lcl-schema.md). Four of them
+steer the resolver:
 
 | `special` | Shipped carriers | Effect |
 |---|---|---|
@@ -564,6 +581,10 @@ Special cases applied before the roll, keyed on `unitType[+0x07]` of the
 | 12 | `Barrel` ×3, `Parabomb` | damage forced to 255, guaranteed hit, and the eight neighbours are marked `0x53` — **it explodes when hit** |
 | 13 | `Case` | damage forced to 255, guaranteed hit |
 | 16 | `Bea'Coo` | on death, marks the eight neighbours `0x53` — **it explodes when killed** |
+
+Two more reach combat indirectly: `1` (`Cy'Coo`) throws its own cached armour
+away when it attacks, and `9` (`Squee'Coo`) turns into a different unit type
+when a hit takes it below 6 HP.
 
 and two more: a target of unit type `0x42` hit by a type-2 weapon takes a flat
 1000 — which is passed to the damage routine as a `u8` and therefore arrives as
@@ -587,7 +608,7 @@ BOOL applyDamage(Unit *def, u8 damage, u8 attackerFacing, u8 *outDealt);
 if (def->type == 0x23) { *outDealt = 0; return TRUE; }      /* one immune unit type */
 if (damage == 0xFE)    { def->hp -= 2 (floor 0); *outDealt = 2; return TRUE; }
 
-switch (aiLevel()) {                                         /* 0x00460450 */
+switch (aiLevel()) {                       /* 0x00460450 = Game.opt +0x18 */
   case 0: d = aRandom((damage+1)/2, damage);     break;
   case 1: d = aRandom((damage+1)/2, damage + 1); break;
   case 2: d = aRandom((damage+1)/2, damage + 2); break;
@@ -620,6 +641,15 @@ Points that only the code gives:
 
 - **The difficulty level widens the damage roll upward; it does not scale it.**
   The floor `(D+1)/2` is identical at every level, only the span grows by one.
+  `aiLevel()` reads `Game.opt` `+0x18`, the options screen's eighth row,
+  labelled *"Set Difficulty Level"* — see [`20` §7.6](20-lcl-language.md). It is
+  forced to 1 in any multi-player or network game, so **the difficulty setting
+  only exists in single player**. The damage span is not its only consumer:
+  `0x00460450` has eleven call sites in six functions — `0x0046C960` (this
+  roll), `0x0047AFD0` (the experience award), `0x00475160` (the movement-point
+  recompute, but only for unit type `0x32`), `0x0043BA10`, `0x004418C0`, and
+  `0x00451A70` six times in the UI. Only the first is in this document's
+  scope.
 - **Fatigue is a damage multiplier on the receiving end.** A defender at
   `FP == 0` takes two extra `aRandom(0, D+1)` rolls — up to roughly three times
   the damage of a rested one; `FP == 1` takes one. This is the mechanical
@@ -837,6 +867,10 @@ aBuildVisibleMap(player)             once per turn and after every move
 | `rng.*` 3 | the RNG constants form a Lehmer generator with scale `1/(2³¹−1)` |
 | `hit.monotonic`, `hit.bounded` 40/40 | the hit curve is non-increasing and never exceeds 100 for every shipped weapon at every in-range distance |
 | `info.wave_overrun` | exactly eight weapons have a 9-character wave name, matching [`21`](21-info-lcl-schema.md) |
+| `opt.io` | `aSaveOptions` and `aLoadOptions` both transfer `0x6C` bytes from `0x005129D8`, i.e. `Game.opt` is one `.data` block |
+| `opt.rows`, `opt.difficulty` | the eight option rows resolve to help lines 50/51/52/57/55/54/56/58, and row 7 — `aiLevel` — is 58 |
+| `special.sites` | the eleven `.text` sites that touch `unitType[+0x07]` are exactly the ones [`21` §5](21-info-lcl-schema.md) accounts for |
+| `rng.private` 2/2 | in both `Incubation.exe` and `iDesigner.exe`, every reference to the RNG's four globals lies inside `aRandom`/`aRandomize` |
 
 `tools/trace_names.py --check gog_incubation` re-derives the symbol table and
 asserts the ten names §1.1 depends on.
@@ -845,21 +879,32 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-1. **`aiLevel()`** (`0x00460450`) reads a global that the options code writes,
-   and it is forced to 1 in any multi-player or network game. Which menu
-   setting it is, and what the three levels are called, has not been traced to
-   `Game.opt` — the 108-byte options blob is itself largely undecoded
-   ([`20`](20-lcl-language.md)).
-2. **The `special` enumerators.** The four values the resolver reacts to are
-   decoded by behaviour (§7.3), but the column has ten distinct shipped values
-   and the remaining six — 1 (`Cy'Coo`), 2 (`Ee'Ther`), 6 (`Tr'Yn`),
-   9 (`Squee'Coo`), 14 (`War'Coo`, `Norc'Yn`), 15 (`Ray'Coo`) — are consumed
-   outside the combat path and have no recovered names.
-3. **The `aRandom` instrumentation counters** at `0x00514080`/`0x00514084` are
-   written and never read. Presumably a cut balance-tuning dump.
+**None.** The three that this document opened are closed below, each in the
+place the evidence belongs, and nothing new was left hanging.
 
-Two dead paths are **closed**, not open — the code is understood and the answer
-is that nothing reaches them:
+1. **`aiLevel()` is the options screen's *"Set Difficulty Level"* row** —
+   `Game.opt` `+0x18`, cycled by `0x00460780`, tooltip text 58 in
+   `Txtmod_h.lcl`. Its three settings have **no names in the shipped product**:
+   the control is a skull icon from `Libs/options.LIB` with one, two or three
+   lit pips (sprites 23/24/25), and sprite 26 is the blank tile drawn when the
+   game state disables the row — which is what text 58 means by *"only in main
+   map during campaign"*. The whole 108-byte blob is now laid out in
+   [`20` §7.6](20-lcl-language.md). Nothing further is recoverable, because
+   there is nothing further: the levels were never given names.
+2. **The `special` enumerators are decoded by behaviour, all seventeen of
+   them** — [`21` §5](21-info-lcl-schema.md). One dispatcher (`0x0046F210`)
+   with five phases covers 1, 2, 3, 4, 6, 7, 8 and 9; `aBuildMoveMap` covers 14
+   and 15; the resolver covers 10, 12, 13 and 16. Seven values are implemented
+   and carried by no shipped unit type. The *names* remain unrecoverable — the
+   code is a hand-written `switch` on integer literals in three modules and
+   neither binary holds a matching string — but nothing about the behaviour is
+   open any more.
+3. **The `aRandom` counters are provably private to the generator** — §3, both
+   binaries. Not "no reader was found": every reference in `.text` was
+   enumerated and they all lie inside `aRandom`/`aRandomize`.
+
+Three dead paths are **closed**, not open — the code is understood and the
+answer is that nothing reaches them:
 
 - **The `0x52` marker (50 % damage) is never written.** The resolver has a case
   for it; sweeping every `0x0042F7D0` call site in `.text` finds markers
@@ -867,3 +912,6 @@ is that nothing reaches them:
   (`combat_tables.py`'s `marker.written`). A cut damage tier.
 - **The armour reroll in `0x0046C960` never runs** for any armour value below
   171, and the shipped range is 0–6 (§7.4).
+- **`aAttackUnit`'s second special-unit hook does nothing.** `0x0046C332` calls
+  `0x0046F210` with phase 1, and the dispatcher's `case 1:` is an empty
+  `break` — a hook that was wired up and never filled in.

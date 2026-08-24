@@ -1403,6 +1403,83 @@ that no shipped binary implements `OBJ` at all, were both wrong.
 
 ---
 
+### 7.6 `Options\Game.opt` — the whole 108-byte blob — **[code] `0x004602E0`, `0x00460390`, `0x00460ED0`, `0x00460520`**
+
+`?_` above writes one dword of a file that is otherwise a raw `fwrite` of a
+single `.data` block:
+
+```c
+BOOL aSaveOptions(void) { WriteFile(h, (void *)0x005129D8, 0x6C); }   /* 0x004602E0 */
+BOOL aLoadOptions(void) { ReadFile (h, (void *)0x005129D8, 0x6C); }   /* 0x00460390 */
+```
+
+So `Game.opt` **is** `0x005129D8 .. 0x00512A43`, byte for byte, and
+`aInitOptions` (`0x00460020`) writes the defaults into the same block when the
+file is missing. Eleven `i32` fields and a 64-byte name:
+
+| Offset | Address | Default | Range | Meaning |
+| --- | --- | --- | --- | --- |
+| +0x00 | `0x005129D8` | `1` | `+1`, `-1` | **Speaker position** — the sound pan is multiplied by it, so `-1` swaps left and right (`0x00460990` sets `aDirectSoundSet(pan = value * 1000)`) |
+| +0x04 | `0x005129DC` | `25000` | `0`, `10000`, `25000`, `50000` | **Music volume** — the only field that reaches `aSetCDVolume` (`0x0042C330`) |
+| +0x08 | `0x005129E0` | `0` | — | **dead** — written once by `aInitOptions` and never read or written again |
+| +0x0C | `0x005129E4` | `-512` | `0`, `-512`, `-1024`, `-10000` | **FX volume**, DirectSound attenuation in hundredths of a dB (`-10000` is silence). `0x00460440` returns it and every animation/sound routine passes it as the buffer volume |
+| +0x10 | `0x005129E8` | `-512` | — | **dead** — same as +0x08 |
+| +0x14 | `0x005129EC` | `-512` | the same four | **Speech volume** — `0x00460480` returns it and only the speech routine `0x0047B660` reads it |
+| +0x18 | `0x005129F0` | `0` | `0`, `1`, `2` | **Difficulty level** — see below |
+| +0x1C | `0x005129F4` | `1` | `0`, `1` | **Enemy Move on/off** — `0x00460740` toggles it as `x = (x != 1)`; read only by `aExecuteMove` (`0x0046E220`), where a non-zero value selects animation mode 3 instead of 2 |
+| +0x20 | `0x005129F8` | `2` | `1`, `2`, `3` | **Cursor and animation level** — `0x004604D0`, forced to 2 in one game mode; seven readers in the 3D-object and UI code |
+| +0x24 | `0x005129FC` | `2` | `1`, `2` | **Animation resolution** — `0x004604F0`, read by `aCreateSeqPlayer` among others |
+| +0x28 | `0x00512A00` | `3` | `1`..`3` | the unit-drawing path `?_` writes (above) |
+| +0x2C | `0x00512A04` | GUI text 198 | 64 bytes | **player name**, returned by `0x00461300` |
+
+`0x2C + 64 = 0x6C`, exactly the size written.
+
+**The options screen names eight of them itself.** `0x00460520` hit-tests the
+screen into a row index 0..7 and dispatches to eight cyclers; `0x00460D7F`
+switches on the same index through a jump table at `0x00460EAC` to pick the
+help line from `Txtmod_h.lcl`:
+
+| Row | Cycler | Field | Text id | Label in `Txtmod_h.lcl` |
+| --- | --- | --- | --- | --- |
+| 0 | `0x00460990` | +0x00 | 50 | `"Toggle Speaker Position"` |
+| 1 | `0x00460A10` | +0x04 | 51 | `"Set Music Volume"` |
+| 2 | `0x00460B10` | +0x0C | 52 | `"Set FX Volume"` |
+| 3 | `0x00460C30` | +0x14 | 57 | `"Set Speech Volume"` |
+| 4 | `0x00460820` | +0x20 | 55 | `"Select Cursor and Animation Level"` |
+| 5 | `0x00460740` | +0x1C | 54 | `"Enemy Move on/off"` |
+| 6 | `0x00460900` | +0x24 | 56 | `"Select Animation Resolution"` |
+| 7 | `0x00460780` | +0x18 | 58 | `"Set Difficulty Level (only in main map during campaign)"` |
+
+Text 53, the unqualified `"Set Difficulty Level"`, is not reachable from this
+switch. Nothing on this screen touches +0x08, +0x10, +0x28 or +0x2C, which is
+why `?_` had to exist at all.
+
+**The rows carry no text.** Each state is a 30x30 icon from `Libs/options.LIB`,
+which is why searching the binaries for level names finds nothing:
+
+| Field | Sprite indices | What the icons show |
+| --- | --- | --- |
+| +0x00 | 6, 7 | a speaker captioned `L R`, mirrored between the two states |
+| +0x04 | 2, 3, 4, 5 | musical notes with a row of pips |
+| +0x0C | 8, 9, 10, 11 | a speaker with sound arcs and a row of pips |
+| +0x14 | 19, 20, 21, 22 | a hand/speaker with a row of pips |
+| +0x18 | 23, 24, 25 | **a skull with one, two or three lit pips** |
+| +0x1C | 15, 16 | a motion trail with two green arrows |
+| +0x20 | 12, 13, 14 | a mouse cursor with a row of pips |
+| +0x24 | 17, 18 | a filmstrip captioned `HI LO` |
+| — | 26 | the blank tile drawn over a row the current game mode disables |
+
+**Difficulty** (+0x18) is therefore a three-position control whose settings have
+**no names anywhere in the shipped product** — one, two or three pips on a
+skull. `0x00460450` returns it, forcing `1` in any multi-player or network game.
+It has eleven call sites in six functions; the one that is fully decoded is the
+damage roll, which widens by one point per step (see
+[`22` §7.4](22-combat-and-visibility.md)). The cycler `0x00460780` is blocked,
+and sprite 26 drawn instead, whenever the game state is 3 — which is what text
+58 means by *"only in main map during campaign"*.
+
+---
+
 ## 8. Defects in the shipped corpus, re-analysed
 
 `tools/lcl_parse.py --check` parses **176/176** files and reports 12
@@ -1678,7 +1755,8 @@ carry the field through without inventing a meaning.
    global; the two animation-flavoured option labels in the GUI text
    (`Txtmod_h.lcl` strings 55 *"Select Cursor and Animation Level"* and 56
    *"Select Animation Resolution"*) therefore belong to other `Game.opt` dwords,
-   not to this one. `iDesigner.exe` implements the identical command
+   not to this one — §7.6 now identifies which, and names every other field of
+   the blob from the options screen's own help lines. `iDesigner.exe` implements the identical command
    (`0x0042c2f0`: clamp 1..3, store to `0x004c3570`) and never reads its copy
    either, and its resources contain no matching label. Nothing in the shipped
    product names it; the name is unrecoverable and none is invented.

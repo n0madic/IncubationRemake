@@ -19,6 +19,13 @@ compared against ``n / 2400`` over the full height range the ``.lev`` corpus
 contains; and the hit curve is evaluated for every shipped weapon at every
 distance inside its range.
 
+**Closure claims.**  Three statements in the documentation are of the form
+"nothing else in the binary touches this", and each is checked by enumerating
+every reference rather than by having failed to find one: the option blob's
+eight rows and their help lines (``docs/20`` 7.6), the eleven sites that read
+the ``special`` column (``docs/21`` 5), and the RNG's four globals, which must
+lie inside ``aRandom``/``aRandomize`` in **both** game binaries.
+
 Usage::
 
     python3 tools/combat_tables.py --check gog_incubation
@@ -120,6 +127,49 @@ EXPECTED_WRITTEN_MARKERS = {0x50, 0x51, 0x53, 0x54, 0x55}
 #: The distance rule at `0x0046A34E`: two adjacent cells more than this far
 #: apart vertically count as further than one field.
 HEIGHT_STEP = 2400
+
+# --- Options\Game.opt (docs/20 7.6) -----------------------------------------
+
+#: `aSaveOptions` / `aLoadOptions` transfer this many bytes from this address.
+#: Both compile to `push 0x6C; push 0x005129D8`, which is what pins the file to
+#: a single `.data` block.
+OPT_BLOB = 0x005129D8
+OPT_SIZE = 0x6C
+OPT_IO = (0x004602E0, 0x00460390)
+
+#: `jmp dword [ebx*4 + 0x00460EAC]` in the options screen's help-line switch:
+#: row index -> a `push <textId>` stub.  The ids name the fields, and the row
+#: order is the same one `0x00460520` hit-tests.
+OPT_ROW_TABLE = 0x00460EAC
+EXPECTED_OPT_ROWS = [50, 51, 52, 57, 55, 54, 56, 58]
+#: Row 7 is `aiLevel`, `Game.opt +0x18`, help line 58 "Set Difficulty Level ...".
+OPT_DIFFICULTY_ROW = 7
+
+# --- provably private globals -----------------------------------------------
+
+#: `unitType[+0x07]`, the `special` column.  Every site that reads it, so that
+#: a new consumer appearing in a re-analysis is a failure rather than a silent
+#: gap.  docs/21 5 tabulates what each one does.
+SPECIAL_COLUMN = 0x0051C027
+EXPECTED_SPECIAL_SITES = {
+    0x0040DB17, 0x0040DCCF,     # aPlayFightAnimation: death animations 12/13/16
+    0x00430A64, 0x00430E5F,     # aBuildMoveMap: 1 and 14 immobile, 15 warps
+    0x004416BB,                 # the SetUnitInfo handler -- the only writer
+    0x0046BBA6, 0x0046BC2E, 0x0046BE6C,   # aAttackUnit: 10, 12, 13, 16
+    0x0046F255,                 # the special hook itself
+    0x004703EE,                 # aExecuteBomb: 12
+    0x004753A9,                 # the warp-range accessor
+}
+
+#: The RNG's four globals and the address span of `aRandomize` + `aRandom`.
+#: Every reference must fall inside that span -- that is what makes the two
+#: instrumentation counters *provably* unread rather than merely unexplained.
+RNG_GLOBALS = {
+    "Incubation.exe": ((0x00514078, 0x0051407C, 0x00514080, 0x00514084),
+                       (0x00463820, 0x004638D5)),
+    "iDesigner.exe": ((0x004C4BE8, 0x004C4BEC, 0x004C4BF0, 0x004C4BF4),
+                      (0x0042D980, 0x0042D9E5)),
+}
 
 WEAPON_COUNT = 48
 
@@ -257,6 +307,48 @@ class CombatTables:
 
     def constants(self) -> dict[str, float]:
         return {name: self.pe.f64(va) for name, (va, _want) in CONSTANTS.items()}
+
+    # -- Game.opt ------------------------------------------------------------
+
+    def option_io(self) -> list[tuple[int, int]]:
+        """``(size, address)`` of each ``push size; push address`` in the two I/O
+        routines.  Both must transfer the whole blob from the same place."""
+        out = []
+        for func in OPT_IO:
+            off = self.pe.va_to_off(func)
+            window = self.pe.data[off:off + 0x80]
+            i = window.find(b"\x6a")
+            while i >= 0:
+                if window[i + 2] == 0x68:
+                    out.append((window[i + 1],
+                                struct.unpack_from("<I", window, i + 3)[0]))
+                    break
+                i = window.find(b"\x6a", i + 1)
+        return out
+
+    def option_rows(self) -> list[int | None]:
+        """Help-line text id for each of the eight option rows, in row order."""
+        out: list[int | None] = []
+        for row in range(8):
+            stub = self.pe.u32(OPT_ROW_TABLE + 4 * row)
+            head = self.pe.bytes_at(stub, 2)
+            out.append(head[1] if head[0] == 0x6A else None)
+        return out
+
+    # -- global reference sweeps --------------------------------------------
+
+    def refs_to(self, address: int) -> list[int]:
+        """Every ``.text`` site whose instruction stream embeds *address*."""
+        _tva, _tvsize, traw, trawsize = self.pe.section(".text")
+        data = self.pe.data
+        pattern = struct.pack("<I", address)
+        out, i = [], traw
+        while True:
+            i = data.find(pattern, i, traw + trawsize)
+            if i < 0:
+                return out
+            out.append(self.pe.off_to_va(i))
+            i += 1
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +539,23 @@ def run_check(root: str) -> int:
                 f"{sorted(hex(m) for m in written)}, expected "
                 f"{sorted(hex(m) for m in EXPECTED_WRITTEN_MARKERS)}")
 
+    # 1b. Game.opt: the file is one .data block, and the rows name themselves
+    io = tables.option_io()
+    stats.check("opt.io", io == [(OPT_SIZE, OPT_BLOB)] * len(OPT_IO),
+                f"aSaveOptions/aLoadOptions transfer {io}, expected "
+                f"{[(OPT_SIZE, OPT_BLOB)] * len(OPT_IO)}")
+    rows = tables.option_rows()
+    stats.check("opt.rows", rows == EXPECTED_OPT_ROWS,
+                f"option help lines are {rows}, expected {EXPECTED_OPT_ROWS}")
+    stats.check("opt.difficulty", rows[OPT_DIFFICULTY_ROW] == 58,
+                f"the difficulty row points at text {rows[OPT_DIFFICULTY_ROW]}, not 58")
+
+    # 1c. the special column has no consumer this documentation does not know
+    sites = set(tables.refs_to(SPECIAL_COLUMN))
+    stats.check("special.sites", sites == EXPECTED_SPECIAL_SITES,
+                f"unitType[+0x07] is referenced at {sorted(hex(x) for x in sites)}, "
+                f"expected {sorted(hex(x) for x in EXPECTED_SPECIAL_SITES)}")
+
     # 2. the indirect-fire predicate
     stats.check("arc.weapons", tables.arcing == EXPECTED_ARCING,
                 f"arcing weapons are {sorted(tables.arcing)}, "
@@ -492,6 +601,20 @@ def run_check(root: str) -> int:
     draws = [rng(0, 100) for _ in range(1000)]
     stats.check("rng.range", all(0 <= d <= 99 for d in draws),
                 "aRandom(0, 100) left 0..99")
+
+    # 6b. the RNG globals are private to the generator, in both binaries
+    for name, (globals_, (lo_va, hi_va)) in RNG_GLOBALS.items():
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            stats.check("rng.private", False, f"{name} not found under {root!r}")
+            continue
+        other = CombatTables.__new__(CombatTables)
+        other.pe = PEFile(path)
+        stray = [va for g in globals_ for va in other.refs_to(g)
+                 if not lo_va <= va < hi_va]
+        stats.check("rng.private", not stray,
+                    f"{name}: the RNG globals are referenced outside "
+                    f"{lo_va:#x}..{hi_va:#x} at {[hex(v) for v in stray]}")
 
     # 7. the hit curve over every shipped weapon
     weapons = load_weapons(root)

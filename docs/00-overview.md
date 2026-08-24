@@ -46,6 +46,7 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 | `.LIB` (shape) | 58 | 2D sprites: UI, icons, fonts, cursors | **Solved**, visually verified | `lib_extract.py` | [60](60-lib-sprites.md) |
 | `.pal` | 24 | 256-colour palettes (Windows BMP carriers) | **Solved** | `inclib/palette.py` | [60](60-lib-sprites.md) |
 | `.IMG` | 42 | Fixed-point atan / sin-cos lookup tables | **Solved** | `img_tables.py` | [70](70-img-tables.md) |
+| `Game.opt` | 0 (created on first run) | Player options | **Solved** — a raw 108-byte dump of one `.data` block; every field named from the options screen's own help lines | `combat_tables.py --check` (layout guard) | [20 §7.6](20-lcl-language.md) |
 | `prototyp.bin` | 21 | 3D prototype geometry — a bytecode program, not a mesh struct | **Solved**, 26072/26072 records | `prototyp_parse.py` | [31](31-prototyp-geometry.md) |
 | `.bmp` | 118 | Briefing art, backgrounds, install screens | Standard Windows BMP | — | — |
 | `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE | — | — |
@@ -169,7 +170,7 @@ python3 tools/lib_extract.py  gog_incubation --check     #  58/58
 python3 tools/img_tables.py   gog_incubation             #  42/42
 python3 tools/verify_3d_indices.py --root gog_incubation # .3DW/.dir/.din
 python3 tools/lcl_decode.py   gog_incubation -o out/lcl  # 178 files
-python3 tools/combat_tables.py --check gog_incubation    # 48/48 weapon patterns
+python3 tools/combat_tables.py --check gog_incubation    # 24 checks, 48/48 patterns
 python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
 ```
 
@@ -194,14 +195,14 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **25 items are
+in place with the evidence that closed them rather than deleted. **22 items are
 still open:**
 
 | Spec | Open | What they are |
 |---|---|---|
 | [10](10-lev-mission-format.md) | 4 | five unit bytes with no accessor in either binary, one all-zero block field, one vestigial header byte, one runtime-only array |
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
-| [22](22-combat-and-visibility.md) | 3 | the difficulty global, six unnamed `special` enumerators, and an unread RNG counter |
+| [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
 | [30](30-eng3d-ascii-formats.md) | 8 | authoring-side meanings of `.dir` metadata, and tokens the shipped readers skip |
 | [31](31-prototyp-geometry.md) | 2 | what a Voodoo did with Glide blend factor `0xf`; runtime rasteriser confirmation |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |

@@ -403,6 +403,61 @@ SetUnitInfo (20, "ComBot", "A_MK_0B.3DI", 0, 5, 20, 255, 10, 5, 12, 0, 3, 30, 1,
 | +0x7c | 1 | 15 | `num[12]` | **height**, in 160-world-unit levels | confirmed: `0x0047ad70` returns `unitinfo[+0x7c] * 0xa0` as the unit's world height and `0x0047ad30` returns `… * 0xa0 / 2 + 800` as its aim point; shipped values 4 (Spider) … 100 (Norc'Yn), 18 for a human. Line of sight uses the first for vision and the second for fire ([`22` §6](22-combat-and-visibility.md)) |
 | +0x7d | 1 | 16 | `str[2][0]` | **key** — first character | header only |
 
+#### Column 11, `special`, is an enumerator with a single dispatcher — **[code] `0x0046F210`**
+
+`+0x07` is not a flag but a small enumerator, and almost all of it goes through
+one hook:
+
+```c
+BOOL specialHook(Unit *u, Unit *other, int phase);      /* 0x0046F210 */
+```
+
+which returns immediately when the type's `special` is 0 and otherwise switches
+on a *phase* supplied by the caller. The binary contains exactly six calls to
+it, and each pushes its phase as a literal, so all six are read off rather than
+inferred:
+
+| Phase | Caller | When |
+| --- | --- | --- |
+| 0 | `aAttackUnit` `0x0046B96D` | the attacker, before its shot is marked out |
+| 1 | `aAttackUnit` `0x0046C332` | the attacker, after the shot — **no case handles it** |
+| 2 | `0x0042FF30` | building the weapon list, i.e. "may this unit attack" |
+| 3 | `aExecuteMove` `0x0046EE3F` | after a move completes |
+| 4 | `aPlayFightAnimation` `0x0040DA52` | the target, as damage lands |
+| 5 | `0x004759B0` | the per-turn stat refresh |
+
+Four more values are handled outside the hook, in `aBuildMoveMap`
+(`0x00430A40`), the combat resolver (`0x0046B450`) and `aExecuteBomb`.
+All seventeen values, with the shipped carriers:
+
+| `special` | Shipped carriers | Effect | Where |
+| --- | --- | --- | --- |
+| 0 | 21 types | nothing | — |
+| 1 | `Cy'Coo` | zeroes its own cached armour `+0x36`/`+0x37` when it attacks, **and cannot move** — `aBuildMoveMap` returns an empty map for it | phase 0; `0x00430A64` |
+| 2 | `Ee'Ther` | **HP restored to the type maximum every turn** | phase 5 |
+| 3 | *none* | spawns up to four units of the **next** type id on its four orthogonal neighbours, each gated by its own random draw | phase 3 |
+| 4 | *none* | may attack only while its per-turn counter `unit[+0x50]` is 2 or less | phase 2 |
+| 5 | *none* | no handler | — |
+| 6 | `Tr'Yn` | places three units of type `0x34` around itself every turn, at offsets picked from its facing — the extra body cells of a unit bigger than one field | phase 5 |
+| 7 | *none* | morphs into the next unit type (`aChangeUnitInfo(type + 1)`) | phase 3 |
+| 8 | *none* | morphs into the previous unit type | phase 3 |
+| 9 | `Squee'Coo` | below 6 HP and hit by a weapon of type 1, 2 or 4: removed and replaced by a neutral unit of type `0x36` that inherits its AI group | phase 4 |
+| 10 | *none* | immune unless the weapon's type is 2 or 3 | `0x0046B450` |
+| 11 | *none* | no handler | — |
+| 12 | `Barrel` x3, `Parabomb` | **explodes when hit** — damage forced to 255 and the eight neighbours marked for a secondary blast | `0x0046B450`, `aExecuteBomb`, `aPlayFightAnimation` |
+| 13 | `Case` | destroyed by any hit — damage forced to 255 | `0x0046B450`, `aPlayFightAnimation` |
+| 14 | `War'Coo`, `Norc'Yn` x3 | **cannot move** — `aBuildMoveMap` returns an empty map | `0x00430A70` |
+| 15 | `Ray'Coo` | **can warp**: `0x00430EE0` marks every free, walkable field within distance 7 with cell state `0x3C`, the warp overlay of [`10` §4.5](10-lev-mission-format.md) | `0x00430E5C` |
+| 16 | `Bea'Coo` | **explodes when killed** — the eight neighbours are marked for a secondary blast | `0x0046B450`, `0x0040DCCD` |
+
+Seven values (3, 4, 5, 7, 8, 10, 11) are implemented and unused: no shipped
+`SetUnitInfo` line carries them, so a remake needs them only for mod
+compatibility. Phase 1 is the reverse case — a call site with no handler.
+
+The values have **no names**: this is a hand-written `switch` on an integer
+literal in three separate modules, and neither binary contains a matching
+string. [`22` §7.3](22-combat-and-visibility.md) works through the combat ones.
+
 #### Column 7, `FP max`, is a flag — **[code] `0x00475120`**
 
 ```

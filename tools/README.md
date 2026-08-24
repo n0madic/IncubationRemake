@@ -61,7 +61,7 @@ python3 tools/visn_decode.py      gog_incubation --check            # 723/723
 python3 tools/cho_parse.py        --check gog_incubation            # 237/237
 python3 tools/cha_parse.py        --check gog_incubation            # 245/245
 python3 tools/cha_parse.py --verify-convention gog_incubation        # quaternion order
-python3 tools/combat_tables.py   --check gog_incubation             # 48/48 weapon patterns
+python3 tools/combat_tables.py   --check gog_incubation             # 24 checks, 48/48 patterns
 python3 tools/trace_names.py     --check gog_incubation             # 324 + 146 names
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
