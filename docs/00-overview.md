@@ -1,0 +1,243 @@
+# Incubation — file format documentation
+
+Reverse-engineering notes for **Incubation: Time Is Running Out** (Blue Byte,
+1997) and its *Wilderness Missions* add-on, produced from the GOG release in
+`gog_incubation/` as groundwork for a remake.
+
+The game directory is treated as strictly read-only. Everything produced here
+lives in `docs/` (specs) and `tools/` (Python parsers and extractors).
+
+---
+
+## 1. What the game is built from
+
+Two separate engines, with their own file families:
+
+- **The game/editor layer** — Blue Byte's own `aLIB` and game modules. Source
+  tree visible in the binaries as `C:\aProject\...`. Owns `.lev`, `.lcl`,
+  `.LIB`, `.pal`.
+- **Eng3d + Charisma** — the 3D renderer (`Eng3d.dll`, source
+  `D:\PRO\3DLIB\eng3d\`) and the model/animation system called **Charisma**
+  (hence `CHData` = Charisma Data, `.cho` = object, `.cha` = animation). Owns
+  `.3DW`, `.3DI`/`.dir`, `.din`, `prototyp.bin`, `texture.lib` (VISN), `.cho`,
+  `.cha`.
+
+The C++ RTTI of the Charisma engine survives in the shipped binaries, which is
+why its class names (`V100ModelDesc`, `KeyFramedAnimationDesc`,
+`LinearVectorMovementDesc`, …) are known exactly rather than guessed.
+
+Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-binaries-and-source-layout.md).
+
+---
+
+## 2. Format inventory
+
+| Format | Count | Role | Status | Tool | Spec |
+|---|---|---|---|---|---|
+| `.lev` | 155 | Missions: field grid, units, scenery placement | **Solved structurally**; grid, units and ground lattice decoded, some fields open | `lev_parse.py` | [10](10-lev-mission-format.md) |
+| `.lcl` / `.gcl` | 176 + 2 | Mission scripts, GUI layout, unit/weapon balance tables | **Solved**, interpreter semantics read from the binary. 177 parse; `DATA/Version.gcl` is a bare version string, not a script | `lcl_decode.py`, `lcl_parse.py` | [20](20-lcl-language.md), [21](21-info-lcl-schema.md) |
+| `.txt` (briefings) | 120 | Mission briefing and debriefing text, same XOR 0xFF obfuscation as `.lcl` | **Undocumented.** The obfuscation is the `.lcl` one and `lcl_decode.py` reads them, but the markup inside (`{:A0}`, `{§1}`, `===[Briefing]`, `@@`) has no spec and no parser | `lcl_decode.py` (deobfuscation only) | — |
+| `.3DW` | 42 | ASCII scene: which prototypes are placed where | **Solved** | `3dw_parse.py` | [30](30-eng3d-ascii-formats.md) |
+| `.dir` (3DI) | 42 | ASCII build-time index (never read by the engine) | **Solved** | `dir3di_parse.py` | [30](30-eng3d-ascii-formats.md) |
+| `.din` | 42 | Binary index into `prototyp.bin` / `texture.lib` | **Solved** (two distinct layouts) | `din_parse.py` | [30](30-eng3d-ascii-formats.md) |
+| `.cho` | 237 | Charisma models: parts, skeletons, mesh references | **Solved**, 237/237 byte-exact | `cho_parse.py` | [40](40-charisma-model-animation.md) |
+| `.cha` | 245 | Charisma keyframed animations and event notes | **Solved**, 245/245 byte-exact | `cha_parse.py` | [40](40-charisma-model-animation.md) |
+| `texture.lib` (VISN) | 21 | Compressed textures, DCT-based codec | **Solved**, 723/723 **byte-exact vs the original DLL** | `visn_decode.py` | [50](50-visn-textures.md) |
+| `.LIB` (shape) | 58 | 2D sprites: UI, icons, fonts, cursors | **Solved**, visually verified | `lib_extract.py` | [60](60-lib-sprites.md) |
+| `.pal` | 24 | 256-colour palettes (Windows BMP carriers) | **Solved** | `inclib/palette.py` | [60](60-lib-sprites.md) |
+| `.IMG` | 42 | Fixed-point atan / sin-cos lookup tables | **Solved** | `img_tables.py` | [70](70-img-tables.md) |
+| `prototyp.bin` | 21 | 3D prototype geometry — a bytecode program, not a mesh struct | **Solved**, 26072/26072 records | `prototyp_parse.py` | [31](31-prototyp-geometry.md) |
+| `.bmp` | 118 | Briefing art, backgrounds, install screens | Standard Windows BMP | — | — |
+| `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE | — | — |
+| `.ogg` | 32 | Music (GOG re-encode of the CD audio) | Standard Ogg Vorbis | — | — |
+| `Rec_0.dat` | 1 | Orphaned file under `DATA/Misc/` | **Dead data** — no shipped binary references it | — | see below |
+
+`Install/*` (InstallShield `.ins`, `.lid`, `.cab`) is installer plumbing and out
+of scope.
+
+### Behaviour, not formats
+
+One spec in the set describes no file at all.
+[`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
+between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
+records turn into a resolved shot and into fog of war. It exists because a
+loader that reads every byte of every format still cannot play a turn.
+`combat_tables.py` and `trace_names.py` are its checks.
+
+**`DATA/Misc/Rec_0.dat` is dead data.** No executable or DLL in the release
+contains the string `Rec_`, and `Incubation.exe` contains no `.dat` literal at
+all — the game builds every data path it uses from `%s.lev`, `%s.lcl`, `%s.cho`
+and friends. Structurally the file is an 82 632-byte stream of variable-length
+records with a recurring 16-byte pattern, consistent with a recorded event or
+input log ("Rec" = recording), but since nothing loads it the question is moot
+for a remake. Checked across all 11 executables and DLLs.
+
+---
+
+## 3. Highlights
+
+**`.lev` had no prior art.** A survey of ModdingWiki, the XeNTaX archives,
+GitHub, and the Battle Isle / Incubation fan communities found no public
+documentation of the mission format; the one recent technical project in this
+space lists it explicitly as unsolved. The layout in
+[`10-lev-mission-format.md`](10-lev-mission-format.md) was recovered here by
+disassembling `iDesigner.exe` with radare2, and it is confirmed by an exact
+size identity that holds for all 155 shipped files:
+
+```
+file_size = 864 + 23 * width * height + 203824
+```
+
+**`.lcl` is the mission logic — and the game balance.** The scripts are only
+obfuscated with XOR 0xFF and decode to well-commented source. The interpreter's
+full 108-entry command table is in `Incubation.exe`, and its semantics were
+recovered from the decompiled interpreter rather than inferred.
+[`20-lcl-language.md`](20-lcl-language.md) is the language reference a remake
+needs; [`21-info-lcl-schema.md`](21-info-lcl-schema.md) is the schema of
+`DATA/Info.lcl`, i.e. every weapon, unit, equipment and terrain stat in the
+game.
+
+**Cross-format validation works, and it is what makes the specs trustworthy.**
+Three independent examples:
+
+- The `.lcl` scripts name map coordinates and compare against action-point
+  values; reading those exact cells out of the `.lev` grid reproduces the
+  values. That is how the cell record's height and action-point fields were
+  pinned down rather than guessed — and it also settled the width/height
+  ordering in the header.
+- Every movement track in a `.cha` animation targets a bone that exists in that
+  animation's own skeleton (6524/6524), and 98.2% also exist in a same-family
+  `.cho` model. The 116 misses are authoring helpers (`Dummy01`, `Shadow`,
+  spare finger bones) kept in the animation but never exported as parts.
+- Every VISN record's bitstream ends 0 or exactly 2 bytes before its indexed
+  end, and none reads past it — a per-record checksum over ~15 MB of entropy
+  coding.
+- A `.lev` cell's height equals the `z` of the land object on that field in
+  184162 of 184162 cells — two independently decoded structures agreeing on the
+  same quantity.
+
+**Frame rate is proven, not assumed.** Cutscenes run at exactly 30 fps: the
+sequence player multiplies its millisecond delta by the float `0.03` held at
+`Incubation.exe:0x004B157C` (0.03 frames/ms), and that constant has exactly two
+`fmul` references in the whole binary. Gameplay advances animation by one
+key-time unit per rendered frame. See
+[`40-charisma-model-animation.md`](40-charisma-model-animation.md).
+
+**The strongest check is running the original code.** Wine 11 executes 32-bit
+x86 PE on arm64 macOS, so the shipped `Eng3d.dll` can be loaded and called
+directly. Diffing its output against our decoder gives **723/723 byte-exact**
+for both VISN entry points, plus 87/87 on synthesised records that exercise
+paths the retail data never touches. That is not "looks right" — it is the
+original decoder agreeing bit for bit. See
+[`../tools/wine_visn/README.md`](../tools/wine_visn/README.md).
+
+**Pictures are the next best check.** Decoded `prototyp.bin` records render as a
+recognisable city skyline and a human torso; a `.cho` skeleton posed by a `.cha`
+animation is an unmistakable humanoid walking. That last one validates the
+quaternion component order, the matrix convention and the parent chain
+simultaneously — none of which can be checked structurally.
+
+**`.cho` files contain no geometry.** Models reference their meshes *by name*,
+and 8509 of 8617 distinct names resolve verbatim into the world set's
+`prototyp.dir`. The geometry itself lives in `prototyp.bin` — which turned out
+not to be a mesh structure at all, but a **bytecode program the engine executes
+in place**, complete with a BSP tree for painter's-order sorting. See
+[`31-prototyp-geometry.md`](31-prototyp-geometry.md).
+
+---
+
+## 4. Tools
+
+All tools are Python 3, dependency-free, and live in `tools/`. Shared code is in
+`tools/inclib/`:
+
+| Module | Purpose |
+|---|---|
+| `inclib/binio.py` | Little-endian `Reader` with the length-prefixed-string convention |
+| `inclib/png.py` | Minimal PNG writer (indexed and truecolour) |
+| `inclib/palette.py` | `.pal` loader |
+| `inclib/liblib.py` | `.LIB` shape-library parser |
+| `inclib/lev.py` | `.lev` battle-map parser |
+| `inclib/pe.py` | PE reader: sections, resources, and reads by virtual address |
+
+Corpus checks — every tool has one, and they are the acceptance criterion for
+each spec:
+
+```bash
+python3 tools/lev_parse.py    gog_incubation --check     # 155/155
+python3 tools/lib_extract.py  gog_incubation --check     #  58/58
+python3 tools/img_tables.py   gog_incubation             #  42/42
+python3 tools/verify_3d_indices.py --root gog_incubation # .3DW/.dir/.din
+python3 tools/lcl_decode.py   gog_incubation -o out/lcl  # 178 files
+python3 tools/combat_tables.py --check gog_incubation    # 48/48 weapon patterns
+python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
+```
+
+Outputs (sprites, map renders, textures) are written under `tools/out/`.
+
+---
+
+## 5. Method and its limits
+
+Every spec here is backed by a parser that runs over 100% of that format's
+corpus. Coverage numbers are stated per format. Where a field's meaning is
+inferred rather than proven, it is marked **UNVERIFIED** and the observed value
+distribution is given instead of an invented name — an honest "u32 at +0x10,
+always 0 across all 155 files" is more useful to a remake than a plausible
+guess that turns out wrong.
+
+Because several of these files are raw `fwrite` dumps of C structs from an MSVC
+debug build, they contain uninitialised memory: `0xCD` fill bytes and stale heap
+pointers appear inside otherwise meaningful records. Those are called out
+per-format and must not be interpreted as data.
+
+### What is still open
+
+Each spec ends with an **Open questions** section, and closed entries are kept
+in place with the evidence that closed them rather than deleted. **25 items are
+still open:**
+
+| Spec | Open | What they are |
+|---|---|---|
+| [10](10-lev-mission-format.md) | 4 | five unit bytes with no accessor in either binary, one all-zero block field, one vestigial header byte, one runtime-only array |
+| [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
+| [22](22-combat-and-visibility.md) | 3 | the difficulty global, six unnamed `special` enumerators, and an unread RNG counter |
+| [30](30-eng3d-ascii-formats.md) | 8 | authoring-side meanings of `.dir` metadata, and tokens the shipped readers skip |
+| [31](31-prototyp-geometry.md) | 2 | what a Voodoo did with Glide blend factor `0xf`; runtime rasteriser confirmation |
+| [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
+| [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |
+| [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
+
+Almost all of these are open **in principle**, not merely untraced. Three
+recurring reasons: there are no symbols (enumerator names, the `J` family — no
+code references it at all); the authoring tool never shipped, so `class_code`,
+`type_code` and `EDITORDETAIL` have no recoverable meaning; or the field is zero
+in every shipped file, which no amount of data can characterise. Each entry
+states what was tried, so effort is not spent twice.
+
+Nothing in this list blocks a remake: every one is either a name for behaviour
+that is already fully specified, or a field a remake can carry through
+unchanged.
+
+---
+
+## 6. Prior art
+
+The formats were surveyed for existing documentation before any work started.
+Findings:
+
+- **[Sonatix/Incubation-HD-Renderer](https://github.com/Sonatix/Incubation-HD-Renderer)**
+  (2026, MIT) — the one substantial technical source. Contains a VISN codec
+  specification recovered by disassembling `Eng3d.dll`, plus descriptions of
+  `.LIB`, `.pal`, `.dir`/`.din`, and `.3DW`. It was used as a starting lead for
+  the VISN work; the implementation here was written from scratch and is now
+  validated directly against the original DLL rather than against any prose, so
+  the dependency is discharged. Two of its claims turned out to be wrong — see
+  [`50-visn-textures.md`](50-visn-textures.md).
+- **LCL Decode** (Kay Ove, early 2000s, Java) on the `scayra.free.fr` fan
+  archive — the XOR 0xFF obfuscation and a field-level description of
+  `DATA/Info.lcl`.
+- Nothing at all for `.lev`, for the `.cho`/`.cha` payloads, for
+  `prototyp.bin`'s contents, or for the `.IMG` tables.
+- ModdingWiki's "Battle Isle / History Line library format" is an **older,
+  unrelated** DOS-era format and does not apply.
