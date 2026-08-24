@@ -35,6 +35,7 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 | Format | Count | Role | Status | Tool | Spec |
 |---|---|---|---|---|---|
 | `.lev` | 155 | Missions: field grid, units, scenery placement | **Solved structurally**; grid, units and ground lattice decoded, some fields open | `lev_parse.py` | [10](10-lev-mission-format.md) |
+| `.sav` | 0 (written by the game) | Save games — campaign and play-by-mail | **Solved structurally** from the writer and reader chains; nine blocks, one of them a complete `.lev` image. No sample exists to parse | `sav_tables.py --check`, `sav_parse.py` | [11](11-save-game-format.md) |
 | `.lcl` / `.gcl` | 176 + 2 | Mission scripts, GUI layout, unit/weapon balance tables | **Solved**, interpreter semantics read from the binary. 177 parse; `DATA/Version.gcl` is a bare version string, not a script | `lcl_decode.py`, `lcl_parse.py` | [20](20-lcl-language.md), [21](21-info-lcl-schema.md) |
 | `.txt` (briefings) | 120 | Mission briefing and debriefing text, same XOR 0xFF obfuscation as `.lcl` | **Undocumented.** The obfuscation is the `.lcl` one and `lcl_decode.py` reads them, but the markup inside (`{:A0}`, `{§1}`, `===[Briefing]`, `@@`) has no spec and no parser | `lcl_decode.py` (deobfuscation only) | — |
 | `.3DW` | 42 | ASCII scene: which prototypes are placed where | **Solved** | `3dw_parse.py` | [30](30-eng3d-ascii-formats.md) |
@@ -88,6 +89,16 @@ size identity that holds for all 155 shipped files:
 ```
 file_size = 864 + 23 * width * height + 203824
 ```
+
+**`.sav` is the only format the game itself writes**, and the only one with no
+corpus at all — the shipped `Work/Saves/` tree is empty. What replaces the
+corpus is that `aSaveGame` and `aLoadGame` are both in the binary and must
+agree, which pins every offset exactly; 69 checks assert that agreement.
+[`11-save-game-format.md`](11-save-game-format.md) also settles three things
+that were invisible from the read-only formats: play-by-mail is a real shipped
+mode with its passwords stored (obfuscated) in the file, the roster block is
+`aUnit[5][31]` of which the save persists 60 records, and the save carries a
+**build number** that makes any two builds refuse each other's files.
 
 **`.lcl` is the mission logic — and the game balance.** The scripts are only
 obfuscated with XOR 0xFF and decode to well-commented source. The interpreter's
@@ -172,6 +183,8 @@ python3 tools/verify_3d_indices.py --root gog_incubation # .3DW/.dir/.din
 python3 tools/lcl_decode.py   gog_incubation -o out/lcl  # 178 files
 python3 tools/combat_tables.py --check gog_incubation    # 24 checks, 48/48 patterns
 python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
+python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
+python3 tools/sav_parse.py    gog_incubation --selftest # 31 map sizes
 ```
 
 Outputs (sprites, map renders, textures) are written under `tools/out/`.
@@ -195,12 +208,13 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **22 items are
+in place with the evidence that closed them rather than deleted. **26 items are
 still open:**
 
 | Spec | Open | What they are |
 |---|---|---|
 | [10](10-lev-mission-format.md) | 4 | five unit bytes with no accessor in either binary, one all-zero block field, one vestigial header byte, one runtime-only array |
+| [11](11-save-game-format.md) | 4 | ViewPlayer's 1100 bytes, twenty offsets that no code compares against a literal, the hard-coded slot 32 — all three want one real save; the fourth is closed by enumeration |
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
 | [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
 | [30](30-eng3d-ascii-formats.md) | 8 | authoring-side meanings of `.dir` metadata, and tokens the shipped readers skip |
@@ -210,7 +224,8 @@ still open:**
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 
 Almost all of these are open **in principle**, not merely untraced. Three
-recurring reasons: there are no symbols (enumerator names, the `J` family — no
+recurring reasons: there is no corpus (three of `11`'s four, which need one
+save the retail release does not ship); there are no symbols (enumerator names, the `J` family — no
 code references it at all); the authoring tool never shipped, so `class_code`,
 `type_code` and `EDITORDETAIL` have no recoverable meaning; or the field is zero
 in every shipped file, which no amount of data can characterise. Each entry

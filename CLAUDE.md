@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Reverse-engineering of the file formats of **Incubation: Time Is Running Out** (Blue Byte, 1997), as groundwork for a remake. It is not an application — it is a set of format specifications (`docs/`) and the parsers that prove them (`tools/`).
 
-`gog_incubation/` is the retail game, and is **strictly read-only**. It is gitignored. Never write into it, never "fix" a file in it, and be careful with `cd` — a shell whose working directory drifts into it will silently create directories there.
+`gog_incubation/` is the retail game, and is **strictly read-only**. `Work/Saves/`
+under it is where the game writes save files; it ships empty. Never run the game
+and never write there yourself — but if a save appears there because the user
+played, that is the sample `tools/sav_parse.py` exists to read, and three of
+`docs/11`'s open questions close the moment one does. It is gitignored. Never write into it, never "fix" a file in it, and be careful with `cd` — a shell whose working directory drifts into it will silently create directories there.
 
 ## Commands
 
@@ -30,15 +34,26 @@ python3 tools/img_tables.py       gog_incubation
 python3 tools/verify_3d_indices.py --root gog_incubation
 python3 tools/combat_tables.py    --check gog_incubation      # 24 checks, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
+python3 tools/sav_tables.py       --check gog_incubation      # 69 checks
+python3 tools/sav_parse.py        gog_incubation --selftest   # 31 map sizes
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 ```
 
 All exit 0. A non-zero exit is a regression. Every one of them also **fails on an empty corpus** — a check that examined nothing is not a check that passed, so a mistyped root cannot come out green.
 
+`.sav` has **no corpus** — the shipped `Work/Saves/` tree is empty — so its two
+checks stand in for one. `sav_tables.py` verifies the layout against the writer
+and reader chains in `Incubation.exe`; `sav_parse.py --selftest` wraps a corpus
+`.lev` in the save's fixed blocks and requires the round trip and a
+byte-identical extraction. `sav_parse.py FILE` is the only tool here that has
+never seen real data; it is deliberately outside the always-run block and exits
+non-zero when there is nothing to parse.
+
 `--verify-convention` and `charisma_selftest.py` are the two that guard *meaning* rather than structure: the first gates on the quaternion-component hypothesis still explaining ≥80 % of tracks, the second asserts decoded key values and times. Structure-only checks pass unchanged when components are permuted, so do not remove either.
 
-**CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables` and
-`trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`. Check `--help` rather than guessing.
+**CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
+`sav_tables` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`sav_parse` takes it positionally but only with `--selftest`. Check `--help` rather than guessing.
 
 ### Asset extraction
 
@@ -132,14 +147,10 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `20`/`21` LCL and the game-balance schema, `22` combat and visibility (**behaviour, not a file format**), `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility (**behaviour, not a file format**), `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-Every doc ends with an **Open questions** section. **22 items remain open** across the set (`10`: 4, `20`: 0, `22`: 0, `30`: 8, `31`: 2, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section. **26 items remain open** across the set (`10`: 4, `11`: 4, `20`: 0, `22`: 0, `30`: 8, `31`: 2, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 
 Documentation and all code comments are in **English**. Conversation with the user is in Russian.
-
-## Repository state
-
-Git is initialised on `main` with **no commits yet**. `.gitignore` already excludes `gog_incubation`, `tools/out`, `__pycache__`, `_wip/`. Nothing has been committed — ask before making the first commit.

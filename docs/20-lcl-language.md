@@ -395,6 +395,14 @@ classifier accepts a slot index of `0..27` (`tok[1] - 'A' <= 0x1b`). 28 slots
 `0x0050b8c0`. So the local array is **28 entries**: `_A` … `_Z` plus two
 otherwise-unreachable slots for `_[` and `_\`.
 
+**The save game persists only 109 of those 112 bytes.** `aSaveLCL`
+(`0x004406b0`) and `aLoadLCL` (`0x004406f0`) both use `0x6D`, so a save
+round-trips and nothing looks corrupt — but `109 = 27 * 4 + 1`, which means
+slots 0…26 survive whole and slot 27 keeps only its lowest byte, the upper
+three carrying over from whatever was in memory. Since the corpus never goes
+past `_Y` this is invisible in the shipped campaign; see
+[`11-save-game-format.md`](11-save-game-format.md) §5.9.
+
 The corpus's use of `_A` … `_Y` (25 slots) is therefore entirely in bounds. The
 `LCL_Vars:%d,…` format string with its 15 conversions is debug-build residue
 from `PrintAllVars`, which compiles to a bare call to the empty reporter in the

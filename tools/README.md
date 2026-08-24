@@ -41,6 +41,8 @@ charisma_selftest.py  exercise the .cho/.cha reader paths the corpus never takes
 pe_resources.py       dump PE dialog templates and string tables
 trace_names.py        recover function names from the compiled-out error macro
 combat_tables.py      decode the combat/LOS tables in Incubation.exe (docs/22)
+sav_tables.py         verify the save-game layout against the writer/reader chains
+sav_parse.py          parse a save game; extract its embedded .lev (docs/11)
 ```
 
 ## Corpus checks
@@ -63,6 +65,8 @@ python3 tools/cha_parse.py        --check gog_incubation            # 245/245
 python3 tools/cha_parse.py --verify-convention gog_incubation        # quaternion order
 python3 tools/combat_tables.py   --check gog_incubation             # 24 checks, 48/48 patterns
 python3 tools/trace_names.py     --check gog_incubation             # 324 + 146 names
+python3 tools/sav_tables.py      --check gog_incubation             # 69 checks
+python3 tools/sav_parse.py       gog_incubation --selftest          # 31 map sizes
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -98,7 +102,16 @@ python3 tools/prototyp_parse.py --list gog_incubation/WorldSet/World_A00/Objects
 python3 tools/prototyp_parse.py --json --name A_50A.3DI \
     gog_incubation/WorldSet/World_A00/Objects/prototyp.din
 python3 tools/prototyp_parse.py --opcodes
+
+# a save game, and the .lev image inside it
+python3 tools/sav_parse.py gog_incubation/Work/Saves/_0_.sav
+python3 tools/sav_parse.py gog_incubation/Work/Saves/_0_.sav --json
+python3 tools/sav_parse.py gog_incubation/Work/Saves/_0_.sav --lev tools/out/save0.lev
+python3 tools/sav_tables.py --layout
 ```
+
+`Work/Saves/` ships empty, so those four are shown for when a real save exists;
+`sav_parse.py` exits non-zero rather than pretending to have checked something.
 
 ## Conventions
 

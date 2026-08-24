@@ -739,7 +739,31 @@ roster base   0x0051F2A0
 record stride 0x5B                    (the unit record above)
 slot address  0x51F2A0 + (player * 31 + slot) * 0x5B
 usable slots  30 per player           (fcn.004789b0 scans 0 .. 0x1D)
+array shape   aUnit[5][31]            (fcn.00478600, see below)
+sizeof        14105 bytes             (0x51F2A0 .. 0x005229B9)
 ```
+
+The array's **outer** bound does not follow from the accessors — every one of
+them scales by 31 and stops there. It comes from `fcn.00478600`, which clears
+the roster before a load:
+
+```asm
+edx = 0x51F2A0
+loop:  ecx = 682;  edi = edx;  edx += 0xB05      ; row stride 2821 = 31 * 0x5B
+       rep stosd                                 ; 2728 bytes
+       stosw                                     ; + 2 = 2730 = 30 * 0x5B
+       cmp edx, 0x5229B9 ; jl loop
+```
+
+Rows are 2821 bytes apart and 2730 of each are cleared — 31 slots per row, 30
+of them usable, which is exactly what the accessors say. The span
+`0x5229B9 − 0x51F2A0` = 14105 is **five** of those rows. So the roster is
+`aUnit[5][31]`, five players' worth.
+
+This matters for saves: the save file's roster block is 5460 bytes = `2*30*0x5B`
+— the count of *usable* slots for two players, which does not line up with rows
+that are 31 records apart. See
+[`11-save-game-format.md`](11-save-game-format.md) §5.7 for what that costs.
 
 Everything below is in `aMissionControl.cpp` unless stated otherwise.
 
