@@ -536,6 +536,194 @@ indirectly — `OBJECTE_C:\EDITOR\OBJECTS\LEVEL09A.3DW`, `…D:\GFX\HICOL\…` (
 are **unknowable from the shipped data**, not merely untraced. A remake writes
 `TYP OBJECT` and `EDITORDETAIL 0` and reads neither.
 
+
+### 2.11 `OBJECT.TYP` — one surviving page of the exporter's configuration
+
+2.10 ends by concluding that the tool which authored `.3DW` files never
+shipped, so its tokens' meanings are unknowable from the product. One file
+contradicts the "nothing survived" half of that: a 213-byte config for that
+tool was left in the release by accident.
+
+```
+gog_incubation/Video/Dialog_03/Objects/OBJECT.TYP
+```
+
+It sits beside `Prototyp.bin` / `.din` / `.dir` — the exporter's *output*. Of
+the **21** directories in the game that hold a `prototyp.bin`, exactly **one**
+also holds an `OBJECT.TYP`. The whole file, CRLF line endings, verbatim:
+
+```
+TYPFILE
+
+[TYP] Charisma
+[COMPILER]
+SORT_OBJECT
+DETAIL_METHODE 1
+USE_MATRIX
+ENDCOMPILER
+ENDTYP
+
+[TYP] Static
+[COMPILER]
+SORT_OBJECT
+DETAIL_METHODE 1
+USE_MATRIX
+ENDCOMPILER
+ENDTYP
+
+[ENDTYPFILE]
+```
+
+**Nothing shipped reads it.** The same sweep 2.7 and 2.10 use — all **35** PE
+files under the game root, ASCII **and** UTF-16LE — finds `TYPFILE`,
+`ENDTYPFILE`, `[TYP]`, `[COMPILER]`, `ENDCOMPILER`, `ENDTYP`, `SORT_OBJECT`,
+`DETAIL_METHODE`, `USE_MATRIX` and even the extension `.TYP` **zero times, in
+every binary**. `typ_parse.py --check` runs a positive control through the same
+code path — `ENG3D.DLL`, which comes back from three of the binaries — so the
+clean negative is not a broken search. This is not a format a remake
+implements. It is evidence.
+
+#### Grammar
+
+```
+typfile   = "TYPFILE"       LF { typ } "[ENDTYPFILE]" LF ;
+typ       = "[TYP]" SP ident LF "[COMPILER]" LF { directive } "ENDCOMPILER" LF
+            "ENDTYP" LF ;
+directive = "SORT_OBJECT" | "DETAIL_METHODE" SP int | "USE_MATRIX" ;
+```
+
+Two `[TYP]` blocks, `Charisma` and `Static`, with identical bodies. Those two
+names match the two kinds of source asset that a `Video/*` directory holds:
+Charisma models (`.cho` / `.cha`) and static scene geometry. Whether this
+`[TYP]` is the **same namespace** as the `.3DW` clone keyword `TYP OBJECT`
+(2.8) is a hypothesis and nothing in the shipped product tests it —
+**UNVERIFIED**. The value `OBJECT` does not occur in this file, and `Charisma`
+and `Static` do not occur in any `.3DW`.
+
+#### What the three directives explain, and what they do not
+
+The reason this file is worth a subsection is that all three directives name
+axes that are already decoded on the engine side — so the corpus can be asked
+whether they are visible in the output. Two of the three are, one is not.
+
+**`DETAIL_METHODE 1` — the four `distance_cull_*` opcodes are not dead code.**
+Eng3d export #7, `_E3D_change_distance_methode_switch_table` (`0x00402050` →
+`0x0040626a`), is:
+
+```c
+int change_distance_methode_switch_table(unsigned methode, unsigned level, i32 threshold) {
+    if (methode >= 4) return -1;                   /* cmp eax, 4 / jae */
+    if (level   >= 4) return -1;                   /* cmp ebx, 4 / jae */
+    ((i32 *)tables[methode])[level] = threshold;   /* tables[] at 0x004142A0 */
+    return 0;
+}
+```
+
+so there are exactly **four distance methods, each a four-entry threshold
+table**, rewritable at run time. The four tables are at `0x004142B0`,
+`0x004142C0`, `0x004142D0`, `0x004142E0`, initialised to
+`50 000 / 100 000 / 200 000 / 0x07FFFFFF`, and **eight** `prototyp.bin` opcodes
+are keyed on them — one per method in each of two families:
+`lod_switch_0…3` (19–22, a level-of-detail prototype swap) and
+`distance_cull_0…3` (23–26, a plain cull). See
+[`31-prototyp-geometry.md`](31-prototyp-geometry.md) §4.
+
+In the corpus **all eight occur 0 times in 26 072 records**, while opcode 28
+`select_detail` — which uses hard-wired 4× / 5× `cull_radius` multipliers and no
+table at all — occurs **26 072 times, exactly once per record**. That
+uniformity was previously measured and unexplained. `OBJECT.TYP` explains it:
+the detail method is an **exporter setting, not a per-object property**, and
+every one of the 21 containers was compiled with the same one.
+
+What it does **not** establish is that `DETAIL_METHODE`'s numbering is the
+engine's `methode` index. If it were, `DETAIL_METHODE 1` should have emitted
+`distance_cull_1`, and the corpus contains none. Either the exporter's
+enumeration differs, or `select_detail` *is* its method 1 under another name.
+**UNVERIFIED — do not identify the two numberings.**
+
+**`USE_MATRIX` — present in every config, with exactly one exception.** The
+matrix-setting opcodes (`matrix_identity`, `matrix_set_*`, `matrix_from_angles*`,
+`matrix_clone*`) occur **75 886** times corpus-wide; `matrix_none` occurs **4**
+times and `matrix_none_b` / `matrix_none_c` never. All six of those exceptional
+commands belong to a **single prototype**:
+
+| container | index | name | render | collision | partinfo |
+|---|---|---|---|---|---|
+| `WorldSet/World_E00/Objects` | 156 | `L096EE00.3DI` | `matrix_identity` | `matrix_none` | `matrix_none` |
+| `WorldSet/World_F00/Objects` | 154 | `L096EF00.3DI` | `matrix_identity` | `matrix_none` | `matrix_none` |
+
+— the same asset shipped into two world sets, so it is **one prototype** out of
+the 9 977 distinct names in the corpus.
+
+The distribution is a fact; reading it as "this one was compiled without
+`USE_MATRIX`" is **UNVERIFIED**, and two things argue against taking it
+literally:
+
+* its render stream carries `matrix_identity`, which *sets* a matrix rather
+  than omitting one — a genuinely matrix-less compile would be expected to emit
+  `matrix_none` in all three streams, not two of three;
+* the directive is per-`[TYP]`-block, i.e. per *kind* of asset, while the
+  exception is a single prototype among ~2 200 in its own container. A per-type
+  setting cannot single one out unless that prototype was compiled in a block
+  of its own — and the leaked config belongs to `Dialog_03`, not to `World_E00`
+  or `World_F00`, so it cannot show whether such a block existed.
+
+What is established is the asymmetry itself: 75 886 to 4, with the four
+localised to one asset.
+
+**`SORT_OBJECT` — it is *not* `depth_bias`.** This is a negative result and it
+is worth stating, because the pairing is the obvious guess. Two independent
+disproofs:
+
+* `depth_bias` is non-zero in 532 of 26 072 records, and those 532 are exactly
+  the `prototyp.dir` `class_code == 1` rows
+  ([`31`](31-prototyp-geometry.md) §2.4). It is **0 in all 12 `Video/*`
+  containers** — including `Dialog_03`, the one whose config says
+  `SORT_OBJECT`. A directive that is on cannot correspond to a field that is
+  uniformly off in its own output.
+* Sorted and unsorted drawing is not a mode the engine switches between.
+  `Incubation.exe` resolves Eng3d entirely **by ordinal** — the loader at
+  `0x00401000` (`a3DEngine.cpp:340`) `LoadLibrary`s the DLL and then walks
+  ordinals **1…86 contiguously** (86 of the DLL's 89 exports), converting each
+  from a decimal string constant such as `"1"` and passing the integer to
+  `GetProcAddress`. It resolves everything whether or not it is used, so the
+  import table proves nothing about which entry points the game calls, and no
+  export *name* appears in any binary. But both resulting pointers are called, **unconditionally and
+  adjacently**, at both of their two call sites:
+
+  ```
+  0x00403312   call dword [0x004FA46C]   ; _E3D_draw_sorted_objects   (ordinal 10)
+  0x00403318   call dword [0x004FA4C0]   ; _E3D_draw_unsorted_objects (ordinal 11)
+
+  0x0047F836   call dword [0x004FA4C0]
+  0x0047F83C   call dword [0x004FA46C]
+  ```
+
+  There is no branch and no dispatch: the engine keeps two object lists and
+  draws both every frame. `SORT_OBJECT` therefore cannot have selected a
+  renderer mode. The plausible reading is that it decided which of the two
+  lists an object is checked into (`_E3D_object_3d_check_in`, ordinal 12), but
+  nothing in the shipped data or binaries shows that — **UNVERIFIED**.
+
+#### What this does and does not move
+
+Moved: two corpus uniformities that were measured facts are now explained
+causes, and opcodes 23–26 are reclassified from "unused" to "unselected
+exporter settings". The exporter's configuration language is attested — six
+keywords and a grammar that no amount of staring at `.3DW` would have produced.
+
+**Not moved: `class_code`.** The obvious hypothesis — that it indexes the
+`[TYP]` blocks — fails immediately: `OBJECT.TYP` declares two types, and
+`class_code` is uniformly `0` across every row of every `Video/*`
+`prototyp.dir`, including `Dialog_03`'s (3.3). Open question 1 stands
+unchanged. `type_code` is likewise untouched; that `prototyp.dir` carries `0`
+and `texture.dir` carries `2` remains the only hint, and the texture pipeline's
+own `.TYP`, if there was one, did not leak.
+
+A remake implements nothing here. It gains a name for a build-time decision it
+will have to make itself — which detail method its exporter emits — and the
+knowledge that the original always made the same one.
+
 ---
 
 ## 3. `.dir` — ASCII directory (`3DI`)
@@ -934,6 +1122,8 @@ Decoding the rest of the record belongs to the `prototyp.bin` payload track.
 | `.dir`  | `3DI`, `[DIRECTORY]`, `ENDDIR`, `[END3DI]`                                                       |
 | `.din`  | `DBIN` (texture flavour only)                                                                     |
 | containers | `VISN` (per `texture.lib` entry)                                                              |
+| `.TYP`  | `TYPFILE`, `[TYP]`, `[COMPILER]`, `SORT_OBJECT`, `DETAIL_METHODE`, `USE_MATRIX`, `ENDCOMPILER`, `ENDTYP`, `[ENDTYPFILE]` — see 2.11 |
+| `.TYP` values | `Charisma`, `Static` (both `[TYP]` idents), `1` (`DETAIL_METHODE`) |
 
 A first-token census over all 42 `.3DW` files finds *exactly* these 12 tokens and
 nothing else, so the data-side inventory is complete.
@@ -1036,6 +1226,12 @@ open.
    keyword table, so they are *not* evidence of other `TYP` values. Unknowable
    from the shipped product.
 
+   **Amended (2.11):** the leaked `OBJECT.TYP` declares two `[TYP]` identifiers,
+   `Charisma` and `Static`. Whether that is the *same* namespace as this
+   keyword is untestable — `OBJECT` does not occur in `OBJECT.TYP`, and neither
+   `Charisma` nor `Static` occurs in any `.3DW`. Two attested vocabularies with
+   no overlap and nothing that joins them.
+
 6. **`[COORD_SYSTEM]` alternatives.** One value ships, the engine never parses
    the line, no alternative identifier exists in any binary (2.8). Unknowable.
 
@@ -1066,6 +1262,32 @@ open.
     note, not a failure (2.6). Whether the shipping game ever loads them is a
     question for the `.lev`/campaign track. Note this is a *different* defect
     from the World D00 count mismatch, which is closed in 2.9.
+
+11. **What `SORT_OBJECT` selected.** New with 2.11, and the only one of the
+    three directives with an **untraced** lead rather than an unknowable one.
+    Ruled out: it is not `depth_bias` (that field is non-zero only for the 532
+    `class_code == 1` rows and is `0` throughout every `Video/*` container,
+    including the one whose config sets `SORT_OBJECT`), and it is not a
+    renderer mode (`_E3D_draw_sorted_objects` and `_E3D_draw_unsorted_objects`
+    are called unconditionally and adjacently at both of their call sites,
+    `0x00403312`/`0x00403318` and `0x0047F836`/`0x0047F83C` — no branch, no
+    dispatch). The engine keeps two object lists and draws both every frame, so
+    the remaining candidate is **which list an object is checked into**:
+    `_E3D_object_3d_check_in`, ordinal 12, thunk `0x00402070` →
+    implementation `0x00404BD0`. Whether that decision is driven by anything in
+    the `prototyp.bin` record has not been traced. This one is answerable from
+    the shipped binaries.
+
+12. **`DETAIL_METHODE`'s numbering.** The engine has four distance methods,
+    indices 0…3, bounds-checked in `_E3D_change_distance_methode_switch_table`
+    and selected by two four-member opcode families (2.11,
+    [`31`](31-prototyp-geometry.md) §4). The exporter's directive says `1`. If
+    the two enumerations were the same, `lod_switch_1` or `distance_cull_1`
+    should appear in the corpus; **all eight opcodes are `0` in 26 072
+    records**, and `select_detail` — which uses no table — is emitted instead,
+    exactly once per record. So either the exporter enumerates differently, or
+    `select_detail` *is* its method 1. Nothing shipped distinguishes the two,
+    and only one `.TYP` leaked, so there is no second sample to compare.
 
 ### Closed since the previous revision
 

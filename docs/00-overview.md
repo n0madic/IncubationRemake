@@ -49,6 +49,7 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 | `.IMG` | 42 | Fixed-point atan / sin-cos lookup tables | **Solved** | `img_tables.py` | [70](70-img-tables.md) |
 | `Game.opt` | 0 (created on first run) | Player options | **Solved** — a raw 108-byte dump of one `.data` block; every field named from the options screen's own help lines | `combat_tables.py --check` (layout guard) | [20 §7.6](20-lcl-language.md) |
 | `prototyp.bin` | 21 | 3D prototype geometry — a bytecode program, not a mesh struct | **Solved**, 26072/26072 records | `prototyp_parse.py` | [31](31-prototyp-geometry.md) |
+| `OBJECT.TYP` | 1 | Config for the object exporter — **the tool that never shipped** | **Solved** (213 bytes, one file, full grammar). Read by nothing; it explains two corpus-wide uniformities and reclassifies eight opcodes as unselected exporter settings | `typ_parse.py` | [30 §2.11](30-eng3d-ascii-formats.md) |
 | `.bmp` | 118 | Briefing art, backgrounds, install screens | Standard Windows BMP | — | — |
 | `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE | — | — |
 | `.ogg` | 32 | Music (GOG re-encode of the CD audio) | Standard Ogg Vorbis | — | — |
@@ -185,6 +186,7 @@ python3 tools/combat_tables.py --check gog_incubation    # 24 checks, 48/48 patt
 python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
 python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
 python3 tools/sav_parse.py    gog_incubation --selftest # 31 map sizes
+python3 tools/typ_parse.py    --check gog_incubation     # 18 checks
 ```
 
 Outputs (sprites, map renders, textures) are written under `tools/out/`.
@@ -208,7 +210,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **26 items are
+in place with the evidence that closed them rather than deleted. **28 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -217,7 +219,7 @@ still open:**
 | [11](11-save-game-format.md) | 4 | ViewPlayer's 1100 bytes, twenty offsets that no code compares against a literal, the hard-coded slot 32 — all three want one real save; the fourth is closed by enumeration |
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
 | [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
-| [30](30-eng3d-ascii-formats.md) | 8 | authoring-side meanings of `.dir` metadata, and tokens the shipped readers skip |
+| [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, and two raised by the leaked exporter config (§2.11): what `SORT_OBJECT` selected — the one item here with an untraced lead — and whether `DETAIL_METHODE`'s numbering is the engine's |
 | [31](31-prototyp-geometry.md) | 2 | what a Voodoo did with Glide blend factor `0xf`; runtime rasteriser confirmation |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
 | [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |

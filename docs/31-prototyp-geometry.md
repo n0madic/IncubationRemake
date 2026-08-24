@@ -385,6 +385,15 @@ use the same four tables but only compare `depth - cull_radius` against
 `table[0]`; if it is greater or equal they `jmp 0x405170`, which **abandons the
 rest of the command stream** — a plain distance cull.
 
+Slots 19–26 are therefore not dead code but **one build-time choice with eight
+encodings**: two families of four, one table per family member. All eight are
+`0` in the corpus because the exporter was always run with the same setting —
+`DETAIL_METHODE 1`, the surviving directive documented in
+[`30-eng3d-ascii-formats.md`](30-eng3d-ascii-formats.md) §2.11. That the
+directive's `1` is the same index as the engine's `methode` is **UNVERIFIED**:
+if it were, `distance_cull_1` or `lod_switch_1` should appear, and neither
+does.
+
 **Slots 38 and 39** are byte-identical to slot 11 (`mov dword [0x414060],
 0x41a8d0; ret`) — they reset the current matrix to the engine's identity matrix.
 
