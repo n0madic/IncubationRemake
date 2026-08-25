@@ -94,7 +94,8 @@ OPCODES: dict[int, tuple[str, str]] = {
     10: ("joint_rotate_3_alt", "anim"),     # 0x406071
     11: ("matrix_none", "unused"),          # 0x405eb0
     12: ("matrix_set_a8ac_b", "unused"),    # 0x405ed6
-    13: ("matrix_set_a8d0", "unused"),      # 0x405eec
+    13: ("matrix_from_angle", "anim"),      # 0x405eec: one angle, as
+                                            #  (0, 0, a), into 0x41a888
     14: ("matrix_from_angles_b", "anim"),   # 0x405f1a
     15: ("matrix_from_angles", "anim"),     # 0x405f4c
     16: ("part_push", "payload"),           # 0x4062ad
@@ -127,8 +128,8 @@ OPCODES: dict[int, tuple[str, str]] = {
     35: ("matrix_clone", "unused"),         # 0x405ebb
     36: ("matrix_clone_compose", "unused"), # 0x405f89
     37: ("select_bank_4", "unused"),        # 0x4061d7 -> 0x407dcd; Glide: ret
-    38: ("matrix_none_b", "unused"),        # 0x405ee1, identical to slot 11
-    39: ("matrix_none_c", "unused"),        # 0x405fc2, identical to slot 11
+    38: ("matrix_none_b", "unused"),        # 0x405ee1: current matrix := 0x41a8d0
+    39: ("matrix_none_c", "unused"),        # 0x405fc2: current matrix := 0x41a8d0
 }
 
 #: Face draw slots: the ``u16`` at face+0x00 is a *byte* offset into whichever
@@ -290,9 +291,9 @@ class Prototype:
 
         Sub-object vertices are stored in part-local space; at rest the engine
         places them with ``joint_place`` (op 18), whose translation comes from
-        the ``part_push`` payload.  Non-zero joint angles come from the clone's
-        animation buffer, which lives outside the container, so this is the
-        rest pose only.
+        the ``part_push`` payload.  Non-zero joint angles come from the joint
+        buffer inside the runtime ``object_3d`` (``docs/30`` 2.12), not from
+        this container, so this is the rest pose only.
         """
         out: list[tuple[int, int, int]] = []
         for v, pi in zip(self.vertices, self.vertex_part):
@@ -396,6 +397,17 @@ def _mark(cover: bytearray, start: int, length: int) -> None:
     end = min(len(cover), start + length)
     for i in range(max(0, start), end):
         cover[i] += 1
+
+
+def read_commands(record: bytes, start: int = HEADER_SIZE) -> list[Command]:
+    """Decode only the command stream that begins at *start*.
+
+    ``parse_record`` decodes the whole record; callers that just want to see
+    which opcodes a prototype uses -- the transform family, the ``anim``
+    operands -- do not need the geometry and should not pay for it.
+    """
+    cmds, _end = _read_stream(record, start, bytearray(len(record)))
+    return cmds
 
 
 def parse_record(data: bytes, name: str = "", index: int = -1, offset: int = 0) -> Prototype:

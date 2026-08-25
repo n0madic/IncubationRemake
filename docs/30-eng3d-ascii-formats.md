@@ -1120,17 +1120,62 @@ record every `_E3D_object_3d_check_in` call takes. It indexes a list of at most
 | `+0x08` | prototype index, from the name lookup `0x004038F0` | `mov [esi+0x08], eax` at `0x0040502A`; `E3D_object_3d_check_in` uses it as `[edx*4 + 0x4180CC]` |
 | `+0x0C` | cached collision radius | `E3D_get_prototype_collision_radius` (ordinal 85) at `0x0040502D` |
 | `+0x10`, `+0x14`, `+0x18` | position x, y, z (`i32`) | the three stores at `0x00404FFA`…`0x00405009`; read by the view-box cull |
-| `+0x1C` | zeroed at construction | `mov dword [esi+0x1c], 0` |
-| `+0x20`, `+0x22`, `+0x24` | three orientation words | the three `mov word` stores at `0x00405011`…`0x00405026` |
+| `+0x1C` … `+0x3F` | **36 bytes with two readings** — see below | the render-opcode handlers |
 
-The rest is Eng3d's. `aBlobs.cpp` embeds this record at `+0x04` of its own
-88-byte particle record and appends eight fields of its own after it — see
-[`28` §7.2](28-effects-and-sound.md), which is where the embedding is checked.
+`E3D_object_3d_check_in` itself reads only `+0x08` and the position, and stores
+the object pointer into the display-list node (`mov [edi+0x0c], esi` at
+`0x00404E3F`). Everything above `+0x18` is read later, by the prototype's own
+bytecode, and **which reading applies is decided by the prototype, not by the
+record**:
+
+**Reading A — a 3×3 `i32` matrix at `+0x1C`.** Two handlers take the 36 bytes
+as a matrix: `matrix_clone` (`0x00405EBB`) points the current transform at
+`object + 0x1c`, and `matrix_clone_compose` (`0x00405F89`) multiplies it into
+the base matrix. Nine `i32` from `+0x1C` reach exactly `+0x40`.
+
+**Reading B — a joint-angle buffer.** Seven handlers (the opcodes
+[`31`](31-prototyp-geometry.md) §3.1 marks `anim`) read
+
+```
+mov  esi, [ebx + 0x1c]      ; a pointer to an external buffer …
+test esi, esi
+jne  +3
+lea  esi, [ebx + 0x20]      ; … or, when null, the inline area
+add  esi, eax               ; eax = the opcode's operand, a byte offset
+```
+
+so `+0x1C` is a **pointer** and `+0x20` onward is an **inline array of `i16`
+Euler triples**. The shipped data addresses three of them — operands `0`, `6`
+and `12`, i.e. `+0x20`, `+0x26` and `+0x2C` — and triple 0 is the object's own
+rotation, written by the builder's three `mov word` stores at
+`0x00405011`…`0x00405026` from the `.lev` record's rotation (§2.5). The angles
+are binary degrees masked to `0xFFF` and looked up in `TRIG.IMG`
+([`70`](70-img-tables.md)).
+
+The two readings partition the corpus cleanly: 16 974 shipped render programs
+(1 886 prototypes) use the matrix, 2 326 (1 448 prototypes) use the joint
+angles, and none uses both. **The matrix family is the Charisma character
+parts**: of the 1 985 meshes the 114 `.cho` models name, 1 877 are
+matrix-family and none is joint-family. The joint family is scenery and
+effects, and it is what the `.lev` missions place — all 395 distinct special-
+object prototypes, bar the two `L096E?00.3DI` records that carry no transform
+opcode at all. `_E3D_get_object_joint_data_ptr` (ordinal 59) is the only export that
+hands the buffer out, and its whole body — `lea eax, [eax + 0x40]; ret` — says
+an Eng3d *clone* keeps its joint array immediately past this record. Neither
+host ever calls it: both write the fields directly, because both allocate the
+records themselves.
+
+`aBlobs.cpp` embeds this record at `+0x04` of its own 88-byte particle record
+and appends eight fields of its own after it — see
+[`28` §7.2](28-effects-and-sound.md) and [`28` §7.8](28-effects-and-sound.md),
+which is where the embedding and the joint buffer are checked
+(`blob_tables.py --joints`).
 
 **Ordinal note.** The exe resolves these by ordinal through `GetProcAddress`
 and names the ordinal in its own failure string, so the numbering is checkable
 without the export table: `"Function Id 9 not found!"` guards
-`_E3D_object_3d_check_in`, `63` `_E3D_draw_zoom_bob_alpha_plus`, `66`
+`_E3D_object_3d_check_in`, `59` `_E3D_get_object_joint_data_ptr`, `63`
+`_E3D_draw_zoom_bob_alpha_plus`, `66`
 `_E3D_get_texture_index_of_texture_name` and `85`
 `_E3D_get_prototype_collision_radius`. `Eng3d.dll`'s export table agrees.
 

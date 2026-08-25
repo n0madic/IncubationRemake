@@ -7,7 +7,7 @@ because they fire from the same place — `aPlayFightAnimation` and the
 `aPlay*Sequence` routines create a blob and load a wave in the same few
 instructions — and because a remake needs both to reproduce one event.
 
-Everything here is checked by `tools/blob_tables.py --check` (217 checks).
+Everything here is checked by `tools/blob_tables.py --check` (252 checks).
 
 **What this document does not own.** The animation *selection* rules — which
 Charisma animation plays for moving, firing or standing, and what the `BREAK`
@@ -426,10 +426,10 @@ what fixes the layout, and it is why the blob's own fields start at `+0x44`:
 | `+0x0C` | `+0x08` | **prototype index**, from `0x004038F0(model)` | arg 1 |
 | `+0x10` | `+0x0C` | cached collision radius | **no** |
 | `+0x14`, `+0x18`, `+0x1C` | `+0x10`, `+0x14`, `+0x18` | **position** | args 3, 4, 5 |
-| `+0x20` | `+0x1C` | zeroed — `0x00404F80` zeroes the same field | yes |
+| `+0x20` | `+0x1C` | **joint-angle pointer** — zeroed, so the inline buffer is used (§7.8) | yes |
 | `+0x24`, `+0x26`, `+0x28` | `+0x20`, `+0x22`, `+0x24` | **class-dependent**, see below | args 6, 7, 8 |
-| `+0x2A`, `+0x2C`, `+0x2E` | `+0x26`, `+0x28`, `+0x2A` | *(Eng3d's — §7.8)* | no |
-| `+0x34` | `+0x30` | *(Eng3d's — §7.8)* | no |
+| `+0x2A`, `+0x2C`, `+0x2E` | `+0x26`, `+0x28`, `+0x2A` | **joint angles of part 1** (§7.8) | no |
+| `+0x30`, `+0x32`, `+0x34` | `+0x2C`, `+0x2E`, `+0x30` | **joint angles of part 2** (§7.8) | no |
 | `+0x44` | — | **kind** — selects the update arm (§7.4, §7.7) | arg 9 |
 | `+0x45` | — | **life** in ticks; `0xFF` never expires; a zero argument aborts the call before anything is allocated | arg 10 |
 | `+0x48`, `+0x4C`, `+0x50` | — | **three per-kind parameters**, velocity for every ballistic kind | args 11, 12, 13 |
@@ -666,26 +666,93 @@ cosmetic.
 
 Four arms are the exception to "particle arithmetic": kinds 26, 27 and 61 are
 500–600 bytes of seeking, and kind 42 (`aBlob_CreateComputerLight`) and kind 54
-(`aBlob_CreateCreateFire`) do nothing but write Eng3d fields (§7.8).
+(`aBlob_CreateCreateFire`) do nothing but pose their model's sub-objects
+(§7.8).
 
-### 7.8 Four `object_3d` fields the arms write and nothing here reads
+### 7.8 Four `object_3d` fields the arms write: the joint angles
 
 `+0x2A`, `+0x2C`, `+0x2E` and `+0x34` — object offsets `+0x26`, `+0x28`, `+0x2A`
-and `+0x30` — are written by exactly two arms and read by nothing in
-`Incubation.exe`:
+and `+0x30` — are written by exactly two update arms and read by nothing in
+`Incubation.exe`. They are **joint angles**: the rotation of the model's
+articulated sub-objects, consumed by the renderer, not by the game.
 
-* **kind 42**, `aBlob_CreateComputerLight`: `+0x2C` gets `0x400` or `0x1000` on
-  a coin flip, and `+0x2A` and `+0x2E` are copied from the object's own
-  `+0x24` and `+0x28`;
-* **kind 54**, `aBlob_CreateCreateFire`: `+0x2E` and `+0x34` each get
-  `rand(0, 0x1000)` every tick.
+**The reader is in `Eng3d.dll`.** Seven of its render-opcode handlers begin
+with the same idiom — a twelve-byte sequence that appears seven times in
+`Eng3d.dll`, seven times in `ENG3DFX.DLL` and **nowhere in `Incubation.exe`,
+`iDesigner.exe` or `Editor.exe`**:
 
-The shape — a triple next to the rotation triple, and values in the 0…4096 range
-next to angles — reads like a second orientation or a per-frame jitter, and both
-effects are things that visibly shimmer. **UNVERIFIED**: no reader exists in
-this binary, and the only consumer of the record beyond that is Eng3d's
-renderer, which is the Eng3d track's ([`30`](30-eng3d-ascii-formats.md)), not
-this document's.
+```
+mov  esi, [ebx + 0x1c]      ; ebx = the object being drawn (0x00414084)
+test esi, esi
+jne  +3
+lea  esi, [ebx + 0x20]      ; null pointer -> the inline buffer
+add  esi, eax               ; eax = the opcode's operand, a byte offset
+mov  bx, [esi]              ; three consecutive i16 -> a rotation matrix
+mov  cx, [esi + 2]
+mov  dx, [esi + 4]
+```
+
+Five of the seven read a triple like this; `joint_rotate_1` and
+`matrix_from_angle` read one angle and zero the other two.
+
+So `object_3d + 0x1c` is a **pointer to a joint-angle buffer**, `+0x20` is the
+**inline buffer** used when that pointer is null, and the prototype's own
+bytecode says which triple to use: the operand `prototyp.bin` marks `anim`
+([`31`](31-prototyp-geometry.md) §3.1) is a byte offset into it. Both hosts
+always write null — `0x0040501B` for a world object, `0x00420A24` for a blob —
+so the inline area is always the one the engine reads.
+
+**The shipped data uses three triples, and only three.** Over all nine world
+sets the `anim` operand takes the values `0`, `6` and `12` and nothing else:
+
+| Triple | `anim` | Object | Blob | What writes it |
+|---|---|---|---|---|
+| 0 | `0` | `+0x20`/`+0x22`/`+0x24` | `+0x24`/`+0x26`/`+0x28` | the constructor, args 6–8 — the object's own rotation |
+| 1 | `6` | `+0x26`/`+0x28`/`+0x2A` | `+0x2A`/`+0x2C`/`+0x2E` | kind 42, kind 54 |
+| 2 | `12` | `+0x2C`/`+0x2E`/`+0x30` | `+0x30`/`+0x32`/`+0x34` | kind 54 |
+
+Eighteen bytes of triples in the thirty-two the record has after `+0x20`. The
+angles are binary degrees in the 4096-unit circle — the handler masks each with
+`0xFFF` and indexes `TRIG.IMG` ([`70`](70-img-tables.md)), the same convention
+as a `.lev` object's rotation.
+
+**Which makes the two arms legible.** Both animate a model with sub-objects,
+and each writes exactly the triples its own model asks for:
+
+* **kind 42**, `aBlob_CreateComputerLight`, model `A_PANEL.3DI` — one
+  `part_push` / `joint_place 6` / `part_pop`, so one moving part. The arm
+  copies the first and third of the object's own three angles into that part's
+  triple and sets the middle one to `0x400` (a quarter turn) or `0x1000` (a
+  whole one, i.e. zero under the mask) on a 50/50 roll. The panel's plate flips
+  between edge-on and face-on every tick: that is the flicker.
+* **kind 54**, `aBlob_CreateCreateFire`, model `A_FIRE3.3DI` — two parts, at
+  `joint_place 6` and `joint_place 12`. The arm gives each part's third angle a
+  fresh `rand(0, 0x1000)` every tick, so both flame billboards spin to a random
+  heading each frame.
+
+For contrast, **kind 41** (`aBlob_CreateWarningLight`, `A_FLIGHT.3DI`) has no
+parts at all, and its arm adds `0x200 / life` to triple 0's third angle — the
+whole object turns. Same mechanism, one triple lower.
+
+**The last 36 bytes are a union.** The joint reading is not the only one: two
+other handlers, `matrix_clone` and `matrix_clone_compose`, take `+0x1c … +0x3f`
+as an inline 3×3 `i32` matrix instead. No shipped render program uses both
+readings, and the split is exactly the split between characters and scenery —
+16 974 programs (1 886 prototypes) take the matrix, 2 326 (1 448 prototypes)
+take the joint angles. Two independent placements confirm which is which:
+every prototype the missions place as a special object is joint-family, bar the
+two `L096E?00.3DI` records that carry no transform opcode at all; and of the
+1 985 meshes the 114 `.cho` models name, **1 877 are matrix-family and not one
+is joint-family** (the other 108 name no record in these containers). Nine
+matrix-family prototypes are named by no `.cho` — one unused `PS_M0_024_*` set.
+So the matrix form is the Charisma track's
+([`40`](40-charisma-model-animation.md)); neither host writes it, and one
+Eng3d export, `_E3D_get_object_joint_data_ptr` (ordinal 59), whose entire body
+is `lea eax, [eax + 0x40]; ret`, says where a *clone's* joint array lives —
+immediately past the embedded 64-byte object. The full field table is in
+[`30`](30-eng3d-ascii-formats.md) §2.12.
+
+`blob_tables.py --joints` prints all of this; 35 checks pin it.
 
 ---
 
@@ -802,7 +869,12 @@ frame, not by markers in the animation data.
    implements the first blob will look thin.
 9. The three weapon switches of §8.1. Nothing else decides what a shot looks
    like.
-10. Nothing for ambience.
+10. **Joint angles for the two model effects (§7.8).** A remake's model format
+    needs a per-part rotation a particle can write each tick, or the computer
+    panel stops flickering and the fire stops moving. Three Euler triples per
+    object is all the original has, and only two effects use more than the
+    first.
+11. Nothing for ambience.
 
 Two of the defects above are worth reproducing deliberately or not at all, and
 a remake should decide rather than inherit them by accident: weapon 35's
@@ -813,17 +885,29 @@ unloadable fire sound (§3.1) and unit type 24's doubled footsteps (§5).
 ## 11. Verification
 
 ```bash
-python3 tools/blob_tables.py --check  gog_incubation   # 217 checks
+python3 tools/blob_tables.py --check  gog_incubation   # 252 checks
 python3 tools/blob_tables.py --waves  gog_incubation   # the event -> wave table
 python3 tools/blob_tables.py --blobs  gog_incubation   # the blob and weapon tables
 python3 tools/blob_tables.py --kinds  gog_incubation   # the 78 update kinds
+python3 tools/blob_tables.py --joints gog_incubation   # the joint-angle buffer
 python3 tools/blob_tables.py --json   gog_incubation
 ```
 
-217 checks, all against the shipped binary and corpus; the tool exits non-zero
-on an empty corpus and on a root that holds only `Incubation.exe`. **1 104
-mutations, 0 missed, every one of the 217 check names shown to fail** under a
-mutation of the byte, table entry, texture header or `Info.lcl` token it covers.
+252 checks, all against the shipped binary and corpus; the tool exits non-zero
+on an empty corpus and on a root that holds only `Incubation.exe`.
+
+**Mutation testing.** A harness perturbs every leaf *and every key* of every
+pinned constant in the tool and re-runs the whole check set: **3 314
+mutations**. Nine checks are never tripped by any of them, and all nine are
+relations over decoded data rather than equalities with a pin — "every literal
+wave name resolves", "every volume id the code uses is defined in `Info.lcl`",
+"every weapon arm's call lands on a blob creator", "the classes are 0…3",
+"every sprite row is inside the grid". They would catch a wrong *corpus*, which
+no constant mutation can simulate. **Every other check name has been shown to
+fail.** The mutations no check notices are constants the prose quotes but no
+check consumes — an address a section heading names, a duplicate of a value
+that is checked through a derived table — and dictionary keys that are
+positional rather than pinned.
 
 What the checks anchor: the four slot bounds and the buffer record; the volume
 formula's four constants and the 103 `SetVolumeCtrl` ids; all 62 wave call
@@ -839,21 +923,23 @@ all nine world sets; the 78-entry update table, the gravity constants, the
 spawn graph, the two computed kinds, the one self-morph and the eleven
 unreachable kinds; the 81 creators and their 57 recovered names; every play
 site's loop flag and frame position and the four overheat callers; the three
-weapon switches, arm by arm and call by call; both `CreateBGB` switches; and
-the single note-callback registration.
+weapon switches, arm by arm and call by call; both `CreateBGB` switches; the
+single note-callback registration; and — 35 of the 252 — the joint buffer:
+the reader's idiom in both renderer builds and its absence from all three
+hosts, the seven handler slots the dispatch table gives it cross-checked
+against our own opcode table, the angle mask and the two `TRIG.IMG` windows,
+the null pointer both builders write, the one export that hands the buffer out
+and its four-byte body in both builds, every `anim` operand in every shipped
+render and part-info stream, the matrix/joint partition of the corpus against
+both the `.lev` placements and the `.cho` mesh names, and each of the three
+arms' model, its `joint_place` operands and the component of the triple every
+store lands on.
 
 ---
 
 ## 12. Open questions
 
-1. **What the arms do with the four Eng3d fields at `+0x2A`, `+0x2C`, `+0x2E`
-   and `+0x34`.** §7.8 pins the two arms that write them and the values they
-   write; no reader exists in `Incubation.exe`, so the meaning is Eng3d's
-   renderer's and belongs to the [`30`](30-eng3d-ascii-formats.md) track. The
-   reading that they are a second angle triple is **UNVERIFIED**, with the
-   observed distribution recorded.
-
-2. **The exact per-tick arithmetic of the 74 arms.** Every kind now has a name
+1. **The exact per-tick arithmetic of the 74 arms.** Every kind now has a name
    (its creators'), a class, a lifetime, a spawn list and a behaviour
    vocabulary (§7.7), which is what a remake needs to reproduce an effect. What
    is *not* written down here is each arm's constants instruction by
@@ -862,7 +948,7 @@ the single note-callback registration.
    prints; nobody has needed them yet, and transcribing 74 short routines into
    prose would add length without adding evidence.
 
-3. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
+2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects
    or arms for a debug path is not recoverable: the arms carry no strings and
    nothing else references them.

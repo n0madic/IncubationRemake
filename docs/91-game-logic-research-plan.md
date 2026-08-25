@@ -263,8 +263,9 @@ having one.
 ## 6. Packages D + E — effects and sound — **delivered**
 
 > **Delivered** as [`28-effects-and-sound.md`](28-effects-and-sound.md) with
-> `tools/blob_tables.py --check` (217 checks, 1 104 mutations, 0 missed, every
-> check name shown to fail).
+> `tools/blob_tables.py --check` (252 checks, 3 314 mutations; every check name
+> shown to fail except nine relations over decoded data, which no constant
+> mutation can simulate — see [`28` §11](28-effects-and-sound.md)).
 > All four questions are answered there. Question 3 was answered twice over:
 > the animation state machine is [`40` §7.2](40-charisma-model-animation.md)'s
 > and already existed, and its remaining half is a *negative* — the `.cha`
@@ -282,9 +283,17 @@ having one.
 > [`30` §2.12](30-eng3d-ascii-formats.md). Every one of the 78 update kinds is
 > now named by the creators that pass it, classed, and its spawn graph decoded;
 > eleven are unreachable. What stayed open moved into `28`'s own Open questions
-> section: four Eng3d fields no reader in this binary touches, the per-tick
-> constants of the 74 arms (readable, not transcribed) and whether the eleven
-> unreachable kinds ever were. The package also corrected
+> section: the per-tick constants of the 74 arms (readable, not transcribed)
+> and whether the eleven unreachable kinds ever were. The four "scratch" fields
+> were closed in a follow-up: they are the **joint angles** of the model's
+> articulated sub-objects, read by seven Eng3d render opcodes at a byte offset
+> the prototype's own bytecode supplies, written by the two arms whose models
+> have parts ([`28` §7.8](28-effects-and-sound.md),
+> [`30` §2.12](30-eng3d-ascii-formats.md)). That also falsified
+> [`31`](31-prototyp-geometry.md) §9 item 1's conclusion that the joint buffer
+> is never filled — the host fills it directly, because the host owns the
+> record — and corrected slot 13 of the opcode table, which takes an `anim`
+> operand. The package also corrected
 > [`40` §7.2](40-charisma-model-animation.md) — the animation selectors switch
 > on the unit's *type* and *weapon* bytes, not on a "state" and a "type" — and
 > [`30`](30-eng3d-ascii-formats.md), where `_E3D_object_3d_check_in` is

@@ -94,7 +94,7 @@ METHODE_OPCODES = [f"lod_switch_{i}" for i in range(4)] + \
 DETAIL_OPCODE = "select_detail"
 
 MATRIX_SET = ["matrix_identity", "matrix_set_a8ac", "matrix_set_a8ac_b",
-              "matrix_set_a8d0", "matrix_from_angles", "matrix_from_angles_b",
+              "matrix_from_angle", "matrix_from_angles", "matrix_from_angles_b",
               "matrix_clone", "matrix_clone_compose"]
 MATRIX_NONE = ["matrix_none", "matrix_none_b", "matrix_none_c"]
 

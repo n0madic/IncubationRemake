@@ -309,9 +309,12 @@ The operand's meaning depends on the slot:
 
 * `payload` — self-relative offset (from the operand field's own address) to a
   data block inside the record;
-* `anim` — byte offset into the *clone's* joint-angle buffer
-  (`clone[0x1c]`, or `clone + 0x20` when that is null; see `0x405fd3`), which
-  lives outside `prototyp.bin`;
+* `anim` — byte offset into the object's joint-angle buffer
+  (`object[0x1c]`, or the inline area at `object + 0x20` when that pointer is
+  null; see `0x405fd3`), which lives in the runtime `object_3d`
+  ([`30`](30-eng3d-ascii-formats.md) §2.12), not in `prototyp.bin`. The shipped
+  streams use three values — `0`, `6` and `12`, i.e. three consecutive `i16`
+  Euler triples;
 * `imm` — a plain immediate the handler reads out of `EAX`;
 * `unused` — the handler ignores it (shipped values are `-1` or `0`).
 
@@ -335,7 +338,7 @@ occur in the shipped data are marked.
 | 10   | `0x28`       | `0x406071`| `joint_rotate_3_alt`   | anim      | 367 |
 | 11   | `0x2c`       | `0x405eb0`| `matrix_none`          | unused    | 4 |
 | 12   | `0x30`       | `0x405ed6`| `matrix_set_a8ac_b`    | unused    | 294 |
-| 13   | `0x34`       | `0x405eec`| `matrix_set_a8d0`      | unused    | 0 |
+| 13   | `0x34`       | `0x405eec`| `matrix_from_angle`    | anim      | 0 |
 | 14   | `0x38`       | `0x405f1a`| `matrix_from_angles_b` | anim      | 3 918 |
 | 15   | `0x3c`       | `0x405f4c`| `matrix_from_angles`   | anim      | 734 |
 | 16   | `0x40`       | `0x4062ad`| `part_push`            | payload   | 639 |
@@ -430,9 +433,10 @@ What the important ones do:
   array. Never used by shipped data.
 * **`draw_faces`** enters the face BSP walker (§4).
 * **`part_push` / `part_pop`** open and close a sub-object scope; see §5.
-* **`joint_*`** and **`matrix_*`** set the current transform. Their angles live
-  in the clone's animation buffer, i.e. outside this container — a static
-  decoder can ignore them and gets the rest pose.
+* **`joint_*`** and **`matrix_from_angle*`** set the current transform. Their
+  angles live in the runtime object's joint buffer, i.e. outside this container
+  — a static decoder can ignore them and gets the rest pose. `joint_rotate_1`
+  and `matrix_from_angle` read one angle, the rest read a triple.
 * **`select_detail`** (`0x40619f`) compares the clone depth against
   `4 × cull_radius` and `5 × cull_radius` and jumps to one of three span-filler
   banks — `0x407d01`, `0x407d34`, `0x407d67`. That is the perspective-correct /
@@ -927,29 +931,51 @@ Samples committed under `tools/out/meshes/`:
 Everything a remake needs in order to *render* a face correctly is now in §4.
 What remains is either outside this container or unreachable from shipped data.
 
-1. ~~**Joint angle encoding.**~~ **— CLOSED, and the buffer is never written.**
-   The encoding was never Charisma's, and it is not unknown: `joint_rotate_3`
-   (`0x406002`) reads three consecutive `i16` and passes them straight to
-   `0x411bf6`, the `RzRxRy` builder that indexes the engine's sine table — so
-   they are **Euler angles in the 4096-unit circle**, the same convention as the
-   `.lev` object rotations (`docs/30` §2.5). `joint_rotate_1` reads one.
+1. ~~**Joint angle encoding.**~~ **— CLOSED, and the buffer is written by the
+   host, not through an export.** The encoding was never Charisma's, and it is
+   not unknown: `joint_rotate_3` (`0x406002`) reads three consecutive `i16` and
+   passes them straight to `0x411bf6`, the `RzRxRy` builder that masks each
+   with `0xFFF` and indexes `TRIG.IMG` — so they are **Euler angles in the
+   4096-unit circle**, the same convention as the `.lev` object rotations
+   (`docs/30` §2.5, `docs/70`). `joint_rotate_1` and `matrix_from_angle` read
+   one.
 
-   What settles the item is the other half. The buffer is `clone[0x1c]`, or the
-   inline area at `clone + 0x20` when that pointer is null, and **exactly one
-   Eng3d export hands it out**: `_E3D_get_object_joint_data_ptr` (ordinal 59),
-   whose whole body is `lea eax, [eax + 0x40]; ret`. There is no
-   `_E3D_set_joint_*` anywhere in the 89-entry export table.
+   The buffer is `object[0x1c]`, or the inline area at `object + 0x20` when
+   that pointer is null, and it lives in the runtime `object_3d`
+   (`docs/30` §2.12). Exactly one Eng3d export hands it out —
+   `_E3D_get_object_joint_data_ptr` (ordinal 59), whose whole body is
+   `lea eax, [eax + 0x40]; ret` — and there is no `_E3D_set_joint_*` anywhere
+   in the 89-entry export table. Both hosts resolve that ordinal and **neither
+   ever calls it**: `Incubation.exe` binds it into `0x004FA40C` and
+   `iDesigner.exe` into `0x004AC56C`, and a byte-level scan of each `.text` for
+   those addresses returns one hit each, the binding store itself. (For
+   contrast, `_E3D_hide_object` gets 2 hits in `Incubation.exe` and
+   `_E3D_init_3d_engine` 3.) See §10 for how the ordinals were mapped.
 
-   Both hosts resolve that ordinal and **neither ever calls it**. `Incubation.exe`
-   binds it into `0x004FA40C` and `iDesigner.exe` into `0x004AC56C`, and a
-   byte-level scan of each `.text` for those addresses returns **one hit each —
-   the binding store itself**. (For contrast, `_E3D_hide_object` gets 2 hits in
-   `Incubation.exe` and `_E3D_init_3d_engine` 3.) See §10 for how the ordinals
-   were mapped.
+   **No setter is needed, because the host owns the record.** It writes the
+   fields directly:
 
-   So the 1 959 records that use `joint_rotate_3` execute it against a buffer
-   nothing in the shipped product ever fills. **The rest pose is not an
-   approximation — it is what the game draws**, and `--obj`'s output is exact.
+   * `0x00404F80`, the world-object builder, nulls the pointer at `+0x1C` and
+     writes **triple 0** (`+0x20`/`+0x22`/`+0x24`) from the `.lev` record's
+     rotation. So the 1 959 `joint_rotate_3`, 367 `joint_rotate_3_alt` and
+     their part-info twins — every one of which uses operand `0` — execute
+     against angles the game does supply. `joint_rotate_3 anim=0` **is** how a
+     placed object gets its heading.
+   * `aBlobs.cpp` does the same for a particle, and two of its update arms
+     write **triples 1 and 2** (operands `6` and `12`) every tick: kind 42 for
+     `A_PANEL.3DI`'s one part, kind 54 for `A_FIRE3.3DI`'s two. See
+     [`28` §7.8](28-effects-and-sound.md), where this is checked.
+
+   What no host writes is triples 1 and 2 of a **world** object, and 135
+   shipped records have a part at operand `6` (78 of them a second at `12`) —
+   29 distinct prototypes, 21 of which the missions place, 1 276 times in all:
+   the animated fittings of §5. The
+   list they live in comes from `aGetMemory`, which is `malloc` and does not
+   clear, so what those parts do depends on what the allocation left; the block
+   is taken once at level load and never reused, so in practice it is the zeros
+   a fresh `malloc` hands back and the parts draw at the rest pose. That is
+   what `--obj` exports, and it is **UNVERIFIED** in the only way that would
+   settle it, which is running the game.
 
 2. ~~**Draw kind `0x18`'s intent.**~~ **— CLOSED as unrecoverable; the
    behaviour is fully defined.** Its payload really is a full textured face

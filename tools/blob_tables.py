@@ -58,8 +58,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lcl_parse  # noqa: E402
+import cho_parse  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 from inclib.visn import parse_header  # noqa: E402
+from inclib import lev as levlib  # noqa: E402
+from inclib import prototyp  # noqa: E402
 
 LOG = logging.getLogger("blob_tables")
 
@@ -927,6 +930,103 @@ CHECK_IN_SITE = 0x0041E441                 # aCheckInBlobObjects hands it blob+4
 CHECK_IN_ORDINAL = 9                       # "Function Id 9 not found!"
 CHECK_IN_ORDINAL_SITE = 0x00401320
 ALLOCATOR = 0x0044AF30                     # aGetMemory -> malloc, no zero fill
+ALLOCATOR_CALL_SITE = 0x0044AF84           # call dword [malloc], not calloc
+ALLOCATOR_IMPORT = 0x005256C8
+ALLOCATOR_ENTRY = bytes.fromhex("51555657")   # push ecx, ebp, esi, edi
+
+# -- the joint-angle buffer: object_3d +0x1c .. +0x3f ---------------------
+#
+# The last 36 bytes of the record are a union, and which reading applies is
+# decided by the prototype's render program, not by the record:
+#
+#   * ``matrix_clone`` / ``matrix_clone_compose`` read +0x1c as an inline
+#     3x3 i32 matrix -- the Charisma character parts;
+#   * the six ``anim`` opcodes read +0x1c as a *pointer* to a joint-angle
+#     buffer and fall back to the inline area at +0x20 when it is null.
+#
+# Both hosts always write null, so world objects and blobs always use the
+# inline area, which the shipped programs address at byte offsets 0, 6 and 12
+# -- three Euler triples.  That is what blob +0x2a/+0x2c/+0x2e/+0x34 are.
+
+ENG3D_DLL = "Eng3d.dll"
+ENG3D_GLIDE = "ENG3DFX.DLL"
+HOST_BINARIES = ("Incubation.exe", "iDesigner.exe", "Editor.exe")
+#: ``mov esi,[ebx+0x1c]; test esi,esi; jne +3; lea esi,[ebx+0x20]; add esi,eax``
+JOINT_IDIOM = bytes.fromhex("8B731C85F675038D732003F0")
+JOINT_IDIOM_SITES = 7
+#: The hosts write these fields and never read them back.
+HOST_IDIOM_COUNTS = {"Incubation.exe": 0, "iDesigner.exe": 0, "Editor.exe": 0}
+JOINT_DISPATCH = 0x0041408C        # Eng3d.dll: the render-opcode handler table
+JOINT_SLOTS = (8, 9, 10, 13, 14, 15, 18)
+JOINT_PTR = 0x1C                   # object_3d: external buffer, or 0
+WORLD_OBJECT_PTR_SITE = 0x0040501B  # mov dword [esi+0x1c], 0
+JOINT_INLINE = 0x20                # object_3d: the inline buffer
+JOINT_TRIPLE = 6                   # bytes per Euler triple
+JOINT_OFFSETS = (0, 6, 12)         # every operand the shipped programs use
+JOINT_BUFFER_BYTES = 18            # three triples ...
+JOINT_BUFFER_ROOM = 32             # ... in the 32 bytes after +0x20
+JOINT_PLACE = 18                   # the opcode that poses a sub-object
+MATRIX_SLOTS = (35, 36)            # the other reading of the same 36 bytes
+#: ``mov esi, [0x414084]; lea esi, [esi+0x1c]`` -- the matrix reading's own
+#: idiom, and the reason it is a *reading* and not a pointer dereference.
+MATRIX_IDIOM = bytes.fromhex("8B358440410 08D761C".replace(" ", ""))
+MATRIX_IDIOM_SITES = 2
+ANGLE_MASK_SITES = (0x00411BFD, 0x00411C03, 0x00411C09)
+ANGLE_MASK = 0xFFF                 # docs/70: TRIG.IMG, a 4096-unit circle
+TRIG_SIN = 0x0048E6C0
+TRIG_COS = 0x0048EEC0
+TRIG_QUARTER = 1024                # cos is sin advanced by a quarter turn
+CURRENT_OBJECT = 0x00414084        # Eng3d: the object being drawn
+CURRENT_OBJECT_REFS = 15
+#: ``0F BF 84 1B <disp32>`` -- the sine and cosine lookups in the builder.
+TRIG_SIN_SITE = 0x00411C0F
+TRIG_COS_SITE = 0x00411C1C
+#: The one export that hands the buffer out, and its whole body: a clone keeps
+#: its joint array immediately past the embedded 64-byte object.
+JOINT_GETTER = "_E3D_get_object_joint_data_ptr"
+JOINT_GETTER_ORDINAL = 59
+JOINT_GETTER_BODY = bytes.fromhex("8D4040C3")   # lea eax,[eax+0x40]; ret
+#: blob kind -> (model, the ``joint_place`` operands its render program uses,
+#: the ``object_3d`` offsets the kind's update arm writes)
+JOINT_KINDS = {
+    41: ("A_FLIGHT.3DI", (), (0x24,)),
+    42: ("A_PANEL.3DI", (6,), (0x26, 0x28, 0x2A)),
+    54: ("A_FIRE3.3DI", (6, 12), (0x2A, 0x30)),
+}
+#: Every ``anim`` operand in every shipped render program, by opcode slot.
+JOINT_OPERANDS = {9: {0: 1959}, 10: {0: 367}, 18: {6: 135, 12: 78}}
+#: The part-info stream of the same records asks for the same angles, with
+#: slots 14 and 15 standing in for 9 and 10.  Its start is the header pointer.
+PARTINFO_PTR_AT = 0x2E
+JOINT_OPERANDS_PARTINFO = {14: {0: 1959}, 15: {0: 367}, 18: {6: 135, 12: 78}}
+#: How the render programs split between the two readings of +0x1c.
+JOINT_FAMILIES = {"matrix": 16974, "euler": 2326, "other": 149}
+JOINT_FAMILIES_MIXED = 0           # no program uses both readings
+#: Distinct prototype names in each family, over all nine world sets.
+JOINT_FAMILY_NAMES = {"matrix": 1886, "euler": 1448, "other": 20}
+#: The prototypes the missions place as special objects are all joint-family;
+#: the two exceptions carry no transform opcode at all and are the pair
+#: ``typ_parse.py`` already knows was compiled without ``USE_MATRIX``.
+LEV_SPECIAL_FAMILIES = {"euler": 393, "other": 2}
+LEV_SPECIAL_OTHER = ("L096EE00.3DI", "L096EF00.3DI")
+#: Prototypes with an articulated sub-object, and how often they are placed.
+#: Nothing in either host writes triples 1 and 2 of a *world* object, so these
+#: are the records whose parts draw at whatever the allocation left.
+JOINT_PART_MODELS = 29
+JOINT_PART_PLACED_NAMES = 21
+JOINT_PART_PLACED = 1276
+#: The matrix family is the Charisma character parts: every mesh the 114 ``.cho``
+#: models name is matrix-family or absent, and none is joint-family.
+CHO_DIR = os.path.join("CHData", "Objects")
+CHO_MODELS = 114
+CHO_MESHES = 1985
+CHO_MESH_FAMILIES = {"matrix": 1877, "?": 108}
+#: The matrix-family prototypes no ``.cho`` names -- one unused model set.
+CHO_ORPHANS = ("PS_M0_024_BOX01", "PS_M0_024_CYLINDER01", "PS_M0_024_CYLINDER02",
+               "PS_M0_024_CYLINDER03", "PS_M0_024_CYLINDER04",
+               "PS_M0_024_CYLINDER05", "PS_M0_024_CYLINDER06",
+               "PS_M0_024_CYLINDER07", "PS_M0_024_CYLINDER08")
+
 
 # -- the zoom bob: one texture atlas, 8x8 tiles of 32x32 -----------------
 
@@ -1178,6 +1278,15 @@ class Binary:
 
     # -- primitives ---------------------------------------------------------
 
+    def mapped(self, va: int, size: int = 1) -> bool:
+        """Whether *va* is inside the image, so a decode can be attempted.
+
+        A mutated address is the normal way a check is shown to fail; reading
+        one must return "not the instruction I expected", not an exception.
+        """
+        off = self.pe.va_to_off(va)
+        return off is not None and off + size <= len(self.pe.data)
+
     def u8(self, va: int) -> int:
         return self.pe.u8(va)
 
@@ -1268,6 +1377,8 @@ class Binary:
 
     def cmp_imm(self, va: int) -> int | None:
         """``cmp r/m8, imm8`` (0x80), ``cmp r/m32, imm8`` (0x83), ``cmp al``."""
+        if not self.mapped(va, 6):
+            return None
         op = self.u8(va)
         if op == 0x3C:
             return self.i8(va + 1)
@@ -1281,6 +1392,8 @@ class Binary:
 
     def mov_imm32(self, va: int) -> int | None:
         """``mov r32, imm32`` (0xB8+r) or ``mov [disp32], imm32`` (0xC7 05)."""
+        if not self.mapped(va, 10):
+            return None
         op = self.u8(va)
         if 0xB8 <= op <= 0xBF:
             return self.i32(va + 1)
@@ -1295,6 +1408,8 @@ class Binary:
         return None
 
     def add_imm(self, va: int) -> int | None:
+        if not self.mapped(va, 6):
+            return None
         op = self.u8(va)
         if op == 0x05:
             return self.i32(va + 1)
@@ -1306,6 +1421,8 @@ class Binary:
 
     def mem_operand(self, va: int) -> int | None:
         """The disp32 of the pinned ``lea``/``mov`` forms this tool reads."""
+        if not self.mapped(va, 7):
+            return None
         op = self.u8(va)
         if op == 0x8D:                       # lea r32, [base + index*s + d32]
             modrm = self.u8(va + 1)
@@ -1322,11 +1439,18 @@ class Binary:
     def switch(self, table: tuple[int, int, int, int]) -> dict[int, int]:
         """``index table`` + ``jump table`` -> {case value: arm address}."""
         index, count, jump, first = table
-        return {first + k: self.u32(jump + 4 * self.u8(index + k))
-                for k in range(count)}
+        out = {}
+        for k in range(count):
+            if not self.mapped(index + k):
+                continue
+            target = jump + 4 * self.u8(index + k)
+            if self.mapped(target, 4):
+                out[first + k] = self.u32(target)
+        return out
 
     def jump_table(self, base: int, count: int) -> list[int]:
-        return [self.u32(base + 4 * k) for k in range(count)]
+        return [self.u32(base + 4 * k) for k in range(count)
+                if self.mapped(base + 4 * k, 4)]
 
     @staticmethod
     def _extent(arm: int, arms, limit: int) -> int:
@@ -1346,6 +1470,8 @@ class Binary:
         """Every ``call rel32`` to one of *targets* inside the arm at *arm*."""
         out: list[int] = []
         end = self._extent(arm, arms, limit)
+        if not self.mapped(arm) or not self.mapped(end - 1):
+            return out
         va = arm
         while va < end - 5:
             if self.u8(va) == 0xE8:
@@ -1552,6 +1678,95 @@ class Binary:
         return out
 
 
+class Engine:
+    """One Eng3d build, read by virtual address.
+
+    ``Eng3d.dll`` (software) and ``ENG3DFX.DLL`` (Glide) are separate
+    compilations of the same source, so an address that is pinned in one is
+    not pinned in the other; only pattern counts are compared across them.
+    """
+
+    CODE = "BEGTEXT"
+
+    def __init__(self, root: str, name: str) -> None:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            raise SystemExit(f"{path}: not found -- is {root!r} the game root?")
+        self.name = name
+        self.pe = PEFile(path)
+        self.code_lo, _vsize, self._raw, self._rawsize = self.pe.section(self.CODE)
+
+    def occurrences(self, pattern: bytes) -> list[int]:
+        """Every virtual address in the code section that starts *pattern*."""
+        out: list[int] = []
+        data = self.pe.data
+        pos = self._raw
+        end = self._raw + self._rawsize
+        while True:
+            pos = data.find(pattern, pos, end)
+            if pos < 0:
+                return out
+            out.append(self.code_lo + (pos - self._raw))
+            pos += 1
+
+    def handler(self, slot: int) -> int:
+        """The render-opcode handler the dispatch table holds for *slot*."""
+        return self.pe.u32(JOINT_DISPATCH + 4 * slot)
+
+    def and_imm32(self, va: int) -> int | None:
+        """The immediate of ``and r32, imm32`` (``81 /4 id``)."""
+        if self.pe.u8(va) != 0x81 or self.pe.u8(va + 1) & 0x38 != 0x20:
+            return None
+        return self.pe.u32(va + 2)
+
+    def absolute_refs(self, address: int) -> int:
+        """How many times the code section spells *address* out in full."""
+        return len(self.occurrences(struct.pack("<I", address)))
+
+    def sib_disp32(self, va: int) -> int | None:
+        """The disp32 of ``movsx r32, word [b + b*1 + disp32]`` (0F BF /r)."""
+        if self.pe.u8(va) != 0x0F or self.pe.u8(va + 1) != 0xBF:
+            return None
+        modrm = self.pe.u8(va + 2)
+        if modrm & 0xC7 != 0x84:            # mod=10, r/m=100 (SIB), disp32
+            return None
+        return self.pe.u32(va + 4)
+
+    def exports(self) -> dict[int, tuple[str, int]]:
+        """``{ordinal: (name, virtual address)}`` from the export directory."""
+        data = self.pe.data
+        rva, _size = self.pe.dirs[0]
+        off = self.pe.rva_to_off(rva)
+        if off is None:
+            raise PEError(f"{self.name}: no export directory")
+        (_flags, _stamp, _major, _minor, _name, base, nfunc, nname,
+         addrs, names, ords) = struct.unpack_from("<IIHHIIIIIII", data, off)
+        table = [struct.unpack_from("<I", data, self.pe.rva_to_off(addrs) + 4 * i)[0]
+                 for i in range(nfunc)]
+        out: dict[int, tuple[str, int]] = {}
+        for i in range(nname):
+            name_rva = struct.unpack_from("<I", data, self.pe.rva_to_off(names) + 4 * i)[0]
+            index = struct.unpack_from("<H", data, self.pe.rva_to_off(ords) + 2 * i)[0]
+            text = data[self.pe.rva_to_off(name_rva):]
+            out[index + base] = (text[:text.index(b"\0")].decode("latin-1"),
+                                 self.pe.image_base + table[index])
+        return out
+
+
+def count_pattern(path: str, pattern: bytes) -> int:
+    """Occurrences of *pattern* anywhere in a file."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    total = 0
+    pos = 0
+    while True:
+        pos = data.find(pattern, pos)
+        if pos < 0:
+            return total
+        total += 1
+        pos += 1
+
+
 class Corpus:
     """The shipped data every corpus check reads."""
 
@@ -1591,6 +1806,80 @@ class Corpus:
             with open(index, "r", errors="replace") as handle:
                 self.prototypes[world] = {line.split()[0].upper()
                                           for line in handle if line.split()}
+
+        self._read_geometry()
+        self._read_missions()
+        self._read_models()
+
+    def _read_geometry(self) -> None:
+        """Classify every shipped render program by how it transforms.
+
+        A program either composes the inline 3x3 matrix at ``object_3d+0x1c``
+        (``matrix_clone*``) or reads Euler triples out of the joint buffer at
+        ``+0x20`` (the ``anim`` opcodes).  No shipped program does both.
+        """
+        self.family: dict[str, str] = {}
+        self.family_records = {"matrix": 0, "euler": 0, "other": 0}
+        self.family_mixed = 0
+        self.joint_operands: dict[int, dict[int, int]] = {}
+        self.partinfo_operands: dict[int, dict[int, int]] = {}
+        self.model_joints: dict[str, tuple[int, ...]] = {}
+        for index in sorted((Path(self.root) / "WorldSet")
+                            .glob("World_*/Objects/prototyp.din")):
+            container = prototyp.load_container(str(index))
+            for slot in range(len(container)):
+                cmds = prototyp.read_commands(container.record_bytes(slot))
+                ops = {cmd.op for cmd in cmds}
+                if ops & set(MATRIX_SLOTS) and ops & set(JOINT_SLOTS):
+                    self.family_mixed += 1
+                if ops & set(MATRIX_SLOTS):
+                    kind = "matrix"
+                elif ops & set(JOINT_SLOTS):
+                    kind = "euler"
+                else:
+                    kind = "other"
+                self.family_records[kind] += 1
+                name = container.names[slot].upper()
+                self.family[name] = kind
+                places = tuple(sorted(cmd.operand for cmd in cmds
+                                      if cmd.op == JOINT_PLACE))
+                if places:
+                    self.model_joints.setdefault(name, places)
+                record = container.record_bytes(slot)
+                try:
+                    start = PARTINFO_PTR_AT + struct.unpack_from(
+                        "<i", record, PARTINFO_PTR_AT)[0]
+                    partinfo = prototyp.read_commands(record, start)
+                except (struct.error, prototyp.ParseError, IndexError):
+                    partinfo = []
+                for stream, into in ((cmds, self.joint_operands),
+                                     (partinfo, self.partinfo_operands)):
+                    for cmd in stream:
+                        if cmd.operand_kind != "anim":
+                            continue
+                        bucket = into.setdefault(cmd.op, {})
+                        bucket[cmd.operand] = bucket.get(cmd.operand, 0) + 1
+
+    def _read_models(self) -> None:
+        """Every mesh the Charisma models name, to identify the matrix family."""
+        self.cho_models = 0
+        self.cho_meshes: set[str] = set()
+        for path in sorted((Path(self.root) / CHO_DIR).rglob("*.cho")):
+            self.cho_models += 1
+            for part in cho_parse.parse(str(path)).parts:
+                if part.mesh:
+                    self.cho_meshes.add(part.mesh.upper())
+
+    def _read_missions(self) -> None:
+        """Every prototype the shipped missions place as a special object."""
+        self.lev_specials: set[str] = set()
+        self.lev_placements: dict[str, int] = {}
+        for path in sorted((Path(self.root) / "Missions").glob("*.lev")):
+            battle = levlib.load_lev(str(path))
+            for obj in battle.special:
+                name = obj.prototype_name(battle.world_set).upper()
+                self.lev_specials.add(name)
+                self.lev_placements[name] = self.lev_placements.get(name, 0) + 1
 
     def _read_info(self) -> None:
         path = os.path.join(self.root, INFO_LCL)
@@ -1671,6 +1960,8 @@ class Checker:
         self.failed = 0
         self.passed = 0
         self.names: list[str] = []
+        #: Names of the checks that failed, for the mutation harness.
+        self.failures: list[str] = []
 
     def check(self, name: str, ok: bool, detail: str = "") -> None:
         self.names.append(name)
@@ -1679,6 +1970,7 @@ class Checker:
             LOG.info("  ok    %-34s %s", name, detail)
         else:
             self.failed += 1
+            self.failures.append(name)
             LOG.error("  FAIL  %-34s %s", name, detail)
 
     @staticmethod
@@ -1689,11 +1981,24 @@ class Checker:
             return f"{len(value)} items"
         return str(value)
 
+    @staticmethod
+    def _format(value, fmt) -> str:
+        """Format for the log, tolerating a value the formatter cannot take.
+
+        A failing check often carries ``None`` where an address was expected;
+        the failure is the finding, and a formatter that raises on it would
+        hide the check name behind a traceback.
+        """
+        try:
+            return fmt(value)
+        except (TypeError, ValueError):
+            return repr(value)
+
     def equal(self, name: str, got, want, fmt=str) -> None:
         if got == want:
-            self.check(name, True, fmt(got))
+            self.check(name, True, self._format(got, fmt))
             return
-        detail = f"got {fmt(got)} want {fmt(want)}"
+        detail = f"got {self._format(got, fmt)} want {self._format(want, fmt)}"
         if isinstance(got, dict) and isinstance(want, dict):
             keys = sorted(set(got) | set(want))
             diff = [f"{k if isinstance(k, str) else hex(k)}: "
@@ -1725,7 +2030,7 @@ def run_checks(root: str) -> Checker:
     ck.equal("dsound.kill_bound", b.cmp_imm(KILL_BOUND_SITE), KILL_BOUND)
     ck.check("dsound.slot_gap",
              b.cmp_imm(LOAD_BOUND_SITE) == b.cmp_imm(SET_BOUND_SITE)
-             == b.cmp_imm(KILL_BOUND_SITE) == b.cmp_imm(PLAY_BOUND_SITE) + 1,
+             == b.cmp_imm(KILL_BOUND_SITE) == _plus(b.cmp_imm(PLAY_BOUND_SITE), 1),
              "load/set/kill take 21 slots, play takes 20")
     ck.equal("dsound.desc_size", b.mov_imm32(DESC_SIZE_SITE), DESC_SIZE)
     ck.equal("dsound.desc_flags", b.mov_imm32(DESC_FLAGS_SITE), DESC_FLAGS, hex)
@@ -1859,7 +2164,8 @@ def run_checks(root: str) -> Checker:
     ck.equal("walk.periods", {a: p for a, (_t, _w, _v, p) in arms.items()},
              {a: (p[1] if p else None) for a, (_t, _w, _v, p) in WALK_ARMS.items()}, Checker.brief)
     ck.check("walk.silent_types",
-             len(arms[WALK_SILENT_ARM][0]) == WALK_SILENT_TYPES,
+             WALK_SILENT_ARM in arms
+             and len(arms[WALK_SILENT_ARM][0]) == WALK_SILENT_TYPES,
              f"{WALK_SILENT_TYPES} unit types have no walk sound")
     ck.equal("walk.stray_volume_id",
              tuple(sorted(v for _t, _w, v, _p in arms.values()
@@ -1958,7 +2264,8 @@ def run_checks(root: str) -> Checker:
     ck.equal("update.delay_field", b.u8(BLOB_DELAY_SITE + 2), BLOB_DELAY, hex)
     ck.equal("update.life_field", b.u8(BLOB_LIFE_SITE + 2), BLOB_LIFE, hex)
     ck.equal("update.kind_field", b.u8(BLOB_KIND_SITE + 2), BLOB_KIND, hex)
-    ck.equal("update.immortal", b.cmp_imm(BLOB_IMMORTAL_SITE) & 0xFF,
+    immortal = b.cmp_imm(BLOB_IMMORTAL_SITE)
+    ck.equal("update.immortal", immortal & 0xFF if immortal is not None else None,
              BLOB_IMMORTAL, hex)
     ck.equal("update.kind_bound", b.cmp_imm(BLOB_KIND_BOUND_SITE),
              BLOB_KIND_BOUND, hex)
@@ -2014,10 +2321,15 @@ def run_checks(root: str) -> Checker:
     ordinal = b.string(b.push_imm(CHECK_IN_ORDINAL_SITE) or 0, 40)
     ck.equal("object.check_in_ordinal", ordinal,
              f"Function Id {CHECK_IN_ORDINAL} not found!")
-    ck.check("object.allocator_does_not_clear",
-             b.call_target(0x0044AF84 - 0) is None
-             and b.u8(0x0044AF84) == 0xFF,
-             "aGetMemory hands the block straight back from malloc")
+    # aGetMemory's one allocation is an indirect call to the CRT import, and
+    # the routine it lands in is never followed by a fill: the block comes
+    # back exactly as malloc left it.
+    ck.equal("object.allocator_does_not_clear",
+             (b.pe.bytes_at(ALLOCATOR, len(ALLOCATOR_ENTRY)),
+              b.u8(ALLOCATOR_CALL_SITE), b.u8(ALLOCATOR_CALL_SITE + 1),
+              b.u32(ALLOCATOR_CALL_SITE + 2)),
+             (ALLOCATOR_ENTRY, 0xFF, 0x15, ALLOCATOR_IMPORT),
+             lambda v: f"call dword [0x{v[3]:08X}] at the one allocation site")
     # the blob constructor and the world-object builder agree, four bytes apart
     world = {offset for offset in WORLD_OBJECT_STORES.values()}
     blob = {offset - OBJECT_3D_AT for _arg, offset in BLOB_CTOR_STORES.values()
@@ -2029,7 +2341,7 @@ def run_checks(root: str) -> Checker:
     shared = world_fields - {0x0C}
     from_blob = {offset - OBJECT_3D_AT
                  for _a, offset in BLOB_CTOR_STORES.values()}
-    from_blob.add(_store_offset(b, BLOB_ZERO_SITE) - OBJECT_3D_AT)
+    from_blob.add(_plus(_store_offset(b, BLOB_ZERO_SITE), -OBJECT_3D_AT))
     ck.equal("object.shared_fields", sorted(shared - from_blob), [],
              Checker.brief)
     ck.equal("object.blob_zero", _store_offset(b, BLOB_ZERO_SITE), 0x20, hex)
@@ -2088,7 +2400,7 @@ def run_checks(root: str) -> Checker:
 
     # ---- the 78 kinds ---------------------------------------------------
     kind_arms = b.kind_arms()
-    ck.equal("kind.count", b.cmp_imm(BLOB_KIND_BOUND_SITE) + 1, KIND_COUNT)
+    ck.equal("kind.count", _plus(b.cmp_imm(BLOB_KIND_BOUND_SITE), 1), KIND_COUNT)
     ck.equal("kind.spawns", {k: v for k, v in b.kind_spawns().items() if v},
              KIND_SPAWNS, Checker.brief)
     for name, (site, how, want) in sorted(KIND_EVIDENCE.items()):
@@ -2105,7 +2417,8 @@ def run_checks(root: str) -> Checker:
                  tuple(range(decoded, decoded + 2)), produces)
     literal = {v for _m, _c, v, _l in calls.values() if isinstance(v, int)}
     computed = {k for _s, (_i, _b, ks) in KIND_COMPUTED.items() for k in ks}
-    morph = {b.byte_imm(KIND_MORPH_SITE)[1]}
+    morph_imm = b.byte_imm(KIND_MORPH_SITE)
+    morph = {morph_imm[1] if morph_imm else None}
     ck.equal("kind.unreachable",
              tuple(k for k in range(KIND_COUNT)
                    if k not in literal | computed | morph), KIND_UNREACHABLE)
@@ -2162,9 +2475,9 @@ def run_checks(root: str) -> Checker:
                  for site, _t in calls),
              "every call site lies inside the arm its switch entry selects")
     ck.equal("weapon.switch_range",
-             (MUZZLE_SWITCH[3] + b.cmp_imm(MUZZLE_BOUND_SITE),
-              IMPACT_SWITCH[3] + b.cmp_imm(IMPACT_BOUND_SITE),
-              IMPACT_SOUND_SWITCH[3] + b.cmp_imm(IMPACT_SOUND_BOUND_SITE)),
+             (_plus(b.cmp_imm(MUZZLE_BOUND_SITE), MUZZLE_SWITCH[3]),
+              _plus(b.cmp_imm(IMPACT_BOUND_SITE), IMPACT_SWITCH[3]),
+              _plus(b.cmp_imm(IMPACT_SOUND_BOUND_SITE), IMPACT_SOUND_SWITCH[3])),
              WEAPON_SWITCH_TOP)
 
     # ---- CreateBGB -------------------------------------------------------
@@ -2178,7 +2491,190 @@ def run_checks(root: str) -> Checker:
              tuple(b.calls_to(NOTE_CALLBACK_REGISTER)), (NOTE_CALLBACK_SITE,),
              lambda xs: _hexlist(xs))
 
+    # ---- the joint-angle buffer (docs/28 7.8, docs/30 2.12) --------------
+    eng = Engine(root, ENG3D_DLL)
+    glide = Engine(root, ENG3D_GLIDE)
+
+    # The buffer is read by one idiom, present in both renderer builds and in
+    # none of the three hosts: they write it, they never read it back.
+    sites = eng.occurrences(JOINT_IDIOM)
+    ck.equal("joint.idiom_sites", len(sites), JOINT_IDIOM_SITES)
+    ck.equal("joint.idiom_glide", len(glide.occurrences(JOINT_IDIOM)),
+             JOINT_IDIOM_SITES)
+    ck.equal("joint.idiom_hosts",
+             {name: count_pattern(os.path.join(root, name), JOINT_IDIOM)
+              for name in HOST_BINARIES},
+             HOST_IDIOM_COUNTS, Checker.brief)
+
+    # Each site sits in the handler of one render opcode.  Bounding by the
+    # nearest preceding table entry is what makes the owner unambiguous.
+    handlers = {slot: eng.handler(slot) for slot in sorted(prototyp.OPCODES)}
+    entries = sorted(set(handlers.values()))
+    owners = {entries[bisect.bisect_right(entries, site) - 1] for site in sites}
+    ck.equal("joint.handler_slots",
+             tuple(slot for slot, addr in sorted(handlers.items())
+                   if addr in owners),
+             JOINT_SLOTS)
+    # The other reading of the same bytes has its own idiom, and the two slots
+    # that carry it come out of the DLL the same way.
+    matrix_sites = set(eng.occurrences(MATRIX_IDIOM))
+    ck.equal("joint.matrix_idiom_sites", len(matrix_sites), MATRIX_IDIOM_SITES)
+    ck.equal("joint.matrix_slots",
+             tuple(slot for slot in sorted(prototyp.OPCODES)
+                   if eng.handler(slot) in matrix_sites),
+             MATRIX_SLOTS)
+    # ... and our own opcode table says exactly those take an ``anim`` operand.
+    ck.equal("joint.opcode_table",
+             tuple(slot for slot, (_name, kind) in sorted(prototyp.OPCODES.items())
+                   if kind == "anim"),
+             JOINT_SLOTS)
+
+    # The angles are binary degrees indexing TRIG.IMG (docs/70): the mask and
+    # the two table addresses come out of the builder's own instructions, and
+    # the cosine window is a quarter turn into the same table.
+    ck.equal("joint.angle_mask",
+             tuple(eng.and_imm32(site) for site in ANGLE_MASK_SITES),
+             (ANGLE_MASK,) * len(ANGLE_MASK_SITES))
+    sine, cosine = eng.sib_disp32(TRIG_SIN_SITE), eng.sib_disp32(TRIG_COS_SITE)
+    ck.equal("joint.trig_tables", (sine, cosine), (TRIG_SIN, TRIG_COS),
+             _hexlist)
+    mask = eng.and_imm32(ANGLE_MASK_SITES[0])
+    window = (cosine - sine) // 2 if (sine is not None and cosine is not None) else None
+    ck.equal("joint.trig_quarter",
+             (window, mask + 1 if mask is not None else None),
+             (TRIG_QUARTER, 4 * TRIG_QUARTER),
+             lambda v: f"cosine window {v[0]} entries into a {v[1]}-unit circle")
+
+    # Nothing else in the renderer reaches the record: every reference to the
+    # "object being drawn" is accounted for.
+    ck.equal("joint.current_object_refs", eng.absolute_refs(CURRENT_OBJECT),
+             CURRENT_OBJECT_REFS)
+
+    # Both hosts null the pointer word, so the inline area is always the one
+    # the handlers fall back to.
+    world_ptr = _store_offset(b, WORLD_OBJECT_PTR_SITE)
+    blob_ptr = _store_offset(b, BLOB_ZERO_SITE)
+    ck.equal("joint.pointer_zeroed",
+             (world_ptr,
+              blob_ptr - OBJECT_3D_AT if blob_ptr is not None else None),
+             (JOINT_PTR, JOINT_PTR), _hexlist)
+
+    # One export hands the buffer out and there is no setter; its whole body
+    # says a clone's joint array begins just past the embedded object.
+    exports = eng.exports()
+    ck.equal("joint.getter_ordinal",
+             tuple(sorted(o for o, (name, _a) in exports.items()
+                          if "joint" in name)),
+             (JOINT_GETTER_ORDINAL,))
+    ck.equal("joint.getter_name",
+             (exports.get(JOINT_GETTER_ORDINAL) or (None,))[0], JOINT_GETTER)
+    for build in (eng, glide):
+        found = build.exports().get(JOINT_GETTER_ORDINAL)
+        body = None
+        if found:
+            entry = found[1]
+            body = build.pe.bytes_at(entry + 4 + 5 + build.pe.i32(entry + 5),
+                                     len(JOINT_GETTER_BODY))
+        ck.equal(f"joint.getter_body_{build.name.split('.')[0].lower()}",
+                 body, JOINT_GETTER_BODY,
+                 lambda v: v.hex() if isinstance(v, bytes) else str(v))
+
+    # ---- what the shipped data asks for ---------------------------------
+    ck.equal("joint.operands", c.joint_operands, JOINT_OPERANDS, Checker.brief)
+    ck.equal("joint.operands_partinfo", c.partinfo_operands,
+             JOINT_OPERANDS_PARTINFO, Checker.brief)
+    used = sorted({op for buckets in
+                   list(c.joint_operands.values()) + list(c.partinfo_operands.values())
+                   for op in buckets})
+    ck.equal("joint.operand_set", tuple(used), JOINT_OFFSETS)
+    ck.equal("joint.buffer_span",
+             ((max(used) + JOINT_TRIPLE) if used else 0,
+              OBJECT_3D_SIZE - JOINT_INLINE),
+             (JOINT_BUFFER_BYTES, JOINT_BUFFER_ROOM),
+             lambda v: f"{v[0]} bytes of Euler triples in {v[1]}")
+    ck.equal("joint.families", (c.family_records, c.family_mixed),
+             (JOINT_FAMILIES, JOINT_FAMILIES_MIXED),
+             lambda v: f"{len(v[0])} entries, {v[1]} mixed")
+    names = {"matrix": 0, "euler": 0, "other": 0}
+    for kind in c.family.values():
+        names[kind] += 1
+    ck.equal("joint.family_names", names, JOINT_FAMILY_NAMES, Checker.brief)
+
+    # Everything the missions place reads its angles out of the buffer; the
+    # two exceptions carry no transform opcode at all.
+    placed: dict[str, int] = {}
+    for name in c.lev_specials:
+        kind = c.family.get(name, "?")
+        placed[kind] = placed.get(kind, 0) + 1
+    ck.equal("joint.lev_specials", placed, LEV_SPECIAL_FAMILIES, Checker.brief)
+    ck.equal("joint.lev_special_other",
+             tuple(sorted(n for n in c.lev_specials
+                          if c.family.get(n) == "other")),
+             LEV_SPECIAL_OTHER)
+
+    # The matrix reading belongs to Charisma: every mesh a .cho names is in
+    # that family or in no container at all, and no joint-family name is.
+    ck.equal("joint.cho_models", c.cho_models, CHO_MODELS)
+    ck.equal("joint.cho_meshes", len(c.cho_meshes), CHO_MESHES)
+    mesh_families: dict[str, int] = {}
+    for name in c.cho_meshes:
+        key = c.family.get(name, "?")
+        mesh_families[key] = mesh_families.get(key, 0) + 1
+    ck.equal("joint.cho_mesh_families", mesh_families, CHO_MESH_FAMILIES,
+             Checker.brief)
+    ck.equal("joint.cho_orphans",
+             tuple(sorted(n for n, k in c.family.items()
+                          if k == "matrix" and n not in c.cho_meshes)),
+             CHO_ORPHANS, Checker.brief)
+
+    # World objects get triple 0 and nothing else, so every articulated
+    # fitting the missions place draws its parts from an unwritten triple.
+    ck.equal("joint.part_models", len(c.model_joints), JOINT_PART_MODELS)
+    placed = {n: k for n, k in c.lev_placements.items() if n in c.model_joints}
+    ck.equal("joint.part_models_placed", len(placed), JOINT_PART_PLACED_NAMES)
+    ck.equal("joint.part_placements", sum(placed.values()), JOINT_PART_PLACED)
+
+    # The three arms that write the buffer write their own model's joints.
+    models: dict[int, tuple] = {}
+    for _site, (model, _cls, kind, _life) in b.blob_calls().items():
+        if kind in JOINT_KINDS and isinstance(model, str):
+            models[kind] = tuple(sorted(set(models.get(kind, ())) | {model}))
+    ck.equal("joint.kind_models", models,
+             {k: (v[0],) for k, v in sorted(JOINT_KINDS.items())}, Checker.brief)
+    ck.equal("joint.kind_places",
+             {k: c.model_joints.get(v[0], ()) for k, v in sorted(JOINT_KINDS.items())},
+             {k: v[1] for k, v in sorted(JOINT_KINDS.items())}, Checker.brief)
+    ck.equal("joint.kind_writes",
+             {k: _kind_writes(k) for k in sorted(JOINT_KINDS)},
+             {k: v[2] for k, v in sorted(JOINT_KINDS.items())}, Checker.brief)
+    # Every offset an arm writes is a component of a triple its model asks for:
+    # the start, the middle or the end, and nothing in between.
+    landings = {}
+    for kind, (model, _places, _writes) in sorted(JOINT_KINDS.items()):
+        triples = (0,) + tuple(c.model_joints.get(model, ()))
+        for off in _kind_writes(kind):
+            deltas = [off - JOINT_INLINE - t for t in triples]
+            landings[(kind, off)] = sorted(d for d in deltas
+                                           if d in (0, 2, JOINT_TRIPLE - 2))
+    ck.check("joint.writes_are_components",
+             bool(landings) and all(len(v) == 1 for v in landings.values()),
+             f"{len(landings)} stores, each exactly one component of one triple")
+
+
     return ck
+
+
+def _kind_writes(kind: int) -> tuple[int, ...]:
+    """The ``object_3d`` offsets the pinned evidence for *kind* stores into."""
+    out = set()
+    for key, (_site, how, want) in KIND_EVIDENCE.items():
+        if not key.startswith(f"k{kind}."):
+            continue
+        if how in ("word_store", "word_add"):
+            out.add(want - OBJECT_3D_AT)
+        elif how == "word_imm":
+            out.add(want[0] - OBJECT_3D_AT)
+    return tuple(sorted(out))
 
 
 def _creator(address: int) -> str:
@@ -2204,8 +2700,19 @@ def _names_string(b: Binary, text: str) -> bool:
     return b.pe.data.find(text.encode("latin-1") + b"\0") >= 0
 
 
+def _plus(value: int | None, delta: int) -> int | None:
+    """``value + delta``, or None when the decode failed.
+
+    Decoders return None when the bytes at a pinned address are not the
+    instruction the address is documented to hold. Propagating that keeps the
+    check reporting its own name instead of raising out of ``run_checks``.
+    """
+    return None if value is None else value + delta
+
+
 def _hexlist(values) -> str:
-    return "[" + ", ".join(f"0x{v:08X}" for v in values) + "]"
+    return "[" + ", ".join("None" if v is None else f"0x{v:08X}"
+                           for v in values) + "]"
 
 
 def report_waves(root: str) -> None:
@@ -2291,6 +2798,63 @@ def report_kinds(root: str) -> None:
               f"{made[:25]:<25}  {by[:70]}")
 
 
+def report_joints(root: str) -> None:
+    eng = Engine(root, ENG3D_DLL)
+    c = Corpus(root)
+    b = Binary(root)
+
+    print("object_3d +0x1c .. +0x3f, the two readings of the same 36 bytes")
+    print(f"  matrix : 3x3 i32 at +0x{JOINT_PTR:02X}      "
+          f"{c.family_records['matrix']:>6} render programs, "
+          f"{sum(1 for k in c.family.values() if k == 'matrix'):>5} prototypes")
+    print(f"  joint  : ptr at +0x{JOINT_PTR:02X}, then     "
+          f"{c.family_records['euler']:>6} render programs, "
+          f"{sum(1 for k in c.family.values() if k == 'euler'):>5} prototypes")
+    print(f"           Euler triples at +0x{JOINT_INLINE:02X}")
+    print(f"  neither                     "
+          f"{c.family_records['other']:>6} render programs, "
+          f"{sum(1 for k in c.family.values() if k == 'other'):>5} prototypes")
+    print()
+
+    print("the joint buffer, as the shipped programs address it")
+    for offset in JOINT_OFFSETS:
+        first = JOINT_INLINE + offset
+        print(f"  triple {offset // JOINT_TRIPLE}  anim operand {offset:>2}  "
+              f"object +0x{first:02X}/+0x{first + 2:02X}/+0x{first + 4:02X}  "
+              f"blob +0x{first + OBJECT_3D_AT:02X}/"
+              f"+0x{first + OBJECT_3D_AT + 2:02X}/"
+              f"+0x{first + OBJECT_3D_AT + 4:02X}")
+    print()
+
+    print("the opcodes that read it")
+    handlers = {slot: eng.handler(slot) for slot in sorted(prototyp.OPCODES)}
+    for slot in JOINT_SLOTS:
+        name = prototyp.OPCODES[slot][0]
+        counts = c.joint_operands.get(slot, {})
+        part = c.partinfo_operands.get(slot, {})
+        used = ", ".join(f"operand {op}: {n}"
+                         for op, n in sorted(counts.items())) or "-"
+        also = ", ".join(f"operand {op}: {n}"
+                         for op, n in sorted(part.items())) or "-"
+        print(f"  slot {slot:>2}  0x{handlers[slot]:08X}  {name:<22} "
+              f"render {used:<28} partinfo {also}")
+    print()
+
+    print("the three update arms that write it")
+    for kind, (model, places, _writes) in sorted(JOINT_KINDS.items()):
+        stored = _kind_writes(kind)
+        print(f"  kind {kind:>2}  {model:<14} joint_place {list(places)!s:<8} "
+              f"writes object {_hexlist(stored)}")
+    print()
+    print(f"angles are binary degrees: mask 0x{eng.and_imm32(ANGLE_MASK_SITES[0]):03X}, "
+          f"TRIG.IMG sine at 0x{eng.sib_disp32(TRIG_SIN_SITE):08X}, "
+          f"cosine window 0x{eng.sib_disp32(TRIG_COS_SITE):08X} (docs/70)")
+    print(f"reads of the buffer in {GAME_EXE}: "
+          f"{count_pattern(os.path.join(root, GAME_EXE), JOINT_IDIOM)} "
+          f"-- the host writes these fields and never reads them back "
+          f"({len(b.blob_calls())} blob calls)")
+
+
 def report_json(root: str) -> None:
     b = Binary(root)
     c = Corpus(root)
@@ -2331,6 +2895,8 @@ def main(argv=None) -> int:
     ap.add_argument("--waves", metavar="ROOT", help="the event -> wave table")
     ap.add_argument("--blobs", metavar="ROOT", help="the blob and weapon tables")
     ap.add_argument("--kinds", metavar="ROOT", help="the 78 update kinds")
+    ap.add_argument("--joints", metavar="ROOT",
+                    help="the object_3d joint-angle buffer")
     ap.add_argument("--json", metavar="ROOT", help="dump everything as JSON")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -2347,6 +2913,9 @@ def main(argv=None) -> int:
         return 0
     if args.kinds:
         report_kinds(args.kinds)
+        return 0
+    if args.joints:
+        report_joints(args.joints)
         return 0
     if args.json:
         report_json(args.json)
