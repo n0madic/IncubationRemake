@@ -30,6 +30,8 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 Plan for the runtime work that remains — the turn, interaction, the campaign,
 effects and sound, the interface contract and the sequence player:
 [`91-game-logic-research-plan.md`](91-game-logic-research-plan.md).
+Decisions taken about the remake itself — engine, language, asset pipeline and
+what stays open: [`92-remake-architecture.md`](92-remake-architecture.md).
 
 ---
 

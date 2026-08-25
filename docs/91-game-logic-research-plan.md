@@ -359,7 +359,8 @@ B, because most of its content is *their* content displayed.
 **Development need not wait.** Loading, terrain, models, animations, textures,
 fonts, sprites, balance tables, combat, visibility, the AI and all mission text
 are specified and checked today. A remake can be built against those while this
-plan is worked through.
+plan is worked through — see [`92`](92-remake-architecture.md) for the engine,
+language and pipeline decisions that work rests on.
 
 ---
 
