@@ -240,7 +240,13 @@ SetCtrlMapInfo (10,10, 255,   0,  "Teleporter Exit");
 ```
 
 The third column is read by `fcn.0042f6b0` and tested `!= 0xFF` on the movement
-path, so `255` means **impassable**. The fourth column is UNVERIFIED.
+path, so `255` means **impassable**; [`23` §7.4](23-ai-system.md) calls it the
+`delay` and gives the per-step cost it produces. **The fourth column is dead
+data.** It lands at record `+0x02`, and a displacement-aware sweep of `.text`
+finds three references to `+0x00` and two to `+0x01` — the positive control —
+and none at all to `+0x02` or `+0x03`; the three routines that take a pointer
+to the record read `+0x01` twice and `+0x03`, the name. See
+[`26` §10](26-interaction.md).
 
 | Value | Name | Cells | Files |
 |---|---|---|---|
@@ -433,33 +439,58 @@ Value 41 is skipped and 5–9, 19–29, 41, 43–69, 72–79 and 90+ are not in 
 legend at all — those are the range the scripts use freely, which is why the
 corpus also holds runs like 50–69, 90–99, 100–133 and 210–216, one cell each.
 
-**The engine hard-codes ten of these values, and only ten.** Sweeping `.text`
-for every comparison against `cell[+0x0B]`:
+**Comparisons are not the only way the engine reads this byte.** Sweeping
+`.text` for every *comparison* against `cell[+0x0B]` gives the table below;
+`aExecuteUse` reaches twenty further values through a **jump table** instead,
+which no comparison sweep can see. [`26` §3.1](26-interaction.md) reads that
+table out and is the authority on which ids the engine acts on.
 
 | Value | Where | What it does |
 |---|---|---|
-| 1 | `0x004190B9`, `0x004191F5`, `0x00431118` | the editor and the deployment pass |
-| 10 | `0x00418BDC`, `0x0046DD28`, `0x0047A5BD` | `aExecuteUse` — picking a supply box up |
-| 12 | `0x00455695` | *full munition* |
+| 1..8 | `0x004190B9`, `0x004191F5` | a range test in the editor's map pass |
+| 1..4 | `0x00431118` | the deployment pass — the four placefields |
+| 10 | `0x0046DD28` | `aExecuteUse` rerolls the random supply box ([`26` §3](26-interaction.md)) |
+| 10..49 | `0x0047A5BD` | `aGetUseTarget` — the band the Use button accepts ([`26` §2](26-interaction.md)) |
+| 10..70 | `0x00418BDC` | `aBattleMap.cpp`'s draw pass flags an interactable cell |
 | **31** | `0x0040A65F`, `0x0040A9CD` | **the AI, and nothing else** — see [`23` §3.2](23-ai-system.md) |
-| 70 | `0x0047B463` | entry point |
+| 33, 32 | `0x0047A5CD`, `0x0047A5D8` | the two jammed-door exceptions in the same predicate |
+| 70 | `0x0047B463` | entry point — the demolition predicate ([`26` §2](26-interaction.md)) |
 | 71 | `0x004418F5`, `0x00441A03` | `InsertUnit` refuses to spawn here ([`21` §8](21-info-lcl-schema.md)) |
-| 80 | `0x00418340`, `0x00430F4D` | the editor; and the base of the warp exclusion band (§4.5) |
-| 85 | `0x0046E9D4` | VictoryPoint B |
+| 80..89 | `0x00418340`, `0x00430F4D` | the editor; and the warp exclusion band (§4.5) |
+| 80..89 | `0x0046E99F`, `0x0046E9D4` | **VictoryPoint capture** on the movement path ([`26` §6.1](26-interaction.md)) |
+| non-zero | `0x0041813F`, `0x0041D010`, `0x004313F4`, `0x00442440`, `0x00455695` | five "is anything here" tests, in five different modules |
 | 249, 254 | `0x0041CDD5`, `0x0041CEF2` | not values — the editor's `+= 5` and `+= 1` overflow guards |
+
+The previous revision listed `0x00455695` as a comparison against 12,
+*full munition*. It is not: the instruction there is `mov al, [ecx+0x0B]`
+followed by `test al, al`, a plain non-zero test in `aMissionControl.cpp`'s
+cursor path. `tools/interaction_tables.py`'s `sweep.*` checks now enumerate all
+**44** instructions in `.text` that touch this byte, with the module each
+belongs to.
 
 Two entries settle questions the other documents had left open. **71 is
 "destroyed entry point"**, which is exactly why `InsertUnit` refuses it. And
 **31 is "standard Door — CLOSED"**, tested at two sites that are both inside
 the AI turn: `0x0040A600` steps up to such a cell and plays `aDoorOpenSequence`
 (`0x00410A20`), and the AI's planner has a whole selector for finding one.
-**The computer opens doors; the jammed pair 32/33 it never touches.**
+**The computer opens doors; the jammed pair 32/33 it never touches.** Nor, it
+turns out, does it touch anything else: `aExecuteUse` has exactly one caller
+and it is in the interface ([`26` §7](26-interaction.md)).
 
 The `0x50`–`0x59` band §4.5 excludes from warp targets is therefore
 **VictoryPoints**, not deployment fields. §4.2's reading of `+0x14` is
 unaffected — its evidence is the multiplayer start layouts, and the same cells
 being both the start areas and the scoring areas is what the heading
 *"only Multiplayer"* implies.
+
+Three gaps in the legend close from the code rather than from the picker.
+**Id 41, which the legend skips, is *Batteries*** — `aExecuteUse` handles it
+and `Events.txt` label `EB` names it; its arm changes nothing, so it is a
+pickup that was authored and left inert. **Ids 86–89 are written on capture,
+never authored**, which is why the census finds none. And **id 32 is
+unreachable**: the Use predicate refuses it outright, so *jammed Door — OPEN*
+exists only as the state a jammed door reaches once it has been pried open.
+[`26` §3.1](26-interaction.md) has the full class table with what each id does.
 
 ---
 

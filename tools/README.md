@@ -47,6 +47,8 @@ typ_parse.py          parse OBJECT.TYP, the lost exporter's config (docs/30 2.11
 ai_tables.py          decode the AI turn: orders, move map, targeting (docs/23)
 brief_parse.py        parse the briefing/info text markup and lay it out (docs/24)
 turn_tables.py        decode the turn: rotation, hand-over, refresh, overwatch (docs/25)
+interaction_tables.py decode using the world: doors, boxes, levers, pushes,
+                      teleporters, mines (docs/26)
 ```
 
 ## Corpus checks
@@ -75,6 +77,7 @@ python3 tools/typ_parse.py       --check gog_incubation             # 18 checks
 python3 tools/ai_tables.py       --check gog_incubation             # 77 checks
 python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
 python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
+python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -131,6 +134,10 @@ python3 tools/brief_parse.py gog_incubation/DATA/TXT/English/Briefing/_C_105.txt
 # the player rotation, the game modes and the hand-over's switch
 python3 tools/turn_tables.py --rotation gog_incubation
 python3 tools/turn_tables.py --json     gog_incubation
+
+# the twenty interaction classes, their effects and their corpus counts
+python3 tools/interaction_tables.py --classes gog_incubation
+python3 tools/interaction_tables.py --json    gog_incubation
 ```
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;

@@ -33,17 +33,17 @@ site at all.
 | Module | First site | Span | Sites | State |
 |---|---|---|---|---|
 | `aBlobs.cpp` | `0x0041DE5B` | 53.7 KB | 263 | **dark** — package D |
-| `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | **dark** — packages A, C, D |
+| `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | the door and set-piece sequences described — [`20` §7.3](20-lcl-language.md), [`26`](26-interaction.md); the rest **dark** — package D |
 | `aMissionControl.cpp` | `0x00453F9A` | 37.1 KB | 138 | one screen described ([`24` §8](24-briefing-text.md)) — package B |
-| `aTacTools.cpp` | `0x0046A463` | 25.8 KB | 183 | described — [`22`](22-combat-and-visibility.md) |
+| `aTacTools.cpp` | `0x0046A463` | 25.8 KB | 183 | described — [`22`](22-combat-and-visibility.md), [`26`](26-interaction.md) |
 | `aMenuSystem.cpp` | `0x0044B238` | 22.1 KB | 100 | **dark** — package F |
 | `a3DObjects.cpp` | `0x004046C1` | 20.7 KB | 226 | partly — [`30`](30-eng3d-ascii-formats.md), [`31`](31-prototyp-geometry.md); package C touches it |
 | `aSeqPlayer.cpp` | `0x0046543A` | 20.0 KB | 18 | **dark** — package G |
 | `aLCL_Com.cpp` | `0x004407D5` | 18.9 KB | 52 | described — [`20` §7](20-lcl-language.md) |
-| `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md) |
+| `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md), [`26` §2](26-interaction.md) |
 | `aBattleSystem.cpp` | `0x00419DB9` | 16.2 KB | 44 | the hand-over's refresh entry described — [`25` §5](25-turn-and-round.md) |
 | `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | **dark** — package F |
-| `aCtrlMap.cpp` | `0x0042EBAB` | 14.4 KB | 31 | partly — [`10`](10-lev-mission-format.md), [`23`](23-ai-system.md); package C |
+| `aCtrlMap.cpp` | `0x0042EBAB` | 14.4 KB | 31 | described — [`10`](10-lev-mission-format.md), [`23`](23-ai-system.md), [`26`](26-interaction.md) |
 | `a3DEngine.cpp` | `0x0040104B` | 13.6 KB | 106 | partly — [`31`](31-prototyp-geometry.md) |
 | `aViewPlayer.cpp` | `0x0047BD0B` | 13.3 KB | 54 | described — [`25` §4](25-turn-and-round.md) |
 | `aMI.cpp` | `0x00450AC8` | 12.8 KB | 33 | **dark** — package F (map interface) |
@@ -139,7 +139,19 @@ turn-start arithmetic against every unit type in the corpus.
 
 ---
 
-## 4. Package C — interaction and set-pieces
+## 4. Package C — interaction and set-pieces — **delivered**
+
+> **Delivered** as [`26-interaction.md`](26-interaction.md) with
+> `tools/interaction_tables.py --check` (109 checks, 112 mutations, 0 missed,
+> all 109 check names shown to fail).
+> Questions 1, 2, 3 and the direct half of 4 are answered there; question 5
+> turned out to be unanswerable from this corpus — field type 8, `Ladder`, has
+> **0 cells** in all 155 shipped missions — and is restated as `26`'s fifth
+> open question rather than dropped. The package also closed two items that
+> belong to other docs: [`10` §4.1](10-lev-mission-format.md)'s fourth
+> `SetCtrlMapInfo` column (dead data, by an enumerated sweep) and five
+> equipment ids in [`21` §3](21-info-lcl-schema.md). The section below is kept
+> as written so the plan can be read against what it produced.
 
 **Why second.** It closes `.lev`. [`10` §4.6](10-lev-mission-format.md) recovers
 the developers' own names for 38 action-point values — doors, crates, buttons,
@@ -355,7 +367,7 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 | # | Package | Deliverable | Depends on | Unblocks |
 |---|---|---|---|---|
 | 1 | ~~**A** turn and round~~ **delivered** | [`25`](25-turn-and-round.md), `turn_tables.py` | — | a playable battle; [`11`](11-save-game-format.md)'s ViewPlayer item partly closed |
-| 2 | **C** interaction | `26` | A (action costs) | mission objectives that use doors, crates, levers |
+| 2 | ~~**C** interaction~~ **delivered** | [`26`](26-interaction.md), `interaction_tables.py` | A (action costs) | mission objectives that use doors, crates, levers |
 | 3 | **B** campaign | `27`, `campaign_tables.py` | A, C | mission 2 onward |
 | 4 | **D + E** effects and sound | `28`, `blob_tables.py` | — (independent) | the game's feel; can run in parallel throughout |
 | 5 | **F** interface contract | `29` | A, B | a UI that shows the right numbers |

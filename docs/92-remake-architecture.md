@@ -199,12 +199,12 @@ compared trace against trace, not just outcome against outcome.
 Specified, checked, and ready to build against now: map loading and terrain,
 scenery geometry and textures, models and animations, fonts and sprites, the
 balance tables, combat resolution, line of sight and fog of war, the computer
-opponent, the turn and the round ([`25`](25-turn-and-round.md)), and every line
-of mission text.
+opponent, the turn and the round ([`25`](25-turn-and-round.md)), using the world
+— doors, supply boxes, levers, pushes, teleporters and mines
+([`26`](26-interaction.md)) — and every line of mission text.
 
-Blocked on [`91`](91-game-logic-research-plan.md): object interaction (C), the
-campaign layer (B), effects and sound (D+E), the interface contract (F), the
-sequence player (G).
+Blocked on [`91`](91-game-logic-research-plan.md): the campaign layer (B),
+effects and sound (D+E), the interface contract (F), the sequence player (G).
 
 A first vertical slice needs nothing that is not already done: convert one
 mission, draw the grid, and light up the reachable cells from
@@ -221,8 +221,14 @@ remake is demonstrably the same game.
    them is a compatibility promise that would constrain the remake's own state.
 2. **The logical grid's representation.** A `Resource` with typed arrays is
    inspector-friendly; a `PackedByteArray` mirroring the original's 23-byte cell
-   is closer to the spec and cheaper to validate against it. Decide when package
-   C settles what a cell has to carry.
+   is closer to the spec and cheaper to validate against it. Package C has now
+   settled what a cell has to carry at runtime: besides the authored `+0x0B`
+   action point and `+0x0D` field type, interaction mutates the **height**
+   `+0x01` (doors), the **field type** (doors), the **action point** itself
+   (every pickup, both levers, the entry point and a captured VictoryPoint), the
+   **unit link** `+0x07` (pushes and teleports) and the four **effect** bytes
+   `+0x0E`..`+0x11` (mines). Six of the twenty-three bytes are live state, not
+   map data — see [`26` §3.1](26-interaction.md).
 3. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
    with a camera height expressed in metres ([`10` §3](10-lev-mission-format.md),
    1600 units = 1 m). How closely to reproduce its framing — and whether to
@@ -235,6 +241,21 @@ remake is demonstrably the same game.
    built with a language component ([`24` §1](24-briefing-text.md)) and the GUI
    strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
    seam costs nothing now and cannot be retrofitted cheaply.
+
+**Decided, not open: the `technical` supply box keeps its bug, behind an
+option.** Action point 16 guards on Battle Fitness (`unit[+0x1A]`) and
+increments Technical Skills (`unit[+0x1D]`) — a copy-paste slip pinned byte by
+byte in [`26` §3.3](26-interaction.md). The remake **reproduces the original
+behaviour by default** and exposes the correction (`TS < 6`) as a setting,
+because the four campaign cells that carry the box were balanced against the
+shipped behaviour. Consequences worth writing down so they are not
+re-litigated: the guard reads a different stat from the one it increments, and
+the increment has **no upper bound** — a unit repeatedly using such a box while
+its Battle Fitness is below 6 can push Technical Skills past 6. Both are part
+of the default path, not defects to be tidied away. The same rule applies to
+any other original-behaviour bug package C or a later package turns up:
+reproduce, document, and offer the fix as a setting rather than silently
+diverging.
 
 **Decided, not open: no play-by-mail.** The original's `pbm session` mode is
 named in the binary ([`25` §2](25-turn-and-round.md)) and its passwords are in

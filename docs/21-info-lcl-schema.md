@@ -181,9 +181,15 @@ Shipped ids: 0, 1, 3..19. Id 2 is missing.
 
 The record carries no behaviour column: an item's effect is hard-coded against
 its **id**, which the engine reads as `unit[+0x21 + id]` in the carried-equipment
-bitmap ([`10` §5.4](10-lev-mission-format.md)). Ten ids have a decoded effect;
-the pairing is exact in every case, in that the shipped name and the coded effect
-agree.
+bitmap ([`10` §5.4](10-lev-mission-format.md)). Fifteen ids have a decoded
+effect; the pairing is exact in every case, in that the shipped name and the
+coded effect agree.
+
+Three of them — 17, 18 and 19 — carry **tech 99**, and no shipped `.lev`
+header sets a tech level above 12, so those three can never be bought: each
+exists only as a pickup off the map ([`26` §3.1](26-interaction.md)). Id 9,
+`Explosion Pack`, is both — tech 9, reachable on eleven maps, and also a
+pickup.
 
 | id | Name | Effect | Code |
 | --- | --- | --- | --- |
@@ -192,9 +198,14 @@ agree.
 | 3 | `Light Stimulant` | sets `unit[+0x58] = 1` | `0x00475320` |
 | 4 | `Heavy Stimulant` | sets `unit[+0x58] = 2` | `0x00475320` |
 | 5 | `Target System` | doubles the weapon's hit quote, capped at 100 | `0x004752E0` |
+| 6 | `Ammo Pack` | **doubles the magazine** — `aGetMaxAmmo` returns the weapon's `mun` column shifted left by one while it is carried | `0x004752A0` |
 | 7 | `Jet Pack` | **warping** — `0x00475380` returns a range of 5 while the unit has movement points left, which `0x00430EE0` turns into the `0x3C` overlay. `Info.lcl` annotates the line itself `* warp & scan`; 5 of the 1863 placed units carry it | `0x00475380`, [`10` §4.5](10-lev-mission-format.md) |
 | 8 | `Banner` | doubles the hit chance of **every friendly unit within `distance < 4`** | `0x0046FAD0` |
+| 9 | `Explosion Pack` | enables weapon `special` 2 on a neighbour (`0x0046F7E0`), and is what **demolishes an entry point**, action point 70 ([`26` §2](26-interaction.md)) | `0x0046F7E0`, `0x0047B410` |
 | 10–13 | the four armours | raise the cached front/rear armour `unit[+0x36]`/`+0x37` | `0x00475490`, `0x004754F0` |
+| 15 | `Small Medic Kit` | **heal power 1** — the heal command restores that many hit points, to the target in front or to the carrier, and the kit is **not consumed** | `0x004753C0`, `0x00470890` |
+| 16 | `Large Medic Kit` | the same, **heal power 3**; the larger kit wins when both are carried | `0x004753C0` |
+| 17 | `Hydraulic Crowbar` | **the key to jammed doors** — without it action point 33 is not offered at all ([`26` §2](26-interaction.md)) | `0x0047A5D2` |
 | 18 | `Damage Absorber` | four charges in `unit[+0x3A]`; each spent charge nullifies one hit entirely | `0x00475590`, `0x004755B0` |
 | 19 | `Cooler` | doubles the weapon's heat cap — which also widens the overheat roll | `0x00475340` |
 
