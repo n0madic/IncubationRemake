@@ -702,7 +702,7 @@ disproofs:
   There is no branch and no dispatch: the engine keeps two object lists and
   draws both every frame. `SORT_OBJECT` therefore cannot have selected a
   renderer mode. The plausible reading is that it decided which of the two
-  lists an object is checked into (`_E3D_object_3d_check_in`, ordinal 12), but
+  lists an object is checked into (`_E3D_object_3d_check_in`, ordinal 9), but
   nothing in the shipped data or binaries shows that — **UNVERIFIED**.
 
 #### What this does and does not move
@@ -1109,6 +1109,31 @@ at `+0x0c` when a `.3DW` clone is created.
 
 Decoding the rest of the record belongs to the `prototyp.bin` payload track.
 
+### 2.12 The runtime `object_3d` — 64 bytes
+
+`FUN_00404f80` is the world-object builder, and it fixes the layout of the
+record every `_E3D_object_3d_check_in` call takes. It indexes a list of at most
+150 entries (`cmp eax, 0x96`) with `shl esi, 6`, so the record is **64 bytes**:
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x08` | prototype index, from the name lookup `0x004038F0` | `mov [esi+0x08], eax` at `0x0040502A`; `E3D_object_3d_check_in` uses it as `[edx*4 + 0x4180CC]` |
+| `+0x0C` | cached collision radius | `E3D_get_prototype_collision_radius` (ordinal 85) at `0x0040502D` |
+| `+0x10`, `+0x14`, `+0x18` | position x, y, z (`i32`) | the three stores at `0x00404FFA`…`0x00405009`; read by the view-box cull |
+| `+0x1C` | zeroed at construction | `mov dword [esi+0x1c], 0` |
+| `+0x20`, `+0x22`, `+0x24` | three orientation words | the three `mov word` stores at `0x00405011`…`0x00405026` |
+
+The rest is Eng3d's. `aBlobs.cpp` embeds this record at `+0x04` of its own
+88-byte particle record and appends eight fields of its own after it — see
+[`28` §7.2](28-effects-and-sound.md), which is where the embedding is checked.
+
+**Ordinal note.** The exe resolves these by ordinal through `GetProcAddress`
+and names the ordinal in its own failure string, so the numbering is checkable
+without the export table: `"Function Id 9 not found!"` guards
+`_E3D_object_3d_check_in`, `63` `_E3D_draw_zoom_bob_alpha_plus`, `66`
+`_E3D_get_texture_index_of_texture_name` and `85`
+`_E3D_get_prototype_collision_radius`. `Eng3d.dll`'s export table agrees.
+
 ---
 
 ## 6. Section / keyword inventory
@@ -1291,7 +1316,7 @@ open.
     `0x00403312`/`0x00403318` and `0x0047F836`/`0x0047F83C` — no branch, no
     dispatch). The engine keeps two object lists and draws both every frame, so
     the remaining candidate is **which list an object is checked into**:
-    `_E3D_object_3d_check_in`, ordinal 12, thunk `0x00402070` →
+    `_E3D_object_3d_check_in`, ordinal 9, thunk `0x00402070` →
     implementation `0x00404BD0`. Whether that decision is driven by anything in
     the `prototyp.bin` record has not been traced. This one is answerable from
     the shipped binaries.

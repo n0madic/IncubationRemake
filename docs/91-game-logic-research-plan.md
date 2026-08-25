@@ -11,8 +11,8 @@ it. It is not a spec and states no findings of its own; everything here is
 either measured (the module map) or a question.
 
 **Scope.** Packages **A, C, B, D+E, F, G** below. Multiplayer and play-by-mail
-(**H**) are explicitly out of scope — see §9. **A, C and B are delivered**;
-D+E, F and G are not.
+(**H**) are explicitly out of scope — see §9. **A, C, B and D+E are
+delivered**; F and G are not.
 
 ---
 
@@ -33,8 +33,8 @@ site at all.
 
 | Module | First site | Span | Sites | State |
 |---|---|---|---|---|
-| `aBlobs.cpp` | `0x0041DE5B` | 53.7 KB | 263 | **dark** — package D |
-| `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | the door and set-piece sequences described — [`20` §7.3](20-lcl-language.md), [`26`](26-interaction.md); the rest **dark** — package D |
+| `aBlobs.cpp` | `0x0041DE5B` | 53.7 KB | 263 | the pool, the constructor, the update switch and every trigger described — [`28` §7, §8](28-effects-and-sound.md); the 74 update arms are named only by their kind ids |
+| `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | the door and set-piece sequences described — [`20` §7.3](20-lcl-language.md), [`26`](26-interaction.md); every sound and effect it fires — [`28` §2, §8](28-effects-and-sound.md); the frame stepping itself is not decoded |
 | `aMissionControl.cpp` | `0x00453F9A` | 37.1 KB | 138 | the campaign map, the roster screens and the location dispatch described — [`27`](27-campaign.md); the screen layouts are package F's |
 | `aTacTools.cpp` | `0x0046A463` | 25.8 KB | 183 | described — [`22`](22-combat-and-visibility.md), [`26`](26-interaction.md) |
 | `aMenuSystem.cpp` | `0x0044B238` | 22.1 KB | 100 | **dark** — package F |
@@ -54,13 +54,15 @@ site at all.
 | `aAISystem.cpp` | `0x00409984` | 6.7 KB | 21 | described — [`23`](23-ai-system.md) |
 | `aMissionEnd.cpp` | `0x0045D40A` | 6.4 KB | 27 | described — [`27` §6](27-campaign.md) |
 | `aLoad.cpp` | `0x00447BF2` | 6.3 KB | 44 | described — [`11`](11-save-game-format.md) |
-| `aDSound.cpp`, `aCDRom.cpp`, `aAmbience.cpp` | — | — | 20 | **dark** — package E |
+| `aDSound.cpp`, `aCDRom.cpp`, `aAmbience.cpp` | — | — | 20 | described — [`28` §1, §6](28-effects-and-sound.md); `aAmbience.cpp` turns out to be a stub |
 | `aPassWord.cpp` | `0x0046246C` | 3.9 KB | 9 | identified — the play-by-mail password screen, [`27` §7](27-campaign.md); **out of scope**, §9 |
 | `aPI.cpp` | `0x00463411` | 1.6 KB | 8 | identified — the **Place Interface**, the deploy screen ([`90` §2](90-binaries-and-source-layout.md)); its rules are package F's |
 | `aMultiPlayer.cpp`, `lNetwork.cpp`, `aDPlay.cpp`, `aMsgTools.cpp` | — | — | 34 | **out of scope** — §9 |
 
-`aBlobs.cpp` and `aAnimations.cpp` are the two largest modules in the game and
-neither is described by a single line anywhere in `docs/`.
+`aBlobs.cpp` and `aAnimations.cpp` are the two largest modules in the game.
+When this plan was written neither was described by a single line anywhere in
+`docs/`; [`28`](28-effects-and-sound.md) now covers what each of them *does*,
+though not every one of `aBlobs.cpp`'s 74 update arms.
 
 ---
 
@@ -258,7 +260,40 @@ having one.
 
 ---
 
-## 6. Packages D + E — effects and sound
+## 6. Packages D + E — effects and sound — **delivered**
+
+> **Delivered** as [`28-effects-and-sound.md`](28-effects-and-sound.md) with
+> `tools/blob_tables.py --check` (217 checks, 1 104 mutations, 0 missed, every
+> check name shown to fail).
+> All four questions are answered there. Question 3 was answered twice over:
+> the animation state machine is [`40` §7.2](40-charisma-model-animation.md)'s
+> and already existed, and its remaining half is a *negative* — the `.cha`
+> event notes drive neither blobs nor waves, because the one routine that
+> registers a note callback has a single caller in the whole image and it
+> registers the `BREAK` stop. Effects are placed by explicit code in
+> `aAnimations.cpp`, and a sound's lifetime is its blocking sequence's.
+> Question 2's "colours" turned out to be a category error: **there are no
+> colour parameters.** A class 2 or 3 blob is a quad textured from one 256×256
+> atlas called `anim`, an 8 × 8 grid of 32 × 32 sprites, and its whole
+> appearance is *(row, column, half-size)* — the palette is in the texture.
+> The structural key was that a blob **is** an Eng3d `object_3d` with eight
+> fields bolted on, which reattributed four "scratch" offsets to Eng3d and put
+> the 64-byte record where it belongs, in
+> [`30` §2.12](30-eng3d-ascii-formats.md). Every one of the 78 update kinds is
+> now named by the creators that pass it, classed, and its spawn graph decoded;
+> eleven are unreachable. What stayed open moved into `28`'s own Open questions
+> section: four Eng3d fields no reader in this binary touches, the per-tick
+> constants of the 74 arms (readable, not transcribed) and whether the eleven
+> unreachable kinds ever were. The package also corrected
+> [`40` §7.2](40-charisma-model-animation.md) — the animation selectors switch
+> on the unit's *type* and *weapon* bytes, not on a "state" and a "type" — and
+> [`30`](30-eng3d-ascii-formats.md), where `_E3D_object_3d_check_in` is
+> ordinal **9**, not 12. Three shipped defects it turned up are recorded rather
+> than smoothed over: `Info.lcl`'s weapon 35 has an unloadable wave name and no
+> `SetWeaponInfo` record at all, unit type 24's footsteps are scaled by a
+> weapon-band volume id, and the alien scream is scaled by the human ids. The
+> section below is kept as written so the plan can be read against what it
+> produced.
 
 **Why together.** They fire from the same places: an animation frame triggers
 both a blob and a wave.
@@ -395,11 +430,12 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 | 1 | ~~**A** turn and round~~ **delivered** | [`25`](25-turn-and-round.md), `turn_tables.py` | — | a playable battle; [`11`](11-save-game-format.md)'s ViewPlayer item partly closed |
 | 2 | ~~**C** interaction~~ **delivered** | [`26`](26-interaction.md), `interaction_tables.py` | A (action costs) | mission objectives that use doors, crates, levers |
 | 3 | ~~**B** campaign~~ **delivered** | [`27`](27-campaign.md), `campaign_tables.py` | A, C | mission 2 onward |
-| 4 | **D + E** effects and sound | `28`, `blob_tables.py` | — (independent) | the game's feel; can run in parallel throughout |
+| 4 | ~~**D + E** effects and sound~~ **delivered** | [`28`](28-effects-and-sound.md), `blob_tables.py` | — (independent) | the game's feel |
 | 5 | **F** interface contract | `29` | A, B | a UI that shows the right numbers |
 | 6 | **G** sequences | `41`, `seq_parse.py` | — (independent) | the story scenes |
 
-**A, C and B are the critical path, and all three are delivered.** D+E and G are independent and can be
+**A, C and B are the critical path, and all three are delivered**, as is the
+independent D+E. G is independent and can be
 picked up whenever someone wants a change of subject; F is best done after A and
 B, because most of its content is *their* content displayed.
 

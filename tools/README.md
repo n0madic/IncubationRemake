@@ -52,6 +52,9 @@ interaction_tables.py decode using the world: doors, boxes, levers, pushes,
                       teleporters, mines (docs/26)
 campaign_tables.py    decode the campaign: the unit pool, the location map and
                       its unlock graph, the economy, mission end (docs/27)
+blob_tables.py        decode effects and sound: the DirectSound buffers, the
+                      event -> wave table, the blob pool and its 78 update
+                      kinds, the sprite atlas, and weapon -> effect (docs/28)
 ```
 
 ## Corpus checks
@@ -82,6 +85,7 @@ python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
 python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
+python3 tools/blob_tables.py        --check gog_incubation          # 217 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -146,6 +150,12 @@ python3 tools/interaction_tables.py --json    gog_incubation
 # the campaign's unlock graph: which locations open once mission N is next
 python3 tools/campaign_tables.py --locations gog_incubation
 python3 tools/campaign_tables.py --json      gog_incubation
+
+# every sound the engine names, and the blob and weapon-effect tables
+python3 tools/blob_tables.py --waves gog_incubation
+python3 tools/blob_tables.py --blobs gog_incubation
+python3 tools/blob_tables.py --kinds gog_incubation
+python3 tools/blob_tables.py --json  gog_incubation
 ```
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;

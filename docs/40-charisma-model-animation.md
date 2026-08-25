@@ -1178,7 +1178,12 @@ unit class (`P0`…`P5`, `PC`, `PR`, `PS`).
 The names are not built at runtime — there is no `"%s_%c%d_%03d"` anywhere.
 `Incubation.exe` contains 92 complete animation names as string literals, and
 they are handed out by three sibling lookup functions, each a two-level `switch`
-on the unit's *state* byte (`unit[+0x4c]`) and *type* byte (`unit[+0x3f]`):
+on the unit's **type** byte (`unit[+0x4c]`) and its **weapon** byte
+(`unit[+0x3f]`) — the two fields [`21` §7](21-info-lcl-schema.md) names. Earlier
+editions of this document called them *state* and *type*: `0x0042da40` bounds
+`unit[+0x4c]` at `0x44`, the top unit-type id, and special-cases `0x17`, the
+hero's type, which only makes sense for the unit type; and `unit[+0x3f]` is the
+weapon id `aToggleWeaponModes` writes ([`25` §7](25-turn-and-round.md)).
 
 | Selector | Families it returns | Names | Reached from |
 |----------|---------------------|-------|--------------|

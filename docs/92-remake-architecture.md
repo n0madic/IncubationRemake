@@ -203,10 +203,13 @@ opponent, the turn and the round ([`25`](25-turn-and-round.md)), using the world
 — doors, supply boxes, levers, pushes, teleporters and mines
 ([`26`](26-interaction.md)) — the campaign around them: the roster that survives
 between missions, the location map and its unlock graph, the equipment-point
-economy and the mission-end score ([`27`](27-campaign.md)) — and every line of
+economy and the mission-end score ([`27`](27-campaign.md)) — the effects and
+sound around all of it: the event → wave table, the weapon fire sound, the
+footstep and voice tables and the blob pool with its weapon → effect switches
+([`28`](28-effects-and-sound.md)) — and every line of
 mission text.
 
-Blocked on [`91`](91-game-logic-research-plan.md): effects and sound (D+E), the
+Blocked on [`91`](91-game-logic-research-plan.md): the
 interface contract (F), the sequence player (G).
 
 A first vertical slice needs nothing that is not already done: convert one
@@ -241,7 +244,17 @@ remake is demonstrably the same game.
    but unlike that one the fix has no obviously right form (refuse the mission?
    force a dismissal? queue the survivor?), so it is listed as open rather than
    decided.
-4. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
+4. **Which of the original's audio defects to reproduce.**
+   [`28`](28-effects-and-sound.md) turned up three that are audible rather than
+   theoretical: weapon 35's fire sound never loads, because `Info.lcl` spells
+   the file `W_BAY0_0` with a zero and never creates the record it patches
+   (§3.1); unit type 24's footsteps are scaled by a weapon-band volume id and
+   so play at twice the volume of the identical type's (§5); and the alien
+   scream is scaled by the *human* volume ids, leaving three ids defined and
+   unused (§4.1). None changes the rules. Reproducing them is faithful;
+   fixing them is a one-line change each. The decision should be one decision,
+   not three.
+5. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
    with a camera height expressed in metres ([`10` §3](10-lev-mission-format.md),
    1600 units = 1 m). How closely to reproduce its framing — and whether to
    allow free rotation the original did not have — is a design question, not a
@@ -249,7 +262,7 @@ remake is demonstrably the same game.
    camera.** Its save format has no field for it and loading returns the view to
    its default ([`11` §5.6](11-save-game-format.md)), so keeping the camera
    across a save is a free improvement rather than a fidelity question.
-5. **Localisation.** Only `English` ships in the GOG release, but every path is
+6. **Localisation.** Only `English` ships in the GOG release, but every path is
    built with a language component ([`24` §1](24-briefing-text.md)) and the GUI
    strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
    seam costs nothing now and cannot be retrofitted cheaply.
