@@ -247,7 +247,7 @@ without limit. Id 14 does its two skills correctly, each guarded on itself.
 The behaviour is the one described here; the intent is plainly `TS < 6`. Four
 cells in the corpus carry id 16, and the remake's call is settled: reproduce
 the original by default, expose the correction as a setting
-([`92` §7](92-remake-architecture.md)).
+([`92` §7.1](92-remake-architecture.md), [`92` §7.8](92-remake-architecture.md)).
 
 ### 3.4 Doors — **[code] `0x00410A20`**
 
@@ -396,7 +396,7 @@ a full movement allowance and then charged like any other step. The two halves
 of the engine therefore disagree, and with no ladder cell in the corpus nothing
 can exercise either. This is a choice, not a finding — the remake takes the
 move map's rule, and the reasoning is recorded with the other product decisions
-in [`92` §7](92-remake-architecture.md).
+in [`92` §7.7](92-remake-architecture.md).
 
 ---
 
@@ -529,7 +529,7 @@ needs **two** movement points to try while spending one.
 3. The twenty-id class table (§3.1) — including the `technical` box's guard bug
    and `Batteries`' inertness. Both are **decided**: the remake reproduces them
    by default and offers the `technical` correction as a setting
-   ([`92` §7](92-remake-architecture.md)).
+   ([`92` §7.8](92-remake-architecture.md)).
 4. The random box: `aRandom(11, 3)`, resolved and written back before the
    effect runs (§3).
 5. The door toggle as a parity rule on the action point, with the one-tile
@@ -606,4 +606,4 @@ detected, and the union of the check names they tripped is all 109.
    ordinary 1 or 2 (§5.1). What was open is only which the designers intended,
    and with **0** ladder cells in all 155 missions no data can decide it. It is
    therefore a product call, and it has been made: the remake takes the move
-   map's rule — [`92` §7](92-remake-architecture.md).
+   map's rule — [`92` §7.7](92-remake-architecture.md).

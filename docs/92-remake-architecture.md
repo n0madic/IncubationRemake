@@ -2,8 +2,8 @@
 
 This repository is groundwork for a remake. This file records the decisions
 that have been taken about the remake itself, with the reasoning, so they are
-not re-argued from scratch; and the decisions that are still open, so they are
-not forgotten.
+not re-argued from scratch; and what is still open, so it is not forgotten.
+§7 is where the numbered specs point when a finding leaves a choice behind.
 
 It is a **living file**, and it is not a specification: nothing here describes
 the original game. Everything that does lives in the numbered specs, and this
@@ -128,9 +128,10 @@ project.**
 
 Two consequences:
 
-* The conversion step ships with the game. Whether that means requiring a system
-  Python 3 or shipping the converter frozen with PyInstaller or Nuitka is
-  **open — see §7.1**. Either way the source stays Python.
+* The conversion step ships with the game. How it is packaged — a system Python
+  3, or the converter frozen with PyInstaller or Nuitka — is release
+  engineering, deliberately not decided here (§9). Either way the source stays
+  Python.
 * Nothing in the shipped game reads an original format in the hot path. The
   converter runs once, writes a cache, and the game loads only its own data
   afterwards.
@@ -219,56 +220,173 @@ remake is demonstrably the same game.
 
 ---
 
-## 7. Open decisions
+## 7. Product decisions
 
-1. **Whether the remake reads original save games.** [`11`](11-save-game-format.md)
-   specifies the format from the writer and reader chains, but three of its four
-   open questions want one real save file. Reading them is achievable; writing
-   them is a compatibility promise that would constrain the remake's own state.
-2. **The logical grid's representation.** A `Resource` with typed arrays is
-   inspector-friendly; a `PackedByteArray` mirroring the original's 23-byte cell
-   is closer to the spec and cheaper to validate against it. Package C has now
-   settled what a cell has to carry at runtime: besides the authored `+0x0B`
-   action point and `+0x0D` field type, interaction mutates the **height**
-   `+0x01` (doors), the **field type** (doors), the **action point** itself
-   (every pickup, both levers, the entry point and a captured VictoryPoint), the
-   **unit link** `+0x07` (pushes and teleports) and the four **effect** bytes
-   `+0x0E`..`+0x11` (mines). Six of the twenty-three bytes are live state, not
-   map data — see [`26` §3.1](26-interaction.md).
-3. **What to do when a mission ends with the roster full.** The original drops
-   the surplus survivors silently: `aTransferUnitFromMapToPool` returns success
-   without adding the unit when all 30 slots are taken, and nothing tells the
-   player ([`27` §3.4](27-campaign.md)). Reproducing that faithfully is
-   defensible; so is warning before the last deployment. It is the same shape as
-   the `technical` box decision below — original behaviour, an option to fix it —
-   but unlike that one the fix has no obviously right form (refuse the mission?
-   force a dismissal? queue the survivor?), so it is listed as open rather than
-   decided.
-4. **Which of the original's audio defects to reproduce.**
-   [`28`](28-effects-and-sound.md) turned up three that are audible rather than
-   theoretical: weapon 35's fire sound never loads, because `Info.lcl` spells
-   the file `W_BAY0_0` with a zero and never creates the record it patches
-   (§3.1); unit type 24's footsteps are scaled by a weapon-band volume id and
-   so play at twice the volume of the identical type's (§5); and the alien
-   scream is scaled by the *human* volume ids, leaving three ids defined and
-   unused (§4.1). None changes the rules. Reproducing them is faithful;
-   fixing them is a one-line change each. The decision should be one decision,
-   not three.
-5. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
-   with a camera height expressed in metres ([`10` §3](10-lev-mission-format.md),
-   1600 units = 1 m). How closely to reproduce its framing — and whether to
-   allow free rotation the original did not have — is a design question, not a
-   research one. One constraint is settled: **the original does not persist the
-   camera.** Its save format has no field for it and loading returns the view to
-   its default ([`11` §5.6](11-save-game-format.md)), so keeping the camera
-   across a save is a free improvement rather than a fidelity question.
-6. **Localisation.** Only `English` ships in the GOG release, but every path is
-   built with a language component ([`24` §1](24-briefing-text.md)) and the GUI
-   strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
-   seam costs nothing now and cannot be retrofitted cheaply.
+These are the choices no evidence can settle: the specs say what the original
+does, and something still has to decide what the remake does about it. They are
+recorded here once, with the reasoning, so they are not re-argued — and because
+several of the numbered specs already point at this section for them.
 
-**Decided, not open: a ladder step follows the move map's rule.** Field type 8,
-`Ladder`, has **0 cells** in the shipped campaign, and the two halves of the
+### 7.1 Faithful by default, corrections as settings — with one exception
+
+The recurring shape is a defect in the original that a remake could quietly fix.
+The rule:
+
+**Reproduce a defect that is part of the output. Never reproduce a defect that
+makes a control inert.** A quirk the player perceives is the game; a slider that
+does nothing is a bug in the remake's own interface, whatever the original did.
+
+Under the first half, reproduced by default with the correction offered as a
+setting:
+
+* the `technical` supply box's guard, which lets an id-16 box be opened by the
+  wrong `TS` — §7.8 has the detail;
+* weapon 35's fire sound, which never loads because `Info.lcl` spells the file
+  `W_BAY0_0` with a zero and never creates the record it patches
+  ([`28` §3.1](28-effects-and-sound.md));
+* unit type 24's footsteps, scaled by a weapon-band volume id and so twice the
+  volume of the identical type's ([`28` §5](28-effects-and-sound.md)).
+
+Under the second half, fixed unconditionally and with no setting:
+
+* the alien scream, scaled by the **human** volume ids
+  ([`28` §4.1](28-effects-and-sound.md)). The defect leaves ids 53–55 defined
+  and dead, so an "alien voices" control in the remake's audio options would do
+  nothing. That is the inert-control case, not a period detail.
+
+One setting covers the whole first list — `Faithful`, on by default — not one
+per defect.
+
+### 7.2 The grid — the authored map and the live state are two structures
+
+The question was posed as a choice of container: a `Resource` with typed arrays
+against a `PackedByteArray` mirroring the original's 23-byte cell. The right cut
+is not by container but by lifetime, because package C established that **six of
+the twenty-three bytes are live state and seventeen are map data**
+([`26` §3.1](26-interaction.md)).
+
+So: two objects, and **struct of arrays, not array of structs**.
+
+* `MapResource` — what the converter writes once and nothing ever mutates: the
+  authored grid, its heights, field types, action points and object arrays.
+* `MapState` — only the six fields interaction writes, each a `Packed*Array` of
+  `width × height`, initialised from the resource: height `+0x01` and field type
+  `+0x0D` (doors), the action point `+0x0B` (every pickup, both levers, the
+  entry point, a captured VictoryPoint), the unit link `+0x07` (pushes and
+  teleports) and the four effect bytes `+0x0E`…`+0x11` (mines).
+
+What this buys that neither original option did: a save is the delta, not a copy
+of the map — the reason the original's `.sav` has to embed a whole `.lev`
+([`11`](11-save-game-format.md)) is precisely that it lacks this split;
+fidelity diffing against the Python reference runs array against array, each one
+mapping 1:1 onto a documented byte offset; and the move map's flood fill over
+up to 1600 cells reads contiguous packed arrays instead of dereferencing a cell
+object per step, which is the one hot path [`23`](23-ai-system.md) has.
+
+This is the only decision here that has to be taken before code, because it is
+the shape everything in `core/` operates on.
+
+### 7.3 Saves — the remake's format is its own
+
+**Decided now, at no cost: the remake's save format is designed around the
+remake's state and is never a superset of the original's.** Writing `.sav` would
+be a compatibility promise that permanently pins the state model to another
+game's — a fixed slot 32, no field for the camera, a whole `.lev` embedded in
+every file ([`11`](11-save-game-format.md)).
+
+**Reading** original saves is a one-way import that constrains nothing, so it is
+deferred rather than rejected: worth doing after 1.0, and worth remembering that
+it is the one feature whose implementation would also close three of
+[`11`](11-save-game-format.md)'s four open questions, since all three want real
+save files. As a feature it ranks low — someone installing a remake is likely to
+start the campaign again.
+
+### 7.4 A full roster loses the surplus, but never silently
+
+The original drops survivors that do not fit: `aTransferUnitFromMapToPool`
+returns success without adding the unit when all 30 slots are taken, and nothing
+tells the player ([`27` §3.4](27-campaign.md)).
+
+Every mechanical fix that was considered — refuse the mission, force a
+dismissal, queue the survivor — changes campaign pacing and the equipment-point
+economy. So **the rule stays exactly as the original has it**, and what gets
+fixed is the silence, which is not a rule at all:
+
+* the mission-end screen lists the survivors who could not be taken;
+* deploying with 30 of 30 slots filled, into a mission that can yield recruits,
+  warns first.
+
+Both are interface additions. Fidelity is untouched in either direction, which
+is why this needs no setting and why it was not really the open question it
+looked like.
+
+### 7.5 Camera — the original framing, four ninety-degree steps
+
+There is measured evidence rather than taste here. [`10`
+§6](10-lev-mission-format.md) now records it: **all 194 105 3D-object records
+in the shipped missions carry yaw only, and 99.5 % of those yaws are exact
+quarter turns** — 100 % of the land lattice, 91.6 % of the special objects,
+94.8 % of the scene clones. The world is authored on a four-fold symmetry.
+
+So: **four fixed orientations, rotated in 90° steps.** Free rotation would show
+faces at angles no one composed; quarter turns cannot. Zoom is free within the
+height range the mission header gives ([`10` §3](10-lev-mission-format.md), 1600
+units = 1 m), pitch is fixed, and the camera persists across a save — the
+original had no field for it and reset the view on load
+([`11` §5.6](11-save-game-format.md)), so keeping it is a free improvement
+rather than an infidelity.
+
+### 7.6 Localisation — the seam stays, and Russian is planned
+
+Only `English` ships in the GOG release, but **a licensed Russian release is
+intended as a second data set**, so the language seam is not hypothetical: it
+has a known first user.
+
+The decision: the converter takes a language and writes a per-language cache,
+and **no user-facing string is a literal in GDScript** — every one comes from
+the resource built out of `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)) and
+`DATA/TXT` ([`24` §1](24-briefing-text.md)). That costs nothing today, because
+every path in the original already carries a language component. Retrofitting
+it means finding every string in the codebase, which is the expensive kind of
+change.
+
+Three consequences that are cheap now and awkward later:
+
+* **The code page is per language, never hardcoded.** A font is 224 elements
+  indexed `codepoint - 32`, one per code point 32…255
+  ([`60` §5](60-lib-sprites.md)). The *format* does not change for Russian —
+  only which characters the upper half holds. So the converter carries a code
+  page per language (cp1252 for English, cp1251 for Russian) and decodes to
+  UTF-8 **at conversion time**, so nothing downstream ever sees a byte whose
+  meaning depends on a locale.
+* **Fonts and sprites are per-language assets, not shared ones.** The glyphs
+  themselves live in `Libs/font_*.LIB`, so a localised release ships different
+  font libraries — and possibly different UI libraries wherever a button
+  carries baked-in text. The converter's cache is keyed by language for those
+  too, not only for text.
+* **The Japanese path stays unimplemented.** The measure and print passes
+  branch on the language name and read big-endian two-byte characters when it
+  is `Japanese` ([`24` §4.4](24-briefing-text.md)). Russian is single-byte, so
+  nothing here needs that branch; it is recorded, not built.
+
+One thing to establish before a second release is treated as evidence rather
+than as content: **whether its `Incubation.exe` is the build these specs are
+pinned to.** Every address in `combat_tables.py`, `ai_tables.py`,
+`turn_tables.py`, `interaction_tables.py`, `campaign_tables.py`,
+`blob_tables.py`, `sav_tables.py` and `trace_names.py` is a virtual address in
+the GOG executable. If the localised disc carries the same binary, all of it
+transfers and only the data differs; if it carries a different build, that is a
+second binary and a separate piece of work — valuable, because a finding
+confirmed across two builds is stronger than one, but not free. The corpus
+checks have the mirror-image problem: they pin census numbers that are facts
+about *this* release (155 `.lev`, 723 textures, 99 waves, 224 glyphs per font),
+not about the format, so pointing them at a second release means separating the
+structural invariants from the census first.
+
+### 7.7 A ladder step follows the move map's rule
+
+Field type 8, `Ladder`, has **0 cells** in the shipped campaign, and the two
+halves of the
 engine disagree about what such a step costs: `aBuildMoveMap` charges the
 unit's whole movement allowance, while `aExecuteMove` charges the ordinary
 `delay + 1` / `delay + 2` ([`26` §5.1](26-interaction.md),
@@ -279,9 +397,10 @@ player sees: the map decides which cells light up, so charging anything else
 would make the highlighted range a lie. Consequence worth writing down: a unit
 may climb a ladder only from a full allowance and arrives with nothing left.
 
-**Decided, not open: the `technical` supply box keeps its bug, behind an
-option.** Action point 16 guards on Battle Fitness (`unit[+0x1A]`) and
-increments Technical Skills (`unit[+0x1D]`) — a copy-paste slip pinned byte by
+### 7.8 The `technical` box keeps its bug, behind an option
+
+Action point 16 guards on Battle Fitness (`unit[+0x1A]`) and increments
+Technical Skills (`unit[+0x1D]`) — a copy-paste slip pinned byte by
 byte in [`26` §3.3](26-interaction.md). The remake **reproduces the original
 behaviour by default** and exposes the correction (`TS < 6`) as a setting,
 because the four campaign cells that carry the box were balanced against the
@@ -289,13 +408,12 @@ shipped behaviour. Consequences worth writing down so they are not
 re-litigated: the guard reads a different stat from the one it increments, and
 the increment has **no upper bound** — a unit repeatedly using such a box while
 its Battle Fitness is below 6 can push Technical Skills past 6. Both are part
-of the default path, not defects to be tidied away. The same rule applies to
-any other original-behaviour bug package C or a later package turns up:
-reproduce, document, and offer the fix as a setting rather than silently
-diverging.
+of the default path, not defects to be tidied away. This is the case §7.1
+generalises.
 
-**Decided, not open: no play-by-mail.** The original's `pbm session` mode is
-named in the binary ([`25` §2](25-turn-and-round.md)) and its passwords are in
+### 7.9 No play-by-mail
+
+The original's `pbm session` mode is named in the binary ([`25` §2](25-turn-and-round.md)) and its passwords are in
 the save format ([`11` §5.3](11-save-game-format.md)), but it was barely a
 feature in 1997 and the remake will not have one. Consequences worth writing
 down so they are not re-litigated: the `pbm session` arm of the turn's skip rule
@@ -317,3 +435,28 @@ These follow from the repository's own rules and apply to the remake as well:
   the remake's.
 * **No original format is parsed in the hot path.** The converter is the only
   thing that reads them, and it runs once per installation.
+
+
+---
+
+---
+
+## 9. What is still open
+
+**Nothing at the architecture level.** Every decision the earlier drafts left
+open is settled in §7, and the questions that remain are research, not choices:
+
+* the interface contract (package F) and the sequence player (package G) in
+  [`91`](91-game-logic-research-plan.md), which is what §6 lists as blocking;
+* the numbered specs' own **Open questions** sections. Of the items still open
+  there, the ones a remake would actually notice are the sprite libraries'
+  transparent index and out-of-sprite anchors ([`60`](60-lib-sprites.md)),
+  whether the engine applies the root `SkeletonNode`'s own matrix
+  ([`40`](40-charisma-model-animation.md)), what the dialogue numbers select
+  ([`27`](27-campaign.md)), and the fourth `SetCtrlMapInfo` column
+  ([`26`](26-interaction.md)). The rest are names for behaviour that is already
+  fully specified, or fields a converter carries through unchanged.
+
+Release engineering — how the converter is packaged and invoked on the player's
+machine — is deliberately not tracked here. It is a detail of shipping, not of
+architecture, and settling it early would buy nothing.

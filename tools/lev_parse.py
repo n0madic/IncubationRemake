@@ -281,6 +281,14 @@ def check(bm: BattleMap) -> list[str]:
         if obj.kind != ord("E"):
             problems.append(f"special {obj.slot} kind {obj.kind}")
             break
+    # Object rotation is yaw only: the first two components are zero in every
+    # shipped record, which is what makes +0x24 the heading (docs/10 6.0, 9.6).
+    for name, array in (("land", bm.land), ("special", bm.special),
+                        ("clone", bm.scene_objects)):
+        stray = next((o for o in array if o.rotation[0] or o.rotation[1]), None)
+        if stray is not None:
+            problems.append(f"{name} {stray.slot} rotation not yaw-only "
+                            f"{stray.rotation}")
     for u in bm.units:
         if u.hit_points == 0:
             continue

@@ -30,8 +30,9 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 Plan for the runtime work that remains — the turn, interaction, the campaign,
 effects and sound, the interface contract and the sequence player:
 [`91-game-logic-research-plan.md`](91-game-logic-research-plan.md).
-Decisions taken about the remake itself — engine, language, asset pipeline and
-what stays open: [`92-remake-architecture.md`](92-remake-architecture.md).
+Decisions taken about the remake itself — engine, language, asset pipeline, and
+the product decisions the specs leave behind:
+[`92-remake-architecture.md`](92-remake-architecture.md).
 
 ---
 
@@ -251,7 +252,7 @@ still open:**
 | [23](23-ai-system.md) | 0 | all five closed; `+0x10` is fire / a mine / a shield, named by the models their makers insert; the cover score's out-of-bounds read is heap history and cancels in the maximiser; `aInitAISystem` does not exist; the planner and the fire routine share one twelve-value selector; and the loop's counters are a local and a parameter, which no mechanism in these binaries could have preserved |
 | [24](24-briefing-text.md) | 0 | nothing open; three mechanisms are implemented and unexercised (`{#2}`, the `#` indent, the Japanese two-byte path) and two things are dead (the `{:OC}` read, and `Errors.txt`/`Campaign.txt`, which no code can name) |
 | [25](25-turn-and-round.md) | 3 | the `pbm session` mode that no literal selects (deliberately not traced — the remake has no play-by-mail), one multiplayer session flag, and one interface routine that belongs to package F |
-| [26](26-interaction.md) | 4 | the dead fourth `SetCtrlMapInfo` column, `_C_156`'s keyless teleporter exit, the `technical` box's guard bug, and what `Batteries` was going to do. The ladder rule is now a **decision**, not a question ([`92` §7](92-remake-architecture.md)) |
+| [26](26-interaction.md) | 4 | the dead fourth `SetCtrlMapInfo` column, `_C_156`'s keyless teleporter exit, the `technical` box's guard bug, and what `Batteries` was going to do. The ladder rule is now a **decision**, not a question ([`92` §7.7](92-remake-architecture.md)) |
 | [27](27-campaign.md) | 4 | which `Video/` directory each dialogue number selects (package G's), why upgrade locations 3 and 6 load each other's map, the fourteen named locations with no cell, and one undecoded dialogue-screen flag. All 30 `setMissionResult` sites are now enumerated and classified, which is **closed** |
 | [28](28-effects-and-sound.md) | 2 | the per-tick constants of the 74 update arms, which are readable but not transcribed, and whether the eleven unreachable kinds were ever reachable. What the kinds *are* is now **closed** — every one is named by its creators, classed, and its spawn list decoded; so are the sprite atlas (there are no colour parameters: the palette is baked into one 8×8 texture), the sound gating (a sound's lifetime is its blocking sequence's), the `explosion.wav` / `explosion2.wav` split (an overheat catastrophe against ordnance impact) and the four `object_3d` fields two arms write — they are the **joint angles** of the model's sub-objects, read by seven Eng3d render opcodes and by nothing in the exe |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected, the one item here with an untraced lead, and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file |

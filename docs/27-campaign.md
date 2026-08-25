@@ -751,10 +751,10 @@ one is `DATA/TXT/English/GUI/Campaign.lcl`, text bank 1.
    emits all three; a converter can bake them out rather than re-deriving them.
 3. **The roster rules**: seed a new campaign with Bratt/West/Maxon exactly as
    §3.1 gives them; hire for 60 points; sort by EP descending; carry over only
-   units with `+0x4D != 0`, and drop silently when the 30 slots are full — or
-   decide, deliberately, to warn instead. That choice is now
-   [`92` §7](92-remake-architecture.md)'s third open decision; it is not a
-   thing to fix quietly.
+   units with `+0x4D != 0`, and drop when the 30 slots are full. That choice is
+   **decided** in [`92` §7.4](92-remake-architecture.md): the rule stays, but
+   the silence does not — the mission-end screen names the survivors that were
+   lost, and deploying with a full roster warns first.
 4. **The two banks**: copy row 0 → row 1 on entry and row 1 → row 0 on exit, or
    model the same thing with an explicit snapshot.
 5. **Mission end**: the result-to-score table of §6.2, the difficulty

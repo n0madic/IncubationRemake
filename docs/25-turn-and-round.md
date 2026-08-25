@@ -688,7 +688,7 @@ it covers.
    that could select it push a register. Whether a menu path reaches it, or
    whether it survives only in the save loader, would need the register traced
    back. **Deliberately not traced:** the remake does not implement
-   play-by-mail ([`92` §7](92-remake-architecture.md)) and package H is out of
+   play-by-mail ([`92` §7.9](92-remake-architecture.md)) and package H is out of
    scope ([`91` §9](91-game-logic-research-plan.md)), so this stays a recorded
    fact about the binary rather than work to do. Nothing else in this document
    depends on it: mode 4 changes only the skip rule's gate (§3.1) and the

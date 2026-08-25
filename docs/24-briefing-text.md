@@ -42,7 +42,9 @@ the constants in `Incubation.exe`.
 
 Both path templates are built with `wsprintfA` — **[code]** `0x004C4000`
 `"%sTXT\%s\Briefing\%s.txt"` and `0x004C4688` `"%s%s\Info\%s.txt"` — with the
-language name coming from `aGetLanguage` (`0x00453DF0`). Only `English` ships.
+language name coming from `aGetLanguage` (`0x00453DF0`). Only `English` ships
+in the GOG release; localised releases exist and put their files under the same
+template.
 The mission name is the `.lev`/`.lcl` stem, so `Missions/_C_105.lev`,
 `Missions/_C_105.lcl` and `DATA/TXT/English/Briefing/_C_105.txt` are one
 mission's three files.

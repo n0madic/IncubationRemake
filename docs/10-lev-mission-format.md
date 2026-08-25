@@ -1085,8 +1085,21 @@ special objects (`+0x40`, `+0x41`), 70 for the land lattice
 
 Rotation values accumulate rather than wrapping — the corpus contains 0, 1024,
 … 16384, 25600 and negative values such as `0xFC00` (−1024). Read them modulo
-4096. The clean multiples of 1024 (90° steps) dominate; a minority of records
-carry finer values (100, 200, 300, …).
+4096.
+
+Two facts about the shipped values, measured over all three arrays of the 153
+missions in `Missions/` — 194 105 object records in total:
+
+* **Rotation is yaw only.** The first two components are zero in every single
+  record, which is what makes `+0x24` the heading (§9 item 6). `lev_parse.py
+  --check` enforces this as an invariant, 155/155.
+* **The world is built on quarter turns.** 193 076 of the 194 105 records
+  (99.5 %) have a yaw that is a multiple of 1024 modulo 4096: **181 337 of
+  181 337** land-lattice records, **10 289 of 11 238** special objects and
+  **1 450 of 1 530** scene clones. The finer values (100, 200, 300, …) are a
+  minority confined to the two hand-placed arrays. A remake can rely on the
+  four-fold symmetry this implies — see
+  [`92` §7.5](92-remake-architecture.md).
 
 The three rotation slots are filled in file order by the `.3DW` scene loader:
 `fcn.00407640` parses a `[CLO]` block's `ROTATION a b c` triple and calls

@@ -317,6 +317,8 @@ shares the **human** cursor.
 which `Info.lcl` labels `S_ALI_0/1/2` — are used only by the fall sequence
 (`aPlayJumpAnimaion`); the combat path passes 56, 57, 58 for both species. Ids
 **53, 54 and 55 are defined by `Info.lcl` and named by no call site at all.**
+This is the one audio defect the remake fixes unconditionally rather than
+reproduces — see [`92` §7.1](92-remake-architecture.md) for why.
 
 ### 4.2 Speech
 
@@ -876,9 +878,12 @@ frame, not by markers in the animation data.
     first.
 11. Nothing for ambience.
 
-Two of the defects above are worth reproducing deliberately or not at all, and
-a remake should decide rather than inherit them by accident: weapon 35's
-unloadable fire sound (§3.1) and unit type 24's doubled footsteps (§5).
+The three audible defects above are **decided**, not left to be inherited by
+accident ([`92` §7.1](92-remake-architecture.md)): weapon 35's unloadable fire
+sound (§3.1) and unit type 24's doubled footsteps (§5) are reproduced by
+default, behind one `Faithful` setting; the alien scream's human volume ids
+(§4.1) are **fixed unconditionally**, because that defect leaves ids 53–55 dead
+and would make an "alien voices" control do nothing.
 
 ---
 
