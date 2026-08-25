@@ -67,6 +67,24 @@ loader: `aCtrlMap.cpp` and `aUnitMap.cpp` own the two big `.lev` arrays,
 `aLCL.cpp`/`aLCL_Com.cpp` own the script language, `aLibTools.cpp` owns `.LIB`,
 `a3DObjects.cpp` owns the scenery blocks.
 
+Three modules that carry no format have been identified by what calls them, and
+are recorded here so the next reader does not have to:
+
+* **`aPI.cpp` is the Place Interface** — the deploy screen. It is the only
+  caller of `aTransferUnitFromPoolToMap` (`0x00478D10`) and one of two callers
+  of `aTransferUnitFromMapToPool`, so it is where a roster slot becomes a unit
+  on the battle map ([`27` §3.4](27-campaign.md)). At 1.6 KB and eight `CHECK`
+  sites it is the smallest of the interface modules, which is why
+  [`91` §7](91-game-logic-research-plan.md) lists identifying it as its own
+  item.
+* **`aPassWord.cpp` is the play-by-mail password screen**, not mission
+  passwords: its comparison reads `GameControl + 0x16B + player*25`, the four
+  25-byte slots [`11` §5.3](11-save-game-format.md) documents, sentinel
+  `INVALID_PASSWORD` included ([`27` §7](27-campaign.md)).
+* **`aDataBase.cpp`** is 0.7 KB with one `CHECK` site, and that site names
+  `aCreateMainDDObject` — DirectDraw setup. It has nothing to do with game
+  data.
+
 **`aLibTools.cpp` is LibMaker — an authoring tool, not a loader.** The module's
 own `CHECK` sites push `LibMaker`, `aLoadBitmap`, `aLoadBitmapInfos`,
 `aCreateWinFont`, `aPrintWinText`, `aCreateBitmap`, `FrameRect`, `GetWindowDC`

@@ -236,7 +236,7 @@ referenced. The ones whose meaning is established:
 | `+0x011B` | `char[4][20]` | **player names** | `0x0043B600` |
 | `+0x016B` | `char[4][25]` | **player passwords** — see §5.3 | `0x0043B660` |
 | `+0x01D0` | `u8` | **game mode**: 1 `campaign`, 2 `net session`, 3 `local session`, 4 `pbm session`; anything else raises `"no gametype selected"` ([`25` §2](25-turn-and-round.md)) | `0x0043B740` |
-| `+0x01D1` | `u8` | UNVERIFIED | `0x0043B760` |
+| `+0x01D1` | `u8` | **Campaign number** — `1` selects `Missions/_C_XXX.lev` as the campaign map, `2` selects `_C_YYY.lev` ([`27` §2.1](27-campaign.md)) | `0x0043B760` |
 | `+0x01D2` | `u8` | **version stamp** — see §5.4 | `0x0043BEF0` |
 | `+0x01D4` | `u32[4]` | **equipment points** per player; the add clamps at 10000 | `0x0043B010` |
 | `+0x01E4` | `u8[4]` | **commendations** per player ([`20` §7](20-lcl-language.md) slot 11) | `0x0043B0F0` |
@@ -335,9 +335,21 @@ live and the last 4 are padding.
 
 | result | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
-| base score | −100 | 0 | +100 | +200 | +300 |
+| base score | 0 | +100 | +200 | +300 | −100 |
 
-anything else raises `"unknown missionresult"`. The final score is
+anything else raises `"unknown missionresult"`.
+
+> **Corrected.** An earlier revision of this table read the five `mov ebx, imm32`
+> arms in *address* order and so had them rotated by one. The compiler's jump
+> table at `0x0043BBB8` gives the order above, and it is the one that matches
+> how the results are *written* ([`27` §6.2](27-campaign.md)): `0x0043B990`
+> resets `+0x20` to **1**, so 1 is "nothing happened" and scores nothing;
+> `0x0047D8D1` stamps **5** on every human player as soon as *any* of LCL slots
+> 0–4 is set, and `0x0047D924` then puts 2/3/4 back for each player whose own
+> slot carries 1/2/3 — so a win passes through 5 and is overwritten, while slot
+> 4 (the computer's) set alone leaves the 5 standing, which is the defeat. The
+> −100 the real save below shows is a defeat, which fits either reading of that
+> one row; the jump table and the writers together settle the rest. The final score is
 `record[+0x00] * difficultyMul − 2 * record[+0x08] + base`, where
 `difficultyMul` is 1, 2 or 3 from the difficulty setting (`docs/20` §7.6) and
 applies only in game mode 1.
@@ -490,6 +502,13 @@ That sharpens the flat-write bug above: the row that loses its last slot to the
 5460-byte write is row 1, the one a campaign mission actually runs on. One
 campaign's saves cannot say whether multiplayer uses the rows differently, so
 this is recorded as observed and not extrapolated.
+
+**The code says the same thing.** `aCopyUnitPool` (`0x00478910`) copies one
+whole usable row — 2730 bytes — and has exactly two call sites: `0x0045A914`
+calls `aCopyUnitPool(0, 1)` when a mission starts and `0x0045E9D9` calls
+`aCopyUnitPool(1, 0)` when the debriefing screen is left. Row 0 is the bank,
+row 1 is the mission's working copy, so the inference above is confirmed from
+the binary — see [`27` §3.5](27-campaign.md).
 
 A remake should size this block from the two constants that agree — 5460 — and
 treat the ragged tail as the original's behaviour, not as something to fix in
@@ -683,10 +702,11 @@ committed and records what each one pins, with digests.
    with index 255 overridden at run time. The block is presentation state from
    end to end and a remake reuses none of it.
 
-2. **Five GameControl offsets** (§5.2, down from ten — [`25`](25-turn-and-round.md)
+2. **Five GameControl offsets** (§5.2, down from eleven — [`25`](25-turn-and-round.md)
    closed the turn counter, the player kinds, the player names, the equipment
    points, the commendations, the solo flag and the LCL slot array, and a real
-   save identified `+0x0000` as the mission name) and **three ProgramState
+   save identified `+0x0000` as the mission name, and [`27` §1](27-campaign.md)
+   identified `+0x01D1` as the campaign number) and **three ProgramState
    dwords** (§5.8) and **seven MissionObjectives offsets** (§5.10). All are read
    and written only within their own module and never compared against a
    literal, so nothing in the binary distinguishes them. Sample saves now give

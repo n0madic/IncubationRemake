@@ -223,6 +223,8 @@ int handOver(int arg)                              /* 0x0047D600 */
             aRunLCL(_C, g_currentPlayer);
             if (!runProgram()) return 0;
             if (missionEnded()) return 0;          /* LCL slots 0..4, docs/20 */
+                                                   /* inlined at 0x0047D88B;
+                                                      decoded in 27 §6.3      */
         }
         if (!advancePlayer()) { allPlayersOut(); return 0; }
     } else {

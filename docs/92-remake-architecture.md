@@ -201,10 +201,13 @@ scenery geometry and textures, models and animations, fonts and sprites, the
 balance tables, combat resolution, line of sight and fog of war, the computer
 opponent, the turn and the round ([`25`](25-turn-and-round.md)), using the world
 — doors, supply boxes, levers, pushes, teleporters and mines
-([`26`](26-interaction.md)) — and every line of mission text.
+([`26`](26-interaction.md)) — the campaign around them: the roster that survives
+between missions, the location map and its unlock graph, the equipment-point
+economy and the mission-end score ([`27`](27-campaign.md)) — and every line of
+mission text.
 
-Blocked on [`91`](91-game-logic-research-plan.md): the campaign layer (B),
-effects and sound (D+E), the interface contract (F), the sequence player (G).
+Blocked on [`91`](91-game-logic-research-plan.md): effects and sound (D+E), the
+interface contract (F), the sequence player (G).
 
 A first vertical slice needs nothing that is not already done: convert one
 mission, draw the grid, and light up the reachable cells from
@@ -229,7 +232,16 @@ remake is demonstrably the same game.
    **unit link** `+0x07` (pushes and teleports) and the four **effect** bytes
    `+0x0E`..`+0x11` (mines). Six of the twenty-three bytes are live state, not
    map data — see [`26` §3.1](26-interaction.md).
-3. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
+3. **What to do when a mission ends with the roster full.** The original drops
+   the surplus survivors silently: `aTransferUnitFromMapToPool` returns success
+   without adding the unit when all 30 slots are taken, and nothing tells the
+   player ([`27` §3.4](27-campaign.md)). Reproducing that faithfully is
+   defensible; so is warning before the last deployment. It is the same shape as
+   the `technical` box decision below — original behaviour, an option to fix it —
+   but unlike that one the fix has no obviously right form (refuse the mission?
+   force a dismissal? queue the survivor?), so it is listed as open rather than
+   decided.
+4. **Camera and projection.** The original is a Glide-era 3D scene at 640×480
    with a camera height expressed in metres ([`10` §3](10-lev-mission-format.md),
    1600 units = 1 m). How closely to reproduce its framing — and whether to
    allow free rotation the original did not have — is a design question, not a
@@ -237,7 +249,7 @@ remake is demonstrably the same game.
    camera.** Its save format has no field for it and loading returns the view to
    its default ([`11` §5.6](11-save-game-format.md)), so keeping the camera
    across a save is a free improvement rather than a fidelity question.
-4. **Localisation.** Only `English` ships in the GOG release, but every path is
+5. **Localisation.** Only `English` ships in the GOG release, but every path is
    built with a language component ([`24` §1](24-briefing-text.md)) and the GUI
    strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
    seam costs nothing now and cannot be retrofitted cheaply.

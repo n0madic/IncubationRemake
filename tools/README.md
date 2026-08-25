@@ -50,6 +50,8 @@ brief_parse.py        parse the briefing/info text markup and lay it out (docs/2
 turn_tables.py        decode the turn: rotation, hand-over, refresh, overwatch (docs/25)
 interaction_tables.py decode using the world: doors, boxes, levers, pushes,
                       teleporters, mines (docs/26)
+campaign_tables.py    decode the campaign: the unit pool, the location map and
+                      its unlock graph, the economy, mission end (docs/27)
 ```
 
 ## Corpus checks
@@ -79,6 +81,7 @@ python3 tools/ai_tables.py       --check gog_incubation             # 77 checks
 python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
 python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
+python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -139,6 +142,10 @@ python3 tools/turn_tables.py --json     gog_incubation
 # the twenty interaction classes, their effects and their corpus counts
 python3 tools/interaction_tables.py --classes gog_incubation
 python3 tools/interaction_tables.py --json    gog_incubation
+
+# the campaign's unlock graph: which locations open once mission N is next
+python3 tools/campaign_tables.py --locations gog_incubation
+python3 tools/campaign_tables.py --json      gog_incubation
 ```
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;

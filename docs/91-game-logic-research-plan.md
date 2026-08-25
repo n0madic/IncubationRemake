@@ -11,7 +11,8 @@ it. It is not a spec and states no findings of its own; everything here is
 either measured (the module map) or a question.
 
 **Scope.** Packages **A, C, B, D+E, F, G** below. Multiplayer and play-by-mail
-(**H**) are explicitly out of scope — see §9.
+(**H**) are explicitly out of scope — see §9. **A, C and B are delivered**;
+D+E, F and G are not.
 
 ---
 
@@ -34,13 +35,13 @@ site at all.
 |---|---|---|---|---|
 | `aBlobs.cpp` | `0x0041DE5B` | 53.7 KB | 263 | **dark** — package D |
 | `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | the door and set-piece sequences described — [`20` §7.3](20-lcl-language.md), [`26`](26-interaction.md); the rest **dark** — package D |
-| `aMissionControl.cpp` | `0x00453F9A` | 37.1 KB | 138 | one screen described ([`24` §8](24-briefing-text.md)) — package B |
+| `aMissionControl.cpp` | `0x00453F9A` | 37.1 KB | 138 | the campaign map, the roster screens and the location dispatch described — [`27`](27-campaign.md); the screen layouts are package F's |
 | `aTacTools.cpp` | `0x0046A463` | 25.8 KB | 183 | described — [`22`](22-combat-and-visibility.md), [`26`](26-interaction.md) |
 | `aMenuSystem.cpp` | `0x0044B238` | 22.1 KB | 100 | **dark** — package F |
 | `a3DObjects.cpp` | `0x004046C1` | 20.7 KB | 226 | partly — [`30`](30-eng3d-ascii-formats.md), [`31`](31-prototyp-geometry.md); package C touches it |
 | `aSeqPlayer.cpp` | `0x0046543A` | 20.0 KB | 18 | **dark** — package G |
 | `aLCL_Com.cpp` | `0x004407D5` | 18.9 KB | 52 | described — [`20` §7](20-lcl-language.md) |
-| `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md), [`26` §2](26-interaction.md) |
+| `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md), [`26` §2](26-interaction.md), [`27` §3](27-campaign.md) (the roster lives here, not in `aMissionControl.cpp`) |
 | `aBattleSystem.cpp` | `0x00419DB9` | 16.2 KB | 44 | the hand-over's refresh entry described — [`25` §5](25-turn-and-round.md) |
 | `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | **dark** — package F |
 | `aCtrlMap.cpp` | `0x0042EBAB` | 14.4 KB | 31 | described — [`10`](10-lev-mission-format.md), [`23`](23-ai-system.md), [`26`](26-interaction.md) |
@@ -51,11 +52,11 @@ site at all.
 | `aGUI.cpp` | `0x0043BF5B` | 10.2 KB | 76 | text box described — [`24`](24-briefing-text.md); package F |
 | `aBattleMap.cpp` | `0x004177BA` | 9.5 KB | 52 | loading described — [`10`](10-lev-mission-format.md) |
 | `aAISystem.cpp` | `0x00409984` | 6.7 KB | 21 | described — [`23`](23-ai-system.md) |
-| `aMissionEnd.cpp` | `0x0045D40A` | 6.4 KB | 27 | **dark** — package B |
+| `aMissionEnd.cpp` | `0x0045D40A` | 6.4 KB | 27 | described — [`27` §6](27-campaign.md) |
 | `aLoad.cpp` | `0x00447BF2` | 6.3 KB | 44 | described — [`11`](11-save-game-format.md) |
 | `aDSound.cpp`, `aCDRom.cpp`, `aAmbience.cpp` | — | — | 20 | **dark** — package E |
-| `aPassWord.cpp` | `0x0046246C` | 3.9 KB | 9 | **dark** — package B, small and self-contained |
-| `aPI.cpp` | `0x00463411` | 1.6 KB | 8 | **dark** — package F |
+| `aPassWord.cpp` | `0x0046246C` | 3.9 KB | 9 | identified — the play-by-mail password screen, [`27` §7](27-campaign.md); **out of scope**, §9 |
+| `aPI.cpp` | `0x00463411` | 1.6 KB | 8 | identified — the **Place Interface**, the deploy screen ([`90` §2](90-binaries-and-source-layout.md)); its rules are package F's |
 | `aMultiPlayer.cpp`, `lNetwork.cpp`, `aDPlay.cpp`, `aMsgTools.cpp` | — | — | 34 | **out of scope** — §9 |
 
 `aBlobs.cpp` and `aAnimations.cpp` are the two largest modules in the game and
@@ -193,7 +194,30 @@ new `tools/interaction_tables.py --check`.
 
 ---
 
-## 5. Package B — the campaign layer
+## 5. Package B — the campaign layer — **delivered**
+
+> **Delivered** as [`27-campaign.md`](27-campaign.md) with
+> `tools/campaign_tables.py --check` (237 checks, 223 mutations,
+> 0 missed, every check name shown to fail).
+> Questions 1–5 are answered there, and so is the follow-on the first revision
+> of `27` had to leave open: **all 30 `setMissionResult` sites are now
+> enumerated and classified** ([`27` §6.4](27-campaign.md)), which turned up
+> three engine-side defeats the campaign really has and corrected the
+> document's own reading of the win/lose gate. Question 6 turned out to rest on a wrong
+> premise and is answered by correcting it: **`aPassWord.cpp` is the
+> play-by-mail password screen**, not mission passwords — its comparison reads
+> the four 25-byte slots [`11` §5.3](11-save-game-format.md) already documents,
+> so there are no level codes in this game and the module is package H's, which
+> is out of scope (§9). The package also closed items belonging to three other
+> docs: [`11` §5.2](11-save-game-format.md)'s `+0x01D1` (the campaign number),
+> [`11` §5.5](11-save-game-format.md)'s mission-result score table (it was
+> rotated by one — read from the arms' addresses rather than the compiler's
+> jump table), [`11` §5.7](11-save-game-format.md)'s open reading of the two
+> roster rows, and the gate on [`20` §7](20-lcl-language.md)'s game-control
+> slots 10 and 11. `aPI.cpp` and `aDataBase.cpp` are identified in
+> [`90` §2](90-binaries-and-source-layout.md) as a side effect, which settles
+> §7's item 3. The section below is kept as written so the plan can be read
+> against what it produced.
 
 **Why third.** Needed for the second mission, not the first. A remake can ship a
 skirmish against the AI without any of it.
@@ -295,7 +319,9 @@ are reference material, not a specification to reproduce.
 2. `aMI.cpp` — the map interface: cursor modes, what a click does in each mode,
    what the overlays mean (the AI's own overlays are already decoded —
    [`23` §6, §10](23-ai-system.md)).
-3. `aPI.cpp` — 1.6 KB, eight sites; identify it and fold it in.
+3. `aPI.cpp` — 1.6 KB, eight sites. **Identified**: the Place Interface, the
+   deploy screen ([`90` §2](90-binaries-and-source-layout.md),
+   [`27` §3.4](27-campaign.md)). What remains is its rules, not its identity.
 4. The screens that carry *logic* rather than layout: unit selection, Upgrade,
    Recruit — shared with package B.
 5. `Menu_*.lcl` and `Txtmod_*.lcl` as the source of screen structure and every
@@ -368,12 +394,12 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 |---|---|---|---|---|
 | 1 | ~~**A** turn and round~~ **delivered** | [`25`](25-turn-and-round.md), `turn_tables.py` | — | a playable battle; [`11`](11-save-game-format.md)'s ViewPlayer item partly closed |
 | 2 | ~~**C** interaction~~ **delivered** | [`26`](26-interaction.md), `interaction_tables.py` | A (action costs) | mission objectives that use doors, crates, levers |
-| 3 | **B** campaign | `27`, `campaign_tables.py` | A, C | mission 2 onward |
+| 3 | ~~**B** campaign~~ **delivered** | [`27`](27-campaign.md), `campaign_tables.py` | A, C | mission 2 onward |
 | 4 | **D + E** effects and sound | `28`, `blob_tables.py` | — (independent) | the game's feel; can run in parallel throughout |
 | 5 | **F** interface contract | `29` | A, B | a UI that shows the right numbers |
 | 6 | **G** sequences | `41`, `seq_parse.py` | — (independent) | the story scenes |
 
-**A, C and B are the critical path.** D+E and G are independent and can be
+**A, C and B are the critical path, and all three are delivered.** D+E and G are independent and can be
 picked up whenever someone wants a change of subject; F is best done after A and
 B, because most of its content is *their* content displayed.
 

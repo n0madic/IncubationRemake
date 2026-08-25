@@ -65,7 +65,7 @@ of scope.
 
 ### Behaviour, not formats
 
-Four specs in the set describe no file at all.
+Five specs in the set describe no file at all.
 [`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
 between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
 records turn into a resolved shot and into fog of war.
@@ -78,10 +78,15 @@ interrupt queue work, and what ends a turn.
 [`26-interaction.md`](26-interaction.md) is what a unit does with the map it is
 standing on: the twenty action-point classes `aExecuteUse` dispatches, doors,
 crates, levers, teleporters and mines, and the one thing the computer player
-does with any of it. The four exist because a loader that reads every byte of
-every format still cannot play a turn — nor be played against.
-`combat_tables.py`, `ai_tables.py`, `turn_tables.py`, `interaction_tables.py`
-and `trace_names.py` are their checks.
+does with any of it.
+[`27-campaign.md`](27-campaign.md) is what holds a *campaign* together: the
+squad that survives between missions, the campaign map's location model, the
+79-arm unlock graph that decides what is playable next, the equipment-point
+economy, and the score a finished mission pays. The five exist because a loader
+that reads every byte of every format still cannot play a turn — nor be played
+against, nor be played through. `combat_tables.py`, `ai_tables.py`,
+`turn_tables.py`, `interaction_tables.py`, `campaign_tables.py` and
+`trace_names.py` are their checks.
 
 **`DATA/Misc/Rec_0.dat` is dead data.** No executable or DLL in the release
 contains the string `Rec_`, and `Incubation.exe` contains no `.dat` literal at
@@ -227,7 +232,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **33 items are
+in place with the evidence that closed them rather than deleted. **37 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -240,6 +245,7 @@ still open:**
 | [24](24-briefing-text.md) | 0 | nothing open; three mechanisms are implemented and unexercised (`{#2}`, the `#` indent, the Japanese two-byte path) and two things are dead (the `{:OC}` read, and `Errors.txt`/`Campaign.txt`, which no code can name) |
 | [25](25-turn-and-round.md) | 3 | the `pbm session` mode that no literal selects (deliberately not traced — the remake has no play-by-mail), one multiplayer session flag, and one interface routine that belongs to package F |
 | [26](26-interaction.md) | 4 | the dead fourth `SetCtrlMapInfo` column, `_C_156`'s keyless teleporter exit, the `technical` box's guard bug, and what `Batteries` was going to do. The ladder rule is now a **decision**, not a question ([`92` §7](92-remake-architecture.md)) |
+| [27](27-campaign.md) | 4 | which `Video/` directory each dialogue number selects (package G's), why upgrade locations 3 and 6 load each other's map, the fourteen named locations with no cell, and one undecoded dialogue-screen flag. All 30 `setMissionResult` sites are now enumerated and classified, which is **closed** |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected, the one item here with an untraced lead, and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file |
 | [31](31-prototyp-geometry.md) | 1 | what a Voodoo did with Glide blend factor `0xf`. Runtime confirmation is **closed as not needed** — the item it was wanted for was settled by reading the code |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
