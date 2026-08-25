@@ -391,11 +391,12 @@ Field type 8, `Ladder`, has **0 cells in the shipped campaign**, so the
 ladder-to-ladder rule that [`23` §7.4](23-ai-system.md) reads out of
 `aBuildMoveMap` never fires. `aExecuteMove` reads the field type exactly three
 times — twice for the movement delay and once for the `== 9` teleporter test —
-so it has no ladder case of its own. **UNVERIFIED:** a ladder step should
-therefore be *offered* only from a full movement allowance and then be charged
-like any other step. The inference is from an enumerated absence — three field
-type reads, none of them 8 — not from observation, and with no ladder cell in
-the corpus nothing can exercise it. See §10 item 5.
+so it has no ladder case of its own: a ladder step would be *offered* only from
+a full movement allowance and then charged like any other step. The two halves
+of the engine therefore disagree, and with no ladder cell in the corpus nothing
+can exercise either. This is a choice, not a finding — the remake takes the
+move map's rule, and the reasoning is recorded with the other product decisions
+in [`92` §7](92-remake-architecture.md).
 
 ---
 
@@ -564,7 +565,7 @@ without `Events.txt`.
 | `move.*` | the VictoryPoint band and its two bases, the neutral player, the mine radius column, the mine's weapon, and the step cost as delay plus 1 or 2 |
 | `ai.*` | the AI's one action point, its eight directions, its two-point minimum, and the enumeration that nothing in `aAISystem.cpp` reaches `aExecuteUse` |
 | `ctrlinfo.*` | which `SetCtrlMapInfo` columns the engine reads — and that the fourth is dead, with the first two as the positive control |
-| `sweep.*` | all 44 instructions in `.text` that touch `cell[+0x0B]`, and their distribution over the nine modules that own them |
+| `sweep.*` | all 44 instructions in `.text` that touch `cell[+0x0B]`, and their distribution over the nine modules the `__FILE__` map attributes them to (an upper bound — [`90`](90-binaries-and-source-layout.md); every one of these 44 sits near a real `CHECK` site of the module it is credited to) |
 | `corpus.*` | every handled action point counted over all 155 missions, the absences (id 32, ids 86–89, ladders), the random box's confinement to the template map, the crowbar/jammed-door mission, and the teleporter pairing with its one authored exception |
 | `lcl.*` (corpus) | 153 `:Use` sections, the four values `_D` is ever compared against, and the 226 `SetActPt` calls beside them |
 | `text.*` | all thirteen `Events.txt` labels resolve and name their pickup |
@@ -598,9 +599,11 @@ detected, and the union of the check names they tripped is all 109.
    equipment id and no game-control slot is written, and no other code in
    either binary tests 41. Whatever it was meant to charge does not exist in
    this build.
-5. **The ladder rule on the player's side is untested.** `aBuildMoveMap`
-   charges a ladder-to-ladder step the whole movement allowance
-   ([`23` §7.4](23-ai-system.md)) while `aExecuteMove` charges it like any
-   other step; with **0** ladder cells shipped, no data can say which the
-   designers intended. A remake should pick the map's rule, because that is the
-   one the player sees.
+5. ~~**The ladder rule on the player's side is untested.**~~ **— Not a
+   research question.** Both halves are fully read: `aBuildMoveMap` charges a
+   ladder-to-ladder step the whole movement allowance
+   ([`23` §7.4](23-ai-system.md)), `aExecuteMove` charges `delay` plus the
+   ordinary 1 or 2 (§5.1). What was open is only which the designers intended,
+   and with **0** ladder cells in all 155 missions no data can decide it. It is
+   therefore a product call, and it has been made: the remake takes the move
+   map's rule — [`92` §7](92-remake-architecture.md).

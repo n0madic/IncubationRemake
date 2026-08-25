@@ -1257,11 +1257,29 @@ open.
    final record does reach EOF with nothing after it. See
    [`31-prototyp-geometry.md`](31-prototyp-geometry.md) §3.2.
 
-10. **Stale worlds.** `World_A00/Worlds/LEVEL03A.3DW` and `LEVEL03B.3DW`
-    reference prototypes that live in `World_C00`. Reported by the verifier as a
-    note, not a failure (2.6). Whether the shipping game ever loads them is a
-    question for the `.lev`/campaign track. Note this is a *different* defect
-    from the World D00 count mismatch, which is closed in 2.9.
+10. ~~**Stale worlds.**~~ **— CLOSED: the shipping game never loads either
+    file.** `World_A00/Worlds/LEVEL03A.3DW` and `LEVEL03B.3DW` reference
+    prototypes that live in `World_C00`, and the question was whether that
+    cross-container reference is ever exercised. Every `.lev` header names a
+    world set and a scene ([`10` §3](10-lev-mission-format.md)), so the set of
+    scenes the game can load is enumerable over all 155 missions:
+
+    * **no mission names `A00` + `LEVEL03A` or `A00` + `LEVEL03B`.** The only
+      `LEVEL03B` reference in the corpus is with world set `C00` — where its
+      prototypes actually are;
+    * **`LEVEL03A` is named by no mission in any world set;**
+    * the `A00` copies are earlier revisions of the `C00` files: identical in
+      size and line count, differing **only in their `POSITION` lines** (five
+      each), with every prototype name, group and directive the same.
+
+    So the defect is two files left in the wrong directory, not a loader that
+    resolves across world sets. **A converter never needs cross-container
+    prototype resolution** — it can skip both files. `verify_3d_indices.py`'s
+    `stale.unreferenced` and `stale.no_referenced_world_is_stale` assert it,
+    and both fail when a mission header is repointed at a stale scene.
+
+    Note this is a *different* defect from the World D00 count mismatch, which
+    is closed in 2.9, and from the dangling scene reference in item 12.
 
 11. **What `SORT_OBJECT` selected.** New with 2.11, and the only one of the
     three directives with an **untraced** lead rather than an unknowable one.
@@ -1278,7 +1296,27 @@ open.
     the `prototyp.bin` record has not been traced. This one is answerable from
     the shipped binaries.
 
-12. **`DETAIL_METHODE`'s numbering.** The engine has four distance methods,
+12. **One shipped `.lev` names a world set that does not exist.**
+    `Missions/_I_001.lev` — map type 4, the non-battle screen kind
+    ([`10` §4.1](10-lev-mission-format.md)) — declares world set `Z00`, scene
+    `Logowall`. There is no `WorldSet/World_Z00/` and no `LOGOWALL.3DW`
+    anywhere in the release. It is the mirror image of item 10: there the file
+    exists and nothing names it, here the name exists and no file backs it.
+
+    It is unreachable, by enumeration: no `.lev` header chains to `_I_001`, no
+    shipped script calls `EnterNameOfNextMap` with an `_I_*` name, and neither
+    `_I_001` nor `Logowall` occurs as a literal in **any of the 35 shipped PE
+    files, in ASCII or UTF-16LE**.
+    Its `.lcl` carries the untouched dispatcher template with every routine
+    empty, and a header `Date:` of 07/02/97 — a property of that one file, not
+    a corpus claim. Work that was left behind, then; but *why* it names a world
+    set that never shipped, and what `Logowall` was, cannot be recovered from
+    the product.
+    `verify_3d_indices.py`'s `stale.dangling_scene_refs` pins it as the **only**
+    such reference in the corpus, so a new one would be caught; it fails when
+    any referenced `.3DW` is removed.
+
+13. **`DETAIL_METHODE`'s numbering.** The engine has four distance methods,
     indices 0…3, bounds-checked in `_E3D_change_distance_methode_switch_table`
     and selected by two four-member opcode families (2.11,
     [`31`](31-prototyp-geometry.md) §4). The exporter's directive says `1`. If
@@ -1305,4 +1343,5 @@ open.
 | `[GRP]` header split | **Closed as a consumer's choice**, with a rule that is safe on 36/36; 2.4 |
 | `TYP` / `EDITORDETAIL` / `[COORD_SYSTEM]` runtime effect | **Closed** — none, proven over all 29 binaries in both encodings; 2.7, 2.8 |
 | `EDITORDETAIL`'s editor-side meaning | **Closed as unknowable** — the editor reads `.3DW` and cannot write one; the authoring tool never shipped; 2.10 |
+| Stale worlds — are they loaded? | **Closed: no** — enumerated over all 155 mission headers; item 10 |
 | Four World D00 `.lev` count mismatches | **Closed as harmless** — nothing is missing and the count is never read; 2.9 |

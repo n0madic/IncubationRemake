@@ -242,6 +242,18 @@ remake is demonstrably the same game.
    strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
    seam costs nothing now and cannot be retrofitted cheaply.
 
+**Decided, not open: a ladder step follows the move map's rule.** Field type 8,
+`Ladder`, has **0 cells** in the shipped campaign, and the two halves of the
+engine disagree about what such a step costs: `aBuildMoveMap` charges the
+unit's whole movement allowance, while `aExecuteMove` charges the ordinary
+`delay + 1` / `delay + 2` ([`26` §5.1](26-interaction.md),
+[`23` §7.4](23-ai-system.md)). No data can say which was intended, so this is a
+choice rather than a finding. The remake takes **the move map's rule** — a
+ladder-to-ladder step costs the whole allowance — because that is the one the
+player sees: the map decides which cells light up, so charging anything else
+would make the highlighted range a lie. Consequence worth writing down: a unit
+may climb a ladder only from a full allowance and arrives with nothing left.
+
 **Decided, not open: the `technical` supply box keeps its bug, behind an
 option.** Action point 16 guards on Battle Fitness (`unit[+0x1A]`) and
 increments Technical Skills (`unit[+0x1D]`) — a copy-paste slip pinned byte by

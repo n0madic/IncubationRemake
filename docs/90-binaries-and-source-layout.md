@@ -67,6 +67,32 @@ loader: `aCtrlMap.cpp` and `aUnitMap.cpp` own the two big `.lev` arrays,
 `aLCL.cpp`/`aLCL_Com.cpp` own the script language, `aLibTools.cpp` owns `.LIB`,
 `a3DObjects.cpp` owns the scenery blocks.
 
+**`aLibTools.cpp` is LibMaker — an authoring tool, not a loader.** The module's
+own `CHECK` sites push `LibMaker`, `aLoadBitmap`, `aLoadBitmapInfos`,
+`aCreateWinFont`, `aPrintWinText`, `aCreateBitmap`, `FrameRect`, `GetWindowDC`
+and `WriteFile`: it is the tool that *built* the `.LIB` sprite libraries out of
+bitmaps, and it shipped inside the retail executable the same way the map editor
+did ([`10` §4.6](10-lev-mission-format.md)). Its element accessor, which returns
+a sprite's pixel pointer, has two callers and both are inside a dialog
+procedure. The game's own sprite drawing is elsewhere —
+[`60` §2](60-lib-sprites.md) bounds the search.
+
+**A caution that follows from the same evidence.** A module whose *name* matches
+a format may own the **writer** rather than the reader, and its accessors will
+then have only editor-side callers. Check the callee names a module pushes
+before assuming it is on the game's path.
+
+**And a caution about the spans themselves.** A module's extent here runs from
+its first `CHECK` site to the next module's first, so it is an *upper bound*
+that also swallows any neighbouring function with no `CHECK` site at all
+([`91` §1](91-game-logic-research-plan.md)). Modules with few sites over a large
+span — `aSeqPlayer.cpp` (18 sites, 20 KB) is the worst — will therefore claim
+code that is not theirs. The action-point legend at `0x0046838D`
+([`10` §4.6](10-lev-mission-format.md)) falls inside `aSeqPlayer.cpp`'s span and
+is certainly not part of the sequence player. Treat an attribution as evidence
+only when the address is close to a real site of that module, or when the module
+is dense.
+
 ---
 
 ## 3. The Charisma engine

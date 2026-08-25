@@ -1044,7 +1044,14 @@ What remains is either outside this container or unreachable from shipped data.
    Reproduce with `python3 tools/prototyp_parse.py --check --root gog_incubation`
    and comparing `part_count` against `collision_program` in the `--json` output.
 
-7. **Runtime confirmation was not obtained.** See §10.
+7. ~~**Runtime confirmation was not obtained.**~~ **— CLOSED as not needed.**
+   §10 assessed a harness and now records why nothing here depends on one: the
+   item it was wanted for — the three span-visibility routines and the
+   opcode-31 bank, item 3 — was closed by reading them instead, and the only
+   thing still open (item 4) is a question about Voodoo silicon that no
+   software-build harness could answer. The pixel path is specified from two
+   independently compiled renderers that agree; a harness would confirm rather
+   than decide.
 
 ---
 
@@ -1080,9 +1087,16 @@ enough to read exactly (`dst>>1 + colour>>1`, `test ax,ax; je`, saturating add
 with an OR-mask table, saturating subtract with an AND-mask table). A harness
 would confirm rather than decide.
 
-**What a harness would still be worth doing for:** the three span-visibility
-routines (open item 3) and the opcode-31 bank, where reading the assembly did
-not produce a confident answer.
+**What a harness would still be worth doing for.** The previous revision named
+the three span-visibility routines and the opcode-31 bank here, on the grounds
+that reading the assembly had not produced a confident answer. That is no
+longer true: §9 item 3 is closed, and it was closed by reading them —
+`0x40E872` turned out to be `0x40E363` duplicated instruction for instruction,
+and only `0x40DAF0` writes to the s-buffer, which settles the split as
+occluding versus non-occluding. **Nothing in this document now depends on a
+harness.** The one remaining open item, the Glide destination blend factor
+`0xf` (§9 item 4), is a question about *Voodoo hardware* rather than about this
+code, so a software-build harness could not answer it either.
 
 ### 10.1 How the hosts bind Eng3d — by ordinal, and how to undo it
 

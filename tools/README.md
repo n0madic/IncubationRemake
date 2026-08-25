@@ -29,7 +29,8 @@ img_tables.py         verify the .IMG fixed-point tables against their formulas
 dir3di_parse.py       parse .dir (3DI) ASCII indices
 din_parse.py          parse .din binary indices
 prototyp_parse.py     decode prototyp.bin geometry; OBJ/PNG export
-verify_3d_indices.py  cross-check .3DW / .dir / .din / container addressing
+verify_3d_indices.py  cross-check .3DW / .dir / .din / container addressing,
+                      and which scenes the mission headers actually load
 visn_decode.py        decode VISN textures to PNG
 wine_visn/            harness that runs the ORIGINAL Eng3d.dll under Wine and
                       diffs it against our decoder (723/723 byte-exact)
@@ -63,7 +64,7 @@ python3 tools/lev_parse.py        gog_incubation --check            # 155/155
 python3 tools/lib_extract.py      gog_incubation --check            #  58/58
 python3 tools/img_tables.py       gog_incubation                    #  42/42
 python3 tools/font_render.py     --check gog_incubation            #   4/4 fonts
-python3 tools/verify_3d_indices.py --root gog_incubation            # 42 x3 + 21 x2
+python3 tools/verify_3d_indices.py --root gog_incubation            # 31 check kinds
 python3 tools/prototyp_parse.py   --check --root gog_incubation      # 26072/26072
 python3 tools/visn_decode.py      gog_incubation --check            # 723/723
 python3 tools/cho_parse.py        --check gog_incubation            # 237/237

@@ -48,6 +48,7 @@ from typing import Any, Callable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from inclib.binio import ParseError  # noqa: E402
+from inclib.lev import load_lev  # noqa: E402
 
 LOG = logging.getLogger("verify3d")
 
@@ -120,7 +121,8 @@ def sibling(path: str, new_suffix: str) -> str | None:
     return None
 
 
-def verify_3dw(root: str, stats: Stats, notes: list[str]) -> int:
+def verify_3dw(root: str, stats: Stats, notes: list[str],
+                stale: list[str] | None = None) -> int:
     """Parse and validate every ``.3DW`` under *root*."""
     paths = find_files(root, ".3dw")
     proto_dirs = [p for p in find_files(root, ".dir") if "prototyp" in os.path.basename(p).lower()]
@@ -168,6 +170,8 @@ def verify_3dw(root: str, stats: Stats, notes: list[str]) -> int:
             # Not a parser failure: the shipped data contains stale worlds whose
             # geometry lives in a different world set.  Reported as a note.
             elsewhere = not (set(missing) - all_proto_names)
+            if stale is not None:
+                stale.append(path)
             notes.append(
                 f"{path}: {len(missing)} PROTOTYP names absent from its own world set "
                 f"(resolvable in another world set: {elsewhere}); e.g. {missing[:3]}"
@@ -179,6 +183,64 @@ def verify_3dw(root: str, stats: Stats, notes: list[str]) -> int:
             f"{sorted(set(missing) - all_proto_names)[:5]}",
         )
     return len(paths)
+
+
+#: the one (world set, scene) a shipped ``.lev`` names for which no ``.3DW``
+#: exists -- ``_I_001.lev``, a 07/02/97 development leftover that nothing
+#: chains to and no binary names.  See docs/30 §8.
+DANGLING_SCENES = [("Z00", "LOGOWALL")]
+
+
+def world_key(path: str) -> tuple[str, str]:
+    """``…/WorldSet/World_A00/Worlds/LEVEL03A.3DW`` -> ``("A00", "LEVEL03A")``."""
+    world_dir = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    scene = os.path.splitext(os.path.basename(path))[0]
+    prefix = "World_"
+    if world_dir.startswith(prefix):
+        world_dir = world_dir[len(prefix):]
+    return world_dir.upper(), scene.upper()
+
+
+def verify_stale_worlds(root: str, stats: Stats, stale: list[str]) -> int:
+    """Is a ``.3DW`` whose prototypes live elsewhere ever loaded?
+
+    Every mission header names a world set and a scene ([`10` §3]), so the set
+    of scenes the shipping game can load is enumerable.  A ``.3DW`` that
+    resolves its prototypes only in *another* world set is a stale copy if and
+    only if no mission names it -- and that is what this asserts, with every
+    mission-referenced scene resolving locally as the positive control.
+    """
+    missions = find_files(root, ".lev")
+    if not missions:
+        stats.check("stale.corpus", False, f"no .lev files under {root!r}")
+        return 0
+    stats.check("stale.corpus", True, f"{len(missions)} missions")
+
+    referenced: set[tuple[str, str]] = set()
+    for path in missions:
+        try:
+            battle = load_lev(path)
+        except Exception as exc:  # noqa: BLE001 - lev_parse reports this too
+            stats.check("stale.lev_parse", False, f"{path}: {exc}")
+            continue
+        referenced.add((battle.world_set.upper(), battle.world_scene.upper()))
+
+    for path in stale:
+        key = world_key(path)
+        stats.check(
+            "stale.unreferenced", key not in referenced,
+            f"{path}: mission headers do name {key[0]}/{key[1]}")
+
+    scenes = {world_key(p) for p in find_files(root, ".3dw")}
+    stale_keys = {world_key(p) for p in stale}
+    missing = sorted(referenced - scenes)
+    stats.check("stale.dangling_scene_refs", missing == DANGLING_SCENES,
+                f"missions naming a scene with no .3DW: {missing} "
+                f"(expected {DANGLING_SCENES})")
+    overlap = sorted(referenced & stale_keys)
+    stats.check("stale.no_referenced_world_is_stale", not overlap,
+                f"a referenced scene resolves only in another world set: {overlap}")
+    return len(stale)
 
 
 def verify_pairs(root: str, stats: Stats) -> tuple[int, int]:
@@ -375,7 +437,9 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = Stats()
     notes: list[str] = []
-    n_3dw = verify_3dw(args.root, stats, notes)
+    stale: list[str] = []
+    n_3dw = verify_3dw(args.root, stats, notes, stale)
+    verify_stale_worlds(args.root, stats, stale)
     n_dir, n_din = verify_pairs(args.root, stats)
 
     print(f"corpus: {n_3dw} .3DW, {n_dir} .dir, {n_din} .din under {args.root}")

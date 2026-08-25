@@ -31,7 +31,7 @@ python3 tools/cha_parse.py        --check gog_incubation      # 245/245
 python3 tools/cha_parse.py        --verify-convention gog_incubation
 python3 tools/font_render.py      --check gog_incubation
 python3 tools/img_tables.py       gog_incubation
-python3 tools/verify_3d_indices.py --root gog_incubation
+python3 tools/verify_3d_indices.py --root gog_incubation      # 31 check kinds
 python3 tools/combat_tables.py    --check gog_incubation      # 27 checks, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
 python3 tools/sav_tables.py       --check gog_incubation      # 69 checks
@@ -162,7 +162,7 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 
 `docs/91-game-logic-research-plan.md` is the plan for the runtime work that remains — package A (the turn and the round) is **delivered** as `docs/25` and package C (interaction and set-pieces) as `docs/26`; the campaign, effects and sound, the interface contract and the sequence player are not; `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine — and the ones still open. Neither is a spec: they cite the numbered docs and state no findings of their own.
 
-Every doc ends with an **Open questions** section. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 3, `26`: 5, `30`: 10, `31`: 2, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section. **33 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 3, `26`: 4, `30`: 10, `31`: 1, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

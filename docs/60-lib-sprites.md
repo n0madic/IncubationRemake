@@ -23,6 +23,24 @@ Type:%d / Entries:%d
 %d/[%d]_%d_(W_%d,H_%d) (dX_%d,dY_%d)
 ```
 
+**`aLibTools.cpp` is the *writer*, not the reader.** Partitioning `.text` by the
+`__FILE__` each function pushes ([`91` §1](91-game-logic-research-plan.md))
+bounds the module at `0x00445DC0`…`0x00447BF2`, and the 28 callee names it
+pushes are an authoring tool end to end: `LibMaker`, `aLoadBitmap`,
+`aLoadBitmapInfos`, `aCreateWinFont`, `aPrintWinText`, `aCreateBitmap`,
+`FrameRect`, `GetWindowDC`, `WriteFile`, `aWriteFile`, `aOpenFile`. The element
+accessor that returns a sprite's pixel pointer — `0x00446180`, which computes
+`lib + data_offset + element[i].data_offset` — has exactly **two callers, both
+inside a dialog procedure** (`0x00444E00`, which calls `GetDlgItem` and
+`SendMessageA`).
+
+So the retail `Incubation.exe` ships **LibMaker**, the tool that built these
+libraries out of bitmaps, the same way it ships the map editor
+([`10` §4.6](10-lev-mission-format.md)) and the mission-script template. That
+is worth knowing twice over: it names the writer responsible for the
+uninitialised `delta_y` documented in §2, and it means the *game's* sprite
+drawing is somewhere else entirely — see §2's transparency question.
+
 The game still ships the authoring tool: `Incubation.exe -debugx` opens a
 developer menu with a **Librarytool** entry (`aLibTool.cpp`) that opens and
 saves these files. It does *not* open `texture.lib`.
@@ -117,12 +135,33 @@ different index entirely, and a large one: `item_e0` is 85.3 % index 15,
 `item_w0` 80.2 % index 1, `item_w13` 85.3 % index 254, and in each case the
 paired palette maps that index to near-black.
 
-Which index (if any) the blitter keys for those is **UNVERIFIED** — the sprite
-blitter is hand-written assembly in `aDDraw.cpp`/`aDIB.cpp` with no trace
-strings, and nothing in the shipped data settles it. `lib_extract.py` therefore
-writes a `tRNS` entry **only for libraries that actually contain index 0** and
-writes the rest fully opaque, rather than emitting an entry pointing at a colour
-the image never uses. `--check` lists both groups.
+Which index (if any) the blitter keys for those is **UNVERIFIED**, and three
+sweeps narrow *where* the answer is not:
+
+* **The drawing code is not in `aLibTools.cpp`.** That module is LibMaker, the
+  writer (§1), and its pixel accessor's only callers are an editor dialog.
+* **It is not DirectDraw colour-keying.** `aDDraw.cpp` (`0x00432DA7`…`0x00434448`)
+  pushes `DirectDrawCreate`, `CreateSurface`, `CreateClipper`, `SetClipper`,
+  `SetCooperativeLevel`, `SetDisplayMode`, `GetPixelFormat`, `GetAttachedSurface`
+  and **`DD_Lock`** — and no `SetColorKey` and no `Blt`. The game locks the
+  surface and copies pixels itself, so transparency is whatever its own inner
+  loop does.
+* **That loop is not findable by its idiom.** Sweeping all of `.text` for the
+  classic `mov r8, [mem]; test r8, r8; jz` skip pattern and attributing each hit
+  to its module returns **zero hits in `aLibTools.cpp` and `aDIB.cpp`** and one
+  in `aDDraw.cpp`, which is a string comparison. Whatever the copy loop looks
+  like, it is not that.
+
+Settling it therefore means finding the drawing path in another module — the
+GUI and screen-tool modules are the candidates — which belongs to the interface
+work, package F ([`91` §7](91-game-logic-research-plan.md)), not to this
+document. The better route may be the writer rather than the reader: LibMaker
+is in the binary and can be read.
+
+`lib_extract.py` therefore writes a `tRNS` entry **only for libraries that
+actually contain index 0** and writes the rest fully opaque, rather than
+emitting an entry pointing at a colour the image never uses. `--check` lists
+both groups.
 
 Some files carry 1–3 padding bytes after the pixel blob, which is why
 `used_size` is the authoritative content length rather than the file size.
@@ -267,8 +306,15 @@ python3 tools/font_render.py --check gog_incubation
 
 2. **Which palette index the blitter keys as transparent for the 34 libraries
    that contain no index 0** (the 33 `Libs/Items/*` and `options.LIB`). Index 0
-   is right for the other 24 and is what `lib_extract.py` uses there. The
-   blitter itself is hand-written assembly in `aDDraw.cpp`/`aDIB.cpp` with no
-   trace strings to locate it by, and no shipped data distinguishes "keyed on a
-   different index" from "drawn fully opaque". §2. **UNVERIFIED**; the tool
-   writes those libraries opaque rather than guessing.
+   is right for the other 24 and is what `lib_extract.py` uses there.
+   **UNVERIFIED**; the tool writes those libraries opaque rather than guessing.
+
+   §2 now bounds the search rather than merely reporting it: the drawing path
+   is **not** in `aLibTools.cpp` (that module is LibMaker, the writer), it is
+   **not** DirectDraw colour-keying (`aDDraw.cpp` locks the surface and has no
+   `SetColorKey` or `Blt`), and it is **not** written in the usual
+   `test r8, r8; jz` idiom (a module-attributed sweep of all of `.text` finds no
+   such loop in any of the library or DIB modules). What remains is a copy loop
+   in one of the GUI or screen-tool modules, which is **package F's** work
+   ([`91` §7](91-game-logic-research-plan.md)) — the interface is where sprites
+   are drawn. Doing it here would duplicate that.
