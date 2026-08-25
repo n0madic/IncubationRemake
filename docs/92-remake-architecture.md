@@ -199,11 +199,12 @@ compared trace against trace, not just outcome against outcome.
 Specified, checked, and ready to build against now: map loading and terrain,
 scenery geometry and textures, models and animations, fonts and sprites, the
 balance tables, combat resolution, line of sight and fog of war, the computer
-opponent, and every line of mission text.
+opponent, the turn and the round ([`25`](25-turn-and-round.md)), and every line
+of mission text.
 
-Blocked on [`91`](91-game-logic-research-plan.md): the turn and the round
-(package A), object interaction (C), the campaign layer (B), effects and sound
-(D+E), the interface contract (F), the sequence player (G).
+Blocked on [`91`](91-game-logic-research-plan.md): object interaction (C), the
+campaign layer (B), effects and sound (D+E), the interface contract (F), the
+sequence player (G).
 
 A first vertical slice needs nothing that is not already done: convert one
 mission, draw the grid, and light up the reachable cells from
@@ -226,11 +227,25 @@ remake is demonstrably the same game.
    with a camera height expressed in metres ([`10` §3](10-lev-mission-format.md),
    1600 units = 1 m). How closely to reproduce its framing — and whether to
    allow free rotation the original did not have — is a design question, not a
-   research one.
+   research one. One constraint is settled: **the original does not persist the
+   camera.** Its save format has no field for it and loading returns the view to
+   its default ([`11` §5.6](11-save-game-format.md)), so keeping the camera
+   across a save is a free improvement rather than a fidelity question.
 4. **Localisation.** Only `English` ships in the GOG release, but every path is
    built with a language component ([`24` §1](24-briefing-text.md)) and the GUI
    strings live in `Txtmod_*.lcl` ([`20` §6](20-lcl-language.md)). Keeping that
    seam costs nothing now and cannot be retrofitted cheaply.
+
+**Decided, not open: no play-by-mail.** The original's `pbm session` mode is
+named in the binary ([`25` §2](25-turn-and-round.md)) and its passwords are in
+the save format ([`11` §5.3](11-save-game-format.md)), but it was barely a
+feature in 1997 and the remake will not have one. Consequences worth writing
+down so they are not re-litigated: the `pbm session` arm of the turn's skip rule
+and of the equipment-point split need no implementation
+([`25` §3.1](25-turn-and-round.md), [`25` §4.1](25-turn-and-round.md)), and
+neither does the password obfuscation. Network multiplayer remains a separate
+question, still out of scope for the same reason as
+[`91` §9](91-game-logic-research-plan.md).
 
 ---
 

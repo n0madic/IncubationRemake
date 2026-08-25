@@ -39,13 +39,19 @@ python3 tools/sav_parse.py        gog_incubation --selftest   # 31 map sizes
 python3 tools/typ_parse.py        --check gog_incubation      # 18 checks
 python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
+python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 ```
 
 All exit 0. A non-zero exit is a regression. Every one of them also **fails on an empty corpus** — a check that examined nothing is not a check that passed, so a mistyped root cannot come out green.
 
-`.sav` has **no corpus** — the shipped `Work/Saves/` tree is empty — so its two
-checks stand in for one. `sav_tables.py` verifies the layout against the writer
+`.sav` had **no corpus** for most of this project's life — the shipped
+`Work/Saves/` tree is empty — so its two checks stand in for one. Six real saves
+now exist in `tests/fixtures/saves/`, made by running the retail game under Wine
+(`wine explorer /desktop=inc,640x480 Incubation.exe -english`, from a **copy** of
+the game, never from `gog_incubation/`). The `.sav` files are gitignored because
+each embeds a whole shipped `.lev`; the committed `README.md` beside them records
+what each pins. Nothing in the always-run block depends on them. `sav_tables.py` verifies the layout against the writer
 and reader chains in `Incubation.exe`; `sav_parse.py --selftest` wraps a corpus
 `.lev` in the save's fixed blocks and requires the round trip and a
 byte-identical extraction. `sav_parse.py FILE` is the only tool here that has
@@ -55,7 +61,7 @@ non-zero when there is nothing to parse.
 `--verify-convention` and `charisma_selftest.py` are the two that guard *meaning* rather than structure: the first gates on the quaternion-component hypothesis still explaining ≥80 % of tracks, the second asserts decoded key values and times. Structure-only checks pass unchanged when components are permuted, so do not remove either.
 
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
-`sav_tables`, `typ_parse`, `ai_tables`, `brief_parse` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
 `sav_parse` takes it positionally but only with `--selftest`. Check `--help` rather than guessing.
 
 ### Asset extraction
@@ -150,11 +156,11 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility and `23` the AI turn (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn and `25` the turn and the round (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-`docs/91-game-logic-research-plan.md` is the plan for the runtime work that remains (the turn, interaction, the campaign, effects and sound, the interface contract, the sequence player); `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine — and the ones still open. Neither is a spec: they cite the numbered docs and state no findings of their own.
+`docs/91-game-logic-research-plan.md` is the plan for the runtime work that remains — package A (the turn and the round) is **delivered** as `docs/25`; interaction, the campaign, effects and sound, the interface contract and the sequence player are not; `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine — and the ones still open. Neither is a spec: they cite the numbered docs and state no findings of their own.
 
-Every doc ends with an **Open questions** section. **28 items remain open** across the set (`10`: 4, `11`: 4, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `30`: 10, `31`: 2, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section. **30 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 3, `30`: 10, `31`: 2, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

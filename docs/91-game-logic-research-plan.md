@@ -41,11 +41,11 @@ site at all.
 | `aSeqPlayer.cpp` | `0x0046543A` | 20.0 KB | 18 | **dark** — package G |
 | `aLCL_Com.cpp` | `0x004407D5` | 18.9 KB | 52 | described — [`20` §7](20-lcl-language.md) |
 | `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md) |
-| `aBattleSystem.cpp` | `0x00419DB9` | 16.2 KB | 44 | **dark** — package A |
-| `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | **dark** — packages A, F |
+| `aBattleSystem.cpp` | `0x00419DB9` | 16.2 KB | 44 | the hand-over's refresh entry described — [`25` §5](25-turn-and-round.md) |
+| `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | **dark** — package F |
 | `aCtrlMap.cpp` | `0x0042EBAB` | 14.4 KB | 31 | partly — [`10`](10-lev-mission-format.md), [`23`](23-ai-system.md); package C |
 | `a3DEngine.cpp` | `0x0040104B` | 13.6 KB | 106 | partly — [`31`](31-prototyp-geometry.md) |
-| `aViewPlayer.cpp` | `0x0047BD0B` | 13.3 KB | 54 | **dark** — package A, and [`11`](11-save-game-format.md)'s open item |
+| `aViewPlayer.cpp` | `0x0047BD0B` | 13.3 KB | 54 | described — [`25` §4](25-turn-and-round.md) |
 | `aMI.cpp` | `0x00450AC8` | 12.8 KB | 33 | **dark** — package F (map interface) |
 | `aUI.cpp` | `0x00471101` | 10.3 KB | 45 | **dark** — package F (unit interface) |
 | `aGUI.cpp` | `0x0043BF5B` | 10.2 KB | 76 | text box described — [`24`](24-briefing-text.md); package F |
@@ -87,7 +87,16 @@ so no package has to repeat it.
 
 ---
 
-## 3. Package A — the turn and the round
+## 3. Package A — the turn and the round — **delivered**
+
+> **Delivered** as [`25-turn-and-round.md`](25-turn-and-round.md) with
+> `tools/turn_tables.py --check` (85 checks, 102 mutations, 0 missed). Questions 1–5 are
+> answered there; question 6 is answered in
+> [`11` §5.6](11-save-game-format.md), where the block belongs. What stayed
+> open moved into `25`'s own Open questions section: the `pbm session` mode no
+> literal selects, one multiplayer session flag, `unit[+0x50]`'s missing reader,
+> and one interface routine that belongs to package F. The section below is kept
+> as written so the plan can be read against what it produced.
 
 **Why first.** [`23`](23-ai-system.md) describes the computer's half of a turn
 and [`22`](22-combat-and-visibility.md) describes what a shot does. Nothing
@@ -345,7 +354,7 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 
 | # | Package | Deliverable | Depends on | Unblocks |
 |---|---|---|---|---|
-| 1 | **A** turn and round | `25`, `turn_tables.py` | — | a playable battle; one open item in [`11`](11-save-game-format.md) |
+| 1 | ~~**A** turn and round~~ **delivered** | [`25`](25-turn-and-round.md), `turn_tables.py` | — | a playable battle; [`11`](11-save-game-format.md)'s ViewPlayer item partly closed |
 | 2 | **C** interaction | `26` | A (action costs) | mission objectives that use doors, crates, levers |
 | 3 | **B** campaign | `27`, `campaign_tables.py` | A, C | mission 2 onward |
 | 4 | **D + E** effects and sound | `28`, `blob_tables.py` | — (independent) | the game's feel; can run in parallel throughout |

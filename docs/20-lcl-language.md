@@ -933,7 +933,7 @@ Only seven slots are read anywhere in the engine:
 
 | Slot | Role | Evidence |
 | --- | --- | --- |
-| 0–3 | end-of-game state for human players 0–3 | `0x0047d600`: value 1/2/3 maps the player to end state 2/3/4; 0 means "nothing happened" |
+| 0–3 | end-of-game state for human players 0–3 | `0x0047d600`: value 1/2/3 maps the player to end state 2/3/4; 0 means "nothing happened". Confirmed in a real save: slot 0 holds `1` on the campaign location screen after a won mission and is back to `0` once the next mission is running ([`11` §4](11-save-game-format.md)) |
 | 4 | the same for the computer player | same loop, index 4 |
 | 10 | **equipment-point bonus**, added to the player's pool at end of mission | `0x0043ba10` adds it to the per-player value the GUI prints into text slot 107, under the label in slot 106 (`"Equipment Points:"`); item pickups add 50/20/10 to it directly (`0x0046dc60`) |
 | 11 | **commendations awarded**, added to the per-player commendation counter at end of mission; a non-zero value also selects which post-mission screen runs | same loop (`0x0043ba10`) writes `0x00509efc[player] += gc[11]`; that counter is printed into text slot 109, under the label in slot 108 (`"Commendations:"`; `0x00458270`) and spent one at a time to promote a unit (`0x0045a770`); `0x0045d3f0` branches on it after the mission |

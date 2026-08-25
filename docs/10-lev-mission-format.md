@@ -146,8 +146,21 @@ Map type distribution over the corpus, and how it matches the filename prefixes:
 | 1 | Campaign | 77 | `_C_*` |
 | 2 | Single | 10 | `_S_*` |
 | 3 | Multi (deathmatch) | 25 | `_M_*` |
-| 4 | Special | 18 | `upgrade_*`, some `_O_*` |
+| 4 | Special | 18 | `upgrade_*`, `_C_XXX`, `_C_YYY`, `_I_001` |
 | 5 | COOP | 25 | `_O_*` |
+
+**Type 4 is not a mission at all — it is a non-battle screen.** All 18 are
+`40x40`; `_C_YYY` (scene `Map2`) is the campaign location map, `_C_XXX` (scene
+`City`) a city view, `_I_001` (scene `Logowall`) the logo screen, and the
+sixteen `upgrade_*` reuse ordinary battle scenes as backdrops for the upgrade
+and recruit screens, carrying the 2–3 figures shown on them. Only `_C_XXX` and
+`_C_YYY` place no units at all.
+
+A save taken while the campaign location screen was open confirms this from the
+running game: it names `_C_YYY` as the current mission and embeds its `40x40`
+map exactly as a battle save embeds a battle
+([`11` §6](11-save-game-format.md)). The engine has one mission pipeline and
+runs its menus through it.
 
 `0x223` runs 1, 2, 3, … for `_C_100`, `_C_101`, `_C_102` … up to 34 for
 `_C_133`, then 40 for `_C_140`, i.e. mission number minus 99. Non-campaign maps
@@ -532,13 +545,13 @@ static `FP` at (73,45) sits next to edit 1217 at (88,45), which
 | `+0x4D` | `u8` | `0` none, `1` **unit-pool candidate**, `2` **hero** | check boxes 1374/1396; `fcn.0046f7e0`, `fcn.00478f20` test it non-zero | confirmed |
 | `+0x4E` | `u8` | **AI group id** | edit 1313 (`Group`); `fcn.0040b210` scans it; `InsertUnitWithGroup`/`GetUnitsInGroup` | confirmed |
 | `+0x4F` | `u8` | **Visibility state**: `0` visible, `1` seen only by a scanner, `3` hidden. Runtime; recomputed from scratch by `aBuildVisibleMap` (`fcn.004798c0`) / `aBuildVisibleMapForUnit` (`fcn.004794b0`) on every pass, see [`22` §9](22-combat-and-visibility.md) | `aSetVisibleStateForUnit` (`fcn.00479370`) is its only writer; it sets the 3D object's flag to 1/3/2 in the same breath | confirmed |
-| `+0x50` | `u8` | Runtime per-turn counter, zeroed by `fcn.004781C0`. Non-zero on 4 shipped units (20, 35, 40, 55) | — | UNVERIFIED |
+| `+0x50` | `u8` | **Distance walked this turn**, in tenths of a field: `aExecuteMove` adds 10 per orthogonal step and 15 per diagonal one (`0x0046E7B7`), and the start-of-turn refresh zeroes it ([`25` §5.1](25-turn-and-round.md)). Read by unit `special` 4 ([`21` §5](21-info-lcl-schema.md)), where the threshold "2 or less" means "has not moved". Non-zero on 4 shipped units (20, 35, 40, 55) — mid-turn state the editor saved | — | confirmed |
 | `+0x51` | `u8` | **x at the start of the current turn** — copied from `+0x42` by the turn refresh `fcn.004781C0`, initialised to the spawn cell by the unit-creation helper `fcn.00477830`. Read *instead of* `+0x42` by `fcn.0042FF30`/`fcn.0046A270` when the attacker's weapon has `special` 6, which `Info.lcl` glosses as "attack the defender's position of the last turn" | — | confirmed |
 | `+0x52` | `u8` | **y at the start of the current turn** | same | confirmed |
 | `+0x55` | `u8` | **Speech** — voice sample set, 0–12, see §5.8 | list box 1470 (`Select Speech`); `switch` in `fcn.0047b660` | confirmed |
 | `+0x56` | `u8` | Runtime **sound-channel back-reference**; `fcn.00477970` stores the channel index, `fcn.00477980` clears it, `fcn.00477990` reads it back to stop the sound. Residue: 177 shipped records carry 1, 2, 4 or 5, at most four per file | — | high |
 | `+0x57` | `u8` | **Rested** — set by `fcn.004781C0` to `unit[0x41] == 7`, i.e. "did not act last turn"; grants one extra MP while FP > 1 (`fcn.00475160`). `0` on all but 4 shipped units (value 16) | — | high |
-| `+0x58` | `u8` | **Stimulant** — `1` for equipment 3 (`Light Stimulant`), `2` for equipment 4 (`Heavy Stimulant`), `0` for neither (`fcn.00475320`). Exactly the three units carrying a Light Stimulant hold `1` | — | confirmed |
+| `+0x58` | `u8` | **Stimulant** — `1` for equipment 3 (`Light Stimulant`), `2` for equipment 4 (`Heavy Stimulant`), `0` for neither (`fcn.00475320`). Exactly the three units carrying a Light Stimulant hold `1`. `255` means **spent this turn**: `fcn.004785B0` pays the value into `+0x15` and stamps `255`, and the refresh turns it back into `0` ([`25` §8](25-turn-and-round.md)) | — | confirmed |
 | `+0x59` | `u8` | **Reaction ticket** — per-player sequence number, see §5.12. `0` on all but 7 shipped units (76–84) | — | confirmed |
 | `+0x5A` | `u8` | **Cached resale value, in tens of credits** — campaign state, see §5.11. `0` on all but two shipped records (both `5`) | — | confirmed |
 
@@ -695,13 +708,11 @@ if mp > 200: mp = 0                    # underflow guard
 if unit[0x41] in (5, 6): mp = 0
 ```
 
-FP itself is a per-turn stamina pool. The turn refresh `fcn.004781C0` walks one
-player's units and, for every unit whose FP is not `255`, moves FP toward the cap
-`fcn.00475120` returns — **the unit's rank, `EP / 12`, with a floor of 3** — by
-one point a turn, by two when a friendly `Banner` carrier is within 4 fields
-(`fcn.0046FAD0` again), plus one more if the unit spent the previous turn idle
-(`+0x41 == 7`). The same routine then records the unit's position in
-`+0x51`/`+0x52`, sets `+0x57`, and clears `+0x41` and `+0x50`.
+FP itself is a per-turn stamina pool, topped up by the start-of-turn refresh
+`fcn.004781C0` toward the cap `fcn.00475120` returns — **the unit's rank,
+`EP / 12`, with a floor of 3**. That routine is what restores everything the
+formula above reads, and it is written out in full in
+[`25` §5](25-turn-and-round.md).
 
 ### 5.6 AI orders (`+0x47`/`+0x48`, `+0x49`/`+0x4A`)
 
@@ -1004,10 +1015,17 @@ unit[+0x41] = 1;
 unit[+0x59] = ++counter[unit[+0x45]];
 ```
 
-`fcn.0046CCA0` then walks all 200 slots, takes the **highest** ticket among
-units with `+0x16 != 0 && +0x41 == 1`, resolves that unit's reaction, clears its
-ticket, and repeats — a last-in-first-out interrupt queue. The turn refresh
-`fcn.004781C0` clears `+0x59` along with `+0x3E`.
+`fcn.0046CCA0` then drains the queue. It walks the tickets from **1 upward**,
+resolving the reaction of the unit that holds each — a *first*-in-first-out
+interrupt queue, and only in game mode 1; every other mode ignores the ticket
+and scans the slots in index order. The turn refresh `fcn.004781C0` clears
+`+0x59`, and **decrements** `+0x3E` by one — or by two for weapon ids 4, 6 and
+41 — rather than clearing it. The full mechanic, including what does *not*
+clear `+0x41`, is [`25` §6](25-turn-and-round.md).
+
+> An earlier revision of this paragraph said the drain took the highest ticket,
+> last in first out. That mistook the pass that finds the highest live ticket —
+> which only bounds the walk — for the selection itself.
 
 ---
 
@@ -1252,8 +1270,8 @@ is left is small and mostly unfalsifiable from the shipped data.
    at `0x0051F2A0` starts every soldier at `rank * 12` and moves in steps of 12
    thereafter; the only other writer is a cheat key that sets 120 outright.
 
-2. **The unit bytes with no reader at all.** The list was eleven; **five are now
-   closed** and five remain, with `+0x50` sitting between the two groups.
+2. **The unit bytes with no reader at all.** The list was eleven; **six are now
+   closed** and five remain.
 
    | Offset | Now |
    |---|---|
@@ -1262,7 +1280,7 @@ is left is small and mostly unfalsifiable from the shipped data.
    | `+0x40` | weapon malfunction state (§5.12) |
    | `+0x59` | reaction ticket (§5.12) |
    | `+0x5A` | cached resale value (§5.11) |
-   | `+0x50` | per-turn counter, zeroed by `fcn.004781C0` — writer known, consumer not |
+   | `+0x50` | distance walked this turn, tenths of a field ([`25` §5.1](25-turn-and-round.md)) |
    | `+0x20`, `+0x3B`, `+0x3C`, `+0x53`, `+0x54` | **still open** |
 
    Two things had hidden the five. First, the *mission* unit array is

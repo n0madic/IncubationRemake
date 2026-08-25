@@ -248,7 +248,7 @@ SetWeaponInfo2 (0, "W_LCG_0", 0,   1,    0,    "A");
 | +0x3a | 1 | 1 | 16 (`num[14]`) | **heat** — the heat *cap*, doubled by equipment 19 (`Cooler`). `255` disables the mechanic. Reaching it triggers the overheat roll | confirmed (`0x00475340`; see [`10` §5.12](10-lev-mission-format.md) and [`22` §8](22-combat-and-visibility.md)) |
 | +0x3b | 1 | 1 | 18 (`num[16]`) | **special** 0..6; `6` = *attack the defender's position of the last turn*, which is the one value with a decoded effect | confirmed (`== 6` in `0x0046f7e0` and in `0x0046A270`, where it swaps the target cell for unit `+0x51`/`+0x52`; `!= 1` in `0x0042ff30`) |
 | +0x3c | 1 | 1 | 12 (`num[10]`) | **AP** — action points per shot | confirmed: subtracted from `unit+0x15` before firing (`0x0040a440`); GUI text 130 `"Action Pts:"` |
-| +0x3d | 1 | 2 | 3 (`num[1]`) | **weapon toggle** | header only |
+| +0x3d | 1 | 2 | 3 (`num[1]`) | **weapon toggle** — the id of this weapon's other firing mode; an involution over all 42 records, 26 fixed points and 8 pairs. `aToggleWeaponModes` (`0x0047a8c0`) is `unit[+0x3f] = weapon[+0x3d]`, and the engine only ever reverts, never toggles into a mode. See [`25` §7](25-turn-and-round.md) | confirmed |
 | +0x3e | 1 | 1 | 17 (`num[15]`) | **cost** in equipment points | confirmed (GUI text 122 `"Equipment Pts:"`; compared against the player's points before purchase in `0x00457da0`) |
 | +0x3f | 1 | 1 | 19 (`num[17]`) | **param** — replacement weapon id for `special` | confirmed: `unit+0x3f = weapon[+0x3f]` when the special fires (`0x0046f7e0`) |
 | +0x40 | 1 | 2 | 6 (`str[1][0]`) | **key** — first character; `'#'` suppresses | confirmed (`0x00432bd0` skips the entry when it is `'#'`) |
@@ -309,8 +309,9 @@ Two sites read it:
   `unit[+0x39] = 3` and, if the unit was already in state 1, zeroes its action
   points.
 
-`unit[+0x41] == 1` is then what the reaction-fire scan looks for (several
-sites; the ordinal in `+0x59` orders the reactions).
+`unit[+0x41] == 1` is then what the reaction-fire scan looks for; the ordinal in
+`+0x59` orders the reactions, **lowest first**, and only in game mode 1. What
+clears the state — and what does not — is [`25` §6](25-turn-and-round.md).
 
 **Shipped values are only 0 and 1.** Weapons with 1 are ids 0, 1, 2, 3, 4, 6,
 10, 14, 16 and 29 — the aimed direct-fire guns (combat guns, assault rifle,
@@ -475,10 +476,16 @@ matters. The shipped file sets it to **0 for every human unit** (ids 0–3, 21,
 have no fitness and humans get `max(3, rank/12)`.
 
 The runtime counter it bounds is `unit[+0x19]`. `0x004781c0`, the start-of-turn
-refresh, tops it up by +1 normally, +2 if `0x0046fad0` says an enemy is
-adjacent, and clamps to the maximum; `0x00475160` then overrides the unit's
+refresh, tops it up by +1 normally, +2 when `0x0046fad0` finds a friendly
+`Banner` carrier (equipment 8) within four fields, and one more on top if the
+unit stood down last turn — clamping to the maximum, so at most +3 in a turn
+([`25` §5](25-turn-and-round.md)). `0x00475160` then overrides the unit's
 movement points from it — **0 → MP 1, 1 → MP 2**, otherwise the type's MP with
 modifiers. It is the "exhausted soldier moves slower" mechanic.
+
+> An earlier revision of this paragraph read `0x0046fad0` as "an enemy is
+> adjacent". It is the Banner test — same player, alive, equipment 8, distance
+> under 4 — which is what [`10` §5.5](10-lev-mission-format.md) already said.
 
 #### Columns 8 and 9: armour with an escape value — **[code] `0x00475490`, `0x004754f0`**
 
