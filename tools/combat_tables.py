@@ -140,6 +140,15 @@ OPT_IO = (0x004602E0, 0x00460390)
 #: `jmp dword [ebx*4 + 0x00460EAC]` in the options screen's help-line switch:
 #: row index -> a `push <textId>` stub.  The ids name the fields, and the row
 #: order is the same one `0x00460520` hit-tests.
+OPT_INIT = (0x004600AC, 0x004601C8)
+"""The straight-line block in ``aInitOptions`` that installs the defaults."""
+EXPECTED_OPT_DEFAULTS = {0x00: 1, 0x04: 25000, 0x08: 0, 0x0C: -512, 0x10: -512,
+                         0x14: -512, 0x18: 0, 0x1C: 1, 0x20: 2, 0x24: 2,
+                         0x28: 3}
+"""docs/20 7.6.  ``+0x2C`` is the 64-byte player name, copied not stored."""
+OPT_NAME_FIELD = 0x005129D8 + 0x2C
+OPT_DEAD_FIELDS = (0x005129E0, 0x005129E8)
+"""``+0x08`` and ``+0x10``: written by aInitOptions and read nowhere."""
 OPT_ROW_TABLE = 0x00460EAC
 EXPECTED_OPT_ROWS = [50, 51, 52, 57, 55, 54, 56, 58]
 #: Row 7 is `aiLevel`, `Game.opt +0x18`, help line 58 "Set Difficulty Level ...".
@@ -324,6 +333,52 @@ class CombatTables:
                                 struct.unpack_from("<I", window, i + 3)[0]))
                     break
                 i = window.find(b"\x6a", i + 1)
+        return out
+
+    def option_defaults(self) -> dict[int, int]:
+        """The blob offsets ``aInitOptions`` writes, and what it writes there.
+
+        The block is straight-line code that loads a constant into a register
+        and stores it several times, so the registers are tracked forward.  A
+        store whose target is outside the blob is ignored.
+        """
+        lo, hi = OPT_INIT
+        data = self.pe.data
+        base = self.pe.va_to_off(lo)
+        end = self.pe.va_to_off(hi)
+        regs = {"eax": None, "esi": None, "ebp": None}
+        stores = {"\xa3": "eax", "\x89\x35": "esi", "\x89\x2d": "ebp"}
+        out: dict[int, int] = {}
+        i = base
+        while i < end:
+            op = data[i]
+            if op in (0xB8, 0xBE, 0xBD):
+                name = {0xB8: "eax", 0xBE: "esi", 0xBD: "ebp"}[op]
+                regs[name] = struct.unpack_from("<i", data, i + 1)[0]
+                i += 5
+                continue
+            if op == 0x33 and data[i + 1] in (0xC0, 0xF6, 0xED):
+                regs[{0xC0: "eax", 0xF6: "esi", 0xED: "ebp"}[data[i + 1]]] = 0
+                i += 2
+                continue
+            if op == 0xC7 and data[i + 1] == 0x05:
+                target = struct.unpack_from("<I", data, i + 2)[0]
+                value = struct.unpack_from("<i", data, i + 6)[0]
+                if OPT_BLOB <= target < OPT_BLOB + OPT_SIZE:
+                    out[target - OPT_BLOB] = value
+                i += 10
+                continue
+            for prefix, name in stores.items():
+                raw = prefix.encode("latin-1")
+                if data[i:i + len(raw)] == raw:
+                    target = struct.unpack_from("<I", data, i + len(raw))[0]
+                    if (OPT_BLOB <= target < OPT_BLOB + OPT_SIZE
+                            and regs[name] is not None):
+                        out[target - OPT_BLOB] = regs[name]
+                    i += len(raw) + 4
+                    break
+            else:
+                i += 1
         return out
 
     def option_rows(self) -> list[int | None]:
@@ -549,6 +604,18 @@ def run_check(root: str) -> int:
                 f"option help lines are {rows}, expected {EXPECTED_OPT_ROWS}")
     stats.check("opt.difficulty", rows[OPT_DIFFICULTY_ROW] == 58,
                 f"the difficulty row points at text {rows[OPT_DIFFICULTY_ROW]}, not 58")
+    defaults = tables.option_defaults()
+    stats.check("opt.defaults", defaults == EXPECTED_OPT_DEFAULTS,
+                f"aInitOptions installs {defaults}, expected "
+                f"{EXPECTED_OPT_DEFAULTS}")
+    stats.check("opt.name_field",
+                any(tables.refs_to(OPT_NAME_FIELD)),
+                f"nothing addresses the player name at {OPT_NAME_FIELD:#010x}")
+    dead = {va: tables.refs_to(va) for va in OPT_DEAD_FIELDS}
+    stats.check("opt.dead", all(len(sites) == 1 for sites in dead.values()),
+                "the two dead dwords are referenced at "
+                + ", ".join(f"{va:#010x}: {[hex(s) for s in sites]}"
+                            for va, sites in dead.items()))
 
     # 1c. the special column has no consumer this documentation does not know
     sites = set(tables.refs_to(SPECIAL_COLUMN))

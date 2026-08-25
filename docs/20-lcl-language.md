@@ -1468,6 +1468,17 @@ Text 53, the unqualified `"Set Difficulty Level"`, is not reachable from this
 switch. Nothing on this screen touches +0x08, +0x10, +0x28 or +0x2C, which is
 why `?_` had to exist at all.
 
+`combat_tables.py --check` guards the whole blob, not just its I/O: `opt.io`
+requires both routines to transfer `0x6C` bytes from `0x005129D8`, `opt.rows`
+and `opt.difficulty` pin the eight help lines, `opt.defaults` re-executes
+`aInitOptions`' straight-line default block (`0x004600AC`..`0x004601C8`) and
+requires exactly the eleven values in the table above, and `opt.dead`
+**enumerates** every `.text` reference to +0x08 and +0x10 rather than reporting
+a failed search: one each, `0x0046019A` and `0x0046018A`, both the
+`aInitOptions` write itself. The player name at +0x2C has two, the default copy
+at `0x0046013A` and the getter at `0x00461301`. So "dead" here means *provably
+write-once*, and every one of the 108 bytes is accounted for.
+
 **The rows carry no text.** Each state is a 30x30 icon from `Libs/options.LIB`,
 which is why searching the binaries for level names finds nothing:
 

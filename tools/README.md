@@ -45,6 +45,7 @@ sav_tables.py         verify the save-game layout against the writer/reader chai
 sav_parse.py          parse a save game; extract its embedded .lev (docs/11)
 typ_parse.py          parse OBJECT.TYP, the lost exporter's config (docs/30 2.11)
 ai_tables.py          decode the AI turn: orders, move map, targeting (docs/23)
+brief_parse.py        parse the briefing/info text markup and lay it out (docs/24)
 ```
 
 ## Corpus checks
@@ -65,12 +66,13 @@ python3 tools/visn_decode.py      gog_incubation --check            # 723/723
 python3 tools/cho_parse.py        --check gog_incubation            # 237/237
 python3 tools/cha_parse.py        --check gog_incubation            # 245/245
 python3 tools/cha_parse.py --verify-convention gog_incubation        # quaternion order
-python3 tools/combat_tables.py   --check gog_incubation             # 24 checks, 48/48 patterns
+python3 tools/combat_tables.py   --check gog_incubation             # 27 checks, 48/48 patterns
 python3 tools/trace_names.py     --check gog_incubation             # 324 + 146 names
 python3 tools/sav_tables.py      --check gog_incubation             # 69 checks
 python3 tools/sav_parse.py       gog_incubation --selftest          # 31 map sizes
 python3 tools/typ_parse.py       --check gog_incubation             # 18 checks
 python3 tools/ai_tables.py       --check gog_incubation             # 77 checks
+python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 
@@ -117,6 +119,12 @@ python3 tools/typ_parse.py gog_incubation/Video/Dialog_03/Objects/OBJECT.TYP
 # the AI's order and level tables, planner horizons and hit-probability bands
 python3 tools/ai_tables.py --orders gog_incubation
 python3 tools/ai_tables.py --json   gog_incubation
+
+# a mission briefing: its labels, its objective/tip program, and the wrapped text
+python3 tools/brief_parse.py gog_incubation/DATA/TXT/English/Briefing/_C_105.txt
+python3 tools/brief_parse.py gog_incubation/DATA/TXT/English/Briefing/_C_105.txt \
+        --label A0 --layout 280
+python3 tools/brief_parse.py gog_incubation/DATA/TXT/English/Briefing/_C_105.txt --json
 ```
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;

@@ -882,6 +882,8 @@ aBuildVisibleMap(player)             once per turn and after every move
 | `info.wave_overrun` | exactly eight weapons have a 9-character wave name, matching [`21`](21-info-lcl-schema.md) |
 | `opt.io` | `aSaveOptions` and `aLoadOptions` both transfer `0x6C` bytes from `0x005129D8`, i.e. `Game.opt` is one `.data` block |
 | `opt.rows`, `opt.difficulty` | the eight option rows resolve to help lines 50/51/52/57/55/54/56/58, and row 7 — `aiLevel` — is 58 |
+| `opt.defaults` | re-executing `aInitOptions`' default block yields exactly the eleven values [`20` §7.6](20-lcl-language.md) tabulates |
+| `opt.dead`, `opt.name_field` | every `.text` reference to `Game.opt` +0x08 and +0x10 is enumerated — one each, both the `aInitOptions` write itself — and the player name at +0x2C has its copy and its getter |
 | `special.sites` | the eleven `.text` sites that touch `unitType[+0x07]` are exactly the ones [`21` §5](21-info-lcl-schema.md) accounts for |
 | `rng.private` 2/2 | in both `Incubation.exe` and `iDesigner.exe`, every reference to the RNG's four globals lies inside `aRandom`/`aRandomize` |
 

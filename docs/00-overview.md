@@ -37,7 +37,7 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 | `.lev` | 155 | Missions: field grid, units, scenery placement | **Solved structurally**; grid, units and ground lattice decoded, some fields open | `lev_parse.py` | [10](10-lev-mission-format.md) |
 | `.sav` | 0 (written by the game) | Save games — campaign and play-by-mail | **Solved structurally** from the writer and reader chains; nine blocks, one of them a complete `.lev` image. No sample exists to parse | `sav_tables.py --check`, `sav_parse.py` | [11](11-save-game-format.md) |
 | `.lcl` / `.gcl` | 176 + 2 | Mission scripts, GUI layout, unit/weapon balance tables | **Solved**, interpreter semantics read from the binary. 177 parse; `DATA/Version.gcl` is a bare version string, not a script | `lcl_decode.py`, `lcl_parse.py` | [20](20-lcl-language.md), [21](21-info-lcl-schema.md) |
-| `.txt` (briefings) | 120 | Mission briefing and debriefing text, same XOR 0xFF obfuscation as `.lcl` | **Undocumented.** The obfuscation is the `.lcl` one and `lcl_decode.py` reads them, but the markup inside (`{:A0}`, `{§1}`, `===[Briefing]`, `@@`) has no spec and no parser | `lcl_decode.py` (deobfuscation only) | — |
+| `.txt` (briefings, info) | 120 | Briefings, victory/defeat conditions, tips, the in-game database, event and error text; same XOR 0xFF obfuscation as `.lcl` | **Solved**, 120/120. Both readers and the line breaker are reproduced, the layout against the shipped fonts included; the label set the game can ask for is enumerated from the call sites | `brief_parse.py` | [24](24-briefing-text.md) |
 | `.3DW` | 42 | ASCII scene: which prototypes are placed where | **Solved** | `3dw_parse.py` | [30](30-eng3d-ascii-formats.md) |
 | `.dir` (3DI) | 42 | ASCII build-time index (never read by the engine) | **Solved** | `dir3di_parse.py` | [30](30-eng3d-ascii-formats.md) |
 | `.din` | 42 | Binary index into `prototyp.bin` / `texture.lib` | **Solved** (two distinct layouts) | `din_parse.py` | [30](30-eng3d-ascii-formats.md) |
@@ -47,10 +47,10 @@ Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-bi
 | `.LIB` (shape) | 58 | 2D sprites: UI, icons, fonts, cursors | **Solved**, visually verified | `lib_extract.py` | [60](60-lib-sprites.md) |
 | `.pal` | 24 | 256-colour palettes (Windows BMP carriers) | **Solved** | `inclib/palette.py` | [60](60-lib-sprites.md) |
 | `.IMG` | 42 | Fixed-point atan / sin-cos lookup tables | **Solved** | `img_tables.py` | [70](70-img-tables.md) |
-| `Game.opt` | 0 (created on first run) | Player options | **Solved** — a raw 108-byte dump of one `.data` block; every field named from the options screen's own help lines | `combat_tables.py --check` (layout guard) | [20 §7.6](20-lcl-language.md) |
+| `Game.opt` | 0 (created on first run) | Player options | **Solved** — a raw 108-byte dump of one `.data` block; every field named from the options screen's own help lines, every default re-executed from `aInitOptions`, and the two dead dwords closed by enumeration | `combat_tables.py --check` (six `opt.*` checks) | [20 §7.6](20-lcl-language.md) |
 | `prototyp.bin` | 21 | 3D prototype geometry — a bytecode program, not a mesh struct | **Solved**, 26072/26072 records | `prototyp_parse.py` | [31](31-prototyp-geometry.md) |
 | `OBJECT.TYP` | 1 | Config for the object exporter — **the tool that never shipped** | **Solved** (213 bytes, one file, full grammar). Read by nothing; it explains two corpus-wide uniformities and reclassifies eight opcodes as unselected exporter settings | `typ_parse.py` | [30 §2.11](30-eng3d-ascii-formats.md) |
-| `.bmp` | 118 | Briefing art, backgrounds, install screens | Standard Windows BMP | — | — |
+| `.bmp` | 118 | Briefing art, backgrounds, install screens; the briefing program names 89 of them | Standard Windows BMP | — | [24 §8](24-briefing-text.md) |
 | `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE | — | — |
 | `.ogg` | 32 | Music (GOG re-encode of the CD audio) | Standard Ogg Vorbis | — | — |
 | `Rec_0.dat` | 1 | Orphaned file under `DATA/Misc/` | **Dead data** — no shipped binary references it | — | see below |
@@ -224,6 +224,7 @@ still open:**
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
 | [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
 | [23](23-ai-system.md) | 0 | all five closed; `+0x10` is fire / a mine / a shield, named by the models their makers insert; the cover score's out-of-bounds read is heap history and cancels in the maximiser; `aInitAISystem` does not exist; the planner and the fire routine share one twelve-value selector; and the loop's counters are a local and a parameter, which no mechanism in these binaries could have preserved |
+| [24](24-briefing-text.md) | 0 | nothing open; three mechanisms are implemented and unexercised (`{#2}`, the `#` indent, the Japanese two-byte path) and two things are dead (the `{:OC}` read, and `Errors.txt`/`Campaign.txt`, which no code can name) |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, and two raised by the leaked exporter config (§2.11): what `SORT_OBJECT` selected — the one item here with an untraced lead — and whether `DETAIL_METHODE`'s numbering is the engine's |
 | [31](31-prototyp-geometry.md) | 2 | what a Voodoo did with Glide blend factor `0xf`; runtime rasteriser confirmation |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
