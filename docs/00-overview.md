@@ -27,6 +27,9 @@ why its class names (`V100ModelDesc`, `KeyFramedAnimationDesc`,
 `LinearVectorMovementDesc`, …) are known exactly rather than guessed.
 
 Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-binaries-and-source-layout.md).
+Plan for the runtime work that remains — the turn, interaction, the campaign,
+effects and sound, the interface contract and the sequence player:
+[`91-game-logic-research-plan.md`](91-game-logic-research-plan.md).
 
 ---
 
