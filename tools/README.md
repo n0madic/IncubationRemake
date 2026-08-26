@@ -60,6 +60,10 @@ interface_tables.py   decode the replacement-UI contract: LCL layouts/text,
                       battle commands, deploy transfer/hand-over overlay, and
                       map intent boundary
                       (docs/29)
+seq_parse.py          verify and print the hard-coded sequence manifest: logical
+                      ids, video parts, actors, camera/rate and corpus; the
+                      per-arm checks pin each part's directory, stems and camera
+                      to aSetSeqPlayerVideoPart itself (docs/41)
 ```
 
 ## Corpus checks
@@ -92,6 +96,7 @@ python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
 python3 tools/blob_tables.py        --check gog_incubation          # 252 checks
 python3 tools/interface_tables.py   --check gog_incubation          # 39 checks
+python3 tools/seq_parse.py          --check gog_incubation          # 75 checks, 130/130
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 

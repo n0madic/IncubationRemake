@@ -178,11 +178,16 @@ The dialogue arms pass these numbers:
 |---|---|---|---|---|---|---|
 | number | 2 | 3 | 7 | 1 | 14 | 15 |
 
-**What the number selects inside `Video/` is not decoded here.** The shipped
-tree has `Dialog_02`, `_03`, `_07`, `_09`, `_14`, `_15`, `_16`; the numbers
-above include a 1 with no `Dialog_01` and never mention 9 or 16, and
-`0x00456FC0` special-cases mission ids 1, 180 and 255 before it uses the
-number at all. The mapping belongs to package G — [`91` §8](91-game-logic-research-plan.md).
+[`41` §2](41-sequence-player.md) closes what the number selects.  Logical ids
+2 and 3 are `Dialog_02` and `_03`; id 7 chains `Dialog_07` then `_09`; id 14 is
+`Dialog_14`; id 15 chains `_15` then `_16`; id 1 selects animated
+`Video/Extro`.  The mission-id special cases are also exact:
+mission 1 selects logical id 0 when its availability flag is set, mission 180
+selects value 16 (intercepted by the static extro screen before the sequence
+player), and mission 255 selects id 1.  `0x00510DC0` is the
+presentation variant: non-zero chooses the full 640×480 viewport and skips the
+framed-screen background callback; zero chooses the 518×306 viewport at
+(65,57).  It does not alter the sequence manifest.
 
 ### 2.4 Upgrade locations are maps of their own
 
@@ -810,11 +815,9 @@ What each group covers:
 
 ## 10. Open questions
 
-1. **What the dialogue numbers select.** §2.3 tables the six numbers
-   `aLocationHandling` passes; the shipped `Video/` directories do not line up
-   with them one-to-one and `0x00456FC0` special-cases three mission ids first.
-   Package G ([`91` §8](91-game-logic-research-plan.md)) owns the sequence
-   player and should close this; it is left here as the trigger side only.
+1. ~~**What the dialogue numbers select.**~~ **Closed** — §2.3 and
+   [`41` §2](41-sequence-player.md) give the complete logical-id → successive
+   directory mapping, including the `_07 → _09` and `_15 → _16` transitions.
 2. **Why locations 3 and 6 load each other's upgrade map.** Pinned as observed
    (§2.4). Whether it is an authoring slip or deliberate cannot be settled from
    the shipped data: both maps exist, both are reachable, and no text names
@@ -840,7 +843,7 @@ What each group covers:
    have cells. The remainder are dialogue ids 12–14, 16–20 and 24–27, and
    location 130, *Epilogue* — which is what `_C_180` would be if its mission id
    were 80 instead of 180. Nothing reads them.
-5. **`0x00510DC0` and the dialogue screen's mission-id special cases** (1, 180,
-   255). The three ids are the campaign's first mission, its last, and the
-   campaign-2 map's own header id; what the flag they set changes on the
-   screen is not decoded, and belongs with question 1.
+5. ~~**`0x00510DC0` and the dialogue screen's mission-id special cases.**~~
+   **Closed** — §2.3.  The ids select logical sequence 0, the intercepted
+   static extro screen, and logical sequence 1; the flag selects full-screen
+   versus framed presentation and the background callback.

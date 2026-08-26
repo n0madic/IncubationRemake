@@ -44,6 +44,7 @@ python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 252 checks
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
+python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 ```
 
@@ -66,8 +67,10 @@ non-zero when there is nothing to parse.
 
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
-`interaction_tables`, `campaign_tables`, `blob_tables` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
-`sav_parse` takes it positionally but only with `--selftest`. Check `--help` rather than guessing.
+`interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`
+and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`sav_parse` takes it positionally but only with `--selftest`, and `seq_parse`
+takes it positionally with `--check` as a bare flag. Check `--help` rather than guessing.
 
 ### Asset extraction
 
@@ -161,11 +164,11 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-`docs/91-game-logic-research-plan.md` is the plan for the runtime work that remains — package A (the turn and the round) is **delivered** as `docs/25`, package C (interaction and set-pieces) as `docs/26`, package B (the campaign layer) as `docs/27`, packages D+E (effects and sound) as `docs/28`, and package F (the interface contract) as `docs/29`; only the sequence player remains. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there. Neither is a spec: they cite the numbered docs and state no findings of their own.
+`docs/91-game-logic-research-plan.md` is the plan for the runtime work: packages A (the turn and round), B (campaign), C (interaction), D+E (effects and sound), F (interface contract), and G (sequence player) are **delivered** as `docs/25` through `docs/29` and `docs/41`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there. Neither is a spec: they cite the numbered docs and state no findings of their own.
 
-Every doc ends with an **Open questions** section. **38 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 4, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section. **36 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

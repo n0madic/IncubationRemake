@@ -392,7 +392,7 @@ field-level branch, marker, and reset contract.
 
 ---
 
-## 8. Package G — the sequence player
+## 8. Package G — the sequence player — **delivered**
 
 **Why it is in scope.** The dialogue scenes are not video files. `Video/Dialog_*`
 holds `.cha` animations and an `IMG` directory, so the cutscenes are the same
@@ -424,6 +424,29 @@ must load through the resulting parser — the usual `N/N`.
 
 **Deliverable.** `docs/41-sequence-player.md`, `tools/seq_parse.py --check`.
 
+**Delivered** as [`41-sequence-player.md`](41-sequence-player.md) with
+`tools/seq_parse.py --check` (75 checks, 100 mutations, 0 missed, all 75
+check names shown to fail).  The compiled manifest is explicit: seven accepted logical
+ids, twelve successive video parts, 130 actor/animation entries, the camera/rate
+strings, the 30 fps wall-clock update, part-completion transition, lifecycle,
+and the exact campaign trigger boundary.  The checker verifies the PE
+dispatch/lifecycle/timing anchors, all 12/12 directories, all selected pairs,
+the eleven intentionally ignored lookalikes, and parses 130/130 selected
+animations through the Charisma reader.  Speech/subtitle synchronisation is
+closed negatively: the player carries neither; only the separate extro screen
+path starts `Briefing/extro.wav`.
+
+The first revision of `41` got one thing wrong, and the correction is the
+lesson: **two arms are laid out in the reverse of their part order**, so
+attributing a camera/rate string by address adjacency swapped `Dialog_07`'s and
+`Dialog_09`'s.  The checker of that revision could not catch it — it pinned the
+camera strings' *existence* in `.rdata` and the selected files' existence on
+disk, both of which survive a permutation.  The per-arm checks added since pin
+each arm's push instructions, its closing `mov edi, <camera>`, its loop bound,
+and the absence of any other arm's `jmp` to the shared tail in between; the
+manifest is now proved from `aSetSeqPlayerVideoPart` rather than from a
+directory listing.
+
 ---
 
 ## 9. Out of scope — H, multiplayer and play-by-mail
@@ -453,12 +476,10 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 | 3 | ~~**B** campaign~~ **delivered** | [`27`](27-campaign.md), `campaign_tables.py` | A, C | mission 2 onward |
 | 4 | ~~**D + E** effects and sound~~ **delivered** | [`28`](28-effects-and-sound.md), `blob_tables.py` | — (independent) | the game's feel |
 | 5 | ~~**F** interface contract~~ **delivered** | [`29`](29-interface-contract.md), `interface_tables.py` | A, B | a UI that shows the right numbers |
-| 6 | **G** sequences | `41`, `seq_parse.py` | — (independent) | the story scenes |
+| 6 | **G** sequences — delivered | `41`, `seq_parse.py` | — (independent) | the story scenes |
 
-**A, C and B are the critical path, and all three are delivered**, as are the
-independent D+E and the F interface contract. G is independent and can be
-picked up whenever someone wants a change of subject; its player does not block
-the battle or interface work.
+**All seven packages are delivered.** A, C and B were the critical path; D+E,
+F and G close the independent effects, interface and story-scene contracts.
 
 **Development need not wait.** Loading, terrain, models, animations, textures,
 fonts, sprites, balance tables, combat, visibility, the AI and all mission text

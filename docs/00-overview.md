@@ -243,7 +243,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **38 items are
+in place with the evidence that closed them rather than deleted. **36 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -256,12 +256,13 @@ still open:**
 | [24](24-briefing-text.md) | 0 | nothing open; three mechanisms are implemented and unexercised (`{#2}`, the `#` indent, the Japanese two-byte path) and two things are dead (the `{:OC}` read, and `Errors.txt`/`Campaign.txt`, which no code can name) |
 | [25](25-turn-and-round.md) | 2 | the `pbm session` mode that no literal selects (deliberately not traced — the remake has no play-by-mail), and one multiplayer session flag |
 | [26](26-interaction.md) | 4 | the dead fourth `SetCtrlMapInfo` column, `_C_156`'s keyless teleporter exit, the `technical` box's guard bug, and what `Batteries` was going to do. The ladder rule is now a **decision**, not a question ([`92` §7.7](92-remake-architecture.md)) |
-| [27](27-campaign.md) | 4 | which `Video/` directory each dialogue number selects (package G's), why upgrade locations 3 and 6 load each other's map, the fourteen named locations with no cell, and one undecoded dialogue-screen flag. All 30 `setMissionResult` sites are now enumerated and classified, which is **closed** |
+| [27](27-campaign.md) | 2 | why upgrade locations 3 and 6 load each other's map, and the fourteen named locations with no cell. The dialogue-number → `Video/` mapping and presentation flag are now **closed** by [`41`](41-sequence-player.md); all 30 `setMissionResult` sites are also enumerated and classified |
 | [28](28-effects-and-sound.md) | 2 | the per-tick constants of the 74 update arms, which are readable but not transcribed, and whether the eleven unreachable kinds were ever reachable. What the kinds *are* is now **closed** — every one is named by its creators, classed, and its spawn list decoded; so are the sprite atlas (there are no colour parameters: the palette is baked into one 8×8 texture), the sound gating (a sound's lifetime is its blocking sequence's), the `explosion.wav` / `explosion2.wav` split (an overheat catastrophe against ordnance impact) and the four `object_3d` fields two arms write — they are the **joint angles** of the model's sub-objects, read by seven Eng3d render opcodes and by nothing in the exe |
 | [29](29-interface-contract.md) | 0 | the hand-over routine `0x004312D0` is now decoded as the deployment-marker build/reset dispatch |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected, the one item here with an untraced lead, and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file |
 | [31](31-prototyp-geometry.md) | 1 | what a Voodoo did with Glide blend factor `0xf`. Runtime confirmation is **closed as not needed** — the item it was wanted for was settled by reading the code |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
+| [41](41-sequence-player.md) | 0 | nothing open; the manifest, the lifecycle, the 30 fps clock and the trigger are pinned to the image, and speech/subtitles are closed **negatively** — the player carries no scheduler and no `Video/` directory holds a wave or a text file. Two residual items are *decisions*, not unknowns: the camera ids `9..19` belong to the 3D scene, and presentation/input live outside the module |
 | [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 
