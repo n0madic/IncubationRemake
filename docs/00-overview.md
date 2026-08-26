@@ -39,7 +39,7 @@ the product decisions the specs leave behind:
 | Format | Count | Role | Status | Tool | Spec |
 |---|---|---|---|---|---|
 | `.lev` | 155 | Missions: field grid, units, scenery placement | **Solved structurally**; grid, units and ground lattice decoded, some fields open | `lev_parse.py` | [10](10-lev-mission-format.md) |
-| `.sav` | 0 (written by the game) | Save games — campaign and play-by-mail | **Solved structurally** from the writer and reader chains; nine blocks, one of them a complete `.lev` image. No sample exists to parse | `sav_tables.py --check`, `sav_parse.py` | [11](11-save-game-format.md) |
+| `.sav` | 6 (gitignored fixtures) | Save games — campaign and play-by-mail | **Solved** from the writer and reader chains and confirmed against six real saves (`tests/fixtures/saves/`, not in git); nine blocks, one of them a complete `.lev` image | `sav_tables.py --check`, `sav_parse.py` | [11](11-save-game-format.md) |
 | `.lcl` / `.gcl` | 176 + 2 | Mission scripts, GUI layout, unit/weapon balance tables | **Solved**, interpreter semantics read from the binary. 177 parse; `DATA/Version.gcl` is a bare version string, not a script | `lcl_decode.py`, `lcl_parse.py` | [20](20-lcl-language.md), [21](21-info-lcl-schema.md) |
 | `.txt` (briefings, info) | 120 | Briefings, victory/defeat conditions, tips, the in-game database, event and error text; same XOR 0xFF obfuscation as `.lcl` | **Solved**, 120/120. Both readers and the line breaker are reproduced, the layout against the shipped fonts included; the label set the game can ask for is enumerated from the call sites | `brief_parse.py` | [24](24-briefing-text.md) |
 | `.3DW` | 42 | ASCII scene: which prototypes are placed where | **Solved** | `3dw_parse.py` | [30](30-eng3d-ascii-formats.md) |
@@ -141,10 +141,13 @@ size identity that holds for all 155 shipped files:
 file_size = 864 + 23 * width * height + 203824
 ```
 
-**`.sav` is the only format the game itself writes**, and the only one with no
-corpus at all — the shipped `Work/Saves/` tree is empty. What replaces the
-corpus is that `aSaveGame` and `aLoadGame` are both in the binary and must
-agree, which pins every offset exactly; 69 checks assert that agreement.
+**`.sav` is the only format the game itself writes**, and the one that had no
+corpus for most of this project's life — the shipped `Work/Saves/` tree ships
+empty. What pinned the layout anyway is that `aSaveGame` and `aLoadGame` are
+both in the binary and must agree, which fixes every offset exactly; 69 checks
+assert that agreement. Six real saves, produced by playing the retail game
+under Wine and kept gitignored in `tests/fixtures/saves/`, have since confirmed
+the layout and settled or narrowed several field meanings.
 [`11-save-game-format.md`](11-save-game-format.md) also settles three things
 that were invisible from the read-only formats: play-by-mail is a real shipped
 mode with its passwords stored (obfuscated) in the file, the roster block is
@@ -232,7 +235,7 @@ python3 tools/lib_extract.py  gog_incubation --check     #  58/58
 python3 tools/img_tables.py   gog_incubation             #  42/42
 python3 tools/verify_3d_indices.py --root gog_incubation # .3DW/.dir/.din
 python3 tools/lcl_decode.py   gog_incubation -o out/lcl  # 178 files
-python3 tools/combat_tables.py --check gog_incubation    # 24 checks, 48/48 patterns
+python3 tools/combat_tables.py --check gog_incubation    # 27 checks, 48/48 patterns
 python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
 python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
 python3 tools/sav_parse.py    gog_incubation --selftest # 31 map sizes
@@ -285,8 +288,9 @@ still open:**
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 
 Almost all of these are open **in principle**, not merely untraced. Three
-recurring reasons: there is no corpus (three of `11`'s four, which need one
-save the retail release does not ship); there are no symbols (enumerator names, the `J` family — no
+recurring reasons: there is no corpus (the residue of [`11`](11-save-game-format.md)
+is narrowed but not settled by the six campaign saves we have; settling it
+wants a multiplayer save, which the retail release cannot produce); there are no symbols (enumerator names, the `J` family — no
 code references it at all); the authoring tool never shipped, so `class_code`,
 `type_code` and `EDITORDETAIL` have no recoverable meaning; or the field is zero
 in every shipped file, which no amount of data can characterise. Each entry

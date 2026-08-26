@@ -295,10 +295,12 @@ game's — a fixed slot 32, no field for the camera, a whole `.lev` embedded in
 every file ([`11`](11-save-game-format.md)).
 
 **Reading** original saves is a one-way import that constrains nothing, so it is
-deferred rather than rejected: worth doing after 1.0, and worth remembering that
-it is the one feature whose implementation would also close three of
-[`11`](11-save-game-format.md)'s four open questions, since all three want real
-save files. As a feature it ranks low — someone installing a remake is likely to
+deferred rather than rejected: worth doing after 1.0, and worth remembering
+that it is also the cheapest route into what remains open in
+[`11`](11-save-game-format.md) §9 — six campaign saves already exist as
+gitignored fixtures and narrowed those questions without settling them, and
+finishing the job wants save kinds the retail release cannot produce (among
+them a multiplayer one). As a feature it ranks low — someone installing a remake is likely to
 start the campaign again.
 
 ### 7.4 A full roster loses the surplus, but never silently

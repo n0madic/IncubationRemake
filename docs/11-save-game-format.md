@@ -1,18 +1,24 @@
 # `.sav` — the save game
 
-**Status:** structure complete, 0 sample files. Every claim below is checked
-against `Incubation.exe` by `tools/sav_tables.py --check`.
+**Status:** structure complete. Every structural claim below is checked
+against `Incubation.exe` by `tools/sav_tables.py --check`; the value-level
+claims of §4–§5.8 are checked against six real saves, kept (gitignored) in
+[`tests/fixtures/saves/`](../tests/fixtures/saves/README.md).
 
 This is the only format the *game* writes. Everything else in `docs/` is
 produced by an authoring tool and only read at run time, so the corpus can
-prove it; here there is no corpus — the shipped `Work/Saves/` tree is empty.
-What replaces it is that the writer and the reader are both in the binary and
-must agree, which pins every offset and size exactly. `.lev` was recovered from
-the same position before a single byte of a `.lev` had been read.
+prove it. This document spent most of its life with no corpus at all — the
+shipped `Work/Saves/` tree ships empty — and the layout was pinned by the fact
+that the writer and the reader are both in the binary and must agree, which
+fixes every offset and size exactly; `.lev` was recovered from the same
+position before a single byte of a `.lev` had been read. Six real saves, made
+by playing the retail game under Wine, have since confirmed the layout and
+settled or narrowed several field meanings (§4–§5.8).
 
-`tools/sav_parse.py` implements the layout and is ready for the first real
-save; it is deliberately **not** in the always-run corpus block, because a
-check with nothing to examine is not a check that passed.
+`tools/sav_parse.py` implements the layout and parses those saves; it is
+deliberately **not** in the always-run corpus block, because a check with
+nothing to examine (as on a fresh checkout, where the fixtures are absent)
+is not a check that passed.
 
 ---
 
@@ -681,14 +687,16 @@ Both tools were mutation-tested: **12 perturbations** of `sav_tables.py` and
 **10** of `sav_parse.py` — sizes, offsets, strides, block order, a swapped
 width/height pair — every one of the 22 detected. Both fail on an empty root.
 
-`tools/sav_parse.py FILE` is the part that has never run against real data.
-`--lev OUT.lev` extracts the embedded battle map so `lev_parse.py` can validate
-it independently; that alone covers about 95 % of the bytes in a save. It is
-deliberately **not** in the always-run corpus block: with `Work/Saves/` empty
-it exits non-zero and says why, rather than reporting a pass over nothing.
+`tools/sav_parse.py FILE` parses one real save — the fixture set described
+just below; for most of this project's life it had no real data to run
+against at all. `--lev OUT.lev` extracts the embedded battle map so
+`lev_parse.py` can validate it independently; that alone covers about 95 % of
+the bytes in a save. It is deliberately **not** in the always-run corpus
+block: with no save to parse (a fresh checkout) it exits non-zero and says
+why, rather than reporting a pass over nothing.
 
-**Real saves exist now, outside the repository.** Six of them, produced by
-playing the retail game under Wine, are kept in `tests/fixtures/saves/` and are
+**Six real saves exist, gitignored.** Produced by playing the retail game
+under Wine, they are kept in `tests/fixtures/saves/` and are
 what this document's §4, §5.2, §5.3, §5.5, §5.6, §5.7 and §5.8 cite. The `.sav`
 files themselves are gitignored — each embeds a byte-identical copy of a shipped
 `.lev` — but
