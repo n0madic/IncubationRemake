@@ -65,8 +65,8 @@ register instead (`0x0044A337`, `0x0044F869`, `0x0044F95B`) — they restore a
 saved mode rather than choosing one. So the *name* `pbm session` is the
 binary's, but no reachable path in this build is shown to select it. That is
 consistent with [`11` §5.3](11-save-game-format.md): the play-by-mail passwords
-are in the save format and their accessors exist, and package H is out of
-scope ([`91` §9](91-game-logic-research-plan.md)).
+are in the save format and their accessors exist, and legacy multiplayer is out of
+scope ([`92` §7.9](92-remake-architecture.md)).
 
 Two mode-dependent behaviours matter below: the reaction queue is ordered by
 ticket **only in mode 1** (§6), and only mode 2 asks DirectPlay which player
@@ -691,8 +691,8 @@ it covers.
    that could select it push a register. Whether a menu path reaches it, or
    whether it survives only in the save loader, would need the register traced
    back. **Deliberately not traced:** the remake does not implement
-   play-by-mail ([`92` §7.9](92-remake-architecture.md)) and package H is out of
-   scope ([`91` §9](91-game-logic-research-plan.md)), so this stays a recorded
+   play-by-mail ([`92` §7.9](92-remake-architecture.md)) and legacy multiplayer is out of
+   scope ([`92` §7.9](92-remake-architecture.md)), so this stays a recorded
    fact about the binary rather than work to do. Nothing else in this document
    depends on it: mode 4 changes only the skip rule's gate (§3.1) and the
    equipment-point split (§4.1), and a campaign reaches neither.

@@ -1,8 +1,8 @@
 # Interface contract
 
 **Status: the interface information and state boundaries needed by a remake
-are decoded and checked by `tools/interface_tables.py --check`.** This is
-package F of [`91`](91-game-logic-research-plan.md). It is a contract for a new
+are decoded and checked by `tools/interface_tables.py --check`.** This is the
+delivered package F in [`00`'s game-logic matrix](00-overview.md). It is a contract for a new
 interface, not a request to copy the 640x480 layout, mouse driver, widgets,
 fonts, or button art of the original.
 

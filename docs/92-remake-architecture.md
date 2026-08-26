@@ -209,8 +209,8 @@ sound around all of it: the event → wave table, the weapon fire sound, the
 footstep and voice tables and the blob pool with its weapon → effect switches
 ([`28`](28-effects-and-sound.md)) — the replacement-interface contract
 ([`29`](29-interface-contract.md)) — the complete story-sequence manifest and
-player ([`41`](41-sequence-player.md)) — and every line of mission text.  All
-packages in [`91`](91-game-logic-research-plan.md) are delivered at their
+player ([`41`](41-sequence-player.md)) — and every line of mission text. All
+packages in [`00`'s game-logic matrix](00-overview.md) are delivered at their
 documented verified-static boundaries.
 
 A first vertical slice needs nothing that is not already done: convert one
@@ -411,7 +411,7 @@ its Battle Fitness is below 6 can push Technical Skills past 6. Both are part
 of the default path, not defects to be tidied away. This is the case §7.1
 generalises.
 
-### 7.9 No play-by-mail
+### 7.9 No play-by-mail or legacy multiplayer research
 
 The original's `pbm session` mode is named in the binary ([`25` §2](25-turn-and-round.md)) and its passwords are in
 the save format ([`11` §5.3](11-save-game-format.md)), but it was barely a
@@ -419,9 +419,18 @@ feature in 1997 and the remake will not have one. Consequences worth writing
 down so they are not re-litigated: the `pbm session` arm of the turn's skip rule
 and of the equipment-point split need no implementation
 ([`25` §3.1](25-turn-and-round.md), [`25` §4.1](25-turn-and-round.md)), and
-neither does the password obfuscation. Network multiplayer remains a separate
-question, still out of scope for the same reason as
-[`91` §9](91-game-logic-research-plan.md).
+neither does the password obfuscation.
+
+The completed game-logic research programme deliberately excluded
+`aMultiPlayer.cpp`, `lNetwork.cpp`, `aDPlay.cpp`, and `aMsgTools.cpp` (34
+`CHECK` sites plus DirectPlay). A remake would not reuse DirectPlay, and modern
+netcode is a product design rather than a binary-parity requirement. Already
+recovered and still contractual are the multiplayer map types and `.lev`
+fields ([`10` §3](10-lev-mission-format.md)), the `Victorypoints` action-point
+band ([`10` §4.6](10-lev-mission-format.md)), and the PBM save layout
+([`11`](11-save-game-format.md)). If multiplayer is added later, the remaining
+research targets are the PBM turn-exchange `.sav` variant and
+`aOutputMissionObjectsForMultiPlayer`, the original state-sync boundary.
 
 ---
 

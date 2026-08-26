@@ -4,7 +4,7 @@
 runs 237 checks against the binary and the shipped data; every one has been
 shown to fail under a mutation of the byte, token or file it covers.**
 
-This is package B of [`91`](91-game-logic-research-plan.md). It is **behaviour,
+This is the delivered package B in [`00`'s game-logic matrix](00-overview.md). It is **behaviour,
 not a file format**: nothing here describes bytes on disk that another document
 does not already own. Where the storage matters it is cited —
 [`10` §5.11](10-lev-mission-format.md) for the roster record,
@@ -638,8 +638,8 @@ for (p = 0; p < humanCount(); p++) {
 }
 ```
 
-`0x0045FDB0` is `aMultiPlayer.cpp`'s — package H, out of scope
-([`91` §9](91-game-logic-research-plan.md)). Each of the six copies is network
+`0x0045FDB0` is `aMultiPlayer.cpp`'s — legacy multiplayer, out of scope
+([`92` §7.9](92-remake-architecture.md)). Each of the six copies is network
 code by one of two mechanical tests, and the checker asserts both:
 
 * **two** sit on an arm the enclosing routine reaches only when
@@ -655,8 +655,8 @@ code by one of two mechanical tests, and the checker asserts both:
 > arms *are* network code, not that a campaign cannot reach them. They carry no
 > game-mode test of their own — only `0x0043B1F0`, which is false in the
 > campaign (§6.2) and therefore does **not** skip the loop. Tracing their entry
-> conditions back to a mode would need the multiplayer session flow, which is
-> package H. What can be said without it: `0x0045FDB0` returns 4 unconditionally
+> conditions back to a mode would need the deliberately unresearched legacy
+> multiplayer session flow. What can be said without it: `0x0045FDB0` returns 4 unconditionally
 > when `humanCount() == 1`, because its "is any other human still alive" loop
 > has no other human to look at — so a campaign reaching one of these arms would
 > award **+300** for nothing. That is a consequence, not a proof; it is recorded
@@ -723,11 +723,10 @@ campaign hands over to the other.
 
 ---
 
-## 7. Two things the plan assumed that are not there
+## 7. Two disproved premises from the campaign research
 
-[`91` §5](91-game-logic-research-plan.md) listed two items this package was
-expected to close. Both turned out to be misreadings of the shipped material,
-and saying so is the finding:
+The campaign research started with two plausible premises. Both turned out to
+be misreadings of the shipped material, and saying so is the finding:
 
 * **`aPassWord.cpp` is not mission passwords.** It is the **play-by-mail
   password entry screen**: it loads `LoadSave.lib` and `loadsave.pal`, and its
@@ -735,7 +734,7 @@ and saying so is the finding:
   which is exactly the four 25-byte slot array
   [`11` §5.3](11-save-game-format.md) already documents, sentinel
   `INVALID_PASSWORD` included. There are no level codes in this game.
-  Play-by-mail is out of scope ([`91` §9](91-game-logic-research-plan.md)).
+  Play-by-mail is out of scope ([`92` §7.9](92-remake-architecture.md)).
 * **`aDataBase.cpp` has nothing to do with the campaign.** 0.7 KB, one `CHECK`
   site, and its only recovered symbol is `aCreateMainDDObject` — DirectDraw
   setup.

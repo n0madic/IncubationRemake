@@ -26,10 +26,8 @@ The C++ RTTI of the Charisma engine survives in the shipped binaries, which is
 why its class names (`V100ModelDesc`, `KeyFramedAnimationDesc`,
 `LinearVectorMovementDesc`, …) are known exactly rather than guessed.
 
-Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-binaries-and-source-layout.md).
-Plan for the runtime work — the turn, interaction, the campaign, effects and
-sound, the interface contract and the sequence player:
-[`91-game-logic-research-plan.md`](91-game-logic-research-plan.md).
+Reconstructed original source layout, runtime-module map, and research method:
+[`90-binaries-and-source-layout.md`](90-binaries-and-source-layout.md).
 Decisions taken about the remake itself — engine, language, asset pipeline, and
 the product decisions the specs leave behind:
 [`92-remake-architecture.md`](92-remake-architecture.md).
@@ -66,7 +64,7 @@ of scope.
 
 ### Behaviour, not formats
 
-Seven specs in the set describe no file at all.
+Eight specs in the set describe no file at all.
 [`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
 between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
 records turn into a resolved shot and into fog of war.
@@ -93,11 +91,31 @@ turn a weapon id into a muzzle effect, an impact effect and an impact sound.
 [`29-interface-contract.md`](29-interface-contract.md) is the information and
 operation boundary a replacement UI needs: its selected-unit view, battle
 commands, deployment transfer, map-intent boundary, and the LCL layouts/text it
-must localise. These seven behaviour specs exist because a loader
+must localise.
+[`41-sequence-player.md`](41-sequence-player.md) is the compiled story-sequence
+manifest and player lifecycle: logical ids, successive video parts, actors,
+cameras, timing, completion, and the campaign trigger boundary.
+These eight behaviour specs exist because a loader
 that reads every byte of every format still cannot play a turn — nor be played
 against, nor be played through. `combat_tables.py`, `ai_tables.py`,
 `turn_tables.py`, `interaction_tables.py`, `campaign_tables.py`,
-`blob_tables.py`, `interface_tables.py` and `trace_names.py` are their checks.
+`blob_tables.py`, `interface_tables.py`, `seq_parse.py` and `trace_names.py` are
+their checks.
+
+The game-logic research programme is complete at its documented
+**verified-static** boundaries:
+
+| Package | Subject | Delivered spec | Checker | Boundary |
+|---|---|---|---|---|
+| A | turn and round | [25](25-turn-and-round.md) | `turn_tables.py` | rotation, refresh, overwatch, hand-over |
+| C | interaction and set-pieces | [26](26-interaction.md) | `interaction_tables.py` | player/AI use, movement interactions, action-point classes |
+| B | campaign | [27](27-campaign.md) | `campaign_tables.py` | roster, location graph, economy, mission end |
+| D+E | effects and sound | [28](28-effects-and-sound.md) | `blob_tables.py` | event mappings, blob contract, sound lifetime |
+| F | replacement-interface contract | [29](29-interface-contract.md) | `interface_tables.py` | information and operation boundary, not pixel layout |
+| G | sequence player | [41](41-sequence-player.md) | `seq_parse.py` | compiled manifest, lifecycle, 30 fps timing, triggers |
+
+Multiplayer and play-by-mail are deliberately outside this programme; the
+preserved boundary and rationale are in [`92` §7.9](92-remake-architecture.md).
 
 **`DATA/Misc/Rec_0.dat` is dead data.** No executable or DLL in the release
 contains the string `Rec_`, and `Incubation.exe` contains no `.dat` literal at

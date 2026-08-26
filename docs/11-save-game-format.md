@@ -540,8 +540,9 @@ with a one-deep push and pop. Seven real saves give the first observed values:
 Two readings survive that sample and it cannot separate them: *current* may be
 the screen, or it may be the save operation itself — every manual save shows
 `5` and every automatic one `3`, whatever screen it was taken from. What the
-numbers **name** needs the controller state machine, which is package B/F
-([`91`](91-game-logic-research-plan.md)). Left **UNVERIFIED**.
+numbers **name** needs the controller state machine at the campaign/interface
+boundary ([`27`](27-campaign.md), [`29`](29-interface-contract.md)). Left
+**UNVERIFIED**.
 
 ### 5.9 LCL variables — 109 bytes
 
@@ -569,8 +570,9 @@ multiplayer module's own convention, not a typo.
 All 28 bytes are **zero in every one of the five sample campaign saves**, which
 is consistent with the owning module: a single-player campaign never fills it.
 A campaign save can therefore never characterise this block — only a `net` or
-`local session` one could, and that is package H's ground
-([`91` §9](91-game-logic-research-plan.md)).
+`local session` one could, and that is legacy multiplayer ground, deliberately
+outside the completed research scope
+([`92` §7.9](92-remake-architecture.md)).
 
 ---
 

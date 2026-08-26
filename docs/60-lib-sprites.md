@@ -24,7 +24,7 @@ Type:%d / Entries:%d
 ```
 
 **`aLibTools.cpp` is the *writer*, not the reader.** Partitioning `.text` by the
-`__FILE__` each function pushes ([`91` §1](91-game-logic-research-plan.md))
+`__FILE__` each function pushes ([`90` §2.1](90-binaries-and-source-layout.md))
 bounds the module at `0x00445DC0`…`0x00447BF2`, and the 28 callee names it
 pushes are an authoring tool end to end: `LibMaker`, `aLoadBitmap`,
 `aLoadBitmapInfos`, `aCreateWinFont`, `aPrintWinText`, `aCreateBitmap`,
@@ -154,7 +154,7 @@ sweeps narrow *where* the answer is not:
 
 Settling it therefore means finding the drawing path in another module — the
 GUI and screen-tool modules are the candidates — which belongs to the interface
-work, package F ([`91` §7](91-game-logic-research-plan.md)), not to this
+work, the replacement-interface contract ([`29`](29-interface-contract.md)), not to this
 document. The better route may be the writer rather than the reader: LibMaker
 is in the binary and can be read.
 
@@ -316,5 +316,5 @@ python3 tools/font_render.py --check gog_incubation
    `test r8, r8; jz` idiom (a module-attributed sweep of all of `.text` finds no
    such loop in any of the library or DIB modules). What remains is a copy loop
    in one of the GUI or screen-tool modules, which is **package F's** work
-   ([`91` §7](91-game-logic-research-plan.md)) — the interface is where sprites
+   ([`29`](29-interface-contract.md)) — the interface is where sprites
    are drawn. Doing it here would duplicate that.
