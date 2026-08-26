@@ -7,7 +7,7 @@ because they fire from the same place — `aPlayFightAnimation` and the
 `aPlay*Sequence` routines create a blob and load a wave in the same few
 instructions — and because a remake needs both to reproduce one event.
 
-Everything here is checked by `tools/blob_tables.py --check` (252 checks).
+Everything here is checked by `tools/blob_tables.py --check` (259 checks).
 
 **What this document does not own.** The animation *selection* rules — which
 Charisma animation plays for moving, firing or standing, and what the `BREAK`
@@ -530,6 +530,32 @@ vz += (life > 10) ? -640 : -32;          // 0xFFFFFD80 / -0x20
 
 so a blob falls hard while it is young and drifts once it is nearly spent.
 
+### 7.4.1 Executable arm rewrite
+
+The per-tick switch is now transcribed as an executable, headless reference in
+[`tools/blob_runtime.py`](../tools/blob_runtime.py). `HANDLERS` covers all 78
+kind values and has 74 distinct callables, matching the jump table's 74
+distinct destinations (21/24, 23/40, 48/53 and 66/70 are aliases). The
+reference preserves the wrapper order and field widths, the Lehmer/x87 RNG, every
+direct position/velocity/rotation/counter write, the life-gated branches, the
+self-morph (49 -> 7), explicit deletion arm (11), and the recovered
+constructor address and argument list. `python3 tools/blob_runtime.py
+--selftest` checks the mutation/RNG/spawn profile of every kind plus terminal
+and conditional branches that morph, delete or create children.
+
+The original's global `0x4FE63C` signal and the pool deletion call at
+`0x0041E320` are deliberately separate in the API: a tick reports
+`delete_requested` for the former and `deleted` for the latter. A
+`BlobHooks` adapter supplies the services that are outside the 88-byte record
+(unit-map/position lookup for seekers, model lookup, orientation helpers and
+constructor allocation) and records their arguments. The default adapter is
+deterministic and never executes the retail binary.
+
+This closes the static transcription gap without overstating native parity:
+the orientation/geometry helpers (`0x004039A0`, `0x00403AA0`, `0x0046D400`) and
+the target-map service (`0x00405100`, `0x00477AE0`) still need a target-runtime
+adapter before a visual or gameplay trace can be called native-verified.
+
 ### 7.5 Models
 
 Thirty `.3DI` prototype names appear in the constructor calls. They are not
@@ -860,9 +886,10 @@ frame, not by markers in the animation data.
    trio of §2.3, the species round-robin of §4.1 and the footstep table of §5.
    Together they are the whole audible game except speech and music.
 5. Case-insensitive wave lookup, or the ten renames in §2.2.
-6. A blob pool with the record of §7.2 and the update of §7.4 — the gravity
-   split at `life == 10` is the one constant that visibly changes how debris
-   falls.
+6. A blob pool with the record of §7.2 and the update of §7.4. The complete
+   per-tick reference is [`tools/blob_runtime.py`](../tools/blob_runtime.py);
+   integrate its 88-byte field semantics and `BlobHooks` boundary rather than
+   re-deriving the 74 arms in the scene layer.
 7. **The sprite path is cheap and worth doing exactly**: one 256×256 atlas,
    8 × 8 tiles, `(row, column, half-size × 160)` per particle, one blend mode
    for all of them, column advanced by the arm (§7.3). Roughly half the
@@ -890,15 +917,16 @@ and would make an "alien voices" control do nothing.
 ## 11. Verification
 
 ```bash
-python3 tools/blob_tables.py --check  gog_incubation   # 252 checks
+python3 tools/blob_tables.py --check  gog_incubation   # 259 checks
 python3 tools/blob_tables.py --waves  gog_incubation   # the event -> wave table
 python3 tools/blob_tables.py --blobs  gog_incubation   # the blob and weapon tables
 python3 tools/blob_tables.py --kinds  gog_incubation   # the 78 update kinds
 python3 tools/blob_tables.py --joints gog_incubation   # the joint-angle buffer
 python3 tools/blob_tables.py --json   gog_incubation
+python3 tools/blob_runtime.py --selftest                 # all 78 update values
 ```
 
-252 checks, all against the shipped binary and corpus; the tool exits non-zero
+259 checks, all against the shipped binary and corpus; the tool exits non-zero
 on an empty corpus and on a root that holds only `Incubation.exe`.
 
 **Mutation testing.** A harness perturbs every leaf *and every key* of every
@@ -944,14 +972,12 @@ store lands on.
 
 ## 12. Open questions
 
-1. **The exact per-tick arithmetic of the 74 arms.** Every kind now has a name
-   (its creators'), a class, a lifetime, a spawn list and a behaviour
-   vocabulary (§7.7), which is what a remake needs to reproduce an effect. What
-   is *not* written down here is each arm's constants instruction by
-   instruction — the step sizes, the random ranges, the exact frame cadence of
-   each flip-book. They are readable at the addresses the `--kinds` report
-   prints; nobody has needed them yet, and transcribing 74 short routines into
-   prose would add length without adding evidence.
+1. **Native validation of the service hooks.** The static arm arithmetic is
+   executable and covered for all 78 kind values by `blob_runtime.py`; the
+   remaining boundary is the return data from the original orientation,
+   geometry and target-map helpers listed in §7.4.1. Those hooks must be
+   validated against a permitted runtime trace before claiming pixel- or
+   trajectory-level parity.
 
 2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects

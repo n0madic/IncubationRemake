@@ -42,7 +42,8 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 252 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 259 checks
+python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic

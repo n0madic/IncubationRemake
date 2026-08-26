@@ -1081,6 +1081,7 @@ KIND_UNREACHABLE = (2, 4, 21, 28, 30, 35, 45, 48, 53, 56, 76)
 # characterised only by the fields they touch, which no byte scan can read
 # reliably, and by the spawn graph below, which it can.
 KIND_EVIDENCE = {
+    "k14.mark_free": (0x0041ED9D, "bytes", b"\x89\x2e"),
     "k41.spin_step": (0x0041E55A, "mov_imm32", 0x200),
     "k41.spin_store": (0x0041E563, "word_add", 0x28),
     "k42.slow": (0x0041E589, "word_imm", (0x2C, 0x400)),
@@ -1095,6 +1096,12 @@ KIND_EVIDENCE = {
     "k49.morph_kind": (0x0041E89C, "byte_imm", (0x44, 7)),
     "k16.model_swap": (0x004202A7, "call", 0x004038F0),
     "k17.model_swap": (0x004201F7, "call", 0x004038F0),
+    "k62.spark_arg10": (0x0041E8D7, "push", 10),
+    "k62.spark_arg1": (0x0041E8D9, "push", 1),
+    "k65.far_col": (0x0041ECEC, "word_imm", (0x26, 3)),
+    "k65.far_aux": (0x0041ECF6, "byte_imm", (0x54, 5)),
+    "k67.spark_arg10": (0x0041EE85, "push", 10),
+    "k67.spark_arg1": (0x0041EE87, "push", 1),
 }
 # The three arms that ask the unit map where a target is.
 KIND_SEEKERS = {26: 0x0041F935, 27: 0x0041FB90, 61: 0x00420310}
@@ -2404,7 +2411,8 @@ def run_checks(root: str) -> Checker:
     ck.equal("kind.spawns", {k: v for k, v in b.kind_spawns().items() if v},
              KIND_SPAWNS, Checker.brief)
     for name, (site, how, want) in sorted(KIND_EVIDENCE.items()):
-        got = {"mov_imm32": b.mov_imm32, "word_store": b.word_store,
+        got = {"bytes": lambda site: b.pe.bytes_at(site, len(want)),
+               "mov_imm32": b.mov_imm32, "word_store": b.word_store,
                "word_add": b.word_add,
                "word_imm": b.word_imm, "byte_imm": b.byte_imm,
                "push": b.push_imm, "call": b.call_target}[how](site)

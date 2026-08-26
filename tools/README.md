@@ -44,6 +44,7 @@ trace_names.py        recover function names from the compiled-out error macro
 combat_tables.py      decode the combat/LOS tables in Incubation.exe (docs/22)
 sav_tables.py         verify the save-game layout against the writer/reader chains
 sav_parse.py          parse a save game; extract its embedded .lev (docs/11)
+blob_runtime.py       headless reference runtime for all 78 blob update kinds
 typ_parse.py          parse OBJECT.TYP, the lost exporter's config (docs/30 2.11)
 ai_tables.py          decode the AI turn: orders, move map, targeting (docs/23)
 brief_parse.py        parse the briefing/info text markup and lay it out (docs/24)
@@ -94,7 +95,8 @@ python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
 python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation          # 252 checks
+python3 tools/blob_tables.py        --check gog_incubation          # 259 checks
+python3 tools/blob_runtime.py       --selftest                      # 78 kinds, 74 arms
 python3 tools/interface_tables.py   --check gog_incubation          # 39 checks
 python3 tools/seq_parse.py          --check gog_incubation          # 75 checks, 130/130
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
