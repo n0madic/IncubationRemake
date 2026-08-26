@@ -187,6 +187,87 @@ static std::vector<uint8_t> ParseHexBytes(const std::wstring& s)
     return out;
 }
 
+// ------------------------------------------------------------
+// Byte patterns
+//
+// Hex bytes with holes in them. A hole is `{EXPR}`, four bytes holding the
+// address EXPR evaluates to, or `{rel32 EXPR}`, the displacement from the end
+// of the hole to that address -- what a near jmp or call needs.
+//
+// Both are filled in when the bytes are written, because both can depend on
+// where they are written and on where a buffer was allocated. That is what
+// lets injected code live on a page of its own instead of in the image's tail
+// padding: `{&tramp}` in the patch and `{rel32 0x42073a}` inside the
+// trampoline are exactly the two addresses that cannot be known in advance.
+// ------------------------------------------------------------
+
+struct BytePattern
+{
+    struct Fixup
+    {
+        uint32_t offset = 0;    // where the four bytes sit
+        bool rel32 = false;
+        std::wstring expr;
+    };
+
+    std::vector<uint8_t> bytes;
+    std::vector<Fixup> fixups;
+};
+
+static BytePattern ParseBytePattern(const std::wstring& s)
+{
+    BytePattern p;
+    std::wstring literal;
+
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        if (s[i] != L'{')
+        {
+            literal.push_back(s[i]);
+            continue;
+        }
+
+        size_t end = s.find(L'}', i);
+
+        if (end == std::wstring::npos)
+            Die(L"Unterminated `{` in byte pattern: " + s);
+
+        std::vector<uint8_t> lit = ParseHexBytes(literal);
+        p.bytes.insert(p.bytes.end(), lit.begin(), lit.end());
+        literal.clear();
+
+        std::wstring inner = Trim(s.substr(i + 1, end - i - 1));
+
+        BytePattern::Fixup f;
+        f.offset = static_cast<uint32_t>(p.bytes.size());
+
+        if (Lower(inner).rfind(L"rel32", 0) == 0 &&
+            inner.size() > 5 &&
+            (inner[5] == L' ' || inner[5] == L'\t'))
+        {
+            f.rel32 = true;
+            f.expr = Trim(inner.substr(5));
+        }
+        else
+        {
+            f.expr = inner;
+        }
+
+        if (f.expr.empty())
+            Die(L"Empty expression in byte pattern: " + s);
+
+        p.fixups.push_back(f);
+        p.bytes.insert(p.bytes.end(), 4, 0);
+
+        i = end;
+    }
+
+    std::vector<uint8_t> lit = ParseHexBytes(literal);
+    p.bytes.insert(p.bytes.end(), lit.begin(), lit.end());
+
+    return p;
+}
+
 static std::wstring HexBytes(const std::vector<uint8_t>& b)
 {
     std::wostringstream o;
@@ -1141,11 +1222,12 @@ static Va RemoteAllocWrite(
     HANDLE process,
     const void* data,
     SIZE_T size,
-    std::vector<LPVOID>& allocations)
+    std::vector<LPVOID>& allocations,
+    DWORD protect = PAGE_READWRITE)
 {
     LPVOID p = VirtualAllocEx(
         process, nullptr, size ? size : 1,
-        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        MEM_COMMIT | MEM_RESERVE, protect);
 
     if (!p)
         DieWin(L"VirtualAllocEx");
@@ -1452,6 +1534,39 @@ static uint32_t EvalExpr(const std::wstring& text, const Env& env)
 {
     ExprParser p(text, env);
     return p.Parse();
+}
+
+// Fills a pattern's holes in for one destination. `dest` is where the first
+// byte is going to live, so a rel32 knows what it is relative to.
+static std::vector<uint8_t> MaterializeBytes(
+    const BytePattern& p,
+    Va dest,
+    const Env& env,
+    const std::wstring& what)
+{
+    std::vector<uint8_t> out = p.bytes;
+
+    for (const BytePattern::Fixup& f : p.fixups)
+    {
+        uint32_t v = 0;
+
+        try
+        {
+            v = EvalExpr(f.expr, env);
+        }
+        catch (const EvalError& e)
+        {
+            Die(what + L": " + e.message);
+        }
+
+        if (f.rel32)
+            v -= static_cast<uint32_t>(dest + f.offset + 4);
+
+        for (int k = 0; k < 4; ++k)
+            out[f.offset + k] = static_cast<uint8_t>((v >> (8 * k)) & 0xFF);
+    }
+
+    return out;
 }
 
 // ------------------------------------------------------------
@@ -2502,8 +2617,84 @@ struct BufDecl
 {
     std::wstring name;
     uint32_t size = 0;
-    std::vector<uint8_t> initial;
+    BytePattern pattern;
+
+    // --code allocates executable, so a trampoline can be built at a fresh
+    // address instead of in whatever tail padding happens to look free. That
+    // is not a convenience: padding that reads as zero in the file can hold
+    // live pointers once the image is loaded, and a page of our own cannot.
+    bool exec = false;
 };
+
+// A patch written into the target at the breakpoint, and left there.
+struct PokeDecl
+{
+    AddressSpec addr;
+    std::vector<uint8_t> expected;
+    BytePattern replacement;
+    std::wstring text;
+};
+
+// ------------------------------------------------------------
+// Patching the target
+// ------------------------------------------------------------
+
+// Writes one patch, checking what it replaces first.
+//
+// The expected bytes are not optional. A patch is only worth anything if the
+// address still holds what the disassembly said it held, and this is the only
+// place that can be checked -- against the loaded image, relocations and all.
+//
+// Nothing is undone at the end of the run: a patch is meant to outlive the
+// debugger, because --resume is what makes it useful.
+static void ApplyPoke(
+    HANDLE process,
+    const PokeDecl& p,
+    Va addr,
+    const Env& env,
+    Reporter& reporter)
+{
+    LPVOID at = reinterpret_cast<LPVOID>(static_cast<uintptr_t>(addr));
+
+    std::vector<uint8_t> was(p.expected.size());
+
+    if (!ReadRemote(process, addr, was.data(), was.size()))
+        DieWin(L"ReadProcessMemory(--poke " + p.text + L")");
+
+    if (was != p.expected)
+    {
+        Die(
+            L"--poke " + p.text + L": " + Hex32(addr) + L" holds " +
+            HexBytes(was) + L", not the expected " + HexBytes(p.expected));
+    }
+
+    std::vector<uint8_t> now =
+        MaterializeBytes(p.replacement, addr, env, L"--poke " + p.text);
+
+    DWORD oldProtect = 0;
+
+    if (!VirtualProtectEx(
+            process, at, now.size(), PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        DieWin(L"VirtualProtectEx(--poke " + p.text + L")");
+    }
+
+    SIZE_T written = 0;
+
+    BOOL ok = WriteProcessMemory(process, at, now.data(), now.size(), &written);
+
+    DWORD ignored = 0;
+    VirtualProtectEx(process, at, now.size(), oldProtect, &ignored);
+
+    if (!ok || written != now.size())
+        DieWin(L"WriteProcessMemory(--poke " + p.text + L")");
+
+    FlushInstructionCache(process, at, now.size());
+
+    reporter.Note(
+        L"[+] poke at " + env.modules->Describe(addr) + L": " +
+        HexBytes(was) + L" -> " + HexBytes(now));
+}
 
 // A call as typed, before addresses, signatures and types are bound.
 struct CallDraft
@@ -2537,6 +2728,7 @@ struct Options
     bool verifySig = true;
 
     std::vector<BufDecl> bufs;
+    std::vector<PokeDecl> pokes;
     std::map<std::wstring, Signature> decls;
 
     std::vector<CallDraft> drafts;
@@ -3034,6 +3226,7 @@ ARGUMENT EXPRESSIONS
 
   --buf NAME:SIZE       zeroed buffer, allocated once for the whole run
   --blob NAME:HEX       buffer holding these bytes, written once
+  --code NAME:HEX       the same, on an executable page: injected code
   --zero NAME           clear that buffer before this call
   --dump NAME           dump that buffer after this call
   --read EXPR:LENGTH    read LENGTH bytes at EXPR after this call
@@ -3041,6 +3234,38 @@ ARGUMENT EXPRESSIONS
   Buffers keep whatever a call left in them, so one call can fill a buffer
   and the next can read it. Add --zero when you need to tell "the function
   wrote nothing" from "it wrote the same bytes again".
+
+PATCHING
+
+  --poke ADDR:EXPECTED=>NEW
+
+  writes NEW over the EXPECTED bytes at ADDR, once, at the breakpoint. The
+  two must be the same length, and the write is refused if the target does
+  not actually hold EXPECTED -- against the loaded image, relocations and
+  all, which is the only place that can be checked.
+
+  Patches are applied in the order written, after every buffer exists, and
+  are never undone: with --resume the target runs on with them in place. So
+  a hook can be installed on the original executable at runtime instead of
+  by shipping a patched copy of it.
+
+  Both --code and --poke take hex with holes in it:
+
+  {EXPR}                four bytes: the address EXPR evaluates to
+  {rel32 EXPR}          four bytes: EXPR minus the end of the hole, which
+                        is what a near jmp or call needs
+
+  Holes are filled in when the bytes are written, so they can name a buffer
+  that was allocated moments earlier. Installing a trampoline over a
+  six-byte instruction pair and returning to the instruction after it:
+
+  dbgcall.exe game.exe --bp rva:0xae890 --resume ^
+      --buf trace:256 ^
+      --code tramp:"8935{&trace}9c505156{...}9d8b56488b6e14e9{rel32 0x42073a}" ^
+      --poke "0x00420734:8b56488b6e14=>e9{rel32 &tramp}90"
+
+  That is a run with no --call in it at all, which is allowed: --poke on
+  its own is a complete job.
 
 BATCHES
 
@@ -3065,7 +3290,7 @@ BATCHES
                         row tainted, since the target's state is suspect
   --resume              put the thread back where the breakpoint caught it
                         and detach, leaving the target running, instead of
-                        killing it
+                        killing it -- and leaving any --poke in place
 
 EXAMPLES
 
@@ -3209,7 +3434,7 @@ int wmain(int argc, wchar_t** argv)
             planFiles.push_back(need(L"--plan"));
             i += 2;
         }
-        else if (x == L"--buf" || x == L"--blob")
+        else if (x == L"--buf" || x == L"--blob" || x == L"--code")
         {
             std::wstring v = need(x.c_str());
             size_t colon = v.find(L':');
@@ -3223,6 +3448,7 @@ int wmain(int argc, wchar_t** argv)
 
             BufDecl b;
             b.name = Trim(v.substr(0, colon));
+            b.exec = (x == L"--code");
 
             if (b.name.empty())
                 Die(L"Empty buffer name in: " + v);
@@ -3237,15 +3463,54 @@ int wmain(int argc, wchar_t** argv)
             }
             else
             {
-                b.initial = ParseHexBytes(Trim(v.substr(colon + 1)));
+                b.pattern = ParseBytePattern(Trim(v.substr(colon + 1)));
 
-                if (b.initial.empty())
-                    Die(L"--blob needs at least one byte: " + v);
+                if (b.pattern.bytes.empty())
+                    Die(x + L" needs at least one byte: " + v);
 
-                b.size = static_cast<uint32_t>(b.initial.size());
+                b.size = static_cast<uint32_t>(b.pattern.bytes.size());
             }
 
             o.bufs.push_back(b);
+            i += 2;
+        }
+        else if (x == L"--poke")
+        {
+            std::wstring v = need(L"--poke");
+            size_t arrow = v.find(L"=>");
+
+            if (arrow == std::wstring::npos)
+                Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
+
+            std::wstring left = Trim(v.substr(0, arrow));
+
+            // The last colon before `=>` is the separator, so `rva:0x1fb34`
+            // stays one address rather than becoming an address and a
+            // nonsensical byte string.
+            size_t colon = left.rfind(L':');
+
+            if (colon == std::wstring::npos)
+                Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
+
+            PokeDecl q;
+            q.text = v;
+            q.addr = ParseAddress(Trim(left.substr(0, colon)));
+            q.expected = ParseHexBytes(Trim(left.substr(colon + 1)));
+            q.replacement = ParseBytePattern(Trim(v.substr(arrow + 2)));
+
+            if (q.expected.empty())
+                Die(L"--poke needs the bytes it expects to find: " + v);
+
+            if (q.replacement.bytes.size() != q.expected.size())
+            {
+                Die(
+                    L"--poke must preserve length: " +
+                    std::to_wstring(q.expected.size()) + L" bytes expected, " +
+                    std::to_wstring(q.replacement.bytes.size()) +
+                    L" written: " + v);
+            }
+
+            o.pokes.push_back(q);
             i += 2;
         }
         else if (x == L"--out")
@@ -3301,8 +3566,12 @@ int wmain(int argc, wchar_t** argv)
     if (cli.any)
         o.drafts.push_back(cli);
 
-    if (o.drafts.empty())
-        Die(L"Nothing to call: give --sig and --call, or a --plan file");
+    if (o.drafts.empty() && o.pokes.empty())
+    {
+        Die(
+            L"Nothing to do: give --sig and --call, a --plan file, "
+            L"or --poke");
+    }
 
     // Bind addresses, signatures and types, then expand sweeps.
     std::vector<CallSpec> calls;
@@ -4017,18 +4286,90 @@ int wmain(int argc, wchar_t** argv)
 
                     region = AllocateStubRegion(pi.hProcess);
 
+                    // Two passes: every buffer exists before any of them is
+                    // filled in, so a pattern in one can name another with
+                    // `&name` and a trampoline can be built out of them.
                     for (const BufDecl& b : o.bufs)
                     {
-                        std::vector<uint8_t> init = b.initial;
-                        init.resize(b.size, 0);
-
                         Buffer buf;
                         buf.size = b.size;
                         buf.addr = RemoteAllocWrite(
-                            pi.hProcess, init.data(), init.size(),
-                            allocations);
+                            pi.hProcess, nullptr, b.size, allocations,
+                            b.exec
+                                ? PAGE_EXECUTE_READWRITE
+                                : PAGE_READWRITE);
 
                         env.buffers[b.name] = buf;
+
+                        if (b.exec)
+                        {
+                            reporter.Note(
+                                L"[+] code " + b.name + L" at " +
+                                Hex32(buf.addr) + L", " +
+                                std::to_wstring(b.size) + L" bytes");
+                        }
+                    }
+
+                    for (const BufDecl& b : o.bufs)
+                    {
+                        if (b.pattern.bytes.empty())
+                            continue;
+
+                        const Buffer& buf = env.buffers[b.name];
+
+                        std::vector<uint8_t> data = MaterializeBytes(
+                            b.pattern, buf.addr, env, L"buffer " + b.name);
+
+                        LPVOID at = reinterpret_cast<LPVOID>(
+                            static_cast<uintptr_t>(buf.addr));
+
+                        SIZE_T written = 0;
+
+                        if (!WriteProcessMemory(
+                                pi.hProcess, at,
+                                data.data(), data.size(), &written) ||
+                            written != data.size())
+                        {
+                            DieWin(
+                                L"WriteProcessMemory(buffer " + b.name + L")");
+                        }
+
+                        if (b.exec)
+                            FlushInstructionCache(pi.hProcess, at, data.size());
+                    }
+
+                    // Patches go in last, so `{&name}` in one can name a
+                    // buffer that now has an address.
+                    for (const PokeDecl& q : o.pokes)
+                    {
+                        Va at = 0;
+
+                        if (q.addr.isExpr)
+                        {
+                            try
+                            {
+                                at = EvalExpr(q.addr.expr, env);
+                            }
+                            catch (const EvalError& e)
+                            {
+                                Die(L"--poke " + q.text + L": " + e.message);
+                            }
+                        }
+                        else
+                        {
+                            at = ResolveAddress(
+                                q.addr, modules, mainImageBase);
+                        }
+
+                        if (!at)
+                        {
+                            Die(
+                                L"--poke " + q.text + L": `" + q.addr.text +
+                                L"` does not resolve; is its module loaded "
+                                L"at the breakpoint?");
+                        }
+
+                        ApplyPoke(pi.hProcess, q, at, env, reporter);
                     }
 
                     if (!StartNextCall())

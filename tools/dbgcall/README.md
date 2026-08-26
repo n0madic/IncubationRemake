@@ -247,6 +247,7 @@ Buffers cover out-parameters and structs:
 ```
 --buf out:64          zeroed buffer, allocated once for the whole run
 --blob hdr:00112233   buffer holding those bytes
+--code fn:8b442404c3  the same, on an executable page: injected code
 --zero out            clear it before this call
 --dump out            hex dump it after this call
 --read [%esi+0x40]:16 read 16 bytes at that address after this call
@@ -256,6 +257,66 @@ Buffers keep whatever a call left in them, so one call can fill a buffer and
 the next read it. `--zero` is explicit for the same reason the signature rules
 are strict: an automatic wipe between calls silently breaks a chain, and a
 silently broken chain still prints plausible numbers.
+
+## Injecting code and patching
+
+`--poke ADDR:EXPECTED=>NEW` writes `NEW` over the `EXPECTED` bytes at `ADDR`,
+once, at the breakpoint. The two must be the same length, and the write is
+refused if the target does not actually hold `EXPECTED`.
+
+That check is the reason to do it here rather than in the file. `EXPECTED` is
+matched against the **loaded** image — relocations applied, whatever the
+loader did already done — which is the only place the claim "this address
+still holds the instruction the disassembly showed" can honestly be made.
+
+`--code NAME:HEX` is `--blob` on an executable page. Its address is `&NAME`,
+so it can be jumped to, called through a signature, or written into a
+function pointer.
+
+Both take hex with holes in it:
+
+| hole | four bytes holding |
+| --- | --- |
+| `{EXPR}` | the address `EXPR` evaluates to |
+| `{rel32 EXPR}` | `EXPR` minus the end of the hole — what a near `jmp` or `call` needs |
+
+`EXPR` is an ordinary argument expression, so `{&trace}` is a buffer's
+address and `{rel32 Eng3d.dll+0x23d8}` reaches a relocated module. Holes are
+filled in when the bytes are written, which is what makes them worth having:
+neither the page a buffer landed on nor the displacement to it exists until
+the run is already under way.
+
+Order at the breakpoint is: every buffer is allocated, then every buffer is
+written, then every `--poke` is applied, in the order written. So a patch can
+name a buffer allocated moments earlier, and a trampoline can name another
+buffer.
+
+Installing a hook over a six-byte instruction pair and continuing into the
+instruction after it:
+
+```bash
+dbgcall.exe Incubation.exe --bp rva:0xae890 --resume \
+    --buf trace:256 \
+    --code "tramp:8935{&trace}9c5051569d8b56488b6e14e9{rel32 0x0042073a}" \
+    --poke "0x00420734:8b56488b6e14=>e9{rel32 &tramp}90"
+```
+
+There is no `--call` in that command, and that is allowed: a `--poke` on its
+own is a complete run. With `--resume` the target then carries on with the
+hook in place, so the trace buffer fills up during ordinary play and is read
+from outside afterwards.
+
+**Patches are never undone.** Restoring them at exit would defeat the point —
+`--resume` is what makes them useful — so a run leaves the target modified,
+exactly as if a patched copy had been started. The difference is that the
+file on disk was never touched, and the bytes were checked against the live
+image before being replaced.
+
+The honest limit is that this generates no code for you. A trampoline is
+still hand-written machine code: you choose how many bytes to displace, you
+copy them into the trampoline yourself, and you are the one who has to know
+whether the arm you are hooking consumes the incoming flags. `--poke` removes
+the patched *file*, not the assembly.
 
 ## Batches
 
@@ -375,8 +436,9 @@ every call sees half-updated state. Pick a quiescent point.
 ## Limits
 
 - `--probe` still cannot *guess* `this`; it only keeps a convention you state.
-- `--resume` leaves the stub's pages and any `--buf` behind in the target.
-  Freeing them would be wrong: the game may still hold a pointer into one.
+- `--resume` leaves the stub's pages, any `--buf` or `--code`, and every
+  `--poke` behind in the target. Freeing or reverting them would be wrong:
+  the game may still hold a pointer into one, or be executing inside it.
 
 ## Verifying a change
 
@@ -387,10 +449,12 @@ loader must relocate it, just like `Eng3d.dll`. It reads every function
 address back out of the built images, then exercises all four conventions,
 every argument width, structs by value, the expression forms, buffers, module
 resolution, deferred and multiple breakpoints, batches, plan files, signature
-verification, `--probe`, `--resume`, and the fault and timeout paths:
+verification, `--probe`, `--resume`, injected `--code` including both hole
+forms, `--poke` against live data and live code, and the fault and timeout
+paths:
 
 ```bash
-bash tools/dbgcall/selftest.sh    # 51 passed, 0 failed
+bash tools/dbgcall/selftest.sh    # 60 passed, 0 failed
 ```
 
 It exits non-zero on any mismatch. Run it after any change to the stub

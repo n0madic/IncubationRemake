@@ -74,6 +74,28 @@ rva() {
     printf '0x%x' $(( 0x$vma - base ))
 }
 
+# va <image> <symbol>  ->  0xNNNN, the address the image loads that symbol at
+va() {
+    printf '0x%x' $(( $(image_base "$1") + $(rva "$1" "$2") ))
+}
+
+# code_bytes <image> <symbol> <n>  ->  hex of the symbol's first n bytes, so a
+# --poke's expected bytes are read out of the image rather than written down
+# and left to rot.
+code_bytes() {
+    "$OBJDUMP" -d "$1" |
+        awk -v s="<_$2>:" '
+            index($0, s) { grab = 1; next }
+            grab && NF == 0 { exit }
+            grab {
+                sub(/^[^:]*:\t/, "")
+                sub(/\t.*/, "")
+                gsub(/ /, "")
+                printf "%s", $0
+            }' |
+        cut -c1-$(( $3 * 2 ))
+}
+
 exe="$out/target.exe"
 dll="$out/selftest_lib.dll"
 
@@ -398,6 +420,65 @@ fi
 
 run_status "timeout  a call that never returns is given up on" timeout "$bp" \
     --call-timeout 1500 --call "spin()"
+
+# --- injected code and patches ---------------------------------------------
+
+# An executable page of our own, called like any other function. The address
+# form `&name` is what makes a buffer callable.
+#   mov eax,[esp+4]; mov ecx,[esp+8]; imul eax,ecx; ret
+run "code     an injected cdecl function" 42 "$bp" \
+    --code "mulfn:8b4424048b4c24080fafc1c3" \
+    --sig "i32 mulcode(i32,i32) = &mulfn" --call "mulcode(6, 7)"
+
+# `a1 <addr32>` is mov eax,[addr]: the hole holds a buffer's address, which
+# is not known until the run allocates it.
+run "code     {EXPR} is a buffer's address" 42 "$bp" \
+    --blob "answer:2a000000" \
+    --code "readfn:a1{&answer}c3" \
+    --sig "i32 readcode() = &readfn" --call "readcode()"
+
+# `e9 <rel32>` is a near jmp: the hole is relative to its own end, so it
+# depends on where the code was written as well as where it points.
+run "code     {rel32} reaches into the image" 3004 "$bp" \
+    --code "tramp:e9{rel32 $(va "$exe" t_add)}" \
+    --sig "i32 viatramp(i32,i32) = &tramp" --call "viatramp(3, 4)"
+
+# Patching live data, checked against what is actually there: g_obj.base is
+# 7000 (0x1b58) until this says otherwise.
+run "poke     data, against the bytes it replaces" 10005 "$bp" \
+    --poke "$gobj:581b0000=>10270000" --call "method($gobj, 5)"
+
+# The whole point: divert a function in the shipped image to a trampoline,
+# at runtime, without a patched copy of the file.
+#   mov eax,1000000; ret
+run "poke     a function is diverted to injected code" 1000000 "$bp" \
+    --code "alt:b840420f00c3" \
+    --poke "$(va "$exe" t_add):$(code_bytes "$exe" t_add 5)=>e9{rel32 &alt}" \
+    --call "add(1, 2)"
+
+run_grep "poke     refuses bytes that are not there" "not the expected" "$bp" \
+    --poke "$gobj:deadbeef=>00000000"
+
+run_grep "poke     refuses a change of length" "must preserve length" "$bp" \
+    --poke "$gobj:581b0000=>0000"
+
+# A run with no --call in it is a complete job when it has a --poke.
+run_grep "poke     with no call is a whole run" "poke at" "$bp" \
+    --poke "$gobj:581b0000=>10270000"
+
+# A patch outlives the debugger: the target's own last line prints
+# t_method(&g_obj, 1), which is 7001 unmodified and 10001 after this.
+poked_out=$(cd "$out" && WINEDEBUG=-all "$WINE" dbgcall.exe target.exe \
+    --bp "$bp" --poke "$gobj:581b0000=>10270000" --resume 2>/dev/null)
+
+if printf '%s' "$poked_out" | grep -q " 10001 "; then
+    echo "PASS  poke     a patch survives --resume"
+    pass=$((pass + 1))
+else
+    echo "FAIL  poke     expected the resumed target to print 10001"
+    printf '%s\n' "$poked_out" | sed 's/^/      /'
+    fail=$((fail + 1))
+fi
 
 # --- resuming --------------------------------------------------------------
 
