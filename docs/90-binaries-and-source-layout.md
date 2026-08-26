@@ -25,6 +25,24 @@ strings and RTTI left in the release build.
 (`aLibTool.cpp`) opens and saves `Libs/*.LIB` shape libraries — see
 [`60-lib-sprites.md`](60-lib-sprites.md).
 
+### 1.1 The exported surface (what a Wine harness can call)
+
+Every `.exe` has an **empty export directory** — game logic is reachable only
+at internal addresses (`tools/trace_names.py` names 324 of them).  All
+directly callable engine entry points live in `Eng3d.dll`: 89 `_E3D_*`
+cdecl exports covering collision (`_E3D_check_collision*`,
+`_E3D_get_face_equation_of_collided_faces`), the software rasterizer
+(`_E3D_c_draw_*_polygon`), fixed-point math (`_E3D_fsin/_E3D_fcos`,
+`_E3D_calc_angle_dx_dy`) and the VISN codec (`_E3D_init_vision`,
+`_E3D_decode_picture[_halve_size]`).  `ENG3DFX.DLL` is the same set minus
+`_E3D_get_engine_version`; `NewToolsR.dll`/`aWin.dll` export the `BB::`
+utility classes (three RNG generators, containers, `String`).
+Committed listings cover only these six original libraries
+([`tools/exports/`](../tools/exports/README.md)), verified by
+`pe_exports.py --check gog_incubation`; the `winmm` shims, GOG wrappers and
+CRT are deliberately not listed.  The headless harness built on this
+surface is `tools/wine_visn/`.
+
 ---
 
 ## 2. Original source tree

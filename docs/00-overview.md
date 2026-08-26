@@ -241,6 +241,7 @@ python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
 python3 tools/sav_parse.py    gog_incubation --selftest # 31 map sizes
 python3 tools/typ_parse.py    --check gog_incubation     # 18 checks
 python3 tools/ai_tables.py    --check gog_incubation     # 77 checks
+python3 tools/pe_exports.py   --check gog_incubation     # 6 engine listings
 ```
 
 Outputs (sprites, map renders, textures) are written under `tools/out/`.

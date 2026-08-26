@@ -146,6 +146,70 @@ class PEFile:
                         continue
                     yield t, n, lang, self.data[off:off + data_size]
 
+    # --- export directory ---------------------------------------------------
+
+    def exports(self):
+        """Parse the export directory.
+
+        Returns ``(dll_name, [(ordinal, rva, name, forwarder), ...])``, or
+        ``None`` if the image has no export directory.  Entries come back in
+        ordinal order, covering *every* exported slot, including anonymous
+        ones (``name`` ``None``); ``forwarder`` is the verbatim forwarder
+        string (e.g. ``system32\\winmm.CloseDriver``) for re-exported
+        symbols and ``None`` otherwise.
+        """
+        if len(self.dirs) < 1:
+            return None
+        dir_rva, dir_size = self.dirs[0]
+        if not dir_rva or not dir_size:
+            return None
+        d = self.data
+        off = self.rva_to_off(dir_rva)
+        if off is None:
+            raise PEError(f"{self.path}: export directory RVA {dir_rva:#x} unmapped")
+        (_chars, _stamp, _maj, _min, name_rva, ordinal_base,
+         nfuncs, nnames, addr_rva, name_ptr_rva, ordinal_idx_rva) = struct.unpack_from(
+            "IIHHIIIIIII", d, off)
+        dll_name = None
+        name_off = self.rva_to_off(name_rva)
+        if name_off is not None:
+            end = d.find(b"\0", name_off)
+            if end >= 0:
+                dll_name = d[name_off:end].decode("latin-1")
+        # Some images (goggame.dll) declare an export directory whose counters
+        # are all zero and whose table pointers point outside any section.
+        # An empty directory is legitimate; only *used* tables must be mapped.
+        if nfuncs == 0 and nnames == 0:
+            return dll_name, []
+        # name slots: sorted-by-name array of RVAs + parallel u16 ordinal indices
+        names = {}                     # ordinal -> name
+        nptr_off = self.rva_to_off(name_ptr_rva)
+        idx_off = self.rva_to_off(ordinal_idx_rva)
+        if nptr_off is None or idx_off is None:
+            raise PEError(f"{self.path}: export name tables unmapped")
+        for i in range(nnames):
+            nrva = struct.unpack_from("<I", d, nptr_off + 4 * i)[0]
+            ordinal = ordinal_base + struct.unpack_from("<H", d, idx_off + 2 * i)[0]
+            noff = self.rva_to_off(nrva)
+            if noff is None:
+                raise PEError(f"{self.path}: export name RVA {nrva:#x} unmapped")
+            end = d.find(b"\0", noff)
+            names[ordinal] = d[noff:end].decode("latin-1")
+        addr_off = self.rva_to_off(addr_rva)
+        if addr_off is None:
+            raise PEError(f"{self.path}: export address table RVA {addr_rva:#x} unmapped")
+        out = []
+        for i in range(nfuncs):
+            ordinal = ordinal_base + i
+            rva = struct.unpack_from("<I", d, addr_off + 4 * i)[0]
+            forwarder = None
+            if dir_rva <= rva < dir_rva + dir_size:
+                foff = self.rva_to_off(rva)
+                fend = d.find(b"\0", foff)
+                forwarder = d[foff:fend].decode("latin-1")
+            out.append((ordinal, rva, names.get(ordinal), forwarder))
+        return dll_name, out
+
     def _entries(self, off: int, base: int):
         """Yield ``(id_or_name, raw_offset_field)`` for one directory node."""
         (_c, _t, _maj, _min, nnamed, nid) = struct.unpack_from("<IIHHHH", self.data, off)

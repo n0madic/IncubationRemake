@@ -44,6 +44,7 @@ python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 259 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
+python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
