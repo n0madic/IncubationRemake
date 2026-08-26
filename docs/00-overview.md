@@ -27,8 +27,8 @@ why its class names (`V100ModelDesc`, `KeyFramedAnimationDesc`,
 `LinearVectorMovementDesc`, …) are known exactly rather than guessed.
 
 Reconstructed original source layout: [`90-binaries-and-source-layout.md`](90-binaries-and-source-layout.md).
-Plan for the runtime work that remains — the turn, interaction, the campaign,
-effects and sound, the interface contract and the sequence player:
+Plan for the runtime work — the turn, interaction, the campaign, effects and
+sound, the interface contract and the sequence player:
 [`91-game-logic-research-plan.md`](91-game-logic-research-plan.md).
 Decisions taken about the remake itself — engine, language, asset pipeline, and
 the product decisions the specs leave behind:
@@ -66,7 +66,7 @@ of scope.
 
 ### Behaviour, not formats
 
-Six specs in the set describe no file at all.
+Seven specs in the set describe no file at all.
 [`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
 between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
 records turn into a resolved shot and into fog of war.
@@ -90,11 +90,14 @@ indirection, the event → wave table, the 450-record blob pool — an Eng3d `ob
 eight fields bolted on — its single fifteen-argument constructor, the 78-arm
 update switch and the one texture atlas half the game's effects are drawn from, and the three compiler-generated switches that
 turn a weapon id into a muzzle effect, an impact effect and an impact sound.
-The six exist because a loader
+[`29-interface-contract.md`](29-interface-contract.md) is the information and
+operation boundary a replacement UI needs: its selected-unit view, battle
+commands, deployment transfer, map-intent boundary, and the LCL layouts/text it
+must localise. These seven behaviour specs exist because a loader
 that reads every byte of every format still cannot play a turn — nor be played
 against, nor be played through. `combat_tables.py`, `ai_tables.py`,
 `turn_tables.py`, `interaction_tables.py`, `campaign_tables.py`,
-`blob_tables.py` and `trace_names.py` are their checks.
+`blob_tables.py`, `interface_tables.py` and `trace_names.py` are their checks.
 
 **`DATA/Misc/Rec_0.dat` is dead data.** No executable or DLL in the release
 contains the string `Rec_`, and `Incubation.exe` contains no `.dat` literal at
@@ -240,7 +243,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **39 items are
+in place with the evidence that closed them rather than deleted. **38 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -251,10 +254,11 @@ still open:**
 | [22](22-combat-and-visibility.md) | 0 | all three closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string |
 | [23](23-ai-system.md) | 0 | all five closed; `+0x10` is fire / a mine / a shield, named by the models their makers insert; the cover score's out-of-bounds read is heap history and cancels in the maximiser; `aInitAISystem` does not exist; the planner and the fire routine share one twelve-value selector; and the loop's counters are a local and a parameter, which no mechanism in these binaries could have preserved |
 | [24](24-briefing-text.md) | 0 | nothing open; three mechanisms are implemented and unexercised (`{#2}`, the `#` indent, the Japanese two-byte path) and two things are dead (the `{:OC}` read, and `Errors.txt`/`Campaign.txt`, which no code can name) |
-| [25](25-turn-and-round.md) | 3 | the `pbm session` mode that no literal selects (deliberately not traced — the remake has no play-by-mail), one multiplayer session flag, and one interface routine that belongs to package F |
+| [25](25-turn-and-round.md) | 2 | the `pbm session` mode that no literal selects (deliberately not traced — the remake has no play-by-mail), and one multiplayer session flag |
 | [26](26-interaction.md) | 4 | the dead fourth `SetCtrlMapInfo` column, `_C_156`'s keyless teleporter exit, the `technical` box's guard bug, and what `Batteries` was going to do. The ladder rule is now a **decision**, not a question ([`92` §7.7](92-remake-architecture.md)) |
 | [27](27-campaign.md) | 4 | which `Video/` directory each dialogue number selects (package G's), why upgrade locations 3 and 6 load each other's map, the fourteen named locations with no cell, and one undecoded dialogue-screen flag. All 30 `setMissionResult` sites are now enumerated and classified, which is **closed** |
 | [28](28-effects-and-sound.md) | 2 | the per-tick constants of the 74 update arms, which are readable but not transcribed, and whether the eleven unreachable kinds were ever reachable. What the kinds *are* is now **closed** — every one is named by its creators, classed, and its spawn list decoded; so are the sprite atlas (there are no colour parameters: the palette is baked into one 8×8 texture), the sound gating (a sound's lifetime is its blocking sequence's), the `explosion.wav` / `explosion2.wav` split (an overheat catastrophe against ordnance impact) and the four `object_3d` fields two arms write — they are the **joint angles** of the model's sub-objects, read by seven Eng3d render opcodes and by nothing in the exe |
+| [29](29-interface-contract.md) | 0 | the hand-over routine `0x004312D0` is now decoded as the deployment-marker build/reset dispatch |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected, the one item here with an untraced lead, and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file |
 | [31](31-prototyp-geometry.md) | 1 | what a Voodoo did with Glide blend factor `0xf`. Runtime confirmation is **closed as not needed** — the item it was wanted for was settled by reading the code |
 | [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |

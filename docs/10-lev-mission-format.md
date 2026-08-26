@@ -193,7 +193,7 @@ named from `fcn.0042ed60` (the per-turn cell-effect tick), `fcn.0042f410` and
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|
-| `+0x00` | `u8` | Cell state. `1` in every shipped cell. At runtime the engine also writes `2` ("selected" — the LCL area commands act on `== 2`), `10`, `0x3C` and `0x64` as movement overlays (§4.5), and `30`–`34` as the AI's target overlay, one band per hit-probability bracket ([`23` §6](23-ai-system.md)). The band `0x50`–`0x5E`, which `fcn.0042f7d0` refuses to overwrite, is the **attack scratchpad**: `0x50`–`0x55` mark the cells a weapon covers and `0x5A`–`0x5D` record what happened there, see [`22` §7.2](22-combat-and-visibility.md). [`23` §10](23-ai-system.md) tabulates every band | confirmed |
+| `+0x00` | `u8` | Cell state. `1` in every shipped cell. At runtime the engine also writes `2` ("selected" — the LCL area commands act on `== 2`), `10`, `0x3C` and `0x64` as movement overlays (§4.5), `30`–`34` as the AI's target overlay, one band per hit-probability bracket ([`23` §6](23-ai-system.md)), and `70`–`73` as player-specific deployment markers during the hand-over overlay ([`29` §1.2](29-interface-contract.md)). The band `0x50`–`0x5E`, which `fcn.0042f7d0` refuses to overwrite, is the **attack scratchpad**: `0x50`–`0x55` mark the cells a weapon covers and `0x5A`–`0x5D` record what happened there, see [`22` §7.2](22-combat-and-visibility.md). [`23` §10](23-ai-system.md) tabulates every band | confirmed |
 | `+0x01` | `i32` | **Height**, world units. Identical to the `z` of the linked land object — 184162/184162 cells | confirmed |
 | `+0x05` | `u16` | **Land-object link** — index into block 3. Equals `y*width + x` in every shipped file | confirmed |
 | `+0x07` | `i16` | **Unit link** — index into the UnitMap, `0xFFFF` when the field is empty | confirmed |
@@ -460,6 +460,10 @@ table out and is the authority on which ids the engine acts on.
 | 80..89 | `0x0046E99F`, `0x0046E9D4` | **VictoryPoint capture** on the movement path ([`26` §6.1](26-interaction.md)) |
 | non-zero | `0x0041813F`, `0x0041D010`, `0x004313F4`, `0x00442440`, `0x00455695` | five "is anything here" tests, in five different modules |
 | 249, 254 | `0x0041CDD5`, `0x0041CEF2` | not values — the editor's `+= 5` and `+= 1` overflow guards |
+
+The `70…73` deployment markers described in [`29` §1.2](29-interface-contract.md)
+are values of **cell state `+0x00`**, not action-point ids. The `70` row above
+is the unrelated entry-point id stored at `cell[+0x0B]`.
 
 The previous revision listed `0x00455695` as a comparison against 12,
 *full munition*. It is not: the instruction there is `mov al, [ecx+0x0B]`

@@ -11,8 +11,8 @@ it. It is not a spec and states no findings of its own; everything here is
 either measured (the module map) or a question.
 
 **Scope.** Packages **A, C, B, D+E, F, G** below. Multiplayer and play-by-mail
-(**H**) are explicitly out of scope — see §9. **A, C, B and D+E are
-delivered**; F and G are not.
+(**H**) are explicitly out of scope — see §9. **A, C, B, D+E and F are
+delivered**; G is not.
 
 ---
 
@@ -37,26 +37,26 @@ site at all.
 | `aAnimations.cpp` | `0x0040B5AD` | 48.5 KB | 458 | the door and set-piece sequences described — [`20` §7.3](20-lcl-language.md), [`26`](26-interaction.md); every sound and effect it fires — [`28` §2, §8](28-effects-and-sound.md); the frame stepping itself is not decoded |
 | `aMissionControl.cpp` | `0x00453F9A` | 37.1 KB | 138 | the campaign map, the roster screens and the location dispatch described — [`27`](27-campaign.md); the screen layouts are package F's |
 | `aTacTools.cpp` | `0x0046A463` | 25.8 KB | 183 | described — [`22`](22-combat-and-visibility.md), [`26`](26-interaction.md) |
-| `aMenuSystem.cpp` | `0x0044B238` | 22.1 KB | 100 | **dark** — package F |
+| `aMenuSystem.cpp` | `0x0044B238` | 22.1 KB | 100 | partly — campaign/roster rules in [`27`](27-campaign.md); front-end flow remains out of scope |
 | `a3DObjects.cpp` | `0x004046C1` | 20.7 KB | 226 | partly — [`30`](30-eng3d-ascii-formats.md), [`31`](31-prototyp-geometry.md); package C touches it |
 | `aSeqPlayer.cpp` | `0x0046543A` | 20.0 KB | 18 | **dark** — package G |
 | `aLCL_Com.cpp` | `0x004407D5` | 18.9 KB | 52 | described — [`20` §7](20-lcl-language.md) |
 | `aUnitMap.cpp` | `0x0047776B` | 17.4 KB | 112 | described — [`22` §5](22-combat-and-visibility.md), [`26` §2](26-interaction.md), [`27` §3](27-campaign.md) (the roster lives here, not in `aMissionControl.cpp`) |
 | `aBattleSystem.cpp` | `0x00419DB9` | 16.2 KB | 44 | the hand-over's refresh entry described — [`25` §5](25-turn-and-round.md) |
-| `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | **dark** — package F |
+| `aUnitInfos.cpp` | `0x00473A41` | 15.3 KB | 24 | balance records and selected-unit fields — [`21`](21-info-lcl-schema.md), [`29`](29-interface-contract.md) |
 | `aCtrlMap.cpp` | `0x0042EBAB` | 14.4 KB | 31 | described — [`10`](10-lev-mission-format.md), [`23`](23-ai-system.md), [`26`](26-interaction.md) |
 | `a3DEngine.cpp` | `0x0040104B` | 13.6 KB | 106 | partly — [`31`](31-prototyp-geometry.md) |
 | `aViewPlayer.cpp` | `0x0047BD0B` | 13.3 KB | 54 | described — [`25` §4](25-turn-and-round.md) |
-| `aMI.cpp` | `0x00450AC8` | 12.8 KB | 33 | **dark** — package F (map interface) |
-| `aUI.cpp` | `0x00471101` | 10.3 KB | 45 | **dark** — package F (unit interface) |
-| `aGUI.cpp` | `0x0043BF5B` | 10.2 KB | 76 | text box described — [`24`](24-briefing-text.md); package F |
+| `aMI.cpp` | `0x00450AC8` | 12.8 KB | 33 | map event boundary — [`29`](29-interface-contract.md); raw mouse driver remains out of scope |
+| `aUI.cpp` | `0x00471101` | 10.3 KB | 45 | selected-unit fields and command pad — [`29`](29-interface-contract.md) |
+| `aGUI.cpp` | `0x0043BF5B` | 10.2 KB | 76 | text box described — [`24`](24-briefing-text.md); layout source in [`29`](29-interface-contract.md) |
 | `aBattleMap.cpp` | `0x004177BA` | 9.5 KB | 52 | loading described — [`10`](10-lev-mission-format.md) |
 | `aAISystem.cpp` | `0x00409984` | 6.7 KB | 21 | described — [`23`](23-ai-system.md) |
 | `aMissionEnd.cpp` | `0x0045D40A` | 6.4 KB | 27 | described — [`27` §6](27-campaign.md) |
 | `aLoad.cpp` | `0x00447BF2` | 6.3 KB | 44 | described — [`11`](11-save-game-format.md) |
 | `aDSound.cpp`, `aCDRom.cpp`, `aAmbience.cpp` | — | — | 20 | described — [`28` §1, §6](28-effects-and-sound.md); `aAmbience.cpp` turns out to be a stub |
 | `aPassWord.cpp` | `0x0046246C` | 3.9 KB | 9 | identified — the play-by-mail password screen, [`27` §7](27-campaign.md); **out of scope**, §9 |
-| `aPI.cpp` | `0x00463411` | 1.6 KB | 8 | identified — the **Place Interface**, the deploy screen ([`90` §2](90-binaries-and-source-layout.md)); its rules are package F's |
+| `aPI.cpp` | `0x00463411` | 1.6 KB | 8 | the **Place Interface**, with deploy transfer rules in [`29`](29-interface-contract.md) |
 | `aMultiPlayer.cpp`, `lNetwork.cpp`, `aDPlay.cpp`, `aMsgTools.cpp` | — | — | 34 | **out of scope** — §9 |
 
 `aBlobs.cpp` and `aAnimations.cpp` are the two largest modules in the game.
@@ -96,10 +96,11 @@ so no package has to repeat it.
 > `tools/turn_tables.py --check` (85 checks, 102 mutations, 0 missed). Questions 1–5 are
 > answered there; question 6 is answered in
 > [`11` §5.6](11-save-game-format.md), where the block belongs. What stayed
-> open moved into `25`'s own Open questions section: the `pbm session` mode no
-> literal selects, one multiplayer session flag, `unit[+0x50]`'s missing reader,
-> and one interface routine that belongs to package F. The section below is kept
-> as written so the plan can be read against what it produced.
+> open is kept in `25`'s own Open questions section: the `pbm session` mode no
+> literal selects and one multiplayer session flag; `unit[+0x50]` is now closed
+> in §5.1. The interface hand-over routine was moved to package F's `29`.
+> The section below is kept as written so the plan can be read against what it
+> produced.
 
 **Why first.** [`23`](23-ai-system.md) describes the computer's half of a turn
 and [`22`](22-combat-and-visibility.md) describes what a shot does. Nothing
@@ -348,7 +349,7 @@ each blob closed is one effect the remake can implement.
 
 ---
 
-## 7. Package F — the GUI runtime, only as far as a new interface needs
+## 7. Package F — the GUI runtime, only as far as a new interface needs — **delivered**
 
 **Deliberately bounded.** The remake will draw its own interface. What it must
 not reinvent is the *information* the original interface carried and the
@@ -375,8 +376,19 @@ are reference material, not a specification to reproduce.
 **Out of scope.** `aMenuSystem.cpp`'s 22 KB of front-end flow, `aGadgets.cpp`,
 list boxes, the mouse driver, and pixel-exact reproduction of any screen.
 
-**Deliverable.** `docs/29-interface-contract.md` — deliberately a *contract*,
-not a spec of the original UI.
+**Delivered** as [`29-interface-contract.md`](29-interface-contract.md) with
+`tools/interface_tables.py --check` (39 checks over the game binary and all
+three layout programs / nine localised GUI tables). It preserves the data and
+semantic boundaries a new interface needs: the selected-unit panel, the six
+battle command operations, the map intent modes and event boundary, the deploy
+transfer gate, the hand-over deployment overlay, and LCL's screen/text source.
+The checks pin complete opcodes/targets for the recovered HUD and map-event
+boundary, as well as their field constants; targeted negative controls cover
+each semantic group. A missing binary, a targeted byte/token mutation, and an
+incomplete corpus all fail closed.
+Pixel layout, widgets, the mouse driver, and `aMenuSystem.cpp` remain explicitly
+out of scope. The former hand-over question is closed in `29` by the
+field-level branch, marker, and reset contract.
 
 ---
 
@@ -440,13 +452,13 @@ and `aOutputMissionObjectsForMultiPlayer`, which is the state-sync contract.
 | 2 | ~~**C** interaction~~ **delivered** | [`26`](26-interaction.md), `interaction_tables.py` | A (action costs) | mission objectives that use doors, crates, levers |
 | 3 | ~~**B** campaign~~ **delivered** | [`27`](27-campaign.md), `campaign_tables.py` | A, C | mission 2 onward |
 | 4 | ~~**D + E** effects and sound~~ **delivered** | [`28`](28-effects-and-sound.md), `blob_tables.py` | — (independent) | the game's feel |
-| 5 | **F** interface contract | `29` | A, B | a UI that shows the right numbers |
+| 5 | ~~**F** interface contract~~ **delivered** | [`29`](29-interface-contract.md), `interface_tables.py` | A, B | a UI that shows the right numbers |
 | 6 | **G** sequences | `41`, `seq_parse.py` | — (independent) | the story scenes |
 
-**A, C and B are the critical path, and all three are delivered**, as is the
-independent D+E. G is independent and can be
-picked up whenever someone wants a change of subject; F is best done after A and
-B, because most of its content is *their* content displayed.
+**A, C and B are the critical path, and all three are delivered**, as are the
+independent D+E and the F interface contract. G is independent and can be
+picked up whenever someone wants a change of subject; its player does not block
+the battle or interface work.
 
 **Development need not wait.** Loading, terrain, models, animations, textures,
 fonts, sprites, balance tables, combat, visibility, the AI and all mission text

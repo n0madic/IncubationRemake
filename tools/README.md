@@ -56,6 +56,10 @@ blob_tables.py        decode effects and sound: the DirectSound buffers, the
                       event -> wave table, the blob pool and its 78 update
                       kinds, the sprite atlas, the object_3d joint buffer, and
                       weapon -> effect (docs/28)
+interface_tables.py   decode the replacement-UI contract: LCL layouts/text,
+                      battle commands, deploy transfer/hand-over overlay, and
+                      map intent boundary
+                      (docs/29)
 ```
 
 ## Corpus checks
@@ -87,6 +91,7 @@ python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
 python3 tools/blob_tables.py        --check gog_incubation          # 252 checks
+python3 tools/interface_tables.py   --check gog_incubation          # 39 checks
 python3 tools/charisma_selftest.py                                   # synthetic reader paths
 ```
 

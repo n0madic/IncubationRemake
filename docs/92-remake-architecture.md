@@ -207,11 +207,11 @@ between missions, the location map and its unlock graph, the equipment-point
 economy and the mission-end score ([`27`](27-campaign.md)) — the effects and
 sound around all of it: the event → wave table, the weapon fire sound, the
 footstep and voice tables and the blob pool with its weapon → effect switches
-([`28`](28-effects-and-sound.md)) — and every line of
-mission text.
+([`28`](28-effects-and-sound.md)) — the replacement-interface contract
+([`29`](29-interface-contract.md)) — and every line of mission text.
 
 Blocked on [`91`](91-game-logic-research-plan.md): the
-interface contract (F), the sequence player (G).
+sequence player (G).
 
 A first vertical slice needs nothing that is not already done: convert one
 mission, draw the grid, and light up the reachable cells from
@@ -446,8 +446,9 @@ These follow from the repository's own rules and apply to the remake as well:
 **Nothing at the architecture level.** Every decision the earlier drafts left
 open is settled in §7, and the questions that remain are research, not choices:
 
-* the interface contract (package F) and the sequence player (package G) in
-  [`91`](91-game-logic-research-plan.md), which is what §6 lists as blocking;
+* the sequence player (package G) in [`91`](91-game-logic-research-plan.md),
+  which is what §6 lists as blocking; package F's interface contract is
+  delivered as [`29`](29-interface-contract.md);
 * the numbered specs' own **Open questions** sections. Of the items still open
   there, the ones a remake would actually notice are the sprite libraries'
   transparent index and out-of-sprite anchors ([`60`](60-lib-sprites.md)),

@@ -338,6 +338,9 @@ The floor, the cap and both floating-point constants are pinned by
 
 `0x00419D50` is two calls: the refresh below for the incoming player, then
 `0x004312D0` for the same player. The refresh has exactly one caller.
+The second call is the interface-side deployment overlay dispatch, documented
+at [`29` §1.2](29-interface-contract.md), rather than another turn-state
+refresh.
 
 ```c
 void refreshPlayer(u8 player)                    /* 0x004781C0 */
@@ -709,10 +712,6 @@ it covers.
    two orthogonal steps and `35` is two orthogonal plus one diagonal, both
    uniquely; `40` and `55` each have two decompositions, so the step mix behind
    them is not recoverable from the value alone.
-
-4. **`0x004312D0`**, the second half of `0x00419D50`, is called once per
-   hand-over with the incoming player and is not described. It is interface
-   state rather than turn state — package F.
 
 The ViewPlayer block is **not** listed here. §10's sweep partitions it and the
 result is tabulated where it belongs, in
