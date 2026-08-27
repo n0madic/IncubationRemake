@@ -274,7 +274,49 @@ The three INT3 modes the old generator offered are gone. `dbgcall --bp` plants
 breakpoints properly, and §3 is the record of why an INT3 in the gameplay path
 is the wrong instrument here regardless of who writes it.
 
-## 6. Next runtime slice
+## 6. Separate DirectDraw/WineD3D A/B
+
+The renderer failure was tested independently from the kind-15 patch. Every
+run below used a fresh copy of the original image in an isolated Wine prefix;
+the working game process in the main prefix was left untouched.
+
+| Route | Observation | Classification |
+|---|---|---|
+| `WINE_D3D_CONFIG=renderer=gl` | OpenGL initialised, then repeated `GL_INVALID_FRAMEBUFFER_OPERATION (0x506)` from `glClear` and `NtUserChangeDisplaySettings ... -2` | Wine/macOS OpenGL failure |
+| `WINE_D3D_CONFIG=renderer=vulkan` | The 16-bit primary requested by the game was rejected: `Failed to find Vulkan swapchain format for WINED3DFMT_B5G6R5_UNORM` | Wine Vulkan format gap |
+| Vulkan plus `+0x32d61` `mov edi,16` → `mov edi,32` | The 32-bit swapchain was created, so the format error disappeared; the direct-save route then emitted `Unhandled location WINED3D_LOCATION_DRAWABLE` and faulted at a Wine address ending in `+0xDA48`. `csmt=0` and a valid NVIDIA PCI-ID override did not change it | partial diagnostic only; not a safe game patch |
+| `WINE_D3D_CONFIG=renderer=gdi` (alias `no3d`) | A visible 640×480 window remained up with no FBO or display-mode errors; Wine explicitly logged `Disabling 3D support`. The kind-15 buffer stayed zero, so no playable 3D or arm sample was established | stable 2D/logic diagnostic route, not a gameplay renderer |
+| `-3dfx` | The bundled nGlide `glide*.dll` path still reaches D3D9. With the default renderer it reproduces the OpenGL failure; with Vulkan it gives either `3Dfx card not detected` or the same `DRAWABLE` fault | not a DirectDraw bypass |
+
+The 32-bit experiment is deliberately a runtime argument probe, not a
+replacement executable: it changes only the value passed to the game's
+`SetDisplayMode` call at VA `0x00432D61` (RVA `0x32D61`). It does not convert
+the game's RGB565 surfaces, which is why it cannot be promoted to a fix.
+
+### 6.1 Native DirectDraw wrappers
+
+To test a layer outside WineD3D, the following 32-bit wrappers were placed next
+to the game and selected with `WINEDLLOVERRIDES=ddraw=n`: cnc-ddraw 7.1.0
+(OpenGL and GDI profiles, including its Windows-ME build), DXGL 0.5.27, D7VK
+2.1, and dxwrapper 1.8 with `Dd7to9=1`. Each process spun without creating an
+`Incubation` window and produced the same host-side
+`rosetta error: LDT ... not supported`; no wrapper run reached a game frame.
+This is a wrapper/Wine-on-Apple-Silicon negative control, not evidence that the
+game rejects DirectDraw. DDrawCompat was not treated as a positive candidate
+because its own documentation excludes Wine as a supported environment.
+
+The bounded conclusions are therefore:
+
+1. `renderer=gdi` is the only isolated route that cleanly removes both the
+   WineD3D FBO and display-mode errors, but it disables the 3D path needed for
+   a gameplay trace.
+2. Vulkan plus the 32-bit probe removes one format mismatch but exposes a
+   second, unimplemented `DRAWABLE` path and is crash-prone.
+3. The confirmed playable route remains the original Wine renderer through
+   `explorer /desktop ... cmd /c`; renderer substitution is not yet a valid
+   replacement for a Windows run.
+
+## 7. Next runtime slice
 
 `tools/dbgcall_patches.py --trace-blob-kind KIND` already takes the arm as a
 parameter; what it does not have is a second entry in its `BLOB_ARMS` table.
