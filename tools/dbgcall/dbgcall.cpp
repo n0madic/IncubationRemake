@@ -144,6 +144,53 @@ static std::vector<std::wstring> SplitWs(const std::wstring& s)
     return out;
 }
 
+// Whitespace-separated tokens, except inside `"`, `[]`, `()` or `{}` -- so
+// `--poke A:B=>e9{rel32 &tramp}` survives being written on a line of a plan
+// file rather than in a shell's quotes. A token wrapped in quotes loses them,
+// the way a shell would remove them.
+static std::vector<std::wstring> SplitTokens(const std::wstring& s)
+{
+    std::vector<std::wstring> out;
+    std::wstring cur;
+    int depth = 0;
+    bool quoted = false;
+
+    auto flush = [&]()
+    {
+        if (cur.empty())
+            return;
+
+        if (cur.size() >= 2 && cur.front() == L'"' && cur.back() == L'"')
+            cur = cur.substr(1, cur.size() - 2);
+
+        out.push_back(cur);
+        cur.clear();
+    };
+
+    for (wchar_t c : s)
+    {
+        if (c == L'"')
+            quoted = !quoted;
+        else if (!quoted && (c == L'[' || c == L'(' || c == L'{'))
+            ++depth;
+        else if (!quoted && (c == L']' || c == L')' || c == L'}'))
+            --depth;
+
+        if (!quoted && depth <= 0 &&
+            (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n'))
+        {
+            flush();
+            continue;
+        }
+
+        cur.push_back(c);
+    }
+
+    flush();
+
+    return out;
+}
+
 static std::wstring Hex32(uint32_t v)
 {
     std::wostringstream o;
@@ -2735,6 +2782,108 @@ struct Options
 };
 
 
+// Options that set the run up rather than belonging to one call: buffers,
+// injected code and patches. Accepted on the command line and on a line of
+// their own in a plan file, parsed here once for both. Returns how many
+// tokens were consumed, or 0 when the token is not one of them.
+static size_t ApplyGlobalOption(
+    const std::vector<std::wstring>& t,
+    size_t i,
+    Options& o)
+{
+    const std::wstring& x = t[i];
+
+    auto need = [&]() -> const std::wstring&
+    {
+        if (i + 1 >= t.size())
+            Die(x + L" requires a value");
+
+        return t[i + 1];
+    };
+
+    if (x == L"--buf" || x == L"--blob" || x == L"--code")
+    {
+        std::wstring v = need();
+        size_t colon = v.find(L':');
+
+        if (colon == std::wstring::npos)
+        {
+            Die(
+                x + L" must be NAME:" +
+                (x == L"--buf" ? L"SIZE" : L"HEXBYTES") + L", got: " + v);
+        }
+
+        BufDecl b;
+        b.name = Trim(v.substr(0, colon));
+        b.exec = (x == L"--code");
+
+        if (b.name.empty())
+            Die(L"Empty buffer name in: " + v);
+
+        if (x == L"--buf")
+        {
+            b.size = static_cast<uint32_t>(ParseU64(Trim(v.substr(colon + 1))));
+
+            if (!b.size || b.size > 0x100000)
+                Die(L"--buf size must be between 1 and 1048576: " + v);
+        }
+        else
+        {
+            b.pattern = ParseBytePattern(Trim(v.substr(colon + 1)));
+
+            if (b.pattern.bytes.empty())
+                Die(x + L" needs at least one byte: " + v);
+
+            b.size = static_cast<uint32_t>(b.pattern.bytes.size());
+        }
+
+        o.bufs.push_back(b);
+        return 2;
+    }
+
+    if (x == L"--poke")
+    {
+        std::wstring v = need();
+        size_t arrow = v.find(L"=>");
+
+        if (arrow == std::wstring::npos)
+            Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
+
+        std::wstring left = Trim(v.substr(0, arrow));
+
+        // The last colon before `=>` is the separator, so `rva:0x1fb34` stays
+        // one address rather than becoming an address and a nonsensical byte
+        // string.
+        size_t colon = left.rfind(L':');
+
+        if (colon == std::wstring::npos)
+            Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
+
+        PokeDecl q;
+        q.text = v;
+        q.addr = ParseAddress(Trim(left.substr(0, colon)));
+        q.expected = ParseHexBytes(Trim(left.substr(colon + 1)));
+        q.replacement = ParseBytePattern(Trim(v.substr(arrow + 2)));
+
+        if (q.expected.empty())
+            Die(L"--poke needs the bytes it expects to find: " + v);
+
+        if (q.replacement.bytes.size() != q.expected.size())
+        {
+            Die(
+                L"--poke must preserve length: " +
+                std::to_wstring(q.expected.size()) + L" bytes expected, " +
+                std::to_wstring(q.replacement.bytes.size()) +
+                L" written: " + v);
+        }
+
+        o.pokes.push_back(q);
+        return 2;
+    }
+
+    return 0;
+}
+
 // Options that attach to a call, and so are accepted both on the command
 // line and after a call in a plan file. Returns how many tokens were
 // consumed, or 0 when the token is not one of them.
@@ -3047,7 +3196,7 @@ static void SplitPlanLine(
             (i == 0 || line[i - 1] == L' ' || line[i - 1] == L'\t'))
         {
             expr = Trim(line.substr(0, i));
-            flags = SplitWs(line.substr(i));
+            flags = SplitTokens(line.substr(i));
             return;
         }
     }
@@ -3057,8 +3206,8 @@ static void SplitPlanLine(
 }
 
 // A declaration carries `= ADDRESS` after the parameter list; a call may
-// carry `binding =` before it. That is the whole difference, and it is why
-// declarations and calls can share one file with no directive keywords.
+// carry `binding =` before it. That is the whole difference between the two
+// forms that look like C.
 static bool IsDeclaration(const std::wstring& expr)
 {
     size_t close = expr.rfind(L')');
@@ -3069,7 +3218,17 @@ static bool IsDeclaration(const std::wstring& expr)
     return !Trim(expr.substr(close + 1)).empty();
 }
 
-// One file format for both: declarations and the calls that use them.
+// One file format for the lot. A line is one of three things, and none of
+// them needs a keyword to say which:
+//
+//   * a setup option, spelled exactly as on the command line, because there
+//     is no reason for the same thing to have two spellings;
+//   * a declaration, which is the one with `= ADDRESS` after its parameters;
+//   * a call, optionally with per-call options after it.
+//
+// Deliberately absent: anything that computes. No loops, no conditionals, no
+// arithmetic over lines. A plan is a flat list, and whatever has to be worked
+// out is worked out by the script that writes the plan.
 static void LoadPlanFile(const std::wstring& path, Options& o)
 {
     for (std::wstring raw : ReadLines(path))
@@ -3083,6 +3242,30 @@ static void LoadPlanFile(const std::wstring& path, Options& o)
         std::vector<std::wstring> flags;
 
         SplitPlanLine(line, expr, flags);
+
+        // A line that is nothing but options sets the run up.
+        if (expr.empty())
+        {
+            for (size_t i = 0; i < flags.size();)
+            {
+                size_t used = ApplyGlobalOption(flags, i, o);
+
+                if (!used)
+                {
+                    CallDraft ignored;
+
+                    Die(
+                        ApplyCallOption(flags, i, ignored)
+                            ? flags[i] + L" belongs to a call, so it goes "
+                              L"after one: " + line
+                            : L"Unknown option in plan file: " + flags[i]);
+                }
+
+                i += used;
+            }
+
+            continue;
+        }
 
         if (IsDeclaration(expr))
         {
@@ -3113,7 +3296,13 @@ static void LoadPlanFile(const std::wstring& path, Options& o)
             size_t used = ApplyCallOption(flags, i, d);
 
             if (!used)
-                Die(L"Unknown option in plan file: " + flags[i]);
+            {
+                Die(
+                    ApplyGlobalOption(flags, i, o)
+                        ? flags[i] + L" sets the whole run up, so it goes on "
+                          L"a line of its own: " + line
+                        : L"Unknown option in plan file: " + flags[i]);
+            }
 
             i += used;
         }
@@ -3244,10 +3433,10 @@ PATCHING
   not actually hold EXPECTED -- against the loaded image, relocations and
   all, which is the only place that can be checked.
 
-  Patches are applied in the order written, after every buffer exists, and
-  are never undone: with --resume the target runs on with them in place. So
-  a hook can be installed on the original executable at runtime instead of
-  by shipping a patched copy of it.
+  Patches are applied in the order written, after every buffer exists and
+  before any call, and are never undone: with --resume the target runs on
+  with them in place. So a hook can be installed on the original executable
+  at runtime instead of by shipping a patched copy of it.
 
   Both --code and --poke take hex with holes in it:
 
@@ -3269,13 +3458,22 @@ PATCHING
 
 BATCHES
 
-  A plan file holds declarations and calls in the same syntax, one per line,
-  with no directive keywords -- a declaration is the one with `= ADDRESS`
-  after the parameter list:
+  A plan file holds a whole run, one thing per line. A line is a setup
+  option, a declaration -- the one with `= ADDRESS` after its parameters --
+  or a call, and none of them needs a keyword to say which:
+
+  --code alt:b840420f00c3
+  --poke 0x004014b0:6944240 4e8=>e9{rel32 &alt}
 
   i32 add(i32,i32) = rva:0x14b0
   x = add(1, 2)
   add($x, 7) --dump out
+
+  Setup options are spelled exactly as on the command line, and go on lines
+  of their own; per-call options go after a call. Braces, brackets and quotes
+  hold a value together, so a hole containing a space survives without the
+  shell. Deliberately absent: loops, conditionals, arithmetic over lines. A
+  plan is a flat list -- generate it from a script when it needs working out.
 
   There is no sweep or range syntax on purpose. Generate the lines with a
   script -- that handles irregular domains a range never could, and keeps
@@ -3381,6 +3579,9 @@ int wmain(int argc, wchar_t** argv)
 
         size_t used = ApplyCallOption(t, i, cli);
 
+        if (!used)
+            used = ApplyGlobalOption(t, i, o);
+
         if (used)
         {
             i += used;
@@ -3432,85 +3633,6 @@ int wmain(int argc, wchar_t** argv)
         else if (x == L"--plan")
         {
             planFiles.push_back(need(L"--plan"));
-            i += 2;
-        }
-        else if (x == L"--buf" || x == L"--blob" || x == L"--code")
-        {
-            std::wstring v = need(x.c_str());
-            size_t colon = v.find(L':');
-
-            if (colon == std::wstring::npos)
-            {
-                Die(
-                    x + L" must be NAME:" +
-                    (x == L"--buf" ? L"SIZE" : L"HEXBYTES") + L", got: " + v);
-            }
-
-            BufDecl b;
-            b.name = Trim(v.substr(0, colon));
-            b.exec = (x == L"--code");
-
-            if (b.name.empty())
-                Die(L"Empty buffer name in: " + v);
-
-            if (x == L"--buf")
-            {
-                b.size = static_cast<uint32_t>(
-                    ParseU64(Trim(v.substr(colon + 1))));
-
-                if (!b.size || b.size > 0x100000)
-                    Die(L"--buf size must be between 1 and 1048576: " + v);
-            }
-            else
-            {
-                b.pattern = ParseBytePattern(Trim(v.substr(colon + 1)));
-
-                if (b.pattern.bytes.empty())
-                    Die(x + L" needs at least one byte: " + v);
-
-                b.size = static_cast<uint32_t>(b.pattern.bytes.size());
-            }
-
-            o.bufs.push_back(b);
-            i += 2;
-        }
-        else if (x == L"--poke")
-        {
-            std::wstring v = need(L"--poke");
-            size_t arrow = v.find(L"=>");
-
-            if (arrow == std::wstring::npos)
-                Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
-
-            std::wstring left = Trim(v.substr(0, arrow));
-
-            // The last colon before `=>` is the separator, so `rva:0x1fb34`
-            // stays one address rather than becoming an address and a
-            // nonsensical byte string.
-            size_t colon = left.rfind(L':');
-
-            if (colon == std::wstring::npos)
-                Die(L"--poke must be ADDR:EXPECTED=>NEW, got: " + v);
-
-            PokeDecl q;
-            q.text = v;
-            q.addr = ParseAddress(Trim(left.substr(0, colon)));
-            q.expected = ParseHexBytes(Trim(left.substr(colon + 1)));
-            q.replacement = ParseBytePattern(Trim(v.substr(arrow + 2)));
-
-            if (q.expected.empty())
-                Die(L"--poke needs the bytes it expects to find: " + v);
-
-            if (q.replacement.bytes.size() != q.expected.size())
-            {
-                Die(
-                    L"--poke must preserve length: " +
-                    std::to_wstring(q.expected.size()) + L" bytes expected, " +
-                    std::to_wstring(q.replacement.bytes.size()) +
-                    L" written: " + v);
-            }
-
-            o.pokes.push_back(q);
             i += 2;
         }
         else if (x == L"--out")
@@ -4301,13 +4423,14 @@ int wmain(int argc, wchar_t** argv)
 
                         env.buffers[b.name] = buf;
 
-                        if (b.exec)
-                        {
-                            reporter.Note(
-                                L"[+] code " + b.name + L" at " +
-                                Hex32(buf.addr) + L", " +
-                                std::to_wstring(b.size) + L" bytes");
-                        }
+                        // Reported because the address is the only way to
+                        // reach a buffer from outside: a trace buffer that
+                        // fills up after --resume is read by something else
+                        // entirely, and it needs to be told where.
+                        reporter.Note(
+                            std::wstring(b.exec ? L"[+] code " : L"[+] buf ") +
+                            b.name + L" at " + Hex32(buf.addr) + L", " +
+                            std::to_wstring(b.size) + L" bytes");
                     }
 
                     for (const BufDecl& b : o.bufs)

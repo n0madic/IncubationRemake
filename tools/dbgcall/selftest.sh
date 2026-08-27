@@ -437,6 +437,13 @@ run "code     {EXPR} is a buffer's address" 42 "$bp" \
     --code "readfn:a1{&answer}c3" \
     --sig "i32 readcode() = &readfn" --call "readcode()"
 
+# A hole is a whole expression, not just a name: a trampoline reaches the
+# fields of its trace buffer this way.
+run "code     {EXPR} does arithmetic" 42 "$bp" \
+    --blob "answer:000000002a000000" \
+    --code "readfn:a1{&answer+4}c3" \
+    --sig "i32 readcode() = &readfn" --call "readcode()"
+
 # `e9 <rel32>` is a near jmp: the hole is relative to its own end, so it
 # depends on where the code was written as well as where it points.
 run "code     {rel32} reaches into the image" 3004 "$bp" \
@@ -465,6 +472,29 @@ run_grep "poke     refuses a change of length" "must preserve length" "$bp" \
 # A run with no --call in it is a complete job when it has a --poke.
 run_grep "poke     with no call is a whole run" "poke at" "$bp" \
     --poke "$gobj:581b0000=>10270000"
+
+# The same three setup options in a plan file, spelled exactly as on the
+# command line. The hole in the last one contains a space, which is the case
+# a plan file has to survive without the shell's quotes.
+cat > "$out/patch.txt" <<EOF
+--code alt:b840420f00c3
+--poke $(va "$exe" t_add):$(code_bytes "$exe" t_add 5)=>e9{rel32 &alt}
+--buf  spare:16
+
+i32 patched(i32,i32) = rva:$(rva "$exe" t_add)
+patched(1, 2)
+EOF
+
+run "plan     setup options in a plan file" 1000000 "$bp" \
+    --plan "$out/patch.txt"
+
+printf -- '--dump nosuch\n' > "$out/bad_call_opt.txt"
+run_grep "plan     a call option on its own line is refused" \
+    "belongs to a call" "$bp" --plan "$out/bad_call_opt.txt"
+
+printf 'zero() --buf x:4\n' > "$out/bad_setup_opt.txt"
+run_grep "plan     a setup option after a call is refused" \
+    "line of its own" "$bp" --plan "$out/bad_setup_opt.txt"
 
 # A patch outlives the debugger: the target's own last line prints
 # t_method(&g_obj, 1), which is 7001 unmodified and 10001 after this.

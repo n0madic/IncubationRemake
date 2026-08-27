@@ -287,9 +287,16 @@ neither the page a buffer landed on nor the displacement to it exists until
 the run is already under way.
 
 Order at the breakpoint is: every buffer is allocated, then every buffer is
-written, then every `--poke` is applied, in the order written. So a patch can
-name a buffer allocated moments earlier, and a trampoline can name another
-buffer.
+written, then every `--poke` is applied in the order written, and only then
+does the first call run. So a patch can name a buffer allocated moments
+earlier, and a trampoline can name another buffer.
+
+That order is the model, not an implementation detail: **a run sets the target
+up, then interrogates it.** Buffers, code pages and patches are position-
+independent, exactly as declarations are; calls are the only thing that
+happens in sequence. The cost is that a `--poke` cannot reach a module which
+only one of your own calls loads — put the breakpoint in that module instead,
+with `--bp Module+RVA`, and it is loaded by the time anything runs.
 
 Installing a hook over a six-byte instruction pair and continuing into the
 instruction after it:
@@ -329,18 +336,40 @@ dbgcall.exe game.exe --bp rva:0x1565 \
     --out jsonl -o los.jsonl
 ```
 
-Past a handful, put them in a file. A plan holds declarations and calls in
-the same syntax, one per line, so the command line does not grow with the
-batch:
+Past a handful, put them in a file. A plan holds a whole run, one thing per
+line, so the command line does not grow with it. A line is one of three
+things, and none of them needs a keyword to say which:
+
+| line | what it is |
+| --- | --- |
+| starts with `--` | a setup option — `--buf`, `--blob`, `--code`, `--poke` |
+| `= ADDRESS` after the parameters | a declaration |
+| anything else | a call, with per-call options after it |
 
 ```
 # plan.txt
+--buf  trace:256
+--code tramp:8925{&trace}9c50515657...
+--poke 0x00420734:8b56488b6e14=>e9{rel32 &tramp}90
+
 __cdecl    i32 aCheckLineOfSight(ptr,i32,i32) = Incubation.exe+0x46C460
 __thiscall i32 aGetUnitHitPoints(ptr)         = Incubation.exe+0x41A2E0
 
 hp = aGetUnitHitPoints(%esi)
 aCheckLineOfSight(%esi, 12, 7)
 ```
+
+The setup options are spelled exactly as on the command line — one way to say
+a thing, whichever side of the file it is on. Braces, brackets and quotes hold
+a value together, so `{rel32 &tramp}` survives the space that the shell would
+otherwise have needed quoting for. A per-call option on a line of its own, or
+a setup option after a call, is refused with a message saying which it is.
+
+**A plan is a flat list, and it stays one.** There are no loops, no
+conditionals and no arithmetic over lines, for the same reason there is no
+sweep syntax: that is a language, and this repository already has one. When a
+plan needs working out, generate it — `tools/dbgcall_patches.py --plan` does
+exactly that for the game's patch sets.
 
 ```bash
 dbgcall.exe game.exe --bp rva:0x1565 --plan plan.txt
@@ -450,11 +479,11 @@ address back out of the built images, then exercises all four conventions,
 every argument width, structs by value, the expression forms, buffers, module
 resolution, deferred and multiple breakpoints, batches, plan files, signature
 verification, `--probe`, `--resume`, injected `--code` including both hole
-forms, `--poke` against live data and live code, and the fault and timeout
-paths:
+forms, `--poke` against live data and live code, setup options in a plan file,
+and the fault and timeout paths:
 
 ```bash
-bash tools/dbgcall/selftest.sh    # 60 passed, 0 failed
+bash tools/dbgcall/selftest.sh    # 64 passed, 0 failed
 ```
 
 It exits non-zero on any mismatch. Run it after any change to the stub
