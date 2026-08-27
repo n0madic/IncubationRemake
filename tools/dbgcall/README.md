@@ -590,3 +590,24 @@ Incubation.exe` just as hard.
 - **`wine explorer /desktop=...` is not usable as a wrapper here.** It does
   not pass the harness's arguments through, and it swallows the console, so
   a failure looks like silence.
+- **A resumed game needs the virtual desktop, but `dbgcall` must receive its
+  arguments through `cmd`.** A plain `wine dbgcall.exe ... --resume` reaches
+  the breakpoint and applies the patch, then the game can die in Wine's
+  display path (`NtUserChangeDisplaySettings -2` / framebuffer `0x506`). The
+  same failure occurs with a confirmed patched copy, so it is not evidence
+  against the live patch. In the tested Wine build, invoke the debugger as a
+  command inside the desktop and make the game copy's working directory
+  explicit:
+
+  ```bash
+  WINEDLLOVERRIDES="krnl386.exe16=d" \
+    wine explorer /desktop=incdbg,640x480 cmd /c \
+    'cd /d Z:\path\to\game-copy && Z:\path\to\dbgcall.exe \
+       Incubation.exe --bp rva:0xae890 --resume --plan direct.plan -- -english \
+       > Z:\path\to\dbgcall.log 2>&1'
+  ```
+
+  `direct.plan` and `Work/Saves2/_6_.sav` must be in that copy. This route was
+  observed to leave a live `Incubation.exe` window at 640×480 after the three
+  direct-save pokes; launching `explorer` with `dbgcall.exe` as its direct
+  target was not a valid control because its command line was lost.

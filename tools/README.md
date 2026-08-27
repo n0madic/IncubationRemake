@@ -172,6 +172,43 @@ python3 tools/blob_tables.py --joints gog_incubation
 python3 tools/blob_tables.py --json  gog_incubation
 ```
 
+## Bounded Wine runtime probes
+
+[`docs/91-wine-runtime-probes.md`](../docs/91-wine-runtime-probes.md) records
+the artifact hashes, direct-save controller path, failed debugger controls and
+the first successful native per-tick sample.
+
+`dbgcall_patches.py` generates the arguments that reproduce it. Nothing is
+written to disk: the patches go into the running process through
+[`dbgcall`](dbgcall/README.md)'s `--code` and `--poke`, each site is checked
+against the loaded image before it is replaced, and `--resume` leaves them in
+place while the game plays on.
+
+```bash
+python3 tools/dbgcall_patches.py gog_incubation --selftest      # 15 checks
+python3 tools/dbgcall_patches.py gog_incubation \
+    --mode direct-save-6 --trace-blob-kind 15 --plan > kind15.plan
+```
+
+The self-test is the reason to trust the generator: it reassembles every stub
+at the tail-padding address the earlier patched builds used and requires the
+bytes to be identical to what those confirmed builds contained. `--plan`
+writes a dbgcall plan file, which is where a set this size belongs;
+`--command` prints a whole `wine` line instead, and with no flag the arguments
+come out one per line, for `mapfile -t A < <(...)`. Run it from a **copy** of
+the game — the direct-save mode expects slot 6 in the TestVersion directory
+`Work/Saves2`.
+
+For a graphical `--resume` run, use the virtual-desktop `cmd /c` recipe in
+[`docs/91-wine-runtime-probes.md`](../docs/91-wine-runtime-probes.md#51-launch-context-ab-2026-08-27):
+passing the long command directly to `explorer` can lose its arguments, while
+plain Wine can fail in the display path even after every poke succeeds.
+
+`inc_control.exe PROCESS readmem ADDRESS LENGTH` reads the trace buffer from
+outside while the game is still running. `inc_probe.exe` is retained as the
+failed Win32 Debug API control; it is not the recommended transport on the
+tested Wine build.
+
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;
 `sav_parse.py` exits non-zero rather than pretending to have checked something.
 

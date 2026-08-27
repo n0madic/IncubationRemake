@@ -48,6 +48,7 @@ python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
+python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 ```
 
 All exit 0. A non-zero exit is a regression. Every one of them also **fails on an empty corpus** — a check that examined nothing is not a check that passed, so a mistyped root cannot come out green.
@@ -71,8 +72,9 @@ non-zero when there is nothing to parse.
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
 `interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`
 and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
-`sav_parse` takes it positionally but only with `--selftest`, and `seq_parse`
-takes it positionally with `--check` as a bare flag. Check `--help` rather than guessing.
+`sav_parse` takes it positionally but only with `--selftest`, `seq_parse`
+takes it positionally with `--check` as a bare flag, and `dbgcall_patches`
+takes either the root or a path to `Incubation.exe`, positionally. Check `--help` rather than guessing.
 
 ### Asset extraction
 
@@ -165,9 +167,9 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 **Runtime verification is available and is the strongest evidence.** Wine 11 runs 32-bit x86 PE on arm64 macOS, and `i686-w64-mingw32-gcc` is installed, so the original code can be called directly. There are two harnesses for this, and they answer different questions:
 
 - `tools/wine_visn/` loads `Eng3d.dll` **out of process** and calls its VISN entry points, reaching 723/723 byte-exact. Use it when a routine depends only on its arguments. Its README explains the build. It found a real bug (a macroblock-count truncation) that no amount of structural self-consistency checking could have caught.
-- `tools/dbgcall/` runs `Incubation.exe` or `iDesigner.exe` **under a debugger**, stops at a breakpoint, and calls functions **inside the live process**, so the engine's own globals are already initialised. That is the only way to exercise code that depends on engine state rather than on its arguments alone. A call is written as a C-like declaration plus an invocation — `__cdecl i32 aCheckLineOfSight(ptr,i32,i32) = Incubation.exe+0x46C460`, then `aCheckLineOfSight(%esi, 12, 7)` — arguments may read registers, target memory and earlier results, and a batch emits JSONL for the Python side to check. It **verifies the declared signature** against the callee's actual stack cleanup, so a wrong arity is an error rather than a confident wrong number, and `--probe` turns the same measurement into a way to recover an unknown convention and arity. Read [`tools/dbgcall/README.md`](tools/dbgcall/README.md) before using it; it also records why `Eng3d.dll` can only be addressed as `Module+RVA` (the loader relocates it on every run), and the three Wine settings `Incubation.exe` needs to start at all.
+- `tools/dbgcall/` runs `Incubation.exe` or `iDesigner.exe` **under a debugger**, stops at a breakpoint, and calls functions **inside the live process**, so the engine's own globals are already initialised. That is the only way to exercise code that depends on engine state rather than on its arguments alone. A call is written as a C-like declaration plus an invocation — `__cdecl i32 aCheckLineOfSight(ptr,i32,i32) = Incubation.exe+0x46C460`, then `aCheckLineOfSight(%esi, 12, 7)` — arguments may read registers, target memory and earlier results, and a batch emits JSONL for the Python side to check. It **verifies the declared signature** against the callee's actual stack cleanup, so a wrong arity is an error rather than a confident wrong number, and `--probe` turns the same measurement into a way to recover an unknown convention and arity. It can also **patch the running process instead of a copy of the file**: `--code` allocates an executable page and `--poke ADDR:EXPECTED=>NEW` writes over code or data only if the live image still holds `EXPECTED`, with `{&buf}` and `{rel32 EXPR}` holes filled in at write time — so a hook is installed on the shipped `Incubation.exe` at runtime, and `--resume` leaves it in place. Read [`tools/dbgcall/README.md`](tools/dbgcall/README.md) before using it; it also records why `Eng3d.dll` can only be addressed as `Module+RVA` (the loader relocates it on every run), and the three Wine settings `Incubation.exe` needs to start at all.
 
-Both are outside the always-run block: they build binaries and need Wine on Linux/MacOS. After changing the debugger harness run its own check, `bash tools/dbgcall/selftest.sh` (51 checks, exits non-zero on any mismatch).
+Both are outside the always-run block: they build binaries and need Wine on Linux/MacOS. After changing the debugger harness run its own check, `bash tools/dbgcall/selftest.sh` (64 checks, exits non-zero on any mismatch).
 
 ## Documentation
 

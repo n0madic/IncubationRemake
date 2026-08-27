@@ -520,6 +520,13 @@ Extract the atlas with
    `0x00420814` holding **74 distinct arms**; kinds above 77 fall to the
    default.
 
+The first bounded native sample is now recorded in
+[`91`](91-wine-runtime-probes.md): a Standard Assault Rifle tracer reached the
+kind-15 arm at `Incubation.exe + 0x20734`; an inline trampoline captured the
+live `ESP`, `ESI` blob pointer and all 88 pre-arm bytes, then returned through
+the displaced instructions without stopping the game. This confirms this one
+dispatch and record instance, not every service hook used by the other arms.
+
 The ballistic arms share one rule worth quoting because a remake has to match
 it to make debris look right:
 

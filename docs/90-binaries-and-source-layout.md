@@ -43,6 +43,17 @@ Committed listings cover only these six original libraries
 CRT are deliberately not listed.  The headless harness built on this
 surface is `tools/wine_visn/`.
 
+`Incubation.exe` itself has no exported game surface, but a bounded workflow
+can now load a real save and sample one internal blob arm without modifying the
+original at all: `tools/dbgcall_patches.py` generates the patches and
+`tools/dbgcall/` writes them into the running process, checking each site
+against the loaded image first. The patch chain, failed `winedbg` controls and
+the successful kind-15 inline trace are in
+[`91-wine-runtime-probes.md`](91-wine-runtime-probes.md). Treat that result as
+feature-local evidence; the tested Wine/WOW64 exception transport is not stable
+enough to serve as a general debugger oracle, which is why the trampoline
+route avoids exceptions entirely.
+
 ---
 
 ## 2. Original source tree
