@@ -1630,6 +1630,11 @@ struct ArgSpec
     std::wstring text;
 };
 
+// The largest --read a single call may ask for.  This bounds the argument,
+// not the transport: ReadRemote is one ReadProcessMemory.  256 KiB covers a
+// whole 40x40 control map and the 200-slot unit array in one read each.
+constexpr uint32_t kMaxReadLength = 262144;
+
 struct ReadSpec
 {
     std::wstring expr;
@@ -3098,8 +3103,14 @@ static CallSpec FinalizeCall(
         rs.length = static_cast<uint32_t>(ParseU64(Trim(r.substr(colon + 1))));
         rs.label = rs.expr;
 
-        if (!rs.length || rs.length > 4096)
-            Die(L"--read length must be between 1 and 4096: " + r);
+        // The cap is a sanity bound on the argument, not a transport limit:
+        // ReadRemote is one ReadProcessMemory and does not care about size.
+        // 256 KiB covers a whole 40x40 control map (23 bytes a cell) and the
+        // 200-slot unit array (91 bytes a slot) in one read each, which is
+        // what a move-map capture needs.
+        if (!rs.length || rs.length > kMaxReadLength)
+            Die(L"--read length must be between 1 and "
+                + std::to_wstring(kMaxReadLength) + L": " + r);
 
         c.reads.push_back(rs);
     }
@@ -3418,7 +3429,7 @@ ARGUMENT EXPRESSIONS
   --code NAME:HEX       the same, on an executable page: injected code
   --zero NAME           clear that buffer before this call
   --dump NAME           dump that buffer after this call
-  --read EXPR:LENGTH    read LENGTH bytes at EXPR after this call
+  --read EXPR:LENGTH    read LENGTH bytes at EXPR after this call (max 262144)
 
   Buffers keep whatever a call left in them, so one call can fill a buffer
   and the next can read it. Add --zero when you need to tell "the function
@@ -3774,6 +3785,11 @@ int wmain(int argc, wchar_t** argv)
     bool initialBpSeen = false;
     bool started = false;
     bool detached = false;
+
+    // Diagnostics for a target that dies on the way to its anchor.  Bounded,
+    // because a first-chance storm would otherwise bury the real message.
+    constexpr int kMaxExceptionNotes = 8;
+    int exceptionNotes = 0;
 
     StubRegion region{};
 
@@ -4557,7 +4573,21 @@ int wmain(int argc, wchar_t** argv)
                     break;
                 }
 
-                // Let the target's own handlers see everything else.
+                // Let the target's own handlers see everything else -- but
+                // say so while no anchor has been reached yet.  A target that
+                // dies during start-up otherwise reports only "exited before
+                // any breakpoint was hit", which hides whether the anchor was
+                // wrong or the process faulted on the way to it.
+                if (!started && exceptionNotes < kMaxExceptionNotes)
+                {
+                    ++exceptionNotes;
+                    std::wcerr << L"[~] exception 0x" << std::hex << code
+                               << L" at " << modules.Describe(exAddr)
+                               << (ev.u.Exception.dwFirstChance
+                                       ? L" (first chance)" : L" (last chance)")
+                               << std::dec << L"\n";
+                }
+
                 continueStatus = DBG_EXCEPTION_NOT_HANDLED;
                 break;
             }
