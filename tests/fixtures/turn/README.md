@@ -16,6 +16,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
 | `0x0043B320` + `0x0043B490` | — | twelve steps of the rotation, with the turn state and the twelve game-control slots at `0x00509F18` |
 | `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
+| `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -76,6 +77,9 @@ exactly the kind of check this repository treats as a bug:
   "no player is left in the game" — cannot be reached without killing every
   unit on both sides first, so it stays corpus-checked and not natively
   pinned, like the body-blocking ray above.
+* **The overheat roll never comes up 30**, so the arm that destroys the
+  carrier is not natively pinned. Eight probes reached three of the four arms
+  — jam, damage and clear.
 * **`InsertUnit` never fires**, so the MSVC `rand()` that `docs/20` §7.4 says
   it draws from is not exercised at all — only `aRandom` is. A capture where
   the two draws cleared `> 59` would need that generator's state as well, and

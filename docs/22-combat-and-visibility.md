@@ -713,7 +713,7 @@ exactly at its heat cap:
 
 ```c
 if (unit[+0x3E] != maxHeat(unit)) return TRUE;
-switch (aRandom(0, unit[+0x3E])) {
+switch (aRandom(0, 40)) {                 /* 0x0046D1D6 pushes 0x28 */
   case 0 ... 10:
         if (weapon[+0x37] is 0, 2, 3 or 4) { effect "damage.wav";  unit[+0x40] = 5; }
         else                               { effect "jammed.wav";  unit[+0x40] = 2; }
@@ -727,11 +727,35 @@ switch (aRandom(0, unit[+0x3E])) {
 }
 ```
 
-The roll is `aRandom(0, heat)`, so the *span* of outcomes is the weapon's own
+~~The roll is `aRandom(0, heat)`, so the *span* of outcomes is the weapon's own
 heat cap. A weapon capped at 10 never rolls above 10 and can never destroy its
 carrier; a cap of 31 or more can. The `Cooler` (equipment 19) doubles the cap
 and therefore **widens the range of bad outcomes** — the item is not purely
-protective.
+protective.~~
+
+**Corrected.** The span is the constant **40**, not the heat cap:
+`0x0046D1D6` pushes `0x28` and `0x0046D1D8` pushes `0`. The cap appears only
+in the gate on the line above. `0x0046D1E2` then rejects a roll above **30**
+and `0x0046D1ED` indexes a 31-entry table at `0x0046D3D4` into the jump table
+at `0x0046D3C4`, which is where the four arms come from:
+
+| arm | rolls | at |
+|---|---|---|
+| 0 | 0–10 | `0x0046D1FA` — jam or damage, by weapon type |
+| 1 | 21–24 | `0x0046D29B` — damage |
+| 2 | 30 | `0x0046D2D8` — the carrier is destroyed |
+| 3 | 11–20, 25–29, **and every roll above 30** | `0x0046D3B8` — `unit[+0x40] = 0` |
+
+So **every weapon that can overheat at all can also be destroyed by it**, and
+the `Cooler` does not widen the outcome range — it only makes the gate harder
+to reach, which makes it purely protective after all. The `> 30` early-out
+lands on the *same* instruction as arm 3, so it clears a previous jam rather
+than leaving it standing.
+
+Pinned natively (`tools/turn_gold.py`): eight probes at the cap, and the
+model's roll, arm and resulting `+0x40` agree with the engine on all eight,
+with the seed read after every call to confirm exactly one draw each. A ninth
+probe one below the cap draws nothing and changes nothing, which is the gate.
 
 This settles the two runtime bytes [`10` §5.12](10-lev-mission-format.md)
 records: `+0x3E` is the heat counter, `+0x40` the malfunction state, `2` and

@@ -1201,15 +1201,24 @@ def _reset_wine(env: dict[str, str]) -> None:
     reach the anchor" immediately after a phase that succeeded, which reads
     like docs/91 §1 start-up flakiness and is not.
 
+    ``-k`` is followed by ``-k9`` because the polite form does not always
+    finish the job: a phase once lost all ten of its attempts with ``-k``
+    running after each one, and a hard kill by hand recovered the host
+    immediately.  Both are scoped to the Wine prefix, which a ``pkill`` by
+    process name would not be -- that would reach an unrelated Wine
+    application the user happened to be running.
+
     Failures here are ignored on purpose.  There may be no session to kill,
     and a cleanup that raises would throw away the retry it is preparing.
     """
-    try:
-        subprocess.run(["wineserver", "-k"], env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=TEARDOWN_TIMEOUT, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        LOG.debug("wineserver -k did not complete cleanly: %s", exc)
+    for flag in ("-k", "-k9"):
+        try:
+            subprocess.run(["wineserver", flag], env=env,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           timeout=TEARDOWN_TIMEOUT, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            LOG.debug("wineserver %s did not complete cleanly: %s", flag, exc)
 
 
 def _run_scoped(command: list[str], *, env: dict[str, str] | None,

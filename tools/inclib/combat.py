@@ -660,6 +660,12 @@ OVERHEAT_CLEARED = "cleared"
 DAMAGING_WEAPON_TYPES = frozenset({0, 2, 3, 4})
 
 
+#: ``0x0046D1D6`` -- the span of the overheat roll, a constant and not the
+#: weapon's heat cap.  ``docs/22`` §8 said the cap for most of this project's
+#: life; the native capture is what settled it.
+OVERHEAT_SPAN = 40
+
+
 def max_heat(world: CombatWorld, unit: CombatUnit) -> int:
     """``0x00475340`` -- ``weapon[+0x3A]``, doubled by the ``Cooler``.
 
@@ -677,13 +683,19 @@ def check_weapon_damage(world: CombatWorld, unit: CombatUnit) -> str:
     """``aCheckWeaponDamage`` ``0x0046D1B0`` -- called once per attack.
 
     Does nothing unless the weapon is **exactly** at its cap.  The roll's span
-    is the cap itself, so a weapon capped at 10 can never destroy its carrier
-    and one capped at 31 or more can.
+    is the constant :data:`OVERHEAT_SPAN`, **not** the cap: ``0x0046D1D6``
+    pushes ``0x28``.  The cap appears only in the gate.  So every weapon that
+    can overheat at all can also be destroyed by it, and the ``Cooler`` only
+    makes the gate harder to reach.
+
+    A roll above 30 lands on the *same* instruction as the 11-20 / 25-29 arm
+    (``0x0046D3B8``), which clears ``+0x40`` -- so it is a clear, not a
+    no-op.  Pinned natively over eight probes at the cap.
     """
     cap = max_heat(world, unit)
     if cap == 0xFF or unit.heat != cap:
         return OVERHEAT_NONE
-    roll = world.rng(0, unit.heat)
+    roll = world.rng(0, OVERHEAT_SPAN)
     weapon = world.tables.weapons.get(unit.weapon)
     weapon_type = 0 if weapon is None else weapon.type
     if 0 <= roll <= 10:

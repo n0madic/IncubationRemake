@@ -82,6 +82,8 @@ __cdecl i32  aGetUnitEyeHeight(ptr)         = Incubation.exe+0x7ad30
 __cdecl i32  aGetMovePoints(ptr)            = Incubation.exe+0x75160
 __cdecl void aRefreshPlayer(i32)            = Incubation.exe+0x781c0
 __cdecl void aRecomputeStats(ptr)           = Incubation.exe+0x759b0
+__cdecl i32  aCheckWeaponDamage(ptr)        = Incubation.exe+0x6d1b0
+__cdecl i32  aExecuteUse(ptr)               = Incubation.exe+0x6dc60
 __fastcall void setb(ptr,i32)               = &setb
 __cdecl u8   aGetTurn()                     = Incubation.exe+0x3b280
 __cdecl u8   aGetCurrentPlayer()            = Incubation.exe+0x3b2c0
@@ -396,6 +398,46 @@ def lcl_plan() -> str:
     return "\n".join(lines) + "\n"
 
 
+#: How many at-the-cap overheat probes to take.  Each advances the generator,
+#: so the sequence walks different rolls rather than repeating one.
+OVERHEAT_PROBES = 8
+
+
+def overheat_plan(slot: int, cap: int) -> str:
+    """Phase 7 -- ``aCheckWeaponDamage`` at and below the heat cap.
+
+    ``docs/22`` §8: the routine does nothing unless ``+0x3E`` is **exactly**
+    at the cap, and then rolls ``aRandom(0, heat)``.  So the phase probes both
+    sides of that gate: one call one below the cap, which must change nothing
+    and must not draw, then several at it, which must.  The seed is read after
+    every call because it is the only way to say how many draws happened.
+    """
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    heat = f"{_unit_addr(slot)}+0x3e"
+    lines = [
+        "# Phase 7: the overheat gate and its roll.",
+        DECLARATIONS,
+        f"--code setb:{SETB_CODE}",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "u0 = aGetUnitMapElementPtr(0)",
+        "aGetAILevel()",
+        f"aGetUnitMapElementPtr(0) --read $u0:{units} --read {SEED_ADDR:#x}:8",
+        # Below the cap: the gate must hold.
+        f"setb({heat}, {cap - 1})",
+        f"aCheckWeaponDamage({_unit_addr(slot)})",
+        f"aGetUnitMapElementPtr(0) --read $u0:{units} --read {SEED_ADDR:#x}:8",
+    ]
+    for _ in range(OVERHEAT_PROBES):
+        lines += [
+            f"setb({heat}, {cap})",
+            f"aCheckWeaponDamage({_unit_addr(slot)})",
+            f"aGetUnitMapElementPtr(0) --read $u0:{units} "
+            f"--read {SEED_ADDR:#x}:8",
+        ]
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Reading a capture back
 # ---------------------------------------------------------------------------
@@ -685,6 +727,48 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
         except Exception as exc:  # noqa: BLE001
             LOG.warning("phase 6 did not complete (%s: %s); LCL execution "
                         "stays unpinned", type(exc).__name__, exc)
+
+    if not payload.get("overheat"):
+        world = _world_from_capture(payload, payload["units_before"],
+                                    load_info(str(root)))
+        caps = {slot: combatmod.max_heat(world, unit)
+                for slot, unit in world.units.items()}
+        # Not a crate.  Choosing the lowest live slot picked player 252 the
+        # first time this ran -- the same accident that had the refresh
+        # captured on props.
+        candidates = [slot for slot, cap in sorted(caps.items())
+                      if cap != 0xFF and cap >= 2
+                      and world.units[slot].player != PLAYER_PROPS]
+        if not candidates:
+            LOG.warning("no unit on this save carries a weapon that can "
+                        "overheat; phase 7 has nothing to probe")
+        else:
+            probe_slot = candidates[0]
+            cap = caps[probe_slot]
+            LOG.info("phase 7: overheat on slot %d, cap %d", probe_slot, cap)
+            try:
+                rows = gold.run_plan(game_copy, dbgcall,
+                                     overheat_plan(probe_slot, cap),
+                                     "turn_overheat", attempts)
+                blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+                seeds = _reads(rows, "aGetUnitMapElementPtr",
+                               f"{SEED_ADDR:#x}")
+                wanted = OVERHEAT_PROBES + 2
+                if len(blocks) != wanted or len(seeds) != wanted:
+                    raise GoldError(
+                        f"phase 7 read {len(blocks)} unit dump(s) and "
+                        f"{len(seeds)} seed(s), wanted {wanted} of each")
+                payload["overheat"] = {
+                    "slot": probe_slot,
+                    "cap": cap,
+                    "returns": _results(rows, "aCheckWeaponDamage"),
+                    "units": [b.hex() for b in blocks],
+                    "seeds": [b.hex() for b in seeds],
+                }
+                _write(payload, out)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("phase 7 did not complete (%s: %s); overheat "
+                            "stays unpinned", type(exc).__name__, exc)
     return 0
 
 
@@ -1083,6 +1167,55 @@ def run_check(capture_path: Path, root: Path) -> int:
              "the NEXT PLAYER path on this save places nothing and moves "
              "nothing, so InsertUnit never fires and the MSVC generator it "
              "would draw from is not exercised")
+
+    # --- overheat: the gate, the roll and the four arms -------------------
+    over = payload.get("overheat")
+    if not over:
+        c.check("overheat.captured", False,
+                "the capture holds no overheat phase; re-run --game-copy")
+        return c.report()
+
+    # A CombatWorld of its own: `world` is the LclWorld from the block above,
+    # and reusing that name would silently hand this one a unit record with no
+    # weapon field.
+    over_world = _world_from_capture(payload, over["units"][0], tables)
+    over_seeds = [struct.unpack("<d", bytes.fromhex(h))[0]
+                  for h in over["seeds"]]
+    over_units = [bytes.fromhex(h) for h in over["units"]]
+    ob = over["slot"] * gold.UNIT_STRIDE
+    c.expect("overheat.probe_is_not_a_prop",
+             _byte(over_units[0], over["slot"], gold.UNIT_PLAYER)
+             != PLAYER_PROPS, True)
+    # Probe 0 is the baseline read, probe 1 is one *below* the cap: the gate.
+    c.expect("overheat.gate_holds_below_the_cap",
+             [over_seeds[1] == over_seeds[0],
+              over_units[1][ob + 0x40] == over_units[0][ob + 0x40]],
+             [True, True],
+             "one below the cap draws nothing and writes nothing")
+
+    over_bad: list[str] = []
+    arms: set[str] = set()
+    for i in range(2, len(over_seeds)):
+        rng = ARandom(over_seeds[i - 1])
+        roll = rng(0, combatmod.OVERHEAT_SPAN)
+        if abs(rng.seed - over_seeds[i]) > 0.5:
+            over_bad.append(f"probe {i}: seed {rng.seed} != {over_seeds[i]}")
+            continue
+        probe = over_world.units[over["slot"]]
+        probe.heat = over["cap"]
+        probe.malfunction = over_units[i - 1][ob + 0x40]
+        over_world.rng = ARandom(over_seeds[i - 1])
+        arms.add(combatmod.check_weapon_damage(over_world, probe))
+        want = over_units[i][ob + 0x40]
+        if probe.malfunction != want:
+            over_bad.append(
+                f"probe {i}: roll {roll} -> +0x40 "
+                f"{probe.malfunction} != {want}")
+    c.check("overheat.probes_compared", len(over_seeds) > 2,
+            f"{len(over_seeds) - 2} at-the-cap probe(s)")
+    c.expect("overheat.matches_native", over_bad[:6], [])
+    c.check("overheat.reached_more_than_one_arm", len(arms) > 1,
+            f"arms reached: {sorted(arms)}")
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:
