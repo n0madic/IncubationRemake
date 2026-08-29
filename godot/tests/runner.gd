@@ -30,6 +30,7 @@ const SUITES: Array[String] = [
 	"res://tests/test_combat.gd",
 	"res://tests/test_combat_native.gd",
 	"res://tests/test_lcl.gd",
+	"res://tests/test_mission.gd",
 	"res://tests/test_save.gd",
 	"res://tests/test_cache.gd",
 	"res://tests/test_warnings_gate.gd",

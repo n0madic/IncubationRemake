@@ -13,3 +13,4 @@ godot/export/
 # The committed README.md beside them records what each one pins.
 tests/fixtures/movemap/*.json
 tests/fixtures/turn/*.json
+tests/fixtures/lcl/*.json

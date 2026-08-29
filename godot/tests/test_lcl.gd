@@ -80,6 +80,7 @@ func run(h: TestHarness) -> void:
 		"at least one case drew from aRandom or from the C runtime")
 
 	_native(h, missions, ai_level)
+	_synthetic(h)
 
 
 ## The one native pin the interpreter has -- `tools/turn_gold.py` phase 6.
@@ -346,3 +347,275 @@ static func _unit_diff(unit: UnitState, want: Dictionary) -> String:
 	if unit.name != DictRead.as_string(want["name"]):
 		return "name '%s' != '%s'" % [unit.name, want["name"]]
 	return ""
+
+
+
+# --- hand-built programs -----------------------------------------------------
+#
+# The corpus cannot exercise what it happens not to contain, and the four
+# missions in the cache contain less of it than the 153 do. Every check below
+# was added because a mutation of [LclInterpreter] survived the replay: the
+# locals' initial value, `SetVarVar`'s bug, `SetActPt`'s byte mask and
+# `GetUnitsInArea`'s rectangle are each reached by exactly one shipped call
+# site, and none of the four is in the four missions.
+
+const SYNTHETIC_SLOT: int = 0
+const SYNTHETIC_MARK: int = 7
+
+
+static func _num(value: int) -> Dictionary:
+	return {"kind": "number", "value": value}
+
+
+static func _var(slot: int) -> Dictionary:
+	return {"kind": "var", "slot_index": slot}
+
+
+static func _name(value: String) -> Dictionary:
+	return {"kind": "name", "value": value}
+
+
+static func _instr(kind: String, name: String, args: Array,
+		op: String = ">") -> Dictionary:
+	return {"kind": kind, "name": name, "line": 1, "op": op, "args": args}
+
+
+## A program that marks game-control slot 0 when its condition holds.
+static func _program(body: Array, labels: Dictionary = {}) -> LclProgram:
+	var instructions: Array = body.duplicate()
+	instructions.append(_instr("end", "", []))
+	return LclProgram.from_document({
+		"schema": LclProgram.SCHEMA,
+		"source": {"mission": "synthetic"},
+		"header_line": 1,
+		"instructions": instructions,
+		"labels": labels,
+	})
+
+
+## Runs one hand-built program on a `w x h` world with the given units.
+static func _run_synthetic(program: LclProgram, units: Array,
+		width: int = 4, height: int = 4) -> Dictionary:
+	var zeros: Array = []
+	var links: Array = []
+	for _i: int in range(width * height):
+		zeros.append(0)
+		links.append(-1)
+	var res: MapResource = MapResource.from_document({
+		"width": width, "height": height,
+		"header": {"name": "synthetic", "next_map": "", "map_type": 0,
+			"mission_id": 0, "world_set": "", "world_scene": "",
+			"camera_height": 0, "equip_points": [0, 0, 0, 0],
+			"skill_level": 0, "tech_level": 0},
+		"cells": {"height": zeros, "field_type": zeros,
+			"action_point": zeros, "unit": links, "effect0": zeros,
+			"effect1": zeros, "effect2": zeros, "effect3": zeros,
+			"land": zeros, "start_index": links, "decal0": zeros,
+			"decal1": zeros},
+	})
+	var state: MapState = MapState.from_resource(res)
+	var roster: Dictionary = {}
+	for entry: Variant in units:
+		var record: Dictionary = DictRead.as_dict(entry)
+		var unit: UnitState = UnitState.new()
+		unit.slot = DictRead.as_int(record["slot"])
+		unit.player = DictRead.as_int(record["player"])
+		unit.type_id = DictRead.as_int(record.get("type_id", 0))
+		unit.x = DictRead.as_int(record["x"])
+		unit.y = DictRead.as_int(record["y"])
+		unit.hp = 10
+		roster[unit.slot] = unit
+		state.set_unit(state.index_of(unit.x, unit.y), unit.slot)
+	var types: UnitTypeTable = UnitTypeTable.from_rows([
+		{"id": 0, "mp_max": 4, "fp_max": 0, "hp_max": 10, "special": 0,
+			"size": 0, "species": 0, "height": 18, "model": "",
+			"description": "soldier"},
+		{"id": 1, "mp_max": 0, "fp_max": 255, "hp_max": 10, "special": 0,
+			"size": 0, "species": 2, "height": 18, "model": "",
+			"description": "crate"},
+	])
+	var turn: TurnState = TurnState.create()
+	turn.turn = 3
+	var control: GameControl = GameControl.create()
+	var context: LclContext = LclContext.create(state, roster, types, turn,
+		control, IncRandom.new(), CRandom.create(), 0, "")
+	var outcome: LclOutcome = LclInterpreter.run(program, context,
+		LclEnv.of(LclEnv.CALL_NEXT_TURN, turn.turn), 500)
+	return {"outcome": outcome, "control": control, "state": state,
+		"units": roster, "context": context}
+
+
+## `SetGameControl (0, 7)`, the marker every synthetic program ends with.
+static func _mark() -> Dictionary:
+	return _instr("command", "SetGameControl",
+		[_num(SYNTHETIC_SLOT), _num(SYNTHETIC_MARK)])
+
+
+static func _marked(run: Dictionary) -> bool:
+	var control: GameControl = run["control"]
+	return control.get_slot(SYNTHETIC_SLOT) == SYNTHETIC_MARK
+
+
+func _synthetic(h: TestHarness) -> void:
+	# docs/20 section 4.2 -- the 28 locals are filled with **-1**, so a read
+	# before the first write yields -1 and not 0.
+	var unread: Dictionary = _run_synthetic(_program([
+		_instr("cond", "VarCmpNum", [_var(0), _num(LclEnv.LOCAL_INITIAL)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.locals_start_at_minus_one", _marked(unread),
+		"a local read before any write is -1")
+
+	# docs/20 section 8.2 -- `SetVarVar` indexes the local array with the
+	# second **numeric** argument, which is missing, so it reads `local[-1]`.
+	var broken: Dictionary = _run_synthetic(_program([
+		_instr("command", "SetVarNum", [_var(1), _num(9)]),
+		_instr("command", "SetVarVar", [_var(0), _var(1)]),
+		_instr("cond", "VarCmpNum", [_var(0), _num(LclEnv.LOCAL_INITIAL)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.setvarvar_is_broken_as_shipped", _marked(broken),
+		"a corrected SetVarVar would leave 9 here, and this is not a "
+		+ "correction")
+
+	# docs/20 section 7.4 -- `SetActPt` writes a **byte**, so the two-argument
+	# form stores `(byte)(-1)` = 255.
+	var masked: Dictionary = _run_synthetic(_program([
+		_instr("command", "SetActPt", [_num(1), _num(1)]),
+		_instr("command", "GetActPt", [_var(0), _num(1), _num(1)]),
+		_instr("cond", "VarCmpNum", [_var(0), _num(255)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.setactpt_short_form_writes_255", _marked(masked),
+		"_C_120.lcl:66 is the one shipped site")
+
+	# `0x00478000` -- an **inclusive** rectangle, and a player of -1 matches
+	# any. Two units, one in the box and one out of it.
+	var boxed: Dictionary = _run_synthetic(_program([
+		_instr("command", "GetUnitsInArea",
+			[_var(0), _num(0), _num(0), _num(0), _num(1), _num(1)]),
+		_instr("cond", "VarCmpNum", [_var(0), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1},
+		{"slot": 1, "player": 0, "x": 3, "y": 3}])
+	h.check("synthetic.getunitsinarea_respects_the_rectangle", _marked(boxed),
+		"one of the two units is outside (0,0)-(1,1)")
+
+	# The flag mechanics of docs/20 section 2: `&` and `|` combine with the
+	# flag the previous condition left, `close` resets it and `else` inverts.
+	var conjunction: Dictionary = _run_synthetic(_program([
+		_instr("cond", "VarCmpNum", [_var(0), _num(LclEnv.LOCAL_INITIAL)]),
+		_instr("cond", "VarCmpNum", [_var(1), _num(99)], "&"),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.and_combines", not _marked(conjunction),
+		"the second condition is false, so the command must not run")
+	var disjunction: Dictionary = _run_synthetic(_program([
+		_instr("cond", "VarCmpNum", [_var(0), _num(99)]),
+		_instr("cond", "VarCmpNum", [_var(1), _num(LclEnv.LOCAL_INITIAL)],
+			"|"),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.or_combines", _marked(disjunction),
+		"the second condition is true")
+	var inverted: Dictionary = _run_synthetic(_program([
+		_instr("cond", "VarCmpNum", [_var(0), _num(99)]),
+		_instr("else", "", []),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.else_inverts", _marked(inverted),
+		"a false condition followed by an else runs the command")
+	var closed: Dictionary = _run_synthetic(_program([
+		_instr("cond", "VarCmpNum", [_var(0), _num(99)]),
+		_instr("close", "", []),
+		_mark(),
+	]), [])
+	h.check("synthetic.close_resets_the_flag", _marked(closed),
+		"a command after a close runs whatever the condition said")
+
+	# `CheckCurrentTurn` is a **range on the turn number**, and the world above
+	# is at turn 3.
+	var in_range: Dictionary = _run_synthetic(_program([
+		_instr("cond", "CheckCurrentTurn", [_num(2), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.check_current_turn_is_a_range", _marked(in_range),
+		"2 <= 3 <= 4")
+	var out_of_range: Dictionary = _run_synthetic(_program([
+		_instr("cond", "CheckCurrentTurn", [_num(5), _num(9)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [])
+	h.check("synthetic.check_current_turn_excludes", not _marked(out_of_range),
+		"3 is not in 5..9")
+
+	# `NoUnitOnField` takes a **cell**, and a crate on it makes it false --
+	# it looks at no species, unlike `UnitOnField`.
+	var empty_cell: Dictionary = _run_synthetic(_program([
+		_instr("cond", "NoUnitOnField", [_num(3), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1}])
+	h.check("synthetic.no_unit_on_field_is_a_cell_test",
+		_marked(empty_cell), "(3,3) is empty and (1,1) is not")
+	var crate_cell: Dictionary = _run_synthetic(_program([
+		_instr("cond", "NoUnitOnField", [_num(1), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "type_id": 1, "x": 1, "y": 1}])
+	h.check("synthetic.a_crate_still_occupies_a_cell",
+		not _marked(crate_cell),
+		"species 2 is excluded by UnitOnField and not by this one")
+
+	# docs/20 section 7.1 -- an unknown name and a missing label both abort,
+	# and neither is silent.
+	var unknown: LclOutcome = _run_synthetic(_program([
+		_instr("command", "NoSuchCommand", []),
+	]), [])["outcome"]
+	h.equal("synthetic.an_unknown_command_aborts", unknown.kind,
+		LclOutcome.ABORT, unknown.reason)
+	var lost: LclOutcome = _run_synthetic(_program([
+		_instr("command", "Goto", [_name("Nowhere")]),
+	]), [])["outcome"]
+	h.equal("synthetic.a_missing_label_aborts", lost.kind, LclOutcome.ABORT,
+		lost.reason)
+	var unknown_pred: LclOutcome = _run_synthetic(_program([
+		_instr("cond", "NoSuchPredicate", [_var(0), _num(1)]),
+	]), [])["outcome"]
+	h.equal("synthetic.an_unknown_predicate_aborts", unknown_pred.kind,
+		LclOutcome.ABORT, unknown_pred.reason)
+
+	# A `Goto` loop is expressible, and the step cap is what stops it.
+	var looping: LclOutcome = _run_synthetic(_program([
+		_instr("label", "Top", []),
+		_instr("command", "Goto", [_name("Top")]),
+	], {"Top": 0}), [])["outcome"]
+	h.equal("synthetic.a_goto_loop_hits_the_step_cap", looping.kind,
+		LclOutcome.ABORT, looping.reason)
+	h.check("synthetic.the_cap_is_reported_not_hidden",
+		looping.reason.contains("Goto loop"), looping.reason)
+
+	# A program with no `[END]` falls off the end, which is an outcome and not
+	# an error (docs/20 section 2).
+	var fell: LclOutcome = _fell_off()
+	h.equal("synthetic.no_end_falls_off", fell.kind, LclOutcome.FELL_OFF,
+		"the loop runs out of buffer; docs/20 section 2")
+
+
+## A program with no `[END]`, run on the smallest world there is.
+static func _fell_off() -> LclOutcome:
+	var program: LclProgram = LclProgram.from_document({
+		"schema": LclProgram.SCHEMA, "source": {}, "header_line": 1,
+		"instructions": [_instr("command", "SetGameControl",
+			[_num(0), _num(1)])],
+		"labels": {},
+	})
+	return _run_synthetic(program, [])["outcome"]

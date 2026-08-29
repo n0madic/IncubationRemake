@@ -65,3 +65,23 @@ static func load_world(name: String) -> Dictionary:
 
 static func load_slice_world() -> Dictionary:
 	return load_world(SLICE_MISSION)
+
+
+## The mission program, as `missions/<name>/script.json` holds it.
+static func script_document(name: String) -> Dictionary:
+	return read_json("%s/missions/%s/script.json" % [cache_dir(), name])
+
+
+## A world with its mission program attached -- what a mission actually is.
+##
+## Separate from [method load_world] because the first slice had no
+## interpreter, and a fixture that silently attached one would change what every
+## suite built on it is testing.
+static func load_mission(name: String) -> Dictionary:
+	var loaded: Dictionary = load_world(name)
+	if loaded.is_empty():
+		return {}
+	var world: World = loaded["world"]
+	var attached: bool = world.attach_script(script_document(name))
+	loaded["script_attached"] = attached
+	return loaded

@@ -339,6 +339,14 @@ func _command(instr: Dictionary) -> String:
 			# 255: `_C_120.lcl:66`'s `SetActPt (14,16);` leaves the third
 			# argument at -1, and `(byte)(-1)` is 255. Masking here rather than
 			# at the reader is what makes that come out right.
+			#
+			# The `& 0xFF` is **redundant in this implementation and stays**:
+			# `MapState` keeps action points in a `PackedByteArray`, which
+			# wraps on assignment, so removing it is an equivalent mutation and
+			# no check looks for one. It is written because the *rule* is the
+			# engine's byte store and not Godot's container -- a `MapState`
+			# that ever widened that array would otherwise change what a script
+			# means.
 			if _context.in_bounds(_n(instr, 0), _n(instr, 1)):
 				_context.state.set_action_point(
 					_context.index(_n(instr, 0), _n(instr, 1)),
