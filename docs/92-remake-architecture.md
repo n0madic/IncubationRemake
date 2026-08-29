@@ -442,11 +442,24 @@ map are all refused **by name**, and none of them half-loads. A round trip
 preserves the canonical simulation hash; the camera travels in the file and is
 excluded from that hash.
 
-What is still a checklist rather than a decision: campaign and turn phase have
-no representation yet because neither exists, and migration between schema
-versions has a version field but no migration to test. The compatibility flags
-are in the hash from the first day so that later ones cannot be added without
-changing it.
+**The turn is in it now**, and the checklist item that said otherwise is
+closed. The second slice ([`94`](94-slice-2-report.md)) put the [TurnState] --
+counter, both players, the rotation's shape, the difficulty level, the session
+kind, the reaction tickets and the hero flags -- and the twelve game-control
+slots into the header and into the canonical hash, and the schema version rose
+with each change: 3 → 4 for the turn, 5 for the columns combat reads, 6 for the
+mission script's own.
+
+**Two generators, not one.** `InsertUnit` draws from the C runtime's `rand()`
+and everything else from `aRandom` ([`20` §7.4](20-lcl-language.md)), so the
+save and the hash carry both streams. A save that dropped the second would come
+back a different mission the moment the next reinforcement fired.
+
+What is still a checklist rather than a decision: the campaign phase has no
+representation because the campaign layer does not exist, and migration between
+schema versions has a version field but no migration to test. The compatibility
+flags are in the hash from the first day so that later ones cannot be added
+without changing it.
 
 A Godot `Resource` may be convenient as the in-memory DTO, but `.res` is not the
 public on-disk contract: it couples saves to Godot serialization, script paths
@@ -503,6 +516,15 @@ and a separate catalogue of remake-only UI strings such as converter errors,
 settings and new warnings. Both use stable keys and an explicit fallback
 language. Retrofitting that seam later means finding every literal in the
 codebase, which is the expensive kind of change.
+
+**Built in the second slice** (`godot/game/localization.gd`,
+[`94` §5](94-slice-2-report.md)), before the first string existed, and with one
+addition the decision above did not name: **a miss renders as a visible
+marker**, not as an empty string. An empty string looks like a layout bug and
+`??hud.end_turn` looks like what it is, which is what lets a check assert that
+nothing on screen is missing. The shipped catalogue is keyed by module and
+numeric id because that is how `DATA/TXT` is keyed; naming 723 strings would be
+a translation of its own.
 
 Three consequences that are cheap now and awkward later:
 
@@ -638,6 +660,24 @@ afterwards** and are recorded in [`93` §10](93-slice-1-report.md):
 | `draw_kind` recovered but not implemented | `game/mesh_builder.gd`, per [`31` §4.4](31-prototyp-geometry.md)'s table |
 | Face triangulation assumed convexity; the cross-check was manual | [`31` §4.3.1](31-prototyp-geometry.md) counts 1572 reflex faces; the mesh builder ear-clips and `prototyp_parse.py --check` pins the counts |
 | The 4/8-connectivity asymmetry, recorded but unresolved | `core/walk_map.gd` transcribes `aWalkMoveMap`, pinned natively; [`23` §8](23-ai-system.md) reports 2772 diagonal steps and **no** path leaving the highlighted region |
+
+**The second vertical slice is done too** ([`94`](94-slice-2-report.md)): the
+turn, movement execution, line of sight, the fog pass, combat, reaction fire,
+interaction and the mission-script interpreter, with `_C_140` played and won in
+an exported build. What it settled and this file now carries: the difficulty
+level is [TurnState]'s own field and enters the canonical hash (§7.9 below), the
+save schema carries **both** generators because `InsertUnit` draws from the C
+runtime's and not from `aRandom`, and the set pieces apply their state change
+instantly while recording the animation as an event.
+
+Three things it left open are named here because they are architectural rather
+than research: **the AI planner** ([`23`](23-ai-system.md)) has not been started
+and is what §2's "profile a complete representative computer turn" is still
+waiting for; **the campaign layer** ([`27`](27-campaign.md)) is untouched, which
+is why `_C_115` cannot be played even though it converts and draws; and
+**bodies, animation and sound** ([`40`](40-charisma-model-animation.md),
+[`41`](41-sequence-player.md), [`28`](28-effects-and-sound.md)) are still a
+capsule and a ground marker.
 
 Nothing remains from that list. The large-unit clearance was the last one, and
 [`93` §11](93-slice-1-report.md) closed it: an earlier edition of this

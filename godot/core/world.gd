@@ -361,9 +361,17 @@ func _run_mission_script(call_type: int,
 ## map and starts the music. Separate from the hand-over because it is not part
 ## of one: no turn has begun when it runs.
 func run_init_map() -> Dictionary:
-	return DictRead.as_dict(_script_callable().call(
-		MissionScript.CALL_INIT_MAP,
-		MissionScript.env(MissionScript.CALL_INIT_MAP)))
+	return run_script(MissionScript.CALL_INIT_MAP,
+		MissionScript.env(MissionScript.CALL_INIT_MAP))
+
+
+## One invocation of the attached program, through the seam.
+##
+## The hand-over and the walk call this for themselves; it is public because
+## `INIT MAP` has no other caller and because a measurement of what a script
+## costs should not have to reach past the seam to take it.
+func run_script(call_type: int, environment: Dictionary) -> Dictionary:
+	return DictRead.as_dict(_script_callable().call(call_type, environment))
 
 
 ## `0x00477BF0` -- how many live units a player owns.

@@ -38,6 +38,9 @@ The first vertical slice it describes in §10 is **delivered**; what was built,
 what each comparison is worth, what the live engine corrected and what it
 measured are in
 [`93-slice-1-report.md`](93-slice-1-report.md).
+The second is delivered too — the turn, combat, visibility, interaction and the
+mission-script interpreter, with `_C_140` played and won in an exported build:
+[`94-slice-2-report.md`](94-slice-2-report.md).
 
 ---
 

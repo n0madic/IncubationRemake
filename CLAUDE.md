@@ -271,8 +271,15 @@ the phase in flight.
 `godot/` is the remake itself: a Godot 4.7 project whose `core/` is pure
 GDScript with no scene tree, no filesystem and no engine singleton, and whose
 `game/` renders what `core` decides. It is not a second repository and is not
-built by any of the format tools; `docs/92` records its architecture and
-`docs/93` reports the first vertical slice that established it.
+built by any of the format tools; `docs/92` records its architecture,
+`docs/93` reports the first vertical slice that established it, and `docs/94`
+the second — the turn, combat, visibility, interaction and the mission-script
+interpreter, with `_C_140` played and won in an exported build.
+
+`core/lcl/` is a **subdirectory**, and both `godot/tests/runner.gd` and
+`test_isolation.gd` scan `core/` recursively for that reason: a scan that
+stopped at the top level would exempt every file in it from the warnings gate
+and the isolation sweep.
 
 `docs/93` §10 and §11 are dated addenda recording what the slice left open and
 what later closed it: §10 the ladder step and the movement allowance (both
@@ -310,6 +317,10 @@ Six things about it that are easy to trip over:
   cache — which is what it is for. Change the emitted document and you must bump
   both **and** republish `user://caches`; the suites read the published cache,
   not only `godot/generated`.
+* **A mutation battery must clear `tools/**/__pycache__` before its final run.**
+  Write-mutate-restore completes inside one filesystem mtime tick, so CPython
+  accepts the stale bytecode and the *mutated* module keeps running after the
+  source is restored. It reported a clean tree as 112/114 once.
 * **Published cache directories are immutable and content-addressed.** Their id
   includes the source and output inventories. Publish, pointer switch and
   collection share one inter-process lock; do not reintroduce an in-place

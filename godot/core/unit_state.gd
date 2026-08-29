@@ -153,6 +153,53 @@ static func from_document(record: Dictionary) -> UnitState:
 	return unit
 
 
+## The inverse of [method view] -- one unit out of the dictionary it produced.
+##
+## `view()` and this are a pair, and a field added to one without the other is
+## a field a save silently drops. [SaveCodec] decodes through this for that
+## reason, rather than repeating the twenty-odd assignments.
+static func from_view(record: Dictionary) -> UnitState:
+	var unit: UnitState = UnitState.new()
+	unit.slot = DictRead.as_int(record["slot"])
+	unit.name = DictRead.as_string(record["name"])
+	unit.type_id = DictRead.as_int(record["type_id"])
+	unit.player = DictRead.as_int(record["player"])
+	unit.x = DictRead.as_int(record["x"])
+	unit.y = DictRead.as_int(record["y"])
+	unit.mp = DictRead.as_int(record["mp"])
+	unit.hp = DictRead.as_int(record["hp"])
+	unit.fp = DictRead.as_int(record["fp"])
+	unit.rested = DictRead.as_int(record["rested"])
+	unit.action_state = DictRead.as_int(record["action_state"])
+	unit.facing = DictRead.as_int(record["facing"])
+	unit.visibility = DictRead.as_int(record["visibility"])
+	unit.acted = DictRead.as_int(record["acted"])
+	unit.ammo = DictRead.as_int(record["ammo"])
+	unit.heat = DictRead.as_int(record["heat"])
+	unit.weapon = DictRead.as_int(record["weapon"])
+	unit.malfunction = DictRead.as_int(record["malfunction"])
+	unit.walked = DictRead.as_int(record["walked"])
+	unit.turn_start_x = DictRead.as_int(record["turn_start_x"])
+	unit.turn_start_y = DictRead.as_int(record["turn_start_y"])
+	unit.stimulant = DictRead.as_int(record["stimulant"])
+	unit.ticket = DictRead.as_int(record["ticket"])
+	unit.ep = DictRead.as_int(record["ep"])
+	unit.armour_front = DictRead.as_int(record["armour_front"])
+	unit.armour_rear = DictRead.as_int(record["armour_rear"])
+	unit.absorber = DictRead.as_int(record["absorber"])
+	unit.order = DictRead.as_int(record["order"])
+	unit.order_param = DictRead.as_int(record["order_param"])
+	unit.order2 = DictRead.as_int(record["order2"])
+	unit.order2_param = DictRead.as_int(record["order2_param"])
+	unit.group = DictRead.as_int(record["group"])
+	unit.tp = DictRead.as_int(record["tp"])
+	unit.pool_flag = DictRead.as_int(record["pool_flag"])
+	unit.speech = DictRead.as_int(record["speech"])
+	unit.skills = DictRead.to_int32(record["skills"])
+	unit.equipment = DictRead.to_int32(record["equipment"])
+	return unit
+
+
 ## docs/10 section 5 -- a slot holds a placed unit when `+0x16` is non-zero.
 func is_placed() -> bool:
 	return hp != 0

@@ -146,48 +146,10 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 	var units: Dictionary = {}
 	var records: Array = DictRead.as_array(header["units"])
 	for record: Variant in records:
-		var view: Dictionary = record
-		var unit: UnitState = UnitState.new()
-		unit.slot = DictRead.as_int(view["slot"])
-		unit.name = DictRead.as_string(view["name"])
-		unit.type_id = DictRead.as_int(view["type_id"])
-		unit.player = DictRead.as_int(view["player"])
-		unit.x = DictRead.as_int(view["x"])
-		unit.y = DictRead.as_int(view["y"])
-		unit.mp = DictRead.as_int(view["mp"])
-		unit.hp = DictRead.as_int(view["hp"])
-		unit.fp = DictRead.as_int(view["fp"])
-		unit.rested = DictRead.as_int(view["rested"])
-		unit.action_state = DictRead.as_int(view["action_state"])
-		unit.facing = DictRead.as_int(view["facing"])
-		unit.visibility = DictRead.as_int(view["visibility"])
-		unit.acted = DictRead.as_int(view["acted"])
-		unit.ammo = DictRead.as_int(view["ammo"])
-		unit.heat = DictRead.as_int(view["heat"])
-		unit.weapon = DictRead.as_int(view["weapon"])
-		unit.malfunction = DictRead.as_int(view["malfunction"])
-		unit.walked = DictRead.as_int(view["walked"])
-		unit.turn_start_x = DictRead.as_int(view["turn_start_x"])
-		unit.turn_start_y = DictRead.as_int(view["turn_start_y"])
-		unit.stimulant = DictRead.as_int(view["stimulant"])
-		unit.ticket = DictRead.as_int(view["ticket"])
-		unit.ep = DictRead.as_int(view["ep"])
-		unit.armour_front = DictRead.as_int(view["armour_front"])
-		unit.armour_rear = DictRead.as_int(view["armour_rear"])
-		unit.absorber = DictRead.as_int(view["absorber"])
-		unit.order = DictRead.as_int(view["order"])
-		unit.order_param = DictRead.as_int(view["order_param"])
-		unit.order2 = DictRead.as_int(view["order2"])
-		unit.order2_param = DictRead.as_int(view["order2_param"])
-		unit.group = DictRead.as_int(view["group"])
-		unit.tp = DictRead.as_int(view["tp"])
-		unit.pool_flag = DictRead.as_int(view["pool_flag"])
-		unit.speech = DictRead.as_int(view["speech"])
-		unit.skills = _int_array(DictRead.as_array(view["skills"]))
-		var ids: Array = DictRead.as_array(view["equipment"])
-		unit.equipment.resize(ids.size())
-		for i: int in range(ids.size()):
-			unit.equipment[i] = DictRead.as_int(ids[i])
+		# One decode, not a second copy of [method UnitState.view]: the two are
+		# a pair, and a field added to one without the other is a field a save
+		# silently drops.
+		var unit: UnitState = UnitState.from_view(DictRead.as_dict(record))
 		units[unit.slot] = unit
 
 	var flags: PackedStringArray = PackedStringArray()
