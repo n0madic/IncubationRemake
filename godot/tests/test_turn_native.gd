@@ -51,6 +51,101 @@ func run(h: TestHarness) -> void:
 
 	_refresh_cases(h, doc, types, weapons, ai_level)
 	_rotation_case(h, doc)
+	_move_cases(h, doc)
+
+
+## `aExecuteMove` inside the live engine, six probes over one path.
+##
+## The world is built once and reloaded per probe, the same way the capture
+## reloads the save: a walk moves a unit and rewrites the cells it crossed, and
+## writing the mutated bytes back does not undo that.
+##
+## The fill and the walk run on the **clean** map and the probe's bytes are
+## written afterwards, which is the plan's own sequencing -- so all six follow
+## the identical route and a disagreement names the arm that caused it.
+func _move_cases(h: TestHarness, doc: Dictionary) -> void:
+	var moves: Dictionary = DictRead.as_dict(doc["moves"])
+	if moves.is_empty():
+		h.check("move.captured", false,
+			"the capture holds no aExecuteMove phase")
+		return
+	var probes: Array = DictRead.as_array(moves["probes"])
+	h.check("move.probes", not probes.is_empty(),
+		"%d probe(s) over one path" % probes.size())
+	var slot: int = DictRead.as_int(moves["slot"])
+	for entry: Variant in probes:
+		var probe: Dictionary = DictRead.as_dict(entry)
+		var tag: String = DictRead.as_string(probe["tag"])
+		var built: Dictionary = MoveMapCaseRunner.build_world(moves)
+		var state: MapState = built["state"]
+		var ctrlmap: CtrlMapTable = built["ctrlmap"]
+		var unit_types: UnitTypeTable = built["unit_types"]
+		var units: Dictionary = built["units"]
+		var mover: UnitState = units[slot]
+
+		var fill: MoveMapResult = MoveMap.build(state, units, unit_types,
+			ctrlmap, slot, false, mover.mp,
+			Allowance.for_unit(mover, unit_types, units,
+				DictRead.as_int(doc["ai_level"])))
+		var walked: Dictionary = WalkMap.path(state, units, ctrlmap, fill,
+			mover.x, mover.y, DictRead.as_int(moves["tx"]),
+			DictRead.as_int(moves["ty"]))
+		if not h.check("move.%s.walk" % tag,
+				DictRead.as_bool(walked["ok"])
+				and DictRead.as_int(walked["steps"])
+					== DictRead.as_int(moves["steps"]),
+				DictRead.as_string(walked["reason"])):
+			continue
+		for write: Variant in DictRead.as_array(probe["writes"]):
+			_apply_write(state, DictRead.as_dict(write))
+
+		var expected: Dictionary = DictRead.as_dict(probe["expected"])
+		var moved: MoveResult = ExecuteMove.run(state, ctrlmap, mover, walked)
+		h.equal("move.%s.returns" % tag, 1 if moved.ok else 0,
+			DictRead.as_int(expected["returns"]))
+		h.equal("move.%s.cost" % tag, moved.cost,
+			DictRead.as_int(expected["cost"]))
+		h.equal("move.%s.position" % tag, Vector2i(moved.x, moved.y),
+			Vector2i(DictRead.as_int(expected["x"]),
+				DictRead.as_int(expected["y"])))
+		h.equal("move.%s.walked" % tag, moved.walked,
+			DictRead.as_int(expected["walked"]))
+		h.equal("move.%s.facing" % tag, moved.facing,
+			DictRead.as_int(expected["facing"]))
+
+		# **The probe calls the routine, not the engine's caller**, so what
+		# `+0x15` holds afterwards is a statement about `aExecuteMove` alone:
+		# unchanged everywhere except the mine, which zeroes it itself. The
+		# caller's own `mp -= cost` is checked in `test_execute_move.gd`,
+		# where there is a caller to check.
+		h.equal("move.%s.the_routine_spends_nothing" % tag,
+			DictRead.as_int(expected["mp_after"]),
+			0 if moved.movement_zeroed
+				else DictRead.as_int(expected["mp_before"]))
+
+		# `JSON.parse_string` gives a float for every number, so the expected
+		# pairs are narrowed here rather than compared as parsed -- the same
+		# boundary rule the cache loader follows.
+		var claimed: PackedInt32Array = PackedInt32Array()
+		for write: Vector2i in moved.action_point_writes:
+			claimed.append(write.x)
+			claimed.append(write.y)
+		var wanted: PackedInt32Array = PackedInt32Array()
+		for entry2: Variant in DictRead.as_array(expected["action_points"]):
+			var pair: Array = DictRead.as_array(entry2)
+			wanted.append(DictRead.as_int(pair[0]))
+			wanted.append(DictRead.as_int(pair[1]))
+		h.equal_ints("move.%s.action_points" % tag, claimed, wanted)
+
+
+func _apply_write(state: MapState, write: Dictionary) -> void:
+	var index: int = state.index_of(DictRead.as_int(write["x"]),
+		DictRead.as_int(write["y"]))
+	var value: int = DictRead.as_int(write["value"])
+	match DictRead.as_string(write["kind"]):
+		"cell_field_type": state.set_field_type(index, value)
+		"cell_action_point": state.set_action_point(index, value)
+		"cell_obstacle": state.set_obstacle(index, value)
 
 
 func _unit_from(view: Dictionary) -> UnitState:

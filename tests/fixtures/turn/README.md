@@ -158,6 +158,11 @@ exactly the kind of check this repository treats as a bug:
 * **The walk is never blocked and never runs out of budget.** All six probes
   report `blocked = 0` and two steps; the arms `aWalkMoveMap` fails on stay
   corpus-checked.
+* **The VictoryPoint is pinned on the destination only.** The rule is modelled
+  **per step** — every cell the unit arrives on is tested — but the probe
+  writes the band onto the last cell of a two-step path, so "a point claimed
+  in passing" is a model claim and not a measured one. Writing it onto the
+  middle cell instead would settle it and costs one more probe.
 * **`aRefreshPlayer(252)` is not captured at all**, deliberately:
   [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
   in the current-player byte, so it is a call the engine itself never makes.

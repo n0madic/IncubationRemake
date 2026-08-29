@@ -1384,13 +1384,93 @@ def emit_cases(capture_path: Path, out: Path, root: Path) -> int:
             "advance": rot.get("advance", []),
         },
         "types": _case_rows(payload, root),
+        "moves": _move_cases(payload, root),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n",
                    encoding="utf-8")
-    LOG.info("wrote %s (%d refresh case(s), %d rotation step(s))", out,
-             len(refreshes), len(document["rotation"]["advance"]))
+    moves = document["moves"]
+    LOG.info("wrote %s (%d refresh case(s), %d rotation step(s), "
+             "%d move probe(s))", out, len(refreshes),
+             len(document["rotation"]["advance"]),
+             len(moves.get("probes", [])) if moves else 0)
     return 0
+
+
+def _move_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Phase 10 in the shape ``MoveMapCaseRunner.build_world`` already reads.
+
+    One world, six probes.  The map and the unit array are emitted **once**:
+    every probe starts from the same reloaded save with the same movement
+    points written into the mover, and differs only in the cell bytes written
+    between the walk and the call.  Repeating 400 cells six times would say
+    otherwise.
+
+    The expected values come from the engine's own answer -- the return, the
+    cost it wrote through argument 5, and the unit record read back afterwards
+    -- so the GDScript side is compared with the engine rather than with a
+    second transcription of the same prose.
+    """
+    move = payload.get("move")
+    if not move:
+        return {}
+    probes = move["probes"]
+    width, height = payload["width"], payload["height"]
+    cells = gold.cells_of(bytes.fromhex(payload["cells"]), width, height)
+    tables = load_info(str(root))
+    first = probes[0]
+    # The unit array **as the probe saw it**: the plan writes the mover's
+    # movement points before the fill, so the case has to carry that write
+    # rather than the save's value, or the fill would spread differently.
+    units = gold.units_of(bytes.fromhex(move["units_before"][0]), tables,
+                          payload["ai_level"])
+    records = [{
+        "slot": u["slot"], "type_id": u["type_id"], "player": u["player"],
+        "x": u["x"], "y": u["y"], "mp": u["mp"],
+        "visibility": u["visibility"], "special": u["special"],
+        "size": u["size"], "mp_allowance": u["mp_allowance"],
+        "equipment_ids": u["equipment_ids"],
+    } for u in units]
+
+    stride = gold.UNIT_STRIDE
+    out: list[dict[str, Any]] = []
+    for i, probe in enumerate(probes):
+        before = bytes.fromhex(move["units_before"][i])
+        after = bytes.fromhex(move["units_after"][i])
+        at = probe["slot"] * stride
+        cells_after = gold.cells_of(bytes.fromhex(move["cells_after"][i]),
+                                    width, height)
+        claimed = [[j, cells_after["action_point"][j]]
+                   for j in range(width * height)
+                   if cells_after["action_point"][j]
+                   != cells["action_point"][j]]
+        out.append({
+            "tag": probe["tag"],
+            "writes": probe["writes"],
+            "expected": {
+                "returns": int(bool(move["returns"][i])),
+                "cost": move["cost"][i],
+                "x": after[at + gold.UNIT_X],
+                "y": after[at + gold.UNIT_Y],
+                "walked": after[at + 0x50] - before[at + 0x50],
+                "facing": after[at + 0x46],
+                "mp_after": after[at + gold.UNIT_MP],
+                "mp_before": before[at + gold.UNIT_MP],
+                "action_points": claimed,
+            },
+        })
+    return {
+        "name": f"{MISSION}_move",
+        "width": width, "height": height,
+        "cells": {k: list(v) for k, v in cells.items()},
+        "delays": {str(t): d for t, d in sorted(tables.delay_table().items())},
+        "units": records,
+        "slot": first["slot"],
+        "sx": first["sx"], "sy": first["sy"],
+        "tx": first["tx"], "ty": first["ty"],
+        "steps": first["steps"],
+        "probes": out,
+    }
 
 
 def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
