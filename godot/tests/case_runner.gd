@@ -219,3 +219,93 @@ static func build_world(case: Dictionary) -> Dictionary:
 		"ctrlmap": CtrlMapTable.from_rows(ctrl_rows),
 		"unit_types": UnitTypeTable.from_rows(type_rows),
 	}
+
+
+## The combat case's world: the same cells, plus **full** unit records and the
+## real balance rows.
+##
+## Separate from [method build_world] because the two carry different things.
+## The move cases synthesise a unit-type table out of the columns the fill
+## reads; a shot reads the shipped rows, and a case that invented them would
+## agree with the engine only by luck.
+static func build_combat_world(case: Dictionary, types_doc: Dictionary,
+		records: Array) -> Dictionary:
+	var width: int = DictRead.as_int(case["width"])
+	var height: int = DictRead.as_int(case["height"])
+	var cells: Dictionary = DictRead.as_dict(case["cells"])
+
+	var zeros: Array = []
+	var links: Array = []
+	for _i: int in range(width * height):
+		zeros.append(0)
+		links.append(-1)
+	var document: Dictionary = {
+		"width": width, "height": height,
+		"header": {
+			"name": DictRead.as_string(case["name"]), "next_map": "",
+			"map_type": 0, "mission_id": 0, "world_set": "", "world_scene": "",
+			"camera_height": 0, "equip_points": [0, 0, 0, 0],
+			"skill_level": 0, "tech_level": 0,
+		},
+		"cells": {
+			"height": cells["height"], "field_type": cells["field_type"],
+			"action_point": cells["action_point"], "unit": cells["unit"],
+			"effect0": zeros, "effect1": zeros, "effect2": zeros,
+			"effect3": zeros, "land": zeros, "start_index": links,
+			"decal0": zeros, "decal1": zeros,
+		},
+	}
+	var res: MapResource = MapResource.from_document(document)
+	var state: MapState = MapState.from_resource(res)
+	var obstacles: PackedByteArray = DictRead.to_bytes(cells["obstacle"])
+	for i: int in range(obstacles.size()):
+		state.set_obstacle(i, obstacles[i])
+
+	var units: Dictionary = {}
+	for entry: Variant in records:
+		var unit: UnitState = combat_unit(DictRead.as_dict(entry))
+		units[unit.slot] = unit
+	return {
+		"resource": res,
+		"state": state,
+		"units": units,
+		"unit_types": UnitTypeTable.from_rows(
+			DictRead.as_array(types_doc["units"])),
+		"weapons": WeaponTable.from_rows(
+			DictRead.as_array(types_doc["weapons"])),
+	}
+
+
+## One `COMBAT_UNIT_FIELDS` record as a [UnitState].
+static func combat_unit(record: Dictionary) -> UnitState:
+	var unit: UnitState = UnitState.new()
+	unit.slot = DictRead.as_int(record["slot"])
+	unit.type_id = DictRead.as_int(record["type_id"])
+	unit.player = DictRead.as_int(record["player"])
+	unit.x = DictRead.as_int(record["x"])
+	unit.y = DictRead.as_int(record["y"])
+	unit.hp = DictRead.as_int(record["hp"])
+	unit.facing = DictRead.as_int(record["facing"])
+	unit.fp = DictRead.as_int(record["fp"])
+	unit.mp = DictRead.as_int(record["mp"])
+	unit.weapon = DictRead.as_int(record["weapon"])
+	unit.ammo = DictRead.as_int(record["ammo"])
+	unit.heat = DictRead.as_int(record["heat"])
+	unit.malfunction = DictRead.as_int(record["malfunction"])
+	unit.absorber = DictRead.as_int(record["absorber"])
+	unit.armour_front = DictRead.as_int(record["armour_front"])
+	unit.armour_rear = DictRead.as_int(record["armour_rear"])
+	unit.action_state = DictRead.as_int(record["action_state"])
+	unit.acted = DictRead.as_int(record["acted"])
+	unit.ticket = DictRead.as_int(record["ticket"])
+	unit.visibility = DictRead.as_int(record["visibility"])
+	unit.order = DictRead.as_int(record["order"])
+	unit.order_param = DictRead.as_int(record["order_param"])
+	unit.order2 = DictRead.as_int(record["order2"])
+	unit.order2_param = DictRead.as_int(record["order2_param"])
+	unit.group = DictRead.as_int(record["group"])
+	unit.turn_start_x = DictRead.as_int(record["turn_start_x"])
+	unit.turn_start_y = DictRead.as_int(record["turn_start_y"])
+	unit.skills = DictRead.to_int32(record["skills"])
+	unit.equipment = DictRead.to_int32(record["equipment_ids"])
+	return unit

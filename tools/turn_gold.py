@@ -1387,15 +1387,20 @@ def emit_cases(capture_path: Path, out: Path, root: Path) -> int:
         },
         "types": _case_rows(payload, root),
         "moves": _move_cases(payload, root),
+        "combat": _combat_cases(payload, root),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n",
                    encoding="utf-8")
     moves = document["moves"]
+    combat_cases = document["combat"]
     LOG.info("wrote %s (%d refresh case(s), %d rotation step(s), "
-             "%d move probe(s))", out, len(refreshes),
-             len(document["rotation"]["advance"]),
-             len(moves.get("probes", [])) if moves else 0)
+             "%d move probe(s), %d hit pair(s), %d shot(s), %d use probe(s))",
+             out, len(refreshes), len(document["rotation"]["advance"]),
+             len(moves.get("probes", [])) if moves else 0,
+             len(combat_cases.get("hit", [])),
+             len((combat_cases.get("attack") or {}).get("probes", [])),
+             len((combat_cases.get("use") or {}).get("probes", [])))
     return 0
 
 
@@ -1475,6 +1480,172 @@ def _move_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
     }
 
 
+#: The unit columns a combat case carries.  Every one is read by line of
+#: sight, the hit curve, the damage roll, the fog pass or the reaction queue;
+#: nothing else is emitted, on the same rule :data:`CASE_UNIT_FIELDS` follows.
+COMBAT_UNIT_FIELDS = {
+    "player": gold.UNIT_PLAYER, "type_id": 0x4C, "x": gold.UNIT_X,
+    "y": gold.UNIT_Y, "hp": gold.UNIT_HP, "facing": 0x46, "fp": 0x19,
+    "mp": gold.UNIT_MP, "weapon": 0x3F, "ammo": 0x3D, "heat": 0x3E,
+    "malfunction": 0x40, "absorber": 0x3A, "armour_front": 0x36,
+    "armour_rear": 0x37, "action_state": 0x41, "acted": 0x39, "ticket": 0x59,
+    "visibility": gold.UNIT_VISIBILITY, "order": 0x47, "order_param": 0x48,
+    "order2": 0x49, "order2_param": 0x4A, "group": 0x4E,
+    "turn_start_x": 0x51, "turn_start_y": 0x52,
+}
+
+
+def _combat_unit(raw: bytes, slot: int) -> dict[str, Any]:
+    out: dict[str, Any] = {"slot": slot}
+    for name, offset in COMBAT_UNIT_FIELDS.items():
+        out[name] = _byte(raw, slot, offset)
+    base = slot * gold.UNIT_STRIDE
+    out["skills"] = list(raw[base + 0x1A:base + 0x20])
+    out["equipment_ids"] = [i for i in range(gold.UNIT_EQUIPMENT_SLOTS)
+                            if raw[base + gold.UNIT_EQUIPMENT + i]]
+    return out
+
+
+def _seed(hex_bytes: str) -> float:
+    """The generator's eight raw bytes as the double they are.
+
+    Emitted as a JSON **number**, not as the hex: every value the capture holds
+    is ``float(int(...))`` below 2**31, so the round trip through JSON is
+    exact, and a number is what ``IncRandom.seed`` takes.
+    """
+    return struct.unpack("<d", bytes.fromhex(hex_bytes))[0]
+
+
+def _combat_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Phases 2, 7, 8 and 9 in the shape ``godot/tests/`` reads.
+
+    One world, emitted once, and the probes beside it.  The **attack** probes
+    are the exception: phase 8 does not reload between them, so each one starts
+    from the world the one before it left behind, and each therefore carries
+    its own unit array.  Emitting the array once and letting the GDScript side
+    replay from it would compare a different experiment -- the same trap the
+    hand-over cases documented from the other end.
+    """
+    if not payload.get("pairs"):
+        return {}
+    width, height = payload["width"], payload["height"]
+    cells = gold.cells_of(bytes.fromhex(payload["cells"]), width, height)
+    before = bytes.fromhex(payload["units_before"])
+    live = list(payload["live"])
+
+    hit: list[dict[str, Any]] = []
+    los_out = payload.get("los_out") or []
+    for i, (a, b, weapon) in enumerate(payload["pairs"]):
+        entry = {
+            "a": a, "b": b, "weapon": weapon,
+            "in_range": int(payload["hit_returns"][i]),
+            "percent": payload["hit_percent"][i],
+            "distance": payload["hit_distance"][i],
+        }
+        if i < len(los_out):
+            # Only the low byte: the routine writes a byte-sized code into a
+            # dword buffer, so the upper three carry whatever the call before
+            # it left there.
+            entry["los"] = los_out[i] & 0xFF
+        hit.append(entry)
+
+    over = payload.get("overheat") or {}
+    overheat: dict[str, Any] = {}
+    if over:
+        raw = [bytes.fromhex(h) for h in over["units"]]
+        slot = over["slot"]
+        overheat = {
+            "slot": slot, "cap": over["cap"],
+            # Probe 0 is the baseline read and probe 1 is one *below* the cap;
+            # both are carried so the GDScript side can assert the gate as well
+            # as the arms.
+            "probes": [{
+                "seed_before": _seed(over["seeds"][i - 1]),
+                "seed_after": _seed(over["seeds"][i]),
+                "malfunction_before": _byte(raw[i - 1], slot, 0x40),
+                "malfunction_after": _byte(raw[i], slot, 0x40),
+                "hp_after": _byte(raw[i], slot, gold.UNIT_HP),
+                "at_the_cap": i >= 2,
+            } for i in range(1, len(over["seeds"]))],
+        }
+
+    atk = payload.get("attack") or {}
+    attack: dict[str, Any] = {}
+    if atk:
+        raw = [bytes.fromhex(h) for h in atk["units"]]
+        attack = {"probes": [{
+            "ax": probe[0], "ay": probe[1], "tx": probe[2], "ty": probe[3],
+            "seed_before": _seed(atk["seeds"][i]),
+            "seed_after": _seed(atk["seeds"][i + 1]),
+            "units": [_combat_unit(raw[i], s) for s in live],
+            "hp_after": [[s, _byte(raw[i + 1], s, gold.UNIT_HP)]
+                         for s in live],
+        } for i, probe in enumerate(atk["probes"])]}
+
+    use = payload.get("use") or {}
+    interaction: dict[str, Any] = {}
+    if use:
+        ux, uy = use["cell"]
+        cell_off = ((uy * width + ux) * gold.CELL_STRIDE
+                    + gold.CELL_ACTION_POINT)
+        base = use["slot"] * gold.UNIT_STRIDE
+        probes = []
+        for i, klass in enumerate(use["classes"]):
+            for facing in range(8):
+                j = i * 8 + facing
+                after_cells = bytes.fromhex(use["cells"][j])
+                after_units = bytes.fromhex(use["units"][j])
+                probes.append({
+                    "class": klass, "facing": facing,
+                    "action_point_after": after_cells[cell_off],
+                    "ammo_after": after_units[base + 0x3D],
+                    "equipment_after": [
+                        k for k in range(gold.UNIT_EQUIPMENT_SLOTS)
+                        if after_units[base + gold.UNIT_EQUIPMENT + k]],
+                })
+        interaction = {"cell": [ux, uy], "slot": use["slot"],
+                       "classes": list(use["classes"]), "probes": probes}
+
+    # The fog pass, per player, self-contained: the units as the refresh saw
+    # them going in, and the `+0x4F` byte the engine left behind.  It is
+    # emitted here rather than folded into the refresh cases because those
+    # carry no map, and `aBuildVisibleMap` is nothing but a map walk.
+    fog: list[dict[str, Any]] = []
+    for key in sorted(payload.get("refreshes", {}), key=int):
+        block = payload["refreshes"][key]
+        raw_before = bytes.fromhex(block["before"])
+        raw_after = bytes.fromhex(block["after"])
+        slots = sorted({s for s in range(gold.UNIT_SLOTS)
+                        if _byte(raw_before, s, gold.UNIT_HP)})
+        fog.append({
+            "player": int(key),
+            "units": [_combat_unit(raw_before, s) for s in slots],
+            "expect": [[s, _byte(raw_after, s, gold.UNIT_VISIBILITY)]
+                       for s in slots],
+        })
+
+    return {
+        "name": f"{MISSION}_combat",
+        "width": width, "height": height,
+        "cells": {k: list(v) for k, v in cells.items()},
+        "units": [_combat_unit(before, s) for s in live],
+        "eye_heights": {str(s): h for s, h
+                        in zip(live, payload.get("eye_heights") or [])},
+        "full_heights": {str(s): h for s, h
+                         in zip(live, payload.get("full_heights") or [])},
+        # The two-vs-four-ray choice and the three-quarter damage rule both key
+        # on these, and the capture is a single-player campaign.
+        "human_players": payload.get("human_count", 1),
+        "game_mode": 1,
+        "los_mode": LOS_MODE,
+        "hit": hit,
+        "fog": fog,
+        "overheat": overheat,
+        "attack": attack,
+        "use": interaction,
+    }
+
+
 def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
     """Every unit and weapon row the cases reference, carried **with** them.
 
@@ -1508,13 +1679,26 @@ def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
             "species": row.species, "height": row.height,
             "model": row.model, "description": row.description,
         })
+    # The weapons a *shot* is asked about are not only the ones the live units
+    # carry: phase 2's pairs name the weapon per pair, and a mine resolves as
+    # weapon 36.  Missing one would make the GDScript side fall back to a
+    # default row and agree with the engine for the wrong reason.
+    for pair in payload.get("pairs", []):
+        weapon_ids.add(pair[2])
+    weapon_ids.add(combatmod.BOMB_WEAPON)
+
     weapons = []
     for weapon_id in sorted(weapon_ids):
         row = tables.weapons.get(weapon_id)
         if row is None:
             continue
-        weapons.append({"id": weapon_id, "heat": row.heat,
-                        "toggle": row.toggle, "mun": row.mun})
+        weapons.append({
+            "id": weapon_id, "heat": row.heat, "toggle": row.toggle,
+            "mun": row.mun, "hit": row.hit, "damage": row.damage,
+            "range_min": row.range_min, "range_max": row.range_max,
+            "type": row.type, "special": row.special,
+            "def_mode": row.def_mode, "mun_per_fight": row.mun_per_fight,
+        })
     return {"units": units, "weapons": weapons}
 
 

@@ -30,7 +30,7 @@ const SENTINEL_FAIL: String = "HARNESS-RESULT: FAILED"
 ## fifty checks, and every suite still said "ok".  Raise a number here when a
 ## suite genuinely grows; never lower one to make a run pass.
 const LEAST_CHECKS: Dictionary = {
-	"core_loads": 16,
+	"core_loads": 34,
 	"game_loads": 10,
 	"int_ops": 26,
 	"rng": 11,
@@ -46,6 +46,8 @@ const LEAST_CHECKS: Dictionary = {
 	"turn_native": 45,
 	"execute_move": 45,
 	"handover": 150,
+	"combat": 95,
+	"combat_native": 22,
 	"save": 17,
 	"cache": 10,
 	"warnings_gate": 10,

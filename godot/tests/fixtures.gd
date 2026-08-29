@@ -29,11 +29,27 @@ const CTRLMAP_ROWS: Array[Dictionary] = [
 ## cools (`heat` 255, as the shipped file marks a weapon with no heat at all),
 ## 4 is one of the three rapid-fire ids that shed two points, and 41 is an
 ## alternate fire mode whose `toggle` reverts to its base.
+## The combat columns are here as well as the turn's three, because a
+## [WeaponTable] built without them answers `hit` 0 and `range_max` 1, and a
+## world-level check on a shot would then pass by never being able to fire.
+## Id 3 is the one shaped like the shipped `Sniper Rifle`: `def_mode` 1, so it
+## can go on overwatch, and a curve of `100 - 2 * d` over thirty fields.
 const WEAPON_ROWS: Array[Dictionary] = [
-	{"id": 0, "heat": 255, "toggle": 0, "mun": 0},
-	{"id": 2, "heat": 4, "toggle": 2, "mun": 10},
-	{"id": 4, "heat": 10, "toggle": 4, "mun": 20},
-	{"id": 41, "heat": 8, "toggle": 4, "mun": 20},
+	{"id": 0, "heat": 255, "toggle": 0, "mun": 0, "hit": 0, "damage": 0,
+		"range_min": 1, "range_max": 1, "type": 1, "special": 0,
+		"def_mode": 0, "mun_per_fight": 0},
+	{"id": 2, "heat": 4, "toggle": 2, "mun": 10, "hit": 4, "damage": 4,
+		"range_min": 1, "range_max": 20, "type": 1, "special": 0,
+		"def_mode": 1, "mun_per_fight": 1},
+	{"id": 3, "heat": 4, "toggle": 3, "mun": 15, "hit": 20, "damage": 4,
+		"range_min": 1, "range_max": 30, "type": 1, "special": 0,
+		"def_mode": 1, "mun_per_fight": 1},
+	{"id": 4, "heat": 10, "toggle": 4, "mun": 20, "hit": 5, "damage": 6,
+		"range_min": 1, "range_max": 20, "type": 1, "special": 0,
+		"def_mode": 1, "mun_per_fight": 1},
+	{"id": 41, "heat": 8, "toggle": 4, "mun": 20, "hit": 5, "damage": 6,
+		"range_min": 1, "range_max": 20, "type": 1, "special": 0,
+		"def_mode": 0, "mun_per_fight": 1},
 ]
 
 
@@ -59,12 +75,17 @@ static func balance(extra_types: Array = []) -> Dictionary:
 	return {"ctrlmap": CTRLMAP_ROWS, "units": types, "weapons": WEAPON_ROWS}
 
 
+## `weapon`, `ammo`, `facing` and `hp` are parameters and not post-construction
+## edits, because `core` hands out no live reference to a [UnitState] -- a test
+## that wanted an armed unit had no way to arm one, and adding an accessor for
+## it would put a hole in exactly the isolation `test_isolation.gd` guards.
 static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
-		mp: int = 4, visibility: int = 0,
-		equipment: Array = []) -> Dictionary:
+		mp: int = 4, visibility: int = 0, equipment: Array = [],
+		weapon: int = 0, ammo: int = 0, facing: int = 0,
+		hp: int = 10) -> Dictionary:
 	return {
 		"slot": slot, "name": "unit %d" % slot, "type_id": type_id,
-		"player": player, "x": x, "y": y, "hit_points": 10,
+		"player": player, "x": x, "y": y, "hit_points": hp,
 		# 255 is what all but the 70 human-type shipped units carry; 0 and 1
 		# are the two values that override the movement allowance, so a
 		# fixture defaulting to 0 would silently exercise an override.
@@ -76,10 +97,14 @@ static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 		# defaulted a missing field would hide a converter that stopped
 		# emitting it.
 		"acted": 0, "damage_absorber": 0, "armour_front": 0,
-		"armour_rear": 0, "ammo": 0, "heat": 0, "malfunction": 0,
+		"armour_rear": 0, "ammo": ammo, "heat": 0, "malfunction": 0,
 		"walked": 0, "turn_start_x": x, "turn_start_y": y,
 		"stimulant": 0, "ticket": 0,
-		"skills": {}, "equipment_ids": equipment, "weapon": 0, "facing": 0,
+		# The six skill columns by name, the way the converter emits them.
+		# An empty map here made `UnitState.from_document` read a missing key,
+		# which GDScript reports as a runtime error and not a failure.
+		"skills": {"CON": 0, "LW": 0, "HW": 0, "TS": 0, "MS": 0, "LS": 0},
+		"equipment_ids": equipment, "weapon": weapon, "facing": facing,
 		"order": 0, "order_param": 0, "order2": 0, "order2_param": 0,
 		"group": 0, "visibility": visibility, "placed": true,
 	}

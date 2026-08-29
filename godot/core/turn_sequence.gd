@@ -22,11 +22,18 @@ extends RefCounted
 ## leaving the current player unchanged -- which is what docs/20 section 2.2's
 ## "report, then return 0" costs at this level.
 ##
-## What is **not** here: `aExecuteFight` in docs/23 section 5.3's tail is
-## reaction fire, and reaction fire is the next stage. It is named rather than
-## silently absent, because an omission nobody wrote down is an omission
-## nobody finds.
-## TODO: reaction fire (docs/25 section 6) once `core/reaction.gd` exists.
+## Two things are **not** here, and both are the caller's:
+##
+## * **reaction fire** ([Reaction]). docs/23 section 5.3's tail calls
+##   `aExecuteFight` after `aExecuteMove`, five times in the binary and never
+##   from the hand-over -- so the drain belongs to a move, and
+##   [method World.submit_move] runs it;
+## * **the fog pass** ([Visibility]). `aBuildVisibleMap` is a map walk and this
+##   routine has no map; [method World.submit_end_turn] runs it after this
+##   returns, and reports it as `fog_rebuilt`.
+##
+## Both are named rather than silently absent, because an omission nobody wrote
+## down is an omission nobody finds.
 
 
 ## One hand-over.

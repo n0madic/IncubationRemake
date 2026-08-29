@@ -14,6 +14,13 @@ const VISIBILITY_HIDDEN: int = 3
 const PLAYER_ALIEN: int = 255
 ## docs/23 section 7.5 -- the Jet Pack, `Info.lcl`'s "warp & scan".
 const JET_PACK_EQUIP_ID: int = 7
+## docs/10 section 5.3 -- `+0x1A..+0x1F`, in the order the record stores them.
+## The converter emits them as a map, so the order lives here and not there.
+const SKILL_NAMES: Array[String] = ["CON", "LW", "HW", "TS", "MS", "LS"]
+const SKILL_CON: int = 0
+const SKILL_LW: int = 1
+const SKILL_HW: int = 2
+const SKILL_TS: int = 3
 
 var slot: int = NO_UNIT
 var name: String = ""
@@ -61,6 +68,30 @@ var ticket: int = 0
 ## reads it even though nothing in this slice awards any.
 var ep: int = 0
 
+# --- what combat reads (docs/22 sections 7 and 9) ---------------------------
+# Same rule again: every one of these is read by the damage roll, the fog pass
+# or the reaction queue.
+## `+0x36` / `+0x37`, the two armour values. Which one applies is decided by
+## docs/22 section 7.4's 135-degree rear arc, not by the weapon.
+var armour_front: int = 0
+var armour_rear: int = 0
+## `+0x3A`, `Damage Absorber` charges. One charge nullifies a hit **entirely**
+## (docs/22 section 7.5) -- it is not a reduction.
+var absorber: int = 0
+## `+0x47` / `+0x48` and `+0x49` / `+0x4A`, the primary and secondary orders.
+## The fog pass promotes the second over the first for a whole AI group when a
+## unit on an alerting order is seen (docs/22 section 9.3), which is what the
+## secondary order in docs/10 section 5.6 is *for*.
+var order: int = 0
+var order_param: int = 0
+var order2: int = 0
+var order2_param: int = 0
+## `+0x4E`, the AI group the promotion above applies to.
+var group: int = 0
+## `+0x1A..+0x1F` -- CON, LW, HW, TS, MS, LS (docs/10 section 5.3). The three
+## implant boxes in docs/26 section 3.1 write to them.
+var skills: PackedInt32Array = PackedInt32Array([0, 0, 0, 0, 0, 0])
+
 
 static func from_document(record: Dictionary) -> UnitState:
 	var unit: UnitState = UnitState.new()
@@ -88,6 +119,17 @@ static func from_document(record: Dictionary) -> UnitState:
 	unit.stimulant = DictRead.as_int(record["stimulant"])
 	unit.ticket = DictRead.as_int(record["ticket"])
 	unit.ep = DictRead.as_int(record["ep"])
+	unit.armour_front = DictRead.as_int(record["armour_front"])
+	unit.armour_rear = DictRead.as_int(record["armour_rear"])
+	unit.absorber = DictRead.as_int(record["damage_absorber"])
+	unit.order = DictRead.as_int(record["order"])
+	unit.order_param = DictRead.as_int(record["order_param"])
+	unit.order2 = DictRead.as_int(record["order2"])
+	unit.order2_param = DictRead.as_int(record["order2_param"])
+	unit.group = DictRead.as_int(record["group"])
+	var skill_map: Dictionary = DictRead.as_dict(record["skills"])
+	for i: int in range(SKILL_NAMES.size()):
+		unit.skills[i] = DictRead.as_int(skill_map[SKILL_NAMES[i]])
 	var ids: Array = DictRead.as_array(record["equipment_ids"])
 	unit.equipment.resize(ids.size())
 	for i: int in range(ids.size()):
@@ -149,6 +191,15 @@ func view() -> Dictionary:
 		"stimulant": stimulant,
 		"ticket": ticket,
 		"ep": ep,
+		"armour_front": armour_front,
+		"armour_rear": armour_rear,
+		"absorber": absorber,
+		"order": order,
+		"order_param": order_param,
+		"order2": order2,
+		"order2_param": order2_param,
+		"group": group,
+		"skills": skills.duplicate(),
 	}
 
 
@@ -159,8 +210,13 @@ func hash_into(ctx: HashingContext) -> void:
 		# The turn's columns, in the order this file declares them.
 		acted, ammo, heat, weapon, malfunction, walked, turn_start_x,
 		turn_start_y, stimulant, ticket, ep,
+		# Combat's own columns, in the order this file declares them.
+		armour_front, armour_rear, absorber, order, order_param, order2,
+		order2_param, group,
 		equipment.size()])
 	ctx.update(scalars.to_byte_array())
+	# Fixed length, so no count is needed in front of it.
+	ctx.update(skills.to_byte_array())
 	# HashingContext refuses an empty buffer, and a unit with no equipment is
 	# ordinary, so the count goes in above and the payload only when there is
 	# one.  Without the count two different rosters could collide.

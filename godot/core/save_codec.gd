@@ -27,10 +27,12 @@ extends RefCounted
 ## [/codeblock]
 
 const MAGIC: String = "INCS"
-## Raised to 4 by the second slice: the header now carries the [TurnState],
-## and the canonical hash covers it.  A slice-1 save is refused **by name**
-## rather than misread, which is the whole point of the field.
-const SCHEMA_VERSION: int = 4
+## Raised to 4 by the second slice (the header carries the [TurnState] and the
+## canonical hash covers it), and to 5 when [UnitState] gained the columns
+## combat reads -- armour, the absorber charges, both orders, the AI group and
+## the six skills.  An older save is refused **by name** rather than misread,
+## which is the whole point of the field.
+const SCHEMA_VERSION: int = 5
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -164,6 +166,15 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		unit.stimulant = DictRead.as_int(view["stimulant"])
 		unit.ticket = DictRead.as_int(view["ticket"])
 		unit.ep = DictRead.as_int(view["ep"])
+		unit.armour_front = DictRead.as_int(view["armour_front"])
+		unit.armour_rear = DictRead.as_int(view["armour_rear"])
+		unit.absorber = DictRead.as_int(view["absorber"])
+		unit.order = DictRead.as_int(view["order"])
+		unit.order_param = DictRead.as_int(view["order_param"])
+		unit.order2 = DictRead.as_int(view["order2"])
+		unit.order2_param = DictRead.as_int(view["order2_param"])
+		unit.group = DictRead.as_int(view["group"])
+		unit.skills = _int_array(DictRead.as_array(view["skills"]))
 		var ids: Array = DictRead.as_array(view["equipment"])
 		unit.equipment.resize(ids.size())
 		for i: int in range(ids.size()):

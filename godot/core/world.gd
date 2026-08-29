@@ -238,7 +238,62 @@ func submit_move(command: MoveCommand) -> MoveResult:
 		unit.mp = 0
 	elif moved.cost > 0:
 		unit.mp = 0 if moved.cost > unit.mp else unit.mp - moved.cost
+
+	# docs/23 section 5.3's tail: `aExecuteFight` is called **after**
+	# `aExecuteMove`, by the caller and never by the routine -- twice from the
+	# AI and three times from `aUI.cpp`. So the drain lives here, where the
+	# charge above already is, and not inside [TurnSequence] or [ExecuteMove].
+	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
+		unit, turn.ai_level, turn.human_count(), turn.mode, rng)
 	return moved
+
+
+## `aAttackUnit` (`0x0046B450`) -- docs/22 section 7.
+##
+## The command's cell is the aim point. Nothing here re-checks line of sight:
+## the resolver does not, and adding a check would make a shot the engine
+## allows impossible.
+func submit_attack(command: AttackCommand) -> AttackResult:
+	if not _units.has(command.unit_slot):
+		var refused: AttackResult = AttackResult.new()
+		refused.reason = "no such unit"
+		return refused
+	var unit: UnitState = _units[command.unit_slot]
+	return Combat.attack(state, _units, _unit_types, _weapons, unit.x, unit.y,
+		command.x, command.y, turn.ai_level, turn.human_count(), turn.mode,
+		rng)
+
+
+## `aExecuteUse` (`0x0046DC60`) -- docs/26.
+##
+## The one movement point the command pad charges is `0x004734C0`'s, not
+## `aExecuteUse`'s, so it is spent here: the routine itself takes nothing.
+## docs/26 section 1.1 also has the pad deselect a unit the use killed, which is
+## presentation and stays in `game/`.
+func submit_use(command: UseCommand) -> UseResult:
+	if not _units.has(command.unit_slot):
+		return UseResult.refused("no such unit")
+	var unit: UnitState = _units[command.unit_slot]
+	var result: UseResult = Interact.execute(state, _units, _unit_types,
+		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
+		turn.mode, rng)
+	if unit.hp != 0 and unit.mp != 0:
+		unit.mp -= 1
+	return result
+
+
+## `0x00478500` behind `0x004753E0`'s gate -- the **Def** button.
+##
+## Returns the ticket, or 0 when the gate refused. The gate is the UI one and
+## not the AI's automatic pass: this is a player pressing a button, and the two
+## disagree on `def_mode` 4 (docs/21 section 4).
+func submit_defend(command: DefendCommand) -> int:
+	if not _units.has(command.unit_slot):
+		return 0
+	var unit: UnitState = _units[command.unit_slot]
+	if not Reaction.may_enter_defence(_weapons, unit):
+		return 0
+	return Reaction.enter_defence(turn, unit)
 
 
 ## `0x00477BF0` -- how many live units a player owns.
@@ -271,9 +326,19 @@ func banner_in_range(slot: int) -> bool:
 ## twice per round, and on `_C_140` that is the script's reinforcement roll
 ## firing twice as often as the mission intends.
 func submit_end_turn(command: EndTurnCommand) -> TurnResult:
-	return TurnSequence.hand_over(turn, _units, game_control, _unit_types,
-		_weapons, script_runner, banner_in_range, live_unit_count,
-		command.arg)
+	var result: TurnResult = TurnSequence.hand_over(turn, _units, game_control,
+		_unit_types, _weapons, script_runner, banner_in_range,
+		live_unit_count, command.arg)
+	if result.refreshed:
+		# `aBuildVisibleMap` for whoever now holds the turn. It runs here and
+		# not in [Refresh] for the reason that file states: visibility is a map
+		# walk and the refresh is a unit walk. It runs only when the refresh
+		# did, so a hand-over the script stopped leaves the fog alone -- the
+		# same player is still looking at the same world.
+		Visibility.build(state, _units, _unit_types, turn.current_player,
+			turn.human_count(), turn.mode)
+		result.fog_rebuilt = true
+	return result
 
 
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.

@@ -30,6 +30,10 @@ var refreshed: PackedInt32Array = PackedInt32Array()
 ## is what comes next. The planner that would run it is docs/23 and is not in
 ## this stage; the hand-over that hands it over is.
 var ai_turn: bool = false
+## True when the caller rebuilt the fog for the player that now holds the turn.
+## It is the *caller's* job (docs/22 section 9 is a map walk and [Refresh] is a
+## unit walk), so this records that the caller did it rather than asserting it.
+var fog_rebuilt: bool = false
 
 
 func ok() -> bool:
@@ -48,4 +52,5 @@ func to_dict() -> Dictionary:
 		"mission_ended": mission_ended,
 		"refreshed": refreshed.duplicate(),
 		"ai_turn": ai_turn,
+		"fog_rebuilt": fog_rebuilt,
 	}

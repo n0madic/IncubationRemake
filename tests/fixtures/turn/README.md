@@ -18,7 +18,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
 | `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
 | `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
-| `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **recorded, not gated**: there is no executable interaction model to diff against yet |
+| `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **gated** since S6: `--check` replays all 24 probes through `inclib/interact.py`, in order and without reloading |
 | `aExecuteMove` | `0x0046E220` | six walks of one two-step path, differing only in a byte written **between the walk and the call**: the step costs, the distance, the facing, the delay column, a VictoryPoint and a mine |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
@@ -66,6 +66,34 @@ the action point *is* consumed. The check therefore asserts
 correct behaviour, and reading the unchanged byte as a defect is the mistake
 this note exists to prevent. A probe that showed the write would need a unit
 that has spent a round first.
+
+### What `--emit-cases` carries, and why some of it is per-probe
+
+`cases_turn.json` re-expresses the capture for `godot/tests/`. Most of it is
+emitted **once** — the map, the balance rows, the unit array — because every
+probe of a phase starts from the same reloaded save and repeating 400 cells six
+times would say otherwise.
+
+Two phases are the exception, and both for the same reason: **they do not
+reload between probes.**
+
+* `attack` carries its own unit array per probe, because each shot starts from
+  the world the one before it left behind. A replay that started every probe
+  from the save would be a different experiment.
+* `use` carries no unit array at all and is replayed in order through one
+  world, because the plan writes the class byte before every probe — restoring
+  the *cell* each time and the *unit* never. The crowbar the class-39 probe
+  grants is still there for the ones after it.
+
+The `fog` block is the third thing worth naming. `aBuildVisibleMap` has no
+phase of its own, so the block pairs the refresh's **before** unit records with
+the `+0x4F` byte its **after** records hold, per player. It is emitted
+separately from the refresh cases because those carry no map, and the fog pass
+is nothing but a map walk.
+
+Seeds are emitted as JSON **numbers**, not as the hex the capture stores: every
+value is `float(int(...))` below 2^31, so the round trip is exact, and a number
+is what `IncRandom.seed` takes.
 
 ### What phase 10 settled
 

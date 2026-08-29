@@ -35,6 +35,13 @@ var reason: String = ""
 ## the walk, so a refusal here cannot un-walk it.
 var script_result: Dictionary = {}
 
+## Every reaction shot the walk drew -- docs/25 section 6. Empty when nobody was
+## on overwatch, which is every walk on a mission the player has not used the
+## **Def** button on. The drain runs in the *caller* (docs/23 section 5.3's
+## tail calls `aExecuteFight` after `aExecuteMove`), so this is filled in by
+## [method World.submit_move] and not by [ExecuteMove].
+var reactions: Array[Dictionary] = []
+
 
 static func failed(fx: int, fy: int, why: String) -> MoveResult:
 	var result: MoveResult = MoveResult.new()
@@ -59,4 +66,5 @@ func to_dict() -> Dictionary:
 		"action_point_writes": writes,
 		"events": events.duplicate(true),
 		"movement_zeroed": movement_zeroed,
+		"reactions": reactions.duplicate(true),
 	}
