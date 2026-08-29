@@ -14,6 +14,13 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aRefreshPlayer` | `0x004781C0` | what a hand-over restores, diffed field by field over the whole 200-slot unit array |
 | `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
 
+`aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
+refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
+**are** its output. That is also why the "leaves the other players alone"
+invariant is stated for every offset *except* `+0x4F` — the strict form was
+asserted first and failed on three slots, which is how the exception was found
+rather than assumed.
+
 ## The `.json` file is not in git
 
 A capture embeds the loaded control map and unit array of a shipped mission, so
@@ -47,3 +54,12 @@ python3 tools/turn_gold.py --check gog_incubation
 * **Wine start-up on this host is intermittent** ([`docs/91`](../../../docs/91-wine-runtime-probes.md) §1).
   A phase that never reaches the anchor is an environment result; the launcher
   retries up to ten times, and a phase can succeed on attempt 1 or on attempt 8.
+  The capture that produced this file needed attempt 4 twice. **Do not lower
+  `--attempts`**: capping a phase below the rest is the documented way to lose
+  a probe that had already been taken once, and doing it cost this capture a
+  full re-run.
+* **Phases are written as they land and merged on re-run**, so a phase that
+  loses all ten attempts costs only itself. A phase that runs but extracts
+  nothing is refused rather than written empty — `--dump` results arrive under
+  the JSONL key `reads`, not `dumps` (`dbgcall.cpp` line 2640), and reading the
+  wrong key once wrote 86 pairs' worth of empty arrays that looked captured.

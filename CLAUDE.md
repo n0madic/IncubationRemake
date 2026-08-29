@@ -235,10 +235,17 @@ python3 tools/turn_gold.py --game-copy /path/to/copy --dbgcall /path/to/copy/dbg
 python3 tools/turn_gold.py --check gog_incubation     # re-run the models against it
 ```
 
-`tests/fixtures/turn/README.md` records what the capture holds. **Wine start-up
+`tests/fixtures/turn/README.md` records what the capture holds; `--check` is
+15 checks over 86 unit pairs, 130 refresh fields, 188 untouched foreign records
+and the fog pass. **Wine start-up
 on this host is intermittent** (`docs/91` §1): a phase can reach the anchor on
 attempt 1 or on attempt 8, and one that never does is an environment result
-rather than a failure — which is why both tools retry ten times.
+rather than a failure — which is why both tools retry ten times. **Do not lower
+`--attempts` to bound a run** — a phase capped below the rest loses probes it
+had already taken once, which `docs/91` §1 warns about and which cost one
+capture a full re-run. Bound the whole invocation with `timeout` instead; phases
+are written as they land and merged on re-run, so a bounded run loses at most
+the phase in flight.
 
 ## The remake
 

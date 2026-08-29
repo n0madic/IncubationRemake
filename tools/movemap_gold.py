@@ -179,6 +179,9 @@ DEFAULT_ATTEMPTS = 10
 ATTEMPT_TIMEOUT = 600
 WINE_DESKTOP = "incdbg,640x480"
 WINE_OVERRIDES = "krnl386.exe16=d"
+#: Seconds ``wineserver -k`` may take before it is itself abandoned.  It is a
+#: cleanup, so a hang in it must not become the hang it exists to prevent.
+TEARDOWN_TIMEOUT = 30
 
 
 class CaptureError(Exception):
@@ -1178,6 +1181,29 @@ def _command_name(dbgcall: Path, game_copy: Path) -> str:
     return windows
 
 
+def _reset_wine(env: dict[str, str]) -> None:
+    """Tear the Wine session down between attempts.
+
+    ``_run_scoped`` kills the attempt's own process **group**, which is what
+    keeps a timed-out run from outliving its attempt -- but ``wineserver`` and
+    the ``winedevice.exe`` processes it owns are deliberately detached from
+    that group, so they survive it.  A half-dead session left behind that way
+    poisons every later attempt in the same phase and in the phases after it:
+    the symptom is a phase that loses **all** of its attempts to "did not
+    reach the anchor" immediately after a phase that succeeded, which reads
+    like docs/91 §1 start-up flakiness and is not.
+
+    Failures here are ignored on purpose.  There may be no session to kill,
+    and a cleanup that raises would throw away the retry it is preparing.
+    """
+    try:
+        subprocess.run(["wineserver", "-k"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=TEARDOWN_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        LOG.debug("wineserver -k did not complete cleanly: %s", exc)
+
+
 def _run_scoped(command: list[str], *, env: dict[str, str] | None,
                 timeout: float, cwd: Path | None = None) -> None:
     """Run one attempt in its own Unix process group and bound its lifetime."""
@@ -1243,6 +1269,7 @@ def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
             # that had already succeeded.
             LOG.warning("%s: attempt %d timed out after %ds",
                         name, attempt, timeout)
+            _reset_wine(env)
             continue
         log = log_path.read_text(errors="replace") if log_path.exists() else ""
         if "breakpoint hit" in log and out_path.exists():
@@ -1254,6 +1281,7 @@ def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
             return [json.loads(line) for line in out_path.read_text().splitlines()
                     if line.strip()]
         LOG.warning("%s: attempt %d did not reach the anchor", name, attempt)
+        _reset_wine(env)
     raise CaptureError(
         f"{name}: no attempt reached {BREAKPOINT} in {attempts} tries; "
         f"see {log_path}")

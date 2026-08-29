@@ -255,17 +255,16 @@ def _results(rows: list[dict[str, Any]], call: str) -> list[int]:
 
 def _dumps(rows: list[dict[str, Any]], call: str,
            name: str) -> list[int]:
-    """The little-endian dword a named buffer held after each call."""
-    out: list[int] = []
-    for row in rows:
-        if row.get("call") != call:
-            continue
-        dumps = row.get("dumps")
-        if not isinstance(dumps, dict) or name not in dumps:
-            continue
-        raw = bytes.fromhex(dumps[name].replace(" ", ""))
-        out.append(int.from_bytes(raw[:4], "little"))
-    return out
+    """The little-endian dword a named buffer held after each call.
+
+    ``--dump`` and ``--read`` land in the **same** JSONL object.  ``dbgcall``
+    emits one key, ``"reads"``, and fills it from its ``dumps`` vector
+    (``dbgcall.cpp`` line 2640), so looking for a ``"dumps"`` key finds
+    nothing -- silently, which is how an empty ``hit_percent`` once got
+    written out as if the phase had succeeded.
+    """
+    return [int.from_bytes(raw[:4], "little")
+            for raw in _reads(rows, call, name)]
 
 
 def pairs_for(live: list[int],
@@ -358,19 +357,33 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
     LOG.info("phase 1: %d live slot(s) at AI level %d -- %s",
              len(live), payload["ai_level"], live)
 
-    if "hit_percent" not in payload:
+    # Truthiness, not presence: an earlier run that wrote the key empty must
+    # re-take the phase rather than be merged past forever.
+    if not payload.get("hit_percent"):
         pairs = pairs_for(live, unit_bytes)
         LOG.info("phase 2: %d ordered enemy pair(s)", len(pairs))
         if pairs:
             rows = gold.run_plan(game_copy, dbgcall, sight_plan(pairs),
                                  "turn_sight", attempts)
-            payload["pairs"] = [list(p) for p in pairs]
-            payload["full_heights"] = _results(rows, "aGetUnitFullHeight")
-            payload["eye_heights"] = _results(rows, "aGetUnitEyeHeight")
-            payload["hit_returns"] = _results(rows, "aGetHitProbability")
-            payload["hit_percent"] = _dumps(rows, "aGetHitProbability", "hit")
-            payload["hit_distance"] = _dumps(rows, "aGetHitProbability",
-                                             "dist")
+            captured = {
+                "pairs": [list(p) for p in pairs],
+                "full_heights": _results(rows, "aGetUnitFullHeight"),
+                "eye_heights": _results(rows, "aGetUnitEyeHeight"),
+                "hit_returns": _results(rows, "aGetHitProbability"),
+                "hit_percent": _dumps(rows, "aGetHitProbability", "hit"),
+                "hit_distance": _dumps(rows, "aGetHitProbability", "dist"),
+            }
+            # A phase that extracted nothing must not be written out as if it
+            # had succeeded: the merge would then skip it forever on re-run,
+            # and --check would index an empty list rather than say so.  This
+            # is how a wrong JSONL key stayed invisible until the gate ran.
+            for key in ("hit_returns", "hit_percent", "hit_distance"):
+                if len(captured[key]) != len(pairs):
+                    raise GoldError(
+                        f"phase 2 extracted {len(captured[key])} {key} for "
+                        f"{len(pairs)} pair(s); the probe ran but nothing "
+                        f"read it back")
+            payload.update(captured)
             _write(payload, out)
 
     player = _byte(unit_bytes, live[0], gold.UNIT_PLAYER) if live else 0
@@ -567,6 +580,52 @@ def run_check(capture_path: Path, root: Path) -> int:
     c.check("refresh.fields_compared", compared > 0,
             f"{compared} field comparison(s)")
     c.expect("refresh.matches_native", mismatches[:8], [])
+
+    # The other half of acceptance item 4: the refresh is for *one* player, so
+    # every record that does not belong to it has to come back untouched --
+    # comparing only the refreshed player would pass a routine that quietly
+    # rewrote the other 190 slots.
+    #
+    # With one documented exception, found by asserting the strict form first.
+    # ``+0x4F`` **does** change on foreign records, because 0x004781C0 runs the
+    # fog pass and that is where an enemy is marked visible, hidden or a
+    # contact *for the refreshing player*.  So the strict invariance holds for
+    # every other offset, and ``+0x4F`` gets a check of its own below -- which
+    # is the aBuildVisibleMap row of the oracle table, captured here for free
+    # rather than in a phase of its own.
+    before_raw = bytes.fromhex(payload["units_refresh_before"])
+    foreign: list[str] = []
+    foreign_slots = 0
+    for slot in range(gold.UNIT_SLOTS):
+        b = slot * gold.UNIT_STRIDE
+        if _byte(before_raw, slot, gold.UNIT_PLAYER) == payload[
+                "refresh_player"]:
+            continue
+        foreign_slots += 1
+        offsets = [f"+0x{i:02X}"
+                   for i in range(gold.UNIT_STRIDE)
+                   if before_raw[b + i] != after_raw[b + i]
+                   and i != gold.UNIT_VISIBILITY]
+        if offsets:
+            foreign.append(f"slot {slot}: {', '.join(offsets)}")
+    c.check("refresh.foreign_slots_examined", foreign_slots > 0,
+            f"{foreign_slots} record(s) outside player "
+            f"{payload['refresh_player']}")
+    c.expect("refresh.touches_only_visibility_elsewhere", foreign[:8], [])
+
+    # --- the fog pass, pinned natively -----------------------------------
+    fog = _world_from_capture(payload, payload["units_refresh_before"], tables)
+    combatmod.build_visible_map(fog, payload["refresh_player"])
+    fog_bad: list[str] = []
+    fog_compared = 0
+    for slot, unit in sorted(fog.units.items()):
+        fog_compared += 1
+        want = after_raw[slot * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]
+        if unit.visibility != want:
+            fog_bad.append(f"slot {slot}: {unit.visibility} != {want}")
+    c.check("fog.slots_compared", fog_compared > 0,
+            f"{fog_compared} visibility byte(s)")
+    c.expect("fog.matches_native", fog_bad[:8], [])
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

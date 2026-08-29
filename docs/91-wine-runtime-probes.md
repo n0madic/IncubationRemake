@@ -46,6 +46,20 @@ went through on a retry, so **every phase that runs a plan must retry**, and a
 phase capped at fewer attempts than the rest lost a probe it had already
 taken once.
 
+**`wineserver` outlives the attempt that started it.** `_run_scoped` kills the
+attempt's own Unix process **group**, which is what stops a timed-out run from
+outliving its attempt — but `wineserver` and the `winedevice.exe` processes it
+owns are deliberately detached from that group and survive it. Two of them were
+found alive after a capture was interrupted by hand. `run_plan` therefore calls
+`wineserver -k` after every failed attempt.
+
+This is **hygiene, not a diagnosis.** It was added on the hypothesis that a
+leftover session explained a phase losing all ten of its attempts right after a
+phase that succeeded; the retry log above already explains that pattern, and
+the next capture reproduced the same phase succeeding on attempt 4 with the
+teardown in place. So nothing here says a stale `wineserver` ever caused a
+failure — only that leaving one behind is avoidable and cheap to avoid.
+
 **`cd /d` under this Wine's `cmd` returns a non-zero exit status even where it
 works.** A launcher written as `cmd /c 'cd /d "<dir>" && <program> > log'`
 therefore short-circuits and runs *nothing*: no log is written, no breakpoint
