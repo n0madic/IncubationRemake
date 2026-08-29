@@ -26,7 +26,14 @@ from __future__ import annotations
 import argparse
 import math
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from inclib.rng import ARandom  # noqa: E402
 
 
 I32_MASK = 0xFFFFFFFF
@@ -147,36 +154,6 @@ class TickResult:
 
     def event(self, name: str, *values: Any) -> None:
         self.events.append((name, *values))
-
-
-class ARandom:
-    """The shipped ``aRandom(base, span)`` Lehmer generator.
-
-    A zero seed is intentionally a fixed point, matching the zero-initialised
-    retail global.  ``seed`` is a float because that is how the original keeps
-    it; the integer conversion is the exact operation in its inner loop.
-    """
-
-    MULTIPLIER = 62089911.0
-    MODULUS = 2147483647.0
-
-    def __init__(self, seed: float = 0.0) -> None:
-        self.seed = float(seed)
-        self.calls = 0
-        self.sum = 0
-
-    def raw(self, base: int, span: int) -> float:
-        """Return the x87 value produced by ``aRandom`` before ``__ftol``."""
-
-        self.seed = float(int(self.seed * self.MULTIPLIER) % int(self.MODULUS)) \
-            if self.seed else 0.0
-        value = base + span * (self.seed / self.MODULUS)
-        self.calls += 1
-        self.sum += int(value)
-        return value
-
-    def __call__(self, base: int, span: int) -> int:
-        return int(self.raw(base, span))
 
 
 class BlobHooks:

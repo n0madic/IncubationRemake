@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 
 LOG = logging.getLogger("interface_tables")
@@ -176,9 +176,9 @@ MAP_COMMAND_CONSUMER = 0x0041DA20
 
 def walk(nodes):
     for node in nodes:
-        if isinstance(node, lcl_parse.Statement):
+        if isinstance(node, lcl.Statement):
             yield node
-        elif isinstance(node, lcl_parse.Conditional):
+        elif isinstance(node, lcl.Conditional):
             yield from (term.call for term in node.terms)
             yield from walk(node.body)
             yield from walk(node.else_body)
@@ -210,7 +210,7 @@ class Checker:
 
 
 def read_program(path: Path):
-    return lcl_parse.parse_bytes(path.read_bytes(), str(path))
+    return lcl.parse_bytes(path.read_bytes(), str(path))
 
 
 def corpus(root: Path):
@@ -238,7 +238,7 @@ def run_checks(root_name: str) -> Checker:
     ck.equal("corpus.text_files", tuple(sorted(texts)), TEXT_FILES,
              "9/9 localized GUI tables")
     ck.equal("corpus.text_entries",
-             sum(isinstance(n, lcl_parse.TextEntry)
+             sum(isinstance(n, lcl.TextEntry)
                  for p in texts.values() for r in p.routines for n in r.body),
              EXPECTED_TEXT_ENTRIES, "868 localized entries")
 
@@ -398,7 +398,7 @@ def report_json(root: str) -> None:
     print(json.dumps({
         "screens": {name: [r.name for r in p.routines if r.name]
                     for name, p in programs.items()},
-        "text_entries": sum(isinstance(n, lcl_parse.TextEntry)
+        "text_entries": sum(isinstance(n, lcl.TextEntry)
                             for p in texts.values() for r in p.routines for n in r.body),
         "gui_commands": dict(sorted(gui_commands.items())),
         "command_pad": {f"{x},{y}": pe.u32(va + 1)

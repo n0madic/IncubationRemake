@@ -810,3 +810,20 @@ that later use them.
 | +0x51, +0x52 | 2 | the unit's x/y **at the start of the turn** | `0x004781c0` copies `+0x42`/`+0x43` into them each turn; weapon `special` 6 ("attack the defender's position of the last turn") reads them |
 | +0x55 | 1 | **speech-set id** | written by `LinkChrWithGroup`; selects the `Waves/Speech/<n>/<PREFIX>` set — see `docs/20-lcl-language.md` §7.4 |
 | +0x59 | 1 | defence-order ordinal | `0x00478500` stores the per-player counter `0x00517f50[player]` here when the unit enters defence mode, which orders reaction fire |
+
+---
+
+## 9. Open questions
+
+**None.** Every column of all five `Set*Info` commands is recovered and checked
+against the corpus by `tools/info_parse.py --check`, and the four this document
+once carried as UNVERIFIED are closed in place above: column 7 (`FP max`) is a
+flag rather than a value (§5), `SetVolumeCtrl`'s index space is settled (§6),
+`SetCharismaInfo`'s six names are read by nothing (§7), and the runtime record
+offsets in §8 all have a reader named beside them.
+
+This section exists so the zero is explicit. `CLAUDE.md` states that every
+numbered document ends with an **Open questions** section and tallies what is
+left across the set; a document with nothing open and no section is
+indistinguishable from one that was never asked, and it was silently skipped by
+the tally for exactly that reason.

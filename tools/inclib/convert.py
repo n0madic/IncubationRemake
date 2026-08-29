@@ -36,6 +36,8 @@ from . import prototyp as protomod
 from . import visn as visnmod
 from .cache import SourceReader, Staging
 from .info import BalanceTables, load_info_file
+from .script import (GUI_TEXT_DIR, load_script, script_document,
+                     text_catalogue)
 from .png import write_rgb_png
 
 MAP_SCHEMA = "incubation.map/1"
@@ -83,6 +85,7 @@ class Conversion:
     world_sets: list[str] = field(default_factory=list)
     prototypes: int = 0
     textures: int = 0
+    text_entries: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -109,6 +112,17 @@ def _find(root: Path, *parts: str) -> Path:
 
 def mission_path(root: Path, name: str) -> Path:
     return _find(root, "Missions", f"{name}.lev")
+
+
+def mission_script_path(root: Path, name: str) -> Path:
+    """The ``.lcl`` beside the ``.lev``; docs/20 -- the mission's own program."""
+    return _find(root, "Missions", f"{name}.lcl")
+
+
+def gui_text_paths(root: Path, language: str) -> list[Path]:
+    """The interface-string programs of one language, in a stable order."""
+    base = _find(root, "DATA", "TXT", language, GUI_TEXT_DIR)
+    return sorted(p for p in base.iterdir() if p.is_file())
 
 
 def world_paths(root: Path, world_set: str, scene: str) -> dict[str, Path]:
@@ -245,6 +259,22 @@ def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
                 "rested": u.rested,
                 "action_state": u.action_state,
                 "tp": u.tp,
+                # docs/10 §5.12 and §5 -- the turn, combat and reaction state
+                # the second slice reads.  Zero in most shipped records, which
+                # is exactly why they are carried: a remake that assumed the
+                # zero would be right until the first mid-turn save.
+                "acted": u.acted,
+                "damage_absorber": u.absorb,
+                "armour_front": u.armour_front,
+                "armour_rear": u.armour_rear,
+                "ammo": u.ammo,
+                "heat": u.heat,
+                "malfunction": u.malfunction,
+                "walked": u.walked,
+                "turn_start_x": u.turn_start_x,
+                "turn_start_y": u.turn_start_y,
+                "stimulant": u.stimulant,
+                "ticket": u.ticket,
                 "skills": dict(zip(levmod.SKILL_NAMES, u.skills)),
                 "equipment_ids": list(u.equipment_ids),
                 "weapon": u.weapon,
@@ -444,7 +474,7 @@ def prototype_names(document: dict[str, Any], tables: BalanceTables,
 
 
 def convert(root: Path, missions: list[str], staging: Staging,
-            reader: SourceReader) -> Conversion:
+            reader: SourceReader, language: str) -> Conversion:
     """Convert every named mission and everything it reaches into `staging`."""
     result = Conversion()
     info_path = reader.record(_find(root, "DATA", "Info.lcl"))
@@ -459,13 +489,29 @@ def convert(root: Path, missions: list[str], staging: Staging,
         bm = levmod.load_lev(str(path))
         paths = world_paths(root, bm.world_set, bm.world_scene)
         clones = scene_clones(_parse_3dw(reader, paths["dw"]))
+        # docs/25 section 4: handing the turn over *runs* the mission script,
+        # so the script is not an extra the map happens to have -- it is half
+        # of what a mission is, and the cache carries it beside the map.
+        script_path = reader.record(mission_script_path(root, name))
+        program = load_script(script_path)
+        script_source = {
+            "lcl": reader.rel(script_path),
+            "sha256": reader.seen[reader.rel(script_path)],
+        }
         document = mission_document(bm, clones, {
             "lev": reader.rel(path),
             "sha256": reader.seen[reader.rel(path)],
             "dw": reader.rel(paths["dw"]),
             "dw_sha256": reader.seen[reader.rel(paths["dw"])],
+            "lcl": script_source["lcl"],
+            "lcl_sha256": script_source["sha256"],
         })
         staging.write_json(f"missions/{name}/map.json", document)
+        staging.write_json(f"missions/{name}/script.json",
+                           script_document(program, script_source))
+        result.warnings += [
+            f"{name}.lcl:{d.line}:{d.column}: {d.message}"
+            for d in program.diagnostics if d.severity == "error"]
         result.missions.append(name)
         result.warnings += document["diagnostics"]["warnings"]
         wanted_by_set.setdefault(bm.world_set, set()).update(
@@ -496,4 +542,16 @@ def convert(root: Path, missions: list[str], staging: Staging,
         staging.write_json(f"textures/{world_set}/index.json", index)
         result.textures += len(index["textures"])
         result.world_sets.append(world_set)
+
+    gui_paths = gui_text_paths(root, language)
+    programs = {}
+    text_source: dict[str, Any] = {}
+    for gui_path in gui_paths:
+        reader.record(gui_path)
+        stem = gui_path.stem
+        programs[stem] = load_script(gui_path)
+        text_source[stem] = reader.rel(gui_path)
+    catalogue = text_catalogue(programs, language, {"files": text_source})
+    staging.write_json(f"text/{language}.json", catalogue)
+    result.text_entries = sum(len(v) for v in catalogue["gui"].values())
     return result

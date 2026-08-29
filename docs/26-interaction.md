@@ -615,13 +615,17 @@ detected, and the union of the check names they tripped is all 109.
 
 ## 10. Open questions
 
-1. **What the fourth `SetCtrlMapInfo` column was for.** `Info.lcl` gives
+1. ~~**What the fourth `SetCtrlMapInfo` column was for.**~~ **— Closed.**
+   `Info.lcl` gives
    `Wall` 255, `Enormous Obs` 40 and 0 for everything else. The value lands at
    record `+0x02` and **nothing in `.text` reads it**: a displacement-aware
    sweep finds three references to `+0x00` and two to `+0x01` — the positive
    control — and none to `+0x02` or `+0x03`. It is dead data in this build.
-   [`10` §4.1](10-lev-mission-format.md) carried it as UNVERIFIED; it is now
-   closed as unreadable rather than unknown.
+   [`10` §4.1](10-lev-mission-format.md) carried it as UNVERIFIED; it is
+   closed as unreadable rather than unknown. The entry was already written as
+   closed and was not struck through, which left the count one too high — the
+   convention is [`20` §10](20-lcl-language.md)'s: strike it, keep the
+   evidence in place, and do not count it.
 2. **Why `_C_156`'s fourth teleporter exit has no key.** The cell is field type
    10 with action point 0, and no entry carries key 0, so both are inert. It
    looks like an unfinished pair, but the mission plays without it and nothing

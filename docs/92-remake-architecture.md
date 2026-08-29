@@ -639,9 +639,14 @@ afterwards** and are recorded in [`93` §10](93-slice-1-report.md):
 | Face triangulation assumed convexity; the cross-check was manual | [`31` §4.3.1](31-prototyp-geometry.md) counts 1572 reflex faces; the mesh builder ear-clips and `prototyp_parse.py --check` pins the counts |
 | The 4/8-connectivity asymmetry, recorded but unresolved | `core/walk_map.gd` transcribes `aWalkMoveMap`, pinned natively; [`23` §8](23-ai-system.md) reports 2772 diagonal steps and **no** path leaving the highlighted region |
 
-What remains from that list is the large-unit clearance natively — no shipped
-unit on the capture mission is large, and unlike the transient obstacles it
-cannot be reached by writing a single byte.
+Nothing remains from that list. The large-unit clearance was the last one, and
+[`93` §11](93-slice-1-report.md) closed it: an earlier edition of this
+paragraph said it "cannot be reached by writing a single byte", and it can —
+the `size` column lives at a fixed offset in `SetUnitInfo`'s static table, so
+writing that byte and calling the engine's own fill turns a mission with no
+large unit into one that exercises the 3×3 clearance. The same technique
+reaches `aExecuteUse`'s action points and the ladder cells no shipped map
+contains.
 
 The numbered specs also retain their own research questions:
 

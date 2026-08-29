@@ -407,10 +407,41 @@ ascending order so no value falls twice in one turn:
 With [`10` §5.12](10-lev-mission-format.md)'s outcomes — a light jam is `2`, a
 heavy one `5` — a light jam costs two turns and a heavy one three.
 
-**Movement points are not restored here.** They are not stored: `0x00475160`
-computes them on demand from the type, the equipment, the fitness and the
-action state, which is [`10` §5.5](10-lev-mission-format.md)'s formula. What
-this routine restores is everything that formula reads.
+**Movement points *are* restored here** — corrected. An earlier edition of this
+section read "they are not stored: `0x00475160` computes them on demand", which
+contradicted its own pseudocode two lines above. `+0x15` is a stored field, and
+`recomputeStats` writes it:
+
+```asm
+0x004759b5  mov  al, byte [esi + 0x39]     ; acted
+0x004759b8  test al, al
+0x004759ba  jbe  0x4759c0                  ; if (acted > 0) acted = 0
+0x004759bc  mov  byte [esi + 0x39], 0
+0x004759c0  push esi
+0x004759c1  call 0x475160                  ; aGetMovePoints
+0x004759c9  mov  byte [esi + 0x15], al     ; <-- the movement points are stored
+0x004759d1  call 0x46f210
+```
+
+So the hand-over restores the allowance **from** `0x00475160`
+([`10` §5.5](10-lev-mission-format.md)'s formula) rather than leaving it to be
+computed on demand, and it restores everything that formula reads first — the
+fitness, the action state and the rest, all above this line. The distinction
+matters to a remake: a unit's `+0x15` is spent during its turn and is a value a
+save carries, not a derived quantity.
+
+**Which `recompute` — settled.** [`10` §5](10-lev-mission-format.md) names
+`fcn.004759E0` for the derived-stat rewrite and this section names
+`0x004759B0`; they are two different functions, and the refresh calls the
+**short** one:
+
+```asm
+0x00478306  call 0x4759b0
+```
+
+`0x004759B0` does the three things above and nothing else. `0x004759E0` is the
+longer rewrite — `+0x3A`, `+0x16`, `+0x15`, `+0x19`, … — and the hand-over does
+not call it.
 
 **Fitness moves by at most three in one turn** — one for having stood down,
 then one or two for the Banner — and snaps to the cap rather than overshooting.

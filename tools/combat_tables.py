@@ -46,7 +46,8 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
+from inclib.combat import hit_percent, magic_div_2400_plus_1  # noqa: E402
 from inclib.lev import LevError, load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 
@@ -426,26 +427,9 @@ class Random:
         return int(base + span * (self.seed * self.scale))
 
 
-def magic_div_2400_plus_1(n: int) -> int:
-    """The compiler's division at ``0x0046A35C``, emulated instruction by instruction.
-
-    ``mov eax, 0x1B4E81B5; imul ecx; sar edx, 8; mov eax, edx; shr eax, 31;
-    lea ecx, [edx + eax + 1]``
-    """
-    product = 0x1B4E81B5 * n
-    if product < 0:
-        product += 1 << 64
-    hi = (product >> 32) & 0xFFFFFFFF
-    if hi >= 1 << 31:
-        hi -= 1 << 32
-    hi >>= 8                      # sar
-    sign = 1 if hi < 0 else (hi & 0xFFFFFFFF) >> 31
-    return hi + sign + 1
-
-
-def hit_percent(accuracy: int, range_max: int, distance: int) -> int:
-    """``docs/22`` 5.4.  Integer division, and it truncates before multiplying."""
-    return 100 - ((101 - accuracy) // range_max) * distance
+# `magic_div_2400_plus_1` and `hit_percent` moved into `inclib.combat`, where
+# the executable model of docs/22 needs them too.  One definition, imported
+# here rather than kept in both.
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +464,7 @@ def load_weapons(root: str) -> dict[int, Weapon]:
             break
     if path is None:
         raise LevError(f"no Info.lcl under {root!r}")
-    program = lcl_parse.parse_bytes(open(path, "rb").read(), path)
+    program = lcl.parse_bytes(open(path, "rb").read(), path)
 
     def nums(stmt):
         return [a.value for a in stmt.args if a.kind == "number"]

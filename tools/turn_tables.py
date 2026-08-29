@@ -50,7 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
 from combat_tables import load_weapons  # noqa: E402
 from inclib.lev import LevError, load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
@@ -692,7 +692,7 @@ def load_info(root: str) -> dict[str, list[tuple[list[int], list[str]]]]:
     if not os.path.isfile(path):
         raise LevError(f"no DATA/Info.lcl under {root!r}")
     with open(path, "rb") as handle:
-        program = lcl_parse.parse_bytes(handle.read(), path)
+        program = lcl.parse_bytes(handle.read(), path)
     out: dict[str, list[tuple[list[int], list[str]]]] = {
         "SetUnitInfo": [], "SetWeaponInfo": [], "SetWeaponInfo2": []}
     for stmt in program.statements():
@@ -762,7 +762,7 @@ class Corpus:
 
     def _count_script(self, path: Path) -> None:
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), str(path))
+            program = lcl.parse_bytes(handle.read(), str(path))
         for stmt in program.statements():
             if stmt.name != "CheckCurrentTurn":
                 continue

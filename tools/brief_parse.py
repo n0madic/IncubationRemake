@@ -43,7 +43,7 @@ from inclib.brieftext import (BriefError, COLOUR_RAMPS, FIELD_LIMIT,        # no
                               layout, program)
 from inclib.liblib import LibError, load_lib                                # noqa: E402
 from inclib.pe import PEError, PEFile                                       # noqa: E402
-from lcl_decode import decode, encode, is_encoded                           # noqa: E402
+from inclib.lcl import decode, encode, is_encoded                         # noqa: E402
 
 LOG = logging.getLogger("brief")
 

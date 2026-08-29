@@ -57,11 +57,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
 from inclib.brieftext import BriefError, block  # noqa: E402
 from inclib.lev import LevError, load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
-from lcl_decode import decode, is_encoded  # noqa: E402
+from inclib.lcl import decode, is_encoded  # noqa: E402
 
 LOG = logging.getLogger("interaction_tables")
 
@@ -618,7 +618,7 @@ class Corpus:
 
     def _count_script(self, path: Path) -> None:
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), str(path))
+            program = lcl.parse_bytes(handle.read(), str(path))
         self.script_files.add(path.name)
         for routine in program.routines:
             if routine.name != "Use":
@@ -663,9 +663,9 @@ class Corpus:
 
 def _walk(nodes):
     for node in nodes:
-        if isinstance(node, lcl_parse.Statement):
+        if isinstance(node, lcl.Statement):
             yield node
-        elif isinstance(node, lcl_parse.Conditional):
+        elif isinstance(node, lcl.Conditional):
             for term in node.terms:
                 yield term.call
             yield from _walk(node.body)

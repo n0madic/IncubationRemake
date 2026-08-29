@@ -53,11 +53,14 @@ from inclib.binio import ParseError  # noqa: E402
 
 LOG = logging.getLogger("remake_convert")
 
-#: The slice's three missions (docs/92 §10 and the slice plan).  `_C_115` is
-#: what gets rendered, `_C_141` is where the native oracle was taken, `_C_100`
+#: The missions the two slices need (docs/92 §10, docs/93, docs/94).  `_C_140`
+#: is the second slice's demonstration mission -- the first playable one, whose
+#: squad and aliens are both in the `.lev` and which is *won by moving*;
+#: `_C_115` is what the first slice rendered; `_C_141` is where the native
+#: oracle is taken, because it is the mission the slot-6 save is on; `_C_100`
 #: is the second entry that keeps determinism honest across two maps sharing a
 #: world set and scene with `_C_141`.
-SLICE_MISSIONS = ["_C_115", "_C_141", "_C_100"]
+SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100"]
 
 #: Files the converter reads that are not reached through a mission, but whose
 #: identity the manifest has to carry.
@@ -80,7 +83,7 @@ def run_conversion(root: Path, missions: list[str], caches_root: Path,
     reader = _reader(root)
     staging = cachemod.Staging.create(caches_root)
     try:
-        result = convert(root, missions, staging, reader)
+        result = convert(root, missions, staging, reader, language)
     except Exception:
         staging.discard()
         raise
@@ -88,7 +91,8 @@ def run_conversion(root: Path, missions: list[str], caches_root: Path,
     manifest = cachemod.build_manifest(
         reader, inventory, language, result.warnings,
         {"missions": result.missions, "world_sets": result.world_sets,
-         "prototypes": result.prototypes, "textures": result.textures})
+         "prototypes": result.prototypes, "textures": result.textures,
+         "text_entries": result.text_entries})
     return staging, manifest, result
 
 

@@ -54,7 +54,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
 from inclib.lev import load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 
@@ -726,7 +726,7 @@ class Corpus:
 
     def _read_script(self, path: Path) -> None:
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), str(path))
+            program = lcl.parse_bytes(handle.read(), str(path))
         for routine in program.routines:
             for stmt in _walk(routine.body):
                 if stmt.name != "EnterNameOfNextMap":
@@ -739,11 +739,11 @@ class Corpus:
         if not os.path.isfile(path):
             return None
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), path)
+            program = lcl.parse_bytes(handle.read(), path)
         out: dict[int, str] = {}
         for routine in program.routines:
             for node in routine.body:
-                if isinstance(node, lcl_parse.TextEntry):
+                if isinstance(node, lcl.TextEntry):
                     out[node.index] = node.text
         return out
 
@@ -752,7 +752,7 @@ class Corpus:
         if not os.path.isfile(path):
             return
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), path)
+            program = lcl.parse_bytes(handle.read(), path)
         table = {"SetWeaponInfo": self.weapons,
                  "SetUnitInfo": self.units,
                  "SetEquipInfo": self.equipment}
@@ -791,9 +791,9 @@ def strings(args) -> list:
 
 def _walk(nodes):
     for node in nodes:
-        if isinstance(node, lcl_parse.Statement):
+        if isinstance(node, lcl.Statement):
             yield node
-        elif isinstance(node, lcl_parse.Conditional):
+        elif isinstance(node, lcl.Conditional):
             for term in node.terms:
                 yield term.call
             yield from _walk(node.body)

@@ -56,8 +56,11 @@ python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/1
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
+python3 tools/lcl_runtime.py        --check gog_incubation   # 34 checks, 942 invocations
+python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 units
+python3 tools/combat_runtime.py     --check gog_incubation   # 55 checks, LOS/hit/damage
 python3 tools/movemap_runtime.py    --check gog_incubation   # 18 checks, 3726 fills, 4587 paths
-python3 tools/remake_convert.py     gog_incubation --check   # 41 checks
+python3 tools/remake_convert.py     gog_incubation --check   # 50 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
 bash   godot/run_tests.sh                                    # 16 suites, 799 checks
 ```
@@ -114,8 +117,8 @@ exits non-zero when there is nothing to parse.
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
 `interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`,
-`info_parse`, `movemap_runtime`, `movemap_gold`
-and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`info_parse`, `movemap_runtime`, `movemap_gold`, `turn_runtime`,
+`combat_runtime`, `lcl_runtime` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
 `remake_convert` takes it positionally **and** wants `--check` as a bare flag.
 `sav_parse` takes it positionally but only with `--selftest`, `seq_parse`
 takes it positionally with `--check` as a bare flag, and `dbgcall_patches`
@@ -177,7 +180,9 @@ Two consequences worth internalising: **`.cho` contains no geometry** (it refere
 
 - `binio.Reader` — little-endian primitives plus `lpstring()` (u32 length + exactly that many bytes, no NUL), the convention Charisma uses throughout
 - `png` — dependency-free indexed and truecolour PNG writing
-- `palette`, `liblib`, `lev`, `charisma`, `prototyp`, `visn` — one module per format family
+- `palette`, `liblib`, `lev`, `charisma`, `prototyp`, `visn`, `lcl` — one module per format family; `lcl` holds the script codec, tokenizer, parser and AST, and `lcl_parse.py` / `lcl_decode.py` are thin CLIs over it
+- `rng` — the two generators the engine draws from: `ARandom` (`0x00463870`, the Lehmer one, pinned by a 64-draw native capture) and `CRandom` (the C runtime's, which only `InsertUnit` uses). `godot/core/rng.gd` is `ARandom`'s twin
+- `script`, `lcl_runtime`, `turn`, `combat` — the LCL cache document, and the executable models of the interpreter (docs/20), the turn (docs/25) and combat/visibility (docs/22)
 - `pe` — PE sections, resources, and typed reads **by virtual address**, so the addresses the docs quote can be used directly
 
 Parsers raise a typed error (`ParseError`, `LevError`, `LibError`, `PaletteError`, `VisnError`) instead of returning partial results, so a corpus check cannot pass by silently skipping files. Keep that property.
@@ -215,6 +220,25 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 - `tools/dbgcall/` runs `Incubation.exe` or `iDesigner.exe` **under a debugger**, stops at a breakpoint, and calls functions **inside the live process**, so the engine's own globals are already initialised. That is the only way to exercise code that depends on engine state rather than on its arguments alone. A call is written as a C-like declaration plus an invocation — `__cdecl i32 aCheckLineOfSight(ptr,i32,i32) = Incubation.exe+0x46C460`, then `aCheckLineOfSight(%esi, 12, 7)` — arguments may read registers, target memory and earlier results, and a batch emits JSONL for the Python side to check. It **verifies the declared signature** against the callee's actual stack cleanup, so a wrong arity is an error rather than a confident wrong number, and `--probe` turns the same measurement into a way to recover an unknown convention and arity. It can also **patch the running process instead of a copy of the file**: `--code` allocates an executable page and `--poke ADDR:EXPECTED=>NEW` writes over code or data only if the live image still holds `EXPECTED`, with `{&buf}` and `{rel32 EXPR}` holes filled in at write time — so a hook is installed on the shipped `Incubation.exe` at runtime, and `--resume` leaves it in place. Read [`tools/dbgcall/README.md`](tools/dbgcall/README.md) before using it; it also records why `Eng3d.dll` can only be addressed as `Module+RVA` (the loader relocates it on every run), and the three Wine settings `Incubation.exe` needs to start at all.
 
 Both are outside the always-run block: they build binaries and need Wine on Linux/MacOS. After changing the debugger harness run its own check, `bash tools/dbgcall/selftest.sh` (64 checks, exits non-zero on any mismatch).
+
+Two tools drive the debugger harness for the remake's oracles, and they share
+one session: `tools/movemap_gold.py` (the fill, the ladder, the allowance, the
+path walk) and `tools/turn_gold.py` (the hand-over refresh, the lone stat
+recompute, line of sight and hit probability). `turn_gold.py` **imports**
+`run_plan` and the capture constants from `movemap_gold.py` rather than copying
+them. Both need a **copy** of the game with `tests/fixtures/saves/_6_.sav`
+staged as `Work/Saves2/_6_.sav`, and both refuse a game directory inside this
+repository:
+
+```bash
+python3 tools/turn_gold.py --game-copy /path/to/copy --dbgcall /path/to/copy/dbgcall.exe
+python3 tools/turn_gold.py --check gog_incubation     # re-run the models against it
+```
+
+`tests/fixtures/turn/README.md` records what the capture holds. **Wine start-up
+on this host is intermittent** (`docs/91` §1): a phase can reach the anchor on
+attempt 1 or on attempt 8, and one that never does is an environment result
+rather than a failure — which is why both tools retry ten times.
 
 ## The remake
 
@@ -283,7 +307,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section. **36 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

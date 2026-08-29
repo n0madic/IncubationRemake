@@ -21,80 +21,13 @@ import argparse
 import logging
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from inclib.lcl import decode, encode, is_encoded, iter_inputs  # noqa: E402
 
 LOG = logging.getLogger("lcl")
-
-LCL_XOR_KEY = 0xFF
-LCL_ENCODED_MARKER = 0x01
-"""First byte of the decoded stream of an obfuscated .lcl file."""
-
-_PRINTABLE = set(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
-
-
-def transform(data: bytes) -> bytes:
-    """Apply the LCL obfuscation. Self-inverse."""
-    return bytes(b ^ LCL_XOR_KEY for b in data)
-
-
-def is_encoded(data: bytes) -> bool:
-    """True when the buffer looks like an obfuscated .lcl file.
-
-    Obfuscated files begin with 0xFE (= marker 0x01 after the NOT). Plain files
-    begin with printable ASCII. Fall back to a printable-ratio vote so unusual
-    files are still classified sensibly.
-    """
-    if not data:
-        return False
-    if data[0] == LCL_XOR_KEY ^ LCL_ENCODED_MARKER:
-        return True
-    if data[0] in _PRINTABLE:
-        return False
-    head = data[:512]
-    plain_score = sum(b in _PRINTABLE for b in head)
-    xor_score = sum((b ^ LCL_XOR_KEY) in _PRINTABLE for b in head)
-    return xor_score > plain_score
-
-
-def decode(data: bytes) -> bytes:
-    """Return the plain LCL source, stripping the 0x01 marker if present."""
-    out = transform(data) if is_encoded(data) else data
-    if out[:1] == bytes([LCL_ENCODED_MARKER]):
-        out = out[1:]
-    return out
-
-
-def encode(text: bytes) -> bytes:
-    """Obfuscate plain LCL source the way the shipped files are stored.
-
-    The inverse of :func:`decode` for the obfuscated case: prepend the marker,
-    then NOT the whole stream. ``decode(encode(x)) == x`` for any plain source.
-
-    Note that :func:`transform` alone is **not** an inverse of :func:`decode`:
-    ``decode`` also strips the marker byte, so a `transform(decode(x))` round
-    trip loses it and turns an obfuscated file into one the loader would read
-    as plain text. The module used to claim "Decode/encode" while offering no
-    encoder at all, which is how that asymmetry went unnoticed.
-    """
-    return transform(bytes([LCL_ENCODED_MARKER]) + text)
-
-
-#: Extensions the shipped scripts use. `.gcl` is the same language -- the two
-#: `DATA/*.gcl` files are plain text rather than obfuscated, and `user.gcl` is a
-#: real script that `main` runs at startup (`aMain.cpp:1002`, `0x0044A1CA`).
-#: Walking only `.lcl` used to hide it, and with it the only shipped call to the
-#: `?_` command.
-SCRIPT_EXTENSIONS = (".lcl", ".gcl")
-
-
-def iter_inputs(paths: list[str]):
-    for path in paths:
-        if os.path.isdir(path):
-            for root, _dirs, files in os.walk(path):
-                for name in sorted(files):
-                    if name.lower().endswith(SCRIPT_EXTENSIONS):
-                        yield os.path.join(root, name)
-        else:
-            yield path
 
 
 def main(argv: list[str] | None = None) -> int:

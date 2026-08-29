@@ -57,7 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import lcl_parse  # noqa: E402
+from inclib import lcl  # noqa: E402
 import cho_parse  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 from inclib.visn import parse_header  # noqa: E402
@@ -1893,7 +1893,7 @@ class Corpus:
         if not os.path.isfile(path):
             return
         with open(path, "rb") as handle:
-            program = lcl_parse.parse_bytes(handle.read(), path)
+            program = lcl.parse_bytes(handle.read(), path)
         for routine in program.routines:
             for stmt in _walk(routine.body):
                 args = numbers(stmt.args)
@@ -1953,9 +1953,9 @@ def strings(args) -> list:
 
 def _walk(nodes):
     for node in nodes:
-        if isinstance(node, lcl_parse.Statement):
+        if isinstance(node, lcl.Statement):
             yield node
-        elif isinstance(node, lcl_parse.Conditional):
+        elif isinstance(node, lcl.Conditional):
             for term in node.terms:
                 yield term.call
             yield from _walk(node.body)

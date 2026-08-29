@@ -562,7 +562,7 @@ def check_scoreboard(c: Checker) -> None:
 def check_text_module(c: Checker, root: Path) -> None:
     """The five mode labels must exist in Txtmod_f.lcl."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from lcl_decode import decode  # noqa: PLC0415
+    from inclib.lcl import decode  # noqa: PLC0415
 
     path = root / "DATA" / "TXT" / "English" / "GUI" / "Txtmod_f.lcl"
     text = decode(path.read_bytes()).decode("latin-1")

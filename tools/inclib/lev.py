@@ -308,11 +308,13 @@ class Unit:
     pool_flag: int       # +0x4D u8, 0 none / 1 unit-pool candidate / 2 hero
     group: int           # +0x4E u8, AI group id
     visibility: int      # +0x4F u8, runtime, see VISIBILITY_*
+    walked: int          # +0x50 u8, distance walked this turn, tenths of a field
     turn_start_x: int    # +0x51 u8, x at the start of the current turn
     turn_start_y: int    # +0x52 u8, y at the start of the current turn
     speech: int          # +0x55 u8, voice sample set, see SPEECH_NAMES
     sound_channel: int   # +0x56 u8, runtime sound-channel back-reference
     stimulant: int       # +0x58 u8, 1 Light Stimulant, 2 Heavy Stimulant
+    ticket: int          # +0x59 u8, reaction ticket, per-player sequence number
     raw: bytes
 
     @property
@@ -329,6 +331,32 @@ class Unit:
     def rested(self) -> int:
         """``+0x57`` -- "did not act last turn"; the allowance adds one at 1."""
         return self.raw[0x57]
+
+    @property
+    def acted(self) -> int:
+        """``+0x39`` -- "this unit has acted", 3 after the AI fires or uses.
+
+        Read by ``aAISystemControl``'s epilogue and cleared by the stat
+        recompute (docs/10 §5).  Zero in every shipped record, which is why it
+        is read off ``raw`` rather than carried as a field.
+        """
+        return self.raw[0x39]
+
+    @property
+    def heat(self) -> int:
+        """``+0x3E`` -- weapon heat; the overheat roll fires at the cap.
+
+        Zero in every shipped record (docs/10 §5.12).
+        """
+        return self.raw[0x3E]
+
+    @property
+    def malfunction(self) -> int:
+        """``+0x40`` -- 0 none, 2 or 5 jammed; non-zero blocks firing.
+
+        Zero in every shipped record (docs/10 §5.12).
+        """
+        return self.raw[0x40]
 
     @property
     def placed(self) -> bool:
@@ -542,11 +570,13 @@ def _parse_unit(raw: bytes, slot: int) -> Unit:
         pool_flag=raw[0x4D],
         group=raw[0x4E],
         visibility=raw[0x4F],
+        walked=raw[0x50],
         turn_start_x=raw[0x51],
         turn_start_y=raw[0x52],
         speech=raw[0x55],
         sound_channel=raw[0x56],
         stimulant=raw[0x58],
+        ticket=raw[0x59],
         raw=raw,
     )
 

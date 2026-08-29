@@ -2,7 +2,7 @@
 
 ``docs/21`` recovers five ``Set*Info`` commands as fixed-stride records the
 loader writes into static tables.  This module reads the ``.lcl`` program with
-``lcl_parse`` and applies the *loader's* rules rather than the file's textual
+:mod:`inclib.lcl` and applies the *loader's* rules rather than the file's textual
 order, because the two differ in three ways that matter:
 
 * an out-of-range index is reported and the statement dropped (``docs/21`` §1);
@@ -28,17 +28,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_TOOLS = os.path.dirname(_HERE)
-
-# `lcl_parse` is a sibling CLI module, not part of `inclib`; moving it in is a
-# separate task.  Importing it by path keeps this module usable from anywhere.
-import sys
-
-if _TOOLS not in sys.path:
-    sys.path.insert(0, _TOOLS)
-
-import lcl_parse  # noqa: E402
+from . import lcl
 
 
 class InfoError(Exception):
@@ -280,11 +270,11 @@ class BalanceTables:
         }
 
 
-def _nums(stmt: lcl_parse.Statement) -> list[int]:
+def _nums(stmt: lcl.Statement) -> list[int]:
     return [a.value for a in stmt.args if a.kind == "number"]
 
 
-def _strs(stmt: lcl_parse.Statement) -> list[str]:
+def _strs(stmt: lcl.Statement) -> list[str]:
     return [a.value for a in stmt.args if a.kind == "string"]
 
 
@@ -299,7 +289,7 @@ def _in_range(table: str, index: int) -> bool:
     return 0 <= index <= MAX_INDEX[table]
 
 
-def parse_program(program: lcl_parse.Program, path: str) -> BalanceTables:
+def parse_program(program: lcl.Program, path: str) -> BalanceTables:
     """Apply the loader's rules to an already-parsed ``Info.lcl``."""
     tables = BalanceTables(path=path)
     for stmt in program.statements():
@@ -309,7 +299,7 @@ def parse_program(program: lcl_parse.Program, path: str) -> BalanceTables:
     return tables
 
 
-def _load_ctrlmap(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
+def _load_ctrlmap(t: BalanceTables, stmt: lcl.Statement) -> None:
     nums, strs = _nums(stmt), _strs(stmt)
     if len(nums) < 4 or not strs:
         t.dropped.append(f"line {stmt.line}: SetCtrlMapInfo with {len(nums)} numbers")
@@ -324,7 +314,7 @@ def _load_ctrlmap(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
         index=index, type=nums[1], delay=nums[2], cover=nums[3], name=strs[0])
 
 
-def _load_equip(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
+def _load_equip(t: BalanceTables, stmt: lcl.Statement) -> None:
     nums, strs = _nums(stmt), _strs(stmt)
     if len(nums) < 10 or len(strs) < 2:
         t.dropped.append(f"line {stmt.line}: SetEquipInfo with {len(nums)} numbers")
@@ -342,7 +332,7 @@ def _load_equip(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
         icon=nums[9])
 
 
-def _load_unit(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
+def _load_unit(t: BalanceTables, stmt: lcl.Statement) -> None:
     nums, strs = _nums(stmt), _strs(stmt)
     if len(nums) < 13 or len(strs) < 3:
         t.dropped.append(f"line {stmt.line}: SetUnitInfo with {len(nums)} numbers")
@@ -362,7 +352,7 @@ def _load_unit(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
         height=nums[12], key=_first_char(strs, 2))
 
 
-def _load_weapon(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
+def _load_weapon(t: BalanceTables, stmt: lcl.Statement) -> None:
     nums, strs = _nums(stmt), _strs(stmt)
     if len(nums) < 18 or not strs:
         t.dropped.append(f"line {stmt.line}: SetWeaponInfo with {len(nums)} numbers")
@@ -382,7 +372,7 @@ def _load_weapon(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
         param=nums[17])
 
 
-def _load_weapon2(t: BalanceTables, stmt: lcl_parse.Statement) -> None:
+def _load_weapon2(t: BalanceTables, stmt: lcl.Statement) -> None:
     nums, strs = _nums(stmt), _strs(stmt)
     if len(nums) < 4 or len(strs) < 2:
         t.dropped.append(f"line {stmt.line}: SetWeaponInfo2 with {len(nums)} numbers")
@@ -448,8 +438,8 @@ def load_info_file(path: str) -> BalanceTables:
     except OSError as exc:
         raise InfoError(f"{path}: {exc}") from exc
     try:
-        program = lcl_parse.parse_bytes(data, path)
-    except lcl_parse.LclSyntaxError as exc:
+        program = lcl.parse_bytes(data, path)
+    except lcl.LclSyntaxError as exc:
         raise InfoError(f"{path}: {exc}") from exc
     return parse_program(program, path)
 
