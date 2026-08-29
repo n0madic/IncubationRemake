@@ -11,8 +11,9 @@ extends RefCounted
 ## 3. the unit scalars, by ascending slot;
 ## 4. the [TurnState] -- the counter, both players, the rotation's shape and
 ##    the difficulty level -- and then the twelve [GameControl] slots;
-## 5. the RNG state -- the **raw eight bytes** of the seed, never its printed
-##    form, plus the two counters;
+## 5. the RNG state -- the **raw eight bytes** of `aRandom`'s seed, never its
+##    printed form, plus the two counters, and then the C runtime's generator,
+##    which is a separate stream `InsertUnit` draws from;
 ## 6. the active compatibility flags.
 ##
 ## The turn entered the digest with the second slice, which changes it
@@ -33,7 +34,7 @@ const SEED_BYTES: int = 8
 
 
 static func compute(state: MapState, units: Dictionary, turn: TurnState,
-		control: GameControl, rng: IncRandom,
+		control: GameControl, rng: IncRandom, crand: CRandom,
 		compat_flags: PackedStringArray) -> PackedByteArray:
 	var ctx: HashingContext = HashingContext.new()
 	var started: Error = ctx.start(HashingContext.HASH_SHA256)
@@ -60,6 +61,8 @@ static func compute(state: MapState, units: Dictionary, turn: TurnState,
 	ctx.update(turn.player_kind.to_byte_array())
 	ctx.update(turn.end_state.to_byte_array())
 	ctx.update(turn.reaction_counter.to_byte_array())
+	ctx.update(turn.hero_killed.to_byte_array())
+	ctx.update(PackedInt32Array([turn.turn_control]).to_byte_array())
 	# The mission's own win conditions live here, and slots 0..4 are what says
 	# the mission is over (docs/20 section 7). Two saves that differ only in
 	# them are a won mission and an unwon one.
@@ -69,6 +72,11 @@ static func compute(state: MapState, units: Dictionary, turn: TurnState,
 	assert(seed_bytes.size() == SEED_BYTES)
 	ctx.update(seed_bytes)
 	ctx.update(PackedInt32Array([rng.calls, rng.sum]).to_byte_array())
+	# The **second** generator. `InsertUnit` draws from the C runtime's, not
+	# from `aRandom` (docs/20 section 7.4), and `_C_140` inserts reinforcements
+	# from turn 4 -- so two saves that differ only in how far it has advanced
+	# are different missions.
+	crand.hash_into(ctx)
 
 	var flags: PackedStringArray = compat_flags.duplicate()
 	flags.sort()

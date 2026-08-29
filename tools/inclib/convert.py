@@ -284,6 +284,13 @@ def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
                 "order2": u.order2,
                 "order2_param": u.order2_param,
                 "group": u.group,
+                # docs/20 §7.4 -- `InsertUnit` writes the first and
+                # `LinkChrWithGroup` the second.  Nothing in the simulation
+                # *reads* either, but a mission script writes both, and a
+                # remake that dropped them could not be diffed against the
+                # executable model on any script that calls those commands.
+                "pool_flag": u.pool_flag,
+                "speech": u.speech,
                 "visibility": u.visibility,
                 "placed": u.placed,
             }

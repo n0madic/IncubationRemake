@@ -13,6 +13,10 @@ extends RefCounted
 var resource: MapResource = null
 var state: MapState = null
 var rng: IncRandom = null
+## The second generator. docs/20 section 7.4: `InsertUnit` draws from the C
+## runtime's `rand()`, not from `aRandom`, so the two streams are separate and
+## both are simulation state.
+var crand: CRandom = CRandom.create()
 var compat_flags: PackedStringArray = PackedStringArray()
 
 var _units: Dictionary = {}
@@ -47,6 +51,20 @@ const ACTED_MOVED: int = 3
 ## wanted, put the default back when done.
 var script_runner: Callable = Callable(MissionScript, "no_op")
 
+## The mission program, or `null` when none is attached.
+##
+## **Data, with no reference back to this world.** The interpreter needs the
+## world, and storing a runner that holds one would be a `RefCounted` cycle --
+## the one Godot reports only as "resources still in use at exit". So the
+## *program* is stored and the [Callable] that runs it is built per call, in
+## [method _script_callable], and never kept.
+var script_program: LclProgram = null
+
+## `EnterNameOfNextMap` writes it and the campaign layer reads it. It starts as
+## the authored header's value ([member MapResource.next_map]) -- a mission that
+## never calls the command still names a successor.
+var next_map: String = ""
+
 
 static func create(map_document: Dictionary, balance: Dictionary,
 		rng_seed: float = 0.0) -> World:
@@ -61,6 +79,7 @@ static func create(map_document: Dictionary, balance: Dictionary,
 	world._weapons = WeaponTable.from_rows(DictRead.as_array(balance["weapons"]))
 	world.turn = TurnState.create()
 	world.game_control = GameControl.create()
+	world.next_map = world.resource.next_map
 	world.rng = IncRandom.new()
 	# docs/92 section 10.3 item 2: seed explicitly even though the slice
 	# consumes no draws, so the state shape later traces compare is established.
@@ -226,7 +245,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# GDScript truncates toward zero on integers exactly as the original does,
 	# so a cell below datum gives the same level in both.
 	var arrived: int = state.index_of(moved.x, moved.y)
-	moved.script_result = DictRead.as_dict(script_runner.call(
+	moved.script_result = DictRead.as_dict(_script_callable().call(
 		MissionScript.CALL_MOVE_UNIT,
 		MissionScript.env(MissionScript.CALL_MOVE_UNIT, turn.turn,
 			unit.player, moved.x, moved.y,
@@ -296,6 +315,46 @@ func submit_defend(command: DefendCommand) -> int:
 	return Reaction.enter_defence(turn, unit)
 
 
+## Attach a mission program, from `missions/<name>/script.json`.
+##
+## Passing an empty document detaches: [member script_runner] takes over again,
+## and its default lets every hand-over proceed. "No program" and "a program
+## that refused" are different answers, and only the second stops anything.
+func attach_script(document: Dictionary) -> bool:
+	script_program = LclProgram.from_document(document)
+	if script_program.is_empty():
+		script_program = null
+		return false
+	return true
+
+
+## The runner for this world, built fresh and never stored.
+func _script_callable() -> Callable:
+	if script_program == null:
+		return script_runner
+	return Callable(self, "_run_mission_script")
+
+
+## One invocation of the attached program -- the seam's own shape.
+##
+## `player` is the host's argument for this call and not always
+## [member TurnState.current_player]: `NEXT PLAYER` names the player whose turn
+## is *starting*, which the hand-over has already advanced to.
+func _run_mission_script(call_type: int,
+		environment: Dictionary) -> Dictionary:
+	var context: LclContext = LclContext.create(state, _units, _unit_types,
+		turn, game_control, rng, crand, turn.current_player, next_map)
+	var outcome: LclOutcome = LclInterpreter.run(script_program, context,
+		MissionScript.to_slots(environment))
+	next_map = context.next_map
+	var result: Dictionary = outcome.to_dict()
+	result["ok"] = outcome.ok()
+	result["ran"] = true
+	result["call_type"] = call_type
+	result["env"] = environment.duplicate()
+	return result
+
+
 ## `0x00477BF0` -- how many live units a player owns.
 func live_unit_count(player: int) -> int:
 	var n: int = 0
@@ -327,7 +386,7 @@ func banner_in_range(slot: int) -> bool:
 ## firing twice as often as the mission intends.
 func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	var result: TurnResult = TurnSequence.hand_over(turn, _units, game_control,
-		_unit_types, _weapons, script_runner, banner_in_range,
+		_unit_types, _weapons, _script_callable(), banner_in_range,
 		live_unit_count, command.arg)
 	if result.refreshed:
 		# `aBuildVisibleMap` for whoever now holds the turn. It runs here and
@@ -358,7 +417,7 @@ func walk_path(result: MoveMapResult, slot: int, tx: int,
 
 func canonical_hash() -> PackedByteArray:
 	return CanonicalHash.compute(state, _units, turn, game_control, rng,
-		compat_flags)
+		crand, compat_flags)
 
 
 func canonical_hash_hex() -> String:
@@ -367,6 +426,7 @@ func canonical_hash_hex() -> String:
 
 func save(camera: Dictionary) -> PackedByteArray:
 	return SaveCodec.encode(resource, state, _units, turn, game_control, rng,
+		crand,
 		compat_flags, camera)
 
 
@@ -387,6 +447,7 @@ func load_save(data: PackedByteArray) -> int:
 	turn = decoded["turn"]
 	game_control = decoded["game_control"]
 	rng = decoded["rng"]
+	crand = decoded["crand"]
 	compat_flags = decoded["compat_flags"]
 	_camera = DictRead.as_dict(decoded["camera"])
 	return code

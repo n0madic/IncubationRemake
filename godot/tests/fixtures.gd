@@ -106,7 +106,8 @@ static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 		"skills": {"CON": 0, "LW": 0, "HW": 0, "TS": 0, "MS": 0, "LS": 0},
 		"equipment_ids": equipment, "weapon": weapon, "facing": facing,
 		"order": 0, "order_param": 0, "order2": 0, "order2_param": 0,
-		"group": 0, "visibility": visibility, "placed": true,
+		"group": 0, "pool_flag": 0, "speech": 0,
+		"visibility": visibility, "placed": true,
 	}
 
 

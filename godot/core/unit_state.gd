@@ -88,6 +88,19 @@ var order2: int = 0
 var order2_param: int = 0
 ## `+0x4E`, the AI group the promotion above applies to.
 var group: int = 0
+
+# --- what the mission script writes (docs/20 section 7.4) -------------------
+# Nothing in the simulation *reads* these three. They are here because a
+# mission script **writes** them -- `InsertUnit` sets the first two and
+# `LinkChrWithGroup` the third -- and a remake that dropped them could not be
+# compared with the executable model on any script that calls those commands.
+## `+0x1C`, the skill-point pool. `InsertUnit` sets it to `rank * 12`, the same
+## value it puts in `ep`.
+var tp: int = 0
+## `+0x4D`: 0 none, 1 unit-pool candidate, 2 hero.
+var pool_flag: int = 0
+## `+0x55`, the voice sample set.
+var speech: int = 0
 ## `+0x1A..+0x1F` -- CON, LW, HW, TS, MS, LS (docs/10 section 5.3). The three
 ## implant boxes in docs/26 section 3.1 write to them.
 var skills: PackedInt32Array = PackedInt32Array([0, 0, 0, 0, 0, 0])
@@ -127,6 +140,9 @@ static func from_document(record: Dictionary) -> UnitState:
 	unit.order2 = DictRead.as_int(record["order2"])
 	unit.order2_param = DictRead.as_int(record["order2_param"])
 	unit.group = DictRead.as_int(record["group"])
+	unit.tp = DictRead.as_int(record["tp"])
+	unit.pool_flag = DictRead.as_int(record["pool_flag"])
+	unit.speech = DictRead.as_int(record["speech"])
 	var skill_map: Dictionary = DictRead.as_dict(record["skills"])
 	for i: int in range(SKILL_NAMES.size()):
 		unit.skills[i] = DictRead.as_int(skill_map[SKILL_NAMES[i]])
@@ -199,6 +215,9 @@ func view() -> Dictionary:
 		"order2": order2,
 		"order2_param": order2_param,
 		"group": group,
+		"tp": tp,
+		"pool_flag": pool_flag,
+		"speech": speech,
 		"skills": skills.duplicate(),
 	}
 
@@ -212,7 +231,7 @@ func hash_into(ctx: HashingContext) -> void:
 		turn_start_y, stimulant, ticket, ep,
 		# Combat's own columns, in the order this file declares them.
 		armour_front, armour_rear, absorber, order, order_param, order2,
-		order2_param, group,
+		order2_param, group, tp, pool_flag, speech,
 		equipment.size()])
 	ctx.update(scalars.to_byte_array())
 	# Fixed length, so no count is needed in front of it.

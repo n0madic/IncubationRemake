@@ -16,61 +16,61 @@ extends RefCounted
 ## must let the turn proceed, since "no program" and "a program that refused"
 ## are different answers and only the second stops anything.
 ##
-## `core/lcl/` will supply the real runner in a later stage. Nothing here
-## interprets anything.
+## [LclInterpreter] is the real runner and [method World.attach_script] is what
+## installs it. Nothing here interprets anything: this file is the *contract*,
+## and the constants below are aliases of [LclEnv]'s so that the two cannot
+## drift apart.
 
 ## docs/20 section 5 -- `_A` selects the entry point.
-const CALL_NEXT_PLAYER: int = 1
-const CALL_MOVE_UNIT: int = 2
-const CALL_ATTACK: int = 3
-const CALL_USE: int = 4
-const CALL_NEXT_TURN: int = 5
-const CALL_INIT_MAP: int = 6
+const CALL_NEXT_PLAYER: int = LclEnv.CALL_NEXT_PLAYER
+const CALL_MOVE_UNIT: int = LclEnv.CALL_MOVE_UNIT
+const CALL_ATTACK: int = LclEnv.CALL_ATTACK
+const CALL_USE: int = LclEnv.CALL_USE
+const CALL_NEXT_TURN: int = LclEnv.CALL_NEXT_TURN
+const CALL_INIT_MAP: int = LclEnv.CALL_INIT_MAP
 
 ## The environment is indexed `letter - 'A'` (`0x0050BF70`), so `_A` is 0.
-const SLOT_A: int = 0
-const SLOT_B: int = 1
-const SLOT_C: int = 2
-const SLOT_D: int = 3
-const SLOT_E: int = 4
-const SLOT_F: int = 5
+const SLOT_A: int = LclEnv.SLOT_A
+const SLOT_B: int = LclEnv.SLOT_B
+const SLOT_C: int = LclEnv.SLOT_C
+const SLOT_D: int = LclEnv.SLOT_D
+const SLOT_E: int = LclEnv.SLOT_E
+const SLOT_F: int = LclEnv.SLOT_F
 
 ## docs/20 section 7.4 -- `GetHeight`/`SetHeight` speak in units of 160 world
 ## units, and `_D` carries a height **level**, not the raw `cell[+0x01]`.
-const HEIGHT_LEVEL_UNITS: int = 160
+const HEIGHT_LEVEL_UNITS: int = LclEnv.HEIGHT_LEVEL_UNITS
 
 
 ## What the host writes into the environment for one call type.
 ##
-## docs/20 section 5 tabulates the whole contract, including the one place the
-## engine contradicts itself: the walk (`0x0046E220`) puts the cell's **height**
-## in `_D` while the warp (`0x0046EF50`) puts its action point there. This
-## builds the walk's form, which is the ordinary move.
+## A `Dictionary` keyed by slot, because that is what the seam's [Callable]
+## carries; [method to_slots] turns it back into the array [LclInterpreter]
+## reads. The contract itself is [method LclEnv.of]'s, once.
 static func env(call_type: int, turn: int = 1, player: int = 0, x: int = 0,
 		y: int = 0, height_level: int = 0, actpt: int = 0,
 		unit_index: int = -1) -> Dictionary:
-	var out: Dictionary = {SLOT_A: call_type}
-	match call_type:
-		CALL_NEXT_PLAYER:
-			out[SLOT_B] = turn
-			out[SLOT_C] = player
-		CALL_MOVE_UNIT:
-			out[SLOT_B] = x
-			out[SLOT_C] = y
-			out[SLOT_D] = height_level
-			out[SLOT_E] = actpt
-			out[SLOT_F] = unit_index
-		CALL_ATTACK:
-			out[SLOT_B] = x
-			out[SLOT_C] = y
-		CALL_USE:
-			out[SLOT_B] = x
-			out[SLOT_C] = y
-			out[SLOT_D] = actpt
-		CALL_NEXT_TURN:
-			out[SLOT_B] = turn
-		# InitMap sets none.
+	var packed: PackedInt32Array = LclEnv.of(call_type, turn, player, x, y,
+		height_level, actpt, unit_index)
+	var out: Dictionary = {}
+	# Only the slots this call type sets, **including the ones it sets to
+	# zero**: `LclEnv.of` zeroes all 27, and a dictionary carrying every one
+	# would make a trace unreadable while one carrying only the non-zero ones
+	# would lose a `MoveUnit` to cell (0,0).
+	for slot: int in LclEnv.slots_for(call_type):
+		out[slot] = packed[slot]
 	return out
+
+
+## The inverse: the seam's dictionary as the array the interpreter reads.
+static func to_slots(environment: Dictionary) -> PackedInt32Array:
+	var packed: PackedInt32Array = PackedInt32Array()
+	packed.resize(LclEnv.ENV_SLOTS)
+	for key: Variant in environment:
+		var slot: int = DictRead.as_int(key)
+		if slot >= 0 and slot < LclEnv.ENV_SLOTS:
+			packed[slot] = DictRead.as_int(environment[key])
+	return packed
 
 
 ## The default runner: no program is attached, so nothing refuses anything.

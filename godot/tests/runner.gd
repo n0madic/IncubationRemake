@@ -79,19 +79,34 @@ static func check_scripts_load(h: TestHarness, suite: String,
 	if dir == null:
 		h.check("directory", false, "cannot open " + directory)
 		return
-	var names: PackedStringArray = dir.get_files()
+	var names: PackedStringArray = _scripts_in(dir, directory)
 	names.sort()
 	var count: int = 0
-	for name: String in names:
+	for path: String in names:
 		# An exported build stores a script under its compiled name; the
 		# `.gd` path still resolves through the remap, so that is what is
 		# loaded either way.
-		if not (name.ends_with(".gd") or name.ends_with(".gdc")):
-			continue
 		count += 1
-		var path: String = directory + "/" + name.get_basename() + ".gd"
 		var script: GDScript = ResourceLoader.load(path, "GDScript") as GDScript
-		h.check(name, script != null and script.can_instantiate(),
+		h.check(path.get_file(), script != null and script.can_instantiate(),
 			"failed to parse -- a typed-warning error or a syntax error")
 	h.check("count", count >= least,
 		"%d scripts under %s" % [count, directory])
+
+
+## Every `.gd` under a directory, **including its subdirectories**.
+##
+## `core/lcl/` is one, and a scan that stopped at the top level would leave a
+## broken file in it loading nowhere and failing nothing -- the exact shape of
+## silent shrinkage the warnings gate exists to prevent.
+static func _scripts_in(dir: DirAccess, directory: String
+		) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for name: String in dir.get_files():
+		if name.ends_with(".gd") or name.ends_with(".gdc"):
+			out.append(directory + "/" + name.get_basename() + ".gd")
+	for sub: String in dir.get_directories():
+		var child: DirAccess = DirAccess.open(directory + "/" + sub)
+		if child != null:
+			out.append_array(_scripts_in(child, directory + "/" + sub))
+	return out

@@ -30,9 +30,11 @@ const MAGIC: String = "INCS"
 ## Raised to 4 by the second slice (the header carries the [TurnState] and the
 ## canonical hash covers it), and to 5 when [UnitState] gained the columns
 ## combat reads -- armour, the absorber charges, both orders, the AI group and
-## the six skills.  An older save is refused **by name** rather than misread,
-## which is the whole point of the field.
-const SCHEMA_VERSION: int = 5
+## the six skills; and to 6 when the mission script arrived -- the C runtime's
+## generator, which `InsertUnit` draws from, and the three unit columns a script
+## writes.  An older save is refused **by name** rather than misread, which is
+## the whole point of the field.
+const SCHEMA_VERSION: int = 6
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -57,7 +59,7 @@ static func result_name(code: int) -> String:
 
 static func encode(res: MapResource, state: MapState, units: Dictionary,
 		turn: TurnState, control: GameControl, rng: IncRandom,
-		compat_flags: PackedStringArray,
+		crand: CRandom, compat_flags: PackedStringArray,
 		camera: Dictionary) -> PackedByteArray:
 	var slots: Array[int] = []
 	for slot: Variant in units:
@@ -74,6 +76,10 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 		"width": state.width,
 		"height": state.height,
 		"rng": rng.state(),
+		# The second generator, stored beside the first. docs/20 section 7.4:
+		# `InsertUnit` draws from the C runtime's, and a save that dropped it
+		# would come back a different mission the next time one fires.
+		"crand": crand.state(),
 		"turn": turn.view(),
 		"game_control": Array(control.values()),
 		"compat_flags": _sorted_strings(compat_flags),
@@ -174,6 +180,9 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		unit.order2 = DictRead.as_int(view["order2"])
 		unit.order2_param = DictRead.as_int(view["order2_param"])
 		unit.group = DictRead.as_int(view["group"])
+		unit.tp = DictRead.as_int(view["tp"])
+		unit.pool_flag = DictRead.as_int(view["pool_flag"])
+		unit.speech = DictRead.as_int(view["speech"])
 		unit.skills = _int_array(DictRead.as_array(view["skills"]))
 		var ids: Array = DictRead.as_array(view["equipment"])
 		unit.equipment.resize(ids.size())
@@ -191,6 +200,7 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		"state": state,
 		"units": units,
 		"rng": IncRandom.from_state(DictRead.as_dict(header["rng"])),
+		"crand": CRandom.from_state(DictRead.as_dict(header["crand"])),
 		"turn": _turn_from(DictRead.as_dict(header["turn"])),
 		"game_control": GameControl.from_array(
 			_int_array(DictRead.as_array(header["game_control"]))),
@@ -218,6 +228,8 @@ static func _turn_from(view: Dictionary) -> TurnState:
 	turn.end_state = _int_array(DictRead.as_array(view["end_state"]))
 	turn.reaction_counter = _int_array(
 		DictRead.as_array(view["reaction_counter"]))
+	turn.hero_killed = _int_array(DictRead.as_array(view["hero_killed"]))
+	turn.turn_control = DictRead.as_int(view["turn_control"])
 	return turn
 
 

@@ -163,6 +163,9 @@ func _class_names_under(directory: String) -> PackedStringArray:
 	return out
 
 
+## **Recursive.** `core/lcl/` is a subdirectory, and a scan that stopped at the
+## top level would exempt every file in it from the whole of this suite -- which
+## is the shape of hole this file exists to close, not to have.
 func _scripts_under(directory: String) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	var dir: DirAccess = DirAccess.open(directory)
@@ -171,5 +174,7 @@ func _scripts_under(directory: String) -> PackedStringArray:
 	for name: String in dir.get_files():
 		if name.ends_with(".gd") or name.ends_with(".gdc"):
 			out.append(directory + "/" + name)
+	for sub: String in dir.get_directories():
+		out.append_array(_scripts_under(directory + "/" + sub))
 	out.sort()
 	return out
