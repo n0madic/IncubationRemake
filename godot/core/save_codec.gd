@@ -54,7 +54,8 @@ static func result_name(code: int) -> String:
 
 
 static func encode(res: MapResource, state: MapState, units: Dictionary,
-		turn: TurnState, rng: IncRandom, compat_flags: PackedStringArray,
+		turn: TurnState, control: GameControl, rng: IncRandom,
+		compat_flags: PackedStringArray,
 		camera: Dictionary) -> PackedByteArray:
 	var slots: Array[int] = []
 	for slot: Variant in units:
@@ -72,6 +73,7 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 		"height": state.height,
 		"rng": rng.state(),
 		"turn": turn.view(),
+		"game_control": Array(control.values()),
 		"compat_flags": _sorted_strings(compat_flags),
 		# Presentation, stored beside the simulation and excluded from its hash.
 		"camera": camera,
@@ -94,7 +96,8 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 
 
 ## Returns `{"result": Result, "state": MapState, "units": Dictionary,
-## "rng": IncRandom, "camera": Dictionary, "compat_flags": PackedStringArray}`.
+## "turn": TurnState, "game_control": GameControl, "rng": IncRandom,
+## "camera": Dictionary, "compat_flags": PackedStringArray}`.
 ## Everything but `result` is absent unless the result is `OK`.
 static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 	if data.size() < HEADER_SIZE - 32:
@@ -178,6 +181,8 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		"units": units,
 		"rng": IncRandom.from_state(DictRead.as_dict(header["rng"])),
 		"turn": _turn_from(DictRead.as_dict(header["turn"])),
+		"game_control": GameControl.from_array(
+			_int_array(DictRead.as_array(header["game_control"]))),
 		"camera": DictRead.as_dict(header["camera"]),
 		"compat_flags": flags,
 	}

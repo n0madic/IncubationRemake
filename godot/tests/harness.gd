@@ -43,6 +43,7 @@ const LEAST_CHECKS: Dictionary = {
 	"camera": 26,
 	"isolation": 10,
 	"turn": 49,
+	"execute_move": 30,
 	"save": 17,
 	"cache": 10,
 	"warnings_gate": 10,

@@ -27,6 +27,12 @@ var _weapons: WeaponTable = null
 ## simulation state, which docs/92 section 7.3 foresaw when it recorded that
 ## "campaign and turn phase have no representation yet".
 var turn: TurnState = null
+## docs/20 section 7 -- the twelve int32s the mission script writes and the
+## hand-over reads to decide the mission is over.
+var game_control: GameControl = null
+
+## docs/23 section 5.3 -- what the move's caller writes into `unit[+0x39]`.
+const ACTED_MOVED: int = 3
 
 
 static func create(map_document: Dictionary, balance: Dictionary,
@@ -41,6 +47,7 @@ static func create(map_document: Dictionary, balance: Dictionary,
 	# where an error belongs" shape this project keeps finding.
 	world._weapons = WeaponTable.from_rows(DictRead.as_array(balance["weapons"]))
 	world.turn = TurnState.create()
+	world.game_control = GameControl.create()
 	world.rng = IncRandom.new()
 	# docs/92 section 10.3 item 2: seed explicitly even though the slice
 	# consumes no draws, so the state shape later traces compare is established.
@@ -147,6 +154,61 @@ func movement_allowance(slot: int,
 	return Allowance.for_unit(unit, _unit_types, _units, ai_level)
 
 
+## Walks a unit to `command`'s cell, and is the only thing that spends
+## movement points.
+##
+## The three steps are the engine's, in its order (docs/23 section 5.3): fill,
+## reconstruct, walk. A path that runs through another unit is **abandoned**
+## rather than walked -- `blocked != 0` zeroes the step count in the original,
+## and the caller moves nothing.
+##
+## The charge happens **here**, not in [ExecuteMove], because that is where the
+## engine does it: `aExecuteMove` reports the cost through its fifth argument
+## and leaves `u->mp` alone (docs/93 section 11, measured). The mine arm is the
+## exception the engine itself makes -- it zeroes the movement points inside
+## the routine and reports a cost of 0.
+func submit_move(command: MoveCommand) -> MoveResult:
+	if not _units.has(command.unit_slot):
+		return MoveResult.failed(0, 0, "no such unit")
+	var unit: UnitState = _units[command.unit_slot]
+	var fill: MoveMapResult = submit_move_query(
+		MoveQueryCommand.create(command.unit_slot))
+	var walked: Dictionary = walk_path(fill, command.unit_slot, command.x,
+		command.y)
+	if not DictRead.as_bool(walked["ok"]):
+		return MoveResult.failed(unit.x, unit.y,
+			DictRead.as_string(walked["reason"]))
+	if DictRead.as_int(walked["blocked"]) != 0:
+		return MoveResult.failed(unit.x, unit.y, "the path runs through a unit")
+
+	var moved: MoveResult = ExecuteMove.run(state, _ctrlmap, unit, walked)
+	if moved.steps == 0:
+		return moved
+	state.set_unit(state.index_of(unit.x, unit.y), MapState.NO_UNIT)
+	state.set_unit(state.index_of(moved.x, moved.y), unit.slot)
+	unit.x = moved.x
+	unit.y = moved.y
+	unit.facing = moved.facing
+	# `+0x50` is one byte and the engine adds into it, so it wraps rather than
+	# saturating. Unreachable in practice -- the refresh zeroes it every turn
+	# and 255 tenths is 25 fields of walking -- but masking is what the field
+	# is, and picking a cap instead would be inventing a rule.
+	unit.walked = (unit.walked + moved.walked) & 0xFF
+	for write: Vector2i in moved.action_point_writes:
+		# `x` is the cell index and `y` the action point it becomes; the pair
+		# comes from [ExecuteMove] in that order.
+		state.set_action_point(write.x, write.y)
+	# docs/23 section 5.3's tail, in the caller: the native probe shows
+	# `aExecuteMove` leaving `+0x39` alone, so this is the AI call site's own
+	# assignment and the player's path is assumed to match it.
+	unit.acted = ACTED_MOVED
+	if moved.movement_zeroed:
+		unit.mp = 0
+	elif moved.cost > 0:
+		unit.mp = 0 if moved.cost > unit.mp else unit.mp - moved.cost
+	return moved
+
+
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.
 ##
 ## The result is a value, not a change: `core` owns no overlay, and the
@@ -163,7 +225,8 @@ func walk_path(result: MoveMapResult, slot: int, tx: int,
 
 
 func canonical_hash() -> PackedByteArray:
-	return CanonicalHash.compute(state, _units, turn, rng, compat_flags)
+	return CanonicalHash.compute(state, _units, turn, game_control, rng,
+		compat_flags)
 
 
 func canonical_hash_hex() -> String:
@@ -171,8 +234,8 @@ func canonical_hash_hex() -> String:
 
 
 func save(camera: Dictionary) -> PackedByteArray:
-	return SaveCodec.encode(resource, state, _units, turn, rng, compat_flags,
-		camera)
+	return SaveCodec.encode(resource, state, _units, turn, game_control, rng,
+		compat_flags, camera)
 
 
 ## Returns the [enum SaveCodec.Result] code; the world is only changed on `OK`.
@@ -190,6 +253,7 @@ func load_save(data: PackedByteArray) -> int:
 	state = decoded["state"]
 	_units = decoded["units"]
 	turn = decoded["turn"]
+	game_control = decoded["game_control"]
 	rng = decoded["rng"]
 	compat_flags = decoded["compat_flags"]
 	_camera = DictRead.as_dict(decoded["camera"])

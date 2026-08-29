@@ -59,6 +59,20 @@ func run(h: TestHarness) -> void:
 
 	# Export output lives under res://export, so omitting this exclusion makes a
 	# later build package resources from older .app bundles (and even itself).
+	#
+	# **The question has to be asked differently in an exported build.**
+	# `export_presets.cfg` is an editor file and Godot never packages it, so
+	# reading it there returns nothing and the `in` test is false -- which is
+	# why this check failed in every exported build there has ever been, while
+	# passing in the headless run beside it. In the pack the claim is about the
+	# pack, so it is asked of the pack: a build that had consumed a prior
+	# bundle would carry its resources under `res://export`.
 	var presets: String = FileAccess.get_file_as_string(EXPORT_PRESETS)
-	h.check("export.excludes_output", "export/*" in presets,
-		"shipping builds never consume prior export artifacts")
+	if presets.is_empty():
+		h.check("export.excludes_output",
+			not DirAccess.dir_exists_absolute("res://export"),
+			"the pack carries no res://export -- asked of the build, because "
+			+ "export_presets.cfg is not in it")
+	else:
+		h.check("export.excludes_output", "export/*" in presets,
+			"shipping builds never consume prior export artifacts")

@@ -10,7 +10,7 @@ extends RefCounted
 ## 2. every [MapState] array, verbatim and in its documented order;
 ## 3. the unit scalars, by ascending slot;
 ## 4. the [TurnState] -- the counter, both players, the rotation's shape and
-##    the difficulty level;
+##    the difficulty level -- and then the twelve [GameControl] slots;
 ## 5. the RNG state -- the **raw eight bytes** of the seed, never its printed
 ##    form, plus the two counters;
 ## 6. the active compatibility flags.
@@ -33,7 +33,7 @@ const SEED_BYTES: int = 8
 
 
 static func compute(state: MapState, units: Dictionary, turn: TurnState,
-		rng: IncRandom,
+		control: GameControl, rng: IncRandom,
 		compat_flags: PackedStringArray) -> PackedByteArray:
 	var ctx: HashingContext = HashingContext.new()
 	var started: Error = ctx.start(HashingContext.HASH_SHA256)
@@ -60,6 +60,10 @@ static func compute(state: MapState, units: Dictionary, turn: TurnState,
 	ctx.update(turn.player_kind.to_byte_array())
 	ctx.update(turn.end_state.to_byte_array())
 	ctx.update(turn.reaction_counter.to_byte_array())
+	# The mission's own win conditions live here, and slots 0..4 are what says
+	# the mission is over (docs/20 section 7). Two saves that differ only in
+	# them are a won mission and an unwon one.
+	control.hash_into(ctx)
 
 	var seed_bytes: PackedByteArray = rng.seed_bytes()
 	assert(seed_bytes.size() == SEED_BYTES)

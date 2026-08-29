@@ -34,6 +34,10 @@ static func as_array(value: Variant) -> Array:
 	return value
 
 
+static func as_int32_array(value: Variant) -> PackedInt32Array:
+	return value
+
+
 static func as_dict(value: Variant) -> Dictionary:
 	return value
 
