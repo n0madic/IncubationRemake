@@ -31,7 +31,6 @@ const SENTINEL_FAIL: String = "HARNESS-RESULT: FAILED"
 ## suite genuinely grows; never lower one to make a run pass.
 const LEAST_CHECKS: Dictionary = {
 	"core_loads": 34,
-	"game_loads": 10,
 	"int_ops": 26,
 	"rng": 11,
 	"move_map_ref": 96,
@@ -50,6 +49,8 @@ const LEAST_CHECKS: Dictionary = {
 	"combat_native": 22,
 	"lcl": 50,
 	"mission": 17,
+	"game_ui": 20,
+	"game_loads": 12,
 	"save": 17,
 	"cache": 10,
 	"warnings_gate": 10,

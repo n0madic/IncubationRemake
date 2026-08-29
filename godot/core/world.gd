@@ -355,6 +355,17 @@ func _run_mission_script(call_type: int,
 	return result
 
 
+## The `INIT MAP` entry point -- docs/20 section 5.
+##
+## The loader runs it once, before any turn, and it is what names the successor
+## map and starts the music. Separate from the hand-over because it is not part
+## of one: no turn has begun when it runs.
+func run_init_map() -> Dictionary:
+	return DictRead.as_dict(_script_callable().call(
+		MissionScript.CALL_INIT_MAP,
+		MissionScript.env(MissionScript.CALL_INIT_MAP)))
+
+
 ## `0x00477BF0` -- how many live units a player owns.
 func live_unit_count(player: int) -> int:
 	var n: int = 0

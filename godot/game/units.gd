@@ -48,6 +48,11 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty():
 			continue
+		# docs/22 section 9: a hidden unit is not drawn and a contact is a blip.
+		# The rule is [Fog]'s, so a change to what visibility means is one edit
+		# and not a search through the renderer.
+		if not Fog.is_drawn(view):
+			continue
 		add_child(_build_one(view, types, prototypes, textures, world))
 
 
@@ -66,6 +71,13 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var facing: int = DictRead.as_int(view["facing"])
 	node.basis = WorldSpace.yaw_basis(
 		FACING_ANGLES[facing % FACING_ANGLES.size()])
+
+	if Fog.is_contact(view):
+		# A detection, not a sighting: the cell, and nothing about what is on
+		# it. No body, no facing, no player colour.
+		node.basis = Basis.IDENTITY
+		node.add_child(Fog.contact_marker())
+		return node
 
 	var colour: Color = UNKNOWN_PLAYER_COLOUR
 	var player: int = DictRead.as_int(view["player"])

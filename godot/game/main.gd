@@ -12,7 +12,10 @@ extends Node3D
 ## The mission shown when nothing else is asked for.  Every mission the cache
 ## contains can be shown; `--mission=NAME` on the command line picks one, and
 ## `[` / `]` step through them at run time.
-const DEFAULT_MISSION: String = "_C_115"
+## `_C_140` is the mission this stage plays: the first one whose squad, aliens
+## and win conditions are all in the `.lev`, so it can be won without the
+## campaign layer (docs/94).
+const DEFAULT_MISSION: String = "_C_140"
 const MISSION_ARG: String = "--mission="
 ## Where a development run finds the same bytes production reads from `user://`.
 const DEV_CACHE: String = "res://generated/cache"
@@ -30,8 +33,12 @@ var _highlight: Highlight = null
 var _units: UnitsView = null
 var _rig: CameraRig = null
 var _status: Label = null
+var _hud: Hud = null
+var _strings: Localization = null
 var _selected: int = -1
 var _cache_dir: String = ""
+var _geometry: Dictionary = {}
+var _textures: Dictionary = {}
 
 
 ## An exported build made with the `run_tests` custom feature runs the suites
@@ -45,7 +52,8 @@ func _ready() -> void:
 	if OS.has_feature(TEST_FEATURE) and _run_tests_and_quit():
 		return
 	_status = Label.new()
-	_status.position = Vector2(12.0, 8.0)
+	# Below the HUD, which owns the top of the screen.
+	_status.position = Vector2(12.0, 120.0)
 	var layer: CanvasLayer = CanvasLayer.new()
 	layer.add_child(_status)
 	add_child(layer)
@@ -70,6 +78,11 @@ func _ready() -> void:
 	if _missions.is_empty():
 		_fail("the cache at %s contains no missions" % _cache_dir)
 		return
+	# The strings come before anything that says one. docs/92 section 7.6: a
+	# localization seam retrofitted later means finding every literal.
+	_strings = Localization.from_cache(_cache_dir, manifest)
+	_hud = Hud.new(_strings)
+	add_child(_hud)
 	_build(_wanted_mission())
 
 
@@ -156,10 +169,21 @@ func _build(mission: String) -> void:
 		return
 
 	world = World.create(map_document, balance, 1.0)
+	# The mission's own program, so the turn runs the script the way the engine
+	# does. A mission with none still plays: `attach_script` returns false and
+	# `World`'s default runner lets every hand-over through.
+	var attached: bool = world.attach_script(CacheLoader.read_json(
+		"%s/missions/%s/script.json" % [_cache_dir, mission]))
+	# `INIT MAP` is the entry point the loader runs once, before any turn
+	# (docs/20 section 5), and it is what names the successor map.
+	if attached:
+		var _init_map: Dictionary = world.run_init_map()
 	var header: Dictionary = DictRead.as_dict(map_document["header"])
 	var world_set: String = DictRead.as_string(header["world_set"])
 	var geometry: Dictionary = _geometry_for(world_set)
 	var textures: Dictionary = _textures_for(world_set)
+	_geometry = geometry
+	_textures = textures
 
 	_scene_root = Node3D.new()
 	_scene_root.name = "Mission_" + mission
@@ -252,6 +276,9 @@ func scenery_count() -> int:
 	return 0 if _scenery == null else _scenery.built_count()
 
 
+## The developer line: the cache, the scene and the hash. **Not** user-facing
+## text, which is why it is not in [Localization] -- it names a mission file, a
+## world set and a digest, and translating any of those would be wrong.
 func _refresh_status(extra: String = "") -> void:
 	if world == null:
 		return
@@ -261,13 +288,12 @@ func _refresh_status(extra: String = "") -> void:
 		world.resource.world_set, world.resource.world_scene,
 		world.unit_slots().size(), _scenery.built_count(),
 		world.canonical_hash_hex().substr(0, 12)]
-	if extra != "":
-		line += "\n" + extra
-	line += "\nclick a unit to see where it can go; shift-click passes " \
-		+ "through friendlies; Q/E rotate, wheel or pinch or +/- zooms, " \
-		+ "T shows the field-type overlay, G the editor's cell markers" \
+	line += "\nQ/E rotate, wheel or pinch or +/- zooms, T the field-type " \
+		+ "overlay, G the editor's cell markers" \
 		+ "\n[ and ] switch mission: " + ", ".join(_missions)
 	_status.text = line
+	if _hud != null:
+		_hud.refresh(world, _selected, extra)
 
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
@@ -340,6 +366,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			show_mission(1)
 		elif key.keycode == KEY_BRACKETLEFT:
 			show_mission(-1)
+		elif key.keycode == KEY_SPACE:
+			end_turn()
+		elif key.keycode == KEY_U:
+			use_in_front()
+		elif key.keycode == KEY_D:
+			hold_fire()
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
 		if click.button_index == MOUSE_BUTTON_LEFT:
@@ -371,9 +403,108 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 		if distance < 1.2 and distance < best_distance:
 			best_distance = distance
 			best_slot = slot
-	if best_slot < 0:
+	if best_slot >= 0:
+		var view: Dictionary = world.unit_view(best_slot)
+		# An enemy that is already selectable is a target, not a selection:
+		# clicking one fires at it. Anything else selects.
+		if _selected >= 0 and DictRead.as_int(view["player"]) \
+				!= DictRead.as_int(world.unit_view(_selected)["player"]):
+			attack_cell(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
+			return
+		var _result: MoveMapResult = select_unit(best_slot, pass_friendlies)
+		return
+
+	# No unit under the ray: if a unit is selected and the cell is one the
+	# query highlighted, walk there. `core` re-fills and re-walks; the overlay
+	# is a picture and is never trusted as the answer.
+	var cell: Vector2i = _cell_under(screen)
+	if _selected < 0 or cell.x < 0:
 		_selected = -1
 		_highlight.clear()
-		_refresh_status("nothing selected")
+		_refresh_status(_strings.text("hud.no_selection"))
 		return
-	var _result: MoveMapResult = select_unit(best_slot, pass_friendlies)
+	move_selected(cell.x, cell.y)
+
+
+## The map cell a screen ray lands on, or `(-1, -1)`.
+##
+## The plane is the *cell's own* height, so a ray is tested against every cell
+## rather than against one flat plane -- the map is not flat, and a single-plane
+## test picks the wrong cell on anything raised.
+func _cell_under(screen: Vector2) -> Vector2i:
+	var camera: Camera3D = _rig.camera()
+	var origin: Vector3 = camera.project_ray_origin(screen)
+	var direction: Vector3 = camera.project_ray_normal(screen)
+	if absf(direction.y) < 0.0001:
+		return Vector2i(-1, -1)
+	var best: Vector2i = Vector2i(-1, -1)
+	var best_distance: float = INF
+	for y: int in range(world.resource.height):
+		for x: int in range(world.resource.width):
+			var cell: Dictionary = world.cell_view(x, y)
+			var centre: Vector3 = WorldSpace.cell_centre(x, y,
+				DictRead.as_int(cell["height"]))
+			var t: float = (centre.y - origin.y) / direction.y
+			if t <= 0.0:
+				continue
+			var distance: float = (origin + direction * t).distance_to(centre)
+			if distance < 0.7 and distance < best_distance:
+				best_distance = distance
+				best = Vector2i(x, y)
+	return best
+
+
+## Walks the selected unit. Public for the same reason [method select_unit] is:
+## a demo run drives the path a click drives.
+func move_selected(x: int, y: int) -> MoveResult:
+	var moved: MoveResult = world.submit_move(
+		MoveCommand.create(_selected, x, y))
+	_after_command(moved.reason if not moved.ok else "%d %s" % [
+		moved.reactions.size(), _strings.text("hud.reactions")])
+	return moved
+
+
+func attack_cell(x: int, y: int) -> AttackResult:
+	var shot: AttackResult = world.submit_attack(
+		AttackCommand.create(_selected, x, y))
+	_after_command(shot.reason if not shot.fired
+		else "%d" % shot.outcomes.size())
+	return shot
+
+
+func use_in_front() -> UseResult:
+	if _selected < 0:
+		return UseResult.refused("")
+	var used: UseResult = world.submit_use(UseCommand.create(_selected))
+	_after_command(used.kind if used.ok else used.reason)
+	return used
+
+
+func hold_fire() -> int:
+	if _selected < 0:
+		return 0
+	var ticket: int = world.submit_defend(DefendCommand.create(_selected))
+	_after_command(_strings.text("hud.overwatch") if ticket > 0 else "")
+	return ticket
+
+
+## Ends the current player's turn, and the computer's straight after it: this
+## stage has no planner, so player 255 receives its turn and returns it.
+func end_turn() -> TurnResult:
+	var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
+	while result.ai_turn and not result.mission_ended:
+		result = world.submit_end_turn(EndTurnCommand.create())
+	_selected = -1
+	_highlight.clear()
+	_after_command("")
+	return result
+
+
+## Everything a command changes is redrawn from the world, never patched.
+func _after_command(note: String) -> void:
+	_units.build(world, _geometry, _textures)
+	if _selected >= 0 and world.has_unit(_selected):
+		var again: MoveMapResult = world.submit_move_query(
+			MoveQueryCommand.create(_selected))
+		_highlight.show_result(again, world.resource.heights())
+	_refresh_status(note)
