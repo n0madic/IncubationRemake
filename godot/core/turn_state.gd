@@ -24,6 +24,13 @@ const PLAYER_PROPS: int = 252
 const END_STATE_OUT: int = 5
 const PLAYER_SLOTS: int = 4
 
+## `0x0043B1F0` reads the session kind. The compiler wrote three successive
+## `sub eax, n; je`, so the four values are consecutive from 1.
+const MODE_CAMPAIGN: int = 1
+const MODE_NET: int = 2
+const MODE_LOCAL: int = 3
+const MODE_PBM: int = 4
+
 ## `0x00509E1D`. Zero means no hand-over has happened yet, and that is the test
 ## the hand-over itself uses to recognise the first one -- at zero the whole
 ## skip rule is disabled (docs/25 section 3.1).
@@ -42,6 +49,9 @@ var solo_flag: bool = true
 ## chooses **1, normal**, and carries it here so it enters the canonical hash
 ## rather than sitting in a constant.
 var ai_level: int = 1
+## Which session kind this is. It gates the "no units left" skip and nothing
+## else here, and a campaign fails that gate -- see [method skips_empty_players].
+var mode: int = MODE_CAMPAIGN
 ## `0x00517F50` -- zeroed by the refresh, so ticket numbering restarts every
 ## hand-over (docs/25 section 6).
 var reaction_counter: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
@@ -57,6 +67,21 @@ func human_count() -> int:
 		if player_kind[i] == 1:
 			n += 1
 	return n
+
+
+## `0x0043B1F0` -- the gate in front of the "no units left" skip.
+##
+## True **only** in a net or pbm session, or a local session with more than one
+## human. A shipped single-player campaign fails it, so it never skips a
+## player: the human keeps being handed its turn even with nothing left alive,
+## and the mission ends through the game-control slots rather than through the
+## rotation running out.
+func skips_empty_players() -> bool:
+	if not solo_flag:
+		return false
+	if mode == MODE_NET or mode == MODE_PBM:
+		return true
+	return mode == MODE_LOCAL and human_count() > 1
 
 
 ## `0x0043B2A0` -- five instructions, and the wrap is the whole of the fifth.
@@ -78,6 +103,7 @@ func view() -> Dictionary:
 		"end_state": end_state.duplicate(),
 		"solo_flag": solo_flag,
 		"ai_level": ai_level,
+		"mode": mode,
 		"reaction_counter": reaction_counter.duplicate(),
 	}
 
@@ -92,5 +118,6 @@ func clone() -> TurnState:
 	copy.end_state = end_state.duplicate()
 	copy.solo_flag = solo_flag
 	copy.ai_level = ai_level
+	copy.mode = mode
 	copy.reaction_counter = reaction_counter.duplicate()
 	return copy

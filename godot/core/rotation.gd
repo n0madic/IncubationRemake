@@ -26,7 +26,17 @@ static func slot_qualifies(state: TurnState, slot: int,
 		return false
 	if state.end_state[slot] == TurnState.END_STATE_OUT:
 		return false
+	# **The gate comes before the count, and a campaign fails it.** Without
+	# this clause a player whose last unit died would stop being handed its
+	# turn, which is a rotation the shipped game never has -- and no capture
+	# could have shown it, because the campaign save's player 0 is alive
+	# throughout. `inclib/turn.py` has had it since it was written; this is the
+	# mirror it should always have been.
+	if not state.skips_empty_players():
+		return true
 	if state.turn == 0:
+		# The very first hand-over never skips anybody: units can still be
+		# placed by the mission script after the map loads.
 		return true
 	return DictRead.as_int(live_units.call(slot)) > 0
 

@@ -170,12 +170,76 @@ exactly the kind of check this repository treats as a bug:
   over crate records with nothing to restore, and would have agreed with a
   model that did nothing at all.
 
+## `cases_handover.json` — the one file here that is **not** a capture
+
+`tools/turn_runtime.py --emit-handover-cases` writes it, and its oracle is
+`tools/inclib/turn.py` with the real LCL interpreter driving `_C_140`'s
+script — **executable Python, not the engine**. It is here because
+`godot/tests/test_handover.gd` reads it beside the native cases, and because
+the reason it cannot be a capture belongs next to the ones that are:
+
+> **The whole hand-over `0x0047D600` is deliberately not called.** It ends by
+> invoking `aAISystemControl` once the current player becomes 255 — the
+> computer's entire turn.
+
+So the sequence has no native oracle and the strongest check available is the
+two implementations agreeing on identical documents. They cannot be given the
+same *program* — `core/` has no interpreter yet — so they are given the same
+**transcript**: each step records what the script was asked, in order, what it
+answered, and what it left in the twelve game-control slots, and the GDScript
+side installs a runner that replays exactly that.
+
+Twelve steps: eight ordinary hand-overs reaching **turn 4**, where `_C_140`'s
+`NextTurn` opens its two tubes; two that end the mission by putting the squad
+in the evacuation zone; and two where the script **refuses**, one per event.
+
+Three things the trace does deliberately, each because mutation testing showed
+the version without it was green against a broken model:
+
+* **The squad is seeded, and differently per unit.** A `.lev` as authored has
+  every field the refresh restores at zero, so a trace taken from it compares a
+  no-op against a no-op — removing `walked = 0` from the refresh left the
+  replay passing. One seed for all four units is not enough either: the
+  stimulant is cleared only from **255**, `rested` is set only from action
+  state **7**, and re-anchoring `turn_start_x`/`y` is invisible when they
+  already hold the unit's own position. The four squad members get four
+  different states.
+* **No shipped script refuses**, so the abort arm of
+  `if (!runProgram()) return 0;` is unreachable from the corpus and is injected
+  by the emitter instead.
+* **Anything forced between steps is recorded.** Reaching a refusal at
+  `NEXT TURN` needs the computer to be the current player; setting that on the
+  side and leaving the trace to say only what came out made the replay ask a
+  different question than the emitter did.
+
+### The limit, and it is asserted rather than described
+
+**The engine has one unit array and this harness has two.** `units_of(bm)`
+builds the records `hand_over` reads and writes; `LclWorld` builds its own from
+the same `.lev` for the interpreter. They are different record types and
+nothing keeps them in step — while `InsertUnit` (`0x004418C0`) writes into the
+engine's single array, where the very next refresh and the rotation both see
+the new unit.
+
+Measured on `_C_140`: the two agree for **nine** hand-overs and part company on
+the tenth, when the turn-5 `NextPlayer` inserts the first reinforcement; by
+turn 11 the interpreter's world holds 20 units and the turn model still holds
+10. The emitter therefore checks the slot lists and the shared units'
+positions after every step and **raises** rather than writing a trace that
+would silently compare a hand-over against a unit set the mission had already
+changed. Raising `HANDOVER_STEPS` past 9 is refused with that message.
+
+The remake is not split: `core/World` owns one `_units` dictionary and
+`core/lcl/` will mutate that one. This is a limit on what the *trace* can say,
+and it lifts when `core/` has an interpreter of its own.
+
 ## The `.json` file is not in git
 
 A capture embeds the loaded control map and unit array of a shipped mission, so
 it is derived from Blue Byte's data for the same reason `tools/out/` is.
-`.gitignore` excludes `tests/fixtures/turn/*.json`; this file is committed
-instead and pins what the capture contained.
+`.gitignore` excludes `tests/fixtures/turn/*.json` — which covers
+`cases_turn.json` and `cases_handover.json` as well; this file is committed
+instead and pins what they contained.
 
 Reproduce with:
 

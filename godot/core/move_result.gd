@@ -30,6 +30,10 @@ var events: Array[Dictionary] = []
 ## arm, so the caller must not also subtract [member cost].
 var movement_zeroed: bool = false
 var reason: String = ""
+## What the `MoveUnit` event returned, or an empty dictionary when the walk
+## never got far enough to fire it. docs/20 section 5: the event fires **after**
+## the walk, so a refusal here cannot un-walk it.
+var script_result: Dictionary = {}
 
 
 static func failed(fx: int, fy: int, why: String) -> MoveResult:

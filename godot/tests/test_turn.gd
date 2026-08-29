@@ -127,17 +127,62 @@ func _turn_counter(h: TestHarness) -> void:
 	h.check("turn.wraps_at_200", state.advance_turn() == 0,
 		"turn %d" % state.turn)
 	h.check("turn.counts_up", state.advance_turn() == 1, "turn %d" % state.turn)
-	# At zero the whole skip rule is disabled, which is why the first hand-over
-	# of a mission reaches every slot even before the script has placed anybody.
-	var zero: TurnState = _campaign_state()
-	zero.turn = 0
-	zero.end_state = PackedInt32Array([0, 0, 0, 0])
+	_skip_rule(h)
+
+
+## `0x0043B1F0` and the two clauses in front of the live-unit count.
+##
+## docs/25 section 3.1 quotes them in the order the disassembly has them:
+## `if (!0x0043B1F0()) return TRUE;` comes **before** `if (g_turn == 0)`. So a
+## campaign, which fails the gate, never skips a player at all -- the human
+## keeps being handed its turn with nothing left alive, and the mission ends
+## through the game-control slots instead.
+##
+## This suite used to assert the opposite, and it passed: the GDScript rotation
+## had no gate, the native capture is a campaign save whose player 0 is alive
+## throughout, and `inclib/turn.py` -- which has always had the gate -- is never
+## compared with `core/` on a state that separates them. Both directions are
+## asserted now, so neither can be dropped again unnoticed.
+func _skip_rule(h: TestHarness) -> void:
 	var none: Callable = func(_slot: int) -> int: return 0
-	h.check("turn.zero_disables_the_skip_rule",
-		Rotation.slot_qualifies(zero, 0, none), "slot 0 still qualifies")
-	zero.turn = 1
-	h.check("turn.past_zero_the_skip_rule_bites",
-		not Rotation.slot_qualifies(zero, 0, none), "slot 0 skipped")
+	var one: Callable = func(_slot: int) -> int: return 1
+
+	var campaign: TurnState = _campaign_state()
+	campaign.end_state = PackedInt32Array([0, 0, 0, 0])
+	campaign.mode = TurnState.MODE_CAMPAIGN
+	h.check("turn.a_campaign_does_not_skip_empty_players",
+		not campaign.skips_empty_players(), "0x0043B1F0 is false in mode 1")
+	campaign.turn = 0
+	h.check("turn.campaign_turn_zero_qualifies",
+		Rotation.slot_qualifies(campaign, 0, none), "slot 0 qualifies")
+	campaign.turn = 1
+	h.check("turn.campaign_past_zero_still_qualifies",
+		Rotation.slot_qualifies(campaign, 0, none),
+		"a campaign player with nothing alive keeps its turn")
+
+	# The one session kind that does skip: net, where the gate is true.
+	var net: TurnState = _campaign_state()
+	net.end_state = PackedInt32Array([0, 0, 0, 0])
+	net.mode = TurnState.MODE_NET
+	h.check("turn.a_net_session_skips_empty_players",
+		net.skips_empty_players(), "0x0043B1F0 is true in mode 2")
+	net.turn = 0
+	h.check("turn.net_turn_zero_disables_the_skip_rule",
+		Rotation.slot_qualifies(net, 0, none),
+		"the first hand-over reaches every slot, placed or not")
+	net.turn = 1
+	h.check("turn.net_past_zero_the_skip_rule_bites",
+		not Rotation.slot_qualifies(net, 0, none), "slot 0 skipped")
+	h.check("turn.and_only_when_the_slot_is_empty",
+		Rotation.slot_qualifies(net, 0, one), "one live unit is enough")
+
+	# `local` cannot fire it at all: the solo flag is only ever set with at
+	# most one human, so the `humanCount() > 1` arm is unreachable -- which
+	# docs/25 section 3.1 states and nothing else here would show.
+	var local: TurnState = _campaign_state()
+	local.mode = TurnState.MODE_LOCAL
+	h.check("turn.local_with_one_human_does_not_skip",
+		not local.skips_empty_players(), "humanCount() is 1")
 
 
 func _refresh(h: TestHarness) -> void:

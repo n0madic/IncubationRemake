@@ -34,6 +34,19 @@ var game_control: GameControl = null
 ## docs/23 section 5.3 -- what the move's caller writes into `unit[+0x39]`.
 const ACTED_MOVED: int = 3
 
+## The [MissionScript] seam. Assign a real runner and the hand-over and the
+## walk start driving the mission program; leave it and they run
+## [method MissionScript.no_op], which reports success and does nothing. The
+## default is not "no script" as an error state -- a world with no program
+## attached must let the turn proceed.
+##
+## **A runner that captures this world leaks it.** `World` holds the
+## [Callable] and the lambda holds the `World`, which is a `RefCounted` cycle;
+## Godot reports it only as "resources still in use at exit". Prefer a static
+## function or a method on a separate object, and where a closure is genuinely
+## wanted, put the default back when done.
+var script_runner: Callable = Callable(MissionScript, "no_op")
+
 
 static func create(map_document: Dictionary, balance: Dictionary,
 		rng_seed: float = 0.0) -> World:
@@ -201,12 +214,66 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
 	# `aExecuteMove` leaving `+0x39` alone, so this is the AI call site's own
 	# assignment and the player's path is assumed to match it.
+	# docs/20 section 5 -- the `MoveUnit` event, and it fires **before** the
+	# charge because the engine fires it inside `aExecuteMove` itself
+	# (`0x0046E220` is the call site the section lists) while the subtraction
+	# is the caller's. A script that read the mover's movement points would see
+	# them uncharged, and putting the seam after the charge would quietly
+	# change that. Wired with the no-op runner now, so attaching the
+	# interpreter later changes one assignment and not this function.
+	#
+	# `_D` is the cell's height field divided by 160, and the division is C's:
+	# GDScript truncates toward zero on integers exactly as the original does,
+	# so a cell below datum gives the same level in both.
+	var arrived: int = state.index_of(moved.x, moved.y)
+	moved.script_result = DictRead.as_dict(script_runner.call(
+		MissionScript.CALL_MOVE_UNIT,
+		MissionScript.env(MissionScript.CALL_MOVE_UNIT, turn.turn,
+			unit.player, moved.x, moved.y,
+			state.height_at(arrived) / MissionScript.HEIGHT_LEVEL_UNITS,
+			state.action_point_at(arrived), unit.slot)))
+
 	unit.acted = ACTED_MOVED
 	if moved.movement_zeroed:
 		unit.mp = 0
 	elif moved.cost > 0:
 		unit.mp = 0 if moved.cost > unit.mp else unit.mp - moved.cost
 	return moved
+
+
+## `0x00477BF0` -- how many live units a player owns.
+func live_unit_count(player: int) -> int:
+	var n: int = 0
+	for slot: Variant in _units:
+		var unit: UnitState = _units[slot]
+		if unit.player == player and unit.hp > 0:
+			n += 1
+	return n
+
+
+## `0x0046FAD0` -- whether this unit is in range of a Banner.
+func banner_in_range(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	return Allowance.banner_in_range(unit, _units)
+
+
+## `0x0047D600` -- end the current player's turn and hand over.
+##
+## The mission script runs from inside this, twice, and a refusal from either
+## stops the hand-over: that is the engine's own `if (!runProgram()) return 0;`
+## and it is why [member script_runner] defaults to something that says yes.
+##
+## **The computer's turn is a turn.** When the rotation yields 255 the result
+## says so and the refresh has already run for it; a caller that treated it as
+## nothing to do and handed over again immediately would run `NEXT PLAYER`
+## twice per round, and on `_C_140` that is the script's reinforcement roll
+## firing twice as often as the mission intends.
+func submit_end_turn(command: EndTurnCommand) -> TurnResult:
+	return TurnSequence.hand_over(turn, _units, game_control, _unit_types,
+		_weapons, script_runner, banner_in_range, live_unit_count,
+		command.arg)
 
 
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.

@@ -61,6 +61,10 @@ rm -f "$HERE/generated/turn/turn.json"
 [ -f "$REPO/tests/fixtures/turn/cases_turn.json" ] \
     && cp "$REPO/tests/fixtures/turn/cases_turn.json" \
           "$HERE/generated/turn/turn.json"
+rm -f "$HERE/generated/turn/handover.json"
+[ -f "$REPO/tests/fixtures/turn/cases_handover.json" ] \
+    && cp "$REPO/tests/fixtures/turn/cases_handover.json" \
+          "$HERE/generated/turn/handover.json"
 
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1

@@ -27,6 +27,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -435,6 +436,321 @@ def check_hand_over(c: Checker, root: Path, tables: BalanceTables) -> None:
     c.expect("handover.win_is_game_control_slot_0", world.game_control[0], 1)
 
 
+#: The document ``godot/tests/test_handover.gd`` replays.
+HANDOVER_CASES_SCHEMA = "incubation.handover-cases/1"
+
+#: Where ``_C_140``'s squad has to stand for the mission to be won -- the
+#: evacuation zone ``docs/27`` names and the mission's own script tests.
+EVACUATION_ZONE = ((3, 18), (4, 18), (5, 18), (6, 18))
+
+#: How many ordinary hand-overs the emitted trace runs before the win.
+#:
+#: Eight is four full cycles of the campaign's two-member rotation, which
+#: reaches **turn 4** -- the turn ``_C_140``'s ``NextTurn`` opens its two tubes
+#: on and sets an action point.  It is also one short of where the trace stops
+#: being able to say anything, and that boundary is checked rather than
+#: trusted: see :func:`_check_one_unit_array`.
+HANDOVER_STEPS = 8
+
+
+class _Refused:
+    """A mission script that reported and returned zero -- ``docs/20`` §2.2.
+
+    ``hand_over`` reads nothing but ``ok``, so this is the whole of it.  It
+    exists because **no shipped script refuses**: every one of the 153 ends
+    cleanly, so a trace taken from the corpus alone leaves the abort arm of
+    ``if (!runProgram()) return 0;`` untested on both sides.  Mutation testing
+    found that -- removing the check from ``core/turn_sequence.gd`` left the
+    replay green.
+    """
+
+    ok = False
+    kind = "refused"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "ok": self.ok}
+
+
+#: What the trace writes into the squad before it starts, so the refresh has
+#: something to restore.  Every one is a field ``0x004781C0`` touches, and all
+#: four are zero on a freshly authored ``.lev`` -- a trace taken from the file
+#: as shipped compares a no-op against a no-op.
+#: What the trace writes into the squad before it starts, one variant per unit.
+#:
+#: **A seed that is the same for every unit only reaches one arm of each
+#: branch.** Mutation testing found four places where it did not reach any:
+#: ``stimulant`` is cleared only when it already reads *spent* (255, not 1 --
+#: ``docs/25`` §8), ``rested`` is set only from action state 7, and
+#: ``turn_start_x``/``turn_start_y`` re-anchor invisibly when they already hold
+#: the unit's own position. So the four squad members get four different
+#: states, chosen to put each branch on both sides at once.
+SEEDED_VARIANTS = (
+    # Stood down, spent stimulant, a malfunction rung that steps to another.
+    {"walked": 40, "heat": 3, "stimulant": turnmod.STIMULANT_SPENT,
+     "action_state": turnmod.ACTION_STOOD_DOWN, "malfunction": 4, "acted": 3,
+     "ticket": 7, "fp": 1, "turn_start_x": 0, "turn_start_y": 0},
+    # Not stood down, a stimulant still in hand, a rung that clears.
+    {"walked": 15, "heat": 1, "stimulant": 2, "action_state": 6,
+     "malfunction": 1, "acted": 1, "ticket": 3, "fp": 2,
+     "turn_start_x": 1, "turn_start_y": 1},
+    # Heat below the shed, no malfunction, no stimulant.
+    {"walked": 10, "heat": 0, "stimulant": 0, "action_state": 0,
+     "malfunction": 0, "acted": 0, "ticket": 1, "fp": 3,
+     "turn_start_x": 2, "turn_start_y": 2},
+    # Fitness already at the cap, so the regeneration arm has nothing to add.
+    {"walked": 55, "heat": 5, "stimulant": turnmod.STIMULANT_SPENT,
+     "action_state": turnmod.ACTION_STOOD_DOWN, "malfunction": 5, "acted": 3,
+     "ticket": 9, "fp": 255, "turn_start_x": 3, "turn_start_y": 3},
+)
+
+#: The reaction tickets the refresh zeroes (``docs/25`` §6). Seeded non-zero
+#: for the same reason: from zero, zeroing them is a no-op.
+SEEDED_REACTION = [1, 2, 3, 4]
+
+
+def _check_one_unit_array(units: list[turnmod.TurnUnit],
+                          world: Any, step: int) -> None:
+    """The premise this trace rests on, asserted instead of assumed.
+
+    **The engine has one unit array and this harness has two.**
+    ``units_of(bm)`` builds the records ``hand_over`` reads and writes, and
+    :class:`inclib.lcl_runtime.LclWorld` builds its own from the same ``.lev``
+    for the interpreter to touch.  They are different record types, so nothing
+    keeps them in step -- and ``InsertUnit`` (``0x004418C0``) writes into the
+    engine's single array, where the very next refresh and the rotation both
+    see the new unit immediately.
+
+    Measured on ``_C_140``: the two agree for the first nine hand-overs and
+    diverge on the tenth, when the turn-5 ``NextPlayer`` inserts the first
+    reinforcement.  From there the interpreter's world holds up to 20 units
+    while the turn model still holds 10.
+
+    So a trace that ran past that point would be comparing a hand-over against
+    a unit set the mission has already changed, and the GDScript replay -- whose
+    unit set is the trace's -- would inherit the error without a symptom.  This
+    raises instead.  **The remake itself is not split**: ``core/World`` owns one
+    ``_units`` dictionary and ``core/lcl/`` will mutate that one, which is why
+    this is a limit on what the *trace* can say and not a defect in the model.
+    """
+    theirs = sorted(world.units.keys())
+    ours = sorted(u.slot for u in units)
+    if theirs != ours:
+        raise ValueError(
+            f"step {step}: the mission script changed the unit array "
+            f"({len(theirs)} slots) and the turn model did not ({len(ours)}). "
+            f"The trace cannot describe hand-overs past this point; see "
+            f"_check_one_unit_array")
+    moved = [u.slot for u in units
+             if (u.x, u.y, u.hp) != (world.units[u.slot].x,
+                                     world.units[u.slot].y,
+                                     world.units[u.slot].hit_points)]
+    if moved:
+        raise ValueError(
+            f"step {step}: the mission script moved or damaged slot(s) "
+            f"{moved} in its own world and the turn model did not see it")
+
+
+def _unit_case(unit: turnmod.TurnUnit) -> dict[str, Any]:
+    return {
+        "slot": unit.slot, "type_id": unit.type_id, "player": unit.player,
+        "x": unit.x, "y": unit.y, "hp": unit.hp, "mp": unit.mp,
+        "fp": unit.fp, "ep": unit.ep, "acted": unit.acted,
+        "action_state": unit.action_state, "rested": unit.rested,
+        "walked": unit.walked, "turn_start_x": unit.turn_start_x,
+        "turn_start_y": unit.turn_start_y, "stimulant": unit.stimulant,
+        "ticket": unit.ticket, "heat": unit.heat,
+        "malfunction": unit.malfunction, "weapon": unit.weapon,
+        "equipment_ids": sorted(unit.equipment_ids),
+    }
+
+
+def _state_case(state: turnmod.TurnState) -> dict[str, Any]:
+    return {
+        "turn": state.turn, "current_player": state.current_player,
+        "previous_player": state.previous_player,
+        "player_count": state.player_count,
+        "player_kind": list(state.player_kind),
+        "end_state": list(state.end_state),
+        "solo_flag": bool(state.solo_flag), "ai_level": state.ai_level,
+        "mode": state.mode,
+        "reaction_counter": list(state.reaction_counter),
+    }
+
+
+def emit_handover_cases(root: Path, out: Path) -> int:
+    """Trace ``hand_over`` on ``_C_140`` into a document GDScript can replay.
+
+    ``core/`` has no LCL interpreter yet, so the two implementations cannot be
+    given the same *program*.  They can be given the same **transcript**: each
+    step records what the mission script was asked, in order, what it answered,
+    and what it left in the game-control slots, and the GDScript side installs
+    a runner that replays exactly that.  What is then compared is the
+    hand-over's own behaviour -- when each event fires, what environment it
+    carries, whether a refusal stops the sequence, and every unit field the
+    refresh touched.
+
+    This is the strongest check available for ``0x0047D600``, whose
+    *composition* is code-read rather than natively run: it ends by invoking
+    the computer's entire turn, which is not something to start inside a
+    debugger probe.  So the two implementations agreeing on identical documents
+    is the gate, and it is only worth anything because one was written from the
+    other.
+    """
+    tables = load_info_file(str(root / "DATA" / "Info.lcl"))
+    name = "_C_140"
+    bm = load_lev(str(root / "Missions" / f"{name}.lev"))
+    document = script_document(
+        lcl.parse_file(str(root / "Missions" / f"{name}.lcl")), {})
+    units = units_of(bm)
+    state = _campaign_state()
+    world = lclrt.LclWorld(bm, tables, turn=state.turn, player=0,
+                           ai_level=state.ai_level)
+
+    # Seed the squad, so the refresh has work to do.  A `.lev` as authored has
+    # every one of these at zero, and a trace taken from it would compare a
+    # no-op against a no-op -- which mutation testing showed: removing the
+    # `walked = 0` from the refresh left the replay green.
+    squad_slots = sorted(u.slot for u in units if u.player == 0)
+    for index, slot in enumerate(squad_slots):
+        unit = next(u for u in units if u.slot == slot)
+        for name, value in SEEDED_VARIANTS[index % len(SEEDED_VARIANTS)].items():
+            setattr(unit, name, value)
+    state.reaction_counter = list(SEEDED_REACTION)
+    initial_units = [_unit_case(u) for u in units]
+    initial_state = _state_case(state)
+    calls: list[dict[str, Any]] = []
+
+    refuse_at: list[int] = []
+
+    def run_script(call_type: int, env: dict[int, int]) -> Any:
+        world.turn = state.turn
+        world.player = state.current_player
+        if call_type in refuse_at:
+            outcome: Any = _Refused()
+        else:
+            outcome = lclrt.run(document, world, env)
+        calls.append({
+            "call_type": call_type,
+            "env": {str(k): v for k, v in sorted(env.items())},
+            "ok": bool(outcome.ok),
+            # What the script left behind, replayed rather than re-derived:
+            # the mission-end test reads these and a canned runner that did not
+            # carry them could never reach the win.
+            "game_control": list(world.game_control),
+        })
+        return outcome
+
+    steps: list[dict[str, Any]] = []
+
+    def step(arg: int = 0, place: tuple[tuple[int, int, int], ...] = (),
+             refuse: tuple[int, ...] = (),
+             force: dict[str, Any] | None = None) -> None:
+        # **Anything forced between steps is recorded, not done on the side.**
+        # Setting the current player here and leaving the trace to say only
+        # what came out made the replay ask a different question than the
+        # emitter did, and it showed up as the wrong script event firing.
+        forced = dict(force or {})
+        for name, value in forced.items():
+            if name == "game_control":
+                world.game_control[:] = list(value)
+            else:
+                setattr(state, name, value)
+        refuse_at.clear()
+        refuse_at.extend(refuse)
+        for slot, tx, ty in place:
+            for unit in units:
+                if unit.slot != slot:
+                    continue
+                world.unit_at[world.index(unit.x, unit.y)] = -1
+                unit.x, unit.y = tx, ty
+                for live in world.units.values():
+                    if live.slot == slot:
+                        live.x, live.y = tx, ty
+                world.unit_at[world.index(tx, ty)] = slot
+        calls.clear()
+        result = turnmod.hand_over(state, units, tables, world.game_control,
+                                   run_script, _banner_of(units))
+        _check_one_unit_array(units, world, len(steps))
+        steps.append({
+            "arg": arg,
+            "slots": sorted(u.slot for u in units),
+            "place": [list(p) for p in place],
+            "refuse": list(refuse),
+            "force": {k: (list(v) if isinstance(v, list) else v)
+                      for k, v in forced.items()},
+            "calls": list(calls),
+            "expected": {
+                "code": result.code, "turn": result.turn,
+                "player": result.player,
+                "previous_player": result.previous_player,
+                "mission_ended": result.mission_ended,
+                "ai_turn": result.ai_turn,
+                "refreshed": list(result.refreshed),
+            },
+            "units_after": [_unit_case(u) for u in units],
+            "state_after": _state_case(state),
+        })
+
+    for _ in range(HANDOVER_STEPS):
+        step()
+    # The win: put the squad in the evacuation zone and hand over.  The
+    # rotation has just come back to player 0, so `0x0043B490` answers with the
+    # solo flag, no NEXT TURN fires, and NEXT PLAYER is where the script sees
+    # the squad standing in the zone and sets game-control slot 0.  The step
+    # after it shows the mission staying ended.
+    squad = sorted((u for u in units if u.player == 0 and u.alive),
+                   key=lambda u: u.slot)
+    step(place=tuple((u.slot, tx, ty)
+                     for u, (tx, ty) in zip(squad, EVACUATION_ZONE)))
+    step()
+
+    # The abort arm, on both events.  The mission is already over by here, so
+    # these two say only what a refusal costs -- the sequence stops where it
+    # stands, the current player does not move and the refresh does not run --
+    # which is the whole of `if (!runProgram()) return 0;`.
+    zeroed = [0] * len(world.game_control)
+    step(refuse=(lclrt.CALL_NEXT_TURN,),
+         force={"game_control": zeroed, "turn": 1,
+                "current_player": turnmod.PLAYER_COMPUTER})
+    step(refuse=(lclrt.CALL_NEXT_PLAYER,), force={"current_player": 0})
+
+    type_ids = sorted({u.type_id for u in units})
+    weapon_ids = sorted({u.weapon for u in units})
+    payload = {
+        "schema": HANDOVER_CASES_SCHEMA,
+        "mission": name,
+        "oracle": "tools/inclib/turn.py hand_over, with the real interpreter "
+                  "driving the mission script",
+        "state": initial_state,
+        "units": initial_units,
+        "types": {
+            "units": [{
+                "id": t, "mp_max": tables.units[t].mp_max,
+                "fp_max": tables.units[t].fp_max,
+                "hp_max": tables.units[t].hp_max,
+                "special": tables.units[t].special,
+                "size": tables.units[t].size,
+                "species": tables.units[t].species,
+                "height": tables.units[t].height,
+                "model": tables.units[t].model,
+                "description": tables.units[t].description,
+            } for t in type_ids if t in tables.units],
+            "weapons": [{
+                "id": w, "heat": tables.weapons[w].heat,
+                "toggle": tables.weapons[w].toggle,
+                "mun": tables.weapons[w].mun,
+            } for w in weapon_ids if w in tables.weapons],
+        },
+        "steps": steps,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    LOG.info("wrote %s (%d step(s), %d script call(s))", out, len(steps),
+             sum(len(s["calls"]) for s in steps))
+    return 0
+
+
 def _require_corpus(root: Path) -> str | None:
     """Refuse a root that is not a game installation, cleanly.
 
@@ -468,12 +784,25 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", metavar="ROOT", required=True,
                     help="game root")
+    ap.add_argument("--emit-handover-cases", metavar="FILE", type=Path,
+                    help="also write the _C_140 hand-over trace "
+                         "godot/tests/test_handover.gd replays")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
+        level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s: %(message)s")
-    return run_check(Path(args.check))
+    root = Path(args.check)
+    code = run_check(root)
+    if args.emit_handover_cases is not None:
+        try:
+            code = emit_handover_cases(root, args.emit_handover_cases) or code
+        except ValueError as exc:
+            # The single-unit-array premise, reported the way every other
+            # failure in this file is rather than as a traceback.
+            LOG.error("%s", exc)
+            return 1
+    return code
 
 
 if __name__ == "__main__":

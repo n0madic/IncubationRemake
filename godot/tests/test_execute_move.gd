@@ -24,6 +24,7 @@ func run(h: TestHarness) -> void:
 	_victory_points(h)
 	_mine(h)
 	_the_caller_spends(h)
+	_the_move_unit_event(h)
 
 
 ## A world whose mover has room to take a two-step path with one orthogonal
@@ -252,6 +253,64 @@ func _the_caller_spends(h: TestHarness) -> void:
 		DictRead.as_int(after["acted"]), World.ACTED_MOVED)
 
 	_blocked_path(h)
+
+
+## docs/20 section 5 -- the `MoveUnit` event a completed walk fires.
+##
+## Wired but unchecked is the same as not wired: removing the call left every
+## other check in this file green, which is why this one exists. What it pins
+## is the call type, the whole environment, and that the event fires **before**
+## the caller charges -- the engine fires it inside `aExecuteMove` while the
+## subtraction is the caller's, so a script reading the mover's movement points
+## sees them uncharged.
+func _the_move_unit_event(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var found: Dictionary = _mixed_path(world, 0)
+	if not h.check("execute_move.event_path_exists", not found.is_empty()):
+		return
+	var target_x: int = DictRead.as_int(found["x"])
+	var target_y: int = DictRead.as_int(found["y"])
+	# The action point the arrival cell carries, so `_E` is not zero by
+	# accident and a runner that filled the wrong slot would still pass.
+	var arrived: int = world.state.index_of(target_x, target_y)
+	world.state.set_action_point(arrived, 37)
+
+	var seen: Array[Dictionary] = []
+	var mp_at_call: Array[int] = []
+	world.script_runner = func(call_type: int, e: Dictionary) -> Dictionary:
+		seen.append({"call_type": call_type, "env": e.duplicate()})
+		mp_at_call.append(DictRead.as_int(world.unit_view(0)["mp"]))
+		return {"ok": true, "ran": true}
+
+	var before: int = DictRead.as_int(world.unit_view(0)["mp"])
+	var moved: MoveResult = world.submit_move(
+		MoveCommand.create(0, target_x, target_y))
+	h.check("execute_move.the_walk_fires_one_event", seen.size() == 1,
+		"%d event(s)" % seen.size())
+	if seen.is_empty():
+		return
+	h.equal("execute_move.the_event_is_move_unit",
+		DictRead.as_int(seen[0]["call_type"]), MissionScript.CALL_MOVE_UNIT)
+	h.equal("execute_move.the_environment_is_the_arrival_cell",
+		DictRead.as_dict(seen[0]["env"]),
+		{
+			MissionScript.SLOT_A: MissionScript.CALL_MOVE_UNIT,
+			MissionScript.SLOT_B: target_x,
+			MissionScript.SLOT_C: target_y,
+			MissionScript.SLOT_D: world.state.height_at(arrived)
+				/ MissionScript.HEIGHT_LEVEL_UNITS,
+			MissionScript.SLOT_E: 37,
+			MissionScript.SLOT_F: 0,
+		})
+	h.equal("execute_move.the_event_sees_uncharged_movement", mp_at_call[0],
+		before)
+	h.equal("execute_move.and_the_charge_follows_it",
+		DictRead.as_int(world.unit_view(0)["mp"]), before - moved.cost)
+	# **Put the default back, or this leaks.** The lambda above captures
+	# `world`, and `world` holds the lambda -- a `RefCounted` cycle that Godot
+	# reports as "resources still in use at exit" and nothing else notices.
+	# `run_tests.sh` treats that line as a failure, which is how it was found.
+	world.script_runner = Callable(MissionScript, "no_op")
 
 
 ## `blocked != 0` -- a path that runs over another unit is **abandoned**

@@ -62,7 +62,7 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 55 checks, LOS/hi
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/remake_convert.py     gog_incubation --check   # 50 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 19 suites, 958 checks
+bash   godot/run_tests.sh                                    # 20 suites, 1161 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -77,14 +77,21 @@ python3 tools/remake_convert.py  gog_incubation --dev-fixtures godot/generated
 #     prototyp_parse --obj per prototype, for the by-eye half of criterion 4.
 #     It carries a .gdignore -- Godot would otherwise import all 91 as resources.
 python3 tools/movemap_runtime.py --emit-cases tests/fixtures/movemap --root gog_incubation
+python3 tools/turn_gold.py       --emit-cases tests/fixtures/turn/cases_turn.json --root gog_incubation
+python3 tools/turn_runtime.py    --check gog_incubation \
+    --emit-handover-cases tests/fixtures/turn/cases_handover.json
 python3 tools/movemap_gold.py    --emit-allowance-cases tests/fixtures/movemap/cases_allowance.json
 python3 tools/movemap_gold.py    --selftest-process-scope
 ```
 
 The native case file comes from an existing capture:
 `python3 tools/movemap_gold.py --emit-cases tests/fixtures/movemap/cases_native.json --root gog_incubation`.
-All four are gitignored; `tests/fixtures/movemap/README.md` records what each
-one holds. `run_tests.sh` copies them into `godot/generated/movemap/`, which the
+All of them are gitignored; `tests/fixtures/movemap/README.md` and
+`tests/fixtures/turn/README.md` record what each one holds -- including why the
+hand-over trace is the one case file whose oracle is **executable Python and
+not the engine**, and the single-unit-array limit its emitter refuses to write
+past. `run_tests.sh` copies them into `godot/generated/movemap/` and
+`godot/generated/turn/`, which the
 suites look at **before** `user://movemap/` -- the other order once let a stale
 copy shadow a fresh one and quietly shrink the run, which is why `harness.gd`
 also carries a minimum check count per suite. Two more are outside the

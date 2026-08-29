@@ -202,6 +202,7 @@ static func _turn_from(view: Dictionary) -> TurnState:
 	turn.player_count = DictRead.as_int(view["player_count"])
 	turn.solo_flag = DictRead.as_bool(view["solo_flag"])
 	turn.ai_level = DictRead.as_int(view["ai_level"])
+	turn.mode = DictRead.as_int(view["mode"])
 	turn.player_kind = _int_array(DictRead.as_array(view["player_kind"]))
 	turn.end_state = _int_array(DictRead.as_array(view["end_state"]))
 	turn.reaction_counter = _int_array(

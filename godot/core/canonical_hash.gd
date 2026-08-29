@@ -55,7 +55,7 @@ static func compute(state: MapState, units: Dictionary, turn: TurnState,
 	# unit type and the damage roll's span, so two saves that differ only in it
 	# are not the same simulation state (docs/93 section 11).
 	ctx.update(PackedInt32Array([turn.turn, turn.current_player,
-		turn.previous_player, turn.player_count, turn.ai_level,
+		turn.previous_player, turn.player_count, turn.ai_level, turn.mode,
 		1 if turn.solo_flag else 0]).to_byte_array())
 	ctx.update(turn.player_kind.to_byte_array())
 	ctx.update(turn.end_state.to_byte_array())
