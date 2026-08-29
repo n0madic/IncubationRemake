@@ -26,9 +26,13 @@ const CTRLMAP_ROWS: Array[Dictionary] = [
 
 
 static func unit_type(id: int, special: int = 0, unit_size: int = 0,
-		mp_max: int = 6) -> Dictionary:
+		mp_max: int = 6, fp_max: int = 0) -> Dictionary:
 	return {
-		"id": id, "mp_max": mp_max, "hp_max": 20, "special": special,
+		# docs/21 section 5 column 7 -- a flag: 0 is "this kind has fitness",
+		# 255 is "it has none".  The shipped file sets 0 for the 70 human types
+		# and 255 for everything else, and the refresh reads it.
+		"id": id, "mp_max": mp_max, "fp_max": fp_max, "hp_max": 20,
+		"special": special,
 		"size": unit_size, "species": 0, "height": 18,
 		"model": "A_MK_0B.3DI", "description": "type %d" % id,
 	}
@@ -54,6 +58,15 @@ static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 		# fixture defaulting to 0 would silently exercise an override.
 		"action_points": mp, "ep": 0, "rank": 0, "fp": 255, "tp": 0,
 		"rested": 0, "action_state": 0,
+		# The turn's own columns (docs/25 section 5).  Present because
+		# `UnitState.from_document` requires them: the cache is versioned and
+		# the loader refuses a mismatched one, so a record that quietly
+		# defaulted a missing field would hide a converter that stopped
+		# emitting it.
+		"acted": 0, "damage_absorber": 0, "armour_front": 0,
+		"armour_rear": 0, "ammo": 0, "heat": 0, "malfunction": 0,
+		"walked": 0, "turn_start_x": x, "turn_start_y": y,
+		"stimulant": 0, "ticket": 0,
 		"skills": {}, "equipment_ids": equipment, "weapon": 0, "facing": 0,
 		"order": 0, "order_param": 0, "order2": 0, "order2_param": 0,
 		"group": 0, "visibility": visibility, "placed": true,

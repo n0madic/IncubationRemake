@@ -33,6 +33,34 @@ var facing: int = 0
 var visibility: int = 0
 var equipment: PackedInt32Array = PackedInt32Array()
 
+# --- what the turn reads (docs/25 section 5) --------------------------------
+# Added for the second slice, and still under the rule at the top of this file:
+# every one of these is read or written by the hand-over refresh, and nothing
+# is here because the record happens to carry it.
+## `+0x39`, "has acted this turn"; the refresh clears it after the recompute,
+## because the allowance reads `+0x41` and would see a stale value otherwise.
+var acted: int = 0
+## `+0x3D`, rounds in the magazine.
+var ammo: int = 0
+## `+0x3E`, the heat counter; the refresh cools it by one or two.
+var heat: int = 0
+## `+0x3F`, the equipped weapon id -- the heat cap and the overheat arm read it.
+var weapon: int = 0
+## `+0x40`, the malfunction state; the refresh walks the ladder in docs/25.
+var malfunction: int = 0
+## `+0x50`, distance walked this turn, in tenths: 10 orthogonal, 15 diagonal.
+var walked: int = 0
+## `+0x51` / `+0x52`, where the unit stood when the turn began.
+var turn_start_x: int = 0
+var turn_start_y: int = 0
+## `+0x58`, the stimulant charge; 255 is "spent this turn".
+var stimulant: int = 0
+## `+0x59`, the reaction-fire ticket -- docs/25 section 6's FIFO order.
+var ticket: int = 0
+## `+0x1B`, experience. The fitness cap is `max(3, ep / 12)`, so the refresh
+## reads it even though nothing in this slice awards any.
+var ep: int = 0
+
 
 static func from_document(record: Dictionary) -> UnitState:
 	var unit: UnitState = UnitState.new()
@@ -49,6 +77,17 @@ static func from_document(record: Dictionary) -> UnitState:
 	unit.action_state = DictRead.as_int(record["action_state"])
 	unit.facing = DictRead.as_int(record["facing"])
 	unit.visibility = DictRead.as_int(record["visibility"])
+	unit.acted = DictRead.as_int(record["acted"])
+	unit.ammo = DictRead.as_int(record["ammo"])
+	unit.heat = DictRead.as_int(record["heat"])
+	unit.weapon = DictRead.as_int(record["weapon"])
+	unit.malfunction = DictRead.as_int(record["malfunction"])
+	unit.walked = DictRead.as_int(record["walked"])
+	unit.turn_start_x = DictRead.as_int(record["turn_start_x"])
+	unit.turn_start_y = DictRead.as_int(record["turn_start_y"])
+	unit.stimulant = DictRead.as_int(record["stimulant"])
+	unit.ticket = DictRead.as_int(record["ticket"])
+	unit.ep = DictRead.as_int(record["ep"])
 	var ids: Array = DictRead.as_array(record["equipment_ids"])
 	unit.equipment.resize(ids.size())
 	for i: int in range(ids.size()):

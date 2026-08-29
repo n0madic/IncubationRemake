@@ -55,6 +55,14 @@ func mp_max(type_id: int) -> int:
 	return _field(type_id, "mp_max", 0)
 
 
+## docs/21 section 5 column 7 -- a **flag**, not a value: the shipped file sets
+## it to 0 for every human type and 255 for everything else, so 255 means "this
+## kind has no fitness at all" and any other value means the cap comes from the
+## rank instead.
+func fp_max(type_id: int) -> int:
+	return _field(type_id, "fp_max", 0)
+
+
 func hp_max(type_id: int) -> int:
 	return _field(type_id, "hp_max", 0)
 
