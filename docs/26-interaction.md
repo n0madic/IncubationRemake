@@ -403,6 +403,28 @@ so it has no ladder case of its own: a ladder step would be *offered* only to a
 unit holding at least its whole allowance, and then charged like any other step.
 The two halves of the engine therefore disagree.
 
+**Which cell's delay is charged is now measured, and it is the one entered.**
+"Twice for the delay" does not say whether a step pays for the field it leaves,
+the field it enters, or both, and the three readings are not equivalent on any
+map with mixed terrain. `tools/turn_gold.py` phase 10 walks one two-step path
+four times, writing a delay-1 field type onto a different cell of it each time
+— after the fill and the walk, so all four walks follow the identical marked
+path and differ only in what `aExecuteMove` sees:
+
+| probe | delay written on | reported cost |
+|---|---|---|
+| control | — | 3 |
+| `delay_source` | the cell the walk starts on | **3** |
+| `delay_middle` | a cell entered and then left again | **4** |
+| `delay_dest` | the destination | **4** |
+
+The cell being **left** is not charged. The cost of a step is therefore
+`base + delay(entered)`, with `base` 1 orthogonal and 2 diagonal
+(`0x0046E645` / `0x0046E63B`) — and the control's 3 is that arithmetic for one
+orthogonal and one diagonal step over delay-0 ground. The same walk moved
+`+0x50` by 25, which is 10 + 15 ([`10` §5.10](10-lev-mission-format.md)), and
+left `+0x46` holding the facing of the last step.
+
 **Both halves are now exercised, and they do disagree.** Writing field type 8
 into two adjacent cells of a live `_C_141` and calling `aBuildMoveMap` gives its
 rule exactly — the step needs `mp >= allowance` and leaves `mp - allowance`,
@@ -428,7 +450,9 @@ Two smaller things the same two calls settle, and both are traps for a remake:
   subtraction — `u->mp = (cost > u->mp) ? 0 : u->mp - cost` — in the *caller*,
   after `aExecuteFight` and after the death test. A remake that charged inside
   its own move routine would double-charge the AI's path and leave the player's
-  uncharged.
+  uncharged. **There is exactly one exception, and it is the mine** (§6.1):
+  that arm zeroes `+0x15` itself and then returns FALSE with nothing written
+  back, so the caller's subtraction runs against a cost of 0.
 * **The cost comes back through argument 5.** The routine takes eight
   arguments (`0x0040AC43` pushes eight dwords and cleans them with
   `add esp, 0x20`); the fifth is the writeback pointer the AI takes with
@@ -494,10 +518,40 @@ Two more things happen while walking, both inside `aExecuteMove`
 **Mines.** After each step the engine looks for `+0x10 == 2`. A **small** unit
 (`unitinfo[type].size == 0`, [`21` §5](21-info-lcl-schema.md)) only sets off
 the mine it is standing on; a **large** one sets off a mine on any of its eight
-neighbours, through `0x0047A4B0`. Either way the unit's movement points are
+neighbours, through `0x0047A4B0`. ~~Either way the unit's movement points are
 zeroed and the mine resolves as a shot from weapon **36**, `ParaBomb`
 (`aExecuteBomb` `0x004702C0` → `0x0046AA10`) — 100 damage at 100 hit
-([`21` §4](21-info-lcl-schema.md)).
+([`21` §4](21-info-lcl-schema.md)).~~
+
+**The first half is measured; the second half did not happen.**
+`tools/turn_gold.py` phase 10 writes `+0x10 = 2` onto the second cell of a
+walked path — after the fill and the walk, because the fill refuses to step a
+non-alien mover onto a mine at all ([`23` §7.1](23-ai-system.md)) — and calls
+`aExecuteMove` for real:
+
+| | measured |
+|---|---|
+| where the unit stopped | on the mine cell, one step in |
+| `+0x50` | 10 — the step it took is still accumulated |
+| `+0x46` | the facing of that step |
+| `+0x15` | **0** — zeroed *inside* the routine |
+| return value | **FALSE** |
+| cost written back through argument 5 | **0**, not the 1 the step cost |
+| `aRandom`'s seed either side | bit-identical |
+| the mover's hit points | unchanged |
+| `+0x10` on the cell afterwards | still 2 |
+
+A `ParaBomb` is 100 damage at 100 hit, so it cannot leave an 11-point soldier
+untouched, and a mine that had gone off would not still be on the cell. The
+walk stops, the movement points go, and **nothing fires**. What the mine
+therefore costs a remake is a stopped walk, not a casualty.
+
+Two caveats, both worth stating rather than resolving by assertion. The probe
+writes the mine *between* the walk and the call, which is the only way a
+non-alien mover can be standing on one, and it is conceivable — though nothing
+in the disassembly suggests it — that the detonation depends on state the fill
+would have set. And the large-unit neighbour arm (`0x0047A4B0`) is untouched by
+this probe. Both are recorded in §10.
 
 **VictoryPoints.** Stepping onto a cell in the band 80–89 claims it:
 
@@ -513,6 +567,10 @@ That closes [`10` §4.6](10-lev-mission-format.md)'s last gap: ids 86–89,
 *VictoryPoint B — player 1 … 4*, have **0 cells** in the corpus because they
 are written on capture and never authored. Player 255, the neutral
 pseudo-player ([`23` §9](23-ai-system.md)), captures nothing.
+
+The A branch is now measured too: phase 10 writes action point `0x50` onto the
+destination of a walked path and player 0 arrives on it, and the cell holds
+**`0x51`** afterwards. The step itself still costs 3 — claiming is free.
 
 ---
 
@@ -659,3 +717,18 @@ detected, and the union of the check names they tripped is all 109.
    data can decide that. It is therefore a product call, and it has been made:
    the remake takes the move map's rule —
    [`92` §7.7](92-remake-architecture.md).
+6. **Why the mine on a walked path does not fire.** §6.1's probe measured the
+   whole of the documented arm except the shot: the walk stops, `+0x15` is
+   zeroed, `aExecuteMove` returns FALSE — and `aRandom`'s seed, the mover's
+   hit points and the cell's `+0x10` are all unchanged. `aExecuteBomb`
+   (`0x004702C0`) is reachable from `aExecuteMove` in the disassembly, so
+   either its guard is narrower than the `+0x10 == 2` test that stops the
+   walk, or the detonation is driven from somewhere the probe does not
+   exercise. Distinguishing the two needs a probe that watches the call
+   itself rather than its effects.
+7. **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
+   mover an eight-neighbour trigger radius. §6.1's probe walks a small unit,
+   and the shipped campaign places no large unit next to a mine, so nothing
+   has ever run it. Writing the `size` byte is the move that would
+   ([`93` §11](93-slice-1-report.md) does it for the clearance ring) — this
+   is untested rather than unknown.

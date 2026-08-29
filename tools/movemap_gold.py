@@ -1239,6 +1239,17 @@ def _run_scoped(command: list[str], *, env: dict[str, str] | None,
         raise
 
 
+#: The ``[!]`` lines ``dbgcall`` prints for an **environment** result rather
+#: than a bad plan.  Everything else it refuses on is a plan or harness error,
+#: and the retry loop must not swallow it: see :func:`run_plan`.
+TRANSIENT_ERRORS = (
+    "the anchor was not reached within",
+    "Target exited before any breakpoint was",
+    "Target exited with",
+    "Cannot restore the thread context",
+)
+
+
 def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
              attempts: int = DEFAULT_ATTEMPTS,
              timeout: float = ATTEMPT_TIMEOUT) -> list[dict[str, Any]]:
@@ -1289,6 +1300,18 @@ def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
             _reset_wine(env)
             continue
         log = log_path.read_text(errors="replace") if log_path.exists() else ""
+        # A plan dbgcall **refuses** is not an environment result, and retrying
+        # it ten times reports "did not reach the anchor" ten times for a
+        # reason that has nothing to do with Wine.  A stale dbgcall.exe that
+        # did not yet know the `u8` return type cost one capture exactly that,
+        # and the log said so on line one the whole time.
+        fatal = [line for line in log.splitlines()
+                 if line.lstrip().startswith("[!]")
+                 and not any(t in line for t in TRANSIENT_ERRORS)]
+        if fatal:
+            raise CaptureError(
+                f"{name}: dbgcall refused the plan -- {fatal[0].strip()}; "
+                f"see {log_path}")
         if "breakpoint hit" in log and out_path.exists():
             failed = [line for line in log.splitlines() if "failed" in line]
             LOG.info("%s: attempt %d reached the anchor -- %s",

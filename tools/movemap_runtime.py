@@ -51,6 +51,7 @@ from inclib.movemap import (  # noqa: E402
     OBSTACLE_MINE,
     OBSTACLE_NONE,
     OBSTACLE_SHIELD,
+    PLAYER_ALIEN,
     JET_PACK_EQUIP_ID,
     MoveMapError,
     MoveMapHooks,
@@ -65,6 +66,9 @@ from inclib.movemap import (  # noqa: E402
     climb_quotient,
     is_enterable,
     walk,
+    execute,
+    FACING_OF_STEP,
+    VICTORY_BAND,
     STATE_REACHABLE,
     build,
     check_invariants,
@@ -234,6 +238,11 @@ def run_checks(root: Path) -> int:
     walk_diagonals = 0
     walk_outside = 0
     walk_failures: list[str] = []
+    executed = 0
+    exec_tenths = 0
+    exec_victory = 0
+    exec_mines = 0
+    exec_failures: list[str] = []
 
     for path in paths:
         try:
@@ -300,6 +309,11 @@ def run_checks(root: Path) -> int:
                 walk_diagonals += stats["diagonals"]
                 walk_outside += stats["outside"]
                 walk_failures += stats["failures"]
+                executed += stats["executed"]
+                exec_tenths += stats["tenths"]
+                exec_victory += stats["victory"]
+                exec_mines += stats["mines"]
+                exec_failures += stats["exec_failures"]
             if len(results) == 2:
                 strict = set(results[False].reachable_cells())
                 loose = set(results[True].reachable_cells())
@@ -354,6 +368,25 @@ def run_checks(root: Path) -> int:
     c.expect("walk.diagonals", walk_diagonals, EXPECTED_WALK_DIAGONALS,
              "diagonal steps in paths a 4-connected fill costed -- docs/23 "
              "§8's asymmetry, measured rather than merely present")
+    c.check("execute.corpus", executed == walk_ok,
+            f"{executed} paths walked for real, one per reconstructed path")
+    c.expect("execute.invariants", exec_failures[:3], [],
+             f"{len(exec_failures)} failures" if exec_failures
+             else f"{executed} walks clean")
+    c.check("execute.distance_accumulates", exec_tenths > 0,
+            f"{exec_tenths} tenths of a field walked over the corpus")
+    # Stated as an equality, not as "few": the corpus reaches **neither** arm,
+    # and saying so out loud is what keeps the two synthetic cases below from
+    # looking like belt and braces.  A fill that started offering mine cells,
+    # or a mission that authored a VictoryPoint where a squad walks, would
+    # move these off zero and this check would say so.
+    c.expect("execute.corpus_reaches_no_path_event",
+             (exec_victory, exec_mines), (0, 0),
+             f"{exec_victory} VictoryPoint claim(s) and {exec_mines} mine(s) "
+             f"on {executed} corpus paths -- the fill refuses a mine cell "
+             f"(docs/23 §7.1) and no shipped VictoryPoint sits where a squad "
+             f"walks, so both arms are exercised synthetically and natively")
+    _execute_arm_checks(c, delays)
     c.check("walk.stays_inside", walk_outside == 0,
             f"{walk_outside} of {walk_ok} paths leave the highlighted region; "
             f"the walk is 8-connected but every cell it steps on was marked "
@@ -375,6 +408,69 @@ def run_checks(root: Path) -> int:
     return c.report()
 
 
+def _execute_arm_checks(c: Checker, delays: dict[int, int]) -> None:
+    """The two arms of ``aExecuteMove`` the shipped corpus never reaches.
+
+    Both are written **after** the fill and the walk, which is not a
+    convenience: the fill refuses to step a non-alien mover onto a mine
+    (docs/23 §7.1), so a mine placed before it would simply be routed around
+    and the arm would stay untested.  ``tools/turn_gold.py`` phase 10 writes
+    them at the same point for the same reason, so the synthetic case and the
+    native probe are asking the engine the same question.
+    """
+    width = 5
+    start, middle, target = (0, 0), (1, 0), (2, 0)
+    units = [_unit(0, *start, mp=6)]
+    open_cells = [-1] * (width * width)
+    open_cells[0] = 0
+
+    def scenario(player: int, action_point: int, index: int,
+                 mine_at: tuple[int, int] | None = None) -> Any:
+        grid = _synthetic_grid(width, width)
+        grid.action_points[index] = action_point
+        hooks = hooks_from_arrays(width, open_cells, visibility={0: 0},
+                                  players={0: player})
+        mover = Mover(slot=0, x=start[0], y=start[1], player=player, mp=6,
+                      special=0, size=0, has_jet_pack=False, mp_allowance=6)
+        result = build(grid, mover, delays, hooks, pass_friendlies=False)
+        answer = walk(grid, result, start[0], start[1], target[0], target[1],
+                      delays, hooks)
+        if mine_at is not None:
+            obstacles = [OBSTACLE_NONE] * (width * width)
+            obstacles[mine_at[1] * width + mine_at[0]] = OBSTACLE_MINE
+            hooks = hooks_from_arrays(width, open_cells, visibility={0: 0},
+                                      players={0: player},
+                                      obstacles=obstacles)
+        return execute(grid, hooks, delays, mover, answer)
+
+    index = target[1] * width + target[0]
+    claimed = scenario(0, 0x50, index)
+    c.expect("execute.victory_point_a", claimed.action_point_writes,
+             [(index, 0x51)],
+             "action point 0x50 walked onto by player 0 becomes 0x51")
+    band_b = scenario(3, 0x55, index)
+    c.expect("execute.victory_point_b", band_b.action_point_writes,
+             [(index, 0x59)],
+             "action point 0x55 walked onto by player 3 becomes 0x59")
+    neutral = scenario(PLAYER_ALIEN, 0x50, index)
+    c.expect("execute.victory_point_neutral", neutral.action_point_writes, [],
+             "player 255 claims nothing -- docs/26 §6.1")
+    mined = scenario(0, 0, index, mine_at=middle)
+    c.check("execute.mine_stops_the_walk",
+            mined.movement_zeroed and mined.steps == 1
+            and (mined.x, mined.y) == middle
+            and [e.kind for e in mined.events] == ["mine"],
+            f"a mine on the second cell ends the walk there: "
+            f"{mined.steps} step(s), at ({mined.x},{mined.y}), "
+            f"movement zeroed {mined.movement_zeroed}")
+    clean = scenario(0, 0, index)
+    c.check("execute.mine_is_what_stopped_it",
+            not clean.movement_zeroed and clean.steps == 2
+            and (clean.x, clean.y) == target,
+            f"the same walk without the mine runs to the target: "
+            f"{clean.steps} step(s), at ({clean.x},{clean.y})")
+
+
 def _walk_checks(grid: Grid, mover: Mover, delays: dict[int, int],
                  hooks: MoveMapHooks, result: MoveMapResult,
                  mission: str) -> dict[str, Any]:
@@ -387,7 +483,8 @@ def _walk_checks(grid: Grid, mover: Mover, delays: dict[int, int],
     leave the region the fill highlighted?
     """
     out: dict[str, Any] = {"walks": 0, "ok": 0, "diagonals": 0, "outside": 0,
-                           "failures": []}
+                           "failures": [], "executed": 0, "tenths": 0,
+                           "victory": 0, "mines": 0, "exec_failures": []}
     start = grid.index(mover.x, mover.y)
     targets = [i for i in result.reachable_cells() if i != start]
     if not targets:
@@ -441,7 +538,81 @@ def _walk_checks(grid: Grid, mover: Mover, delays: dict[int, int],
                         break
         if any(result.state[i] != STATE_REACHABLE for i in answer.path):
             out["outside"] += 1
+        _execute_checks(grid, mover, delays, hooks, answer, where, out)
     return out
+
+
+def _execute_checks(grid: Grid, mover: Mover, delays: dict[int, int],
+                    hooks: MoveMapHooks, answer: Any, where: str,
+                    out: dict[str, Any]) -> None:
+    """Walk the reconstructed path for real and check the arithmetic.
+
+    ``aExecuteMove`` has no oracle over the corpus -- calling it needs Wine and
+    a save -- so what is checked here is what its own code forces: the distance
+    is the step count in tenths, the cost is at least one per step, the facing
+    is the last step's, and a VictoryPoint is only ever rewritten inside its
+    band.  The *values* those rules use are pinned natively by
+    ``tools/turn_gold.py`` phase 10; this is the corpus half.
+    """
+    moved = execute(grid, hooks, delays, mover, answer)
+    out["executed"] += 1
+    if not moved.ok:
+        out["exec_failures"].append(f"{where}: {moved.reason}")
+        return
+    target = answer.path[0]
+    stopped = moved.movement_zeroed
+    if not stopped and (moved.x, moved.y) != (target % grid.width,
+                                              target // grid.width):
+        out["exec_failures"].append(
+            f"{where}: ended at ({moved.x},{moved.y}), not the target")
+    if not stopped and moved.steps != answer.steps:
+        out["exec_failures"].append(
+            f"{where}: walked {moved.steps} of {answer.steps} steps")
+    route = list(reversed(answer.path))[:moved.steps + 1]
+    diagonal = sum(1 for a, b in zip(route, route[1:])
+                   if (a % grid.width) != (b % grid.width)
+                   and (a // grid.width) != (b // grid.width))
+    orthogonal = moved.steps - diagonal
+    # **The numbers are written out here on purpose.**  Importing the model's
+    # own constants and multiplying by them re-derives the model's answer with
+    # the model's arithmetic, and the check passes whatever they are: setting
+    # the diagonal distance to 14 left this green.  A check has to carry its
+    # own copy of what it is checking.  These four are docs/10 §5.10 and
+    # docs/26 §5, and the native oracle for them is tools/turn_gold.py phase
+    # 10, where one path cost 3 and walked 25.
+    tenths = diagonal * 15 + orthogonal * 10
+    if moved.walked != tenths:
+        out["exec_failures"].append(
+            f"{where}: walked {moved.walked} tenths, wanted {tenths}")
+    # The full cost, not a floor: the delay column of the cell **entered** is
+    # added to each step's base, and nothing is charged for the cell left.
+    # Phase 10 measured that by writing a delay-1 field type onto the source,
+    # the middle and the destination of one path -- +0, +1, +1.
+    cost = diagonal * 2 + orthogonal * 1
+    for step_to in route[1:]:
+        cost += delays.get(grid.field_types[step_to], DELAY_IMPASSABLE)
+    if moved.cost != cost:
+        out["exec_failures"].append(
+            f"{where}: cost {moved.cost}, wanted {cost}")
+    if moved.steps:
+        last, end = route[-2], route[-1]
+        step = (end % grid.width - last % grid.width,
+                end // grid.width - last // grid.width)
+        if moved.facing != FACING_OF_STEP[step]:
+            out["exec_failures"].append(
+                f"{where}: facing {moved.facing} is not the last step's "
+                f"{FACING_OF_STEP[step]}")
+    for index, value in moved.action_point_writes:
+        if grid.action_points[index] not in VICTORY_BAND:
+            out["exec_failures"].append(
+                f"{where}: rewrote action point "
+                f"{grid.action_points[index]} at {index}, outside the band")
+        if value not in VICTORY_BAND:
+            out["exec_failures"].append(
+                f"{where}: claimed as {value}, outside the band")
+    out["tenths"] += moved.walked
+    out["victory"] += len(moved.action_point_writes)
+    out["mines"] += sum(1 for e in moved.events if e.kind == "mine")
 
 
 def run_one(path: Path, slot: int, pass_friendlies: bool, root: Path | None,

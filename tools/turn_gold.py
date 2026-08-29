@@ -57,6 +57,7 @@ from inclib.info import BalanceTables, load_info                   # noqa: E402
 from inclib import lcl as lclmod
 from inclib import lcl_runtime as lclmodrt
 from inclib import lev as levmod
+from inclib import movemap as movemapmod
 from inclib import script as scriptmod
 from inclib.rng import ARandom                                     # noqa: E402
 
@@ -145,6 +146,12 @@ LOS_MODE = 1
 #: records are crates: no fatigue cap, no stimulant, no heat, no malfunction.
 #: A refresh captured on them would have matched a model that did nothing.
 PLAYER_PROPS = 252
+
+#: ``docs/10`` §5.7 -- the aliens.  Named here because phase 10 needs a
+#: mover the *player* owns: an alien's fill is the one that steps onto
+#: mines, so choosing one would have made the mine probe unreachable
+#: for the arm a squad actually walks into.
+PLAYER_ALIEN = 255
 
 
 class GoldError(Exception):
@@ -526,6 +533,245 @@ def use_plan(slot: int, cx: int, cy: int, width: int) -> str:
             ]
     return "\n".join(lines) + "\n"
 
+
+# ---------------------------------------------------------------------------
+# Phase 10: aExecuteMove -- the walk, its cost, and what it leaves behind
+# ---------------------------------------------------------------------------
+
+#: The three routines a walk needs, in the order it needs them.  The fill
+#: writes the gradient into ``cell[+0x0C]``, the walk marks the chosen path
+#: into ``cell[+0x00]``, and only then does ``aExecuteMove`` have something to
+#: follow.  ``movemap_gold.py`` declares the same three; they are repeated
+#: rather than imported because a plan is one text and a declaration block is
+#: how that text names its callees.
+MOVE_DECLARATIONS = """\
+__cdecl void aResetMoveOverlay()            = Incubation.exe+0x2ee90
+__cdecl i32  aBuildMoveMap(ptr,i32,ptr,i32) = Incubation.exe+0x30a40
+__cdecl i32  aWalkMoveMap(i32,i32,i32,i32,ptr,ptr) = Incubation.exe+0x305e0
+__cdecl i32  aExecuteMove(i32,i32,i32,i32,ptr,i32,i32,i32) = Incubation.exe+0x6e220
+"""
+
+#: The three trailing literals, copied from the AI's own call site
+#: (``0x0040AC43`` pushes eight dwords) rather than invented.
+MOVE_TAIL = (1, 255, 0)
+
+#: Seconds one attempt of this phase may take.  Every probe reloads the save
+#: and then animates a walk with sound and the Charisma path, so it is the
+#: slowest phase in the file by a wide margin and the one plausible hang.
+MOVE_TIMEOUT = 600
+
+#: Movement points written into the mover before the fill.  The fill spends
+#: ``+0x15``, so this is what decides how far the highlight reaches; the walk
+#: itself is asked for a fixed target either way.
+MOVE_MP_MARGIN = 2
+
+#: ``docs/26`` §6.1 -- the VictoryPoint band, and the value the phase writes.
+#: 0x50 is *VictoryPoint A, unclaimed*: the arm under test rewrites it to
+#: ``0x51 + player``, so writing 0x51 would make a no-op indistinguishable
+#: from a correct capture by player 0.
+VICTORY_POINT_UNCLAIMED = 0x50
+
+#: ``cell[+0x10] == 2`` -- a mine.  ``docs/26`` §6.1.
+OBSTACLE_MINE = 2
+
+#: The field type the delay probes write.  Chosen from the control map at
+#: plan time rather than hard-coded, because "which type has a delay" is a
+#: property of the shipped table; this is only the fallback for a table where
+#: nothing has one, and then the delay probes are skipped instead.
+MOVE_DELAY_MIN, MOVE_DELAY_MAX = 1, 3
+
+
+def move_probes(payload: dict[str, Any], tables: BalanceTables
+                ) -> list[dict[str, Any]]:
+    """One path, walked six ways.
+
+    **Every mutation is written after the fill and after the walk**, and that
+    is the whole design of the phase.  Writing a delay-bearing field type
+    before the fill would change which cells are reachable and which path the
+    gradient picks, so two probes would differ in two ways at once and neither
+    cost could be attributed.  Written afterwards, the six probes walk the
+    *identical* marked path and differ only in what ``aExecuteMove`` sees --
+    which is the routine under test.
+
+    The path is chosen by :mod:`inclib.movemap`, which is not circular: the
+    model picks *what to ask*, the engine answers, and ``--check`` compares.
+    It is the shortest path carrying **both** an orthogonal and a diagonal
+    step, so one walk pins both base costs (1 and 2) and both distance
+    increments (10 and 15) at once.
+    """
+    width, height = payload["width"], payload["height"]
+    cells = gold.cells_of(bytes.fromhex(payload["cells"]), width, height)
+    units = gold.units_of(bytes.fromhex(payload["units_before"]), tables,
+                          payload["ai_level"])
+    delays = tables.delay_table()
+
+    movers = [u for u in units
+              if u["player"] not in (PLAYER_PROPS, PLAYER_ALIEN)
+              and u["mp_allowance"] > 0]
+    if not movers:
+        LOG.warning("no player-owned mover on this save; phase 10 has "
+                    "nothing to walk")
+        return []
+    mover = movers[0]
+
+    grid = gold.Grid(width, height, cells["height"], cells["field_type"],
+                     cells["action_point"])
+    hooks = gold.hooks_from_arrays(
+        width, cells["unit"],
+        visibility={u["slot"]: u["visibility"] for u in units},
+        players={u["slot"]: u["player"] for u in units},
+        obstacles=cells["obstacle"])
+    mp = mover["mp_allowance"] + MOVE_MP_MARGIN
+    fill = gold.build(grid, gold.Mover(
+        slot=mover["slot"], x=mover["x"], y=mover["y"],
+        player=mover["player"], mp=mp, special=mover["special"],
+        size=mover["size"], has_jet_pack=mover["has_jet_pack"],
+        mp_allowance=mover["mp_allowance"]), delays, hooks,
+        pass_friendlies=False)
+
+    chosen: tuple[int, list[tuple[int, int]]] | None = None
+    for index in fill.reachable_cells():
+        tx, ty = index % width, index // width
+        if (tx, ty) == (mover["x"], mover["y"]):
+            continue
+        result = gold.walk(grid, fill, mover["x"], mover["y"], tx, ty,
+                           delays, hooks)
+        if not result.ok or result.blocked:
+            continue
+        # The engine marks the path target first; a walk reads better -- and
+        # costs its steps in the right order -- source first.
+        path = [(i % width, i // width) for i in reversed(list(result.path))]
+        diagonal = sum(1 for a, b in zip(path, path[1:])
+                       if a[0] != b[0] and a[1] != b[1])
+        if diagonal == 0 or diagonal == result.steps:
+            continue
+        if chosen is None or result.steps < chosen[0]:
+            chosen = (result.steps, path)
+    if chosen is None:
+        LOG.warning("no reachable path mixes an orthogonal step with a "
+                    "diagonal one; phase 10 has nothing to walk")
+        return []
+    steps, path = chosen
+    source, destination = path[0], path[-1]
+    # A cell the walk steps *onto* and then leaves again.  The mine and one of
+    # the delay probes need one, and a two-step path is the shortest that has
+    # one at all.
+    middle = path[1] if steps >= 2 else destination
+
+    delay_type = next(
+        (t for t, d in sorted(delays.items())
+         if MOVE_DELAY_MIN <= d <= MOVE_DELAY_MAX), None)
+
+    probes: list[dict[str, Any]] = [{"tag": "plain", "writes": []}]
+    if delay_type is None:
+        LOG.warning("no field type in the control map carries a delay in "
+                    "%d..%d; the delay probes are skipped",
+                    MOVE_DELAY_MIN, MOVE_DELAY_MAX)
+    else:
+        # Source, middle and destination separate three readings that two
+        # cannot.  If only the entered cell is charged the bumps are 0/+1/+1;
+        # if only the left cell is, +1/+1/0; if both, +1/+2/+1.  docs/26 §5
+        # counts two field-type reads for the delay and does not say which
+        # cells they are.
+        for tag, cell in (("delay_source", source), ("delay_middle", middle),
+                          ("delay_dest", destination)):
+            probes.append({
+                "tag": tag,
+                "writes": [{"kind": "cell_field_type", "x": cell[0],
+                            "y": cell[1], "value": delay_type}],
+            })
+    probes.append({
+        "tag": "victory",
+        "writes": [{"kind": "cell_action_point", "x": destination[0],
+                    "y": destination[1], "value": VICTORY_POINT_UNCLAIMED}],
+    })
+    probes.append({
+        "tag": "mine",
+        "writes": [{"kind": "cell_obstacle", "x": middle[0], "y": middle[1],
+                    "value": OBSTACLE_MINE}],
+    })
+    for probe in probes:
+        probe.update({
+            "slot": mover["slot"], "mp": mp,
+            "mp_allowance": mover["mp_allowance"],
+            "sx": source[0], "sy": source[1],
+            "tx": destination[0], "ty": destination[1],
+            "steps": steps,
+            "path": [list(c) for c in path],
+            "delay_type": delay_type,
+        })
+    return probes
+
+
+def _cell_write(write: dict[str, Any], width: int) -> str:
+    """The ``setb`` address for one cell mutation."""
+    base = (write["y"] * width + write["x"]) * gold.CELL_STRIDE
+    offset = {
+        "cell_field_type": gold.CELL_FIELD_TYPE,
+        "cell_action_point": gold.CELL_ACTION_POINT,
+        "cell_obstacle": gold.CELL_OBSTACLE,
+    }[write["kind"]]
+    return f"$c0+0x{base + offset:x}"
+
+
+def move_plan(probes: list[dict[str, Any]], width: int) -> str:
+    """Phase 10 -- reload, fill, walk, mutate, and walk it for real.
+
+    **Each probe reloads the save.**  A walk moves a unit, rewrites the cells
+    it crossed and may detonate a mine; none of that is undone by writing the
+    mutated bytes back, so reloading is the only restore that covers it.  This
+    is the rule ``movemap_gold.py``'s fourth phase established.
+
+    The unit array and the generator's seed are read **either side** of the
+    call: the seed says whether the mine's shot drew at all, and reading
+    ``+0x50`` before as well as after keeps a stale distance in the save from
+    being mistaken for one this walk accumulated.
+    """
+    cells = width * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    tail = ", ".join(str(v) for v in MOVE_TAIL)
+    lines = [
+        "# Phase 10: aExecuteMove over one path, six times, differing only",
+        "# in what is written between the walk and the call.",
+        DECLARATIONS + MOVE_DECLARATIONS,
+        "--buf scratch:4",
+        "--buf wblocked:4",
+        "--buf wsteps:4",
+        "--buf ecost:4",
+        f"--code setb:{SETB_CODE}",
+        "",
+    ]
+    for i, probe in enumerate(probes):
+        slot = probe["slot"]
+        lines += [
+            f"# probe {i}: {probe['tag']}, slot {slot} "
+            f"({probe['sx']},{probe['sy']}) -> ({probe['tx']},{probe['ty']})",
+            "aSetSaveMode(0)",
+            f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+            "c0 = aGetCtrlMapElementPtr(0,0)",
+            "u0 = aGetUnitMapElementPtr(0)",
+            f"setb({_unit_addr(slot, gold.UNIT_MP)}, {probe['mp']})",
+            "aResetMoveOverlay()",
+            f"ue{i} = aGetUnitMapElementPtr({slot})",
+            f"aBuildMoveMap($ue{i}, 0, &scratch, 0) --zero scratch",
+            f"aWalkMoveMap({probe['sx']}, {probe['sy']}, {probe['tx']}, "
+            f"{probe['ty']}, &wblocked, &wsteps) --zero wblocked "
+            f"--zero wsteps --dump wblocked --dump wsteps",
+        ]
+        for write in probe["writes"]:
+            lines.append(f"setb({_cell_write(write, width)}, "
+                         f"{write['value']})")
+        lines += [
+            f"aGetUnitMapElementPtr(0) --read $u0:{units} "
+            f"--read {SEED_ADDR:#x}:8",
+            f"aExecuteMove({probe['sx']}, {probe['sy']}, {probe['tx']}, "
+            f"{probe['ty']}, &ecost, {tail}) --zero ecost --dump ecost",
+            f"aGetUnitMapElementPtr(0) --read $u0:{units} "
+            f"--read {SEED_ADDR:#x}:8",
+            f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+            "",
+        ]
+    return "\n".join(lines) + "\n"
 
 # ---------------------------------------------------------------------------
 # Reading a capture back
@@ -1007,6 +1253,52 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("phase 9 did not complete (%s: %s); interaction "
                             "stays unrecorded", type(exc).__name__, exc)
+
+    # Last, and for the reason movemap_gold's fourth phase is last: this one
+    # animates.  It is also the only phase that reloads *inside* itself, once
+    # per probe, because a walk cannot be undone by writing bytes back.
+    if not payload.get("move"):
+        probes = move_probes(payload, load_info(str(root)))
+        LOG.info("phase 10: %d aExecuteMove probe(s)", len(probes))
+        if probes:
+            try:
+                rows = gold.run_plan(game_copy, dbgcall,
+                                     move_plan(probes, payload["width"]),
+                                     "turn_move", attempts,
+                                     timeout=MOVE_TIMEOUT)
+                blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+                seeds = _reads(rows, "aGetUnitMapElementPtr",
+                               f"{SEED_ADDR:#x}")
+                cellb = _reads(rows, "aGetCtrlMapElementPtr", "$c0")
+                costs = _dumps(rows, "aExecuteMove", "ecost")
+                walked = _dumps(rows, "aWalkMoveMap", "wsteps")
+                blocked = _dumps(rows, "aWalkMoveMap", "wblocked")
+                wanted = len(probes)
+                counts = {"unit dumps": len(blocks) // 2,
+                          "seeds": len(seeds) // 2, "cell dumps": len(cellb),
+                          "costs": len(costs), "walk steps": len(walked),
+                          "walk blocked": len(blocked)}
+                bad = {k: n for k, n in counts.items() if n != wanted}
+                if bad or len(blocks) != 2 * wanted or len(seeds) != 2 * wanted:
+                    raise GoldError(
+                        f"phase 10 read {counts} for {wanted} probe(s); "
+                        f"wrong: {bad}")
+                payload["move"] = {
+                    "probes": probes,
+                    "returns": _results(rows, "aExecuteMove"),
+                    "cost": costs,
+                    "walk_steps": walked,
+                    "walk_blocked": blocked,
+                    "units_before": [b.hex() for b in blocks[0::2]],
+                    "units_after": [b.hex() for b in blocks[1::2]],
+                    "seeds_before": [b.hex() for b in seeds[0::2]],
+                    "seeds_after": [b.hex() for b in seeds[1::2]],
+                    "cells_after": [b.hex() for b in cellb],
+                }
+                _write(payload, out)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("phase 10 did not complete (%s: %s); the walk "
+                            "stays unpinned", type(exc).__name__, exc)
     return 0
 
 
@@ -1699,6 +1991,14 @@ def run_check(capture_path: Path, root: Path) -> int:
              ammo_after[sl + 0x3D], mag,
              f"weapon magazine is {mag}")
 
+    # --- the walk: aExecuteMove, probe by probe ---------------------------
+    move = payload.get("move")
+    if not move:
+        c.check("move.captured", False,
+                "the capture holds no aExecuteMove phase")
+    else:
+        _move_checks(c, payload, move, tables)
+
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:
         c.check("recompute.captured", False,
@@ -1722,6 +2022,131 @@ def run_check(capture_path: Path, root: Path) -> int:
                  wanted[-1],
                  "+0x15 holds exactly what aGetMovePoints returned")
     return c.report()
+
+
+def _move_checks(c: Checker, payload: dict[str, Any], move: dict[str, Any],
+                 tables: BalanceTables) -> None:
+    """Phase 10 against :func:`inclib.movemap.execute`, probe by probe.
+
+    Every probe walks the *same* reconstructed path and differs only in one
+    byte written between the walk and the call, so a disagreement names the
+    arm that caused it rather than "something about movement".
+    """
+    width, height = payload["width"], payload["height"]
+    base = gold.cells_of(bytes.fromhex(payload["cells"]), width, height)
+    delays = tables.delay_table()
+    stride = gold.UNIT_STRIDE
+    probes = move["probes"]
+
+    c.check("move.probed", len(probes) > 0,
+            f"{len(probes)} aExecuteMove probe(s) on one path")
+    c.expect("move.the_walk_found_the_same_path",
+             sorted(set(move["walk_steps"])), [probes[0]["steps"]],
+             "every probe re-fills and re-walks, and must get the same path")
+    c.expect("move.nothing_was_in_the_way", sorted(set(move["walk_blocked"])),
+             [0])
+
+    costs: dict[str, int] = {}
+    for i, probe in enumerate(probes):
+        tag = probe["tag"]
+        slot = probe["slot"]
+        before = bytes.fromhex(move["units_before"][i])
+        after = bytes.fromhex(move["units_after"][i])
+        at = slot * stride
+        costs[tag] = move["cost"][i]
+
+        cells = dict(base)
+        for key in ("field_type", "action_point", "obstacle"):
+            cells[key] = list(base[key])
+        for write in probe["writes"]:
+            key = {"cell_field_type": "field_type",
+                   "cell_action_point": "action_point",
+                   "cell_obstacle": "obstacle"}[write["kind"]]
+            cells[key][write["y"] * width + write["x"]] = write["value"]
+
+        grid = gold.Grid(width, height, cells["height"], cells["field_type"],
+                         cells["action_point"])
+        units = gold.units_of(before, tables, payload["ai_level"])
+        hooks = gold.hooks_from_arrays(
+            width, cells["unit"],
+            visibility={u["slot"]: u["visibility"] for u in units},
+            players={u["slot"]: u["player"] for u in units},
+            obstacles=cells["obstacle"])
+        mover_row = next(u for u in units if u["slot"] == slot)
+        mover = gold.Mover(
+            slot=slot, x=mover_row["x"], y=mover_row["y"],
+            player=mover_row["player"], mp=mover_row["mp"],
+            special=mover_row["special"], size=mover_row["size"],
+            has_jet_pack=mover_row["has_jet_pack"],
+            mp_allowance=mover_row["mp_allowance"])
+        # The fill and the walk ran on the **unmutated** map, which is what
+        # the plan does: every write lands after them.
+        clean = gold.Grid(width, height, base["height"], base["field_type"],
+                          base["action_point"])
+        clean_hooks = gold.hooks_from_arrays(
+            width, base["unit"],
+            visibility={u["slot"]: u["visibility"] for u in units},
+            players={u["slot"]: u["player"] for u in units},
+            obstacles=base["obstacle"])
+        fill = gold.build(clean, mover, delays, clean_hooks,
+                          pass_friendlies=False)
+        walked = gold.walk(clean, fill, probe["sx"], probe["sy"],
+                           probe["tx"], probe["ty"], delays, clean_hooks)
+        model = movemapmod.execute(grid, hooks, delays, mover, walked)
+
+        c.expect(f"move.{tag}.returns", int(model.ok),
+                 int(bool(move["returns"][i])))
+        c.expect(f"move.{tag}.cost", model.cost, move["cost"][i])
+        c.expect(f"move.{tag}.position", (model.x, model.y),
+                 (after[at + gold.UNIT_X], after[at + gold.UNIT_Y]))
+        c.expect(f"move.{tag}.walked",
+                 before[at + 0x50] + model.walked, after[at + 0x50],
+                 "unit[+0x50], in tenths of a field")
+        c.expect(f"move.{tag}.facing", model.facing, after[at + 0x46])
+        # The seam docs/23 §5.3 draws: the routine reports and the caller
+        # spends.  The one exception is the mine, which zeroes +0x15 itself.
+        if model.movement_zeroed:
+            c.expect(f"move.{tag}.movement_zeroed", after[at + gold.UNIT_MP],
+                     0, "a mine zeroes +0x15 inside aExecuteMove")
+        else:
+            c.expect(f"move.{tag}.reports_without_spending",
+                     after[at + gold.UNIT_MP], before[at + gold.UNIT_MP],
+                     "u->mp is untouched by the call")
+        c.expect(f"move.{tag}.drew_nothing", move["seeds_after"][i],
+                 move["seeds_before"][i],
+                 "aRandom's seed is bit-identical either side: a walk draws "
+                 "nothing at all")
+
+        cells_after = gold.cells_of(bytes.fromhex(move["cells_after"][i]),
+                                    width, height)
+        if any(e.kind == "mine" for e in model.events):
+            # The other half of the evidence that no ParaBomb fired.  A shot
+            # of 100 damage at 100 hit (docs/21 §4) cannot leave an 11-point
+            # soldier untouched, and a mine that went off would not still be
+            # standing on the cell.
+            mine = next(e for e in model.events if e.kind == "mine")
+            c.expect(f"move.{tag}.the_mover_is_unhurt",
+                     after[at + gold.UNIT_HP], before[at + gold.UNIT_HP],
+                     "docs/26 §6.1 predicts a 100-damage ParaBomb here")
+            c.expect(f"move.{tag}.the_mine_is_still_there",
+                     cells_after["obstacle"][mine.y * width + mine.x],
+                     movemapmod.OBSTACLE_MINE,
+                     "cell[+0x10] is untouched by the walk that stopped on it")
+        for index, value in model.action_point_writes:
+            c.expect(f"move.{tag}.claimed_{index}",
+                     cells_after["action_point"][index], value,
+                     "docs/26 §6.1 -- 0x51 + player")
+
+    # The three delay probes are the phase's own experiment, and they are read
+    # as differences from the control rather than as absolutes.
+    if {"plain", "delay_source", "delay_middle", "delay_dest"} <= costs.keys():
+        c.expect("move.delay_is_charged_on_the_cell_entered",
+                 (costs["delay_source"] - costs["plain"],
+                  costs["delay_middle"] - costs["plain"],
+                  costs["delay_dest"] - costs["plain"]),
+                 (0, 1, 1),
+                 "source +0, middle +1, destination +1 -- the cell being "
+                 "left is not charged, which docs/26 §5 could not say")
 
 
 def main(argv: list[str] | None = None) -> int:

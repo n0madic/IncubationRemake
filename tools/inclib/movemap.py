@@ -888,3 +888,215 @@ def cases_document(oracle: str, source: str,
         "source": source,
         "cases": cases,
     }
+
+
+# ---------------------------------------------------------------------------
+# aExecuteMove -- walking the path the walk reconstructed
+# ---------------------------------------------------------------------------
+
+#: ``0x0046E645`` / ``0x0046E63B`` -- what a step costs before the field
+#: type's delay column is added to it.
+STEP_COST_ORTHOGONAL = 1
+STEP_COST_DIAGONAL = 2
+
+#: ``docs/10`` §5.10 -- ``unit[+0x50]``, the distance walked this turn, in
+#: tenths of a field.  ``0x0046E7B7`` adds these.
+STEP_TENTHS_ORTHOGONAL = 10
+STEP_TENTHS_DIAGONAL = 15
+
+#: ``docs/26`` §6.1 -- the VictoryPoint band and the two bases it rewrites to.
+VICTORY_BAND = range(0x50, 0x5A)
+VICTORY_A_LAST = 0x54
+VICTORY_A_BASE = 0x51
+VICTORY_B_FIRST = 0x55
+VICTORY_B_LAST = 0x59
+VICTORY_B_BASE = 0x56
+
+#: ``docs/26`` §5 -- the field type that starts a teleport, and the only one
+#: ``aExecuteMove`` tests for other than through the delay column.
+FIELD_TELEPORT_IN = 9
+
+#: ``docs/21`` §4 -- the weapon a mine resolves as, 100 damage at 100 hit.
+MINE_WEAPON = 36
+
+#: Which cell of a step the delay column is charged for -- **measured**.
+#: ``docs/26`` §5 reads two field-type tests for the delay out of
+#: ``0x0046EA4B`` and does not say which cells they are, so
+#: ``tools/turn_gold.py`` phase 10 wrote a delay-1 type onto the source, the
+#: intermediate and the destination of one two-step path and asked the engine
+#: what each cost.  Against a baseline of 3:
+#:
+#: ===============  =====  ==========================================
+#: probe            cost   reading it rules out
+#: ===============  =====  ==========================================
+#: ``plain``          3    --
+#: ``delay_source``   3    the cell being **left** is charged
+#: ``delay_middle``   4    --
+#: ``delay_dest``     4    --
+#: ===============  =====  ==========================================
+#:
+#: The cell being **entered** is charged, and only it: a cell that is entered
+#: and then left again costs its delay once, and the cell the walk starts on
+#: costs nothing.  The three constants are kept because the reading is what a
+#: reader will want to check, not because the value is in doubt.
+DELAY_ON_ENTERED = "entered"
+DELAY_ON_LEFT = "left"
+DELAY_ON_BOTH = "both"
+DELAY_CHARGED_ON = DELAY_ON_ENTERED
+
+#: :data:`inclib.lev.FACING_STEPS` inverted -- a step to the facing that takes
+#: it.  Kept here rather than imported so this module has no dependency on the
+#: file-format side, and asserted equal to it by ``movemap_runtime.py``.
+FACING_OF_STEP = {(0, 1): 0, (1, 1): 6, (1, 0): 3, (1, -1): 4,
+                  (0, -1): 2, (-1, -1): 7, (-1, 0): 1, (-1, 1): 5}
+
+
+@dataclass(frozen=True)
+class MoveEvent:
+    """One thing that happened to the walker on one cell."""
+
+    kind: str
+    x: int
+    y: int
+    #: The action point or obstacle that caused it, or the weapon a mine fired.
+    detail: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": self.kind, "x": self.x, "y": self.y,
+                "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class ExecuteResult:
+    """What ``aExecuteMove`` reports, and what it left on the map.
+
+    **The cost is reported, not spent.**  ``docs/23`` §5.3 and ``docs/93`` §11:
+    ``u->mp`` is untouched by the call and the caller does
+    ``mp = 0 if cost > mp else mp - cost`` afterwards.  This model keeps that
+    seam -- :attr:`cost` comes back and :attr:`mp_after` is absent -- because a
+    remake that charged inside its own move routine would double-charge the
+    AI's path and leave the player's uncharged.
+    """
+
+    #: The routine's own return value.  FALSE does **not** mean nothing
+    #: happened: a mine ends the walk with the unit moved, its distance
+    #: accumulated and its facing turned, and ``aExecuteMove`` still answers
+    #: FALSE.  :attr:`steps` is what says how far it got.
+    ok: bool
+    x: int
+    y: int
+    #: What argument 5 receives -- **0** on the mine arm, which is not the
+    #: cost of the steps that were taken.
+    cost: int
+    steps: int
+    #: The increment to ``unit[+0x50]``, in tenths of a field.
+    walked: int
+    #: ``unit[+0x46]`` after the walk: the facing of the last step taken.
+    facing: int
+    #: ``(cell index, new action point)`` for every VictoryPoint claimed.
+    action_point_writes: list[tuple[int, int]] = field(default_factory=list)
+    events: list[MoveEvent] = field(default_factory=list)
+    #: Set when a mine stopped the walk: ``docs/26`` §6.1 zeroes the mover's
+    #: movement points, which the caller applies along with the cost.
+    movement_zeroed: bool = False
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok, "x": self.x, "y": self.y, "cost": self.cost,
+            "steps": self.steps, "walked": self.walked, "facing": self.facing,
+            "action_point_writes": [list(w) for w in self.action_point_writes],
+            "events": [e.to_dict() for e in self.events],
+            "movement_zeroed": self.movement_zeroed,
+        }
+
+
+def _delay_of(grid: Grid, delays: Mapping[int, int], index: int) -> int:
+    return delays.get(grid.field_types[index], DELAY_IMPASSABLE)
+
+
+def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
+            mover: Mover, walked: WalkResult) -> ExecuteResult:
+    """``aExecuteMove(sx, sy, tx, ty, &cost, 1, 255, 0)`` -- ``0x0046E220``.
+
+    ``walked`` is the :func:`walk` this is following, and its ``path`` is in
+    the engine's own order -- target first, source last -- so the steps are
+    taken over the reverse of it.  That reversal is where an off-by-one would
+    live, which is why it happens here once rather than at every call site.
+
+    Three things happen per step, in this order (``docs/26`` §6.1): the cost
+    and the distance accumulate, a VictoryPoint under the arriving unit is
+    claimed, and a mine under it goes off -- and a mine ends the walk.
+    """
+    if not walked.ok or not walked.path:
+        return ExecuteResult(ok=False, x=mover.x, y=mover.y, cost=0, steps=0,
+                             walked=0, facing=0,
+                             reason="no path to follow")
+    route = list(reversed(walked.path))
+    x, y = route[0] % grid.width, route[0] // grid.width
+    if (x, y) != (mover.x, mover.y):
+        raise MoveMapError(
+            f"the path starts at ({x},{y}) but the mover is at "
+            f"({mover.x},{mover.y})")
+
+    cost = 0
+    tenths = 0
+    steps = 0
+    facing = 0
+    writes: list[tuple[int, int]] = []
+    events: list[MoveEvent] = []
+    zeroed = False
+    here = route[0]
+    for index in route[1:]:
+        nx, ny = index % grid.width, index // grid.width
+        dx, dy = nx - x, ny - y
+        if (dx, dy) not in FACING_OF_STEP:
+            raise MoveMapError(
+                f"({x},{y}) -> ({nx},{ny}) is not a step to a neighbour")
+        diagonal = dx != 0 and dy != 0
+        cost += STEP_COST_DIAGONAL if diagonal else STEP_COST_ORTHOGONAL
+        if DELAY_CHARGED_ON in (DELAY_ON_ENTERED, DELAY_ON_BOTH):
+            cost += _delay_of(grid, delays, index)
+        if DELAY_CHARGED_ON in (DELAY_ON_LEFT, DELAY_ON_BOTH):
+            cost += _delay_of(grid, delays, here)
+        tenths += STEP_TENTHS_DIAGONAL if diagonal else STEP_TENTHS_ORTHOGONAL
+        facing = FACING_OF_STEP[(dx, dy)]
+        steps += 1
+        x, y, here = nx, ny, index
+
+        action_point = grid.action_points[index]
+        if action_point in VICTORY_BAND and mover.player != PLAYER_ALIEN:
+            claimed = action_point
+            if claimed <= VICTORY_A_LAST:
+                claimed = VICTORY_A_BASE + mover.player
+            if VICTORY_B_FIRST <= claimed <= VICTORY_B_LAST:
+                claimed = VICTORY_B_BASE + mover.player
+            writes.append((index, claimed))
+            events.append(MoveEvent("victory_point", nx, ny, claimed))
+
+        if grid.field_types[index] == FIELD_TELEPORT_IN:
+            events.append(MoveEvent("teleporter", nx, ny,
+                                    grid.action_points[index]))
+
+        if hooks.obstacle_at(nx, ny) == OBSTACLE_MINE:
+            # **Measured, and not what docs/26 §6.1 predicted.**  A mine under
+            # the arriving unit ends the walk there, zeroes ``+0x15`` *inside*
+            # the routine and makes it return FALSE with **nothing written
+            # back through argument 5** -- so the caller's
+            # ``mp -= cost`` charges zero, on top of a unit that already has
+            # none.  What did **not** happen in the native probe is the
+            # ParaBomb: ``aRandom``'s seed was bit-identical either side, the
+            # mover's hit points did not move, and the mine was still on the
+            # cell afterwards.  The shot is therefore *not* modelled here; the
+            # event says a mine was reached, not that one went off.
+            events.append(MoveEvent("mine", nx, ny, MINE_WEAPON))
+            return ExecuteResult(ok=False, x=nx, y=ny, cost=0, steps=steps,
+                                 walked=tenths, facing=facing,
+                                 action_point_writes=writes, events=events,
+                                 movement_zeroed=True,
+                                 reason="a mine ended the walk")
+
+    return ExecuteResult(ok=True, x=x, y=y, cost=cost, steps=steps,
+                         walked=tenths, facing=facing,
+                         action_point_writes=writes, events=events,
+                         movement_zeroed=zeroed)

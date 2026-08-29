@@ -19,6 +19,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
 | `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
 | `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **recorded, not gated**: there is no executable interaction model to diff against yet |
+| `aExecuteMove` | `0x0046E220` | six walks of one two-step path, differing only in a byte written **between the walk and the call**: the step costs, the distance, the facing, the delay column, a VictoryPoint and a mine |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -66,6 +67,40 @@ correct behaviour, and reading the unchanged byte as a defect is the mistake
 this note exists to prevent. A probe that showed the write would need a unit
 that has spent a round first.
 
+### What phase 10 settled
+
+The six probes walk the identical reconstructed path — `(2,0)` → `(3,0)`
+orthogonal, `(3,0)` → `(4,1)` diagonal — and every mutation is written *after*
+the fill and the walk, so nothing about the route can differ between them. That
+is not tidiness: the fill refuses to step a non-alien mover onto a mine
+([`docs/23`](../../../docs/23-ai-system.md) §7.1), so a mine written before it
+would simply be routed around and the arm would never run.
+
+| probe | cost | ends at | `+0x50` | `+0x46` | `+0x15` | returns |
+|---|---|---|---|---|---|---|
+| `plain` | 3 | (4,1) | 25 | 6 | 5, unchanged | 1 |
+| `delay_source` | 3 | (4,1) | 25 | 6 | 5, unchanged | 1 |
+| `delay_middle` | **4** | (4,1) | 25 | 6 | 5, unchanged | 1 |
+| `delay_dest` | **4** | (4,1) | 25 | 6 | 5, unchanged | 1 |
+| `victory` | 3 | (4,1) | 25 | 6 | 5, unchanged | 1 |
+| `mine` | **0** | **(3,0)** | **10** | **3** | **0** | **0** |
+
+Four readings come out of that table. The step cost is `base + delay(entered)`
+with `base` 1 and 2 — the **cell being left is not charged**, which
+[`docs/26`](../../../docs/26-interaction.md) §5's "twice for the delay" could
+not decide. The distance is 10 and 15 tenths. The facing is the last step's,
+which is the second native confirmation of
+[`inclib/lev.py`](../../../tools/inclib/lev.py)'s `FACING_STEPS` — the `mine`
+row is the one that proves it, because it stopped on the orthogonal step and
+came back holding 3 while every other probe ended on the diagonal holding 6.
+And a VictoryPoint at `0x50` walked onto by player 0 becomes `0x51`, for free.
+
+The mine row is the one that contradicts a published claim, and it is written
+up in [`docs/26`](../../../docs/26-interaction.md) §6.1: the walk stops, the
+movement points are zeroed *inside* the routine, FALSE comes back with a cost
+of 0 — and no `ParaBomb` fires. `aRandom`'s seed is bit-identical either side,
+the soldier's 11 hit points are untouched, and the mine is still on the cell.
+
 ### What the capture does *not* exercise
 
 Stated because a green check over a corpus that never reaches a branch is
@@ -111,6 +146,18 @@ exactly the kind of check this repository treats as a bug:
 * **Only one entry point of one script is run natively.** The other six labels
   and the other 152 missions stay corpus-checked; `tools/lcl_runtime.py
   --check` is what covers those, at 942 invocations.
+* **The mine's detonation never runs** (§6.1's new open question). The stop is
+  measured; the shot is measured *not* to have happened, which is a different
+  and weaker statement than knowing why. The large-unit eight-neighbour
+  trigger `0x0047A4B0` is untouched as well — the mover is a small unit.
+* **No teleporter and no ladder is walked.** `_C_141` carries neither, and
+  unlike the mine and the VictoryPoint those two cannot be produced by writing
+  one byte between the walk and the call: a teleporter needs a paired exit
+  with a matching key, and the ladder half is already pinned by
+  `movemap_gold.py`'s own fourth phase.
+* **The walk is never blocked and never runs out of budget.** All six probes
+  report `blocked = 0` and two steps; the arms `aWalkMoveMap` fails on stay
+  corpus-checked.
 * **`aRefreshPlayer(252)` is not captured at all**, deliberately:
   [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
   in the current-player byte, so it is a call the engine itself never makes.
