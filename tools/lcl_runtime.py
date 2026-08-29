@@ -63,9 +63,11 @@ KNOWN_ABORTS = {
 #: corpus has **zero** such lines, checked below, so the flat form is exact.
 
 
-def _mission_world(root: Path, name: str, tables: Any) -> runtime.LclWorld:
+def _mission_world(root: Path, name: str, tables: Any, turn: int = 1,
+                   player: int = 0,
+                   seed: float = 0.0) -> runtime.LclWorld:
     bm = load_lev(str(root / "Missions" / f"{name}.lev"))
-    return runtime.LclWorld(bm, tables)
+    return runtime.LclWorld(bm, tables, turn=turn, player=player, seed=seed)
 
 
 def _script_paths(root: Path) -> list[Path]:
@@ -432,6 +434,166 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     return c.report(quiet_ok=False)
 
 
+# ---------------------------------------------------------------------------
+# Re-expressing a run for the GDScript side
+# ---------------------------------------------------------------------------
+
+CASES_SCHEMA = "incubation.lcl-cases/1"
+
+#: The missions the converter ships, and therefore the ones the GDScript replay
+#: can reach.  Corpus-wide ``N/N`` stays here, in Python: the cache holds four
+#: maps and running 153 scripts on the GDScript side would need 153 maps in it.
+DEFAULT_MISSIONS = ("_C_140", "_C_115", "_C_141", "_C_100")
+
+#: The `(turn, player)` settings each call type is replayed with.
+#:
+#: **Not just turn 1.**  `_C_140`'s `NEXT TURN` opens two tubes on turn 4 and
+#: its `NEXT PLAYER` inserts reinforcements from turn 5; a case file emitted at
+#: turn 1 alone reaches neither, so every run comes back with an empty cell
+#: delta and the replay compares nothing to nothing.
+CASE_TURNS = ((1, 0), (4, 0), (4, 255), (5, 0), (8, 0))
+
+#: The seed every case starts from.  **Not 0**: zero is a fixed point in
+#: `aRandom` (``inclib.rng``), so `SetVarRandom` would return its base on every
+#: draw and a script that branches on one would take the same arm every time.
+CASE_SEED = 1.0
+
+#: The unit columns a case carries.  ``docs/20``'s commands read or write every
+#: one of them; ``hp`` doubles as the "is this slot live" test the queries use.
+CASE_UNIT_FIELDS = ("slot", "player", "type_id", "x", "y", "hit_points",
+                    "group", "ammo", "ep", "tp", "pool_flag", "speech", "name")
+
+
+def _case_units(world: runtime.LclWorld) -> list[dict[str, Any]]:
+    out = []
+    for slot in sorted(world.units):
+        unit = world.units[slot]
+        out.append({name: getattr(unit, name) for name in CASE_UNIT_FIELDS})
+    return out
+
+
+def _case_cells(world: runtime.LclWorld) -> dict[str, list[int]]:
+    return {"height": list(world.cell_height),
+            "field_type": list(world.ctrl_type),
+            "action_point": list(world.actpt),
+            "unit": list(world.unit_at)}
+
+
+def _delta(before: dict[str, list[int]],
+           after: dict[str, list[int]]) -> list[list[int]]:
+    """``[array, index, value]`` for every cell the run changed.
+
+    A delta and not a second copy of the map: `_C_115` is 33x30, and six call
+    types times four missions times four arrays of 990 is a megabyte of JSON
+    saying almost nothing.
+    """
+    names = sorted(before)
+    out: list[list[int]] = []
+    for i, name in enumerate(names):
+        old, new = before[name], after[name]
+        for index in range(len(old)):
+            if old[index] != new[index]:
+                out.append([i, index, new[index]])
+    return out
+
+
+def emit_cases(root: Path, out: Path, missions: list[str]) -> int:
+    """One document per mission, with every entry point replayed on it.
+
+    Each case carries **the world it ran on**, not a reference to one: the
+    `.lev` a mission ships and the `map.json` the converter writes are built
+    from the same file but not from the same *set* of records -- `active_units`
+    is "has a name" and this model's roster is "has hit points", and `_C_140`
+    differs by two slots.  Comparing two worlds that disagree about the roster
+    would report an interpreter bug that is really a loading difference.
+    """
+    tables = load_info_file(str(root / "DATA" / "Info.lcl"))
+    documents: list[dict[str, Any]] = []
+    for name in missions:
+        lev = root / "Missions" / f"{name}.lev"
+        script = root / "Missions" / f"{name}.lcl"
+        if not (lev.is_file() and script.is_file()):
+            raise SystemExit(f"{name}: no {lev.name} or no {script.name}")
+        document = _document(script)
+        world = _mission_world(root, name, tables)
+        base_cells = _case_cells(world)
+        entry = {
+            "mission": name,
+            "script": document,
+            "width": world.width,
+            "height": world.height,
+            "cells": base_cells,
+            "units": _case_units(world),
+            "types": _case_types(world, tables),
+            # The header's own successor. `EnterNameOfNextMap` overwrites it,
+            # and a mission that never calls the command still names one, so a
+            # replay that started from an empty string would disagree with
+            # every case that does not write it.
+            "next_map": world.next_map,
+            "cases": [],
+        }
+        for call in runtime.MISSION_CALL_TYPES:
+            for turn, player in CASE_TURNS:
+                fresh = _mission_world(root, name, tables, turn=turn,
+                                       player=player, seed=CASE_SEED)
+                env = runtime.mission_env(call, turn=turn, player=player)
+                outcome = runtime.run(document, fresh, env)
+                entry["cases"].append({
+                    "call": call,
+                    "turn": turn,
+                    "player": player,
+                    "env": {str(k): v for k, v in env.items()},
+                    "outcome": outcome.to_dict(),
+                    "game_control": list(fresh.game_control),
+                    "next_map": fresh.next_map,
+                    "turn_control": fresh.turn_control,
+                    "rng": {"seed": fresh.rng.seed,
+                            "calls": fresh.rng.calls},
+                    "crand": {"seed": fresh.crand.seed,
+                              "calls": fresh.crand.calls},
+                    "cell_delta": _delta(base_cells, _case_cells(fresh)),
+                    "units_after": _case_units(fresh),
+                })
+        documents.append(entry)
+    payload = {"schema": CASES_SCHEMA,
+               "ai_level": runtime.DEFAULT_AI_LEVEL,
+               "cell_arrays": sorted(_case_cells(
+                   _mission_world(root, missions[0], tables))),
+               "missions": documents}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    cases = sum(len(d["cases"]) for d in documents)
+    LOG.info("wrote %s (%d mission(s), %d case(s))", out, len(documents),
+             cases)
+    return 0
+
+
+def _case_types(world: runtime.LclWorld,
+                tables: Any) -> list[dict[str, Any]]:
+    """The unit rows the cases reference, carried **with** them.
+
+    ``hp_max`` is what a spawn writes and ``species`` is what ``UnitOnField``
+    filters on, so a case whose units came from the capture and whose columns
+    came from a separate file would not be a byte-identical input.  Every type
+    the script can insert is in here as well as every type already placed,
+    because a spawn of an unknown type is a different unit.
+    """
+    ids = {u.type_id for u in world.units.values()}
+    ids |= set(tables.units)
+    rows = []
+    for type_id in sorted(ids):
+        row = tables.units.get(type_id)
+        if row is None:
+            continue
+        rows.append({"id": type_id, "mp_max": row.mp_max,
+                     "fp_max": row.fp_max, "hp_max": row.hp_max,
+                     "special": row.special, "size": row.size,
+                     "species": row.species, "height": row.height,
+                     "model": row.model, "description": row.description})
+    return rows
+
+
 def run_one(path: Path, root: Path, call: int, as_json: bool) -> int:
     tables = load_info_file(str(root / "DATA" / "Info.lcl"))
     document = _document(path)
@@ -465,6 +627,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="game root, for the .lev and the balance tables")
     ap.add_argument("--call", type=int, default=runtime.CALL_NEXT_TURN,
                     help="call type to enter with (docs/20 section 5)")
+    ap.add_argument("--emit-cases", metavar="OUT",
+                    help="write the GDScript replay case file")
+    ap.add_argument("--missions", default=",".join(DEFAULT_MISSIONS),
+                    help="which missions --emit-cases replays")
     ap.add_argument("--stats", action="store_true",
                     help="with --check, print per-command usage")
     ap.add_argument("--json", action="store_true")
@@ -474,6 +640,9 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s: %(message)s")
 
+    if args.emit_cases:
+        return emit_cases(Path(args.root), Path(args.emit_cases),
+                          [m for m in args.missions.split(",") if m])
     if args.check:
         return run_check(Path(args.check), args.stats)
     if not args.script:

@@ -48,6 +48,7 @@ const LEAST_CHECKS: Dictionary = {
 	"handover": 150,
 	"combat": 95,
 	"combat_native": 22,
+	"lcl": 30,
 	"save": 17,
 	"cache": 10,
 	"warnings_gate": 10,

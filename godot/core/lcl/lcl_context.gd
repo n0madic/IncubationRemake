@@ -79,6 +79,26 @@ func kill(unit: UnitState) -> void:
 			state.set_unit(at, MapState.NO_UNIT)
 
 
+## docs/10 section 5 -- the unit array is 200 fixed records.
+const UNIT_SLOTS: int = 200
+
+
+## The lowest slot holding no **live** unit.
+##
+## **UNVERIFIED.** docs/20 section 7.4 records everything `0x00479CF0` writes
+## and not which index it writes it to; the array is 200 fixed records, so the
+## lowest free one is the natural reading and it is what both implementations
+## use. See [method spawn] for why the rule matters more than the answer.
+func free_slot() -> int:
+	for slot: int in range(UNIT_SLOTS):
+		if not units.has(slot):
+			return slot
+		var unit: UnitState = units[slot]
+		if not unit.is_alive():
+			return slot
+	return UNIT_SLOTS - 1
+
+
 ## Every cell whose action point is in the inclusive range.
 func cells_with_actpt(low: int, high: int) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
@@ -96,9 +116,12 @@ func cells_with_actpt(low: int, high: int) -> PackedInt32Array:
 ## skill-point pool, and an empty name is filled from the unit type's
 ## description string.
 ##
-## The slot is `max(existing) + 1`, which is the rule the executable model uses
-## and the one a replay depends on: a spawn that landed in a different slot
-## would move the cell link, the roster order and the canonical hash with it.
+## The slot is the **lowest in 0..199 holding no live unit**, which is
+## [method free_slot]'s rule and what `inclib/lcl_runtime.py` uses. "One past
+## the highest key" would have been simpler and wrong: a `.lev` carries named
+## slots whose hit points are zero -- `_C_140` has two -- so the two
+## implementations would have picked 10 and 12 for the same spawn, and nothing
+## downstream would have said so.
 func spawn(spawn_player: int, type_id: int, name: String, rank: int,
 		pool_flag: int, x: int, y: int) -> UnitState:
 	var tx: int = -1
@@ -116,11 +139,8 @@ func spawn(spawn_player: int, type_id: int, name: String, rank: int,
 					ty = y + dy
 	if tx < 0:
 		return null
-	var highest: int = -1
-	for slot: Variant in units:
-		highest = maxi(highest, DictRead.as_int(slot))
 	var unit: UnitState = UnitState.new()
-	unit.slot = highest + 1
+	unit.slot = free_slot()
 	unit.player = spawn_player
 	unit.type_id = type_id
 	unit.x = tx

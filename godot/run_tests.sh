@@ -66,6 +66,13 @@ rm -f "$HERE/generated/turn/handover.json"
     && cp "$REPO/tests/fixtures/turn/cases_handover.json" \
           "$HERE/generated/turn/handover.json"
 
+# The LCL replay cases, on the same terms again.
+mkdir -p "$HERE/generated/lcl"
+rm -f "$HERE/generated/lcl/lcl.json"
+[ -f "$REPO/tests/fixtures/lcl/cases_lcl.json" ] \
+    && cp "$REPO/tests/fixtures/lcl/cases_lcl.json" \
+          "$HERE/generated/lcl/lcl.json"
+
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1
 

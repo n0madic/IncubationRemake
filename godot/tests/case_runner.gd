@@ -309,3 +309,68 @@ static func combat_unit(record: Dictionary) -> UnitState:
 	unit.skills = DictRead.to_int32(record["skills"])
 	unit.equipment = DictRead.to_int32(record["equipment_ids"])
 	return unit
+
+
+## The world one LCL replay case runs on.
+##
+## A third builder, and for the reason the case file states: the `.lev` a
+## mission ships and the `map.json` the converter writes are built from the same
+## file but not from the same **set** of records -- `active_units` is "has a
+## name" and the interpreter's roster is "has hit points", and `_C_140` differs
+## by two slots. The case carries its own world so the two implementations
+## cannot disagree about what they were given.
+static func build_lcl_world(case: Dictionary) -> Dictionary:
+	var width: int = DictRead.as_int(case["width"])
+	var height: int = DictRead.as_int(case["height"])
+	var cells: Dictionary = DictRead.as_dict(case["cells"])
+	var zeros: Array = []
+	var links: Array = []
+	for _i: int in range(width * height):
+		zeros.append(0)
+		links.append(-1)
+	var document: Dictionary = {
+		"width": width, "height": height,
+		"header": {
+			"name": DictRead.as_string(case["mission"]), "next_map": "",
+			"map_type": 0, "mission_id": 0, "world_set": "", "world_scene": "",
+			"camera_height": 0, "equip_points": [0, 0, 0, 0],
+			"skill_level": 0, "tech_level": 0,
+		},
+		"cells": {
+			"height": cells["height"], "field_type": cells["field_type"],
+			"action_point": cells["action_point"], "unit": cells["unit"],
+			"effect0": zeros, "effect1": zeros, "effect2": zeros,
+			"effect3": zeros, "land": zeros, "start_index": links,
+			"decal0": zeros, "decal1": zeros,
+		},
+	}
+	var res: MapResource = MapResource.from_document(document)
+	var units: Dictionary = {}
+	for entry: Variant in DictRead.as_array(case["units"]):
+		var unit: UnitState = lcl_unit(DictRead.as_dict(entry))
+		units[unit.slot] = unit
+	return {
+		"state": MapState.from_resource(res),
+		"units": units,
+		"unit_types": UnitTypeTable.from_rows(
+			DictRead.as_array(case["types"])),
+	}
+
+
+## One `CASE_UNIT_FIELDS` record as a [UnitState].
+static func lcl_unit(record: Dictionary) -> UnitState:
+	var unit: UnitState = UnitState.new()
+	unit.slot = DictRead.as_int(record["slot"])
+	unit.player = DictRead.as_int(record["player"])
+	unit.type_id = DictRead.as_int(record["type_id"])
+	unit.x = DictRead.as_int(record["x"])
+	unit.y = DictRead.as_int(record["y"])
+	unit.hp = DictRead.as_int(record["hit_points"])
+	unit.group = DictRead.as_int(record["group"])
+	unit.ammo = DictRead.as_int(record["ammo"])
+	unit.ep = DictRead.as_int(record["ep"])
+	unit.tp = DictRead.as_int(record["tp"])
+	unit.pool_flag = DictRead.as_int(record["pool_flag"])
+	unit.speech = DictRead.as_int(record["speech"])
+	unit.name = DictRead.as_string(record["name"])
+	return unit

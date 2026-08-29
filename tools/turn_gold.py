@@ -1624,6 +1624,30 @@ def _combat_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
                        for s in slots],
         })
 
+    # The LCL phase, for the GDScript interpreter: the same entry point, the
+    # same seed, and the engine's own answers.  The mission's *world* is not
+    # emitted here -- `lcl_runtime.py --emit-cases` carries `_C_141`'s -- but
+    # the units the engine actually held are, because the shipped `.lev` is not
+    # the world the save was taken on (ten crates and nothing else) and running
+    # the model on that would take a different arm of the script.
+    lcl_case: dict[str, Any] = {}
+    lcl = payload.get("lcl")
+    if lcl:
+        lcl_case = {
+            "entry": lcl["entry"],
+            "player": lcl.get("player", 0),
+            "turn": payload["turn"],
+            "seed_before": _seed(lcl["seed_before"]),
+            "seed_after": _seed(lcl["seed_after"]),
+            "slots_before": list(lcl["slots_before"]),
+            "slots_after": list(lcl["slots_after"]),
+            # The engine's own statement that nothing moved: the cell block and
+            # the unit array came back byte-identical, so the model must leave
+            # them alone too.
+            "world_unchanged": [lcl["cells_after"] == payload["cells"],
+                                lcl["units_after"] == payload["units_before"]],
+        }
+
     return {
         "name": f"{MISSION}_combat",
         "width": width, "height": height,
@@ -1639,6 +1663,7 @@ def _combat_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
         "game_mode": 1,
         "los_mode": LOS_MODE,
         "hit": hit,
+        "lcl": lcl_case,
         "fog": fog,
         "overheat": overheat,
         "attack": attack,

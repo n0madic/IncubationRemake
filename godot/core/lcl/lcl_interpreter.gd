@@ -228,26 +228,32 @@ func _predicate(instr: Dictionary) -> bool:
 		"VarCmpVar":
 			return _get_local(_v(instr, 0)) == _get_local(_v(instr, 1))
 		"CheckCurrentTurn":
-			return _context.turn.current_player == _n(instr, 0)
+			# **A range on the turn number, not a test on the player.** The
+			# name reads like the latter and the arguments are `(low, high)`.
+			return _n(instr, 0) <= _context.turn.turn \
+				and _context.turn.turn <= _n(instr, 1)
 		"HeroKilled":
 			var slot: int = _n(instr, 0)
 			if slot < 0 or slot >= _context.turn.hero_killed.size():
 				return false
 			return _context.turn.hero_killed[slot] != 0
 		"GroupOnField":
-			for key: Variant in _context.units:
-				var unit: UnitState = _context.units[key]
-				if unit.is_alive() and unit.group == _n(instr, 0):
-					return true
-			return false
+			var standing: UnitState = _context.unit_on(_n(instr, 1),
+				_n(instr, 2))
+			return standing != null and standing.group == _n(instr, 0)
 		"UnitOnField":
-			return _unit_on_field(_n(instr, 0), false)
+			return _on_field(instr, false)
 		"MechOnField":
-			return _unit_on_field(_n(instr, 0), true)
+			return _on_field(instr, true)
 		"NoUnitOnField":
-			return not _unit_on_field(_n(instr, 0), false)
+			# **Two arguments, and they are the cell.** Not the negation of
+			# `UnitOnField`: this one takes no player and does not look at the
+			# species, so a crate on the tile makes it false.
+			return _context.unit_on(_n(instr, 0), _n(instr, 1)) == null
 		"GameControlCmpNum":
-			return _context.control.get_slot(_n(instr, 0)) == _n(instr, 1)
+			var slot: int = _n(instr, 0)
+			return slot >= 0 and slot < GameControl.SLOTS \
+				and _context.control.get_slot(slot) == _n(instr, 1)
 		_:
 			# docs/20 section 7.1: an unmatched name makes the dispatcher
 			# return "not found", which aborts. Reported, never silently false:
@@ -256,24 +262,25 @@ func _predicate(instr: Dictionary) -> bool:
 			return false
 
 
-## `UnitOnField` and `MechOnField` are one loop with two species tests.
+## `UnitOnField (player, x, y)` and `MechOnField (player, x, y)` -- one test on
+## **one cell**, with two species rules.
 ##
 ## docs/20 section 7.4: the first **excludes** objects and machines, the second
-## **requires** a machine. A player of 254 matches any.
-func _unit_on_field(player: int, want_machine: bool) -> bool:
-	for key: Variant in _context.units:
-		var unit: UnitState = _context.units[key]
-		if not unit.is_alive():
-			continue
-		if player != PLAYER_ANY and unit.player != player:
-			continue
-		var species: int = _context.types.species(unit.type_id)
-		if want_machine:
-			if species == SPECIES_MACHINE:
-				return true
-		elif species != SPECIES_OBJECT and species != SPECIES_MACHINE:
-			return true
-	return false
+## **requires** a machine. A player of 254 matches any. Neither scans the map:
+## they ask what is standing on the tile the arguments name, which is why the
+## coordinates are arguments 2 and 3 and the player is argument 1.
+func _on_field(instr: Dictionary, want_machine: bool) -> bool:
+	var unit: UnitState = _context.unit_on(_n(instr, 1), _n(instr, 2))
+	if unit == null:
+		return false
+	var species: int = _context.types.species(unit.type_id)
+	if want_machine:
+		if species != SPECIES_MACHINE:
+			return false
+	elif species == SPECIES_OBJECT or species == SPECIES_MACHINE:
+		return false
+	var player: int = _n(instr, 0)
+	return player == PLAYER_ANY or unit.player == player
 
 
 # --- commands -- docs/20 section 7.4 ----------------------------------------

@@ -115,6 +115,9 @@ DEFAULT_AI_LEVEL = AI_LEVEL_NORMAL
 #: check that hangs on one script is worse than one that names it.
 MAX_STEPS = 100_000
 
+#: ``docs/10`` §5 -- the unit array is 200 fixed records, and a spawn takes one.
+UNIT_SLOTS = 200
+
 #: ``docs/20`` §2.3 and §7.4 -- the two directions a set piece can be given,
 #: which do **not** agree on the north/south axis.  Keeping both spellings here
 #: is the point: folding them into one is the trap the doc calls out.
@@ -298,7 +301,7 @@ class LclWorld:
                     break
         if target is None:
             return None
-        slot = max(self.units, default=-1) + 1
+        slot = self.free_slot()
         row = self.tables.units.get(type_id)
         unit = RuntimeUnit(
             slot=slot, player=player, type_id=type_id, x=target[0],
@@ -314,6 +317,26 @@ class LclWorld:
         self.units[slot] = unit
         self.unit_at[self.index(*target)] = slot
         return unit
+
+    def free_slot(self) -> int:
+        """The lowest slot in 0..199 that holds no **live** unit.
+
+        **UNVERIFIED.**  ``docs/20`` §7.4 records everything ``0x00479cf0``
+        writes and not which index it writes it to; the engine's array is 200
+        fixed records, so the lowest free one is the natural reading and it is
+        what both this model and ``godot/core/lcl/lcl_context.gd`` use.
+
+        The rule matters more than the answer: a ``.lev`` carries *named* slots
+        whose hit points are zero -- ``_C_140`` has two -- and "one past the
+        highest key" gives 10 for a roster built from the placed units and 12
+        for one built from the named ones.  Those are two different missions
+        after the first reinforcement, and nothing downstream would say so.
+        """
+        for slot in range(UNIT_SLOTS):
+            unit = self.units.get(slot)
+            if unit is None or not unit.alive:
+                return slot
+        return UNIT_SLOTS - 1
 
     def cells_with_actpt(self, low: int, high: int) -> list[int]:
         return [i for i, v in enumerate(self.actpt) if low <= v <= high]
