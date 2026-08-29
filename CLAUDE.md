@@ -6,11 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Reverse-engineering of the file formats of **Incubation: Time Is Running Out** (Blue Byte, 1997), as groundwork for a remake. It is not an application — it is a set of format specifications (`docs/`) and the parsers that prove them (`tools/`).
 
-`gog_incubation/` is the retail game, and is **strictly read-only**. `Work/Saves/`
-under it is where the game writes save files; it ships empty. Never run the game
-and never write there yourself — but if a save appears there because the user
-played, that is the sample `tools/sav_parse.py` exists to read, and three of
-`docs/11`'s open questions close the moment one does. It is gitignored. Never write into it, never "fix" a file in it, and be careful with `cd` — a shell whose working directory drifts into it will silently create directories there.
+`gog_incubation/` is the retail game, and is **strictly read-only**. `Work/`
+under it is where the game writes save files and options; it ships empty, but
+the user's own saves may be there from playing and are theirs to keep — the
+rule is that *nothing here writes into it*, not that it stays empty.
+`tools/verify_untouched.sh` lists what `Work/` holds so a new file is obvious.
+Never run the game from here and never write here yourself — but a save that
+appeared because the user played is the sample `tools/sav_parse.py` exists to
+read, and three of `docs/11`'s open questions close the moment one does. The
+tree is gitignored. Never "fix" a file in it, and be careful with `cd` — a
+shell whose working directory drifts into it will silently create directories
+there.
 
 ## Commands
 
@@ -49,7 +55,42 @@ python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
+python3 tools/info_parse.py         --check gog_incubation   # 21 checks
+python3 tools/movemap_runtime.py    --check gog_incubation   # 18 checks, 3726 fills, 4587 paths
+python3 tools/remake_convert.py     gog_incubation --check   # 41 checks
+python3 tools/remake_convert.py     --check-cache            # 29 checks
+bash   godot/run_tests.sh                                    # 16 suites, 799 checks
 ```
+
+The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
+and gates on the harness's sentinel line rather than on the exit status, because
+Godot exits 0 even when the main script fails to load. It also needs its inputs
+present -- a suite whose fixture is missing **fails**, deliberately, the same way
+every `--check` here fails on an empty corpus:
+
+```bash
+python3 tools/remake_convert.py  gog_incubation --dev-fixtures godot/generated
+#   ^ also writes godot/generated/inspect/: lev_parse --png per mission and
+#     prototyp_parse --obj per prototype, for the by-eye half of criterion 4.
+#     It carries a .gdignore -- Godot would otherwise import all 91 as resources.
+python3 tools/movemap_runtime.py --emit-cases tests/fixtures/movemap --root gog_incubation
+python3 tools/movemap_gold.py    --emit-allowance-cases tests/fixtures/movemap/cases_allowance.json
+python3 tools/movemap_gold.py    --selftest-process-scope
+```
+
+The native case file comes from an existing capture:
+`python3 tools/movemap_gold.py --emit-cases tests/fixtures/movemap/cases_native.json --root gog_incubation`.
+All four are gitignored; `tests/fixtures/movemap/README.md` records what each
+one holds. `run_tests.sh` copies them into `godot/generated/movemap/`, which the
+suites look at **before** `user://movemap/` -- the other order once let a stale
+copy shadow a fresh one and quietly shrink the run, which is why `harness.gd`
+also carries a minimum check count per suite. Two more are outside the
+always-run block because they need Wine and a copy of the game:
+`python3 tools/movemap_gold.py --check gog_incubation` re-runs the executable
+model against the native capture (41 checks over 74 fills, 37 allowance calls,
+9 walks and 2 `aExecuteMove` probes: the fill, the ladder, the large-unit
+clearance, the movement allowance, the path walk and the walk's own charge),
+and re-taking that capture needs `--game-copy`.
 
 All exit 0. A non-zero exit is a regression. Every one of them also **fails on an empty corpus** — a check that examined nothing is not a check that passed, so a mistyped root cannot come out green.
 
@@ -62,16 +103,20 @@ each embeds a whole shipped `.lev`; the committed `README.md` beside them record
 what each pins. Nothing in the always-run block depends on them. `sav_tables.py` verifies the layout against the writer
 and reader chains in `Incubation.exe`; `sav_parse.py --selftest` wraps a corpus
 `.lev` in the save's fixed blocks and requires the round trip and a
-byte-identical extraction. `sav_parse.py FILE` is the only tool here that has
-never seen real data; it is deliberately outside the always-run block and exits
-non-zero when there is nothing to parse.
+byte-identical extraction. `sav_parse.py FILE` reads a real save cleanly now that
+the six fixtures exist — `tests/fixtures/saves/_6_.sav` comes back as `_C_141`
+on `Level01e` of `World_A00`, 20x20, with its embedded `.lev` at +7541 — but it
+stays outside the always-run block because those files are gitignored, and it
+exits non-zero when there is nothing to parse.
 
 `--verify-convention` and `charisma_selftest.py` are the two that guard *meaning* rather than structure: the first gates on the quaternion-component hypothesis still explaining ≥80 % of tracks, the second asserts decoded key values and times. Structure-only checks pass unchanged when components are permuted, so do not remove either.
 
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
-`interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`
+`interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`,
+`info_parse`, `movemap_runtime`, `movemap_gold`
 and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`remake_convert` takes it positionally **and** wants `--check` as a bare flag.
 `sav_parse` takes it positionally but only with `--selftest`, `seq_parse`
 takes it positionally with `--check` as a bare flag, and `dbgcall_patches`
 takes either the root or a path to `Incubation.exe`, positionally. Check `--help` rather than guessing.
@@ -170,6 +215,67 @@ Ghidra (`/opt/homebrew/Cellar/ghidra/*/libexec/support/analyzeHeadless`) gives C
 - `tools/dbgcall/` runs `Incubation.exe` or `iDesigner.exe` **under a debugger**, stops at a breakpoint, and calls functions **inside the live process**, so the engine's own globals are already initialised. That is the only way to exercise code that depends on engine state rather than on its arguments alone. A call is written as a C-like declaration plus an invocation — `__cdecl i32 aCheckLineOfSight(ptr,i32,i32) = Incubation.exe+0x46C460`, then `aCheckLineOfSight(%esi, 12, 7)` — arguments may read registers, target memory and earlier results, and a batch emits JSONL for the Python side to check. It **verifies the declared signature** against the callee's actual stack cleanup, so a wrong arity is an error rather than a confident wrong number, and `--probe` turns the same measurement into a way to recover an unknown convention and arity. It can also **patch the running process instead of a copy of the file**: `--code` allocates an executable page and `--poke ADDR:EXPECTED=>NEW` writes over code or data only if the live image still holds `EXPECTED`, with `{&buf}` and `{rel32 EXPR}` holes filled in at write time — so a hook is installed on the shipped `Incubation.exe` at runtime, and `--resume` leaves it in place. Read [`tools/dbgcall/README.md`](tools/dbgcall/README.md) before using it; it also records why `Eng3d.dll` can only be addressed as `Module+RVA` (the loader relocates it on every run), and the three Wine settings `Incubation.exe` needs to start at all.
 
 Both are outside the always-run block: they build binaries and need Wine on Linux/MacOS. After changing the debugger harness run its own check, `bash tools/dbgcall/selftest.sh` (64 checks, exits non-zero on any mismatch).
+
+## The remake
+
+`godot/` is the remake itself: a Godot 4.7 project whose `core/` is pure
+GDScript with no scene tree, no filesystem and no engine singleton, and whose
+`game/` renders what `core` decides. It is not a second repository and is not
+built by any of the format tools; `docs/92` records its architecture and
+`docs/93` reports the first vertical slice that established it.
+
+`docs/93` §10 and §11 are dated addenda recording what the slice left open and
+what later closed it: §10 the ladder step and the movement allowance (both
+native), `draw_kind`, face triangulation and the 4/8-connectivity asymmetry;
+§11 the 3x3 large-unit clearance (native, by writing the `size` byte rather
+than by finding a mission with a large unit), `aExecuteMove`'s half of the
+ladder rule, a mutation test of the wave-queue guard, and the model bug the
+first of those exposed -- the fill's direction loop runs 0..7, and
+`anyFriendlyBlocked` is therefore a constant (docs/23 §7.6).
+
+Six things about it that are easy to trip over:
+
+* **Warnings are errors, project-wide.** A script with an untyped declaration
+  or an unsafe call argument does not *load*, so a broken file makes the suites
+  that never touch it still report success unless something checks. `tests/`
+  therefore loads every script under `core/` and `game/` explicitly, and
+  `tests/fixtures/violations/` holds a deliberately invalid file that must stay
+  invalid. Godot 4.7's `directory_rules` can only exclude a directory, never
+  give one a stricter level.
+* **`Packed*Array` returned from a function aliases the original.** Writing
+  through the returned handle writes through to the source. Every accessor in
+  `core/` therefore returns `duplicate()`, and `tests/test_isolation.gd` mutates
+  a snapshot and re-hashes the world to keep it that way.
+* **The cache is JSON and holds no float.** `JSON.parse_string` produces a
+  `float` for every number, so the narrowing to typed arrays happens once at the
+  loading boundary and the canonical hash never sees the parsed form — a hash
+  over parsed floats would be stable and wrong.
+* **The output root is not a scratch directory.** `remake_convert.py -o` is
+  refused for the game installation and for this repository, and the collector
+  removes only directories carrying one of its own manifests — it used to
+  delete every subdirectory it found under `-o`, which turns a mistyped path
+  into data loss.
+* **`CONVERTER_VERSION` is written down twice**, in `tools/inclib/cache.py` and
+  in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
+  cache — which is what it is for. Change the emitted document and you must bump
+  both **and** republish `user://caches`; the suites read the published cache,
+  not only `godot/generated`.
+* **Published cache directories are immutable and content-addressed.** Their id
+  includes the source and output inventories. Publish, pointer switch and
+  collection share one inter-process lock; do not reintroduce an in-place
+  replacement of the directory `active.json` names.
+
+```bash
+python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish
+python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
+bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
+godot --path godot -- --mission=_C_141        # run one of the converted maps
+```
+
+`docs/93` has the two-command first run. **After changing anything under
+`godot/`, export and launch the shipping build as well as running the suites**:
+that preset excludes `tests/`, so a `class_name` from there used in `game/`
+breaks only the exported build, and it has done so once.
 
 ## Documentation
 

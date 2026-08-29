@@ -721,6 +721,18 @@ header field and all 74 `EnterNameOfNextMap` arguments name a shipped mission.
 `_C_133`'s next map is `_C_YYY` — the campaign-2 map — which is how one
 campaign hands over to the other.
 
+**A clean campaign start enters the second chain, at `_C_140`.** The two chains
+are `_C_100`…`_C_133`→`_C_YYY` and `_C_140`…`_C_17x`, and it is `_C_100` whose
+header carries mission id 1 — so the obvious reading, that a new game begins
+there, is wrong. The evidence is a save the game wrote itself:
+`tests/fixtures/saves/_0_.sav` is "the only fixture from a session that went
+straight into the campaign", with untouched password slots and no four-player
+residue in its equipment points, and the mission it names is **`_C_140`**
+(`tests/fixtures/saves/README.md`). Noticed while choosing a mission for the
+first vertical slice's native capture ([`93` §9](93-slice-1-report.md)), which
+is why `_C_141` — the second mission actually played — is the one the capture
+runs on.
+
 ---
 
 ## 7. Two disproved premises from the campaign research

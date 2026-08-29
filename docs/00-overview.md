@@ -34,6 +34,10 @@ successful native per-tick blob sample — is recorded separately in
 Decisions taken about the remake itself — engine, language, asset pipeline, and
 the product decisions the specs leave behind:
 [`92-remake-architecture.md`](92-remake-architecture.md).
+The first vertical slice it describes in §10 is **delivered**; what was built,
+what each comparison is worth, what the live engine corrected and what it
+measured are in
+[`93-slice-1-report.md`](93-slice-1-report.md).
 
 ---
 

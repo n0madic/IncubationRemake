@@ -39,7 +39,28 @@ no derived artifact to hash and keep, and that each site is checked against the
 The confirmed run used Wine 11.0 on an Apple M4 Max host and a 640×480 Wine
 virtual desktop. Wine startup itself is intermittent on this host: a failed
 `wineserver` connection followed by an unchanged successful retry is an
-environment result, not evidence about game control flow.
+environment result, not evidence about game control flow. The same goes for an
+access violation at a Wine address before the anchor is reached — one capture
+session saw the start-up fault five times across four phases and every phase
+went through on a retry, so **every phase that runs a plan must retry**, and a
+phase capped at fewer attempts than the rest lost a probe it had already
+taken once.
+
+**`cd /d` under this Wine's `cmd` returns a non-zero exit status even where it
+works.** A launcher written as `cmd /c 'cd /d "<dir>" && <program> > log'`
+therefore short-circuits and runs *nothing*: no log is written, no breakpoint
+line appears, and the retry loop reports the anchor as unreachable when the
+target was never started. It worked before a Wine update and stopped after
+one, silently. Two further traps in the same line: this `cmd` will not run a
+command whose name is a **quoted** absolute path (`"Z:\...\prog.exe"` is "not
+recognised"), and `wine explorer /desktop=` detaches the console, so a `cmd`
+wrapper and its `>` redirect are how output reaches a file at all.
+
+The launcher that works sets the working directory from the **Unix** side —
+Wine maps it to the current drive — and leaves the command line free of paths
+entirely: `subprocess.Popen(["wine", "explorer", "/desktop=...", "cmd", "/c",
+"prog.exe args > name.log 2>&1"], cwd=game_copy)`. That removes the `cd`, the
+quoting and the space-in-path hazard in one move.
 
 The executable used its preferred base `0x00400000` in the observed runs. The
 addresses below are therefore written both as image-relative anchors and as
@@ -102,6 +123,35 @@ None of these observations establishes anti-debugging in the game. They
 establish that this Wine/WOW64 exception transport is unsuitable for the
 runtime evidence gate. Static specifications and deterministic reference tests
 remain the primary oracle; Wine is used for bounded observations.
+
+### 3.1 A route that does work — **[runtime]**
+
+The conclusion above is about stopping *late*. There is a way to reach a loaded
+mission with the debugger still attached, and the first vertical slice used it
+to call `aBuildMoveMap` sixty times inside a live `Incubation.exe`
+([`93` §4](93-slice-1-report.md), `tools/movemap_gold.py`):
+
+* **Anchor inside `aGameIntro`, at `Incubation.exe+0x4bd6f`.** By then the front
+  end has initialised and `Info.lcl` is loaded, but no screen has been built.
+  Crucially it is reached *before* the start-up path this Wine build faults on:
+  breakpoints at `aMainController` (`0x0042E690`) and at the main-menu builder
+  (`0x0044C170`) are never reached, and the log shows a first- and last-chance
+  `0xC0000005` at a Wine DLL address on the way there. This one is reached.
+* **Load the mission by calling the game's own routines**, not by patching the
+  controller dispatch: `aSetSaveMode(0)` then `aLoadGame(6)`. No `--poke`, no
+  `--resume`, no patched executable, and no human playing to the mission.
+
+After the load, `aGetCtrlMapElementPtr(0,0)` returns an allocated map whose
+9200 bytes match `_C_141.lev` in field type, height and action point and differ
+in exactly four unit links — the squad deploying onto the action-point-1 cells.
+Both large reads need the `--read` cap raised from 4096 (9200 bytes of control
+map, 18200 of unit array); it is now 262144.
+
+Two things this does **not** overturn: Wine start-up on this host stays
+intermittent, so the launcher retries and a run that never reaches the anchor is
+an environment result; and a *patched* copy faulted at the same Wine DLL address
+in every attempt, which is a further reason the unpatched image plus called
+routines is the route to prefer.
 
 ---
 

@@ -391,12 +391,48 @@ Field type 8, `Ladder`, has **0 cells in the shipped campaign**, so the
 ladder-to-ladder rule that [`23` §7.4](23-ai-system.md) reads out of
 `aBuildMoveMap` never fires. `aExecuteMove` reads the field type exactly three
 times — twice for the movement delay and once for the `== 9` teleporter test —
-so it has no ladder case of its own: a ladder step would be *offered* only from
-a full movement allowance and then charged like any other step. The two halves
-of the engine therefore disagree, and with no ladder cell in the corpus nothing
-can exercise either. This is a choice, not a finding — the remake takes the
-move map's rule, and the reasoning is recorded with the other product decisions
-in [`92` §7.7](92-remake-architecture.md).
+so it has no ladder case of its own: a ladder step would be *offered* only to a
+unit holding at least its whole allowance, and then charged like any other step.
+The two halves of the engine therefore disagree.
+
+**Both halves are now exercised, and they do disagree.** Writing field type 8
+into two adjacent cells of a live `_C_141` and calling `aBuildMoveMap` gives its
+rule exactly — the step needs `mp >= allowance` and leaves `mp - allowance`,
+over a height difference the climb rule would otherwise block
+([`23` §7.4](23-ai-system.md), six native fills). Calling `aExecuteMove`
+(`0x0046E220`) over the *same* written pair, and over the identical step with
+the field types left alone, gives the other half:
+
+| probe | field types | reported cost | `u->mp` after |
+|---|---|---|---|
+| ladder | 8 → 8 | **1** | 5, unchanged |
+| control | 0 → 0 | **1** | 5, unchanged |
+
+The mover's allowance is 3, so the move map would have charged it 3 for that
+step and the walk charged it 1. **A ladder is offered at the price of a whole
+turn's movement and then walked for the price of one field.** The reading above
+— three field-type tests, none of them a ladder case — is what the engine does.
+
+Two smaller things the same two calls settle, and both are traps for a remake:
+
+* **`aExecuteMove` reports the cost and does not spend it.** `u->mp` is
+  untouched by the call; [`23` §5.3](23-ai-system.md)'s tail does the
+  subtraction — `u->mp = (cost > u->mp) ? 0 : u->mp - cost` — in the *caller*,
+  after `aExecuteFight` and after the death test. A remake that charged inside
+  its own move routine would double-charge the AI's path and leave the player's
+  uncharged.
+* **The cost comes back through argument 5.** The routine takes eight
+  arguments (`0x0040AC43` pushes eight dwords and cleans them with
+  `add esp, 0x20`); the fifth is the writeback pointer the AI takes with
+  `lea ecx, [esp+0x1c]` at `0x0040AC29`, and the last three are the literals
+  `1, 255, 0`.
+
+Which behaviour the designers intended is still not something data can say, so
+the *choice* stands as a choice: the remake takes the move map's rule, and the
+reasoning is with the other product decisions in
+[`92` §7.7](92-remake-architecture.md). What has changed is that the choice is
+now between two measured behaviours rather than between one measurement and one
+reading.
 
 ---
 
@@ -599,11 +635,15 @@ detected, and the union of the check names they tripped is all 109.
    equipment id and no game-control slot is written, and no other code in
    either binary tests 41. Whatever it was meant to charge does not exist in
    this build.
-5. ~~**The ladder rule on the player's side is untested.**~~ **— Not a
-   research question.** Both halves are fully read: `aBuildMoveMap` charges a
-   ladder-to-ladder step the whole movement allowance
-   ([`23` §7.4](23-ai-system.md)), `aExecuteMove` charges `delay` plus the
-   ordinary 1 or 2 (§5.1). What was open is only which the designers intended,
-   and with **0** ladder cells in all 155 missions no data can decide it. It is
-   therefore a product call, and it has been made: the remake takes the move
-   map's rule — [`92` §7.7](92-remake-architecture.md).
+5. ~~**The ladder rule on the player's side is untested.**~~ **— Closed by
+   measurement, and it is not a research question any more.** Both halves have
+   now been run in the live engine over a written ladder pair: `aBuildMoveMap`
+   charges a ladder-to-ladder step the whole movement allowance
+   ([`23` §7.4](23-ai-system.md), six native fills) and `aExecuteMove` charges
+   **1** — the same as the identical step over plain ground, against an
+   allowance of 3 (§5). The two halves disagree, which is what §5's reading
+   predicted and what the reading could not prove. What was open is only which
+   the designers intended, and with **0** ladder cells in all 155 missions no
+   data can decide that. It is therefore a product call, and it has been made:
+   the remake takes the move map's rule —
+   [`92` §7.7](92-remake-architecture.md).

@@ -1,0 +1,37 @@
+; Incubation remake -- first vertical slice (docs/92 section 10).
+;
+; Warnings are errors project-wide, not only under core/: the 4.7 setting
+; `directory_rules` only excludes directories, it cannot give one a stricter
+; level.  Everything written here is statically typed, so the stricter reading
+; costs nothing and satisfies the section 10.4 gate for core/ a fortiori.
+
+config_version=5
+
+[application]
+
+config/name="Incubation (slice 1)"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+run/main_scene="res://game/main.tscn"
+
+[debug]
+
+gdscript/warnings/enable=true
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/inference_on_variant=2
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+gdscript/warnings/unsafe_void_return=2
+gdscript/warnings/return_value_discarded=1
+gdscript/warnings/integer_division=0
+gdscript/warnings/directory_rules={
+"res://addons": 0
+}
+
+[rendering]
+
+; Required for a universal / arm64 macOS export.
+textures/vram_compression/import_etc2_astc=true
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

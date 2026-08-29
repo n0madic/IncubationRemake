@@ -112,9 +112,20 @@ form in [`22`](22-combat-and-visibility.md)) must be written as the plain
 divisions they stand for, not transcribed. Every such site should be checked
 against the strongest available oracle (§5).
 
-`aRandom` is the opposite case: a Lehmer generator modulo 2³¹−1
-([`22` §3](22-combat-and-visibility.md)) is *easier* in 64-bit, because the
-intermediate product fits and Schrage's method is unnecessary.
+`aRandom` looked like the opposite case and is not. An earlier version of this
+section called a Lehmer generator modulo 2³¹−1
+([`22` §3](22-combat-and-visibility.md)) *easier* in 64-bit because the
+intermediate product fits. It does not fit: `22` §3 gives the step as
+`seed = (double)(int)fmod(seed * 62089911.0, 2147483647.0)`, and that product
+reaches 1.33 × 10¹⁷ — **past 2⁵³** — so the rounding of the double multiply is
+part of the sequence and an integer port produces a different stream. The
+generator stays in `double`, and the RNG state is
+`{seed: float, calls: int, sum: int}`. `tools/blob_runtime.py:152` already
+carried the correct model; sixty-four draws captured from the running game,
+with the raw eight bytes of the seed read back after each one, confirm it and
+settle the x87 question with it — the shipped control word gives 53-bit
+significands, so IEEE doubles here are equivalent
+([`93` §3](93-slice-1-report.md)).
 
 The core therefore owns a small explicit integer-semantics library: at least
 `i32`, `u32`, `i16`, `u16`, `u8` and signed division truncated toward zero.
@@ -176,9 +187,34 @@ Two consequences:
 | `DATA/TXT` briefings ([`24`](24-briefing-text.md)) | versioned localised data | labels resolved, markup kept as structure |
 | `.wav`, `.ogg` | copied unchanged | already standard formats |
 
-The exact portable mesh and binary-data containers are deliberately selected by
-the first vertical slice (§10), because they must be tested in an exported Godot
-build rather than chosen from format names alone. Every production cache has a
+The portable containers were deliberately left to the first vertical slice, and
+the slice has chosen them. **Decided: JSON plus PNG, with no float anywhere in
+the cache.**
+
+The scale is what settles it. The slice's lead mission closes over 53
+prototypes, 1176 vertices, 610 faces and 10 of 37 textures — a 1997 game with a
+software rasteriser, smaller than one modern character, and 1.34 MiB converted.
+At that size glTF costs a binary writer in Python, a second coordinate
+convention and an opaque diff for no measurable gain; a Godot `.res` would pin
+the player's data to Godot's serialisation for the same reason §7.3 rejects it
+for saves; and a packed binary wins threefold on a figure that does not matter
+while losing both exit criteria of §10.4, which on JSON are `sha256` and `diff`.
+
+**Determinism is built in rather than tested for afterwards: the cache contains
+no float.** Vertices are whole world units, texture coordinates are the raw 8.7
+fixed point the record carries, colours are the raw `u16` plus a decoded RGB
+triple, heights are `i32`. Float formatting therefore cannot drift. Every file
+is written with sorted keys, no spaces and no `NaN`, and **no timestamp appears
+anywhere, including in the manifest** — a clock is the easiest way to lose
+byte-identical output. Polygons stay polygons: triangulation is a rendering
+decision and lives in `game/`, or the cache would stop being decoded,
+engine-independent data.
+
+The production cache and the development `res://generated/` fixtures are the
+**same byte stream** from the same function, differing only in output root, so
+§10.1 item 4's "diff the portable logical data, not the incidental Godot
+resource serialization" is satisfied by there being no incidental serialisation
+at all. Every production cache has a
 manifest carrying at least the source edition/language fingerprint, converter
 version and cache-schema version, so incompatible or partial output is rejected
 instead of being loaded optimistically.
@@ -327,9 +363,11 @@ this lets the preset grow without silently changing an old session.
 
 The question was posed as a choice of container: a `Resource` with typed arrays
 against a `PackedByteArray` mirroring the original's 23-byte cell. The right cut
-is not by container but by lifetime, because package C established that **six of
-the twenty-three bytes are live state and seventeen are map data**
-([`26` §3.1](26-interaction.md)).
+is not by container but by lifetime. (An earlier version of this paragraph cited
+[`26` §3.1](26-interaction.md) for a count of live bytes; that subsection holds
+the `aExecuteUse` class table and no such count. The working contract is the
+explicit field list below, and [`10` §4](10-lev-mission-format.md) documents
+eight purely runtime bytes.)
 
 So: two objects, and **struct of arrays, not array of structs**.
 
@@ -340,7 +378,13 @@ So: two objects, and **struct of arrays, not array of structs**.
   `width × height`, initialised from the resource: height `+0x01` and field type
   `+0x0D` (doors), the action point `+0x0B` (every pickup, both levers, the
   entry point, a captured VictoryPoint), the unit link `+0x07` (pushes and
-  teleports) and the four effect bytes `+0x0E`…`+0x11` (mines).
+  teleports) and `+0x0E`…`+0x11`. Those four are **not four bytes of the same
+  kind**: [`23` §7.1](23-ai-system.md) shows `+0x0F` and `+0x11` are slot
+  indices into the runtime object array while `+0x0E` and `+0x10` are values.
+  All four are carried through verbatim and none of them is interpreted.
+  `+0x10` in particular is the transient obstacle — fire, a mine, a shield —
+  and is `0xFF` in all 184162 shipped cells because it is created during play,
+  so `MapState` synthesises it rather than the converter carrying it.
 
 What this buys that neither original option did: authored input cannot be
 accidentally mutated; fidelity diffing against an appropriate oracle runs array
@@ -377,12 +421,32 @@ finishing the job wants save kinds the retail release cannot produce (among
 them a multiplayer one). As a feature it ranks low — someone installing a remake is likely to
 start the campaign again.
 
-The remake save contract is not yet fixed. Before it is treated as public it
-should consider a schema version, map/cache identity and hash, full mutable map
-state, campaign and turn phase, RNG state, the active compatibility flags,
-optional presentation state such as the camera, integrity checking, atomic
-writes and migration tests. This is a checklist for implementation, not a claim
-that every item or representation is already decided.
+**The container is decided, and it is a small binary envelope rather than a
+Godot `Resource`.** The first vertical slice implemented and tested it
+(`godot/core/save_codec.gd`, [`93` §6](93-slice-1-report.md)):
+
+```
+  0   4   magic "INCS"
+  4   4   schema version
+  8  32   sha256 of everything from byte 44 on
+ 40   4   payload length
+ 44  32   the authored map's hash
+ 76  ..   a JSON header: width, height, mission, RNG state, compat flags,
+          the camera, and the unit records
+     ..   the complete mutable map state, array after array
+```
+
+Four properties, each with a negative test behind it: an unknown schema version,
+a truncated file, a corrupted digest and a save paired with a different authored
+map are all refused **by name**, and none of them half-loads. A round trip
+preserves the canonical simulation hash; the camera travels in the file and is
+excluded from that hash.
+
+What is still a checklist rather than a decision: campaign and turn phase have
+no representation yet because neither exists, and migration between schema
+versions has a version field but no migration to test. The compatibility flags
+are in the hash from the first day so that later ones cannot be added without
+changing it.
 
 A Godot `Resource` may be convenient as the in-memory DTO, but `.res` is not the
 public on-disk contract: it couples saves to Godot serialization, script paths
@@ -484,8 +548,11 @@ unit's whole movement allowance, while `aExecuteMove` charges the ordinary
 choice rather than a finding. The remake takes **the move map's rule** — a
 ladder-to-ladder step costs the whole allowance — because that is the one the
 player sees: the map decides which cells light up, so charging anything else
-would make the highlighted range a lie. Consequence worth writing down: a unit
-may climb a ladder only from a full allowance and arrives with nothing left.
+would make the highlighted range a lie. Consequence worth writing down, now
+measured natively ([`23` §7.4](23-ai-system.md)): the step needs
+`mp >= allowance` and leaves `mp - allowance`, so a unit acting at its full
+allowance arrives with nothing left — but one that had *more* than its allowance
+does not, and one that had less cannot climb at all.
 
 ### 7.8 The `technical` box keeps its bug, behind an option
 
@@ -541,13 +608,40 @@ These follow from the repository's own rules and apply to the remake as well:
 
 ## 9. What is still open
 
-The product choices in §7 are the current defaults, but the remake has not yet
-started and the architecture is not frozen. In particular, the first vertical
-slice still has to validate the converted-data containers and schema, Godot
-materialisation path, save representation, fidelity trace shape, cache
-invalidation and the practical `game`/`core` boundary. A decision changes only
-when implementation or a new observation supplies a better fact, and this file
-records the change and its reason.
+The product choices in §7 are the current defaults, and the architecture is not
+frozen. A decision changes only when implementation or a new observation
+supplies a better fact, and this file records the change and its reason.
+
+**The first vertical slice is done** ([`93`](93-slice-1-report.md)). The six
+things it was to validate have been settled and written back into this file:
+the converted-data container and schema (§3.2), the Godot materialisation path
+(§3.2), the save representation (§7.3), the fidelity trace shape (the
+`incubation.movemap-cases/1` document one reader consumes from three
+producers), cache invalidation (the source fingerprint is the set of files the
+converter actually read, and the whole inventory is verified on every load), and
+the practical `game`/`core` boundary (`core` returns fresh dictionaries of
+scalars and duplicates every packed array, because a `Packed*Array` returned
+from a function aliases the original in Godot 4.7).
+
+The slice also measured what §2 could only hope: **one complete move map over
+990 cells costs 138 µs**, so memoisation, a native flood fill and GDExtension
+are all unjustified for the AI loop. What is not yet measured is a complete AI
+turn, because there is no AI turn.
+
+What the slice deliberately did not settle is listed in
+[`93` §8 and §9](93-slice-1-report.md). **Four of those items were closed
+afterwards** and are recorded in [`93` §10](93-slice-1-report.md):
+
+| Item | Where it went |
+|---|---|
+| The ladder step, and the movement allowance as an *input* | native, [`23` §7.4](23-ai-system.md) and [`10` §5.5](10-lev-mission-format.md); `core/allowance.gd` computes it |
+| `draw_kind` recovered but not implemented | `game/mesh_builder.gd`, per [`31` §4.4](31-prototyp-geometry.md)'s table |
+| Face triangulation assumed convexity; the cross-check was manual | [`31` §4.3.1](31-prototyp-geometry.md) counts 1572 reflex faces; the mesh builder ear-clips and `prototyp_parse.py --check` pins the counts |
+| The 4/8-connectivity asymmetry, recorded but unresolved | `core/walk_map.gd` transcribes `aWalkMoveMap`, pinned natively; [`23` §8](23-ai-system.md) reports 2772 diagonal steps and **no** path leaving the highlighted region |
+
+What remains from that list is the large-unit clearance natively — no shipped
+unit on the capture mission is large, and unlike the transient obstacles it
+cannot be reached by writing a single byte.
 
 The numbered specs also retain their own research questions:
 
@@ -567,7 +661,18 @@ transactionally and leave the previous valid cache usable after failure.
 
 ---
 
-## 10. First vertical slice
+## 10. First vertical slice — **delivered**
+
+> **Status: complete.** [`93`](93-slice-1-report.md) is the report: what was
+> built, the oracle boundary each comparison actually reaches, the four things
+> the live engine corrected in the specs, the measurements, and the exit
+> criteria with how each is shown. The requirements below are kept verbatim,
+> because they are what that report is a report against.
+>
+> It ran on `_C_115` (33 × 30, the smallest shipped map on which the climbing
+> rule decides anything, and the strictest test of a `width`/`height`
+> transposition since neither side is 40), with `_C_100` as a second entry and
+> `_C_141` as the mission the native oracle was captured on.
 
 The first slice proves one narrow path end to end rather than building a
 framework for the whole remake. Use one representative campaign mission whose
@@ -641,3 +746,19 @@ build, not only in the editor:
 
 Only after this slice should the chosen portable containers and save schema be
 promoted from provisional implementation choices into decisions in this file.
+They have been: §3.2 for the container, §7.3 for the save.
+
+Two facts about the original that the slice's rendering work established, and
+that a later stage would otherwise rediscover:
+
+* **Units are not drawn from `SetUnitInfo`'s model column.** Thirty of the
+  thirty-six rows name `A_MK_0B.3DI`, which is four vertices and one face — a
+  box ±1600 on X and Y at Z = 80, a one-field ground marker. Six inanimate types
+  have a real model. The living bodies come through Charisma's hard-wired switch
+  ([`40` §7.2](40-charisma-model-animation.md)).
+* **There is no terrain surface in a `.lev`.** The ground lattice's prototype
+  `S003_00X.3DI` is an octagon 320 world units across — a fifth of a metre, an
+  editor marker for the cell centre, not a 3200-wide tile. The visible ground is
+  the `.3DW` clones plus the special objects; the lattice only carries the
+  height. Nothing has to be generated to fill the steps between heights, and
+  those steps are correct rather than missing walls.

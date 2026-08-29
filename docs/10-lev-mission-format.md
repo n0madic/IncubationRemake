@@ -343,6 +343,7 @@ transient overlays; neither ever reaches a `.lev`.
 
 | Test | Cell field |
 |---|---|
+| the fill has not already marked it — **[runtime]**, see below | `+0x00 != 10` |
 | the field is empty | `+0x07 == 0xFFFF` |
 | field type is Undefined, Free Place or Ladder | `+0x0D` ∈ {0, 1, 8} |
 | not a VictoryPoint (§4.6) | `+0x0B` ∉ `0x50`–`0x59` |
@@ -364,6 +365,14 @@ The **warp range** is `fcn.00475380(unit)`:
   **`Ray'Coo`** (type 64) — the innate warper.
 * **0** otherwise, in which case `fcn.00430ee0` returns immediately and no
   cell is marked.
+
+The first row is not from the disassembly: it was established by calling
+`aBuildMoveMap` inside a live `Incubation.exe` and comparing the whole grid
+against an executable model ([`93` §3](93-slice-1-report.md)). Thirteen cells
+across three warp runs that the model would have turned into warp targets kept
+their `10`, and the test is on `+0x00` rather than on `+0x0C` — nine cells
+marked reachable with zero movement points left, indistinguishable from
+unvisited by the fill's own test, also kept theirs.
 
 A third value joins them once a destination has been chosen. `fcn.004305e0`
 walks the map back from the target to the unit, marking each cell of the
@@ -729,19 +738,52 @@ should treat them as a cache and recompute.
 ### 5.5 The action-point formula
 
 `fcn.00475160` is the single source of a unit's MP, and it is now fully
-readable:
+readable — and, since the first vertical slice, **called directly in a running
+`Incubation.exe`** (`tools/movemap_gold.py`, 37 calls on `_C_141`):
 
 ```
-mp  = SetUnitInfo[type].mpMax          # unit type 0x32 has a difficulty tweak
+mp  = SetUnitInfo[type].mpMax          # see the type 0x32 tweak below
 mp += 1  if equipment 14 (Servo System)
-mp += 1  if a friendly unit carrying equipment 8 (Banner) is within 4 fields
+mp += 1  if BannerInRange(u)           # fcn.0046fad0, see below
 mp -= 1  if equipment 13 (Heavy Armor)
-if   FP == 0: mp = 1
+if   FP == 0: mp = 1                   # the overrides win over everything above
 elif FP == 1: mp = 2
 elif unit[0x57] == 1: mp += 1
 if mp > 200: mp = 0                    # underflow guard
 if unit[0x41] in (5, 6): mp = 0
 ```
+
+**The accumulator is a byte** (`bl` throughout), so `dec bl` on a zero wraps to
+255 and the `> 200` guard at `0x0047521F` is what catches it. Modelled as an
+unbounded integer that guard is dead code, and a type with `mpMax == 0` wearing
+Heavy Armor comes out at −1 instead of 0.
+
+**The type 0x32 tweak is a difficulty setting.** `0x0047516B` compares the type
+against `0x32` and, only for it, asks `fcn.00460450` for the AI level: level
+**0** takes one off `mpMax`, levels 1 and 2 leave it, and anything else raises
+`"incorrect ai level!"` and returns 0. The captured session answered 0, which is
+how the discrepancy was found — a model defaulting to 1 disagreed with the
+engine on `Ray'Ther` and on nothing else.
+
+**`fcn.0046fad0` — the Banner scan.** It walks all 200 slots and has two arms,
+chosen by `fcn.0043b1f0`, which is true only for network game types 2, 3 and 4.
+The single-player arm (`0x0046fb38`) accepts a slot when
+
+- `+0x16` is non-zero (the slot is live),
+- `+0x45` equals the asking unit's player **exactly**,
+- `+0x29` is set (equipment 8, the Banner), and
+- `aGetDistance(u.x, u.y, other.x, other.y) < 4`.
+
+Three consequences, all of them measured rather than reasoned:
+
+- **The reach is floor-Euclidean and strictly below four**, i.e. three fields.
+  "Within 4 fields" was ambiguous; a carrier at `(+3, +3)` — Chebyshev 3,
+  `aGetDistance` 4 — does **not** count.
+- **The scan does not skip the carrier**, so a unit carrying its own Banner
+  gets the +1 from itself.
+- **The owner test is exact**, so a Banner carried by another player in the same
+  cell counts for nothing. The multiplayer arm relaxes it to `player <= 4` and
+  additionally refuses a mover owned by 255.
 
 FP itself is a per-turn stamina pool, topped up by the start-of-turn refresh
 `fcn.004781C0` toward the cap `fcn.00475120` returns — **the unit's rank,

@@ -648,8 +648,8 @@ special = unitInfo[u->type].special;          /* +0x07 */
 if (special == 1 || special == 14) return TRUE;    /* empty map; §5 of docs/21 */
 *anyFriendlyBlocked = TRUE;
 start = GetCellPtr(u->x, u->y);
+start[+0x0C] = u->mp;  start[+0x00] = 10;      /* seeded first -- see below */
 if (start[+0x10] == 3) { *anyFriendlyBlocked = FALSE; return TRUE; }
-start[+0x0C] = u->mp;  start[+0x00] = 10;
 queue[0] = { u->x, u->y, u->mp };  n = 1;
 if (u->mp <= 0) goto warp;
 ```
@@ -679,6 +679,15 @@ re-creates all four object kinds from `+0x10`, `+0x0E`, `+0x12` and `+0x13`.
 So the refusal above reads: **a unit standing inside a shield cannot move at
 all.**
 
+**The seeding comes before the shield refusal, not after it — [runtime].** An
+earlier version of this listing had the two the other way round. Calling
+`aBuildMoveMap` inside a live `Incubation.exe` with `cell[+0x10] = 3` written
+into the mover's own cell returns an otherwise empty map whose start cell holds
+state 10 and the mover's movement points, so the seeding has already happened
+when the refusal returns. The `special` refusal is genuinely first: it marks
+nothing. See [`93` §3](93-slice-1-report.md) and
+`tests/fixtures/movemap/README.md`.
+
 ### 7.2 The queue
 
 Two ping-ponged arrays of **2003** four-byte entries `{u8 x, u8 y, u16 mpLeft}`
@@ -687,10 +696,15 @@ is a hard error (`0x00430DB8`). The outer loop runs at most `u->mp` waves.
 
 ### 7.3 Whether a step is allowed
 
-For each of the **four orthogonal** directions — `0x004308C0` is called with its
-diagonal flag set to 0, so directions 4…7 return FALSE immediately:
+The loop runs **`dir = 0 … 7`** (`0x00430DC8` is `cmp eax, 7`), not 0…3.
+`0x004308C0` dispatches through a jump table at `0x00430A20` whose first four
+arms are the orthogonal steps and whose last four begin by testing
+`allowDiagonal` — and the only call site pushes a literal `0` (`0x00430BBD`).
+Directions 4…7 therefore always fail, which is why the fill is 4-connected
+about **cells**. They are not skippable, for a reason §7.6 gives.
 
 ```c
+for (dir = 0; dir <= 7; dir++) {
 ok = FALSE;
 if (Step(dir, x, y, &nx, &ny, /*allowDiagonal=*/0)) {
     to = GetCellPtr(nx, ny);
@@ -698,12 +712,12 @@ if (Step(dir, x, y, &nx, &ny, /*allowDiagonal=*/0)) {
 }
 if (!ok || to->unit == NO_UNIT
         || GetUnitPtr(to->unit)->visibility /* +0x4F */ == 3) {
-    *anyFriendlyBlocked = FALSE;                      /* nothing in the way */
+    *anyFriendlyBlocked = FALSE;                      /* 0x00430C64 */
 } else {
     if (!passFriendlies) ok = FALSE;
     o = GetUnitPtr(to->unit);
-    if (o->player == u->player) *anyFriendlyBlocked = TRUE;
-    else                       { *anyFriendlyBlocked = FALSE; ok = FALSE; }
+    if (o->player == u->player) *anyFriendlyBlocked = TRUE;   /* 0x00430C58 */
+    else                        ok = FALSE;    /* 0x00430C60 -- no write */
 }
 if (*anyFriendlyBlocked && to->unit == startUnitIndex) {
     *anyFriendlyBlocked = FALSE;  ok = TRUE;          /* the mover's own cell */
@@ -712,7 +726,13 @@ if (unitInfo[u->type].size == 1 && !0x0047A410(nx, ny, startUnitIndex)) ok = FAL
 if (to[+0x10] == 1) ok = FALSE;                        /* fire */
 if (u->player != 0xFF && to[+0x10] == 2) ok = FALSE;  /* a mine */
 if (!ok) continue;
+}
 ```
+
+**Corrected against the engine.** An earlier reading of this block had the
+enemy arm writing `*anyFriendlyBlocked = FALSE` and had the loop stopping at
+four directions. Neither is what `0x00430A40` does, and §7.6 is what the
+difference amounts to.
 
 With §7.1's identification the two obstacle tests read plainly: **nobody walks
 into fire, and a mine stops everyone except units owned by player 255** — the
@@ -731,6 +751,32 @@ neighbours of the candidate must exist, be empty or hold the mover itself, have
 field type 0 or 1, be at exactly the same height, and have `+0x10 != 1`. A
 `ComBot`, `Tr'Yn` or `Al'Coo` therefore needs a flat, clear 3 × 3 block for
 every cell of its path.
+
+**Native, and it did not need a large unit to be native.** `size` is 1 on only
+those three types, none of which is on `_C_141`, and reaching a mission that
+has one is hours of play. It is a byte in the shipped `SetUnitInfo` table
+instead — `unitInfo[type] + 0x7B`, which `0x00430CA6` reads as
+`byte [type*126 + 0x51C09B]` — so writing it in the live process turns an
+ordinary mover large for the duration of one fill and changes nothing else the
+fill reads. Six captured fills
+(`tools/movemap_gold.py`): the test **refuses 232 cells** a small mover
+reaches from the same squares and **passes 61**, so both arms are exercised
+rather than only the refusal. Four of its five conditions decide on the
+mission's own geometry — height on 159 candidates, occupancy on 83, the map
+edge on 56, field type on 27. The fifth has no natural instance anywhere,
+since `+0x10` is 255 in all 184162 shipped cells, so one fire is written
+**diagonally** from a candidate: a diagonal neighbour is in the clearance ring
+but is never the cell a 4-connected fill steps through. Four captured fills
+make that a 2 × 2 — `{large, small}` × `{fire, no fire}` — and the fire
+condition is the difference of the differences, not the gap between two movers:
+
+| mover | no fire | fire | lost |
+|---|---|---|---|
+| large | 29 | 1 | **28** |
+| small | 98 | 95 | 3 |
+
+The three the small mover loses are the ordinary `to[+0x10] == 1` test and what
+sits behind it. The other 25 are this one.
 
 ### 7.4 The cost
 
@@ -772,6 +818,25 @@ cell, so **the ladder rule never fires in the shipped campaign** — a ladder-to
 ladder step costs `delay + mpAllowance`, i.e. an entire turn's movement, and
 skips the height test, which is exactly what a ladder is for.
 
+**Measured, not deduced.** Writing field type 8 into a mover's own cell and one
+neighbour of a live `_C_141` and then calling the engine's own fill
+(`tools/movemap_gold.py`, six fills) gives:
+
+| pair | Δh | allowance | mp | result |
+|---|---|---|---|---|
+| over a cliff | 5000 | 7 | 12 | reached, 5 points left |
+| over a cliff | 5000 | 7 | 7 | reached, 0 points left |
+| over a cliff | 5000 | 7 | 6 | **not reached** |
+| flat | 0 | 3 | 12 | reached, 9 points left |
+| flat | 0 | 3 | 3 | reached, 0 points left |
+| flat | 0 | 3 | 2 | **not reached** |
+
+So the step leaves `mp - mpAllowance` and needs `mp >= mpAllowance`, and the
+5000-unit drop — three field-widths, which the climb rule blocks outright —
+does not stop it. That closes the ladder as **native-runtime** evidence rather
+than specification-only; `mpAllowance` itself is [`10` §5.5](10-lev-mission-format.md),
+also called natively.
+
 **Climbing is limited to one field-width per step.** The height test is the
 magic multiply `0x51EB851F` with `sar edx, 9`, which is a signed divide by
 **1600**; `> 1` therefore blocks a step whose height difference is **≥ 3200**
@@ -784,7 +849,14 @@ Path *reconstruction* is 8-connected (§8) — see the warning there.
 ### 7.5 Warping
 
 The fill ends by calling `0x00430EE0`, which makes a second pass over the whole
-grid and marks every cell the unit could warp to with `cell[+0x00] = 60`.
+grid and marks every cell the unit could warp to with `cell[+0x00] = 60` —
+**except a cell the fill has already marked**, which keeps its 10.
+[`10` §4.5](10-lev-mission-format.md) lists five acceptance tests; that is a
+sixth, established by calling the routine in a live process (thirteen cells over
+three captured warp runs). The test is on `cell[+0x00]` and not on
+`cell[+0x0C]`: nine cells marked reachable with **zero** movement points left —
+which the fill's own visited test cannot tell from unvisited — kept their 10 as
+well.
 [`10` §4.5](10-lev-mission-format.md) lays out its five acceptance tests and
 the three warp ranges `0x00475380` returns — **5** with the `Jet Pack`
 (equipment id 7, which `Info.lcl` annotates `* warp & scan`), **7** for a type
@@ -800,6 +872,33 @@ test excludes, 80…89, is the one the game's own legend heads
 fields, which is what the heading implies.
 [`21` §3](21-info-lcl-schema.md)'s equipment table did not list id 7 among the
 ids with a decoded effect; it does now.
+
+### 7.6 `anyFriendlyBlocked` carries no information about friendlies
+
+The third argument is not a summary and it is not even the last *interesting*
+neighbour: it is whatever the last of **eight** directions left behind, and the
+last four are always the refused diagonals, whose failure path writes it 0
+(`0x00430C64`). So every cell the fill examines ends by clearing it, and:
+
+> **the flag is FALSE after any fill that ran a single wave.**
+
+It can only come back TRUE from the write at `0x00430A84`, before the loop —
+which survives exactly when the loop never runs, i.e. when the unit has no
+movement points left.
+
+Measured, not deduced. Across 74 native fills on `_C_141`
+(`tools/movemap_gold.py`), the flag is TRUE on 26 and FALSE on 48, and the
+split is exactly `u->mp == 0`: thirteen of the mission's fourteen live slots
+are spent, and slot 3 — the only one with `mp` 3 — is the only unmutated fill
+that comes back FALSE. Every mutated fill, all of which give the mover
+movement points, comes back FALSE too.
+
+A caller reading it as "a friendly was in the way" is therefore reading
+"the unit has no movement points", which it already knows. **A remake must not
+give the flag a meaning.** It is reproduced bit for bit here because
+reproducing it is cheaper than auditing the six `aBuildMoveMap` call sites in
+`0x0040A750` for whether any of them reads the scratch back — which this
+document does not claim to have done.
 
 ---
 
@@ -851,9 +950,40 @@ in the final path even though no diagonal was ever costed.
 `0x004303E0(dir, x, y, unitIndex)` is the corner check: for each of the four
 diagonals it takes the two orthogonal components that bracket it — 4 → {−y, +x},
 5 → {+y, −x}, 6 → {+y, +x}, 7 → {−y, −x} — and requires **both** to be
-enterable via `0x00479C60`, the routine [`21` §2](21-info-lcl-schema.md) already
-names as treating `delay == 255` as "not enterable". No cutting corners past a
-wall.
+enterable via `0x00479C60`. No cutting corners past a wall.
+
+`0x00479C60(x, y, unitIndex)` is more than the delay test
+[`21` §2](21-info-lcl-schema.md) names it for. In full:
+
+```c
+if ((u8)x >= width || (u8)y >= height) return FALSE;
+c = GetCellPtr(x, y);
+if (c->unit != NO_UNIT && c->unit != unitIndex) return FALSE;  /* occupied */
+if (Delay(c) == 255) return FALSE;                             /* impassable */
+if (c[+0x10] == 1) return FALSE;                               /* fire */
+return c[+0x10] != 2;                                          /* a mine */
+```
+
+`aWalkMoveMap` passes `0xFFFF`, which matches no slot, so for the corner check
+the occupancy test means "must be empty".
+
+**Three transcription details a paraphrase loses.** Acceptance is `v >= best`,
+so **later directions win ties** and the evaluation order 0…7 is part of the
+answer. The gradient is compared **16-bit** (`cmp ax, word [esp+0x14]`), which
+is why the `movzx ax, byte [eax+0xc]` at `0x00430677` leaving the cell pointer
+in the high half of `EAX` cannot reach the result. And the budget is tested
+*before* each step: a walk that spends all 300 returns FALSE with the overlay
+left mid-flight — the final sweep does not run.
+
+**What the asymmetry costs, measured.** A walk to a target the fill never
+marked does not stop at "no direction found": every unmarked cell holds zero,
+`v >= best` accepts an equal zero, and the ascent wanders until the budget is
+gone. That arm is captured natively (`steps` 300, return FALSE). For a target
+the fill *did* mark, `tools/movemap_runtime.py --check` reconstructs 4587 paths
+over the whole corpus: **2772 of the steps are diagonal**, and **not one path
+leaves the highlighted region**. A remake therefore does not have to reconcile
+the two connectivities — it has to refuse to offer an unreachable target, which
+is what the highlight already expresses.
 
 Cell state **100** is a fourth movement overlay value, alongside 10 and 60. It
 survives the final sweep, so after `aWalkMoveMap` the grid holds the chosen

@@ -571,6 +571,36 @@ layout* is a property of the slot only.
 `size - (0x0e + 2n)` matches the table exactly for every one of the 236 861
 shipped faces (`unexplained bytes inside faces: 0`).
 
+### 4.3.1 Face shape — what a remake may assume about the polygon
+
+`vertex_count` runs from 3 to **24**, not to 8:
+
+| corners | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 24 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| faces | 82403 | 145706 | 4898 | 2519 | 198 | 1103 | 9 | 5 | 2 | 1 | 4 | 2 | 11 |
+
+The engine fills a polygon by walking its edges, so it never needed the two
+properties a triangulating renderer does. Both are decidable in exact integers
+over the placed vertices, and `tools/prototyp_parse.py --check` reports them:
+
+* **Planarity is approximate, not exact.** 144 877 of 236 861 faces are exactly
+  planar in integer world units; the worst out-of-plane deviation is 40 864
+  units (about 25 m, on `MODEL_EXTRO_6_SCHIFFSKORPER_DECKEL`). This is
+  *reported* rather than gated — the corpus is authored on an integer grid, and
+  a span filler never asked for flatness.
+* **Convexity is not universal, and this one matters.** **1572** faces have a
+  reflex corner and **129** name the same vertex slot twice; 700 more have a
+  Newell normal of zero, i.e. no area at all. The three counts partition the
+  corpus with the 234 589 a triangle fan handles correctly. The reflex faces are
+  mostly dialogue and sequence models, but **81 are in `World_A00`**, which the
+  playable campaign's first missions use.
+
+A **fan from vertex 0 is therefore wrong on 1572 shipped faces**: it emits a
+triangle outside the outline and misses one inside. `godot/game/mesh_builder.gd`
+ear-clips in the plane of the Newell normal instead. The counts above are pinned
+in `prototyp_parse.py` so that a change in them is a visible change rather than
+a silent one.
+
 Two corrections to earlier readings of this table:
 
 * **Slot `0x04` has a two-byte tail after the shades.** After the `fild

@@ -316,6 +316,21 @@ class Unit:
     raw: bytes
 
     @property
+    def action_state(self) -> int:
+        """``+0x41`` -- runtime action state.
+
+        5 and 6 zero the movement allowance and 7 means "stood down without
+        acting" (docs/10 §5.5).  Zero in every shipped record, which is why it
+        is read off ``raw`` rather than carried as a field.
+        """
+        return self.raw[0x41]
+
+    @property
+    def rested(self) -> int:
+        """``+0x57`` -- "did not act last turn"; the allowance adds one at 1."""
+        return self.raw[0x57]
+
+    @property
     def placed(self) -> bool:
         return bool(self.name) and self.hit_points != 0
 

@@ -57,6 +57,7 @@ Only a handful of the 40 dispatch slots occur in the shipped data; see
 from __future__ import annotations
 
 import logging
+import math
 import os
 import struct
 from dataclasses import dataclass, field
@@ -184,6 +185,121 @@ DRAW_KINDS: dict[int, tuple[str, str, str]] = {
            "u,v come from the array load_uvbase builds"),        # 0x40f622
     0x28: ("none_28", "flat", "bare ret, draws nothing"),        # 0x410b12
 }
+
+# ---------------------------------------------------------------------------
+# Face shape: is a triangle fan a correct triangulation of this face?
+# ---------------------------------------------------------------------------
+
+#: Faces carry **three to twenty-four** vertex indices -- the shipped
+#: distribution is 3:82403, 4:145706, 5:4898, 6:2519, 7:198, 8:1103, 9:9,
+#: 10:5, 11:2, 12:1, 13:4, 14:2, 24:11 -- and the renderer fans them from
+#: the first one.  docs/31 used to say three to eight, which is where a
+#: fixed-size decoder would come from.  A fan is a correct triangulation exactly when the polygon is
+#: star-shaped from that vertex, and convexity is the sufficient condition that
+#: can be decided in exact integers.  A bad fan is silent -- it looks like a
+#: modelling error, not like a bug -- so this is checked over the whole corpus
+#: rather than by eye against ``--obj``.
+FACE_MIN_VERTICES = 3
+
+
+@dataclass(frozen=True)
+class FaceShape:
+    """What exact integer arithmetic can say about one face's polygon."""
+
+    #: Every vertex satisfies ``dot(normal, v - v0) == 0`` exactly.
+    planar: bool
+    #: Every turn around the polygon has the same sign, ignoring collinear
+    #: ones, so the polygon is convex and a fan from any vertex is valid.
+    convex: bool
+    #: The Newell normal is zero: the polygon has no area in any plane.
+    degenerate: bool
+    #: The index array names the same vertex slot twice.
+    repeated: bool
+
+    @property
+    def fan_ok(self) -> bool:
+        """Whether a triangle fan from vertex 0 reproduces the polygon.
+
+        Planarity is deliberately **not** part of this.  A fan and a scanline
+        fill of a slightly non-planar polygon cover the same silhouette; what a
+        fan gets wrong is a *reflex* corner, where it emits a triangle outside
+        the polygon and misses one inside it.  See :func:`face_out_of_plane`
+        for how far from flat the corpus actually is.
+        """
+        return self.convex and not self.repeated
+
+
+def _newell(points: Sequence[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """Newell's normal, in exact integers -- no normalisation, no floats."""
+    nx = ny = nz = 0
+    for i, (x0, y0, z0) in enumerate(points):
+        x1, y1, z1 = points[(i + 1) % len(points)]
+        nx += (y0 - y1) * (z0 + z1)
+        ny += (z0 - z1) * (x0 + x1)
+        nz += (x0 - x1) * (y0 + y1)
+    return nx, ny, nz
+
+
+def face_out_of_plane(vertices: Sequence[tuple[int, int, int]],
+                      indices: Sequence[int]) -> float:
+    """How far the worst vertex sits off the Newell plane, in world units.
+
+    Reported rather than gated: the corpus is authored in integer world units,
+    so a quad is very rarely *exactly* planar, and 39 % of shipped faces are
+    not.  What matters for a fan is convexity; this number is what says whether
+    treating a face as flat is a small lie or a large one.
+    """
+    if len(indices) < FACE_MIN_VERTICES:
+        return 0.0
+    points = [vertices[i] for i in indices]
+    nx, ny, nz = _newell(points)
+    norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if norm == 0.0:
+        return 0.0
+    x0, y0, z0 = points[0]
+    return max(abs(nx * (x - x0) + ny * (y - y0) + nz * (z - z0)) / norm
+               for x, y, z in points[1:])
+
+
+def face_shape(vertices: Sequence[tuple[int, int, int]],
+               indices: Sequence[int]) -> FaceShape:
+    """Decide :class:`FaceShape` for one face, exactly.
+
+    Convexity is tested in the plane the normal's dominant axis drops out of,
+    which keeps the whole test in integers: projecting away the largest
+    component cannot collapse a non-degenerate polygon to a line.
+    """
+    if len(indices) < FACE_MIN_VERTICES:
+        return FaceShape(True, True, True, len(set(indices)) != len(indices))
+    points = [vertices[i] for i in indices]
+    repeated = len(set(indices)) != len(indices)
+    nx, ny, nz = _newell(points)
+    if (nx, ny, nz) == (0, 0, 0):
+        return FaceShape(True, False, True, repeated)
+
+    x0, y0, z0 = points[0]
+    planar = all(nx * (x - x0) + ny * (y - y0) + nz * (z - z0) == 0
+                 for x, y, z in points[1:])
+
+    axis = max(range(3), key=lambda i: abs((nx, ny, nz)[i]))
+    flat = [tuple(c for i, c in enumerate(p) if i != axis) for p in points]
+    sign = 0
+    convex = True
+    n = len(flat)
+    for i in range(n):
+        ax, ay = flat[i]
+        bx, by = flat[(i + 1) % n]
+        cx, cy = flat[(i + 2) % n]
+        cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+        if cross == 0:
+            continue
+        this = 1 if cross > 0 else -1
+        if sign and this != sign:
+            convex = False
+            break
+        sign = this
+    return FaceShape(planar, convex, False, repeated)
+
 
 VERTEX_STRIDE = 12  # i32 x, i32 y, i32 z
 PLANE_STRIDE = 6    # i16 nx, i16 ny, i16 nz  (1/16384 fixed point)

@@ -3,3 +3,12 @@ _wip/
 gog_incubation
 tools/out
 *.sav
+
+# Godot editor cache, dev fixtures and export output (docs/92 section 3.2, section 10.1).
+godot/.godot/
+godot/generated/
+godot/export/
+
+# Native move-map captures: derived from Blue Byte data, like tools/out/.
+# The committed README.md beside them records what each one pins.
+tests/fixtures/movemap/*.json

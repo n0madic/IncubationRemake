@@ -40,6 +40,8 @@ from inclib.prototyp import (  # noqa: E402
     OPCODES,
     Container,
     Prototype,
+    face_out_of_plane,
+    face_shape,
     find_containers,
     load_container,
     render_png,
@@ -47,6 +49,24 @@ from inclib.prototyp import (  # noqa: E402
 )
 
 LOG = logging.getLogger("prototyp_parse")
+
+#: A triangle fan from vertex 0 is a correct triangulation only for a convex
+#: polygon that names no vertex twice.  These three counts are corpus facts,
+#: pinned rather than asserted to zero: the shipped geometry really does carry
+#: reflex quads and pentagons, mostly in the dialogue and sequence models but
+#: 81 of them in ``World_A00`` alone, so a renderer that fans every face draws
+#: those wrong.  ``godot/game/mesh_builder.gd`` ear-clips instead, which is
+#: what these numbers exist to justify.
+EXPECTED_NON_CONVEX = 1572
+EXPECTED_REPEATED_INDEX = 129
+#: Faces whose Newell normal is zero: no area in any plane, so nothing to draw
+#: and nothing to triangulate.
+EXPECTED_ZERO_AREA = 700
+#: Faces the index guard skips before the shape pass -- an index past the end
+#: of the placed-vertex list.  Pinned so that a decoder change quietly moving
+#: faces out of the shape pass shows up as a count, rather than as three
+#: bucket totals that all shrink together and still add up.
+EXPECTED_UNSHAPED = 0
 
 
 def _resolve_container(path: str) -> Container:
@@ -132,6 +152,27 @@ def cmd_check(root: str) -> int:
     depth_bias_nonzero = 0
     trailing_bytes = 0
     gap_records: list[str] = []
+    fan_ok = 0
+    exact_planar = 0
+    worst_out_of_plane = 0.0
+    worst_face = ""
+    non_convex: list[str] = []
+    degenerate = 0
+    repeated: list[str] = []
+    #: Faces the index guard skipped, so they never reached `face_shape`.
+    unshaped = 0
+    #: Faces that fell into no shape bucket, or into more than one.  The three
+    #: pinned counts used to be checked by `fan_ok + non_convex + degenerate ==
+    #: face_total`, which is an identity over three sets that were never
+    #: disjoint by construction: a *convex* face naming a vertex twice is in
+    #: none of them (`fan_ok` excludes it, `non_convex` needs `not convex`),
+    #: and a face with fewer than three indices is counted as both fannable
+    #: and degenerate.  Neither occurs today, so the identity held -- and when
+    #: one does occur, the run says only `SOME CHECKS FAILED` with no line
+    #: naming which face or which condition.  These lists name them.
+    unclassified: list[str] = []
+    double_counted: list[str] = []
+    face_sizes: collections.Counter[int] = collections.Counter()
 
     for din, binp in containers:
         container = load_container(din, binp)
@@ -202,6 +243,43 @@ def cmd_check(root: str) -> int:
                 if any(k >= nv for k in f.indices):
                     bad_index.append(f"{rel}[{i}] {proto.name} face@0x{f.pos:x}")
                     break
+            placed = proto.placed_vertices
+            for f in proto.faces:
+                face_sizes[len(f.indices)] += 1
+                if any(k >= len(placed) for k in f.indices):
+                    unshaped += 1
+                    continue
+                shape = face_shape(placed, f.indices)
+                if shape.degenerate:
+                    degenerate += 1
+                if shape.fan_ok:
+                    fan_ok += 1
+                if shape.planar:
+                    exact_planar += 1
+                where = f"{rel}[{i}] {proto.name} face@0x{f.pos:x} " \
+                        f"({len(f.indices)} verts)"
+                deviation = face_out_of_plane(placed, f.indices)
+                if deviation > worst_out_of_plane:
+                    worst_out_of_plane = deviation
+                    worst_face = where
+                if not shape.convex and not shape.degenerate:
+                    non_convex.append(where)
+                if shape.repeated:
+                    repeated.append(where)
+                # Exactly one of the three pinned buckets, or it is named.
+                in_bucket = sum((shape.degenerate,
+                                 shape.fan_ok,
+                                 not shape.convex and not shape.degenerate))
+                if in_bucket == 0:
+                    unclassified.append(
+                        f"{where}: convex={shape.convex} "
+                        f"repeated={shape.repeated} "
+                        f"degenerate={shape.degenerate}")
+                elif in_bucket > 1:
+                    double_counted.append(
+                        f"{where}: in {in_bucket} buckets "
+                        f"(convex={shape.convex} repeated={shape.repeated} "
+                        f"degenerate={shape.degenerate})")
             for f in proto.faces:
                 if abs(f.plane_index) > np_:
                     bad_plane.append(f"{rel}[{i}] {proto.name} face@0x{f.pos:x}")
@@ -244,6 +322,19 @@ def cmd_check(root: str) -> int:
     print(f"texture ids within texture.din count: "
           f"{face_total - len(tex_out_of_range)}/{face_total}")
     print(f"unexplained bytes inside faces: {trailing_bytes}")
+    # A triangle fan from vertex 0 is a correct triangulation exactly when the
+    # polygon is planar, convex and names no vertex twice.  This is the check
+    # that retires the manual `--obj` cross-check the remake's mesh builder
+    # used to depend on.
+    print(f"faces a triangle fan triangulates correctly: "
+          f"{fan_ok}/{face_total} "
+          f"(non-convex {len(non_convex)}, repeated index {len(repeated)}, "
+          f"zero-area {degenerate})")
+    print(f"faces exactly planar in integer world units: "
+          f"{exact_planar}/{face_total}; worst deviation "
+          f"{worst_out_of_plane:.1f} units on {worst_face}")
+    print("face vertex counts: "
+          + ", ".join(f"{k}:{v}" for k, v in sorted(face_sizes.items())))
     print(f"totals: {vert_total} vertices, {face_total} faces, "
           f"coordinate range [{vmin}, {vmax}], max texture id {tex_max}")
     print("opcodes:")
@@ -257,6 +348,13 @@ def cmd_check(root: str) -> int:
                          ("VERTEX INDEX OUT OF RANGE", bad_index),
                          ("PLANE INDEX OUT OF RANGE", bad_plane),
                          ("TEXTURE ID OUT OF RANGE", tex_out_of_range),
+                         ("UNEXPECTED NON-CONVEX FACE COUNT", non_convex
+                          if len(non_convex) != EXPECTED_NON_CONVEX else []),
+                         ("UNEXPECTED REPEATED-INDEX FACE COUNT", repeated
+                          if len(repeated) != EXPECTED_REPEATED_INDEX else []),
+                         ("FACES IN NO SHAPE BUCKET", unclassified),
+                         ("FACES IN MORE THAN ONE SHAPE BUCKET",
+                          double_counted),
                          ("NOTE: records with unreferenced slack bytes",
                           gap_records)):
         if items:
@@ -270,7 +368,17 @@ def cmd_check(root: str) -> int:
           and not bbox_worse and not tex_out_of_range
           and overlap == 0 and tree_ptr_bad == 0 and alt_bad == 0
           and bbox_contains == parsed and height_ok == parsed
-          and radius_pair_ok == parsed and trailing_bytes == 0)
+          and radius_pair_ok == parsed and trailing_bytes == 0
+          and len(non_convex) == EXPECTED_NON_CONVEX
+          and len(repeated) == EXPECTED_REPEATED_INDEX
+          and degenerate == EXPECTED_ZERO_AREA
+          # Every face is fannable, reflex, or has no area at all -- and now
+          # that is checked per face rather than inferred from a sum, so a
+          # face in no bucket or in two is named instead of turning the whole
+          # run red without a reason.
+          and not unclassified and not double_counted
+          and fan_ok + len(non_convex) + degenerate == face_total - unshaped
+          and unshaped == EXPECTED_UNSHAPED)
     print("\n" + ("all checks passed" if ok else "SOME CHECKS FAILED"))
     return 0 if ok else 1
 

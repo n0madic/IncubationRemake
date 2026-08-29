@@ -251,6 +251,8 @@ Buffers cover out-parameters and structs:
 --zero out            clear it before this call
 --dump out            hex dump it after this call
 --read [%esi+0x40]:16 read 16 bytes at that address after this call
+                      (1..262144; the cap bounds the argument, not the
+                      transport -- one ReadProcessMemory does the work)
 ```
 
 Buffers keep whatever a call left in them, so one call can fill a buffer and
@@ -454,7 +456,7 @@ reasoning — a batch whose results were all identical.
 | situation | behaviour |
 | --- | --- |
 | module never loads | at exit, the unresolved address and the list of modules that did load |
-| breakpoint never hit | said explicitly, rather than a silent exit |
+| breakpoint never hit | said explicitly, rather than a silent exit; the first few unhandled exceptions seen before any anchor is reached are printed too, so a target that dies on the way is distinguishable from a wrong address |
 | a call faults | the row is reported and the batch stops; `--continue-on-fault` carries on and marks every later row `tainted`, because the target's state is now suspect. A faulted target is never resumed, even with `--resume` |
 | a call never returns | `--call-timeout` (default 5000 ms) gives up; the batch cannot continue, since the thread is stopped somewhere unknown |
 | an argument expression fails | that row reports `arg-error` and the batch moves on |
