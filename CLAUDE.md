@@ -58,7 +58,8 @@ python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
 python3 tools/lcl_runtime.py        --check gog_incubation   # 34 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 units
-python3 tools/combat_runtime.py     --check gog_incubation   # 55 checks, LOS/hit/damage
+python3 tools/combat_runtime.py     --check gog_incubation   # 80 checks, LOS/hit/damage/reaction
+python3 tools/interact_runtime.py   --check gog_incubation   # 57 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/remake_convert.py     gog_incubation --check   # 50 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
@@ -125,7 +126,7 @@ exits non-zero when there is nothing to parse.
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
 `interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`,
 `info_parse`, `movemap_runtime`, `movemap_gold`, `turn_runtime`,
-`combat_runtime`, `lcl_runtime` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
+`combat_runtime`, `interact_runtime`, `lcl_runtime` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
 `remake_convert` takes it positionally **and** wants `--check` as a bare flag.
 `sav_parse` takes it positionally but only with `--selftest`, `seq_parse`
 takes it positionally with `--check` as a bare flag, and `dbgcall_patches`
@@ -189,7 +190,7 @@ Two consequences worth internalising: **`.cho` contains no geometry** (it refere
 - `png` — dependency-free indexed and truecolour PNG writing
 - `palette`, `liblib`, `lev`, `charisma`, `prototyp`, `visn`, `lcl` — one module per format family; `lcl` holds the script codec, tokenizer, parser and AST, and `lcl_parse.py` / `lcl_decode.py` are thin CLIs over it
 - `rng` — the two generators the engine draws from: `ARandom` (`0x00463870`, the Lehmer one, pinned by a 64-draw native capture) and `CRandom` (the C runtime's, which only `InsertUnit` uses). `godot/core/rng.gd` is `ARandom`'s twin
-- `script`, `lcl_runtime`, `turn`, `combat` — the LCL cache document, and the executable models of the interpreter (docs/20), the turn (docs/25) and combat/visibility (docs/22)
+- `script`, `lcl_runtime`, `turn`, `combat`, `interact` — the LCL cache document, and the executable models of the interpreter (docs/20), the turn (docs/25), combat/visibility/reaction (docs/22, docs/25 §6) and interaction (docs/26)
 - `pe` — PE sections, resources, and typed reads **by virtual address**, so the addresses the docs quote can be used directly
 
 Parsers raise a typed error (`ParseError`, `LevError`, `LibError`, `PaletteError`, `VisnError`) instead of returning partial results, so a corpus check cannot pass by silently skipping files. Keep that property.
@@ -243,13 +244,15 @@ python3 tools/turn_gold.py --check gog_incubation     # re-run the models agains
 ```
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
-108 checks over 86 unit pairs (hit probability **and** line of sight), the
+114 checks over 86 unit pairs (hit probability **and** line of sight), the
 refresh of every player that owns a live unit, the records those refreshes must
 leave alone, the fog pass, the lone stat recompute, and twelve steps of the
 rotation with the twelve game-control slots beside it, and one `NextPlayer`
 invocation of the real interpreter with `aRandom`'s seed read either side,
 the overheat gate with its roll, six ordered shots,
-`aExecuteUse` swept over all eight facings, and six `aExecuteMove` walks of
+`aExecuteUse` swept over all eight facings — **replayed through
+`inclib/interact.py` in order and without reloading**, because the phase itself
+does not reload — and six `aExecuteMove` walks of
 one path that differ only in a byte written between the walk and the call.
 `python3 tools/turn_gold.py --emit-cases tests/fixtures/turn/cases_turn.json`
 turns the capture into the fixture `godot/tests/test_turn_native.gd` reads. **Wine start-up
@@ -329,7 +332,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **37 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 5, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **38 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 5, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

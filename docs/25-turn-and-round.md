@@ -548,6 +548,16 @@ with a call to `0x004104A0`. This is the single most remake-relevant rule in
 this document, and the one an implementation is most likely to get wrong by
 clearing the flag after the first shot.
 
+**As code.** `tools/inclib/combat.py` models the whole of this section —
+`may_enter_defence` (`0x004753E0`), `auto_enter_defence` (`0x0040A710`),
+`enter_defence` (`0x00478500`), `in_front_arc` (`0x004790F0`) and
+`drain_reactions` (`0x0046CCA0`) — and `tools/combat_runtime.py --check`
+asserts it. **No shipped `.lev` places a unit on overwatch**: `+0x41` is 0 in
+all 1826 placed records, because the state only ever exists at runtime, so the
+scenario is built rather than loaded and the checks say so. Seven mutations of
+the model were run against the check set and all seven were caught — including
+the one this section names, clearing `+0x41` after the first shot.
+
 ---
 
 ## 7. Weapon modes — **[code] `aToggleWeaponModes` `0x0047A8C0`**

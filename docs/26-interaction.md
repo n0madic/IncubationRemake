@@ -677,6 +677,28 @@ single-byte or single-dword pokes into a copy of `Incubation.exe`, 16 edits to
 a copy of the corpus — were each run against the full check set; all 112 were
 detected, and the union of the check names they tripped is all 109.
 
+### 9.1 The behaviour, as code
+
+`interaction_tables.py` proves the *dispatch*; `tools/inclib/interact.py` is
+what those arms **do**, and `tools/interact_runtime.py --check gog_incubation`
+runs it — **57 checks**, over all 155 missions for the census and on built
+scenes for the arms that no shipped map can reach. It asserts the band, the
+crowbar, the jammed door's one-way opening, class 12's *assignment* (§3.2),
+class 16's guard on the wrong stat (§3.3), the door round trip, the push's four
+steps and its two terminations, and that a push and a defuse **never reach the
+script**. Twelve mutations of the model were each run against it; all twelve
+were detected.
+
+Above that sits the native gate. `tools/turn_gold.py`'s phase 9 sweeps
+`aExecuteUse` over eight facings for three action-point classes inside the live
+engine, and `--check` now **replays all 24 probes through the model** — in
+order and without reloading, because the phase itself does not reload — and
+compares the cell's action point, the mover's magazine and its twenty
+equipment slots against the engine's own bytes. All three agree on all 24.
+That is what settled the facing convention (§2) and what makes the *"a full
+magazine makes class 12 look inert"* invariant a measurement rather than a
+reading.
+
 ---
 
 ## 10. Open questions
@@ -726,7 +748,17 @@ detected, and the union of the check names they tripped is all 109.
    walk, or the detonation is driven from somewhere the probe does not
    exercise. Distinguishing the two needs a probe that watches the call
    itself rather than its effects.
-7. **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
+7. **Whether an object *pushed* onto a mine detonates it.** §4 quotes the
+   push's own call site — `…free the mine object, aExecuteBomb(x, y)…` — and
+   `tools/inclib/interact.py` models it that way, as a weapon-36 shot centred
+   on the cell. But the *sibling* path is measured and does not detonate:
+   item 6 above. The two arms are different call sites and may genuinely
+   differ, or the push's may be as inert as the walk's. Nothing has probed it:
+   `aExecuteUse` phase 9's three classes are pickups, and putting a pushable
+   object and a mine in front of one unit needs writes to three cells rather
+   than one. Until it is probed, the model's detonation is the documentation's
+   claim and not a measurement, and it says so in its own docstring.
+8. **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
    mover an eight-neighbour trigger radius. §6.1's probe walks a small unit,
    and the shipped campaign places no large unit next to a mine, so nothing
    has ever run it. Writing the `size` byte is the move that would

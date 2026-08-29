@@ -17,7 +17,11 @@ What is here, in the order ``docs/22`` §10 puts them:
   armour subtraction and the 135-degree rear arc;
 * ``aCheckWeaponDamage`` -- the overheat roll;
 * ``aBuildVisibleMap`` and its per-unit pass, including the two scanners and
-  the neighbour-cluster promotion.
+  the neighbour-cluster promotion;
+* the reaction queue -- ``0x004753E0`` and ``0x0040A710``'s two disagreeing Def
+  gates, ``0x00478500``'s ticket, ``0x004790F0``'s 135-degree front arc and
+  ``0x0046CCA0``'s drain (``docs/25`` §6).  Nothing in the drain clears
+  ``+0x41``, and this model does not either.
 
 Three things this model is deliberately literal about, because ``docs/22`` says
 a remake gets them wrong by accident:
@@ -318,6 +322,8 @@ class CombatUnit:
     armour_front: int = 0     # +0x36
     armour_rear: int = 0      # +0x37
     action_state: int = 0     # +0x41
+    acted: int = 0            # +0x39
+    ticket: int = 0           # +0x59
     visibility: int = 0       # +0x4F
     order: int = 0            # +0x47
     order2: int = 0           # +0x49
@@ -326,6 +332,9 @@ class CombatUnit:
     group: int = 0            # +0x4E
     turn_start_x: int = 0     # +0x51
     turn_start_y: int = 0     # +0x52
+    #: ``+0x1A..+0x1F`` in :data:`inclib.lev.SKILL_NAMES` order -- CON, LW, HW,
+    #: TS, MS, LS.  A **list**, because the three implant boxes write to it.
+    skills: list[int] = field(default_factory=lambda: [0] * 6)
     equipment_ids: frozenset[int] = field(default_factory=frozenset)
 
     @property
@@ -347,7 +356,7 @@ class CombatWorld:
     #: The unit slot standing on each cell, ``-1`` for none.
     unit_at: list[int]
     #: ``+0x10``; a cell whose effect state is 3 takes no damage (``docs/22``
-    #: §7.3).
+    #: §7.3).  ``2`` is a mine (``docs/26`` §4.1).
     effect_state: list[int]
     units: dict[int, CombatUnit]
     tables: BalanceTables
@@ -356,6 +365,18 @@ class CombatWorld:
     #: three-quarter damage rule both key on this.
     human_players: int = 1
     game_mode: int = 1
+    #: ``0x00517F50`` -- one ticket counter per player slot, zeroed by the
+    #: hand-over's refresh (``docs/25`` §5), so numbering restarts every turn.
+    reaction_counter: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    #: ``+0x0B`` and ``+0x0D`` -- the two cell bytes interaction reads
+    #: (``docs/26``).  Empty by default: nothing in ``docs/22`` touches them,
+    #: and :mod:`inclib.interact` refuses a world that did not fill them rather
+    #: than reading an index off the end of a list.
+    action_point: list[int] = field(default_factory=list)
+    field_type: list[int] = field(default_factory=list)
+    #: ``0x00509F18`` -- the twelve game-control slots.  Slot 10 is the
+    #: mission's equipment-point bonus, which three pickup arms add to.
+    game_control: list[int] = field(default_factory=lambda: [0] * 12)
     rng: ARandom = field(default_factory=ARandom)
 
     def in_bounds(self, x: int, y: int) -> bool:
@@ -1052,3 +1073,280 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         if cap != 0xFF and attacker.heat < cap:
             attacker.heat += 1
     return result
+
+
+# ---------------------------------------------------------------------------
+# aExecuteBomb -- docs/26 section 4
+# ---------------------------------------------------------------------------
+
+#: ``docs/21`` §4 -- ``ParaBomb``.  A mine resolves as a shot from this weapon.
+BOMB_WEAPON = 36
+
+
+def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
+    """``aExecuteBomb`` ``0x004702C0`` -- a weapon-36 shot with no shooter.
+
+    ``docs/26`` §4 quotes the push's own call site: an object pushed onto a
+    mine frees the effect object and detonates it here.  The marking pass is
+    ``0x0046AA10`` exactly as an attack uses it, so the footprint is the
+    ``aim_and_neighbours`` family -- full damage on the centre and 70 % around
+    it.
+
+    **UNVERIFIED in one respect, and it is the same one ``docs/26`` §10 item 6
+    records.**  The sibling path -- a mine *stepped* on during a walk -- was
+    probed natively and did **not** detonate: the seed, the mover's hit points
+    and the cell's ``+0x10`` were all unchanged.  The push path has never been
+    probed.  What is modelled here is the documented arm; if a later capture
+    shows the push behaves like the step, this is the function to delete.
+
+    The rear-arc test needs a facing and a bomb has no shooter, so the heading
+    from the centre to each target is used.  Nothing in the disassembly names
+    the value the engine passes; a target standing *on* the centre gets
+    heading 0 either way, which is the only case the shipped data reaches.
+    """
+    result = AttackResult(True, "bomb")
+    result.marked = mark_cells(world, BOMB_WEAPON, x, y)
+    weapon = world.tables.weapons.get(BOMB_WEAPON)
+    for cx, cy, marker in result.marked:
+        target = world.unit_on(cx, cy)
+        if target is None:
+            continue
+        if world.effect_state[world.index(cx, cy)] == 3:
+            continue
+        chance = 0 if weapon is None else weapon.hit
+        damage = marker_damage(world, marker, BOMB_WEAPON)
+        roll = world.rng(0, 100)
+        if chance + HIT_BONUS < roll:
+            result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
+                                    "marker": MARKER_MISS, "dealt": 0,
+                                    "chance": chance, "roll": roll})
+            continue
+        if target.absorber:
+            target.absorber -= 1
+            dealt = 0
+        else:
+            dealt = apply_damage(world, target, damage,
+                                 direction(x, y, cx, cy))
+        killed = not target.alive
+        if killed:
+            world.unit_at[world.index(target.x, target.y)] = -1
+        result.outcomes.append({
+            "slot": target.slot, "x": cx, "y": cy,
+            "marker": MARKER_KILLED if killed else MARKER_HIT,
+            "dealt": dealt, "chance": chance, "roll": roll})
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Reaction fire -- docs/25 section 6
+# ---------------------------------------------------------------------------
+
+#: ``docs/21`` §4 -- ``weapon[+0x32]``.  The **Def** button's eligibility test
+#: is ``def_mode & 1``; the AI's automatic end-of-turn pass tests
+#: ``== 1 || == 4``.  The two disagree only on 4, which the shipped table never
+#: uses, so both are written out rather than folded into one predicate.
+DEF_MODE_AUTOMATIC = frozenset({1, 4})
+
+#: ``0x004753E0`` -- the movement points a unit must still hold, and the
+#: ``+0x39`` value ``0x00478500`` stamps.
+OVERWATCH_MIN_MP = 2
+OVERWATCH_ACTED = 3
+
+#: ``+0x41 == 1`` -- a reaction is pending.  ``docs/21`` §5's table for the
+#: field; ``docs/25`` §6 for what does and does not clear it.
+ACTION_WAITING = 1
+
+#: ``docs/25`` §6 -- the drain fires in ticket order in ``campaign`` mode and
+#: in slot order in every other.  The tickets are written either way.
+GAME_MODE_CAMPAIGN = 1
+
+
+def may_enter_defence(world: CombatWorld, unit: CombatUnit) -> bool:
+    """``0x004753E0`` -- the **Def** button's own eligibility test.
+
+    Four gates and then the flag: two movement points, no malfunction, some
+    ammunition, and not already waiting.  The return is ``def_mode & 1``, so a
+    weapon whose column is 4 is refused *here* and accepted by the automatic
+    pass -- see :func:`auto_enter_defence`.
+    """
+    if unit.mp < OVERWATCH_MIN_MP:
+        return False
+    if unit.malfunction != 0:
+        return False
+    if unit.ammo == 0:
+        return False
+    if unit.action_state == ACTION_WAITING:
+        return False
+    weapon = world.tables.weapons.get(unit.weapon)
+    return bool(0 if weapon is None else weapon.def_mode & 1)
+
+
+def auto_enter_defence(world: CombatWorld, unit: CombatUnit) -> bool:
+    """``0x0040A710`` -- the AI's end-of-turn pass, as a predicate.
+
+    ``0x00409940`` walks all 200 slots and calls this for every unit that still
+    holds two movement points; the test here is on the weapon column alone.
+    """
+    if unit.mp < OVERWATCH_MIN_MP:
+        return False
+    weapon = world.tables.weapons.get(unit.weapon)
+    return weapon is not None and weapon.def_mode in DEF_MODE_AUTOMATIC
+
+
+def enter_defence(world: CombatWorld, unit: CombatUnit) -> int:
+    """``0x00478500`` -- put a unit on overwatch and hand it a ticket.
+
+    Returns the ticket.  ``docs/21`` §4: a unit that was **already** waiting
+    loses its remaining movement points, which is what makes pressing Def twice
+    an act rather than a no-op.  The order matters -- the old state is read
+    before the new one is written.
+    """
+    was_waiting = unit.action_state == ACTION_WAITING
+    unit.action_state = ACTION_WAITING
+    unit.acted = OVERWATCH_ACTED
+    world.reaction_counter[unit.player & 3] += 1
+    unit.ticket = world.reaction_counter[unit.player & 3]
+    if was_waiting:
+        unit.mp = 0
+    return unit.ticket
+
+
+def in_front_arc(reactor: CombatUnit, mover: CombatUnit) -> bool:
+    """``0x004790F0`` -- is the mover inside the reactor's 135 degree front?
+
+    The heading from the reactor to the mover (``0x0046A760``) and its two
+    neighbouring octants; true when the reactor's own facing is one of the
+    three.  The same shape ``docs/22`` §7.4 uses for rear armour, read from the
+    other end.
+    """
+    heading = direction(reactor.x, reactor.y, mover.x, mover.y)
+    return reactor.facing in REAR_ARC.get(heading, ())
+
+
+@dataclass
+class Reaction:
+    """One shot the drain took, as a value."""
+
+    reactor: int
+    ticket: int
+    attack: AttackResult
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"reactor": self.reactor, "ticket": self.ticket,
+                "attack": self.attack.to_dict()}
+
+
+def reaction_candidates(world: CombatWorld,
+                        mover: CombatUnit) -> list[CombatUnit]:
+    """``0x0046CCA0``'s six conditions, in the order ``docs/25`` §6 lists them.
+
+    The chance test is the expensive one and stays last, exactly as the engine
+    orders it: a reactor that is dead, unwaiting, empty or overheated never
+    reaches the line-of-sight walk.
+    """
+    out: list[CombatUnit] = []
+    for reactor in world.units.values():
+        if not reactor.alive or reactor.player == mover.player:
+            continue
+        if reactor.action_state != ACTION_WAITING:
+            continue
+        if reactor.ammo == 0:
+            continue
+        cap = max_heat(world, reactor)
+        if cap != 0xFF and reactor.heat >= cap:
+            continue
+        chance = hit_probability(world, reactor, mover, reactor.weapon)
+        if not chance.in_range or chance.percent <= 0:
+            continue
+        if not (banner_nearby(world, reactor) or in_front_arc(reactor, mover)):
+            continue
+        out.append(reactor)
+    return out
+
+
+def drain_reactions(world: CombatWorld, mover: CombatUnit) -> list[Reaction]:
+    """``0x0046CCA0`` -- every enemy on overwatch shoots the unit that moved.
+
+    Two branches, and the difference is the **order**, never the membership.
+    In ``campaign`` mode the queue is drained by ticket from 1 upward -- the
+    unit that went on overwatch first shoots first -- and in every other mode
+    the 200 slots are walked in index order.  The tickets are written either
+    way, so a save carries them whatever the mode.
+
+    Three rules this is deliberately literal about, because ``docs/25`` §6 says
+    an implementation is most likely to get them wrong:
+
+    * **nothing here clears ``+0x41``.**  A unit stays on overwatch and fires at
+      every enemy that walks past, until the hand-over clears it or it runs out
+      of ammunition;
+    * the reactor's facing is saved before the shot and restored after it, so
+      overwatch does not end up staring at whatever it last shot at;
+    * if the mover dies the drain returns immediately -- the reactors behind it
+      in the queue keep their tickets and their turn comes round again.
+    """
+    fired: list[Reaction] = []
+    if not mover.alive:
+        return fired
+    candidates = reaction_candidates(world, mover)
+    by_slot = sorted(candidates, key=lambda u: u.slot)
+    if world.game_mode == GAME_MODE_CAMPAIGN:
+        # **The ticket loop starts at 1, not at 0.**  A waiting unit whose
+        # ticket is 0 is therefore never found by it, and no shipped path
+        # produces one -- `enter_defence` always stamps at least 1 -- but a
+        # save or a script can, and the two branches disagree about it.
+        highest = max((u.ticket for u in by_slot), default=0)
+        order: list[CombatUnit] = []
+        for ticket in range(1, highest + 1):
+            order += [u for u in by_slot if u.ticket == ticket]
+    else:
+        order = by_slot
+    for reactor in order:
+        facing = reactor.facing
+        result = attack_unit(world, reactor.x, reactor.y, mover.x, mover.y)
+        reactor.facing = facing
+        fired.append(Reaction(reactor.slot, reactor.ticket, result))
+        if not mover.alive:
+            break
+    return fired
+
+
+# ---------------------------------------------------------------------------
+# Building one from a mission
+# ---------------------------------------------------------------------------
+
+def world_from_map(bm: Any, tables: BalanceTables,
+                   seed: float = 1.0) -> CombatWorld:
+    """One mission as the world an attack, a fog pass or a Use runs against.
+
+    Fills the interaction cells (``+0x0B`` and ``+0x0D``) as well as the combat
+    ones, so ``combat_runtime.py`` and ``interact_runtime.py`` build **the
+    same** world from the same ``.lev`` rather than two that agree by
+    coincidence.  ``bm`` is an :class:`inclib.lev.BattleMap`; it is typed
+    loosely here because importing ``lev`` would make this module depend on the
+    file format it is deliberately independent of.
+    """
+    cells = bm.cells
+    units: dict[int, CombatUnit] = {}
+    for u in bm.units:
+        if not u.placed:
+            continue
+        units[u.slot] = CombatUnit(
+            slot=u.slot, type_id=u.type_id, player=u.player, x=u.x, y=u.y,
+            hp=u.hit_points, facing=u.facing, fp=u.fp, mp=u.action_points,
+            weapon=u.weapon, ammo=u.ammo, heat=u.heat,
+            malfunction=u.malfunction, absorber=u.absorb,
+            armour_front=u.armour_front, armour_rear=u.armour_rear,
+            action_state=u.action_state, acted=u.acted, ticket=u.ticket,
+            visibility=u.visibility,
+            order=u.order, order_param=u.order_param, order2=u.order2,
+            order2_param=u.order2_param, group=u.group,
+            turn_start_x=u.turn_start_x, turn_start_y=u.turn_start_y,
+            skills=list(u.skills), equipment_ids=frozenset(u.equipment_ids))
+    return CombatWorld(
+        width=bm.width, height=bm.height,
+        cell_height=[c.height for c in cells],
+        unit_at=[-1 if c.unit is None else c.unit for c in cells],
+        effect_state=[c.raw[0x10] for c in cells],
+        action_point=[c.action_point for c in cells],
+        field_type=[c.field_type for c in cells],
+        units=units, tables=tables, rng=ARandom(seed))

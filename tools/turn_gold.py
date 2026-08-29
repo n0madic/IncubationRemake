@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import movemap_gold as gold                                        # noqa: E402
 from inclib import combat as combatmod                             # noqa: E402
+from inclib import interact as interactmod                         # noqa: E402
 from inclib import turn as turnmod                                 # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
 from inclib.info import BalanceTables, load_info                   # noqa: E402
@@ -503,10 +504,11 @@ def use_plan(slot: int, cx: int, cy: int, width: int) -> str:
     in this repository as a direction, only as a rotation angle -- and the
     seven that miss are the control: they must leave the point standing.
 
-    There is **no executable model of interaction**, so this phase is a
-    recorded observation rather than a gate.  It exists so that the Wine work
-    is done once and ``inclib/interact.py``, when it is written, can be diffed
-    offline against it.
+    The phase was a recorded observation when it was taken -- there was no
+    executable model of interaction to diff it against.  There is now:
+    ``--check`` replays all 24 probes through :mod:`inclib.interact`, in order
+    and without reloading, and compares the cell's action point, the mover's
+    magazine and its equipment slots against the engine's own bytes.
     """
     units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
     cells = width * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
@@ -1528,6 +1530,8 @@ def _world_from_capture(payload: dict[str, Any], unit_hex: str,
     cell_height: list[int] = []
     unit_at: list[int] = []
     effect: list[int] = []
+    action_point: list[int] = []
+    field_type: list[int] = []
     for i in range(width * height):
         base = i * gold.CELL_STRIDE
         cell_height.append(int.from_bytes(
@@ -1537,6 +1541,8 @@ def _world_from_capture(payload: dict[str, Any], unit_hex: str,
             cells[base + gold.CELL_UNIT:base + gold.CELL_UNIT + 2], "little")
         unit_at.append(-1 if slot == 0xFFFF else slot)
         effect.append(cells[base + gold.CELL_OBSTACLE])
+        action_point.append(cells[base + gold.CELL_ACTION_POINT])
+        field_type.append(cells[base + gold.CELL_FIELD_TYPE])
 
     units: dict[int, combatmod.CombatUnit] = {}
     for slot in payload["live"]:
@@ -1559,10 +1565,14 @@ def _world_from_capture(payload: dict[str, Any], unit_hex: str,
             order=units_raw[b + 0x47], order_param=units_raw[b + 0x48],
             order2=units_raw[b + 0x49], order2_param=units_raw[b + 0x4A],
             group=units_raw[b + 0x4E], turn_start_x=units_raw[b + 0x51],
-            turn_start_y=units_raw[b + 0x52], equipment_ids=equipment)
+            turn_start_y=units_raw[b + 0x52],
+            acted=units_raw[b + 0x39], ticket=units_raw[b + 0x59],
+            skills=list(units_raw[b + 0x1A:b + 0x20]),
+            equipment_ids=equipment)
     return combatmod.CombatWorld(
         width=width, height=height, cell_height=cell_height,
-        unit_at=unit_at, effect_state=effect, units=units, tables=tables,
+        unit_at=unit_at, effect_state=effect, action_point=action_point,
+        field_type=field_type, units=units, tables=tables,
         ai_level=payload["ai_level"], rng=ARandom())
 
 
@@ -1597,6 +1607,71 @@ def lcl_script_of(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         raise GoldError(f"no {path} to compare the capture against")
     return scriptmod.script_document(lclmod.parse_file(str(path)),
                                      {"file": str(path), "mission": name})
+
+
+
+
+def _use_model_checks(c: Checker, payload: dict[str, Any],
+                      use: dict[str, Any], tables: BalanceTables) -> None:
+    """Replay phase 9's 24 probes through :mod:`inclib.interact`.
+
+    **The probes are sequential and this replay is too.**  ``use_plan`` loads
+    the save once and then writes the class byte before every probe, so the
+    *cell* is restored each time and the *unit* is not: the crowbar granted by
+    the class-39 probe is still there for the ones after it.  Replaying each
+    probe from the saved state would compare a different experiment.
+    """
+    width = payload["width"]
+    ux, uy = use["cell"]
+    cell_off = ((uy * width + ux) * gold.CELL_STRIDE
+                + gold.CELL_ACTION_POINT)
+    slot = use["slot"]
+    base = slot * gold.UNIT_STRIDE
+    world = _world_from_capture(payload, payload["units_before"], tables)
+    unit = world.units[slot]
+    at = world.index(ux, uy)
+
+    ap_bad: list[str] = []
+    ammo_bad: list[str] = []
+    equip_bad: list[str] = []
+    kinds: set[str] = set()
+    compared = 0
+    for i, klass in enumerate(use["classes"]):
+        for facing in range(8):
+            j = i * 8 + facing
+            world.action_point[at] = klass
+            unit.facing = facing
+            result = interactmod.execute_use(world, unit)
+            kinds.add(result.kind if result.ok else "refused")
+            after_cells = bytes.fromhex(use["cells"][j])
+            after_units = bytes.fromhex(use["units"][j])
+            compared += 1
+            if world.action_point[at] != after_cells[cell_off]:
+                ap_bad.append(f"class {klass} facing {facing}: "
+                              f"{world.action_point[at]} != "
+                              f"{after_cells[cell_off]}")
+            if unit.ammo != after_units[base + 0x3D]:
+                ammo_bad.append(f"class {klass} facing {facing}: "
+                                f"{unit.ammo} != {after_units[base + 0x3D]}")
+            mine = sorted(unit.equipment_ids)
+            theirs = sorted(
+                k for k in range(gold.UNIT_EQUIPMENT_SLOTS)
+                if after_units[base + gold.UNIT_EQUIPMENT + k])
+            if mine != theirs:
+                equip_bad.append(f"class {klass} facing {facing}: "
+                                 f"{mine} != {theirs}")
+    c.check("use.model_probes_replayed", compared == len(use["classes"]) * 8,
+            f"{compared} probe(s)")
+    c.expect("use.model_action_point_matches_native", ap_bad[:6], [])
+    c.expect("use.model_ammunition_matches_native", ammo_bad[:6], [])
+    c.expect("use.model_equipment_matches_native", equip_bad[:6], [])
+    # Seven of every eight probes are refusals, so a model that refused
+    # *everything* would agree with 21 of the 24.  This says it did not.
+    c.check("use.model_reached_more_than_a_refusal", len(kinds) > 1,
+            f"kinds reached: {sorted(kinds)}")
+    c.check("use.model_granted_the_crowbar",
+            interactmod.EQUIP_CROWBAR in unit.equipment_ids,
+            "class 39 is the third of the three probed classes")
 
 
 def run_check(capture_path: Path, root: Path) -> int:
@@ -2070,6 +2145,12 @@ def run_check(capture_path: Path, root: Path) -> int:
     c.expect("use.full_munition_leaves_the_magazine_full",
              ammo_after[sl + 0x3D], mag,
              f"weapon magazine is {mag}")
+
+    # Everything above is native-only.  This is where `inclib/interact.py` is
+    # run: the same 24 probes, in the same order, on a world built from the
+    # engine's own bytes -- so the phase is a **gate** now rather than the
+    # recorded observation `use_plan`'s docstring described.
+    _use_model_checks(c, payload, use, tables)
 
     # --- the walk: aExecuteMove, probe by probe ---------------------------
     move = payload.get("move")

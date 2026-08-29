@@ -18,7 +18,10 @@ they feed, against every shipped map.  What it asserts:
   and the sentinel 254 always deals exactly 2;
 * the rear arc is three octants of eight, i.e. 135 degrees, and every octant
   is somebody's rear;
-* every shipped weapon id maps to one of the sixteen target patterns.
+* every shipped weapon id maps to one of the sixteen target patterns;
+* the reaction queue drains in ticket order in ``campaign`` and in slot order
+  everywhere else, the 135-degree front arc gates it, a ``Banner`` lifts the
+  arc -- and **the drain never clears ``+0x41``** (``docs/25`` §6).
 
 Usage::
 
@@ -38,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from inclib import combat                                           # noqa: E402
 from inclib.check import Checker                                    # noqa: E402
 from inclib.info import BalanceTables, load_info_file               # noqa: E402
-from inclib.lev import BattleMap, load_lev                          # noqa: E402
+from inclib.lev import load_lev                                     # noqa: E402
 from inclib.rng import ARandom                                      # noqa: E402
 
 LOG = logging.getLogger("combat_runtime")
@@ -51,31 +54,10 @@ LOS_SAMPLE_MISSIONS = 12
 LOS_SAMPLE_PAIRS = 60
 
 
-def world_of(bm: BattleMap, tables: BalanceTables,
-             seed: float = 1.0) -> combat.CombatWorld:
-    """One mission as the world an attack or a fog pass runs against."""
-    cells = bm.cells
-    units: dict[int, combat.CombatUnit] = {}
-    for u in bm.units:
-        if not u.placed:
-            continue
-        units[u.slot] = combat.CombatUnit(
-            slot=u.slot, type_id=u.type_id, player=u.player, x=u.x, y=u.y,
-            hp=u.hit_points, facing=u.facing, fp=u.fp, mp=u.action_points,
-            weapon=u.weapon, ammo=u.ammo, heat=u.heat,
-            malfunction=u.malfunction, absorber=u.absorb,
-            armour_front=u.armour_front, armour_rear=u.armour_rear,
-            action_state=u.action_state, visibility=u.visibility,
-            order=u.order, order_param=u.order_param, order2=u.order2,
-            order2_param=u.order2_param, group=u.group,
-            turn_start_x=u.turn_start_x, turn_start_y=u.turn_start_y,
-            equipment_ids=frozenset(u.equipment_ids))
-    return combat.CombatWorld(
-        width=bm.width, height=bm.height,
-        cell_height=[c.height for c in cells],
-        unit_at=[-1 if c.unit is None else c.unit for c in cells],
-        effect_state=[c.raw[0x10] for c in cells],
-        units=units, tables=tables, rng=ARandom(seed))
+#: Kept as a name here because every check below reads it; the builder itself
+#: lives in :func:`inclib.combat.world_from_map`, so the interaction runtime
+#: and this one construct byte-identical worlds from the same ``.lev``.
+world_of = combat.world_from_map
 
 
 def check_patterns(c: Checker, tables: BalanceTables) -> None:
@@ -474,6 +456,205 @@ def check_hit_probability(c: Checker, root: Path,
             f"distance {far.distance}")
 
 
+#: The reaction scenario's weapon.  ``Sniper Rifle``: ``def_mode`` 1, range
+#: 1..30 and ``Hit (%)`` 20, so the curve gives ``100 - 2 * d`` and a shot at
+#: two fields has a chance the queue's own gate will accept.  A weapon whose
+#: chance came out zero would make every reaction check pass by refusing.
+REACTION_WEAPON = 3
+#: The scenario's map, big enough that no shot leaves it.
+REACTION_SIZE = 8
+
+
+def _reaction_scene(tables: BalanceTables, seed: float = 1.0
+                    ) -> tuple[combat.CombatWorld, combat.CombatUnit,
+                               combat.CombatUnit, combat.CombatUnit]:
+    """One mover and two reactors on flat ground, both looking at him.
+
+    Built rather than loaded: **no shipped ``.lev`` places a unit on
+    overwatch** -- ``+0x41`` is 0 in all 1826 placed records, because the state
+    only ever exists at runtime -- so a corpus sweep cannot reach the queue at
+    all.  The scenario is the smallest world in which the two drain orders can
+    disagree: the reactor with the *lower* ticket sits in the *higher* slot.
+    """
+    n = REACTION_SIZE * REACTION_SIZE
+    kind = next(iter(sorted(tables.units)))
+    world = combat.CombatWorld(
+        width=REACTION_SIZE, height=REACTION_SIZE, cell_height=[0] * n,
+        unit_at=[-1] * n, effect_state=[0] * n, units={}, tables=tables,
+        rng=ARandom(seed))
+
+    def place(slot: int, player: int, x: int, y: int, facing: int,
+              ticket: int) -> combat.CombatUnit:
+        unit = combat.CombatUnit(
+            slot=slot, type_id=kind, player=player, x=x, y=y, hp=10 ** 6,
+            facing=facing, fp=5, mp=4, weapon=REACTION_WEAPON, ammo=15,
+            action_state=combat.ACTION_WAITING if ticket else 0,
+            ticket=ticket)
+        world.units[slot] = unit
+        world.unit_at[world.index(x, y)] = slot
+        return unit
+
+    mover = place(0, 0, 4, 4, 0, 0)
+    mover.action_state = 0
+    # `direction(4,2 -> 4,4)` is 0 and `direction(4,6 -> 4,4)` is 2, and each
+    # reactor is given an **off-centre** facing from its own arc -- 6 is in
+    # `REAR_ARC[0]` and 4 is in `REAR_ARC[2]`.  Pointing them straight at the
+    # mover instead would make `aAttackUnit`'s turn-to-face a no-op, and the
+    # save-and-restore check would pass on an implementation that does not
+    # restore anything.  That is exactly what it did until a mutation said so.
+    high_ticket = place(1, combat.PLAYER_COMPUTER, 4, 2, 6, 2)
+    low_ticket = place(2, combat.PLAYER_COMPUTER, 4, 6, 4, 1)
+    return world, mover, high_ticket, low_ticket
+
+
+def check_reaction(c: Checker, tables: BalanceTables) -> None:
+    """``docs/25`` §6 -- the Def gate, the ticket, the arc and the drain."""
+    # --- the two Def gates, and the one value they disagree about ---------
+    world, mover, _a, _b = _reaction_scene(tables)
+    ready = combat.CombatUnit(slot=9, type_id=mover.type_id, player=0, x=0,
+                              y=0, hp=10, mp=2, ammo=1,
+                              weapon=REACTION_WEAPON)
+    c.check("defence.ui_gate_accepts_a_ready_unit",
+            combat.may_enter_defence(world, ready),
+            f"weapon {REACTION_WEAPON}, def_mode "
+            f"{tables.weapons[REACTION_WEAPON].def_mode}")
+    refusals = {
+        "too_few_movement_points": {"mp": combat.OVERWATCH_MIN_MP - 1},
+        "a_jammed_weapon": {"malfunction": 1},
+        "an_empty_magazine": {"ammo": 0},
+        "already_waiting": {"action_state": combat.ACTION_WAITING},
+    }
+    for name, override in refusals.items():
+        fields: dict[str, Any] = dict(
+            slot=9, type_id=mover.type_id, player=0, x=0, y=0, hp=10, mp=2,
+            ammo=1, weapon=REACTION_WEAPON)
+        fields.update(override)
+        probe = combat.CombatUnit(**fields)
+        c.check(f"defence.ui_gate_refuses_{name}",
+                not combat.may_enter_defence(world, probe), str(override))
+
+    # Every shipped weapon, both gates.  `def_mode & 1` and `in {1, 4}` agree
+    # on the whole shipped table, which is why the disagreement below has to be
+    # constructed to be seen at all.
+    disagreeing = []
+    for weapon_id, row in sorted(tables.weapons.items()):
+        probe = combat.CombatUnit(slot=9, type_id=mover.type_id, player=0,
+                                  x=0, y=0, hp=10, mp=2, ammo=1,
+                                  weapon=weapon_id)
+        ui = combat.may_enter_defence(world, probe)
+        auto = combat.auto_enter_defence(world, probe)
+        if ui != auto:
+            disagreeing.append(f"{weapon_id} def_mode {row.def_mode}")
+    c.expect("defence.the_two_gates_agree_on_the_shipped_table",
+             disagreeing, [],
+             "docs/21 section 4: they differ only on def_mode 4, which the "
+             "shipped file never uses")
+    c.check("defence.shipped_table_has_no_def_mode_4",
+            4 not in {r.def_mode for r in tables.weapons.values()},
+            f"values present: {sorted({r.def_mode for r in tables.weapons.values()})}")
+
+    # --- the ticket -------------------------------------------------------
+    world, mover, _a, _b = _reaction_scene(tables)
+    first = combat.CombatUnit(slot=20, type_id=mover.type_id, player=0, x=0,
+                              y=0, hp=10, mp=4, ammo=1, weapon=REACTION_WEAPON)
+    second = combat.CombatUnit(slot=21, type_id=mover.type_id, player=0, x=1,
+                               y=0, hp=10, mp=4, ammo=1,
+                               weapon=REACTION_WEAPON)
+    c.expect("defence.tickets_are_consecutive_from_one",
+             [combat.enter_defence(world, first),
+              combat.enter_defence(world, second)], [1, 2])
+    c.expect("defence.the_counter_is_per_player",
+             world.reaction_counter, [2, 0, 0, 0])
+    c.expect("defence.entering_stamps_the_acted_byte",
+             [first.acted, first.action_state],
+             [combat.OVERWATCH_ACTED, combat.ACTION_WAITING])
+    c.expect("defence.a_second_press_spends_the_movement_points",
+             [combat.enter_defence(world, first), first.mp], [3, 0],
+             "docs/21 section 4: 0x00478500 zeroes +0x15 when the unit was "
+             "already waiting, so pressing Def twice is an act")
+
+    # --- the 135-degree front arc ----------------------------------------
+    world, mover, north, _b = _reaction_scene(tables)
+    arc = [f for f in range(8)
+           if combat.in_front_arc(
+               combat.CombatUnit(slot=1, type_id=mover.type_id, player=255,
+                                 x=4, y=2, hp=10, facing=f), mover)]
+    c.expect("reaction.front_arc_is_three_octants_of_eight", len(arc), 3,
+             f"facings that cover (4,4) from (4,2): {arc}")
+    c.check("reaction.front_arc_excludes_looking_away",
+            not combat.in_front_arc(
+                combat.CombatUnit(slot=1, type_id=mover.type_id, player=255,
+                                  x=4, y=2, hp=10, facing=2), mover),
+            "facing 2 from (4,2) points away from (4,4)")
+
+    # A reactor looking the wrong way does not fire -- and a Banner carrier
+    # within four fields makes it fire anyway.  That pair is the whole point of
+    # the last row of docs/25 section 6's table.
+    world, mover, north, south = _reaction_scene(tables)
+    north.facing = 2          # (4,2) looking north, away from (4,4)
+    south.facing = 0          # (4,6) looking south, away from (4,4)
+    c.expect("reaction.looking_away_is_not_a_candidate",
+             [u.slot for u in combat.reaction_candidates(world, mover)], [])
+    world.units[3] = combat.CombatUnit(
+        slot=3, type_id=mover.type_id, player=combat.PLAYER_COMPUTER,
+        x=5, y=4, hp=10, equipment_ids=frozenset({combat.EQUIP_BANNER}))
+    world.unit_at[world.index(5, 4)] = 3
+    c.check("reaction.the_banner_carrier_covers_both_reactors",
+            all(combat.distance(5, 4, u.x, u.y) < combat.BANNER_RANGE
+                for u in (north, south)),
+            "0x0046FAD0 is a strict `< 4`, so a carrier that only reaches one "
+            "reactor would make the check below pass for the wrong reason")
+    c.expect("reaction.a_banner_lifts_the_arc",
+             sorted(u.slot for u in combat.reaction_candidates(world, mover)),
+             [1, 2])
+
+    # --- the drain, and the flag it does not clear ------------------------
+    world, mover, high, low = _reaction_scene(tables)
+    fired = combat.drain_reactions(world, mover)
+    c.expect("reaction.campaign_drains_in_ticket_order",
+             [r.ticket for r in fired], [1, 2],
+             "0x0046CCA0 counts up from ticket 1, so the unit that went on "
+             "overwatch first shoots first")
+    c.expect("reaction.campaign_order_is_not_slot_order",
+             [r.reactor for r in fired], [2, 1])
+    c.expect("reaction.the_flag_survives_the_shot",
+             [world.units[1].action_state, world.units[2].action_state],
+             [combat.ACTION_WAITING, combat.ACTION_WAITING],
+             "docs/25 section 6: nothing in the drain stores into +0x41, so a "
+             "unit on overwatch fires at every enemy that walks past")
+    c.expect("reaction.the_shot_would_have_turned_them",
+             [combat.direction(4, 2, 4, 4), combat.direction(4, 6, 4, 4)],
+             [0, 2],
+             "the headings differ from the facings the scene sets, so a "
+             "restore that does nothing is visible")
+    c.expect("reaction.the_facing_is_restored",
+             [world.units[1].facing, world.units[2].facing], [6, 4])
+    c.check("reaction.the_shot_spent_ammunition",
+            world.units[1].ammo == 14 and world.units[2].ammo == 14,
+            f"{world.units[1].ammo} and {world.units[2].ammo} left of 15")
+
+    world, mover, _high, _low = _reaction_scene(tables)
+    world.game_mode = 2
+    world.human_players = 2
+    fired = combat.drain_reactions(world, mover)
+    c.expect("reaction.other_modes_drain_in_slot_order",
+             [r.reactor for r in fired], [1, 2],
+             "the tickets are still written; only the order differs")
+
+    # A mover that is already dead draws nothing, and one that dies mid-drain
+    # stops it.  Both are the same early return in the engine.
+    world, mover, _high, _low = _reaction_scene(tables)
+    mover.hp = 0
+    c.expect("reaction.a_dead_mover_draws_nothing",
+             len(combat.drain_reactions(world, mover)), 0)
+    world, mover, _high, _low = _reaction_scene(tables)
+    mover.hp = 1
+    fired = combat.drain_reactions(world, mover)
+    c.check("reaction.death_stops_the_drain",
+            not mover.alive and len(fired) == 1,
+            f"{len(fired)} shot(s) before hp {mover.hp}")
+
+
 def _require_corpus(root: Path) -> str | None:
     if not (root / "DATA" / "Info.lcl").is_file():
         return f"{root}: no DATA/Info.lcl -- this is not a game installation"
@@ -499,6 +680,7 @@ def run_check(root: Path) -> int:
     check_overheat(c, tables)
     check_hit_probability(c, root, tables)
     check_attack(c, root, tables)
+    check_reaction(c, tables)
     return c.report()
 
 
