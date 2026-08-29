@@ -224,6 +224,14 @@ Its arm shows the message, plays the voice line and clears the cell — and
 touches no unit field at all. **Batteries is a pickup that was authored, wired
 up and left inert.** One cell in the corpus carries it, in `_C_148.lev`.
 
+**A full magazine makes class 12 look inert.** The arm *assigns* the
+magazine, it does not add to it, so a unit that has not fired sees `+0x3D`
+unchanged while the action point is still consumed and the cell still becomes
+`0`. Confirmed natively (`tools/turn_gold.py` phase 9): a `Standard Assault
+Rifle` carrier holding its full 10 rounds used a class-12 point, the point went
+to `0`, and the ammunition byte stayed at 10. A test written as "ammunition
+increased" fails on correct behaviour; the invariant is `+0x3D == mun`.
+
 ### 3.3 The *technical* supply box is a copy-paste bug — **[code] `0x0046DF3B`**
 
 The three implant boxes share one shape, and the third one's guard was not

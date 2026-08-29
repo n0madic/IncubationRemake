@@ -142,6 +142,23 @@ FACING_ANGLES = {0: 0, 1: 3072, 2: 2048, 3: 1024, 4: 1536,
                  5: 3584, 6: 512, 7: 2560}
 """Unit +0x46 -> rotation, from Incubation.exe fcn.0046a6e0 (4096 = 360 deg)."""
 
+FACING_STEPS = {0: (0, 1), 6: (1, 1), 3: (1, 0), 4: (1, -1),
+                2: (0, -1), 7: (-1, -1), 1: (-1, 0), 5: (-1, 1)}
+"""Unit +0x46 -> the cell step in front of it.
+
+Derived from :data:`FACING_ANGLES` by taking **0 degrees as +y** and the angle
+as growing toward +x, and then confirmed natively: `tools/turn_gold.py` phase 9
+sweeps all eight facings of a unit standing on the top row and calls
+``aExecuteUse``.  The three that this table gives a ``-y`` component -- 2, 4
+and 7 -- are exactly the three the engine answers ``0`` for, because
+``CellInFront`` runs off the map; and facing 3, the one this table sends to
+``+x``, is the only one that reaches and consumes an action point written into
+the cell to the east.  Eight of eight.
+
+``FACING_ANGLES`` alone does not say which way 0 degrees points, so this is the
+half that had to be measured rather than read.
+"""
+
 AI_ORDER_NAMES = {
     0: "Berserk",
     1: "Move (ActPt)",

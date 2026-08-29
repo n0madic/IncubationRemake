@@ -18,6 +18,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
 | `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
 | `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
+| `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **recorded, not gated**: there is no executable interaction model to diff against yet |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -53,6 +54,17 @@ and `847344462.0` after `NextPlayer`, which is exactly **two** draws of
 arithmetic and says the interpreter reached both of them. It also explains why
 nothing is inserted: the two draws yield 2 and 39 against a threshold of
 `> 59`.
+
+**Class 12 leaves the ammunition byte unchanged here, and that is correct.**
+`aExecuteUse` on a "full munition" point sets `unit[+0x3D]` to the weapon's
+magazine ([`docs/26`](../../../docs/26-interaction.md) §3.1) — it does not add
+to it. The probe unit carries a `Standard Assault Rifle`, whose `mun` is 10,
+and it was already holding 10. So the byte is identical before and after while
+the action point *is* consumed. The check therefore asserts
+`ammo == the magazine`, not `ammo increased`: the second form would fail on
+correct behaviour, and reading the unchanged byte as a defect is the mistake
+this note exists to prevent. A probe that showed the write would need a unit
+that has spent a round first.
 
 ### What the capture does *not* exercise
 

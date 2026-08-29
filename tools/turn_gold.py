@@ -476,6 +476,57 @@ def attack_plan(probes: list[tuple[int, int, int, int]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: The action-point classes phase 9 writes into the probe cell.  ``docs/10``
+#: §4.6: 12 is full munition, 17 is 20 equipment points, 39 is the crowbar.
+#: All three exist on ``_C_141`` but none of them next to a unit, which is why
+#: the class is written into a neighbour rather than the unit moved to it --
+#: the same move ``docs/93`` §11 used for the large-unit clearance.
+USE_CLASSES = (12, 17, 39)
+
+#: The facing whose step is (+1, 0), from :data:`inclib.lev.FACING_STEPS`.
+FACING_TO_EAST = 3
+
+
+def use_plan(slot: int, cx: int, cy: int, width: int) -> str:
+    """Phase 9 -- ``aExecuteUse`` over every facing, for three classes.
+
+    ``aExecuteUse`` takes only the unit; the target is ``CellInFront``, so the
+    facing byte ``+0x46`` is the whole input.  Sweeping all eight says which
+    one points at the probe cell -- the convention is not documented anywhere
+    in this repository as a direction, only as a rotation angle -- and the
+    seven that miss are the control: they must leave the point standing.
+
+    There is **no executable model of interaction**, so this phase is a
+    recorded observation rather than a gate.  It exists so that the Wine work
+    is done once and ``inclib/interact.py``, when it is written, can be diffed
+    offline against it.
+    """
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    cells = width * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    ap = (f"$c0+0x{((cy * width + cx) * gold.CELL_STRIDE)
+                   + gold.CELL_ACTION_POINT:x}")
+    lines = [
+        "# Phase 9: aExecuteUse, eight facings by three action-point classes.",
+        DECLARATIONS,
+        f"--code setb:{SETB_CODE}",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "c0 = aGetCtrlMapElementPtr(0,0)",
+        "u0 = aGetUnitMapElementPtr(0)",
+        "aGetAILevel()",
+    ]
+    for klass in USE_CLASSES:
+        for facing in range(8):
+            lines += [
+                f"setb({ap}, {klass})",
+                f"setb({_unit_addr(slot)}+0x46, {facing})",
+                f"aExecuteUse({_unit_addr(slot)})",
+                f"aGetUnitMapElementPtr(0) --read $u0:{units}",
+                f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+            ]
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Reading a capture back
 # ---------------------------------------------------------------------------
@@ -576,6 +627,39 @@ def attack_probes(payload: dict[str, Any]
                     _byte(units, b, gold.UNIT_X),
                     _byte(units, b, gold.UNIT_Y)))
     return out
+
+
+def use_probe_cell(payload: dict[str, Any]
+                   ) -> tuple[int, int, int] | None:
+    """A non-prop unit and a free neighbour to write an action point into.
+
+    The neighbour must hold no unit and no action point of its own: the
+    dispatch returns early on a cell with a unit on it (``docs/26`` §3, the
+    push arm) and an existing class would make "did the probe consume it"
+    ambiguous.
+    """
+    units = bytes.fromhex(payload["units_before"])
+    cells = bytes.fromhex(payload["cells"])
+    width, height = payload["width"], payload["height"]
+    for slot in payload["live"]:
+        if _byte(units, slot, gold.UNIT_PLAYER) == PLAYER_PROPS:
+            continue
+        ux = _byte(units, slot, gold.UNIT_X)
+        uy = _byte(units, slot, gold.UNIT_Y)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                x, y = ux + dx, uy + dy
+                if not (0 <= x < width and 0 <= y < height):
+                    continue
+                b = (y * width + x) * gold.CELL_STRIDE
+                held = int.from_bytes(
+                    cells[b + gold.CELL_UNIT:b + gold.CELL_UNIT + 2], "little")
+                if held != 0xFFFF or cells[b + gold.CELL_ACTION_POINT]:
+                    continue
+                return slot, x, y
+    return None
 
 
 def _write(payload: dict[str, Any], out: Path) -> None:
@@ -887,6 +971,42 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("phase 8 did not complete (%s: %s); the shot "
                             "stays unpinned", type(exc).__name__, exc)
+
+    if not payload.get("use"):
+        spot = use_probe_cell(payload)
+        if spot is None:
+            LOG.warning("no free neighbour to write an action point into; "
+                        "phase 9 has nowhere to probe")
+        else:
+            probe_slot, cx, cy = spot
+            LOG.info("phase 9: aExecuteUse from slot %d onto (%d,%d)",
+                     probe_slot, cx, cy)
+            try:
+                rows = gold.run_plan(
+                    game_copy, dbgcall,
+                    use_plan(probe_slot, cx, cy, payload["width"]),
+                    "turn_use", attempts)
+                blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+                cellb = _reads(rows, "aGetCtrlMapElementPtr", "$c0")
+                wanted = len(USE_CLASSES) * 8
+                # One dump per probe, on both arrays: the setup line that
+                # binds $c0 carries no --read, so there is no baseline here.
+                if len(blocks) != wanted or len(cellb) != wanted:
+                    raise GoldError(
+                        f"phase 9 read {len(blocks)} unit dump(s) and "
+                        f"{len(cellb)} cell dump(s), wanted {wanted} of each")
+                payload["use"] = {
+                    "slot": probe_slot,
+                    "cell": [cx, cy],
+                    "classes": list(USE_CLASSES),
+                    "returns": _results(rows, "aExecuteUse"),
+                    "units": [b.hex() for b in blocks],
+                    "cells": [b.hex() for b in cellb],
+                }
+                _write(payload, out)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("phase 9 did not complete (%s: %s); interaction "
+                            "stays unrecorded", type(exc).__name__, exc)
     return 0
 
 
@@ -1394,6 +1514,56 @@ def run_check(capture_path: Path, root: Path) -> int:
             any(r.overheat != combatmod.OVERHEAT_NONE for r in outcomes),
             f"{sum(1 for r in outcomes if r.overheat != combatmod.OVERHEAT_NONE)}"
             f" probe(s) rolled the weapon")
+
+    # --- interaction: recorded, not gated --------------------------------
+    use = payload.get("use")
+    if not use:
+        c.check("use.captured", False,
+                "the capture holds no interaction phase; re-run --game-copy")
+        return c.report()
+
+    width = payload["width"]
+    ux, uy = use["cell"]
+    cell_off = (uy * width + ux) * gold.CELL_STRIDE + gold.CELL_ACTION_POINT
+    sl = use["slot"] * gold.UNIT_STRIDE
+    consumed: dict[int, list[int]] = {}
+    zero_returns: list[int] = []
+    for i, klass in enumerate(use["classes"]):
+        for facing in range(8):
+            j = i * 8 + facing
+            after = bytes.fromhex(use["cells"][j])
+            if after[cell_off] != klass:
+                consumed.setdefault(klass, []).append(facing)
+            if i == 0 and use["returns"][j] == 0:
+                zero_returns.append(facing)
+    c.check("use.classes_probed", len(use["classes"]) > 0,
+            f"{len(use['classes'])} class(es) x 8 facings")
+    c.expect("use.exactly_one_facing_consumes_the_point",
+             {k: v for k, v in consumed.items() if len(v) != 1}, {},
+             "the other seven are the control: they must leave it standing")
+    c.expect("use.the_same_facing_every_time",
+             sorted({tuple(v) for v in consumed.values()}),
+             [(FACING_TO_EAST,)])
+
+    # The convention this settles: FACING_ANGLES gives a rotation, not a
+    # direction.  Taking 0 degrees as +y makes 2, 4 and 7 the facings with a
+    # -y step -- and the probe unit stands on the top row, so those are
+    # exactly the ones whose CellInFront runs off the map and answers 0.
+    off_map = sorted(f for f, (_dx, dy) in levmod.FACING_STEPS.items()
+                     if dy < 0)
+    c.expect("use.facing_convention_matches_the_map_edge",
+             sorted(zero_returns), off_map,
+             "0 degrees is +y and the angle grows toward +x")
+
+    # docs/26 section 3.1: class 12 sets the magazine.  It is a visible no-op
+    # here because the soldier's rifle holds 10 and it already had 10 -- said
+    # so that a later reader does not take the unchanged byte for a defect.
+    mag = tables.weapons[
+        _byte(bytes.fromhex(payload["units_before"]), use["slot"], 0x3F)].mun
+    ammo_after = bytes.fromhex(use["cells"] and use["units"][FACING_TO_EAST])
+    c.expect("use.full_munition_leaves_the_magazine_full",
+             ammo_after[sl + 0x3D], mag,
+             f"weapon magazine is {mag}")
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:
