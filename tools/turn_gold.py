@@ -42,6 +42,7 @@ import argparse
 import hashlib
 import json
 import logging
+import struct
 import sys
 from pathlib import Path
 from typing import Any
@@ -53,11 +54,18 @@ from inclib import combat as combatmod                             # noqa: E402
 from inclib import turn as turnmod                                 # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
 from inclib.info import BalanceTables, load_info                   # noqa: E402
+from inclib import lcl as lclmod
+from inclib import lcl_runtime as lclmodrt
+from inclib import lev as levmod
+from inclib import script as scriptmod
 from inclib.rng import ARandom                                     # noqa: E402
 
 LOG = logging.getLogger("turn_gold")
 
 CAPTURE_SCHEMA = "incubation.turn-capture/3"
+
+#: The mission the capture is taken on.
+MISSION = "_C_141"
 
 #: The routines this capture calls, as module-relative addresses.  The image
 #: base is ``0x00400000``, so ``0x0046A270`` is ``+0x6A270``.
@@ -86,7 +94,19 @@ __cdecl i32  aGetEndState(i32)              = Incubation.exe+0x3b930
 __cdecl i32  aGetLclSlot(i32)               = Incubation.exe+0x3b160
 __cdecl i32  aAnyPlayerLeftThisTurn()       = Incubation.exe+0x3b490
 __cdecl i32  aAdvancePlayer()               = Incubation.exe+0x3b320
+__cdecl i32  aSetEnvVar(i32,i32)            = Incubation.exe+0x402a0
+__cdecl i32  aGetMissionProgram()           = Incubation.exe+0x19a40
+__cdecl i32  aRunLCL(i32)                   = Incubation.exe+0x3f6e0
 """
+
+#: ``0x00514078`` -- ``aRandom``'s seed, and a **qword**: the generator reads it
+#: with ``fld qword`` and writes it back with ``fst qword``.  Captured rather
+#: than poked, because a zero seed is a fixed point in that generator and the
+#: retail global starts zeroed, so reading it says whether it was drawn at all.
+SEED_ADDR = 0x00514078
+
+#: ``_A`` selects the entry point; ``docs/20`` §5 gives 1 for ``NextPlayer``.
+ENTRY_NEXT_PLAYER = 1
 
 #: How many times the rotation is advanced.  Enough to wrap past the computer
 #: and come back round on any player count this save can have, so the sequence
@@ -321,6 +341,58 @@ def rotation_plan() -> str:
         lines.append("aAdvancePlayer()")
     lines.append("aGetCurrentPlayer()")
     lines.append("aGetPreviousPlayer()")
+    return "\n".join(lines) + "\n"
+
+
+def lcl_plan() -> str:
+    """Phase 6 -- one ``NextPlayer`` invocation of the mission script.
+
+    The call chain is the one ``0x0047D600`` itself uses, read off the
+    disassembly rather than taken from a doc: ``0x004402A0`` sets an
+    environment variable (**letter first, value second**), ``0x00419A40``
+    returns the loaded mission program's id from ``[0x4fd223]``, and
+    ``0x0043F6E0`` runs it.  The plan's oracle table named ``0x004402A0`` as
+    "the program is called"; it is the environment setter, and ``docs/20``'s
+    own table says so.
+
+    The turn and the current player are read live and bound by name rather
+    than baked in, so this phase does not depend on phase 5 having run.
+
+    **This phase mutates.**  ``_C_141``'s script carries four ``InsertUnit``
+    and two ``SetVarRandom``, so it can both draw the generator and place
+    units.  It is therefore last, and the seed is read either side to say
+    whether it was drawn at all.
+    """
+    cells = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    lines = [
+        "# Phase 6: NEXT PLAYER through the real interpreter.",
+        DECLARATIONS,
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "c0 = aGetCtrlMapElementPtr(0,0)",
+        "u0 = aGetUnitMapElementPtr(0)",
+        f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+        f"aGetUnitMapElementPtr(0) --read $u0:{units}",
+        "aGetAILevel()",
+        f"aGetTurn() --read {SEED_ADDR:#x}:8",
+    ]
+    lines += [f"aGetLclSlot({i})" for i in range(12)]
+    lines += [
+        f"turn = aGetTurn()",
+        "player = aGetCurrentPlayer()",
+        f"aSetEnvVar(0x41, {ENTRY_NEXT_PLAYER})",
+        "aSetEnvVar(0x42, $turn)",
+        "aSetEnvVar(0x43, $player)",
+        "pid = aGetMissionProgram()",
+        "ran = aRunLCL($pid)",
+    ]
+    lines += [f"aGetLclSlot({i})" for i in range(12)]
+    lines += [
+        f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+        f"aGetUnitMapElementPtr(0) --read $u0:{units}",
+        f"aGetPlayerCount() --read {SEED_ADDR:#x}:8",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -582,6 +654,37 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
         except Exception as exc:  # noqa: BLE001
             LOG.warning("phase 5 did not complete (%s: %s); the rotation "
                         "stays unpinned", type(exc).__name__, exc)
+
+    if not payload.get("lcl"):
+        LOG.info("phase 6: NEXT PLAYER through the real interpreter")
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, lcl_plan(),
+                                 "turn_lcl", attempts)
+            slots = _results(rows, "aGetLclSlot")
+            seeds = (_reads(rows, "aGetTurn", f"{SEED_ADDR:#x}")
+                     + _reads(rows, "aGetPlayerCount", f"{SEED_ADDR:#x}"))
+            cells = _reads(rows, "aGetCtrlMapElementPtr", "$c0")
+            units = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+            if len(slots) != 24:
+                raise GoldError(
+                    f"phase 6 read {len(slots)} slot value(s), wanted 24")
+            if len(cells) < 2 or len(units) < 2:
+                raise GoldError("phase 6 did not read the world either side")
+            payload["lcl"] = {
+                "entry": ENTRY_NEXT_PLAYER,
+                "program_id": _results(rows, "aGetMissionProgram")[0],
+                "returned": _results(rows, "aRunLCL")[0],
+                "slots_before": slots[:12],
+                "slots_after": slots[12:],
+                "cells_after": cells[-1].hex(),
+                "units_after": units[-1].hex(),
+                "seed_before": seeds[0].hex() if seeds else "",
+                "seed_after": seeds[-1].hex() if len(seeds) > 1 else "",
+            }
+            _write(payload, out)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("phase 6 did not complete (%s: %s); LCL execution "
+                        "stays unpinned", type(exc).__name__, exc)
     return 0
 
 
@@ -656,6 +759,16 @@ def _turn_units_from(payload: dict[str, Any],
             heat=raw[b + 0x3E], malfunction=raw[b + 0x40],
             weapon=raw[b + 0x3F], equipment_ids=equipment))
     return out
+
+
+def lcl_script_of(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """The cache document for the mission the capture was taken on."""
+    name = payload.get("mission", "_C_141")
+    path = Path(root) / "Missions" / f"{name}.lcl"
+    if not path.is_file():
+        raise GoldError(f"no {path} to compare the capture against")
+    return scriptmod.script_document(lclmod.parse_file(str(path)),
+                                     {"file": str(path), "mission": name})
 
 
 def run_check(capture_path: Path, root: Path) -> int:
@@ -885,6 +998,91 @@ def run_check(capture_path: Path, root: Path) -> int:
     # A rotation that never moved would agree with a model that never moved.
     c.check("rotation.is_not_stationary", len(set(rot["current"])) > 1,
             f"visits {sorted(set(rot['current']))}")
+
+    # --- LCL: one NEXT PLAYER through the real interpreter ----------------
+    lcl = payload.get("lcl")
+    if not lcl:
+        c.check("lcl.captured", False,
+                "the capture holds no LCL phase; re-run --game-copy")
+        return c.report()
+
+    c.expect("lcl.program_returned_ok", lcl["returned"], 1,
+             f"aRunLCL({lcl['program_id']}) -- the mission program is loaded "
+             f"and ran to its end")
+    c.expect("lcl.slots_match_native", lcl["slots_after"], lcl["slots_before"],
+             "NEXT PLAYER on this save writes no game-control slot")
+
+    # The generator is the sharp part.  Two SetVarRandom in _C_141's script,
+    # and the engine's seed advances by exactly two draws -- which pins the
+    # arithmetic *and* says the interpreter reached both of them.
+    seed_before = struct.unpack("<d", bytes.fromhex(lcl["seed_before"]))[0]
+    seed_after = struct.unpack("<d", bytes.fromhex(lcl["seed_after"]))[0]
+    c.check("lcl.seed_was_drawn", seed_before != seed_after,
+            f"{seed_before} -> {seed_after}")
+    rng = ARandom(seed_before)
+    draws = 0
+    while draws < 16 and rng.seed != seed_after:
+        rng.raw(0, 1)
+        draws += 1
+    c.expect("lcl.seed_after_matches_native", rng.seed, seed_after,
+             f"reached in {draws} draw(s) of ARandom from {seed_before}")
+
+    # Everything above is native-only.  This is where the *model* is run: the
+    # same entry point, on the shipped mission, seeded with what the engine
+    # actually held -- and it has to draw the generator the same number of
+    # times and leave the same slots alone.  Without it the block would pin
+    # ARandom and the engine, and say nothing about inclib/lcl_runtime.py.
+    script = lcl_script_of(root, payload)
+    bm = levmod.load_lev(str(Path(root) / "Missions" / f"{MISSION}.lev"))
+    world = lclmodrt.LclWorld(bm, tables, turn=payload["turn"],
+                              player=lcl.get("player", 0),
+                              ai_level=payload["ai_level"],
+                              seed=seed_before)
+    # **The shipped .lev is not the world the engine ran on.** _C_141 ships
+    # with ten crates and nothing else -- the squad and the aliens exist only
+    # in the save. Left as loaded, GetUnits(player 0) answers 0 here and 1
+    # there, and the script's "squad wiped out" arm fires in the model and not
+    # in the engine. Comparing those would have reported a model bug that is
+    # really a different world.
+    units_raw = bytes.fromhex(payload["units_before"])
+    world.units = {}
+    for slot in payload["live"]:
+        b = slot * gold.UNIT_STRIDE
+        world.units[slot] = lclmodrt.RuntimeUnit(
+            slot=slot,
+            player=units_raw[b + gold.UNIT_PLAYER],
+            type_id=units_raw[b + 0x4C],
+            x=units_raw[b + gold.UNIT_X],
+            y=units_raw[b + gold.UNIT_Y],
+            hit_points=units_raw[b + gold.UNIT_HP],
+            group=units_raw[b + 0x4E],
+            ammo=units_raw[b + 0x3D])
+    world.unit_at = [-1] * (payload["width"] * payload["height"])
+    for slot, unit in world.units.items():
+        if 0 <= unit.x < payload["width"] and 0 <= unit.y < payload["height"]:
+            world.unit_at[unit.y * payload["width"] + unit.x] = slot
+    # The environment is indexed from zero: the engine's setter is
+    # `letter - 'A'` (0x004402A0), so _A is slot 0, not ord('A').
+    outcome = lclmodrt.run(script, world, {0: lcl["entry"],
+                                           1: payload["turn"],
+                                           2: lcl.get("player", 0)})
+    c.expect("lcl.model_runs_to_the_end", outcome.ok, True,
+             f"{outcome.kind}: {outcome.reason or 'no abort'}")
+    c.expect("lcl.model_draws_match_native", world.rng.calls, draws,
+             f"the model drew {world.rng.calls} time(s); the engine's seed "
+             f"advanced {draws}")
+    c.expect("lcl.model_seed_matches_native", world.rng.seed, seed_after)
+    c.expect("lcl.model_writes_no_slot", world.game_control,
+             list(lcl["slots_after"]))
+
+    # Nothing the script did is visible in the world it ran on.
+    c.expect("lcl.world_unchanged_natively",
+             [lcl["cells_after"] == payload["cells"],
+              lcl["units_after"] == payload["units_before"]],
+             [True, True],
+             "the NEXT PLAYER path on this save places nothing and moves "
+             "nothing, so InsertUnit never fires and the MSVC generator it "
+             "would draw from is not exercised")
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

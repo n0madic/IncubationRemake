@@ -259,10 +259,18 @@ Buffers cover out-parameters and structs:
 --code fn:8b442404c3  the same, on an executable page: injected code
 --zero out            clear it before this call
 --dump out            hex dump it after this call
---read [%esi+0x40]:16 read 16 bytes at that address after this call
+--read [%esi+0x40]:16 read 16 bytes at the address *stored* there
+--read 0x514078:8     read 8 bytes at that address itself
                       (1..262144; the cap bounds the argument, not the
                       transport -- one ReadProcessMemory does the work)
 ```
+
+**The brackets are a dereference, not grouping.** `--read [0x514078]:8` reads
+the dword at `0x514078` and then reads eight bytes at *that* address, which for
+a global holding zero is a read at the null page. It reports
+`<unreadable at 0x00000000>` rather than failing the call, so a plan that meant
+to read a global gets a row that looks like it ran. To read a global, name it
+without brackets.
 
 Buffers keep whatever a call left in them, so one call can fill a buffer and
 the next read it. `--zero` is explicit for the same reason the signature rules

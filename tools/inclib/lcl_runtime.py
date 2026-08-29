@@ -377,8 +377,16 @@ class Interpreter:
         self.local = [LOCAL_VAR_INITIAL] * LOCAL_VAR_SLOTS
         self.env = [0] * ENV_VAR_SLOTS
         for slot, value in (env or {}).items():
-            if 0 <= slot < ENV_VAR_SLOTS:
-                self.env[slot] = value
+            # Out of range is an error, not a skip.  The engine indexes the
+            # environment by `letter - 'A'` (0x004402A0), so a caller passing
+            # ord('A') rather than 0 is asking for slot 65 -- and silently
+            # dropping it made an invocation run to its end having never
+            # reached the entry point it was supposed to select.
+            if not 0 <= slot < ENV_VAR_SLOTS:
+                raise RuntimeError_(
+                    f"environment slot {slot} is outside 0..{ENV_VAR_SLOTS - 1};"
+                    f" the engine indexes by letter - 'A', so pass 0 for _A")
+            self.env[slot] = value
         self.flag = True
         self.pos = 0
         self.max_steps = max_steps

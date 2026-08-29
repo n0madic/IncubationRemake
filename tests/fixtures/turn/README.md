@@ -15,6 +15,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aCheckLineOfSightEx` | `0x0046C460` | the ray fan and the "keep the smallest" rule, over the same ordered pairs |
 | `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
 | `0x0043B320` + `0x0043B490` | — | twelve steps of the rotation, with the turn state and the twelve game-control slots at `0x00509F18` |
+| `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -35,6 +36,21 @@ as `i32` the current player came back as `4436480`: only AL carries the value
 and the rest of EAX is the caller's leftovers. That number is not
 wrong-looking enough to notice, which is why `dbgcall` grew byte return types
 rather than the mask living here.
+
+**The LCL call chain was read off `0x0047D600`, not taken from the plan.**
+`0x004402A0` sets an environment variable (**letter first, value second**),
+`0x00419A40` returns the loaded mission program's id from `[0x4fd223]`, and
+`0x0043F6E0` runs it. The plan's oracle table named `0x004402A0` as "the
+program is called"; it is the environment setter, and
+[`docs/20`](../../../docs/20-lcl-language.md)'s own table says so.
+
+The sharp part of that phase is the generator. The engine's seed at
+`0x00514078` — a **qword**, `fld`/`fst` — is `1.0` when the mission is loaded
+and `847344462.0` after `NextPlayer`, which is exactly **two** draws of
+`aRandom`, one per `SetVarRandom` in `_C_141`'s body. That pins the
+arithmetic and says the interpreter reached both of them. It also explains why
+nothing is inserted: the two draws yield 2 and 39 against a threshold of
+`> 59`.
 
 ### What the capture does *not* exercise
 
@@ -60,6 +76,13 @@ exactly the kind of check this repository treats as a bug:
   "no player is left in the game" — cannot be reached without killing every
   unit on both sides first, so it stays corpus-checked and not natively
   pinned, like the body-blocking ray above.
+* **`InsertUnit` never fires**, so the MSVC `rand()` that `docs/20` §7.4 says
+  it draws from is not exercised at all — only `aRandom` is. A capture where
+  the two draws cleared `> 59` would need that generator's state as well, and
+  it lives in the C runtime rather than in an engine global.
+* **Only one entry point of one script is run natively.** The other six labels
+  and the other 152 missions stay corpus-checked; `tools/lcl_runtime.py
+  --check` is what covers those, at 942 invocations.
 * **`aRefreshPlayer(252)` is not captured at all**, deliberately:
   [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
   in the current-player byte, so it is a call the engine itself never makes.

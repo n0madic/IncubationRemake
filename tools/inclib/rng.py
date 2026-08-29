@@ -16,8 +16,19 @@ class ARandom:
     """The shipped ``aRandom(base, span)`` Lehmer generator.
 
     A zero seed is intentionally a fixed point, matching the zero-initialised
-    retail global.  ``seed`` is a float because that is how the original keeps
-    it; the integer conversion is the exact operation in its inner loop.
+    retail global -- but that state is **not** what a running game is in: the
+    seed read out of a live ``Incubation.exe`` with a mission loaded is
+    ``1.0``, so something sets it between start-up and play. The fixed point
+    is therefore a property of the arithmetic to preserve, not the value to
+    model a mission with.
+
+    ``seed`` is a float because that is how the original keeps it (the global
+    at ``0x00514078`` is a **qword**, read with ``fld`` and written with
+    ``fst``); the integer conversion is the exact operation in its inner loop.
+
+    Pinned natively: seeded ``1.0`` and drawn twice -- once per ``SetVarRandom``
+    in ``_C_141``'s ``NextPlayer`` body -- the engine's global comes back
+    holding ``847344462.0``, which this reproduces exactly.
     """
 
     MULTIPLIER = 62089911.0
