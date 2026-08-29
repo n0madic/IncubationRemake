@@ -75,7 +75,23 @@ __cdecl i32  aGetMovePoints(ptr)            = Incubation.exe+0x75160
 __cdecl void aRefreshPlayer(i32)            = Incubation.exe+0x781c0
 __cdecl void aRecomputeStats(ptr)           = Incubation.exe+0x759b0
 __fastcall void setb(ptr,i32)               = &setb
+__cdecl u8   aGetTurn()                     = Incubation.exe+0x3b280
+__cdecl u8   aGetCurrentPlayer()            = Incubation.exe+0x3b2c0
+__cdecl u8   aGetPreviousPlayer()           = Incubation.exe+0x3b2d0
+__cdecl i32  aGetPlayerCount()              = Incubation.exe+0x3b310
+__cdecl i32  aGetHumanCount()               = Incubation.exe+0x3b700
+__cdecl i32  aGetSoloFlag()                 = Incubation.exe+0x3b1e0
+__cdecl i32  aGetPlayerKind(i32)            = Incubation.exe+0x3b6e0
+__cdecl i32  aGetEndState(i32)              = Incubation.exe+0x3b930
+__cdecl i32  aGetLclSlot(i32)               = Incubation.exe+0x3b160
+__cdecl i32  aAnyPlayerLeftThisTurn()       = Incubation.exe+0x3b490
+__cdecl i32  aAdvancePlayer()               = Incubation.exe+0x3b320
 """
+
+#: How many times the rotation is advanced.  Enough to wrap past the computer
+#: and come back round on any player count this save can have, so the sequence
+#: pins the wrap and not just the first step.
+ROTATION_STEPS = 12
 
 #: The same three-byte ``mov [ecx], dl; ret`` movemap_gold injects.  Here it
 #: writes a sentinel into ``+0x15`` before the lone recompute, so that routine's
@@ -258,6 +274,54 @@ def recompute_plan(probe_slot: int) -> str:
         f"aRecomputeStats({_unit_addr(probe_slot)})",
         f"aGetUnitMapElementPtr(0) --read $u0:{units}",
     ]) + "\n"
+
+
+def rotation_plan() -> str:
+    """Phase 5 -- the turn state and the rotation, stepped one player at a time.
+
+    Deliberately **not** the whole hand-over.  ``0x0047D600`` ends by calling
+    ``aAISystemControl`` once the current player becomes 255 (``docs/25`` §4),
+    which is the computer's entire turn -- out of this stage's scope, and not
+    something to start inside a debugger probe.  ``0x0043B320`` is the part
+    ``docs/25`` §3.1 actually specifies, and it is the part a remake's turn
+    sits on.
+
+    Every accessor here was checked in the disassembly first: each is a load
+    from a fixed address with a bounds test, so a wrong arity would be a wrong
+    answer rather than an error.  Three of them are ``mov al, [g]; ret`` and
+    are declared ``u8`` for that reason -- read as ``i32`` the current player
+    came back as 4436480 rather than 0, because only AL is the result and the
+    rest of EAX is the caller's leftovers.  ``aGetLclSlot`` reads
+    ``[eax*4 + 0x509f18]`` after rejecting an index of 12 or more, which is the
+    twelve game-control slots ``docs/20`` §7 owns.
+    """
+    lines = [
+        "# Phase 5: turn state, the twelve LCL slots, and the rotation.",
+        DECLARATIONS,
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "aGetAILevel()",
+        "aGetTurn()",
+        "aGetPlayerCount()",
+        "aGetHumanCount()",
+        "aGetSoloFlag()",
+    ]
+    for i in range(4):
+        lines.append(f"aGetPlayerKind({i})")
+        lines.append(f"aGetEndState({i})")
+    for i in range(12):
+        lines.append(f"aGetLclSlot({i})")
+    # The rotation, one step at a time, reading the three bytes it maintains
+    # after each.  aAnyPlayerLeftThisTurn is sampled alongside because it is
+    # the predicate the hand-over uses to decide whether the turn advances.
+    for _ in range(ROTATION_STEPS):
+        lines.append("aGetCurrentPlayer()")
+        lines.append("aGetPreviousPlayer()")
+        lines.append("aAnyPlayerLeftThisTurn()")
+        lines.append("aAdvancePlayer()")
+    lines.append("aGetCurrentPlayer()")
+    lines.append("aGetPreviousPlayer()")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +548,40 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             LOG.warning("phase 4 did not complete (%s: %s); the lone "
                         "recompute stays unpinned",
                         type(exc).__name__, exc)
+
+    if not payload.get("rotation"):
+        LOG.info("phase 5: turn state, LCL slots and %d rotation step(s)",
+                 ROTATION_STEPS)
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, rotation_plan(),
+                                 "turn_rotation", attempts)
+            captured = {
+                "turn": _results(rows, "aGetTurn")[0],
+                "player_count": _results(rows, "aGetPlayerCount")[0],
+                "human_count": _results(rows, "aGetHumanCount")[0],
+                "solo_flag": _results(rows, "aGetSoloFlag")[0],
+                "player_kind": _results(rows, "aGetPlayerKind"),
+                "end_state": _results(rows, "aGetEndState"),
+                "lcl_slots": _results(rows, "aGetLclSlot"),
+                "rotation": {
+                    "current": _results(rows, "aGetCurrentPlayer"),
+                    "previous": _results(rows, "aGetPreviousPlayer"),
+                    "any_left": _results(rows, "aAnyPlayerLeftThisTurn"),
+                    "advance": _results(rows, "aAdvancePlayer"),
+                },
+            }
+            want = {"player_kind": 4, "end_state": 4, "lcl_slots": 12}
+            for key, n in want.items():
+                if len(captured[key]) != n:
+                    raise GoldError(
+                        f"phase 5 read {len(captured[key])} {key}, wanted {n}")
+            if len(captured["rotation"]["advance"]) != ROTATION_STEPS:
+                raise GoldError("phase 5 did not step the rotation")
+            payload.update(captured)
+            _write(payload, out)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("phase 5 did not complete (%s: %s); the rotation "
+                        "stays unpinned", type(exc).__name__, exc)
     return 0
 
 
@@ -720,6 +818,73 @@ def run_check(capture_path: Path, root: Path) -> int:
         c.check(f"fog.p{player}.slots_compared", fog_compared > 0,
                 f"{fog_compared} visibility byte(s)")
         c.expect(f"fog.p{player}.matches_native", fog_bad[:8], [])
+
+    # --- the rotation and the twelve game-control slots -------------------
+    rot = payload.get("rotation")
+    if not rot:
+        c.check("rotation.captured", False,
+                "the capture holds no rotation phase; re-run --game-copy")
+        return c.report()
+
+    # The turn counter is an *input* to the rotation, not something the model
+    # derives, so there is nothing to compare it against -- what matters is
+    # that it is non-zero, because `g_turn == 0` disables the whole skip rule
+    # (docs/25 section 3.1) and a capture taken at turn 0 would exercise none
+    # of it.
+    c.check("state.turn_is_past_the_first_handover", payload["turn"] > 0,
+            f"turn {payload['turn']}, so the skip rule is live")
+    c.expect("state.lcl_slots_captured", len(payload["lcl_slots"]), 12,
+             "0x0043B160 reads [eax*4 + 0x509f18] after rejecting an index of "
+             "12 or more -- docs/20 section 7's twelve slots")
+
+    state = turnmod.TurnState(
+        turn=payload["turn"],
+        current_player=rot["current"][0],
+        previous_player=rot["previous"][0],
+        player_count=payload["player_count"],
+        player_kind=list(payload["player_kind"]),
+        end_state=list(payload["end_state"]),
+        solo_flag=bool(payload["solo_flag"]),
+        ai_level=payload["ai_level"],
+    )
+    c.expect("state.human_count_matches_native",
+             state.human_count(), payload["human_count"])
+
+    # The live-unit count the skip rule consults, straight off phase 1's dump.
+    before_units = bytes.fromhex(payload["units_before"])
+
+    def live_units(player: int) -> int:
+        return sum(1 for slot in payload["live"]
+                   if _byte(before_units, slot, gold.UNIT_PLAYER) == player)
+
+    rot_bad: list[str] = []
+    for i in range(len(rot["advance"])):
+        if state.current_player != rot["current"][i]:
+            rot_bad.append(
+                f"step {i} current: {state.current_player} != "
+                f"{rot['current'][i]}")
+        if state.previous_player != rot["previous"][i]:
+            rot_bad.append(
+                f"step {i} previous: {state.previous_player} != "
+                f"{rot['previous'][i]}")
+        got_left = turnmod.any_player_left_this_turn(state, live_units)
+        if int(got_left) != rot["any_left"][i]:
+            rot_bad.append(
+                f"step {i} any_left: {int(got_left)} != {rot['any_left'][i]}")
+        got_adv = turnmod.advance_player(state, live_units)
+        if int(got_adv) != rot["advance"][i]:
+            rot_bad.append(
+                f"step {i} advance: {int(got_adv)} != {rot['advance'][i]}")
+    c.check("rotation.steps_compared", len(rot["advance"]) > 0,
+            f"{len(rot['advance'])} step(s)")
+    c.expect("rotation.matches_native", rot_bad[:8], [])
+    c.expect("rotation.final_player_matches_native",
+             [state.current_player, state.previous_player],
+             [rot["current"][-1], rot["previous"][-1]])
+
+    # A rotation that never moved would agree with a model that never moved.
+    c.check("rotation.is_not_stationary", len(set(rot["current"])) > 1,
+            f"visits {sorted(set(rot['current']))}")
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

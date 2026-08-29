@@ -14,6 +14,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aRefreshPlayer` | `0x004781C0` | what a hand-over restores, diffed field by field over the whole 200-slot unit array |
 | `aCheckLineOfSightEx` | `0x0046C460` | the ray fan and the "keep the smallest" rule, over the same ordered pairs |
 | `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
+| `0x0043B320` + `0x0043B490` | — | twelve steps of the rotation, with the turn state and the twelve game-control slots at `0x00509F18` |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -21,6 +22,19 @@ refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
 invariant is stated for every offset *except* `+0x4F` — the strict form was
 asserted first and failed on three slots, which is how the exception was found
 rather than assumed.
+
+**The whole hand-over `0x0047D600` is deliberately not called.** It ends by
+invoking `aAISystemControl` once the current player becomes 255
+([`docs/25`](../../../docs/25-turn-and-round.md) §4) — the computer's entire
+turn, which is out of this stage's scope and not something to start inside a
+debugger probe. `0x0043B320` is the part §3.1 specifies and the part a remake's
+turn sits on.
+
+Three of the accessors are `mov al, [g]; ret` and are declared **`u8`**. Read
+as `i32` the current player came back as `4436480`: only AL carries the value
+and the rest of EAX is the caller's leftovers. That number is not
+wrong-looking enough to notice, which is why `dbgcall` grew byte return types
+rather than the mask living here.
 
 ### What the capture does *not* exercise
 
@@ -35,6 +49,17 @@ exactly the kind of check this repository treats as a bug:
   `refresh.p0` compares 13 fields on one record. The three aliens carry the
   weight of the refresh evidence — they are the records with fatigue, heat and
   a malfunction ladder, which the crates do not have.
+* **The rotation has only two members here** — player 0 and the computer, so
+  it cycles `0, 255, 0, …` and the multi-slot skip rule is never stretched.
+  That is what a campaign save *is* (`solo_flag=1`, `player_count=1`,
+  `human_count=1`, `kind=[1,0,0,0]`), so the shape is right; a hot-seat save
+  would be needed to exercise more.
+* **The twelve game-control slots are all zero** on this save, so their
+  capture pins the accessor and the count, not the values.
+* **`advancePlayer` returns `TRUE` on all twelve steps.** Its `FALSE` arm —
+  "no player is left in the game" — cannot be reached without killing every
+  unit on both sides first, so it stays corpus-checked and not natively
+  pinned, like the body-blocking ray above.
 * **`aRefreshPlayer(252)` is not captured at all**, deliberately:
   [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
   in the current-player byte, so it is a call the engine itself never makes.

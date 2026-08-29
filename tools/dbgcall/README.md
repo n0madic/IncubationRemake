@@ -118,7 +118,16 @@ dbgcall.exe game.exe --bp rva:0x1565 \
     --call "GetRange(%esi, 3)"
 ```
 
-Types: `i32 u32 ptr i64 u64 f32 f64 str wstr void bytesN`.
+Types: `i8 u8 i32 u32 ptr i64 u64 f32 f64 str wstr void bytesN`.
+`char` and `byte` are accepted as aliases of `i8` and `u8`.
+
+**Declare a byte return as one.** A routine written `mov al, [g]; ret`
+sets **AL only** and leaves the rest of EAX holding the caller's
+leftovers, so reading it as `i32` gives a number that is not
+wrong-looking enough to notice — a player id came back as `4436480`
+rather than `0`. `u8` and `i8` mask (and, for `i8`, sign-extend) the
+result, so the width is stated once in the declaration instead of
+being remembered at every call site.
 
 `this` under `__thiscall` is an **explicit** first parameter. The harness has
 no notion of a class, and an implicit `this` would break the arity check that

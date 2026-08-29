@@ -115,6 +115,9 @@ cat > "$out/decls.txt" <<EOF
 # convention  return  name              parameters              address
               i32     add(i32,i32)                            = rva:$(rva "$exe" t_add)
               i32     zero()                                  = rva:$(rva "$exe" t_zero)
+              u8      bytefn(i32)                             = rva:$(rva "$exe" t_byte)
+              i8      sbytefn(i32)                            = rva:$(rva "$exe" t_byte)
+              i32     dirtyfn(i32)                            = rva:$(rva "$exe" t_byte)
               f32     fmul(f32,f32)                           = rva:$(rva "$exe" t_fmul)
               f64     dmul(f64,f64)                           = rva:$(rva "$exe" t_dmul)
               u64     add64(u64,u64)                          = rva:$(rva "$exe" t_add64)
@@ -208,6 +211,26 @@ run_grep() {
 # --- conventions -----------------------------------------------------------
 
 run "cdecl    add(1,2)"            1002 "$bp" --call "add(1, 2)"
+
+# A callee that sets only AL.  Declaring the width is the whole point: the
+# upper 24 bits of EAX are the caller's leftovers, so an i32 declaration here
+# reports a large number rather than 254 -- which is how a player id once came
+# back as 4436480 instead of 0.
+run "u8       only AL is the result"   254  "$bp" --call "bytefn(0)"
+run "i8       AL, sign-extended"       -2   "$bp" --call "sbytefn(0)"
+
+# The sensitivity probe for the two above: the *same* callee read as i32 must
+# NOT come back as 254, or the masking is untested and EAX merely happened to
+# be clean.
+dirty_out=$(harness "$bp" --call "dirtyfn(0)")
+
+if [ "$dirty_out" != "254" ]; then
+    echo "PASS  u8       the upper EAX bits really are dirty"
+    pass=$((pass + 1))
+else
+    echo "FAIL  u8       EAX was already clean, so the mask is untested"
+    fail=$((fail + 1))
+fi
 run "cdecl    fmul(2.5,4)"         10   "$bp" --call "fmul(2.5, 4)"
 run "cdecl    dmul(2.5,4)"         10   "$bp" --call "dmul(2.5, 4)"
 run "cdecl    add64(2^32,5)"       4294967301 "$bp" \

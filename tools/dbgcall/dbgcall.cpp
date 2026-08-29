@@ -576,6 +576,13 @@ using Va = uint32_t;
 enum class SlotType
 {
     Void,
+    // A routine that returns a byte sets **AL only**; the upper 24 bits of
+    // EAX keep whatever was there.  Reading such a result as i32 gives a
+    // number that is not wrong-looking enough to notice -- a player id came
+    // back as 4436480 rather than 0.  Declaring the width is what makes the
+    // harness mask it, instead of every caller remembering to.
+    I8,
+    U8,
     I32,
     U32,
     Ptr,
@@ -625,6 +632,8 @@ static bool ParseSlotType(const std::wstring& s, SlotType& out)
     if (t == L"void")               { out = SlotType::Void; return true; }
     if (t == L"i32" || t == L"int") { out = SlotType::I32;  return true; }
     if (t == L"u32")                { out = SlotType::U32;  return true; }
+    if (t == L"i8"  || t == L"char")   { out = SlotType::I8;  return true; }
+    if (t == L"u8"  || t == L"byte")   { out = SlotType::U8;  return true; }
     if (t == L"ptr" || t == L"hex") { out = SlotType::Ptr;  return true; }
     if (t == L"i64")                { out = SlotType::I64;  return true; }
     if (t == L"u64")                { out = SlotType::U64;  return true; }
@@ -643,6 +652,8 @@ static const wchar_t* SlotTypeName(SlotType t)
         case SlotType::Void: return L"void";
         case SlotType::I32:  return L"i32";
         case SlotType::U32:  return L"u32";
+        case SlotType::I8:   return L"i8";
+        case SlotType::U8:   return L"u8";
         case SlotType::Ptr:  return L"ptr";
         case SlotType::I64:  return L"i64";
         case SlotType::U64:  return L"u64";
@@ -684,6 +695,8 @@ static bool IsRegisterEligible(const Param& p)
 {
     switch (p.type)
     {
+        case SlotType::I8:
+        case SlotType::U8:
         case SlotType::I32:
         case SlotType::U32:
         case SlotType::Ptr:
@@ -2467,6 +2480,16 @@ static std::wstring DecodeReturn(SlotType kind, const RemoteResult& r)
 
         case SlotType::I32:
             o << static_cast<int32_t>(r.eax);
+            break;
+
+        // Only AL carries the value; the rest of EAX is the caller's business
+        // and is not zeroed by the callee.
+        case SlotType::U8:
+            o << static_cast<uint32_t>(r.eax & 0xFFu);
+            break;
+
+        case SlotType::I8:
+            o << static_cast<int32_t>(static_cast<int8_t>(r.eax & 0xFFu));
             break;
 
         case SlotType::U64:

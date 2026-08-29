@@ -9,6 +9,15 @@ int __attribute__((noinline, cdecl)) t_zero(void)
     return 0;
 }
 
+/* cdecl: returns a byte in AL, leaving the rest of EAX dirty on purpose --
+   the shape of the engine's `mov al, [g_x]; ret` accessors. */
+unsigned char __attribute__((noinline, cdecl)) t_byte(int dirty)
+{
+    volatile int keep = dirty;   /* so EAX is not already the answer */
+    (void)keep;
+    return (unsigned char)0xFE;
+}
+
 /* cdecl: two ints */
 int __attribute__((noinline, cdecl)) t_add(int a, int b)
 {
@@ -144,7 +153,8 @@ int main(int argc, char **argv)
         struct Vec3 v = { 1, 2, 3 };
         struct Odd o = { 1, 1, 1, 1, 1 };
         struct Four f = { 1, 1, 1, 1 };
-        printf("[target] %d %d %d\n", t_vec(v, 4), t_odd(o), t_odd4(f));
+        printf("[target] %d %d %d %u\n", t_vec(v, 4), t_odd(o), t_odd4(f),
+               (unsigned)t_byte(1));
     }
 
     printf("[target] %d %f %f %lld %d %d %d %d %d %d\n",
