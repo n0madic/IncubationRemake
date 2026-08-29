@@ -103,13 +103,23 @@ void __attribute__((noinline)) t_ready(void)
     fflush(stdout);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     HMODULE lib;
     void (*ready)(void);
 
     printf("[target] g_obj = %p\n", (void*)&g_obj);
     fflush(stdout);
+
+    /* Wedge before ever reaching the anchor, so the self-test can check that
+       --anchor-timeout gives up instead of waiting forever.  This is the shape
+       of a start-up fault under Wine: the process is alive, produces no
+       further debug event, and no plan line has run. */
+    if (argc > 1 && strcmp(argv[1], "--wedge") == 0)
+    {
+        for (;;)
+            Sleep(1000);
+    }
 
     /* Loaded dynamically, like the game's Eng3d.dll: it is in no import
        table, so the debugger only learns its base from the load event. */

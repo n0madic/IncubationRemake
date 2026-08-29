@@ -176,7 +176,15 @@ UNITINFO_SIZE = 0x7B
 #: reaches the anchor is an environment result, so the launcher retries.
 DEFAULT_ATTEMPTS = 10
 #: Seconds one attempt may take before it is abandoned and retried.
-ATTEMPT_TIMEOUT = 600
+#:
+#: The outer bound, and deliberately not the only one: ``dbgcall`` itself now
+#: gives up if the anchor is not reached (``--anchor-timeout``, 60 s by
+#: default), so a start-up that wedges costs a minute rather than this whole
+#: budget.  Observed cost of an attempt that *works* is single-digit seconds --
+#: one capture ran seven attempts of a phase, six failures and a success, in
+#: under a minute -- so this leaves well over an order of magnitude of headroom
+#: for a plan far larger than any taken so far.
+ATTEMPT_TIMEOUT = 180
 WINE_DESKTOP = "incdbg,640x480"
 WINE_OVERRIDES = "krnl386.exe16=d"
 #: Seconds ``wineserver -k`` may take before it is itself abandoned.  It is a

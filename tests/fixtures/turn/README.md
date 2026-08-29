@@ -12,6 +12,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aGetHitProbability` | `0x0046A270` | the distance rule, the range gate and the accuracy curve, over a grid of ordered enemy pairs |
 | `aGetUnitFullHeight` / `aGetUnitEyeHeight` | `0x0047AD70` / `0x0047AD30` | the two height helpers vision and fire measure from |
 | `aRefreshPlayer` | `0x004781C0` | what a hand-over restores, diffed field by field over the whole 200-slot unit array |
+| `aCheckLineOfSightEx` | `0x0046C460` | the ray fan and the "keep the smallest" rule, over the same ordered pairs |
 | `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
@@ -20,6 +21,26 @@ refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
 invariant is stated for every offset *except* `+0x4F` — the strict form was
 asserted first and failed on three slots, which is how the exception was found
 rather than assumed.
+
+### What the capture does *not* exercise
+
+Stated because a green check over a corpus that never reaches a branch is
+exactly the kind of check this repository treats as a bug:
+
+* **`*out == 0xFE`, a body blocking a ray, never occurs.** The 86 rays come
+  back 46 clear and 40 blocked by terrain; no unit ever stands between two
+  others on this save. So the body-blocking arm of `docs/22` §6.2 is
+  implemented and corpus-checked but **not** natively pinned.
+* **The squad is one soldier.** Player 0 owns a single live unit here, so
+  `refresh.p0` compares 13 fields on one record. The three aliens carry the
+  weight of the refresh evidence — they are the records with fatigue, heat and
+  a malfunction ladder, which the crates do not have.
+* **`aRefreshPlayer(252)` is not captured at all**, deliberately:
+  [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
+  in the current-player byte, so it is a call the engine itself never makes.
+  An earlier version of this capture pinned the refresh on exactly that player,
+  over crate records with nothing to restore, and would have agreed with a
+  model that did nothing at all.
 
 ## The `.json` file is not in git
 
@@ -63,3 +84,9 @@ python3 tools/turn_gold.py --check gog_incubation
   nothing is refused rather than written empty — `--dump` results arrive under
   the JSONL key `reads`, not `dumps` (`dbgcall.cpp` line 2640), and reading the
   wrong key once wrote 86 pairs' worth of empty arrays that looked captured.
+* **Two of these routines answer through an out-parameter, not a return
+  value.** `aGetHitProbability` reports the percentage and the distance that
+  way, and `aCheckLineOfSightEx` reports its outcome code that way — its EAX
+  is a success flag that is 1 for a clear ray and 1 for a blocked one alike
+  (`docs/22` §6.2). Comparing a model against EAX produced 86 confidently
+  wrong numbers before the gate caught it, which is what the gate is for.

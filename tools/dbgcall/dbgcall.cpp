@@ -2775,6 +2775,16 @@ struct Options
 
     DWORD callTimeoutMs = 5000;
 
+    // How long the target may take to reach the first anchor.  The
+    // wait before that point used to be INFINITE, and that is exactly
+    // the window a start-up fault lives in: the debugger hands the
+    // exception back, the target wedges without producing another
+    // debug event, and WaitForDebugEvent never returns.  Nothing
+    // inside the process is wrong at that point -- no plan line has
+    // run yet -- so the right answer is to give up quickly and let
+    // the caller launch again.  0 restores the old infinite wait.
+    DWORD anchorTimeoutMs = 60000;
+
     bool continueOnFault = false;
     bool resume = false;
     bool verifySig = true;
@@ -3669,6 +3679,13 @@ int wmain(int argc, wchar_t** argv)
 
             i += 2;
         }
+        else if (x == L"--anchor-timeout")
+        {
+            o.anchorTimeoutMs =
+                static_cast<DWORD>(ParseU64(need(L"--anchor-timeout")));
+
+            i += 2;
+        }
         else if (x == L"--resume")
         {
             o.resume = true;
@@ -3784,6 +3801,12 @@ int wmain(int argc, wchar_t** argv)
 
     bool initialBpSeen = false;
     bool started = false;
+    // A deadline, not a per-event timeout: module loads and a
+    // first-chance exception each wake the wait, so a per-event
+    // budget would be refreshed by the very events a wedged start-up
+    // produces on its way to producing no more.
+    const ULONGLONG anchorDeadline =
+        GetTickCount64() + static_cast<ULONGLONG>(o.anchorTimeoutMs);
     bool detached = false;
 
     // Diagnostics for a target that dies on the way to its anchor.  Bounded,
@@ -4183,12 +4206,38 @@ int wmain(int argc, wchar_t** argv)
     {
         DEBUG_EVENT ev{};
 
-        DWORD waitMs =
-            (callRunning && o.callTimeoutMs) ? o.callTimeoutMs : INFINITE;
+        DWORD waitMs = INFINITE;
+
+        if (callRunning && o.callTimeoutMs)
+        {
+            waitMs = o.callTimeoutMs;
+        }
+        else if (!started && o.anchorTimeoutMs)
+        {
+            ULONGLONG now = GetTickCount64();
+            waitMs = now >= anchorDeadline
+                         ? 0
+                         : static_cast<DWORD>(anchorDeadline - now);
+        }
 
         if (!WaitForDebugEvent(&ev, waitMs))
         {
             DWORD e = GetLastError();
+
+            if (!started && e == ERROR_SEM_TIMEOUT)
+            {
+                // No plan line has run, so there is nothing to report but the
+                // fact itself.  Terminating leaves the log without a
+                // "breakpoint hit" line, which is what a launcher retries on.
+                reporter.Note(
+                    L"[!] the anchor was not reached within " +
+                    std::to_wstring(o.anchorTimeoutMs) +
+                    L" ms; giving up so the run can be retried");
+
+                TerminateProcess(pi.hProcess, 1);
+                finished = true;
+                break;
+            }
 
             if (callRunning && e == ERROR_SEM_TIMEOUT)
             {

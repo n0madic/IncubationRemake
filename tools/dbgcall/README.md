@@ -459,6 +459,7 @@ reasoning — a batch whose results were all identical.
 | breakpoint never hit | said explicitly, rather than a silent exit; the first few unhandled exceptions seen before any anchor is reached are printed too, so a target that dies on the way is distinguishable from a wrong address |
 | a call faults | the row is reported and the batch stops; `--continue-on-fault` carries on and marks every later row `tainted`, because the target's state is now suspect. A faulted target is never resumed, even with `--resume` |
 | a call never returns | `--call-timeout` (default 5000 ms) gives up; the batch cannot continue, since the thread is stopped somewhere unknown |
+| the target wedges before the anchor | `--anchor-timeout` (default 60000 ms, `0` disables) terminates it. That wait used to be infinite, which is the window a start-up fault lives in: the debugger hands the exception back, the target produces no further debug event, and nothing ever times it out. No plan line has run at that point, so the only useful answer is to give up quickly and let the caller launch again — the log then carries no `breakpoint hit` line, which is exactly what a retry loop keys on |
 | an argument expression fails | that row reports `arg-error` and the batch moves on |
 
 One thing no code can fix: if the breakpoint sits in the middle of a mutation,

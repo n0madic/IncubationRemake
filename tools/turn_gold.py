@@ -57,7 +57,7 @@ from inclib.rng import ARandom                                     # noqa: E402
 
 LOG = logging.getLogger("turn_gold")
 
-CAPTURE_SCHEMA = "incubation.turn-capture/1"
+CAPTURE_SCHEMA = "incubation.turn-capture/3"
 
 #: The routines this capture calls, as module-relative addresses.  The image
 #: base is ``0x00400000``, so ``0x0046A270`` is ``+0x6A270``.
@@ -92,6 +92,20 @@ MP_SENTINEL = 200
 #: affordable; the cap is here so a save with more units cannot make one
 #: attempt exceed its timeout.
 MAX_PAIRS = 240
+
+#: The ``mode`` argument ``aCheckLineOfSightEx`` is probed with.  Mode 0 is the
+#: single reversed centre ray; anything else fans out to two or four, and which
+#: of those it is depends on engine globals rather than on the arguments
+#: (``docs/22`` §6.1).  Probing 1 is what exercises the fan and therefore the
+#: "keep the smallest" rule that the single-ray mode cannot distinguish.
+LOS_MODE = 1
+
+#: The neutral-prop owner.  ``docs/25`` §7 -- it is **never** stored in the
+#: current-player byte, the setter would reject it, and nothing passes it, so
+#: ``aRefreshPlayer(252)`` is a call the engine itself never makes.  Its
+#: records are crates: no fatigue cap, no stimulant, no heat, no malfunction.
+#: A refresh captured on them would have matched a model that did nothing.
+PLAYER_PROPS = 252
 
 
 class GoldError(Exception):
@@ -138,11 +152,18 @@ def state_plan() -> str:
     ]) + "\n"
 
 
-def sight_plan(pairs: list[tuple[int, int, int]]) -> str:
+def sight_plan(pairs: list[tuple[int, int, int]],
+               live: list[int], unit_bytes: bytes) -> str:
     """Phase 2 -- the read-only probes, over a grid of ordered unit pairs.
 
     Every call here is a pure function of the state phase 1 already captured,
     so the whole phase can be re-run without reloading anything.
+
+    The two height helpers are called once per live slot and their results are
+    **bound by name**, so the line-of-sight calls below can pass them as
+    arguments (``$name`` is EAX of an earlier call).  That is what lets the
+    heights and the rays they feed share one plan: the heights are computed by
+    the engine, not stored, so they cannot be known when the plan is written.
     """
     cells = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
     units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
@@ -160,14 +181,9 @@ def sight_plan(pairs: list[tuple[int, int, int]]) -> str:
         f"aGetUnitMapElementPtr(0) --read $u0:{units}",
         "aGetAILevel()",
     ]
-    seen: set[int] = set()
-    for a, b, _w in pairs:
-        for slot in (a, b):
-            if slot in seen:
-                continue
-            seen.add(slot)
-            lines.append(f"aGetUnitFullHeight({_unit_addr(slot)})")
-            lines.append(f"aGetUnitEyeHeight({_unit_addr(slot)})")
+    for slot in live:
+        lines.append(f"full{slot} = aGetUnitFullHeight({_unit_addr(slot)})")
+        lines.append(f"eye{slot} = aGetUnitEyeHeight({_unit_addr(slot)})")
     for a, b, weapon in pairs:
         # The weapon id is a literal read out of phase 1's dump rather than an
         # `[address]` expression: `[expr]` reads a **dword**, and `+0x3F` is a
@@ -175,6 +191,20 @@ def sight_plan(pairs: list[tuple[int, int, int]]) -> str:
         lines.append(
             f"aGetHitProbability({_unit_addr(a)}, {_unit_addr(b)}, "
             f"{weapon}, 0, 1, &hit, &dist) --dump hit --dump dist")
+    # Line of sight on its own, over the same pairs.  It used to be missing:
+    # the plan declared a `los` buffer and never emitted a call for it, so the
+    # rays were pinned only indirectly, through whatever aGetHitProbability
+    # does with them internally.  The shooter looks from its eyes and the
+    # target is hit anywhere up its body (``docs/22`` §6.2), which is
+    # asymmetric -- so an ordered pair list gives both directions for free.
+    for a, b, _w in pairs:
+        lines.append(
+            f"aCheckLineOfSightEx("
+            f"{_byte(unit_bytes, a, gold.UNIT_X)}, "
+            f"{_byte(unit_bytes, a, gold.UNIT_Y)}, $eye{a}, "
+            f"{_byte(unit_bytes, b, gold.UNIT_X)}, "
+            f"{_byte(unit_bytes, b, gold.UNIT_Y)}, $full{b}, "
+            f"{LOS_MODE}, &los) --dump los")
     return "\n".join(lines) + "\n"
 
 
@@ -363,7 +393,8 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
         pairs = pairs_for(live, unit_bytes)
         LOG.info("phase 2: %d ordered enemy pair(s)", len(pairs))
         if pairs:
-            rows = gold.run_plan(game_copy, dbgcall, sight_plan(pairs),
+            rows = gold.run_plan(game_copy, dbgcall,
+                                 sight_plan(pairs, live, unit_bytes),
                                  "turn_sight", attempts)
             captured = {
                 "pairs": [list(p) for p in pairs],
@@ -372,12 +403,19 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
                 "hit_returns": _results(rows, "aGetHitProbability"),
                 "hit_percent": _dumps(rows, "aGetHitProbability", "hit"),
                 "hit_distance": _dumps(rows, "aGetHitProbability", "dist"),
+                # EAX is a plain success flag; the outcome **code** is what
+                # the routine writes through its last argument (docs/22 §6.2:
+                # `*out = 0xFF; ... return TRUE`).  Capturing only EAX made
+                # every ray look like 1 and hid the codes entirely.
+                "los_returns": _results(rows, "aCheckLineOfSightEx"),
+                "los_out": _dumps(rows, "aCheckLineOfSightEx", "los"),
             }
             # A phase that extracted nothing must not be written out as if it
             # had succeeded: the merge would then skip it forever on re-run,
             # and --check would index an empty list rather than say so.  This
             # is how a wrong JSONL key stayed invisible until the gate ran.
-            for key in ("hit_returns", "hit_percent", "hit_distance"):
+            for key in ("hit_returns", "hit_percent", "hit_distance",
+                        "los_returns", "los_out"):
                 if len(captured[key]) != len(pairs):
                     raise GoldError(
                         f"phase 2 extracted {len(captured[key])} {key} for "
@@ -386,28 +424,45 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             payload.update(captured)
             _write(payload, out)
 
-    player = _byte(unit_bytes, live[0], gold.UNIT_PLAYER) if live else 0
-    probe = live[0] if live else 0
-
-    if "units_refresh_after" not in payload:
+    # **Every** player that owns a live unit, not just the owner of the lowest
+    # live slot.  On this save that slot belongs to player 252 -- the crates --
+    # whose records have no fatigue cap, no stimulant, no heat and no
+    # malfunction, so a refresh over them is very nearly a no-op and would have
+    # matched a model that did nothing at all.  The squad and the aliens are
+    # where the routine has anything to restore.
+    players = sorted({_byte(unit_bytes, slot, gold.UNIT_PLAYER)
+                      for slot in live} - {PLAYER_PROPS})
+    refreshes: dict[str, Any] = payload.get("refreshes") or {}
+    for player in players:
+        if str(player) in refreshes:
+            continue
         LOG.info("phase 3: refresh for player %d", player)
         try:
             rows = gold.run_plan(game_copy, dbgcall, refresh_plan(player),
-                                 "turn_refresh", attempts)
+                                 f"turn_refresh_{player}", attempts)
             blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
             if len(blocks) < 2:
                 raise GoldError(
                     f"phase 3 produced {len(blocks)} unit dumps, wanted 2")
-            payload.update({
-                "refresh_player": player,
-                "units_refresh_before": blocks[0].hex(),
-                "units_refresh_after": blocks[1].hex(),
-            })
+            refreshes[str(player)] = {
+                "before": blocks[0].hex(),
+                "after": blocks[1].hex(),
+            }
+            payload["refreshes"] = refreshes
             _write(payload, out)
         except Exception as exc:  # noqa: BLE001 -- see the docstring
-            LOG.warning("phase 3 did not complete (%s: %s); the refresh stays "
-                        "unpinned and --check will say so",
-                        type(exc).__name__, exc)
+            LOG.warning("phase 3 for player %d did not complete (%s: %s); "
+                        "that player's refresh stays unpinned and --check "
+                        "will say so", player, type(exc).__name__, exc)
+
+    # The recompute probe wants a unit with something to recompute.  A crate
+    # has no movement allowance at all, so a sentinel overwritten with 0 on one
+    # would be a weaker statement than the same sentinel overwritten with a
+    # real allowance on a soldier.  Prefer a unit whose player is neither the
+    # object owner nor an empty slot's default.
+    real = [slot for slot in live
+            if _byte(unit_bytes, slot, gold.UNIT_PLAYER) != PLAYER_PROPS]
+    probe = real[0] if real else (live[0] if live else 0)
 
     if "units_recompute" not in payload:
         LOG.info("phase 4: lone recompute on slot %d", probe)
@@ -541,91 +596,130 @@ def run_check(capture_path: Path, root: Path) -> int:
         c.check("heights.captured", bool(heights),
                 f"{len(heights)} fullHeight call(s)")
 
-    # --- the refresh ------------------------------------------------------
-    if "units_refresh_after" not in payload:
+        # Line of sight on its own, over the same ordered pairs.  The eye
+        # height is the source and the full height is the target, which is
+        # asymmetric -- so the ordered list exercises both directions.
+        # The outcome is the **out-parameter**, not the return value.  EAX is
+        # a success flag that is 1 for a clear ray and 1 for a blocked one
+        # alike (docs/22 §6.2), so comparing the model against it made every
+        # disagreement look like the model was wrong about everything.
+        want_los = payload.get("los_out") or []
+        want_flag = payload.get("los_returns") or []
+        c.check("los.captured", len(want_los) == len(pairs),
+                f"{len(want_los)} ray(s) for {len(pairs)} pair(s)")
+        c.expect("los.return_is_a_success_flag",
+                 sorted(set(want_flag)), [1],
+                 "docs/22 section 6.2: the routine returns TRUE and reports "
+                 "through its last argument")
+        los_bad: list[str] = []
+        eye = dict(zip(payload["live"], payload["eye_heights"]))
+        full = dict(zip(payload["live"], payload["full_heights"]))
+        for i, (a, b, _w) in enumerate(pairs[:len(want_los)]):
+            att, dfn = world.units[a], world.units[b]
+            got = combatmod.check_line_of_sight_ex(
+                world, att.x, att.y, eye[a], dfn.x, dfn.y, full[b], LOS_MODE)
+            # Only the low byte: the buffer is a dword and the routine writes
+            # a byte-sized code into it, so the upper three carry whatever the
+            # previous call left there.
+            if got != (want_los[i] & 0xFF):
+                los_bad.append(f"{a}->{b}: {got} != {want_los[i] & 0xFF}")
+        c.expect("los.matches_native", los_bad[:5], [])
+
+    # --- the refresh, once per player that owns a live unit ---------------
+    refreshes = payload.get("refreshes") or {}
+    if not refreshes:
         # Not a pass and not a silent skip: the capture is incomplete, and a
         # check that examined nothing is not a check that passed.
         c.check("refresh.captured", False,
                 "the capture holds no refresh phase; re-run --game-copy, and "
                 "expect the anchor to need several attempts (docs/91 section 1)")
         return c.report()
-    before = _turn_units_from(payload, payload["units_refresh_before"])
-    after_raw = bytes.fromhex(payload["units_refresh_after"])
-    state = turnmod.TurnState(turn=1, current_player=payload["refresh_player"],
-                              ai_level=payload["ai_level"])
-    world = _world_from_capture(payload, payload["units_refresh_before"],
-                                tables)
 
-    def banner_of(unit: turnmod.TurnUnit) -> bool:
-        return combatmod.banner_nearby(world, world.units[unit.slot])
-
-    turnmod.refresh_player(state, payload["refresh_player"], before, tables,
-                           banner_of)
     fields = {"mp": gold.UNIT_MP, "fp": 0x19, "acted": 0x39,
               "action_state": 0x41, "rested": 0x57, "walked": 0x50,
               "turn_start_x": 0x51, "turn_start_y": 0x52,
               "stimulant": 0x58, "ticket": 0x59, "heat": 0x3E,
               "malfunction": 0x40, "weapon": 0x3F}
-    mismatches: list[str] = []
-    compared = 0
-    for unit in before:
-        if unit.player != payload["refresh_player"]:
-            continue
-        b = unit.slot * gold.UNIT_STRIDE
-        for name, offset in fields.items():
-            compared += 1
-            got, want = getattr(unit, name), after_raw[b + offset]
-            if got != want:
-                mismatches.append(f"slot {unit.slot} {name}: {got} != {want}")
-    c.check("refresh.fields_compared", compared > 0,
-            f"{compared} field comparison(s)")
-    c.expect("refresh.matches_native", mismatches[:8], [])
+    for key in sorted(refreshes, key=int):
+        player = int(key)
+        c.expect(f"refresh.p{player}.is_a_rotation_member",
+                 player != PLAYER_PROPS, True,
+                 "docs/25 section 7: 252 is never stored in the current-player "
+                 "byte, so the engine never passes it here")
+        before_hex = refreshes[key]["before"]
+        after_raw = bytes.fromhex(refreshes[key]["after"])
+        before_raw = bytes.fromhex(before_hex)
+        before = _turn_units_from(payload, before_hex)
+        state = turnmod.TurnState(turn=1, current_player=player,
+                                  ai_level=payload["ai_level"])
+        world = _world_from_capture(payload, before_hex, tables)
 
-    # The other half of acceptance item 4: the refresh is for *one* player, so
-    # every record that does not belong to it has to come back untouched --
-    # comparing only the refreshed player would pass a routine that quietly
-    # rewrote the other 190 slots.
-    #
-    # With one documented exception, found by asserting the strict form first.
-    # ``+0x4F`` **does** change on foreign records, because 0x004781C0 runs the
-    # fog pass and that is where an enemy is marked visible, hidden or a
-    # contact *for the refreshing player*.  So the strict invariance holds for
-    # every other offset, and ``+0x4F`` gets a check of its own below -- which
-    # is the aBuildVisibleMap row of the oracle table, captured here for free
-    # rather than in a phase of its own.
-    before_raw = bytes.fromhex(payload["units_refresh_before"])
-    foreign: list[str] = []
-    foreign_slots = 0
-    for slot in range(gold.UNIT_SLOTS):
-        b = slot * gold.UNIT_STRIDE
-        if _byte(before_raw, slot, gold.UNIT_PLAYER) == payload[
-                "refresh_player"]:
-            continue
-        foreign_slots += 1
-        offsets = [f"+0x{i:02X}"
-                   for i in range(gold.UNIT_STRIDE)
-                   if before_raw[b + i] != after_raw[b + i]
-                   and i != gold.UNIT_VISIBILITY]
-        if offsets:
-            foreign.append(f"slot {slot}: {', '.join(offsets)}")
-    c.check("refresh.foreign_slots_examined", foreign_slots > 0,
-            f"{foreign_slots} record(s) outside player "
-            f"{payload['refresh_player']}")
-    c.expect("refresh.touches_only_visibility_elsewhere", foreign[:8], [])
+        def banner_of(unit: turnmod.TurnUnit, _w: Any = world) -> bool:
+            return combatmod.banner_nearby(_w, _w.units[unit.slot])
 
-    # --- the fog pass, pinned natively -----------------------------------
-    fog = _world_from_capture(payload, payload["units_refresh_before"], tables)
-    combatmod.build_visible_map(fog, payload["refresh_player"])
-    fog_bad: list[str] = []
-    fog_compared = 0
-    for slot, unit in sorted(fog.units.items()):
-        fog_compared += 1
-        want = after_raw[slot * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]
-        if unit.visibility != want:
-            fog_bad.append(f"slot {slot}: {unit.visibility} != {want}")
-    c.check("fog.slots_compared", fog_compared > 0,
-            f"{fog_compared} visibility byte(s)")
-    c.expect("fog.matches_native", fog_bad[:8], [])
+        turnmod.refresh_player(state, player, before, tables, banner_of)
+
+        mismatches: list[str] = []
+        compared = 0
+        owned = 0
+        for unit in before:
+            if unit.player != player:
+                continue
+            owned += 1
+            b = unit.slot * gold.UNIT_STRIDE
+            for name, offset in fields.items():
+                compared += 1
+                got, want = getattr(unit, name), after_raw[b + offset]
+                if got != want:
+                    mismatches.append(
+                        f"slot {unit.slot} {name}: {got} != {want}")
+        c.check(f"refresh.p{player}.fields_compared", compared > 0,
+                f"{compared} comparison(s) over {owned} owned record(s)")
+        c.expect(f"refresh.p{player}.matches_native", mismatches[:8], [])
+
+        # The other half of acceptance item 4: the refresh is for *one*
+        # player, so every record that does not belong to it has to come back
+        # untouched -- comparing only the refreshed player would pass a
+        # routine that quietly rewrote the other slots.
+        #
+        # With one documented exception, found by asserting the strict form
+        # first.  ``+0x4F`` **does** change on foreign records, because
+        # 0x004781C0 runs the fog pass and that is where an enemy is marked
+        # visible, hidden or a contact *for the refreshing player*.  So the
+        # strict invariance holds for every other offset, and ``+0x4F`` gets a
+        # check of its own below -- the aBuildVisibleMap row of the oracle
+        # table, captured here for free rather than in a phase of its own.
+        foreign: list[str] = []
+        foreign_slots = 0
+        for slot in range(gold.UNIT_SLOTS):
+            b = slot * gold.UNIT_STRIDE
+            if _byte(before_raw, slot, gold.UNIT_PLAYER) == player:
+                continue
+            foreign_slots += 1
+            offsets = [f"+0x{i:02X}"
+                       for i in range(gold.UNIT_STRIDE)
+                       if before_raw[b + i] != after_raw[b + i]
+                       and i != gold.UNIT_VISIBILITY]
+            if offsets:
+                foreign.append(f"slot {slot}: {', '.join(offsets)}")
+        c.check(f"refresh.p{player}.foreign_slots_examined", foreign_slots > 0,
+                f"{foreign_slots} record(s) outside player {player}")
+        c.expect(f"refresh.p{player}.touches_only_visibility_elsewhere",
+                 foreign[:8], [])
+
+        # --- the fog pass, pinned natively -------------------------------
+        fog = _world_from_capture(payload, before_hex, tables)
+        combatmod.build_visible_map(fog, player)
+        fog_bad: list[str] = []
+        fog_compared = 0
+        for slot, unit in sorted(fog.units.items()):
+            fog_compared += 1
+            want = after_raw[slot * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]
+            if unit.visibility != want:
+                fog_bad.append(f"slot {slot}: {unit.visibility} != {want}")
+        c.check(f"fog.p{player}.slots_compared", fog_compared > 0,
+                f"{fog_compared} visibility byte(s)")
+        c.expect(f"fog.p{player}.matches_native", fog_bad[:8], [])
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

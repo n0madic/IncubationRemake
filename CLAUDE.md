@@ -236,8 +236,9 @@ python3 tools/turn_gold.py --check gog_incubation     # re-run the models agains
 ```
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
-15 checks over 86 unit pairs, 130 refresh fields, 188 untouched foreign records
-and the fog pass. **Wine start-up
+26 checks over 86 unit pairs (hit probability **and** line of sight), the
+refresh of every player that owns a live unit, the records those refreshes must
+leave alone, the fog pass and the lone stat recompute. **Wine start-up
 on this host is intermittent** (`docs/91` §1): a phase can reach the anchor on
 attempt 1 or on attempt 8, and one that never does is an environment result
 rather than a failure — which is why both tools retry ten times. **Do not lower

@@ -337,6 +337,32 @@ run_grep "bp       the anchor reached first wins" \
 run_grep "bp       none reached is reported per anchor" "never resolved" \
     "nosuch.dll+0x1000" --bp "alsomissing.dll+0x20" --call "add(1, 2)"
 
+# A target that wedges before the anchor: alive, no further debug event, no
+# plan line run.  The wait before the first breakpoint used to be INFINITE, so
+# this hung the whole run rather than failing it.  The outer `timeout` is not
+# belt and braces -- without it a regression here hangs the self-test itself.
+#
+# WEDGE_TIMEOUT_MS=0 reproduces the old infinite wait, which is how this case
+# was shown to be sensitive rather than merely green: with the bound disabled
+# it reports "still hanging" and fails.
+wedge_out=$(cd "$out" && WINEDEBUG=-all timeout 60 "$WINE" dbgcall.exe \
+                target.exe --bp "$bp" --out jsonl --plan decls.txt \
+                --anchor-timeout ${WEDGE_TIMEOUT_MS:-1500} \
+                --call "add(1, 2)" -- --wedge 2>&1)
+wedge_rc=$?
+
+if [ $wedge_rc -eq 124 ]; then
+    echo "FAIL  bp       a wedged start-up is given up on: still hanging"
+    fail=$((fail + 1))
+elif printf '%s' "$wedge_out" | grep -q "the anchor was not reached"; then
+    echo "PASS  bp       a wedged start-up is given up on"
+    pass=$((pass + 1))
+else
+    echo "FAIL  bp       a wedged start-up is given up on: no message"
+    printf '%s\n' "$wedge_out" | sed 's/^/      /'
+    fail=$((fail + 1))
+fi
+
 # --- batches ---------------------------------------------------------------
 
 run "batch    repeated --call"     "7|1007|2007" "$bp" \
