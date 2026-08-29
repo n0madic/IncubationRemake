@@ -160,7 +160,7 @@ static func build_world(case: Dictionary) -> Dictionary:
 			type_rows.append({
 				"id": type_id,
 				"mp_max": DictRead.as_int(record["mp_allowance"]),
-				"hp_max": 0,
+				"fp_max": 255, "hp_max": 0,
 				"special": DictRead.as_int(record["special"]),
 				"size": DictRead.as_int(record["size"]),
 				"species": 0,

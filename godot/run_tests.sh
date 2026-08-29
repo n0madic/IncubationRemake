@@ -54,6 +54,14 @@ for name in synthetic slice native allowance; do
     [ -f "$src" ] && cp "$src" "$HERE/generated/movemap/$name.json"
 done
 
+# The turn's native cases, on the same terms: removed first, copied only if
+# present, and the suite reports the gap rather than the run shrinking.
+mkdir -p "$HERE/generated/turn"
+rm -f "$HERE/generated/turn/turn.json"
+[ -f "$REPO/tests/fixtures/turn/cases_turn.json" ] \
+    && cp "$REPO/tests/fixtures/turn/cases_turn.json" \
+          "$HERE/generated/turn/turn.json"
+
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1
 
@@ -70,6 +78,36 @@ else
     OUT="$("$GODOT" --headless --path "$HERE" --script res://tests/main.gd 2>&1)"
 fi
 echo "$OUT"
+
+# A GDScript runtime error does not stop the script and does not fail a check:
+# it prints to stderr and execution carries on with a null or a default.  The
+# suites stayed green for a whole run that way, while `UnitTypeTable` was
+# silently answering `fp_max` with nothing at all.  So the error text is a
+# failure in its own right, independent of the sentinel.
+#
+# `tests/fixtures/violations/` is expected to fail to load -- that is its
+# entire purpose -- and it is the one exemption.  The path is not on the error
+# line but on the `at:` line under it, so the pair has to be read together;
+# filtering the error line alone matched nothing and reported the deliberate
+# failure as a real one.
+# The path may be on the error line itself (a failed load) or on the `at:`
+# line under it (a parse error inside the file), so both are checked.
+ERRORS="$(printf '%s\n' "$OUT" | awk '
+    /^(SCRIPT )?ERROR:/ {
+        if ($0 ~ /tests\/fixtures\/violations\//) { pending = ""; next }
+        pending = $0; next
+    }
+    pending != "" {
+        if ($0 !~ /tests\/fixtures\/violations\//) print pending
+        pending = ""
+    }
+    END { if (pending != "") print pending }
+')"
+if [ -n "$ERRORS" ]; then
+    echo "run_tests.sh: runtime errors during the run:" >&2
+    printf '%s\n' "$ERRORS" >&2
+    exit 1
+fi
 
 if echo "$OUT" | grep -q '^HARNESS-RESULT: OK$'; then
     exit 0

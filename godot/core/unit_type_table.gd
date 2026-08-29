@@ -25,6 +25,7 @@ static func from_rows(rows: Array) -> UnitTypeTable:
 		var record: Dictionary = row
 		table._rows[DictRead.as_int(record["id"])] = {
 			"mp_max": DictRead.as_int(record["mp_max"]),
+			"fp_max": DictRead.as_int(record["fp_max"]),
 			"hp_max": DictRead.as_int(record["hp_max"]),
 			"special": DictRead.as_int(record["special"]),
 			"size": DictRead.as_int(record["size"]),

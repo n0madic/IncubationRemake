@@ -63,7 +63,7 @@ func run(h: TestHarness) -> void:
 	solo.fp = 255
 	var only: Dictionary = {0: solo}
 	var table_one: UnitTypeTable = UnitTypeTable.from_rows([{
-		"id": Allowance.DIFFICULTY_TWEAK_TYPE, "mp_max": 6, "hp_max": 0,
+		"id": Allowance.DIFFICULTY_TWEAK_TYPE, "mp_max": 6, "fp_max": 255, "hp_max": 0,
 		"special": 0, "size": 0, "species": 0, "height": 0, "model": "",
 		"description": "difficulty-tweaked type",
 	}])
@@ -81,7 +81,7 @@ func run(h: TestHarness) -> void:
 	zero.fp = 255
 	zero.equipment = PackedInt32Array([Allowance.EQUIP_HEAVY_ARMOR])
 	var table_zero: UnitTypeTable = UnitTypeTable.from_rows([{
-		"id": 1, "mp_max": 0, "hp_max": 0, "special": 0, "size": 0,
+		"id": 1, "mp_max": 0, "fp_max": 255, "hp_max": 0, "special": 0, "size": 0,
 		"species": 0, "height": 0, "model": "", "description": "immobile",
 	}])
 	h.equal("byte_wrap_guard",
@@ -113,6 +113,7 @@ func _build(case: Dictionary) -> Dictionary:
 			rows.append({
 				"id": unit.type_id,
 				"mp_max": DictRead.as_int(record["mp_max"]),
+				"fp_max": 255,
 				"hp_max": 0, "special": 0, "size": 0, "species": 0,
 				"height": 0, "model": "",
 				"description": "type %d" % unit.type_id,

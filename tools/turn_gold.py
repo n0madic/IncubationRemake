@@ -1011,6 +1011,140 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
 
 
 # ---------------------------------------------------------------------------
+# Re-expressing the capture for the GDScript side
+# ---------------------------------------------------------------------------
+
+CASES_SCHEMA = "incubation.turn-cases/1"
+
+#: The unit columns a refresh case carries.  Every one is either an input the
+#: refresh reads or an output it writes; a case that carried the whole 91-byte
+#: record would invite treating the rest as validated.
+CASE_UNIT_FIELDS = {
+    "slot": None, "player": gold.UNIT_PLAYER, "type_id": 0x4C,
+    "x": gold.UNIT_X, "y": gold.UNIT_Y, "hp": gold.UNIT_HP,
+    # Every offset here is the one docs/10 section 5 records and
+    # `inclib/lev.py` names.  `ep` was written 0x1B once; the native suite
+    # caught it in one run, because a wrong experience value moves the fitness
+    # cap and the refresh's fitness arm with it.
+    "mp": gold.UNIT_MP, "fp": 0x19, "ep": 0x17, "rested": 0x57,
+    "action_state": 0x41, "acted": 0x39, "ammo": 0x3D, "heat": 0x3E,
+    "weapon": 0x3F, "malfunction": 0x40, "walked": 0x50,
+    "turn_start_x": 0x51, "turn_start_y": 0x52, "stimulant": 0x58,
+    "ticket": 0x59, "facing": 0x46, "visibility": gold.UNIT_VISIBILITY,
+    "group": 0x4E,
+}
+
+
+def _case_unit(raw: bytes, slot: int) -> dict[str, int]:
+    out: dict[str, int] = {"slot": slot}
+    for name, offset in CASE_UNIT_FIELDS.items():
+        if offset is None:
+            continue
+        out[name] = _byte(raw, slot, offset)
+    return out
+
+
+def emit_cases(capture_path: Path, out: Path, root: Path) -> int:
+    """Re-express the capture in the shape ``godot/tests/`` reads.
+
+    Each case carries the state the engine actually saw, so the GDScript side
+    applies no mutations of its own: it builds a world from these numbers and
+    compares against the numbers beside them.  That is what makes the two
+    implementations receive byte-identical inputs by construction rather than
+    by both following the same prose.
+    """
+    payload = json.loads(capture_path.read_text())
+    if payload.get("schema") != CAPTURE_SCHEMA:
+        raise GoldError(f"{capture_path} is not a {CAPTURE_SCHEMA} capture")
+
+    refreshes: list[dict[str, Any]] = []
+    for key in sorted(payload.get("refreshes", {}), key=int):
+        block = payload["refreshes"][key]
+        before = bytes.fromhex(block["before"])
+        after = bytes.fromhex(block["after"])
+        live = _live_slots(before)
+        refreshes.append({
+            "player": int(key),
+            "before": [_case_unit(before, s) for s in live],
+            "after": [_case_unit(after, s) for s in live],
+        })
+    if not refreshes:
+        raise GoldError("the capture holds no refresh phase to emit")
+
+    rot = payload.get("rotation") or {}
+    document = {
+        "schema": CASES_SCHEMA,
+        "mission": MISSION,
+        "oracle": payload.get("oracle", ""),
+        "ai_level": payload["ai_level"],
+        "turn": payload.get("turn", 0),
+        "player_count": payload.get("player_count", 1),
+        "human_count": payload.get("human_count", 1),
+        "solo_flag": payload.get("solo_flag", 1),
+        "player_kind": payload.get("player_kind", []),
+        "end_state": payload.get("end_state", []),
+        "lcl_slots": payload.get("lcl_slots", []),
+        "refreshes": refreshes,
+        "rotation": {
+            "current": rot.get("current", []),
+            "previous": rot.get("previous", []),
+            "any_left": rot.get("any_left", []),
+            "advance": rot.get("advance", []),
+        },
+        "types": _case_rows(payload, root),
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    LOG.info("wrote %s (%d refresh case(s), %d rotation step(s))", out,
+             len(refreshes), len(document["rotation"]["advance"]))
+    return 0
+
+
+def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Every unit and weapon row the cases reference, carried **with** them.
+
+    The GDScript side must not reach for ``tables/balance.json``: a case whose
+    unit records came from the capture and whose balance came from a separate
+    file is not a byte-identical input, and a converter change could move one
+    without the other.
+    """
+    tables = load_info(str(root))
+    before = bytes.fromhex(payload["units_before"])
+    type_ids: set[int] = set()
+    weapon_ids: set[int] = set()
+    for slot in payload["live"]:
+        type_ids.add(_byte(before, slot, 0x4C))
+        weapon_ids.add(_byte(before, slot, 0x3F))
+    for block in payload.get("refreshes", {}).values():
+        for raw_hex in (block["before"], block["after"]):
+            raw = bytes.fromhex(raw_hex)
+            for slot in _live_slots(raw):
+                type_ids.add(_byte(raw, slot, 0x4C))
+                weapon_ids.add(_byte(raw, slot, 0x3F))
+
+    units = []
+    for type_id in sorted(type_ids):
+        row = tables.units.get(type_id)
+        if row is None:
+            continue
+        units.append({
+            "id": type_id, "mp_max": row.mp_max, "fp_max": row.fp_max,
+            "hp_max": row.hp_max, "special": row.special, "size": row.size,
+            "species": row.species, "height": row.height,
+            "model": row.model, "description": row.description,
+        })
+    weapons = []
+    for weapon_id in sorted(weapon_ids):
+        row = tables.weapons.get(weapon_id)
+        if row is None:
+            continue
+        weapons.append({"id": weapon_id, "heat": row.heat,
+                        "toggle": row.toggle, "mun": row.mun})
+    return {"units": units, "weapons": weapons}
+
+
+# ---------------------------------------------------------------------------
 # The check
 # ---------------------------------------------------------------------------
 
@@ -1605,12 +1739,21 @@ def main(argv: list[str] | None = None) -> int:
                     default=Path("tests/fixtures/turn/_C_141.json"),
                     help="with --check, the capture to read")
     ap.add_argument("--attempts", type=int, default=gold.DEFAULT_ATTEMPTS)
+    ap.add_argument("--emit-cases", metavar="PATH", type=Path,
+                    help="re-express the capture for godot/tests/; the balance "
+                         "rows it carries come from --root")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s")
 
+    if args.emit_cases:
+        if not args.capture.is_file():
+            LOG.error("%s is missing; run --game-copy to produce it",
+                      args.capture)
+            return 1
+        return emit_cases(args.capture, args.emit_cases, args.root)
     if args.check:
         if not args.capture.is_file():
             LOG.error("%s is missing; run --game-copy to produce it",
