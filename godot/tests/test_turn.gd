@@ -30,7 +30,79 @@ func run(h: TestHarness) -> void:
 	_rotation(h)
 	_turn_counter(h)
 	_refresh(h)
+	_stand_down_and_stimulant(h)
 	_hash_and_save(h)
+
+
+## docs/25 section 8 -- the two one-screen routines, and the hand-over that
+## pays for them.
+##
+## No shipped `.lev` carries a unit that has stood down or spent a stimulant --
+## `+0x41` is 0 and `+0x58` is its charge in every placed record -- so the only
+## way to reach either arm of [Refresh] from *play* is through these commands.
+## Before they existed the refresh's two rewards were tested and unreachable.
+func _stand_down_and_stimulant(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var slot: int = world.unit_slots()[0]
+	var before: int = DictRead.as_int(world.unit_view(slot)["mp"])
+	h.check("stand_down.spends_the_turn",
+		world.submit_stand_down(StandDownCommand.create(slot)),
+		"mp was %d" % before)
+	var after: Dictionary = world.unit_view(slot)
+	h.equal("stand_down.zeroes_the_movement_points",
+		DictRead.as_int(after["mp"]), 0)
+	h.equal("stand_down.sets_action_state_7",
+		DictRead.as_int(after["action_state"]), Refresh.ACTION_STOOD_DOWN)
+	h.check("stand_down.had_points_to_spend", before > 0,
+		"a unit with none already would prove nothing")
+	h.equal("stand_down.a_missing_slot_is_refused",
+		world.submit_stand_down(StandDownCommand.create(99)), false)
+
+	# The reward, end to end: the hand-over turns state 7 into `rested = 1`,
+	# which the allowance formula reads. This is the arm that was unreachable.
+	var rested: World = TestFixtures.tiny_world()
+	var rested_slot: int = rested.unit_slots()[0]
+	var _stood: bool = rested.submit_stand_down(
+		StandDownCommand.create(rested_slot))
+	var _handed: TurnResult = rested.submit_end_turn(
+		EndTurnCommand.create(1))
+	h.equal("stand_down.the_refresh_pays_for_it",
+		DictRead.as_int(rested.unit_view(rested_slot)["rested"]), 1,
+		"docs/25 section 5: the hand-over reads +0x41 == 7 and writes +0x57")
+
+	# The stimulant: the **old** value is what is added, and 255 is "spent this
+	# turn" rather than "gone".
+	var empty: World = TestFixtures.tiny_world()
+	h.equal("stimulant.a_unit_with_none_cannot_spend_one",
+		empty.submit_stimulant(
+			SpendStimulantCommand.create(empty.unit_slots()[0])),
+		false, "the fixture's units carry 0")
+
+	# The charge is a **fixture parameter**, not a setter: `core` hands out no
+	# live [UnitState], and adding one so a test could arm a unit would be the
+	# hole `test_isolation.gd` exists to prevent.
+	var dosed: World = World.create(TestFixtures.map_document(7, 7,
+		[TestFixtures.unit(0, 2, 2, 0, 0, 4, 0, [], 0, 0, 0, 10, 2)]),
+		TestFixtures.balance(), 1.0)
+	var dosed_slot: int = 0
+	var mp_before: int = DictRead.as_int(dosed.unit_view(dosed_slot)["mp"])
+	h.check("stimulant.spends",
+		dosed.submit_stimulant(SpendStimulantCommand.create(dosed_slot)),
+		"a Heavy Stimulant")
+	h.equal("stimulant.a_heavy_one_is_worth_two",
+		DictRead.as_int(dosed.unit_view(dosed_slot)["mp"]), mp_before + 2)
+	h.equal("stimulant.spending_writes_255",
+		DictRead.as_int(dosed.unit_view(dosed_slot)["stimulant"]),
+		Refresh.STIMULANT_SPENT)
+	h.equal("stimulant.only_once_a_turn",
+		dosed.submit_stimulant(SpendStimulantCommand.create(dosed_slot)),
+		false)
+	var _handed_again: TurnResult = dosed.submit_end_turn(
+		EndTurnCommand.create(1))
+	h.equal("stimulant.the_refresh_gives_it_back",
+		DictRead.as_int(dosed.unit_view(dosed_slot)["stimulant"]), 0,
+		"docs/25 section 8: not consumed, a once-a-turn button")
+
 
 
 ## The turn is simulation state, so it is in the canonical hash and it survives

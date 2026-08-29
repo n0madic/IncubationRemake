@@ -82,7 +82,7 @@ static func balance(extra_types: Array = []) -> Dictionary:
 static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 		mp: int = 4, visibility: int = 0, equipment: Array = [],
 		weapon: int = 0, ammo: int = 0, facing: int = 0,
-		hp: int = 10) -> Dictionary:
+		hp: int = 10, stimulant: int = 0) -> Dictionary:
 	return {
 		"slot": slot, "name": "unit %d" % slot, "type_id": type_id,
 		"player": player, "x": x, "y": y, "hit_points": hp,
@@ -99,7 +99,7 @@ static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 		"acted": 0, "damage_absorber": 0, "armour_front": 0,
 		"armour_rear": 0, "ammo": ammo, "heat": 0, "malfunction": 0,
 		"walked": 0, "turn_start_x": x, "turn_start_y": y,
-		"stimulant": 0, "ticket": 0,
+		"stimulant": stimulant, "ticket": 0,
 		# The six skill columns by name, the way the converter emits them.
 		# An empty map here made `UnitState.from_document` read a missing key,
 		# which GDScript reports as a runtime error and not a failure.

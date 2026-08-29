@@ -16,10 +16,10 @@ is the evidence, the deviations and the measurements.
 
 ```
 godot/
-  core/      37 files      pure GDScript: no Node, no FileAccess, no singleton
+  core/      39 files      pure GDScript: no Node, no FileAccess, no singleton
     lcl/      5 files      the mission-script interpreter
   game/      12 files      + localization, HUD, fog
-  tests/     20 suites     1413 checks
+  tests/     25 suites     1427 checks
 tools/
   inclib/    interact.py new; combat.py, lcl_runtime.py, turn.py extended
   interact_runtime.py new
@@ -29,8 +29,15 @@ tools/
 `turn_sequence`, `refresh`, `rotation`, `mission_script`, `game_control`, then
 `line_of_sight`, `hit_chance`, `visibility`, `combat`, `reaction`, `interact`,
 `crandom`, and `lcl/` — `lcl_program`, `lcl_env`, `lcl_context`,
-`lcl_interpreter`, `lcl_outcome`. `World` gained six commands: move, attack,
-use, defend, end turn, and the move query the first slice already had.
+`lcl_interpreter`, `lcl_outcome`. `World` gained eight commands: move, attack,
+use, defend, stand down, spend a stimulant, end turn, and the move query the
+first slice already had.
+
+The last two are small and were nearly missed. Nothing in `World` could produce
+`action_state == 7` or a spent stimulant, so [Refresh]'s two rewards for them --
+`rested = 1` and turning 255 back into the charge -- were **tested and
+unreachable from play**. No shipped `.lev` carries either state, so the only
+route to those arms is a command.
 
 **What is deliberately absent** is the AI planner. Player 255 receives its turn
 and returns it; [`23` §2–§6](23-ai-system.md)'s eleven orders, two passes and six

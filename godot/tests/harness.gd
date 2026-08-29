@@ -41,7 +41,7 @@ const LEAST_CHECKS: Dictionary = {
 	"mesh": 28,
 	"camera": 26,
 	"isolation": 10,
-	"turn": 49,
+	"turn": 60,
 	"turn_native": 45,
 	"execute_move": 45,
 	"handover": 150,

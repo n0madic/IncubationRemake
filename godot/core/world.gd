@@ -374,6 +374,42 @@ func run_script(call_type: int, environment: Dictionary) -> Dictionary:
 	return DictRead.as_dict(_script_callable().call(call_type, environment))
 
 
+## `0x00478570` -- spend the rest of this unit's turn, deliberately.
+##
+## Returns whether anything happened. docs/25 section 8: the state is 7 and the
+## movement points go to zero, and the *reward* arrives at the next hand-over --
+## [Refresh] turns state 7 into `rested = 1`, which docs/10 section 5.5's
+## allowance formula reads as one extra point while fitness is above 1.
+func submit_stand_down(command: StandDownCommand) -> bool:
+	if not _units.has(command.unit_slot):
+		return false
+	var unit: UnitState = _units[command.unit_slot]
+	if not unit.is_alive():
+		return false
+	unit.action_state = Refresh.ACTION_STOOD_DOWN
+	unit.mp = 0
+	return true
+
+
+## `0x004785B0` -- spend a stimulant, once a turn.
+##
+## Returns whether it was spent. The movement points go up by the **old** value,
+## which is what makes a *Heavy Stimulant* worth two, and `+0x58` becomes 255 --
+## "spent this turn", which the refresh turns back into the charge. Nothing is
+## consumed; a unit that decremented the field would have one per mission.
+func submit_stimulant(command: SpendStimulantCommand) -> bool:
+	if not _units.has(command.unit_slot):
+		return false
+	var unit: UnitState = _units[command.unit_slot]
+	if not unit.is_alive():
+		return false
+	if unit.stimulant == 0 or unit.stimulant == Refresh.STIMULANT_SPENT:
+		return false
+	unit.mp += unit.stimulant
+	unit.stimulant = Refresh.STIMULANT_SPENT
+	return true
+
+
 ## `0x00477BF0` -- how many live units a player owns.
 func live_unit_count(player: int) -> int:
 	var n: int = 0
