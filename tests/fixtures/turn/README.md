@@ -17,6 +17,7 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `0x0043B320` + `0x0043B490` | — | twelve steps of the rotation, with the turn state and the twelve game-control slots at `0x00509F18` |
 | `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
 | `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
+| `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -77,6 +78,17 @@ exactly the kind of check this repository treats as a bug:
   "no player is left in the game" — cannot be reached without killing every
   unit on both sides first, so it stays corpus-checked and not natively
   pinned, like the body-blocking ray above.
+* **The aliens never attack.** Both carry weapon 22, whose `spores_filtered`
+  cover pattern is one of the eight families `inclib/combat.py` refuses rather
+  than simulates, so every attack probe is fired by the soldier. That also
+  costs the two 99 %-chance pairs: the captured shots run at 52 % and below.
+  Deriving the pattern from two observations would have been a guess, and the
+  row is left open instead.
+* **`special` 12 is not reached.** The guaranteed-hit rule is pinned for
+  `special` 13 (`Case`, every crate on this map); 12 (`Barrel`, `Parabomb`)
+  carries the same rule in [`docs/22`](../../../docs/22-combat-and-visibility.md)
+  §7 but no such unit stands here, and its neighbour explosion — and
+  `special` 16's — is not modelled at all.
 * **The overheat roll never comes up 30**, so the arm that destroys the
   carrier is not natively pinned. Eight probes reached three of the four arms
   — jam, damage and clear.

@@ -84,6 +84,7 @@ __cdecl void aRefreshPlayer(i32)            = Incubation.exe+0x781c0
 __cdecl void aRecomputeStats(ptr)           = Incubation.exe+0x759b0
 __cdecl i32  aCheckWeaponDamage(ptr)        = Incubation.exe+0x6d1b0
 __cdecl i32  aExecuteUse(ptr)               = Incubation.exe+0x6dc60
+__cdecl i32  aAttackUnit(i32,i32,i32,i32,i32) = Incubation.exe+0x6b450
 __fastcall void setb(ptr,i32)               = &setb
 __cdecl u8   aGetTurn()                     = Incubation.exe+0x3b280
 __cdecl u8   aGetCurrentPlayer()            = Incubation.exe+0x3b2c0
@@ -402,6 +403,11 @@ def lcl_plan() -> str:
 #: so the sequence walks different rolls rather than repeating one.
 OVERHEAT_PROBES = 8
 
+#: How many aAttackUnit probes phase 8 takes.  Each one changes the world
+#: and draws the generator, so this is the expensive phase the plan warned
+#: about; a handful is enough to cover a hit, a miss and a kill.
+ATTACK_PROBES = 6
+
 
 def overheat_plan(slot: int, cap: int) -> str:
     """Phase 7 -- ``aCheckWeaponDamage`` at and below the heat cap.
@@ -432,6 +438,38 @@ def overheat_plan(slot: int, cap: int) -> str:
         lines += [
             f"setb({heat}, {cap})",
             f"aCheckWeaponDamage({_unit_addr(slot)})",
+            f"aGetUnitMapElementPtr(0) --read $u0:{units} "
+            f"--read {SEED_ADDR:#x}:8",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def attack_plan(probes: list[tuple[int, int, int, int]]) -> str:
+    """Phase 8 -- ``aAttackUnit``, the most destructive probe in the set.
+
+    ``silent`` is **0**, which is what the game's own call site passes: the
+    five pushes at ``0x00473191`` begin with ``push 0``, and arguments go
+    right to left, so the last one is zero.
+
+    Every probe changes the world -- a target loses hit points or dies, the
+    attacker's heat and ammunition move, and the generator is drawn several
+    times.  So the unit array and the seed are read after **every** call and
+    the model is fed the state each probe actually started from, rather than
+    the state the phase started from.
+    """
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    lines = [
+        "# Phase 8: aAttackUnit. Destructive; state is read after each call.",
+        DECLARATIONS,
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "u0 = aGetUnitMapElementPtr(0)",
+        "aGetAILevel()",
+        f"aGetUnitMapElementPtr(0) --read $u0:{units} --read {SEED_ADDR:#x}:8",
+    ]
+    for ax, ay, tx, ty in probes:
+        lines += [
+            f"aAttackUnit({ax}, {ay}, {tx}, {ty}, 0)",
             f"aGetUnitMapElementPtr(0) --read $u0:{units} "
             f"--read {SEED_ADDR:#x}:8",
         ]
@@ -494,6 +532,49 @@ def pairs_for(live: list[int],
             out.append((a, b, _byte(unit_bytes, a, 0x3F)))
             if len(out) >= MAX_PAIRS:
                 return out
+    return out
+
+
+def attack_probes(payload: dict[str, Any]
+                  ) -> list[tuple[int, int, int, int]]:
+    """Attacker and aim cells for phase 8, chosen from phase 2's own gate.
+
+    Only pairs the engine already reported as in range, only non-prop
+    attackers, and deliberately a **mix** of hit chances: a zero-percent pair
+    is as interesting as a ninety-nine, because the ``+10`` bonus is
+    unconditional (``docs/22`` §7.2) so a 0 % weapon still connects on a roll
+    of 0..9. A probe set that was all near-certain hits would never show that.
+    """
+    units = bytes.fromhex(payload["units_before"])
+    simulated = payload.get("_simulated_attackers") or set()
+    pairs = [tuple(x) for x in payload.get("pairs", [])]
+    gate = payload.get("hit_returns") or []
+    percent = payload.get("hit_percent") or []
+    ranked: list[tuple[int, int, int, int, int]] = []
+    for i, (a, b, _w) in enumerate(pairs):
+        if i >= len(gate) or not gate[i]:
+            continue
+        if _byte(units, a, gold.UNIT_PLAYER) == PLAYER_PROPS:
+            continue
+        # Only attackers whose cover pattern the model actually simulates.
+        # Eight of the sixteen families raise rather than silently marking
+        # nothing (``docs/22`` §7.2), and a probe on one of those would make
+        # the phase fail for a reason that is not a disagreement.
+        if not simulated:
+            continue
+        if a not in simulated:
+            continue
+        ranked.append((percent[i] if i < len(percent) else 0, a, b, i, 0))
+    if not ranked:
+        return []
+    ranked.sort(key=lambda r: -r[0])
+    chosen = ranked[:ATTACK_PROBES - 1] + [ranked[-1]]
+    out: list[tuple[int, int, int, int]] = []
+    for _pc, a, b, _i, _z in chosen:
+        out.append((_byte(units, a, gold.UNIT_X),
+                    _byte(units, a, gold.UNIT_Y),
+                    _byte(units, b, gold.UNIT_X),
+                    _byte(units, b, gold.UNIT_Y)))
     return out
 
 
@@ -768,6 +849,43 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
                 _write(payload, out)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("phase 7 did not complete (%s: %s); overheat "
+                            "stays unpinned", type(exc).__name__, exc)
+
+    if not payload.get("attack"):
+        aworld = _world_from_capture(payload, payload["units_before"],
+                                     load_info(str(root)))
+        simulated = set()
+        for slot, unit in aworld.units.items():
+            try:
+                combatmod.mark_cells(aworld, unit.weapon, unit.x, unit.y)
+            except combatmod.CombatError:
+                continue
+            simulated.add(slot)
+        payload["_simulated_attackers"] = simulated
+        probes = attack_probes(payload)
+        payload.pop("_simulated_attackers", None)
+        LOG.info("phase 8: %d attack probe(s)", len(probes))
+        if probes:
+            try:
+                rows = gold.run_plan(game_copy, dbgcall, attack_plan(probes),
+                                     "turn_attack", attempts)
+                blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+                seeds = _reads(rows, "aGetUnitMapElementPtr",
+                               f"{SEED_ADDR:#x}")
+                wanted = len(probes) + 1
+                if len(blocks) != wanted or len(seeds) != wanted:
+                    raise GoldError(
+                        f"phase 8 read {len(blocks)} unit dump(s) and "
+                        f"{len(seeds)} seed(s), wanted {wanted} of each")
+                payload["attack"] = {
+                    "probes": [list(p) for p in probes],
+                    "returns": _results(rows, "aAttackUnit"),
+                    "units": [b.hex() for b in blocks],
+                    "seeds": [b.hex() for b in seeds],
+                }
+                _write(payload, out)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("phase 8 did not complete (%s: %s); the shot "
                             "stays unpinned", type(exc).__name__, exc)
     return 0
 
@@ -1216,6 +1334,66 @@ def run_check(capture_path: Path, root: Path) -> int:
     c.expect("overheat.matches_native", over_bad[:6], [])
     c.check("overheat.reached_more_than_one_arm", len(arms) > 1,
             f"arms reached: {sorted(arms)}")
+
+    # --- the shot: aAttackUnit, probe by probe ----------------------------
+    atk = payload.get("attack")
+    if not atk:
+        c.check("attack.captured", False,
+                "the capture holds no attack phase; re-run --game-copy")
+        return c.report()
+
+    atk_seeds = [struct.unpack("<d", bytes.fromhex(h))[0]
+                 for h in atk["seeds"]]
+    atk_units = [bytes.fromhex(h) for h in atk["units"]]
+    hp_bad: list[str] = []
+    seed_bad: list[str] = []
+    fired_bad: list[str] = []
+    kills = 0
+    for i, (ax, ay, tx, ty) in enumerate(atk["probes"]):
+        # Each probe starts from the world the one before it left behind.
+        before = _world_from_capture(payload, atk["units"][i], tables)
+        before.rng = ARandom(atk_seeds[i])
+        got = combatmod.attack_unit(before, ax, ay, tx, ty)
+        # The BOOL is **not** "did it fire": it comes back 1 for a jam too,
+        # and 0 was only ever seen when the attacker was already dead. So the
+        # model's `fired` is compared against the world and the generator
+        # below, and the return value gets the one assertion it can carry.
+        if atk["returns"][i] not in (0, 1):
+            fired_bad.append(f"probe {i}: return {atk['returns'][i]}")
+        if abs(before.rng.seed - atk_seeds[i + 1]) > 0.5:
+            seed_bad.append(
+                f"probe {i}: seed {before.rng.seed} != {atk_seeds[i + 1]}")
+        after = atk_units[i + 1]
+        for slot in payload["live"]:
+            want = _byte(after, slot, gold.UNIT_HP)
+            unit = before.units.get(slot)
+            mine = 0 if unit is None else unit.hp
+            if mine != want:
+                hp_bad.append(f"probe {i} slot {slot}: {mine} != {want}")
+            if want == 0 and _byte(atk_units[i], slot, gold.UNIT_HP):
+                kills += 1
+    c.check("attack.probes_compared", len(atk["probes"]) > 0,
+            f"{len(atk['probes'])} probe(s)")
+    c.expect("attack.return_is_boolean", fired_bad[:6], [])
+    c.expect("attack.seed_matches_native", seed_bad[:6], [])
+    c.expect("attack.hit_points_match_native", hp_bad[:8], [])
+    c.check("attack.something_actually_died", kills > 0,
+            f"{kills} unit(s) killed across the probes")
+    # The probe set must contain a shot that connects *and* one that does not,
+    # or "matches native" would only ever have exercised one arm.
+    outcomes = []
+    for i, (ax, ay, tx, ty) in enumerate(atk["probes"]):
+        w = _world_from_capture(payload, atk["units"][i], tables)
+        w.rng = ARandom(atk_seeds[i])
+        outcomes.append(combatmod.attack_unit(w, ax, ay, tx, ty))
+    markers = {o["marker"] for r in outcomes for o in r.outcomes}
+    c.check("attack.reached_a_hit_and_a_miss",
+            combatmod.MARKER_MISS in markers and len(markers) > 1,
+            f"markers seen: {sorted(markers)}")
+    c.check("attack.overheat_was_exercised_inside_the_shot",
+            any(r.overheat != combatmod.OVERHEAT_NONE for r in outcomes),
+            f"{sum(1 for r in outcomes if r.overheat != combatmod.OVERHEAT_NONE)}"
+            f" probe(s) rolled the weapon")
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

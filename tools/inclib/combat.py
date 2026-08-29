@@ -129,6 +129,25 @@ BANNER_RANGE = 4
 #: ``chance + 10 < roll``, so a weapon at 0 % still connects 11 % of the time.
 HIT_BONUS = 10
 
+#: ``docs/22`` §7 -- target ``special`` values that force the hit and the
+#: damage.  12 is ``Barrel`` and ``Parabomb``, 13 is ``Case``.  Pinned
+#: natively for 13 (``tools/turn_gold.py`` phase 8); 12 carries the same rule
+#: in the specification but no shipped unit of that kind stands on ``_C_141``,
+#: so it rides on the documentation rather than on a capture.
+#:
+#: TODO: ``special`` 12 also marks the eight neighbours ``0x53`` (it explodes
+#: when hit) and ``special`` 16 (``Bea'Coo``) does the same on death.  Neither
+#: is modelled here, and neither can be reached on the captured save.
+GUARANTEED_HIT_SPECIALS = frozenset({12, 13})
+GUARANTEED_HIT_DAMAGE = 255
+
+
+def _target_special(world: CombatWorld, unit: CombatUnit) -> int:
+    """``unitType[+0x07]`` of a target, or -1 when the type is unknown."""
+    info = world.tables.units.get(unit.type_id)
+    return -1 if info is None else info.special
+
+
 #: ``docs/22`` §7.4 -- the sentinel damage value and the one immune unit type.
 DAMAGE_SENTINEL = 0xFE
 SENTINEL_DAMAGE_DEALT = 2
@@ -973,6 +992,14 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             chance, roll = 0, 1
         elif marker == MARKER_STUN:
             chance, roll = 1, 0
+        if _target_special(world, target) in GUARANTEED_HIT_SPECIALS:
+            # docs/22 section 7: `special` 12 (Barrel, Parabomb) and 13 (Case)
+            # force the hit and the damage.  The roll is still **drawn** -- the
+            # native capture shows two draws against a Case whether or not the
+            # roll would have connected, against one for a miss on an ordinary
+            # target -- so this overrides the comparison, not the generator.
+            chance, roll = 0, 1
+            damage = GUARANTEED_HIT_DAMAGE
 
         if chance + HIT_BONUS < roll:
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
