@@ -9,9 +9,16 @@ extends RefCounted
 ## 1. `width` and `height`;
 ## 2. every [MapState] array, verbatim and in its documented order;
 ## 3. the unit scalars, by ascending slot;
-## 4. the RNG state -- the **raw eight bytes** of the seed, never its printed
+## 4. the [TurnState] -- the counter, both players, the rotation's shape and
+##    the difficulty level;
+## 5. the RNG state -- the **raw eight bytes** of the seed, never its printed
 ##    form, plus the two counters;
-## 5. the active compatibility flags.
+## 6. the active compatibility flags.
+##
+## The turn entered the digest with the second slice, which changes it
+## deliberately: docs/92 section 7.3 recorded that "campaign and turn phase
+## have no representation yet because neither exists", and now the turn does.
+## [constant SaveCodec.SCHEMA_VERSION] rises with it.
 ##
 ## What stays out: the camera, and anything else presentational.  docs/92
 ## section 10.3 item 3 requires save/load to preserve this hash and requires the
@@ -25,7 +32,8 @@ extends RefCounted
 const SEED_BYTES: int = 8
 
 
-static func compute(state: MapState, units: Dictionary, rng: IncRandom,
+static func compute(state: MapState, units: Dictionary, turn: TurnState,
+		rng: IncRandom,
 		compat_flags: PackedStringArray) -> PackedByteArray:
 	var ctx: HashingContext = HashingContext.new()
 	var started: Error = ctx.start(HashingContext.HASH_SHA256)
@@ -42,6 +50,16 @@ static func compute(state: MapState, units: Dictionary, rng: IncRandom,
 	for slot: int in slots:
 		var unit: UnitState = units[slot]
 		unit.hash_into(ctx)
+
+	# `ai_level` is in here on purpose: it steers the movement allowance for one
+	# unit type and the damage roll's span, so two saves that differ only in it
+	# are not the same simulation state (docs/93 section 11).
+	ctx.update(PackedInt32Array([turn.turn, turn.current_player,
+		turn.previous_player, turn.player_count, turn.ai_level,
+		1 if turn.solo_flag else 0]).to_byte_array())
+	ctx.update(turn.player_kind.to_byte_array())
+	ctx.update(turn.end_state.to_byte_array())
+	ctx.update(turn.reaction_counter.to_byte_array())
 
 	var seed_bytes: PackedByteArray = rng.seed_bytes()
 	assert(seed_bytes.size() == SEED_BYTES)

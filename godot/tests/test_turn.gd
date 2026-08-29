@@ -30,6 +30,67 @@ func run(h: TestHarness) -> void:
 	_rotation(h)
 	_turn_counter(h)
 	_refresh(h)
+	_hash_and_save(h)
+
+
+## The turn is simulation state, so it is in the canonical hash and it survives
+## a save -- docs/92 section 7.3, and acceptance item 10 of this slice.
+##
+## Each field is moved on its own and the hash re-taken, because a digest that
+## covered only the turn counter would pass a "the turn is hashed" test written
+## against the counter alone.
+func _hash_and_save(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var base: String = world.canonical_hash_hex()
+
+	# Each field is moved on its own, from a fresh world each time, so a digest
+	# that happened to cover only the counter cannot pass this.
+	var fields: Array[String] = ["turn", "current_player", "previous_player",
+		"player_count", "ai_level", "solo_flag", "player_kind", "end_state",
+		"reaction_counter"]
+	for field: String in fields:
+		var moved: World = TestFixtures.tiny_world()
+		match field:
+			"turn": moved.turn.turn = 7
+			"current_player": moved.turn.current_player = 255
+			"previous_player": moved.turn.previous_player = 3
+			"player_count": moved.turn.player_count = 2
+			"ai_level": moved.turn.ai_level = 2
+			"solo_flag": moved.turn.solo_flag = false
+			"player_kind": moved.turn.player_kind = PackedInt32Array([1, 1, 0, 0])
+			"end_state": moved.turn.end_state = PackedInt32Array([0, 5, 0, 0])
+			"reaction_counter": moved.turn.reaction_counter = \
+				PackedInt32Array([0, 0, 0, 9])
+		h.check("hash.covers_%s" % field,
+			moved.canonical_hash_hex() != base,
+			"moving %s must change the digest" % field)
+
+	# The round trip, mid-turn: the state that comes back has to hash the same.
+	var live: World = TestFixtures.tiny_world()
+	live.turn.turn = 5
+	live.turn.current_player = 255
+	live.turn.previous_player = 0
+	live.turn.reaction_counter = PackedInt32Array([2, 0, 0, 0])
+	var before: String = live.canonical_hash_hex()
+	var blob: PackedByteArray = live.save({"x": 1.0})
+	var reloaded: World = TestFixtures.tiny_world()
+	var code: int = reloaded.load_save(blob)
+	h.check("save.round_trip_accepts", code == SaveCodec.Result.OK,
+		"result %d" % code)
+	h.check("save.round_trip_preserves_the_hash",
+		reloaded.canonical_hash_hex() == before, "digest differs")
+	h.check("save.round_trip_preserves_the_turn",
+		reloaded.turn.turn == 5
+			and reloaded.turn.current_player == 255
+			and reloaded.turn.reaction_counter == PackedInt32Array([2, 0, 0, 0]),
+		str(reloaded.turn.view()))
+	# The schema rose to 4 with this slice, so a slice-1 save is refused by
+	# name rather than misread.
+	var stale: PackedByteArray = blob.duplicate()
+	stale.encode_s32(4, 3)
+	h.check("save.refuses_the_previous_schema",
+		reloaded.load_save(stale) == SaveCodec.Result.BAD_SCHEMA,
+		"a version-3 save must not load")
 
 
 func _rotation(h: TestHarness) -> void:

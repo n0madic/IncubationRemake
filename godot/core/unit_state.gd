@@ -135,13 +135,31 @@ func view() -> Dictionary:
 		"visibility": visibility,
 		"placed": is_placed(),
 		"equipment": equipment.duplicate(),
+		# The turn's own columns.  A save that dropped these would round-trip
+		# to a *different* simulation -- a cooling weapon would come back hot,
+		# a spent stimulant would come back available.
+		"acted": acted,
+		"ammo": ammo,
+		"heat": heat,
+		"weapon": weapon,
+		"malfunction": malfunction,
+		"walked": walked,
+		"turn_start_x": turn_start_x,
+		"turn_start_y": turn_start_y,
+		"stimulant": stimulant,
+		"ticket": ticket,
+		"ep": ep,
 	}
 
 
 func hash_into(ctx: HashingContext) -> void:
 	var scalars: PackedInt32Array = PackedInt32Array(
 		[slot, type_id, player, x, y, mp, hp, fp, rested, action_state,
-		facing, visibility, equipment.size()])
+		facing, visibility,
+		# The turn's columns, in the order this file declares them.
+		acted, ammo, heat, weapon, malfunction, walked, turn_start_x,
+		turn_start_y, stimulant, ticket, ep,
+		equipment.size()])
 	ctx.update(scalars.to_byte_array())
 	# HashingContext refuses an empty buffer, and a unit with no equipment is
 	# ordinary, so the count goes in above and the payload only when there is

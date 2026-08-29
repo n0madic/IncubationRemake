@@ -27,7 +27,10 @@ extends RefCounted
 ## [/codeblock]
 
 const MAGIC: String = "INCS"
-const SCHEMA_VERSION: int = 3
+## Raised to 4 by the second slice: the header now carries the [TurnState],
+## and the canonical hash covers it.  A slice-1 save is refused **by name**
+## rather than misread, which is the whole point of the field.
+const SCHEMA_VERSION: int = 4
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -51,7 +54,7 @@ static func result_name(code: int) -> String:
 
 
 static func encode(res: MapResource, state: MapState, units: Dictionary,
-		rng: IncRandom, compat_flags: PackedStringArray,
+		turn: TurnState, rng: IncRandom, compat_flags: PackedStringArray,
 		camera: Dictionary) -> PackedByteArray:
 	var slots: Array[int] = []
 	for slot: Variant in units:
@@ -68,6 +71,7 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 		"width": state.width,
 		"height": state.height,
 		"rng": rng.state(),
+		"turn": turn.view(),
 		"compat_flags": _sorted_strings(compat_flags),
 		# Presentation, stored beside the simulation and excluded from its hash.
 		"camera": camera,
@@ -146,6 +150,17 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		unit.action_state = DictRead.as_int(view["action_state"])
 		unit.facing = DictRead.as_int(view["facing"])
 		unit.visibility = DictRead.as_int(view["visibility"])
+		unit.acted = DictRead.as_int(view["acted"])
+		unit.ammo = DictRead.as_int(view["ammo"])
+		unit.heat = DictRead.as_int(view["heat"])
+		unit.weapon = DictRead.as_int(view["weapon"])
+		unit.malfunction = DictRead.as_int(view["malfunction"])
+		unit.walked = DictRead.as_int(view["walked"])
+		unit.turn_start_x = DictRead.as_int(view["turn_start_x"])
+		unit.turn_start_y = DictRead.as_int(view["turn_start_y"])
+		unit.stimulant = DictRead.as_int(view["stimulant"])
+		unit.ticket = DictRead.as_int(view["ticket"])
+		unit.ep = DictRead.as_int(view["ep"])
 		var ids: Array = DictRead.as_array(view["equipment"])
 		unit.equipment.resize(ids.size())
 		for i: int in range(ids.size()):
@@ -162,9 +177,39 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		"state": state,
 		"units": units,
 		"rng": IncRandom.from_state(DictRead.as_dict(header["rng"])),
+		"turn": _turn_from(DictRead.as_dict(header["turn"])),
 		"camera": DictRead.as_dict(header["camera"]),
 		"compat_flags": flags,
 	}
+
+
+## Every field of [TurnState] the header carries, narrowed at the boundary.
+##
+## `JSON.parse_string` gives a `float` for every number, so the typed arrays are
+## rebuilt here rather than assigned -- the same rule the cache loader follows,
+## and for the same reason: a hash over the parsed form would be stable and
+## wrong.
+static func _turn_from(view: Dictionary) -> TurnState:
+	var turn: TurnState = TurnState.create()
+	turn.turn = DictRead.as_int(view["turn"])
+	turn.current_player = DictRead.as_int(view["current_player"])
+	turn.previous_player = DictRead.as_int(view["previous_player"])
+	turn.player_count = DictRead.as_int(view["player_count"])
+	turn.solo_flag = DictRead.as_bool(view["solo_flag"])
+	turn.ai_level = DictRead.as_int(view["ai_level"])
+	turn.player_kind = _int_array(DictRead.as_array(view["player_kind"]))
+	turn.end_state = _int_array(DictRead.as_array(view["end_state"]))
+	turn.reaction_counter = _int_array(
+		DictRead.as_array(view["reaction_counter"]))
+	return turn
+
+
+static func _int_array(values: Array) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	out.resize(values.size())
+	for i: int in range(values.size()):
+		out[i] = DictRead.as_int(values[i])
+	return out
 
 
 static func _digest(body: PackedByteArray) -> PackedByteArray:

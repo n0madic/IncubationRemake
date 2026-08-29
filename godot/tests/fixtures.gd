@@ -25,6 +25,18 @@ const CTRLMAP_ROWS: Array[Dictionary] = [
 ]
 
 
+## docs/21 section 6 -- the three columns the turn reads.  Weapon 0 never
+## cools (`heat` 255, as the shipped file marks a weapon with no heat at all),
+## 4 is one of the three rapid-fire ids that shed two points, and 41 is an
+## alternate fire mode whose `toggle` reverts to its base.
+const WEAPON_ROWS: Array[Dictionary] = [
+	{"id": 0, "heat": 255, "toggle": 0, "mun": 0},
+	{"id": 2, "heat": 4, "toggle": 2, "mun": 10},
+	{"id": 4, "heat": 10, "toggle": 4, "mun": 20},
+	{"id": 41, "heat": 8, "toggle": 4, "mun": 20},
+]
+
+
 static func unit_type(id: int, special: int = 0, unit_size: int = 0,
 		mp_max: int = 6, fp_max: int = 0) -> Dictionary:
 	return {
@@ -44,7 +56,7 @@ static func balance(extra_types: Array = []) -> Dictionary:
 		unit_type(99, 0, 1),
 	]
 	types.append_array(extra_types)
-	return {"ctrlmap": CTRLMAP_ROWS, "units": types}
+	return {"ctrlmap": CTRLMAP_ROWS, "units": types, "weapons": WEAPON_ROWS}
 
 
 static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,

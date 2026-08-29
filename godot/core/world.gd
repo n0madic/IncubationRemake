@@ -21,6 +21,12 @@ var _ctrlmap: CtrlMapTable = null
 ## canonical hash -- where the player was looking is not simulation state.
 var _camera: Dictionary = {}
 var _unit_types: UnitTypeTable = null
+var _weapons: WeaponTable = null
+## docs/25 section 3 -- whose turn it is, and the counter. Outside [MapState]
+## because it is not cell state; inside the canonical hash because it is
+## simulation state, which docs/92 section 7.3 foresaw when it recorded that
+## "campaign and turn phase have no representation yet".
+var turn: TurnState = null
 
 
 static func create(map_document: Dictionary, balance: Dictionary,
@@ -30,6 +36,11 @@ static func create(map_document: Dictionary, balance: Dictionary,
 	world.state = MapState.from_resource(world.resource)
 	world._ctrlmap = CtrlMapTable.from_rows(DictRead.as_array(balance["ctrlmap"]))
 	world._unit_types = UnitTypeTable.from_rows(DictRead.as_array(balance["units"]))
+	# Required, not optional: an empty weapon table would silently disable the
+	# refresh's cooling and its weapon-mode revert, which is the "a fallback
+	# where an error belongs" shape this project keeps finding.
+	world._weapons = WeaponTable.from_rows(DictRead.as_array(balance["weapons"]))
+	world.turn = TurnState.create()
 	world.rng = IncRandom.new()
 	# docs/92 section 10.3 item 2: seed explicitly even though the slice
 	# consumes no draws, so the state shape later traces compare is established.
@@ -51,6 +62,10 @@ func ctrlmap() -> CtrlMapTable:
 
 func unit_types() -> UnitTypeTable:
 	return _unit_types
+
+
+func weapons() -> WeaponTable:
+	return _weapons
 
 
 func unit_slots() -> PackedInt32Array:
@@ -148,7 +163,7 @@ func walk_path(result: MoveMapResult, slot: int, tx: int,
 
 
 func canonical_hash() -> PackedByteArray:
-	return CanonicalHash.compute(state, _units, rng, compat_flags)
+	return CanonicalHash.compute(state, _units, turn, rng, compat_flags)
 
 
 func canonical_hash_hex() -> String:
@@ -156,7 +171,8 @@ func canonical_hash_hex() -> String:
 
 
 func save(camera: Dictionary) -> PackedByteArray:
-	return SaveCodec.encode(resource, state, _units, rng, compat_flags, camera)
+	return SaveCodec.encode(resource, state, _units, turn, rng, compat_flags,
+		camera)
 
 
 ## Returns the [enum SaveCodec.Result] code; the world is only changed on `OK`.
@@ -173,6 +189,7 @@ func load_save(data: PackedByteArray) -> int:
 		return code
 	state = decoded["state"]
 	_units = decoded["units"]
+	turn = decoded["turn"]
 	rng = decoded["rng"]
 	compat_flags = decoded["compat_flags"]
 	_camera = DictRead.as_dict(decoded["camera"])
