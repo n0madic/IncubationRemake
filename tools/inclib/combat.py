@@ -292,6 +292,103 @@ def direction(x0: int, y0: int, x1: int, y1: int) -> int:
     return 5 if dy > 0 else 7
 
 
+#: ``0x0047A8E0``'s three modes.  Only mode 2 is reached from ``endUnitTurn``;
+#: mode 0 looks for an action point in the multiplayer band and mode 1 is
+#: mode 2 **plus a visibility test**.  The three are modelled together because
+#: the difference between 1 and 2 is the interesting part.
+FACING_MODE_ACTION_POINT = 0
+FACING_MODE_VISIBLE_ENEMY = 1
+FACING_MODE_ANY_ENEMY = 2
+
+#: ``0x0047A8E0``'s answer when it finds nobody: the caller skips the write.
+FACING_NONE = 0xFF
+
+#: The action-point band mode 0 accepts -- the multiplayer victory points
+#: (``docs/10`` §4.6).
+FACING_ACTION_POINT_BAND = (30, 34)
+
+
+def end_turn_facing(world: "CombatWorld", x: int, y: int,
+                    mode: int = FACING_MODE_ANY_ENEMY,
+                    net_gate: bool = False) -> int:
+    """``0x0047A8E0(x, y, mode)`` -- which way the unit on a cell turns.
+
+    ``endUnitTurn`` (``0x0040B380``) calls this with mode 2 and writes the
+    answer into ``unit[+0x44]`` unless it is ``0xFF``.  What it does:
+
+    * take the unit standing on ``(x, y)``; no cell or no unit is ``0xFF``;
+    * sweep the **whole control map in index order** for a candidate;
+    * mode 2 accepts any cell holding a unit of another player, mode 1 the
+      same **plus** ``other[+0x4F] == 0`` -- so **the end-of-turn facing does
+      not care whether the enemy can be seen.**  A unit turns towards
+      something it has no line of sight to, which is the sort of thing a
+      remake invents a fog test for and gets wrong;
+    * either way the candidate's *species* must not be 2: the table read at
+      ``0x51C099 + type * 0x7E`` is ``SetUnitInfo``'s ``+0x79`` column, and
+      the three accepted values 0, 1 and 3 are human, alien and machine.
+      Props do not attract a turn;
+    * the winner is chosen by a **ratchet**: a candidate must have an action
+      point byte ``>=`` the best so far **and** be strictly nearer than the
+      best so far.  Both halves matter and neither is a plain minimum -- a
+      candidate that is nearer but sits on a lower action point loses, and a
+      later candidate at the same distance loses to the earlier one.
+
+    The net-session gate (``0x0043B1F0``) suppresses the whole thing between
+    two human players; it is false in a campaign, so it defaults to false here
+    the way it does everywhere else in this package.
+    """
+    if not world.in_bounds(x, y):
+        return FACING_NONE
+    slot = world.unit_at[world.index(x, y)]
+    me = world.units.get(slot) if slot >= 0 else None
+    if me is None:
+        return FACING_NONE
+    if not world.action_point:
+        raise CombatError(
+            "end_turn_facing needs the control map's action points; this "
+            "world was built without them")
+
+    best_index = -1
+    best_action_point = 0
+    best_distance = 0xFFFFFFFF
+    low, high = FACING_ACTION_POINT_BAND
+    for index in range(world.width * world.height):
+        occupant_slot = world.unit_at[index]
+        other = world.units.get(occupant_slot) if occupant_slot >= 0 else None
+        matched = False
+        if mode == FACING_MODE_ACTION_POINT:
+            matched = low <= world.action_point[index] <= high
+        elif mode in (FACING_MODE_VISIBLE_ENEMY, FACING_MODE_ANY_ENEMY):
+            if other is not None and other.player != me.player:
+                both_human = (net_gate and other.player <= 4
+                              and me.player <= 4)
+                if not both_human:
+                    matched = (mode == FACING_MODE_ANY_ENEMY
+                               or other.visibility == VISIBLE_FULL)
+        else:
+            raise CombatError(f"0x0047A8E0 has no mode {mode}")
+        if not matched:
+            continue
+        # The routine reads the cell's unit again here **outside** the mode
+        # arms, and an empty cell ends the whole scan rather than skipping it.
+        # Mode 0 is the only arm that can reach this with an empty cell.
+        if other is None:
+            return FACING_NONE
+        if world.species(other) == SPECIES_OBJECT:
+            continue
+        cell_x, cell_y = index % world.width, index // world.width
+        gap = distance(cell_x, cell_y, x, y)
+        if world.action_point[index] >= best_action_point \
+                and gap < best_distance:
+            best_action_point = world.action_point[index]
+            best_distance = gap
+            best_index = index
+    if best_index < 0:
+        return FACING_NONE
+    return direction(me.x, me.y, best_index % world.width,
+                     best_index // world.width)
+
+
 def is_rear_shot(attacker_facing: int, defender_facing: int) -> bool:
     """``docs/22`` §7.4 -- the defender is shot in the back.
 

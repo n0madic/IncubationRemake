@@ -142,6 +142,100 @@ const NO_PATTERN: Array[int] = [18, 19, 28, 33, 34, 35, 37, 38, 39]
 const BOMB_WEAPON: int = 36
 
 
+## `0x0047A8E0`'s three modes. Only mode 2 is reached from `endUnitTurn`; mode
+## 0 looks for an action point in the multiplayer band and mode 1 is mode 2
+## **plus a visibility test**.
+const FACING_MODE_ACTION_POINT: int = 0
+const FACING_MODE_VISIBLE_ENEMY: int = 1
+const FACING_MODE_ANY_ENEMY: int = 2
+## What it answers when it finds nobody: the caller skips the write.
+const FACING_NONE: int = 0xFF
+## docs/10 section 4.6 -- the multiplayer victory points, which mode 0 looks
+## for.
+const FACING_ACTION_POINT_LOW: int = 30
+const FACING_ACTION_POINT_HIGH: int = 34
+## docs/21 section 5 -- species 2 is an inanimate object.
+const SPECIES_OBJECT: int = 2
+## The player numbers the net-session gate calls human.
+const LAST_HUMAN_PLAYER: int = 4
+
+
+## `0x0047A8E0(x, y, mode)` -- which way the unit on a cell turns.
+##
+## `endUnitTurn` (`0x0040B380`) calls this with mode 2 and writes the answer
+## into `unit[+0x46]` unless it is [constant FACING_NONE]. What it does:
+##
+## * take the unit standing on `(x, y)`; no cell or no unit is `0xFF`;
+## * sweep the **whole control map in index order** for a candidate;
+## * mode 2 accepts any cell holding a unit of another player, mode 1 the same
+##   **plus** `other[+0x4F] == 0` -- so **the end-of-turn facing does not care
+##   whether the enemy can be seen.** A unit turns towards something it has no
+##   line of sight to, which is the sort of thing a remake invents a fog test
+##   for and gets wrong;
+## * either way the candidate's species must not be 2: the table read at
+##   `0x51C099 + type * 0x7E` is `SetUnitInfo`'s `+0x79` column, and the three
+##   accepted values 0, 1 and 3 are human, alien and machine. Props do not
+##   attract a turn;
+## * the winner is chosen by a **ratchet**: a candidate needs an action point
+##   byte `>=` the best so far **and** a distance strictly less than the best
+##   so far. Neither half is a plain minimum, and a later candidate at the same
+##   distance loses to the earlier one.
+##
+## The net-session gate (`0x0043B1F0`) suppresses the whole thing between two
+## human players; it is false in a campaign, so it defaults to false the way it
+## does everywhere else in `core`.
+static func end_turn_facing(state: MapState, units: Dictionary,
+		utab: UnitTypeTable, x: int, y: int,
+		mode: int = FACING_MODE_ANY_ENEMY, net_gate: bool = false) -> int:
+	if not state.in_bounds(x, y):
+		return FACING_NONE
+	var slot: int = state.unit_at(state.index_of(x, y))
+	if slot == MapState.NO_UNIT or not units.has(slot):
+		return FACING_NONE
+	var me: UnitState = units[slot]
+	var best_index: int = -1
+	var best_action_point: int = 0
+	var best_distance: int = 0x7FFFFFFF
+	for index: int in range(state.cell_count()):
+		var occupant_slot: int = state.unit_at(index)
+		var other: UnitState = null
+		if occupant_slot != MapState.NO_UNIT and units.has(occupant_slot):
+			other = units[occupant_slot]
+		var matched: bool = false
+		if mode == FACING_MODE_ACTION_POINT:
+			var point: int = state.action_point_at(index)
+			matched = point >= FACING_ACTION_POINT_LOW \
+				and point <= FACING_ACTION_POINT_HIGH
+		elif other != null and other.player != me.player:
+			var both_human: bool = net_gate \
+				and other.player <= LAST_HUMAN_PLAYER \
+				and me.player <= LAST_HUMAN_PLAYER
+			if not both_human:
+				matched = mode == FACING_MODE_ANY_ENEMY \
+					or other.visibility == AIOverlay.VISIBILITY_VISIBLE
+		if not matched:
+			continue
+		# The routine reads the cell's unit again here **outside** the mode
+		# arms, and an empty cell ends the whole scan rather than skipping it.
+		# Mode 0 is the only arm that can reach this with an empty cell.
+		if other == null:
+			return FACING_NONE
+		if utab.species(other.type_id) == SPECIES_OBJECT:
+			continue
+		var cell_x: int = index % state.width
+		var cell_y: int = index / state.width
+		var gap: int = MoveMap.distance(cell_x, cell_y, x, y)
+		if state.action_point_at(index) >= best_action_point \
+				and gap < best_distance:
+			best_action_point = state.action_point_at(index)
+			best_distance = gap
+			best_index = index
+	if best_index < 0:
+		return FACING_NONE
+	return direction(me.x, me.y, best_index % state.width,
+		best_index / state.width)
+
+
 ## `0x0046A760` -- the octant from the shooter to the target.
 ##
 ## The thresholds are `|dy/dx|` at 0.5 and 1.5, which is what makes the eight

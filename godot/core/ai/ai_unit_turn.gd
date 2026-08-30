@@ -25,16 +25,18 @@ const CLOSING_SWEEP: String = "closing sweep"
 
 ## `0x0040B380` -- face a direction, then zero the movement points.
 ##
-## The facing comes from `0x0047A8E0(x, y, 2)`, which is **not** modelled: it
-## picks a direction from the map and answers 0xFF when there is none, and the
-## write is skipped then. The movement points go to zero either way, which is
-## the half every caller depends on, so the facing is recorded as an unmodelled
-## refusal rather than guessed at.
+## The facing is `0x0047A8E0(x, y, 2)` ([method Combat.end_turn_facing]), and
+## `0xFF` means "nobody to turn towards", in which case the write is skipped.
+## The movement points go to zero either way, which is the half every caller
+## depends on.
 static func end_unit_turn(ctx: AIContext, unit: UnitState,
 		note: String = "") -> bool:
 	if unit.hp == 0:
 		return false
-	ctx.refuse("0x0047A8E0's end-of-turn facing is not modelled")
+	var facing: int = Combat.end_turn_facing(ctx.map, ctx.units, ctx.utab,
+		unit.x, unit.y)
+	if facing != Combat.FACING_NONE:
+		unit.facing = facing
 	unit.mp = 0
 	ctx.emit(AIEvent.make("end_unit_turn", unit.slot, unit.x, unit.y,
 		0, 0, 0, note))

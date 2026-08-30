@@ -250,7 +250,7 @@ python3 tools/turn_gold.py --check gog_incubation     # re-run the models agains
 turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
 captures eleven phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
 `python3 tools/ai_gold.py --check gog_incubation` re-runs `inclib/ai.py`
-against them (45 checks: the three predicates over 90 ordered pairs, the cover
+against them (40 checks: the three predicates over 90 ordered pairs, the cover
 score over 60 cells, the target overlay, the approach cell, seven helpers, six
 fires, twelve plans, the parabomb fuse, and `aAISystemControl` itself with all
 200 unit records and `aRandom`'s seed compared field by field). **It must not

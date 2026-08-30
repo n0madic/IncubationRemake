@@ -839,28 +839,18 @@ TURN_FIELDS = {
     0x4C: "type", 0x50: "walked",
 }
 
-#: The fields a diff reports separately rather than as a failure, because the
-#: model states that it does not compute them.
-#:
-#: ``+0x46`` is the facing, and ``endUnitTurn``'s comes from ``0x0047A8E0``,
-#: which picks a direction from the map and is not modelled (``inclib.ai``
-#: says so and records a refusal).  Every other write to the byte -- a shot's
-#: ``aAttackUnit`` and a walk's last step -- **is** modelled, so the field is
-#: reported and counted rather than dropped.
-UNMODELLED_FIELDS = frozenset({"facing"})
+def _diff(native: dict[str, int], model: dict[str, int]) -> dict[str, Any]:
+    """Every field of one record, compared.
 
-
-def _diff(native: dict[str, int],
-          model: dict[str, int]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """``(differences that matter, differences the model declares it omits)``."""
-    real: dict[str, Any] = {}
-    known: dict[str, Any] = {}
-    for key, value in native.items():
-        if value == model[key]:
-            continue
-        (known if key in UNMODELLED_FIELDS else real)[key] = (value,
-                                                              model[key])
-    return real, known
+    **No field is exempt.**  ``+0x46``, the facing, used to be: ``endUnitTurn``
+    takes it from ``0x0047A8E0``, which was not modelled, so records differing
+    only in that byte were counted and reported rather than failed.  That
+    routine is modelled now (:func:`inclib.combat.end_turn_facing`) and the
+    tolerance is gone with it -- which is the point, because a tolerance that
+    outlives the gap it covers turns a wrong model into a passing one.
+    """
+    return {key: (value, model[key]) for key, value in native.items()
+            if value != model[key]}
 
 
 def _record(raw: bytes, slot: int) -> dict[str, int]:
@@ -1116,7 +1106,6 @@ def _replay(c: Checker, payload: dict[str, Any], tables: BalanceTables,
     cells = data.get("cells") or []
     seeds = data["seeds"]
     bad: list[str] = []
-    unmodelled: list[str] = []
     seed_bad: list[str] = []
     returns_bad: list[str] = []
     for i, probe in enumerate(data["probes"]):
@@ -1138,11 +1127,9 @@ def _replay(c: Checker, payload: dict[str, Any], tables: BalanceTables,
             unit = ctx.world.units.get(slot)
             model = (_model_record(unit) if unit is not None
                      else {**_record(before, slot), "hp": 0})
-            diff, known = _diff(native, model)
+            diff = _diff(native, model)
             if diff:
                 bad.append(f"probe {i} slot {slot}: {diff}")
-            if known:
-                unmodelled.append(f"probe {i} slot {slot}: {known}")
         native_seed = _seed_of(seeds[i + 1])
         if native_seed != ctx.world.rng.seed:
             seed_bad.append(f"probe {i}: {native_seed} against "
@@ -1151,9 +1138,6 @@ def _replay(c: Checker, payload: dict[str, Any], tables: BalanceTables,
              f"{len(data['probes'])} probe(s)")
     c.expect(f"{label}.records", bad[:6], [],
              "every unit record, field by field, after each probe")
-    c.check(f"{label}.unmodelled_fields", True,
-            f"{len(unmodelled)} record(s) differ only in a field the model "
-            f"declares it does not compute: {sorted(UNMODELLED_FIELDS)}")
     c.expect(f"{label}.seed", seed_bad, [],
              "aRandom's seed either side of every probe")
 
@@ -1185,7 +1169,6 @@ def check_helpers(c: Checker, payload: dict[str, Any],
         return
     cells = bytes.fromhex(state["cells"])
     bad: list[str] = []
-    unmodelled: list[str] = []
     for i, (name, argument) in enumerate(
             (tuple(call) for call in data["calls"])):
         before = bytes.fromhex(data["units"][i])
@@ -1215,16 +1198,11 @@ def check_helpers(c: Checker, payload: dict[str, Any],
             native = _record(after, slot)
             live = ctx.world.units.get(slot)
             model = _model_record(live) if live is not None else native
-            diff, known = _diff(native, model)
+            diff = _diff(native, model)
             if diff:
                 bad.append(f"{name} slot {slot}: {diff}")
-            if known:
-                unmodelled.append(f"{name} slot {slot}: {known}")
     c.expect("helper.records", bad[:6], [],
              f"{len(data['calls'])} helper(s), every record after each")
-    c.check("helper.unmodelled_fields", True,
-            f"{len(unmodelled)} record(s) differ only in "
-            f"{sorted(UNMODELLED_FIELDS)}: {unmodelled[:2]}")
     returns = data["returns"]
     c.check("helper.group_alive", bool(returns.get("aGroupAlive")),
             f"0x0040B210 answered {returns.get('aGroupAlive')}")
@@ -1284,7 +1262,6 @@ def check_turn(c: Checker, payload: dict[str, Any],
         result = ai.run_turn(ctx, ai.PLAYER_COMPUTER)
         c.check(f"{label}.model_ran", result.ok, result.reason or "terminal")
         bad: list[str] = []
-        unmodelled: list[str] = []
         for unit_slot in range(gold.UNIT_SLOTS):
             native = _record(after, unit_slot)
             model_unit = ctx.world.units.get(unit_slot)
@@ -1292,16 +1269,11 @@ def check_turn(c: Checker, payload: dict[str, Any],
                 continue
             model = (_model_record(model_unit) if model_unit is not None
                      else native)
-            diff, known = _diff(native, model)
+            diff = _diff(native, model)
             if diff:
                 bad.append(f"slot {unit_slot}: {diff}")
-            if known:
-                unmodelled.append(f"slot {unit_slot}: {known}")
         c.expect(f"{label}.records", bad[:8], [],
                  f"all {gold.UNIT_SLOTS} unit records, field by field")
-        c.check(f"{label}.unmodelled_fields", True,
-                f"{len(unmodelled)} record(s) differ only in "
-                f"{sorted(UNMODELLED_FIELDS)}")
         native_seed = _seed_of(data["seeds"][2])
         c.expect(f"{label}.seed", native_seed, ctx.world.rng.seed,
                  "aRandom's state after the whole turn")

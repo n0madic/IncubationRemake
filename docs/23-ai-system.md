@@ -353,6 +353,66 @@ nowhere else in the module, cleared by the per-turn stat recompute.
 it through `aChangeUnitViewDirection` unless the answer is `0xFF`, and then
 sets `unit[+0x15] = 0` unconditionally.
 
+### 3.6 The end-of-turn facing — **[code] `0x0047A8E0`**
+
+```c
+int aGetDirectionTo(int x, int y, int mode);   /* 0 or 1 or 2; anything else errors */
+```
+
+```c
+cell = aGetCtrlMapElementPtr(x, y);   if (!cell) return 0xFF;   /* 0x0042F730 */
+me   = aGetUnitMapElementPtr(cell->unit /* +0x07 */);
+if (!me) return 0xFF;                                           /* 0x00477AE0 */
+
+best = NULL;  bestActPt = 0;  bestDist = 0xFFFFFFFF;
+for (c = ctrlMapBase(); i < ctrlMapCount(); c += 0x17, i++) {    /* 0x0042F650 / 0x0042F660 */
+    match = 0;
+    switch (mode & 0xFF) {
+      case 0: match = (c->actPt /* +0x00 */ >= 30 && c->actPt <= 34); break;
+      case 1:
+      case 2:
+        if (c->unit == 0xFFFF) break;
+        other = aGetUnitMapElementPtr(c->unit);
+        if (other->player /* +0x45 */ == me->player) break;
+        if (netGate() && other->player <= 4 && me->player <= 4) break;
+        if (mode == 1 && other->visibility /* +0x4F */ != 0) break;
+        match = 1;
+        break;
+    }
+    if (!match) continue;
+    if (c->unit == 0xFFFF) return 0xFF;        /* only mode 0 can reach this */
+    u = aGetUnitMapElementPtr(c->unit);
+    if (unitInfo[u->type].species /* +0x79 */ not in {0, 1, 3}) continue;
+    d = aGetDistance(c->x /* +0x09 */, c->y /* +0x0A */, x, y);
+    if (c->actPt >= bestActPt && d < bestDist) {
+        bestActPt = c->actPt;  bestDist = d;  best = c;
+    }
+}
+if (!best) return 0xFF;
+return aGetDirection(me->x /* +0x42 */, me->y /* +0x43 */, best->x, best->y);
+```
+
+Three things here are the kind a remake invents differently and no structural
+check would notice:
+
+* **Mode 2 has no visibility test and mode 1 does.** `endUnitTurn` uses mode 2,
+  so a unit finishing its turn **turns towards an enemy it cannot see**. A fog
+  test added "for consistency" would be wrong.
+* **The choice is a ratchet, not a minimum.** A candidate needs an action point
+  byte `>=` the best so far **and** a distance strictly less than the best so
+  far. Once a cell with action point 31 has been taken, a nearer cell with 0
+  cannot replace it; and a later candidate at the same distance loses to the
+  earlier one, because the distance test is strict.
+* **Species 2 does not attract a turn.** The table read is
+  `byte[0x51C099 + type * 0x7E]`, which is `SetUnitInfo + 0x79` — the species
+  column ([`21` §5](21-info-lcl-schema.md)) — and the accepted values 0, 1 and
+  3 are human, alien and machine. Props are skipped.
+
+Verified against the whole-turn capture: with the facing modelled,
+`ai_gold.py --check` compares **every field of all 200 unit records** on both
+`_C_140` saves, `+0x46` included, and the exemption that used to cover it is
+gone. See [`95` §3](95-slice-3-report.md).
+
 ---
 
 ## 4. Firing — **[code] `0x0040A440`**

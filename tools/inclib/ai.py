@@ -1298,15 +1298,17 @@ def end_unit_turn(ctx: AIContext, unit: CombatUnit,
                   note: str = "") -> bool:
     """``0x0040B380`` -- face a direction, then zero the movement points.
 
-    The facing comes from ``0x0047A8E0(x, y, 2)``, which is not modelled: it
-    picks a direction from the map and answers ``0xFF`` when there is none, and
-    the write is skipped then.  **The movement points are zeroed either way**,
-    which is the half every caller depends on, so the facing is recorded as an
-    unmodelled refusal rather than guessed at.
+    The facing is ``0x0047A8E0(x, y, 2)``
+    (:func:`inclib.combat.end_turn_facing`), and ``0xFF`` means "nobody to
+    turn towards", in which case the write is skipped.  **The movement points
+    are zeroed either way**, which is the half every caller depends on.
     """
     if unit.hp == 0:
         return False
-    ctx.result.refuse("0x0047A8E0's end-of-turn facing is not modelled")
+    facing = combatmod.end_turn_facing(ctx.world, unit.x, unit.y,
+                                       combatmod.FACING_MODE_ANY_ENEMY)
+    if facing != combatmod.FACING_NONE:
+        unit.facing = facing
     unit.mp = 0
     ctx.emit(AIEvent("end_unit_turn", unit.slot, unit.x, unit.y, note=note))
     return True

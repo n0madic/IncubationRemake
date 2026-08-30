@@ -30,7 +30,7 @@ godot/
 tools/
   inclib/    ai.py new (1813 lines); combat.py, movemap.py extended
   ai_runtime.py new        59 checks over 108 missions and 1594 aliens
-  ai_gold.py new           eleven native phases, 45 checks
+  ai_gold.py new           eleven native phases, 40 checks
 ```
 
 `core/ai/` is [`23`](23-ai-system.md) §2–§9 in the order the stage built it:
@@ -184,10 +184,17 @@ eighth, `spores_filtered` — `aim_and_neighbours` plus "the neighbour's owner i
 not `0xFC`" — which 218 corpus aliens carry. The other seven still refuse
 loudly.
 
-**`0x0047A8E0`'s end-of-turn facing is not modelled.** `endUnitTurn` picks a
-direction from the map and answers `0xFF` when there is none. Seven records per
-captured turn differ from the model in that byte alone, and the check counts
-them as a named refusal rather than passing quietly.
+**`0x0047A8E0`'s end-of-turn facing is modelled, and the tolerance that
+covered it is gone.** It was left out of the stage's first pass; seven records
+per captured turn differed in that byte alone and `ai_gold.py` reported them as
+a named exemption. The routine is a sweep of the whole control map for the
+nearest enemy, and three of its rules are ones a remake invents differently:
+mode 2 -- the one `endUnitTurn` uses -- has **no visibility test**, the choice
+is a **ratchet** on the action point byte rather than a minimum, and species 2
+does not attract a turn. [`23` §3.6](23-ai-system.md) carries the listing.
+`UNMODELLED_FIELDS` is deleted with it: **every field of all 200 records on
+both captured turns is now compared**, `+0x46` included, and the capture on
+disk confirms the model without a new Wine run.
 
 **The AI turn is atomic and there is no mid-turn save.** `AITurnResult` is a
 value; nothing new is persisted, the canonical hash is unchanged, and the
@@ -305,13 +312,11 @@ clean one, per the rule [`94`](94-slice-2-report.md) left behind.
    not. No shipped unit on `_C_140` is large, so nothing in the demonstration
    reaches it. `ai_gold.py` carries it as a named open check.
 3. **Seven of sixteen target patterns** are still unsimulated (§5).
-4. **`0x0047A8E0`'s end-of-turn facing** (§5) — seven records per turn differ in
-   that byte alone.
-5. **No band boundary is pinned by shipped data** (§7). A native probe that
+4. **No band boundary is pinned by shipped data** (§7). A native probe that
    forces a hit chance into one of the four gaps would close all four at once.
-6. **The cover score's two out-of-bounds bytes** came back 168 and 3, against
+5. **The cover score's two out-of-bounds bytes** came back 168 and 3, against
    [`23` §5.2](23-ai-system.md)'s "both ≥ 40". The conclusion is unchanged — the
    bytes are heap history and the term is a constant — but the doc's observation
    is a single run's and is now known to be one.
-7. **The campaign layer, bodies, animation and sound** are still untouched, as
+6. **The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).
