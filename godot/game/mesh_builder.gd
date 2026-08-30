@@ -67,6 +67,18 @@ const NO_TEXTURE: int = -1
 ## what draw kind `0x14` treats as a hole.
 const PLAIN: String = "plain"
 const KEYED: String = "keyed"
+## `{name: id}` for the world set in use, added by [method load_textures] so a
+## face can name its texture instead of numbering it.
+const BY_NAME: String = "by_name"
+
+## The key a face of the **shared unit geometry** carries instead of `texture`.
+##
+## A unit body is the same mesh in every world set, but a texture *id* is not:
+## `caan0000` is 7 in `A00` and 8 in `E00`, and only 9 of the 29 shared names
+## keep their id.  So `geometry/units.json` names its textures and the id is
+## resolved here, against whichever set the mission uses.  The per-set
+## `geometry/<ws>.json` documents are unaffected and still carry `texture`.
+const TEXTURE_NAME: String = "texture_name"
 
 
 static func build(prototype: Dictionary,
@@ -80,7 +92,7 @@ static func build(prototype: Dictionary,
 		if DRAWS_NOTHING.has(kind):
 			continue
 		var texture: int = NO_TEXTURE if FLAT_KINDS.has(kind) \
-			else DictRead.as_int(face["texture"])
+			else _texture_of(face, textures)
 		var key: String = "%03d.%04d" % [kind, texture + 1]
 		if not buckets.has(key):
 			buckets[key] = []
@@ -96,6 +108,21 @@ static func build(prototype: Dictionary,
 		_surface(vertices, bucket, parts[0].to_int(),
 			parts[1].to_int() - 1, textures, mesh)
 	return mesh
+
+
+## The texture id of one face: its own, or the id its **name** has in this
+## world set.  An unknown name paints flat rather than painting the wrong
+## texture -- the converter already warns about one, and a silently mismatched
+## texture is the harder bug to see.
+static func _texture_of(face: Dictionary, textures: Dictionary) -> int:
+	if face.has(TEXTURE_NAME):
+		var by_name: Dictionary = DictRead.as_dict(
+			textures.get(BY_NAME, {}))
+		var wanted: String = DictRead.as_string(face[TEXTURE_NAME])
+		if wanted == "" or not by_name.has(wanted):
+			return NO_TEXTURE
+		return DictRead.as_int(by_name[wanted])
+	return DictRead.as_int(face["texture"])
 
 
 static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
@@ -283,6 +310,7 @@ static func load_textures(cache_dir: String, world_set: String,
 		index: Dictionary) -> Dictionary:
 	var plain: Dictionary = {}
 	var keyed: Dictionary = {}
+	var by_name: Dictionary = {}
 	var entries: Array = DictRead.as_array(index.get("textures", []))
 	for entry: Variant in entries:
 		var record: Dictionary = DictRead.as_dict(entry)
@@ -302,7 +330,8 @@ static func load_textures(cache_dir: String, world_set: String,
 		var id: int = DictRead.as_int(record["id"])
 		plain[id] = ImageTexture.create_from_image(image)
 		keyed[id] = ImageTexture.create_from_image(colour_key(image))
-	return {PLAIN: plain, KEYED: keyed}
+		by_name[DictRead.as_string(record["name"])] = id
+	return {PLAIN: plain, KEYED: keyed, BY_NAME: by_name}
 
 
 ## A copy of `image` with alpha 0 wherever the texel is exactly black.

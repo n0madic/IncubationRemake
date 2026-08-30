@@ -209,6 +209,10 @@ func _build(mission: String) -> void:
 
 	_units = UnitsView.new()
 	_units.name = "Units"
+	# The bodies and their clips, opened once per mission. `UnitsView.build`
+	# runs on every fog change, and re-parsing a 26-part body or re-building
+	# its meshes each time would be a cost this slice invented for itself.
+	_units.library = CharismaLibrary.open(_cache_dir, textures)
 	_scene_root.add_child(_units)
 	_units.build(world, geometry, textures)
 
@@ -294,6 +298,11 @@ func _focus_on_unit(view: Dictionary) -> void:
 
 func camera_rig() -> CameraRig:
 	return _rig
+
+
+## The unit views, and through them this mission's bodies and their library.
+func units_view() -> UnitsView:
+	return _units
 
 
 func scenery_count() -> int:

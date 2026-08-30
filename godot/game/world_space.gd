@@ -43,5 +43,32 @@ static func yaw_basis(yaw: int) -> Basis:
 	return Basis(Vector3.UP, turns * TAU)
 
 
+## A whole engine matrix -- 16 floats, row-major, applied as `M * v`
+## (docs/40 section 5.1) -- as a Godot [Transform3D].
+##
+## This is [method to_godot] generalised from a point to a frame, and it is
+## derived rather than guessed. A point maps as `g = S * P * e` with
+## `P = [[1,0,0],[0,0,1],[0,-1,0]]` the axis permutation and `S` the metre
+## scale, so a transform maps as
+##
+##     basis  = P * R * P^T          (the scale cancels: it is uniform)
+##     origin = to_godot(translation)
+##
+## Written out, the columns below are that product. Godot's [Basis] takes
+## **columns**, and the engine's matrix is stored by **rows**, which is the
+## transposition that has to happen exactly once and here.
+##
+## The failure modes are unmistakable if looked at: a wrong permutation lays
+## the body on its side, a wrong handedness mirrors it. `test_charisma.gd`
+## checks the three properties that pin it -- identity, composition, and an
+## engine yaw against [method yaw_basis].
+static func engine_matrix(m: PackedFloat64Array) -> Transform3D:
+	var basis: Basis = Basis(
+		Vector3(m[0], m[8], -m[4]),
+		Vector3(m[2], m[10], -m[6]),
+		Vector3(-m[1], -m[9], m[5]))
+	return Transform3D(basis, to_godot_v(Vector3(m[3], m[7], m[11])))
+
+
 static func uv(u: int, v: int) -> Vector2:
 	return Vector2(float(u), float(v)) / UV_SCALE

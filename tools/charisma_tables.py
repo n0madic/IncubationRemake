@@ -88,6 +88,22 @@ PARTIAL_ANIMATION_TYPES: dict[int, tuple[str, ...]] = {
     66: ("move", "idle"),             # Bea'Coo
 }
 
+#: Bone translations are in 1/16 of a world unit; a mesh's vertices are in
+#: world units.  ``docs/40`` never states the two are different and they are:
+#: ``P0_000``'s whole skeleton spans 171 units while one torso mesh is 536
+#: tall, so drawn raw a marine is a 10 cm pile of 30 cm parts.  16 is ``1 << 4``,
+#: the same fixed-point shift ``docs/30`` §2.5 records for ``.3DW`` positions.
+SKELETON_TO_WORLD = 16
+
+#: Models whose bind pose must put their lowest vertex on the ground, and how
+#: far off it may be in world units.  Solving ``min(s*z + meshmin) = 0`` over
+#: ``P0_000``'s meshed parts gives **16.01**; at exactly 16 these four land at
+#: -0.1, which is 0.06 mm and 3e-5 of their own height.  Not every model does
+#: -- ``PC_001`` hovers 306 units up and ``PC_005`` reaches 1197 below -- so
+#: the claim is made about the ones that stand, and named.
+GROUNDED_MODELS = ("P0_000", "P0_003", "P1_000", "P1_003")
+GROUND_TOLERANCE = 1.0
+
 #: The schema of the pose case file the Godot suite replays.
 POSE_SCHEMA = "incubation.charisma-pose/1"
 #: Evenly spaced frames sampled per animation, before the targeted probes
@@ -276,6 +292,77 @@ def _check_meshes(ck: Checker, tables: SelectorTables, root: str,
     ck.expect("unit meshes in every world set", len(absent), 0,
               f"{len(meshes)} meshes x {len(containers)} sets"
               + ("" if not absent else f"; short: {absent}"))
+
+
+def _check_scale(ck: Checker, root: str, models: dict[str, str]) -> None:
+    """The bone-to-mesh scale, measured off feet touching the ground.
+
+    A body assembled without it is a 10 cm pile of 30 cm parts, and nothing
+    else in the pipeline would say so: the pose diff passes -- both sides
+    compute the same skeleton -- and the meshes are individually correct.  It
+    is only where the two meet that the mismatch exists, so this is where it
+    is checked.
+    """
+    containers = [(din, bin_) for din, bin_ in protomod.find_containers(root)
+                  if os.sep + "World_" in din]
+    if not containers:
+        ck.check("scale corpus", False, "no world set to read meshes from")
+        return
+    din, bin_path = containers[0]
+    container = protomod.load_container(din, bin_path)
+    boxes: dict[str, Any] = {}
+
+    def box(name: str):
+        if name not in boxes:
+            try:
+                boxes[name] = container.parse(container.find(name)).vertex_bbox
+            except KeyError:
+                boxes[name] = None
+        return boxes[name]
+
+    def ground_at(scale: float) -> dict[str, tuple[float, float]]:
+        """Lowest vertex and total height of each grounded model, at *scale*."""
+        out: dict[str, tuple[float, float]] = {}
+        for name in GROUNDED_MODELS:
+            path = models.get(name)
+            if path is None:
+                continue
+            model = charisma.parse_model_file(path)
+            joints = pose_model(model, None, 0.0).joints(include_hidden=True)
+            low: list[float] = []
+            high: list[float] = []
+            for part in model.parts:
+                bounds = box(part.mesh) if part.mesh else None
+                if bounds is None or part.name not in joints:
+                    continue
+                base = scale * joints[part.name][2]
+                low.append(base + bounds[0][2])
+                high.append(base + bounds[1][2])
+            if low:
+                out[name] = (min(low), max(high) - min(low))
+        return out
+
+    grounded = ground_at(SKELETON_TO_WORLD)
+    ck.expect("models measured for ground contact", sorted(grounded),
+              sorted(GROUNDED_MODELS))
+    off = {n: round(v[0], 2) for n, v in grounded.items()
+           if abs(v[0]) > GROUND_TOLERANCE}
+    ck.expect("bind pose stands on the ground at scale 16", off, {},
+              "lowest vertex within %.1f world unit of z=0: " % GROUND_TOLERANCE
+              + ", ".join(f"{n} {v[0]:+.2f} ({v[1] / 1600:.2f} m)"
+                          for n, v in sorted(grounded.items())))
+    # The tolerance above is 1 world unit against bodies 3000 tall, so it would
+    # be easy to state a claim that a merely *plausible* scale also satisfies.
+    # The neighbouring integers are therefore required to **fail** it: 15 and
+    # 17 put the feet 180 units off, which is 11 cm.
+    neighbours = {}
+    for delta in (-1, 1):
+        for name, value in ground_at(SKELETON_TO_WORLD + delta).items():
+            neighbours[f"{name}@{SKELETON_TO_WORLD + delta}"] = value[0]
+    ck.check("15 and 17 do not",
+             all(abs(v) > GROUND_TOLERANCE for v in neighbours.values()),
+             "closest miss %.1f world units"
+             % min(abs(v) for v in neighbours.values()))
 
 
 def _check_track_binding(ck: Checker, tables: SelectorTables, root: str,
@@ -583,6 +670,7 @@ def run_check(root: str) -> int:
     _check_guards(ck, tables, root)
     _check_unit_types(ck, tables, root)
     _check_meshes(ck, tables, root, models)
+    _check_scale(ck, root, models)
     _check_track_binding(ck, tables, root, models, animations)
     _check_reachability(ck, tables, root)
     _check_pose(ck, tables, models, animations)
