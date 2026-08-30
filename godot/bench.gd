@@ -72,6 +72,8 @@ func _initialize() -> void:
 	print("load_save_us=", Time.get_ticks_usec() - t9,
 		" result=", SaveCodec.result_name(code))
 	_turn_measurements()
+	_body_measurements("_C_140")
+	_body_measurements("_C_132")
 	scenery.free()
 	overlay.free()
 	quit(0)
@@ -295,3 +297,75 @@ func _first_alien(ctx: AIContext) -> UnitState:
 ## Fewer than [constant RUNS]: a turn on `_C_132` is three orders of magnitude
 ## more expensive than a move map, and each repetition reloads the mission.
 const AI_RUNS: int = 10
+
+
+## The fourth slice's own: what a body costs to build and to pose.
+##
+## Taken **before** the state machine exists, so that "what gets cut first" is
+## still a live option if the numbers say so (the plan's risk 5). A body is up
+## to 130 meshed parts on the large models and about 26 on a marine, and a map
+## holds up to 200 unit slots.
+func _body_measurements(mission: String) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission(mission)
+	if loaded.is_empty():
+		print("bodies mission=", mission, " not in the cache")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = loaded["document"]
+	var world_set: String = DictRead.as_string(
+		DictRead.as_dict(document["header"])["world_set"])
+	var textures: Dictionary = MeshBuilder.load_textures(
+		CacheFixture.cache_dir(), world_set,
+		CacheFixture.texture_index(world_set))
+
+	var t0: int = Time.get_ticks_usec()
+	var library: CharismaLibrary = CharismaLibrary.open(
+		CacheFixture.cache_dir(), textures)
+	print("bodies mission=", mission, " library_open_us=",
+		Time.get_ticks_usec() - t0, " ready=", library.is_ready())
+	if not library.is_ready():
+		return
+
+	# Every body the mission's own units select, built once each -- which is
+	# what the game does, because `CharismaLibrary` shares a mesh between the
+	# units that draw it.
+	var built: Array[CharismaBody] = []
+	var clips: Array[CharismaClip] = []
+	var parts: int = 0
+	var t1: int = Time.get_ticks_usec()
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty():
+			continue
+		var type_id: int = DictRead.as_int(view["type_id"])
+		var weapon: int = DictRead.as_int(view["weapon"])
+		var player: int = DictRead.as_int(view["player"])
+		var model: CharismaModel = library.model(library.name_for(
+			CharismaLibrary.SELECTOR_MODEL, type_id, weapon, player))
+		if model == null:
+			continue
+		var body: CharismaBody = CharismaBody.create(model, library)
+		if body == null:
+			continue
+		built.append(body)
+		parts += body.part_count()
+		clips.append(library.clip(library.name_for(
+			CharismaLibrary.SELECTOR_IDLE, type_id, weapon, player)))
+	var build_us: int = Time.get_ticks_usec() - t1
+	print("bodies mission=", mission, " n=", built.size(), " parts=", parts,
+		" build_total_us=", build_us, " build_each_us=",
+		0.0 if built.is_empty() else float(build_us) / float(built.size()))
+
+	# One frame: pose and place every body, which is what `_process` would do.
+	var frames: int = 30
+	var t2: int = Time.get_ticks_usec()
+	for f: int in range(frames):
+		for i: int in range(built.size()):
+			built[i].pose(clips[i], float(f))
+	var frame_us: float = float(Time.get_ticks_usec() - t2) / float(frames)
+	print("bodies mission=", mission, " frame_us=", frame_us,
+		" per_body_us=",
+		0.0 if built.is_empty() else frame_us / float(built.size()),
+		" budget_16667us_headroom=", 16667.0 / maxf(frame_us, 0.001), "x")
+	for body: CharismaBody in built:
+		body.free()
