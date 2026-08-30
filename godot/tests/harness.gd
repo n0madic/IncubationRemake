@@ -48,6 +48,7 @@ const LEAST_CHECKS: Dictionary = {
 	"combat": 95,
 	"combat_native": 22,
 	"lcl": 50,
+	"charisma": 8,
 	"mission": 17,
 	"game_ui": 20,
 	"game_loads": 12,

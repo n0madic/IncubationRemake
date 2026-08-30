@@ -43,8 +43,28 @@ Per case:
 | `model`, `animation` | the `.cho` and `.cha` stems |
 | `bones` | every `SkeletonNode` name, in file order — the index basis for the two flat arrays |
 | `key_classes` | the interpolators this pair exercises |
-| `frames` | 5 times spanning the clip; `joints` is the **world** translation of every bone, flattened |
+| `frames` | 5 evenly spaced times spanning the clip, **plus up to 4 targeted probes** (below); `joints` is the **world** translation of every bone, flattened |
 | `local_time`, `locals` | the middle frame's full 16-float **local** matrix per bone |
+
+### The targeted probes, and the mutation that demanded them
+
+The first version of this fixture sampled 5 evenly spaced frames and nothing
+else. The mutation battery then found that **disabling the 0.25-frame hold rule
+in the GDScript sampler changed nothing the fixture could see** — a 0.25-frame
+window inside a 60-frame clip is missed by five samples essentially always,
+even though 5.2 % of the corpus' 896 443 segments are exactly that long.
+
+So the emitter now also samples *inside* short segments: for each case, up to
+four times taken at `u = 0.5` and `u = 0.75` of a `dt <= 0.25` segment — the
+first is the inclusive boundary of the "which key is returned" test and picks
+the earlier key, the second picks the later one. 194 of the 311 cases have at
+least one. Both halves of the rule are now caught: dropping the threshold moves
+a joint by 119 units, picking the wrong key by 2.7.
+
+This is the failure mode the project's rules are about. The check looked broad
+and was narrow, and only mutating the thing it claimed to test showed it.
+
+### What `frames` catches
 
 `frames` catches everything that moves a bone in space — a transposed or
 `(w, x, y, z)` quaternion, slerp where the engine uses squad, a dropped hold

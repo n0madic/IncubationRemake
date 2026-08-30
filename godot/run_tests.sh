@@ -73,6 +73,16 @@ rm -f "$HERE/generated/ai/ai.json"
     && cp "$REPO/tests/fixtures/ai/cases_ai.json" \
           "$HERE/generated/ai/ai.json"
 
+# The Charisma pose cases, on the same terms again. The suite reads the
+# published cache for the bodies themselves and this file for what the pose
+# must come out as, so a missing fixture makes the suite report the gap
+# rather than quietly checking nothing.
+mkdir -p "$HERE/generated/charisma"
+rm -f "$HERE/generated/charisma/pose.json"
+[ -f "$REPO/tests/fixtures/charisma/cases_pose.json" ] \
+    && cp "$REPO/tests/fixtures/charisma/cases_pose.json" \
+          "$HERE/generated/charisma/pose.json"
+
 # The LCL replay cases, on the same terms again.
 mkdir -p "$HERE/generated/lcl"
 rm -f "$HERE/generated/lcl/lcl.json"

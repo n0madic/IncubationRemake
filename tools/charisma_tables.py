@@ -54,6 +54,7 @@ from inclib.charisma_tables import (  # noqa: E402
 )
 from inclib.info import load_info  # noqa: E402
 from inclib.charisma import mat_translation  # noqa: E402
+from inclib import pose as posemod  # noqa: E402
 from inclib.pose import (CHANNEL_POSITION, pose_model,  # noqa: E402
                          sample_vector)
 from inclib.pe import PEError, PEFile  # noqa: E402
@@ -89,11 +90,10 @@ PARTIAL_ANIMATION_TYPES: dict[int, tuple[str, ...]] = {
 
 #: The schema of the pose case file the Godot suite replays.
 POSE_SCHEMA = "incubation.charisma-pose/1"
-#: Frames sampled per animation.  Five is enough to cross every interpolation
-#: segment class in the corpus while keeping the fixture around a megabyte;
-#: the middle one additionally carries every bone's full local matrix, so a
-#: rotation error on a childless leaf -- which no joint position can show --
-#: is still caught.
+#: Evenly spaced frames sampled per animation, before the targeted probes
+#: below are added.  The middle one additionally carries every bone's full
+#: local matrix, so a rotation error on a childless leaf -- which no joint
+#: position can show -- is still caught.
 POSE_FRAMES = 5
 
 #: The authoring helpers of ``docs/40`` §7: movement targets the exporter left
@@ -411,11 +411,48 @@ def _gameplay_pairs(tables: SelectorTables) -> list[tuple[str, str]]:
     return sorted(pairs)
 
 
+#: Extra sample times aimed **inside** short segments, at most this many per
+#: case.  Without them the grid almost never lands in one.
+POSE_HOLD_PROBES = 4
+
+
+def _hold_probes(anim, limit: int = POSE_HOLD_PROBES) -> list[float]:
+    """Times that fall strictly inside a ``dt <= HOLD_DT`` segment.
+
+    The engine returns one key of such a segment outright rather than
+    interpolating (``docs/40`` §4.4), and 5.2 % of the corpus' 896 443 segments
+    are exactly 0.25 frames long -- so this is a rule, not a corner.  An evenly
+    spaced grid does not exercise it: a 0.25-frame window inside a 60-frame
+    clip is missed by five samples essentially always, and a mutation test
+    proved it -- disabling the hold rule in the GDScript sampler changed
+    nothing the fixture could see.
+
+    Two probes per segment, at ``u = 0.5`` and ``u = 0.75``: the first is the
+    inclusive boundary of the "which key is returned" test and picks the
+    earlier key, the second picks the later one.  Both differ from what an
+    interpolation would give.
+    """
+    out: list[float] = []
+    for movement in anim.movements:
+        for i in range(len(movement.keys) - 1):
+            k0, k1 = movement.keys[i], movement.keys[i + 1]
+            dt = k1.time - k0.time
+            if not 0.0 < dt <= posemod.EPS:
+                continue
+            out.append(k0.time + dt * 0.5)
+            if len(out) < limit:
+                out.append(k0.time + dt * 0.75)
+            if len(out) >= limit:
+                return out[:limit]
+    return out[:limit]
+
+
 def _pose_frames(model, anim) -> list[float]:
     duration = getattr(anim, "duration", 0.0)
     if duration <= 0.0:
         return [0.0]
-    return [duration * i / (POSE_FRAMES - 1) for i in range(POSE_FRAMES)]
+    grid = [duration * i / (POSE_FRAMES - 1) for i in range(POSE_FRAMES)]
+    return grid + _hold_probes(anim)
 
 
 def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
