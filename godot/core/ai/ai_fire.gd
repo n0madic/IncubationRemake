@@ -143,7 +143,16 @@ static func until_empty(ctx: AIContext, unit: UnitState,
 ## `0x00475490` and `0x004754F0` -- docs/10 section 5.4, recomputed after every
 ## shot. The type's column wins unless it is 255; carrying no armour gives
 ## **0 / 0**, which is what both routines' shared idiom yields.
+##
+## A type the table has no row for keeps the unit's own bytes, which is what
+## `inclib.ai.armour_of` does. Reading the columns anyway would take
+## [method UnitTypeTable.armour_front]'s fallback of 0 and **zero a unit's
+## armour after every shot it survives** -- the two implementations would then
+## disagree wherever a mission places a type `Info.lcl` never defined, and no
+## emitted case covers that, so the diff would not say so.
 static func armour_of(utab: UnitTypeTable, unit: UnitState) -> Vector2i:
+	if not utab.has(unit.type_id):
+		return Vector2i(unit.armour_front, unit.armour_rear)
 	var front: int = utab.armour_front(unit.type_id)
 	var rear: int = utab.armour_rear(unit.type_id)
 	for i: int in range(ARMOUR_EQUIPMENT.size()):

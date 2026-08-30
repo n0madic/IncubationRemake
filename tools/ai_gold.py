@@ -127,6 +127,10 @@ MEMCPY_SLOT = 0x00525634
 MAX_PAIRS = 200
 MAX_COVER_CELLS = 60
 MAX_APPROACH = 12
+#: How many of the large-mover approach probes the model gets wrong.  Recorded
+#: rather than tolerated: the second ring is a known open item (``docs/95``
+#: §8), and a census fails both when it gets worse and when it is fixed.
+APPROACH_LARGE_DISAGREEMENTS = 8
 #: The band sweep: the four boundaries, how far either side of each one it
 #: tries to land, and how many distinct percentages a pair must be able to
 #: reach before it is worth sweeping.
@@ -1299,15 +1303,23 @@ def check_approach(c: Checker, payload: dict[str, Any],
     # **Open, and named rather than hidden.**  The large-mover arm -- the
     # second ring, reached only by writing `unitInfo[type] + 0x7B` (docs/93
     # §11) -- comes back with the engine accepting a candidate the model
-    # refuses.  Both read `jle` against the model's `>`, so the disagreement is
+    # refuses.  It is 8 of the 10 probes; the figure stood at "5 of 10" in the
+    # comment and in docs/95 for as long as the check could not fail, which is
+    # what an always-true check costs.  Both read `jle` against the model's `>`, so the disagreement is
     # not the tie-break the listing shows; it is something the second ring
     # sees that this transcription does not.  No shipped unit on `_C_140` is
     # large -- `size` is 1 on exactly `ComBot`, `Tr'Yn` and `Al'Coo` -- so
     # nothing in the corpus or in the demonstration reaches it, and docs/95
     # carries it as an open question rather than as a check quietly relaxed.
-    c.check("approach.large_ring_is_open", True,
-            f"{len(large_bad)} of {len(targets)} large-mover calls disagree: "
-            f"{large_bad[:2]}")
+    # **Open, and now pinned as open.** This was `c.check(..., True, ...)`:
+    # the disagreement was computed and then printed, so nothing could turn
+    # red -- not a regression that made it worse, and not the day somebody
+    # fixes it. The count is a census instead, and it fails in either
+    # direction. Bringing it to zero is the fix, and the check is what will
+    # say so.
+    c.expect("approach.large_ring_disagreements", len(large_bad),
+             APPROACH_LARGE_DISAGREEMENTS,
+             f"of {len(targets)} large-mover calls: {large_bad[:2]}")
     c.check("approach.own_cell_arm", own_cell >= 0,
             f"{own_cell} call(s) returned the 10000 the mover's own cell gives")
 

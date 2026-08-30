@@ -94,8 +94,20 @@ func run(h: TestHarness) -> void:
 	var quiet_load: Dictionary = CacheFixture.load_mission(MISSION)
 	var quiet: World = quiet_load["world"]
 	quiet.ai_may_fire = false
-	_play(h, "held_fire", quiet, _squad(quiet),
+	var held: Dictionary = _play(h, "held_fire", quiet, _squad(quiet),
 		DictRead.as_dict(quiet_load["document"]))
+
+	# **The acceptance claim, with a check under it.** The comment inside
+	# `_play` says "the `held_fire` run below proves it end to end", and until
+	# now nothing asserted that: the return value was discarded and `_play`'s
+	# own `else` arm accepts a deadlock. So a change that broke the walk badly
+	# enough for `_C_140` never to be won on either run left the suite green
+	# while the claim stayed in the comment. This is the claim.
+	h.check("outcome.the_mission_is_completable",
+		DictRead.as_bool(held["squad_won"]),
+		"with the computer's fire held, the squad still reaches the "
+		+ "evacuation zone and _C_140's own SetGameControl (0,1) fires: "
+		+ DictRead.as_string(held["summary"]))
 
 	# The one thing only the live run can show, and the first time this
 	# project has been able to show it: **the computer can win.** docs/23's
@@ -232,7 +244,17 @@ func _play(h: TestHarness, label: String, world: World,
 		+ "%d of the squad alive; in the zone %s"
 		% [_squad(world).size(), _zone_census(world)])
 	h.check("%s.moved" % label, moves > 0, summary)
-	h.check("%s.rested" % label, rests >= 0, "%d stand-down(s)" % rests)
+	# `rests >= 0` stood here and **could not fail**: the counter starts at
+	# zero and is only ever incremented. Replacing it with `rests > 0` showed
+	# what it had been hiding -- **the walk never rests.** The arm needs a
+	# squad member at fitness 1 or less with no enemy inside
+	# [constant DANGER_RANGE], and on this map that pair of conditions never
+	# meets: the squad is either fresher than that or in contact. So the
+	# number is recorded as the census it is, and it fails if the walk's
+	# behaviour moves. The stand-down command itself is checked where it can
+	# be built deliberately, in `test_combat.gd`'s overwatch scene.
+	h.equal("%s.rests" % label, rests, 0,
+		"nobody tires to fitness 1 while out of contact on this map")
 	h.check("%s.fought" % label, shots > 0,
 		"%d shot(s) -- the squad has to fight its way in now that the aliens "
 		% shots + "close and shoot back (docs/23)")
@@ -254,8 +276,17 @@ func _play(h: TestHarness, label: String, world: World,
 	# (`outcome.defeat_is_reachable`), and a *scripted* squad does not beat
 	# this opponent on this map. docs/95 records it as an open question rather
 	# than as a check that was quietly relaxed.
-	h.check("%s.ended_or_deadlocked" % label,
-		ended or rounds >= TURN_LIMIT, summary)
+	#
+	# `ended or rounds >= TURN_LIMIT` stood here and **could not fail**: the
+	# loop above exits on exactly those two conditions, so the check restated
+	# its own guard. What the run has to show instead is that it got somewhere
+	# under its own power -- the squad still has units, the walk both moved and
+	# fired, and if it did not end then it used its whole budget rather than
+	# stopping early for a reason nobody recorded.
+	h.check("%s.ran_to_a_definite_end" % label,
+		(ended and rounds < TURN_LIMIT) or (not ended
+			and rounds == TURN_LIMIT and not _squad(world).is_empty()),
+		summary)
 
 	# **Each of the three outcomes is asserted for what it is**, rather than
 	# one of them being asserted and the others tolerated. `_C_140`'s own
@@ -285,8 +316,17 @@ func _play(h: TestHarness, label: String, world: World,
 		h.check("%s.deadlock_leaves_the_squad_in_the_field" % label,
 			not _squad(world).is_empty() and rounds >= TURN_LIMIT,
 			"neither condition fired inside the bound: " + summary)
-	h.check("%s.the_script_decided" % label, ended or rounds >= TURN_LIMIT,
-		"SetGameControl from _C_140's own NEXT PLAYER body, or the bound")
+	# `the_script_decided` stood here with the same expression as the check
+	# above -- two names over one tautology. What the mission's own body
+	# actually promises is that it never sets **both** outcome slots and never
+	# sets one to a value it has no arm for, which is a statement the run can
+	# violate.
+	h.check("%s.the_script_wrote_a_value_it_has_an_arm_for" % label,
+		world.game_control.get_slot(0) in [0, 1]
+			and world.game_control.get_slot(4) in [0, 1],
+		"_C_140's NEXT PLAYER body writes only SetGameControl (0,1) and "
+		+ "(4,1): slot 0 %d slot 4 %d" % [world.game_control.get_slot(0),
+			world.game_control.get_slot(4)])
 	h.equal("%s.the_next_map_is_named" % label, world.next_map, "_C_141",
 		"EnterNameOfNextMap from the InitMap entry -- or the header, which agrees")
 	

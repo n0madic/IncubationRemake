@@ -21,6 +21,10 @@ extends TestSuite
 
 const CASES: String = "res://generated/ai/ai.json"
 const SCHEMA: String = "incubation.ai-cases/1"
+## docs/21 section 1 -- `SetUnitInfo` accepts ids up to 100, so a scan that
+## found every one of those defined would be looking at a table this cache
+## does not have.
+const UNKNOWN_TYPE_LIMIT: int = 101
 
 
 func run(h: TestHarness) -> void:
@@ -40,6 +44,92 @@ func run(h: TestHarness) -> void:
 		_case(h, DictRead.as_dict(entry))
 	_constants(h)
 	_spores(h)
+	_merge(h)
+
+
+## Two computer turns inside one hand-over, merged rather than dropped.
+##
+## `Rotation.advance_player` re-selects player 255 when no human slot
+## qualifies, so [method World.submit_end_turn] can play the computer twice
+## before it returns. It used to recurse there and assign the **outer** turn's
+## result over the inner one, so the first turn's events were never played
+## back; the loop that replaced it merges them, and this is the merge.
+##
+## The bound itself -- [constant World.AI_TURNS_PER_HAND_OVER] -- is not
+## exercised here: reaching it needs a mission whose script never ends while
+## every human slot is out, and no shipped map is one. It turns a hang into a
+## stop, which is the reason it exists rather than a behaviour to assert.
+func _merge(h: TestHarness) -> void:
+	var first: AITurnResult = AITurnResult.new()
+	first.seed_before = 1.0
+	first.seed_after = 2.0
+	first.sweeps = 3
+	first.add(AIEvent.make("move", 1, 0, 0, 1, 1, 0, ""))
+	first.saw_order(7)
+	first.refuse("a reason")
+	first.did(AIContext.WORK_FILL)
+	var second: AITurnResult = AITurnResult.new()
+	second.seed_before = 2.0
+	second.seed_after = 9.0
+	second.sweeps = 4
+	second.add(AIEvent.make("fire", 2, 0, 0, 2, 2, 0, ""))
+	second.saw_order(7)
+	second.refuse("a reason")
+	second.did(AIContext.WORK_FILL)
+
+	var merged: AITurnResult = first.followed_by(second)
+	h.equal("merge.events_keep_their_order",
+		[merged.events[0].kind, merged.events[1].kind], ["move", "fire"],
+		"the earlier turn is replayed first")
+	h.equal("merge.sweeps_add", merged.sweeps, 7)
+	h.equal("merge.counters_add", _sorted(merged.counters), "fire=1, move=1")
+	h.equal("merge.orders_add", merged.orders_seen_as_strings(), {"7": 2})
+	h.equal("merge.refusals_add", merged.refusals, {"a reason": 2})
+	h.equal("merge.work_adds", merged.work, {AIContext.WORK_FILL: 2})
+	h.equal("merge.the_generator_spans_both",
+		[merged.seed_before, merged.seed_after], [1.0, 9.0],
+		"before the first turn and after the second")
+	_armour(h)
+
+
+## `0x00475490` / `0x004754F0` on a type the table has no row for.
+##
+## The recompute runs after every shot the unit survives, so a wrong answer
+## here does not stay still -- it rewrites the record. `inclib.ai.armour_of`
+## returns the unit's own bytes when the row is missing; reading the columns
+## anyway takes [method UnitTypeTable]'s fallback of 0 and **zeroes the
+## armour**. No mission places such a type and no emitted case carries one, so
+## the scene is built: one unit, one type id the table does not define.
+func _armour(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("armour.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var utab: UnitTypeTable = world.unit_types()
+	var unit: UnitState = UnitState.from_view(
+		world.unit_view(world.unit_slots()[0]))
+	unit.armour_front = 37
+	unit.armour_rear = 11
+	h.check("armour.the_type_is_known", utab.has(unit.type_id),
+		"type %d" % unit.type_id)
+	var known: Vector2i = AIFire.armour_of(utab, unit)
+	h.check("armour.a_known_type_uses_its_columns",
+		known.x == utab.armour_front(unit.type_id)
+		or utab.armour_front(unit.type_id) == AIFire.ARMOUR_DERIVED,
+		"front %d against the column %d"
+		% [known.x, utab.armour_front(unit.type_id)])
+
+	var undefined: int = 0
+	while utab.has(undefined) and undefined < UNKNOWN_TYPE_LIMIT:
+		undefined += 1
+	h.check("armour.an_undefined_type_exists", not utab.has(undefined),
+		"type %d is not in the table" % undefined)
+	unit.type_id = undefined
+	h.equal("armour.an_undefined_type_keeps_the_unit_s_bytes",
+		AIFire.armour_of(utab, unit), Vector2i(37, 11),
+		"the columns' fallback is 0, and using it would zero the record "
+		+ "after every shot the unit survives")
 
 
 func _case(h: TestHarness, case: Dictionary) -> void:

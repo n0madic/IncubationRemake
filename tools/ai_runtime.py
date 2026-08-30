@@ -73,6 +73,11 @@ SAMPLE_PER_MISSION = 4
 HORIZON_REACH_CENSUS = {0: 9142, 1: 21154, 2: 87598, 3: 98564, 4: 104083,
                         5: 104083}
 
+#: The horizon levels at which a sampled fill actually stood a mover on a
+#: hidden unit's cell.  0 and 1 use the mover's real points and reach none in
+#: the sample; that is a property of the sample, not of the rule.
+HIDDEN_OCCUPANT_LEVELS = [2, 3, 4, 5]
+
 #: ``docs/23`` §6's bands, written out a second time and independently of
 #: :data:`inclib.ai.TARGET_BANDS`, because a check that recomputes the band
 #: with the same table it is checking proves only that the table is a
@@ -356,9 +361,17 @@ def check_horizon(c: Checker, root: Path, tables: BalanceTables,
              f"a superset of the last")
     c.expect("horizon.friendly_levels", sorted(friendly_levels), [2],
              "level 2 is the only one that may reach a visible friendly's cell")
-    c.check("horizon.hidden_is_empty", bool(hidden_levels),
-            f"a hidden unit's cell is enterable at levels "
-            f"{sorted(hidden_levels)} -- docs/23 section 7.3")
+    # The name used to be ``hidden_is_empty`` and the assertion was
+    # ``bool(hidden_levels)`` -- a check that passed when the set was *not*
+    # empty, under a name that read as the opposite, and that would have been
+    # satisfied by one level out of six.  ``docs/23`` §7.3's claim is that a
+    # hidden occupant is never a blocker; what the sample can show is at which
+    # levels one was actually stood on, and levels 0 and 1 flood with the
+    # unit's own points and do not reach one here.  So the observed set is
+    # recorded, and it moves if the rule does.
+    c.expect("horizon.hidden_is_never_a_blocker", sorted(hidden_levels),
+             HIDDEN_OCCUPANT_LEVELS,
+             "levels whose fill stood a mover on a hidden unit's cell")
 
 
 def check_immobile(c: Checker, root: Path, tables: BalanceTables,
@@ -1097,13 +1110,15 @@ def check_turns(c: Checker, root: Path, tables: BalanceTables,
         if left:
             failures.append(f"{path.name}: slots {left} still hold points")
     c.expect("turn.missions", ran, 108)
+    # One list, one check.  ``turn.everyone_spent`` used to assert the same
+    # ``failures`` a second time under a second name, which could not fail
+    # independently and inflated the count by one.
     c.expect("turn.terminal", failures, [],
-             f"worst sweep count {worst} on {worst_name}, ceiling "
-             f"{ai.TURN_SWEEP_CEILING}")
+             f"the turn ends and the final sweep zeroes every live unit that "
+             f"still had points; worst sweep count {worst} on {worst_name}, "
+             f"ceiling {ai.TURN_SWEEP_CEILING}")
     c.check("turn.sweeps_bounded", worst <= ai.TURN_SWEEP_CEILING,
             f"{worst} <= {ai.TURN_SWEEP_CEILING}")
-    c.check("turn.everyone_spent", not failures,
-            "the final sweep zeroes every live unit that still had points")
     c.check("turn.something_happened",
             counters.get("move", 0) > 0 and counters.get("fire", 0) > 0,
             f"{counters.get('move', 0)} moves and {counters.get('fire', 0)} "

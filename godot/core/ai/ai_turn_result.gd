@@ -67,6 +67,34 @@ func orders_seen_as_strings() -> Dictionary:
 	return out
 
 
+## Two computer turns played inside one hand-over, as one value.
+##
+## The rotation can give player 255 the turn twice running; the events of the
+## earlier one used to be dropped on the floor. Order is the whole point --
+## `game` replays this list -- so the later turn's events go after these, and
+## the generator's state spans both.
+func followed_by(later: AITurnResult) -> AITurnResult:
+	events.append_array(later.events)
+	sweeps += later.sweeps
+	for kind: Variant in later.counters:
+		counters[kind] = DictRead.as_int(counters.get(kind, 0)) \
+			+ DictRead.as_int(later.counters[kind])
+	for order: Variant in later.orders_seen:
+		orders_seen[order] = DictRead.as_int(orders_seen.get(order, 0)) \
+			+ DictRead.as_int(later.orders_seen[order])
+	for reason: Variant in later.refusals:
+		refusals[reason] = DictRead.as_int(refusals.get(reason, 0)) \
+			+ DictRead.as_int(later.refusals[reason])
+	for kind: Variant in later.work:
+		work[kind] = DictRead.as_int(work.get(kind, 0)) \
+			+ DictRead.as_int(later.work[kind])
+	seed_after = later.seed_after
+	ok = ok and later.ok
+	if reason == "":
+		reason = later.reason
+	return self
+
+
 func to_dict() -> Dictionary:
 	var orders: Dictionary = {}
 	var keys: Array = orders_seen.keys()

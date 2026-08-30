@@ -494,8 +494,17 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 		# to decide "attack or select". That was invisible while the aliens
 		# never acted; with docs/23's planner in place it meant a player could
 		# click a purple pill and take the computer's turn for it.
+		#
+		# **"Cannot be commanded" is not the same as "is a target."**
+		# [method World.may_command] also refuses a *friendly* record with no
+		# hit points, and a dead squad member stays in `unit_slots()` and stays
+		# on screen -- the fog pass leaves an own corpse fully visible. Routing
+		# every refusal into the attack branch therefore let a player spend a
+		# soldier's action points, and drain the reaction queue, shooting at
+		# the body of the soldier who died during the alien turn. So the attack
+		# branch asks the question it means: is this somebody else's live unit?
 		if not world.may_command(best_slot):
-			if _selected >= 0:
+			if _selected >= 0 and is_a_target(view, turn_player()):
 				attack_cell(DictRead.as_int(view["x"]),
 					DictRead.as_int(view["y"]))
 			else:
@@ -514,6 +523,27 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 		_refresh_status(_strings.text("hud.no_selection"))
 		return
 	move_selected(cell.x, cell.y)
+
+
+## Whether a picked unit is something to shoot at rather than something to
+## select: alive, and not the current player's own.
+##
+## The owner test alone is what `game` used before docs/23's planner, and the
+## liveness test is what the corpse case needs. A hidden unit never reaches
+## here -- the picker only sees what is drawn.
+##
+## Static, and taking the player rather than reading it, so a suite can ask it
+## the question directly: the rule is small enough that the only way to get it
+## wrong is not to have checked it.
+static func is_a_target(view: Dictionary, current_player: int) -> bool:
+	if DictRead.as_int(view["hp"]) == 0:
+		return false
+	return DictRead.as_int(view["player"]) != current_player
+
+
+## The player the world says is holding the turn, or -1 with no world.
+func turn_player() -> int:
+	return -1 if world == null else world.turn.current_player
 
 
 ## The map cell a screen ray lands on, or `(-1, -1)`.
@@ -557,8 +587,13 @@ func move_selected(x: int, y: int) -> MoveResult:
 func attack_cell(x: int, y: int) -> AttackResult:
 	var shot: AttackResult = world.submit_attack(
 		AttackCommand.create(_selected, x, y))
+	# The reaction count belongs on screen for the same reason
+	# [method move_selected] puts it there: a shot that drew return fire is
+	# the player's business, and `World.submit_attack` has been filling
+	# `reactions` with nobody reading it.
 	_after_command(shot.reason if not shot.fired
-		else "%d" % shot.outcomes.size())
+		else "%d, %d %s" % [shot.outcomes.size(), shot.reactions.size(),
+			_strings.text("hud.reactions")])
 	return shot
 
 

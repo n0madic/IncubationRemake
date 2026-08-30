@@ -92,6 +92,33 @@ func _command_gate(h: TestHarness) -> void:
 		world.may_command(ours[0]), true,
 		"the gate is the slots, not a latch")
 
+	# **A refusal is not a target.** `may_command` says no to three different
+	# things -- somebody else's unit, a hidden one, and the player's **own
+	# dead** one -- and only the first is something to shoot at. A dead squad
+	# member stays in `unit_slots()` and stays drawn (the fog pass leaves an
+	# own corpse fully visible), so routing every refusal into the attack
+	# branch let a player spend a soldier's action points, and drain the
+	# reaction queue, firing at the body of the soldier who had just died.
+	var corpse: int = ours[0]
+	var body: Dictionary = world.unit_view(corpse).duplicate()
+	body["hp"] = 0
+	h.equal("command.a_dead_friend_is_not_commandable",
+		[DictRead.as_int(body["hp"]) != 0,
+			DictRead.as_int(body["player"]) == 0], [false, true],
+		"the view the picker hands the click")
+	h.equal("command.a_dead_friend_is_not_a_target",
+		SliceMain.is_a_target(body, 0), false,
+		"clicking your own casualty is not an order to shoot it")
+	var enemy: Dictionary = world.unit_view(theirs[0])
+	h.equal("command.a_live_enemy_is_a_target",
+		SliceMain.is_a_target(enemy, 0), true,
+		"which is the case the branch exists for")
+	var dead_enemy: Dictionary = enemy.duplicate()
+	dead_enemy["hp"] = 0
+	h.equal("command.a_dead_enemy_is_not_a_target",
+		SliceMain.is_a_target(dead_enemy, 0), false,
+		"a corpse is a corpse whoever owned it")
+
 	# `0x00477DF0`'s third test, `+0x4F != 3`, is not exercised here: making a
 	# unit hidden means running the fog pass from the *other* side, which
 	# `_fog` above already does, and `World` grows no test-only mutator to

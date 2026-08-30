@@ -10,6 +10,14 @@ extends RefCounted
 ## both -- the first by mutating a snapshot and re-hashing, the second by
 ## reading every file under `core/` as text and failing on a forbidden symbol.
 
+## How many computer turns one [method submit_end_turn] will play before it
+## stops. The rotation can hand player 255 the turn twice running when no human
+## slot qualifies, and a mission whose script never ends would otherwise loop
+## for ever; four is well past anything the corpus produces (every mission
+## hands over to a human on the first pass) and short enough that the stop is
+## a result rather than a hang.
+const AI_TURNS_PER_HAND_OVER: int = 4
+
 var resource: MapResource = null
 var state: MapState = null
 var rng: IncRandom = null
@@ -577,18 +585,43 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	# **The computer's turn is played here, and handed back through the same
 	# seam it arrived by.** docs/25 section 4 puts `aAISystemControl` at the end
 	# of the hand-over, after the refresh and the fog, and docs/23 section 2 is
-	# what it runs. When it is done this calls [method submit_end_turn] again,
-	# which is the *engine's* own hand-over and not a second one: the rotation
-	# moves on to whoever is next, exactly as it would after a human player
-	# pressed the button.
-	if result.ai_turn and result.ok():
+	# what it runs. When it is done the hand-over runs *again*, which is the
+	# engine's own and not a second one: the rotation moves on to whoever is
+	# next, exactly as it would after a human player pressed the button.
+	#
+	# **It is a loop and not recursion, and the two AI turns are merged.**
+	# `0x0043B320` re-selects player 255 when no human slot qualifies
+	# (`Rotation.advance_player`, the arm that leaves `current_player` alone
+	# and answers true), so the computer can be handed the turn twice running
+	# -- every human out, and a mission script that has not ended the mission.
+	# The old shape recursed into itself there and overwrote the first turn's
+	# [member TurnResult.ai_result] with the second's, so the events of the
+	# earlier turn were never played back; and nothing bounded the depth, so
+	# a mission that never ends would exhaust the stack rather than stop.
+	var played: AITurnResult = null
+	var turns: int = 0
+	while result.ai_turn and result.ok():
+		turns += 1
+		if turns > AI_TURNS_PER_HAND_OVER:
+			result.code = TurnResult.STOPPED
+			if played != null:
+				played.ok = false
+				played.reason = ("the rotation handed the computer "
+					+ str(turns) + " turns without reaching a human player")
+			break
 		var ctx: AIContext = AIContext.create(state, _units, _unit_types,
 			_weapons, _ctrlmap, turn, rng)
 		ctx.may_fire = ai_may_fire
-		result.ai_result = AISystem.run(ctx, turn.current_player)
-		var handed: TurnResult = submit_end_turn(EndTurnCommand.create())
-		handed.ai_result = result.ai_result
-		return handed
+		var one: AITurnResult = AISystem.run(ctx, turn.current_player)
+		played = one if played == null else played.followed_by(one)
+		result = TurnSequence.hand_over(turn, _units, game_control,
+			_unit_types, _weapons, _script_callable(), banner_in_range,
+			live_unit_count, EndTurnCommand.create().arg)
+		if result.refreshed:
+			Visibility.build(state, _units, _unit_types, turn.current_player,
+				turn.human_count(), turn.mode)
+			result.fog_rebuilt = true
+	result.ai_result = played
 	return result
 
 

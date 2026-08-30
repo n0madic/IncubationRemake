@@ -26,10 +26,10 @@ godot/
     ai/      12 files      docs/23's planner
     lcl/      5 files      the mission-script interpreter
   game/      13 files      + the AI playback
-  tests/     26 suites     1538 checks
+  tests/     26 suites     1554 checks
 tools/
   inclib/    ai.py new (1813 lines); combat.py, movemap.py extended
-  ai_runtime.py new        72 checks over 108 missions and 1594 aliens
+  ai_runtime.py new        71 checks over 108 missions and 1594 aliens
   ai_gold.py new           twelve native phases, 45 checks
 ```
 
@@ -339,7 +339,71 @@ clean one, per the rule [`94`](94-slice-2-report.md) left behind.
 
 ---
 
-## 8. Open questions this stage leaves
+## 8. What a review pass found afterwards
+
+Eleven findings over the whole stage, all real and all fixed in place. Nine of
+them are one family, and it is the family a mutation battery cannot reach:
+**checks that could not fail.**
+
+* **Four tautologies in the mission suite.** `ended_or_deadlocked` asserted
+  `ended or rounds >= TURN_LIMIT` — which is the loop's own exit condition, so
+  it restated its guard; `the_script_decided` asserted the same expression
+  under a second name; `rested` asserted `rests >= 0` on a counter that starts
+  at zero and only ever grows. Replacing that last one with `rests > 0` showed
+  what it had been hiding: **the walk never rests at all**, because it needs a
+  squad member at fitness 1 with no enemy in reach and those two never meet on
+  this map. It is a recorded census now, and the stand-down is checked where it
+  can be built deliberately.
+* **The stage's own acceptance claim had no check under it.** `_play`'s comment
+  says "the `held_fire` run below proves it end to end" — and that run's result
+  was discarded, while `_play`'s own arm accepts a deadlock as a pass. A change
+  that broke the walk badly enough for `_C_140` never to be won on either run
+  left the suite green. `outcome.the_mission_is_completable` is the claim.
+* **`approach.large_ring_is_open` computed a number and only printed it.** It
+  was `check(..., True, ...)` over a known model-vs-engine disagreement, so
+  nothing could turn red — not a regression, and not the day somebody fixes it.
+  Turning it into a census immediately showed the documented figure had drifted:
+  **8 of 10 probes disagree, not 5.** The number had been wrong in this report
+  and in the source comment for as long as the check could not fail.
+* **`horizon.hidden_is_empty` asserted the opposite of its name** (it passed on
+  a *non*-empty set, and would have been satisfied by one level out of six),
+  and **`turn.everyone_spent` asserted the same list as `turn.terminal`**, so
+  it could not fail independently and inflated the count by one.
+
+Two are behaviour, and one of them is user-visible:
+
+* **Clicking your own casualty fired at it.** The click path routed every
+  `may_command` refusal into the attack branch — but that method also refuses a
+  *friendly* record with no hit points, and a dead squad member stays in the
+  roster and stays drawn. So a soldier who died during the alien turn could be
+  shot at by his own squad, spending action points and draining the reaction
+  queue. The branch now asks the question it means: alive, and not the current
+  player's.
+* **`AIFire.armour_of` diverged from the Python model** for a type the table
+  has no row for: Python keeps the unit's own bytes, the port took the
+  accessor's fallback of 0 and would have **zeroed a unit's armour after every
+  shot it survived**. No mission places such a type and no emitted case carries
+  one, so the check is a built scene.
+
+And two are the hand-over seam:
+
+* **The recursive hand-over discarded an AI turn and could not terminate.**
+  `Rotation.advance_player` re-selects player 255 when no human slot qualifies,
+  so the computer can be handed the turn twice running; the old shape recursed
+  and assigned the outer turn's `ai_result` over the inner one, losing the
+  earlier turn's events, with nothing bounding the depth. It is a bounded loop
+  now, and the two turns are merged in order.
+* **`AttackResult.reactions` was written and never read.** `World.submit_attack`
+  filled it; the HUD reported only the outcome count, while the sibling move
+  reported its reactions. A player whose shot drew return fire was told nothing.
+
+The battery grew to 45 mutations to cover the fixes, and the armour case
+escaped it until the scene was built — which is the same lesson §7 records, one
+layer down: a check that cannot reach a branch is a check that cannot see it.
+
+---
+
+## 9. Open questions this stage leaves
 
 1. **`_C_140` is not *won* by a scripted squad against the live planner.** The
    run deadlocks: the script's reinforcements from turn 5 plug the corridor to
@@ -349,9 +413,13 @@ clean one, per the rule [`94`](94-slice-2-report.md) left behind.
    each of the three outcomes for what it is rather than relaxing until one
    passes. What is missing is a squad tactic, not a rule.
 2. **The large-mover second ring of `0x0040ADC0` disagrees with the engine** on
-   5 of 10 probes. Both listings read `jle` against the model's `>`, so it is
-   not the tie-break; the second ring sees something this transcription does
+   **8 of 10** probes. Both listings read `jle` against the model's `>`, so it
+   is not the tie-break; the second ring sees something this transcription does
    not. No shipped unit on `_C_140` is large, so nothing in the demonstration
-   reaches it. `ai_gold.py` carries it as a named open check.
+   reaches it. The count stood at "5 of 10" here until a review pass turned
+   `approach.large_ring_is_open` -- a `check(..., True, ...)` that computed the
+   number and only printed it -- into `approach.large_ring_disagreements`, a
+   census that fails in **both** directions. The old figure had drifted, and
+   nothing could say so.
 3. **The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).
