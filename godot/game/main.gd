@@ -32,6 +32,9 @@ var _overlay: TerrainOverlay = null
 var _highlight: Highlight = null
 var _units: UnitsView = null
 var _rig: CameraRig = null
+## How far out the view opens, in metres. Chosen to clear the ceiling of the
+## interiors the demo missions are: see [method _frame_units].
+const OPENING_ZOOM_METRES: float = 8.0
 var _status: Label = null
 var _hud: Hud = null
 var _strings: Localization = null
@@ -222,6 +225,7 @@ func _build(mission: String) -> void:
 	_rig.setup(world.resource.width, world.resource.height,
 		world.resource.heights(), world.resource.camera_height)
 	_rig.camera().current = true
+	_frame_units(world)
 
 	var environment: WorldEnvironment = WorldEnvironment.new()
 	var env: Environment = Environment.new()
@@ -298,6 +302,60 @@ func _focus_on_unit(view: Dictionary) -> void:
 
 func camera_rig() -> CameraRig:
 	return _rig
+
+
+## Open the camera on the player's squad rather than on the map's centre.
+##
+## [method CameraRig.setup] parks the pivot on the middle cell, which is where
+## the mission happens to have put its geometry and not where the player's
+## units are: on `_C_140` the centre is inside a support column, so the first
+## frame of the game is a close-up of a pillar.
+##
+## This is what the original does: on load it shows the squad, close, rather
+## than the middle of the map from under the ceiling.
+##
+## Two things were wrong with the old opening view and each had to be fixed
+## separately, which is why the first attempt made it worse rather than better:
+##
+## * **the pivot.** `CameraRig.setup` parks it on the middle cell, which is
+##   where the mission happens to have put its geometry -- on `_C_140` that is
+##   inside a support column. The squad is what the player is about to act
+##   with, so the view opens there instead. It is **one unit's cell, not the
+##   squad's centroid**: a centroid is not a cell anybody stands on, and the
+##   mean of `_C_140`'s four marines lands inside the wall between them;
+## * **the zoom.** `setup` opens at the mission's authored `camera_height`,
+##   20 m on `_C_140`, and at 20 m the camera sits **above the level's roof**
+##   and looks down through it -- these maps are interiors. So moving the pivot
+##   alone still showed a ceiling, and 12 m still showed the dark side of one.
+##   [constant OPENING_ZOOM_METRES] puts the camera under it.
+##
+## The maximum is untouched: the player can still pull out to what the mission
+## authored. This is where the view *starts*. The yaw is left alone too -- it
+## is the player's, on Q and E.
+##
+## Nothing here is authoritative and nothing here is simulation: a camera that
+## opened somewhere else would change no hash and no result.
+func _frame_units(mission_world: World) -> void:
+	# **One unit's cell, not the squad's centroid.** The centroid is not a cell
+	# anybody stands on: on `_C_140` the mean of four marines lands inside the
+	# wall between them, and the camera opens in the dark. A unit's own cell is
+	# somewhere the simulation has already agreed is standable and open.
+	var x: int = -1
+	var y: int = -1
+	for slot: int in mission_world.unit_slots():
+		var view: Dictionary = mission_world.unit_view(slot)
+		if view.is_empty() or not Fog.is_drawn(view) or Fog.is_contact(view):
+			continue
+		if DictRead.as_int(view["player"]) != mission_world.turn.current_player:
+			continue
+		x = DictRead.as_int(view["x"])
+		y = DictRead.as_int(view["y"])
+		break
+	if x < 0 or not mission_world.state.in_bounds(x, y):
+		return
+	_rig.focus_on(x, y,
+		mission_world.state.height_at(mission_world.state.index_of(x, y)))
+	_rig.set_zoom(minf(_rig.max_zoom, OPENING_ZOOM_METRES))
 
 
 ## The unit views, and through them this mission's bodies and their library.
