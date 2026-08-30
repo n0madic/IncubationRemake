@@ -1249,9 +1249,16 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
     world = ctx.world
     world.unit_at[ctx.index(unit.x, unit.y)] = movemap.NO_UNIT
     world.unit_at[ctx.index(moved.x, moved.y)] = unit.slot
+    # `path` is the one thing a playback cannot recover for itself.  By the
+    # time `game/ai_playback.gd` reaches this event the world is already at the
+    # end of the turn, so re-deriving the route would derive it against the
+    # wrong state -- the same reason every other event carries what it needs.
+    # It is the walk's own route: source first, in travel order, truncated
+    # where the walk actually stopped.
     ctx.emit(AIEvent("move", unit.slot, unit.x, unit.y, moved.x, moved.y,
                      detail=moved.cost,
                      payload={"steps": moved.steps, "facing": moved.facing,
+                              "path": list(moved.route),
                               "events": [e.to_dict() for e in moved.events]}))
     unit.x, unit.y = moved.x, moved.y
     unit.facing = moved.facing

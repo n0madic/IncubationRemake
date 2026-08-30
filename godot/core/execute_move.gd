@@ -88,6 +88,7 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 	var result: MoveResult = MoveResult.new()
 	result.x = mover.x
 	result.y = mover.y
+	result.route.append(route[0])
 	var here: int = route[0]
 	for i: int in range(1, route.size()):
 		var index: int = route[i]
@@ -113,6 +114,7 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 		result.steps += 1
 		result.x = nx
 		result.y = ny
+		result.route.append(index)
 		here = index
 
 		var action_point: int = state.action_point_at(index)

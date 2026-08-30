@@ -35,6 +35,18 @@ var reason: String = ""
 ## the walk, so a refusal here cannot un-walk it.
 var script_result: Dictionary = {}
 
+## The cells the walk actually entered, **source first**, in travel order --
+## `[start, first step, ..., where the unit stopped]`. Not the reconstructed
+## path: a walk can stop short of it on the budget or on a mine, and this is
+## what happened rather than what was planned.
+##
+## Deliberately **not** in [method to_dict]. That document is diffed against
+## `inclib.movemap.ExecuteResult.to_dict` and pinned by the native capture in
+## `tests/fixtures/movemap/cases_native.json`, which the engine emitted and
+## which cannot grow a field the engine never had. This is presentation data
+## for [AIPlayback], carried in the move event's payload instead.
+var route: PackedInt32Array = PackedInt32Array()
+
 ## Every reaction shot the walk drew -- docs/25 section 6. Empty when nobody was
 ## on overwatch, which is every walk on a mission the player has not used the
 ## **Def** button on. The drain runs in the *caller* (docs/23 section 5.3's

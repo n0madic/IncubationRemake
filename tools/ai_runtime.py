@@ -1291,9 +1291,19 @@ def emit_cases(root: Path, out: Path, tables: BalanceTables,
         result = ai.run_turn(ctx, ai.PLAYER_COMPUTER)
         after = [_unit_case(u) for u in
                  (ctx.world.units[s] for s in sorted(ctx.world.units))]
-        events = [{k: e[k] for k in
-                   ("kind", "slot", "x", "y", "tx", "ty", "detail", "note")}
-                  for e in result.to_dict()["events"]]
+        events = []
+        for event in result.to_dict()["events"]:
+            case = {k: event[k] for k in
+                    ("kind", "slot", "x", "y", "tx", "ty", "detail", "note")}
+            # The one payload field that is carried, and it is carried because
+            # nothing else diffs it.  `game/ai_playback.gd` walks the computer's
+            # units along this path, and unlike an `AttackResult` -- which
+            # `test_combat_native.gd` already pins -- a route that the two
+            # implementations disagreed about would show up as a body walking
+            # through a wall and as nothing else.
+            if event["kind"] == "move":
+                case["path"] = list(event["payload"]["path"])
+            events.append(case)
         cases.append({
             "mission": name,
             "seed": 1.0,
@@ -1303,7 +1313,8 @@ def emit_cases(root: Path, out: Path, tables: BalanceTables,
             # comparing event names alone cost the last time.  The nested
             # payloads are deliberately not here -- an `AttackResult` is
             # already diffed by `test_combat_native.gd`, and carrying it twice
-            # would make this fixture a copy of that one.
+            # would make this fixture a copy of that one.  A move's `path` is
+            # the exception, for the reason stated where it is added.
             "events": events,
             "sweeps": result.sweeps,
             "counters": result.counters,

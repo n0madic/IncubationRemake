@@ -63,6 +63,32 @@ start-up and not per save, so a phase that left it written would poison every
 phase after it in the same session — the reload between destructive probes does
 not undo it.
 
+## `cases_ai.json` carries one payload field, and only one
+
+The replay cases record every event's **arguments** and not just its name --
+[`docs/94`](../../../docs/94-slice-2-report.md) §8 records what comparing names
+alone cost once. Nested payloads are deliberately left out: an `AttackResult`
+is already pinned by `test_combat_native.gd`, and carrying it here would make
+this fixture a copy of that one.
+
+A `move` event's **`path`** is the exception. Slice 4 gave the event the cells
+the walk actually entered — source first, in travel order, truncated where the
+walk stopped rather than where it was planned to — because
+`game/ai_playback.gd` walks the computer's bodies along it and cannot recover
+it for itself: by the time the playback reaches event *i* the world is already
+at the end of the turn, so re-deriving the route would derive it against the
+wrong state.
+
+Nothing else diffs that value, which is why it is here. A route the two
+implementations disagreed about would surface only as a body walking through a
+wall during the computer's turn — and it is checkable: dropping the source cell
+from `ExecuteMove`'s route makes `ai._C_140.events` and `ai._C_132.events`
+fail.
+
+It is carried in the **event**, not in `MoveResult.to_dict()`. That document is
+pinned by `../movemap/cases_native.json`, which the engine emitted and which
+cannot grow a field the engine never had.
+
 ## Re-taking a capture
 
 ```bash

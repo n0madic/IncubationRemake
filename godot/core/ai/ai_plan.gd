@@ -235,9 +235,18 @@ static func _apply_move(ctx: AIContext, unit: UnitState,
 		moved: MoveResult) -> void:
 	ctx.map.set_unit(ctx.map.index_of(unit.x, unit.y), MapState.NO_UNIT)
 	ctx.map.set_unit(ctx.map.index_of(moved.x, moved.y), unit.slot)
+	# `path` is the one thing a playback cannot recover for itself. By the time
+	# [AIPlayback] reaches this event the world is already at the end of the
+	# turn, so re-deriving the route with [method WalkMap.path] would derive it
+	# against the wrong state -- the same reason every other event carries what
+	# it needs. It is the walk's own [member MoveResult.route]: source first,
+	# in travel order, truncated where the walk actually stopped.
+	var route: Array = []
+	for index: int in moved.route:
+		route.append(index)
 	ctx.emit(AIEvent.make("move", unit.slot, unit.x, unit.y, moved.x, moved.y,
 		moved.cost, "", {"steps": moved.steps, "facing": moved.facing,
-			"events": moved.events.duplicate(true)}))
+			"path": route, "events": moved.events.duplicate(true)}))
 	unit.x = moved.x
 	unit.y = moved.y
 	unit.facing = moved.facing

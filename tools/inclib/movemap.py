@@ -999,6 +999,16 @@ class ExecuteResult:
     #: Set when a mine stopped the walk: ``docs/26`` §6.1 zeroes the mover's
     #: movement points, which the caller applies along with the cost.
     movement_zeroed: bool = False
+    #: The cells the walk actually entered, **source first**, in travel order.
+    #: Not the reconstructed path: a walk can stop short of it on the budget or
+    #: on a mine, and this is what happened rather than what was planned.
+    #:
+    #: Deliberately **absent from** :meth:`to_dict`.  That document is diffed
+    #: against ``MoveResult.to_dict`` and pinned by the native capture in
+    #: ``tests/fixtures/movemap/cases_native.json``, which the engine emitted
+    #: and which cannot grow a field the engine never had.  It is presentation
+    #: data, carried in the AI move event's payload instead.
+    route: list[int] = field(default_factory=list)
     reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -1048,6 +1058,7 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
     events: list[MoveEvent] = []
     zeroed = False
     here = route[0]
+    entered: list[int] = [route[0]]
     for index in route[1:]:
         nx, ny = index % grid.width, index // grid.width
         dx, dy = nx - x, ny - y
@@ -1079,6 +1090,7 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
         facing = FACING_OF_STEP[(dx, dy)]
         steps += 1
         x, y, here = nx, ny, index
+        entered.append(index)
 
         action_point = grid.action_points[index]
         if action_point in VICTORY_BAND and mover.player != PLAYER_ALIEN:
@@ -1109,10 +1121,10 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
             return ExecuteResult(ok=False, x=nx, y=ny, cost=0, steps=steps,
                                  walked=tenths, facing=facing,
                                  action_point_writes=writes, events=events,
-                                 movement_zeroed=True,
+                                 movement_zeroed=True, route=entered,
                                  reason="a mine ended the walk")
 
     return ExecuteResult(ok=True, x=x, y=y, cost=cost, steps=steps,
                          walked=tenths, facing=facing,
                          action_point_writes=writes, events=events,
-                         movement_zeroed=zeroed)
+                         movement_zeroed=zeroed, route=entered)

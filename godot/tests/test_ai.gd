@@ -185,6 +185,25 @@ func _case(h: TestHarness, case: Dictionary) -> void:
 				mismatched.append("%d.%s %d != %d"
 					% [i, key, DictRead.as_int(a[key]),
 						DictRead.as_int(b[key])])
+		# The route a move took, cell by cell. It is the one payload field the
+		# fixture carries, because it is the one nothing else diffs: an
+		# `AttackResult` is pinned by `test_combat_native.gd`, but a path the
+		# two implementations disagreed about would show up only as a body
+		# walking through a wall during the computer's turn.
+		if DictRead.as_string(a["kind"]) == "move":
+			var want_path: Array = DictRead.as_array(a["path"])
+			var got_path: Array = DictRead.as_array(
+				DictRead.as_dict(b["payload"])["path"])
+			var same: bool = want_path.size() == got_path.size()
+			if same:
+				for step: int in range(want_path.size()):
+					if DictRead.as_int(want_path[step]) \
+							!= DictRead.as_int(got_path[step]):
+						same = false
+						break
+			if not same:
+				mismatched.append("%d.path %s != %s"
+					% [i, str(want_path), str(got_path)])
 	h.equal("%s.events" % name, ", ".join(mismatched), "",
 		"%d event(s), every argument" % want.size())
 
