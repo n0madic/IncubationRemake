@@ -369,6 +369,10 @@ func _frame_units(mission_world: World) -> void:
 	_rig.focus_on(x, y,
 		mission_world.state.height_at(mission_world.state.index_of(x, y)))
 	_rig.set_zoom(minf(_rig.max_zoom, OPENING_ZOOM_METRES))
+	# The one place the rig turns by itself: at load there is no previous view
+	# to preserve, so an opening yaw that puts the eye inside a wall is simply
+	# replaced by the nearest one that does not.
+	_rig.choose_yaw()
 
 
 ## Give the computer's event to the body it is about.

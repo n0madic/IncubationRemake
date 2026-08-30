@@ -633,37 +633,49 @@ research targets are the PBM turn-exchange `.sav` variant and
 
 ---
 
-### 7.5.2 The eye stays inside the level
+### 7.5.2 A move that would leave the level is refused, not shortened
 
 The pivot sits on a map field and the eye is up and back from it, so at a wide
 zoom it left the level: outside the map looking in, or inside a wall. On
-`_C_140` the middle field is a 16 m support column and the game opened looking
-at the inside of it.
+`_C_140` the middle field is a 16 m support column.
 
-`CameraRig` now refuses that. It tests **where the eye ends up** — the field
-under it must be inside the map and lower than the eye by a clearance — and
-pulls the eye in until that holds.
+**The first fix was to pull the eye in every frame until it was clear.** It
+satisfied "the eye is never inside geometry" over all 1600 pivot-and-yaw
+combinations of `_C_140` — and it was unusable. Beside a wall the eye collapsed
+onto the unit's feet; during a yaw tween the clearance was recomputed every
+frame, so the view snapped back out to the ceiling the moment the wall passed.
+A continuous clamp on a discrete camera reads as the camera fighting the
+player.
 
-Two things it deliberately does **not** do, each learned by doing it:
+So the rule is a **refusal**. A quarter turn that would end with the eye
+outside the level does not happen, and neither does a zoom step; the view stays
+exactly where it was, which is something a player can understand and work
+around. Zooming *in* is always allowed — it can only bring the eye nearer a
+pivot that is on the map by definition.
 
-* **it does not test the ground between the pivot and the eye.** That version
-  pulled the eye in whenever anything tall stood in the way, which on an
-  interior map is almost always, and the view collapsed onto the unit. These
+Three deliberate limits:
+
+* **only the eye's own position is tested, not the ground it passes over.**
+  Testing the path refuses almost every view on an interior map, because these
   levels have columns and ceilings everywhere and the camera is meant to look
-  past them; what it may not do is leave the level;
-* **it does not clamp to `MIN_ZOOM`.** That is the floor on what the player may
-  *ask* for, not a physical distance, and clamping the result up to it pushed
-  the eye back into the wall the search had just rejected.
+  past them;
+* **where no yaw fits at all, every turn is allowed.** Refusing all four would
+  trap the player for no gain;
+* **following a unit does not re-choose the yaw.** A camera that turned by
+  itself whenever the selection moved would be worse than one that occasionally
+  looks through a wall. The opening yaw is the single exception, and it is the
+  one moment with no previous view to preserve.
 
 The rule reads the map's **own cell heights** — the same data the simulation
-uses — rather than a collision mesh built from the scenery, which would be a
-second and disagreeing description of the level. And it clamps the *distance*,
-never `_zoom`: the zoom the player chose is what a save round-trips, so backing
-out of a corner restores the view instead of having quietly lost it.
+uses — rather than a collision mesh built from 1642 scenery instances, which
+would be a second and disagreeing description of the level. It never touches
+`_zoom`, so a save still round-trips the zoom the player chose.
 
-Checked over every field of `_C_140` at all four yaw steps — 1600 combinations,
-of which 60 put the eye inside geometry and 226 outside the map before the
-rule, and none after.
+Neither the crowded-pivot case nor the zoom refusal occurs anywhere on
+`_C_140`: a field near a corner fails for one yaw and the **opposite** yaw
+always fits. They are exercised on a synthetic map instead — a pivot ringed by
+100 m walls, and a one-sided wall that refuses one yaw while another fits — and
+the suite says so, so that the corpus checks are not read as covering them.
 
 ### 7.10 Animation plays at 30 fps, and that is a choice
 
