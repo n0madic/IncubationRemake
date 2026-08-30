@@ -488,12 +488,14 @@ def check_bands(c: Checker, root: Path, tables: BalanceTables,
         if ai._band_of(percent) != expected:
             wrong.append(f"{percent}% -> {ai._band_of(percent)}, "
                          f"docs/23 section 6 says {expected}")
-    # **The only guard the boundaries have.** The census above binds a boundary
-    # only where a shipped pair sits on each side of it, and the report below
-    # shows that none does: moving the first boundary from 20 to 25 reclassifies
-    # nothing, because no situation in the corpus lands in 21..25. So the table
-    # itself is stated twice -- the same treatment `CONVERTER_VERSION` gets --
-    # and the two statements are compared directly.
+    # The census above binds a boundary only where a shipped pair sits on each
+    # side of it, and `band.boundary_windows` below shows how far each one
+    # could move before the corpus noticed. **The boundaries themselves are
+    # pinned natively**: `ai_gold.py`'s `bands` phase writes the weapon's hit
+    # quote inside a live process, asks the engine for the chance and reads
+    # back the marker it stamped, one percentage point either side of all
+    # four. This restatement is what ties that measurement to the table the
+    # model uses.
     c.expect("band.table_is_the_spec_s",
              [tuple(entry) for entry in ai.TARGET_BANDS],
              [tuple(entry) for entry in BAND_TABLE_FROM_THE_SPEC],

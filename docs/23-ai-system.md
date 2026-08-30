@@ -683,6 +683,23 @@ the target's cell with a **band of the resulting hit percentage**:
 | 71 … 90 | 33 |
 | > 90 | 34 |
 
+**Measured, not read off the listing.** No shipped situation puts a resolvable
+pair on both sides of any of the four boundaries — the corpus's 210 reachable
+pairs come nearest at 20/28, 48/52, 70/72 and 90/92 — so the table above rested
+on the disassembly until `ai_gold.py`'s `bands` phase walked a percentage
+across all four inside a live `Incubation.exe`. The lever is the weapon's *hit
+quote* (`SetWeaponInfo + 0x30`, [`21` §4](21-info-lcl-schema.md)), which moves
+`aGetHitProbability`'s answer and nothing else the overlay reads. Twenty-two
+probes, each asking the engine what the chance is and then reading back what it
+stamped:
+
+| percent | 1 | 18 | 19 | **20** | **21** | 22 | 48 | 49 | **50** | **51** | 52 | 68 | 69 | **70** | **71** | 72 | 88 | 89 | **90** | **91** | 92 | 99 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| marker | 30 | 30 | 30 | **30** | **31** | 31 | 31 | 31 | **31** | **32** | 32 | 32 | 32 | **32** | **33** | 33 | 33 | 33 | **33** | **34** | 34 | 34 |
+
+Every boundary is inclusive of the value named and exclusive of the next point,
+exactly as the table states.
+
 Weapon `special` 6 — *attack the defender's position of the last turn* — swaps
 in `+0x51`/`+0x52` before the stamp, exactly as [`21` §4](21-info-lcl-schema.md)
 records for the combat path.

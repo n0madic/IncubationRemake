@@ -14,3 +14,4 @@ godot/export/
 tests/fixtures/movemap/*.json
 tests/fixtures/turn/*.json
 tests/fixtures/lcl/*.json
+tests/fixtures/ai/*.json

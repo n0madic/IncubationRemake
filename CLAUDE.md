@@ -248,12 +248,19 @@ python3 tools/turn_gold.py --check gog_incubation     # re-run the models agains
 
 `tools/ai_gold.py` is the third, and the one that pins a **whole computer
 turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
-captures eleven phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
+captures twelve phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
 `python3 tools/ai_gold.py --check gog_incubation` re-runs `inclib/ai.py`
-against them (40 checks: the three predicates over 90 ordered pairs, the cover
+against them (45 checks: the three predicates over 90 ordered pairs, the cover
 score over 60 cells, the target overlay, the approach cell, seven helpers, six
 fires, twelve plans, the parabomb fuse, and `aAISystemControl` itself with all
-200 unit records and `aRandom`'s seed compared field by field). **It must not
+200 unit records and `aRandom`'s seed compared field by field). The twelfth is
+the **band sweep**: it writes the weapon's hit quote (`SetWeaponInfo + 0x30`)
+one point either side of each of `docs/23` §6's four boundaries, asks
+`aGetHitProbability` what the chance is and reads back the marker
+`aBuildTargetOverlay` stamped, so the band table is measured rather than read
+off the listing. It puts the column back -- the weapon table is loaded once at
+start-up and not per save, so a phase that left it written would poison every
+phase after it. **It must not
 use `--code`**: on this host an injected executable page makes `Incubation.exe`
 fault before the anchor, ten attempts out of ten, so the byte writer is the
 game's own imported `memcpy` reached through its IAT slot with the byte in a

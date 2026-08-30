@@ -30,7 +30,7 @@ godot/
 tools/
   inclib/    ai.py new (1813 lines); combat.py, movemap.py extended
   ai_runtime.py new        72 checks over 108 missions and 1594 aliens
-  ai_gold.py new           eleven native phases, 40 checks
+  ai_gold.py new           twelve native phases, 45 checks
 ```
 
 `core/ai/` is [`23`](23-ai-system.md) §2–§9 in the order the stage built it:
@@ -58,6 +58,7 @@ not move; the inventory did.
 | The three predicates `0x0040B000` / `40` / `80` | **native-runtime** | 90 ordered pairs of live slots |
 | The cover score `0x0040B0D0` | **native-runtime** | 60 cells, including the two bytes it reads past the unit array |
 | The target overlay `0x0042FF30` + prune `0x0042FE90` | **native-runtime** | call, then read the cell grid back |
+| **The five hit-chance bands** | **native-runtime** | 22 probes: the weapon's hit quote written, `aGetHitProbability` asked, the stamped marker read back — one point either side of all four boundaries |
 | The approach cell `0x0040ADC0` | **native-runtime** | 10 targets, small and large mover; the `size` byte written as in [`93` §11](93-slice-1-report.md) |
 | Fire `0x0040A440`, six shots | **native-runtime** | destructive; reload between probes, seed pinned |
 | Plan `0x0040A750`, twelve probes | **native-runtime** | one per reachable kind × level |
@@ -111,6 +112,20 @@ answered the fallback 0 while `tables/balance.json` carried the real values, so
 the remake's aliens did damage the engine's would not. `test_ai.gd` found it on
 its first run, comparing unit records after a turn; `test_cache.gd` now asserts
 that every column any accessor reads survives the narrowing.
+
+**The five hit-chance bands were never bound by data, and now are.** No
+shipped situation puts a resolvable pair one point either side of any of
+[`23` §6](23-ai-system.md)'s four boundaries — the corpus's 210 pairs come
+nearest at 20/28, 48/52, 70/72 and 90/92 — so the table had been resting on the
+disassembly. The `bands` phase walks a percentage across all four inside a live
+`Incubation.exe`: it writes the weapon's *hit quote* (`SetWeaponInfo + 0x30`),
+which moves `aGetHitProbability`'s answer and nothing else the overlay reads,
+then asks the engine what the chance is and reads back the marker
+`aBuildTargetOverlay` stamped on the target's cell. Twenty-two probes, and the
+boundaries fall out of the data: 20 → 30 and 21 → 31, 50 → 31 and 51 → 32,
+70 → 32 and 71 → 33, 90 → 33 and 91 → 34. The column is put back afterwards —
+the weapon table is loaded once at start-up and not per save, so a phase that
+left it written would poison every phase after it in the same session.
 
 **`--code` cannot be used on this host.** `dbgcall`'s injected executable page
 makes `Incubation.exe` fault before the anchor, ten attempts out of ten
@@ -297,11 +312,13 @@ whose `+0x42`/`+0x43` already equal the cell it stands on makes the branch
 invisible, so the scene writes the `size` column and moves the centre, the
 technique [`93` §11](93-slice-1-report.md) used natively.
 
-**What the corpus cannot bind is now said out loud.**
-`band.boundaries_the_corpus_leaves_open` reports that the nearest resolvable
-pairs to the four boundaries are 20/28, 48/52, 68/72 and 88/92 — **no boundary
-has a shipped situation on both sides of it**. All four rest on the listing, and
-`band.table_is_the_spec_s` is the only thing guarding them.
+**What the corpus cannot bind is said out loud — and then measured.**
+`band.boundary_windows` records the nearest resolvable pair on each side of
+each boundary: even after widening the population from the aliens to every live
+attacker, they come nearest at 20/28, 48/52, 70/72 and 90/92, so **no boundary
+has a shipped situation one point either side of it.** All four therefore rested
+on the listing, with `band.table_is_the_spec_s` as their only guard — until the
+`bands` capture (§3) walked a percentage across every one of them.
 
 Two process lessons, both of which produced *wrong green results* before they
 were understood:
@@ -336,14 +353,5 @@ clean one, per the rule [`94`](94-slice-2-report.md) left behind.
    not the tie-break; the second ring sees something this transcription does
    not. No shipped unit on `_C_140` is large, so nothing in the demonstration
    reaches it. `ai_gold.py` carries it as a named open check.
-3. **Two of the four band boundaries are still loose.** Widening the census
-   from the aliens to every live attacker — 147 pairs to 210 — puts a shipped
-   pair exactly **on** 70 and on 90, so those two are pinned from below and
-   loose by one above. 20 and 50 have their nearest pairs at 20/28 and 48/52,
-   so either could move several points without any shipped situation noticing.
-   The closure path is named rather than taken: a native probe that forces a
-   hit chance into one of the two windows and reads the stamped marker back
-   would settle both, and it needs a game copy and a `dbgcall` build that do
-   not currently exist on this host.
-4. **The campaign layer, bodies, animation and sound** are still untouched, as
+3. **The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).

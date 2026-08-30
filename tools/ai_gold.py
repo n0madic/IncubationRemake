@@ -99,6 +99,13 @@ COVER_OOB_LENGTH = 2
 
 #: ``unitInfo[type] + 0x7B`` -- the ``size`` column, written to turn an
 #: ordinary mover large for one call.  ``docs/93`` §11's technique.
+#: ``docs/21`` §4 -- ``SetWeaponInfo``'s table, and the "hit quote" column the
+#: band sweep writes.  It is the one input that moves the hit percentage
+#: without moving anything else the overlay reads.
+WEAPON_INFO_BASE = 0x0051B2C0
+WEAPON_INFO_STRIDE = 67
+WEAPON_INFO_ACCURACY = 0x30
+
 UNIT_INFO_BASE = 0x0051C020
 UNIT_INFO_STRIDE = 126
 UNIT_INFO_SIZE = 0x7B
@@ -120,6 +127,13 @@ MEMCPY_SLOT = 0x00525634
 MAX_PAIRS = 200
 MAX_COVER_CELLS = 60
 MAX_APPROACH = 12
+#: The band sweep: the four boundaries, how far either side of each one it
+#: tries to land, and how many distinct percentages a pair must be able to
+#: reach before it is worth sweeping.
+BAND_BOUNDARIES = (20, 50, 70, 90)
+BAND_SWEEP_MARGIN = 2
+BAND_MIN_PERCENTS = 20
+BAND_ENOUGH_PERCENTS = 60
 FIRE_PROBES = 6
 PLAN_PROBES = 14
 
@@ -152,6 +166,7 @@ __cdecl i32  aDefenceMode(ptr)                  = Incubation.exe+0xa710
 __cdecl i32  aOpenDoor(ptr)                     = Incubation.exe+0xa600
 __cdecl i32  aAISpecialPlayerControl()          = Incubation.exe+0xb2d0
 __cdecl i32  aAISystemControl(i32,i32,ptr)      = Incubation.exe+0x9940
+__cdecl i32  aGetHitProbability(ptr,ptr,i32,i32,i32,ptr,ptr) = Incubation.exe+0x6a270
 """
 
 #: ``memcpy`` is the only one of the three block routines this image imports,
@@ -320,6 +335,48 @@ def overlay_plan(slot: int, unit_slots: list[int]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def bands_plan(slot: int, shooter: int, target: int, weapon: int,
+               tx: int, ty: int, accuracies: list[int],
+               restore: int) -> str:
+    """``0x0042FF30``'s five bands, read off the engine one percentage at a
+    time.
+
+    The bands are the one part of ``docs/23`` §6 that **no shipped situation
+    pins**: the corpus's 210 resolvable pairs leave a window on each side of
+    every boundary (``ai_runtime.py``'s ``band.boundary_windows``), so the
+    table has been resting on the listing.  This walks a percentage across all
+    four.
+
+    The lever is the weapon's *hit quote* (``docs/21`` §4, ``+0x30``), which is
+    the only input that moves ``aGetHitProbability``'s answer without moving
+    anything the overlay reads: not a position, not a facing, not a line of
+    sight.  For each value the plan asks the engine what the chance **is** and
+    then what marker it **stamps**, so each probe is a `(percent, marker)`
+    pair the engine itself produced.
+
+    The column is put back at the end.  It lives in a table the process loads
+    once at start-up rather than per save, so a phase that left it written
+    would poison every phase after it in the same session.
+    """
+    offset = (WEAPON_INFO_BASE + weapon * WEAPON_INFO_STRIDE
+              + WEAPON_INFO_ACCURACY)
+    address = f"0x{offset:x}"
+    lines = _prologue(slot, bytes_needed=tuple(accuracies) + (restore,))
+    lines += ["--buf hit:4", "--buf dist:4"]
+    for value in accuracies:
+        lines.append(_writeb(address, value))
+        lines.append(
+            f"aGetHitProbability({_unit(shooter)}, {_unit(target)}, "
+            f"{weapon}, 0, 1, &hit, &dist) --dump hit")
+        lines += [
+            "aResetOverlay()",
+            f"aBuildTargetOverlay({_unit(shooter)}) "
+            f"--read {_cell(tx, ty)}:1",
+        ]
+    lines.append(_writeb(address, restore))
+    return "\n".join(lines) + "\n"
+
+
 def approach_plan(slot: int, unit_slot: int, unit_type: int,
                   targets: list[tuple[int, int]]) -> str:
     """``0x0040ADC0`` after a real fill, small and then large.
@@ -457,6 +514,70 @@ def _cover_cells(blob: bytes, live: list[int]) -> list[tuple[int, int]]:
 def _alien_slots(blob: bytes, live: list[int]) -> list[int]:
     return [s for s in live
             if _byte(blob, s, gold.UNIT_PLAYER) == ai.PLAYER_COMPUTER]
+
+
+def _band_setup(state: dict[str, Any], tables: BalanceTables
+                ) -> tuple[int, int, int, tuple[int, int], list[int],
+                           int] | None:
+    """Pick the pair and the accuracies the band sweep will walk.
+
+    A pair is usable when the model can resolve a chance for it at *some*
+    accuracy: the sweep then moves the percentage across all four boundaries.
+    The accuracies are chosen so that every percentage the sweep can reach
+    within four of a boundary is visited, plus the extremes -- about fifty
+    probes rather than a hundred, because Wine start-up on this host is
+    intermittent (``docs/91`` §1) and a shorter plan is a likelier one.
+    """
+    blob = bytes.fromhex(state["units"])
+    ctx = _context_from(bytes.fromhex(state["cells"]), blob, tables,
+                        state["ai_level"])
+    best: tuple[int, int, int, tuple[int, int], dict[int, int]] | None = None
+    for shooter_slot in sorted(ctx.world.units):
+        shooter = ctx.world.units[shooter_slot]
+        if shooter.hp == 0:
+            continue
+        weapon = shooter.weapon
+        row = ctx.world.tables.weapons.get(weapon)
+        if row is None:
+            continue
+        original = row.hit
+        reached: dict[int, int] = {}
+        for target_slot in sorted(ctx.world.units):
+            target = ctx.world.units[target_slot]
+            if target.hp == 0 or target.player == shooter.player:
+                continue
+            reached = {}
+            try:
+                for accuracy in range(1, 101):
+                    ctx.world.tables.weapons[weapon] = type(row)(
+                        **{**row.__dict__, "hit": accuracy})
+                    chance = combatmod.hit_probability(
+                        ctx.world, shooter, target, weapon, apply_los=True)
+                    if chance.in_range and 0 < chance.percent < 254:
+                        reached.setdefault(chance.percent, accuracy)
+            finally:
+                ctx.world.tables.weapons[weapon] = type(row)(
+                    **{**row.__dict__, "hit": original})
+            if len(reached) >= BAND_MIN_PERCENTS:
+                if best is None or len(reached) > len(best[4]):
+                    best = (shooter_slot, target_slot, weapon,
+                            (target.x, target.y), reached)
+        if best is not None and len(best[4]) >= BAND_ENOUGH_PERCENTS:
+            break
+    if best is None:
+        return None
+    shooter_slot, target_slot, weapon, cell, reached = best
+    wanted: set[int] = set()
+    for boundary in BAND_BOUNDARIES:
+        for percent in range(boundary - BAND_SWEEP_MARGIN,
+                             boundary + BAND_SWEEP_MARGIN + 1):
+            if percent in reached:
+                wanted.add(percent)
+    for percent in (min(reached), max(reached)):
+        wanted.add(percent)
+    accuracies = sorted({reached[p] for p in wanted})
+    original = tables.weapons[weapon].hit
+    return shooter_slot, target_slot, weapon, cell, accuracies, original
 
 
 def _capture_one(payload: dict[str, Any], key: str, game_copy: Path,
@@ -600,6 +721,44 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int) -> int:
                                _reads(rows, "aGetCtrlMapElementPtr", "$c0")],
                  })
     _write(payload, out)
+
+    # --- phase 4b: the five bands, one percentage at a time ------------
+    #
+    # The one thing no shipped situation pins.  The pair and the sweep are
+    # chosen with the model so that the plan is short and lands on both sides
+    # of every boundary; what the check compares is what the **engine** said
+    # the chance was against what it stamped, so a model that chose badly
+    # produces a weak capture rather than a wrong one.
+    # The tables come from the copy being captured, not from `gog_incubation`:
+    # the sweep writes into *this* image's weapon table and has to know what
+    # it is overwriting.
+    band_setup = _band_setup(state, load_info_file(
+        game_copy / "DATA" / "Info.lcl"))
+    if band_setup is None:
+        LOG.warning("no pair on %s can resolve a hit chance; the band phase "
+                    "is skipped and docs/95's item stays open", MISSION)
+    else:
+        shooter, target, weapon, (tx, ty), accuracies, restore = band_setup
+        _capture_one(payload, "bands", game_copy, dbgcall,
+                     bands_plan(SLOT_TURN_1, shooter, target, weapon, tx, ty,
+                                accuracies, restore),
+                     "ai_bands", attempts,
+                     lambda rows: {
+                         "shooter": shooter,
+                         "target": target,
+                         "weapon": weapon,
+                         "cell": [tx, ty],
+                         "accuracies": accuracies,
+                         "restore": restore,
+                         "returns": _results(rows, "aGetHitProbability"),
+                         "percent": [b.hex() for b in
+                                     _reads(rows, "aGetHitProbability",
+                                            "hit")],
+                         "markers": [b.hex() for b in
+                                     _reads(rows, "aBuildTargetOverlay",
+                                            _cell(tx, ty))],
+                     })
+        _write(payload, out)
 
     # --- phase 5: the approach cell ------------------------------------
     mover = aliens[0] if aliens else live[0]
@@ -1037,6 +1196,63 @@ def check_overlay(c: Checker, payload: dict[str, Any],
     c.expect("overlay.pruned", pruned, [], "0x0042FE90 drops the same markers")
 
 
+def check_bands(c: Checker, payload: dict[str, Any]) -> None:
+    """``0x0042FF30``'s five bands, taken from the engine one percent apart.
+
+    The table used to rest on the listing alone: no shipped situation puts a
+    resolvable pair on both sides of any boundary, so ``ai_runtime.py`` could
+    only *report* the windows it left open.  This closes them.  The sweep
+    writes the weapon's hit quote, asks ``aGetHitProbability`` what the chance
+    is, and reads back the marker ``aBuildTargetOverlay`` stamped on the
+    target's cell -- so each probe is a ``(percent, marker)`` pair the engine
+    produced, and the boundaries fall out of the data rather than out of a
+    reading of the disassembly.
+    """
+    data = payload.get("bands")
+    if not data:
+        c.check("band.captured", False, "phase did not run")
+        return
+    percents = [int.from_bytes(bytes.fromhex(h), "little", signed=True)
+                for h in data["percent"]]
+    markers = [int(h, 16) for h in data["markers"]]
+    c.expect("band.probes", (len(percents), len(markers)),
+             (len(data["accuracies"]), len(data["accuracies"])),
+             "one hit probability and one marker per accuracy written")
+    c.expect("band.returns", sorted(set(data["returns"])), [1],
+             "aGetHitProbability answered for every probe")
+
+    observed = dict(zip(percents, markers))
+    # The boundaries the data implies: the highest percentage still carrying
+    # each marker.
+    derived: list[tuple[int, int]] = []
+    for marker in sorted(set(markers)):
+        if marker == ai.TARGET_MARKER_TOP:
+            continue
+        derived.append((max(p for p in observed if observed[p] == marker),
+                        marker))
+    c.expect("band.table_from_the_engine", derived,
+             [list(entry) for entry in ai.TARGET_BANDS]
+             if isinstance(ai.TARGET_BANDS[0], list)
+             else [tuple(entry) for entry in ai.TARGET_BANDS],
+             "docs/23 section 6's four boundaries, now measured")
+
+    crossed: list[str] = []
+    for limit, marker in ai.TARGET_BANDS:
+        if observed.get(limit) != marker:
+            crossed.append(f"{limit}% is {observed.get(limit)}, "
+                           f"not {marker}")
+        elif observed.get(limit + 1) == marker:
+            crossed.append(f"{limit + 1}% is still {marker}")
+    c.expect("band.every_boundary_is_crossed", crossed, [],
+             "each boundary has a probe on it and a probe one point above it")
+
+    wrong = [f"{p}% -> {observed[p]}, model says {ai._band_of(p)}"
+             for p in sorted(observed) if ai._band_of(p) != observed[p]]
+    c.expect("band.model_agrees", wrong, [],
+             f"{len(observed)} percentages, banded by inclib.ai and by the "
+             f"engine")
+
+
 def check_approach(c: Checker, payload: dict[str, Any],
                    tables: BalanceTables) -> None:
     data = payload.get("approach")
@@ -1294,6 +1510,7 @@ def run_check(capture_path: Path, root: Path) -> int:
     check_predicates(c, payload, tables)
     check_cover(c, payload, tables)
     check_overlay(c, payload, tables)
+    check_bands(c, payload)
     check_approach(c, payload, tables)
     check_helpers(c, payload, tables)
     check_fire(c, payload, tables)
