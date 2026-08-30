@@ -554,6 +554,45 @@ def check_bodies(c: Checker, root: Path, cache_dir: Path,
             f"{BODY_CACHE_CEILING_BYTES / 1024 / 1024:.0f} MiB")
 
 
+#: ``docs/60`` §5 -- the descent each font reserves below the baseline. The
+#: two blank glyphs, space and NBSP, are exempt in ``font_0`` and ``font_2``,
+#: which is why those two carry a second value.
+FONT_DESCENTS: dict[str, list[int]] = {
+    "font_0": [2, 3], "font_1": [2], "font_2": [2, 3], "font_3": [2],
+}
+#: ``docs/60`` §5 -- 224 elements, one per cp1252 code point from 32 to 255.
+FONT_GLYPHS = 224
+
+
+def check_fonts(c: Checker, cache_dir: Path) -> None:
+    """The game's own bitmap fonts, against what ``docs/60`` §5 measured."""
+    index = json.loads((cache_dir / "fonts" / "index.json").read_text())
+    fonts = {f["name"]: f for f in index["fonts"]}
+    c.expect("fonts.present", sorted(fonts), sorted(FONT_DESCENTS))
+    for name in sorted(fonts):
+        font = fonts[name]
+        c.expect(f"fonts.{name}.glyphs", len(font["glyphs"]), FONT_GLYPHS,
+                 "one per cp1252 code point from 32 to 255")
+        # The descent is a property of the font, not of a glyph, and a font
+        # whose glyphs disagreed about it would show up as an extra value
+        # rather than as a baseline nobody noticed.
+        c.expect(f"fonts.{name}.descents", font["descents"],
+                 FONT_DESCENTS[name])
+        c.expect(f"fonts.{name}.codepoints",
+                 [font["glyphs"][0]["codepoint"], font["glyphs"][-1]["codepoint"]],
+                 [32, 255])
+        # Every glyph must lie inside the atlas it indexes into.
+        overflow = [g["codepoint"] for g in font["glyphs"]
+                    if g["x"] + g["width"] > font["atlas_width"]
+                    or g["height"] > font["atlas_height"]]
+        c.expect(f"fonts.{name}.inside_atlas", overflow, [],
+                 f"{font['atlas_width']}x{font['atlas_height']}")
+        c.check(f"fonts.{name}.png",
+                (cache_dir / "fonts" / str(font["file"])).is_file(),
+                str(font["file"]))
+    c.expect("fonts.no_floats", _float_paths(index), [])
+
+
 def run_checks(root: Path, missions: list[str], language: str) -> int:
     c = Checker()
     if not (root / "Missions").is_dir():
@@ -596,6 +635,7 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
 
         check_against_as_dict(c, root, first.root, missions)
         check_bodies(c, root, first.root, missions)
+        check_fonts(c, first.root)
         c.expect("bodies.cross_set_identical",
                  [w for w in result.warnings if "differs between" in w], [],
                  "unit meshes are the same geometry in every world set")

@@ -31,6 +31,24 @@ var _report: Label = null
 var _strings: Localization = null
 
 
+## The game's own font, when the cache carries it.
+##
+## docs/60: `font_2` is the largest of the four at 17 px and the only one big
+## enough to read at a modern resolution. A cache without fonts -- one built by
+## an older converter -- leaves the [Label]s on Godot's default, which is what
+## they were on for three slices; the HUD is not the place to fail over it.
+var _font: FontFile = null
+
+
+func use_font(font: FontFile) -> void:
+	_font = font
+	for label: Label in [_lines, _report]:
+		if label == null or font == null:
+			continue
+		label.add_theme_font_override("font", font)
+		label.add_theme_font_size_override("font_size", font.fixed_size)
+
+
 func _init(strings: Localization) -> void:
 	_strings = strings
 	_lines = Label.new()

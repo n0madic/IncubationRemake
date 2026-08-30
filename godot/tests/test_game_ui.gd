@@ -22,6 +22,7 @@ func run(h: TestHarness) -> void:
 	_fog(h)
 	_hud(h)
 	_command_gate(h)
+	_game_font(h)
 
 
 ## `0x00477DF0` -- who the player may give an order to.
@@ -375,3 +376,51 @@ static func _report_text(hud: Hud) -> String:
 	var panel: Control = hud.get_child(1)
 	var label: Label = panel.get_child(1)
 	return label.text
+
+
+## The game's own bitmap font, built from the cache (docs/60 section 5).
+##
+## The check that matters is **coverage**, not metrics. A glyph's pixels are
+## palette *indices*, not intensities: `font_2` uses only 0, 1 and 2, so the
+## obvious `alpha = value / 255` renders the whole font at 1 % opacity. It
+## builds, it reports sane metrics, `has_char` is true for everything -- and
+## nothing appears on screen. That is exactly how it first came out, and only
+## looking at a screenshot found it.
+##
+## So this asserts that the atlas has ink: some pixel of the built font is
+## fully opaque. Metrics are checked too, because a font that measured zero
+## would lay every glyph on top of the last.
+func _game_font(h: TestHarness) -> void:
+	var opened: Dictionary = CacheLoader.open_active()
+	if not DictRead.as_bool(opened["ok"]):
+		h.check("font.cache", false, DictRead.as_string(opened["reason"]))
+		return
+	var dir: String = DictRead.as_string(opened["cache_dir"])
+	var font: FontFile = GameFont.load_from(dir, "font_2")
+	if font == null:
+		h.check("font.built", false,
+			"no fonts/index.json -- republish the cache")
+		return
+	h.check("font.built", true, "font_2 at %d px" % font.fixed_size)
+	h.equal("font.glyphs",
+		font.get_glyph_list(0, Vector2i(font.fixed_size, 0)).size(), 224,
+		"one per cp1252 code point from 32 to 255")
+	h.check("font.has_letters", font.has_char(65) and font.has_char(122),
+		"A and z")
+	var measured: Vector2 = font.get_string_size("Incubation", 0, -1,
+		font.fixed_size)
+	h.check("font.measures", measured.x > 20.0 and measured.y > 4.0,
+		"\"Incubation\" is %.0f x %.0f px" % [measured.x, measured.y])
+
+	# The ink. A texture whose most opaque pixel is nearly transparent is the
+	# palette-index trap, and every other check above passes through it.
+	var image: Image = font.get_texture_image(0,
+		Vector2i(font.fixed_size, 0), 0)
+	var opaque: int = 0
+	for y: int in range(image.get_height()):
+		for x: int in range(image.get_width()):
+			if image.get_pixel(x, y).a > 0.99:
+				opaque += 1
+	h.check("font.has_ink", opaque > 100,
+		"%d fully opaque texels of %d" % [opaque,
+			image.get_width() * image.get_height()])

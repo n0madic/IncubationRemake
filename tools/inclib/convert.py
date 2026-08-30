@@ -42,6 +42,7 @@ from . import charisma as chamod
 from . import charisma_cache as chacache
 from . import charisma_tables as chatables
 from . import lev as levmod
+from . import liblib
 from . import prototyp as protomod
 from . import visn as visnmod
 from .cache import SourceReader, Staging
@@ -93,6 +94,16 @@ GAME_EXE = "Incubation.exe"
 #: every one -- but the choice has to be written down, and the converter checks
 #: cross-set identity for the meshes it actually emits rather than trusting it.
 UNIT_GEOMETRY_SOURCE_SET = "A00"
+
+#: ``docs/60`` §5 -- the game's four proportional bitmap fonts.  Each holds 224
+#: elements, one per cp1252 code point from 32 to 255, so the element index is
+#: ``codepoint - FONT_FIRST_CODEPOINT``.
+FONT_NAMES = ("font_0", "font_1", "font_2", "font_3")
+FONT_FIRST_CODEPOINT = 32
+FONT_SCHEMA = "incubation.fonts/1"
+#: One transparent column between glyphs in the atlas, so that a renderer
+#: sampling with any filtering cannot bleed a neighbour in.
+FONT_ATLAS_GAP = 1
 
 
 class ConvertError(Exception):
@@ -487,6 +498,85 @@ def convert_textures(reader: SourceReader, staging: Staging, world_set: str,
 
 
 # ---------------------------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------------------------
+
+def convert_fonts(root: Path, reader: SourceReader,
+                  staging: Staging) -> dict[str, Any]:
+    """The four bitmap fonts as one atlas each, plus their metrics.
+
+    ``docs/60`` §5: a glyph's ``delta_y`` is its **ascent** -- its top row sits
+    at ``baseline - delta_y`` -- and ``height - delta_y`` is a constant per
+    font, the descent.  It is 3 in ``font_0``/``font_2`` and 2 in the other
+    two, so the descent is derived per font rather than assumed.
+
+    The glyphs are palette **indices**, and the fonts ship without a companion
+    ``.pal``: the caller supplies the ramp.  So the atlas is written as
+    greyscale-in-RGB -- index value straight into all three channels -- and the
+    text colour is the renderer's, which is what the original did by handing
+    the font a palette.  Black is transparent, which is what index 0 means for
+    every other shape-library sprite too.
+    """
+    fonts: list[dict[str, Any]] = []
+    for name in FONT_NAMES:
+        path = reader.record(_find(root, "Libs", f"{name}.LIB"))
+        library = liblib.load_lib(str(path))
+        # One row, glyph after glyph: 224 glyphs of at most ~17 px is a strip
+        # of a few thousand pixels, which no texture size limit minds and which
+        # keeps the metrics trivial to state.
+        height = max((e.height for e in library.elements), default=1)
+        width = sum(e.width + FONT_ATLAS_GAP for e in library.elements)
+        pixels = bytearray(max(width, 1) * max(height, 1) * 3)
+        glyphs: list[dict[str, Any]] = []
+        x = 0
+        descents: set[int] = set()
+        for index, element in enumerate(library.elements):
+            if not element.is_empty:
+                descents.add(element.height - element.delta_y)
+                for row in range(element.height):
+                    src = row * element.width
+                    dst = (row * width + x) * 3
+                    for column in range(element.width):
+                        value = element.pixels[src + column]
+                        at = dst + column * 3
+                        pixels[at] = value
+                        pixels[at + 1] = value
+                        pixels[at + 2] = value
+            glyphs.append({
+                "codepoint": FONT_FIRST_CODEPOINT + index,
+                "x": x,
+                "width": element.width,
+                "height": element.height,
+                # The ascent, and the left side bearing -- 0 for every glyph
+                # except the two blank ones, space and NBSP, which carry 3.
+                "ascent": element.delta_y,
+                "bearing": element.delta_x,
+            })
+            x += element.width + FONT_ATLAS_GAP
+        rel = f"fonts/{name}.png"
+        target = staging.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_rgb_png(str(target), max(width, 1), max(height, 1), bytes(pixels))
+        staging.files[rel] = "written"
+        fonts.append({
+            "name": name,
+            "file": f"{name}.png",
+            "atlas_width": max(width, 1),
+            "atlas_height": max(height, 1),
+            "first_codepoint": FONT_FIRST_CODEPOINT,
+            "glyphs": glyphs,
+            # Stated, not assumed: a font whose glyphs disagreed about it would
+            # show up here as more than one value rather than as a wrong
+            # baseline nobody noticed.
+            "descents": sorted(descents),
+            "source": reader.rel(path),
+        })
+    document: dict[str, Any] = {"schema": FONT_SCHEMA, "fonts": fonts}
+    staging.write_json("fonts/index.json", document)
+    return document
+
+
+# ---------------------------------------------------------------------------
 # Driving one conversion
 # ---------------------------------------------------------------------------
 
@@ -766,6 +856,8 @@ def convert(root: Path, missions: list[str], staging: Staging,
         staging.write_json(f"textures/{world_set}/index.json", index)
         result.textures += len(index["textures"])
         result.world_sets.append(world_set)
+
+    convert_fonts(root, reader, staging)
 
     gui_paths = gui_text_paths(root, language)
     programs = {}

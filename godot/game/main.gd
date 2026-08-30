@@ -35,6 +35,8 @@ var _rig: CameraRig = null
 ## How far out the view opens, in metres. Chosen to clear the ceiling of the
 ## interiors the demo missions are: see [method _frame_units].
 const OPENING_ZOOM_METRES: float = 8.0
+## docs/60 section 5 -- the largest of the four shipped fonts, 17 px.
+const GAME_FONT: String = "font_2"
 ## How long a body takes to cross one map field while walking.
 ##
 ## A remake decision, like the 30 fps of [CharismaState]: the original's own
@@ -97,6 +99,9 @@ func _ready() -> void:
 	# localization seam retrofitted later means finding every literal.
 	_strings = Localization.from_cache(_cache_dir, manifest)
 	_hud = Hud.new(_strings)
+	# docs/60 -- the game's own bitmap font, the 17 px one. A cache built by an
+	# older converter has no fonts and the HUD stays on Godot's default.
+	_hud.use_font(GameFont.load_from(_cache_dir, GAME_FONT))
 	add_child(_hud)
 	_build(_wanted_mission())
 

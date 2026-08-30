@@ -281,18 +281,31 @@ a pose is computed, not how it is applied. Nothing is optimised now, because
   authored maximum — which on `_C_140` is inside a support column and above the
   level's roof. See [`92` §7.5.1](92-remake-architecture.md).
 
-## 9. What was cut, and why
+## 9. The game fonts, and one trap in them
 
-**The `docs/60` game fonts.** The plan lists them as the second thing to cut if
-the stage runs long, and it did — the scale finding of §3 and the camera work
-of §8 were not in the estimate. The HUD still draws in Godot's default font.
+[`60` §5](60-lib-sprites.md)'s four bitmap fonts are converted and the HUD
+draws in `font_2`, the 17 px one. The cache carries an atlas PNG and per-glyph
+metrics — 12 KB of image and 64 KB of JSON for all four — and `game/` builds a
+Godot `FontFile` from them. Not a `.fnt`: `FontFile.load_bitmap_font` would be
+less code and would put another engine's format inside the converted data,
+which [`92` §3.2](92-remake-architecture.md) is against.
 
-This is a **recorded cut, not an omission**: nothing depends on it, the two
-open questions of `docs/60` belong to [`29`](29-interface-contract.md) rather
-than here, and the sprite pipeline it needs is the same one the interface slice
-will want. It moves there whole.
+**The trap is that a glyph's pixels are palette indices, not intensities.**
+`font_2` uses only the values 0, 1 and 2, so the obvious `alpha = value / 255`
+renders the whole font at 1 % opacity. Everything else still passes: the font
+builds, reports 224 glyphs, `has_char` is true for every letter and
+`get_string_size("Incubation")` returns a sensible 71 × 20 px. Nothing appears
+on screen. Only a screenshot found it, so the suite now asserts that the built
+atlas has **ink** — some texel fully opaque — and that assertion fails on the
+mutant that reintroduces the bug.
 
-Also deliberately absent: cutscenes and the sequence player
+`tools/font_render.py` had documented the same trap in a comment ("using the
+raw index as a grey level would render most glyphs near-black") and it was
+still walked into. The two non-zero indices are kept in the cache, so a later
+slice that establishes what index 2 means — an outline, most likely — needs no
+reconversion.
+
+Deliberately absent: cutscenes and the sequence player
 ([`41`](41-sequence-player.md)), sound and effects
 ([`28`](28-effects-and-sound.md)), the campaign layer
 ([`27`](27-campaign.md)), the `J` animation family (no code path references
@@ -312,11 +325,13 @@ it), and animation blending (`weight` is written and never read,
 | `_C_140` plays with bodies | 8 of 10 units bodied, 13–23 parts each; idle, walk and fire drive them |
 | Cache size and conversion time | 2.87 MiB of bodies against an 8 MiB ceiling; 5.1 s |
 | `core` isolation and typed warnings | unchanged; the warnings gate found `game/charisma/` on its own and rejected four files until every `Variant` cast was typed |
-| Mutation battery | 7 pose + 4 state-machine + 9 Python mutants; the three survivors are closed and re-checked |
+| Game fonts | four converted, 4 × 224 glyphs, descents matching `docs/60` §5 including its space/NBSP exception; the HUD draws in `font_2` |
+| Mutation battery | 7 pose + 4 state-machine + 2 font + 9 Python mutants; the three survivors are closed and re-checked |
 
 Regression, all green: the 38-command always-run block,
 `bash tools/dbgcall/selftest.sh`, the four-command `docs/40` §12 gate, and
-**27 suites, 1582 checks, 0 failures**. The shipping build exports and runs
+**27 suites, 1588 checks, 0 failures** with `remake_convert --check` at
+101/101. The shipping build exports and runs
 `_C_140` with no script errors.
 
 ## 11. Open questions
