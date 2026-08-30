@@ -96,3 +96,20 @@ func def_mode(weapon_id: int) -> int:
 ## Rounds spent per shot.
 func mun_per_fight(weapon_id: int) -> int:
 	return _field(weapon_id, "mun_per_fight", 0)
+
+
+## `weapon[+0x3C]` -- the movement points one shot costs.
+##
+## docs/23 section 4: the computer's fire routine refuses before it marks
+## anything when `u->mp < ap`, and subtracts this afterwards with a clamp at
+## zero, so a unit is never left owing points. The fallback is 0 rather than a
+## refusal because an id with no row has no cost either, and the eligibility
+## test above it is what keeps such a weapon from firing.
+func ap(weapon_id: int) -> int:
+	return _field(weapon_id, "ap", 0)
+
+
+## `weapon[+0x3F]` -- the id `special` 1 falls back to when the weapon is
+## jammed or out of ammunition. docs/21 section 6 calls it `param`.
+func param(weapon_id: int) -> int:
+	return _field(weapon_id, "param", weapon_id)

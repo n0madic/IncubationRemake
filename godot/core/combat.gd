@@ -103,11 +103,11 @@ const HEAT_NONE: int = 0xFF
 const MUN_NONE: int = 0xFF
 
 ## docs/22 section 7.2 -- the weapon families this file simulates.  The other
-## eight -- the radius that widens with the shot, the line-of-sight sweep, the
-## whole-map sweep, the 18-cell scatter, the re-centred explosion and the
-## filtered spores -- are **not** here.  [method mark_cells] returns an empty
-## array and sets `unsupported`, so a shot this model cannot resolve says so
-## instead of quietly marking nothing.
+## seven -- the radius that widens with the shot, the line-of-sight sweep, the
+## whole-map sweep, the 18-cell scatter, the re-centred explosion and the two
+## special-object sweeps -- are **not** here.  [method mark_cells] returns an
+## empty array and sets `unsupported`, so a shot this model cannot resolve says
+## so instead of quietly marking nothing.
 ## 46 and 42 belong to their own handlers -- `aim_cell_full_null_object` and
 ## `aim_cell_70_null_object` -- which differ from these two only in a null
 ## object pointer the marking pass does not use.  They are folded in here
@@ -120,6 +120,19 @@ const AIM_AND_NEIGHBOURS: Array[int] = [8, 12, 26, 36]
 const NEIGHBOURS_THEN_AIM_70: Array[int] = [40]
 const AIM_FORCED_HIT: Array[int] = [43]
 const AIM_STUN: Array[int] = [45]
+## `0x0046ACCD` -- weapon 22 `Spores`.  The aim cell, then the eight
+## neighbours, each only when it holds a unit whose owner is not
+## [constant PLAYER_NEUTRAL].
+const SPORES_FILTERED: Array[int] = [22]
+## docs/10 section 5.7 -- the neutral-prop owner the spores pattern skips.
+const PLAYER_NEUTRAL: int = 0xFC
+## `0x004308C0`'s direction table (docs/23 section 8), in the order the spores
+## handler sweeps it with `allowDiagonal` set.  It is neither the facing
+## encoding nor the `dy`-then-`dx` order [constant AIM_AND_NEIGHBOURS] writes
+## its ring in, and the order is what the damage rolls come out in.
+const STEP_DIRECTIONS: Array[Vector2i] = [
+	Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1), Vector2i(1, 0),
+	Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1), Vector2i(-1, -1)]
 ## docs/22 section 7.2 -- the ids whose dispatch entry reports an error.  28 is
 ## the `-` placeholder and 37 is `Mine`; the other seven `Info.lcl` never
 ## defines.  They mark nothing, and that is correct rather than unsupported.
@@ -285,7 +298,8 @@ static func apply_damage(defender: UnitState, damage: int,
 ## Returns `[x, y, marker]` triples.  A family this file does not simulate
 ## returns empty **and** appends its name to `unsupported`, so the caller can
 ## refuse instead of reporting a clean miss.
-static func mark_cells(state: MapState, weapon_id: int, tx: int, ty: int,
+static func mark_cells(state: MapState, units: Dictionary, weapon_id: int,
+		tx: int, ty: int,
 		unsupported: Array[String]) -> Array[PackedInt32Array]:
 	var out: Array[PackedInt32Array] = []
 	if NO_PATTERN.has(weapon_id):
@@ -325,6 +339,28 @@ static func mark_cells(state: MapState, weapon_id: int, tx: int, ty: int,
 		out.append_array(neighbours)
 		if aim_in:
 			out.append(PackedInt32Array([tx, ty, MARKER_70]))
+		return out
+	if SPORES_FILTERED.has(weapon_id):
+		# Two things "the same, filtered" loses: an **empty** neighbour is
+		# skipped too -- the `cell->unit == 0xFFFF` test comes before the owner
+		# test -- and the sweep runs the stepper's direction order rather than
+		# the unrolled ring above.
+		if aim_in:
+			out.append(PackedInt32Array([tx, ty, MARKER_FULL]))
+		for step: Vector2i in STEP_DIRECTIONS:
+			var nx: int = tx + step.x
+			var ny: int = ty + step.y
+			if not state.in_bounds(nx, ny):
+				continue
+			var slot: int = state.unit_at(state.index_of(nx, ny))
+			if slot == MapState.NO_UNIT:
+				continue
+			if not units.has(slot):
+				continue
+			var occupant: UnitState = units[slot]
+			if occupant.player == PLAYER_NEUTRAL:
+				continue
+			out.append(PackedInt32Array([nx, ny, MARKER_70]))
 		return out
 	unsupported.append(
 		"weapon %d uses a target pattern this model does not simulate; "
@@ -375,7 +411,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	attacker.facing = direction(x, y, tx, ty)
 	result.facing = attacker.facing
 	var unsupported: Array[String] = []
-	result.marked = mark_cells(state, attacker.weapon, tx, ty, unsupported)
+	result.marked = mark_cells(state, units, attacker.weapon, tx, ty,
+		unsupported)
 	if not unsupported.is_empty():
 		result.fired = false
 		result.reason = unsupported[0]

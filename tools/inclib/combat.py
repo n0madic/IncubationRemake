@@ -100,6 +100,10 @@ BIAS_HIGH = 0.6
 #: single-ray form; everything else gets the two- or four-ray one.
 CLEVER_SMALL_UNITS_ORDER = 9
 PLAYER_COMPUTER = 0xFF
+#: ``docs/10`` §5.7 -- the neutral-prop owner.  ``0x0046ACCD`` refuses to mark a
+#: neighbour whose occupant belongs to it, which is what makes weapon 22's
+#: pattern differ from weapon 8's.
+PLAYER_NEUTRAL = 0xFC
 
 #: ``docs/22`` §9.2 -- permanently visible whatever the fog says.
 ALWAYS_VISIBLE_TYPES = frozenset({0x3D, 0x3E, 0x3F})
@@ -207,7 +211,17 @@ SIMULATED_FAMILIES = frozenset({
     "aim_cell_full", "aim_cell_70", "aim_and_neighbours",
     "neighbours_then_aim_70", "aim_cell_70_null_object",
     "aim_cell_full_null_object", "aim_cell_forced_hit", "aim_cell_stun",
+    "spores_filtered",
 })
+
+#: ``0x004308C0``'s direction table (``docs/23`` §8), in the order
+#: ``0x0046ACCD`` sweeps it with ``allowDiagonal`` set.  It is **not**
+#: :data:`DIRECTION_VECTORS`, which is the facing encoding, and it is not the
+#: ``dy``-then-``dx`` order the unrolled handler at ``0x0046AE0B`` writes its
+#: eight neighbours in -- so the two patterns cover the same cells in
+#: different orders, and the order is what the damage rolls are drawn in.
+STEP_DIRECTIONS = ((0, 1), (-1, 0), (0, -1), (1, 0),
+                   (1, -1), (-1, 1), (1, 1), (-1, -1))
 
 #: ``docs/22`` §7.4 -- the eight direction codes, from the shooter to the
 #: target.  The layout is the doc's own diagram; the rear arc is these three
@@ -903,10 +917,11 @@ def mark_cells(world: CombatWorld, weapon_id: int, tx: int,
     """``0x0046AA10`` -- the covered cells and their markers, for the simple
     families.
 
-    ``docs/22`` §7.2's other eight handlers -- the radius that widens with the
-    shot, the line-of-sight sweep, the whole-map sweep, the 18-cell scatter,
-    the re-centred explosion and the filtered spores -- raise instead of
-    marking nothing, so a model that cannot resolve a shot says so.
+    ``docs/22`` §7.2's remaining seven handlers -- the radius that widens with
+    the shot, the line-of-sight sweep, the whole-map sweep, the 18-cell
+    scatter, the re-centred explosion and the two special-object sweeps --
+    raise instead of marking nothing, so a model that cannot resolve a shot
+    says so.
     """
     family = pattern_family(weapon_id)
     if family == "none":
@@ -931,6 +946,27 @@ def mark_cells(world: CombatWorld, weapon_id: int, tx: int,
     if family == "aim_and_neighbours":
         out = [(tx, ty, MARKER_FULL)] if aim_in else []
         return out + [(x, y, MARKER_70) for x, y in neighbours]
+    if family == "spores_filtered":
+        # `0x0046ACCD` -- the aim cell is stamped unconditionally, and each of
+        # the eight neighbours only when it holds a unit whose owner is not
+        # `0xFC`.  Two things a paraphrase of "the same, filtered" loses: an
+        # **empty** neighbour is skipped as well (the `cell->unit == 0xFFFF`
+        # test comes before the owner test), and the sweep runs the stepper's
+        # direction order rather than the unrolled handler's, which is the
+        # order the damage rolls come out in.
+        out = [(tx, ty, MARKER_FULL)] if aim_in else []
+        for dx, dy in STEP_DIRECTIONS:
+            nx, ny = tx + dx, ty + dy
+            if not world.in_bounds(nx, ny):
+                continue
+            slot = world.unit_at[world.index(nx, ny)]
+            if slot < 0:
+                continue
+            occupant = world.units.get(slot)
+            if occupant is None or occupant.player == PLAYER_NEUTRAL:
+                continue
+            out.append((nx, ny, MARKER_70))
+        return out
     # neighbours_then_aim_70 -- the order is the handler's own.
     out = [(x, y, MARKER_70) for x, y in neighbours]
     return out + ([(tx, ty, MARKER_70)] if aim_in else [])

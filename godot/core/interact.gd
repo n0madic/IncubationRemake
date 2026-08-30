@@ -273,7 +273,7 @@ static func execute_bomb(state: MapState, units: Dictionary,
 	var result: AttackResult = AttackResult.new()
 	result.fired = true
 	var unsupported: Array[String] = []
-	result.marked = Combat.mark_cells(state, Combat.BOMB_WEAPON, x, y,
+	result.marked = Combat.mark_cells(state, units, Combat.BOMB_WEAPON, x, y,
 		unsupported)
 	if not unsupported.is_empty():
 		result.fired = false
