@@ -24,6 +24,8 @@ func run(h: TestHarness) -> void:
 	_check_pivot(h)
 
 
+	_inside_the_level(h)
+
 ## Four presses in either direction must be four equal quarter turns, and the
 ## camera must end up exactly where it started.
 func _check_full_turns(h: TestHarness) -> void:
@@ -176,3 +178,57 @@ func _key(code: int, pressed: bool) -> InputEventKey:
 	event.keycode = code
 	event.pressed = pressed
 	return event
+
+
+## The eye never ends up inside the level, at any pivot and any yaw.
+##
+## This is the complaint the rule exists for: at a wide zoom the camera sits up
+## and back from the pivot, and on an interior map that put it inside a support
+## column or outside the level altogether -- `_C_140`'s middle field is a 16 m
+## column, and the game opened looking at the inside of it.
+##
+## Every enterable-or-not field of the map, at all four yaw steps, is checked
+## against the map's own heights. On `_C_140` that is 1600 combinations; before
+## the rule 60 of them put the eye inside geometry and 226 put it off the map,
+## the worst by 13 m.
+func _inside_the_level(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("bounds.mission", false, "_C_140 is not in the cache")
+		return
+	var world: World = loaded["world"]
+	var heights: PackedInt32Array = world.resource.heights()
+	var width: int = world.resource.width
+	var height: int = world.resource.height
+
+	var rig: CameraRig = CameraRig.new()
+	rig.setup(width, height, heights,
+		DictRead.as_int(DictRead.as_dict(
+			DictRead.as_dict(loaded["document"])["header"])["camera_height"]))
+	var inside: int = 0
+	var off_map: int = 0
+	var tested: int = 0
+	var worst: float = 0.0
+	for step: int in range(4):
+		rig.rotation.y = CameraRig.step_angle(step)
+		for y: int in range(height):
+			for x: int in range(width):
+				rig.focus_on(x, y, heights[y * width + x])
+				tested += 1
+				var eye: Vector3 = rig.position \
+					+ rig.transform.basis * rig.camera().position
+				var cx: int = roundi(eye.x / 2.0)
+				var cy: int = roundi(-eye.z / 2.0)
+				if cx < 0 or cy < 0 or cx >= width or cy >= height:
+					off_map += 1
+					continue
+				var ground: float = float(heights[cy * width + cx]) / 1600.0
+				if eye.y < ground:
+					inside += 1
+					worst = maxf(worst, ground - eye.y)
+	h.check("bounds.tested", tested == width * height * 4,
+		"%d pivot and yaw combinations" % tested)
+	h.equal("bounds.never_inside_geometry", inside, 0,
+		"worst penetration %.2f m" % worst)
+	h.equal("bounds.never_off_the_map", off_map, 0)
+	rig.free()

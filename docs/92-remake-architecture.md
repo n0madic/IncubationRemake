@@ -633,6 +633,38 @@ research targets are the PBM turn-exchange `.sav` variant and
 
 ---
 
+### 7.5.2 The eye stays inside the level
+
+The pivot sits on a map field and the eye is up and back from it, so at a wide
+zoom it left the level: outside the map looking in, or inside a wall. On
+`_C_140` the middle field is a 16 m support column and the game opened looking
+at the inside of it.
+
+`CameraRig` now refuses that. It tests **where the eye ends up** — the field
+under it must be inside the map and lower than the eye by a clearance — and
+pulls the eye in until that holds.
+
+Two things it deliberately does **not** do, each learned by doing it:
+
+* **it does not test the ground between the pivot and the eye.** That version
+  pulled the eye in whenever anything tall stood in the way, which on an
+  interior map is almost always, and the view collapsed onto the unit. These
+  levels have columns and ceilings everywhere and the camera is meant to look
+  past them; what it may not do is leave the level;
+* **it does not clamp to `MIN_ZOOM`.** That is the floor on what the player may
+  *ask* for, not a physical distance, and clamping the result up to it pushed
+  the eye back into the wall the search had just rejected.
+
+The rule reads the map's **own cell heights** — the same data the simulation
+uses — rather than a collision mesh built from the scenery, which would be a
+second and disagreeing description of the level. And it clamps the *distance*,
+never `_zoom`: the zoom the player chose is what a save round-trips, so backing
+out of a corner restores the view instead of having quietly lost it.
+
+Checked over every field of `_C_140` at all four yaw steps — 1600 combinations,
+of which 60 put the eye inside geometry and 226 outside the map before the
+rule, and none after.
+
 ### 7.10 Animation plays at 30 fps, and that is a choice
 
 [`40` §4.8](40-charisma-model-animation.md) proves 30 fps for cutscenes and
