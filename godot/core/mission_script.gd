@@ -63,13 +63,25 @@ static func env(call_type: int, turn: int = 1, player: int = 0, x: int = 0,
 
 
 ## The inverse: the seam's dictionary as the array the interpreter reads.
+##
+## An out-of-range slot is **reported**, not dropped. The engine indexes the
+## environment by `letter - 'A'` (`0x004402A0`), so a caller passing `ord("A")`
+## rather than 0 is asking for slot 65 -- and dropping it silently leaves `_A`
+## at zero, matches no `EnvVarCmpNum` arm, runs the program to `fell_off` with
+## `ok` true, and lets the hand-over proceed with the mission never advancing.
+## `inclib/lcl_runtime.py` raises for the same reason, and records that it
+## learned it the hard way.
 static func to_slots(environment: Dictionary) -> PackedInt32Array:
 	var packed: PackedInt32Array = PackedInt32Array()
 	packed.resize(LclEnv.ENV_SLOTS)
 	for key: Variant in environment:
 		var slot: int = DictRead.as_int(key)
-		if slot >= 0 and slot < LclEnv.ENV_SLOTS:
-			packed[slot] = DictRead.as_int(environment[key])
+		if not LclEnv.is_slot(slot):
+			push_error(("environment slot %d is outside 0..%d; the engine "
+				+ "indexes by letter - 'A', so pass 0 for _A")
+				% [slot, LclEnv.ENV_SLOTS - 1])
+			continue
+		packed[slot] = DictRead.as_int(environment[key])
 	return packed
 
 

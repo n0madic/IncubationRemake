@@ -970,6 +970,23 @@ func _world_wiring(h: TestHarness) -> void:
 	h.equal("world.the_bonus_reached_the_game_control_slot",
 		pad.game_control.get_slot(GameControl.SLOT_EQUIPMENT_POINTS), 20)
 
+	# **A use that was not offered costs nothing.** docs/26 section 1.1's pad
+	# spends the point whatever `aExecuteUse` returned, but `0x00472570` never
+	# offers command 8 unless `may_use` accepted -- so the gate is what stops a
+	# unit at the map edge, facing outward, from losing a point per press.
+	var edge: World = _wired_world()
+	var stranded: int = 2
+	var kept: int = DictRead.as_int(
+		DictRead.as_dict(edge.unit_view(stranded))["mp"])
+	var facing_nothing: UseResult = edge.submit_use(
+		UseCommand.create(stranded))
+	h.equal("world.a_use_with_nothing_in_front_is_refused",
+		[facing_nothing.ok, facing_nothing.kind], [false, "refused"],
+		facing_nothing.reason)
+	h.equal("world.a_refused_use_costs_no_movement_point",
+		DictRead.as_int(DictRead.as_dict(edge.unit_view(stranded))["mp"]),
+		kept)
+
 
 ## A world with two units four fields apart, both armed, the alien hidden and
 ## facing the squad.

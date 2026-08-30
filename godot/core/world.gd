@@ -293,6 +293,14 @@ func submit_use(command: UseCommand) -> UseResult:
 	if not _units.has(command.unit_slot):
 		return UseResult.refused("no such unit")
 	var unit: UnitState = _units[command.unit_slot]
+	# **The gate comes first, and the charge is unconditional after it.**
+	# docs/26 section 1.1 quotes the pad's arm: it calls `aExecuteUse` and then
+	# spends the point whatever came back -- but `0x00472570` never offers
+	# command 8 unless `may_use` accepted, so the two together mean "a use that
+	# was not offered costs nothing". Charging on the result instead let a unit
+	# at the map edge, facing outward, lose a point per press.
+	if not Interact.may_use(state, _units, _unit_types, unit):
+		return UseResult.refused("there is nothing to use in front of it")
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
 		turn.mode, rng)

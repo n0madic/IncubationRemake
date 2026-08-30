@@ -655,6 +655,57 @@ def check_reaction(c: Checker, tables: BalanceTables) -> None:
             f"{len(fired)} shot(s) before hp {mover.hp}")
 
 
+def check_stun(c: Checker, tables: BalanceTables) -> None:
+    """``docs/22`` §7.5 -- a ``Damage Absorber`` charge nullifies a stun.
+
+    The reported flag is read **before** the charge is spent.  With exactly one
+    charge the unit spends it and is *not* stunned, and reading the field after
+    the decrement said the opposite -- which `godot/core/combat.gd` had right,
+    so the two implementations disagreed.
+    """
+    weapon_id = sorted(combat.PATTERN_FAMILIES["aim_cell_stun"])[0]
+    row = tables.weapons.get(weapon_id)
+    c.check("stun.the_weapon_is_defined", row is not None,
+            f"weapon {weapon_id} is the one `aim_cell_stun` handler")
+    if row is None:
+        return
+
+    def scene(charges: int) -> tuple[combat.CombatWorld, combat.CombatUnit]:
+        n = 4 * 4
+        kind = next(iter(sorted(tables.units)))
+        world = combat.CombatWorld(
+            width=4, height=4, cell_height=[0] * n, unit_at=[-1] * n,
+            effect_state=[0] * n, units={}, tables=tables, rng=ARandom(1.0))
+        shooter = combat.CombatUnit(slot=0, type_id=kind, player=0, x=1, y=1,
+                                    hp=100, fp=5, weapon=weapon_id, ammo=9)
+        victim = combat.CombatUnit(slot=1, type_id=kind, player=255, x=2, y=1,
+                                   hp=100, fp=5, mp=4, absorber=charges)
+        for unit in (shooter, victim):
+            world.units[unit.slot] = unit
+            world.unit_at[world.index(unit.x, unit.y)] = unit.slot
+        return world, victim
+
+    world, victim = scene(1)
+    result = combat.attack_unit(world, 1, 1, 2, 1)
+    stun = [o for o in result.outcomes if o["slot"] == 1]
+    c.check("stun.one_charge_resolves", bool(stun),
+            f"{len(result.outcomes)} outcome(s)")
+    if stun:
+        c.expect("stun.a_spent_charge_is_not_a_stun",
+                 [stun[0].get("stunned"), victim.absorber, victim.mp],
+                 [False, 0, 4],
+                 "the charge is gone and the turn is not")
+
+    world, victim = scene(0)
+    result = combat.attack_unit(world, 1, 1, 2, 1)
+    stun = [o for o in result.outcomes if o["slot"] == 1]
+    if stun:
+        c.expect("stun.no_charge_is_a_stun",
+                 [stun[0].get("stunned"), victim.action_state, victim.mp],
+                 [True, combat.STUNNED_ACTION_STATE
+                  if hasattr(combat, "STUNNED_ACTION_STATE") else 5, 0])
+
+
 def _require_corpus(root: Path) -> str | None:
     if not (root / "DATA" / "Info.lcl").is_file():
         return f"{root}: no DATA/Info.lcl -- this is not a game installation"
@@ -681,6 +732,7 @@ def run_check(root: Path) -> int:
     check_hit_probability(c, root, tables)
     check_attack(c, root, tables)
     check_reaction(c, tables)
+    check_stun(c, tables)
     return c.report()
 
 

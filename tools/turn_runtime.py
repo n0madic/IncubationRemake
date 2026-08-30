@@ -613,8 +613,13 @@ def emit_handover_cases(root: Path, out: Path) -> int:
     squad_slots = sorted(u.slot for u in units if u.player == 0)
     for index, slot in enumerate(squad_slots):
         unit = next(u for u in units if u.slot == slot)
-        for name, value in SEEDED_VARIANTS[index % len(SEEDED_VARIANTS)].items():
-            setattr(unit, name, value)
+        # **Not `name`.**  That is the mission, set above and read by the
+        # payload's `"mission"` key at the end of this function; rebinding it
+        # here put `"turn_start_y"` in the fixture, which `test_handover.gd`
+        # prints as the trace's provenance.
+        for field, value in SEEDED_VARIANTS[
+                index % len(SEEDED_VARIANTS)].items():
+            setattr(unit, field, value)
     state.reaction_counter = list(SEEDED_REACTION)
     initial_units = [_unit_case(u) for u in units]
     initial_state = _state_case(state)
@@ -668,8 +673,14 @@ def emit_handover_cases(root: Path, out: Path) -> int:
                         live.x, live.y = tx, ty
                 world.unit_at[world.index(tx, ty)] = slot
         calls.clear()
+        # `arg` goes **into the call**, not only into the trace.  It is 0 in
+        # every step today, and `godot/tests/test_handover.gd` already passes
+        # the recorded value through -- so the first `step(arg=1)` would have
+        # made the replay run a different branch than the one that produced
+        # these expectations (`inclib/turn.py`: a non-zero arg skips the whole
+        # advance and searches from slot 0).
         result = turnmod.hand_over(state, units, tables, world.game_control,
-                                   run_script, _banner_of(units))
+                                   run_script, _banner_of(units), arg)
         _check_one_unit_array(units, world, len(steps))
         steps.append({
             "arg": arg,

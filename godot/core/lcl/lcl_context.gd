@@ -155,7 +155,16 @@ func spawn(spawn_player: int, type_id: int, name: String, rank: int,
 	unit.ep = rank * 12
 	unit.tp = rank * 12
 	unit.pool_flag = pool_flag
-	unit.name = name if name != "" else types.description(type_id)
+	# `has` first: [method UnitTypeTable.description] answers `"type %d"` for an
+	# id it does not know, and `inclib/lcl_runtime.py` answers `""`. An
+	# `InsertUnit` naming a type `Info.lcl` never defines would otherwise give
+	# the two models different rosters.
+	if name != "":
+		unit.name = name
+	elif types.has(type_id):
+		unit.name = types.description(type_id)
+	else:
+		unit.name = ""
 	unit.turn_start_x = tx
 	unit.turn_start_y = ty
 	units[unit.slot] = unit

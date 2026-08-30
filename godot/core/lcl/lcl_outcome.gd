@@ -34,5 +34,15 @@ func ok() -> bool:
 
 
 func to_dict() -> Dictionary:
+	# The events go out as `[name, values]` **pairs**, which is the shape
+	# `inclib.lcl_runtime.Outcome.to_dict` produces. They are held as
+	# dictionaries because `game/` reads them by name, and the class doc's
+	# claim that a disagreement is a document diff is only true if the two
+	# documents have the same shape -- it was not, and the replay quietly
+	# compared event names and never event values.
+	var pairs: Array = []
+	for event: Dictionary in events:
+		pairs.append([DictRead.as_string(event["name"]),
+			DictRead.as_array(event["values"]).duplicate()])
 	return {"kind": kind, "reason": reason, "line": line, "steps": steps,
-		"dispatched": dispatched, "events": events.duplicate(true)}
+		"dispatched": dispatched, "events": pairs}

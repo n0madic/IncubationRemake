@@ -20,6 +20,13 @@ python3 tools/lcl_runtime.py --emit-cases tests/fixtures/lcl/cases_lcl.json \
 It is gitignored: it embeds four missions' cell arrays and four parsed scripts,
 all derived from Blue Byte data.
 
+> The commit that created it added the file **and** the `.gitignore` line in one
+> `git add -A`, and gitignore has no effect on an already-tracked path — so for
+> fourteen commits this sentence was false and 560 KB of extracted retail data
+> was tracked. `git rm --cached` fixed the tracking; the blob is still in the
+> local history at `0bcf348`, and nothing has been pushed. Add the ignore rule
+> **before** the first run that writes the file.
+
 ## What it holds
 
 Four missions — the ones `tools/remake_convert.py` ships, because those are the

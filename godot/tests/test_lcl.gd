@@ -224,18 +224,26 @@ func _mission(h: TestHarness, entry: Dictionary, arrays: PackedStringArray,
 		if mine != theirs:
 			outcome_bad.append("%s: %s %s != %s"
 				% [tag, got.kind, mine, theirs])
-		if got.events.size() != DictRead.as_array(want["events"]).size():
+		# The **whole** event, name and arguments. Comparing only the names
+		# left `platform`'s cell count, `set_ground_fire`'s hit count and
+		# `para_bombs`' tile count unchecked on both sides.
+		var mine_events: Array = DictRead.as_array(got.to_dict()["events"])
+		var want_events: Array = DictRead.as_array(want["events"])
+		if mine_events.size() != want_events.size():
 			events_bad.append("%s: %d event(s) != %d" % [tag,
-				got.events.size(),
-				DictRead.as_array(want["events"]).size()])
+				mine_events.size(), want_events.size()])
 		else:
-			for i: int in range(got.events.size()):
-				var pair: Array = DictRead.as_array(
-					DictRead.as_array(want["events"])[i])
-				if DictRead.as_string(got.events[i]["name"]) \
-						!= DictRead.as_string(pair[0]):
+			for i: int in range(mine_events.size()):
+				var got_pair: Array = DictRead.as_array(mine_events[i])
+				var want_pair: Array = DictRead.as_array(want_events[i])
+				if DictRead.as_string(got_pair[0]) \
+						!= DictRead.as_string(want_pair[0]):
 					events_bad.append("%s: event %d is '%s' != '%s'" % [tag, i,
-						got.events[i]["name"], pair[0]])
+						got_pair[0], want_pair[0]])
+				elif not _same_values(DictRead.as_array(got_pair[1]),
+						DictRead.as_array(want_pair[1])):
+					events_bad.append("%s: event %d '%s' %s != %s" % [tag, i,
+						got_pair[0], got_pair[1], want_pair[1]])
 
 		var control_want: PackedInt32Array = DictRead.to_int32(
 			case["game_control"])
@@ -309,6 +317,24 @@ func _mission(h: TestHarness, entry: Dictionary, arrays: PackedStringArray,
 	h.check("%s.generators" % name, rng_bad.is_empty(),
 		", ".join(rng_bad.slice(0, REPORT_LIMIT)))
 	return cases.size()
+
+
+## Two event argument lists, compared through JSON's own numeric type.
+##
+## Every number the fixture holds arrived through `JSON.parse_string` and is a
+## `float`; the interpreter's are `int`. Comparing the arrays directly would
+## make `4` and `4.0` differ, which is the narrowing boundary [DictRead]
+## describes, here at the one place a check crosses it.
+static func _same_values(mine: Array, theirs: Array) -> bool:
+	if mine.size() != theirs.size():
+		return false
+	for i: int in range(mine.size()):
+		if typeof(theirs[i]) == TYPE_STRING or typeof(mine[i]) == TYPE_STRING:
+			if DictRead.as_string(mine[i]) != DictRead.as_string(theirs[i]):
+				return false
+		elif DictRead.as_int(mine[i]) != DictRead.as_int(theirs[i]):
+			return false
+	return true
 
 
 static func _cell(state: MapState, array: String, index: int) -> int:
@@ -602,6 +628,61 @@ func _synthetic(h: TestHarness) -> void:
 		LclOutcome.ABORT, looping.reason)
 	h.check("synthetic.the_cap_is_reported_not_hidden",
 		looping.reason.contains("Goto loop"), looping.reason)
+
+	# The environment's own bounds. docs/20 section 4: `letter - 'A'` against
+	# 0..26, so 65 -- what `ord("A")` asks for -- is not a slot. A version of
+	# `MissionScript.to_slots` that dropped it silently would leave `_A` at 0,
+	# match no `EnvVarCmpNum` arm, and let the hand-over proceed with the
+	# mission never advancing.
+	h.equal("synthetic.the_environment_bounds_are_zero_to_26",
+		[LclEnv.is_slot(0), LclEnv.is_slot(LclEnv.ENV_SLOTS - 1),
+			LclEnv.is_slot(LclEnv.ENV_SLOTS), LclEnv.is_slot(-1),
+			LclEnv.is_slot("A".unicode_at(0))],
+		[true, true, false, false, false])
+	# And the seam's two halves are inverses on a real call type.
+	var packed: PackedInt32Array = MissionScript.to_slots(
+		MissionScript.env(LclEnv.CALL_MOVE_UNIT, 4, 0, 7, 9, 3, 17, 2))
+	h.equal_ints("synthetic.the_seam_round_trips", packed,
+		LclEnv.of(LclEnv.CALL_MOVE_UNIT, 4, 0, 7, 9, 3, 17, 2))
+
+	# `GetUnits` with the player left off counts **nobody**. `_n` answers -1
+	# for a missing operand, and routing that through the "any player"
+	# sentinel counted the aliens and the props too.
+	var counted: Dictionary = _run_synthetic(_program([
+		_instr("command", "GetUnits", [_var(0)]),
+		_instr("cond", "VarCmpNum", [_var(0), _num(0)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1},
+		{"slot": 1, "player": 255, "x": 2, "y": 2}])
+	h.check("synthetic.getunits_without_a_player_counts_nobody",
+		_marked(counted),
+		"there is a player-0 unit and an alien on the map")
+	var mine_only: Dictionary = _run_synthetic(_program([
+		_instr("command", "GetUnits", [_var(0), _num(0)]),
+		_instr("cond", "VarCmpNum", [_var(0), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1},
+		{"slot": 1, "player": 255, "x": 2, "y": 2}])
+	h.check("synthetic.getunits_with_a_player_counts_that_player",
+		_marked(mine_only), "one of the two is player 0")
+
+	# A spawn of a type `Info.lcl` never defines is **nameless**, not
+	# `"type 99"`: the executable model answers "" and the two rosters would
+	# otherwise differ on a field the replay compares.
+	var nameless: Dictionary = _run_synthetic(_program([
+		_instr("command", "InsertUnit", [_num(255), _num(99), _num(0),
+			_num(0), _num(2), _num(2), _num(0)]),
+	]), [])
+	var spawned: Dictionary = nameless["units"]
+	var found: String = "<none>"
+	for key: Variant in spawned:
+		var one: UnitState = spawned[key]
+		if one.type_id == 99:
+			found = one.name
+	h.equal("synthetic.an_unknown_type_spawns_nameless", found, "",
+		"UnitTypeTable.description answers 'type 99' and must not be used here")
 
 	# A program with no `[END]` falls off the end, which is an outcome and not
 	# an error (docs/20 section 2).

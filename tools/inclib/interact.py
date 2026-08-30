@@ -351,7 +351,13 @@ def execute_use(world: CombatWorld, unit: CombatUnit) -> UseResult:
         _consume(world, index)
         result.kind = "message_only"
     elif ap == 12:
-        magazine = world.tables.weapons[unit.weapon].mun
+        # `.get`, not `[]`: `Info.lcl` defines no row for ids 18, 19, 33, 34,
+        # 38, 39 or anything from 48 up, and a unit can carry one of those
+        # bytes out of a save or a script.  A bare `KeyError` here would be the
+        # one place in this module that fails with something other than
+        # :class:`InteractError`, and `godot/core/interact.gd` falls back to 0.
+        weapon = world.tables.weapons.get(unit.weapon)
+        magazine = 0 if weapon is None else weapon.mun
         if unit.has(EQUIP_DOUBLE_MUNITION):
             magazine *= 2
         unit.ammo = magazine

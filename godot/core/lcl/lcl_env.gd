@@ -38,6 +38,16 @@ const SLOT_F: int = 5
 const HEIGHT_LEVEL_UNITS: int = 160
 
 
+## Is this a slot the environment array has?
+##
+## The engine range-checks `letter - 'A'` against 0..26 (`0x004402A0`), so 65 --
+## what a caller passing `ord("A")` asks for -- is not one, and the difference
+## between refusing it and dropping it is an invocation that runs to its end
+## having never reached the entry point it was supposed to select.
+static func is_slot(slot: int) -> bool:
+	return slot >= 0 and slot < ENV_SLOTS
+
+
 ## Which slots one call type writes.
 ##
 ## Separate from [method of] because "the slot is set to zero" and "the slot is

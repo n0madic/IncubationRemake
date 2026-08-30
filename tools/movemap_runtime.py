@@ -556,6 +556,11 @@ def _execute_checks(grid: Grid, mover: Mover, delays: dict[int, int],
     """
     moved = execute(grid, hooks, delays, mover, answer)
     out["executed"] += 1
+    # **Counted before the early return.**  The mine arm is exactly the one
+    # that comes back `ok=False` (``inclib/movemap.py``), so counting it below
+    # made the tally structurally zero and the invariant that reads it a claim
+    # about nothing.
+    out["mines"] += sum(1 for e in moved.events if e.kind == "mine")
     if not moved.ok:
         out["exec_failures"].append(f"{where}: {moved.reason}")
         return
@@ -612,7 +617,6 @@ def _execute_checks(grid: Grid, mover: Mover, delays: dict[int, int],
                 f"{where}: claimed as {value}, outside the band")
     out["tenths"] += moved.walked
     out["victory"] += len(moved.action_point_writes)
-    out["mines"] += sum(1 for e in moved.events if e.kind == "mine")
 
 
 def run_one(path: Path, slot: int, pass_friendlies: bool, root: Path | None,

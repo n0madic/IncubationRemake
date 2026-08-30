@@ -19,7 +19,7 @@ godot/
   core/      39 files      pure GDScript: no Node, no FileAccess, no singleton
     lcl/      5 files      the mission-script interpreter
   game/      12 files      + localization, HUD, fog
-  tests/     25 suites     1427 checks
+  tests/     25 suites     1434 checks
 tools/
   inclib/    interact.py new; combat.py, lcl_runtime.py, turn.py extended
   interact_runtime.py new
@@ -251,7 +251,53 @@ each states a rule of the *engine* that Godot's containers happen to agree with.
 
 ---
 
-## 8. Open questions this stage leaves
+## 8. What a review pass found afterwards
+
+Thirteen findings, all of them real and all fixed in place. Three are worth
+recording because of *what kind* of mistake they were.
+
+**A 560 KB fixture of extracted retail data was tracked in git.** The commit
+that created `tests/fixtures/lcl/cases_lcl.json` added it and the `.gitignore`
+line in the same `git add -A`, and gitignore has no effect on an already-tracked
+path — so the file's own committed README said "it is gitignored" while it was
+not. Untracked now; the blob remains in the local history at `0bcf348`, and
+nothing has been pushed anywhere. This is the project's oldest rule and it was
+broken by the mechanics of one command.
+
+**Two checks were structurally dead.** `interact_runtime`'s
+`census.no_accepted_id_is_unhandled` guarded on `ap not in range(10, 50)` after
+a call that returns a value only *inside* that range, so nothing was ever
+appended; `movemap_runtime`'s mine tally sat after an early return that the mine
+arm is the only thing to trigger. Both are the shape this repository's own rules
+name — "a check that examined nothing is not a check that passed" — and both
+were written by the person who wrote that rule. The first found a real gap the
+moment it started examining anything: action point **10**, the random supply
+box, is dispatched by `aExecuteUse` (it rolls into 11, 12 or 13 *before* the
+switch) and was in neither the handled set nor the script-only set.
+
+**Four cross-implementation divergences** that no test could see, because each
+sat in a place the two sides were never compared: `stunned` read after the
+charge was spent (Python wrong, GDScript right); `GetUnits` with the player
+operand omitted counting everybody (GDScript wrong); a spawn of an undefined
+type named `"type 99"` on one side and `""` on the other; and the event
+documents having different *shapes*, so the replay compared event names and
+never event arguments. The last one is the instructive one: the class doc
+asserted "the same shape … so a disagreement is a document diff", and the
+assertion was false, which is why 120 cases' worth of event arguments went
+unchecked. They agree now.
+
+The rest were smaller: a loop variable that shadowed the mission name and put
+`"turn_start_y"` in a fixture's provenance field; a `hand_over` argument
+recorded in a trace but not passed to the oracle that produced it; a Win32
+failure classified as a plan refusal, which turned an intermittent Wine launch
+into a hard stop the ten retries exist to absorb; an unguarded weapon-table
+index; an environment slot dropped silently where the Python twin raises; and a
+movement point charged for a `Use` the engine's own pad would never have
+offered.
+
+---
+
+## 9. Open questions this stage leaves
 
 1. **The AI planner.** Not started, deliberately. Player 255 takes its turn and
    returns it, so `_C_140`'s reinforcements stand where they spawn. This is the

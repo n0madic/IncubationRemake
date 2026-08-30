@@ -57,8 +57,26 @@ TEMPLATE_MISSION = "_C_XXX"
 #: not imported from the model, for the same reason ``movemap_runtime.py``
 #: writes its step costs out: importing the model's own table and comparing
 #: against it re-derives the model's answer and passes whatever it is.
-HANDLED_IDS = frozenset({11, 12, 13, 14, 15, 16, 17, 18,
+#: 10 is in here even though the switch has no arm for it: ``aExecuteUse``
+#: **rolls it into 11, 12 or 13 before the switch runs** (``docs/26`` §3), so
+#: it is dispatched rather than left to the script.  Its absence was invisible
+#: until the census check below stopped being dead -- the first thing that
+#: check found once it examined anything.
+HANDLED_IDS = frozenset({10, 11, 12, 13, 14, 15, 16, 17, 18,
                          30, 31, 32, 33, 36, 37, 38, 39, 40, 41, 42, 70})
+
+#: ``docs/26`` §2 -- the ids the gate offers and the switch has no arm for.
+#: They fire the LCL ``Use`` event and change nothing else, which is the
+#: mechanism behind every button and mission gadget in the game.  Written out
+#: for the same reason :data:`HANDLED_IDS` is: the point of the census is to
+#: notice an id that is in *neither* set.
+SCRIPT_ONLY_IDS = frozenset(
+    set(range(19, 30)) | {34, 35} | set(range(43, 50)))
+
+#: ``0x0047A530``'s band, inclusive.  Repeated here rather than imported from
+#: the model, so the partition check below is not the model agreeing with
+#: itself.
+USE_BAND_IDS = frozenset(range(10, 50))
 
 
 def _blank(width: int, height: int, tables: BalanceTables,
@@ -114,8 +132,17 @@ def check_census(c: Checker, root: Path, tables: BalanceTables) -> None:
                 continue
             got = interact.use_target(world, probe)
             (accepted if got >= 0 else refused).add(ap)
-            if got >= 0 and ap not in HANDLED_IDS and ap not in range(10, 50):
-                unhandled.append(f"{path.name}: accepted {ap}")
+            if got >= 0 and ap not in HANDLED_IDS:
+                # An id the gate accepts and the switch has no arm for is the
+                # script-only band -- 19..29, 34, 35, 43..49 (docs/26 §2).
+                # Anything *else* would be an arm this model is missing.
+                #
+                # The third conjunct that used to be here, `ap not in
+                # range(10, 50)`, was tautologically false: `use_target`
+                # returns >= 0 only inside that band, so nothing was ever
+                # appended and the check below examined nothing.
+                if ap not in SCRIPT_ONLY_IDS:
+                    unhandled.append(f"{path.name}: accepted {ap}")
     c.check("census.missions_read", maps > 0, f"{maps} mission(s)")
     c.check("census.action_points_found", len(seen) > 0,
             f"{len(seen)} distinct id(s), {sum(seen.values())} cell(s)")
@@ -126,7 +153,13 @@ def check_census(c: Checker, root: Path, tables: BalanceTables) -> None:
              [interact.DOOR_JAMMED_CLOSED],
              "docs/26 section 2: the only in-band id a crowbar-less unit is "
              "refused is the jammed, closed door; jammed-open never ships")
-    c.expect("census.no_accepted_id_is_unhandled", unhandled[:5], [])
+    c.expect("census.no_accepted_id_is_unhandled", unhandled[:5], [],
+             f"every accepted id is in an arm or in the {len(SCRIPT_ONLY_IDS)} "
+             f"the switch deliberately leaves to the script")
+    # And the two sets really do partition the band, so an id in neither is a
+    # thing the census can see rather than a thing it defines away.
+    c.expect("census.the_two_sets_cover_the_whole_band",
+             sorted(set(USE_BAND_IDS) - HANDLED_IDS - SCRIPT_ONLY_IDS), [])
     c.expect("census.the_random_box_is_only_on_the_template_map",
              sorted(random_box_in), [TEMPLATE_MISSION],
              "docs/26 section 3: no shipped mission contains one, so the roll "
@@ -199,6 +232,20 @@ def check_pickups(c: Checker, tables: BalanceTables) -> None:
     world.action_point[world.index(2, 1)] = 12
     interact.execute_use(world, unit)
     c.expect("munition.equipment_6_doubles_it", unit.ammo, magazine * 2)
+
+    # A weapon byte `Info.lcl` never defines. `docs/21` §6 leaves 18, 19, 33,
+    # 34, 38, 39 and everything from 48 up undefined, and a unit can carry one
+    # out of a save or a script -- so this must be a magazine of nothing, not a
+    # `KeyError` out of the one arm that indexes the table.
+    undefined = next(w for w in range(48, 64) if w not in tables.weapons)
+    world = _blank(4, 4, tables)
+    unit = _place(world, 0, 0, 1, 1, weapon=undefined, ammo=3)
+    world.action_point[world.index(2, 1)] = 12
+    result = interact.execute_use(world, unit)
+    c.expect("munition.an_undefined_weapon_is_a_magazine_of_nothing",
+             [unit.ammo, world.action_point[world.index(2, 1)], result.kind],
+             [0, 0, "full_munition"],
+             f"weapon {undefined} has no SetWeaponInfo row")
 
     # --- classes 13, 17, 18: the equipment-point bonus --------------------
     for ap, worth in ((13, 50), (17, 20), (18, 10)):

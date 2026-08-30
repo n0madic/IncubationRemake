@@ -382,8 +382,16 @@ func _command(instr: Dictionary) -> String:
 		"GetPlayer":
 			_set_local(_v(instr, 0), _context.player)
 		"GetUnits":
-			_set_local(_v(instr, 0), _count_units(_n(instr, 0), -1, 0, 0, 0, 0,
-				false))
+			# **A bare equality**, and not [method _count_units]'s `-1` "any
+			# player" sentinel: `_n` answers -1 for a missing operand, so
+			# routing this through the sentinel made `GetUnits (_A);` count the
+			# aliens and the props. `inclib/lcl_runtime.py` compares directly.
+			var counted: int = 0
+			for key: Variant in _context.units:
+				var one: UnitState = _context.units[key]
+				if one.is_alive() and one.player == _n(instr, 0):
+					counted += 1
+			_set_local(_v(instr, 0), counted)
 		"GetUnitsInArea":
 			# `0x00478000` -- inclusive rectangle; a player of -1 matches any.
 			_set_local(_v(instr, 0), _count_units(_n(instr, 0), -1,

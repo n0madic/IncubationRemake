@@ -1032,6 +1032,12 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             # No damage is rolled; unless a Damage Absorber charge is spent the
             # target's action state becomes 5 and its movement points 0 -- it
             # loses the rest of its turn.
+            # **Read before the charge is spent.**  With exactly one charge
+            # the unit spends it and is *not* stunned, and `not
+            # target.absorber` evaluated after the decrement said the
+            # opposite.  `godot/core/combat.gd` had it right, which is how the
+            # two came to disagree.
+            stunned = not target.absorber
             if target.absorber:
                 target.absorber -= 1
             else:
@@ -1040,7 +1046,7 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
                                     "marker": MARKER_RESOLVED, "dealt": 0,
                                     "chance": chance, "roll": roll,
-                                    "stunned": not target.absorber})
+                                    "stunned": stunned})
             continue
 
         if target.absorber:

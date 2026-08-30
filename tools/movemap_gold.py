@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import shutil
 import struct
@@ -1242,6 +1243,17 @@ def _run_scoped(command: list[str], *, env: dict[str, str] | None,
 #: The ``[!]`` lines ``dbgcall`` prints for an **environment** result rather
 #: than a bad plan.  Everything else it refuses on is a plan or harness error,
 #: and the retry loop must not swallow it: see :func:`run_plan`.
+#: ``DieWin`` (``dbgcall.cpp``) prints ``[!] <what>`` and then an indented
+#: ``error=<n>: <text>`` continuation, and every one of its call sites is a
+#: Win32 API failure -- ``CreateProcessW``, ``WaitForDebugEvent``,
+#: ``OpenThread``, ``GetThreadContext``, ``ContinueDebugEvent``.  Those are
+#: exactly the intermittent Wine start-up failures ``docs/91`` §1 says to retry,
+#: so the continuation line is what tells an **environment** result apart from a
+#: plan the harness refused.  Matching on the shape rather than on a list of
+#: message names is deliberate: a list would rot the next time ``dbgcall`` grows
+#: a call site.
+WIN32_ERROR_CONTINUATION = re.compile(r"^\s*error=\d+")
+
 TRANSIENT_ERRORS = (
     "the anchor was not reached within",
     "Target exited before any breakpoint was",
@@ -1305,9 +1317,19 @@ def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
         # reason that has nothing to do with Wine.  A stale dbgcall.exe that
         # did not yet know the `u8` return type cost one capture exactly that,
         # and the log said so on line one the whole time.
-        fatal = [line for line in log.splitlines()
-                 if line.lstrip().startswith("[!]")
-                 and not any(t in line for t in TRANSIENT_ERRORS)]
+        lines = log.splitlines()
+        fatal = []
+        for i, line in enumerate(lines):
+            if not line.lstrip().startswith("[!]"):
+                continue
+            if any(t in line for t in TRANSIENT_ERRORS):
+                continue
+            following = lines[i + 1] if i + 1 < len(lines) else ""
+            if WIN32_ERROR_CONTINUATION.match(following):
+                # `DieWin`: a Win32 call failed, which on this host is an
+                # environment result and is what the ten attempts are for.
+                continue
+            fatal.append(line)
         if fatal:
             raise CaptureError(
                 f"{name}: dbgcall refused the plan -- {fatal[0].strip()}; "
