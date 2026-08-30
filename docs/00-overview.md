@@ -45,6 +45,13 @@ So is the third — [`23`](23-ai-system.md)'s planner, so the aliens move, close
 and shoot, with a whole computer turn taken from the live engine and the
 measurement §2 of `92` had been waiting for since the first day:
 [`95-slice-3-report.md`](95-slice-3-report.md).
+And so is the fourth — the **bodies**: Charisma models, skeletons and the
+three gameplay animation families, so units stand, walk and shoot instead of
+being capsules. It corrected three statements in a delivered spec (the model
+selector is three-level, the idle selector has a randomised arm, and the model
+filename grammar was too narrow) and measured one thing nothing had written
+down — bone translations are in 1/16 of a world unit:
+[`96-slice-4-report.md`](96-slice-4-report.md).
 
 ---
 
