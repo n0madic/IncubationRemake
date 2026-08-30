@@ -37,6 +37,7 @@ import argparse
 import glob
 import json
 import logging
+import math
 import os
 import sys
 from collections import Counter, defaultdict
@@ -53,6 +54,9 @@ from inclib.charisma_tables import (  # noqa: E402
     registered_names, split_registered,
 )
 from inclib.info import load_info  # noqa: E402
+from inclib.charisma import mat_translation  # noqa: E402
+from inclib.pose import (CHANNEL_POSITION, pose_model,  # noqa: E402
+                         sample_vector)
 from inclib.pe import PEError, PEFile  # noqa: E402
 
 LOG = logging.getLogger("charisma_tables")
@@ -83,6 +87,15 @@ PARTIAL_ANIMATION_TYPES: dict[int, tuple[str, ...]] = {
     65: ("move", "idle"),             # Bea'Ther
     66: ("move", "idle"),             # Bea'Coo
 }
+
+#: The schema of the pose case file the Godot suite replays.
+POSE_SCHEMA = "incubation.charisma-pose/1"
+#: Frames sampled per animation.  Five is enough to cross every interpolation
+#: segment class in the corpus while keeping the fixture around a megabyte;
+#: the middle one additionally carries every bone's full local matrix, so a
+#: rotation error on a childless leaf -- which no joint position can show --
+#: is still caught.
+POSE_FRAMES = 5
 
 #: The authoring helpers of ``docs/40`` §7: movement targets the exporter left
 #: in a gameplay animation and never emitted as a model part.  A runtime
@@ -382,6 +395,149 @@ def _check_reachability(ck: Checker, tables: SelectorTables, root: str) -> None:
               f"{len(seen) - len(partial)} of {len(seen)} keys fully clipped")
 
 
+def _gameplay_pairs(tables: SelectorTables) -> list[tuple[str, str]]:
+    """(model, animation) pairs the selectors actually put together.
+
+    Posing an animation against a model it is never selected with would be a
+    test of nothing: the targets would not resolve and the pose would be the
+    bind pose with extra steps.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for selector in ANIMATION_SELECTORS:
+        for key, outcomes in tables.tables[selector].items():
+            bodies = {o.name for o in tables.lookup("model", key) if o.name}
+            for outcome in outcomes:
+                if outcome.name:
+                    pairs |= {(b, outcome.name) for b in bodies}
+    return sorted(pairs)
+
+
+def _pose_frames(model, anim) -> list[float]:
+    duration = getattr(anim, "duration", 0.0)
+    if duration <= 0.0:
+        return [0.0]
+    return [duration * i / (POSE_FRAMES - 1) for i in range(POSE_FRAMES)]
+
+
+def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
+                animations: dict[str, str]) -> None:
+    """Every gameplay pose, on a frame grid, bone by bone.
+
+    Two properties, and they are the two that a wrong transform chain breaks
+    rather than merely perturbs: every matrix element is finite, and the one
+    top-level bone takes its translation **from the track** and not from the
+    bind pose (``docs/40`` §6.2).  The second is the check that would have
+    caught the earlier draft of that section, which had the branch firing for
+    no model at all.
+    """
+    pairs = _gameplay_pairs(tables)
+    ck.check("gameplay pose pairs", bool(pairs), f"{len(pairs)} (model, clip)")
+
+    posed = 0
+    nonfinite: list[str] = []
+    top_level_counts: Counter[int] = Counter()
+    absolute_root = 0
+    root_tracked = 0
+    for model_name, anim_name in pairs:
+        model_path = models.get(model_name)
+        anim_path = animations.get(anim_name)
+        if model_path is None or anim_path is None:
+            continue
+        model = cho_parse.parse(model_path)
+        anim = cha_parse.parse(anim_path)
+        if model.skeleton is None:
+            continue
+        tracks = {(m.target, m.channel) for m in anim.movements}
+        for time in _pose_frames(model, anim):
+            pose = pose_model(model, anim, time)
+            posed += 1
+            tops = [n.name for n in pose.nodes if pose.is_top_level(n.name)]
+            top_level_counts[len(tops)] += 1
+            for node in pose.nodes:
+                for value in pose.world[node.name]:
+                    if not math.isfinite(value):
+                        nonfinite.append(f"{model_name}/{anim_name}:{node.name}")
+                        break
+            # docs/40 §6.2: where the top-level bone has a Position track, its
+            # local translation is that track's value outright -- the bind
+            # translation is not added.  Stated as an equality against the
+            # sampled value, so the branch is checked and not just executed.
+            for name in tops:
+                if (name, CHANNEL_POSITION) not in tracks:
+                    continue
+                root_tracked += 1
+                movement = next(m for m in anim.movements
+                                if m.target == name
+                                and m.channel == CHANNEL_POSITION)
+                want = sample_vector(movement, time)
+                got = mat_translation(pose.local[name])
+                if all(abs(got[i] - want[i]) < 1e-6 for i in range(3)):
+                    absolute_root += 1
+
+    ck.check("poses computed", posed > 0, f"{posed} frames over {len(pairs)} pairs")
+    ck.expect("every bone matrix is finite", len(nonfinite), 0,
+              "" if not nonfinite else f"{nonfinite[:4]}")
+    ck.expect("exactly one top-level bone per pose",
+              sorted(top_level_counts), [1],
+              f"{posed} poses")
+    ck.expect("top-level translation comes from the track",
+              absolute_root, root_tracked,
+              f"{absolute_root}/{root_tracked} poses whose root has a "
+              f"Position track")
+
+
+def emit_pose_cases(root: str, path: str) -> int:
+    """Write the fixture ``godot/tests/test_charisma.gd`` replays."""
+    tables = SelectorTables(PEFile(os.path.join(root, GAME_EXE)))
+    models = shipped_models(root)
+    animations = shipped_animations(root)
+    cases: list[dict[str, object]] = []
+    for model_name, anim_name in _gameplay_pairs(tables):
+        model_path = models.get(model_name)
+        anim_path = animations.get(anim_name)
+        if model_path is None or anim_path is None:
+            continue
+        model = cho_parse.parse(model_path)
+        anim = cha_parse.parse(anim_path)
+        if model.skeleton is None:
+            continue
+        times = _pose_frames(model, anim)
+        order = [n.name for n in model.skeleton.nodes]
+        frames = []
+        for time in times:
+            pose = pose_model(model, anim, time)
+            frames.append({
+                "time": time,
+                "joints": [c for name in order
+                           for c in pose.joints(include_hidden=True)[name]],
+            })
+        middle = pose_model(model, anim, times[len(times) // 2])
+        cases.append({
+            "model": model_name,
+            "animation": anim_name,
+            "bones": order,
+            # The interpolators this pair exercises, so the suite can assert
+            # that the fixture covers squad and the cubic Bezier vector rather
+            # than only the two linear paths.
+            "key_classes": sorted({m.key_class for m in anim.movements}),
+            "frames": frames,
+            "local_time": middle.time,
+            "locals": [v for name in order for v in middle.local[name]],
+        })
+    document = {
+        "schema": POSE_SCHEMA,
+        "source": {"root": os.path.abspath(root)},
+        "frames_per_case": POSE_FRAMES,
+        "cases": cases,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(document, handle)
+    LOG.info("wrote %d pose cases to %s (%.1f MB)", len(cases), path,
+             os.path.getsize(path) / 1e6)
+    return 0 if cases else 1
+
+
 def run_check(root: str) -> int:
     ck = Checker()
     pe = PEFile(os.path.join(root, GAME_EXE))
@@ -393,6 +549,7 @@ def run_check(root: str) -> int:
     _check_meshes(ck, tables, root, models)
     _check_track_binding(ck, tables, root, models, animations)
     _check_reachability(ck, tables, root)
+    _check_pose(ck, tables, models, animations)
     return ck.report()
 
 
@@ -426,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="print every name each selector can return")
     ap.add_argument("--json", action="store_true",
                     help="dump the four decision tables as JSON")
+    ap.add_argument("--emit-pose-cases", metavar="PATH",
+                    help="write the pose fixture the Godot suite replays")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -436,6 +595,8 @@ def main(argv: list[str] | None = None) -> int:
         LOG.error("root %s is not a directory", root)
         return 2
     try:
+        if args.emit_pose_cases:
+            return emit_pose_cases(root, args.emit_pose_cases)
         if args.check:
             return run_check(root)
         if args.json:
