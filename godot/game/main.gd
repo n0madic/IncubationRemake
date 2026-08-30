@@ -228,7 +228,7 @@ func _build(mission: String) -> void:
 	# The bodies and their clips, opened once per mission. `UnitsView.build`
 	# runs on every fog change, and re-parsing a 26-part body or re-building
 	# its meshes each time would be a cost this slice invented for itself.
-	_units.library = CharismaLibrary.open(_cache_dir, textures)
+	_units.library = CharismaLibrary.open(_cache_dir, textures, mission)
 	_scene_root.add_child(_units)
 	_units.build(world, geometry, textures)
 

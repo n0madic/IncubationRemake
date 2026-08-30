@@ -128,7 +128,7 @@ func advance(delta: float) -> bool:
 				_time = _clip.duration
 				_running = false
 		if body != null:
-			body.pose(_clip, _time)
+			body.pose(_clip, _time, mode == Mode.MOVE)
 	return mode == Mode.FIRE and _running
 
 
@@ -141,4 +141,7 @@ func _enter(new_mode: int, clip: CharismaClip, looping: bool,
 	_time = 0.0
 	_running = true
 	if body != null:
-		body.pose(_clip, _time)
+		# The movement clip is the one that walks the body away from its own
+		# node, because the walk itself is the node's ([method
+		# CharismaBody.pose]). Nothing else moves under a clip.
+		body.pose(_clip, _time, mode == Mode.MOVE)

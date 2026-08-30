@@ -320,7 +320,7 @@ func _body_measurements(mission: String) -> void:
 
 	var t0: int = Time.get_ticks_usec()
 	var library: CharismaLibrary = CharismaLibrary.open(
-		CacheFixture.cache_dir(), textures)
+		CacheFixture.cache_dir(), textures, mission)
 	print("bodies mission=", mission, " library_open_us=",
 		Time.get_ticks_usec() - t0, " ready=", library.is_ready())
 	if not library.is_ready():

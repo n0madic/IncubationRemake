@@ -191,6 +191,14 @@ func _case(h: TestHarness, case: Dictionary) -> void:
 		# two implementations disagreed about would show up only as a body
 		# walking through a wall during the computer's turn.
 		if DictRead.as_string(a["kind"]) == "move":
+			if not a.has("path"):
+				# A case file emitted before the route was carried. Indexing it
+				# would fail as an opaque "invalid get index" instead of saying
+				# what to run.
+				mismatched.append("%d.path missing from the case file; "
+					% i + "run tools/ai_runtime.py --emit-cases "
+					+ "tests/fixtures/ai/cases_ai.json --root gog_incubation")
+				continue
 			var want_path: Array = DictRead.as_array(a["path"])
 			var got_path: Array = DictRead.as_array(
 				DictRead.as_dict(b["payload"])["path"])

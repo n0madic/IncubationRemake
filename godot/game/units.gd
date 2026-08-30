@@ -87,8 +87,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var h: int = DictRead.as_int(cell.get("height", 0))
 	node.position = WorldSpace.cell_centre(x, y, h)
 	var facing: int = DictRead.as_int(view["facing"])
-	node.basis = WorldSpace.yaw_basis(
-		FACING_ANGLES[facing % FACING_ANGLES.size()])
+	_face(node, null, facing)
 
 	if Fog.is_contact(view):
 		# A detection, not a sighting: the cell, and nothing about what is on
@@ -120,6 +119,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 			DictRead.as_int(view["weapon"]), player)
 		states[slot] = CharismaState.create(body, clips[0], clips[1], clips[2])
 		node.add_child(body)
+		_face(node, body, facing)
 		return node
 
 	# No body: the capsule, sized from the type's own height column.  This is
@@ -215,7 +215,7 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 	node.position = from.lerp(to, into)
 	var facing: int = _facing_of(cells[step], cells[step + 1], width)
 	if facing >= 0:
-		node.basis = WorldSpace.yaw_basis(FACING_ANGLES[facing])
+		_face(node, _body_of(slot), facing)
 
 
 ## Put a walking body on its **last cell** and stop the walk cycle.
@@ -240,7 +240,7 @@ func _snap_to_end(slot: int, world: World) -> void:
 	var facing: int = _facing_of(cells[cells.size() - 2],
 		cells[cells.size() - 1], width)
 	if facing >= 0:
-		node.basis = WorldSpace.yaw_basis(FACING_ANGLES[facing])
+		_face(node, _body_of(slot), facing)
 
 
 func _node_of(slot: int) -> Node3D:
@@ -252,6 +252,31 @@ func _cell_position(index: int, width: int, world: World) -> Vector3:
 	var y: int = index / width
 	var cell: Dictionary = world.cell_view(x, y)
 	return WorldSpace.cell_centre(x, y, DictRead.as_int(cell.get("height", 0)))
+
+
+## The body built for a slot this rebuild, or null. Typed, because a `Dictionary`
+## lookup is a `Variant` and an untyped call argument does not compile here.
+func _body_of(slot: int) -> CharismaBody:
+	return bodies[slot] if bodies.has(slot) else null
+
+
+## Point a unit at `facing`: the node the engine's own way, and the body its own.
+##
+## **The two are not the same rotation**, and that is a finding rather than a
+## workaround.  The ground marker is Eng3d geometry and takes the engine's own
+## yaw, the same one the scenery takes.  A Charisma body is authored facing
+## engine -Y and only lines up with `docs/10` section 5.10's facing table under
+## [method WorldSpace.charisma_yaw_basis]; applying that to the node instead
+## would drag the marker round with it.  A unit with no body -- the capsule,
+## the contact blip -- is the `null` case and keeps the node's own basis.
+##
+## Without this a walking body faced away from wherever it was going, which is
+## how it was found: it walked backwards.
+func _face(node: Node3D, body: CharismaBody, facing: int) -> void:
+	var angle: int = FACING_ANGLES[facing % FACING_ANGLES.size()]
+	node.basis = WorldSpace.yaw_basis(angle)
+	if body != null:
+		body.basis = node.basis.inverse() * WorldSpace.charisma_yaw_basis(angle)
 
 
 ## The facing index of one step, or -1 when the two cells are not neighbours.

@@ -286,7 +286,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **36 items are
+in place with the evidence that closed them rather than deleted. **37 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -304,7 +304,7 @@ still open:**
 | [29](29-interface-contract.md) | 0 | the hand-over routine `0x004312D0` is now decoded as the deployment-marker build/reset dispatch |
 | [30](30-eng3d-ascii-formats.md) | 10 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected, the one item here with an untraced lead, and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file |
 | [31](31-prototyp-geometry.md) | 1 | what a Voodoo did with Glide blend factor `0xf`. Runtime confirmation is **closed as not needed** — the item it was wanted for was settled by reading the code |
-| [40](40-charisma-model-animation.md) | 5 | enumerator names, the `J` animation family, the four synthetically-validated reader branches |
+| [40](40-charisma-model-animation.md) | 6 | enumerator names, the `J` animation family, the four synthetically-validated reader branches, and whether the −Y authored forward (§5.4) is reconciled by a rotation or by a mirror |
 | [41](41-sequence-player.md) | 0 | nothing open; the manifest, the lifecycle, the 30 fps clock and the trigger are pinned to the image, and speech/subtitles are closed **negatively** — the player carries no scheduler and no `Video/` directory holds a wave or a text file. Two residual items are *decisions*, not unknowns: the camera ids `9..19` belong to the 3D scene, and presentation/input live outside the module |
 | [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |

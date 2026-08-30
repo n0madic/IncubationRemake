@@ -42,12 +42,21 @@ var _missing: PackedStringArray = PackedStringArray()
 ## **Its own generator, never [member World.rng] or the C runtime's.** Both of
 ## those are inside [CanonicalHash]: a body choosing which flourish to stand in
 ## would change the save hash, which is exactly the kind of shortcut that looks
-## harmless. Seeded from the mission name so a screenshot is reproducible.
+## harmless. Seeded from the mission name, so the bodies a mission opens with
+## are the same ones every run.
+##
+## **It is not reseeded per rebuild.** `UnitsView.build` runs again on every
+## fog change and draws again for each unit, so an idle can change after the
+## first build. Whether the engine re-draws there too is UNVERIFIED -- its own
+## draw site is in the view-refresh path, which is why this is left alone
+## rather than cached per unit.
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
+## `mission` is required, not defaulted: the seed above is the only thing that
+## reads it, and a default is how it came to be passed by nobody at all.
 static func open(cache_dir: String, textures: Dictionary,
-		mission: String = "") -> CharismaLibrary:
+		mission: String) -> CharismaLibrary:
 	var library: CharismaLibrary = CharismaLibrary.new()
 	library._cache_dir = cache_dir
 	library._textures = textures

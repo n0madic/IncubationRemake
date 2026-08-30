@@ -43,7 +43,7 @@ const SUITES: Array[String] = [
 ## Returns the process exit code.
 static func run_all() -> int:
 	var h: TestHarness = TestHarness.new()
-	print("Incubation slice 1 -- headless tests")
+	print("Incubation - Remake -- headless tests")
 	print("")
 	check_scripts_load(h, "core_loads", CORE_DIR, 10)
 	check_scripts_load(h, "game_loads", GAME_DIR, 6)

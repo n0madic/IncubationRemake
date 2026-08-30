@@ -180,6 +180,123 @@ func run(h: TestHarness) -> void:
 				", ".join(PackedStringArray(ignored_targets.keys()))])
 	_state_machine(h, clips)
 	_walking(h)
+	_facing(h)
+	_stride(h, cases, models, clips)
+
+
+## Which way a body faces, over all eight facings.
+##
+## This is the check that would have caught units walking backwards.  It is
+## pure arithmetic over three things that already exist -- the facing table
+## `docs/10` section 5.10, the step-to-facing table `aExecuteMove` confirmed
+## natively twice, and the direction a Charisma model is authored facing --
+## so it needs no cache and no body, and it fails on any convention but the
+## one [method WorldSpace.charisma_yaw_basis] states.
+func _facing(h: TestHarness) -> void:
+	var steps: Dictionary[int, Vector2i] = {}
+	for step: Vector2i in ExecuteMove.FACING_OF_STEP:
+		steps[DictRead.as_int(ExecuteMove.FACING_OF_STEP[step])] = step
+	h.equal("facing.table", steps.size(), UnitsView.FACING_ANGLES.size(),
+		"eight facings, each reached by exactly one step")
+
+	var wrong: PackedStringArray = PackedStringArray()
+	var marker: PackedStringArray = PackedStringArray()
+	var units: UnitsView = UnitsView.new()
+	var node: Node3D = Node3D.new()
+	var body: CharismaBody = CharismaBody.new()
+	node.add_child(body)
+	units.add_child(node)
+	for facing: int in range(UnitsView.FACING_ANGLES.size()):
+		var step: Vector2i = steps[facing]
+		# The step as a Godot direction: `cell_centre` sends map +y to -z.
+		var want: Vector3 = Vector3(float(step.x), 0.0,
+			-float(step.y)).normalized()
+		var angle: int = UnitsView.FACING_ANGLES[facing]
+		units._face(node, body, facing)
+		var faces: Vector3 = (node.basis * body.basis
+			* CharismaBody.AUTHORED_FORWARD).normalized()
+		if faces.distance_to(want) > 0.0001:
+			wrong.append("facing %d walks %s facing %s"
+				% [facing, str(want), str(faces)])
+		# And the node itself is left on the engine's own yaw, which is what
+		# the ground marker under it is drawn with.
+		if not node.basis.is_equal_approx(WorldSpace.yaw_basis(angle)):
+			marker.append("facing %d" % facing)
+	units.free()
+	h.equal("facing.body_walks_forwards", ", ".join(wrong), "",
+		"all eight facings, body forward against the step it takes")
+	h.equal("facing.marker_keeps_engine_yaw", ", ".join(marker), "",
+		"the node stays on docs/10 section 5.10's own angle")
+
+
+## The stride a movement clip carries, and that a walk takes it back out.
+##
+## A movement clip is authored walking: `P0_M0_000` moves its top-level bone
+## one map field over its 20 frames, and 94 of the 99 pairings the selectors
+## produce stride at all.  [method UnitsView.start_walk] moves the
+## node itself, so a clip played untouched adds a second field per loop and the
+## body slides out of its own square -- which is why [method CharismaBody.pose]
+## takes `in_place`.  Both halves are asserted: that the stride is really there
+## in the shipped data, and that cancelling it leaves nothing behind.
+func _stride(h: TestHarness, cases: Array,
+		models: Dictionary[String, CharismaModel],
+		clips: Dictionary[String, CharismaClip]) -> void:
+	var strides: int = 0
+	var worst_cancelled: float = 0.0
+	var worst_free: float = 0.0
+	var largest: float = 0.0
+	var name: String = ""
+	for entry: Variant in cases:
+		var kase: Dictionary = DictRead.as_dict(entry)
+		var clip_name: String = DictRead.as_string(kase["animation"])
+		if not clip_name.contains("_M0_"):
+			continue
+		var model: CharismaModel = _model(models,
+			DictRead.as_string(kase["model"]))
+		var clip: CharismaClip = _clip(clips, clip_name)
+		if model == null or clip == null or clip.duration <= 0.0:
+			continue
+		var start: CharismaSkeleton = CharismaSkeleton.pose(model, clip, 0.0)
+		var end: CharismaSkeleton = CharismaSkeleton.pose(model, clip,
+			clip.duration)
+		var travel: Vector2 = CharismaBody.stride(model, start, end)
+		if travel.length() > largest:
+			largest = travel.length()
+			name = "%s/%s" % [DictRead.as_string(kase["model"]), clip_name]
+		if travel.length() * CharismaBody.SKELETON_TO_WORLD <= 1000.0:
+			continue
+		strides += 1
+		# Measured on what the body would actually draw. The probe stands in
+		# for a mesh on the top-level bone -- half a biped's bones carry none,
+		# and which node moves is not the point: every part of a body carries
+		# its top-level bone's translation.
+		var bone: String = CharismaBody.top_level_bone(model)
+		var body: CharismaBody = CharismaBody.new()
+		body._model = model
+		var probe: MeshInstance3D = MeshInstance3D.new()
+		body.add_child(probe)
+		body._nodes[bone] = probe
+		body.pose(clip, 0.0, true)
+		var held: Vector3 = probe.position
+		body.pose(clip, clip.duration, true)
+		worst_cancelled = maxf(worst_cancelled,
+			Vector2(probe.position.x - held.x,
+				probe.position.z - held.z).length())
+		body.pose(clip, 0.0, false)
+		held = probe.position
+		body.pose(clip, clip.duration, false)
+		worst_free = maxf(worst_free,
+			Vector2(probe.position.x - held.x,
+				probe.position.z - held.z).length())
+		body.free()
+	h.check("stride.present", strides > 0,
+		"%d movement pairing(s) walk more than 1000 world units; largest %s "
+		% [strides, name]
+		+ "at %.0f" % (largest * CharismaBody.SKELETON_TO_WORLD))
+	h.check("stride.travels_when_played_raw", worst_free > 1.0,
+		"a movement clip left alone carries the body %.2f m" % worst_free)
+	h.check("stride.cancelled", worst_cancelled < 0.0001,
+		"in place, the same clip moves it %.6f m" % worst_cancelled)
 
 
 ## What [CharismaState] plays and when it stops.

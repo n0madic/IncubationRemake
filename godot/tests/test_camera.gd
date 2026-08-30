@@ -22,9 +22,8 @@ func run(h: TestHarness) -> void:
 	_check_zoom(h)
 	_check_zoom_inputs(h)
 	_check_pivot(h)
-
-
 	_inside_the_level(h)
+
 
 ## Four presses in either direction must be four equal quarter turns, and the
 ## camera must end up exactly where it started.

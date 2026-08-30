@@ -949,6 +949,54 @@ verified; its origin is not.
 
 Checked by `python3 tools/charisma_tables.py --check gog_incubation`.
 
+### 5.4 A model is authored facing engine **−Y**
+
+**Found while fixing the remake's bodies, which walked backwards.** Nothing in
+a `.cho` or a `.cha` names a forward axis, and no structural check can supply
+one: a pose is exactly as self-consistent facing either way. The movement
+clips supply it, because a walk cycle *walks*.
+
+`P0_M0_000` carries `P0_000`'s top-level bone **−3238 world units in y and −57
+in x** over its 20 frames — 3200 is one map field ([`10` §5.11](10-lev-mission-format.md))
+— and over every `(model, movement clip)` pairing the selectors can produce,
+**94 of 99 stride** and every one of those heads within **1.9°** of −Y. The
+five that do not move at all are creature clips. The shortest real stride is
+0.43 of a field and the longest 3.54; 87 land on a whole field, so the
+quantisation is the human set's and not a rule of the format.
+
+Two independent readings agree with it: in the bind pose the weapon hand sits
+at `y = −1266` and both feet put their toes ahead of their ankles, all in −y.
+
+**The consequence for a renderer** is that `docs/10` §5.10's facing table
+cannot be applied to a body as a plain rotation. With a −Y forward there is no
+angle convention that sends all eight facings the right way — taken directly it
+agrees on the two facings along x and is mirrored in y on the other six. **Half
+a turn minus the tabulated angle** agrees on all eight, and is the only such
+correction:
+
+| facing | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| angle (§5.10) | 0 | 3072 | 2048 | 1024 | 1536 | 3584 | 512 | 2560 |
+| step (`aExecuteMove`) | +y | −x | −y | +x | +x−y | −x+y | +x+y | −x−y |
+| body yaw | 2048 | 1024 | 0 | 3072 | 512 | 2560 | 1536 | 3584 |
+
+**Where the engine does this is UNVERIFIED**, for the same reason §5.3's scale
+is: it is in the Charisma-to-Eng3d bridge, which is not decompiled. A **mirror
+in y** fits the eight facings equally well and is not excluded by anything
+measured here; the remake uses the rotation because a mirror also swaps the
+body left for right, and the marine carries its weapon in `Hand_R`. One
+screenshot of the original showing the weapon in the **left** hand settles it
+the other way.
+
+The remake carries this as `WorldSpace.charisma_yaw_basis` and
+`CharismaBody.AUTHORED_FORWARD`, checked by `godot/tests/test_charisma.gd`;
+the corpus half is `_check_stride` in `tools/charisma_tables.py`.
+
+A second consequence, and the reason the stride was measured at all: a
+movement clip is **not** animated in place, so a renderer that moves the unit
+itself has to take the clip's own travel back out or the body slides a field
+out of its square on every loop.
+
 ---
 
 ## 6. Runtime: how a track drives a bone
@@ -1484,7 +1532,7 @@ Closed in this revision, each with the address that proves it:
 | **`BREAK` semantics** | §9 | `StopAnimationAtNoteEventCallback` registered on the literal `"BREAK"` at `0x0042c5d0` for every combat animation |
 
 Closed in **slice 4**, by enumerating the selectors rather than reading them
-(`tools/charisma_tables.py --check`, 35 checks):
+(`tools/charisma_tables.py --check`, 40 checks):
 
 | Item | Where it is now documented | Proof |
 |------|---------------------------|-------|
@@ -1507,7 +1555,7 @@ to act on it rather than merely read it:
    **resolved as far as the shipped artefacts allow**, not open in the sense of
    "not looked at".
 
-Still genuinely open — **five items**:
+Still genuinely open — **six items**:
 
 1. **What `weight` was for.** §4.10 proves the field is never read at runtime by
    either binary. Its *intent* — the class name and the constant value 100 both
@@ -1536,6 +1584,16 @@ Still genuinely open — **five items**:
    bind pose — but the disposition of the root node's rotation when no rotation
    track is bound is still inferred. `0x004842a2` (which would answer it) is
    dead code in the shipped binary. **UNVERIFIED.**
+
+6. **Whether the −Y authored forward (§5.4) is reconciled by a rotation or by a
+   mirror in y.** The eight facings determine the *result* — the body's yaw is
+   half a turn minus `docs/10` §5.10's angle — and that is measured. Both a
+   plain rotation and a y-mirror produce it, and they differ by swapping the
+   body left for right, which no measurement here separates because a biped is
+   near-symmetric. The bridge that would answer it is not decompiled. **The
+   discriminator is cheap and known**: the marine's weapon is parented under
+   `Hand_R`, so one screenshot of the original showing it in the left hand says
+   mirror. **UNVERIFIED.**
 
 ---
 

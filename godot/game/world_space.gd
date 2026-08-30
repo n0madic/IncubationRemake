@@ -43,6 +43,32 @@ static func yaw_basis(yaw: int) -> Basis:
 	return Basis(Vector3.UP, turns * TAU)
 
 
+## The same engine yaw, for a Charisma **body** rather than for Eng3d geometry.
+##
+## It is not [method yaw_basis] and the difference is measured, not a nudge to
+## make a screenshot look right.  A Charisma model is authored facing engine
+## **-Y** ([constant CharismaBody.AUTHORED_FORWARD]), and with that forward
+## there is **no** angle convention under which `docs/10` section 5.10's own
+## facing table sends all eight facings the right way: taken as a plain
+## rotation it agrees on the two facings along X and is mirrored in Y on the
+## other six.  Half a turn minus the angle agrees on all eight, and it is the
+## only such correction:
+##
+##     facing  0    1    2    3     4     5     6     7     (docs/10 5.10)
+##     angle   0    3072 2048 1024  1536  3584  512   2560
+##     step   +y   -x   -y   +x    +x-y  -x+y  +x+y  -x-y   (`FACING_OF_STEP`)
+##     needed  180  270  0    90    45    225   135   315   = 2048 - angle
+##
+## **Where the engine does this is UNVERIFIED**, exactly as `docs/40` section
+## 5.3's scale is: the Charisma-to-Eng3d bridge is not decompiled.  A rotation
+## is chosen over the mirror that would also fit because a mirror flips the
+## body left for right, and the marine carries its weapon in `Hand_R`.  One
+## screenshot of the original showing the weapon in the *left* hand closes that
+## question the other way.
+static func charisma_yaw_basis(yaw: int) -> Basis:
+	return yaw_basis(ANGLE_FULL_TURN / 2 - yaw)
+
+
 ## A whole engine matrix -- 16 floats, row-major, applied as `M * v`
 ## (docs/40 section 5.1) -- as a Godot [Transform3D].
 ##

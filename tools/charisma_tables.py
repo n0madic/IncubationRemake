@@ -55,6 +55,7 @@ from inclib.charisma_tables import (  # noqa: E402
 from inclib.info import load_info  # noqa: E402
 from inclib.charisma import mat_translation  # noqa: E402
 from inclib import pose as posemod  # noqa: E402
+from inclib import lev  # noqa: E402
 from inclib.pose import (CHANNEL_POSITION, pose_model,  # noqa: E402
                          sample_vector)
 from inclib.pe import PEError, PEFile  # noqa: E402
@@ -365,10 +366,16 @@ def _check_scale(ck: Checker, root: str, tables: SelectorTables,
     for delta in (-1, 1):
         for name, value in ground_at(SKELETON_TO_WORLD + delta).items():
             neighbours[f"{name}@{SKELETON_TO_WORLD + delta}"] = value[0]
-    ck.check("15 and 17 do not",
-             all(abs(v) > GROUND_TOLERANCE for v in neighbours.values()),
-             "closest miss %.1f world units"
-             % min(abs(v) for v in neighbours.values()))
+    # `all()` over an empty mapping is True, so the emptiness is its own arm:
+    # a check that measured no model is not a check that passed.
+    if neighbours:
+        ck.check("15 and 17 do not",
+                 all(abs(v) > GROUND_TOLERANCE for v in neighbours.values()),
+                 "closest miss %.1f world units"
+                 % min(abs(v) for v in neighbours.values()))
+    else:
+        ck.check("15 and 17 do not", False,
+                 "no grounded model measured at either neighbouring scale")
 
     # **The bind pose is not enough.**  The check above passed while every
     # animated body stood a metre deep in the floor, because the offset
@@ -590,6 +597,108 @@ def _pose_frames(model, anim) -> list[float]:
     return grid + _hold_probes(anim)
 
 
+#: A movement clip's stride, in world units, above which it is locomotion
+#: rather than authored sway.  The idle and combat families' largest is 126.
+STRIDE_FLOOR = 1000.0
+#: How far off a whole number of map fields a stride may land, as a fraction.
+STRIDE_FIELD_TOLERANCE = 0.09
+#: The shortest stride that is still locomotion, in map fields.  The largest
+#: sway an idle or combat clip carries is 126 world units, a twenty-fifth of
+#: this, so the two populations do not touch.
+STRIDE_MINIMUM_FIELDS = 0.4
+#: How far off engine -Y a stride's heading may point, in degrees.
+STRIDE_HEADING_TOLERANCE = 3.0
+
+
+def _top_level(model) -> str | None:
+    """The bone whose ``.cho`` parent is the ``ROOT`` sentinel, or None.
+
+    ``docs/40`` §6.2: there is exactly one, and ``_check_pose`` asserts that
+    over every gameplay pose, so this returns the first rather than voting.
+    """
+    if model.skeleton is None:
+        return None
+    for node in model.skeleton.nodes:
+        if node.parent == posemod.ROOT_SENTINEL:
+            return node.name
+    return None
+
+
+def _check_stride(ck: Checker, tables: SelectorTables, models: dict[str, str],
+                  animations: dict[str, str]) -> None:
+    """Which way a body is authored facing, measured off its own walk.
+
+    A Charisma model carries no forward axis and none of ``docs/40``'s
+    structural checks can supply one: a pose is equally self-consistent facing
+    either way.  The movement clips supply it, because a walk cycle **walks**
+    -- and it walks a whole number of map fields, which is a second thing the
+    number has to be and a coincidence would not.
+
+    This is the corpus evidence behind ``CharismaBody.AUTHORED_FORWARD`` and,
+    through it, behind ``WorldSpace.charisma_yaw_basis``: a body that faces the
+    other way walks backwards, which is how the remake had it.
+    """
+    strides: dict[str, tuple[float, float]] = {}
+    for model_name, anim_name in _gameplay_pairs(tables):
+        if "_M0_" not in anim_name:
+            continue
+        model_path = models.get(model_name)
+        anim_path = animations.get(anim_name)
+        if model_path is None or anim_path is None:
+            continue
+        model = charisma.parse_model_file(model_path)
+        anim = charisma.parse_animation_file(anim_path)
+        if anim.duration <= 0.0:
+            continue
+        start = pose_model(model, anim, 0.0).joints(include_hidden=True)
+        end = pose_model(model, anim, anim.duration).joints(include_hidden=True)
+        root = _top_level(model)
+        if root is None or root not in start:
+            continue
+        dx = (end[root][0] - start[root][0]) * SKELETON_TO_WORLD
+        dy = (end[root][1] - start[root][1]) * SKELETON_TO_WORLD
+        strides[f"{model_name}/{anim_name}"] = (dx, dy)
+
+    ck.check("movement pairings measured", bool(strides),
+             f"{len(strides)} (model, movement clip)")
+    walking = {k: v for k, v in strides.items()
+               if math.hypot(*v) > STRIDE_FLOOR}
+    ck.check("movement clips that stride", bool(walking),
+             "%d of %d; the rest are animated in place, and all of those are "
+             "the creature set: %s"
+             % (len(walking), len(strides),
+                ", ".join(sorted({k.split("/")[1].split("_M0_")[0]
+                                  for k in strides if k not in walking}))))
+
+    # The heading is the finding: every one of them walks toward engine -Y.
+    off = {k: round(math.degrees(math.atan2(v[0], -v[1])), 1)
+           for k, v in walking.items()
+           if abs(math.degrees(math.atan2(v[0], -v[1])))
+           > STRIDE_HEADING_TOLERANCE}
+    ck.expect("every stride heads toward engine -Y", off, {},
+              "within %.0f deg; worst %.1f deg"
+              % (STRIDE_HEADING_TOLERANCE,
+                 max((abs(math.degrees(math.atan2(v[0], -v[1])))
+                      for v in walking.values()), default=0.0)))
+
+    # And it is locomotion rather than decoration: the smallest stride is an
+    # order of magnitude past the largest sway an idle or a combat clip has.
+    # The human set is quantised on the map field -- 91 of its clips walk
+    # exactly one, one walks three over twice the frames -- and the creature
+    # set is not, which is reported rather than asserted because nothing says
+    # it has to be.
+    fields = {k: math.hypot(*v) / lev.WORLD_UNITS_PER_FIELD
+              for k, v in walking.items()}
+    short = {k: round(v, 3) for k, v in fields.items()
+             if v < STRIDE_MINIMUM_FIELDS}
+    whole = sum(1 for v in fields.values()
+                if abs(v - round(v)) <= STRIDE_FIELD_TOLERANCE and v >= 0.5)
+    ck.expect("and every stride is a real one", short, {},
+              "%d clip(s), shortest %.2f field(s), longest %.2f; %d land on a "
+              "whole field" % (len(fields), min(fields.values()),
+                               max(fields.values()), whole))
+
+
 def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
                 animations: dict[str, str]) -> None:
     """Every gameplay pose, on a frame grid, bone by bone.
@@ -792,6 +901,7 @@ def run_check(root: str) -> int:
     _check_track_binding(ck, tables, root, models, animations)
     _check_reachability(ck, tables, root)
     _check_pose(ck, tables, models, animations)
+    _check_stride(ck, tables, models, animations)
     return ck.report()
 
 

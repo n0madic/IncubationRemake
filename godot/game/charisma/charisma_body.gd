@@ -49,10 +49,32 @@ extends Node3D
 ## verified is the number.
 const SKELETON_TO_WORLD: float = 16.0
 
+## Which way a body is authored facing, as a Godot direction (engine **-Y**).
+##
+## Measured three ways that share no code:
+##
+## * the walk cycle **strides** that way -- `P0_M0_000` carries its top-level
+##   bone -3238 world units in Y and -57 in X over its 20 frames, and all 94
+##   striding (model, movement clip) pairings the selectors produce head that
+##   way to within **1.9 degrees** (`charisma_tables.py --check`);
+## * the bind pose puts the weapon hand out in front of the chest at
+##   `y = -1266` and the toes of both feet ahead of their ankles, both in -Y;
+## * it is the only forward for which an angle convention exists that sends
+##   all eight of `docs/10` section 5.10's facings the right way -- see
+##   [method WorldSpace.charisma_yaw_basis], which is that convention.
+##
+## Engine -Y is Godot +Z, which is Godot's own forward with the sign it takes
+## after [method WorldSpace.to_godot_v].
+const AUTHORED_FORWARD: Vector3 = Vector3(0.0, 0.0, 1.0)
+
 ## Bone name -> the node drawing its mesh. Bones without a mesh -- more than
 ## half of a biped's -- get no node at all.
 var _nodes: Dictionary[String, MeshInstance3D] = {}
 var _model: CharismaModel = null
+## The clip whose start [member _origin] holds, so a walk poses the skeleton
+## twice on the frame it begins and once on every frame after it.
+var _origin_clip: CharismaClip = null
+var _origin: CharismaSkeleton = null
 
 
 ## Build the body of `model`, unposed. Returns null when the model names no
@@ -76,7 +98,13 @@ static func create(model: CharismaModel,
 		instance.name = bone.replace(".", "_")
 		body.add_child(instance)
 		body._nodes[bone] = instance
-	return null if body._nodes.is_empty() else body
+	if body._nodes.is_empty():
+		# Freed rather than dropped: this is a `Node3D` and it was never
+		# parented, so nothing else would ever free it -- and the caller takes
+		# this path on every rebuild for a type the cache carries no mesh for.
+		body.free()
+		return null
+	return body
 
 
 ## How many parts this body actually draws, for a measurement to report.
@@ -91,10 +119,18 @@ func part_count() -> int:
 ## disagree about the skeleton, which the converter's closure prevents, and
 ## snapping a limb to the model's feet would be a louder wrong answer than
 ## leaving it where it was.
-func apply(pose: CharismaSkeleton) -> void:
+## `travel` is the clip's own stride, in the pose's own units, and it is
+## **subtracted**: see [method pose].
+func apply(pose: CharismaSkeleton, travel: Vector2 = Vector2.ZERO) -> void:
 	for bone: String in _nodes:
 		var instance: MeshInstance3D = _nodes[bone]
 		var world: PackedFloat64Array = pose.world_matrix(bone)
+		# The stride comes off before the scale, because it is measured in the
+		# same units the pose is. Z is left alone: the walk cycle's own rise
+		# and fall is not travel, and `charisma_tables.py`'s ground check pins
+		# it.
+		world[3] -= travel.x
+		world[7] -= travel.y
 		# Scaling the *world* translation is exactly equivalent to scaling
 		# every local one, because a rotation does not change a length and
 		# `t_world = R_parent * t_local + t_parent` is linear in the
@@ -118,5 +154,51 @@ func apply(pose: CharismaSkeleton) -> void:
 ## A null clip is not a failure: nine unit types get fewer than three clips and
 ## two get none at all (docs/40 section 7.2 as amended), so a body that stands
 ## in its bind pose is the engine's own behaviour for them.
-func pose(clip: CharismaClip, time: float) -> void:
-	apply(CharismaSkeleton.pose(_model, clip, time))
+## `in_place` removes the clip's own travel, which the caller must ask for
+## whenever **it** is the one moving the unit.
+##
+## A movement clip is not animated in place: `P0_M0_000` walks its top-level
+## bone one map field (3238 world units against a field's 3200) over its 20
+## frames, and 94 of the 99 pairings the selectors produce stride at all --
+## the shortest by 0.43 of a field, the longest by 3.5.
+## [method UnitsView.start_walk] interpolates the unit's node between cells
+## itself, so playing the clip untouched adds a second field of travel per
+## loop and the body slides away from its own marker. Only the movement family
+## is cancelled, and only because the node moves under it: idle and combat
+## clips carry at most 126 world units of authored sway (8 cm), which is
+## theirs to keep.
+func pose(clip: CharismaClip, time: float, in_place: bool = false) -> void:
+	var posed: CharismaSkeleton = CharismaSkeleton.pose(_model, clip, time)
+	var travel: Vector2 = Vector2.ZERO
+	if in_place and clip != null:
+		if clip != _origin_clip:
+			_origin_clip = clip
+			_origin = CharismaSkeleton.pose(_model, clip, 0.0)
+		travel = stride(_model, _origin, posed)
+	apply(posed, travel)
+
+
+## How far a clip has carried its own top-level bone between two of its poses,
+## in the pose's units, on the ground plane only.
+##
+## Static and pure so the suite can measure a stride without standing a body
+## up. The top-level bone is the one whose `.cho` parent is the `ROOT` sentinel
+## (docs/40 section 6.2) and there is exactly one -- `charisma_tables.py`
+## checks that over all 2331 poses -- so a model without one is a cache that
+## did not survive conversion, and no stride is the honest answer for it.
+static func stride(model: CharismaModel, from: CharismaSkeleton,
+		to: CharismaSkeleton) -> Vector2:
+	var bone: String = top_level_bone(model)
+	if bone == "":
+		return Vector2.ZERO
+	var a: PackedFloat64Array = from.world_matrix(bone)
+	var b: PackedFloat64Array = to.world_matrix(bone)
+	return Vector2(b[3] - a[3], b[7] - a[7])
+
+
+## The model's top-level bone, or `""` when it has none.
+static func top_level_bone(model: CharismaModel) -> String:
+	for bone: String in model.bones:
+		if model.is_top_level(bone):
+			return bone
+	return ""
