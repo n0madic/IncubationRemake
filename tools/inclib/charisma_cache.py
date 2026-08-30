@@ -137,12 +137,19 @@ def animation_document(name: str, animation: Any) -> dict[str, Any]:
 # The selector tables
 # ---------------------------------------------------------------------------
 
-def selector_document(tables: Any, source: dict[str, Any]) -> dict[str, Any]:
+def selector_document(tables: Any, source: dict[str, Any],
+                      keys: Iterable[Any]) -> dict[str, Any]:
     """The four decision tables, as ``tools/charisma_tables.py`` read them.
 
     The converter does not re-derive the player prefixes, the hero rewrite or
     the neutral player's refusal: it copies out what the interpreter produced,
     so there is one reading of those routines in the repository and not two.
+
+    *keys* is the closure the caller computed, and passing it is not an
+    optimisation: :meth:`to_dict` without it drops every key that returns
+    nothing, and those are the interesting ones.  The neutral player 0xFC has
+    no body at all, and a document that simply lacked the key would be read as
+    a converter that forgot rather than as an engine that draws nothing.
 
     The document deliberately keeps the shape that carries **absences**.  Nine
     unit types get fewer than three clips and two get none at all
@@ -152,7 +159,7 @@ def selector_document(tables: Any, source: dict[str, Any]) -> dict[str, Any]:
     bounds and the threshold -- rather than as a probability, so the remake can
     reproduce the choice instead of inventing one.
     """
-    document = tables.to_dict()
+    document = tables.to_dict(keys)
     document["schema"] = SELECTOR_SCHEMA
     document["source"] = source
     return document

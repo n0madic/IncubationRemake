@@ -31,9 +31,11 @@ packaging, and §10.1 only asks that the converter be pointed at an installation
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -46,7 +48,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lev_parse  # noqa: E402
 from inclib import cache as cachemod  # noqa: E402
 from inclib.check import Checker  # noqa: E402
-from inclib.convert import ConvertError, convert, mission_path  # noqa: E402
+from inclib import charisma as chamod  # noqa: E402
+from inclib import charisma_tables as chatables  # noqa: E402
+from inclib.convert import (ConvertError, animation_path,  # noqa: E402
+                            convert, mission_path)
 from inclib.lev import load_lev  # noqa: E402
 from inclib import prototyp as protomod  # noqa: E402
 from inclib.binio import ParseError  # noqa: E402
@@ -403,6 +408,138 @@ def check_against_as_dict(c: Checker, root: Path, cache_dir: Path,
         c.expect(f"beyond.{name}.no_floats", _float_paths(document), [])
 
 
+#: The cache is the player's disc, so the bodies' cost is bounded by a number
+#: rather than by hope.  Measured for the three demo missions: bodies and clips
+#: together come to about 3.1 MB against roughly 4.5 MB of map, scenery and
+#: textures.  The ceiling is set at twice the measurement -- generous enough not
+#: to fire on a mission with a wider roster, tight enough that closing over
+#: "every model" (2.5 MB of mesh per world set, 4.6 MB of clips) trips it.
+BODY_CACHE_CEILING_BYTES = 8 * 1024 * 1024
+
+
+def check_bodies(c: Checker, root: Path, cache_dir: Path,
+                 missions: list[str]) -> None:
+    """The Charisma documents: closure, resolution, encoding and size."""
+    models_index = json.loads((cache_dir / "models" / "index.json").read_text())
+    anims_index = json.loads(
+        (cache_dir / "animations" / "index.json").read_text())
+    selectors = json.loads((cache_dir / "tables" / "charisma.json").read_text())
+    units = json.loads((cache_dir / "geometry" / "units.json").read_text())
+
+    emitted_models = {m["name"] for m in models_index["models"]}
+    emitted_anims = {a["name"] for a in anims_index["animations"]}
+
+    # The two indexes are exactly what the selector table can return -- neither
+    # short (a body that cannot be drawn) nor long (a body nothing selects).
+    from_table: dict[str, set[str]] = {
+        selector: set(document["names"])
+        for selector, document in selectors.items()
+        if isinstance(document, dict) and "names" in document}
+    c.expect("bodies.models_match_table", emitted_models,
+             from_table.get("model", set()),
+             f"{len(emitted_models)} bodies")
+    c.expect("bodies.animations_match_table", emitted_anims,
+             set().union(*(from_table[s] for s in ("move", "idle", "fire"))),
+             f"{len(emitted_anims)} clips")
+
+    # Every unit of every converted mission finds its key in the table.
+    missing_keys: list[str] = []
+    for name in missions:
+        document = json.loads(
+            (cache_dir / "missions" / name / "map.json").read_text())
+        for unit in document["units"]:
+            for weapon in range(chatables.WEAPON_LIMIT):
+                key = f"{unit['type_id']},{weapon},{unit['player']}"
+                if key not in selectors["model"]["entries"]:
+                    missing_keys.append(f"{name}:{key}")
+    c.expect("bodies.closure_covers_units", missing_keys[:4], [],
+             f"{len(missions)} missions, every unit and every weapon")
+
+    # Every part's mesh is emitted; every emitted mesh is used.
+    named: set[str] = set()
+    for entry in models_index["models"]:
+        named.update(entry["meshes"])
+    c.expect("bodies.meshes_resolve", sorted(named - set(units["prototypes"])),
+             [], f"{len(named)} meshes named by {len(emitted_models)} bodies")
+    c.expect("bodies.no_orphan_meshes",
+             sorted(set(units["prototypes"]) - named), [])
+
+    # docs/40 §7: a track whose target is no part must survive into the cache,
+    # because ignoring it is a runtime rule the exported build has to exercise.
+    parts_by_model: dict[str, set[str]] = {}
+    for name in sorted(emitted_models):
+        document = json.loads((cache_dir / "models" / f"{name}.json").read_text())
+        parts_by_model[name] = {p["name"] for p in document["parts"]} \
+            | {n["name"] for n in document["skeleton"]["nodes"]}
+    every_part: set[str] = set().union(*parts_by_model.values()) \
+        if parts_by_model else set()
+    unbound: set[str] = set()
+    for name in sorted(emitted_anims):
+        document = json.loads(
+            (cache_dir / "animations" / f"{name}.json").read_text())
+        unbound |= {t["target"] for t in document["tracks"]
+                    if t["target"] not in every_part}
+    c.check("bodies.helper_tracks_kept", bool(unbound),
+            f"{len(unbound)} targets a runtime must ignore: "
+            + ", ".join(sorted(unbound)))
+
+    # Textures are named, never numbered: the id is per world set and this
+    # document is shared.
+    world_sets = {json.loads((cache_dir / "missions" / m / "map.json")
+                             .read_text())["header"]["world_set"]
+                  for m in missions}
+    wanted = {face["texture_name"]
+              for proto in units["prototypes"].values()
+              for face in proto["faces"] if face["texture_name"]}
+    for world_set in sorted(world_sets):
+        index = json.loads(
+            (cache_dir / "textures" / world_set / "index.json").read_text())
+        have = {entry["name"] for entry in index["textures"]}
+        c.expect(f"bodies.textures.{world_set}", sorted(wanted - have), [],
+                 f"{len(wanted)} unit texture names decoded for {world_set}")
+
+    # The float rule, on the documents that actually carry floats.
+    for relative in ["tables/charisma.json", "geometry/units.json",
+                     "models/index.json", "animations/index.json"]:
+        c.expect(f"bodies.no_floats.{relative}",
+                 _float_paths(json.loads((cache_dir / relative).read_text())),
+                 [])
+    sample_model = sorted(emitted_models)[0]
+    sample_anim = sorted(emitted_anims)[0]
+    for relative in [f"models/{sample_model}.json",
+                     f"animations/{sample_anim}.json"]:
+        c.expect(f"bodies.no_floats.{relative}",
+                 _float_paths(json.loads((cache_dir / relative).read_text())),
+                 [])
+
+    # The bit-pattern encoding is exact, checked against the source files.
+    animation = chamod.parse_animation_file(str(animation_path(root, sample_anim)))
+    document = json.loads(
+        (cache_dir / "animations" / f"{sample_anim}.json").read_text())
+    mismatches = 0
+    total = 0
+    for movement, track in zip(animation.movements, document["tracks"]):
+        raw = base64.b64decode(track["keys"])
+        values = struct.unpack(f"<{len(raw) // 4}f", raw)
+        at = 0
+        for key in movement.keys:
+            want = (key.time,) + tuple(key.values)
+            got = values[at:at + 1 + track["arity"]]
+            at += 1 + track["arity"]
+            total += len(want)
+            mismatches += int(got != want)
+    c.expect("bodies.keys_round_trip", mismatches, 0,
+             f"{total} floats of {sample_anim} recovered bit-exactly")
+
+    size = sum(path.stat().st_size
+               for directory in ("models", "animations")
+               for path in (cache_dir / directory).rglob("*.json")) \
+        + (cache_dir / "geometry" / "units.json").stat().st_size
+    c.check("bodies.cache_size", size <= BODY_CACHE_CEILING_BYTES,
+            f"{size / 1024 / 1024:.2f} MiB of bodies and clips, ceiling "
+            f"{BODY_CACHE_CEILING_BYTES / 1024 / 1024:.0f} MiB")
+
+
 def run_checks(root: Path, missions: list[str], language: str) -> int:
     c = Checker()
     if not (root / "Missions").is_dir():
@@ -444,6 +581,10 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
                 f"{len(declared)} declared source files all exist")
 
         check_against_as_dict(c, root, first.root, missions)
+        check_bodies(c, root, first.root, missions)
+        c.expect("bodies.cross_set_identical",
+                 [w for w in result.warnings if "differs between" in w], [],
+                 "unit meshes are the same geometry in every world set")
 
         published, created = cachemod.publish(first, caches_root, manifest_a)
         c.check("publish.created", created, published.name)

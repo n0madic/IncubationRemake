@@ -19,6 +19,13 @@ world units, UVs are the raw 8.7 fixed-point the record carries, colours are the
 raw ``u16`` plus a decoded RGB triple, heights are ``i32``.  No float is ever
 formatted, so no formatting can drift.
 
+**Animation does not weaken that rule; it extends it.**  Bind matrices and
+animation keys are genuinely ``f32``, and they reach the cache as their own
+IEEE-754 bit patterns -- a ``u32`` for a single value, base64 of little-endian
+``f32`` for an array (:mod:`inclib.charisma_cache`).  The invariant the rule
+wanted is kept literally: no float is ever formatted.  The round trip is exact
+by construction and is checked over the corpus, not assumed.
+
 **Polygons stay polygons.**  Triangulation is a rendering decision and lives in
 ``game/``; a triangulated cache would stop being "decoded, engine-independent
 data".
@@ -31,6 +38,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import charisma as chamod
+from . import charisma_cache as chacache
+from . import charisma_tables as chatables
 from . import lev as levmod
 from . import prototyp as protomod
 from . import visn as visnmod
@@ -71,6 +81,18 @@ MARKER_PROTOTYPE = "CLS.3DI"
 #: is outside the slice, so the converter emits the marker and the real models
 #: of the inanimate types that are actually placed.
 UNIT_MARKER_MODEL = "A_MK_0B.3DI"
+
+#: ``docs/40`` §7.2 -- the bodies themselves come from Charisma, chosen by four
+#: routines in ``Incubation.exe``.  The converter reads them through
+#: :mod:`inclib.charisma_tables` rather than re-deriving the player prefixes,
+#: the hero rewrite or the neutral player's refusal, so those routines have one
+#: reading in this repository and not two.
+GAME_EXE = "Incubation.exe"
+#: The world set the shared unit meshes are parsed from.  Any of the nine would
+#: do -- ``charisma_tables --check`` proves all 1 877 unit meshes are present in
+#: every one -- but the choice has to be written down, and the converter checks
+#: cross-set identity for the meshes it actually emits rather than trusting it.
+UNIT_GEOMETRY_SOURCE_SET = "A00"
 
 
 class ConvertError(Exception):
@@ -117,6 +139,16 @@ def mission_path(root: Path, name: str) -> Path:
 def mission_script_path(root: Path, name: str) -> Path:
     """The ``.lcl`` beside the ``.lev``; docs/20 -- the mission's own program."""
     return _find(root, "Missions", f"{name}.lcl")
+
+
+def model_path(root: Path, name: str) -> Path:
+    """One Charisma body; ``docs/40`` §7.1 -- the name is the file stem."""
+    return _find(root, "CHData", "Objects", f"{name}.cho")
+
+
+def animation_path(root: Path, name: str) -> Path:
+    """One Charisma clip."""
+    return _find(root, "CHData", "Animations", f"{name}.cha")
 
 
 def gui_text_paths(root: Path, language: str) -> list[Path]:
@@ -480,6 +512,174 @@ def prototype_names(document: dict[str, Any], tables: BalanceTables,
     return sorted(names)
 
 
+# ---------------------------------------------------------------------------
+# Bodies: the Charisma closure
+# ---------------------------------------------------------------------------
+
+def unit_selector_keys(document: dict[str, Any]) -> set[chatables.SelectorKey]:
+    """Every ``(type, weapon, player)`` a mission's units can present.
+
+    Two deliberate widenings over :func:`prototype_names`:
+
+    * **unplaced units are included.**  ``prototype_names`` skips them, which is
+      right for scenery -- a body that is never placed draws nothing.  It is
+      wrong here: reinforcements and script-inserted units are exactly the ones
+      that appear later, and a body missing at that moment is a body missing
+      when the player is looking;
+    * **every weapon is closed over**, not just the type's default.  A unit's
+      model changes with its weapon (a marine has 16 bodies), the weapon byte
+      is written mid-mission by ``aToggleWeaponModes`` and by scripts, and the
+      whole weapon range costs a few hundred lookups and about 25 KB.  Closing
+      over the default alone would work until the first weapon toggle.
+    """
+    return {
+        chatables.SelectorKey(unit["type_id"], weapon, unit["player"])
+        for unit in document["units"]
+        for weapon in range(chatables.WEAPON_LIMIT)
+    }
+
+
+def _masked_faces(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """A prototype's faces with the per-world-set texture id removed."""
+    return [{k: v for k, v in face.items() if k != "texture"}
+            for face in document["faces"]]
+
+
+def convert_bodies(root: Path, reader: SourceReader, staging: Staging,
+                   keys: set[chatables.SelectorKey],
+                   result: Conversion) -> set[str]:
+    """Emit the bodies, the clips and the selector tables; name the textures.
+
+    Returns the texture **names** the unit meshes reference, for the per-world
+    -set texture pass to resolve: a unit body is the same geometry everywhere,
+    but a texture *id* is not -- ``caan0000`` is 7 in ``A00`` and 8 in ``E00``.
+    """
+    exe = reader.record(_find(root, GAME_EXE))
+    tables = chatables.SelectorTables(chatables.PEFile(str(exe)), keys)
+    staging.write_json("tables/charisma.json", chacache.selector_document(
+        tables, {"exe": reader.rel(exe),
+                 "sha256": reader.seen[reader.rel(exe)]}, keys))
+
+    model_names: set[str] = set()
+    animation_names: set[str] = set()
+    for selector in chatables.SELECTORS:
+        names = tables.names(selector)
+        (model_names if selector == "model" else animation_names).update(names)
+
+    # Bodies.
+    mesh_names: set[str] = set()
+    model_index: list[dict[str, Any]] = []
+    for name in sorted(model_names):
+        path = reader.record(model_path(root, name))
+        model = chamod.parse_model_file(str(path))
+        document = chacache.model_document(name, model)
+        staging.write_json(f"models/{name}.json", document)
+        meshes = sorted({p["mesh"] for p in document["parts"] if p["mesh"]})
+        mesh_names.update(meshes)
+        model_index.append({"name": name, "parts": len(document["parts"]),
+                            "bones": len(document["skeleton"]["nodes"]),
+                            "meshes": meshes})
+    staging.write_json("models/index.json", {
+        "schema": chacache.MODEL_INDEX_SCHEMA, "models": model_index})
+
+    # Clips.  Tracks whose target matches no part are **kept**: docs/40 §7
+    # measures 17 of them across the gameplay set, and the rule a runtime must
+    # follow is to ignore them.  Stripping them here would mean the exported
+    # build never takes that path on shipped data.
+    animation_index: list[dict[str, Any]] = []
+    for name in sorted(animation_names):
+        path = reader.record(animation_path(root, name))
+        animation = chamod.parse_animation_file(str(path))
+        document = chacache.animation_document(name, animation)
+        staging.write_json(f"animations/{name}.json", document)
+        animation_index.append({
+            "name": name,
+            "duration_bits": document["duration_bits"],
+            "tracks": len(document["tracks"]),
+            "notes": [n["text"] for n in document["notes"]],
+        })
+    staging.write_json("animations/index.json", {
+        "schema": chacache.ANIMATION_INDEX_SCHEMA,
+        "animations": animation_index})
+
+    # Geometry, once for every world set.
+    paths = world_paths(root, UNIT_GEOMETRY_SOURCE_SET,
+                        _any_scene(root, UNIT_GEOMETRY_SOURCE_SET))
+    reader.record(paths["din"])
+    reader.record(paths["bin"])
+    container = protomod.load_container(str(paths["din"]), str(paths["bin"]))
+    prototypes: dict[str, Any] = {}
+    missing: list[str] = []
+    for name in sorted(mesh_names):
+        try:
+            index = container.find(name)
+        except KeyError:
+            missing.append(name)
+            continue
+        prototypes[name] = prototype_document(container.parse(index))
+    if missing:
+        result.warnings.append(
+            f"unit meshes absent from {UNIT_GEOMETRY_SOURCE_SET}: "
+            + ", ".join(missing))
+
+    names_by_id = {entry.index: entry.name
+                   for entry in visnmod.read_din_index(str(paths["texture_din"]))}
+    document = chacache.unit_geometry_document(
+        UNIT_GEOMETRY_SOURCE_SET, prototypes, names_by_id,
+        {"din": reader.rel(paths["din"]), "bin": reader.rel(paths["bin"]),
+         "sha256": reader.seen[reader.rel(paths["bin"])]})
+    staging.write_json("geometry/units.json", document)
+    if document["unnamed_textures"]:
+        result.warnings.append(
+            f"unit meshes reference texture ids with no name in "
+            f"{UNIT_GEOMETRY_SOURCE_SET}: {document['unnamed_textures']}")
+    result.warnings += _check_cross_set_meshes(root, prototypes)
+    return chacache.unit_texture_names(document)
+
+
+def _any_scene(root: Path, world_set: str) -> str:
+    """Any scene of a world set -- only the Objects/ paths are wanted."""
+    base = _find(root, "WorldSet", f"World_{world_set}", "Worlds")
+    for entry in sorted(base.iterdir()):
+        if entry.suffix.upper() == ".3DW":
+            return entry.stem
+    raise ConvertError(f"World_{world_set} has no .3DW scene")
+
+
+def _check_cross_set_meshes(root: Path,
+                            prototypes: dict[str, Any]) -> list[str]:
+    """The claim the shared unit geometry rests on, checked where it is used.
+
+    Emitting bodies once instead of nine times is only sound if a unit mesh is
+    the same geometry in every world set.  ``charisma_tables --check`` proves
+    every unit mesh is *present* in all nine; that a mesh is also *identical*
+    once the per-set texture id is masked is what makes one copy enough, and
+    the converter is where that has consequences, so it is checked here rather
+    than assumed from a measurement made elsewhere.
+    """
+    complaints: list[str] = []
+    base = _find(root, "WorldSet")
+    others = [entry.name.split("_", 1)[1] for entry in sorted(base.iterdir())
+              if entry.is_dir() and entry.name.startswith("World_")
+              and entry.name != f"World_{UNIT_GEOMETRY_SOURCE_SET}"]
+    for world_set in others:
+        paths = world_paths(root, world_set, _any_scene(root, world_set))
+        container = protomod.load_container(str(paths["din"]), str(paths["bin"]))
+        for name, document in prototypes.items():
+            try:
+                index = container.find(name)
+            except KeyError:
+                complaints.append(f"{name} absent from {world_set}")
+                continue
+            other = prototype_document(container.parse(index))
+            if _masked_faces(other) != _masked_faces(document) \
+                    or other["vertices"] != document["vertices"]:
+                complaints.append(
+                    f"{name} differs between {UNIT_GEOMETRY_SOURCE_SET} and "
+                    f"{world_set} by more than its texture ids")
+    return complaints
+
+
 def convert(root: Path, missions: list[str], staging: Staging,
             reader: SourceReader, language: str) -> Conversion:
     """Convert every named mission and everything it reaches into `staging`."""
@@ -490,6 +690,7 @@ def convert(root: Path, missions: list[str], staging: Staging,
 
     wanted_by_set: dict[str, set[str]] = {}
     scenes_by_set: dict[str, set[str]] = {}
+    selector_keys: set[chatables.SelectorKey] = set()
 
     for name in missions:
         path = reader.record(mission_path(root, name))
@@ -524,6 +725,12 @@ def convert(root: Path, missions: list[str], staging: Staging,
         wanted_by_set.setdefault(bm.world_set, set()).update(
             prototype_names(document, tables, _lattice_prototype(bm)))
         scenes_by_set.setdefault(bm.world_set, set()).add(bm.world_scene)
+        selector_keys |= unit_selector_keys(document)
+
+    # The bodies come before the world-set pass because they decide which
+    # textures each set has to decode: the shared unit geometry names its
+    # textures and every set resolves those names to its own ids.
+    unit_textures = convert_bodies(root, reader, staging, selector_keys, result)
 
     for world_set, names in sorted(wanted_by_set.items()):
         paths = world_paths(root, world_set, sorted(scenes_by_set[world_set])[0])
@@ -543,6 +750,16 @@ def convert(root: Path, missions: list[str], staging: Staging,
             result.warnings.append(
                 f"{world_set}: prototypes named but absent from prototyp.din: "
                 + ", ".join(document["missing"]))
+        # The unit bodies' textures, resolved from name to this set's own ids.
+        ids_by_name = {entry.name: entry.index for entry
+                       in visnmod.read_din_index(str(paths["texture_din"]))}
+        unresolved = sorted(unit_textures - set(ids_by_name))
+        if unresolved:
+            result.warnings.append(
+                f"{world_set}: unit textures with no record: "
+                + ", ".join(unresolved))
+        textures |= {ids_by_name[name] for name in unit_textures
+                     if name in ids_by_name}
         index = convert_textures(reader, staging, world_set,
                                  paths["texture_lib"], paths["texture_din"],
                                  textures)
