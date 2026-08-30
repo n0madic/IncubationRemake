@@ -9,9 +9,6 @@ godot/.godot/
 godot/generated/
 godot/export/
 
-# Native move-map captures: derived from Blue Byte data, like tools/out/.
+# Native captures: derived from Blue Byte data, like tools/out/.
 # The committed README.md beside them records what each one pins.
-tests/fixtures/movemap/*.json
-tests/fixtures/turn/*.json
-tests/fixtures/lcl/*.json
-tests/fixtures/ai/*.json
+tests/fixtures/*/*.json
