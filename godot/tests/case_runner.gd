@@ -165,6 +165,7 @@ static func build_world(case: Dictionary) -> Dictionary:
 				"size": DictRead.as_int(record["size"]),
 				"species": 0,
 				"height": 0,
+				"armour_front": 255, "armour_rear": 255,
 				"model": "",
 				"description": "type %d" % type_id,
 			})

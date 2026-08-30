@@ -1016,7 +1016,8 @@ def _delay_of(grid: Grid, delays: Mapping[int, int], index: int) -> int:
 
 
 def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
-            mover: Mover, walked: WalkResult) -> ExecuteResult:
+            mover: Mover, walked: WalkResult,
+            budget: int | None = None) -> ExecuteResult:
     """``aExecuteMove(sx, sy, tx, ty, &cost, 1, 255, 0)`` -- ``0x0046E220``.
 
     ``walked`` is the :func:`walk` this is following, and its ``path`` is in
@@ -1054,11 +1055,26 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
             raise MoveMapError(
                 f"({x},{y}) -> ({nx},{ny}) is not a step to a neighbour")
         diagonal = dx != 0 and dy != 0
-        cost += STEP_COST_DIAGONAL if diagonal else STEP_COST_ORTHOGONAL
+        step = STEP_COST_DIAGONAL if diagonal else STEP_COST_ORTHOGONAL
         if DELAY_CHARGED_ON in (DELAY_ON_ENTERED, DELAY_ON_BOTH):
-            cost += _delay_of(grid, delays, index)
+            step += _delay_of(grid, delays, index)
         if DELAY_CHARGED_ON in (DELAY_ON_LEFT, DELAY_ON_BOTH):
-            cost += _delay_of(grid, delays, here)
+            step += _delay_of(grid, delays, here)
+        if budget is not None and cost + step > budget:
+            # **The walk is bounded by the mover's real movement points.**
+            # Measured: `tools/ai_gold.py`'s plan probes hand the routine a
+            # path the level-2 horizon flooded with 30 points and the unit
+            # took **one** step of it -- `+0x50` came back 15, one diagonal --
+            # while the model walked all seven.  The horizon is a *search*
+            # radius (docs/23 §5.1); `0x0040A750` restores `u->+0x15` before
+            # it commits, and `aExecuteMove` stops where those points do.
+            #
+            # `None` keeps the unbounded behaviour, which is what the player's
+            # own move wants: the UI never offers a cell the fill did not
+            # reach on the unit's real points, so the path is affordable by
+            # construction and a budget would be a second, redundant test.
+            break
+        cost += step
         tenths += STEP_TENTHS_DIAGONAL if diagonal else STEP_TENTHS_ORTHOGONAL
         facing = FACING_OF_STEP[(dx, dy)]
         steps += 1

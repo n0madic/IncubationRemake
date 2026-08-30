@@ -30,10 +30,23 @@ func has(weapon_id: int) -> bool:
 	return _rows.has(weapon_id)
 
 
+## One column of one row, or `fallback`.
+##
+## A row is a **document**, not a struct: it comes from `tables/balance.json`
+## and a hand-built fixture in `tests/` carries only the columns that fixture
+## is about. So a missing key is the same answer as a missing row -- the
+## accessor's own documented default -- rather than a crash in whichever suite
+## happened to add a reader first.
+##
+## The real cache is held to the stricter standard: `test_cache.gd` asserts
+## that every published row carries every column any accessor reads, so a
+## converter that dropped one fails there and not silently here.
 func _field(weapon_id: int, key: String, fallback: int) -> int:
 	if not _rows.has(weapon_id):
 		return fallback
 	var row: Dictionary = _rows[weapon_id]
+	if not row.has(key):
+		return fallback
 	return DictRead.as_int(row[key])
 
 

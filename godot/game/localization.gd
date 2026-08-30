@@ -57,6 +57,18 @@ const OWN: Dictionary = {
 	"hud.reactions": {"English": "reaction shots"},
 	"hud.hidden": {"English": "hidden"},
 	"hud.contact": {"English": "contact"},
+	"hud.ai_turn": {"English": "the aliens are moving"},
+	"hud.ai_skip": {"English": "any key skips the replay"},
+	"hud.defeat": {"English": "mission failed"},
+	"hud.victory": {"English": "mission accomplished"},
+	"ai.move": {"English": "advances"},
+	"ai.warp": {"English": "jumps"},
+	"ai.fire": {"English": "fires"},
+	"ai.fire_heat_blocked": {"English": "cannot fire"},
+	"ai.door": {"English": "opens a door"},
+	"ai.parabomb": {"English": "a parabomb goes off"},
+	"ai.reactions": {"English": "draws reaction fire"},
+	"ai.promote_order": {"English": "changes its orders"},
 }
 
 ## What a missing key renders as. Visible on purpose.
@@ -95,6 +107,16 @@ func shipped(module: String, id: int) -> String:
 	if not entries.has(key):
 		return "%s%s/%d" % [MISSING_PREFIX, module, id]
 	return DictRead.as_string(entries[key])
+
+
+## Whether this catalogue defines one of the remake's own keys.
+##
+## The AI playback names an event kind as `ai.<kind>`, and a kind the
+## catalogue has no line for renders as the kind itself rather than as a
+## marker: a new event should be legible before it is translated, not
+## invisible.
+func has(key: String) -> bool:
+	return OWN.has(key)
 
 
 ## One of the remake's own strings, by key.

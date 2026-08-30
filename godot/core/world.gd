@@ -60,6 +60,17 @@ var script_runner: Callable = Callable(MissionScript, "no_op")
 ## [method _script_callable], and never kept.
 var script_program: LclProgram = null
 
+## `0x004FAE40`, through its setter `0x0040B360` and getter `0x0040B370` --
+## "the computer may fire". An engine **debug** global: `aMain` reaches the
+## whole AI module exactly once and that call is this setter, and no product
+## option is wired to it (docs/23 section 1). It is 1 in every shipped run.
+##
+## It is exposed here because it is the one switch that separates "the
+## opponent moves" from "the opponent kills", which is what a test needs to
+## show the mission is still completable through the whole stack while a
+## second run shows what the live opponent does to a squad.
+var ai_may_fire: bool = true
+
 ## `EnterNameOfNextMap` writes it and the campaign layer reads it. It starts as
 ## the authored header's value ([member MapResource.next_map]) -- a mission that
 ## never calls the command still names a successor.
@@ -272,15 +283,33 @@ func submit_move(command: MoveCommand) -> MoveResult:
 ## The command's cell is the aim point. Nothing here re-checks line of sight:
 ## the resolver does not, and adding a check would make a shot the engine
 ## allows impossible.
+##
+## **The charge, the *acted* flag and the reaction drain are the call site's,
+## and they were missing.** `aUI.cpp:3516` (`0x004731E4`) does, after the
+## resolver returns and only while the shooter is still alive: subtract the
+## weapon's AP with a clamp at zero, write 3 into `+0x39`, and call
+## `aExecuteFight`. `0x0040A440` -- the computer's fire routine -- does the
+## same three things, which is what makes them the call site's rather than the
+## resolver's. Slice 2 left all three out and nothing noticed, because a
+## player who could fire for free was still playing against an opponent that
+## never moved.
 func submit_attack(command: AttackCommand) -> AttackResult:
 	if not _units.has(command.unit_slot):
 		var refused: AttackResult = AttackResult.new()
 		refused.reason = "no such unit"
 		return refused
 	var unit: UnitState = _units[command.unit_slot]
-	return Combat.attack(state, _units, _unit_types, _weapons, unit.x, unit.y,
-		command.x, command.y, turn.ai_level, turn.human_count(), turn.mode,
-		rng)
+	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
+		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
+		turn.human_count(), turn.mode, rng)
+	if unit.hp == 0:
+		return shot
+	var ap: int = _weapons.ap(unit.weapon)
+	unit.mp = unit.mp - ap if unit.mp > ap else 0
+	unit.acted = ACTED_MOVED
+	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
+		unit, turn.ai_level, turn.human_count(), turn.mode, rng)
+	return shot
 
 
 ## `aExecuteUse` (`0x0046DC60`) -- docs/26.
@@ -428,6 +457,26 @@ func live_unit_count(player: int) -> int:
 	return n
 
 
+## `aGetHitProbability` (`0x0046A270`) for one shooter and one target.
+##
+## A scalar, not a [HitChance]: `core` hands out values and this is the one the
+## interface needs -- docs/29 section 1.1's target cursor and the AI's own
+## band both read exactly this number. Zero means "out of range, blocked, or
+## no such unit", which are the three the caller treats alike.
+func hit_chance(shooter_slot: int, target_slot: int) -> int:
+	if not _units.has(shooter_slot) or not _units.has(target_slot):
+		return 0
+	var shooter: UnitState = _units[shooter_slot]
+	var target: UnitState = _units[target_slot]
+	var weapon: int = AIOverlay.effective_weapon(_weapons, shooter)
+	if weapon < 0:
+		return 0
+	var chance: HitChance = HitChance.compute(state, _units, _unit_types,
+		_weapons, shooter, target, weapon, true, turn.human_count(),
+		turn.mode)
+	return chance.percent if chance.in_range else 0
+
+
 ## `0x0046FAD0` -- whether this unit is in range of a Banner.
 func banner_in_range(slot: int) -> bool:
 	if not _units.has(slot):
@@ -460,6 +509,22 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 		Visibility.build(state, _units, _unit_types, turn.current_player,
 			turn.human_count(), turn.mode)
 		result.fog_rebuilt = true
+
+	# **The computer's turn is played here, and handed back through the same
+	# seam it arrived by.** docs/25 section 4 puts `aAISystemControl` at the end
+	# of the hand-over, after the refresh and the fog, and docs/23 section 2 is
+	# what it runs. When it is done this calls [method submit_end_turn] again,
+	# which is the *engine's* own hand-over and not a second one: the rotation
+	# moves on to whoever is next, exactly as it would after a human player
+	# pressed the button.
+	if result.ai_turn and result.ok():
+		var ctx: AIContext = AIContext.create(state, _units, _unit_types,
+			_weapons, _ctrlmap, turn, rng)
+		ctx.may_fire = ai_may_fire
+		result.ai_result = AISystem.run(ctx, turn.current_player)
+		var handed: TurnResult = submit_end_turn(EndTurnCommand.create())
+		handed.ai_result = result.ai_result
+		return handed
 	return result
 
 

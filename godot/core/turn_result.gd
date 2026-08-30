@@ -27,9 +27,12 @@ var ran_player_script: bool = false
 var mission_ended: bool = false
 var refreshed: PackedInt32Array = PackedInt32Array()
 ## Whether the incoming player is 255 -- that is, whether the computer's turn
-## is what comes next. The planner that would run it is docs/23 and is not in
-## this stage; the hand-over that hands it over is.
+## is what comes next. docs/23's planner runs it, and [member ai_result]
+## carries what it did.
 var ai_turn: bool = false
+## The computer's turn, when [member ai_turn] was true and [World] ran it.
+## `null` otherwise; `game` plays the events back and `core` renders nothing.
+var ai_result: AITurnResult = null
 ## True when the caller rebuilt the fog for the player that now holds the turn.
 ## It is the *caller's* job (docs/22 section 9 is a map walk and [Refresh] is a
 ## unit walk), so this records that the caller did it rather than asserting it.
@@ -52,5 +55,6 @@ func to_dict() -> Dictionary:
 		"mission_ended": mission_ended,
 		"refreshed": refreshed.duplicate(),
 		"ai_turn": ai_turn,
+		"ai_result": {} if ai_result == null else ai_result.to_dict(),
 		"fog_rebuilt": fog_rebuilt,
 	}

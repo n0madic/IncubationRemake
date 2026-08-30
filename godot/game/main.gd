@@ -39,6 +39,10 @@ var _selected: int = -1
 var _cache_dir: String = ""
 var _geometry: Dictionary = {}
 var _textures: Dictionary = {}
+## The computer's turn, played back one event at a time. `core` decided the
+## whole thing before this exists; the playback only shows it.
+var _playback: AIPlayback = AIPlayback.new()
+var _ai_note: String = ""
 
 
 ## An exported build made with the `run_tests` custom feature runs the suites
@@ -345,8 +349,47 @@ static func zoom_delta_for(event: InputEvent) -> float:
 	return 0.0
 
 
+func _process(delta: float) -> void:
+	if _playback.is_running():
+		_playback.advance(delta)
+
+
+## One event of the computer's turn: lead the camera to it and say what it was.
+##
+## An empty dictionary means the playback is over. Nothing here touches the
+## world: it has held the post-turn state since [method World.submit_end_turn]
+## returned, which is what makes skipping free.
+func _on_ai_step(event: Dictionary) -> void:
+	if event.is_empty():
+		_ai_note = ""
+		_after_command("")
+		return
+	var kind: String = DictRead.as_string(event["kind"])
+	var to_x: int = DictRead.as_int(event["tx"])
+	var to_y: int = DictRead.as_int(event["ty"])
+	var at_x: int = DictRead.as_int(event["x"])
+	var at_y: int = DictRead.as_int(event["y"])
+	if kind == "move" or kind == "warp":
+		at_x = to_x
+		at_y = to_y
+	if world.state.in_bounds(at_x, at_y):
+		_rig.focus_on(at_x, at_y,
+			world.state.height_at(world.state.index_of(at_x, at_y)))
+	_ai_note = "%s  %s %d" % [_strings.text("hud.computer"),
+		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
+		DictRead.as_int(event["slot"])]
+	_units.build(world, _geometry, _textures)
+	_refresh_status(_ai_note)
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if world == null:
+		return
+	# The computer's turn holds the input while it is being shown. One key
+	# ends the showing; the world does not change either way.
+	if _playback.is_running():
+		if event is InputEventKey and event.is_pressed():
+			_playback.skip()
 		return
 	var zoom: float = zoom_delta_for(event)
 	if not is_zero_approx(zoom):
@@ -488,12 +531,16 @@ func hold_fire() -> int:
 	return ticket
 
 
-## Ends the current player's turn, and the computer's straight after it: this
-## stage has no planner, so player 255 receives its turn and returns it.
+## Ends the current player's turn. The computer's turn runs **inside**
+## [method World.submit_end_turn] now (docs/23), and hands over again by itself
+## when it is done, so what comes back has already passed the rotation on. The
+## loop that used to sit here would have run `NEXT PLAYER` a second time per
+## round -- which on `_C_140` is the script's reinforcement roll firing twice
+## as often as the mission intends.
 func end_turn() -> TurnResult:
 	var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
-	while result.ai_turn and not result.mission_ended:
-		result = world.submit_end_turn(EndTurnCommand.create())
+	if result.ai_result != null:
+		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
 	_selected = -1
 	_highlight.clear()
 	_after_command("")

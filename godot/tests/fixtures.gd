@@ -62,6 +62,9 @@ static func unit_type(id: int, special: int = 0, unit_size: int = 0,
 		"id": id, "mp_max": mp_max, "fp_max": fp_max, "hp_max": 20,
 		"special": special,
 		"size": unit_size, "species": 0, "height": 18,
+		# docs/10 section 5.4 -- 255 is "derive it from the four armour items",
+		# which is what [AIFire]'s post-shot recompute reads.
+		"armour_front": 255, "armour_rear": 255,
 		"model": "A_MK_0B.3DI", "description": "type %d" % id,
 	}
 

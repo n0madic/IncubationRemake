@@ -63,5 +63,24 @@ static func abs_i(v: int) -> int:
 ## signed divide by 1600; a step is blocked when the quotient exceeds 1, i.e.
 ## when the two cells differ by at least 3200 world units -- one map field.
 ## Written as the division it means, never transcribed as the multiply.
+## `(int)sqrt((double)value)` -- the truncation MSVCRT's `_ftol` performs.
+##
+## The one place the engine takes a square root outside the renderer is the AI
+## cover score (docs/23 section 5.2), and it converts the result with `_ftol`,
+## which truncates toward zero. The doc writes it as `+ 0.5` rounding; the
+## disassembly has no `fadd`, and the two differ by one on most inputs. Written
+## as an integer search rather than `int(sqrt(x))` so nothing depends on how a
+## float rounds.
+static func isqrt_trunc(value: int) -> int:
+	if value <= 0:
+		return 0
+	var root: int = int(sqrt(float(value)))
+	while (root + 1) * (root + 1) <= value:
+		root += 1
+	while root * root > value:
+		root -= 1
+	return root
+
+
 static func climb_quotient(height_delta: int) -> int:
 	return div_trunc(abs_i(height_delta), 1600)

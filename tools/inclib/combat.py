@@ -346,6 +346,11 @@ class CombatUnit:
     group: int = 0            # +0x4E
     turn_start_x: int = 0     # +0x51
     turn_start_y: int = 0     # +0x52
+    #: ``+0x50`` -- tenths of a field walked this turn.  ``aExecuteMove``
+    #: writes it, ``docs/21`` §5's ``special`` 4 reads it, and the refresh
+    #: zeroes it; nothing in ``docs/22`` touches it, which is why it arrived
+    #: here only when the AI started walking units.
+    walked: int = 0
     #: ``+0x1A..+0x1F`` in :data:`inclib.lev.SKILL_NAMES` order -- CON, LW, HW,
     #: TS, MS, LS.  A **list**, because the three implant boxes write to it.
     skills: list[int] = field(default_factory=lambda: [0] * 6)
@@ -1383,6 +1388,7 @@ def world_from_map(bm: Any, tables: BalanceTables,
             order=u.order, order_param=u.order_param, order2=u.order2,
             order2_param=u.order2_param, group=u.group,
             turn_start_x=u.turn_start_x, turn_start_y=u.turn_start_y,
+            walked=u.walked,
             skills=list(u.skills), equipment_ids=frozenset(u.equipment_ids))
     return CombatWorld(
         width=bm.width, height=bm.height,

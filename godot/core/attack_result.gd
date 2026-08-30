@@ -17,6 +17,11 @@ var facing: int = 0
 var marked: Array[PackedInt32Array] = []
 ## One entry per marked cell that held a unit.
 var outcomes: Array[Dictionary] = []
+## What `aExecuteFight` drained after the shot. The *caller* of `aAttackUnit`
+## runs it -- both the UI at `0x004731F5` and the computer's fire routine at
+## `0x0040A5AB` -- so it is filled in by [method World.submit_attack] and left
+## empty by [method Combat.attack] itself.
+var reactions: Array[Dictionary] = []
 
 
 func to_dict() -> Dictionary:

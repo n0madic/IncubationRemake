@@ -455,9 +455,11 @@ static func _run_synthetic(program: LclProgram, units: Array,
 	var types: UnitTypeTable = UnitTypeTable.from_rows([
 		{"id": 0, "mp_max": 4, "fp_max": 0, "hp_max": 10, "special": 0,
 			"size": 0, "species": 0, "height": 18, "model": "",
+			"armour_front": 255, "armour_rear": 255,
 			"description": "soldier"},
 		{"id": 1, "mp_max": 0, "fp_max": 255, "hp_max": 10, "special": 0,
 			"size": 0, "species": 2, "height": 18, "model": "",
+			"armour_front": 255, "armour_rear": 255,
 			"description": "crate"},
 	])
 	var turn: TurnState = TurnState.create()

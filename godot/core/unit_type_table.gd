@@ -45,10 +45,23 @@ func has(type_id: int) -> bool:
 	return _rows.has(type_id)
 
 
+## One column of one row, or `fallback`.
+##
+## A row is a **document**, not a struct: it comes from `tables/balance.json`
+## and a hand-built fixture in `tests/` carries only the columns that fixture
+## is about. So a missing key is the same answer as a missing row -- the
+## accessor's own documented default -- rather than a crash in whichever suite
+## happened to add a reader first.
+##
+## The real cache is held to the stricter standard: `test_cache.gd` asserts
+## that every published row carries every column any accessor reads, so a
+## converter that dropped one fails there and not silently here.
 func _field(type_id: int, key: String, fallback: int) -> int:
 	if not _rows.has(type_id):
 		return fallback
 	var record: Dictionary = _rows[type_id]
+	if not record.has(key):
+		return fallback
 	return DictRead.as_int(record[key])
 
 
@@ -70,6 +83,16 @@ func hp_max(type_id: int) -> int:
 
 func special(type_id: int) -> int:
 	return _field(type_id, "special", 0)
+
+
+## docs/21 section 5 -- the front armour column, or 255 for "derive it from
+## the four armour equipment items" (docs/10 section 5.4).
+func armour_front(type_id: int) -> int:
+	return _field(type_id, "armour_front", 0)
+
+
+func armour_rear(type_id: int) -> int:
+	return _field(type_id, "armour_rear", 0)
 
 
 func unit_size(type_id: int) -> int:

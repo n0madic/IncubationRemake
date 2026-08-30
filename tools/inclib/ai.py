@@ -1193,8 +1193,12 @@ def _commit(ctx: AIContext, unit: CombatUnit, best_cell: int) -> bool:
             cost = unit.mp
         else:
             assert walked is not None
+            # The mover's **real** points bound the walk: `0x0040A750`
+            # restores `u->+0x15` before it commits, and the wider horizons
+            # are a search radius rather than a movement allowance.
             moved = movemap.execute(ctx.grid, ctx.hooks(), ctx.delays,
-                                    ctx.mover(unit, unit.mp), walked)
+                                    ctx.mover(unit, unit.mp), walked,
+                                    budget=unit.mp)
             if not moved.ok and not moved.movement_zeroed:
                 return False
             _apply_move(ctx, unit, moved)
@@ -1229,6 +1233,9 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
                               "events": [e.to_dict() for e in moved.events]}))
     unit.x, unit.y = moved.x, moved.y
     unit.facing = moved.facing
+    # `+0x50` is written by `aExecuteMove` itself, not by its caller, and the
+    # engine adds into one byte -- so it wraps rather than saturating.
+    unit.walked = (unit.walked + moved.walked) & 0xFF
     for index, value in moved.action_point_writes:
         ctx.grid.action_points[index] = value
         world.action_point[index] = value

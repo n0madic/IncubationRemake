@@ -89,6 +89,51 @@ func run(h: TestHarness) -> void:
 		second.canonical_hash_hex(),
 		"two loads of the same cache give the same canonical hash")
 
+	# **Every column any accessor reads is in every published row.**
+	# [method UnitTypeTable._field] and its weapon twin fall back on a missing
+	# key, because a hand-built fixture in `tests/` carries only the columns it
+	# is about. The real cache is held to the stricter standard here, so a
+	# converter that dropped a column fails loudly instead of turning into a
+	# silent default -- which is how `armour_front` reached [AIFire] as a
+	# runtime error in four suites rather than as one failing check.
+	_check_columns(h, CacheFixture.cache_dir())
+
+
+## Columns [UnitTypeTable] reads, and the [AIFire] recompute among them.
+const UNIT_COLUMNS: Array[String] = ["id", "mp_max", "fp_max", "hp_max",
+	"special", "size", "species", "height", "model", "description",
+	"armour_front", "armour_rear"]
+## Columns [WeaponTable] reads, `ap` and `param` included -- both are what the
+## computer's fire routine and its jam fallback need.
+const WEAPON_COLUMNS: Array[String] = ["id", "heat", "toggle", "mun", "hit",
+	"damage", "range_min", "range_max", "type", "special", "def_mode",
+	"mun_per_fight", "ap", "param"]
+
+
+static func _check_columns(h: TestHarness, cache_dir: String) -> void:
+	var balance: Dictionary = CacheLoader.read_json(
+		cache_dir + "/tables/balance.json")
+	if balance.is_empty():
+		h.check("columns.balance", false, "tables/balance.json is missing")
+		return
+	h.equal("columns.units",
+		_missing(DictRead.as_array(balance["units"]), UNIT_COLUMNS), "",
+		"every SetUnitInfo row carries every column an accessor reads")
+	h.equal("columns.weapons",
+		_missing(DictRead.as_array(balance["weapons"]), WEAPON_COLUMNS), "",
+		"every SetWeaponInfo row carries every column an accessor reads")
+
+
+static func _missing(rows: Array, columns: Array[String]) -> String:
+	var gaps: PackedStringArray = PackedStringArray()
+	for entry: Variant in rows:
+		var row: Dictionary = DictRead.as_dict(entry)
+		for column: String in columns:
+			if not row.has(column):
+				gaps.append("%s on row %s" % [column,
+					str(row.get("id", "?"))])
+	return ", ".join(gaps)
+
 
 func _any_contains(values: PackedStringArray, needle: String) -> bool:
 	for value: String in values:

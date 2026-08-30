@@ -61,6 +61,7 @@ python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 u
 python3 tools/combat_runtime.py     --check gog_incubation   # 84 checks, LOS/hit/damage/reaction
 python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
+python3 tools/ai_runtime.py         --check gog_incubation   # 49 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 50 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
 bash   godot/run_tests.sh                                    # 25 suites, 1434 checks
@@ -243,6 +244,19 @@ repository:
 python3 tools/turn_gold.py --game-copy /path/to/copy --dbgcall /path/to/copy/dbgcall.exe
 python3 tools/turn_gold.py --check gog_incubation     # re-run the models against it
 ```
+
+`tools/ai_gold.py` is the third, and the one that pins a **whole computer
+turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
+captures eleven phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
+`python3 tools/ai_gold.py --check gog_incubation` re-runs `inclib/ai.py`
+against them (45 checks: the three predicates over 90 ordered pairs, the cover
+score over 60 cells, the target overlay, the approach cell, seven helpers, six
+fires, twelve plans, the parabomb fuse, and `aAISystemControl` itself with all
+200 unit records and `aRandom`'s seed compared field by field). **It must not
+use `--code`**: on this host an injected executable page makes `Incubation.exe`
+fault before the anchor, ten attempts out of ten, so the byte writer is the
+game's own imported `memcpy` reached through its IAT slot with the byte in a
+plain `--blob`.
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
 114 checks over 86 unit pairs (hit probability **and** line of sight), the

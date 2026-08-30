@@ -56,8 +56,20 @@ const FACING_OF_STEP: Dictionary = {
 ## `walked.path` is in the engine's own order, target first and source last, so
 ## the steps are taken over the reverse of it. That reversal happens here once
 ## rather than at every call site, because it is where an off-by-one would live.
+## `budget` is the movement points the walk may spend. **Measured, and it is
+## the mover's real points**: `tools/ai_gold.py`'s plan probes hand the engine
+## a path the level-2 horizon flooded with 30 points and the unit takes *one*
+## step of it -- `+0x50` comes back 15, a single diagonal -- while an unbounded
+## walk takes all seven. docs/23 section 5.1's horizon is a **search** radius;
+## `0x0040A750` restores `u->+0x15` before it commits and the walk stops where
+## those points do.
+##
+## -1 keeps the unbounded behaviour, which is what the player's own move wants:
+## the UI never offers a cell the fill did not reach on the unit's real points,
+## so the path is affordable by construction and a budget would be a second,
+## redundant test.
 static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
-		walked: Dictionary) -> MoveResult:
+		walked: Dictionary, budget: int = -1) -> MoveResult:
 	if not DictRead.as_bool(walked["ok"]):
 		return MoveResult.failed(mover.x, mover.y, "no path to follow")
 	# `duplicate()`, and it is not defensive: a `Packed*Array` read out of a
@@ -89,9 +101,12 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 		# The delay is charged on the cell **entered**, and only it: phase 10
 		# wrote a delay-1 field type onto the source (+0), a cell entered and
 		# then left (+1) and the destination (+1).
-		result.cost += (STEP_COST_DIAGONAL if diagonal
+		var cost: int = (STEP_COST_DIAGONAL if diagonal
 			else STEP_COST_ORTHOGONAL) \
 			+ ctab.delay(state.field_type_at(index))
+		if budget >= 0 and result.cost + cost > budget:
+			break
+		result.cost += cost
 		result.walked += (STEP_TENTHS_DIAGONAL if diagonal
 			else STEP_TENTHS_ORTHOGONAL)
 		result.facing = FACING_OF_STEP[step]
@@ -133,7 +148,8 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 			return result
 
 	# `here` is the arrival cell; keeping it named makes the loop's last write
-	# visible to a reader looking for where the position comes from.
-	assert(here == route[route.size() - 1])
+	# visible to a reader looking for where the position comes from. It is the
+	# end of the route only when the budget did not cut the walk short.
+	assert(budget >= 0 or here == route[route.size() - 1])
 	result.ok = true
 	return result

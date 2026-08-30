@@ -65,6 +65,7 @@ func run(h: TestHarness) -> void:
 	var table_one: UnitTypeTable = UnitTypeTable.from_rows([{
 		"id": Allowance.DIFFICULTY_TWEAK_TYPE, "mp_max": 6, "fp_max": 255, "hp_max": 0,
 		"special": 0, "size": 0, "species": 0, "height": 0, "model": "",
+		"armour_front": 255, "armour_rear": 255,
 		"description": "difficulty-tweaked type",
 	}])
 	h.equal("ai_level.bad", Allowance.for_unit(solo, table_one, only, 3), 0)
@@ -82,7 +83,8 @@ func run(h: TestHarness) -> void:
 	zero.equipment = PackedInt32Array([Allowance.EQUIP_HEAVY_ARMOR])
 	var table_zero: UnitTypeTable = UnitTypeTable.from_rows([{
 		"id": 1, "mp_max": 0, "fp_max": 255, "hp_max": 0, "special": 0, "size": 0,
-		"species": 0, "height": 0, "model": "", "description": "immobile",
+		"species": 0, "height": 0, "model": "",
+		"armour_front": 255, "armour_rear": 255, "description": "immobile",
 	}])
 	h.equal("byte_wrap_guard",
 		Allowance.for_unit(zero, table_zero, {0: zero}), 0)
@@ -116,6 +118,7 @@ func _build(case: Dictionary) -> Dictionary:
 				"fp_max": 255,
 				"hp_max": 0, "special": 0, "size": 0, "species": 0,
 				"height": 0, "model": "",
+				"armour_front": 255, "armour_rear": 255,
 				"description": "type %d" % unit.type_id,
 			})
 	return {"units": units, "unit_types": UnitTypeTable.from_rows(rows)}
