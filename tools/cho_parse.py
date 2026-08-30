@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from inclib.binio import Reader, read_file  # noqa: E402
 from inclib.charisma import (  # noqa: E402
+    parse_model_file as parse,
     ComponentDesc,
     Skeleton,
     expect_eof,
@@ -46,114 +47,6 @@ from inclib.charisma import (  # noqa: E402
 )
 
 logger = logging.getLogger("cho_parse")
-
-
-@dataclass
-class Part:
-    """One ``V100PartDesc`` record (``V100PartDesc::Load`` @ 0x004a70fd).
-
-    Layout::
-
-        u16      version          # rejected unless 0
-        lpstring mesh             # geometry name, "" for a pure bone
-        StdComponentDesc          # component class "V100Part", instance name
-
-    ``mesh`` is the name of the geometry chunk this part draws (empty for a
-    pure bone); the geometry itself lives in the Eng3d containers.  The
-    component instance name is the animation binding key: it matches a
-    ``SkeletonNode`` name and a movement target in the ``.cha`` files.
-    """
-
-    version: int
-    mesh: str
-    component: ComponentDesc
-
-    @property
-    def name(self) -> str:
-        return self.component.instance_name
-
-    def to_json(self) -> dict:
-        return {
-            "name": self.name,
-            "mesh": self.mesh,
-            "version": self.version,
-            "component": self.component.to_json(),
-        }
-
-
-@dataclass
-class Model:
-    """A parsed ``.cho`` file."""
-
-    path: str
-    stream_version: int
-    desc_version: int
-    base_version: int
-    parts: list[Part] = field(default_factory=list)
-    has_skeleton: int = 0
-    skeleton: Skeleton | None = None
-    component: ComponentDesc | None = None
-
-    @property
-    def name(self) -> str | None:
-        return self.component.instance_name if self.component else None
-
-    def to_json(self) -> dict:
-        return {
-            "path": self.path,
-            "stream_version": self.stream_version,
-            "desc_version": self.desc_version,
-            "base_version": self.base_version,
-            "name": self.name,
-            "part_count": len(self.parts),
-            "parts": [p.to_json() for p in self.parts],
-            "has_skeleton": self.has_skeleton,
-            "skeleton": self.skeleton.to_json() if self.skeleton else None,
-            "component": self.component.to_json() if self.component else None,
-        }
-
-
-def parse_part_body(r: Reader) -> Part:
-    """Parse one ``V100PartDesc`` *after* its class-name record (0x004a70fd)."""
-    version = read_version(r, "V100PartDesc", (0,))
-    mesh = r.lpstring()
-    component = read_component_desc(r, expected_class="V100Part")
-    return Part(version, mesh, component)
-
-
-def parse_part(r: Reader) -> Part:
-    """Parse one ``V100PartDesc`` (cursor on its class-name length)."""
-    read_storable_name(r, expected="V100PartDesc")
-    return parse_part_body(r)
-
-
-def parse_model_body(r: Reader, path: str) -> Model:
-    """Parse a ``V100ModelDesc`` *after* its class-name record (0x004a77bd)."""
-    desc_version = read_version(r, "V100ModelDesc", (0,))
-    base_version = read_version(r, "StdModelDesc", (0,))
-    model = Model(path, 1, desc_version, base_version)
-    for _ in range(r.u32()):
-        model.parts.append(parse_part(r))
-    model.has_skeleton, model.skeleton = read_optional_skeleton(r)
-    model.component = read_component_desc(r, expected_class="V100Model")
-    return model
-
-
-def parse(path: str) -> Model:
-    """Parse a ``.cho`` file, consuming it to the byte."""
-    r = Reader(read_file(path))
-    stream_version = read_file_version(r)
-    read_storable_name(r, expected="V100ModelDesc")
-    model = parse_model_body(r, path)
-    model.stream_version = stream_version
-    expect_eof(r, path)
-    return model
-
-
-# StdComponentDesc children are polymorphic IComponentDesc records; register
-# the two this module can read (0x0049aab6, see COMPONENT_DESC_CLASSES).
-register_desc_reader("V100PartDesc", parse_part_body)
-register_desc_reader("V100ModelDesc", lambda r: parse_model_body(r, "<child>"))
 
 
 # --------------------------------------------------------------------------

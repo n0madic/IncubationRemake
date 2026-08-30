@@ -44,8 +44,7 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import cha_parse  # noqa: E402
-import cho_parse  # noqa: E402
+from inclib import charisma  # noqa: E402
 from inclib import prototyp as protomod  # noqa: E402
 from inclib.check import Checker  # noqa: E402
 from inclib.charisma_tables import (  # noqa: E402
@@ -253,7 +252,7 @@ def _check_meshes(ck: Checker, tables: SelectorTables, root: str,
         path = models.get(name)
         if path is None:
             continue
-        model = cho_parse.parse(path)
+        model = charisma.parse_model_file(path)
         parts += len(model.parts)
         meshes |= {p.mesh for p in model.parts if p.mesh}
     ck.check("selectable models parsed", parts > 0,
@@ -296,7 +295,7 @@ def _check_track_binding(ck: Checker, tables: SelectorTables, root: str,
         path = models.get(name)
         if path is None:
             continue
-        model = cho_parse.parse(path)
+        model = charisma.parse_model_file(path)
         names = {p.name for p in model.parts}
         if model.skeleton is not None:
             names |= {n.name for n in model.skeleton.nodes}
@@ -318,7 +317,7 @@ def _check_track_binding(ck: Checker, tables: SelectorTables, root: str,
         path = animations.get(anim_name)
         if path is None:
             continue
-        anim = cha_parse.parse(path)
+        anim = charisma.parse_animation_file(path)
         reachable: set[str] = set()
         for body in paired[anim_name]:
             reachable |= skeletons.get(body, set())
@@ -443,8 +442,8 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
         anim_path = animations.get(anim_name)
         if model_path is None or anim_path is None:
             continue
-        model = cho_parse.parse(model_path)
-        anim = cha_parse.parse(anim_path)
+        model = charisma.parse_model_file(model_path)
+        anim = charisma.parse_animation_file(anim_path)
         if model.skeleton is None:
             continue
         tracks = {(m.target, m.channel) for m in anim.movements}
@@ -497,8 +496,8 @@ def emit_pose_cases(root: str, path: str) -> int:
         anim_path = animations.get(anim_name)
         if model_path is None or anim_path is None:
             continue
-        model = cho_parse.parse(model_path)
-        anim = cha_parse.parse(anim_path)
+        model = charisma.parse_model_file(model_path)
+        anim = charisma.parse_animation_file(anim_path)
         if model.skeleton is None:
             continue
         times = _pose_frames(model, anim)

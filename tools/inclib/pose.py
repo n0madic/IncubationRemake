@@ -32,17 +32,21 @@ Three things here are easy to get wrong and are wrong silently:
   parent string is the ``ROOT`` sentinel -- the position channel is absolute
   and the bind translation is not added at all (``docs/40`` §6.2).
 
-The structures are described by protocols rather than imported: the ``.cho``
-and ``.cha`` dataclasses live in the sibling CLIs ``tools/cho_parse.py`` and
-``tools/cha_parse.py``, and ``inclib`` does not import upwards.
+The ``.cho`` and ``.cha`` record types come from :mod:`inclib.charisma`, which
+is where they live now that the converter also needs to read a body.
 """
 
 from __future__ import annotations
 
 import bisect
-from typing import Iterable, Protocol, Sequence, runtime_checkable
+from typing import Iterable
 
 from .charisma import (
+    Animation,
+    Key,
+    Model,
+    Movement,
+    SkeletonNode,
     HOLD_DT,
     HOLD_PICK,
     Mat4,
@@ -85,41 +89,10 @@ CHANNEL_VISIBILITY = "Visibility"
 
 
 # ---------------------------------------------------------------------------
-# What this module needs of the parsed structures
-# ---------------------------------------------------------------------------
-
-@runtime_checkable
-class KeyLike(Protocol):
-    """One keyframe: a time stamp plus 1..9 floats of channel data."""
-
-    time: float
-    values: tuple[float, ...]
-
-
-@runtime_checkable
-class MovementLike(Protocol):
-    """One animated channel of one part."""
-
-    key_class: str
-    target: str
-    channel: str
-    keys: list
-
-
-@runtime_checkable
-class NodeLike(Protocol):
-    """One ``SkeletonNode``: a name, its parent's name and a 4x4 bind matrix."""
-
-    name: str
-    parent: str
-    matrix: Sequence[float]
-
-
-# ---------------------------------------------------------------------------
 # Track sampling - one function per interpolator, mirroring the engine
 # ---------------------------------------------------------------------------
 
-def segment(mov: MovementLike, t: float) -> tuple[int, KeyLike, KeyLike, float]:
+def segment(mov: Movement, t: float) -> tuple[int, Key, Key, float]:
     """Locate the key pair bracketing *t*, its index and the parameter u."""
     times = [k.time for k in mov.keys]
     i = bisect.bisect_right(times, t) - 1
@@ -137,7 +110,7 @@ def segment(mov: MovementLike, t: float) -> tuple[int, KeyLike, KeyLike, float]:
     return i, k0, k1, u
 
 
-def squad_controls(mov: MovementLike) -> list[tuple[float, ...]]:
+def squad_controls(mov: Movement) -> list[tuple[float, ...]]:
     """Control quaternions of a BezierRotation track, derived once per track."""
     cached = getattr(mov, "_squad_controls", None)
     if cached is None:
@@ -146,7 +119,7 @@ def squad_controls(mov: MovementLike) -> list[tuple[float, ...]]:
     return cached
 
 
-def sample_rotation(mov: MovementLike, t: float) -> Mat4:
+def sample_rotation(mov: Movement, t: float) -> Mat4:
     """Rotation channel -> 4x4 matrix (0x004a9a9a linear, 0x004aca7a Bezier).
 
     Linear rotation slerps the two keys.  Bezier rotation carries no tangents
@@ -165,7 +138,7 @@ def sample_rotation(mov: MovementLike, t: float) -> Mat4:
     return quat_to_matrix(quat_slerp(k0.values, k1.values, u))
 
 
-def sample_vector(mov: MovementLike, t: float) -> tuple[float, float, float]:
+def sample_vector(mov: Movement, t: float) -> tuple[float, float, float]:
     """Position channel -> vec3 (0x004a8b72 linear lerp, 0x004ab918 Bezier)."""
     _, k0, k1, u = segment(mov, t)
     if k0 is k1 or k1.time - k0.time <= EPS:
@@ -183,7 +156,7 @@ def sample_vector(mov: MovementLike, t: float) -> tuple[float, float, float]:
     )
 
 
-def sample_float(mov: MovementLike, t: float) -> float:
+def sample_float(mov: Movement, t: float) -> float:
     """Visibility channel -> scalar (0x004aa9df).  Visible when > 0."""
     _, k0, k1, u = segment(mov, t)
     if k0 is k1 or k1.time - k0.time <= EPS:
@@ -203,13 +176,13 @@ def sample_float(mov: MovementLike, t: float) -> float:
 class Pose:
     """World transforms of every bone of a model at one point in time."""
 
-    def __init__(self, nodes: Iterable[NodeLike],
-                 movements: Iterable[MovementLike] | None,
+    def __init__(self, nodes: Iterable[SkeletonNode],
+                 movements: Iterable[Movement] | None,
                  time: float) -> None:
         self.time = time
-        self.nodes: list[NodeLike] = list(nodes)
+        self.nodes: list[SkeletonNode] = list(nodes)
         self.parent_of: dict[str, str] = {n.name: n.parent for n in self.nodes}
-        tracks: dict[tuple[str, str], MovementLike] = {}
+        tracks: dict[tuple[str, str], Movement] = {}
         for mov in movements or ():
             tracks[(mov.target, mov.channel)] = mov
         self.tracks = tracks
@@ -230,7 +203,7 @@ class Pose:
         """
         return self.parent_of.get(name) not in self.parent_of
 
-    def _local(self, node: NodeLike) -> Mat4:
+    def _local(self, node: SkeletonNode) -> Mat4:
         """One bone's local matrix, exactly as V100Part::Update builds it."""
         bind_t = mat_translation(node.matrix)
         pos = self.tracks.get((node.name, CHANNEL_POSITION))
@@ -297,12 +270,13 @@ class Pose:
                 if n.name in names and n.parent in names]
 
 
-def pose_model(model, animation, time: float) -> Pose:
+def pose_model(model: Model, animation: Animation | None,
+               time: float) -> Pose:
     """Pose a parsed ``.cho`` with an optional parsed ``.cha``.
 
     The convenience shape callers actually want; :class:`Pose` itself takes the
-    node and movement sequences so that nothing here depends on the CLI
-    dataclasses.
+    node and movement sequences, so a caller with a skeleton from somewhere
+    else -- an animation's own embedded one, say -- can still use it.
     """
     if model.skeleton is None:
         raise ValueError(f"{getattr(model, 'path', model)} has no skeleton")

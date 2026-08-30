@@ -688,16 +688,25 @@ def iter_keys(*, types: Iterable[int] | None = None,
 
 
 class SelectorTables:
-    """The four selectors, enumerated over their whole domain."""
+    """The four selectors, enumerated over a domain.
 
-    def __init__(self, pe: PEFile) -> None:
+    The default domain is the whole of it -- 24 010 keys, about 2.7 seconds --
+    which is what the corpus checks need.  A caller that knows which keys it
+    wants passes them: the converter's closure is a few hundred, and paying for
+    the other 23 800 on every conversion would be a cost with no reader.
+    """
+
+    def __init__(self, pe: PEFile,
+                 keys: Iterable[SelectorKey] | None = None) -> None:
         self.pe = pe
         self.emulator = Emulator(pe)
+        domain = list(iter_keys()) if keys is None else sorted(
+            set(keys), key=lambda k: (k.type_id, k.weapon, k.player))
         self.tables: dict[str, dict[SelectorKey, tuple[Outcome, ...]]] = {}
         for name, entry in SELECTORS.items():
             self.tables[name] = {
                 key: tuple(self.emulator.run(entry, unit_bytes(key)))
-                for key in iter_keys()
+                for key in domain
             }
 
     def names(self, selector: str) -> set[str]:
@@ -710,21 +719,41 @@ class SelectorTables:
     def lookup(self, selector: str, key: SelectorKey) -> tuple[Outcome, ...]:
         return self.tables[selector].get(key, ())
 
-    def to_dict(self) -> dict[str, Any]:
-        """The portable form: one entry per key that returns anything."""
+    def to_dict(self, keys: Iterable[SelectorKey] | None = None
+                ) -> dict[str, Any]:
+        """The portable form: one entry per key, ``"type,weapon,player"``.
+
+        The whole domain is 24 010 keys and 2.5 MB of the same hundred names
+        repeated, which is the wrong thing to put in a player's cache: the
+        container rule is the mission and what the mission reaches
+        (``docs/92`` §10.1).  Passing *keys* narrows the document to the
+        closure a caller computed; the default is every key that returns
+        something, which is what ``--json`` wants.
+
+        A key whose selector returns nothing is written as an explicit ``null``
+        rather than omitted.  Nine unit types get fewer than three clips and
+        two get none at all, and a consumer that met a missing key could not
+        tell "the engine plays nothing here" from "the converter dropped it".
+        """
+        wanted = None if keys is None else sorted(
+            set(keys), key=lambda k: (k.type_id, k.weapon, k.player))
         out: dict[str, Any] = {}
         for selector, table in self.tables.items():
             entries: dict[str, Any] = {}
-            for key, outcomes in sorted(
-                    table.items(),
-                    key=lambda kv: (kv[0].type_id, kv[0].weapon, kv[0].player)):
-                if not any(o.name for o in outcomes):
+            source = wanted if wanted is not None else sorted(
+                table, key=lambda k: (k.type_id, k.weapon, k.player))
+            for key in source:
+                outcomes = table.get(key, ())
+                if wanted is None and not any(o.name for o in outcomes):
                     continue
                 entries[f"{key.type_id},{key.weapon},{key.player}"] = \
                     [o.to_dict() for o in outcomes]
             out[selector] = {
                 "address": f"{SELECTORS[selector]:#010x}",
-                "names": sorted(self.names(selector)),
+                "names": sorted({name
+                                 for entry in entries.values()
+                                 for outcome in entry
+                                 if (name := outcome["name"]) is not None}),
                 "entries": entries,
             }
         return out

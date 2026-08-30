@@ -34,7 +34,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .binio import ParseError, Reader
+from .binio import ParseError, Reader, read_file
 
 logger = logging.getLogger(__name__)
 
@@ -769,3 +769,400 @@ def run_check(paths: list[str], parse: Callable[[str], object],
     for path, msg in failures:
         print(f"  FAIL {path}: {msg}")
     return 0 if not failures else 1
+
+
+# --------------------------------------------------------------------------
+# ``.cho`` -- the model record
+#
+# The record parsers live here rather than in the CLIs over them because
+# ``inclib`` does not import upwards and the converter needs to read a body.
+# ``tools/cho_parse.py`` and ``tools/cha_parse.py`` are the thin CLIs
+# ``CLAUDE.md`` describes; this is the library half they were always meant to
+# sit on.
+# --------------------------------------------------------------------------
+
+@dataclass
+class Part:
+    """One ``V100PartDesc`` record (``V100PartDesc::Load`` @ 0x004a70fd).
+
+    Layout::
+
+        u16      version          # rejected unless 0
+        lpstring mesh             # geometry name, "" for a pure bone
+        StdComponentDesc          # component class "V100Part", instance name
+
+    ``mesh`` is the name of the geometry chunk this part draws (empty for a
+    pure bone); the geometry itself lives in the Eng3d containers.  The
+    component instance name is the animation binding key: it matches a
+    ``SkeletonNode`` name and a movement target in the ``.cha`` files.
+    """
+
+    version: int
+    mesh: str
+    component: ComponentDesc
+
+    @property
+    def name(self) -> str:
+        return self.component.instance_name
+
+    def to_json(self) -> dict:
+        return {
+            "name": self.name,
+            "mesh": self.mesh,
+            "version": self.version,
+            "component": self.component.to_json(),
+        }
+
+
+@dataclass
+class Model:
+    """A parsed ``.cho`` file."""
+
+    path: str
+    stream_version: int
+    desc_version: int
+    base_version: int
+    parts: list[Part] = field(default_factory=list)
+    has_skeleton: int = 0
+    skeleton: Skeleton | None = None
+    component: ComponentDesc | None = None
+
+    @property
+    def name(self) -> str | None:
+        return self.component.instance_name if self.component else None
+
+    def to_json(self) -> dict:
+        return {
+            "path": self.path,
+            "stream_version": self.stream_version,
+            "desc_version": self.desc_version,
+            "base_version": self.base_version,
+            "name": self.name,
+            "part_count": len(self.parts),
+            "parts": [p.to_json() for p in self.parts],
+            "has_skeleton": self.has_skeleton,
+            "skeleton": self.skeleton.to_json() if self.skeleton else None,
+            "component": self.component.to_json() if self.component else None,
+        }
+
+
+def parse_part_body(r: Reader) -> Part:
+    """Parse one ``V100PartDesc`` *after* its class-name record (0x004a70fd)."""
+    version = read_version(r, "V100PartDesc", (0,))
+    mesh = r.lpstring()
+    component = read_component_desc(r, expected_class="V100Part")
+    return Part(version, mesh, component)
+
+
+def parse_part(r: Reader) -> Part:
+    """Parse one ``V100PartDesc`` (cursor on its class-name length)."""
+    read_storable_name(r, expected="V100PartDesc")
+    return parse_part_body(r)
+
+
+def parse_model_body(r: Reader, path: str) -> Model:
+    """Parse a ``V100ModelDesc`` *after* its class-name record (0x004a77bd)."""
+    desc_version = read_version(r, "V100ModelDesc", (0,))
+    base_version = read_version(r, "StdModelDesc", (0,))
+    model = Model(path, 1, desc_version, base_version)
+    for _ in range(r.u32()):
+        model.parts.append(parse_part(r))
+    model.has_skeleton, model.skeleton = read_optional_skeleton(r)
+    model.component = read_component_desc(r, expected_class="V100Model")
+    return model
+
+
+def parse_model_file(path: str) -> Model:
+    """Parse a ``.cho`` file, consuming it to the byte."""
+    r = Reader(read_file(path))
+    stream_version = read_file_version(r)
+    read_storable_name(r, expected="V100ModelDesc")
+    model = parse_model_body(r, path)
+    model.stream_version = stream_version
+    expect_eof(r, path)
+    return model
+
+
+# StdComponentDesc children are polymorphic IComponentDesc records; register
+# the two this module can read (0x0049aab6, see COMPONENT_DESC_CLASSES).
+register_desc_reader("V100PartDesc", parse_part_body)
+register_desc_reader("V100ModelDesc", lambda r: parse_model_body(r, "<child>"))
+
+
+
+
+# --------------------------------------------------------------------------
+# ``.cha`` -- the animation record
+# --------------------------------------------------------------------------
+
+MOVEMENT_DESC_CLASSES = frozenset(
+    f"{interp}{channel}MovementDesc"
+    for interp in ("Linear", "Bezier")
+    for channel in ("Vector", "Rotation", "Float")
+)
+
+# The component class each descriptor builds, and the key class it holds.
+DESC_TO_COMPONENT = {c: c[: -len("Desc")] for c in MOVEMENT_DESC_CLASSES}
+DESC_TO_KEY = {c: c[: -len("MovementDesc")] + "Key" for c in MOVEMENT_DESC_CLASSES}
+
+# Channel names, from the three globals initialised at 0x004a6807's owner
+# (``Position`` / ``Rotation matrix`` / ``Visibility``, DAT_005242e0..f0).
+CHANNEL_NAMES = ("Position", "Rotation matrix", "Visibility")
+
+
+@dataclass
+class Note:
+    """A timed event marker.
+
+    Layout is bare ``f32 time`` + ``lpstring text``.  ``Note`` is not a
+    storable class (it lives in a ``BBDList<Note>``), so it carries neither a
+    class name nor a version - the loaders at 0x004a1dde and 0x004a26d5 read
+    the two fields inline.
+    """
+
+    time: float
+    text: str
+
+    def to_json(self) -> dict:
+        return {"time": self.time, "text": self.text}
+
+
+@dataclass
+class Key:
+    """One keyframe: a time stamp plus 1..9 floats of channel data."""
+
+    version: int
+    time: float
+    values: tuple[float, ...]
+
+    def to_json(self) -> dict:
+        return {"time": self.time, "values": list(self.values)}
+
+
+@dataclass
+class Movement:
+    """One animated channel of one part.
+
+    ``desc_version`` is the most-derived ``*MovementDesc`` version (0 or 1);
+    ``base_version`` is the ``KeyFramedMovementDesc`` version (0..3) that
+    decides where the key array is written and whether a per-track note list
+    follows it.  ``weight``, ``target``, ``channel`` and ``attributes`` come
+    from ``StdMovementDesc``; ``component`` is the ``StdComponentDesc`` tail.
+    """
+
+    desc_class: str
+    desc_version: int
+    base_version: int
+    key_class: str
+    keys: list[Key]
+    track_notes: list[Note]
+    weight: int
+    target: str
+    channel: str
+    attributes: list[tuple[str, str]]
+    component: ComponentDesc
+
+    def to_json(self) -> dict:
+        return {
+            "desc_class": self.desc_class,
+            "desc_version": self.desc_version,
+            "base_version": self.base_version,
+            "key_class": self.key_class,
+            "key_count": len(self.keys),
+            "keys": [k.to_json() for k in self.keys],
+            "track_notes": [n.to_json() for n in self.track_notes],
+            "weight": self.weight,
+            "target": self.target,
+            "channel": self.channel,
+            "attributes": [list(a) for a in self.attributes],
+            "component": self.component.to_json(),
+        }
+
+    @property
+    def duration(self) -> float:
+        return self.keys[-1].time if self.keys else 0.0
+
+
+@dataclass
+class Animation:
+    """A parsed ``.cha`` file."""
+
+    path: str
+    stream_version: int
+    desc_version: int
+    base_version: int = 0
+    notes: list[Note] = field(default_factory=list)
+    movements: list[Movement] = field(default_factory=list)
+    has_skeleton: int = 0
+    skeleton: Skeleton | None = None
+    component: ComponentDesc | None = None
+
+    @property
+    def name(self) -> str | None:
+        return self.component.instance_name if self.component else None
+
+    @property
+    def duration(self) -> float:
+        """Length of the animation in key-time units (frames; see the docs)."""
+        return max((m.duration for m in self.movements), default=0.0)
+
+    def to_json(self) -> dict:
+        return {
+            "path": self.path,
+            "stream_version": self.stream_version,
+            "desc_version": self.desc_version,
+            "base_version": self.base_version,
+            "name": self.name,
+            "duration": self.duration,
+            "notes": [n.to_json() for n in self.notes],
+            "movement_count": len(self.movements),
+            "movements": [m.to_json() for m in self.movements],
+            "has_skeleton": self.has_skeleton,
+            "skeleton": self.skeleton.to_json() if self.skeleton else None,
+            "component": self.component.to_json() if self.component else None,
+        }
+
+
+# --------------------------------------------------------------------------
+# Record readers
+# --------------------------------------------------------------------------
+
+def _read_note_list(r: Reader) -> list[Note]:
+    """``u32 count`` followed by ``f32 time`` + ``lpstring text`` per note."""
+    return [Note(r.f32(), r.lpstring()) for _ in range(r.u32())]
+
+
+def _read_key_body(r: Reader, key_class: str) -> Key:
+    """One key: ``u16 version`` (rejected unless 0) plus time and values."""
+    version = read_version(r, key_class, (0,))
+    time = r.f32()
+    values = tuple(r.f32() for _ in range(KEY_COMPONENTS[key_class]))
+    return Key(version, time, values)
+
+
+def _check_key_class(name: str, off: int) -> str:
+    if name not in KEY_STRIDE:
+        raise CharismaError(f"at 0x{off:x}: {name!r} is not a keyframe class")
+    return name
+
+
+def _read_hoisted_keys(r: Reader) -> tuple[str, list[Key]]:
+    """``u32 count`` + (if non-zero) one hoisted class name + count key bodies.
+
+    This is the shape used by ``*MovementDesc::Load`` version 1 and by
+    ``KeyFramedMovementDesc::Load`` versions 1 and 2: the element class name is
+    written once for the whole array instead of once per element.
+    """
+    count = r.u32()
+    if not count:
+        return "", []
+    off = r.pos
+    key_class = _check_key_class(read_storable_name(r), off)
+    return key_class, [_read_key_body(r, key_class) for _ in range(count)]
+
+
+def _read_polymorphic_keys(r: Reader) -> tuple[str, list[Key]]:
+    """``u32 count`` + one full ``LoadStorableObject`` per key.
+
+    ``KeyFramedMovementDesc::Load`` version 0.  Never used by shipped data.
+    """
+    count = r.u32()
+    keys: list[Key] = []
+    key_class = ""
+    for _ in range(count):
+        off = r.pos
+        key_class = _check_key_class(read_storable_name(r), off)
+        keys.append(_read_key_body(r, key_class))
+    return key_class, keys
+
+
+def parse_movement(r: Reader) -> Movement:
+    """Parse one ``*MovementDesc`` record (cursor on its class-name length)."""
+    off = r.pos
+    desc_class = read_storable_name(r)
+    if desc_class not in MOVEMENT_DESC_CLASSES:
+        raise CharismaError(f"at 0x{off:x}: {desc_class!r} is not a movement descriptor")
+    return parse_movement_body(r, desc_class)
+
+
+def parse_movement_body(r: Reader, desc_class: str) -> Movement:
+    """Parse one ``*MovementDesc`` *after* its class-name record."""
+    desc_version = read_version(r, desc_class, (0, 1))
+
+    key_class = ""
+    keys: list[Key] = []
+    if desc_version == 1:
+        # The derived class reads the array itself and insists on its own key
+        # class (e.g. LinearRotationMovementDesc::Load @ 0x004aa0b7 compares
+        # the name against "LinearRotationKey").
+        key_class, keys = _read_hoisted_keys(r)
+        if key_class and key_class != DESC_TO_KEY[desc_class]:
+            raise CharismaError(
+                f"{desc_class} version 1 holds {key_class!r}, "
+                f"expected {DESC_TO_KEY[desc_class]!r}")
+
+    # KeyFramedMovementDesc::Load @ 0x004a26d5.
+    base_version = read_version(r, "KeyFramedMovementDesc", (0, 1, 2, 3))
+    track_notes: list[Note] = []
+    if base_version == 0:
+        key_class, keys = _read_polymorphic_keys(r)
+        track_notes = _read_note_list(r)
+    elif base_version == 1:
+        key_class, keys = _read_hoisted_keys(r)
+        track_notes = _read_note_list(r)
+    elif base_version == 2:
+        key_class, keys = _read_hoisted_keys(r)
+    # version 3 writes no keys at this level - the derived class already did.
+
+    # StdMovementDesc::Load @ 0x0049b4e7.
+    read_version(r, "StdMovementDesc", (0,))
+    weight = r.u32()
+    target = r.lpstring()
+    channel = r.lpstring()
+    attributes = [(r.lpstring(), r.lpstring()) for _ in range(r.u32())]
+
+    component = read_component_desc(r, expected_class=DESC_TO_COMPONENT[desc_class])
+    return Movement(desc_class, desc_version, base_version, key_class, keys,
+                    track_notes, weight, target, channel, attributes, component)
+
+
+def parse_animation_body(r: Reader, path: str) -> Animation:
+    """Parse a ``KeyFramedAnimationDesc`` after its class-name record."""
+    desc_version = read_version(r, "KeyFramedAnimationDesc", (0, 1))
+    anim = Animation(path, 1, desc_version)
+    if desc_version >= 1:
+        # The note list only exists from descriptor version 1 onwards; the
+        # three version-0 files in the corpus jump straight to the movements.
+        anim.notes = _read_note_list(r)
+
+    # StdAnimationDesc::Load @ 0x0049cba6.
+    anim.base_version = read_version(r, "StdAnimationDesc", (0,))
+    for _ in range(r.u32()):
+        anim.movements.append(parse_movement(r))
+    anim.has_skeleton, anim.skeleton = read_optional_skeleton(r)
+    anim.component = read_component_desc(r)
+    if anim.component.component_class not in ("KeyFramedAnimation", "StdAnimation"):
+        raise CharismaError(
+            f"animation builds component {anim.component.component_class!r}")
+    return anim
+
+
+def parse_animation_file(path: str) -> Animation:
+    """Parse a ``.cha`` file, consuming it to the byte."""
+    r = Reader(read_file(path))
+    stream_version = read_file_version(r)
+    read_storable_name(r, expected="KeyFramedAnimationDesc")
+    anim = parse_animation_body(r, path)
+    anim.stream_version = stream_version
+    expect_eof(r, path)
+    return anim
+
+
+# StdComponentDesc children are polymorphic IComponentDesc records
+# (0x0049aab6); register every descriptor this module can read.
+register_desc_reader("KeyFramedAnimationDesc",
+                     lambda r: parse_animation_body(r, "<child>"))
+for _cls in MOVEMENT_DESC_CLASSES:
+    register_desc_reader(_cls, (lambda c: lambda r: parse_movement_body(r, c))(_cls))
+
+
