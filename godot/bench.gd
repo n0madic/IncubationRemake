@@ -163,7 +163,8 @@ func _turn_measurements() -> void:
 		var _shot: AttackResult = arena.submit_attack(AttackCommand.create(
 			shooter, DictRead.as_int(aim["x"]), DictRead.as_int(aim["y"])))
 	print("attack_us_each=", float(Time.get_ticks_usec() - t4) / float(RUNS))
-	print("ai_turn_us=does_not_exist_yet")
+	_ai_measurements("_C_140")
+	_ai_measurements("_C_132")
 
 
 ## A fresh roster of [UnitState]s from the world's own views.
@@ -176,3 +177,121 @@ func _roster(world: World) -> Dictionary:
 	for slot: int in world.unit_slots():
 		out[slot] = UnitState.from_view(world.unit_view(slot))
 	return out
+
+
+## The measurement docs/92 section 2 has been waiting for since the first day:
+## **a complete computer turn.**
+##
+## Two missions -- `_C_140`, which the slice demonstrates (20x20), and
+## `_C_132`, the corpus worst case by live aliens times cells (40x40, 39
+## aliens). Driven through [method AISystem.run] rather than through
+## [method World.submit_end_turn]: the planner is what is being measured, not
+## the rotation, the two script runs and the fog pass, which
+## [method _turn_measurements] already timed separately.
+##
+## The turn is **destructive** -- it moves and kills units and draws from the
+## generator -- so every repetition runs against a freshly loaded mission, and
+## the load happens **outside** the timed region rather than being subtracted
+## from it.
+func _ai_measurements(mission: String) -> void:
+	var probe: Dictionary = CacheFixture.load_mission(mission)
+	if probe.is_empty():
+		print("no ", mission, " in the cache")
+		return
+	var probe_world: World = probe["world"]
+	var aliens: int = 0
+	for slot: int in probe_world.unit_slots():
+		var view: Dictionary = probe_world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == UnitState.PLAYER_ALIEN \
+				and DictRead.as_int(view["hp"]) > 0:
+			aliens += 1
+	print("ai_mission=", mission, " cells=", probe_world.resource.cell_count(),
+		" live_aliens=", aliens)
+
+	var work: Dictionary = {}
+	var sweeps: int = 0
+	var events: int = 0
+	var dispatches: int = 0
+	var spent: int = 0
+	for _i: int in range(AI_RUNS):
+		var ctx: AIContext = _fresh_context(mission)
+		var t: int = Time.get_ticks_usec()
+		var result: AITurnResult = AISystem.run(ctx, UnitState.PLAYER_ALIEN)
+		spent += Time.get_ticks_usec() - t
+		work = result.work
+		sweeps = result.sweeps
+		events = result.events.size()
+		dispatches = 0
+		for order: Variant in result.orders_seen:
+			dispatches += DictRead.as_int(result.orders_seen[order])
+	print("ai_turn_us_each=", float(spent) / float(AI_RUNS))
+	print("ai_turn_sweeps=", sweeps, " events=", events, " work=", work,
+		" order_dispatches=", dispatches)
+
+	# One of each of the three things a turn is made of, so the shares above
+	# can be read as time and not only as counts. The plan and the fire are
+	# **destructive** -- one commits a move, the other spends ammunition -- so
+	# they get a fresh mission each, like the turn.
+	var fill_ctx: AIContext = _fresh_context(mission)
+	var first: UnitState = _first_alien(fill_ctx)
+	if first == null:
+		print("no live alien in ", mission)
+		return
+	var t_fill: int = Time.get_ticks_usec()
+	for _i: int in range(RUNS):
+		fill_ctx.reset_overlay()
+		var _built: bool = AIPlan.build_move_map(fill_ctx, first, 0)
+	print("ai_fill_us_each=", float(Time.get_ticks_usec() - t_fill)
+		/ float(RUNS))
+
+	var overlay_ctx: AIContext = _fresh_context(mission)
+	var aimer: UnitState = _first_alien(overlay_ctx)
+	var t_overlay: int = Time.get_ticks_usec()
+	for _i: int in range(RUNS):
+		overlay_ctx.reset_overlay()
+		var _stamped: bool = AIOverlay.build(overlay_ctx, aimer,
+			overlay_ctx.turn.human_count(), overlay_ctx.turn.mode)
+	print("ai_target_overlay_us_each=",
+		float(Time.get_ticks_usec() - t_overlay) / float(RUNS))
+
+	var plan_us: int = 0
+	var fire_us: int = 0
+	for _i: int in range(AI_RUNS):
+		var pctx: AIContext = _fresh_context(mission)
+		var mover: UnitState = _first_alien(pctx)
+		var t0: int = Time.get_ticks_usec()
+		var _planned: bool = AIPlan.run(pctx, mover, AIPlan.KIND_ENEMY, 0, 0)
+		plan_us += Time.get_ticks_usec() - t0
+		var fctx: AIContext = _fresh_context(mission)
+		var shooter: UnitState = _first_alien(fctx)
+		var t1: int = Time.get_ticks_usec()
+		var _fired: bool = AIFire.run(fctx, shooter)
+		fire_us += Time.get_ticks_usec() - t1
+	print("ai_plan_us_each=", float(plan_us) / float(AI_RUNS),
+		" ai_fire_us_each=", float(fire_us) / float(AI_RUNS))
+
+
+## A context on a freshly loaded mission, built the way [World] builds one.
+func _fresh_context(mission: String) -> AIContext:
+	var loaded: Dictionary = CacheFixture.load_mission(mission)
+	var world: World = loaded["world"]
+	world.turn.current_player = UnitState.PLAYER_ALIEN
+	return AIContext.create(world.state, world.units_for_ai(),
+		world.unit_types(), world.weapons(), world.ctrlmap(), world.turn,
+		world.rng)
+
+
+## The lowest-numbered live alien slot -- the one the sweep would reach first.
+func _first_alien(ctx: AIContext) -> UnitState:
+	var slots: Array = ctx.units.keys()
+	slots.sort()
+	for slot: Variant in slots:
+		var unit: UnitState = ctx.units[slot]
+		if unit.player == UnitState.PLAYER_ALIEN and unit.hp > 0:
+			return unit
+	return null
+
+
+## Fewer than [constant RUNS]: a turn on `_C_132` is three orders of magnitude
+## more expensive than a move map, and each repetition reloads the mission.
+const AI_RUNS: int = 10

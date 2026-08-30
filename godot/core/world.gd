@@ -501,7 +501,16 @@ func live_unit_count(player: int) -> int:
 ## owner only to choose between attacking and selecting -- which was invisible
 ## while the aliens never acted, and let a player take the computer's turn for
 ## it once they did.
+## The fourth test is not one of `0x00477DF0`'s and is added here on purpose:
+## **a finished mission is not playable**. The engine has no state in which the
+## map is still up after the game-control slots have ended it -- the hand-over
+## stops and `aMissionEnd.cpp`'s debriefing screen replaces the map (docs/27
+## section 6.1) -- so there is nothing for it to test. The remake leaves the map
+## on screen behind the result panel, which would otherwise let a player keep
+## giving orders after they had lost.
 func may_command(slot: int) -> bool:
+	if game_control.mission_ended():
+		return false
 	if not _units.has(slot):
 		return false
 	var unit: UnitState = _units[slot]

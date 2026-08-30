@@ -36,6 +36,29 @@ const ID_PLAYER: int = 13
 const ID_COMPLETED: int = 25
 const ID_FAILED: int = 26
 
+## The ids in `Txtmod_d`, the debriefing module (docs/27 section 6.1 builds the
+## end-of-mission screen from it), that the result panel puts on screen.
+##
+## 15, 16 and 17 are the three win grades in order, and they sit directly after
+## 14, so a table indexed by docs/27 section 6.3's mission result reads
+## `{1: 19, 2: 15, 3: 16, 4: 17, 5: 14}`. **Which of the module's two defeat
+## lines the engine picks is untraced** -- 18, "You have lost.", is the other
+## candidate, and the reading taken here is that it belongs with the 40..46
+## match-report block the way 14 belongs with 15..17. Marked rather than
+## presented as settled.
+const ID_REPORT_TITLE: int = 10
+const ID_REPORT_DEFEATED: int = 14
+const ID_REPORT_SUCCESS: int = 15
+const ID_REPORT_OUTSTANDING: int = 16
+const ID_REPORT_GLORIOUS: int = 17
+const ID_REPORT_RUNNING: int = 19
+## "Turns", "Equipment Points" and "Commendations" are labels from the module's
+## match-report block, which is where the two payout labels live together;
+## the single-mission block has only "Commendations" (22) of the three.
+const ID_REPORT_TURNS: int = 41
+const ID_REPORT_EQUIPMENT: int = 45
+const ID_REPORT_COMMENDATIONS: int = 46
+
 ## The remake's own strings, by key and then by language. English is the only
 ## one the shipped data guarantees -- `DATA/TXT/` contains whatever the
 ## installation was sold with -- so it is also the fallback.
@@ -60,8 +83,6 @@ const OWN: Dictionary = {
 	"hud.not_yours": {"English": "not your unit"},
 	"hud.ai_turn": {"English": "the aliens are moving"},
 	"hud.ai_skip": {"English": "any key skips the replay"},
-	"hud.defeat": {"English": "mission failed"},
-	"hud.victory": {"English": "mission accomplished"},
 	"ai.move": {"English": "advances"},
 	"ai.warp": {"English": "jumps"},
 	"ai.fire": {"English": "fires"},

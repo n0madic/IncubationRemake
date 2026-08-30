@@ -91,11 +91,16 @@ renderer or UI retaining such a reference would let presentation timing mutate
 simulation state outside the turn rules, and would make replay and fidelity
 traces unreliable.
 
-**Revisit order:** first profile a complete representative computer turn. If the
-move map is material, consider memoisation with an explicit world/navigation
-revision in its key. If it is still too slow, move **the flood fill alone** into
-a GDExtension. Not the core. No performance threshold or optimisation is a
-contract until the first vertical slice supplies a measurement.
+**Revisit order — answered, and the answer is "none of it".** The instruction
+was to profile a complete representative computer turn first, then consider
+memoising the move map with a world/navigation revision in its key, and only
+then move **the flood fill alone** into a GDExtension. The turn was profiled by
+the third slice ([`95` §4](95-slice-3-report.md)): **12 ms on `_C_140`, 264 ms
+on `_C_132`** — the corpus worst case, 39 live aliens on 1600 cells — of which
+the 123 flood fills are **11 %**. The move map is not material, so neither step
+is taken. This paragraph stays as the standing rule for the next time the
+question is asked: no performance threshold or optimisation is a contract
+without a measurement.
 
 ### 2.1 Integer semantics — the one place to be careful
 
@@ -647,8 +652,8 @@ from a function aliases the original in Godot 4.7).
 
 The slice also measured what §2 could only hope: **one complete move map over
 990 cells costs 138 µs**, so memoisation, a native flood fill and GDExtension
-are all unjustified for the AI loop. What is not yet measured is a complete AI
-turn, because there is no AI turn.
+are all unjustified for the AI loop. The complete AI turn it could not measure
+was measured by the third slice, and agrees — see below.
 
 What the slice deliberately did not settle is listed in
 [`93` §8 and §9](93-slice-1-report.md). **Four of those items were closed
@@ -670,11 +675,36 @@ save schema carries **both** generators because `InsertUnit` draws from the C
 runtime's and not from `aRandom`, and the set pieces apply their state change
 instantly while recording the animation as an event.
 
-Three things it left open are named here because they are architectural rather
-than research: **the AI planner** ([`23`](23-ai-system.md)) has not been started
-and is what §2's "profile a complete representative computer turn" is still
-waiting for; **the campaign layer** ([`27`](27-campaign.md)) is untouched, which
-is why `_C_115` cannot be played even though it converts and draws; and
+Three things it left open were named here because they are architectural rather
+than research. **The first of the three is now closed.**
+
+**The third vertical slice is done** ([`95`](95-slice-3-report.md)):
+[`23`](23-ai-system.md)'s planner in full — the target overlay, the cover score,
+the approach cell, the plan, the fire, the eleven order arms, the two-pass
+six-level sweep and the pseudo-player — with `_C_140` played against an opponent
+that closes and shoots, and **defeat reachable for the first time**. It settled
+four things this file now carries:
+
+* **§2's oldest measurement is taken.** A complete computer turn costs **12 ms**
+  on `_C_140` and **264 ms** on `_C_132`, the corpus worst case by live aliens
+  times cells. Flood fills are 11 % of it. The conclusion §2 reached on a guess
+  and [`93` §5](93-slice-1-report.md) and [`94` §4](94-slice-2-report.md)
+  reached on parts is now reached on the whole: **no memoisation, no native
+  flood fill, no GDExtension.**
+* **The computer's turn is a value, and `game` replays it.** `core` decides the
+  whole turn in one call and returns an ordered event stream; the playback walks
+  it with a timer and never reads the world, which is what makes skipping the
+  replay free and unable to desynchronise anything. No new persisted state, and
+  the canonical hash is unchanged.
+* **`aExecuteMove` is bounded by the mover's movement points**, measured
+  natively. Both implementations take a budget; the player's own move passes the
+  unbounded sentinel, which is the behaviour the interface needs.
+* **A stage can leave the converter alone.** This was the first with no
+  `CONVERTER_VERSION` bump and no schema change — the second slice's save still
+  loads — which is the shape the pipeline was designed for.
+
+Of the other two, **the campaign layer** ([`27`](27-campaign.md)) is untouched,
+which is why `_C_115` cannot be played even though it converts and draws; and
 **bodies, animation and sound** ([`40`](40-charisma-model-animation.md),
 [`41`](41-sequence-player.md), [`28`](28-effects-and-sound.md)) are still a
 capsule and a ground marker.

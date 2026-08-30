@@ -16,9 +16,18 @@ extends CanvasLayer
 const PLAYER_COMPUTER: int = 255
 ## `+0x41 == 1` -- a reaction is pending (docs/25 section 6).
 const ACTION_WAITING: int = 1
+## The player the report is written for. One squad, one seat: the slice has no
+## campaign and no second human, and docs/27 section 6.3's result is per player.
+const PLAYER_HUMAN: int = 0
+## What the map is dimmed to behind the report. Dimmed rather than covered:
+## the last thing that happened is worth seeing under the words.
+const DIM_COLOUR: Color = Color(0.0, 0.0, 0.0, 0.72)
 
 var _lines: Label = null
-var _banner: Label = null
+## The report is a panel, not a line: a dimmed screen with the debriefing on
+## it. [member _report] is the Label inside [member _result].
+var _result: Control = null
+var _report: Label = null
 var _strings: Localization = null
 
 
@@ -27,14 +36,22 @@ func _init(strings: Localization) -> void:
 	_lines = Label.new()
 	_lines.position = Vector2(12.0, 8.0)
 	add_child(_lines)
-	_banner = Label.new()
-	_banner.position = Vector2(12.0, 8.0)
-	_banner.visible = false
-	add_child(_banner)
-
-
-## Where the banner sits once there is something to say.
-const BANNER_OFFSET: Vector2 = Vector2(12.0, 200.0)
+	_result = Control.new()
+	_result.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_result.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var dim: ColorRect = ColorRect.new()
+	dim.color = DIM_COLOUR
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_result.add_child(dim)
+	_report = Label.new()
+	_report.set_anchors_preset(Control.PRESET_CENTER)
+	_report.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_report.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_report.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_result.add_child(_report)
+	_result.visible = false
+	add_child(_result)
 
 
 func refresh(world: World, selected: int, note: String) -> void:
@@ -81,14 +98,59 @@ func _unit_line(world: World, selected: int) -> String:
 	return line
 
 
-## docs/20 section 7 -- slots 0..4 are what says the mission is over, and slot 0
-## is this player's. `Txtmod_g` 25 and 26 are the words the game itself uses.
+## The debriefing, in the game's own words -- docs/20 section 7 says whether
+## the mission is over, docs/27 section 6 says what the outcome was worth.
+##
+## Every line comes out of `Txtmod_d`, the module `aMissionEnd.cpp` builds its
+## own screen from, except the headline, which is `Txtmod_g`'s two-word verdict
+## the map already used. What is **not** here is the campaign half: the score,
+## the kills and the losses need the scoreboard record, and docs/27 is out of
+## this slice's scope. The two payout slots are shown because the mission
+## script writes them and they are in the world already.
 func _show_result(world: World) -> void:
 	if not world.game_control.mission_ended():
-		_banner.visible = false
+		_result.visible = false
 		return
-	var won: bool = world.game_control.get_slot(0) != 0
-	_banner.text = _strings.shipped(Localization.MODULE_MISSION,
-		Localization.ID_COMPLETED if won else Localization.ID_FAILED)
-	_banner.position = BANNER_OFFSET
-	_banner.visible = true
+	var control: GameControl = world.game_control
+	var outcome: int = control.mission_result(PLAYER_HUMAN)
+	var out: PackedStringArray = PackedStringArray()
+	out.append(_strings.shipped(Localization.MODULE_REPORT,
+		Localization.ID_REPORT_TITLE))
+	out.append("")
+	out.append(_strings.shipped(Localization.MODULE_MISSION,
+		Localization.ID_COMPLETED if outcome != GameControl.RESULT_DEFEAT
+		else Localization.ID_FAILED))
+	out.append(_strings.shipped(Localization.MODULE_REPORT,
+		_grade_text_id(outcome)))
+	out.append("")
+	out.append("%s %d" % [_strings.shipped(Localization.MODULE_REPORT,
+		Localization.ID_REPORT_TURNS), world.turn.turn])
+	# docs/27 section 6.2 pays these out only when the result is not 5, and
+	# only when the slot carries something -- both of the engine's own tests.
+	if control.pays_out(PLAYER_HUMAN):
+		var points: int = control.get_slot(GameControl.SLOT_EQUIPMENT_POINTS)
+		if points != 0:
+			out.append("%s %d" % [_strings.shipped(
+				Localization.MODULE_REPORT,
+				Localization.ID_REPORT_EQUIPMENT), points])
+		var awards: int = control.get_slot(GameControl.SLOT_COMMENDATIONS)
+		if awards != 0:
+			out.append("%s %d" % [_strings.shipped(
+				Localization.MODULE_REPORT,
+				Localization.ID_REPORT_COMMENDATIONS), awards])
+	_report.text = "\n".join(out)
+	_result.visible = true
+
+
+## docs/27 section 6.3's mission result, as the line the module has for it.
+func _grade_text_id(outcome: int) -> int:
+	match outcome:
+		GameControl.RESULT_WON:
+			return Localization.ID_REPORT_SUCCESS
+		GameControl.RESULT_WON_OUTSTANDING:
+			return Localization.ID_REPORT_OUTSTANDING
+		GameControl.RESULT_WON_GLORIOUS:
+			return Localization.ID_REPORT_GLORIOUS
+		GameControl.RESULT_DEFEAT:
+			return Localization.ID_REPORT_DEFEATED
+	return Localization.ID_REPORT_RUNNING

@@ -1,0 +1,317 @@
+# Third slice — an opponent that plays
+
+The stage is complete: **the aliens move, close and shoot.** `_C_140` is played
+against a live planner in an exported build, the computer's turn is replayed on
+screen one action at a time, and defeat — unreachable in every previous slice —
+is now an ordinary outcome with a debriefing screen behind it.
+
+It also closes the one measurement [`92` §2](92-remake-architecture.md) has been
+asking for since the first day. **A complete computer turn costs 12 ms on
+`_C_140` and 264 ms on `_C_132`**, the corpus worst case, and the answer to the
+question that number was asked for is unchanged for the third time: no
+memoisation, no native flood fill, no GDExtension.
+
+Like [`93`](93-slice-1-report.md) and [`94`](94-slice-2-report.md), this is a
+report on one piece of work and not a living document. What it decides has been
+written into [`92`](92-remake-architecture.md) and into the numbered specs; what
+stays here is the evidence, the deviations and the measurements.
+
+---
+
+## 1. What exists now
+
+```
+godot/
+  core/      42 files      pure GDScript: no Node, no FileAccess, no singleton
+    ai/      12 files      docs/23's planner
+    lcl/      5 files      the mission-script interpreter
+  game/      13 files      + the AI playback
+  tests/     26 suites     1518 checks
+tools/
+  inclib/    ai.py new (1813 lines); combat.py, movemap.py extended
+  ai_runtime.py new        59 checks over 108 missions and 1594 aliens
+  ai_gold.py new           eleven native phases, 45 checks
+```
+
+`core/ai/` is [`23`](23-ai-system.md) §2–§9 in the order the stage built it:
+the target overlay and its prune, the three predicates and the cover score, the
+approach cell, the plan, the fire, the eleven order handlers, the sweep itself
+and the pseudo-player. `World.submit_end_turn` runs it when the incoming player
+is 255 and returns an `AITurnResult` — an ordered list of events, the sweep
+count, the generator's state either side, and the refusals the model made
+rather than the engine.
+
+**The converter did not change.** `CONVERTER_VERSION` is `0.5.0` on both sides
+of this stage, `SaveCodec.SCHEMA_VERSION` is unchanged, and a save taken by the
+second slice still loads. The one qualification, stated plainly because the
+plan's acceptance item said "no republication": `_C_132` was **added to
+`SLICE_MISSIONS`**, so the cache was republished as *content*. The schema did
+not move; the inventory did.
+
+---
+
+## 2. Oracle boundaries, per comparison
+
+| What is compared | Boundary | Evidence |
+|---|---|---|
+| **`aAISystemControl` — the whole computer turn** | **native-runtime** | `ai_gold.py` phases `turn_0` / `turn_2`, on **`_C_140` itself**, turns 1 and 10: all 200 unit records field by field and `aRandom`'s seed either side |
+| The three predicates `0x0040B000` / `40` / `80` | **native-runtime** | 90 ordered pairs of live slots |
+| The cover score `0x0040B0D0` | **native-runtime** | 60 cells, including the two bytes it reads past the unit array |
+| The target overlay `0x0042FF30` + prune `0x0042FE90` | **native-runtime** | call, then read the cell grid back |
+| The approach cell `0x0040ADC0` | **native-runtime** | 10 targets, small and large mover; the `size` byte written as in [`93` §11](93-slice-1-report.md) |
+| Fire `0x0040A440`, six shots | **native-runtime** | destructive; reload between probes, seed pinned |
+| Plan `0x0040A750`, twelve probes | **native-runtime** | one per reachable kind × level |
+| `endUnitTurn` and the four order helpers | **native-runtime** | record dumps before and after |
+| The pseudo-player `0x0040B2D0` | **native-runtime** | on `_C_141`, with `type = 31` written |
+| Eleven order arms, horizon, bands, spores, approach | executable-Python | `ai_runtime.py --check`, `N/N` over the corpus |
+| `core/ai/` against `inclib/ai.py` | executable-Python | `tests/test_ai.gd`, a three-way diff on two missions |
+| The AI playback, the debriefing screen | specification-only | properties of this design |
+
+**The bottom row of [`94` §2](94-slice-2-report.md) is gone.** That table said
+the hand-over "ends by invoking `aAISystemControl` — the computer's whole turn —
+which is not something to start inside a debugger probe". It is, and it was.
+The capture reloads a save, runs `aRefreshPlayer(255)` the way the hand-over
+does, calls `aAISystemControl(NULL)` and reads back every unit record and the
+generator. Both saves are on the demonstration mission itself, so the strongest
+evidence in this project's history is also evidence about the thing being shown.
+
+---
+
+## 3. What the native oracle caught
+
+Four engine behaviours that no amount of structural self-consistency would have
+produced, and one loading bug that only a second implementation could see.
+
+**`aExecuteMove` is bounded by the mover's real movement points.** The model
+walked the whole path; the engine takes as many steps as the unit can pay for.
+The plan probes hand the routine a path the level-2 horizon flooded with 30
+points — and the unit took **one step**. This was the entirety of the whole-turn
+diff: with the walk unbounded, every alien on `_C_140` ended the turn somewhere
+else. `movemap.execute` and `core/execute_move.gd` both take a `budget` now, and
+the player's own move passes `-1` to keep the unbounded behaviour it needs.
+
+**The player's shot was free.** Not an AI bug, but the AI found it: with the
+aliens firing back it became obvious that the squad never ran out of action
+points. `aUI.cpp:3516` (`0x004731E4`) subtracts the weapon's AP, writes 3 into
+`+0x39` and *then* calls `aExecuteFight`; the second slice had none of the
+first two. Fixed in `World.submit_attack`.
+
+**The six-level horizon is not monotone.** [`23` §5.1](23-ai-system.md)'s table
+reads as a widening search, and it is — except at level 2, which floods with 30
+points **and** passes through friendly units, and level 3, which takes the
+permission back. The growing chain is 0, 1, 3, 4, 5, with 1 ⊆ 2 beside it, and
+`ai_runtime.py` asserts exactly that shape rather than a single chain. A
+related correction: a hidden unit's cell is enterable at **every** level, not
+only at 2, because the fill cannot see it at all.
+
+**`UnitTypeTable.from_rows` dropped two columns.** The loading boundary narrows
+each cache row to a fixed list — this is where the JSON floats become typed
+values once — and `armour_front` / `armour_rear` were not on it. Every type
+answered the fallback 0 while `tables/balance.json` carried the real values, so
+the remake's aliens did damage the engine's would not. `test_ai.gd` found it on
+its first run, comparing unit records after a turn; `test_cache.gd` now asserts
+that every column any accessor reads survives the narrowing.
+
+**`--code` cannot be used on this host.** `dbgcall`'s injected executable page
+makes `Incubation.exe` fault before the anchor, ten attempts out of ten
+(`0xc0000005`). The byte writer for `ai_gold.py` is therefore the game's own
+imported `memcpy`, reached through its IAT slot at `0x00525634` with the byte in
+a plain `--blob`. Recorded in `CLAUDE.md` so the next capture does not
+rediscover it.
+
+---
+
+## 4. Measurements
+
+Apple M4 Max, Godot 4.7.1. The AI rows are new; the rest carry over from
+[`94` §4](94-slice-2-report.md) and are re-taken here because the turn now
+contains the planner.
+
+| Measurement | `_C_140` (400 cells, 4 live aliens) | `_C_132` (1600 cells, 39 live aliens) |
+|---|---|---|
+| **A complete computer turn** | **12.2 ms** | **264 ms** |
+| Order dispatches in it | 16 | 270 |
+| Flood fills / target overlays / hit probabilities | 16 / 28 / 168 | 123 / 241 / 1698 |
+| One `plan` (`0x0040A750`), fill included | 237 µs | 575 µs |
+| One `fire` (`0x0040A440`), overlay included | 123 µs | 341 µs |
+| One flood fill written into the overlay | 65 µs | 150 µs |
+| One target overlay | 72 µs | 182 µs |
+
+Carried over, on `_C_140`: one move map 149 µs, the fog pass 326 µs, one hit
+probability 8.7 µs, one resolved shot 20 µs, one `NEXT PLAYER` 72 µs. **One
+hand-over is now 33 ms** rather than the 916 µs [`94`](94-slice-2-report.md)
+measured, and the whole of the difference is the computer's turn inside it. The
+comparison is loose in the bench's favour: it averages twenty hand-overs of
+which ten came back `OK`, the rest being cheap returns once the mission had
+ended, so the true cost of one hand-over that runs a turn is higher again.
+
+**What these decide.** A quarter of a second, once per round, on the heaviest
+map the corpus contains — while the player is watching a replay that takes
+several seconds anyway. Multiplying the counts by the single-call costs accounts
+for roughly three fifths of the turn (`124 × 575 µs + 243 × 341 µs ≈ 154 ms` of
+264 ms); the single-call figures are one named unit's, not the mean, so the
+remainder is the same work on units in busier positions plus the 2800 slot
+visits of fourteen sweeps. Nothing here is dominated by the flood fill: 123
+fills are 28 ms, 11 % of the turn. **No memoisation, no native fill, no
+GDExtension** — the same conclusion [`93` §5](93-slice-1-report.md) and
+[`94` §4](94-slice-2-report.md) reached, now with the thing they were guessing
+about actually running.
+
+---
+
+## 5. Deliberate deviations from the plan
+
+**The plan's corpus numbers were wrong and are corrected here.** It said 107
+missions and 1790 aliens; the truth is **108 missions with a live alien and 1594
+aliens on them**. The plan's figures came from overlapping populations — the
+1790 counts every alien record including the dead ones an authored `.lev`
+carries. Every `N/N` in `ai_runtime.py` states the corrected numbers.
+
+**The three cover-score terms that read past the unit array are not
+implemented.** [`23` §5.2](23-ai-system.md) shows they carry no information: the
+bonus is +10 everywhere except one row and one column of the map, and a constant
+cancels in a maximiser. The native capture read the same two bytes and they came
+back **168 and 3** — so §5.2's "both ≥ 40" does not hold for this run either,
+which is what heap history looks like. The model reproduces the +10 and is exact
+off the single row `y == 3`.
+
+**Kind 12 is implemented and kinds 4 and 5 are not.** 12 exists in the engine
+and is selected by nothing; 4 and 5 have no code in either shipped binary and
+stay as failing arms.
+
+**Seven of sixteen target patterns remain unsimulated.** The stage added the
+eighth, `spores_filtered` — `aim_and_neighbours` plus "the neighbour's owner is
+not `0xFC`" — which 218 corpus aliens carry. The other seven still refuse
+loudly.
+
+**`0x0047A8E0`'s end-of-turn facing is not modelled.** `endUnitTurn` picks a
+direction from the map and answers `0xFF` when there is none. Seven records per
+captured turn differ from the model in that byte alone, and the check counts
+them as a named refusal rather than passing quietly.
+
+**The AI turn is atomic and there is no mid-turn save.** `AITurnResult` is a
+value; nothing new is persisted, the canonical hash is unchanged, and the
+playback reads the event list rather than the world — which is why skipping the
+replay is free and cannot desynchronise anything.
+
+---
+
+## 6. What the exported build demonstrates
+
+The acceptance list of the stage's plan, all of it inside the exported `.app`:
+
+1. the installation is untouched — `tools/verify_untouched.sh`, before and
+   after;
+2. the converter's schema did not move: `CONVERTER_VERSION` unchanged, the
+   second slice's save still loads. The cache was republished because
+   `_C_132` joined the mission set — content, not schema;
+3. **the whole computer turn agrees with the native capture on `_C_140`** — all
+   200 unit records field by field and the generator's state, on turns 1 and 10;
+4. all eleven order arms are dispatched, ten by shipped data and order 3 by a
+   scene built for it; the checks fail on an empty corpus;
+5. every one of the 1594 corpus aliens either resolves a shot or refuses for a
+   named reason; `spores_filtered` is implemented and the other seven patterns
+   refuse;
+6. plan, fire, overlay, cover score, approach and the pseudo-player agree with
+   the native probes;
+7. **`_C_140` is played against an opponent that closes and shoots, and defeat
+   is reachable** — `SetGameControl (4,1)` when the hero dies, with the
+   debriefing screen `Txtmod_d` supplies;
+8. the computer's turn is visible: events play one at a time, the camera leads
+   them, input is locked, and one key skips without changing the world;
+9. the turn terminates — no mission run exceeds the sweep ceiling;
+10. `core` still has no scene, no filesystem and no singleton, `game` cannot
+    mutate its arrays, and typed warnings still fail the build.
+
+---
+
+## 7. How the checks were made to mean something
+
+Eighteen mutations, one per rule the stage added, run against both
+implementations. **Nine escaped** across two batteries — four on the Python side
+and five on the GDScript side — and every one named a real hole. All nine are
+closed; the battery now reports **18 mutations, 0 escapes**.
+
+The Python escapes were all the same shape: *the checks asserted relations, and
+a relation survives any table with the same order.*
+
+* **The six horizon values were pinned by nothing.** Changing level 2's 30
+  movement points to 40 left every check in `ai_runtime.py` green *and* left the
+  native whole-turn capture green, because 30 points already floods a 20×20 map.
+  `horizon.reach_census` now records cells reached per level over the whole
+  corpus.
+* **The band boundaries were checked against themselves.** `target.band_matches`
+  recomputed the band with the same table it was checking, which proves only
+  that the table is a function.
+* **The spores filter — the one thing the new pattern adds — was unchecked.**
+  Deleting the neutral-owner test left everything green. The corpus contains
+  **806** situations in which a neutral prop stands next to a target a spores
+  weapon can aim at, and not one of them is stamped; `spores.no_neutral_is_stamped`
+  now says so, over 835 marked cells.
+* **The approach cell's climb threshold was not pinned natively.** The capture's
+  ten probed targets contain no height step of exactly 2, so 2 → 1 changed
+  nothing the engine had been asked about. `approach.census` records 67 256
+  candidates scanned and 1 628 accepted, and moves when the threshold does.
+
+The GDScript escapes were **one** shape, and it is a property of the three-way
+diff rather than a defect in it. `test_ai.gd` replays two missions; a constant
+that does not change the outcome on those two missions cannot be caught by
+comparing outcomes on them, and four of the five escapes were exactly the
+constants the Python side needed a *corpus census* to bind. `game/` has no
+corpus. So `test_ai.gd` gained a `_constants` section that writes
+[`23`](23-ai-system.md)'s tables out and compares them directly — the treatment
+`CONVERTER_VERSION` already gets in two files — plus `horizon_mp(1, 130) == 4`
+for the byte shift, which no table check can see, and a **built scene** for the
+spores filter, the way [`94`](94-slice-2-report.md) built one for reaction fire
+and this stage built one for order 3.
+
+**What the corpus cannot bind is now said out loud.**
+`band.boundaries_the_corpus_leaves_open` reports that the nearest resolvable
+pairs to the four boundaries are 20/28, 48/52, 68/72 and 88/92 — **no boundary
+has a shipped situation on both sides of it**. All four rest on the listing, and
+`band.table_is_the_spec_s` is the only thing guarding them.
+
+Two process lessons, both of which produced *wrong green results* before they
+were understood:
+
+* A first battery run was killed by a timeout **between mutating a file and
+  restoring it**, and the leftover `if false and budget >= 0` in
+  `core/execute_move.gd` sat in the tree while four later mutations were
+  scored — each reporting extra failures that were not its own. The harness now
+  **aborts** when an anchor does not match instead of skipping past it: a tree
+  that is not what the battery expects makes every result after it meaningless.
+* Running anything else **while the battery runs** invalidates it. Two suite
+  runs issued by hand during a background battery reported a mutation as caught
+  that in fact escapes, because the tree they read was mid-cycle. A mutation
+  battery is a single-writer operation on the whole working tree.
+
+`tools/**/__pycache__` is cleared before every Python run and before the final
+clean one, per the rule [`94`](94-slice-2-report.md) left behind.
+
+---
+
+## 8. Open questions this stage leaves
+
+1. **`_C_140` is not *won* by a scripted squad against the live planner.** The
+   run deadlocks: the script's reinforcements from turn 5 plug the corridor to
+   the evacuation zone faster than a scripted squad clears it. The mission is
+   completable — the same script, the same route, with `ai_may_fire` off, wins
+   it — and defeat against the live opponent is reproducible. The suite asserts
+   each of the three outcomes for what it is rather than relaxing until one
+   passes. What is missing is a squad tactic, not a rule.
+2. **The large-mover second ring of `0x0040ADC0` disagrees with the engine** on
+   5 of 10 probes. Both listings read `jle` against the model's `>`, so it is
+   not the tie-break; the second ring sees something this transcription does
+   not. No shipped unit on `_C_140` is large, so nothing in the demonstration
+   reaches it. `ai_gold.py` carries it as a named open check.
+3. **Seven of sixteen target patterns** are still unsimulated (§5).
+4. **`0x0047A8E0`'s end-of-turn facing** (§5) — seven records per turn differ in
+   that byte alone.
+5. **No band boundary is pinned by shipped data** (§7). A native probe that
+   forces a hit chance into one of the four gaps would close all four at once.
+6. **The cover score's two out-of-bounds bytes** came back 168 and 3, against
+   [`23` §5.2](23-ai-system.md)'s "both ≥ 40". The conclusion is unchanged — the
+   bytes are heap history and the term is a constant — but the doc's observation
+   is a single run's and is now known to be one.
+7. **The campaign layer, bodies, animation and sound** are still untouched, as
+   they were after [`94`](94-slice-2-report.md).

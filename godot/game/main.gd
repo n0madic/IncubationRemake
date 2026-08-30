@@ -396,9 +396,9 @@ func _on_ai_step(event: Dictionary) -> void:
 		_rig.focus_on(at_x, at_y,
 			world.state.height_at(world.state.index_of(at_x, at_y)))
 
-	_ai_note = "%s  %s %d" % [_strings.text("hud.computer"),
+	_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
 		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
-		DictRead.as_int(event["slot"])]
+		DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
 	_units.build(world, _geometry, _textures)
 	_refresh_status(_ai_note)
 
@@ -431,15 +431,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_BRACKETLEFT:
 			show_mission(-1)
 		elif key.keycode == KEY_SPACE:
-			end_turn()
+			if not _mission_over():
+				end_turn()
 		elif key.keycode == KEY_U:
-			use_in_front()
+			if not _mission_over():
+				use_in_front()
 		elif key.keycode == KEY_D:
-			hold_fire()
+			if not _mission_over():
+				hold_fire()
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
-		if click.button_index == MOUSE_BUTTON_LEFT:
+		if click.button_index == MOUSE_BUTTON_LEFT and not _mission_over():
 			_pick(click.position, click.shift_pressed)
+
+
+## Whether the mission has ended -- in which case no command is taken any more.
+##
+## [method World.may_command] is the rule and refuses every slot once the
+## game-control slots are set; this is the same rule read once, so that a click
+## on a friendly unit does not fall through to the "not yours, so shoot it"
+## branch and so that the three keyed commands stop with it. Rotating, zooming
+## and the two overlays keep working: the map is still worth looking at.
+func _mission_over() -> bool:
+	return world != null and world.game_control.mission_ended()
 
 
 ## Turns a screen position into a map field, then asks the world about it.

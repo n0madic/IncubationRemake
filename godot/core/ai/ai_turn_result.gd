@@ -24,6 +24,17 @@ var refusals: Dictionary = {}
 var seed_before: float = 0.0
 var seed_after: float = 0.0
 var reason: String = ""
+## How much work the turn cost, by kind -- fills, target overlays, hit
+## probabilities. **Not part of [method to_dict]**, on purpose: the diffed
+## document says what the turn *decided*, and coupling it to how many times
+## either implementation reached for a flood fill would make an optimisation
+## a test failure. It exists for `bench.gd`, which multiplies these by the
+## measured cost of one of each.
+var work: Dictionary = {}
+
+
+func did(kind: String, times: int = 1) -> void:
+	work[kind] = DictRead.as_int(work.get(kind, 0)) + times
 
 
 func add(event: AIEvent) -> void:

@@ -60,6 +60,7 @@ static func build_move_map(ctx: AIContext, unit: UnitState,
 	var mp: int = horizon_mp(level, unit.mp)
 	var allowance: int = Allowance.for_unit(unit, ctx.utab, ctx.units,
 		ctx.turn.ai_level)
+	ctx.did(AIContext.WORK_FILL)
 	var fill: MoveMapResult = MoveMap.build(ctx.map, ctx.units, ctx.utab,
 		ctx.ctab, unit.slot, HORIZON_PASS[level], mp, allowance)
 	var states: PackedByteArray = fill.states()
@@ -73,6 +74,7 @@ static func build_move_map(ctx: AIContext, unit: UnitState,
 
 static func run(ctx: AIContext, unit: UnitState, kind: int, param: int,
 		level: int) -> bool:
+	ctx.did(AIContext.WORK_PLAN)
 	if unit.hp == 0 or unit.mp == 0:
 		return true
 	var own_cell: int = ctx.map.index_of(unit.x, unit.y)

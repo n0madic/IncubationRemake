@@ -41,6 +41,10 @@ measured are in
 The second is delivered too — the turn, combat, visibility, interaction and the
 mission-script interpreter, with `_C_140` played and won in an exported build:
 [`94-slice-2-report.md`](94-slice-2-report.md).
+So is the third — [`23`](23-ai-system.md)'s planner, so the aliens move, close
+and shoot, with a whole computer turn taken from the live engine and the
+measurement §2 of `92` had been waiting for since the first day:
+[`95-slice-3-report.md`](95-slice-3-report.md).
 
 ---
 

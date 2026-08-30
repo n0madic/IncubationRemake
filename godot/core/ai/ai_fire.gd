@@ -68,6 +68,7 @@ static func select_target(ctx: AIContext, mode: int,
 
 static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 		group: int = 0) -> bool:
+	ctx.did(AIContext.WORK_FIRE)
 	var ap: int = ctx.wtab.ap(unit.weapon)
 	if unit.hp == 0:
 		return false

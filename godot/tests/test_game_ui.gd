@@ -75,6 +75,23 @@ func _command_gate(h: TestHarness) -> void:
 	h.equal("command.follows_the_turn", still, [] as Array[int],
 		"nobody commands the squad while it is not the squad's turn")
 
+	# And a finished mission is not playable. The engine never shows the map in
+	# that state -- the debriefing screen replaces it (docs/27 section 6.1) --
+	# so the rule is the remake's, and it lives beside the other three rather
+	# than in the input handler.
+	world.turn.current_player = 0
+	world.game_control.set_slot(4, 1)
+	var after: Array[int] = []
+	for slot: int in ours:
+		if world.may_command(slot):
+			after.append(slot)
+	h.equal("command.not_after_the_mission_ends", after, [] as Array[int],
+		"nobody gives an order once the game-control slots are set")
+	world.game_control.set_slot(4, 0)
+	h.equal("command.and_the_squad_is_commandable_again",
+		world.may_command(ours[0]), true,
+		"the gate is the slots, not a latch")
+
 	# `0x00477DF0`'s third test, `+0x4F != 3`, is not exercised here: making a
 	# unit hidden means running the fog pass from the *other* side, which
 	# `_fog` above already does, and `World` grows no test-only mutator to
@@ -206,23 +223,108 @@ func _hud(h: TestHarness) -> void:
 	h.check("hud.renders_no_missing_string_when_selected",
 		not selected.contains(Localization.MISSING_PREFIX), selected)
 
-	# The result banner is the mission's own words, and it appears only once
-	# the game-control slots say the mission is over (docs/20 section 7).
-	h.check("hud.no_banner_before_the_end", not _banner_visible(hud),
+	# The report appears only once the game-control slots say the mission is
+	# over (docs/20 section 7), and it is the debriefing rather than a word.
+	h.check("hud.no_report_before_the_end", not _report_visible(hud),
 		"slots 0..4 are clear")
 	world.game_control.set_slot(0, 1)
 	hud.refresh(world, squad[0], "")
-	h.check("hud.the_banner_appears_on_a_win", _banner_visible(hud),
+	h.check("hud.the_report_appears_on_a_win", _report_visible(hud),
 		"slot 0 is set")
-	h.equal("hud.the_banner_is_the_game_s_own_words", _banner_text(hud),
-		strings.shipped(Localization.MODULE_MISSION,
+	var won: String = _report_text(hud)
+	h.check("hud.the_report_is_the_game_s_own_words",
+		won.contains(strings.shipped(Localization.MODULE_MISSION,
 			Localization.ID_COMPLETED))
+		and won.contains(strings.shipped(Localization.MODULE_REPORT,
+			Localization.ID_REPORT_TITLE)), won.replace("\n", " | "))
+	h.check("hud.the_report_grades_the_win",
+		won.contains(strings.shipped(Localization.MODULE_REPORT,
+			Localization.ID_REPORT_SUCCESS)), won.replace("\n", " | "))
+	h.check("hud.the_report_renders_no_missing_string",
+		not won.contains(Localization.MISSING_PREFIX), won)
+
+	# The three grades are three different lines, in docs/27 section 6.3's
+	# order. A report that printed one word for every win would pass every
+	# check above.
+	var grades: Array[String] = []
+	for value: int in [1, 2, 3]:
+		world.game_control.set_slot(0, value)
+		hud.refresh(world, squad[0], "")
+		grades.append(_report_text(hud))
+	h.check("hud.the_three_win_grades_differ",
+		grades[0] != grades[1] and grades[1] != grades[2]
+		and grades[0] != grades[2], " | ".join(grades).replace("\n", " / "))
+	h.check("hud.the_best_grade_is_the_glorious_one",
+		grades[2].contains(strings.shipped(Localization.MODULE_REPORT,
+			Localization.ID_REPORT_GLORIOUS)), grades[2].replace("\n", " | "))
+
+	# The payout lines are shown only when the slot carries something and only
+	# when the result is not 5 -- both of docs/27 section 6.2's own tests.
+	var equipment: String = strings.shipped(Localization.MODULE_REPORT,
+		Localization.ID_REPORT_EQUIPMENT)
+	h.check("hud.an_unset_payout_is_not_printed",
+		not grades[0].contains(equipment), grades[0].replace("\n", " | "))
+	world.game_control.set_slot(0, 1)
+	world.game_control.set_slot(GameControl.SLOT_EQUIPMENT_POINTS, 50)
+	hud.refresh(world, squad[0], "")
+	h.check("hud.a_set_payout_is_printed",
+		_report_text(hud).contains(equipment),
+		_report_text(hud).replace("\n", " | "))
+
 	world.game_control.set_slot(0, 0)
 	world.game_control.set_slot(4, 1)
 	hud.refresh(world, squad[0], "")
-	h.equal("hud.a_loss_says_so", _banner_text(hud),
-		strings.shipped(Localization.MODULE_MISSION, Localization.ID_FAILED))
+	var lost: String = _report_text(hud)
+	h.check("hud.a_loss_says_so",
+		lost.contains(strings.shipped(Localization.MODULE_MISSION,
+			Localization.ID_FAILED))
+		and lost.contains(strings.shipped(Localization.MODULE_REPORT,
+			Localization.ID_REPORT_DEFEATED)), lost.replace("\n", " | "))
+	h.check("hud.a_loss_forfeits_the_payout",
+		not lost.contains(equipment), lost.replace("\n", " | "))
 	hud.free()
+
+	_mission_result(h)
+
+
+## docs/27 section 6.3 -- `0x0047D600`'s classification, which is one order of
+## operations and not a lookup.
+##
+## The vector that matters is the third: **another player's slot ends the
+## mission and this player is defeated by it.** The OR chain stamps 5 on
+## everybody first and only then does each player's own slot put a grade back,
+## so an implementation that reads its own slot and slot 4 answers every other
+## case correctly and this one wrongly.
+func _mission_result(h: TestHarness) -> void:
+	var control: GameControl = GameControl.create()
+	h.equal("result.nothing_happened_while_it_runs", control.mission_result(0),
+		GameControl.RESULT_NOTHING)
+	h.check("result.a_running_mission_pays_nothing_out", control.pays_out(0),
+		"the payout gate is the result test, not the end test")
+	var grades: Array[int] = []
+	for value: int in [1, 2, 3]:
+		control.set_slot(0, value)
+		grades.append(control.mission_result(0))
+	h.equal("result.the_three_grades", grades, [GameControl.RESULT_WON,
+		GameControl.RESULT_WON_OUTSTANDING, GameControl.RESULT_WON_GLORIOUS])
+
+	control = GameControl.create()
+	control.set_slot(4, 1)
+	h.equal("result.the_computer_s_slot_is_a_defeat", control.mission_result(0),
+		GameControl.RESULT_DEFEAT)
+	h.check("result.a_defeat_forfeits_the_payout", not control.pays_out(0),
+		"docs/27 section 6.2 gates on result != 5")
+
+	control = GameControl.create()
+	control.set_slot(1, 1)
+	h.equal("result.another_player_s_win_defeats_this_one",
+		[control.mission_result(0), control.mission_result(1)],
+		[GameControl.RESULT_DEFEAT, GameControl.RESULT_WON])
+
+	control = GameControl.create()
+	control.set_slot(0, 9)
+	h.equal("result.an_unaccounted_value_leaves_the_five_standing",
+		control.mission_result(0), GameControl.RESULT_DEFEAT)
 
 
 ## The HUD's two labels, read back out of the node it built.
@@ -235,11 +337,14 @@ static func _hud_text(hud: Hud) -> String:
 	return label.text
 
 
-static func _banner_visible(hud: Hud) -> bool:
-	var label: Label = hud.get_child(1)
-	return label.visible
+## The report panel is the HUD's second child, and the words are the Label
+## inside it -- the first child of the panel is what dims the map.
+static func _report_visible(hud: Hud) -> bool:
+	var panel: Control = hud.get_child(1)
+	return panel.visible
 
 
-static func _banner_text(hud: Hud) -> String:
-	var label: Label = hud.get_child(1)
+static func _report_text(hud: Hud) -> String:
+	var panel: Control = hud.get_child(1)
+	var label: Label = panel.get_child(1)
 	return label.text

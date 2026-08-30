@@ -64,6 +64,35 @@ HEAT_CAP_ZERO_WEAPONS = (36, 37)
 #: quadratic in the map, so they take a bounded slice of each.
 SAMPLE_PER_MISSION = 4
 
+#: Cells reached per horizon level, summed over the sampled movers of the whole
+#: corpus.  Recorded from a run, like ``docs/23``'s order histogram: it pins the
+#: six entries of ``0x0040AD70``'s table, which no relation between the levels
+#: can.  Levels 4 and 5 agree because 100 points already reach everything 250
+#: would.
+HORIZON_REACH_CENSUS = {0: 9142, 1: 21154, 2: 87598, 3: 98564, 4: 104083,
+                        5: 104083}
+
+#: ``docs/23`` §6's bands, written out a second time and independently of
+#: :data:`inclib.ai.TARGET_BANDS`, because a check that recomputes the band
+#: with the same table it is checking proves only that the table is a
+#: function.  ``(upper bound, marker)``; anything above the last is 34.
+BAND_TABLE_FROM_THE_SPEC = ((20, 30), (50, 31), (70, 32), (90, 33))
+BAND_ABOVE_ALL = 34
+
+#: Every ordered attacker/target pair the corpus can resolve, by hit
+#: percentage.  Recorded from a run.
+PAIR_PERCENT_CENSUS = {10: 3, 19: 4, 20: 1, 28: 6, 32: 4, 37: 2, 42: 2, 44: 2,
+                       46: 3, 48: 2, 52: 3, 55: 7, 56: 4, 60: 3, 64: 9, 68: 4,
+                       72: 6, 73: 5, 76: 5, 80: 4, 82: 1, 84: 4, 86: 3, 88: 3,
+                       92: 5, 94: 3, 96: 9, 99: 24, 100: 16}
+
+#: How the approach census strides the map, and what it comes to.
+APPROACH_STRIDE = 7
+APPROACH_CENSUS = (67256, 1628, 3130292)
+
+#: ``0x0042FF30``'s own refusal, mirrored from ``inclib.ai``'s ``>= 254``.
+BAND_REFUSAL = 254
+
 CASES_SCHEMA = "incubation.ai-cases/1"
 
 
@@ -185,6 +214,7 @@ def check_horizon(c: Checker, root: Path, tables: BalanceTables,
                   delays: dict[int, int]) -> None:
     """Six fills per unit, and what has to be true of the six together."""
     monotone = 0
+    reach_totals: dict[int, int] = {level: 0 for level in range(ai.MAX_LEVEL + 1)}
     violations: list[str] = []
     friendly_levels: set[int] = set()
     hidden_levels: set[int] = set()
@@ -207,6 +237,7 @@ def check_horizon(c: Checker, root: Path, tables: BalanceTables,
                 reach = {i for i, s in enumerate(ctx.state)
                          if s == movemap.STATE_REACHABLE}
                 reached[level] = reach
+                reach_totals[level] += len(reach)
                 for index in reach:
                     other = ctx.world.unit_at[index]
                     if other < 0 or other == unit.slot:
@@ -241,6 +272,15 @@ def check_horizon(c: Checker, root: Path, tables: BalanceTables,
             else:
                 monotone += 1
     c.check("horizon.sampled", sampled > 0, f"{sampled} movers")
+    # **The census is what binds the six numbers themselves.**  Everything
+    # else about the horizon is a *relation* -- monotone, contains, may pass a
+    # friendly -- and a relation survives any table that keeps the same order.
+    # A mutation battery found that: changing level 2's 30 points to 40 left
+    # every other check in this file green, and left the native whole-turn
+    # capture green too, because 30 points already floods a 20x20 map.  The
+    # totals below move the moment any of the six does.
+    c.expect("horizon.reach_census", reach_totals, HORIZON_REACH_CENSUS,
+             "cells reached, summed over the sampled movers, per level")
     c.expect("horizon.monotone", violations, [],
              f"{monotone} transitions along {HORIZON_CHAIN} plus 1 -> 2, each "
              f"a superset of the last")
@@ -322,6 +362,179 @@ def check_targets(c: Checker, root: Path, tables: BalanceTables,
              "the AI always shoots at its highest hit chance")
     c.expect("target.band_matches", wrong_band, [],
              "the marker is aGetHitProbability's band, 30..34")
+
+
+def check_bands(c: Checker, root: Path, tables: BalanceTables,
+                delays: dict[int, int]) -> None:
+    """``0x0042FF30``'s five bands, against a table stated twice.
+
+    :func:`check_targets` above asserts that the stamped marker is
+    ``_band_of(percent)`` -- which is true of *any* boundary table, because it
+    is the same table on both sides.  This one writes ``docs/23`` §6's
+    boundaries out independently, and counts the whole corpus's ordered
+    attacker/target pairs into them.
+
+    **What the corpus cannot bind is recorded rather than implied.** The 147
+    reachable pairs land on 29 distinct percentages, and the gaps between them
+    are windows in which a boundary could move without any shipped situation
+    noticing: nothing sits in 21..25, so the top of the ``<= 20`` band rests on
+    the listing alone.  The check reports the windows it leaves open.
+    """
+    histogram: dict[int, int] = {}
+    for path in mission_paths(root):
+        ctx = context_for(path, tables, delays)
+        for unit in aliens_of(ctx):
+            weapon = ai.effective_weapon(ctx, unit)
+            if weapon is None:
+                continue
+            for other in ctx.world.units.values():
+                if other.hp == 0 or other.player == unit.player:
+                    continue
+                chance = combatmod.hit_probability(ctx.world, unit, other,
+                                                   weapon, apply_los=True)
+                if not chance.in_range or chance.percent <= 0:
+                    continue
+                # `0x0042FF30` refuses anything at or above 254, which is how
+                # the two forcing hooks (weapons 45 and 47) express "never".
+                if chance.percent >= BAND_REFUSAL:
+                    continue
+                histogram[chance.percent] = histogram.get(chance.percent, 0) + 1
+    c.expect("band.pair_census", dict(sorted(histogram.items())),
+             PAIR_PERCENT_CENSUS,
+             "every ordered attacker/target pair the corpus can resolve")
+
+    wrong: list[str] = []
+    for percent in sorted(histogram):
+        expected = BAND_ABOVE_ALL
+        for limit, marker in BAND_TABLE_FROM_THE_SPEC:
+            if percent <= limit:
+                expected = marker
+                break
+        if ai._band_of(percent) != expected:
+            wrong.append(f"{percent}% -> {ai._band_of(percent)}, "
+                         f"docs/23 section 6 says {expected}")
+    # **The only guard the boundaries have.** The census above binds a boundary
+    # only where a shipped pair sits on each side of it, and the report below
+    # shows that none does: moving the first boundary from 20 to 25 reclassifies
+    # nothing, because no situation in the corpus lands in 21..25. So the table
+    # itself is stated twice -- the same treatment `CONVERTER_VERSION` gets --
+    # and the two statements are compared directly.
+    c.expect("band.table_is_the_spec_s",
+             [tuple(entry) for entry in ai.TARGET_BANDS],
+             [tuple(entry) for entry in BAND_TABLE_FROM_THE_SPEC],
+             "docs/23 section 6's four boundaries, written down a second time")
+    c.expect("band.matches_the_spec_table", wrong, [],
+             f"{len(histogram)} distinct percentages, "
+             f"{sum(histogram.values())} pairs")
+
+    # Which boundaries the data actually pins, and how far each could move
+    # before a shipped pair would notice.
+    unbound: list[str] = []
+    for limit, _marker in BAND_TABLE_FROM_THE_SPEC:
+        below = [p for p in histogram if p <= limit]
+        above = [p for p in histogram if p > limit]
+        low = max(below) if below else None
+        high = min(above) if above else None
+        if low is None or high is None or high - low > 1:
+            unbound.append(f"{limit}: nearest pairs {low} and {high}")
+    c.check("band.boundaries_the_corpus_leaves_open", True,
+            "; ".join(unbound) if unbound
+            else "every boundary has a pair on each side of it")
+
+
+def check_spores(c: Checker, root: Path, tables: BalanceTables,
+                 delays: dict[int, int]) -> None:
+    """``0x46ACCD`` -- the one target pattern this stage added.
+
+    ``spores_filtered`` is ``aim_and_neighbours`` with one extra test: the
+    neighbouring cell is stamped only if what stands on it is **not** owned by
+    ``0xFC``, the neutral side (``docs/22`` §7.2).  The filter is the whole
+    difference between the two families, and a mutation battery found that
+    deleting it left every check in this file and the native capture green.
+
+    The corpus exercises it heavily -- 806 situations in which a neutral unit
+    stands next to a target a spores weapon can aim at -- so the check is a
+    census over shipped data and not a scene.
+    """
+    aimers = 0
+    marked = 0
+    adjacent = 0
+    leaked: list[str] = []
+    for path in mission_paths(root):
+        ctx = context_for(path, tables, delays)
+        for unit in aliens_of(ctx):
+            if combatmod.pattern_family(unit.weapon) != "spores_filtered":
+                continue
+            aimers += 1
+            for other in ctx.world.units.values():
+                if other.hp == 0 or other.player == unit.player:
+                    continue
+                cells = combatmod.mark_cells(ctx.world, unit.weapon,
+                                             other.x, other.y)
+                marked += len(cells)
+                stamped = {(x, y) for x, y, _m in cells}
+                for dx, dy in combatmod.STEP_DIRECTIONS:
+                    nx, ny = other.x + dx, other.y + dy
+                    if not ctx.world.in_bounds(nx, ny):
+                        continue
+                    slot = ctx.world.unit_at[ctx.world.index(nx, ny)]
+                    if slot < 0:
+                        continue
+                    occupant = ctx.world.units.get(slot)
+                    if occupant is None \
+                            or occupant.player != combatmod.PLAYER_NEUTRAL:
+                        continue
+                    adjacent += 1
+                    if (nx, ny) in stamped:
+                        leaked.append(f"{path.name}: ({nx},{ny}) beside "
+                                      f"({other.x},{other.y})")
+    c.expect("spores.aimers", aimers, 218,
+             "aliens whose weapon uses the filtered-neighbour pattern")
+    c.expect("spores.marked_census", marked, 835,
+             "cells the pattern stamps, over the whole corpus")
+    c.check("spores.the_filter_is_exercised", adjacent > 0,
+            f"{adjacent} neutral units standing next to a reachable target")
+    c.expect("spores.no_neutral_is_stamped", leaked[:4], [],
+             f"0 of {adjacent} neutral neighbours were marked")
+
+
+def check_approach(c: Checker, root: Path, tables: BalanceTables,
+                   delays: dict[int, int]) -> None:
+    """``0x0040ADC0``'s acceptance, as a census.
+
+    A census and not a proof, and it says so: the routine's rules come from
+    the listing (``docs/23`` §5.4) and from ``ai_gold.py``'s ``approach``
+    phase, which compares the model against the engine over 10 probed targets.
+    Those targets happen to contain no height step of exactly 2, so the climb
+    threshold -- the one number that separates this transcription from the
+    obvious wrong one -- is not pinned by the native capture.  A mutation
+    battery found exactly that.  The totals below move when it changes.
+    """
+    accepted = 0
+    scanned = 0
+    best_total = 0
+    for path in mission_paths(root):
+        ctx = context_for(path, tables, delays)
+        for unit in aliens_of(ctx)[:SAMPLE_PER_MISSION]:
+            row = ctx.world.tables.units.get(unit.type_id)
+            if row is not None and row.special in movemap.SPECIAL_CANNOT_MOVE:
+                continue
+            ai.reset_overlay(ctx)
+            if ai.build_move_map(ctx, unit, 0) is None:
+                continue
+            best = 0
+            # Every seventh cell: the scan is quadratic in the map and the
+            # stride keeps the corpus pass to seconds while still visiting
+            # 67 thousand candidates.
+            for index in range(0, len(ctx.state), APPROACH_STRIDE):
+                found, best = ai.approach_cell(ctx, index, best, unit.slot)
+                scanned += 1
+                if found is not None:
+                    accepted += 1
+            best_total += best
+    c.expect("approach.census", (scanned, accepted, best_total),
+             APPROACH_CENSUS,
+             "candidates scanned, candidates accepted, best scores summed")
 
 
 def check_shot_reasons(c: Checker, root: Path, tables: BalanceTables,
@@ -770,6 +983,9 @@ def run_check(root: Path) -> int:
     check_horizon(c, root, tables, delays)
     check_immobile(c, root, tables, delays)
     check_targets(c, root, tables, delays)
+    check_bands(c, root, tables, delays)
+    check_spores(c, root, tables, delays)
+    check_approach(c, root, tables, delays)
     check_shot_reasons(c, root, tables, delays)
     check_fire(c, root, tables, delays)
     check_commit(c, root, tables, delays)

@@ -61,10 +61,10 @@ python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 u
 python3 tools/combat_runtime.py     --check gog_incubation   # 84 checks, LOS/hit/damage/reaction
 python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
-python3 tools/ai_runtime.py         --check gog_incubation   # 49 checks, 108 missions
-python3 tools/remake_convert.py     gog_incubation --check   # 50 checks
+python3 tools/ai_runtime.py         --check gog_incubation   # 59 checks, 108 missions
+python3 tools/remake_convert.py     gog_incubation --check   # 59 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 26 suites, 1490 checks
+bash   godot/run_tests.sh                                    # 26 suites, 1518 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7

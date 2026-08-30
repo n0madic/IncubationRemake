@@ -12,6 +12,15 @@ extends RefCounted
 ## So the two arrays live here, in one object with a lifetime of one turn, and
 ## nothing outside `core/ai/` can see them.
 
+## The three kinds of work worth counting -- the three the turn is made of
+## and the three `bench.gd` measures the cost of one of.
+const WORK_FILL: String = "fills"
+const WORK_OVERLAY: String = "target_overlays"
+const WORK_HIT_CHANCE: String = "hit_chances"
+const WORK_PLAN: String = "plans"
+const WORK_FIRE: String = "fires"
+
+
 ## `cell[+0x00]` -- the overlay byte.
 var state: PackedByteArray = PackedByteArray()
 ## `cell[+0x0C]` -- the movement points left on arrival.
@@ -94,3 +103,8 @@ func emit(event: AIEvent) -> void:
 
 func refuse(reason: String) -> void:
 	result.refuse(reason)
+
+
+## One unit of work of a named kind. See [member AITurnResult.work].
+func did(kind: String) -> void:
+	result.did(kind)

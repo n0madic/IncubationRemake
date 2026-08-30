@@ -68,6 +68,53 @@ func mission_ended() -> bool:
 	return false
 
 
+## docs/27 section 6.3 -- the five values `setMissionResult` takes.  1 is the
+## reset value and means "nothing happened"; 2, 3 and 4 are the three win
+## grades (+100/+200/+300); 5 is defeat (-100).
+const RESULT_NOTHING: int = 1
+const RESULT_WON: int = 2
+const RESULT_WON_OUTSTANDING: int = 3
+const RESULT_WON_GLORIOUS: int = 4
+const RESULT_DEFEAT: int = 5
+
+
+## What one player's mission result is, by `0x0047D600`'s own classification.
+##
+## The order is the part worth having: the OR chain over slots 0..4 stamps
+## **5 on every human player** first, and only then does each player's own slot
+## put 2/3/4 back.  So a mission that ends by *another* player's slot -- or by
+## slot 4, the computer's -- leaves this player defeated, and an implementation
+## that reads only its own slot and slot 4 gets that case wrong.
+##
+## `gc[i] > 3` is `error("unknown missionresult")` in the engine.  There is no
+## error path here, and the 5 the OR chain already stamped is what stands:
+## a slot the mission script set to something unaccounted for still ended the
+## mission, and treating it as a win would be the worse guess.
+func mission_result(player: int) -> int:
+	if not mission_ended():
+		return RESULT_NOTHING
+	if player < 0 or player >= END_STATE_SLOTS - 1:
+		return RESULT_DEFEAT
+	match _slots[player]:
+		1:
+			return RESULT_WON
+		2:
+			return RESULT_WON_OUTSTANDING
+		3:
+			return RESULT_WON_GLORIOUS
+	return RESULT_DEFEAT
+
+
+## Whether the two payout slots are paid out to this player -- docs/27 section
+## 6.2's `missionResult(player) != 5`.
+##
+## The other half of the engine's gate, `gameMode() == 1`, is the campaign
+## layer and is out of this slice's scope (docs/27), so what is modelled here
+## is the result test alone.
+func pays_out(player: int) -> bool:
+	return mission_result(player) != RESULT_DEFEAT
+
+
 func values() -> PackedInt32Array:
 	return _slots.duplicate()
 

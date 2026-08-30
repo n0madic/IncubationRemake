@@ -103,6 +103,7 @@ static func effective_weapon(wtab: WeaponTable, unit: UnitState) -> int:
 ## the caller the two differ only through the overlay.
 static func build(ctx: AIContext, unit: UnitState, human_players: int,
 		game_mode: int) -> bool:
+	ctx.did(AIContext.WORK_OVERLAY)
 	if unit.fp <= MIN_FITNESS:
 		return false
 	if unit.weapon == WEAPON_NONE:
@@ -134,6 +135,7 @@ static func build(ctx: AIContext, unit: UnitState, human_players: int,
 			continue
 		if other.type_id == TYPE_NEVER_TARGET or other.type_id == TYPE_IMMUNE:
 			continue
+		ctx.did(AIContext.WORK_HIT_CHANCE)
 		var chance: HitChance = HitChance.compute(ctx.map, ctx.units, ctx.utab,
 			ctx.wtab, unit, other, weapon_id, true, human_players, game_mode)
 		if not chance.in_range:

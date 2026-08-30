@@ -149,6 +149,14 @@ OVERLAY_FAMILY = (
 #: ``0x0040437C`` -- what each family does.  ``"units"`` is the hit-probability
 #: sweep of §6; the other three stamp markers outside the AI's window, and
 #: ``"error"`` is the ``"unknown weapon"`` arm.
+#: The three kinds of work worth counting -- the three a turn is made of, and
+#: the three `godot/bench.gd` measures the cost of one of.
+WORK_FILL = "fills"
+WORK_OVERLAY = "target_overlays"
+WORK_HIT_CHANCE = "hit_chances"
+WORK_PLAN = "plans"
+WORK_FIRE = "fires"
+
 OVERLAY_ARMS = ("units", "units", "units", "special_objects", "units",
                 "empty_ground", "any_unit", "units", "empty_ground", "units",
                 "error")
@@ -316,6 +324,15 @@ class AITurnResult:
     seed_before: float = 0.0
     seed_after: float = 0.0
     reason: str = ""
+    #: How much work the turn cost, by kind -- fills, target overlays, hit
+    #: probabilities. **Not part of** :meth:`to_dict`, on purpose: the diffed
+    #: document says what the turn *decided*, and coupling it to how many
+    #: times either implementation reached for a flood fill would make an
+    #: optimisation a test failure.
+    work: dict[str, int] = field(default_factory=dict)
+
+    def did(self, kind: str, times: int = 1) -> None:
+        self.work[kind] = self.work.get(kind, 0) + times
 
     def add(self, event: AIEvent) -> None:
         self.events.append(event)
@@ -562,6 +579,7 @@ def build_target_overlay(ctx: AIContext, unit: CombatUnit) -> bool:
     all"; TRUE with nothing stamped means "it can aim and found nobody", and
     the two are different to the caller only through the overlay.
     """
+    ctx.result.did(WORK_OVERLAY)
     if unit.fp <= MIN_FITNESS_TO_AIM:
         return False
     if unit.weapon == WEAPON_NONE:
@@ -604,6 +622,7 @@ def build_target_overlay(ctx: AIContext, unit: CombatUnit) -> bool:
             continue
         if other.type_id in (TYPE_NEVER_TARGET, TYPE_IMMUNE):
             continue
+        ctx.result.did(WORK_HIT_CHANCE)
         chance = combatmod.hit_probability(world, unit, other, weapon_id,
                                            apply_los=True)
         if not chance.in_range:
@@ -899,6 +918,7 @@ def fire(ctx: AIContext, unit: CombatUnit, mode: int = FIRE_ANY,
     did not** -- a weapon whose heat cap is 0 spends its points and draws no
     rolls.  A model that skipped the subtraction on that arm would hang.
     """
+    ctx.result.did(WORK_FIRE)
     world = ctx.world
     weapon = world.tables.weapons.get(unit.weapon)
     ap = 0 if weapon is None else weapon.ap
@@ -1027,6 +1047,7 @@ def build_move_map(ctx: AIContext, unit: CombatUnit,
     ``resetOverlay`` just put there, which is why this copies rather than
     returning.  A cell the fill never reached keeps its 1 and its 0.
     """
+    ctx.result.did(WORK_FILL)
     saved = unit.mp
     mp = horizon_mp(level, saved)
     unit.mp = mp & 0xFF
@@ -1055,6 +1076,7 @@ def plan(ctx: AIContext, unit: CombatUnit, kind: int, param: int,
     failed fill, a failed path reconstruction, no candidate cell at all, and a
     failed ``aExecuteWarp`` / ``aExecuteMove``.
     """
+    ctx.result.did(WORK_PLAN)
     if unit.hp == 0 or unit.mp == 0:
         return True
 

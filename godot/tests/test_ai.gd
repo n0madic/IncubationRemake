@@ -38,6 +38,108 @@ func run(h: TestHarness) -> void:
 	h.check("cases.count", not cases.is_empty(), "%d case(s)" % cases.size())
 	for entry: Variant in cases:
 		_case(h, DictRead.as_dict(entry))
+	_constants(h)
+	_spores(h)
+
+
+## The four constants the replay cannot bind, stated a second time.
+##
+## A mutation battery found all four: changing level 2's horizon, dropping the
+## byte shift in level 1's doubling, moving the first band boundary and lowering
+## the approach climb threshold each left every case above green. That is not a
+## hole in the diff -- it is what the diff *is*. The cases replay two missions,
+## and a constant that does not change the outcome on those two missions cannot
+## be caught by comparing outcomes on them. `tools/ai_runtime.py` catches them
+## with censuses over all 108 missions of the corpus; `game/` has no corpus, so
+## here the tables are written out from docs/23 and compared directly, the same
+## treatment `CONVERTER_VERSION` gets in two files.
+func _constants(h: TestHarness) -> void:
+	# docs/23 section 5.1's `0x0040AD70`. -1 is "the unit's own points".
+	h.equal("const.horizon_table", AIPlan.HORIZON_MP,
+		[-1, -1, 30, 50, 100, 250] as Array[int],
+		"the six arms of the horizon")
+	h.equal("const.horizon_passes_friendlies_at_two", AIPlan.HORIZON_PASS,
+		[false, false, true, false, false, false] as Array[bool])
+	# `shl al, 1` is a **byte** shift: 130 points doubled is 4, not 260. The
+	# table check above cannot see this one, because level 1 is not in it.
+	h.equal("const.horizon_level_1_is_a_byte_shift",
+		[AIPlan.horizon_mp(1, 130), AIPlan.horizon_mp(1, 5),
+			AIPlan.horizon_mp(0, 7)], [4, 10, 7])
+	# docs/23 section 6's five bands. No shipped situation sits on both sides
+	# of any of the four boundaries -- `ai_runtime.py`'s
+	# `band.boundaries_the_corpus_leaves_open` reports the gaps -- so this is
+	# the only guard either implementation has for them.
+	h.equal("const.band_limits", AIOverlay.BAND_LIMITS,
+		[20, 50, 70, 90] as Array[int])
+	h.equal("const.band_markers", AIOverlay.BAND_MARKERS,
+		[30, 31, 32, 33] as Array[int])
+	h.equal("const.band_of_each_boundary",
+		[AIOverlay.band_of(20), AIOverlay.band_of(21), AIOverlay.band_of(50),
+			AIOverlay.band_of(51), AIOverlay.band_of(90),
+			AIOverlay.band_of(91)], [30, 31, 31, 32, 33, 34])
+	# docs/23 section 5.4 -- two, and not the one the obvious reading gives.
+	# The native capture's ten probed targets contain no height step of
+	# exactly 2, so it does not pin this either.
+	h.equal("const.approach_climb_max", AIApproach.CLIMB_MAX, 2)
+
+
+## `0x46ACCD` -- the one thing `spores_filtered` adds, on a scene built for it.
+##
+## The corpus has 806 situations in which a neutral prop stands beside a
+## reachable target and `ai_runtime.py` counts them; the five missions in the
+## cache have none, so this builds one, the way docs/94 built a scene for
+## reaction fire and this stage built one for order 3.
+func _spores(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("spores.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slots: PackedInt32Array = world.unit_slots()
+	h.check("spores.the_map_has_units", slots.size() >= 2,
+		"%d units" % slots.size())
+	if slots.size() < 2:
+		return
+	# Two neighbouring cells: the target, and a prop beside it.
+	var target: UnitState = UnitState.from_view(world.unit_view(slots[0]))
+	var units: Dictionary = {}
+	var state: MapState = world.state
+	var tx: int = target.x
+	var ty: int = target.y
+	var nx: int = tx + 1 if state.in_bounds(tx + 1, ty) else tx - 1
+	var neutral: UnitState = UnitState.from_view(world.unit_view(slots[1]))
+	neutral.player = Combat.PLAYER_NEUTRAL
+	neutral.x = nx
+	neutral.y = ty
+	units[slots[0]] = target
+	units[slots[1]] = neutral
+	# The world is freshly loaded for this suite and is not shared, so the two
+	# cells are set on it directly.
+	state.set_unit(state.index_of(tx, ty), slots[0])
+	state.set_unit(state.index_of(nx, ty), slots[1])
+
+	var unsupported: Array[String] = []
+	var cells: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SPORES_FILTERED[0], tx, ty, unsupported)
+	h.equal("spores.pattern_is_simulated", unsupported, [] as Array[String])
+	var stamped: Array[String] = []
+	for cell: PackedInt32Array in cells:
+		stamped.append("%d,%d" % [cell[0], cell[1]])
+	h.check("spores.the_aim_cell_is_stamped", stamped.has("%d,%d" % [tx, ty]),
+		", ".join(stamped))
+	h.equal("spores.the_neutral_neighbour_is_not",
+		stamped.has("%d,%d" % [nx, ty]), false,
+		"docs/22 section 7.2: the owner test is what the family adds")
+	# And with the same prop owned by anyone else, it *is* stamped -- otherwise
+	# the check above would pass on an implementation that stamps nothing.
+	neutral.player = UnitState.PLAYER_ALIEN
+	cells = Combat.mark_cells(state, units, Combat.SPORES_FILTERED[0], tx, ty,
+		unsupported)
+	var again: Array[String] = []
+	for cell: PackedInt32Array in cells:
+		again.append("%d,%d" % [cell[0], cell[1]])
+	h.check("spores.a_non_neutral_neighbour_is_stamped",
+		again.has("%d,%d" % [nx, ty]), ", ".join(again))
 
 
 func _case(h: TestHarness, case: Dictionary) -> void:

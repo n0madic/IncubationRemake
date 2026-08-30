@@ -551,6 +551,16 @@ runs; there is no value here to recover. A remake that drops the three terms
 entirely is exactly equivalent whenever the two bytes fall outside the map, and
 otherwise differs only in near-ties along one arbitrary row and column.
 
+**Measured, once, inside a live process.** `ai_gold.py`'s `cover` phase reads
+the same two bytes on `_C_140` and gets **168 and 3**. So this run is the "one
+of them is not ≥ 40" case the paragraph above allows for: the bonus is +10 on
+every candidate except the single map row `y == 3`, where it is +5. The remake
+implements the constant and is exact off that row, which is what
+[`95` §5](95-slice-3-report.md) records. The number is an observation of one
+allocation on one host and not a property to rely on — the point of the
+paragraph is unchanged, and it is now an observation rather than only a
+deduction.
+
 **The approach cell — `0x0040ADC0(target, *best, myUnitIndex)`.** Once a target
 cell is chosen the unit has to stand *next to* it. This scans the target's eight
 neighbours — and, when `unitInfo[u->type].size == 1` (a large unit), the eight
