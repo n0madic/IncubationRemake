@@ -691,12 +691,25 @@ def emit_cases(root: Path, out: Path, tables: BalanceTables,
         result = ai.run_turn(ctx, ai.PLAYER_COMPUTER)
         after = [_unit_case(u) for u in
                  (ctx.world.units[s] for s in sorted(ctx.world.units))]
+        events = [{k: e[k] for k in
+                   ("kind", "slot", "x", "y", "tx", "ty", "detail", "note")}
+                  for e in result.to_dict()["events"]]
         cases.append({
             "mission": name,
             "seed": 1.0,
             "units_before": before,
             "units_after": after,
-            "result": result.to_dict(),
+            # The **arguments**, not only the names: docs/94 §8 records what
+            # comparing event names alone cost the last time.  The nested
+            # payloads are deliberately not here -- an `AttackResult` is
+            # already diffed by `test_combat_native.gd`, and carrying it twice
+            # would make this fixture a copy of that one.
+            "events": events,
+            "sweeps": result.sweeps,
+            "counters": result.counters,
+            "orders_seen": {str(k): v for k, v in
+                            sorted(result.orders_seen.items())},
+            "seed_after": result.seed_after,
         })
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"schema": CASES_SCHEMA, "cases": cases},
@@ -706,13 +719,29 @@ def emit_cases(root: Path, out: Path, tables: BalanceTables,
 
 
 def _unit_case(unit: combatmod.CombatUnit) -> dict[str, Any]:
-    return {"slot": unit.slot, "x": unit.x, "y": unit.y, "hp": unit.hp,
-            "mp": unit.mp, "facing": unit.facing, "acted": unit.acted,
-            "action_state": unit.action_state, "heat": unit.heat,
-            "ammo": unit.ammo, "order": unit.order,
-            "order_param": unit.order_param, "player": unit.player,
-            "armour_front": unit.armour_front,
-            "armour_rear": unit.armour_rear}
+    """One unit record, complete enough to **rebuild** it on the other side.
+
+    The GDScript suite applies this over the world it loaded from the cache
+    before it runs anything, so the two implementations start from bit-identical
+    rosters rather than from two loaders that agree by coincidence.  Everything
+    ``inclib.ai`` reads or writes is here; nothing that is presentation is.
+    """
+    return {
+        "slot": unit.slot, "type_id": unit.type_id, "player": unit.player,
+        "x": unit.x, "y": unit.y, "hp": unit.hp, "mp": unit.mp,
+        "fp": unit.fp, "facing": unit.facing, "acted": unit.acted,
+        "action_state": unit.action_state, "heat": unit.heat,
+        "ammo": unit.ammo, "malfunction": unit.malfunction,
+        "absorber": unit.absorber, "visibility": unit.visibility,
+        "armour_front": unit.armour_front, "armour_rear": unit.armour_rear,
+        "order": unit.order, "order_param": unit.order_param,
+        "order2": unit.order2, "order2_param": unit.order2_param,
+        "group": unit.group, "weapon": unit.weapon, "ticket": unit.ticket,
+        "walked": unit.walked, "turn_start_x": unit.turn_start_x,
+        "turn_start_y": unit.turn_start_y,
+        "equipment": sorted(unit.equipment_ids),
+        "skills": list(unit.skills),
+    }
 
 
 # ---------------------------------------------------------------------------

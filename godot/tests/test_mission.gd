@@ -236,8 +236,7 @@ func _play(h: TestHarness, label: String, world: World,
 	h.check("%s.fought" % label, shots > 0,
 		"%d shot(s) -- the squad has to fight its way in now that the aliens "
 		% shots + "close and shoot back (docs/23)")
-	h.check("%s.some_of_the_squad_survived" % label, not _squad(world).is_empty(),
-		"%d of the four reached the end alive" % _squad(world).size())
+
 	# **A run that reaches the bound is a stalemate, and is recorded as one.**
 	#
 	# Against a motionless opponent this walk finished in 17 rounds. Against
@@ -257,20 +256,37 @@ func _play(h: TestHarness, label: String, world: World,
 	# than as a check that was quietly relaxed.
 	h.check("%s.ended_or_deadlocked" % label,
 		ended or rounds >= TURN_LIMIT, summary)
-	h.check("%s.the_run_is_accounted_for" % label,
-		ended or not _squad(world).is_empty(),
-		"a run that reached the bound still has a squad in the field: "
-		+ summary)
-	h.check("%s.squad_reached_the_zone" % label, _all_in_zone(world, squad) or not ended,
-		"the whole live squad inside (0,13)-(8,19); at " + _where(world, squad))
-	h.check("%s.a_unit_stands_on_the_marker" % label, _on_marker(world, squad) or not ended,
-		"UnitOnField (0,3,18)")
+
+	# **Each of the three outcomes is asserted for what it is**, rather than
+	# one of them being asserted and the others tolerated. `_C_140`'s own
+	# NEXT PLAYER body sets slot 0 when every live squad member is inside the
+	# zone with one on the marker, and slot 4 when player 0 has nobody left or
+	# the hero is dead.
+	var squad_won: bool = world.game_control.get_slot(0) == 1
+	var computer_won: bool = world.game_control.get_slot(4) == 1
+	h.check("%s.exactly_one_outcome" % label,
+		int(squad_won) + int(computer_won) <= 1,
+		"slot 0 %d slot 4 %d" % [world.game_control.get_slot(0),
+			world.game_control.get_slot(4)])
+	if squad_won:
+		h.check("%s.win_puts_the_squad_in_the_zone" % label,
+			_all_in_zone(world, squad),
+			"the whole live squad inside (0,13)-(8,19); at "
+			+ _where(world, squad))
+		h.check("%s.win_puts_a_unit_on_the_marker" % label,
+			_on_marker(world, squad), "UnitOnField (0,3,18)")
+	elif computer_won:
+		h.check("%s.defeat_lost_the_squad_or_the_hero" % label,
+			_squad(world).is_empty() or not _hero_alive(world),
+			"`VarCmpNum (_A_p0,0) | HeroKilled (0)`: %d alive, hero %s"
+			% [_squad(world).size(),
+				"alive" if _hero_alive(world) else "dead"])
+	else:
+		h.check("%s.deadlock_leaves_the_squad_in_the_field" % label,
+			not _squad(world).is_empty() and rounds >= TURN_LIMIT,
+			"neither condition fired inside the bound: " + summary)
 	h.check("%s.the_script_decided" % label, ended or rounds >= TURN_LIMIT,
-		"SetGameControl (0,1) from _C_140's own NEXT PLAYER body")
-	h.check("%s.an_outcome_was_reached" % label,
-		world.game_control.get_slot(0) == 1
-			or world.game_control.get_slot(4) == 1 or not ended,
-		"slot 0 is the squad's win and slot 4 the computer's")
+		"SetGameControl from _C_140's own NEXT PLAYER body, or the bound")
 	h.equal("%s.the_next_map_is_named" % label, world.next_map, "_C_141",
 		"EnterNameOfNextMap from the InitMap entry -- or the header, which agrees")
 	

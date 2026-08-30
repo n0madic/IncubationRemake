@@ -53,14 +53,17 @@ from inclib.binio import ParseError  # noqa: E402
 
 LOG = logging.getLogger("remake_convert")
 
-#: The missions the two slices need (docs/92 §10, docs/93, docs/94).  `_C_140`
+#: The missions the three slices need (docs/92 §10, docs/93, docs/94,
+#: docs/95).  `_C_132` is the third slice's worst case -- 39 live aliens on a
+#: 40x40 map, the largest product of "aliens x cells" in the corpus -- and is
+#: what the AI replay cases and the turn measurement are taken on.  `_C_140`
 #: is the second slice's demonstration mission -- the first playable one, whose
 #: squad and aliens are both in the `.lev` and which is *won by moving*;
 #: `_C_115` is what the first slice rendered; `_C_141` is where the native
 #: oracle is taken, because it is the mission the slot-6 save is on; `_C_100`
 #: is the second entry that keeps determinism honest across two maps sharing a
 #: world set and scene with `_C_141`.
-SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100"]
+SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100", "_C_132"]
 
 #: Files the converter reads that are not reached through a mission, but whose
 #: identity the manifest has to carry.

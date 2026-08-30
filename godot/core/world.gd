@@ -134,6 +134,36 @@ func has_unit(slot: int) -> bool:
 	return _units.has(slot)
 
 
+## The unit dictionary, for the one consumer that needs the objects rather
+## than views: [AIContext], which is `core` and mutates them by design.
+##
+## Not a leak of the isolation rule -- `core/ai/` is inside `core` and
+## `tests/test_isolation.gd` sweeps it with everything else. It is named
+## `_for_ai` so a `game` file reaching for it reads as obviously wrong.
+func units_for_ai() -> Dictionary:
+	return _units
+
+
+## Write a case record over one unit, field by field.
+##
+## The one writer of unit state that is not a command, and it exists for the
+## case suites: `test_ai.gd` applies a roster the Python model produced so the
+## two implementations start from bit-identical state rather than from two
+## loaders that happen to agree. Absent keys are left alone, so a case can name
+## only what it is about.
+func apply_unit_record(slot: int, record: Dictionary) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	var was: int = state.index_of(unit.x, unit.y)
+	unit.apply_record(record)
+	if state.unit_at(was) == slot and was != state.index_of(unit.x, unit.y):
+		state.set_unit(was, MapState.NO_UNIT)
+	if unit.hp > 0:
+		state.set_unit(state.index_of(unit.x, unit.y), slot)
+	return true
+
+
 ## A fresh dictionary of scalars, never the [UnitState] itself.
 func unit_view(slot: int) -> Dictionary:
 	if not _units.has(slot):

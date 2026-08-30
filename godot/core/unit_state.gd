@@ -213,6 +213,37 @@ func is_hidden() -> bool:
 	return visibility == VISIBILITY_HIDDEN
 
 
+## Write the fields a case record names, leaving the rest alone.
+##
+## Paired with [method World.apply_unit_record]; see there for why it exists.
+## The key list is explicit rather than reflective so a field that reaches the
+## simulation without reaching a case is a compile-time question and not a
+## silent omission.
+func apply_record(record: Dictionary) -> void:
+	for key: String in RECORD_FIELDS:
+		if not record.has(key):
+			continue
+		set(key, DictRead.as_int(record[key]))
+	if record.has("equipment"):
+		var ids: PackedInt32Array = PackedInt32Array()
+		for value: Variant in DictRead.as_array(record["equipment"]):
+			ids.append(DictRead.as_int(value))
+		equipment = ids
+	if record.has("skills"):
+		var values: PackedInt32Array = PackedInt32Array()
+		for value: Variant in DictRead.as_array(record["skills"]):
+			values.append(DictRead.as_int(value))
+		skills = values
+
+
+## The integer fields [method apply_record] will write.
+const RECORD_FIELDS: Array[String] = ["type_id", "player", "x", "y", "hp",
+	"mp", "fp", "facing", "acted", "action_state", "heat", "ammo",
+	"malfunction", "absorber", "visibility", "armour_front", "armour_rear",
+	"order", "order_param", "order2", "order2_param", "group", "weapon",
+	"ticket", "walked", "turn_start_x", "turn_start_y"]
+
+
 func has_equipment(equip_id: int) -> bool:
 	return equipment.has(equip_id)
 

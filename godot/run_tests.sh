@@ -66,6 +66,13 @@ rm -f "$HERE/generated/turn/handover.json"
     && cp "$REPO/tests/fixtures/turn/cases_handover.json" \
           "$HERE/generated/turn/handover.json"
 
+# The AI replay cases, on the same terms.
+mkdir -p "$HERE/generated/ai"
+rm -f "$HERE/generated/ai/ai.json"
+[ -f "$REPO/tests/fixtures/ai/cases_ai.json" ] \
+    && cp "$REPO/tests/fixtures/ai/cases_ai.json" \
+          "$HERE/generated/ai/ai.json"
+
 # The LCL replay cases, on the same terms again.
 mkdir -p "$HERE/generated/lcl"
 rm -f "$HERE/generated/lcl/lcl.json"

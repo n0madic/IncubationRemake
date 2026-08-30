@@ -48,6 +48,14 @@ func event_dicts() -> Array[Dictionary]:
 	return out
 
 
+## [member orders_seen] with string keys, which is how a JSON case carries it.
+func orders_seen_as_strings() -> Dictionary:
+	var out: Dictionary = {}
+	for key: Variant in orders_seen:
+		out[str(DictRead.as_int(key))] = DictRead.as_int(orders_seen[key])
+	return out
+
+
 func to_dict() -> Dictionary:
 	var orders: Dictionary = {}
 	var keys: Array = orders_seen.keys()

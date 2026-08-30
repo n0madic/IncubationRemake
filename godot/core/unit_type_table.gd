@@ -19,6 +19,18 @@ const HEIGHT_UNIT: int = 160
 var _rows: Dictionary = {}
 
 
+## **This narrows, and the narrowing is the loading boundary.**
+##
+## `JSON.parse_string` makes a `float` of every number, so each column is
+## converted once here rather than at every read (CLAUDE.md; docs/92 section
+## 7). The cost is that a column absent from this list is absent from the
+## table whatever the cache holds -- `armour_front` was, and
+## [method UnitTypeTable.armour_front] answered its fallback of 0 for every
+## type while `tables/balance.json` carried the real value all along. It
+## surfaced as two wrong bytes on the two units that fired in an AI turn.
+##
+## `test_cache.gd` checks the published rows against the accessors' column
+## list; a column added to an accessor has to be added **here** as well.
 static func from_rows(rows: Array) -> UnitTypeTable:
 	var table: UnitTypeTable = UnitTypeTable.new()
 	for row: Variant in rows:
@@ -31,6 +43,8 @@ static func from_rows(rows: Array) -> UnitTypeTable:
 			"size": DictRead.as_int(record["size"]),
 			"species": DictRead.as_int(record["species"]),
 			"height": DictRead.as_int(record["height"]),
+			"armour_front": DictRead.as_int(record.get("armour_front", 0)),
+			"armour_rear": DictRead.as_int(record.get("armour_rear", 0)),
 			"model": DictRead.as_string(record["model"]),
 			"description": DictRead.as_string(record["description"]),
 		}
