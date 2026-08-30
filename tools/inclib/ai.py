@@ -239,6 +239,11 @@ ARMOUR_EQUIPMENT = ((13, 6, 4), (12, 5, 0), (11, 4, 2), (10, 3, 2))
 #: The unit-type armour column value that means "derive it from equipment".
 ARMOUR_DERIVED = 255
 
+#: What the closing sweep of ``aAISystemControl`` tags its ``endUnitTurn``
+#: events with, so a check can tell the turn's own calls apart from the
+#: handlers'.
+CLOSING_SWEEP = "closing sweep"
+
 #: A hard ceiling on the ``repeat`` re-sweeps of one level.  The engine has
 #: none: ``repeat`` is set whenever a unit ended a sweep with zero movement
 #: points, and a sweep that changes nothing clears it, so the loop terminates
@@ -906,29 +911,9 @@ def fire(ctx: AIContext, unit: CombatUnit, mode: int = FIRE_ANY,
     build_target_overlay(ctx, unit)
     prune_objects(ctx, False)
 
-    best: int | None = None
-    best_score = 0
-    for index, marker in enumerate(ctx.state):
-        if marker < TARGET_MARKER_MIN or marker > TARGET_MARKER_MAX:
-            continue
-        if mode == FIRE_GROUP:
-            slot = world.unit_at[index]
-            target = world.units.get(slot) if slot >= 0 else None
-            if target is None:
-                # `GetUnitPtr(0xFFFF)` reports "unit id out of area" and the
-                # routine returns FALSE.  Reachable: weapon `special` 6 stamps
-                # the target's cell of *last* turn, which may now be empty.
-                ctx.result.refuse("group fire found a marker on an empty cell")
-                return False
-            if target.group != group:
-                continue
-        elif mode != FIRE_ANY:
-            continue
-        # `s >= bestScore`: **the later cell wins a tie**, and the scan order
-        # is row-major over the whole grid.
-        if marker >= best_score:
-            best = index
-            best_score = marker
+    best, best_score, refused = select_target(ctx, mode, group)
+    if refused:
+        return False
     if best is None:
         return False
     if unit.mp == 0:
@@ -970,6 +955,42 @@ def fire(ctx: AIContext, unit: CombatUnit, mode: int = FIRE_ANY,
                                                     for r in reactions]}))
     unit.armour_front, unit.armour_rear = armour_of(world, unit)
     return True
+
+
+def select_target(ctx: AIContext, mode: int,
+                  group: int) -> tuple[int | None, int, bool]:
+    """``0x0040A440``'s middle stage: the numerically largest marker.
+
+    Returns ``(cell index or None, marker, refused)``.  Two properties are
+    checks of their own in ``ai_runtime.py`` rather than comments here:
+    acceptance is ``s >= bestScore``, so **the later cell wins a tie**, and the
+    scan is row-major over the whole grid, so "later" means "further down and
+    to the right".  There is no weighting by the target's health, threat or
+    value: the AI always shoots at its highest hit chance.
+    """
+    world = ctx.world
+    best: int | None = None
+    best_score = 0
+    for index, marker in enumerate(ctx.state):
+        if marker < TARGET_MARKER_MIN or marker > TARGET_MARKER_MAX:
+            continue
+        if mode == FIRE_GROUP:
+            slot = world.unit_at[index]
+            target = world.units.get(slot) if slot >= 0 else None
+            if target is None:
+                # `GetUnitPtr(0xFFFF)` reports "unit id out of area" and the
+                # routine returns FALSE.  Reachable: weapon `special` 6 stamps
+                # the target's cell of *last* turn, which may now be empty.
+                ctx.result.refuse("group fire found a marker on an empty cell")
+                return None, 0, True
+            if target.group != group:
+                continue
+        elif mode != FIRE_ANY:
+            continue
+        if marker >= best_score:
+            best = index
+            best_score = marker
+    return best, best_score, False
 
 
 def fire_until_empty(ctx: AIContext, unit: CombatUnit, mode: int = FIRE_ANY,
@@ -1244,7 +1265,8 @@ def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
 # 0x0040B250, 0x0047A810, 0x0040A710
 # ---------------------------------------------------------------------------
 
-def end_unit_turn(ctx: AIContext, unit: CombatUnit) -> bool:
+def end_unit_turn(ctx: AIContext, unit: CombatUnit,
+                  note: str = "") -> bool:
     """``0x0040B380`` -- face a direction, then zero the movement points.
 
     The facing comes from ``0x0047A8E0(x, y, 2)``, which is not modelled: it
@@ -1257,7 +1279,7 @@ def end_unit_turn(ctx: AIContext, unit: CombatUnit) -> bool:
         return False
     ctx.result.refuse("0x0047A8E0's end-of-turn facing is not modelled")
     unit.mp = 0
-    ctx.emit(AIEvent("end_unit_turn", unit.slot, unit.x, unit.y))
+    ctx.emit(AIEvent("end_unit_turn", unit.slot, unit.x, unit.y, note=note))
     return True
 
 
@@ -1751,7 +1773,7 @@ def run_turn(ctx: AIContext, player: int = PLAYER_COMPUTER) -> AITurnResult:
             continue
         if unit.player != player or unit.mp == 0:
             continue
-        end_unit_turn(ctx, unit)
+        end_unit_turn(ctx, unit, CLOSING_SWEEP)
     result.seed_after = ctx.world.rng.seed
     return result
 
