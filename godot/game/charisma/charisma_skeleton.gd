@@ -29,15 +29,27 @@ extends RefCounted
 
 ## `StdModel`'s per-instance placement, through its `"StandardModel"` interface
 ## (`0x0049FC2D` GetFlag, `0x0049FC6A` GetScale). The constructor at
-## `0x0049ED2C` leaves the flag 0 and the scale `(1, 1, 1)`, and the owning
-## animation's offset (`0x0049C5AC`) is zero. Nothing in a shipped `.cho` or
-## `.cha` can change either, so these are the values the whole corpus runs
-## with -- they are named rather than folded away because the engine does
-## multiply and add by them, and a mission that set them would need them.
+## `0x0049ED2C` leaves the flag 0 and the scale `(1, 1, 1)`, and nothing in a
+## shipped `.cho` or `.cha` can change it.
 const MODEL_SCALE: Vector3 = Vector3(1.0, 1.0, 1.0)
-const ANIM_OFFSET: Vector3 = Vector3.ZERO
 
 var _model: CharismaModel = null
+## `ownerAnimation.GetOffset()` (`0x0049C5AC`) -- **the top-level bone's own
+## bind translation**, not the zero its constructor leaves.
+##
+## docs/40 section 6.2 establishes the branch from the code and leaves what the
+## offset holds open, because nothing in a `.cho` or a `.cha` writes it: it is
+## "set, if at all, by the game". With zero, an idle animation puts a marine's
+## feet **1.03 m below the floor** -- which is exactly what the first build of
+## this slice looked like, every unit waist-deep in the ground. With the root's
+## bind translation, `P0_001` under `P0_S0_000` lands at -0.1 world units, the
+## same place its bind pose does; across every pairing the selectors can
+## produce the median is -0.1 for idle and fire and +6.5 cm for the walk,
+## which is a walk cycle lifting.
+##
+## So the top-level bone ends up at `bind + track`, where an ordinary bone ends
+## up -- the branch is real and on shipped data it cancels.
+var _offset: Vector3 = Vector3.ZERO
 ## Bone name -> its 16-float local matrix.
 var _local: Dictionary[String, PackedFloat64Array] = {}
 ## Bone name -> its 16-float world matrix.
@@ -52,6 +64,7 @@ static func pose(model: CharismaModel, clip: CharismaClip,
 		time: float) -> CharismaSkeleton:
 	var out: CharismaSkeleton = CharismaSkeleton.new()
 	out._model = model
+	out._offset = model.animation_offset()
 	for bone: String in model.bones:
 		out._local[bone] = out._local_of(model, clip, bone, time)
 	for bone: String in model.bones:
@@ -70,9 +83,9 @@ func _local_of(model: CharismaModel, clip: CharismaClip, bone: String,
 		var sampled: Vector3 = position.sample_vector(time)
 		if model.is_top_level(bone):
 			translation = Vector3(
-				sampled.x * MODEL_SCALE.x + ANIM_OFFSET.x,
-				sampled.y * MODEL_SCALE.y + ANIM_OFFSET.y,
-				sampled.z * MODEL_SCALE.z + ANIM_OFFSET.z)
+				sampled.x * MODEL_SCALE.x + _offset.x,
+				sampled.y * MODEL_SCALE.y + _offset.y,
+				sampled.z * MODEL_SCALE.z + _offset.z)
 		else:
 			translation += sampled
 

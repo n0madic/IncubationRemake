@@ -103,6 +103,10 @@ SKELETON_TO_WORLD = 16
 #: the claim is made about the ones that stand, and named.
 GROUNDED_MODELS = ("P0_000", "P0_003", "P1_000", "P1_003")
 GROUND_TOLERANCE = 1.0
+#: How far an *animated* body's lowest vertex may sit below the ground, in
+#: world units.  Looser than the bind-pose bound because a clip legitimately
+#: shifts weight; 160 is 10 cm, and the bug this catches was **1650**.
+ANIMATED_GROUND_TOLERANCE = 160.0
 
 #: The schema of the pose case file the Godot suite replays.
 POSE_SCHEMA = "incubation.charisma-pose/1"
@@ -294,7 +298,9 @@ def _check_meshes(ck: Checker, tables: SelectorTables, root: str,
               + ("" if not absent else f"; short: {absent}"))
 
 
-def _check_scale(ck: Checker, root: str, models: dict[str, str]) -> None:
+def _check_scale(ck: Checker, root: str, tables: SelectorTables,
+                 models: dict[str, str],
+                 animations: dict[str, str]) -> None:
     """The bone-to-mesh scale, measured off feet touching the ground.
 
     A body assembled without it is a 10 cm pile of 30 cm parts, and nothing
@@ -363,6 +369,48 @@ def _check_scale(ck: Checker, root: str, models: dict[str, str]) -> None:
              all(abs(v) > GROUND_TOLERANCE for v in neighbours.values()),
              "closest miss %.1f world units"
              % min(abs(v) for v in neighbours.values()))
+
+    # **The bind pose is not enough.**  The check above passed while every
+    # animated body stood a metre deep in the floor, because the offset
+    # `ownerAnimation.GetOffset()` runs with is not the zero the descriptor
+    # carries (docs/40 §6.2, and `inclib.pose.animation_offset`).  A standing
+    # unit is a unit playing its *idle*, so that is what is measured.
+    animated: dict[str, float] = {}
+    for name in GROUNDED_MODELS:
+        model_path = models.get(name)
+        if model_path is None:
+            continue
+        model = charisma.parse_model_file(model_path)
+        for selector in ("idle",):
+            clip_names = {o.name
+                          for key, outcomes in tables.tables[selector].items()
+                          for o in outcomes
+                          if o.name and name in {b.name
+                                                 for b in tables.lookup("model", key)
+                                                 if b.name}}
+            for clip_name in sorted(clip_names):
+                clip_path = animations.get(clip_name)
+                if clip_path is None:
+                    continue
+                clip = charisma.parse_animation_file(clip_path)
+                worst = 0.0
+                for step in range(5):
+                    pose = pose_model(model, clip, clip.duration * step / 4.0)
+                    joints = pose.joints(include_hidden=True)
+                    low = [SKELETON_TO_WORLD * joints[part.name][2]
+                           + box(part.mesh)[0][2]
+                           for part in model.parts
+                           if part.mesh and part.name in joints
+                           and box(part.mesh) is not None]
+                    if low:
+                        worst = min(worst, min(low)) if step else min(low)
+                animated[f"{name}/{clip_name}"] = worst
+    sunk = {k: round(v, 1) for k, v in animated.items()
+            if v < -ANIMATED_GROUND_TOLERANCE}
+    ck.expect("an idling body stands on the ground too", sunk, {},
+              f"{len(animated)} (body, idle) pairs, lowest vertex "
+              + ", ".join(f"{k.split('/')[0]} {v:+.1f}"
+                          for k, v in sorted(animated.items())))
 
 
 def _check_track_binding(ck: Checker, tables: SelectorTables, root: str,
@@ -581,10 +629,16 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
                     if not math.isfinite(value):
                         nonfinite.append(f"{model_name}/{anim_name}:{node.name}")
                         break
-            # docs/40 §6.2: where the top-level bone has a Position track, its
-            # local translation is that track's value outright -- the bind
-            # translation is not added.  Stated as an equality against the
-            # sampled value, so the branch is checked and not just executed.
+            # docs/40 §6.2 plus `inclib.pose.animation_offset`: the top-level
+            # bone's local translation is the sampled track value **plus the
+            # animation offset**, and that offset is the bone's own bind
+            # translation.  So the value equals what an ordinary bone would
+            # get -- the branch is real and on shipped data it cancels.
+            #
+            # This check can therefore no longer tell the two apart, and says
+            # so rather than implying otherwise.  What it still catches is the
+            # offset going missing, which is the bug that put every animated
+            # body a metre into the floor.
             for name in tops:
                 if (name, CHANNEL_POSITION) not in tracks:
                     continue
@@ -592,7 +646,8 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
                 movement = next(m for m in anim.movements
                                 if m.target == name
                                 and m.channel == CHANNEL_POSITION)
-                want = sample_vector(movement, time)
+                sampled = sample_vector(movement, time)
+                want = tuple(sampled[i] + pose.offset[i] for i in range(3))
                 got = mat_translation(pose.local[name])
                 if all(abs(got[i] - want[i]) < 1e-6 for i in range(3)):
                     absolute_root += 1
@@ -604,10 +659,12 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
     ck.expect("exactly one top-level bone per pose",
               sorted(top_level_counts), [1],
               f"{posed} poses")
-    ck.expect("top-level translation comes from the track",
+    ck.expect("top-level translation is track plus offset",
               absolute_root, root_tracked,
               f"{absolute_root}/{root_tracked} poses whose root has a "
-              f"Position track")
+              f"Position track; the offset is that bone's own bind "
+              f"translation, so the value equals an ordinary bone's and the "
+              f"branch cancels")
 
 
 def _check_hold_rule(ck: Checker, models: dict[str, str],
@@ -731,7 +788,7 @@ def run_check(root: str) -> int:
     _check_guards(ck, tables, root)
     _check_unit_types(ck, tables, root)
     _check_meshes(ck, tables, root, models)
-    _check_scale(ck, root, models)
+    _check_scale(ck, root, tables, models, animations)
     _check_track_binding(ck, tables, root, models, animations)
     _check_reachability(ck, tables, root)
     _check_pose(ck, tables, models, animations)

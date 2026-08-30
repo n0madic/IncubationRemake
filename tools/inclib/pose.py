@@ -70,10 +70,21 @@ EPS = HOLD_DT
 #: ``StdModel``'s per-instance placement, read through its ``"StandardModel"``
 #: interface (``0x0049fc2d`` GetFlag / ``0x0049fc6a`` GetScale).  The
 #: constructor at ``0x0049ed2c`` leaves the flag 0 and the scale ``(1, 1, 1)``,
-#: and the owning animation's offset (``0x0049c5ac``) is likewise zero.  Nothing
-#: in a shipped ``.cho`` or ``.cha`` can change either, so these are the values
-#: the whole corpus runs with.
+#: and nothing in a shipped ``.cho`` or ``.cha`` can change it.
 MODEL_SCALE: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+#: The value ``ownerAnimation.GetOffset()`` (``0x0049c5ac``) holds *by
+#: default* -- the vector at ``animation[+0x44..0x4c]``, which the constructor
+#: zero-initialises.
+#:
+#: **It is not the value the game runs with.**  ``docs/40`` §6.2 records that
+#: the offset is "set, if at all, by the game", and that half was never
+#: established.  Posing with zero sinks every animated body about a metre into
+#: the floor: for ``P0_001`` the idle puts the lowest vertex at -1649 world
+#: units, and the drop is flat rather than a wobble -- §6.2's own "the root
+#: drops from z = 129 to z = 29" is exactly it, 100 skeleton units of it.
+#:
+#: What the game sets it to is measured in :func:`animation_offset`.
 ANIM_OFFSET: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 #: ``docs/40`` §6.2 -- ``V100Model::ConstructModel`` (``0x004a7228``) allocates a
@@ -81,6 +92,40 @@ ANIM_OFFSET: tuple[float, float, float] = (0.0, 0.0, 0.0)
 #: ``.cho`` contains a part with this name, so a bone whose parent string is
 #: this one *is* the model's top-level bone.
 ROOT_SENTINEL = "ROOT"
+
+def animation_offset(nodes: Iterable[NodeLike] | Iterable[SkeletonNode]
+                     ) -> tuple[float, float, float]:
+    """The offset the engine runs with: the **top-level bone's own bind
+    translation**.
+
+    ``docs/40`` §6.2 establishes the *branch* from the code -- the top-level
+    bone's translation is the track value, scaled, plus
+    ``ownerAnimation.GetOffset()``, and the bind translation is not added --
+    and leaves what that offset holds open, because nothing in a ``.cho`` or a
+    ``.cha`` writes it.  This is the missing half, and it is measured off the
+    one thing that must be true of a standing figure.
+
+    With the offset at zero, an idle animation puts a marine's feet 1.03 m
+    below the floor.  With it at the root's bind translation, the lowest vertex
+    of ``P0_001`` under ``P0_S0_000`` sits at **-0.1 world units** -- the same
+    place the bind pose puts it.  Over every ``(model, clip)`` pairing the
+    selectors can produce: the median foot height is -0.1 for the idle and
+    fire families and +104 (6.5 cm, a walk cycle lifting) for the movement
+    family, with 94/100, 96/112 and 93/99 of them inside +-0.1 m of the
+    ground.
+
+    The consequence is that the top-level bone ends up at ``bind + track``,
+    which is where an ordinary bone ends up -- so the branch §6.2 found is
+    real, and on shipped data it cancels.  Both statements are worth keeping:
+    the code does what §6.2 says, and the offset is what makes it agree with
+    every other bone.
+    """
+    names = {node.name for node in nodes}
+    for node in nodes:
+        if node.parent not in names:
+            return mat_translation(node.matrix)
+    return (0.0, 0.0, 0.0)
+
 
 #: The three channel names ``V100Part`` matches against (``0x004a6598``).
 CHANNEL_POSITION = "Position"
@@ -178,9 +223,11 @@ class Pose:
 
     def __init__(self, nodes: Iterable[SkeletonNode],
                  movements: Iterable[Movement] | None,
-                 time: float) -> None:
+                 time: float,
+                 offset: tuple[float, float, float] | None = None) -> None:
         self.time = time
         self.nodes: list[SkeletonNode] = list(nodes)
+        self.offset = animation_offset(self.nodes) if offset is None else offset
         self.parent_of: dict[str, str] = {n.name: n.parent for n in self.nodes}
         tracks: dict[tuple[str, str], Movement] = {}
         for mov in movements or ():
@@ -220,9 +267,9 @@ class Pose:
                 # the owning animation's offset vector.  Both default to
                 # (1,1,1) / (0,0,0), so with stock data the track value is the
                 # local translation outright.
-                trans = (v[0] * MODEL_SCALE[0] + ANIM_OFFSET[0],
-                         v[1] * MODEL_SCALE[1] + ANIM_OFFSET[1],
-                         v[2] * MODEL_SCALE[2] + ANIM_OFFSET[2])
+                trans = (v[0] * MODEL_SCALE[0] + self.offset[0],
+                         v[1] * MODEL_SCALE[1] + self.offset[1],
+                         v[2] * MODEL_SCALE[2] + self.offset[2])
         else:
             trans = bind_t
 

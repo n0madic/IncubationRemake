@@ -66,6 +66,16 @@ func is_top_level(bone: String) -> bool:
 	return not parent_of.has(parent_of.get(bone, ""))
 
 
+## The offset `ownerAnimation.GetOffset()` runs with: the top-level bone's own
+## bind translation. See [CharismaSkeleton]'s `_offset` for why it is that and
+## not the zero the descriptor carries.
+func animation_offset() -> Vector3:
+	for bone: String in bones:
+		if is_top_level(bone):
+			return CharismaTrack.mat_translation(bind_matrix(bone))
+	return Vector3.ZERO
+
+
 ## The bind matrix, or the identity for a bone this model does not have.
 func bind_matrix(bone: String) -> PackedFloat64Array:
 	if not bind_of.has(bone):
