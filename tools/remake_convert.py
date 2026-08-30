@@ -531,6 +531,20 @@ def check_bodies(c: Checker, root: Path, cache_dir: Path,
     c.expect("bodies.keys_round_trip", mismatches, 0,
              f"{total} floats of {sample_anim} recovered bit-exactly")
 
+    # The *single*-value encoding, which the blob check does not touch: a note's
+    # time and a clip's duration are `u32` bit patterns rather than base64, so
+    # that a document stays greppable. A mutation test found this uncovered.
+    def from_bits(bits: int) -> float:
+        return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+    c.expect("bodies.duration_round_trip",
+             from_bits(document["duration_bits"]), animation.duration,
+             f"{sample_anim} is {animation.duration:g} key-time units")
+    note_times = [from_bits(n["time_bits"]) for n in document["notes"]]
+    c.expect("bodies.note_times_round_trip", note_times,
+             [n.time for n in animation.notes],
+             f"{len(note_times)} note(s)")
+
     size = sum(path.stat().st_size
                for directory in ("models", "animations")
                for path in (cache_dir / directory).rglob("*.json")) \

@@ -506,6 +506,20 @@ original had no field for it and reset the view on load
 ([`11` §5.6](11-save-game-format.md)), so keeping it is a free improvement
 rather than an infidelity.
 
+### 7.5.1 The view opens on the squad, not on the middle of the map
+
+`CameraRig.setup` parked the pivot on the centre cell at the mission's authored
+`camera_height`. On `_C_140` the centre cell is inside a support column and the
+authored height is 20 m, which is **above the level's roof** — these maps are
+interiors — so the first frame of the game was a pillar seen through a ceiling.
+The original shows the squad, close.
+
+So the view opens on **one unit's cell** — not the squad's centroid, which is
+not a cell anybody stands on and which on `_C_140` lands inside the wall
+between four marines — at 8 m rather than at the authored maximum. The maximum
+is untouched and the yaw is left to the player. This is where the view starts,
+not a new limit, and it changes no hash.
+
 ### 7.6 Localisation — the seam stays, and Russian is planned
 
 Only `English` ships in the GOG release, but **a licensed Russian release is
@@ -618,6 +632,36 @@ research targets are the PBM turn-exchange `.sav` variant and
 `aOutputMissionObjectsForMultiPlayer`, the original state-sync boundary.
 
 ---
+
+### 7.10 Animation plays at 30 fps, and that is a choice
+
+[`40` §4.8](40-charisma-model-animation.md) proves 30 fps for cutscenes and
+proves that gameplay advanced key time by one unit **per rendered frame**,
+under a nominal 20 fps cap whose epoch handling roughly doubled it. The
+original's gameplay rate was therefore whatever the machine managed, and there
+is no number to recover.
+
+The remake fixes **30**, in one named constant
+(`CharismaState.FRAMES_PER_SECOND`), and records which of the original's
+numbers that is not. The visible consequence is that a walk cycle plays at a
+steady rate rather than at a 1997 machine's.
+
+Two neighbouring quantities are decisions on the same terms, and are named
+rather than folded into an expression:
+
+* **`WALK_SECONDS_PER_STEP` = 0.16 s per map field.** The clock that matters is
+  still `AIPlayback.STEP_SECONDS`: a walk is told how long it has and fits
+  itself into that window, so `skip()` keeps meaning "stop drawing" rather than
+  "stop simulating".
+* **`M` loops while a unit walks and `S` resumes when nothing else plays.**
+  [`40` §7.2](40-charisma-model-animation.md) marks the playback set-up of
+  `kind` 0 and `kind` 4 UNVERIFIED — the interface slots `+0x44`, `+0x2C` and
+  `+0x34` are not decompiled — so these are chosen, not recovered. `kind == 4`
+  and its one fixed literal `P0_M2_000` are not implemented at all.
+
+What is **not** a choice, and is measured, is the bone-to-mesh scale of 16
+([`40` §5.3](40-charisma-model-animation.md)) and the `BREAK` note that stops a
+combat animation ([`40` §9](40-charisma-model-animation.md)).
 
 ## 8. Standing constraints
 

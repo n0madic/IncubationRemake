@@ -598,6 +598,7 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
                     absolute_root += 1
 
     ck.check("poses computed", posed > 0, f"{posed} frames over {len(pairs)} pairs")
+    _check_hold_rule(ck, models, animations, pairs)
     ck.expect("every bone matrix is finite", len(nonfinite), 0,
               "" if not nonfinite else f"{nonfinite[:4]}")
     ck.expect("exactly one top-level bone per pose",
@@ -607,6 +608,66 @@ def _check_pose(ck: Checker, tables: SelectorTables, models: dict[str, str],
               absolute_root, root_tracked,
               f"{absolute_root}/{root_tracked} poses whose root has a "
               f"Position track")
+
+
+def _check_hold_rule(ck: Checker, models: dict[str, str],
+                     animations: dict[str, str],
+                     pairs: list[tuple[str, str]]) -> None:
+    """A segment of ``HOLD_DT`` frames or less returns a key, not a blend.
+
+    ``docs/40`` §4.4: all five ``GetValue`` implementations compare the segment
+    length against the ``0.25`` at ``0x004B38E0`` first and hand back one of the
+    two keys outright.  5.2 % of the corpus' 896 443 segments are exactly that
+    long, so this is a rule and not a corner.
+
+    It is checked here because a **mutation test said it was not**: setting
+    ``inclib.pose.EPS`` to 1e-9 left every other check in this file green.  The
+    Godot suite catches it, but only because its fixture probes short segments
+    deliberately -- and the fixture is written by this file, so the Python side
+    was resting on the very thing it generates.
+    """
+    probed = 0
+    held = 0
+    blended = 0
+    for model_name, anim_name in pairs:
+        anim_path = animations.get(anim_name)
+        if anim_path is None:
+            continue
+        animation = charisma.parse_animation_file(anim_path)
+        for movement in animation.movements:
+            if movement.key_class not in ("LinearRotationKey",
+                                          "BezierRotationKey"):
+                continue
+            for i in range(len(movement.keys) - 1):
+                k0, k1 = movement.keys[i], movement.keys[i + 1]
+                delta = k1.time - k0.time
+                if not 0.0 < delta <= posemod.EPS:
+                    continue
+                if all(abs(a - b) < 1e-6
+                       for a, b in zip(k0.values, k1.values)):
+                    # The two keys are the same rotation, so holding and
+                    # blending agree and the sample proves nothing.
+                    continue
+                probed += 1
+                # `u = 0.5` is the inclusive boundary of the pick test, so the
+                # engine returns the *first* key exactly.
+                got = posemod.sample_rotation(movement, k0.time + delta * 0.5)
+                want = charisma.quat_to_matrix(k0.values)
+                if all(abs(a - b) < 1e-9 for a, b in zip(got, want)):
+                    held += 1
+                else:
+                    blended += 1
+                if probed >= 200:
+                    break
+            if probed >= 200:
+                break
+        if probed >= 200:
+            break
+    ck.check("short segments exist to hold", probed > 0,
+             f"{probed} segments of <= {posemod.EPS} frames between "
+             f"distinct keys")
+    ck.expect("a short segment returns a key, not a blend", blended, 0,
+              f"{held}/{probed} returned the first key exactly")
 
 
 def emit_pose_cases(root: str, path: str) -> int:
