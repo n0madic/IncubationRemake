@@ -205,14 +205,44 @@ PATTERN_FAMILIES: dict[str, frozenset[int]] = {
     "none": NO_PATTERN_WEAPONS,
 }
 
-#: The families this module actually applies.  The rest are named above and
-#: raise: a model that marked nothing for them would look like a clean miss.
-SIMULATED_FAMILIES = frozenset({
-    "aim_cell_full", "aim_cell_70", "aim_and_neighbours",
-    "neighbours_then_aim_70", "aim_cell_70_null_object",
-    "aim_cell_full_null_object", "aim_cell_forced_hit", "aim_cell_stun",
-    "spores_filtered",
-})
+#: The families this module applies.  **All sixteen**, since the third slice;
+#: ``"none"`` is the arm that reports an error and returns FALSE, which is
+#: modelled as an empty list rather than as a refusal.
+SIMULATED_FAMILIES = frozenset(PATTERN_FAMILIES) - {"none"}
+
+#: ``0x0046AE0B`` (weapons 8, 12, 26, 36) -- the eight neighbours in the order
+#: the **unrolled** handler writes them.  The order is the order the damage
+#: rolls come out in, so it is not a set.
+AIM_NEIGHBOUR_ORDER = ((-1, 0), (-1, -1), (-1, 1), (0, -1),
+                       (1, -1), (1, 1), (1, 0), (0, 1))
+
+#: ``0x0046AA66`` (weapon 40) -- a *different* unrolled eight, and then the aim
+#: cell.  The two differ in their last four entries.
+FLAME_B_NEIGHBOUR_ORDER = ((-1, 0), (-1, -1), (-1, 1), (1, 0),
+                           (1, -1), (1, 1), (0, 1), (0, -1))
+
+#: ``0x0046B1C7`` -- the radius grows with the range of the shot.
+RADIUS_BY_RANGE = ((2, 1), (25, 2))
+RADIUS_BEYOND = 3
+
+#: ``0x0046AED2`` (weapon 44) and ``0x0046AF38`` / ``0x0046B0D8`` (weapons 9
+#: and 11): the two distance limits, and they are **not the same test** --
+#: 44 uses ``< 4`` and the other two ``<= 4``.
+EVERY_UNIT_MAX_DISTANCE = 4
+ARC_SWEEP_MAX_DISTANCE = 4
+
+#: ``0x0046B0D8`` -- the action-point band weapon 11 hunts for; the same
+#: multiplayer victory points ``docs/10`` §4.6 names.
+SPECIAL_OBJECT_BAND = (30, 34)
+
+#: ``0x0046AD9F`` -- the scatter: 18 cells, each offset drawn as
+#: ``aRandom(-2, 5)``, which is ``base`` and ``span`` and not a closed range.
+SCATTER_COUNT = 18
+SCATTER_BASE = -2
+SCATTER_SPAN = 5
+
+#: ``0x0042FF30``'s refusal, mirrored: a hit chance at or above this is "never".
+PATTERN_CHANCE_REFUSED = 254
 
 #: ``0x004308C0``'s direction table (``docs/23`` §8), in the order
 #: ``0x0046ACCD`` sweeps it with ``allowDiagonal`` set.  It is **not**
@@ -1014,28 +1044,46 @@ class AttackResult:
         }
 
 
-def mark_cells(world: CombatWorld, weapon_id: int, tx: int,
-               ty: int) -> list[tuple[int, int, int]]:
-    """``0x0046AA10`` -- the covered cells and their markers, for the simple
-    families.
+def mark_cells(world: CombatWorld, weapon_id: int, tx: int, ty: int,
+               shooter: "CombatUnit | None" = None,
+               rng: ARandom | None = None) -> list[tuple[int, int, int]]:
+    """``0x0046AA10(weapon, aimX, aimY, shooterX, shooterY, shooterFacing)``.
 
-    ``docs/22`` §7.2's remaining seven handlers -- the radius that widens with
-    the shot, the line-of-sight sweep, the whole-map sweep, the 18-cell
-    scatter, the re-centred explosion and the two special-object sweeps --
-    raise instead of marking nothing, so a model that cannot resolve a shot
-    says so.
+    All sixteen handlers, in the order they write their markers -- which is
+    the order the damage rolls come out in, so it is not a set.
+
+    The dispatcher takes **six** arguments and not three.  Its two call sites
+    settle what they are: the shot resolver at ``0x0046B6AC`` pushes the
+    shooter's ``+0x42``, ``+0x43`` and ``+0x46``, and ``aExecuteBomb``
+    (``0x00470318``) passes one value for all three because weapon 36 reads
+    none of them.  ``shooter`` therefore carries the last three, and a family
+    that needs them refuses when it is absent rather than inventing a default.
+
+    Four things a reading of ``docs/22`` §7.2's table alone gets wrong, all
+    cross-checked between the raw listing and Ghidra:
+
+    * **weapons 17 and 22 blast the shooter's own cell**, not the aim cell.
+      Both handlers reload ``ebx``/``ebp`` from the argument slots the
+      prologue overwrote with the *shooter's* cell pointer and coordinates.
+      For ``Explosives`` that is the weapon working as its name says -- a
+      charge goes off where it is planted -- and the aim cell is simply
+      unused;
+    * **weapon 44 is not "every unit on the map"**: it is every unit within
+      ``aGetDistance < 4`` of the aim point, and it stamps each cell with
+      *that cell's* object id rather than the aim cell's;
+    * **weapon 13 falls through** into weapon 42's arm, so the eighteen
+      scattered cells are followed by the aim cell at ``0x51``;
+    * the two unrolled eight-neighbour handlers write their neighbours in
+      **two different orders**, and neither is ``dy``-then-``dx``.
     """
     family = pattern_family(weapon_id)
     if family == "none":
         return []
-    if family not in SIMULATED_FAMILIES:
+    if family not in SIMULATED_FAMILIES:                      # pragma: no cover
         raise CombatError(
             f"weapon {weapon_id} uses target pattern {family!r}, which this "
             f"model does not simulate; docs/22 section 7.2 describes it")
 
-    neighbours = [(tx + dx, ty + dy)
-                  for dy in (-1, 0, 1) for dx in (-1, 0, 1)
-                  if (dx or dy) and world.in_bounds(tx + dx, ty + dy)]
     aim_in = world.in_bounds(tx, ty)
     if family in ("aim_cell_full", "aim_cell_full_null_object"):
         return [(tx, ty, MARKER_FULL)] if aim_in else []
@@ -1047,31 +1095,205 @@ def mark_cells(world: CombatWorld, weapon_id: int, tx: int,
         return [(tx, ty, MARKER_STUN)] if aim_in else []
     if family == "aim_and_neighbours":
         out = [(tx, ty, MARKER_FULL)] if aim_in else []
-        return out + [(x, y, MARKER_70) for x, y in neighbours]
-    if family == "spores_filtered":
-        # `0x0046ACCD` -- the aim cell is stamped unconditionally, and each of
-        # the eight neighbours only when it holds a unit whose owner is not
-        # `0xFC`.  Two things a paraphrase of "the same, filtered" loses: an
-        # **empty** neighbour is skipped as well (the `cell->unit == 0xFFFF`
-        # test comes before the owner test), and the sweep runs the stepper's
-        # direction order rather than the unrolled handler's, which is the
-        # order the damage rolls come out in.
-        out = [(tx, ty, MARKER_FULL)] if aim_in else []
-        for dx, dy in STEP_DIRECTIONS:
-            nx, ny = tx + dx, ty + dy
-            if not world.in_bounds(nx, ny):
-                continue
-            slot = world.unit_at[world.index(nx, ny)]
-            if slot < 0:
-                continue
-            occupant = world.units.get(slot)
-            if occupant is None or occupant.player == PLAYER_NEUTRAL:
+        return out + _ring(world, tx, ty, AIM_NEIGHBOUR_ORDER, MARKER_70)
+    if family == "neighbours_then_aim_70":
+        out = _ring(world, tx, ty, FLAME_B_NEIGHBOUR_ORDER, MARKER_70)
+        return out + ([(tx, ty, MARKER_70)] if aim_in else [])
+    if family == "scatter_18":
+        return _scatter(world, tx, ty, rng)
+    if family == "every_unit":
+        return _every_unit(world, tx, ty)
+    if family in ("spores_filtered", "explosives_recentred"):
+        return _self_centred_ring(world, family, _shooter(family, shooter))
+    if family == "radius_by_range":
+        return _radius_by_range(world, tx, ty,
+                                _shooter(family, shooter))
+    if family == "line_of_sight_from_aim":
+        return _arc_sweep(world, tx, ty, _shooter(family, shooter), True)
+    # special_objects
+    return _arc_sweep(world, tx, ty, _shooter(family, shooter), False)
+
+
+def _shooter(family: str, shooter: "CombatUnit | None") -> "CombatUnit":
+    if shooter is None:
+        raise CombatError(
+            f"target pattern {family!r} reads the shooter's position and "
+            f"facing (0x0046AA10's arguments 4, 5 and 6); none was given")
+    return shooter
+
+
+def _ring(world: CombatWorld, x: int, y: int,
+          order: tuple[tuple[int, int], ...],
+          marker: int) -> list[tuple[int, int, int]]:
+    """The eight neighbours of a cell, in a handler's own write order."""
+    return [(x + dx, y + dy, marker) for dx, dy in order
+            if world.in_bounds(x + dx, y + dy)]
+
+
+def _scatter(world: CombatWorld, tx: int, ty: int,
+             rng: ARandom | None) -> list[tuple[int, int, int]]:
+    """``0x0046AD9F`` -- eighteen cells, then the aim cell.
+
+    **The y offset is drawn before the x offset.**  The two ``aRandom`` calls
+    carry source lines 978 and 977 in that order, so the compiler evaluated
+    the arguments right to left and the draw order is the reverse of the
+    source's.  A model that draws x first agrees on the cells and disagrees on
+    every roll that follows in the same turn.
+
+    The draws happen for all eighteen iterations whether or not the cell is on
+    the map: the write is bounds-checked and the draw is not.
+    """
+    if rng is None:
+        raise CombatError(
+            "target pattern 'scatter_18' draws from aRandom; no generator "
+            "was given")
+    out: list[tuple[int, int, int]] = []
+    for _ in range(SCATTER_COUNT):
+        dy = rng(SCATTER_BASE, SCATTER_SPAN)
+        dx = rng(SCATTER_BASE, SCATTER_SPAN)
+        if world.in_bounds(tx + dx, ty + dy):
+            out.append((tx + dx, ty + dy, MARKER_FULL))
+    # The fall-through into weapon 42's arm.
+    if world.in_bounds(tx, ty):
+        out.append((tx, ty, MARKER_70))
+    return out
+
+
+def _every_unit(world: CombatWorld, tx: int,
+                ty: int) -> list[tuple[int, int, int]]:
+    """``0x0046AED2`` -- every occupied cell within ``< 4`` of the aim."""
+    out: list[tuple[int, int, int]] = []
+    for index in range(world.width * world.height):
+        if world.unit_at[index] < 0:
+            continue
+        cx, cy = index % world.width, index // world.width
+        if distance(tx, ty, cx, cy) < EVERY_UNIT_MAX_DISTANCE:
+            out.append((cx, cy, MARKER_FULL))
+    return out
+
+
+def _self_centred_ring(world: CombatWorld, family: str,
+                       shooter: "CombatUnit") -> list[tuple[int, int, int]]:
+    """``0x0046ACCD`` (spores) and ``0x0046ABD5`` (explosives).
+
+    Both stamp the **shooter's own cell** at ``0x50`` and then walk the
+    stepper's eight directions from it.  A neighbour is stamped only when it
+    holds a unit -- the ``cell->unit == 0xFFFF`` test comes first in both --
+    and then:
+
+    * spores skip an occupant owned by ``0xFC``, the neutral side;
+    * explosives stamp a **large** occupant's own ``+0x42``/``+0x43`` instead
+      of the stepped cell, because a large unit's record carries the centre of
+      the three-by-three it stands on.
+    """
+    x, y = shooter.x, shooter.y
+    out: list[tuple[int, int, int]] = []
+    if world.in_bounds(x, y):
+        out.append((x, y, MARKER_FULL))
+    for dx, dy in STEP_DIRECTIONS:
+        nx, ny = x + dx, y + dy
+        if not world.in_bounds(nx, ny):
+            continue
+        slot = world.unit_at[world.index(nx, ny)]
+        if slot < 0:
+            continue
+        occupant = world.units.get(slot)
+        if occupant is None:
+            continue
+        if family == "spores_filtered":
+            if occupant.player == PLAYER_NEUTRAL:
                 continue
             out.append((nx, ny, MARKER_70))
-        return out
-    # neighbours_then_aim_70 -- the order is the handler's own.
-    out = [(x, y, MARKER_70) for x, y in neighbours]
-    return out + ([(tx, ty, MARKER_70)] if aim_in else [])
+            continue
+        if world.size(occupant) == 1:
+            out.append((occupant.x, occupant.y, MARKER_70))
+        else:
+            out.append((nx, ny, MARKER_70))
+    return out
+
+
+def _radius_by_range(world: CombatWorld, tx: int, ty: int,
+                     shooter: "CombatUnit") -> list[tuple[int, int, int]]:
+    """``0x0046B1C7`` (weapons 5 and 41) -- a blast that grows with the range.
+
+    The radius comes from how far the shot went, not from the weapon: 1 up to
+    two fields, 2 up to twenty-five, 3 beyond.  Inside it, a cell is stamped
+    only when it holds a unit, the octant from the shooter to that cell is
+    **exactly the shooter's facing**, and ``aGetHitProbability`` answers with
+    a chance in ``1..253`` -- the routine calls it with the shooter's own
+    weapon and refuses the cell when it fails.
+    """
+    reach = distance(shooter.x, shooter.y, tx, ty)
+    radius = RADIUS_BEYOND
+    for limit, value in RADIUS_BY_RANGE:
+        if reach <= limit:
+            radius = value
+            break
+    out: list[tuple[int, int, int]] = []
+    for index in range(world.width * world.height):
+        cx, cy = index % world.width, index // world.width
+        if distance(cx, cy, tx, ty) > radius:
+            continue
+        slot = world.unit_at[index]
+        if slot < 0:
+            continue
+        target = world.units.get(slot)
+        if target is None:
+            continue
+        if direction(shooter.x, shooter.y, cx, cy) != shooter.facing:
+            continue
+        chance = hit_probability(world, shooter, target, shooter.weapon,
+                                 apply_los=True)
+        if 0 < chance.percent < PATTERN_CHANCE_REFUSED:
+            out.append((cx, cy, MARKER_FULL))
+    return out
+
+
+def _arc_sweep(world: CombatWorld, tx: int, ty: int, shooter: "CombatUnit",
+               by_line_of_sight: bool) -> list[tuple[int, int, int]]:
+    """``0x0046AF38`` (weapon 9) and ``0x0046B0D8`` (weapon 11).
+
+    The two share a shape and differ in what they look for: weapon 9 wants a
+    unit the shooter can **see**, weapon 11 wants a cell whose action point is
+    in the multiplayer band 30..34 and does not care what stands on it.  Both
+    then require the octant from the shooter to the cell to lie in the
+    **three-octant arc** around the shooter's facing -- ``0x0046A9A0`` and
+    ``0x0046A930`` are the two neighbours -- and the cell to be within four
+    fields of the aim point.
+    """
+    low, high = SPECIAL_OBJECT_BAND
+    out: list[tuple[int, int, int]] = []
+    for index in range(world.width * world.height):
+        cx, cy = index % world.width, index // world.width
+        if by_line_of_sight:
+            slot = world.unit_at[index]
+            if slot < 0:
+                continue
+            target = world.units.get(slot)
+            if target is None:
+                continue
+            blocked = check_line_of_sight_ex(
+                world, cx, cy,
+                world.cell_height[index] + world.eye_height(target),
+                shooter.x, shooter.y,
+                world.cell_height[world.index(shooter.x, shooter.y)]
+                + world.eye_height(shooter), 1)
+            if blocked >= LOS_TERRAIN:
+                continue
+        else:
+            if not world.action_point:
+                raise CombatError(
+                    "target pattern 'special_objects' reads the control "
+                    "map's action points; this world was built without them")
+            if not low <= world.action_point[index] <= high:
+                continue
+        octant = direction(shooter.x, shooter.y, cx, cy)
+        if shooter.facing not in REAR_ARC[octant]:
+            continue
+        if distance(cx, cy, tx, ty) > ARC_SWEEP_MAX_DISTANCE:
+            continue
+        out.append((cx, cy, MARKER_FULL))
+    return out
 
 
 def marker_damage(world: CombatWorld, marker: int, weapon_id: int) -> int:
@@ -1124,7 +1346,8 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
 
     attacker.facing = direction(x, y, tx, ty)
     result.facing = attacker.facing
-    result.marked = mark_cells(world, attacker.weapon, tx, ty)
+    result.marked = mark_cells(world, attacker.weapon, tx, ty,
+                               shooter=attacker, rng=world.rng)
 
     weapon = world.tables.weapons.get(attacker.weapon)
     banner = banner_nearby(world, attacker)
@@ -1249,6 +1472,8 @@ def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
     heading 0 either way, which is the only case the shipped data reaches.
     """
     result = AttackResult(True, "bomb")
+    # aExecuteBomb (0x00470318) passes one value for all three of the
+    # shooter arguments because weapon 36 reads none of them.
     result.marked = mark_cells(world, BOMB_WEAPON, x, y)
     weapon = world.tables.weapons.get(BOMB_WEAPON)
     for cx, cy, marker in result.marked:

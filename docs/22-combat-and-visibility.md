@@ -493,6 +493,20 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
 
 ### 7.2 The target pattern — **[code] `0x0046AA10`**
 
+```c
+BOOL aBuildTargetPattern(int weaponId, int aimX, int aimY,
+                         int shooterX, int shooterY, int shooterFacing);
+```
+
+**Six arguments, not three.** The two call sites settle them: the shot
+resolver at `0x0046B6AC` pushes the shooter's `+0x42`, `+0x43` and `+0x46`
+after the aim point, and `aExecuteBomb` (`0x00470318`) passes one value for
+all three because weapon 36 reads none of them. Six of the sixteen handlers
+read the last three, and the prologue makes them awkward to see: it loads the
+aim into `ebx`/`ebp` and then **overwrites the argument slots** with the two
+`aGetCtrlMapElementPtr` results, so a handler that wants the shooter reloads
+from a slot that no longer holds what its offset suggests.
+
 A two-level switch on the weapon id: an index byte at `0x0046B420 + weaponId`
 selects one of 28 handlers listed at `0x0046B3B0`. `combat_tables.py` decodes
 both tables, so all **48/48** weapon ids are accounted for. Each handler writes
@@ -515,13 +529,13 @@ The sixteen distinct patterns, with `Info.lcl` names
 |---|---|---|
 | `0x46ABC0` | 0–4, 6, 10, 14–16, 20, 21, 23–25, 27, 29–32, 47 | the aim cell, `0x50`. Twenty-one direct-fire weapons |
 | `0x46AE0B` | 8, 12, 26, 36 | aim cell `0x50` + all eight neighbours `0x51` |
-| `0x46ABD5` | 17 `Explosives` | the same, but each neighbour is re-centred on the unit standing there |
-| `0x46ACCD` | 22 `Spores` | the same, filtered to targets whose owner is not `0xFC` |
-| `0x46B1C7` | 5, 41 | every unit within a radius of the aim point, `0x50`. The radius widens with the shot: 1 at range ≤ 2, 2 at 3–25, 3 beyond |
-| `0x46AF38` | 9 `Plasma Gun` | every unit with line of sight from the aim point, `0x50` |
-| `0x46B0D8` | 11 `Multi-target Destroyer` | every *special object* of type 30–34, `0x50` |
-| `0x46AED2` | 44 `Multi-target Destroyer B` | every unit on the map, `0x50` |
-| `0x46AD9F` | 13 `Mine Thrower Enhanced` | 18 cells at `aRandom(-2, 5)` offsets around the aim point, `0x50` |
+| `0x46ABD5` | 17 `Explosives` | **the shooter's own cell** `0x50`, then its eight neighbours `0x51` — only those holding a unit, and a **large** occupant is stamped on its own `+0x42`/`+0x43` instead of on the stepped cell |
+| `0x46ACCD` | 22 `Spores` | **the shooter's own cell** `0x50`, then its eight neighbours `0x51` — only those holding a unit whose owner is not `0xFC` |
+| `0x46B1C7` | 5, 41 | every unit within a radius of the aim point whose octant **from the shooter** is exactly the shooter's facing and whose `aGetHitProbability` resolves in 1…253, `0x50`. The radius widens with the shot: 1 at range ≤ 2, 2 at 3–25, 3 beyond |
+| `0x46AF38` | 9 `Plasma Gun` | every unit the **shooter** has line of sight to, within the **three-octant arc** around its facing and `aGetDistance ≤ 4` of the aim point, `0x50` |
+| `0x46B0D8` | 11 `Multi-target Destroyer` | every cell whose action point is 30–34, under the same arc and the same `≤ 4`, `0x50` |
+| `0x46AED2` | 44 `Multi-target Destroyer B` | every unit within `aGetDistance < 4` of the aim point, `0x50`, each stamped with **its own** cell's object id |
+| `0x46AD9F` | 13 `Mine Thrower Enhanced` | 18 cells at `aRandom(-2, 5)` offsets around the aim point, `0x50` — and then **falls through** into `0x46ADE5`, so the aim cell is stamped `0x51` as well |
 | `0x46AB0A` | 7 `Flame Thrower` | the aim cell, `0x51` |
 | `0x46AA66` | 40 `Flame Thrower B` | the eight neighbours `0x51`, then the aim cell `0x51` |
 | `0x46ADE5` | 42 `Mine Thrower B` | the aim cell, `0x51`, with a null object id |
@@ -537,6 +551,36 @@ fired.
 
 `0x0046AA10` is also called by `aExecuteBomb` (`0x004702C0`), which is how a
 planted bomb reuses a weapon's blast pattern.
+
+**Five corrections this table carried until the third slice implemented the
+handlers**, each cross-checked between the raw listing and Ghidra:
+
+* **weapons 17 and 22 blast the shooter's own cell**, not the aim cell. Both
+  handlers reload their coordinates from the argument slots the prologue
+  overwrote with the *shooter's*, so the aim point is read and then never
+  used. For `Explosives` that is the weapon working as its name says — a
+  charge goes off where it is planted;
+* **weapon 44 is not "every unit on the map"**: `aGetDistance < 4` of the aim
+  point bounds it, and each cell is stamped with its own object id rather than
+  the aim cell's;
+* **weapon 13 falls through** into weapon 42's arm; so does weapon 40 into
+  weapon 7's, which is where "the eight neighbours, then the aim cell" comes
+  from;
+* the two unrolled eight-neighbour handlers write their neighbours in **two
+  different orders**, and neither is `dy`-then-`dx`. `0x0046AE0B` writes
+  (−1,0) (−1,−1) (−1,+1) (0,−1) (+1,−1) (+1,+1) (+1,0) (0,+1); `0x0046AA66`
+  writes (−1,0) (−1,−1) (−1,+1) (+1,0) (+1,−1) (+1,+1) (0,+1) (0,−1). The
+  order is the order the damage rolls come out in, so it is not a set;
+* **weapon 13 draws its `y` offset before its `x` offset.** The two `aRandom`
+  calls carry source lines 978 and 977 in that order, so the compiler
+  evaluated the arguments right to left; and the draws happen for all eighteen
+  iterations whether or not the cell is on the map, because the write is
+  bounds-checked and the draw is not.
+
+All sixteen are implemented in `inclib/combat.py` and `godot/core/combat.gd`;
+`ai_runtime.py`'s `pattern.*` checks census them over the corpus and, for the
+five families no shipped unit carries, over a scene built by writing one
+weapon byte.
 
 `SetWeaponInfo` accepts ids up to 50 ([`21` §1](21-info-lcl-schema.md)), but the
 dispatch bounds-checks `id > 0x2F` and reports an error, so **weapon ids 48–50

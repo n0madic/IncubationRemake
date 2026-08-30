@@ -102,12 +102,9 @@ const HEAT_NONE: int = 0xFF
 ## apart is why the ammunition gate cannot be read as a heat test.
 const MUN_NONE: int = 0xFF
 
-## docs/22 section 7.2 -- the weapon families this file simulates.  The other
-## seven -- the radius that widens with the shot, the line-of-sight sweep, the
-## whole-map sweep, the 18-cell scatter, the re-centred explosion and the two
-## special-object sweeps -- are **not** here.  [method mark_cells] returns an
-## empty array and sets `unsupported`, so a shot this model cannot resolve says
-## so instead of quietly marking nothing.
+## docs/22 section 7.2 -- the sixteen weapon families, **all** of them since
+## the third slice. [method mark_cells] still takes an `unsupported` array,
+## because a weapon id above 47 reaches the dispatcher's own error arm.
 ## 46 and 42 belong to their own handlers -- `aim_cell_full_null_object` and
 ## `aim_cell_70_null_object` -- which differ from these two only in a null
 ## object pointer the marking pass does not use.  They are folded in here
@@ -124,6 +121,45 @@ const AIM_STUN: Array[int] = [45]
 ## neighbours, each only when it holds a unit whose owner is not
 ## [constant PLAYER_NEUTRAL].
 const SPORES_FILTERED: Array[int] = [22]
+## `0x0046ABD5` -- weapon 17 `Explosives`. The shooter's own cell, then the
+## eight neighbours; a **large** occupant is stamped on its own centre.
+const EXPLOSIVES: Array[int] = [17]
+## `0x0046B1C7` -- weapons 5 and 41; the blast grows with the range of the shot.
+const RADIUS_BY_RANGE: Array[int] = [5, 41]
+const RADIUS_NEAR_LIMIT: int = 2
+const RADIUS_MID_LIMIT: int = 25
+const RADIUS_BEYOND: int = 3
+## `0x0046AF38` -- weapon 9 `Plasma Gun`; every unit the shooter can see.
+const LINE_OF_SIGHT_FROM_AIM: Array[int] = [9]
+## `0x0046B0D8` -- weapon 11 `Multi-target Destroyer`; cells in the action-point
+## band, which docs/10 section 4.6 calls the multiplayer victory points.
+const SPECIAL_OBJECTS: Array[int] = [11]
+const SPECIAL_OBJECT_LOW: int = 30
+const SPECIAL_OBJECT_HIGH: int = 34
+## `0x0046AED2` -- weapon 44; every unit within `< 4` of the aim point, which is
+## **not** "every unit on the map".
+const EVERY_UNIT: Array[int] = [44]
+const EVERY_UNIT_MAX_DISTANCE: int = 4
+## `0x0046AF38` and `0x0046B0D8` use `<= 4`, which is not the same test.
+const ARC_SWEEP_MAX_DISTANCE: int = 4
+## `0x0046AD9F` -- weapon 13; eighteen cells at `aRandom(-2, 5)` offsets, and
+## then the aim cell, because the handler falls through into weapon 42's.
+const SCATTER_18: Array[int] = [13]
+const SCATTER_COUNT: int = 18
+const SCATTER_BASE: int = -2
+const SCATTER_SPAN: int = 5
+## `0x0042FF30`'s refusal: a chance at or above this is "never".
+const PATTERN_CHANCE_REFUSED: int = 254
+## `0x0046AE0B` (weapons 8, 12, 26, 36) -- the eight neighbours in the order the
+## **unrolled** handler writes them.
+const AIM_NEIGHBOUR_ORDER: Array[Vector2i] = [
+	Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(0, -1),
+	Vector2i(1, -1), Vector2i(1, 1), Vector2i(1, 0), Vector2i(0, 1)]
+## `0x0046AA66` (weapon 40) -- a *different* unrolled eight. The two differ in
+## their last four entries, and the order is the order the rolls come out in.
+const FLAME_B_NEIGHBOUR_ORDER: Array[Vector2i] = [
+	Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(1, 0),
+	Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, 1), Vector2i(0, -1)]
 ## docs/10 section 5.7 -- the neutral-prop owner the spores pattern skips.
 const PLAYER_NEUTRAL: int = 0xFC
 ## `0x004308C0`'s direction table (docs/23 section 8), in the order the spores
@@ -387,14 +423,33 @@ static func apply_damage(defender: UnitState, damage: int,
 	return dealt
 
 
-## `0x0046AA10` -- the covered cells and their markers, for the simple families.
+## `0x0046AA10(weapon, aimX, aimY, shooterX, shooterY, shooterFacing)`.
 ##
-## Returns `[x, y, marker]` triples.  A family this file does not simulate
-## returns empty **and** appends its name to `unsupported`, so the caller can
-## refuse instead of reporting a clean miss.
+## Returns `[x, y, marker]` triples in the order the handler writes them --
+## which is the order the damage rolls come out in, so it is not a set. All
+## sixteen handlers are here since the third slice; `unsupported` is kept for
+## the caller's sake and is now only ever filled by a weapon id above 47.
+##
+## The dispatcher takes **six** arguments and not three. Its two call sites
+## settle what they are: the shot resolver at `0x0046B6AC` pushes the shooter's
+## `+0x42`, `+0x43` and `+0x46`, and `aExecuteBomb` (`0x00470318`) passes one
+## value for all three because weapon 36 reads none of them. `shooter` carries
+## the last three; a family that needs it and does not get it marks nothing and
+## says so.
+##
+## Four things a reading of docs/22 section 7.2's table alone gets wrong, all
+## cross-checked between the raw listing and Ghidra:
+##
+## * **weapons 17 and 22 blast the shooter's own cell**, not the aim cell;
+## * **weapon 44 is not "every unit on the map"** -- it is every unit within
+##   `aGetDistance < 4` of the aim point;
+## * **weapon 13 falls through** into weapon 42's arm, so the eighteen
+##   scattered cells are followed by the aim cell at `0x51`;
+## * the two unrolled eight-neighbour handlers write in **two different
+##   orders**, and neither is `dy`-then-`dx`.
 static func mark_cells(state: MapState, units: Dictionary, weapon_id: int,
-		tx: int, ty: int,
-		unsupported: Array[String]) -> Array[PackedInt32Array]:
+		tx: int, ty: int, unsupported: Array[String],
+		context: PatternContext = null) -> Array[PackedInt32Array]:
 	var out: Array[PackedInt32Array] = []
 	if NO_PATTERN.has(weapon_id):
 		return out
@@ -415,50 +470,213 @@ static func mark_cells(state: MapState, units: Dictionary, weapon_id: int,
 		if aim_in:
 			out.append(PackedInt32Array([tx, ty, MARKER_STUN]))
 		return out
-	var neighbours: Array[PackedInt32Array] = []
-	for dy: int in [-1, 0, 1]:
-		for dx: int in [-1, 0, 1]:
-			if dx == 0 and dy == 0:
-				continue
-			if state.in_bounds(tx + dx, ty + dy):
-				neighbours.append(
-					PackedInt32Array([tx + dx, ty + dy, MARKER_70]))
 	if AIM_AND_NEIGHBOURS.has(weapon_id):
 		if aim_in:
 			out.append(PackedInt32Array([tx, ty, MARKER_FULL]))
-		out.append_array(neighbours)
+		out.append_array(_ring(state, tx, ty, AIM_NEIGHBOUR_ORDER))
 		return out
 	if NEIGHBOURS_THEN_AIM_70.has(weapon_id):
-		# The order is the handler's own: the ring first, then the aim point.
-		out.append_array(neighbours)
+		out.append_array(_ring(state, tx, ty, FLAME_B_NEIGHBOUR_ORDER))
 		if aim_in:
 			out.append(PackedInt32Array([tx, ty, MARKER_70]))
 		return out
-	if SPORES_FILTERED.has(weapon_id):
-		# Two things "the same, filtered" loses: an **empty** neighbour is
-		# skipped too -- the `cell->unit == 0xFFFF` test comes before the owner
-		# test -- and the sweep runs the stepper's direction order rather than
-		# the unrolled ring above.
-		if aim_in:
-			out.append(PackedInt32Array([tx, ty, MARKER_FULL]))
-		for step: Vector2i in STEP_DIRECTIONS:
-			var nx: int = tx + step.x
-			var ny: int = ty + step.y
-			if not state.in_bounds(nx, ny):
-				continue
-			var slot: int = state.unit_at(state.index_of(nx, ny))
-			if slot == MapState.NO_UNIT:
-				continue
-			if not units.has(slot):
-				continue
-			var occupant: UnitState = units[slot]
-			if occupant.player == PLAYER_NEUTRAL:
-				continue
-			out.append(PackedInt32Array([nx, ny, MARKER_70]))
-		return out
+	if EVERY_UNIT.has(weapon_id):
+		return _every_unit(state, tx, ty)
+	if SCATTER_18.has(weapon_id):
+		if context == null or context.rng == null:
+			unsupported.append(
+				"weapon %d draws from aRandom; no generator was given"
+				% weapon_id)
+			return out
+		return _scatter(state, tx, ty, context.rng)
+	if SPORES_FILTERED.has(weapon_id) or EXPLOSIVES.has(weapon_id):
+		if not _has_shooter(context, weapon_id, unsupported):
+			return out
+		return _self_centred_ring(state, units, context,
+			SPORES_FILTERED.has(weapon_id))
+	if RADIUS_BY_RANGE.has(weapon_id):
+		if not _has_shooter(context, weapon_id, unsupported):
+			return out
+		return _radius_by_range(state, units, weapon_id, tx, ty, context)
+	if LINE_OF_SIGHT_FROM_AIM.has(weapon_id) \
+			or SPECIAL_OBJECTS.has(weapon_id):
+		if not _has_shooter(context, weapon_id, unsupported):
+			return out
+		return _arc_sweep(state, units, tx, ty, context,
+			LINE_OF_SIGHT_FROM_AIM.has(weapon_id))
 	unsupported.append(
 		"weapon %d uses a target pattern this model does not simulate; "
 		% weapon_id + "docs/22 section 7.2 describes it")
+	return out
+
+
+static func _has_shooter(context: PatternContext, weapon_id: int,
+		unsupported: Array[String]) -> bool:
+	if context != null and context.shooter != null:
+		return true
+	unsupported.append(
+		"weapon %d reads the shooter's position and facing " % weapon_id
+		+ "(0x0046AA10's arguments 4, 5 and 6); none was given")
+	return false
+
+
+## The eight neighbours of a cell, in a handler's own write order.
+static func _ring(state: MapState, x: int, y: int,
+		order: Array[Vector2i]) -> Array[PackedInt32Array]:
+	var out: Array[PackedInt32Array] = []
+	for step: Vector2i in order:
+		if state.in_bounds(x + step.x, y + step.y):
+			out.append(PackedInt32Array([x + step.x, y + step.y, MARKER_70]))
+	return out
+
+
+## `0x0046AD9F` -- eighteen scattered cells, then the aim cell.
+##
+## **The y offset is drawn before the x offset**: the two `aRandom` calls carry
+## source lines 978 and 977 in that order, so the compiler evaluated the
+## arguments right to left. A model that draws x first agrees on the cells and
+## disagrees on every roll that follows in the same turn. The draws happen for
+## all eighteen iterations whether or not the cell is on the map -- the write
+## is bounds-checked and the draw is not.
+static func _scatter(state: MapState, tx: int, ty: int,
+		rng: IncRandom) -> Array[PackedInt32Array]:
+	var out: Array[PackedInt32Array] = []
+	for _i: int in range(SCATTER_COUNT):
+		var dy: int = rng.draw(SCATTER_BASE, SCATTER_SPAN)
+		var dx: int = rng.draw(SCATTER_BASE, SCATTER_SPAN)
+		if state.in_bounds(tx + dx, ty + dy):
+			out.append(PackedInt32Array([tx + dx, ty + dy, MARKER_FULL]))
+	# The fall-through into weapon 42's arm.
+	if state.in_bounds(tx, ty):
+		out.append(PackedInt32Array([tx, ty, MARKER_70]))
+	return out
+
+
+## `0x0046AED2` -- every occupied cell within `< 4` of the aim.
+static func _every_unit(state: MapState, tx: int,
+		ty: int) -> Array[PackedInt32Array]:
+	var out: Array[PackedInt32Array] = []
+	for index: int in range(state.cell_count()):
+		if state.unit_at(index) == MapState.NO_UNIT:
+			continue
+		var cx: int = index % state.width
+		var cy: int = index / state.width
+		if MoveMap.distance(tx, ty, cx, cy) < EVERY_UNIT_MAX_DISTANCE:
+			out.append(PackedInt32Array([cx, cy, MARKER_FULL]))
+	return out
+
+
+## `0x0046ACCD` (spores) and `0x0046ABD5` (explosives).
+##
+## Both stamp the **shooter's own cell** at `0x50` and then walk the stepper's
+## eight directions from it. A neighbour is stamped only when it holds a unit,
+## and then spores skip an occupant owned by `0xFC` while explosives stamp a
+## **large** occupant's own `+0x42`/`+0x43` instead of the stepped cell.
+static func _self_centred_ring(state: MapState, units: Dictionary,
+		context: PatternContext, spores: bool) -> Array[PackedInt32Array]:
+	var shooter: UnitState = context.shooter
+	var out: Array[PackedInt32Array] = []
+	if state.in_bounds(shooter.x, shooter.y):
+		out.append(PackedInt32Array([shooter.x, shooter.y, MARKER_FULL]))
+	for step: Vector2i in STEP_DIRECTIONS:
+		var nx: int = shooter.x + step.x
+		var ny: int = shooter.y + step.y
+		if not state.in_bounds(nx, ny):
+			continue
+		var slot: int = state.unit_at(state.index_of(nx, ny))
+		if slot == MapState.NO_UNIT or not units.has(slot):
+			continue
+		var occupant: UnitState = units[slot]
+		if spores:
+			if occupant.player == PLAYER_NEUTRAL:
+				continue
+			out.append(PackedInt32Array([nx, ny, MARKER_70]))
+			continue
+		if context.utab.unit_size(occupant.type_id) == 1:
+			out.append(PackedInt32Array(
+				[occupant.x, occupant.y, MARKER_70]))
+		else:
+			out.append(PackedInt32Array([nx, ny, MARKER_70]))
+	return out
+
+
+## `0x0046B1C7` (weapons 5 and 41) -- a blast that grows with the range.
+##
+## The radius comes from how far the shot went, not from the weapon: 1 up to
+## two fields, 2 up to twenty-five, 3 beyond. Inside it a cell is stamped only
+## when it holds a unit, the octant from the shooter to that cell is **exactly**
+## the shooter's facing, and `aGetHitProbability` answers with a chance in
+## 1..253.
+static func _radius_by_range(state: MapState, units: Dictionary,
+		weapon_id: int, tx: int, ty: int,
+		context: PatternContext) -> Array[PackedInt32Array]:
+	var shooter: UnitState = context.shooter
+	var reach: int = MoveMap.distance(shooter.x, shooter.y, tx, ty)
+	var radius: int = RADIUS_BEYOND
+	if reach <= RADIUS_NEAR_LIMIT:
+		radius = 1
+	elif reach <= RADIUS_MID_LIMIT:
+		radius = 2
+	var out: Array[PackedInt32Array] = []
+	for index: int in range(state.cell_count()):
+		var cx: int = index % state.width
+		var cy: int = index / state.width
+		if MoveMap.distance(cx, cy, tx, ty) > radius:
+			continue
+		var slot: int = state.unit_at(index)
+		if slot == MapState.NO_UNIT or not units.has(slot):
+			continue
+		if direction(shooter.x, shooter.y, cx, cy) != shooter.facing:
+			continue
+		var target: UnitState = units[slot]
+		var chance: HitChance = HitChance.compute(state, units, context.utab,
+			context.wtab, shooter, target, weapon_id, true,
+			context.human_players, context.game_mode)
+		if chance.percent > 0 and chance.percent < PATTERN_CHANCE_REFUSED:
+			out.append(PackedInt32Array([cx, cy, MARKER_FULL]))
+	return out
+
+
+## `0x0046AF38` (weapon 9) and `0x0046B0D8` (weapon 11).
+##
+## The two share a shape and differ in what they look for: weapon 9 wants a
+## unit the shooter can **see**, weapon 11 a cell whose action point is in the
+## multiplayer band 30..34 and does not care what stands on it. Both then
+## require the octant from the shooter to the cell to lie in the three-octant
+## arc around the shooter's facing, and the cell to be within four fields of
+## the aim point.
+static func _arc_sweep(state: MapState, units: Dictionary, tx: int, ty: int,
+		context: PatternContext,
+		by_line_of_sight: bool) -> Array[PackedInt32Array]:
+	var shooter: UnitState = context.shooter
+	var out: Array[PackedInt32Array] = []
+	var eye: int = state.height_at(state.index_of(shooter.x, shooter.y)) \
+		+ HitChance.eye_height(context.utab, shooter.type_id)
+	for index: int in range(state.cell_count()):
+		var cx: int = index % state.width
+		var cy: int = index / state.width
+		if by_line_of_sight:
+			var slot: int = state.unit_at(index)
+			if slot == MapState.NO_UNIT or not units.has(slot):
+				continue
+			var target: UnitState = units[slot]
+			var blocked: int = LineOfSight.check(state, units, context.utab,
+				cx, cy,
+				state.height_at(index)
+				+ HitChance.eye_height(context.utab, target.type_id),
+				shooter.x, shooter.y, eye, 1, context.human_players,
+				context.game_mode)
+			if blocked >= LineOfSight.TERRAIN:
+				continue
+		elif state.action_point_at(index) < SPECIAL_OBJECT_LOW \
+				or state.action_point_at(index) > SPECIAL_OBJECT_HIGH:
+			continue
+		if not in_arc(direction(shooter.x, shooter.y, cx, cy),
+				shooter.facing):
+			continue
+		if MoveMap.distance(cx, cy, tx, ty) > ARC_SWEEP_MAX_DISTANCE:
+			continue
+		out.append(PackedInt32Array([cx, cy, MARKER_FULL]))
 	return out
 
 
@@ -506,7 +724,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	result.facing = attacker.facing
 	var unsupported: Array[String] = []
 	result.marked = mark_cells(state, units, attacker.weapon, tx, ty,
-		unsupported)
+		unsupported, PatternContext.create(attacker, utab, wtab, rng,
+			human_players, game_mode))
 	if not unsupported.is_empty():
 		result.fired = false
 		result.reason = unsupported[0]

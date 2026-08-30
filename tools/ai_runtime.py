@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from inclib import ai                                              # noqa: E402
 from inclib import combat as combatmod                             # noqa: E402
 from inclib import movemap                                         # noqa: E402
+from inclib import rng as rngmod                                   # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
 from inclib.info import BalanceTables, load_info_file              # noqa: E402
 from inclib.lev import load_lev                                    # noqa: E402
@@ -81,10 +82,21 @@ BAND_ABOVE_ALL = 34
 
 #: Every ordered attacker/target pair the corpus can resolve, by hit
 #: percentage.  Recorded from a run.
-PAIR_PERCENT_CENSUS = {10: 3, 19: 4, 20: 1, 28: 6, 32: 4, 37: 2, 42: 2, 44: 2,
-                       46: 3, 48: 2, 52: 3, 55: 7, 56: 4, 60: 3, 64: 9, 68: 4,
-                       72: 6, 73: 5, 76: 5, 80: 4, 82: 1, 84: 4, 86: 3, 88: 3,
-                       92: 5, 94: 3, 96: 9, 99: 24, 100: 16}
+PAIR_PERCENT_CENSUS = {10: 4, 19: 5, 20: 1, 28: 8, 32: 4, 37: 2, 42: 2, 44: 2,
+                       46: 5, 48: 2, 52: 3, 55: 14, 56: 4, 60: 3, 64: 12,
+                       68: 4, 70: 1, 72: 8, 73: 7, 74: 1, 76: 5, 80: 5, 82: 2,
+                       84: 4, 86: 5, 88: 4, 89: 3, 90: 8, 92: 6, 94: 4, 96: 9,
+                       99: 24, 100: 39}
+
+#: ``docs/23`` §5.2 -- the two bytes ``0x0040B0D0`` reads past the end of the
+#: unit array, as ``ai_gold.py``'s ``cover`` phase read them on this host, and
+#: the bonus a candidate gets when exactly one coordinate matches.
+COVER_OOB_GX = 168
+COVER_OOB_GY = 3
+COVER_ALIGNED_BONUS = 5
+#: How many sampled cover choices move when they are honoured.  A bound, not a
+#: target: the bytes are heap history and differ between runs.
+COVER_DEFLECTION = 12
 
 #: How the approach census strides the map, and what it comes to.
 APPROACH_STRIDE = 7
@@ -92,6 +104,64 @@ APPROACH_CENSUS = (67256, 1628, 3130292)
 
 #: ``0x0042FF30``'s own refusal, mirrored from ``inclib.ai``'s ``>= 254``.
 BAND_REFUSAL = 254
+
+#: The nearest resolvable pair on each side of each band boundary.  A boundary
+#: whose two neighbours differ by more than one could move without any shipped
+#: situation noticing; 70 and 90 have a pair **on** them and are pinned from
+#: below.
+BAND_BOUNDARY_WINDOWS = {20: (20, 28), 50: (48, 52), 70: (70, 72),
+                         90: (90, 92)}
+
+#: Recorded from a run: cells the spores pattern stamps over the whole corpus,
+#: and the per-family census and population of :func:`check_patterns`.
+SPORES_MARKED_CENSUS = 640
+PATTERN_POPULATION = {"aim_and_neighbours": 123, "aim_cell_70": 138,
+                      "aim_cell_full": 1288, "explosives_recentred": 4,
+                      "spores_filtered": 218}
+PATTERN_MARKED_CENSUS = {"aim_and_neighbours": 1101, "aim_cell_70": 138,
+                         "aim_cell_full": 1288, "explosives_recentred": 4,
+                         "spores_filtered": 640}
+#: The scene's generator seed, so ``scatter_18``'s eighteen draws are the same
+#: eighteen on every run.
+SCENE_SEED = 1.0
+PATTERN_SCENE_CENSUS = {
+    "aim_and_neighbours": 9, "aim_cell_70": 1, "aim_cell_70_null_object": 1,
+    "aim_cell_forced_hit": 1, "aim_cell_full": 1,
+    "aim_cell_full_null_object": 1, "aim_cell_stun": 1, "every_unit": 7,
+    "explosives_recentred": 1, "line_of_sight_from_aim": 13,
+    "neighbours_then_aim_70": 9, "radius_by_range": 3, "scatter_18": 19,
+    "special_objects": 2, "spores_filtered": 1,
+}
+PATTERN_SCENE_CELLS = {
+    "aim_and_neighbours":
+        "18,18,80;17,18,81;17,17,81;17,19,81;18,17,81;19,17,81;19,19,81;"
+        "19,18,81;18,19,81",
+    "aim_cell_70": "18,18,81",
+    "aim_cell_70_null_object": "18,18,81",
+    "aim_cell_forced_hit": "18,18,84",
+    "aim_cell_full": "18,18,80",
+    "aim_cell_full_null_object": "18,18,80",
+    "aim_cell_stun": "18,18,85",
+    "every_unit":
+        "18,16,80;21,16,80;17,17,80;18,17,80;19,17,80;17,18,80;18,18,80",
+    "explosives_recentred": "25,14,80",
+    "line_of_sight_from_aim":
+        "16,14,80;19,14,80;18,16,80;21,16,80;22,16,80;17,17,80;18,17,80;"
+        "19,17,80;22,17,80;17,18,80;18,18,80;22,18,80;19,22,80",
+    "neighbours_then_aim_70":
+        "17,18,81;17,17,81;17,19,81;19,18,81;19,17,81;19,19,81;18,19,81;"
+        "18,17,81;18,18,81",
+    "radius_by_range": "16,14,80;19,14,80;18,16,80",
+    "scatter_18":
+        "18,17,80;20,18,80;18,18,80;19,20,80;17,18,80;18,17,80;19,19,80;"
+        "18,18,80;19,19,80;20,20,80;18,17,80;19,17,80;19,18,80;18,17,80;"
+        "18,20,80;17,18,80;18,19,80;18,18,80;18,18,81",
+    "special_objects": "6,10,80;7,11,80",
+    "spores_filtered": "25,14,80",
+}
+#: ``0x0046B1C7``'s radius for every range 0..40 -- the whole span a shipped
+#: map can produce.
+PATTERN_RADII = ([1] * 3) + ([2] * 23) + ([3] * 15)
 
 CASES_SCHEMA = "incubation.ai-cases/1"
 
@@ -383,7 +453,12 @@ def check_bands(c: Checker, root: Path, tables: BalanceTables,
     histogram: dict[int, int] = {}
     for path in mission_paths(root):
         ctx = context_for(path, tables, delays)
-        for unit in aliens_of(ctx):
+        # **Every live unit**, not only the aliens: widening the population
+        # from 147 pairs to 210 puts a shipped pair exactly on two of the four
+        # boundaries, 70 and 90, which the alien-only census could not reach.
+        for unit in ctx.world.units.values():
+            if unit.hp == 0:
+                continue
             weapon = ai.effective_weapon(ctx, unit)
             if weapon is None:
                 continue
@@ -429,73 +504,368 @@ def check_bands(c: Checker, root: Path, tables: BalanceTables,
 
     # Which boundaries the data actually pins, and how far each could move
     # before a shipped pair would notice.
-    unbound: list[str] = []
+    # How far each boundary could move before a shipped pair would notice: the
+    # window between the nearest percentage at or below it and the nearest one
+    # above.  Two of the four now have a pair sitting **on** them, so they are
+    # pinned from below and loose by one above; the other two are loose either
+    # way.  Recorded rather than described, so that a widening of the
+    # population shows up as a change here.
+    windows: dict[int, tuple[int | None, int | None]] = {}
     for limit, _marker in BAND_TABLE_FROM_THE_SPEC:
         below = [p for p in histogram if p <= limit]
         above = [p for p in histogram if p > limit]
-        low = max(below) if below else None
-        high = min(above) if above else None
-        if low is None or high is None or high - low > 1:
-            unbound.append(f"{limit}: nearest pairs {low} and {high}")
-    c.check("band.boundaries_the_corpus_leaves_open", True,
-            "; ".join(unbound) if unbound
-            else "every boundary has a pair on each side of it")
+        windows[limit] = (max(below) if below else None,
+                          min(above) if above else None)
+    c.expect("band.boundary_windows", windows, BAND_BOUNDARY_WINDOWS,
+             "the nearest resolvable pair on each side of each boundary")
 
 
 def check_spores(c: Checker, root: Path, tables: BalanceTables,
                  delays: dict[int, int]) -> None:
-    """``0x46ACCD`` -- the one target pattern this stage added.
+    """``0x0046ACCD`` -- the pattern that goes off where the shooter stands.
 
-    ``spores_filtered`` is ``aim_and_neighbours`` with one extra test: the
-    neighbouring cell is stamped only if what stands on it is **not** owned by
-    ``0xFC``, the neutral side (``docs/22`` §7.2).  The filter is the whole
-    difference between the two families, and a mutation battery found that
-    deleting it left every check in this file and the native capture green.
-
-    The corpus exercises it heavily -- 806 situations in which a neutral unit
-    stands next to a target a spores weapon can aim at -- so the check is a
-    census over shipped data and not a scene.
+    Two rules, and the corpus exercises both.  The blast is centred on the
+    **shooter's own cell** and not on the aim point -- the handler reloads its
+    coordinates from the argument slots the dispatcher's prologue overwrote
+    with the shooter's -- and a neighbour is stamped only when it holds a unit
+    whose owner is not ``0xFC``, the neutral side.  A mutation battery found
+    that deleting the owner test left every check green, which is what this
+    exists for.
     """
     aimers = 0
     marked = 0
     adjacent = 0
     leaked: list[str] = []
+    off_aim = 0
     for path in mission_paths(root):
         ctx = context_for(path, tables, delays)
         for unit in aliens_of(ctx):
             if combatmod.pattern_family(unit.weapon) != "spores_filtered":
                 continue
             aimers += 1
+            cells = combatmod.mark_cells(ctx.world, unit.weapon, unit.x,
+                                         unit.y, shooter=unit)
+            marked += len(cells)
+            stamped = {(x, y) for x, y, _m in cells}
+            # The aim point is not read at all: aiming somewhere else changes
+            # nothing, which is the half of the correction a census over one
+            # aim point could not show.
             for other in ctx.world.units.values():
                 if other.hp == 0 or other.player == unit.player:
                     continue
-                cells = combatmod.mark_cells(ctx.world, unit.weapon,
-                                             other.x, other.y)
-                marked += len(cells)
-                stamped = {(x, y) for x, y, _m in cells}
-                for dx, dy in combatmod.STEP_DIRECTIONS:
-                    nx, ny = other.x + dx, other.y + dy
-                    if not ctx.world.in_bounds(nx, ny):
-                        continue
-                    slot = ctx.world.unit_at[ctx.world.index(nx, ny)]
-                    if slot < 0:
-                        continue
-                    occupant = ctx.world.units.get(slot)
-                    if occupant is None \
-                            or occupant.player != combatmod.PLAYER_NEUTRAL:
-                        continue
-                    adjacent += 1
-                    if (nx, ny) in stamped:
-                        leaked.append(f"{path.name}: ({nx},{ny}) beside "
-                                      f"({other.x},{other.y})")
+                elsewhere = combatmod.mark_cells(ctx.world, unit.weapon,
+                                                 other.x, other.y,
+                                                 shooter=unit)
+                if elsewhere != cells:
+                    off_aim += 1
+                break
+            for dx, dy in combatmod.STEP_DIRECTIONS:
+                nx, ny = unit.x + dx, unit.y + dy
+                if not ctx.world.in_bounds(nx, ny):
+                    continue
+                slot = ctx.world.unit_at[ctx.world.index(nx, ny)]
+                if slot < 0:
+                    continue
+                occupant = ctx.world.units.get(slot)
+                if occupant is None \
+                        or occupant.player != combatmod.PLAYER_NEUTRAL:
+                    continue
+                adjacent += 1
+                if (nx, ny) in stamped:
+                    leaked.append(f"{path.name}: ({nx},{ny}) beside "
+                                  f"({unit.x},{unit.y})")
     c.expect("spores.aimers", aimers, 218,
              "aliens whose weapon uses the filtered-neighbour pattern")
-    c.expect("spores.marked_census", marked, 835,
+    c.expect("spores.marked_census", marked, SPORES_MARKED_CENSUS,
              "cells the pattern stamps, over the whole corpus")
+    c.expect("spores.the_aim_point_is_not_read", off_aim, 0,
+             "aiming somewhere else stamps exactly the same cells")
     c.check("spores.the_filter_is_exercised", adjacent > 0,
-            f"{adjacent} neutral units standing next to a reachable target")
+            f"{adjacent} neutral units standing next to the shooter")
     c.expect("spores.no_neutral_is_stamped", leaked[:4], [],
              f"0 of {adjacent} neutral neighbours were marked")
+
+
+def check_patterns(c: Checker, root: Path, tables: BalanceTables,
+                   delays: dict[int, int]) -> None:
+    """All sixteen target patterns, over every unit in the corpus that has one.
+
+    The third slice implemented the last six.  What this counts is a census of
+    the cells each family stamps, over **every** shipped unit carrying a
+    weapon of that family -- not only the aliens, because four of the six are
+    player weapons (``Explosives``, ``Plasma Gun``, both ``Multi-target
+    Destroyer``s) that no alien carries.
+
+    ``scatter_18`` draws from ``aRandom``, so its census is taken from a
+    generator seeded the way the rest of this file seeds one; the interleaving
+    of those draws with a real fight's is **UNVERIFIED** -- no capture
+    exercises weapon 13.
+    """
+    census: dict[str, int] = {}
+    population: dict[str, int] = {}
+    refused: list[str] = []
+    for path in mission_paths(root):
+        ctx = context_for(path, tables, delays)
+        for unit in ctx.world.units.values():
+            if unit.hp == 0:
+                continue
+            family = combatmod.pattern_family(unit.weapon)
+            if family == "none":
+                continue
+            population[family] = population.get(family, 0) + 1
+            aim = _first_enemy_cell(ctx, unit)
+            try:
+                cells = combatmod.mark_cells(ctx.world, unit.weapon, aim[0],
+                                             aim[1], shooter=unit,
+                                             rng=ctx.world.rng)
+            except combatmod.CombatError as exc:
+                refused.append(f"{path.name} slot {unit.slot}: {exc}")
+                continue
+            census[family] = census.get(family, 0) + len(cells)
+    c.expect("pattern.no_family_refuses", refused[:3], [],
+             "every shipped weapon resolves a pattern")
+    c.expect("pattern.population", dict(sorted(population.items())),
+             PATTERN_POPULATION,
+             "shipped units carrying a weapon of each family")
+    c.expect("pattern.marked_census", dict(sorted(census.items())),
+             PATTERN_MARKED_CENSUS,
+             "cells stamped, summed over the corpus")
+    c.expect("pattern.all_sixteen_are_simulated",
+             sorted(set(combatmod.PATTERN_FAMILIES)
+                    - combatmod.SIMULATED_FAMILIES), ["none"],
+             "docs/22 section 7.2's table, with only the error arm left out")
+
+    # **Five families have no shipped carrier at all.** A placed unit's weapon
+    # is its type's default, and weapons 5, 9, 11, 13, 41 and 44 are equipment
+    # the campaign hands out, so nothing on any map carries them. They are
+    # reached the way docs/94 reached reaction fire and this stage reached
+    # order 3: by building the situation, here by writing one weapon byte.
+    scene = context_for(root / "Missions" / "_C_132.lev", tables, delays)
+    scene_census: dict[str, int] = {}
+    scene_cells: dict[str, str] = {}
+    for family, ids in sorted(combatmod.PATTERN_FAMILIES.items()):
+        if family == "none":
+            continue
+        weapon = sorted(ids)[0]
+        stage = scene
+        found = _scene_shot(stage, family, weapon)
+        if found is None:
+            # `_C_132` carries no cell in the action-point band, so the one
+            # family that hunts for one gets a mission that does.
+            for path in mission_paths(root):
+                stage = context_for(path, tables, delays)
+                found = _scene_shot(stage, family, weapon)
+                if found is not None:
+                    break
+        if found is None:
+            scene_census[family] = 0
+            continue
+        shooter, aim = found
+        shooter.weapon = weapon
+        shooter.facing = combatmod.direction(shooter.x, shooter.y, aim[0],
+                                             aim[1])
+        stage.world.rng = rngmod.ARandom(SCENE_SEED)
+        cells = combatmod.mark_cells(stage.world, weapon, aim[0], aim[1],
+                                     shooter=shooter, rng=stage.world.rng)
+        scene_census[family] = len(cells)
+        # **The order and the cells, not only how many.** A census of counts
+        # is blind to the two unrolled rings writing their neighbours in
+        # different orders and to the scatter drawing y before x -- a mutation
+        # battery found exactly those two -- so what is recorded is the
+        # sequence.
+        scene_cells[family] = ";".join(f"{x},{y},{m}" for x, y, m in cells)
+    c.expect("pattern.scene_census", scene_census, PATTERN_SCENE_CENSUS,
+             "one shot of every family from a unit arranged to fire it")
+    c.expect("pattern.scene_cells", scene_cells, PATTERN_SCENE_CELLS,
+             "the same shots, cell by cell and in the order they are written")
+
+    # The radius table itself, over every range a shipped map can produce.
+    radii = [_radius_for(reach) for reach in range(0, 41)]
+    c.expect("pattern.radius_thresholds", radii, PATTERN_RADII,
+             "0x0046B1C7's 1 up to two fields, 2 up to twenty-five, 3 beyond")
+
+    # `explosives_recentred`'s one rule the corpus cannot reach: a **large**
+    # occupant is stamped on its own centre. No shipped map puts a large unit
+    # next to a unit carrying weapon 17, so the `size` column is written for
+    # the duration of one call -- the technique docs/93 section 11 used
+    # natively for the large-unit clearance.
+    large = None
+    firer = None
+    neighbour = None
+    for path in mission_paths(root):
+        large = context_for(path, tables, delays)
+        for candidate in aliens_of(large):
+            neighbour = _adjacent_unit(large, candidate)
+            if neighbour is not None:
+                firer = candidate
+                break
+        if neighbour is not None:
+            break
+    c.check("pattern.large_scene",
+            neighbour is not None and firer is not None and large is not None,
+            "a unit standing next to a firer")
+    if neighbour is not None and firer is not None and large is not None:
+        firer.weapon = sorted(
+            combatmod.PATTERN_FAMILIES["explosives_recentred"])[0]
+        row = large.world.tables.units[neighbour.type_id]
+        small = combatmod.mark_cells(large.world, firer.weapon, firer.x,
+                                     firer.y, shooter=firer)
+        # A large unit spills past its own field: the map holds it on the cell
+        # beside the firer while its record keeps the centre of the three by
+        # three. That gap is what the re-centre exists for, so the scene has
+        # to open it -- a record whose x, y already equal the cell it stands
+        # on makes the branch invisible.
+        occupied = (neighbour.x, neighbour.y)
+        centre = (neighbour.x + 1 if large.in_bounds(neighbour.x + 1,
+                                                     neighbour.y)
+                  else neighbour.x - 1, neighbour.y)
+        large.world.tables.units[neighbour.type_id] = type(row)(
+            **{**row.__dict__, "size": 1})
+        neighbour.x, neighbour.y = centre
+        big = combatmod.mark_cells(large.world, firer.weapon, firer.x,
+                                   firer.y, shooter=firer)
+        neighbour.x, neighbour.y = occupied
+        large.world.tables.units[neighbour.type_id] = row
+        c.expect("pattern.large_occupant_is_recentred",
+                 [cell for cell in big if cell not in small],
+                 [(centre[0], centre[1], combatmod.MARKER_70)],
+                 "a large neighbour is stamped on its own +0x42/+0x43 and "
+                 "not on the cell the stepper reached")
+
+
+def _radius_for(reach: int) -> int:
+    """``0x0046B1C7``'s radius, as a function of the range of the shot."""
+    for limit, value in combatmod.RADIUS_BY_RANGE:
+        if reach <= limit:
+            return value
+    return combatmod.RADIUS_BEYOND
+
+
+def _adjacent_unit(ctx: ai.AIContext,
+                   unit: combatmod.CombatUnit) -> combatmod.CombatUnit | None:
+    """A live unit standing on one of ``unit``'s eight neighbours."""
+    for dx, dy in combatmod.STEP_DIRECTIONS:
+        nx, ny = unit.x + dx, unit.y + dy
+        if not ctx.world.in_bounds(nx, ny):
+            continue
+        slot = ctx.world.unit_at[ctx.world.index(nx, ny)]
+        if slot < 0:
+            continue
+        other = ctx.world.units.get(slot)
+        if other is not None and other.hp > 0:
+            return other
+    return None
+    c.expect("pattern.every_family_is_reached",
+             sorted(f for f, n in scene_census.items() if n == 0), [],
+             "each of the fifteen stamps at least one cell")
+
+
+def _scene_shot(ctx: ai.AIContext, family: str,
+                weapon: int) -> tuple[combatmod.CombatUnit,
+                                      tuple[int, int]] | None:
+    """A shooter and an aim point that let one family actually stamp a cell.
+
+    Two of the six need arranging rather than picking: ``special_objects``
+    hunts for a cell in the action-point band 30..34 and will find nothing
+    aimed anywhere else, and ``radius_by_range`` refuses a target whose hit
+    probability does not resolve. The rest fire from anywhere.
+    """
+    aliens = aliens_of(ctx)
+    world = ctx.world
+    if family == "special_objects":
+        low, high = combatmod.SPECIAL_OBJECT_BAND
+        for index, point in enumerate(world.action_point):
+            if not low <= point <= high:
+                continue
+            cx, cy = index % world.width, index // world.width
+            for unit in aliens:
+                if movemap.distance(unit.x, unit.y, cx, cy) \
+                        <= combatmod.ARC_SWEEP_MAX_DISTANCE:
+                    return unit, (cx, cy)
+        return None
+    if family == "radius_by_range":
+        for unit in aliens:
+            saved = unit.weapon
+            unit.weapon = weapon
+            try:
+                for other in world.units.values():
+                    if other.hp == 0 or other.player == unit.player:
+                        continue
+                    chance = combatmod.hit_probability(world, unit, other,
+                                                       weapon, apply_los=True)
+                    if 0 < chance.percent < combatmod.PATTERN_CHANCE_REFUSED:
+                        return unit, (other.x, other.y)
+            finally:
+                unit.weapon = saved
+        return None
+    shooter = aliens[0]
+    return shooter, _first_enemy_cell(ctx, shooter)
+
+
+def _first_enemy_cell(ctx: ai.AIContext,
+                      unit: combatmod.CombatUnit) -> tuple[int, int]:
+    """A deterministic aim point: the lowest-numbered live enemy's cell."""
+    for slot in sorted(ctx.world.units):
+        other = ctx.world.units[slot]
+        if other.hp > 0 and other.player != unit.player:
+            return other.x, other.y
+    return unit.x, unit.y
+
+
+def check_cover(c: Checker, root: Path, tables: BalanceTables,
+                delays: dict[int, int]) -> None:
+    """``0x0040B0D0``'s three out-of-bounds terms, as a measured deflection.
+
+    ``docs/23`` §5.2 proves the terms carry no information: the two bytes are
+    66 past the end of a 200-slot array, they are heap history rather than
+    game state, and the bonus they feed is ``+10`` for every candidate except
+    one map row and one map column, where it is ``+5``.  A constant cancels in
+    a maximiser, so the remake adds the constant and stops.
+
+    What was missing is the size of the residue.  The native capture read the
+    two bytes and they came back **168 and 3**, so on that host the term is
+    ``+10`` everywhere except row 3 -- ``168`` is off every shipped map.  This
+    replays every sampled unit's cover choice twice, once with the flat
+    constant and once with that row penalised, and counts how many choices
+    move.  It is a bound and not a fix: the bytes differ between runs and
+    between missions, so **no** implementation can reproduce them, and the
+    number below is what omitting them costs on the one layout ever observed.
+    """
+    moved: list[str] = []
+    sampled = 0
+    for path in mission_paths(root):
+        ctx = context_for(path, tables, delays)
+        for unit in aliens_of(ctx)[:SAMPLE_PER_MISSION]:
+            sampled += 1
+            flat = _best_cover_cell(ctx, unit, penalise_row=None)
+            real = _best_cover_cell(ctx, unit, penalise_row=COVER_OOB_GY)
+            if flat != real:
+                moved.append(f"{path.name} slot {unit.slot}: "
+                             f"{flat} against {real}")
+    c.check("cover.sampled", sampled > 0, f"{sampled} cover choices")
+    c.expect("cover.deflection", len(moved), COVER_DEFLECTION,
+             f"choices that move when the captured bytes {COVER_OOB_GX} and "
+             f"{COVER_OOB_GY} are honoured instead of the flat constant")
+    c.check("cover.the_x_byte_is_off_every_map", COVER_OOB_GX > 40,
+            "no shipped map is wider than 40, so only the row can bite")
+
+
+def _best_cover_cell(ctx: ai.AIContext, unit: combatmod.CombatUnit,
+                     penalise_row: int | None) -> int | None:
+    """The cell ``0x0040B0D0`` would settle on, with and without the term."""
+    best = -1
+    chosen: int | None = None
+    for index in range(len(ctx.state)):
+        found, raised = ai.cover_score(ctx, index, unit, best)
+        if found is None:
+            continue
+        score = raised
+        if penalise_row is not None and ctx.cell_y(index) == penalise_row:
+            score -= ai.COVER_ALIGNMENT_BONUS - COVER_ALIGNED_BONUS
+        if score > best:
+            best = score
+            chosen = index
+    return chosen
 
 
 def check_approach(c: Checker, root: Path, tables: BalanceTables,
@@ -985,6 +1355,8 @@ def run_check(root: Path) -> int:
     check_targets(c, root, tables, delays)
     check_bands(c, root, tables, delays)
     check_spores(c, root, tables, delays)
+    check_patterns(c, root, tables, delays)
+    check_cover(c, root, tables, delays)
     check_approach(c, root, tables, delays)
     check_shot_reasons(c, root, tables, delays)
     check_fire(c, root, tables, delays)

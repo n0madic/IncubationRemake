@@ -611,15 +611,17 @@ runs; there is no value here to recover. A remake that drops the three terms
 entirely is exactly equivalent whenever the two bytes fall outside the map, and
 otherwise differs only in near-ties along one arbitrary row and column.
 
-**Measured, once, inside a live process.** `ai_gold.py`'s `cover` phase reads
-the same two bytes on `_C_140` and gets **168 and 3**. So this run is the "one
-of them is not ≥ 40" case the paragraph above allows for: the bonus is +10 on
-every candidate except the single map row `y == 3`, where it is +5. The remake
-implements the constant and is exact off that row, which is what
-[`95` §5](95-slice-3-report.md) records. The number is an observation of one
-allocation on one host and not a property to rely on — the point of the
-paragraph is unchanged, and it is now an observation rather than only a
-deduction.
+**Measured, once inside a live process, and then bounded.** `ai_gold.py`'s
+`cover` phase reads the same two bytes on `_C_140` and gets **168 and 3**. So
+this run is the "one of them is not ≥ 40" case the paragraph above allows for:
+the bonus is +10 on every candidate except the single map row `y == 3`, where
+it is +5. `ai_runtime.py`'s `cover.deflection` then replays every sampled
+unit's cover choice twice, once with the flat constant and once with row 3
+penalised, and counts the choices that move: **12 of 417**. That is the whole
+cost of omitting the three terms on the one heap layout ever observed, and it
+is a bound rather than a defect to fix — the bytes differ between runs and
+between missions, so no implementation can reproduce them. The deduction above
+stands; what is new is its size.
 
 **The approach cell — `0x0040ADC0(target, *best, myUnitIndex)`.** Once a target
 cell is chosen the unit has to stand *next to* it. This scans the target's eight

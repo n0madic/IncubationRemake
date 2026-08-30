@@ -26,10 +26,10 @@ godot/
     ai/      12 files      docs/23's planner
     lcl/      5 files      the mission-script interpreter
   game/      13 files      + the AI playback
-  tests/     26 suites     1518 checks
+  tests/     26 suites     1538 checks
 tools/
   inclib/    ai.py new (1813 lines); combat.py, movemap.py extended
-  ai_runtime.py new        59 checks over 108 missions and 1594 aliens
+  ai_runtime.py new        72 checks over 108 missions and 1594 aliens
   ai_gold.py new           eleven native phases, 40 checks
 ```
 
@@ -168,21 +168,32 @@ aliens on them**. The plan's figures came from overlapping populations — the
 carries. Every `N/N` in `ai_runtime.py` states the corrected numbers.
 
 **The three cover-score terms that read past the unit array are not
-implemented.** [`23` §5.2](23-ai-system.md) shows they carry no information: the
-bonus is +10 everywhere except one row and one column of the map, and a constant
-cancels in a maximiser. The native capture read the same two bytes and they came
-back **168 and 3** — so §5.2's "both ≥ 40" does not hold for this run either,
-which is what heap history looks like. The model reproduces the +10 and is exact
-off the single row `y == 3`.
+implemented, and the cost of leaving them out is now measured.**
+[`23` §5.2](23-ai-system.md) shows they carry no information: the bonus is +10
+everywhere except one row and one column of the map, and a constant cancels in a
+maximiser. The native capture read the same two bytes and they came back **168
+and 3** — so §5.2's "both ≥ 40" does not hold for this run, which is what heap
+history looks like, and the term is +5 rather than +10 on row 3.
+`cover.deflection` replays every sampled unit's cover choice with and without
+that penalty: **12 of 417 choices move.** That is a bound and not a defect to
+fix — the bytes differ between runs and between missions, so no implementation
+can reproduce them.
 
 **Kind 12 is implemented and kinds 4 and 5 are not.** 12 exists in the engine
 and is selected by nothing; 4 and 5 have no code in either shipped binary and
 stay as failing arms.
 
-**Seven of sixteen target patterns remain unsimulated.** The stage added the
-eighth, `spores_filtered` — `aim_and_neighbours` plus "the neighbour's owner is
-not `0xFC`" — which 218 corpus aliens carry. The other seven still refuse
-loudly.
+**All sixteen target patterns are implemented.** The stage's first pass added
+`spores_filtered` and left six refusing; the second read every remaining
+handler out of the binary and cross-checked it against Ghidra, which corrected
+five claims [`22` §7.2](22-combat-and-visibility.md) had been carrying —
+including two families that blast the **shooter's own cell** rather than the
+aim point, and one that is bounded by distance where the table said "every unit
+on the map". `0x0046AA10` takes **six** arguments and not three; the sixth is
+the shooter's facing, and four handlers filter by it. Five families are carried
+by no shipped unit at all — a placed unit's weapon is its type's default, and
+those five are campaign equipment — so they are reached by a scene built from
+one weapon byte, the way [`94`](94-slice-2-report.md) reached reaction fire.
 
 **`0x0047A8E0`'s end-of-turn facing is modelled, and the tolerance that
 covered it is gone.** It was left out of the stage's first pass; seven records
@@ -216,9 +227,9 @@ The acceptance list of the stage's plan, all of it inside the exported `.app`:
    200 unit records field by field and the generator's state, on turns 1 and 10;
 4. all eleven order arms are dispatched, ten by shipped data and order 3 by a
    scene built for it; the checks fail on an empty corpus;
-5. every one of the 1594 corpus aliens either resolves a shot or refuses for a
-   named reason; `spores_filtered` is implemented and the other seven patterns
-   refuse;
+5. every one of the 1594 corpus aliens resolves a shot, and **all sixteen
+   target patterns are implemented** -- the five no shipped unit carries are
+   exercised by a scene built from one weapon byte;
 6. plan, fire, overlay, cover score, approach and the pseudo-player agree with
    the native probes;
 7. **`_C_140` is played against an opponent that closes and shoots, and defeat
@@ -234,10 +245,10 @@ The acceptance list of the stage's plan, all of it inside the exported `.app`:
 
 ## 7. How the checks were made to mean something
 
-Eighteen mutations, one per rule the stage added, run against both
-implementations. **Nine escaped** across two batteries — four on the Python side
-and five on the GDScript side — and every one named a real hole. All nine are
-closed; the battery now reports **18 mutations, 0 escapes**.
+Thirty-eight mutations, one per rule the stage added, run against both
+implementations. **Seventeen escaped** across four batteries, and every one
+named a real hole. All seventeen are closed; the battery now reports
+**38 mutations, 0 escapes**.
 
 The Python escapes were all the same shape: *the checks asserted relations, and
 a relation survives any table with the same order.*
@@ -271,6 +282,20 @@ corpus. So `test_ai.gd` gained a `_constants` section that writes
 for the byte shift, which no table check can see, and a **built scene** for the
 spores filter, the way [`94`](94-slice-2-report.md) built one for reaction fire
 and this stage built one for order 3.
+
+The eight the last battery found, once §8's open items were implemented, were
+one shape again and a different one: **a census that counts *how many* cells a
+pattern stamps is blind to the order they are stamped in**, and the order is
+the order the damage rolls come out in. The two unrolled eight-neighbour rings
+could be permuted, and the scatter could draw its `x` before its `y`, with
+every count unchanged. `pattern.scene_cells` records the sequence and not the
+size; `test_ai.gd` replays the generator itself and compares the offsets.
+Three more needed a scene rather than a check: the radius thresholds are
+pinned by evaluating the table over every range a shipped map can produce, and
+the large-occupant re-centre by **opening the gap it exists for** -- a record
+whose `+0x42`/`+0x43` already equal the cell it stands on makes the branch
+invisible, so the scene writes the `size` column and moves the centre, the
+technique [`93` §11](93-slice-1-report.md) used natively.
 
 **What the corpus cannot bind is now said out loud.**
 `band.boundaries_the_corpus_leaves_open` reports that the nearest resolvable
@@ -311,12 +336,14 @@ clean one, per the rule [`94`](94-slice-2-report.md) left behind.
    not the tie-break; the second ring sees something this transcription does
    not. No shipped unit on `_C_140` is large, so nothing in the demonstration
    reaches it. `ai_gold.py` carries it as a named open check.
-3. **Seven of sixteen target patterns** are still unsimulated (§5).
-4. **No band boundary is pinned by shipped data** (§7). A native probe that
-   forces a hit chance into one of the four gaps would close all four at once.
-5. **The cover score's two out-of-bounds bytes** came back 168 and 3, against
-   [`23` §5.2](23-ai-system.md)'s "both ≥ 40". The conclusion is unchanged — the
-   bytes are heap history and the term is a constant — but the doc's observation
-   is a single run's and is now known to be one.
-6. **The campaign layer, bodies, animation and sound** are still untouched, as
+3. **Two of the four band boundaries are still loose.** Widening the census
+   from the aliens to every live attacker — 147 pairs to 210 — puts a shipped
+   pair exactly **on** 70 and on 90, so those two are pinned from below and
+   loose by one above. 20 and 50 have their nearest pairs at 20/28 and 48/52,
+   so either could move several points without any shipped situation noticing.
+   The closure path is named rather than taken: a native probe that forces a
+   hit chance into one of the two windows and reads the stamped marker back
+   would settle both, and it needs a game copy and a `dbgcall` build that do
+   not currently exist on this host.
+4. **The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).

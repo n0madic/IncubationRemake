@@ -42,106 +42,6 @@ func run(h: TestHarness) -> void:
 	_spores(h)
 
 
-## The four constants the replay cannot bind, stated a second time.
-##
-## A mutation battery found all four: changing level 2's horizon, dropping the
-## byte shift in level 1's doubling, moving the first band boundary and lowering
-## the approach climb threshold each left every case above green. That is not a
-## hole in the diff -- it is what the diff *is*. The cases replay two missions,
-## and a constant that does not change the outcome on those two missions cannot
-## be caught by comparing outcomes on them. `tools/ai_runtime.py` catches them
-## with censuses over all 108 missions of the corpus; `game/` has no corpus, so
-## here the tables are written out from docs/23 and compared directly, the same
-## treatment `CONVERTER_VERSION` gets in two files.
-func _constants(h: TestHarness) -> void:
-	# docs/23 section 5.1's `0x0040AD70`. -1 is "the unit's own points".
-	h.equal("const.horizon_table", AIPlan.HORIZON_MP,
-		[-1, -1, 30, 50, 100, 250] as Array[int],
-		"the six arms of the horizon")
-	h.equal("const.horizon_passes_friendlies_at_two", AIPlan.HORIZON_PASS,
-		[false, false, true, false, false, false] as Array[bool])
-	# `shl al, 1` is a **byte** shift: 130 points doubled is 4, not 260. The
-	# table check above cannot see this one, because level 1 is not in it.
-	h.equal("const.horizon_level_1_is_a_byte_shift",
-		[AIPlan.horizon_mp(1, 130), AIPlan.horizon_mp(1, 5),
-			AIPlan.horizon_mp(0, 7)], [4, 10, 7])
-	# docs/23 section 6's five bands. No shipped situation sits on both sides
-	# of any of the four boundaries -- `ai_runtime.py`'s
-	# `band.boundaries_the_corpus_leaves_open` reports the gaps -- so this is
-	# the only guard either implementation has for them.
-	h.equal("const.band_limits", AIOverlay.BAND_LIMITS,
-		[20, 50, 70, 90] as Array[int])
-	h.equal("const.band_markers", AIOverlay.BAND_MARKERS,
-		[30, 31, 32, 33] as Array[int])
-	h.equal("const.band_of_each_boundary",
-		[AIOverlay.band_of(20), AIOverlay.band_of(21), AIOverlay.band_of(50),
-			AIOverlay.band_of(51), AIOverlay.band_of(90),
-			AIOverlay.band_of(91)], [30, 31, 31, 32, 33, 34])
-	# docs/23 section 5.4 -- two, and not the one the obvious reading gives.
-	# The native capture's ten probed targets contain no height step of
-	# exactly 2, so it does not pin this either.
-	h.equal("const.approach_climb_max", AIApproach.CLIMB_MAX, 2)
-
-
-## `0x46ACCD` -- the one thing `spores_filtered` adds, on a scene built for it.
-##
-## The corpus has 806 situations in which a neutral prop stands beside a
-## reachable target and `ai_runtime.py` counts them; the five missions in the
-## cache have none, so this builds one, the way docs/94 built a scene for
-## reaction fire and this stage built one for order 3.
-func _spores(h: TestHarness) -> void:
-	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
-	if loaded.is_empty():
-		h.check("spores.cache", false, "no _C_140 in the cache")
-		return
-	var world: World = loaded["world"]
-	var slots: PackedInt32Array = world.unit_slots()
-	h.check("spores.the_map_has_units", slots.size() >= 2,
-		"%d units" % slots.size())
-	if slots.size() < 2:
-		return
-	# Two neighbouring cells: the target, and a prop beside it.
-	var target: UnitState = UnitState.from_view(world.unit_view(slots[0]))
-	var units: Dictionary = {}
-	var state: MapState = world.state
-	var tx: int = target.x
-	var ty: int = target.y
-	var nx: int = tx + 1 if state.in_bounds(tx + 1, ty) else tx - 1
-	var neutral: UnitState = UnitState.from_view(world.unit_view(slots[1]))
-	neutral.player = Combat.PLAYER_NEUTRAL
-	neutral.x = nx
-	neutral.y = ty
-	units[slots[0]] = target
-	units[slots[1]] = neutral
-	# The world is freshly loaded for this suite and is not shared, so the two
-	# cells are set on it directly.
-	state.set_unit(state.index_of(tx, ty), slots[0])
-	state.set_unit(state.index_of(nx, ty), slots[1])
-
-	var unsupported: Array[String] = []
-	var cells: Array[PackedInt32Array] = Combat.mark_cells(state, units,
-		Combat.SPORES_FILTERED[0], tx, ty, unsupported)
-	h.equal("spores.pattern_is_simulated", unsupported, [] as Array[String])
-	var stamped: Array[String] = []
-	for cell: PackedInt32Array in cells:
-		stamped.append("%d,%d" % [cell[0], cell[1]])
-	h.check("spores.the_aim_cell_is_stamped", stamped.has("%d,%d" % [tx, ty]),
-		", ".join(stamped))
-	h.equal("spores.the_neutral_neighbour_is_not",
-		stamped.has("%d,%d" % [nx, ty]), false,
-		"docs/22 section 7.2: the owner test is what the family adds")
-	# And with the same prop owned by anyone else, it *is* stamped -- otherwise
-	# the check above would pass on an implementation that stamps nothing.
-	neutral.player = UnitState.PLAYER_ALIEN
-	cells = Combat.mark_cells(state, units, Combat.SPORES_FILTERED[0], tx, ty,
-		unsupported)
-	var again: Array[String] = []
-	for cell: PackedInt32Array in cells:
-		again.append("%d,%d" % [cell[0], cell[1]])
-	h.check("spores.a_non_neutral_neighbour_is_stamped",
-		again.has("%d,%d" % [nx, ty]), ", ".join(again))
-
-
 func _case(h: TestHarness, case: Dictionary) -> void:
 	var name: String = DictRead.as_string(case["mission"])
 	var loaded: Dictionary = CacheFixture.load_mission(name)
@@ -216,12 +116,245 @@ func _case(h: TestHarness, case: Dictionary) -> void:
 		"%d record(s), field by field" % after.size())
 
 
-## The unit fields the diff covers. Everything the planner reads or writes;
-## `ticket` and `walked` among them, because a move and a reaction are exactly
-## what a wrong turn gets wrong quietly.
+## The fields a record diff compares -- every one the planner reads or writes.
+## docs/94 section 8's lesson: comparing names and not arguments is how 120
+## cases went unchecked for a year.
 const DIFFED: Array[String] = ["x", "y", "hp", "mp", "fp", "facing", "acted",
 	"action_state", "heat", "ammo", "malfunction", "armour_front",
 	"armour_rear", "order", "order_param", "group", "walked"]
+
+
+## The four constants the replay cannot bind, stated a second time.
+##
+## A mutation battery found all four: changing level 2's horizon, dropping the
+## byte shift in level 1's doubling, moving the first band boundary and lowering
+## the approach climb threshold each left every case above green. That is not a
+## hole in the diff -- it is what the diff *is*. The cases replay two missions,
+## and a constant that does not change the outcome on those two missions cannot
+## be caught by comparing outcomes on them. `tools/ai_runtime.py` catches them
+## with censuses over all 108 missions of the corpus; `game/` has no corpus, so
+## here the tables are written out from docs/23 and compared directly, the same
+## treatment `CONVERTER_VERSION` gets in two files.
+func _constants(h: TestHarness) -> void:
+	# docs/23 section 5.1's `0x0040AD70`. -1 is "the unit's own points".
+	h.equal("const.horizon_table", AIPlan.HORIZON_MP,
+		[-1, -1, 30, 50, 100, 250] as Array[int],
+		"the six arms of the horizon")
+	h.equal("const.horizon_passes_friendlies_at_two", AIPlan.HORIZON_PASS,
+		[false, false, true, false, false, false] as Array[bool])
+	# `shl al, 1` is a **byte** shift: 130 points doubled is 4, not 260. The
+	# table check above cannot see this one, because level 1 is not in it.
+	h.equal("const.horizon_level_1_is_a_byte_shift",
+		[AIPlan.horizon_mp(1, 130), AIPlan.horizon_mp(1, 5),
+			AIPlan.horizon_mp(0, 7)], [4, 10, 7])
+	# docs/23 section 6's five bands. No shipped situation sits on both sides
+	# of any of the four boundaries -- `ai_runtime.py`'s
+	# `band.boundaries_the_corpus_leaves_open` reports the gaps -- so this is
+	# the only guard either implementation has for them.
+	h.equal("const.band_limits", AIOverlay.BAND_LIMITS,
+		[20, 50, 70, 90] as Array[int])
+	h.equal("const.band_markers", AIOverlay.BAND_MARKERS,
+		[30, 31, 32, 33] as Array[int])
+	h.equal("const.band_of_each_boundary",
+		[AIOverlay.band_of(20), AIOverlay.band_of(21), AIOverlay.band_of(50),
+			AIOverlay.band_of(51), AIOverlay.band_of(90),
+			AIOverlay.band_of(91)], [30, 31, 31, 32, 33, 34])
+	# docs/23 section 5.4 -- two, and not the one the obvious reading gives.
+	# The native capture's ten probed targets contain no height step of
+	# exactly 2, so it does not pin this either.
+	h.equal("const.approach_climb_max", AIApproach.CLIMB_MAX, 2)
+
+	# docs/22 section 7.2's sixteen families, by the weapon ids that reach
+	# them. Stated a second time for the same reason the bands are: a check
+	# that asks `Combat.EXPLOSIVES[0]` what weapon 17 is proves only that the
+	# constant is self-consistent, and a mutation battery found exactly that.
+	h.equal("const.family_explosives", Combat.EXPLOSIVES, [17] as Array[int])
+	h.equal("const.family_spores", Combat.SPORES_FILTERED, [22] as Array[int])
+	h.equal("const.family_radius", Combat.RADIUS_BY_RANGE, [5, 41] as Array[int])
+	h.equal("const.family_line_of_sight", Combat.LINE_OF_SIGHT_FROM_AIM,
+		[9] as Array[int])
+	h.equal("const.family_special_objects", Combat.SPECIAL_OBJECTS,
+		[11] as Array[int])
+	h.equal("const.family_every_unit", Combat.EVERY_UNIT, [44] as Array[int])
+	h.equal("const.family_scatter", Combat.SCATTER_18, [13] as Array[int])
+	# The two unrolled rings, whose *order* is the order the damage rolls come
+	# out in. A census of how many cells they stamp cannot see this.
+	h.equal("const.aim_neighbour_order", Combat.AIM_NEIGHBOUR_ORDER,
+		[Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(0, -1),
+			Vector2i(1, -1), Vector2i(1, 1), Vector2i(1, 0),
+			Vector2i(0, 1)] as Array[Vector2i])
+	h.equal("const.flame_b_neighbour_order", Combat.FLAME_B_NEIGHBOUR_ORDER,
+		[Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(1, 0),
+			Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, 1),
+			Vector2i(-0, -1)] as Array[Vector2i])
+	h.equal("const.radius_thresholds",
+		[Combat.RADIUS_NEAR_LIMIT, Combat.RADIUS_MID_LIMIT,
+			Combat.RADIUS_BEYOND], [2, 25, 3])
+
+
+## `0x46ACCD` -- the two things `spores_filtered` does, on a scene built for it.
+##
+## The blast is centred on the **shooter's own cell** and not on the aim point,
+## and a neighbour is stamped only when what stands on it is not owned by
+## `0xFC`. The corpus counts both in `ai_runtime.py`; the five missions in the
+## cache carry no such arrangement, so this builds one, the way docs/94 built a
+## scene for reaction fire and this stage built one for order 3.
+func _spores(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("spores.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slots: PackedInt32Array = world.unit_slots()
+	h.check("spores.the_map_has_units", slots.size() >= 2,
+		"%d units" % slots.size())
+	if slots.size() < 2:
+		return
+	var state: MapState = world.state
+	var shooter: UnitState = UnitState.from_view(world.unit_view(slots[0]))
+	var neutral: UnitState = UnitState.from_view(world.unit_view(slots[1]))
+	var units: Dictionary = {slots[0]: shooter, slots[1]: neutral}
+	var sx: int = shooter.x
+	var sy: int = shooter.y
+	var nx: int = sx + 1 if state.in_bounds(sx + 1, sy) else sx - 1
+	neutral.player = Combat.PLAYER_NEUTRAL
+	neutral.x = nx
+	neutral.y = sy
+	# The world is freshly loaded for this suite and is not shared, so the two
+	# cells are set on it directly.
+	state.set_unit(state.index_of(sx, sy), slots[0])
+	state.set_unit(state.index_of(nx, sy), slots[1])
+	var context: PatternContext = PatternContext.create(shooter,
+		world.unit_types(), world.weapons())
+
+	# Aimed at the far corner, which is what makes the first check mean
+	# something: the pattern must ignore it.
+	var far: Vector2i = Vector2i(state.width - 1, state.height - 1)
+	var unsupported: Array[String] = []
+	var cells: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SPORES_FILTERED[0], far.x, far.y, unsupported, context)
+	h.equal("spores.pattern_is_simulated", unsupported, [] as Array[String])
+	var stamped: Array[String] = []
+	for cell: PackedInt32Array in cells:
+		stamped.append("%d,%d" % [cell[0], cell[1]])
+	h.check("spores.the_shooter_s_own_cell_is_stamped",
+		stamped.has("%d,%d" % [sx, sy]), ", ".join(stamped))
+	h.equal("spores.the_aim_cell_is_not",
+		stamped.has("%d,%d" % [far.x, far.y]), false,
+		"0x0046ACCD reads the shooter's coordinates, not the aim's")
+	h.equal("spores.the_neutral_neighbour_is_not",
+		stamped.has("%d,%d" % [nx, sy]), false,
+		"docs/22 section 7.2: the owner test is what the family adds")
+	# And with the same prop owned by anyone else, it *is* stamped -- otherwise
+	# the check above would pass on an implementation that stamps nothing.
+	neutral.player = UnitState.PLAYER_ALIEN
+	cells = Combat.mark_cells(state, units, Combat.SPORES_FILTERED[0], far.x,
+		far.y, unsupported, context)
+	var again: Array[String] = []
+	for cell: PackedInt32Array in cells:
+		again.append("%d,%d" % [cell[0], cell[1]])
+	h.check("spores.a_non_neutral_neighbour_is_stamped",
+		again.has("%d,%d" % [nx, sy]), ", ".join(again))
+
+	# The other five families that no cached mission can fire, reached the same
+	# way: one weapon byte, one shot, and a count of what it stamped.
+	_patterns(h, world, units, context, shooter)
+
+
+## The five families a shipped map never carries, and the two corrections a
+## reading of docs/22 section 7.2's table alone would miss.
+func _patterns(h: TestHarness, world: World, units: Dictionary,
+		context: PatternContext, shooter: UnitState) -> void:
+	var state: MapState = world.state
+	var unsupported: Array[String] = []
+	# Weapon 44 is *not* "every unit on the map": it is every unit within four
+	# fields of the aim point. Two aim points, two answers.
+	var near: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.EVERY_UNIT[0], shooter.x, shooter.y, unsupported, context)
+	var far: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.EVERY_UNIT[0], state.width - 1, state.height - 1, unsupported,
+		context)
+	h.check("pattern.every_unit_is_bounded", near.size() > far.size(),
+		"%d cells near the units, %d at the far corner"
+		% [near.size(), far.size()])
+
+	# Weapon 13 draws eighteen offsets and then falls through into weapon 42's
+	# arm, so the last marker is the aim cell at 0x51.
+	context.rng = IncRandom.new()
+	context.rng.randomize_seed(1.0)
+	var scatter: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SCATTER_18[0], shooter.x, shooter.y, unsupported, context)
+	h.check("pattern.scatter_falls_through", not scatter.is_empty()
+		and scatter[scatter.size() - 1][2] == Combat.MARKER_70,
+		"%d cells, last marker %d" % [scatter.size(),
+			0 if scatter.is_empty() else scatter[scatter.size() - 1][2]])
+	# The draws are y then x, so a model that swapped them would agree on the
+	# count and disagree on the cells. Replaying from the same seed is the
+	# check that the order is part of the contract.
+	context.rng.randomize_seed(1.0)
+	var again: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SCATTER_18[0], shooter.x, shooter.y, unsupported, context)
+	h.equal("pattern.scatter_is_deterministic", again, scatter,
+		"the same seed draws the same eighteen offsets")
+	# And the draw order itself: y first. A model that swapped them agrees on
+	# the count and on determinism and disagrees on every cell, so the offsets
+	# are compared against the sequence the generator actually produces.
+	var expected: IncRandom = IncRandom.new()
+	expected.randomize_seed(1.0)
+	var wanted: Array[String] = []
+	for _i: int in range(Combat.SCATTER_COUNT):
+		var dy: int = expected.draw(Combat.SCATTER_BASE, Combat.SCATTER_SPAN)
+		var dx: int = expected.draw(Combat.SCATTER_BASE, Combat.SCATTER_SPAN)
+		if state.in_bounds(shooter.x + dx, shooter.y + dy):
+			wanted.append("%d,%d" % [shooter.x + dx, shooter.y + dy])
+	wanted.append("%d,%d" % [shooter.x, shooter.y])
+	var got: Array[String] = []
+	for cell: PackedInt32Array in scatter:
+		got.append("%d,%d" % [cell[0], cell[1]])
+	h.equal("pattern.scatter_draws_y_before_x", got, wanted,
+		"aTacTools.cpp lines 978 then 977 -- the arguments are evaluated "
+		+ "right to left")
+
+	# The eight neighbours in the handler's own order, which the count cannot
+	# see either.
+	var ring: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.AIM_AND_NEIGHBOURS[0], shooter.x, shooter.y, unsupported,
+		context)
+	var ring_cells: Array[String] = []
+	for cell: PackedInt32Array in ring:
+		ring_cells.append("%d,%d" % [cell[0], cell[1]])
+	var ring_wanted: Array[String] = ["%d,%d" % [shooter.x, shooter.y]]
+	for step: Vector2i in Combat.AIM_NEIGHBOUR_ORDER:
+		if state.in_bounds(shooter.x + step.x, shooter.y + step.y):
+			ring_wanted.append("%d,%d" % [shooter.x + step.x,
+				shooter.y + step.y])
+	h.equal("pattern.the_ring_is_written_in_order", ring_cells, ring_wanted,
+		"0x0046AE0B writes its eight in one order and 0x0046AA66 in another")
+
+	# Weapon 17 blasts the shooter's own cell, like weapon 22.
+	var blast: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.EXPLOSIVES[0], state.width - 1, state.height - 1, unsupported,
+		context)
+	h.check("pattern.explosives_are_self_centred", not blast.is_empty()
+		and blast[0][0] == shooter.x and blast[0][1] == shooter.y,
+		"first cell %s" % ("none" if blast.is_empty()
+			else "%d,%d" % [blast[0][0], blast[0][1]]))
+
+	# The two arc sweeps and the radius refuse without a shooter, which is the
+	# whole reason the context exists.
+	var bare: Array[String] = []
+	for weapon: int in [Combat.RADIUS_BY_RANGE[0],
+			Combat.LINE_OF_SIGHT_FROM_AIM[0], Combat.SPECIAL_OBJECTS[0],
+			Combat.EXPLOSIVES[0], Combat.SPORES_FILTERED[0]]:
+		var refusal: Array[String] = []
+		var none: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+			weapon, shooter.x, shooter.y, refusal)
+		if refusal.is_empty() or not none.is_empty():
+			bare.append(str(weapon))
+	h.equal("pattern.no_shooter_is_a_refusal", bare, [] as Array[String],
+		"the five families that read arguments 4, 5 and 6 say so")
+	h.equal("pattern.nothing_else_refused", unsupported, [] as Array[String],
+		"every family with a context resolves")
 
 
 ## Write the case's roster over the world's, and answer how many it matched.
