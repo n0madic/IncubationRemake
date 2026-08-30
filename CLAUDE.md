@@ -52,7 +52,7 @@ python3 tools/blob_tables.py        --check gog_incubation    # 259 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
-python3 tools/charisma_tables.py    --check gog_incubation    # 33 checks
+python3 tools/charisma_tables.py    --check gog_incubation    # 35 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -63,9 +63,9 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 84 checks, LOS/hi
 python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
-python3 tools/remake_convert.py     gog_incubation --check   # 59 checks
+python3 tools/remake_convert.py     gog_incubation --check   # 101 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 26 suites, 1554 checks
+bash   godot/run_tests.sh                                    # 27 suites, 1593 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7

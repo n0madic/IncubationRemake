@@ -378,9 +378,11 @@ func _frame_units(mission_world: World) -> void:
 ## the path cannot be re-derived here -- it would be derived against the wrong
 ## state. The event brought it.
 ##
-## The rebuild in [method _after_command] happens *after* this, so the walk is
-## started on the nodes that already exist and the next event's rebuild ends
-## it; a walk never outlives the frame set it was started in.
+## It is called **after** `_on_ai_step`'s own rebuild, never before: that
+## rebuild frees every unit node and clears the bodies, the states and the
+## walks. The *next* event's rebuild ending this walk is the design; this
+## event's rebuild ending it was a bug that made the computer's units teleport
+## and never play `F`.
 func _play_event_body(event: Dictionary, kind: String) -> void:
 	if _units == null:
 		return
@@ -507,7 +509,6 @@ func _on_ai_step(event: Dictionary) -> void:
 	var to_y: int = DictRead.as_int(event["ty"])
 	var at_x: int = DictRead.as_int(event["x"])
 	var at_y: int = DictRead.as_int(event["y"])
-	_play_event_body(event, kind)
 	if kind == "move" or kind == "warp":
 		at_x = to_x
 		at_y = to_y
@@ -519,6 +520,13 @@ func _on_ai_step(event: Dictionary) -> void:
 		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
 		DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
 	_units.build(world, _geometry, _textures)
+	# **After** the rebuild, not before. `UnitsView.build` frees every unit
+	# node and clears the bodies, the states and the walks, so an event handed
+	# to the bodies first started a walk on nodes that were freed microseconds
+	# later: the computer's units teleported and `F` never played. The *next*
+	# event's rebuild ending this one is the design; this event's rebuild
+	# ending it is the bug.
+	_play_event_body(event, kind)
 	_refresh_status(_ai_note)
 
 
@@ -533,7 +541,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			# turn", and a body half way between two cells is not the state
 			# the last frame would have shown.
 			if _units != null:
-				_units.finish_walks()
+				_units.finish_walks(world)
 			_playback.skip()
 		return
 	var zoom: float = zoom_delta_for(event)
@@ -715,8 +723,9 @@ func move_selected(x: int, y: int) -> MoveResult:
 
 
 func attack_cell(x: int, y: int) -> AttackResult:
+	var slot: int = _selected
 	var shot: AttackResult = world.submit_attack(
-		AttackCommand.create(_selected, x, y))
+		AttackCommand.create(slot, x, y))
 	# The reaction count belongs on screen for the same reason
 	# [method move_selected] puts it there: a shot that drew return fire is
 	# the player's business, and `World.submit_attack` has been filling
@@ -724,6 +733,10 @@ func attack_cell(x: int, y: int) -> AttackResult:
 	_after_command(shot.reason if not shot.fired
 		else "%d, %d %s" % [shot.outcomes.size(), shot.reactions.size(),
 			_strings.text("hud.reactions")])
+	# After `_after_command`, for the same reason `move_selected` walks after
+	# it: the rebuild is what creates the state this drives.
+	if shot.fired and _units != null and _units.states.has(slot):
+		_units.states[slot].fire()
 	return shot
 
 

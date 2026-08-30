@@ -1484,7 +1484,7 @@ Closed in this revision, each with the address that proves it:
 | **`BREAK` semantics** | §9 | `StopAnimationAtNoteEventCallback` registered on the literal `"BREAK"` at `0x0042c5d0` for every combat animation |
 
 Closed in **slice 4**, by enumerating the selectors rather than reading them
-(`tools/charisma_tables.py --check`, 33 checks):
+(`tools/charisma_tables.py --check`, 35 checks):
 
 | Item | Where it is now documented | Proof |
 |------|---------------------------|-------|

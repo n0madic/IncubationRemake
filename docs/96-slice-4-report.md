@@ -312,6 +312,40 @@ Deliberately absent: cutscenes and the sequence player
 it), and animation blending (`weight` is written and never read,
 [`40` §4.10](40-charisma-model-animation.md)).
 
+## 9.1 Three bugs the suite could not see, and how they were found
+
+The suite covers `core/` and the pieces of `game/` that can be driven without
+a scene. Nothing tests `main.gd`'s *event wiring*, and all three of the
+slice's remaining bugs lived exactly there — each one leaving every check
+green:
+
+1. **The computer's walks and shots were wiped in the frame that started
+   them.** `_on_ai_step` handed the event to the bodies and *then* called
+   `UnitsView.build`, which frees every unit node and clears the bodies, the
+   states and the walks. The next event's rebuild ending a walk is the design;
+   this event's rebuild ending it is the bug. The comment on the function even
+   claimed the opposite, having been written for the player's path, where the
+   rebuild really does come first.
+2. **`finish_walks` did not finish anything.** It called `rest()` on the state
+   and never touched the node, so a completed walk left the body wherever the
+   last interpolated frame put it. For `AIPlayback.skip()` that strands bodies
+   between cells — the one state `skip()` promises cannot happen.
+3. **The player's own shot never played `F`.** `attack_cell` submitted the
+   attack and stopped; the only `fire()` caller was the computer's event path.
+
+The first was proved end-to-end rather than by reading: a probe ends turns
+until the computer acts, then counts frames in which a body is between two cell
+centres. With the fix, the same four move events give **26 frames of walking
+and 3 with a body off-centre**; with the call moved back before the rebuild,
+**0 and 0**.
+
+The second is now a permanent check — `walk.moves`, `walk.not_arrived` and
+`walk.lands_on_the_last_cell` — and it caught a mistake in its own first
+draft twice over: the test node started at the origin, so "it has left its
+first cell" was true before the walk ran, and the three test cells stepped off
+the edge of a 20-wide map onto the next row, landing the body a full map width
+away and blaming the code for it.
+
 ## 10. Verification
 
 | Criterion | Result |
@@ -326,11 +360,12 @@ it), and animation blending (`weight` is written and never read,
 | Cache size and conversion time | 2.87 MiB of bodies against an 8 MiB ceiling; 5.1 s |
 | `core` isolation and typed warnings | unchanged; the warnings gate found `game/charisma/` on its own and rejected four files until every `Variant` cast was typed |
 | Game fonts | four converted, 4 × 224 glyphs, descents matching `docs/60` §5 including its space/NBSP exception; the HUD draws in `font_2` |
-| Mutation battery | 7 pose + 4 state-machine + 2 font + 9 Python mutants; the three survivors are closed and re-checked |
+| The computer's turn is played on foot | proved end-to-end: 26 frames walking, 3 with a body between cell centres; 0 and 0 with the fix reverted |
+| Mutation battery | 7 pose + 4 state-machine + 3 walk + 2 font + 9 Python mutants; every survivor is closed and re-checked |
 
 Regression, all green: the 38-command always-run block,
 `bash tools/dbgcall/selftest.sh`, the four-command `docs/40` §12 gate, and
-**27 suites, 1588 checks, 0 failures** with `remake_convert --check` at
+**27 suites, 1593 checks, 0 failures** with `remake_convert --check` at
 101/101. The shipping build exports and runs
 `_C_140` with no script errors.
 

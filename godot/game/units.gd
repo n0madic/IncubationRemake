@@ -185,9 +185,9 @@ func is_walking() -> bool:
 ##
 ## `AIPlayback.skip()` must leave the map in exactly the state the last frame
 ## would have shown, and a walk half way between two cells is not that.
-func finish_walks() -> void:
+func finish_walks(world: World) -> void:
 	for slot: int in _walks.keys():
-		_snap_to_end(slot)
+		_snap_to_end(slot, world)
 	_walks.clear()
 
 
@@ -198,7 +198,7 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 	var cells: PackedInt32Array = DictRead.as_int32_array(walk["cells"])
 	var width: int = DictRead.as_int(walk["width"])
 	if elapsed >= seconds:
-		_snap_to_end(slot)
+		_snap_to_end(slot, world)
 		_walks.erase(slot)
 		return
 	walk["elapsed"] = elapsed
@@ -218,10 +218,29 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 		node.basis = WorldSpace.yaw_basis(FACING_ANGLES[facing])
 
 
-func _snap_to_end(slot: int) -> void:
-	if not states.has(slot):
+## Put a walking body on its **last cell** and stop the walk cycle.
+##
+## Calling `rest()` alone -- which is all this did at first -- leaves the node
+## wherever the last interpolated frame put it, short of the destination. For
+## the player's move that off-centre idle persists until the next command's
+## rebuild; for `AIPlayback.skip()` it leaves bodies stranded between cells,
+## which is precisely the state `skip()` promises cannot happen.
+func _snap_to_end(slot: int, world: World) -> void:
+	if states.has(slot):
+		states[slot].rest()
+	if not _walks.has(slot):
 		return
-	states[slot].rest()
+	var walk: Dictionary = _walks[slot]
+	var cells: PackedInt32Array = DictRead.as_int32_array(walk["cells"])
+	var width: int = DictRead.as_int(walk["width"])
+	var node: Node3D = _node_of(slot)
+	if node == null or cells.size() < 2:
+		return
+	node.position = _cell_position(cells[cells.size() - 1], width, world)
+	var facing: int = _facing_of(cells[cells.size() - 2],
+		cells[cells.size() - 1], width)
+	if facing >= 0:
+		node.basis = WorldSpace.yaw_basis(FACING_ANGLES[facing])
 
 
 func _node_of(slot: int) -> Node3D:

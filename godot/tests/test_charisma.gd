@@ -179,6 +179,7 @@ func run(h: TestHarness) -> void:
 			% [ignored_targets.size(),
 				", ".join(PackedStringArray(ignored_targets.keys()))])
 	_state_machine(h, clips)
+	_walking(h)
 
 
 ## What [CharismaState] plays and when it stops.
@@ -311,3 +312,73 @@ func _read(relative: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {}
 	return CacheLoader.read_json(path)
+
+
+## The walk: a body between two cells while it runs, and **on** its last cell
+## when it stops.
+##
+## The second half is why this exists. `finish_walks` at first only called
+## `rest()` on the state and never touched the node, so a finished walk left
+## the body wherever the previous interpolated frame put it -- short of its
+## destination. For the player that off-centre idle sits there until the next
+## command; for `AIPlayback.skip()` it strands bodies between cells, which is
+## exactly the state `skip()` promises cannot happen. Nothing else in the
+## suite looks at a unit node's position.
+func _walking(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("walk.mission", false, "_C_140 is not in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = -1
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if not view.is_empty() and DictRead.as_int(view["player"]) == 0:
+			slot = candidate
+			break
+	if slot < 0:
+		h.check("walk.unit", false, "no player unit on _C_140")
+		return
+
+	var units: UnitsView = UnitsView.new()
+	units.name = "unit_%d_holder" % slot
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+
+	# Three cells in a row from the unit's own, which is somewhere standable.
+	# The step is chosen to stay in the row: `+1` on a cell index is `+1` in x
+	# only while x stays below the width, and past it the index wraps onto the
+	# next row -- which the first version of this test did, landing the body a
+	# full map width away and blaming the code.
+	var view: Dictionary = world.unit_view(slot)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	var width: int = world.resource.width
+	var step: int = 1 if x + 2 < width else -1
+	var cells: PackedInt32Array = PackedInt32Array([
+		y * width + x, y * width + x + step, y * width + x + step * 2])
+	var last: Vector3 = WorldSpace.cell_centre(x + step * 2, y,
+		world.state.height_at(cells[2]))
+
+	# The node starts **on its first cell**. Leaving it at the origin made
+	# `walk.moves` pass for free -- the origin is metres from any cell centre,
+	# so "it is not where it started" was true before the walk ran at all.
+	var first: Vector3 = WorldSpace.cell_centre(x, y,
+		world.state.height_at(cells[0]))
+	node.position = first
+	units.start_walk(slot, cells, width, 1.0)
+	h.check("walk.started", units.is_walking(), "three cells over one second")
+	units.animate(0.5, world)
+	var midway: Vector3 = node.position
+	h.check("walk.moves", midway.distance_to(first) > 0.1,
+		"half way along, the body has left its first cell")
+	h.check("walk.not_arrived", midway.distance_to(last) > 0.1,
+		"and has not reached the last one")
+
+	units.finish_walks(world)
+	h.check("walk.stopped", not units.is_walking(), "the walk is over")
+	h.check("walk.lands_on_the_last_cell",
+		node.position.distance_to(last) < 0.001,
+		"%.3f m from the destination centre" % node.position.distance_to(last))
+	units.free()
