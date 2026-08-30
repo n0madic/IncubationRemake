@@ -57,6 +57,7 @@ const OWN: Dictionary = {
 	"hud.reactions": {"English": "reaction shots"},
 	"hud.hidden": {"English": "hidden"},
 	"hud.contact": {"English": "contact"},
+	"hud.not_yours": {"English": "not your unit"},
 	"hud.ai_turn": {"English": "the aliens are moving"},
 	"hud.ai_skip": {"English": "any key skips the replay"},
 	"hud.defeat": {"English": "mission failed"},

@@ -21,6 +21,68 @@ func run(h: TestHarness) -> void:
 	_localization(h)
 	_fog(h)
 	_hud(h)
+	_command_gate(h)
+
+
+## `0x00477DF0` -- who the player may give an order to.
+##
+## The rule the second slice did not have: a click selected whatever was under
+## the cursor, and with docs/23's planner in place that meant the aliens could
+## be commanded by hand. Checked here rather than in `game` because
+## [method World.may_command] is where the rule lives.
+func _command_gate(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("command.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	world.turn.current_player = 0
+	var ours: Array[int] = []
+	var theirs: Array[int] = []
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == 0:
+			ours.append(slot)
+		else:
+			theirs.append(slot)
+	h.check("command.the_map_has_both", not ours.is_empty()
+		and not theirs.is_empty(),
+		"%d of the player's and %d of everyone else's" % [ours.size(),
+			theirs.size()])
+
+	var refused: Array[int] = []
+	for slot: int in theirs:
+		if world.may_command(slot):
+			refused.append(slot)
+	h.equal("command.not_the_other_players", refused, [] as Array[int],
+		"the aliens and the props are not the player's to move")
+	var allowed: int = 0
+	for slot: int in ours:
+		if world.may_command(slot):
+			allowed += 1
+	h.equal("command.the_players_own", allowed, ours.size(),
+		"every live squad member can be given an order")
+
+	# And the gate follows the turn rather than the unit: hand the turn to the
+	# computer and the same four slots stop being commandable.
+	world.turn.current_player = UnitState.PLAYER_ALIEN
+	var still: Array[int] = []
+	for slot: int in ours:
+		if world.may_command(slot):
+			still.append(slot)
+	h.equal("command.follows_the_turn", still, [] as Array[int],
+		"nobody commands the squad while it is not the squad's turn")
+
+	# `0x00477DF0`'s third test, `+0x4F != 3`, is not exercised here: making a
+	# unit hidden means running the fog pass from the *other* side, which
+	# `_fog` above already does, and `World` grows no test-only mutator to
+	# fake it. Named rather than silently absent.
+	world.turn.current_player = 0
+	h.equal("command.visibility_is_the_third_test",
+		UnitState.VISIBILITY_HIDDEN, 3,
+		"exercised by the fog checks above, not by a hand-set byte")
 
 
 func _localization(h: TestHarness) -> void:

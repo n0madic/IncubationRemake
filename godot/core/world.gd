@@ -457,6 +457,31 @@ func live_unit_count(player: int) -> int:
 	return n
 
 
+## `0x00477DF0`'s three tests -- whether the player holding the turn may give
+## this slot an order.
+##
+## Alive, `+0x45` equal to `aGetCurrentPlayer`, and `+0x4F` not hidden. That
+## routine is what `0x00453CF0` -- the game's own "cycle the selected friendly
+## unit", docs/29's command 14 -- walks the 200 slots with, so it is the
+## engine's own notion of a unit you can command.
+##
+## In `core` rather than in `game` because it is a rule about the simulation
+## and not about the mouse: a demo run, a click and a test all have to agree
+## on it. `game` used to select whatever was under the cursor and consult the
+## owner only to choose between attacking and selecting -- which was invisible
+## while the aliens never acted, and let a player take the computer's turn for
+## it once they did.
+func may_command(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if unit.hp == 0:
+		return false
+	if unit.player != turn.current_player:
+		return false
+	return unit.visibility != UnitState.VISIBILITY_HIDDEN
+
+
 ## `aGetHitProbability` (`0x0046A270`) for one shooter and one target.
 ##
 ## A scalar, not a [HitChance]: `core` hands out values and this is the one the

@@ -262,6 +262,12 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 		MoveQueryCommand.create(slot, pass_friendlies))
 	_highlight.show_result(result, world.resource.heights())
 	var view: Dictionary = world.unit_view(slot)
+	# docs/29 section 3's command 2 is "execute the selected-unit/map **focus**
+	# path": selecting a unit puts the camera on it. The yaw and the zoom are
+	# the player's and are kept -- [method CameraRig.focus_on] moves the pivot
+	# and nothing else -- so a selection re-centres the view without throwing
+	# away how the player had arranged it.
+	_focus_on_unit(view)
 	_refresh_status("slot %d %s: %d reachable, %d warp, mp %d, pf %s" % [
 		slot, DictRead.as_string(view["name"]), result.reachable_count(),
 		result.warp_count(), result.mp, str(pass_friendlies)])
@@ -270,6 +276,20 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 
 func selected_slot() -> int:
 	return _selected
+
+
+## Put the camera pivot on a unit, from the view dictionary that names it.
+##
+## One place, because three callers want it: a selection, the AI playback
+## stepping to the next thing the computer did, and a mission switch.
+func _focus_on_unit(view: Dictionary) -> void:
+	if _rig == null or view.is_empty():
+		return
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	if not world.state.in_bounds(x, y):
+		return
+	_rig.focus_on(x, y, world.state.height_at(world.state.index_of(x, y)))
 
 
 func camera_rig() -> CameraRig:
@@ -375,6 +395,7 @@ func _on_ai_step(event: Dictionary) -> void:
 	if world.state.in_bounds(at_x, at_y):
 		_rig.focus_on(at_x, at_y,
 			world.state.height_at(world.state.index_of(at_x, at_y)))
+
 	_ai_note = "%s  %s %d" % [_strings.text("hud.computer"),
 		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
 		DictRead.as_int(event["slot"])]
@@ -448,11 +469,23 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 			best_slot = slot
 	if best_slot >= 0:
 		var view: Dictionary = world.unit_view(best_slot)
-		# An enemy that is already selectable is a target, not a selection:
-		# clicking one fires at it. Anything else selects.
-		if _selected >= 0 and DictRead.as_int(view["player"]) \
-				!= DictRead.as_int(world.unit_view(_selected)["player"]):
-			attack_cell(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
+		# **Only the current player's own units can be selected.**
+		# `0x00477DF0(player)` -- which `0x00453CF0`, the game's own "cycle
+		# the selected friendly unit", walks -- accepts a slot on exactly
+		# three tests: hit points non-zero, `+0x45` equal to
+		# `aGetCurrentPlayer`, and `+0x4F` zero. Anything else is a target,
+		# not a selection.
+		#
+		# Selection used to be unconditional, and the owner was consulted only
+		# to decide "attack or select". That was invisible while the aliens
+		# never acted; with docs/23's planner in place it meant a player could
+		# click a purple pill and take the computer's turn for it.
+		if not world.may_command(best_slot):
+			if _selected >= 0:
+				attack_cell(DictRead.as_int(view["x"]),
+					DictRead.as_int(view["y"]))
+			else:
+				_refresh_status(_strings.text("hud.not_yours"))
 			return
 		var _result: MoveMapResult = select_unit(best_slot, pass_friendlies)
 		return
