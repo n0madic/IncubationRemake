@@ -920,6 +920,37 @@ pose with this rule produces a recognisable humanoid biped.
 
 ---
 
+### 5.3 Bone translations are in 1/16 of a world unit
+
+**Found in slice 4, and stated nowhere above.** A `SkeletonNode`'s translation
+and a mesh's vertices are not in the same unit. `P0_000`'s whole skeleton spans
+171 units in z while one of its torso meshes is 536 units tall, so a body
+assembled from the two as they stand is a 10 cm pile of 30 cm parts.
+
+The factor is measured off the one thing that must be true of a standing
+figure — its lowest vertex touches the ground. Solving
+
+    min over meshed parts of ( s * z_bone + z_meshmin ) = 0
+
+gives **16.01** for `P0_000`, and at exactly 16 the lowest vertex of `P0_000`,
+`P0_003`, `P1_000` and `P1_003` sits at **−0.07 world units** — 0.04 mm, from
+four independent models — with body heights of 1.83 m and 1.91 m against the
+1.8 m their type's own height column implies (`docs/21` §5). `PC_000` lands at
++9.3. The neighbouring integers 15 and 17 miss by 6.6 units, so the value is
+determined and not merely plausible.
+
+16 is `1 << 4`, the same fixed-point shift [`30` §2.5](30-eng3d-ascii-formats.md)
+records for `.3DW` positions.
+
+**Where the engine applies it is UNVERIFIED.** It is not `StdModel`'s scale —
+§6.2 shows that defaults to `(1, 1, 1)` and no shipped file changes it — so it
+lives in the Charisma-to-Eng3d bridge, which is not decompiled. The number is
+verified; its origin is not.
+
+Checked by `python3 tools/charisma_tables.py --check gog_incubation`.
+
+---
+
 ## 6. Runtime: how a track drives a bone
 
 `V100Part::Update` (`0x004a6807`, vtable slot 4 of `V100Part`) is the whole
@@ -1173,6 +1204,12 @@ correctly.
 Filename grammar: `P<class>[_<family><variant>]_<index>`, where `<class>` is the
 unit class (`P0`…`P5`, `PC`, `PR`, `PS`).
 
+**Amended (slice 4).** That grammar is right for the *animations* and too
+narrow for the *models*: `0x0042D070` returns `PC_ArmL_011` and `PC_ArmR_011`,
+and both are shipped `CHData/Objects/*.cho`. The middle segment is a word, not
+a letter plus a digit. A registry scan built on the narrow form finds 102 of
+the 104 models the engine registers and looks complete.
+
 ### 7.2 What the family letter selects
 
 The names are not built at runtime — there is no `"%s_%c%d_%03d"` anywhere.
@@ -1191,8 +1228,85 @@ weapon id `aToggleWeaponModes` writes ([`25` §7](25-turn-and-round.md)).
 | `0x0042ddf0` | `S0` (+ `P4_S1_000`, `PC_F1_011`) | 30 | `fcn.004060b0` |
 | `0x0042e220` | `F0` (+ `F1` variants) | 33 | `fcn.004055e0` cases 1, 2, 3 |
 
-(A fourth sibling, `0x0042d070`, has the same shape but returns *model* names —
-`P0_000` … `PR_016` — not animations.)
+(A fourth sibling, `0x0042d070`, returns *model* names — `P0_000` … `PR_016` —
+not animations.)
+
+### 7.2.1 Amendments from slice 4 — the selectors, enumerated
+
+`tools/charisma_tables.py` reads these four routines by **interpreting** them:
+a bounded interpreter over exactly the instruction forms MSVC emitted for the
+cascades, with an unknown opcode a hard error. Enumerating the whole domain
+(type `0..0x45`, weapon `0..0x31`, player `{0,1,2,3,4,0xFC,0xFF}`) corrects two
+statements above and adds a third.
+
+**1. The model selector is three-level, not "the same shape".** `0x0042D070`
+switches on the unit type (`+0x4C`), then the weapon (`+0x3F`), then the
+**player** (`+0x45`):
+
+```
+0042D070  mov  al, [ecx+0x45]      ; player
+          cmp  al, 0xFC
+          jne  0x42d088
+          xor eax, eax ; ret       ; player 0xFC -> nothing is written
+0042D088  mov  al, [ecx+0x4C]      ; unit type
+          cmp  al, 0x17            ; the hero
+          jne  0x42d09d
+          mov  byte [esp+8], 0     ; type  <- 0
+          mov  byte [esp+0x10], 1  ; player <- 1
+```
+
+Level-1 index bytes at `0x0042D788` and jump table at `0x0042D71C`; level 2 at
+`0x0042D840` / `0x0042D7D0`; level 3 is a jump table per weapon arm from
+`0x0042D870` upwards. The `P0_`/`P1_`/`P2_`/`P3_` prefixes are the **owner's
+skin**, the neutral player `0xFC` gets no body at all, and unit type `0x17` —
+the hero — is drawn as type 0 in player 1's colours whatever player owns it.
+Player `0xFF`, which the shipped missions do use, is *not* refused.
+
+Read as two levels the routine yields 26 distinct names. Read as three it
+yields **104**, which is exactly the number of `aCreateCHModelDescriptor`
+calls in `fcn.00407e90` — and exactly the same *set*, name for name. That
+agreement between two unrelated readings of the binary is the check the tool
+gates on.
+
+**2. The idle selector is not a pure function.** One arm, at `0x0042DF77`:
+
+```
+0042DF77  push 0xa ; push 0
+          call 0x4638e0            ; aRandom's float entry, frand(0, 10)
+          fcomp qword [0x4b1380]   ; = 5.0
+          fnstsw ax ; test ah, 0x41
+          jne  0x42dfbc            ; draw <= 5.0  -> PC_F1_011
+          mov  edi, str.PC_S0_011  ; draw >  5.0  -> PC_S0_011
+```
+
+This is the explanation of the unexplained parenthetical above: `S0`
+"(+ `P4_S1_000`, `PC_F1_011`)". The idle of one alien is a coin toss, and a
+remake needs a **presentation** random draw to reproduce it — not the
+simulation's, which a save hash covers.
+
+**3. Animation coverage is not total.** Nine unit types get fewer than three
+families, and the gaps are the engine's, not a reading error:
+
+| Type | Unit | Families it gets |
+|------|------|------------------|
+| 24 | Spider | `M` only |
+| 52 | Dec'Ther | `M`, `S` |
+| 55 | Cy'Coo | `F` only |
+| 60 | War'Coo | `F` only |
+| 61 | Norc'Yn | `S` only — and its "idle" is the `F1` name |
+| 62, 63 | Norc'Yn left and right arm | **none** |
+| 65 | Bea'Ther | `M`, `S` |
+| 66 | Bea'Coo | `M`, `S` |
+
+Types 62 and 63 are bodies with no clip of any family, which fits §6: a limb
+aimed by an `External*Movement` is driven by the game writing a matrix into it,
+not by an animation. So "`S` … is always playing" is true of most units and not
+of all, and a runtime must hold the bind pose rather than assume three clips.
+
+Counts: the model selector returns 104 names, `M` 28, `S` 30, `F` 33 — the
+last three as stated above — and every one of the 137 resolves to a shipped
+file. 29 of the 33 `F` clips carry a `BREAK` note; the other four end at their
+own duration.
 
 `fcn.004055e0(slot, unit, kind)` in `a3DObjects.cpp` is the "start animation"
 entry point, and `kind` picks both the selector and the playback settings:
@@ -1369,6 +1483,17 @@ Closed in this revision, each with the address that proves it:
 | **Animation family letters** | §7.2 | three selector functions (`0x0042da40` `M`, `0x0042ddf0` `S`, `0x0042e220` `F`) and their call sites in `aTacTools.cpp` / `aAnimations.cpp` / `a3DObjects.cpp` |
 | **`BREAK` semantics** | §9 | `StopAnimationAtNoteEventCallback` registered on the literal `"BREAK"` at `0x0042c5d0` for every combat animation |
 
+Closed in **slice 4**, by enumerating the selectors rather than reading them
+(`tools/charisma_tables.py --check`, 33 checks):
+
+| Item | Where it is now documented | Proof |
+|------|---------------------------|-------|
+| **What the model selector switches on** | §7.2.1 | three levels — type `+0x4C`, weapon `+0x3F`, **player** `+0x45`; index/jump tables at `0x0042D788`/`0x0042D71C`, `0x0042D840`/`0x0042D7D0` and `0x0042D870`+. Read two-level it gives 26 names; read three-level, exactly the 104 `fcn.00407e90` registers |
+| **The `S0` parenthetical** | §7.2.1 | `0x0042DF77` draws `frand(0, 10)` from `0x004638E0` and compares it against the `5.0` at `0x004B1380`: the arm returns `PC_S0_011` or `PC_F1_011` |
+| **The model filename grammar** | §7.1 | too narrow as written — `PC_ArmL_011` and `PC_ArmR_011` are shipped models the selector returns |
+| **Bone-to-mesh scale** | §5.3 | 16, measured from four models' feet landing at −0.07 world units; 15 and 17 miss by 6.6 |
+| **Which types get which families** | §7.2.1 | nine types get fewer than three; types 62 and 63 get none, which fits §6's `External*Movement` limbs |
+
 One further entry is **closed, but kept written out** because a remake still has
 to act on it rather than merely read it:
 
@@ -1441,6 +1566,14 @@ python3 tools/cha_parse.py --check gog_incubation
 python3 tools/cha_parse.py --notes gog_incubation
 python3 tools/cha_parse.py --cross-check gog_incubation
 python3 tools/cha_parse.py --verify-convention gog_incubation
+
+# the four name selectors, enumerated by interpreting them; 33 corpus checks
+python3 tools/charisma_tables.py --check gog_incubation
+python3 tools/charisma_tables.py --names gog_incubation
+python3 tools/charisma_tables.py --json  gog_incubation
+# the pose fixture the remake's GDScript sampler is diffed against
+python3 tools/charisma_tables.py gog_incubation \
+    --emit-pose-cases tests/fixtures/charisma/cases_pose.json
 
 # pose a skeleton: OBJ line segments per frame + orthographic PNG sheet
 python3 tools/cho_export.py gog_incubation/CHData/Objects/P0_000.cho

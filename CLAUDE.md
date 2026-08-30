@@ -52,6 +52,7 @@ python3 tools/blob_tables.py        --check gog_incubation    # 259 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
+python3 tools/charisma_tables.py    --check gog_incubation    # 33 checks
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -85,6 +86,8 @@ python3 tools/turn_runtime.py    --check gog_incubation \
 python3 tools/movemap_gold.py    --emit-allowance-cases tests/fixtures/movemap/cases_allowance.json
 python3 tools/movemap_gold.py    --selftest-process-scope
 python3 tools/lcl_runtime.py     --emit-cases tests/fixtures/lcl/cases_lcl.json --root gog_incubation
+python3 tools/charisma_tables.py gog_incubation \
+    --emit-pose-cases tests/fixtures/charisma/cases_pose.json
 python3 tools/ai_runtime.py      --emit-cases tests/fixtures/ai/cases_ai.json --root gog_incubation
 ```
 
@@ -123,6 +126,15 @@ on `Level01e` of `World_A00`, 20x20, with its embedded `.lev` at +7541 — but i
 stays outside the always-run block because those files are gitignored, and it
 exits non-zero when there is nothing to parse.
 
+`charisma_tables.py` is the fourth slice's: it enumerates the four name
+selectors of `docs/40` §7.2 by **interpreting** the `switch` cascades in
+`Incubation.exe`, and its strongest check is that the result equals, exactly,
+the 104 models and 30 idle animations `fcn.00407e90` registers eagerly -- two
+readings of the same binary that share no code. It also pins the bone-to-mesh
+scale of 16 (`docs/40` §5.3) and the pose of all 311 (model, clip) pairings.
+It emits the Godot pose fixture too, with the root **positional**:
+`python3 tools/charisma_tables.py gog_incubation --emit-pose-cases tests/fixtures/charisma/cases_pose.json`.
+
 `--verify-convention` and `charisma_selftest.py` are the two that guard *meaning* rather than structure: the first gates on the quaternion-component hypothesis still explaining ≥80 % of tracks, the second asserts decoded key values and times. Structure-only checks pass unchanged when components are permuted, so do not remove either.
 
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
@@ -130,7 +142,9 @@ exits non-zero when there is nothing to parse.
 `interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`,
 `info_parse`, `movemap_runtime`, `movemap_gold`, `turn_runtime`,
 `combat_runtime`, `interact_runtime`, `lcl_runtime` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
-`remake_convert` takes it positionally **and** wants `--check` as a bare flag.
+`remake_convert` takes it positionally **and** wants `--check` as a bare flag;
+`charisma_tables` takes it as the argument to `--check` but **positionally**
+for `--emit-pose-cases`, which is the one tool that does both.
 `sav_parse` takes it positionally but only with `--selftest`, `seq_parse`
 takes it positionally with `--check` as a bare flag, and `dbgcall_patches`
 takes either the root or a path to `Incubation.exe`, positionally. Check `--help` rather than guessing.
@@ -298,10 +312,19 @@ built by any of the format tools; `docs/92` records its architecture,
 the second — the turn, combat, visibility, interaction and the mission-script
 interpreter, with `_C_140` played and won in an exported build.
 
-`core/lcl/` is a **subdirectory**, and both `godot/tests/runner.gd` and
-`test_isolation.gd` scan `core/` recursively for that reason: a scan that
+`game/charisma/` is the fourth slice's: the model, the clip, the track
+sampler, `V100Part::Update`, the body and its state machine. `core/lcl/` is a
+**subdirectory**, and both `godot/tests/runner.gd` and
+`test_isolation.gd` scan `core/` *and* `game/` recursively for that reason: a scan that
 stopped at the top level would exempt every file in it from the warnings gate
 and the isolation sweep.
+
+`docs/96` reports the fourth -- the bodies: Charisma models, skeletons and the
+three gameplay animation families, `_C_140` played with bodies that walk and
+shoot. Its two corrections to a delivered spec are that the model selector is
+**three-level** (type, weapon *and player*) and that the idle selector has a
+**randomised arm**; its own finding is that bone translations are in 1/16 of a
+world unit while mesh vertices are in world units.
 
 `docs/93` §10 and §11 are dated addenda recording what the slice left open and
 what later closed it: §10 the ladder step and the movement allowance (both
