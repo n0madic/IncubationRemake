@@ -37,12 +37,21 @@ var _unit_geometry: Dictionary = {}
 var _textures: Dictionary = {}
 ## Names the cache does not carry, reported once rather than per rebuild.
 var _missing: PackedStringArray = PackedStringArray()
+## The draw the idle selector's one randomised arm needs (`0x0042DF77`).
+##
+## **Its own generator, never [member World.rng] or the C runtime's.** Both of
+## those are inside [CanonicalHash]: a body choosing which flourish to stand in
+## would change the save hash, which is exactly the kind of shortcut that looks
+## harmless. Seeded from the mission name so a screenshot is reproducible.
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
-static func open(cache_dir: String, textures: Dictionary) -> CharismaLibrary:
+static func open(cache_dir: String, textures: Dictionary,
+		mission: String = "") -> CharismaLibrary:
 	var library: CharismaLibrary = CharismaLibrary.new()
 	library._cache_dir = cache_dir
 	library._textures = textures
+	library._rng.seed = hash(mission)
 	library._selectors = CacheLoader.read_json(
 		cache_dir + "/tables/charisma.json")
 	library._unit_geometry = DictRead.as_dict(CacheLoader.read_json(
@@ -95,6 +104,22 @@ func name_for(selector: String, type_id: int, weapon: int, player: int,
 static func _name_of(outcome: Dictionary) -> String:
 	var value: Variant = outcome.get("name", null)
 	return "" if value == null else DictRead.as_string(value)
+
+
+## A draw in `[0, 10)`, the span `0x0042DF77` passes to `aRandom`.
+func idle_roll() -> float:
+	return _rng.randf() * 10.0
+
+
+## The three clips a unit's `(type, weapon, player)` selects, in the order
+## [method CharismaState.create] wants them: idle, move, fire. Any of them may
+## be null, and for nine unit types at least one always is.
+func clips_for(type_id: int, weapon: int, player: int) -> Array[CharismaClip]:
+	return [
+		clip(name_for(SELECTOR_IDLE, type_id, weapon, player, idle_roll())),
+		clip(name_for(SELECTOR_MOVE, type_id, weapon, player)),
+		clip(name_for(SELECTOR_FIRE, type_id, weapon, player)),
+	]
 
 
 func model(model_name: String) -> CharismaModel:

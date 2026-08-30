@@ -37,11 +37,17 @@ const FACING_ANGLES: Array[int] = [0, 0xC00, 0x800, 0x400,
 
 const CAPSULE_RADIUS: float = 0.35
 
+
 ## Set once by [method build]; the bodies and the clips of this mission.
 var library: CharismaLibrary = null
 ## Slot -> the body node built for it this rebuild, so the animator can drive
 ## bodies without walking the scene tree looking for them.
 var bodies: Dictionary[int, CharismaBody] = {}
+## Slot -> what that body is playing.
+var states: Dictionary[int, CharismaState] = {}
+## Slot -> an in-progress walk, `{"cells": PackedInt32Array, "width": int,
+## "elapsed": float, "seconds": float}`. Empty between walks.
+var _walks: Dictionary[int, Dictionary] = {}
 
 
 func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
@@ -52,6 +58,8 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		remove_child(child)
 		child.free()
 	bodies.clear()
+	states.clear()
+	_walks.clear()
 	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
 	var types: UnitTypeTable = world.unit_types()
 	for slot: int in world.unit_slots():
@@ -108,7 +116,9 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var body: CharismaBody = _body_for(view)
 	if body != null:
 		bodies[slot] = body
-		body.pose(null, 0.0)
+		var clips: Array[CharismaClip] = library.clips_for(type_id,
+			DictRead.as_int(view["weapon"]), player)
+		states[slot] = CharismaState.create(body, clips[0], clips[1], clips[2])
 		node.add_child(body)
 		return node
 
@@ -130,6 +140,115 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		capsule_node.position = Vector3(0.0, capsule.height * 0.5, 0.0)
 		node.add_child(capsule_node)
 	return node
+
+
+## Advance every body's animation, and any walk in progress.
+##
+## Driven from `_process`. A rebuild throws the states away with the nodes, so
+## nothing here outlives the world state it was built from.
+func animate(delta: float, world: World) -> void:
+	for slot: int in states:
+		var state: CharismaState = states[slot]
+		var was_firing: bool = state.is_busy()
+		state.advance(delta)
+		# A one-shot that has just ended returns the body to the idle, which is
+		# what plays when nothing else does (docs/40 section 7.2).
+		if was_firing and not state.is_busy():
+			state.rest()
+	for slot: int in _walks.keys():
+		_advance_walk(slot, delta, world)
+
+
+## Walk a unit's node along `cells` -- map indices, source first -- over
+## `seconds`, playing its `M` clip for the duration.
+##
+## The **clock is the caller's**: the walk is told how long it has and fits
+## itself into that window. It never decides when the next thing happens, which
+## is what keeps [AIPlayback]'s `skip()` meaning "stop drawing" rather than
+## "stop simulating".
+func start_walk(slot: int, cells: PackedInt32Array, width: int,
+		seconds: float) -> void:
+	if cells.size() < 2 or seconds <= 0.0:
+		return
+	_walks[slot] = {"cells": cells, "width": width, "elapsed": 0.0,
+		"seconds": seconds}
+	if states.has(slot):
+		states[slot].walk()
+
+
+## True while any body is still walking, so a caller can wait for it.
+func is_walking() -> bool:
+	return not _walks.is_empty()
+
+
+## Put every unit where the world says it is and stop every walk.
+##
+## `AIPlayback.skip()` must leave the map in exactly the state the last frame
+## would have shown, and a walk half way between two cells is not that.
+func finish_walks() -> void:
+	for slot: int in _walks.keys():
+		_snap_to_end(slot)
+	_walks.clear()
+
+
+func _advance_walk(slot: int, delta: float, world: World) -> void:
+	var walk: Dictionary = _walks[slot]
+	var elapsed: float = DictRead.as_float(walk["elapsed"]) + delta
+	var seconds: float = DictRead.as_float(walk["seconds"])
+	var cells: PackedInt32Array = DictRead.as_int32_array(walk["cells"])
+	var width: int = DictRead.as_int(walk["width"])
+	if elapsed >= seconds:
+		_snap_to_end(slot)
+		_walks.erase(slot)
+		return
+	walk["elapsed"] = elapsed
+	_walks[slot] = walk
+	# Where along the whole path the body is, as a cell pair and a fraction.
+	var travelled: float = (elapsed / seconds) * float(cells.size() - 1)
+	var step: int = clampi(int(travelled), 0, cells.size() - 2)
+	var into: float = travelled - float(step)
+	var node: Node3D = _node_of(slot)
+	if node == null:
+		return
+	var from: Vector3 = _cell_position(cells[step], width, world)
+	var to: Vector3 = _cell_position(cells[step + 1], width, world)
+	node.position = from.lerp(to, into)
+	var facing: int = _facing_of(cells[step], cells[step + 1], width)
+	if facing >= 0:
+		node.basis = WorldSpace.yaw_basis(FACING_ANGLES[facing])
+
+
+func _snap_to_end(slot: int) -> void:
+	if not states.has(slot):
+		return
+	states[slot].rest()
+
+
+func _node_of(slot: int) -> Node3D:
+	return get_node_or_null(NodePath("unit_%d" % slot)) as Node3D
+
+
+func _cell_position(index: int, width: int, world: World) -> Vector3:
+	var x: int = index % width
+	var y: int = index / width
+	var cell: Dictionary = world.cell_view(x, y)
+	return WorldSpace.cell_centre(x, y, DictRead.as_int(cell.get("height", 0)))
+
+
+## The facing index of one step, or -1 when the two cells are not neighbours.
+##
+## `ExecuteMove.FACING_OF_STEP` **is** the table, so it is read rather than
+## restated. Writing the inverse out by hand here got it wrong on the first
+## try -- the eight facings are not in compass order and never were -- and a
+## second copy of a table is a second thing to get wrong. Reading a `core`
+## constant mutates nothing.
+func _facing_of(from_index: int, to_index: int, width: int) -> int:
+	var step: Vector2i = Vector2i(
+		(to_index % width) - (from_index % width),
+		(to_index / width) - (from_index / width))
+	if not ExecuteMove.FACING_OF_STEP.has(step):
+		return -1
+	return DictRead.as_int(ExecuteMove.FACING_OF_STEP[step])
 
 
 ## The Charisma body a unit's `(type, weapon, player)` selects, or null.

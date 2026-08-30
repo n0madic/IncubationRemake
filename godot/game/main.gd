@@ -35,6 +35,14 @@ var _rig: CameraRig = null
 ## How far out the view opens, in metres. Chosen to clear the ceiling of the
 ## interiors the demo missions are: see [method _frame_units].
 const OPENING_ZOOM_METRES: float = 8.0
+## How long a body takes to cross one map field while walking.
+##
+## A remake decision, like the 30 fps of [CharismaState]: the original's own
+## rate was whatever the machine rendered at. Chosen so that a full move reads
+## as a walk rather than a slide, and short enough that the computer's turn --
+## whose clock is [constant AIPlayback.STEP_SECONDS] and stays the master --
+## does not wait for it.
+const WALK_SECONDS_PER_STEP: float = 0.16
 var _status: Label = null
 var _hud: Hud = null
 var _strings: Localization = null
@@ -358,6 +366,42 @@ func _frame_units(mission_world: World) -> void:
 	_rig.set_zoom(minf(_rig.max_zoom, OPENING_ZOOM_METRES))
 
 
+## Give the computer's event to the body it is about.
+##
+## This is why the `move` event carries its route (`docs/96`): by the time the
+## playback reaches event *i* the world is already at the end of the turn, so
+## the path cannot be re-derived here -- it would be derived against the wrong
+## state. The event brought it.
+##
+## The rebuild in [method _after_command] happens *after* this, so the walk is
+## started on the nodes that already exist and the next event's rebuild ends
+## it; a walk never outlives the frame set it was started in.
+func _play_event_body(event: Dictionary, kind: String) -> void:
+	if _units == null:
+		return
+	var slot: int = DictRead.as_int(event["slot"])
+	if kind == "move":
+		var payload: Dictionary = DictRead.as_dict(event["payload"])
+		if payload.has("path"):
+			_walk_body(slot, DictRead.to_int32(payload["path"]),
+				DictRead.as_int(payload.get("steps", 0)))
+	elif kind == "fire" and _units.states.has(slot):
+		_units.states[slot].fire()
+
+
+## Walk a body along the cells a move actually entered.
+##
+## The duration is [constant WALK_SECONDS_PER_STEP] a step, so a long walk
+## takes longer than a short one, which is the only thing about it that is not
+## arbitrary. It is presentation: the world has already moved the unit, and a
+## walk that were interrupted would leave nothing behind.
+func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> void:
+	if _units == null or steps <= 0 or route.size() < 2:
+		return
+	_units.start_walk(slot, route, world.resource.width,
+		float(steps) * WALK_SECONDS_PER_STEP)
+
+
 ## The unit views, and through them this mission's bodies and their library.
 func units_view() -> UnitsView:
 	return _units
@@ -439,6 +483,8 @@ static func zoom_delta_for(event: InputEvent) -> float:
 func _process(delta: float) -> void:
 	if _playback.is_running():
 		_playback.advance(delta)
+	if _units != null:
+		_units.animate(delta, world)
 
 
 ## One event of the computer's turn: lead the camera to it and say what it was.
@@ -456,6 +502,7 @@ func _on_ai_step(event: Dictionary) -> void:
 	var to_y: int = DictRead.as_int(event["ty"])
 	var at_x: int = DictRead.as_int(event["x"])
 	var at_y: int = DictRead.as_int(event["y"])
+	_play_event_body(event, kind)
 	if kind == "move" or kind == "warp":
 		at_x = to_x
 		at_y = to_y
@@ -477,6 +524,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	# ends the showing; the world does not change either way.
 	if _playback.is_running():
 		if event is InputEventKey and event.is_pressed():
+			# The bodies are snapped first: `skip()` means "stop drawing the
+			# turn", and a body half way between two cells is not the state
+			# the last frame would have shown.
+			if _units != null:
+				_units.finish_walks()
 			_playback.skip()
 		return
 	var zoom: float = zoom_delta_for(event)
@@ -644,10 +696,16 @@ func _cell_under(screen: Vector2) -> Vector2i:
 ## Walks the selected unit. Public for the same reason [method select_unit] is:
 ## a demo run drives the path a click drives.
 func move_selected(x: int, y: int) -> MoveResult:
+	var slot: int = _selected
 	var moved: MoveResult = world.submit_move(
-		MoveCommand.create(_selected, x, y))
+		MoveCommand.create(slot, x, y))
 	_after_command(moved.reason if not moved.ok else "%d %s" % [
 		moved.reactions.size(), _strings.text("hud.reactions")])
+	# `MoveResult.route` is the walk's own -- source first, truncated where it
+	# actually stopped rather than where it was planned to. It is not in
+	# `to_dict()` and does not need to be: the player's move hands `game` the
+	# object itself.
+	_walk_body(slot, moved.route, moved.steps)
 	return moved
 
 

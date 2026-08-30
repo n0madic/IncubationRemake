@@ -178,6 +178,94 @@ func run(h: TestHarness) -> void:
 		"%d target(s) with no part, ignored rather than fatal: %s"
 			% [ignored_targets.size(),
 				", ".join(PackedStringArray(ignored_targets.keys()))])
+	_state_machine(h, clips)
+
+
+## What [CharismaState] plays and when it stops.
+##
+## The three rules that come from call sites rather than from the letters:
+## `S` loops because it is what plays when nothing else does, `M` loops for as
+## long as the walk lasts, and `F` plays **once** and halts at its `BREAK`
+## note because `fcn.004055E0` registers a stop callback on that text.
+func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
+	# A clip with a BREAK note and one without, taken from what the cache has
+	# rather than constructed, so the test is about shipped data.
+	var with_break: CharismaClip = null
+	var without: CharismaClip = null
+	for clip_name: String in clips:
+		var clip: CharismaClip = clips[clip_name]
+		if clip == null:
+			continue
+		if clip.break_time() >= 0.0 and with_break == null:
+			with_break = clip
+		elif clip.break_time() < 0.0 and clip.duration > 0.0 and without == null:
+			without = clip
+	h.check("break_note_found", with_break != null,
+		"" if with_break == null
+			else "%s breaks at %.1f of %.1f"
+				% [with_break.name, with_break.break_time(), with_break.duration])
+	if with_break == null:
+		return
+
+	# A body is not needed to test the clock, and not having one also proves
+	# the state machine tolerates a null body -- which is what a unit whose
+	# type has no model gets.
+	var state: CharismaState = CharismaState.create(null, without, without,
+		with_break)
+	h.equal("starts_idle", state.mode, CharismaState.Mode.IDLE)
+	h.check("idle_is_not_busy", not state.is_busy(), "nothing to wait for")
+
+	state.fire()
+	h.equal("fire_mode", state.mode, CharismaState.Mode.FIRE)
+	h.check("fire_is_busy", state.is_busy(), "a one-shot is running")
+	# Advance past the note but well short of the clip's end. It must have
+	# stopped, which is the whole difference `BREAK` makes.
+	var to_break: float = with_break.break_time() \
+		/ CharismaState.FRAMES_PER_SECOND
+	state.advance(to_break + 0.05)
+	h.check("fire_stops_at_break", not state.is_busy(),
+		"halted at %.1f, %.1f short of the clip's %.1f"
+			% [with_break.break_time(),
+				with_break.duration - with_break.break_time(),
+				with_break.duration])
+	state.rest()
+	h.equal("rests_after_fire", state.mode, CharismaState.Mode.IDLE)
+
+	# **A fire clip with no `BREAK` note.** Four of the 33 shipped `F` clips
+	# have none, so running out is a real end and not a safety net -- and it is
+	# the only case that tests "F plays once": with a note, the note stops it
+	# first and a looping one-shot would pass unnoticed.
+	var once: CharismaState = CharismaState.create(null, without, without,
+		without)
+	once.fire()
+	once.advance((without.duration + 1.0) / CharismaState.FRAMES_PER_SECOND)
+	h.check("fire_without_break_stops", not once.is_busy(),
+		"%s has no BREAK and ends at its own %.1f"
+			% [without.name, without.duration])
+
+	# An absent clip is normal -- nine unit types have one, and two have no
+	# clip at all. It must hold, not crash and not spin.
+	var bare: CharismaState = CharismaState.create(null, null, null, null)
+	bare.fire()
+	bare.advance(1.0)
+	bare.walk()
+	bare.advance(1.0)
+	h.check("null_clips_survive", true,
+		"a type with no clip holds its bind pose")
+
+	# The loop, which is the reason an idle can play for a whole mission -- and
+	# it is checked through `rest()`, the path a body actually takes after a
+	# shot, not only through the initial state. `mode` alone cannot show this:
+	# it stays `IDLE` whether the clip loops or has quietly stopped.
+	var looping: CharismaState = CharismaState.create(null, without, without,
+		with_break)
+	looping.fire()
+	looping.rest()
+	looping.advance((without.duration * 2.5) / CharismaState.FRAMES_PER_SECOND)
+	h.equal("idle_loops", looping.mode, CharismaState.Mode.IDLE)
+	h.check("idle_still_playing", looping.is_playing(),
+		"two and a half lengths of %s after a shot, still running"
+			% without.name)
 
 
 func _strings(value: Variant) -> PackedStringArray:
