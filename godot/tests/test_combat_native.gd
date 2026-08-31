@@ -33,6 +33,17 @@ static func _path() -> String:
 	return USER_CASES
 
 
+## The resolver's [TurnState] argument. The capture compares markers, action
+## points and the generator's seed; nothing in it reads the hero counter
+## `aRemoveUnitElement` keeps, so only the two fields the resolver itself uses
+## are set.
+func _turn(mode: int) -> TurnState:
+	var out: TurnState = TurnState.create()
+	out.mode = mode
+	out.turn = 1
+	return out
+
+
 func run(h: TestHarness) -> void:
 	h.begin("combat_native", TestHarness.ORACLE_NATIVE)
 	var path: String = _path()
@@ -254,7 +265,7 @@ func _attack_cases(h: TestHarness, combat: Dictionary, types: Dictionary,
 			shot_types, shot_weapons,
 			DictRead.as_int(case["ax"]), DictRead.as_int(case["ay"]),
 			DictRead.as_int(case["tx"]), DictRead.as_int(case["ty"]),
-			ai_level, players, mode, 0, rng)
+			ai_level, players, mode, _turn(mode), rng)
 		for outcome: Dictionary in result.outcomes:
 			markers[DictRead.as_int(outcome["marker"])] = true
 		if absf(rng.seed - DictRead.as_float(case["seed_after"])) > 0.5:
@@ -324,7 +335,8 @@ func _use_cases(h: TestHarness, combat: Dictionary, types: Dictionary,
 		var result: UseResult = Interact.execute(state, units,
 			use_types, use_weapons, control, unit, ai_level,
 			DictRead.as_int(combat["human_players"]),
-			DictRead.as_int(combat["game_mode"]), rng)
+			DictRead.as_int(combat["game_mode"]),
+			_turn(DictRead.as_int(combat["game_mode"])), rng)
 		kinds[result.kind] = true
 		if state.action_point_at(at) \
 				!= DictRead.as_int(case["action_point_after"]):

@@ -119,7 +119,7 @@ func _hash_and_save(h: TestHarness) -> void:
 	# that happened to cover only the counter cannot pass this.
 	var fields: Array[String] = ["turn", "current_player", "previous_player",
 		"player_count", "ai_level", "solo_flag", "player_kind", "end_state",
-		"reaction_counter"]
+		"reaction_counter", "hero_killed", "turn_control"]
 	for field: String in fields:
 		var moved: World = TestFixtures.tiny_world()
 		match field:
@@ -133,6 +133,9 @@ func _hash_and_save(h: TestHarness) -> void:
 			"end_state": moved.turn.end_state = PackedInt32Array([0, 5, 0, 0])
 			"reaction_counter": moved.turn.reaction_counter = \
 				PackedInt32Array([0, 0, 0, 9])
+			"hero_killed": moved.turn.hero_killed = \
+				PackedInt32Array([0, 1, 0, 0])
+			"turn_control": moved.turn.turn_control = 4
 		h.check("hash.covers_%s" % field,
 			moved.canonical_hash_hex() != base,
 			"moving %s must change the digest" % field)
@@ -143,8 +146,26 @@ func _hash_and_save(h: TestHarness) -> void:
 	live.turn.current_player = 255
 	live.turn.previous_player = 0
 	live.turn.reaction_counter = PackedInt32Array([2, 0, 0, 0])
-	var before: String = live.canonical_hash_hex()
-	var blob: PackedByteArray = live.save({"x": 1.0})
+	# The hero counter is live gameplay state now (docs/22 section 9.5), so a
+	# save that dropped it would un-fire a mission's defeat condition on
+	# reload. It is checked in both directions: it must reach the digest above
+	# and it must come back out of the blob below.
+	live.turn.hero_killed = PackedInt32Array([0, 0, 3, 0])
+	# **A load ends with a fog pass** -- `aLoad.cpp:1649` (`0x004490A9`) calls
+	# `aBuildVisibleMap(aGetCurrentPlayer())` after the objectives are read
+	# back, so the `+0x4F` bytes a save carries are not the ones the loaded
+	# mission plays with. The digest is therefore stable across a round trip
+	# from a world whose fog is already that pass's, and a world whose fog is
+	# whatever its `.lev` authored moves on the first load. Both are checked.
+	var authored: String = live.canonical_hash_hex()
+	var first: PackedByteArray = live.save({"x": 1.0})
+	var settled: World = TestFixtures.tiny_world()
+	h.check("save.the_load_rebuilds_the_fog",
+		settled.load_save(first) == SaveCodec.Result.OK
+			and settled.canonical_hash_hex() != authored,
+		"the authored +0x4F bytes survived a load, so the pass did not run")
+	var before: String = settled.canonical_hash_hex()
+	var blob: PackedByteArray = settled.save({"x": 1.0})
 	var reloaded: World = TestFixtures.tiny_world()
 	var code: int = reloaded.load_save(blob)
 	h.check("save.round_trip_accepts", code == SaveCodec.Result.OK,
@@ -156,6 +177,18 @@ func _hash_and_save(h: TestHarness) -> void:
 			and reloaded.turn.current_player == 255
 			and reloaded.turn.reaction_counter == PackedInt32Array([2, 0, 0, 0]),
 		str(reloaded.turn.view()))
+	h.equal("save.round_trip_preserves_the_hero_counter",
+		reloaded.turn.hero_killed, PackedInt32Array([0, 0, 3, 0]),
+		"docs/22 section 9.5: HeroKilled has to survive a save")
+	# **The one-shot latch is saved too**, by `aSaveViewPlayer` /
+	# `aLoadViewPlayer` (`0x0047DBE0` / `0x0047DC20`, 0x44C bytes from
+	# `0x005229D0`). This remake derives it from the turn counter instead, so
+	# a mid-mission save must not let the reset inside the one-shot run again
+	# and wipe the counter it just restored.
+	reloaded.submit_end_turn(EndTurnCommand.create())
+	h.equal("save.a_loaded_turn_does_not_re_run_the_one_shot",
+		reloaded.turn.hero_killed, PackedInt32Array([0, 0, 3, 0]),
+		"0x0043B78C clears +0x24, and a spent latch is what stops it")
 	# The schema rose to 4 with this slice, so a slice-1 save is refused by
 	# name rather than misread.
 	var stale: PackedByteArray = blob.duplicate()

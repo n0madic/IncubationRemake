@@ -55,9 +55,12 @@ var mode: int = MODE_CAMPAIGN
 ## `0x00517F50` -- zeroed by the refresh, so ticket numbering restarts every
 ## hand-over (docs/25 section 6).
 var reaction_counter: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
-## The player record's `+0x24`, one per slot -- what `HeroKilled` (docs/20
-## section 7.4) reads. A `.lev` carries no player records, so an authored
-## mission starts with all four clear and only a save can set one.
+## The player record's `+0x24` (`0x00509F48` + 40*p), one per slot -- what
+## `HeroKilled` (docs/20 section 7.4) reads and what
+## [method UnitState.remove] writes. A `.lev` carries no player records, so an
+## authored mission starts with all four clear; from there it is the removal
+## of a **hero** on a turn that has started that moves one (docs/22 section
+## 9.5). Each is one byte in the engine, so it wraps at 256.
 var hero_killed: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
 ## `0x004418B0` writes its one argument into `0x0043BE00`. **UNVERIFIED**: what
 ## reads it has not been traced. Carried so a later capture has something to

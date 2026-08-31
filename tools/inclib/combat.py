@@ -478,6 +478,9 @@ class CombatUnit:
     #: zeroes it; nothing in ``docs/22`` touches it, which is why it arrived
     #: here only when the AI started walking units.
     walked: int = 0
+    #: ``+0x4D`` -- 0 none, 1 unit-pool candidate, 2 hero.  Only
+    #: :func:`remove_unit_element` reads it, and ``docs/22`` §9.5 is why.
+    pool_flag: int = 0
     #: ``+0x1A..+0x1F`` in :data:`inclib.lev.SKILL_NAMES` order -- CON, LW, HW,
     #: TS, MS, LS.  A **list**, because the three implant boxes write to it.
     skills: list[int] = field(default_factory=lambda: [0] * 6)
@@ -526,6 +529,12 @@ class CombatWorld:
     #: ``0x00509E32`` -- the player holding the turn.  Only ``docs/21`` §5's
     #: ``special`` 9 arm reads it here, to rebuild the fog after a hatch.
     current_player: int = 0
+    #: ``0x00509E1D`` -- the turn counter, and the gate on the hero counter
+    #: (``docs/22`` §9.5).  Zero means no hand-over has happened yet.
+    turn: int = 0
+    #: The four player records' ``+0x24`` (``0x00509F48`` + 40·p), which the
+    #: LCL predicate ``HeroKilled`` reads.
+    hero_killed: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     rng: ARandom = field(default_factory=ARandom)
 
     def in_bounds(self, x: int, y: int) -> bool:
@@ -1421,7 +1430,9 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             dealt = apply_damage(world, target, damage, attacker.facing)
         killed = not target.alive
         if killed:
-            world.unit_at[world.index(target.x, target.y)] = -1
+            # ``aKillUnit`` (``0x00472920``) is the death sequence plus
+            # ``aRemoveUnitElement``, which is where the hero counter lives.
+            remove_unit_element(world, target)
         result.outcomes.append({
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
@@ -1504,6 +1515,42 @@ def free_slot(world: CombatWorld) -> int:
     return UNIT_SLOTS - 1
 
 
+#: ``+0x4D`` at or above this is a **hero**.
+HERO_POOL_FLAG = 2
+#: The player record's ``+0x24`` is one byte, so the count wraps.
+HERO_COUNT_WRAP = 256
+
+
+def remove_unit_element(world: CombatWorld, unit: CombatUnit) -> bool:
+    """``aRemoveUnitElement`` (``0x004779C0``) -- ``docs/22`` §9.5.
+
+    The three instructions this model used to skip:
+
+    .. code-block:: c
+
+       if (unit[+0x4D] >= 2 && getTurnCounter() != 0)   /* 0x00477A3B */
+           playerRecord(unit[+0x45])[+0x24]++;          /* 0x00477A53 */
+
+    ``playerRecord`` is ``0x0043BA00`` (base ``0x00509F48``, stride 40, four
+    records) and ``+0x24`` is what the LCL predicate ``HeroKilled`` reads
+    (``0x004409E0``).  The gate is the turn counter at ``0x00509E1D``, so a
+    hero taken off the map before the first hand-over does not count.
+
+    Returns whether the counter moved.
+    """
+    counted = False
+    if (unit.pool_flag >= HERO_POOL_FLAG and world.turn != 0
+            and 0 <= unit.player < len(world.hero_killed)):
+        world.hero_killed[unit.player] = (
+            (world.hero_killed[unit.player] + 1) % HERO_COUNT_WRAP)
+        counted = True
+    if world.in_bounds(unit.x, unit.y):
+        at = world.index(unit.x, unit.y)
+        if world.unit_at[at] == unit.slot:
+            world.unit_at[at] = -1
+    return counted
+
+
 def hatch(world: CombatWorld, target: CombatUnit,
           attacker: CombatUnit) -> int:
     """``0x0046F210`` case 4 with ``special == 9`` -- ``docs/21`` §5.
@@ -1527,9 +1574,9 @@ def hatch(world: CombatWorld, target: CombatUnit,
 
     x, y, group = target.x, target.y, target.group
     # ``aRemoveUnitElement`` (``0x004779C0``) frees the record and clears the
-    # cell; it does not kill the unit, so no death bookkeeping runs.
-    if world.unit_at[world.index(x, y)] == target.slot:
-        world.unit_at[world.index(x, y)] = -1
+    # cell; it does not kill the unit, so no death bookkeeping runs -- but its
+    # own hero counter does, which is what :func:`remove_unit_element` adds.
+    remove_unit_element(world, target)
     target.hp = 0
 
     row = world.tables.units.get(HATCH_TYPE)
@@ -1591,7 +1638,9 @@ def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
                                  direction(x, y, cx, cy))
         killed = not target.alive
         if killed:
-            world.unit_at[world.index(target.x, target.y)] = -1
+            # ``aKillUnit`` (``0x00472920``) is the death sequence plus
+            # ``aRemoveUnitElement``, which is where the hero counter lives.
+            remove_unit_element(world, target)
         result.outcomes.append({
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
@@ -1803,7 +1852,7 @@ def world_from_map(bm: Any, tables: BalanceTables,
             order=u.order, order_param=u.order_param, order2=u.order2,
             order2_param=u.order2_param, group=u.group,
             turn_start_x=u.turn_start_x, turn_start_y=u.turn_start_y,
-            walked=u.walked,
+            walked=u.walked, pool_flag=u.pool_flag,
             skills=list(u.skills), equipment_ids=frozenset(u.equipment_ids))
     return CombatWorld(
         width=bm.width, height=bm.height,

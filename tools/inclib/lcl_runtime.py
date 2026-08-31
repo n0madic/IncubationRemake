@@ -236,9 +236,10 @@ class LclWorld:
         self.ai_level = ai_level
         self.game_control = [0] * GAME_CONTROL_SLOTS
         self.next_map = bm.next_map
-        #: ``docs/20`` §7.4 -- ``HeroKilled`` reads the player record's `+0x24`.
-        #: The ``.lev`` carries no player records, so it starts clear for all
-        #: four; a save is what would set one.
+        #: ``docs/20`` §7.4 -- ``HeroKilled`` reads the player record's `+0x24`
+        #: and :meth:`LclWorld.remove` writes it.  The ``.lev`` carries no
+        #: player records, so it starts clear for all four; from there it is
+        #: the removal of a **hero** that moves one (``docs/22`` §9.5).
         self.hero_killed = [0, 0, 0, 0]
         self.turn_control = 0
         self.rng = ARandom(seed)
@@ -267,12 +268,40 @@ class LclWorld:
         unit = self.units.get(slot)
         return unit if unit is not None and unit.alive else None
 
-    def kill(self, unit: RuntimeUnit) -> None:
-        unit.hit_points = 0
+    #: ``+0x4D`` at or above this is a **hero** -- ``docs/22`` §9.5.
+    HERO_POOL_FLAG = 2
+    #: The player record's ``+0x24`` is one byte.
+    HERO_COUNT_WRAP = 256
+
+    def remove(self, unit: RuntimeUnit) -> bool:
+        """``aRemoveUnitElement`` (``0x004779C0``) -- and its hero counter.
+
+        ``docs/22`` §9.5:
+
+        .. code-block:: c
+
+           if (unit[+0x4D] >= 2 && getTurnCounter() != 0)
+               playerRecord(unit[+0x45])[+0x24]++;
+
+        ``+0x24`` is what ``HeroKilled`` reads (``0x004409E0``), and the gate
+        is the turn counter at ``0x00509E1D``: a hero taken off the map before
+        the first hand-over does not count.  Returns whether it moved.
+        """
+        counted = False
+        if (unit.pool_flag >= self.HERO_POOL_FLAG and self.turn != 0
+                and 0 <= unit.player < len(self.hero_killed)):
+            self.hero_killed[unit.player] = (
+                (self.hero_killed[unit.player] + 1) % self.HERO_COUNT_WRAP)
+            counted = True
         if self.in_bounds(unit.x, unit.y):
             at = self.index(unit.x, unit.y)
             if self.unit_at[at] == unit.slot:
                 self.unit_at[at] = -1
+        return counted
+
+    def kill(self, unit: RuntimeUnit) -> None:
+        unit.hit_points = 0
+        self.remove(unit)
 
     def free_cell(self, x: int, y: int) -> bool:
         return self.in_bounds(x, y) and self.unit_on(x, y) is None

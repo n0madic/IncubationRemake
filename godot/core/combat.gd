@@ -717,7 +717,7 @@ static func marker_damage(wtab: WeaponTable, marker: int,
 ## `aAttackUnit` `0x0046B450` -- docs/22 section 7, in the order it runs.
 static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, x: int, y: int, tx: int, ty: int, ai_level: int,
-		human_players: int, game_mode: int, current_player: int,
+		human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
@@ -816,7 +816,9 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 				human_players, game_mode, rng)
 		var killed: bool = not target.is_alive()
 		if killed:
-			state.set_unit(state.index_of(target.x, target.y), MapState.NO_UNIT)
+			# `aKillUnit` (`0x00472920`) is two calls: the death sequence and
+			# `aRemoveUnitElement`, which is where the hero counter lives.
+			UnitState.remove(state, turn, target)
 		result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
 			"marker": MARKER_KILLED if killed else MARKER_HIT, "dealt": dealt,
 			"chance": chance, "roll": roll})
@@ -852,7 +854,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			# replacement -- `special` 0 -- and does nothing.
 			continue
 		var made: int = hatch(state, units, utab, wtab, carrier, attacker,
-			human_players, game_mode, current_player)
+			human_players, game_mode, turn)
 		if made >= 0:
 			outcome["hatched"] = made
 	return result
@@ -874,12 +876,13 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 ##   bracketed by the save/restore pair, so unlike the per-command probe of
 ##   docs/22 section 9.4 it changes what the rules see, not only the picture.
 ##
-## What the engine also does here and this does not: `aRemoveUnitElement` bumps
-## a per-player counter at `+0x24` for a unit whose `+0x4D` is 2 or more, which
-## is bookkeeping no part of this remake reads.
+## The carrier goes through [method UnitState.remove], so the hero counter
+## `aRemoveUnitElement` keeps at `+0x24` moves here too -- a `Squee'Coo` marked
+## as a hero would be counted, which is what the engine does and not a rule
+## invented for this arm.
 static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, target: UnitState, attacker: UnitState,
-		human_players: int, game_mode: int, current_player: int) -> int:
+		human_players: int, game_mode: int, turn: TurnState) -> int:
 	if utab.special(target.type_id) != SPECIAL_HATCH:
 		return -1
 	if target.hp > HATCH_HP_LIMIT:
@@ -889,16 +892,14 @@ static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var x: int = target.x
 	var y: int = target.y
 	var group: int = target.group
-	var at: int = state.index_of(x, y)
-	if state.unit_at(at) == target.slot:
-		state.set_unit(at, MapState.NO_UNIT)
+	UnitState.remove(state, turn, target)
 	target.hp = 0
 	var made: UnitState = UnitState.generate(state, units, utab, HATCH_PLAYER,
 		HATCH_TYPE, "", 0, 0, x, y, true)
 	if made == null:
 		return -1
 	made.group = group
-	Visibility.build(state, units, utab, current_player, human_players,
+	Visibility.build(state, units, utab, turn.current_player, human_players,
 		game_mode)
 	return made.slot
 

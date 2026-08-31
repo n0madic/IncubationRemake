@@ -323,6 +323,15 @@ func hash_into(ctx: HashingContext) -> void:
 
 ## docs/10 section 5 -- the unit array is 200 fixed records.
 const UNIT_SLOTS: int = 200
+## `+0x4D` at or above this is a **hero**, and `aRemoveUnitElement` counts one
+## when it takes such a unit off the map. docs/22 section 9.5.
+const HERO_POOL_FLAG: int = 2
+## The player record's `+0x24` is one byte, so the count the engine keeps wraps
+## at 256 rather than saturating. `HeroKilled` only asks whether it is
+## non-zero, so the wrap is reachable only in theory -- it is modelled because
+## the field is a byte and a remake that widened it would round-trip a save
+## differently.
+const HERO_COUNT_WRAP: int = 256
 
 
 ## The lowest slot holding no **live** unit.
@@ -416,3 +425,43 @@ static func generate(state: MapState, units: Dictionary,
 	units[unit.slot] = unit
 	state.set_unit(state.index_of(tx, ty), unit.slot)
 	return unit
+
+
+## `aRemoveUnitElement` (`0x004779C0`) -- the one routine that takes a unit off
+## the map, and the **only** thing that ever moves the hero counter.
+##
+## docs/22 section 9.5. Its middle third is three instructions of bookkeeping
+## that this remake had never modelled:
+##
+## [codeblock]
+## if (unit[+0x4D] >= 2 && getTurnCounter() != 0)   /* 0x00477A3B, 0x0043B280 */
+##     playerRecord(unit[+0x45])[+0x24]++;          /* 0x00477A53..0x00477A5E */
+## [/codeblock]
+##
+## `playerRecord` is `0x0043BA00` -- base `0x00509F48`, stride 40, four
+## records -- and `+0x24` is what the LCL predicate `HeroKilled` reads
+## (`0x004409E0`, docs/20 section 7.4). [member TurnState.hero_killed] carried
+## the field and nothing wrote it, so `HeroKilled` answered false in every
+## mission that asks -- and `_C_140`, the one this slice plays, asks.
+##
+## **The gate is the turn counter, not the turn number of the unit.** A hero
+## taken off the map before the first hand-over does not count: at that point
+## `0x00509E1D` is still zero, which is the same test docs/25 section 3.1 uses
+## to recognise the first hand-over.
+##
+## Returns whether the counter moved, so a caller can report it.
+static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
+	var counted: bool = false
+	if unit.pool_flag >= HERO_POOL_FLAG and turn.turn != 0 \
+			and unit.player >= 0 and unit.player < turn.hero_killed.size():
+		turn.hero_killed[unit.player] = \
+			(turn.hero_killed[unit.player] + 1) % HERO_COUNT_WRAP
+		counted = true
+	# The cell is cleared only when it still names this unit: a push that has
+	# already moved the record, or a second removal, must not blank a cell
+	# somebody else is standing on.
+	if state.in_bounds(unit.x, unit.y):
+		var at: int = state.index_of(unit.x, unit.y)
+		if state.unit_at(at) == unit.slot:
+			state.set_unit(at, MapState.NO_UNIT)
+	return counted

@@ -221,7 +221,7 @@ static func defuse_mine(state: MapState, index: int) -> UseResult:
 ## centred on the cell, or it reaches a `Hole` and falls out of the world.
 static func push_object(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, unit: UnitState,
-		ai_level: int, human_players: int, game_mode: int,
+		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
@@ -248,12 +248,12 @@ static func push_object(state: MapState, units: Dictionary,
 		if state.obstacle_at(into) == EFFECT_MINE:
 			state.set_obstacle(into, EFFECT_NONE)
 			execute_bomb(state, units, utab, wtab, at[0], at[1], ai_level,
-				human_players, game_mode, rng)
+				human_players, game_mode, turn, rng)
 			out.kind = "push_onto_mine"
 			break
 		var ft: int = state.field_type_at(into)
 		if ft == FIELD_TYPE_HOLE or ft == FIELD_TYPE_DEEP_HOLE:
-			state.set_unit(into, MapState.NO_UNIT)
+			UnitState.remove(state, turn, obj)
 			obj.hp = 0
 			out.kind = "push_into_hole"
 			break
@@ -269,7 +269,8 @@ static func push_object(state: MapState, units: Dictionary,
 ## is the function to delete.
 static func execute_bomb(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, x: int, y: int, ai_level: int,
-		human_players: int, game_mode: int, rng: IncRandom) -> AttackResult:
+		human_players: int, game_mode: int, turn: TurnState,
+		rng: IncRandom) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	result.fired = true
 	var unsupported: Array[String] = []
@@ -311,7 +312,7 @@ static func execute_bomb(state: MapState, units: Dictionary,
 				human_players, game_mode, rng)
 		var killed: bool = not target.is_alive()
 		if killed:
-			state.set_unit(state.index_of(target.x, target.y), MapState.NO_UNIT)
+			UnitState.remove(state, turn, target)
 		result.outcomes.append({"slot": slot, "x": cell[0], "y": cell[1],
 			"marker": Combat.MARKER_KILLED if killed else Combat.MARKER_HIT,
 			"dealt": dealt, "chance": chance, "roll": roll})
@@ -326,7 +327,7 @@ static func execute_bomb(state: MapState, units: Dictionary,
 ## event and nothing else.
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, control: GameControl, unit: UnitState,
-		ai_level: int, human_players: int, game_mode: int,
+		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
@@ -334,7 +335,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var index: int = state.index_of(at[0], at[1])
 	if state.unit_at(index) >= 0:
 		return push_object(state, units, utab, wtab, unit, ai_level,
-			human_players, game_mode, rng)
+			human_players, game_mode, turn, rng)
 	if state.obstacle_at(index) == EFFECT_MINE:
 		return defuse_mine(state, index)
 

@@ -46,6 +46,7 @@ func run(h: TestHarness) -> void:
 	_reaction_queue(h)
 	_interaction(h)
 	_the_hatch(h)
+	_the_hero_counter(h)
 
 
 # --- the tables --------------------------------------------------------------
@@ -612,6 +613,17 @@ func _defence_gate(h: TestHarness) -> void:
 ## smallest world in which the two drain orders can disagree.  Both are given an
 ## off-centre facing from their own arc, so `aAttackUnit`'s turn-to-face is not
 ## a no-op and the save-and-restore is visible.
+## A [TurnState] for the resolver's own argument. Its `turn` is 1, not 0:
+## `aRemoveUnitElement`'s hero counter is gated on the turn counter being
+## non-zero (docs/22 section 9.5), and a fixture stuck at turn 0 could never
+## show the counter move.
+func _turn(player: int = 0, counter: int = 1) -> TurnState:
+	var out: TurnState = TurnState.create()
+	out.current_player = player
+	out.turn = counter
+	return out
+
+
 func _reaction_queue(h: TestHarness) -> void:
 	var scene: Scene = _reaction_scene()
 	var mover: UnitState = _at(scene, 0)
@@ -619,7 +631,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var fired: Array[Dictionary] = Reaction.drain(scene.state,
 		scene.units, scene.types, scene.weapons, mover, 1, 1,
-		TurnState.MODE_CAMPAIGN, 0, rng)
+		TurnState.MODE_CAMPAIGN, _turn(), rng)
 	var tickets: Array[int] = []
 	var reactors: Array[int] = []
 	for shot: Dictionary in fired:
@@ -649,7 +661,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var net_fired: Array[Dictionary] = Reaction.drain(net.state,
 		net.units, net.types, net.weapons, net_mover, 1, 2,
-		TurnState.MODE_NET, 0, rng)
+		TurnState.MODE_NET, _turn(), rng)
 	var net_order: Array[int] = []
 	for shot: Dictionary in net_fired:
 		net_order.append(DictRead.as_int(shot["reactor"]))
@@ -685,7 +697,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	h.equal("reaction.a_dead_mover_draws_nothing",
 		Reaction.drain(dead.state, dead.units, dead.types,
-			dead.weapons, corpse, 1, 1, TurnState.MODE_CAMPAIGN, 0,
+			dead.weapons, corpse, 1, 1, TurnState.MODE_CAMPAIGN, _turn(),
 			rng).size(), 0)
 	var frail_scene: Scene = _reaction_scene()
 	var frail: UnitState = _at(frail_scene, 0)
@@ -693,7 +705,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var stopped: Array[Dictionary] = Reaction.drain(frail_scene.state,
 		frail_scene.units, frail_scene.types, frail_scene.weapons,
-		frail, 1, 1, TurnState.MODE_CAMPAIGN, 0, rng)
+		frail, 1, 1, TurnState.MODE_CAMPAIGN, _turn(), rng)
 	h.check("reaction.death_stops_the_drain",
 		not frail.is_alive() and stopped.size() == 1,
 		"%d shot(s) before hp %d" % [stopped.size(), frail.hp])
@@ -751,7 +763,7 @@ func _interaction(h: TestHarness) -> void:
 	var rng: IncRandom = IncRandom.new()
 	rng.randomize_seed(1.0)
 	var opened: UseResult = Interact.execute(state, scene.units,
-		scene.types, wtab, control, unit, 1, 1, 1, rng)
+		scene.types, wtab, control, unit, 1, 1, 1, _turn(), rng)
 	h.equal("use.the_jammed_door_becomes_jammed_open",
 		[opened.kind, state.action_point_at(at)],
 		["door", Interact.DOOR_JAMMED_OPEN])
@@ -780,7 +792,7 @@ func _interaction(h: TestHarness) -> void:
 	soldier.ammo = wtab.magazine(REACTION_WEAPON)
 	full_state.set_action_point(full_state.index_of(2, 1), 12)
 	var kept: UseResult = Interact.execute(full_state, full.units,
-		full.types, wtab, control, soldier, 1, 1, 1, rng)
+		full.types, wtab, control, soldier, 1, 1, 1, _turn(), rng)
 	h.equal("use.a_full_magazine_is_a_visible_no_op",
 		[soldier.ammo, full_state.action_point_at(full_state.index_of(2, 1)),
 			kept.kind],
@@ -794,14 +806,14 @@ func _interaction(h: TestHarness) -> void:
 	trainee.skills = PackedInt32Array([3, 0, 0, 9, 0, 0])
 	bug_state.set_action_point(bug_state.index_of(2, 1), 16)
 	Interact.execute(bug_state, bug.units, bug.types, wtab, control,
-		trainee, 1, 1, 1, rng)
+		trainee, 1, 1, 1, _turn(), rng)
 	h.equal("use.the_technical_box_pushes_past_the_cap",
 		trainee.skills[UnitState.SKILL_TS], 10,
 		"the guard reads CON, so nothing bounds TS")
 	trainee.skills = PackedInt32Array([Interact.SKILL_CAP, 0, 0, 1, 0, 0])
 	bug_state.set_action_point(bug_state.index_of(2, 1), 16)
 	Interact.execute(bug_state, bug.units, bug.types, wtab, control,
-		trainee, 1, 1, 1, rng)
+		trainee, 1, 1, 1, _turn(), rng)
 	h.equal("use.the_technical_box_stops_at_a_capped_condition",
 		trainee.skills[UnitState.SKILL_TS], 1,
 		"inert for a unit whose Battle Fitness is 6 -- the bug, reproduced")
@@ -813,7 +825,7 @@ func _interaction(h: TestHarness) -> void:
 	var bonus: GameControl = GameControl.create()
 	points_state.set_action_point(points_state.index_of(2, 1), 13)
 	Interact.execute(points_state, points.units, points.types, wtab,
-		bonus, finder, 1, 1, 1, rng)
+		bonus, finder, 1, 1, 1, _turn(), rng)
 	h.equal("use.class_13_adds_fifty_equipment_points",
 		bonus.get_slot(GameControl.SLOT_EQUIPMENT_POINTS), 50)
 
@@ -826,13 +838,13 @@ func _interaction(h: TestHarness) -> void:
 	door_state.set_field_type(door_at, Interact.FIELD_TYPE_WALL)
 	door_state.set_height(door_at, Interact.DOOR_HEIGHT_STEP)
 	Interact.execute(door_state, door.units, door.types, wtab, control,
-		opener, 1, 1, 1, rng)
+		opener, 1, 1, 1, _turn(), rng)
 	h.equal("use.opening_drops_the_panel_to_the_floor",
 		[door_state.action_point_at(door_at),
 			door_state.field_type_at(door_at), door_state.height_at(door_at)],
 		[30, Interact.FIELD_TYPE_FREE, 0])
 	Interact.execute(door_state, door.units, door.types, wtab, control,
-		opener, 1, 1, 1, rng)
+		opener, 1, 1, 1, _turn(), rng)
 	h.equal("use.closing_raises_it_one_tile",
 		[door_state.action_point_at(door_at),
 			door_state.field_type_at(door_at), door_state.height_at(door_at)],
@@ -846,7 +858,7 @@ func _interaction(h: TestHarness) -> void:
 	script_state.set_action_point(script_state.index_of(2, 1), 25)
 	var pressed: UseResult = Interact.execute(script_state,
 		script_only.units, script_only.types, wtab, control, presser, 1,
-		1, 1, rng)
+		1, 1, _turn(), rng)
 	h.equal("use.an_unhandled_in_band_id_is_script_only",
 		[pressed.kind, pressed.fires_script_event,
 			script_state.action_point_at(script_state.index_of(2, 1))],
@@ -867,7 +879,7 @@ func _turn_to_face(h: TestHarness) -> void:
 	var rng: IncRandom = IncRandom.new()
 	rng.randomize_seed(1.0)
 	var shot: AttackResult = Combat.attack(scene.state, scene.units,
-		scene.types, scene.weapons, 1, 1, 5, 1, 1, 1, 1, 0, rng)
+		scene.types, scene.weapons, 1, 1, 5, 1, 1, 1, 1, _turn(), rng)
 	h.equal("attack.the_shooter_turns_to_face",
 		[shooter.facing, shot.facing], [3, 3],
 		"the heading from (1,1) to (5,1) is octant 3, and the shooter began "
@@ -886,7 +898,7 @@ func _push(h: TestHarness, wtab: WeaponTable, control: GameControl,
 	var pusher: UnitState = _place(scene, 0, 0, 1, 5, 3)
 	var crate: UnitState = _place(scene, 1, 252, 2, 5, 0, 30)
 	var slid: UseResult = Interact.execute(state, scene.units,
-		scene.types, wtab, control, pusher, 1, 1, 1, rng)
+		scene.types, wtab, control, pusher, 1, 1, 1, _turn(), rng)
 	h.equal("push.slides_at_most_four_cells", slid.pushed.size(),
 		Interact.PUSH_MAX_STEPS)
 	h.equal("push.the_object_ends_where_the_slide_did",
@@ -911,7 +923,7 @@ func _push(h: TestHarness, wtab: WeaponTable, control: GameControl,
 	hole_state.set_field_type(hole_state.index_of(3, 5),
 		Interact.FIELD_TYPE_DEEP_HOLE)
 	var fell: UseResult = Interact.execute(hole_state, hole.units,
-		hole.types, wtab, control, shover, 1, 1, 1, rng)
+		hole.types, wtab, control, shover, 1, 1, 1, _turn(), rng)
 	h.equal("push.a_hole_swallows_it",
 		[fell.kind, doomed.hp,
 			hole_state.unit_at(hole_state.index_of(3, 5))],
@@ -930,7 +942,7 @@ func _push(h: TestHarness, wtab: WeaponTable, control: GameControl,
 	mine_state.set_action_point(mine_at, 17)
 	mine_state.set_height(mine_at, 640)
 	var defused: UseResult = Interact.execute(mine_state, mine.units,
-		mine.types, wtab, control, sapper, 1, 1, 1, rng)
+		mine.types, wtab, control, sapper, 1, 1, 1, _turn(), rng)
 	# docs/26 section 4.1: the defuse frees the effect object and touches
 	# nothing else.  The action point in particular survives -- a defuse is not
 	# a pickup, and the point under the mine is still there to be used.
@@ -1080,7 +1092,7 @@ func _world_wiring(h: TestHarness) -> void:
 		"header_line": 1,
 		"instructions": [
 			{"kind": "command", "name": "BuildVisibleMap", "line": 1,
-				"op": ">", "args": [-1]},
+				"op": ">", "args": [_num(-1)]},
 			{"kind": "end", "name": "", "line": 1, "op": ">", "args": []},
 		],
 		"labels": {},
@@ -1091,6 +1103,121 @@ func _world_wiring(h: TestHarness) -> void:
 	h.equal("world.a_scripted_rebuild_is_performed_not_only_recorded",
 		DictRead.as_int(scripted.unit_view(1)["visibility"]), Visibility.FULL,
 		"the interpreter owns no fog, so the event has to be acted on")
+
+	# **The elevator rebuilds for the rider, not for the current player.**
+	# `aPlayElevatorSequence` (`0x004125D0`) reads the unit index out of the
+	# elevator's own cell, takes that unit's `+0x45`, and passes it at
+	# `0x00412905`; when the tile is empty (`cell[+0x07] == 0xFFFF`) it skips
+	# the call entirely (`je` at `0x004128FD`). The rider here is the alien, so
+	# a rebuild for **its** player leaves the squad hidden from itself, which
+	# no rebuild for player 0 could produce.
+	#
+	# The discriminator is a wall the whole height of the map at `x = 4`, which
+	# puts every player-0 unit on one side and the alien on the other:
+	# a pass for player 0 cannot then see the alien, and a pass for player 255
+	# marks it [constant Visibility.FULL] because it is that player's own. So
+	# the alien's byte says **whose** pass ran, not merely that one did.
+	var lift: World = _wired_world()
+	_wall_column(lift, 4)
+	h.check("world.the_elevator_script_attached",
+		lift.attach_script(_elevator_program(6, 2)),
+		"the one-command program did not load")
+	var blocked_world: World = _wired_world()
+	_wall_column(blocked_world, 4)
+	blocked_world._first_hand_over()
+	h.equal("world.the_wall_hides_the_rider_from_player_zero",
+		DictRead.as_int(blocked_world.unit_view(1)["visibility"]),
+		Visibility.CONTACT,
+		"a pass for player 0 leaves the alien a blip behind the wall; without "
+		+ "this the next check could not tell the two passes apart")
+	var lifted: Dictionary = lift.run_init_map()
+	h.check("world.the_elevator_ran", DictRead.as_bool(lifted["ok"]),
+		str(lifted.get("abort", "")))
+	h.equal("world.the_elevator_rebuilds_for_the_rider",
+		DictRead.as_int(lift.unit_view(1)["visibility"]), Visibility.FULL,
+		"the alien is the rider, so the pass ran for player 255 and its own "
+		+ "unit is FULL -- a pass for player 0 leaves it a blip")
+
+	# An empty elevator tile: the same command, one field away from anybody.
+	var empty: World = _wired_world()
+	_wall_column(empty, 4)
+	h.check("world.the_empty_elevator_script_attached",
+		empty.attach_script(_elevator_program(4, 5)),
+		"the one-command program did not load")
+	var untouched: Dictionary = empty.run_init_map()
+	h.check("world.the_empty_elevator_ran", DictRead.as_bool(untouched["ok"]),
+		str(untouched.get("abort", "")))
+	h.equal("world.an_empty_elevator_rebuilds_nothing",
+		DictRead.as_int(empty.unit_view(1)["visibility"]), Visibility.HIDDEN,
+		"the alien is authored hidden and no pass ran, so it is still hidden: "
+		+ "nothing stands on the elevator tile, and `je 0x004128FD` is taken")
+
+	# **The first hand-over builds for a literal player 0, in a campaign
+	# only.** `aNextPlayerHandling` (`0x0047DCA7`..`0x0047DCD4`) is a one-shot
+	# behind `0x005229D0`; the mode getter is `0x0043B740` and the comparison
+	# is against 1. A network session reaches the same code and skips the call.
+	var opening: World = _wired_world()
+	opening.turn.mode = TurnState.MODE_CAMPAIGN
+	opening._first_hand_over()
+	h.equal("world.the_first_hand_over_builds_for_player_zero",
+		DictRead.as_int(opening.unit_view(1)["visibility"]), Visibility.FULL,
+		"push 0 at 0x0047DCCD, before the rotation and before the refresh")
+	var again: int = DictRead.as_int(opening.unit_view(1)["visibility"])
+	opening.state.set_unit(opening.state.index_of(6, 2), MapState.NO_UNIT)
+	opening._first_hand_over()
+	h.equal("world.the_first_hand_over_is_a_one_shot",
+		DictRead.as_int(opening.unit_view(1)["visibility"]), again,
+		"0x005229D0 is set on the first run and tested on every one")
+	var networked: World = _wired_world()
+	networked.turn.mode = TurnState.MODE_NET
+	networked._first_hand_over()
+	h.equal("world.a_network_session_skips_it",
+		DictRead.as_int(networked.unit_view(1)["visibility"]),
+		Visibility.HIDDEN,
+		"`cmp eax, ebx` at 0x0047DCC9 with ebx == 1")
+	# The reset the one-shot runs first, which is **not** guarded by the mode:
+	# `0x0043B770`'s last store is `mov byte [eax+0x1c], bl` at `0x0043B78C`,
+	# and with the pointer at `record + 8` that is the hero counter's `+0x24`.
+	var carried: World = _wired_world()
+	carried.turn.mode = TurnState.MODE_NET
+	carried.turn.hero_killed = PackedInt32Array([0, 2, 0, 0])
+	carried._first_hand_over()
+	h.equal("world.the_one_shot_clears_the_hero_counter",
+		carried.turn.hero_killed, PackedInt32Array([0, 0, 0, 0]),
+		"the reset runs before the mode test, so a network session gets it "
+		+ "too")
+
+
+## A blocking column: every cell of one map column raised well above any unit,
+## which is what [LineOfSight] traces against. A single cell is not enough --
+## the fixture has two player-0 units and a diagonal ray goes round one wall.
+static func _wall_column(world: World, x: int) -> void:
+	for y: int in range(9):
+		var at: int = world.state.index_of(x, y)
+		world.state.set_field_type(at, Interact.FIELD_TYPE_WALL)
+		world.state.set_height(at, 20000)
+
+
+## One numeric argument in the shape [method LclProgram.from_document] reads:
+## a bare int contributes to no array at all, which is how a program with the
+## wrong argument shape can still run and do nothing.
+static func _num(value: int) -> Dictionary:
+	return {"kind": "number", "raw": str(value), "value": value}
+
+
+## A one-command `Elevator (x, y, 0, 1)` program.
+static func _elevator_program(x: int, y: int) -> Dictionary:
+	return {
+		"schema": LclProgram.SCHEMA,
+		"source": {"mission": "synthetic"},
+		"header_line": 1,
+		"instructions": [
+			{"kind": "command", "name": "Elevator", "line": 1, "op": ">",
+				"args": [_num(x), _num(y), _num(0), _num(1)]},
+			{"kind": "end", "name": "", "line": 1, "op": ">", "args": []},
+		],
+		"labels": {},
+	}
 
 
 ## A world with two units four fields apart, both armed, the alien hidden and
@@ -1171,7 +1298,7 @@ func _the_hatch(h: TestHarness) -> void:
 	sturdy.hp = Combat.HATCH_HP_LIMIT + 1
 	h.equal("hatch.six_hit_points_is_one_too_many",
 		Combat.hatch(healthy.state, healthy.units, types, weapons, sturdy,
-			healthy_gunner, 1, 1, 0), -1,
+			healthy_gunner, 1, 1, _turn()), -1,
 		"`cmp byte [esi+0x16], 5` then `ja` at 0x0046F286")
 
 	var wrong: Scene = _scene()
@@ -1184,12 +1311,12 @@ func _the_hatch(h: TestHarness) -> void:
 	wrong_target.hp = 1
 	h.equal("hatch.the_weapon_type_must_be_one_two_or_four",
 		Combat.hatch(wrong.state, wrong.units, types, weapons, wrong_target,
-			wrong_gunner, 1, 1, 0), -1,
+			wrong_gunner, 1, 1, _turn()), -1,
 		"the two rows differ only in `type`; 3 is not in {1, 2, 4}")
 
 	# --- the arm itself ---------------------------------------------------
 	var made: int = Combat.hatch(gate.state, gate.units, types, weapons, frail,
-		gunner, 1, 1, 0)
+		gunner, 1, 1, _turn())
 	h.check("hatch.it_fired", made >= 0, "hatch returned %d" % made)
 	var born: UnitState = gate.units[made]
 	h.equal("hatch.the_replacement_is_a_neutral_of_the_named_type",
@@ -1222,7 +1349,7 @@ func _the_hatch(h: TestHarness) -> void:
 	var rng: IncRandom = IncRandom.new()
 	rng.randomize_seed(1.0)
 	var landed: AttackResult = Combat.attack(shot.state, shot.units, types,
-		weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+		weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng)
 	var hatched: Array[int] = []
 	for outcome: Dictionary in landed.outcomes:
 		if outcome.has("hatched"):
@@ -1240,7 +1367,7 @@ func _the_hatch(h: TestHarness) -> void:
 	doomed.hp = 1
 	rng.randomize_seed(1.0)
 	var killed: AttackResult = Combat.attack(lethal.state, lethal.units, types,
-		weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+		weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng)
 	var any_hatched: bool = false
 	var markers: Array[int] = []
 	for outcome: Dictionary in killed.outcomes:
@@ -1265,7 +1392,7 @@ func _the_hatch(h: TestHarness) -> void:
 		Combat.EFFECT_SHIELDED)
 	rng.randomize_seed(1.0)
 	var resolved: AttackResult = Combat.attack(shielded_cell.state,
-		shielded_cell.units, types, weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+		shielded_cell.units, types, weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng)
 	var resolved_markers: Array[int] = []
 	var resolved_hatched: bool = false
 	for outcome: Dictionary in resolved.outcomes:
@@ -1275,3 +1402,137 @@ func _the_hatch(h: TestHarness) -> void:
 		[resolved_markers, resolved_hatched, safe.hp],
 		[[Combat.MARKER_RESOLVED], false, Combat.HATCH_HP_LIMIT],
 		"a shield writes 0x5B and the sweep only reads 0x5C")
+
+
+## `aRemoveUnitElement`'s hero counter -- docs/22 section 9.5.
+##
+## The oracle is the listing: twelve bytes at `0x00477A34`..`0x00477A5E` plus
+## the predicate at `0x004409E0`, all pinned by `combat_tables.py`'s
+## `hero.counter`. It cannot be a native case either, for the same reason the
+## hatch cannot: nothing `dbgcall` captures reads the player record.
+func _the_hero_counter(h: TestHarness) -> void:
+	var types: UnitTypeTable = _types()
+	var weapons: WeaponTable = _weapons()
+
+	# A hero killed by the resolver, on a turn that has started.
+	var field: Scene = _scene()
+	field.types = types
+	field.weapons = weapons
+	var shooter: UnitState = _place(field, 0, 0, 1, 1, 3)
+	shooter.weapon = REACTION_WEAPON
+	var hero: UnitState = _place(field, 1, 2, 3, 1, 0)
+	hero.hp = 1
+	hero.pool_flag = UnitState.HERO_POOL_FLAG
+	var live: TurnState = _turn()
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	var shot: AttackResult = Combat.attack(field.state, field.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, live, rng)
+	h.equal("hero.a_kill_counts_it",
+		[hero.is_alive(), live.hero_killed],
+		[false, PackedInt32Array([0, 0, 1, 0])],
+		"`inc cl` at 0x00477A5C, into player 2's own record; %s"
+			% [shot.outcomes])
+
+	# The same shot against a unit whose `+0x4D` is one short of the bound.
+	var plain: Scene = _scene()
+	plain.types = types
+	plain.weapons = weapons
+	var gunner: UnitState = _place(plain, 0, 0, 1, 1, 3)
+	gunner.weapon = REACTION_WEAPON
+	var trooper: UnitState = _place(plain, 1, 2, 3, 1, 0)
+	trooper.hp = 1
+	trooper.pool_flag = UnitState.HERO_POOL_FLAG - 1
+	var ordinary: TurnState = _turn()
+	rng.randomize_seed(1.0)
+	Combat.attack(plain.state, plain.units, types, weapons, 1, 1, 3, 1, 1, 1,
+		1, ordinary, rng)
+	h.equal("hero.a_unit_pool_candidate_is_not_a_hero",
+		[trooper.is_alive(), ordinary.hero_killed],
+		[false, PackedInt32Array([0, 0, 0, 0])],
+		"`cmp al, 2` then `jb` at 0x00477A3B is a bound, not an equality")
+
+	# Turn zero: the gate the whole block hangs on.
+	var setup: Scene = _scene()
+	setup.types = types
+	setup.weapons = weapons
+	var early_gunner: UnitState = _place(setup, 0, 0, 1, 1, 3)
+	early_gunner.weapon = REACTION_WEAPON
+	var early_hero: UnitState = _place(setup, 1, 2, 3, 1, 0)
+	early_hero.hp = 1
+	early_hero.pool_flag = UnitState.HERO_POOL_FLAG
+	var unstarted: TurnState = _turn(0, 0)
+	rng.randomize_seed(1.0)
+	Combat.attack(setup.state, setup.units, types, weapons, 1, 1, 3, 1, 1, 1,
+		1, unstarted, rng)
+	h.equal("hero.turn_zero_does_not_count",
+		[early_hero.is_alive(), unstarted.hero_killed],
+		[false, PackedInt32Array([0, 0, 0, 0])],
+		"`test al, al` / `jbe` at 0x00477A44 reads the turn counter")
+
+	# The counter is one byte. 256 removals bring it back to zero, which is the
+	# only way `HeroKilled` can answer false after a hero has died.
+	var wrap: TurnState = _turn()
+	wrap.hero_killed[0] = UnitState.HERO_COUNT_WRAP - 1
+	var last: Scene = _scene()
+	last.types = types
+	var doomed: UnitState = _place(last, 0, 0, 2, 2, 0)
+	doomed.pool_flag = UnitState.HERO_POOL_FLAG
+	h.equal("hero.the_counter_is_a_byte",
+		[UnitState.remove(last.state, wrap, doomed), wrap.hero_killed[0]],
+		[true, 0],
+		"`mov cl, [eax+0x24]; inc cl; mov [eax], cl` is byte-wide")
+
+	# The hatch removes its carrier through the same routine.
+	var carrier_type: int = 57
+	var brood: UnitTypeTable = UnitTypeTable.from_rows([
+		{"id": 0, "mp_max": 4, "fp_max": 0, "hp_max": 20, "special": 0,
+			"size": 0, "species": 0, "height": 20, "model": "",
+			"description": "soldier"},
+		{"id": carrier_type, "mp_max": 4, "fp_max": 255, "hp_max": 10,
+			"special": Combat.SPECIAL_HATCH, "size": 0, "species": 1,
+			"height": 20, "model": "", "description": "carrier"},
+		{"id": Combat.HATCH_TYPE, "mp_max": 4, "fp_max": 255, "hp_max": 4,
+			"special": 0, "size": 0, "species": 1, "height": 20, "model": "",
+			"description": "hatchling"},
+	])
+	var hatch_weapon: int = 7
+	var brood_weapons: WeaponTable = WeaponTable.from_rows([
+		{"id": hatch_weapon, "heat": 255, "toggle": hatch_weapon, "mun": 255,
+			"hit": 100, "damage": 100, "range_min": 1, "range_max": 30,
+			"type": 1, "special": 0, "def_mode": 0, "mun_per_fight": 1},
+	])
+	var nest: Scene = _scene()
+	nest.types = brood
+	nest.weapons = brood_weapons
+	var hunter: UnitState = _place(nest, 0, 0, 1, 1, 3)
+	hunter.weapon = hatch_weapon
+	var host: UnitState = _place(nest, 1, 3, 3, 1, 0, carrier_type)
+	host.hp = Combat.HATCH_HP_LIMIT
+	host.pool_flag = UnitState.HERO_POOL_FLAG
+	var hatching: TurnState = _turn()
+	h.check("hero.the_hatch_removes_through_the_same_routine",
+		Combat.hatch(nest.state, nest.units, brood, brood_weapons, host,
+			hunter, 1, 1, hatching) >= 0
+			and hatching.hero_killed == PackedInt32Array([0, 0, 0, 1]),
+		"0x0046F2FB is aRemoveUnitElement, so its counter runs too: %s"
+			% [hatching.hero_killed])
+
+	# And a script kill: `KillUnit`, the barrier and the fixed statue all go
+	# through [method LclContext.kill], which is what makes `HeroKilled` a
+	# predicate a mission can actually see move.
+	var scripted: Scene = _scene()
+	scripted.types = types
+	var victim: UnitState = _place(scripted, 0, 1, 2, 2, 0)
+	victim.pool_flag = UnitState.HERO_POOL_FLAG
+	var script_turn: TurnState = _turn()
+	var context: LclContext = LclContext.create(scripted.state, scripted.units,
+		types, script_turn, GameControl.create(), IncRandom.new(),
+		CRandom.new(), 0, "")
+	var before: PackedInt32Array = script_turn.hero_killed.duplicate()
+	context.kill(victim)
+	h.equal("hero.a_script_kill_counts_too",
+		[before, script_turn.hero_killed, victim.is_alive()],
+		[PackedInt32Array([0, 0, 0, 0]), PackedInt32Array([0, 1, 0, 0]),
+			false],
+		"docs/20 section 7.4's HeroKilled reads the byte 0x00477A5E writes")

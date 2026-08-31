@@ -243,6 +243,117 @@ HATCH_ARM = (
 HATCH_CURRENT_PLAYER_CALL = (0x0046F39D, 0x0043B2C0)
 HATCH_FOG_CALL = (0x0046F3A8, BUILD_VISIBLE_MAP)
 
+#: The **other ten** permanent rebuilds -- ``docs/22`` §9.4's table, with the
+#: player argument each one passes pinned byte for byte.  The instruction just
+#: before the ``call`` is what decides *whose* fog moves, and three of the ten
+#: do not pass the current player at all.
+FOG_ARGUMENTS = (
+    (0x0040D67A, "e841dc0200",
+     "aPlayFightAnimation's Spidy arm: call aGetCurrentPlayer for the spawn"),
+    (0x0040D6B2, "e809dc0200",
+     "and again for the rebuild -- the current player"),
+    (0x00412901, "8a4845",
+     "aPlayElevatorSequence: mov cl, byte [eax+0x45] -- the *rider's* player"),
+    (0x004128fd, "7433",
+     "je -- and nothing is rebuilt when the elevator tile is empty"),
+    (0x004130E2, "8a5045",
+     "aPlayPlatformSequence: mov dl, byte [eax+0x45] -- and `eax` is the unit "
+     "0x00471F70 named, which is the *selected* unit, not the rider"),
+    (0x00413098, "e8d3ee0500",
+     "call 0x00471F70 -- the interface's own selection, from 0x005162F8"),
+    (0x004149C5, "6a00",
+     "aPlayStatueSequence: push 0 -- a literal player, not the current one"),
+    (0x004149B1, "68ff000000",
+     "and the unit it spawns first is a neutral (player 0xFF)"),
+    (0x0044909E, "e81d22ffff",
+     "aLoad.cpp:1649: call aGetCurrentPlayer"),
+    (0x0045791B, "e8a039feff",
+     "aMissionControl's GUI build: call aGetCurrentPlayer, not the own player"),
+    (0x0046F140, "8a5645",
+     "aExecuteWarp: mov dl, byte [esi+0x45] -- the warping unit's own player"),
+    (0x0046F133, "8a4616",
+     "guarded by the unit's +0x16 being non-zero"),
+    (0x004781C0, "558b6c240855",
+     "0x004781C0 is a forwarder: push ebp; call aBuildVisibleMap(arg)"),
+    (0x00478DD9, "e8e224fcff",
+     "aTransferUnitFromPoolToMap: call aGetCurrentPlayer"),
+    (0x0047DCAC, "a1d0295200",
+     "aNextPlayerHandling: mov eax, [0x005229D0] -- the one-shot latch"),
+    (0x0047DCC4, "e877dafbff",
+     "call 0x0043B740, the game-mode getter"),
+    (0x0047DCC9, "3bc3", "cmp eax, ebx -- ebx is 1, i.e. a campaign"),
+    (0x0047DCCD, "6a00", "push 0 -- a literal player 0"),
+)
+
+#: ``0x0043BA00`` -- the player record: ``lea eax,[eax+eax*4]`` then
+#: ``lea eax,[eax*8 + 0x00509F48]``, i.e. base ``0x00509F48`` and stride 40.
+#: ``0x0043B770``'s loop runs its pointer at ``record + 8`` -- it starts at
+#: ``0x00509F50`` and its first store is ``[eax-8]`` -- so the bound
+#: ``0x00509FF0`` is ``0x00509F48 + 40*4 + 8`` and the **last** store is the
+#: hero counter of ``docs/22`` §9.5, cleared at the width it is incremented.
+PLAYER_RECORD = (
+    (0x0043BA04, "8d0480", "lea eax, [eax + eax*4]"),
+    (0x0043BA07, "8d04c5489f5000", "lea eax, [eax*8 + 0x00509F48]"),
+    (0x0043B772, "b8509f5000", "mov eax, 0x00509F50 -- the record plus 8"),
+    (0x0043B77E, "8958f8", "mov [eax-8], ebx -- record +0x00"),
+    (0x0043B789, "897018", "mov [eax+0x18], esi -- record +0x20 = 1"),
+    (0x0043B78C, "88581c", "mov byte [eax+0x1c], bl -- record +0x24 = 0"),
+    (0x0043B78F, "83c028", "add eax, 0x28 -- a stride of 40"),
+    (0x0043B792, "3df09f5000", "cmp eax, 0x00509FF0 -- four records of 40"),
+)
+#: The one-shot latch is **in a save block**: both sides transfer 0x44C bytes
+#: from ``0x005229D0``.  ``0x0047BCD0`` is the two-instruction reset.
+VIEW_PLAYER_BLOCK = (
+    (0x0047DBE4, "684c04000068d0295200",
+     "aSaveViewPlayer: push 0x44C; push 0x005229D0"),
+    (0x0047DC24, "684c04000068d0295200",
+     "aLoadViewPlayer: push 0x44C; push 0x005229D0"),
+    (0x0047BCD0, "c705d0295200000000 00".replace(" ", ""),
+     "mov dword [0x005229D0], 0 -- the new-mission reset"),
+)
+
+#: ``docs/22`` §9.5 -- the hero counter inside ``aRemoveUnitElement``, and the
+#: predicate that reads it.  These twelve bytes are the whole mechanic.
+HERO_COUNTER = (
+    (0x00477A34, "8a44514d",
+     "mov al, byte [ecx+edx*2+0x4d] -- the removed unit's +0x4D"),
+    (0x00477A3B, "3c02", "cmp al, 2 -- 'hero'"),
+    (0x00477A3D, "7221", "jb -- below 2 skips the whole block"),
+    (0x00477A44, "84c0", "test al, al -- the turn counter"),
+    (0x00477A46, "7618", "jbe -- turn 0 does not count"),
+    (0x00477A4A, "8a5645", "mov dl, byte [esi+0x45] -- the unit's player"),
+    (0x00477A53, "8a4824", "mov cl, byte [eax+0x24] -- the counter"),
+    (0x00477A56, "83c024", "add eax, 0x24"),
+    (0x00477A5C, "fec1", "inc cl -- one byte, so it wraps at 256"),
+    (0x00477A5E, "8808", "mov byte [eax], cl"),
+    (0x004409EB, "8a5024", "HeroKilled: mov dl, byte [eax+0x24]"),
+    (0x004409F5, "0f95c1", "setne cl -- it answers non-zero, not the count"),
+)
+#: The two calls the counter makes, and the one call site of the predicate.
+HERO_COUNTER_CALLS = (
+    (0x00477A3F, 0x0043B280, "the turn-counter getter"),
+    (0x00477A4E, 0x0043BA00, "the player record"),
+    (0x004409E6, 0x0043BA00, "HeroKilled's own record lookup"),
+)
+#: ``0x00444BA3`` is the only caller of the predicate, and the string compared
+#: immediately before it is the command's name.
+HERO_KILLED_NAME = (0x004409E0, 0x00444BA3, 0x004C5818, b"HeroKilled\x00")
+
+#: ``aPlayFightAnimation``'s impact switch -- ``docs/28`` §8.1.  The key is the
+#: attacker's **weapon id**, biased by 7; the byte table selects the arm.
+IMPACT_INDEX_TABLE = 0x0040E614
+IMPACT_JUMP_TABLE = 0x0040E5D4
+IMPACT_KEY_BIAS = 7
+#: The arm that spawns a unit instead of a blob, and what it spawns.
+SPIDY_WEAPON = 46
+SPIDY_ARM = 0x0040D65C
+SPIDY_SPAWN = (
+    (0x0040D678, "6a18", "push 0x18 -- unit type 24, `Spider`"),
+    (0x0040D673, "68080f4c00", "push \"Spidy\" -- the name it is given"),
+    (0x0040D66F, "6a00", "push 0 -- rank"),
+    (0x0040D671, "6a00", "push 0 -- pool flag"),
+)
+
 #: The RNG's four globals and the address span of `aRandomize` + `aRandom`.
 #: Every reference must fall inside that span -- that is what makes the two
 #: instrumentation counters *provably* unread rather than merely unexplained.
@@ -641,6 +752,32 @@ def corpus_height_range(root: str) -> tuple[int, int, int]:
     return (0 if lo is None else lo, 0 if hi is None else hi, files)
 
 
+def corpus_weapon_ids(root: str) -> tuple[set[int], int, int]:
+    """``(ids, placed units, files)`` over every ``.lev`` under *root*.
+
+    The upper half of the weapon table is reachable only through the campaign
+    armoury, which no ``.lev`` carries, so this is what says whether an arm
+    keyed on a weapon id can fire from authored data at all.
+    """
+    ids: set[int] = set()
+    placed = files = 0
+    for dirpath, _dirs, names in os.walk(root):
+        for fname in names:
+            if not fname.lower().endswith(".lev"):
+                continue
+            try:
+                battle = load_lev(os.path.join(dirpath, fname))
+            except LevError:
+                continue
+            files += 1
+            for unit in battle.units:
+                if not unit.placed:
+                    continue
+                placed += 1
+                ids.add(unit.weapon)
+    return ids, placed, files
+
+
 def run_check(root: str) -> int:
     exe = os.path.join(root, GAME_EXE)
     if not os.path.isfile(exe):
@@ -730,6 +867,51 @@ def run_check(root: str) -> int:
         stats.check("door.fog", got == want,
                     f"{va:#010x} is {got}, expected {want} ({what})")
 
+    # 1g. the other ten permanent rebuilds -- whose fog each one moves
+    for va, want, what in FOG_ARGUMENTS:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("fog.argument", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for va, want, what in PLAYER_RECORD:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("fog.player_record", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for va, want, what in VIEW_PLAYER_BLOCK:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("fog.view_player_block", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+
+    # 1h. docs/22 §9.5 -- the hero counter, and the predicate that reads it
+    for va, want, what in HERO_COUNTER:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("hero.counter", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for site, target, what in HERO_COUNTER_CALLS:
+        stats.check("hero.call", site in tables.calls_to(target),
+                    f"{site:#010x} does not call {target:#010x} ({what})")
+    predicate, only_site, name_va, name = HERO_KILLED_NAME
+    callers = tables.calls_to(predicate)
+    stats.check("hero.predicate", callers == {only_site},
+                f"{predicate:#010x} is called from "
+                f"{sorted(hex(x) for x in callers)}, expected "
+                f"{[hex(only_site)]}")
+    stats.check("hero.predicate_name",
+                tables.pe.bytes_at(name_va, len(name)) == name,
+                f"{name_va:#010x} is not {name!r} -- the string the dispatcher "
+                f"compares immediately before calling {predicate:#010x}")
+
+    # 1i. the Spidy arm: an impact that spawns a unit rather than a blob
+    key = SPIDY_WEAPON - IMPACT_KEY_BIAS
+    arm = tables.pe.u32(IMPACT_JUMP_TABLE
+                        + 4 * tables.pe.u8(IMPACT_INDEX_TABLE + key))
+    stats.check("spidy.arm", arm == SPIDY_ARM,
+                f"weapon {SPIDY_WEAPON} selects {arm:#010x}, expected "
+                f"{SPIDY_ARM:#010x}")
+    for va, want, what in SPIDY_SPAWN:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("spidy.spawn", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+
     # 2. the indirect-fire predicate
     stats.check("arc.weapons", tables.arcing == EXPECTED_ARCING,
                 f"arcing weapons are {sorted(tables.arcing)}, "
@@ -758,6 +940,18 @@ def run_check(root: str) -> int:
     # 5. the magic division, over the height range the corpus actually contains
     lo, hi, nlev = corpus_height_range(root)
     stats.check("lev.corpus", nlev > 0, f"no .lev parsed under {root!r}")
+
+    # 5a. the Spidy arm cannot fire from authored data
+    weapon_ids, placed, wfiles = corpus_weapon_ids(root)
+    stats.check("spidy.corpus", wfiles > 0 and placed > 0,
+                f"no placed unit found under {root!r}")
+    stats.check("spidy.unreachable", SPIDY_WEAPON not in weapon_ids,
+                f"weapon {SPIDY_WEAPON} is carried by a placed unit after all")
+    stats.check("spidy.armoury_half",
+                max(weapon_ids) < 30,
+                f"a placed unit carries weapon {max(weapon_ids)}; the whole "
+                f"upper half of the table was thought to be the campaign "
+                f"armoury's")
     span = hi - lo                       # the largest |dh| the corpus can produce
     bad = next((n for n in range(0, span + 1)
                 if magic_div_2400_plus_1(n) != n // HEIGHT_STEP + 1), None)

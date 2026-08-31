@@ -928,21 +928,21 @@ fog for good.
 
 | Address | Routine | Rebuilds for | Kind |
 |---|---|---|---|
-| `0x0040D6BD` | `aPlayFightAnimation`, `aAnimations.cpp:2752` | current player | permanent |
+| `0x0040D6BD` | `aPlayFightAnimation`, `aAnimations.cpp:2752` — weapon 46's impact arm (§9.4.2) | current player | permanent |
 | `0x00410C6A` | `aDoorOpenSequence` — the panel drops | current player | permanent |
 | `0x00410D60` | `aDoorOpenSequence` — the panel rises | current player | permanent |
 | `0x00412905` | `aPlayElevatorSequence`, `cpp:8215` | the rider's own player | permanent |
-| `0x004130E6` | `aPlayPlatformSequence`, `cpp:8694` | the rider's own player | permanent |
-| `0x004149C7` | `aPlayStatueSequence`, `cpp:10602` | literal player 0 | permanent |
+| `0x004130E6` | `aPlayPlatformSequence`, `cpp:8694` | the **selected** unit's player | permanent |
+| `0x004149C7` | `aPlayStatueSequence`, `cpp:10602` — `FixedStatue`'s | literal player 0 | permanent |
 | `0x004419B6` | the `InsertUnit` handler | current player | permanent |
 | `0x00441F55` | the `BuildVisibleMap` command | current player | permanent |
 | `0x004490A9` | `aLoad.cpp:1649` | current player | permanent |
-| `0x00457926` | the mission-control GUI build | own player | permanent |
+| `0x00457926` | the mission-control GUI build, `aMissionControl.cpp:4571` | current player | permanent |
 | `0x0046F144` | `aExecuteWarp` (`0x0046EF50`) | **the warping unit's** `+0x45` | permanent |
 | `0x0046F3A8` | `0x0046F210` `case 4`, `special` 9 ([`21` §5](21-info-lcl-schema.md)) | current player | permanent |
 | `0x004781C6` | `refreshCurrentPlayer`, `aUnitMap.cpp:1240` | its own argument | permanent |
 | `0x00478DE4` | `aTransferUnitFromPoolToMap` | current player | permanent |
-| `0x0047DCCF` | `aNextPlayerHandling`, under game mode 1 | literal player 0 | permanent |
+| `0x0047DCCF` | `aNextPlayerHandling`, once per session, campaign only (§9.4.1) | literal player 0 | permanent |
 | `0x0047CBED` | `aViewPlayer.cpp:1051` | own player | **probe** |
 | `0x0047CF8B` | `aViewPlayer.cpp:992` | own player | **probe** |
 | `0x0047CFB5` | `aViewPlayer.cpp:998` | `0x0043B2D0` | **probe** |
@@ -951,6 +951,109 @@ fog for good.
 `0x0043B2C0` is `aGetCurrentPlayer` (`0x00509E32`, the byte
 [`25` §4](25-turn-and-round.md) rotates); `0x00436980` is the *own* player of
 the network session, `-1` when there is none.
+
+**Three of the fifteen do not rebuild for the player holding the turn**, and
+the instruction immediately before each `call` is what says so.
+`combat_tables.py`'s `fog.argument` pins all eighteen of those instructions.
+
+* the **elevator** takes the rider's byte — `mov cl, byte [eax+0x45]` at
+  `0x00412901`, where `eax` came from `aGetUnitMapElementPtr(cell[+0x07])` on
+  the elevator's own tile at `0x004126B5`. An empty tile skips the call
+  entirely (`je` at `0x004128FD`);
+* the **platform** looks like the same thing and is not. `eax` there comes
+  from `0x00471F70` (`0x00413098`), which is a three-line accessor over the
+  globals `0x005162F8`/`0x005162FC`/`0x00516300` — the unit the *interface* has
+  selected. A platform moved under somebody while a different unit is selected
+  rebuilds for the selected one;
+* the **statue** and `aNextPlayerHandling` push a literal `0` (`0x004149C5`,
+  `0x0047DCCD`).
+
+### 9.4.1 The one-shot at the top of the hand-over
+
+`0x0047DCA7`..`0x0047DCD4` runs once per session and is easy to miss, because
+the hand-over's *own* rebuild is elsewhere and conditional:
+
+```c
+if (g_5229D0 == 0) {                    /* 0x0047DCAC */
+    g_5229D0 = 1;
+    resetPlayerRecords();               /* 0x0043B770 */
+    if (gameMode() == 1)                /* 0x0043B740 -> 0x00509EE8; campaign */
+        aBuildVisibleMap(0);            /* 0x0047DCCF */
+}
+```
+
+`0x0043B770` walks the four player records of 40 bytes from `0x00509F48`.
+**Its pointer runs at `record + 8`**, not at the record — it starts at
+`0x00509F50` and the first store is `[eax-8]` — so the loop bound
+`0x00509FF0` is `0x00509F48 + 40·4 + 8` and the six stores land on `+0x00`,
+`+0x08`, `+0x10` and `+0x18` (all zero), `+0x20` (set to **1**) and `+0x24`
+(a **byte**, zero). It then writes 0 into the turn counter and clears
+game-control slots 10 and 11.
+
+So the one-shot **does** clear the hero counter of §9.5 — `mov byte
+[eax+0x1c], bl` at `0x0043B78C` is `record[+0x24] = 0`, at the same width the
+counter is incremented — and a campaign's first turn starts on a fog pass for
+player 0 rather than on the `+0x4F` bytes the `.lev` authored. A network
+session gets neither.
+
+**The latch is saved.** `0x00509F50`'s neighbour `0x005229D0` is not a
+run-time-only global: `aSaveViewPlayer` (`0x0047DBE0`) and `aLoadViewPlayer`
+(`0x0047DC20`) transfer `0x44C` bytes starting at it, so a save taken after
+the first hand-over comes back with the one-shot already spent and the reset
+does not run again over the loaded records. `0x0047BCD0` — two instructions,
+`mov dword [0x005229D0], 0; ret` — is what puts it back for a new mission.
+
+### 9.4.2 `aPlayFightAnimation`'s arm that spawns a unit
+
+The impact switch in [`28` §8.1](28-effects-and-sound.md) is keyed on the
+attacker's **weapon id** biased by 7 (`lea eax,[edx-7]` at `0x0040D4DF`), and
+seventeen of its arms create a blob. One does something else: weapon **46**,
+`Mine Thrower Enhanced`, selects `0x0040D65C`, which calls
+`aGenerateUnitElement(aGetCurrentPlayer(), 0x18, "Spidy", 0, 0, x, y, 0)` —
+unit type 24, `Spider` — then `aBlob_CreateLandingDust` and the permanent
+rebuild at `0x0040D6BD`. The enhanced mine thrower does not lay a mine; it
+lands a unit for the firing player.
+
+**No shipped `.lev` can reach it.** Across the 155-mission corpus the placed
+units carry weapon ids 0..29 only — nothing in 30..47, which is the half the
+campaign armoury hands out — so the arm is reachable in a campaign and not
+from authored data. `combat_tables.py`'s `spidy.arm`, `spidy.spawn`,
+`spidy.unreachable` and `spidy.armoury_half` pin both halves of that.
+
+### 9.5 The other thing `aRemoveUnitElement` does: the hero counter
+
+`aRemoveUnitElement` (`0x004779C0`) is the routine every removal goes through
+— `aKillUnit` (`0x00472920`) is a death sequence plus this call, and twenty
+sites reach it. Its middle third is not removal at all:
+
+```c
+al = unit[+0x4D];                      /* 0x00477A34 */
+if (al >= 2 && getTurnCounter() != 0) {          /* 0x00477A3B, 0x0043B280 */
+    rec = playerRecord(unit[+0x45]);             /* 0x0043BA00 */
+    rec[+0x24]++;                                /* one byte: 0x00477A5C */
+}
+```
+
+* `+0x4D` is [`10` §5.4](10-lev-mission-format.md)'s pool flag — 0 none, 1
+  unit-pool candidate, 2 hero — and the test is `cmp al, 2` / `jb`, a **bound**
+  and not an equality;
+* the gate is the **turn counter** at `0x00509E1D`, the same byte
+  [`25` §3.1](25-turn-and-round.md) uses to recognise the first hand-over, so a
+  hero taken off the map before the first one does not count;
+* `playerRecord` is `lea eax,[eax+eax*4]` then `lea eax,[eax*8 + 0x00509F48]`
+  — base `0x00509F48`, stride 40 — the array §9.4.1's reset walks;
+* the counter is **one byte**, incremented with `inc cl`, so it wraps at 256.
+
+**What reads it is the LCL predicate `HeroKilled`.** `0x004409E0` is four
+instructions — `playerRecord(g_50BEF8)[+0x24] != 0` — and its single caller is
+`0x00444BA3`, immediately after the dispatcher compares the command name
+against the string `"HeroKilled"` at `0x004C5818`
+([`20` §7.4](20-lcl-language.md)). 75 of the 156 shipped scripts ask — including all
+five the remake converts, and `_C_140`, where it is half of the defeat
+condition. A remake that carried the
+field and never wrote it answers *no hero has died* for the whole campaign.
+`combat_tables.py`'s `hero.counter`, `hero.call`, `hero.predicate` and
+`hero.predicate_name` pin the twelve bytes and the one call site.
 
 #### The probe, and the half of it that is not put back
 
@@ -1025,6 +1128,9 @@ aExecuteFight
          ├─ aRandom(0,100) <= chance + 10
          ├─ 0x0046C960               damage roll, fatigue, armour, HP
          └─ aSetVisibleStateForUnit
+     and, for a cell whose marker is 0x5D:
+         └─ aKillUnit
+             └─ aRemoveUnitElement   free the record; count the hero (§9.5)
 
 aBuildVisibleMap(player)             15 permanent sites; probed per command (§9.4)
  └─ for each own unit: aBuildVisibleMapForUnit
@@ -1061,6 +1167,14 @@ aBuildVisibleMap(player)             15 permanent sites; probed per command (§9
 | `fog.saves`, `fog.restores` | and exactly the three save and six restore sites that make four of them probes |
 | `door.fog` 6/6 | `aDoorOpenSequence`'s two arms, their opposite sign tests, and the `!= 0xFF` guard both carry |
 | `hatch.arm` 12/12, `hatch.call` 2/2 | every immediate of `0x0046F210`'s `case 4` — `special` 9, the five-hit-point bound, the weapon types {1, 2, 4}, the replacement's type and player, the inherited group — and the two calls that follow it |
+| `fog.argument` 18/18 | the instruction before each of the other ten permanent `call`s, which is what says **whose** fog each one moves (§9.4) |
+| `fog.player_record` 8/8 | `0x0043BA00`'s two `lea`s and the reset loop's six instructions: base `0x00509F48`, stride 40, four records, a pointer at `record + 8`, and `+0x24` cleared as a byte |
+| `fog.view_player_block` 3/3 | both sides of the `0x44C`-byte block at `0x005229D0`, i.e. the one-shot latch is saved and restored, and the two-instruction reset that starts a new mission |
+| `hero.counter` 12/12 | the whole of §9.5 — the `+0x4D` bound, the turn-counter gate, the byte-wide increment, and the predicate's `setne` |
+| `hero.call` 3/3, `hero.predicate` | the counter's two calls, and that `0x004409E0` has exactly one caller |
+| `hero.predicate_name` | the string that caller compares immediately before it is `"HeroKilled"` |
+| `spidy.arm`, `spidy.spawn` 4/4 | weapon 46's impact arm is `0x0040D65C`, and it pushes type `0x18` with the name `"Spidy"` (§9.4.2) |
+| `spidy.unreachable`, `spidy.armoury_half` | no placed unit in the corpus carries weapon 46, and none carries anything above 29 |
 
 `tools/trace_names.py --check gog_incubation` re-derives the symbol table and
 asserts the ten names §1.1 depends on.
@@ -1069,8 +1183,21 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-**None.** The three that this document opened are closed below, each in the
-place the evidence belongs, and nothing new was left hanging.
+1. **What type does `FixedStatue`'s sequence spawn?** `0x00414000` ends with
+   `aDeleteLand` on the statue's tile and then
+   `aGenerateUnitElement(0xFF, type, ...)` — a **neutral** unit, `push 0xff` at
+   `0x004149B1` — before the permanent rebuild at `0x004149C7` (§9.4). `type`
+   is `[esp+0x40]` at `0x0041499F`, and the frame there cannot be resolved
+   statically: the epilogue at `0x00414988` pops only two of the four saved
+   registers, so the offset does not reduce to an argument slot with any
+   confidence. `FixedStatue`'s own wrapper `0x00442370` passes just `(x, y,
+   dir)`, so the type is either a constant loaded inside the routine or comes
+   from the cell. **Next step is a native probe**, not more disassembly:
+   `dbgcall` on `_C_166` or another of the five missions that call
+   `FixedStatue`, breaking on `0x004149BD` and reading `edx`.
+
+The three questions this document opened are closed below, each in the place
+the evidence belongs.
 
 1. **`aiLevel()` is the options screen's *"Set Difficulty Level"* row** —
    `Game.opt` `+0x18`, cycled by `0x00460780`, tooltip text 58 in

@@ -767,8 +767,9 @@ three of them permanent, because that is what radare2's `axt` reports after
 of the extra eleven disassembles into a real instruction. The corrected table
 is in §9.4 and `combat_tables.py`'s `fog.sites` now pins it exactly.
 
-Three of the fifteen permanent sites are reachable from this remake's own
-seams, and all three are implemented:
+Of the **fifteen** permanent sites, five are the door (two), `InsertUnit`,
+the `BuildVisibleMap` command and `special` 9, and they were implemented
+first:
 
 * **the door** — `aDoorOpenSequence` (`0x00410A20`) rebuilds on both arms and
   refuses while the computer holds the turn. It lives in `World.submit_use`
@@ -783,18 +784,64 @@ seams, and all three are implemented:
   already had: the interpreter owns four cell fields and no derived state;
 * **`special` 9** — `0x0046F210`'s `case 4`, in `Combat.hatch`; see §7.5.7.
 
-The other twelve are **recorded and not implemented**, each because the seam
-it belongs to does not exist here yet: `aExecuteWarp` (`0x0046F144`, and note
-it rebuilds for the *warping unit's* player, not the current one), the
-elevator, platform and statue sequences (`0x00412905`, `0x004130E6`,
-`0x004149C7`), `aPlayFightAnimation`'s Spidy arm (`0x0040D6BD`),
-`aTransferUnitFromPoolToMap` (`0x00478DE4`), the load path (`0x004490A9`) and
-`aNextPlayerHandling`'s mode-1 site (`0x0047DCCF`).
+> **The count was wrong here, and this is the correction.** This paragraph
+> used to say "three of the fifteen … the other **twelve**", while listing
+> eight addresses. Five sites were implemented and ten were not; the twelve
+> came from counting mechanisms on one side of the subtraction and sites on
+> the other, and it silently dropped `0x00457926` and `0x004781C6` from the
+> enumeration entirely.
 
-Replaying `_C_140` to its end through `core` alone gives a byte-identical
-canonical hash before and after: its script's inserts are immediately
-superseded by the hand-over's own rebuild, and the scripted play never opened
-a door. The change is reachable, not yet exercised by a regression fixture.
+**The remaining ten, resolved.** Three more are now implemented, one is a
+reclassification, and six are recorded with the reason each is not:
+
+| Site | What it is | Here |
+|---|---|---|
+| `0x00412905` | `aPlayElevatorSequence` | **implemented** in `World._run_mission_script`, for the **rider's** player |
+| `0x004490A9` | the load path | **implemented** at the end of `World.load_save` |
+| `0x0047DCCF` | `aNextPlayerHandling`'s one-shot | **implemented** as `World._first_hand_over`, campaign only, for a literal player 0 |
+| `0x004781C6` | `refreshCurrentPlayer` | **reclassified**: `0x004781C0` is a four-instruction forwarder — `push ebp; call aBuildVisibleMap` — with one caller. It *is* `Visibility.build`, not a mechanic beside it |
+| `0x0040D6BD` | weapon 46's impact arm | **recorded**: it spawns a `Spider` for the firing player ([`22` §9.4.2](22-combat-and-visibility.md)), and no placed unit in the 155-mission corpus carries a weapon above 29. Reachable only through the campaign armoury, which this remake does not have |
+| `0x004130E6` | `aPlayPlatformSequence` | **recorded**: it rebuilds for the unit the *interface* has selected (`0x00471F70`), and `core` owns no selection — that is `game`'s. Guessing the rider instead would be a different rule, not the engine's |
+| `0x004149C7` | `FixedStatue`'s sequence | **recorded**: the site is not a bare rebuild. It follows `aDeleteLand` and an `aGenerateUnitElement` that spawns a **neutral** unit (`push 0xff` at `0x004149B1`) whose type comes from a stack slot a static read cannot resolve. Modelling the fog without the spawn would model half of it; the type wants a native probe |
+| `0x0046F144` | `aExecuteWarp` | **recorded**: `MoveMap` computes the warp overlay and nothing consumes `STATE_WARP` — there is no execute path to hang it on yet |
+| `0x00457926` | `aMissionControl`'s GUI build | **recorded**: four interface-driven call sites. `game` redraws its HUD without asking `core`, and folding this in would make a draw mutate the rules |
+| `0x00478DE4` | `aTransferUnitFromPoolToMap` | **recorded**: the unit pool is the campaign layer's ([`27`](27-campaign.md)), which this remake does not have |
+
+Two of the three implemented are inert on `_C_140` and one is not reachable
+from it at all: replaying the mission to its end through `core` gives a
+byte-identical canonical hash with the elevator arm and the one-shot on and
+off (`4b0d4bd7…` either way), because its script drives no elevator and its
+first hand-over's own rebuild immediately supersedes the one-shot's. The load
+path is exercised by `test_turn.gd`'s `save.the_load_rebuilds_the_fog`, which
+is a *behavioural* change: a save's stored `+0x4F` bytes are not the ones the
+loaded mission plays with.
+
+### 7.5.5.1 The hero counter, which was the real gap
+
+Chasing the remaining ten turned up something bigger than any of them.
+`aRemoveUnitElement` (`0x004779C0`) — the routine every removal in the engine
+goes through, `aKillUnit` included — increments a per-player byte at `+0x24`
+when the unit it removes is a **hero** and the turn counter is non-zero.
+[`22` §9.5](22-combat-and-visibility.md) has it instruction by instruction.
+
+That byte is what the LCL predicate `HeroKilled` reads. `TurnState`
+carried the field, `LclInterpreter` read it, and **nothing wrote it**, with a
+comment saying only a save could set one. 75 of the 156 shipped scripts call
+`HeroKilled`, and `_C_140` — the mission this remake plays — makes it half of
+the defeat condition.
+
+`UnitState.remove` is now the one place a unit leaves the map, and every
+removal path goes through it: the resolver's kill, `Interact`'s bomb and its
+push into a hole, the parabomb, `Combat.hatch`'s carrier and `LclContext.kill`
+(which is `KillUnit`, the barrier and the fixed statue). `inclib/combat.py`
+and `inclib/lcl_runtime.py` grew the same function.
+
+**This one is not inert.** The same `_C_140` replay ends on turn 9 with 17
+survivors instead of turn 11 with 19: the squad's hero dies, `HeroKilled (0)`
+finally answers true, and the mission's own defeat condition fires. The
+canonical hash moves from `4b0d4bd7…` to `258596e3…`, and a mutation that
+disables only the counter puts it back exactly — which is how the change was
+attributed to the counter and not to the two fog sites beside it.
 
 **One deliberate difference from the engine.** The probe wakes no AI group.
 The engine's can: `aBuildVisibleMapForUnit` promotes the secondary order of a
@@ -838,7 +885,8 @@ Four details are the engine's and each would be easy to get wrong:
   even though its occupant is alive and frail;
 * the carrier is **removed, not killed** — `aRemoveUnitElement` (`0x004779C0`)
   frees the record and clears the cell — so its slot is free again and the
-  replacement usually takes it;
+  replacement usually takes it. That routine also counts a hero (§7.5.5.1), so
+  the hatch goes through `UnitState.remove` like every other removal;
 * `aGenerateUnitElement` is called with its `exact` flag **set**, so the
   replacement never searches a neighbouring cell the way an `InsertUnit` does.
   That flag is the only difference between the two callers, so

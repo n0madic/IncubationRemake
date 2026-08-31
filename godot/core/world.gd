@@ -53,6 +53,9 @@ const ACTED_MOVED: int = 3
 const DOOR_USE_KIND: String = "door"
 ## The event [LclInterpreter] emits where the engine calls `aBuildVisibleMap`.
 const SCRIPT_FOG_EVENT: String = "build_visible_map"
+## The `Elevator` command's event. `aPlayElevatorSequence` ends with a
+## permanent rebuild for the **rider's** own player -- see [method run_script].
+const ELEVATOR_EVENT: String = "elevator"
 
 ## The [MissionScript] seam. Assign a real runner and the hand-over and the
 ## walk start driving the mission program; leave it and they run
@@ -92,6 +95,18 @@ var ai_may_fire: bool = true
 ## never calls the command still names a successor.
 var next_map: String = ""
 
+## `0x005229D0` -- the latch `aNextPlayerHandling` sets on its first run.
+##
+## **The engine saves it.** `aSaveViewPlayer` (`0x0047DBE0`) and
+## `aLoadViewPlayer` (`0x0047DC20`) transfer `0x44C` bytes starting at this
+## address, so a save taken after the first hand-over comes back with the
+## one-shot already spent -- which matters, because otherwise the reset inside
+## it would clear the loaded hero counters. This remake's save block is its
+## own and does not carry the byte; [method load_save] derives it instead,
+## from the one thing that says the same: a loaded turn counter above zero can
+## only have come from a hand-over that has already run.
+var _hand_over_initialised: bool = false
+
 
 static func create(map_document: Dictionary, balance: Dictionary,
 		rng_seed: float = 0.0) -> World:
@@ -120,6 +135,42 @@ static func create(map_document: Dictionary, balance: Dictionary,
 			continue
 		world._units[unit.slot] = unit
 	return world
+
+
+## `aNextPlayerHandling`'s one-shot -- `0x0047DCA7`..`0x0047DCD4`.
+##
+## The first time the rotation runs, and only then:
+##
+## [codeblock]
+## if (g_5229D0 == 0) {                       /* 0x0047DCAC */
+##     g_5229D0 = 1;
+##     resetPlayerRecords();                  /* 0x0043B770 */
+##     if (gameMode() == 1)                   /* 0x0043B740, campaign */
+##         aBuildVisibleMap(0);               /* 0x0047DCCF */
+## }
+## [/codeblock]
+##
+## `0x0043B770` walks the four player records with its pointer at `record + 8`
+## -- it starts at `0x00509F50` and its first store is `[eax-8]` -- so its six
+## stores land on `+0x00`, `+0x08`, `+0x10`, `+0x18` (zero), `+0x20` (1) and
+## `+0x24` (a byte, zero). The last of those is the hero counter, so this
+## clears [member TurnState.hero_killed]; the other five are fields this
+## remake does not carry. It also zeroes the turn counter and game-control
+## slots 10 and 11, which [method create] already leaves that way.
+##
+## The rebuild is **not** the hand-over's own: that one runs later, for
+## whoever the rotation picked and only when the refresh ran. This one is
+## unconditional, for player 0, and it is the reason a campaign's first turn
+## starts on a fog pass rather than on the `+0x4F` bytes the `.lev` authored.
+func _first_hand_over() -> void:
+	if _hand_over_initialised:
+		return
+	_hand_over_initialised = true
+	turn.hero_killed = PackedInt32Array([0, 0, 0, 0])
+	if turn.mode != TurnState.MODE_CAMPAIGN:
+		return
+	Visibility.build(state, _units, _unit_types, 0, turn.human_count(),
+		turn.mode)
 
 
 func ctrlmap() -> CtrlMapTable:
@@ -320,8 +371,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# AI and three times from `aUI.cpp`. So the drain lives here, where the
 	# charge above already is, and not inside [TurnSequence] or [ExecuteMove].
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode,
-		turn.current_player, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng)
 	return moved
 
 
@@ -348,15 +398,14 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	var unit: UnitState = _units[command.unit_slot]
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
-		turn.human_count(), turn.mode, turn.current_player, rng)
+		turn.human_count(), turn.mode, turn, rng)
 	if unit.hp == 0:
 		return shot
 	var ap: int = _weapons.ap(unit.weapon)
 	unit.mp = unit.mp - ap if unit.mp > ap else 0
 	unit.acted = ACTED_MOVED
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode,
-		turn.current_player, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng)
 	return shot
 
 
@@ -380,7 +429,7 @@ func submit_use(command: UseCommand) -> UseResult:
 		return UseResult.refused("there is nothing to use in front of it")
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
-		turn.mode, rng)
+		turn.mode, turn, rng)
 	# **A door that opens changes what the rules see, and the rebuild is not
 	# `aExecuteUse`'s.** It belongs to `aDoorOpenSequence` (`0x00410A20`), the
 	# animation the use path drives, which calls `aBuildVisibleMap` twice --
@@ -455,14 +504,34 @@ func _run_mission_script(call_type: int,
 	# outside [LclContext], whose whole point is that the language reaches four
 	# cell fields and not the map's derived state. The events themselves are
 	# unchanged, so `lcl_runtime.py`'s comparison still sees the same list.
+	#
+	# **The elevator is a third, and it rebuilds for somebody else.**
+	# `aPlayElevatorSequence` (`0x004125D0`) reads the unit index out of the
+	# elevator's own ctrl-map cell, takes that unit's `+0x45`, and calls
+	# `aBuildVisibleMap` with it at `0x00412905` -- the **rider's** player, not
+	# the current one, and skipped entirely when the tile is empty
+	# (`cell[+0x07] == 0xFFFF`). The rider is read back off the cell here
+	# rather than carried in the event, because the command changes the cell's
+	# height and never moves the unit, so the occupant after is the occupant
+	# before -- and the event payload stays byte-identical to the one
+	# `lcl_runtime.py` emits.
 	for event: Dictionary in outcome.events:
-		if DictRead.as_string(event["name"]) != SCRIPT_FOG_EVENT:
-			continue
+		var name: String = DictRead.as_string(event["name"])
 		var values: PackedInt32Array = DictRead.as_int32_array(event["values"])
-		if values.is_empty():
-			continue
-		Visibility.build(state, _units, _unit_types, values[0],
-			turn.human_count(), turn.mode)
+		if name == SCRIPT_FOG_EVENT:
+			if values.is_empty():
+				continue
+			Visibility.build(state, _units, _unit_types, values[0],
+				turn.human_count(), turn.mode)
+		elif name == ELEVATOR_EVENT:
+			if values.size() < 2 or not state.in_bounds(values[0], values[1]):
+				continue
+			var rider: int = state.unit_at(state.index_of(values[0], values[1]))
+			if rider < 0 or not _units.has(rider):
+				continue
+			var on_it: UnitState = _units[rider]
+			Visibility.build(state, _units, _unit_types, on_it.player,
+				turn.human_count(), turn.mode)
 	var result: Dictionary = outcome.to_dict()
 	result["ok"] = outcome.ok()
 	result["ran"] = true
@@ -610,6 +679,7 @@ func banner_in_range(slot: int) -> bool:
 ## twice per round, and on `_C_140` that is the script's reinforcement roll
 ## firing twice as often as the mission intends.
 func submit_end_turn(command: EndTurnCommand) -> TurnResult:
+	_first_hand_over()
 	var result: TurnResult = TurnSequence.hand_over(turn, _units, game_control,
 		_unit_types, _weapons, _script_callable(), banner_in_range,
 		live_unit_count, command.arg)
@@ -656,6 +726,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	var turns: int = 0
 	while turn.current_player == TurnState.PLAYER_COMPUTER \
 			and result.code == TurnResult.OK:
+		_first_hand_over()
 		turns += 1
 		if turns > AI_TURNS_PER_HAND_OVER:
 			result.code = TurnResult.STOPPED
@@ -751,6 +822,16 @@ func load_save(data: PackedByteArray) -> int:
 	crand = decoded["crand"]
 	compat_flags = decoded["compat_flags"]
 	_camera = DictRead.as_dict(decoded["camera"])
+	# See [member _hand_over_initialised]: the engine restores the latch from
+	# the save, and a non-zero turn counter is what a spent one implies.
+	_hand_over_initialised = turn.turn != 0
+	# `aLoad.cpp:1649` (`0x004490A9`) -- the load ends with a permanent
+	# `aBuildVisibleMap(aGetCurrentPlayer())`, after the mission objectives are
+	# read back. The stored `+0x4F` bytes are therefore not what the loaded
+	# mission plays with: the pass is re-run over the restored roster. docs/22
+	# section 9.4.
+	Visibility.build(state, _units, _unit_types, turn.current_player,
+		turn.human_count(), turn.mode)
 	return code
 
 

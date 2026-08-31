@@ -913,7 +913,7 @@ in shipped data (one commented-out line in `_C_171.lcl:140`).
 | `VarGreaterNum (_X, n)` | `0x00440950` | `local[X] > n` |
 | `VarCmpVar (_X, _Y)` | `0x00440970` | `local[X] == local[Y]` |
 | `CheckCurrentTurn (lo, hi)` | `0x004409a0` | `lo <= turn <= hi` |
-| `HeroKilled (player)` | `0x004409e0` | the player record's "hero killed" byte (`+0x24`) is non-zero |
+| `HeroKilled (player)` | `0x004409e0` | the player record's "hero killed" byte (`+0x24`) is non-zero — **written by `aRemoveUnitElement`**, see below |
 | `GroupOnField (group, x, y)` | `0x00440a00` | a unit of that group stands on the tile |
 | `UnitOnField (player, x, y)` | `0x00440a20` | a unit stands there whose species is **not** 2 (object) or 3 (machine) and whose owner matches: `0..3` a human player, `255` the computer, **`254` = any player** |
 | `MechOnField (player, x, y)` | `0x00440b40` | same, but species **must** be 3; `254` = any |
@@ -922,6 +922,17 @@ in shipped data (one commented-out line in `_C_171.lcl:140`).
 
 The `254` = "any player" escape in `UnitOnField`/`MechOnField` is not used by
 the corpus, which always passes 0 or 255.
+
+**`HeroKilled` is the one predicate whose byte no LCL command writes.**
+`0x004409E0` reads `playerRecord(arg)[+0x24]` and answers `!= 0`; the only
+thing in the binary that moves that byte is `aRemoveUnitElement`
+(`0x004779C0`), which increments it when the unit it is taking off the map has
+`+0x4D >= 2` — a **hero** — and the turn counter is non-zero. The full
+disassembly, the player-record arithmetic and the corpus checks are in
+[`22` §9.5](22-combat-and-visibility.md). 75 of the 156 shipped scripts call
+it, `_C_140` among them, where it is half of the defeat condition — so a model
+that carries `+0x24` and never writes it answers *no hero has died* for a whole
+campaign.
 
 #### Game-control slots — **[code] `0x0043b160` / `0x0043b180` / `0x0043b1a0`**
 

@@ -31,7 +31,7 @@ static func run(ctx: AIContext) -> bool:
 		var y: int = unit.y
 		var blast: AttackResult = Interact.execute_bomb(ctx.map, ctx.units,
 			ctx.utab, ctx.wtab, x, y, ctx.turn.ai_level,
-			ctx.turn.human_count(), ctx.turn.mode, ctx.rng)
+			ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng)
 		ctx.emit(AIEvent.make("parabomb", slot, x, y, 0, 0, 0, "",
 			blast.to_dict()))
 		if unit.hp != 0:
@@ -39,7 +39,5 @@ static func run(ctx: AIContext) -> bool:
 			# which docs/22 section 7's guaranteed-hit rule makes impossible
 			# for the shipped `Parabomb`.
 			unit.hp = 0
-			var index: int = ctx.map.index_of(x, y)
-			if ctx.map.unit_at(index) == slot:
-				ctx.map.set_unit(index, MapState.NO_UNIT)
+			UnitState.remove(ctx.map, ctx.turn, unit)
 	return true

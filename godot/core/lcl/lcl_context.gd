@@ -73,10 +73,7 @@ func free_cell(x: int, y: int) -> bool:
 
 func kill(unit: UnitState) -> void:
 	unit.hp = 0
-	if state.in_bounds(unit.x, unit.y):
-		var at: int = state.index_of(unit.x, unit.y)
-		if state.unit_at(at) == unit.slot:
-			state.set_unit(at, MapState.NO_UNIT)
+	UnitState.remove(state, turn, unit)
 
 
 ## The lowest slot holding no **live** unit -- [method UnitState.free_slot],
