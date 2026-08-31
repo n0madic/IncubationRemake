@@ -38,7 +38,7 @@ python3 tools/cha_parse.py        --verify-convention gog_incubation
 python3 tools/font_render.py      --check gog_incubation
 python3 tools/img_tables.py       gog_incubation
 python3 tools/verify_3d_indices.py --root gog_incubation      # 31 check kinds
-python3 tools/combat_tables.py    --check gog_incubation      # 45 checks, 48/48 patterns
+python3 tools/combat_tables.py    --check gog_incubation      # 56 checks, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
 python3 tools/sav_tables.py       --check gog_incubation      # 69 checks
 python3 tools/sav_parse.py        gog_incubation --selftest   # 31 map sizes
@@ -389,7 +389,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **40 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 1, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **39 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

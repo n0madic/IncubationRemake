@@ -190,7 +190,7 @@ EXPECTED_FOG_SITES = {
     0x00410D60,   # aDoorOpenSequence -- the door closes; current, not 0xFF
     0x00412905,   # aPlayElevatorSequence, cpp:8215 -- the rider's player
     0x004130E6,   # aPlayPlatformSequence, cpp:8694 -- the rider's player
-    0x004149C7,   # aPlayStatueSequence, cpp:10602 -- literal player 0
+    0x004149C7,   # the spore hatch 0x004147D0, cpp:10602 -- literal player 0
     0x004419B6,   # the InsertUnit handler -- current
     0x00441F55,   # the BuildVisibleMap command -- current
     0x004490A9,   # aLoad.cpp:1649 -- current
@@ -262,7 +262,8 @@ FOG_ARGUMENTS = (
     (0x00413098, "e8d3ee0500",
      "call 0x00471F70 -- the interface's own selection, from 0x005162F8"),
     (0x004149C5, "6a00",
-     "aPlayStatueSequence: push 0 -- a literal player, not the current one"),
+     "the spore hatch 0x004147D0 (§9.4.3, *not* aPlayStatueSequence): push 0 "
+     "-- a literal player, not the current one"),
     (0x004149B1, "68ff000000",
      "and the unit it spawns first is a neutral (player 0xFF)"),
     (0x0044909E, "e81d22ffff",
@@ -353,6 +354,109 @@ SPIDY_SPAWN = (
     (0x0040D66F, "6a00", "push 0 -- rank"),
     (0x0040D671, "6a00", "push 0 -- pool flag"),
 )
+
+#: ``docs/22`` §9.4.3 -- the routine that owns the ``0x004149C7`` rebuild.  It
+#: is **not** ``aPlayStatueSequence``.  That routine is ``0x00414000``, and it
+#: ends at ``0x00414346`` with its own jump table at ``0x00414348``; the spawn
+#: and the rebuild belong to ``0x004147D0``, the spore hatch
+#: (``msqueether.wav``, ``docs/28`` §2).  No ``CHECK`` names it, so it is
+#: identified by what calls it rather than by a symbol.
+GENERATE_UNIT_ELEMENT = 0x00479CF0
+SPORE_HATCH = 0x004147D0
+SPORE_HATCH_CALLERS = frozenset({0x0046FC66, 0x0046FE18})
+#: Its frame is ``0x24`` of locals plus **three** saved registers, so the
+#: settled esp is ``ret - 0x30`` and the arguments sit at ``+0x34``, ``+0x38``
+#: and ``+0x3C``.  Both epilogues free exactly ``0x30``, and that is what says
+#: this is not the routine starting at ``0x00414000``, whose prologue is
+#: ``0x28`` plus **four** pushes.  ``aGetCtrlMapElementPtr(arg1, arg2)`` then
+#: fixes arguments 1 and 2 as ``(x, y)``.
+SPORE_HATCH_FRAME = (
+    (0x004147D0, "83ec24", "sub esp, 0x24"),
+    (0x004147D3, "555657", "push ebp; push esi; push edi -- three, not four"),
+    (0x00414826, "5f5e5d83c424c3", "the early epilogue frees 0x0c + 0x24"),
+    (0x00414A5E, "5f5eb8010000005d83c424c3", "and so does the tail one"),
+    (0x004147F5, "8b442438", "mov eax, [esp+0x38] -- argument 2"),
+    (0x004147F9, "8b4c2434", "mov ecx, [esp+0x34] -- argument 1"),
+    (0x004147FF, "e82caf0100", "call aGetCtrlMapElementPtr(arg1, arg2) = (x, y)"),
+    (0x00414000, "83ec28", "aPlayStatueSequence, for contrast: sub esp, 0x28"),
+    (0x00414003, "53555657", "push ebx; push ebp; push esi; push edi -- four"),
+    (0x0041408B, "83c428c3", "and its epilogue frees 0x10 + 0x28"),
+)
+#: The spawn itself.  ``[esp+0x40]`` at ``0x0041499F`` has exactly one push in
+#: flight, so it reads ``base + 0x3C``: **argument 3**.  The nine arguments and
+#: their order are the same as the Spidy site's, where ``push 0x18`` pins
+#: argument 2 as the unit type.
+SPORE_SPAWN = (
+    (0x0041499E, "52", "push edx -- the ninth argument, a local"),
+    (0x0041499F, "8b542440", "mov edx, [esp+0x40] -- base+0x3C, argument 3"),
+    (0x004149AB, "6824a54f00", "push 0x004FA524 -- the shared name buffer"),
+    (0x004149B0, "52", "push edx -- argument 2: the unit type"),
+    (0x004149B1, "68ff000000", "push 0xff -- argument 1: the player"),
+    (0x004149BD, "e82e530600", "call aGenerateUnitElement"),
+    (0x004149C2, "83c424", "add esp, 0x24 -- nine cdecl arguments"),
+    (0x0040D68A, "83c424", "the Spidy site cleans the same nine"),
+)
+#: ``Spores``' arm: the type comes straight from the script's third numeric
+#: argument, ``num[2]`` at ``0x0050BF00`` (``docs/20`` §3.2).
+SPORES_ARM = (
+    (0x00441FF0, "a100bf5000", "the Spores handler: mov eax, [0x0050BF00]"),
+    (0x00441FF5, "8a0dfcbe5000", "mov cl, [0x0050BEFC] -- num[1]"),
+    (0x00441FFB, "8a15f8be5000", "mov dl, [0x0050BEF8] -- num[0]"),
+    (0x00442004, "e827dc0200", "call 0x0046FC30 with (num[0], num[1], num[2])"),
+    (0x0046FC51, "8a06", "the sweep: mov al, byte [esi] -- the cell's +0x0B"),
+    (0x0046FC53, "3ac3", "cmp al, bl -- against num[0]"),
+    (0x0046FC57, "3a442418", "cmp al, byte [esp+0x18] -- and against num[1]"),
+    (0x0046FC63, "55", "push ebp -- the third argument, straight through"),
+    (0x0046FC64, "50", "push eax -- [esi+0x0A], the cell's y"),
+    (0x0046FC65, "51", "push ecx -- [esi+0x09], its x"),
+    (0x0046FC66, "e8654bfaff", "call 0x004147D0"),
+    (0x0046FC6E, "83c617", "add esi, 0x17 -- a CtrlMap cell is 23 bytes"),
+)
+#: ``MoveSpores``' arm of ``0x0046FC90`` is the one path where the type is a
+#: constant: 50, ``Ray'Ther`` in ``Info.lcl``'s ``SetUnitInfo`` table.  The
+#: three ``Move*`` commands are one routine with kind 0, 1 and 2, and only kind
+#: 2 reaches the spore hatch.
+MOVE_SPORES_TYPE = 50
+MOVE_SPORES_ARM = (
+    (0x0044253B, "6a00", "MoveObjects pushes kind 0"),
+    (0x0044255B, "6a01", "MoveFireCircles pushes kind 1"),
+    (0x0044257B, "6a02", "MoveSpores pushes kind 2"),
+    (0x0046FE03, "83e800", "sub eax, 0 -- kind 0 falls straight through"),
+    (0x0046FE08, "48", "dec eax -- kind 1"),
+    (0x0046FE0B, "48", "dec eax -- kind 2"),
+    (0x0046FE14, "6a32", "push 0x32 -- unit type 50"),
+    (0x0046FE16, "50", "push eax -- [edi+0x0A], the destination cell's y"),
+    (0x0046FE17, "51", "push ecx -- [edi+0x09], its x"),
+    (0x0046FE18, "e8b349faff", "call 0x004147D0"),
+    (0x0046FE2A, "e89133faff", "kind 1 calls 0x004131C0, the fire circle"),
+)
+#: The LCL dispatcher's ``mov eax, <name>`` sits exactly ``0x36`` bytes before
+#: the ``call`` its comparison guards, so the pairing is mechanical rather than
+#: read off by eye.
+DISPATCH_STRIDE = 0x36
+SPORE_DISPATCH = (
+    (0x00444649, 0x00441FF0, 0x004C5348, b"Spores\x00"),
+    (0x00443C71, 0x00442530, 0x004C5524, b"MoveObjects\x00"),
+    (0x00443CB7, 0x00442550, 0x004C5514, b"MoveFireCircles\x00"),
+    (0x00443CFD, 0x00442570, 0x004C5508, b"MoveSpores\x00"),
+    (0x004432D7, 0x00442370, 0x004C5710, b"FixedStatue\x00"),
+)
+#: ``FixedStatue``'s own routine, for contrast: it spawns nothing and rebuilds
+#: no fog.  What it *does* call is ``aRemoveUnitElement`` -- it petrifies a
+#: unit, which is why §9.5's counter is in its call graph and a spawn is not.
+STATUE_BODY = (0x00414000, 0x00414347)
+STATUE_MUST_NOT_CALL = (GENERATE_UNIT_ELEMENT, BUILD_VISIBLE_MAP)
+STATUE_MUST_CALL = 0x004779C0
+#: The three unit types the two paths can hatch, as ``Info.lcl`` names them.
+SPORE_UNIT_NAMES = {50: "Ray'Ther", 65: "Bea'Ther", 66: "Bea'Coo"}
+#: What the corpus holds: three ``Spores`` calls, all in one mission, and not a
+#: single use of the ``Move*`` trio.
+SPORES_CORPUS_CALLS = (
+    ("_C_174.lcl", (100, 102, 66)),
+    ("_C_174.lcl", (120, 121, 66)),
+    ("_C_174.lcl", (120, 121, 65)),
+)
+SPORES_CORPUS_UNUSED = ("MoveObjects", "MoveFireCircles", "MoveSpores")
 
 #: The RNG's four globals and the address span of `aRandomize` + `aRandom`.
 #: Every reference must fall inside that span -- that is what makes the two
@@ -595,6 +699,39 @@ class CombatTables:
                 out.add(self.pe.off_to_va(i))
         return out
 
+    def call_targets(self, lo: int, hi: int) -> set[int]:
+        """Every near-``call`` target reached from the span ``[lo, hi)``.
+
+        The same byte sweep as :meth:`calls_to`, run the other way round.  A
+        displacement that is really an operand can add a target, so this is
+        useful for asserting a call is **absent**: a spurious hit then fails
+        the check rather than hiding one.
+        """
+        out: set[int] = set()
+        for va in range(lo, hi - 4):
+            if self.pe.u8(va) != 0xE8:
+                continue
+            out.add((va + 5 + self.pe.i32(va + 1)) & 0xFFFFFFFF)
+        return out
+
+    def image_refs_to(self, address: int) -> list[int]:
+        """Every **file** offset holding *address* as a little-endian dword.
+
+        :meth:`refs_to` sweeps ``.text`` only, which cannot see a dispatch
+        table in ``.rdata`` or ``.data``.  A routine with no reference
+        anywhere in the image is reachable only through the ``call`` sites
+        :meth:`calls_to` finds -- which is what makes "reachable only from
+        these two commands" a checked claim and not an assumption.
+        """
+        pattern = struct.pack("<I", address)
+        data, out, i = self.pe.data, [], 0
+        while True:
+            i = data.find(pattern, i)
+            if i < 0:
+                return out
+            out.append(i)
+            i += 1
+
     def refs_to(self, address: int) -> list[int]:
         """Every ``.text`` site whose instruction stream embeds *address*."""
         _tva, _tvsize, traw, trawsize = self.pe.section(".text")
@@ -778,6 +915,60 @@ def corpus_weapon_ids(root: str) -> tuple[set[int], int, int]:
     return ids, placed, files
 
 
+def corpus_actpt_family(root: str) -> tuple[dict[str, list], int]:
+    """``(command -> [(file, numeric args), ...], scripts)`` over every script.
+
+    ``docs/22`` §9.4.3's claim is about which *authored* data can reach the
+    spore hatch, so it is answered by parsing the shipped scripts rather than
+    by grepping them: an argument that is not a plain number would be a
+    different claim, and the parser is what says so.
+    """
+    wanted = ("Spores",) + SPORES_CORPUS_UNUSED
+    out: dict[str, list] = {name: [] for name in wanted}
+    scripts = 0
+    for dirpath, _dirs, names in os.walk(root):
+        for fname in sorted(names):
+            path = os.path.join(dirpath, fname)
+            if not fname.lower().endswith(lcl.SCRIPT_EXTENSIONS):
+                continue
+            try:
+                if not lcl.is_script(path):
+                    continue
+                program = lcl.parse_file(path)
+            except (OSError, lcl.LclSyntaxError):
+                continue
+            scripts += 1
+            for stmt in program.statements():
+                if stmt.name not in out:
+                    continue
+                # A non-numeric argument is not skipped: it would make the
+                # call invisible to a check whose claim is about *every*
+                # shipped use, so it is recorded as its raw text instead.
+                out[stmt.name].append(
+                    (fname, tuple(a.value if a.kind == "number" else a.raw
+                                  for a in stmt.args)))
+    return out, scripts
+
+
+def corpus_unit_names(root: str) -> dict[int, str]:
+    """``id -> name`` from ``DATA/Info.lcl``'s ``SetUnitInfo`` table."""
+    out: dict[int, str] = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for fname in files:
+            if fname.lower() != "info.lcl":
+                continue
+            program = lcl.parse_file(os.path.join(dirpath, fname))
+            for stmt in program.statements():
+                if stmt.name != "SetUnitInfo":
+                    continue
+                nums = [a.value for a in stmt.args if a.kind == "number"]
+                texts = [a.value for a in stmt.args if a.kind == "string"]
+                if nums and texts:
+                    out[nums[0]] = texts[0]
+            return out
+    return out
+
+
 def run_check(root: str) -> int:
     exe = os.path.join(root, GAME_EXE)
     if not os.path.isfile(exe):
@@ -912,6 +1103,52 @@ def run_check(root: str) -> int:
         stats.check("spidy.spawn", got == want,
                     f"{va:#010x} is {got}, expected {want} ({what})")
 
+    # 1j. docs/22 §9.4.3 -- the `0x004149C7` rebuild belongs to the spore
+    #     hatch, not to `FixedStatue`.  The frame is what makes `[esp+0x40]`
+    #     mechanically re-checkable as argument 3.
+    for va, want, what in SPORE_HATCH_FRAME:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("spore.frame", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for va, want, what in SPORE_SPAWN:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("spore.spawn", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    stats.check("spore.callers",
+                tables.calls_to(SPORE_HATCH) == SPORE_HATCH_CALLERS,
+                f"{SPORE_HATCH:#010x} is called from "
+                f"{sorted(hex(x) for x in tables.calls_to(SPORE_HATCH))}, "
+                f"expected {sorted(hex(x) for x in SPORE_HATCH_CALLERS)}")
+    for target in (SPORE_HATCH, 0x0046FC30, 0x0046FC90):
+        refs = tables.image_refs_to(target)
+        stats.check("spore.no_pointer", not refs,
+                    f"{target:#010x} appears as a little-endian dword at file "
+                    f"{[hex(o) for o in refs]} -- something may reach it "
+                    f"through a table rather than through a call")
+    for va, want, what in SPORES_ARM + MOVE_SPORES_ARM:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("spore.arm", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for site, handler, name_va, name in SPORE_DISPATCH:
+        stats.check("spore.dispatch",
+                    site in tables.calls_to(handler),
+                    f"{site:#010x} does not call {handler:#010x}")
+        head = site - DISPATCH_STRIDE
+        stats.check("spore.dispatch",
+                    tables.pe.u8(head) == 0xB8
+                    and tables.pe.u32(head + 1) == name_va
+                    and tables.pe.bytes_at(name_va, len(name)) == name,
+                    f"the mov at {head:#010x} does not load {name!r} from "
+                    f"{name_va:#010x} -- the name paired with {handler:#010x}")
+    statue_calls = tables.call_targets(*STATUE_BODY)
+    for target in STATUE_MUST_NOT_CALL:
+        stats.check("spore.statue", target not in statue_calls,
+                    f"aPlayStatueSequence calls {target:#010x} after all -- "
+                    f"§9.4.3 says it spawns nothing and rebuilds no fog")
+    stats.check("spore.statue", STATUE_MUST_CALL in statue_calls,
+                f"aPlayStatueSequence does not call {STATUE_MUST_CALL:#010x}, "
+                f"aRemoveUnitElement")
+
     # 2. the indirect-fire predicate
     stats.check("arc.weapons", tables.arcing == EXPECTED_ARCING,
                 f"arcing weapons are {sorted(tables.arcing)}, "
@@ -952,6 +1189,23 @@ def run_check(root: str) -> int:
                 f"a placed unit carries weapon {max(weapon_ids)}; the whole "
                 f"upper half of the table was thought to be the campaign "
                 f"armoury's")
+    # 5b. docs/22 §9.4.3 -- what authored data can actually reach the hatch
+    family, nscripts = corpus_actpt_family(root)
+    stats.check("spore.corpus", nscripts > 0,
+                f"no LCL script parsed under {root!r}")
+    got = tuple((f, a) for f, a in family["Spores"])
+    stats.check("spore.corpus_spores", got == SPORES_CORPUS_CALLS,
+                f"the shipped Spores calls are {got}, expected "
+                f"{SPORES_CORPUS_CALLS}")
+    for command in SPORES_CORPUS_UNUSED:
+        stats.check("spore.corpus_unused", not family[command],
+                    f"{command} is used after all: {family[command]}")
+    unit_names = corpus_unit_names(root)
+    for uid, want in SPORE_UNIT_NAMES.items():
+        stats.check("spore.unit_type", unit_names.get(uid) == want,
+                    f"unit type {uid} is {unit_names.get(uid)!r} in Info.lcl, "
+                    f"expected {want!r}")
+
     span = hi - lo                       # the largest |dh| the corpus can produce
     bad = next((n for n in range(0, span + 1)
                 if magic_div_2400_plus_1(n) != n // HEIGHT_STEP + 1), None)

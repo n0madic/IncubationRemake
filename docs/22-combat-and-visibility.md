@@ -933,7 +933,7 @@ fog for good.
 | `0x00410D60` | `aDoorOpenSequence` — the panel rises | current player | permanent |
 | `0x00412905` | `aPlayElevatorSequence`, `cpp:8215` | the rider's own player | permanent |
 | `0x004130E6` | `aPlayPlatformSequence`, `cpp:8694` | the **selected** unit's player | permanent |
-| `0x004149C7` | `aPlayStatueSequence`, `cpp:10602` — `FixedStatue`'s | literal player 0 | permanent |
+| `0x004149C7` | `0x004147D0`, `aAnimations.cpp:10602` — the **spore hatch**, not the statue (§9.4.3) | literal player 0 | permanent |
 | `0x004419B6` | the `InsertUnit` handler | current player | permanent |
 | `0x00441F55` | the `BuildVisibleMap` command | current player | permanent |
 | `0x004490A9` | `aLoad.cpp:1649` | current player | permanent |
@@ -965,8 +965,8 @@ the instruction immediately before each `call` is what says so.
   globals `0x005162F8`/`0x005162FC`/`0x00516300` — the unit the *interface* has
   selected. A platform moved under somebody while a different unit is selected
   rebuilds for the selected one;
-* the **statue** and `aNextPlayerHandling` push a literal `0` (`0x004149C5`,
-  `0x0047DCCD`).
+* the **spore hatch** and `aNextPlayerHandling` push a literal `0`
+  (`0x004149C5`, `0x0047DCCD`).
 
 ### 9.4.1 The one-shot at the top of the hand-over
 
@@ -1019,6 +1019,82 @@ units carry weapon ids 0..29 only — nothing in 30..47, which is the half the
 campaign armoury hands out — so the arm is reachable in a campaign and not
 from authored data. `combat_tables.py`'s `spidy.arm`, `spidy.spawn`,
 `spidy.unreachable` and `spidy.armoury_half` pin both halves of that.
+
+### 9.4.3 The `0x004149C7` rebuild is the spore hatch, not `FixedStatue`
+
+> **The routine boundary was wrong.** An earlier revision of this document
+> attributed
+> `0x004149C7` to `aPlayStatueSequence` and left the type it spawns open,
+> because `[esp+0x40]` "cannot be resolved statically". The offset resolves
+> perfectly well; it was measured against the wrong prologue.
+> `aPlayStatueSequence` **is** `0x00414000` — its wrapper `0x00442370` pushes
+> that name on the error path — but that routine **ends at `0x00414346`**,
+> with its own jump table at `0x00414348` and the next routine at
+> `0x00414360`. [`28` §2](28-effects-and-sound.md) had the split right all
+> along: `aPlayStatueSequence 0x00414000` plays `stonefire.wav`, and
+> `0x004147D0 (from 0x0046FC30 / 0x0046FC90)` plays `msqueether.wav`.
+
+`0x004147D0` has no recoverable name — no `CHECK` call site pushes one for it —
+so it is identified by what reaches it. Its frame is `sub esp, 0x24` plus
+**three** saved registers, so the settled `esp` is `ret - 0x30` and the
+arguments are at `+0x34`, `+0x38`, `+0x3C`; both epilogues free exactly `0x30`,
+against `0x38` for `0x00414000`. `aGetCtrlMapElementPtr([esp+0x34],
+[esp+0x38])` at `0x004147FF` fixes arguments 1 and 2 as `(x, y)`. At
+`0x0041499F` exactly one push is in flight, so `[esp+0x40]` is `base + 0x3C` —
+**argument 3**:
+
+```c
+aGenerateUnitElement(0xFF,            /* push 0xff  @0x004149B1 */
+                     arg3,            /* push edx   @0x004149B0 -- the type */
+                     (char *)0x004FA524,
+                     0, 0, x, y, 0, &local);
+aBuildVisibleMap(0);                  /* @0x004149C7 */
+```
+
+Nine arguments cleaned with `add esp, 0x24`, the same shape as the Spidy site
+of §9.4.2, where `push 0x18` against `Spider` in `SetUnitInfo` is what pins
+argument 2 as the unit type.
+
+**Two call sites reach it, both LCL commands** ([`20`
+§7.4](20-lcl-language.md)'s ActPt-range family):
+
+| Command | Path | The type it spawns |
+|---|---|---|
+| `Spores (actPtMin, actPtMax, unitType)` | `0x00441FF0` → `0x0046FC30` → `0x004147D0` | the script's **third argument**, straight through (`push ebp` at `0x0046FC63`) |
+| `MoveSpores (actPtMin, actPtMax)` | `0x00442570` → `0x0046FC90(…, 2)` → `0x004147D0` | the constant **50** (`push 0x32` at `0x0046FE14`) — `Ray'Ther` |
+
+`0x0046FC30` sweeps the whole CtrlMap — 23 bytes a cell, `add esi, 0x17` — and
+fires on every cell whose **action-point id** `+0x0B` ([`10`
+§4.6](10-lev-mission-format.md)) falls in `[actPtMin, actPtMax]`. `0x0046FC90`
+is one routine behind three commands, `MoveObjects` / `MoveFireCircles` /
+`MoveSpores` with kind 0 / 1 / 2; only kind 2 reaches the hatch, and kind 1
+reaches `0x004131C0`, the fire circle — which is exactly what the `FireCircle`
+command itself calls, so the kinds and the names agree.
+
+**What the corpus can actually hatch.** Three `Spores` calls ship, all in
+`_C_174.lcl`: line 77 `Spores(100,102,66)`, line 93 `Spores(120,121,66)` and
+line 99 `Spores(120,121,65)` — `Bea'Coo` twice and `Bea'Ther` once. The tags
+they harvest are laid down by the same script: 100..102 by its `GrowingLand`
+calls, and 120 by the `FallingSpores` on line 87 ([`20`
+§7.4](20-lcl-language.md)). `MoveObjects`,
+`MoveFireCircles` and `MoveSpores` are used **0 times** in the 177 shipped
+scripts, so the constant-50 path is reachable only from a script nobody wrote,
+and `Ray'Ther` is a possibility rather than an observation.
+
+**And `FixedStatue` spawns nothing.** Sweeping `0x00414000`..`0x00414346` for
+near calls finds neither `aGenerateUnitElement` nor `aBuildVisibleMap`; what it
+does find is `aRemoveUnitElement` at `0x004142EC` — the statue *petrifies* a
+unit, which is why §9.5's counter is in its call graph and a spawn is not. Nor
+does anything reach `0x004147D0`, `0x0046FC30` or `0x0046FC90` through a
+pointer: none of the three appears as a little-endian dword anywhere in the
+image, so the two `call` sites above are the whole of it.
+
+`combat_tables.py` pins all of this: `spore.frame` 10/10 (both prologues, both
+epilogues, and the `aGetCtrlMapElementPtr` call), `spore.spawn` 8/8,
+`spore.callers`, `spore.no_pointer` 3/3, `spore.arm` 23/23, `spore.dispatch`
+10/10 (each handler and the name the dispatcher compares `0x36` bytes before
+it), `spore.statue` 3/3, `spore.corpus_spores`, `spore.corpus_unused` 3/3 and
+`spore.unit_type` 3/3.
 
 ### 9.5 The other thing `aRemoveUnitElement` does: the hero counter
 
@@ -1175,6 +1251,14 @@ aBuildVisibleMap(player)             15 permanent sites; probed per command (§9
 | `hero.predicate_name` | the string that caller compares immediately before it is `"HeroKilled"` |
 | `spidy.arm`, `spidy.spawn` 4/4 | weapon 46's impact arm is `0x0040D65C`, and it pushes type `0x18` with the name `"Spidy"` (§9.4.2) |
 | `spidy.unreachable`, `spidy.armoury_half` | no placed unit in the corpus carries weapon 46, and none carries anything above 29 |
+| `spore.frame` 10/10 | `0x004147D0` saves three registers and frees `0x30`, `0x00414000` saves four and frees `0x38` — the boundary §9.4.3 turns on |
+| `spore.spawn` 8/8 | the nine-argument `aGenerateUnitElement` at `0x004149BD`, including `mov edx,[esp+0x40]` and `push 0xff` |
+| `spore.callers`, `spore.no_pointer` 3/3 | `0x004147D0` is called from exactly `0x0046FC66` and `0x0046FE18`, and neither it nor its two callers appears as a dword anywhere in the image |
+| `spore.arm` 23/23 | both paths byte for byte: `Spores`' three argument globals and the CtrlMap sweep, and the three `Move*` kinds with `push 0x32` on kind 2 |
+| `spore.dispatch` 10/10 | each of the five commands calls the handler this document names, and the string the dispatcher loads `0x36` bytes earlier is that command's name |
+| `spore.statue` 3/3 | `aPlayStatueSequence` calls neither `aGenerateUnitElement` nor `aBuildVisibleMap`, and does call `aRemoveUnitElement` |
+| `spore.corpus_spores`, `spore.corpus_unused` 3/3 | the three shipped `Spores` calls parse to exactly `(100,102,66)`, `(120,121,66)`, `(120,121,65)` in `_C_174.lcl`, and the `Move*` trio is unused |
+| `spore.unit_type` 3/3 | 50, 65 and 66 are `Ray'Ther`, `Bea'Ther` and `Bea'Coo` in `Info.lcl` |
 
 `tools/trace_names.py --check gog_incubation` re-derives the symbol table and
 asserts the ten names §1.1 depends on.
@@ -1183,18 +1267,10 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-1. **What type does `FixedStatue`'s sequence spawn?** `0x00414000` ends with
-   `aDeleteLand` on the statue's tile and then
-   `aGenerateUnitElement(0xFF, type, ...)` — a **neutral** unit, `push 0xff` at
-   `0x004149B1` — before the permanent rebuild at `0x004149C7` (§9.4). `type`
-   is `[esp+0x40]` at `0x0041499F`, and the frame there cannot be resolved
-   statically: the epilogue at `0x00414988` pops only two of the four saved
-   registers, so the offset does not reduce to an argument slot with any
-   confidence. `FixedStatue`'s own wrapper `0x00442370` passes just `(x, y,
-   dir)`, so the type is either a constant loaded inside the routine or comes
-   from the cell. **Next step is a native probe**, not more disassembly:
-   `dbgcall` on `_C_166` or another of the five missions that call
-   `FixedStatue`, breaking on `0x004149BD` and reading `edx`.
+**None.** The one this section carried — what type `FixedStatue`'s sequence
+spawns — is closed in §9.4.3, and the honest form of the close is that the
+premise was wrong: the site belongs to the spore hatch, `FixedStatue` spawns
+nothing, and the type is `Spores`' own third argument or the constant 50.
 
 The three questions this document opened are closed below, each in the place
 the evidence belongs.

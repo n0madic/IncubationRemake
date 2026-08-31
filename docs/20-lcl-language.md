@@ -1215,16 +1215,20 @@ address a *set* of tiles that the level designer tagged in the editor.
 
 | Command | Handler → routine | Effect on each matching cell |
 | --- | --- | --- |
-| `Spores (actPtMin, actPtMax, unitType)` | `0x00441ff0` → `0x0046fc30` → `0x004147d0` | clears the ActPt and spawns one computer unit of type `unitType` there |
+| `Spores (actPtMin, actPtMax, unitType)` | `0x00441ff0` → `0x0046fc30` → `0x004147d0` | clears the ActPt and spawns one neutral-player unit of type `unitType` there — the type is the script's third argument, passed straight through to `aGenerateUnitElement`'s second ([`22` §9.4.3](22-combat-and-visibility.md)) — then rebuilds the fog |
 | `Statue2 (actPtMin, actPtMax)` | `0x004424b0` → `0x00413500` | runs the `Statue` sequence |
 | `FootBridge2 (actPt, frames, turn)` | `0x004426d0` → `0x00415110` | collapses it (exact match, not a range) |
 | `MoveObjects (actPtMin, actPtMax)` | `0x00442530` → `0x0046fc90(…,0)` | moves the object one tile in a random direction |
-| `MoveFireCircles (…)` / `MoveSpores (…)` | `0x00442550` / `0x00442570` | the same routine with kind 1 / 2 |
+| `MoveFireCircles (…)` / `MoveSpores (…)` | `0x00442550` / `0x00442570` | the same routine with kind 1 / 2. Kind 1 then runs `0x004131c0`, the same fire-circle sequence `FireCircle` itself calls; kind 2 runs `0x004147d0` with the **constant** unit type 50, `Ray'Ther` (`push 0x32` at `0x0046fe14`) |
 | `GrowingLand (actPt, "model.3DI")` | `0x00442010` → `0x0046ff20` | grows a new land tile into a random free neighbour, tags it with the same ActPt, gives it the named model and control-map type 2 (`Wall`) |
 
 The three shipped `Spores` calls are `Spores(100,102,66)`, `Spores(120,121,66)`
-and `Spores(120,121,65)`; unit types 65 and 66 are `Bea'Ther` and `Bea'Coo`, so
-the "spores" hatch aliens on the tagged tiles. `GrowingLand` is called with
+and `Spores(120,121,65)`, all in `_C_174.lcl`; unit types 65 and 66 are
+`Bea'Ther` and `Bea'Coo`, so the "spores" hatch aliens on the tagged tiles.
+The routine they share, `0x004147d0`, plays `msqueether.wav` and ends on a
+permanent fog rebuild for a literal player 0 — it is the site
+[`22` §9.4.3](22-combat-and-visibility.md) works through, and the reason that
+document's own reading of it as `FixedStatue`'s was wrong. `GrowingLand` is called with
 ActPt 100/101/102 and the model `L022EH00.3DI`, and refuses to run at all once
 the scene holds 141 objects (`0x00407410`).
 
@@ -1277,7 +1281,7 @@ uniform value in `0 … n-1`.
 | `NewCommands (a, b, c, d, e)` | `0x004410e0` | five bytes into `0x0047a850`; **roles UNVERIFIED**. Two observed shapes: `(n,0,0,0,0)` with `n` ∈ 100..106 (12 sites) and `(n,1,m,7,0)` with `n` ∈ 5..6, `m` ∈ 110..112 (3 sites) |
 | `SaveCamera ()` / `LoadCamera ()` | `0x00441b90` / `0x00441c00` | push/pop the six camera parameters through globals at `0x0050c088` |
 | `SelectNextUnit ()` | `0x00441270` | advances the unit selection |
-| `MoveObjects (actPtMin, actPtMax)` / `MoveFireCircles (…)` / `MoveSpores (…)` | `0x00442530` / `0x00442550` / `0x00442570` | the same call `0x0046fc90(min, max, kind)` with kind 0 / 1 / 2 — see the ActPt-range family above |
+| `MoveObjects (actPtMin, actPtMax)` / `MoveFireCircles (…)` / `MoveSpores (…)` | `0x00442530` / `0x00442550` / `0x00442570` | the same call `0x0046fc90(min, max, kind)` with kind 0 / 1 / 2 — see the ActPt-range family above. **None of the three is used by any shipped script** |
 | `ActivateInfo ("file", x, y, w, h, mode, "c1", "c2")` | `0x00441070` | opens the info/briefing box on `TXT\<lang>\Info\<file>.txt`; `mode` is `num[4]`, `c1`/`c2` are the first characters of `str[1]`/`str[2]` |
 | `ActivateInfoSuccessor (…)` | `0x00441110` | the same shape, routed to `0x0043ec20` |
 | `Dialog (…)` / `EndDialog ()` | `0x00441190` / `0x00441290` | §5.2 |
