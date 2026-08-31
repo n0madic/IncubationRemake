@@ -44,6 +44,7 @@ from . import charisma_tables as chatables
 from . import lev as levmod
 from . import liblib
 from . import prototyp as protomod
+from . import sound as soundmod
 from . import visn as visnmod
 from .cache import SourceReader, Staging
 from .info import BalanceTables, load_info_file
@@ -114,6 +115,18 @@ FONT_SCHEMA = "incubation.fonts/1"
 FONT_ATLAS_GAP = 1
 
 
+#: ``docs/28`` -- the sound layer's own source directories.  Waves are copied
+#: unchanged; music is the GOG release's Ogg substitution for the CD audio the
+#: engine asks MCI for, which is packaging rather than engine (``28`` §6).
+WAVES_DIR = "Waves"
+MUSIC_DIR = "music"
+#: The atlas every sprite effect is drawn from: one VISN record named ``anim``,
+#: present in all nine world sets and byte-identical in each.  It reaches the
+#: cache through the ordinary texture path, so the identity is *checked* rather
+#: than assumed and no second container reader exists for it.
+ATLAS_TEXTURE = "anim"
+
+
 class ConvertError(Exception):
     """Raised when a mission cannot be converted."""
 
@@ -127,6 +140,8 @@ class Conversion:
     prototypes: int = 0
     textures: int = 0
     text_entries: int = 0
+    waves: int = 0
+    tracks: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -424,7 +439,7 @@ def prototype_document(proto: protomod.Prototype) -> dict[str, Any]:
     the runtime object, which is outside the slice.
     """
     bbox = proto.vertex_bbox
-    return {
+    document: dict[str, Any] = {
         "vertices": [list(v) for v in proto.placed_vertices],
         "bbox": {
             "min": list(proto.bbox_min),
@@ -437,6 +452,62 @@ def prototype_document(proto: protomod.Prototype) -> dict[str, Any]:
         "collision_radius": proto.collision_radius,
         "faces": [_face_document(f) for f in _iter_faces(proto.tree)],
     }
+    parts = _part_documents(proto)
+    if parts:
+        document["parts"] = parts
+    return document
+
+
+#: ``joint_rotate_3`` (op 9) and ``joint_place`` (op 18) both name a byte
+#: offset into the runtime object's joint-angle buffer (``docs/28`` 7.8).  The
+#: root's own offset is always 0 in the shipped data and is not emitted; a
+#: part's is what a remake needs, because it says *which* angle triple of the
+#: live object rotates that part.
+_JOINT_PLACE = "joint_place"
+
+
+def _part_documents(proto: protomod.Prototype) -> list[dict[str, Any]]:
+    """The prototype's articulated sub-objects, or ``[]`` when it has none.
+
+    Emitted **only when there are parts**, so the 1 800-odd prototypes that
+    have none produce exactly the bytes they produced before.  Each entry
+    carries the joint-buffer offset its ``joint_place`` names, the translation
+    the ``part_push`` payload gave it, and the vertex slots it owns -- enough
+    to rebuild the part as its own node and rotate it about its joint.
+
+    ``vertices`` are indices into the flattened ``vertices`` array above, which
+    already has the translation applied; a caller that wants part-local space
+    subtracts ``translation``.
+    """
+    if not proto.parts:
+        return []
+    # Walk the render stream to pair each part with the `joint_place` inside
+    # its own push/pop scope. The parser builds `proto.parts` in push order, so
+    # the nth push is the nth part.
+    anims: list[int | None] = [None] * len(proto.parts)
+    depth: list[int] = []
+    seen = 0
+    for cmd in proto.render_cmds:
+        if cmd.name == "part_push":
+            depth.append(seen)
+            seen += 1
+        elif cmd.name == "part_pop":
+            if depth:
+                depth.pop()
+        elif cmd.name == _JOINT_PLACE and depth:
+            anims[depth[-1]] = cmd.operand
+    owners: dict[int, list[int]] = {}
+    for slot, part in enumerate(proto.vertex_part):
+        if part >= 0:
+            owners.setdefault(part, []).append(slot)
+    out: list[dict[str, Any]] = []
+    for index, part in enumerate(proto.parts):
+        out.append({
+            "anim": anims[index],
+            "translation": list(part.translation),
+            "vertices": owners.get(index, []),
+        })
+    return out
 
 
 def geometry_document(world_set: str, names: list[str],
@@ -736,6 +807,104 @@ def convert_bodies(root: Path, reader: SourceReader, staging: Staging,
     return chacache.unit_texture_names(document)
 
 
+# ---------------------------------------------------------------------------
+# Audio and effects
+# ---------------------------------------------------------------------------
+
+def _sound_tables():
+    """The one reader of ``Incubation.exe``'s sound and effect tables.
+
+    Imported lazily and by module name: ``blob_tables`` is a CLI at the top of
+    ``tools/``, which the entry point puts on ``sys.path``.  Duplicating its
+    extraction here would give the binary two readings that could drift, which
+    is exactly what this repository's rule about corpus checks forbids.
+    """
+    import blob_tables  # noqa: PLC0415 -- see the docstring
+    return blob_tables
+
+
+def convert_audio(root: Path, reader: SourceReader, staging: Staging,
+                  programs: dict[str, Any], result: Conversion,
+                  *, music: bool = True) -> dict[str, Any]:
+    """Copy the waves the tables can name, the music the missions ask for, and
+    write the two documents that say what to play and what to draw.
+
+    The wanted set is the tables' own closure, never the directory: the ten
+    ambience files and the four unreferenced waves (``docs/28`` §6) are named
+    by nothing in the image, so a cache that carried them would carry sound the
+    game cannot reach.  Case is resolved here, once -- every file is written in
+    lower case under the name the document uses -- so the runtime never does a
+    case-insensitive search on a case-sensitive filesystem (``docs/28`` §2.2).
+    """
+    tables = _sound_tables()
+    document = tables.sound_document(str(root))
+
+    for lower, shipped in sorted(document["waves"].items()):
+        source = _find(root, WAVES_DIR, shipped)
+        staging.write_bytes(f"audio/waves/{lower}", reader.read_bytes(source))
+
+    # Exactly one name in the closure resolves to nothing, and it is a
+    # recorded defect rather than a broken corpus: ``docs/28`` §3.1.
+    for name in document["unresolved"]:
+        result.warnings.append(
+            f"Waves: '{name}' names no shipped file -- Info.lcl's "
+            f"SetWeaponInfo2 ({document['weapon_missing_sound']}) typo, "
+            "reproduced by default (docs/28 3.1)")
+
+    playlists: dict[str, list[int]] = {}
+    for name, program in sorted(programs.items()):
+        for instr in program.flat:
+            if instr.name != "CDTrackProgram":
+                continue
+            for arg in instr.args:
+                if arg.kind == "string":
+                    playlists[name] = soundmod.playlist(arg.value)
+    document["playlists"] = playlists
+
+    tracks = sorted({track for entry in playlists.values() for track in entry})
+    copied: list[int] = []
+    if music:
+        for track in tracks:
+            source = root / MUSIC_DIR / (soundmod.MUSIC_FORMAT % track)
+            if not source.is_file():
+                result.warnings.append(
+                    f"{MUSIC_DIR}: no {source.name} for a playlist that "
+                    "names it")
+                continue
+            staging.write_bytes(f"audio/music/{track}.ogg",
+                                reader.read_bytes(source))
+            copied.append(track)
+    else:
+        result.warnings.append(
+            f"music: not converted (--no-music); {len(tracks)} track(s) the "
+            "missions name are absent from the cache")
+    document["tracks"] = copied
+    document["music_converted"] = music
+
+    staging.write_json("tables/sound.json", document)
+    staging.write_json("tables/blobs.json", tables.blob_document(str(root)))
+    result.waves = len(document["waves"])
+    result.tracks = len(copied)
+    return document
+
+
+def effect_models(root: Path) -> list[str]:
+    """The thirty ``.3DI`` names the blob constructor calls pass.
+
+    They are ordinary world-object prototypes, so they join the mission's own
+    closure and resolve through the same ``prototyp.dir`` chain (``docs/28``
+    §7.5).  Four of them exist in one or two world sets only; a set that lacks
+    one is not an error -- the original's constructor returns ``-1`` and the
+    effect does not appear -- so the pairing is recorded as a constraint.
+    """
+    return _sound_tables().blob_models(_sound_tables().Binary(str(root)))
+
+
+def rare_effect_models(root: Path) -> dict[str, tuple[str, ...]]:
+    """``model -> the world sets that have it``, for the four that are rare."""
+    return dict(_sound_tables().BLOB_MODELS_RARE)
+
+
 def _any_scene(root: Path, world_set: str) -> str:
     """Any scene of a world set -- only the Objects/ paths are wanted."""
     base = _find(root, "WorldSet", f"World_{world_set}", "Worlds")
@@ -780,7 +949,8 @@ def _check_cross_set_meshes(root: Path,
 
 
 def convert(root: Path, missions: list[str], staging: Staging,
-            reader: SourceReader, language: str) -> Conversion:
+            reader: SourceReader, language: str,
+            *, music: bool = True) -> Conversion:
     """Convert every named mission and everything it reaches into `staging`."""
     result = Conversion()
     info_path = reader.record(_find(root, "DATA", "Info.lcl"))
@@ -790,6 +960,11 @@ def convert(root: Path, missions: list[str], staging: Staging,
     wanted_by_set: dict[str, set[str]] = {}
     scenes_by_set: dict[str, set[str]] = {}
     selector_keys: set[chatables.SelectorKey] = set()
+    scripts: dict[str, Any] = {}
+    # The effects reach the same prototype index as the scenery, so they join
+    # every set's closure rather than getting a container reader of their own.
+    effects = effect_models(root)
+    rare = rare_effect_models(root)
 
     for name in missions:
         path = reader.record(mission_path(root, name))
@@ -821,8 +996,10 @@ def convert(root: Path, missions: list[str], staging: Staging,
             for d in program.diagnostics if d.severity == "error"]
         result.missions.append(name)
         result.warnings += document["diagnostics"]["warnings"]
+        scripts[name] = program
         wanted_by_set.setdefault(bm.world_set, set()).update(
             prototype_names(document, tables, _lattice_prototype(bm)))
+        wanted_by_set[bm.world_set].update(effects)
         scenes_by_set.setdefault(bm.world_set, set()).add(bm.world_scene)
         selector_keys |= unit_selector_keys(document)
 
@@ -843,12 +1020,26 @@ def convert(root: Path, missions: list[str], staging: Staging,
             "bin": reader.rel(paths["bin"]),
             "sha256": reader.seen[reader.rel(paths["bin"])],
         })
-        staging.write_json(f"geometry/{world_set}.json", document)
         result.prototypes += len(document["prototypes"])
-        if document["missing"]:
+        # An effect model that a world set does not have is the original's own
+        # behaviour, not a broken closure: the constructor reports it and
+        # returns -1, and the effect simply does not appear (docs/28 §7.5).
+        # Recording it as a constraint keeps a real missing prototype visible.
+        absent_effects = [n for n in document["missing"]
+                          if n in rare and world_set not in rare[n]]
+        genuinely_missing = [n for n in document["missing"]
+                             if n not in absent_effects]
+        document["absent_effects"] = absent_effects
+        if absent_effects:
+            result.warnings.append(
+                f"{world_set}: effect models this set does not have, so the "
+                "effect is cancelled rather than drawn (docs/28 7.5): "
+                + ", ".join(absent_effects))
+        if genuinely_missing:
             result.warnings.append(
                 f"{world_set}: prototypes named but absent from prototyp.din: "
-                + ", ".join(document["missing"]))
+                + ", ".join(genuinely_missing))
+        staging.write_json(f"geometry/{world_set}.json", document)
         # The unit bodies' textures, resolved from name to this set's own ids.
         ids_by_name = {entry.name: entry.index for entry
                        in visnmod.read_din_index(str(paths["texture_din"]))}
@@ -859,6 +1050,15 @@ def convert(root: Path, missions: list[str], staging: Staging,
                 + ", ".join(unresolved))
         textures |= {ids_by_name[name] for name in unit_textures
                      if name in ids_by_name}
+        # The sprite atlas is named by no face, so the closure has to ask for
+        # it: every class-2 and class-3 blob is a tile out of this one record.
+        atlas_id = ids_by_name.get(ATLAS_TEXTURE)
+        if atlas_id is None:
+            result.warnings.append(
+                f"{world_set}: no '{ATLAS_TEXTURE}' texture -- every sprite "
+                "effect in this set would draw nothing")
+        else:
+            textures.add(atlas_id)
         index = convert_textures(reader, staging, world_set,
                                  paths["texture_lib"], paths["texture_din"],
                                  textures)
@@ -867,6 +1067,7 @@ def convert(root: Path, missions: list[str], staging: Staging,
         result.world_sets.append(world_set)
 
     convert_fonts(root, reader, staging)
+    convert_audio(root, reader, staging, scripts, result, music=music)
 
     gui_paths = gui_text_paths(root, language)
     programs = {}

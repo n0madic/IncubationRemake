@@ -50,8 +50,10 @@ from inclib import cache as cachemod  # noqa: E402
 from inclib.check import Checker  # noqa: E402
 from inclib import charisma as chamod  # noqa: E402
 from inclib import charisma_tables as chatables  # noqa: E402
+from inclib import convert as convertmod  # noqa: E402
 from inclib.convert import (ConvertError, animation_path,  # noqa: E402
                             convert, mission_path)
+from inclib import sound as soundmod  # noqa: E402
 from inclib.lev import load_lev  # noqa: E402
 from inclib import prototyp as protomod  # noqa: E402
 from inclib.binio import ParseError  # noqa: E402
@@ -85,13 +87,14 @@ def _reader(root: Path) -> cachemod.SourceReader:
 
 
 def run_conversion(root: Path, missions: list[str], caches_root: Path,
-                   language: str) -> tuple[cachemod.Staging,
-                                           dict[str, Any], Any]:
+                   language: str,
+                   music: bool = True) -> tuple[cachemod.Staging,
+                                                dict[str, Any], Any]:
     """Convert into a fresh staging directory and build its manifest."""
     reader = _reader(root)
     staging = cachemod.Staging.create(caches_root)
     try:
-        result = convert(root, missions, staging, reader, language)
+        result = convert(root, missions, staging, reader, language, music=music)
     except Exception:
         staging.discard()
         raise
@@ -100,7 +103,12 @@ def run_conversion(root: Path, missions: list[str], caches_root: Path,
         reader, inventory, language, result.warnings,
         {"missions": result.missions, "world_sets": result.world_sets,
          "prototypes": result.prototypes, "textures": result.textures,
-         "text_entries": result.text_entries})
+         "text_entries": result.text_entries,
+         "waves": result.waves, "tracks": result.tracks,
+         # Recorded in the manifest because the same input converts to two
+         # different caches with and without it, and the cache id would
+         # otherwise be the only place that difference showed.
+         "music": music})
     return staging, manifest, result
 
 
@@ -133,12 +141,12 @@ def refuse_game_output(root: Path, out: Path) -> None:
 
 
 def convert_and_publish(root: Path, missions: list[str], out: Path,
-                        language: str) -> int:
+                        language: str, music: bool = True) -> int:
     refuse_unsafe_output(root, out)
     caches_root = out
     started = time.perf_counter()
     staging, manifest, result = run_conversion(root, missions, caches_root,
-                                               language)
+                                               language, music)
     try:
         with cachemod.publish_lock(caches_root):
             target, created = cachemod.publish(staging, caches_root, manifest)
@@ -152,8 +160,9 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
     LOG.info("%s %s (%d files, %.1f KiB) in %.2fs",
              "published" if created else "already published", target.name,
              len(manifest["inventory"]), size / 1024, elapsed)
-    LOG.info("missions %s, %d prototypes, %d textures",
-             ", ".join(result.missions), result.prototypes, result.textures)
+    LOG.info("missions %s, %d prototypes, %d textures, %d waves, %d track(s)",
+             ", ".join(result.missions), result.prototypes, result.textures,
+             result.waves, result.tracks)
     for warning in manifest["warnings"]:
         LOG.warning("%s", warning)
     if removed:
@@ -162,7 +171,7 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
 
 
 def dev_fixtures(root: Path, missions: list[str], out: Path,
-                 language: str) -> int:
+                 language: str, music: bool = True) -> int:
     """Materialise the same bytes into a gitignored ``res://generated/`` tree.
 
     ``docs/92`` §10.1 item 4 wants the development fixtures to describe the same
@@ -181,7 +190,8 @@ def dev_fixtures(root: Path, missions: list[str], out: Path,
                     "it is not one of this converter's caches")
     _refuse_unowned(out / EYE_DIR, _is_eye_dir,
                     f"it carries no {EYE_MARKER} marker")
-    staging, manifest, _result = run_conversion(root, missions, out, language)
+    staging, manifest, _result = run_conversion(root, missions, out, language,
+                                                music)
     out.mkdir(parents=True, exist_ok=True)
     target = out / "cache"
     # The same rule `collect` follows, and for the same reason: this removes a
@@ -354,9 +364,16 @@ def check_against_as_dict(c: Checker, root: Path, cache_dir: Path,
         c.check(f"beyond.{name}.geometry_present", len(geometry_names) > 0,
                 f"{len(geometry_names)} prototypes emitted for "
                 f"{header['world_set']}")
+        # An effect model a world set does not carry is the original's own
+        # behaviour (docs/28 7.5) and is recorded as `absent_effects`.  Every
+        # *other* miss is still a regression, so the check subtracts the
+        # recorded set rather than dropping the assertion.
         c.expect(f"beyond.{name}.geometry_complete",
-                 geometry.get("missing", []), [],
-                 "every prototype the placements name was found")
+                 [n for n in geometry.get("missing", [])
+                  if n not in set(geometry.get("absent_effects", []))], [],
+                 "every prototype the placements name was found, bar the "
+                 f"{len(geometry.get('absent_effects', []))} effect model(s) "
+                 "this world set does not have")
         c.expect(f"oracle.{name}.header",
                  [header["name"], header["next_map"], header["map_type"],
                   header["mission_id"], header["world_set"],
@@ -593,6 +610,189 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
     c.expect("fonts.no_floats", _float_paths(index), [])
 
 
+#: The cache's size, in KiB, with music and without it.  Named as two numbers
+#: because music is 95 % of the difference and is behind a flag; a check that
+#: quoted one would pass on the other by luck.  The ceilings are the measured
+#: sizes rounded up to the next whole MiB -- close enough that a new asset
+#: family shows, loose enough that one more converted texture does not.
+CACHE_CEILING_KIB_MUSIC = 33 * 1024
+CACHE_CEILING_KIB_SILENT = 13 * 1024
+#: Sprite constructor calls that build a row, column or size in a
+#: register instead of passing a literal (docs/28 7.3).
+SPRITE_COMPUTED_CALLS = 18
+
+
+def check_audio(c: Checker, root: Path, cache_dir: Path,
+                music: bool) -> None:
+    """The sound and effect documents, and the files they name."""
+    import blob_tables  # noqa: PLC0415 -- one reader of the binary, see convert
+
+    document = json.loads((cache_dir / "tables" / "sound.json").read_text())
+    blobs = json.loads((cache_dir / "tables" / "blobs.json").read_text())
+    c.expect("audio.schema", document["schema"],
+             blob_tables.SOUND_DOCUMENT_SCHEMA)
+    c.expect("audio.blob_schema", blobs["schema"],
+             blob_tables.BLOB_DOCUMENT_SCHEMA)
+    c.expect("audio.volume_ids", len(document["volumes"]),
+             soundmod.INFO_VOLUME_IDS)
+    c.expect("audio.play_slots", document["play_slots"], soundmod.PLAY_SLOTS)
+
+    # Every wave the document can name is in the cache, under the lower-cased
+    # name the document uses -- the case question is answered once, here.
+    named = set(document["waves"])
+    for event in document["events"].values():
+        named |= {cue["wave"] for cue in event}
+    named |= {w["wave"] for w in document["weapons"].values() if w["wave"]}
+    named |= set(document["voices"]["human"] + document["voices"]["alien"]
+                 + document["voices"]["second_human"])
+    named |= {step["wave"] for step in document["footsteps"] if step["wave"]}
+    missing = sorted(n for n in named
+                     if not (cache_dir / "audio" / "waves" / n).is_file())
+    c.expect("audio.waves_present", missing, [], f"{len(named)} named waves")
+    c.check("audio.waves_lowercase", all(n == n.lower() for n in named),
+            "every name the document uses is already resolved")
+
+    shipped = sorted(p.name for p in (cache_dir / "audio" / "waves").iterdir())
+    c.expect("audio.no_dead_waves",
+             sorted(set(shipped) & {n.lower() for n in soundmod.DEAD_WAVES}),
+             [], "no ambience or unreferenced wave reaches the cache")
+    c.expect("audio.case_renames_resolved",
+             sorted(n for n in blob_tables.CASE_MISMATCHED
+                    if (cache_dir / "audio" / "waves" / n).is_file()),
+             sorted(n for n in blob_tables.CASE_MISMATCHED if n in named),
+             "the ten renames of docs/28 2.2 are files in the cache")
+
+    # The one name that resolves to nothing is the recorded defect, and the
+    # document says so rather than leaving a hole.
+    c.expect("audio.unresolved_count", len(document["unresolved"]), 1,
+             "; ".join(document["unresolved"]))
+    c.expect("audio.weapon_35_silent",
+             document["weapons"][str(soundmod.WEAPON_MISSING_SOUND)]["wave"],
+             None, "reproduced by default (docs/28 3.1)")
+    c.check("audio.weapon_35_correctable",
+            document["weapons"][str(soundmod.WEAPON_MISSING_SOUND)]
+            ["corrected"] is not None,
+            "the correction names a file the cache carries")
+
+    # Playlists and music.
+    c.expect("audio.playlists", sorted(document["playlists"]),
+             sorted(missions_in_cache(cache_dir)),
+             f"{len(document['playlists'])} missions name a playlist")
+    tracks = sorted({t for entry in document["playlists"].values()
+                     for t in entry})
+    c.check("audio.playlist_tracks", bool(tracks), str(tracks))
+    if music:
+        c.expect("audio.tracks_present",
+                 sorted(t for t in tracks
+                        if not (cache_dir / "audio" / "music"
+                                / f"{t}.ogg").is_file()),
+                 [], f"{len(tracks)} track(s)")
+    else:
+        c.expect("audio.no_music", (cache_dir / "audio" / "music").exists(),
+                 False, "--no-music leaves the tracks out")
+
+    # The effect tables and the atlas.
+    c.expect("effects.kinds", len(blobs["kinds"]),
+             blob_tables.KIND_COUNT)
+    c.expect("effects.arms",
+             len({k["arm_id"] for k in blobs["kinds"].values()}),
+             blob_tables.KIND_ARMS)
+    c.expect("effects.unreachable", tuple(blobs["unreachable"]),
+             blob_tables.KIND_UNREACHABLE)
+    c.expect("effects.calls", len(blobs["calls"]), blob_tables.BLOB_CTOR_CALLS)
+    c.expect("effects.sprites", len(blobs["sprites"]),
+             len(blob_tables.BLOB_SPRITE))
+    c.expect("effects.models", len(blobs["models"]),
+             blob_tables.BLOB_MODEL_COUNT)
+    # Eighteen of the 54 sprite calls build a row, a column or a size in a
+    # register; the document carries `null` for those rather than a guess, and
+    # the runtime takes them from the arm.  The literal ones must be in range.
+    grid = blobs["atlas"]["grid"]
+    out_of_grid = sorted(site for site, v in blobs["sprites"].items()
+                         for field in ("row", "col")
+                         if v[field] is not None
+                         and not 0 <= v[field] < grid)
+    c.expect("effects.sprite_cells_in_grid", out_of_grid, [],
+             f"every literal row and column is inside the {grid}x{grid} grid")
+    c.expect("effects.sprite_computed",
+             sum(1 for v in blobs["sprites"].values()
+                 if None in (v["row"], v["col"], v["size"])),
+             SPRITE_COMPUTED_CALLS,
+             "calls whose row, column or size the arm supplies")
+
+    atlases = {}
+    for world_set in sorted(p.name for p in (cache_dir / "textures").iterdir()):
+        index = json.loads((cache_dir / "textures" / world_set
+                            / "index.json").read_text())
+        entry = [t for t in index["textures"]
+                 if t["name"] == convertmod.ATLAS_TEXTURE]
+        c.expect(f"effects.atlas_{world_set}", len(entry), 1)
+        if not entry:
+            continue
+        c.expect(f"effects.atlas_size_{world_set}",
+                 (entry[0]["width"], entry[0]["height"]),
+                 (blobs["atlas"]["size"], blobs["atlas"]["size"]))
+        atlases[world_set] = (cache_dir / "textures" / world_set
+                              / entry[0]["file"]).read_bytes()
+    c.expect("effects.atlas_identical", len(set(atlases.values())), 1,
+             f"one image across {len(atlases)} converted world set(s)")
+
+    # Every effect model is either in the set or recorded as absent from it.
+    for world_set in sorted(atlases):
+        geometry = json.loads((cache_dir / "geometry"
+                               / f"{world_set}.json").read_text())
+        absent = set(geometry.get("absent_effects", []))
+        unaccounted = sorted(n for n in blobs["models"]
+                             if n not in geometry["prototypes"]
+                             and n not in absent)
+        c.expect(f"effects.models_{world_set}", unaccounted, [],
+                 f"{len(blobs['models']) - len(absent)} present, "
+                 f"{len(absent)} cancelled by docs/28 7.5")
+
+    # The two jointed effect models, and the part structure that makes the
+    # joint angles drawable (docs/28 7.8).  A prototype with no `part_push`
+    # emits no `parts` key at all, which is why the count is checked and not
+    # merely the presence.
+    for world_set in sorted(atlases):
+        geometry = json.loads((cache_dir / "geometry"
+                               / f"{world_set}.json").read_text())
+        found = {}
+        for name, wanted in JOINTED_EFFECT_MODELS.items():
+            proto = geometry["prototypes"].get(name)
+            if proto is None:
+                continue
+            found[name] = [part["anim"] for part in proto.get("parts", [])]
+        c.expect(f"effects.joints_{world_set}", found,
+                 {n: list(v) for n, v in JOINTED_EFFECT_MODELS.items()
+                  if n in found},
+                 f"{len(found)} jointed model(s), by the operand each "
+                 "part's joint_place names")
+        # And the model whose arm turns the whole object has no parts at all.
+        flat = geometry["prototypes"].get(UNJOINTED_EFFECT_MODEL)
+        # Absent is a failure, not a skip: the contrast case only says
+        # something if the model it names is one the set really carries.
+        c.expect(f"effects.unjointed_{world_set}",
+                 flat is not None and "parts" not in flat, True,
+                 f"{UNJOINTED_EFFECT_MODEL} is present and turns as one object")
+
+
+#: ``docs/28`` 7.8 -- the two effect models whose update arm writes joint
+#: angles, and the ``joint_place`` operand of each of their parts.  The panel
+#: has one moving plate; the fire has two billboards.
+JOINTED_EFFECT_MODELS = {
+    "A_PANEL.3DI": (6,),
+    "A_FIRE3.3DI": (6, 12),
+}
+#: The contrast case: kind 41's model has no sub-object, and its arm turns
+#: triple 0 -- the whole object -- instead.
+UNJOINTED_EFFECT_MODEL = "A_FLIGHT.3DI"
+
+
+def missions_in_cache(cache_dir: Path) -> list[str]:
+    return sorted(p.name for p in (cache_dir / "missions").iterdir()
+                  if p.is_dir())
+
+
 def run_checks(root: Path, missions: list[str], language: str) -> int:
     c = Checker()
     if not (root / "Missions").is_dir():
@@ -636,6 +836,7 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         check_against_as_dict(c, root, first.root, missions)
         check_bodies(c, root, first.root, missions)
         check_fonts(c, first.root)
+        check_audio(c, root, first.root, True)
         c.expect("bodies.cross_set_identical",
                  [w for w in result.warnings if "differs between" in w], [],
                  "unit meshes are the same geometry in every world set")
@@ -649,8 +850,29 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
                         for p in caches_root.iterdir()),
                 "no staging directory survives a completed run")
         size = sum(p.stat().st_size for p in published.rglob("*") if p.is_file())
+        c.check("cache.size_with_music", size / 1024 <= CACHE_CEILING_KIB_MUSIC,
+                f"{size / 1024:.0f} KiB <= {CACHE_CEILING_KIB_MUSIC} KiB")
         LOG.info("conversion of %d missions took %.2fs and produced %.0f KiB",
                  len(missions), elapsed, size / 1024)
+
+        # The same conversion without music: the flag has to change the cache
+        # and nothing else, and the silent ceiling is what makes "95 % of the
+        # growth is music" a measurement rather than a claim.
+        silent, silent_manifest, _ = run_conversion(root, missions, caches_root,
+                                                    language, music=False)
+        check_audio(c, root, silent.root, False)
+        silent_size = sum(p.stat().st_size for p in silent.root.rglob("*")
+                          if p.is_file())
+        c.check("cache.size_without_music",
+                silent_size / 1024 <= CACHE_CEILING_KIB_SILENT,
+                f"{silent_size / 1024:.0f} KiB <= {CACHE_CEILING_KIB_SILENT} KiB")
+        c.check("cache.music_is_the_growth", silent_size * 2 < size,
+                f"{size / 1024:.0f} KiB with music, "
+                f"{silent_size / 1024:.0f} KiB without")
+        c.expect("cache.music_recorded",
+                 (manifest_a["music"], silent_manifest["music"]), (True, False),
+                 "the manifest says which of the two caches it is")
+        silent.discard()
     return c.report()
 
 
@@ -886,6 +1108,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="two conversions, the as_dict oracle, PNG stability")
     ap.add_argument("--check-cache", action="store_true",
                     help="partial cache refused, valid cache survives failure")
+    ap.add_argument("--no-music", dest="music", action="store_false",
+                    help="leave the CD-audio tracks out of the cache; they are "
+                         "most of its size and none of its rules")
+    ap.set_defaults(music=True)
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -904,10 +1130,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.dev_fixtures:
             return dev_fixtures(args.root, missions, args.dev_fixtures,
-                                args.language)
+                                args.language, args.music)
         if args.out is None:
             ap.error("give -o, the caches directory to publish into")
-        return convert_and_publish(args.root, missions, args.out, args.language)
+        return convert_and_publish(args.root, missions, args.out, args.language,
+                                   args.music)
     except (ConvertError, cachemod.CacheError) as exc:
         LOG.error("%s", exc)
         return 1

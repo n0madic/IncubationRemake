@@ -5,6 +5,8 @@ extends SceneTree
 ##     godot --headless --path godot --script res://bench.gd
 
 const RUNS: int = 20
+## The set the model bench builds its meshes from; `_C_140`'s own.
+const BENCH_WORLD_SET: String = "A00"
 
 
 func _initialize() -> void:
@@ -369,3 +371,132 @@ func _body_measurements(mission: String) -> void:
 		" budget_16667us_headroom=", 16667.0 / maxf(frame_us, 0.001), "x")
 	for body: CharismaBody in built:
 		body.free()
+
+
+	_bench_effects()
+
+
+## The fifth slice's number: what a **full** blob pool costs per frame.
+##
+## docs/92 section 10.4 wants a measurement rather than an impression, and the
+## slice's cut list is keyed to this one: if 450 particles do not fit in a
+## frame, the model blobs go first and the sprite path stays. So it is taken
+## before the model path exists, which is the only time the answer is useful.
+##
+## Two halves are timed apart because they are cut apart: the pool's own tick
+## -- 450 arms, integer arithmetic, no scene tree -- and the sprite rebuild,
+## which is 450 camera-facing quads written into one [ImmediateMesh].
+func _bench_effects() -> void:
+	var pool: BlobPool = BlobPool.create(1.0)
+	# A spread over the kinds that actually move, so the measurement is of
+	# arms doing work rather than of the wrapper's early exits.
+	var kinds: Array[int] = [0, 5, 7, 8, 18, 22, 32, 43, 44, 50, 58, 60, 62,
+		68, 69, 73, 75, 77]
+	var made: int = 0
+	for index: int in range(BlobPool.SLOTS):
+		var kind: int = kinds[index % kinds.size()]
+		if pool.create_blob({"kind": kind, "class_id": 2,
+				"life": BlobKinds.IMMORTAL,
+				"x": (index % 40) * 3200, "y": (index / 40) * 3200,
+				"z": 4000 + index, "vx": 120, "vy": -80, "vz": 300,
+				"aux": 3 + (index % 38), "rot_x": index % 8,
+				"rot_y": index % 8}) >= 0:
+			made += 1
+	print("effects pool_capacity=", pool.capacity(), " created=", made,
+		" live=", pool.live())
+
+	var frames: int = 60
+	# The rebuild is measured **first**, on the full pool: half the sample
+	# kinds fall out of the world within sixty ticks, and a draw timed after
+	# that would be a draw of what survived rather than of a full pool.
+	var sprites: BlobSprites = BlobSprites.new()
+	sprites.setup(null, {})
+	var basis: Basis = Basis.IDENTITY
+	var blobs: Array[Blob] = pool.blobs()
+	var t1: int = Time.get_ticks_usec()
+	for _f: int in range(frames):
+		var _drawn: int = sprites.rebuild(blobs, basis)
+	var draw_us: float = float(Time.get_ticks_usec() - t1) / float(frames)
+
+	var t0: int = Time.get_ticks_usec()
+	for _f: int in range(frames):
+		var _results: Array[BlobKinds.TickResult] = pool.tick_all()
+	var tick_us: float = float(Time.get_ticks_usec() - t0) / float(frames)
+
+	print("effects tick_us=", tick_us, " per_blob_us=",
+		tick_us / float(BlobPool.SLOTS),
+		" rebuild_us=", draw_us, " quads=", sprites.drawn(),
+		" survivors_after_", frames, "_ticks=", pool.live())
+	# The two run at different rates and the budget has to say so: the pool
+	# ticks at 20 fps (docs/92 section 7.10, the same frame as the bodies) and
+	# the sprite cloud is rebuilt every displayed frame, because the camera
+	# can move between ticks.
+	var per_second: float = tick_us * 20.0 + draw_us * 60.0
+	print("effects per_frame_at_60_us=", per_second / 60.0,
+		" budget_16667us_headroom=",
+		16667.0 / maxf(per_second / 60.0, 0.001), "x")
+	sprites.free()
+	_bench_model_effects()
+
+
+## And what the **model** half costs, now that it is drawn.
+##
+## The two halves never both hold 450 -- a blob is a sprite or a model, never
+## both -- so this is deliberately the same worst case run again with the class
+## flipped: a full pool of class-0 blobs, each a node with a mesh, and two of
+## the kinds moving their models' joints every tick. The number that matters is
+## the pair, because the cut list ordered them: models go before sprites.
+func _bench_model_effects() -> void:
+	var geometry: Dictionary = CacheFixture.geometry(BENCH_WORLD_SET)
+	var prototypes: Dictionary = DictRead.as_dict(
+		geometry.get("prototypes", {}))
+	if prototypes.is_empty():
+		print("effect_models: no geometry for ", BENCH_WORLD_SET)
+		return
+	var index: Dictionary[String, int] = {}
+	var next_id: int = 0
+	for name: Variant in prototypes:
+		index[DictRead.as_string(name)] = next_id
+		next_id += 1
+	var pool: BlobPool = BlobPool.create(1.0)
+	pool.hooks().model_index = index
+	# The two jointed kinds and one that only moves, so the sample includes the
+	# arms that write joint angles rather than only the ones that translate.
+	var kinds: Array[int] = [42, 54, 41]
+	var models: Array[String] = ["A_PANEL.3DI", "A_FIRE3.3DI", "A_FLIGHT.3DI"]
+	var made: int = 0
+	for i: int in range(BlobPool.SLOTS):
+		if pool.create_blob({"kind": kinds[i % kinds.size()], "class_id": 0,
+				"life": BlobKinds.IMMORTAL, "model_name": models[i % 3],
+				"x": (i % 40) * 3200, "y": (i / 40) * 3200, "z": 4000 + i,
+				"vx": 120, "vy": -80, "vz": 300}) >= 0:
+			made += 1
+	var view: BlobModels = BlobModels.new()
+	view.setup(prototypes, {}, index)
+	get_root().add_child(view)
+	print("effect_models created=", made, " live=", pool.live())
+
+	var frames: int = 30
+	# First call builds every node and mesh; that is a mission-load cost, not a
+	# frame cost, so it is timed separately rather than folded into the mean.
+	var t0: int = Time.get_ticks_usec()
+	var first: int = view.rebuild(pool)
+	var build_us: int = Time.get_ticks_usec() - t0
+	var t1: int = Time.get_ticks_usec()
+	for _f: int in range(frames):
+		var _n: int = view.rebuild(pool)
+	var draw_us: float = float(Time.get_ticks_usec() - t1) / float(frames)
+	var t2: int = Time.get_ticks_usec()
+	for _f: int in range(frames):
+		var _r: Array[BlobKinds.TickResult] = pool.tick_all()
+	var tick_us: float = float(Time.get_ticks_usec() - t2) / float(frames)
+	print("effect_models first_build_us=", build_us, " nodes=", first,
+		" rebuild_us=", draw_us, " tick_us=", tick_us,
+		" meshes=", view.cached().size())
+	# The same accounting the sprite half gets: the pool ticks at 20 fps and
+	# the nodes are re-placed every displayed frame.
+	var model_second: float = tick_us * 20.0 + draw_us * 60.0
+	print("effect_models per_frame_at_60_us=", model_second / 60.0,
+		" budget_16667us_headroom=",
+		16667.0 / maxf(model_second / 60.0, 0.001), "x")
+	view.free()

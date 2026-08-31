@@ -52,6 +52,25 @@ selector is three-level, the idle selector has a randomised arm, and the model
 filename grammar was too narrow) and measured one thing nothing had written
 down — bone translations are in 1/16 of a world unit:
 [`96-slice-4-report.md`](96-slice-4-report.md).
+And so is the fifth — everything that is **not a rule**: the sound layer, the
+450-slot blob pool with all 74 update arms diffed tick by tick against
+`tools/blob_runtime.py`, the sprite atlas, the three weapon switches, the
+set-piece driver and the terrain diff that finally makes a door *move* rather
+than silently change its cell's height. Its own finding is `RoofUnit`'s drop
+rate — one whole map field per displayed frame — which neither
+[`20`](20-lcl-language.md) nor [`28`](28-effects-and-sound.md) carried:
+[`97-slice-5-report.md`](97-slice-5-report.md).
+
+Its §14 and §15 are a later pass over what it left open, and they closed two
+questions in **other** documents: the shipped build plays the **`Arack`** music
+family, read out of `Incubation.exe`'s import descriptor rather than out of the
+MCI shim ([`28` §6.1](28-effects-and-sound.md)), and the composition order of a
+jointed prototype's three angles is whatever its opcode's `call` names — the two
+the shipped data reaches both build `RzRxRy` ([`30` §2.5](30-eng3d-ascii-formats.md)
+open question 7). The same pass gave the blob layer its **first native oracle**:
+`tools/blob_gold.py` calls each effect creator inside a running
+`Incubation.exe`, and the pool it reads back agrees with the static tables
+field for field.
 
 ---
 

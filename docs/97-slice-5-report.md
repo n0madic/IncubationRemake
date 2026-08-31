@@ -1,0 +1,1033 @@
+# Slice 5 — a world that answers back
+
+**What this slice set out to do:** make a shot sound and look like something;
+make the lift move, the tube open, the door slide and the alien fall from the
+ceiling with a scream; play the mission's own music. Play `_C_140`, `_C_141`
+and `_C_115` in an exported build with sound and effects, and measure what a
+full effect pool costs per frame.
+
+**What it did:** the sound layer entire, the blob pool entire — all 78 update
+kinds diffed against the Python reference tick by tick — the sprite path, the
+three weapon switches, the set-piece driver and the re-render that closes the
+slice's headline visible defect. It also recovered one constant neither
+delivered specification carried, and it reports two things it did **not** do.
+
+Four slices closed the *rules* and the *bodies*. [`93`](93-slice-1-report.md)
+the map, the fill and the path; [`94`](94-slice-2-report.md) the turn, fog,
+combat, reaction, interaction and the mission script; [`95`](95-slice-3-report.md)
+the AI planner; [`96`](96-slice-4-report.md) the Charisma bodies. What the
+remake had none of was everything that is **not a rule**: there was no audio
+call site anywhere in `godot/`, no particle system, and a door that changed its
+cell's height by `0xC80` and produced no visible change at all.
+
+---
+
+## 1. The structural fact the whole slice rests on
+
+[`28` §8](28-effects-and-sound.md):
+
+> **effects are not driven by the simulation, they are driven by the animation
+> routines**, and the simulation only calls those.
+
+Of the callers of all 81 blob creators, exactly **two** sit outside
+`aAnimations.cpp` and `aBlobs.cpp`. Nothing in the original reads a blob back.
+Damage stays in the resolver; blobs are cosmetic.
+
+Two consequences decided the slice's shape:
+
+1. **The `core/` delta is zero, and it is measured.** `git diff --stat
+   godot/core/` is empty, `SaveCodec.SCHEMA_VERSION` is still 6, and `_C_140`'s
+   canonical hash is still
+   `50d33fa7a150fc13f36256266ad1f3f89d09cd994b7d05f500c51760a2b81fe9` — the
+   value [`96` §](96-slice-4-report.md) recorded. `core` already emitted every
+   event this slice needed; three call sites in `game` stopped discarding them.
+2. **No `.cha` note starts a sound or creates a blob.** `0x0042C5D0`, the
+   note-callback registrar, has exactly one caller in the whole image
+   ([`28` §9](28-effects-and-sound.md)). The timings are carried by the
+   drivers, not by the animation data — so a driver is what was written.
+
+---
+
+## 2. Where the blob pool lives, and why
+
+This was the slice's one consequential architectural call, and it is not close.
+
+A blob is deterministic integer arithmetic over an 88-byte record drawing from
+`aRandom`. In `core/` it would be covered by the canonical hash and diffable
+against Python with the machinery that already exists. **Three arguments put it
+in `game/` instead:**
+
+* [`28` §8](28-effects-and-sound.md) again: effects are created by the
+  animation routines, which `core` does not have — it applies everything
+  instantly. A pool in `core` would need a tick `core` has no concept of.
+* **The hash.** Particle draws depend on the frame rate and on whether the
+  player skipped a replay. A pool in `core` drawing from `world.rng` would put
+  the frame rate into `CanonicalHash`'s item 5, and would force a save-schema
+  bump — for state **no rule reads**. Giving it a separate stream inside `core`
+  fixes the hash and breaks the fidelity claim the other way: a separate stream
+  is not what the original has, so there would be no reason for it to be in
+  `core` at all.
+* The original treats effects as optional: a constructor that finds no free
+  slot returns `-1` and the effect silently does not appear
+  ([`28` §7.1](28-effects-and-sound.md)).
+
+**Determinism is therefore bought explicitly rather than inherited:**
+`BlobPool.trace_digest()` hashes every live record in slot order, and
+`test_effects.gd` requires the same seed and the same events to give the same
+digest while a different seed gives a different one. The pool is seeded from
+the mission name and never from `World.rng`.
+
+---
+
+## 3. The sound layer
+
+`tools/inclib/sound.py` is new and is the executable model of
+[`28` §§1–5](28-effects-and-sound.md). It opens no file and reads no binary:
+`tools/blob_tables.py` owns the extraction and hands it the tables, so the two
+readings stay independent and a mutation of one is not absorbed by the other.
+`blob_tables.py --check` grew from **259 checks to 345**, of which 82 compare
+the model against decoded data rather than against a second pin.
+
+What it holds, and what pins it:
+
+| Rule | Pinned by |
+|---|---|
+| Twenty buffers, and a twenty-first that can never play | the four routines' own bounds, which differ by one |
+| `att = base + 20·percent − 2000`, clipped at 0, silence below −2000 | the four constants at their own sites, swept over 26 base volumes × 7 percentages |
+| 103 `SetVolumeCtrl` ids, seven of them not 100 % | `Info.lcl`, read by `blob_tables.py` and compared id by id |
+| The 62 call sites partitioned into 43 remake events | every site's owning routine, bounded by the nearest call entry |
+| Nine looping play sites, reached by thirteen loads | **derived** from `PLAY_SITES`, not pinned separately |
+| The weapon's own fire sound, scaled by its **own id** | 42 `SetWeaponInfo2` rows, 41 of which resolve |
+| Two voice cursors, `SP_HUM_*` sharing the human one | the nine voice arms and their two cursor addresses |
+| Eight footstep arms over 69 unit types, 39 silent | the 69-entry index table and its jump table |
+
+### 3.1 Case is resolved once, at conversion time
+
+Ten of the fifty literal wave names do not match the shipped file's case, so a
+naive open fails on anything but Windows. The converter resolves them **once**
+and writes every wave into `audio/waves/` under the lower-cased name the
+document uses. The runtime never does a case-insensitive search, so the hazard
+cannot recur. A check counts both populations: 50 names pushed at a load call
+site (the doc's own figure) and **58** once the voice and footstep names the
+arms build in a register are included — which is the set the conversion has to
+resolve, and the wider one.
+
+### 3.2 The three audible defects, decided rather than inherited
+
+[`92` §7.1](92-remake-architecture.md)'s rule is *reproduce a defect that is
+part of the output; never reproduce a defect that makes a control inert*.
+
+* **Weapon 35's fire sound** never loads: `Info.lcl` spells the file
+  `W_BAY0_0` with a zero for the letter O, and patches a record no
+  `SetWeaponInfo` ever created. Reproduced by default. The converter emits it
+  as a **named warning** with a null entry, not as a silent gap.
+* **Unit type 24's footsteps** are scaled by volume id 45 — inside the
+  weapon band, one bit from the 91 its twin uses — so that one type walks at
+  100 % where its twin walks at 50 %. Reproduced by default.
+* **The alien scream** is scaled by the *human* volume ids. Fixed
+  unconditionally: the combat path now passes 59/60/61, the ids `Info.lcl`
+  labels `S_ALI_0/1/2`.
+
+**One correction to `92` §7.1's own wording.** It justifies the alien fix by
+saying the defect "leaves ids 53–55 defined and dead". It does not: 53–55 are a
+*second* `SP_HUM_0/1/2` label and stay unnamed under either setting. The fix is
+still right — an "alien voices" control that moved nothing would be inert — but
+it is the 59/60/61 ids that make it work, not 53–55. `sound.py` records the
+three ids as permanently unnamed and a check asserts it.
+
+---
+
+## 4. The blob pool, and the gate
+
+`game/fx/` is the port of `tools/blob_runtime.py`: the 88-byte record, the
+delay/life/dispatch wrapper, and all **74** arms behind a 78-entry `match`
+whose four aliases (21/24, 23/40, 48/53, 66/70) are written as aliases.
+
+`blob_runtime.py` gained `--emit-cases`, which writes 78 kinds × **12
+scenarios** — 936 cases, 3 900 ticks. `tests/test_blob.gd` replays them and
+compares **111 384 field and flag values**, every spawn with its arguments, and
+`aRandom`'s call count and seed after every single tick.
+
+**The gate was demonstrated, not assumed.** Changing one arm's gravity constant
+by one unit — `0x64` to `0x63` in kind 0 — makes the suite fail and name the
+field and the tick:
+
+```
+FAIL blob.ticks: 780 cases, 3276 ticks, 111384 field and flag comparisons,
+  247 spawns; kind 0 profile tick 0: vz 401 != 400; kind 0 profile tick 1:
+  z 1901 != 1900; ... (and 57 more)
+```
+
+Two scenarios exist only to close branches both sides would otherwise have
+agreed on by never running: `emitter_special` reaches kind 59's
+`emitter_mode == 3` arm, and `zero_velocity` reaches kind 41's division guard.
+
+### 4.1 Two port hazards worth recording
+
+* **Python's `round()` is half-to-even; GDScript's `roundi` is half-away-from
+  zero.** The seek step reaches the half-integers whenever a distance divides
+  evenly. `BlobHooks.round_half_even` is written explicitly and checked on
+  every half-integer either side of zero, with a check that it *differs* from
+  `roundi`. Half-to-even is also the right answer: it is what an x87 store does
+  under the default rounding mode.
+* **`IncRandom` exposes only the truncated draw**, and kind 62 compares the
+  raw x87 value against the literal `5.0` — the fractional part decides whether
+  a spark burst happens. `core` is not changing, so the raw value is recovered
+  from the seed the draw left behind, which is the same number the original
+  multiplied.
+
+---
+
+## 5. The oracle boundary, stated down
+
+**Nothing in this slice is `native-runtime`, and both suites print
+`executable-Python`.**
+
+[`28` §12 item 1](28-effects-and-sound.md) records that the return data of the
+original's orientation, geometry and target-map helpers — `0x004039A0`,
+`0x00403AA0`, `0x0046D400`, `0x00405100`, `0x00477AE0` — has never been
+validated against a native trace. Every arm that calls one is therefore
+compared against **the same deterministic adapter on both sides**, implemented
+twice: `CaseHooks` in Python and `BlobHooks` in GDScript, each a pure function
+of its arguments and two small tables.
+
+So `test_blob.gd` checks that 74 arms were transcribed correctly. It does
+**not** check that a particle follows the trajectory the original's particle
+followed. Both fixtures carry that sentence in their own `oracle` field.
+
+The one service that *is* natively pinned is the generator: `aRandom` is
+[`91`](91-wine-runtime-probes.md)'s routine and `core/rng.gd` its twin, so the
+draw counts and seeds compared every tick are anchored even though the hooks
+are not.
+
+---
+
+## 6. The finding: `RoofUnit`'s drop rate
+
+The three demo missions need seven set-piece frame counts.
+[`20` §7.4](20-lcl-language.md) gives five (`Elevator` is `steps` frames of
+±800, `Platform` `dist·10` frames of ±0x140, `Bridge` 80 frames of ±12,
+`FootBridge`/`FootBridge2` take theirs as an argument) and
+[`28` §1.4](28-effects-and-sound.md) quotes `aDoorOpenSequence`'s own
+`for (n = 10; n; n--)`. **`RoofUnit`'s was in neither.**
+
+It is one instruction. The drop loop at `0x00411DF3` reads:
+
+```
+    call frameTick                  ; 0x0040B6F0
+    z -= 0xC80                      ; 0x00411E26
+    aChangeStdObjectPosition(type, x, y, z + 0xA0)
+    if (z > floor) loop
+```
+
+**The falling unit drops a whole map field — 3 200 world units — per displayed
+frame.** `RoofUnit (x, y, height, unitType)` starts at `height · 1600`, so the
+count is `height · 1600 / 3200`; the shipped heights of 20 to 65 give 10 to 33
+frames, half a second to 1.65 seconds at 20 fps. Four checks pin it, including
+one that the loop really is paced by the frame tick.
+
+---
+
+## 7. The re-render: the headline defect
+
+`Scenery.build` ran **once per mission** and `TerrainOverlay.build` once more,
+so `Interact.toggle_door` writing a field-type flip and `DOOR_HEIGHT_STEP` into
+`MapState` produced no visible change at all until `[` or `]` rebuilt the
+mission.
+
+Closing it needed no new concept in `core`. `game` keeps the last terrain
+snapshot it drew, and `TerrainDiff` compares two immutable views:
+
+> **`game` renders `f(authored, MapState)`. The diff exists only to say which
+> cells to redraw, never to hold state.**
+
+`Scenery` records each instance's **authored** transform and each cell's
+**authored** height — from the `.lev`'s own lattice records, not from the state
+at build time — and offsets by the difference. Three properties follow and are
+each checked: applying twice is applying once, closing a door returns the panel
+exactly where it started, and a save resumed with a door already open draws it
+open on the first frame.
+
+What moves is settled by the corpus rather than by reading
+[`26` §3.4](26-interaction.md) literally. Its decompile says the toggle writes
+`landObject->z`, and [`10` §6.3](10-lev-mission-format.md) says the land record
+is a 320-unit editor marker. But `_C_140`'s two closed doors each carry a
+**special object** `L100EX00.3DI` — a full-tile-wide panel spanning z 36…3673 —
+and §3.4's own prose says *a door is a wall panel that rises out of the floor*.
+So every object standing on the cell takes the height delta, which the rule
+above gives for free with no special case.
+
+---
+
+## 8. The set-piece driver
+
+`SequenceQueue` is the generalisation of `AIPlayback`, which already had a
+`_hold` a step could lengthen. A blocking `aPlay*Sequence` becomes a queued
+step of *n* frames at **20 fps** — the same clock the bodies use
+([`92` §7.10](92-remake-architecture.md)), which is the whole point: the
+original's blob tick and its sequence loop are both "once per displayed frame",
+and that frame is the one that was measured, so a set piece and a walking body
+cannot drift apart.
+
+Three rules the queue enforces rather than observes:
+
+* **A sound's lifetime is its sequence's** ([`28` §1.4](28-effects-and-sound.md)).
+  Every sound a step starts is killed when the step ends, never when the sample
+  runs out. Nine of the fifty-eight play sites loop and all nine are machinery
+  whose sequence outlasts its sample.
+* **`skip()` means stop drawing, never stop simulating.** Every remaining step
+  is painted at its own last frame — which is the state the world has held
+  since `core` returned — and every queued sound is killed.
+* **A queued cell is not redrawn by the diff** while its sequence runs.
+  Snapping it to the finished state would show the end of the lift before the
+  lift.
+
+Sequences the converted missions do not reach — the statue, the barrier, the
+crush wall, the ground unit and thirteen more — apply their state change with
+their sound and no motion, and are **named** in `SetpieceDriver.INSTANT` rather
+than merely absent: an event that is silently unhandled and one that is
+deliberately instant look identical from outside.
+
+### 8.1 A bug this found in its own first draft
+
+`core` spells its two event streams differently and both are legitimate: a
+mission script's events serialise as `[name, values]` **pairs**
+(`LclOutcome.to_dict`, so the document matches `inclib.lcl_runtime`'s) and the
+computer's are `{"kind": …}` dictionaries. Reading only one of them yields an
+empty name and no cue — which is a perfectly plausible answer, so **every
+set-piece sound was silently missing and nothing said so**. `AudioEvents.as_event`
+now normalises all three shapes and a check covers each.
+
+---
+
+## 9. Measurements
+
+| | Before | After |
+|---|---|---|
+| Cache, with music | 7 476 KiB | **31 428 KiB** |
+| Cache, without music | 7 476 KiB | **10 255 KiB** |
+| Conversion time | ~7 s | ~8 s |
+| Waves in the cache | 0 | 81 (of 99 shipped) |
+| Music tracks | 0 | 5 (the union of five playlists) |
+| `blob_tables.py --check` | 259 | **384** |
+| `remake_convert.py --check` | 101 | **181** |
+| Godot suites / checks | 27 / 1 678 | **31 / 1 854** |
+
+The last three rows are as of §14, which closed the slice's own loose ends;
+they were 345, 169 and 30 / 1 811 when §1–§13 were written, and 367,
+181 and 30 / 1 842 at the end of §14.
+
+**95 % of the cache's growth is music**, which is why it is behind
+`--no-music`, why the manifest records which of the two caches it is, and why
+the size check names **two** ceilings rather than one.
+
+### 9.1 The frame cost of a full pool
+
+Taken before the model-blob path existed, because that is the only time the
+answer is useful — the plan's cut list is keyed to this number.
+
+| | |
+|---|---|
+| Pool tick, 450 live blobs | **1 117 µs** (2.48 µs a blob) |
+| Sprite rebuild, 450 camera-facing quads | **655 µs** |
+| Per displayed frame (tick at 20 fps, rebuild at 60) | **1 028 µs** |
+| Headroom against a 16 667 µs frame | **16.2×** |
+
+**The frame budget forced no cut.** That is the useful reading of the number,
+and it is narrower than "nothing was cut": the pool ticks and updates every
+model blob correctly at full occupancy with sixteen times the budget spare, so
+the plan's first cut — *keep only the sprite path* — was never **forced**. Two
+items from that list were still taken, as scope rather than as cost, and §11
+names them. §14.1 took them back and re-measured.
+
+---
+
+## 10. Deviations from the plan, all deliberate
+
+1. **Audio compatibility flags live in `game/audio/`, not `World.compat_flags`.**
+   The plan said they go where `canonical_hash.gd` already carries them; but
+   that array is item 6 of `CanonicalHash.compute`, and the acceptance criteria
+   require the hash and the save schema to be unchanged. `weapon_35_missing_sound`
+   and `unit_24_footstep_volume_original` change what is heard and no rule, so
+   they are held by the audio layer under [`92` §7.1](92-remake-architecture.md)'s
+   stable names. `technical_box_guard_original` stays in `core`, where it
+   belongs, because it changes the simulation.
+2. **The sprite atlas reaches the cache through the existing per-set texture
+   path**, not as a separate `textures/anim.png`. `anim` is an ordinary VISN
+   record, so adding its id to each set's closure reuses the whole VISN → PNG
+   chain and turns "byte-identical in all nine sets" into a *check*. Measured:
+   256×256, a 31 309-byte PNG, identical across A00, C00 and D00.
+3. **Effect models join `geometry/<set>.json`**, not a separate
+   `geometry/effects.json`. They are ordinary world-object prototypes. The four
+   that exist in one or two world sets are recorded as `absent_effects` — a
+   constraint, not an error — and the existing completeness check subtracts
+   them so a *real* missing prototype still fails.
+4. **Music uses the `Track` family** — see the open question below.
+5. **`slot_tag` is the pool slot index**, not the record's address. Kinds 25
+   and 56 branch on the low byte of the record pointer to mirror an animation;
+   the slot index is the same kind of fact and is reproducible.
+6. **The sound pool is twenty slots**, [`28` §1.1](28-effects-and-sound.md)'s
+   own advice. The drop behaviour itself *is* reproduced, and drops are counted.
+
+---
+
+## 11. What was not done, and what is still open
+
+* **Unit speech** ([`20` §7.4](20-lcl-language.md)) — 233 files, out of scope
+  by the plan.
+* **Ambience** — [`28` §6](28-effects-and-sound.md) proves the subsystem never
+  plays anything. The ten `amb_*.wav` and four other unreferenced waves are
+  excluded from the cache, and a check asserts none of them is in it.
+* **`CreateBGB`** — 14 calls in the whole corpus and none in the five
+  converted missions.
+* ~~**Model blobs and joint angles are not drawn**~~ — **closed in §14.1.**
+  The text below is what the slice reported; the pool's model half now draws,
+  and the panel flickers.
+* **(as reported)** Model blobs and joint angles are not drawn (§7.5 and
+  §7.8) — the plan's
+  cut list items 1 and 2, taken as **scope**, not because the frame budget
+  demanded it: §9.1 measured sixteen times the headroom. The pool creates,
+  ticks and deletes every class-0 and class-1 blob correctly, resolves its
+  model against the world set and cancels it when the set lacks it — but what
+  reaches the screen is the sprite path. So the computer panel does not
+  flicker, the fire does not spin, and a laser bolt is its sparks rather than
+  its geometry. 54 of the 116 constructor calls are sprites, so about half the
+  effects are visible.
+* ~~**Footsteps are modelled and not heard**~~ — **closed in §14.2.** The
+  reasoning below still holds; what changed is that the frame counter was put
+  where the walk is, in `game/`, rather than asked of `core`.
+* **(as reported)** Footsteps are modelled and not heard — the plan's cut list item 5, and
+  the one cut with a structural reason rather than a scope one. The eight arms,
+  their waves, their volume ids and their periods are checked against all 69
+  unit types in both presets, and `AudioEvents.footstep` answers correctly. But
+  a step is 2 to 8 frames apart and `core` hands over a **whole path at once**:
+  the event a footstep needs does not exist, and the phase that would supply it
+  is `CharismaState`'s. Wiring it is a change to the body's walk, not to the
+  audio layer, which is why it was left where the plan left it.
+* **The creators' argument arithmetic** — still open, and **§14.5 measures
+  exactly how open**: 30 of the 81 creators and 43 of the 116 constructor calls
+  are reachable by firing a weapon, and 27 of those 43 carry a literal
+  lifetime, which is what now paces a tracer. The rest of the paragraph stands.
+* **(as reported)** The three weapon switches are
+  transcribed and pinned, so a shot fires the **right effects, of the right
+  kinds, for the right lifetimes, from the right atlas tiles**. But the 81
+  creators' own placement and velocity arithmetic is transcribed nowhere in
+  this repository, so `BlobTriggers` supplies a straight line at a chosen
+  speed. That is the remake's own, it is said so in the file, and closing it is
+  its own piece of work.
+* ~~**A unit an elevator carries pops rather than rides.**~~ — **closed in
+  §14.3**, and not by the suppression this paragraph considered.
+* **(as reported)** A unit an elevator carries pops rather than rides. `RoofUnit`'s alien is
+  held out of the picture until its drop ends (§13's criterion), but a unit
+  standing on a moving lift is rebuilt at its finished height by
+  `_units.build` while the scenery under it interpolates. The same suppression
+  would hide it and the same hook would show it, but hiding a unit the player
+  is watching move is worse than letting it arrive early. Recorded, not fixed.
+* ~~**The exported build leaks four objects at exit**~~ — **closed in §14.4.**
+  The diagnosis below was right about *where* and wrong about *what could be
+  done*: `_exit_tree` is too late, not powerless.
+* **(as reported)** The exported build leaks four objects at exit — the Ogg music stream, its
+  packet sequence and both playbacks. Established as the music path by running
+  the same build against a `--no-music` cache, where the leak does not occur.
+  `AudioSystem._exit_tree` stops the players and drops every cached stream and
+  the report persists, so the reference is the audio server's rather than the
+  scene tree's. Cosmetic — it is one warning at process exit and the streams
+  are released on any ordinary mission change — but **unresolved**.
+
+### 11.1 `93` §11's deferred-draw-order trigger, answered
+
+[`93` §11](93-slice-1-report.md) deferred the draw order of the engine's
+translucent kinds and asked to come back to it "when the Charisma models or the
+aim markers are converted". Both now are, so the trigger has fired.
+
+**Nothing needs to change.** Of the 26 blob models `World_A00` carries, the
+draw kinds used are `0x08`, `0x10`, `0x14` and `0x1C` only — additive and
+subtractive commute, and masked is a scissor rather than a blend, so none of
+the three is order-dependent. The one kind that *is* — `0x0C`, the translucent
+flat fill — **appears on no blob model and on no face in A00's converted
+closure**. The sprite path adds no ordering problem of its own either: every
+zoom bob is additive with depth writing off, which is the same treatment
+`mesh_builder.gd` already gives the engine's own deferred kinds.
+
+The trigger is therefore closed with numbers rather than re-deferred.
+
+### 11.2 A new open question for `docs/28` — closed in §14.6
+
+`music/` ships two families, `Track02…20` and `Arack02…14`. Measured pairwise,
+**02–08 are byte-identical and 09–14 differ.** Shipped playlists reach track
+13, so the choice matters for 9–13 — and it looked unfalsifiable on this
+slice's corpus, whose five missions reach only track 7. The slice recorded
+`Track` as a choice.
+
+**It was not a choice and the corpus was never the place to look.** §14.6 reads
+the import table: the shipped build plays `Arack`. The open question this
+section opened in `docs/28` §12 is closed in the same pass that opened it,
+which is worth saying plainly rather than quietly deleting.
+
+---
+
+## 12. The mutation battery, and the two bugs it found
+
+Every constant this slice added to `blob_tables.py` and `inclib/sound.py` was
+perturbed one at a time and the whole check set re-run: **53 mutations, 40
+caught, 13 unread** — the caught figure by subtraction, since every target
+lands in exactly one of the two lists. `tools/**/__pycache__` is cleared before every run,
+including the final one on the restored tree — write-mutate-restore completes
+inside one filesystem mtime tick, so CPython otherwise keeps running the
+*mutated* module after the source is back.
+
+**The battery found two bugs in itself before it found anything else**, and
+both are worth recording because both made a green result meaningless:
+
+* it read `proc.stdout`, and `blob_tables.py` configures `logging` with no
+  handler of its own, so **every check line goes to stderr**. First run: 0 of
+  53 caught, on a check set that catches 40 — a result that was not believed
+  precisely because it was too clean a failure;
+* it counted a mutation as caught only when a `FAIL` line was named. A
+  perturbed constant that puts the model out of range makes the tool *raise*,
+  and a non-zero exit with a traceback is the check set noticing just as much
+  as a named failure is.
+
+**And the re-run found a real bug in the remake.** `BlobPool` resolved a model
+name through `BlobHooks.MODELS` — the *diff's* three-name deterministic table —
+so every class-0 muzzle effect was refused. Weapon 2's muzzle is two model
+blobs, `A_LINE5.3DI` and `A_CASE.3DI`, and the trigger reported making **zero**
+effects, which is a perfectly plausible answer for a weapon with no muzzle arm.
+`BlobHooks.model_index` now carries the world set's own prototypes; the
+deterministic table remains the fallback, which is what keeps the Python diff
+reproducible. The fix also implements [`28` §7.5](28-effects-and-sound.md)'s
+constraint for real, and a check asserts it: `A_PARAB1.3DI` on `World_A00`
+is **cancelled**, not drawn as a hole.
+
+### 12.1 The thirteen pins no check reads, and why
+
+Named rather than left implicit, on the precedent of §11's own nine.
+
+| Pins | Why nothing here reads them |
+|---|---|
+| `DOOR_SEQUENCE_FRAMES`, `ELEVATOR_STEP`, `PLATFORM_STEP`, `PLATFORM_FRAMES_PER_FIELD`, `BRIDGE_FRAMES`, `BRIDGE_STEP` | Read out of the LCL handlers by [`20` §7.4](20-lcl-language.md) and quoted here for the driver. `blob_tables.py` has no **second** reading of them, so a check would compare a pin with itself. `tests/test_effects.gd` pins each against the shipped commands' own arguments. |
+| `ATLAS_SIZE` | Derived — `ATLAS_TILE * ATLAS_GRID` — so there is no literal to perturb, and both factors are caught. |
+| `ATLAS_HALF_EXTENT_SCALE` | Consumed by the cache document and by the sprite path; pinned on the GDScript side, where `HALF_EXTENT_SCALE / 1600 == 0.1` is checked. |
+| `COMPAT_WEAPON_35`, `COMPAT_FOOTSTEP_24` | Flag **names**, whose only independent reading is [`92` §7.1](92-remake-architecture.md)'s prose. |
+| ~~`MUSIC_FORMAT`~~ | **Now caught** — §14.6 gave it three independent readings: the shim's own format string, the shipped playlists, and the family's file range. |
+| `INTERFACE_WAVES[entry]` | The sampled perturbation lands on a digit inside a name the containment check tolerates. The set itself is checked against the seventeen direct sites. |
+
+`ROOF_UNIT` and `PAIN_CURSOR_MODULUS` were both in this list until the last
+pass. The second turned out to be a battery artefact: perturbing the modulus
+puts the voice cursor past the end of its own three-entry table, so the tool
+*raises* rather than reporting, which is the check set noticing just as much as
+a named failure is.
+
+**The first was recorded as fixed here and was not.** It gained a containment
+check — the drop, the draw offset and the frame tick must lie inside the routine
+whose address it is, bounded by the next call entry — and that check catches a
+wrong *function* and tolerates a wrong *byte*, which is exactly what the battery
+perturbs. §14 caught the discrepancy and added the check that does the job:
+`roof.is_a_routine` requires the address to be the target of a call. Recorded
+rather than quietly corrected, because "a check was added" and "the mutation is
+caught" are not the same claim and this section had conflated them.
+
+---
+
+## 13. Verification
+
+```bash
+python3 tools/blob_tables.py --check gog_incubation        # 384 checks
+python3 tools/blob_runtime.py --selftest                   # 78 kinds, 74 arms
+python3 tools/remake_convert.py gog_incubation --check     # 181 checks
+bash godot/run_tests.sh                                    # 31 suites, 1854 checks
+```
+
+Plus the whole always-run block (38 commands, all green), the exported shipping
+preset — which excludes `tests/`, so a `class_name` from there used in `game/`
+breaks only it — and `_C_140` played in that build.
+
+Both new suites **fail rather than shrink** when their fixture is absent, both
+refuse a stale fixture **by name** through its schema string, and both are in
+`harness.gd`'s minimum-check table.
+
+`core` is still without a scene tree, a filesystem or an engine singleton;
+`tests/fixtures/violations/` still does not compile; typed warnings still fail
+the build — which caught four real errors in this slice's own files before any
+of them ran.
+
+---
+
+## 14. Closing the slice's own loose ends
+
+§11 listed what the slice left open and §11.2 opened one new question. This
+section is a **later pass over that list**, taken as a whole. Six items, of
+which four are now closed, one is closed and turned out to close two open
+questions in other documents as well, and one is measured rather than closed.
+
+Two of the closures needed no new research and one needed none at all — it
+needed the right file read. That is the pattern worth carrying forward: three
+of the six were open because of an assumption about where the answer lived, not
+because the answer was absent.
+
+### 14.1 The model half of the pool draws, and its joints move
+
+The pool always ticked its class-0 and class-1 blobs correctly; what it did not
+do was put them on screen. `game/fx/blob_models.gd` does, and the interesting
+part is not the drawing — it is that a **single mesh cannot** show what
+[`28` §7.8](28-effects-and-sound.md) describes.
+
+A jointed prototype's sub-objects live in their own `part_push` scope with
+their own `joint_place` operand, and the arms of kinds 42 and 54 rotate those
+scopes rather than the object. So the converter now emits, **for a prototype
+that has parts and only for one that has parts**, each part's joint-buffer
+offset, its `part_push` translation, and the vertex slots it owns:
+
+```json
+"parts": [{"anim": 6, "translation": [0, -64, 0], "vertices": [4, 5, 6, 7]}]
+```
+
+`MeshBuilder.build_scope` splits a prototype on that ownership — a face belongs
+to the part its first corner does, which is exactly how the engine's index base
+works, so no face straddles a scope — and `BlobModels` builds a node per scope:
+the root under the blob's own rotation triple, one child per part under the
+triple its `anim` operand names. `A_PANEL.3DI`'s plate flips edge-on and face-on every tick and
+`A_FIRE3.3DI`'s two billboards take a fresh heading -- **pinned by the suite
+rather than seen in a demo mission**, because neither kind is reachable from
+the three weapon switches the demo missions exercise. What is visibly on
+screen is the model half of a shot: weapon 2's muzzle is `A_LINE5.3DI` and
+`A_CASE.3DI`, and those were drawn by nothing before this.
+
+**And it closed [`30` §2.5](30-eng3d-ascii-formats.md)'s last open item.** That
+document had left the *composition order* of a general three-angle rotation
+open, "because the composition order is prototype data, not a format constant".
+It is prototype data — and the opcode names its builder in a `call rel32`.
+`joint_rotate_3` and `joint_place`, the two the shipped joint programs reach,
+both call `E3D_init_matrix_RzRxRy` at `Eng3d.dll+0x411BF6`. The order was never
+unknowable; it was one instruction away, in a binary the question did not think
+to look in. Three checks pin the seven handlers' targets.
+
+What remains a **choice**, and is written down as one in `WorldSpace`, is the
+handedness of that composition carried across into Godot's column-vector
+convention — the engine transforms row vectors. Every single-axis case is exact
+either way, and every shipped joint animation is single-axis per part.
+
+**The re-measured frame cost**, on the same worst case §9.1 used:
+
+| | Sprite half | Model half |
+|---|---|---|
+| Pool tick, 450 live | 1 098 µs | 1 480 µs |
+| Rebuild | 656 µs (450 quads) | 5 083 µs (450 nodes) |
+| First build (mission load, not a frame) | — | 5 157 µs |
+| Per displayed frame (tick at 20 fps, rebuild at 60) | **1 022 µs** | **5 576 µs** |
+| Headroom against 16 667 µs | **16.3×** | **3.0×** |
+
+The two are measured apart because a blob is a sprite **or** a model, never
+both, so neither number is ever paid twice. The model half is five times the
+sprite half and still fits three times over; §9.1's 1 028 µs is superseded for
+the sprite path only and is **not** the whole-pool figure any more.
+
+### 14.2 Footsteps are heard, and the period turned out to be a global
+
+The slice's reasoning was right and its conclusion was one layer off. A step is
+2 to 8 frames apart, `core` hands over a whole path at once, and the phase must
+therefore come from the presentation — but not from `CharismaState`. It comes
+from **`UnitsView`, which already owns the walk**: `start_walk` takes a period,
+`_advance_walk` counts frames at the body clock, and `steps_taken()` answers
+which slots put a foot down. Nothing in `units.gd` knows a wave from a volume
+id; `main.gd` turns each slot into the cue its type set up. `core` is untouched.
+
+**And reading `aStartWalkAnimationSound` properly to supply that period found
+something the table had flattened.** Six of the seven sounding arms end with
+`mov dword [0x004FAECC], imm32` — **one global**. The `msqueether` arm, unit
+type 54, writes its wave and its volume id and leaves the period alone, so a
+Squeether walks at whatever the previous walker set. And `0x004FAECC` is past
+the end of `.data`'s raw bytes, in the tail the loader zero-fills, so before
+anything has walked the period is **zero** and the first Squeether of a mission
+gets one step and no repeat.
+
+So the call is not a pure function of the unit type, and modelling it as one
+would have quietly given type 54 a period it does not have.
+`inclib/sound.WalkPeriod` is that global as state, `AudioEvents.footstep` is
+its GDScript twin, and an ordered trace of nine walks is emitted into the sound
+fixture and replayed by `tests/test_sound.gd`. Written up as
+[`28` §5.1](28-effects-and-sound.md); five checks.
+
+The first step fires **with** the walk animation rather than at the first period
+boundary. That is a reading of a routine whose caller is not decompiled, it is
+said so in `units.gd`, and the alternative would make the shortest shipped path
+— one field, six frames, against periods of 2 to 8 — silent for some types.
+
+### 14.3 A unit on a moving lift rides it
+
+Not by the suppression §11 considered, which would have hidden a unit the
+player is watching. `UnitsView.lift(slot, world_units)` holds one unit's node
+away from where the world says it stands; `_carry_rider` decays that offset
+from `from - to` to zero across the sequence, in step with the same
+interpolation `_paint_setpiece` gives the cell's objects. The passenger is
+captured at the **start** of the sequence, `drop_lifts()` puts everyone back
+when the queue drains or the replay is skipped, and — like the suppression — the
+offset is re-applied after a rebuild, because a rebuild recreates every node.
+
+`roof_unit` is the one animated set piece whose unit is not a passenger: it is
+the cargo, and it stays suppressed.
+
+**A bug in the first draft, worth recording because it is the same shape as the
+one §8.1 found.** `_apply_lifts` wrote `position.y` for **every** child on every
+lifted frame, so any set piece anywhere on the map put a walking body back on
+its start cell's floor — a walk and a script sequence do run in the same
+playback. It now touches only the slots in the lift table, and
+`tests/test_effects.gd` asserts it.
+
+### 14.4 The exit leak: `_exit_tree` was too late, not powerless
+
+The slice's diagnosis was right about where — the Ogg music path, established
+by running the same build against a `--no-music` cache — and wrong about what
+could be done. Reproduced outside this repository in a twenty-five-line
+project: an `AudioStreamPlayer` that has played an Ogg leaks four objects at
+exit if the process quits in the same frame the stream is released. Loading the
+stream and never playing it leaks nothing. Playing it, releasing it and then
+running a handful of frames leaks nothing. **Six process frames were enough.**
+
+So the holder is the audio server, it lets go on its next mix, and `_exit_tree`
+cannot help because by then there is no frame left to run. The fix is to stop
+quitting in the same frame: `get_tree().auto_accept_quit = false`, and a close
+request runs `AudioSystem.shutdown()` — release everything, then let the tree
+run for `SHUTDOWN_WAIT_MS` — before `quit()`. The wait is wall-clock and twice
+the measured threshold rather than a frame count tuned to one driver; it is
+spent once, on the way out. `release()` stays on `_exit_tree` as the belt to
+that brace.
+
+### 14.5 The creators: measured, not closed
+
+This is the one item that was **scaled down rather than finished**, and it is
+named here rather than left to be inferred.
+
+Transcribing the 81 creators' own placement and velocity arithmetic is a slice
+of its own, and the count says why: 30 of the 81 are reachable by firing a
+weapon at all, they hold 43 of the 116 constructor calls, and each is roughly a
+kilobyte of x86 whose position arguments come from five service helpers that
+[`28` §12.1](28-effects-and-sound.md) records as **not natively validated**.
+Transcribing them would produce trajectories that look authoritative and cannot
+be checked — the failure mode this repository's rules exist to prevent.
+
+What was done instead:
+
+* **the reach is measured and pinned** — `creators.reachable` (30 of 81),
+  `creators.reachable_calls` (43 of 116) and `creators.reachable_lifetimes`
+  (27 of 43), so the size of the gap is a number rather than a paragraph;
+* **the trajectories' *timing* stopped being invented.** A muzzle blob now
+  crosses to what was shot at in exactly the lifetime its own call site
+  passes — extracted data, alongside the kind and the class — instead of at a
+  chosen constant speed. A fixed speed made short shots overshoot and long ones
+  expire in mid-air. The two cases with no lifetime to divide by, an immortal
+  blob and a computed one, keep the constant and say so.
+
+The path to closing it properly is a `dbgcall` capture — fire a shot in the
+live process, read the pool back, and diff the records — which is the pattern
+`turn_gold.py` and `ai_gold.py` already use. That would validate the hooks and
+the creators in one pass, and it is the only thing that would.
+
+### 14.6 Which music family plays: `Arack`, read out of the import table
+
+§11.2 called this unfalsifiable on this corpus and recorded `Track` as a
+choice. It was neither.
+
+**`Incubation.exe`'s import descriptor names `audio.dll` where the 1997 build
+named `WINMM.dll`**, importing exactly the nine `winmm` entry points the game
+used: `mciSendCommandA` and `mciGetErrorStringA` for the CD, and seven `mixer*`
+calls for the options screen. There is no `winmm` descriptor at all. That DLL
+is an ogg-winmm shim built with `%s\Arack%02d.ogg`; `sound.dll` is the same
+shim built with `%s\Track%02d.ogg`, and **nothing in the tree imports it**.
+
+The corpus could not settle it and was never going to — the answer was in the
+loader's own table, one directory the question had not thought to read. The
+converter now copies the `Arack` family, `docs/28` gained a §6.1 for it and
+closed its own open question 3, and eleven checks pin the chain end to end:
+the descriptor, its nine entry points, the missing `winmm` descriptor, the
+sweep that finds no importer of `sound.dll`, each DLL's format string, the two
+families' 02–08 / 09–14 divergence, and that every track the shipped playlists
+name exists in the family the shim plays.
+
+**The converted cache's bytes do not change** — the five missions reach only
+track 7, and 02–08 are byte-identical between the families — but the manifest's
+source fingerprint names different files, so the cache id moves and the cache
+is republished. That is the content-addressing working as designed.
+
+### 14.7 What this pass cost
+
+| | §1–§13 | §14 |
+|---|---|---|
+| `blob_tables.py --check` | 345 | **367** |
+| `remake_convert.py --check` | 169 | **181** |
+| Godot suites / checks | 30 / 1 811 | **30 / 1 842** |
+| `CONVERTER_VERSION` | 0.9.0 | **0.10.0** |
+| Open questions closed | — | `28` §12.3, `30` §2.5 item 7 |
+| `godot/core/` delta | zero | **still zero** |
+
+The version bump is because the emitted documents changed twice — the geometry
+document gained `parts` for the prototypes that have them, and the sound
+document gained the step period's initial value. Both in both places, and
+`user://caches` republished.
+
+### 14.8 The battery, re-run
+
+**74 mutations, 63 caught, 11 missed** — against §12's 53 / 40 / 13, with
+`tools/**/__pycache__` cleared before every run and before the final one.
+
+Every pin §14 added is read by a check: the import descriptor and both shim
+format strings, the two families' range and their divergence point, the step
+period's global address and its zero start, the carry-over trace, the seven
+matrix builders, the two jointed effect models and the unjointed contrast, and
+all three reach figures.
+
+Three entries left §12.1's missed list, and each for a different reason worth
+distinguishing:
+
+* **`MUSIC_FORMAT`** — because §14.6 gave it three independent readings.
+* **`ROOF_UNIT`** — because §12.1's claim about it was wrong and the re-run
+  said so.
+* **`UNJOINTED_EFFECT_MODEL`** — because the check that named it *skipped*
+  when the model was absent. A check that passes on a missing input is not a
+  check; it now fails.
+
+Two more were rewritten mid-pass after the battery showed them agreeing with
+themselves: `music.families_diverge_at` derived both sides of its comparison
+from `MUSIC_TRACK_LO`, and `walk.period_carries` seeded the global with a type
+whose period was the one already in force. Both now read the shipped tree.
+
+The eleven that remain are §12.1's own list minus those three, unchanged and
+for the reasons that table gives.
+
+---
+
+## 15. The eleven unread pins, and the creators
+
+§14.8 left eleven pins that no check read and §14.5 left the creators measured
+rather than closed. This section is the pass over both.
+
+### 15.1 Nine of the eleven had a second reading available
+
+The reason six of them were unread was recorded in §12.1 as "read out of the
+LCL handlers by [`20` §7.4](20-lcl-language.md) and quoted here for the driver;
+`blob_tables.py` has no **second** reading of them, so a check would compare a
+pin with itself". That was true of the file and not of the binary. The four
+animation routines `docs/20` names carry the numbers as instructions, and
+instructions decode:
+
+* **`OpenDoor`** — `mov ebp, 0xA` at `0x00410CFC`, counted down by the `dec` at
+  `0x00410D17`. Ten frames.
+* **`Bridge`** — `mov ebx, 0x50` at `0x00410EBF` with its `dec` at
+  `0x00410ED1`; and the step is `lea edi,[edi+edi*2]` then `shl edi,2`, which
+  is 3 × 4 = **12**.
+* **`Elevator`** — `lea eax,[esi+esi*4]`, `lea esi,[eax+eax*4]`, `shl esi,5`:
+  5 × 5 × 32 = **800**.
+* **`Platform`** — the frame count is `lea` ×5 then `shl 1` = `dist * `**10**,
+  and the step is `lea` ×5 then `shl 6` = **0x140**, on both axes.
+
+Two decoders do the work and both **fail loud**: `lea_scale` answers `None`
+unless the base and the index are the same register (otherwise the instruction
+is an address computation and not a multiply), and `shl_scale` answers `None`
+unless the bytes are `C1 /4 ib` or `D1 /4`. A mutated site reads as "not the
+instruction I expected", never as a wrong multiplier. Each site is also
+required to lie inside the routine `docs/20` names, and that routine is
+required to be the target of a call — the pair of checks `roof.is_a_routine`
+and `roof.sites_inside` learned to make together in §14.
+
+**`ATLAS_HALF_EXTENT_SCALE` was the same story one layer down.** `SIZE_SCALE`
+already existed with its shift pinned; the `160` at the bottom of the file was a
+second, unread copy, and the factor of five in `lea eax,[eax+eax*4]` at
+`0x004040F0` had never been read at all. Both are now one constant with both
+factors decoded.
+
+**`ATLAS_SIZE` was not underchecked — it was dead.** The file defined it twice:
+`= 256` near the other atlas constants and `= ATLAS_TILE * ATLAS_GRID` fourteen
+hundred lines later. The second shadowed the first, so perturbing the literal
+changed nothing and the battery was right to call it unread. Deleting the dead
+one leaves a derived constant whose two factors are both checked against the
+`anim` record's own header in every world set, and `sound.atlas_grid_squares`
+— which had become `ATLAS_TILE * ATLAS_GRID == ATLAS_SIZE`, a definition
+compared with itself — now reads the two `shl …,5` the draw path applies to the
+row and the column bytes.
+
+### 15.2 The two compatibility flag names — and the gap the check found
+
+§12.1's reason for these was "flag **names**, whose only independent reading is
+[`92` §7.1](92-remake-architecture.md)'s prose". There is a better one: the
+remake spells the same two strings by hand, and a rename on one side alone
+gives the player a preset that toggles nothing. So `blob_tables.py` reads
+`godot/game/audio/*.gd` and requires both names to appear.
+
+**It failed the moment it was written, and it was right to.** The remake did
+not spell them. `AudioEvents` carried a single `_faithful` boolean, and
+[`97` §10](97-slice-5-report.md) and `92` §7.1's "every compatibility choice
+gets a stable named flag" were satisfied on the Python side and nowhere here.
+`AudioEvents` now carries `COMPAT_WEAPON_35` and `COMPAT_FOOTSTEP_24` by name,
+each independently settable, with `is_faithful()` derived from them rather than
+from the constructor's argument, and `unknown_compat_flags()` reporting any
+name the **cache document** declares that this build does not carry. Five suite
+checks, including that turning the footstep flag off leaves the weapon flag on.
+
+That is the second time in this slice a check written to close a battery miss
+found a real defect rather than confirming an absence — the first was
+`effects.unjointed_*` skipping on a missing model.
+
+### 15.3 `INTERFACE_WAVES` — containment was the flaw, not the sample
+
+The battery's perturbation turns `click_5.wav` into `click_6.wav`, and the check
+asked whether the model's five names were a **subset** of every direct site's
+name. A perturbed name that is still some other direct site's name stays inside
+the set. Filtering the sites by `INTERFACE_VOLUME_ID` and asking for **equality**
+derives the tuple from the binary instead, and re-pins 96 in the same breath.
+
+### 15.4 The creators: `tools/blob_gold.py`
+
+§14.5 named the closing path — "a `dbgcall` capture: fire a shot in the live
+process, read the pool back, and diff the records" — and this is that tool.
+
+Three things had to be settled before a plan could be written, and each was a
+place the obvious guess was wrong:
+
+1. **`aGetMemory` writes a handle, not a pointer.** `aInitBlobs` passes
+   `&0x004FE638`, and it is tempting to read that as the block address. Both
+   the constructor `0x00420950` and `aDrawZoomBlobs` show otherwise: each does
+   `eax = [0x004FE638]; esi = [0x0050DE54 + eax*74]`, which is only arithmetic
+   that makes sense if the first value is a small index into a table of 74-byte
+   entries. It is 22 in the shipped build. A plan that read at the handle would
+   have read at address 22 and burned every Wine attempt for nothing.
+2. **`--code` is unusable on this host**, exactly as `ai_gold.py` records: a
+   nineteen-byte stub that did nothing but the dance above made
+   `Incubation.exe` fault before the anchor, six attempts out of six, where the
+   same plan without it reached the anchor on attempt two. So the address is
+   reached through the table instead, and confirmed twice per run — by the
+   handle, and by `aResetBlobs`'s return value, which is the block's end after
+   it has walked 450 records of 88 bytes.
+3. **`--probe` cannot recover a `__cdecl` arity.** The creators are `__cdecl`,
+   the caller cleans up, and the callee's `ret` pops nothing whatever the
+   arity — which the harness's own README states as an honest limit. The
+   arities come from the **callers** instead: each arm's `add esp, K` after the
+   `call` is exact, every creator that is called from more than one site has
+   sites that agree, and the thirty run from **2 to 7 dwords**. That table is
+   pinned whether or not a capture ever runs.
+
+Two bugs in the tool's own first drafts are worth recording, because both
+produced a result that looked like a finding:
+
+* the read was hung on a second `aResetBlobs()`, which **wipes the pool before
+  the read**. Every creator came back with zero records — indistinguishable
+  from the CHECK-abort path, and a perfectly plausible answer for a creator
+  called on an empty cell;
+* every phase is its own process, and only the first one loaded the save. The
+  other phases ran the creators against no map at all, and every one of them
+  took the abort path. Same symptom, different cause, and the first hid the
+  second.
+
+### 15.5 What the capture found
+
+The tool works, and what came back is more than a confirmation.
+
+**The engine agrees with the static tables, field for field.** For every
+creator that produced records, the `(class, kind, lifetime)` of each record is
+compared against what `blob_tables.py` read out of the compiler's own index and
+jump tables. The two share no code — one is a disassembly, the other is a
+running process — and they agree. That is the first time anything in the blob
+layer has been checked against the engine rather than against a second reading
+of the same bytes, and the suite that replays it prints **`native-runtime`**.
+
+**The origin is the shooter's tile.** Every record stands at `tile * 3200`
+world units, which is precisely what `BlobTriggers.muzzle_point` already
+answered. It was an assumption; it is a measurement now.
+
+**And the placement law is not "at the tile".** Some creators offset their
+blobs — `0x00425CA0` by (−400, −800), `0x00426070` by (−960, −1920) — and every
+one of those offsets is **collinear with the line from the source tile to the
+target tile**. `0x00428570` lays eight blobs evenly down that line, from the
+shooter to nearly a field and a half away, with `z` falling 2 400 → 1 743 as it
+goes: a tracer, drawn as one call. The check is an integer cross product, so no
+fraction has to be named and no rounding enters it.
+
+**The elevation is a constant the creator carries, not the ground —
+provisionally.** Every tile the capture used stands at height 0 and the blobs
+still come out between 0 and 3 679 units up, so the number is the creator's and
+not the terrain's. What that does *not* separate is "absolute" from "the floor
+plus a constant", because at height zero the two are the same number. The tool
+grew a phase for it — one creator called again on a tile the control map says is
+raised — and **that phase has not landed**: Wine did not reach the anchor for it.
+So the question is open, the capability to close it is in the tool, and the
+check that would read it is conditional on the phase existing rather than
+passing in its absence.
+
+**A missing edge in the call graph, found by a disagreement that was not one.**
+Two creators produced a `(class 2, kind 50, life 8)` record their own
+constructor calls could not explain. They call *other* creators, and the
+records those leave are in the same pool; the check now follows one level of
+nesting, which is enough for every creator in the capture as it stands — an
+empirical claim about the ones that ran, not about all thirty, and a second
+level showing up would be a finding rather than a failure. The lesson is the
+same one §12 recorded: a check that looks like it has caught the engine
+disagreeing with the disassembly is far more likely to have caught the check.
+
+**What is still ours** is the per-blob velocity. It is drawn from `aRandom`
+*inside* the creator, so replaying one exactly needs the engine's generator
+state at the moment of the shot — which is a different capture, of a whole
+shot rather than of a creator call. `BlobTriggers` paces a blob by its own
+recorded lifetime instead, which is extracted data rather than a chosen
+constant.
+
+**The capture as it stands holds 15 of the 30 creators**, 13 of which produced
+records and two of which refused the tile they were given — 104 records in all.
+Wine reached the anchor for some phase groups and not for others, which
+[`91` §1](91-wine-runtime-probes.md) already records as an environment result
+rather than a failure: phases are written as they land and merged on re-run,
+`--check` reports the coverage, and the fixture is gitignored like every other
+capture here. Two merge passes at ten attempts each added nothing to the first
+pass's fifteen, so the remaining groups are where this host's Wine will not go
+today, not where the tool stops working.
+
+### 15.6 What this pass cost
+
+| | §14 | §15 |
+|---|---|---|
+| `blob_tables.py --check` | 367 | **384** |
+| `blob_gold.py --check` | — | **new** |
+| Godot suites / checks | 30 / 1 842 | **31 / 1 854** |
+| Battery: mutations / caught | 74 / 63 | **98 / 98** |
+| `godot/core/` delta | zero | **still zero** |
+
+### 15.7 The battery's own window, three times wrong
+
+The last "unread pin" of §14.8 was not a pin. `INTERFACE_WAVES` opens its tuple
+on the same line as its name and the sampler started at the line **after** the
+assignment, so no entry of it was ever reachable. Widening that window is what
+makes the check written in §15.3 catch it — and the widening broke the sampler
+outright, in a way that reported success:
+
+1. starting **after** the assignment line put every one-line structure's
+   entries out of reach;
+2. starting **on** it made the "next top-level statement" test fire on the
+   assignment itself, so **all fourteen** sampled tables stopped being built.
+   The run printed `0 missed` and a smaller total, because a target that is
+   never built is never missed. Only the count showed it — 83 where the
+   previous run had 88;
+3. and the sampler only ever perturbed **decimal** literals, while the address
+   tables are written entirely in hex. Those it did report, as fifteen lines of
+   "no sampled entry" — visible, at least, but read as a property of the tables
+   rather than of the sampler.
+
+The window is now bounded by **bracket depth**, which is what it should always
+have been, with two additions: a hex literal is perturbed where there is one,
+and a table written entirely in strings has a string perturbed instead. All
+fourteen tables now produce a real mutation — including `PAIN_WAVES`,
+`DEAD_WAVES` and `SECOND_HUMAN_WAVES`, which had never been perturbed at all.
+The run on the finished tree is **98 mutations, 98 caught, 0 missed**,
+with no "no sampled entry" line left: every pin this slice added, and
+every table it samples, is read by a check.
+
+The lesson is one this document has now recorded three times in three different
+shapes — the `__pycache__` staleness, the stdout-versus-stderr read, and this.
+**A test harness reporting a clean result about work it did not do is the
+default failure of test harnesses**, and the only defence that has actually
+worked here is reading the *count* beside the colour.
+
+**One process note, because it cost a check.** The mutation battery rewrites
+the files it perturbs, and an edit made to `tools/blob_tables.py` **while it was
+running** was lost when the battery restored its own copy of the tree. The two
+arity checks came back silently short and only the check count showed it. The
+rule is the same shape as the `__pycache__` one already recorded: do not touch
+a file the battery is walking, and read the count, not the colour.
+

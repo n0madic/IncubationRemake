@@ -62,6 +62,9 @@ const KEY_CUTOFF: float = 0.5
 
 const NO_TEXTURE: int = -1
 
+## [method build_scope]'s "everything the parts do not own".
+const ROOT_SCOPE: int = -1
+
 ## `textures` is `{"plain": {id: Texture2D}, "keyed": {id: Texture2D}}`.  The
 ## keyed copies carry alpha 0 wherever the texel is exactly black, which is
 ## what draw kind `0x14` treats as a hole.
@@ -83,8 +86,33 @@ const TEXTURE_NAME: String = "texture_name"
 
 static func build(prototype: Dictionary,
 		textures: Dictionary) -> ArrayMesh:
+	return build_scope(prototype, textures, ROOT_SCOPE)
+
+
+## The whole prototype (`scope == ROOT_SCOPE`), or one articulated sub-object.
+##
+## docs/28 section 7.8: a prototype with `parts` draws each of them under its
+## own joint rotation, so a single mesh cannot show it moving. Splitting is by
+## **vertex ownership** -- the converter emits each part's vertex slots -- and a
+## face belongs to the part its first corner does, which is exactly how the
+## engine's `part_push` index base works: a face never straddles a scope.
+##
+## A part's vertices come back in **part-local space**, with the `part_push`
+## translation subtracted, so the caller can put the translation on the node
+## and rotate about the joint rather than about the model origin.
+static func build_scope(prototype: Dictionary, textures: Dictionary,
+		scope: int) -> ArrayMesh:
 	var vertices: Array = DictRead.as_array(prototype["vertices"])
 	var faces: Array = DictRead.as_array(prototype["faces"])
+	var parts: Array = DictRead.as_array(prototype.get("parts", []))
+	if not parts.is_empty():
+		var owner: PackedInt32Array = _ownership(vertices.size(), parts)
+		faces = _faces_in(faces, owner, scope)
+		if scope != ROOT_SCOPE and scope < parts.size():
+			vertices = _localised(vertices,
+				DictRead.as_array(DictRead.as_dict(parts[scope])["translation"]))
+	elif scope != ROOT_SCOPE:
+		return ArrayMesh.new()
 	var buckets: Dictionary = {}
 	for entry: Variant in faces:
 		var face: Dictionary = DictRead.as_dict(entry)
@@ -103,10 +131,10 @@ static func build(prototype: Dictionary,
 	var keys: Array = buckets.keys()
 	keys.sort()
 	for key: Variant in keys:
-		var parts: PackedStringArray = DictRead.as_string(key).split(".")
+		var fields: PackedStringArray = DictRead.as_string(key).split(".")
 		var bucket: Array = buckets[key]
-		_surface(vertices, bucket, parts[0].to_int(),
-			parts[1].to_int() - 1, textures, mesh)
+		_surface(vertices, bucket, fields[0].to_int(),
+			fields[1].to_int() - 1, textures, mesh)
 	return mesh
 
 
@@ -123,6 +151,55 @@ static func _texture_of(face: Dictionary, textures: Dictionary) -> int:
 			return NO_TEXTURE
 		return DictRead.as_int(by_name[wanted])
 	return DictRead.as_int(face["texture"])
+
+
+## Vertex slot -> the part that owns it, or [constant ROOT_SCOPE].
+static func _ownership(count: int, parts: Array) -> PackedInt32Array:
+	var owner: PackedInt32Array = PackedInt32Array()
+	owner.resize(count)
+	owner.fill(ROOT_SCOPE)
+	for index: int in range(parts.size()):
+		for entry: Variant in DictRead.as_array(
+				DictRead.as_dict(parts[index])["vertices"]):
+			var slot: int = DictRead.as_int(entry)
+			if slot >= 0 and slot < count:
+				owner[slot] = index
+	return owner
+
+
+static func _faces_in(faces: Array, owner: PackedInt32Array,
+		scope: int) -> Array:
+	var out: Array = []
+	for entry: Variant in faces:
+		var face: Dictionary = DictRead.as_dict(entry)
+		var indices: Array = DictRead.as_array(face["indices"])
+		if indices.is_empty():
+			continue
+		var first: int = DictRead.as_int(indices[0])
+		if first < 0 or first >= owner.size():
+			continue
+		if owner[first] == scope:
+			out.append(entry)
+	return out
+
+
+## The same vertex array with a part's translation taken back off, so the part
+## is authored about its own joint.
+static func _localised(vertices: Array, translation: Array) -> Array:
+	if translation.size() < 3:
+		return vertices
+	var dx: int = DictRead.as_int(translation[0])
+	var dy: int = DictRead.as_int(translation[1])
+	var dz: int = DictRead.as_int(translation[2])
+	var out: Array = []
+	for entry: Variant in vertices:
+		var v: Array = DictRead.as_array(entry)
+		if v.size() < 3:
+			out.append(entry)
+			continue
+		out.append([DictRead.as_int(v[0]) - dx, DictRead.as_int(v[1]) - dy,
+			DictRead.as_int(v[2]) - dz])
+	return out
 
 
 static func _surface(vertices: Array, faces: Array, kind: int, texture: int,

@@ -1078,6 +1078,57 @@ framework for the whole remake. Use one representative campaign mission whose
 terrain, objects, unit placement and reachability are already well covered by
 the numbered specs.
 
+### 7.11 Effects and sound — five decisions the fifth slice took, one since retracted
+
+Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
+a choice the remake is committed to and not a finding.
+
+**The effect clock is the gameplay clock.** A blob ticks once per displayed
+frame in the original, and a `aPlay*Sequence` runs its loop against the same
+tick. §7.10 established that frame as 20 fps for gameplay, so the blob pool and
+the set-piece queue run at `CharismaState.FRAMES_PER_SECOND` and the bodies,
+the particles and the lifts cannot drift apart. It is an **inference from a
+measurement**, not a second measurement: what was measured is the gameplay
+frame, and what is asserted is that the blob tick is that frame.
+
+**The sprite blend is additive, on the strength of a name.** `Eng3d` exports
+three zoom-bob entry points — `alpha_plus`, `alpha_minus` and `masked` — and
+`a3DEngine.cpp` resolves all three at start-up, but **only `alpha_plus` is
+ever called** ([`28` §7.3](28-effects-and-sound.md)). The other two import
+slots are written by the resolver and read by nothing, so the entry point's
+name is the only evidence there is. "Plus" is read as a saturating add, with
+depth writing off. A native frame capture is what would settle it.
+
+**~~Music plays the `Track` family.~~ Music plays `Arack`, and it is no longer
+a decision.** This entry was a choice for exactly as long as it took to read the
+right file. `music/` ships `Track02…20` and `Arack02…14`, byte-identical for
+02–08 and different from 09 on — and `Incubation.exe`'s **import descriptor**
+names `audio.dll` where the 1997 build named `WINMM.dll`, taking the nine
+`winmm` entry points from it, while nothing at all imports `sound.dll`.
+`audio.dll` is the shim built with `Arack`. See
+[`28` §6.1](28-effects-and-sound.md); the remake plays what the game plays, and
+this is kept in the list as a **retracted** decision rather than deleted,
+because the useful lesson is that "the selector is inside a shim no tool reads"
+was an assumption about where the answer lived.
+
+**The sound pool is twenty slots, and a full pool drops.** [`28` §1.1](28-effects-and-sound.md)
+shows the loader hands out a twenty-first buffer the play routine then refuses,
+so slot 20 is allocated, filled, freed and never heard; sizing at twenty makes
+that a counted drop instead of a silent allocation. The **drop itself is
+reproduced** under §7.1's first half: a crowded turn losing a sound is output
+the player perceives.
+
+**Two of the compatibility flags are presentation and live outside
+`World.compat_flags`.** §7.1 says every compatibility choice gets a stable
+named flag, and it does — but `compat_flags` is item 6 of
+`CanonicalHash.compute`, and `weapon_35_missing_sound` and
+`unit_24_footstep_volume_original` change what is **heard** and no rule. An
+audio preset that moved the simulation's hash would be a worse defect than
+either of the two it reproduces, so the audio layer holds them under those
+exact names. `technical_box_guard_original` stays in `core`, where it belongs,
+because it does change the simulation. The rule this refines: **a flag lives
+with the thing it changes.**
+
 ### 10.1 Conversion
 
 1. Point the converter at a read-only copy or installation of the supported GOG

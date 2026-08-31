@@ -48,7 +48,7 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 259 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 384 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -63,9 +63,9 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 84 checks, LOS/hi
 python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
-python3 tools/remake_convert.py     gog_incubation --check   # 101 checks
+python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 27 suites, 1678 checks
+bash   godot/run_tests.sh                                    # 31 suites, 1854 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -89,7 +89,15 @@ python3 tools/lcl_runtime.py     --emit-cases tests/fixtures/lcl/cases_lcl.json 
 python3 tools/charisma_tables.py gog_incubation \
     --emit-pose-cases tests/fixtures/charisma/cases_pose.json
 python3 tools/ai_runtime.py      --emit-cases tests/fixtures/ai/cases_ai.json --root gog_incubation
+python3 tools/blob_tables.py     --emit-sound-cases tests/fixtures/sound/cases_sound.json \
+    --root gog_incubation
+python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json
 ```
+
+The last two are the fifth slice's, and `blob_runtime.py --emit-cases` is the
+one emitter that needs **no game root at all**: it is a transcription of
+`aBlob_Update`, not a reader, which is exactly why it can be an oracle for a
+layer the corpus cannot exercise.
 
 The native case file comes from an existing capture:
 `python3 tools/movemap_gold.py --emit-cases tests/fixtures/movemap/cases_native.json --root gog_incubation`.
@@ -260,6 +268,32 @@ python3 tools/turn_gold.py --game-copy /path/to/copy --dbgcall /path/to/copy/dbg
 python3 tools/turn_gold.py --check gog_incubation     # re-run the models against it
 ```
 
+`tools/blob_gold.py` is the fourth, and it is **outside the always-run block**
+because its check needs a capture. Its `--check` fails without one, on purpose;
+the thirty creator arities it depends on are pinned in `blob_tables.py` instead
+(`creators.arity_table`), so a change to the switch tables is caught whether or
+not anybody has Wine. It is the one that reaches the part of the
+effect layer no static reading does: the **creators** of `docs/28` §7.6. It
+resets the pool, calls a creator with controlled tile arguments inside the live
+process and reads the records back, so what a shot looks like stops being the
+remake's invention. Three things it records that are easy to get wrong:
+`aGetMemory` writes a **handle**, not a pointer (the block address is
+`[0x0050DE54 + 74*handle]`, which is what both the constructor and
+`aDrawZoomBlobs` compute, and the heap address itself moves between runs);
+`--code` makes `Incubation.exe` fault before the anchor on this host, so the
+table read is the only route; and `--probe` **cannot** recover a `__cdecl`
+arity, so the thirty arities come from each caller's own `add esp, K` and are
+pinned whether or not a capture ever runs. What the capture found is
+`docs/97` §15.5: the engine's own pool agrees with the static tables field for
+field, the origin is the shooter's tile in world units, and every blob a
+creator makes lies **on the line from the shooter's tile to the target's** --
+one creator lays eight of them evenly down it, which is a tracer. The
+velocities are drawn from `aRandom` inside the creator and are **not** replayed.
+`python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
+the capture; taking one needs `--game-copy` and Wine, and Wine reaches the
+anchor for some phase groups and not others, so phases are written as they land
+and merged on re-run. The capture in hand holds **15 of the 30**.
+
 `tools/ai_gold.py` is the third, and the one that pins a **whole computer
 turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
 captures twelve phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
@@ -318,6 +352,34 @@ sampler, `V100Part::Update`, the body and its state machine. `core/lcl/` is a
 `test_isolation.gd` scan `core/` *and* `game/` recursively for that reason: a scan that
 stopped at the top level would exempt every file in it from the warnings gate
 and the isolation sweep.
+
+`docs/97` reports the fifth -- the world that answers back: the sound layer,
+the 450-slot blob pool with all 74 update arms diffed tick by tick against
+`tools/blob_runtime.py`, the sprite atlas, the three weapon switches, the
+set-piece driver at 20 fps and the terrain diff that finally makes a door
+*move*. Its own finding is `RoofUnit`'s drop rate -- one whole map field per
+displayed frame, `0x00411E26` -- which neither `docs/20` nor `docs/28` carried;
+its correction is to `docs/92` §7.1's accounting of which volume ids the alien
+scream's defect left dead. **Nothing in it claims `native-runtime`**: the blob
+service hooks of `docs/28` §12 are un-validated, so both sides of the diff run
+the same deterministic adapter and the suites print `executable-Python`.
+
+`docs/97` §14 is a later pass over the loose ends that report listed: the model
+half of the pool now draws and its joints move, footsteps sound, a unit rides
+the lift it stands on, and the exit leak is fixed by not quitting in the same
+frame the stream is released. It closed two open questions in **other**
+documents -- `docs/28` §12.3 (the shipped build plays the **`Arack`** music
+family, read out of `Incubation.exe`'s import descriptor, which names
+`audio.dll` where the 1997 build named `WINMM.dll`; nothing imports
+`sound.dll`) and `docs/30` §2.5 item 7 (the joint opcodes name their matrix
+builder in a `call`; the two the shipped data reaches both build `RzRxRy`) --
+and found that the footstep **period is one global** at `0x004FAECC` that one
+arm does not write, so type 54 inherits the last walker's. The one item it
+scaled down rather than closed is the 81 creators' own placement arithmetic:
+30 of them are reachable by firing a weapon, holding 43 of the 116 constructor
+calls, and their arguments come from the un-validated hooks above -- so the
+reach is **measured and pinned** instead, and closing it wants a `dbgcall`
+capture of the live pool.
 
 `docs/96` reports the fourth -- the bodies: Charisma models, skeletons and the
 three gameplay animation families, `_C_140` played with bodies that walk and
@@ -389,7 +451,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **39 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 10, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **38 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

@@ -24,6 +24,7 @@ Static source: ``gog_incubation/Incubation.exe`` (SHA-256
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -1138,12 +1139,229 @@ def _selftest() -> None:
     assert b.rot_y == 0 and b.aux == 7 and h.calls == 2
 
 
+# --------------------------------------------------------------------------
+# The fixture the GDScript pool is compared against
+# --------------------------------------------------------------------------
+
+#: Bumped when the document's shape changes, so `run_tests.sh` copying a stale
+#: file is refused by name instead of quietly shrinking the run.
+CASES_SCHEMA = "incubation.blob-cases/1"
+
+#: Every model name an arm can ask for, in a fixed order.  The index is the
+#: position, so the adapter is a pure function of the name and the GDScript
+#: twin needs no recorded returns to reproduce it.
+CASE_MODELS: Tuple[str, ...] = ("A_BLUT5.3DI", "A_BLUT6.3DI", "A_HIT2.3DI")
+
+#: Where the deterministic adapter says a seeker's target is.  Chosen so the
+#: distance is not a perfect square and the truncating divisions in `_seek`
+#: are actually exercised.
+CASE_TARGET: Tuple[int, int, int] = (2000, 3000, 4000)
+
+#: The seed every case starts from.  `1.0` rather than `0.0` because the zero
+#: seed is a fixed point of the Lehmer step: a case seeded with it would run
+#: every arm against a constant draw and prove nothing about the generator.
+CASE_SEED = 1.0
+
+
+class CaseHooks(BlobHooks):
+    """The adapter both the fixture and the GDScript twin implement.
+
+    Each service is a pure function of its arguments and of the two tables
+    above, so the comparison is of the seventy-four arms and not of a replay
+    of recorded returns.  The orientation helper is the base class's portable
+    fixed-point one -- **not** the retail routine, which docs/28 section 12
+    item 1 records as un-validated -- and the fixture says so.
+    """
+
+    def __init__(self, seed: float = CASE_SEED, *,
+                 target: Optional[Tuple[int, int, int]] = CASE_TARGET,
+                 models: bool = True, spawns: bool = True,
+                 emitter_mode: int = 0) -> None:
+        super().__init__(seed)
+        self.target = target
+        self.models = models
+        self.spawns_ok = spawns
+        #: ``0x00461E80``'s returned byte, which kind 59 branches on.  Without
+        #: a scenario that sets it, both sides would agree about that branch
+        #: by never running it, which is not agreement.
+        self.emitter_mode = emitter_mode
+
+    def spawn(self, creator: int, args: Sequence[Any], source: Blob) -> bool:
+        super().spawn(creator, args, source)
+        return self.spawns_ok
+
+    def lookup_model(self, name: str) -> int:
+        self.model_calls.append(name)
+        if not self.models or name not in CASE_MODELS:
+            return -1
+        return CASE_MODELS.index(name)
+
+    def target_position(self, blob: Blob) -> Optional[Tuple[int, int, int]]:
+        self.target_calls.append(blob.aux)
+        return self.target
+
+
+#: The scenario each kind is run under.  The names are what a failing case
+#: prints, so they say which branch of the wrapper is under test.
+CASE_SCENARIOS: Tuple[Tuple[str, Dict[str, Any], Dict[str, Any], int], ...] = (
+    # (name, blob overrides, hook overrides, ticks)
+    ("profile", {}, {}, 8),
+    ("delayed", {"delay": 3}, {}, 5),
+    ("expiring", {"life": 1}, {}, 3),
+    ("below_floor", {"z": -1}, {}, 2),
+    ("immortal", {"life": 0xFF}, {}, 4),
+    ("class_zero", {"class_id": 0, "aux": 200}, {}, 4),
+    ("no_target", {}, {"target": None}, 4),
+    ("no_model", {}, {"models": False}, 4),
+    ("spawn_refused", {}, {"spawns": False}, 4),
+    ("mirrored", {"slot_tag": 0}, {}, 4),
+    # Two branches the profile cannot reach, and which would otherwise be
+    # "agreed" on by neither side running them: kind 59's special emitter, and
+    # the zero divisor kind 41 guards against.
+    ("emitter_special", {}, {"emitter_mode": 3}, 4),
+    ("zero_velocity", {"vx": 0, "vy": 0, "vz": 0}, {}, 4),
+)
+
+#: The blob every scenario starts from, before its own overrides.  It is the
+#: selftest's profile, so the two agree about what a "meaningful non-terminal
+#: path" is and a change to one is visible in the other.
+CASE_BLOB: Dict[str, Any] = dict(
+    x=100, y=-200, z=1000, rot_x=10, rot_y=20, rot_z=30,
+    angle0=40, angle1=50, angle2=60, angle3=70, angle4=80, angle5=90,
+    vx=300, vy=-400, vz=500, aux=4, life=12, class_id=2,
+    model=7, slot_tag=1,
+)
+
+#: The field order the fixture writes and the twin reads back.
+CASE_FIELDS: Tuple[str, ...] = (
+    "in_use", "x", "y", "z", "rot_x", "rot_y", "rot_z",
+    "angle0", "angle1", "angle2", "angle3", "angle4", "angle5",
+    "vx", "vy", "vz", "aux", "kind", "life", "delay", "class_id",
+    "model", "slot_tag", "alive",
+)
+
+
+def _case_blob(blob: Blob) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for name in CASE_FIELDS:
+        value = getattr(blob, name)
+        out[name] = int(value) if isinstance(value, bool) else value
+    return out
+
+
+def _case_tick(blob: Blob, hooks: CaseHooks) -> Dict[str, Any]:
+    before_spawns = len(hooks.spawn_calls)
+    before_models = len(hooks.model_calls)
+    result = tick_blob(blob, hooks)
+    return {
+        "blob": _case_blob(blob),
+        "ran": int(result.ran),
+        "delayed": int(result.delayed),
+        "dispatched": int(result.dispatched),
+        "deleted": int(result.deleted),
+        "delete_requested": int(result.delete_requested),
+        "global_signal": int(result.global_signal),
+        "target_missing": int(result.target_missing),
+        "model_missing": int(result.model_missing),
+        "spawns": [{"creator": spawn.creator,
+                    "args": [_case_arg(a) for a in spawn.args],
+                    "ok": int(spawn.succeeded)}
+                   for spawn in result.spawns],
+        "models": hooks.model_calls[before_models:],
+        "spawn_calls": len(hooks.spawn_calls) - before_spawns,
+        "rng_calls": hooks.rng.calls,
+        "rng_seed": hooks.rng.seed,
+    }
+
+
+def _case_arg(value: Any) -> Any:
+    """A constructor argument, narrowed to what JSON can carry exactly.
+
+    Every argument the arms pass is already an integer or the scratch-buffer
+    address; a float would mean an arm leaked an x87 value into a store, which
+    is worth failing on rather than rounding away.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return value
+    raise TypeError("blob spawn argument is not an integer: %r" % (value,))
+
+
+def emit_cases(out: str) -> int:
+    """Write the per-tick trace `godot/tests/test_blob.gd` replays."""
+
+    cases: List[Dict[str, Any]] = []
+    for kind in range(len(HANDLERS)):
+        for name, blob_over, hook_over, ticks in CASE_SCENARIOS:
+            fields_in = dict(CASE_BLOB, kind=kind, **blob_over)
+            blob = Blob(**fields_in)
+            hooks = CaseHooks(**hook_over)
+            trace = [_case_tick(blob, hooks) for _ in range(ticks)]
+            cases.append({
+                "kind": kind,
+                "scenario": name,
+                "seed": CASE_SEED,
+                "target": list(hooks.target) if hooks.target else None,
+                "models": int(hooks.models),
+                "spawns_ok": int(hooks.spawns_ok),
+                "emitter_mode": hooks.emitter_mode,
+                "blob": _case_blob(Blob(**fields_in)),
+                "ticks": trace,
+            })
+
+    arms: Dict[int, int] = {}
+    order: List[int] = []
+    for kind in range(len(HANDLERS)):
+        key = id(HANDLERS[kind])
+        if key not in order:
+            order.append(key)
+        arms[kind] = order.index(key)
+
+    payload = {
+        "schema": CASES_SCHEMA,
+        "oracle": "executable-Python (tools/blob_runtime.py).  The service "
+                  "hooks of docs/28 section 12 item 1 -- orientation, geometry "
+                  "and the target map -- are NOT natively validated; this "
+                  "compares a transcription against a deterministic adapter, "
+                  "not a trajectory against the engine.",
+        "kinds": len(HANDLERS),
+        "arms": len(order),
+        "arm_of_kind": {str(k): v for k, v in sorted(arms.items())},
+        "aliases": [[21, 24], [23, 40], [48, 53], [66, 70]],
+        "unreachable": [2, 4, 21, 28, 30, 35, 45, 48, 53, 56, 76],
+        "gravity": {"split": 10, "high": -640, "low": -32},
+        "immortal_life": 0xFF,
+        "models": list(CASE_MODELS),
+        "target": list(CASE_TARGET),
+        "seed": CASE_SEED,
+        "fields": list(CASE_FIELDS),
+        "scenarios": [name for name, _b, _h, _t in CASE_SCENARIOS],
+        "cases": cases,
+    }
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    ticks = sum(len(case["ticks"]) for case in cases)
+    print("wrote %s (%d kinds, %d cases, %d ticks)"
+          % (out, len(HANDLERS), len(cases), ticks))
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true", help="run runtime invariants")
+    parser.add_argument("--emit-cases", metavar="OUT",
+                        help="write the per-tick trace the Godot suite replays")
     args = parser.parse_args(argv)
-    if not args.selftest:
-        parser.error("use --selftest (the module is a library/reference runtime)")
+    if not (args.selftest or args.emit_cases):
+        parser.error("use --selftest or --emit-cases (the module is a "
+                     "library/reference runtime)")
+    if args.emit_cases:
+        return emit_cases(args.emit_cases)
     _selftest()
     print("blob_runtime: selftest passed (78 kinds, 74 arms)")
     return 0

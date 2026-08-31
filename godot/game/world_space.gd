@@ -43,6 +43,47 @@ static func yaw_basis(yaw: int) -> Basis:
 	return Basis(Vector3.UP, turns * TAU)
 
 
+## A joint-angle triple as a Godot basis: the three-axis rotation the engine's
+## own matrix builder makes of it.
+##
+## docs/28 section 7.8 -- the render opcodes read three consecutive `i16` out of
+## the object's joint buffer and hand them to a matrix builder. docs/30 section
+## 2.5 left **which** builder open ("the composition order is prototype data,
+## not a format constant"); it is readable, and the fifth slice read it: the two
+## opcodes that place a jointed part, `joint_rotate_3` (`Eng3d.dll+0x405FFC`)
+## and `joint_place` (`Eng3d.dll+0x4060F0`), both call
+## `E3D_init_matrix_RzRxRy` at `Eng3d.dll+0x411BF6`. (`joint_rotate_3_alt` and
+## `matrix_from_angles` call the other one, `+0x411A93`; no shipped joint
+## prototype uses them.) So the order here is not a guess.
+##
+## The components are in **engine axis order and are not reordered** (docs/30
+## section 2.5): the first is about engine X, the second about engine Y, the
+## third about engine Z -- the yaw, which is the one docs/30 had already closed.
+## Both blob arms that write these agree: kind 54 spins its flame billboards by
+## putting a random value in the **third** component, which is a spin about
+## vertical, and kind 42 flips its panel plate with the **second**.
+##
+## **What stays a choice** is the handedness of the composition once it is
+## carried across into Godot's column-vector convention: the engine transforms
+## row vectors (`out[j] = sum_i M[3i+j] * v[i]`, docs/30 section 2.5). This
+## composes the three rotations in the builder's own name order under Godot's
+## convention, which reproduces every single-axis case exactly -- and every
+## shipped joint animation is single-axis per part.
+static func joint_basis(ax: int, ay: int, az: int) -> Basis:
+	# Each engine axis, in Godot's frame, under the `(x, z, -y)` mapping at the
+	# top of this file: engine X is Godot X, engine Y is Godot -Z, engine Z is
+	# Godot Y -- which is why the third component reaches [method yaw_basis]'s
+	# own axis and sign.
+	var rx: Basis = Basis(Vector3.RIGHT, _turns(ax))
+	var ry: Basis = Basis(Vector3.BACK, -_turns(ay))
+	var rz: Basis = Basis(Vector3.UP, _turns(az))
+	return rz * rx * ry
+
+
+static func _turns(angle: int) -> float:
+	return float(posmod(angle, ANGLE_FULL_TURN)) / float(ANGLE_FULL_TURN) * TAU
+
+
 ## The same engine yaw, for a Charisma **body** rather than for Eng3d geometry.
 ##
 ## It is not [method yaw_basis] and the difference is measured, not a nudge to

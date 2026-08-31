@@ -73,10 +73,43 @@ var _textures: Dictionary = {}
 var _playback: AIPlayback = AIPlayback.new()
 var _ai_note: String = ""
 
+## The fifth slice's two presentation layers. Both are `game`'s alone: `core`
+## emits the events they read and knows about neither, which is docs/28
+## section 8's structural fact -- effects are driven by the animation
+## routines, and the simulation only calls those.
+var _audio: AudioSystem = null
+var _events: AudioEvents = null
+var _fx: BlobPool = null
+var _sprites: BlobSprites = null
+var _models: BlobModels = null
+var _triggers: BlobTriggers = null
+var _sequences: SequenceQueue = null
+var _blob_tables: Dictionary = {}
+## The effect clock, in seconds carried over from the last frame. Blobs tick
+## once per displayed frame in the original, and docs/92 section 7.10 measured
+## that frame at 20 fps for gameplay animation -- the same frame the bodies
+## use, so the two cannot drift apart.
+var _fx_carry: float = 0.0
+## The terrain the picture currently shows. `game` keeps it and diffs two
+## immutable snapshots; `core` has no dirty flag and neither did the original.
+var _drawn_terrain: Dictionary = {}
+## True once the close request has been accepted, so a second one is ignored
+## while the audio server is being given its frames.
+var _quitting: bool = false
+## Slot -> the walk cue that slot's type set up, kept for as long as the walk
+## lasts so every step of one walk sounds the same.
+var _footstep_cues: Dictionary[int, Dictionary] = {}
+
 
 ## An exported build made with the `run_tests` custom feature runs the suites
 ## and quits, so docs/92 section 10.4's "demonstrated in an exported build" is
 ## the same suites against the same cache rather than a second, weaker claim.
+## The `anim` sprite atlas, by the name the texture index carries.
+const ATLAS_TEXTURE: String = "anim"
+## The most effect ticks one displayed frame may run. A long stall should not
+## fast-forward every particle in the pool to its death.
+const MAX_EFFECT_TICKS: int = 4
+
 const TEST_FEATURE: String = "run_tests"
 const TEST_RUNNER: String = "res://tests/runner.gd"
 
@@ -84,6 +117,10 @@ const TEST_RUNNER: String = "res://tests/runner.gd"
 func _ready() -> void:
 	if OS.has_feature(TEST_FEATURE) and _run_tests_and_quit():
 		return
+	# The window's close button must not end the process on the spot: the audio
+	# server needs a few more frames to let go of a playing Ogg stream, and a
+	# quit in the same frame leaks it. See [method AudioSystem.shutdown].
+	get_tree().auto_accept_quit = false
 	_status = Label.new()
 	# Below the HUD, which owns the top of the screen.
 	_status.position = Vector2(12.0, 120.0)
@@ -153,6 +190,27 @@ func _wanted_mission() -> String:
 ## excludes `tests/`, and a `TestRunner` identifier here would stop `main.gd`
 ## itself from compiling in that build -- which is exactly what happened once,
 ## and is why the shipping export is now launched as part of verifying a change.
+## Closing the window, and the platform gestures that mean the same thing.
+##
+## `auto_accept_quit` is off (see `_ready`), so nothing quits until this does.
+## The guard matters: on macOS a Cmd-Q while the shutdown is already awaiting
+## delivers the notification again, and two overlapping shutdowns would call
+## `quit` twice.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST \
+			or what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		_quit()
+
+
+func _quit() -> void:
+	if _quitting:
+		return
+	_quitting = true
+	if _audio != null:
+		var _frames: int = await _audio.shutdown()
+	get_tree().quit()
+
+
 func _run_tests_and_quit() -> bool:
 	if not ResourceLoader.exists(TEST_RUNNER):
 		push_warning("%s asked for tests, but %s is not in this build"
@@ -212,8 +270,9 @@ func _build(mission: String) -> void:
 		"%s/missions/%s/script.json" % [_cache_dir, mission]))
 	# `INIT MAP` is the entry point the loader runs once, before any turn
 	# (docs/20 section 5), and it is what names the successor map.
+	var opening_script: Dictionary = {}
 	if attached:
-		var _init_map: Dictionary = world.run_init_map()
+		opening_script = world.run_init_map()
 	var header: Dictionary = DictRead.as_dict(map_document["header"])
 	var world_set: String = DictRead.as_string(header["world_set"])
 	var geometry: Dictionary = _geometry_for(world_set)
@@ -229,11 +288,17 @@ func _build(mission: String) -> void:
 	_scenery.name = "Scenery"
 	_scene_root.add_child(_scenery)
 	_scenery.build(map_document, geometry, textures)
+	# The scenery is placed from the `.lev`, so a mission resumed from a save
+	# with a door already open needs the offset applied before the first
+	# frame -- otherwise the picture would be right only after something
+	# changed, which is the defect this closes rather than a version of it.
+	var _placed: int = _scenery.apply_all(world.terrain_snapshot())
 
 	_overlay = TerrainOverlay.new()
 	_overlay.name = "TerrainOverlay"
 	_scene_root.add_child(_overlay)
-	_overlay.build(world.terrain_snapshot())
+	_drawn_terrain = world.terrain_snapshot()
+	_overlay.build(_drawn_terrain)
 
 	_highlight = Highlight.new()
 	_highlight.name = "Highlight"
@@ -247,6 +312,13 @@ func _build(mission: String) -> void:
 	_units.library = CharismaLibrary.open(_cache_dir, textures, mission)
 	_scene_root.add_child(_units)
 	_units.build(world, geometry, textures)
+
+	_build_effects(mission, world_set, textures)
+	# `INIT MAP` is where every shipped mission puts its `CDTrackProgram`, and
+	# the return value was being discarded. The set pieces it may also run are
+	# applied by `core` before this point, so what is left for `game` is the
+	# sound and the picture.
+	_present_script(opening_script)
 
 	_rig = CameraRig.new()
 	_rig.name = "CameraRig"
@@ -264,6 +336,69 @@ func _build(mission: String) -> void:
 	_scene_root.add_child(environment)
 
 	_refresh_status()
+
+
+## The sound layer and the blob pool, per mission.
+##
+## Both read the cache and nothing else; a cache converted with `--no-music`,
+## or one whose world set has no `anim` texture, makes the mission quieter or
+## plainer rather than making it fail. That is the same policy the original
+## has for an effect whose model is missing (docs/28 section 7.5) and for a
+## sound that finds no free buffer (section 7.1).
+func _build_effects(mission: String, world_set: String,
+		textures: Dictionary) -> void:
+	var tables: AudioTables = AudioTables.open(_cache_dir)
+	_blob_tables = CacheLoader.read_json(_cache_dir + "/tables/blobs.json")
+	_events = AudioEvents.open(tables, _blob_tables)
+	if _audio == null:
+		_audio = AudioSystem.new()
+		_audio.name = "Audio"
+		add_child(_audio)
+		_audio.setup(tables, _events)
+	else:
+		_audio.stop_all()
+		_audio.stop_music()
+	_audio.start_music(mission)
+
+	# The pool is seeded from the mission name, so a mission's particles look
+	# the same every run without any of it reaching `World.rng` -- which is
+	# item 5 of the canonical hash and must not learn about the frame rate.
+	_footstep_cues.clear()
+	_fx = BlobPool.create(float(hash(mission) % 1000000 + 1))
+	# The pool resolves a model name against **this world set's** prototypes.
+	# A blob model the set does not carry comes back -1 and the effect is
+	# cancelled, which is the original's own behaviour: four of the thirty
+	# exist in one or two sets only (docs/28 section 7.5).
+	var prototypes: Dictionary = DictRead.as_dict(
+		_geometry.get("prototypes", {}))
+	var index: Dictionary[String, int] = {}
+	var next_id: int = 0
+	for name: Variant in prototypes:
+		index[DictRead.as_string(name)] = next_id
+		next_id += 1
+	_fx.hooks().model_index = index
+	_triggers = BlobTriggers.open(_fx, _blob_tables)
+	_sequences = SequenceQueue.create(_audio)
+	_fx_carry = 0.0
+	_sprites = BlobSprites.new()
+	_sprites.name = "Effects"
+	_scene_root.add_child(_sprites)
+	# The other half of the pool: the class-0 and class-1 blobs, which draw
+	# geometry and -- for kinds 42 and 54 -- move their models' joints.
+	_models = BlobModels.new()
+	_models.name = "EffectModels"
+	_scene_root.add_child(_models)
+	_models.setup(prototypes, textures, index)
+	var by_name: Dictionary = DictRead.as_dict(
+		textures.get(MeshBuilder.BY_NAME, {}))
+	var plain: Dictionary = DictRead.as_dict(
+		textures.get(MeshBuilder.PLAIN, {}))
+	var atlas_id: int = DictRead.as_int(by_name.get(ATLAS_TEXTURE, -1))
+	var atlas: Texture2D = plain.get(atlas_id) if plain.has(atlas_id) else null
+	if atlas == null:
+		push_warning("effects: %s has no '%s' texture; sprite effects will "
+			% [world_set, ATLAS_TEXTURE] + "not be drawn")
+	_sprites.setup(atlas, _blob_tables)
 
 
 func _geometry_for(world_set: String) -> Dictionary:
@@ -498,8 +633,44 @@ func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> float:
 	if _units == null or steps <= 0 or route.size() < 2:
 		return 0.0
 	var seconds: float = float(steps) * WALK_SECONDS_PER_STEP
-	_units.start_walk(slot, route, world.resource.width, seconds)
+	# docs/28 section 5. The wave and the volume id are the unit type's; the
+	# *period* is a global the call writes, so asking for it here -- once, at
+	# the start of the walk, in the order the walks happen -- is what makes the
+	# Squeether's missing period behave the way the original's does.
+	_units.start_walk(slot, route, world.resource.width, seconds,
+		_footstep_period(slot))
 	return seconds
+
+
+## The step period for a walk about to start, and the cue cached beside it.
+##
+## Zero for the 39 silent unit types, and zero for a Squeether that walks
+## before anything else has: the period is one global and it starts at zero.
+func _footstep_period(slot: int) -> int:
+	if _events == null or world == null:
+		return 0
+	var view: Dictionary = world.unit_view(slot)
+	if view.is_empty():
+		return 0
+	var cue: Dictionary = _events.footstep(DictRead.as_int(view["type_id"]))
+	if cue.is_empty():
+		return 0
+	_footstep_cues[slot] = cue
+	return DictRead.as_int(cue["period"])
+
+
+## Play a wave for every foot that came down this frame.
+##
+## [method UnitsView.steps_taken] counts frames and knows nothing about sound;
+## this turns each slot into the cue its type set up when the walk began. The
+## cue is the one taken at `start_walk`, not a fresh lookup: the period global
+## may have moved on since, and a walk sounds like what it started as.
+func _play_footsteps() -> void:
+	if _audio == null:
+		return
+	for slot: int in _units.steps_taken():
+		if _footstep_cues.has(slot):
+			var _played: int = _audio.play_cue(_footstep_cues[slot])
 
 
 ## The unit views, and through them this mission's bodies and their library.
@@ -585,6 +756,43 @@ func _process(delta: float) -> void:
 		_playback.advance(delta)
 	if _units != null:
 		_units.animate(delta, world)
+		_play_footsteps()
+	if _sequences != null and _sequences.is_running():
+		# The picture is held, never the world: `core` returned the finished
+		# state before any of this was queued.
+		var still: bool = _sequences.advance(delta)
+		if not still:
+			_redraw_terrain_now()
+			# Whoever the queue was delivering has arrived.
+			if _units != null:
+				var _shown: int = _units.reveal_all()
+				var _dropped: int = _units.drop_lifts()
+	_advance_effects(delta)
+
+
+## The blob pool at the engine's own frame, and the sprite cloud from it.
+##
+## The pool is ticked a **whole** number of times per displayed frame and the
+## remainder is carried, so a slow frame runs the arms twice rather than
+## stretching them: the arms count in ticks, not in seconds, and half a tick is
+## not a thing any of them can do.
+func _advance_effects(delta: float) -> void:
+	if _fx == null:
+		return
+	_fx_carry += delta * CharismaState.FRAMES_PER_SECOND
+	var ticks: int = int(_fx_carry)
+	_fx_carry -= float(ticks)
+	# A frame that lost a second to a rebuild should not run three hundred
+	# particle ticks to catch up; the effect is cosmetic and the cap is the
+	# same shape as the walk's own.
+	ticks = mini(ticks, MAX_EFFECT_TICKS)
+	for _step: int in range(ticks):
+		var _results: Array[BlobKinds.TickResult] = _fx.tick_all()
+	if _sprites != null and _rig != null and _rig.camera() != null:
+		var _drawn: int = _sprites.rebuild(_fx.blobs(),
+			_rig.camera().global_transform.basis)
+	if _models != null:
+		var _shown: int = _models.rebuild(_fx)
 
 
 ## One event of the computer's turn: lead the camera to it and say what it was.
@@ -627,8 +835,53 @@ func _on_ai_step(event: Dictionary) -> float:
 	# event's rebuild ending this one is the design; this event's rebuild
 	# ending it is the bug.
 	var hold: float = _play_event_body(event, kind)
+	_present_ai_event(event, kind)
 	_refresh_status(_ai_note)
 	return hold
+
+
+## The computer's own shot, door and para bomb, heard and seen.
+##
+## The player watching a replay should hear what they would have heard live;
+## an effect that only fired on the player's own turn would be worse than
+## none at all.
+func _present_ai_event(event: Dictionary, kind: String) -> void:
+	if _audio == null or _events == null:
+		return
+	var slot: int = DictRead.as_int(event["slot"])
+	match kind:
+		"fire":
+			var view: Dictionary = world.unit_view(slot)
+			if view.is_empty() or _triggers == null:
+				return
+			var weapon: int = DictRead.as_int(view["weapon"])
+			var from: Vector3i = _muzzle_of(DictRead.as_int(event["x"]),
+				DictRead.as_int(event["y"]))
+			var to: Vector3i = _muzzle_of(DictRead.as_int(event["tx"]),
+				DictRead.as_int(event["ty"]))
+			var _muzzle: int = _triggers.muzzle(weapon, from, to)
+			var _impact: int = _triggers.impact(weapon, to)
+			var cues: Array[Dictionary] = []
+			var fire: Dictionary = _events.weapon_fire(weapon)
+			if not fire.is_empty():
+				cues.append(fire)
+			var hit: Dictionary = _events.impact_for_weapon(weapon)
+			if not hit.is_empty():
+				cues.append(hit)
+			var _slots: PackedInt32Array = _audio.play_cues(cues, "ai")
+		"door":
+			var _door: PackedInt32Array = _audio.play_cues(
+				_events.for_event_kind("open_door"), "ai")
+		"parabomb":
+			# The LCL command runs two routines in order, so the driver asks
+			# for both phases rather than letting the alias hide the second.
+			var _bomber: PackedInt32Array = _audio.play_cues(
+				_events.for_event_kind("bomber"), "ai")
+			var _bomb: PackedInt32Array = _audio.play_cues(
+				_events.for_event_kind("para_bomb"), "ai")
+		"fire_heat_blocked":
+			var _jam: PackedInt32Array = _audio.play_cues(
+				_events.for_event_kind("reaction_jam"), "ai")
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -638,6 +891,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	# ends the showing; the world does not change either way.
 	if _playback.is_running():
 		if event is InputEventKey and event.is_pressed():
+			if _sequences != null:
+				_sequences.skip()
+			if _units != null:
+				var _shown: int = _units.reveal_all()
+				var _dropped: int = _units.drop_lifts()
 			# The bodies are snapped first: `skip()` means "stop drawing the
 			# turn", and a body half way between two cells is not the state
 			# the last frame would have shown.
@@ -863,7 +1121,198 @@ func attack_cell(x: int, y: int) -> AttackResult:
 	# it: the rebuild is what creates the state this drives.
 	if shot.fired and _units != null and _units.states.has(slot):
 		_units.states[slot].fire()
+	_present_shot(slot, x, y, shot)
 	return shot
+
+
+## The audible and visible half of one shot.
+##
+## Three switches decide it and nothing else does (docs/28 section 8.1): the
+## muzzle blob at the shooter, the impact blob and its sound at the target.
+## The weapon's own fire sound and the overheat trio come from [AudioEvents],
+## which reads the same weapon id.
+##
+## Called for the player's shots and for the computer's alike -- an effect the
+## player only saw on their own turn would be worse than none.
+func _present_shot(slot: int, x: int, y: int, shot: AttackResult) -> void:
+	if not shot.fired or world == null or _triggers == null:
+		return
+	var view: Dictionary = world.unit_view(slot)
+	if view.is_empty():
+		return
+	var weapon: int = DictRead.as_int(view["weapon"])
+	var from: Vector3i = _muzzle_of(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	var to: Vector3i = _muzzle_of(x, y)
+	var _muzzle: int = _triggers.muzzle(weapon, from, to)
+	var _impact: int = _triggers.impact(weapon, to)
+	if _audio != null and _events != null:
+		var _slots: PackedInt32Array = _audio.play_cues(
+			_events.for_attack(shot, weapon), "shot")
+	# One scream per unit the shot actually resolved on, off that species'
+	# own cursor -- which is why the two species interleave rather than each
+	# running its own sequence.
+	for entry: Variant in shot.outcomes:
+		var outcome: Dictionary = DictRead.as_dict(entry)
+		if DictRead.as_int(outcome.get("dealt", 0)) <= 0:
+			continue
+		var hurt: Dictionary = world.unit_view(
+			DictRead.as_int(outcome["slot"]))
+		if hurt.is_empty():
+			continue
+		var species: int = world.unit_types().species(
+			DictRead.as_int(hurt["type_id"]))
+		if _audio != null and _events != null:
+			var _voice: int = _audio.play_cue(_events.pain(species), "shot")
+
+
+## The sounds one run of a mission script asks for.
+##
+## `core` has already applied every state change these events record -- the
+## door is open, the lift has moved -- so what reaches here is the half the
+## simulation does not own: docs/28's `aPlay*Sequence` sounds, keyed by the
+## routine that owns them.
+func _present_script(outcome: Dictionary) -> int:
+	if outcome.is_empty() or _audio == null or _events == null:
+		return 0
+	var played: int = 0
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		if event.is_empty():
+			continue
+		var cues: Array[Dictionary] = _events.for_event(event)
+		var frames: int = SetpieceDriver.frames_for(event)
+		if frames > 0 and _sequences != null:
+			# An animated set piece: the picture is interpolated over the
+			# frames the original's own loop ran for, and its sound lives for
+			# exactly that long rather than for the length of its sample.
+			_queue_setpiece(event, frames, cues)
+			played += cues.size()
+			continue
+		if cues.is_empty():
+			continue
+		var slots: PackedInt32Array = _audio.play_cues(cues, "script")
+		played += slots.size()
+	return played
+
+
+## Queue one set piece: hold the cell where it was drawn, and walk it to where
+## `core` has already put it.
+##
+## The offset is against the **drawn** snapshot, not against the authored
+## height, so a lift that has moved twice starts its second trip from where the
+## first one left it. `core` is never read for anything but the destination.
+func _queue_setpiece(event: Dictionary, frames: int,
+		cues: Array[Dictionary]) -> void:
+	var cell: Vector2i = SetpieceDriver.cell_of(event)
+	if world == null or not world.state.in_bounds(cell.x, cell.y):
+		if not cues.is_empty() and _audio != null:
+			var _slots: PackedInt32Array = _audio.play_cues(cues, "script")
+		return
+	var index: int = world.state.index_of(cell.x, cell.y)
+	var was: PackedInt32Array = _drawn_terrain["height_map"] \
+		if _drawn_terrain.has("height_map") else PackedInt32Array()
+	var from: int = was[index] if index < was.size() \
+		else world.state.height_at(index)
+	var to: int = world.state.height_at(index)
+	var name: String = AudioEvents.name_of(event)
+	# A `RoofUnit` inserts its alien the instant the command runs, so the unit
+	# is on the map before its fall has started. The body is held out of the
+	# picture for the length of the sequence and shown at the end: the criterion
+	# is that the unit **appears at the end of the drop, not at the beginning**,
+	# and `core` is never asked to delay anything.
+	if name == "roof_unit" and _units != null:
+		var arriving: int = world.state.unit_at(index)
+		if arriving != MapState.NO_UNIT:
+			_units.suppress(arriving)
+	# Anyone standing on the cell rides it. `core` has already moved them to
+	# the destination height, so the passenger is captured **now**, at the
+	# start, and carried by the same offset the cell's objects are: without
+	# this a unit on a lift is at the top before the lift has left the floor.
+	# `roof_unit` is the one animated set piece whose unit is not a passenger
+	# -- it is the cargo, and it is suppressed above instead.
+	var rider: int = MapState.NO_UNIT
+	if name != "roof_unit" and _units != null:
+		rider = world.state.unit_at(index)
+	_sequences.enqueue(name, frames,
+		func(frame: int, total: int) -> void:
+			_paint_setpiece(index, from, to, frame, total)
+			_carry_rider(rider, from, to, frame, total),
+		cues)
+
+
+## Hold a unit riding a moving cell at the height the cell has reached.
+##
+## The offset is against where `core` already put it -- `to` -- so it starts at
+## `from - to` and reaches zero on the last frame, whatever direction the lift
+## went in.
+func _carry_rider(slot: int, from: int, to: int, frame: int,
+		frames: int) -> void:
+	if slot == MapState.NO_UNIT or _units == null:
+		return
+	var at: int = from + roundi(float(to - from)
+		* SetpieceDriver.progress(frame, frames))
+	_units.lift(slot, at - to)
+
+
+## One frame of a set piece: the cell's objects at the height the original
+## would have had them at after `frame` of its own ticks.
+func _paint_setpiece(index: int, from: int, to: int, frame: int,
+		frames: int) -> void:
+	if _scenery == null or world == null:
+		return
+	var at: int = from + roundi(float(to - from)
+		* SetpieceDriver.progress(frame, frames))
+	var partial: Dictionary = world.terrain_snapshot()
+	var heights: PackedInt32Array = partial["height_map"]
+	if index >= heights.size():
+		return
+	heights[index] = at
+	partial["height_map"] = heights
+	var _moved: int = _scenery.apply_state(partial, PackedInt32Array([index]))
+
+
+## Move and repaint whatever the last command changed about the terrain.
+##
+## Before this, `_scenery.build` and `_overlay.build` ran **once per mission**,
+## so a door that changed its cell's field type and raised it by
+## [constant Interact.DOOR_HEIGHT_STEP] produced no visible change at all until
+## the mission was rebuilt with `[` or `]`. That was the slice's headline
+## defect, and closing it needed no new concept in `core`: two immutable
+## snapshots and the difference between them.
+##
+## Answers how many cells changed, so a caller and a suite can tell "nothing
+## moved" from "nothing was checked".
+func _redraw_terrain() -> int:
+	# A queued set piece owns the cells it is animating: snapping them to the
+	# finished state now would show the end of the lift before the lift.
+	# `_process` calls `_redraw_terrain_now` when the queue drains.
+	if _sequences != null and _sequences.is_running():
+		return 0
+	return _redraw_terrain_now()
+
+
+func _redraw_terrain_now() -> int:
+	if world == null or _scenery == null or _overlay == null:
+		return 0
+	var now: Dictionary = world.terrain_snapshot()
+	var changed: PackedInt32Array = TerrainDiff.changed_cells(
+		_drawn_terrain, now)
+	if changed.is_empty():
+		return 0
+	var moved: PackedInt32Array = TerrainDiff.moved_cells(_drawn_terrain, now)
+	if not moved.is_empty():
+		var _n: int = _scenery.apply_state(now, moved)
+	_overlay.rebuild_cells(now, changed)
+	_drawn_terrain = now
+	return changed.size()
+
+
+func _muzzle_of(x: int, y: int) -> Vector3i:
+	var height: int = 0
+	if world != null and world.state.in_bounds(x, y):
+		height = world.state.height_at(world.state.index_of(x, y))
+	return BlobTriggers.muzzle_point(x, y, height)
 
 
 func use_in_front() -> UseResult:
@@ -871,6 +1320,13 @@ func use_in_front() -> UseResult:
 		return UseResult.refused("")
 	var used: UseResult = world.submit_use(UseCommand.create(_selected))
 	_after_command(used.kind if used.ok else used.reason)
+	# The player's own door emits **no event** -- `Interact.toggle_door` writes
+	# the state change and returns, and only the LCL `OpenDoor` path records
+	# one. So the sound is driven from the result, not from the event stream,
+	# and this is why [method AudioEvents.for_use] exists at all.
+	if _audio != null and _events != null:
+		var _slots: PackedInt32Array = _audio.play_cues(
+			_events.for_use(used), "use")
 	return used
 
 
@@ -890,6 +1346,10 @@ func hold_fire() -> int:
 ## as often as the mission intends.
 func end_turn() -> TurnResult:
 	var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
+	if result.ran_turn_script:
+		var _turn_sounds: int = _present_script(result.turn_script)
+	if result.ran_player_script:
+		var _player_sounds: int = _present_script(result.player_script)
 	if result.ai_result != null:
 		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
 	_selected = -1
@@ -905,6 +1365,7 @@ func end_turn() -> TurnResult:
 ## Everything a command changes is redrawn from the world, never patched.
 func _after_command(note: String) -> void:
 	_units.build(world, _geometry, _textures)
+	_redraw_terrain()
 	if _selected >= 0 and world.has_unit(_selected):
 		var again: MoveMapResult = world.submit_move_query(
 			MoveQueryCommand.create(_selected))

@@ -356,7 +356,9 @@ Two caveats for a remake:
 * **The composition order is prototype data, not a format constant.** Which of
   the two builders runs is decided by the opcode list inside the `prototyp.bin`
   record, so `.3DW` alone does not fix it. Both agree on the single-axis cases
-  above, which is what the yaw question needed.
+  above, which is what the yaw question needed. **Which one each opcode
+  picks is now read out of the handlers** — open question 7 below has the
+  table; the two the shipped joint programs reach both build `RzRxRy`.
 * The opcode also supplies the `add esi, eax` byte offset, so a prototype may
   read a *different* three-angle window out of an external animation array. The
   slot semantics stated here are the loader's, which is offset-independent.
@@ -1305,14 +1307,26 @@ open.
 6. **`[COORD_SYSTEM]` alternatives.** One value ships, the engine never parses
    the line, no alternative identifier exists in any binary (2.8). Unknowable.
 
-7. **`ROTATION` — the composition order for a general three-axis rotation.**
-   Which component is the yaw is closed (2.5: the third). But *which* matrix
-   builder runs — `E3D_init_matrix_RzRxRy` (`fcn.00411bf6`) or
-   `E3D_init_matrix_RyRxRz` (`fcn.00411a93`) — is selected by the opcode list
-   inside the `prototyp.bin` record, not by the `.3DW`, and every shipped clone
-   is `0 0 0`. Both builders agree on every single-axis case, so this only
-   matters for a scene that rotates about two or three axes at once — which no
-   shipped scene does. Settling it belongs to the `prototyp.bin` payload track.
+7. ~~**`ROTATION` — the composition order for a general three-axis
+   rotation.**~~ **Closed.** Which component is the yaw was already closed
+   (2.5: the third); which builder runs is selected by the opcode, and the
+   opcode names it in a `call rel32`. Read out of `Eng3d.dll`:
+
+   | Opcode | Handler | Builder |
+   |---|---|---|
+   | `joint_rotate_1` (8) | `+0x405FCD` | `+0x41204F`, one angle |
+   | `joint_rotate_3` (9) | `+0x405FFC` | **`+0x411BF6`, `RzRxRy`** |
+   | `joint_rotate_3_alt` (10) | `+0x406071` | `+0x411A93`, `RyRxRz` |
+   | `matrix_from_angle` (13) | `+0x405EEC` | `+0x411BF6` |
+   | `matrix_from_angles_b` (14) | `+0x405F1A` | `+0x411BF6` |
+   | `matrix_from_angles` (15) | `+0x405F4C` | `+0x411A93` |
+   | `joint_place` (18) | `+0x4060F0` | **`+0x411BF6`, `RzRxRy`** |
+
+   The two the shipped joint programs actually reach are 9 and 18
+   ([`28` §7.8](28-effects-and-sound.md)'s operand census), and **both build
+   `RzRxRy`**. So a jointed prototype's three angles compose in that order, for
+   every prototype the game draws. `blob_tables.py` pins the seven call targets,
+   that 9 and 18 agree, and that the three builders are distinct.
 
 8. **`texture.din` name field — 13 chars without a terminator.** Resolved
    *practically* (4.2: treat it as 12 + NUL, because lookup uses `strcmp` and a
@@ -1402,6 +1416,7 @@ open.
 | Was | Now |
 |---|---|
 | `ROTATION` component order | **Closed** — the third component is the yaw; 2.5 |
+| `ROTATION` composition order | **Closed** — the opcode names its builder in a `call`; the two the joint data reaches both build `RzRxRy`; open question 7 |
 | `POSITION` axis handling | **Corrected** — the loader *reorders*, it does not merely negate; 2.5 |
 | `prototyp.dir` col 4 | **Closed** — bounding/cull radius; 5.2 and `31-…` |
 | Is the `.dir` read at runtime? | **Closed** — no, by three independent arguments; 3.4 |

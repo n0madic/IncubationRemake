@@ -7,7 +7,7 @@ because they fire from the same place — `aPlayFightAnimation` and the
 `aPlay*Sequence` routines create a blob and load a wave in the same few
 instructions — and because a remake needs both to reproduce one event.
 
-Everything here is checked by `tools/blob_tables.py --check` (259 checks).
+Everything here is checked by `tools/blob_tables.py --check` (345 checks).
 
 **What this document does not own.** The animation *selection* rules — which
 Charisma animation plays for moving, firing or standing, and what the `BREAK`
@@ -353,6 +353,22 @@ ends it.
 | `malien.wav` | 92 | 5 | 50, 51, 53, 55–58, 60, 64, 67, 68 |
 | *(silent)* | — | — | 39 types: 7–19, 27–49, 61–63 |
 
+### 5.1 The period is one global, and one arm does not write it
+
+The wave and the volume id are per arm; **the period is not**. Six of the seven
+sounding arms end with `mov dword [0x004FAECC], imm32` — one global, written
+with the arm's own literal. The `msqueether` arm, unit type 54, writes its wave
+and its volume id and **leaves the period alone**, so a Squeether walks at
+whatever period the last walker set.
+
+`0x004FAECC` is past the end of `.data`'s raw bytes, in the tail the loader
+zero-fills, so before anything has walked the period is **zero** and a
+Squeether's step never repeats. Both halves are reproduced rather than smoothed
+over, which is why a remake's "start walk sound" cannot be a pure function of
+the unit type: `tools/inclib/sound.py`'s `WalkPeriod` is that global as state,
+and `blob_tables.py` pins the six stores, the address, the zero start and an
+ordered carry-over trace.
+
 **Unit type 24 scales its footsteps by volume id 45.** Every other footstep uses
 one of the four ids `Info.lcl` labels for walking (62, 90, 91, 92, 93); 45 is
 inside the 0…49 band that belongs to weapon 45. The two ids differ by one bit
@@ -389,6 +405,35 @@ Fourteen shipped waves are named by nothing at all: the ten ambience files,
 The GOG release ships the tracks as `music/Track02…20.ogg` and
 `music/Arack02…14.ogg` and intercepts MCI in `audio.dll`; that substitution is
 packaging, not engine.
+
+### 6.1 Which of the two families the shipped build plays — `Arack`
+
+`music/` carries the score twice, and it is not a duplicate: measured pairwise,
+**02–08 are byte-identical and 09–14 differ**, and the shipped `CDTrackProgram`
+playlists reach track 13. So which family plays is audible, and for most of this
+project's life it was an open question, on the grounds that the selector lives
+inside an MCI shim no tool here read.
+
+It never needed the shim's code. **`Incubation.exe`'s import descriptor names
+`audio.dll` where the 1997 build named `WINMM.dll`**, importing exactly the nine
+`winmm` entry points the game used — `mciSendCommandA` and `mciGetErrorStringA`
+for the CD, and the seven `mixer*` calls the options screen moves — and there is
+no `winmm` descriptor at all. That DLL is an ogg-winmm shim built with the
+format string `%s\Arack%02d.ogg`. `sound.dll` is byte-for-byte the same shim
+built with `%s\Track%02d.ogg`, and **no import descriptor anywhere in the tree
+names it**.
+
+| | `audio.dll` | `sound.dll` |
+|---|---|---|
+| Format string | `%s\Arack%02d.ogg` | `%s\Track%02d.ogg` |
+| Imported by | `Incubation.exe` (and the three trace builds) | nothing |
+
+So the shipped release plays **`Arack`**, and the `Track` family — which alone
+runs on to 20 — is the one nothing reaches. `blob_tables.py` pins all of it:
+the import descriptor and its nine entry points, the absence of a `winmm`
+descriptor, the sweep that finds no other importer of `sound.dll`, each DLL's
+own format string, the twelve tracks the shipped playlists name, and the
+02–08 / 09–14 divergence itself.
 
 ---
 
@@ -924,7 +969,7 @@ and would make an "alien voices" control do nothing.
 ## 11. Verification
 
 ```bash
-python3 tools/blob_tables.py --check  gog_incubation   # 259 checks
+python3 tools/blob_tables.py --check  gog_incubation   # 345 checks
 python3 tools/blob_tables.py --waves  gog_incubation   # the event -> wave table
 python3 tools/blob_tables.py --blobs  gog_incubation   # the blob and weapon tables
 python3 tools/blob_tables.py --kinds  gog_incubation   # the 78 update kinds
@@ -933,7 +978,7 @@ python3 tools/blob_tables.py --json   gog_incubation
 python3 tools/blob_runtime.py --selftest                 # all 78 update values
 ```
 
-259 checks, all against the shipped binary and corpus; the tool exits non-zero
+345 checks, all against the shipped binary and corpus; the tool exits non-zero
 on an empty corpus and on a root that holds only `Incubation.exe`.
 
 **Mutation testing.** A harness perturbs every leaf *and every key* of every
@@ -986,7 +1031,90 @@ store lands on.
    validated against a permitted runtime trace before claiming pixel- or
    trajectory-level parity.
 
+   **Partly answered, for the creators rather than for the arms.**
+   `tools/blob_gold.py` calls each of the thirty creators §8.1's switches can
+   reach inside a running `Incubation.exe` and reads the pool back. That
+   settles what those creators *produce* — the origin is the caller's tile in
+   world units, the offsets lie on the line to the target tile, and the class,
+   update kind and lifetime of every record match what was read statically out
+   of the compiler's tables. It does **not** settle the hooks themselves: the
+   creators read them and the capture sees only the answer. The arms' own use
+   of the orientation and target-map helpers is untouched by it, so the item
+   stays open and the remake keeps printing `executable-Python` for everything
+   except the creator capture.
+
 2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects
    or arms for a debug path is not recoverable: the arms carry no strings and
    nothing else references them.
+
+3. ~~**Which music family the GOG release plays.**~~ **Closed** — §6.1. The
+   import descriptor settles it without reading the shim: `Incubation.exe`
+   imports the nine `winmm` entry points from `audio.dll`, which is the shim
+   built with `Arack`, and nothing in the tree imports the `Track` build. Eleven
+   checks.
+
+## 13. What the fifth slice added here
+
+Two things belong in this document rather than only in the slice report.
+
+**`RoofUnit`'s drop rate, which neither this document nor [`20`](20-lcl-language.md)
+carried.** `0x00442030`'s animation routine `0x00411B00` runs its drop as a
+loop at `0x00411DF3`: a frame tick (`0x0040B6F0`), then `sub eax, 0xC80` at
+`0x00411E26`, then `aChangeStdObjectPosition` with `z + 0xA0`, repeating while
+the falling object is above the floor. **A falling unit descends one whole map
+field — 3 200 world units — per displayed frame**, from the `height · 1600` the
+command's third argument names. The shipped heights of 20 to 65 are therefore
+10 to 33 frames. `blob_tables.py` pins the step, the draw offset, the tick and
+the "one map field" identity.
+
+**§4.1's defect and [`92` §7.1](92-remake-architecture.md)'s justification for
+fixing it do not quite agree, and the fix is still right.** `92` says the
+alien scream's defect "leaves ids 53–55 defined and dead". It does not: 53–55
+carry a *second* `SP_HUM_0/1/2` label in `Info.lcl` and are unnamed by any call
+site before the correction **and after it**. What the correction does is make
+the alien scream read 59/60/61 — the ids `Info.lcl` labels `S_ALI_0/1/2` — so
+that an "alien voices" control moves something. That is still the
+inert-control case; only the accounting of which ids were dead was wrong.
+
+## 14. What closing the fifth slice's own loose ends added
+
+Three things, and two of them close questions this document had left open.
+
+**The music family (§6.1, open question 3).** Read out of the import table
+rather than out of the shim: the shipped build plays `Arack`.
+
+**The step period is one global (§5.1).** Six arms write `0x004FAECC` and the
+seventh does not, so `aStartWalkAnimationSound` is not a pure function of the
+unit type and a Squeether inherits. The address is in the zero-filled tail of
+`.data`, so its start value is 0 and the first Squeether of a mission has no
+period at all.
+
+**Which matrix builder the joint opcodes use** — which is
+[`30` §2.5](30-eng3d-ascii-formats.md)'s open item rather than this document's,
+and §7.8 is where it was needed. `joint_rotate_3` (`Eng3d.dll+0x405FFC`) and
+`joint_place` (`Eng3d.dll+0x4060F0`) both call `E3D_init_matrix_RzRxRy` at
+`+0x411BF6`; `joint_rotate_3_alt` and `matrix_from_angles` call the other one,
+`+0x411A93`, and no shipped joint prototype uses either of those. So the
+composition order of a part's three angles is settled for every prototype the
+game actually draws. Three checks.
+
+**The set-piece frame counts and per-frame steps now have a second reading
+here.** [`20` §7.4](20-lcl-language.md) recovered them from the four animation
+routines and this document quoted the numbers; a quoted number is not a pin,
+and a mutation battery over all six found that nothing checked them. They are
+decoded now — the loop counter's `mov imm32` proved to be a counter by the
+`dec` that follows it, and the `lea`/`shl` pair the compiler emitted for each
+step:
+
+| | Routine | Frames | Step |
+|---|---|---|---|
+| `OpenDoor` | `0x00410A20` | `mov ebp, 0xA` at `+0x2DC` | — |
+| `Bridge` | `0x00410DA0` | `mov ebx, 0x50` at `+0x11F` | `lea ×3` then `shl 2` = **12** |
+| `Elevator` | `0x004125D0` | the command's `steps` | `lea ×5`, `lea ×5`, `shl 5` = **800** |
+| `Platform` | `0x00412A00` | `lea ×5` then `shl 1` = `dist * `**10** | `lea ×5` then `shl 6` = **0x140** |
+
+The same technique gives §7.3's sprite half-extent: `and eax,0xff; lea
+eax,[eax+eax*4]; shl eax,5` at `0x004040F0` is the `size * 160` this document
+already stated, and only the shift had been pinned.
+

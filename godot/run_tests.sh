@@ -90,6 +90,25 @@ rm -f "$HERE/generated/lcl/lcl.json"
     && cp "$REPO/tests/fixtures/lcl/cases_lcl.json" \
           "$HERE/generated/lcl/lcl.json"
 
+# The sound-layer and blob cases, on the same terms again.  Both are produced
+# by a Python model that `--check` has anchored against the binary, and both
+# suites fail rather than shrink when their fixture is not there.
+mkdir -p "$HERE/generated/sound"
+rm -f "$HERE/generated/sound/sound.json"
+[ -f "$REPO/tests/fixtures/sound/cases_sound.json" ] \
+    && cp "$REPO/tests/fixtures/sound/cases_sound.json" \
+          "$HERE/generated/sound/sound.json"
+
+mkdir -p "$HERE/generated/blob"
+rm -f "$HERE/generated/blob/blob.json"
+[ -f "$REPO/tests/fixtures/blob/cases_blob.json" ] \
+    && cp "$REPO/tests/fixtures/blob/cases_blob.json" \
+          "$HERE/generated/blob/blob.json"
+rm -f "$HERE/generated/blob/native.json"
+[ -f "$REPO/tests/fixtures/blob/cases_native.json" ] \
+    && cp "$REPO/tests/fixtures/blob/cases_native.json" \
+          "$HERE/generated/blob/native.json"
+
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1
 

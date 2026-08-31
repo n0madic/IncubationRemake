@@ -63,6 +63,7 @@ from inclib.pe import PEError, PEFile  # noqa: E402
 from inclib.visn import parse_header  # noqa: E402
 from inclib import lev as levlib  # noqa: E402
 from inclib import prototyp  # noqa: E402
+from inclib import sound  # noqa: E402
 
 LOG = logging.getLogger("blob_tables")
 
@@ -70,6 +71,21 @@ GAME_EXE = "Incubation.exe"
 WAVES_DIR = "Waves"
 SPEECH_DIR = os.path.join("Waves", "Speech")
 BRIEFING_DIR = "Briefing"
+MUSIC_DIR = "music"
+
+#: How far the import walkers below will read before giving up.  A PE with a
+#: damaged directory must terminate rather than run off the end of the image;
+#: the shipped tree's largest descriptor count is 12 and its largest thunk list
+#: is 56, so both bounds are two orders of magnitude clear.
+_IMPORT_DESCRIPTOR_LIMIT = 256
+_IMPORT_THUNK_LIMIT = 4096
+
+#: The two music families overlap on 02..08 and diverge on 09..14; `Arack`
+#: stops at 14 and `Track` runs on to 20.  These bound the comparison, and the
+#: divergence point is itself a check.
+MUSIC_TRACK_LO = 2
+MUSIC_SHARED_HI = 8
+MUSIC_TRACK_HI = 14
 INFO_LCL = os.path.join("DATA", "Info.lcl")
 
 # -- aDSound.cpp: the DirectSound wrapper ---------------------------------
@@ -196,6 +212,30 @@ WALK_JUMP_TABLE = 0x0040E8F4
 WALK_PERIOD_GLOBAL = 0x004FAECC
 WALK_SILENT_ARM = 0x0040E8CC
 
+# -- the set pieces' own frame counts -------------------------------------
+#
+# docs/20 sec.7.4 gives most of them from the LCL side -- `Elevator` is `steps`
+# frames of +-800, `Platform` is `dist*10` frames of +-0x140, `Bridge` is 80
+# frames of +-12, `FootBridge`/`FootBridge2` take their count as an argument --
+# and docs/28 sec.1.4 quotes `aDoorOpenSequence`'s own `for (n = 10; n; n--)`.
+# `RoofUnit` is the one the three demo missions need and neither document
+# gives, so it is read here: the drop loop at 0x00411DF3 subtracts a whole map
+# field from the falling object's z on every frame tick and stops when it
+# reaches the floor, so the count is the height divided by that step.
+
+ROOF_UNIT = 0x00411B00
+ROOF_DROP_SITE = 0x00411E26          # sub eax, 0xC80
+ROOF_DROP_STEP = 0xC80               # one map field per displayed frame
+ROOF_DRAW_OFFSET_SITE = 0x00411E2F   # add eax, 0xA0 -- the draw offset
+ROOF_DRAW_OFFSET = 0xA0
+ROOF_TICK_SITE = 0x00411E15          # the frame tick the loop is paced by
+DOOR_SEQUENCE_FRAMES = 10            # docs/28 sec.1.4
+ELEVATOR_STEP = 800                  # docs/20 sec.7.4, per frame
+PLATFORM_STEP = 0x140                # per frame, `dist * 10` of them
+PLATFORM_FRAMES_PER_FIELD = 10
+BRIDGE_FRAMES = 80
+BRIDGE_STEP = 12
+
 # -- aAmbience.cpp: present, and never fed --------------------------------
 
 AMBIENCE_INIT = 0x0040B3F0
@@ -316,11 +356,31 @@ VOICE_CURSOR_REFS = (8, 9)
 AMBIENCE_SLOT_REFS = (2, 1, 1, 1, 1)
 AMBIENCE_CONTROL = "door.wav"      # positive control for the same search
 WALK_STRAY_VOLUME = (45,)          # the one footstep scaled by a weapon-band id
+#: The one arm that writes no period, the type that seeds the global after it,
+#: and the period that type sets.
+WALK_CARRY_TYPE = 54
+WALK_CARRY_AFTER = 20
+WALK_CARRY_PERIOD = 8
 INFO_WEAPON_TOP = 47
 # The three sites that pass a computed volume-control id in a register.
 DYNAMIC_VOLUME_PUSHES = (0x0040C7D7, 0x0040CBF4, 0x0040E857)
 DYNAMIC_VOLUME_OPCODES = (0x57, 0x57, 0x57)
 WEAPON_SWITCH_TOP = (47, 46, 44)   # the top weapon id each switch covers
+#: Weapon ids the third switch leaves silent -- the melee arms and every one
+#: whose impact makes no noise of its own, out of the 45 the switch covers.
+IMPACT_SOUND_SILENT = 28
+#: Distinct literal wave names **pushed at a load call site** -- the 50 of
+#: docs/28 section 2.2, and the population the ten renames were counted over.
+CASE_CALL_LITERALS = 50
+#: Every literal wave name the sound layer can name, which is the call sites'
+#: 50 plus the four voice and four footstep names the arms build in a register.
+#: The wider set is what the conversion has to resolve.
+CASE_LITERALS = 58
+#: The base volumes the attenuation is swept over.  The options field is a
+#: DirectSound attenuation in hundredths of a decibel, so 0 is full scale;
+#: below the floor every percentage is silence, so the identity sweep starts
+#: at the floor and the silence gate is checked either side of it separately.
+BASE_SWEEP_LO, BASE_SWEEP_HI, BASE_SWEEP_STEP = VOLUME_FLOOR, 0, 100
 
 # Shipped waves that no string literal and no Info.lcl field names.
 WAVES_UNREFERENCED = ("W_CHS_0.wav", "W_HSR_0.wav",
@@ -986,6 +1046,30 @@ TRIG_COS_SITE = 0x00411C1C
 JOINT_GETTER = "_E3D_get_object_joint_data_ptr"
 JOINT_GETTER_ORDINAL = 59
 JOINT_GETTER_BODY = bytes.fromhex("8D4040C3")   # lea eax,[eax+0x40]; ret
+
+# ``docs/30`` 2.5 left one thing open about these angles: *which* of Eng3d's two
+# three-axis matrix builders runs, "because the composition order is prototype
+# data, not a format constant".  It is prototype data, and it is readable --
+# each ``anim`` handler calls one of them outright, so the opcode decides and
+# the opcode is in the record.  Both handlers the shipped joint programs reach,
+# ``joint_rotate_3`` (slot 9) and ``joint_place`` (slot 18), call the **same**
+# one.
+MATRIX_BUILDER_RZRXRY = 0x00411BF6
+MATRIX_BUILDER_RYRXRZ = 0x00411A93
+#: ``joint_rotate_1``'s, which takes one angle rather than three.
+MATRIX_BUILDER_ONE_ANGLE = 0x0041204F
+#: opcode slot -> (the ``call`` inside its handler, the builder it names).
+JOINT_BUILDERS = {
+    8:  (0x00405FEC, MATRIX_BUILDER_ONE_ANGLE),
+    9:  (0x00406025, MATRIX_BUILDER_RZRXRY),
+    10: (0x0040609A, MATRIX_BUILDER_RYRXRZ),
+    13: (0x00405F0A, MATRIX_BUILDER_RZRXRY),
+    14: (0x00405F3C, MATRIX_BUILDER_RZRXRY),
+    15: (0x00405F6E, MATRIX_BUILDER_RYRXRZ),
+    18: (0x00406138, MATRIX_BUILDER_RZRXRY),
+}
+#: The two the shipped joint data actually reaches (``JOINT_OPERANDS``).
+JOINT_BUILDERS_USED = (9, 18)
 #: blob kind -> (model, the ``joint_place`` operands its render program uses,
 #: the ``object_3d`` offsets the kind's update arm writes)
 JOINT_KINDS = {
@@ -1058,10 +1142,52 @@ ATLAS_NAME_SITES = (0x0040301E, 0x00403270)
 ATLAS_HANDLE = 0x004F9F70
 ATLAS_LOOKUP_IMPORT = 0x004FA4EC           # Eng3d ordinal 66
 ATLAS_LOOKUP_ORDINAL_SITE = 0x004024A4     # "Function Id 66 not found!"
-ATLAS_SIZE = 256
 ATLAS_TILE = 32
 ATLAS_GRID = 8
+#: Derived, and deliberately so: the corpus check compares it against the
+#: `anim` record's own header in every world set, which is the independent
+#: reading.  There used to be a second `ATLAS_SIZE = 256` further down that
+#: shadowed a literal here, so perturbing the literal changed nothing -- a pin
+#: that documented nothing and looked like one.
+ATLAS_SIZE = ATLAS_TILE * ATLAS_GRID
 SPRITE_SIZE_RANGE = (3, 40)      # half-size in 160-unit steps: 0.3 m to 4 m
+
+# -- the set-piece animation routines (docs/20 sec.7.4) --------------------
+#
+# `docs/20` read the frame counts and the per-frame steps out of these
+# routines; the constants below were quoted from it and, until this pass, read
+# by nothing here -- six pins with no second reading, which the mutation
+# battery reported as six misses.  These are that second reading: the loop
+# counter's `mov imm32` and its `dec`, and the shift/`lea` pairs the compiler
+# emitted for each step.
+DOOR_SEQUENCE = 0x00410A20               # aDoorOpenSequence
+DOOR_FRAMES_SITE = 0x00410CFC            # mov ebp, 0xa
+DOOR_FRAMES_DEC = 0x00410D17             # dec ebp
+ELEVATOR_SEQUENCE = 0x004125D0
+#: `lea eax,[esi+esi*4]; lea esi,[eax+eax*4]; shl esi,5` -- 5 * 5 * 32.
+ELEVATOR_STEP_SITES = (0x004127F3, 0x004127F6, 0x004127F9)
+PLATFORM_SEQUENCE = 0x00412A00
+#: `lea eax,[esi+esi*4]; shl eax,1` -- the frame count, `dist * 10`.
+PLATFORM_FRAMES_SITES = (0x00412CBE, 0x00412CC1)
+#: `lea eax,[edi+edi*4]; shl eax,6` -- the per-frame step, 5 * 64.
+PLATFORM_STEP_SITES = (0x00412CCF, 0x00412CD6)
+#: The same step for the other axis, from `ebp` instead of `edi`; it is a
+#: `mod=01` `lea` with a zero `disp8`, which is why the decoder takes both
+#: forms rather than only the one the first three sites use.
+PLATFORM_STEP_SITES_Y = (0x00412CD2, 0x00412CD9)
+BRIDGE_SEQUENCE = 0x00410DA0
+BRIDGE_FRAMES_SITE = 0x00410EBF           # mov ebx, 0x50
+BRIDGE_FRAMES_DEC = 0x00410ED1            # dec ebx
+#: `lea edi,[edi+edi*2]; shl edi,2` -- 3 * 4.
+BRIDGE_STEP_SITES = (0x00410EB6, 0x00410EBC)
+#: `and eax,0xff; lea eax,[eax+eax*4]; shl eax,5` in the zoom-draw wrapper --
+#: the sprite half-extent, 5 * 32.  `SIZE_SCALE_SITE` already pinned the shift
+#: alone, which left the factor of five unread.
+SIZE_SCALE_SITES = (0x004040F0, 0x004040F3)
+#: `shl eax,5` and `shl ecx,5` in the same wrapper -- the atlas row and column
+#: on their way to the draw call, both scaled by the tile size.
+ATLAS_ROW_SCALE_SITE = 0x00404108
+ATLAS_COL_SCALE_SITE = 0x0040412F
 
 # -- the 78 update kinds --------------------------------------------------
 
@@ -1075,6 +1201,8 @@ KIND_COMPUTED = {                          # the two calls that build a kind
     0x00426463: (0x004263CE, 0x1A, (26, 27)),   # aBlob_CreateGrenade: sete  + 0x1A
 }
 KIND_UNREACHABLE = (2, 4, 21, 28, 30, 35, 45, 48, 53, 56, 76)
+#: Distinct destinations in the 78-entry jump table (docs/28 7.4).
+KIND_ARMS = 74
 
 # What individual arms do, pinned instruction by instruction.  These are the
 # claims docs/28 makes about particular kinds; the rest of the 74 arms are
@@ -1312,6 +1440,79 @@ class Binary:
             return self.pe.cstring(va, limit)
         except PEError:
             return None
+
+    def lea_scale(self, va: int) -> int | None:
+        """The multiplier of ``lea r32, [b + b*n]``, or ``None``.
+
+        The compiler turns a small constant multiply into one or two of these
+        plus a shift, and that is the only place the set-piece steps of
+        ``docs/20`` 7.4 exist as numbers.  **Base and index must be the same
+        register**, or the instruction is an address computation and not a
+        multiply, and this answers ``None`` -- a perturbed site must read as
+        "not the instruction I expected" rather than as a wrong multiplier.
+        """
+        try:
+            if self.u8(va) != 0x8D:
+                return None
+            modrm = self.u8(va + 1)
+            if modrm & 0x07 != 0x04:            # r/m = 100 -> a SIB follows
+                return None
+            mod = modrm >> 6
+            sib = self.u8(va + 2)
+            base, index = sib & 0x07, (sib >> 3) & 0x07
+            if index == 0x04 or base != index:  # no index, or not b + b*n
+                return None
+            if mod == 0x00:
+                if base == 0x05:                # disp32, no base register
+                    return None
+            elif mod == 0x01:
+                if self.u8(va + 3) != 0:        # a real displacement
+                    return None
+            else:
+                return None
+            return 1 + (1 << (sib >> 6))
+        except PEError:
+            return None
+
+    def shl_scale(self, va: int) -> int | None:
+        """The multiplier of ``shl r32, imm8`` (``C1 /4 ib``) or ``shl r32, 1``
+        (``D1 /4``), or ``None`` when the bytes are something else."""
+        try:
+            opcode = self.u8(va)
+            modrm = self.u8(va + 1)
+            if modrm >> 6 != 0x03 or (modrm >> 3) & 0x07 != 0x04:
+                return None
+            if opcode == 0xD1:
+                return 2
+            if opcode == 0xC1:
+                return 1 << self.u8(va + 2)
+            return None
+        except PEError:
+            return None
+
+    def is_dec_reg(self, va: int) -> bool:
+        """``dec r32`` -- ``48+r``.  What makes a ``mov imm`` a loop counter."""
+        try:
+            return 0x48 <= self.u8(va) <= 0x4F
+        except PEError:
+            return False
+
+    def cleanup_dwords(self, site: int) -> int | None:
+        """``add esp, K`` right after the five-byte ``call rel32`` at *site*.
+
+        For a ``__cdecl`` callee this is the only place the arity exists: the
+        callee pops nothing, so a debugger's own signature probe cannot recover
+        it and the caller's cleanup can.
+        """
+        after = site + 5
+        try:
+            if self.u8(after) == 0x83 and self.u8(after + 1) == 0xC4:
+                return self.u8(after + 2) // 4
+            if self.u8(after) == 0x81 and self.u8(after + 1) == 0xC4:
+                return self.pe.u32(after + 2) // 4
+        except PEError:
+            return None
+        return None
 
     def call_target(self, va: int) -> int | None:
         try:
@@ -2179,6 +2380,34 @@ def run_checks(root: str) -> Checker:
                           if v is not None and v < WEAPON_VOLUME_BAND)),
              WALK_STRAY_VOLUME)
 
+    # The period is one global, not a field of the walker.  Six of the seven
+    # sounding arms write it with `mov dword [0x004FAECC], imm32`; the
+    # `msqueether` arm writes the wave and the volume id and leaves it, so type
+    # 54 walks at whatever the last walker set.
+    stores = [site for _a, (_t, _w, _v, period) in WALK_ARMS.items()
+              if period for site in (period[0],)]
+    ck.check("walk.period_is_one_global",
+             bool(stores) and all(b.u8(site) == 0xC7 and b.u8(site + 1) == 0x05
+                                  and b.u32(site + 2) == WALK_PERIOD_GLOBAL
+                                  for site in stores),
+             f"{len(stores)} arms store to 0x{WALK_PERIOD_GLOBAL:08X}")
+    ck.equal("walk.period_global", sound.FOOTSTEP_PERIOD_GLOBAL,
+             WALK_PERIOD_GLOBAL, hex)
+    # It is past the end of `.data`'s raw bytes, in the tail the loader
+    # zero-fills, so a Squeether walking first has no period at all.
+    ck.check("walk.period_starts_zero",
+             not b.mapped(WALK_PERIOD_GLOBAL, 4)
+             and sound.FOOTSTEP_PERIOD_INITIAL == 0,
+             "0x%08X is in the zero-filled tail of .data" % WALK_PERIOD_GLOBAL)
+    carry = sound.WalkPeriod()
+    first = carry.start(WALK_CARRY_TYPE)
+    seeded = carry.start(WALK_CARRY_AFTER)
+    later = carry.start(WALK_CARRY_TYPE)
+    ck.equal("walk.period_carries",
+             (first.period, seeded.period, later.period),
+             (sound.FOOTSTEP_PERIOD_INITIAL, WALK_CARRY_PERIOD,
+              WALK_CARRY_PERIOD))
+
     # ---- ambience: present, never fed ----------------------------------
     for slot, expected in zip(AMBIENCE_SLOTS, AMBIENCE_SLOT_REFS):
         refs = [r for r in b.absolute_refs(slot) if b.text_lo <= r < b.text_hi]
@@ -2553,6 +2782,25 @@ def run_checks(root: str) -> Checker:
              (TRIG_QUARTER, 4 * TRIG_QUARTER),
              lambda v: f"cosine window {v[0]} entries into a {v[1]}-unit circle")
 
+    # Which matrix builder each handler calls -- `docs/30` 2.5's last open
+    # item about the joint family, and it is a `call rel32` away.
+    builders = {slot: _eng_call(eng, site)
+                for slot, (site, _want) in sorted(JOINT_BUILDERS.items())}
+    ck.equal("joint.matrix_builders", builders,
+             {slot: want for slot, (_site, want) in JOINT_BUILDERS.items()},
+             Checker.brief)
+    ck.check("joint.builders_agree",
+             all(builders.get(slot) == MATRIX_BUILDER_RZRXRY
+                 for slot in JOINT_BUILDERS_USED),
+             "the two opcodes the shipped joint programs use -- "
+             f"{JOINT_BUILDERS_USED} -- both build RzRxRy")
+    ck.check("joint.builders_differ",
+             MATRIX_BUILDER_RZRXRY != MATRIX_BUILDER_RYRXRZ
+             and sorted({want for _s, want in JOINT_BUILDERS.values()})
+             == sorted({MATRIX_BUILDER_ONE_ANGLE, MATRIX_BUILDER_RYRXRZ,
+                        MATRIX_BUILDER_RZRXRY}),
+             "the choice is real: three distinct builders across seven arms")
+
     # Nothing else in the renderer reaches the record: every reference to the
     # "object being drawn" is accounted for.
     ck.equal("joint.current_object_refs", eng.absolute_refs(CURRENT_OBJECT),
@@ -2668,8 +2916,890 @@ def run_checks(root: str) -> Checker:
              bool(landings) and all(len(v) == 1 for v in landings.values()),
              f"{len(landings)} stores, each exactly one component of one triple")
 
+    _sound_model_checks(ck, b, c)
+    _music_shim_checks(ck, c)
+    _creator_reach_checks(ck, b)
+    _setpiece_timing_checks(ck, b)
 
     return ck
+
+
+# --------------------------------------------------------------------------
+# The executable sound model (tools/inclib/sound.py)
+# --------------------------------------------------------------------------
+#
+# These check the *model* against the tables above, which were read out of the
+# binary.  The two share no code: `sound.py` opens nothing, and everything it
+# is compared against here comes from `Binary`/`Corpus`.  A mutation of a pin
+# in this file that the model does not carry, or of a constant in the model
+# that this file does not carry, breaks one of them.
+
+# --------------------------------------------------------------------------
+# Which music family the shipped build plays (docs/28 6.1)
+# --------------------------------------------------------------------------
+#
+# `music/` ships two families, `Track02..20` and `Arack02..14`, and 09-14 are
+# audibly different recordings.  For most of this project's life which one the
+# game plays was an open question, because the CD player is an MCI shim and no
+# tool here read it.  The import table settles it without reading the shim's
+# code at all: the 1997 build called `winmm`, and the shipped import descriptor
+# names `audio.dll` instead, carrying exactly the nine `winmm` entry points the
+# game used.  That DLL is the shim built with `Arack`.  `sound.dll` is the same
+# shim built with `Track`, and nothing imports it.
+
+#: Every PE in the game root, so "nothing imports the other one" is a sweep and
+#: not an assertion about one file.
+def _imports(path: str) -> dict[str, list[str]]:
+    """``dll name -> imported symbol names``, from a PE's import directory.
+
+    Returns ``{}`` for a file that is not a readable PE: the sweep below runs
+    over everything in the root, and a data file must not raise.
+    """
+    try:
+        pe = PEFile(path)
+    except (PEError, OSError, ValueError):
+        return {}
+    if len(pe.dirs) <= 1:
+        return {}
+    rva, _size = pe.dirs[1]
+    if not rva:
+        return {}
+    off = pe.rva_to_off(rva)
+    if off is None:
+        return {}
+    table: dict[str, list[str]] = {}
+    for i in range(_IMPORT_DESCRIPTOR_LIMIT):
+        entry = pe.data[off + i * 20:off + i * 20 + 20]
+        if len(entry) < 20 or entry == b"\0" * 20:
+            break
+        oft, _ts, _fc, name_rva, ft = struct.unpack("<5I", entry)
+        if not name_rva:
+            break
+        name = pe.cstring(pe.image_base + name_rva)
+        thunk = pe.rva_to_off(oft or ft)
+        names: list[str] = []
+        if thunk is not None:
+            for j in range(_IMPORT_THUNK_LIMIT):
+                raw = pe.data[thunk + j * 4:thunk + j * 4 + 4]
+                if len(raw) < 4:
+                    break
+                value = struct.unpack("<I", raw)[0]
+                if value == 0:
+                    break
+                if value & 0x80000000:
+                    names.append(f"ord#{value & 0xFFFF}")
+                else:
+                    names.append(pe.cstring(pe.image_base + value + 2))
+        table[name.lower()] = names
+    return table
+
+
+def _shipped_playlist_tracks(root: Path) -> set[int]:
+    """Every track number a shipped ``CDTrackProgram`` names, over all missions.
+
+    ``docs/20`` 7.3: the argument is a dot-separated list the mission loops.
+    Reading all of them rather than the five converted ones is deliberate --
+    the question the flip raises is whether the family the shim plays is long
+    enough for the *game*, not for the slice.
+    """
+    tracks: set[int] = set()
+    for path in sorted((root / "Missions").glob("*.lcl")):
+        with open(path, "rb") as handle:
+            program = lcl.parse_bytes(handle.read(), str(path))
+        for routine in program.routines:
+            for stmt in _walk(routine.body):
+                if stmt.name != "CDTrackProgram":
+                    continue
+                for text in strings(stmt.args):
+                    tracks.update(sound.playlist(text))
+    return tracks
+
+
+def _music_shim_checks(ck: "Checker", c: Corpus) -> None:
+    root = Path(c.root)
+    exe = root / GAME_EXE
+    table = _imports(str(exe))
+    ck.check("music.shim_imported", sound.MUSIC_SHIM.lower() in table,
+             f"{GAME_EXE} imports {sound.MUSIC_SHIM} "
+             f"(of {len(table)} descriptors)")
+    ck.equal("music.shim_entry_points",
+             sorted(table.get(sound.MUSIC_SHIM.lower(), [])),
+             sorted(sound.MUSIC_SHIM_IMPORTS))
+    ck.check("music.shim_replaces_winmm",
+             not any(name.startswith("winmm") for name in table),
+             f"{GAME_EXE} names no winmm descriptor -- "
+             f"{sound.MUSIC_SHIM} stands in its place")
+
+    # The other build of the same shim is imported by nothing in the tree.
+    importers = []
+    for path in sorted(root.glob("*")):
+        if not path.is_file():
+            continue
+        if sound.MUSIC_SHIM_UNUSED.lower() in _imports(str(path)):
+            importers.append(path.name)
+    ck.equal("music.alternate_shim_unimported", importers, [])
+
+    # Each shim carries its family verbatim, and only that family.
+    for dll, wanted in sorted(sound.MUSIC_SHIM_STRINGS.items()):
+        blob = (root / dll).read_bytes()
+        other = sound.MUSIC_SHIM_STRINGS[
+            sound.MUSIC_SHIM_UNUSED if dll == sound.MUSIC_SHIM
+            else sound.MUSIC_SHIM]
+        tag = "shim" if dll == sound.MUSIC_SHIM else "alternate"
+        ck.check(f"music.{tag}_names_family",
+                 wanted.encode("ascii") in blob
+                 and other.encode("ascii") not in blob,
+                 f"{dll} carries {wanted!r} and not {other!r}")
+
+    ck.equal("music.format", sound.MUSIC_FORMAT,
+             sound.MUSIC_SHIM_STRINGS[sound.MUSIC_SHIM].split("\\")[-1])
+    ck.equal("music.alternate_format", sound.MUSIC_ALTERNATE_FORMAT,
+             sound.MUSIC_SHIM_STRINGS[sound.MUSIC_SHIM_UNUSED].split("\\")[-1])
+
+    # Every track any shipped playlist can name exists in the family the shim
+    # plays.  The two families are not the same length -- Track runs to 20 and
+    # Arack stops at 14 -- so this is the check that the flip did not silently
+    # cost a mission its music.
+    wanted_tracks = sorted(_shipped_playlist_tracks(root))
+    absent = [t for t in wanted_tracks
+              if not (root / MUSIC_DIR / (sound.MUSIC_FORMAT % t)).is_file()]
+    ck.check("music.playlists_resolve", bool(wanted_tracks) and not absent,
+             f"{len(wanted_tracks)} track(s) named by shipped playlists, "
+             f"{max(wanted_tracks or [0])} the highest, all present")
+
+    # 02-08 are byte-identical between the families and 09-14 are not, which is
+    # why the question was worth settling: the choice is audible exactly where
+    # the missions reach past 8.
+    # The low end is the shipped tree's, not this file's: deriving both sides
+    # of the comparison below from the same constant would make it agree with
+    # itself.
+    present = sorted(t for t in range(0, 100)
+                     if (root / MUSIC_DIR / (sound.MUSIC_FORMAT % t)).is_file())
+    ck.equal("music.family_range",
+             (MUSIC_TRACK_LO, MUSIC_TRACK_HI),
+             (min(present), max(present)) if present else (None, None))
+
+    same, differ = [], []
+    for track in range(MUSIC_TRACK_LO, MUSIC_TRACK_HI + 1):
+        a = root / MUSIC_DIR / (sound.MUSIC_FORMAT % track)
+        t = root / MUSIC_DIR / (sound.MUSIC_ALTERNATE_FORMAT % track)
+        if not (a.is_file() and t.is_file()):
+            continue
+        (same if a.read_bytes() == t.read_bytes() else differ).append(track)
+    ck.equal("music.families_diverge_at", (same, differ),
+             (list(range(MUSIC_TRACK_LO, MUSIC_SHARED_HI + 1)),
+              list(range(MUSIC_SHARED_HI + 1, MUSIC_TRACK_HI + 1))))
+
+
+# --------------------------------------------------------------------------
+# How much of the creator layer a shot can actually reach
+# --------------------------------------------------------------------------
+#
+# `docs/28` 7.6 lists 81 creators and 7.2 lists 116 constructor calls, and the
+# remake transcribes **none** of the creators' own placement and velocity
+# arithmetic -- their positions and velocities are its own.  That is a real
+# limit, and a limit is only honest if it is measured.  These checks say
+# exactly how large it is: how many creators a shot can reach through the two
+# geometry switches of 8.1, how many constructor calls sit inside them, and how
+# many of those calls carry a literal lifetime rather than one the creator
+# computes.  The last is what makes the remake's trajectory *timing* extracted
+# rather than invented (`blob_triggers.gd`).
+
+#: Creators reachable from `weapon_muzzle` and `weapon_impact` together.
+REACHABLE_CREATORS = 30
+#: The constructor calls inside them.
+REACHABLE_CALLS = 43
+#: Of those, the ones whose lifetime is a literal at the call site.
+REACHABLE_CALLS_WITH_LIFE = 27
+#: creator -> its dword arity, from each caller's `add esp, K`.  `tools/
+#: blob_gold.py` needs this before it can call one, and `--probe` cannot
+#: recover it: the creators are `__cdecl`, so the callee pops nothing.
+CREATOR_ARITIES = {
+    "0x00420A50": 2, "0x004227C0": 2, "0x004228F0": 3, "0x00422B80": 3,
+    "0x00423D80": 7, "0x00424250": 7, "0x004247C0": 7, "0x00424D20": 4,
+    "0x00425400": 6, "0x00425810": 6, "0x00425CA0": 5, "0x00426070": 6,
+    "0x004264A0": 5, "0x004268B0": 4, "0x00426B70": 4, "0x00426F90": 4,
+    "0x00427410": 4, "0x00427810": 4, "0x00427C80": 5, "0x00428200": 5,
+    "0x00428570": 5, "0x00429180": 4, "0x004294E0": 2, "0x004295D0": 2,
+    "0x00429A80": 3, "0x00429C30": 3, "0x00429F40": 4, "0x0042A9D0": 4,
+    "0x0042ACF0": 2, "0x0042AF10": 2,
+}
+
+
+# --------------------------------------------------------------------------
+# The set-piece frame counts and steps, read a second time
+# --------------------------------------------------------------------------
+#
+# `docs/20` 7.4 recovered these out of the four animation routines, and this
+# file quoted the numbers.  A quoted number is not a pin: the mutation battery
+# perturbed all six and nothing noticed, because nothing here had a **second**
+# reading to compare against.  These decode the routines themselves -- the loop
+# counter's `mov imm32` proved to be a counter by the `dec` that follows it,
+# and the `lea`/`shl` pairs the compiler emitted for each per-frame step.
+
+def _scaled(b: Binary, sites) -> int | None:
+    """The product of a run of `lea r,[b+b*n]` / `shl r,imm` multipliers.
+
+    ``None`` if any site is not one of those two forms, so a moved or mutated
+    address reads as "not the instruction I expected".
+    """
+    total = 1
+    for va in sites:
+        factor = b.lea_scale(va)
+        if factor is None:
+            factor = b.shl_scale(va)
+        if factor is None:
+            return None
+        total *= factor
+    return total
+
+
+def _sites_with_volume(sites: dict, volume_id: int) -> set[str]:
+    """The wave names among *sites* scaled by *volume_id*."""
+    return {name.lower() for name, volume in sites.values()
+            if name and volume == volume_id}
+
+
+#: Where the remake spells the compatibility flag names. Resolved against this
+#: file rather than the working directory: a check that cannot find its input
+#: must fail, not quietly pass.
+REMAKE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "godot" / "game" / "audio"
+
+
+def _flag_names_in_remake() -> str | None:
+    """Every `.gd` under `game/audio/`, concatenated, or ``None``."""
+    if not REMAKE_AUDIO_DIR.is_dir():
+        return None
+    parts = [path.read_text(encoding="utf-8")
+             for path in sorted(REMAKE_AUDIO_DIR.glob("*.gd"))]
+    return "\n".join(parts) if parts else None
+
+
+def _setpiece_timing_checks(ck: "Checker", b: Binary) -> None:
+    ck.equal("setpiece.door_frames", b.mov_imm32(DOOR_FRAMES_SITE),
+             DOOR_SEQUENCE_FRAMES)
+    ck.check("setpiece.door_is_a_loop", b.is_dec_reg(DOOR_FRAMES_DEC),
+             f"0x{DOOR_FRAMES_SITE:08X}'s immediate is counted down at "
+             f"0x{DOOR_FRAMES_DEC:08X}")
+    ck.equal("setpiece.bridge_frames", b.mov_imm32(BRIDGE_FRAMES_SITE),
+             BRIDGE_FRAMES)
+    ck.check("setpiece.bridge_is_a_loop", b.is_dec_reg(BRIDGE_FRAMES_DEC),
+             f"counted down at 0x{BRIDGE_FRAMES_DEC:08X}")
+    ck.equal("setpiece.bridge_step", _scaled(b, BRIDGE_STEP_SITES), BRIDGE_STEP)
+    ck.equal("setpiece.elevator_step", _scaled(b, ELEVATOR_STEP_SITES),
+             ELEVATOR_STEP)
+    ck.equal("setpiece.platform_frames", _scaled(b, PLATFORM_FRAMES_SITES),
+             PLATFORM_FRAMES_PER_FIELD)
+    ck.equal("setpiece.platform_step",
+             (_scaled(b, PLATFORM_STEP_SITES), _scaled(b, PLATFORM_STEP_SITES_Y)),
+             (PLATFORM_STEP, PLATFORM_STEP), _hexlist)
+    # And each site really is inside the routine `docs/20` names, bounded by
+    # the next call entry -- otherwise the immediates above would be read out
+    # of whatever function happened to follow it.
+    entries = sorted(b.call_entries())
+    routines = {
+        "door": (DOOR_SEQUENCE, (DOOR_FRAMES_SITE, DOOR_FRAMES_DEC)),
+        "bridge": (BRIDGE_SEQUENCE,
+                   (BRIDGE_FRAMES_SITE, BRIDGE_FRAMES_DEC) + BRIDGE_STEP_SITES),
+        "elevator": (ELEVATOR_SEQUENCE, ELEVATOR_STEP_SITES),
+        "platform": (PLATFORM_SEQUENCE,
+                     PLATFORM_FRAMES_SITES + PLATFORM_STEP_SITES
+                     + PLATFORM_STEP_SITES_Y),
+    }
+    for name, (entry, sites) in sorted(routines.items()):
+        after = [e for e in entries if e > entry]
+        end = min(after) if after else entry + 0x1000
+        ck.check(f"setpiece.{name}_sites_inside",
+                 entry in set(entries)
+                 and all(entry < site < end for site in sites),
+                 f"0x{entry:08X} is a routine and holds all {len(sites)} site(s)")
+
+    # The sprite half-extent: `SIZE_SCALE_SITE` pinned the shift and left the
+    # factor of five unread, so `160` was a literal nothing checked.
+    ck.equal("zoom.size_scale", _scaled(b, SIZE_SCALE_SITES), SIZE_SCALE)
+    ck.equal("zoom.half_extent_scale", ATLAS_HALF_EXTENT_SCALE, SIZE_SCALE)
+
+
+def _creator_of_call(b: Binary) -> dict[int, int | None]:
+    """Constructor call site -> the creator whose body contains it.
+
+    The same bounding rule :meth:`Binary.blob_creators` uses, kept as its own
+    function because the reach checks need the mapping and not only the set.
+    """
+    entries = sorted(b.call_entries())
+    out: dict[int, int | None] = {}
+    for site in BLOB_CALLS:
+        index = bisect.bisect_right(entries, site) - 1
+        out[site] = entries[index] if index >= 0 else None
+    return out
+
+
+def _creator_reach_checks(ck: "Checker", b: Binary) -> None:
+    muzzle = b.weapon_effects(MUZZLE_SWITCH, WEAPON_MUZZLE)
+    impact = b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT)
+    reached: set[int] = set()
+    for table in (muzzle, impact):
+        for _weapon, (_arm, calls) in table.items():
+            for _site, creator in calls:
+                if creator is not None:
+                    reached.add(creator)
+    ck.equal("creators.reachable", len(reached), REACHABLE_CREATORS,
+             lambda n: f"{n} of {len(b.blob_creators())} creators can be "
+                       "reached by firing a weapon")
+    calls = b.blob_calls()
+    owners = _creator_of_call(b)
+    inside = [site for site, owner in owners.items() if owner in reached]
+    ck.equal("creators.reachable_calls", len(inside), REACHABLE_CALLS,
+             lambda n: f"{n} of {len(calls)} constructor calls sit inside them")
+    # The arity of every reachable creator, from the **caller's** own stack
+    # cleanup.  `--probe` cannot answer this -- the creators are `__cdecl`, the
+    # caller cleans up, and the callee's `ret` pops nothing whatever the arity
+    # -- so `tools/blob_gold.py` has to know it before it can call one, and
+    # this is the reading it uses.  Every creator called from more than one
+    # site has sites that agree, which is what makes it a measurement.
+    arity: dict[int, set[int]] = {}
+    for table, pinned in ((MUZZLE_SWITCH, WEAPON_MUZZLE),
+                          (IMPACT_SWITCH, WEAPON_IMPACT)):
+        for _weapon, (_arm, sites) in b.weapon_effects(table, pinned).items():
+            for site, creator in sites:
+                if creator is not None:
+                    arity.setdefault(creator, set()).add(b.cleanup_dwords(site))
+    ck.check("creators.arity_agrees",
+             bool(arity) and all(len(w) == 1 and None not in w
+                                 for w in arity.values()),
+             f"{len(arity)} creators, every call site agreeing")
+    ck.equal("creators.arity_table",
+             {f"0x{c:08X}": sorted(w)[0] for c, w in sorted(arity.items())},
+             CREATOR_ARITIES, Checker.brief)
+
+    with_life = [site for site in inside if calls[site][3] is not None]
+    ck.equal("creators.reachable_lifetimes", len(with_life),
+             REACHABLE_CALLS_WITH_LIFE,
+             lambda n: f"{n} of {len(inside)} carry a literal lifetime -- "
+                       "what paces the remake's tracers")
+
+
+def _eng_call(eng: "Engine", va: int) -> int | None:
+    """The target of the ``call rel32`` at *va* in an Eng3d build."""
+    try:
+        if eng.pe.u8(va) != 0xE8:
+            return None
+        return va + 5 + eng.pe.i32(va + 1)
+    except PEError:
+        return None
+
+
+def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
+    ck.equal("sound.play_slots", sound.PLAY_SLOTS, b.cmp_imm(PLAY_BOUND_SITE) + 1)
+    ck.equal("sound.loader_slots", sound.LOADER_SLOTS,
+             b.cmp_imm(LOAD_BOUND_SITE) + 1)
+    ck.equal("sound.set_id_max", sound.SET_ID_MAX, b.cmp_imm(VOLUME_SETTER_BOUND_SITE))
+    ck.equal("sound.load_id_max", sound.LOAD_ID_MAX,
+             b.cmp_imm(VOLUME_LOAD_BOUND_SITE) - 1)
+
+    # ---- 1.3: the attenuation, against the four constants the binary holds
+    ck.equal("sound.volume_floor", sound.BASE_VOLUME_FLOOR,
+             b.cmp_imm(VOLUME_FLOOR_SITE))
+    ck.equal("sound.volume_silence", sound.SILENCE, VOLUME_SILENCE)
+    ck.equal("sound.volume_offset", sound.ATTENUATION_OFFSET, VOLUME_OFFSET)
+    ck.equal("sound.volume_per_percent", sound.HUNDREDTHS_PER_PERCENT,
+             VOLUME_PER_PERCENT)
+
+    # 100 % is the identity, and every point below it costs exactly 0.2 dB.
+    bases = list(range(BASE_SWEEP_LO, BASE_SWEEP_HI + 1, BASE_SWEEP_STEP))
+    ck.check("sound.percent_100_identity",
+             all(sound.attenuation(v, 100) == min(v, 0) for v in bases),
+             f"{len(bases)} base volumes, 100 % changes none of them")
+    ck.check("sound.percent_step",
+             all(sound.attenuation(0, p) - sound.attenuation(0, p - 1)
+                 == VOLUME_PER_PERCENT for p in range(1, 101)),
+             f"each point is {VOLUME_PER_PERCENT} hundredths of a dB")
+    ck.equal("sound.silence_gate",
+             (sound.attenuation(VOLUME_FLOOR, 100),
+              sound.attenuation(VOLUME_FLOOR - 1, 100)),
+             (VOLUME_FLOOR + VOLUME_PER_PERCENT * 100 + VOLUME_OFFSET,
+              VOLUME_SILENCE))
+    ck.check("sound.no_boost",
+             sound.attenuation(0, INFO_VOLUME_SPECIAL[102]) == 0
+             and sound.attenuation(0, 100) == 0,
+             "id 102's 101 % is clipped at 0, exactly like 100 %")
+    ck.equal("sound.passthrough",
+             sound.scaled_volume(-1234, sound.NO_SCALING, c.volumes), -1234)
+
+    # ---- 1.3: the model agrees with Info.lcl on all 103 ids
+    ck.equal("sound.info_ids", len(c.volumes), sound.INFO_VOLUME_IDS)
+    ck.equal("sound.info_ids_dense", sorted(c.volumes),
+             list(range(sound.INFO_VOLUME_IDS)), Checker.brief)
+    ck.equal("sound.scaled_all_ids",
+             {i: sound.scaled_volume(BASE_SWEEP_HI, i, c.volumes)
+              for i in sorted(c.volumes)},
+             {i: min(BASE_SWEEP_HI + VOLUME_PER_PERCENT * p + VOLUME_OFFSET, 0)
+              for i, p in sorted(c.volumes.items())}, Checker.brief)
+    ck.check("sound.rejects_undefined",
+             _raises(sound.scaled_volume, 0, sound.INFO_VOLUME_IDS, c.volumes)
+             and _raises(sound.scaled_volume, 0, sound.LOAD_ID_MAX + 1, c.volumes),
+             "an undefined id and one past the load bound are both refused")
+
+    # ---- 1.1: the pool drops rather than growing
+    pool = sound.SoundPool()
+    got = [pool.load("w", 0, sound.NO_SCALING, c.volumes)
+           for _ in range(sound.PLAY_SLOTS + 2)]
+    ck.equal("sound.pool_drops", got,
+             list(range(sound.PLAY_SLOTS)) + [-1, -1], Checker.brief)
+    ck.equal("sound.pool_drop_count", pool.drops, 2)
+    pool.kill(7)
+    ck.equal("sound.pool_kill_frees",
+             pool.load("w", 0, sound.NO_SCALING, c.volumes), 7)
+
+    # ---- 2: the partition of the 62 sites
+    sites = b.sound_sites()
+    owned = [a for addresses in sound.EVENT_SITES.values() for a in addresses]
+    ck.equal("sound.sites_partition", sorted(owned), sorted(sites),
+             Checker.brief)
+    ck.equal("sound.sites_disjoint", len(owned), len(set(owned)))
+    ck.equal("sound.event_routines", sorted(sound.EVENT_ROUTINES),
+             sorted(sound.EVENT_SITES), Checker.brief)
+    entries = sorted(b.call_entries())
+    owners = {}
+    for event, addresses in sound.EVENT_SITES.items():
+        found = {entries[bisect.bisect_right(entries, a) - 1] for a in addresses}
+        owners[event] = sorted(found)
+    ck.check("sound.sites_in_one_routine",
+             all(len(v) == 1 for v in owners.values()),
+             f"each of the {len(owners)} events' sites lie in one routine")
+    ck.equal("sound.event_owner",
+             {e: v[0] for e, v in owners.items()},
+             dict(sound.EVENT_ROUTINES), Checker.brief)
+
+    # ---- 1.4: which loads loop, derived from the play sites
+    plays = sorted(PLAY_SITES)
+    derived = tuple(a for a in sorted(sites)
+                    if PLAY_SITES[plays[bisect.bisect_right(plays, a)]][1]
+                    == PLAY_LOOPING)
+    ck.equal("sound.looping_loads", tuple(sorted(sound.LOOPING_LOADS)), derived,
+             Checker.brief)
+    ck.equal("sound.looping_plays",
+             len({plays[bisect.bisect_right(plays, a)]
+                  for a in sound.LOOPING_LOADS}),
+             sound.LOOPING_PLAY_SITES)
+
+    # ---- 2: the catalogue the converter writes
+    table = sound.catalogue(sites)
+    cues = [cue for group in table.values() for cue in group]
+    ck.equal("sound.catalogue_size", len(cues),
+             len(sites) - len(sound.COMPUTED_SITES))
+    ck.equal("sound.computed_sites", sorted(sound.COMPUTED_SITES),
+             sorted(a for a, (w, v) in sites.items() if w is None or v is None
+                    or w.startswith("%")), Checker.brief)
+    ck.check("sound.catalogue_volume_ids",
+             all(sound.load_id_valid(cue.volume_id) for cue in cues),
+             f"all {len(cues)} cue ids pass the load bound")
+    ck.check("sound.catalogue_ids_defined",
+             all(cue.volume_id == sound.NO_SCALING or cue.volume_id in c.volumes
+                 for cue in cues),
+             "every id a cue carries is defined by Info.lcl")
+
+    # ---- 2.2: case
+    index = sound.wave_index(c.waves)
+    ck.equal("sound.case_index", len(index), len(c.waves))
+    # Every literal name in the image, not only the ones this slice plays:
+    # the ten renames of section 2.2 are only ten when the direct sites are
+    # counted too, and a check over a subset would find eight and look right.
+    literal = sorted({cue.wave for cue in cues}
+                     | {n for n, _v in b.voice_arms() if n}
+                     | {w for _t, w, _v, _p in b.walk_arms().values() if w}
+                     | {w for w, _v in b.direct_sites().values()
+                        if w and "%" not in w})
+    ck.equal("sound.case_literals", len(literal), CASE_LITERALS)
+    ck.equal("sound.case_call_literals",
+             len({w for w, _v in b.sound_sites().values() if w and "%" not in w}
+                 | {w for w, _v in b.direct_sites().values()
+                    if w and "%" not in w}),
+             CASE_CALL_LITERALS)
+    ck.check("sound.case_resolves",
+             all(sound.resolve_wave(n, index) for n in literal),
+             f"{len(literal)}/{len(literal)} literal names resolve")
+    ck.equal("sound.case_mismatched",
+             tuple(sorted(n for n in literal
+                          if sound.resolve_wave(n, index) != n)),
+             CASE_MISMATCHED, Checker.brief)
+
+    # ---- 3: the weapon's own fire sound
+    ck.equal("sound.weapon_format", sound.WEAPON_WAVE_FORMAT,
+             WEAPON_WAVE_FORMAT)
+    ck.equal("sound.weapon_band", sound.WEAPON_VOLUME_BAND, WEAPON_VOLUME_BAND)
+    fires = {w: sound.weapon_fire(w, c.weapon_waves, index)
+             for w in sorted(c.weapon_waves)}
+    ck.equal("sound.weapon_waves", len(fires), INFO_WEAPON_WAVES)
+    ck.equal("sound.weapon_unresolved",
+             tuple(w for w, cue in fires.items() if cue is None),
+             WEAPON_WAVE_TYPO)
+    ck.check("sound.weapon_volume_is_id",
+             all(cue.volume_id == w for w, cue in fires.items() if cue),
+             f"{sum(1 for cue in fires.values() if cue)} weapons, each scaled "
+             "by its own id")
+    ck.check("sound.weapon_35_corrected",
+             sound.weapon_fire(sound.WEAPON_MISSING_SOUND, c.weapon_waves,
+                               index, faithful=False) is not None,
+             "the correction resolves the name the Faithful preset does not")
+
+    # ---- 4.1: the two cursors
+    voices = sound.VoiceCursors()
+    human = [voices.pain(sound.SPECIES_HUMAN) for _ in range(3)]
+    alien = [voices.pain(sound.SPECIES_ALIEN) for _ in range(3)]
+    ck.equal("sound.voice_human",
+             [(cue.wave, cue.volume_id) for cue in human],
+             [(n, v) for _s, n, _vs, v in reversed(VOICE_ARMS[6:9])],
+             Checker.brief)
+    ck.equal("sound.voice_alien_fixed",
+             [cue.volume_id for cue in alien],
+             list(sound.ALIEN_PAIN_VOLUME_IDS))
+    ck.equal("sound.voice_alien_original",
+             [c2.volume_id for c2 in
+              [sound.VoiceCursors(fix_alien_volume=False)
+               .pain(sound.SPECIES_ALIEN) for _ in range(1)]],
+             [sound.PAIN_VOLUME_IDS[0]])
+    ck.equal("sound.voice_wraps",
+             [voices.pain(sound.SPECIES_HUMAN).wave for _ in range(4)],
+             [sound.PAIN_WAVES[0][i] for i in (0, 1, 2, 0)], Checker.brief)
+    shared = sound.VoiceCursors()
+    shared.pain(sound.SPECIES_HUMAN)
+    ck.equal("sound.voice_shared_cursor", shared.second_human().wave,
+             sound.SECOND_HUMAN_WAVES[1])
+    ck.equal("sound.voice_silent_species",
+             sound.VoiceCursors().pain(2), None)
+    ck.equal("sound.voice_unnamed_ids", sound.UNNAMED_VOLUME_IDS,
+             VOLUME_IDS_UNUSED)
+
+    # ---- 5: the eight footstep arms
+    walk = b.walk_arms()
+    ck.equal("sound.footstep_arms", sorted(sound.FOOTSTEP_ARMS), sorted(walk),
+             Checker.brief)
+    ck.equal("sound.footstep_types",
+             sorted(t for types, _s in sound.FOOTSTEP_ARMS.values()
+                    for t in types),
+             list(range(sound.FOOTSTEP_TYPES)), Checker.brief)
+    ck.equal("sound.footstep_table",
+             {t: ((s.wave, s.volume_id, s.period) if s else None)
+              for t in range(sound.FOOTSTEP_TYPES)
+              for s in (sound.footstep(t),)},
+             {t: ((wave, volume, period) if wave else None)
+              for types, wave, volume, period in walk.values()
+              for t in types},
+             Checker.brief)
+    ck.equal("sound.footstep_silent",
+             sum(1 for t in range(sound.FOOTSTEP_TYPES)
+                 if sound.footstep(t) is None), WALK_SILENT_TYPES)
+    ck.equal("sound.footstep_24_faithful",
+             sound.footstep(sound.FOOTSTEP_STRAY_TYPE).volume_id,
+             WALK_STRAY_VOLUME[0])
+    ck.equal("sound.footstep_24_corrected",
+             sound.footstep(sound.FOOTSTEP_STRAY_TYPE,
+                            faithful=False).volume_id,
+             sound.FOOTSTEP_FIXED_VOLUME_ID)
+    ck.check("sound.footstep_24_is_louder",
+             c.volumes[WALK_STRAY_VOLUME[0]] > c.volumes[
+                 sound.FOOTSTEP_FIXED_VOLUME_ID],
+             f"id {WALK_STRAY_VOLUME[0]} is "
+             f"{c.volumes[WALK_STRAY_VOLUME[0]]} %, id "
+             f"{sound.FOOTSTEP_FIXED_VOLUME_ID} is "
+             f"{c.volumes[sound.FOOTSTEP_FIXED_VOLUME_ID]} %")
+
+    # ---- 2.3 and 8.1: the named outcome sets
+    ck.equal("sound.overheat_cues",
+             {k: (v.wave, v.volume_id)
+              for k, v in sorted(sound.OVERHEAT_CUES.items())},
+             {k: sites[v.site] for k, v in sorted(sound.OVERHEAT_CUES.items())},
+             Checker.brief)
+    ck.equal("sound.overheat_sites",
+             sorted(cue.site for cue in sound.OVERHEAT_CUES.values()),
+             sorted(sound.EVENT_SITES["overheat"]), Checker.brief)
+    switch_waves = {name for _arm, wave in b.weapon_sounds().values()
+                    if wave for _site, name in (wave,)}
+    ck.equal("sound.impact_cues",
+             {cue.wave for cue in sound.IMPACT_CUES.values()}, switch_waves,
+             Checker.brief)
+    ck.equal("sound.impact_silent_weapons",
+             sum(1 for _arm, wave in b.weapon_sounds().values() if wave is None),
+             IMPACT_SOUND_SILENT)
+
+    # ---- the one set-piece frame count the documents do not give
+    #
+    # A remake has to pace `RoofUnit` at *some* rate, and the difference
+    # between a guess and this is one `sub` instruction.
+    ck.equal("roof.drop_step", b.i32(ROOF_DROP_SITE + 1), ROOF_DROP_STEP, hex)
+    ck.equal("roof.draw_offset", b.i32(ROOF_DRAW_OFFSET_SITE + 1),
+             ROOF_DRAW_OFFSET, hex)
+    ck.equal("roof.tick", b.call_target(ROOF_TICK_SITE), FRAME_TICK, hex)
+    ck.check("roof.step_is_one_field", ROOF_DROP_STEP == 3200,
+             "the falling unit drops a whole map field per displayed frame")
+    # The three sites really are inside `RoofUnit`'s own routine, bounded by
+    # the next call entry -- otherwise the constants above would be read out
+    # of whatever function happened to follow it.
+    entries = sorted(b.call_entries())
+    # And the address itself is a routine somebody calls, not an offset into
+    # one: the containment test below tolerates a wrong byte, this does not.
+    ck.check("roof.is_a_routine", ROOF_UNIT in set(entries),
+             f"0x{ROOF_UNIT:08X} is the target of a call")
+    after = [e for e in entries if e > ROOF_UNIT]
+    end = min(after) if after else ROOF_UNIT + 0x600
+    ck.check("roof.sites_inside",
+             all(ROOF_UNIT < site < end for site in
+                 (ROOF_DROP_SITE, ROOF_DRAW_OFFSET_SITE, ROOF_TICK_SITE)),
+             f"the drop, the draw offset and the tick all lie in "
+             f"0x{ROOF_UNIT:08X}..0x{end:08X}")
+
+    # ---- 6: nothing dead reaches the cache
+    wanted, missing = sound.wanted_waves(sites, c.weapon_waves, index)
+    ck.check("sound.wanted_resolve",
+             all(w in c.waves for w in wanted),
+             f"{len(wanted)} shipped waves in the closure")
+    ck.equal("sound.wanted_missing", tuple(missing),
+             (WEAPON_WAVE_FORMAT % c.weapon_waves[WEAPON_WAVE_TYPO[0]],))
+    ck.check("sound.wanted_excludes_dead",
+             not (set(wanted) & {c.resolves(n) for n in sound.DEAD_WAVES}),
+             f"none of the {len(sound.DEAD_WAVES)} unreferenced waves is wanted")
+    ck.equal("sound.dead_waves", tuple(sorted(sound.DEAD_WAVES)),
+             tuple(sorted(WAVES_UNREFERENCED)), Checker.brief)
+
+    # ---- the pins the mutation battery found nothing reading -------------
+    #
+    # Every one of these was silent under a one-step perturbation until the
+    # check beside it existed.  Each compares the model against **decoded**
+    # data rather than against a second copy of itself.
+    ck.equal("sound.weapon_missing_id", sound.WEAPON_MISSING_SOUND,
+             WEAPON_WAVE_TYPO[0])
+    # The alien scream's corrected ids are the ones the *fall* sequence loads
+    # with `S_ALI_0/1/2`, read back out of `aPlayJumpAnimaion`'s own sites.
+    fall = {name: volume for name, volume in
+            (sites[a] for a in sound.EVENT_SITES["jump"])
+            if name and name.startswith("S_ALI_")}
+    ck.equal("sound.alien_ids_from_fall",
+             tuple(sound.ALIEN_PAIN_VOLUME_IDS),
+             tuple(fall[n] for n in sorted(fall)))
+    # The second human set's ids are the first three voice arms', decoded.
+    ck.equal("sound.second_human_ids",
+             tuple(sound.SECOND_HUMAN_VOLUME_IDS),
+             tuple(v for _n, v in reversed(b.voice_arms()[0:3])))
+    ck.equal("sound.second_human_waves",
+             tuple(sound.SECOND_HUMAN_WAVES),
+             tuple(n for n, _v in reversed(b.voice_arms()[0:3])))
+    ck.equal("sound.cursor_modulus", sound.PAIN_CURSOR_MODULUS,
+             len(sound.PAIN_WAVES[sound.SPECIES_HUMAN]))
+    ck.equal("sound.footstep_stray_id", sound.FOOTSTEP_STRAY_VOLUME_ID,
+             walk[[a for a, (t, _w, _v, _p) in walk.items()
+                   if t == (sound.FOOTSTEP_STRAY_TYPE,)][0]][2])
+    # The corrected id is its twin's -- the other `mdecther.wav` arm, which is
+    # what makes 45 recognisable as a typo rather than a choice.
+    twin = [v for _t, w, v, _p in walk.values()
+            if w == sound.footstep(sound.FOOTSTEP_STRAY_TYPE).wave
+            and v != sound.FOOTSTEP_STRAY_VOLUME_ID]
+    ck.equal("sound.footstep_fixed_id", [sound.FOOTSTEP_FIXED_VOLUME_ID], twin)
+    # Id 96 and its five waves, from the seventeen direct sites.
+    direct = b.direct_sites()
+    ck.equal("sound.interface_id", sound.INTERFACE_VOLUME_ID,
+             sorted({v for _n, v in direct.values()
+                     if v is not None and v != sound.NO_SCALING})[0])
+    # **Equality against the sites that carry id 96, not containment against
+    # every direct site.** Containment tolerated a perturbed name that happened
+    # to be some *other* direct site's, which is exactly what the mutation
+    # battery found: `click_2.wav` -> `click_3.wav` stayed inside the set and
+    # nothing failed. Filtering the sites by the volume id is a second reading
+    # -- it derives the tuple from the binary rather than checking it is a
+    # subset of something larger -- and it re-pins 96 in the same breath.
+    ck.equal("sound.interface_waves",
+             tuple(sorted(_sites_with_volume(direct,
+                                             sound.INTERFACE_VOLUME_ID))),
+             tuple(sorted(w.lower() for w in sound.INTERFACE_WAVES)),
+             Checker.brief)
+    ck.equal("sound.impact_cue_ids",
+             {k: v.volume_id for k, v in sorted(sound.IMPACT_CUES.items())},
+             {k: sites[v.site][1]
+              for k, v in sorted(sound.IMPACT_CUES.items())}, Checker.brief)
+    ck.equal("sound.atlas_name_present",
+             sorted(c.texture(ATLAS_NAME)), sorted(c.prototypes),
+             Checker.brief)
+    ck.equal("sound.atlas_size",
+             sorted({size for size in c.texture(ATLAS_NAME).values()}),
+             [(ATLAS_SIZE, ATLAS_SIZE)])
+    # The grid really is square in the *binary* too: the row and the column
+    # bytes are both scaled by the same shift on the way to the draw call, and
+    # that shift is the tile size. Comparing `ATLAS_TILE * ATLAS_GRID` with
+    # `ATLAS_SIZE` was comparing a definition with itself once the duplicate
+    # literal was removed.
+    ck.equal("sound.atlas_grid_squares",
+             (b.shl_scale(ATLAS_ROW_SCALE_SITE),
+              b.shl_scale(ATLAS_COL_SCALE_SITE)),
+             (ATLAS_TILE, ATLAS_TILE))
+    ck.equal("kind.arm_count", len(set(b.kind_arms().values())), KIND_ARMS)
+
+    # ---- the playlist, and the compatibility flags
+    ck.equal("sound.playlist", sound.playlist("3.5.7.3.4.5"), [3, 5, 7, 3, 4, 5],
+             Checker.brief)
+    ck.equal("sound.playlist_drops_junk", sound.playlist("3..x.5"), [3, 5])
+    ck.equal("sound.compat_flags", sound.COMPAT_FLAGS,
+             (sound.COMPAT_WEAPON_35, sound.COMPAT_FOOTSTEP_24))
+    # A flag *name* has one independent reading and it is not in this binary:
+    # the remake spells the same two strings, by hand, in `game/audio/`. A
+    # rename on one side and not the other silently gives the player a preset
+    # that toggles nothing, which is the whole failure this catches.
+    spelled = _flag_names_in_remake()
+    ck.check("sound.compat_flags_spelled",
+             spelled is not None
+             and all(flag in spelled for flag in sound.COMPAT_FLAGS),
+             f"both flag names appear in {REMAKE_AUDIO_DIR}"
+             if spelled is not None else f"{REMAKE_AUDIO_DIR} is not readable")
+
+
+#: The fixture `godot/tests/test_sound.gd` replays.  Bumped when its shape
+#: changes, so a stale copy is refused by name rather than silently read.
+SOUND_CASES_SCHEMA = "incubation.sound-cases/1"
+
+
+def emit_sound_cases(root: str, out: str) -> int:
+    """Write the trace the GDScript sound layer is compared against.
+
+    The oracle boundary is **executable-Python**: every expectation here is
+    produced by `inclib/sound.py`, which is itself checked against the binary
+    by `--check`.  Nothing in this file claims native parity, and the fixture
+    says so in its own schema note.
+    """
+    b = Binary(root)
+    c = Corpus(root)
+    if not c.waves or not c.volumes:
+        raise SystemExit(f"{root}: no Waves/ or no Info.lcl -- is that the "
+                         "game root?")
+    sites = b.sound_sites()
+    index = sound.wave_index(c.waves)
+
+    attenuations = []
+    for base in range(VOLUME_FLOOR - 500, 1, 100):
+        for percent in (0, 1, 50, 99, 100, 101, 120):
+            attenuations.append({"base": base, "percent": percent,
+                                 "want": sound.attenuation(base, percent)})
+
+    scaled = []
+    for volume_id in sorted(c.volumes) + [sound.NO_SCALING]:
+        for base in (0, -1000, VOLUME_FLOOR, VOLUME_FLOOR - 1):
+            scaled.append({"base": base, "volume_id": volume_id,
+                           "want": sound.scaled_volume(base, volume_id,
+                                                       c.volumes)})
+
+    # The pool, as an op log the twin replays step for step.
+    pool = sound.SoundPool()
+    pool_ops = []
+    for step in range(sound.PLAY_SLOTS + 3):
+        got = pool.load("w%d.wav" % step, 0, sound.NO_SCALING, c.volumes)
+        pool.play(got, step % 4 == 0)
+        pool_ops.append({"op": "load", "want": got, "drops": pool.drops,
+                         "loop": step % 4 == 0})
+    for slot in (0, 7, 19):
+        pool_ops.append({"op": "kill", "slot": slot,
+                         "want": 1 if pool.kill(slot) else 0,
+                         "drops": pool.drops, "loop": False})
+    pool_ops.append({"op": "kill_looping", "want": pool.kill_looping(),
+                     "drops": pool.drops, "loop": False})
+    pool_ops.append({"op": "live", "want": len(pool.live()),
+                     "drops": pool.drops, "loop": False})
+
+    voices = sound.VoiceCursors()
+    voice_trace = []
+    for step, species in enumerate((0, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1)):
+        cue = voices.pain(species)
+        voice_trace.append({"call": "pain", "species": species,
+                            "wave": cue.wave.lower() if cue else "",
+                            "volume_id": cue.volume_id if cue else 0})
+        if step % 4 == 3:
+            second = voices.second_human()
+            voice_trace.append({"call": "second_human", "species": 0,
+                                "wave": second.wave.lower(),
+                                "volume_id": second.volume_id})
+
+    footsteps = []
+    for unit_type in range(sound.FOOTSTEP_TYPES):
+        for faithful in (True, False):
+            step = sound.footstep(unit_type, faithful=faithful)
+            footsteps.append({
+                "type": unit_type, "faithful": faithful,
+                "wave": step.wave.lower() if step else "",
+                "volume_id": step.volume_id if step else 0,
+                "period": -1 if step is None or step.period is None
+                          else step.period})
+
+    # The period global, as an ordered trace: type 54 writes none, so what it
+    # walks at depends on who walked before it.
+    carry = sound.WalkPeriod()
+    walk_trace = []
+    for unit_type in (54, 0, 54, 20, 54, 7, 54, 24, 54):
+        step = carry.start(unit_type)
+        walk_trace.append({"type": unit_type,
+                           "wave": step.wave.lower() if step else "",
+                           "period": step.period if step else -1,
+                           "global": carry.frames})
+
+    weapons = []
+    for weapon in sorted(c.weapon_waves):
+        for faithful in (True, False):
+            cue = sound.weapon_fire(weapon, c.weapon_waves, index,
+                                    faithful=faithful)
+            weapons.append({"weapon": weapon, "faithful": faithful,
+                            "wave": cue.wave.lower() if cue else "",
+                            "volume_id": cue.volume_id if cue else -1})
+
+    table = sound.catalogue(sites)
+    wanted, missing = sound.wanted_waves(sites, c.weapon_waves, index)
+    payload = {
+        "schema": SOUND_CASES_SCHEMA,
+        "oracle": "executable-Python (tools/inclib/sound.py); the service "
+                  "hooks of docs/28 section 12 are not natively validated",
+        # The very document the cache carries, so the suite builds its tables
+        # from the same input the game does rather than from a second shape
+        # that could drift away from it.
+        "document": sound_document(root),
+        "play_slots": sound.PLAY_SLOTS,
+        "volume_table": {str(k): v for k, v in sorted(c.volumes.items())},
+        "attenuation": attenuations,
+        "scaled": scaled,
+        "pool": pool_ops,
+        "voices": voice_trace,
+        "footsteps": footsteps,
+        "walk_period": {"initial": sound.FOOTSTEP_PERIOD_INITIAL,
+                        "trace": walk_trace},
+        "weapons": weapons,
+        "catalogue": {event: [{"wave": cue.wave.lower(),
+                               "volume_id": cue.volume_id,
+                               "loop": cue.loop}
+                              for cue in cues]
+                      for event, cues in sorted(table.items())},
+        "case_map": {name.lower(): name for name in sorted(wanted)},
+        "wanted": wanted,
+        "unresolved": missing,
+        "overheat": {name: {"wave": cue.wave.lower(),
+                            "volume_id": cue.volume_id}
+                     for name, cue in sorted(sound.OVERHEAT_CUES.items())},
+        "impact": {name: {"wave": cue.wave.lower(),
+                          "volume_id": cue.volume_id}
+                   for name, cue in sorted(sound.IMPACT_CUES.items())},
+        "playlists": [{"program": text, "want": sound.playlist(text)}
+                      for text in ("3.5.7.3.4.5", "6.3.5", "3.7.5.4",
+                                   "3.5.4", "7.4.5", "3..x.5", "")],
+    }
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    LOG.warning("wrote %s (%d attenuations, %d scaled, %d footsteps, "
+                "%d weapons, %d events)", out, len(attenuations), len(scaled),
+                len(footsteps), len(weapons), len(table))
+    return 0
+
+
+def _raises(fn, *args) -> bool:
+    try:
+        fn(*args)
+    except sound.SoundError:
+        return True
+    return False
 
 
 def _kind_writes(kind: int) -> tuple[int, ...]:
@@ -2863,6 +3993,194 @@ def report_joints(root: str) -> None:
           f"({len(b.blob_calls())} blob calls)")
 
 
+#: The two documents the converter writes into the cache.  They are built here
+#: rather than in ``inclib/convert.py`` so the binary has exactly one reader.
+SOUND_DOCUMENT_SCHEMA = "incubation.sound/1"
+BLOB_DOCUMENT_SCHEMA = "incubation.blobs/1"
+
+#: The sprite atlas: one 256x256 VISN record named ``anim``, an 8x8 grid of
+#: 32x32 tiles, drawn as a camera-facing quad of half-extent ``size * 160``
+#: world units (docs/28 section 7.3).
+ATLAS_NAME = ATLAS_TEXTURE
+#: The half-extent scale is `SIZE_SCALE`, not a second copy of 160: it used to
+#: be one, and nothing read it.
+ATLAS_HALF_EXTENT_SCALE = SIZE_SCALE
+
+
+def sound_document(root: str) -> dict:
+    """The sound layer as portable data, waves named by their cache file.
+
+    Case is resolved **here, once**: the document names every wave in lower
+    case and the converter writes the file under that name, so the runtime
+    never does a case-insensitive search and docs/28 section 2.2's hazard
+    cannot recur on a case-sensitive filesystem.
+    """
+    b = Binary(root)
+    c = Corpus(root)
+    sites = b.sound_sites()
+    index = sound.wave_index(c.waves)
+    table = sound.catalogue(sites)
+
+    def cue(entry) -> dict:
+        return {"wave": entry.wave.lower(), "volume_id": entry.volume_id,
+                "loop": entry.loop, "site": f"0x{entry.site:08X}"}
+
+    weapons = {}
+    for weapon in sorted(c.weapon_waves):
+        fire = sound.weapon_fire(weapon, c.weapon_waves, index)
+        corrected = sound.weapon_fire(weapon, c.weapon_waves, index,
+                                      faithful=False)
+        weapons[str(weapon)] = {
+            "wave": fire.wave.lower() if fire else None,
+            "corrected": corrected.wave.lower() if corrected else None,
+            "volume_id": weapon,
+            "declared": sound.WEAPON_WAVE_FORMAT % c.weapon_waves[weapon],
+        }
+
+    wanted, missing = sound.wanted_waves(sites, c.weapon_waves, index)
+    return {
+        "schema": SOUND_DOCUMENT_SCHEMA,
+        "source": {"exe": GAME_EXE, "info": INFO_LCL},
+        "play_slots": sound.PLAY_SLOTS,
+        "attenuation": {
+            "base_floor": sound.BASE_VOLUME_FLOOR,
+            "silence": sound.SILENCE,
+            "offset": sound.ATTENUATION_OFFSET,
+            "per_percent": sound.HUNDREDTHS_PER_PERCENT,
+            "ceiling": sound.ATTENUATION_CEILING,
+            "no_scaling": sound.NO_SCALING,
+            "load_id_max": sound.LOAD_ID_MAX,
+            "set_id_max": sound.SET_ID_MAX,
+        },
+        "volumes": {str(i): v for i, v in sorted(c.volumes.items())},
+        "events": {event: [cue(entry) for entry in entries]
+                   for event, entries in sorted(table.items())},
+        "weapons": weapons,
+        "voices": {
+            "human": [w.lower() for w in sound.PAIN_WAVES[sound.SPECIES_HUMAN]],
+            "alien": [w.lower() for w in sound.PAIN_WAVES[sound.SPECIES_ALIEN]],
+            "second_human": [w.lower() for w in sound.SECOND_HUMAN_WAVES],
+            "volume_ids": list(sound.PAIN_VOLUME_IDS),
+            "alien_volume_ids": list(sound.ALIEN_PAIN_VOLUME_IDS),
+            "second_human_volume_ids": list(sound.SECOND_HUMAN_VOLUME_IDS),
+            "cursor_modulus": sound.PAIN_CURSOR_MODULUS,
+        },
+        "footsteps": [
+            {"arm": f"0x{arm:08X}", "types": list(types),
+             "wave": step.wave.lower() if step else None,
+             "volume_id": step.volume_id if step else -1,
+             "period": step.period if step and step.period is not None else -1}
+            for arm, (types, step) in sorted(sound.FOOTSTEP_ARMS.items())],
+        "footstep_period_initial": sound.FOOTSTEP_PERIOD_INITIAL,
+        "footstep_fix": {"type": sound.FOOTSTEP_STRAY_TYPE,
+                         "original": sound.FOOTSTEP_STRAY_VOLUME_ID,
+                         "corrected": sound.FOOTSTEP_FIXED_VOLUME_ID},
+        "overheat": {name: cue(entry)
+                     for name, entry in sorted(sound.OVERHEAT_CUES.items())},
+        "impact": {name: cue(entry)
+                   for name, entry in sorted(sound.IMPACT_CUES.items())},
+        "interface": {"volume_id": sound.INTERFACE_VOLUME_ID,
+                      "waves": [w.lower() for w in sound.INTERFACE_WAVES]},
+        "compat_flags": list(sound.COMPAT_FLAGS),
+        "weapon_missing_sound": sound.WEAPON_MISSING_SOUND,
+        "music": {"format": sound.MUSIC_FORMAT,
+                  "alternate": sound.MUSIC_ALTERNATE_FORMAT},
+        "waves": {name.lower(): name for name in wanted},
+        "unresolved": missing,
+    }
+
+
+def blob_models(b: Binary) -> list:
+    """Every ``.3DI`` name the 116 constructor calls pass, sorted."""
+    return sorted({model for model, _cl, _k, _l in b.blob_calls().values()
+                   if isinstance(model, str)})
+
+
+def blob_document(root: str) -> dict:
+    """The effect tables as portable data: the pool, the kinds, the creators,
+    the sprite parameters, the three weapon switches and ``CreateBGB``."""
+    b = Binary(root)
+    arms = b.kind_arms()
+    order: list = []
+    for kind in sorted(arms):
+        if arms[kind] not in order:
+            order.append(arms[kind])
+    spawns = b.kind_spawns()
+    return {
+        "schema": BLOB_DOCUMENT_SCHEMA,
+        "source": {"exe": GAME_EXE},
+        "pool": {
+            "slots": BLOB_SLOTS,
+            "stride": BLOB_STRIDE,
+            "immortal_life": BLOB_IMMORTAL,
+            "kind_bound": BLOB_KIND_BOUND,
+            "gravity_split": BLOB_GRAVITY_SPLIT,
+            "gravity_high": BLOB_GRAVITY_HIGH,
+            "gravity_low": BLOB_GRAVITY_LOW,
+        },
+        "atlas": {"name": ATLAS_NAME, "tile": ATLAS_TILE, "grid": ATLAS_GRID,
+                  "size": ATLAS_SIZE,
+                  "half_extent_scale": ATLAS_HALF_EXTENT_SCALE},
+        "kinds": {str(k): {"arm": f"0x{a:08X}", "arm_id": order.index(a),
+                           "spawns": [_creator(t) for t in spawns.get(k, ())],
+                           "unreachable": k in KIND_UNREACHABLE}
+                  for k, a in sorted(arms.items())},
+        "morph": {"kind": KIND_MORPH_TO, "life": KIND_MORPH_LIFE},
+        "computed_kinds": {f"0x{s:08X}": list(produces)
+                           for s, (_i, _b, produces) in
+                           sorted(KIND_COMPUTED.items())},
+        "unreachable": list(KIND_UNREACHABLE),
+        "models": blob_models(b),
+        "models_rare": {k: list(v) for k, v in
+                        sorted(BLOB_MODELS_RARE.items())},
+        "calls": {f"0x{s:08X}": {
+            "model": m if isinstance(m, str) else None,
+            "class": cl, "kind": k, "life": l,
+            "creator": _creator_address(s)}
+            for s, (m, cl, k, l) in sorted(b.blob_calls().items())},
+        "sprites": {f"0x{s:08X}": {"row": r, "col": co, "size": z}
+                    for s, (r, co, z) in sorted(b.sprite_params().items())},
+        "creators": {f"0x{k:08X}": (v[1] if v else None)
+                     for k, v in sorted(BLOB_CREATOR_NAMES.items())},
+        # The switches name creators **by address**, not by name: several
+        # names appear at more than one address (`aBlob_CreateLaser` at four),
+        # which is what C++ overloads look like once the linker is done, and
+        # keying by name would merge two different effects.
+        "weapon_muzzle": {str(k): [f"0x{t:08X}" for _s, t in calls]
+                          for k, (_a, calls) in sorted(WEAPON_MUZZLE.items())},
+        "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
+                          for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
+        "weapon_impact_sound": {str(k): (w[1].lower() if w else None)
+                                for k, (_a, w) in
+                                sorted(WEAPON_IMPACT_SOUND.items())},
+        "bgb": {"slots": BGB_SLOTS, "stride": BGB_STRIDE,
+                "register": {str(k): _creator(target) if target else None
+                             for k, (_site, target) in sorted(BGB_ARMS.items())},
+                "tick": {str(k): _creator(target) if target else None
+                         for k, (_site, target) in
+                         sorted(BGB_TICK_ARMS.items())}},
+        "joints": {str(k): {"model": model, "places": list(places),
+                            "writes": [f"0x{w:02X}" for w in writes]}
+                   for k, (model, places, writes) in
+                   sorted(JOINT_KINDS.items())},
+    }
+
+
+def _creator_address(site: int):
+    """The creator whose body contains constructor call *site*, as an address.
+
+    Bounded by the nearest creator entry at or below the site.  Two of the 116
+    calls sit outside every creator (docs/28 section 8's two foreign callers),
+    and those come back ``None`` rather than being attributed to whichever
+    function happens to precede them.
+    """
+    best = None
+    for address in BLOB_CREATOR_NAMES:
+        if address <= site and (best is None or address > best):
+            best = address
+    return None if best is None else f"0x{best:08X}"
+
+
 def report_json(root: str) -> None:
     b = Binary(root)
     c = Corpus(root)
@@ -2885,9 +4203,13 @@ def report_json(root: str) -> None:
         "blobs": {f"0x{s:08X}": {"model": m if isinstance(m, str) else None,
                                  "class": cl, "kind": k, "life": l}
                   for s, (m, cl, k, l) in sorted(b.blob_calls().items())},
-        "weapon_muzzle": {str(k): [_creator(t) for _s, t in calls]
+        # The switches name creators **by address**, not by name: several
+        # names appear at more than one address (`aBlob_CreateLaser` at four),
+        # which is what C++ overloads look like once the linker is done, and
+        # keying by name would merge two different effects.
+        "weapon_muzzle": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_MUZZLE.items())},
-        "weapon_impact": {str(k): [_creator(t) for _s, t in calls]
+        "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
         "weapon_impact_sound": {str(k): (w[1] if w else None)
                                 for k, (_a, w) in sorted(WEAPON_IMPACT_SOUND.items())},
@@ -2906,6 +4228,10 @@ def main(argv=None) -> int:
     ap.add_argument("--joints", metavar="ROOT",
                     help="the object_3d joint-angle buffer")
     ap.add_argument("--json", metavar="ROOT", help="dump everything as JSON")
+    ap.add_argument("--emit-sound-cases", metavar="OUT",
+                    help="write the sound-layer fixture the Godot suite reads")
+    ap.add_argument("--root", metavar="ROOT",
+                    help="the game root --emit-sound-cases reads")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -2928,6 +4254,10 @@ def main(argv=None) -> int:
     if args.json:
         report_json(args.json)
         return 0
+    if args.emit_sound_cases:
+        if not args.root:
+            ap.error("--emit-sound-cases needs --root")
+        return emit_sound_cases(args.root, args.emit_sound_cases)
     if not args.check:
         ap.print_help()
         return 2

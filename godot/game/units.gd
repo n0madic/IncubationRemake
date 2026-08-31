@@ -48,6 +48,30 @@ var states: Dictionary[int, CharismaState] = {}
 ## Slot -> an in-progress walk, `{"cells": PackedInt32Array, "width": int,
 ## "elapsed": float, "seconds": float}`. Empty between walks.
 var _walks: Dictionary[int, Dictionary] = {}
+## Slots whose node is built but **not shown**, because a set piece is still
+## delivering them.
+##
+## `core` inserts a `RoofUnit`'s alien the moment the command runs, so without
+## this the unit appears at the *start* of its fall and the drop sequence plays
+## over a body that is already standing there. The rule is not that the unit
+## does not exist -- it does, and every rule can see it -- but that the picture
+## catches up with the state when the sequence ends, which is the same contract
+## the terrain diff has.
+var _suppressed: Dictionary[int, bool] = {}
+## Slots that crossed a footstep boundary since [method steps_taken] was last
+## called, in the order they crossed.
+##
+## The walk is here and the audio is not: this view counts frames and says who
+## put a foot down, and `main.gd` decides what that sounds like. docs/28
+## section 5's period is a number handed in by [method start_walk], so nothing
+## in this file knows a wave from a volume id.
+var _steps: Array[int] = []
+## Slot -> world units the unit's node is held away from where the world says
+## it stands, while a set piece carries it. See [method lift].
+var _lifts: Dictionary[int, int] = {}
+## The world this view was last built from, so a lift can work out the height
+## it is an offset *from* without the caller passing it in each frame.
+var world_ref: World = null
 
 
 func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
@@ -60,8 +84,10 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	bodies.clear()
 	states.clear()
 	_walks.clear()
+	_steps.clear()
 	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
 	var types: UnitTypeTable = world.unit_types()
+	world_ref = world
 	# **What is drawn is a fresh fog pass, not the stored one.** The rules read
 	# `+0x4F` as the last hand-over left it; the picture does not. `0x00481F00`
 	# rebuilds the fog before every player command and restores only the unit
@@ -81,6 +107,11 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		if not Fog.is_drawn(view):
 			continue
 		add_child(_build_one(view, types, prototypes, textures, world))
+	# **After** the loop, not inside it: a rebuild recreates every node, so a
+	# unit a set piece is still delivering has to be hidden again each time --
+	# and so does one a lift is carrying.
+	_apply_suppression()
+	_apply_lifts()
 
 
 func _build_one(view: Dictionary, types: UnitTypeTable,
@@ -176,13 +207,33 @@ func animate(delta: float, world: World) -> void:
 ## is what keeps [AIPlayback]'s `skip()` meaning "stop drawing" rather than
 ## "stop simulating".
 func start_walk(slot: int, cells: PackedInt32Array, width: int,
-		seconds: float) -> void:
+		seconds: float, step_frames: int = 0) -> void:
 	if cells.size() < 2 or seconds <= 0.0:
 		return
 	_walks[slot] = {"cells": cells, "width": width, "elapsed": 0.0,
-		"seconds": seconds}
+		"seconds": seconds, "step_frames": step_frames, "frames": 0.0,
+		"steps": 0}
 	if states.has(slot):
 		states[slot].walk()
+	# The original starts the walk sound with the walk animation and repeats it
+	# every `step_frames` frames after that. That the *first* step is at frame
+	# zero rather than at the first boundary is this remake's reading of
+	# `aStartWalkAnimationSound`, whose caller is not decompiled; a walk shorter
+	# than one period would otherwise be silent, and the shortest shipped path
+	# is one field, which is six frames against periods of 2 to 8.
+	if step_frames > 0:
+		_steps.append(slot)
+
+
+## The slots that put a foot down since the last call, and clear the list.
+##
+## Returned by value and emptied here: a caller that forgets to drain it would
+## otherwise hear every step of the mission at once, which is exactly the sort
+## of thing an aliasing `Array` return would hide.
+func steps_taken() -> Array[int]:
+	var taken: Array[int] = _steps.duplicate()
+	_steps.clear()
+	return taken
 
 
 ## True while any body is still walking, so a caller can wait for it.
@@ -198,6 +249,7 @@ func finish_walks(world: World) -> void:
 	for slot: int in _walks.keys():
 		_snap_to_end(slot, world)
 	_walks.clear()
+	_steps.clear()
 
 
 func _advance_walk(slot: int, delta: float, world: World) -> void:
@@ -211,6 +263,17 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 		_walks.erase(slot)
 		return
 	walk["elapsed"] = elapsed
+	var step_frames: int = DictRead.as_int(walk["step_frames"])
+	if step_frames > 0:
+		var frames: float = DictRead.as_float(walk["frames"]) \
+			+ delta * CharismaState.FRAMES_PER_SECOND
+		walk["frames"] = frames
+		var due: int = int(frames) / step_frames
+		var taken: int = DictRead.as_int(walk["steps"])
+		while taken < due:
+			taken += 1
+			_steps.append(slot)
+		walk["steps"] = taken
 	_walks[slot] = walk
 	# Where along the whole path the body is, as a cell pair and a fraction.
 	var travelled: float = (elapsed / seconds) * float(cells.size() - 1)
@@ -320,3 +383,108 @@ func _body_for(view: Dictionary) -> CharismaBody:
 	if model == null:
 		return null
 	return CharismaBody.create(model, library)
+
+
+## Hide `slot` until [method reveal] is called for it, or for everything.
+##
+## Applied on every rebuild rather than once, because `UnitsView.build` frees
+## and recreates every node on each fog change -- a node hidden once would come
+## back visible on the next one.
+func suppress(slot: int) -> void:
+	_suppressed[slot] = true
+	_apply_suppression()
+
+
+func reveal(slot: int) -> void:
+	if _suppressed.erase(slot):
+		_apply_suppression()
+
+
+func reveal_all() -> int:
+	var count: int = _suppressed.size()
+	_suppressed.clear()
+	_apply_suppression()
+	return count
+
+
+func suppressed() -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for slot: int in _suppressed:
+		out.append(slot)
+	out.sort()
+	return out
+
+
+func _apply_suppression() -> void:
+	for child: Node in get_children():
+		var node: Node3D = child as Node3D
+		if node == null:
+			continue
+		var slot: int = node.name.get_slice("_", 1).to_int()
+		node.visible = not _suppressed.has(slot)
+
+
+## Hold a unit `world_units` away from where the world says it stands, while a
+## set piece carries it.
+##
+## `core` applies a lift's whole travel the instant the command runs, so a unit
+## standing on it is already at the top before the platform has started to
+## move. The offset is the difference between where the picture is and where
+## the state is; it decays to zero as the sequence plays, and [method
+## drop_lifts] puts everyone back. **The world is never consulted about it and
+## never told** -- this is the same contract the terrain diff and the
+## suppression have, and it is why a rebuild mid-sequence re-applies rather
+## than resets.
+##
+## **Only the lifted slot is touched.** An earlier draft wrote every child's
+## `y` on every lifted frame, which put a walking body back on its start cell's
+## floor once a set piece anywhere on the map began -- a walk and a script
+## sequence do run in the same playback.
+func lift(slot: int, world_units: int) -> void:
+	if world_units == 0:
+		if _lifts.erase(slot):
+			_place(slot, 0)
+		return
+	_lifts[slot] = world_units
+	_place(slot, world_units)
+
+
+## Put every lifted unit back where the world says it is.
+func drop_lifts() -> int:
+	var count: int = _lifts.size()
+	for slot: int in _lifts.keys():
+		_place(slot, 0)
+	_lifts.clear()
+	return count
+
+
+## Slot -> the offset currently in force, for a caller and a suite.
+func lifts() -> Dictionary[int, int]:
+	return _lifts.duplicate()
+
+
+## Re-apply every lift after a rebuild, which recreated the nodes.
+func _apply_lifts() -> void:
+	for slot: int in _lifts:
+		_place(slot, _lifts[slot])
+
+
+func _place(slot: int, world_units: int) -> void:
+	var node: Node3D = get_node_or_null(NodePath("unit_%d" % slot)) as Node3D
+	if node == null:
+		return
+	node.position.y = _floor_y(slot) \
+		+ float(world_units) / WorldSpace.WORLD_UNITS_PER_METRE
+
+
+## The height the world puts this unit's node at, before any lift.
+func _floor_y(slot: int) -> float:
+	if world_ref == null:
+		return 0.0
+	var view: Dictionary = world_ref.unit_view(slot)
+	if view.is_empty():
+		return 0.0
+	var cell: Dictionary = world_ref.cell_view(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	return float(DictRead.as_int(cell.get("height", 0))) \
+		/ WorldSpace.WORLD_UNITS_PER_METRE

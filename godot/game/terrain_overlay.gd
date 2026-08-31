@@ -40,6 +40,18 @@ var _height: int = 0
 var _mesh: ArrayMesh = null
 
 
+## Redraw from a fresh snapshot, keeping whatever visibility it had.
+##
+## The overlay is one mesh over the whole grid and a 40 x 40 map is 1 600
+## quads, so a partial update would cost more bookkeeping than it saved. What
+## the caller's diff buys here is not a smaller rebuild but **no rebuild at
+## all** on the frames where nothing changed, which is almost all of them.
+func rebuild_cells(snapshot: Dictionary, _cells: PackedInt32Array) -> void:
+	var was_visible: bool = visible
+	build(snapshot)
+	visible = was_visible
+
+
 func build(snapshot: Dictionary) -> void:
 	_width = DictRead.as_int(snapshot["width"])
 	_height = DictRead.as_int(snapshot["height"])
