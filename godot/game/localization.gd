@@ -70,6 +70,7 @@ const OWN: Dictionary = {
 	"hud.use": {"English": "U uses what the unit faces"},
 	"hud.defend": {"English": "D holds fire until an enemy moves"},
 	"hud.end_turn": {"English": "SPACE ends the turn"},
+	"hud.cycle": {"English": "TAB steps to your next unit"},
 	"hud.no_selection": {"English": "nothing selected"},
 	"hud.movement_points": {"English": "MP"},
 	"hud.hit_points": {"English": "HP"},

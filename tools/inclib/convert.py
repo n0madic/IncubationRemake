@@ -82,6 +82,14 @@ MARKER_PROTOTYPE = "CLS.3DI"
 #: is outside the slice, so the converter emits the marker and the real models
 #: of the inanimate types that are actually placed.
 UNIT_MARKER_MODEL = "A_MK_0B.3DI"
+#: The contact blip -- ``docs/22`` §9.1's ``+0x4F == 1``, drawn where a unit is
+#: detected but not seen.  ``a3DObjects.cpp`` line 3838 resolves this name
+#: through ``aGetNumberOfPrototype`` (``0x00407056``), and the geometry says
+#: what it is: 28 vertices spanning z 730..6337 in a 1550-wide footprint, a
+#: beam about 3.5 m tall.  Like the unit marker it is named by no placement --
+#: the engine holds it by name and draws it wherever the fog pass leaves a
+#: contact -- so the closure below has to ask for it.
+CONTACT_MARKER_MODEL = "A_BLIB.3DI"
 
 #: ``docs/40`` §7.2 -- the bodies themselves come from Charisma, chosen by four
 #: routines in ``Incubation.exe``.  The converter reads them through
@@ -587,12 +595,13 @@ def prototype_names(document: dict[str, Any], tables: BalanceTables,
     ``docs/92`` §10.1 item 2: only the mission and the assets needed to display
     it.  That is the scene's clones, the special objects, the ground lattice,
     and the real models of the inanimate unit types actually placed -- plus the
-    one-cell ground marker every living type points at.
+    one-cell ground marker every living type points at and the contact blip.
     """
     names = {clone["prototype"] for clone in document["scene_clones"]}
     names |= {obj["prototype"] for obj in document["special_objects"]}
     names.add(lattice)
     names.add(UNIT_MARKER_MODEL)
+    names.add(CONTACT_MARKER_MODEL)
     for unit in document["units"]:
         if not unit["placed"]:
             continue

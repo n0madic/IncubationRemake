@@ -23,6 +23,7 @@ func run(h: TestHarness) -> void:
 	_check_zoom_inputs(h)
 	_check_pivot(h)
 	_inside_the_level(h)
+	_hands_the_view_back(h)
 
 
 ## Four presses in either direction must be four equal quarter turns, and the
@@ -384,3 +385,133 @@ func _crowded_and_zoom(h: TestHarness) -> void:
 			DictRead.as_float(narrow.state()["zoom"]) < wide,
 			"zooming in is never refused")
 	narrow.free()
+
+
+## The view comes back to the player's own units when the computer is done.
+##
+## The bug this pins: the replay leads the camera to every alien it shows and
+## there is **no pan** -- the only two things that move the pivot are a
+## selection and this. A replay that ended in the far corner therefore handed
+## the turn back with the squad off screen and nothing on screen to click, and
+## the game looked frozen. Driving [SliceMain] from a script and projecting
+## every squad member into the viewport, `_C_140` reached that state from turn
+## 4 on: **0 of 4** inside the frame.
+##
+## The zoom and the yaw are the player's and are checked to survive: this moves
+## the pivot and nothing else.
+func _hands_the_view_back(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("handback.mission", false, "_C_140 is not in the cache")
+		return
+	var world: World = loaded["world"]
+	var rig: CameraRig = CameraRig.new()
+	rig.setup(world.resource.width, world.resource.height,
+		world.resource.heights(),
+		DictRead.as_int(DictRead.as_dict(
+			DictRead.as_dict(loaded["document"])["header"])["camera_height"]))
+	rig.set_zoom(9.0)
+	rig.apply_state({"yaw_step": 2, "zoom": 9.0})
+
+	# Where the replay left it: the opposite corner from the squad.
+	rig.focus_on(0, 0, world.resource.heights()[0])
+	var stranded: Vector3 = rig.position
+
+	var slot: int = SliceMain.focus_on_friendly(rig, world)
+	h.check("handback.found_a_unit", slot >= 0,
+		"the current player owns a drawn unit to look at")
+	var view: Dictionary = world.unit_view(slot)
+	h.equal("handback.the_unit_is_the_players",
+		DictRead.as_int(view["player"]), world.turn.current_player)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	h.check("handback.the_view_moved", rig.position != stranded,
+		"the pivot left the corner the replay parked it in")
+	h.check("handback.on_the_unit",
+		rig.position.distance_to(WorldSpace.cell_centre(x, y,
+			world.state.height_at(world.state.index_of(x, y)))) < EPSILON,
+		"the pivot is that unit's own cell (%d,%d)" % [x, y])
+	var after: Dictionary = rig.state()
+	h.equal("handback.zoom_is_the_players", DictRead.as_float(after["zoom"]),
+		9.0, "the hand-over does not re-zoom")
+	h.equal("handback.yaw_is_the_players", DictRead.as_int(after["yaw_step"]),
+		2, "the hand-over does not turn the camera")
+
+	# docs/29 section 3 command 14: the cycle, which is the only way to reach a
+	# unit the camera is not already pointing at.
+	var seen: PackedInt32Array = PackedInt32Array()
+	var at: int = -1
+	for _i: int in range(8):
+		at = SliceMain.next_friendly_slot(world, at)
+		if at < 0:
+			break
+		if seen.has(at):
+			break
+		seen.append(at)
+	h.check("handback.cycle_reaches_the_squad", seen.size() >= 4,
+		"%d units reachable by cycling: %s" % [seen.size(), str(seen)])
+	var foreign: PackedInt32Array = PackedInt32Array()
+	for reached: int in seen:
+		if DictRead.as_int(world.unit_view(reached)["player"]) \
+				!= world.turn.current_player:
+			foreign.append(reached)
+	h.equal("handback.cycle_stays_friendly", foreign.size(), 0,
+		"the cycle never offers another player's unit")
+	h.equal("handback.cycle_wraps",
+		SliceMain.next_friendly_slot(world, seen[seen.size() - 1]), seen[0],
+		"past the last it comes back to the first")
+	var nobody: int = world.turn.current_player
+	world.turn.current_player = 7
+	h.equal("handback.no_units_no_view",
+		SliceMain.next_friendly_slot(world, -1), -1,
+		"a player with nothing on the map is told so rather than given slot 0")
+	world.turn.current_player = nobody
+	rig.free()
+	_cycle_is_the_click_gate(h)
+
+
+## The cycle offers exactly what a click may select, and nothing else.
+##
+## Owner alone is not the rule: [method World.may_command] -- `0x00477DF0`,
+## which `0x00453CF0` walks -- also refuses a friendly record with no hit
+## points and a hidden one, and a dead squad member stays in `unit_slots()`
+## with the fog pass leaving an own corpse fully visible. A cycle filtered on
+## the player byte would therefore step to a body the mouse refuses, and the
+## hand-back would park the camera on it. A synthetic map, because `_C_140`
+## opens with four live marines and would not tell the two apart.
+func _cycle_is_the_click_gate(h: TestHarness) -> void:
+	var units: Array = [
+		TestFixtures.unit(0, 2, 2),
+		TestFixtures.unit(1, 3, 2),
+		TestFixtures.unit(2, 4, 2, 0, 0, 4, UnitState.VISIBILITY_HIDDEN),
+		TestFixtures.unit(3, 5, 2, 0, 1),
+	]
+	var world: World = World.create(TestFixtures.map_document(7, 7, units),
+		TestFixtures.balance(), 1.0)
+	world.turn.current_player = 0
+	# **The corpse is made here rather than authored.** `World.create` drops a
+	# record with no hit points -- [method UnitState.is_placed] is `hp != 0` --
+	# so a squad member that is dead in the map document never enters
+	# `unit_slots()` at all and would not exercise this. One that dies during
+	# play does, which is the case that matters, and reaching it through the
+	# combat model would make a camera check depend on a die roll.
+	world._units[1].hp = 0
+	var offered: PackedInt32Array = PackedInt32Array()
+	var at: int = -1
+	for _i: int in range(6):
+		at = SliceMain.next_friendly_slot(world, at)
+		if at < 0 or offered.has(at):
+			break
+		offered.append(at)
+	h.equal("handback.cycle_is_the_click_gate", offered,
+		PackedInt32Array([0]),
+		"the live own unit only: not the corpse (slot 1), not the hidden "
+		+ "one (slot 2), not the other player's (slot 3)")
+	var refused: PackedInt32Array = PackedInt32Array()
+	for slot: int in [1, 2, 3]:
+		if world.may_command(slot):
+			refused.append(slot)
+	h.equal("handback.the_gate_agrees_with_the_click", refused,
+		PackedInt32Array(),
+		"World.may_command refuses the same three, so the two paths cannot "
+		+ "drift apart")

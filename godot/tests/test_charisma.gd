@@ -182,6 +182,49 @@ func run(h: TestHarness) -> void:
 	_walking(h)
 	_facing(h)
 	_stride(h, cases, models, clips)
+	_pacing(h)
+
+
+## How fast a body walks, and that the computer's replay waits for it.
+##
+## The pace is not a taste setting: `aExecuteMove` crosses a field in **six**
+## rendered frames ([constant SliceMain.FRAMES_PER_FIELD], measured off the two
+## walk helpers), and gameplay advances animation time by one key unit per
+## rendered frame, so a field is six frames of the clip at whatever rate the
+## loop runs.
+## Both halves of that are asserted here, because the two constants drifted
+## apart once already -- 0.16 s a field against 30 fps was the original's
+## **epoch bug**, not its design.
+func _pacing(h: TestHarness) -> void:
+	h.equal("pacing.frames_per_field", SliceMain.FRAMES_PER_FIELD, 6,
+		"aExecuteMove divides the step by six and loops six times")
+	var derived: float = float(SliceMain.FRAMES_PER_FIELD) \
+		/ CharismaState.FRAMES_PER_SECOND
+	h.check("pacing.derived",
+		absf(SliceMain.WALK_SECONDS_PER_STEP - derived) < 0.000001,
+		"%.4f s a field, six frames at %.0f fps"
+			% [SliceMain.WALK_SECONDS_PER_STEP, CharismaState.FRAMES_PER_SECOND])
+
+	# And the replay holds for the walk it started. A four-field move outlasts
+	# `STEP_SECONDS`, and the next event's rebuild would cut it off half way.
+	var result: AITurnResult = AITurnResult.new()
+	result.add(AIEvent.make("move", 1, 0, 0, 1, 1, 0, ""))
+	result.add(AIEvent.make("move", 2, 0, 0, 2, 2, 0, ""))
+	var seen: Array[int] = [0]
+	var playback: AIPlayback = AIPlayback.new()
+	playback.play(result, func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		seen[0] += 1
+		return 1.0 if seen[0] == 1 else 0.0)
+	playback.advance(AIPlayback.STEP_SECONDS)
+	h.equal("pacing.replay.first", seen[0], 1, "one event shown")
+	playback.advance(0.5)
+	h.equal("pacing.replay.waits", seen[0], 1,
+		"half a second later the walk it asked a second for is still running")
+	playback.advance(0.6)
+	h.equal("pacing.replay.resumes", seen[0], 2,
+		"and the next event follows once the walk is over")
 
 
 ## Which way a body faces, over all eight facings.

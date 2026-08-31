@@ -86,10 +86,10 @@ func refresh(world: World, selected: int, note: String) -> void:
 	out.append(_unit_line(world, selected))
 	if note != "":
 		out.append(note)
-	out.append("%s | %s | %s | %s | %s" % [
+	out.append("%s | %s | %s | %s | %s | %s" % [
 		_strings.text("hud.move"), _strings.text("hud.attack"),
 		_strings.text("hud.use"), _strings.text("hud.defend"),
-		_strings.text("hud.end_turn")])
+		_strings.text("hud.cycle"), _strings.text("hud.end_turn")])
 	_lines.text = "\n".join(out)
 	_show_result(world)
 

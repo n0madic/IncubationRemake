@@ -28,15 +28,27 @@ extends RefCounted
 ## Norc'Yn's detachable arms have no clip at all. A null clip holds the bind
 ## pose, silently, because that is what the engine does with them.
 
-## docs/40 section 4.8 -- **a decision, not a measurement.**
+## docs/40 section 4.8 -- the **nominal cap of the gameplay loop**, which is a
+## measurement of the original's intent even though its render rate was not one.
 ##
-## The document proves 30 fps for cutscenes, and proves that gameplay advanced
-## key time by one unit per *rendered* frame under a nominal 20 fps cap whose
-## epoch bug roughly doubled it. There is no number to recover, so the remake
-## fixes one and says which of the original's numbers it is not. The visible
-## consequence is that a walk cycle plays at a steady rate instead of at
-## whatever a 1997 machine managed.
-const FRAMES_PER_SECOND: float = 30.0
+## Gameplay advances key time by one unit per *rendered* frame, and the routine
+## that renders those frames -- `fcn.0040B6F0`, the one `aExecuteMove` calls
+## six times per map field (docs/40 section 4.8, and [constant
+## SliceMain.FRAMES_PER_FIELD]) -- is capped by the skip controller at `(10,
+## 20)`.
+## Twenty is therefore the rate the walk was paced against.
+##
+## **This was 30 in slices 1 to 4**, taken from the proven cutscene rate for
+## consistency, and at 30 a walking body moves half again too fast for the
+## distance it covers. Cutscenes keep 30: that one is proven outright
+## (`0.03` frames/ms at `0x004B157C`) and is a different clock.
+##
+## The original's own rate was whatever the machine rendered at, and its skip
+## controller does not reset its epoch on the branch that waits, so the cap was
+## enforced on every *other* frame and the effective rate was roughly double.
+## That is an engine bug (docs/40 section 4.8), and the remake follows the
+## nominal cap rather than the bug.
+const FRAMES_PER_SECOND: float = 20.0
 
 enum Mode {IDLE, MOVE, FIRE}
 

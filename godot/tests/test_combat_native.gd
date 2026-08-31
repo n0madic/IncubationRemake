@@ -254,7 +254,7 @@ func _attack_cases(h: TestHarness, combat: Dictionary, types: Dictionary,
 			shot_types, shot_weapons,
 			DictRead.as_int(case["ax"]), DictRead.as_int(case["ay"]),
 			DictRead.as_int(case["tx"]), DictRead.as_int(case["ty"]),
-			ai_level, players, mode, rng)
+			ai_level, players, mode, 0, rng)
 		for outcome: Dictionary in result.outcomes:
 			markers[DictRead.as_int(outcome["marker"])] = true
 		if absf(rng.seed - DictRead.as_float(case["seed_after"])) > 0.5:

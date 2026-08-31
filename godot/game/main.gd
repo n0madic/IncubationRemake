@@ -37,14 +37,30 @@ var _rig: CameraRig = null
 const OPENING_ZOOM_METRES: float = 8.0
 ## docs/60 section 5 -- the largest of the four shipped fonts, 17 px.
 const GAME_FONT: String = "font_2"
+## How many rendered frames the engine spends crossing one map field.
+##
+## **Measured, and it was a guess before.** `aExecuteMove`'s two walk helpers,
+## `0x0040EA30` and `0x0040EBB0`, take the vector between the two cells,
+## divide each axis by **six** (`0x2AAAAAAB`, the signed magic for a division
+## by 6), set a loop counter to six, and per iteration set the object's
+## position and call `fcn.0040B6F0` -- the gameplay frame routine, the one the
+## skip controller caps at `(10, 20)` fps (docs/40 section 4.8). A field is six
+## frames, and since gameplay advances animation time by one key unit per
+## rendered frame it is also six frames of the walk cycle.
+const FRAMES_PER_FIELD: int = 6
+
 ## How long a body takes to cross one map field while walking.
 ##
-## A remake decision, like the 30 fps of [CharismaState]: the original's own
-## rate was whatever the machine rendered at. Chosen so that a full move reads
-## as a walk rather than a slide, and short enough that the computer's turn --
-## whose clock is [constant AIPlayback.STEP_SECONDS] and stays the master --
-## does not wait for it.
-const WALK_SECONDS_PER_STEP: float = 0.16
+## Not a taste setting any more: it is the six frames above, at the rate
+## [constant CharismaState.FRAMES_PER_SECOND] plays gameplay clips, which is
+## the same loop's own nominal cap. 0.3 s a field is 6.7 m/s over the 2 m a
+## field is.
+##
+## It was 0.16 through slice 4, which is within rounding of what the original's
+## **epoch bug** produced (the cap enforced every other frame, so ~40 fps and
+## ~0.15 s a field). Following the bug made every walk read as a sprint.
+const WALK_SECONDS_PER_STEP: float = \
+	float(FRAMES_PER_FIELD) / CharismaState.FRAMES_PER_SECOND
 var _status: Label = null
 var _hud: Hud = null
 var _strings: Localization = null
@@ -299,6 +315,19 @@ func selected_slot() -> int:
 	return _selected
 
 
+## Select the next unit the current player owns, and look at it.
+##
+## docs/29 section 3's command 14. It is the only way to reach a unit that is
+## off screen: the view has no pan, so a squad member the camera is not
+## pointing at cannot be clicked. Returns the slot, or -1 when there is none.
+func cycle_friendly() -> int:
+	var slot: int = next_friendly_slot(world, _selected)
+	if slot < 0:
+		return -1
+	var _map: MoveMapResult = select_unit(slot, false)
+	return slot
+
+
 ## Put the camera pivot on a unit, from the view dictionary that names it.
 ##
 ## One place, because three callers want it: a selection, the AI playback
@@ -353,26 +382,82 @@ func _frame_units(mission_world: World) -> void:
 	# anybody stands on: on `_C_140` the mean of four marines lands inside the
 	# wall between them, and the camera opens in the dark. A unit's own cell is
 	# somewhere the simulation has already agreed is standable and open.
-	var x: int = -1
-	var y: int = -1
-	for slot: int in mission_world.unit_slots():
-		var view: Dictionary = mission_world.unit_view(slot)
-		if view.is_empty() or not Fog.is_drawn(view) or Fog.is_contact(view):
-			continue
-		if DictRead.as_int(view["player"]) != mission_world.turn.current_player:
-			continue
-		x = DictRead.as_int(view["x"])
-		y = DictRead.as_int(view["y"])
-		break
-	if x < 0 or not mission_world.state.in_bounds(x, y):
+	if focus_on_friendly(_rig, mission_world) < 0:
 		return
-	_rig.focus_on(x, y,
-		mission_world.state.height_at(mission_world.state.index_of(x, y)))
 	_rig.set_zoom(minf(_rig.max_zoom, OPENING_ZOOM_METRES))
 	# The one place the rig turns by itself: at load there is no previous view
 	# to preserve, so an opening yaw that puts the eye inside a wall is simply
 	# replaced by the nearest one that does not.
 	_rig.choose_yaw()
+
+
+## The next unit the current player may command, after `after` and wrapping.
+##
+## docs/29 section 3's command **14** -- "cycle the selected friendly unit"
+## (`0x00453CF0`) -- which the engine binds to a key and which this remake did
+## not have at all. `after` of -1 asks for the first; -1 comes back when the
+## current player has nothing on the map it may command.
+##
+## **The gate is [method World.may_command], the same one a click goes
+## through**, because `0x00453CF0` walks `0x00477DF0` and that is what
+## `0x00477DF0` is. Owner alone is not enough: a dead squad member stays in
+## `unit_slots()` and the fog pass leaves an own corpse fully visible, so a
+## cycle that filtered on the player byte would offer a body the mouse
+## refuses -- and the hand-back below would park the camera on it.
+##
+## A contact is excluded on top of that even though a friendly one cannot
+## occur: the rule is "a cell the player can click", and [method
+## Fog.is_contact] is what decides that everywhere else.
+static func next_friendly_slot(mission_world: World, after: int) -> int:
+	var slots: PackedInt32Array = mission_world.unit_slots()
+	var start: int = slots.find(after) + 1
+	for step: int in range(slots.size()):
+		var slot: int = slots[(start + step) % slots.size()]
+		if not mission_world.may_command(slot):
+			continue
+		var view: Dictionary = mission_world.unit_view(slot)
+		if view.is_empty() or not Fog.is_drawn(view) or Fog.is_contact(view):
+			continue
+		return slot
+	return -1
+
+
+## Put the camera pivot on the current player's first unit. Returns the slot,
+## or -1 when there is nothing to look at and the view is left alone.
+##
+## **This is what ends the computer's turn**, and it is the remake's decision
+## rather than a traced one: docs/29 section 3's command 2 is the engine's
+## selected-unit/map focus path, but that the engine runs it on hand-over is
+## **UNVERIFIED**. What is not a decision is the problem it solves.
+##
+## The replay leads the camera to every alien it shows ([method _on_ai_step]),
+## and there is no way to pan -- the only things that move the pivot are a
+## selection and this. So a replay that finished at the far corner of the map
+## left the player looking at an empty floor with their own squad off screen
+## and nothing on it to click: the turn had been handed back, and the game
+## looked frozen. Measured on `_C_140` with the replay driven from a script:
+## from turn 4 on, **0 of 4** of the squad were inside the viewport when the
+## player got the turn back, and 4 of 4 with this in place.
+##
+## Static, and taking the rig, so the suite can check it against a real world
+## without standing a scene up.
+##
+## The zoom and the yaw are **not** touched. They are the player's, on Q, E and
+## the wheel; only [method _frame_units] sets them, and only at load.
+static func focus_on_friendly(rig: CameraRig, mission_world: World) -> int:
+	if rig == null:
+		return -1
+	var slot: int = next_friendly_slot(mission_world, -1)
+	if slot < 0:
+		return -1
+	var view: Dictionary = mission_world.unit_view(slot)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	if not mission_world.state.in_bounds(x, y):
+		return -1
+	rig.focus_on(x, y,
+		mission_world.state.height_at(mission_world.state.index_of(x, y)))
+	return slot
 
 
 ## Give the computer's event to the body it is about.
@@ -387,30 +472,34 @@ func _frame_units(mission_world: World) -> void:
 ## walks. The *next* event's rebuild ending this walk is the design; this
 ## event's rebuild ending it was a bug that made the computer's units teleport
 ## and never play `F`.
-func _play_event_body(event: Dictionary, kind: String) -> void:
+## Returns how long the event needs on screen, which for a move is its walk.
+func _play_event_body(event: Dictionary, kind: String) -> float:
 	if _units == null:
-		return
+		return 0.0
 	var slot: int = DictRead.as_int(event["slot"])
 	if kind == "move":
 		var payload: Dictionary = DictRead.as_dict(event["payload"])
 		if payload.has("path"):
-			_walk_body(slot, DictRead.to_int32(payload["path"]),
+			return _walk_body(slot, DictRead.to_int32(payload["path"]),
 				DictRead.as_int(payload.get("steps", 0)))
 	elif kind == "fire" and _units.states.has(slot):
 		_units.states[slot].fire()
+	return 0.0
 
 
 ## Walk a body along the cells a move actually entered.
 ##
 ## The duration is [constant WALK_SECONDS_PER_STEP] a step, so a long walk
-## takes longer than a short one, which is the only thing about it that is not
-## arbitrary. It is presentation: the world has already moved the unit, and a
-## walk that were interrupted would leave nothing behind.
-func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> void:
+## takes longer than a short one. It is presentation: the world has already
+## moved the unit, and a walk that were interrupted would leave nothing behind.
+##
+## Returns that duration, so the computer's playback can wait for it.
+func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> float:
 	if _units == null or steps <= 0 or route.size() < 2:
-		return
-	_units.start_walk(slot, route, world.resource.width,
-		float(steps) * WALK_SECONDS_PER_STEP)
+		return 0.0
+	var seconds: float = float(steps) * WALK_SECONDS_PER_STEP
+	_units.start_walk(slot, route, world.resource.width, seconds)
+	return seconds
 
 
 ## The unit views, and through them this mission's bodies and their library.
@@ -503,11 +592,18 @@ func _process(delta: float) -> void:
 ## An empty dictionary means the playback is over. Nothing here touches the
 ## world: it has held the post-turn state since [method World.submit_end_turn]
 ## returned, which is what makes skipping free.
-func _on_ai_step(event: Dictionary) -> void:
+##
+## Returns how long this event should stay on screen; see
+## [method AIPlayback._step].
+func _on_ai_step(event: Dictionary) -> float:
 	if event.is_empty():
 		_ai_note = ""
+		# The turn is the player's again, so the view goes back to the player's
+		# own units -- see [method focus_on_friendly] for what it was like
+		# without this.
+		var _back: int = focus_on_friendly(_rig, world)
 		_after_command("")
-		return
+		return 0.0
 	var kind: String = DictRead.as_string(event["kind"])
 	var to_x: int = DictRead.as_int(event["tx"])
 	var to_y: int = DictRead.as_int(event["ty"])
@@ -530,8 +626,9 @@ func _on_ai_step(event: Dictionary) -> void:
 	# later: the computer's units teleported and `F` never played. The *next*
 	# event's rebuild ending this one is the design; this event's rebuild
 	# ending it is the bug.
-	_play_event_body(event, kind)
+	var hold: float = _play_event_body(event, kind)
 	_refresh_status(_ai_note)
+	return hold
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -554,7 +651,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
-		if key.keycode == KEY_Q:
+		if key.keycode == KEY_TAB:
+			var _cycled: int = cycle_friendly()
+		elif key.keycode == KEY_Q:
 			_rig.rotate_step(-1)
 		elif key.keycode == KEY_E:
 			_rig.rotate_step(1)
@@ -567,17 +666,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif key.keycode == KEY_BRACKETLEFT:
 			show_mission(-1)
 		elif key.keycode == KEY_SPACE:
-			if not _mission_over():
+			if _may_command_now():
 				end_turn()
 		elif key.keycode == KEY_U:
-			if not _mission_over():
+			if _may_command_now():
 				use_in_front()
 		elif key.keycode == KEY_D:
-			if not _mission_over():
+			if _may_command_now():
 				hold_fire()
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
-		if click.button_index == MOUSE_BUTTON_LEFT and not _mission_over():
+		if click.button_index == MOUSE_BUTTON_LEFT and _may_command_now():
 			_pick(click.position, click.shift_pressed)
 
 
@@ -590,6 +689,29 @@ func _unhandled_input(event: InputEvent) -> void:
 ## and the two overlays keep working: the map is still worth looking at.
 func _mission_over() -> bool:
 	return world != null and world.game_control.mission_ended()
+
+
+## Whether a command may be given at all: the mission is running **and the
+## turn is not the computer's**.
+##
+## The second half is this remake's stand-in for a thing the engine has and it
+## does not. `0x0047D600` sets **view state 2** the moment the rotation reaches
+## player 255 (docs/25 section 4), and `aNextPlayerHandling` only leaves the
+## state that accepts input -- 0 -- when a human holds the turn. There is no
+## view state here, so the same refusal is written out.
+##
+## It should now be unreachable through the normal rotation:
+## [method World.submit_end_turn] turns until a human holds the turn, which is
+## the engine's own `while (g_currentPlayer == 255 && result == 1)`. It stays
+## because a **stopped** hand-over can still leave player 255 holding -- every
+## player out, with no mission end behind it -- and what that used to allow was
+## not a cosmetic slip: [method World.may_command] compares against whoever
+## holds the turn, so the player could select the aliens and spend their turn
+## for them.
+func _may_command_now() -> bool:
+	if world == null or _mission_over():
+		return false
+	return world.turn.current_player != TurnState.PLAYER_COMPUTER
 
 
 ## Turns a screen position into a map field, then asks the world about it.
@@ -772,6 +894,10 @@ func end_turn() -> TurnResult:
 		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
 	_selected = -1
 	_highlight.clear()
+	# A turn with nothing to replay hands back here rather than through
+	# [method _on_ai_step], and the view has to come back either way.
+	if not _playback.is_running():
+		var _back: int = focus_on_friendly(_rig, world)
 	_after_command("")
 	return result
 

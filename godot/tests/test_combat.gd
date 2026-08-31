@@ -45,6 +45,7 @@ func run(h: TestHarness) -> void:
 	_defence_gate(h)
 	_reaction_queue(h)
 	_interaction(h)
+	_the_hatch(h)
 
 
 # --- the tables --------------------------------------------------------------
@@ -464,6 +465,45 @@ func _visibility(h: TestHarness) -> void:
 	h.equal("fog.a_body_does_not_hide", behind.visibility, Visibility.FULL,
 		"docs/22 section 9.3: a unit blocks a shot but not the sight of it")
 
+	# **The probe: what the pass would say, without the pass happening.**
+	#
+	# `0x00481F00` (`lNetwork.cpp:1461`) saves all 200 `+0x4F` bytes
+	# (`0x00479AA0`), rebuilds the fog, reads what it wanted and restores them
+	# (`0x00479AC0`). The restore covers the unit byte and **not** the 3D
+	# object's draw flag that `aSetVisibleStateForUnit` writes in the same
+	# breath, which is how the original updates the picture on every command
+	# while the rules keep reading the fog the last hand-over left. The
+	# terrain wall above is still up, so `seen` is a contact by the stored
+	# byte; flattening the ridge is the "the squad moved and can see it now"
+	# case, and the two answers have to disagree.
+	for x: int in range(SCENE_SIZE):
+		state.set_height(state.index_of(x, 3), 0)
+	var probed: Dictionary[int, int] = Visibility.states_for(state, units,
+		utab, 0, 1, 1)
+	h.equal("fog.the_probe_sees_what_the_pass_would", probed[seen.slot],
+		Visibility.FULL, "the ridge is down, so the alien is in the open")
+	h.equal("fog.the_probe_changes_nothing", seen.visibility,
+		Visibility.CONTACT,
+		"the stored byte is still what the last real pass wrote")
+	Visibility.build(state, units, utab, 0, 1, 1)
+	h.equal("fog.the_real_pass_agrees_with_the_probe", seen.visibility,
+		probed[seen.slot],
+		"the probe is the same computation, not a second one")
+
+	# A woken group would survive a probe -- the orders are not in the buffer
+	# the engine restores -- so the probe does not wake one at all.
+	var quiet: Scene = _scene()
+	_place(quiet, 0, 0, 1, 1, 0)
+	var sleeper_probe: UnitState = _place(quiet, 1, UnitState.PLAYER_ALIEN, 3,
+		1, 0)
+	sleeper_probe.order = Visibility.ALERTING_ORDERS[0]
+	sleeper_probe.order2 = 9
+	var _probe: Dictionary[int, int] = Visibility.states_for(quiet.state,
+		quiet.units, quiet.types, 0, 1, 1)
+	h.equal("fog.the_probe_wakes_nobody", sleeper_probe.order,
+		Visibility.ALERTING_ORDERS[0],
+		"a query that promoted an order would be a command")
+
 	# The alert: seeing a neutral on an alerting order promotes its group's
 	# secondary order over its primary.
 	var alert_scene: Scene = _scene()
@@ -579,7 +619,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var fired: Array[Dictionary] = Reaction.drain(scene.state,
 		scene.units, scene.types, scene.weapons, mover, 1, 1,
-		TurnState.MODE_CAMPAIGN, rng)
+		TurnState.MODE_CAMPAIGN, 0, rng)
 	var tickets: Array[int] = []
 	var reactors: Array[int] = []
 	for shot: Dictionary in fired:
@@ -609,7 +649,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var net_fired: Array[Dictionary] = Reaction.drain(net.state,
 		net.units, net.types, net.weapons, net_mover, 1, 2,
-		TurnState.MODE_NET, rng)
+		TurnState.MODE_NET, 0, rng)
 	var net_order: Array[int] = []
 	for shot: Dictionary in net_fired:
 		net_order.append(DictRead.as_int(shot["reactor"]))
@@ -645,7 +685,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	h.equal("reaction.a_dead_mover_draws_nothing",
 		Reaction.drain(dead.state, dead.units, dead.types,
-			dead.weapons, corpse, 1, 1, TurnState.MODE_CAMPAIGN,
+			dead.weapons, corpse, 1, 1, TurnState.MODE_CAMPAIGN, 0,
 			rng).size(), 0)
 	var frail_scene: Scene = _reaction_scene()
 	var frail: UnitState = _at(frail_scene, 0)
@@ -653,7 +693,7 @@ func _reaction_queue(h: TestHarness) -> void:
 	rng.randomize_seed(1.0)
 	var stopped: Array[Dictionary] = Reaction.drain(frail_scene.state,
 		frail_scene.units, frail_scene.types, frail_scene.weapons,
-		frail, 1, 1, TurnState.MODE_CAMPAIGN, rng)
+		frail, 1, 1, TurnState.MODE_CAMPAIGN, 0, rng)
 	h.check("reaction.death_stops_the_drain",
 		not frail.is_alive() and stopped.size() == 1,
 		"%d shot(s) before hp %d" % [stopped.size(), frail.hp])
@@ -827,7 +867,7 @@ func _turn_to_face(h: TestHarness) -> void:
 	var rng: IncRandom = IncRandom.new()
 	rng.randomize_seed(1.0)
 	var shot: AttackResult = Combat.attack(scene.state, scene.units,
-		scene.types, scene.weapons, 1, 1, 5, 1, 1, 1, 1, rng)
+		scene.types, scene.weapons, 1, 1, 5, 1, 1, 1, 1, 0, rng)
 	h.equal("attack.the_shooter_turns_to_face",
 		[shooter.facing, shot.facing], [3, 3],
 		"the heading from (1,1) to (5,1) is octant 3, and the shooter began "
@@ -987,6 +1027,71 @@ func _world_wiring(h: TestHarness) -> void:
 		DictRead.as_int(DictRead.as_dict(edge.unit_view(stranded))["mp"]),
 		kept)
 
+	# --- the door, whose animation rebuilds the fog for good ---------------
+	#
+	# docs/22 section 9.4: `aDoorOpenSequence` (`0x00410A20`) calls
+	# `aBuildVisibleMap` on **both** arms -- `0x00410C6A` when the panel drops
+	# and `0x00410D60` when it rises -- for `aGetCurrentPlayer`, and outside
+	# the save/restore bracket, so unlike the per-command probe it changes what
+	# the rules read.  The alien's byte is set to a value the pass cannot
+	# produce, so what is checked is that the pass **ran**, not the geometry.
+	for opening: bool in [true, false]:
+		var door: World = _wired_world()
+		var at: int = door.state.index_of(3, 2)
+		door.state.set_action_point(at, 31 if opening else 30)
+		if opening:
+			door.state.set_field_type(at, Interact.FIELD_TYPE_WALL)
+			door.state.set_height(at, Interact.DOOR_HEIGHT_STEP)
+		var toggled: UseResult = door.submit_use(UseCommand.create(0))
+		h.equal("world.the_use_reached_the_door" if opening
+				else "world.the_use_closed_the_door", toggled.kind, "door",
+			toggled.reason)
+		h.equal("world.a_door_rebuilds_the_fog_for_good" if opening
+				else "world.a_closing_door_rebuilds_it_too",
+			DictRead.as_int(door.unit_view(1)["visibility"]),
+			Visibility.FULL,
+			"the alien is authored hidden and stands in the open, so only a "
+			+ "pass that ran can have revealed it")
+
+	# The computer's turn is the exception: both arms test
+	# `aGetCurrentPlayer() != 0xFF` first (`0x00410C5B`, `0x00410D51`).
+	var alien_turn: World = _wired_world()
+	var alien_at: int = alien_turn.state.index_of(3, 2)
+	alien_turn.state.set_action_point(alien_at, 31)
+	alien_turn.state.set_field_type(alien_at, Interact.FIELD_TYPE_WALL)
+	alien_turn.state.set_height(alien_at, Interact.DOOR_HEIGHT_STEP)
+	alien_turn.turn.current_player = UnitState.PLAYER_ALIEN
+	var by_computer: UseResult = alien_turn.submit_use(UseCommand.create(0))
+	h.equal("world.the_computers_door_still_opens",
+		[by_computer.kind, alien_turn.state.height_at(alien_at)], ["door", 0])
+	h.equal("world.the_computers_door_leaves_the_fog_alone",
+		DictRead.as_int(alien_turn.unit_view(1)["visibility"]),
+		Visibility.HIDDEN, "the guard is the engine's, not a convenience")
+
+	# --- the script's own rebuilds ----------------------------------------
+	#
+	# `InsertUnit` (`0x004419B6`) and the `BuildVisibleMap` command
+	# (`0x00441F55`) both call `aBuildVisibleMap` for good.  [LclInterpreter]
+	# records them as events and performs neither; [World] is where they land.
+	var scripted: World = _wired_world()
+	h.check("world.the_script_attached", scripted.attach_script({
+		"schema": LclProgram.SCHEMA,
+		"source": {"mission": "synthetic"},
+		"header_line": 1,
+		"instructions": [
+			{"kind": "command", "name": "BuildVisibleMap", "line": 1,
+				"op": ">", "args": [-1]},
+			{"kind": "end", "name": "", "line": 1, "op": ">", "args": []},
+		],
+		"labels": {},
+	}), "the one-command program did not load")
+	var ran: Dictionary = scripted.run_init_map()
+	h.check("world.the_script_ran", DictRead.as_bool(ran["ok"]),
+		str(ran.get("abort", "")))
+	h.equal("world.a_scripted_rebuild_is_performed_not_only_recorded",
+		DictRead.as_int(scripted.unit_view(1)["visibility"]), Visibility.FULL,
+		"the interpreter owns no fog, so the event has to be acted on")
+
 
 ## A world with two units four fields apart, both armed, the alien hidden and
 ## facing the squad.
@@ -1007,3 +1112,166 @@ static func _wired_world() -> World:
 	]
 	return World.create(TestFixtures.map_document(9, 9, units),
 		TestFixtures.balance(), 1.0)
+
+
+## docs/21 section 5's `special` 9 -- `0x0046F210` `case 4`, the one arm of the
+## effect dispatcher that rewrites the roster.
+##
+## The oracle is the listing, not a capture: `aPlayFightAnimation` runs after
+## `aAttackUnit` returns, so a `dbgcall` capture of `aAttackUnit` alone can
+## never contain this and the native suite is not where it belongs. No shipped
+## slice mission carries the one type that has it (`Squee'Coo`, 57), which is
+## why the scene is synthetic.
+func _the_hatch(h: TestHarness) -> void:
+	var carrier_type: int = 57
+	var types: UnitTypeTable = UnitTypeTable.from_rows([
+		{"id": 0, "mp_max": 4, "fp_max": 0, "hp_max": 20, "special": 0,
+			"size": 0, "species": 0, "height": 20, "model": "",
+			"description": "soldier"},
+		{"id": carrier_type, "mp_max": 4, "fp_max": 255, "hp_max": 10,
+			"special": Combat.SPECIAL_HATCH, "size": 0, "species": 1,
+			"height": 20, "model": "", "description": "carrier"},
+		{"id": Combat.HATCH_TYPE, "mp_max": 4, "fp_max": 255, "hp_max": 4,
+			"special": 0, "size": 0, "species": 1, "height": 20, "model": "",
+			"description": "hatchling"},
+	])
+	# Two rows that differ only in the `type` column the arm tests.
+	var hits: int = 7
+	var misses: int = 8
+	var weapons: WeaponTable = WeaponTable.from_rows([
+		{"id": hits, "heat": 255, "toggle": hits, "mun": 255, "hit": 100,
+			"damage": 100, "range_min": 1, "range_max": 30, "type": 1,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		{"id": misses, "heat": 255, "toggle": misses, "mun": 255, "hit": 100,
+			"damage": 100, "range_min": 1, "range_max": 30, "type": 3,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+	])
+
+	# --- the three gates, called directly ---------------------------------
+	var gate: Scene = _scene()
+	gate.types = types
+	gate.weapons = weapons
+	var gunner: UnitState = _place(gate, 0, 0, 1, 1, 3)
+	gunner.weapon = hits
+	var frail: UnitState = _place(gate, 1, UnitState.PLAYER_ALIEN, 3, 1, 0,
+		carrier_type)
+	frail.hp = Combat.HATCH_HP_LIMIT
+	frail.group = 9
+	# A value no fog pass writes, so "it was rebuilt" is not a guess about the
+	# geometry of a synthetic scene: a rebuild for player 0 always ends with
+	# player 0's own units at [constant Visibility.FULL].
+	gunner.visibility = 7
+	var healthy: Scene = _scene()
+	healthy.types = types
+	healthy.weapons = weapons
+	var healthy_gunner: UnitState = _place(healthy, 0, 0, 1, 1, 3)
+	healthy_gunner.weapon = hits
+	var sturdy: UnitState = _place(healthy, 1, UnitState.PLAYER_ALIEN, 3, 1, 0,
+		carrier_type)
+	sturdy.hp = Combat.HATCH_HP_LIMIT + 1
+	h.equal("hatch.six_hit_points_is_one_too_many",
+		Combat.hatch(healthy.state, healthy.units, types, weapons, sturdy,
+			healthy_gunner, 1, 1, 0), -1,
+		"`cmp byte [esi+0x16], 5` then `ja` at 0x0046F286")
+
+	var wrong: Scene = _scene()
+	wrong.types = types
+	wrong.weapons = weapons
+	var wrong_gunner: UnitState = _place(wrong, 0, 0, 1, 1, 3)
+	wrong_gunner.weapon = misses
+	var wrong_target: UnitState = _place(wrong, 1, UnitState.PLAYER_ALIEN, 3,
+		1, 0, carrier_type)
+	wrong_target.hp = 1
+	h.equal("hatch.the_weapon_type_must_be_one_two_or_four",
+		Combat.hatch(wrong.state, wrong.units, types, weapons, wrong_target,
+			wrong_gunner, 1, 1, 0), -1,
+		"the two rows differ only in `type`; 3 is not in {1, 2, 4}")
+
+	# --- the arm itself ---------------------------------------------------
+	var made: int = Combat.hatch(gate.state, gate.units, types, weapons, frail,
+		gunner, 1, 1, 0)
+	h.check("hatch.it_fired", made >= 0, "hatch returned %d" % made)
+	var born: UnitState = gate.units[made]
+	h.equal("hatch.the_replacement_is_a_neutral_of_the_named_type",
+		[born.type_id, born.player, born.x, born.y],
+		[Combat.HATCH_TYPE, UnitState.PLAYER_ALIEN, 3, 1],
+		"`push 0x36` and `push 0xff` at 0x0046F338, on the carrier's own cell")
+	h.equal("hatch.the_ai_group_is_inherited", born.group, 9,
+		"`mov byte [eax+0x4e], bl` at 0x0046F39A")
+	h.equal("hatch.the_carrier_is_removed_not_killed",
+		[frail.hp, gate.state.unit_at(gate.state.index_of(3, 1))],
+		[0, born.slot],
+		"aRemoveUnitElement frees the record and the cell takes the new one")
+	h.equal("hatch.the_fog_was_rebuilt_for_good", gunner.visibility,
+		Visibility.FULL,
+		"aBuildVisibleMap(aGetCurrentPlayer()) at 0x0046F3A8, outside the "
+		+ "save/restore bracket, so the sentinel cannot survive it")
+
+	# --- through the resolver: hit hatches, killed does not ----------------
+	var shot: Scene = _scene()
+	shot.types = types
+	shot.weapons = weapons
+	var shooter: UnitState = _place(shot, 0, 0, 1, 1, 3)
+	shooter.weapon = hits
+	var shielded: UnitState = _place(shot, 1, UnitState.PLAYER_ALIEN, 3, 1, 0,
+		carrier_type)
+	shielded.hp = Combat.HATCH_HP_LIMIT
+	# A Damage Absorber charge nullifies the damage, so the outcome is a hit
+	# and never a kill -- which is the marker the sweep keys on.
+	shielded.absorber = 1
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	var landed: AttackResult = Combat.attack(shot.state, shot.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+	var hatched: Array[int] = []
+	for outcome: Dictionary in landed.outcomes:
+		if outcome.has("hatched"):
+			hatched.append(DictRead.as_int(outcome["hatched"]))
+	h.equal("hatch.a_hit_runs_the_sweep", hatched.size(), 1,
+		"%d outcome(s): %s" % [landed.outcomes.size(), landed.outcomes])
+
+	var lethal: Scene = _scene()
+	lethal.types = types
+	lethal.weapons = weapons
+	var killer: UnitState = _place(lethal, 0, 0, 1, 1, 3)
+	killer.weapon = hits
+	var doomed: UnitState = _place(lethal, 1, UnitState.PLAYER_ALIEN, 3, 1, 0,
+		carrier_type)
+	doomed.hp = 1
+	rng.randomize_seed(1.0)
+	var killed: AttackResult = Combat.attack(lethal.state, lethal.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+	var any_hatched: bool = false
+	var markers: Array[int] = []
+	for outcome: Dictionary in killed.outcomes:
+		markers.append(DictRead.as_int(outcome["marker"]))
+		any_hatched = any_hatched or outcome.has("hatched")
+	h.equal("hatch.a_kill_does_not", [markers, any_hatched],
+		[[Combat.MARKER_KILLED], false],
+		"0x0040BD70 sweeps cells marked 0x5C, and a kill writes 0x5D")
+
+	# **The gate is the marker and not "the target survived".**  A shielded
+	# cell resolves to `0x5B` with the carrier untouched at five hit points, so
+	# a sweep that keyed on anything but `0x5C` would hatch it.
+	var shielded_cell: Scene = _scene()
+	shielded_cell.types = types
+	shielded_cell.weapons = weapons
+	var blocked_gunner: UnitState = _place(shielded_cell, 0, 0, 1, 1, 3)
+	blocked_gunner.weapon = hits
+	var safe: UnitState = _place(shielded_cell, 1, UnitState.PLAYER_ALIEN, 3,
+		1, 0, carrier_type)
+	safe.hp = Combat.HATCH_HP_LIMIT
+	shielded_cell.state.set_obstacle(shielded_cell.state.index_of(3, 1),
+		Combat.EFFECT_SHIELDED)
+	rng.randomize_seed(1.0)
+	var resolved: AttackResult = Combat.attack(shielded_cell.state,
+		shielded_cell.units, types, weapons, 1, 1, 3, 1, 1, 1, 1, 0, rng)
+	var resolved_markers: Array[int] = []
+	var resolved_hatched: bool = false
+	for outcome: Dictionary in resolved.outcomes:
+		resolved_markers.append(DictRead.as_int(outcome["marker"]))
+		resolved_hatched = resolved_hatched or outcome.has("hatched")
+	h.equal("hatch.only_a_hit_marker_runs_it",
+		[resolved_markers, resolved_hatched, safe.hp],
+		[[Combat.MARKER_RESOLVED], false, Combat.HATCH_HP_LIMIT],
+		"a shield writes 0x5B and the sweep only reads 0x5C")

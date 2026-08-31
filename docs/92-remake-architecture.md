@@ -677,26 +677,214 @@ always fits. They are exercised on a synthetic map instead — a pivot ringed by
 100 m walls, and a one-sided wall that refuses one yaw while another fits — and
 the suite says so, so that the corpus checks are not read as covering them.
 
-### 7.10 Animation plays at 30 fps, and that is a choice
+### 7.5.3 The view is handed back with the turn, and the squad can be cycled
 
-[`40` §4.8](40-charisma-model-animation.md) proves 30 fps for cutscenes and
-proves that gameplay advanced key time by one unit **per rendered frame**,
-under a nominal 20 fps cap whose epoch handling roughly doubled it. The
-original's gameplay rate was therefore whatever the machine managed, and there
-is no number to recover.
+The replay of the computer's turn leads the camera to every alien it shows.
+Nothing led it back, and the view has **no pan** — the only two things that
+move the pivot are a selection and the framing done at load. So a replay that
+ended in the far corner handed the turn back with the whole squad off screen
+and nothing on screen to click: the game accepted input, rendered at full
+rate, and could not be played. It reads exactly like a freeze, and it was
+reported as one.
 
-The remake fixes **30**, in one named constant
-(`CharismaState.FRAMES_PER_SECOND`), and records which of the original's
-numbers that is not. The visible consequence is that a walk cycle plays at a
-steady rate rather than at a 1997 machine's.
+Measured rather than argued: driving `SliceMain` from a script, ending each
+turn and projecting every squad member into the viewport, `_C_140` reaches
+that state from **turn 4** on — 0 of 4 inside the frame, then 1 of 4. With the
+hand-back in place it is 4 of 4 on every turn of the same run.
 
-Two neighbouring quantities are decisions on the same terms, and are named
-rather than folded into an expression:
+Two things close it, and both are the engine's own:
 
-* **`WALK_SECONDS_PER_STEP` = 0.16 s per map field.** The clock that matters is
-  still `AIPlayback.STEP_SECONDS`: a walk is told how long it has and fits
-  itself into that window, so `skip()` keeps meaning "stop drawing" rather than
-  "stop simulating".
+* **the hand-back.** When the computer's turn ends the pivot goes to the first
+  unit the current player may command. The zoom and the yaw are not touched —
+  those are the player's, on Q, E and the wheel — so this moves the pivot and
+  nothing else. It is the remake's decision, consistent with the focus path
+  [`29` §3](29-interface-contract.md)'s command 2 provides; that the engine
+  runs that command on hand-over is **UNVERIFIED**;
+* **the cycle**, on TAB: select the next unit the player owns and look at it.
+  [`29` §3](29-interface-contract.md)'s command **14** (`0x00453CF0`), which
+  the engine binds to a key and which this remake did not have at all. Without
+  a pan it is the only way to reach a squad member the camera is not already
+  pointing at, so a hand-back that shows *one* unit is not enough on its own.
+
+Both go through `World.may_command` — `0x00477DF0`, which `0x00453CF0` walks —
+and not through the player byte. A dead squad member stays in `unit_slots()`
+and the fog pass leaves an own corpse fully visible, so the weaker test would
+cycle to a body the mouse refuses to select and hand the camera back to it.
+
+A pan is still not implemented. The original does not need one either: it
+drives the view from the selection, which is what these two restore.
+
+### 7.5.4 The rotation never hands the interface a turn the computer holds
+
+Reported as "the enemy turn hangs and I can select and move an enemy unit",
+and both halves were one bug.
+
+`World.submit_end_turn` looped on [code]TurnResult.ai_turn[/code]. The engine's
+own loop, [`25` §4.1](25-turn-and-round.md), is
+`do { ... } while (g_currentPlayer == 255 && result == 1)` — on the **player**,
+not on whether the planner ran. The two differ in exactly one place, and it is
+the first press of the button in every mission: `0x0047D600` runs
+`aAISystemControl` only `if (g_turn != 0)`, so at turn zero the computer is
+handed the turn and does nothing with it. Looping on the planner stopped there
+and returned to the interface with player 255 holding the turn.
+
+What that allowed was not cosmetic. `World.may_command` — `0x00477DF0` — asks
+whether a unit's owner *is the current player*, so with 255 holding it the
+aliens became selectable and the player could spend their turn for them, while
+the interface waited for a press that would only end a turn that was not
+theirs.
+
+The engine has a second line of defence the remake did not: `0x0047D600` sets
+**view state 2** the moment the rotation reaches 255, and only view state 0
+accepts commands. There are no view states here, so `SliceMain` refuses
+commands while the computer holds the turn. With the loop fixed that should be
+unreachable through the rotation; it stays for the stopped hand-over, where
+every player is out and no mission end is behind it.
+
+### 7.5.5 What is drawn is a fresh fog pass; what is decided is not
+
+An enemy that walked into the squad's sight stayed a blip until the turn
+changed, because `Visibility.build` ran only in the hand-over.
+
+The engine's answer is stranger and better, and it is in
+[`22` §9.4](22-combat-and-visibility.md): every player command **probes** the
+fog — save all 200 `+0x4F` bytes, rebuild, read, restore — and the restore
+covers the unit byte but not the 3D object's draw flag that
+`aSetVisibleStateForUnit` writes beside it. The picture follows the probe; the
+rules do not.
+
+`Visibility.states_for` is that probe, and it is a query: it puts every byte
+back, so nothing about it reaches the canonical hash, the planner or the
+resolver. `UnitsView.build` draws from it instead of from the stored byte.
+Replaying `_C_140` to its end under two policies gives the same outcome, the
+same turn and the same survivors as before the change, which is the point —
+only the picture moved.
+
+**The permanent rebuilds, which this then closed.** The first revision of
+[`22` §9.4](22-combat-and-visibility.md) counted **eight** call sites and named
+three of them permanent, because that is what radare2's `axt` reports after
+`aa`; a `.text` byte sweep for the encoded `call` finds **19**, and every one
+of the extra eleven disassembles into a real instruction. The corrected table
+is in §9.4 and `combat_tables.py`'s `fog.sites` now pins it exactly.
+
+Three of the fifteen permanent sites are reachable from this remake's own
+seams, and all three are implemented:
+
+* **the door** — `aDoorOpenSequence` (`0x00410A20`) rebuilds on both arms and
+  refuses while the computer holds the turn. It lives in `World.submit_use`
+  and **not** in `core/interact.gd`: `interact_runtime`'s native capture
+  replays `aExecuteUse` alone, which calls `aBuildVisibleMap` nowhere, so a
+  model that folded the animation into the routine would disagree with the
+  engine it was measured against. `_C_140` carries two closed doors, so this
+  is reachable in the mission the slice plays;
+* **`InsertUnit` and the `BuildVisibleMap` command** — `LclInterpreter`
+  already recorded both as `build_visible_map` events and performed neither.
+  `World._run_mission_script` acts on them, which is the same split the fog
+  already had: the interpreter owns four cell fields and no derived state;
+* **`special` 9** — `0x0046F210`'s `case 4`, in `Combat.hatch`; see §7.5.7.
+
+The other twelve are **recorded and not implemented**, each because the seam
+it belongs to does not exist here yet: `aExecuteWarp` (`0x0046F144`, and note
+it rebuilds for the *warping unit's* player, not the current one), the
+elevator, platform and statue sequences (`0x00412905`, `0x004130E6`,
+`0x004149C7`), `aPlayFightAnimation`'s Spidy arm (`0x0040D6BD`),
+`aTransferUnitFromPoolToMap` (`0x00478DE4`), the load path (`0x004490A9`) and
+`aNextPlayerHandling`'s mode-1 site (`0x0047DCCF`).
+
+Replaying `_C_140` to its end through `core` alone gives a byte-identical
+canonical hash before and after: its script's inserts are immediately
+superseded by the hand-over's own rebuild, and the scripted play never opened
+a door. The change is reachable, not yet exercised by a regression fixture.
+
+**One deliberate difference from the engine.** The probe wakes no AI group.
+The engine's can: `aBuildVisibleMapForUnit` promotes the secondary order of a
+group it sees, and orders are not in the buffer the restore covers. A query
+that promoted an order would be a command, so `states_for` passes the empty
+`wake` callable that `for_unit` already documented for exactly this.
+
+### 7.5.6 The contact blip is the engine's own geometry
+
+A detected-but-unseen unit was drawn as a flat red disc this remake invented.
+The original draws `A_BLIB.3DI` — `a3DObjects.cpp` line 3838 resolves the name
+through `aGetNumberOfPrototype` at `0x00407056` — and the geometry says what it
+is: 28 vertices spanning z 730..6337 in a 1550-wide footprint, a beam about
+3.5 m tall standing on the cell.
+
+It is named by no placement, so the converter asks for it by name for every
+world set, exactly as it already did for the unit marker `A_MK_0B.3DI`. That
+is a change to the emitted document, so `CONVERTER_VERSION` is **0.8.0** and
+the cache has to be republished.
+
+### 7.5.7 `special` 9 — the one arm that rewrites the roster
+
+[`21` §5](21-info-lcl-schema.md) lists seventeen values of the unit type's
+`special` column and one dispatcher, `0x0046F210`. Sixteen of the values were
+already modelled or already unreachable; **9** was neither, and it is the one
+that also moves the fog, which is how it surfaced.
+
+`Squee'Coo` (type 57, its only shipped carrier, in 19 of the 155 missions and
+in none of the five this remake plays) that is **hit and not killed**, left
+with five hit points or fewer, by a weapon whose `type` column is 1, 2 or 4, is
+removed and replaced **on its own cell** by a neutral `Squee'Ther` (type
+`0x36`) that inherits its AI group — and the fog is then rebuilt for the player
+holding the turn, permanently.
+
+Four details are the engine's and each would be easy to get wrong:
+
+* the sweep is over **cells marked `0x5C`**, not over the outcomes that dealt
+  damage. `aPlayFightAnimation` (`0x0040BD70`) walks the whole cell array and
+  calls the dispatcher for every cell whose marker byte is a hit; a kill writes
+  `0x5D` and is skipped, and a shielded cell writes `0x5B` and is skipped too,
+  even though its occupant is alive and frail;
+* the carrier is **removed, not killed** — `aRemoveUnitElement` (`0x004779C0`)
+  frees the record and clears the cell — so its slot is free again and the
+  replacement usually takes it;
+* `aGenerateUnitElement` is called with its `exact` flag **set**, so the
+  replacement never searches a neighbouring cell the way an `InsertUnit` does.
+  That flag is the only difference between the two callers, so
+  `UnitState.generate` takes it as an argument and `LclContext.spawn` became a
+  one-line delegate rather than a second copy of the routine;
+* there is **no** `!= 0xFF` guard here, unlike the door: the hatch rebuilds the
+  fog during the computer's turn as well.
+
+**Where the boundary is.** This belongs to `aPlayFightAnimation`, which runs
+*after* `aAttackUnit` returns, so a `dbgcall` capture of `aAttackUnit` can
+never contain it and `test_combat_native.gd` is not where it is checked. It is
+folded into `Combat.attack` because that is the single funnel all three
+shooters reach, and the boundary is written into the docstring so a future
+capture of a `Squee'Coo` mission is not read as disproving a correct model.
+
+### 7.10 Gameplay animation plays at 20 fps, and that is now mostly measured
+
+**Revised.** This section said 30 fps and called it a free choice, on the
+grounds that the original's gameplay rate was whatever the machine managed.
+[`40` §4.8](40-charisma-model-animation.md) now carries a third link that
+constrains it: `aExecuteMove`'s two walk helpers cross a map field in exactly
+**six** calls of the gameplay frame routine, and that routine is the one the
+skip controller caps at a nominal **20 fps**. Since gameplay advances key time
+by one unit per rendered frame, the walk was paced against 20 fps, and the rate
+and the field time are **one** choice rather than two.
+
+The remake therefore fixes **20** in `CharismaState.FRAMES_PER_SECOND` and
+*derives* the field time from it. Cutscenes keep the 30 fps that is proven
+outright; they are a different clock.
+
+What the old pair reproduced is worth recording, because it is why the bodies
+sprinted: 30 fps with a hand-picked 0.16 s per field is, to within rounding,
+the engine's **epoch bug** — the limiter does not reset its epoch on the branch
+that waits, so the cap was enforced every other frame and a field took ~0.15 s.
+Following the bug is not the same as following the original.
+
+One neighbouring quantity is still a decision, and is named rather than folded
+into an expression:
+
+* **`WALK_SECONDS_PER_STEP` = `FRAMES_PER_FIELD / FRAMES_PER_SECOND` = 0.3 s.**
+  Derived, not chosen. What *is* chosen is that
+  `AIPlayback.STEP_SECONDS` became a **floor** rather than the whole rule: an
+  event may ask for longer, and a move asks for its walk, because at the
+  engine's own pace a move of more than one field outlasts the old fixed
+  window and the next event's rebuild would cut the walk in half. `skip()`
+  still means "stop drawing" rather than "stop simulating".
 * **`M` loops while a unit walks and `S` resumes when nothing else plays.**
   [`40` §7.2](40-charisma-model-animation.md) marks the playback set-up of
   `kind` 0 and `kind` 4 UNVERIFIED — the interface slots `+0x44`, `+0x2C` and

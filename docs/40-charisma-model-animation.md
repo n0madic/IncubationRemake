@@ -720,13 +720,37 @@ Two caveats a remake should know rather than copy:
   every *other* call. The effective cap is roughly twice the nominal one. This
   is an engine bug, not a design.
 
+**3c. A walk is six of those frames per map field.** This is the measurement
+that turns the gameplay rate from a free choice into a constrained one, and it
+is in `aExecuteMove` (`0x0046E220`, `aTacTools.cpp`) rather than in the
+animation code. Its two per-step helpers, `0x0040EA30` and `0x0040EBB0`, are
+built the same way:
+
+```
+delta = (to - from) / 6            ; 0x2AAAAAAB, the signed magic for /6
+counter = 6
+do  { set the object's position; position -= delta; fcn.0040B6F0() }
+while (--counter)
+```
+
+`fcn.0040B6F0` is the gameplay frame routine — the one the table above shows
+being capped at `(10, 20)`. So **one map field is six rendered frames**, and by
+3b it is also six key-time units of whatever clip is playing. A `.cha`
+movement clip is 20 frames long and strides one field (§5.4), so the engine
+walks a unit **3.3× further per cycle than the clip's own stride** — the feet
+do not track the ground, and did not in 1997 either.
+
 **Conclusion for a remake.** Key times are frames (§4.7). Play `Video/*.cha` at
-**30 fps** — proven. For gameplay animations the original ties playback to the
-render loop at one frame per rendered frame, nominally ≤20 fps; a remake that
-wants frame-rate independence should pick a fixed rate, and 30 fps is the
-consistent choice (it is what the same assets are played at in cutscenes, and
-what the 3ds Max exporter defaults to). The 20/25/30 spread in the table is a
-property of the 1997 main loop, not of the animation data.
+**30 fps** — proven. For gameplay the original ties playback to the render loop
+at one frame per rendered frame; the loop that renders a walk is capped at a
+nominal **20 fps**, and a field is six of those frames, so 20 fps and 0.3 s per
+field are one choice and not two. 30 fps is defensible for consistency with the
+cutscenes, but then a field must be 0.2 s: picking 30 fps *and* a field time
+from taste is how a remake ends up reproducing the engine's **epoch bug**
+instead of its design — the limiter does not reset its epoch on the branch that
+waits, so the effective cap is roughly 40 fps and a field roughly 0.15 s. The
+20/25/30 spread in the table is a property of the 1997 main loop, not of the
+animation data.
 
 One related constant, recorded because it looks like a rate and is not:
 `fcn.004055e0` stores `animationLength × (1/6)` (float at `0x004b116c`,

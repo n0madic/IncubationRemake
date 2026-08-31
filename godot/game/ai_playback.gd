@@ -12,8 +12,9 @@ extends RefCounted
 ## Skipping is therefore free. It stops the timer and jumps to the last frame;
 ## the world is already in that state and was from the moment `core` returned.
 
-## Seconds between events. Slow enough to follow a unit across a 20x20 map,
-## fast enough that a 39-alien turn does not outstay its welcome.
+## Seconds between events, and the **floor** rather than the whole rule. Slow
+## enough to follow a unit across a 20x20 map, fast enough that a 39-alien turn
+## does not outstay its welcome.
 const STEP_SECONDS: float = 0.45
 ## The kinds worth stopping on. `end_unit_turn` and the refusals are
 ## bookkeeping and would triple the length of the replay for nothing.
@@ -26,6 +27,9 @@ var _elapsed: float = 0.0
 var _running: bool = false
 var _note: String = ""
 var _on_step: Callable = Callable()
+## How long the event now on screen gets. [constant STEP_SECONDS] unless the
+## step callback asked for longer -- see [method _step].
+var _hold: float = STEP_SECONDS
 
 
 ## Start playing a finished turn. `on_step` is called with the event
@@ -38,6 +42,7 @@ func play(result: AITurnResult, on_step: Callable) -> void:
 			_events.append(event)
 	_index = 0
 	_elapsed = 0.0
+	_hold = STEP_SECONDS
 	_on_step = on_step
 	_running = not _events.is_empty()
 	if not _running:
@@ -57,8 +62,8 @@ func advance(delta: float) -> bool:
 	if not _running:
 		return false
 	_elapsed += delta
-	while _running and _elapsed >= STEP_SECONDS:
-		_elapsed -= STEP_SECONDS
+	while _running and _elapsed >= _hold:
+		_elapsed -= _hold
 		_step()
 	return _running
 
@@ -78,8 +83,17 @@ func _step() -> void:
 		return
 	var event: Dictionary = _events[_index]
 	_index += 1
+	_hold = STEP_SECONDS
 	if _on_step.is_valid():
-		_on_step.call(event)
+		# The callback may ask for longer, and a move does: a walk is paced at
+		# the engine's own six frames a field ([constant
+		# SliceMain.WALK_SECONDS_PER_STEP]), so a four-field move outlasts
+		# [constant STEP_SECONDS] and the next event's rebuild would cut it
+		# off half way. Anything shorter than the floor still gets the floor,
+		# so the replay never speeds up.
+		var asked: Variant = _on_step.call(event)
+		if asked is float:
+			_hold = maxf(STEP_SECONDS, DictRead.as_float(asked))
 	if _index >= _events.size():
 		_finish()
 

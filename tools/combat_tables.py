@@ -171,6 +171,78 @@ EXPECTED_SPECIAL_SITES = {
     0x004753A9,                 # the warp-range accessor
 }
 
+#: ``docs/22`` §9.4 -- ``aBuildVisibleMap``, and the pair that brackets the
+#: **probes**.  Nineteen call sites, each verified by disassembling it: only
+#: four sit inside a `save; build; look; restore` bracket, and the other
+#: fifteen change the fog for good.  radare2's ``axt`` after ``aa`` reports
+#: only eight of them -- it misses every site in a function its analysis did
+#: not reach -- which is why this check sweeps the whole ``.text`` for the
+#: encoded ``call`` instead, and why it compares an exact set: a twentieth hit
+#: is a failure, not a silent addition.
+BUILD_VISIBLE_MAP = 0x004798C0
+SAVE_VISIBILITY = 0x00479AA0
+RESTORE_VISIBILITY = 0x00479AC0
+#: ``address -> (enclosing routine, the player it rebuilds for)``.
+EXPECTED_FOG_SITES = {
+    # -- permanent -------------------------------------------------------
+    0x0040D6BD,   # aPlayFightAnimation, aAnimations.cpp:2752 -- current
+    0x00410C6A,   # aDoorOpenSequence -- the door opens; current, not 0xFF
+    0x00410D60,   # aDoorOpenSequence -- the door closes; current, not 0xFF
+    0x00412905,   # aPlayElevatorSequence, cpp:8215 -- the rider's player
+    0x004130E6,   # aPlayPlatformSequence, cpp:8694 -- the rider's player
+    0x004149C7,   # aPlayStatueSequence, cpp:10602 -- literal player 0
+    0x004419B6,   # the InsertUnit handler -- current
+    0x00441F55,   # the BuildVisibleMap command -- current
+    0x004490A9,   # aLoad.cpp:1649 -- current
+    0x00457926,   # the mission-control GUI build -- current
+    0x0046F144,   # aExecuteWarp -- the warping unit's own player
+    0x0046F3A8,   # 0x0046F210 case 4, `special` 9 -- current
+    0x004781C6,   # refreshCurrentPlayer, aUnitMap.cpp:1240 -- its argument
+    0x00478DE4,   # aTransferUnitFromPoolToMap -- current
+    0x0047DCCF,   # aNextPlayerHandling -- literal 0, under game mode 1
+    # -- probes: bracketed by the save/restore pair ----------------------
+    0x0047CBED,   # aViewPlayer.cpp:1051 -- the own player
+    0x0047CF8B,   # aViewPlayer.cpp:992  -- the own player
+    0x0047CFB5,   # aViewPlayer.cpp:998  -- 0x0043B2D0
+    0x00481FE3,   # lNetwork.cpp:1461    -- the per-command probe
+}
+EXPECTED_SAVE_SITES = {0x0047CBD2, 0x0047CF5D, 0x00481F05}
+EXPECTED_RESTORE_SITES = {
+    0x0047CEA5, 0x0047D011,
+    0x00481F49, 0x00481F87, 0x00481FB4, 0x00481FD2,
+}
+#: The two door arms, and the guard both carry.  ``ebx`` is -100 on the arm
+#: that opens the panel and +100 on the one that closes it, so the two
+#: conditional jumps are opposites; each is followed by the 0xFF test.
+DOOR_ARMS = (
+    (0x00410B8B, "bb9cffffff", "mov ebx, -100 -- the door opens"),
+    (0x00410BAE, "bb64000000", "mov ebx, 100 -- the door closes"),
+    (0x00410C52, "85db7d1c", "test ebx,ebx / jge -- only the opening arm"),
+    (0x00410D48, "85db7e1c", "test ebx,ebx / jle -- only the closing arm"),
+    (0x00410C5B, "3cff", "cmp al, 0xff -- not during the computer's turn"),
+    (0x00410D51, "3cff", "cmp al, 0xff -- not during the computer's turn"),
+)
+
+#: ``docs/21`` §5's ``special`` 9, byte for byte out of ``0x0046F210``'s
+#: ``case 4``.  Each entry is ``(virtual address, bytes, what it is)``.
+HATCH_ARM = (
+    (0x0046F279, "80fa09", "cmp dl, 9 -- the special enumerator"),
+    (0x0046F282, "807e1605", "cmp byte [esi+0x16], 5 -- the hit-point bound"),
+    (0x0046F2A3, "3c01", "cmp al, 1 -- weapon type"),
+    (0x0046F2A7, "3c02", "cmp al, 2 -- weapon type"),
+    (0x0046F2AB, "3c04", "cmp al, 4 -- weapon type"),
+    (0x0046F2B3, "8a4642", "mov al, byte [esi+0x42] -- the carrier's x"),
+    (0x0046F2B6, "8a4e43", "mov cl, byte [esi+0x43] -- the carrier's y"),
+    (0x0046F2F6, "8a5e4e", "mov bl, byte [esi+0x4e] -- the AI group"),
+    (0x0046F32B, "6a01", "push 1 -- aGenerateUnitElement's `exact` flag"),
+    (0x0046F338, "6a36", "push 0x36 -- the replacement unit type"),
+    (0x0046F33A, "68ff000000", "push 0xff -- the replacement's player"),
+    (0x0046F39A, "88584e", "mov byte [eax+0x4e], bl -- the group is inherited"),
+)
+#: The two calls the arm makes after it has rewritten the roster.
+HATCH_CURRENT_PLAYER_CALL = (0x0046F39D, 0x0043B2C0)
+HATCH_FOG_CALL = (0x0046F3A8, BUILD_VISIBLE_MAP)
+
 #: The RNG's four globals and the address span of `aRandomize` + `aRandom`.
 #: Every reference must fall inside that span -- that is what makes the two
 #: instrumentation counters *provably* unread rather than merely unexplained.
@@ -393,6 +465,25 @@ class CombatTables:
 
     # -- global reference sweeps --------------------------------------------
 
+    def calls_to(self, address: int) -> set[int]:
+        """Every ``.text`` site holding a near ``call`` to *address*.
+
+        A plain byte sweep for ``E8`` plus the displacement that lands on the
+        target.  It can in principle match a displacement that is really an
+        operand, so the callers compare against a written-down set rather than
+        counting: a spurious hit is then a failure and not a silent one.
+        """
+        _tva, _tvsize, traw, trawsize = self.pe.section(".text")
+        data = self.pe.data
+        out: set[int] = set()
+        for i in range(traw, traw + trawsize - 5):
+            if data[i] != 0xE8:
+                continue
+            rel = struct.unpack_from("<i", data, i + 1)[0]
+            if self.pe.off_to_va(i) + 5 + rel == address:
+                out.add(self.pe.off_to_va(i))
+        return out
+
     def refs_to(self, address: int) -> list[int]:
         """Every ``.text`` site whose instruction stream embeds *address*."""
         _tva, _tvsize, traw, trawsize = self.pe.section(".text")
@@ -606,6 +697,38 @@ def run_check(root: str) -> int:
     stats.check("special.sites", sites == EXPECTED_SPECIAL_SITES,
                 f"unitType[+0x07] is referenced at {sorted(hex(x) for x in sites)}, "
                 f"expected {sorted(hex(x) for x in EXPECTED_SPECIAL_SITES)}")
+
+    # 1d. the fog: which call sites are permanent and which are probes
+    fog_sites = tables.calls_to(BUILD_VISIBLE_MAP)
+    stats.check("fog.sites", fog_sites == EXPECTED_FOG_SITES,
+                f"aBuildVisibleMap is called from "
+                f"{sorted(hex(x) for x in fog_sites)}, expected "
+                f"{sorted(hex(x) for x in EXPECTED_FOG_SITES)}")
+    saves = tables.calls_to(SAVE_VISIBILITY)
+    stats.check("fog.saves", saves == EXPECTED_SAVE_SITES,
+                f"the visibility save is called from "
+                f"{sorted(hex(x) for x in saves)}, expected "
+                f"{sorted(hex(x) for x in EXPECTED_SAVE_SITES)}")
+    restores = tables.calls_to(RESTORE_VISIBILITY)
+    stats.check("fog.restores", restores == EXPECTED_RESTORE_SITES,
+                f"the visibility restore is called from "
+                f"{sorted(hex(x) for x in restores)}, expected "
+                f"{sorted(hex(x) for x in EXPECTED_RESTORE_SITES)}")
+
+    # 1e. `special` 9, the one arm that rewrites the roster (docs/21 §5)
+    for va, want, what in HATCH_ARM:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("hatch.arm", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for site, target in (HATCH_CURRENT_PLAYER_CALL, HATCH_FOG_CALL):
+        stats.check("hatch.call", site in tables.calls_to(target),
+                    f"{site:#010x} does not call {target:#010x}")
+
+    # 1f. the door, whose two arms are what docs/22 §9.4 calls the use path
+    for va, want, what in DOOR_ARMS:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("door.fog", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
 
     # 2. the indirect-fire predicate
     stats.check("arc.weapons", tables.arcing == EXPECTED_ARCING,

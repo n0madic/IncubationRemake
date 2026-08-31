@@ -319,3 +319,100 @@ func hash_into(ctx: HashingContext) -> void:
 	# one.  Without the count two different rosters could collide.
 	if not equipment.is_empty():
 		ctx.update(equipment.to_byte_array())
+
+
+## docs/10 section 5 -- the unit array is 200 fixed records.
+const UNIT_SLOTS: int = 200
+
+
+## The lowest slot holding no **live** unit.
+##
+## **UNVERIFIED.** docs/20 section 7.4 records everything `0x00479CF0` writes
+## and not which index it writes it to; the array is 200 fixed records, so the
+## lowest free one is the natural reading and it is what both implementations
+## use.  It lives here, and not in [LclContext], because the interpreter is no
+## longer the only caller: [method Combat.hatch] generates a unit too.
+static func free_slot(units: Dictionary) -> int:
+	for slot_id: int in range(UNIT_SLOTS):
+		if not units.has(slot_id):
+			return slot_id
+		var unit: UnitState = units[slot_id]
+		if not unit.is_alive():
+			return slot_id
+	return UNIT_SLOTS - 1
+
+
+## An in-bounds cell with no live unit on it.
+static func free_cell(state: MapState, units: Dictionary, x: int,
+		y: int) -> bool:
+	if not state.in_bounds(x, y):
+		return false
+	var slot_id: int = state.unit_at(state.index_of(x, y))
+	if slot_id < 0 or not units.has(slot_id):
+		return true
+	var unit: UnitState = units[slot_id]
+	return not unit.is_alive()
+
+
+## `aGenerateUnitElement` (`0x00479CF0`) -- the one routine that puts a unit
+## into the array at run time, and both of its shapes.
+##
+## docs/20 section 7.4: `rank * 12` goes into **both** the experience points
+## and the skill-point pool, and an empty name is filled from the unit type's
+## description string.
+##
+## `exact` is the engine's own eighth argument, and the two callers differ on
+## it: the LCL spawn commands pass **0** and an occupied target cell then makes
+## the routine search up to eight neighbours, while `0x0046F210`'s `special` 9
+## arm passes **1** and takes the cell or nothing.  Written as one function
+## because it is one routine; the flag is not a remake convenience.
+static func generate(state: MapState, units: Dictionary,
+		types: UnitTypeTable, spawn_player: int, type_id: int, name_text: String,
+		rank: int, pool_flag: int, x: int, y: int,
+		exact: bool) -> UnitState:
+	var tx: int = -1
+	var ty: int = -1
+	if free_cell(state, units, x, y):
+		tx = x
+		ty = y
+	elif not exact:
+		for dy: int in [-1, 0, 1]:
+			for dx: int in [-1, 0, 1]:
+				if dx == 0 and dy == 0:
+					continue
+				if tx < 0 and free_cell(state, units, x + dx, y + dy):
+					tx = x + dx
+					ty = y + dy
+	if tx < 0:
+		return null
+	var unit: UnitState = UnitState.new()
+	unit.slot = free_slot(units)
+	unit.player = spawn_player
+	unit.type_id = type_id
+	unit.x = tx
+	unit.y = ty
+	unit.hp = types.hp_max(type_id)
+	if unit.hp == 0:
+		# `placed` is `hp != 0`, so a type with no row -- or one whose `hp_max`
+		# is 0 -- would be an unplaced slot the moment it is written. One hit
+		# point keeps it a unit; the exact value is for a native capture to
+		# settle, not this model to guess.
+		unit.hp = 1
+	unit.ep = rank * 12
+	unit.tp = rank * 12
+	unit.pool_flag = pool_flag
+	# `has` first: [method UnitTypeTable.description] answers `"type %d"` for an
+	# id it does not know, and `inclib/lcl_runtime.py` answers `""`. An
+	# `InsertUnit` naming a type `Info.lcl` never defines would otherwise give
+	# the two models different rosters.
+	if name_text != "":
+		unit.name = name_text
+	elif types.has(type_id):
+		unit.name = types.description(type_id)
+	else:
+		unit.name = ""
+	unit.turn_start_x = tx
+	unit.turn_start_y = ty
+	units[unit.slot] = unit
+	state.set_unit(state.index_of(tx, ty), unit.slot)
+	return unit

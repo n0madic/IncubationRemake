@@ -203,14 +203,42 @@ func _fog(h: TestHarness) -> void:
 			Fog.is_contact({"visibility": Fog.CONTACT})], [true, true])
 	h.equal("fog.hidden_is_not_drawn",
 		Fog.is_drawn({"visibility": Fog.HIDDEN}), false)
-	var marker: MeshInstance3D = Fog.contact_marker()
-	h.check("fog.the_blip_has_a_mesh", marker.mesh != null, marker.name)
-	marker.free()
+	_the_blip(h)
 	# The states are [Visibility]'s, not a second set: a renderer that invented
 	# its own numbering would drift the first time the fog pass changed.
 	h.equal("fog.states_match_the_simulation",
 		[Fog.FULL, Fog.CONTACT, Fog.HIDDEN],
 		[Visibility.FULL, Visibility.CONTACT, Visibility.HIDDEN])
+
+
+## The blip is the engine's own geometry, not a shape this remake invented.
+##
+## `A_BLIB.3DI` -- `a3DObjects.cpp` line 3838, resolved through
+## `aGetNumberOfPrototype` at `0x00407056` -- is a **beam**: 28 vertices
+## spanning z 730..6337, about 3.5 m tall. The disc drawn before this was a
+## guess, and a flat disc at a cell reads as a decal rather than as something
+## standing on the map. The height is what separates the two, so it is what is
+## checked; the fallback is checked as well, because a cache built by an older
+## converter still has to draw something.
+func _the_blip(h: TestHarness) -> void:
+	var geometry: Dictionary = CacheFixture.geometry("A00")
+	var prototypes: Dictionary = DictRead.as_dict(
+		geometry.get("prototypes", {}))
+	h.check("fog.the_cache_carries_the_engines_blip",
+		prototypes.has(Fog.CONTACT_MODEL),
+		"%s is emitted for every world set, named by no placement"
+			% Fog.CONTACT_MODEL)
+	var beam: MeshInstance3D = Fog.contact_marker(prototypes, {})
+	h.check("fog.the_blip_has_a_mesh", beam.mesh != null, beam.name)
+	var tall: float = beam.mesh.get_aabb().size.y if beam.mesh != null else 0.0
+	h.check("fog.the_blip_is_the_beam", tall > 2.0,
+		"%.2f m tall -- the disc it replaced was 0.08" % tall)
+	beam.free()
+	var disc: MeshInstance3D = Fog.contact_marker({}, {})
+	h.check("fog.an_older_cache_still_draws_something",
+		disc.mesh != null and disc.mesh.get_aabb().size.y < 0.5,
+		"the fallback disc, for a cache built before the beam was emitted")
+	disc.free()
 
 
 func _hud(h: TestHarness) -> void:

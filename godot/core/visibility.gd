@@ -112,8 +112,61 @@ static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
 
 
 ## `aBuildVisibleMap` `0x004798C0` -- the whole fog pass for one player.
+##
+## Writes `+0x4F` on every unit and wakes the AI groups the pass alerts. For
+## the answer *without* either, see [method states_for].
 static func build(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		player: int, human_players: int, game_mode: int) -> void:
+	# **A local lambda, never a stored one.**  A [Callable] that captured
+	# `units` and was then stored anywhere reachable from `units` is a
+	# RefCounted cycle, which Godot reports only as "resources still in use at
+	# exit".  This one dies with the call.
+	var wake: Callable = func(group: int) -> void:
+		alert_group(units, group)
+	_pass(state, units, utab, player, human_players, game_mode, wake)
+
+
+## What the pass *would* say, without the pass having happened.
+##
+## `0x00481F00` -- `lNetwork.cpp:1461`, the routine `aViewPlayer.cpp`'s command
+## dispatcher calls before every player command -- does exactly this: it saves
+## all 200 units' `+0x4F` (`0x00479AA0`, into the 200-byte buffer at
+## `0x51F1D8`), calls `aBuildVisibleMap` for the current player, reads the cell
+## it was asked about, and then puts every `+0x4F` back (`0x00479AC0`). The fog
+## the *rules* see is therefore still the one the last hand-over left; the fog
+## the *player* sees is recomputed on every command.
+##
+## That asymmetry is not an accident of this remake, it is the engine's:
+## `aSetVisibleStateForUnit` writes both `+0x4F` **and** the 3D object's
+## `+0x40` (1 solid / 3 blip / 2 absent, docs/22 section 9.1), and the save and
+## restore cover only the first. So what is drawn follows the probe and what
+## the AI and the rules read does not.
+##
+## **No group is woken.** The engine's probe can wake one -- the orders it
+## promotes are not in the buffer it restores -- and that is a bug rather than
+## a rule, so [method for_unit]'s documented "run the pass without waking
+## anybody" arm is used instead.
+##
+## Returns slot -> `+0x4F`, and leaves `units` exactly as it found it.
+static func states_for(state: MapState, units: Dictionary,
+		utab: UnitTypeTable, player: int, human_players: int,
+		game_mode: int) -> Dictionary[int, int]:
+	var saved: Dictionary[int, int] = {}
+	for slot: Variant in units:
+		var unit: UnitState = units[slot]
+		saved[unit.slot] = unit.visibility
+	_pass(state, units, utab, player, human_players, game_mode, Callable())
+	var seen: Dictionary[int, int] = {}
+	for slot: Variant in units:
+		var unit: UnitState = units[slot]
+		seen[unit.slot] = unit.visibility
+		unit.visibility = saved[unit.slot]
+	return seen
+
+
+static func _pass(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		player: int, human_players: int, game_mode: int,
+		wake: Callable) -> void:
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		if not unit.is_alive():
@@ -123,12 +176,6 @@ static func build(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			or ALWAYS_VISIBLE_TYPES.has(unit.type_id))
 		set_state(unit, FULL if always else HIDDEN)
 
-	# **A local lambda, never a stored one.**  A [Callable] that captured
-	# `units` and was then stored anywhere reachable from `units` is a
-	# RefCounted cycle, which Godot reports only as "resources still in use at
-	# exit".  This one dies with the call.
-	var wake: Callable = func(group: int) -> void:
-		alert_group(units, group)
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		if unit.is_alive() and unit.player == player:

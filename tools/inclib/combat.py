@@ -523,6 +523,9 @@ class CombatWorld:
     #: ``0x00509F18`` -- the twelve game-control slots.  Slot 10 is the
     #: mission's equipment-point bonus, which three pickup arms add to.
     game_control: list[int] = field(default_factory=lambda: [0] * 12)
+    #: ``0x00509E32`` -- the player holding the turn.  Only ``docs/21`` §5's
+    #: ``special`` 9 arm reads it here, to rebuild the fog after a hatch.
+    current_player: int = 0
     rng: ARandom = field(default_factory=ARandom)
 
     def in_bounds(self, x: int, y: int) -> bool:
@@ -1439,6 +1442,25 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         cap = max_heat(world, attacker)
         if cap != 0xFF and attacker.heat < cap:
             attacker.heat += 1
+
+    # **``aPlayFightAnimation`` runs after ``aAttackUnit``, and it is not only
+    # an animation.**  ``0x0040BD70`` sweeps the whole cell array and calls the
+    # effect dispatcher ``0x0046F210`` with phase 4 for every cell whose marker
+    # byte is ``0x5C`` -- hit, and not ``0x5D``, killed.  Only ``special`` 9
+    # has a ``case 4``, so that sweep is :func:`hatch` and nothing else.
+    for outcome in result.outcomes:
+        if outcome["marker"] != MARKER_HIT:
+            continue
+        carrier = world.units.get(outcome["slot"])
+        if carrier is None or not carrier.alive:
+            # The engine reads the cell's **current** occupant, so a second
+            # marked cell naming a carrier that already hatched finds the
+            # replacement -- ``special`` 0 -- and does nothing.
+            continue
+        made = hatch(world, carrier, attacker)
+        if made >= 0:
+            outcome["hatched"] = made
+
     return result
 
 
@@ -1448,6 +1470,77 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
 
 #: ``docs/21`` §4 -- ``ParaBomb``.  A mine resolves as a shot from this weapon.
 BOMB_WEAPON = 36
+
+
+# ---------------------------------------------------------------------------
+# ``docs/21`` §5's ``special`` 9 -- ``0x0046F210`` case 4
+# ---------------------------------------------------------------------------
+
+#: The one arm of the effect dispatcher that rewrites the roster.
+SPECIAL_HATCH = 9
+#: ``push 0x36`` at ``0x0046F338`` and ``push 0xff`` at ``0x0046F33A``.
+HATCH_TYPE = 0x36
+HATCH_PLAYER = 0xFF
+#: ``cmp byte [esi + 0x16], 5`` then ``ja`` -- six or more and nothing happens.
+HATCH_HP_LIMIT = 5
+#: The attacker's weapon ``type`` column (``SetWeaponInfo + 0x37``), compared
+#: to 1, 2 and 4 at ``0x0046F2A3``.
+HATCH_WEAPON_TYPES = frozenset({1, 2, 4})
+#: ``docs/10`` §5 -- the unit array is 200 fixed records.
+UNIT_SLOTS = 200
+
+
+def free_slot(world: CombatWorld) -> int:
+    """The lowest slot in 0..199 holding no live unit.
+
+    **UNVERIFIED**, and the same reading ``godot/core/unit_state.gd`` uses:
+    ``docs/20`` §7.4 records everything ``0x00479CF0`` writes and not which
+    index it writes it to.
+    """
+    for slot in range(UNIT_SLOTS):
+        unit = world.units.get(slot)
+        if unit is None or not unit.alive:
+            return slot
+    return UNIT_SLOTS - 1
+
+
+def hatch(world: CombatWorld, target: CombatUnit,
+          attacker: CombatUnit) -> int:
+    """``0x0046F210`` case 4 with ``special == 9`` -- ``docs/21`` §5.
+
+    ``Squee'Coo`` (type 57, the only shipped carrier) that is **hit but not
+    killed**, has five hit points or fewer left, and was hit by a weapon whose
+    ``type`` column is 1, 2 or 4, is removed and replaced in place by a neutral
+    ``Squee'Ther`` inheriting its AI group; the fog is then rebuilt for the
+    player holding the turn, and **not** restored afterwards (``docs/22``
+    §9.4).
+
+    Returns the new slot, or ``-1`` when the arm did not fire.
+    """
+    if _target_special(world, target) != SPECIAL_HATCH:
+        return -1
+    if target.hp > HATCH_HP_LIMIT:
+        return -1
+    weapon = world.tables.weapons.get(attacker.weapon)
+    if weapon is None or weapon.type not in HATCH_WEAPON_TYPES:
+        return -1
+
+    x, y, group = target.x, target.y, target.group
+    # ``aRemoveUnitElement`` (``0x004779C0``) frees the record and clears the
+    # cell; it does not kill the unit, so no death bookkeeping runs.
+    if world.unit_at[world.index(x, y)] == target.slot:
+        world.unit_at[world.index(x, y)] = -1
+    target.hp = 0
+
+    row = world.tables.units.get(HATCH_TYPE)
+    made = CombatUnit(slot=free_slot(world), type_id=HATCH_TYPE,
+                      player=HATCH_PLAYER, x=x, y=y,
+                      hp=1 if row is None or not row.hp_max else row.hp_max,
+                      group=group)
+    world.units[made.slot] = made
+    world.unit_at[world.index(x, y)] = made.slot
+    build_visible_map(world, world.current_player)
+    return made.slot
 
 
 def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:

@@ -905,6 +905,109 @@ alien.
 
 ---
 
+### 9.4 Nineteen rebuilds, of which four are **probes**
+
+`aBuildVisibleMap` (`0x004798C0`) is called from **19** places, and the split
+between them is the part a remake has to reproduce. Two helpers make it
+visible:
+
+| Address | What it does |
+|---|---|
+| `0x00479AA0` | copies all 200 units' `+0x4F` into the byte buffer at `0x51F1D8` |
+| `0x00479AC0` | copies them back |
+
+A call bracketed by that pair is a **question**; a call outside it changes the
+fog for good.
+
+> **The enumeration needed a byte sweep, not radare2.** `axt` after `aa`
+> reports eight of the nineteen — it has no xref for a site in a function its
+> analysis never reached — and an earlier revision of this section was written
+> from that eight and got the shape of the rule wrong. `combat_tables.py`'s
+> `fog.sites` sweeps the whole `.text` for the encoded `call` and compares an
+> exact set; each of the nineteen was then confirmed by disassembling it.
+
+| Address | Routine | Rebuilds for | Kind |
+|---|---|---|---|
+| `0x0040D6BD` | `aPlayFightAnimation`, `aAnimations.cpp:2752` | current player | permanent |
+| `0x00410C6A` | `aDoorOpenSequence` — the panel drops | current player | permanent |
+| `0x00410D60` | `aDoorOpenSequence` — the panel rises | current player | permanent |
+| `0x00412905` | `aPlayElevatorSequence`, `cpp:8215` | the rider's own player | permanent |
+| `0x004130E6` | `aPlayPlatformSequence`, `cpp:8694` | the rider's own player | permanent |
+| `0x004149C7` | `aPlayStatueSequence`, `cpp:10602` | literal player 0 | permanent |
+| `0x004419B6` | the `InsertUnit` handler | current player | permanent |
+| `0x00441F55` | the `BuildVisibleMap` command | current player | permanent |
+| `0x004490A9` | `aLoad.cpp:1649` | current player | permanent |
+| `0x00457926` | the mission-control GUI build | own player | permanent |
+| `0x0046F144` | `aExecuteWarp` (`0x0046EF50`) | **the warping unit's** `+0x45` | permanent |
+| `0x0046F3A8` | `0x0046F210` `case 4`, `special` 9 ([`21` §5](21-info-lcl-schema.md)) | current player | permanent |
+| `0x004781C6` | `refreshCurrentPlayer`, `aUnitMap.cpp:1240` | its own argument | permanent |
+| `0x00478DE4` | `aTransferUnitFromPoolToMap` | current player | permanent |
+| `0x0047DCCF` | `aNextPlayerHandling`, under game mode 1 | literal player 0 | permanent |
+| `0x0047CBED` | `aViewPlayer.cpp:1051` | own player | **probe** |
+| `0x0047CF8B` | `aViewPlayer.cpp:992` | own player | **probe** |
+| `0x0047CFB5` | `aViewPlayer.cpp:998` | `0x0043B2D0` | **probe** |
+| `0x00481FE3` | `lNetwork.cpp:1461` | own player | **probe** |
+
+`0x0043B2C0` is `aGetCurrentPlayer` (`0x00509E32`, the byte
+[`25` §4](25-turn-and-round.md) rotates); `0x00436980` is the *own* player of
+the network session, `-1` when there is none.
+
+#### The probe, and the half of it that is not put back
+
+`0x00481F00` (`lNetwork.cpp:1461`) — which `aViewPlayer.cpp`'s command
+dispatcher `0x0047DE90` calls at four sites, one of them immediately before
+`aUI_MoveUnit` — is
+
+```c
+saveVisibility();                       /* 0x00479AA0 */
+if (g_523FFC == 0)                      /* not a network session */
+    aBuildVisibleMap(ownPlayer());
+else
+    fcn_00482210();
+... look at cell (x, y) ...
+restoreVisibility();                    /* 0x00479AC0 */
+```
+
+It answers "what is standing there, as the player can see it": 1 for a visible
+unit, 2 for a special cell, 0 for neither. `0x0047C2C0` uses the same pattern
+twice for the computer's turn.
+
+**But the restore covers only half of what the pass wrote.** §9.1's
+`aSetVisibleStateForUnit` writes the unit byte `+0x4F` *and* the 3D object's
+`+0x40` — 1 solid, 3 blip, 2 absent — and the 200-byte buffer holds only the
+first. The object flags keep the probe's answer. That is what makes an alien
+appear the moment the squad walks into sight of it, while the AI and the
+resolver go on reading a fog that the *permanent* sites moved.
+
+Whether the asymmetry was intended is **UNVERIFIED** — it is equally consistent
+with an oversight — but it is what the code does, and a remake that restored
+both would freeze the picture until the turn changed, while one that restored
+neither would let a probe rewrite the state the AI plans against.
+
+#### The door, which is where "a use changes what the rules see" lives
+
+The rebuild a use produces is **not** `aExecuteUse`'s: that routine calls
+`aBuildVisibleMap` nowhere. It belongs to `aDoorOpenSequence` (`0x00410A20`),
+the animation the use path drives, and it has two arms because a door is a
+toggle:
+
+```c
+if (cell[+0x0B] & 1) {              /* odd ActPt: the door is closed */
+    cell[+0x0D] = 1;  cell[+0x01] = 0;              ebx = -100;   /* opens */
+} else {
+    cell[+0x0D] = 2;  cell[+0x01] += 0xC80;         ebx = +100;   /* closes */
+}
+...
+if (ebx <  0 && currentPlayer() != 0xFF) aBuildVisibleMap(currentPlayer());
+if (ebx >  0 && currentPlayer() != 0xFF) aBuildVisibleMap(currentPlayer());
+```
+
+Both arms rebuild, each on its own side of the sign, and **both refuse while
+the computer holds the turn** — a door the computer opens leaves the fog until
+the hand-over. `combat_tables.py`'s `door.fog` pins the six bytes that say so.
+
+---
+
 ## 10. What a remake has to implement
 
 The whole chain, in order, for one attack:
@@ -923,7 +1026,7 @@ aExecuteFight
          ├─ 0x0046C960               damage roll, fatigue, armour, HP
          └─ aSetVisibleStateForUnit
 
-aBuildVisibleMap(player)             once per turn and after every move
+aBuildVisibleMap(player)             15 permanent sites; probed per command (§9.4)
  └─ for each own unit: aBuildVisibleMapForUnit
      └─ aCheckLineOfSightEx  +  the two scanner ranges
 ```
@@ -954,6 +1057,10 @@ aBuildVisibleMap(player)             once per turn and after every move
 | `opt.dead`, `opt.name_field` | every `.text` reference to `Game.opt` +0x08 and +0x10 is enumerated — one each, both the `aInitOptions` write itself — and the player name at +0x2C has its copy and its getter |
 | `special.sites` | the eleven `.text` sites that touch `unitType[+0x07]` are exactly the ones [`21` §5](21-info-lcl-schema.md) accounts for |
 | `rng.private` 2/2 | in both `Incubation.exe` and `iDesigner.exe`, every reference to the RNG's four globals lies inside `aRandom`/`aRandomize` |
+| `fog.sites` | the `.text` sweep finds exactly the 19 `aBuildVisibleMap` call sites §9.4 tabulates — a twentieth is a failure |
+| `fog.saves`, `fog.restores` | and exactly the three save and six restore sites that make four of them probes |
+| `door.fog` 6/6 | `aDoorOpenSequence`'s two arms, their opposite sign tests, and the `!= 0xFF` guard both carry |
+| `hatch.arm` 12/12, `hatch.call` 2/2 | every immediate of `0x0046F210`'s `case 4` — `special` 9, the five-hit-point bound, the weapon types {1, 2, 4}, the replacement's type and player, the inherited group — and the two calls that follow it |
 
 `tools/trace_names.py --check gog_incubation` re-derives the symbol table and
 asserts the ten names §1.1 depends on.

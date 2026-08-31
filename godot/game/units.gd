@@ -62,10 +62,19 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	_walks.clear()
 	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
 	var types: UnitTypeTable = world.unit_types()
+	# **What is drawn is a fresh fog pass, not the stored one.** The rules read
+	# `+0x4F` as the last hand-over left it; the picture does not. `0x00481F00`
+	# rebuilds the fog before every player command and restores only the unit
+	# byte, so the 3D object's draw flag keeps the fresh answer -- which is why
+	# an alien walked into view appears the moment you walk, rather than when
+	# the turn changes. [method World.display_visibility] is that query.
+	var seen: Dictionary[int, int] = world.display_visibility()
 	for slot: int in world.unit_slots():
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty():
 			continue
+		if seen.has(slot):
+			view["visibility"] = seen[slot]
 		# docs/22 section 9: a hidden unit is not drawn and a contact is a blip.
 		# The rule is [Fog]'s, so a change to what visibility means is one edit
 		# and not a search through the renderer.
@@ -93,7 +102,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		# A detection, not a sighting: the cell, and nothing about what is on
 		# it. No body, no facing, no player colour.
 		node.basis = Basis.IDENTITY
-		node.add_child(Fog.contact_marker())
+		node.add_child(Fog.contact_marker(prototypes, textures))
 		return node
 
 	var colour: Color = UNKNOWN_PLAYER_COLOUR

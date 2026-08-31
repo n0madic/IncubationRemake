@@ -120,7 +120,7 @@ static func candidates(state: MapState, units: Dictionary,
 ## disagree about it.
 static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, mover: UnitState, ai_level: int,
-		human_players: int, game_mode: int,
+		human_players: int, game_mode: int, current_player: int,
 		rng: IncRandom) -> Array[Dictionary]:
 	var fired: Array[Dictionary] = []
 	if not mover.is_alive():
@@ -146,7 +146,7 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var facing: int = reactor.facing
 		var result: AttackResult = Combat.attack(state, units, utab, wtab,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
-			game_mode, rng)
+			game_mode, current_player, rng)
 		reactor.facing = facing
 		fired.append({"reactor": reactor.slot, "ticket": reactor.ticket,
 			"attack": result.to_dict()})

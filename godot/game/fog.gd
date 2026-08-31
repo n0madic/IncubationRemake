@@ -28,7 +28,15 @@ const FULL: int = 0
 const CONTACT: int = 1
 const HIDDEN: int = 3
 
-## What a contact blip looks like: a flat disc at the cell, no body.
+## The engine's own blip, by name: `a3DObjects.cpp` line 3838 resolves
+## `A_BLIB.3DI` through `aGetNumberOfPrototype` (`0x00407056`), and the
+## geometry is a beam -- 28 vertices spanning z 730..6337 in a 1550-wide
+## footprint, about 3.5 m tall. The converter emits it for every world set
+## (`inclib.convert.CONTACT_MARKER_MODEL`).
+const CONTACT_MODEL: String = "A_BLIB.3DI"
+
+## The fallback blip, for a cache built before the converter emitted the beam:
+## a flat disc at the cell, no body. Not what the engine draws.
 const CONTACT_RADIUS: float = 0.45
 const CONTACT_COLOUR: Color = Color8(230, 90, 90, 180)
 
@@ -43,8 +51,26 @@ static func is_contact(view: Dictionary) -> bool:
 	return DictRead.as_int(view["visibility"]) == CONTACT
 
 
-## The blip mesh, for a unit the player has only detected.
-static func contact_marker() -> MeshInstance3D:
+## The blip, for a unit the player has only detected: the engine's own
+## `A_BLIB.3DI` when the cache carries it, and the disc when it does not.
+##
+## The disc was this remake's invention and it was wrong twice over -- the
+## original marks a contact with a tall beam, and a flat disc at a cell reads
+## as a decal rather than as something standing there. The prototype is four
+## lines of lookup away, so there is no reason to draw a guess.
+static func contact_marker(prototypes: Dictionary,
+		textures: Dictionary) -> MeshInstance3D:
+	if prototypes.has(CONTACT_MODEL):
+		var beam: MeshInstance3D = MeshInstance3D.new()
+		beam.name = "contact"
+		beam.mesh = MeshBuilder.build(
+			DictRead.as_dict(prototypes[CONTACT_MODEL]), textures)
+		return beam
+	return fallback_marker()
+
+
+## The disc, kept only for a cache built before the beam was emitted.
+static func fallback_marker() -> MeshInstance3D:
 	var disc: CylinderMesh = CylinderMesh.new()
 	disc.top_radius = CONTACT_RADIUS
 	disc.bottom_radius = CONTACT_RADIUS

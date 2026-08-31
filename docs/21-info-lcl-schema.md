@@ -454,7 +454,7 @@ All seventeen values, with the shipped carriers:
 | 6 | `Tr'Yn` | places three units of type `0x34` around itself every turn, at offsets picked from its facing — the extra body cells of a unit bigger than one field | phase 5 |
 | 7 | *none* | morphs into the next unit type (`aChangeUnitInfo(type + 1)`) | phase 3 |
 | 8 | *none* | morphs into the previous unit type | phase 3 |
-| 9 | `Squee'Coo` | below 6 HP and hit by a weapon of type 1, 2 or 4: removed and replaced by a neutral unit of type `0x36` that inherits its AI group | phase 4 |
+| 9 | `Squee'Coo` | below 6 HP and **hit but not killed** by a weapon of type 1, 2 or 4: removed and replaced by a neutral unit of type `0x36` that inherits its AI group, and the fog is then rebuilt for the current player. Phase 4's caller sweeps cells marked `0x5C`, so a kill (`0x5D`) and a shielded cell (`0x5B`) both miss it; `aGenerateUnitElement` is called with its `exact` flag set, so the replacement takes the carrier's own cell or none. See [`22` §9.4](22-combat-and-visibility.md) | phase 4 |
 | 10 | *none* | immune unless the weapon's type is 2 or 3 | `0x0046B450` |
 | 11 | *none* | no handler | — |
 | 12 | `Barrel` x3, `Parabomb` | **explodes when hit** — damage forced to 255 and the eight neighbours marked for a secondary blast | `0x0046B450`, `aExecuteBomb`, `aPlayFightAnimation` |

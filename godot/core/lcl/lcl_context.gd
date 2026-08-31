@@ -68,7 +68,7 @@ func unit_on(x: int, y: int) -> UnitState:
 
 
 func free_cell(x: int, y: int) -> bool:
-	return state.in_bounds(x, y) and unit_on(x, y) == null
+	return UnitState.free_cell(state, units, x, y)
 
 
 func kill(unit: UnitState) -> void:
@@ -79,24 +79,11 @@ func kill(unit: UnitState) -> void:
 			state.set_unit(at, MapState.NO_UNIT)
 
 
-## docs/10 section 5 -- the unit array is 200 fixed records.
-const UNIT_SLOTS: int = 200
-
-
-## The lowest slot holding no **live** unit.
-##
-## **UNVERIFIED.** docs/20 section 7.4 records everything `0x00479CF0` writes
-## and not which index it writes it to; the array is 200 fixed records, so the
-## lowest free one is the natural reading and it is what both implementations
-## use. See [method spawn] for why the rule matters more than the answer.
+## The lowest slot holding no **live** unit -- [method UnitState.free_slot],
+## which is where the rule lives now that the interpreter is no longer its only
+## caller.  See [method spawn] for why the rule matters more than the answer.
 func free_slot() -> int:
-	for slot: int in range(UNIT_SLOTS):
-		if not units.has(slot):
-			return slot
-		var unit: UnitState = units[slot]
-		if not unit.is_alive():
-			return slot
-	return UNIT_SLOTS - 1
+	return UnitState.free_slot(units)
 
 
 ## Every cell whose action point is in the inclusive range.
@@ -116,57 +103,12 @@ func cells_with_actpt(low: int, high: int) -> PackedInt32Array:
 ## skill-point pool, and an empty name is filled from the unit type's
 ## description string.
 ##
-## The slot is the **lowest in 0..199 holding no live unit**, which is
-## [method free_slot]'s rule and what `inclib/lcl_runtime.py` uses. "One past
-## the highest key" would have been simpler and wrong: a `.lev` carries named
-## slots whose hit points are zero -- `_C_140` has two -- so the two
-## implementations would have picked 10 and 12 for the same spawn, and nothing
-## downstream would have said so.
+## The routine is [method UnitState.generate]; what belongs here is only the
+## flag the LCL callers pass.  The slot rule it carries matters more than the
+## answer: a `.lev` holds named slots whose hit points are zero -- `_C_140` has
+## two -- so "one past the highest key" would have picked 10 and 12 for the
+## same spawn, and nothing downstream would have said so.
 func spawn(spawn_player: int, type_id: int, name: String, rank: int,
 		pool_flag: int, x: int, y: int) -> UnitState:
-	var tx: int = -1
-	var ty: int = -1
-	if free_cell(x, y):
-		tx = x
-		ty = y
-	else:
-		for dy: int in [-1, 0, 1]:
-			for dx: int in [-1, 0, 1]:
-				if dx == 0 and dy == 0:
-					continue
-				if tx < 0 and free_cell(x + dx, y + dy):
-					tx = x + dx
-					ty = y + dy
-	if tx < 0:
-		return null
-	var unit: UnitState = UnitState.new()
-	unit.slot = free_slot()
-	unit.player = spawn_player
-	unit.type_id = type_id
-	unit.x = tx
-	unit.y = ty
-	unit.hp = types.hp_max(type_id)
-	if unit.hp == 0:
-		# `placed` is `hp != 0`, so a type with no row -- or one whose `hp_max`
-		# is 0 -- would be an unplaced slot the moment it is written. One hit
-		# point keeps it a unit; the exact value is for a native capture to
-		# settle, not this model to guess.
-		unit.hp = 1
-	unit.ep = rank * 12
-	unit.tp = rank * 12
-	unit.pool_flag = pool_flag
-	# `has` first: [method UnitTypeTable.description] answers `"type %d"` for an
-	# id it does not know, and `inclib/lcl_runtime.py` answers `""`. An
-	# `InsertUnit` naming a type `Info.lcl` never defines would otherwise give
-	# the two models different rosters.
-	if name != "":
-		unit.name = name
-	elif types.has(type_id):
-		unit.name = types.description(type_id)
-	else:
-		unit.name = ""
-	unit.turn_start_x = tx
-	unit.turn_start_y = ty
-	units[unit.slot] = unit
-	state.set_unit(state.index_of(tx, ty), unit.slot)
-	return unit
+	return UnitState.generate(state, units, types, spawn_player, type_id, name,
+		rank, pool_flag, x, y, false)

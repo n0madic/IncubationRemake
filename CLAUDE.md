@@ -38,7 +38,7 @@ python3 tools/cha_parse.py        --verify-convention gog_incubation
 python3 tools/font_render.py      --check gog_incubation
 python3 tools/img_tables.py       gog_incubation
 python3 tools/verify_3d_indices.py --root gog_incubation      # 31 check kinds
-python3 tools/combat_tables.py    --check gog_incubation      # 27 checks, 48/48 patterns
+python3 tools/combat_tables.py    --check gog_incubation      # 33 checks, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
 python3 tools/sav_tables.py       --check gog_incubation      # 69 checks
 python3 tools/sav_parse.py        gog_incubation --selftest   # 31 map sizes
@@ -65,7 +65,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 101 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 27 suites, 1610 checks
+bash   godot/run_tests.sh                                    # 27 suites, 1656 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7

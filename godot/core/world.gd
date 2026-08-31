@@ -10,12 +10,15 @@ extends RefCounted
 ## both -- the first by mutating a snapshot and re-hashing, the second by
 ## reading every file under `core/` as text and failing on a forbidden symbol.
 
-## How many computer turns one [method submit_end_turn] will play before it
-## stops. The rotation can hand player 255 the turn twice running when no human
-## slot qualifies, and a mission whose script never ends would otherwise loop
-## for ever; four is well past anything the corpus produces (every mission
-## hands over to a human on the first pass) and short enough that the stop is
-## a result rather than a hang.
+## How many times one [method submit_end_turn] will hand the computer the turn
+## before it stops. The rotation can hand player 255 the turn twice running when
+## no human slot qualifies, and a mission whose script never ends would
+## otherwise loop for ever; four is well past anything the corpus produces
+## (every mission hands over to a human on the first pass) and short enough
+## that the stop is a result rather than a hang.
+##
+## It counts **hand-overs to the computer**, not planner runs: at turn zero the
+## computer is handed the turn and does not act (see [method submit_end_turn]).
 const AI_TURNS_PER_HAND_OVER: int = 4
 
 var resource: MapResource = null
@@ -45,6 +48,11 @@ var game_control: GameControl = null
 
 ## docs/23 section 5.3 -- what the move's caller writes into `unit[+0x39]`.
 const ACTED_MOVED: int = 3
+## [member UseResult.kind] for the one interaction whose animation rebuilds
+## the fog -- see [method submit_use].
+const DOOR_USE_KIND: String = "door"
+## The event [LclInterpreter] emits where the engine calls `aBuildVisibleMap`.
+const SCRIPT_FOG_EVENT: String = "build_visible_map"
 
 ## The [MissionScript] seam. Assign a real runner and the hand-over and the
 ## walk start driving the mission program; leave it and they run
@@ -312,7 +320,8 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# AI and three times from `aUI.cpp`. So the drain lives here, where the
 	# charge above already is, and not inside [TurnSequence] or [ExecuteMove].
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode,
+		turn.current_player, rng)
 	return moved
 
 
@@ -339,14 +348,15 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	var unit: UnitState = _units[command.unit_slot]
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
-		turn.human_count(), turn.mode, rng)
+		turn.human_count(), turn.mode, turn.current_player, rng)
 	if unit.hp == 0:
 		return shot
 	var ap: int = _weapons.ap(unit.weapon)
 	unit.mp = unit.mp - ap if unit.mp > ap else 0
 	unit.acted = ACTED_MOVED
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode,
+		turn.current_player, rng)
 	return shot
 
 
@@ -371,6 +381,22 @@ func submit_use(command: UseCommand) -> UseResult:
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
 		turn.mode, rng)
+	# **A door that opens changes what the rules see, and the rebuild is not
+	# `aExecuteUse`'s.** It belongs to `aDoorOpenSequence` (`0x00410A20`), the
+	# animation the use path drives, which calls `aBuildVisibleMap` twice --
+	# `0x00410C6A` on the arm that opens the panel and `0x00410D60` on the one
+	# that closes it -- for `aGetCurrentPlayer`, and **not** inside the
+	# save/restore bracket that makes docs/22 section 9.4's per-command pass a
+	# probe. So this is permanent, and it is here rather than in [Interact]
+	# because `interact_runtime`'s native capture replays `aExecuteUse` alone
+	# and would disagree with a model that folded the animation into it.
+	#
+	# Both sites are guarded by `aGetCurrentPlayer() != 0xFF`: a door the
+	# computer opens leaves the fog alone until the hand-over.
+	if result.kind == DOOR_USE_KIND \
+			and turn.current_player != UnitState.PLAYER_ALIEN:
+		Visibility.build(state, _units, _unit_types, turn.current_player,
+			turn.human_count(), turn.mode)
 	if unit.hp != 0 and unit.mp != 0:
 		unit.mp -= 1
 	return result
@@ -422,6 +448,21 @@ func _run_mission_script(call_type: int,
 	var outcome: LclOutcome = LclInterpreter.run(script_program, context,
 		MissionScript.to_slots(environment))
 	next_map = context.next_map
+	# **The script's own fog rebuilds, which the interpreter records and does
+	# not perform.** `InsertUnit` (`0x004419B6`) and the `BuildVisibleMap`
+	# command both call `aBuildVisibleMap` for good, so the events they emit
+	# are acted on here -- outside [LclInterpreter], which owns no fog, and
+	# outside [LclContext], whose whole point is that the language reaches four
+	# cell fields and not the map's derived state. The events themselves are
+	# unchanged, so `lcl_runtime.py`'s comparison still sees the same list.
+	for event: Dictionary in outcome.events:
+		if DictRead.as_string(event["name"]) != SCRIPT_FOG_EVENT:
+			continue
+		var values: PackedInt32Array = DictRead.as_int32_array(event["values"])
+		if values.is_empty():
+			continue
+		Visibility.build(state, _units, _unit_types, values[0],
+			turn.human_count(), turn.mode)
 	var result: Dictionary = outcome.to_dict()
 	result["ok"] = outcome.ok()
 	result["ran"] = true
@@ -598,9 +639,23 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	# [member TurnResult.ai_result] with the second's, so the events of the
 	# earlier turn were never played back; and nothing bounded the depth, so
 	# a mission that never ends would exhaust the stack rather than stop.
+	#
+	# **The condition is the engine's own, and it is not
+	# [member TurnResult.ai_turn].** docs/25 section 4.1 gives
+	# `aNextPlayerHandling`'s body as
+	# `do { ... } while (g_currentPlayer == 255 && result == 1)` -- the
+	# *player*, and the code equal to `1` rather than merely not zero. Looping
+	# on `ai_turn` instead let one case out: at turn zero `ai_turn` is false
+	# while the computer holds the turn (`0x0047D600` runs the planner only
+	# `if (g_turn != 0)`), so the first press of "end turn" returned to the
+	# interface with player 255 holding it. The engine cannot do that -- its
+	# loop is what "lets the computer take its turn without returning to the
+	# interface" -- and in this remake it meant the player could select and
+	# command the aliens, with nothing on screen to say whose turn it was.
 	var played: AITurnResult = null
 	var turns: int = 0
-	while result.ai_turn and result.ok():
+	while turn.current_player == TurnState.PLAYER_COMPUTER \
+			and result.code == TurnResult.OK:
 		turns += 1
 		if turns > AI_TURNS_PER_HAND_OVER:
 			result.code = TurnResult.STOPPED
@@ -609,11 +664,18 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 				played.reason = ("the rotation handed the computer "
 					+ str(turns) + " turns without reaching a human player")
 			break
-		var ctx: AIContext = AIContext.create(state, _units, _unit_types,
-			_weapons, _ctrlmap, turn, rng)
-		ctx.may_fire = ai_may_fire
-		var one: AITurnResult = AISystem.run(ctx, turn.current_player)
-		played = one if played == null else played.followed_by(one)
+		# **The AI runs only when the hand-over said so; the loop turns
+		# either way.** `0x0047D600` sets the view state and calls
+		# `aAISystemControl` under `if (g_turn != 0)`, so at turn zero the
+		# computer is handed the turn and does nothing with it -- and it is
+		# `aNextPlayerHandling`'s loop, not the planner, that carries the
+		# rotation past it.
+		if result.ai_turn:
+			var ctx: AIContext = AIContext.create(state, _units, _unit_types,
+				_weapons, _ctrlmap, turn, rng)
+			ctx.may_fire = ai_may_fire
+			var one: AITurnResult = AISystem.run(ctx, turn.current_player)
+			played = one if played == null else played.followed_by(one)
 		result = TurnSequence.hand_over(turn, _units, game_control,
 			_unit_types, _weapons, _script_callable(), banner_in_range,
 			live_unit_count, EndTurnCommand.create().arg)
@@ -623,6 +685,20 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			result.fog_rebuilt = true
 	result.ai_result = played
 	return result
+
+
+## What the player would see if the fog were rebuilt now -- slot to `+0x4F`.
+##
+## A **query**: it leaves every `+0x4F` exactly as it found it, so nothing here
+## reaches the canonical hash, the AI or the rules. It is the engine's own
+## split: `0x00481F00` rebuilds the fog before every player command and then
+## restores it, and the restore covers the unit byte but not the 3D object's
+## draw flag, so what is *drawn* follows the command and what is *decided*
+## follows the last hand-over. [method Visibility.states_for] carries the
+## addresses.
+func display_visibility() -> Dictionary[int, int]:
+	return Visibility.states_for(state, _units, _unit_types,
+		turn.current_player, turn.human_count(), turn.mode)
 
 
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.

@@ -62,6 +62,25 @@ const HIT_SPAN: int = 100
 const GUARANTEED_HIT_SPECIALS: Array[int] = [12, 13]
 const GUARANTEED_HIT_DAMAGE: int = 255
 
+## docs/21 section 5 -- `special` 9, the one arm of the effect dispatcher
+## `0x0046F210` that rewrites the roster rather than a number.
+##
+## The whole rule is read off `0x0046F279`, the dispatcher's `case 4`:
+## `Squee'Coo` (type 57, the only shipped carrier) that is **hit but not
+## killed**, has five hit points or fewer left, and was hit by a weapon whose
+## `type` column is 1, 2 or 4, is removed and replaced **in place** by a
+## neutral `Squee'Ther` inheriting its AI group -- and the fog is then rebuilt
+## for the player holding the turn, permanently (docs/22 section 9.4).
+const SPECIAL_HATCH: int = 9
+## `push 0x36` at `0x0046F338`; `push 0xff` at `0x0046F33A`.
+const HATCH_TYPE: int = 0x36
+const HATCH_PLAYER: int = UnitState.PLAYER_ALIEN
+## `cmp byte [esi + 0x16], 5` then `ja` -- six or more and nothing happens.
+const HATCH_HP_LIMIT: int = 5
+## The attacker's weapon `type` (`SetWeaponInfo + 0x37`), compared to 1, 2 and
+## 4 at `0x0046F2A3`.
+const HATCH_WEAPON_TYPES: Array[int] = [1, 2, 4]
+
 ## docs/22 section 7.4 -- the sentinel damage value and the one immune type.
 const DAMAGE_SENTINEL: int = 0xFE
 const SENTINEL_DAMAGE_DEALT: int = 2
@@ -698,7 +717,8 @@ static func marker_damage(wtab: WeaponTable, marker: int,
 ## `aAttackUnit` `0x0046B450` -- docs/22 section 7, in the order it runs.
 static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, x: int, y: int, tx: int, ty: int, ai_level: int,
-		human_players: int, game_mode: int, rng: IncRandom) -> AttackResult:
+		human_players: int, game_mode: int, current_player: int,
+		rng: IncRandom) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
 	if attacker == null:
@@ -811,7 +831,76 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var cap: int = max_heat(wtab, attacker)
 		if cap != HEAT_NONE and attacker.heat < cap:
 			attacker.heat += 1
+
+	# **`aPlayFightAnimation` runs after `aAttackUnit`, and it is not only an
+	# animation.**  `0x0040BD70` sweeps the whole cell array and calls the
+	# effect dispatcher `0x0046F210` with phase 4 for every cell whose marker
+	# byte is `0x5C` -- hit, and not `0x5D`, killed.  Only `special` 9 has a
+	# `case 4`, so that sweep is [method hatch] and nothing else; the sweep
+	# order is the cell array's, which is the order the outcomes were appended
+	# in.
+	for outcome: Dictionary in result.outcomes:
+		if DictRead.as_int(outcome["marker"]) != MARKER_HIT:
+			continue
+		var slot: int = DictRead.as_int(outcome["slot"])
+		if not units.has(slot):
+			continue
+		var carrier: UnitState = units[slot]
+		if not carrier.is_alive():
+			# The engine reads the cell's **current** occupant, so a second
+			# marked cell naming a carrier that already hatched finds the
+			# replacement -- `special` 0 -- and does nothing.
+			continue
+		var made: int = hatch(state, units, utab, wtab, carrier, attacker,
+			human_players, game_mode, current_player)
+		if made >= 0:
+			outcome["hatched"] = made
 	return result
+
+
+## `0x0046F210` `case 4` with `special == 9` -- see [constant SPECIAL_HATCH].
+##
+## Returns the slot of the unit that hatched, or -1 when the arm did not fire.
+##
+## Three things are the engine's own and each would be easy to "fix":
+##
+## * the carrier is **removed**, not killed -- `aRemoveUnitElement`
+##   (`0x004779C0`) frees its record and clears the cell -- so its slot is free
+##   again and the replacement usually takes it;
+## * `aGenerateUnitElement` is called with its `exact` flag **set**
+##   (`push 1` at `0x0046F32B`), so the replacement never searches a
+##   neighbouring cell the way an `InsertUnit` would;
+## * the fog rebuild is `aBuildVisibleMap(g_currentPlayer)` and is **not**
+##   bracketed by the save/restore pair, so unlike the per-command probe of
+##   docs/22 section 9.4 it changes what the rules see, not only the picture.
+##
+## What the engine also does here and this does not: `aRemoveUnitElement` bumps
+## a per-player counter at `+0x24` for a unit whose `+0x4D` is 2 or more, which
+## is bookkeeping no part of this remake reads.
+static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		wtab: WeaponTable, target: UnitState, attacker: UnitState,
+		human_players: int, game_mode: int, current_player: int) -> int:
+	if utab.special(target.type_id) != SPECIAL_HATCH:
+		return -1
+	if target.hp > HATCH_HP_LIMIT:
+		return -1
+	if not HATCH_WEAPON_TYPES.has(wtab.type_of(attacker.weapon)):
+		return -1
+	var x: int = target.x
+	var y: int = target.y
+	var group: int = target.group
+	var at: int = state.index_of(x, y)
+	if state.unit_at(at) == target.slot:
+		state.set_unit(at, MapState.NO_UNIT)
+	target.hp = 0
+	var made: UnitState = UnitState.generate(state, units, utab, HATCH_PLAYER,
+		HATCH_TYPE, "", 0, 0, x, y, true)
+	if made == null:
+		return -1
+	made.group = group
+	Visibility.build(state, units, utab, current_player, human_players,
+		game_mode)
+	return made.slot
 
 
 static func _unit_on(state: MapState, units: Dictionary, x: int,

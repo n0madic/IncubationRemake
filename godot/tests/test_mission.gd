@@ -103,6 +103,8 @@ func run(h: TestHarness) -> void:
 	# own `else` arm accepts a deadlock. So a change that broke the walk badly
 	# enough for `_C_140` never to be won on either run left the suite green
 	# while the claim stayed in the comment. This is the claim.
+	_the_turn_always_comes_back(h)
+
 	h.check("outcome.the_mission_is_completable",
 		DictRead.as_bool(held["squad_won"]),
 		"with the computer's fire held, the squad still reaches the "
@@ -118,6 +120,57 @@ func run(h: TestHarness) -> void:
 			or DictRead.as_bool(played["hero_died"]),
 		"the aliens killed the hero or wiped the squad out: "
 		+ DictRead.as_string(played["summary"]))
+
+
+## `submit_end_turn` never returns with the computer still holding the turn.
+##
+## docs/25 section 4.1: `aNextPlayerHandling` is
+## `do { ... } while (g_currentPlayer == 255 && result == 1)`, and its own
+## documentation of that loop is "what lets the computer take its turn without
+## returning to the interface". A hand-over that came back with player 255
+## holding therefore cannot happen in the engine -- and when it happened here
+## it was not cosmetic: [method World.may_command] compares a unit's owner
+## against whoever holds the turn, so **the aliens became selectable and the
+## player could spend their turn for them**, with the interface waiting for a
+## press that only ended a turn that was not theirs.
+##
+## The case that produced it is turn **zero**: `0x0047D600` runs the planner
+## only `if (g_turn != 0)`, so [member TurnResult.ai_turn] is false while the
+## computer holds the turn, and a loop written on that flag stopped there. It
+## is therefore the *first* press of the button on every mission, which is why
+## this walks from a fresh world rather than from the middle of one.
+func _the_turn_always_comes_back(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission(MISSION)
+	if loaded.is_empty():
+		h.check("rotation.cache", false, "no %s in the cache" % MISSION)
+		return
+	var world: World = loaded["world"]
+	var stops: PackedStringArray = PackedStringArray()
+	var commandable: PackedStringArray = PackedStringArray()
+	var handed: int = 0
+	for _i: int in range(TURN_LIMIT):
+		var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
+		if not result.ok():
+			break
+		handed += 1
+		if world.turn.current_player == TurnState.PLAYER_COMPUTER:
+			stops.append("turn %d" % world.turn.turn)
+		for slot: int in world.unit_slots():
+			var view: Dictionary = world.unit_view(slot)
+			if world.may_command(slot) \
+					and DictRead.as_int(view["player"]) \
+						== TurnState.PLAYER_COMPUTER:
+				commandable.append("turn %d slot %d" % [world.turn.turn, slot])
+		if world.game_control.mission_ended():
+			break
+	h.check("rotation.hand_overs_happened", handed > 1,
+		"%d hand-overs returned ok" % handed)
+	h.equal("rotation.never_stops_on_the_computer", stops,
+		PackedStringArray(),
+		"an ok hand-over always comes back to a human player")
+	h.equal("rotation.the_aliens_are_never_commandable", commandable,
+		PackedStringArray(),
+		"World.may_command refuses every alien after every hand-over")
 
 
 ## The squad, in slot order.

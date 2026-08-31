@@ -101,7 +101,7 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 			var attack: AttackResult = Combat.attack(ctx.map, ctx.units,
 				ctx.utab, ctx.wtab, unit.x, unit.y, bx, by,
 				ctx.turn.ai_level, ctx.turn.human_count(), ctx.turn.mode,
-				ctx.rng)
+				ctx.turn.current_player, ctx.rng)
 			if not attack.reason.is_empty() and not attack.fired:
 				ctx.refuse(attack.reason)
 			ctx.emit(AIEvent.make("fire", unit.slot, unit.x, unit.y, bx, by,
@@ -117,7 +117,8 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 	if unit.hp > 0:
 		var reactions: Array[Dictionary] = Reaction.drain(ctx.map, ctx.units,
 			ctx.utab, ctx.wtab, unit, ctx.turn.ai_level,
-			ctx.turn.human_count(), ctx.turn.mode, ctx.rng)
+			ctx.turn.human_count(), ctx.turn.mode, ctx.turn.current_player,
+			ctx.rng)
 		if not reactions.is_empty():
 			ctx.emit(AIEvent.make("reactions", unit.slot, unit.x, unit.y,
 				0, 0, reactions.size(), "",
