@@ -236,6 +236,63 @@ and **a mission plays out identically every time it is loaded**.
 uninitialised tail of `.data`. The editor's generator therefore never leaves
 zero, and every `aRandom(base, span)` in it returns `base`.
 
+### 3.2 The second stream — **[code] `0x004638E0`, seed `0x00514070`**
+
+Eleven `nop`s after `aRandom`'s `ret` there is a **second entry point**, and it
+is not a variant or a wrapper. Its body is `aRandom`'s **byte for byte** —
+same multiplier, same modulus, same x87 sequence — over a different seed
+global, and without the two counters:
+
+```
+0x00463870..0x004638B4   aRandom          seed 0x00514078, then count and sum
+0x004638E0..0x00463924   the same code    seed 0x00514070, then `pop ecx; ret`
+```
+
+Sixty-two of the sixty-nine shared bytes are identical. The seven that differ
+are the low byte of the seed address in the opening `fld` and the closing
+`fst`, the two `call rel32` displacements (same targets, different origins),
+and the two bytes where `aRandom` goes on to its counters while this one
+returns.
+
+**It is the busier of the two by a factor of eleven** — 372 call sites against
+`aRandom`'s 32 — and the split between them is close to, but not exactly, the
+line between simulation and presentation:
+
+| | counted, `0x00463870` | uncounted, `0x004638E0` |
+|---|---|---|
+| call sites | 32 | 372 |
+| calling functions | 17 | 75 |
+| who calls it | `aAISystemControl`, `aAttackUnit`, `aCheckWeaponDamage`, `aExecuteUse`, `aComputeMissionObjectives` | `aBlobs.cpp` entire, the animation drivers (`aPlayFightAnimation`, `aPlayJumpAnimaion`, `aPlayFootBridgeSequence`) |
+| seeded with | **1.0**, a constant | **`GetTickCount()`** |
+
+Both seeds are written in the same six instructions inside `0x004494C0`:
+
+```
+    eax = GetTickCount();
+    fild qword [esp+0x1c];          /* (double) of it */
+    seed_uncounted(that);           /* 0x00463850 -> 0x00514070 */
+    aRandomize(1.0);                /* 0x00463820 -> 0x00514078 */
+```
+
+So §3.1's finding — *a mission plays out identically every time it is loaded*
+— has a second half: **the effects were never meant to repeat.** A shot does
+the same damage every run and does not look the same, by construction. The
+uncounted stream has its own seeder at `0x00463850`, which writes the qword as
+two dwords and has exactly one caller.
+
+**Nineteen of the seventy-five callers are outside `aBlobs.cpp`**, and three of
+those are the unit pool — `aEnlargeUnitPool`, `aAddUnitToUnitPool`,
+`aGenerateUnitElement` — which is simulation, not presentation; one function,
+`0x004160F0`, draws from **both**. `docs/20` §7.4 has `InsertUnit`'s spawn
+count coming from the C runtime's `rand`, so a third generator is already in
+that picture. What the unit pool draws the uncounted stream for is an open
+question (§12).
+
+All of it is pinned by `tools/blob_tables.py`'s `random.*` checks — the
+byte-identity, both seeds, both seeders, the two site counts, the two caller
+sets, the nineteen that cross the line and the one that mixes — and none of
+them needs a capture.
+
 ---
 
 ## 4. Distance — **[code] `aGetDistance` `0x0044AE10`, inlined at `0x0046A2CE`**
@@ -1267,7 +1324,22 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-**None.** The one this section carried — what type `FixedStatue`'s sequence
+**One.**
+
+1. **What the unit pool draws the uncounted stream for.** §3.2 establishes that
+   `0x004638E0` is `aRandom` over a second, clock-seeded stream, and that its
+   callers are `aBlobs.cpp` and the animation drivers — with three exceptions
+   that are not presentation at all: `aEnlargeUnitPool` (`0x004789B0`),
+   `aAddUnitToUnitPool` (`0x00478C10`) and `aGenerateUnitElement`
+   (`0x00479CF0`). A fourth, `0x004160F0`, draws from **both** streams.
+   `docs/20` §7.4 already has `InsertUnit`'s spawn *count* coming from the C
+   runtime's `rand`, so the spawn path demonstrably mixes generators; what the
+   pool routines themselves roll for — a position, a type, a stat — is not
+   traced. It matters for a remake because a draw here is **simulation seeded
+   from the wall clock**, which is the one combination §3.1's determinism
+   argument does not cover. Static reading can answer it; nobody has.
+
+The question this section used to carry — what type `FixedStatue`'s sequence
 spawns — is closed in §9.4.3, and the honest form of the close is that the
 premise was wrong: the site belongs to the spore hatch, `FixedStatue` spawns
 nothing, and the type is `Spores`' own third argument or the constant 50.
@@ -1294,7 +1366,10 @@ the evidence belongs.
    open any more.
 3. **The `aRandom` counters are provably private to the generator** — §3, both
    binaries. Not "no reader was found": every reference in `.text` was
-   enumerated and they all lie inside `aRandom`/`aRandomize`.
+   enumerated and they all lie inside `aRandom`/`aRandomize`. §3.2 sharpens
+   this rather than disturbing it: the second stream does not keep counters at
+   all, which is the one behavioural difference between two otherwise
+   byte-identical bodies.
 
 Three dead paths are **closed**, not open — the code is understood and the
 answer is that nothing reaches them:

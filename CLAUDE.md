@@ -48,7 +48,7 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 384 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 407 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -65,7 +65,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 1854 checks
+bash   godot/run_tests.sh                                    # 31 suites, 1860 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -284,15 +284,29 @@ remake's invention. Three things it records that are easy to get wrong:
 table read is the only route; and `--probe` **cannot** recover a `__cdecl`
 arity, so the thirty arities come from each caller's own `add esp, K` and are
 pinned whether or not a capture ever runs. What the capture found is
-`docs/97` §15.5: the engine's own pool agrees with the static tables field for
-field, the origin is the shooter's tile in world units, and every blob a
-creator makes lies **on the line from the shooter's tile to the target's** --
-one creator lays eight of them evenly down it, which is a tracer. The
-velocities are drawn from `aRandom` inside the creator and are **not** replayed.
+`docs/97` §15.5 **as corrected by §16**, and three of §15.5's four headline
+findings had a wrong premise -- read them together. The engine's own pool
+agrees with the static tables field for field. The origin is the **placed
+object's** position (`aGetSymbolObjectPtr`'s `+0x10/+0x14/+0x18`), not the
+tile and not the floor -- no creator reads the control map's height at all,
+which is what settles "absolute z" against "floor plus a constant" for all
+thirty rather than for the one a probe touches. Placement is **not one law**:
+some creators lay their blobs along the line to the target (one lays eight
+evenly down it, which is a tracer) and some in a burst around the source, and
+which is which is pinned per creator. And the velocities are **not**
+`aRandom`'s: its seed is unmoved either side of all thirty and no creator's
+closure calls it. They come from a second entry point at `0x004638E0` --
+`aRandom`'s body byte for byte over the seed at `0x00514070`, seeded from
+`GetTickCount()` where `aRandom` is seeded to 1.0, so the effects were never
+meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
+side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture; taking one needs `--game-copy` and Wine, and Wine reaches the
-anchor for some phase groups and not others, so phases are written as they land
-and merged on re-run. The capture in hand holds **15 of the 30**.
+the capture; taking one needs `--game-copy` and Wine. **One creator per plan**:
+a plan that dies takes every creator sharing its process with it, and the
+deaths are Wine's own access violation before the anchor rather than anything
+the plan contains. Phases are written as they land and merged on re-run, and
+`--check` pins the coverage so a thinner capture fails rather than reporting
+less.
 
 `tools/ai_gold.py` is the third, and the one that pins a **whole computer
 turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
@@ -451,7 +465,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **38 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **39 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 1, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

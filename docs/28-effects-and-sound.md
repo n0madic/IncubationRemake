@@ -7,7 +7,7 @@ because they fire from the same place — `aPlayFightAnimation` and the
 `aPlay*Sequence` routines create a blob and load a wave in the same few
 instructions — and because a remake needs both to reproduce one event.
 
-Everything here is checked by `tools/blob_tables.py --check` (345 checks).
+Everything here is checked by `tools/blob_tables.py --check` (407 checks).
 
 **What this document does not own.** The animation *selection* rules — which
 Charisma animation plays for moving, firing or standing, and what the `BREAK`
@@ -670,6 +670,56 @@ literal lifetime range from 4 ticks to `0xFF`, and 25 compute one.
 
 ---
 
+### 7.6.1 Where a creator's origin and randomness come from
+
+Two things about the creators were guessed for a long time and are now read
+rather than assumed. Both readings are static and cover **all thirty**
+creators a shot can reach; the native capture (`tools/blob_gold.py`) is the
+second reading of each.
+
+**The origin is the placed object's position, and the floor never enters it.**
+Every one of the thirty opens the same way:
+
+```
+    eax = aGetCtrlMapElementPtr(y, x);      /* CHECK, refuse if null */
+    dx  = *(u16 *)(eax + 5);                /* the symbol on the cell */
+    eax = aGetSymbolObjectPtr(dx);          /* CHECK, refuse if null */
+    x = eax->[0x10];  y = eax->[0x14];  z = eax->[0x18] + K;
+```
+
+so a blob starts at the **object standing there**, not at the tile and not at
+the ground. The control map's height dword sits at `+1` of the cell and is
+read by **no creator at all** — checked by sweeping every `mov r32, [base+1]`
+in all thirty bodies, of which there are none. That closes a question the
+capture alone could not: every occupied tile in the captured save is at height
+zero, where "absolute z" and "floor plus a constant" are the same number. They
+are neither. `blob_gold.py`'s z probe writes a height under the creator's own
+tile and confirms `z` does not move.
+
+**The velocities are random, and the generator is not `aRandom`.** Reading
+`aRandom`'s seed either side of all thirty creators shows it **never moves**,
+and no creator's closure contains a call to it. What they draw from is
+[`22` §3.2](22-combat-and-visibility.md)'s second entry point, `0x004638E0`:
+`aRandom`'s body byte for byte over the seed at `0x00514070`, without the call
+counters. Twenty-six of the thirty carry a call to it somewhere in their
+closure — up to 52 sites in one.
+
+Reading *that* seed either side turns "random" into a number, because the
+generator is a pure function of its seed: the advance names how many draws the
+creator took, and the draws are then a known sequence. On the captured tile
+most creators take **none** — `aBlob_CreateSpores` (`0x00420A50`) lays its
+twelve blobs on a ring, 36° apart at a radius of about 640, and is the same
+twelve every time — while `aBlob_CreateFireWheel` (`0x004228F0`) takes
+**ninety** for its twelve records and is different every time.
+
+Which is by design, and §3.2 of `22` shows where: the effects stream is seeded
+from `GetTickCount()` at start-up while the gameplay stream is seeded to the
+constant 1.0. **A shot does the same damage every run and does not look the
+same.** A remake that wants byte-identical effect trajectories has to seed the
+effects stream itself; one that wants the original's behaviour must not.
+
+---
+
 ### 7.7 The seventy-eight kinds
 
 The switch's 74 arms are short pieces of particle arithmetic with no names in
@@ -969,7 +1019,7 @@ and would make an "alien voices" control do nothing.
 ## 11. Verification
 
 ```bash
-python3 tools/blob_tables.py --check  gog_incubation   # 345 checks
+python3 tools/blob_tables.py --check  gog_incubation   # 407 checks
 python3 tools/blob_tables.py --waves  gog_incubation   # the event -> wave table
 python3 tools/blob_tables.py --blobs  gog_incubation   # the blob and weapon tables
 python3 tools/blob_tables.py --kinds  gog_incubation   # the 78 update kinds
@@ -978,7 +1028,7 @@ python3 tools/blob_tables.py --json   gog_incubation
 python3 tools/blob_runtime.py --selftest                 # all 78 update values
 ```
 
-345 checks, all against the shipped binary and corpus; the tool exits non-zero
+407 checks, all against the shipped binary and corpus; the tool exits non-zero
 on an empty corpus and on a root that holds only `Incubation.exe`.
 
 **Mutation testing.** A harness perturbs every leaf *and every key* of every
@@ -1034,14 +1084,24 @@ store lands on.
    **Partly answered, for the creators rather than for the arms.**
    `tools/blob_gold.py` calls each of the thirty creators §8.1's switches can
    reach inside a running `Incubation.exe` and reads the pool back. That
-   settles what those creators *produce* — the origin is the caller's tile in
-   world units, the offsets lie on the line to the target tile, and the class,
-   update kind and lifetime of every record match what was read statically out
-   of the compiler's tables. It does **not** settle the hooks themselves: the
-   creators read them and the capture sees only the answer. The arms' own use
-   of the orientation and target-map helpers is untouched by it, so the item
-   stays open and the remake keeps printing `executable-Python` for everything
-   except the creator capture.
+   settles what those creators *produce*: the class, update kind and lifetime
+   of every record match what was read statically out of the compiler's
+   tables, the origin is the **placed object's** position (§7.6.1), and the
+   offsets lie either on the line to the target tile or in a burst around the
+   source — which of the two is now pinned per creator rather than assumed for
+   all of them, because the first capture was missing the creators that
+   scatter.
+
+   Three things that were open inside this item are closed by §7.6.1 and
+   [`22` §3.2](22-combat-and-visibility.md), and none of them needed the hooks:
+   the floor does not enter a blob's `z`; the generator the creators draw from
+   is the uncounted stream at `0x004638E0`, not `aRandom`; and how many times
+   each creator draws is measured from that stream's seed either side of the
+   call. What is *not* settled is the hooks themselves: the creators read them
+   and the capture sees only the answer. The arms' own use of the orientation
+   and target-map helpers is untouched by it, so the item stays open and the
+   remake keeps printing `executable-Python` for everything except the creator
+   capture.
 
 2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects

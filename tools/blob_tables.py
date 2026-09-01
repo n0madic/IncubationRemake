@@ -2919,6 +2919,7 @@ def run_checks(root: str) -> Checker:
     _sound_model_checks(ck, b, c)
     _music_shim_checks(ck, c)
     _creator_reach_checks(ck, b)
+    _generator_checks(ck, b)
     _setpiece_timing_checks(ck, b)
 
     return ck
@@ -3125,6 +3126,169 @@ CREATOR_ARITIES = {
     "0x0042ACF0": 2, "0x0042AF10": 2,
 }
 
+# --------------------------------------------------------------------------
+# The two Lehmer streams
+# --------------------------------------------------------------------------
+#
+# `docs/22` 3 recovered `aRandom` at `0x00463870` and `inclib/rng.py` pins it
+# natively.  There is a **second entry point** eleven `nop`s later whose body
+# is that one byte for byte -- same multiplier, same modulus, same x87
+# sequence -- over a **different seed global**, and without the call counter
+# and running sum `aRandom` keeps.  It is not a variant and not a wrapper: it
+# is the same generator over a second stream, and it is the busier of the two
+# by a factor of eleven.
+#
+# This matters because `docs/97` 15.5 wrote the blob creators' velocities down
+# as "drawn from `aRandom` ... and **not** replayed".  They are not drawn from
+# `aRandom` at all: reading its seed either side of all thirty creators shows
+# it never moves.  These checks are the static half of that finding, and they
+# need no capture.
+
+#: The counted stream: seed, call counter and running sum.
+ARANDOM_ENTRY = 0x00463870
+ARANDOM_SEED = 0x00514078
+ARANDOM_COUNTER = 0x00514080
+ARANDOM_SUM = 0x00514084
+#: The uncounted stream, and the one nearly everything draws from.
+ARANDOM2_ENTRY = 0x004638E0
+ARANDOM2_SEED = 0x00514070
+#: How long the shared body is, up to and including the second stream's `ret`.
+ARANDOM_SHARED_BYTES = 0x45
+#: Where the two differ inside that span, as offsets from each entry: the low
+#: byte of the seed global in the `fld` and again in the `fst`, the two
+#: `call rel32` displacements to `__ftol` and its neighbour (same targets,
+#: different origins), and the two bytes where `aRandom` goes on to its
+#: counter while the second stream pops and returns.
+ARANDOM_BODY_DIFFERENCES = (0x03, 0x14, 0x19, 0x1A, 0x31, 0x43, 0x44)
+#: Call sites reaching each, across `.text`.
+ARANDOM_SITES = 32
+ARANDOM2_SITES = 372
+#: creator -> how many `call` sites in its closure reach the uncounted stream.
+#: Reach, not use: a creator with sites on an untaken branch draws nothing,
+#: which is exactly what the capture measures against this.
+CREATOR_DRAW_SITES = {
+    "0x00420A50": 7, "0x004227C0": 3, "0x004228F0": 3, "0x00422B80": 1,
+    "0x00423D80": 34, "0x00424250": 52, "0x004247C0": 30, "0x00424D20": 30,
+    "0x00425400": 0, "0x00425810": 3, "0x00425CA0": 0, "0x00426070": 5,
+    "0x004264A0": 3, "0x004268B0": 0, "0x00426B70": 26, "0x00426F90": 14,
+    "0x00427410": 17, "0x00427810": 3, "0x00427C80": 2, "0x00428200": 0,
+    "0x00428570": 26, "0x00429180": 20, "0x004294E0": 18, "0x004295D0": 16,
+    "0x00429A80": 11, "0x00429C30": 11, "0x00429F40": 10, "0x0042A9D0": 14,
+    "0x0042ACF0": 15, "0x0042AF10": 20,
+}
+#: How many creators can reach the generator at all.
+CREATORS_THAT_CAN_DRAW = 26
+
+#: How many functions call each stream, and which of the uncounted one's
+#: callers are **not** in the blob module.  The split is nearly the line the
+#: remake draws between `core/` and `game/` -- the counted stream is the
+#: gameplay one (`aAISystemControl`, `aAttackUnit`, `aCheckWeaponDamage`,
+#: `aExecuteUse`, `aComputeMissionObjectives`), the uncounted one is
+#: `aBlobs.cpp` and the animation drivers -- but it is **not clean**, and the
+#: exceptions are pinned rather than rounded off.  Three of them are the unit
+#: pool (`aEnlargeUnitPool`, `aAddUnitToUnitPool`, `aGenerateUnitElement`),
+#: which is simulation, and one function draws from **both**.  `docs/20` 7.4
+#: has `InsertUnit`'s spawn count coming from the C runtime's `rand`; that
+#: these three also draw from a Lehmer stream is a separate thread, recorded
+#: here and open.
+RANDOM_OWNERS_UNCOUNTED = 75
+RANDOM_OWNERS_COUNTED = 17
+#: Callers of the uncounted stream outside `aBlobs.cpp`'s own address range.
+RANDOM_BLOB_MODULE = (0x0041E500, 0x0042B3B0)
+RANDOM_UNCOUNTED_OUTSIDE = (
+    0x004055E0, 0x00405F70, 0x004060B0, 0x00406FC0, 0x0040BD70, 0x00411460,
+    0x00414550, 0x00414A70, 0x00415110, 0x004160F0, 0x0041E1A0, 0x0042DDF0,
+    0x0042F840, 0x0042FCB0, 0x0044DCD0, 0x004789B0, 0x00478C10, 0x00479CF0,
+    0x0047B660,
+)
+#: The one function that draws from both streams.
+RANDOM_BOTH_STREAMS = (0x004160F0,)
+
+#: **How each stream is seeded, and it is the whole story.**  At start-up,
+#: inside `0x004494C0`, the engine does this and nothing else:
+#:
+#:     eax = GetTickCount()
+#:     fild qword [esp+0x1c]        ; (double) of it
+#:     seed_uncounted(that)         ; 0x00463850 -> 0x00514070
+#:     aRandomize(1.0)              ; 0x00463820 -> 0x00514078
+#:
+#: So the **effects** stream is seeded from the wall clock and the
+#: **gameplay** stream is seeded to a constant.  `docs/22` 3.1 already
+#: records what the constant means -- a mission plays out identically every
+#: time it is loaded -- and this is the other half of it: the *effects* were
+#: never meant to repeat, which is why a shot's velocities differ run to run
+#: while its damage does not.
+RANDOM_UNCOUNTED_SEEDER = 0x00463850
+RANDOM_SEEDING_SITE = 0x00449919
+RANDOM_COUNTED_SEEDING_SITE = 0x00449927
+RANDOM_TICK_COUNT_SITE = 0x00449901
+#: The high dword of the IEEE double 1.0, pushed at the counted seed site.
+RANDOM_COUNTED_START_SEED_HI = 0x3FF00000
+
+# --------------------------------------------------------------------------
+# Where a creator's origin comes from
+# --------------------------------------------------------------------------
+#
+# `docs/97` 15.5 left "absolute z" and "floor plus a constant" undecided,
+# because every occupied tile in the captured save is at height zero and the
+# two are the same number there.  The disassembly decides it for all thirty
+# without a capture, and the answer is **neither**.  A creator opens with
+#
+#     eax = aGetCtrlMapElementPtr(y, x)
+#     dx  = word [eax + 5]                ; the symbol standing on the cell
+#     eax = aGetSymbolObjectPtr(dx)
+#     ecx = [eax + 0x10]  edx = [eax + 0x14]  eax = [eax + 0x18]
+#
+# so the origin is the **placed object's own position**, and `z` is that plus
+# a constant the creator carries.  The control map's height dword at `+1` --
+# the floor -- is read by **no creator at all**, which is the check below and
+# the reason the native probe that raises it is a confirmation rather than the
+# evidence.
+
+#: The symbol lookup every creator goes through.
+GET_SYMBOL_OBJECT = 0x00404C40
+#: The object's position fields, as disp8 reads off the returned pointer.
+SYMBOL_ORIGIN_FIELDS = (0x10, 0x14, 0x18)
+#: The control map's height field.  `movemap_gold.CELL_HEIGHT`, and the one
+#: displacement no creator reads.
+CELL_HEIGHT_DISP = 0x01
+
+#: How far past its entry a creator's body is scanned for calls to other
+#: creators.  The same window `tools/blob_gold.py` scans with, kept here
+#: because the table below is what pins it.  **This is a bound, not a
+#: measurement**: widening it by a byte changes nothing, so a mutation battery
+#: cannot show it is read.  The measurement is the line under it -- the
+#: furthest offset at which a nested call actually appears -- and the check
+#: requires the bound to clear it, which is what makes both live.
+CREATOR_EXTENT = 1400
+#: The furthest a creator's own body reaches to call another, and where.
+#: `0x00424250` calls `0x00428F70` 1 349 bytes in, which is what decides how
+#: wide the window above has to be.
+CREATOR_NESTING_REACH = 1349
+CREATOR_NESTING_FURTHEST = (0x00424250, 0x00428F70, 0x00424795)
+#: creator -> the creators its own body calls.  A creator may build its effect
+#: by running **another** creator, and the records that one leaves are in the
+#: pool too: a cross-validation that collected only the constructor calls
+#: whose nearest preceding entry was the creator itself missed them, and the
+#: engine came back with a triple the static tables "did not have".  That
+#: looked like the two readings disagreeing and was a missing edge.  Only the
+#: eight creators below have one.
+CREATOR_NESTED = {
+    "0x00423D80": ["0x00423720"],
+    "0x00424250": ["0x00423720", "0x00428F70"],
+    "0x004247C0": ["0x00423720"],
+    "0x00424D20": ["0x00423720"],
+    "0x00426B70": ["0x00423720"],
+    "0x00426F90": ["0x0042A9D0"],
+    "0x00427410": ["0x0042A9D0"],
+    "0x00428570": ["0x00423720"],
+}
+#: Whether the graph above is **flat**: no creator a creator calls calls a
+#: third.  Pinned rather than assumed, because "one level of nesting is enough
+#: for every creator here" was an observation about the fifteen that had run
+#: and this makes it a statement about all thirty, with no capture involved.
+CREATOR_NESTING_IS_FLAT = True
+
 
 # --------------------------------------------------------------------------
 # The set-piece frame counts and steps, read a second time
@@ -3234,6 +3398,196 @@ def _creator_of_call(b: Binary) -> dict[int, int | None]:
     return out
 
 
+def _generator_checks(ck: "Checker", b: Binary) -> None:
+    """The two Lehmer streams, and which one the creators can reach."""
+    # The bodies, byte for byte.  Anything but the six named offsets differing
+    # means these are no longer the same generator, and the whole finding
+    # rests on their being one.
+    span = ARANDOM_SHARED_BYTES
+    if not (b.mapped(ARANDOM_ENTRY, span) and b.mapped(ARANDOM2_ENTRY, span)):
+        ck.check("random.entries_mapped", False, "an entry is outside .text")
+        return
+    first = bytes(b.u8(ARANDOM_ENTRY + i) for i in range(span))
+    second = bytes(b.u8(ARANDOM2_ENTRY + i) for i in range(span))
+    differ = tuple(i for i in range(span) if first[i] != second[i])
+    ck.equal("random.same_body", differ, ARANDOM_BODY_DIFFERENCES,
+             lambda d: f"{span - len(d)} of {span} bytes identical")
+    # The seed each one keeps, read out of the `fld` the body opens with.
+    ck.equal("random.counted_seed", b.u32(ARANDOM_ENTRY + 0x03),
+             ARANDOM_SEED, hex)
+    ck.equal("random.uncounted_seed", b.u32(ARANDOM2_ENTRY + 0x03),
+             ARANDOM2_SEED, hex)
+    # Only the counted one keeps a call counter and a running sum, which is
+    # the one behavioural difference between them.
+    ck.equal("random.counter_globals",
+             (b.u32(ARANDOM_ENTRY + 0x4A), b.u32(ARANDOM_ENTRY + 0x50)),
+             (ARANDOM_SUM, ARANDOM_COUNTER),
+             lambda v: f"aRandom alone writes {tuple(hex(x) for x in v)}")
+
+    # The seeder each stream has, and where the seed comes from.
+    ck.equal("random.uncounted_seeder_globals",
+             (b.u32(RANDOM_UNCOUNTED_SEEDER + 0x09),
+              b.u32(RANDOM_UNCOUNTED_SEEDER + 0x0F)),
+             (ARANDOM2_SEED, ARANDOM2_SEED + 4),
+             lambda v: "0x%08X writes the qword at %s"
+                       % (RANDOM_UNCOUNTED_SEEDER,
+                          tuple(hex(x) for x in v)))
+    ck.check("random.effects_seed_is_the_clock",
+             b.u8(RANDOM_TICK_COUNT_SITE) == 0xFF
+             and b.u8(RANDOM_TICK_COUNT_SITE + 1) == 0x15
+             and b.u8(RANDOM_SEEDING_SITE) == 0xE8
+             and RANDOM_SEEDING_SITE + 5 + b.i32(RANDOM_SEEDING_SITE + 1)
+             == RANDOM_UNCOUNTED_SEEDER,
+             "GetTickCount feeds the uncounted stream's seeder")
+    ck.check("random.gameplay_seed_is_a_constant",
+             b.u8(RANDOM_COUNTED_SEEDING_SITE - 6) == 0x68
+             and b.u32(RANDOM_COUNTED_SEEDING_SITE - 5)
+             == RANDOM_COUNTED_START_SEED_HI
+             and b.u8(RANDOM_COUNTED_SEEDING_SITE) == 0xE8
+             and RANDOM_COUNTED_SEEDING_SITE + 5
+             + b.i32(RANDOM_COUNTED_SEEDING_SITE + 1) == 0x00463820,
+             "aRandomize(1.0) eight bytes later -- docs/22 3.1's constant")
+
+    sites = {ARANDOM_ENTRY: 0, ARANDOM2_ENTRY: 0}
+    va = b.text_lo
+    while va < b.text_hi - 5:
+        if b.u8(va) == 0xE8:
+            target = va + 5 + b.i32(va + 1)
+            if target in sites:
+                sites[target] += 1
+                va += 5
+                continue
+        va += 1
+    ck.equal("random.counted_sites", sites[ARANDOM_ENTRY], ARANDOM_SITES)
+    owners = _stream_owners(b)
+    ck.equal("random.owners",
+             (len(owners[ARANDOM2_ENTRY]), len(owners[ARANDOM_ENTRY])),
+             (RANDOM_OWNERS_UNCOUNTED, RANDOM_OWNERS_COUNTED),
+             lambda v: f"{v[0]} functions draw from the uncounted stream, "
+                       f"{v[1]} from the counted one")
+    ck.equal("random.streams_that_mix",
+             tuple(sorted(owners[ARANDOM_ENTRY] & owners[ARANDOM2_ENTRY])),
+             RANDOM_BOTH_STREAMS,
+             lambda v: f"{len(v)} function(s) draw from both streams")
+    lo, hi = RANDOM_BLOB_MODULE
+    outside = tuple(sorted(f for f in owners[ARANDOM2_ENTRY]
+                           if not lo <= f <= hi))
+    ck.equal("random.uncounted_outside_the_blob_module", outside,
+             RANDOM_UNCOUNTED_OUTSIDE,
+             lambda v: f"{len(v)} of {len(owners[ARANDOM2_ENTRY])} callers "
+                       "sit outside aBlobs.cpp -- the animation drivers and "
+                       "the unit pool")
+    ck.equal("random.uncounted_sites", sites[ARANDOM2_ENTRY], ARANDOM2_SITES,
+             lambda n: f"{n} call sites against aRandom's "
+                       f"{sites[ARANDOM_ENTRY]} -- the uncounted stream is "
+                       "the one the game draws from")
+
+    creators = b.blob_creators()
+    entries = sorted(b.call_entries())
+
+    def closure(creator: int) -> set[int]:
+        seen, stack = {creator}, [creator]
+        while stack:
+            for nxt in b.arm_calls(stack.pop(), creators, entries,
+                                   CREATOR_EXTENT):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return seen
+
+    def draws(entry: int) -> int:
+        count, va = 0, entry
+        while va < entry + CREATOR_EXTENT - 5:
+            if b.u8(va) == 0xE8 and va + 5 + b.i32(va + 1) == ARANDOM2_ENTRY:
+                count += 1
+                va += 5
+                continue
+            va += 1
+        return count
+
+    reached = _reachable_creators(b)
+    _origin_checks(ck, b, reached)
+    table = {f"0x{c:08X}": sum(draws(f) for f in closure(c))
+             for c in sorted(reached)}
+    ck.equal("random.creator_draw_sites", table, CREATOR_DRAW_SITES,
+             Checker.brief)
+    ck.equal("random.creators_that_can_draw",
+             sum(1 for n in table.values() if n), CREATORS_THAT_CAN_DRAW,
+             lambda n: f"{n} of {len(table)} creators reach the generator")
+
+
+def _origin_checks(ck: "Checker", b: Binary, reached: set[int]) -> None:
+    """Where a creator's origin comes from -- and where it does not."""
+
+    def disp8_reads(entry: int) -> set[int]:
+        """Every ``mov r32, [base+disp8]`` displacement in the body."""
+        out: set[int] = set()
+        va = entry
+        while va < entry + CREATOR_EXTENT - 3:
+            if b.u8(va) == 0x8B:
+                modrm = b.u8(va + 1)
+                if modrm >> 6 == 1 and modrm & 7 != 4:
+                    out.add(b.u8(va + 2))
+            va += 1
+        return out
+
+    def calls_symbol(entry: int) -> bool:
+        va = entry
+        while va < entry + CREATOR_EXTENT - 5:
+            if b.u8(va) == 0xE8 and va + 5 + b.i32(va + 1) == GET_SYMBOL_OBJECT:
+                return True
+            va += 1
+        return False
+
+    reads = {c: disp8_reads(c) for c in sorted(reached)}
+    ck.equal("origin.every_creator_asks_the_symbol",
+             sum(1 for c in reads if calls_symbol(c)), len(reads),
+             lambda n: f"{n} creator(s) go through aGetSymbolObjectPtr")
+    missing = [f"0x{c:08X}" for c, seen in reads.items()
+               if not set(SYMBOL_ORIGIN_FIELDS) <= seen]
+    ck.equal("origin.is_the_objects_position", missing, [],
+             lambda v: "every creator reads the object's "
+                       f"{tuple(hex(f) for f in SYMBOL_ORIGIN_FIELDS)} triple"
+                       if not v else f"{len(v)} do not: {v}")
+    # **The negative, and it is what settles the open question.**  The control
+    # map's height sits at +1 and no creator reads a dword there, so the floor
+    # cannot enter a creator's `z` however the ground is shaped.
+    floor = [f"0x{c:08X}" for c, seen in reads.items()
+             if CELL_HEIGHT_DISP in seen]
+    ck.equal("origin.floor_is_never_read", floor, [],
+             lambda v: "no creator reads the control map's height"
+                       if not v else f"{len(v)} do: {v}")
+
+
+def _stream_owners(b: Binary) -> dict[int, set[int]]:
+    """Which function each call to either stream sits in."""
+    entries = sorted(b.call_entries())
+    out: dict[int, set[int]] = {ARANDOM_ENTRY: set(), ARANDOM2_ENTRY: set()}
+    va = b.text_lo
+    while va < b.text_hi - 5:
+        if b.u8(va) == 0xE8:
+            target = va + 5 + b.i32(va + 1)
+            if target in out:
+                index = bisect.bisect_right(entries, va) - 1
+                if index >= 0:
+                    out[target].add(entries[index])
+                va += 5
+                continue
+        va += 1
+    return out
+
+
+def _reachable_creators(b: Binary) -> set[int]:
+    out: set[int] = set()
+    for table, pinned in ((MUZZLE_SWITCH, WEAPON_MUZZLE),
+                          (IMPACT_SWITCH, WEAPON_IMPACT)):
+        for _weapon, (_arm, calls) in b.weapon_effects(table, pinned).items():
+            for _site, creator in calls:
+                if creator is not None:
+                    out.add(creator)
+    return out
+
+
 def _creator_reach_checks(ck: "Checker", b: Binary) -> None:
     muzzle = b.weapon_effects(MUZZLE_SWITCH, WEAPON_MUZZLE)
     impact = b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT)
@@ -3272,6 +3626,53 @@ def _creator_reach_checks(ck: "Checker", b: Binary) -> None:
              {f"0x{c:08X}": sorted(w)[0] for c, w in sorted(arity.items())},
              CREATOR_ARITIES, Checker.brief)
 
+    # **The call graph among the creators, and its depth.**  Transitive, by
+    # worklist, so the answer does not depend on how deep anyone guessed.
+    creators = b.blob_creators()
+    entries = sorted(b.call_entries())
+
+    def direct(creator: int) -> set[int]:
+        return set(b.arm_calls(creator, creators, entries,
+                               CREATOR_EXTENT)) - {creator}
+
+    def closure(creator: int) -> set[int]:
+        seen, stack = {creator}, [creator]
+        while stack:
+            for nxt in direct(stack.pop()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return seen
+
+    # How far the window actually has to reach, measured -- and the bound
+    # required to clear it.  Without this pair `CREATOR_EXTENT` is a number no
+    # check can be shown to read.
+    reach, furthest = 0, (0, 0, 0)
+    for creator in sorted(reached):
+        va = creator
+        while va < creator + CREATOR_EXTENT - 5:
+            if b.u8(va) == 0xE8:
+                target = va + 5 + b.i32(va + 1)
+                if target in creators and target != creator \
+                        and va - creator > reach:
+                    reach, furthest = va - creator, (creator, target, va)
+            va += 1
+    ck.equal("creators.nesting_reach", reach, CREATOR_NESTING_REACH,
+             lambda n: f"the furthest nested call is {n} bytes in")
+    ck.equal("creators.nesting_furthest", furthest, CREATOR_NESTING_FURTHEST,
+             lambda v: "0x%08X calls 0x%08X at 0x%08X" % v)
+    ck.check("creators.nesting_window_clears_it",
+             CREATOR_EXTENT > CREATOR_NESTING_REACH,
+             f"the {CREATOR_EXTENT}-byte window clears the "
+             f"{CREATOR_NESTING_REACH}-byte reach")
+
+    nested = {f"0x{c:08X}": sorted(f"0x{n:08X}" for n in direct(c))
+              for c in sorted(reached) if direct(c)}
+    ck.equal("creators.nesting_table", nested, CREATOR_NESTED, Checker.brief)
+    flat = all(closure(c) == {c} | direct(c) for c in reached)
+    ck.equal("creators.nesting_is_flat", flat, CREATOR_NESTING_IS_FLAT,
+             lambda v: f"one level reaches every nested creator: {v}")
+
     with_life = [site for site in inside if calls[site][3] is not None]
     ck.equal("creators.reachable_lifetimes", len(with_life),
              REACHABLE_CALLS_WITH_LIFE,
@@ -3307,6 +3708,16 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
 
     # 100 % is the identity, and every point below it costs exactly 0.2 dB.
     bases = list(range(BASE_SWEEP_LO, BASE_SWEEP_HI + 1, BASE_SWEEP_STEP))
+    # **The sweep has to reach both ends.**  Its step is a sampling density
+    # rather than a measured value, so no perturbation of it can make the
+    # identity below false -- the identity holds for every base.  What a
+    # coarser step *can* do is stop short of full scale, which is the one
+    # place the identity is interesting, so that is what is asserted.
+    ck.equal("sound.sweep_spans_the_range",
+             (bases[0], bases[-1]) if bases else (None, None),
+             (BASE_SWEEP_LO, BASE_SWEEP_HI),
+             lambda v: f"the sweep runs {v[0]} to {v[1]} -- the floor and "
+                       "full scale, both included")
     ck.check("sound.percent_100_identity",
              all(sound.attenuation(v, 100) == min(v, 0) for v in bases),
              f"{len(bases)} base volumes, 100 % changes none of them")

@@ -72,6 +72,18 @@ open question 7). The same pass gave the blob layer its **first native oracle**:
 `Incubation.exe`, and the pool it reads back agrees with the static tables
 field for field.
 
+Its **§16** is a later pass over the four things §15 left open, and three of
+them had a wrong premise. The one worth reading outside the slice is that
+`aRandom` is **two generators**, not one: `0x004638E0` is its body byte for
+byte over a second seed, it carries eleven times the call sites, and the
+engine seeds it from `GetTickCount()` where it seeds `aRandom` to the constant
+1.0 — so a mission's *outcome* repeats and its *effects* never do. That is
+[`22` §3.2](22-combat-and-visibility.md), and it opened `22`'s first open
+question: three unit-pool routines draw from the clock-seeded stream, which is
+simulation. The same pass established that a blob's origin is the placed
+object's position and that no creator reads the terrain height at all
+([`28` §7.6.1](28-effects-and-sound.md)).
+
 ---
 
 ## 2. Format inventory

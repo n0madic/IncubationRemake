@@ -17,8 +17,18 @@ extends RefCounted
 ## not a claim that a particle follows the original's trajectory. Anything
 ## stronger would have to be measured first, and it has not been.
 ##
-## The one service that **is** natively pinned is the generator: `aRandom` is
-## docs/91's Lehmer routine and [IncRandom] is its twin, seeded natively.
+## The one service that **is** natively pinned is the generator -- and which
+## generator it is turned out to matter. The effects do **not** draw from
+## `aRandom` (`0x00463870`): its seed is unmoved either side of all thirty
+## creators and no creator's closure calls it. They draw from a second entry
+## point, `0x004638E0`, which is `aRandom`'s body byte for byte over the seed
+## at `0x00514070` and without its call counters -- docs/22 section 3.2. The
+## arithmetic is identical, so [IncRandom] is the twin of both; what differs
+## is the stream, and the original seeds this one from `GetTickCount()` where
+## it seeds `aRandom` to the constant 1.0. Effects were never meant to repeat
+## run to run, and keeping this instance off [member World.rng] -- which the
+## next comment already required for the canonical hash's sake -- turns out to
+## be what the engine does too.
 
 ## Where the deterministic adapter says a seeker's target is. Not a round
 ## number: the distance has to be irrational for the truncating divisions in
@@ -38,6 +48,7 @@ const MODELS: Array[String] = ["A_BLUT5.3DI", "A_BLUT6.3DI", "A_HIT2.3DI"]
 ## The generator, natively pinned. **Never [member World.rng]**: a particle
 ## drawing from the simulation's stream would put the frame rate into the
 ## canonical hash, and docs/92 section 10.3 forbids presentation reaching it.
+## The original keeps the two apart the same way, in two separate seeds.
 var rng: IncRandom = IncRandom.new()
 var target: Vector3i = DEFAULT_TARGET
 var has_target: bool = true

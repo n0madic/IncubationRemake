@@ -85,22 +85,58 @@ Written by `tools/blob_gold.py --game-copy`, read by
 Its `phases` map holds:
 
 * `state` — the pool's memory-manager handle, `aResetBlobs`'s return value and
-  the block base derived from it, and every live unit's tile. The base is a
-  **heap address and moves between runs**, which is why nothing downstream uses
-  it as an address: the plan reads the pool through
-  `[0x0050DE54 + 74*handle]`, and the base is recorded only so the two readings
-  can be checked against each other.
-* one entry per creator, `"0xXXXXXXXX"` — the arguments it was called with, and
-  the records it left in the pool.
+  the block base derived from it, every live unit's tile, and every cell's
+  height. The base is a **heap address and moves between runs**, which is why
+  nothing downstream uses it as an address: the plan reads the pool through
+  `[0x0050DE54 + 74*handle]`, and the base is recorded only so the two
+  readings can be checked against each other.
+* one entry per creator, `"0xXXXXXXXX"` — the arguments it was called with,
+  the records it left, and **both generators' seeds either side of the call**
+  (`seed_before`/`seed_after` for `aRandom`, `seed2_*` for the uncounted
+  stream at `0x00514070`).
+* `raised` — the z probe: the same creator on the same tile with the control
+  map's height dword **written** under it, and the cell read back so a write
+  that did not land is visible rather than silently answering the question.
+* `scatter` — one creator run **twice in one process** with `rand()` calls
+  bracketing each, which says whether its scatter is state at all and rules
+  out the C runtime as the source.
+* `failures` — creators whose plan the harness refused, with what it said.
+  They are kept **out** of `phases`, so a re-run retries them; a creator that
+  faults is a result and is not the same thing as one that refuses a tile.
+
+**What one capture held.** All thirty creators, no plan left unlanded: one
+pass took twenty-five and lost five to Wine, a merge pass took the five.
+Twenty-three produced records, 198 in all; seven refused the tile. Fourteen
+drew from the uncounted stream, between 3 and 203 times; sixteen drew nothing.
+Four of the twenty-three scatter rather than placing along the line of fire.
+All five numbers are pinned in `blob_gold.py`, so a thinner capture fails
+rather than reporting less.
 
 **A creator with no records is a result, not a gap.** Every one of them opens
 by looking up the cell it was given and its occupant, and refuses through the
-trace macro when there is nothing there. Which creators refuse on which tile is
-part of what the capture measures.
+trace macro when there is nothing there. Which creators refuse on which tile
+is part of what the capture measures.
 
-**Velocities are drawn from `aRandom` and are not replayed exactly.** What is
-replayed is what is deterministic: the placement (`tile * 3200` world units),
-the per-creator `z`, the record count, and the class, kind and lifetime of each
-record — the last three being the same fields `blob_tables.py` reads out of the
-compiler's tables statically, which is the cross-validation this capture exists
-for.
+**One creator per plan.** With five, the capture came back holding creators
+1–5, 11–15 and 21–25 — three whole groups present and three whole groups
+empty, reproduced across three invocations of ten attempts each. That looked
+like a faulting creator taking its process down with it, and it is not: with
+one creator per plan a plan still fails occasionally, and the log says
+`exception 0xc0000005 at 0x7bf2123d` inside a Wine system DLL **before the
+anchor** — before any line of the plan has run. That is `docs/91` §1's
+start-up intermittency, and why the groups aligned the way they did stays
+unexplained. One per plan is right either way: a plan that dies takes down
+every creator sharing its process, so five per plan turns one bad start into
+a fifth of the capture.
+
+**The velocities are not `aRandom`'s, and they are not unreplayable.** An
+earlier version of this file said both. `aRandom`'s seed is read either side
+of every creator and **never moves**, and no creator's closure contains a call
+to it. The generator they draw from is a second entry point at `0x004638E0` —
+`aRandom` byte for byte over the seed at `0x00514070`, without the call
+counters, and seeded from `GetTickCount()` where `aRandom` is seeded to 1.0.
+That is why a shot does the same damage every run and does not look the same.
+With the second seed read either side, the draw count is exact: most creators
+take **none** on the captured tile and are reproducible from this file alone;
+`0x004228F0` takes ninety, and what is reproducible there is the count and the
+sequence, given the seed. `docs/28` §7.6.1 and `docs/22` §3.2 carry it.

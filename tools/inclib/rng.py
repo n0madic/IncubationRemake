@@ -31,6 +31,26 @@ class ARandom:
     holding ``847344462.0``, which this reproduces exactly.
     """
 
+    #: **The generator serves two streams, not one.**  ``0x004638E0`` is this
+    #: body byte for byte -- same multiplier, same modulus, same x87 sequence
+    #: -- over the seed at ``0x00514070``, and without the call counter and
+    #: running sum ``aRandom`` keeps at ``0x00514080`` / ``0x00514084``.  The
+    #: uncounted one is the busier by a factor of eleven (372 call sites
+    #: against 32) and is what ``aBlobs.cpp`` and the animation drivers draw
+    #: from; the counted one is what the gameplay routines this project models
+    #: draw from -- ``aAISystemControl``, ``aAttackUnit``,
+    #: ``aCheckWeaponDamage``, ``aExecuteUse``, ``aComputeMissionObjectives``.
+    #: So ``godot/core/rng.gd`` modelling the counted stream is right, and an
+    #: effects port needs a **second instance** of this class rather than a
+    #: second class.  ``blob_tables.py``'s ``random.*`` checks pin all of it,
+    #: including the nineteen callers that cross the line.
+    ENTRY_COUNTED = 0x00463870
+    ENTRY_UNCOUNTED = 0x004638E0
+    SEED_COUNTED = 0x00514078
+    SEED_UNCOUNTED = 0x00514070
+    CALL_COUNT_GLOBAL = 0x00514080
+    CALL_SUM_GLOBAL = 0x00514084
+
     MULTIPLIER = 62089911.0
     MODULUS = 2147483647.0
 

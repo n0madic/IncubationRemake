@@ -12,25 +12,38 @@ extends TestSuite
 ##
 ## **What that settles.** `BlobTriggers` places a shot's effects itself,
 ## because the creators' own placement arithmetic is transcribed nowhere; the
-## capture measures it. Every record a creator makes stands at
-## `tile * 3200` world units -- one map field, docs/30 section 2.5 -- and the
-## per-creator `z` is what the capture reports.
+## capture measures it. A record a creator makes stands either at
+## `tile * 3200` world units -- one map field, docs/30 section 2.5 -- or a
+## fraction of the way along the line to the target, and which of the two a
+## creator does is pinned per creator rather than assumed for all of them.
 ##
-## **What it does not settle, and says so.** The velocities are drawn from
-## `aRandom` inside the creator, so they are not replayed: a byte-exact
-## trajectory would need the engine's generator state at the moment of the
-## shot. What is replayed is what is deterministic -- the placement, the record
-## count, and the class, kind and lifetime of each record.
+## **The velocities are not `aRandom`'s, and they are not unreplayable.** An
+## earlier reading of this capture said both. Reading `aRandom`'s seed either
+## side of all thirty creators shows it never moves, and no creator's closure
+## contains a call to it. The generator they do draw from is a **second entry
+## point**, `0x004638E0`: `aRandom`'s body byte for byte over the seed at
+## `0x00514070`, without the call counter. With that seed read either side,
+## how many times a creator drew is a number, and the draws themselves are a
+## known sequence.
 ##
 ## **An empty creator is a case, not a hole.** Every creator opens by looking
 ## up the cell it was given and its occupant, and refuses when there is nothing
-## there. Two of the captured thirty refuse on the tile the capture used, and
-## the suite requires them to stay refused rather than skipping them.
+## there. The refusals are counted, and the suite requires them to stay
+## refused rather than skipping them.
 
 const CASES: String = "res://generated/blob/native.json"
 const SCHEMA: String = "incubation.blob-native/1"
 ## docs/30 section 2.5 -- one map field, in world units.
 const FIELD_UNITS: int = 3200
+## Creators that lay their blobs in a burst around the tile rather than along
+## the line of fire. `tools/blob_gold.py`'s `PLACEMENT_LAW` is the other copy;
+## a divergence fails on both sides, which is the point of writing it twice.
+const SCATTER_PLACEMENT: Array[String] = ["0x00424D20",
+	"0x00425810", "0x00427410", "0x0042A9D0"]
+## How many of the thirty advance the uncounted stream on the captured tile.
+const CREATORS_THAT_DRAW: int = 14
+## What the z probe found. `tools/blob_gold.py`'s `Z_READING` is the other copy.
+const Z_READING: String = "floor-does-not-enter"
 
 
 func run(h: TestHarness) -> void:
@@ -59,22 +72,25 @@ func run(h: TestHarness) -> void:
 	h.check("creators", not creators.is_empty(),
 		"%d creator(s) ran in the engine" % creators.size())
 
-	# **What the capture measured, and it is not what the file assumed.**
+	# **What the capture measured, and it is not one law.**
 	# Most creators place their blobs on the tile they were given, exactly --
 	# but not all: `0x00425CA0` puts its record 400 west and 800 north of it,
 	# and `0x00426070` puts its six 960 and 1920. Those are not stray numbers.
 	# The capture called every creator with a source tile and a target tile
 	# 1 west and 2 north of it, and both offsets are **collinear with that
 	# line**: -400 / -800 and -960 / -1920 are the same direction, an eighth
-	# and three tenths of the way along it.
+	# and three tenths of the way along it. That is checked as an exact
+	# integer cross product rather than as a fraction, so no rounding enters
+	# it.
 	#
-	# So the law is not "at the tile" -- it is **on the line of fire**, and
-	# that is checked as an exact integer cross product rather than as a
-	# fraction, so no rounding enters it.
+	# With fifteen creators captured the rule looked universal. It is not:
+	# the fifteen that a shared process had been losing include creators that
+	# lay their blobs in a **burst around** the tile, on neither side of the
+	# line. So the reading is a census, and the burst ones are named.
 	var placed: int = 0
 	var refused: int = 0
 	var offset: int = 0
-	var bad: PackedStringArray = PackedStringArray()
+	var scattered: Array[String] = []
 	for key: String in creators:
 		var phase: Dictionary = DictRead.as_dict(phases[key])
 		var args: Array = DictRead.as_array(phase["args"])
@@ -88,6 +104,7 @@ func run(h: TestHarness) -> void:
 		if args.size() >= 4:
 			line = Vector2i(DictRead.as_int(args[2]) - source.x,
 				DictRead.as_int(args[3]) - source.y) * FIELD_UNITS
+		var on_line: bool = true
 		for entry: Variant in records:
 			var record: Dictionary = DictRead.as_dict(entry)
 			var d: Vector2i = Vector2i(
@@ -96,16 +113,86 @@ func run(h: TestHarness) -> void:
 			if d != Vector2i.ZERO:
 				offset += 1
 			if d.x * line.y != d.y * line.x:
-				bad.append("%s: %s is not on the line %s"
-					% [key, str(d), str(line)])
+				on_line = false
 			placed += 1
-	h.check("on_the_line_of_fire", bad.is_empty() and placed > 0,
-		"%d record(s), %d of them offset along the line%s"
-			% [placed, offset, "" if bad.is_empty() else "; first: " + bad[0]])
+		if not on_line:
+			scattered.append(key)
+	h.check("placement_census", placed > 0,
+		"%d record(s), %d offset along the line, %d creator(s) scattering"
+			% [placed, offset, scattered.size()])
+	h.equal("scattering_creators", scattered, SCATTER_PLACEMENT)
 	h.check("refusals_are_cases", refused >= 0,
 		"%d creator(s) refused the tile they were given" % refused)
 
+	_check_generators(h, phases, creators)
+	_check_z_probe(h, phases)
 	_check_triggers(h, phases, creators)
+
+
+## Which generator the creators draw from, replayed on this side too.
+##
+## The load-bearing half is negative and cheap: `aRandom`'s own seed is read
+## either side of every creator and is required to be **unmoved**. The second
+## stream's is read on the same lines, and how far it moved is the draw count.
+func _check_generators(h: TestHarness, phases: Dictionary,
+		creators: Array[String]) -> void:
+	var seeded: int = 0
+	var moved_counted: Array[String] = []
+	var drew: int = 0
+	for key: String in creators:
+		var phase: Dictionary = DictRead.as_dict(phases[key])
+		if not phase.has("seed2_after"):
+			continue
+		seeded += 1
+		if DictRead.as_float(phase["seed_before"]) \
+				!= DictRead.as_float(phase["seed_after"]):
+			moved_counted.append(key)
+		if DictRead.as_float(phase["seed2_before"]) \
+				!= DictRead.as_float(phase["seed2_after"]):
+			drew += 1
+	h.check("seed_pairs", seeded == creators.size(),
+		"%d of %d creator(s) carry both seeds" % [seeded, creators.size()])
+	var none: Array[String] = []
+	h.equal("arandom_is_untouched", moved_counted, none)
+	h.equal("creators_that_draw", drew, CREATORS_THAT_DRAW)
+
+
+## Does the floor enter a blob's `z`? It does not.
+##
+## `blob_tables.py`'s `origin.*` checks read it out of the binary: a creator
+## takes its origin from the **placed object's** position and reads the
+## control map's height at `+1` nowhere. This is the other reading: the
+## capture writes a height under the creator's own tile and calls it again
+## with everything else held, and `z` must not move.
+func _check_z_probe(h: TestHarness, phases: Dictionary) -> void:
+	if not phases.has("raised"):
+		h.check("z_probe", false, "the capture carries no raised phase")
+		return
+	var raised: Dictionary = DictRead.as_dict(phases["raised"])
+	var base: Dictionary = DictRead.as_dict(phases.get(
+		DictRead.as_string(raised["creator"]), {}))
+	var height: int = DictRead.as_int(raised["height"])
+	var flat: Array[int] = _elevations(DictRead.as_array(
+		base.get("records", [])))
+	var up: Array[int] = _elevations(DictRead.as_array(raised["records"]))
+	h.check("z_probe_ran", not flat.is_empty() and not up.is_empty(),
+		"%d flat record(s) against %d raised" % [flat.size(), up.size()])
+	if flat.is_empty() or up.is_empty():
+		return
+	var shifted: bool = flat.size() == up.size()
+	for i: int in range(min(flat.size(), up.size())):
+		if up[i] - flat[i] != height:
+			shifted = false
+	h.equal("z_reading", "floor-does-not-enter" if flat == up
+		else ("floor-relative" if shifted else "neither"), Z_READING)
+
+
+func _elevations(records: Array) -> Array[int]:
+	var out: Array[int] = []
+	for entry: Variant in records:
+		out.append(DictRead.as_int(DictRead.as_dict(entry)["z"]))
+	out.sort()
+	return out
 
 
 ## The remake's own muzzle point, against the engine's.

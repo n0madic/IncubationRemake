@@ -532,10 +532,10 @@ caught" are not the same claim and this section had conflated them.
 ## 13. Verification
 
 ```bash
-python3 tools/blob_tables.py --check gog_incubation        # 384 checks
+python3 tools/blob_tables.py --check gog_incubation        # 407 checks
 python3 tools/blob_runtime.py --selftest                   # 78 kinds, 74 arms
 python3 tools/remake_convert.py gog_incubation --check     # 181 checks
-bash godot/run_tests.sh                                    # 31 suites, 1854 checks
+bash godot/run_tests.sh                                    # 31 suites, 1860 checks
 ```
 
 Plus the whole always-run block (38 commands, all green), the exported shipping
@@ -919,6 +919,11 @@ produced a result that looked like a finding:
 
 ### 15.5 What the capture found
 
+> **Four of the findings below are superseded by [§16](#16-the-four-items-15-left-and-what-three-of-them-turned-out-to-be)**
+> — the velocities, the elevation, the placement law and the coverage. Three
+> of the four had a wrong premise. The section is kept as written because what
+> was believed and why is part of the record; read §16 beside it.
+
 The tool works, and what came back is more than a confirmation.
 
 **The engine agrees with the static tables, field for field.** For every
@@ -1016,7 +1021,9 @@ fourteen tables now produce a real mutation — including `PAIN_WAVES`,
 `DEAD_WAVES` and `SECOND_HUMAN_WAVES`, which had never been perturbed at all.
 The run on the finished tree is **98 mutations, 98 caught, 0 missed**,
 with no "no sampled entry" line left: every pin this slice added, and
-every table it samples, is read by a check.
+every table it samples, is read by a check. (True when written and
+**superseded by §16.6**, which found three more ways this battery could report
+nothing about a pin, and ends at 159 of 159.)
 
 The lesson is one this document has now recorded three times in three different
 shapes — the `__pycache__` staleness, the stdout-versus-stderr read, and this.
@@ -1030,4 +1037,257 @@ running** was lost when the battery restored its own copy of the tree. The two
 arity checks came back silently short and only the check count showed it. The
 rule is the same shape as the `__pycache__` one already recorded: do not touch
 a file the battery is walking, and read the count, not the colour.
+
+---
+
+## 16. The four items §15 left, and what three of them turned out to be
+
+§15.5 ended with four things open: the velocities, the elevation, the
+coverage, and the depth of the creators' call graph. Three of the four had a
+**wrong premise**, and the corrections belong here rather than in a quiet edit
+of the paragraph that made them. §15.5 stands as written; where it is
+superseded, it is superseded by this section.
+
+### 16.1 The velocities are not `aRandom`'s — there are two generators
+
+§15.5 said the per-blob velocity "is drawn from `aRandom` *inside* the
+creator, so replaying one exactly needs the engine's generator state at the
+moment of the shot — which is a different capture, of a whole shot rather than
+of a creator call."
+
+The first clause is false, which makes the rest of it moot. The capture now
+reads `aRandom`'s seed (`0x00514078`, a qword double) immediately before and
+immediately after every creator call, and it **never moves** — not for one of
+the thirty. A static sweep of each creator's whole closure finds no `call` to
+`aRandom` either. Two readings sharing no code, both negative.
+
+What the disassembly then shows is a **second entry point eleven `nop`s
+later**. `0x004638E0` is `aRandom`'s body byte for byte — same multiplier,
+same modulus, same x87 sequence — over the seed at `0x00514070`, and without
+the call counter and running sum. Sixty-two of the sixty-nine shared bytes are
+identical; the seven that differ are the seed address in the opening `fld` and
+the closing `fst`, two `call rel32` displacements, and the two bytes where
+`aRandom` goes on to its counters while this one returns.
+
+**It is the busier of the two by a factor of eleven** — 372 call sites against
+32, 75 calling functions against 17 — and the two are seeded differently in
+the same six instructions of `0x004494C0`:
+
+```
+    eax = GetTickCount();
+    fild qword [esp+0x1c];
+    seed_uncounted(that);        /* 0x00463850 -> 0x00514070 */
+    aRandomize(1.0);             /* 0x00463820 -> 0x00514078 */
+```
+
+So [`22` §3.1](22-combat-and-visibility.md)'s finding — a mission plays out
+identically every time it is loaded — has a second half nobody had looked for:
+**the effects were never meant to repeat.** A shot does the same damage every
+run and does not look the same, by construction.
+
+With the *right* seed read either side, "random" becomes a number, because the
+generator is a pure function of its seed. On the captured tile most creators
+draw **nothing at all** — `aBlob_CreateSpores` (`0x00420A50`) lays twelve
+blobs on a ring 36° apart at a radius of about 640 and lays the same twelve
+every time — while `aBlob_CreateFireWheel` (`0x004228F0`) takes **ninety**
+draws for its twelve records. **Fourteen of the thirty draw** on the captured
+tile, from 3 to 203 times; the other sixteen draw nothing at all and are
+reproducible from the fixture alone. The count is now pinned per creator
+beside the static one: `blob_tables.py`'s `CREATOR_DRAW_SITES` says how many calls to the
+generator a creator's closure *contains*, and `blob_gold.py`'s `CREATOR_DRAWS`
+says how many it *made*. A creator with sites and no draws has them on a
+branch this tile does not take, which is a result and not a discrepancy.
+
+What is **not** claimed is the arithmetic on top of the draws. A velocity that
+is `aRandom(base, span)` outright is a straight line in the drawn fraction and
+can be solved for; **none of the twelve drawing creators solves**, which is
+consistent with them drawing an angle and laying down `R·cos` — and that is
+recorded as UNVERIFIED rather than guessed at. The solver is handed a
+synthetic creator whose velocities *are* draws and is required to recover
+them, because a fitter that never fires is indistinguishable from a broken
+one; that is `native.fitter_solves_a_known_case`, and it is the check that
+makes the empty census mean something.
+
+`docs/22` gained §3.2 for the generator itself, `docs/28` gained §7.6.1, and
+`blob_tables.py` gained thirteen `random.*` checks that need no capture at all.
+
+One thing this opened rather than closed: nineteen of the seventy-five callers
+of the uncounted stream are outside `aBlobs.cpp`, and three of those are the
+**unit pool** — `aEnlargeUnitPool`, `aAddUnitToUnitPool`,
+`aGenerateUnitElement` — which is simulation, seeded from the wall clock. One
+function draws from both streams. That is now [`22` §12](22-combat-and-visibility.md)'s
+one open question.
+
+### 16.2 The elevation: neither hypothesis was right
+
+§15.5 offered "absolute" against "the floor plus a constant" and said the
+phase that would separate them had not landed because Wine did not reach the
+anchor.
+
+Both parts were wrong. The phase never *ran*: the capture's `state` predated
+the control-map read, so it carried no `heights`, the tile-finder returned
+`None`, and the probe was skipped in silence. That is the second time in this
+document a check has reported nothing rather than failing, and the fix is the
+same shape — the recapture predicate now asks whether the phase carries the
+field rather than trusting a version number.
+
+And the answer is neither hypothesis. Every one of the thirty creators opens:
+
+```
+    eax = aGetCtrlMapElementPtr(y, x);     /* CHECK */
+    dx  = *(u16 *)(eax + 5);               /* the symbol on the cell */
+    eax = aGetSymbolObjectPtr(dx);         /* CHECK */
+    x = eax->[0x10];  y = eax->[0x14];  z = eax->[0x18] + K;
+```
+
+The origin is the **placed object's own position**, and the control map's
+height dword at `+1` is read by **no creator at all** — swept for across all
+thirty bodies, of which none contains the read. So the floor cannot enter,
+whatever the ground is doing, and this is settled for all thirty rather than
+for the one a probe touches.
+
+The probe still runs, as the other reading: rather than hunting the map for a
+raised tile — there is none a creator will act on, since every unit in the
+save stands at height zero — it **writes** one map field into the control
+map's height under the creator's own tile, through the game's imported
+`memcpy`, and calls the creator again unchanged. `z` does not move.
+[`93` §11](93-slice-1-report.md) settled the large-unit clearance the same way,
+by writing the `size` byte rather than finding a mission with a large unit.
+
+A third defect fell out of building it: `heights_from` was reading the cell's
+height as **one byte** where `movemap_gold` has always read a signed dword, so
+a tile at 8 320 came back as 128. It had never been exercised, because the
+phase that would have used it never ran.
+
+### 16.3 The placement law is not one law
+
+§15.5's "on the line of fire" was true of the fifteen creators the first
+capture held and is **not** true of all thirty. The ones a shared process had
+been losing include creators that lay their blobs in a **burst around** the
+source tile, collinear with nothing.
+
+The check is now a per-creator census — `line` or `scatter`, pinned per
+address in `blob_gold.PLACEMENT_LAW` and mirrored in
+`test_blob_native.gd`'s `SCATTER_PLACEMENT` — so a creator that starts
+scattering, or stops, fails on both sides. The cross product is unchanged;
+what changed is that its answer is now data rather than a law. **Four of the
+twenty-three producers scatter**: `0x00424D20`, `0x00425810`, `0x00427410`
+and `0x0042A9D0`, the last of them putting its record some nineteen map
+fields off the line.
+
+### 16.4 Coverage: one creator per plan, and the cause is still unknown
+
+§15.5 attributed the missing fifteen to this host's Wine. The pattern said
+otherwise: the capture held creators 1–5, 11–15 and 21–25 — groups 0, 2 and 4
+entire, groups 1, 3 and 5 empty — reproduced across three invocations of ten
+attempts each, and a start-up that fails independently does not land on group
+boundaries. The obvious conclusion was a *faulting creator* taking its whole
+plan down with it.
+
+That conclusion is also wrong, and one creator per plan is what showed it. A
+plan still fails now and then, and what the log says when it does is
+`exception 0xc0000005 at 0x7bf2123d` inside a Wine system DLL, **before the
+anchor** — before a single line of the plan has run, and so independent of
+what the plan contains. `docs/91` §1's start-up intermittency, exactly as
+originally attributed; the group-boundary alignment stays **unexplained**.
+
+One creator per plan is still right, for the reason that survives either
+explanation: a plan that dies takes down every creator sharing its process, so
+five per plan turns one bad start into a fifth of the capture and one per plan
+turns it into one retryable creator. Failures are recorded in the fixture with
+what the harness said, kept *out* of `phases` so a re-run retries them.
+
+**The capture in hand holds all thirty**, with no failures left: one pass took
+twenty-five and lost five to Wine, and one merge pass took the five.
+Twenty-three of the thirty produced records — 198 in all — and seven refused
+the tile they were given, which is a measurement of which tile a creator will
+act on and not a hole. Coverage, producers and record count are all pinned, so
+a thinner capture fails rather than quietly reporting less.
+
+### 16.5 The call graph: one level is enough, and now that is a statement
+
+§15.5's "one level of nesting is enough for every creator in the capture as it
+stands" was an empirical claim about the fifteen that had run. The walk is now
+a **fixed point** rather than one hop, and the interesting part is that it
+terminates after one for all thirty — which is a static fact, pinned in
+`blob_tables.CREATOR_NESTED` (eight creators have an edge; the deepest chain
+is one long) and checked as `creators.nesting_is_flat`. No capture involved,
+and the claim covers thirty rather than fifteen.
+
+### 16.6 Two pins the battery found unread, and what they were
+
+The battery over the finished tree named ten misses, all in
+`tools/blob_gold.py`, and they split into two different problems rather than
+one.
+
+**Nine of them shape a plan and nothing else** — the pool table and its
+stride, the two seed globals and their width, `memcpy`'s and `rand`'s import
+slots, how many `rand()` outputs bracket a call. `--check` replays a stored
+capture and never renders a plan, so those nine were exercised only by
+*taking* a capture, which needs Wine and is therefore outside every battery
+this project runs. The fix is not to accept the boundary: the four plans are
+now rendered with fixed arguments and **hashed**, so a perturbed constant
+changes the text the tool would send and the digest says so. Three checks,
+no Wine, no second copy of the addresses.
+
+**The tenth was `CREATOR_EXTENT`, and it is a different animal.** It is a scan
+*bound*: widening it by a byte changes no answer, so no perturbation of it can
+fail, and that is a property of the constant rather than a gap in the checks.
+What was missing beside it was the **measurement** — how far a creator's body
+actually reaches to call another. It is 1 349 bytes, `0x00424250` calling
+`0x00428F70` at `0x00424795`, and the window has to clear it. The reach and
+the site are pinned; the bound is checked against them; and `GROUP_SIZE`, the
+one remaining constant of the same kind, is now marked in the battery as a
+capture *policy* rather than a measurement, because no check can honestly
+assert its value.
+
+**Then the battery found two more silences in itself.** Adding a line for
+every listed pin it could not build a target for turned up eight names, and
+three of them were real blind spots: `BASE_SWEEP_LO/HI/STEP` are one
+*tuple-unpacking* assignment, which the single-name matcher could not see, and
+`RANDOM_UNCOUNTED_OUTSIDE` and `MUSIC_SHIM_IMPORTS` are multi-line tuples that
+belonged in the sampled path. The other five were honest: `ATLAS_NAME` does
+not exist, and `ATLAS_SIZE` and `ATLAS_HALF_EXTENT_SCALE` are **derived** from
+constants that are themselves mutated and caught. A separate hole in the same
+place: `perturb()` returned `None` for an **empty** container, so
+`NATIVE_FAULTS = []` and `AFFINE_IN_DRAWS = []` — whose emptiness *is* the
+finding — were skipped without a word. It now inserts an element into an empty
+container, and an unbuilt target is printed either way.
+
+Reaching those turned up one last unread pin, `BASE_SWEEP_STEP`, and it is a
+sampling density: the attenuation identity holds for *every* base volume, so
+no step can make it false. What a coarser step can do is stop the sweep short
+of full scale — 101 ends at −81 instead of 0 — and that is what is asserted
+now, so the density is load-bearing for a property the sweep actually needs.
+
+Two constants are left deliberately outside the battery, each with its reason
+written beside it: `CREATOR_EXTENT`, a scan bound whose measurement is pinned
+separately, and `GROUP_SIZE`, a capture policy no check can honestly assert.
+
+The run on the finished tree is **159 mutations, 159 caught, 0 missed**, with
+no "not found", "no perturbation" or "no sampled entry" line left — the three
+different ways this battery has now been caught saying nothing.
+
+This is the fourth, fifth and sixth time this document has recorded the same
+shape of finding. The first three were the harness reporting a clean result
+about work it did not do; these are the harness reporting a real gap, and the
+temptation being to write the gap down as a boundary instead of closing it.
+
+### 16.7 What this pass cost, and where it leaves the layer
+
+| | |
+|---|---|
+| `blob_tables.py --check` | 384 -> **407**, all static, no capture needed |
+| `blob_gold.py --check` | 49 -> **115** |
+| `godot/run_tests.sh` | 1 854 -> **1 860** checks, 31 suites |
+| The capture | **30 of 30** creators, 0 failures, 198 records |
+| `core/` delta | **zero**, as every slice since the first |
+| Documents corrected | `22` (§3.2 new, §12's first open question), `28` (§7.6.1 new, §12 item 1 sharpened), `97` (§15.5 superseded by §16), `00`, `CLAUDE.md` |
+
+The oracle boundary is unchanged and still honest: the creators are
+`native-runtime`, the arms are `executable-Python`, and `docs/28` §12 item 1 —
+the service hooks the *arms* read — remains open. What moved is that three of
+the four things §15 called open were answered by reading the binary rather
+than by more Wine, and the fourth was answered by asking the harness for a
+smaller unit of work.
 
