@@ -18,21 +18,28 @@ instead.
 Reproduce with:
 
 ```bash
-python3 tools/blob_runtime.py --emit-cases tests/fixtures/blob/cases_blob.json
+python3 tools/blob_runtime.py --emit-cases tests/fixtures/blob/cases_blob.json \
+    --root gog_incubation
 ```
 
-It needs **no game root** — `blob_runtime.py` is a transcription, not a reader,
-and that is exactly why it can be an oracle for a layer the corpus cannot
-exercise. `godot/run_tests.sh` copies it to `godot/generated/blob/blob.json`; a
+It still *runs* with **no game root** — `blob_runtime.py` is a transcription,
+not a reader, and that is exactly why it can be an oracle for a layer the
+corpus cannot exercise. `--root` changes one service: the orientation helper
+becomes `0x00403AA0`'s measured arithmetic and the shipped `TRIG.IMG`/`ATN.IMG`
+ride along in the document so the GDScript twin reads the same numbers. Emit it
+without a root and the document says `"orient": "substitute"` and
+`test_blob.gd` **fails** on that field — the fallback is there so a root-free
+run is consistent, not so it can pass unnoticed. `godot/run_tests.sh` copies it to `godot/generated/blob/blob.json`; a
 missing fixture makes the suite **fail** rather than shrink.
 
 ## The oracle boundary is executable-Python, and deliberately not stronger
 
-`docs/28` §12 item 1 records that the return data of the original's
+`docs/28` §12 item 1 used to record that the return data of the original's
 orientation, geometry and target-map helpers — `0x004039A0`, `0x00403AA0`,
-`0x0046D400`, `0x00405100`, `0x00477AE0` — has **not** been validated against a
-native trace. Every arm that calls one of them is therefore compared against a
-*deterministic adapter* that both sides implement, `CaseHooks` in Python and
+`0x0046D400`, `0x00405100`, `0x00477AE0` — had **not** been validated against a
+native trace. All five have been swept now (`cases_native.json`'s `hooks`
+phase), and the orientation one is the engine's arithmetic on both sides. The
+rest are still a *deterministic adapter* that both sides implement, `CaseHooks` in Python and
 `BlobHooks` in GDScript:
 
 * `random(base, span)` is `ARandom`, which *is* natively pinned
@@ -40,11 +47,15 @@ native trace. Every arm that calls one of them is therefore compared against a
 * `lookup_model(name)` is the position of the name in a fixed three-entry
   table, or −1;
 * `target_position` is one fixed point, or `null`;
-* `orient` is the portable fixed-point helper in `blob_runtime.BlobHooks`,
-  **not** the retail routine.
+* `orient` **is** the retail routine, `0x00403AA0`, when the fixture was
+  emitted with a game root — measured over twenty deltas inside a live
+  `Incubation.exe` and reproduced from the shipped trig tables
+  (`docs/28` §7.4.2). It was the invented substitute until that sweep, and the
+  substitute was wrong in the unit *and* in the pitch.
 
 So this file checks that the 74 arms were transcribed correctly. It does not
-check that a particle follows the trajectory the original's particle followed.
+check that a particle follows the trajectory the original's particle followed:
+one service being measured does not make the arms measured.
 The document's own `oracle` field says so in as many words, and the suite
 prints the boundary rather than letting a reader assume the stronger one.
 
@@ -100,6 +111,22 @@ Its `phases` map holds:
 * `scatter` — one creator run **twice in one process** with `rand()` calls
   bracketing each, which says whether its scatter is state at all and rules
   out the C runtime as the source.
+* `hooks` — the five services of `docs/28` §12 item 1, called directly: twenty
+  deltas through the orientation helper and forty through the geometry one,
+  eight rotations, eighty-one object ids and every named unit slot, plus the
+  five runtime function pointers read both as values and as the first bytes of
+  what they point at. The three geometry helpers write only into buffers the
+  plan owns and the two lookups write nothing, so all of it fits in one
+  process.
+
+  Two conventions in it. Non-finite doubles are stored as the **strings**
+  `"nan"`, `"inf"` and `"-inf"`: `0x0046D400` divides by zero unguarded, and
+  `json.dump`'s bare `NaN` is not JSON — Godot's parser refuses the whole
+  document, which is how a suite stopped loading once. And the sweep
+  deliberately **omits the invalid ids**: the out-of-range and dead-unit paths
+  go through the engine's CHECK reporter, and a plan that puts a message box up
+  never reaches its next line. Those branches are read statically instead;
+  there is nothing in them to measure.
 * `failures` — creators whose plan the harness refused, with what it said.
   They are kept **out** of `phases`, so a re-run retries them; a creator that
   faults is a result and is not the same thing as one that refuses a tile.

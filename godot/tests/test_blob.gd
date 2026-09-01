@@ -8,13 +8,17 @@ extends TestSuite
 ## requires [Blob], [BlobKinds] and [BlobHooks] to agree **field for field, tick
 ## for tick**, over all 78 kinds and ten scenarios each.
 ##
-## **What this does not claim.** docs/28 section 12 item 1 records that the
-## return data of the original's orientation, geometry and target-map helpers
+## **What this does not claim.** All five services of docs/28 section 12 item 1
 ## -- `0x004039A0`, `0x00403AA0`, `0x0046D400`, `0x00405100`, `0x00477AE0` --
-## has never been validated against a native trace. Every arm that calls one is
-## therefore compared against the *same deterministic adapter* on both sides.
-## So this is a check that the arms were transcribed correctly, not a check
-## that a particle follows the trajectory the original's particle followed. The
+## have been swept inside a running `Incubation.exe` now, and the orientation
+## one is the engine's own arithmetic on both sides of this diff. The other
+## services stay a *deterministic adapter* that both sides implement, on
+## purpose: making them read a running game would replace a reproducible diff
+## with a replay of recorded returns.
+##
+## So this is still a check that the **arms** were transcribed correctly, not a
+## check that a particle follows the trajectory the original's particle
+## followed. One service being measured does not make the arms measured. The
 ## fixture says so in its own `oracle` field, and this suite prints
 ## `executable-Python` rather than `native-runtime` for exactly that reason.
 ##
@@ -58,6 +62,27 @@ func run(h: TestHarness) -> void:
 		DictRead.as_int(document["immortal_life"]))
 	h.equal("unreachable", BlobKinds.UNREACHABLE,
 		_as_ints(DictRead.as_array(document["unreachable"])))
+	# **The orientation service is measured now**, and the suite must fail if
+	# it silently falls back. docs/28 section 12 item 1 recorded the retail
+	# routine as never called; `tools/blob_gold.py`'s `hooks` phase called it,
+	# and a fixture emitted with a game root carries the shipped tables so
+	# both twins run the same arithmetic instead of the same guess.
+	h.equal("orient_is_measured", DictRead.as_string(document.get("orient", "")),
+		"native",
+		"the fixture was emitted with a game root, so orient() is 0x00403AA0")
+	var measured: Eng3dGeometry = _geometry(document)
+	h.check("orient_tables_loaded", measured != null and measured.is_loaded(),
+		"TRIG.IMG and ATN.IMG rode along in the fixture")
+	# Two answers out of the twenty the native sweep took, restated here so a
+	# GDScript-side regression in the table narrowing fails this suite and not
+	# only the Python one: a full field along +x is a quarter turn of the
+	# 4096 circle with the pitch at level, and straight up is -1024.
+	h.equal("orient_quarter_turn",
+		measured.orient(Vector3i.ZERO, Vector3i(1000, 0, 0)),
+		Vector2i(0, 1024), "+x is yaw 1024, pitch 0")
+	h.equal("orient_straight_up",
+		measured.orient(Vector3i.ZERO, Vector3i(0, 0, 1000)),
+		Vector2i(-1024, 0), "straight up is pitch -1024")
 	h.equal("adapter_models", BlobHooks.MODELS,
 		_as_strings(DictRead.as_array(document["models"])))
 	h.equal("adapter_target", BlobHooks.DEFAULT_TARGET,
@@ -288,6 +313,7 @@ func _check_rounding(h: TestHarness) -> void:
 func _hooks(document: Dictionary, kase: Dictionary) -> BlobHooks:
 	var hooks: BlobHooks = BlobHooks.deterministic(
 		DictRead.as_float(document["seed"]))
+	hooks.geometry = _geometry(document)
 	hooks.target = _as_vector(DictRead.to_int32(document["target"]))
 	if kase.has("target"):
 		hooks.has_target = kase["target"] != null
@@ -300,6 +326,26 @@ func _hooks(document: Dictionary, kase: Dictionary) -> BlobHooks:
 	if kase.has("emitter_mode"):
 		hooks.emitter_mode = DictRead.as_int(kase["emitter_mode"])
 	return hooks
+
+
+## The shipped trig tables the fixture carries, or null.
+##
+## `tools/blob_runtime.py --emit-cases --root <game>` puts them in and marks
+## the document `"orient": "native"`; without a root the field says
+## `"substitute"` and both twins keep the older stand-in. Reading the field
+## rather than assuming either is what keeps a root-free emit from quietly
+## comparing two different orientation helpers.
+func _geometry(document: Dictionary) -> Eng3dGeometry:
+	if _cached_geometry != null:
+		return _cached_geometry
+	var raw: Variant = document.get("eng3d")
+	if not (raw is Dictionary):
+		return null
+	_cached_geometry = Eng3dGeometry.from_document(DictRead.as_dict(raw))
+	return _cached_geometry
+
+
+var _cached_geometry: Eng3dGeometry = null
 
 
 func _seeded_blob(kind: int, document: Dictionary) -> Blob:

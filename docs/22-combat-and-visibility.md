@@ -281,17 +281,43 @@ uncounted stream has its own seeder at `0x00463850`, which writes the qword as
 two dwords and has exactly one caller.
 
 **Nineteen of the seventy-five callers are outside `aBlobs.cpp`**, and three of
-those are the unit pool — `aEnlargeUnitPool`, `aAddUnitToUnitPool`,
-`aGenerateUnitElement` — which is simulation, not presentation; one function,
-`0x004160F0`, draws from **both**. `docs/20` §7.4 has `InsertUnit`'s spawn
-count coming from the C runtime's `rand`, so a third generator is already in
-that picture. What the unit pool draws the uncounted stream for is an open
-question (§12).
+those are in the unit pool — `aEnlargeUnitPool`, `aAddUnitToUnitPool`,
+`aGenerateUnitElement` — with a fourth, `0x004160F0`, drawing from **both**.
+That looked like simulation reaching a clock-seeded generator, which is the one
+combination §3.1's determinism argument does not cover. It is not.
+
+**All three unit-pool sites roll a voice.** Each pushes `(1, 6)`, truncates
+with `__ftol` and stores one **byte**, and the byte is `unit[+0x55]` — the
+speech-set id of [`20` §7.4](20-lcl-language.md), which of the shipped
+`Waves/Speech/` sets the soldier talks with. Two of the three address it
+outright as `mov byte [reg + 0x0051F2F5]`, which is the persistent roster at
+`0x0051F2A0` plus `0x55`, so the field is read off the encoding rather than
+guessed from the value. [`10` §5.8](10-lev-mission-format.md) already recorded
+that the byte was rolled; the generator is the missing half, and it is the
+presentation one. `aGenerateUnitElement` does not roll at all for unit type
+24: it writes a fixed 12, `spidy`.
+
+Two consequences. Nothing in the rule set reads `+0x55`, so the determinism
+argument stands; but the roster **is saved**
+([`11` §5.11](11-save-game-format.md)), so a wall-clock-seeded byte does reach
+the save file, and a remake must keep it out of a canonical hash rather than
+out of the save.
+
+**`0x004160F0` draws from both streams because it does both jobs.** It is in
+`aAnimations.cpp`. Twice from the **counted** stream it picks a candidate spawn
+tile — retried up to five times and tested by the placement helper, which is
+simulation — and once from the **uncounted** one it takes an argument for a
+routine inside `aBlobs.cpp`, which is an effect. The split is kept inside the
+function, argument by argument. `docs/20` §7.4 has `InsertUnit`'s spawn count
+coming from the C runtime's `rand`, so a third generator is in that picture
+too, and it is on the same side of the line: a count, not a rule.
 
 All of it is pinned by `tools/blob_tables.py`'s `random.*` checks — the
 byte-identity, both seeds, both seeders, the two site counts, the two caller
-sets, the nineteen that cross the line and the one that mixes — and none of
-them needs a capture.
+sets, the nineteen that cross the line, the one that mixes, the three pool
+sites with their arguments and their store, the fixed set for type 24, and
+what each of `0x004160F0`'s draws is handed to — and none of them needs a
+capture.
 
 ---
 
@@ -1324,20 +1350,33 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-**One.**
+**None.**
 
-1. **What the unit pool draws the uncounted stream for.** §3.2 establishes that
-   `0x004638E0` is `aRandom` over a second, clock-seeded stream, and that its
-   callers are `aBlobs.cpp` and the animation drivers — with three exceptions
-   that are not presentation at all: `aEnlargeUnitPool` (`0x004789B0`),
-   `aAddUnitToUnitPool` (`0x00478C10`) and `aGenerateUnitElement`
-   (`0x00479CF0`). A fourth, `0x004160F0`, draws from **both** streams.
-   `docs/20` §7.4 already has `InsertUnit`'s spawn *count* coming from the C
-   runtime's `rand`, so the spawn path demonstrably mixes generators; what the
-   pool routines themselves roll for — a position, a type, a stat — is not
-   traced. It matters for a remake because a draw here is **simulation seeded
-   from the wall clock**, which is the one combination §3.1's determinism
-   argument does not cover. Static reading can answer it; nobody has.
+1. ~~**What the unit pool draws the uncounted stream for.**~~ **Closed** —
+   §3.2. All three sites do the identical thing: `aRandom(1, 6)`, `__ftol`,
+   and one **byte** store, and the byte is `unit[+0x55]` — the **speech-set
+   id** [`20` §7.4](20-lcl-language.md) and [`21` §5](21-info-lcl-schema.md)
+   already decode, which of the shipped `Waves/Speech/` voice sets the
+   recruited soldier talks with. [`10` §5.8](10-lev-mission-format.md) already
+   recorded that the value was rolled; what was missing was *which generator*,
+   and it is the presentation one. Nothing in the rule set reads the byte, so
+   §3.1's determinism argument is not disturbed.
+
+   Two details worth keeping. `aGenerateUnitElement` **does not roll for unit
+   type 24**: it writes a fixed 12, which is `spidy`, the only non-human set in
+   that table. And the roster the other two write into is **saved**
+   ([`11` §5.11](11-save-game-format.md)), so a clock-seeded byte does reach
+   the save file — a remake must keep it out of a canonical hash rather than
+   out of the save.
+
+   The fourth caller, `0x004160F0`, is not a counter-example either. It is in
+   `aAnimations.cpp` and does two jobs: it draws **twice from the counted
+   stream** for a candidate spawn tile, retried up to five times and tested by
+   the placement helper — simulation, on the gameplay generator — and **once
+   from the uncounted one** for an argument it hands to a routine inside
+   `aBlobs.cpp` — an effect, on the presentation generator. One function doing
+   both jobs is not one function mixing generators: the split is kept inside
+   it, argument by argument. Fourteen checks in `blob_tables.py`.
 
 The question this section used to carry — what type `FixedStatue`'s sequence
 spawns — is closed in §9.4.3, and the honest form of the close is that the

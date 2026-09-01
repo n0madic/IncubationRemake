@@ -84,6 +84,7 @@ var _sprites: BlobSprites = null
 var _models: BlobModels = null
 var _triggers: BlobTriggers = null
 var _sequences: SequenceQueue = null
+var _eng3d: Eng3dGeometry = null
 var _blob_tables: Dictionary = {}
 ## The effect clock, in seconds carried over from the last frame. Blobs tick
 ## once per displayed frame in the original, and docs/92 section 7.10 measured
@@ -377,6 +378,14 @@ func _build_effects(mission: String, world_set: String,
 		index[DictRead.as_string(name)] = next_id
 		next_id += 1
 	_fx.hooks().model_index = index
+	# The engine's own sine and arctangent tables, so the orientation service
+	# is `0x00403AA0`'s **measured** arithmetic -- a 4096-unit yaw and a pitch
+	# measured from level -- rather than the 65536ths substitute docs/28
+	# section 12 item 1 had to stand in with. Read once and shared: the tables
+	# are one content across all 21 world sets.
+	if _eng3d == null:
+		_eng3d = Eng3dGeometry.from_cache(_cache_dir)
+	_fx.hooks().geometry = _eng3d
 	_triggers = BlobTriggers.open(_fx, _blob_tables)
 	_sequences = SequenceQueue.create(_audio)
 	_fx_carry = 0.0

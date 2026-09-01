@@ -1078,7 +1078,7 @@ framework for the whole remake. Use one representative campaign mission whose
 terrain, objects, unit placement and reachability are already well covered by
 the numbered specs.
 
-### 7.11 Effects and sound — five decisions the fifth slice took, one since retracted
+### 7.11 Effects and sound — six decisions, one since retracted
 
 Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
 a choice the remake is committed to and not a finding.
@@ -1090,6 +1090,17 @@ the set-piece queue run at `CharismaState.FRAMES_PER_SECOND` and the bodies,
 the particles and the lifts cannot drift apart. It is an **inference from a
 measurement**, not a second measurement: what was measured is the gameplay
 frame, and what is asserted is that the blob tick is that frame.
+
+**The engine's trig tables ship in the cache; they are not regenerated.**
+`TRIG.IMG` and `ATN.IMG` are one content across all 21 world sets, and the
+converter copies them into `tables/trig.json` rather than letting GDScript
+build them from the formula. [`70`](70-img-tables.md)'s first open question is
+that the generation rounding is unknown and `img_tables.py` can only show the
+formula agrees to **within one unit** — and one unit of a 4096-unit circle is
+one unit of every angle built on it, which is the size of the thing
+[`28` §7.4.2](28-effects-and-sound.md)'s orientation sweep measured. 12 KiB of
+cache buys exactness against the engine; a formula would buy a number that is
+almost right. This is why `CONVERTER_VERSION` moved to 0.11.0.
 
 **The sprite blend is additive, on the strength of a name.** `Eng3d` exports
 three zoom-bob entry points — `alpha_plus`, `alpha_minus` and `masked` — and

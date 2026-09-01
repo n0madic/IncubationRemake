@@ -104,6 +104,15 @@ the check meaningful rather than vacuous.
 
 ## Open questions
 
+**These tables are load-bearing now.** `docs/28` §7.4.2's orientation helper is
+exact against a live `Incubation.exe` only when read out of the shipped files:
+`tools/inclib/eng3d.py` and `godot/game/fx/eng3d_geometry.gd` both load them
+rather than regenerate them, and the converter puts them in the cache as
+`tables/trig.json` for that reason. Item 1 below is why — one unit of a
+4096-unit circle is one unit of every angle built on it, so a table
+regenerated from the formula would give angles that differ from the engine's by
+one, which is exactly the size of the thing the sweep was measuring.
+
 1. The exact rounding rule Blue Byte used to *generate* the sine table is
    unknown — truncation at scale 16383 is the best fit (3073 of 5120 entries
    exact, the rest off by one), but no rule reproduces the table bit-for-bit.

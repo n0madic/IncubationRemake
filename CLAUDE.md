@@ -48,7 +48,7 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 407 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 423 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -65,7 +65,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 1860 checks
+bash   godot/run_tests.sh                                    # 31 suites, 1865 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -91,13 +91,20 @@ python3 tools/charisma_tables.py gog_incubation \
 python3 tools/ai_runtime.py      --emit-cases tests/fixtures/ai/cases_ai.json --root gog_incubation
 python3 tools/blob_tables.py     --emit-sound-cases tests/fixtures/sound/cases_sound.json \
     --root gog_incubation
-python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json
+python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json \
+    --root gog_incubation
 ```
 
-The last two are the fifth slice's, and `blob_runtime.py --emit-cases` is the
-one emitter that needs **no game root at all**: it is a transcription of
-`aBlob_Update`, not a reader, which is exactly why it can be an oracle for a
-layer the corpus cannot exercise.
+The last two are the fifth slice's, and `blob_runtime.py --emit-cases` still
+runs with **no game root at all**: it is a transcription of `aBlob_Update`, not
+a reader, which is exactly why it can be an oracle for a layer the corpus
+cannot exercise. `--root` changes exactly one thing — the orientation service
+becomes `0x00403AA0`'s **measured** arithmetic (`docs/28` §7.4.2) and the
+shipped `TRIG.IMG`/`ATN.IMG` ride along in the fixture so the GDScript twin
+reads the same numbers. Without it the fixture says `"orient": "substitute"`,
+both twins fall back to the older invented helper, and `test_blob.gd` **fails**
+on that field: the fallback exists so a root-free run still produces a
+consistent oracle, not so it can pass unnoticed.
 
 The native case file comes from an existing capture:
 `python3 tools/movemap_gold.py --emit-cases tests/fixtures/movemap/cases_native.json --root gog_incubation`.
@@ -214,6 +221,9 @@ Two consequences worth internalising: **`.cho` contains no geometry** (it refere
 - `binio.Reader` — little-endian primitives plus `lpstring()` (u32 length + exactly that many bytes, no NUL), the convention Charisma uses throughout
 - `png` — dependency-free indexed and truecolour PNG writing
 - `palette`, `liblib`, `lev`, `charisma`, `prototyp`, `visn`, `lcl` — one module per format family; `lcl` holds the script codec, tokenizer, parser and AST, and `lcl_parse.py` / `lcl_decode.py` are thin CLIs over it
+- `eng3d` — the engine's fixed-point geometry: the shipped `TRIG.IMG`/`ATN.IMG`
+  tables, the 4096-unit angle helper, the Q14 matrix and `0x00403AA0`'s
+  orientation. `godot/game/fx/eng3d_geometry.gd` is its twin
 - `rng` — the two generators the engine draws from: `ARandom` (`0x00463870`, the Lehmer one, pinned by a 64-draw native capture) and `CRandom` (the C runtime's, which only `InsertUnit` uses). `godot/core/rng.gd` is `ARandom`'s twin
 - `script`, `lcl_runtime`, `turn`, `combat`, `interact` — the LCL cache document, and the executable models of the interpreter (docs/20), the turn (docs/25), combat/visibility/reaction (docs/22, docs/25 §6) and interaction (docs/26)
 - `pe` — PE sections, resources, and typed reads **by virtual address**, so the addresses the docs quote can be used directly
@@ -301,7 +311,17 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture; taking one needs `--game-copy` and Wine. **One creator per plan**:
+the capture; taking one needs `--game-copy` and Wine. It also carries the
+**`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
+routines an update arm reaches outside its own record, called in the live
+process and swept — twenty deltas through the orientation helper, forty through
+the geometry one, eight rotations, eighty-one object ids and every named unit
+slot. `tools/inclib/eng3d.py` reproduces four of the five exactly and
+`--check` compares them answer for answer. The fifth, Eng3d's three-angle
+matrix builder, is **recorded and not reproduced** — do not let a suite claim
+otherwise. `--probe-startup N` is the other new mode and needs no plan of its
+own: it runs one plan N times with a single attempt each and reports how often
+Wine reached the anchor (`docs/91` §1.1). **One creator per plan**:
 a plan that dies takes every creator sharing its process with it, and the
 deaths are Wine's own access violation before the anchor rather than anything
 the plan contains. Phases are written as they land and merged on re-run, and
@@ -465,7 +485,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **39 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 1, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 2, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **37 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

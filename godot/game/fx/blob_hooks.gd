@@ -8,14 +8,21 @@ extends RefCounted
 ## and position lookup the three seekers steer by, the model lookup kinds 16
 ## and 17 swap through, the orientation helper, and the constructor itself.
 ##
-## **The default adapter is deterministic and is the whole oracle boundary.**
-## docs/28 section 12 item 1 records that the return data of the original's
+## **The orientation service is measured; the rest of the adapter is not.**
+## docs/28 section 12 item 1 used to record that the return data of all five
 ## helpers -- `0x004039A0`, `0x00403AA0`, `0x0046D400`, `0x00405100`,
-## `0x00477AE0` -- has never been validated against a native trace. So this
-## class is written to be *the same* deterministic adapter the Python side
-## uses, and the comparison between them is a transcription check on the arms,
-## not a claim that a particle follows the original's trajectory. Anything
-## stronger would have to be measured first, and it has not been.
+## `0x00477AE0` -- had never been validated against a native trace. All five
+## have been called now (`tools/blob_gold.py`'s `hooks` phase), and
+## [method orient] is `0x00403AA0`'s own arithmetic through [Eng3dGeometry]
+## rather than a stand-in for it.
+##
+## What that does **not** license: the seventy-four arms are still a
+## transcription compared against a transcription, so `tests/test_blob.gd`
+## keeps printing `executable-Python` and nothing here claims that a particle
+## follows the original's trajectory. The model lookup and the target-map
+## service stay a deterministic adapter on both sides, deliberately: making
+## them read a running game would replace a reproducible diff with a replay of
+## recorded returns.
 ##
 ## The one service that **is** natively pinned is the generator -- and which
 ## generator it is turned out to matter. The effects do **not** draw from
@@ -50,6 +57,10 @@ const MODELS: Array[String] = ["A_BLUT5.3DI", "A_BLUT6.3DI", "A_HIT2.3DI"]
 ## canonical hash, and docs/92 section 10.3 forbids presentation reaching it.
 ## The original keeps the two apart the same way, in two separate seeds.
 var rng: IncRandom = IncRandom.new()
+## The engine's own sine and arctangent tables, when a cache or a fixture
+## supplied them. Null is not an error: it selects the substitute in
+## [method orient] and the caller reports which one it used.
+var geometry: Eng3dGeometry = null
 var target: Vector3i = DEFAULT_TARGET
 var has_target: bool = true
 var models_present: bool = true
@@ -128,12 +139,23 @@ func has_target_for(_blob: Blob) -> bool:
 	return has_target
 
 
-## `0x004039A0` / `0x00403AA0` -- the portable fixed-point stand-in for the
-## engine's orientation helper. Answers `(pitch, yaw, roll)` as 0..0xFFFF turn
-## angles. The retail routine is the un-validated one of docs/28 section 12,
-## so this is deliberately the *documented substitute* rather than a guess at
-## it, and both sides of the diff use it.
+## `0x00403AA0` -- **measured**, when [member geometry] carries the shipped
+## tables, and the documented substitute when it does not.
+##
+## The substitute below was an `atan2` over a 0..0xFFFF turn, invented because
+## docs/28 section 12 item 1 recorded the retail routine as never having been
+## called. It has been called now: `tools/blob_gold.py`'s `hooks` phase sweeps
+## twenty deltas through it inside a live `Incubation.exe`, and the routine
+## answers in the **4096-unit circle** with a pitch measured from level, not in
+## 65536ths from the horizontal. Both numbers this substitute produces are
+## therefore wrong, and it survives only for a fixture emitted with no game
+## root -- which says `"orient": "substitute"` so the suite knows.
 func orient(blob: Blob, at: Vector3i) -> Vector3i:
+	if geometry != null and geometry.is_loaded():
+		var pair: Vector2i = geometry.orient(
+			Vector3i(blob.x, blob.y, blob.z), at)
+		return Vector3i(pair.x & IncInt.U16_MASK, 0,
+			pair.y & IncInt.U16_MASK)
 	var dx: float = float(at.x - blob.x)
 	var dy: float = float(at.y - blob.y)
 	var dz: float = float(at.z - blob.z)

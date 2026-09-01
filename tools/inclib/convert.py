@@ -41,6 +41,7 @@ from typing import Any, Iterable
 from . import charisma as chamod
 from . import charisma_cache as chacache
 from . import charisma_tables as chatables
+from . import eng3d
 from . import lev as levmod
 from . import liblib
 from . import prototyp as protomod
@@ -883,6 +884,19 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
 
     staging.write_json("tables/sound.json", document)
     staging.write_json("tables/blobs.json", tables.blob_document(str(root)))
+    # **The engine's own sine and arctangent tables**, shipped in every world
+    # set's `IMG/` and byte-identical across all 21 (`docs/70`).  They are in
+    # the cache rather than regenerated in GDScript because `docs/70`'s open
+    # question 1 is that the generation rounding is unknown: `img_tables.py`
+    # can only show the formula agrees to within one unit, and one unit of a
+    # 4096-unit circle is one unit of every angle built on it.  `docs/28`
+    # 12.1's orientation hook is exact against the engine only with these.
+    shipped = eng3d.load(str(root))
+    staging.write_json("tables/trig.json",
+                       {"trig": shipped.trig, "atn": shipped.atn,
+                        "angle_units": eng3d.ANGLE_UNITS,
+                        "sine_scale": eng3d.SINE_SCALE,
+                        "q14_shift": eng3d.Q14_SHIFT})
     result.waves = len(document["waves"])
     result.tracks = len(copied)
     return document

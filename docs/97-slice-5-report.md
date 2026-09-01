@@ -702,7 +702,8 @@ Transcribing the 81 creators' own placement and velocity arithmetic is a slice
 of its own, and the count says why: 30 of the 81 are reachable by firing a
 weapon at all, they hold 43 of the 116 constructor calls, and each is roughly a
 kilobyte of x86 whose position arguments come from five service helpers that
-[`28` §12.1](28-effects-and-sound.md) records as **not natively validated**.
+[`28` §12.1](28-effects-and-sound.md) recorded, at the time, as **not natively
+validated** — since measured, §17.1.
 Transcribing them would produce trajectories that look authoritative and cannot
 be checked — the failure mode this repository's rules exist to prevent.
 
@@ -1042,6 +1043,14 @@ a file the battery is walking, and read the count, not the colour.
 
 ## 16. The four items §15 left, and what three of them turned out to be
 
+> **Superseded in part by §17.** Three of the residues this section names have
+> since been closed and one was not a question: the draw arithmetic (§16.1's
+> `UNVERIFIED` — see §17.2), the Wine group-boundary alignment (§16.6's
+> "unexplained" — see §17.3), the unit-pool thread §16 handed to `docs/22`
+> (§17.4), and `docs/28` §12 item 1, which §16.7 records as still open and
+> §17.1 closes. Read the two together; nothing below is retracted, but its
+> open list is out of date.
+
 §15.5 ended with four things open: the velocities, the elevation, the
 coverage, and the depth of the creators' call graph. Three of the four had a
 **wrong premise**, and the corrections belong here rather than in a quiet edit
@@ -1291,3 +1300,179 @@ the four things §15 called open were answered by reading the binary rather
 than by more Wine, and the fourth was answered by asking the harness for a
 smaller unit of work.
 
+
+---
+
+## 17. Closing §16's own residue — the service hooks, the draws, the host
+
+Dated addendum, September 2026. §16 ended by naming four things it had not
+settled. Three of them turned out to rest on a premise that was wrong, and the
+fourth was not a question.
+
+### 17.1 The five service hooks were never called; now they have been
+
+`docs/28` §12 item 1 had stood since the layer was first written: the
+orientation, geometry and target-map helpers an update **arm** reaches outside
+its own record return data nobody had measured, so no trajectory built on them
+could be called native-verified. §16 sharpened the item without moving it — the
+*creators* were captured, and the creators only show what a helper answered.
+
+`tools/blob_gold.py` gained a `hooks` phase. It declares all five with the
+arity each one's callers clean up, hands them scratch buffers, and sweeps them
+inside a running `Incubation.exe` with `_6_.sav` loaded: twenty deltas through
+`0x00403AA0` and forty (twenty × two shift modes) through `0x0046D400`, eight
+rotations through `0x004039A0`, eighty-one ids through `0x00405100` and every
+named unit slot through `0x00477AE0`, plus the five runtime function pointers
+read as values and as the first bytes of what they point at. **It landed on
+attempt 1.**
+
+Four of the five are now reproduced exactly, in `tools/inclib/eng3d.py` and its
+GDScript twin `godot/game/fx/eng3d_geometry.gd`, and checked answer for answer
+against the capture. `docs/28` §7.4.2 is the specification; three findings are
+worth repeating here because each corrects something the remake was doing:
+
+**The remake's `orient()` was wrong in the unit and wrong in the pitch.** It
+was an `atan2` over a 0..0xFFFF turn — a *documented substitute*, chosen
+honestly because nothing better existed. The real routine works in the
+**4096-unit circle** and takes its pitch from the delta *after* turning it flat
+with a Q14 matrix, minus a quarter turn. Twenty of twenty pairs now reproduce.
+
+**Two shifts round differently inside one call.** The matrix builder divides
+toward zero (`cdq / and edx, 0x3FFF / add / sar 14`) and Eng3d's transform
+divides toward negative infinity (a plain `sar 14`). Exactly one of the twenty
+deltas — `(-1, -1, -1)` — separates them, and it answers 512 one way and 0 the
+other. A sweep that had not included a delta of length one would have pinned
+the wrong rule and passed.
+
+**`0x0046D400` divides by zero on purpose.** `NaN` and `±inf` are ordinary
+answers from it, and its `>> 3` flag does not reach the two components a reader
+would expect it to. Neither is a thing a reimplementation invents; both had to
+be seen.
+
+The sweep also found an off-by-one in the shipped engine: both lookups guard
+with `cmp eax, 0xC8` and a *strictly greater* branch, so **id 200 is admitted
+and the arrays hold 200 entries**. Nothing shipped passes 200. It is pinned so
+that a remake clamping at `<= 200` does not inherit it silently.
+
+**What did not move.** The arms are still a transcription compared against a
+transcription, so `test_blob.gd` still prints `executable-Python` and the blob
+layer still claims no `native-runtime` anywhere. And one of the five —
+Eng3d's three-angle matrix builder behind `0x004039A0` — is *recorded* and not
+reproduced: no ordering of `Rz Rx Ry` with either rounding matches all eight
+captured cases. It is named in the document rather than smoothed over.
+
+### 17.2 The draw arithmetic was `aRandom` all along; the fit was wrong
+
+§16.1 established which generator the creators draw from and how many times,
+and left the arithmetic on top `UNVERIFIED` because an affine fit matched none
+of the fourteen creators that draw. Two things were wrong with the fit, and
+neither is exotic:
+
+* **the draw-to-field order is per creator and runs both ways.** MSVC evaluates
+  `__cdecl` arguments right to left, so a creator that passes its draws
+  straight into the constructor consumes them in reverse field order
+  (`0x004228F0` draws `vz`, `vy`, `vx`) and one that parks them in locals first
+  does not (`0x00425810` draws `vx`, `vy`, `vz`). A single global rule cannot
+  fit both;
+* **some creators scale the truncated draw.** `0x0042ACF0`'s vertical is 32
+  times it, and a fit looking only for `base + span·f` cannot see a factor.
+
+With those two admitted, three creators reproduce **every varying field of
+every captured record** from the seed alone and a fourth its velocities, and a
+drawn rotation turns out to be `aRandom(0, 4096)` — the same 4096-unit circle
+§17.1's orientation helper answers in. `docs/28` §7.6.2 has the table.
+
+The remaining creators have **no per-record recipe to fit**, and that is the
+answer rather than a gap: their stream is not consumed at a fixed rate. Three
+build records of several kinds in one call; others retry, so `0x00429A80`'s
+first record does not sit at draw 0 while its second sits at draw 4. No cycle
+length exists for a fit to find. The blanket affine fit failed for a reason
+that would have made it keep failing.
+
+The discipline that keeps this honest: a creator is pinned **only** if every
+field that varies across its records is explained. Allowing partial recipes
+produced a coincidence immediately — a creator with four records "explained" a
+field as `800 · int(18 + 7f)` — which is what four samples and a free scale
+factor will do.
+
+### 17.3 The Wine alignment was not a phenomenon
+
+§16.6 recorded the group-boundary alignment of the first blob capture as
+**unexplained**. It is not a thing to explain. `blob_gold.py --probe-startup 16`
+runs one identical plan sixteen times with a single attempt each: **two reached
+the anchor**, the fourteen failures are all pre-anchor, in two shapes, and
+their positions carry no period.
+
+So the loss unit *is* the group, every loss is therefore a whole group, and
+"aligned with group boundaries" is a tautology rather than an observation. What
+remains is three of six groups losing all ten of their attempts, which at that
+rate is ordinary. `docs/91` §1.1 carries the sequence, and the measurement is a
+re-runnable mode rather than a number written down once — the rate is a
+property of the host and the day, and the `hooks` phase of the same tool landed
+first try.
+
+### 17.4 The unit pool rolls a voice
+
+§16 handed `docs/22` a new open question: three routines in `aUnitMap.cpp` draw
+from the **clock-seeded** stream, which is the one combination §3.1's
+determinism argument does not cover.
+
+All three do the identical thing — `aRandom(1, 6)`, `__ftol`, one byte — and
+the byte is `unit[+0x55]`, the **speech-set id** `docs/20` §7.4 and `docs/21`
+§5 already decode. Two of the three address it as
+`mov byte [reg + 0x0051F2F5]`, which is the persistent roster plus `0x55`, so
+the field comes off the encoding and not off the value. `docs/10` §5.8 already
+said the byte was rolled; the generator was the missing half, and it is the
+presentation one. `aGenerateUnitElement` does not roll for unit type 24 at all:
+it writes a fixed 12, `spidy`.
+
+The fourth caller, `0x004160F0`, draws from **both** streams because it does
+both jobs — the counted one for a candidate spawn tile, the uncounted one for
+an effect argument. The split `docs/22` §3.2 describes is kept inside it.
+
+One consequence worth carrying: the roster **is saved**, so a wall-clock-seeded
+byte reaches the save file. A remake keeps it out of the canonical hash, not
+out of the save.
+
+### 17.5 What this pass cost
+
+| | |
+|---|---|
+| `blob_tables.py --check` | 407 -> **423**, all static |
+| `blob_gold.py --check` | 115 -> **161** |
+| `godot/run_tests.sh` | 1 860 -> **1 865** checks, 31 suites |
+| New capture phase | `hooks`, five services, one attempt |
+| New module | `tools/inclib/eng3d.py` and `godot/game/fx/eng3d_geometry.gd` |
+| `CONVERTER_VERSION` | 0.10.0 -> **0.11.0**, `tables/trig.json` added, cache republished |
+| `core/` delta | **zero** |
+| Mutation battery | 205 mutations, **205 caught**, 0 missed |
+| Open questions | 39 -> **37** (`22` 1 -> 0, `28` 2 -> 1) |
+
+The battery found two of its own blind spots again, and both were the same
+shape as §16.6's: a constant that is *described* rather than *read*.
+`SINE_SCALE` is never multiplied by anything, because the table is loaded and
+not generated, and `COSINE_OFFSET` shifts a table index by one, which moves no
+captured angle. Neither is excluded; both now have a property a perturbation
+breaks — the table's peak **is** the scale, and the cosine window **is** the
+sine table a quarter turn along.
+
+It also cost a run. Editing a walked file while the battery is running is
+silently destructive: the restore is a whole-file write, so it discards the
+edit, and every number taken during the window is meaningless — one run
+reported twenty-four pins as missed that the previous run had caught. The rule
+is that a running battery holds an exclusive lock on the files it walks **and**
+on the fixtures its checks read.
+
+The oracle boundary moved for the first time in this layer: the orientation
+service is the engine's own arithmetic on both sides of the diff, where it had
+been an invented substitute on both sides. The arms did not move and are not
+claimed to have.
+
+**Still open, and stated as such.** Eng3d's three-angle matrix builder is
+recorded and not reproduced. Eleven of the fourteen drawing creators have no
+per-record recipe because their stream is not consumed at a fixed rate — that
+is a measurement, not a fit waiting to be found, but it does mean their
+trajectories remain the remake's own. And the two Eng3d entry points behind
+`0x004039A0` are runtime function pointers whose targets were read as bytes and
+not identified as exports; naming them wants a second capture or a walk of
+`Eng3d.dll`'s own export table.

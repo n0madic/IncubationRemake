@@ -46,6 +46,38 @@ went through on a retry, so **every phase that runs a plan must retry**, and a
 phase capped at fewer attempts than the rest lost a probe it had already
 taken once.
 
+### 1.1 The rate, measured — and what it does to a grouped capture
+
+The intermittency has a number now. `python3 tools/blob_gold.py --game-copy
+<copy> --dbgcall <copy>/dbgcall.exe --probe-startup 16` runs one identical
+minimal plan sixteen times with a **single attempt each**:
+
+```
+exited exception exception exception exception exited exception ok
+exception exception exited exception exited ok exception exited
+```
+
+**Two of sixteen reached the anchor.** The failures are all pre-anchor and
+come in two shapes — a clean `Target exited before any breakpoint was hit` and
+an `exception 0xc0000005` inside a Wine system DLL — and their positions carry
+no period: no alternation, no run length, nothing a mechanism would leave.
+
+That settles a loose end from the first blob capture, which had been recorded
+as *unexplained*. With five creators to a plan the capture came back holding
+groups 0, 2 and 4 entire and groups 1, 3 and 5 empty, three times over, and
+the alignment with group boundaries looked like a faulting creator. It is not
+an observation at all: **the loss unit is the group**, so any loss is a whole
+group and "aligned with group boundaries" is a tautology. What is left is three
+of six groups losing all ten of their attempts, and at a per-start success rate
+this low that is what happens to about a quarter of groups. There was nothing
+to explain.
+
+The practical consequence is unchanged and holds under either reading: **one
+logical unit per plan**, so a bad start costs one retryable item rather than a
+fifth of the capture. The rate is a property of this host and of the day, not
+a constant — the same tool's `hooks` phase landed on attempt 1 — which is why
+it is a re-runnable mode and not a number written down here alone.
+
 **`wineserver` outlives the attempt that started it.** `_run_scoped` kills the
 attempt's own Unix process **group**, which is what stops a timed-out run from
 outliving its attempt — but `wineserver` and the `winedevice.exe` processes it

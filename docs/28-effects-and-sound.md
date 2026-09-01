@@ -604,9 +604,87 @@ constructor allocation) and records their arguments. The default adapter is
 deterministic and never executes the retail binary.
 
 This closes the static transcription gap without overstating native parity:
-the orientation/geometry helpers (`0x004039A0`, `0x00403AA0`, `0x0046D400`) and
-the target-map service (`0x00405100`, `0x00477AE0`) still need a target-runtime
-adapter before a visual or gameplay trace can be called native-verified.
+the arms themselves are a transcription and the diff against them compares two
+transcriptions. What the *services* do is no longer open — see §7.4.2.
+
+### 7.4.2 The five services, measured
+
+`tools/blob_gold.py`'s `hooks` phase calls all five inside a running
+`Incubation.exe` with a mission loaded and reads what they write. Their
+arities are their **callers'** `add esp, K`, the same reading the creators'
+are: `0x00403AA0` nine, `0x0046D400` ten, `0x004039A0` three, `0x00405100`
+four, `0x00477AE0` one.
+
+| routine | what it is | reproduced? |
+| --- | --- | --- |
+| `0x00403AA0` | source and target → `(pitch, yaw)` | **yes**, 20/20 |
+| `0x0046D400` | source and target → three doubles | **yes**, 40/40 |
+| `0x00405100` | object id → its position | **yes**, table and gate measured |
+| `0x00477AE0` | unit id → its record address | **yes**, stride measured |
+| `0x004039A0` | a vector through Eng3d's 3-angle matrix | recorded, **not** reproduced |
+
+`tools/inclib/eng3d.py` is the portable half and `godot/game/fx/eng3d_geometry.gd`
+its twin; both read the shipped `TRIG.IMG` and `ATN.IMG` rather than
+regenerating them, because [`70` §5](70-img-tables.md)'s first open question is
+that the generation rounding is unknown and one unit of a 4096-unit circle is
+one unit of every angle built on it.
+
+**`0x00403AA0` is the one the remake had been standing in for, and the
+substitute was wrong twice.** The real routine works in the **4096-unit
+circle**, not in 65536ths, and its pitch is measured **from level** rather than
+from the horizontal plane by trigonometry:
+
+```c
+yaw   = ANGLE(dx, dy);                 /* [0x004FA4E0], out of ATN.IMG      */
+M     = matrix(0, yaw);                /* 0x004039F0, Q14, truncate to zero */
+flat  = M * delta >> 14;               /* Eng3d's transform, arithmetic sar */
+pitch = ANGLE(flat[1], flat[2]) - 0x400;
+```
+
+`ANGLE(a, b)` is measured from `+b` toward `+a`, so it is 0 along `+y` and
+1024 along `+x`; `ANGLE(0, 0)` is 0 and `ANGLE(a, 0)` is 1024. Three details
+that a reimplementation gets wrong by default and the capture settles:
+
+* the **two shifts round differently inside one call**. The matrix builder
+  uses `cdq / and edx, 0x3FFF / add / sar 14` — toward zero — and Eng3d's
+  transform uses a plain `sar 14` — toward negative infinity. A delta of
+  `(-1, -1, -1)` answers 512 with the second and 0 with the first.
+* the engine's **identity rotation is not one**: `TRIG.IMG`'s peak is 16383
+  over a denominator of 16384, so a coordinate of 1000 comes back 999 and a
+  delta of length 1 rounds away entirely. That is why `0x00403AA0` answers a
+  pitch of −1024 (straight up) for a purely horizontal delta of one unit.
+* the routine's **seventh argument is dead**. All twenty sweeps leave the
+  buffer handed to it exactly as it was zeroed.
+
+**`0x0046D400` is not a normalised direction.** Its first two outputs are
+divided by whichever of `|dx|` and `|dy|` is larger — so one of them is always
+exactly ±1 — and the third by the **truncated integer** 2D distance
+`0x0044AE10` returns, which is `trunc(sqrt(dx² + dy²))` and not the exact
+length: `(5, 3)` comes back 5. Two behaviours a remake would otherwise invent
+a guard for and must not:
+
+* it **divides by zero unguarded**. A zero horizontal delta gives `NaN` in the
+  first two components and `±inf` or `NaN` in the third, and the caller gets
+  them.
+* its **tenth argument, the `>> 3` flag, does not reach the first two
+  components**. The shift is applied inside the branch that computes the
+  vertical only, so a caller passing 1 still gets the unshifted horizontal
+  ratio.
+
+**The two lookups.** `0x00405100` indexes an array at `[0x004FA804]` with
+stride 77, gates on `+0x40`, delegates through `+0x45` and otherwise copies
+`+0x10/+0x14/+0x18` — the placed object's position of §7.6.1, and every
+in-range answer in the save is a whole 3200-unit map field.  `0x00477AE0`
+indexes `[0x005229C4]` with stride 91 — the unit record — and returns the
+record's address, or 0 after a CHECK for an id of `0xFFFF`, an id above 200 or
+a dead unit. The dead-unit path was swept live and **does not block the
+process**.
+
+Both guards are `cmp eax, 0xC8` with a *strictly greater* branch, so **id 200
+is admitted and the arrays hold 200 entries, 0 through 199**. The sweep's last
+object comes back with a position that is neither a tile nor a multiple of the
+map field. Nothing shipped passes 200; a remake that clamps at `<= 200`
+inherits the bug silently, which is why it is pinned.
 
 ### 7.5 Models
 
@@ -719,6 +797,54 @@ same.** A remake that wants byte-identical effect trajectories has to seed the
 effects stream itself; one that wants the original's behaviour must not.
 
 ---
+
+### 7.6.2 The arithmetic on top of the draws
+
+§7.6.1 established *which* generator a creator draws from and *how many* times.
+What §7.6.1 left `UNVERIFIED` was the arithmetic in between — an affine fit
+over the captured velocities matched none of the fourteen creators that draw.
+**That marker is retired by this section**: the fit was wrong, not the
+arithmetic.
+
+**The shape is the generator's own.** A drawn field is
+`scale * int(base + span * fraction)` — `aRandom(base, span)`, truncated,
+sometimes times a constant. `0x0042ACF0`'s vertical is 32 times it, which is
+why a fit that only looked for `base + span * f` could not see it.
+
+**The draw-to-field order is per creator and runs both ways.** MSVC evaluates
+`__cdecl` arguments right to left, so a creator that passes its draws straight
+into `0x00420950` consumes them in **reverse** field order — `0x004228F0`
+draws `vz`, then `vy`, then `vx` — while one that parks them in locals first
+does not: `0x00425810` draws `vx`, `vy`, `vz`. A single global rule was the
+first fit's other mistake.
+
+Three creators reproduce **every varying field of every captured record** from
+the seed alone, and a fourth its velocities:
+
+| creator | cycle | fields, in draw order |
+| --- | --- | --- |
+| `0x004228F0` | 3 | `vz` = `(400, 800)`, `vy` = `(-100, 200)`, `vx` = `(-100, 200)` |
+| `0x004294E0` | 3 | `vz` = `(200, 300)`, `vx` = `(-300, 600)`, `vy` = `(-300, 600)` |
+| `0x004295D0` | 6 | the same three, then `rot_z`, `rot_y`, `rot_x`, each `(0, 4096)` |
+| `0x00425810` | 3 | `vx`, `vy`, `vz`, all `(-320, 640)` — its *positions* are not on a cadence |
+
+A drawn rotation is `aRandom(0, 4096)`: the **4096-unit circle** of
+[`70`](70-img-tables.md) again, the same one §7.4.2's orientation helper
+answers in and §7.8's joint angles are masked to.
+
+**The remaining creators have no per-record recipe to fit, and that is the
+answer rather than a gap.** Their draw stream is not consumed at a fixed rate:
+three of them build records of several *kinds* in one call (`kind`,
+`class_id` and `model` all vary across the twelve read back), and others
+retry — `0x00429A80`'s first record does not sit at draw 0 while its second
+sits at draw 4. No cycle length exists for a fit to find, which is exactly why
+the blanket affine fit failed and would have kept failing.
+
+`tools/blob_gold.py` pins the recipes and replays each one against every
+captured record; a creator is listed only if **every** field that varies is
+explained, because a partial recipe over twelve records is a coincidence
+waiting to be pinned and one creator produced exactly such a coincidence over
+four.
 
 ### 7.7 The seventy-eight kinds
 
@@ -1074,34 +1200,28 @@ store lands on.
 
 ## 12. Open questions
 
-1. **Native validation of the service hooks.** The static arm arithmetic is
-   executable and covered for all 78 kind values by `blob_runtime.py`; the
-   remaining boundary is the return data from the original orientation,
-   geometry and target-map helpers listed in §7.4.1. Those hooks must be
-   validated against a permitted runtime trace before claiming pixel- or
-   trajectory-level parity.
+1. ~~**Native validation of the service hooks.**~~ **Closed** — §7.4.2.
+   All five were called inside a running `Incubation.exe`: `0x00403AA0` and
+   `0x0046D400` over twenty deltas each, `0x004039A0` over eight rotations,
+   and the two lookups swept over their id ranges. Four of the five are
+   reproduced exactly in portable arithmetic and checked against the capture
+   answer for answer (`tools/blob_gold.py`, 161 checks); the remake's
+   orientation service is the measured routine on both sides of its own diff.
 
-   **Partly answered, for the creators rather than for the arms.**
-   `tools/blob_gold.py` calls each of the thirty creators §8.1's switches can
-   reach inside a running `Incubation.exe` and reads the pool back. That
-   settles what those creators *produce*: the class, update kind and lifetime
-   of every record match what was read statically out of the compiler's
-   tables, the origin is the **placed object's** position (§7.6.1), and the
-   offsets lie either on the line to the target tile or in a burst around the
-   source — which of the two is now pinned per creator rather than assumed for
-   all of them, because the first capture was missing the creators that
-   scatter.
-
-   Three things that were open inside this item are closed by §7.6.1 and
-   [`22` §3.2](22-combat-and-visibility.md), and none of them needed the hooks:
-   the floor does not enter a blob's `z`; the generator the creators draw from
-   is the uncounted stream at `0x004638E0`, not `aRandom`; and how many times
-   each creator draws is measured from that stream's seed either side of the
-   call. What is *not* settled is the hooks themselves: the creators read them
-   and the capture sees only the answer. The arms' own use of the orientation
-   and target-map helpers is untouched by it, so the item stays open and the
-   remake keeps printing `executable-Python` for everything except the creator
+   **What that does and does not license.** The service *return data* is
+   measured, so a trajectory is no longer built on an invented helper — but
+   the seventy-four arms are still a transcription compared against a
+   transcription, so `test_blob.gd` keeps printing `executable-Python` and
+   nothing in the blob layer claims `native-runtime`. Claiming otherwise would
+   need the arms themselves stepped in the engine, which is a different
    capture.
+
+   **One residue, named rather than rounded off.** Eng3d's own three-angle
+   matrix builder behind `0x004039A0` is *recorded* and not reproduced: no
+   ordering of `Rz Rx Ry` with either rounding matches all eight captured
+   cases, and its two Eng3d entry points are runtime function pointers rather
+   than imports, so a static read of them is a second capture's work. What is
+   established about it is in the fixture and in §7.4.2's rounding note.
 
 2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects

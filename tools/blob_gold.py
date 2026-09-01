@@ -7,10 +7,13 @@ part of the effect layer no static reading reaches.
 them, the class, the update kind, the literal lifetime, the model and the atlas
 tile.  What none of that gives is the **creators' own argument arithmetic**:
 where each one places its blob and what velocity it hands it.  Those thirty
-functions read the control map, the symbol objects and the unit map through the
-five helpers ``docs/28`` §12.1 records as *not natively validated*, so
-transcribing them statically would produce trajectories that look authoritative
-and could not be checked.
+functions read the control map, the symbol objects and the unit map through
+the five helpers ``docs/28`` §12.1 once recorded as *not natively validated*,
+so transcribing them statically would have produced trajectories that look
+authoritative and could not be checked.  (Those five are measured now, by this
+tool's own ``hooks`` phase -- ``docs/28`` §7.4.2.  What the creators do *with*
+their answers is still a thousand bytes of x86 apiece, which is why this
+capture exists.)
 
 This runs them instead.  Under ``tools/dbgcall``, inside a live
 ``Incubation.exe`` with a save loaded, each creator is called with controlled
@@ -125,18 +128,205 @@ FILL_ARGUMENT = 0
 #: boundaries three times over looked like a *faulting creator* taking its
 #: whole process down, and this comment said so.
 #:
-#: It is not.  With one creator per plan, a plan still fails now and then, and
-#: what the log says when it does is `exception 0xc0000005 at 0x7bf2123d`
-#: inside a Wine system DLL, **before the anchor** -- so before a single line
-#: of the plan has run and whatever the plan contains.  That is `docs/91`
-#: §1's start-up intermittency exactly, the original attribution was right,
-#: and the group-boundary alignment stays **unexplained**.
+#: It is not, and the alignment is not even an observation.  What the log says
+#: when a plan fails is `exception 0xc0000005` inside a Wine system DLL or a
+#: clean `Target exited before any breakpoint was hit`, **before the anchor**
+#: -- before a single line of the plan has run and whatever the plan contains.
+#: `--probe-startup 16` measures the rate directly: two of sixteen identical
+#: single-attempt runs reached the anchor, with no period in the failures.
+#:
+#: So the **loss unit is the group**, and any loss is therefore a whole group:
+#: "aligned with group boundaries" is a tautology, not a finding.  What is left
+#: is three of six groups losing all ten attempts, which at that rate happens
+#: to about a quarter of groups.  `docs/91` §1.1 has the sequence.
 #:
 #: One creator per plan is still the right size, for the reason that survives
 #: either explanation: a plan that dies takes down every creator sharing its
 #: process, so five per plan turns one bad start into a fifth of the capture
 #: while one per plan turns it into one retryable creator.
 GROUP_SIZE = 1
+
+
+# -- the five service hooks -------------------------------------------------
+#
+# `docs/28` §12.1 lists five routines an update **arm** reaches outside its own
+# 88-byte record and says their return data has never been measured.  The
+# creator capture did not touch them: it sees the answer a creator got, not
+# what the helper computed.  These phases call all five directly.
+#
+# The arity of each is its **callers'** `add esp, K`, the same reading
+# `creator_arities` uses and for the same reason -- `--probe` cannot recover a
+# `__cdecl` arity.  All five agree across every site that cleans up at all:
+#
+#     0x00403AA0   36 bytes   9 arguments
+#     0x0046D400   40 bytes  10 arguments
+#     0x004039A0   12 bytes   3 arguments
+#     0x00405100   16 bytes   4 arguments
+#     0x00477AE0    4 bytes   1 argument
+
+#: Source and target to two 0..4095 angles.  **This is the one the remake's
+#: `orient()` stands in for**, and the static reading already contradicts the
+#: stand-in: the routine ends `sub eax, 0x400` and writes the result of a
+#: two-argument engine helper, so its unit is the 4096-circle of `docs/70`,
+#: not the 0..0xFFFF turn the adapter invented.
+HOOK_ORIENT = 0x00403AA0
+#: Source and target to three doubles -- the normalised direction, divided by
+#: whichever of |dx| and |dy| is larger, with the third the vertical over the
+#: 2D distance.  Straight-line and argument-pure.
+HOOK_DIRECTION = 0x0046D400
+#: A vector through the engine's rotation helper: `(vec3 dwords, three shorts,
+#: out vec3)`.  It calls two runtime function pointers, so it is the one that
+#: cannot be modelled without knowing what those point at.
+HOOK_ROTATE = 0x004039A0
+#: `(id, &x, &y, &z)` -- the object-position service.  Table at
+#: `OBJECT_TABLE`, stride 77, gated on `+0x40`, delegating through `+0x45`.
+HOOK_OBJECT_POSITION = 0x00405100
+#: `(id)` -> the unit record's address, or 0 after a CHECK.  Table at
+#: `UNIT_TABLE`, stride 91, alive byte at `+0x16`.
+HOOK_UNIT_RECORD = 0x00477AE0
+
+#: The bases the last two index, read so the strides above are measured rather
+#: than derived from the disassembly alone.
+OBJECT_TABLE = 0x004FA804
+UNIT_TABLE = 0x005229C4
+OBJECT_STRIDE = 77
+OBJECT_GATE = 0x40
+OBJECT_DELEGATE = 0x45
+OBJECT_POSITION_FIELDS = (0x10, 0x14, 0x18)
+UNIT_ALIVE = 0x16
+#: The highest id either service accepts -- both compare against 200.
+HOOK_ID_LIMIT = 200
+
+#: The runtime function pointers `0x004039A0` and `0x00403AA0` call through.
+#: They are **not** imports: `Incubation.exe`'s import table lives at
+#: `0x525xxx` and these are ordinary globals filled in at start-up, so the
+#: only way to learn what they point at is to look while the process is up.
+#: Each is read as a pointer *and* as the first bytes of whatever it points
+#: at, which is enough to identify the routine against a DLL's own code.
+POINTER_GLOBALS = (0x004FA4E4, 0x004F84D4, 0x004F84D8, 0x004FA4DC, 0x004FA4E0)
+#: How many bytes of each target are read back.
+POINTER_PREVIEW = 32
+
+#: Where the sweeps put the source point.  Not the origin and not a multiple
+#: of the field size: a helper that quietly assumed either would still look
+#: right from a sweep that used one.
+HOOK_SOURCE = (12800, 9600, 1600)
+#: The offsets from it.  Every axis sign, both diagonals, the two degenerate
+#: cases the routines branch on (`dx == 0` and `dy == 0`), a zero vector, and
+#: magnitudes from 1 to a whole map away -- the branch structure of
+#: `0x0046D400` is entirely made of these comparisons.
+HOOK_DELTAS = (
+    (1000, 0, 0), (0, 1000, 0), (-1000, 0, 0), (0, -1000, 0),
+    (1000, 1000, 0), (-1000, 1000, 0), (1000, -1000, 0), (-1000, -1000, 0),
+    (3000, 1000, 500), (1000, 3000, -500), (-3000, 1000, 2000),
+    (700, -2400, -1300), (0, 0, 1000), (0, 0, -1000), (0, 0, 0),
+    (16000, 9000, 4000), (5, 3, 1), (1, 0, 0), (0, 1, 0), (-1, -1, -1),
+)
+#: `(vector, angles)` for the rotation helper.  The angles are in the same
+#: 4096-circle; 0x88 is the literal `0x004228F0` writes into the third word
+#: before it calls, so one case is the shipped one.
+HOOK_ROTATIONS = (
+    ((1000, 0, 0), (0, 0, 0)),
+    ((1000, 0, 0), (0, 0, 1024)),
+    ((1000, 0, 0), (0, 1024, 0)),
+    ((1000, 0, 0), (1024, 0, 0)),
+    ((0, 0, 1000), (2048, 0, 0)),
+    ((1000, 500, 250), (100, 200, 300)),
+    ((-700, 300, -900), (4000, 3000, 2000)),
+    ((1000, 0, 0), (0, 0, 0x88)),
+)
+#: Object ids swept one by one, then coarsely to the limit.  A gap in the
+#: dense part is a gated slot and is itself the measurement.
+HOOK_DENSE_IDS = 50
+HOOK_SPARSE_STEP = 10
+
+
+def hook_object_ids() -> list[int]:
+    """The object ids the sweep visits: dense, then coarse to the limit."""
+    ids = list(range(HOOK_DENSE_IDS))
+    ids += [i for i in range(HOOK_DENSE_IDS, HOOK_ID_LIMIT + 1,
+                             HOOK_SPARSE_STEP)]
+    return ids
+
+
+def _hook_declarations() -> str:
+    return "\n".join([
+        f"__cdecl i32 hOrient(i32,i32,i32,i32,i32,i32,ptr,ptr,ptr)"
+        f" = Incubation.exe+0x{HOOK_ORIENT - 0x400000:x}",
+        f"__cdecl i32 hDirection(i32,i32,i32,i32,i32,i32,ptr,ptr,ptr,i32)"
+        f" = Incubation.exe+0x{HOOK_DIRECTION - 0x400000:x}",
+        f"__cdecl i32 hRotate(ptr,ptr,ptr)"
+        f" = Incubation.exe+0x{HOOK_ROTATE - 0x400000:x}",
+        f"__cdecl i32 hObjectPosition(i32,ptr,ptr,ptr)"
+        f" = Incubation.exe+0x{HOOK_OBJECT_POSITION - 0x400000:x}",
+    ])
+
+
+def hooks_plan(units: list[dict[str, int]]) -> str:
+    """Call all five services `docs/28` §12.1 leaves un-measured.
+
+    One process, because none of them is destructive: the three geometry
+    helpers write only into buffers this plan owns, and the two lookups do not
+    write at all.  The save is still loaded, because the two lookups index
+    tables that do not exist before it is.
+
+    **The invalid ids are not swept.**  `0x00477AE0`'s out-of-range and
+    dead-unit paths go through the engine's CHECK reporter, and a plan that
+    puts a message box up never reaches its next line.  Those three branches
+    are read statically instead -- they are literal comparisons against
+    `0xFFFF` and 200 and a byte test, with nothing to measure.
+    """
+    lines = [
+        "# The five service hooks of docs/28 12.1, called directly.",
+        DECLARATIONS.rstrip("\n"),
+        _hook_declarations(),
+        "--buf oa:8",
+        "--buf ob:8",
+        "--buf oc:8",
+        "--buf px:4",
+        "--buf py:4",
+        "--buf pz:4",
+        "--buf rot:12",
+    ]
+    for index, (vector, angles) in enumerate(HOOK_ROTATIONS):
+        raw = b"".join(v.to_bytes(4, "little", signed=True) for v in vector)
+        ang = b"".join(a.to_bytes(2, "little", signed=True) for a in angles)
+        lines.append(f"--blob rv{index}:{raw.hex()}")
+        lines.append(f"--blob ra{index}:{ang.hex()}")
+    lines += [
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+    ]
+    # The runtime pointers, and enough of each target to name it later.
+    reads = " ".join(f"--read 0x{g:x}:4" for g in POINTER_GLOBALS)
+    previews = " ".join(f"--read [0x{g:x}]:{POINTER_PREVIEW}"
+                        for g in POINTER_GLOBALS)
+    lines.append(f"tables = aResetBlobs() {reads} {previews}"
+                 f" --read 0x{OBJECT_TABLE:x}:4 --read 0x{UNIT_TABLE:x}:4")
+
+    sx, sy, sz = HOOK_SOURCE
+    for index, (dx, dy, dz) in enumerate(HOOK_DELTAS):
+        target = (sx + dx, sy + dy, sz + dz)
+        args = f"{sx},{sy},{sz},{target[0]},{target[1]},{target[2]}"
+        lines.append(f"o{index} = hOrient({args},&oa,&ob,&oc)"
+                     " --zero oa --zero ob --zero oc"
+                     " --read &oa:8 --read &ob:8 --read &oc:8")
+        for shift in (0, 1):
+            lines.append(
+                f"d{index}s{shift} = hDirection({args},&oa,&ob,&oc,{shift})"
+                " --zero oa --zero ob --zero oc"
+                " --read &oa:8 --read &ob:8 --read &oc:8")
+    for index in range(len(HOOK_ROTATIONS)):
+        lines.append(f"r{index} = hRotate(&rv{index},&ra{index},&rot)"
+                     " --zero rot --read &rot:12")
+
+    for object_id in hook_object_ids():
+        lines.append(f"p{object_id} = hObjectPosition({object_id},&px,&py,&pz)"
+                     " --zero px --zero py --zero pz"
+                     " --read &px:4 --read &py:4 --read &pz:4")
+    for unit in units:
+        lines.append(f"u{unit['slot']} = aGetUnitMapElementPtr({unit['slot']})")
+    return "\n".join(lines) + "\n"
 
 
 def _entry_address(handle: int) -> int:
@@ -582,6 +772,27 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     source = (units[0]["x"], units[0]["y"])
     target = (units[1]["x"], units[1]["y"])
 
+    # **The five service hooks**, `docs/28` §12.1's open item.  Its own phase
+    # and taken before the creators, because it is the cheap one: no writes,
+    # no reset, one process, and a failure costs one retry rather than a
+    # creator.
+    if "hooks" not in phases:
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, hooks_plan(units),
+                                 "blob_hooks", attempts=attempts)
+            phases["hooks"] = parse_hooks(rows)
+            phases["hooks"]["source"] = list(HOOK_SOURCE)
+            phases["hooks"]["deltas"] = [list(d) for d in HOOK_DELTAS]
+            phases["hooks"]["unit_slots"] = [u["slot"] for u in units]
+            phases["hooks"]["rotations"] = [[list(v), list(a)]
+                                            for v, a in HOOK_ROTATIONS]
+            phases["hooks"]["object_ids"] = hook_object_ids()
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})["hooks"] = str(err)
+            LOG.warning("blob_hooks: %s", err)
+            _save(out, document)
+
     arities = creator_arities(root)
     # A phase written before the seed reads existed is re-taken: it holds the
     # records but cannot answer the velocity question, and merging is the
@@ -736,6 +947,95 @@ def _rand_results(rows: list[dict[str, Any]]) -> list[int]:
     return out
 
 
+def parse_hooks(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Turn the hook plan's rows into the phase document.
+
+    Rows carry the **callee's** name and not the binding, so the sweeps are
+    told apart by order alone -- the same property `_rand_results` relies on.
+    """
+    import struct
+
+    def reads(row: dict[str, Any]) -> dict[str, str]:
+        return row.get("reads") or {}
+
+    def qword(row: dict[str, Any], key: str) -> Any:
+        """A captured double, with the non-finite ones as **strings**.
+
+        ``0x0046D400`` divides by zero without a guard, so ``NaN`` and
+        ``inf`` are ordinary answers -- and `json.dump` writes them as bare
+        `NaN`, which is not JSON.  Godot's parser refuses the whole document,
+        and the suite that reads this fixture stopped loading because of it.
+        Naming them keeps the fixture parseable and keeps the fact.
+        """
+        text = reads(row).get(key)
+        if not text or "<" in text:
+            return None
+        raw = _hex_bytes(text)
+        if len(raw) < 8:
+            return None
+        value = struct.unpack_from("<d", raw, 0)[0]
+        if value != value:
+            return "nan"
+        if value == float("inf"):
+            return "inf"
+        if value == float("-inf"):
+            return "-inf"
+        return value
+
+    def dword(row: dict[str, Any], key: str, signed: bool = True) -> int | None:
+        text = reads(row).get(key)
+        if not text or "<" in text:
+            return None
+        raw = _hex_bytes(text)
+        if len(raw) < 4:
+            return None
+        return int.from_bytes(raw[:4], "little", signed=signed)
+
+    out: dict[str, Any] = {"orient": [], "direction": [], "rotate": [],
+                           "object": [], "unit": [], "pointers": {},
+                           "targets": {}}
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        call = row.get("call")
+        if call == "aResetBlobs":
+            for global_va in POINTER_GLOBALS:
+                key = f"0x{global_va:x}"
+                value = dword(row, key, signed=False)
+                if value is not None:
+                    out["pointers"][key] = value
+                preview = reads(row).get(f"[{key}]")
+                if preview and "<" not in preview:
+                    out["targets"][key] = preview.replace(" ", "")
+            for name, va in (("object_table", OBJECT_TABLE),
+                             ("unit_table", UNIT_TABLE)):
+                value = dword(row, f"0x{va:x}", signed=False)
+                if value is not None:
+                    out[name] = value
+        elif call == "hOrient":
+            out["orient"].append([dword(row, "&oa"), dword(row, "&ob"),
+                                  dword(row, "&oc")])
+        elif call == "hDirection":
+            out["direction"].append([qword(row, "&oa"), qword(row, "&ob"),
+                                     qword(row, "&oc")])
+        elif call == "hRotate":
+            text = reads(row).get("&rot")
+            if text and "<" not in text:
+                raw = _hex_bytes(text)
+                out["rotate"].append(list(struct.unpack_from("<iii", raw, 0)))
+            else:
+                out["rotate"].append(None)
+        elif call == "hObjectPosition":
+            out["object"].append({
+                "ok": int(row["eax"], 16),
+                "x": dword(row, "&px"), "y": dword(row, "&py"),
+                "z": dword(row, "&pz"),
+            })
+        elif call == "aGetUnitMapElementPtr":
+            out["unit"].append(int(row["eax"], 16))
+    return out
+
+
 def _save(out: Path, document: dict[str, Any]) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
@@ -833,6 +1133,136 @@ def seed_draws(before: float, count: int) -> list[float]:
         seed = float(int(seed * ARandom.MULTIPLIER) % int(ARandom.MODULUS))
         out.append(seed / ARandom.MODULUS)
     return out
+
+
+# -- what the hooks and the draws turned out to be --------------------------
+
+#: How many sweep points the hook phase carries, and how many of each answer
+#: `inclib.eng3d` has to reproduce **exactly**.  Not "within a unit": the
+#: whole point of measuring was to stop approximating.
+HOOK_ORIENT_CASES = 20
+HOOK_DIRECTION_CASES = 40
+HOOK_ROTATE_CASES = 8
+#: Object ids that answered out of the ids swept.  A gated slot answers 0 and
+#: writes nothing, which the sweep sees as a zero return with the buffers
+#: still cleared.
+HOOK_OBJECTS_ANSWERED = 15
+#: **One of those fifteen is id 200, and it is a bug.**  Both lookups guard
+#: with `cmp eax, 0xC8` and a *strictly greater* branch, so id 200 is admitted
+#: -- and the array has 200 entries, 0 through 199.  The sweep's last object
+#: comes back with a position that is neither a tile nor a multiple of the map
+#: field, read out of whatever follows the array.  It is reachable only from a
+#: caller that would pass 200, and nothing shipped does; pinned because a
+#: remake that clamps at `<= 200` would inherit it silently.
+HOOK_OBJECT_PAST_THE_END = 200
+#: Unit slots whose record address came back, and the ones that did not: the
+#: dead-unit branch returns 0 through the engine's CHECK reporter **without
+#: blocking**, which is why the sweep could include them at all.
+HOOK_UNITS_ANSWERED = 14
+HOOK_UNITS_REFUSED = 4
+#: The five runtime function pointers, read live.  They are not imports, so
+#: this is the only place their values exist; what matters for the model is
+#: that all five are non-null and distinct, which is what says the engine
+#: really did fill them in before the sweep ran.
+HOOK_POINTERS = 5
+
+#: **The creators' draw arithmetic**, `docs/97` §16.1's residue and the item
+#: this closes.  It is `int(base + span * fraction)` -- the generator's own
+#: shape -- optionally times a constant.  The earlier fit failed for two
+#: reasons and neither was exotic arithmetic:
+#:
+#: * the draw-to-field **order is per creator and runs both ways**.  MSVC
+#:   evaluates `__cdecl` arguments right to left, so a creator that passes its
+#:   draws straight into the constructor consumes them in reverse field order
+#:   (`0x004228F0`) while one that parks them in locals first does not
+#:   (`0x00425810`);
+#: * some creators **scale** the truncated draw (`0x0042ACF0`'s vertical is
+#:   32 times it), so a fit that only looked for `base + span*f` could not
+#:   see it.
+#:
+#: Each entry is `field -> (index in the cycle, scale, base, span)` plus the
+#: cycle length, and `--check` replays every captured record through it.  A
+#: creator is listed **only** if every field that varies across its records is
+#: explained: a partial recipe over twelve records is a coincidence waiting to
+#: be pinned, and `0x00427810` produced exactly one of those over four.
+CREATOR_DRAW_RECIPES: dict[str, dict[str, Any]] = {
+    "0x004228F0": {"cycle": 3, "fields": {
+        "vz": (0, 1, 400, 800), "vy": (1, 1, -100, 200),
+        "vx": (2, 1, -100, 200)}},
+    "0x004294E0": {"cycle": 3, "fields": {
+        "vz": (0, 1, 200, 300), "vx": (1, 1, -300, 600),
+        "vy": (2, 1, -300, 600)}},
+    "0x004295D0": {"cycle": 6, "fields": {
+        "vz": (0, 1, 600, 700), "vx": (1, 1, -300, 600),
+        "vy": (2, 1, -300, 600), "rot_z": (3, 1, 0, 4096),
+        "rot_y": (4, 1, 0, 4096), "rot_x": (5, 1, 0, 4096)}},
+}
+#: Creators whose captured velocities are drawn but whose **stream is not
+#: consumed at a fixed rate per record**, so no per-record recipe exists to
+#: fit.  Two shapes, both visible in the capture: a creator that builds
+#: records of several kinds in one call (`kind`, `class_id` and `model` all
+#: vary across its twelve), and one that retries -- `0x00429A80`'s first
+#: record does not sit at draw 0 while its second sits at draw 4.  Naming them
+#: is the finding; fitting them is not possible from a capture that reads back
+#: twelve records of a longer run.
+CREATOR_DRAWS_UNSTRUCTURED = (
+    "0x00424D20", "0x00425810", "0x004264A0", "0x00426F90", "0x00427410",
+    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042ACF0",
+    "0x0042AF10",
+)
+#: The velocity draws of `0x00425810`, which is in that list for its
+#: **positions** and not its velocities.  Kept separate rather than dropped:
+#: three fields reproduced exactly over twelve records is a result whether or
+#: not the other three are.
+CREATOR_PARTIAL_RECIPES: dict[str, dict[str, Any]] = {
+    "0x00425810": {"cycle": 3, "fields": {
+        "vx": (0, 1, -320, 640), "vy": (1, 1, -320, 640),
+        "vz": (2, 1, -320, 640)}},
+}
+
+#: **The Wine start-up measurement**, `docs/91` §1 and `docs/97` §16.6's
+#: unexplained group-boundary alignment.  Sixteen fresh single-attempt runs of
+#: one identical plan on this host: two reached the anchor.  The failures are
+#: all *pre-anchor* and come in two shapes -- a clean early exit and an access
+#: violation inside a Wine system DLL -- and their positions carry no period.
+#:
+#: That closes the alignment without a mechanism, and correctly.  The loss
+#: unit **is** the group, so any loss is a whole group and "aligned with group
+#: boundaries" is a tautology, not an observation; the three failing groups of
+#: six, each given ten attempts, is what a per-start success rate this low
+#: produces about a quarter of the time per group.  There was nothing to
+#: explain.
+STARTUP_PROBE_RUNS = 16
+STARTUP_PROBE_REACHED = 2
+
+def probe_startup(game_copy: Path, dbgcall: Path, runs: int) -> int:
+    """Run one identical plan *runs* times, one attempt each, and report.
+
+    This is the experiment behind ``STARTUP_PROBE_RUNS``.  It exists as a mode
+    rather than as a note because the claim it settles -- that the first blob
+    capture's group-boundary alignment had **no mechanism** -- is a claim about
+    this host, and a claim about a host has to be re-measurable on it.
+
+    It is outside ``--check`` for the obvious reason: it needs Wine, a copy of
+    the game and several minutes, and its result is a rate rather than a pass.
+    """
+    outcomes: list[str] = []
+    for index in range(runs):
+        name = f"startup_{index:02d}"
+        try:
+            gold.run_plan(game_copy, dbgcall, state_plan(), name, attempts=1)
+            outcomes.append("reached")
+        except gold.CaptureError:
+            log = game_copy / f"{name}.log"
+            text = log.read_text(errors="replace") if log.is_file() else ""
+            outcomes.append("exception" if "exception 0x" in text
+                            else "exited" if "exited before" in text
+                            else "other")
+        LOG.warning("%s: %s", name, outcomes[-1])
+    reached = outcomes.count("reached")
+    LOG.warning("%d of %d runs reached the anchor: %s",
+                reached, runs, " ".join(outcomes))
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -948,6 +1378,8 @@ def run_checks(root: str, fixture: Path) -> int:
     _seed_checks(ck, captured)
     _scatter_checks(ck, phases)
     _z_probe_checks(ck, phases, captured)
+    _hook_checks(ck, root, phases)
+    _recipe_checks(ck, captured)
     ck.check("native.some_produced", bool(produced),
              f"{len(produced)} creator(s) built records, "
              f"{len(aborted)} took the abort path")
@@ -1045,6 +1477,346 @@ SILENT_REFUSALS = 7
 #: moves across each call and only there.
 SCATTER_REPEATABLE = False
 SCATTER_CRT_DRAWS = 0
+
+
+def _hook_checks(ck: "tables.Checker", root: str,
+                 phases: dict[str, Any]) -> None:
+    """Replay the five services of `docs/28` §12.1 through `inclib.eng3d`.
+
+    This is the check that moves the item.  Before it, the remake's
+    ``BlobHooks.orient`` was an invented ``atan2`` over a 0..0xFFFF turn and
+    the document said in as many words that nothing had measured the real
+    one.  The capture measured it, and the model here has to reproduce every
+    captured answer **exactly** or say so.
+
+    What it deliberately does *not* claim: `0x004039A0`'s three-angle matrix
+    builder lives in Eng3d and is only recorded, not reproduced -- so its
+    cases are checked for having been taken, not for agreeing with anything.
+    """
+    from inclib import eng3d
+
+    hooks = phases.get("hooks")
+    if not hooks:
+        ck.check("native.hooks", False,
+                 "no hooks phase in the capture; re-run --game-copy")
+        return
+    ck.check("native.hooks", True,
+             "the five services of docs/28 12.1 were called in a live process")
+    tablesets = eng3d.load(root)
+    # **The sweep's own arguments are pinned, not taken from the capture.**
+    # Reading them out of the fixture and then reproducing the fixture's
+    # answers with them is circular: a wrong constant would move both sides
+    # together and the check would pass.  So the constants are compared to
+    # what the capture was actually taken with, and the model then runs on the
+    # constants.
+    ck.equal("native.hook_sweep_source", tuple(hooks["source"]), HOOK_SOURCE)
+    ck.equal("native.hook_sweep_deltas",
+             tuple(tuple(d) for d in hooks["deltas"]), HOOK_DELTAS,
+             lambda v: f"{len(v)} delta(s), the sweep's own")
+    ck.equal("native.hook_sweep_rotations",
+             tuple((tuple(v), tuple(a))
+                   for v, a in hooks.get("rotations", [])), HOOK_ROTATIONS,
+             lambda v: f"{len(v)} rotation(s), the sweep's own")
+    ck.equal("native.hook_sweep_object_ids",
+             list(hooks.get("object_ids", [])), hook_object_ids(),
+             lambda v: f"{len(v)} object id(s): {HOOK_DENSE_IDS} dense, then "
+                       f"every {HOOK_SPARSE_STEP} to {HOOK_ID_LIMIT}")
+    ck.equal("native.hook_pointer_set",
+             sorted(hooks["pointers"]),
+             sorted(f"0x{g:x}" for g in POINTER_GLOBALS),
+             lambda v: f"{len(v)} runtime function pointer(s), by address")
+    source = HOOK_SOURCE
+    deltas = list(HOOK_DELTAS)
+
+    # **The tables themselves, before anything built on them.**  Two of
+    # `inclib.eng3d`'s constants are otherwise only *described*: the peak is
+    # never multiplied by anything (the table is read, not generated) and the
+    # cosine offset shifts an index by one, which moves no captured angle.  A
+    # battery caught both saying nothing.  These are the properties that make
+    # them true: the table's peak **is** the scale, and the cosine window is
+    # the sine table a quarter turn along, so `cos(0)` is the peak and
+    # `sin(quarter)` is the same number.
+    ck.check("native.eng3d_scale_is_the_peak",
+             max(tablesets.trig) == eng3d.SINE_SCALE
+             and min(tablesets.trig) == -eng3d.SINE_SCALE,
+             f"TRIG.IMG peaks at +/-{eng3d.SINE_SCALE}, which is what makes "
+             "the engine's identity rotation lose a unit")
+    ck.check("native.eng3d_cosine_window",
+             eng3d.COSINE_OFFSET == eng3d.ANGLE_UNITS // 4
+             and tablesets.cos(0) == eng3d.SINE_SCALE
+             and tablesets.sin(eng3d.ANGLE_UNITS // 4) == eng3d.SINE_SCALE
+             and all(tablesets.cos(t) == tablesets.sin(t + eng3d.COSINE_OFFSET)
+                     for t in range(0, eng3d.ANGLE_UNITS, 17)),
+             f"the cosine window is the sine table {eng3d.COSINE_OFFSET} "
+             "entries along, which is why it needs no wrap-around check")
+    ck.equal("native.hook_orient_cases", len(hooks["orient"]),
+             HOOK_ORIENT_CASES)
+    mismatched = []
+    for delta, answer in zip(deltas, hooks["orient"]):
+        target = tuple(s + d for s, d in zip(source, delta))
+        pitch, yaw = tablesets.orient(source, target)
+        if [0, pitch, yaw] != answer:
+            mismatched.append((delta, answer, [0, pitch, yaw]))
+    ck.equal("native.hook_orient", mismatched, [],
+             lambda v: f"{HOOK_ORIENT_CASES - len(v)}/{HOOK_ORIENT_CASES} "
+                       "(pitch, yaw) reproduced from ATN.IMG and the Q14 "
+                       "matrix")
+    # The seventh argument is never read -- the capture's proof is that the
+    # buffer handed to it comes back exactly as it was zeroed, in all twenty.
+    ck.check("native.hook_orient_dead_argument",
+             all(answer[0] == 0 for answer in hooks["orient"]),
+             "0x00403AA0's seventh argument is dead; only two are written")
+
+    ck.equal("native.hook_direction_cases", len(hooks["direction"]),
+             HOOK_DIRECTION_CASES)
+    mismatched = []
+    for index, delta in enumerate(deltas):
+        target = tuple(s + d for s, d in zip(source, delta))
+        for shift in (0, 1):
+            answer = hooks["direction"][2 * index + shift]
+            want = [_named(v) for v in tablesets.direction(source, target,
+                                                            shift)]
+            same = list(answer) == want
+            if not same:
+                mismatched.append((delta, shift, answer, list(want)))
+    ck.equal("native.hook_direction", mismatched, [],
+             lambda v: f"{HOOK_DIRECTION_CASES - len(v)}/"
+                       f"{HOOK_DIRECTION_CASES} triples reproduced, NaN and "
+                       "inf included")
+    # Two properties of `0x0046D400` that a remake would otherwise invent.
+    ck.check("native.hook_direction_is_not_normalised",
+             any(isinstance(a, float) and isinstance(b, float)
+                 and abs(a) == 1.0 and abs(b) < 1.0
+                 for a, b, _c in hooks["direction"]),
+             "the first two components are divided by the larger of |dx|,|dy|")
+    ck.check("native.hook_direction_divides_by_zero",
+             any(isinstance(c, str) for _a, _b, c in hooks["direction"]),
+             "a zero horizontal distance is not guarded -- NaN and inf reach "
+             "the caller")
+
+    ck.equal("native.hook_rotate_cases", len(hooks["rotate"]),
+             HOOK_ROTATE_CASES)
+    ck.check("native.hook_rotate_recorded",
+             all(row is not None and len(row) == 3 for row in hooks["rotate"]),
+             "0x004039A0 answered every case -- **recorded, not reproduced**: "
+             "its three-angle builder is Eng3d's and no RzRxRy ordering with "
+             "either rounding matches all eight")
+    ck.check("native.hook_rotate_identity_loses_a_unit",
+             hooks["rotate"][0] == [999, 0, 0],
+             "the engine's identity rotation is 16383/16384, not 1 -- which "
+             "is where a coordinate of 1000 becomes 999")
+
+    ck.equal("native.hook_pointers", len(hooks["pointers"]), HOOK_POINTERS)
+    ck.check("native.hook_pointers_resolved",
+             all(v for v in hooks["pointers"].values())
+             and len(set(hooks["pointers"].values())) == HOOK_POINTERS,
+             "all five runtime function pointers were filled in and distinct")
+    ck.check("native.hook_pointer_targets",
+             len(hooks["targets"]) == HOOK_POINTERS
+             and all(t.startswith("5356578b") for t in hooks["targets"].values()),
+             "each points at a thunk with the same prologue -- one module's "
+             "export stubs, not five unrelated routines")
+
+    answered = [o for o in hooks["object"] if o["ok"]]
+    ck.equal("native.hook_objects_answered", len(answered),
+             HOOK_OBJECTS_ANSWERED,
+             lambda n: f"{n} of {len(hooks['object'])} object ids carry a "
+                       "position; the rest are gated off at +0x40")
+    ck.check("native.hook_object_positions_are_fields",
+             all(o["x"] % FIELD_UNITS == 0 and o["y"] % FIELD_UNITS == 0
+                 for o in answered[:-1]),
+             f"every in-range answer is a whole {FIELD_UNITS}-unit map field "
+             "-- the placed object's tile, docs/28 7.6.1")
+    past = [object_id for object_id, answer
+            in zip(hook_object_ids(), hooks["object"])
+            if answer["ok"] and answer["x"] % FIELD_UNITS != 0]
+    ck.equal("native.hook_object_admits_one_past_the_end", past,
+             [HOOK_OBJECT_PAST_THE_END],
+             lambda v: f"id {v[0]} passes the `> {HOOK_ID_LIMIT}` guard and "
+                       f"reads past a {HOOK_ID_LIMIT}-entry array"
+                       if v else "no id read past the array")
+    ck.check("native.hook_object_refusal_writes_nothing",
+             all(o["x"] == 0 and o["y"] == 0 and o["z"] == 0
+                 for o in hooks["object"] if not o["ok"]),
+             "a refused id leaves the out-parameters alone")
+
+    _hook_static_checks(ck, root)
+
+    table = hooks["unit_table"]
+    slots = hooks["unit_slots"]
+    good = [(slot, ptr) for slot, ptr in zip(slots, hooks["unit"]) if ptr]
+    ck.equal("native.hook_units_answered", len(good), HOOK_UNITS_ANSWERED)
+    ck.equal("native.hook_units_refused", len(slots) - len(good),
+             HOOK_UNITS_REFUSED,
+             lambda n: f"{n} slot(s) hold a named but dead unit; the CHECK "
+                       "path returns 0 and does **not** block the process")
+    ck.check("native.hook_unit_stride",
+             all(ptr == table + gold.UNIT_STRIDE * slot for slot, ptr in good),
+             f"every answer is base + {gold.UNIT_STRIDE} * id -- the unit "
+             "record stride, measured rather than read off the disassembly")
+
+
+def _hook_static_checks(ck: "tables.Checker", root: str) -> None:
+    """The two lookups' strides and offsets, read out of the instructions.
+
+    The capture measures the unit record's stride directly -- every answered
+    address is `base + 91*id` -- but the object table's base is never returned,
+    so its stride is read here instead, out of the three `lea`s that compute
+    it.  Both are pinned so the constants above are *read* by something: a
+    documented offset no check consumes is a comment, and a comment cannot go
+    stale loudly.
+    """
+    from inclib import eng3d
+
+    b = tables.Binary(root)
+
+    def lea(va: int, encoding: bytes) -> bool:
+        return all(b.u8(va + n) == byte for n, byte in enumerate(encoding))
+
+    # `0x00405100`: ecx = 9*id; edx = id + 2*ecx = 19*id; eax = base+id +
+    # 4*edx -- so the record is 77 bytes and the base is `[0x004FA804]`.
+    ck.check("native.hook_object_stride",
+             lea(HOOK_OBJECT_POSITION + 0x0F, b"\x8d\x0c\xc0")
+             and lea(HOOK_OBJECT_POSITION + 0x12, b"\x8d\x14\x48")
+             and lea(HOOK_OBJECT_POSITION + 0x1D, b"\x8d\x04\x91")
+             and 1 + 4 * (1 + 2 * 9) == OBJECT_STRIDE,
+             f"three lea's encode a stride of {OBJECT_STRIDE}")
+    ck.check("native.hook_object_gate",
+             b.u8(HOOK_OBJECT_POSITION + 0x20) == 0x8A
+             and b.u8(HOOK_OBJECT_POSITION + 0x23) == OBJECT_GATE
+             and b.u8(HOOK_OBJECT_POSITION + 0x28) == 0x8B
+             and b.u8(HOOK_OBJECT_POSITION + 0x2A) == OBJECT_DELEGATE,
+             f"gated on +0x{OBJECT_GATE:02X}, delegating through "
+             f"+0x{OBJECT_DELEGATE:02X}")
+    ck.equal("native.hook_object_fields",
+             (b.u8(HOOK_OBJECT_POSITION + 0x53),
+              b.u8(HOOK_OBJECT_POSITION + 0x5C),
+              b.u8(HOOK_OBJECT_POSITION + 0x65)),
+             OBJECT_POSITION_FIELDS,
+             lambda v: "the position copied out is "
+                       + ", ".join(f"+0x{n:02X}" for n in v))
+    # `0x00477AE0`: ecx = 5*id; ecx = 9*ecx = 45*id; eax = base+id + 2*ecx.
+    ck.check("native.hook_unit_stride",
+             lea(HOOK_UNIT_RECORD + 0x56, b"\x8d\x0c\x80")
+             and lea(HOOK_UNIT_RECORD + 0x5B, b"\x8d\x0c\xc9")
+             and lea(HOOK_UNIT_RECORD + 0x5E, b"\x8d\x04\x4a")
+             and 1 + 2 * (9 * 5) == gold.UNIT_STRIDE,
+             f"three lea's encode a stride of {gold.UNIT_STRIDE}, which the "
+             "capture also measures directly")
+    ck.check("native.hook_unit_alive_byte",
+             b.u8(HOOK_UNIT_RECORD + 0x61) == 0x8A
+             and b.u8(HOOK_UNIT_RECORD + 0x64) == UNIT_ALIVE,
+             f"the liveness byte is +0x{UNIT_ALIVE:02X}")
+    ck.check("native.hook_table_bases",
+             b.u8(HOOK_OBJECT_POSITION + 0x15) == 0x8B
+             and b.u32(HOOK_OBJECT_POSITION + 0x17) == OBJECT_TABLE
+             and b.u8(HOOK_UNIT_RECORD + 0x50) == 0x8B
+             and b.u32(HOOK_UNIT_RECORD + 0x52) == UNIT_TABLE,
+             f"the arrays are at [0x{OBJECT_TABLE:08X}] and "
+             f"[0x{UNIT_TABLE:08X}]")
+    # The three geometry routines, identified by their own first bytes and by
+    # the one instruction that carries a claim: `0x00403AA0` ends its pitch
+    # with `sub eax, 0x400`, which is the quarter turn docs/28 7.4.2 names.
+    ck.check("native.hook_orient_entry",
+             b.u8(HOOK_ORIENT) == 0x83 and b.u8(HOOK_ORIENT + 1) == 0xEC
+             and b.u8(HOOK_ORIENT + 0x81) == 0x2D
+             and b.u32(HOOK_ORIENT + 0x82) == eng3d.ANGLE_UNITS // 4,
+             f"0x{HOOK_ORIENT:08X} subtracts a quarter of "
+             f"{eng3d.ANGLE_UNITS} from its pitch")
+    ck.check("native.hook_direction_entry",
+             b.u8(HOOK_DIRECTION) == 0x8B and b.u8(HOOK_DIRECTION + 1) == 0x4C
+             and b.u8(HOOK_DIRECTION + 2) == 0x24
+             and b.u8(HOOK_DIRECTION + 3) == 0x10,
+             f"0x{HOOK_DIRECTION:08X} opens by reading its fourth argument")
+    ck.check("native.hook_rotate_entry",
+             b.u8(HOOK_ROTATE) == 0x83 and b.u8(HOOK_ROTATE + 1) == 0xEC
+             and b.u8(HOOK_ROTATE + 2) == 0x24,
+             f"0x{HOOK_ROTATE:08X} opens with a 0x24-byte frame")
+    ck.check("native.hook_guards_admit_the_limit",
+             b.u8(HOOK_OBJECT_POSITION + 4) == 0x3D
+             and b.u32(HOOK_OBJECT_POSITION + 5) == HOOK_ID_LIMIT
+             and b.u8(HOOK_UNIT_RECORD + 0x2A) == 0x3D
+             and b.u32(HOOK_UNIT_RECORD + 0x2B) == HOOK_ID_LIMIT,
+             f"both guards compare against {HOOK_ID_LIMIT} with a strictly "
+             "greater branch, so the limit itself is admitted")
+
+
+def _named(value: float) -> Any:
+    """A float, or the name of a non-finite one -- the fixture's convention."""
+    if value != value:
+        return "nan"
+    if value == float("inf"):
+        return "inf"
+    if value == float("-inf"):
+        return "-inf"
+    return value
+
+
+def _recipe_checks(ck: "tables.Checker", captured: dict[str, Any]) -> None:
+    """Replay each pinned draw recipe against every captured record.
+
+    A recipe reproduces a **field**, from the generator's seed, with nothing
+    taken from the record it is being compared against.  That is what makes
+    it a model rather than a restatement of the capture.
+    """
+    from inclib.rng import ARandom
+
+    def replay(name: str, recipe: dict[str, Any]) -> list[Any]:
+        phase = captured.get(name)
+        if not phase or phase.get("seed2_before") is None:
+            return [f"{name}: not captured"]
+        records = phase["records"]
+        cycle = recipe["cycle"]
+        rng = ARandom(phase["seed2_before"])
+        draws = [rng.raw(0, 1) for _ in range(cycle * len(records) + cycle)]
+        wrong: list[Any] = []
+        for index, record in enumerate(records):
+            for field, (slot, scale, base, span) in recipe["fields"].items():
+                want = scale * int(base + span * draws[cycle * index + slot])
+                if record[field] != want:
+                    wrong.append((name, index, field, record[field], want))
+        return wrong
+
+    total = 0
+    for name, recipe in sorted(CREATOR_DRAW_RECIPES.items()):
+        wrong = replay(name, recipe)
+        total += len(recipe["fields"])
+        ck.equal(f"native.draw_recipe_{name}", wrong, [],
+                 lambda v, n=name, r=recipe:
+                 f"{n}: {len(r['fields'])} field(s) of every record "
+                 f"reproduced from the seed" if not v
+                 else f"{len(v)} disagreement(s)")
+    for name, recipe in sorted(CREATOR_PARTIAL_RECIPES.items()):
+        wrong = replay(name, recipe)
+        ck.equal(f"native.draw_recipe_partial_{name}", wrong, [],
+                 lambda v, n=name, r=recipe:
+                 f"{n}: {len(r['fields'])} velocity field(s) reproduced; its "
+                 "positions are not on a fixed cadence" if not v
+                 else f"{len(v)} disagreement(s)")
+    ck.check("native.draw_recipe_order_runs_both_ways",
+             CREATOR_DRAW_RECIPES["0x004228F0"]["fields"]["vz"][0] == 0
+             and CREATOR_PARTIAL_RECIPES["0x00425810"]["fields"]["vx"][0] == 0,
+             "one creator draws vz first and another vx first -- the order is "
+             "the source's, through MSVC's right-to-left argument evaluation")
+    from inclib import eng3d
+    ck.check("native.draw_recipe_rotations_are_binary_degrees",
+             all(span == eng3d.ANGLE_UNITS
+                 for slot, scale, base, span
+                 in CREATOR_DRAW_RECIPES["0x004295D0"]["fields"].values()
+                 if base == 0 and span > 1000),
+             f"a drawn rotation is aRandom(0, {eng3d.ANGLE_UNITS}) -- the "
+             "4096-unit circle, docs/70")
+    ck.equal("native.draws_unstructured",
+             tuple(sorted(CREATOR_DRAWS_UNSTRUCTURED)),
+             tuple(sorted(set(CREATOR_DRAWS_UNSTRUCTURED))),
+             lambda v: f"{len(v)} creator(s) consume the stream at no fixed "
+                       "rate per record and cannot carry a recipe")
+    ck.check("native.draw_recipes_cover_the_solved",
+             set(CREATOR_DRAW_RECIPES) & set(CREATOR_DRAWS_UNSTRUCTURED)
+             == set(),
+             f"{total} pinned field(s) across "
+             f"{len(CREATOR_DRAW_RECIPES)} creator(s), disjoint from the "
+             "unstructured ones")
 
 
 def _scatter_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
@@ -1417,6 +2189,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="re-run the models against the capture")
     ap.add_argument("--fixture", type=Path, default=FIXTURE)
     ap.add_argument("--attempts", type=int, default=gold.DEFAULT_ATTEMPTS)
+    ap.add_argument("--probe-startup", type=int, metavar="N",
+                    help="run one plan N times with a single attempt each and "
+                         "report how often Wine reached the anchor "
+                         "(docs/91 1); needs --game-copy and --dbgcall")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
@@ -1425,6 +2201,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_checks(args.check, args.fixture)
     if not args.game_copy or not args.dbgcall:
         ap.error("--game-copy and --dbgcall, or --check")
+    if args.probe_startup:
+        return probe_startup(args.game_copy.resolve(), args.dbgcall,
+                             args.probe_startup)
     repo = Path(__file__).resolve().parent.parent
     copy = args.game_copy.resolve()
     if repo in copy.parents or copy == repo:

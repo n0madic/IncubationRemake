@@ -166,7 +166,16 @@ class BlobHooks:
     records a missing-target event.
     """
 
-    def __init__(self, seed: float = 0.0) -> None:
+    def __init__(self, seed: float = 0.0, tables: Any = None) -> None:
+        #: The engine's own geometry, when a game root has been read.
+        #:
+        #: ``docs/28`` §12 item 1's orientation helper is **measured** now
+        #: (``tools/blob_gold.py``'s ``hooks`` phase, ``inclib.eng3d``), and
+        #: with these tables in hand :meth:`orient` is the retail routine
+        #: rather than a stand-in for it.  Without them it falls back to the
+        #: documented substitute and the emitted fixture says which, so a
+        #: root-free run still produces a usable oracle instead of a wrong one.
+        self.tables = tables
         self.rng = ARandom(seed)
         self.spawn_calls: List[SpawnEvent] = []
         self.model_calls: List[str] = []
@@ -194,13 +203,22 @@ class BlobHooks:
         return None
 
     def orient(self, blob: Blob, target: Tuple[int, int, int]) -> Tuple[int, int, int]:
-        """Portable fixed-point equivalent of the engine orientation helper.
+        """``0x00403AA0``'s ``(pitch, 0, yaw)``, measured where possible.
 
-        The original helper writes a 0..0xFFFF turn angle.  The hook exists so
-        a renderer can replace this with the recovered trig table without
-        changing any blob arm.
+        With :attr:`tables` this is the retail routine: the yaw straight out
+        of the horizontal delta in ``docs/70``'s **4096-unit circle**, the
+        delta turned flat by a Q14 matrix, and the pitch from what survives
+        minus a quarter turn.  Twenty of twenty captured pairs.
+
+        Without them it is the older substitute -- an ``atan2`` over a
+        0..0xFFFF turn -- which is wrong in the unit and in the pitch and is
+        kept only so a run with no game root still has *something* both twins
+        can implement identically.
         """
 
+        if self.tables is not None:
+            pitch, yaw = self.tables.orient((blob.x, blob.y, blob.z), target)
+            return u16(pitch), 0, u16(yaw)
         dx = target[0] - blob.x
         dy = target[1] - blob.y
         dz = target[2] - blob.z
@@ -1168,16 +1186,18 @@ class CaseHooks(BlobHooks):
 
     Each service is a pure function of its arguments and of the two tables
     above, so the comparison is of the seventy-four arms and not of a replay
-    of recorded returns.  The orientation helper is the base class's portable
-    fixed-point one -- **not** the retail routine, which docs/28 section 12
-    item 1 records as un-validated -- and the fixture says so.
+    of recorded returns.  The orientation helper is the **retail routine**
+    when a game root supplied the shipped trig tables (``docs/28`` §7.4.2) and
+    the base class's substitute when it did not; the emitted document records
+    which, and the GDScript twin configures itself from that field rather than
+    assuming either.
     """
 
     def __init__(self, seed: float = CASE_SEED, *,
                  target: Optional[Tuple[int, int, int]] = CASE_TARGET,
                  models: bool = True, spawns: bool = True,
-                 emitter_mode: int = 0) -> None:
-        super().__init__(seed)
+                 emitter_mode: int = 0, tables: Any = None) -> None:
+        super().__init__(seed, tables)
         self.target = target
         self.models = models
         self.spawns_ok = spawns
@@ -1290,15 +1310,27 @@ def _case_arg(value: Any) -> Any:
     raise TypeError("blob spawn argument is not an integer: %r" % (value,))
 
 
-def emit_cases(out: str) -> int:
-    """Write the per-tick trace `godot/tests/test_blob.gd` replays."""
+def emit_cases(out: str, root: Optional[str] = None) -> int:
+    """Write the per-tick trace `godot/tests/test_blob.gd` replays.
 
+    *root* is optional and changes exactly one thing: with it the orientation
+    service is the **measured** ``0x00403AA0`` and the shipped trig tables ride
+    along in the document so the GDScript twin reads the same numbers; without
+    it both sides use the older substitute.  Everything else here -- the
+    seventy-four arms, the wrapper, the generator -- is a transcription of
+    ``aBlob_Update`` and reads nothing.
+    """
+
+    tables = None
+    if root:
+        from inclib import eng3d
+        tables = eng3d.load(root)
     cases: List[Dict[str, Any]] = []
     for kind in range(len(HANDLERS)):
         for name, blob_over, hook_over, ticks in CASE_SCENARIOS:
             fields_in = dict(CASE_BLOB, kind=kind, **blob_over)
             blob = Blob(**fields_in)
-            hooks = CaseHooks(**hook_over)
+            hooks = CaseHooks(tables=tables, **hook_over)
             trace = [_case_tick(blob, hooks) for _ in range(ticks)]
             cases.append({
                 "kind": kind,
@@ -1322,11 +1354,16 @@ def emit_cases(out: str) -> int:
 
     payload = {
         "schema": CASES_SCHEMA,
-        "oracle": "executable-Python (tools/blob_runtime.py).  The service "
-                  "hooks of docs/28 section 12 item 1 -- orientation, geometry "
-                  "and the target map -- are NOT natively validated; this "
-                  "compares a transcription against a deterministic adapter, "
-                  "not a trajectory against the engine.",
+        "oracle": "executable-Python (tools/blob_runtime.py).  The "
+                  "seventy-four arms are a transcription compared against a "
+                  "transcription -- NOT a trajectory against the engine.  The "
+                  "orientation service is the exception: with a game root it "
+                  "is 0x00403AA0's measured arithmetic (tools/blob_gold.py's "
+                  "hooks phase, 20/20), and the other services of docs/28 "
+                  "section 12 item 1 remain a deterministic adapter.",
+        "orient": "native" if tables is not None else "substitute",
+        "eng3d": ({"trig": tables.trig, "atn": tables.atn}
+                  if tables is not None else None),
         "kinds": len(HANDLERS),
         "arms": len(order),
         "arm_of_kind": {str(k): v for k, v in sorted(arms.items())},
@@ -1356,12 +1393,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--selftest", action="store_true", help="run runtime invariants")
     parser.add_argument("--emit-cases", metavar="OUT",
                         help="write the per-tick trace the Godot suite replays")
+    parser.add_argument("--root", metavar="GAME_ROOT",
+                        help="use the measured orientation helper and carry "
+                             "the shipped trig tables into the fixture; "
+                             "without it both twins use the substitute")
     args = parser.parse_args(argv)
     if not (args.selftest or args.emit_cases):
         parser.error("use --selftest or --emit-cases (the module is a "
                      "library/reference runtime)")
     if args.emit_cases:
-        return emit_cases(args.emit_cases)
+        return emit_cases(args.emit_cases, args.root)
     _selftest()
     print("blob_runtime: selftest passed (78 kinds, 74 arms)")
     return 0

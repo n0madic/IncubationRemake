@@ -3185,12 +3185,17 @@ CREATORS_THAT_CAN_DRAW = 26
 #: gameplay one (`aAISystemControl`, `aAttackUnit`, `aCheckWeaponDamage`,
 #: `aExecuteUse`, `aComputeMissionObjectives`), the uncounted one is
 #: `aBlobs.cpp` and the animation drivers -- but it is **not clean**, and the
-#: exceptions are pinned rather than rounded off.  Three of them are the unit
-#: pool (`aEnlargeUnitPool`, `aAddUnitToUnitPool`, `aGenerateUnitElement`),
-#: which is simulation, and one function draws from **both**.  `docs/20` 7.4
-#: has `InsertUnit`'s spawn count coming from the C runtime's `rand`; that
-#: these three also draw from a Lehmer stream is a separate thread, recorded
-#: here and open.
+#: exceptions are pinned rather than rounded off.  Three of them are in the
+#: unit pool (`aEnlargeUnitPool`, `aAddUnitToUnitPool`,
+#: `aGenerateUnitElement`) and one function draws from **both**.
+#:
+#: Neither is a leak, and `POOL_DRAW_SITES` below is why.  All three pool
+#: sites roll `aRandom(1, 6)` into `unit[+0x55]` -- the **speech-set id** of
+#: `docs/20` 7.4, which of the shipped voice sets a recruited soldier talks
+#: with, and which no rule reads.  The one that draws from both does two jobs
+#: and uses the right stream for each.  `docs/22` 3.2 has the whole reading;
+#: `docs/20` 7.4's `InsertUnit` spawn *count* from the C runtime's `rand` is
+#: on the same side of the line, being a count and not a rule.
 RANDOM_OWNERS_UNCOUNTED = 75
 RANDOM_OWNERS_COUNTED = 17
 #: Callers of the uncounted stream outside `aBlobs.cpp`'s own address range.
@@ -3203,6 +3208,62 @@ RANDOM_UNCOUNTED_OUTSIDE = (
 )
 #: The one function that draws from both streams.
 RANDOM_BOTH_STREAMS = (0x004160F0,)
+
+#: **What the unit pool draws the clock-seeded stream for**, which was the
+#: question `docs/22` §12 opened and the reason it opened it: a draw from a
+#: wall-clock-seeded generator inside `aUnitMap.cpp` looks like simulation
+#: escaping the determinism argument of `docs/22` §3.1.
+#:
+#: It is not simulation.  All three sites do the identical thing --
+#: `aRandom(1, 6)`, `__ftol`, and a **byte** store -- and the byte is
+#: `unit[+0x55]`, which `docs/20` §7.4 and `docs/21` §5 already identify as
+#: the **speech-set id**: which of the shipped `Waves/Speech/` voice sets the
+#: recruited soldier talks with.  `docs/10` §5.8 already said the value was
+#: rolled; what was missing was *which generator*, and it is the presentation
+#: one.  Nothing in the rule set reads the byte.
+#:
+#: The one thing that follows and is worth writing down: the roster is
+#: **saved** (`docs/11` §5.11), so a clock-seeded byte does reach the save
+#: file.  A remake must therefore keep it out of a canonical hash rather than
+#: keep it out of the save.
+POOL_DRAW_SITES = {
+    0x00478B36: 0x004789B0,     # aEnlargeUnitPool
+    0x00478CC8: 0x00478C10,     # aAddUnitToUnitPool
+    0x00479F5D: 0x00479CF0,     # aGenerateUnitElement
+}
+#: The arguments every one of them pushes: `aRandom(1, 6)`, so 1..6.
+POOL_DRAW_ARGUMENTS = (1, 6)
+#: `docs/20` §7.4 -- the speech-set byte in the 91-byte unit record.
+POOL_DRAW_FIELD = 0x55
+#: The persistent roster two of the three write into (`docs/11` §5.11).
+UNIT_ROSTER = 0x0051F2A0
+#: `aGenerateUnitElement`'s exception: unit type 24 is given a **fixed** set
+#: rather than a rolled one, and 12 is `spidy` -- the only non-human voice in
+#: `docs/20` §7.4's table.
+POOL_SPEECH_FIXED_TYPE = 0x18
+POOL_SPEECH_FIXED_VALUE = 12
+#: How far back a draw's two pushes are looked for.  `aEnlargeUnitPool`
+#: separates them from the call by seventy-five bytes of unrelated work.
+POOL_DRAW_WINDOW = 0x60
+#: The highest id the roll can produce, and the last human set in that table.
+POOL_SPEECH_MAX = 6
+
+#: **The function that draws from both streams, and why that is correct.**
+#: `0x004160F0` is in `aAnimations.cpp`.  It draws **twice from the counted
+#: stream** to pick a candidate tile, retried up to five times and tested by
+#: `aGenerateUnitElement`'s placement helper -- that is simulation, and it is
+#: on the gameplay generator.  It then draws **once from the uncounted one**
+#: and hands the result to a routine inside `aBlobs.cpp` -- that is an effect,
+#: and it is on the presentation generator.  One function doing both jobs is
+#: not one function mixing generators: the split `docs/22` §3.2 describes is
+#: kept inside it, argument by argument.
+BOTH_STREAMS_COUNTED_SITES = (0x004161BA, 0x004161D0)
+BOTH_STREAMS_UNCOUNTED_SITE = 0x00416238
+#: What each result is handed to.
+BOTH_STREAMS_PLACEMENT_TEST = 0x00479C60
+BOTH_STREAMS_EFFECT = 0x0042B070
+#: `__ftol`, which follows every draw that is stored as an integer.
+FTOL = 0x004AE7B6
 
 #: **How each stream is seeded, and it is the whole story.**  At start-up,
 #: inside `0x004494C0`, the engine does this and nothing else:
@@ -3514,6 +3575,92 @@ def _generator_checks(ck: "Checker", b: Binary) -> None:
     ck.equal("random.creators_that_can_draw",
              sum(1 for n in table.values() if n), CREATORS_THAT_CAN_DRAW,
              lambda n: f"{n} of {len(table)} creators reach the generator")
+    _pool_draw_checks(ck, b, owners)
+
+
+def _pool_draw_checks(ck: "Checker", b: Binary,
+                      owners: dict[int, set[int]]) -> None:
+    """What the three unit-pool draws are for -- `docs/22` §12's question.
+
+    Every claim here is one instruction's bytes.  The three sites push the
+    same pair, truncate the same way and store one byte, and the byte's
+    displacement is what identifies it: two of them address the persistent
+    roster at ``UNIT_ROSTER + 0x55`` outright, so the field is read off the
+    encoding rather than inferred from what the value looks like.
+    """
+    ck.equal("pool.draw_owners",
+             tuple(sorted(set(POOL_DRAW_SITES.values()))),
+             tuple(sorted(f for f in owners[ARANDOM2_ENTRY]
+                          if f in set(POOL_DRAW_SITES.values()))),
+             lambda v: f"{len(v)} unit-pool routines draw from the "
+                       "clock-seeded stream")
+    base, span = POOL_DRAW_ARGUMENTS
+    for site in sorted(POOL_DRAW_SITES):
+        tag = f"0x{site:08X}"
+        # The two pushes are the last two before the call, but not always
+        # adjacent to it **or to each other**: in `aEnlargeUnitPool` the
+        # compiler puts eight bytes of unrelated work between them and
+        # seventy-five before the call.  So the check is that both immediate
+        # pushes appear in that order inside the window and nothing else
+        # pushes in between -- which is what `add esp, 8` already tells us.
+        window = [b.u8(site - n) for n in range(POOL_DRAW_WINDOW, 0, -1)]
+        order = [n for n in range(len(window) - 1)
+                 if window[n] == 0x6A and window[n + 1] in (base, span)]
+        pushed = [window[n + 1] for n in order]
+        ck.check(f"pool.draw_arguments.{tag}",
+                 pushed[-2:] == [span, base],
+                 f"push {span}; push {base} -- aRandom({base}, {span})")
+        ck.check(f"pool.draw_truncates.{tag}",
+                 b.u8(site + 5) == 0x83 and b.u8(site + 6) == 0xC4
+                 and b.u8(site + 7) == 0x08 and b.u8(site + 8) == 0xE8
+                 and site + 13 + b.i32(site + 9) == FTOL,
+                 "add esp, 8 then __ftol -- the draw is stored as an integer")
+    # `mov [reg + 0x0051F2F5], al` -- opcode 0x88, modrm mod=10 with a
+    # dword displacement, and the displacement is the roster plus the
+    # speech-set offset.  Both writers of the roster copy use it.
+    roster_field = UNIT_ROSTER + POOL_DRAW_FIELD
+    for site in (0x00478B36, 0x00478CC8):
+        ck.check(f"pool.draw_stores_speech.0x{site:08X}",
+                 any(b.u8(va) == 0x88 and (b.u8(va + 1) >> 6) == 2
+                     and b.u8(va + 1) & 7 != 4
+                     and b.u32(va + 2) == roster_field
+                     for va in range(site + 13, site + 22)),
+                 f"the byte lands at unit[+0x{POOL_DRAW_FIELD:02X}] of the "
+                 f"roster at 0x{UNIT_ROSTER:08X} -- the speech set")
+    # `aGenerateUnitElement` writes into a record it is still building, so
+    # its store is `mov byte [esp+disp8], al` and the field is identified by
+    # the branch above it instead: type 24 skips the roll and takes 12.
+    fixed = 0x00479F4B
+    ck.check("pool.speech_fixed_for_type_24",
+             b.u8(fixed) == 0x80 and b.u8(fixed + 4) == POOL_SPEECH_FIXED_TYPE
+             and b.u8(fixed + 7) == 0xC6
+             and b.u8(fixed + 11) == POOL_SPEECH_FIXED_VALUE,
+             f"unit type {POOL_SPEECH_FIXED_TYPE} takes speech set "
+             f"{POOL_SPEECH_FIXED_VALUE} without drawing")
+    ck.check("pool.speech_roll_is_in_range",
+             base >= 1 and base + span - 1 == POOL_SPEECH_MAX
+             and POOL_SPEECH_MAX < POOL_SPEECH_FIXED_VALUE,
+             "the roll cannot leave docs/20 7.4's shipped table")
+    for site in BOTH_STREAMS_COUNTED_SITES:
+        ck.check(f"pool.both_streams_counted.0x{site:08X}",
+                 b.u8(site) == 0xE8 and site + 5 + b.i32(site + 1)
+                 == ARANDOM_ENTRY,
+                 "the tile candidate comes from the gameplay generator")
+    ck.check("pool.both_streams_placement",
+             b.u8(0x004161E1) == 0xE8
+             and 0x004161E1 + 5 + b.i32(0x004161E2)
+             == BOTH_STREAMS_PLACEMENT_TEST,
+             "and is handed to the placement test, five tries at most")
+    site = BOTH_STREAMS_UNCOUNTED_SITE
+    ck.check("pool.both_streams_uncounted",
+             b.u8(site) == 0xE8 and site + 5 + b.i32(site + 1) == ARANDOM2_ENTRY
+             and b.u8(0x00416248) == 0xE8
+             and 0x00416248 + 5 + b.i32(0x00416249) == BOTH_STREAMS_EFFECT,
+             "the effect argument comes from the presentation generator")
+    lo, hi = RANDOM_BLOB_MODULE
+    ck.check("pool.both_streams_effect_is_a_blob",
+             lo <= BOTH_STREAMS_EFFECT <= hi,
+             f"0x{BOTH_STREAMS_EFFECT:08X} is inside aBlobs.cpp")
 
 
 def _origin_checks(ck: "Checker", b: Binary, reached: set[int]) -> None:
@@ -4161,8 +4308,9 @@ def emit_sound_cases(root: str, out: str) -> int:
     wanted, missing = sound.wanted_waves(sites, c.weapon_waves, index)
     payload = {
         "schema": SOUND_CASES_SCHEMA,
-        "oracle": "executable-Python (tools/inclib/sound.py); the service "
-                  "hooks of docs/28 section 12 are not natively validated",
+        "oracle": "executable-Python (tools/inclib/sound.py); a transcription "
+                  "of the sound layer's tables compared against a "
+                  "transcription, not a recording of the engine playing",
         # The very document the cache carries, so the suite builds its tables
         # from the same input the game does rather than from a second shape
         # that could drift away from it.
