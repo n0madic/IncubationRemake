@@ -269,7 +269,7 @@ static func _set_model(blob: Blob, h: BlobHooks, r: TickResult,
 
 static func _orient(blob: Blob, h: BlobHooks, at: Vector3i,
 		write_y: bool = true, zero_y: bool = false) -> void:
-	var angles: Vector3i = h.orient(blob, at)
+	var angles: Vector3i = h.orient(Vector3i(blob.x, blob.y, blob.z), at)
 	blob.rot_x = IncInt.u16(angles.x)
 	if write_y:
 		blob.rot_y = IncInt.u16(angles.y)
@@ -278,48 +278,67 @@ static func _orient(blob: Blob, h: BlobHooks, at: Vector3i,
 	blob.rot_z = IncInt.u16(angles.z)
 
 
-## The seeking step kinds 26, 27 and 61 share.
+## The unit map had nothing to point at, so the arm returned without steering.
+const SEEK_NO_TARGET: int = -1
+## It steered and has not arrived.
+const SEEK_MISS: int = 0
+## It steered and is inside the box on all three axes.
+const SEEK_HIT: int = 1
+## `[0x004B1238]`, the double every seeker scales the direction service by.
+const SEEK_PULL: float = -240.0
+## Half the width of the box that counts as an arrival, per axis.
+const SEEK_BOX: int = 0x640
+
+
+## The seeking step kinds 26, 27 and 61 share -- docs/28 section 7.7.1.
 ##
-## The recovered constant at `0x4B1238` is -240.0 and the surrounding magic
-## multiply is a signed divide by six, so the velocity is damped by a sixth and
-## nudged 240 units toward the target each tick. `false` means the unit map had
-## nothing to point at, which leaves the velocity alone.
+## Three things here are the engine's rather than this file's, and all three
+## were wrong until `tools/blob_gold.py` stepped a kind-26 and a kind-61 record
+## inside a running `Incubation.exe`:
+##
+## 1. the steer comes from **`0x0046D400`**, which divides by whichever of
+##    `|dx|` and `|dy|` is larger -- not by the true distance. The product with
+##    -240.0 is truncated by `_ftol` and **subtracted**, so the two negatives
+##    make a pull;
+## 2. the orientation call takes the **step** -- where the record is about to
+##    be -- not the target, so a seeker points along its own path;
+## 3. an arrival sets `life` to zero and nothing else. The global signal is
+##    each arm's own, and kinds 26 and 61 raise it for a spent life too, while
+##    kind 27 raises it only for an arrival.
 static func _seek(blob: Blob, h: BlobHooks, r: TickResult,
-		z_offset: int = 0, finish: bool = true) -> bool:
+		z_offset: int = 0) -> int:
 	if not h.has_target_for(blob):
 		h.target_calls.append(blob.aux)
 		r.target_missing = true
-		return false
+		return SEEK_NO_TARGET
 	var found: Vector3i = h.target_position(blob)
 	var at: Vector3i = Vector3i(IncInt.i32(found.x), IncInt.i32(found.y),
 		IncInt.i32(found.z + z_offset))
-	var dx: int = at.x - blob.x
-	var dy: int = at.y - blob.y
-	var dz: int = at.z - blob.z
-	var distance: float = sqrt(float(dx * dx + dy * dy + dz * dz))
-	if distance != 0.0:
-		var span: int = BlobHooks.round_half_even(distance)
-		blob.vx = IncInt.i32(blob.vx - IncInt.div_trunc(blob.vx, 6)
-			+ IncInt.div_trunc(BlobHooks.round_half_even(float(dx) * 240.0),
-				span))
-		blob.vy = IncInt.i32(blob.vy - IncInt.div_trunc(blob.vy, 6)
-			+ IncInt.div_trunc(BlobHooks.round_half_even(float(dy) * 240.0),
-				span))
-		blob.vz = IncInt.i32(blob.vz - IncInt.div_trunc(blob.vz, 6)
-			+ IncInt.div_trunc(BlobHooks.round_half_even(float(dz) * 240.0),
-				span))
-	_orient(blob, h, at, false, true)
+	var steer: PackedFloat64Array = h.direction(blob, at)
+	blob.vx = IncInt.i32(blob.vx - IncInt.div_trunc(blob.vx, 6)
+		- Eng3dGeometry.ftol(steer[0] * SEEK_PULL))
+	blob.vy = IncInt.i32(blob.vy - IncInt.div_trunc(blob.vy, 6)
+		- Eng3dGeometry.ftol(steer[1] * SEEK_PULL))
+	blob.vz = IncInt.i32(blob.vz - IncInt.div_trunc(blob.vz, 6)
+		- Eng3dGeometry.ftol(steer[2] * SEEK_PULL))
+	var step: Vector3i = Vector3i(IncInt.i32(blob.x + blob.vx),
+		IncInt.i32(blob.y + blob.vy), IncInt.i32(blob.z + blob.vz))
+	_orient(blob, h, step, false, true)
 	_move(blob)
-	if finish and absi(blob.x - at.x) < 0x640 and absi(blob.y - at.y) < 0x640 \
-			and absi(blob.z - at.z) < 0x640:
+	if absi(step.x - at.x) < SEEK_BOX and absi(step.y - at.y) < SEEK_BOX \
+			and absi(step.z - at.z) < SEEK_BOX:
 		blob.life = 0
-		_request_delete(blob, r)
-	return true
+		return SEEK_HIT
+	return SEEK_MISS
 
 
 # --- the arms ---------------------------------------------------------------
 
 static func _kind_0(b: Blob, h: BlobHooks, _r: TickResult) -> void:
+	# **0x1000 here.** Only kind 8's arm pushes `0xFFF`; this one and kinds 2
+	# and 29 push `0x1000`. A pass that had stepped kind 8 and not these copied
+	# the literal across all four, which stepping *these* -- with a donor
+	# record's kind byte rewritten -- caught (docs/97 section 20).
 	b.rot_x = IncInt.u16(h.random(0, 0x1000))
 	b.rot_y = IncInt.u16(h.random(0, 0x1000))
 	b.rot_z = IncInt.u16(h.random(0, 0x1000))
@@ -336,6 +355,10 @@ static func _kind_1(b: Blob, _h: BlobHooks, r: TickResult) -> void:
 ## Unreachable, and kept executable: it falls through the same tail as kind 49.
 static func _kind_2(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	_move(b)
+	# **0x1000 here.** Only kind 8's arm pushes `0xFFF`; this one and kinds 2
+	# and 29 push `0x1000`. A pass that had stepped kind 8 and not these copied
+	# the literal across all four, which stepping *these* -- with a donor
+	# record's kind byte rewritten -- caught (docs/97 section 20).
 	b.rot_x = IncInt.u16(h.random(0, 0x1000))
 	b.rot_y = IncInt.u16(h.random(0, 0x1000))
 	b.rot_z = IncInt.u16(h.random(0, 0x1000))
@@ -389,9 +412,12 @@ static func _kind_8(b: Blob, h: BlobHooks, _r: TickResult) -> void:
 	b.x = IncInt.i32(b.x + h.random(-100, 200))
 	b.y = IncInt.i32(b.y + h.random(-100, 200))
 	b.z = IncInt.i32(b.z + h.random(-100, 200))
-	b.rot_x = IncInt.u16(h.random(0, 0x1000))
-	b.rot_y = IncInt.u16(h.random(0, 0x1000))
-	b.rot_z = IncInt.u16(h.random(0, 0x1000))
+	# **0xFFF, not 0x1000** -- the three literals at `0x00420543`, `0x0042055B`
+	# and `0x00420576`. Stepping a kind-8 record inside the retail process found
+	# this one unit high on about a quarter of its draws.
+	b.rot_x = IncInt.u16(h.random(0, 0xFFF))
+	b.rot_y = IncInt.u16(h.random(0, 0xFFF))
+	b.rot_z = IncInt.u16(h.random(0, 0xFFF))
 
 
 static func _kind_9(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
@@ -413,22 +439,32 @@ static func _kind_11(b: Blob, _h: BlobHooks, r: TickResult) -> void:
 	b.rot_x = _add_word(b.rot_x, 0x0A)
 	b.rot_y = _add_word(b.rot_y, 0x0A)
 	b.rot_z = _add_word(b.rot_z, 0x0A)
-	_delete(b, r)
+	# It does **not** delete: `0x004207B6` ends `mov eax, 1 / ret`, and the
+	# `aDeleteBlobObject` two instructions later belongs to the wrapper's expiry
+	# path. Stepping a kind-11 record inside the retail process for eight ticks
+	# found it still moving where this arm had removed it.
 
 
 static func _kind_12(b: Blob, h: BlobHooks, _r: TickResult) -> void:
 	b.rot_y = _add_word(b.rot_y, h.random(0, 0x1000))
 
 
+# `0x66666667` with `sar edx, 3` is a divide by **20**: the magic is the same
+# for 5, 10 and 20 and only the shift separates them.
 static func _kind_13(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 	b.x = IncInt.i32(b.x + b.vx)
 	b.y = IncInt.i32(b.y + b.vy)
-	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 10))
-	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 10))
+	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 20))
+	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 20))
 
 
 ## Not ballistic: `vx`/`vy` are a **destination**, and the record's own x/y are
 ## the remaining delta. That is why the arm reads them the other way round.
+##
+## The remaining delta is **spun about the vertical** by `0x004039A0` before it
+## is added back, through an angle read off `life`: twenty per point while the
+## record is not rising, ten per point past 22 while it is. This model had no
+## turn at all, which nothing could notice while no creator filled kind 14.
 static func _kind_14(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	var dx: int = IncInt.i32(b.vx - b.x)
 	var dy: int = IncInt.i32(b.vy - b.y)
@@ -437,10 +473,15 @@ static func _kind_14(b: Blob, h: BlobHooks, r: TickResult) -> void:
 		dy = IncInt.i32(dy - IncInt.div_trunc(dy, 10))
 	if b.life == 1:
 		_mark_free(b, r)
-	_orient(b, h, Vector3i(IncInt.i32(b.x + dx), IncInt.i32(b.y + dy), b.z),
-		false)
-	b.x = IncInt.i32(dx + b.vx)
-	b.y = IncInt.i32(dy + b.vy)
+	var turn: int = IncInt.u16(b.life * 20) if b.vz == 0 \
+		else IncInt.u16((b.life - 22) * 10)
+	var spun: Vector3i = h.rotate(Vector3i(dx, dy, 0), Vector3i(0, 0, turn))
+	b.x = IncInt.i32(spun.x + b.vx)
+	b.y = IncInt.i32(spun.y + b.vy)
+	var angles: Vector3i = h.orient(Vector3i(b.vx, b.vy, 0),
+		Vector3i(b.x, b.y, 0))
+	b.rot_x = IncInt.u16(angles.x)
+	b.rot_z = IncInt.u16(angles.z)
 
 
 static func _kind_15(b: Blob, h: BlobHooks, r: TickResult) -> void:
@@ -474,11 +515,12 @@ static func _kind_18(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 	b.vz = IncInt.i32(b.vz - 0x64)
 
 
+# `sar edx, 1` after the same magic: a fifth, not a tenth.
 static func _kind_19(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	_move(b)
-	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 10))
-	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 10))
-	b.vz = IncInt.i32(b.vz - IncInt.div_trunc(b.vz, 10))
+	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 5))
+	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 5))
+	b.vz = IncInt.i32(b.vz - IncInt.div_trunc(b.vz, 5))
 	if b.life == 0:
 		_spawn(b, h, r, CREATE_HITTING_BLOBS, [b.x, b.y, b.z, 1])
 
@@ -515,15 +557,23 @@ static func _kind_25(b: Blob, h: BlobHooks, r: TickResult) -> void:
 			[b.x, b.y, IncInt.i32(b.z - 0x3200)])
 
 
+# `0x0041FAF7` reads `life` back **after** the hit test, so a seeker that
+# simply ran out of life signals and spawns exactly like one that arrived.
 static func _kind_26(b: Blob, h: BlobHooks, r: TickResult) -> void:
-	if _seek(b, h, r):
-		if b.life == 0:
-			_spawn(b, h, r, CREATE_ZOOM_BOB, [b.x, b.y, b.z, 0, 30, 16])
-			_spawn(b, h, r, CREATE_HITTING_BLOBS_3, [b.x, b.y, b.z, 1])
+	if _seek(b, h, r) == SEEK_NO_TARGET:
+		return
+	if b.life == 0:
+		_request_delete(b, r)
+		_spawn(b, h, r, CREATE_ZOOM_BOB, [b.x, b.y, b.z, 0, 30, 16])
+		_spawn(b, h, r, CREATE_HITTING_BLOBS_3, [b.x, b.y, b.z, 1])
 
 
+# The one seeker that aims 0x640 **above** its target, and the one whose signal
+# sits inside the hit branch (`0x0041FD68`): a kind-27 record that merely
+# expires writes nothing global.
 static func _kind_27(b: Blob, h: BlobHooks, r: TickResult) -> void:
-	_seek(b, h, r, 0x640)
+	if _seek(b, h, r, 0x640) == SEEK_HIT:
+		_request_delete(b, r)
 
 
 static func _kind_28(b: Blob, _h: BlobHooks, r: TickResult) -> void:
@@ -532,6 +582,10 @@ static func _kind_28(b: Blob, _h: BlobHooks, r: TickResult) -> void:
 
 
 static func _kind_29(b: Blob, h: BlobHooks, _r: TickResult) -> void:
+	# **0x1000 here.** Only kind 8's arm pushes `0xFFF`; this one and kinds 2
+	# and 29 push `0x1000`. A pass that had stepped kind 8 and not these copied
+	# the literal across all four, which stepping *these* -- with a donor
+	# record's kind byte rewritten -- caught (docs/97 section 20).
 	b.rot_x = IncInt.u16(h.random(0, 0x1000))
 	b.rot_y = IncInt.u16(h.random(0, 0x1000))
 	b.rot_z = IncInt.u16(h.random(0, 0x1000))
@@ -580,8 +634,18 @@ static func _kind_36(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	_spawn(b, h, r, CREATE_HITTING_BLOBS_2, [b.x, b.y, b.z, 5])
 
 
+## Kind 14's turn with a fixed angle and the sign flipped: the delta to the
+## point in `vx`/`vy` is spun by `0x66` and **subtracted** from it.
 static func _kind_37(b: Blob, h: BlobHooks, _r: TickResult) -> void:
-	_orient(b, h, Vector3i(b.vx, b.vy, b.z), false)
+	var spun: Vector3i = h.rotate(
+		Vector3i(IncInt.i32(b.vx - b.x), IncInt.i32(b.vy - b.y), 0),
+		Vector3i(0, 0, 0x66))
+	b.x = IncInt.i32(b.vx - spun.x)
+	b.y = IncInt.i32(b.vy - spun.y)
+	var angles: Vector3i = h.orient(Vector3i(b.vx, b.vy, 0),
+		Vector3i(b.x, b.y, 0))
+	b.rot_x = IncInt.u16(angles.x)
+	b.rot_z = IncInt.u16(angles.z)
 
 
 static func _kind_38(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
@@ -743,16 +807,21 @@ static func _kind_59(b: Blob, h: BlobHooks, r: TickResult) -> void:
 		[NAME_SCRATCH, 2, b.x, b.y, b.z, 1, 0, 0, 60, 8, rx, ry, rz, size, 0])
 
 
+# `0x55555556` with **no** shift is a third. The seeker's damping uses the
+# negated magic and is a sixth; the two are one instruction apart.
 static func _kind_60(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 	b.rot_y = IncInt.u16(7 - b.life)
 	_move(b)
-	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 6))
-	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 6))
-	b.vz = IncInt.i32(b.vz - IncInt.div_trunc(b.vz, 6))
+	b.vx = IncInt.i32(b.vx - IncInt.div_trunc(b.vx, 3))
+	b.vy = IncInt.i32(b.vy - IncInt.div_trunc(b.vy, 3))
+	b.vz = IncInt.i32(b.vz - IncInt.div_trunc(b.vz, 3))
 
 
 static func _kind_61(b: Blob, h: BlobHooks, r: TickResult) -> void:
-	_seek(b, h, r)
+	if _seek(b, h, r) == SEEK_NO_TARGET:
+		return
+	if b.life == 0:
+		_request_delete(b, r)
 
 
 ## The x87 comparison is against the literal 5.0, so the burst is taken for a
@@ -893,15 +962,22 @@ static func _kind_75(b: Blob, h: BlobHooks, r: TickResult) -> void:
 		_spawn(b, h, r, CREATE_PLASMA_SPARKS, [b.x, b.y, b.z, 5, 5])
 
 
+## It moves **twice** while it lives: the `ja` at `0x0041EB79` leaves for
+## `0x0041EBCB`, which is a second plain move and a return. Only the last four
+## ticks take the halved step, and there the vertical is a divide by *minus*
+## three (`0x55555555` plus the `sub edx, ecx` correction) and the constant 2
+## goes into the pitch.
 static func _kind_76(b: Blob, h: BlobHooks, _r: TickResult) -> void:
 	_move(b)
 	b.rot_y = IncInt.u16(h.random(0, 7))
 	_set_aux(b, h.random(5, 15))
-	if b.life <= 4:
-		b.x = IncInt.i32(b.x + IncInt.div_trunc(b.vx, 2))
-		b.y = IncInt.i32(b.y + IncInt.div_trunc(b.vy, 2))
-		b.z = IncInt.i32(b.z + IncInt.div_trunc(b.vz, 3))
-		b.rot_z = 2
+	if b.life > 4:
+		_move(b)
+		return
+	b.x = IncInt.i32(b.x + IncInt.div_trunc(b.vx, 2))
+	b.y = IncInt.i32(b.y + IncInt.div_trunc(b.vy, 2))
+	b.z = IncInt.i32(b.z - IncInt.div_trunc(b.vz, 3))
+	b.rot_x = 2
 
 
 ## Three nearby offsets are drawn before the ballistic step, and the first draw

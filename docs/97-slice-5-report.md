@@ -1476,3 +1476,402 @@ trajectories remain the remake's own. And the two Eng3d entry points behind
 `0x004039A0` are runtime function pointers whose targets were read as bytes and
 not identified as exports; naming them wants a second capture or a walk of
 `Eng3d.dll`'s own export table.
+
+*(§18 closes all four of those, and one of them by doing exactly what the last
+sentence above suggested.)*
+
+## 18. The four residues, closed — 2026-09-01
+
+§17 ended on four things it could not do. Three of them were not hard; they
+were mis-stated. The fourth was hard and is now done, and it found two bugs.
+
+### 18.1 The three-angle matrix builder — 8/8, and three reasons it had failed
+
+`0x004039A0` is a marshaller. `Incubation.exe` reads three signed words out of
+the caller's structure, calls **ordinal 13** of `Eng3d.dll` to build the
+matrix, calls **ordinal 15** to push the vector through it, and returns 1. All
+the arithmetic is in the DLL, and every attempt to reproduce it from the
+caller was reasoning about the wrong file.
+
+Three properties had to be right **together**, and getting any one of them
+wrong reproduces at most three of the eight captured cases:
+
+1. **The angles are negated before they index the table.** The body opens
+   `neg ebx / neg ecx / neg edx` and only then masks with `0xFFF`. Because the
+   products floor, negating before is not negating after: four of the eight
+   differ by exactly one unit on that alone.
+2. **Its products floor; `0x004039F0`'s truncate.** This builder uses a 64-bit
+   `imul` with `shrd eax, edx, 14`; its neighbour twelve bytes away uses a
+   32-bit `imul` and the `cdq / and edx, 0x3FFF` idiom. Two roundings inside
+   one call was already §17.1's finding for `0x00403AA0`; there are three
+   sites of it, not two.
+3. **The chained triple products shift at every step**, `sh(sh(s·s)·s)`.
+   Shifting once at the end puts the entries six orders of magnitude out.
+
+And `_E3D_c_rotate_coordinate` reads the matrix **by column**. That last one
+also explains a thing that had looked fine: `orient` reproduced twenty
+captured pairs while *both* halves of its Q14 step were transposed, because a
+transposed read of a transposed build cancels — and `0x00403AA0` passes
+`matrix(0, -yaw)`, the `neg eax` at `0x00403ACF`, which is the third sign that
+was silently absorbing the error. Adding a second builder is what made it
+visible. `tools/inclib/eng3d.py` and `godot/game/fx/eng3d_geometry.gd` are the
+two transcriptions; 8/8 against the capture.
+
+**This corrects a delivered spec.** [`30` §2.5](30-eng3d-ascii-formats.md)
+already carried "the exact matrix, if you want bit-identical results" — the
+same nine expressions, read statically out of `fcn.00411bf6` — and taken
+literally it misses four of the eight. The static reading had the shape right
+and the arithmetic wrong, which is the class of error a capture exists to
+catch. It is corrected in place.
+
+### 18.2 The two entry points — named without a capture at all
+
+§17 said naming them "wants a second capture or a walk of `Eng3d.dll`'s own
+export table". It wanted neither. `Incubation.exe` resolves them with
+`GetProcAddress` and the ordinal written out as **decimal text**, so
+`push 0x004BF9F8` is the string `"13"` and the caller names them itself:
+
+| Global | Ordinal | Export |
+|---|---|---|
+| `0x004FA4E4` | 13 | `_E3D_init_matrix_RzRxRy` |
+| `0x004F84D4` | 15 | `_E3D_c_rotate_coordinate` |
+| `0x004FA4E0` | 27 | `_E3D_calc_angle_dx_dy` |
+| `0x004F84D8` | 28 | `_E3D_fsin` |
+| `0x004FA4DC` | 29 | `_E3D_fcos` |
+
+Three readings agree and none shares a step with the others: the literal in
+the caller, the export table in the callee, and the captured thunk bytes,
+which occur exactly once in the shipped DLL and at that export's own RVA —
+with all five pointers minus their RVAs giving one module base.
+
+A free result came with it. Ordinal 14 is `_E3D_init_matrix_RyRxRz`; the
+start-up resolver asks for it like it asks for 86 of the DLL's 89 exports and
+stores it in `0x004FA4A0` — and **nothing in `.text` calls or even loads that
+slot**. [`30` §2.5](30-eng3d-ascii-formats.md) item 7 concluded from the joint
+opcodes that both builders the shipped data reaches build `RzRxRy`; the call
+graph says the stronger thing.
+
+### 18.3 The eleven creators — five, three, three, and a fitter with two bugs
+
+The residue was "eleven of the fourteen drawing creators have no per-record
+recipe". Two of the reasons for that were bugs in the solver, not properties
+of the engine:
+
+* it had **no scale**. The engine truncates with `ftol` and *then* shifts, so
+  a column is `scale * int(base + span·f)`; `0x0042ACF0`'s loop is thirty
+  iterations of `aRandom(5, 10) << 5` and two `aRandom(-10, 20) << 4`, which
+  is also exactly the ninety draws the seed delta counts. It carries a full
+  recipe now, confirmed twice over — by the fit and by the disassembly.
+* its **stride loop broke out of itself** the first time an offset ran past
+  the end of the draw list, so nothing past stride 1 at a low offset was ever
+  tried. The empty result that produced had been quoted as a measurement.
+
+And two shapes were being looked for in the wrong place, because they are not
+draws:
+
+* **the loop counter.** Three creators stagger `delay` as `index / k` — a
+  signed divide, `cdq / sub eax, edx / sar eax, 1` for k = 2.
+* **the direction service.** Three take their velocity from `0x0046D400` and
+  a fixed 1600. §17.1's finding that that routine is *not normalised* leaves a
+  signature nothing else makes: **every** one of their 33 records carries
+  `|vx|` or `|vy|` equal to 1600 exactly, and none of `0x0042ACF0`'s drawn
+  velocities ever lands on it. So closing the service closed half of this.
+
+What is left is a residue of ten creators rather than eleven whole ones, and
+`native.draws_unstructured` now pins the list by name — it used to compare the
+tuple against its own de-duplication, which is true of every tuple without
+repeats, so deleting an entry passed silently.
+
+### 18.4 The arms, stepped inside the engine
+
+This is the one that was actually hard, and it is the one that paid.
+
+`tools/blob_gold.py` gained two phase families. Both load the save, reset the
+pool, run one creator and read all twelve 88-byte records; then `ticks_*`
+calls **the engine's own frame sweep**, `aCheckInBlobObjects` `0x0041E3D0`,
+eight times, and `arms_*` calls `aBlob_Update` `0x0041E500` per record
+instead. The second exists because the sweep hands every non-sprite record to
+Eng3d's `0x00403CC0` before ticking it, and outside an open render frame that
+faults — deterministically, on the first sweep, for any creator whose records
+are class 0. The check-in is not part of the arm, so skipping it is the more
+precise measurement of the two.
+
+Twenty-three creator pools landed, eight rounds each. The model is re-seeded
+from the **measured** second-generator seed at the start of every round: the
+engine walks the pool by ascending index and so does the transcription, so the
+prefix of the stream is the same and a slot that drew in an earlier round
+cannot drift the comparison.
+
+| | |
+|---|---|
+| Arms a shot can populate at all | **24** of 74 |
+| Reproduce the engine's record field for field | **22** |
+| Stepped and disagreeing | **2** |
+| Untouched by any measurement | **50** |
+
+**Two real errors, both invisible to any amount of re-reading.**
+
+* **Kind 11 does not delete itself.** [`28` §7.7](28-effects-and-sound.md)'s
+  arm table listed it as the one self-deleting arm and this transcription
+  followed the table. `0x004207B6` ends `mov eax, 1 / ret`; the
+  `aDeleteBlobObject` call at `0x004207F8` two instructions later is the
+  **wrapper's** expiry path, which every arm falls past and none enters. The
+  engine's record kept moving, gravity-bitten and spinning, where the model
+  had already removed it. Removal is the wrapper's, always.
+* **Kind 8 draws `aRandom(0, 0xFFF)`, not `0x1000`.** Three literals at
+  `0x00420543`, `0x0042055B` and `0x00420576`. One unit high on about a
+  quarter of the draws, in a rotation word — the exact shape of defect that
+  survives every structural check ever written for it.
+
+**The two that disagree are named rather than rounded off.** Arms 25 and 58
+(kinds 26 and 61) are seekers: their arm asks the unit map where its target is
+and the capture's adapter answers nothing. Feeding them the save's own unit
+positions does not reproduce the engine's first tick either, so what the engine
+handed them is **UNVERIFIED** and `_seek`'s arithmetic is not cleared by this
+capture. That is a new, specific open item where there had been a vague one.
+
+**Two things about the comparison that had to be got right, and one that
+nearly was not.** A freed slot is reused *within the same round* — the engine
+walks slots in ascending order, so a blob that spawns while slot 1 is being
+ticked lands in slot 1 the moment slot 1 is freed later in that round, and
+often with the same kind, since a kind-75 emitter spawns more kind 75.
+Comparing on compares two unrelated records. The tell is **life**: the wrapper
+decrements it by exactly one per tick and holds it only at the immortal
+`0xFF`, so a record whose life is neither `was` nor `was - 1` is not the
+record that was there before. That rule is honest in both directions — an arm
+that wrongly deletes early still fails, because the engine's record for its
+slot *is* a continuation, and that is how kind 11 was caught rather than
+excused. And because a stopping rule that stopped too eagerly would report 24
+of 24 in silence, the check hands the same machinery a model started one unit
+wrong and requires it to say so.
+
+**The boundary the suites print does not move.** `test_blob.gd` still says
+`executable-Python`, because that suite compares GDScript against Python and
+not against the engine. The stronger statement is *transitive* and per arm:
+for those 22, the engine agrees with the Python here and the Python agrees
+with the GDScript there. The fixture carries both lists and the suite names
+which — a blanket `native-runtime` label would be exactly the overclaim this
+project exists to avoid.
+
+### 18.5 What tested the new pins
+
+An **in-memory** mutation battery rather than a file-walking one: each new
+constant in `blob_gold.py`, `blob_runtime.py` and `inclib/eng3d.py` is
+perturbed in the loaded module and `--check` is required to fail. 109
+mutations, 97 caught. The twelve that are not are all **capture-plan**
+constants — the RNG entry points the plans read, the group size, the start-up
+probe's own numbers — which a run against a finished capture structurally
+cannot exercise, because they are only used while *taking* one. Doing it in
+memory also sidesteps the hazard §17 recorded at the cost of a whole run:
+nothing on disk is written, so nothing on disk can be clobbered.
+
+Three of the misses were real and were fixed rather than excused, and one was
+a check that checked nothing: `native.draws_unstructured` compared its tuple
+against its own de-duplication, so deleting a creator passed silently. The
+two recipe families and the tick coverage are now pinned by count as well as
+by name, and `TICK_FIELDS` is pinned against the whole record `parse_records`
+reads — a field quietly dropped from the diff is a field the engine is no
+longer consulted about, and no count would have moved.
+
+### 18.6 What §18 left open
+
+*(Two of these four closed on 2026-09-01; see §19.)*
+
+* ~~**`_seek` is not cleared.**~~ Closed — [`28` §7.7.1](28-effects-and-sound.md).
+* ~~**Fifty arms have never been stepped.** ... reaching them wants writing
+  records into the pool directly, which is a different and more invasive
+  experiment.~~ Closed — it is one byte, and ten of the fifty were wrong; §20.
+* **Ten creators keep a residue** of fields with no named mechanism, per
+  §18.3.
+* ~~One creator's pool, `0x00428200`'s, had to go through `arms_*` rather than
+  the sweep even though its own records are sprites: one of its arms spawns a
+  model blob.~~ Right in substance, wrong in the attribution, and it does have
+  a static answer — §19.2.
+
+| | |
+|---|---|
+| `blob_gold.py --check` | 161 -> **195** |
+| `run_tests.sh` | 1870 -> **1875** |
+| Open questions | 37 -> **38** — the four residues all lived inside closure texts rather than in numbered questions, so closing them moved nothing; §18.4 **found** one, and `28` gains it as item 3 |
+
+## 19. 2026-09-01 — the seekers, and why one pool killed the sweep
+
+Two of §18.6's four are closed, and **neither needed a new capture**. Both
+were answerable from the arms' own instructions plus the two phases already
+taken, which is the same pattern §18 itself ran into: the premise was wrong,
+not the effort insufficient.
+
+### 19.1 The seekers reproduce the engine — arms 25 and 58
+
+[`28` §7.7.1](28-effects-and-sound.md) carries the finding in full. In short,
+`_seek` was wrong in three separate places, and the capture could not have
+told them apart because all three are wrong on the very first tick:
+
+1. the steer comes from `0x0046D400`, whose first two components are divided
+   by whichever of `|dx|` and `|dy|` is larger — **not** a unit vector. The
+   old model normalised by the true distance;
+2. the orientation call takes the record's **next position**, not the target,
+   so a seeker points along its own path;
+3. the arrival writes `life = 0` only; the global word is each arm's, and
+   kind 27's sits inside the arrival branch while kinds 26 and 61 raise it for
+   a spent life too.
+
+The target was found by elimination rather than by reading it: replaying the
+18 stepped transitions against the 15 object positions this save holds leaves
+exactly one that reproduces the engine's next record, on every one of the 18.
+That is `seek.target_is_unique`, and the narrower thing still open — nobody
+read the `[unit + 0x4B]` byte — is stated as item 3's residue rather than
+folded away.
+
+**`TICK_ARMS_UNRESOLVED` is now empty**, and every stepped arm agrees. The
+suites still print `executable-Python`: 24 of 74 is what the fixture's
+`native_arms` says, and it is still a transitive claim per arm.
+
+### 19.2 The pool that killed the sweep is `aBlob_CreateLaser`
+
+`0x00428200` is `aBlob_CreateLaser`, and it builds **two** kinds, not one:
+kind 70 at `0x004284D3` and kind 71 at `0x00428544`, both class 2, both life
+20. The twelve records the plan reads are all kind 70 — the kind 71 records
+sit past the window — which is why the pool looked like a sprite pool whose
+arm somehow spawned geometry. It does not: kind 70's arm (`0x0041F427`,
+shared with kind 66) draws `aRandom(3, 10)` into `+0x54` and returns.
+
+**Kind 71's arm** (`0x0041F448`) is the one that spawns, and it calls
+`aBlob_CreateLaserHit2` `0x0042A9D0`, which builds a class **0** record with
+`A_SPARK.3DI` at `0x0042AB17`. The sweep's own test at `0x0041E432` skips
+Eng3d's `0x00403CC0` for class 2 and 3 and for any record whose `delay` is
+still counting, so the model record is handed to the renderer on the sweep
+*after* it appears — the fourth, which is exactly where `ticks_0x00428200`
+faults.
+
+Two checks fall out of that and are worth keeping in mind rather than
+guessing again: every pool whose `ticks_` phase survived all eight sweeps
+holds only class-2 records, and every pool that faulted on the *first* sweep
+holds class 0 or 1. "Try the sweep and fall back" stays the rule, but the
+fallback is now explained rather than superstitious.
+
+## 20. 2026-09-01 — the other fifty arms, and the ten defects in them
+
+§18.6's second residue said reaching the fifty arms no creator fills "wants
+writing records into the pool directly, which is a different and more invasive
+experiment". It is a **one-byte** experiment: `+0x44` is the jump-table index,
+so a donor record with a foreign kind in it is a record of that kind as far as
+`aBlob_Update` is concerned.
+
+`tools/blob_gold.py` gained the `poked_*` family. One donor pool
+(`aBlob_SparkingPlug` `0x0042ACF0` — the one reachable creator that fills
+twelve **class-0** slots with a model handle, so a model-posing arm has
+something to dereference), then two adjacent bytes of six records rewritten
+through the game's own imported `memcpy` — `+0x44` is the jump-table index and
+`+0x45` is `life` — then `aBlob_Update` per record per round with the pool and
+the second generator's seed read back after **every call** rather than once per
+round. Nine plans, eight rounds, 50 arms, **397** single-arm comparisons. No
+plan faulted.
+
+The `life` half of that write is there because a mutation battery caught what
+the first attempt could not see. With the donor's own `life` of 30 and four
+rounds, kind 76's `life <= 4` branch is never entered: perturbing its divisor
+changed nothing and the check stayed green. A poked `life` of six over eight
+rounds crosses that gate and reaches `life == 0`, where the terminal arms
+spawn, morph and hand the record back — and `poked.life_written` and
+`poked.rounds_per_phase` pin both numbers, so a thinner capture fails rather
+than checking less.
+
+What it measures is the **arm**; the record it is handed is a donor's, so the
+arguments a creator would have passed are not measured. That is a weaker claim
+than §18.4's and the fixture keeps the two lists apart for exactly that reason.
+
+### 20.1 Ten of the fifty disagreed, and nine of them were this file's fault
+
+| Arm | Kind | What was wrong | What it is |
+|---|---|---|---|
+| 0, 2, 28 | 0, 2, 29 | the rotation draws were `aRandom(0, 0xFFF)` | `0x1000` — **only** kind 8's arm pushes `0xFFF` |
+| 13 | 13 | velocity damped by a tenth | a **twentieth**: `sar edx, 3` after `0x66666667` |
+| 19 | 19 | damped by a tenth | a **fifth**: `sar edx, 1` |
+| 57 | 60 | damped by a sixth | a **third**: `0x55555556` with no shift |
+| 72 | 76 | one move; `+0x28` set to 2; `z += vz/3` | **two** moves while `life > 4`; `+0x24` set to 2; `z −= vz/3` |
+| 14 | 14 | no rotation at all | the delta is spun about the vertical by `0x004039A0` through `life·20` or `(life−22)·10` |
+| 36 | 37 | an orientation call and nothing else | the same spin at a fixed `0x66`, subtracted rather than added |
+
+The tenth is kind 27, the seeker, and it is §20.2 — an arm this file had
+right and a helper it did not.
+
+The first row is a **regression this project introduced**, and it is worth
+saying so plainly. §18.4 found that kind 8's arm draws `aRandom(0, 0xFFF)` and
+the correction was copied to all four arms that share the wording; three of
+them push `0x1000` and are two hundred bytes apart in the binary. Nothing could
+catch it, because no creator fills kinds 0, 2 or 29 — until something stepped
+them.
+
+The last two rows are the interesting ones. Kinds 14 and 37 are the **only**
+arms that call `0x004039A0`, Eng3d's three-angle matrix, and §17 had just
+finished measuring that service without noticing that two arms depend on it.
+Both spin the horizontal delta to a point held in the velocity slots and place
+the record at the point plus (kind 14) or minus (kind 37) the turned delta.
+
+### 20.2 And `_ftol` returns the **low dword**
+
+The fiftieth arm to fall was kind 27, a seeker, and it fell for a reason worth
+recording. Its donor record sits exactly on its target's column, so
+`0x0046D400` answers `NaN, NaN, ±inf` — the `hooks` phase measured those three
+deltas and they are genuinely degenerate. The model steered by `INT_MIN`; the
+engine steered by **nothing**.
+
+MSVC's `_ftol` is an `fistp` to a **qword** and returns the pair in `edx:eax`,
+and every caller here keeps `eax`. x87's 64-bit integer indefinite is
+`0x8000000000000000`, whose low dword is zero. So the invalid conversion is a
+zero, not an `INT_MIN`, and the branch that `docs/28` §7.7.1 had marked
+**UNVERIFIED** is now measured — by an arm nothing had ever run.
+
+### 20.3 Both twins, and what the suites print
+
+`tools/blob_runtime.py` and `godot/game/fx/blob_kinds.gd` carry all ten fixes;
+`BlobHooks` gained a `rotate` service beside `orient` and `direction`, and
+`orient` now takes a **source point** rather than the record, because kinds 14
+and 37 orient from the point in their velocity slots and not from where they
+are.
+
+The boundary the suites print does **not** move: `test_blob.gd` still says
+`executable-Python`, because it compares GDScript against Python. What changed
+is the transitive claim behind it, which is now the whole table:
+
+| | |
+|---|---|
+| Arms stepped inside `Incubation.exe` | **74 of 74** |
+| …with records a creator built | 24 (`native_arms`) |
+| …with a donor record, kind byte rewritten | 50 (`poked_arms`) |
+| Stepped and disagreeing | **0** |
+
+### 20.4 The unit-map slot, at a second point
+
+§19.1 identified the seekers' target by elimination at one value of `+0x54`.
+The poked kind-27 record carries the donor's, which is **0**, and sweeping the
+same fifteen object positions leaves object 0 — uniquely. Two points is not a
+reading of `[unit + 0x4B]`, and `docs/28` §12 item 3's residue still says so,
+but it is two rather than one.
+
+### 20.5 One more service had to be measured first
+
+Two of the fifty disagreed on the second capture and neither was a
+transcription bug. Kinds 16 and 17 are the **swap-model** arms: they call
+`0x004038F0` with a name and store the answer straight into `+0x0C`. The
+adapter answered with an index into its own three-name list, the engine with a
+real handle, and the diff was a diff of the adapter.
+
+That is the same shape as the seekers' target, and it gets the same treatment:
+a small `models` phase asks the engine's own lookup for each of the three names
+after loading the save, and the check resolves through **that**. `A_BLUT5.3DI`
+is 105, `A_BLUT6.3DI` 106, `A_HIT2.3DI` 144. `poked.model_handles` pins that
+all three resolve, so a capture without the phase fails rather than comparing
+invented numbers.
+
+The rule this is the second instance of: **a field an arm copies out of a
+service is not evidence about the arm until the service is measured.** Getting
+it wrong in the other direction — "the arm is broken" — would have cost a day.
+
+| | |
+|---|---|
+| `blob_gold.py --check` | 195 -> **215** |
+| `run_tests.sh` | 1875 -> **1876** |
+| Mutation battery over the ten fixes | 11 mutants, 11 caught |
+| Open questions | 38 -> **37** (`28` item 3 closes; its residue is named in place) |

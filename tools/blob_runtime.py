@@ -34,6 +34,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from inclib.eng3d import direction_vector  # noqa: E402
 from inclib.rng import ARandom  # noqa: E402
 
 
@@ -202,7 +203,51 @@ class BlobHooks:
         self.target_calls.append(blob.aux)
         return None
 
-    def orient(self, blob: Blob, target: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    def direction(self, blob: Blob,
+                  target: Sequence[int]) -> Tuple[float, float, float]:
+        """`0x0046D400` -- the service the three seekers steer on.
+
+        Unlike :meth:`orient` this one needs **no table**: it is two ratios
+        over ``max(|dx|, |dy|)`` and a height over the truncated 2D distance,
+        so every adapter can answer it exactly and the seekers are not gated
+        on a game root.  The ``1`` the arms pass reaches only the vertical
+        (`docs/28` §7.4.2), and it is instruction evidence -- a `push 1` at
+        `0x0041F9A8`, `0x0041FC03` and `0x00420383` -- rather than something
+        the capture could separate, because `_ftol` collapses the difference
+        on every recorded step.
+        """
+
+        return direction_vector((blob.x, blob.y, blob.z), target, 1)
+
+    def rotate(self, vector: Sequence[int],
+               angles: Sequence[int]) -> Tuple[int, int, int]:
+        """`0x004039A0` -- a vector through Eng3d's three-angle matrix.
+
+        Two arms reach it (kinds 14 and 37, `docs/97` §20.2) and both spin a
+        horizontal delta about the vertical.  With :attr:`tables` this is the
+        measured routine, `_E3D_init_matrix_RzRxRy` and its column-read
+        transform; without them it is a float stand-in, and the emitted
+        fixture's ``"orient": "substitute"`` covers this service too, since
+        both need the same tables.
+        """
+
+        if self.tables is not None:
+            x, y, z = self.tables.rotate(tuple(vector), tuple(angles))
+            return i32(x), i32(y), i32(z)
+        a, b, c = (math.radians(v * 360.0 / 4096.0) for v in angles)
+        sa, ca = math.sin(-a), math.cos(-a)
+        sb, cb = math.sin(-b), math.cos(-b)
+        sc, cc = math.sin(-c), math.cos(-c)
+        m = (cb * cc - sa * sb * sc, ca * sc, sb * cc + sa * cb * sc,
+             -(cb * sc + sa * sb * cc), ca * cc, sa * cb * cc - sb * sc,
+             -ca * sb, -sa, ca * cb)
+        return tuple(  # type: ignore[return-value]
+            i32(int(math.floor(m[row] * vector[0] + m[row + 3] * vector[1]
+                               + m[row + 6] * vector[2])))
+            for row in range(3))
+
+    def orient(self, source: Sequence[int],
+               target: Tuple[int, int, int]) -> Tuple[int, int, int]:
         """``0x00403AA0``'s ``(pitch, 0, yaw)``, measured where possible.
 
         With :attr:`tables` this is the retail routine: the yaw straight out
@@ -217,11 +262,11 @@ class BlobHooks:
         """
 
         if self.tables is not None:
-            pitch, yaw = self.tables.orient((blob.x, blob.y, blob.z), target)
+            pitch, yaw = self.tables.orient(tuple(source), target)
             return u16(pitch), 0, u16(yaw)
-        dx = target[0] - blob.x
-        dy = target[1] - blob.y
-        dz = target[2] - blob.z
+        dx = target[0] - source[0]
+        dy = target[1] - source[1]
+        dz = target[2] - source[2]
         horizontal = math.hypot(dx, dy)
         yaw = int(round(math.atan2(dy, dx) * (65536.0 / (2.0 * math.pi)))) & U16_MASK
         pitch = int(round(math.atan2(dz, horizontal) * (65536.0 / (2.0 * math.pi)))) & U16_MASK
@@ -256,7 +301,13 @@ def _request_delete(blob: Blob, result: TickResult) -> None:
 
 
 def _explicit_delete(blob: Blob, result: TickResult) -> None:
-    """Call the retail pool-deletion routine used by kind 11/the wrapper."""
+    """Call the retail pool-deletion routine -- the **wrapper's**, only.
+
+    No jump-table arm reaches `0x0041E320`; every one of them returns and the
+    wrapper removes the record on the next tick that finds `life == 0`. This
+    helper had a second caller until a kind-11 record was stepped inside the
+    engine and kept moving (`docs/28` §7.7).
+    """
 
     blob.in_use = False
     blob.alive = False
@@ -299,7 +350,8 @@ def _set_model(blob: Blob, hooks: BlobHooks, result: TickResult, name: str) -> N
 def _orient(blob: Blob, hooks: BlobHooks, result: TickResult,
             target: Tuple[int, int, int], *, write_y: bool = True,
             zero_y: bool = False) -> None:
-    pitch, yaw, roll = (u16(v) for v in hooks.orient(blob, target))
+    pitch, yaw, roll = (u16(v) for v in
+                        hooks.orient((blob.x, blob.y, blob.z), target))
     blob.rot_x = pitch
     if write_y:
         blob.rot_y = yaw
@@ -309,30 +361,73 @@ def _orient(blob: Blob, hooks: BlobHooks, result: TickResult,
     result.event("orient", target)
 
 
+#: `[0x004B1238]`, the double every seeker multiplies the direction service's
+#: answer by.  It is **negative**, and the arm subtracts the product, so the
+#: two signs cancel and a seeker accelerates *toward* its target.
+SEEK_PULL = -240.0
+#: The half-width of the box that counts as a hit, on each axis separately.
+SEEK_HIT = 0x640
+
+
+def _ftol(value: float) -> int:
+    """`0x004AE7B6` -- MSVC's `_ftol`, which is `fistp qword` and truncates.
+
+    It stores **64 bits** and returns the pair in `edx:eax`; every caller here
+    keeps `eax`, so the answer is the *low dword* of the truncation.  That
+    matters for the invalid conversion: x87's 64-bit integer indefinite is
+    `0x8000000000000000`, whose low dword is **zero**, so a NaN steers a
+    seeker by nothing at all rather than by `INT_MIN`.
+
+    Measured, not reasoned: the poked kind-27 record of `docs/97` §20 sits
+    exactly on its target's column, the direction service answers `NaN, NaN,
+    inf` (the `hooks` phase has those three deltas), and the engine's record
+    comes back damped by a sixth with **no** steering term.
+    """
+
+    if math.isnan(value) or math.isinf(value) or not -2**63 <= value < 2**63:
+        return 0
+    return i32(int(value) & I32_MASK)
+
+
 def _seek(blob: Blob, hooks: BlobHooks, result: TickResult,
-          *, z_offset: int = 0, finish: bool = True) -> bool:
+          *, z_offset: int = 0) -> Optional[bool]:
+    """Kinds 26, 27 and 61 -- `docs/28` §7.7.1.  ``None`` when there is no target.
+
+    The arm asks the unit map for the record of the unit its own ``+0x54``
+    names, takes that unit's *object* id from ``+0x4B``, asks
+    `aGetStdObjectPosition` where that object is, and steers with
+    `0x0046D400` -- the **direction service**, whose first two components are
+    divided by whichever of ``|dx|`` and ``|dy|`` is larger and whose third is
+    divided by the truncated 2D distance.  It is *not* a normalised vector,
+    and the older model here divided by the true distance instead: a shape
+    that looks right and is wrong, which is why the two seekers were the only
+    stepped arms that disagreed with the engine.
+
+    Two more corrections came out of the same reading.  The orientation call
+    takes the **step** -- the position the record is about to have -- not the
+    target, so a seeker points where it is going rather than where it is
+    aiming; and the hit sets ``life`` to zero and nothing else, the global
+    signal belonging to each arm's own ``life == 0`` branch.
+    """
+
     target = hooks.target_position(blob)
     if target is None:
         result.target_missing = True
         result.event("target_missing", blob.aux)
-        return False
+        return None
     target = (i32(target[0]), i32(target[1]), i32(target[2] + z_offset))
-    dx, dy, dz = target[0] - blob.x, target[1] - blob.y, target[2] - blob.z
-    # 26/27/61 use the same normalized vector helper.  The recovered constant
-    # at 0x4b1238 is -240.0 and the surrounding magic multiply is signed /6,
-    # hence ``old_v - old_v/6 + direction*240`` below.
-    distance = math.sqrt(float(dx * dx + dy * dy + dz * dz))
-    if distance:
-        blob.vx = i32(blob.vx - trunc_div(blob.vx, 6) + trunc_div(round(dx * 240.0), round(distance)))
-        blob.vy = i32(blob.vy - trunc_div(blob.vy, 6) + trunc_div(round(dy * 240.0), round(distance)))
-        blob.vz = i32(blob.vz - trunc_div(blob.vz, 6) + trunc_div(round(dz * 240.0), round(distance)))
-    _orient(blob, hooks, result, target, write_y=False, zero_y=True)
+    steer = hooks.direction(blob, target)
+    blob.vx = i32(blob.vx - trunc_div(blob.vx, 6) - _ftol(steer[0] * SEEK_PULL))
+    blob.vy = i32(blob.vy - trunc_div(blob.vy, 6) - _ftol(steer[1] * SEEK_PULL))
+    blob.vz = i32(blob.vz - trunc_div(blob.vz, 6) - _ftol(steer[2] * SEEK_PULL))
+    step = (i32(blob.x + blob.vx), i32(blob.y + blob.vy), i32(blob.z + blob.vz))
+    _orient(blob, hooks, result, step, write_y=False, zero_y=True)
     _move(blob)
-    if finish and all(abs(a - b) < 0x640 for a, b in zip((blob.x, blob.y, blob.z), target)):
+    if all(abs(a - b) < SEEK_HIT for a, b in zip(step, target)):
         blob.life = 0
         result.event("seek_hit", blob.aux)
-        _request_delete(blob, result)
-    return True
+        return True
+    return False
 
 
 # Constructor entry points recovered from the jump arms.  Keeping addresses
@@ -354,6 +449,11 @@ BLOB_NAME_SCRATCH = 0x4FA524
 
 
 def _kind_0(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
+    # **0x1000 here, and 0xFFF only in kind 8's arm.**  The three arms below
+    # push `0x1000`; `0x004204F4`'s push `0xFFF`.  A pass that had stepped
+    # kind 8 and not these copied the literal across all four, which stepping
+    # *these* -- with a donor record's kind byte rewritten, since no creator
+    # fills them -- caught (`docs/97` §20).
     blob.rot_x = u16(_random(hooks, 0, 0x1000))
     blob.rot_y = u16(_random(hooks, 0, 0x1000))
     blob.rot_z = u16(_random(hooks, 0, 0x1000))
@@ -369,6 +469,11 @@ def _kind_1(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 def _kind_2(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     _move(blob)
+    # **0x1000 here, and 0xFFF only in kind 8's arm.**  The three arms below
+    # push `0x1000`; `0x004204F4`'s push `0xFFF`.  A pass that had stepped
+    # kind 8 and not these copied the literal across all four, which stepping
+    # *these* -- with a donor record's kind byte rewritten, since no creator
+    # fills them -- caught (`docs/97` §20).
     blob.rot_x = u16(_random(hooks, 0, 0x1000))
     blob.rot_y = u16(_random(hooks, 0, 0x1000))
     blob.rot_z = u16(_random(hooks, 0, 0x1000))
@@ -426,9 +531,14 @@ def _kind_8(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.x = i32(blob.x + _random(hooks, -100, 200))
     blob.y = i32(blob.y + _random(hooks, -100, 200))
     blob.z = i32(blob.z + _random(hooks, -100, 200))
-    blob.rot_x = u16(_random(hooks, 0, 0x1000))
-    blob.rot_y = u16(_random(hooks, 0, 0x1000))
-    blob.rot_z = u16(_random(hooks, 0, 0x1000))
+    # **0xFFF, not 0x1000.**  The three rotation draws push the literal
+    # `0xFFF` (`0x00420543`, `0x0042055B`, `0x00420576`); this model had 0x1000
+    # and was one unit high on about a quarter of the draws.  Stepping a
+    # kind-8 record inside `Incubation.exe` is what found it -- a difference
+    # of one in a rotation word no structural check could ever see.
+    blob.rot_x = u16(_random(hooks, 0, 0xFFF))
+    blob.rot_y = u16(_random(hooks, 0, 0xFFF))
+    blob.rot_z = u16(_random(hooks, 0, 0xFFF))
 
 
 def _kind_9(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -449,7 +559,14 @@ def _kind_11(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.rot_x = add_word(blob.rot_x, 0x0A)
     blob.rot_y = add_word(blob.rot_y, 0x0A)
     blob.rot_z = add_word(blob.rot_z, 0x0A)
-    _explicit_delete(blob, result)
+    # **It does not delete.**  `docs/28` §7.7's table listed kind 11 as the
+    # one self-deleting arm and this transcription followed it; the engine
+    # says otherwise.  `0x004207B6` ends `mov eax, 1 / ret`, and the
+    # `aDeleteBlobObject` call at `0x004207F8` two instructions later is the
+    # **wrapper's** expiry path, which every arm falls past and none of them
+    # enters.  Stepping a kind-11 record inside `Incubation.exe` for eight
+    # ticks found it moving, gravity-bitten and spinning where this model had
+    # already removed it (`tools/blob_gold.py`'s `arms_` phase).
 
 
 def _kind_12(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -459,11 +576,23 @@ def _kind_12(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 def _kind_13(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.x = i32(blob.x + blob.vx)
     blob.y = i32(blob.y + blob.vy)
-    blob.vx = i32(blob.vx - trunc_div(blob.vx, 10))
-    blob.vy = i32(blob.vy - trunc_div(blob.vy, 10))
+    # `0x66666667` with `sar edx, 3` is a divide by **20**, not by 10: the
+    # magic is the same for 5, 10 and 20 and only the shift separates them.
+    blob.vx = i32(blob.vx - trunc_div(blob.vx, 20))
+    blob.vy = i32(blob.vy - trunc_div(blob.vy, 20))
 
 
 def _kind_14(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
+    """`0x0041ED5A` -- the one arm that **spins** its delta before applying it.
+
+    The velocity slots hold a point rather than a velocity here: the record
+    closes on `(vx, vy)` by a tenth of the remaining distance per tick, and
+    the remainder is turned about the vertical by an angle read off `life`
+    before it is added back.  That turn is `0x004039A0`, Eng3d's three-angle
+    matrix, and this model had no turn at all -- which nothing could notice,
+    because no creator fills kind 14 (`docs/97` §20.2).
+    """
+
     dx = i32(blob.vx - blob.x)
     dy = i32(blob.vy - blob.y)
     if blob.life > 3:
@@ -471,10 +600,19 @@ def _kind_14(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
         dy = i32(dy - trunc_div(dy, 10))
     if blob.life == 1:
         _mark_free(blob, result)
-    target = (i32(blob.x + dx), i32(blob.y + dy), blob.z)
-    _orient(blob, hooks, result, target, write_y=False)
-    blob.x = i32(dx + blob.vx)
-    blob.y = i32(dy + blob.vy)
+    # The angle is a **word**: 20 per point of life while the record is not
+    # rising, and ten per point past 22 while it is.
+    turn = u16(blob.life * 20) if blob.vz == 0 else u16((blob.life - 22) * 10)
+    spun = hooks.rotate((dx, dy, 0), (0, 0, turn))
+    result.event("rotate", turn)
+    blob.x = i32(spun[0] + blob.vx)
+    blob.y = i32(spun[1] + blob.vy)
+    pitch, _yaw, roll = (u16(v) for v in
+                         hooks.orient((blob.vx, blob.vy, 0),
+                                      (blob.x, blob.y, 0)))
+    blob.rot_x = pitch
+    blob.rot_z = roll
+    result.event("orient", (blob.x, blob.y, 0))
 
 
 def _kind_15(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -510,9 +648,10 @@ def _kind_18(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 def _kind_19(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     _move(blob)
-    blob.vx = i32(blob.vx - trunc_div(blob.vx, 10))
-    blob.vy = i32(blob.vy - trunc_div(blob.vy, 10))
-    blob.vz = i32(blob.vz - trunc_div(blob.vz, 10))
+    # `sar edx, 1` after the same magic: a fifth, not a tenth.
+    blob.vx = i32(blob.vx - trunc_div(blob.vx, 5))
+    blob.vy = i32(blob.vy - trunc_div(blob.vy, 5))
+    blob.vz = i32(blob.vz - trunc_div(blob.vz, 5))
     if blob.life == 0:
         _spawn(blob, hooks, result, CREATE_HITTING_BLOBS, blob.x, blob.y, blob.z, 1)
 
@@ -549,14 +688,22 @@ def _kind_25(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 
 def _kind_26(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
-    if _seek(blob, hooks, result):
-        if blob.life == 0:
-            _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z, 0, 30, 16)
-            _spawn(blob, hooks, result, CREATE_HITTING_BLOBS_3, blob.x, blob.y, blob.z, 1)
+    # `0x0041FAF7` reads `life` back **after** the hit test, so a seeker that
+    # simply ran out of life signals and spawns exactly like one that arrived.
+    if _seek(blob, hooks, result) is None:
+        return
+    if blob.life == 0:
+        _request_delete(blob, result)
+        _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z, 0, 30, 16)
+        _spawn(blob, hooks, result, CREATE_HITTING_BLOBS_3, blob.x, blob.y, blob.z, 1)
 
 
 def _kind_27(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
-    _seek(blob, hooks, result, z_offset=0x640)
+    # The one seeker that aims 0x640 **above** its target, and the one whose
+    # signal is inside the hit branch (`0x0041FD68`) rather than after it: a
+    # kind-27 record that merely expires writes nothing global.
+    if _seek(blob, hooks, result, z_offset=0x640):
+        _request_delete(blob, result)
 
 
 def _kind_28(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -565,6 +712,11 @@ def _kind_28(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 
 def _kind_29(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
+    # **0x1000 here, and 0xFFF only in kind 8's arm.**  The three arms below
+    # push `0x1000`; `0x004204F4`'s push `0xFFF`.  A pass that had stepped
+    # kind 8 and not these copied the literal across all four, which stepping
+    # *these* -- with a donor record's kind byte rewritten, since no creator
+    # fills them -- caught (`docs/97` §20).
     blob.rot_x = u16(_random(hooks, 0, 0x1000))
     blob.rot_y = u16(_random(hooks, 0, 0x1000))
     blob.rot_z = u16(_random(hooks, 0, 0x1000))
@@ -615,7 +767,24 @@ def _kind_36(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 
 def _kind_37(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
-    _orient(blob, hooks, result, (blob.vx, blob.vy, blob.z), write_y=False)
+    """`0x0041EF0E` -- kind 14's turn with a fixed angle and the sign flipped.
+
+    Same shape: the velocity slots are a point, the delta to it is turned by
+    `0x004039A0`, and the record is placed at the point *minus* the turned
+    delta rather than at the delta plus it.  The angle is the literal `0x66`.
+    """
+
+    spun = hooks.rotate((i32(blob.vx - blob.x), i32(blob.vy - blob.y), 0),
+                        (0, 0, 0x66))
+    result.event("rotate", 0x66)
+    blob.x = i32(blob.vx - spun[0])
+    blob.y = i32(blob.vy - spun[1])
+    pitch, _yaw, roll = (u16(v) for v in
+                         hooks.orient((blob.vx, blob.vy, 0),
+                                      (blob.x, blob.y, 0)))
+    blob.rot_x = pitch
+    blob.rot_z = roll
+    result.event("orient", (blob.x, blob.y, 0))
 
 
 def _kind_38(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -778,13 +947,19 @@ def _kind_59(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 def _kind_60(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.rot_y = u16(7 - blob.life)
     _move(blob)
-    blob.vx = i32(blob.vx - trunc_div(blob.vx, 6))
-    blob.vy = i32(blob.vy - trunc_div(blob.vy, 6))
-    blob.vz = i32(blob.vz - trunc_div(blob.vz, 6))
+    # `0x55555556` with **no** shift is a third.  The seeker's damping next
+    # door uses the negated magic and is a sixth; the two are one instruction
+    # apart and were transcribed as the same number.
+    blob.vx = i32(blob.vx - trunc_div(blob.vx, 3))
+    blob.vy = i32(blob.vy - trunc_div(blob.vy, 3))
+    blob.vz = i32(blob.vz - trunc_div(blob.vz, 3))
 
 
 def _kind_61(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
-    _seek(blob, hooks, result)
+    if _seek(blob, hooks, result) is None:
+        return
+    if blob.life == 0:
+        _request_delete(blob, result)
 
 
 def _kind_62(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -932,11 +1107,22 @@ def _kind_76(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     _move(blob)
     blob.rot_y = u16(_random(hooks, 0, 7))
     set_aux(blob, _random(hooks, 5, 15))
+    # **It moves twice while it lives.**  The `ja` at `0x0041EB79` leaves for
+    # `0x0041EBCB`, which is a second plain move and a return; only the last
+    # four ticks take the halved step below.
+    if blob.life > 4:
+        _move(blob)
+        return
     if blob.life <= 4:
         blob.x = i32(blob.x + trunc_div(blob.vx, 2))
         blob.y = i32(blob.y + trunc_div(blob.vy, 2))
-        blob.z = i32(blob.z + trunc_div(blob.vz, 3))
-        blob.rot_z = 2
+        # `0x55555555` followed by `sub edx, ecx` is a divide by **minus**
+        # three -- the magic is one below `0x55555556` and the subtraction is
+        # the correction that flips the sign, so the record sinks by a third
+        # of its rise rather than climbing by it.  And the constant 2 goes
+        # into `+0x24`, the **pitch**, not into `+0x28`.
+        blob.z = i32(blob.z - trunc_div(blob.vz, 3))
+        blob.rot_x = 2
 
 
 def _kind_77(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -1010,14 +1196,14 @@ _ARM_MUTATIONS = (
     'x,y,z,rot_x,rot_y,rot_z,vz', 'x,y,z', 'x,y,z,rot_x,rot_y,rot_z',
     'x,y,z,rot_x,rot_y,rot_z,vz', 'x,y,z,vz', 'x,y,z,rot_x,rot_y,rot_z,vz',
     'x,y,z,rot_x,rot_y,rot_z,vz', 'x,y,z,aux', 'x,y,z,rot_x,rot_y,rot_z',
-    'x,y,z,rot_y,vz', 'x,y,z', 'in_use,x,y,z,rot_x,rot_y,rot_z,vz,alive',
+    'x,y,z,rot_y,vz', 'x,y,z', 'x,y,z,rot_x,rot_y,rot_z,vz',
     'rot_y', 'x,y,vx,vy', 'x,y,rot_x,rot_z', 'x,y,z', 'z', 'x,y,z,vz',
     'x,y,z,rot_x,rot_y,rot_z,vz', 'x,y,z,vx,vy,vz', 'x,y,z,vz', 'x,y,z,vz',
     'x,y,z,rot_y,vz', 'x,y,z,rot_y,vz', 'x,y,z,vz', 'x,y,z,rot_z',
     'x,y,z,rot_x,rot_y,rot_z,vx,vy,vz', 'x,y,z,rot_x,rot_y,rot_z,vx,vy,vz',
     '', 'x,y,z,rot_x,rot_y,rot_z,vz', 'x,y,z,vz', 'x,y,z,vz',
     'x,y,z,rot_y,aux', 'x,y,z,rot_y,aux', 'x,y,z,vz', 'rot_z', 'x,y,z',
-    'rot_x,rot_z', 'x,y,z,rot_y', 'x,y,z,rot_x,rot_y,rot_z,vz',
+    'x,y,rot_x,rot_z', 'x,y,z,rot_y', 'x,y,z,rot_x,rot_y,rot_z,vz',
     'x,y,z,rot_y,vz', 'rot_z', 'angle0,angle1,angle2', 'x,y,z,vz',
     'x,y,z,rot_y,vz', 'x,y,z,rot_y', 'x,y,z,rot_y,aux', 'x,y,rot_y,vx,vy',
     '', 'x,y,z,rot_y,aux', 'rot_y', 'rot_y', 'x,y,z,rot_y,vx,vy', '',
@@ -1052,6 +1238,23 @@ class _SelftestHooks(BlobHooks):
         return 2000, 3000, 4000
 
 
+class _SeekHooks(BlobHooks):
+    """The unit the captured seeker phases steer at.
+
+    `tools/blob_gold.py` established the whole chain by elimination: the
+    record's ``+0x54`` names a unit-map slot, that unit's ``+0x4B`` names an
+    object, and the object at id 1 is the only one of the fifteen the save
+    actually holds that reproduces the engine's next record -- on all eighteen
+    transitions where an arm ran.
+    """
+
+    TARGET = (57600, 12800, 160)
+
+    def target_position(self, blob: Blob) -> Optional[Tuple[int, int, int]]:
+        self.target_calls.append(blob.aux)
+        return self.TARGET
+
+
 class _ScriptedHooks(_SelftestHooks):
     def __init__(self, values: Sequence[float]) -> None:
         super().__init__()
@@ -1077,6 +1280,10 @@ def _selftest() -> None:
     assert HANDLERS[23] is HANDLERS[40]
     assert HANDLERS[48] is HANDLERS[53]
     assert HANDLERS[66] is HANDLERS[70]
+    # The two capture families between them reach every arm exactly once.
+    assert not set(NATIVE_ARMS) & set(POKED_ARMS)
+    assert sorted(NATIVE_ARMS + POKED_ARMS) == list(range(74))
+    assert not UNRESOLVED_ARMS
 
     # Wrapper order and byte/word wrapping.
     b = Blob(kind=0, life=3, delay=2, rot_x=0xFFFF, vx=3, vy=-2, vz=4)
@@ -1109,7 +1316,16 @@ def _selftest() -> None:
         assert h.rng.calls == _ARM_RNG_CALLS[kind], (kind, h.rng.calls)
         assert tuple(spawn.creator for spawn in r.spawns) == _ARM_SPAWNS.get(kind, ()), kind
 
+    # **No arm deletes; the wrapper does.**  This assertion used to require
+    # kind 11 to remove itself, which is what `docs/28` §7.7's table said and
+    # what stepping a kind-11 record inside `Incubation.exe` disproved.  It
+    # now asserts the two halves separately: the arm runs and leaves the
+    # record alone, and the wrapper removes it on the tick that finds a spent
+    # life.
     b = Blob(kind=11, life=2, z=100)
+    r = tick_blob(b, BlobHooks())
+    assert not r.deleted and b.alive and b.life == 1
+    b = Blob(kind=11, life=0, z=100)
     r = tick_blob(b, BlobHooks())
     assert r.deleted and not b.alive
     b = Blob(kind=73, life=1, z=100)
@@ -1121,6 +1337,28 @@ def _selftest() -> None:
     b = Blob(kind=49, life=1, z=100)
     r = tick_blob(b, BlobHooks(seed=1))
     assert r.dispatched and b.kind == 7 and b.life == 6
+
+    # The seeker, pinned to the **engine's own record**.  `blob_gold.py`'s
+    # `arms_0x004264A0` phase, round 0 to round 1, slot 0: a kind-61 record
+    # steering at the unit whose object sits at (57600, 12800, 160).  Only the
+    # position and the velocity are asserted here -- the two rotation words
+    # come from `0x00403AA0` and need the shipped tables, so `blob_gold.py`
+    # is where they are compared.  The older model, which divided by the true
+    # distance instead of by `0x0046D400`'s answer, misses every component.
+    b = Blob(kind=61, life=100, aux=1, class_id=0, model=99,
+             x=60800, y=19200, z=2400, vx=-960, vy=-1920, vz=-644)
+    r = tick_blob(b, _SeekHooks())
+    assert (b.x, b.y, b.z) == (59880, 17360, 1788), (b.x, b.y, b.z)
+    assert (b.vx, b.vy, b.vz) == (-920, -1840, -612), (b.vx, b.vy, b.vz)
+    assert b.life == 99 and not r.global_signal
+    # Sixteen steps later the same record is inside the 0x640 box on all three
+    # axes, and the arrival is `life = 0` plus the signal and **no** delete.
+    for _ in range(60):
+        if b.life == 0:
+            break
+        r = tick_blob(b, _SeekHooks())
+    assert b.life == 0 and b.alive and not r.deleted
+    assert r.global_signal and ('seek_hit', 1) in r.events
 
     # Review regressions: constructor ABI, direct +0x00 store and all branches
     # of kind 65.  Scripted values are the already-converted x87 results.
@@ -1310,6 +1548,62 @@ def _case_arg(value: Any) -> Any:
     raise TypeError("blob spawn argument is not an integer: %r" % (value,))
 
 
+#: The eight `(vector, angles)` pairs `tools/blob_gold.py`'s `hooks` phase put
+#: through `0x004039A0` in a live process.  They are repeated here so the
+#: emitted fixture can carry the **model's** answers to them and the GDScript
+#: twin can be diffed against the Python one on exactly the inputs the engine
+#: itself answered; `blob_gold.py` pins that the two lists are the same list.
+#: `0x88` is the literal `0x004228F0` writes before it calls, so one case is
+#: the shipped one rather than a sweep's invention.
+#: **The arms the engine itself has stepped.**  `tools/blob_gold.py`'s
+#: `ticks_`/`arms_` phases populate the pool with a creator inside a running
+#: `Incubation.exe`, call the engine's own frame sweep -- or `aBlob_Update`
+#: directly, where the sweep's renderer check-in cannot run outside a frame --
+#: and read the 88-byte records back between rounds.  These arms reproduced
+#: every field of every occupied slot for every round.
+#:
+#: It does **not** make the layer `native-runtime`: this file is still diffed
+#: against its GDScript twin and not against the engine, and the other fifty
+#: arms are not populated by any creator a weapon switch selects, so nothing
+#: has stepped them at all.  What it does make is a *transitive* claim for
+#: these twenty-four -- engine against Python here, Python against GDScript in
+#: the suite -- and the fixture carries the list so the suite can say which.
+#: `blob_gold.py` pins that this list is the one its capture produced.
+NATIVE_ARMS: Tuple[int, ...] = (
+    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
+    61, 63, 68, 71, 73,
+)
+#: **The other fifty**, stepped the only way they can be.  No creator a weapon
+#: switch selects fills them, so `blob_gold.py`'s `poked_*` phases borrow a
+#: donor pool and rewrite each record's `+0x44` -- the jump-table index -- and
+#: call `aBlob_Update` once per record per round inside the engine.  Every one
+#: reproduces the engine's record field for field.
+#:
+#: It is a weaker claim than :data:`NATIVE_ARMS` in one specific way and no
+#: other: the record an arm is handed is a donor's, so the *arm* is measured
+#: and the arguments a creator would have given it are not.
+#:
+#: Ten of these fifty did not reproduce it until this file was corrected, and
+#: that is what the experiment was for -- `docs/97` §20 lists them.
+POKED_ARMS: Tuple[int, ...] = (0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72)
+#: Stepped and **not** reproduced: none, of all seventy-four.  The two seekers
+#: were here until the reading in :func:`_seek` replaced the invented
+#: normalisation with `0x0046D400`'s own answer.
+UNRESOLVED_ARMS: Tuple[int, ...] = ()
+
+
+CASE_ROTATIONS: Tuple[Tuple[Tuple[int, int, int], Tuple[int, int, int]], ...] = (
+    ((1000, 0, 0), (0, 0, 0)),
+    ((1000, 0, 0), (0, 0, 1024)),
+    ((1000, 0, 0), (0, 1024, 0)),
+    ((1000, 0, 0), (1024, 0, 0)),
+    ((0, 0, 1000), (2048, 0, 0)),
+    ((1000, 500, 250), (100, 200, 300)),
+    ((-700, 300, -900), (4000, 3000, 2000)),
+    ((1000, 0, 0), (0, 0, 0x88)),
+)
+
+
 def emit_cases(out: str, root: Optional[str] = None) -> int:
     """Write the per-tick trace `godot/tests/test_blob.gd` replays.
 
@@ -1354,15 +1648,24 @@ def emit_cases(out: str, root: Optional[str] = None) -> int:
 
     payload = {
         "schema": CASES_SCHEMA,
-        "oracle": "executable-Python (tools/blob_runtime.py).  The "
-                  "seventy-four arms are a transcription compared against a "
-                  "transcription -- NOT a trajectory against the engine.  The "
-                  "orientation service is the exception: with a game root it "
-                  "is 0x00403AA0's measured arithmetic (tools/blob_gold.py's "
-                  "hooks phase, 20/20), and the other services of docs/28 "
-                  "section 12 item 1 remain a deterministic adapter.",
+        "oracle": "executable-Python (tools/blob_runtime.py).  This diff is "
+                  "a transcription against a transcription; the boundary is "
+                  "NOT raised by what follows.  All five services of docs/28 "
+                  "section 12 item 1 are measured and reproduced "
+                  "(tools/blob_gold.py's hooks phase), and **all 74 arms** "
+                  "have additionally been stepped inside a running "
+                  "Incubation.exe and agree field for field: 24 with records "
+                  "a creator built (native_arms) and the other 50 with a "
+                  "donor record whose kind byte was rewritten (poked_arms), "
+                  "which measures the arm and not the arguments a creator "
+                  "would have passed it.  unresolved_arms is empty.",
+        "native_arms": list(NATIVE_ARMS),
+        "poked_arms": list(POKED_ARMS),
+        "unresolved_arms": list(UNRESOLVED_ARMS),
         "orient": "native" if tables is not None else "substitute",
-        "eng3d": ({"trig": tables.trig, "atn": tables.atn}
+        "eng3d": ({"trig": tables.trig, "atn": tables.atn,
+                   "rotations": [[list(v), list(a), tables.rotate(v, a)]
+                                 for v, a in CASE_ROTATIONS]}
                   if tables is not None else None),
         "kinds": len(HANDLERS),
         "arms": len(order),

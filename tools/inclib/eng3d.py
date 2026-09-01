@@ -27,20 +27,47 @@ Three of the five are argument-pure and are reproduced here exactly:
     by the **truncated integer** 2D distance.  It divides by zero without a
     guard, so ``NaN`` and ``±inf`` are ordinary results.  40/40.
 
+``rotate(vector, angles)``
+    ``0x004039A0`` -- a vector through Eng3d's own three-angle matrix.  It was
+    the one service this module recorded and did not reproduce, because no
+    ordering of ``Rz Rx Ry`` built from :meth:`Tables.matrix`'s arithmetic
+    matched all eight captured cases.  Three separate things were wrong, and
+    all three are in the DLL rather than in the caller: the builder **negates**
+    each angle before it indexes the table, its products are 64-bit and shifted
+    with ``shrd`` (floor) where ``0x004039F0``'s are 32-bit and truncated
+    toward zero, and the transform reads the matrix **by column**.  8/8.
+
 The other two are lookups whose tables only exist once a mission is loaded --
 ``0x00405100`` (object position) and ``0x00477AE0`` (unit record) -- and their
 strides and gates are pinned in ``blob_gold.py`` against the same capture.
 
-The one service that is **measured but not reproduced** is Eng3d's own
-three-angle matrix builder behind ``0x004039A0``.  Its two-angle sibling
-``0x004039F0`` *is* here, because ``orient`` is built on it; the three-angle
-one composes differently and no ordering of ``Rz Rx Ry`` with either rounding
-reproduces all eight captured cases.  The capture holds them; the arithmetic
-does not, and saying so is the point.
+The five runtime function pointers the two ``0x004039x0`` routines call
+through are ordinals of ``Eng3d.dll``, identified by finding each captured
+thunk's own bytes in the shipped DLL and matching the offset against its
+export table:
+
+===========  =========================  =======  ================================
+Global       Thunk RVA                  Ordinal  Export
+===========  =========================  =======  ================================
+0x004FA4E4   0x20AC                     13       ``_E3D_init_matrix_RzRxRy``
+0x004F84D4   0x20E4                     15       ``_E3D_c_rotate_coordinate``
+0x004FA4E0   0x2208                     27       ``_E3D_calc_angle_dx_dy``
+0x004F84D8   0x221C                     28       ``_E3D_fsin``
+0x004FA4DC   0x222C                     29       ``_E3D_fcos``
+===========  =========================  =======  ================================
+
+Ordinal 14 is ``_E3D_init_matrix_RyRxRz`` and **nothing reaches it**, which is
+the export table saying in its own words what `docs/30` §2.5 item 7 concluded
+from the joint opcodes.
 
 Static source: ``gog_incubation/Incubation.exe`` (``0x004039F0``,
-``0x00403AA0``, ``0x0046D400``) plus the shipped ``TRIG.IMG`` / ``ATN.IMG``,
-which ``tools/img_tables.py`` shows are one content across all 21 world sets.
+``0x004039A0``, ``0x00403AA0``, ``0x0046D400``), ``gog_incubation/Eng3d.dll``
+(``_E3D_init_matrix_RzRxRy`` at file offset 0x11BF6, ``_E3D_c_rotate_coordinate``
+at 0x1123C) plus the shipped ``TRIG.IMG`` / ``ATN.IMG``, which
+``tools/img_tables.py`` shows are one content across all 21 world sets.  The
+DLL carries **space** for the sine table at ``0x0048E6C0`` and not the table:
+all 5120 entries are zero in the file, so ``TRIG.IMG`` is what the running
+engine indexes.
 """
 
 from __future__ import annotations
@@ -53,8 +80,8 @@ from typing import Sequence
 
 __all__ = [
     "ANGLE_UNITS", "ATAN_INPUT_SCALE", "SINE_SCALE", "Q14_SHIFT",
-    "Eng3dError", "Tables", "load", "angle", "matrix", "transform",
-    "orient", "direction", "distance_2d",
+    "Eng3dError", "Tables", "load", "angle", "matrix", "matrix3",
+    "transform", "orient", "rotate", "direction", "distance_2d",
 ]
 
 #: A full turn.  `docs/70` -- binary degrees, not 65536ths.
@@ -164,13 +191,68 @@ class Tables:
                 sb, _trunc_shift(cb * ca), -_trunc_shift(cb * sa),
                 0, sa, ca]
 
-    # -- Eng3d's `[0x004F84D4]` --------------------------------------------
+    # -- `_E3D_init_matrix_RzRxRy`, `[0x004FA4E4]` --------------------------
+
+    def matrix3(self, a: int, b: int, c: int) -> list[int]:
+        """Eng3d's three-angle Q14 matrix, row major, in memory order.
+
+        Three things separate it from :meth:`matrix`, and all three had to be
+        right before a single one of the eight captured cases matched:
+
+        * every angle is **negated** before it indexes the table -- the DLL
+          opens ``neg ebx / neg ecx / neg edx`` and only then masks to 0xFFF,
+          so this builds ``Rz Rx Ry`` of the *opposite* turns;
+        * every product is a full 64-bit ``imul`` shifted with
+          ``shrd eax, edx, 14``, which floors.  ``0x004039F0`` next door uses a
+          32-bit ``imul`` and the ``cdq / and edx, 0x3FFF`` idiom, which
+          truncates toward zero.  Two roundings, two builders, one engine;
+        * the chained triple products shift **at each step**, not once at the
+          end, so ``sh(sh(s*s)*s)`` is not ``sh(s*s*s)``.
+        """
+        sa, ca = self.sin(-a), self.cos(-a)
+        sb, cb = self.sin(-b), self.cos(-b)
+        sc, cc = self.sin(-c), self.cos(-c)
+        sh = _floor_shift
+        return [
+            sh(cb * cc) - sh(sh(sa * sb) * sc),
+            sh(ca * sc),
+            sh(sb * cc) + sh(sh(sa * cb) * sc),
+            -(sh(cb * sc) + sh(sh(sa * sb) * cc)),
+            sh(ca * cc),
+            sh(sh(sa * cb) * cc) - sh(sb * sc),
+            -sh(ca * sb),
+            -sa,
+            sh(ca * cb),
+        ]
+
+    # -- `_E3D_c_rotate_coordinate`, `[0x004F84D4]` -------------------------
 
     @staticmethod
     def transform(m: Sequence[int], v: Sequence[int]) -> list[int]:
-        """``m * v`` in Q14, rounded the way the engine's transform rounds."""
-        return [_floor_shift(m[3 * row] * v[0] + m[3 * row + 1] * v[1]
-                             + m[3 * row + 2] * v[2]) for row in range(3)]
+        """``v`` through ``m`` in Q14, read the way the engine reads it.
+
+        The multiply is ``v0*m[i] + v1*m[i+3] + v2*m[i+6]``: the three entries
+        one output component needs are **three apart** in memory, not
+        adjacent.  Getting this backwards is survivable in isolation -- a
+        transposed read paired with a transposed build cancels, which is how
+        ``orient`` passed twenty cases while both halves were wrong -- and it
+        is not survivable the moment a second builder is added.
+
+        The three products accumulate at full 64-bit width and the sum is
+        shifted **once**, so this floors rather than truncating.
+        """
+        return [_floor_shift(m[row] * v[0] + m[row + 3] * v[1]
+                             + m[row + 6] * v[2]) for row in range(3)]
+
+    def rotate(self, vector: Sequence[int],
+               angles: Sequence[int]) -> list[int]:
+        """`0x004039A0` -- *vector* through :meth:`matrix3` of *angles*.
+
+        The wrapper in ``Incubation.exe`` reads the three angles as **signed
+        words** out of the caller's structure and does nothing else, so this
+        is the whole service.  8/8 against the capture.
+        """
+        return self.transform(self.matrix3(*angles), vector)
 
     # -- `0x00403AA0` -------------------------------------------------------
 
@@ -179,7 +261,9 @@ class Tables:
         """``(pitch, yaw)`` in 4096ths, exactly as the arms receive them.
 
         The routine takes the yaw straight from the horizontal delta, rotates
-        the whole delta by that yaw so it lies flat, and takes the pitch from
+        the whole delta by **minus** that yaw -- the ``neg eax`` at
+        ``0x00403ACF``, and the reason a transposed read of the matrix looked
+        right for twenty cases -- so it lies flat, and takes the pitch from
         the two components that survive -- **minus a quarter turn**, which is
         the ``sub eax, 0x400`` at ``0x00403B21`` and is why level is 0 and
         straight up is -1024.
@@ -191,7 +275,7 @@ class Tables:
         delta = [target[0] - source[0], target[1] - source[1],
                  target[2] - source[2]]
         yaw = self.angle(delta[0], delta[1])
-        flat = self.transform(self.matrix(0, yaw), delta)
+        flat = self.transform(self.matrix(0, -yaw), delta)
         return self.angle(flat[1], flat[2]) - ANGLE_UNITS // 4, yaw
 
     # -- `0x0046D400` -------------------------------------------------------
@@ -208,27 +292,44 @@ class Tables:
         * a delta with ``z1 == z0`` takes an early exit that stores a hard
           **0.0** rather than dividing, so the only ``NaN`` in the third
           component comes from a non-zero height over a zero distance.
+
+        It needs no table at all -- it is ratios and an integer square root --
+        so :func:`direction_vector` carries the arithmetic and callers with no
+        :class:`Tables` in hand (``tools/blob_runtime.py``'s seeker arms) can
+        reach the same answers.
         """
-        dx = target[0] - source[0]
-        dy = target[1] - source[1]
-        wide = max(abs(dx), abs(dy))
-        if wide:
-            first, second = dx / wide, dy / wide
-        else:
-            first = second = math.nan
-        if target[2] == source[2]:
-            return first, second, 0.0
-        if shift:
-            lo = [v >> 3 for v in source]
-            hi = [v >> 3 for v in target]
-        else:
-            lo, hi = list(source), list(target)
-        height = hi[2] - lo[2]
-        span = distance_2d(hi[0] - lo[0], hi[1] - lo[1])
-        if span == 0:
-            return first, second, (math.nan if height == 0
-                                   else math.copysign(math.inf, height))
-        return first, second, height / span
+        return direction_vector(source, target, shift)
+
+
+def direction_vector(source: Sequence[int], target: Sequence[int],
+                     shift: int = 0) -> tuple[float, float, float]:
+    """``0x0046D400``'s three doubles, without a :class:`Tables` to hold.
+
+    Split out of :meth:`Tables.direction` because the routine reads neither
+    ``TRIG.IMG`` nor ``ATN.IMG``: the three seeker arms of `docs/28` §7.7.1
+    steer on it, and their model has no reason to demand a game root for a
+    division.
+    """
+    dx = target[0] - source[0]
+    dy = target[1] - source[1]
+    wide = max(abs(dx), abs(dy))
+    if wide:
+        first, second = dx / wide, dy / wide
+    else:
+        first = second = math.nan
+    if target[2] == source[2]:
+        return first, second, 0.0
+    if shift:
+        lo = [v >> 3 for v in source]
+        hi = [v >> 3 for v in target]
+    else:
+        lo, hi = list(source), list(target)
+    height = hi[2] - lo[2]
+    span = distance_2d(hi[0] - lo[0], hi[1] - lo[1])
+    if span == 0:
+        return first, second, (math.nan if height == 0
+                               else math.copysign(math.inf, height))
+    return first, second, height / span
 
 
 def distance_2d(dx: int, dy: int) -> int:
@@ -273,8 +374,17 @@ def matrix(tables: Tables, a: int, b: int) -> list[int]:
     return tables.matrix(a, b)
 
 
+def matrix3(tables: Tables, a: int, b: int, c: int) -> list[int]:
+    return tables.matrix3(a, b, c)
+
+
 def transform(m: Sequence[int], v: Sequence[int]) -> list[int]:
     return Tables.transform(m, v)
+
+
+def rotate(tables: Tables, vector: Sequence[int],
+           angles: Sequence[int]) -> list[int]:
+    return tables.rotate(vector, angles)
 
 
 def orient(tables: Tables, source: Sequence[int],

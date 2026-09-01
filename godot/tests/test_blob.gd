@@ -34,6 +34,12 @@ const CASES: String = "res://generated/blob/blob.json"
 const SCHEMA: String = "incubation.blob-cases/1"
 ## How many mismatching fields to name before the message becomes noise.
 const REPORTED: int = 6
+## The vectors the native sweep put through `0x004039A0`.
+const ROTATE_CASES: int = 8
+## Arms stepped inside a running `Incubation.exe`, and those that disagreed.
+const NATIVE_ARMS: int = 24
+const POKED_ARMS: int = 50
+const UNRESOLVED_ARMS: int = 0
 
 
 func run(h: TestHarness) -> void:
@@ -83,6 +89,8 @@ func run(h: TestHarness) -> void:
 	h.equal("orient_straight_up",
 		measured.orient(Vector3i.ZERO, Vector3i(0, 0, 1000)),
 		Vector2i(-1024, 0), "straight up is pitch -1024")
+	_check_rotate(h, document, measured)
+	_check_native_arms(h, document)
 	h.equal("adapter_models", BlobHooks.MODELS,
 		_as_strings(DictRead.as_array(document["models"])))
 	h.equal("adapter_target", BlobHooks.DEFAULT_TARGET,
@@ -335,6 +343,103 @@ func _hooks(document: Dictionary, kase: Dictionary) -> BlobHooks:
 ## `"substitute"` and both twins keep the older stand-in. Reading the field
 ## rather than assuming either is what keeps a root-free emit from quietly
 ## comparing two different orientation helpers.
+## The arms the engine itself has stepped, carried in from the capture.
+##
+## This suite's own boundary does **not** move: it compares GDScript against
+## Python, and the fixture's `oracle` field says so. What it can do is name the
+## arms for which the Python side has additionally been diffed against a
+## running `Incubation.exe` field for field, so a reader knows which of the 74
+## are transitively native and which are two readings of one listing.
+func _check_native_arms(h: TestHarness, document: Dictionary) -> void:
+	var native: Array = DictRead.as_array(document.get("native_arms", []))
+	var unresolved: Array = DictRead.as_array(document.get("unresolved_arms", []))
+	h.equal("native_arms_counted", native.size(), NATIVE_ARMS,
+		"%d of 74 arms were stepped inside the retail process and agreed"
+		% NATIVE_ARMS)
+	h.equal("unresolved_arms_counted", unresolved.size(), UNRESOLVED_ARMS,
+		"%d stepped arm(s) disagree; the two seekers left this list when "
+		% UNRESOLVED_ARMS
+		+ "`_seek` started asking `0x0046D400` instead of normalising")
+	var poked: Array = DictRead.as_array(document.get("poked_arms", []))
+	h.equal("poked_arms_counted", poked.size(), POKED_ARMS,
+		"%d arm(s) no creator fills were stepped with a donor record whose "
+		% POKED_ARMS + "kind byte was rewritten")
+	var overlap: bool = false
+	for arm: Variant in unresolved:
+		if native.has(arm):
+			overlap = true
+	for arm: Variant in poked:
+		if native.has(arm):
+			overlap = true
+	h.check("native_arms_disjoint", not overlap,
+		"an arm is stepped one way or the other, never both")
+	h.check("native_arms_cover_the_table",
+		native.size() + poked.size() == DictRead.as_int(document["arms"]),
+		"the two capture families between them reach all %d arms"
+		% DictRead.as_int(document["arms"]))
+	# And the boundary this suite prints is still the weaker one, on purpose.
+	h.check("oracle_is_still_executable_python",
+		DictRead.as_string(document.get("oracle", "")).begins_with(
+			"executable-Python"),
+		"the fixture says transcription-against-transcription in its own words")
+
+
+## `0x004039A0` -- the last of the five services, on the eight vectors the
+## native sweep put through it.
+##
+## The fixture carries the **Python** twin's answers to those eight, and
+## `tools/blob_gold.py` compares the same eight against the engine's own. So
+## this half is twin against twin and that half is twin against the process,
+## and neither is asked to stand in for the other.
+func _check_rotate(h: TestHarness, document: Dictionary,
+		measured: Eng3dGeometry) -> void:
+	var raw: Variant = document.get("eng3d")
+	var block: Dictionary = DictRead.as_dict(raw)
+	var rotations: Array = DictRead.as_array(block.get("rotations", []))
+	h.check("rotate_cases_present", rotations.size() == ROTATE_CASES,
+		"the fixture carries %d rotation(s)" % ROTATE_CASES)
+	var bad: int = 0
+	for row: Variant in rotations:
+		var triple: Array = DictRead.as_array(row)
+		if triple.size() != 3:
+			bad += 1
+			continue
+		var vector: Vector3i = _as_vector3i(DictRead.as_array(triple[0]))
+		var angles: Vector3i = _as_vector3i(DictRead.as_array(triple[1]))
+		var want: Vector3i = _as_vector3i(DictRead.as_array(triple[2]))
+		if measured.rotate(vector, angles) != want:
+			bad += 1
+	h.equal("rotate_matches_python", bad, 0,
+		"every captured vector goes through _E3D_init_matrix_RzRxRy the same way")
+	# The three properties that separate this builder from its neighbour, each
+	# stated so a GDScript-side regression fails here and not only in Python.
+	h.equal("rotate_identity_loses_a_unit",
+		measured.rotate(Vector3i(1000, 0, 0), Vector3i.ZERO), Vector3i(999, 0, 0),
+		"the engine's identity rotation is 16383/16384, not 1")
+	h.equal("rotate_negates_its_angles",
+		measured.matrix3(0, 0, 1024)[1], -measured.sine(1024),
+		"the builder indexes the table with the opposite turn")
+	h.equal("rotate_reads_by_column",
+		Eng3dGeometry.transform(_column_probe(), Vector3i(0, 1, 0)),
+		Vector3i(1, 0, 0),
+		"output i reads m[i], m[i+3], m[i+6]")
+
+
+## A matrix whose only non-zero entry is m[3], one in Q14.
+static func _column_probe() -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for index: int in range(9):
+		out.append(1 << Eng3dGeometry.Q14_SHIFT if index == 3 else 0)
+	return out
+
+
+static func _as_vector3i(values: Array) -> Vector3i:
+	if values.size() != 3:
+		return Vector3i.ZERO
+	return Vector3i(DictRead.as_int(values[0]), DictRead.as_int(values[1]),
+		DictRead.as_int(values[2]))
+
+
 func _geometry(document: Dictionary) -> Eng3dGeometry:
 	if _cached_geometry != null:
 		return _cached_geometry

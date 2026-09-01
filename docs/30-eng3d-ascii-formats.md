@@ -335,21 +335,48 @@ the horizontal depth axis. A remake placing rotated scenery needs `c`.
 ##### The exact matrix, if you want bit-identical results
 
 `E3D_init_matrix_RzRxRy(a0, a1, a2, dest)` (`fcn.00411bf6`) writes nine `int32`
-Q14 values. With `s_k = sin(a_k)`, `c_k = cos(a_k)` (4096-unit circle, `TRIG.IMG`,
-peak 16383) the stored order is:
+Q14 values.
+
+> **Corrected 2026-09-01 against a live capture.** The form this section
+> carried before — nine expressions in `s_k = sin(a_k)`, `c_k = cos(a_k)` with
+> "every product is `(x*y) >> 14`" — has the right *shape* and is **not**
+> bit-identical. Implemented literally it misses four of the eight cases
+> `tools/blob_gold.py`'s `hooks` phase measured by calling the routine inside a
+> running `Incubation.exe` ([`28` §7.4.2](28-effects-and-sound.md)). Two things
+> were missing and both change numbers.
+
+The routine **negates every angle** before it indexes the table — the body
+opens `neg ebx / neg ecx / neg edx` and only then masks with `0xFFF` — and its
+products are 64-bit `imul` shifted with `shrd eax, edx, 14`, which **floors**.
+Negating before a floor is not negating after one, so the signs cannot be
+folded into the expressions: write `s_k = sin(-a_k)`, `c_k = cos(-a_k)`, both
+read out of `TRIG.IMG` (4096-unit circle, peak 16383), let `sh(x) = x >> 14`
+arithmetic, and the stored order is
 
 ```
-M[0] = c1*c2 + s0*s1*s2     M[1] = -c0*s2            M[2] = s0*c1*s2 - s1*c2
-M[3] = c1*s2 - s0*s1*c2     M[4] =  c0*c2            M[5] = -s0*c1*c2 - s1*s2
-M[6] = c0*s1                M[7] =  s0               M[8] =  c0*c1
+M[0] = sh(c1*c2) - sh(sh(s0*s1)*s2)      M[1] = sh(c0*s2)
+M[2] = sh(s1*c2) + sh(sh(s0*c1)*s2)      M[3] = -(sh(c1*s2) + sh(sh(s0*s1)*c2))
+M[4] = sh(c0*c2)                         M[5] = sh(sh(s0*c1)*c2) - sh(s1*s2)
+M[6] = -sh(c0*s1)                        M[7] = -s0
+M[8] = sh(c0*c1)
 ```
 
-(every product is `(x*y) >> 14`). The matrix is **applied transposed** —
-`_E3D_c_rotate_coordinate` / `fcn.0041123c` computes
+The **triple products shift at each step**: `sh(sh(x*y)*z)`, not `sh(x*y*z)`.
+Shifting once at the end puts those entries six orders of magnitude out, which
+is the larger half of the correction; the negation is the smaller half and
+moves single units.
+
+The matrix is **applied transposed** — `_E3D_c_rotate_coordinate` /
+`fcn.0041123c` computes
 
 ```
 out[j] = ( sum_i  M[3*i + j] * v[i] ) >> 14
 ```
+
+with the three products accumulated at full 64-bit width and the sum shifted
+once. `tools/inclib/eng3d.py` (`Tables.matrix3`, `Tables.rotate`) and
+`godot/game/fx/eng3d_geometry.gd` are the two transcriptions of this, 8/8
+against the capture.
 
 Two caveats for a remake:
 
@@ -358,7 +385,11 @@ Two caveats for a remake:
   record, so `.3DW` alone does not fix it. Both agree on the single-axis cases
   above, which is what the yaw question needed. **Which one each opcode
   picks is now read out of the handlers** — open question 7 below has the
-  table; the two the shipped joint programs reach both build `RzRxRy`.
+  table; the two the shipped joint programs reach both build `RzRxRy`. The
+  call graph now says something stronger from the other end: `Incubation.exe`
+  resolves ordinal 14, `_E3D_init_matrix_RyRxRz`, into `0x004FA4A0` like it
+  resolves 86 of the DLL's 89 exports — and **nothing in `.text` calls or even
+  loads that slot**. `fcn.00411a93` is reachable only from inside Eng3d.
 * The opcode also supplies the `add esi, eax` byte offset, so a prototype may
   read a *different* three-angle window out of an external animation array. The
   slot semantics stated here are the loader's, which is offset-independent.

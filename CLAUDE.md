@@ -65,7 +65,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 1865 checks
+bash   godot/run_tests.sh                                    # 31 suites, 1875 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -311,15 +311,59 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture; taking one needs `--game-copy` and Wine. It also carries the
+the capture (**215 checks**); taking one needs `--game-copy` and Wine. It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through
 the geometry one, eight rotations, eighty-one object ids and every named unit
-slot. `tools/inclib/eng3d.py` reproduces four of the five exactly and
-`--check` compares them answer for answer. The fifth, Eng3d's three-angle
-matrix builder, is **recorded and not reproduced** — do not let a suite claim
-otherwise. `--probe-startup N` is the other new mode and needs no plan of its
+slot. `tools/inclib/eng3d.py` reproduces **all five** exactly and `--check`
+compares them answer for answer. The last to fall was Eng3d's three-angle
+matrix builder, and the three things that had to be right together are all in
+`Eng3d.dll` rather than in the caller: it **negates** each angle before it
+indexes the table, its products are 64-bit and floored where `0x004039F0`'s
+twelve bytes away are 32-bit and truncated toward zero, and its chained triple
+products shift at **every** step. The five runtime function pointers are named
+too — `Incubation.exe` resolves them by ordinal written out as **decimal
+text**, so `push 0x004BF9F8` is the string `"13"` and `Eng3d.dll`'s export
+table finishes the sentence. It also carries the two **tick** families, which is what closed the second
+half of `docs/28` §12 item 1 — the arms themselves, stepped in the engine.
+`ticks_*` calls the engine's own frame sweep `aCheckInBlobObjects`
+`0x0041E3D0`; `arms_*` calls `aBlob_Update` `0x0041E500` per record, and
+exists because the sweep hands every record whose class is not 2 or 3 and
+whose `delay` has run out to Eng3d's `0x00403CC0`, which faults outside an
+open render frame — a class-2 pool that spawns a **model** blob therefore
+dies a few sweeps in rather than at once, which is what `aBlob_CreateLaser`
+`0x00428200` does through its kind-71 arm (`docs/97` §19.2). 24 of the 74
+arms are populated by a creator a weapon switch selects and **all 24
+reproduce the engine's record field for field**; the last two to fall were
+the seekers, arms 25 and 58, whose step is `docs/28` §7.7.1 and whose target
+is the object named by `[unit_map[record + 0x54] + 0x4B]`. The **`poked_*`**
+family reaches the other fifty, which no creator fills: `+0x44` is the
+jump-table index and `+0x45` is `life`, so writing **two adjacent bytes** into
+a donor record through the game's own imported `memcpy` makes it a record of
+any kind with a lifetime short enough to reach its own terminal branch, and
+`aBlob_Update` is then called per record per round with the pool read back
+after **every call** so a fault costs only the arms after it. The `life` half
+exists because a mutation battery caught kind 76's `life <= 4` branch being
+transcribed and never run. All fifty reproduce the engine too --
+after ten of them were fixed (`docs/97` §20), which is what that experiment
+was for. So **74 of 74 arms are stepped and agree**, 24 with a creator's
+record and 50 with a donor's; the second is weaker in one way and no other,
+in that the arm is measured and the arguments a creator would pass it are
+not. Between them the two families found errors in **fourteen** of the
+seventy-four arms and one in `_ftol`: kind 11 does **not** delete itself (the
+`aDeleteBlobObject` two instructions past its arm is the *wrapper's* expiry
+path), kind 8 draws `aRandom(0, 0xFFF)`, not `0x1000` -- and **only** kind 8,
+a correction this project then over-applied to kinds 0, 2 and 29, which the
+poked pass caught -- `_seek` was steering on a normalised direction the engine
+never computes, three arms damp by a twentieth, a fifth and a third where the
+model had a tenth, a tenth and a sixth, kind 76 moves **twice** while it lives,
+kinds 14 and 37 turn their delta through `0x004039A0` and had
+no turn at all, and `_ftol`'s invalid conversion is a **zero** rather than
+`INT_MIN` because the caller keeps `eax` of an `fistp qword`. **The suites still
+print `executable-Python`** — the transitive claim is per arm and the fixture
+carries the list; do not let a suite label the layer `native-runtime`.
+`--probe-startup N` is the other new mode and needs no plan of its
 own: it runs one plan N times with a single attempt each and reports how often
 Wine reached the anchor (`docs/91` §1.1). **One creator per plan**:
 a plan that dies takes every creator sharing its process with it, and the
@@ -394,9 +438,16 @@ set-piece driver at 20 fps and the terrain diff that finally makes a door
 *move*. Its own finding is `RoofUnit`'s drop rate -- one whole map field per
 displayed frame, `0x00411E26` -- which neither `docs/20` nor `docs/28` carried;
 its correction is to `docs/92` §7.1's accounting of which volume ids the alien
-scream's defect left dead. **Nothing in it claims `native-runtime`**: the blob
-service hooks of `docs/28` §12 are un-validated, so both sides of the diff run
-the same deterministic adapter and the suites print `executable-Python`.
+scream's defect left dead. **The suites still print `executable-Python`**, and
+must keep doing so: they compare GDScript against Python, not against the
+engine. `docs/97` §17 and §18 raised what is *behind* that diff — all five
+blob service hooks are measured and reproduced, and **all 74 arms** have been
+stepped inside a running `Incubation.exe` and agree field for field (§19
+closed the last two of the 24 a weapon can reach, §20 the other 50) — but
+that is a **transitive, per-arm** claim carried in the fixture's `native_arms`
+list, not a label on the layer -- two lists now, `native_arms` and
+`poked_arms`, because a donor record with a rewritten kind byte measures the
+arm and not the arguments a creator would give it.
 
 `docs/97` §14 is a later pass over the loose ends that report listed: the model
 half of the pool now draws and its joints move, footsteps sound, a unit rides

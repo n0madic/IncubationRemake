@@ -31,10 +31,13 @@ extends RefCounted
 ## `tools/img_tables.py` can only show the formula agrees to within one unit,
 ## and one unit of a 4096-unit circle is one unit of every angle built on it.
 ##
-## What is **not** here: Eng3d's own three-angle matrix builder behind
-## `0x004039A0`. The capture holds its eight cases and no ordering of
-## `Rz Rx Ry` with either rounding reproduces them, so it stays measured and
-## unreproduced -- see `docs/28` section 12.
+## Eng3d's own three-angle matrix builder behind `0x004039A0` is here too, and
+## it was the last of the five to fall. `Incubation.exe` only marshals for it;
+## the arithmetic is `_E3D_init_matrix_RzRxRy`, ordinal 13 of `Eng3d.dll`, and
+## three things about it are not guessable from the caller: it **negates** each
+## angle before indexing the table, its products are 64-bit and floored where
+## the two-angle builder's are 32-bit and truncated toward zero, and the
+## transform reads the matrix **by column**. All eight captured cases, exactly.
 
 ## A full turn. Binary degrees; **not** 65536ths.
 const ANGLE_UNITS: int = 4096
@@ -153,17 +156,125 @@ func matrix(a: int, b: int) -> PackedInt32Array:
 	return out
 
 
-## Eng3d's `[0x004F84D4]` -- `m * v`, rounded the way it rounds.
+## `_E3D_init_matrix_RzRxRy`, ordinal 13 -- the three-angle Q14 matrix.
+##
+## Every angle is negated before it indexes the table, every product is floored
+## rather than truncated, and the chained triples shift **at each step**: the
+## engine's `sh(sh(s * s) * s)` is not `sh(s * s * s)`.
+func matrix3(a: int, b: int, c: int) -> PackedInt32Array:
+	var sa: int = sine(-a)
+	var ca: int = cosine(-a)
+	var sb: int = sine(-b)
+	var cb: int = cosine(-b)
+	var sc: int = sine(-c)
+	var cc: int = cosine(-c)
+	var out: PackedInt32Array = PackedInt32Array()
+	out.append(floor_shift(cb * cc) - floor_shift(floor_shift(sa * sb) * sc))
+	out.append(floor_shift(ca * sc))
+	out.append(floor_shift(sb * cc) + floor_shift(floor_shift(sa * cb) * sc))
+	out.append(-(floor_shift(cb * sc) + floor_shift(floor_shift(sa * sb) * cc)))
+	out.append(floor_shift(ca * cc))
+	out.append(floor_shift(floor_shift(sa * cb) * cc) - floor_shift(sb * sc))
+	out.append(-floor_shift(ca * sb))
+	out.append(-sa)
+	out.append(floor_shift(ca * cb))
+	return out
+
+
+## `_E3D_c_rotate_coordinate`, ordinal 15 -- `v` through `m`, read by column.
+##
+## The three entries one output component needs are **three apart** in memory,
+## not adjacent. A transposed read paired with a transposed build cancels, which
+## is how `orient` passed twenty captured cases while both halves were wrong.
 static func transform(m: PackedInt32Array, v: Vector3i) -> Vector3i:
 	return Vector3i(
-		floor_shift(m[0] * v.x + m[1] * v.y + m[2] * v.z),
-		floor_shift(m[3] * v.x + m[4] * v.y + m[5] * v.z),
-		floor_shift(m[6] * v.x + m[7] * v.y + m[8] * v.z))
+		floor_shift(m[0] * v.x + m[3] * v.y + m[6] * v.z),
+		floor_shift(m[1] * v.x + m[4] * v.y + m[7] * v.z),
+		floor_shift(m[2] * v.x + m[5] * v.y + m[8] * v.z))
+
+
+## `0x004039A0` -- a vector through the three-angle matrix of `angles`.
+func rotate(v: Vector3i, angles: Vector3i) -> Vector3i:
+	return transform(matrix3(angles.x, angles.y, angles.z), v)
+
+
+## `0x0044AE10` -- the 2D distance, **truncated** to an integer.
+##
+## A delta of (5, 3) comes back 5 where rounding would give 6, and the third
+## component of [method direction] divides by this rather than by the exact
+## length. `sqrt` is exact enough for the map's magnitudes, and the two loops
+## make it exact for all of them.
+static func distance_2d(dx: int, dy: int) -> int:
+	var square: int = dx * dx + dy * dy
+	var root: int = int(sqrt(float(square)))
+	while root > 0 and root * root > square:
+		root -= 1
+	while (root + 1) * (root + 1) <= square:
+		root += 1
+	return root
+
+
+## `0x0046D400` -- the three doubles the seeking arms steer on.
+##
+## It is **not** a normalised vector, which is the whole point: the first two
+## components are divided by whichever of `|dx|` and `|dy|` is larger, so one
+## of them is always exactly ±1, and the third is divided by the truncated 2D
+## distance. A model that divided by the true length has the right shape and
+## the wrong numbers, and that is what kept the two seekers disagreeing with
+## the engine until `tools/blob_gold.py` stepped them.
+##
+## `shift` reaches **only** the vertical -- it is applied inside the branch
+## that computes it -- and the three arms all pass 1.
+##
+## Doubles, not a `Vector3`: `Vector3` is 32-bit and these ratios are
+## multiplied by -240 and truncated, where a lost bit changes an integer.
+static func direction(source: Vector3i, target: Vector3i,
+		shift: int) -> PackedFloat64Array:
+	var dx: int = target.x - source.x
+	var dy: int = target.y - source.y
+	var wide: int = maxi(absi(dx), absi(dy))
+	var first: float = NAN
+	var second: float = NAN
+	if wide != 0:
+		first = float(dx) / float(wide)
+		second = float(dy) / float(wide)
+	if target.z == source.z:
+		return PackedFloat64Array([first, second, 0.0])
+	var lo: Vector3i = source
+	var hi: Vector3i = target
+	if shift != 0:
+		lo = Vector3i(source.x >> 3, source.y >> 3, source.z >> 3)
+		hi = Vector3i(target.x >> 3, target.y >> 3, target.z >> 3)
+	var height: int = hi.z - lo.z
+	var span: int = distance_2d(hi.x - lo.x, hi.y - lo.y)
+	if span == 0:
+		if height == 0:
+			return PackedFloat64Array([first, second, NAN])
+		return PackedFloat64Array([first, second, INF if height > 0 else -INF])
+	return PackedFloat64Array([first, second, float(height) / float(span)])
+
+
+## `0x004AE7B6` -- MSVC's `_ftol`, which is an `fistp qword` and truncates.
+##
+## It stores **64 bits** and returns the pair in `edx:eax`, and every caller
+## here keeps `eax`: the answer is the *low dword*. An invalid conversion
+## stores x87's 64-bit integer indefinite, `0x8000000000000000`, whose low
+## dword is **zero** -- so a NaN steers a seeker by nothing rather than by
+## `INT_MIN`. Measured: the poked kind-27 record of docs/97 section 20 sits on
+## its target's column, the direction service answers NaN, and the engine's
+## record comes back with no steering term at all.
+static func ftol(value: float) -> int:
+	if is_nan(value) or is_inf(value) \
+			or value < -9223372036854775808.0 or value >= 9223372036854775808.0:
+		return 0
+	return IncInt.i32(int(value) & IncInt.U32_MASK)
 
 
 ## `0x00403AA0` -- `(pitch, yaw)` in 4096ths, as the arms receive them.
+##
+## The delta is turned by **minus** the yaw -- the `neg eax` at `0x00403ACF`.
 func orient(from: Vector3i, at: Vector3i) -> Vector2i:
 	var delta: Vector3i = at - from
 	var yaw: int = angle(delta.x, delta.y)
-	var flat: Vector3i = transform(matrix(0, yaw), delta)
+	var flat: Vector3i = transform(matrix(0, -yaw), delta)
 	return Vector2i(angle(flat.y, flat.z) - ANGLE_UNITS / 4, yaw)

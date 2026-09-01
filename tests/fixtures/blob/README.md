@@ -47,21 +47,47 @@ rest are still a *deterministic adapter* that both sides implement, `CaseHooks` 
 * `lookup_model(name)` is the position of the name in a fixed three-entry
   table, or −1;
 * `target_position` is one fixed point, or `null`;
+* `rotate`/`matrix3` are the retail `_E3D_init_matrix_RzRxRy` and
+  `_E3D_c_rotate_coordinate`, and the document carries the eight
+  `(vector, angles, expected)` triples the native sweep put through
+  `0x004039A0` under `eng3d.rotations`; `test_blob.gd` re-runs them through
+  the GDScript twin while `blob_gold.py` compares the same eight against the
+  engine, so neither half stands in for the other;
 * `orient` **is** the retail routine, `0x00403AA0`, when the fixture was
   emitted with a game root — measured over twenty deltas inside a live
   `Incubation.exe` and reproduced from the shipped trig tables
   (`docs/28` §7.4.2). It was the invented substitute until that sweep, and the
   substitute was wrong in the unit *and* in the pitch.
 
-So this file checks that the 74 arms were transcribed correctly. It does not
-check that a particle follows the trajectory the original's particle followed:
-one service being measured does not make the arms measured.
-The document's own `oracle` field says so in as many words, and the suite
-prints the boundary rather than letting a reader assume the stronger one.
+So this file checks that the 74 arms were transcribed correctly, GDScript
+against Python. It is **not** a diff against the engine, and the document's
+`oracle` field says so in as many words.
+
+What has changed underneath it is that all five services are measured *and
+reproduced* now (`0x004039A0` included — it is `_E3D_init_matrix_RzRxRy`,
+ordinal 13 of `Eng3d.dll`), and that **all 74 arms have been stepped inside a
+running `Incubation.exe`** by `cases_native.json`'s phases and reproduce its
+records field for field. The document carries three lists so this suite can
+name which is which:
+
+* `native_arms` — the 24 a weapon switch's creators fill, stepped by the
+  `ticks_*` and `arms_*` phases with the records those creators built;
+* `poked_arms` — the other 50, stepped by the `poked_*` phases with a **donor**
+  record whose `+0x44` was rewritten. The jump-table index is one byte, so no
+  creator is needed to reach an arm; what that measures is the arm, and not
+  the arguments a creator would have passed it;
+* `unresolved_arms` — **empty**. The last two to leave it were the seekers
+  (arms 25 and 58), which disagreed until `_seek` stopped normalising a
+  direction the engine never computes (`docs/28` §7.7.1).
+
+The claim is *transitive and per arm* — the engine agrees with the Python
+there, the Python agrees with the GDScript here — and never a label on the
+layer. Ten of the fifty were wrong when they were first stepped; `docs/97`
+§20.1 lists them.
 
 ## What one run held
 
-780 cases, 3276 ticks: 78 kinds × 10 scenarios.
+936 cases, 3900 ticks: 78 kinds × 12 scenarios.
 
 | Scenario | What it exercises |
 |---|---|
@@ -75,6 +101,8 @@ prints the boundary rather than letting a reader assume the stronger one.
 | `no_model` | kinds 16 and 17 with a model lookup that fails |
 | `spawn_refused` | a constructor that finds no free slot and returns −1 — `docs/28` §7.1's silent drop |
 | `mirrored` | the low byte of the record pointer, which kinds 25 and 56 branch on |
+| `emitter_special` | `0x00461E80`'s returned byte, which kind 59 branches on — without it both sides agree about that branch by never running it |
+| `zero_velocity` | a record with no velocity at all, so an arm that only *moves* is distinguished from one that does nothing |
 
 Each tick records the whole 24-field record plus the wrapper's eight result
 flags, the spawn list with its arguments, the model lookups, and `ARandom`'s
@@ -88,7 +116,15 @@ the suite asserts are named by no creator in the port.
 ## `cases_native.json` — the creators, run in the engine
 
 `docs/28` §7.6's thirty reachable creators, called inside a live
-`Incubation.exe` with `_6_.sav` loaded, with the pool read back after each.
+`Incubation.exe` with `_6_.sav` loaded, with the pool read back after each —
+plus, since `docs/97` §18, **the arms themselves**. Twenty-three creator pools
+carry a `ticks_<creator>` or `arms_<creator>` phase holding nine rounds of the
+first twelve records as **raw hex** (not parsed: a blob that frees slot 3
+would otherwise hide slots 4 through 11 from every later round) and the second
+generator's seed beside each. `ticks_*` calls the engine's own frame sweep
+`aCheckInBlobObjects`; `arms_*` calls `aBlob_Update` per record, and exists
+because the sweep hands every non-sprite record to Eng3d's `0x00403CC0`, which
+faults outside an open render frame.
 Written by `tools/blob_gold.py --game-copy`, read by
 `tools/blob_gold.py --check gog_incubation` and by
 `godot/tests/test_blob_native.gd`. Gitignored, like every capture here.

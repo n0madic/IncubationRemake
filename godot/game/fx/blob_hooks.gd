@@ -139,6 +139,51 @@ func has_target_for(_blob: Blob) -> bool:
 	return has_target
 
 
+## `0x0046D400` -- how a seeker steers, and the one service of the five that
+## needs no table at all.
+##
+## The arms pass 1, which reaches only the vertical component. This is
+## [method Eng3dGeometry.direction] verbatim, so a fixture emitted with no game
+## root still gets the retail answer here -- unlike [method orient], which
+## falls back to a substitute and says so.
+func direction(blob: Blob, at: Vector3i) -> PackedFloat64Array:
+	return Eng3dGeometry.direction(Vector3i(blob.x, blob.y, blob.z), at, 1)
+
+
+## `0x004039A0` -- a vector through Eng3d's three-angle matrix.
+##
+## Two arms reach it (kinds 14 and 37) and both spin a horizontal delta about
+## the vertical. Measured when [member geometry] carries the shipped tables;
+## the float stand-in below covers the same root-free case [method orient]
+## does, and the fixture's `"orient": "substitute"` covers both.
+func rotate(vector: Vector3i, angles: Vector3i) -> Vector3i:
+	if geometry != null and geometry.is_loaded():
+		return geometry.rotate(vector, angles)
+	var a: float = float(-angles.x) * TAU / 4096.0
+	var b: float = float(-angles.y) * TAU / 4096.0
+	var c: float = float(-angles.z) * TAU / 4096.0
+	var m: PackedFloat64Array = PackedFloat64Array([
+		cos(b) * cos(c) - sin(a) * sin(b) * sin(c), cos(a) * sin(c),
+		sin(b) * cos(c) + sin(a) * cos(b) * sin(c),
+		-(cos(b) * sin(c) + sin(a) * sin(b) * cos(c)), cos(a) * cos(c),
+		sin(a) * cos(b) * cos(c) - sin(b) * sin(c),
+		-cos(a) * sin(b), -sin(a), cos(a) * cos(b)])
+	return Vector3i(_column(m, 0, vector), _column(m, 1, vector),
+		_column(m, 2, vector))
+
+
+## One output component of the substitute matrix, read **by column** as the
+## retail transform reads it.
+static func _column(m: PackedFloat64Array, row: int,
+		vector: Vector3i) -> int:
+	var a: float = m[row]
+	var b: float = m[row + 3]
+	var c: float = m[row + 6]
+	var sum: float = floor(a * float(vector.x) + b * float(vector.y)
+		+ c * float(vector.z))
+	return IncInt.i32(int(sum))
+
+
 ## `0x00403AA0` -- **measured**, when [member geometry] carries the shipped
 ## tables, and the documented substitute when it does not.
 ##
@@ -150,15 +195,14 @@ func has_target_for(_blob: Blob) -> bool:
 ## 65536ths from the horizontal. Both numbers this substitute produces are
 ## therefore wrong, and it survives only for a fixture emitted with no game
 ## root -- which says `"orient": "substitute"` so the suite knows.
-func orient(blob: Blob, at: Vector3i) -> Vector3i:
+func orient(from: Vector3i, at: Vector3i) -> Vector3i:
 	if geometry != null and geometry.is_loaded():
-		var pair: Vector2i = geometry.orient(
-			Vector3i(blob.x, blob.y, blob.z), at)
+		var pair: Vector2i = geometry.orient(from, at)
 		return Vector3i(pair.x & IncInt.U16_MASK, 0,
 			pair.y & IncInt.U16_MASK)
-	var dx: float = float(at.x - blob.x)
-	var dy: float = float(at.y - blob.y)
-	var dz: float = float(at.z - blob.z)
+	var dx: float = float(at.x - from.x)
+	var dy: float = float(at.y - from.y)
+	var dz: float = float(at.z - from.z)
 	var horizontal: float = sqrt(dx * dx + dy * dy)
 	var yaw: int = round_half_even(atan2(dy, dx) * (65536.0 / TAU)) \
 		& IncInt.U16_MASK
@@ -172,11 +216,13 @@ func orient(blob: Blob, at: Vector3i) -> Vector3i:
 ## Round half to **even**, which is what an x87 store does under the default
 ## rounding mode -- and what Python's `round()` does, so the two sides agree.
 ##
-## GDScript's `roundi` rounds half **away from zero**. The difference shows up
-## on exactly the half-integers, which the seek step's `dx * 240.0` reaches
-## whenever the distance divides evenly; a silent one-unit divergence there
-## would surface as a particle drifting apart from the reference over a
-## hundred ticks rather than as an obvious failure.
+## GDScript's `roundi` rounds half **away from zero**, and the difference shows
+## up on exactly the half-integers. The seek step used to reach them; it no
+## longer does -- it truncates through [method Eng3dGeometry.ftol] now, which
+## is what `0x004AE7B6` does -- so the remaining caller is the substitute
+## orientation above, where a silent one-unit divergence would surface as a
+## particle drifting from the reference over a hundred ticks rather than as an
+## obvious failure.
 static func round_half_even(value: float) -> int:
 	var floored: float = floor(value)
 	var fraction: float = value - floored

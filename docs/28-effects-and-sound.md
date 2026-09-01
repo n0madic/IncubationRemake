@@ -621,7 +621,7 @@ four, `0x00477AE0` one.
 | `0x0046D400` | source and target → three doubles | **yes**, 40/40 |
 | `0x00405100` | object id → its position | **yes**, table and gate measured |
 | `0x00477AE0` | unit id → its record address | **yes**, stride measured |
-| `0x004039A0` | a vector through Eng3d's 3-angle matrix | recorded, **not** reproduced |
+| `0x004039A0` | a vector through Eng3d's 3-angle matrix | **yes**, 8/8 |
 
 `tools/inclib/eng3d.py` is the portable half and `godot/game/fx/eng3d_geometry.gd`
 its twin; both read the shipped `TRIG.IMG` and `ATN.IMG` rather than
@@ -655,6 +655,48 @@ that a reimplementation gets wrong by default and the capture settles:
   pitch of −1024 (straight up) for a purely horizontal delta of one unit.
 * the routine's **seventh argument is dead**. All twenty sweeps leave the
   buffer handed to it exactly as it was zeroed.
+* the yaw it builds the matrix from is **negated** — `neg eax` at
+  `0x00403ACF`, so the call is `matrix(0, -yaw)`. A model that passes `+yaw`
+  and then reads the matrix transposed reproduces all twenty answers as well,
+  because the two errors cancel; it stops being harmless the moment a second
+  builder is added, which is what happened below.
+
+**`0x004039A0` is Eng3d's, and `Incubation.exe` only marshals for it.** The
+wrapper reads three signed words out of the caller's structure, calls ordinal
+13 (`_E3D_init_matrix_RzRxRy`) to build a matrix into a 36-byte stack frame,
+calls ordinal 15 (`_E3D_c_rotate_coordinate`) to push the vector through it,
+and returns 1. All the arithmetic is in the DLL, and three properties of it
+are neither in the caller nor guessable from `0x004039F0` next door:
+
+* **each angle is negated before it indexes the table.** The body opens
+  `neg ebx / neg ecx / neg edx` and only then masks to `0xFFF`. Since the
+  products floor, negating before is not negating after: four of the eight
+  captured cases differ by a unit on that alone.
+* **its products floor where `0x004039F0`'s truncate.** This builder uses a
+  64-bit `imul` and `shrd eax, edx, 14`; its neighbour uses a 32-bit `imul`
+  and the `cdq / and edx, 0x3FFF` idiom. Same file, twelve bytes apart, two
+  roundings.
+* **the triple products shift at every step**, `sh(sh(s·s)·s)`. Shifting once
+  at the end puts the entries six orders of magnitude out.
+
+And `_E3D_c_rotate_coordinate` reads the matrix **by column**:
+`out[i] = (v₀·M[i] + v₁·M[i+3] + v₂·M[i+6]) >> 14`, the three products
+accumulated at full 64-bit width and shifted once.
+
+[`30` §2.5](30-eng3d-ascii-formats.md)'s "the exact matrix, if you want
+bit-identical results" is the same nine expressions read statically, and it is
+**not** bit-identical: taken literally it misses four of these eight. It has
+been corrected there.
+
+**The five geometry pointers are ordinals, not mystery globals.**
+`Incubation.exe` resolves them with `GetProcAddress` and the ordinal written
+out as **decimal text** — `push 0x004BF9F8` is the string `"13"` — so the
+caller names them itself: `0x004FA4E4` = 13 `_E3D_init_matrix_RzRxRy`,
+`0x004F84D4` = 15 `_E3D_c_rotate_coordinate`, `0x004FA4E0` = 27
+`_E3D_calc_angle_dx_dy`, `0x004F84D8` = 28 `_E3D_fsin`, `0x004FA4DC` = 29
+`_E3D_fcos`. The captured thunk bytes confirm it independently: each occurs
+exactly once in the shipped `Eng3d.dll` and at that export's own RVA, and all
+five pointers minus their RVAs give one module base.
 
 **`0x0046D400` is not a normalised direction.** Its first two outputs are
 divided by whichever of `|dx|` and `|dy|` is larger — so one of them is always
@@ -827,18 +869,49 @@ the seed alone, and a fourth its velocities:
 | `0x004294E0` | 3 | `vz` = `(200, 300)`, `vx` = `(-300, 600)`, `vy` = `(-300, 600)` |
 | `0x004295D0` | 6 | the same three, then `rot_z`, `rot_y`, `rot_x`, each `(0, 4096)` |
 | `0x00425810` | 3 | `vx`, `vy`, `vz`, all `(-320, 640)` — its *positions* are not on a cadence |
+| `0x0042ACF0` | 3 | `vz` = **32** × `(5, 10)`, `vy` = **16** × `(-10, 20)`, `vx` = **16** × `(-10, 20)` |
+
+`0x0042ACF0` is the one that shows the scale is real rather than a hedge: its
+loop is thirty iterations of `ftol(aRandom(5, 10)) << 5` and two
+`ftol(aRandom(-10, 20)) << 4`, which is also exactly the ninety draws the seed
+delta counts. `32 * trunc(x)` and `trunc(32 * x)` are different numbers, and
+the first fit computed the second.
 
 A drawn rotation is `aRandom(0, 4096)`: the **4096-unit circle** of
 [`70`](70-img-tables.md) again, the same one §7.4.2's orientation helper
 answers in and §7.8's joint angles are masked to.
 
-**The remaining creators have no per-record recipe to fit, and that is the
-answer rather than a gap.** Their draw stream is not consumed at a fixed rate:
-three of them build records of several *kinds* in one call (`kind`,
-`class_id` and `model` all vary across the twelve read back), and others
-retry — `0x00429A80`'s first record does not sit at draw 0 while its second
-sits at draw 4. No cycle length exists for a fit to find, which is exactly why
-the blanket affine fit failed and would have kept failing.
+**Two more shapes, neither of them a draw.** A field can vary across a
+creator's records without the generator being involved at all, and looking
+only for a line in the draws reports such a creator as unexplained:
+
+* **the loop counter.** `0x004228F0`, `0x004264A0` and `0x00429A80` stagger
+  `delay` as `index / k` — a signed divide of the counter, `cdq / sub eax, edx
+  / sar eax, 1` for k = 2. Three creators, three constants, pinned and
+  replayed like a recipe.
+* **the direction service.** `0x00426F90`, `0x00427410` and `0x0042A9D0` take
+  a target, call `0x0046D400` and multiply by a fixed 1600. §7.4.2's finding
+  that that routine is **not normalised** — it divides by whichever of `|dx|`
+  and `|dy|` is larger, so one of the two is always exactly ±1 — leaves a
+  signature nothing else produces: **every** one of their 33 records carries
+  `|vx|` or `|vy|` equal to 1600 exactly, and none of `0x0042ACF0`'s drawn
+  velocities ever lands on it. These velocities were never candidates for
+  `aRandom(base, span)`; the fit was not failing, it was being asked the wrong
+  question.
+
+**What is left has no per-record recipe, and that part is still the answer
+rather than a gap.** Ten creators keep a residue: their draw stream is not
+consumed at a fixed rate, because they build records of several *kinds* in one
+call (`kind`, `class_id` and `model` all vary across the twelve read back) or
+they retry — `0x00429A80`'s first record does not sit at draw 0 while its
+second sits at draw 4. It is a residue of each rather than the whole of any.
+
+**Two of the reasons the first fit failed were the fitter.** Besides the
+missing scale, its stride loop broke out of *itself* the first time an offset
+ran past the end of the draw list, so nothing past stride 1 at a low offset
+was ever tried — and the empty result it produced was quoted as a measurement.
+Fixed, an unaided search that is told nothing but the seed and the records now
+solves five of the fourteen.
 
 `tools/blob_gold.py` pins the recipes and replays each one against every
 captured record; a creator is listed only if **every** field that varies is
@@ -886,7 +959,7 @@ which parts apply:
 | grow or shrink | writes `+0x54`, the sprite half-size |
 | swap model | calls `0x004038F0` again and rewrites `+0x0C` — kinds 16 and 17 |
 | spawn | calls another creator, or the constructor directly |
-| self-delete | calls `aDeleteBlobObject` `0x0041E320` — kind 11 |
+| ~~self-delete~~ | **no arm deletes itself.** This row said kind 11 did; it does not. `0x004207B6` ends `mov eax, 1 / ret` and the `aDeleteBlobObject` `0x0041E320` call at `0x004207F8` is the **wrapper's** expiry path, which the arms fall past rather than enter. Removal is the wrapper's, always — and the correction came from stepping a kind-11 record inside the running engine, not from re-reading the listing (§12 item 1) |
 
 **The spawn graph** is the part a remake most needs, because one trigger can
 cascade into four or five effects. Twenty-three kinds spawn something:
@@ -920,10 +993,86 @@ store is through the blob pointer, so the unit map is read and never written.
 Damage stays where [`22` §7](22-combat-and-visibility.md) puts it — blobs are
 cosmetic.
 
+### 7.7.1 The seeking step, in full
+
+*(2026-09-01. Before this, the seeking step lived only as a one-line comment
+in `tools/blob_runtime.py` -- `old_v - old_v/6 + direction*240` -- which had
+the shape right and the direction, the orientation argument and the signal
+placement wrong. It closes §12 item 3.)*
+
+The chain from a record to a position is four links, and all four are in the
+arm's own instructions:
+
+| Step | What | Where |
+|---|---|---|
+| 1 | the record's `+0x54` byte is a **unit-map slot** | `mov cl, [esi+0x54]`, `0x0041F931` / `0x0041FB8C` / `0x0042030C` |
+| 2 | `aGetUnitMapElementPtr` turns it into a unit record; a null answer aborts the arm through the trace path | `0x00477AE0` |
+| 3 | the unit's `+0x4B` byte is an **object id** | `mov cl, [eax+0x4B]` |
+| 4 | `aGetStdObjectPosition` turns that into `(x, y, z)` — the object's, not the tile's | `0x00405100` |
+
+Then the steer, per component, with `D` the three doubles `0x0046D400`
+writes for (source = the record's position, target = the position from step 4,
+`shift = 1`):
+
+```
+v := v − trunc(v / 6) − ftol(D · −240.0)
+```
+
+Three things in that line are not guessable from the shape:
+
+* **`D` is not a normalised direction.** Its first two components are divided
+  by whichever of `|dx|` and `|dy|` is larger — §7.4.2 — so one of them is
+  always exactly ±1, and its third is divided by the **truncated** 2D
+  distance. A model that divides by the true length produces plausible numbers
+  that are wrong on every axis.
+* **The constant is negative and the arm subtracts.** `[0x004B1238]` holds
+  −240.0; the two signs cancel and the record accelerates toward the target.
+  `_ftol` `0x004AE7B6` is an `fistp` to a **qword** returning `edx:eax`, and
+  the arm keeps `eax`: an invalid conversion is therefore the low dword of
+  x87's 64-bit indefinite, which is **zero**, not `INT_MIN`. A poked kind-27
+  record sitting on its target's column measured that (`docs/97` §20.2).
+* **The `1` reaches only the vertical.** It is a `push 1` at `0x0041F9A8`,
+  `0x0041FC03` and `0x00420383`; `_ftol` collapses the difference on every
+  captured step, so this is instruction evidence rather than a measurement.
+
+The orientation call takes the **step** — where the record is about to be —
+not the target: `0x00403AA0(old, old + v, …)` at `0x0041FA74`, `0x0041FCD4`
+and `0x0042044F`. A seeker therefore points along its own path, and a model
+that orients at the target is out by nine 4096ths on the capture's very first
+tick.
+
+The arrival test is per axis, `|Δ| < 0x640` on all three, against the **same**
+target the steer used — so kind 27, which aims `0x640` above its unit, also
+tests against that raised point. An arrival writes `life = 0` and nothing
+else. The global word `[0x004FE63C]` belongs to each arm, not to the step:
+kinds 26 and 61 raise it from a `life == 0` test placed **after** the arrival
+test, so a seeker that merely ran out of life raises it too, while kind 27
+raises it only inside the arrival branch.
+
+**How it was verified.** `tools/blob_gold.py`'s `arms_0x00426070` and
+`arms_0x004264A0` phases stepped a kind-26 and a kind-61 record inside a
+running `Incubation.exe`. Replaying those 18 transitions against every object
+position the `hooks` phase measured — the 15 of 66 swept ids this save
+answers for — leaves **exactly one** object, id 1, that reproduces the next
+record; and with it the model reproduces position, velocity, both rotation
+words, `life` and the arrival, on all 18. What is *not* closed by that is the
+`[unit + 0x4B]` byte itself, which no phase read: that unit-map slot 1 and
+object id 1 are the same number is a property of this save, not a
+demonstrated identity.
+
 Four arms are the exception to "particle arithmetic": kinds 26, 27 and 61 are
 500–600 bytes of seeking, and kind 42 (`aBlob_CreateComputerLight`) and kind 54
 (`aBlob_CreateCreateFire`) do nothing but pose their model's sub-objects
 (§7.8).
+
+**Two more turn a vector rather than move one.** Kinds 14 and 37 are the only
+arms that call `0x004039A0`, Eng3d's three-angle matrix (§7.4.2): both read a
+*point* out of the velocity slots, spin the delta from the record to it about
+the vertical, and place the record at the point plus the turned delta (14) or
+minus it (37). Kind 14's angle is `life · 20` while `vz == 0` and
+`(life − 22) · 10` otherwise; kind 37's is the literal `0x66`. Neither is
+filled by any creator, and this document had no turn in either until one was
+stepped inside the engine — `docs/97` §20.1.
 
 ### 7.8 Four `object_3d` fields the arms write: the joint angles
 
@@ -1203,32 +1352,146 @@ store lands on.
 1. ~~**Native validation of the service hooks.**~~ **Closed** — §7.4.2.
    All five were called inside a running `Incubation.exe`: `0x00403AA0` and
    `0x0046D400` over twenty deltas each, `0x004039A0` over eight rotations,
-   and the two lookups swept over their id ranges. Four of the five are
-   reproduced exactly in portable arithmetic and checked against the capture
-   answer for answer (`tools/blob_gold.py`, 161 checks); the remake's
-   orientation service is the measured routine on both sides of its own diff.
+   and the two lookups swept over their id ranges. **All five** are reproduced
+   exactly in portable arithmetic and checked against the capture answer for
+   answer (`tools/blob_gold.py`); the remake's orientation service is the
+   measured routine on both sides of its own diff.
 
-   **What that does and does not license.** The service *return data* is
-   measured, so a trajectory is no longer built on an invented helper — but
-   the seventy-four arms are still a transcription compared against a
-   transcription, so `test_blob.gd` keeps printing `executable-Python` and
-   nothing in the blob layer claims `native-runtime`. Claiming otherwise would
-   need the arms themselves stepped in the engine, which is a different
-   capture.
+   **And the arms themselves have now been stepped.** That was the sentence
+   this item used to end on — "claiming otherwise would need the arms
+   themselves stepped in the engine, which is a different capture". The
+   capture exists. `tools/blob_gold.py` populates the pool with one creator
+   inside a running `Incubation.exe` and then calls **the engine's own**
+   frame sweep, `aCheckInBlobObjects` `0x0041E3D0`, reading all twelve
+   88-byte records between rounds; where the sweep cannot run — it hands
+   every non-sprite record to Eng3d's `0x00403CC0` before ticking it, and
+   outside an open render frame that faults — it calls `aBlob_Update`
+   `0x0041E500` per record instead, which is the wrapper without the
+   renderer.
 
-   **One residue, named rather than rounded off.** Eng3d's own three-angle
-   matrix builder behind `0x004039A0` is *recorded* and not reproduced: no
-   ordering of `Rz Rx Ry` with either rounding matches all eight captured
-   cases, and its two Eng3d entry points are runtime function pointers rather
-   than imports, so a static read of them is a second capture's work. What is
-   established about it is in the fixture and in §7.4.2's rounding note.
+   Twenty-three creator pools, eight rounds each, the transcription re-seeded
+   from the **measured** second-generator seed at the start of every round
+   because the engine walks the pool by ascending index and so does the model:
+
+   * **24 of the 74 arms are reachable by firing a weapon** — and all 24
+     reproduce the engine's record field for field, over every occupied slot
+     and every round, deletions included. Two of them — the seekers, kinds 26
+     and 61 — did not until 2026-09-01: their arm asks the unit map where its
+     target is, the capture's adapter answered nothing, and `_seek` was
+     steering on an invented normalisation besides. §7.7.1 is what it actually
+     does, and the same capture then verified it;
+   * **the other fifty were stepped too**, by the one-byte experiment
+     `docs/97` §20 describes: `+0x44` is the jump-table index, so a donor
+     record with a foreign kind byte written into it is a record of that kind
+     as far as `aBlob_Update` is concerned. All fifty reproduce the engine's
+     record as well — after ten of them were corrected. That claim is weaker
+     in one specific way and no other: the record is a donor's, so the **arm**
+     is measured and the arguments a creator would pass it are not.
+
+   **It found errors in fourteen of the seventy-four arms, and one in
+   `_ftol` itself**, which is the point of doing it. §7.7's arm table listed
+   kind 11 as self-deleting; it does not, and the record kept moving in the
+   engine after the model had removed it. Kind 8's three rotation draws are
+   `aRandom(0, 0xFFF)` and not `0x1000` — one unit high on about a quarter of
+   the draws — and that correction was then **over-applied** by this project
+   to kinds 0, 2 and 29, which push `0x1000`, which is the first thing the
+   poked pass caught. The three seekers are §7.7.1. The rest are `docs/97`
+   §20.1: three damping divisors (a twentieth, a fifth and a third where the
+   model had a tenth, a tenth and a sixth), kind 76's second move, its pitch
+   store and the sign of its vertical, and the missing turn in kinds 14 and
+   37. `_ftol`'s invalid conversion is §20.2.
+
+   **What is still not claimed.** `test_blob.gd` keeps printing
+   `executable-Python`, because that suite compares GDScript against Python
+   and not against the engine. The stronger statement is *transitive* and is
+   made per arm: for all 74, the engine agrees with the Python here and the
+   Python agrees with the GDScript there, and the fixture carries the two
+   lists — `native_arms` and `poked_arms` — so the suite names which kind of
+   record earned each.
+
+   **The last of the five, and what it cost to be wrong about it.** Eng3d's
+   three-angle matrix builder behind `0x004039A0` was the one this document
+   called *recorded and not reproduced*. It is reproduced now, 8/8, and none
+   of the three things that had been wrong was in `Incubation.exe`:
+
+   * the builder **negates** each angle before it indexes the table
+     (`neg ebx / neg ecx / neg edx`, then `and 0xFFF`), and negating before a
+     floor is not negating after one — that alone is the difference between
+     16382 and 16383 in four of the eight cases;
+   * its products are 64-bit `imul` shifted with `shrd eax, edx, 14`, which
+     **floors**, where `0x004039F0` twelve bytes away uses a 32-bit `imul` and
+     the `cdq / and edx, 0x3FFF` idiom, which truncates toward zero. Two
+     roundings, two builders, one call;
+   * the triple products shift **at each step**: `sh(sh(s*s)*s)`, not
+     `sh(s*s*s)`. Read the other way the entries come out six orders of
+     magnitude too large.
+
+   **This also corrects a delivered spec.** [`30` §2.5](30-eng3d-ascii-formats.md)
+   already carried "the exact matrix, if you want bit-identical results" —
+   the same nine expressions, read statically out of `fcn.00411bf6` — and it
+   is **not** bit-identical: implemented literally it misses four of the eight
+   captured cases, by one unit where the negation moves a floor and by whole
+   orders of magnitude in the triple products. The static reading had the
+   shape right and the arithmetic wrong, which is exactly the class of error a
+   capture exists to catch. `30` §2.5 now carries the corrected form.
+
+   **And the two entry points are named.** They were "runtime function
+   pointers rather than imports, so a static read is a second capture's work";
+   that was true and the conclusion was wrong. `Incubation.exe` resolves them
+   with `GetProcAddress` **by ordinal written out as decimal text**, so the
+   caller carries the literal `"13"` at `0x004BF9F8` and `Eng3d.dll`'s export
+   table finishes the sentence. All five of the blob path's geometry pointers,
+   three independent readings agreeing (the literal in the caller, the export
+   table in the callee, the captured thunk bytes, which occur once in the
+   shipped DLL and at that export's own RVA):
+
+   | Global | Ordinal | Export |
+   |---|---|---|
+   | `0x004FA4E4` | 13 | `_E3D_init_matrix_RzRxRy` |
+   | `0x004F84D4` | 15 | `_E3D_c_rotate_coordinate` |
+   | `0x004FA4E0` | 27 | `_E3D_calc_angle_dx_dy` |
+   | `0x004F84D8` | 28 | `_E3D_fsin` |
+   | `0x004FA4DC` | 29 | `_E3D_fcos` |
+
+   Ordinal 14 is `_E3D_init_matrix_RyRxRz`. The start-up resolver asks for it
+   like it asks for 86 of the DLL's 89 exports, and stores it in
+   `0x004FA4A0` — and **nothing calls or even loads that slot**, anywhere in
+   `.text`. That is [`30` §2.5](30-eng3d-ascii-formats.md) item 7's conclusion
+   arrived at from the other end, and it is a stronger statement than the one
+   that document could make from the joint opcodes alone: not "the two the
+   shipped data reaches build `RzRxRy`" but "the other builder is never
+   called by anything".
 
 2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects
    or arms for a debug path is not recoverable: the arms carry no strings and
    nothing else references them.
 
-3. ~~**Which music family the GOG release plays.**~~ **Closed** — §6.1. The
+3. ~~**What the engine hands a seeker as its target — and whether `_seek`'s
+   arithmetic is right.**~~ **Closed 2026-09-01, and it wanted no new
+   capture.** Both halves were answerable from the arms' own instructions
+   plus the two phases already taken. The target is the position of the
+   object named by `[unit_map[record + 0x54] + 0x4B]`; the step is
+   `v − trunc(v/6) − ftol(D · −240)` with `D` the **direction service**'s
+   un-normalised answer, not a unit vector; and the orientation call takes
+   the record's next position rather than the target. §7.7.1 carries all of
+   it, and the 18 stepped transitions of `arms_0x00426070` and
+   `arms_0x004264A0` now reproduce field for field, so arms 25 and 58 join
+   the 22 of item 1 and no stepped arm disagrees.
+
+   What stays open is one link, and it is narrower than the item was: no
+   phase read the `[unit + 0x4B]` byte, so object id 1 is identified **by
+   elimination** — it is the only one of the fifteen objects this save holds
+   that reproduces the engine's records — and the fact that the unit-map slot
+   is also 1 is a coincidence of the save until a capture reads that byte --
+   though it is now a coincidence at **two** points rather than one, since the
+   poked kind-27 record of `docs/97` §20.4 names slot 0 and resolves, uniquely,
+   to object 0. The `NaN` branch of `_ftol` was marked UNVERIFIED here on the
+   same grounds and is **not** any more: that same poked record sits exactly on
+   its target's column, so the direction service answers `NaN` and the engine's
+   own record shows what the conversion returns -- `docs/97` §20.2.
+
+4. ~~**Which music family the GOG release plays.**~~ **Closed** — §6.1. The
    import descriptor settles it without reading the shim: `Incubation.exe`
    imports the nine `winmm` entry points from `audio.dll`, which is the shim
    built with `Arack`, and nothing in the tree imports the `Track` build. Eleven

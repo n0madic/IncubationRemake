@@ -53,9 +53,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import struct
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -207,6 +208,41 @@ POINTER_GLOBALS = (0x004FA4E4, 0x004F84D4, 0x004F84D8, 0x004FA4DC, 0x004FA4E0)
 #: How many bytes of each target are read back.
 POINTER_PREVIEW = 32
 
+#: **What the five actually are.**  They were "read as bytes and not matched
+#: to an export" for exactly as long as nobody looked at the string the
+#: resolver pushes: `Incubation.exe` calls `GetProcAddress` with the ordinal
+#: written out as **decimal text**, so `push 0x004BF9F8` is the literal `"13"`
+#: and the export table of `Eng3d.dll` finishes the sentence.  Three readings
+#: agree and none of them shares a step with the others -- the literal in the
+#: caller, the export table in the callee, and the captured thunk bytes, which
+#: occur once in the shipped DLL and at exactly that export's RVA.
+POINTER_ORDINALS = {
+    0x004FA4E4: 13,   # _E3D_init_matrix_RzRxRy
+    0x004F84D4: 15,   # _E3D_c_rotate_coordinate
+    0x004FA4E0: 27,   # _E3D_calc_angle_dx_dy
+    0x004F84D8: 28,   # _E3D_fsin
+    0x004FA4DC: 29,   # _E3D_fcos
+}
+POINTER_EXPORTS = {
+    13: "_E3D_init_matrix_RzRxRy",
+    15: "_E3D_c_rotate_coordinate",
+    27: "_E3D_calc_angle_dx_dy",
+    28: "_E3D_fsin",
+    29: "_E3D_fcos",
+}
+#: The neighbouring builder, and the reason it is worth a check of its own.
+#: `docs/30` §2.5 item 7 concluded from the joint opcodes that both matrix
+#: builders the shipped data reaches build `RzRxRy`; the export table says the
+#: other ordering **exists** and the call graph says nothing calls it.  Note
+#: the resolver does fill its slot -- it resolves 86 of the DLL's 89 ordinals
+#: unconditionally -- so "unresolved" would have been the wrong claim and
+#: "never called" is the right one.
+ENG3D_UNCALLED_ORDINAL = 14
+ENG3D_UNCALLED_EXPORT = "_E3D_init_matrix_RyRxRz"
+ENG3D_UNCALLED_GLOBAL = 0x004FA4A0
+#: How many of `Eng3d.dll`'s exports the start-up resolver asks for by ordinal.
+ENG3D_RESOLVED_ORDINALS = 86
+
 #: Where the sweeps put the source point.  Not the origin and not a multiple
 #: of the field size: a helper that quietly assumed either would still look
 #: right from a sweep that used one.
@@ -327,6 +363,346 @@ def hooks_plan(units: list[dict[str, int]]) -> str:
     for unit in units:
         lines.append(f"u{unit['slot']} = aGetUnitMapElementPtr({unit['slot']})")
     return "\n".join(lines) + "\n"
+
+
+#: **The whole pool, ticked.**  `aCheckInBlobObjects` `0x0041E3D0` is what a
+#: frame calls: it sweeps the twenty emitter slots, then walks all 450 records
+#: and hands each to `0x0041E500` -- the wrapper `tools/blob_runtime.py`
+#: transcribes.  It takes no arguments, so calling it in the live process is
+#: one line and steps *the engine's own* arms over the pool a creator left.
+#: That is the difference between diffing two transcriptions and diffing a
+#: transcription against the thing.
+POOL_TICK = 0x0041E3D0
+#: The record count its loop walks, read out of the `cmp edi, 0x1C2`.
+POOL_TICK_RECORDS = 450
+#: How many times the sweep is called per capture.  Long enough for a delay to
+#: expire, a life to run out and a morph to fire; short enough that one plan
+#: is one process's worth of work.
+TICK_ROUNDS = 8
+
+
+def ticks_plan(handle: int, creator: int, args: list[int]) -> str:
+    """Populate the pool with one creator, then tick the engine's own sweep.
+
+    The records are read **before** the first tick and after every one, so the
+    diff has the engine's own starting state rather than the model's idea of
+    it -- a comparison that seeded itself from the model would be a
+    transcription against a transcription with extra steps.
+
+    The second generator's seed is read beside every round for the same reason
+    it is read around a creator: an arm that draws has to draw the same number
+    of times, and the seed delta is the only thing that says so.
+    """
+    entry = _entry_address(handle)
+    signature = ",".join("i32" for _ in args)
+    read = (f" --read [0x{entry:x}]:{READ_RECORDS * RECORD_BYTES}"
+            f" --read 0x{ARANDOM_SEED:x}:{ARANDOM_SEED_BYTES}"
+            f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
+    lines = [
+        "# One creator's pool, stepped by the engine's own frame sweep.",
+        DECLARATIONS,
+        f"__cdecl i32 aCheckInBlobObjects() = Incubation.exe+0x{POOL_TICK - 0x400000:x}",
+        f"__cdecl i32 c{creator:08X}({signature})"
+        f" = Incubation.exe+0x{creator - 0x400000:x}",
+        "",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "reset = aResetBlobs()",
+        f"c{creator:08X}({', '.join(str(a) for a in args)})",
+        f"aGetUnitMapElementPtr(0){read}",
+    ]
+    for _round in range(TICK_ROUNDS):
+        lines.append(f"aCheckInBlobObjects(){read}")
+    return "\n".join(lines) + "\n"
+
+
+#: `aBlob_Update` itself -- the per-record wrapper the sweep calls, and the
+#: one `tools/blob_runtime.py` transcribes line for line.  Arguments are
+#: `(index, blob)`: the sweep pushes `esi` then `edi`, so the **last** push is
+#: the first argument and it is the index.
+BLOB_ARM = 0x0041E500
+#: Why there are two tick families rather than one.  `aCheckInBlobObjects`
+#: hands every non-sprite record to Eng3d's `0x00403CC0` before it ticks it,
+#: and outside an open render frame that faults -- deterministically, on the
+#: first sweep, for any creator whose records are class 0.  The check-in is
+#: **not part of the arm**, so calling `0x0041E500` per record skips it and is
+#: the more precise measurement of the two; the sweep family is kept for the
+#: sprite creators because it also exercises the pool walk and the emitter
+#: pass around them.
+#:
+#: Calling the wrapper on a record that has already deleted itself is safe and
+#: was checked before it was relied on: an all-zero record has delay 0 and
+#: life 0, which takes the expiry path at `0x004207F8`, which calls
+#: `0x0041E320` with the **index** and writes the same zero back.
+
+
+def arms_plan(handle: int, creator: int, args: list[int],
+              slots: list[int]) -> str:
+    """Populate the pool, then call `aBlob_Update` per record per round.
+
+    The slot list comes from the creator's own captured records, so the plan
+    ticks what that creator actually filled.  The expression grammar has no
+    multiplication, so each record's address is emitted as a literal offset
+    from the pool block at plan-generation time.
+    """
+    entry = _entry_address(handle)
+    signature = ",".join("i32" for _ in args)
+    read = (f" --read [0x{entry:x}]:{READ_RECORDS * RECORD_BYTES}"
+            f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
+    lines = [
+        "# One creator's pool, stepped by the engine's own aBlob_Update.",
+        DECLARATIONS,
+        f"__cdecl i32 aBlob_Update(i32,ptr) = Incubation.exe+0x{BLOB_ARM - 0x400000:x}",
+        f"__cdecl i32 c{creator:08X}({signature})"
+        f" = Incubation.exe+0x{creator - 0x400000:x}",
+        "",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "reset = aResetBlobs()",
+        f"c{creator:08X}({', '.join(str(a) for a in args)})",
+        f"aGetUnitMapElementPtr(0){read}",
+    ]
+    for _round in range(TICK_ROUNDS):
+        for slot in slots[:-1]:
+            lines.append(f"aBlob_Update({slot},"
+                         f" [0x{entry:x}]+0x{RECORD_BYTES * slot:x})")
+        last = slots[-1]
+        lines.append(f"aBlob_Update({last},"
+                     f" [0x{entry:x}]+0x{RECORD_BYTES * last:x}){read}")
+    return "\n".join(lines) + "\n"
+
+
+#: The donor whose pool the poked phases borrow.  It has to fill twelve slots
+#: with **class 0** records that carry a model handle, because an arm that
+#: poses a model or swaps one dereferences it: a class-2 donor would turn every
+#: such arm into a fault rather than a comparison.  `aBlob_SparkingPlug` is the
+#: one reachable creator that does, and its own arm (index 20) is already
+#: native, so nothing about the donor is being taken on trust.
+POKE_DONOR = 0x0042ACF0
+#: How many rounds a poked plan steps each record.  It was four until a
+#: mutation battery pointed out what four rounds of a donor's `life` of 30
+#: cannot reach: kind 76 branches on `life <= 4` and that branch was being
+#: transcribed and never run.  Eight rounds and a poked `life` of six reach
+#: both sides of every such gate, and the last rounds reach `life == 0`,
+#: which is where the terminal arms spawn, morph and hand the record back.
+POKE_ROUNDS = 8
+#: The life every poked record is given, written in the same pass as the kind.
+#: Six is chosen so four rounds see `life > 4` and four see it at or below --
+#: kind 76 branches there and a battery caught the branch going unexercised --
+#: and so the last rounds reach `life == 0`, which is where the terminal arms
+#: spawn, morph and hand the record back to the wrapper.
+POKE_LIFE = 6
+#: Slots per plan.  One plan is one process, so this is also how many unknown
+#: arms share a fate.
+POKE_SLOTS = 6
+
+
+#: `0x004038F0` -- the model lookup two arms call, and the three names they
+#: can ask for.  `docs/28` §7.5: it answers `-1` for a model the world set
+#: does not carry, and the arm then leaves the record alone.
+MODEL_LOOKUP = 0x004038F0
+
+
+def models_plan(names: Sequence[str]) -> str:
+    """Ask the engine what handle each swappable model name has.
+
+    The two swap arms (kinds 16 and 17) store `0x004038F0`'s answer straight
+    into `+0x0C`, so a diff of their records is a diff of this service.  The
+    fixture's adapter answers with an index into its own list -- fine for
+    comparing two transcriptions, useless for comparing one against the
+    engine -- so the check resolves the name through **this** measurement
+    instead, exactly as the seekers' target is resolved through the object
+    sweep rather than assumed.
+    """
+    lines = [
+        "# The model lookup, one call per name a swap arm can ask for.",
+        DECLARATIONS,
+        f"__cdecl i32 aGetModelIndex(ptr) = Incubation.exe+0x{MODEL_LOOKUP - 0x400000:x}",
+    ]
+    for index, name in enumerate(names):
+        lines.append(f"--blob mn{index}:{(name + chr(0)).encode('ascii').hex()}")
+    lines += ["", "aSetSaveMode(0)", f"loaded = aLoadGame({gold.CAPTURE_SLOT})"]
+    for index in range(len(names)):
+        lines.append(f"aGetModelIndex(&mn{index})")
+    return "\n".join(lines) + "\n"
+
+
+def parse_models(rows: list[dict[str, Any]],
+                 names: Sequence[str]) -> dict[str, int]:
+    """``name -> handle``, in call order."""
+    out: dict[str, int] = {}
+    calls = [row for row in rows
+             if row.get("call") == "aGetModelIndex" and row.get("status") == "ok"]
+    for name, row in zip(names, calls):
+        out[name] = int(row["eax"], 16) - (1 << 32) \
+            if int(row["eax"], 16) & 0x80000000 else int(row["eax"], 16)
+    return out
+
+
+def poked_arms() -> list[tuple[int, int]]:
+    """``(arm, kind)`` for every arm no creator a weapon switch selects fills.
+
+    The kind is the **lowest** one that maps to the arm, so the choice is a
+    property of the jump table rather than of this run.  The eleven kinds
+    `docs/28` §7.7 calls unreachable are eligible here on purpose: poking is
+    the only thing that can step them, and stepping one says what its arm
+    does without saying anything about whether the shipped game reaches it.
+    """
+    arm_of = _arm_of_kind()
+    first: dict[int, int] = {}
+    for kind in sorted(arm_of):
+        first.setdefault(arm_of[kind], kind)
+    return [(arm, kind) for arm, kind in sorted(first.items())
+            if arm not in TICK_ARMS_SEEN]
+
+
+def poked_batches(donor_slots: list[int]) -> list[tuple[list[int], list[int]]]:
+    """The poked arms, cut into one plan's worth of slots each."""
+    slots = donor_slots[:POKE_SLOTS]
+    pairs = poked_arms()
+    out: list[tuple[list[int], list[int]]] = []
+    for start in range(0, len(pairs), len(slots)):
+        group = pairs[start:start + len(slots)]
+        out.append((slots[:len(group)], [kind for _arm, kind in group]))
+    return out
+
+
+def poked_plan(handle: int, donor: int, args: list[int],
+               slots: list[int], kinds: list[int], rounds: int) -> str:
+    """Overwrite each donor record's kind byte, then step one arm per call.
+
+    `docs/97` §18.6 said the fifty arms no creator populates would want
+    "writing records into the pool directly, which is a different and more
+    invasive experiment".  This is that experiment, and it is **two adjacent
+    bytes**: `+0x44` is the jump-table index and `+0x45` is `life`, so one
+    two-byte write makes a donor record a record of any kind with a lifetime
+    short enough to reach its own terminal branches.  What it is **not** is a
+    record a creator would have built -- the velocities and the model stay the
+    donor's -- so this measures the arm and says nothing about the arguments
+    the arm would normally see.
+
+    The pool is read after **every** call rather than once per round.  A
+    poked arm can fault, and a fault costs the rest of the process; per-call
+    reads mean the calls before it are still a measurement, and they isolate
+    one arm's writes instead of twelve arms' together.
+    """
+    entry = _entry_address(handle)
+    signature = ",".join("i32" for _ in args)
+    read = (f" --read [0x{entry:x}]:{READ_RECORDS * RECORD_BYTES}"
+            f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
+    lines = [
+        "# One donor pool, each record's kind byte overwritten, one arm per",
+        "# call.  The read after every call is deliberate: see poked_plan.",
+        DECLARATIONS,
+        f"__cdecl i32 aBlob_Update(i32,ptr) = Incubation.exe+0x{BLOB_ARM - 0x400000:x}",
+        f"__cdecl i32 c{donor:08X}({signature})"
+        f" = Incubation.exe+0x{donor - 0x400000:x}",
+        MEMCPY_DECL,
+    ]
+    for index, kind in enumerate(kinds):
+        # kind and life are adjacent, `+0x44` and `+0x45`, so one two-byte
+        # write sets both.
+        lines.append(f"--blob pk{index}:{kind:02x}{POKE_LIFE:02x}")
+    lines += [
+        "",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "reset = aResetBlobs()",
+        f"c{donor:08X}({', '.join(str(a) for a in args)})",
+    ]
+    for index, slot in enumerate(slots):
+        lines.append(f"memcpy([0x{entry:x}]+0x{RECORD_BYTES * slot + 0x44:x},"
+                     f" &pk{index}, 2)")
+    lines.append(f"aGetUnitMapElementPtr(0){read}")
+    for _round in range(rounds):
+        for slot in slots:
+            lines.append(f"aBlob_Update({slot},"
+                         f" [0x{entry:x}]+0x{RECORD_BYTES * slot:x}){read}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_poked(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
+    """Every snapshot a poked plan produced, in call order.
+
+    ``steps`` is one entry per `aBlob_Update` that returned, holding the pool
+    and the second generator's seed **after** it; ``start`` is the state the
+    first call saw.  A plan that faulted mid-way simply has fewer steps, which
+    is why the check counts them rather than assuming a rectangle.
+    """
+    import struct
+
+    key = f"[0x{entry:x}]"
+    seed_key = f"0x{ARANDOM2_SEED:x}"
+
+    def snapshot(row: dict[str, Any]) -> dict[str, Any] | None:
+        reads = row.get("reads") or {}
+        if key not in reads or "<" in reads[key]:
+            return None
+        text = reads.get(seed_key)
+        seed = (struct.unpack_from("<d", _hex_bytes(text), 0)[0]
+                if text and "<" not in text else None)
+        return {"pool": reads[key].replace(" ", ""), "seed": seed}
+
+    start: dict[str, Any] | None = None
+    steps: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        shot = snapshot(row)
+        if shot is None:
+            continue
+        if row.get("call") == "aBlob_Update":
+            steps.append(shot)
+        elif start is None:
+            start = shot
+    return {"start": start, "steps": steps}
+
+
+def parse_ticks(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
+    """The pool as it stood before the first tick and after every one.
+
+    The rounds are stored as **raw hex**, not as parsed records, and that is
+    deliberate: :func:`parse_records` stops at the first free slot because a
+    creator's records are contiguous, and after a tick they are not -- a blob
+    that deleted itself in slot 3 would hide slots 4 through 11 from every
+    later round and the diff would silently shrink. The check parses all
+    twelve, free ones included.
+    """
+    import struct
+
+    key = f"[0x{entry:x}]"
+    rounds: list[str] = []
+    seeds: list[float | None] = []
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        reads = row.get("reads") or {}
+        if key not in reads or "<" in reads[key]:
+            continue
+        rounds.append(reads[key].replace(" ", ""))
+        text = reads.get(f"0x{ARANDOM2_SEED:x}")
+        seeds.append(struct.unpack_from("<d", _hex_bytes(text), 0)[0]
+                     if text and "<" not in text else None)
+    return {"rounds": rounds, "seed2": seeds}
+
+
+def parse_slots(blob: bytes) -> list[dict[str, Any] | None]:
+    """All `READ_RECORDS` slots, with ``None`` where the record is free.
+
+    `docs/28` §7.1: the first dword is the in-use marker the frame sweep
+    tests, so a zero there is a slot the engine skipped rather than the end of
+    anything.
+    """
+    import struct
+
+    out: list[dict[str, Any] | None] = []
+    for index in range(len(blob) // RECORD_BYTES):
+        raw = blob[index * RECORD_BYTES:(index + 1) * RECORD_BYTES]
+        if struct.unpack_from("<I", raw, 0x00)[0] == 0:
+            out.append(None)
+            continue
+        out.append(parse_records(raw)[0] | {"slot": index})
+    return out
 
 
 def _entry_address(handle: int) -> int:
@@ -793,7 +1169,96 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             LOG.warning("blob_hooks: %s", err)
             _save(out, document)
 
+    # **The model lookup.**  Its own small phase, for the same reason `hooks`
+    # is one: no writes, no reset, and the two swap arms are otherwise a diff
+    # of an adapter's invented index against an engine handle.
+    if "models" not in phases:
+        import blob_runtime
+        try:
+            rows = gold.run_plan(game_copy, dbgcall,
+                                 models_plan(blob_runtime.CASE_MODELS),
+                                 "blob_models", attempts=attempts)
+            phases["models"] = parse_models(rows, blob_runtime.CASE_MODELS)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})["models"] = str(err)
+            LOG.warning("blob_models: %s", err)
+            _save(out, document)
+
     arities = creator_arities(root)
+    # **The tick phases.**  One per creator that actually filled the pool, and
+    # one plan each for the same reason the creators are one per plan: a plan
+    # that dies takes every creator sharing its process with it.  Written as
+    # they land and skipped when present, so a bounded run loses at most the
+    # phase in flight.
+    entry = _entry_address(state["handle"])
+    for creator in reachable_creators(root):
+        name = f"0x{creator:08X}"
+        if not (phases.get(name) or {}).get("records"):
+            continue
+        records = phases[name]["records"]
+        args = argument_vector(arities[creator], source, target)
+        # **The family is chosen from the records, not by retrying.**  A
+        # creator whose blobs are class 0 faults the sweep before it ticks
+        # anything, every time; picking the family up front spends the
+        # attempts on reaching the anchor rather than on reaching a known
+        # fault.
+        # A creator whose own records are all sprites can go through the
+        # sweep -- unless one of its arms **spawns** a model blob, which the
+        # next sweep then hands to the renderer and which killed one phase
+        # three ticks in. There is no static answer to "does this arm spawn a
+        # model", so the rule is: try the sweep once per sprite creator, and
+        # fall back to the direct wrapper for anything that has not landed.
+        sprite = ({r["class_id"] for r in records} <= {2, 3}
+                  and "ticks_" + name not in document.get("failures", {})
+                  and "arms_" + name not in document.get("failures", {}))
+        if "ticks_" + name in phases or "arms_" + name in phases:
+            continue
+        tick_name = ("ticks_" if sprite else "arms_") + name
+        slots = sorted({r["slot"] for r in records})[:READ_RECORDS]
+        plan = (ticks_plan(state["handle"], creator, args) if sprite
+                else arms_plan(state["handle"], creator, args, slots))
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, plan, tick_name,
+                                 attempts=attempts)
+            phases[tick_name] = parse_ticks(rows, entry)
+            phases[tick_name]["args"] = list(args)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})[tick_name] = str(err)
+            LOG.warning("%s: %s", tick_name, err)
+            _save(out, document)
+
+    # **The fifty arms no creator reaches**, `docs/97` §18.6's second residue.
+    # A donor pool with the kind byte rewritten per record reaches every one
+    # of them; the plans are small and one per batch for the same reason the
+    # creators are one per plan.
+    donor = (phases.get(f"0x{POKE_DONOR:08X}") or {}).get("records") or []
+    donor_slots = sorted({r["slot"] for r in donor})
+    if donor_slots and POKE_DONOR in arities:
+        donor_args = argument_vector(arities[POKE_DONOR], source, target)
+        batches = poked_batches(donor_slots)
+        LOG.info("%d poked batch(es) over %d unstepped arm(s)",
+                 len(batches), sum(len(b[1]) for b in batches))
+        for index, (slots, kinds) in enumerate(batches):
+            name = "poked_%02d" % index
+            if name in phases:
+                continue
+            plan = poked_plan(state["handle"], POKE_DONOR, donor_args,
+                              slots, kinds, POKE_ROUNDS)
+            try:
+                rows = gold.run_plan(game_copy, dbgcall, plan, name,
+                                     attempts=attempts)
+                phases[name] = parse_poked(rows, entry)
+                phases[name]["slots"] = list(slots)
+                phases[name]["kinds"] = list(kinds)
+                phases[name]["args"] = list(donor_args)
+                _save(out, document)
+            except gold.CaptureError as err:
+                document.setdefault("failures", {})[name] = str(err)
+                LOG.warning("%s: %s", name, err)
+                _save(out, document)
+
     # A phase written before the seed reads existed is re-taken: it holds the
     # records but cannot answer the velocity question, and merging is the
     # whole point of writing phases as they land.
@@ -1196,7 +1661,54 @@ CREATOR_DRAW_RECIPES: dict[str, dict[str, Any]] = {
         "vz": (0, 1, 600, 700), "vx": (1, 1, -300, 600),
         "vy": (2, 1, -300, 600), "rot_z": (3, 1, 0, 4096),
         "rot_y": (4, 1, 0, 4096), "rot_x": (5, 1, 0, 4096)}},
+    # **The one the first pass called unstructured, and the reason it was.**
+    # Its draws are ordinary and its cadence is three per record; what the
+    # fitter could not see is that the engine **scales after truncating**
+    # (`ftol`, then `shl eax, 5` / `shl eax, 4`), and `32 * trunc(x)` is not
+    # `trunc(32 * x)`.  Reading the loop settles it independently: thirty
+    # iterations of `aRandom(5, 10) << 5`, `aRandom(-10, 20) << 4` twice --
+    # which is also exactly the ninety draws the seed delta counts.
+    "0x0042ACF0": {"cycle": 3, "fields": {
+        "vz": (0, 32, 5, 10), "vy": (1, 16, -10, 20),
+        "vx": (2, 16, -10, 20)}},
 }
+
+#: **The second shape, and it is not random at all.**  Several creators stagger
+#: their records with `delay = index / k` -- a signed divide of the loop
+#: counter, `cdq / sub eax, edx / sar eax, 1` for k = 2.  A fitter looking only
+#: for a line in the draws cannot see it and reports the creator unexplained,
+#: which is what "no per-record recipe" partly meant.  Each entry is
+#: `field -> k`, and `--check` replays it against every captured record.
+CREATOR_INDEX_RECIPES: dict[str, dict[str, int]] = {
+    "0x004228F0": {"delay": 2},
+    "0x004264A0": {"delay": 1},
+    "0x00429A80": {"delay": 3},
+}
+
+#: **The third shape: velocity that is a direction, not a draw.**
+#: `0x00426F90`, `0x00427410` and `0x0042A9D0` all take a target, call
+#: `0x0046D400` and multiply.  §7.4.2's finding that that routine is **not
+#: normalised** -- it divides by whichever of `|dx|` and `|dy|` is larger, so
+#: one of the two is always exactly ±1 -- has a signature no other arithmetic
+#: produces: **every** record carries `|vx|` or `|vy|` equal to the speed
+#: exactly.  33 of 33 across the three.  So these velocities were never
+#: candidates for `aRandom(base, span)`, and the fit was not failing, it was
+#: being asked the wrong question.
+DIRECTION_SPEED = 1600
+CREATOR_DIRECTION_VELOCITY = ("0x00426F90", "0x00427410", "0x0042A9D0")
+#: The two shapes' sizes, pinned so shortening either list is a failure and
+#: not a smaller report.
+DIRECTION_VELOCITY_CREATORS = 3
+DIRECTION_VELOCITY_RECORDS = 33
+INDEX_RECIPE_CREATORS = 3
+INDEX_RECIPE_FIELDS = 3
+
+#: The residue, written out a second time so the tuple above is pinned against
+#: something other than itself.
+DRAWS_UNSTRUCTURED_PIN = (
+    "0x00424D20", "0x00425810", "0x004264A0", "0x00426F90", "0x00427410",
+    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042AF10",
+)
 #: Creators whose captured velocities are drawn but whose **stream is not
 #: consumed at a fixed rate per record**, so no per-record recipe exists to
 #: fit.  Two shapes, both visible in the capture: a creator that builds
@@ -1205,10 +1717,19 @@ CREATOR_DRAW_RECIPES: dict[str, dict[str, Any]] = {
 #: record does not sit at draw 0 while its second sits at draw 4.  Naming them
 #: is the finding; fitting them is not possible from a capture that reads back
 #: twelve records of a longer run.
+#: **Ten, not eleven**, and no longer one blanket reason.  `0x0042ACF0` left
+#: outright: its draws were being read without the scale the engine applies
+#: after `ftol`, and with that fixed it carries a full recipe.  The other ten
+#: keep an entry, but each now has a named mechanism for part of what it
+#: writes rather than none for all of it -- three (`0x004264A0`, `0x00429A80`
+#: and, among the recipe-carrying creators, `0x004228F0`) stagger a field by
+#: the loop counter and are in `CREATOR_INDEX_RECIPES`; three
+#: (`CREATOR_DIRECTION_VELOCITY`) take their velocity from `0x0046D400` and a
+#: fixed speed rather than from the generator at all.  What is left here is
+#: the remainder of each, and it is a remainder, not a whole creator.
 CREATOR_DRAWS_UNSTRUCTURED = (
     "0x00424D20", "0x00425810", "0x004264A0", "0x00426F90", "0x00427410",
-    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042ACF0",
-    "0x0042AF10",
+    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042AF10",
 )
 #: The velocity draws of `0x00425810`, which is in that list for its
 #: **positions** and not its velocities.  Kept separate rather than dropped:
@@ -1379,6 +1900,7 @@ def run_checks(root: str, fixture: Path) -> int:
     _scatter_checks(ck, phases)
     _z_probe_checks(ck, phases, captured)
     _hook_checks(ck, root, phases)
+    _tick_checks(ck, root, phases)
     _recipe_checks(ck, captured)
     ck.check("native.some_produced", bool(produced),
              f"{len(produced)} creator(s) built records, "
@@ -1460,7 +1982,22 @@ DRAW_SITES_NOT_TAKEN: list[str] = [
 #: **None of the fourteen**, which is consistent with them drawing an angle
 #: and laying down `R * cos` rather than a component -- and is a measurement
 #: only because `native.fitter_solves_a_known_case` proves the solver solves.
-AFFINE_IN_DRAWS: list[str] = []
+#: What the **independent search** finds, kept separate from the pinned
+#: recipes on purpose: the recipes above are exact and read off the loop, this
+#: is a solver given nothing but the seed and the records.  It used to be
+#: empty, and that emptiness was quoted as a measurement.  It was a bug --
+#: the stride loop broke out of itself the first time an offset ran past the
+#: end of the draw list, so nothing past stride 1 at a low offset was ever
+#: tried -- on top of the missing scale.  Both are fixed; five of the fourteen
+#: drawing creators now solve without being told anything.
+AFFINE_IN_DRAWS: list[str] = [
+    "0x004228F0", "0x00425810", "0x004294E0", "0x004295D0", "0x0042ACF0",
+]
+
+#: The multipliers `_fit_draws` tries between the truncation and the store.
+#: Powers of two only: the engine reaches them with `shl`, and a general
+#: multiplier would let the solver fit noise.
+FIT_SCALES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 #: How many of the creators that touch no generator also produce no records.
 #: Pinned rather than tolerated: a refusal is a measurement of which tile a
@@ -1477,6 +2014,198 @@ SILENT_REFUSALS = 7
 #: moves across each call and only there.
 SCATTER_REPEATABLE = False
 SCATTER_CRT_DRAWS = 0
+
+
+def _eng3d_dll(root: str) -> "PEFile":
+    """``Eng3d.dll`` out of a game root, by the name the resolver loads."""
+    from inclib.pe import PEFile
+
+    for name in ("Eng3d.dll", "ENG3D.DLL", "eng3d.dll"):
+        path = Path(root) / name
+        if path.is_file():
+            return PEFile(path)
+    raise SystemExit(f"{root}: no Eng3d.dll -- is this the game root?")
+
+
+def _resolver_ordinal(b: "tables.Binary", store: int) -> int | None:
+    """The decimal-text ordinal pushed before the ``mov [global], eax``.
+
+    The resolver is one repeated shape: push the ordinal **as a string**, turn
+    it into a number, call ``GetProcAddress``, store.  Walking backwards from
+    the store to the nearest ``push imm32`` whose target is all digits is
+    therefore exact, and it is what makes the names below a reading rather
+    than an attribution.
+    """
+    for back in range(4, 64):
+        va = store - back
+        if not b.mapped(va, 5) or b.u8(va) != 0x68:
+            continue
+        text = b.string(b.u32(va + 1), 8)
+        if text and text.isdigit():
+            return int(text)
+    return None
+
+
+def _store_site(b: "tables.Binary", data: bytes, global_va: int) -> int | None:
+    """The single ``mov [global_va], eax`` in ``.text``, or ``None``."""
+    hits = _byte_sites(data, b.text_lo, b"\xa3" + global_va.to_bytes(4, "little"))
+    hits += _byte_sites(data, b.text_lo,
+                        b"\x89\x05" + global_va.to_bytes(4, "little"))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _byte_sites(data: bytes, base: int, pattern: bytes) -> list[int]:
+    out, start = [], 0
+    while True:
+        index = data.find(pattern, start)
+        if index < 0:
+            return out
+        out.append(base + index)
+        start = index + 1
+
+
+def _resolved_slot(b: "tables.Binary", text: bytes,
+                   ordinal: int) -> int | None:
+    """The global the start-up resolver stores *ordinal*'s address into.
+
+    Forwards from the ``push`` of the ordinal's decimal text to the first
+    ``mov [global], eax``, which is the inverse of :func:`_resolver_ordinal`
+    and the only way to make a claim about a slot depend on the slot.
+    """
+    for index in range(len(text) - 5):
+        if text[index] != 0x68:
+            continue
+        literal = b.string(int.from_bytes(text[index + 1:index + 5], "little"), 8)
+        if not literal or not literal.isdigit() or int(literal) != ordinal:
+            continue
+        site = b.text_lo + index
+        for forward in range(4, 64):
+            if not b.mapped(site + forward, 6):
+                break
+            if b.u8(site + forward) == 0xA3:
+                return b.u32(site + forward + 1)
+            if b.u8(site + forward) == 0x89 and b.u8(site + forward + 1) == 0x05:
+                return b.u32(site + forward + 2)
+    return None
+
+
+def _eng3d_export_checks(ck: "tables.Checker", root: str,
+                         hooks: dict[str, Any]) -> None:
+    """Name the five runtime function pointers, three ways that do not share
+    a step.
+
+    This is the check that closes "read as bytes and not matched to an
+    export".  The three readings are the ordinal literal in the **caller**,
+    the export table in the **callee**, and the **captured** thunk's own bytes;
+    the first two are static and the third is the running process, and a wrong
+    name would have to be wrong in all three the same way.
+    """
+    b = tables.Binary(root)
+    dll = _eng3d_dll(root)
+    text = b.pe.bytes_at(b.text_lo, b.text_hi - b.text_lo)
+    exports = {ordinal: (rva, name)
+               for ordinal, rva, name, _forward in dll.exports()[1]}
+
+    read: dict[int, int] = {}
+    for global_va in sorted(POINTER_ORDINALS):
+        store = _store_site(b, text, global_va)
+        ordinal = _resolver_ordinal(b, store) if store else None
+        if ordinal is not None:
+            read[global_va] = ordinal
+    ck.equal("eng3d.pointer_ordinals", read, POINTER_ORDINALS,
+             lambda v: f"{len(v)} runtime pointer(s) resolved by ordinal, the "
+                       "literal pushed as decimal text at the store site")
+    ck.equal("eng3d.pointer_exports",
+             {o: exports[o][1] for o in sorted(POINTER_EXPORTS) if o in exports},
+             POINTER_EXPORTS,
+             lambda v: "; ".join(f"{o}={n}" for o, n in sorted(v.items())))
+
+    # The captured thunk bytes, back against the shipped file.  Each preview
+    # must occur **once** in the DLL -- a pattern that occurs twice names
+    # nothing -- and at the RVA its export claims.
+    placed, base_of = {}, set()
+    for global_va, ordinal in sorted(POINTER_ORDINALS.items()):
+        preview = hooks["targets"].get(f"0x{global_va:x}")
+        if not preview:
+            continue
+        raw = bytes.fromhex(preview)
+        offset = dll.data.find(raw)
+        if offset < 0 or dll.data.find(raw, offset + 1) >= 0:
+            placed[ordinal] = None
+            continue
+        va = dll.off_to_va(offset)
+        placed[ordinal] = None if va is None else va - dll.image_base
+        base_of.add(hooks["pointers"][f"0x{global_va:x}"] - placed[ordinal])
+    ck.equal("eng3d.thunks_are_the_exports", placed,
+             {o: exports[o][0] for o in sorted(POINTER_EXPORTS)},
+             lambda v: f"{len(v)} captured thunk(s) occur once in the shipped "
+                       "DLL, each at its export's own RVA")
+    ck.check("eng3d.one_module_base", len(base_of) == 1,
+             "all five captured pointers minus their RVAs give one module "
+             f"base (0x{min(base_of) if base_of else 0:08X}) -- they are one "
+             "relocated Eng3d.dll, not five unrelated routines")
+
+    # The neighbouring builder.  `docs/30` §2.5 item 7 read the joint opcodes
+    # and concluded both reachable builders are RzRxRy; here is the same fact
+    # from the other end.
+    ordinals = set()
+    for index in range(len(text) - 5):
+        if text[index] != 0x68:
+            continue
+        literal = b.string(int.from_bytes(text[index + 1:index + 5], "little"), 8)
+        if literal and literal.isdigit() and 1 <= int(literal) <= 200:
+            ordinals.add(int(literal))
+    ck.equal("eng3d.resolved_ordinals", len(ordinals), ENG3D_RESOLVED_ORDINALS,
+             lambda v: f"the start-up resolver asks for {v} of the DLL's "
+                       f"{len(exports)} exports by ordinal")
+    # Which slot ordinal 14 lands in is **read**, not asserted: the check that
+    # only asked "is 0x004FA4A0 uncalled?" passed just as happily when handed
+    # a neighbouring address that is also uncalled, which is a check about
+    # nothing.  Walking the resolver forwards from the literal ties the two.
+    slot = _resolved_slot(b, text, ENG3D_UNCALLED_ORDINAL)
+    ck.equal("eng3d.ryrxrz_slot", slot, ENG3D_UNCALLED_GLOBAL,
+             lambda v: f"ordinal {ENG3D_UNCALLED_ORDINAL} is stored into "
+                       f"0x{v:08X}" if v else "ordinal is never stored")
+    ck.check("eng3d.ryrxrz_is_resolved_and_never_called",
+             ENG3D_UNCALLED_ORDINAL in ordinals
+             and exports[ENG3D_UNCALLED_ORDINAL][1] == ENG3D_UNCALLED_EXPORT
+             and slot == ENG3D_UNCALLED_GLOBAL
+             and not _byte_sites(
+                 text, b.text_lo,
+                 b"\xff\x15" + ENG3D_UNCALLED_GLOBAL.to_bytes(4, "little"))
+             and not _byte_sites(
+                 text, b.text_lo,
+                 b"\xa1" + ENG3D_UNCALLED_GLOBAL.to_bytes(4, "little")),
+             f"{ENG3D_UNCALLED_EXPORT} is resolved into "
+             f"0x{ENG3D_UNCALLED_GLOBAL:08X} and **never called or loaded** -- "
+             "docs/30 2.5 item 7 from the other end")
+
+
+def _rotate_truncating(tablesets: Any, vector: tuple[int, int, int],
+                       angles: tuple[int, int, int]) -> list[int]:
+    """:meth:`Tables.rotate` with **the other** rounding, as a control.
+
+    `docs/28` §7.4.2's claim that the two builders round differently is only
+    worth making if the difference is visible, so this rebuilds the same
+    matrix with the truncate-toward-zero idiom ``0x004039F0`` uses and hands
+    it to the same transform.  If the eight captured answers agreed with both,
+    the claim would be unfalsifiable and the check says so by failing.
+    """
+    from inclib import eng3d
+
+    def sh(value: int) -> int:
+        return -((-value) >> 14) if value < 0 else value >> 14
+
+    sa, ca = tablesets.sin(-angles[0]), tablesets.cos(-angles[0])
+    sb, cb = tablesets.sin(-angles[1]), tablesets.cos(-angles[1])
+    sc, cc = tablesets.sin(-angles[2]), tablesets.cos(-angles[2])
+    m = [sh(cb * cc) - sh(sh(sa * sb) * sc), sh(ca * sc),
+         sh(sb * cc) + sh(sh(sa * cb) * sc),
+         -(sh(cb * sc) + sh(sh(sa * sb) * cc)), sh(ca * cc),
+         sh(sh(sa * cb) * cc) - sh(sb * sc),
+         -sh(ca * sb), -sa, sh(ca * cb)]
+    return [sh(m[row] * vector[0] + m[row + 3] * vector[1]
+               + m[row + 6] * vector[2]) for row in range(3)]
 
 
 def _hook_checks(ck: "tables.Checker", root: str,
@@ -1517,6 +2246,13 @@ def _hook_checks(ck: "tables.Checker", root: str,
              tuple((tuple(v), tuple(a))
                    for v, a in hooks.get("rotations", [])), HOOK_ROTATIONS,
              lambda v: f"{len(v)} rotation(s), the sweep's own")
+    # The GDScript twin is diffed on **these** vectors, so the list the
+    # fixture emitter carries has to be this list and not a copy that drifted.
+    import blob_runtime
+    ck.equal("native.hook_rotations_are_the_fixture's",
+             blob_runtime.CASE_ROTATIONS, HOOK_ROTATIONS,
+             lambda v: f"blob_runtime carries the same {len(v)} rotation(s) "
+                       "into tests/fixtures/blob/cases_blob.json")
     ck.equal("native.hook_sweep_object_ids",
              list(hooks.get("object_ids", [])), hook_object_ids(),
              lambda v: f"{len(v)} object id(s): {HOOK_DENSE_IDS} dense, then "
@@ -1598,9 +2334,42 @@ def _hook_checks(ck: "tables.Checker", root: str,
              HOOK_ROTATE_CASES)
     ck.check("native.hook_rotate_recorded",
              all(row is not None and len(row) == 3 for row in hooks["rotate"]),
-             "0x004039A0 answered every case -- **recorded, not reproduced**: "
-             "its three-angle builder is Eng3d's and no RzRxRy ordering with "
-             "either rounding matches all eight")
+             "0x004039A0 answered every case")
+    mismatched = []
+    for (vector, angles), answer in zip(HOOK_ROTATIONS, hooks["rotate"]):
+        got = tablesets.rotate(vector, angles)
+        if got != answer:
+            mismatched.append((vector, angles, answer, got))
+    ck.equal("native.hook_rotate", mismatched, [],
+             lambda v: f"{HOOK_ROTATE_CASES - len(v)}/{HOOK_ROTATE_CASES} "
+                       "vectors reproduced through Eng3d's own RzRxRy builder")
+    # The three things that had to be right together, each stated as a
+    # property the capture can refute rather than as a comment.  A model that
+    # got any one of them wrong reproduced at most three of the eight.
+    ck.check("native.hook_rotate_negates_its_angles",
+             tablesets.matrix3(0, 0, 1024)
+             != [-v for v in tablesets.matrix3(0, 0, -1024)]
+             and tablesets.matrix3(0, 0, 1024)[1] == -tablesets.sin(1024),
+             "_E3D_init_matrix_RzRxRy negates each angle before it indexes "
+             "the table -- it builds the matrix of the opposite turns")
+    truncated = [_rotate_truncating(tablesets, v, a)
+                 for v, a in HOOK_ROTATIONS]
+    ck.check("native.hook_rotate_floors_where_the_other_truncates",
+             truncated != hooks["rotate"]
+             and [tablesets.rotate(v, a) for v, a in HOOK_ROTATIONS]
+             == hooks["rotate"],
+             "the same eight cases built with 0x004039F0's rounding disagree "
+             "with the engine: the three-angle builder shifts a 64-bit "
+             "product with shrd, which floors, and its neighbour truncates a "
+             "32-bit one toward zero")
+    ck.check("native.hook_rotate_reads_the_matrix_by_column",
+             tablesets.transform(list(range(9)), (1, 0, 0)) == [0, 0, 0]
+             and tablesets.transform([1 << 14 if i == 3 else 0
+                                      for i in range(9)], (0, 1, 0))
+             == [1, 0, 0],
+             "_E3D_c_rotate_coordinate reads m[i], m[i+3], m[i+6] for output "
+             "i -- a transposed read paired with a transposed build cancels, "
+             "which is how orient passed twenty cases while both were wrong")
     ck.check("native.hook_rotate_identity_loses_a_unit",
              hooks["rotate"][0] == [999, 0, 0],
              "the engine's identity rotation is 16383/16384, not 1 -- which "
@@ -1616,6 +2385,7 @@ def _hook_checks(ck: "tables.Checker", root: str,
              and all(t.startswith("5356578b") for t in hooks["targets"].values()),
              "each points at a thunk with the same prologue -- one module's "
              "export stubs, not five unrelated routines")
+    _eng3d_export_checks(ck, root, hooks)
 
     answered = [o for o in hooks["object"] if o["ok"]]
     ck.equal("native.hook_objects_answered", len(answered),
@@ -1806,17 +2576,691 @@ def _recipe_checks(ck: "tables.Checker", captured: dict[str, Any]) -> None:
                  if base == 0 and span > 1000),
              f"a drawn rotation is aRandom(0, {eng3d.ANGLE_UNITS}) -- the "
              "4096-unit circle, docs/70")
+    # The stagger, replayed the same way: from the record's **index**, with
+    # nothing taken from the record.
+    for name, fields in sorted(CREATOR_INDEX_RECIPES.items()):
+        phase = captured.get(name)
+        records = (phase or {}).get("records") or []
+        wrong = [(name, index, field, record[field], index // k)
+                 for field, k in fields.items()
+                 for index, record in enumerate(records)
+                 if record[field] != index // k]
+        ck.equal(f"native.index_recipe_{name}", wrong, [],
+                 lambda v, n=name, f=fields, r=len(records):
+                 f"{n}: {', '.join(f'{k} = index / {d}' for k, d in f.items())}"
+                 f" over {r} record(s)" if not v
+                 else f"{len(v)} disagreement(s)")
+    ck.equal("native.index_recipe_count",
+             (len(CREATOR_INDEX_RECIPES),
+              sum(len(f) for f in CREATOR_INDEX_RECIPES.values())),
+             (INDEX_RECIPE_CREATORS, INDEX_RECIPE_FIELDS),
+             lambda v: f"{v[1]} staggered field(s) across {v[0]} creator(s)")
+    ck.check("native.index_recipes_are_not_draws",
+             all(name not in CREATOR_DRAW_RECIPES
+                 or field not in CREATOR_DRAW_RECIPES[name]["fields"]
+                 for name, fields in CREATOR_INDEX_RECIPES.items()
+                 for field in fields),
+             f"{len(CREATOR_INDEX_RECIPES)} creator(s) stagger a field by the "
+             "loop counter, which is a shape no search of the draws can find")
+
+    # The direction signature.  This is the check that turns "the arithmetic
+    # on top of the draws is UNVERIFIED" into a named mechanism for three of
+    # the creators that carried it.
+    off_speed, counted = [], 0
+    for name in CREATOR_DIRECTION_VELOCITY:
+        records = (captured.get(name) or {}).get("records") or []
+        for index, record in enumerate(records[1:], start=1):
+            counted += 1
+            if DIRECTION_SPEED not in (abs(record["vx"]), abs(record["vy"])):
+                off_speed.append((name, index, record["vx"], record["vy"]))
+    ck.equal("native.direction_velocity_counted",
+             (len(CREATOR_DIRECTION_VELOCITY), counted),
+             (DIRECTION_VELOCITY_CREATORS, DIRECTION_VELOCITY_RECORDS),
+             lambda v: f"{v[1]} record(s) across {v[0]} creator(s)")
+    ck.equal("native.direction_velocity_signature", off_speed, [],
+             lambda v: f"{counted - len(v)}/{counted} records carry |vx| or "
+                       f"|vy| = {DIRECTION_SPEED} exactly -- 0x0046D400's "
+                       "larger-axis division, not a draw" if not v
+                       else f"{len(v)} record(s) miss the signature")
+    # And it must be a signature, not a tautology: a creator whose velocities
+    # *are* draws must fail the same test.
+    drawn = (captured.get("0x0042ACF0") or {}).get("records") or []
+    ck.check("native.direction_velocity_is_discriminating",
+             bool(drawn) and not any(
+                 DIRECTION_SPEED in (abs(r["vx"]), abs(r["vy"])) for r in drawn),
+             "0x0042ACF0's drawn velocities never land on the speed exactly, "
+             "so the signature separates the two mechanisms")
+    # **The residue is pinned by name, not by a property of itself.**  This
+    # check used to compare the tuple against its own de-duplication, which is
+    # true for every tuple without repeats: deleting an entry passed silently,
+    # and the number it reported was therefore unguarded.
     ck.equal("native.draws_unstructured",
-             tuple(sorted(CREATOR_DRAWS_UNSTRUCTURED)),
-             tuple(sorted(set(CREATOR_DRAWS_UNSTRUCTURED))),
-             lambda v: f"{len(v)} creator(s) consume the stream at no fixed "
-                       "rate per record and cannot carry a recipe")
+             tuple(sorted(CREATOR_DRAWS_UNSTRUCTURED)), DRAWS_UNSTRUCTURED_PIN,
+             lambda v: f"{len(v)} creator(s) still have fields no named "
+                       "mechanism explains")
+    ck.check("native.fit_scales_cover_the_recipes",
+             all(scale in FIT_SCALES
+                 for recipe in CREATOR_DRAW_RECIPES.values()
+                 for _slot, scale, _base, _span in recipe["fields"].values()),
+             f"the solver's {len(FIT_SCALES)} scales include every scale a "
+             "pinned recipe uses -- a search that could not find its own "
+             "answers would report the engine as unexplained")
     ck.check("native.draw_recipes_cover_the_solved",
              set(CREATOR_DRAW_RECIPES) & set(CREATOR_DRAWS_UNSTRUCTURED)
              == set(),
              f"{total} pinned field(s) across "
              f"{len(CREATOR_DRAW_RECIPES)} creator(s), disjoint from the "
              "unstructured ones")
+
+
+#: The record fields the tick diff compares.  Everything `parse_records`
+#: reads, which is everything an arm can write that survives into the next
+#: frame.
+TICK_FIELDS = ("x", "y", "z", "vx", "vy", "vz", "rot_x", "rot_y", "rot_z",
+               "kind", "life", "delay", "class_id", "model", "aux")
+
+#: **The arms the engine itself validated.**  Filled in from a capture and
+#: pinned, so a thinner one fails rather than reporting less -- the same rule
+#: every other coverage number here follows.  An arm is on this list only if
+#: every occupied slot of its creator's pool agreed with the transcription in
+#: every field for every tick.
+TICK_ARMS_NATIVE: list[int] = [
+    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
+    61, 63, 68, 71, 73,
+]
+#: The arms the capture actually stepped, and the phases that stepped them.
+#: Pinned by name so a thinner capture **fails** rather than quietly reporting
+#: a smaller number -- the rule every other coverage figure here follows.
+TICK_ARMS_SEEN: list[int] = [
+    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
+    61, 63, 68, 71, 73,
+]
+#: Stepped and **not** agreeing: none any more.  Arms 25 and 58 -- the two
+#: seekers of kinds 26 and 61 -- sat here until `_seek` stopped inventing a
+#: normalised direction and started asking `0x0046D400`, which is the routine
+#: the three arms actually call.  See :data:`SEEK_ARMS`.
+TICK_ARMS_UNRESOLVED: tuple[int, ...] = ()
+
+#: The three seeking arms, by jump-table index -- which for this table *is*
+#: the kind, since `0x0041E553` indexes with the record's own `+0x44`.
+#: `docs/28` §7.7.1.  Kind 27 is populated by no creator a weapon switch
+#: selects, so the capture never stepped it; it stays verified-static.
+SEEK_ARMS = {26: 0x0041F92F, 27: 0x0041FB8A, 61: 0x0042030A}
+#: `aGetUnitMapElementPtr`, `aGetStdObjectPosition` and the direction service,
+#: in the order every seeker calls them.
+SEEK_SERVICES = (0x00477AE0, 0x00405100, 0x0046D400)
+#: The record byte that names the unit-map slot, and the unit byte that names
+#: the object whose position is the target.
+SEEK_UNIT_FIELD = 0x54
+SEEK_OBJECT_FIELD = 0x4B
+#: `[0x004B1238]` -- the double the direction is multiplied by.
+SEEK_PULL_ADDRESS = 0x004B1238
+SEEK_PULL = -240.0
+#: The unit-map slot every captured seeker record names, and the object id its
+#: unit holds.  The second is measured **by elimination**: the `hooks` phase
+#: swept sixty-six object ids and this save answers for fifteen of them, and
+#: object 1's position is the only one of the fifteen that reproduces the
+#: engine's next record -- on every transition where an arm ran.
+#: The `[unit + 0x4B]` byte itself was not read, so the *identity* of the two
+#: numbers is a coincidence of this save until a capture reads that byte.
+SEEK_UNIT_SLOT = 1
+SEEK_OBJECT_ID = 1
+#: The **second** point the identity is tested at: the donor record's `+0x54`
+#: is 0, so the poked kind-27 seeker names slot 0 and resolves to object 0.
+SEEK_POKED_SLOT = 0
+TICK_PHASES: list[str] = [
+    "arms_0x00424D20", "arms_0x00425CA0", "arms_0x00426070",
+    "arms_0x004264A0", "arms_0x00426B70", "arms_0x00426F90",
+    "arms_0x00427410", "arms_0x00427810", "arms_0x00428200",
+    "arms_0x00429180", "arms_0x004294E0", "arms_0x004295D0",
+    "arms_0x0042A9D0", "arms_0x0042ACF0", "arms_0x0042AF10",
+    "ticks_0x00420A50", "ticks_0x004227C0", "ticks_0x004228F0",
+    "ticks_0x00425810", "ticks_0x004268B0", "ticks_0x00428570",
+    "ticks_0x00429A80", "ticks_0x00429C30",
+]
+#: The poked batches, by name, and what stepping them found.  Filled in from
+#: a capture and pinned, so a thinner one fails rather than reporting less.
+POKED_PHASES: list[str] = ["poked_%02d" % n for n in range(9)]
+POKED_ARMS_STEPPED: list[int] = [0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72]
+#: **All fifty.**  Every arm no creator a weapon switch selects can fill
+#: was stepped with a donor record whose kind byte was rewritten, and every
+#: one reproduces the engine's record field for field -- after ten of them
+#: were fixed, which is what the experiment was for (`docs/97` §20).
+POKED_ARMS_NATIVE: list[int] = list(POKED_ARMS_STEPPED)
+POKED_ARMS_DISAGREE: list[int] = []
+#: How many of the 74 arms a shot can reach at all.  The rest cannot be
+#: populated by firing a weapon, so no capture of this shape can reach them.
+TICK_ARMS_REACHABLE = 24
+
+
+def _seek_positions(phases: dict[str, Any]) -> dict[int, tuple[int, int, int]]:
+    """``object id -> position``, exactly as the `hooks` phase measured it."""
+    hooks = phases.get("hooks") or {}
+    ids = hooks.get("object_ids") or []
+    table = hooks.get("object") or []
+    return {oid: (e["x"], e["y"], e["z"])
+            for oid, e in zip(ids, table) if e.get("ok")}
+
+
+def _seek_hooks(seed: float, positions: dict[int, tuple[int, int, int]],
+                tables: Any, handles: dict[str, int] | None = None) -> Any:
+    """`CaseHooks` whose target is the record's **own** `+0x54`, resolved.
+
+    The captured seekers all name slot 1 and the poked kind-27 record names
+    slot 0, so a single fixed target would answer one of them and not the
+    other.  Resolving through the measured object table instead is what makes
+    the identity `unit-map slot -> object id` a *tested* proposition rather
+    than an assumption: get it wrong for either value and that arm fails.
+    """
+    import blob_runtime
+
+    class _Hooks(blob_runtime.CaseHooks):
+        def target_position(self, blob: Any) -> tuple[int, int, int] | None:
+            self.target_calls.append(blob.aux)
+            return positions.get(blob.aux)
+
+        def lookup_model(self, name: str) -> int:
+            self.model_calls.append(name)
+            if handles is None:
+                return super().lookup_model(name)
+            return handles.get(name, -1)
+
+    return _Hooks(seed, target=None, tables=tables)
+
+
+def _seek_target(phases: dict[str, Any]) -> tuple[int, int, int] | None:
+    """Where the captured seekers were steering, out of the `hooks` phase.
+
+    `aGetStdObjectPosition` was swept over sixty-six object ids there, so this
+    is a **read of the engine's own answer** rather than a position invented
+    for the replay.
+    """
+    hooks = phases.get("hooks") or {}
+    ids = hooks.get("object_ids") or []
+    table = hooks.get("object") or []
+    for oid, entry in zip(ids, table):
+        if oid == SEEK_OBJECT_ID and entry.get("ok"):
+            return entry["x"], entry["y"], entry["z"]
+    return None
+
+
+def _seek_sites(binary: "tables.Binary", arm: int,
+                window: int = 0x260) -> list[int]:
+    """The service calls one seeking arm makes, in order."""
+    out: list[int] = []
+    for offset in range(window):
+        va = arm + offset
+        if not binary.mapped(va, 5) or binary.u8(va) != 0xE8:
+            continue
+        target = (va + 5 + binary.i32(va + 1)) & 0xFFFFFFFF
+        if target in SEEK_SERVICES:
+            out.append(target)
+    return out
+
+
+def _seek_checks(ck: "tables.Checker", binary: "tables.Binary",
+                 phases: dict[str, Any], arm_of_kind: dict[int, int],
+                 tablesets: Any) -> None:
+    """What the three seekers read, and which object the capture says it is.
+
+    Two independent readings have to agree here.  The **static** one is the
+    arms themselves: each opens by loading the record's `+0x54` as a byte,
+    hands it to `aGetUnitMapElementPtr`, takes `+0x4B` out of the unit record
+    it gets back, hands *that* to `aGetStdObjectPosition`, and steers with
+    `0x0046D400` scaled by the double at `0x004B1238`.  The **dynamic** one is
+    the capture: replaying each seeker transition against all sixty-six object
+    positions the `hooks` phase measured -- the fifteen of sixty-six ids that
+    exist in this save -- leaves exactly one that reproduces the engine's next
+    record.
+    """
+    import blob_runtime
+
+    ck.equal("seek.pull_constant", struct.unpack(
+        "<d", binary.pe.bytes_at(SEEK_PULL_ADDRESS, 8))[0], SEEK_PULL,
+        lambda v: f"[0x{SEEK_PULL_ADDRESS:08X}] is {v}, the scale every "
+                  "seeker multiplies the direction service by")
+    for kind, arm in sorted(SEEK_ARMS.items()):
+        ck.equal(f"seek.services_of_kind_{kind}", _seek_sites(binary, arm),
+                 list(SEEK_SERVICES),
+                 lambda v, kind=kind: f"kind {kind}'s arm calls the unit map, "
+                                      "the object position and the direction "
+                                      "service, once each and in that order")
+        unit_field = [binary.u8(arm + n + 2) for n in range(6)
+                      if binary.u8(arm + n) == 0x8A
+                      and binary.u8(arm + n + 1) in (0x46, 0x4E, 0x56)]
+        ck.equal(f"seek.unit_field_of_kind_{kind}", unit_field,
+                 [SEEK_UNIT_FIELD],
+                 lambda v, kind=kind: f"kind {kind}'s arm opens by reading the "
+                                      f"record's +0x{SEEK_UNIT_FIELD:02X} as "
+                                      "the unit-map slot")
+
+    landed = [n for n in phases if n.startswith("ticks_") or n.startswith("arms_")]
+    ids = (phases.get("hooks") or {}).get("object_ids") or []
+    table = (phases.get("hooks") or {}).get("object") or []
+    candidates = [(oid, (e["x"], e["y"], e["z"]))
+                  for oid, e in zip(ids, table) if e.get("ok")]
+    slots: set[int] = set()
+    fits: list[list[int]] = []
+    for name in sorted(landed):
+        phase = phases[name]
+        rounds = [parse_slots(bytes.fromhex(h)) for h in phase["rounds"]]
+        for step in range(1, len(rounds)):
+            for index, record in enumerate(rounds[step - 1]):
+                if record is None or record["kind"] not in SEEK_ARMS:
+                    continue
+                after = rounds[step][index]
+                if after is None or after["kind"] != record["kind"]:
+                    continue
+                slots.add(record["aux"])
+                if record["delay"]:
+                    continue
+                fit = []
+                for oid, position in candidates:
+                    blob = blob_runtime.Blob(
+                        **{f: record[f] for f in TICK_FIELDS})
+                    hooks = blob_runtime.CaseHooks(1.0, target=position,
+                                                   tables=tablesets)
+                    blob_runtime.tick_blob(blob, hooks)
+                    if _tick_agrees(blob, after):
+                        fit.append(oid)
+                fits.append(fit)
+    ck.check("seek.transitions_replayed", len(fits) > 0,
+             f"{len(fits)} seeker transition(s) where an arm actually ran, "
+             f"replayed against {len(candidates)} measured object position(s)")
+    ck.equal("seek.unit_slot", sorted(slots), [SEEK_UNIT_SLOT],
+             lambda v: f"every captured seeker record names unit-map slot {v}")
+    ck.equal("seek.target_is_unique",
+             sorted({tuple(f) for f in fits}), [(SEEK_OBJECT_ID,)],
+             lambda v: f"exactly one object id reproduces the engine's next "
+                       f"record, on every transition: {v}")
+
+
+def _tick_state(phases: dict[str, Any]) -> int:
+    return (phases.get("state") or {}).get("base", 0)
+
+
+def _tick_checks(ck: "tables.Checker", root: str,
+                 phases: dict[str, Any]) -> None:
+    """Step the transcription beside the engine's own frame sweep.
+
+    Every other check in this file compares a *creator's* output. This one
+    compares the **arms**, which is what `docs/28` §12 item 1's second half
+    said had never been done: `tools/blob_runtime.py` is a transcription of
+    `aBlob_Update` and `godot/game/fx/` is a transcription of that, so the
+    Godot suite diffs two readings of one listing and cannot tell whether the
+    listing is right.
+
+    The capture calls `aCheckInBlobObjects` -- the routine a frame calls --
+    and reads the pool between rounds. The model is re-seeded from the
+    **measured** second-generator seed at the start of each round, so a slot
+    that drew in an earlier round cannot drift the comparison; the engine
+    walks the pool by ascending index and so does this, which is what makes
+    the prefix of the stream the same.
+    """
+    import blob_runtime
+    from inclib import eng3d
+
+    b = tables.Binary(root)
+    tablesets = eng3d.load(root)
+    base = _tick_state(phases)
+    landed = sorted(n for n in phases
+                    if n.startswith("ticks_") or n.startswith("arms_"))
+    ck.equal("native.tick_phases", landed, TICK_PHASES,
+             lambda v: f"{len(v)} creator pool(s) stepped inside the engine: "
+                       f"{sum(1 for n in v if n.startswith('ticks_'))} through "
+                       "the frame sweep and "
+                       f"{sum(1 for n in v if n.startswith('arms_'))} through "
+                       "aBlob_Update directly")
+    if not landed:
+        return
+
+    arm_of_kind = _arm_of_kind()
+    # **The seekers' target.**  Every other arm is a closed function of its own
+    # record; these three read the unit map, and the capture's adapter used to
+    # answer nothing, which is why they were the only stepped arms that
+    # disagreed.  The position comes from the `hooks` phase's own sweep of
+    # `aGetStdObjectPosition`, so it is measured rather than assumed -- see
+    # :data:`SEEK_OBJECT_ID` for what "measured" covers and what it does not.
+    positions = _seek_positions(phases)
+    # **The model lookup, measured.**  `docs/97` §20.5: the two swap arms store
+    # `0x004038F0`'s answer straight into the record, so without this the diff
+    # compares an engine handle against an adapter's index into its own list.
+    handles = {str(k): int(v) for k, v in (phases.get("models") or {}).items()}
+    agreed: dict[int, bool] = {}
+    rounds_seen = slots_seen = 0
+    for name in landed:
+        phase = phases[name]
+        rounds = [parse_slots(bytes.fromhex(h)) for h in phase["rounds"]]
+        seeds = phase.get("seed2") or []
+        if len(rounds) < 2 or len(seeds) < len(rounds):
+            continue
+        live = [index for index, record in enumerate(rounds[0])
+                if record is not None]
+        slots_seen += len(live)
+        models = [blob_runtime.Blob(
+            **{f: rounds[0][index][f] for f in TICK_FIELDS},
+            slot_tag=(base + RECORD_BYTES * index) & 0xFF) for index in live]
+        kinds = [rounds[0][index]["kind"] for index in live]
+        dropped = [False] * len(live)
+        previous = [rounds[0][index]["life"] for index in live]
+        for step in range(1, len(rounds)):
+            rounds_seen += 1
+            hooks = _seek_hooks(seeds[step - 1], positions, tablesets,
+                                handles)
+            for position, index in enumerate(live):
+                if dropped[position]:
+                    continue
+                blob = models[position]
+                if blob.alive:
+                    blob_runtime.tick_blob(blob, hooks)
+                arm = arm_of_kind.get(kinds[position])
+                if arm is None:
+                    continue
+                record = rounds[step][index]
+                # **A freed slot is reused within the same round.**  The engine
+                # walks slots in ascending order, so a blob that spawns while
+                # slot 1 is being ticked lands in slot 1 the moment slot 1 is
+                # freed later in that same round, and the read at the end of
+                # the round shows a *different* blob at the tracked index --
+                # of the same kind, often, since a kind-75 emitter spawns more
+                # kind 75.  Comparing on compares two unrelated records.
+                #
+                # The tell is **life**, not kind: the wrapper decrements it by
+                # exactly one per tick and holds it only at the immortal 0xFF,
+                # so a record whose life is neither `was` nor `was - 1` is not
+                # the record that was there before.  Stopping there is honest
+                # in both directions -- an arm that wrongly deletes early
+                # still fails, because the engine's record for its slot *is* a
+                # continuation and the comparison runs.  That is how kind 11's
+                # spurious self-delete was caught rather than excused.
+                was = previous[position]
+                continues = (record is not None and was is not None
+                             and record["life"] in (was, was - 1))
+                if record is not None and not continues and not blob.alive:
+                    dropped[position] = True
+                    continue
+                previous[position] = None if record is None else record["life"]
+                agreed.setdefault(arm, True)
+                if not _tick_agrees(blob, record):
+                    agreed[arm] = False
+    ck.check("native.tick_rounds_compared", rounds_seen > 0,
+             f"{rounds_seen} round(s) over {slots_seen} occupied slot(s)")
+    ck.equal("native.tick_rounds_per_phase",
+             sorted({len(phases[n]["rounds"]) for n in landed}),
+             [TICK_ROUNDS + 1],
+             lambda v: f"every phase holds {v} read(s): the pool before the "
+                       f"first tick and after each of {TICK_ROUNDS}")
+    # **The diff must look at the whole record.**  A field quietly dropped
+    # from the comparison is a field the engine is no longer consulted about,
+    # and the count would not move.
+    ck.equal("native.tick_fields",
+             sorted(TICK_FIELDS), sorted(parse_records(b"\x01" + b"\0" * (RECORD_BYTES - 1))[0]
+                                         .keys() - {"slot"}),
+             lambda v: f"{len(v)} field(s) compared -- every one "
+                       "`parse_records` reads")
+    ck.check("native.tick_entries",
+             b.u8(POOL_TICK) == 0x56 and b.u8(POOL_TICK + 1) == 0x57
+             and b.u8(BLOB_ARM) == 0x83 and b.u8(BLOB_ARM + 1) == 0xEC
+             and b.u32(POOL_TICK + 0x89) == POOL_TICK_RECORDS,
+             f"0x{POOL_TICK:08X} walks {POOL_TICK_RECORDS} records and "
+             f"0x{BLOB_ARM:08X} opens with its own frame")
+    # **What a shot can reach at all**, from the creators' own records rather
+    # than from the tick phases: an arm no creator populates is out of this
+    # capture's reach whatever Wine does, and separating the two numbers keeps
+    # a thin capture from looking like a small engine.
+    reachable = {arm_of_kind[record["kind"]]
+                 for name, phase in phases.items()
+                 if name.startswith("0x")
+                 for record in (phase.get("records") or [])
+                 if record["kind"] in arm_of_kind}
+    ck.equal("native.tick_arms_reachable", len(reachable),
+             TICK_ARMS_REACHABLE,
+             lambda v: f"{v} of 74 arms are populated by a creator a weapon "
+                       "switch selects; the other 50 are not reachable by "
+                       "firing anything and no capture of this shape reaches "
+                       "them")
+    ck.equal("native.tick_arms_seen", len(agreed), len(TICK_ARMS_SEEN),
+             lambda v: f"{v} arm(s) were actually stepped")
+    ck.equal("native.tick_arms_stepped", sorted(agreed), TICK_ARMS_SEEN,
+             lambda v: f"{len(v)} arm(s), by index")
+    # **A diff that cannot fail is not a diff.**  The reuse rule above stops
+    # comparing a slot on purpose, and a rule that stopped too eagerly would
+    # turn every disagreement into silence and report 24 of 24.  So the same
+    # machinery is handed a model that is deliberately one unit wrong and has
+    # to say so.
+    ck.check("native.tick_diff_is_discriminating",
+             _tick_disagrees_when_perturbed(phases, landed, base, tablesets),
+             "a model started one unit off its captured record fails the "
+             "same comparison the arms pass")
+    ck.equal("native.tick_arms_unresolved",
+             tuple(sorted(a for a, ok in agreed.items() if not ok)),
+             TICK_ARMS_UNRESOLVED,
+             lambda v: f"{len(v)} stepped arm(s) disagree with the engine")
+    _seek_checks(ck, b, phases, arm_of_kind, tablesets)
+    _poked_checks(ck, phases, base, tablesets, positions, handles)
+    # The fixture the Godot suite reads carries the same two lists, so the
+    # boundary it prints cannot drift from the capture that earned it.
+    ck.equal("native.tick_arms_are_the_fixture's",
+             (blob_runtime.NATIVE_ARMS, blob_runtime.UNRESOLVED_ARMS),
+             (tuple(TICK_ARMS_NATIVE), TICK_ARMS_UNRESOLVED),
+             lambda v: f"blob_runtime carries the same {len(v[0])} native "
+                       f"and {len(v[1])} unresolved arm(s)")
+    ck.equal("native.tick_arms_native",
+             sorted(a for a, ok in agreed.items() if ok), TICK_ARMS_NATIVE,
+             lambda v: f"{len(v)} arm(s) reproduce the engine's own records "
+                       f"field for field; the other {len(agreed) - len(v)} "
+                       "stepped arm(s) differ and stay executable-Python")
+
+
+def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                  tablesets: Any,
+                  positions: dict[int, tuple[int, int, int]],
+                  handles: dict[str, int]) -> None:
+    """The arms no creator reaches, stepped with a donor record.
+
+    One call, one snapshot: the comparison is per `aBlob_Update` rather than
+    per round, so an arm that faults costs the arms after it in its plan and
+    nothing before it, and each arm's writes are isolated from its
+    neighbours'.  The model is re-seeded from the **measured** second-generator
+    seed before every call for the same reason the tick diff is: an arm that
+    draws must draw from where the engine drew.
+    """
+    import blob_runtime
+
+    landed = sorted(n for n in phases if n.startswith("poked_"))
+    ck.equal("poked.phases", landed, POKED_PHASES,
+             lambda v: f"{len(v)} poked batch(es) landed")
+    if not landed:
+        return
+    arm_of_kind = _arm_of_kind()
+    agreed: dict[int, bool] = {}
+    steps_seen = 0
+    for name in landed:
+        phase = phases[name]
+        start = phase.get("start")
+        steps = phase.get("steps") or []
+        slots = phase.get("slots") or []
+        kinds = phase.get("kinds") or []
+        if not start or not slots:
+            continue
+        first = parse_slots(bytes.fromhex(start["pool"]))
+        models: dict[int, Any] = {}
+        previous: dict[int, int | None] = {}
+        dropped: set[int] = set()
+        for position, slot in enumerate(slots):
+            record = first[slot]
+            if record is None or record["kind"] != kinds[position]:
+                continue
+            models[slot] = blob_runtime.Blob(
+                **{f: record[f] for f in TICK_FIELDS},
+                slot_tag=(base + RECORD_BYTES * slot) & 0xFF)
+            previous[slot] = record["life"]
+        seed = start["seed"]
+        for index, step in enumerate(steps):
+            slot = slots[index % len(slots)]
+            after = parse_slots(bytes.fromhex(step["pool"]))[slot]
+            if slot in models and slot not in dropped:
+                blob = models[slot]
+                if blob.alive:
+                    hooks = _seek_hooks(seed or 0.0, positions, tablesets,
+                                        handles)
+                    blob_runtime.tick_blob(blob, hooks)
+                was = previous[slot]
+                continues = (after is not None and was is not None
+                             and after["life"] in (was, was - 1))
+                if after is not None and not continues and not blob.alive:
+                    dropped.add(slot)
+                else:
+                    previous[slot] = None if after is None else after["life"]
+                    arm = arm_of_kind[kinds[slots.index(slot)]]
+                    agreed.setdefault(arm, True)
+                    steps_seen += 1
+                    if not _tick_agrees(blob, after):
+                        agreed[arm] = False
+            seed = step["seed"]
+    ck.check("poked.steps_compared", steps_seen > 0,
+             f"{steps_seen} single-arm call(s) compared, one snapshot each")
+    # **Pin the coverage, not only the result.**  A mutation battery caught
+    # kind 76's `life <= 4` branch being transcribed and never run, because a
+    # donor's `life` of 30 cannot reach it in four rounds.  The poke writes
+    # `life` as well now, and these two say so -- a thinner capture that went
+    # back to the long life would fail rather than quietly checking less.
+    ck.equal("poked.life_written",
+             sorted({parse_slots(
+                         bytes.fromhex(phases[name]["start"]["pool"]))[slot]["life"]
+                     for name in landed
+                     for slot in phases[name]["slots"]}),
+             [POKE_LIFE],
+             lambda v: f"every poked record starts at life {v}, short enough "
+                       "to reach its own terminal branch")
+    ck.equal("poked.rounds_per_phase",
+             sorted({len(phases[name]["steps"]) // len(phases[name]["slots"])
+                     for name in landed}),
+             [POKE_ROUNDS],
+             lambda v: f"every phase stepped each record {v} time(s)")
+    ck.equal("poked.model_handles", sorted(handles),
+             sorted(blob_runtime.CASE_MODELS),
+             lambda v: f"{len(v)} model name(s) resolved by the engine's own "
+                       "lookup, so the two swap arms are compared against a "
+                       "measured handle rather than an adapter's index")
+    ck.equal("poked.arms_stepped", sorted(agreed), POKED_ARMS_STEPPED,
+             lambda v: f"{len(v)} arm(s) no creator reaches were stepped by "
+                       "rewriting a donor record's kind byte")
+    ck.equal("poked.arms_native", sorted(a for a, ok in agreed.items() if ok),
+             POKED_ARMS_NATIVE,
+             lambda v: f"{len(v)} of them reproduce the engine's record field "
+                       "for field")
+    ck.equal("poked.arms_disagree",
+             sorted(a for a, ok in agreed.items() if not ok),
+             POKED_ARMS_DISAGREE,
+             lambda v: f"{len(v)} disagree and are named rather than rounded "
+                       "off")
+    _poked_seek_check(ck, phases, base, tablesets, positions)
+
+
+def _poked_seek_check(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                      tablesets: Any,
+                      positions: dict[int, tuple[int, int, int]]) -> None:
+    """The **second** value of the unit-map slot, and what it resolves to.
+
+    `seek.target_is_unique` pins that the captured seekers, which all name
+    slot 1, are steering at object 1.  One value cannot tell an identity from
+    a coincidence.  The poked kind-27 record carries the donor's `+0x54`,
+    which is **0**, and sweeping the same fifteen positions leaves object 0 --
+    so the two numbers agree at two points rather than one.  It is still not
+    a reading of `[unit + 0x4B]`; it is two of fifteen.
+    """
+    import blob_runtime
+
+    arm_of_kind = _arm_of_kind()
+    candidates = sorted(positions)
+    fits: list[tuple[int, tuple[int, ...]]] = []
+    for name in sorted(n for n in phases if n.startswith("poked_")):
+        phase = phases[name]
+        start = phase.get("start")
+        slots = phase.get("slots") or []
+        kinds = phase.get("kinds") or []
+        if not start:
+            continue
+        first = parse_slots(bytes.fromhex(start["pool"]))
+        for index, step in enumerate(phase.get("steps") or []):
+            position = index % len(slots)
+            kind = kinds[position]
+            if kind not in SEEK_ARMS or index >= len(slots):
+                continue
+            record = first[slots[position]]
+            after = parse_slots(bytes.fromhex(step["pool"]))[slots[position]]
+            if record is None or after is None or record["kind"] != kind:
+                continue
+            fit = []
+            for oid in candidates:
+                blob = blob_runtime.Blob(
+                    **{f: record[f] for f in TICK_FIELDS},
+                    slot_tag=(base + RECORD_BYTES * slots[position]) & 0xFF)
+                hooks = blob_runtime.CaseHooks(start["seed"] or 0.0,
+                                               target=positions[oid],
+                                               tables=tablesets)
+                blob_runtime.tick_blob(blob, hooks)
+                if _tick_agrees(blob, after):
+                    fit.append(oid)
+            fits.append((record["aux"], tuple(fit)))
+    ck.check("poked.seeker_present", len(fits) > 0,
+             f"{len(fits)} poked seeker step(s) swept over "
+             f"{len(candidates)} measured object position(s)")
+    ck.equal("poked.seeker_target_is_its_own_slot",
+             sorted({(aux, fit) for aux, fit in fits}),
+             [(SEEK_POKED_SLOT, (SEEK_POKED_SLOT,))],
+             lambda v: "the record naming unit-map slot "
+                       f"{SEEK_POKED_SLOT} steers at object "
+                       f"{SEEK_POKED_SLOT} and at no other of the fifteen")
+
+
+def _tick_disagrees_when_perturbed(phases: dict[str, Any], landed: list[str],
+                                   base: int, tablesets: Any) -> bool:
+    """Whether the tick diff notices a model that starts one unit wrong."""
+    import blob_runtime
+
+    for name in landed:
+        phase = phases[name]
+        rounds = [parse_slots(bytes.fromhex(h)) for h in phase["rounds"]]
+        seeds = phase.get("seed2") or []
+        if len(rounds) < 2 or not seeds:
+            continue
+        for index, start in enumerate(rounds[0]):
+            if start is None or rounds[1][index] is None:
+                continue
+            fields = dict((f, start[f]) for f in TICK_FIELDS)
+            fields["x"] += 1
+            blob = blob_runtime.Blob(
+                **fields, slot_tag=(base + RECORD_BYTES * index) & 0xFF)
+            hooks = blob_runtime.CaseHooks(seeds[0], target=None,
+                                           tables=tablesets)
+            blob_runtime.tick_blob(blob, hooks)
+            return not _tick_agrees(blob, rounds[1][index])
+    return False
+
+
+def _tick_agrees(blob: Any, record: dict[str, Any] | None) -> bool:
+    """Whether the model's blob is the engine's record, field for field."""
+    if record is None:
+        return not blob.alive
+    if not blob.alive:
+        return False
+    return all(getattr(blob, field) == record[field] for field in TICK_FIELDS)
+
+
+def _arm_of_kind() -> dict[int, int]:
+    """``kind -> arm index``, the same grouping the fixture carries."""
+    import blob_runtime
+
+    order: list[int] = []
+    out: dict[int, int] = {}
+    for kind in range(len(blob_runtime.HANDLERS)):
+        key = id(blob_runtime.HANDLERS[kind])
+        if key not in order:
+            order.append(key)
+        out[kind] = order.index(key)
+    return out
 
 
 def _scatter_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
@@ -2072,9 +3516,8 @@ def _seed_checks(ck: "tables.Checker", captured: dict[str, Any]) -> None:
     fitted = sorted(n for n, k in drawing.items() if _fit_draws(captured[n], k))
     ck.equal("native.velocities_affine_in_the_draws", fitted, AFFINE_IN_DRAWS,
              lambda v: f"{len(v)} of {len(drawing)} drawing creator(s) have a "
-                       "velocity column that solves to (base, span); the rest "
-                       "are UNVERIFIED -- the draw count is known, the "
-                       "arithmetic on top of it is not")
+                       "velocity column an unaided search solves to "
+                       "(scale, base, span)")
 
 
 def _fitter_selftest() -> bool:
@@ -2110,6 +3553,7 @@ def _fit_draws(phase: dict[str, Any], steps: int) -> str | None:
         values = [r[axis] for r in records]
         if len(set(values)) < 2:
             continue
+        found = False
         for stride in range(1, 7):
             for offset in range(len(draws)):
                 last = offset + stride * (len(values) - 1)
@@ -2118,16 +3562,28 @@ def _fit_draws(phase: dict[str, Any], steps: int) -> str | None:
                 picks = [draws[offset + stride * i] for i in range(len(values))]
                 if picks[0] == picks[1]:
                     continue
-                span = (values[1] - values[0]) / (picks[1] - picks[0])
-                base = values[0] - span * picks[0]
-                if all(abs(int(base + span * f) - v) <= 1
-                       for f, v in zip(picks, values)):
-                    explained.append(f"{axis}=aRandom({base:.0f},{span:.0f})"
-                                     f"@{offset}+{stride}i")
+                # **The scale is searched, and it has to be.**  The engine
+                # truncates with `ftol` and *then* shifts, so a column is
+                # `scale * int(base + span*f)` and not `int(base + span*f)`.
+                # Without this the solver missed a creator whose recipe the
+                # disassembly hands over in three lines.
+                for scale in FIT_SCALES:
+                    if any(v % scale for v in values):
+                        continue
+                    scaled = [v // scale for v in values]
+                    span = (scaled[1] - scaled[0]) / (picks[1] - picks[0])
+                    base = scaled[0] - span * picks[0]
+                    if all(abs(int(base + span * f) - v) <= 1
+                           for f, v in zip(picks, scaled)):
+                        explained.append(
+                            f"{axis}={scale}*aRandom({base:.0f},{span:.0f})"
+                            f"@{offset}+{stride}i")
+                        found = True
+                        break
+                if found:
                     break
-            else:
-                continue
-            break
+            if found:
+                break
     return ", ".join(explained) if explained else None
 
 
