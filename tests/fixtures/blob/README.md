@@ -75,7 +75,9 @@ name which is which:
 * `poked_arms` — the other 50, stepped by the `poked_*` phases with a **donor**
   record whose `+0x44` was rewritten. The jump-table index is one byte, so no
   creator is needed to reach an arm; what that measures is the arm, and not
-  the arguments a creator would have passed it;
+  the arguments a creator would have passed it. The sweep is run at **two**
+  input vectors and eight further one-arm probes fill in branches a uniform
+  vector cannot reach, so the agreement is not a property of one record;
 * `unresolved_arms` — **empty**. The last two to leave it were the seekers
   (arms 25 and 58), which disagreed until `_seek` stopped normalising a
   direction the engine never computes (`docs/28` §7.7.1).
@@ -84,6 +86,16 @@ The claim is *transitive and per arm* — the engine agrees with the Python
 there, the Python agrees with the GDScript here — and never a label on the
 layer. Ten of the fifty were wrong when they were first stepped; `docs/97`
 §20.1 lists them.
+
+**And the claim now says how much of each arm it covers.** `arm_lines_covered`
+and `arm_lines_total` carry the figure the capture earned — **377 of 385**
+transcribed arm lines executed by the comparison itself, 72 of the 74 arms
+entirely — and `test_blob.gd` checks both, so a re-emit that lost a vector
+lowers the number rather than keeping the wording. The eight that remain are
+named in `tools/blob_gold.py`'s `COVERAGE_UNCOVERED`; two of them are a
+**deliberate divergence**, where kind 41's arm divides by the record's `vx`
+with no test in front of it and the original dies where this port returns
+(`docs/97` §21.2).
 
 ## What one run held
 
@@ -147,6 +159,16 @@ Its `phases` map holds:
 * `scatter` — one creator run **twice in one process** with `rand()` calls
   bracketing each, which says whether its scatter is state at all and rules
   out the C runtime as the source.
+* `units` — the whole 200-slot unit array, read for one byte of each record:
+  `+0x4B`, the object id a seeking arm steers at (`docs/28` §7.7.1). A
+  read-only phase of its own and **not** a field added to `state`, because
+  that phase also yields the pool's base, which is a heap address that moves
+  between runs and whose low byte two arms branch on.
+* `origins` and `symbols` — what a creator reads before it draws: the control
+  map, the standard object array as the records hold it, both unit heights,
+  and the two **symbol** objects the argument tiles name. The two object
+  lookups are different tables and answer differently, which is why the second
+  phase exists (`docs/97` §22.2).
 * `hooks` — the five services of `docs/28` §12 item 1, called directly: twenty
   deltas through the orientation helper and forty through the geometry one,
   eight rotations, eighty-one object ids and every named unit slot, plus the

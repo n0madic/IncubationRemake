@@ -40,6 +40,11 @@ const ROTATE_CASES: int = 8
 const NATIVE_ARMS: int = 24
 const POKED_ARMS: int = 50
 const UNRESOLVED_ARMS: int = 0
+## Transcribed arm lines the native comparison actually executed, and how many
+## there are. The eight that are missing are named in `blob_gold.py`'s
+## `COVERAGE_UNCOVERED`; two of them are a deliberate divergence.
+const ARM_LINES_COVERED: int = 377
+const ARM_LINES_TOTAL: int = 385
 
 
 func run(h: TestHarness) -> void:
@@ -377,6 +382,19 @@ func _check_native_arms(h: TestHarness, document: Dictionary) -> void:
 		native.size() + poked.size() == DictRead.as_int(document["arms"]),
 		"the two capture families between them reach all %d arms"
 		% DictRead.as_int(document["arms"]))
+	# **How much of each arm the native comparison reached.** A per-arm claim
+	# that never says which lines were run is a claim about the arm's name
+	# rather than its body, and one uncovered branch is exactly the defect
+	# `docs/97` section 20 went looking for. The fixture carries the figure
+	# the capture earned; a re-emit that lost a vector would lower it.
+	h.equal("arm_lines_covered",
+		DictRead.as_int(document.get("arm_lines_covered", 0)),
+		ARM_LINES_COVERED,
+		"%d of the transcribed arm lines are executed by the comparison "
+		% ARM_LINES_COVERED + "against the engine, not merely transcribed")
+	h.equal("arm_lines_total",
+		DictRead.as_int(document.get("arm_lines_total", 0)), ARM_LINES_TOTAL,
+		"out of %d" % ARM_LINES_TOTAL)
 	# And the boundary this suite prints is still the weaker one, on purpose.
 	h.check("oracle_is_still_executable_python",
 		DictRead.as_string(document.get("oracle", "")).begins_with(

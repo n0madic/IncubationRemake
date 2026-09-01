@@ -492,6 +492,12 @@ POKE_ROUNDS = 8
 #: and so the last rounds reach `life == 0`, which is where the terminal arms
 #: spawn, morph and hand the record back to the wrapper.
 POKE_LIFE = 6
+#: The second vector's life.  Twelve, with fourteen rounds, is the shortest
+#: pair that reaches **both** `life == 10` -- kind 43's and kind 65's gate --
+#: and `life == 0`, which is where the terminal arms spawn.  One vector cannot
+#: do both at eight rounds, which is why there are two.
+POKE_LIFE_LONG = 12
+POKE_ROUNDS_LONG = 14
 #: Slots per plan.  One plan is one process, so this is also how many unknown
 #: arms share a fate.
 POKE_SLOTS = 6
@@ -501,6 +507,24 @@ POKE_SLOTS = 6
 #: can ask for.  `docs/28` §7.5: it answers `-1` for a model the world set
 #: does not carry, and the arm then leaves the record alone.
 MODEL_LOOKUP = 0x004038F0
+
+#: Every model name the ten transcribed creators pass to the constructor,
+#: collected from their own instructions.  The two swap arms' three names are
+#: `blob_runtime.CASE_MODELS`; these are the creators', and the phase asks the
+#: engine for both sets in one process -- a creator's record carries the
+#: handle, so a transcription that guessed one would be comparing an invented
+#: index against a measured one (`docs/97` §20.5's rule, applied again).
+CREATOR_MODELS = (
+    "A_BLASER.3DI", "A_BLIZ01.3DI", "A_BLIZ02.3DI", "A_BLIZ03.3DI",
+    "A_CASE.3DI", "A_LASERG.3DI", "A_LINE5.3DI", "A_LINE6.3DI",
+    "A_PLSMA1.3DI", "A_SPARK.3DI",
+)
+
+
+def _model_names() -> tuple[str, ...]:
+    """The two swap arms' names and the creators', in one stable order."""
+    import blob_runtime
+    return tuple(blob_runtime.CASE_MODELS) + CREATOR_MODELS
 
 
 def models_plan(names: Sequence[str]) -> str:
@@ -539,6 +563,58 @@ def parse_models(rows: list[dict[str, Any]],
     return out
 
 
+#: The unit record byte the three seeking arms take their object id from,
+#: and the whole-array read that makes it readable.  `docs/28` §7.7.1: an arm
+#: loads its record's `+0x54` as a unit-map slot, asks `aGetUnitMapElementPtr`
+#: for that unit and takes **this** byte out of the record it gets back.
+#: Until this phase existed the byte had never been read, and the object the
+#: capture's seekers steer at was known only by elimination -- which is a
+#: weaker claim than it looks, because the unit array of `_6_.sav` makes slot
+#: and id equal for its first twelve units and **not** for the rest.
+UNIT_OBJECT_FIELD = 0x4B
+
+
+def units_plan() -> str:
+    """Read the whole unit array, for one byte of each record.
+
+    Deliberately **not** folded into `state_plan`.  That phase's other output
+    is the pool's base, which is a heap address and moves between runs, and
+    `slot_tag` -- the low byte kinds 25 and 56 branch on -- is derived from
+    it, so re-taking `state` to gain a field would silently re-base every
+    tick phase already captured.  A read-only phase of its own costs one
+    process and cannot do that.
+    """
+    return "\n".join([
+        "# The unit array, read for +0x4B: the object id a seeking arm steers",
+        "# at.  Read-only, and separate from `state` on purpose -- see",
+        "# units_plan.",
+        DECLARATIONS,
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        f"u0 = aGetUnitMapElementPtr(0)"
+        f" --read $u0:{gold.UNIT_SLOTS * gold.UNIT_STRIDE}",
+    ]) + "\n"
+
+
+def parse_units(rows: list[dict[str, Any]]) -> list[dict[str, int]]:
+    """Every live unit's slot, tile and **object id**, from the array read."""
+    blob = b""
+    for row in rows:
+        for key, text in (row.get("reads") or {}).items():
+            if key.startswith("$u0") and "<" not in text:
+                blob = _hex_bytes(text)
+    out: list[dict[str, int]] = []
+    for slot in range(gold.UNIT_SLOTS):
+        raw = blob[slot * gold.UNIT_STRIDE:(slot + 1) * gold.UNIT_STRIDE]
+        if len(raw) < gold.UNIT_STRIDE or raw[gold.UNIT_NAME] == 0:
+            continue
+        out.append({"slot": slot, "x": raw[gold.UNIT_X], "y": raw[gold.UNIT_Y],
+                    "player": raw[gold.UNIT_PLAYER],
+                    "type": raw[gold.UNIT_TYPE],
+                    "object": raw[UNIT_OBJECT_FIELD]})
+    return out
+
+
 def poked_arms() -> list[tuple[int, int]]:
     """``(arm, kind)`` for every arm no creator a weapon switch selects fills.
 
@@ -556,30 +632,298 @@ def poked_arms() -> list[tuple[int, int]]:
             if arm not in TICK_ARMS_SEEN]
 
 
-def poked_batches(donor_slots: list[int]) -> list[tuple[list[int], list[int]]]:
-    """The poked arms, cut into one plan's worth of slots each."""
+#: **The input vectors every poked arm is stepped at.**  One vector is one
+#: point of an arm's input space, and one point exercises one path: the first
+#: pass reached 341 of the 385 transcribed lines of the seventy-four arms and
+#: left the rest untouched, which is a coverage figure and not a bug.  So the
+#: sweep is run again with a second vector chosen against that measurement --
+#: a longer life, so `life == 10` and `life == 0` are both reached inside one
+#: plan, and an `aux` of 10, which is kind 74's gate.  `docs/97` §21.
+#:
+#: It **used** to zero `vx` as well, which is the only thing that reaches
+#: kind 41's other branch, and that is how this experiment found out there is
+#: no such branch: the engine's arm is `mov eax, 0x200 / cdq / idiv [esi+0x48]`
+#: with nothing in front of it, so a record with no `vx` divides by zero and
+#: `Incubation.exe` dies.  It did, at slot 3 of `poked_v1_04`, after the three
+#: arms before it had been measured.  The guard in `blob_runtime._kind_41` is
+#: the **port's**, not the engine's, and the write was removed because a plan
+#: that faults costs the arms after it -- not because the answer was
+#: unwelcome.  `docs/97` §21.2.
+#:
+#: The name prefix is empty for the first, so the phases the earlier capture
+#: already holds keep their names and are **not** re-taken.
+POKE_VECTORS: tuple[dict[str, Any], ...] = (
+    {"name": "", "writes": {"life": POKE_LIFE}, "rounds": POKE_ROUNDS},
+    {"name": "v1_", "writes": {"life": POKE_LIFE_LONG, "aux": 10},
+     "rounds": POKE_ROUNDS_LONG},
+)
+#: How many rounds a probe plan steps its records.  Long enough that a life of
+#: twelve reaches zero, which is where the terminal branches are.
+POKE_PROBE_ROUNDS = POKE_ROUNDS_LONG
+
+
+def poke_probes(target: tuple[int, int, int] | None
+                ) -> list[tuple[int, int, dict[str, int]]]:
+    """The vectors that reach the last few lines, one arm at a time.
+
+    Everything a *sweep* vector can reach, a sweep vector does; these five are
+    the residue of that measurement, and each names the branch it is for:
+
+    * kinds 26 and 61 with `aux` naming a **dead** unit slot -- 14, whose
+      `+0x4B` names an object `aGetStdObjectPosition` refuses -- reach the
+      early return `docs/28` §7.7.1 calls `target_missing`.  That slot is not
+      invented: the `units` phase reads it.
+    * kind 75 with the same `aux`, which is its `aux > 2` spawn.
+    * kind 65 with a life of sixty, which is the `life >= 0x28` return, and
+      again with position and velocity zeroed, which is the near half of its
+      distance test -- the only branch in the seventy-four that needs the
+      record's *position* rather than a counter.
+    * kinds 26 and 61 placed **on** the object they steer at, which is the
+      arrival branch: `_seek` writes `life = 0` and the arm spawns.
+    """
+    probes: list[tuple[int, int, dict[str, int]]] = [
+        (25, 26, {"life": 12, "aux": UNIT_OBJECT_DEAD_SLOT}),
+        (58, 61, {"life": 12, "aux": UNIT_OBJECT_DEAD_SLOT}),
+        (71, 75, {"life": 12, "aux": UNIT_OBJECT_DEAD_SLOT}),
+        (62, 65, {"life": 60}),
+        (62, 65, {"life": 12, "x": 0, "y": 0, "z": 0,
+                  "vx": 0, "vy": 0, "vz": 0}),
+        # Three arms whose spawn sits behind `life == 0`.  Their creators
+        # give them a life the eight and nine rounds of a tick phase cannot
+        # run out, so the branch was transcribed and never stepped; a poked
+        # twelve reaches it.  Kind 75's needs `aux <= 2` as well, which is
+        # the *other* side of the gate the dead-slot probe above takes.
+        (42, 44, {"life": 12}),
+        (45, 47, {"life": 12}),
+        (71, 75, {"life": 12, "aux": 1}),
+    ]
+    if target is not None:
+        arrival = {"life": 12, "aux": SEEK_UNIT_SLOT,
+                   "x": target[0], "y": target[1], "z": target[2],
+                   "vx": 0, "vy": 0, "vz": 0}
+        probes += [(25, 26, dict(arrival)), (58, 61, dict(arrival))]
+    return probes
+
+
+def poked_batches(donor_slots: list[int], vector: dict[str, Any]
+                  ) -> list[list[tuple[int, int, dict[str, int]]]]:
+    """The poked arms under one vector, cut into one plan's worth each."""
     slots = donor_slots[:POKE_SLOTS]
     pairs = poked_arms()
-    out: list[tuple[list[int], list[int]]] = []
+    writes = vector["writes"]
+    out: list[list[tuple[int, int, dict[str, int]]]] = []
     for start in range(0, len(pairs), len(slots)):
         group = pairs[start:start + len(slots)]
-        out.append((slots[:len(group)], [kind for _arm, kind in group]))
+        out.append([(slot, kind, dict(writes))
+                    for slot, (_arm, kind) in zip(slots, group)])
+    return out
+
+
+def probe_batches(donor_slots: list[int],
+                  probes: list[tuple[int, int, dict[str, int]]]
+                  ) -> list[list[tuple[int, int, dict[str, int]]]]:
+    """The probe vectors, cut into one plan's worth of slots each."""
+    slots = donor_slots[:POKE_SLOTS]
+    out: list[list[tuple[int, int, dict[str, int]]]] = []
+    for start in range(0, len(probes), len(slots)):
+        group = probes[start:start + len(slots)]
+        out.append([(slot, kind, writes)
+                    for slot, (_arm, kind, writes) in zip(slots, group)])
+    return out
+
+
+#: `aGetSymbolObjectPtr` and the unit-height helper the creators open with.
+#: Every one of the ten unexplained creators starts the same way: the tile
+#: argument through `aGetCtrlMapElementPtr`, the cell's `+5` through this
+#: lookup for the **placed object**, and the cell's `+7` through the unit map
+#: for a height.  `docs/97` §22.
+SYMBOL_OBJECT = 0x00404C40
+UNIT_HEIGHT = 0x0047AD30
+#: Where the cell names its object and its unit.
+CELL_OBJECT = 0x05
+CELL_UNIT = 0x07
+
+
+def origins_plan() -> str:
+    """Everything a creator reads before it draws anything.
+
+    Read-only, one process, and separate from `state` for the same reason
+    `units` is: `state` also yields the pool's base, which moves between runs.
+
+    The object array is read **raw**, not through `aGetStdObjectPosition`:
+    the creators load `+0x10/+0x14/+0x18` out of the record themselves, and
+    those are not what the position service returns -- the service answers
+    160 for a z the record holds as 0.  A transcription fed the service's
+    answer would be out by that much on every record it places.
+    """
+    cells = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    objects = HOOK_ID_LIMIT * OBJECT_STRIDE
+    return "\n".join([
+        "# The creators' own inputs: the control map, the object array as the",
+        "# records hold it, and the unit height helper for both tiles.",
+        DECLARATIONS,
+        f"__cdecl ptr aGetSymbolObjectPtr(i32) = Incubation.exe+0x{SYMBOL_OBJECT - 0x400000:x}",
+        f"__cdecl i32 aGetUnitHeight(ptr)      = Incubation.exe+0x{UNIT_HEIGHT - 0x400000:x}",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+        f"objects = aGetSymbolObjectPtr(0)"
+        f" --read [0x{OBJECT_TABLE:x}]:{objects}",
+        "u0 = aGetUnitMapElementPtr(0)",
+        "h0 = aGetUnitHeight($u0)",
+        "u1 = aGetUnitMapElementPtr(1)",
+        "h1 = aGetUnitHeight($u1)",
+    ]) + "\n"
+
+
+def parse_origins(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The control map, the object array and the two unit heights."""
+    import struct
+
+    cells = b""
+    objects = b""
+    for row in rows:
+        for key, text in (row.get("reads") or {}).items():
+            if "<" in text:
+                continue
+            if key.startswith("$c0"):
+                cells = _hex_bytes(text)
+            elif key.startswith(f"[0x{OBJECT_TABLE:x}]"):
+                objects = _hex_bytes(text)
+    heights = [int(row["eax"], 16) for row in rows
+               if row.get("call") == "aGetUnitHeight" and row.get("status") == "ok"]
+    grid: list[dict[str, int]] = []
+    for index in range(gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT):
+        base = index * gold.CELL_STRIDE
+        if base + gold.CELL_STRIDE > len(cells):
+            break
+        grid.append({
+            "object": struct.unpack_from("<H", cells, base + CELL_OBJECT)[0],
+            "unit": struct.unpack_from("<H", cells, base + CELL_UNIT)[0],
+        })
+    table: list[dict[str, int]] = []
+    for index in range(HOOK_ID_LIMIT):
+        base = index * OBJECT_STRIDE
+        if base + OBJECT_STRIDE > len(objects):
+            break
+        table.append({
+            "x": struct.unpack_from("<i", objects, base + 0x10)[0],
+            "y": struct.unpack_from("<i", objects, base + 0x14)[0],
+            "z": struct.unpack_from("<i", objects, base + 0x18)[0],
+        })
+    return {"cells": grid, "objects": table, "heights": heights}
+
+
+#: How much of a symbol-object record the `symbols` phase reads.  Only
+#: `+0x10/+0x14/+0x18` are used; the rest is read so a wrong offset is visible
+#: rather than plausible.
+SYMBOL_RECORD_BYTES = 0x40
+
+
+def symbols_plan(ids: Sequence[int]) -> str:
+    """The **symbol** objects the argument tiles name.
+
+    `aGetSymbolObjectPtr` `0x00404C40` and `aGetStdObjectPosition` `0x00405100`
+    are two different tables, and the creators use the first: the cell at the
+    capture's source tile names symbol 139 while the *standard* object standing
+    there is id 0.  Reading the second and calling it the first is a mistake
+    that produces a plausible position and the wrong z -- symbol 139's `+0x18`
+    is 0 where standard object 0's is 160.
+    """
+    lines = [
+        "# The symbol objects the two argument tiles name, read raw.",
+        DECLARATIONS,
+        f"__cdecl ptr aGetSymbolObjectPtr(i32) = Incubation.exe+0x{SYMBOL_OBJECT - 0x400000:x}",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+    ]
+    for index, symbol in enumerate(ids):
+        lines.append(f"s{index} = aGetSymbolObjectPtr({symbol})"
+                     f" --read $s{index}:{SYMBOL_RECORD_BYTES}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_symbols(rows: list[dict[str, Any]],
+                  ids: Sequence[int]) -> dict[str, dict[str, int]]:
+    """``symbol id -> its own x, y, z``, in call order."""
+    import struct
+
+    out: dict[str, dict[str, int]] = {}
+    index = 0
+    for row in rows:
+        if row.get("call") != "aGetSymbolObjectPtr" or row.get("status") != "ok":
+            continue
+        raw = b""
+        for key, text in (row.get("reads") or {}).items():
+            if key.startswith("$s") and "<" not in text:
+                raw = _hex_bytes(text)
+        if len(raw) >= 0x1C and index < len(ids):
+            out[str(ids[index])] = {
+                "x": struct.unpack_from("<i", raw, 0x10)[0],
+                "y": struct.unpack_from("<i", raw, 0x14)[0],
+                "z": struct.unpack_from("<i", raw, 0x18)[0],
+            }
+        index += 1
+    return out
+
+
+#: The record fields a poked vector may write, and how wide each is.
+#: Deliberately short: `class_id` and `model` are **not** on it, because an
+#: arm that poses or swaps a model dereferences the handle the donor carries
+#: and a rewritten class turns a comparison into a fault.  Everything here is
+#: a number the arm reads and nothing more.
+POKE_FIELD_OFFSETS: dict[str, tuple[int, int]] = {
+    "x": (0x14, 4), "y": (0x18, 4), "z": (0x1C, 4),
+    "kind": (0x44, 1), "life": (0x45, 1),
+    "vx": (0x48, 4), "vy": (0x4C, 4), "vz": (0x50, 4),
+    "aux": (0x54, 1),
+}
+
+
+def poke_writes(kind: int, vector: dict[str, int]) -> list[tuple[int, bytes]]:
+    """One vector, as the fewest contiguous writes that express it.
+
+    `kind` and `life` are adjacent, so the common case is still the single
+    two-byte write the first poked pass used; a vector that also sets the
+    velocity adds one more run rather than a write per field.
+    """
+    raw: dict[int, bytes] = {}
+    for field, value in ({"kind": kind} | vector).items():
+        offset, width = POKE_FIELD_OFFSETS[field]
+        raw[offset] = int(value).to_bytes(width, "little", signed=width > 1)
+    out: list[tuple[int, bytes]] = []
+    for offset in sorted(raw):
+        if out and out[-1][0] + len(out[-1][1]) == offset:
+            out[-1] = (out[-1][0], out[-1][1] + raw[offset])
+        else:
+            out.append((offset, raw[offset]))
     return out
 
 
 def poked_plan(handle: int, donor: int, args: list[int],
-               slots: list[int], kinds: list[int], rounds: int) -> str:
-    """Overwrite each donor record's kind byte, then step one arm per call.
+               entries: Sequence[tuple[int, int, dict[str, int]]],
+               rounds: int) -> str:
+    """Overwrite each donor record's fields, then step one arm per call.
 
     `docs/97` §18.6 said the fifty arms no creator populates would want
     "writing records into the pool directly, which is a different and more
-    invasive experiment".  This is that experiment, and it is **two adjacent
-    bytes**: `+0x44` is the jump-table index and `+0x45` is `life`, so one
-    two-byte write makes a donor record a record of any kind with a lifetime
-    short enough to reach its own terminal branches.  What it is **not** is a
-    record a creator would have built -- the velocities and the model stay the
-    donor's -- so this measures the arm and says nothing about the arguments
-    the arm would normally see.
+    invasive experiment".  This is that experiment.  In its first form it was
+    **two adjacent bytes**: `+0x44` is the jump-table index and `+0x45` is
+    `life`, so one two-byte write makes a donor record a record of any kind
+    with a lifetime short enough to reach its own terminal branches.
+
+    What that form could not do is say *how much* of an arm it had run.  A
+    record is an input, and one input exercises one path: `docs/97` §21
+    measures which lines of each transcribed arm the comparison actually
+    reached, and a second and third vector -- a different life, a zeroed
+    velocity, an aux naming a dead unit, a position on top of the target --
+    are chosen to reach the ones the first left cold.  Each *entry* is
+    therefore a slot, a kind and its own vector, and one plan may hold the
+    same arm twice under two of them.
+
+    What this still is **not** is a record a creator would have built: the
+    class and the model stay the donor's, so it measures the arm and says
+    nothing about the arguments the arm would normally see.
 
     The pool is read after **every** call rather than once per round.  A
     poked arm can fault, and a fault costs the rest of the process; per-call
@@ -591,7 +935,7 @@ def poked_plan(handle: int, donor: int, args: list[int],
     read = (f" --read [0x{entry:x}]:{READ_RECORDS * RECORD_BYTES}"
             f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
     lines = [
-        "# One donor pool, each record's kind byte overwritten, one arm per",
+        "# One donor pool, each record's fields overwritten, one arm per",
         "# call.  The read after every call is deliberate: see poked_plan.",
         DECLARATIONS,
         f"__cdecl i32 aBlob_Update(i32,ptr) = Incubation.exe+0x{BLOB_ARM - 0x400000:x}",
@@ -599,10 +943,9 @@ def poked_plan(handle: int, donor: int, args: list[int],
         f" = Incubation.exe+0x{donor - 0x400000:x}",
         MEMCPY_DECL,
     ]
-    for index, kind in enumerate(kinds):
-        # kind and life are adjacent, `+0x44` and `+0x45`, so one two-byte
-        # write sets both.
-        lines.append(f"--blob pk{index}:{kind:02x}{POKE_LIFE:02x}")
+    for index, (_slot, kind, vector) in enumerate(entries):
+        for run, (_offset, raw) in enumerate(poke_writes(kind, vector)):
+            lines.append(f"--blob pk{index}_{run}:{raw.hex()}")
     lines += [
         "",
         "aSetSaveMode(0)",
@@ -610,12 +953,14 @@ def poked_plan(handle: int, donor: int, args: list[int],
         "reset = aResetBlobs()",
         f"c{donor:08X}({', '.join(str(a) for a in args)})",
     ]
-    for index, slot in enumerate(slots):
-        lines.append(f"memcpy([0x{entry:x}]+0x{RECORD_BYTES * slot + 0x44:x},"
-                     f" &pk{index}, 2)")
+    for index, (slot, kind, vector) in enumerate(entries):
+        for run, (offset, raw) in enumerate(poke_writes(kind, vector)):
+            lines.append(
+                f"memcpy([0x{entry:x}]+0x{RECORD_BYTES * slot + offset:x},"
+                f" &pk{index}_{run}, {len(raw)})")
     lines.append(f"aGetUnitMapElementPtr(0){read}")
     for _round in range(rounds):
-        for slot in slots:
+        for slot, _kind, _vector in entries:
             lines.append(f"aBlob_Update({slot},"
                          f" [0x{entry:x}]+0x{RECORD_BYTES * slot:x}){read}")
     return "\n".join(lines) + "\n"
@@ -1172,17 +1517,65 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     # **The model lookup.**  Its own small phase, for the same reason `hooks`
     # is one: no writes, no reset, and the two swap arms are otherwise a diff
     # of an adapter's invented index against an engine handle.
-    if "models" not in phases:
+    # Re-taken when the name list grows, the same way `state` is re-taken
+    # when it is missing a field: a phase that answers for fewer names than
+    # the checks ask about would leave a creator's model unresolved.
+    if not set(_model_names()) <= set(phases.get("models") or {}):
         import blob_runtime
         try:
             rows = gold.run_plan(game_copy, dbgcall,
-                                 models_plan(blob_runtime.CASE_MODELS),
+                                 models_plan(_model_names()),
                                  "blob_models", attempts=attempts)
-            phases["models"] = parse_models(rows, blob_runtime.CASE_MODELS)
+            phases["models"] = parse_models(rows, _model_names())
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["models"] = str(err)
             LOG.warning("blob_models: %s", err)
+            _save(out, document)
+
+    # **The unit array's `+0x4B`**, `docs/28` §12 item 3's residue.  Its own
+    # read-only phase, and not a field added to `state`: see `units_plan`.
+    if "units" not in phases:
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, units_plan(),
+                                 "blob_units", attempts=attempts)
+            phases["units"] = parse_units(rows)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})["units"] = str(err)
+            LOG.warning("blob_units: %s", err)
+            _save(out, document)
+
+    # **The creators' inputs**, `docs/97` §22: what each of them reads before
+    # it draws.  Read-only and additive, like `units`.
+    if "origins" not in phases:
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, origins_plan(),
+                                 "blob_origins", attempts=attempts)
+            phases["origins"] = parse_origins(rows)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})["origins"] = str(err)
+            LOG.warning("blob_origins: %s", err)
+            _save(out, document)
+
+    # **The symbol objects** the two argument tiles name -- built from the
+    # cells the `origins` phase read, so it comes after it.
+    if "symbols" not in phases and phases.get("origins"):
+        cells = phases["origins"]["cells"]
+        ids = []
+        for tile in (source, target):
+            index = tile[1] * gold.CAPTURE_WIDTH + tile[0]
+            if index < len(cells):
+                ids.append(cells[index]["object"])
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, symbols_plan(ids),
+                                 "blob_symbols", attempts=attempts)
+            phases["symbols"] = parse_symbols(rows, ids)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})["symbols"] = str(err)
+            LOG.warning("blob_symbols: %s", err)
             _save(out, document)
 
     arities = creator_arities(root)
@@ -1237,21 +1630,30 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     donor_slots = sorted({r["slot"] for r in donor})
     if donor_slots and POKE_DONOR in arities:
         donor_args = argument_vector(arities[POKE_DONOR], source, target)
-        batches = poked_batches(donor_slots)
-        LOG.info("%d poked batch(es) over %d unstepped arm(s)",
-                 len(batches), sum(len(b[1]) for b in batches))
-        for index, (slots, kinds) in enumerate(batches):
-            name = "poked_%02d" % index
+        plans: list[tuple[str, list[tuple[int, int, dict[str, int]]], int]] = []
+        for vector in POKE_VECTORS:
+            for index, entries in enumerate(poked_batches(donor_slots, vector)):
+                plans.append(("poked_%s%02d" % (vector["name"], index),
+                              entries, vector["rounds"]))
+        probes = poke_probes(_seek_target(phases))
+        for index, entries in enumerate(probe_batches(donor_slots, probes)):
+            plans.append(("poked_probe_%02d" % index, entries,
+                          POKE_PROBE_ROUNDS))
+        LOG.info("%d poked plan(s) over %d arm-and-vector pair(s)",
+                 len(plans), sum(len(e) for _n, e, _r in plans))
+        for name, entries, rounds in plans:
             if name in phases:
                 continue
             plan = poked_plan(state["handle"], POKE_DONOR, donor_args,
-                              slots, kinds, POKE_ROUNDS)
+                              entries, rounds)
             try:
                 rows = gold.run_plan(game_copy, dbgcall, plan, name,
                                      attempts=attempts)
                 phases[name] = parse_poked(rows, entry)
-                phases[name]["slots"] = list(slots)
-                phases[name]["kinds"] = list(kinds)
+                phases[name]["slots"] = [slot for slot, _k, _v in entries]
+                phases[name]["kinds"] = [kind for _s, kind, _v in entries]
+                phases[name]["vectors"] = [vec for _s, _k, vec in entries]
+                phases[name]["rounds"] = rounds
                 phases[name]["args"] = list(donor_args)
                 _save(out, document)
             except gold.CaptureError as err:
@@ -1703,34 +2105,28 @@ DIRECTION_VELOCITY_RECORDS = 33
 INDEX_RECIPE_CREATORS = 3
 INDEX_RECIPE_FIELDS = 3
 
-#: The residue, written out a second time so the tuple above is pinned against
-#: something other than itself.
-DRAWS_UNSTRUCTURED_PIN = (
-    "0x00424D20", "0x00425810", "0x004264A0", "0x00426F90", "0x00427410",
-    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042AF10",
-)
-#: Creators whose captured velocities are drawn but whose **stream is not
-#: consumed at a fixed rate per record**, so no per-record recipe exists to
-#: fit.  Two shapes, both visible in the capture: a creator that builds
-#: records of several kinds in one call (`kind`, `class_id` and `model` all
-#: vary across its twelve), and one that retries -- `0x00429A80`'s first
-#: record does not sit at draw 0 while its second sits at draw 4.  Naming them
-#: is the finding; fitting them is not possible from a capture that reads back
-#: twelve records of a longer run.
-#: **Ten, not eleven**, and no longer one blanket reason.  `0x0042ACF0` left
-#: outright: its draws were being read without the scale the engine applies
-#: after `ftol`, and with that fixed it carries a full recipe.  The other ten
-#: keep an entry, but each now has a named mechanism for part of what it
-#: writes rather than none for all of it -- three (`0x004264A0`, `0x00429A80`
-#: and, among the recipe-carrying creators, `0x004228F0`) stagger a field by
-#: the loop counter and are in `CREATOR_INDEX_RECIPES`; three
-#: (`CREATOR_DIRECTION_VELOCITY`) take their velocity from `0x0046D400` and a
-#: fixed speed rather than from the generator at all.  What is left here is
-#: the remainder of each, and it is a remainder, not a whole creator.
-CREATOR_DRAWS_UNSTRUCTURED = (
-    "0x00424D20", "0x00425810", "0x004264A0", "0x00426F90", "0x00427410",
-    "0x00427810", "0x00429180", "0x00429A80", "0x0042A9D0", "0x0042AF10",
-)
+#: The residue, written out a second time so the tuple below is pinned against
+#: something other than itself.  **Empty since `docs/97` §22**: all ten are
+#: transcribed instruction by instruction in `tools/inclib/blob_creators.py`
+#: and reproduce the engine's records field for field, with their draw counts
+#: checked against the measured seed either side of the call.
+DRAWS_UNSTRUCTURED_PIN: tuple[str, ...] = ()
+#: Creators for which no per-record *recipe* exists, because their draw
+#: stream is not consumed at a fixed rate: they build records of several
+#: kinds in one call, or call another creator first, or retry.
+#:
+#: **Empty.**  It held ten for as long as "a mechanism" meant "a recipe a
+#: search over the draws can find".  `docs/97` §22 stopped searching and read
+#: the ten functions instead: each is now a program in
+#: `tools/inclib/blob_creators.py`, replayed from the measured seed by
+#: `native.creator_program_records`, and what it produces is not a fitted
+#: field but every field of every record the engine left.  Four shapes no
+#: recipe could have expressed came out of it -- a draw with a counter added
+#: **inside** the conversion, a position that reads a *different* axis'
+#: direction ratio, a creator that calls another creator before it places
+#: anything, and a constructor that silently drops a record whose `life` is
+#: zero.
+CREATOR_DRAWS_UNSTRUCTURED: tuple[str, ...] = ()
 #: The velocity draws of `0x00425810`, which is in that list for its
 #: **positions** and not its velocities.  Kept separate rather than dropped:
 #: three fields reproduced exactly over twelve records is a result whether or
@@ -1900,7 +2296,13 @@ def run_checks(root: str, fixture: Path) -> int:
     _scatter_checks(ck, phases)
     _z_probe_checks(ck, phases, captured)
     _hook_checks(ck, root, phases)
-    _tick_checks(ck, root, phases)
+    # **Coverage is measured on the comparison itself**, so the tracer is
+    # installed around it rather than around a run of its own -- a second run
+    # would measure a different set of inputs and say nothing about the one
+    # that agreed with the engine.  `docs/97` §21.
+    with ArmLines() as lines:
+        _tick_checks(ck, root, phases)
+    _coverage_checks(ck, lines)
     _recipe_checks(ck, captured)
     ck.check("native.some_produced", bool(produced),
              f"{len(produced)} creator(s) built records, "
@@ -1941,8 +2343,14 @@ PLAN_FIXTURE_RING = 0x00420A50
 PLAN_FIXTURE_SCATTER = 0x00424D20
 PLAN_FIXTURE_ARGS = [19, 6]
 PLAN_FIXTURE_ARGS4 = [19, 6, 18, 4]
+#: Two symbol ids, so the plan renders with fixed arguments like the rest.
+PLAN_FIXTURE_SYMBOLS = (139, 98)
+
 PLAN_DIGESTS = {
     "state": "49f0ca979d1e710b03ede4a1cde1d43eee35aef6a0c90e7bdd69a7d6b281e4f7",
+    "units": "ada0bfa1db2064771681de1906a4b6fb8d0e858ce389345a4ba262a3f16edd18",
+    "origins": "1a930330c90c01b762ee9a0022dade554710158e5a3d8fccb4490b41f9e0609a",
+    "symbols": "a177043d0a567cfa08cc540a639e775fef8cbc8a841c9ef6ae0a0299c4d6ebd6",
     "creator": "3a8cb6db096c56e18262f17f3573ef633061238fb448fdbe15f457852fd9589a",
     "raised": "781238ff3d31d20af3b7adbfff55e5fabe39594df0308ca49dc8ac2a73cf88df",
     "scatter": "595bcc6cb036941d3ed8b181d76529b665d6a830402966fa680da892293cea36",
@@ -2681,6 +3089,12 @@ TICK_ARMS_SEEN: list[int] = [
 #: the three arms actually call.  See :data:`SEEK_ARMS`.
 TICK_ARMS_UNRESOLVED: tuple[int, ...] = ()
 
+#: Kind 41's arm, and the four instructions that are all of it.  There is no
+#: test in front of the `idiv`, which is what a poked record with no `vx`
+#: measured the hard way: `docs/97` §21.2.
+DIVIDING_ARM_KIND = 41
+DIVIDING_ARM_BYTES = bytes.fromhex("b800020000" "99" "f77e48" "66014628")
+
 #: The three seeking arms, by jump-table index -- which for this table *is*
 #: the kind, since `0x0041E553` indexes with the record's own `+0x44`.
 #: `docs/28` §7.7.1.  Kind 27 is populated by no creator a weapon switch
@@ -2697,17 +3111,30 @@ SEEK_OBJECT_FIELD = 0x4B
 SEEK_PULL_ADDRESS = 0x004B1238
 SEEK_PULL = -240.0
 #: The unit-map slot every captured seeker record names, and the object id its
-#: unit holds.  The second is measured **by elimination**: the `hooks` phase
-#: swept sixty-six object ids and this save answers for fifteen of them, and
-#: object 1's position is the only one of the fifteen that reproduces the
-#: engine's next record -- on every transition where an arm ran.
-#: The `[unit + 0x4B]` byte itself was not read, so the *identity* of the two
-#: numbers is a coincidence of this save until a capture reads that byte.
+#: unit holds.  Arrived at twice, by readings that share no step.  By
+#: **elimination**: the `hooks` phase swept sixty-six object ids, this save
+#: answers for fifteen of them, and object 1's position is the only one that
+#: reproduces the engine's next record -- on every transition where an arm
+#: ran.  And by **reading the byte**: the `units` phase reads `+0x4B` out of
+#: every unit record, and slot 1 holds 1.
+#:
+#: The second reading is not a formality, because the first one's *shape*
+#: could have been a coincidence of this save.  It is not: `[unit + 0x4B]`
+#: equals the slot for the first twelve units of `_6_.sav` and **not** for
+#: the rest -- slot 16 holds 12 and slot 17 holds 13 -- so "the seeker steers
+#: at object 1" and "the seeker steers at unit 1's object" are different
+#: claims about this save, and the byte says which one is true.
 SEEK_UNIT_SLOT = 1
 SEEK_OBJECT_ID = 1
 #: The **second** point the identity is tested at: the donor record's `+0x54`
 #: is 0, so the poked kind-27 seeker names slot 0 and resolves to object 0.
 SEEK_POKED_SLOT = 0
+#: Every `(unit-map slot, [unit + 0x4B])` pair the poked seekers reach.  The
+#: donor's own `+0x54` is 0; the second sweep vector writes 10 and a probe
+#: writes 1, and the fourth -- slot 14, whose byte names an object the
+#: position service refuses -- is deliberately absent, because a refusal has
+#: no position to fit and is the `target_missing` branch instead.
+POKED_SEEKER_SLOTS: list[tuple[int, int]] = [(0, 0), (1, 1), (10, 10)]
 TICK_PHASES: list[str] = [
     "arms_0x00424D20", "arms_0x00425CA0", "arms_0x00426070",
     "arms_0x004264A0", "arms_0x00426B70", "arms_0x00426F90",
@@ -2720,7 +3147,8 @@ TICK_PHASES: list[str] = [
 ]
 #: The poked batches, by name, and what stepping them found.  Filled in from
 #: a capture and pinned, so a thinner one fails rather than reporting less.
-POKED_PHASES: list[str] = ["poked_%02d" % n for n in range(9)]
+POKED_PHASES: list[str] = (["poked_%02d" % n for n in range(9)]
+                           + ["poked_v1_%02d" % n for n in range(9)])
 POKED_ARMS_STEPPED: list[int] = [0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72]
 #: **All fifty.**  Every arm no creator a weapon switch selects can fill
 #: was stepped with a donor record whose kind byte was rewritten, and every
@@ -2728,6 +3156,59 @@ POKED_ARMS_STEPPED: list[int] = [0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 2
 #: were fixed, which is what the experiment was for (`docs/97` §20).
 POKED_ARMS_NATIVE: list[int] = list(POKED_ARMS_STEPPED)
 POKED_ARMS_DISAGREE: list[int] = []
+#: What the coverage instrument found, pinned.  The first is
+#: `(covered, total)` transcribed arm lines; the second, how many of the
+#: seventy-four arms have every line executed; the third names the rest, by
+#: source text rather than by line number.
+#: **The total moves whenever any arm's line count does** -- wrapping a line
+#: or splitting a comment out of one is enough.  That is deliberate: a
+#: coverage figure has to be re-earned when the thing it counts changes, and
+#: the uncovered *lines* beside it are pinned by source text so an unrelated
+#: edit does not silently rename a gap.  If this pin breaks and
+#: `coverage.uncovered_lines` does not, the transcription grew or shrank a
+#: line and the number simply wants updating.
+COVERAGE_ARM_LINES = (377, 385)
+COVERAGE_ARMS_COMPLETE = 72
+#: The eight that remain, and neither group is a gap in the capture:
+#:
+#: * **arm 39** is a *divergence*.  `0x0041E55A` has no test in front of its
+#:   `idiv`, so a record with no `vx` kills the engine -- measured, once
+#:   (`docs/97` §21.2).  The port's guard has no counterpart to reach.
+#: * **arm 56**'s special-emitter branch is gated on a byte `0x00461E80`
+#:   returns, not on anything in the record, so no vector written into a
+#:   record can reach it.  It is named here rather than left implied.
+COVERAGE_UNCOVERED: list[tuple[int, str]] = [
+    (39, 'result.event("division_by_zero", 0x200)'),
+    (39, 'return'),
+    (56, 'r1 = _random(hooks, 5, 10)'),
+    (56, 'r2 = _random(hooks, -100, 200)'),
+    (56, 'r3 = _random(hooks, -100, 200)'),
+    (56, '_spawn(blob, hooks, result, CREATE_EMITTER,'),
+    (56, 'BLOB_NAME_SCRATCH, 2, blob.x, blob.y, blob.z,'),
+    (56, '1, 0, 0, 60, 8, r3, r2, r1, 0, 0)'),
+]
+
+#: The lives and round counts the poked *sweep* phases carry, and how many
+#: distinct input vectors each of the fifty arms was stepped at.  Pinned so a
+#: capture that dropped a vector fails rather than reporting a smaller
+#: coverage figure with the same wording.
+POKE_LIVES = [6, 12]
+POKE_ROUNDS_SEEN = [8, 14]
+POKED_ARMS_MULTI_VECTOR = 50
+POKED_VECTORS_PER_ARM: list[tuple[int, int]] = [
+    (arm, 2) for arm in [0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 23, 24,
+                         26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39,
+                         40, 41, 43, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57,
+                         59, 62, 64, 65, 66, 67, 69, 70, 72]]
+#: The probe family: the plans, the arms they reach and the vectors each is
+#: reached under.  Two of the four are creator-filled arms already on
+#: :data:`TICK_ARMS_SEEN` -- a probe is a coverage instrument, not a way of
+#: reaching an arm nothing else reaches.
+PROBE_PHASES = ["poked_probe_00", "poked_probe_01"]
+PROBE_ARMS = [25, 42, 45, 58, 62, 71]
+PROBE_VECTORS_PER_ARM: list[tuple[int, int]] = [(25, 2), (42, 1), (45, 1),
+                                                (58, 2), (62, 2), (71, 2)]
+
 #: How many of the 74 arms a shot can reach at all.  The rest cannot be
 #: populated by firing a weapon, so no capture of this shape can reach them.
 TICK_ARMS_REACHABLE = 24
@@ -2815,6 +3296,14 @@ def _seek_checks(ck: "tables.Checker", binary: "tables.Binary",
     """
     import blob_runtime
 
+    arm = binary.pe.u32(tables.BLOB_UPDATE_TABLE + 4 * DIVIDING_ARM_KIND)
+    ck.equal("seek.dividing_arm_has_no_guard",
+             binary.pe.bytes_at(arm, len(DIVIDING_ARM_BYTES)),
+             DIVIDING_ARM_BYTES,
+             lambda v: f"kind {DIVIDING_ARM_KIND}'s whole arm is "
+                       "`mov eax, 0x200 / cdq / idiv [esi+0x48] / add "
+                       "[esi+0x28], ax` -- the divisor is the record's vx and "
+                       "nothing tests it, so a record with no vx faults")
     ck.equal("seek.pull_constant", struct.unpack(
         "<d", binary.pe.bytes_at(SEEK_PULL_ADDRESS, 8))[0], SEEK_PULL,
         lambda v: f"[0x{SEEK_PULL_ADDRESS:08X}] is {v}, the scale every "
@@ -2873,6 +3362,333 @@ def _seek_checks(ck: "tables.Checker", binary: "tables.Binary",
              sorted({tuple(f) for f in fits}), [(SEEK_OBJECT_ID,)],
              lambda v: f"exactly one object id reproduces the engine's next "
                        f"record, on every transition: {v}")
+
+
+#: The unit array of `_6_.sav`, slot by slot, as the `units` phase read it:
+#: `(slot, [unit + 0x4B])`.  Eighteen records carry a name; the four the unit
+#: map itself refuses -- 12 through 15 -- are in the list because what they
+#: hold is part of the finding.
+UNIT_OBJECTS: list[tuple[int, int]] = [
+    (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8),
+    (9, 9), (10, 10), (11, 11), (12, 10), (13, 11), (14, 14), (15, 15),
+    (16, 12), (17, 13),
+]
+#: The slots `aGetUnitMapElementPtr` answers for -- the live units.  Every one
+#: of them resolves `+0x4B` to an object standing on that unit's **own tile**,
+#: which is the cross-check that makes the byte an identification rather than
+#: a number that happens to be in range.
+UNIT_OBJECTS_LIVE = 14
+#: World units per tile, the scale that cross-check needs.  Derived from the
+#: capture rather than assumed: every answered object's x and y are exact
+#: multiples of it, and dividing by it lands on a unit's tile.
+FIELD_SCALE = 3200
+#: The live slots where `[unit + 0x4B]` is **not** the slot.  Two of fourteen,
+#: which is what stops the elimination result from being a tautology.
+UNIT_OBJECT_NOT_SLOT = [(16, 12), (17, 13)]
+#: What a dead record holds.  Slots 12 and 13 repeat a live unit's id and 14
+#: and 15 name ids `aGetStdObjectPosition` refuses; all four are slots the
+#: unit map declines, so nothing reads them -- except a blob whose `+0x54`
+#: names one, which is `blob_runtime`'s `no_target` scenario and the reason
+#: that scenario exists.
+UNIT_OBJECT_DEAD = [(12, 10), (13, 11), (14, 14), (15, 15)]
+#: The dead slot the probe vectors point a seeker at.  Its `+0x4B` names an
+#: object `aGetStdObjectPosition` refuses, which is the only way to reach the
+#: three seekers' `target_missing` return from a record field.
+UNIT_OBJECT_DEAD_SLOT = 14
+
+
+def _unit_object_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
+    """`[unit + 0x4B]`, read -- the last link of the seeking chain.
+
+    `docs/28` §7.7.1 reads the chain out of the arms statically: `+0x54` names
+    a unit-map slot, the unit record's `+0x4B` names an object, the object's
+    position is the target.  Every link but the middle one was measured; this
+    is the middle one, and it is measured three ways at once.
+
+    * the byte itself, for all eighteen named slots;
+    * against the object sweep: for each of the fourteen live units, the
+      object `+0x4B` names stands on **that unit's own tile**, so the number
+      identifies the unit's object rather than merely being in range;
+    * against the elimination result: slot 1 holds 1, which is the id the
+      replay of every seeker transition had already singled out, and slot 0
+      holds 0, which is the poked seeker's.
+
+    And the failure mode the first two rule out is real: slot and id are equal
+    for twelve of this save's units and different for two, so a check that
+    only asserted "slot 1 -> object 1" would have passed on a save where the
+    arm read something else entirely.
+    """
+    units = phases.get("units")
+    if not units:
+        ck.check("units.phase_landed", False,
+                 "the unit array was never read; +0x4B stays unmeasured")
+        return
+    ck.equal("units.objects_read", [(u["slot"], u["object"]) for u in units],
+             UNIT_OBJECTS,
+             lambda v: f"{len(v)} named unit record(s), each with the object "
+                       "id its +0x4B holds")
+
+    hooks = phases.get("hooks") or {}
+    answered = {slot for slot, ptr in zip(hooks.get("unit_slots") or [],
+                                          hooks.get("unit") or []) if ptr}
+    positions = _seek_positions(phases)
+    live = [u for u in units if u["slot"] in answered]
+    ck.equal("units.live_slots", len(live), UNIT_OBJECTS_LIVE,
+             lambda n: f"{n} slot(s) the unit map answers for")
+    named = [positions[u["object"]] for u in live if u["object"] in positions]
+    ck.check("units.scale_divides_every_object",
+             bool(named) and all(x % FIELD_SCALE == 0 and y % FIELD_SCALE == 0
+                                 for x, y, _z in named),
+             f"every object a live unit names sits on an exact multiple of "
+             f"{FIELD_SCALE}, so the tile it stands on is exact")
+    tiles = [(u["slot"], u["object"],
+              (positions[u["object"]][0] // FIELD_SCALE,
+               positions[u["object"]][1] // FIELD_SCALE) == (u["x"], u["y"]))
+             for u in live if u["object"] in positions]
+    ck.equal("units.object_stands_on_the_unit's_tile",
+             [(slot, oid) for slot, oid, ok in tiles if not ok], [],
+             lambda v: f"{len(tiles)} live unit(s) resolve +0x4B to an object "
+                       "on that unit's own tile; "
+                       f"{len(v)} do not")
+    ck.equal("units.object_is_not_the_slot",
+             [(u["slot"], u["object"]) for u in live
+              if u["object"] != u["slot"]], UNIT_OBJECT_NOT_SLOT,
+             lambda v: f"{len(v)} live unit(s) name an object id that is not "
+                       "their slot -- which is why the elimination result "
+                       "needed this byte")
+    ck.equal("units.dead_slots_hold_stale_ids",
+             [(u["slot"], u["object"]) for u in units
+              if u["slot"] not in answered], UNIT_OBJECT_DEAD,
+             lambda v: f"{len(v)} named-but-dead slot(s), holding a repeat of "
+                       "a live id or an id the object service refuses")
+    byslot = {u["slot"]: u["object"] for u in units}
+    ck.equal("units.seeker_target_is_the_byte",
+             byslot.get(SEEK_UNIT_SLOT), SEEK_OBJECT_ID,
+             lambda v: f"unit {SEEK_UNIT_SLOT}'s +0x4B holds {v} -- the id "
+                       "replaying every seeker transition had singled out by "
+                       "elimination")
+    ck.equal("units.poked_seeker_target_is_the_byte",
+             byslot.get(SEEK_POKED_SLOT), SEEK_POKED_SLOT,
+             lambda v: f"unit {SEEK_POKED_SLOT}'s +0x4B holds {v}, the "
+                       "donor record's second point")
+
+
+#: The ten creators `docs/28` §7.6.1 left with "a residue of fields with no
+#: named mechanism", now transcribed instruction by instruction in
+#: `tools/inclib/blob_creators.py` -- `docs/97` §22.
+CREATOR_PROGRAMS_EXPECTED = 10
+#: How many draws each takes from the second generator, and how many records
+#: the constructor refuses for a zero `life`.  Both are pinned because both
+#: are checked against the **measured** seed either side of the call: the
+#: record comparison can only see the pool's first twelve, and the draw count
+#: sees the whole call.
+CREATOR_PROGRAM_DRAWS: dict[str, tuple[int, int]] = {
+    "0x00424D20": (25, 1), "0x00425810": (90, 0), "0x004264A0": (3, 0),
+    "0x00426F90": (200, 0), "0x00427410": (203, 0), "0x00427810": (7, 3),
+    "0x00429180": (144, 0), "0x00429A80": (108, 0), "0x0042A9D0": (200, 0),
+    "0x0042AF10": (6, 0),
+}
+
+
+def _creator_inputs(root: str, phases: dict[str, Any]) -> Any:
+    """The three read-only phases, assembled into what a program is given."""
+    from inclib import blob_creators, eng3d
+
+    origins = phases.get("origins") or {}
+    symbols = phases.get("symbols") or {}
+    models = phases.get("models") or {}
+    cells = origins.get("cells") or []
+    if not cells or not symbols:
+        return None
+    units = (phases.get("state") or {}).get("units") or []
+    if len(units) < 2:
+        return None
+    tiles = [(units[0]["x"], units[0]["y"]), (units[1]["x"], units[1]["y"])]
+    found = []
+    for tile in tiles:
+        index = tile[1] * gold.CAPTURE_WIDTH + tile[0]
+        if index >= len(cells):
+            return None
+        found.append(cells[index])
+    source = symbols.get(str(found[0]["object"]))
+    target = symbols.get(str(found[1]["object"]))
+    heights = origins.get("heights") or []
+    if not source or not target or len(heights) < 2:
+        return None
+    return blob_creators.Inputs(
+        source=(source["x"], source["y"], source["z"]),
+        source_height=heights[0],
+        target=(target["x"], target["y"], target["z"]),
+        target_height=heights[1],
+        models={str(k): int(v) for k, v in models.items()},
+        tables=eng3d.load(root),
+        target_unit=found[1]["unit"] & 0xFF)
+
+
+#: The constants a creator program carries that this capture **cannot tell
+#: apart from a neighbour**.  Every one is *read* out of the disassembly, so
+#: none is a guess; but a constant no captured record exercises is a
+#: transcription nothing has tested, which is the same thing the arm-line
+#: coverage of `docs/97` §21 measures one level down.  Naming them is the
+#: point: a richer capture that did discriminate one would fail this check
+#: and the list would shrink.
+#:
+#: Why each is invisible here: `HEAD_SPEED` belongs to three records the
+#: constructor drops for a zero `life` and `DOT_SPEED` to records past the
+#: twelve a capture reads back; the three length constants divide a span of
+#: 6400 whose quotient an off-by-one does not move; and `HEAD_STEP` shifts an
+#: orientation target by one unit, which does not move a 4096th.
+CREATOR_CONSTANTS_UNDISCRIMINATED = (
+    "BEAM_BASE", "BEAM_UNIT", "DOT_SPEED", "HEAD_SPEED", "HEAD_STEP",
+    "TRAIL_UNIT",
+)
+#: The ones it does pin, so the check is a measurement in both directions
+#: rather than a list of excuses.
+CREATOR_CONSTANTS_DISCRIMINATED = (
+    "BEAM_STEP", "CASING_SPEED", "SHARD_SPEED", "SPARK_SPEED",
+    "TRACER_LEAN", "TRACER_SPREAD", "TRAIL_STEP",
+)
+
+
+def _creator_discrimination(root: str, phases: dict[str, Any]) -> list[str]:
+    """Which program constants this capture can tell apart from a neighbour.
+
+    Perturbs each by one and replays; a constant whose perturbation changes
+    no captured record and no draw count is not discriminated *here*.
+    """
+    from inclib import blob_creators
+
+    inputs = _creator_inputs(root, phases)
+    if inputs is None:
+        return []
+
+    def replays() -> list[Any]:
+        out: list[Any] = []
+        for address, (_arity, program) in sorted(
+                blob_creators.PROGRAMS.items()):
+            phase = phases.get(f"0x{address:08X}") or {}
+            if not phase.get("records"):
+                continue
+            pool = blob_creators.Pool(inputs)
+            draws = blob_creators.Draws(phase["seed2_before"])
+            program(pool, draws, phase["args"])
+            keep = len(phase["records"])
+            out.append((draws.count, pool.refused, pool.records[:keep]))
+        return out
+
+    base = replays()
+    moved: list[str] = []
+    for name in sorted(CREATOR_CONSTANTS_UNDISCRIMINATED
+                       + CREATOR_CONSTANTS_DISCRIMINATED):
+        was = getattr(blob_creators, name)
+        setattr(blob_creators, name, was + (1.0 if isinstance(was, float)
+                                            else 1))
+        try:
+            if replays() != base:
+                moved.append(name)
+        finally:
+            setattr(blob_creators, name, was)
+    return moved
+
+
+def _creator_program_checks(ck: "tables.Checker", root: str,
+                            phases: dict[str, Any]) -> None:
+    """Replay each transcribed creator against the records the engine left.
+
+    Two comparisons, and the second is the one that reaches past the read
+    window.  The **records** are compared field for field over the twelve
+    slots the capture reads back -- which for two of the ten are entirely a
+    *nested* creator's, because they call one before they place anything of
+    their own.  The **draw count** is compared against `aRandom2`'s measured
+    seed either side of the call, and that covers every record the program
+    builds, seen or not: a beam whose length is one dot wrong takes a
+    different number of draws.
+
+    Nothing here is fitted.  The programs are read out of the creators' own
+    instructions and their constants are the doubles at `0x004B12xx`; a wrong
+    one fails.
+    """
+    from inclib import blob_creators
+    from inclib.rng import ARandom
+
+    inputs = _creator_inputs(root, phases)
+    ck.check("native.creator_inputs",
+             inputs is not None,
+             "the control map, the two symbol objects, the two unit heights "
+             "and the model handles are all captured, so a program can be "
+             "given what the engine read")
+    if inputs is None:
+        return
+    ck.equal("native.creator_programs",
+             len(blob_creators.PROGRAMS), CREATOR_PROGRAMS_EXPECTED,
+             lambda n: f"{n} creator(s) transcribed instruction by "
+                       "instruction")
+    arities = creator_arities(root)
+    wrong: list[Any] = []
+    counts: dict[str, tuple[int, int]] = {}
+    seeds: list[str] = []
+    compared = 0
+    for address, (arity, program) in sorted(blob_creators.PROGRAMS.items()):
+        name = f"0x{address:08X}"
+        phase = phases.get(name) or {}
+        records = phase.get("records") or []
+        if not records or phase.get("seed2_before") is None:
+            wrong.append((name, "not captured"))
+            continue
+        ck.equal(f"native.creator_arity_{name}", arities.get(address), arity,
+                 lambda v, n=name: f"{n} takes {v} dword argument(s), as its "
+                                   "callers' own stack cleanup says")
+        pool = blob_creators.Pool(inputs)
+        draws = blob_creators.Draws(phase["seed2_before"])
+        program(pool, draws, phase["args"])
+        counts[name] = (draws.count, pool.refused)
+        rng = ARandom(phase["seed2_before"])
+        for _ in range(draws.count):
+            rng.raw(0, 1)
+        if abs(rng.seed - phase["seed2_after"]) > 1e-9:
+            seeds.append(name)
+        for index, record in enumerate(records):
+            compared += 1
+            if index >= len(pool.records):
+                wrong.append((name, index, "missing"))
+                continue
+            built = pool.records[index]
+            for field in blob_creators.FIELDS:
+                if record[field] != built[field]:
+                    wrong.append((name, index, field, record[field],
+                                  built[field]))
+    ck.equal("native.creator_program_records", wrong, [],
+             lambda v: f"{compared} record(s) across "
+                       f"{len(blob_creators.PROGRAMS)} creator(s) reproduced "
+                       "field for field" if not v
+                       else f"{len(v)} disagreement(s): {v[:3]}")
+    ck.equal("native.creator_program_draws", counts, CREATOR_PROGRAM_DRAWS,
+             tables.Checker.brief)
+    # **The denominator has to cover the module**, or a constant added later
+    # sits in neither list and the figure below quietly means something else.
+    numeric = sorted(
+        name for name in dir(blob_creators)
+        if name.isupper()
+        and isinstance(getattr(blob_creators, name), (int, float))
+        and not isinstance(getattr(blob_creators, name), bool))
+    ck.equal("native.creator_constants_all_listed", numeric,
+             sorted(CREATOR_CONSTANTS_DISCRIMINATED
+                    + CREATOR_CONSTANTS_UNDISCRIMINATED),
+             lambda v: f"all {len(v)} numeric constant(s) of "
+                       "blob_creators.py are named by one of the two lists")
+    moved = _creator_discrimination(root, phases)
+    ck.equal("native.creator_constants_discriminated", moved,
+             sorted(CREATOR_CONSTANTS_DISCRIMINATED),
+             lambda v: f"{len(v)} of "
+                       f"{len(CREATOR_CONSTANTS_DISCRIMINATED) + len(CREATOR_CONSTANTS_UNDISCRIMINATED)}"
+                       " program constant(s) are pinned by this capture; the "
+                       "rest are read from the disassembly and exercised by "
+                       "no record it holds")
+    ck.equal("native.creator_program_seed_delta", seeds, [],
+             lambda v: "every program takes exactly the number of draws the "
+                       "measured seed delta says, which is a claim about the "
+                       "records past the read window too" if not v
+                       else f"{len(v)} creator(s) draw a different number")
 
 
 def _tick_state(phases: dict[str, Any]) -> int:
@@ -3036,8 +3852,11 @@ def _tick_checks(ck: "tables.Checker", root: str,
              tuple(sorted(a for a, ok in agreed.items() if not ok)),
              TICK_ARMS_UNRESOLVED,
              lambda v: f"{len(v)} stepped arm(s) disagree with the engine")
+    _unit_object_checks(ck, phases)
+    _creator_program_checks(ck, root, phases)
     _seek_checks(ck, b, phases, arm_of_kind, tablesets)
     _poked_checks(ck, phases, base, tablesets, positions, handles)
+    _probe_checks(ck, phases, base, tablesets, positions, handles)
     # The fixture the Godot suite reads carries the same two lists, so the
     # boundary it prints cannot drift from the capture that earned it.
     ck.equal("native.tick_arms_are_the_fixture's",
@@ -3052,11 +3871,145 @@ def _tick_checks(ck: "tables.Checker", root: str,
                        "stepped arm(s) differ and stay executable-Python")
 
 
-def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+class ArmLines:
+    """Which transcribed lines of each arm the engine comparison executed.
+
+    `docs/97` §21.  Every other number here says the model **agreed** with the
+    engine; this one says how much of the model was asked.  An arm is a
+    function with branches, a poked record is one point of its input space,
+    and a branch no input reached is a transcription nothing has tested --
+    which is exactly the shape of the defect a mutation battery once found in
+    kind 76 (`docs/97` §18.5).
+
+    It is **Python line coverage**, and honest about being that: the arms are
+    a transcription and the lines are the transcription's, not the engine's
+    basic blocks.  It is a fair proxy for one specific reason -- the same
+    replay it measures is the one that reproduces the engine's records field
+    for field, so a line the replay ran is a line the engine ran too.  The
+    converse does not hold: a line the replay never ran might still be right,
+    and might still be wrong, and that is the whole point of naming it.
+    """
+
+    def __init__(self) -> None:
+        self.hit: dict[str, set[int]] = {}
+        self._previous: Any = None
+
+    def __enter__(self) -> "ArmLines":
+        self._previous = sys.gettrace()
+        sys.settrace(self._trace)
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        sys.settrace(self._previous)
+        return False
+
+    def _trace(self, frame: Any, event: str, _arg: Any) -> Any:
+        if frame.f_code.co_name not in _watched_functions():
+            return None
+        if event == "line":
+            self.hit.setdefault(frame.f_code.co_name, set()).add(frame.f_lineno)
+        return self._trace
+
+
+#: The shared steps an arm reaches through, traced beside the arms themselves.
+#: They are not attributed to any one arm -- `_seek` belongs to three and
+#: `_move` to most of them -- so they are reported as their own row.
+ARM_HELPERS = ("_seek", "_move", "_orient", "_spawn", "_drift", "_fall",
+               "_request_delete", "_explicit_delete")
+
+
+def _watched_functions() -> frozenset[str]:
+    import blob_runtime
+    global _WATCHED
+    if _WATCHED is None:
+        _WATCHED = frozenset(
+            [fn.__code__.co_name for fn in blob_runtime.HANDLERS.values()]
+            + [name for name in ARM_HELPERS if hasattr(blob_runtime, name)])
+    return _WATCHED
+
+
+_WATCHED: frozenset[str] | None = None
+
+
+def _executable_lines(fn: Any) -> set[int]:
+    """Every line of *fn* that can be executed, less its own `def`."""
+    code = fn.__code__
+    return {line for _start, _end, line in code.co_lines()
+            if line is not None and line != code.co_firstlineno}
+
+
+def _arm_functions() -> dict[int, Any]:
+    """``arm -> the function the dispatch table sends its lowest kind to``."""
+    import blob_runtime
+    arm_of = _arm_of_kind()
+    out: dict[int, Any] = {}
+    for kind in sorted(blob_runtime.HANDLERS):
+        arm = arm_of.get(kind)
+        if arm is not None:
+            out.setdefault(arm, blob_runtime.HANDLERS[kind])
+    return out
+
+
+def _source_of(fn: Any, line: int) -> str:
+    """One line of the transcription, stripped -- the stable name for a gap.
+
+    Uncovered lines are pinned by their **text** and not their number: a line
+    number moves whenever anything above it is edited, and a pin that breaks
+    for an unrelated reason gets deleted rather than earned.
+    """
+    import inspect
+    source, first = inspect.getsourcelines(inspect.getmodule(fn))
+    return source[line - 1].strip() if 0 < line <= len(source) else ""
+
+
+def _coverage_checks(ck: "tables.Checker", lines: "ArmLines") -> None:
+    """What the comparison reached, and -- by name -- what it did not."""
+    arms = _arm_functions()
+    total = covered = 0
+    gaps: list[tuple[int, str]] = []
+    for arm, fn in sorted(arms.items()):
+        wanted = _executable_lines(fn)
+        seen = lines.hit.get(fn.__code__.co_name, set()) & wanted
+        total += len(wanted)
+        covered += len(seen)
+        gaps += [(arm, _source_of(fn, line)) for line in sorted(wanted - seen)]
+    ck.equal("coverage.arm_lines", (covered, total), COVERAGE_ARM_LINES,
+             lambda v: f"{v[0]} of {v[1]} transcribed arm line(s) were "
+                       "executed by the replay that reproduces the engine's "
+                       "records")
+    ck.equal("coverage.arms_complete",
+             sum(1 for arm, fn in arms.items()
+                 if not (_executable_lines(fn)
+                         - lines.hit.get(fn.__code__.co_name, set()))),
+             COVERAGE_ARMS_COMPLETE,
+             lambda n: f"{n} of {len(arms)} arm(s) have every transcribed "
+                       "line executed against the engine")
+    ck.equal("coverage.uncovered_lines", gaps, COVERAGE_UNCOVERED,
+             lambda v: f"{len(v)} arm line(s) no captured input reaches, by "
+                       "name rather than by line number")
+
+
+def _vector_key(phase: dict[str, Any], position: int
+                ) -> tuple[tuple[str, int], ...]:
+    """The input vector one entry of a poked phase was stepped at.
+
+    A phase written before vectors existed carries none, and *is* the first
+    vector -- which is why the fallback is `POKE_VECTORS[0]` rather than an
+    empty tuple: an unlabelled phase must not read as a distinct point.
+    """
+    vectors = phase.get("vectors")
+    writes = (vectors[position] if vectors and position < len(vectors)
+              else POKE_VECTORS[0]["writes"])
+    return tuple(sorted((str(k), int(v)) for k, v in writes.items()))
+
+
+def _replay_poked(phases: dict[str, Any], names: list[str], base: int,
                   tablesets: Any,
                   positions: dict[int, tuple[int, int, int]],
-                  handles: dict[str, int]) -> None:
-    """The arms no creator reaches, stepped with a donor record.
+                  handles: dict[str, int]) -> tuple[
+                      dict[int, bool],
+                      dict[int, set[tuple[tuple[str, int], ...]]], int]:
+    """Replay one family of poked phases against the engine's snapshots.
 
     One call, one snapshot: the comparison is per `aBlob_Update` rather than
     per round, so an arm that faults costs the arms after it in its plan and
@@ -3064,18 +4017,18 @@ def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
     neighbours'.  The model is re-seeded from the **measured** second-generator
     seed before every call for the same reason the tick diff is: an arm that
     draws must draw from where the engine drew.
+
+    Returns ``(agreed, stepped_at, steps)`` -- whether each arm reproduced
+    every snapshot, which input vectors it was stepped at, and how many
+    comparisons were made.
     """
     import blob_runtime
 
-    landed = sorted(n for n in phases if n.startswith("poked_"))
-    ck.equal("poked.phases", landed, POKED_PHASES,
-             lambda v: f"{len(v)} poked batch(es) landed")
-    if not landed:
-        return
     arm_of_kind = _arm_of_kind()
     agreed: dict[int, bool] = {}
+    stepped_at: dict[int, set[tuple[tuple[str, int], ...]]] = {}
     steps_seen = 0
-    for name in landed:
+    for name in names:
         phase = phases[name]
         start = phase.get("start")
         steps = phase.get("steps") or []
@@ -3112,34 +4065,107 @@ def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
                     dropped.add(slot)
                 else:
                     previous[slot] = None if after is None else after["life"]
-                    arm = arm_of_kind[kinds[slots.index(slot)]]
+                    position = slots.index(slot)
+                    arm = arm_of_kind[kinds[position]]
                     agreed.setdefault(arm, True)
+                    stepped_at.setdefault(arm, set()).add(
+                        _vector_key(phase, position))
                     steps_seen += 1
                     if not _tick_agrees(blob, after):
                         agreed[arm] = False
             seed = step["seed"]
+    return agreed, stepped_at, steps_seen
+
+
+#: Poked phases whose vectors are chosen against a coverage measurement rather
+#: than swept over every arm.  Their own accounting: two of the four arms they
+#: reach are creator-filled and already native, so they are not part of the
+#: fifty.
+PROBE_PREFIX = "poked_probe_"
+
+
+def _probe_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                  tablesets: Any,
+                  positions: dict[int, tuple[int, int, int]],
+                  handles: dict[str, int]) -> None:
+    """The targeted vectors -- the branches a sweep cannot reach.
+
+    `docs/97` §21: five of the seventy-four arms have a branch gated by
+    something a uniform vector cannot set at the same time as the rest --
+    an `aux` naming a **dead** unit, a life of sixty, a record standing on
+    its own target.  These are those, one arm and one vector per slot.
+    """
+    landed = sorted(n for n in phases if n.startswith(PROBE_PREFIX))
+    ck.equal("probe.phases", landed, PROBE_PHASES,
+             lambda v: f"{len(v)} probe plan(s) landed")
+    if not landed:
+        return
+    agreed, stepped_at, steps_seen = _replay_poked(
+        phases, landed, base, tablesets, positions, handles)
+    ck.check("probe.steps_compared", steps_seen > 0,
+             f"{steps_seen} single-arm call(s) compared under a targeted "
+             "vector")
+    ck.equal("probe.arms_stepped", sorted(stepped_at), PROBE_ARMS,
+             lambda v: f"{len(v)} arm(s) reached by a vector chosen against "
+                       "the coverage measurement")
+    ck.equal("probe.arms_agree", sorted(a for a, ok in agreed.items() if ok),
+             PROBE_ARMS,
+             lambda v: f"{len(v)} of them reproduce the engine's record under "
+                       "the probe vector too")
+    ck.equal("probe.vectors", sorted((arm, len(seen))
+                                     for arm, seen in stepped_at.items()),
+             PROBE_VECTORS_PER_ARM, tables.Checker.brief)
+
+
+def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                  tablesets: Any,
+                  positions: dict[int, tuple[int, int, int]],
+                  handles: dict[str, int]) -> None:
+    """The fifty arms no creator reaches, swept once per input vector."""
+    import blob_runtime
+
+    landed = sorted(n for n in phases
+                    if n.startswith("poked_") and not n.startswith(PROBE_PREFIX))
+    ck.equal("poked.phases", landed, POKED_PHASES,
+             lambda v: f"{len(v)} poked batch(es) landed")
+    if not landed:
+        return
+    agreed, stepped_at, steps_seen = _replay_poked(
+        phases, landed, base, tablesets, positions, handles)
     ck.check("poked.steps_compared", steps_seen > 0,
              f"{steps_seen} single-arm call(s) compared, one snapshot each")
-    # **Pin the coverage, not only the result.**  A mutation battery caught
+    # **Pin the inputs, not only the result.**  A mutation battery caught
     # kind 76's `life <= 4` branch being transcribed and never run, because a
     # donor's `life` of 30 cannot reach it in four rounds.  The poke writes
-    # `life` as well now, and these two say so -- a thinner capture that went
-    # back to the long life would fail rather than quietly checking less.
-    ck.equal("poked.life_written",
+    # `life` as well for that reason, and a second sweep vector and seven
+    # probes were added for the same one -- `docs/97` §21 measures which
+    # transcribed lines the comparison reaches, and these pin the inputs that
+    # earned the figure.  A thinner capture that went back to one vector
+    # fails rather than quietly checking less.
+    ck.equal("poked.lives_written",
              sorted({parse_slots(
                          bytes.fromhex(phases[name]["start"]["pool"]))[slot]["life"]
                      for name in landed
                      for slot in phases[name]["slots"]}),
-             [POKE_LIFE],
-             lambda v: f"every poked record starts at life {v}, short enough "
-                       "to reach its own terminal branch")
+             POKE_LIVES,
+             lambda v: f"the poked records start at life {v} -- each short "
+                       "enough to reach a branch the others cannot")
     ck.equal("poked.rounds_per_phase",
              sorted({len(phases[name]["steps"]) // len(phases[name]["slots"])
                      for name in landed}),
-             [POKE_ROUNDS],
-             lambda v: f"every phase stepped each record {v} time(s)")
-    ck.equal("poked.model_handles", sorted(handles),
-             sorted(blob_runtime.CASE_MODELS),
+             POKE_ROUNDS_SEEN,
+             lambda v: f"the phases step each record {v} time(s)")
+    ck.equal("poked.vectors_per_arm",
+             sorted({(arm, len(seen)) for arm, seen in stepped_at.items()},
+                    key=lambda p: (p[1], p[0])),
+             POKED_VECTORS_PER_ARM, tables.Checker.brief)
+    ck.equal("poked.arms_at_two_vectors_or_more",
+             sum(1 for seen in stepped_at.values() if len(seen) > 1),
+             POKED_ARMS_MULTI_VECTOR,
+             lambda n: f"{n} arm(s) are stepped at more than one point of "
+                       "their input space, so the agreement is not a "
+                       "property of one record")
+    ck.equal("poked.model_handles", sorted(handles), sorted(_model_names()),
              lambda v: f"{len(v)} model name(s) resolved by the engine's own "
                        "lookup, so the two swap arms are compared against a "
                        "measured handle rather than an adapter's index")
@@ -3155,32 +4181,39 @@ def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
              POKED_ARMS_DISAGREE,
              lambda v: f"{len(v)} disagree and are named rather than rounded "
                        "off")
-    _poked_seek_check(ck, phases, base, tablesets, positions)
+    _poked_seek_check(ck, phases, base, tablesets, positions,
+                      {u["slot"]: u["object"]
+                       for u in (phases.get("units") or [])})
 
 
 def _poked_seek_check(ck: "tables.Checker", phases: dict[str, Any], base: int,
                       tablesets: Any,
-                      positions: dict[int, tuple[int, int, int]]) -> None:
-    """The **second** value of the unit-map slot, and what it resolves to.
+                      positions: dict[int, tuple[int, int, int]],
+                      byte_of: dict[int, int]) -> None:
+    """Every poked seeker, swept against the object its unit record names.
 
-    `seek.target_is_unique` pins that the captured seekers, which all name
-    slot 1, are steering at object 1.  One value cannot tell an identity from
-    a coincidence.  The poked kind-27 record carries the donor's `+0x54`,
-    which is **0**, and sweeping the same fifteen positions leaves object 0 --
-    so the two numbers agree at two points rather than one.  It is still not
-    a reading of `[unit + 0x4B]`; it is two of fifteen.
+    `seek.target_is_unique` singles out object 1 for the captured seekers by
+    elimination, and `units.seeker_target_is_the_byte` reads `[unit + 0x4B]`
+    and finds 1 there.  This is the two put together at every *other* point
+    the capture reaches: a poked record carries whichever `+0x54` its vector
+    wrote -- 0 from the donor, 10 from the second sweep vector, 1 and 14 from
+    the probes -- and sweeping the fifteen measured positions has to leave
+    exactly the object that unit's byte names, at each of them.
+
+    A record whose byte names an object `aGetStdObjectPosition` refuses is
+    **not** in the comparison: there is no position to fit, which is the
+    `target_missing` return and is checked by the arm's own coverage instead.
     """
     import blob_runtime
 
-    arm_of_kind = _arm_of_kind()
     candidates = sorted(positions)
-    fits: list[tuple[int, tuple[int, ...]]] = []
+    fits: list[tuple[int, int, bool]] = []
     for name in sorted(n for n in phases if n.startswith("poked_")):
         phase = phases[name]
         start = phase.get("start")
         slots = phase.get("slots") or []
         kinds = phase.get("kinds") or []
-        if not start:
+        if not start or not slots:
             continue
         first = parse_slots(bytes.fromhex(start["pool"]))
         for index, step in enumerate(phase.get("steps") or []):
@@ -3191,6 +4224,9 @@ def _poked_seek_check(ck: "tables.Checker", phases: dict[str, Any], base: int,
             record = first[slots[position]]
             after = parse_slots(bytes.fromhex(step["pool"]))[slots[position]]
             if record is None or after is None or record["kind"] != kind:
+                continue
+            wanted = byte_of.get(record["aux"])
+            if wanted is None or wanted not in positions:
                 continue
             fit = []
             for oid in candidates:
@@ -3203,16 +4239,20 @@ def _poked_seek_check(ck: "tables.Checker", phases: dict[str, Any], base: int,
                 blob_runtime.tick_blob(blob, hooks)
                 if _tick_agrees(blob, after):
                     fit.append(oid)
-            fits.append((record["aux"], tuple(fit)))
+            fits.append((record["aux"], wanted, tuple(fit) == (wanted,)))
     ck.check("poked.seeker_present", len(fits) > 0,
              f"{len(fits)} poked seeker step(s) swept over "
              f"{len(candidates)} measured object position(s)")
-    ck.equal("poked.seeker_target_is_its_own_slot",
-             sorted({(aux, fit) for aux, fit in fits}),
-             [(SEEK_POKED_SLOT, (SEEK_POKED_SLOT,))],
-             lambda v: "the record naming unit-map slot "
-                       f"{SEEK_POKED_SLOT} steers at object "
-                       f"{SEEK_POKED_SLOT} and at no other of the fifteen")
+    ck.equal("poked.seeker_slots_swept",
+             sorted({(aux, wanted) for aux, wanted, _ok in fits}),
+             POKED_SEEKER_SLOTS,
+             lambda v: f"{len(v)} distinct (unit-map slot, [unit + 0x4B]) "
+                       "pair(s) among the poked seekers")
+    ck.equal("poked.seeker_target_is_its_own_byte",
+             [(aux, wanted) for aux, wanted, ok in fits if not ok], [],
+             lambda v: "every poked seeker steers at exactly the object its "
+                       "unit record's +0x4B names, and at no other of the "
+                       f"fifteen" if not v else f"{len(v)} disagreement(s)")
 
 
 def _tick_disagrees_when_perturbed(phases: dict[str, Any], landed: list[str],
@@ -3396,6 +4436,9 @@ def _plan_checks(ck: "tables.Checker") -> None:
     import hashlib
     rendered = {
         "state": state_plan(),
+        "units": units_plan(),
+        "origins": origins_plan(),
+        "symbols": symbols_plan(PLAN_FIXTURE_SYMBOLS),
         "creator": creator_plan(PLAN_FIXTURE_HANDLE,
                                 [{"creator": PLAN_FIXTURE_RING,
                                   "args": PLAN_FIXTURE_ARGS}]),
@@ -3411,7 +4454,8 @@ def _plan_checks(ck: "tables.Checker") -> None:
     # readings the plans exist for are also asserted in the clear.
     ck.check("plans.read_both_seeds",
              all(f"0x{ARANDOM_SEED:x}" in text and f"0x{ARANDOM2_SEED:x}" in text
-                 for name, text in rendered.items() if name != "state"),
+                 for name, text in rendered.items()
+                 if name not in ("state", "units", "origins", "symbols")),
              "every creator plan reads both generators' seeds")
     ck.check("plans.pool_is_reached_through_the_table",
              f"[0x{_entry_address(PLAN_FIXTURE_HANDLE):x}]"

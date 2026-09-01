@@ -662,8 +662,13 @@ static func _kind_39(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 
 
 ## `aBlob_CreateWarningLight`: the whole object turns, at a rate that is a
-## division by its own `vx`. A zero there is a division by zero in the
-## original too, so the arm is written to notice rather than to crash.
+## division by its own `vx`. A zero there divides by zero in the original as
+## well -- `0x0041E55A` is four instructions with no test in front of the
+## `idiv`, and a poked record with `vx` written to zero killed the engine
+## outright (docs/97 section 21.2). So this early return is a **deliberate
+## divergence**: the original faults, the port carries on -- quietly here,
+## since `TickResult` carries named flags and no free-form event list, while
+## `blob_runtime._kind_41` notes it as a Python-side diagnostic.
 static func _kind_41(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 	if b.vx == 0:
 		return

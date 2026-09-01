@@ -899,12 +899,40 @@ only for a line in the draws reports such a creator as unexplained:
   `aRandom(base, span)`; the fit was not failing, it was being asked the wrong
   question.
 
-**What is left has no per-record recipe, and that part is still the answer
-rather than a gap.** Ten creators keep a residue: their draw stream is not
-consumed at a fixed rate, because they build records of several *kinds* in one
-call (`kind`, `class_id` and `model` all vary across the twelve read back) or
-they retry — `0x00429A80`'s first record does not sit at draw 0 while its
-second sits at draw 4. It is a residue of each rather than the whole of any.
+**~~What is left has no per-record recipe~~ — the ten are transcribed, and
+none of them wanted one.** *(2026-09-01.)* For as long as "a mechanism" meant
+"a recipe a search over the draws can find", ten creators had none: their draw
+stream is not consumed at a fixed rate, because they build records of several
+*kinds* in one call, or call **another creator** before they place anything of
+their own, or drop a record the constructor refuses. `docs/97` §22 stopped
+searching and read the ten functions instead. `tools/inclib/blob_creators.py`
+carries all ten as programs, and `blob_gold.py`'s
+`native.creator_program_records` replays each from the measured seed and
+reproduces **every field of every record the engine left**, with the draw
+count checked against `aRandom2`'s seed either side of the call — which covers
+the records past the twelve the capture reads back, too.
+
+Four shapes came out of it that no recipe could have expressed, and each is
+worth carrying here:
+
+* **a draw with a counter added to it.** `0x00429A80` does `call 0x004638E0 /
+  fadd qword [esp+0x2C] / _ftol`, the addend being the ring index converted
+  with `fild` — so `aux` climbs by two a ring on top of its draw. The addition
+  is *inside* the conversion, which for this creator's positive range is the
+  same number as adding after it; the shape is what defeated the fit, not the
+  rounding. Its fourth record does not sit at `aRandom2(5, 15)` and no stride
+  through the draw stream makes it.
+* **a position that reads a different axis' ratio.** `0x00424D20` places its
+  two tracers perpendicular to the line of fire: the `x` term is the *`y`*
+  component of `0x0046D400`'s answer scaled by 640, and the `y` term the `x`.
+  Its casings fly perpendicular too, at 80.
+* **a creator that calls a creator.** `0x00426F90` and `0x00427410` both run
+  `0x0042A9D0` at the target before placing a single dot of their own, so the
+  first two hundred draws — and all twelve records the capture reads — are its.
+* **a record with no life is dropped, silently.** `0x00420950` opens `mov al,
+  [esp+0x28] / test al, al / je`; the tenth argument is `life`. `0x00427810`'s
+  three heads take `(length & 0xFF) >> 1` for theirs, which is 0 for a short
+  beam, so the pool starts with that creator's *second* loop.
 
 **Two of the reasons the first fit failed were the fitter.** Besides the
 missing scale, its stride loop broke out of *itself* the first time an offset
@@ -1055,10 +1083,40 @@ running `Incubation.exe`. Replaying those 18 transitions against every object
 position the `hooks` phase measured — the 15 of 66 swept ids this save
 answers for — leaves **exactly one** object, id 1, that reproduces the next
 record; and with it the model reproduces position, velocity, both rotation
-words, `life` and the arrival, on all 18. What is *not* closed by that is the
-`[unit + 0x4B]` byte itself, which no phase read: that unit-map slot 1 and
-object id 1 are the same number is a property of this save, not a
-demonstrated identity.
+words, `life` and the arrival, on all 18.
+
+**And step 3 is read, not inferred.** *(2026-09-01, later the same day.)* The
+`units` phase reads the whole 200-slot unit array out of the live process and
+takes `+0x4B` from every record. It is a separate, read-only phase and not a
+field added to the pool phase on purpose: that one also yields the pool's
+base, which is a heap address that moves between runs, and the low byte of it
+is what kinds 25 and 56 branch on — re-taking it to gain a field would have
+silently re-based every tick phase already captured.
+
+What the byte says, for `_6_.sav`:
+
+| | |
+|---|---|
+| named slots | 18 |
+| slots the unit map answers for | 14 |
+| of those, `+0x4B` names an object standing on **that unit's own tile** | 14 of 14 |
+| of those, `+0x4B` equals the slot | 12 of 14 — slot 16 holds 12, slot 17 holds 13 |
+| the four dead slots | 12 and 13 repeat a live unit's id; 14 and 15 name ids `aGetStdObjectPosition` refuses |
+
+So slot 1 holds 1, which is the id the elimination above had already singled
+out, and the poked kind-27 record's slot 0 holds 0. The second column is why
+the read was worth taking rather than a formality: **slot and id are not the
+same number in general**, so "the seeker steers at object 1" and "the seeker
+steers at unit 1's object" were different claims about this save, and only one
+of them survives. The fourteen-of-fourteen tile agreement is the cross-check
+that makes the byte an *identification* rather than a number that happens to
+be in range: an object id read out of the wrong field would have to land, for
+every live unit at once, on the object standing where that unit stands.
+
+The four dead slots are the other half of the finding. A record the unit map
+declines still holds a `+0x4B`, and what it holds is stale — which is what a
+blob naming one gets, and why `blob_runtime.py`'s `no_target` scenario exists
+rather than being a hypothetical.
 
 Four arms are the exception to "particle arithmetic": kinds 26, 27 and 61 are
 500–600 bytes of seeking, and kind 42 (`aBlob_CreateComputerLight`) and kind 54
@@ -1401,6 +1459,22 @@ store lands on.
    store and the sign of its vertical, and the missing turn in kinds 14 and
    37. `_ftol`'s invalid conversion is §20.2.
 
+   **How much of each arm that reached is measured too.** *(2026-09-01,
+   `docs/97` §21.)* "The arm reproduces the engine" is a claim about the
+   records a particular input produced, and a branch no input reached was
+   compared against nothing — which is exactly the shape of the kind-76 defect
+   a mutation battery found by luck. The comparison is line-traced now: it
+   executes **377 of the 385** transcribed arm lines, 72 of the 74 arms
+   entirely, after a second sweep vector and eight one-arm probes were chosen
+   against the first measurement. The eight lines it does not reach are named
+   by source text in `blob_gold.py`'s `COVERAGE_UNCOVERED`, and neither group
+   is a thin capture: six are kind 59's branch on a byte `0x00461E80` returns,
+   which no record field can set, and two are a **deliberate divergence** —
+   kind 41's arm is `mov eax, 0x200 / cdq / idiv [esi+0x48]` with no test in
+   front of the divide, so a record with no `vx` kills the original. That was
+   measured, once, by a poked record that did exactly that; the guard in the
+   port has no counterpart in the engine to compare against.
+
    **What is still not claimed.** `test_blob.gd` keeps printing
    `executable-Python`, because that suite compares GDScript against Python
    and not against the engine. The stronger statement is *transitive* and is
@@ -1479,15 +1553,19 @@ store lands on.
    `arms_0x004264A0` now reproduce field for field, so arms 25 and 58 join
    the 22 of item 1 and no stepped arm disagrees.
 
-   What stays open is one link, and it is narrower than the item was: no
-   phase read the `[unit + 0x4B]` byte, so object id 1 is identified **by
-   elimination** — it is the only one of the fifteen objects this save holds
-   that reproduces the engine's records — and the fact that the unit-map slot
-   is also 1 is a coincidence of the save until a capture reads that byte --
-   though it is now a coincidence at **two** points rather than one, since the
-   poked kind-27 record of `docs/97` §20.4 names slot 0 and resolves, uniquely,
-   to object 0. The `NaN` branch of `_ftol` was marked UNVERIFIED here on the
-   same grounds and is **not** any more: that same poked record sits exactly on
+   ~~What stays open is one link~~ — **that closed too, later the same day.**
+   The residue was that no phase had read the `[unit + 0x4B]` byte, so object
+   id 1 was identified by elimination and the fact that the unit-map slot is
+   also 1 could have been a coincidence of the save. The `units` phase reads
+   the byte out of all 200 unit records now (§7.7.1): slot 1 holds 1, slot 0
+   holds 0, and for every one of the fourteen live units the object `+0x4B`
+   names stands on **that unit's own tile**. The read was worth taking rather
+   than a formality — slot and id are *not* the same number in general in this
+   save, so the two readings could have disagreed and do not. Every poked
+   seeker is swept against it as well
+   (`poked.seeker_target_is_its_own_byte`), at unit-map slots 0, 1 and 10.
+   The `NaN` branch of `_ftol` was marked UNVERIFIED here on the
+   same grounds and is **not** any more: a poked record sits exactly on
    its target's column, so the direction service answers `NaN` and the engine's
    own record shows what the conversion returns -- `docs/97` §20.2.
 

@@ -1681,8 +1681,8 @@ longer consulted about, and no count would have moved.
 * ~~**Fifty arms have never been stepped.** ... reaching them wants writing
   records into the pool directly, which is a different and more invasive
   experiment.~~ Closed — it is one byte, and ten of the fifty were wrong; §20.
-* **Ten creators keep a residue** of fields with no named mechanism, per
-  §18.3.
+* ~~**Ten creators keep a residue** of fields with no named mechanism, per
+  §18.3.~~ Closed — they wanted reading, not fitting; §22.
 * ~~One creator's pool, `0x00428200`'s, had to go through `arms_*` rather than
   the sweep even though its own records are sprites: one of its arms spawns a
   model blob.~~ Right in substance, wrong in the attribution, and it does have
@@ -1875,3 +1875,214 @@ it wrong in the other direction — "the arm is broken" — would have cost a da
 | `run_tests.sh` | 1875 -> **1876** |
 | Mutation battery over the ten fixes | 11 mutants, 11 caught |
 | Open questions | 38 -> **37** (`28` item 3 closes; its residue is named in place) |
+
+## 21. 2026-09-01 — how much of each arm the engine actually ran
+
+§20 ends with "all fifty reproduce the engine". That sentence is true and it
+is about *records*, not about arms: an arm is a function with branches, a
+poked record is **one point of its input space**, and a branch no input
+reached was compared against nothing. The defect §18.5's mutation battery
+found in kind 76 was exactly that shape — a `life <= 4` branch that a donor's
+`life` of 30 cannot reach in four rounds — and it was found by luck rather
+than by looking.
+
+So the capture now measures its own reach.
+
+### 21.1 The instrument, and why it is honest as a proxy
+
+`tools/blob_gold.py` installs a line tracer **around the comparison itself**
+(`ArmLines`) rather than around a run of its own: a second run would exercise
+a different set of inputs and say nothing about the one that agreed with the
+engine. For each of the 74 arms it records which lines of
+`tools/blob_runtime.py`'s transcription the replay executed.
+
+It is **Python line coverage** and the code says so. The arms are a
+transcription and the lines are the transcription's, not the engine's basic
+blocks. It is a fair proxy for one specific reason: the same replay it
+measures is the one that reproduces the engine's records field for field, so
+a line the replay ran is a line the engine ran. The converse does not hold —
+a line no input reached might be right and might be wrong, which is the whole
+point of naming it.
+
+The first pass reached **341 of 385** lines. Three vectors closed most of the
+rest:
+
+| Vector | What it is for |
+|---|---|
+| `life 6`, 8 rounds (the original) | the terminal branches of a short-lived record |
+| `life 12`, `aux 10`, 14 rounds, all fifty arms | `life == 10` **and** `life == 0` in one plan — eight rounds cannot do both — plus kind 74's `aux == 10` |
+| eight one-arm probes | branches a uniform vector cannot reach at all: an `aux` naming a **dead** unit slot, a life of sixty, a record standing on its own target, a record with position and velocity zeroed |
+
+The dead unit slot is not invented. `[unit + 0x4B]` is read now (§22.1
+below and `docs/28` §7.7.1), and slot 14 of `_6_.sav` names an object
+`aGetStdObjectPosition` refuses — which is the only way to reach the three
+seekers' `target_missing` return from a record field.
+
+**377 of 385**, 72 of 74 arms complete. `coverage.arm_lines`,
+`coverage.arms_complete` and `coverage.uncovered_lines` pin all three, the
+last **by source text rather than line number**, so an edit elsewhere in the
+file does not break a pin for a reason that has nothing to do with it.
+
+### 21.2 The eight that remain, and the one that is a divergence
+
+Neither group is a thin capture.
+
+**Arm 56** (kind 59, the emitter) has a six-line branch gated on a byte
+`0x00461E80` returns. It is not in the record, so **no vector written into a
+record can reach it**. Named rather than left implied.
+
+**Arm 39** (kind 41) is the interesting one, and it was found the hard way.
+The second sweep vector originally also wrote `vx = 0`, because that is the
+sole gate on kind 41's other branch. The plan died: `poked_v1_04` reached the
+anchor, measured three arms, and then `Incubation.exe` faulted on the fourth
+call. The arm is four instructions:
+
+```
+0x0041E55A  mov  eax, 0x200
+0x0041E55F  cdq
+0x0041E560  idiv dword [esi+0x48]     ; the record's vx
+0x0041E563  add  word [esi+0x28], ax
+```
+
+There is **no test in front of the divide**. A record with no `vx` raises #DE
+and takes the process with it. The guard in `blob_runtime._kind_41` — and in
+`blob_kinds.gd` — is therefore the **port's**, not the engine's: a deliberate
+divergence, where the original faults and the port carries on and says so
+through an event. The comment in both files used to read "a division by zero
+in the original too, so the arm is written to notice rather than to crash",
+which is right about the arithmetic and wrong about what the original does
+with it.
+
+The write was removed from the sweep vector because a plan that faults costs
+the arms after it, not because the answer was unwelcome; the reading is kept
+as `seek.dividing_arm_has_no_guard`, which pins all four instruction bytes.
+
+**The rule this is the third instance of**: *a branch that has never been
+executed is not a transcription, it is a guess with good handwriting.* Ten of
+the fifty arms were wrong when they were first stepped (§20.1); kind 76's
+divisor was wrong until a longer life reached it; and kind 41's guard was
+invented. Every one of them read plausibly.
+
+## 22. 2026-09-01 — the ten creators, read instead of fitted
+
+`docs/28` §7.6.1's last standing residue was: *ten creators keep a residue of
+fields with no named mechanism.* The mechanism was there all along. What was
+missing was the decision to stop searching the draw stream for it.
+
+### 22.1 What "no mechanism" actually meant
+
+A *recipe* is a fit: field `f` of record `i` is `scale * ftol(base + span *
+draw[cycle*i + slot])`. That shape describes a creator that builds one kind of
+record in a fixed loop and nothing else. Five of the fourteen drawing creators
+fit it. The other ten did not, and the reasons were **all** properties of the
+creators rather than of the data:
+
+* one adds the loop counter to its draw — `call 0x004638E0 / fadd qword
+  [esp+0x2C] / _ftol`, the addend being the ring index converted with `fild`,
+  so `aux` climbs by two a ring on top of the draw. (The addition is inside
+  the conversion; for this creator's positive range that is the same number as
+  adding after it, and a mutant that moves it is not caught. The shape is what
+  defeated the fit, not the rounding.);
+* two **call another creator** before they place anything of their own, so
+  their first two hundred draws are that creator's and the twelve records the
+  capture reads back are entirely its;
+* one places its two records **perpendicular** to the line of fire — the `x`
+  term reads the *`y`* direction ratio and the `y` term reads the `x`. No
+  axis-by-axis recipe can express a term that reads a different axis;
+* one builds records of three kinds in two loops with different laws;
+* and the constructor `0x00420950` **silently drops a record whose `life` is
+  zero** — `mov al, [esp+0x28] / test al, al / je` — so one creator's first
+  three records never exist and the pool starts with its second loop. A fit
+  looking for "the first record" was looking at the fourth.
+
+### 22.2 The programs
+
+`tools/inclib/blob_creators.py` transcribes all ten, instruction by
+instruction, out of the disassembly and the doubles at `0x004B12xx`. Each is a
+function of the arguments the capture passed, the inputs the engine read
+before it drew anything, and a draw source.
+
+Those inputs are **measured**, by two read-only phases this closure added:
+
+* `origins` — the whole control map, the standard object array as the records
+  hold it, and `0x0047AD30`'s height for both argument tiles;
+* `symbols` — the two objects the cells at `+5` name, through
+  `aGetSymbolObjectPtr` `0x00404C40`.
+
+The second exists because of a trap worth recording: `aGetSymbolObjectPtr` and
+`aGetStdObjectPosition` are **two different tables**. The cell at the
+capture's source tile names symbol 139 while the standard object standing
+there is id 0, and symbol 139's `+0x18` is 0 where object 0's is 160. Feeding
+a creator the position service's answer produces a plausible number and the
+wrong z on every record it places. That is `docs/97` §20.5's rule for the
+third time: a field copied out of a service is not evidence until the service
+is measured.
+
+### 22.3 What the check is, and what it reaches
+
+`native.creator_program_records` replays each program from the **measured**
+second-generator seed and compares every record the capture read back, field
+for field. `native.creator_program_draws` and
+`native.creator_program_seed_delta` compare the number of draws each program
+takes against `aRandom2`'s seed either side of the call.
+
+The second is the one that matters, because the capture reads only the pool's
+first twelve records and two of these creators fill those twelve entirely
+with a *nested* creator's output. The seed delta covers **every** record the
+program builds, seen or not: a beam one dot too long takes a different number
+of draws.
+
+| Creator | Draws | Records dropped for a zero life | What it is |
+|---|---|---|---|
+| `0x00424D20` | 25 | 1 | machine gun: five bursts of two tracers, two casings and a puff |
+| `0x00425810` | 90 | 0 | smoke trail: rings of six along the line of fire |
+| `0x004264A0` | 3 | 0 | blizzard shot: two seekers, name chosen by a float compare |
+| `0x00426F90` | 200 | 0 | green laser: sparks at the target, then a dotted beam |
+| `0x00427410` | 203 | 0 | blue laser: the same, aimed at a scattered point |
+| `0x00427810` | 7 | 3 | plasma beam: three heads and a trail of pairs |
+| `0x00429180` | 144 | 0 | line fire: streaks, each with its own drawn speed |
+| `0x00429A80` | 108 | 0 | smoke column: nine rings of three, rising |
+| `0x0042A9D0` | 200 | 0 | sparks: one emitter and fifty sparks |
+| `0x0042AF10` | 6 | 0 | blizzard hit: a flash and two tumbling shards |
+
+All ten reproduce the engine's records exactly and all ten take exactly the
+number of draws the seed says. `CREATOR_DRAWS_UNSTRUCTURED` and
+`DRAWS_UNSTRUCTURED_PIN` are **empty**.
+
+### 22.4 Which constants this capture actually pins
+
+A program's constants are **read** out of the disassembly, so none is a guess.
+That is not the same as saying the capture tests them. Perturbing each by one
+and replaying — `native.creator_constants_discriminated` does exactly this, in
+`--check`, so the claim is a measurement rather than an assurance — leaves
+seven of the thirteen changing a captured record or a draw count and **six
+that change nothing**:
+
+| Constant | Why this capture cannot see it |
+|---|---|
+| `HEAD_SPEED` | belongs to the three records the constructor drops for a zero `life` |
+| `DOT_SPEED` | belongs to records past the twelve a capture reads back — the nested creator fills them |
+| `BEAM_BASE`, `BEAM_UNIT`, `TRAIL_UNIT` | divide a span of 6400; an off-by-one does not move the quotient |
+| `HEAD_STEP` | shifts an orientation target by one unit, which does not move a 4096th |
+
+This is the arm-line coverage of §21 one level down, and it gets the same
+treatment: named, pinned, and shrinkable by a capture with a second pair of
+tiles.
+
+### 22.5 One thing this did not close
+
+The velocities of three of them come from the direction service and a flat
+speed; the positions of one come from the *perpendicular* of that direction.
+Which of the service's three doubles is which axis was read off the stack for
+nine of the ten, and for `0x00424D20` the argument pushes interleave with the
+FPU loads so densely that the assignment was fixed by **matching against the
+capture** instead — over twelve records, four record kinds and three bursts,
+which leaves one assignment standing but is a fit and not a reading. Say so
+rather than let the table above imply otherwise.
+
+| | |
+|---|---|
+| `blob_gold.py --check` | 215 -> **252** |
+| Arm lines executed against the engine | 341 -> **377** of 385 |
+| Creators with no named mechanism | 10 -> **0** |
+| Open questions | unchanged at **37**; `28` §12 item 3's residue is closed in place |

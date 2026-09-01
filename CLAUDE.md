@@ -311,7 +311,7 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture (**215 checks**); taking one needs `--game-copy` and Wine. It also carries the
+the capture (**252 checks**); taking one needs `--game-copy` and Wine. It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through
@@ -350,7 +350,32 @@ after ten of them were fixed (`docs/97` §20), which is what that experiment
 was for. So **74 of 74 arms are stepped and agree**, 24 with a creator's
 record and 50 with a donor's; the second is weaker in one way and no other,
 in that the arm is measured and the arguments a creator would pass it are
-not. Between them the two families found errors in **fourteen** of the
+not. **How much of each arm that reached is measured too** (`docs/97` §21):
+the comparison is line-traced and runs **377 of the 385** transcribed arm
+lines, 72 of 74 arms entirely, after a second sweep vector (`life` 12, `aux`
+10, fourteen rounds) and eight one-arm probes were chosen against the first
+measurement -- one vector is one point of an arm's input space, and the
+kind-76 defect a battery once found was a branch nothing had executed. The
+eight lines left are pinned **by source text** in `COVERAGE_UNCOVERED`: six
+are kind 59's branch on a byte `0x00461E80` returns, which no record field can
+set, and two are a **deliberate divergence** -- kind 41's arm is
+`mov eax, 0x200 / cdq / idiv [esi+0x48]` with nothing in front of the divide,
+so a record with no `vx` kills the original. A poked record did exactly that,
+which is how it was found and why the sweep vector no longer writes `vx`. The
+guard in `blob_runtime` and `blob_kinds.gd` is the **port's**.
+
+**The ten creators that had no named mechanism are transcribed** (`docs/97`
+§22): `tools/inclib/blob_creators.py` carries all ten as programs read out of
+their own instructions, and `native.creator_program_records` replays each from
+the measured seed and reproduces every field of every record the engine left,
+with the draw count checked against `aRandom2`'s seed either side of the call
+-- which reaches the records past the twelve a capture reads back. Three
+read-only phases feed them: `units` (the whole unit array, for `+0x4B`),
+`origins` (the control map, the standard object array, both unit heights) and
+`symbols` (the two objects the cells name). The last exists because
+`aGetSymbolObjectPtr` `0x00404C40` and `aGetStdObjectPosition` `0x00405100`
+are **two different tables** -- the source tile names symbol 139 while the
+standard object standing there is id 0, and their `+0x18` differ by 160. Between them the two families found errors in **fourteen** of the
 seventy-four arms and one in `_ftol`: kind 11 does **not** delete itself (the
 `aDeleteBlobObject` two instructions past its arm is the *wrapper's* expiry
 path), kind 8 draws `aRandom(0, 0xFFF)`, not `0x1000` -- and **only** kind 8,

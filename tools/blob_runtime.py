@@ -801,6 +801,19 @@ def _kind_39(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 
 
 def _kind_41(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
+    # **The guard is this port's, not the engine's.**  `0x0041E55A` is four
+    # instructions -- `mov eax, 0x200 / cdq / idiv [esi+0x48] / add
+    # [esi+0x28], ax` -- with nothing in front of the divide, so a record
+    # whose `vx` is zero raises #DE and takes the process with it.  That is
+    # measured, not deduced: a poked record with `vx` written to zero killed
+    # `Incubation.exe` at the fourth call of its plan, after the three arms
+    # before it had already been compared (`docs/97` §21.2).  The engine
+    # never builds such a record -- every creator that fills kind 41 draws a
+    # non-zero `vx` -- so this branch is a **deliberate divergence**: the
+    # original faults where the port carries on.  The event is a *Python-side
+    # diagnostic only*; `TickResult` in `blob_kinds.gd` carries eight named
+    # flags and no free-form list, so the GDScript twin returns quietly and
+    # the two agree in every compared field.
     if blob.vx == 0:
         result.event("division_by_zero", 0x200)
         return
@@ -1049,10 +1062,6 @@ def _kind_69(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
         _request_delete(blob, result)
         _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z,
                6, _random(hooks, 5, 15))
-
-
-def _kind_70(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
-    _kind_66(blob, hooks, result)
 
 
 def _kind_71(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -1658,7 +1667,17 @@ def emit_cases(out: str, root: Optional[str] = None) -> int:
                   "a creator built (native_arms) and the other 50 with a "
                   "donor record whose kind byte was rewritten (poked_arms), "
                   "which measures the arm and not the arguments a creator "
-                  "would have passed it.  unresolved_arms is empty.",
+                  "would have passed it.  unresolved_arms is empty.  How "
+                  "much of each arm that reached is measured rather than "
+                  "assumed: the sweep is run at more than one point of the "
+                  "input space, and 377 of the 385 transcribed arm lines are "
+                  "executed by the comparison itself.  The eight that are "
+                  "not are named in tools/blob_gold.py's "
+                  "COVERAGE_UNCOVERED -- two of them a deliberate "
+                  "divergence, where the original divides by zero and this "
+                  "port refuses to (docs/97 section 21.2).",
+        "arm_lines_covered": 377,
+        "arm_lines_total": 385,
         "native_arms": list(NATIVE_ARMS),
         "poked_arms": list(POKED_ARMS),
         "unresolved_arms": list(UNRESOLVED_ARMS),
