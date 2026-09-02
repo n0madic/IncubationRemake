@@ -2455,3 +2455,423 @@ now, and the digests through one shared helper. **222 mutants, 222 caught.**
 | Output-system fields read rather than inferred | **2** (`0x00512A9C`, `0x00512A60`), and `0x00512A9C`'s source named as `DDSURFACEDESC.lPitch` |
 | Mutation battery over the new pins | **265** mutants, 265 caught |
 | Open questions | unchanged at **37** |
+
+## 24. 2026-09-02 — the shot the player can see, and the shot that answers it
+
+§11 and §14 own shot presentation. This is a later pass over the part of it the
+**player reports as missing**: firing and being fired at read as "nothing
+happened". Four distinct defects, all found by reading the code and all in
+`game/`, and one latent fifth. None of them is a spec gap — the specs were
+right and the presentation did not follow them.
+
+| What was missing on screen | Cause |
+|---|---|
+| The player's own shot ends in a snap | `UnitsView.animate` stopped the clip at its `BREAK` note and `rest()`ed the body **in the same call**, so the pose the engine holds was posed and then overwritten before a frame was drawn |
+| Enemy return fire | Reaction fire had **no presentation at all** at any of the three sites that drain it — no animation, no blobs, no sound. The HUD counted the shots and nothing drew them |
+| The computer's shots cut off | `_play_event_body` returned `0.0` for a `"fire"` event, so `AIPlayback` held `STEP_SECONDS = 0.45 s` while the shipped `F` clips reach `BREAK` at 17–36 frames — 0.85 to 1.8 s at 20 fps — and the next event's rebuild freed the state mid-clip |
+| The target does not react | `_present_ai_event`'s `"fire"` arm played the weapon and impact cues but **no pain scream**, so a marine shot by an alien made no sound at all |
+| *(latent)* | the same arm read the weapon out of `world.unit_view(slot)`, which is the **post-turn** record: an alien killed by reaction fire after its own shot came back as an empty view and the arm returned with no presentation whatever |
+
+**There is no hit or death animation to add, and none was invented.**
+[`40` §7.2 / §7.2.1](40-charisma-models-and-animation.md) is explicit that the
+engine references exactly `M`, `S`, `F` and the one `M2` literal. Being hit is
+the pain-voice round robin plus the impact blob ([`28` §4.1, §8.1](28-effects-and-sound.md));
+dying is `aKillUnit` removing the record ([`22` §9.5](22-combat-and-visibility.md)).
+The honest fix for "no reaction at the target" is the missing scream and the
+missing impact on the paths that lacked them.
+
+### 24.1 One presenter, and what it owns
+
+`SliceMain._present_attack(shooter, sx, sy, tx, ty, weapon, attack)` is now the
+only thing in the remake that shows a shot — the player's, the computer's, and
+every reaction on either turn. It fires the shooter's body, spawns the muzzle
+and impact blobs through `BlobTriggers`, plays `AudioEvents.for_attack` and one
+pain scream per outcome that dealt damage, and **returns how long the body is
+occupied** so a caller can wait for it. The three layers are independent: a
+body animates whether or not there is an audio server behind it, which is also
+what lets a headless suite drive it.
+
+Two things about its arguments are decisions rather than mechanics.
+
+`(sx, sy)` — where the shot came *from* — is **passed in, not read back out of
+the world**. The computer's playback runs after its turn is decided, so the
+shooter may have moved or died since; the event carries the cell it fired from
+and that is what the muzzle blob uses. For the same reason the weapon comes
+from the event's `note`, which `AIFire` writes as `str(unit.weapon)` at the
+moment the trigger is pulled. That is the fifth defect above, closed by
+construction rather than by a guard.
+
+`AttackResult.from_dict` is new in `core/`, and it deliberately does **not**
+read `reactions`: the document shape is pinned to
+`inclib.combat.AttackResult.to_dict()`, and the computer emits what it drained
+as its own `reactions` event.
+
+### 24.2 The hold is the remake's, and is said to be
+
+`CharismaState` now owns the whole shot, the hold included:
+`HOLD_SECONDS = 0.35` is how long the `BREAK` pose stands before the idle
+resumes, and `is_busy()` stays true through it, so a caller that rests the body
+when it goes false rests it at the *end* of the shot.
+
+*(Superseded 2026-09-02 by [`42` §4](42-mission-presentation.md): the engine
+plays the `F` clip at speed **6.0**, holds at `BREAK` while the projectile
+flies — up to 100 frames on the *arrived* flag — draws the damage numbers for
+at least 20 frames and then **resumes the clip past `BREAK`**. There is an
+engine sequence behind the hold; it is not a constant.)*
+
+**There is no engine number behind that 0.35.** `fcn.004055E0`'s callback halts
+the clip at the note and leaves it there; what puts `S` back is the 3D-view
+refresh, and that refresh rate is not recovered — [`40` §7.2](40-charisma-models-and-animation.md)
+marks the `kind` 0 / `kind` 4 playback set-up UNVERIFIED. It is **not** the
+`int(len / 6) / 3` spin of [`40` §4.8](40-charisma-models-and-animation.md):
+that one runs *while* the clip plays toward `BREAK` and is three or four
+iterations, not a wait after it. The hold lives in the state and not in
+`UnitsView` for a structural reason — a view holding the pose on its own clock
+would report a length covering only the clip, and the computer's next event
+would rebuild the state part way through the hold.
+
+The same edit fixed a real bug beside it. `_enter` set `_running = true`
+unconditionally, so `fire()` on one of the seven types with no `F` clip
+(Spider 24, Dec'Ther 52, Norc'Yn 61, Bea'Ther 65, Bea'Coo 66, and types 62 and
+63) left the state running with a null clip: `advance()` answered "still
+running" for ever and the body never came back to its idle. `_running` is now
+`clip != null`, and `UnitsView.animate` rests on the **mode** rather than on an
+edge of `is_busy()` — an edge never fires for a body that was never busy for a
+frame.
+
+### 24.3 Return fire is shown where `core` resolved it
+
+`World.submit_move` drains a whole move's reactions in one call at the *end* of
+the move, and the walk that follows is only the picture. So the player's return
+fire is **queued** and drained from `_process` when the picture has caught up:
+nothing walking, and no body still shooting. That is the second remake choice
+in this pass, and the alternative — showing the return fire on the frame the
+command was issued, over a body still walking toward where it was shot — would
+be a picture of something that did not happen.
+
+The condition is a **state** test and not an edge, deliberately: a move that
+was refused or that walked no steps still drains reactions in `core`, and an
+edge on a walk ending would never fire for it. `_after_command` clears the
+queue, because a new command supersedes what was waiting.
+
+The computer's turn needs no queue — its `"reactions"` event is already
+sequenced by the playback — so `_play_event_body` shows it at once and returns
+the longest reactor's clip as the hold.
+
+### 24.4 Deviations from the plan
+
+Two, both deliberate.
+
+* The plan's `_present_attack(shooter, tx, ty, weapon, attack)` would have read
+  the shooter's cell out of the world. That is right for the player's shot and
+  a regression for the computer's, whose old arm already used the event's own
+  cell — hence the seven-argument form above.
+* The plan said `units.gd` needed no change. It needed one: its `was_firing and
+  not is_busy()` edge is exactly what leaves a null-`F` body in `FIRE` for ever,
+  and the plan's own suite check for that case cannot pass without it.
+
+### 24.5 Verification
+
+| | |
+|---|---|
+| `godot/run_tests.sh` | 31 suites, 1878 -> **1912** checks, 0 failures |
+| `test_charisma` | 37 -> **57** checks: the reported length, the held pose, the null-`F` state, and one shot end to end through `UnitsView` |
+| `test_game_ui` | 57 -> **71** checks: the queue, the two waits, the drain, and both computer events |
+| `remake_convert.py --check` | 181/181 |
+| `remake_convert.py --check-cache` | 29/29 |
+| Shipping export | built headless and launched; no script error |
+
+`test_game_ui`'s reaction checks are driven by **`core`'s own drain**: no
+shipped `.lev` places a unit on overwatch and none starts an alien within a
+field of the first marine, so the suite moves one alien beside a squad member
+and puts it on overwatch, and everything after that is `Reaction.drain`'s
+answer. What it cannot reach is `_after_command`'s clearing of the queue —
+that call rebuilds the units, redraws the terrain and refreshes the status
+line, so it needs a HUD, an overlay and the mission geometry a headless suite
+has none of. The queue it clears is checked; the clearing is not.
+
+The whole chain was also driven **in a real scene** — a temporary
+`SceneTree` driver over `game/main.tscn`, with the audio, the blob pool and the
+camera alive — because every suite runs with `_audio`, `_events` and
+`_triggers` null. One move drew one reaction: `pending=1` while the walk ran,
+the drain reached `_present_reactions` -> `_present_attack` -> `play_cues` when
+it ended, and `pending=0` after. That is the one place the audio path of a
+reaction has been executed at all.
+
+**Not performed:** the by-eye pass. Whether the marine now *looks* like it
+shoots, whether the alien is heard on its own turn, and whether a computer
+`"fire"` event runs to its `BREAK` without the next event cutting it off are
+four things a suite cannot answer and this pass did not watch. What is
+established is that the state machine reaches the end of the clip, holds the
+pose for `HOLD_SECONDS` and only then rests; that every one of the three
+reaction sites now presents; and that the two computer events report a length
+at least as long as their clip.
+
+## 25. 2026-09-02 — what play found that the suites could not
+
+§24 fixed four defects a reading of the code had named. Played, the shot still
+read as nothing happening, and the report that came back named four things
+instead: only one soldier's weapon showed anything, the others "stood in the
+idle pose, resetting the animation at the moment of the shot", overwatch fired
+without animating, and a killed unit did not disappear until the next turn.
+
+All four are real, all four were measured rather than guessed, and **three of
+them are defects §24 could not have found**, because each one is invisible to a
+suite that drives one unit through one command.
+
+### 25.1 A killed unit stayed on screen
+
+`aKillUnit` (`0x00472920`) is two calls: the death sequence and
+`aRemoveUnitElement`, which deletes the 3D object. The remake's
+`UnitState.remove` clears the map cell and **keeps the record** — correctly, as
+the hero counter and the win conditions read it — and `UnitsView.build` drew
+every record it found, gated only on the fog. So a dead unit stood on its cell
+until some later rebuild happened to drop it, which for a unit killed on the
+player's own turn is the next hand-over.
+
+Measured in a running scene before the fix: the shot reports `marker: 93`
+(killed) and `hp = 0`, and the alien's node was still in the picture 1.5 s
+later. `UnitsView.build` skips `hp == 0` now, and the same run shows the node
+gone in the frame the shot resolves.
+
+### 25.2 Every command restarted every animation
+
+`_after_command` rebuilds the whole units view, which frees every node and
+builds a fresh `CharismaState` — idle at frame 0. Measured before the fix: a
+marine standing well away from the action had its idle clock read **18.99
+frames before the command and 0.0 after it**. Ten bodies snapped at once, every
+time the player did anything, which is exactly the reported "resetting the
+animation at the moment of the shot"; and a reaction shot in flight was thrown
+away by the next rebuild, which is **a candidate** for overwatch firing without
+animating -- that one was not measured, only reasoned about.
+
+`CharismaState.playback()` and `resume()` carry the clip and the playhead
+across a rebuild. **`MOVE` is refused deliberately**: the walk itself lives in
+`UnitsView` and a rebuild clears it, so a movement clip carried over would loop
+on the spot for ever — the idle is what a body with no walk plays. The clock is
+presentation and not world state, so carrying it is not a scene node becoming
+authoritative.
+
+### 25.3 The muzzle switch has a default arm, and the two starting guns reach it
+
+The one that made shots invisible. [`28` §8.1](28-effects-and-sound.md) read the
+muzzle switch out of its index and jump tables — 2…47 — and the compiler's
+bound check is `add eax, -2 / cmp eax, 0x2D / ja 0x0040D42C`. Weapons **0 and
+1**, `Light Combat Gun` and `Advanced Combat Gun`, fall past the table to the
+default arm, and that arm is not a join point: it calls
+`aBlob_CreateTracerBullet` (`0x004247C0`), the same creator weapon 2 uses.
+
+So in the remake the two guns the campaign starts with fired nothing at all,
+while a marine carrying the Standard Assault Rifle fired a visible tracer —
+which is precisely the "only one weapon shows anything" that was reported.
+
+`blob_tables.py` pins the `ja` target, the call target, that the target is a
+known creator, and that every id the table carries is at or above its first, so
+a table read without its default cannot come back green. `BlobTriggers.creators`
+falls back to `<switch>_default` for an id the table does not carry.
+`test_effects.gd`'s `triggers.out_of_range` **required zero blobs** before this
+— a suite check that had encoded the gap — and now requires the tracer.
+
+The other two switches' defaults were read the same way and make no blob, so
+weapons 0…6 having no impact effect is the engine's answer and not a second
+gap.
+
+### 25.4 What is data rather than a defect
+
+Two measurements worth writing down, because they bound what any further work
+can achieve.
+
+**The combat clips differ enormously in how much they move.** Sampled through
+`inclib/pose.py` for every `(type, weapon, player)` the converted missions
+contain, the largest joint displacement between the clip's own frame 0 and its
+`BREAK` note, converted to metres through the ×16 bone-to-world bridge:
+
+| weapon | clip | at `BREAK` | clip peak |
+|---|---|---|---|
+| 0 | `P0_F0_000` | 1.02 m | 1.06 m @ f20 |
+| 1 | `P0_F0_001` | 0.71 m | 0.91 m @ f60 |
+| 2 | `P0_F0_002` | 0.43 m | 0.57 m @ f30 |
+| 6 | `P0_F0_006` | 0.24 m | 0.24 m @ f28 |
+| 8 | `P0_F0_008` | 0.26 m | 0.26 m @ f20 |
+| 10 | `P0_F0_010` | 0.22 m | 0.22 m @ f20 |
+| 11 | `P0_F0_011` | **0.14 m** | 0.14 m @ f18 |
+
+The idle clips move *more* than several of these — `P0_S0_000` carries a hand
+1.25 m over its 90 frames — so a shot with one of the heavy weapons is a
+smaller movement than the pose it interrupts. That is the shipped data, and the
+engine truncates it at the note besides: `P0_F0_002` stops at frame 20 of 76
+and never reaches its own peak at 30.
+
+**Most weapons have no impact effect.** The impact switch names a creator for
+13 of the 40 ids it covers, and its default makes none, so nothing appears at
+the target for the Assault Rifle and for every other conventional gun — only
+the `ricochet.wav` the sound switch selects. There is no hit, flinch or death
+animation to add either: [`40` §7.2.1](40-charisma-models-and-animation.md) is
+that the engine references exactly `M`, `S`, `F` and one `M2` literal.
+
+### 25.5 Verification
+
+| | |
+|---|---|
+| `godot/run_tests.sh` | 31 suites, 1912 -> **1926** checks, 0 failures |
+| `blob_tables.py --check` | 445 -> **449** |
+| `blob_runtime.py --selftest` | 78 kinds, 74 arms |
+| `remake_convert.py --check` / `--check-cache` | 181/181, 29/29 |
+| Shipping export | rebuilt headless, launched, no script error |
+
+`CONVERTER_VERSION` is **0.12.0**: `tables/blobs.json` carries
+`weapon_muzzle_default` now, so both copies of the constant were bumped and the
+cache republished.
+
+The three fixes were each measured in a running scene, not only in the suites:
+the Light Combat Gun makes 2 muzzle blobs where it made 0, a killed alien's
+node leaves the picture in the frame the shot resolves (10 nodes -> 9), and a
+bystanding marine's idle clock reads 18.96 before the command and 18.96 after
+it.
+
+**Still not performed:** the by-eye pass. Whether the shot now *reads* as a
+shot is the one question none of this answers, and §25.4 is the reason to
+expect it to remain modest for the heavy weapons.
+
+## 26. 2026-09-02 — three more from play
+
+§25's fixes were played back, and the report that came from that is the reason
+this section exists: with the shot now visible, three further things were.
+
+### 26.1 Ammunition went negative and the unit kept firing
+
+`aAttackUnit` does not check. Its spend is
+`mov al, [esi+0x3D] / sub al, dl / mov [esi+0x3D], al` at `0x0046C308` — an
+**8-bit** subtraction with no clamp and no test, so in the engine the count
+wraps rather than refusing. The refusal is the **caller's**, and the engine's
+own weapon selector `0x0042FF30` is where it lives: a unit whose weapon is
+jammed or empty gets its `special` 1 fallback weapon, or **no weapon at all**.
+
+That routine has been in the remake since the third slice, as
+`AIOverlay.effective_weapon` — but only the computer went through it. The
+player's call site, `World.submit_attack`, had no gate of any kind, so a marine
+fired for ever and its count went past zero.
+
+`submit_attack` now refuses on exactly [method Combat.attack]'s own **spend**
+condition — the weapon's `mun` column is not 255, the unit's type is not
+`0x42`, and the count is below `mun_per_fight` — so the subtraction can no
+longer be reached with too little to spend, whatever the magazine size. Both
+models keep the *signed* count deliberately rather than reproducing the byte
+wrap: past zero is unreachable now, and a negative would be visible as a
+defect where 250-something would look like a refill. The instruction is
+recorded in both twins so the deviation is a decision and not an oversight.
+
+### 26.2 The computer's units arrived, then walked to where they already were
+
+`_on_ai_step` rebuilds before it plays the event — deliberately, since the
+rebuild is what creates the state the animation drives — and the rebuild puts
+every unit where the world says it is, which after a turn `core` has already
+resolved is the **end** of that turn. `UnitsView.start_walk` did not write a
+position, and `_advance_walk` writes one on the frame *after*. So an alien
+appeared at its destination for a frame, jumped back to its source and walked
+to it.
+
+`start_walk` places the node on its route's first cell and faces it along the
+first step, before any frame is drawn.
+
+### 26.3 A casualty vanished before the shot that killed it
+
+§25.1's fix — the picture drops a unit with no hit points — is right, and it
+put the removal in the wrong place in the *order*. The rebuild that drops a
+casualty runs **before** the event that killed it is presented, always for the
+computer's replay and by one call for the player's own shot, so a marine
+disappeared and the sound of what killed it arrived afterwards.
+
+`UnitsView.linger(slot, seconds)` keeps a dead unit drawn for a moment, and
+`main.gd` holds every casualty of a shot **before** the rebuild — the player's
+own outcomes, the reactions a move or a shot drew, and the computer's `"fire"`
+and `"reactions"` events alike. `animate` counts the hold down and drops the
+node itself, so nothing waits for another rebuild.
+
+`DEATH_LINGER_SECONDS = 0.7` is **the remake's number and there is no engine
+number behind it**: `aKillUnit` is a network message and `aRemoveUnitElement`,
+the object goes at once, and Charisma has no death clip to play instead
+([`40` §7.2.1](40-charisma-models-and-animation.md)). What the engine gives is
+the *order*, and that is what the hold restores. *(Corrected 2026-09-02: the
+object does go at once, but not into nothing — `aPlayFightAnimation` hides it
+and spawns a blood, debris, fire or flying-unit effect by species and class,
+with a death scream: [`42` §4.8](42-mission-presentation.md).)*
+
+### 26.4 Verification
+
+| | |
+|---|---|
+| `godot/run_tests.sh` | 1926 -> **1934** checks, 0 failures |
+| `combat_tables.py` / `combat_runtime.py` / `ai_runtime.py` | all pass, 84/84 and 71/71 |
+| `remake_convert.py --check` | 181/181 |
+
+Live, in a running scene: a marine with no rounds is refused with `no
+ammunition` and its count stays at 0; with ten rounds it fires and has nine;
+the alien it killed is still drawn immediately after the shot and 0.3 s later,
+and gone by 1.1 s.
+
+The suites pin the same three: `ammo.an_empty_weapon_does_not_fire` and
+`ammo.and_the_count_stays_at_zero` with `ammo.exactly_enough_still_fires` for
+the other side of the boundary, `walk.starts_on_its_first_cell`, and
+`rebuild.a_casualty_is_held` / `rebuild.and_then_it_goes`.
+
+## 27. 2026-09-02 — the jump had two halves, and §26.2 fixed one
+
+Played again, the computer's units still "sometimes" arrived before they
+walked. §26.2 was right about the cause and wrong about its extent: placing the
+body on its route's first cell in `UnitsView.start_walk` closes the **one-frame
+flash** at the moment a move event plays, and there are two longer windows it
+cannot reach.
+
+The root of all three is the same architectural fact, and it is not a defect:
+`core` decides the whole turn in one call ([`94`](94-slice-4-report.md)), so
+from the instant `submit_end_turn` returns, the world holds every unit at the
+position it *ends* the turn on. Every rebuild during the replay therefore draws
+a unit that has not walked yet at the place it is about to walk to.
+
+* **Window one, the whole of the first `STEP_SECONDS`.** `AIPlayback.play()`
+  does not take a step; the first one waits for the timer. `end_turn` calls
+  `_after_command("")` straight after `play()`, so for the first 0.45 s of the
+  computer's turn every unit stands at its destination. This is the one that
+  reads as "it was already there".
+* **Window two, every event before a unit's own.** A unit that walks at event
+  seven is drawn at its destination through events one to six — seconds, on a
+  turn with several actors — and only then jumps back and sets off.
+
+The events already carry what is needed: `AIPlan` emits a move with the
+**source** in `x`/`y` and the destination in `tx`/`ty`.
+`AIPlayback.pending_starts()` walks the events still to come and returns, per
+slot, the source of its **next** move or warp; `UnitsView.hold_at` draws those
+slots on those cells whatever the world says. It is the same contract
+[`92`](92-remake-architecture.md)'s `lift` and `suppress` have -- the world is
+never consulted about it and never told, a rebuild re-applies rather than
+resets, and the hold is released when the replay ends, including when it is
+skipped.
+
+`UnitsView.fire` faces a body from the cell it is **drawn** on for the same
+reason, so a computer unit that shoots before it moves aims from where the
+player can see it standing.
+
+### 27.1 Verification
+
+Measured in a running scene, because no suite can reach it: `_C_140` played to
+turn 2, where the computer moves four units, sampling every drawn unit that
+still owed a move on every frame of the replay and comparing its node against
+the source its own event carries.
+
+| | |
+|---|---|
+| before | worst offset **4.0 m**, four units at their destinations |
+| after | **526 placements sampled, worst offset 0.0 m** |
+
+The suites pin the part that is a function of its arguments:
+`AIPlayback.starts_in` over a hand-made event list -- the source is the event's
+own `x`/`y`, a warp counts, a unit that moves twice is held at the start of its
+**next** move, and nothing is held once the last event has played -- and
+`UnitsView.hold_at` drawing a unit on a cell the world does not put it on, then
+releasing it. 31 suites, 1934 -> **1945** checks.
+
+The two call sites -- one in `end_turn` beside `play()`, one in `_on_ai_step`
+before its rebuild -- are covered by the live measurement and not by a suite:
+`end_turn` needs the HUD, the overlay and the mission geometry that a headless
+run has none of.

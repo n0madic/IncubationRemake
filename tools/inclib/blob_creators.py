@@ -552,3 +552,356 @@ def _c00424D20(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
         pool.spawn(SCRATCH, 2, x + trunc_div(dx, 5), y + trunc_div(dy, 5),
                    z + trunc_div(dz, 5), 0, 0, 0, 0x32, burst,
                    0, 0, 0, 10, 0)
+
+
+# --------------------------------------------------------------------------
+# The death and damage creators -- `docs/42` §4.8
+# --------------------------------------------------------------------------
+#
+# A second registry, kept apart from `PROGRAMS` because these creators are
+# not reached by the weapon switches `blob_gold` captures: they are what
+# `aPlayFightAnimation` calls per floating-text entry when a unit is hurt or
+# killed, and `tools/presentation_gold.py`'s `deaths` phases capture them
+# with controlled tiles and a written seed.  Four of the seven carry no
+# developer name anywhere in the binary (`blob_tables.BLOB_CREATOR_NAMES`
+# lists them as `None`); the names used here are this project's, chosen
+# from what the code does, and are marked as such in the docs.
+#
+# Every one of them reads the **gore level** first -- `0x004604A0` returns
+# dword 10 of `Game.opt` (`0x00512A00`, `docs/20` §8, written by the LCL
+# `?_` command) -- and at level 1, or at level 2 for a unit that is not the
+# computer's (`+0x45 != 0xFF`), replaces its blood with one class-2 puff
+# (`0x004297F0`).  That is what the option is; `docs/20` had it as a
+# "unit-drawing path".
+
+#: `0x004B1248`, `0x004B1250`, `0x004B1258`, `0x004B1260` -- the four doubles
+#: the two blood sprays scale the direction service by: the horizontal
+#: velocity term, the vertical one, the placement step back along the line
+#: (negative, and subtracted, so the blood starts *toward* the source), and
+#: the larger spray's horizontal term.
+BLOOD_VELOCITY = 16.0
+BLOOD_VELOCITY_LARGE = 48.0
+BLOOD_LIFT = 160.0
+BLOOD_STEP = -1280.0
+#: `0x004B1268` -- the species death's coin: `aRandom2(0, 10) <= 6.0` takes
+#: the species branch, compared as a double before any truncation.
+SPECIES_COIN = 6.0
+
+
+class Death:
+    """The small integers the death creators branch on -- ids and levels,
+    not measured magnitudes, so they are not module constants for
+    `blob_tables.creators.constant_sites_cover_module` to inventory."""
+
+    #: The gore levels, `docs/20` §8.
+    GORE_NONE, GORE_COMPUTER_ONLY, GORE_FULL = 1, 2, 3
+    #: `0x0047AD70` -- a unit's full height: the type's height byte times 160.
+    HEIGHT_UNIT = 0xA0
+    #: The output-system mode id the debris creator reads (`0x00461E80`,
+    #: `docs/97` §23.3); only mode 3 gets the long debris loop.
+    DEBRIS_FULL_MODE = 3
+
+
+#: The types with their own death models (`A_50A/B/C`, `A_51A/B/C`,
+#: `A_56A/B/C`); type 57's arm (`A_57A`, repeated four times) is in the
+#: switch but not in this set, so it is dead code.
+SPECIES_MODELS = {
+    50: ("A_50A.3DI", "A_50B.3DI", "A_50C.3DI"),
+    51: ("A_51A.3DI", "A_51B.3DI", "A_51C.3DI"),
+    56: ("A_56A.3DI", "A_56B.3DI", "A_56C.3DI"),
+}
+SPECIES_TYPES = frozenset(SPECIES_MODELS)
+SPLATS = ("A_SPLAT1.3DI", "A_SPLAT2.3DI", "A_SPLAT3.3DI", "A_SPLAT4.3DI", "A_SPLAT5.3DI")
+#: The four blood pieces that trail a splat or a species piece, in order.
+BLOOD_TRAIL = ("A_BLUT1.3DI", "A_BLUT1.3DI", "A_BLUT2.3DI", "A_BLUT3.3DI")
+
+
+@dataclass
+class DeathUnit:
+    type_id: int
+    player: int
+    height: int
+
+
+@dataclass
+class DeathInputs:
+    """What a death creator reads before it draws.
+
+    `tiles` maps a tile to the **symbol** object's own `+0x10/+0x14/+0x18`
+    (`docs/97` §22: `aGetSymbolObjectPtr`, not the standard object) and to
+    the unit standing there, if any, with the height `0x0047AD70` answers
+    for it.  `gore` is `0x00512A00`, `display_mode` is `0x00512A78`, and
+    `models` is `0x004038F0`'s answer per model name -- all measured in the
+    same process the creator ran in.
+    """
+
+    tiles: Dict[Tuple[int, int], Tuple[Tuple[int, int, int], Optional[DeathUnit]]]
+    gore: int
+    display_mode: int
+    models: Dict[str, int]
+
+    def handle(self, name: str, class_id: int) -> int:
+        if class_id in MODELLESS:
+            return -1
+        return self.models.get(name, -1)
+
+    def object(self, x: int, y: int) -> Tuple[int, int, int]:
+        return self.tiles[(x, y)][0]
+
+    def unit(self, x: int, y: int) -> Optional[DeathUnit]:
+        return self.tiles[(x, y)][1]
+
+
+DEATH_PROGRAMS: Dict[int, Tuple[int, Callable[..., None]]] = {}
+
+
+def death_program(address: int, arity: int
+                  ) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    def register(fn: Callable[..., None]) -> Callable[..., None]:
+        DEATH_PROGRAMS[address] = (arity, fn)
+        return fn
+    return register
+
+
+def _puff(pool: Pool, draw: Draws, at: Tuple[int, int, int]) -> None:
+    """`0x004297F0` -- the bloodless substitute: one class-2 record, kind
+    59, life 20, drifting sideways.  Named `death_puff` by this project."""
+    aux = draw(5, 0x14)
+    vy = draw(-1000, 2000)
+    vx = draw(-1000, 2000)
+    pool.spawn(SCRATCH, 2, at[0], at[1], at[2], 1, 0, 0, 0x3B, 0x14, vx, vy, 0, aux, 0)
+
+
+@death_program(0x004297F0, 2)
+def _c004297F0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    x, y = args
+    _puff(pool, draw, inputs.object(x, y))
+
+
+def _gore_substitutes(inputs: DeathInputs, unit: DeathUnit) -> bool:
+    """Level 2 keeps the blood for the computer's units only."""
+    return inputs.gore == Death.GORE_COMPUTER_ONLY and unit.player != 0xFF
+
+
+@death_program(0x00420B80, 2)
+def _c00420B80(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`death_blood_burst` (no developer name): fifteen pairs of `A_BLUT4`
+    rising from the unit's tile, kinds 17 and 43, paired by the `delay`
+    they share -- the severity-3 death of a unit of species 1."""
+    x, y = args
+    if inputs.gore == Death.GORE_NONE:
+        _puff(pool, draw, inputs.object(x, y))
+        return
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    if _gore_substitutes(inputs, unit):
+        _puff(pool, draw, inputs.object(x, y))
+        return
+    ox, oy, oz = inputs.object(x, y)
+    for i in range(15):
+        vz = draw(500, 500)
+        delay = (i >> 1) & 0x7F
+        vy = draw(0, 100)
+        vx = draw(0, 100)
+        dz = draw(0, 0x960)
+        pool.spawn("A_BLUT4.3DI", 0, ox, oy, oz + dz, 0, 0, 0, 0x11, 0xF, vx, vy, vz, 0, delay)
+        vz += 0x640
+        vy = draw(0, 100)
+        vx = draw(0, 100)
+        dz = draw(0, 0x960)
+        pool.spawn("A_BLUT4.3DI", 0, ox, oy, oz + dz, 0, 0, 0, 0x2B, 0xF, vx, vy, vz, 0, delay)
+
+
+@death_program(0x004298D0, 2)
+def _c004298D0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`death_barrel_burst` (no developer name): ten tumbling `A_BDEBI1` /
+    `A_BDEBI0` pieces, kind 5, life 100, from the object's own position --
+    the class-0x0D death that `aPlayFightAnimation` pairs with
+    `aBlob_CreateFlyingUnit`'s class-0x0C one."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    for i in range(10):
+        vx = draw(-500, 1000)
+        vy = draw(-500, 1000)
+        vz = draw(500, 500)
+        name = "A_BDEBI1.3DI" if i % 2 == 0 else "A_BDEBI0.3DI"
+        rot_z = draw(0, 0x1000)
+        rot_y = draw(0, 0x1000)
+        rot_x = draw(0, 0x1000)
+        pool.spawn(name, 0, ox, oy, oz, rot_x, rot_y, rot_z, 5, 100, vx, vy, vz, 0, 0)
+
+
+def _spray(pool: Pool, draw: Draws, inputs: DeathInputs,
+           source: Tuple[int, int], target: Tuple[int, int], mode: int,
+           *, large: bool) -> None:
+    """The shared body of the two blood sprays.
+
+    Both take the **target's** object as the origin and, in mode 0, the
+    direction from the target (raised by half its unit's height) to the
+    source, through `0x0046D400` with its shift flag; the horizontal terms
+    are scaled by 16 (`aBlob_CreateBloodFlood`) or 48 (the large one) and
+    the vertical one by 160, and every record starts `1280` along that
+    direction.  Modes 1 and 2 leave the direction at zero: a burst on the
+    spot, the second one scattered.  The named creator alone reads the gore
+    level, per record, and switches the model and the spread on it.
+    """
+    tx, ty = target
+    ox, oy, oz = inputs.object(tx, ty)
+    unit = inputs.unit(tx, ty)
+    if unit is None:
+        return
+    half = trunc_div(unit.height, 2)
+    dx = dy = dz = 0.0
+    d_x = d_y = d_z = 0
+    if mode == 0:
+        sx, sy, sz = inputs.object(source[0], source[1])
+        dx, dy, dz = eng3d.direction_vector((ox, oy, oz + half), (sx, sy, sz + half), 1)
+        scale = BLOOD_VELOCITY_LARGE if large else BLOOD_VELOCITY
+        d_x, d_y, d_z = ftol(dx * scale), ftol(dy * scale), ftol(dz * BLOOD_LIFT)
+        count, speed, zspan, scatter = (4, 100, 0xA0, 0) if large else (12, 20, 0xA0, 800)
+    elif mode == 1:
+        count, speed, zspan, scatter = 15, 400, 0x960, 0
+    elif mode == 2:
+        count, speed, zspan, scatter = 35, 400, 0x1900, 0x12C0
+    else:
+        return
+    px, py = ox, oy
+    for i in range(count):
+        if scatter:
+            px += draw(-scatter, 2 * scatter)
+            py += draw(-scatter, 2 * scatter)
+        if large:
+            delay, aux = i // 2, 10
+            vz = draw(100, speed) + d_z
+            vy = draw(0, 100) + d_y
+            vx = draw(0, 100) + d_x
+            model, class_id, rot_x, kind, life = SCRATCH, 2, 1, 0x32, 8
+        elif inputs.gore == Death.GORE_NONE or (inputs.gore == Death.GORE_COMPUTER_ONLY
+                                           and unit.player != 0xFF):
+            delay, aux = 0, draw(5, 10)
+            vz = draw(100, speed) + d_z
+            vy = draw(-200, 400) + d_y
+            vx = draw(-200, 400) + d_x
+            model, class_id, rot_x, kind, life = SCRATCH, 2, 5, 0x3C, 8
+        elif inputs.gore == Death.GORE_COMPUTER_ONLY:
+            delay, aux = i >> 1, 0
+            vz = draw(100, speed) + d_z
+            vy = draw(-200, 400) + d_y
+            vx = draw(-200, 400) + d_x
+            model, class_id, rot_x, kind, life = "A_BLUT4.3DI", 0, 0, 0x11, 8
+        elif inputs.gore == Death.GORE_FULL:
+            delay, aux = i >> 1, 0
+            vz = draw(100, speed) + d_z
+            vy = draw(0, 0x32) + d_y
+            vx = draw(0, 0x32) + d_x
+            model, class_id, rot_x, kind, life = "A_BLUT4.3DI", 0, 0, 0x11, 8
+        else:
+            continue
+        z = draw(0, zspan) + oz + half
+        y = py - ftol(dy * BLOOD_STEP)
+        x = px - ftol(dx * BLOOD_STEP)
+        pool.spawn(model, class_id, x, y, z, rot_x, 0, 0, kind, life, vx, vy, vz, aux, delay)
+
+
+@death_program(0x00420D80, 5)
+def _c00420D80(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateBloodFlood(sx, sy, tx, ty, mode)` -- the damage effect."""
+    sx, sy, tx, ty, mode = args
+    _spray(pool, draw, inputs, (sx, sy), (tx, ty), mode, large=False)
+
+
+@death_program(0x00421360, 5)
+def _c00421360(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`death_blood_spray_large` (no developer name): the same spray with
+    kind 50, life 8, fewer records and three times the sideways velocity,
+    the one `aPlayFightAnimation` uses for units flagged at `+0x7B`."""
+    sx, sy, tx, ty, mode = args
+    _spray(pool, draw, inputs, (sx, sy), (tx, ty), mode, large=True)
+
+
+@death_program(0x004216D0, 2)
+def _c004216D0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateFlyingDebris` (`aBlob_CreateSplatter` at one call site):
+    splats thrown from the unit's tile, each trailed by four blood pieces
+    (`A_BLUT1`, `A_BLUT1`, `A_BLUT2`, `A_BLUT3`) -- twelve throws in output
+    mode 3, five otherwise, the splat model cycling `A_SPLAT1..5` -- then
+    five lower splats with no trail."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    half = trunc_div(unit.height, 2)
+    count = 12 if inputs.display_mode == Death.DEBRIS_FULL_MODE else 5
+    for i in range(count):
+        name = SPLATS[i % len(SPLATS)]
+        vx = draw(-1000, 2000)
+        vy = draw(-1000, 2000)
+        vz = draw(-1000, 2000)
+        dz = draw(0, 0xC80) + half
+        delay = draw(0, 3)
+        pool.spawn(name, 0, ox, oy, oz + dz, 0, 0, 0, 0x12, 0x32, vx, vy, vz + 500, 0, delay)
+        for m in range(1, 5):
+            pool.spawn(BLOOD_TRAIL[m - 1], 0, ox, oy, oz + dz, 0, 0, 0, 0x12, 0x1E,
+                       vx, vy, vz + 500, 0, m)
+    for i in range(5):
+        name = SPLATS[i % len(SPLATS)]
+        vx = draw(-0xFA, 500)
+        vy = draw(-0xFA, 500)
+        vz = draw(0, 500)
+        dz = draw(0, 0xC80)
+        delay = draw(0, 3)
+        pool.spawn(name, 0, ox, oy, oz + half + dz, 0, 0, 0, 0x12, 0x1E, vx, vy, vz + 500, 0, delay)
+
+
+@death_program(0x00421C50, 2)
+def _c00421C50(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`death_species_burst` (no developer name): the severity-3 death of
+    types 50, 51 and 56 -- seven times in ten two `A_SPLAT5`, two class-2
+    bursts and the type's own three `A_50A/B/C`-style pieces each trailed
+    by four `A_BLUT1/2/3`; otherwise, and for every other type, a mode-1
+    `aBlob_CreateBloodFlood` and `aBlob_CreateFlyingDebris` on the tile."""
+    x, y = args
+    if inputs.gore == Death.GORE_NONE:
+        _puff(pool, draw, inputs.object(x, y))
+        return
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    if _gore_substitutes(inputs, unit):
+        _puff(pool, draw, inputs.object(x, y))
+        return
+    if unit.type_id not in SPECIES_TYPES:
+        _c00420D80(pool, draw, (x, y, x, y, 1), inputs)
+        _c004216D0(pool, draw, (x, y), inputs)
+        return
+    coin = 10.0 * draw.raw()
+    if coin > SPECIES_COIN:
+        _c00420D80(pool, draw, (x, y, x, y, 1), inputs)
+        _c004216D0(pool, draw, (x, y), inputs)
+        return
+    ox, oy, oz = inputs.object(x, y)
+    half = trunc_div(unit.height, 2)
+    for _ in range(2):
+        delay = draw(0, 3)
+        vz = draw(500, 1000) + 500
+        vy = draw(500, 1000)
+        vx = draw(500, 1000)
+        pool.spawn("A_SPLAT5.3DI", 0, ox, oy, oz + half, 0, 0, 0, 0x12, 0x1E, vx, vy, vz, 0, delay)
+    pool.spawn(SCRATCH, 2, ox, oy, oz + half, 7, 0, 0, 0x33, 0x10, 0, 0, 0, 0x19, 0)
+    pool.spawn(SCRATCH, 2, ox, oy, oz + half + 500, 7, 0, 0, 0x33, 0x10, 0, 0, 0, 0x1E, 2)
+    models = SPECIES_MODELS[unit.type_id]
+    for j in range(4):
+        if j >= len(models):
+            continue
+        name = models[j]
+        vx2 = draw(-600, 0x4B0)
+        vy2 = draw(-600, 0x4B0)
+        vz = draw(500, 700)
+        dz = draw(0, 0x640)
+        vx, vy = trunc_div(vx2, 2), trunc_div(vy2, 2)
+        pool.spawn(name, 0, ox, oy, oz + half + dz, 0, 0, 0, 0x12, 0x32, vx, vy, vz, 0, 0)
+        for m in range(1, 5):
+            pool.spawn(BLOOD_TRAIL[m - 1], 0, ox, oy, oz + half + dz, 0, 0, 0, 0x12, 0x1E,
+                       vx, vy, vz, 0, m)

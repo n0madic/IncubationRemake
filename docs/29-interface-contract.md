@@ -69,6 +69,11 @@ unit.
 
 ### 1.2 Map interaction
 
+*The camera of the mission view — its placement on a unit, its flight, the
+three views, the mouse control and what it does during a walk, a shot and a
+set piece — is not part of this contract and was not in it; it is decoded in
+[`42`](42-mission-presentation.md), 2026-09-02.*
+
 The replacement keeps one selected unit and one explicit intent. The following
 are contract names for the modes a new map UI needs; they are not claims that
 the original stored an enum with these names:

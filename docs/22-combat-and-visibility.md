@@ -1182,8 +1182,11 @@ it), `spore.statue` 3/3, `spore.corpus_spores`, `spore.corpus_unused` 3/3 and
 ### 9.5 The other thing `aRemoveUnitElement` does: the hero counter
 
 `aRemoveUnitElement` (`0x004779C0`) is the routine every removal goes through
-— `aKillUnit` (`0x00472920`) is a death sequence plus this call, and twenty
-sites reach it. Its middle third is not removal at all:
+— `aKillUnit` (`0x00472920`) is a network message plus this call, and twenty
+sites reach it. *(Corrected 2026-09-02: it carries no death sequence. What is
+drawn when a unit dies — the object hidden in the same frame, a blood, debris
+or fire effect chosen by species and class, the death scream — lives in
+`aPlayFightAnimation`, [`42` §4.8](42-mission-presentation.md).)* Its middle third is not removal at all:
 
 ```c
 al = unit[+0x4D];                      /* 0x00477A34 */

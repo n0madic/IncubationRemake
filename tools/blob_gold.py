@@ -3693,6 +3693,12 @@ def _creator_inputs(root: str, phases: dict[str, Any]) -> Any:
 CREATOR_CONSTANTS_UNDISCRIMINATED = (
     "BEAM_BASE", "BEAM_UNIT", "DOT_SPEED", "HEAD_SPEED", "HEAD_STEP",
     "TRAIL_UNIT",
+    # The death creators' doubles: no weapon switch reaches those creators,
+    # so this capture never runs them.  `presentation_gold.py`'s `deaths`
+    # phases do, and its `deaths.constants_discriminated` is where each of
+    # these five is told from its neighbour.
+    "BLOOD_LIFT", "BLOOD_STEP", "BLOOD_VELOCITY", "BLOOD_VELOCITY_LARGE",
+    "SPECIES_COIN",
 )
 #: The ones it does pin, so the check is a measurement in both directions
 #: rather than a list of excuses.

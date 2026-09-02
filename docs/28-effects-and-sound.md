@@ -783,6 +783,17 @@ Several names appear at more than one address — `aBlob_CreateLaser` at four,
 `aBlob_CreateTracerBullet` at three — which is what C++ overloads look like
 once the linker is done. **Key everything by address, not by name.**
 
+Four of the 24 unnamed creators are the ones `aPlayFightAnimation`'s death
+switch reaches — `0x004297F0`, `0x00420B80`, `0x00421360`, `0x00421C50` and
+`0x004298D0` (five with the bloodless puff) — and [`42` §4.8.1](42-mission-presentation.md)
+names them from what they build (`death_puff`, `death_blood_burst`,
+`death_blood_spray_large`, `death_species_burst`, `death_barrel_burst`: this
+project's names, not the developers'), transcribes them beside
+`aBlob_CreateBloodFlood` and `aBlob_CreateFlyingDebris` in
+`tools/inclib/blob_creators.py`, and measures all seven against the running
+engine. They are also the readers of the **gore level** — dword 10 of
+`Game.opt`, `0x00512A00` — which `20` §8 once called a unit-drawing path.
+
 `python3 tools/blob_tables.py --blobs gog_incubation` prints every one of the
 116 calls with its model, class, kind and lifetime. Sixty-two distinct kind
 values are used, all within the switch's 0…77; classes are 0…3; the 91 calls that pass a
@@ -1226,8 +1237,8 @@ creators, exactly **two** sit in another module:
 
 | Site | Module | Reaches |
 |---|---|---|
-| `0x00473942` | `aUI.cpp` | `0x00422D40` — the arrow marker |
-| `0x0046D85F` | `aTacTools.cpp` | `0x0042A6E0` |
+| `0x00473942` | `aUI.cpp` | `0x00422D40` — the arrow marker: four `A_ARROW.3DI` model blobs of kind 14 around the selected unit ([`42` §7.3](42-mission-presentation.md)) |
+| `0x0046D85F` | `aTacTools.cpp` | `0x0042A6E0` — the push's dust puff, one sprite per frame ([`42` §7.2](42-mission-presentation.md)) |
 
 Everything else is either `aAnimations.cpp` — overwhelmingly
 `aPlayFightAnimation` — or `aBlobs.cpp` itself, where an update arm spawns a
@@ -1273,6 +1284,26 @@ A selection, with `Info.lcl`'s names — the complete table is
 
 Weapons 15, 20, 21, 27 and 30–32 — the melee weapons — select an arm that
 creates no blob at all.
+
+**The muzzle switch has a default arm, and it is not empty.** The compiler
+emits `add eax, -2 / cmp eax, 0x2D / ja 0x0040D42C` at `0x0040CC46`, so the
+table above covers 2…47 and weapons **0 and 1** — `Light Combat Gun` and
+`Advanced Combat Gun`, the two the campaign starts with — fall past it. The
+default arm at `0x0040D42C` pushes 5 and calls `aBlob_CreateTracerBullet`
+(`0x004247C0`) at `0x0040D44D`: the same creator weapon 2 uses, so those two
+guns fire the visible `A_LINE5.3DI` + `A_CASE.3DI` pair like the rest. Any id
+past 47 reaches it too.
+
+This was found from play rather than from the listing — in the remake the two
+starting guns fired invisibly, because reading the jump table alone cannot
+show an arm the table does not point at. `blob_tables.py` pins the `ja`
+target, the call target and the fact that every id the table carries is at or
+above its first, so the gap cannot come back.
+
+The other two switches' defaults were read the same way and **make no blob**:
+the impact switch's (`0x0040DA07`) goes straight on to `aGetUnitMapElementPtr`
+and the unit sweep, so weapons 0…6 having no impact effect is the engine's own
+answer rather than a second gap.
 
 ### 8.2 `CreateBGB`, the scripted emitter
 

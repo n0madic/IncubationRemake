@@ -1289,7 +1289,7 @@ uniform value in `0 … n-1`.
 | `GUI_PrintBackground ()` / `GUI_Render ()` | `0x0043cbf0` / `0x0043ccc0` | blit / present |
 | `PrintAllVars ()` | `0x00440800` | debug-only; a bare call to the empty reporter in the release build |
 | `Message ("text")` | `0x00440880` | debug-only; same |
-| `?_ (n)` | `0x00440d50` → `0x004604b0` | sets `0x00512a00` to `n` for `1 <= n <= 3`. That global is **dword 10 of the 108-byte `Options\Game.opt` blob** (`0x005129d8`, saved/loaded whole by `0x004602e0` / `0x00460390`), defaults to 3 (`0x004601be`) and is read by four renderers through `0x004604a0`; it selects the unit-drawing path (1 = every unit the cheap way, 2 = only non-computer units, 3 = the full way). **`?_` is its only writer in the shipped binary** — the options screen does not expose it and no string in either binary names it, so its user-facing name is not recoverable from these files |
+| `?_ (n)` | `0x00440d50` → `0x004604b0` | sets `0x00512a00` to `n` for `1 <= n <= 3`. That global is **dword 10 of the 108-byte `Options\Game.opt` blob** (`0x005129d8`, saved/loaded whole by `0x004602e0` / `0x00460390`), defaults to 3 (`0x004601be`) and is read by four renderers through `0x004604a0`; ~~it selects the unit-drawing path (1 = every unit the cheap way, 2 = only non-computer units, 3 = the full way)~~ — it is the **gore level**: the four readers are the death and damage creators of [`42` §4.8.1](42-mission-presentation.md) and the killing teleporter, and at 1 every death is a bloodless puff, at 2 only the computer's units (`+0x45 == 0xFF`) bleed, at 3 everything does. **`?_` is its only writer in the shipped binary** — the options screen does not expose it and no string in either binary names it, so its user-facing name is not recoverable from these files |
 
 #### The `GUI_*` layout commands — **[code] `0x0043c7a0` … `0x0043e030`**
 
@@ -1458,7 +1458,7 @@ file is missing. Eleven `i32` fields and a 64-byte name:
 | +0x1C | `0x005129F4` | `1` | `0`, `1` | **Enemy Move on/off** — `0x00460740` toggles it as `x = (x != 1)`; read only by `aExecuteMove` (`0x0046E220`), where a non-zero value selects animation mode 3 instead of 2 |
 | +0x20 | `0x005129F8` | `2` | `1`, `2`, `3` | **Cursor and animation level** — `0x004604D0`, forced to 2 in one game mode; seven readers in the 3D-object and UI code |
 | +0x24 | `0x005129FC` | `2` | `1`, `2` | **Animation resolution** — `0x004604F0`, read by `aCreateSeqPlayer` among others |
-| +0x28 | `0x00512A00` | `3` | `1`..`3` | the unit-drawing path `?_` writes (above) |
+| +0x28 | `0x00512A00` | `3` | `1`..`3` | the gore level `?_` writes (above): 1 no blood, 2 the computer's units only, 3 all |
 | +0x2C | `0x00512A04` | GUI text 198 | 64 bytes | **player name**, returned by `0x00461300` |
 
 `0x2C + 64 = 0x6C`, exactly the size written.

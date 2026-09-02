@@ -246,8 +246,20 @@ func _check_triggers(h: TestHarness) -> void:
 	h.check("triggers.ticking", pool.trace_digest() != digest,
 		"and one tick changes them")
 
-	# A weapon outside every switch's range makes nothing, silently.
-	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 0)
+	# **A weapon outside the muzzle table still fires a tracer**, because the
+	# switch has a default arm and that arm calls `aBlob_CreateTracerBullet`.
+	# This check used to require zero, which encoded a gap in the extraction
+	# rather than the engine: the table starts at id 2, so weapons 0 and 1 --
+	# the two guns the campaign starts with -- reached the default and fired
+	# invisibly in the remake. `blob_tables.py` pins the arm now.
+	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 2,
+		"the switch's default arm, the same creator weapon 2 uses")
+	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 2,
+		"the Light Combat Gun is not a gun with no muzzle flash")
+	# The impact switch's default makes no blob, and that **is** the engine:
+	# `0x0040DA07` goes straight on to the unit sweep.
+	h.equal("triggers.impact_default", triggers.impact(0, to), 0,
+		"weapons below the impact table's first id have no impact effect")
 
 	# An effect whose model this world set does not carry is **cancelled**,
 	# not drawn as a hole and not a crash. `A_PARAB1.3DI` lives in E00 and

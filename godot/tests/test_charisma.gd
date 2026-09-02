@@ -182,6 +182,7 @@ func run(h: TestHarness) -> void:
 	_walking(h)
 	_facing(h)
 	_stride(h, cases, models, clips)
+	_shooting(h, clips)
 	_pacing(h)
 
 
@@ -376,19 +377,42 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	h.equal("starts_idle", state.mode, CharismaState.Mode.IDLE)
 	h.check("idle_is_not_busy", not state.is_busy(), "nothing to wait for")
 
-	state.fire()
+	var length: float = state.fire()
 	h.equal("fire_mode", state.mode, CharismaState.Mode.FIRE)
 	h.check("fire_is_busy", state.is_busy(), "a one-shot is running")
-	# Advance past the note but well short of the clip's end. It must have
-	# stopped, which is the whole difference `BREAK` makes.
 	var to_break: float = with_break.break_time() \
 		/ CharismaState.FRAMES_PER_SECOND
+	h.check("fire_reports_its_length",
+		absf(length - (to_break + CharismaState.HOLD_SECONDS)) < 0.000001,
+		"%.3f s: %.3f to the note plus the %.2f s hold"
+			% [length, to_break, CharismaState.HOLD_SECONDS])
+
+	# Advance past the note but well short of the clip's end. It must have
+	# stopped, which is the whole difference `BREAK` makes.
 	state.advance(to_break + 0.05)
-	h.check("fire_stops_at_break", not state.is_busy(),
+	h.check("fire_stops_at_break", not state.is_playing(),
 		"halted at %.1f, %.1f short of the clip's %.1f"
 			% [with_break.break_time(),
 				with_break.duration - with_break.break_time(),
 				with_break.duration])
+
+	# **The pose is held, and this is the defect the hold exists for.** The
+	# clip used to be stopped at the note and the body rested to idle frame 0
+	# in the same `animate()` call, so only the frames up to the note were ever
+	# seen and the figure snapped. `is_busy()` covers the hold, so a caller
+	# that rests on it rests at the end of the shot.
+	h.check("break_pose_is_held", state.is_busy(),
+		"a frame past the note, the body is still the shot's")
+	state.advance(1.0 / CharismaState.FRAMES_PER_SECOND)
+	h.equal("break_pose_does_not_advance", state._time, with_break.break_time(),
+		"the callback halts the animation at the note and leaves it there")
+	h.check("break_pose_still_held", state.is_busy(),
+		"and it is still held a frame later")
+	state.advance(CharismaState.HOLD_SECONDS)
+	h.check("break_pose_released", not state.is_busy(),
+		"%.2f s after the note the body is free" % CharismaState.HOLD_SECONDS)
+	h.equal("break_pose_kept_to_the_end", state._time, with_break.break_time(),
+		"and the pose was the shot's for all of it")
 	state.rest()
 	h.equal("rests_after_fire", state.mode, CharismaState.Mode.IDLE)
 
@@ -398,11 +422,35 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	# first and a looping one-shot would pass unnoticed.
 	var once: CharismaState = CharismaState.create(null, without, without,
 		without)
-	once.fire()
+	var once_length: float = once.fire()
 	once.advance((without.duration + 1.0) / CharismaState.FRAMES_PER_SECOND)
+	h.check("fire_without_break_plays_out", not once.is_playing(),
+		"%s has no BREAK and ends at its own %.1f"
+			% [without.name, without.duration])
+	h.check("fire_without_break_holds", once.is_busy(),
+		"and owes the same hold a clip with a note does")
+	once.advance(CharismaState.HOLD_SECONDS)
 	h.check("fire_without_break_stops", not once.is_busy(),
 		"%s has no BREAK and ends at its own %.1f"
 			% [without.name, without.duration])
+	h.check("fire_without_break_length",
+		absf(once_length - (without.duration / CharismaState.FRAMES_PER_SECOND
+			+ CharismaState.HOLD_SECONDS)) < 0.000001,
+		"a clip with no note reports its whole length, %.3f s" % once_length)
+
+	# **A type with no `F` clip at all** -- seven of the shipped ones (docs/40
+	# section 7.2.1: Spider, Dec'Ther, Norc'Yn, Bea'Ther, Bea'Coo and types 62
+	# and 63). `fire()` used to leave the state running with no clip, so
+	# `advance()` answered "still running" for ever and the body never came
+	# back to its idle. There is nothing to wait for and the length says so.
+	var unarmed: CharismaState = CharismaState.create(null, without, without,
+		null)
+	var nothing: float = unarmed.fire()
+	h.equal("null_fire_length", nothing, 0.0, "no clip, no wait")
+	h.check("null_fire_is_not_busy", not unarmed.is_busy(),
+		"a body with no `F` is free from the first frame")
+	h.check("null_fire_does_not_spin", not unarmed.advance(1.0),
+		"and `advance` agrees with `is_busy` about it")
 
 	# An absent clip is normal -- nine unit types have one, and two have no
 	# clip at all. It must hold, not crash and not spin.
@@ -474,6 +522,100 @@ func _read(relative: String) -> Dictionary:
 	return CacheLoader.read_json(path)
 
 
+## One shot, end to end, at the level the game drives: turn the body, play the
+## clip, hold the struck pose, and come back to the idle.
+##
+## **The defect this pins.** [method UnitsView.animate] used to rest the body on
+## the frame the `BREAK` note stopped the clip, so the pose the engine holds was
+## thrown away as soon as it was struck and a shot read as nothing having
+## happened. The second half is the type with no `F` clip, which the same edit
+## covers: it is never busy for a frame, so an edge test never returned it to
+## its idle and it stayed in `FIRE` for the rest of the mission.
+func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
+	var with_break: CharismaClip = null
+	var without: CharismaClip = null
+	for clip_name: String in clips:
+		var clip: CharismaClip = clips[clip_name]
+		if clip == null:
+			continue
+		if clip.break_time() >= 0.0 and with_break == null:
+			with_break = clip
+		elif clip.break_time() < 0.0 and clip.duration > 0.0 and without == null:
+			without = clip
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if with_break == null or without == null or loaded.is_empty():
+		h.check("shot.fixture", false, "no clips, or no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = -1
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if not view.is_empty() and DictRead.as_int(view["player"]) == 0:
+			slot = candidate
+			break
+	if slot < 0:
+		h.check("shot.unit", false, "no player unit on _C_140")
+		return
+
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+	units.states[slot] = CharismaState.create(null, without, without, with_break)
+
+	# A target four fields east of the shooter: far enough that the neighbour
+	# step table [method UnitsView._facing_of] reads would not answer at all,
+	# which is why the turn goes through `Combat.direction` instead.
+	var view: Dictionary = world.unit_view(slot)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	var step: int = 4 if x + 4 < world.resource.width else -4
+	var length: float = units.fire(slot, x + step, y)
+	h.equal("shot.mode", units.states[slot].mode, CharismaState.Mode.FIRE,
+		"the body is playing its combat clip")
+	h.check("shot.length", length > 0.0,
+		"%.3f s of clip and held pose" % length)
+	var facing: int = Combat.direction(x, y, x + step, y)
+	h.check("shot.faces_the_target",
+		node.basis.is_equal_approx(WorldSpace.yaw_basis(
+			UnitsView.FACING_ANGLES[facing])),
+		"turned to facing %d, four fields away" % facing)
+
+	# Driven the way `_process` drives it: fixed steps, and the body is not
+	# free until the whole reported length has passed.
+	var elapsed: float = 0.0
+	var tick: float = 1.0 / CharismaState.FRAMES_PER_SECOND
+	while elapsed < length - tick:
+		units.animate(tick, world)
+		elapsed += tick
+		if units.states[slot].mode != CharismaState.Mode.FIRE:
+			break
+	h.check("shot.holds_for_its_length",
+		units.states[slot].mode == CharismaState.Mode.FIRE,
+		"%.3f s in, the body is still the shot's" % elapsed)
+	for _i: int in range(3):
+		units.animate(tick, world)
+		elapsed += tick
+	h.equal("shot.returns_to_the_idle", units.states[slot].mode,
+		CharismaState.Mode.IDLE,
+		"%.3f s in, the idle is back -- which is what plays when nothing else does"
+			% elapsed)
+
+	# The type with no `F`: nothing to wait for, and back to the idle on the
+	# very next frame rather than never.
+	units.states[slot] = CharismaState.create(null, without, without, null)
+	h.equal("shot.null_clip_length", units.fire(slot, x + step, y), 0.0,
+		"a type with no combat clip asks for no time at all")
+	h.check("shot.null_clip_is_not_busy", not units.any_busy(),
+		"and nothing is waiting on it")
+	units.animate(tick, world)
+	h.equal("shot.null_clip_returns_to_the_idle", units.states[slot].mode,
+		CharismaState.Mode.IDLE,
+		"the body a missing clip left in FIRE for ever comes back")
+	units.free()
+
+
 ## The walk: a body between two cells while it runs, and **on** its last cell
 ## when it stops.
 ##
@@ -527,8 +669,18 @@ func _walking(h: TestHarness) -> void:
 	var first: Vector3 = WorldSpace.cell_centre(x, y,
 		world.state.height_at(cells[0]))
 	node.position = first
+	units.world_ref = world
+	node.position = Vector3(99.0, 99.0, 99.0)
 	units.start_walk(slot, cells, width, 1.0)
 	h.check("walk.started", units.is_walking(), "three cells over one second")
+	# **On its first cell before a single frame is drawn.** `_advance_walk`
+	# writes the position on the frame *after* the walk starts, so the body was
+	# left wherever the rebuild put it for one rendered frame -- and for the
+	# computer's replay that is where the unit stands at the end of the whole
+	# turn, which made an alien appear at its destination and then walk to it.
+	h.check("walk.starts_on_its_first_cell",
+		node.position.distance_to(first) < 0.001,
+		"%.3f m from the source centre" % node.position.distance_to(first))
 	units.animate(0.5, world)
 	var midway: Vector3 = node.position
 	h.check("walk.moves", midway.distance_to(first) > 0.1,

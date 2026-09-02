@@ -48,11 +48,12 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 440 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 449 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
+python3 tools/presentation_tables.py --check gog_incubation   # 390 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -65,7 +66,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 1875 checks
+bash   godot/run_tests.sh                                    # 31 suites, 1945 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -577,18 +578,39 @@ bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
 ```
 
-`docs/93` has the two-command first run. **After changing anything under
-`godot/`, export and launch the shipping build as well as running the suites**:
-that preset excludes `tests/`, so a `class_name` from there used in `game/`
-breaks only the exported build, and it has done so once.
+`docs/93` has the two-command first run.
+
+`tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
+is **outside the always-run block**: its `--check` reads a capture that is
+gitignored (`tests/fixtures/presentation/README.md` records what it holds) and
+fails without one. Seventeen phases, one process each, at `docs/91`'s anchor
+with the fixture save: `idle_random` calls the engine's idle starter two
+hundred times with `aRandom2`'s seed read either side of every call and
+replays the draws, which is what pinned that the starter's **type search never
+advances** (`0x0040616C` compares unit 0's type two hundred times) and that
+every call past the countdown draws one slot; `idle_pose` writes the countdown
+and the seed through the game's own imported `memcpy`, starts the one
+candidate on the first call and reads every part the clip binds at eight stops
+-- reached through the animation's own movement list, since the Charisma
+bridge hands the renderer only the root part's record -- which is what measured
+the clock at **1.5** a step, the last frame held while the finished clip stays
+attached, and the bind pose back on the first step after `aFreeCHAnimation`
+(`docs/42` §6); and fourteen `death_*` phases call the seven death and damage
+creators of `docs/42` §4.8.1 with controlled tiles and a written seed and
+replay `blob_creators.DEATH_PROGRAMS` against the pool they left, field for
+field. The idle clip's speed of 1.5, the walk's 2.0 and the fight's 6.0 are the
+same start call with a different literal (`docs/42` §1.2), and `docs/40` §4.8's
+"the speed is always 1.0" was the constructor's initialiser, not the game. **Do
+not use `--code`** here either: the byte writer is the game's imported
+`memcpy`, as in `ai_gold.py`.
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
+The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

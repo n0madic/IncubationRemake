@@ -637,7 +637,13 @@ way out to the two call sites that produce it and settles the frame rate.
 This was the last open question, and it is now closed by code. The chain has
 three links.
 
-**1. The per-animation speed factor is always 1.0.**
+**1. The per-animation speed factor is initialised to 1.0 — and then set per
+use.** *(Corrected 2026-09-02 by [`42` §1.2](42-mission-presentation.md): the
+scan below found the only direct write, but every gameplay start goes through
+the animation interface's start slot `+0x2C` with a speed argument — the walk
+starts at **2.0** (`0x0040599C`), the fight at **6.0** (`0x00405B17`), the idle
+at **1.5** (`0x004063E3`, measured live as `+0x64 = 1.5`) and `M2` at 1.0. The
+arithmetic below is right; "nothing changes it" was not.)*
 `StdAnimation::Update` (`0x004a0c50`) is the whole time advance:
 
 ```
@@ -659,7 +665,7 @@ The same initialiser fixes the rest of the playback state, which a remake needs:
 |--------|---------|---------------|
 | `+0x58` | current time (unmapped, monotonic) | 0 |
 | `+0x5c` | mapped time actually sampled | 0 |
-| `+0x60` | length from the descriptor (last key time) | from `IAnimationDesc` |
+| `+0x60` | length — the **first movement's last key time**: `KeyFramedAnimation::Init` `0x004A0A01` asks its own slot `0xC` for movement 0, casts it to `IMovement` and calls slot `0x2C`, which every keyframed movement answers with `fld dword [lastKey + 4]` ([`42` §1.2](42-mission-presentation.md)); every movement of every shipped clip ends at the same time (112/112 of the clips with movements), so it is the clip's last key time too | computed, not a descriptor field |
 | `+0x64` | **speed factor** | `1.0` |
 | `+0x68` | play range start | 0 |
 | `+0x6c` | play range end | `+0x60` |
@@ -738,7 +744,9 @@ being capped at `(10, 20)`. So **one map field is six rendered frames**, and by
 3b it is also six key-time units of whatever clip is playing. A `.cha`
 movement clip is 20 frames long and strides one field (§5.4), so the engine
 walks a unit **3.3× further per cycle than the clip's own stride** — the feet
-do not track the ground, and did not in 1997 either.
+do not track the ground, and did not in 1997 either. *(Corrected 2026-09-02:
+the walk clip is started at speed 2.0 — [`42` §1.2](42-mission-presentation.md)
+— so a cycle is 10 frames and the figure is **1.67×**, not 3.3×.)*
 
 **Conclusion for a remake.** Key times are frames (§4.7). Play `Video/*.cha` at
 **30 fps** — proven. For gameplay the original ties playback to the render loop
@@ -1385,10 +1393,10 @@ entry point, and `kind` picks both the selector and the playback settings:
 
 | `kind` | Name source | Started by | Playback set-up |
 |--------|-------------|------------|-----------------|
-| 0 | `0x0042da40` → **`M`** | `aTacTools.cpp` `fcn.0046e220` at `0x0046e581` — the unit-movement routine | calls interface slots `+0x44`, `+0x2c`; not decompiled, **UNVERIFIED** |
-| 1, 2, 3 | `0x0042e220` → **`F`** | `aAnimations.cpp` `fcn.0040bd70` at `0x0040be88` — the combat routine, whose four leading arguments are the attacker's and the target's map coordinates | registers a `StopAnimationAtNoteEventCallback` on the note text `"BREAK"` (`0x0042c5d0`), i.e. the animation halts at its `BREAK` marker |
-| 4 | fixed literal `"P0_M2_000"` (`0x004c030c`) | `aAnimations.cpp` `fcn.00417510` at `0x00417636` | calls slots `+0x44`, `+0x2c`, `+0x34` with `rand(0, 10)`; the slots are not decompiled, **UNVERIFIED** |
-| — | `0x0042ddf0` → **`S`** | `a3DObjects.cpp` `fcn.004060b0`, called from the 3D-view refresh `fcn.00406fc0` for slots 1, 2, 4, 5 | the idle animation that plays whenever nothing else does |
+| 0 | `0x0042da40` → **`M`** | `aTacTools.cpp` `fcn.0046e220` at `0x0046e581` — the unit-movement routine | `+0x44(100000)` loops, `+0x2c(2.0)` starts at speed 2.0 — decoded in [`42` §1.2](42-mission-presentation.md), 2026-09-02; the first argument of `fcn.004055e0` is the animation **slot** (3 for the walk and the shot, 6 for a reaction shot), the third the selector |
+| 1, 2, 3 | `0x0042e220` → **`F`** | `aAnimations.cpp` `fcn.0040bd70` at `0x0040be88` — the combat routine, whose four leading arguments are the attacker's and the target's map coordinates | `+0x2c(6.0)` starts at speed **6.0** ([`42` §1.2](42-mission-presentation.md)), then registers a `StopAnimationAtNoteEventCallback` on the note text `"BREAK"` (`0x0042c5d0`), i.e. the animation halts at its `BREAK` marker — which it reaches in 3 to 6 frames; the combat routine later resumes it past the note (`42` §4.9) |
+| 4 | fixed literal `"P0_M2_000"` (`0x004c030c`) | `aAnimations.cpp` `fcn.00417510` at `0x00417636` | `+0x44(100000)` loops, `+0x2c(1.0)` starts, `+0x34(rand(0, 10))` sets a random start time — decoded in [`42` §1.2](42-mission-presentation.md) |
+| — | `0x0042ddf0` → **`S`** | `a3DObjects.cpp` `fcn.004060b0`, called from the 3D-view refresh `fcn.00406fc0` for slots 1, 2, 4, 5 | a **scheduler**, not a loop: each of the four slots plays one random unit's idle once at speed 1.5 and holds the slot for the clip's declared length — [`42` §6](42-mission-presentation.md) |
 
 So the letters are settled by their call sites, not by guesswork:
 

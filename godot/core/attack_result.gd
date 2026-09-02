@@ -30,3 +30,26 @@ func to_dict() -> Dictionary:
 		cells.append(Array(m))
 	return {"fired": fired, "reason": reason, "overheat": overheat,
 		"facing": facing, "marked": cells, "outcomes": outcomes.duplicate()}
+
+
+## The same document read back, for a caller that only has the dictionary.
+##
+## The computer's turn is decided in one call and replayed afterwards, so an
+## `AIEvent`'s shot reaches `game` as [method to_dict]'s document and not as
+## this object. Presenting it needs the outcomes and the overheat name, which
+## is exactly what a round trip through here recovers.
+##
+## [member reactions] is **not** part of the document and is not read: the
+## shape is pinned to `inclib.combat.AttackResult.to_dict()`, and the
+## computer emits what it drained as its own `reactions` event.
+static func from_dict(document: Dictionary) -> AttackResult:
+	var result: AttackResult = AttackResult.new()
+	result.fired = DictRead.as_bool(document.get("fired", false))
+	result.reason = DictRead.as_string(document.get("reason", ""))
+	result.overheat = DictRead.as_string(document.get("overheat", "none"))
+	result.facing = DictRead.as_int(document.get("facing", 0))
+	for cell: Variant in DictRead.as_array(document.get("marked", [])):
+		result.marked.append(DictRead.to_int32(cell))
+	for entry: Variant in DictRead.as_array(document.get("outcomes", [])):
+		result.outcomes.append(DictRead.as_dict(entry))
+	return result

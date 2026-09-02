@@ -396,6 +396,26 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		refused.reason = "no such unit"
 		return refused
 	var unit: UnitState = _units[command.unit_slot]
+	# **A weapon that spends ammunition and has none does not fire.**
+	#
+	# `aAttackUnit` itself does not check: its spend is `mov al, [esi+0x3D] /
+	# sub al, dl / mov [esi+0x3D], al` at `0x0046C308`, an **8-bit**
+	# subtraction that wraps rather than refusing. The check is the caller's,
+	# and the engine's own weapon selector `0x0042FF30` -- transcribed as
+	# [method AIOverlay.effective_weapon] for docs/23 -- is where it lives: a
+	# unit whose weapon is empty gets its `special` 1 fallback or no weapon at
+	# all. The computer has been going through that routine since slice 3; the
+	# player's call site had no gate, so a marine fired for ever and its count
+	# went negative.
+	#
+	# The condition mirrors [method Combat.attack]'s **spend** exactly, so the
+	# count can no longer go past zero by this path whatever the magazine size.
+	if (_weapons.magazine(unit.weapon) != Combat.MUN_NONE
+			and unit.type_id != Combat.NO_AMMO_UNIT_TYPE
+			and unit.ammo < _weapons.mun_per_fight(unit.weapon)):
+		var empty: AttackResult = AttackResult.new()
+		empty.reason = "no ammunition"
+		return empty
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
 		turn.human_count(), turn.mode, turn, rng)

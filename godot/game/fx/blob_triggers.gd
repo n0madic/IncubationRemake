@@ -117,9 +117,18 @@ func impact_wave(weapon_id: int) -> String:
 
 
 ## The creators a switch names for this weapon, by address.
+##
+## **A weapon the jump table does not cover is not a weapon with no effect.**
+## The muzzle switch's table starts at id 2 (`add eax, -2 / cmp eax, 0x2D /
+## ja`), so weapons 0 and 1 -- the Light and Advanced Combat Guns the campaign
+## starts with -- fall to its default arm, and that arm calls
+## `aBlob_CreateTracerBullet` just as weapon 2's does. Reading only the table
+## left both starting guns firing invisibly.
 func creators(switch_name: String, weapon_id: int) -> Array:
-	return DictRead.as_array(
-		DictRead.as_dict(_document.get(switch_name, {})).get(str(weapon_id), []))
+	var switch: Dictionary = DictRead.as_dict(_document.get(switch_name, {}))
+	if switch.has(str(weapon_id)):
+		return DictRead.as_array(switch[str(weapon_id)])
+	return DictRead.as_array(_document.get(switch_name + "_default", []))
 
 
 func _fire(switch_name: String, weapon_id: int, at: Vector3i,

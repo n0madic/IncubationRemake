@@ -751,7 +751,7 @@ the field**, and its three values are named by the models their makers insert:
 |---|---|---|---|
 | 1 | `0x0042F840` (`aCtrlMap.cpp:1483`, `:1495`) | `A_FIRE1/2/3.3DI` | **burning ground**, three intensities |
 | 2 | `0x0042FA70` (`aCtrlMap.cpp:1627`) | `A_MINE.3DI` | **a mine** |
-| 3 | `0x0042FB90` (`aCtrlMap.cpp:1735`) | `A_SHILD.3DI` | **a shield** |
+| 3 | `0x0042FB90` (`aCtrlMap.cpp:1735`) | `A_SHILD.3DI` | **a shield** — placed by the Plasma Gun's impact arm and turning 51 units a frame ([`42` §9.1](42-mission-presentation.md)) |
 | 255 | — | — | nothing there |
 
 Each of the three clears the byte to 255, inserts a symbol object through

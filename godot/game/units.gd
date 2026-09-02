@@ -81,6 +81,13 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	for child: Node in get_children():
 		remove_child(child)
 		child.free()
+	# What every body was playing, so the rebuild does not restart it. See
+	# [method CharismaState.playback]: a command must not snap every idle on
+	# the map back to frame 0, and a shot in flight must survive a fog change
+	# that lands in the middle of it.
+	var carried: Dictionary[int, Dictionary] = {}
+	for slot: int in states:
+		carried[slot] = states[slot].playback()
 	bodies.clear()
 	states.clear()
 	_walks.clear()
@@ -99,6 +106,15 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty():
 			continue
+		# **A dead unit is not drawn.** `aKillUnit` (`0x00472920`) is the death
+		# sequence *and* `aRemoveUnitElement`, which deletes the object -- so the
+		# engine's picture loses it the moment it dies. `core` keeps the record,
+		# because the hero counter and the mission conditions read it, and
+		# [method UnitState.remove] only clears the map cell. Without this the
+		# body stood there until some later rebuild happened to drop it, which
+		# for a unit killed on the player's turn was the next hand-over.
+		if DictRead.as_int(view["hp"]) == 0 and not _linger.has(slot):
+			continue
 		if seen.has(slot):
 			view["visibility"] = seen[slot]
 		# docs/22 section 9: a hidden unit is not drawn and a contact is a blip.
@@ -106,7 +122,8 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		# and not a search through the renderer.
 		if not Fog.is_drawn(view):
 			continue
-		add_child(_build_one(view, types, prototypes, textures, world))
+		add_child(_build_one(view, types, prototypes, textures, world,
+			carried))
 	# **After** the loop, not inside it: a rebuild recreates every node, so a
 	# unit a set piece is still delivering has to be hidden again each time --
 	# and so does one a lift is carrying.
@@ -116,12 +133,16 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 
 func _build_one(view: Dictionary, types: UnitTypeTable,
 		prototypes: Dictionary, textures: Dictionary,
-		world: World) -> Node3D:
+		world: World, carried: Dictionary[int, Dictionary]) -> Node3D:
 	var node: Node3D = Node3D.new()
 	var slot: int = DictRead.as_int(view["slot"])
 	var type_id: int = DictRead.as_int(view["type_id"])
 	var x: int = DictRead.as_int(view["x"])
 	var y: int = DictRead.as_int(view["y"])
+	# The replay's override, if this unit has not played its move yet.
+	if _held_at.has(slot):
+		x = _held_at[slot].x
+		y = _held_at[slot].y
 	node.name = "unit_%d" % slot
 	var cell: Dictionary = world.cell_view(x, y)
 	var h: int = DictRead.as_int(cell.get("height", 0))
@@ -158,6 +179,8 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		var clips: Array[CharismaClip] = library.clips_for(type_id,
 			DictRead.as_int(view["weapon"]), player)
 		states[slot] = CharismaState.create(body, clips[0], clips[1], clips[2])
+		if carried.has(slot):
+			var _resumed: bool = states[slot].resume(carried[slot])
 		node.add_child(body)
 		_face(node, body, facing)
 		return node
@@ -189,14 +212,63 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 func animate(delta: float, world: World) -> void:
 	for slot: int in states:
 		var state: CharismaState = states[slot]
-		var was_firing: bool = state.is_busy()
-		state.advance(delta)
-		# A one-shot that has just ended returns the body to the idle, which is
-		# what plays when nothing else does (docs/40 section 7.2).
-		if was_firing and not state.is_busy():
+		var _busy: bool = state.advance(delta)
+		# A one-shot that has ended -- clip stopped **and** its end pose
+		# held for [constant CharismaState.HOLD_SECONDS] -- returns the body
+		# to the idle, which is what plays when nothing else does (docs/40
+		# section 7.2).
+		#
+		# The test is the **mode**, not an edge of `is_busy()`. A type with
+		# no `F` clip is never busy for a frame, so an edge test never fired
+		# for it and left the body in `FIRE` for the rest of the mission.
+		if state.mode == CharismaState.Mode.FIRE and not state.is_busy():
 			state.rest()
 	for slot: int in _walks.keys():
 		_advance_walk(slot, delta, world)
+	_age_the_dead(delta)
+
+
+## Face `slot`'s body at `(tx, ty)` and play its combat clip once.
+##
+## Returns how long the whole shot occupies the body ([method
+## CharismaState.fire]), so a caller pacing a sequence can wait for it. Zero
+## for a slot with no state at all -- a unit the fog does not draw has no
+## node and no body this rebuild, and a reaction from one presents nothing.
+##
+## **The turn is the picture's and is not written back.** `Reaction.drain`
+## saves the reactor's facing and restores it after the shot (`core/
+## reaction.gd`), so the world never reports a reactor as looking at what it
+## shot at; the body is turned for the clip and the next rebuild puts it
+## back where the world says it looks.
+func fire(slot: int, tx: int, ty: int) -> float:
+	if not states.has(slot):
+		return 0.0
+	var node: Node3D = _node_of(slot)
+	if node != null and world_ref != null:
+		var view: Dictionary = world_ref.unit_view(slot)
+		if not view.is_empty() or _held_at.has(slot):
+			# `Combat.direction` is the engine's own octant rule (docs/22
+			# section 7.4), and a target is rarely a neighbouring cell -- which
+			# is the one case [method _facing_of]'s step table covers. Reading
+			# a `core` routine mutates nothing.
+			# From where the body **is drawn**, which during the computer's
+			# replay is not where the world says it is.
+			var from_x: int = _held_at[slot].x if _held_at.has(slot) \
+				else DictRead.as_int(view["x"])
+			var from_y: int = _held_at[slot].y if _held_at.has(slot) \
+				else DictRead.as_int(view["y"])
+			var facing: int = Combat.direction(from_x, from_y, tx, ty)
+			_face(node, _body_of(slot), facing)
+	return states[slot].fire()
+
+
+## True while any body is still playing a one-shot, so a caller can wait for
+## the shot before it shows what came back.
+func any_busy() -> bool:
+	for slot: int in states:
+		if states[slot].is_busy():
+			return true
+	return false
 
 
 ## Walk a unit's node along `cells` -- map indices, source first -- over
@@ -213,6 +285,17 @@ func start_walk(slot: int, cells: PackedInt32Array, width: int,
 	_walks[slot] = {"cells": cells, "width": width, "elapsed": 0.0,
 		"seconds": seconds, "step_frames": step_frames, "frames": 0.0,
 		"steps": 0}
+	# **On its own first cell, now, and not on the next frame.** The node was
+	# left wherever the rebuild put it, which for the computer's replay is
+	# where the unit stands at the *end* of the whole turn -- so an alien
+	# appeared at its destination, then jumped back and walked to it.
+	# `_advance_walk` only writes the position on the frame after this one.
+	var start: Node3D = _node_of(slot)
+	if start != null and world_ref != null:
+		start.position = _cell_position(cells[0], width, world_ref)
+		var heading: int = _facing_of(cells[0], cells[1], width)
+		if heading >= 0:
+			_face(start, _body_of(slot), heading)
 	if states.has(slot):
 		states[slot].walk()
 	# The original starts the walk sound with the walk animation and repeats it
@@ -457,6 +540,71 @@ func drop_lifts() -> int:
 	_lifts.clear()
 	return count
 
+
+## Slot -> the cell the picture draws that unit on, whatever the world says.
+##
+## The computer's replay is the only user: `core` resolves the whole turn
+## before any of it is shown, so a unit that has not played its move event yet
+## is already standing where it will end up. [method AIPlayback.pending_starts]
+## says where each of them still is, and this holds them there until their own
+## event comes round.
+##
+## It is the same contract [method lift] and [method suppress] have: the world
+## is never consulted about it and never told, and a rebuild re-applies rather
+## than resets.
+var _held_at: Dictionary[int, Vector2i] = {}
+
+
+## Draw these slots on these cells until told otherwise. An empty dictionary
+## puts everyone back where the world says they are.
+func hold_at(cells: Dictionary[int, Vector2i]) -> void:
+	_held_at = cells.duplicate()
+
+
+## Slot -> the cell it is held on, for a caller and a suite.
+func held_at() -> Dictionary[int, Vector2i]:
+	return _held_at.duplicate()
+
+## Slot -> how many seconds a **dead** unit is still drawn for.
+##
+## `aKillUnit` removes the object at once and there is no death clip in
+## Charisma at all (docs/40 section 7.2.1), so a corpse is not a thing the
+## engine has. What it does have is an order: the shot is drawn, and *then* the
+## unit is gone. Dropping the record the moment `core` reports the kill put the
+## removal **before** the shot that caused it -- the computer's rebuild runs
+## ahead of its own event -- so a marine vanished and only afterwards came the
+## sound of what killed it.
+##
+## The duration is therefore the remake's and not the engine's: long enough
+## that the shot is seen first, short enough to still read as dying at once.
+var _linger: Dictionary[int, float] = {}
+
+
+## Keep drawing `slot` for `seconds` although the world says it is dead.
+func linger(slot: int, seconds: float) -> void:
+	_linger[slot] = maxf(DictRead.as_float(_linger.get(slot, 0.0)), seconds)
+
+
+## Slot -> the time left, for a caller and a suite.
+func lingering() -> Dictionary[int, float]:
+	return _linger.duplicate()
+
+
+## Count the lingering down and drop whoever has run out.
+func _age_the_dead(delta: float) -> void:
+	for slot: int in _linger.keys():
+		var left: float = _linger[slot] - delta
+		if left > 0.0:
+			_linger[slot] = left
+			continue
+		_linger.erase(slot)
+		bodies.erase(slot)
+		states.erase(slot)
+		_walks.erase(slot)
+		var node: Node3D = _node_of(slot)
+		if node != null:
+			remove_child(node)
+			node.free()
 
 ## Slot -> the offset currently in force, for a caller and a suite.
 func lifts() -> Dictionary[int, int]:

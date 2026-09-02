@@ -100,6 +100,16 @@ var _quitting: bool = false
 ## Slot -> the walk cue that slot's type set up, kept for as long as the walk
 ## lasts so every step of one walk sounds the same.
 var _footstep_cues: Dictionary[int, Dictionary] = {}
+## Return fire waiting to be shown, one batch per command that drew it:
+## `{"entries": Array, "x": int, "y": int}`, where the cell is the mover's.
+##
+## `core` resolves a whole move's reactions in one call at the end of the
+## move (`World.submit_move`) and the walk that follows is only the picture,
+## so the return fire is held until the picture has caught up. It is drained
+## from [method _process] on a **state** test -- nothing walking, no body
+## still shooting -- rather than on the edge of a walk ending, because a
+## refused or zero-step move drains reactions in `core` and never walks.
+var _pending_reactions: Array[Dictionary] = []
 
 
 ## An exported build made with the `run_tests` custom feature runs the suites
@@ -110,6 +120,17 @@ const ATLAS_TEXTURE: String = "anim"
 ## The most effect ticks one displayed frame may run. A long stall should not
 ## fast-forward every particle in the pool to its death.
 const MAX_EFFECT_TICKS: int = 4
+
+## How long a unit a shot killed is still drawn for, in seconds.
+##
+## **The remake's number, with no engine number behind it.** `aKillUnit`
+## (`0x00472920`) is a network message and `aRemoveUnitElement`: the object
+## goes at once and Charisma has no death clip to play instead (docs/40
+## section 7.2.1). What the engine does have is the *order* -- the shot is
+## drawn and then the unit is gone -- and the rebuild that drops it runs
+## **before** the event that killed it is presented, so without this a marine
+## vanished and the sound of what killed it arrived afterwards.
+const DEATH_LINGER_SECONDS: float = 0.7
 
 const TEST_FEATURE: String = "run_tests"
 const TEST_RUNNER: String = "res://tests/runner.gd"
@@ -616,18 +637,43 @@ static func focus_on_friendly(rig: CameraRig, mission_world: World) -> int:
 ## walks. The *next* event's rebuild ending this walk is the design; this
 ## event's rebuild ending it was a bug that made the computer's units teleport
 ## and never play `F`.
+##
+## **It owns the shot as well as the body.** The effects and the sounds of a
+## shot used to be a second, partial copy in [method _present_ai_event] that
+## dropped the pain screams, while the body was started here -- two owners
+## for one event, and only one of them could report a length.
+##
 ## Returns how long the event needs on screen, which for a move is its walk.
 func _play_event_body(event: Dictionary, kind: String) -> float:
-	if _units == null:
-		return 0.0
 	var slot: int = DictRead.as_int(event["slot"])
 	if kind == "move":
+		if _units == null:
+			return 0.0
 		var payload: Dictionary = DictRead.as_dict(event["payload"])
 		if payload.has("path"):
 			return _walk_body(slot, DictRead.to_int32(payload["path"]),
 				DictRead.as_int(payload.get("steps", 0)))
-	elif kind == "fire" and _units.states.has(slot):
-		_units.states[slot].fire()
+	elif kind == "fire":
+		# **The weapon comes from the event, not from the world.** The
+		# playback runs after the turn, so an alien killed by reaction fire
+		# after its own shot has no view left and the shot was presented as
+		# nothing at all. `AIFire` writes the weapon into the note as it was
+		# when the trigger was pulled, which is both accurate and always
+		# there.
+		return _present_attack(slot, DictRead.as_int(event["x"]),
+			DictRead.as_int(event["y"]), DictRead.as_int(event["tx"]),
+			DictRead.as_int(event["ty"]),
+			DictRead.as_string(event["note"]).to_int(),
+			AttackResult.from_dict(DictRead.as_dict(event["payload"])))
+	elif kind == "reactions":
+		# The event's own cell is the **mover's**: `AIFire` and `AIPlan` emit
+		# this for the unit that drew the fire, and the reactors are in the
+		# payload. There is nothing to wait for the mover to do, so it is
+		# shown at once and its longest clip is what the playback holds on.
+		var drained: Dictionary = DictRead.as_dict(event["payload"])
+		return _present_reactions(
+			DictRead.as_array(drained.get("reactions", [])),
+			DictRead.as_int(event["x"]), DictRead.as_int(event["y"]))
 	return 0.0
 
 
@@ -766,6 +812,7 @@ func _process(delta: float) -> void:
 	if _units != null:
 		_units.animate(delta, world)
 		_play_footsteps()
+		var _waiting: int = _drain_pending_reactions()
 	if _sequences != null and _sequences.is_running():
 		# The picture is held, never the world: `core` returned the finished
 		# state before any of this was queued.
@@ -819,6 +866,11 @@ func _on_ai_step(event: Dictionary) -> float:
 		# own units -- see [method focus_on_friendly] for what it was like
 		# without this.
 		var _back: int = focus_on_friendly(_rig, world)
+		# The replay is over, so nobody is held at an old cell any more. It is
+		# cleared **before** the rebuild `_after_command` does, which is what
+		# puts everyone back; a skipped replay comes through here too.
+		if _units != null:
+			_units.hold_at({} as Dictionary[int, Vector2i])
 		_after_command("")
 		return 0.0
 	var kind: String = DictRead.as_string(event["kind"])
@@ -836,6 +888,21 @@ func _on_ai_step(event: Dictionary) -> float:
 	_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
 		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
 		DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
+	# **Before the rebuild**, for the same reason the player's shot does it:
+	# this event's own casualties must still be on screen while the event is
+	# presented, and the rebuild below is what takes them away.
+	var payload: Dictionary = DictRead.as_dict(event["payload"])
+	if kind == "fire":
+		var _held: int = _linger_the_killed(
+			DictRead.as_array(payload.get("outcomes", [])))
+	elif kind == "reactions":
+		var _held_back: int = _linger_the_killed_by(
+			DictRead.as_array(payload.get("reactions", [])))
+	# Where every unit whose move is still to come is standing. The world has
+	# held the end of the turn since `submit_end_turn` returned, so without
+	# this a unit stood at its destination until its own event came round and
+	# only then walked there.
+	_units.hold_at(_playback.pending_starts())
 	_units.build(world, _geometry, _textures)
 	# **After** the rebuild, not before. `UnitsView.build` frees every unit
 	# node and clears the bodies, the states and the walks, so an event handed
@@ -849,35 +916,21 @@ func _on_ai_step(event: Dictionary) -> float:
 	return hold
 
 
-## The computer's own shot, door and para bomb, heard and seen.
+## The computer's door and para bomb, heard.
+##
+## **The shot is not here.** It was a partial copy of the player's own
+## presentation -- no pain scream, and the weapon read out of the post-turn
+## world -- and it returned nothing, so the playback could not wait for it.
+## [method _play_event_body] owns every attack now; what is left here is the
+## sound-only half of the replay.
 ##
 ## The player watching a replay should hear what they would have heard live;
 ## an effect that only fired on the player's own turn would be worse than
 ## none at all.
-func _present_ai_event(event: Dictionary, kind: String) -> void:
+func _present_ai_event(_event: Dictionary, kind: String) -> void:
 	if _audio == null or _events == null:
 		return
-	var slot: int = DictRead.as_int(event["slot"])
 	match kind:
-		"fire":
-			var view: Dictionary = world.unit_view(slot)
-			if view.is_empty() or _triggers == null:
-				return
-			var weapon: int = DictRead.as_int(view["weapon"])
-			var from: Vector3i = _muzzle_of(DictRead.as_int(event["x"]),
-				DictRead.as_int(event["y"]))
-			var to: Vector3i = _muzzle_of(DictRead.as_int(event["tx"]),
-				DictRead.as_int(event["ty"]))
-			var _muzzle: int = _triggers.muzzle(weapon, from, to)
-			var _impact: int = _triggers.impact(weapon, to)
-			var cues: Array[Dictionary] = []
-			var fire: Dictionary = _events.weapon_fire(weapon)
-			if not fire.is_empty():
-				cues.append(fire)
-			var hit: Dictionary = _events.impact_for_weapon(weapon)
-			if not hit.is_empty():
-				cues.append(hit)
-			var _slots: PackedInt32Array = _audio.play_cues(cues, "ai")
 		"door":
 			var _door: PackedInt32Array = _audio.play_cues(
 				_events.for_event_kind("open_door"), "ai")
@@ -1105,6 +1158,9 @@ func move_selected(x: int, y: int) -> MoveResult:
 	var slot: int = _selected
 	var moved: MoveResult = world.submit_move(
 		MoveCommand.create(slot, x, y))
+	# A move that drew return fire can lose the mover to it; the same order
+	# applies, and the walk still plays because the body is still there.
+	var _held: int = _linger_the_killed_by(moved.reactions)
 	_after_command(moved.reason if not moved.ok else "%d %s" % [
 		moved.reactions.size(), _strings.text("hud.reactions")])
 	# `MoveResult.route` is the walk's own -- source first, truncated where it
@@ -1112,6 +1168,11 @@ func move_selected(x: int, y: int) -> MoveResult:
 	# `to_dict()` and does not need to be: the player's move hands `game` the
 	# object itself.
 	_walk_body(slot, moved.route, moved.steps)
+	# **After** the walk starts and after `_after_command`, which clears the
+	# queue: `World.submit_move` resolves the whole move's reactions in one
+	# call at its end, so the end of the walk is where the picture reaches
+	# the state `core` already returned.
+	_queue_reactions(moved.reactions, x, y)
 	return moved
 
 
@@ -1119,6 +1180,10 @@ func attack_cell(x: int, y: int) -> AttackResult:
 	var slot: int = _selected
 	var shot: AttackResult = world.submit_attack(
 		AttackCommand.create(slot, x, y))
+	# **Before `_after_command`**, which rebuilds and would otherwise drop the
+	# body this shot is about to be drawn hitting.
+	var _held: int = _linger_the_killed(shot.outcomes)
+	var _held_back: int = _linger_the_killed_by(shot.reactions)
 	# The reaction count belongs on screen for the same reason
 	# [method move_selected] puts it there: a shot that drew return fire is
 	# the player's business, and `World.submit_attack` has been filling
@@ -1127,41 +1192,92 @@ func attack_cell(x: int, y: int) -> AttackResult:
 		else "%d, %d %s" % [shot.outcomes.size(), shot.reactions.size(),
 			_strings.text("hud.reactions")])
 	# After `_after_command`, for the same reason `move_selected` walks after
-	# it: the rebuild is what creates the state this drives.
-	if shot.fired and _units != null and _units.states.has(slot):
-		_units.states[slot].fire()
-	_present_shot(slot, x, y, shot)
+	# it: the rebuild is what creates the state this drives -- and after it
+	# for a second reason now, because `_after_command` clears the pending
+	# return fire and this command's own is queued below it.
+	var view: Dictionary = world.unit_view(slot)
+	if not view.is_empty():
+		var _hold: float = _present_attack(slot, DictRead.as_int(view["x"]),
+			DictRead.as_int(view["y"]), x, y,
+			DictRead.as_int(view["weapon"]), shot)
+	# The shooter's own cell is where the return fire is aimed, and it is
+	# queued rather than shown: the shot's own clip runs first.
+	_queue_reactions(shot.reactions, DictRead.as_int(view.get("x", x)),
+		DictRead.as_int(view.get("y", y)))
 	return shot
 
 
-## The audible and visible half of one shot.
+## Keep every unit this attack killed on screen until its shot has been shown.
 ##
-## Three switches decide it and nothing else does (docs/28 section 8.1): the
-## muzzle blob at the shooter, the impact blob and its sound at the target.
-## The weapon's own fire sound and the overheat trio come from [AudioEvents],
-## which reads the same weapon id.
+## Called **before** the rebuild, because the rebuild is what drops them and
+## for the computer's replay it runs ahead of the event's own presentation.
+## Returns how many were held, for a caller and a suite.
+func _linger_the_killed(outcomes: Array) -> int:
+	if _units == null or world == null:
+		return 0
+	var held: int = 0
+	for entry: Variant in outcomes:
+		var outcome: Dictionary = DictRead.as_dict(entry)
+		var slot: int = DictRead.as_int(outcome.get("slot", -1))
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) != 0:
+			continue
+		_units.linger(slot, DEATH_LINGER_SECONDS)
+		held += 1
+	return held
+
+
+## The same, for every reaction one command drained.
+func _linger_the_killed_by(entries: Array) -> int:
+	var held: int = 0
+	for item: Variant in entries:
+		var entry: Dictionary = DictRead.as_dict(item)
+		var attack: Dictionary = DictRead.as_dict(entry.get("attack", {}))
+		held += _linger_the_killed(DictRead.as_array(
+			attack.get("outcomes", [])))
+	return held
+
+## The audible and visible half of one shot, and the shooter's own body.
 ##
-## Called for the player's shots and for the computer's alike -- an effect the
-## player only saw on their own turn would be worse than none.
-func _present_shot(slot: int, x: int, y: int, shot: AttackResult) -> void:
-	if not shot.fired or world == null or _triggers == null:
-		return
-	var view: Dictionary = world.unit_view(slot)
-	if view.is_empty():
-		return
-	var weapon: int = DictRead.as_int(view["weapon"])
-	var from: Vector3i = _muzzle_of(DictRead.as_int(view["x"]),
-		DictRead.as_int(view["y"]))
-	var to: Vector3i = _muzzle_of(x, y)
-	var _muzzle: int = _triggers.muzzle(weapon, from, to)
-	var _impact: int = _triggers.impact(weapon, to)
-	if _audio != null and _events != null:
-		var _slots: PackedInt32Array = _audio.play_cues(
-			_events.for_attack(shot, weapon), "shot")
+## **One presenter for every shot in the game** -- the player's, the
+## computer's, and every reaction on either turn. There were three before this,
+## and each was missing something the others had: the computer's dropped the
+## pain screams, and reaction fire had no presentation at all, so the HUD
+## counted return fire that nothing drew.
+##
+## Three switches decide the effects and nothing else does (docs/28 section
+## 8.1): the muzzle blob at the shooter, the impact blob and its sound at the
+## target. The weapon's own fire sound and the overheat trio come from
+## [AudioEvents], which reads the same weapon id.
+##
+## `(sx, sy)` is where the shot came **from**, and it is passed rather than
+## read back out of the world: the computer's playback runs after its turn, so
+## the shooter may have moved or died since. The three layers are optional
+## separately, because a body animates whether or not there is an audio server
+## behind it.
+##
+## Returns how long the shooter's body is occupied ([method UnitsView.fire]),
+## so the computer's playback can hold the event for its clip.
+func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
+		weapon: int, attack: AttackResult) -> float:
+	if attack == null or not attack.fired or world == null:
+		return 0.0
+	var hold: float = 0.0
+	if _units != null:
+		hold = _units.fire(shooter, tx, ty)
+	if _triggers != null:
+		var from: Vector3i = _muzzle_of(sx, sy)
+		var to: Vector3i = _muzzle_of(tx, ty)
+		var _muzzle: int = _triggers.muzzle(weapon, from, to)
+		var _impact: int = _triggers.impact(weapon, to)
+	if _audio == null or _events == null:
+		return hold
+	var _slots: PackedInt32Array = _audio.play_cues(
+		_events.for_attack(attack, weapon), "shot")
 	# One scream per unit the shot actually resolved on, off that species'
 	# own cursor -- which is why the two species interleave rather than each
 	# running its own sequence.
-	for entry: Variant in shot.outcomes:
+	for entry: Variant in attack.outcomes:
 		var outcome: Dictionary = DictRead.as_dict(entry)
 		if DictRead.as_int(outcome.get("dealt", 0)) <= 0:
 			continue
@@ -1171,8 +1287,61 @@ func _present_shot(slot: int, x: int, y: int, shot: AttackResult) -> void:
 			continue
 		var species: int = world.unit_types().species(
 			DictRead.as_int(hurt["type_id"]))
-		if _audio != null and _events != null:
-			var _voice: int = _audio.play_cue(_events.pain(species), "shot")
+		var _voice: int = _audio.play_cue(_events.pain(species), "shot")
+	return hold
+
+
+## Every reaction one command drained, shown at the cell that drew them.
+##
+## `Reaction.drain` returns `{"reactor": slot, "ticket": int, "attack": ...}`
+## and the target is always the mover, whose cell the caller has. Returns the
+## longest of the shots, so a caller pacing a replay can wait for all of them.
+##
+## A reactor the fog does not draw has no body this rebuild and animates
+## nothing; its shot is still heard and its blobs still fly, which is what the
+## player would have had from an unseen shooter in the original.
+func _present_reactions(entries: Array, tx: int, ty: int) -> float:
+	if world == null or entries.is_empty():
+		return 0.0
+	var longest: float = 0.0
+	for item: Variant in entries:
+		var entry: Dictionary = DictRead.as_dict(item)
+		var reactor: int = DictRead.as_int(entry.get("reactor", -1))
+		var view: Dictionary = world.unit_view(reactor)
+		if view.is_empty():
+			continue
+		var attack: AttackResult = AttackResult.from_dict(
+			DictRead.as_dict(entry.get("attack", {})))
+		longest = maxf(longest, _present_attack(reactor,
+			DictRead.as_int(view["x"]), DictRead.as_int(view["y"]), tx, ty,
+			DictRead.as_int(view["weapon"]), attack))
+	return longest
+
+
+## Hold return fire until the picture has caught up with what `core` did.
+func _queue_reactions(entries: Array, tx: int, ty: int) -> void:
+	if entries.is_empty():
+		return
+	_pending_reactions.append({"entries": entries.duplicate(true),
+		"x": tx, "y": ty})
+
+
+## Show one waiting batch of return fire, when there is room for it.
+##
+## The condition is a **state** test and deliberately not an edge: a move that
+## was refused or that walked no steps still drained reactions in `core`, and
+## an edge on a walk ending would never fire for it. Returns how many batches
+## are still waiting, for a suite.
+func _drain_pending_reactions() -> int:
+	if _pending_reactions.is_empty() or _units == null:
+		return _pending_reactions.size()
+	if _units.is_walking() or _units.any_busy():
+		return _pending_reactions.size()
+	var batch: Dictionary = _pending_reactions[0]
+	_pending_reactions.remove_at(0)
+	var _hold: float = _present_reactions(DictRead.as_array(batch["entries"]),
+		DictRead.as_int(batch["x"]), DictRead.as_int(batch["y"]))
+	return _pending_reactions.size()
 
 
 ## The sounds one run of a mission script asks for.
@@ -1361,6 +1530,18 @@ func end_turn() -> TurnResult:
 		var _player_sounds: int = _present_script(result.player_script)
 	if result.ai_result != null:
 		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
+	# **Before the rebuild `_after_command` does below.** [method
+	# AIPlayback.play] does not take its first step -- that waits for
+	# [constant AIPlayback.STEP_SECONDS] -- so without this every unit the
+	# computer is about to walk stands at its destination for the first half
+	# second of the replay, and then jumps back to walk there. That window is
+	# the half of the defect that placing the body on its first cell in
+	# [method UnitsView.start_walk] does not reach.
+	if _units != null:
+		var owed: Dictionary[int, Vector2i] = {}
+		if _playback.is_running():
+			owed = _playback.pending_starts()
+		_units.hold_at(owed)
 	_selected = -1
 	_highlight.clear()
 	# A turn with nothing to replay hands back here rather than through
@@ -1373,6 +1554,9 @@ func end_turn() -> TurnResult:
 
 ## Everything a command changes is redrawn from the world, never patched.
 func _after_command(note: String) -> void:
+	# A new command supersedes whatever return fire was still waiting: it
+	# was drawn by a command the player has already moved on from.
+	_pending_reactions.clear()
 	_units.build(world, _geometry, _textures)
 	_redraw_terrain()
 	if _selected >= 0 and world.has_unit(_selected):

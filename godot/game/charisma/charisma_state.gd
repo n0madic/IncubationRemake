@@ -50,6 +50,22 @@ extends RefCounted
 ## nominal cap rather than the bug.
 const FRAMES_PER_SECOND: float = 20.0
 
+## How long the `BREAK` pose is held before the idle resumes, in seconds.
+##
+## **This number is the remake's, and there is no engine number behind it.**
+## `fcn.004055E0`'s callback halts the combat clip at the note and leaves the
+## body there; what puts `S` back is the 3D-view refresh, and that refresh
+## rate is not recovered -- docs/40 section 7.2 marks the `kind` 0 / `kind` 4
+## playback set-up UNVERIFIED. It is **not** the `int(len / 6) / 3` spin of
+## docs/40 section 4.8: that one runs *while* the clip plays toward `BREAK`
+## and is three or four iterations, not a wait after it.
+##
+## What it is for is the defect it fixes. The pose used to be thrown away on
+## the very frame it was struck -- the clip stopped at its note and the body
+## snapped to idle frame 0 in the same `animate()` call -- so a shot read as
+## nothing having happened.
+const HOLD_SECONDS: float = 0.35
+
 enum Mode {IDLE, MOVE, FIRE}
 
 var body: CharismaBody = null
@@ -70,7 +86,21 @@ var _looping: bool = true
 ## the time is **kept**: the engine's callback halts the animation where the
 ## note is and leaves it there, so the body holds that pose. Dropping the clip
 ## instead would snap the figure back to its bind pose in the middle of a shot.
+##
+## It is also false the moment a **null** clip is entered. Nine unit types
+## get fewer than three families and two get none, and a `FIRE` that left
+## this true with no clip made [method advance] answer "still running" for
+## ever: the body never came back to its idle. See [method fire].
 var _running: bool = true
+## Seconds of the `BREAK` pose still owed, counted down once the clip has
+## stopped. [constant HOLD_SECONDS] at the moment [member _running] goes
+## false in `FIRE`, and zero everywhere else.
+##
+## **The hold belongs here and not in the caller.** A view holding the pose
+## on its own clock would report a length that covered only the clip, and
+## the computer's next event would rebuild the state part way through the
+## hold.
+var _hold_left: float = 0.0
 
 
 static func create(unit_body: CharismaBody, idle: CharismaClip,
@@ -92,10 +122,14 @@ func is_playing() -> bool:
 	return _running and _clip != null
 
 
-## True while a one-shot clip is still running -- the caller may want to hold
-## the turn open for it.
+## True while a one-shot clip is still running **or its end pose is still
+## being held** -- the caller may want to hold the turn open for it.
+##
+## The hold is inside the answer rather than beside it, so a caller that
+## rests the body when this goes false rests it at the end of the shot
+## rather than on the frame the note stopped the clip.
 func is_busy() -> bool:
-	return mode == Mode.FIRE and _running
+	return mode == Mode.FIRE and (_running or _hold_left > 0.0)
 
 
 ## Start the walk cycle. Harmless when the type has no `M`: the body keeps
@@ -107,9 +141,19 @@ func walk() -> void:
 
 
 ## Start the combat animation, once, halting at its `BREAK` note.
-func fire() -> void:
+##
+## Returns how many seconds the whole shot occupies the body -- the clip up
+## to its stop plus [constant HOLD_SECONDS] -- so a caller driving a
+## sequence can wait exactly that long. Zero when the type has no `F` clip,
+## which is seven of the shipped types (docs/40 section 7.2.1): there is
+## nothing to wait for, and [method is_busy] says so from the first frame.
+func fire() -> float:
 	var stop: float = -1.0 if _fire == null else _fire.break_time()
 	_enter(Mode.FIRE, _fire, false, stop)
+	if _fire == null:
+		return 0.0
+	var frames: float = stop if stop >= 0.0 else _fire.duration
+	return frames / FRAMES_PER_SECOND + HOLD_SECONDS
 
 
 ## Back to the idle, which is what plays when nothing else does.
@@ -139,10 +183,57 @@ func advance(delta: float) -> bool:
 				# running out is a real end and not only a safety net.
 				_time = _clip.duration
 				_running = false
+		if not _running and mode == Mode.FIRE:
+			_hold_left = HOLD_SECONDS
 		if body != null:
 			body.pose(_clip, _time, mode == Mode.MOVE)
-	return mode == Mode.FIRE and _running
+	elif _hold_left > 0.0:
+		# The pose is struck and the clip is not advancing: what is left is
+		# the wait before the idle resumes. It is spent on the frames
+		# *after* the one that stopped the clip, so a single long step
+		# never consumes both.
+		_hold_left = maxf(_hold_left - delta, 0.0)
+	return is_busy()
 
+
+## What this state is playing and how far into it, so a rebuild can put it back.
+##
+## **A rebuild is not a reason to restart an animation.** `UnitsView.build`
+## frees every node on every command and on every fog change, and a fresh state
+## begins its idle at frame 0 -- so every body on the map visibly snapped each
+## time the player did anything, and a shot in flight was thrown away. The
+## clock is presentation and not world state, so carrying it across is not a
+## scene node becoming authoritative.
+func playback() -> Dictionary:
+	return {"mode": mode, "time": _time, "hold": _hold_left,
+		"clip": "" if _clip == null else _clip.name}
+
+
+## Put [method playback]'s answer back, when it still names this body's clip.
+##
+## Refuses a `MOVE`: the walk itself lives in [UnitsView] and a rebuild clears
+## it, so a movement clip carried across would loop on the spot for ever. The
+## idle is what a body with no walk plays, and that is what it gets.
+func resume(saved: Dictionary) -> bool:
+	var want: int = DictRead.as_int(saved.get("mode", Mode.IDLE))
+	if want == Mode.MOVE:
+		return false
+	var clip: CharismaClip = _fire if want == Mode.FIRE else _idle
+	if clip == null or clip.name != DictRead.as_string(saved.get("clip", "")):
+		return false
+	var stop: float = clip.break_time() if want == Mode.FIRE else -1.0
+	_enter(want, clip, want != Mode.FIRE, stop)
+	_time = DictRead.as_float(saved.get("time", 0.0))
+	_hold_left = DictRead.as_float(saved.get("hold", 0.0))
+	if _stop_at >= 0.0 and _time >= _stop_at:
+		_time = _stop_at
+		_running = false
+	elif want == Mode.FIRE and clip.duration > 0.0 and _time >= clip.duration:
+		_time = clip.duration
+		_running = false
+	if body != null:
+		body.pose(_clip, _time, false)
+	return true
 
 func _enter(new_mode: int, clip: CharismaClip, looping: bool,
 		stop_at: float) -> void:
@@ -151,7 +242,10 @@ func _enter(new_mode: int, clip: CharismaClip, looping: bool,
 	_looping = looping
 	_stop_at = stop_at
 	_time = 0.0
-	_running = true
+	# **Not unconditionally true.** A null clip has nothing to run, and
+	# saying it does left a body with no `F` permanently busy.
+	_running = clip != null
+	_hold_left = 0.0
 	if body != null:
 		# The movement clip is the one that walks the body away from its own
 		# node, because the walk itself is the node's ([method

@@ -829,6 +829,13 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if wtab.has(attacker.weapon):
 		if (wtab.magazine(attacker.weapon) != MUN_NONE
 				and attacker.type_id != NO_AMMO_UNIT_TYPE):
+			# `0x0046C308` is an 8-bit `sub` with no clamp, so the engine
+			# wraps rather than refusing; the check is every caller's. This
+			# keeps the signed value for the same reason
+			# `inclib.combat.attack_unit` does -- past zero is visible as a
+			# negative rather than as 250-something -- and no caller reaches
+			# it: `AIOverlay.effective_weapon` gates the computer and
+			# [method World.submit_attack] the player.
 			attacker.ammo -= wtab.mun_per_fight(attacker.weapon)
 		var cap: int = max_heat(wtab, attacker)
 		if cap != HEAT_NONE and attacker.heat < cap:

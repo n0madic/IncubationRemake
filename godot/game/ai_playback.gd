@@ -77,6 +77,41 @@ func skip() -> void:
 	_finish()
 
 
+## Where every unit whose move is still to come is **standing now**.
+##
+## `core` decides the whole turn before any of it is drawn, so the world holds
+## every unit at the position it ends the turn on from the very first rebuild.
+## A unit that has not walked yet was therefore already standing at the place
+## it is about to walk to -- for as long as every event before its own takes --
+## and then jumped back to its source and set off. Placing it on its first cell
+## in [method UnitsView.start_walk] fixed the one-frame flash of that and not
+## the rest of it.
+##
+## The events carry their own source cell (`AIEvent.make("move", slot, unit.x,
+## unit.y, ...)`), so the picture can be told where each of them still is.
+func pending_starts() -> Dictionary[int, Vector2i]:
+	return starts_in(_events, _index)
+
+
+## The same, as a function of its arguments, so a suite can ask it directly.
+##
+## The **first** event per slot wins: a unit that moves twice is held at the
+## start of its next move, not of its last.
+static func starts_in(events: Array[Dictionary],
+		from_index: int) -> Dictionary[int, Vector2i]:
+	var out: Dictionary[int, Vector2i] = {}
+	for i: int in range(maxi(from_index, 0), events.size()):
+		var event: Dictionary = events[i]
+		var kind: String = DictRead.as_string(event["kind"])
+		if kind != "move" and kind != "warp":
+			continue
+		var slot: int = DictRead.as_int(event["slot"])
+		if out.has(slot):
+			continue
+		out[slot] = Vector2i(DictRead.as_int(event["x"]),
+			DictRead.as_int(event["y"]))
+	return out
+
 func _step() -> void:
 	if _index >= _events.size():
 		_finish()

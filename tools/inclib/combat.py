@@ -1444,11 +1444,14 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         # column is 255 spends nothing, and neither does unit type 0x42.
         # Dropping the second half would quietly disarm that one type.
         if weapon.mun != 0xFF and attacker.type_id != NO_AMMO_UNIT_TYPE:
-            # The engine's `+0x3D` is a `u8` and wraps; this model keeps the
-            # signed value, so a negative count is visible rather than
-            # arriving as 250-something.  Nothing in this stage fires often
-            # enough to reach it, and a native capture is what would settle
-            # whether the wrap is ever observed.
+            # The engine's `+0x3D` is a `u8` and **wraps**: the spend is
+            # `mov al, [esi+0x3D] / sub al, dl / mov [esi+0x3D], al` at
+            # `0x0046C308`, an 8-bit subtraction with no clamp and no check.
+            # This model keeps the signed value **deliberately**, so a count
+            # that has gone past zero is visible as a negative rather than as
+            # 250-something -- and the situation is not reachable anyway,
+            # because every caller gates on it: the computer through
+            # `0x0042FF30` and the player through `World.submit_attack`.
             attacker.ammo -= weapon.mun_per_fight
         cap = max_heat(world, attacker)
         if cap != 0xFF and attacker.heat < cap:

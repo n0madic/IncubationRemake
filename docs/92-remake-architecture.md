@@ -711,8 +711,17 @@ and not through the player byte. A dead squad member stays in `unit_slots()`
 and the fog pass leaves an own corpse fully visible, so the weaker test would
 cycle to a body the mouse refuses to select and hand the camera back to it.
 
-A pan is still not implemented. The original does not need one either: it
-drives the view from the selection, which is what these two restore.
+A pan is still not implemented. ~~The original does not need one either: it
+drives the view from the selection, which is what these two restore.~~
+*(Corrected 2026-09-02: [`42` §2](42-mission-presentation.md) read the camera
+out of `aMI.cpp`. The original pans on a middle-button drag, rotates freely
+on a right-button drag, keeps a view quadrant of its own, flies the camera to
+every unit before it walks, tracks it while it walks, and places it behind a
+computer shooter or its victim. The hand-back above stays a remake decision:
+the engine's hand-over `0x0047D600` calls no camera routine, which is now
+verified rather than UNVERIFIED. The four-orientation decision of §7.5 stands
+— the engine's own quadrant `0x00510700` supports it; the rest of the camera
+is planned in `docs/97`'s next addendum.)*
 
 ### 7.5.4 The rotation never hands the interface a turn the computer holds
 

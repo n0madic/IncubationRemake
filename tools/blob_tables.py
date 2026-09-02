@@ -189,6 +189,23 @@ MUZZLE_BOUND_SITE = 0x0040CC46
 IMPACT_BOUND_SITE = 0x0040D4E2
 IMPACT_SOUND_BOUND_SITE = 0x0040C81B
 
+# The muzzle switch's **default** arm, and why it is not an optional extra.
+#
+# The compiler emits `add eax, -2 / cmp eax, 0x2D / ja <default>`, so the table
+# covers weapons 2..47 and weapons **0 and 1** -- `Light Combat Gun` and
+# `Advanced Combat Gun`, the two the campaign starts with -- fall past it.  The
+# default is not a join point: it pushes 5 and calls `aBlob_CreateTracerBullet`,
+# the same creator weapon 2 uses, so those two guns fire a visible tracer in the
+# original.  Reading the jump table alone left them with no muzzle effect at
+# all, which is what "you cannot see the shot" looked like in the remake.
+#
+# The other two switches' defaults were read the same way and make no blob:
+# `IMPACT_SWITCH`'s (`0x0040DA07`) goes straight on to `aGetUnitMapElementPtr`
+# and the unit sweep, so weapons 0..6 having no impact effect is the engine's
+# own answer rather than a second gap.
+MUZZLE_DEFAULT_JA = 0x0040CC51
+MUZZLE_DEFAULT = (0x0040D42C, ((0x0040D44D, 0x004247C0),))
+
 # -- the pain voice --------------------------------------------------------
 
 SPECIES_OFFSET = 0x79                # SetUnitInfo record, docs/21 sec.5
@@ -1522,6 +1539,15 @@ class Binary:
         except PEError:
             return None
 
+    def ja_target(self, va: int) -> int | None:
+        """``ja rel32`` (0x0F 0x87) -> where it goes, for a switch default."""
+        try:
+            if self.pe.u8(va) != 0x0F or self.pe.u8(va + 1) != 0x87:
+                return None
+            return va + 6 + self.pe.i32(va + 2)
+        except PEError:
+            return None
+
     def call_map(self) -> dict[int, list[int]]:
         """target -> every ``call rel32`` site in ``.text`` that reaches it.
 
@@ -2697,6 +2723,19 @@ def run_checks(root: str) -> Checker:
              IMPACT_SOUND_SWITCH[1] - 1, hex)
     ck.equal("weapon.muzzle", b.weapon_effects(MUZZLE_SWITCH, WEAPON_MUZZLE),
              WEAPON_MUZZLE, Checker.brief)
+    # The default arm, which the jump table cannot show.  Weapons 0 and 1 reach
+    # it and it makes a tracer -- see MUZZLE_DEFAULT.
+    ck.equal("weapon.muzzle_default_arm", b.ja_target(MUZZLE_DEFAULT_JA),
+             MUZZLE_DEFAULT[0], hex)
+    ck.equal("weapon.muzzle_default_call",
+             b.call_target(MUZZLE_DEFAULT[1][0][0]), MUZZLE_DEFAULT[1][0][1],
+             hex)
+    ck.check("weapon.muzzle_default_is_a_creator",
+             MUZZLE_DEFAULT[1][0][1] in creators,
+             "the default arm's call lands on a blob creator")
+    ck.check("weapon.muzzle_default_is_outside_the_table",
+             all(w >= MUZZLE_SWITCH[3] for w in WEAPON_MUZZLE),
+             "weapons below %d are the ones it answers for" % MUZZLE_SWITCH[3])
     ck.equal("weapon.impact", b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT),
              WEAPON_IMPACT, Checker.brief)
     ck.equal("weapon.impact_sound", b.weapon_sounds(), WEAPON_IMPACT_SOUND,
@@ -3403,6 +3442,25 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     "TRAIL_UNIT":    (("magic", 0x00425810, 0x00425AB2, 0x3C0),),
     "TRACER_LEAN":   (("scale", 0x00424D20,
                        (0x00425117, 0x0042511E, 0x00425121, 0x00425132), 200),),
+    # The death and damage creators' doubles (`docs/42` §4.8.1): the blood
+    # sprays' velocity, lift and step terms and the species coin, read by
+    # `fmul` or -- the coin -- `fcomp` inside the creator each is attributed
+    # to.  `presentation_gold.py` measures them; this reads them back.
+    "BLOOD_VELOCITY":       (("f64", 0x00420D80, 0x004B1248, 16.0),),
+    "BLOOD_VELOCITY_LARGE": (("f64", 0x00421360, 0x004B1260, 48.0),),
+    "BLOOD_LIFT":           (("f64", 0x00420D80, 0x004B1250, 160.0),
+                             ("f64", 0x00421360, 0x004B1250, 160.0)),
+    "BLOOD_STEP":           (("f64", 0x00420D80, 0x004B1258, -1280.0),
+                             ("f64", 0x00421360, 0x004B1258, -1280.0)),
+    "SPECIES_COIN":         (("f64", 0x00421C50, 0x004B1268, 6.0),),
+}
+#: The death creators are not in `CREATOR_DRAW_SITES` (no weapon switch
+#: reaches them), so their extents are written down: each ends where the
+#: next routine begins.
+DEATH_CREATOR_EXTENTS = {
+    0x00420D80: (0x00420D80, 0x00421360),
+    0x00421360: (0x00421360, 0x004216D0),
+    0x00421C50: (0x00421C50, 0x00422460),
 }
 #: How many dividends the ``magic`` replay sweeps.  A reciprocal multiply that
 #: agrees with a truncating divide over this many values, negative and
@@ -4153,10 +4211,12 @@ def _creator_extents() -> dict[int, tuple[int, int]]:
 
 
 def _fmul_sites(b: Binary, lo: int, hi: int, cell: int) -> list[int]:
-    """Every ``fmul qword [cell]`` (``DC 0D`` + m32) in ``[lo, hi)``."""
+    """Every ``fmul qword [cell]`` (``DC 0D`` + m32) -- or ``fcomp qword
+    [cell]`` (``DC 1D``), which is how the species coin reads its double --
+    in ``[lo, hi)``."""
     out: list[int] = []
     for va in range(lo, hi - 6):
-        if b.u8(va) == 0xDC and b.u8(va + 1) == 0x0D and b.u32(va + 2) == cell:
+        if b.u8(va) == 0xDC and b.u8(va + 1) in (0x0D, 0x1D) and b.u32(va + 2) == cell:
             out.append(va)
     return out
 
@@ -4276,7 +4336,8 @@ def _creator_constant_checks(ck: "Checker", b: Binary) -> None:
              lambda v: f"all {len(v)} numeric constant(s) of blob_creators.py "
                        "have a named site in the binary")
 
-    extents = _creator_extents()
+    extents = dict(_creator_extents())
+    extents.update(DEATH_CREATOR_EXTENTS)
     read: list[tuple[str, str, str, object]] = []
     magnitudes: list[str] = []
     contained: list[str] = []
@@ -5664,6 +5725,10 @@ def blob_document(root: str) -> dict:
         # keying by name would merge two different effects.
         "weapon_muzzle": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_MUZZLE.items())},
+        # The arm every weapon the jump table does not cover reaches -- ids 0
+        # and 1, the two starting guns.  See MUZZLE_DEFAULT.
+        "weapon_muzzle_default": [f"0x{t:08X}"
+                                  for _s, t in MUZZLE_DEFAULT[1]],
         "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
         "weapon_impact_sound": {str(k): (w[1].lower() if w else None)
@@ -5725,6 +5790,10 @@ def report_json(root: str) -> None:
         # keying by name would merge two different effects.
         "weapon_muzzle": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_MUZZLE.items())},
+        # The arm every weapon the jump table does not cover reaches -- ids 0
+        # and 1, the two starting guns.  See MUZZLE_DEFAULT.
+        "weapon_muzzle_default": [f"0x{t:08X}"
+                                  for _s, t in MUZZLE_DEFAULT[1]],
         "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
         "weapon_impact_sound": {str(k): (w[1] if w else None)

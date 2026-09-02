@@ -23,6 +23,429 @@ func run(h: TestHarness) -> void:
 	_hud(h)
 	_command_gate(h)
 	_game_font(h)
+	_shots_and_reactions(h)
+	_rebuild(h)
+	_replay_positions(h)
+
+
+## One shot and one burst of return fire, at the level `main.gd` shows them.
+##
+## Oracle boundary: **specification**. `core` decides what a shot does and
+## `test_combat` checks that; what is checked here is the half `game` owns and
+## had no coverage of at all -- that a shot animates its shooter, that the
+## computer\'s events report how long they need, and that return fire is shown
+## rather than only counted in the HUD.
+##
+## **Three defects this pins.** Reaction fire had no presentation whatever at
+## any of the three sites that drain it, so the HUD counted shots nothing drew.
+## The computer\'s `"fire"` event returned `0.0`, so [constant
+## AIPlayback.STEP_SECONDS] cut every combat clip off part way through. And the
+## return fire a move drew was shown -- once it was shown at all -- only when
+## the picture had caught up with the walk, which is where `core` resolved it.
+##
+## `_after_command`\'s own clearing of the queue is **not** checked here: it
+## rebuilds the units, redraws the terrain and refreshes the status line, so it
+## needs a HUD, an overlay and the mission geometry that a headless suite has
+## none of. What is checked is the queue it clears.
+func _shots_and_reactions(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("shot.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	world.turn.current_player = 0
+	var shooter: int = -1
+	var reactor: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == 0:
+			if shooter < 0:
+				shooter = slot
+		elif reactor < 0:
+			reactor = slot
+	if shooter < 0 or reactor < 0:
+		h.check("shot.units", false, "_C_140 has no live pair to shoot with")
+		return
+
+	# The alien is **moved** next to the squad member and put on overwatch. No
+	# shipped `.lev` places a unit on overwatch (docs/25 section 6, and
+	# `test_combat` says the same), and none starts an alien within a field of
+	# the first marine either, so a suite about presenting return fire has to
+	# arrange for some. Everything after this point is `core`\'s own answer.
+	var us: Dictionary = world.unit_view(shooter)
+	var sx: int = DictRead.as_int(us["x"])
+	var sy: int = DictRead.as_int(us["y"])
+	var ax: int = sx + 1 if sx + 1 < world.resource.width else sx - 1
+	var _placed: bool = world.apply_unit_record(reactor, {
+		"x": ax, "y": sy, "facing": Combat.direction(ax, sy, sx, sy),
+		"action_state": Reaction.WAITING, "ticket": 1,
+		"mp": Reaction.MIN_MP, "malfunction": 0, "heat": 0,
+		"visibility": 0})
+	var mover: UnitState = world.units_for_ai()[shooter]
+	var entries: Array[Dictionary] = Reaction.drain(world.state,
+		world.units_for_ai(), world.unit_types(), world.weapons(), mover,
+		world.turn.ai_level, world.turn.human_count(), world.turn.mode,
+		world.turn, world.rng)
+	h.check("shot.reactions_drained", not entries.is_empty(),
+		"%d reaction(s) from slot %d" % [entries.size(), reactor])
+	# The shot the reaction took is undone: what is being checked below is the
+	# presentation, and a shooter the setup killed would refuse to fire.
+	var _restored: bool = world.apply_unit_record(shooter, {
+		"hp": DictRead.as_int(us["hp"]), "mp": DictRead.as_int(us["mp"]),
+		"ammo": DictRead.as_int(us["ammo"]), "acted": 0, "heat": 0,
+		"action_state": 0})
+	var shot: AttackResult = world.submit_attack(
+		AttackCommand.create(shooter, ax, sy))
+	h.check("shot.fired", shot.fired,
+		shot.reason if not shot.fired else "%d outcome(s)" % shot.outcomes.size())
+
+	var fire_clip: CharismaClip = _clip_with_break()
+	if fire_clip == null:
+		h.check("shot.clip", false, "no `F` clip with a BREAK note in the cache")
+		return
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	for slot: int in [shooter, reactor]:
+		var node: Node3D = Node3D.new()
+		node.name = "unit_%d" % slot
+		units.add_child(node)
+		units.states[slot] = CharismaState.create(null, fire_clip, fire_clip,
+			fire_clip)
+
+	# --- the player\'s own shot ------------------------------------------
+	var hold: float = main._present_attack(shooter, sx, sy, ax, sy,
+		DictRead.as_int(us["weapon"]), shot)
+	h.equal("shot.body_plays_f", units.states[shooter].mode,
+		CharismaState.Mode.FIRE, "the shooter is playing its combat clip")
+	h.check("shot.body_is_busy", units.states[shooter].is_busy(),
+		"and the caller is told to wait for it")
+	h.check("shot.hold_covers_the_clip",
+		hold >= fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND,
+		"%.3f s asked for a clip that breaks at %.3f s"
+			% [hold, fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND])
+
+	# --- the return fire it drew ------------------------------------------
+	main._queue_reactions(entries, sx, sy)
+	h.equal("shot.reactions_queued", main._pending_reactions.size(), 1,
+		"one batch waiting, aimed at the cell that drew it")
+	h.equal("shot.waits_for_the_shot", main._drain_pending_reactions(), 1,
+		"the shooter\'s own clip runs before the answer to it")
+	units.states[shooter].rest()
+
+	var width: int = world.resource.width
+	var step: int = 1 if sx + 2 < width else -1
+	units.start_walk(shooter, PackedInt32Array([sy * width + sx,
+		sy * width + sx + step]), width, 1.0)
+	h.equal("shot.waits_for_the_walk", main._drain_pending_reactions(), 1,
+		"return fire lands where `core` resolved it: at the end of the move")
+	units.finish_walks(world)
+
+	h.equal("shot.drains_when_the_picture_is_free",
+		main._drain_pending_reactions(), 0, "nothing walking, nothing shooting")
+	h.equal("shot.the_reactor_shoots_back", units.states[reactor].mode,
+		CharismaState.Mode.FIRE,
+		"the unit on overwatch animates its own shot, which nothing drew before")
+
+	# --- the computer\'s two events ---------------------------------------
+	units.states[shooter].rest()
+	units.states[reactor].rest()
+	var fire_event: Dictionary = AIEvent.make("fire", shooter, sx, sy, ax, sy,
+		0, str(DictRead.as_int(us["weapon"])), shot.to_dict()).to_dict()
+	var fire_hold: float = main._play_event_body(fire_event, "fire")
+	h.check("shot.event_fire_holds",
+		fire_hold >= fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND,
+		"a `fire` event asks for %.3f s, not the %.2f s floor"
+			% [fire_hold, AIPlayback.STEP_SECONDS])
+	h.equal("shot.event_fire_plays_the_body", units.states[shooter].mode,
+		CharismaState.Mode.FIRE, "and the body it names is the one playing")
+	units.states[shooter].rest()
+
+	var reaction_event: Dictionary = AIEvent.make("reactions", shooter, sx, sy,
+		0, 0, entries.size(), "",
+		{"reactions": entries.duplicate(true)}).to_dict()
+	var reaction_hold: float = main._play_event_body(reaction_event, "reactions")
+	h.check("shot.event_reactions_hold", reaction_hold > 0.0,
+		"a drawn reactor\'s clip is what the replay waits for, %.3f s"
+			% reaction_hold)
+	h.equal("shot.event_reactions_play_the_body", units.states[reactor].mode,
+		CharismaState.Mode.FIRE,
+		"the computer\'s turn shows return fire too")
+
+	# --- the ammunition gate ----------------------------------------------
+	# `aAttackUnit`'s spend is an 8-bit `sub` with no check (`0x0046C308`), so
+	# the refusal is the **caller's**: the computer goes through `0x0042FF30`
+	# and the player's call site had nothing at all, which let a marine fire
+	# for ever and drove its count negative.
+	var armed: Dictionary = world.unit_view(shooter)
+	var per_shot: int = world.weapons().mun_per_fight(
+		DictRead.as_int(armed["weapon"]))
+	var magazine: int = world.weapons().magazine(
+		DictRead.as_int(armed["weapon"]))
+	if magazine != Combat.MUN_NONE and per_shot > 0:
+		var _empty: bool = world.apply_unit_record(shooter,
+			{"ammo": 0, "acted": 0, "mp": 40})
+		var dry: AttackResult = world.submit_attack(
+			AttackCommand.create(shooter, ax, sy))
+		h.check("ammo.an_empty_weapon_does_not_fire", not dry.fired, dry.reason)
+		h.equal("ammo.and_the_count_stays_at_zero",
+			DictRead.as_int(world.unit_view(shooter)["ammo"]), 0,
+			"the engine's own spend is a byte and wraps; nothing may reach it")
+		# One round short of a shot is refused too, which `ammo == 0` alone
+		# would let through for a weapon that spends more than one.
+		if per_shot > 1:
+			var _short: bool = world.apply_unit_record(shooter,
+				{"ammo": per_shot - 1, "acted": 0, "mp": 40})
+			var partial: AttackResult = world.submit_attack(
+				AttackCommand.create(shooter, ax, sy))
+			h.check("ammo.a_partial_magazine_does_not_fire", not partial.fired,
+				"%d round(s) for a shot that costs %d"
+					% [per_shot - 1, per_shot])
+		var _full: bool = world.apply_unit_record(shooter,
+			{"ammo": per_shot, "acted": 0, "mp": 40})
+		var last: AttackResult = world.submit_attack(
+			AttackCommand.create(shooter, ax, sy))
+		h.check("ammo.exactly_enough_still_fires", last.fired, last.reason)
+		h.equal("ammo.and_spends_it_all",
+			DictRead.as_int(world.unit_view(shooter)["ammo"]), 0)
+	else:
+		h.check("ammo.an_empty_weapon_does_not_fire", true,
+			"weapon %d spends no ammunition"
+				% DictRead.as_int(armed["weapon"]))
+
+	units.free()
+	main.free()
+
+
+## The first `F` clip in the cache that carries a `BREAK` note, by name.
+##
+## Read out of the published cache rather than constructed: the hold is about
+## what the shipped clips do, and 29 of the 33 shipped `F` clips have the note.
+func _clip_with_break() -> CharismaClip:
+	var directory: String = CacheFixture.cache_dir() + "/animations"
+	var dir: DirAccess = DirAccess.open(directory)
+	if dir == null:
+		return null
+	var names: PackedStringArray = dir.get_files()
+	names.sort()
+	for name: String in names:
+		if not name.ends_with(".json") or name == "index.json":
+			continue
+		var document: Dictionary = CacheFixture.read_json(
+			"%s/%s" % [directory, name])
+		if document.is_empty():
+			continue
+		var clip: CharismaClip = CharismaClip.from_document(document)
+		if clip != null and clip.break_time() >= 0.0:
+			return clip
+	return null
+
+
+## What the picture drops, and what it carries, when it is rebuilt.
+##
+## Oracle boundary: **specification** -- docs/22 section 9.5 for the first and
+## docs/40 section 7.2 for the second.
+##
+## Two defects, both reported from play and both in [method UnitsView.build]:
+##
+## * a **killed** unit stayed on screen. `aKillUnit` is the death sequence and
+##   `aRemoveUnitElement`, so the engine deletes the object at once; `core`
+##   keeps the record (the hero counter reads it) and the picture was drawing
+##   every record it found, so a dead alien stood there until the next
+##   hand-over happened to drop it;
+## * every rebuild **restarted every animation**. A rebuild happens on every
+##   command and on every fog change, so ten bodies snapped to idle frame 0
+##   each time the player did anything, and a shot in flight was thrown away.
+func _rebuild(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	var geometry: Dictionary = CacheFixture.geometry("A00")
+	if loaded.is_empty() or geometry.is_empty():
+		h.check("rebuild.cache", false, "no _C_140 or no A00 geometry")
+		return
+	var world: World = loaded["world"]
+	var units: UnitsView = UnitsView.new()
+	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {}, "_C_140")
+	h.check("rebuild.library", units.library.is_ready(),
+		"the cache carries the bodies, so there are states to carry over")
+	units.build(world, geometry, {})
+	var drawn: int = units.get_child_count()
+	h.check("rebuild.something_is_drawn", drawn > 0, "%d unit node(s)" % drawn)
+
+	# The dead are not drawn. The record stays -- `core` owns that -- and the
+	# picture is what has to lose it.
+	var victim: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0 \
+				and units.get_node_or_null(NodePath("unit_%d" % slot)) != null:
+			victim = slot
+			break
+	h.check("rebuild.a_live_unit_is_drawn", victim >= 0,
+		"slot %d has a node" % victim)
+	if victim < 0:
+		units.free()
+		return
+	var _killed: bool = world.apply_unit_record(victim, {"hp": 0})
+	h.check("rebuild.the_record_survives_the_death", world.has_unit(victim),
+		"`core` keeps it: the hero counter and the win conditions read it")
+
+	# **Held for as long as the shot that killed it takes to draw.** The
+	# rebuild that drops a casualty runs *before* the event that killed it is
+	# presented -- for the computer's replay always -- so a marine vanished and
+	# the sound of what killed it arrived afterwards.
+	units.linger(victim, SliceMain.DEATH_LINGER_SECONDS)
+	units.build(world, geometry, {})
+	h.check("rebuild.a_casualty_is_held",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) != null,
+		"still drawn while its killer's shot is on screen")
+	units.animate(SliceMain.DEATH_LINGER_SECONDS + 0.01, world)
+	h.check("rebuild.and_then_it_goes",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
+		"%.2f s later, without waiting for another rebuild"
+			% SliceMain.DEATH_LINGER_SECONDS)
+	h.equal("rebuild.the_hold_is_released", units.lingering().size(), 0)
+	units.build(world, geometry, {})
+	h.check("rebuild.the_dead_are_not_drawn",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
+		"slot %d died and left the picture at once" % victim)
+	h.equal("rebuild.only_that_one_left", units.get_child_count(), drawn - 1,
+		"and nothing else went with it")
+
+	# The animation clock survives a rebuild.
+	var mover: int = -1
+	for slot: int in units.states:
+		mover = slot
+		break
+	h.check("rebuild.a_body_has_a_state", mover >= 0,
+		"slot %d is a Charisma body rather than a capsule" % mover)
+	if mover < 0:
+		units.free()
+		return
+	units.animate(0.5, world)
+	var before: Dictionary = units.states[mover].playback()
+	h.check("rebuild.the_idle_has_run",
+		DictRead.as_float(before["time"]) > 0.0,
+		"%.2f frames into %s" % [DictRead.as_float(before["time"]),
+			DictRead.as_string(before["clip"])])
+	units.build(world, geometry, {})
+	var after: Dictionary = units.states[mover].playback()
+	h.equal("rebuild.the_clock_is_carried",
+		DictRead.as_float(after["time"]), DictRead.as_float(before["time"]),
+		"a command must not snap every idle on the map back to frame 0")
+	h.equal("rebuild.the_clip_is_carried",
+		DictRead.as_string(after["clip"]), DictRead.as_string(before["clip"]))
+
+	# A shot in flight survives one too, which is what a fog change landing in
+	# the middle of a reaction used to destroy.
+	var length: float = units.fire(mover, 0, 0)
+	if length > 0.0:
+		units.animate(0.2, world)
+		var shooting: Dictionary = units.states[mover].playback()
+		units.build(world, geometry, {})
+		h.equal("rebuild.a_shot_survives", units.states[mover].mode,
+			CharismaState.Mode.FIRE, "the body is still firing after a rebuild")
+		h.equal("rebuild.the_shots_clock_is_carried",
+			DictRead.as_float(units.states[mover].playback()["time"]),
+			DictRead.as_float(shooting["time"]))
+	else:
+		h.check("rebuild.a_shot_survives", true,
+			"slot %d has no `F` clip; the carry is checked on its idle" % mover)
+	units.free()
+
+
+## Where the computer's replay draws a unit that has not moved yet.
+##
+## Oracle boundary: **specification** -- docs/94 for the resolve-then-replay
+## split this exists because of.
+##
+## `core` decides the whole turn in one call, so the world holds every unit at
+## the position it *ends* the turn on from the first rebuild onwards. A unit
+## whose move event has not come round yet was therefore standing at the place
+## it was about to walk to -- for as long as every event before its own took --
+## and then jumped back to its source and set off. Placing the body on its
+## first cell in `start_walk` fixed the one-frame flash of that and not the
+## rest, which is why this exists as well.
+func _replay_positions(h: TestHarness) -> void:
+	# The events are the real shape: `AIPlan` emits a move with the **source**
+	# in `x`/`y` and the destination in `tx`/`ty`.
+	var events: Array[Dictionary] = [
+		AIEvent.make("fire", 4, 1, 1, 2, 2).to_dict(),
+		AIEvent.make("warp", 6, 3, 4, 8, 8).to_dict(),
+		AIEvent.make("end_unit_turn", 4).to_dict(),
+		AIEvent.make("move", 5, 2, 3, 9, 9).to_dict(),
+		AIEvent.make("fire", 5, 9, 9, 1, 1).to_dict(),
+		AIEvent.make("move", 5, 9, 9, 1, 1).to_dict(),
+	]
+	var all: Dictionary[int, Vector2i] = AIPlayback.starts_in(events, 0)
+	h.equal("replay.every_unmoved_unit_is_placed", all.size(), 2,
+		"slots 5 and 6 have a move or a warp still to come")
+	h.equal("replay.the_source_is_the_events_own", all.get(5, Vector2i.ZERO),
+		Vector2i(2, 3), "the move's `x`/`y`, not its `tx`/`ty`")
+	h.equal("replay.a_warp_counts_too", all.get(6, Vector2i.ZERO),
+		Vector2i(3, 4))
+	# A unit that moves twice is held at the start of its **next** move.
+	var later: Dictionary[int, Vector2i] = AIPlayback.starts_in(events, 4)
+	h.equal("replay.the_next_move_wins", later.get(5, Vector2i.ZERO),
+		Vector2i(9, 9), "its first move has already played")
+	h.equal("replay.a_played_warp_is_released", later.has(6), false)
+	h.equal("replay.nothing_is_held_at_the_end",
+		AIPlayback.starts_in(events, events.size()).size(), 0)
+
+	# And the view really draws them there.
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	var geometry: Dictionary = CacheFixture.geometry("A00")
+	if loaded.is_empty() or geometry.is_empty():
+		h.check("replay.cache", false, "no _C_140 or no A00 geometry")
+		return
+	var world: World = loaded["world"]
+	var units: UnitsView = UnitsView.new()
+	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {}, "_C_140")
+	var slot: int = -1
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
+			slot = candidate
+			break
+	if slot < 0:
+		h.check("replay.unit", false, "no live unit on _C_140")
+		units.free()
+		return
+	var at: Dictionary = world.unit_view(slot)
+	var home: Vector3 = WorldSpace.cell_centre(DictRead.as_int(at["x"]),
+		DictRead.as_int(at["y"]), world.state.height_at(world.state.index_of(
+			DictRead.as_int(at["x"]), DictRead.as_int(at["y"]))))
+	var elsewhere: Vector2i = Vector2i(
+		(DictRead.as_int(at["x"]) + 3) % world.resource.width,
+		(DictRead.as_int(at["y"]) + 2) % world.resource.height)
+	var held: Dictionary[int, Vector2i] = {slot: elsewhere}
+	units.hold_at(held)
+	units.build(world, geometry, {})
+	var node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	h.check("replay.the_held_unit_is_drawn", node != null, "slot %d" % slot)
+	if node != null:
+		var there: Vector3 = WorldSpace.cell_centre(elsewhere.x, elsewhere.y,
+			world.state.height_at(world.state.index_of(elsewhere.x,
+				elsewhere.y)))
+		h.check("replay.it_is_drawn_where_it_is_held",
+			node.position.distance_to(there) < 0.001,
+			"%.3f m from the held cell" % node.position.distance_to(there))
+		h.check("replay.and_not_where_the_world_says",
+			node.position.distance_to(home) > 0.5,
+			"the world still says (%d,%d) and is never told otherwise"
+				% [DictRead.as_int(at["x"]), DictRead.as_int(at["y"])])
+	# Releasing the hold puts it back, which is what the end of a replay does.
+	units.hold_at({} as Dictionary[int, Vector2i])
+	units.build(world, geometry, {})
+	var back: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	h.check("replay.the_release_puts_it_back",
+		back != null and back.position.distance_to(home) < 0.001,
+		"the rebuild after the replay is what returns everyone")
+	h.equal("replay.the_hold_is_empty", units.held_at().size(), 0)
+	units.free()
 
 
 ## `0x00477DF0` -- who the player may give an order to.
