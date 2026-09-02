@@ -130,9 +130,24 @@ func _shots_and_reactions(h: TestHarness) -> void:
 			% [hold, fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND])
 
 	# --- the return fire it drew ------------------------------------------
-	main._queue_reactions(entries, sx, sy)
+	main._queue_reactions(entries, shooter, sx, sy)
 	h.equal("shot.reactions_queued", main._pending_reactions.size(), 1,
 		"one batch waiting, aimed at the cell that drew it")
+	# The mover's camera inputs follow its **slot**, not whoever stands on the
+	# cell now: during the computer's replay the mover has walked on, and a
+	# bare cell would give the reaction camera no height and no size.
+	var empty_x: int = sx
+	var empty_y: int = sy
+	for y: int in range(world.resource.height):
+		for x: int in range(world.resource.width):
+			if world.state.unit_at(world.state.index_of(x, y)) < 0:
+				empty_x = x
+				empty_y = y
+	var mover_inputs: Dictionary = main._inputs_of(shooter, empty_x, empty_y)
+	h.check("shot.mover_inputs_follow_the_slot",
+		DictRead.as_int(mover_inputs.get("height", 0)) > 0
+			and DictRead.as_int(mover_inputs.get("x", -1)) == empty_x,
+		"the mover's own height on the event's cell, %s" % str(mover_inputs))
 	h.equal("shot.waits_for_the_shot", main._drain_pending_reactions(), 1,
 		"the shooter\'s own clip runs before the answer to it")
 	units.states[shooter].rest()

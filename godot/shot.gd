@@ -24,12 +24,33 @@ func _process(_delta: float) -> bool:
 		print("reachable=", result.reachable_count(),
 			" warp=", result.warp_count(), " mp=", result.mp)
 		if OS.get_cmdline_user_args().has("--focus"):
+			# The engine's own "on the unit" placement, settled at once.
+			var _flight: float = _main.camera_director().cycle(_main.world,
+				slots[0])
+			_main.camera_rig().settle()
+		if OS.get_cmdline_user_args().has("--eyes"):
+			var _flight: float = _main.camera_director().view_eyes(_main.world,
+				slots[0])
+			_main.camera_rig().settle()
+		if OS.get_cmdline_user_args().has("--map"):
+			# `--at=x,y` puts the map view over another cell -- one under a
+			# ceiling, say -- instead of the first unit's.
 			var view: Dictionary = _main.world.unit_view(slots[0])
-			var x: int = DictRead.as_int(view["x"])
-			var y: int = DictRead.as_int(view["y"])
-			var cell: Dictionary = _main.world.cell_view(x, y)
-			_main.camera_rig().focus_on(x, y, DictRead.as_int(cell["height"]))
-			_main.camera_rig().set_zoom(26.0)
+			var at_x: int = DictRead.as_int(view["x"])
+			var at_y: int = DictRead.as_int(view["y"])
+			for arg: String in OS.get_cmdline_user_args():
+				if arg.begins_with("--at="):
+					var pair: PackedStringArray = arg.substr(5).split(",")
+					if pair.size() == 2:
+						at_x = pair[0].to_int()
+						at_y = pair[1].to_int()
+			var _flight: float = _main.camera_director().view_map(_main.world,
+				at_x, at_y)
+			_main.camera_rig().settle()
+	if _frames == 5:
+		var rig: CameraRig = _main.camera_rig()
+		print("camera eye=", rig.eye(), " target=", rig.target(),
+			" quadrant=", rig.quadrant(), " flying=", rig.is_flying())
 	if _frames < 16:
 		return false
 	var image: Image = root.get_texture().get_image()

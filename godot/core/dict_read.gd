@@ -38,6 +38,18 @@ static func as_int32_array(value: Variant) -> PackedInt32Array:
 	return value
 
 
+static func as_vector3i(value: Variant) -> Vector3i:
+	if value is Vector3i:
+		return value
+	if value is Vector3:
+		var v: Vector3 = value
+		return Vector3i(v)
+	var parts: Array = as_array(value)
+	if parts.size() != 3:
+		return Vector3i.ZERO
+	return Vector3i(as_int(parts[0]), as_int(parts[1]), as_int(parts[2]))
+
+
 static func as_dict(value: Variant) -> Dictionary:
 	return value
 

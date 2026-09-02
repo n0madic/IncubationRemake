@@ -212,6 +212,22 @@ func _case(h: TestHarness, case: Dictionary) -> void:
 			if not same:
 				mismatched.append("%d.path %s != %s"
 					% [i, str(want_path), str(got_path)])
+			# The walk's two visibility passes, run at the moment of the move
+			# (docs/42 section 3.2) with the `+0x0C > 6` discard applied. The
+			# Python side is a second transcription of
+			# `aBuildVisibleMapForUnit`, which makes it the oracle here.
+			for key: String in ["seen_source", "seen_destination"]:
+				if not a.has(key):
+					mismatched.append("%d.%s missing from the case file; "
+						% [i, key] + "run tools/ai_runtime.py --emit-cases "
+						+ "tests/fixtures/ai/cases_ai.json --root gog_incubation")
+					continue
+				var got_payload: Dictionary = DictRead.as_dict(b["payload"])
+				if DictRead.as_int(a[key]) != DictRead.as_int(
+						got_payload.get(key, -1)):
+					mismatched.append("%d.%s %d != %d" % [i, key,
+						DictRead.as_int(a[key]),
+						DictRead.as_int(got_payload.get(key, -1))])
 	h.equal("%s.events" % name, ", ".join(mismatched), "",
 		"%d event(s), every argument" % want.size())
 

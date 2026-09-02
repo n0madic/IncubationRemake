@@ -265,6 +265,9 @@ static func _points_of(vertices: Array, indices: Array) -> PackedVector3Array:
 ## handles a reflex corner.  A fan is the fallback for the cases it refuses
 ## (a self-intersecting outline, or one whose normal is zero), where no
 ## triangulation is right and the fan is at least the old behaviour.
+##
+## Every triangle comes back wound as the polygon is ([method oriented]),
+## because the material culls the back face.
 static func triangulate(points: PackedVector3Array) -> PackedInt32Array:
 	if points.size() == 3:
 		return PackedInt32Array([0, 1, 2])
@@ -273,8 +276,30 @@ static func triangulate(points: PackedVector3Array) -> PackedInt32Array:
 		var flat: PackedVector2Array = project(points, normal)
 		var ears: PackedInt32Array = Geometry2D.triangulate_polygon(flat)
 		if not ears.is_empty():
-			return ears
+			return oriented(ears, points, normal)
 	return fan(points.size())
+
+
+## The same triangles, each wound the way the polygon is.
+##
+## [method Geometry2D.triangulate_polygon] normalises the orientation of what
+## it returns rather than following its input, and [method project] mirrors
+## the outline for half of the possible normals -- so an ear can come back
+## wound against the face. That was invisible while every material was
+## double-sided; with the back face culled it is a hole. A triangle whose
+## cross product runs against the Newell normal has two corners swapped.
+static func oriented(triangles: PackedInt32Array, points: PackedVector3Array,
+		normal: Vector3) -> PackedInt32Array:
+	var out: PackedInt32Array = triangles.duplicate()
+	for t: int in range(0, out.size() - 2, 3):
+		var a: Vector3 = points[out[t]]
+		var b: Vector3 = points[out[t + 1]]
+		var c: Vector3 = points[out[t + 2]]
+		if (b - a).cross(c - a).dot(normal) < 0.0:
+			var swap: int = out[t + 1]
+			out[t + 1] = out[t + 2]
+			out[t + 2] = swap
+	return out
 
 
 ## Newell's normal: correct for a polygon that is only approximately planar,
@@ -331,7 +356,20 @@ static func material_for(kind: int, texture: int,
 	var material: StandardMaterial3D = StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# **One-sided, the way the engine draws them.** docs/31 section 4.2: every
+	# face names a plane, and the leaf walker (`Eng3d.dll` `0x405203`..
+	# `0x405230`) draws it only when `plane_value - plane_d < 0`. `plane_value`
+	# is the plane normal dotted with the object's position **minus the
+	# camera's** (`0x404BF4` subtracts the camera, `0x4050C4` hands the rotated
+	# vector to the prototype) and `plane_d` is `-n.v/16384` on the corpus, so
+	# the test is `n . (vertex - camera) < 0`: the face is drawn when the camera
+	# is on the side its normal points to. The stored winding's Newell normal is
+	# **against** the plane normal on 236 160 of 236 861 shipped faces (700 have
+	# no area, one is a near-degenerate sliver), which under Godot's clockwise
+	# front face puts the visible side in front -- so the indices are used as
+	# they come and the back face is culled. `prototyp_parse.py --check` pins
+	# every number in this paragraph.
+	material.cull_mode = BaseMaterial3D.CULL_BACK
 	# **Only the flat kinds read the face colour.**  docs/31 section 4.4 lists
 	# the textured kinds' shading as "none (decal)": the engine samples the
 	# texture and never looks at `colour`, which is `0x0000` on most textured

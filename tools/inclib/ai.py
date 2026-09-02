@@ -1223,7 +1223,7 @@ def _commit(ctx: AIContext, unit: CombatUnit, best_cell: int) -> bool:
                                     budget=unit.mp)
             if not moved.ok and not moved.movement_zeroed:
                 return False
-            _apply_move(ctx, unit, moved)
+            _apply_move(ctx, unit, moved, tx, ty)
             cost = moved.cost
             if moved.movement_zeroed:
                 unit.mp = 0
@@ -1244,9 +1244,21 @@ def _commit(ctx: AIContext, unit: CombatUnit, best_cell: int) -> bool:
 
 
 def _apply_move(ctx: AIContext, unit: CombatUnit,
-                moved: movemap.ExecuteResult) -> None:
+                moved: movemap.ExecuteResult, tx: int, ty: int) -> None:
     """What the caller of ``aExecuteMove`` does with the result it reports."""
     world = ctx.world
+    # `aExecuteMove`'s own two passes (docs/42 §3.2), run **before** the
+    # first step and from the cell the walk was asked for, not the one it
+    # reached: `aBuildVisibleMapForUnit(unit, tx, ty, &seen)` at `0x0046E330`
+    # and `(unit, sx, sy, &seen)` at `0x0046E385`.  They write -- every enemy
+    # the mover sees from there is revealed and the groups it alerts wake --
+    # and their two flags ride on the event because the playback runs after
+    # the turn, when the world they were asked on is gone.  The destination
+    # cell's `+0x0C` is the fill's movement points left on arrival, which
+    # `aWalkMoveMap` leaves in place on every path cell.
+    seen_destination, seen_source = combatmod.look_before_walk(
+        world, unit, tx, ty,
+        ctx.mp_left[ctx.index(tx, ty)] & 0xFF if ctx.in_bounds(tx, ty) else 0)
     world.unit_at[ctx.index(unit.x, unit.y)] = movemap.NO_UNIT
     world.unit_at[ctx.index(moved.x, moved.y)] = unit.slot
     # `path` is the one thing a playback cannot recover for itself.  By the
@@ -1259,15 +1271,23 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
                      detail=moved.cost,
                      payload={"steps": moved.steps, "facing": moved.facing,
                               "path": list(moved.route),
-                              "events": [e.to_dict() for e in moved.events]}))
+                              "events": [e.to_dict() for e in moved.events],
+                              "seen_source": seen_source,
+                              "seen_destination": seen_destination}))
     unit.x, unit.y = moved.x, moved.y
-    unit.facing = moved.facing
+    if moved.steps:
+        # The facing is written per step (`aChangeUnitViewDirection` inside
+        # the loop), so a walk of no steps leaves it alone.
+        unit.facing = moved.facing
     # `+0x50` is written by `aExecuteMove` itself, not by its caller, and the
     # engine adds into one byte -- so it wraps rather than saturating.
     unit.walked = (unit.walked + moved.walked) & 0xFF
     for index, value in moved.action_point_writes:
         ctx.grid.action_points[index] = value
         world.action_point[index] = value
+    # `0x0046EE55` -- the third pass, from the cell the walk reached, before
+    # the `MoveUnit` event and the caller's charge.
+    combatmod.look_after_walk(world, unit)
 
 
 def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
@@ -1293,6 +1313,9 @@ def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
     ctx.state[source] = movemap.STATE_RESET
     ctx.emit(AIEvent("warp", unit.slot, unit.x, unit.y, tx, ty))
     unit.x, unit.y = tx, ty
+    # `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
+    # on every warp its mine arm did not kill it on (docs/22 §9.4).
+    combatmod.build_visible_map(world, unit.player)
     return True
 
 

@@ -42,6 +42,7 @@ func run(h: TestHarness) -> void:
 	_damage(h)
 	_overheat(h)
 	_visibility(h)
+	_reveals(h)
 	_defence_gate(h)
 	_reaction_queue(h)
 	_interaction(h)
@@ -1536,3 +1537,45 @@ func _the_hero_counter(h: TestHarness) -> void:
 		[PackedInt32Array([0, 0, 0, 0]), PackedInt32Array([0, 1, 0, 0]),
 			false],
 		"docs/20 section 7.4's HeroKilled reads the byte 0x00477A5E writes")
+
+
+## The two reveals inside `aAttackUnit` and the one inside `aExecuteBomb`:
+## the shooter once its weapon is cleared to fire (`0x0046B643`), and every
+## unit on a marked cell before its roll (`0x0046BA22`, `0x004703A9`) --
+## hit or miss, so a hidden shooter is seen firing and a hidden target is
+## seen being shot at.
+func _reveals(h: TestHarness) -> void:
+	var scene: Scene = _scene()
+	var shooter: UnitState = _place(scene, 0, 0, 1, 1, 0)
+	var target: UnitState = _place(scene, 1, UnitState.PLAYER_ALIEN, 5, 1, 0)
+	shooter.visibility = Visibility.HIDDEN
+	target.visibility = Visibility.HIDDEN
+	var rng: IncRandom = IncRandom.new()
+	var shot: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, 1, 1, 5, 1, 1, 1, 1, _turn(), rng)
+	h.check("reveal.the_shot_was_fired", shot.fired, shot.reason)
+	h.equal("reveal.the_shooter_is_seen_firing", shooter.visibility,
+		Visibility.FULL, "0x0046B643, after the jam test")
+	h.equal("reveal.the_target_is_seen_shot_at", target.visibility,
+		Visibility.FULL, "0x0046BA22, before the roll")
+
+	# A jammed weapon never reaches the reveal.
+	var jammed: Scene = _scene()
+	var stuck: UnitState = _place(jammed, 0, 0, 1, 1, 0)
+	stuck.visibility = Visibility.HIDDEN
+	stuck.malfunction = 2
+	var _victim: UnitState = _place(jammed, 1, UnitState.PLAYER_ALIEN, 5, 1, 0)
+	var refused: AttackResult = Combat.attack(jammed.state, jammed.units,
+		jammed.types, jammed.weapons, 1, 1, 5, 1, 1, 1, 1, _turn(), rng)
+	h.check("reveal.a_jam_fires_nothing", not refused.fired)
+	h.equal("reveal.a_jam_reveals_nothing", stuck.visibility,
+		Visibility.HIDDEN)
+
+	# The bomb reveals what it lands on.
+	var field: Scene = _scene()
+	var bystander: UnitState = _place(field, 0, UnitState.PLAYER_ALIEN, 3, 3, 0)
+	bystander.visibility = Visibility.HIDDEN
+	var _blast: AttackResult = Interact.execute_bomb(field.state, field.units,
+		field.types, field.weapons, 3, 3, 1, 1, 1, _turn(), rng)
+	h.equal("reveal.a_bomb_reveals_its_target", bystander.visibility,
+		Visibility.FULL, "0x004703A9")

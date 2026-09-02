@@ -321,23 +321,14 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	if DictRead.as_int(walked["blocked"]) != 0:
 		return MoveResult.failed(unit.x, unit.y, "the path runs through a unit")
 
-	var moved: MoveResult = ExecuteMove.run(state, _ctrlmap, unit, walked)
+	# The routine's own three visibility passes and the position it leaves
+	# are inside [method ExecuteMove.execute]; `mp_left_at` is the destination's
+	# `+0x0C`, which only the presentation mode of a computer walk reads.
+	var moved: MoveResult = ExecuteMove.execute(state, _units, _unit_types,
+		_ctrlmap, unit, walked, command.x, command.y,
+		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode)
 	if moved.steps == 0:
 		return moved
-	state.set_unit(state.index_of(unit.x, unit.y), MapState.NO_UNIT)
-	state.set_unit(state.index_of(moved.x, moved.y), unit.slot)
-	unit.x = moved.x
-	unit.y = moved.y
-	unit.facing = moved.facing
-	# `+0x50` is one byte and the engine adds into it, so it wraps rather than
-	# saturating. Unreachable in practice -- the refresh zeroes it every turn
-	# and 255 tenths is 25 fields of walking -- but masking is what the field
-	# is, and picking a cap instead would be inventing a rule.
-	unit.walked = (unit.walked + moved.walked) & 0xFF
-	for write: Vector2i in moved.action_point_writes:
-		# `x` is the cell index and `y` the action point it becomes; the pair
-		# comes from [ExecuteMove] in that order.
-		state.set_action_point(write.x, write.y)
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
 	# `aExecuteMove` leaving `+0x39` alone, so this is the AI call site's own
 	# assignment and the player's path is assumed to match it.

@@ -28,6 +28,7 @@ import argparse
 import collections
 import json
 import logging
+import math
 import os
 import sys
 from typing import Any
@@ -36,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from inclib.binio import ParseError  # noqa: E402
 from inclib.prototyp import (  # noqa: E402
+    LATTICE_PROTOTYPE,
     DRAW_KINDS,
     OPCODES,
     Container,
@@ -44,6 +46,7 @@ from inclib.prototyp import (  # noqa: E402
     face_shape,
     find_containers,
     load_container,
+    newell_normal,
     render_png,
     to_obj,
 )
@@ -67,6 +70,52 @@ EXPECTED_ZERO_AREA = 700
 #: faces out of the shape pass shows up as a count, rather than as three
 #: bucket totals that all shrink together and still add up.
 EXPECTED_UNSHAPED = 0
+#: docs/31 section 4.2 -- every face names a plane and the leaf walker draws
+#: it only from the side the plane normal points to (``Eng3d.dll``
+#: ``0x405203``..``0x405230``: drawn when ``plane_value - plane_d < 0``, with
+#: ``plane_value`` the normal dotted with the object's position minus the
+#: camera's, ``0x404BF4``).  The stored vertex winding has its Newell normal
+#: **against** the plane normal on every face that has an area -- except one,
+#: a sliver in a dialogue head whose Newell normal is ``(-9, 50, 7)`` on a
+#: plane of magnitude 16384.  That relation is what lets a renderer use the
+#: indices as they come and cull the back face, so it is pinned by name.
+EXPECTED_WOUND_WITH_PLANE = ["MODEL_D02_RUTHERFORD_KOPF"]
+#: ``plane_d == -n.v / 16384`` for the face's own vertices **in the frame the
+#: engine tests it in**: a face inside a ``part_push`` scope keeps its plane
+#: in the part's own coordinates, because ``joint_place`` (``Eng3d.dll``
+#: ``0x004060F0``) adds the rotated part translation into the position the
+#: side test dots the normal with (``0x00414064``).  Measured that way the
+#: stored normal puts ``plane_d`` inside the vertex span, within two units of
+#: rounding, on 230 940 faces.  The stored normal is the exact one **truncated
+#: to 14 bits** -- its magnitude is 16 381..16 384 and never above -- and
+#: ``plane_d`` was computed before the truncation: every one of the remaining
+#: 5 921 faces lands in the span under a rotation of the stored normal of at
+#: most ``PLANE_NORMAL_SLACK_DEG``, which is what a truncation error at a
+#: radius of up to 5.5 million units looks like.  The worst miss in units is
+#: pinned too, so the remake's cull on the face's own plane is bounded
+#: against the engine's rather than described.
+PLANE_D_SLACK = 2
+EXPECTED_PLANE_D_IN_SPAN = 230940
+EXPECTED_PLANE_D_BY_NORMAL_PRECISION = 5921
+PLANE_NORMAL_SLACK_DEG = 0.02
+#: The largest ``plane_d`` miss, in world units, across those 5 921 faces:
+#: on the 5.5-million-unit space sphere of the sequence models, where a
+#: hundredth of a degree is that many units.
+EXPECTED_PLANE_D_WORST_MISS = 908
+#: Every stored plane normal has this magnitude or one below it -- the exact
+#: normal scaled to 16 384 and truncated, so the four magnitudes it lands on
+#: are a corpus fact and are pinned per face.
+PLANE_NORMAL_MAGNITUDE = 16384
+EXPECTED_PLANE_NORMAL_MAGNITUDES = {16381: 7153, 16382: 53657,
+                                    16383: 170216, 16384: 5835}
+#: The same worst miss over the world prototypes alone -- every container
+#: outside ``Video/`` -- so the bound that matters in play is its own number.
+EXPECTED_PLANE_D_WORST_MISS_WORLD = 60
+#: The ground lattice's plane, read off every one of its faces: straight up,
+#: and ``plane_d`` is minus its own height of 80.  A floor is seen from above,
+#: which fixes the sign of the whole side test without a renderer.
+LATTICE_NORMAL = (0, 0, 16383)
+LATTICE_PLANE_D = -80
 
 
 def _resolve_container(path: str) -> Container:
@@ -173,6 +222,21 @@ def cmd_check(root: str) -> int:
     unclassified: list[str] = []
     double_counted: list[str] = []
     face_sizes: collections.Counter[int] = collections.Counter()
+    #: The side test of docs/31 section 4.2, face by face.
+    plane_zero = 0
+    wound_against = 0
+    wound_zero = 0
+    wound_with: list[str] = []
+    plane_d_in_span = 0
+    plane_d_by_precision = 0
+    plane_d_unexplained: list[str] = []
+    plane_d_worst_miss = 0.0
+    plane_d_worst_face = ""
+    plane_d_worst_world_miss = 0.0
+    plane_normal_magnitudes: collections.Counter[int] = collections.Counter()
+    plane_normal_too_long: list[str] = []
+    lattice_faces = 0
+    lattice_bad: list[str] = []
 
     for din, binp in containers:
         container = load_container(din, binp)
@@ -264,6 +328,61 @@ def cmd_check(root: str) -> int:
                     worst_face = where
                 if not shape.convex and not shape.degenerate:
                     non_convex.append(where)
+                if f.plane_index == 0:
+                    plane_zero += 1
+                elif abs(f.plane_index) <= np_:
+                    normal = proto.planes[abs(f.plane_index) - 1]
+                    if f.plane_index < 0:
+                        normal = (-normal[0], -normal[1], -normal[2])
+                    corners = [placed[k] for k in f.indices]
+                    wound = newell_normal(corners)
+                    turn = sum(a * b for a, b in zip(wound, normal))
+                    if turn < 0:
+                        wound_against += 1
+                    elif turn > 0:
+                        wound_with.append(f"{where}: newell {wound}")
+                    else:
+                        wound_zero += 1
+                    # The plane's own frame: a part face is placed by the
+                    # part translation at draw time and its plane is not.
+                    frame = [proto.vertices[k] for k in f.indices] \
+                        if any(proto.vertex_part[k] >= 0
+                               for k in f.indices) else corners
+                    spans = [-sum(a * b for a, b in zip(normal, p)) / 16384
+                             for p in frame]
+                    if min(spans) - PLANE_D_SLACK <= f.plane_d \
+                            <= max(spans) + PLANE_D_SLACK:
+                        plane_d_in_span += 1
+                    else:
+                        miss = max(min(spans) - f.plane_d,
+                                   f.plane_d - max(spans))
+                        radius = max(math.sqrt(p[0] * p[0] + p[1] * p[1]
+                                               + p[2] * p[2]) for p in frame)
+                        # The smallest rotation of the stored normal that
+                        # would put plane_d back in the span.
+                        if radius and math.degrees(miss / radius) \
+                                <= PLANE_NORMAL_SLACK_DEG:
+                            plane_d_by_precision += 1
+                            if miss > plane_d_worst_miss:
+                                plane_d_worst_miss = miss
+                                plane_d_worst_face = where
+                            if not rel.startswith("Video") \
+                                    and miss > plane_d_worst_world_miss:
+                                plane_d_worst_world_miss = miss
+                        else:
+                            plane_d_unexplained.append(
+                                f"{where}: plane_d {f.plane_d} misses the "
+                                f"span by {miss:.1f} at radius {radius:.0f}")
+                    magnitude = math.sqrt(sum(a * a for a in normal))
+                    plane_normal_magnitudes[round(magnitude)] += 1
+                    if magnitude > PLANE_NORMAL_MAGNITUDE + 0.5:
+                        plane_normal_too_long.append(f"{where}: {normal}")
+                    if proto.name.upper() == LATTICE_PROTOTYPE:
+                        lattice_faces += 1
+                        if normal != LATTICE_NORMAL \
+                                or f.plane_d != LATTICE_PLANE_D:
+                            lattice_bad.append(
+                                f"{where}: normal {normal} d {f.plane_d}")
                 if shape.repeated:
                     repeated.append(where)
                 # Exactly one of the three pinned buckets, or it is named.
@@ -333,6 +452,24 @@ def cmd_check(root: str) -> int:
     print(f"faces exactly planar in integer world units: "
           f"{exact_planar}/{face_total}; worst deviation "
           f"{worst_out_of_plane:.1f} units on {worst_face}")
+    # docs/31 section 4.2's side test, which is what makes the remake's faces
+    # one-sided: every face has a plane, and the winding's Newell normal runs
+    # against it, so the visible side is the front face as the indices stand.
+    print(f"faces naming a side plane:   {face_total - plane_zero}/{face_total} "
+          f"(plane index 0, 'always draw', on {plane_zero})")
+    print(f"winding against the plane normal: {wound_against}; with it "
+          f"{len(wound_with)}; no area {wound_zero}")
+    print(f"plane_d == -n.v/16384 within the face's own span (a part face in "
+          f"its part's frame): {plane_d_in_span}/{face_total}; the rest "
+          f"within {PLANE_NORMAL_SLACK_DEG} deg of the 14-bit normal: "
+          f"{plane_d_by_precision}, worst miss {plane_d_worst_miss:.0f} "
+          f"units on {plane_d_worst_face}, {plane_d_worst_world_miss:.0f} "
+          f"outside Video/; unexplained {len(plane_d_unexplained)}")
+    print("plane normal magnitudes: "
+          + ", ".join(f"{k}:{v}" for k, v in sorted(plane_normal_magnitudes.items())))
+    print(f"ground lattice {LATTICE_PROTOTYPE}: {lattice_faces} faces, "
+          f"normal {LATTICE_NORMAL} and plane_d {LATTICE_PLANE_D} on "
+          f"{lattice_faces - len(lattice_bad)}")
     print("face vertex counts: "
           + ", ".join(f"{k}:{v}" for k, v in sorted(face_sizes.items())))
     print(f"totals: {vert_total} vertices, {face_total} faces, "
@@ -353,6 +490,14 @@ def cmd_check(root: str) -> int:
                          ("UNEXPECTED REPEATED-INDEX FACE COUNT", repeated
                           if len(repeated) != EXPECTED_REPEATED_INDEX else []),
                          ("FACES IN NO SHAPE BUCKET", unclassified),
+                         ("UNEXPECTED FACE WOUND WITH ITS PLANE NORMAL",
+                          wound_with if [w.split(" ")[1] for w in wound_with]
+                          != EXPECTED_WOUND_WITH_PLANE else []),
+                         ("GROUND LATTICE FACE OFF ITS PLANE", lattice_bad),
+                         ("PLANE_D OFF THE FACE BEYOND THE NORMAL'S PRECISION",
+                          plane_d_unexplained),
+                         ("PLANE NORMAL LONGER THAN 16384",
+                          plane_normal_too_long),
                          ("FACES IN MORE THAN ONE SHAPE BUCKET",
                           double_counted),
                          ("NOTE: records with unreferenced slack bytes",
@@ -378,7 +523,27 @@ def cmd_check(root: str) -> int:
           # run red without a reason.
           and not unclassified and not double_counted
           and fan_ok + len(non_convex) + degenerate == face_total - unshaped
-          and unshaped == EXPECTED_UNSHAPED)
+          and unshaped == EXPECTED_UNSHAPED
+          # The side test: no face is 'always drawn', the one face wound
+          # with its plane is the known sliver, the three winding buckets
+          # cover every shaped face, and the lattice fixes the sign.
+          and plane_zero == 0
+          and [w.split(" ")[1] for w in wound_with] == EXPECTED_WOUND_WITH_PLANE
+          and wound_against + len(wound_with) + wound_zero
+          == face_total - unshaped
+          and wound_zero == EXPECTED_ZERO_AREA
+          # plane_d is the face's own plane in its own frame, computed before
+          # the normal lost its precision: the two counts are pinned, the
+          # worst miss is bounded, and no normal is longer than 16384.
+          and plane_d_in_span == EXPECTED_PLANE_D_IN_SPAN
+          and plane_d_by_precision == EXPECTED_PLANE_D_BY_NORMAL_PRECISION
+          and not plane_d_unexplained
+          and round(plane_d_worst_miss) == EXPECTED_PLANE_D_WORST_MISS
+          and round(plane_d_worst_world_miss)
+          == EXPECTED_PLANE_D_WORST_MISS_WORLD
+          and dict(plane_normal_magnitudes) == EXPECTED_PLANE_NORMAL_MAGNITUDES
+          and not plane_normal_too_long
+          and lattice_faces > 0 and not lattice_bad)
     print("\n" + ("all checks passed" if ok else "SOME CHECKS FAILED"))
     return 0 if ok else 1
 

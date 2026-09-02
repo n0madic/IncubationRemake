@@ -35,6 +35,7 @@ const AREA_EPSILON: float = 0.0001
 func run(h: TestHarness) -> void:
 	h.begin("mesh", TestHarness.ORACLE_SPEC)
 	_check_triangulation(h)
+	_check_winding(h)
 	_check_draw_kinds(h)
 	_check_colour_key(h)
 	_check_corpus_kinds(h)
@@ -80,6 +81,88 @@ func _check_triangulation(h: TestHarness) -> void:
 		"a zero-area outline still yields a fan rather than nothing")
 	h.check("newell.zero_on_degenerate",
 		MeshBuilder.newell(collinear).is_zero_approx())
+
+
+## docs/31 section 4.2: a face is drawn from one side, the one its plane
+## normal points to, and the stored winding puts that side in front under
+## Godot's convention -- so the material culls the back face and every
+## triangle the builder emits has to be wound as its polygon is.
+## `Geometry2D.triangulate_polygon` normalises its output's orientation, and
+## dropping an axis mirrors the outline for half the normals, so without
+## [method MeshBuilder.oriented] an ear-clipped face can vanish. The reflex
+## outline is laid in all three planes, facing both ways, wound both ways.
+func _check_winding(h: TestHarness) -> void:
+	var textures: Dictionary = {MeshBuilder.PLAIN: {}, MeshBuilder.KEYED: {}}
+	h.equal("side.back_face_culled", MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_PERSP, 0, textures).cull_mode,
+		BaseMaterial3D.CULL_BACK,
+		"Eng3d.dll 0x405203..0x405230 draws a face from one side only")
+	var flips: int = 0
+	for axis: int in range(3):
+		for way: int in [1, -1]:
+			for backwards: bool in [false, true]:
+				var poly: PackedVector3Array = _outline_in(axis, way, backwards)
+				var normal: Vector3 = MeshBuilder.newell(poly)
+				var ears: PackedInt32Array = MeshBuilder.triangulate(poly)
+				var label: String = "%d%s%s" % [axis, "+" if way > 0 else "-",
+					"r" if backwards else "f"]
+				h.check("side.ears_follow_the_face." + label,
+					ears.size() == 9 and _all_with(poly, ears, normal),
+					"%d corners; a triangle runs against the Newell normal"
+						% ears.size())
+				var raw: PackedInt32Array = Geometry2D.triangulate_polygon(
+					MeshBuilder.project(poly, normal))
+				if not _all_with(poly, raw, normal):
+					flips += 1
+	# The check above has to bite: the un-oriented ears really do run against
+	# the face for some of the twelve, or the orientation pass tests nothing.
+	h.check("side.raw_ears_do_flip", flips > 0,
+		"%d of 12 raw triangulations run against the face" % flips)
+	# The fan on a **convex** outline: a fan is only a triangulation of one,
+	# and on the reflex fixture its third triangle is wound the other way,
+	# which is the defect `reflex.fan_is_wrong` already pins.
+	var plain: PackedVector3Array = PackedVector3Array([
+		Vector3(0.0, 0.0, 0.0), Vector3(2.0, 0.0, 0.0),
+		Vector3(2.0, 0.0, 2.0), Vector3(0.0, 0.0, 2.0)])
+	h.check("side.fan_follows_the_face", _all_with(plain,
+		MeshBuilder.fan(plain.size()), MeshBuilder.newell(plain)),
+		"the fallback fan keeps a convex polygon's winding")
+	var triangle: PackedVector3Array = PackedVector3Array(plain.slice(0, 3))
+	h.check("side.triangle_untouched", _all_with(triangle,
+		MeshBuilder.triangulate(triangle), MeshBuilder.newell(triangle)))
+
+
+## The reflex outline in the plane normal to `axis`, mirrored when `way` is
+## negative and wound the other way when `backwards`.
+static func _outline_in(axis: int, way: int, backwards: bool) -> PackedVector3Array:
+	var out: PackedVector3Array = PackedVector3Array()
+	for entry: Variant in REFLEX:
+		var flat: Vector3 = entry
+		var u: float = flat.x
+		var v: float = flat.z * float(way)
+		if axis == 0:
+			out.append(Vector3(0.0, u, v))
+		elif axis == 1:
+			out.append(Vector3(u, 0.0, v))
+		else:
+			out.append(Vector3(u, v, 0.0))
+	if backwards:
+		out.reverse()
+	return out
+
+
+## Whether every triangle's cross product runs with `normal`.
+static func _all_with(points: PackedVector3Array, triangles: PackedInt32Array,
+		normal: Vector3) -> bool:
+	if triangles.size() < 3:
+		return false
+	for t: int in range(0, triangles.size() - 2, 3):
+		var a: Vector3 = points[triangles[t]]
+		var b: Vector3 = points[triangles[t + 1]]
+		var c: Vector3 = points[triangles[t + 2]]
+		if (b - a).cross(c - a).dot(normal) <= 0.0:
+			return false
+	return true
 
 
 func _check_draw_kinds(h: TestHarness) -> void:

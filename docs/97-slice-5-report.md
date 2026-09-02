@@ -2875,3 +2875,262 @@ The two call sites -- one in `end_turn` beside `play()`, one in `_on_ai_step`
 before its rebuild -- are covered by the live measurement and not by a suite:
 `end_turn` needs the HUD, the overlay and the mission geometry that a headless
 run has none of.
+
+## 28. 2026-09-02 — the camera, on the engine's own six integers
+
+[`42` §11](42-mission-presentation.md) measured the remake's camera against
+the engine's and found nothing in common: a pivot snapped to a cell, one yaw
+tween, no pan, no camera during a walk or a shot. This addendum is the
+camera half of the plan that table asked for, under **model A** of
+[`92` §7.5](92-remake-architecture.md): the tactical orientation stays
+discrete, everything else the engine does is added.
+
+### 28.1 What the rig is now
+
+`game/camera_rig.gd` holds what `a3DEngine.cpp` holds — an **eye** and a
+**target** in engine units — and moves them the way `0x0040EEE0` does:
+
+* the six deltas eased by a third each frame when any starts at 500 or more,
+  by a sixth otherwise, the choice made once; stopped when all six are
+  within 30; set at once when the eye's height would change by more than
+  0x7D00. Truncating division, one step per gameplay frame, the remainder
+  carried like the effects'. `flight_frames` pre-computes the length so a
+  walk or a hold can wait for exactly it, because the engine's flight
+  **blocks** and everything that follows one starts after it;
+* `0x004529D0` as `place_on_unit`: mode 1 behind the unit along its facing
+  with the axis-aligned extra field, mode 0 on the current quadrant's corner
+  of the `(dist + 6) × dist` rectangle, the box clamp, the near-axis rule,
+  and the free-position search in **both** modes — the listing joins mode 1
+  to it at `0x00452E11`, which the first reading of `42` §2.3 missed;
+* `0x00453510` as `free_position`: up to 70 tries of `±51 × n` about the
+  look point, each clamped into the box, given up unchanged;
+* the eyes view, the map view, the ride and the tracking write of §2.4 and
+  §3.2, and the middle-drag pan of §2.5 at 400 units a pixel of the
+  original's width.
+
+The quadrant `0x00510700` is the rig's `_quadrant`, and Q and E step it: the
+current offset's magnitudes with the next sign pair, flown. **The eye's
+azimuth is quantised at every placement** — the quadrant table, a facing, or
+the search's own 51-unit steps — and the one thing that leaves it off the
+grid is the walk's tracking, which keeps the eye still and moves the target
+with the walker as the engine does. The next placement flies it back.
+
+The engine's box is what caps the height. `0x004529D0`'s own cap compares
+`pos.z` against `0x00419B90() × 1600`, and `0x00419B90` returns the loaded
+header's `+0x224`, which [`10`](10-lev-mission-format.md) had already pinned
+as world units — so it multiplies units by 1600 and never bites. The box
+initialiser `0x00453320` is pinned instead: 800 on every low side, a field
+in from the far edges, the header value on z.
+
+### 28.2 What decides, and what it decided differently from the doc
+
+`game/camera_director.gd` is `42`'s call-site table and mode tables over a
+`World`: `(8, 7, 0)` on TAB, `(6, 4, 0)` before a computer walk when the eye
+is low or the walker is out of sight, `(5, 2, 1)`, `(9, 5, 1)` and
+`(5, 3, 1)` for a computer shooter by §4.3's decision, the far shot one field
+back along the line at a metre over the head, and the reaction's coin. Four
+things the listing said that the document did not, all now in `42` and
+pinned by `presentation_tables.py` (390 → **425** checks):
+
+* the flight's target after a placement is the object **plus the unit's
+  height**; `obj + 1 m` is the look point the search is given;
+* the near-axis rule goes **both ways**: `pos.z += |Δx| − 12 800` after the
+  clamp. Intact, only the teleporter's `(5, 5, 0)` reaches it and it raises
+  by 4800; near the map's east or west edge the clamp pulls `|Δx|` under
+  12 800 and it lowers — on `_C_140` the first marine is two fields from
+  the east edge, and the opening view comes out 3227 east, 12 800 north and
+  6427 up, a steep close view. That is what the engine's player saw there
+  too, and it is not corrected;
+* the reaction camera is **2400 back** along the line's horizontal direction
+  and `4800 × slope` in height, not "4800 back and 2400 up"; both heights
+  are the reactor's and the size is the unit the camera stands behind;
+* the walk's mode reads `0x004794B0` — one line of sight per other-player
+  unit to the asked cell, at `0x0047AD70` heights — at the destination and
+  then at the source. *(As delivered, `World.is_seen_at` was that call as a
+  query on the post-turn world, and the destination's `+0x0C > 6` test was
+  not transcribed; §28.5 and §28.6 corrected both — the call is a writing
+  pass, `core` runs it at the moment of the move, and the event carries its
+  two answers.)*
+
+Two caveats of the post-turn probe, both accepted: a marine that **died**
+later in the computer's turn is not among the observers any more, so a walk
+that only it saw comes out mode 0; and an AI `reactions` event names only the
+mover's cell, so a mover the world has since lost — killed by that very
+reaction — is framed as a cell with no height and no size.
+
+The per-event `focus_on` in `_on_ai_step` is gone with the rest: it flew the
+player to every alien's cell, hidden ones included, which was a leak of the
+fog through the camera.
+
+### 28.3 The remake's own decisions, named
+
+* **A selection** flies the target to the unit with the eye's offset kept.
+  The engine's select camera is not traced and its hand-over calls no camera
+  routine (`42` §2.6); the hand-back keeps the same rule.
+* **The clear-line test** runs over the map's heights, sampled a quarter
+  field at a time, where `0x00453490` walks the special-object and clone
+  arrays. Same data policy as every other guard here, same blind spot: a
+  roof that is scenery and not a height is not an obstacle to it.
+* **Keys 1, 2, 3** for the eyes, unit and map views; `docs/29` records the
+  GUI events and no key. The HUD stays up through the eyes: `0x00452E90`'s
+  `0x0041A980(1)` then `(0)` is a hide-and-redraw pulse round the flight,
+  not a state.
+* **A computer jump** still gets the target flown to its landing cell when
+  the fog draws the warper. The engine's jump camera follows the parabola
+  (`42` §7.1) and is a later phase; without this interim an alien vanished
+  from one place and appeared in another with no camera move at all.
+* **The zoom** scales the offset by 1.15 a notch, never under 6400 units;
+  the engine's height keys move by 2000 and there is no third key here.
+* **The shot's flight runs beside the clip** rather than after it. The
+  engine plays the clip to `BREAK`, sets the caption, *then* flies (`42`
+  §4); the remake's shot is still the three-stage one of §24 and the
+  nine-stage sequencing is the next phase. The hold reported to the
+  playback covers flight plus clip.
+* **The free right-drag rotation** is left out, by the decision itself.
+
+### 28.4 Verification
+
+31 suites, 1945 → **2057** checks, `camera` 26 → 143, `mesh` 28 → 44
+(the later-the-same-day closures of §28.5 included): the flight's five
+rules and its frame count, every placement number of §2.3 on a flat map
+with the search on a walled one, the box, the three views, the pan and its
+refusal, the walk's mode table with all four pre-walk cameras and the tracking that
+waits for them, both arms of
+the shot's near test and the far flight, both arms of the coin with the
+slope and floor terms, the probe in `core`, and the level-bounds and
+hand-back checks carried over to the new state. `shot.gd` gained `--eyes`
+and `--map` and prints the rig's state; the opening, the map and the eyes
+view of `_C_140` were looked at and match their numbers.
+
+**Not looked at in a running game**, and left to the by-hand pass CLAUDE.md
+asks for on the exported build: a computer walk tracked and an alien
+emerging shown from its own eyes, a computer shot from behind the shooter
+or the victim, a reaction on either turn, Q and E round the rectangle, the
+pan, and a skip landing where the flight would have stopped.
+
+### 28.5 Open — and closed the same day
+
+Three items this section listed at delivery were closed later on 2026-09-02;
+what each found is recorded here because two of them corrected a delivered
+reading rather than merely filling one in.
+
+**The roof — closed, and it was a material question after all.** Eng3d
+culls back faces: [`31` §4.2](31-prototyp-geometry.md) now pins the sign of
+the leaf walker's side test from the binary (the vector is object minus
+camera, `0x00404BF4`), from the corpus (`plane_d = −n·v/16384` on 230 016
+of 236 861 faces as first measured; §28.6 closes the other 6 845 — a part
+face's plane is in its part's frame and the rest is the 14-bit normal's
+precision, so the engine's test is a cull on the face's own plane) and from
+the one face whose visible side is known without
+a renderer (the ground lattice, normal up, `plane_d = −80`), and the stored
+winding is against the plane normal on every face with an area but one.
+`mesh_builder.gd` culls the back face and its ear-clipper is now
+orientation-preserving, which it had to become — `Geometry2D.triangulate_polygon`
+normalises its output and the axis-drop mirrors half the outlines, so under
+`CULL_BACK` some ears were holes. So the engine's heights **are** usable on
+an interior as they are: a ceiling faces down and is culled from above, which
+is why the original's player looks into a roofed room from ten metres over
+the unit's head. Over `_C_140`'s floor there are four such faces, all at
+`z = 32 000`, above the map view's eye, which is why that map looked the
+same either way; `_C_141` has 31 facing down between `z = 17 064` and
+`32 000`. **The witness is the map view over `_C_141`'s cell (9, 9)**
+(`shot.gd --mission=_C_141 --map --at=9,9`, the `--at` added for it): with
+the faces double-sided the frame is the underside of a ceiling slab and
+nothing else; one-sided, it is the room under it — crates, girders and two
+units. The opening and map views of `_C_140` were taken again as well and
+the lattice floor is still there — the arbiter of the winding convention,
+since a wrong one removes the floor rather than the roof.
+
+**The `+0x0C > 6` test — transcribed.** The byte is the fill's movement
+points left on arrival, and `aWalkMoveMap` stamps the destination `100`
+**before** its closing sweep zeroes every cell that is not, so the value is
+alive when `0x0046E357` compares it with 6: over six, the destination's
+answer is discarded. The discard is `core`'s since §28.6
+(`ExecuteMove.ARRIVAL_POINTS_LIMIT`), and `CameraDirector.walk_mode` takes
+the two flags already decided. The mechanism is that instruction; the intent
+behind the number stays an inference. One consequence worth knowing: the
+AI's fills run at the horizon levels of [`23` §7](23-ai-system.md), so a
+computer unit routinely arrives with far more than six points left — on the
+fixture's two turns every move does (18, 18, 44, 47) — and the original then
+shows no arrival at all, mode 0, the unit simply being where it went. The
+remake still walks the body (the walk is presentation, §28.3); only the
+camera follows the engine's rule.
+
+**The died-observer probe — closed by moving it.** `0x004794B0` is
+`aBuildVisibleMapForUnit(observer, x, y, &saw)` of [`22` §9.3](22-combat-and-visibility.md),
+and [`42` §3.2](42-mission-presentation.md) had its observer backwards: the
+**mover** looks from the cell, and the flag is "it would see an enemy from
+there". The answer is the same either way round (one line per enemy, the
+same two endpoints), but the timing was not: `main.gd` asked the post-turn
+world, which has lost every observer that died later in the turn. Both
+twins now ask at the moment of the move and carry `seen_source` and
+`seen_destination` on the event; `test_ai.gd` diffs them against the Python
+fixture, which makes a second transcription the oracle for the first. (At
+first the asking was a query with the writes taken out; §28.6 made it the
+writing pass it is.) The reaction camera's mover inputs follow the mover's
+**slot** as well (`_inputs_of`), not whoever stands on the cell in the
+post-turn world.
+
+**Opened by the third, and closed in §28.6:** the engine's pre-walk call is
+the *writing* pass, and `core` asked the question only.
+
+### 28.6 The three left open — closed, 2026-09-02
+
+**`0x004794B0` writes, and now `core` does too.** `aBuildVisibleMapForUnit`
+is the engine's only visible-map pass — six call sites, all writing, no query
+form ([`22` §9.3](22-combat-and-visibility.md) now tables them) — and
+`aExecuteMove` runs it three times per walk: from the destination before the
+first step, from the source for a computer mover, and from the arrival cell
+afterwards, with mode 3 opening on `aSetVisibleStateForUnit(unit, 0)` for
+the walker itself. Both twins carry all four writes inside their own
+`aExecuteMove` (`ExecuteMove.execute`, `combat.look_before_walk` /
+`look_after_walk`), which is also where the walk's position apply moved to,
+so that the arrival pass sees the unit where it arrived. The shooter's and
+the target's reveals inside `aAttackUnit` (`0x0046B643`, `0x0046BA22`), the
+bomb's (`0x004703A9`) and the warp's full rebuild (`0x0046F144`) went in
+with them. The query form (`seen_from`, `World.is_seen_at`) is gone.
+
+What made the gap invisible was that nothing compared `+0x4F` after a
+computer turn. `tools/ai_gold.py --check` now does, on all 200 records after
+both captured turns and after every plan and fire probe, and passes — the
+engine reveals four human units by walking in turn 1 and two in turn 10,
+and a model with the passes silenced fails on exactly those slots, which is
+the discrimination the check needed. The shooter's and target's reveals are
+pinned by their instructions only: every unit those probes fire at was
+already visible. `tools/turn_gold.py --check` compares `+0x4F`, `+0x47` and
+`+0x48` of every live record after each of its six `aExecuteMove` probes
+(120 checks now); the player's two-step walk there reveals nothing new, so
+that half pins an absence. The GDScript side has the same six comparisons in
+`test_turn_native.gd`, fourteen synthetic checks in `test_execute_move.gd`
+(the destination pass reveals and wakes a group, the discard drops the flag
+and never the writes, a computer mover asks the source and is itself marked
+visible, a human mover is not asked) and seven in `test_combat.gd` (the two
+reveals, a jam revealing nothing, the bomb's).
+
+It corrected the entry that opened it: "the arrival rebuild makes the same
+marks" was wrong for `core`, which had no arrival pass at all. And it moved
+one decision: the `+0x0C > 6` discard of the destination's answer is
+`aExecuteMove`'s, so it is `core`'s now (`ExecuteMove.ARRIVAL_POINTS_LIMIT`)
+and the move event carries the two flags as the routine's own locals; `mp_left`
+left the event and `CameraDirector.walk_mode` takes two booleans.
+
+**The 6 845 faces were two things, neither of them a parallel plane.** The
+924 with parts were measured in the wrong frame: `joint_place`
+(`Eng3d.dll` `0x004060F0`) adds the rotated part translation into the
+position the side test dots the normal with, so a part face's `plane_d` is in
+the part's own coordinates, and in that frame every one of them is in span.
+The other 5 921 are the normal's precision: the stored normal is the exact
+one truncated to 14 bits (magnitude 16 381..16 384, never above) and
+`plane_d` was computed before the truncation, so on the sequence models'
+planets and their 5.5-million-unit space sphere a rotation of at most 0.018°
+puts every one back in span — a miss of up to 908 units there and of 60 at
+most on a world prototype. So the engine's side test **is** a cull on the face's own
+plane, and `CULL_BACK` differs from it only inside that sliver.
+[`31` §4.2](31-prototyp-geometry.md) is corrected and
+`prototyp_parse.py --check` pins both counts, the 0.02° bound with its
+worst miss, and that no normal is longer than 16 384.
+
+**The suites:** 2057 → **2075** checks; `camera` 143 → 135 (the query's
+five checks and the limit's three moved out), `execute_move` +14, `combat`
++7, `turn_native` +6. Still to do by hand in the exported build: what §28.4
+lists, on a map with ceilings such as `_C_141`.

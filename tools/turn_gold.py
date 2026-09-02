@@ -1431,12 +1431,21 @@ def _move_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
     # rather than the save's value, or the fill would spread differently.
     units = gold.units_of(bytes.fromhex(move["units_before"][0]), tables,
                           payload["ai_level"])
+    first_before = bytes.fromhex(move["units_before"][0])
     records = [{
         "slot": u["slot"], "type_id": u["type_id"], "player": u["player"],
         "x": u["x"], "y": u["y"], "mp": u["mp"],
         "visibility": u["visibility"], "special": u["special"],
         "size": u["size"], "mp_allowance": u["mp_allowance"],
         "equipment_ids": u["equipment_ids"],
+        # The walk's three visibility passes read and write these (docs/22
+        # section 9.3), so the GDScript twin needs them to make the same
+        # marks the engine's after-image holds.
+        "order": _byte(first_before, u["slot"], 0x47),
+        "order_param": _byte(first_before, u["slot"], 0x48),
+        "order2": _byte(first_before, u["slot"], 0x49),
+        "order2_param": _byte(first_before, u["slot"], 0x4A),
+        "group": _byte(first_before, u["slot"], 0x4E),
     } for u in units]
 
     stride = gold.UNIT_STRIDE
@@ -1464,6 +1473,13 @@ def _move_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
                 "mp_after": after[at + gold.UNIT_MP],
                 "mp_before": before[at + gold.UNIT_MP],
                 "action_points": claimed,
+                # `+0x4F`, `+0x47`, `+0x48` of every live record after the
+                # call -- what the three passes of docs/22 section 9.3 left.
+                "records_after": [{
+                    "slot": s, "visibility": _byte(after, s, 0x4F),
+                    "order": _byte(after, s, 0x47),
+                    "order_param": _byte(after, s, 0x48),
+                } for s in payload["live"]],
             },
         })
     return {
@@ -2473,6 +2489,39 @@ def _move_checks(c: Checker, payload: dict[str, Any], move: dict[str, Any],
                  before[at + 0x50] + model.walked, after[at + 0x50],
                  "unit[+0x50], in tenths of a field")
         c.expect(f"move.{tag}.facing", model.facing, after[at + 0x46])
+        # The three visibility passes of `aExecuteMove` (docs/22 §9.3): from
+        # the destination before the first step, from the source for a
+        # computer mover, and from the arrival cell -- each a **writing**
+        # pass, so `+0x4F` and the promoted orders of every live record are
+        # what the engine's after-image has to agree with.  The probe's
+        # mover is the player's, so the source pass and the mode-3
+        # self-reveal are the arms this capture cannot reach.
+        world = _world_from_capture(payload, move["units_before"][i], tables)
+        walker = world.units[slot]
+        arrival_points = fill.mp_left[probe["ty"] * width + probe["tx"]]
+        seen = combatmod.look_before_walk(world, walker, probe["tx"],
+                                          probe["ty"], arrival_points)
+        world.unit_at[world.index(walker.x, walker.y)] = -1
+        world.unit_at[world.index(model.x, model.y)] = slot
+        walker.x, walker.y, walker.facing = model.x, model.y, model.facing
+        combatmod.look_after_walk(world, walker)
+        fog_bad: list[str] = []
+        for other_slot, other in sorted(world.units.items()):
+            rec = other_slot * stride
+            for offset, name, got in ((0x4F, "visibility", other.visibility),
+                                      (0x47, "order", other.order),
+                                      (0x48, "order_param",
+                                       other.order_param)):
+                if after[rec + offset] != got:
+                    fog_bad.append(f"slot {other_slot} {name}: {got} against "
+                                   f"{after[rec + offset]}")
+        revealed = [other_slot for other_slot in payload["live"]
+                    if before[other_slot * stride + 0x4F]
+                    != after[other_slot * stride + 0x4F]]
+        c.expect(f"move.{tag}.passes_write_what_the_engine_wrote", fog_bad,
+                 [], f"+0x4F, +0x47 and +0x48 of every live record after "
+                     f"the walk; the engine changed +0x4F on {revealed} "
+                     f"(destination {seen[0]}, source {seen[1]})")
         # The seam docs/23 §5.3 draws: the routine reports and the caller
         # spends.  The one exception is the mine, which zeroes +0x15 itself.
         if model.movement_zeroed:

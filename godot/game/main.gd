@@ -32,9 +32,11 @@ var _overlay: TerrainOverlay = null
 var _highlight: Highlight = null
 var _units: UnitsView = null
 var _rig: CameraRig = null
-## How far out the view opens, in metres. Chosen to clear the ceiling of the
-## interiors the demo missions are: see [method _frame_units].
-const OPENING_ZOOM_METRES: float = 8.0
+## The camera's choreography -- docs/42's decisions over the rig.
+var _director: CameraDirector = null
+## Slot -> the [enum CameraDirector.WalkMode] its walk is shown in, for as
+## long as it walks; the camera tracks or rides every entry each frame.
+var _walk_cameras: Dictionary[int, CameraDirector.WalkMode] = {}
 ## docs/60 section 5 -- the largest of the four shipped fonts, 17 px.
 const GAME_FONT: String = "font_2"
 ## How many rendered frames the engine spends crossing one map field.
@@ -344,10 +346,13 @@ func _build(mission: String) -> void:
 
 	_rig = CameraRig.new()
 	_rig.name = "CameraRig"
+	_rig.eng3d = _eng3d
 	_scene_root.add_child(_rig)
 	_rig.setup(world.resource.width, world.resource.height,
 		world.resource.heights(), world.resource.camera_height)
 	_rig.camera().current = true
+	_director = CameraDirector.create(_rig)
+	_walk_cameras.clear()
 	_frame_units(world)
 
 	var environment: WorldEnvironment = WorldEnvironment.new()
@@ -465,11 +470,13 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 	_highlight.show_result(result, world.resource.heights())
 	var view: Dictionary = world.unit_view(slot)
 	# docs/29 section 3's command 2 is "execute the selected-unit/map **focus**
-	# path": selecting a unit puts the camera on it. The yaw and the zoom are
-	# the player's and are kept -- [method CameraRig.focus_on] moves the pivot
-	# and nothing else -- so a selection re-centres the view without throwing
-	# away how the player had arranged it.
-	_focus_on_unit(view)
+	# path": selecting a unit puts the camera on it. The engine's own select
+	# camera is not traced (docs/42 section 2.6), so this is the remake's:
+	# [method CameraRig.focus_on] flies the target to the unit and keeps the
+	# eye's offset, so a selection re-centres the view without throwing away
+	# how the player had arranged it.
+	if _director != null:
+		var _flight: float = _director.select(world, slot)
 	_refresh_status("slot %d %s: %d reachable, %d warp, mp %d, pf %s" % [
 		slot, DictRead.as_string(view["name"]), result.reachable_count(),
 		result.warp_count(), result.mp, str(pass_friendlies)])
@@ -490,25 +497,20 @@ func cycle_friendly() -> int:
 	if slot < 0:
 		return -1
 	var _map: MoveMapResult = select_unit(slot, false)
+	# docs/42 section 2.3's cycle row: `0x00453D42` places the camera on the
+	# unit with `(8, 7, 0)`, which is the engine's own answer to a squad
+	# member the camera is not pointing at.
+	if _director != null:
+		var _flight: float = _director.cycle(world, slot)
 	return slot
-
-
-## Put the camera pivot on a unit, from the view dictionary that names it.
-##
-## One place, because three callers want it: a selection, the AI playback
-## stepping to the next thing the computer did, and a mission switch.
-func _focus_on_unit(view: Dictionary) -> void:
-	if _rig == null or view.is_empty():
-		return
-	var x: int = DictRead.as_int(view["x"])
-	var y: int = DictRead.as_int(view["y"])
-	if not world.state.in_bounds(x, y):
-		return
-	_rig.focus_on(x, y, world.state.height_at(world.state.index_of(x, y)))
 
 
 func camera_rig() -> CameraRig:
 	return _rig
+
+
+func camera_director() -> CameraDirector:
+	return _director
 
 
 ## Open the camera on the player's squad rather than on the map's centre.
@@ -547,13 +549,16 @@ func _frame_units(mission_world: World) -> void:
 	# anybody stands on: on `_C_140` the mean of four marines lands inside the
 	# wall between them, and the camera opens in the dark. A unit's own cell is
 	# somewhere the simulation has already agreed is standable and open.
-	if focus_on_friendly(_rig, mission_world) < 0:
+	#
+	# The placement is the engine's "on the unit" view, `(8, 7, 0)` from the
+	# current quadrant with the free-position search (docs/42 section 2.3),
+	# settled at once because there is no previous view to fly from.
+	var slot: int = focus_on_friendly(_rig, mission_world)
+	if slot < 0:
 		return
-	_rig.set_zoom(minf(_rig.max_zoom, OPENING_ZOOM_METRES))
-	# The one place the rig turns by itself: at load there is no previous view
-	# to preserve, so an opening yaw that puts the eye inside a wall is simply
-	# replaced by the nearest one that does not.
-	_rig.choose_yaw()
+	if _director != null:
+		var _flight: float = _director.view_unit(mission_world, slot)
+	_rig.settle()
 
 
 ## The next unit the current player may command, after `after` and wrapping.
@@ -620,7 +625,7 @@ static func focus_on_friendly(rig: CameraRig, mission_world: World) -> int:
 	var y: int = DictRead.as_int(view["y"])
 	if not mission_world.state.in_bounds(x, y):
 		return -1
-	rig.focus_on(x, y,
+	var _flight: int = rig.focus_on(x, y,
 		mission_world.state.height_at(mission_world.state.index_of(x, y)))
 	return slot
 
@@ -651,8 +656,24 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			return 0.0
 		var payload: Dictionary = DictRead.as_dict(event["payload"])
 		if payload.has("path"):
-			return _walk_body(slot, DictRead.to_int32(payload["path"]),
-				DictRead.as_int(payload.get("steps", 0)))
+			# docs/42 section 3.2: the walk's mode is decided from what the
+			# mover would see -- `aBuildVisibleMapForUnit` `0x004794B0` from the
+			# destination and from the source -- and the camera follows from
+			# the mode. **The answers ride on the event.** They are the writing
+			# passes `core` ran at the moment of the move, when every unit of
+			# that moment was still standing; the post-turn world this playback
+			# runs on has lost the ones that died later in the turn.
+			var from_x: int = DictRead.as_int(event["x"])
+			var from_y: int = DictRead.as_int(event["y"])
+			var to_x: int = DictRead.as_int(event["tx"])
+			var to_y: int = DictRead.as_int(event["ty"])
+			var mode: CameraDirector.WalkMode = CameraDirector.walk_mode(false,
+				DictRead.as_bool(payload.get("seen_source", false)),
+				DictRead.as_bool(payload.get("seen_destination", false)))
+			var delay: float = _camera_before_walk(slot, from_x, from_y, to_x,
+				to_y, mode)
+			return delay + _walk_body(slot, DictRead.to_int32(payload["path"]),
+				DictRead.as_int(payload.get("steps", 0)), delay)
 	elif kind == "fire":
 		# **The weapon comes from the event, not from the world.** The
 		# playback runs after the turn, so an alien killed by reaction fire
@@ -672,7 +693,7 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 		# shown at once and its longest clip is what the playback holds on.
 		var drained: Dictionary = DictRead.as_dict(event["payload"])
 		return _present_reactions(
-			DictRead.as_array(drained.get("reactions", [])),
+			DictRead.as_array(drained.get("reactions", [])), slot,
 			DictRead.as_int(event["x"]), DictRead.as_int(event["y"]))
 	return 0.0
 
@@ -684,7 +705,8 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 ## moved the unit, and a walk that were interrupted would leave nothing behind.
 ##
 ## Returns that duration, so the computer's playback can wait for it.
-func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> float:
+func _walk_body(slot: int, route: PackedInt32Array, steps: int,
+		delay: float = 0.0) -> float:
 	if _units == null or steps <= 0 or route.size() < 2:
 		return 0.0
 	var seconds: float = float(steps) * WALK_SECONDS_PER_STEP
@@ -693,8 +715,56 @@ func _walk_body(slot: int, route: PackedInt32Array, steps: int) -> float:
 	# the start of the walk, in the order the walks happen -- is what makes the
 	# Squeether's missing period behave the way the original's does.
 	_units.start_walk(slot, route, world.resource.width, seconds,
-		_footstep_period(slot))
+		_footstep_period(slot), delay)
 	return seconds
+
+
+## The camera before a walk (docs/42 section 3.2), and the mode remembered
+## for the frames that follow. Returns how long the walk has to wait for the
+## flight. A ride hides the walker for the duration, as the engine does.
+func _camera_before_walk(slot: int, from_x: int, from_y: int, to_x: int,
+		to_y: int, mode: CameraDirector.WalkMode) -> float:
+	if _director == null or _units == null:
+		return 0.0
+	var view: Dictionary = world.unit_view(slot)
+	if view.is_empty():
+		return 0.0
+	var delay: float = _director.before_walk(world, view, from_x, from_y, to_x,
+		to_y, mode)
+	if mode == CameraDirector.WalkMode.NONE:
+		return delay
+	_walk_cameras[slot] = mode
+	if _director.rides(mode):
+		_units.suppress(slot)
+	return delay
+
+
+## Every frame of every walk the camera is following: the target on the
+## walker's head, or the ride from it. A walk that has ended releases its
+## entry and, if it was ridden, shows the body again.
+func _follow_walks() -> void:
+	if _units == null or _director == null or _walk_cameras.is_empty():
+		return
+	var walking: PackedInt32Array = _units.walking_slots()
+	for slot: int in _walk_cameras.keys():
+		var mode: CameraDirector.WalkMode = _walk_cameras[slot]
+		if not walking.has(slot):
+			_walk_cameras.erase(slot)
+			if _director.rides(mode):
+				_units.reveal(slot)
+			continue
+		var view: Dictionary = world.unit_view(slot)
+		var height: int = 0
+		if not view.is_empty():
+			height = world.unit_types().body_height_world(
+				DictRead.as_int(view["type_id"]))
+		var destination: int = _units.walk_destination(slot)
+		var there: Vector3i = Vector3i.ZERO
+		if destination >= 0:
+			there = CameraRig.cell_object(destination % world.resource.width,
+				destination / world.resource.width,
+				world.state.height_at(destination))
+		_director.track(_units.drawn_position(slot), height, mode, there)
 
 
 ## The step period for a walk about to start, and the cue cached beside it.
@@ -813,6 +883,11 @@ func _process(delta: float) -> void:
 		_units.animate(delta, world)
 		_play_footsteps()
 		var _waiting: int = _drain_pending_reactions()
+	# The camera after the bodies: tracking reads where a walker is drawn
+	# this frame, and the flight steps at the same 20 fps the bodies use.
+	_follow_walks()
+	if _rig != null:
+		var _flying: bool = _rig.advance(delta)
 	if _sequences != null and _sequences.is_running():
 		# The picture is held, never the world: `core` returned the finished
 		# state before any of this was queued.
@@ -881,10 +956,19 @@ func _on_ai_step(event: Dictionary) -> float:
 	if kind == "move" or kind == "warp":
 		at_x = to_x
 		at_y = to_y
-	if world.state.in_bounds(at_x, at_y):
-		_rig.focus_on(at_x, at_y,
-			world.state.height_at(world.state.index_of(at_x, at_y)))
-
+	# **No camera per event here.** The pivot used to be put on every
+	# event's cell, which flew the player to hidden aliens the fog was
+	# keeping from them; the camera now belongs to the presentation of each
+	# event (docs/42 sections 3.2 and 4.3), which knows what may be seen.
+	# The jump is the exception until its own camera (docs/42 section 7.1)
+	# is in: a warper the fog draws gets the target flown to its landing
+	# cell, the remake's interim, so that it does not vanish from one place
+	# and appear in another with no camera move at all.
+	if kind == "warp" and _rig != null and world.state.in_bounds(to_x, to_y):
+		var warper: Dictionary = world.unit_view(DictRead.as_int(event["slot"]))
+		if not warper.is_empty() and Fog.is_drawn(warper):
+			var _flight: int = _rig.focus_on(to_x, to_y,
+				world.state.height_at(world.state.index_of(to_x, to_y)))
 	_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
 		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
 		DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
@@ -963,6 +1047,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			# the last frame would have shown.
 			if _units != null:
 				_units.finish_walks(world)
+			# The flight is blocking in the original, so a skip lands where
+			# it would have stopped.
+			if _rig != null:
+				_rig.settle()
+			_walk_cameras.clear()
 			_playback.skip()
 		return
 	var zoom: float = zoom_delta_for(event)
@@ -977,6 +1066,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_rig.rotate_step(-1)
 		elif key.keycode == KEY_E:
 			_rig.rotate_step(1)
+		elif key.keycode == KEY_1:
+			_set_view(CameraRig.View.EYES)
+		elif key.keycode == KEY_2:
+			_set_view(CameraRig.View.UNIT)
+		elif key.keycode == KEY_3:
+			_set_view(CameraRig.View.MAP)
 		elif key.keycode == KEY_T:
 			_overlay.toggle()
 		elif key.keycode == KEY_G:
@@ -998,6 +1093,37 @@ func _unhandled_input(event: InputEvent) -> void:
 		var click: InputEventMouseButton = event
 		if click.button_index == MOUSE_BUTTON_LEFT and _may_command_now():
 			_pick(click.position, click.shift_pressed)
+	elif event is InputEventMouseMotion:
+		# docs/42 section 2.5: the middle button held drags the view.
+		var motion: InputEventMouseMotion = event
+		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
+			_rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
+
+
+## docs/42 section 2.4's three views, on keys 1, 2 and 3 -- the remake's
+## binding; docs/29 records the GUI events and no key. The eyes and unit
+## views need a unit and take the selection, or the first own unit; the map
+## view is over the same cell. The HUD stays: the engine's `0x0041A980(1)`
+## then `(0)` around the eyes flight is a hide-and-redraw pulse, not a state.
+func _set_view(mode: CameraRig.View) -> void:
+	if _director == null or world == null:
+		return
+	var slot: int = _selected if _selected >= 0 and world.has_unit(_selected) \
+		else next_friendly_slot(world, -1)
+	if slot < 0:
+		return
+	var view: Dictionary = world.unit_view(slot)
+	if view.is_empty():
+		return
+	var _flight: float = 0.0
+	match mode:
+		CameraRig.View.EYES:
+			_flight = _director.view_eyes(world, slot)
+		CameraRig.View.MAP:
+			_flight = _director.view_map(world, DictRead.as_int(view["x"]),
+				DictRead.as_int(view["y"]))
+		_:
+			_flight = _director.view_unit(world, slot)
 
 
 ## Whether the mission has ended -- in which case no command is taken any more.
@@ -1167,12 +1293,19 @@ func move_selected(x: int, y: int) -> MoveResult:
 	# actually stopped rather than where it was planned to. It is not in
 	# `to_dict()` and does not need to be: the player's move hands `game` the
 	# object itself.
-	_walk_body(slot, moved.route, moved.steps)
+	# docs/42 section 3.2, mode 1: the target flies to the walker before the
+	# first step and follows it after; the walk waits for the flight.
+	var delay: float = 0.0
+	if moved.ok and moved.steps > 0 and moved.route.size() >= 2:
+		var width: int = world.resource.width
+		delay = _camera_before_walk(slot, moved.route[0] % width,
+			moved.route[0] / width, x, y, CameraDirector.WalkMode.OWN)
+	_walk_body(slot, moved.route, moved.steps, delay)
 	# **After** the walk starts and after `_after_command`, which clears the
 	# queue: `World.submit_move` resolves the whole move's reactions in one
 	# call at its end, so the end of the walk is where the picture reaches
 	# the state `core` already returned.
-	_queue_reactions(moved.reactions, x, y)
+	_queue_reactions(moved.reactions, slot, x, y)
 	return moved
 
 
@@ -1202,7 +1335,7 @@ func attack_cell(x: int, y: int) -> AttackResult:
 			DictRead.as_int(view["weapon"]), shot)
 	# The shooter's own cell is where the return fire is aimed, and it is
 	# queued rather than shown: the shot's own clip runs first.
-	_queue_reactions(shot.reactions, DictRead.as_int(view.get("x", x)),
+	_queue_reactions(shot.reactions, slot, DictRead.as_int(view.get("x", x)),
 		DictRead.as_int(view.get("y", y)))
 	return shot
 
@@ -1259,12 +1392,14 @@ func _linger_the_killed_by(entries: Array) -> int:
 ## Returns how long the shooter's body is occupied ([method UnitsView.fire]),
 ## so the computer's playback can hold the event for its clip.
 func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
-		weapon: int, attack: AttackResult) -> float:
+		weapon: int, attack: AttackResult, reaction: bool = false,
+		mover: int = MapState.NO_UNIT) -> float:
 	if attack == null or not attack.fired or world == null:
 		return 0.0
-	var hold: float = 0.0
+	var hold: float = _camera_for_shot(shooter, sx, sy, tx, ty, attack,
+		reaction, mover)
 	if _units != null:
-		hold = _units.fire(shooter, tx, ty)
+		hold += _units.fire(shooter, tx, ty)
 	if _triggers != null:
 		var from: Vector3i = _muzzle_of(sx, sy)
 		var to: Vector3i = _muzzle_of(tx, ty)
@@ -1291,16 +1426,64 @@ func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
 	return hold
 
 
+## docs/42 section 4.3 -- the camera a shot gets, and how long it takes.
+##
+## The player's own shot moves nothing. A computer shooter is framed by
+## [method CameraDirector.computer_shot]; a reaction on either turn by the
+## coin toss of [method CameraDirector.reaction_shot]. The flight's seconds
+## are returned so the hold covers it: the engine's flight blocks, and the
+## clip stage before it is what the remake runs alongside rather than before
+## -- a deviation of the clip's few frames, recorded in docs/97.
+func _camera_for_shot(shooter: int, sx: int, sy: int, tx: int, ty: int,
+		attack: AttackResult, reaction: bool, mover: int) -> float:
+	if _director == null or _rig == null:
+		return 0.0
+	var view: Dictionary = world.unit_view(shooter)
+	if view.is_empty():
+		return 0.0
+	var from: Dictionary = CameraDirector.inputs_at(world, view, sx, sy)
+	if reaction:
+		return _director.reaction_shot(world, from, _inputs_of(mover, tx, ty),
+			_director.toss())
+	if DictRead.as_int(view["player"]) != UnitState.PLAYER_ALIEN:
+		return 0.0
+	# The target cell's object with the **shooter's** height, as the engine
+	# reads it; whether a victim stands there is what the shot resolved on.
+	var to: Dictionary = CameraDirector.inputs_at(world, view, tx, ty)
+	return _director.computer_shot(from, to, not attack.outcomes.is_empty())
+
+
+## A named unit standing on a cell as camera inputs -- the cell an event
+## puts it on, not the one the world has it on now -- or the bare cell when
+## there is no record to read. The record outlives the unit: a mover killed
+## by the reaction being shown, or one that walked on before the playback
+## reached this event, still has its type, which is what the shot cameras
+## need (its height and its size); the cell is the event's.
+func _inputs_of(slot: int, x: int, y: int) -> Dictionary:
+	if not world.state.in_bounds(x, y):
+		return {}
+	var view: Dictionary = world.unit_view(slot) if slot >= 0 else {}
+	if not view.is_empty():
+		return CameraDirector.inputs_at(world, view, x, y)
+	return {"obj": CameraRig.cell_object(x, y,
+			world.state.height_at(world.state.index_of(x, y))),
+		"height": 0, "gradient": Vector3i(0, 1, 0), "large": false,
+		"x": x, "y": y}
+
+
 ## Every reaction one command drained, shown at the cell that drew them.
 ##
 ## `Reaction.drain` returns `{"reactor": slot, "ticket": int, "attack": ...}`
-## and the target is always the mover, whose cell the caller has. Returns the
-## longest of the shots, so a caller pacing a replay can wait for all of them.
+## and the target is always the mover, whose slot and cell the caller has --
+## the cell as it was when the fire was drawn, which during the computer's
+## replay is not where the world has the mover now. Returns the longest of
+## the shots, so a caller pacing a replay can wait for all of them.
 ##
 ## A reactor the fog does not draw has no body this rebuild and animates
 ## nothing; its shot is still heard and its blobs still fly, which is what the
 ## player would have had from an unseen shooter in the original.
-func _present_reactions(entries: Array, tx: int, ty: int) -> float:
+func _present_reactions(entries: Array, mover: int, tx: int,
+		ty: int) -> float:
 	if world == null or entries.is_empty():
 		return 0.0
 	var longest: float = 0.0
@@ -1314,16 +1497,16 @@ func _present_reactions(entries: Array, tx: int, ty: int) -> float:
 			DictRead.as_dict(entry.get("attack", {})))
 		longest = maxf(longest, _present_attack(reactor,
 			DictRead.as_int(view["x"]), DictRead.as_int(view["y"]), tx, ty,
-			DictRead.as_int(view["weapon"]), attack))
+			DictRead.as_int(view["weapon"]), attack, true, mover))
 	return longest
 
 
 ## Hold return fire until the picture has caught up with what `core` did.
-func _queue_reactions(entries: Array, tx: int, ty: int) -> void:
+func _queue_reactions(entries: Array, mover: int, tx: int, ty: int) -> void:
 	if entries.is_empty():
 		return
 	_pending_reactions.append({"entries": entries.duplicate(true),
-		"x": tx, "y": ty})
+		"mover": mover, "x": tx, "y": ty})
 
 
 ## Show one waiting batch of return fire, when there is room for it.
@@ -1340,7 +1523,8 @@ func _drain_pending_reactions() -> int:
 	var batch: Dictionary = _pending_reactions[0]
 	_pending_reactions.remove_at(0)
 	var _hold: float = _present_reactions(DictRead.as_array(batch["entries"]),
-		DictRead.as_int(batch["x"]), DictRead.as_int(batch["y"]))
+		DictRead.as_int(batch["mover"]), DictRead.as_int(batch["x"]),
+		DictRead.as_int(batch["y"]))
 	return _pending_reactions.size()
 
 

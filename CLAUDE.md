@@ -53,7 +53,7 @@ python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
-python3 tools/presentation_tables.py --check gog_incubation   # 390 checks, docs/42
+python3 tools/presentation_tables.py --check gog_incubation   # 425 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -66,7 +66,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 1945 checks
+bash   godot/run_tests.sh                                    # 31 suites, 2075 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -90,6 +90,10 @@ python3 tools/lcl_runtime.py     --emit-cases tests/fixtures/lcl/cases_lcl.json 
 python3 tools/charisma_tables.py gog_incubation \
     --emit-pose-cases tests/fixtures/charisma/cases_pose.json
 python3 tools/ai_runtime.py      --emit-cases tests/fixtures/ai/cases_ai.json --root gog_incubation
+#   ^ the case file carries each move's `path` and, since 2026-09-02, the walk's
+#     `seen_source` / `seen_destination` (docs/42 §3.2, the two writing passes'
+#     answers); `test_ai` names the missing key and this command when it reads
+#     an older file.
 python3 tools/blob_tables.py     --emit-sound-cases tests/fixtures/sound/cases_sound.json \
     --root gog_incubation
 python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json \
@@ -429,7 +433,7 @@ less.
 turn**: `python3 tools/ai_gold.py --game-copy /path --dbgcall /path/dbgcall.exe`
 captures twelve phases on `_C_140` -- two saves, turn 1 and turn 10 -- and
 `python3 tools/ai_gold.py --check gog_incubation` re-runs `inclib/ai.py`
-against them (45 checks: the three predicates over 90 ordered pairs, the cover
+against them (47 checks, `+0x4F` diffed with the rest since 2026-09-02 and the slots it moves on pinned: the three predicates over 90 ordered pairs, the cover
 score over 60 cells, the target overlay, the approach cell, seven helpers, six
 fires, twelve plans, the parabomb fuse, and `aAISystemControl` itself with all
 200 unit records and `aRandom`'s seed compared field by field). The twelfth is
@@ -446,7 +450,7 @@ game's own imported `memcpy` reached through its IAT slot with the byte in a
 plain `--blob`.
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
-114 checks over 86 unit pairs (hit probability **and** line of sight), the
+120 checks over 86 unit pairs (hit probability **and** line of sight), the
 refresh of every player that owns a live unit, the records those refreshes must
 leave alone, the fog pass, the lone stat recompute, and twelve steps of the
 rotation with the twelve game-control slots beside it, and one `NextPlayer`

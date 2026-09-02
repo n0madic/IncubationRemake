@@ -62,14 +62,25 @@ static func alert_group(units: Dictionary, group: int) -> int:
 	return woken
 
 
-## `aBuildVisibleMapForUnit` `0x00479370` -- one observer's pass.
+## `aBuildVisibleMapForUnit(observer, x, y, &saw)` `0x004794B0` -- one
+## observer's pass, **standing on `(x, y)`**.
 ##
-## Returns true when it saw anything.  `wake` is called with an AI group id;
-## pass an empty [Callable] to run the pass without waking anybody, which is
-## what a "what would this unit see" query wants.
+## The cell is an argument, not the observer's record: `aExecuteMove` asks
+## it from the walk's destination before the first step (`0x0046E330`), and
+## the line of sight starts at that cell's height plus the observer's full
+## height. Every call **writes** -- each unit of another player in sight goes
+## to [constant FULL], and a computer unit on one of [constant ALERTING_ORDERS]
+## wakes its group -- and the return value is only whether anything was seen.
+## All six call sites in `Incubation.exe` are this writing pass; the engine
+## has no query form of it. The scanner arm measures its distance from the
+## asked cell too (`0x0047969C`).
+##
+## `wake` is called with an AI group id; pass an empty [Callable] to run the
+## pass without waking anybody, which only [method states_for] wants -- see
+## there for why.
 static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
-		observer: UnitState, human_players: int, game_mode: int,
-		wake: Callable) -> bool:
+		observer: UnitState, x: int, y: int, human_players: int,
+		game_mode: int, wake: Callable) -> bool:
 	var scan: int = 0
 	if observer.has_equipment(EQUIP_SCAN_MODULE):
 		scan = 1
@@ -78,7 +89,7 @@ static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
 
 	var saw: bool = false
 	var oz: int = HitChance.full_height(utab, observer.type_id) \
-		+ state.height_at(state.index_of(observer.x, observer.y))
+		+ state.height_at(state.index_of(x, y))
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		if not unit.is_alive():
@@ -93,8 +104,8 @@ static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
 
 		var uz: int = HitChance.full_height(utab, unit.type_id) \
 			+ state.height_at(state.index_of(unit.x, unit.y))
-		var block: int = LineOfSight.check(state, units, utab, observer.x,
-			observer.y, oz, unit.x, unit.y, uz, 1, human_players, game_mode)
+		var block: int = LineOfSight.check(state, units, utab, x, y, oz,
+			unit.x, unit.y, uz, 1, human_players, game_mode)
 		if block < LineOfSight.TERRAIN:
 			saw = true
 			set_state(unit, FULL)
@@ -102,13 +113,26 @@ static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
 					and ALERTING_ORDERS.has(unit.order) and wake.is_valid()):
 				wake.call(unit.group)
 		elif unit.visibility != FULL:
-			var d: int = MoveMap.distance(observer.x, observer.y, unit.x,
-				unit.y)
+			var d: int = MoveMap.distance(x, y, unit.x, unit.y)
 			if scan >= 1 and d < SCAN_RANGE:
 				set_state(unit, FULL if scan == 2 else CONTACT)
 			elif scan == 2 and d < LONG_SCAN_RANGE:
 				set_state(unit, CONTACT)
 	return saw
+
+
+## [method for_unit] as the engine calls it outside the whole fog pass: the
+## writes, **and** the groups it alerts woken on the spot (`0x0047A810` is
+## unconditional inside `0x004794B0`). This is the pass `aExecuteMove` runs
+## three times per walk ([method ExecuteMove.execute]).
+static func look_from(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		observer: UnitState, x: int, y: int, human_players: int,
+		game_mode: int) -> bool:
+	# A local lambda for the reason [method build] gives.
+	var wake: Callable = func(group: int) -> void:
+		alert_group(units, group)
+	return for_unit(state, units, utab, observer, x, y, human_players,
+		game_mode, wake)
 
 
 ## `aBuildVisibleMap` `0x004798C0` -- the whole fog pass for one player.
@@ -179,7 +203,8 @@ static func _pass(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		if unit.is_alive() and unit.player == player:
-			for_unit(state, units, utab, unit, human_players, game_mode, wake)
+			for_unit(state, units, utab, unit, unit.x, unit.y, human_players,
+				game_mode, wake)
 
 	# The second pass: a still-hidden neutral unit is promoted to a contact
 	# unless one of its eight neighbours is already one -- which shows one blip

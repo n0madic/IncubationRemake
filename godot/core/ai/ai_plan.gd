@@ -206,11 +206,15 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 			# The mover's **real** points bound the walk: `0x0040A750`
 			# restores `u->+0x15` before it commits, and the wider horizons
 			# are a search radius rather than a movement allowance.
-			var moved: MoveResult = ExecuteMove.run(ctx.map, ctx.ctab, unit,
-				walked, unit.mp)
+			var sx: int = unit.x
+			var sy: int = unit.y
+			var moved: MoveResult = ExecuteMove.execute(ctx.map, ctx.units,
+				ctx.utab, ctx.ctab, unit, walked, tx, ty,
+				IncInt.u8(ctx.mp_left[best_cell]), ctx.turn.human_count(),
+				ctx.turn.mode, unit.mp)
 			if not moved.ok and not moved.movement_zeroed:
 				return false
-			_apply_move(ctx, unit, moved)
+			_apply_move(ctx, unit, moved, sx, sy)
 			cost = moved.cost
 			if moved.movement_zeroed:
 				unit.mp = 0
@@ -232,9 +236,14 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 
 
 static func _apply_move(ctx: AIContext, unit: UnitState,
-		moved: MoveResult) -> void:
-	ctx.map.set_unit(ctx.map.index_of(unit.x, unit.y), MapState.NO_UNIT)
-	ctx.map.set_unit(ctx.map.index_of(moved.x, moved.y), unit.slot)
+		moved: MoveResult, sx: int, sy: int) -> void:
+	# `aExecuteMove`'s writes -- the position, the VictoryPoint claims and the
+	# three visibility passes of docs/22 section 9.3 -- happened inside
+	# [method ExecuteMove.execute]; what is left to the caller is the event.
+	# The two flags are the passes' own answers, asked at the moment of the
+	# move, and they ride on the event because the playback runs after the
+	# turn, when the world they were asked on is gone.
+	#
 	# `path` is the one thing a playback cannot recover for itself. By the time
 	# [AIPlayback] reaches this event the world is already at the end of the
 	# turn, so re-deriving the route with [method WalkMap.path] would derive it
@@ -244,15 +253,11 @@ static func _apply_move(ctx: AIContext, unit: UnitState,
 	var route: Array = []
 	for index: int in moved.route:
 		route.append(index)
-	ctx.emit(AIEvent.make("move", unit.slot, unit.x, unit.y, moved.x, moved.y,
+	ctx.emit(AIEvent.make("move", unit.slot, sx, sy, moved.x, moved.y,
 		moved.cost, "", {"steps": moved.steps, "facing": moved.facing,
-			"path": route, "events": moved.events.duplicate(true)}))
-	unit.x = moved.x
-	unit.y = moved.y
-	unit.facing = moved.facing
-	unit.walked = (unit.walked + moved.walked) & 0xFF
-	for write: Vector2i in moved.action_point_writes:
-		ctx.map.set_action_point(write.x, write.y)
+			"path": route, "events": moved.events.duplicate(true),
+			"seen_source": moved.seen_source,
+			"seen_destination": moved.seen_destination}))
 
 
 ## `aExecuteWarp(sx, sy, tx, ty, 1)` `0x0046EF50`, reduced to its state.
@@ -278,4 +283,8 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 	ctx.emit(AIEvent.make("warp", unit.slot, unit.x, unit.y, tx, ty))
 	unit.x = tx
 	unit.y = ty
+	# `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
+	# on every warp its mine arm did not kill it on (docs/22 section 9.4).
+	Visibility.build(ctx.map, ctx.units, ctx.utab, unit.player,
+		ctx.turn.human_count(), ctx.turn.mode)
 	return true

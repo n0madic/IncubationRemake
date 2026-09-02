@@ -76,7 +76,7 @@ ANGLE_FULL_TURN = 4096
 #: a 3200-wide terrain tile: the visible ground is the ``.3DW`` clones and the
 #: lattice only carries the height.  The record's own ``+0x08`` is a stale
 #: runtime index, so it is resolved by name.
-LATTICE_PROTOTYPE = "S003_00X.3DI"
+LATTICE_PROTOTYPE = protomod.LATTICE_PROTOTYPE
 #: The prototype the ``.lev`` parks at ``z = -1600000``; it is never drawn.
 MARKER_PROTOTYPE = "CLS.3DI"
 #: ``docs/92`` §10 -- 30 of the 36 ``SetUnitInfo`` rows name this four-vertex

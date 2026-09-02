@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from .info import BalanceTables
 from .movemap import distance
@@ -108,6 +108,9 @@ PLAYER_NEUTRAL = 0xFC
 #: ``docs/22`` §9.2 -- permanently visible whatever the fog says.
 ALWAYS_VISIBLE_TYPES = frozenset({0x3D, 0x3E, 0x3F})
 SPECIES_OBJECT = 2
+#: The two beacon types: every observer's pass marks them visible and they
+#: observe nothing themselves (``docs/22`` §9.3).
+BEACON_TYPES = frozenset({0x3D, 0x3E})
 
 #: ``docs/22`` §9.1 -- ``+0x4F``.
 VISIBLE_FULL = 0
@@ -930,12 +933,24 @@ def set_visible_state(unit: CombatUnit, state: int) -> bool:
 
 
 def build_visible_map_for_unit(world: CombatWorld, observer: CombatUnit,
-                               alert: Callable[[int], None] | None = None
-                               ) -> bool:
-    """``aBuildVisibleMapForUnit`` ``0x00479370`` -- ``docs/22`` §9.3.
+                               x: int, y: int) -> bool:
+    """``aBuildVisibleMapForUnit(observer, x, y, &saw)`` ``0x004794B0`` --
+    ``docs/22`` §9.3, the **observer standing on** ``(x, y)``.
+
+    The cell is an argument, not the observer's record: ``aExecuteMove`` asks
+    it from the walk's destination before the first step (``0x0046E330``),
+    and the answer's endpoints are the asked cell's height plus the
+    observer's full height on one side and each other unit's on the other.
+    Every call **writes** -- each unit of another player in sight goes to
+    state 0, and a computer unit on orders 5, 6 or 8 wakes its group through
+    ``0x0047A810`` on the spot -- and the return value is only whether
+    anything was seen.  All six call sites in ``Incubation.exe`` are this
+    writing pass; the engine has no query form of it.
 
     Vision measures from ``fullHeight`` at both ends and accepts ``0xFE``: a
-    unit standing in the way blocks a shot but not the sight of it.
+    unit standing in the way blocks a shot but not the sight of it.  The
+    scanner arm measures its distance from the asked cell as well
+    (``0x0047969C`` pushes the two arguments the line of sight took).
     """
     scan = 0
     if observer.has(EQUIP_SCAN_MODULE):
@@ -944,10 +959,11 @@ def build_visible_map_for_unit(world: CombatWorld, observer: CombatUnit,
         scan = 2
 
     saw_something = False
+    oz = world.full_height(observer) + world.height_at(x, y)
     for unit in world.units.values():
         if not unit.alive:
             continue
-        if unit.type_id in (0x3D, 0x3E):
+        if unit.type_id in BEACON_TYPES:
             set_visible_state(unit, VISIBLE_FULL)
             continue
         if unit.player == observer.player:
@@ -956,25 +972,74 @@ def build_visible_map_for_unit(world: CombatWorld, observer: CombatUnit,
             continue
 
         block = check_line_of_sight_ex(
-            world, observer.x, observer.y,
-            world.full_height(observer) + world.height_at(observer.x,
-                                                          observer.y),
-            unit.x, unit.y,
+            world, x, y, oz, unit.x, unit.y,
             world.full_height(unit) + world.height_at(unit.x, unit.y), 1)
         if block < LOS_TERRAIN:
             saw_something = True
             set_visible_state(unit, VISIBLE_FULL)
-            if (unit.player == PLAYER_COMPUTER
-                    and unit.order in ALERTING_ORDERS and alert is not None):
-                alert(unit.group)
+            if unit.player == PLAYER_COMPUTER and unit.order in ALERTING_ORDERS:
+                alert_group(world, unit.group)
         elif unit.visibility != VISIBLE_FULL:
-            d = distance(observer.x, observer.y, unit.x, unit.y)
+            d = distance(x, y, unit.x, unit.y)
             if scan >= 1 and d < SCAN_RANGE:
                 set_visible_state(
                     unit, VISIBLE_CONTACT if scan == 1 else VISIBLE_FULL)
             elif scan == 2 and d < LONG_SCAN_RANGE:
                 set_visible_state(unit, VISIBLE_CONTACT)
     return saw_something
+
+
+#: ``aExecuteMove`` ``0x0046E357`` -- ``cmp byte [dest + 0x0C], 6 / jbe``: the
+#: destination's answer is discarded when the fill left more movement points
+#: than this on the cell.  The mechanism is pinned; the intent behind the
+#: number is an inference (``docs/42`` §3.2).
+ARRIVAL_POINTS_LIMIT = 6
+
+
+def look_before_walk(world: CombatWorld, unit: CombatUnit, tx: int, ty: int,
+                     arrival_points: int) -> tuple[bool, bool]:
+    """``aExecuteMove``'s two passes before the first step, and the write the
+    second one decides.
+
+    * ``0x0046E330`` -- ``aBuildVisibleMapForUnit(unit, tx, ty, &seen)`` for
+      **every** mover, from the cell the walk was asked for.  The flag -- not
+      the writes -- is dropped at ``0x0046E357`` when the destination's
+      ``+0x0C`` is over :data:`ARRIVAL_POINTS_LIMIT`.
+    * ``0x0046E385`` -- the same from the source, for a **computer** mover
+      only (``cmp byte [unit + 0x45], 0xFF`` at ``0x0046E367``).
+    * ``0x0046E4BB`` -- a computer mover seen where it starts walks in mode 3,
+      and mode 3 opens with ``aSetVisibleStateForUnit(unit, 0)``: the walker
+      itself is marked visible before it moves.  Mode 3 also needs the
+      *Enemy Move* option (``0x00460510``), which the remake takes as on
+      (``godot/game/camera_director.gd``).
+
+    Returns ``(seen_destination, seen_source)`` as the routine's own locals
+    hold them after the discard -- the inputs of ``docs/42`` §3.2's table.
+    """
+    seen_destination = False
+    if world.in_bounds(tx, ty):
+        seen_destination = build_visible_map_for_unit(world, unit, tx, ty)
+    if arrival_points > ARRIVAL_POINTS_LIMIT:
+        seen_destination = False
+    seen_source = False
+    if unit.player == PLAYER_COMPUTER:
+        seen_source = build_visible_map_for_unit(world, unit, unit.x, unit.y)
+        if seen_source:
+            set_visible_state(unit, VISIBLE_FULL)
+    return seen_destination, seen_source
+
+
+def look_after_walk(world: CombatWorld, unit: CombatUnit) -> bool:
+    """``0x0046EE55`` -- the third pass, from the cell the walk reached.
+
+    It runs on every call that got past the argument checks, a walk ended by
+    a mine or a teleporter included, and only while the mover lives: the
+    bomb arm returns first when it killed the walker (``0x0046ECB5``,
+    ``0x0046EDE1``, ``0x0046EE35``).
+    """
+    if not unit.alive:
+        return False
+    return build_visible_map_for_unit(world, unit, unit.x, unit.y)
 
 
 def alert_group(world: CombatWorld, group: int) -> int:
@@ -1008,8 +1073,7 @@ def build_visible_map(world: CombatWorld, player: int) -> None:
 
     for unit in world.units.values():
         if unit.alive and unit.player == player:
-            build_visible_map_for_unit(
-                world, unit, lambda group: alert_group(world, group))
+            build_visible_map_for_unit(world, unit, unit.x, unit.y)
 
     # The second pass: a still-hidden neutral unit is promoted to a contact
     # unless one of its eight neighbours is already one -- which shows one blip
@@ -1355,6 +1419,9 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         result.reason = ("the weapon jammed or was destroyed"
                          if attacker.malfunction else "the attacker is dead")
         return result
+    # ``0x0046B643`` -- the shooter is marked visible the moment its weapon is
+    # cleared to fire, before it turns to face the target.
+    set_visible_state(attacker, VISIBLE_FULL)
 
     attacker.facing = direction(x, y, tx, ty)
     result.facing = attacker.facing
@@ -1367,6 +1434,9 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         target = world.unit_on(cx, cy)
         if target is None:
             continue
+        # ``0x0046BA22`` -- every unit on a marked cell is marked visible
+        # before its roll, whether the shot then hits or misses.
+        set_visible_state(target, VISIBLE_FULL)
         if world.effect_state[world.index(cx, cy)] == 3:
             # docs/22 section 7.3: a cell whose effect state is 3 takes nothing.
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
@@ -1623,6 +1693,9 @@ def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
         target = world.unit_on(cx, cy)
         if target is None:
             continue
+        # ``0x004703A9`` -- the same reveal ``aAttackUnit`` makes: a unit on a
+        # marked cell is visible before its roll.
+        set_visible_state(target, VISIBLE_FULL)
         if world.effect_state[world.index(cx, cy)] == 3:
             continue
         chance = 0 if weapon is None else weapon.hit

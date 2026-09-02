@@ -739,6 +739,9 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		result.reason = ("the weapon jammed or was destroyed"
 			if attacker.malfunction != 0 else "the attacker is dead")
 		return result
+	# `0x0046B643` -- the shooter is marked visible the moment its weapon is
+	# cleared to fire, before it turns to face the target.
+	Visibility.set_state(attacker, Visibility.FULL)
 
 	attacker.facing = direction(x, y, tx, ty)
 	result.facing = attacker.facing
@@ -759,6 +762,9 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var target: UnitState = _unit_on(state, units, cx, cy)
 		if target == null:
 			continue
+		# `0x0046BA22` -- every unit on a marked cell is marked visible before
+		# its roll, whether the shot then hits or misses.
+		Visibility.set_state(target, Visibility.FULL)
 		if state.obstacle_at(state.index_of(cx, cy)) == EFFECT_SHIELDED:
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
 				"marker": MARKER_RESOLVED, "dealt": 0, "chance": 0, "roll": 0})

@@ -498,13 +498,28 @@ in the shipped missions carry yaw only, and 99.5 % of those yaws are exact
 quarter turns** — 100 % of the land lattice, 91.6 % of the special objects,
 94.8 % of the scene clones. The world is authored on a four-fold symmetry.
 
-So: **four fixed orientations, rotated in 90° steps.** Free rotation would show
-faces at angles no one composed; quarter turns cannot. Zoom is free within the
+So: **four fixed orientations, ~~rotated in 90° steps~~.** Free rotation would show
+faces at angles no one composed. Zoom is free within the
 height range the mission header gives ([`10` §3](10-lev-mission-format.md), 1600
-units = 1 m), pitch is fixed, and the camera persists across a save — the
+units = 1 m), ~~pitch is fixed~~, and the camera persists across a save — the
 original had no field for it and reset the view on load
 ([`11` §5.6](11-save-game-format.md)), so keeping it is a free improvement
 rather than an infidelity.
+
+*(Corrected 2026-09-02, model A of [`97` §28](97-slice-5-report.md).)* The
+engine's four orientations are its **view quadrant** `0x00510700`, and
+[`42` §2.3](42-mission-presentation.md) read what a quadrant is: the eye goes
+to a corner of a `(dist + 6) × dist` rectangle about the unit — 14 × 8 m for
+the "on the unit" view, about 30° off the x axis — at `(height + 3)` metres
+over its head. The four corners are the discrete orientations this decision
+keeps; they are **not** quarter turns, and Q and E step round the rectangle
+by mirroring the offset. Pitch is no longer fixed: it is whatever the
+engine's placement gives, and the placements differ (§2.3's table). The
+statistic above still holds and still matters — the scenery is authored for
+quarter turns and the engine's own player looked at it from 30° off axis —
+so the model keeps the quantised azimuth and drops the free right-drag
+rotation only. Every move of the view is the engine's flight
+(`0x0040EEE0`), transcribed on the engine's own six integers.
 
 ### 7.5.1 The view opens on the squad, not on the middle of the map
 
@@ -516,9 +531,15 @@ The original shows the squad, close.
 
 So the view opens on **one unit's cell** — not the squad's centroid, which is
 not a cell anybody stands on and which on `_C_140` lands inside the wall
-between four marines — at 8 m rather than at the authored maximum. The maximum
+between four marines — ~~at 8 m rather than at the authored maximum~~. The maximum
 is untouched and the yaw is left to the player. This is where the view starts,
 not a new limit, and it changes no hash.
+
+*(2026-09-02: the opening is now the engine's own "on the unit" placement,
+`0x004529D0(8, 7, 0)` from quadrant 0 with the free-position search and the
+box clamp — [`42` §2.3](42-mission-presentation.md). The 8 m was a remake
+number chosen against a roof drawn from above; what the engine does near a
+map edge is in `97` §28.)*
 
 ### 7.6 Localisation — the seam stays, and Russian is planned
 
@@ -711,7 +732,8 @@ and not through the player byte. A dead squad member stays in `unit_slots()`
 and the fog pass leaves an own corpse fully visible, so the weaker test would
 cycle to a body the mouse refuses to select and hand the camera back to it.
 
-A pan is still not implemented. ~~The original does not need one either: it
+~~A pan is still not implemented.~~ *(2026-09-02: the middle-drag pan of `42`
+§2.5 is in, on the engine's numbers.)* ~~The original does not need one either: it
 drives the view from the selection, which is what these two restore.~~
 *(Corrected 2026-09-02: [`42` §2](42-mission-presentation.md) read the camera
 out of `aMI.cpp`. The original pans on a middle-button drag, rotates freely

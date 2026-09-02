@@ -288,6 +288,9 @@ static func execute_bomb(state: MapState, units: Dictionary,
 		var target: UnitState = units[slot]
 		if not target.is_alive():
 			continue
+		# `0x004703A9` -- the reveal `aAttackUnit` makes: a unit on a marked
+		# cell is visible before its roll.
+		Visibility.set_state(target, Visibility.FULL)
 		if state.obstacle_at(index) == Combat.EFFECT_SHIELDED:
 			continue
 		var chance: int = wtab.hit(Combat.BOMB_WEAPON)

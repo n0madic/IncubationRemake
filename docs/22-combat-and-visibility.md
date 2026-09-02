@@ -570,9 +570,12 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
 1. `aCheckWeaponDamage` (§8) may jam or destroy the weapon. If it leaves
    `unit[+0x40] != 0`, or the attacker's HP is 0, the function returns without
    firing.
-2. The attacker turns to face the target: `aChangeUnitViewDirection` writes
+2. **The shooter is revealed**: `aSetVisibleStateForUnit(attacker, 0)` at
+   `0x0046B643` (`aTacTools.cpp:1662`), right after that test — a hidden
+   unit is seen the moment it fires, whatever the shot then does.
+3. The attacker turns to face the target: `aChangeUnitViewDirection` writes
    `unit[+0x46]` with `direction(x, y, tx, ty)` (§7.4).
-3. `0x0046AA10` marks every cell the weapon covers.
+4. `0x0046AA10` marks every cell the weapon covers.
 
 ### 7.2 The target pattern — **[code] `0x0046AA10`**
 
@@ -673,7 +676,10 @@ can be defined and can never be fired**. `Info.lcl` defines none of them.
 
 The resolver sweeps the whole cell array, and repeats the sweep when a
 secondary explosion added `0x53` markers. For every cell whose marker is in
-`0x50..0x59` and which holds a unit:
+`0x50..0x59` and which holds a unit — **which is revealed first**,
+`aSetVisibleStateForUnit(target, 0)` at `0x0046BA22` (`cpp:1988`), before the
+roll and so on a miss as well as a hit; `aExecuteBomb` does the same at
+`0x004703A9` — the shot resolves as:
 
 ```c
 /* the raw call is `push &dist; push &hit; push 0; push 0; push weaponId;
@@ -937,6 +943,38 @@ permanently visible. `unitType[+0x79]` is `SetUnitInfo`'s *species* column
 never hidden, and which for the same reason award no experience (§7.5).
 
 ### 9.3 `aBuildVisibleMapForUnit(observer, x, y, *sawSomething)`
+
+The observer is `observer`, **standing on `(x, y)`** — the cell is an
+argument, and the routine reads the observer's record for nothing but its
+player, its scanners and its height. `aBuildVisibleMap` passes the unit's own
+cell; `aExecuteMove` passes the walk's destination before the first step. And
+it **writes**: this is the only visible-map pass the engine has, there is no
+query form, and every one of its six call sites changes `+0x4F` for good
+(a byte sweep of the `call` encoding, the way §9.4's nineteen were found; `axt` after `aa` reports one of the six):
+
+| Site | Caller | Observer, cell | Note |
+|---|---|---|---|
+| `0x004799D3` | `aBuildVisibleMap` §9.2 | each own unit, its cell | the whole pass |
+| `0x0046E330` | `aExecuteMove` | the mover, the **destination** | before the first step; the *answer* is dropped when the destination's `+0x0C` is over 6 ([`42` §3.2](42-mission-presentation.md)), the writes never |
+| `0x0046E385` | `aExecuteMove` | the mover, the **source** | computer movers only (`cmp byte [unit+0x45], 0xFF` at `0x0046E367`) |
+| `0x0046EE55` | `aExecuteMove` | the mover, the arrival cell | after the walk, before the `MoveUnit` event, only while the mover lives |
+| `0x0046BDEB` | `aAttackUnit` | the **converted** unit, its cell | weapon 47's arm: the target's `+0x45` is overwritten with the shooter's, its points reset, and it looks around for its new side. No shipped unit carries weapon 47 (§7.2); named, not modelled |
+| `0x0047AF53` | `0x0047AD90`, `aUnitMap.cpp:5663` | the moved unit, its new cell | a unit relocated cell to cell — called only from the animation module's platform ride (`0x00412F9A`), presentation |
+
+`aSetVisibleStateForUnit` itself has fifteen callers: the five inside this
+routine and the four inside `aBuildVisibleMap`, `aExecuteMove`'s mode-3
+self-reveal (`0x0046E4BB`), the shooter and the target in `aAttackUnit`
+(§7.1, §7.3), the target in `aExecuteBomb` (`0x004703A9`), and one in
+`aAnimations.cpp` (`0x00411660`, the spawn of §9.4.2). The remake's `core`
+carries every one of these that a turn can reach; what pins them is
+`tools/ai_gold.py --check`, which since 2026-09-02 diffs `+0x4F` on all 200
+records after both captured computer turns — the engine reveals four human
+units in one and two in the other by walking, and a model without the walk's
+passes fails on exactly those slots — and `tools/turn_gold.py --check`, whose
+six `aExecuteMove` probes compare `+0x4F`, `+0x47` and `+0x48` of every live
+record after each walk (nothing changes there: the player's mover sees nothing
+new from its two-step path, so that capture pins the absence of a write rather
+than one).
 
 ```c
 scan = observer->equip[0] ? 1 : 0;          /* +0x21, "Scan Module" */

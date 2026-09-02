@@ -229,7 +229,7 @@ class FaceShape:
         return self.convex and not self.repeated
 
 
-def _newell(points: Sequence[tuple[int, int, int]]) -> tuple[int, int, int]:
+def newell_normal(points: Sequence[tuple[int, int, int]]) -> tuple[int, int, int]:
     """Newell's normal, in exact integers -- no normalisation, no floats."""
     nx = ny = nz = 0
     for i, (x0, y0, z0) in enumerate(points):
@@ -252,7 +252,7 @@ def face_out_of_plane(vertices: Sequence[tuple[int, int, int]],
     if len(indices) < FACE_MIN_VERTICES:
         return 0.0
     points = [vertices[i] for i in indices]
-    nx, ny, nz = _newell(points)
+    nx, ny, nz = newell_normal(points)
     norm = math.sqrt(nx * nx + ny * ny + nz * nz)
     if norm == 0.0:
         return 0.0
@@ -273,7 +273,7 @@ def face_shape(vertices: Sequence[tuple[int, int, int]],
         return FaceShape(True, True, True, len(set(indices)) != len(indices))
     points = [vertices[i] for i in indices]
     repeated = len(set(indices)) != len(indices)
-    nx, ny, nz = _newell(points)
+    nx, ny, nz = newell_normal(points)
     if (nx, ny, nz) == (0, 0, 0):
         return FaceShape(True, False, True, repeated)
 
@@ -305,6 +305,13 @@ VERTEX_STRIDE = 12  # i32 x, i32 y, i32 z
 PLANE_STRIDE = 6    # i16 nx, i16 ny, i16 nz  (1/16384 fixed point)
 FACE_HEADER_SIZE = 0x0E
 PART_PAYLOAD_SIZE = 24
+
+
+#: The ground lattice every world set ships under this one name; the
+#: converter places it under every map and the corpus check uses it as the
+#: one face whose visible side is known without a renderer: a floor is
+#: seen from above.
+LATTICE_PROTOTYPE = "S003_00X.3DI"
 
 
 @dataclass

@@ -74,6 +74,13 @@ MISSION = "_C_140"
 SLOT_TURN_1 = 0
 SLOT_TURN_10 = 2
 EXPECTED_TURNS = {SLOT_TURN_1: 1, SLOT_TURN_10: 10}
+#: The human units whose ``+0x4F`` the computer's own walks change during each
+#: captured turn: hidden by ``aRefreshPlayer(255)``'s fog pass, revealed by
+#: the three ``aBuildVisibleMapForUnit`` passes inside ``aExecuteMove``
+#: (``docs/22`` §9.3).  Pinned so that the field-by-field diff of ``+0x4F`` in
+#: :func:`check_turn` cannot pass vacuously on a capture where the byte never
+#: moves -- a model with those passes silenced fails on exactly these slots.
+EXPECTED_REVEALED = {SLOT_TURN_1: [2, 3, 4, 5], SLOT_TURN_10: [2, 3]}
 #: ``_6_.sav`` on ``_C_141``, which is where the pseudo-player probe runs:
 #: that mission places 13 records owned by player 252 and ``_C_140`` places
 #: two, both of the wrong type.
@@ -999,7 +1006,7 @@ TURN_FIELDS = {
     0x37: "armour_rear", 0x39: "acted", 0x3D: "ammo", 0x3E: "heat",
     0x40: "malfunction", 0x41: "action_state", 0x42: "x", 0x43: "y",
     0x45: "player", 0x46: "facing", 0x47: "order", 0x48: "order_param",
-    0x4C: "type", 0x50: "walked",
+    0x4C: "type", 0x4F: "visibility", 0x50: "walked",
 }
 
 def _diff(native: dict[str, int], model: dict[str, int]) -> dict[str, Any]:
@@ -1029,7 +1036,8 @@ def _model_record(unit: combatmod.CombatUnit) -> dict[str, int]:
             "action_state": unit.action_state, "x": unit.x, "y": unit.y,
             "player": unit.player, "facing": unit.facing,
             "order": unit.order, "order_param": unit.order_param,
-            "type": unit.type_id, "walked": unit.walked & 0xFF}
+            "type": unit.type_id, "visibility": unit.visibility,
+            "walked": unit.walked & 0xFF}
 
 
 def check_state(c: Checker, payload: dict[str, Any]) -> None:
@@ -1484,6 +1492,13 @@ def check_turn(c: Checker, payload: dict[str, Any],
         refreshed = bytes.fromhex(data["units"][1])
         after = bytes.fromhex(data["units"][2])
         cells = bytes.fromhex(data["cells"][1])
+        revealed = [s for s in range(gold.UNIT_SLOTS)
+                    if refreshed[s * gold.UNIT_STRIDE + gold.UNIT_HP]
+                    and refreshed[s * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]
+                    != after[s * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]]
+        c.expect(f"{label}.walks_revealed", revealed, EXPECTED_REVEALED[slot],
+                 "the slots whose +0x4F the computer's own walks changed; "
+                 "what makes the +0x4F column of the diff below a check")
         ctx = _context_from(cells, refreshed, tables,
                             payload[f"state_{slot}"]["ai_level"],
                             _seed_of(data["seeds"][1]))

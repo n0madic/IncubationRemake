@@ -25,6 +25,7 @@ func run(h: TestHarness) -> void:
 	_mine(h)
 	_the_caller_spends(h)
 	_the_move_unit_event(h)
+	_the_passes(h)
 
 
 ## A world whose mover has room to take a two-step path with one orthogonal
@@ -351,3 +352,129 @@ func _blocked_path(h: TestHarness) -> void:
 		DictRead.as_int(world.unit_view(0)["x"]), 0)
 	h.equal("execute_move.a_blocked_path_spends_nothing",
 		DictRead.as_int(world.unit_view(0)["mp"]), 8)
+
+
+## A 7x7 floor with one wall cell at (3, 1): a unit on (1, 1) and one on
+## (5, 1) cannot see each other along the row, and a step down to (1, 3)
+## opens the line past the wall's corner.
+static func _walled_world(mover_player: int, mover_x: int, mover_y: int,
+		other_player: int) -> World:
+	var mover: Dictionary = TestFixtures.unit(0, mover_x, mover_y, 0,
+		mover_player, 4, Visibility.HIDDEN)
+	var other: Dictionary = TestFixtures.unit(1, 5, 1, 0, other_player, 4,
+		Visibility.HIDDEN)
+	# Orders 5, 6 and 8 wake the group (docs/22 section 9.3): the secondary
+	# order is what the promotion copies over the primary.
+	other["order"] = 5
+	other["order2"] = 7
+	other["group"] = 9
+	var heights: Array = []
+	for _i: int in range(7 * 7):
+		heights.append(0)
+	heights[1 * 7 + 3] = 20000
+	return World.create(TestFixtures.map_document(7, 7, [mover, other], [],
+		heights), TestFixtures.balance(), 1.0)
+
+
+## `aExecuteMove`'s three visibility passes (docs/22 section 9.3) are writing
+## ones, run inside [method ExecuteMove.execute]: from the destination before
+## the first step, from the source for a computer mover, and from the arrival
+## cell. What they write is `+0x4F` and, through `0x0047A810`, the promoted
+## orders of the groups they alert.
+func _the_passes(h: TestHarness) -> void:
+	# The player's mover: the destination pass reveals the alien it will see
+	# from (1, 3) -- and wakes its group -- before a step is taken.
+	var world: World = _walled_world(0, 1, 1, UnitState.PLAYER_ALIEN)
+	h.equal("passes.the_alien_starts_hidden",
+		DictRead.as_int(world.unit_view(1)["visibility"]), Visibility.HIDDEN)
+	var moved: MoveResult = world.submit_move(MoveCommand.create(0, 1, 3))
+	h.check("passes.the_walk_happened", moved.ok and moved.steps > 0,
+		moved.reason)
+	h.check("passes.the_destination_answer_is_yes", moved.seen_destination,
+		"an enemy is in sight from (1, 3)")
+	h.check("passes.the_source_is_not_asked_for_a_human",
+		not moved.seen_source, "0x0046E367: only a computer mover asks it")
+	h.equal("passes.the_destination_pass_reveals",
+		DictRead.as_int(world.unit_view(1)["visibility"]), Visibility.FULL)
+	h.equal("passes.the_destination_pass_wakes_the_group",
+		DictRead.as_int(world.unit_view(1)["order"]), 7,
+		"0x0047A810 copies +0x49 over +0x47 for the whole group")
+
+	# The same walk called directly, with the destination's `+0x0C` over the
+	# limit: the flag is discarded (0x0046E357) and the writes are not.
+	var direct: World = _walled_world(0, 1, 1, UnitState.PLAYER_ALIEN)
+	var units: Dictionary = {
+		0: UnitState.from_document(TestFixtures.unit(0, 1, 1, 0, 0, 4,
+			Visibility.HIDDEN)),
+		1: UnitState.from_document(_walled_alien()),
+	}
+	var walked: Dictionary = _walk(direct, units, 0, 1, 3)
+	var walker: UnitState = units[0]
+	var watched: UnitState = units[1]
+	var discarded: MoveResult = ExecuteMove.execute(direct.state, units,
+		direct.unit_types(), direct.ctrlmap(), walker, walked, 1, 3,
+		ExecuteMove.ARRIVAL_POINTS_LIMIT + 1, 1, 1)
+	h.check("passes.over_the_limit_discards_the_flag",
+		discarded.ok and not discarded.seen_destination,
+		"cmp byte [dest + 0x0C], 6; jbe")
+	h.equal("passes.over_the_limit_still_writes", watched.visibility,
+		Visibility.FULL,
+		"the discard is of the answer, never of the pass")
+	var kept: Dictionary = {
+		0: UnitState.from_document(TestFixtures.unit(0, 1, 1, 0, 0, 4,
+			Visibility.HIDDEN)),
+		1: UnitState.from_document(_walled_alien()),
+	}
+	var at_limit: World = _walled_world(0, 1, 1, UnitState.PLAYER_ALIEN)
+	var limit_walk: Dictionary = _walk(at_limit, kept, 0, 1, 3)
+	var kept_walker: UnitState = kept[0]
+	var held: MoveResult = ExecuteMove.execute(at_limit.state, kept,
+		at_limit.unit_types(), at_limit.ctrlmap(), kept_walker, limit_walk,
+		1, 3, ExecuteMove.ARRIVAL_POINTS_LIMIT, 1, 1)
+	h.check("passes.at_the_limit_the_flag_stands",
+		held.ok and held.seen_destination, "six is not over six")
+
+	# A computer mover seen where it starts: the source pass is asked, it
+	# answers yes, and mode 3 marks the walker itself visible (0x0046E4BB).
+	var alien_world: World = _walled_world(UnitState.PLAYER_ALIEN, 1, 3, 0)
+	var alien_units: Dictionary = {
+		0: UnitState.from_document(TestFixtures.unit(0, 1, 3, 0,
+			UnitState.PLAYER_ALIEN, 4, Visibility.HIDDEN)),
+		1: UnitState.from_document(TestFixtures.unit(1, 5, 1, 0, 0, 4,
+			Visibility.HIDDEN)),
+	}
+	var alien_walk: Dictionary = _walk(alien_world, alien_units, 0, 1, 1)
+	var alien: UnitState = alien_units[0]
+	var human: UnitState = alien_units[1]
+	var alien_moved: MoveResult = ExecuteMove.execute(alien_world.state,
+		alien_units, alien_world.unit_types(), alien_world.ctrlmap(),
+		alien, alien_walk, 1, 1, 0, 1, 1)
+	h.check("passes.a_computer_mover_asks_the_source",
+		alien_moved.ok and alien_moved.seen_source, alien_moved.reason)
+	h.check("passes.the_wall_hides_the_destination",
+		not alien_moved.seen_destination, "(1, 1) to (5, 1) runs through (3, 1)")
+	h.equal("passes.mode_3_reveals_the_walker", alien.visibility,
+		Visibility.FULL, "aSetVisibleStateForUnit(unit, 0) at 0x0046E4BB")
+	h.equal("passes.the_source_pass_reveals_the_human", human.visibility,
+		Visibility.FULL)
+	h.equal("passes.the_walker_arrived", Vector2i(alien.x, alien.y),
+		Vector2i(1, 1))
+
+
+static func _walled_alien() -> Dictionary:
+	var other: Dictionary = TestFixtures.unit(1, 5, 1, 0,
+		UnitState.PLAYER_ALIEN, 4, Visibility.HIDDEN)
+	other["order"] = 5
+	other["order2"] = 7
+	other["group"] = 9
+	return other
+
+
+static func _walk(world: World, units: Dictionary, slot: int, tx: int,
+		ty: int) -> Dictionary:
+	var mover: UnitState = units[slot]
+	var fill: MoveMapResult = MoveMap.build(world.state, units,
+		world.unit_types(), world.ctrlmap(), slot, false, mover.mp,
+		Allowance.for_unit(mover, world.unit_types(), units, 1))
+	return WalkMap.path(world.state, units, world.ctrlmap(), fill, mover.x,
+		mover.y, tx, ty)

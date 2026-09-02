@@ -395,6 +395,20 @@ submission order; Godot sorts transparent surfaces by depth. Reproducing the
 order would mean reproducing the BSP walk the cache flattens away, and depth
 sorting is right more often than a fixed order is.
 
+**Corrected 2026-09-02 — the faces are one-sided.** The slice's material
+set `CULL_DISABLED`, a choice this report never recorded, and it was wrong:
+[`31` §4.2](31-prototyp-geometry.md) now pins that Eng3d's leaf walker draws
+a face only when the camera is on the side its plane normal points to, and
+that the stored winding puts that side in front under Godot's clockwise
+front face. `mesh_builder.gd` culls the back face, and the ear-clipper had
+to become orientation-preserving to survive it: `Geometry2D.triangulate_polygon`
+normalises the orientation of what it returns and the axis-drop projection
+mirrors the outline for half the normals, so an ear could come back wound
+against its face — harmless double-sided, a hole one-sided. `test_mesh.gd`
+lays the reflex outline in all three planes, facing both ways, wound both
+ways, and requires every triangle to follow the polygon's Newell normal, with
+a check that the raw triangulation really does flip for some of the twelve.
+
 ### Face triangulation (§8 bullet 4)
 
 The manual `--obj` cross-check is retired, and the answer was **not** the green

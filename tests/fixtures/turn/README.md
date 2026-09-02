@@ -95,6 +95,15 @@ Seeds are emitted as JSON **numbers**, not as the hex the capture stores: every
 value is `float(int(...))` below 2^31, so the round trip is exact, and a number
 is what `IncRandom.seed` takes.
 
+Since 2026-09-02 each move probe's `expected` also carries `records_after`
+— `+0x4F`, `+0x47` and `+0x48` of every live record after the call — and the
+`units` records carry `order`, `order_param`, `order2`, `order2_param` and
+`group`, because the three visibility passes inside `aExecuteMove`
+([`docs/22`](../../../docs/22-combat-and-visibility.md) §9.3) read and write
+them. On this capture nothing changes: the player's mover sees nothing new
+from its two-step path, so what the six comparisons pin is the absence of a
+write.
+
 ### What phase 10 settled
 
 The six probes walk the identical reconstructed path — `(2,0)` → `(3,0)`

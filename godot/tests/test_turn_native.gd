@@ -100,7 +100,12 @@ func _move_cases(h: TestHarness, doc: Dictionary) -> void:
 			_apply_write(state, DictRead.as_dict(write))
 
 		var expected: Dictionary = DictRead.as_dict(probe["expected"])
-		var moved: MoveResult = ExecuteMove.run(state, ctrlmap, mover, walked)
+		var tx: int = DictRead.as_int(moves["tx"])
+		var ty: int = DictRead.as_int(moves["ty"])
+		var moved: MoveResult = ExecuteMove.execute(state, units, unit_types,
+			ctrlmap, mover, walked, tx, ty, fill.mp_left_at(tx, ty),
+			DictRead.as_int(doc["human_count"]),
+			DictRead.as_int(DictRead.as_dict(doc["combat"])["game_mode"]))
 		h.equal("move.%s.returns" % tag, 1 if moved.ok else 0,
 			DictRead.as_int(expected["returns"]))
 		h.equal("move.%s.cost" % tag, moved.cost,
@@ -112,6 +117,27 @@ func _move_cases(h: TestHarness, doc: Dictionary) -> void:
 			DictRead.as_int(expected["walked"]))
 		h.equal("move.%s.facing" % tag, moved.facing,
 			DictRead.as_int(expected["facing"]))
+		# The three visibility passes of `aExecuteMove` (docs/22 section 9.3)
+		# are writing ones, and `+0x4F`, `+0x47` and `+0x48` of every live
+		# record after the call are what they left. The probe's mover is the
+		# player's, so the source pass and the mode-3 self-reveal are the two
+		# arms this capture cannot reach.
+		var fog_bad: PackedStringArray = PackedStringArray()
+		for entry3: Variant in DictRead.as_array(expected["records_after"]):
+			var record: Dictionary = DictRead.as_dict(entry3)
+			var other_slot: int = DictRead.as_int(record["slot"])
+			if not units.has(other_slot):
+				fog_bad.append("slot %d missing" % other_slot)
+				continue
+			var other: UnitState = units[other_slot]
+			for pair: Array in [["visibility", other.visibility],
+					["order", other.order], ["order_param", other.order_param]]:
+				var name: String = DictRead.as_string(pair[0])
+				if DictRead.as_int(record[name]) != DictRead.as_int(pair[1]):
+					fog_bad.append("slot %d %s %d != %d" % [other_slot, name,
+						DictRead.as_int(pair[1]), DictRead.as_int(record[name])])
+		h.check("move.%s.passes_write_what_the_engine_wrote" % tag,
+			fog_bad.is_empty(), ", ".join(fog_bad))
 
 		# **The probe calls the routine, not the engine's caller**, so what
 		# `+0x15` holds afterwards is a statement about `aExecuteMove` alone:

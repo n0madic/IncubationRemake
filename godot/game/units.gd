@@ -279,12 +279,15 @@ func any_busy() -> bool:
 ## is what keeps [AIPlayback]'s `skip()` meaning "stop drawing" rather than
 ## "stop simulating".
 func start_walk(slot: int, cells: PackedInt32Array, width: int,
-		seconds: float, step_frames: int = 0) -> void:
+		seconds: float, step_frames: int = 0, delay: float = 0.0) -> void:
 	if cells.size() < 2 or seconds <= 0.0:
 		return
+	# `delay` is the camera's: the engine flies the camera to the walker
+	# **before** the first step and that flight blocks (docs/42 section 2.2),
+	# so the body waits on its first cell for as long as the flight takes.
 	_walks[slot] = {"cells": cells, "width": width, "elapsed": 0.0,
 		"seconds": seconds, "step_frames": step_frames, "frames": 0.0,
-		"steps": 0}
+		"steps": 0, "delay": maxf(delay, 0.0)}
 	# **On its own first cell, now, and not on the next frame.** The node was
 	# left wherever the rebuild put it, which for the computer's replay is
 	# where the unit stands at the *end* of the whole turn -- so an alien
@@ -337,15 +340,21 @@ func finish_walks(world: World) -> void:
 
 func _advance_walk(slot: int, delta: float, world: World) -> void:
 	var walk: Dictionary = _walks[slot]
-	var elapsed: float = DictRead.as_float(walk["elapsed"]) + delta
+	var total: float = DictRead.as_float(walk["elapsed"]) + delta
 	var seconds: float = DictRead.as_float(walk["seconds"])
 	var cells: PackedInt32Array = DictRead.as_int32_array(walk["cells"])
 	var width: int = DictRead.as_int(walk["width"])
+	walk["elapsed"] = total
+	# Still waiting for the camera: the body stays on its first cell, the
+	# walk cycle has not begun and no foot comes down.
+	var elapsed: float = total - DictRead.as_float(walk.get("delay", 0.0))
+	if elapsed < 0.0:
+		_walks[slot] = walk
+		return
 	if elapsed >= seconds:
 		_snap_to_end(slot, world)
 		_walks.erase(slot)
 		return
-	walk["elapsed"] = elapsed
 	var step_frames: int = DictRead.as_int(walk["step_frames"])
 	if step_frames > 0:
 		var frames: float = DictRead.as_float(walk["frames"]) \
@@ -400,6 +409,42 @@ func _snap_to_end(slot: int, world: World) -> void:
 
 func _node_of(slot: int) -> Node3D:
 	return get_node_or_null(NodePath("unit_%d" % slot)) as Node3D
+
+
+## Where a slot's body is **drawn** this frame, in engine units -- part way
+## along a walk when it is walking, else its node's position -- or the cell
+## the world puts it on when it has no node. The camera tracks this, never
+## the world's record: during the computer's replay the two differ by design.
+func drawn_position(slot: int) -> Vector3i:
+	var node: Node3D = _node_of(slot)
+	if node != null:
+		return WorldSpace.from_godot(node.position)
+	if world_ref == null:
+		return Vector3i.ZERO
+	var view: Dictionary = world_ref.unit_view(slot)
+	if view.is_empty():
+		return Vector3i.ZERO
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	return WorldSpace.from_godot(_cell_position(
+		world_ref.state.index_of(x, y), world_ref.resource.width, world_ref))
+
+
+## The map index a slot's walk ends on, or -1 when it is not walking.
+func walk_destination(slot: int) -> int:
+	if not _walks.has(slot):
+		return -1
+	var cells: PackedInt32Array = DictRead.as_int32_array(
+		DictRead.as_dict(_walks[slot])["cells"])
+	return cells[cells.size() - 1] if not cells.is_empty() else -1
+
+
+## The slots walking right now, for the camera to pick its subject from.
+func walking_slots() -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for slot: int in _walks.keys():
+		out.append(slot)
+	return out
 
 
 func _cell_position(index: int, width: int, world: World) -> Vector3:

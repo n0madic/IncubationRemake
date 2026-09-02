@@ -179,6 +179,13 @@ static func build_world(case: Dictionary) -> Dictionary:
 		unit.hp = 1
 		unit.visibility = DictRead.as_int(record["visibility"])
 		unit.equipment = DictRead.to_int32(record["equipment_ids"])
+		# The walk's visibility passes read and write these (docs/22 section
+		# 9.3); a fill-only case carries none, and none is what they get.
+		unit.order = DictRead.as_int(record.get("order", 0))
+		unit.order_param = DictRead.as_int(record.get("order_param", 0))
+		unit.order2 = DictRead.as_int(record.get("order2", 0))
+		unit.order2_param = DictRead.as_int(record.get("order2_param", 0))
+		unit.group = DictRead.as_int(record.get("group", 0))
 		units[unit.slot] = unit
 
 	var zeros: Array = []

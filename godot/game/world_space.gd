@@ -30,6 +30,17 @@ static func to_godot_v(v: Vector3) -> Vector3:
 	return Vector3(v.x, v.z, -v.y) / WORLD_UNITS_PER_METRE
 
 
+## The inverse of [method to_godot]: a Godot position back into engine units.
+##
+## Truncated, not rounded, because every consumer is an engine routine that
+## works on integers -- the camera flight of docs/42 section 2.2 is one -- and
+## a rounding here would put a half unit into arithmetic the engine does in
+## whole ones.
+static func from_godot(v: Vector3) -> Vector3i:
+	return Vector3i(int(v.x * WORLD_UNITS_PER_METRE),
+		int(-v.z * WORLD_UNITS_PER_METRE), int(v.y * WORLD_UNITS_PER_METRE))
+
+
 ## The centre of map field `(x, y)` at engine height `h`.
 static func cell_centre(x: int, y: int, h: int) -> Vector3:
 	return Vector3(float(x) * FIELD_METRES, float(h) / WORLD_UNITS_PER_METRE,

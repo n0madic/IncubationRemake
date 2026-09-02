@@ -54,6 +54,15 @@ var route: PackedInt32Array = PackedInt32Array()
 ## [method World.submit_move] and not by [ExecuteMove].
 var reactions: Array[Dictionary] = []
 
+## `aExecuteMove`'s two locals from the passes it runs before the first step
+## (docs/42 section 3.2), as they stand after the `+0x0C > 6` discard: would
+## the mover see an enemy from the destination, and -- asked for a computer
+## mover only -- from the source. Filled in by [method ExecuteMove.execute],
+## not by [method ExecuteMove.run], and kept out of [method to_dict] for the
+## same reason as [member route].
+var seen_destination: bool = false
+var seen_source: bool = false
+
 
 static func failed(fx: int, fy: int, why: String) -> MoveResult:
 	var result: MoveResult = MoveResult.new()

@@ -129,7 +129,7 @@ against the corpus for the clip it animates.
 | `0x004FA490` | camera lock; every primitive refuses with *"move locked camera!"* while it is set |
 | `0x005106D8` | **view mode**: 0 none/script, 1 through the unit's eyes, 2 on the unit, 4 map |
 | `0x00510700` | **view quadrant** 0…3, the orientation the unit camera is placed relative to |
-| `0x00510760…0x00510774` | the box every computed position is clamped into (`0x00453420`) |
+| `0x00510760…0x00510774` | the box every computed position is clamped into (`0x00453420`): `0x00453320` fills it with 800 on every low side, `(width − 1) × 3200` and `(height − 1) × 3200` on x and y, and the header's camera height (`0x004FD0F4`, [`10`](10-lev-mission-format.md) `+0x224`, world units) on z. **This is the height cap that bites** — see §2.3 |
 
 * `0x00403560(px, py, pz, tx, ty, tz)` sets position and target and rebuilds
   the direction — **43 call sites**, every animation driver among them.
@@ -171,20 +171,55 @@ and the type's height (`0x0047AD70`: `unitInfo[type + 0x1C] × 160`).
 ```
 pos.x = obj.x - gx * dist * 1600 - (axis-aligned ? gx * 3200 : 0)
 pos.y = obj.y - gy * dist * 1600 - (axis-aligned ? gy * 3200 : 0)
-pos.z = obj.z + unitHeight + height * 1600,  capped at the mission's camera height × 1600 (0x00419B90)
-target = (obj.x, obj.y, obj.z + 1600)
+pos.z = obj.z + unitHeight + height * 1600
+target = (obj.x, obj.y, obj.z + unitHeight)
 ```
 
+*(Corrected 2026-09-02, from the listing rather than the first skim.)* The
+flight's **target is the object plus the unit's height** (`0x0051071C`); the
+`obj.z + 1600` of the first reading is the *look point the search is given*,
+below. The cap that follows — `if (cameraHeight × 1600 < pos.z) pos.z =
+cameraHeight × 1600` — compares against `0x00419B90`, which returns the
+header's camera height **already in world units** (`0x004FD0F4` is the loaded
+header's `+0x224`), so it multiplies units by 1600 and **can never bite**; the
+cap that does is the box clamp of §2.1, whose z ceiling is the same header
+value unscaled. "Axis-aligned" is `gx == 0 || gy == 0`. Mode 1 then goes
+straight to the free-position search: the search is **not** mode 0's alone.
+
 **Mode 0 — relative to the view quadrant** (`0x00452C1E`, jump table
-`0x00452E80`): `(dist + 6) × 1600` along one axis and `dist × 1600` along the
-other, signs by quadrant (`+,+ / +,− / −,− / −,+`), `pos.z = obj.z +
-unitHeight + (height + 3) × 1600`, capped the same way. Then the **free-position
-search** `0x00453510`: up to **70** tries, each rotating the offset around the
-target by `±51 × n` angle units alternately, until the line from the position
-to the target and to the target + 2400 (1.5 m) crosses no scenery
-(`0x00453490` walks the special-object and clone arrays with `0x00403FF0`).
-If the found position is within 9600 (6 m) of the target horizontally the
-height is reduced by `12 800 − |Δx|`. The target is `obj + 1 m`.
+`0x00452E80`): `(dist + 6) × 1600` along **x** and `dist × 1600` along **y**
+— always in that order — with the signs by quadrant:
+
+| quadrant | x | y |
+|---|---|---|
+| 0 | + | + |
+| 1 | + | − |
+| 2 | − | − |
+| 3 | − | + |
+
+`pos.z = obj.z + unitHeight + (height + 3) × 1600`, the dead cap, then the
+**box clamp** of §2.1 (which is where the height is actually limited), then
+the near-axis rule: `if (|Δx| < 9600 || |Δy| < 9600) pos.z += |Δx| − 12 800`,
+with the deltas measured **after** the clamp. It goes both ways: with the
+offset intact only the teleporter's `(5, 5, 0)` reaches it (`|Δy| = 8000`),
+and there it is a **raise** of 4800 (`|Δx| = 17 600`); near the map's east or
+west edge the clamp pulls `|Δx|` under 12 800 and it is a **reduction** — on
+`_C_140` the first marine stands two fields from the east edge and the "on
+the unit" view of §2.4 comes out 3227 east, 12 800 north and 6427 up, a
+steep close view rather than the 19 m one. So the four orientations the engine's
+player saw are the **corners of a `(dist + 6) × dist` rectangle** — for the
+"on the unit" view a 14 × 8 m one, about 30° off the x axis — and not
+quarter turns; [`92` §7.5](92-remake-architecture.md) is corrected
+accordingly.
+
+Both modes end in the **free-position search** `0x00453510`, given the
+position and a look point of `obj + 1 m`: up to **70** tries, each rotating
+the offset around the look point by `±51 × n` angle units alternately
+(`0x004039A0` on `(0, 0, ±51n)`), then clamping into the box, until the line
+from the position to the look point and to the look point + 2400 (1.5 m)
+crosses no scenery (`0x00453490` walks the special-object and clone arrays
+with `0x00403FF0`). A position nothing clears is left as it was — the
+out-parameters are only written on success.
 
 Both modes end in the flight of §2.2 with the mouse hidden (`0x0045F270`) and a
 full redraw. The call sites and their arguments, all pinned:
@@ -225,7 +260,10 @@ In the main loop `0x0041C010`, on `WM_MOUSEMOVE`:
 * **right button held → `0x00451000`: free rotation** by `Δmouse × 8` angle
   units per axis (pitch clamped by §2.1);
 * **middle button held → `0x004511A0`: pan** by `Δmouse × 40` units along the
-  view's own axes (`0x0050FE64/68` hold the yaw's cosine and sine);
+  view's own axes — `0x0050FE64/68/6C` are the vector `(0, −10, 0)` turned by
+  the camera's angles, written by the free rotation above (`0x00451060`), so
+  the two components are the forward direction scaled by ten and a pixel of
+  drag is **400** units;
 * keys 3 and 4 → `0x004037D0(0, 0, ±2000, …)`: height by 1.25 m.
 
 `92` §7.5.3's "the original does not need a pan" was written without this.
@@ -262,16 +300,54 @@ The walk takes a **mode byte**, decided at the top of the routine:
 |---|---|---|---|---|
 | own unit | — | 1 | yes | `aPlaySelectUnitAnimation3` `0x0040EDB0`: the position stays, the **target flies to the unit** (view modes 2, 3 only) |
 | computer, option *Enemy Move* off (`Game.opt +0x1C`, `20` §9) | — | 0 | **none** — the unit is moved cell by cell with no frame drawn |
-| computer, option on | at the source | 3 | yes | if the unit is on screen (`0x00453050`: a clear line from the camera to the object + 2 m) and the camera is higher than 12 800 → `aPlaySelectUnitAnimation3`; else view mode 4 → `0x00453150`; else `0x004529D0(6, 4, 0)` |
-| computer, option on | only at the destination | 2 | yes | a flight from the unit's own position to its destination looking at −160 z, then **the ride** |
+| computer, option on | at the source | 3 | yes | if the unit is in sight (`0x00453050`: a clear line from the camera to the object + 3200) and the camera's own z is above 12 800 → `aPlaySelectUnitAnimation3`; else view mode 4 → `0x00453150` on the unit's cell; else `0x004529D0(6, 4, 0)` |
+| computer, option on | only at the destination | 2 | yes | a flight of the **eye** to the unit's own object plus its height and of the **target** to the destination's object plus its height − 160, then **the ride** |
+
+"Seen" is `0x004794B0` — `aBuildVisibleMapForUnit(observer, x, y, &saw)` of
+[`22` §9.3](22-combat-and-visibility.md), the **mover** standing on the asked
+cell: one line of sight (`0x0046C460`, mode 1) from that cell to each live
+unit of another player, both ends at cell height plus the type's
+`0x0047AD70` height, any code under 255 setting the flag; the beacon types
+`0x3D`/`0x3E` are marked visible and skipped, species-2 objects are skipped.
+*(Corrected 2026-09-02: this paragraph first had the other units observing
+the cell. The endpoints are the same, so the answer is; the observer is not,
+and it matters for what the call writes.)* **The call writes**: it is the
+one visible-map pass the engine has, every unit it sees goes to `+0x4F = 0`
+and a computer unit on orders 5, 6 or 8 wakes its group there and then — so
+an enemy the mover *would* see from its destination is revealed, and its
+group woken, before the first step is taken, and a walk cut short still
+leaves those marks. It is asked for the destination first (`0x0046E330`,
+into `local_4c`) and then, for a computer mover only (`cmp byte
+[unit+0x45], 0xFF` at `0x0046E367`), for the source (`0x0046E385`), and the
+destination's **answer** — not its writes — is discarded when the destination
+cell's `+0x0C` is over 6 (`0x0046E357`, `cmp byte [cell+0x0C], 6 / jbe`).
+That byte is the move map's "movement points left on arrival"
+([`23` §7](23-ai-system.md), [`29` §1.2](29-interface-contract.md)) and it is
+**alive at this point**: `aWalkMoveMap` stamps the destination `100` first
+and its closing sweep zeroes only the cells that are not. The mechanism is
+pinned; the intent behind the number is an inference (a unit with points to
+spend will act again, so its arrival is not the end of what it does). Since
+the AI fills at the horizon levels of `23` §7, a computer unit routinely
+arrives with more than six points left, and then — unless it was seen where
+it started — walks in mode 0, with no frame drawn. The *Enemy Move* option
+is `0x00460510`. Mode 3 has one write of its own: it opens with
+`aSetVisibleStateForUnit(unit, 0)` (`0x0046E4BB`), so a computer unit seen
+where it starts is marked visible before it moves; mode 2 has none. After the
+walk the same pass is run a third time from the arrival cell (`0x0046EE55`),
+before the `MoveUnit` event, whenever the mover is still alive. The remake's
+`core` runs all three passes and the mode-3 write inside its own
+`aExecuteMove` ([`97` §28.6](97-slice-5-report.md)); the mode byte is then
+decided by the presentation from the two answers the walk reports.
 
 During every frame of a step in modes 1 and 3 (`0x0040EBB0`), when the view
 mode is neither 0 nor 4, the camera's **position is kept and its target is set
 to the unit's position plus its height** — the view tracks the walker. In mode
 2, and in mode 1 or 3 when the view mode is 1 (the eyes), the step is
 `0x0040EA30` instead: **the camera rides on the unit** at head height looking
-at the destination's object, and the unit's own object is hidden (state 5) for
-the duration — the enemy that comes out of the fog is seen from its own eyes.
+at the object of the move's **final destination** cell (`aExecuteMove`'s own
+third and fourth arguments, not the step's next cell) plus the unit's height,
+and the unit's own object is hidden (state 5) for the duration — the enemy that
+comes out of the fog is seen from its own eyes.
 
 ### 3.3 The rest of the step
 
@@ -322,11 +398,20 @@ For the **player's own** shot nothing moves. For a **computer** shooter
    shooter.z + unitHeight + 1600`, looking at the target + its height.
 
 For a **reaction** (`reaction != 0`): a coin toss `aRandom2(0, 10) < 5` (in a
-network game: whose unit it is) chooses **behind the reactor looking at the
-mover** or **behind the mover looking at the reactor**, 4800 back and 2400 up
-(8000 / 5600 for large types), through the position helper `0x00453730`, then
-a flight. `docs/28` §12 item 1's "`aRandom2` is what the effects draw from"
-holds for the camera as well: this draw is not `aRandom`'s.
+network game: whose unit it is) chooses **behind the mover looking at the
+reactor** (under 5) or **behind the reactor looking at the mover** (5 and
+over). *(Corrected 2026-09-02 from the listing at `0x0040C08E`; the first
+reading had the two numbers transposed.)* The camera stands `2400` back from
+the unit it is behind along the line's horizontal direction (`0x0046D400`,
+components 1 and 2), at that unit's z plus the **reactor's** height minus
+`4800 × ` the line's third component, its slope — `5600` and `8000` for a
+**large** unit behind (`unitInfo + 0x7B` of the one the camera stands behind).
+The height is then raised by `0x00453730` to no less than the cell under the
+position plus the unit on it (or 3200 with no unit record), nor than any of
+its four neighbours' heights under 16 000, plus 800; the look-at is the other
+unit's object plus the reactor's height; then a flight. `docs/28` §12 item 1's
+"`aRandom2` is what the effects draw from" holds for the camera as well: this
+draw is not `aRandom`'s. The coin's `5.0` is the double at `0x004B11D0`.
 
 ### 4.4 The floating texts
 
@@ -801,11 +886,11 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 
 | | Original | Remake |
 |---|---|---|
-| camera moves | flight §2.2 everywhere | a snap of the pivot; one 0.18 s yaw tween |
-| unit camera | behind / by quadrant, clear-line search | pivot on the cell |
-| walk | target tracks the unit; enemy ride | no camera during a walk |
-| views | eyes / unit / map; right-drag rotate; middle-drag pan | four yaws, zoom; no pan |
-| fight camera | behind shooter / victim; reaction coin toss | none |
+| camera moves | flight §2.2 everywhere | ~~a snap of the pivot; one 0.18 s yaw tween~~ the flight, on the engine's six integers (`97` §28) |
+| unit camera | behind / by quadrant, clear-line search | ~~pivot on the cell~~ §2.3 transcribed, the quadrant kept discrete; the search over the map's heights |
+| walk | target tracks the unit; enemy ride | ~~no camera during a walk~~ §3.2's modes, the ride included |
+| views | eyes / unit / map; right-drag rotate; middle-drag pan | ~~four yaws, zoom; no pan~~ eyes / unit / map on 1, 2, 3; the pan; no free rotation, by decision |
+| fight camera | behind shooter / victim; reaction coin toss | ~~none~~ §4.3, both arms, the flight beside the clip rather than after it |
 | clip speeds | 2.0 / 6.0 / 1.5 / 1.0 | 1.0 everywhere |
 | shot | 9 stages, clip resumed past `BREAK` | clip to `BREAK` + 0.35 s hold |
 | captions, damage numbers | drawn, rising, fading | none |
@@ -820,14 +905,25 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | script camera | seven commands | events with no action |
 
 The plan that follows from this table is the remake's business and is recorded
-in `docs/97`'s next addendum, not here.
+in `docs/97`'s next addendum, not here. *(The camera rows were closed on
+2026-09-02 by [`97` §28](97-slice-5-report.md); the others stand.)*
 
 ---
 
 ## 12. Open questions
 
-None. The six this section carried are closed in the body, each with its
-evidence:
+None. The one this section carried on 2026-09-02 — *the walk's pre-walk
+visibility pass writes, and the remake's does not* — was closed the same day
+in §3.2 and [`97` §28.6](97-slice-5-report.md): `core` now runs the three
+passes of `aExecuteMove` as the writing passes they are, from the destination,
+from the source for a computer mover, and from the arrival cell, plus mode 3's
+self-reveal. The entry's own claim that "the arrival rebuild makes the same
+marks" was wrong for `core`, which had no arrival pass at all; what made the
+gap invisible was that nothing compared `+0x4F` after a computer turn. It is
+compared now — `tools/ai_gold.py --check` diffs the byte on all 200 records
+after both captured turns, where the engine reveals four and two human units
+by walking, and the model without the passes fails on exactly those slots.
+The six closed before it stand in the body, each with its evidence:
 
 1. *The part matrices after detach* — **measured** (§6.2, §6.3): the bound
    parts' Eng3d records hold the last frame while the finished clip stays

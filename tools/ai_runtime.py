@@ -1303,6 +1303,10 @@ def emit_cases(root: Path, out: Path, tables: BalanceTables,
             # through a wall and as nothing else.
             if event["kind"] == "move":
                 case["path"] = list(event["payload"]["path"])
+                # The walk's two probes and the destination's `+0x0C`, asked
+                # at the moment of the move (docs/42 section 3.2).
+                for key in ("seen_source", "seen_destination"):
+                    case[key] = event["payload"][key]
             events.append(case)
         cases.append({
             "mission": name,

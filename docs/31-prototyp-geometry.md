@@ -548,6 +548,67 @@ the standard 565 → 555 squeeze. It is `0` on most textured faces (the texture
 supplies the colour) and carries real colours on flat ones; 285 distinct values
 occur.
 
+**The side test is a back-face cull, and its sign is pinned** *(added
+2026-09-02, for the remake's roof question in [`97` §28.5](97-slice-5-report.md))*.
+Three readings that have to agree, and do:
+
+* **What `plane_value` is.** `E3D_object_3d_check_in` subtracts the camera's
+  position from the object's (`0x00404BF4`..`0x00404C00`, the camera at
+  `0x41a7e0/e4/e8`), stores the difference at `0x41b8dc/e0/e4` (`0x00404C62`),
+  rotates it by the camera matrix into the display-list node's first three
+  words (`0x00404D8B`..`0x00404DBC`), and the draw loop copies those to
+  `0x414064/68/6c` (`0x004050C4`) before the prototype runs. So the vector
+  `load_planes` dots each rotated normal with is **object minus camera**, in
+  camera space, and `plane_value = n · (object − camera) / 16384`.
+* **What `plane_d` is.** The face's own plane, `plane_d == −n · v / 16384`
+  for its vertices `v`, **in the frame the engine tests it in**. Two things
+  had to be read before the corpus said so cleanly. A face inside a
+  `part_push` scope keeps its plane in the *part's* coordinates: `joint_place`
+  (`0x004060F0`) rotates the part translation by the current matrix and
+  **adds it into** `0x414064/68/6c` — the very position the side test dots
+  the normal with — so the part's origin, not the object's, is what a part
+  face is measured from (§5). And the stored normal is the exact one
+  **truncated to 14 bits**: its magnitude is 16 381 on 7 153 faces, 16 382 on
+  53 657, 16 383 on 170 216 and 16 384 on 5 835, never above, while
+  `plane_d` was computed before the truncation. Measured that way, 230 940 of
+  236 861 faces have `plane_d` inside the span their vertices give (± 2
+  units), and every one of the other 5 921 lands in it under a rotation of
+  the stored normal of at most **0.018°** — which at the radii these faces
+  sit at (the sequence models' planets and their 5.5-million-unit space
+  sphere) is a miss of up to 908 units; outside the sequence models' `Video/`
+  containers the worst is 60, on `L096EE00.3DI`.
+  An earlier revision of this bullet called those faces "a parallel plane
+  offset by up to 13 518 units, cause UNVERIFIED": the 13 518 was a part face
+  measured in the wrong frame, and the rest was the normal's precision.
+  So the engine's side test **is** a cull on the face's own plane, and the
+  remake's `CULL_BACK` differs from it only inside a sliver 0.018° wide.
+  The ground lattice `S003_00X.3DI` reads `n = (0, 0, 16383)`, `plane_d =
+  −80`, on every face — a floor at `z = 80`, normal up.
+* **What the leaf walker does** (`0x00405203`..`0x00405230`): a negative
+  index negates the value, and the face is drawn when `plane_value − plane_d
+  < 0`, i.e. `n · (object − camera) + n · v < 0`, i.e. **`n · (vertex −
+  camera) < 0`: the face is drawn only when the camera is on the side its
+  plane normal points to.** The lattice fixes the sign without a renderer: a
+  floor is seen from above, and only from above. Index `0`, "always draw",
+  occurs on **no shipped face**.
+
+And the winding agrees with it: the Newell normal of the stored vertex order
+is **against** the plane normal on 236 160 faces, zero on the 700 that have no
+area, and with it on exactly one — a sliver in `MODEL_D02_RUTHERFORD_KOPF`
+whose Newell normal is `(−9, 50, 7)` against a plane of magnitude 16 384. So a
+renderer that takes the indices as stored and culls the back face under a
+clockwise-front convention draws exactly the side the engine draws.
+`prototyp_parse.py --check` pins every count in this paragraph, the
+lattice's plane, the 0.02° bound with its worst miss, and that no normal is
+longer than 16 384.
+
+The consequence the remake was waiting on (`97` §28.5): a ceiling is a face
+whose plane normal points **down**, drawn from below and culled from above —
+which is why the original's player looks into a roofed room from ten metres
+over the unit's head. World_A00 carries 957 near-horizontal faces facing down
+and 2 234 facing up across its prototypes; over the playable floor of
+`_C_140` there are four, all facing down, at `z = 32 000`.
+
 ### 4.3 Draw kinds — payload layout
 
 The `u16` at `0x00` is a byte offset into whichever draw-routine table is

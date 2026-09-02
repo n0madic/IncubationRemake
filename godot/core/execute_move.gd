@@ -41,6 +41,12 @@ const FIELD_TELEPORT_IN: int = 9
 ## docs/21 section 4 -- the weapon a mine would resolve as.
 const MINE_WEAPON: int = 36
 
+## `0x0046E357` -- `cmp byte [dest + 0x0C], 6 / jbe`: the destination's
+## answer from the pass before the walk is discarded when the fill left more
+## movement points than this on the cell. The mechanism is that instruction;
+## the intent behind the number is an inference (docs/42 section 3.2).
+const ARRIVAL_POINTS_LIMIT: int = 6
+
 ## `inclib.lev.FACING_STEPS` inverted: a step, to the facing that takes it.
 ## Confirmed natively twice -- eight facings against the map edge in phase 9,
 ## and the facing byte after a walk in phase 10.
@@ -165,3 +171,73 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 	assert(budget >= 0 or here == route[route.size() - 1])
 	result.ok = true
 	return result
+
+
+## `aExecuteMove` with its writes: [method run] plus the three visibility
+## passes the routine makes and the position the walk leaves.
+##
+## docs/22 section 9.3: `aBuildVisibleMapForUnit` is a **writing** pass, and
+## the routine runs it from the destination before the first step
+## (`0x0046E330`, every mover), from the source for a computer mover
+## (`0x0046E385`), and from the arrival cell afterwards (`0x0046EE55`). The
+## first two decide the walk's presentation mode -- [member MoveResult.seen_destination]
+## and [member MoveResult.seen_source], the destination's answer discarded over
+## [constant ARRIVAL_POINTS_LIMIT] -- and mode 3, a computer unit seen where it
+## starts, opens with `aSetVisibleStateForUnit(unit, 0)` (`0x0046E4BB`): the
+## walker is marked visible before it moves. Mode 3 also needs the *Enemy
+## Move* option, which the remake takes as on (docs/92 section 7).
+##
+## The passes run on the world **as it stands at the call** -- the pre-walk
+## ones with the mover on its source cell, the arrival one after the map and
+## the record hold the new position -- which is why the apply lives here and
+## not in the two callers. The `MoveUnit` event, the charge and the reaction
+## drain stay the callers' (docs/23 section 5.3).
+##
+## `arrival_points` is the destination's `+0x0C`, the fill's movement points
+## left on arrival; `aWalkMoveMap` stamps the destination 100 before its
+## closing sweep and so leaves the byte alive for the test.
+static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		ctab: CtrlMapTable, mover: UnitState, walked: Dictionary, tx: int,
+		ty: int, arrival_points: int, human_players: int, game_mode: int,
+		budget: int = -1) -> MoveResult:
+	var moved: MoveResult = run(state, ctab, mover, walked, budget)
+	if not moved.ok and not moved.movement_zeroed:
+		return moved
+
+	if state.in_bounds(tx, ty):
+		moved.seen_destination = Visibility.look_from(state, units, utab,
+			mover, tx, ty, human_players, game_mode)
+	if arrival_points > ARRIVAL_POINTS_LIMIT:
+		moved.seen_destination = false
+	if mover.player == PLAYER_ALIEN:
+		moved.seen_source = Visibility.look_from(state, units, utab, mover,
+			mover.x, mover.y, human_players, game_mode)
+		if moved.seen_source:
+			Visibility.set_state(mover, Visibility.FULL)
+
+	if moved.steps > 0:
+		state.set_unit(state.index_of(mover.x, mover.y), MapState.NO_UNIT)
+		state.set_unit(state.index_of(moved.x, moved.y), mover.slot)
+		mover.x = moved.x
+		mover.y = moved.y
+		# The facing is written per step (`aChangeUnitViewDirection` inside
+		# the loop), so a walk of no steps leaves it alone.
+		mover.facing = moved.facing
+		# `+0x50` is one byte and the engine adds into it, so it wraps rather
+		# than saturating. Unreachable in practice -- the refresh zeroes it
+		# every turn and 255 tenths is 25 fields of walking -- but masking is
+		# what the field is, and picking a cap instead would be inventing a
+		# rule.
+		mover.walked = (mover.walked + moved.walked) & 0xFF
+	for write: Vector2i in moved.action_point_writes:
+		# `x` is the cell index and `y` the action point it becomes; the pair
+		# comes from [method run] in that order.
+		state.set_action_point(write.x, write.y)
+
+	# The bomb arm returns first when the mine killed the walker
+	# (`0x0046ECB5`, `0x0046EDE1`); `core` does not detonate, so this is the
+	# guard and not a reachable branch.
+	if mover.is_alive():
+		var _saw: bool = Visibility.look_from(state, units, utab, mover,
+			mover.x, mover.y, human_players, game_mode)
+	return moved

@@ -115,6 +115,23 @@ A_RANDOM2 = 0x004638E0
 A_DISTANCE = 0x0044AE10
 A_DIRECTION = 0x0046D400
 A_REACTION_POS = 0x00453730
+REACTION_POS = (0x00453730, 0x00453900)
+#: `0x00453320` fills the camera box; `0x00419B90/A50/A60` read the loaded
+#: `.lev` header at `0x004FCED0` (`+0x224` camera height, `+0x357` rows,
+#: `+0x35B` columns -- docs/10 section 3).
+CAMERA_BOX_INIT = (0x00453320, 0x00453390)
+HEADER_BASE = 0x004FCED0
+A_CAMERA_HEIGHT = 0x00419B90
+#: `0x0047ABD0`'s facing jump table and its eight `(gx, gy)` arms, in facing
+#: order -- the inverse of docs/10 section 5.10's step table.
+GRADIENT_TABLE = 0x0047AD04
+GRADIENTS = [(0, 1), (-1, 0), (0, -1), (1, 0), (1, -1), (-1, 1), (1, 1),
+             (-1, -1)]
+#: `0x004794B0` -- the walk's "would the unit be seen at this cell" probe.
+SEEN_AT = (0x004794B0, 0x00479700)
+A_SEEN_AT = 0x004794B0
+A_LOS_EX = 0x0046C460
+FREE_ROTATION = (0x00451000, 0x00451092)
 A_ARRIVED = 0x0042B480
 A_ALIVE = 0x0042B4A0
 A_BLOB_SWEEP = 0x0041E3D0
@@ -343,6 +360,54 @@ def _check_camera(ck: Checker, b: Binary) -> None:
                b"\x83\xfd\x46", 1)
     _pin_bytes(ck, b, "free_position.second_ray_plus_2400", FREE_POSITION,
                b"\x81\xc1\x60\x09\x00\x00", 1)
+    # The cap inside the placement multiplies the header's camera height --
+    # already world units -- by 1600 (`lea eax,[eax+eax*4]` twice, `shl 6`)
+    # and so never bites; the box clamp below is the cap that does. Both
+    # modes call the search: the `jmp` at `0x00452E11` joins mode 1 to it.
+    _pin_calls(ck, b, "unit_camera.cap_reads_camera_height", UNIT_CAMERA,
+               A_CAMERA_HEIGHT, 4)
+    _pin_bytes(ck, b, "unit_camera.cap_x1600_dead", UNIT_CAMERA,
+               b"\x8d\x04\x80\x8d\x04\x80\xc1\xe0\x06", 2, at_least=True)
+    _pin_at(ck, b, "camera_height.is_header_0x224", A_CAMERA_HEIGHT,
+            b"\xa1" + struct.pack("<I", HEADER_BASE + 0x224) + b"\xc3")
+    _pin_at(ck, b, "map_rows.is_header_0x357", 0x00419A50,
+            b"\xa1" + struct.pack("<I", HEADER_BASE + 0x357) + b"\xc3")
+    _pin_at(ck, b, "map_columns.is_header_0x35b", 0x00419A60,
+            b"\xa1" + struct.pack("<I", HEADER_BASE + 0x35B) + b"\xc3")
+    # §2.1 -- the box: 800 on every low side, `(n - 1) * 3200` on x and y,
+    # the header's camera height on z.
+    _pin_at(ck, b, "camera_box.low_800_x3", CAMERA_BOX_INIT[0],
+            b"\xb8\x20\x03\x00\x00\xa3\x60\x07\x51\x00\xa3\x64\x07\x51\x00"
+            b"\xa3\x68\x07\x51\x00")
+    _pin_bytes(ck, b, "camera_box.x25x128_x2", CAMERA_BOX_INIT,
+               b"\x8d\x04\x80", 2, at_least=True)
+    _pin_at(ck, b, "camera_box.x_high_minus_3200", 0x00453342,
+            b"\x2d\x80\x0c\x00\x00\xa3\x6c\x07\x51\x00")
+    _pin_at(ck, b, "camera_box.y_high_minus_3200", 0x0045335A,
+            b"\x81\xe9\x80\x0c\x00\x00\x89\x0d\x70\x07\x51\x00")
+    _pin_calls(ck, b, "camera_box.z_high", CAMERA_BOX_INIT, A_CAMERA_HEIGHT, 1)
+    _pin_at(ck, b, "camera_box.z_high_store", 0x0045336B,
+            b"\xa3\x74\x07\x51\x00")
+    _pin_calls(ck, b, "camera_box.columns", CAMERA_BOX_INIT, 0x00419A60, 1)
+    _pin_calls(ck, b, "camera_box.rows", CAMERA_BOX_INIT, 0x00419A50, 1)
+    # `0x0047ABD0` -- the gradient of a facing, arm by arm out of the table.
+    arms = [b.u32(GRADIENT_TABLE + 4 * i) for i in range(8)]
+    decoded = []
+    for arm in arms:
+        head = b.pe.bytes_at(arm, 12)
+        ok = head[0:2] == b"\xc7\x00" and head[6:8] == b"\xc7\x01"
+        gx = struct.unpack_from("<i", head, 2)[0]
+        gy = struct.unpack_from("<i", head, 8)[0]
+        decoded.append((gx, gy) if ok else None)
+    ck.check("gradients.table_is_facing_inverse", decoded == GRADIENTS,
+             str(decoded))
+    # §2.5 -- the pan's axes are `(0, -10, 0)` turned by the camera's angles,
+    # written by the free rotation, and the drag is `* 40` on top.
+    _pin_at(ck, b, "pan.forward_is_minus_10", 0x00451044,
+            b"\xc7\x44\x24\x14\xf6\xff\xff\xff")
+    _pin_calls(ck, b, "pan.forward_turned", FREE_ROTATION, 0x004039A0, 1)
+    _pin_bytes(ck, b, "pan.forward_stored_at_0x50fe64", FREE_ROTATION,
+               b"\x68\x64\xfe\x50\x00", 1)
     _pin_bytes(ck, b, "free_position.step_17x3", FREE_POSITION,
                b"\xc1\xe0\x04", 1)
     _pin_bytes(ck, b, "free_position.step_17x3_b", FREE_POSITION,
@@ -428,6 +493,21 @@ def _check_walk(ck: Checker, b: Binary) -> None:
     _pin_calls(ck, b, "walk.mode.map_camera", EXECUTE_MOVE, A_MAP_CAMERA, 1)
     _pin_calls(ck, b, "walk.step.ride", EXECUTE_MOVE, A_RIDE, 2)
     _pin_calls(ck, b, "walk.step.track", EXECUTE_MOVE, A_TRACK, 1)
+    # The mode byte's inputs: `0x004794B0` asked at the destination and at
+    # the source, the destination's answer dropped when the cell's `+0x0C`
+    # is over 6. The probe is one `aCheckLineOfSightEx` per other-player unit
+    # at `0x0047AD70` heights, skipping the beacon types 0x3D and 0x3E.
+    _pin_calls(ck, b, "walk.mode.seen_probe_x3", EXECUTE_MOVE, A_SEEN_AT, 3)
+    _pin_at(ck, b, "walk.mode.seen_probe_at_destination", 0x0046E330,
+            b"\xe8" + struct.pack("<i", A_SEEN_AT - 0x0046E335))
+    _pin_at(ck, b, "walk.mode.seen_probe_at_source", 0x0046E385,
+            b"\xe8" + struct.pack("<i", A_SEEN_AT - 0x0046E38A))
+    _pin_at(ck, b, "walk.mode.destination_plus_0x0c_over_6", 0x0046E357,
+            b"\x80\x78\x0c\x06")
+    _pin_calls(ck, b, "seen_at.line_of_sight", SEEN_AT, A_LOS_EX, 1)
+    _pin_calls(ck, b, "seen_at.unit_height_x2", SEEN_AT, 0x0047AD70, 2)
+    _pin_bytes(ck, b, "seen_at.skips_0x3d", SEEN_AT, b"\x3c\x3d", 1)
+    _pin_bytes(ck, b, "seen_at.skips_0x3e", SEEN_AT, b"\x3c\x3e", 1)
     _pin_calls(ck, b, "walk.step.hide_rider", EXECUTE_MOVE, A_HIDE, 4)
     _pin_calls(ck, b, "walk.clip_started_once", EXECUTE_MOVE, A_START_ANIM, 1)
     # The selection animation only re-aims in view modes 2 and 3.
@@ -562,6 +642,29 @@ def _check_fight(ck: Checker, b: Binary) -> None:
     _pin_calls(ck, b, "fight.direction", FIGHT, A_DIRECTION, 3)
     _pin_calls(ck, b, "fight.reaction_position", FIGHT, A_REACTION_POS, 2)
     _pin_calls(ck, b, "fight.reaction_coin", FIGHT, A_RANDOM2, 1)
+    # The reaction camera's numbers, both arms (`0x0040C08E`, `0x0040C1C8`):
+    # 2400 in `eax` is what the horizontal direction is scaled by (`fild
+    # [esp+0x14]`, `fmul [esp+0x34]`), 4800 in `[esp+0x1c]` what the slope
+    # is (`fild [esp+0x20]` after the push, `fmul [esp+0x60]`); 5600 and
+    # 8000 for a large type behind.
+    for name, va in (("first", 0x0040C08E), ("second", 0x0040C1C8)):
+        _pin_at(ck, b, f"fight.reaction_{name}.back_2400_slope_4800", va,
+                b"\xb8\x60\x09\x00\x00\xc7\x44\x24\x1c\xc0\x12\x00\x00")
+    for name, va in (("first", 0x0040C0A5), ("second", 0x0040C1DF)):
+        _pin_at(ck, b, f"fight.reaction_{name}.large_5600_8000", va,
+                b"\xb8\xe0\x15\x00\x00\xc7\x44\x24\x1c\x40\x1f\x00\x00")
+    _pin_at(ck, b, "fight.reaction_first.back_scales_direction", 0x0040C0BA,
+            b"\xdb\x44\x24\x14\xdc\x4c\x24\x34")
+    _pin_at(ck, b, "fight.reaction_first.slope_term", 0x0040C0E8,
+            b"\xdb\x44\x24\x20")
+    _pin_at(ck, b, "fight.reaction_first.slope_times_third", 0x0040C0F3,
+            b"\xdc\x4c\x24\x60")
+    _pin_bytes(ck, b, "reaction_pos.neighbour_limit_16000", REACTION_POS,
+               b"\x80\x3e\x00\x00", 1, at_least=True)
+    _pin_bytes(ck, b, "reaction_pos.plus_800", REACTION_POS,
+               b"\x20\x03\x00\x00", 1, at_least=True)
+    _pin_bytes(ck, b, "reaction_pos.no_unit_plus_3200", REACTION_POS,
+               b"\x80\x0c\x00\x00", 1, at_least=True)
     _pin_calls(ck, b, "fight.flight", FIGHT, A_FLIGHT, 1)
     # §4.4 -- the markers and the colour.
     _pin_bytes(ck, b, "fight.marker_0x5a_x2", FIGHT, b"\x3c\x5a", 2)
