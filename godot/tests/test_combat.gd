@@ -35,6 +35,7 @@ class Scene extends RefCounted:
 
 func run(h: TestHarness) -> void:
 	h.begin("combat", TestHarness.ORACLE_SPEC)
+	_conversion_and_absorber(h)
 	_direction_and_arc(h)
 	_world_wiring(h)
 	_hit_curve(h)
@@ -72,6 +73,13 @@ static func _weapons() -> WeaponTable:
 			"mun": 255, "hit": 100, "damage": 100, "range_min": 1,
 			"range_max": 1, "type": 1, "special": 0, "def_mode": 0,
 			"mun_per_fight": 1},
+		# Weapon 47, `Laser Enhanced`: the shipped row's heat cap, damage and
+		# type, because the cap is what the shot is set to and the type is
+		# what the overheat arm reads.
+		{"id": Combat.CONVERTER_WEAPON, "heat": 4,
+			"toggle": Combat.CONVERTER_WEAPON, "mun": 255, "hit": 90,
+			"damage": 1, "range_min": 0, "range_max": 40, "type": 3,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
 	])
 
 
@@ -1345,8 +1353,10 @@ func _the_hatch(h: TestHarness) -> void:
 		carrier_type)
 	shielded.hp = Combat.HATCH_HP_LIMIT
 	# A Damage Absorber charge nullifies the damage, so the outcome is a hit
-	# and never a kill -- which is the marker the sweep keys on.
+	# and never a kill -- which is the marker the sweep keys on. The charge
+	# counts only behind the equipment (`0x00475590`).
 	shielded.absorber = 1
+	shielded.equipment = PackedInt32Array([Combat.EQUIP_DAMAGE_ABSORBER])
 	var rng: IncRandom = IncRandom.new()
 	rng.randomize_seed(1.0)
 	var landed: AttackResult = Combat.attack(shot.state, shot.units, types,
@@ -1579,3 +1589,133 @@ func _reveals(h: TestHarness) -> void:
 		field.types, field.weapons, 3, 3, 1, 1, 1, _turn(), rng)
 	h.equal("reveal.a_bomb_reveals_its_target", bystander.visibility,
 		Visibility.FULL, "0x004703A9")
+
+
+# --- docs/22 sections 7.3 and 7.5: weapon 47 and the absorber's gate --------
+
+## Every claim here is one `tools/turn_gold.py` measured in its `reveal` and
+## `conversion` phases; the synthetic scenes keep `core/` on the same rules.
+func _conversion_and_absorber(h: TestHarness) -> void:
+	# Weapon 47 fires at its heat cap. A first draw of 0..10 damages the
+	# weapon (type 3 is a damaging type) and nothing fires: seed 1.0's first
+	# `aRandom(0, 40)` is 1.
+	var jam: Scene = _scene()
+	var hot: UnitState = _place(jam, 0, 0, 1, 1, 0)
+	hot.weapon = Combat.CONVERTER_WEAPON
+	var _mark: UnitState = _place(jam, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+	var seed_rng: IncRandom = IncRandom.new()
+	seed_rng.randomize_seed(1.0)
+	var refused: AttackResult = Combat.attack(jam.state, jam.units, jam.types,
+		jam.weapons, 1, 1, 3, 1, 0, 1, 1, _turn(), seed_rng)
+	h.check("convert.weapon_47_fires_at_its_cap",
+		not refused.fired and hot.heat == 4 and hot.malfunction == 5,
+		"0x0046B5DF sets +0x3E to maxHeat first; heat %d, malfunction %d"
+			% [hot.heat, hot.malfunction])
+
+	# A seed that clears the overheat roll and connects: searched, as the
+	# native probe's was. The hit converts the target -- player, points,
+	# action state -- and the converted unit looks around for its new side,
+	# revealing the alien it now counts as an enemy.
+	var converted: bool = false
+	for seed: int in range(2, 200):
+		var scene: Scene = _scene()
+		var shooter: UnitState = _place(scene, 0, 0, 1, 1, 0)
+		shooter.weapon = Combat.CONVERTER_WEAPON
+		var target: UnitState = _place(scene, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+		target.action_state = 5
+		target.mp = 0
+		var watched: UnitState = _place(scene, 2, UnitState.PLAYER_ALIEN, 6, 1, 0)
+		watched.visibility = Visibility.HIDDEN
+		var rng: IncRandom = IncRandom.new()
+		rng.randomize_seed(float(seed))
+		var shot: AttackResult = Combat.attack(scene.state, scene.units,
+			scene.types, scene.weapons, 1, 1, 3, 1, 0, 1, 1, _turn(), rng)
+		var flagged: bool = false
+		for outcome: Dictionary in shot.outcomes:
+			if outcome.get("converted", false):
+				flagged = true
+		if not flagged:
+			continue
+		converted = true
+		h.equal("convert.the_target_changes_sides", target.player, 0,
+			"+0x45 becomes the shooter's at 0x0046BDCB")
+		# `aGetMovePoints` is asked **before** `+0x41` is cleared
+		# (`0x0046BDCE` then `0x0046BDE7`), and a stunned unit's allowance
+		# is nothing -- so a convert that was stunned keeps no points this
+		# turn, and only a later refresh gives it any.
+		h.equal("convert.its_points_are_asked_before_the_state_clears",
+			target.mp, 0, "stunned when asked, so aGetMovePoints said 0")
+		h.equal("convert.its_action_state_is_cleared", target.action_state, 0)
+		h.equal("convert.it_looks_around_for_its_new_side", watched.visibility,
+			Visibility.FULL, "0x0046BDEB, the writing pass from its own cell")
+		h.check("convert.the_target_still_lost_its_hit_points",
+			target.hp < 1000, "damage landed before the arm: hp %d" % target.hp)
+		break
+	h.check("convert.a_seed_below_200_converts", converted,
+		"the overheat roll and the hit roll both have to come out right")
+
+	# The absorber's gate: `0x00475590` reads the charges behind equipment
+	# slot 18. Charges without the equipment are ignored; with it, one is
+	# spent, the damage is zeroed **and still rolled** -- the same draws as a
+	# landed hit, which is what the native seed showed.
+	var stale: Scene = _scene()
+	var _gunner: UnitState = _place(stale, 0, 0, 1, 1, 0)
+	var unflagged: UnitState = _place(stale, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+	unflagged.absorber = 5
+	var stale_rng: IncRandom = IncRandom.new()
+	stale_rng.randomize_seed(1.0)
+	var _ignored: AttackResult = Combat.attack(stale.state, stale.units,
+		stale.types, stale.weapons, 1, 1, 3, 1, 0, 1, 1, _turn(), stale_rng)
+	h.check("absorber.charges_without_the_equipment_are_ignored",
+		unflagged.hp < 1000 and unflagged.absorber == 5,
+		"hp %d, charges %d: _C_119's six stale records absorb nothing"
+			% [unflagged.hp, unflagged.absorber])
+
+	var carried: Scene = _scene()
+	var _shooter2: UnitState = _place(carried, 0, 0, 1, 1, 0)
+	var flagged_unit: UnitState = _place(carried, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+	flagged_unit.absorber = 5
+	flagged_unit.equipment = PackedInt32Array([Combat.EQUIP_DAMAGE_ABSORBER])
+	var carried_rng: IncRandom = IncRandom.new()
+	carried_rng.randomize_seed(1.0)
+	var _spent: AttackResult = Combat.attack(carried.state, carried.units,
+		carried.types, carried.weapons, 1, 1, 3, 1, 0, 1, 1, _turn(),
+		carried_rng)
+	h.check("absorber.a_carried_charge_is_spent_and_nullifies",
+		flagged_unit.hp == 1000 and flagged_unit.absorber == 4,
+		"hp %d, charges %d" % [flagged_unit.hp, flagged_unit.absorber])
+	h.check("absorber.a_spent_charge_still_rolls_the_damage",
+		absf(carried_rng.seed - stale_rng.seed) < 0.5,
+		"xor ebp, ebp at 0x0046BD83 and applyDamage at 0x0046BD9D: the same "
+		+ "draws as the landed hit, %f against %f"
+			% [carried_rng.seed, stale_rng.seed])
+
+	# The bomb never asks: `aExecuteBomb` reaches `applyDamage` straight from
+	# its roll, with the heading 0xFF no arc holds.
+	var minefield: Scene = _scene()
+	var victim: UnitState = _place(minefield, 0, UnitState.PLAYER_ALIEN, 3, 3, 0)
+	victim.absorber = 5
+	victim.equipment = PackedInt32Array([Combat.EQUIP_DAMAGE_ABSORBER])
+	var mine_rng: IncRandom = IncRandom.new()
+	mine_rng.randomize_seed(1.0)
+	var _blast2: AttackResult = Interact.execute_bomb(minefield.state,
+		minefield.units, minefield.types, minefield.weapons, 3, 3, 0, 1, 1,
+		_turn(), mine_rng)
+	h.check("absorber.a_mine_ignores_the_absorber",
+		victim.hp < 1000 and victim.absorber == 5,
+		"hp %d, charges %d: no 0x00475590 call in 0x004702C0"
+			% [victim.hp, victim.absorber])
+
+	# The contact promotion is the per-unit pass's own (0x00479786..0x00479861
+	# inside 0x004794B0): one observer's pass promotes a hidden neutral it
+	# cannot see, with no whole-map rebuild involved.
+	var walled: Scene = _scene()
+	var observer: UnitState = _place(walled, 0, 0, 1, 1, 0)
+	var behind: UnitState = _place(walled, 1, UnitState.PLAYER_ALIEN, 6, 1, 0)
+	behind.visibility = Visibility.HIDDEN
+	walled.state.set_height(walled.state.index_of(3, 1), 20000)
+	var saw: bool = Visibility.look_from(walled.state, walled.units,
+		walled.types, observer, 1, 1, 1, 1)
+	h.check("promotion.is_inside_the_per_unit_pass",
+		not saw and behind.visibility == Visibility.CONTACT,
+		"hidden behind the wall, promoted to a lone contact by one pass")

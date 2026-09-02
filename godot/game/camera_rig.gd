@@ -421,6 +421,12 @@ static func _field_of(v: int) -> int:
 ## The remake's zoom: scale the offset. In is always allowed down to
 ## [constant MIN_DISTANCE]; out is refused on the same terms as a turn, and
 ## when the scaled eye would leave the box.
+##
+## **Applied at once, like the pan.** The zoom is the remake's own input and
+## not one of the engine's camera moves, so it does not go through
+## [method fly]: that loop steps at 20 frames a second and takes a sixth of
+## the remainder per frame, which turned a wheel notch into a lagging,
+## stepped approach (it did, for one revision).
 func zoom_by(steps: float) -> void:
 	var offset: Vector3i = _eye_goal - _target_goal
 	var factor: float = pow(ZOOM_STEP, steps)
@@ -436,7 +442,7 @@ func zoom_by(steps: float) -> void:
 			return
 		if not eye_is_inside(wanted) and _any_quadrant_fits(scaled):
 			return
-	var _frames: int = fly(wanted, _target_goal)
+	set_now(wanted, _target_goal)
 
 
 ## Section 2.5's pan, at once: eye and target together along the view's

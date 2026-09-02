@@ -450,6 +450,7 @@ static func _run_synthetic(program: LclProgram, units: Array,
 		unit.x = DictRead.as_int(record["x"])
 		unit.y = DictRead.as_int(record["y"])
 		unit.hp = 10
+		unit.visibility = DictRead.as_int(record.get("visibility", 0))
 		roster[unit.slot] = unit
 		state.set_unit(state.index_of(unit.x, unit.y), unit.slot)
 	var types: UnitTypeTable = UnitTypeTable.from_rows([
@@ -543,6 +544,51 @@ func _synthetic(h: TestHarness) -> void:
 	]), [])
 	h.check("synthetic.and_combines", not _marked(conjunction),
 		"the second condition is false, so the command must not run")
+
+	# docs/22 section 9.3 -- `Platform` relocates its riders through
+	# `0x0047AD90`, and each looks around from its new cell before the cells
+	# are copied: a rider carried into sight of a hidden alien reveals it, and
+	# the vacated centre is left a deep hole. Measured by `turn_gold.py`'s
+	# `platform` phase; here on an 8x8 map, east by three.
+	var ride: Dictionary = _run_synthetic(_program([
+		_instr("command", "Platform", [_num(1), _num(1), _num(3), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1},
+		{"slot": 1, "player": UnitState.PLAYER_ALIEN, "x": 6, "y": 1,
+			"visibility": Visibility.HIDDEN}], 8, 8)
+	var riders: Dictionary = ride["units"]
+	var rider: UnitState = riders[0]
+	var spotted: UnitState = riders[1]
+	var ridden: MapState = ride["state"]
+	h.check("synthetic.platform_carries_the_rider", _marked(ride)
+		and rider.x == 4 and rider.y == 1
+		and ridden.unit_at(ridden.index_of(4, 1)) == 0
+		and ridden.unit_at(ridden.index_of(1, 1)) == MapState.NO_UNIT,
+		"(1,1) east by three is (4,1), in the map's unit index as well")
+	h.equal("synthetic.platform_rider_looks_around", spotted.visibility,
+		Visibility.FULL, "0x0047AF53, from the cell it arrived on")
+	h.equal("synthetic.platform_leaves_a_deep_hole",
+		ridden.field_type_at(ridden.index_of(1, 1)), Platform.CTRL_TYPE_DEEP_HOLE)
+
+	# A destination cell already occupied: the relocation is refused and the
+	# rider's source cell keeps its link -- a cleared one would leave a unit
+	# the map no longer knows about.
+	var blocked: Dictionary = _run_synthetic(_program([
+		_instr("command", "Platform", [_num(1), _num(1), _num(3), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 1, "y": 1},
+		{"slot": 1, "player": 0, "x": 4, "y": 1}], 8, 8)
+	var stuck_units: Dictionary = blocked["units"]
+	var stuck: UnitState = stuck_units[0]
+	var stuck_state: MapState = blocked["state"]
+	h.check("synthetic.platform_refused_rider_keeps_its_link",
+		stuck.x == 1 and stuck.y == 1
+		and stuck_state.unit_at(stuck_state.index_of(1, 1)) == 0
+		and stuck_state.unit_at(stuck_state.index_of(4, 1)) == 1,
+		"rider at (%d,%d), link %d" % [stuck.x, stuck.y,
+			stuck_state.unit_at(stuck_state.index_of(1, 1))])
 	var disjunction: Dictionary = _run_synthetic(_program([
 		_instr("cond", "VarCmpNum", [_var(0), _num(99)]),
 		_instr("cond", "VarCmpNum", [_var(1), _num(LclEnv.LOCAL_INITIAL)],

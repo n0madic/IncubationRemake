@@ -465,6 +465,7 @@ func show_mission(step: int) -> void:
 ## the scene never becomes the source of the selection either way.
 func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 	_selected = slot
+	world.selected_slot = slot
 	var result: MoveMapResult = world.submit_move_query(
 		MoveQueryCommand.create(slot, pass_friendlies))
 	_highlight.show_result(result, world.resource.heights())
@@ -485,6 +486,14 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 
 func selected_slot() -> int:
 	return _selected
+
+
+## Drops the selection here and in `core`, which reads it for exactly one
+## rule -- the platform's closing rebuild (docs/22 section 9.4).
+func _deselect() -> void:
+	_selected = -1
+	if world != null:
+		world.selected_slot = MapState.NO_UNIT
 
 
 ## Select the next unit the current player owns, and look at it.
@@ -1222,7 +1231,7 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 	# is a picture and is never trusted as the answer.
 	var cell: Vector2i = _cell_under(screen)
 	if _selected < 0 or cell.x < 0:
-		_selected = -1
+		_deselect()
 		_highlight.clear()
 		_refresh_status(_strings.text("hud.no_selection"))
 		return
@@ -1726,7 +1735,7 @@ func end_turn() -> TurnResult:
 		if _playback.is_running():
 			owed = _playback.pending_starts()
 		_units.hold_at(owed)
-	_selected = -1
+	_deselect()
 	_highlight.clear()
 	# A turn with nothing to replay hands back here rather than through
 	# [method _on_ai_step], and the view has to come back either way.

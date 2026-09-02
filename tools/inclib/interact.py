@@ -44,6 +44,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import combat
 from .combat import CombatUnit, CombatWorld, PLAYER_COMPUTER  # noqa: F401
 from .lev import FACING_STEPS
 
@@ -430,3 +431,85 @@ def toggle_door(world: CombatWorld, index: int) -> None:
         world.field_type[index] = FIELD_TYPE_FREE
         world.action_point[index] = ap - 1
         world.cell_height[index] = 0
+
+
+# ---------------------------------------------------------------------------
+# The platform ride -- aPlayPlatformSequence 0x00412A00, and its relocation
+# ---------------------------------------------------------------------------
+
+#: ``docs/20`` §7.4 -- ``Platform``'s direction encoding, 0=N 1=W 2=S 3=E.
+DIR_PLATFORM = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
+
+#: ``docs/10`` §4.2 -- the control-map type the vacated cells are left as.
+CTRL_TYPE_DEEP_HOLE = 4
+
+
+def relocate_unit(world: CombatWorld, unit: CombatUnit, tx: int, ty: int) -> bool:
+    """``0x0047AD90`` (``aUnitMap.cpp:5663``) -- one unit, cell to cell.
+
+    The map's unit index moves with it (``aWriteUnitIdIntoCtrlMap`` twice:
+    the source to ``0xFFFF``, then the target), ``+0x42``/``+0x43`` are
+    rewritten, the 3D object is placed, and the unit **looks around from the
+    new cell** -- ``aBuildVisibleMapForUnit`` at ``0x0047AF53``, the writing
+    pass of ``docs/22`` §9.3.  Its one caller is the platform ride below.
+    Returns the pass's answer; ``False`` too when the target cell is off the
+    map or already holds a unit, which the engine refuses with an error.
+    """
+    if not world.in_bounds(tx, ty) or world.unit_on(tx, ty) is not None:
+        return False
+    world.unit_at[world.index(unit.x, unit.y)] = -1
+    world.unit_at[world.index(tx, ty)] = unit.slot
+    unit.x, unit.y = tx, ty
+    return combat.build_visible_map_for_unit(world, unit, tx, ty)
+
+
+def platform_ride(world: CombatWorld, x: int, y: int, direction: int,
+                  dist: int) -> list[int]:
+    """``aPlayPlatformSequence`` -- what the ride leaves in the world.
+
+    The routine collects the 3x3 block centred on ``(x, y)`` **x outer, y
+    inner** (``0x00412AAA``: ``ebx`` runs ``x-1..x+1`` and ``edi``
+    ``y-1..y+1`` inside it) and every unit standing on it, animates, and then
+    does two things in **this** order:
+
+    1. every rider is relocated ``dist`` tiles along ``direction`` through
+       :func:`relocate_unit` -- one at a time, each looking around from its
+       new cell **before the next rider moves and before any cell is copied**;
+    2. every source cell's height and type are copied to the cell ``dist``
+       tiles away, the source's unit index is cleared and its type becomes
+       ``Deep Hole`` (``0x00412FFB`` onwards).
+
+    So the rider's pass sees the destination block's *old* heights: the
+    platform's own height arrives only with step 2.  ``lcl_runtime.py``'s
+    ``_c_platform`` and the GDScript interpreter do the copy on the script's
+    world; this is the same ride on a combat world, for the native check and
+    for the fog the script world cannot hold.  Returns the riders, in order.
+    """
+    step = DIR_PLATFORM.get(direction)
+    if step is None:
+        return []
+    dx, dy = step[0] * dist, step[1] * dist
+    block = [(x + ox, y + oy) for ox in (-1, 0, 1) for oy in (-1, 0, 1)]
+    riders = [world.unit_on(sx, sy) for sx, sy in block
+              if world.in_bounds(sx, sy)]
+    # A rider whose destination is off the map or already occupied is refused
+    # by :func:`relocate_unit` and stays where it stands -- the engine reports
+    # an error there (``aUnitMap.cpp:5590``) and what it does next is
+    # unmeasured -- so it is not counted, and its source cell keeps its link.
+    moved: list[int] = []
+    for rider in riders:
+        if rider is None:
+            continue
+        before = (rider.x, rider.y)
+        relocate_unit(world, rider, rider.x + dx, rider.y + dy)
+        if (rider.x, rider.y) != before:
+            moved.append(rider.slot)
+    for sx, sy in block:
+        tx, ty = sx + dx, sy + dy
+        if not (world.in_bounds(sx, sy) and world.in_bounds(tx, ty)):
+            continue
+        src, dst = world.index(sx, sy), world.index(tx, ty)
+        world.cell_height[dst] = world.cell_height[src]
+        world.field_type[dst] = world.field_type[src]
+        world.field_type[src] = CTRL_TYPE_DEEP_HOLE
+    return moved

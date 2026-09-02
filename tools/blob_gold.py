@@ -1323,9 +1323,10 @@ RAND_SEARCH_LIMIT = 100000
 
 #: ``memcpy`` through the game's own import thunk -- the byte writer
 #: ``ai_gold`` established, and for the same reason: ``--code`` makes
-#: ``Incubation.exe`` fault before the anchor on this host.
-MEMCPY_SLOT = 0x00525634
-MEMCPY_DECL = f"__cdecl ptr memcpy(ptr,ptr,i32) = [{MEMCPY_SLOT:#x}]"
+#: ``Incubation.exe`` fault before the anchor on this host.  The definition
+#: lives in the session module; ``presentation_gold`` reads it from here.
+MEMCPY_SLOT = gold.MEMCPY_SLOT
+MEMCPY_DECL = gold.MEMCPY_DECL
 
 #: ``docs/30`` §2.5 -- one map field, in world units.  Defined **once**: the
 #: chained second definition this file used to carry further down shadowed it,

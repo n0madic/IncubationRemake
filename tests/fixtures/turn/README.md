@@ -20,6 +20,9 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
 | `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **gated** since S6: `--check` replays all 24 probes through `inclib/interact.py`, in order and without reloading |
 | `aExecuteMove` | `0x0046E220` | six walks of one two-step path, differing only in a byte written **between the walk and the call**: the step costs, the distance, the facing, the delay column, a VictoryPoint and a mine |
+| `aAttackUnit`, `0x0047AD90`, `aExecuteMove` | — | **phase 11, `reveal`** — both parties written hidden through the game's own `memcpy`: a shot reveals shooter and target, a jammed one neither; the human relocated next to the alien through the engine's own `0x0047AD90` reveals it; the alien walking one step with the *Enemy Move* dword written on comes out visible, and written off a **contact** (the promotion inside `0x004794B0`) |
+| `aAttackUnit` | — | **phase 12, `conversion`** — the weapon byte written to 47 and the seed to one that clears its always-at-the-cap overheat roll: the target changes sides and looks around; `+0x3A` written with `+0x33` clear is ignored, with it set one charge is spent and the damage still rolled |
+| `aPlayPlatformSequence` | `0x00412A00` | **phase 13, `platform`** — the human relocated to a clear centre and carried three tiles: position, every cell's height, type and link, the deep hole, and the rider's pass from the new cell |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -94,6 +97,19 @@ is nothing but a map walk.
 Seeds are emitted as JSON **numbers**, not as the hex the capture stores: every
 value is `float(int(...))` below 2^31, so the round trip is exact, and a number
 is what `IncRandom.seed` takes.
+
+Phases 11–13 are emitted under `combat.probes`, one case per probe, each
+with its **own** cell and unit arrays (every probe reloaded, and a relocation
+moves a unit link before the snapshot), the call's arguments, the option
+dword, the seed either side, and the engine's after-image as the
+expectation: ten record fields of every live slot, and for the relocation
+and the ride every cell's height, type and link. `test_combat_native.gd`
+replays them through `Combat.attack`, `Platform.relocate`,
+`ExecuteMove.execute` (with the option as its last argument) and
+`Platform.ride`. The scene the three share is chosen with the model — a
+free neighbour of the alien from which the two see each other — and the
+`conversion` seed is searched, because the weapon rolls the overheat table
+before it fires.
 
 Since 2026-09-02 each move probe's `expected` also carries `records_after`
 — `+0x4F`, `+0x47` and `+0x48` of every live record after the call — and the

@@ -118,6 +118,41 @@ static func for_unit(state: MapState, units: Dictionary, utab: UnitTypeTable,
 				set_state(unit, FULL if scan == 2 else CONTACT)
 			elif scan == 2 and d < LONG_SCAN_RANGE:
 				set_state(unit, CONTACT)
+
+	# The second pass, and it is **this routine's**, not the whole fog pass's
+	# (`0x00479786`..`0x00479861`, before the `ret` at `0x0047989A`): a
+	# still-hidden neutral unit is promoted to a contact unless one of its
+	# eight neighbours already is one -- one blip per cluster. So every
+	# per-unit pass runs it, `aExecuteMove`'s three included, which is how a
+	# computer mover that walks unseen with the *Enemy Move* option off comes
+	# out of its own arrival pass as a contact (`turn_gold.py`, `mode3_off`).
+	#
+	# **Order-dependent, and deliberately so.**  A promotion made earlier in
+	# this loop is visible to the neighbour test of a later one, so the
+	# iteration order is part of the answer.  `units` is walked in insertion
+	# order, which is slot order, exactly as the engine's 200-slot scan is.
+	for slot: Variant in units:
+		var unit: UnitState = units[slot]
+		if (not unit.is_alive() or unit.visibility != HIDDEN
+				or unit.player != UnitState.PLAYER_ALIEN):
+			continue
+		var neighbour_contact: bool = false
+		for dy: int in [-1, 0, 1]:
+			for dx: int in [-1, 0, 1]:
+				if dx == 0 and dy == 0:
+					continue
+				var nx: int = unit.x + dx
+				var ny: int = unit.y + dy
+				if not state.in_bounds(nx, ny):
+					continue
+				var other_slot: int = state.unit_at(state.index_of(nx, ny))
+				if other_slot < 0 or not units.has(other_slot):
+					continue
+				var other: UnitState = units[other_slot]
+				if other.is_alive() and other.visibility == CONTACT:
+					neighbour_contact = true
+		if not neighbour_contact:
+			set_state(unit, CONTACT)
 	return saw
 
 
@@ -200,39 +235,11 @@ static func _pass(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			or ALWAYS_VISIBLE_TYPES.has(unit.type_id))
 		set_state(unit, FULL if always else HIDDEN)
 
+	# The contact promotion runs inside each per-unit pass (see [method
+	# for_unit]), so a player with no living unit rebuilds to "all hidden" with
+	# no blips.
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		if unit.is_alive() and unit.player == player:
 			for_unit(state, units, utab, unit, unit.x, unit.y, human_players,
 				game_mode, wake)
-
-	# The second pass: a still-hidden neutral unit is promoted to a contact
-	# unless one of its eight neighbours is already one -- which shows one blip
-	# per cluster instead of one per alien.
-	#
-	# **Order-dependent, and deliberately so.**  A promotion made earlier in
-	# this loop is visible to the neighbour test of a later one, so the
-	# iteration order is part of the answer.  `units` is walked in insertion
-	# order, which is slot order, exactly as the engine's 200-slot scan is.
-	for slot: Variant in units:
-		var unit: UnitState = units[slot]
-		if (not unit.is_alive() or unit.visibility != HIDDEN
-				or unit.player != UnitState.PLAYER_ALIEN):
-			continue
-		var neighbour_contact: bool = false
-		for dy: int in [-1, 0, 1]:
-			for dx: int in [-1, 0, 1]:
-				if dx == 0 and dy == 0:
-					continue
-				var nx: int = unit.x + dx
-				var ny: int = unit.y + dy
-				if not state.in_bounds(nx, ny):
-					continue
-				var other_slot: int = state.unit_at(state.index_of(nx, ny))
-				if other_slot < 0 or not units.has(other_slot):
-					continue
-				var other: UnitState = units[other_slot]
-				if other.is_alive() and other.visibility == CONTACT:
-					neighbour_contact = true
-		if not neighbour_contact:
-			set_state(unit, CONTACT)

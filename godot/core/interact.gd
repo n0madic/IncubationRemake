@@ -64,7 +64,7 @@ const ENTRY_POINT_Z_DROP: int = 0xA0
 const EQUIP_DOUBLE_MUNITION: int = 6
 const EQUIP_EXPLOSION_PACK: int = 9
 const EQUIP_CROWBAR: int = 17
-const EQUIP_DAMAGE_ABSORBER: int = 18
+const EQUIP_DAMAGE_ABSORBER: int = Combat.EQUIP_DAMAGE_ABSORBER
 const EQUIP_COOLER: int = 19
 const ABSORBER_CHARGES: int = 4
 
@@ -302,17 +302,13 @@ static func execute_bomb(state: MapState, units: Dictionary,
 				"marker": Combat.MARKER_MISS, "dealt": 0, "chance": chance,
 				"roll": roll})
 			continue
-		var dealt: int = 0
-		if target.absorber != 0:
-			target.absorber -= 1
-		else:
-			# A bomb has no shooter, so the rear-arc test takes the heading from
-			# the centre.  Nothing in the disassembly names the value the engine
-			# passes; a target standing *on* the centre gets heading 0 either
-			# way, which is the only case the shipped data reaches.
-			dealt = Combat.apply_damage(target, damage,
-				Combat.direction(x, y, cell[0], cell[1]), ai_level,
-				human_players, game_mode, rng)
+		# No absorber here: `aExecuteBomb` never calls `0x00475590` or
+		# `0x004755B0` -- `applyDamage` is reached straight from the roll
+		# (`0x004704C9`), with the heading `0xFF` no arc holds. The model once
+		# spent a charge the engine does not and derived a heading from the
+		# centre.
+		var dealt: int = Combat.apply_damage(target, damage, Combat.BOMB_FACING,
+			ai_level, human_players, game_mode, rng)
 		var killed: bool = not target.is_alive()
 		if killed:
 			UnitState.remove(state, turn, target)

@@ -56,6 +56,16 @@ const SCRIPT_FOG_EVENT: String = "build_visible_map"
 ## The `Elevator` command's event. `aPlayElevatorSequence` ends with a
 ## permanent rebuild for the **rider's** own player -- see [method run_script].
 const ELEVATOR_EVENT: String = "elevator"
+## The `Platform` command's event. `aPlayPlatformSequence` ends with a
+## permanent rebuild for the **selected** unit's player (`0x004130E6`, docs/22
+## section 9.4) and skips it when nothing is selected -- see [method run_script].
+const PLATFORM_EVENT: String = "platform"
+
+## The slot the interface has selected, or [constant MapState.NO_UNIT] --
+## `0x005162F8`, read by `0x00471F70`. The presentation writes it; `core` reads
+## it in exactly one place, the platform's closing rebuild, which is the one
+## rule that keys on the selection rather than on the turn.
+var selected_slot: int = MapState.NO_UNIT
 
 ## The [MissionScript] seam. Assign a real runner and the hand-over and the
 ## walk start driving the mission program; leave it and they run
@@ -511,7 +521,9 @@ func _run_mission_script(call_type: int,
 	# **The script's own fog rebuilds, which the interpreter records and does
 	# not perform.** `InsertUnit` (`0x004419B6`) and the `BuildVisibleMap`
 	# command both call `aBuildVisibleMap` for good, so the events they emit
-	# are acted on here -- outside [LclInterpreter], which owns no fog, and
+	# are acted on here -- outside [LclInterpreter], which owns no fog (with
+	# one exception: `Platform`'s riders look around inside [method Platform.ride],
+	# because that pass runs before the cell copy and after it would differ), and
 	# outside [LclContext], whose whole point is that the language reaches four
 	# cell fields and not the map's derived state. The events themselves are
 	# unchanged, so `lcl_runtime.py`'s comparison still sees the same list.
@@ -542,6 +554,15 @@ func _run_mission_script(call_type: int,
 				continue
 			var on_it: UnitState = _units[rider]
 			Visibility.build(state, _units, _unit_types, on_it.player,
+				turn.human_count(), turn.mode)
+		elif name == PLATFORM_EVENT:
+			# The riders already looked around inside [method Platform.ride];
+			# this is the routine's own closing rebuild, for whoever the
+			# interface has selected, and for nobody when it has no one.
+			if selected_slot == MapState.NO_UNIT or not _units.has(selected_slot):
+				continue
+			var chosen: UnitState = _units[selected_slot]
+			Visibility.build(state, _units, _unit_types, chosen.player,
 				turn.human_count(), turn.mode)
 	var result: Dictionary = outcome.to_dict()
 	result["ok"] = outcome.ok()

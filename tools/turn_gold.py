@@ -776,6 +776,491 @@ def move_plan(probes: list[dict[str, Any]], width: int) -> str:
     return "\n".join(lines) + "\n"
 
 # ---------------------------------------------------------------------------
+# Phases 11..13 -- the reveals, the conversion, the platform ride
+# ---------------------------------------------------------------------------
+
+#: The unit-record bytes the probes below write or read back, beyond the
+#: ones ``movemap_gold`` names.
+UNIT_WEAPON = 0x3F
+UNIT_MALFUNCTION = 0x40
+UNIT_ABSORBER = 0x3A
+#: ``+0x33`` -- equipment slot 18, the Damage Absorber, which ``0x00475590``
+#: reads before it reads the charges.  Named by its origin, not its offset.
+UNIT_ABSORBER_FLAG = gold.UNIT_EQUIPMENT + combatmod.EQUIP_DAMAGE_ABSORBER
+UNIT_RESTED = 0x57
+
+#: The *Enemy Move* option, the dword ``0x00460510`` returns (``docs/42``
+#: §3.2).  Written one byte at a time and read back as the whole dword, so a
+#: non-zero high byte cannot pass for "off".
+ENEMY_MOVE_OPTION = 0x005129F4
+
+#: Hit points written into the reveal probes' target so that a shot which
+#: connects leaves a record to read: the save's alien has one point and the
+#: player's rifle deals three.
+PROBE_TARGET_HP = 10
+#: Hit points for the conversion probe: weapon 47 deals one, and the arm at
+#: ``0x0046BDC0`` needs the target alive afterwards.
+CONVERSION_TARGET_HP = 2
+#: Charges written into ``+0x3A`` for the absorber-gate probes -- any number
+#: the shot can be seen to spend or ignore.
+ABSORBER_PROBE_CHARGES = 5
+#: Movement points written into the computer mover for the mode-3 probes;
+#: one orthogonal step costs one.
+PROBE_MOVER_MP = 3
+#: Tiles the platform probe travels.  Three is the smallest shipped distance
+#: and the smallest that keeps the source and destination blocks apart.
+PLATFORM_PROBE_DIST = 3
+#: The overlay's "movement points on arrival" is what the discard at
+#: ``0x0046E357`` compares; the walk's fill supplies it.
+PROBE_DECLARATIONS = """\
+__cdecl i32  aRelocateUnit(i32,i32,i32,i32)        = Incubation.exe+0x7ad90
+__cdecl i32  aPlayPlatformSequence(i32,i32,i32,i32) = Incubation.exe+0x12a00
+"""
+#: The eight neighbours, in the order a free cell next to the alien is tried.
+NEIGHBOURS = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1),
+              (-1, -1))
+
+#: What ``+0x4F`` the engine must have left on the scene's human and alien,
+#: per reveal probe -- the discrimination the phase exists for.  A capture on
+#: which the shot revealed nobody would make "matches the model" a statement
+#: about nothing, so the values are pinned.  ``mode3_off`` leaves the alien a
+#: **contact**, not hidden: its own arrival pass promotes it
+#: (``0x00479786``, the cluster rule inside ``aBuildVisibleMapForUnit``).
+REVEAL_STATES: dict[str, tuple[int, int]] = {
+    "attack_hidden": (combatmod.VISIBLE_FULL, combatmod.VISIBLE_FULL),
+    "attack_jammed": (combatmod.VISIBLE_HIDDEN, combatmod.VISIBLE_HIDDEN),
+    "relocate": (combatmod.VISIBLE_FULL, combatmod.VISIBLE_FULL),
+    "mode3_on": (combatmod.VISIBLE_FULL, combatmod.VISIBLE_FULL),
+    "mode3_off": (combatmod.VISIBLE_FULL, combatmod.VISIBLE_CONTACT),
+}
+
+#: ``aRandom``'s seed as the attack probes start: written, because
+#: ``aLoadGame`` does not touch it and each probe would otherwise start from
+#: the draw the one before left.  1.0 is the value after a load, and its first
+#: ``aRandom(0, 100)`` is 2 -- a hit against any chance.
+PROBE_SEED = 1.0
+#: How many integer seeds the weapon-47 probe tries before giving up: the
+#: weapon rolls the overheat table first (``0x0046B5DF``), and the seed has to
+#: clear it *and* connect.
+SEED_SEARCH_LIMIT = 200
+
+
+def _unit_write(slot: int, offset: int, value: int) -> dict[str, int]:
+    return {"slot": slot, "offset": offset, "value": value}
+
+
+def _seed_write(seed: float) -> dict[str, float]:
+    return {"seed": seed}
+
+
+def _seed_blob(seed: float) -> tuple[str, str]:
+    """The ``--blob`` name and hex of one seed value."""
+    raw = struct.pack("<d", seed)
+    return f"sd{raw.hex()}", raw.hex()
+
+
+def conversion_seed(payload: dict[str, Any], scene: dict[str, Any],
+                    tables: BalanceTables) -> float | None:
+    """A seed under which the model's weapon-47 shot converts its target.
+
+    Searched rather than chosen, because the shot draws the overheat roll
+    first and then the hit roll, and both have to come out right.
+    """
+    for seed in range(1, SEED_SEARCH_LIMIT + 1):
+        world = _world_from_capture(payload, payload["units_before"], tables)
+        world.rng = ARandom(float(seed))
+        human, alien = world.units[scene["human"]], world.units[scene["alien"]]
+        human.weapon = combatmod.CONVERTER_WEAPON
+        alien.hp = CONVERSION_TARGET_HP
+        result = combatmod.attack_unit(world, human.x, human.y, alien.x, alien.y)
+        if any(o.get("converted") for o in result.outcomes):
+            return float(seed)
+    return None
+
+
+def _live_units(world: combatmod.CombatWorld) -> list[combatmod.CombatUnit]:
+    return [u for _s, u in sorted(world.units.items()) if u.alive]
+
+
+def probe_scene(payload: dict[str, Any], tables: BalanceTables
+                ) -> dict[str, Any] | None:
+    """The one arrangement phases 11..13 share.
+
+    The save's aliens all stand out of the player's sight, so the routine that
+    reveals a computer mover where it starts (mode 3) is unreachable as
+    loaded.  Rather than write ``+0x42``/``+0x43`` and leave the map's unit
+    index pointing at the old cell, the plan calls the engine's **own**
+    relocation, ``0x0047AD90`` -- which is also the routine the platform ride
+    uses, so the setup measures it.  The cell is chosen with the model:
+    a free neighbour of the alien from which the human's pass sees the alien
+    *and* the alien's pass sees the human, since mode 3 needs the second.
+    """
+    world = _world_from_capture(payload, payload["units_before"], tables)
+    humans = [u for u in _live_units(world)
+              if u.player not in (PLAYER_PROPS, PLAYER_ALIEN)]
+    aliens = [u for u in _live_units(world) if u.player == PLAYER_ALIEN]
+    if not humans or not aliens:
+        return None
+    human = humans[0]
+    gate = payload.get("hit_returns") or []
+    hittable = [b for i, (a, b, _w) in enumerate(payload.get("pairs") or [])
+                if a == human.slot and i < len(gate) and gate[i]
+                and b in {u.slot for u in aliens}]
+    alien = world.units[hittable[0]] if hittable else aliens[0]
+    cell: tuple[int, int] | None = None
+    for ox, oy in NEIGHBOURS:
+        cx, cy = alien.x + ox, alien.y + oy
+        if not world.in_bounds(cx, cy) or world.unit_on(cx, cy) is not None:
+            continue
+        trial = _world_from_capture(payload, payload["units_before"], tables)
+        trial.units[alien.slot].visibility = combatmod.VISIBLE_HIDDEN
+        interactmod.relocate_unit(trial, trial.units[human.slot], cx, cy)
+        if trial.units[alien.slot].visibility != combatmod.VISIBLE_FULL:
+            continue
+        seen = combatmod.build_visible_map_for_unit(
+            trial, trial.units[alien.slot], alien.x, alien.y)
+        if seen:
+            cell = (cx, cy)
+            break
+    if cell is None:
+        return None
+    return {"human": human.slot, "alien": alien.slot,
+            "human_at": [human.x, human.y], "alien_at": [alien.x, alien.y],
+            "cell": list(cell), "player": human.player}
+
+
+def _relocated_cells(payload: dict[str, Any], scene: dict[str, Any]
+                     ) -> dict[str, list[int]]:
+    width, height = payload["width"], payload["height"]
+    cells = gold.cells_of(bytes.fromhex(payload["cells"]), width, height)
+    hx, hy = scene["human_at"]
+    cx, cy = scene["cell"]
+    cells["unit"][hy * width + hx] = -1
+    cells["unit"][cy * width + cx] = scene["human"]
+    return cells
+
+
+def _mode3_destination(payload: dict[str, Any], scene: dict[str, Any],
+                       tables: BalanceTables) -> tuple[int, int] | None:
+    """One reachable step for the alien, after the human has been moved."""
+    width, height = payload["width"], payload["height"]
+    cells = _relocated_cells(payload, scene)
+    units = gold.units_of(bytes.fromhex(payload["units_before"]), tables,
+                          payload["ai_level"])
+    for u in units:
+        if u["slot"] == scene["human"]:
+            u["x"], u["y"] = scene["cell"]
+    mover = next(u for u in units if u["slot"] == scene["alien"])
+    grid = gold.Grid(width, height, cells["height"], cells["field_type"],
+                     cells["action_point"])
+    hooks = gold.hooks_from_arrays(
+        width, cells["unit"],
+        visibility={u["slot"]: u["visibility"] for u in units},
+        players={u["slot"]: u["player"] for u in units},
+        obstacles=cells["obstacle"])
+    fill = gold.build(grid, gold.Mover(
+        slot=mover["slot"], x=mover["x"], y=mover["y"],
+        player=mover["player"], mp=PROBE_MOVER_MP, special=mover["special"],
+        size=mover["size"], has_jet_pack=mover["has_jet_pack"],
+        mp_allowance=mover["mp_allowance"]), tables.delay_table(), hooks,
+        pass_friendlies=False)
+    best: tuple[int, int, int] | None = None
+    for index in fill.reachable_cells():
+        tx, ty = index % width, index // width
+        if (tx, ty) == (mover["x"], mover["y"]):
+            continue
+        result = gold.walk(grid, fill, mover["x"], mover["y"], tx, ty,
+                           tables.delay_table(), hooks)
+        if not result.ok or result.blocked:
+            continue
+        if best is None or result.steps < best[0]:
+            best = (result.steps, tx, ty)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def reveal_probes(payload: dict[str, Any], scene: dict[str, Any],
+                  tables: BalanceTables) -> list[dict[str, Any]]:
+    """Phase 11 -- the three writers of ``+0x4F`` no earlier capture reached.
+
+    Each probe reloads the save, writes the bytes that make the write
+    observable -- both parties **hidden** first, so a 0 afterwards is the
+    routine's -- and reads the whole unit array either side.  The jammed shot
+    is the control: the shooter's reveal sits *after* the jam test
+    (``0x0046B643``), which only a shot that jams can show.  The two mode-3
+    probes differ in one dword, the *Enemy Move* option: the human going
+    visible in both is the walk's passes, the alien going visible in one is
+    the self-reveal at ``0x0046E4BB``.
+    """
+    human, alien = scene["human"], scene["alien"]
+    hx, hy = scene["human_at"]
+    ax, ay = scene["alien_at"]
+    cx, cy = scene["cell"]
+    hidden = [_unit_write(human, gold.UNIT_VISIBILITY, combatmod.VISIBLE_HIDDEN),
+              _unit_write(alien, gold.UNIT_VISIBILITY, combatmod.VISIBLE_HIDDEN)]
+    seeded = [_seed_write(PROBE_SEED)]
+    probes: list[dict[str, Any]] = [
+        {"tag": "attack_hidden", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(alien, gold.UNIT_HP, PROBE_TARGET_HP)]
+                   + hidden + seeded,
+         "call": [hx, hy, ax, ay]},
+        {"tag": "attack_jammed", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(alien, gold.UNIT_HP, PROBE_TARGET_HP),
+                    _unit_write(human, UNIT_MALFUNCTION, 2)] + hidden + seeded,
+         "call": [hx, hy, ax, ay]},
+        {"tag": "relocate", "kind": "relocate", "relocate": None,
+         "writes": [_unit_write(alien, gold.UNIT_VISIBILITY,
+                                combatmod.VISIBLE_HIDDEN)],
+         "call": [hx, hy, cx, cy]},
+    ]
+    destination = _mode3_destination(payload, scene, tables)
+    if destination is None:
+        LOG.warning("no reachable step for the alien next to the relocated "
+                    "human; the mode-3 probes are skipped")
+        return probes
+    tx, ty = destination
+    for tag, option in (("mode3_on", 1), ("mode3_off", 0)):
+        probes.append({
+            "tag": tag, "kind": "move", "relocate": [hx, hy, cx, cy],
+            "writes": [_unit_write(alien, gold.UNIT_MP, PROBE_MOVER_MP)]
+                      + hidden + [{"option": option}],
+            "slot": alien, "sx": ax, "sy": ay, "tx": tx, "ty": ty,
+            "call": [ax, ay, tx, ty],
+        })
+    return probes
+
+
+def conversion_probes(payload: dict[str, Any], scene: dict[str, Any],
+                      tables: BalanceTables) -> list[dict[str, Any]]:
+    """Phase 12 -- ``0x00475590``'s gate and weapon 47's arm, natively.
+
+    No shipped unit carries weapon 47, so the byte is written; the target's
+    hit points are set so the one point of damage leaves it alive, which is
+    what the arm at ``0x0046BDC0`` requires; and the seed is one the model
+    says clears the overheat roll the weapon always makes and then connects.
+    The two absorber probes write the same charge count and differ only in
+    ``+0x33``: the engine reads the charges behind the equipment flag, and
+    the model's absorber used to read them without it.
+    """
+    human, alien = scene["human"], scene["alien"]
+    hx, hy = scene["human_at"]
+    ax, ay = scene["alien_at"]
+    probes: list[dict[str, Any]] = []
+    seed = conversion_seed(payload, scene, tables)
+    if seed is None:
+        LOG.warning("no seed below %d lets the weapon-47 shot convert; the "
+                    "probe is skipped", SEED_SEARCH_LIMIT)
+    else:
+        probes.append(
+            {"tag": "weapon47", "kind": "attack", "relocate": None,
+             "writes": [_unit_write(human, UNIT_WEAPON,
+                                    combatmod.CONVERTER_WEAPON),
+                        _unit_write(alien, gold.UNIT_HP, CONVERSION_TARGET_HP),
+                        _seed_write(seed)],
+             "call": [hx, hy, ax, ay]})
+    probes += [
+        {"tag": "absorber_unflagged", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(alien, gold.UNIT_HP, PROBE_TARGET_HP),
+                    _unit_write(alien, UNIT_ABSORBER, ABSORBER_PROBE_CHARGES),
+                    _seed_write(PROBE_SEED)],
+         "call": [hx, hy, ax, ay]},
+        {"tag": "absorber_flagged", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(alien, gold.UNIT_HP, PROBE_TARGET_HP),
+                    _unit_write(alien, UNIT_ABSORBER, ABSORBER_PROBE_CHARGES),
+                    _unit_write(alien, UNIT_ABSORBER_FLAG, 1),
+                    _seed_write(PROBE_SEED)],
+         "call": [hx, hy, ax, ay]},
+    ]
+    return probes
+
+
+def platform_probes(payload: dict[str, Any], scene: dict[str, Any],
+                    tables: BalanceTables) -> list[dict[str, Any]]:
+    """Phase 13 -- ``aPlayPlatformSequence`` with the human riding.
+
+    The human is first relocated to a cell that can be a platform's centre:
+    its 3x3 block and the block three tiles along the chosen direction both
+    inside the map, and no unit on any of the eighteen cells but the rider.
+    The nearest such centre to the alien is taken, so the ride ends where the
+    rider's pass has something to see.  The alien is hidden first for the
+    same reason as in phase 11.
+    """
+    width, height = payload["width"], payload["height"]
+    world = _world_from_capture(payload, payload["units_before"], tables)
+    human = world.units[scene["human"]]
+    alien = world.units[scene["alien"]]
+    best: tuple[int, int, int, int] | None = None
+    for px in range(1, width - 1):
+        for py in range(1, height - 1):
+            for direction, (dx, dy) in sorted(interactmod.DIR_PLATFORM.items()):
+                fx, fy = px + dx * PLATFORM_PROBE_DIST, py + dy * PLATFORM_PROBE_DIST
+                if not (1 <= fx < width - 1 and 1 <= fy < height - 1):
+                    continue
+                clear = True
+                for ox in (-1, 0, 1):
+                    for oy in (-1, 0, 1):
+                        for x, y in ((px + ox, py + oy), (fx + ox, fy + oy)):
+                            occupant = world.unit_on(x, y)
+                            if occupant is not None and occupant is not human:
+                                clear = False
+                if not clear:
+                    continue
+                d = abs(fx - alien.x) + abs(fy - alien.y)
+                if best is None or d < best[0]:
+                    best = (d, px, py, direction)
+    if best is None:
+        LOG.warning("no platform centre with two clear blocks; phase 13 has "
+                    "nothing to ride")
+        return []
+    _d, px, py, direction = best
+    return [{
+        "tag": "ride", "kind": "platform",
+        "relocate": [human.x, human.y, px, py],
+        "writes": [_unit_write(alien.slot, gold.UNIT_VISIBILITY,
+                               combatmod.VISIBLE_HIDDEN)],
+        "call": [px, py, direction, PLATFORM_PROBE_DIST],
+    }]
+
+
+def _probe_write(write: dict[str, Any]) -> str:
+    if "seed" in write:
+        name, _hex = _seed_blob(write["seed"])
+        return f"memcpy({SEED_ADDR:#x}, &{name}, 8)"
+    if "option" in write:
+        return gold.writeb(f"{ENEMY_MOVE_OPTION:#x}", write["option"])
+    return gold.writeb(_unit_addr(write["slot"], write["offset"]),
+                       write["value"])
+
+
+def probe_plan(header: str, probes: list[dict[str, Any]], width: int) -> str:
+    """One plan for a phase of reloading probes, phase 10's shape.
+
+    Every probe reloads the save; its writes go through the game's own
+    ``memcpy`` (:data:`movemap_gold.MEMCPY_DECL`) after any relocation; the
+    unit array, the generator's seed, the option dword and the control map
+    are read **either side** of the call.
+    """
+    cells = width * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    units = gold.UNIT_SLOTS * gold.UNIT_STRIDE
+    values: list[int] = []
+    seeds: dict[str, str] = {}
+    for probe in probes:
+        for write in probe["writes"]:
+            if "seed" in write:
+                name, hex_bytes = _seed_blob(write["seed"])
+                seeds[name] = hex_bytes
+            else:
+                values.append(write["option"] if "option" in write
+                              else write["value"])
+    snapshot = (f"aGetUnitMapElementPtr(0) --read $u0:{units} "
+                f"--read {SEED_ADDR:#x}:8 --read {ENEMY_MOVE_OPTION:#x}:4\n"
+                f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}")
+    # No ``--code`` page here (``movemap_gold.MEMCPY_DECL`` says why), so
+    # the ``setb`` declaration that phases 4 and 10 bind to one is left out.
+    declarations = "\n".join(line for line in DECLARATIONS.splitlines()
+                             if "setb" not in line)
+    lines = [f"# {header}", declarations + "\n" + MOVE_DECLARATIONS
+             + PROBE_DECLARATIONS + gold.MEMCPY_DECL]
+    lines += gold.blob_lines(values)
+    lines += [f"--blob {name}:{hex_bytes}" for name, hex_bytes in sorted(seeds.items())]
+    lines += ["--buf scratch:4", "--buf wblocked:4", "--buf wsteps:4",
+              "--buf ecost:4", ""]
+    for i, probe in enumerate(probes):
+        args = ", ".join(str(v) for v in probe["call"])
+        lines += [
+            f"# probe {i}: {probe['tag']} ({probe['kind']})",
+            "aSetSaveMode(0)",
+            f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+            "c0 = aGetCtrlMapElementPtr(0,0)",
+            "u0 = aGetUnitMapElementPtr(0)",
+        ]
+        if probe["relocate"]:
+            moved = ", ".join(str(v) for v in probe["relocate"])
+            lines.append(f"aRelocateUnit({moved})")
+        lines += [_probe_write(w) for w in probe["writes"]]
+        if probe["kind"] == "move":
+            lines += [
+                "aResetMoveOverlay()",
+                f"ue{i} = aGetUnitMapElementPtr({probe['slot']})",
+                f"aBuildMoveMap($ue{i}, 0, &scratch, 0) --zero scratch",
+                f"aWalkMoveMap({probe['sx']}, {probe['sy']}, {probe['tx']}, "
+                f"{probe['ty']}, &wblocked, &wsteps) --zero wblocked "
+                f"--zero wsteps --dump wblocked --dump wsteps",
+            ]
+        lines.append(snapshot)
+        if probe["kind"] == "attack":
+            lines.append(f"aAttackUnit({args}, 0)")
+        elif probe["kind"] == "relocate":
+            lines.append(f"aRelocateUnit({args})")
+        elif probe["kind"] == "move":
+            tail = ", ".join(str(v) for v in MOVE_TAIL)
+            lines.append(f"aExecuteMove({args}, &ecost, {tail}) "
+                         f"--zero ecost --dump ecost")
+        else:
+            lines.append(f"aPlayPlatformSequence({args})")
+        lines += [snapshot, ""]
+    return "\n".join(lines) + "\n"
+
+
+#: Seconds one attempt of the platform phase may take: the ride animates for
+#: ``dist * 10`` frames with sound, after a reload.
+PLATFORM_TIMEOUT = MOVE_TIMEOUT
+
+PROBE_PHASES: tuple[tuple[str, str, str], ...] = (
+    ("reveal", "Phase 11: the reveals -- aAttackUnit hidden and jammed, "
+               "0x0047AD90, and aExecuteMove in mode 3 with the option on "
+               "and off.", "turn_reveal"),
+    ("conversion", "Phase 12: weapon 47's conversion and 0x00475590's "
+                   "equipment gate.", "turn_conversion"),
+    ("platform", "Phase 13: aPlayPlatformSequence with a rider.",
+     "turn_platform"),
+)
+
+
+def capture_probe_phase(game_copy: Path, dbgcall: Path, payload: dict[str, Any],
+                        out: Path, key: str, header: str, name: str,
+                        probes: list[dict[str, Any]], scene: dict[str, Any],
+                        attempts: int) -> None:
+    """Run one of phases 11..13 and merge its block into the capture."""
+    rows = gold.run_plan(game_copy, dbgcall, probe_plan(header, probes,
+                                                        payload["width"]),
+                         name, attempts, timeout=PLATFORM_TIMEOUT)
+    blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+    seeds = _reads(rows, "aGetUnitMapElementPtr", f"{SEED_ADDR:#x}")
+    options = _reads(rows, "aGetUnitMapElementPtr", f"{ENEMY_MOVE_OPTION:#x}")
+    cellb = _reads(rows, "aGetCtrlMapElementPtr", "$c0")
+    wanted = 2 * len(probes)
+    counts = {"unit dumps": len(blocks), "seeds": len(seeds),
+              "options": len(options), "cell dumps": len(cellb)}
+    bad = {k: n for k, n in counts.items() if n != wanted}
+    if bad:
+        raise GoldError(f"{name} read {counts} for {len(probes)} probe(s); "
+                        f"wrong: {bad}")
+    returns: dict[str, list[int]] = {}
+    for call in ("aAttackUnit", "aRelocateUnit", "aExecuteMove",
+                 "aPlayPlatformSequence"):
+        returns[call] = _results(rows, call)
+    payload[key] = {
+        "scene": scene,
+        "probes": probes,
+        "returns": returns,
+        "cost": _dumps(rows, "aExecuteMove", "ecost"),
+        "walk_steps": _dumps(rows, "aWalkMoveMap", "wsteps"),
+        "walk_blocked": _dumps(rows, "aWalkMoveMap", "wblocked"),
+        "units_before": [b.hex() for b in blocks[0::2]],
+        "units_after": [b.hex() for b in blocks[1::2]],
+        "seeds_before": [b.hex() for b in seeds[0::2]],
+        "seeds_after": [b.hex() for b in seeds[1::2]],
+        "option_before": [b.hex() for b in options[0::2]],
+        "option_after": [b.hex() for b in options[1::2]],
+        "cells_before": [b.hex() for b in cellb[0::2]],
+        "cells_after": [b.hex() for b in cellb[1::2]],
+    }
+    _write(payload, out)
+
+
+# ---------------------------------------------------------------------------
 # Reading a capture back
 # ---------------------------------------------------------------------------
 
@@ -1301,6 +1786,37 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("phase 10 did not complete (%s: %s); the walk "
                             "stays unpinned", type(exc).__name__, exc)
+
+    # Phases 11..13 share one arrangement, chosen with the model, and each
+    # reloads per probe like phase 10.  The platform ride is last and alone
+    # in its plan because it is the one that animates longest.
+    if any(not payload.get(key) for key, _h, _n in PROBE_PHASES):
+        tables = load_info(str(root))
+        scene = probe_scene(payload, tables)
+        if scene is None:
+            LOG.warning("no human, alien and free cell between them on this "
+                        "save; phases 11..13 have no scene")
+        else:
+            LOG.info("phases 11..13: human %d moves to %s next to alien %d",
+                     scene["human"], scene["cell"], scene["alien"])
+            builders = {
+                "reveal": lambda: reveal_probes(payload, scene, tables),
+                "conversion": lambda: conversion_probes(payload, scene, tables),
+                "platform": lambda: platform_probes(payload, scene, tables),
+            }
+            for key, header, name in PROBE_PHASES:
+                if payload.get(key):
+                    continue
+                probes = builders[key]()
+                LOG.info("%s: %d probe(s)", name, len(probes))
+                if not probes:
+                    continue
+                try:
+                    capture_probe_phase(game_copy, dbgcall, payload, out, key,
+                                        header, name, probes, scene, attempts)
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning("%s did not complete (%s: %s); it stays "
+                                "unpinned", name, type(exc).__name__, exc)
     return 0
 
 
@@ -1503,7 +2019,8 @@ COMBAT_UNIT_FIELDS = {
     "player": gold.UNIT_PLAYER, "type_id": 0x4C, "x": gold.UNIT_X,
     "y": gold.UNIT_Y, "hp": gold.UNIT_HP, "facing": 0x46, "fp": 0x19,
     "mp": gold.UNIT_MP, "weapon": 0x3F, "ammo": 0x3D, "heat": 0x3E,
-    "malfunction": 0x40, "absorber": 0x3A, "armour_front": 0x36,
+    "malfunction": 0x40, "absorber": 0x3A, "rested": 0x57,
+    "armour_front": 0x36,
     "armour_rear": 0x37, "action_state": 0x41, "acted": 0x39, "ticket": 0x59,
     "visibility": gold.UNIT_VISIBILITY, "order": 0x47, "order_param": 0x48,
     "order2": 0x49, "order2_param": 0x4A, "group": 0x4E,
@@ -1684,6 +2201,7 @@ def _combat_cases(payload: dict[str, Any], root: Path) -> dict[str, Any]:
         "overheat": overheat,
         "attack": attack,
         "use": interaction,
+        "probes": _probe_cases(payload),
     }
 
 
@@ -1704,6 +2222,15 @@ def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
         weapon_ids.add(_byte(before, slot, 0x3F))
     for block in payload.get("refreshes", {}).values():
         for raw_hex in (block["before"], block["after"]):
+            raw = bytes.fromhex(raw_hex)
+            for slot in _live_slots(raw):
+                type_ids.add(_byte(raw, slot, 0x4C))
+                weapon_ids.add(_byte(raw, slot, 0x3F))
+    # The probe phases write a weapon id no shipped unit carries (47), so
+    # their snapshots are scanned too; without its row the GDScript replay
+    # fired a weapon with no heat cap and no hit rating and quietly missed.
+    for key, _header, _name in PROBE_PHASES:
+        for raw_hex in (payload.get(key) or {}).get("units_before", []):
             raw = bytes.fromhex(raw_hex)
             for slot in _live_slots(raw):
                 type_ids.add(_byte(raw, slot, 0x4C))
@@ -1748,9 +2275,16 @@ def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _world_from_capture(payload: dict[str, Any], unit_hex: str,
-                        tables: BalanceTables) -> combatmod.CombatWorld:
+                        tables: BalanceTables,
+                        cells_hex: str | None = None) -> combatmod.CombatWorld:
+    """A combat world from one unit dump and, by default, phase 1's cells.
+
+    ``cells_hex`` is for the probes that read the control map either side of
+    their call: a relocation moves a unit link before the snapshot, and a
+    world built from phase 1's cells would put the unit back.
+    """
     width, height = payload["width"], payload["height"]
-    cells = bytes.fromhex(payload["cells"])
+    cells = bytes.fromhex(payload["cells"] if cells_hex is None else cells_hex)
     units_raw = bytes.fromhex(unit_hex)
     cell_height: list[int] = []
     unit_at: list[int] = []
@@ -1783,7 +2317,7 @@ def _world_from_capture(payload: dict[str, Any], unit_hex: str,
             fp=units_raw[b + 0x19], mp=units_raw[b + gold.UNIT_MP],
             weapon=units_raw[b + 0x3F], ammo=units_raw[b + 0x3D],
             heat=units_raw[b + 0x3E], malfunction=units_raw[b + 0x40],
-            absorber=units_raw[b + 0x3A],
+            absorber=units_raw[b + 0x3A], rested=units_raw[b + 0x57],
             armour_front=units_raw[b + 0x36],
             armour_rear=units_raw[b + 0x37],
             action_state=units_raw[b + 0x41], visibility=units_raw[b + 0x4F],
@@ -1897,6 +2431,347 @@ def _use_model_checks(c: Checker, payload: dict[str, Any],
     c.check("use.model_granted_the_crowbar",
             interactmod.EQUIP_CROWBAR in unit.equipment_ids,
             "class 39 is the third of the three probed classes")
+
+
+#: The record bytes the probe phases compare on every live slot: what the
+#: reveals, the conversion and the ride write, plus the position and hit
+#: points a shot or a ride moves.
+PROBE_RECORD_FIELDS: tuple[tuple[int, str], ...] = (
+    (gold.UNIT_VISIBILITY, "visibility"), (0x47, "order"),
+    (0x48, "order_param"), (gold.UNIT_PLAYER, "player"),
+    (gold.UNIT_MP, "mp"), (gold.UNIT_ACTION_STATE, "action_state"),
+    (UNIT_ABSORBER, "absorber"), (gold.UNIT_HP, "hp"),
+    (gold.UNIT_X, "x"), (gold.UNIT_Y, "y"),
+    # The heat and the malfunction byte are what pin weapon 47 firing at its
+    # cap and the jammed control: without them those two were a printout.
+    (0x3E, "heat"), (UNIT_MALFUNCTION, "malfunction"),
+)
+
+
+def _record_diff(world: combatmod.CombatWorld, after: bytes,
+                 live: list[int]) -> list[str]:
+    """Every live record's probe fields, model against the engine's image."""
+    bad: list[str] = []
+    for slot in live:
+        rec = slot * gold.UNIT_STRIDE
+        unit = world.units.get(slot)
+        if unit is None or not unit.alive:
+            if after[rec + gold.UNIT_HP] != 0:
+                bad.append(f"slot {slot}: the model has it dead, the engine "
+                           f"has hp {after[rec + gold.UNIT_HP]}")
+            continue
+        for offset, name in PROBE_RECORD_FIELDS:
+            got = getattr(unit, name)
+            if after[rec + offset] != got:
+                bad.append(f"slot {slot} {name}: {got} against "
+                           f"{after[rec + offset]}")
+    return bad
+
+
+def _flips(before: bytes, after: bytes, live: list[int]) -> list[int]:
+    return [s for s in live
+            if before[s * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]
+            != after[s * gold.UNIT_STRIDE + gold.UNIT_VISIBILITY]]
+
+
+def _dword(hex_bytes: str) -> int:
+    return int.from_bytes(bytes.fromhex(hex_bytes), "little")
+
+
+def _probe_returns(block: dict[str, Any]) -> list[int]:
+    """The engine's return for each probe's **own** call.
+
+    ``_results`` lists every ``aRelocateUnit`` in the plan, the setup ones
+    included, so the list is walked in plan order.
+    """
+    names = {"attack": "aAttackUnit", "relocate": "aRelocateUnit",
+             "move": "aExecuteMove", "platform": "aPlayPlatformSequence"}
+    taken = {name: 0 for name in names.values()}
+    out: list[int] = []
+    for probe in block["probes"]:
+        if probe["relocate"]:
+            taken["aRelocateUnit"] += 1
+        name = names[probe["kind"]]
+        out.append(block["returns"][name][taken[name]])
+        taken[name] += 1
+    return out
+
+
+def _probe_model(payload: dict[str, Any], block: dict[str, Any], i: int,
+                 tables: BalanceTables
+                 ) -> tuple[combatmod.CombatWorld, dict[str, Any]]:
+    """Replay probe ``i`` through the models; the world it leaves, and notes."""
+    probe = block["probes"][i]
+    width = payload["width"]
+    world = _world_from_capture(payload, block["units_before"][i], tables,
+                                cells_hex=block["cells_before"][i])
+    world.rng = ARandom(struct.unpack(
+        "<d", bytes.fromhex(block["seeds_before"][i]))[0])
+    notes: dict[str, Any] = {}
+    kind = probe["kind"]
+    if kind == "attack":
+        ax, ay, tx, ty = probe["call"]
+        result = combatmod.attack_unit(world, ax, ay, tx, ty)
+        notes["fired"] = result.fired
+        notes["converted"] = [o["slot"] for o in result.outcomes
+                              if o.get("converted")]
+    elif kind == "relocate":
+        _sx, _sy, tx, ty = probe["call"]
+        unit = world.unit_on(_sx, _sy)
+        notes["saw"] = (unit is not None
+                        and interactmod.relocate_unit(world, unit, tx, ty))
+    elif kind == "move":
+        before = bytes.fromhex(block["units_before"][i])
+        cells = gold.cells_of(bytes.fromhex(block["cells_before"][i]), width,
+                              payload["height"])
+        units = gold.units_of(before, tables, payload["ai_level"])
+        grid = gold.Grid(width, payload["height"], cells["height"],
+                         cells["field_type"], cells["action_point"])
+        hooks = gold.hooks_from_arrays(
+            width, cells["unit"],
+            visibility={u["slot"]: u["visibility"] for u in units},
+            players={u["slot"]: u["player"] for u in units},
+            obstacles=cells["obstacle"])
+        row = next(u for u in units if u["slot"] == probe["slot"])
+        mover = gold.Mover(
+            slot=probe["slot"], x=row["x"], y=row["y"], player=row["player"],
+            mp=row["mp"], special=row["special"], size=row["size"],
+            has_jet_pack=row["has_jet_pack"],
+            mp_allowance=row["mp_allowance"])
+        delays = tables.delay_table()
+        fill = gold.build(grid, mover, delays, hooks, pass_friendlies=False)
+        walked = gold.walk(grid, fill, probe["sx"], probe["sy"], probe["tx"],
+                           probe["ty"], delays, hooks)
+        moved = movemapmod.execute(grid, hooks, delays, mover, walked)
+        walker = world.units[probe["slot"]]
+        option = _dword(block["option_before"][i])
+        arrival = fill.mp_left[probe["ty"] * width + probe["tx"]]
+        notes["seen"] = combatmod.look_before_walk(
+            world, walker, probe["tx"], probe["ty"], arrival,
+            enemy_move=option != 0)
+        if moved.steps:
+            world.unit_at[world.index(walker.x, walker.y)] = -1
+            world.unit_at[world.index(moved.x, moved.y)] = walker.slot
+            walker.x, walker.y, walker.facing = moved.x, moved.y, moved.facing
+        combatmod.look_after_walk(world, walker)
+        notes["ok"] = moved.ok
+        notes["cost"] = moved.cost
+        notes["steps"] = walked.steps
+        notes["option"] = option
+    else:
+        px, py, direction, dist = probe["call"]
+        notes["riders"] = interactmod.platform_ride(world, px, py, direction,
+                                                    dist)
+    return world, notes
+
+
+def _probe_checks(c: Checker, payload: dict[str, Any], key: str,
+                  block: dict[str, Any], tables: BalanceTables) -> None:
+    """Phases 11..13 against the models, probe by probe.
+
+    Two kinds of check per probe.  The **agreement** ones compare every live
+    record's probe fields -- and, for the relocation and the ride, every
+    cell's height, type and unit link -- with the engine's after-image.  The
+    **discrimination** ones pin what the engine itself did, so that a capture
+    on which a routine changed nothing cannot pass as agreement.
+    """
+    width, height = payload["width"], payload["height"]
+    live = payload["live"]
+    scene = block["scene"]
+    probes = block["probes"]
+    returns = _probe_returns(block)
+    c.check(f"{key}.probed", len(probes) > 0, f"{len(probes)} probe(s)")
+    c.expect(f"{key}.every_relocation_succeeded",
+             sorted(set(block["returns"]["aRelocateUnit"])),
+             [1] if block["returns"]["aRelocateUnit"] else [],
+             "0x0047AD90 returns TRUE for every setup and probe call")
+    moves = 0
+    for i, probe in enumerate(probes):
+        tag = probe["tag"]
+        label = f"{key}.{tag}"
+        before = bytes.fromhex(block["units_before"][i])
+        after = bytes.fromhex(block["units_after"][i])
+        world, notes = _probe_model(payload, block, i, tables)
+        c.expect(f"{label}.records_match_native",
+                 _record_diff(world, after, live), [],
+                 f"{', '.join(n for _o, n in PROBE_RECORD_FIELDS)} of every "
+                 f"live record after the call; notes {notes}")
+        flips = _flips(before, after, live)
+        if tag in REVEAL_STATES:
+            human_rec = scene["human"] * gold.UNIT_STRIDE
+            alien_rec = scene["alien"] * gold.UNIT_STRIDE
+            c.expect(f"{label}.engine_left_human_and_alien_at",
+                     (after[human_rec + gold.UNIT_VISIBILITY],
+                      after[alien_rec + gold.UNIT_VISIBILITY]),
+                     REVEAL_STATES[tag],
+                     f"+0x4F of the human and the alien after the call "
+                     f"(written 3 first, except the human of `relocate`); "
+                     f"the engine changed +0x4F on {flips}")
+        if probe["kind"] == "attack":
+            seed_after = struct.unpack(
+                "<d", bytes.fromhex(block["seeds_after"][i]))[0]
+            c.check(f"{label}.seed_matches_native",
+                    abs(world.rng.seed - seed_after) <= 0.5,
+                    f"{world.rng.seed} against {seed_after}")
+            c.expect(f"{label}.returns", returns[i], 1,
+                     "aAttackUnit's BOOL, 1 for a jam as well")
+        elif probe["kind"] == "relocate":
+            cells_after = gold.cells_of(bytes.fromhex(block["cells_after"][i]),
+                                        width, height)
+            c.expect(f"{label}.unit_links_match_native", world.unit_at,
+                     cells_after["unit"], "cell +0x07 of every cell")
+            c.expect(f"{label}.returns", returns[i], 1)
+        elif probe["kind"] == "move":
+            moves += 1
+            c.expect(f"{label}.returns", int(notes["ok"]), int(bool(returns[i])))
+            c.expect(f"{label}.cost", notes["cost"], block["cost"][moves - 1])
+            c.expect(f"{label}.walk_found_a_path", block["walk_blocked"][moves - 1],
+                     0)
+            intended = next(w["option"] for w in probe["writes"]
+                            if "option" in w)
+            c.expect(f"{label}.option_dword_reads_back", 
+                     (_dword(block["option_before"][i]),
+                      _dword(block["option_after"][i])),
+                     (intended, intended),
+                     "the whole dword at 0x005129F4, so a stale high byte "
+                     "cannot pass for the value written")
+            c.expect(f"{label}.drew_nothing", block["seeds_after"][i],
+                     block["seeds_before"][i])
+        else:
+            cells_after = gold.cells_of(bytes.fromhex(block["cells_after"][i]),
+                                        width, height)
+            px, py, direction, dist = probe["call"]
+            dx, dy = interactmod.DIR_PLATFORM[direction]
+            rider = scene["human"]
+            c.expect(f"{label}.cells_match_native",
+                     [world.cell_height, world.field_type, world.unit_at],
+                     [cells_after["height"], cells_after["field_type"],
+                      cells_after["unit"]],
+                     "height, field type and unit link of every cell")
+            c.expect(f"{label}.the_rider_travelled",
+                     (after[rider * gold.UNIT_STRIDE + gold.UNIT_X],
+                      after[rider * gold.UNIT_STRIDE + gold.UNIT_Y]),
+                     (px + dx * dist, py + dy * dist))
+            c.expect(f"{label}.the_source_is_a_deep_hole",
+                     cells_after["field_type"][py * width + px],
+                     interactmod.CTRL_TYPE_DEEP_HOLE)
+            c.expect(f"{label}.returns", returns[i], 1)
+            # The order question: the rider's pass before the cell copy sees
+            # the destination block's old heights.  Replayed the other way
+            # round, does the image still agree?  Reported either way; the
+            # gate above is the engine's order.
+            other = _world_from_capture(payload, block["units_before"][i],
+                                        tables,
+                                        cells_hex=block["cells_before"][i])
+            _ride_copy_first(other, px, py, direction, dist)
+            c.check(f"{label}.pass_before_copy_is_the_order_measured", True,
+                    "copy-then-pass also agrees" if not _record_diff(other, after, live)
+                    else "copy-then-pass disagrees: "
+                         f"{_record_diff(other, after, live)[:3]}")
+        if probe["kind"] == "attack" and tag == "weapon47":
+            alien = scene["alien"] * gold.UNIT_STRIDE
+            c.expect(f"{label}.engine_converted_the_target",
+                     (after[alien + gold.UNIT_PLAYER],
+                      after[alien + gold.UNIT_ACTION_STATE]),
+                     (scene["player"], 0),
+                     "+0x45 is the shooter's and +0x41 is cleared")
+            c.expect(f"{label}.model_converted_the_same_record",
+                     notes["converted"], [scene["alien"]])
+        if tag == "absorber_unflagged":
+            alien = scene["alien"] * gold.UNIT_STRIDE
+            c.check(f"{label}.engine_ignored_the_charges",
+                    after[alien + gold.UNIT_HP] < before[alien + gold.UNIT_HP]
+                    and after[alien + UNIT_ABSORBER] == ABSORBER_PROBE_CHARGES,
+                    f"hp {before[alien + gold.UNIT_HP]} -> "
+                    f"{after[alien + gold.UNIT_HP]}, charges "
+                    f"{after[alien + UNIT_ABSORBER]} with +0x33 clear")
+        if tag == "absorber_flagged":
+            alien = scene["alien"] * gold.UNIT_STRIDE
+            c.expect(f"{label}.engine_spent_one_charge",
+                     (after[alien + gold.UNIT_HP], after[alien + UNIT_ABSORBER]),
+                     (before[alien + gold.UNIT_HP], ABSORBER_PROBE_CHARGES - 1),
+                     "the damage is nullified and +0x3A drops by one")
+    if key == "reveal":
+        c.check("reveal.mode3_probes_present",
+                {"mode3_on", "mode3_off"} <= {p["tag"] for p in probes},
+                "both option settings were walked")
+
+
+def _ride_copy_first(world: combatmod.CombatWorld, x: int, y: int,
+                     direction: int, dist: int) -> None:
+    """The ride with the cell copy **before** the riders' passes -- the order
+    the interpreters use on the script world, replayed to report whether the
+    capture can tell the two apart."""
+    dx, dy = interactmod.DIR_PLATFORM[direction]
+    dx, dy = dx * dist, dy * dist
+    block = [(x + ox, y + oy) for ox in (-1, 0, 1) for oy in (-1, 0, 1)]
+    riders = [world.unit_on(sx, sy) for sx, sy in block
+              if world.in_bounds(sx, sy)]
+    for sx, sy in block:
+        tx, ty = sx + dx, sy + dy
+        if not (world.in_bounds(sx, sy) and world.in_bounds(tx, ty)):
+            continue
+        src, dst = world.index(sx, sy), world.index(tx, ty)
+        world.cell_height[dst] = world.cell_height[src]
+        world.field_type[dst] = world.field_type[src]
+        world.field_type[src] = interactmod.CTRL_TYPE_DEEP_HOLE
+    for rider in riders:
+        if rider is not None:
+            interactmod.relocate_unit(world, rider, rider.x + dx, rider.y + dy)
+
+
+def _probe_cases(payload: dict[str, Any]) -> dict[str, Any]:
+    """Phases 11..13 in the shape ``test_combat_native.gd`` replays.
+
+    Every probe reloads and writes, so each carries its own unit array **and**
+    its own cell arrays -- the relocation moves a unit link before the
+    snapshot -- and the engine's after-image as the expectation.
+    """
+    width, height = payload["width"], payload["height"]
+    out: dict[str, Any] = {}
+    for key, _header, _name in PROBE_PHASES:
+        block = payload.get(key)
+        if not block:
+            continue
+        returns = _probe_returns(block)
+        cases: list[dict[str, Any]] = []
+        moves = 0
+        for i, probe in enumerate(block["probes"]):
+            before = bytes.fromhex(block["units_before"][i])
+            after = bytes.fromhex(block["units_after"][i])
+            cells = gold.cells_of(bytes.fromhex(block["cells_before"][i]),
+                                  width, height)
+            cells_after = gold.cells_of(bytes.fromhex(block["cells_after"][i]),
+                                        width, height)
+            case: dict[str, Any] = {
+                "tag": probe["tag"], "kind": probe["kind"],
+                "call": list(probe["call"]),
+                "option": _dword(block["option_before"][i]),
+                "seed_before": _seed(block["seeds_before"][i]),
+                "seed_after": _seed(block["seeds_after"][i]),
+                "cells": {k: list(v) for k, v in cells.items()},
+                "units": [_combat_unit(before, s) for s in payload["live"]],
+                "expected": {
+                    "returns": returns[i],
+                    "records_after": [dict(
+                        {"slot": s},
+                        **{name: _byte(after, s, offset)
+                           for offset, name in PROBE_RECORD_FIELDS})
+                        for s in payload["live"]],
+                    "cells_after": {k: list(cells_after[k])
+                                    for k in ("height", "field_type", "unit")},
+                },
+            }
+            if probe["kind"] == "move":
+                case["move"] = {"slot": probe["slot"], "sx": probe["sx"],
+                                "sy": probe["sy"], "tx": probe["tx"],
+                                "ty": probe["ty"],
+                                "steps": block["walk_steps"][moves]}
+                case["expected"]["cost"] = block["cost"][moves]
+                moves += 1
+            cases.append(case)
+        out[key] = {"scene": block["scene"], "probes": cases}
+    return out
 
 
 def run_check(capture_path: Path, root: Path) -> int:
@@ -2384,6 +3259,15 @@ def run_check(capture_path: Path, root: Path) -> int:
                 "the capture holds no aExecuteMove phase")
     else:
         _move_checks(c, payload, move, tables)
+
+    # --- the reveals, the conversion and the ride: phases 11..13 ----------
+    for key, _header, _name in PROBE_PHASES:
+        block = payload.get(key)
+        if not block:
+            c.check(f"{key}.captured", False,
+                    f"the capture holds no {key} phase; re-run --game-copy")
+        else:
+            _probe_checks(c, payload, key, block, tables)
 
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:

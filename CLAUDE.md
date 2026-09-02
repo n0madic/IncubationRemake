@@ -60,13 +60,13 @@ python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
 python3 tools/lcl_runtime.py        --check gog_incubation   # 34 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 units
-python3 tools/combat_runtime.py     --check gog_incubation   # 84 checks, LOS/hit/damage/reaction
+python3 tools/combat_runtime.py     --check gog_incubation   # 100 checks, LOS/hit/damage/reaction
 python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
 python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 2075 checks
+bash   godot/run_tests.sh                                    # 31 suites, 2128 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -450,7 +450,7 @@ game's own imported `memcpy` reached through its IAT slot with the byte in a
 plain `--blob`.
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
-120 checks over 86 unit pairs (hit probability **and** line of sight), the
+172 checks over 86 unit pairs (hit probability **and** line of sight), the
 refresh of every player that owns a live unit, the records those refreshes must
 leave alone, the fog pass, the lone stat recompute, and twelve steps of the
 rotation with the twelve game-control slots beside it, and one `NextPlayer`
@@ -460,6 +460,17 @@ the overheat gate with its roll, six ordered shots,
 `inclib/interact.py` in order and without reloading**, because the phase itself
 does not reload — and six `aExecuteMove` walks of
 one path that differ only in a byte written between the walk and the call.
+Three phases added on 2026-09-02 reload per probe and write through the
+game's own `memcpy` (`movemap_gold.MEMCPY_DECL`, shared by all four gold
+tools): `reveal` (the shooter's and target's reveals with both written
+hidden, a jammed control, the engine's own relocation `0x0047AD90`, and one
+step by a computer mover with the *Enemy Move* dword written on and off),
+`conversion` (weapon 47 with the byte written and the seed written to one
+that clears its always-at-the-cap overheat roll, and the absorber's `+0x33`
+gate) and `platform` (`aPlayPlatformSequence` with a rider). Their scene is
+chosen with the model and the `--check` pins what the engine itself changed,
+so a capture on which nothing moved cannot pass as agreement (`docs/97`
+§28.7).
 `python3 tools/turn_gold.py --emit-cases tests/fixtures/turn/cases_turn.json`
 turns the capture into the fixture `godot/tests/test_turn_native.gd` reads. **Wine start-up
 on this host is intermittent** (`docs/91` §1): a phase can reach the anchor on

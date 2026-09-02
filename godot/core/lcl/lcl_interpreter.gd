@@ -51,9 +51,8 @@ const STATUE_REACH: int = 10
 
 ## docs/20 sections 2.3 and 7.4 -- the two directions a set piece can be given,
 ## which do **not** agree on the north/south axis. Keeping both spellings is the
-## point: folding them into one is the trap the doc calls out.
-const DIR_PLATFORM_DX: Array[int] = [0, -1, 0, 1]
-const DIR_PLATFORM_DY: Array[int] = [-1, 0, 1, 0]
+## point: folding them into one is the trap the doc calls out. `Platform`'s is
+## [constant Platform.DIR_DX] / [constant Platform.DIR_DY].
 const DIR_BARRIER_DX: Array[int] = [0, -1, 0, 1]
 const DIR_BARRIER_DY: Array[int] = [1, 0, -1, 0]
 
@@ -724,36 +723,20 @@ func _actpt_range(instr: Dictionary, name: String) -> void:
 ## `dist` is **3** (the corpus spans 3..16), and 3 already separates them. A
 ## mission with `dist` 1 or 2 would need the nine cells buffered first, and
 ## would need the engine's own copy order -- a native probe, not a guess.
+## `0x00412A00` -- the ride is [method Platform.ride]: each rider is
+## relocated through `0x0047AD90` and looks around from its new cell
+## **before** the cells are copied, which is why this one command performs a
+## fog pass the interpreter otherwise only records (docs/22 section 9.3).
 func _platform(instr: Dictionary) -> void:
 	var direction: int = _n(instr, 2)
-	if direction < 0 or direction >= DIR_PLATFORM_DX.size():
+	if direction < 0 or direction >= Platform.DIR_DX.size():
 		return
 	var x: int = _n(instr, 0)
 	var y: int = _n(instr, 1)
 	var dist: int = _n(instr, 3)
-	var dx: int = DIR_PLATFORM_DX[direction] * dist
-	var dy: int = DIR_PLATFORM_DY[direction] * dist
-	var moved: int = 0
-	for oy: int in [-1, 0, 1]:
-		for ox: int in [-1, 0, 1]:
-			var sx: int = x + ox
-			var sy: int = y + oy
-			if not (_context.in_bounds(sx, sy)
-					and _context.in_bounds(sx + dx, sy + dy)):
-				continue
-			var src: int = _context.index(sx, sy)
-			var dst: int = _context.index(sx + dx, sy + dy)
-			_context.state.set_height(dst, _context.state.height_at(src))
-			_context.state.set_field_type(dst,
-				_context.state.field_type_at(src))
-			var rider: UnitState = _context.unit_on(sx, sy)
-			_context.state.set_unit(dst, _context.state.unit_at(src))
-			if rider != null:
-				rider.x = sx + dx
-				rider.y = sy + dy
-			_context.state.set_unit(src, MapState.NO_UNIT)
-			_context.state.set_field_type(src, CTRL_TYPE_DEEP_HOLE)
-			moved += 1
+	var moved: int = Platform.ride(_context.state, _context.units,
+		_context.types, x, y, direction, dist, _context.turn.human_count(),
+		_context.turn.mode)
 	_event("platform", [x, y, direction, dist, moved])
 
 

@@ -301,6 +301,7 @@ static func combat_unit(record: Dictionary) -> UnitState:
 	unit.heat = DictRead.as_int(record["heat"])
 	unit.malfunction = DictRead.as_int(record["malfunction"])
 	unit.absorber = DictRead.as_int(record["absorber"])
+	unit.rested = DictRead.as_int(record.get("rested", 0))
 	unit.armour_front = DictRead.as_int(record["armour_front"])
 	unit.armour_rear = DictRead.as_int(record["armour_rear"])
 	unit.action_state = DictRead.as_int(record["action_state"])

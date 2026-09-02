@@ -1003,13 +1003,31 @@ north/south axis. The corpus confirms it independently: `_C_166.lcl` fires
 *aPlayPlatformSequence*. `(x, y)` is the platform's **current centre tile**;
 `dist` is the distance to travel **in tiles**. The routine
 
-1. collects the 3×3 block of cells centred on `(x,y)` and every unit standing
-   on them;
+1. collects the 3×3 block of cells centred on `(x,y)` — **x outer, y inner**
+   (`0x00412AAA`) — and every unit standing on them;
 2. animates for `dist·10` frames, translating the land objects, the units and
    the camera target by `±0x140` per frame along `dir`;
-3. copies each source cell's object/height/type fields to the cell `dist` tiles
+3. relocates every rider `dist` tiles along `dir` through `0x0047AD90`
+   (`0x00412F9A`), one at a time: the map's unit index, `+0x42`/`+0x43`, the
+   3D object, and then a **writing** visibility pass from the new cell
+   ([`22` §9.3](22-combat-and-visibility.md)) — before any cell is copied,
+   so the pass sees the destination block's old heights;
+4. copies each source cell's object/height/type fields to the cell `dist` tiles
    away, clears the source cell's unit index and sets its control-map type to
-   **4** (`Deep Hole`).
+   **4** (`Deep Hole`) (`0x00412FFB` onwards);
+5. rebuilds the fog for the **selected** unit's player (`0x004130E6`,
+   [`22` §9.4](22-combat-and-visibility.md)), and for nobody when nothing is
+   selected.
+
+Steps 3 and 4 were measured on 2026-09-02 (`tools/turn_gold.py`, the
+`platform` phase: a rider carried three tiles east arrived where the model
+said, every cell's height, type and link agreed, and the alien it could see
+from there was revealed). The remake carries them as `Platform.ride`, which
+[the interpreter](../godot/core/lcl/lcl_interpreter.gd) calls directly — the
+one command whose fog pass it performs rather than records, because a pass
+deferred past the copy would read the wrong heights — and step 5 as the
+`platform` event `World.run_script` acts on with the selection the
+presentation keeps in `World.selected_slot`.
 
 `Missions/_C_105.lcl` proves the reading arithmetically — every pair of calls
 is a there-and-back:

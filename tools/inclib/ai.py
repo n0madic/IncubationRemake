@@ -53,7 +53,6 @@ from typing import Any, Callable, Iterable, Sequence
 
 from . import combat as combatmod
 from . import movemap
-from .allowance import AllowanceUnit, movement_allowance
 from .combat import CombatUnit, CombatWorld
 
 LOG = logging.getLogger("ai")
@@ -386,7 +385,6 @@ class AIContext:
     #: ``0x00460450`` -- the difficulty, which the AI module never reads.  It
     #: reaches the movement allowance and the damage roll, both of which the
     #: AI calls into.
-    ai_level: int = 1
 
     def __post_init__(self) -> None:
         n = self.world.width * self.world.height
@@ -462,28 +460,21 @@ class AIContext:
 
     def allowance(self, unit: CombatUnit) -> int:
         """``aGetMovePoints`` -- only the ladder-to-ladder step spends it."""
-        row = self.world.tables.units.get(unit.type_id)
-        if row is None:
-            return 0
-        return movement_allowance(_allowance_unit(unit), row.mp_max,
-                                  [_allowance_unit(u)
-                                   for u in self.world.units.values()],
-                                  self.ai_level)
+        return combatmod.move_points(self.world, unit)
 
     def emit(self, event: AIEvent) -> None:
         self.result.add(event)
 
 
-def _allowance_unit(unit: CombatUnit) -> AllowanceUnit:
-    return AllowanceUnit(slot=unit.slot, type_id=unit.type_id,
-                         player=unit.player, x=unit.x, y=unit.y, hp=unit.hp,
-                         fp=unit.fp, rested=0, action_state=unit.action_state,
-                         equipment_ids=unit.equipment_ids)
+def context_from_world(world: CombatWorld, delays: dict[int, int]
+                       ) -> AIContext:
+    """Build a context from a world the other models already made.
 
-
-def context_from_world(world: CombatWorld, delays: dict[int, int],
-                       ai_level: int = 1) -> AIContext:
-    """Build a context from a world the other models already made."""
+    The difficulty level is the world's (``CombatWorld.ai_level``): every
+    reader here goes through :func:`combat.move_points` and the damage
+    roll, both of which read it there, so a second copy on the context
+    could only disagree.
+    """
     if not world.field_type or not world.action_point:
         raise AIError("the world carries no field types or action points; "
                       "inclib.combat.world_from_map fills both")
@@ -491,8 +482,7 @@ def context_from_world(world: CombatWorld, delays: dict[int, int],
                         heights=list(world.cell_height),
                         field_types=list(world.field_type),
                         action_points=list(world.action_point))
-    return AIContext(world=world, grid=grid, delays=dict(delays),
-                     ai_level=ai_level)
+    return AIContext(world=world, grid=grid, delays=dict(delays))
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from .allowance import AllowanceUnit, movement_allowance
 from .info import BalanceTables
 from .movemap import distance
 from .rng import ARandom
@@ -134,6 +135,13 @@ EQUIP_TARGET_SYSTEM = 5
 EQUIP_BANNER = 8
 EQUIP_DAMAGE_ABSORBER = 18
 EQUIP_COOLER = 19
+
+#: ``docs/22`` §7.3 -- the one weapon whose hit **converts** the target:
+#: ``aAttackUnit`` compares the shooter's ``+0x3F`` against ``0x2F`` at
+#: ``0x0046BDAD``.  It is ``Laser Enhanced`` in the shipped ``Info.lcl`` and
+#: no shipped unit carries it, so the arm is reached natively by writing the
+#: byte (``turn_gold.py``, the ``conversion`` phase) and by nothing else.
+CONVERTER_WEAPON = 0x2F
 BANNER_RANGE = 4
 
 #: ``docs/22`` §7.3 -- the roll is ``aRandom(0, 100)`` and the comparison is
@@ -463,6 +471,7 @@ class CombatUnit:
     heat: int = 0             # +0x3E
     malfunction: int = 0      # +0x40
     absorber: int = 0         # +0x3A
+    rested: int = 0           # +0x57, read by aGetMovePoints only
     armour_front: int = 0     # +0x36
     armour_rear: int = 0      # +0x37
     action_state: int = 0     # +0x41
@@ -932,6 +941,65 @@ def set_visible_state(unit: CombatUnit, state: int) -> bool:
     return False
 
 
+def absorber_charges(unit: CombatUnit) -> int:
+    """``0x00475590`` -- the charges a Damage Absorber has left, or none.
+
+    The engine reads ``+0x3A`` **only behind ``+0x33``**, and ``+0x33`` is
+    equipment slot 18 (``+0x21 + 18``, ``docs/10`` §5.4): a record whose
+    equipment array does not carry the absorber has no charges whatever the
+    byte holds.  That matters for six placed aliens on ``_C_119.lev`` whose
+    ``+0x3A`` is a stale 123 or 126 -- the refresh writes the byte from the
+    equipment at their first hand-over, but a human's shot in turn 1 lands
+    before that, and the engine lets it through.
+    """
+    if not unit.has(EQUIP_DAMAGE_ABSORBER):
+        return 0
+    return unit.absorber
+
+
+def spend_absorber(unit: CombatUnit) -> bool:
+    """``0x004755B0`` -- spend one charge, behind the same gate; True if spent."""
+    if absorber_charges(unit) == 0:
+        return False
+    unit.absorber -= 1
+    return True
+
+
+def allowance_unit(unit: CombatUnit) -> AllowanceUnit:
+    """The record fields ``aGetMovePoints`` and its Banner scan read."""
+    return AllowanceUnit(slot=unit.slot, type_id=unit.type_id,
+                         player=unit.player, x=unit.x, y=unit.y, hp=unit.hp,
+                         fp=unit.fp, rested=unit.rested,
+                         action_state=unit.action_state,
+                         equipment_ids=unit.equipment_ids)
+
+
+def move_points(world: CombatWorld, unit: CombatUnit) -> int:
+    """``aGetMovePoints`` (``0x00475160``) over this world -- docs/10 §5.5."""
+    row = world.tables.units.get(unit.type_id)
+    if row is None:
+        return 0
+    return movement_allowance(allowance_unit(unit), row.mp_max,
+                              [allowance_unit(u) for u in world.units.values()],
+                              world.ai_level)
+
+
+def convert_unit(world: CombatWorld, unit: CombatUnit, player: int) -> bool:
+    """``0x0046BDC7``..``0x0046BDEB`` -- weapon 47's arm, in its order.
+
+    The target's ``+0x45`` becomes the shooter's, ``+0x15`` is refilled by
+    ``aGetMovePoints`` (whose Banner scan reads the **new** player, which is
+    why the player is written first), ``+0x41`` is cleared, and the unit looks
+    around from its own cell for its new side -- a writing pass, so what it
+    now counts as an enemy is revealed and woken there and then.  Returns the
+    pass's answer.
+    """
+    unit.player = player
+    unit.mp = move_points(world, unit)
+    unit.action_state = 0
+    return build_visible_map_for_unit(world, unit, unit.x, unit.y)
+
+
 def build_visible_map_for_unit(world: CombatWorld, observer: CombatUnit,
                                x: int, y: int) -> bool:
     """``aBuildVisibleMapForUnit(observer, x, y, &saw)`` ``0x004794B0`` --
@@ -986,6 +1054,30 @@ def build_visible_map_for_unit(world: CombatWorld, observer: CombatUnit,
                     unit, VISIBLE_CONTACT if scan == 1 else VISIBLE_FULL)
             elif scan == 2 and d < LONG_SCAN_RANGE:
                 set_visible_state(unit, VISIBLE_CONTACT)
+
+    # The second pass, and it is **this routine's**, not ``aBuildVisibleMap``'s
+    # (``0x00479786``..``0x00479861``, before the ``ret`` at ``0x0047989A``):
+    # a still-hidden neutral unit is promoted to a contact unless one of its
+    # eight neighbours already is one -- one blip per cluster.  So every
+    # per-unit pass runs it, ``aExecuteMove``'s three included, which is how
+    # a computer mover that walks unseen with the *Enemy Move* option off
+    # comes out of its own arrival pass as a contact (``turn_gold.py``,
+    # ``mode3_off``).  The model once kept it at the end of the whole fog
+    # pass, where that walk left the mover hidden.
+    for unit in world.units.values():
+        if (not unit.alive or unit.visibility != VISIBLE_HIDDEN
+                or unit.player != PLAYER_COMPUTER):
+            continue
+        neighbour_contact = False
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                other = world.unit_on(unit.x + dx, unit.y + dy)
+                if other is not None and other.visibility == VISIBLE_CONTACT:
+                    neighbour_contact = True
+        if not neighbour_contact:
+            set_visible_state(unit, VISIBLE_CONTACT)
     return saw_something
 
 
@@ -997,7 +1089,8 @@ ARRIVAL_POINTS_LIMIT = 6
 
 
 def look_before_walk(world: CombatWorld, unit: CombatUnit, tx: int, ty: int,
-                     arrival_points: int) -> tuple[bool, bool]:
+                     arrival_points: int,
+                     enemy_move: bool = True) -> tuple[bool, bool]:
     """``aExecuteMove``'s two passes before the first step, and the write the
     second one decides.
 
@@ -1010,8 +1103,11 @@ def look_before_walk(world: CombatWorld, unit: CombatUnit, tx: int, ty: int,
     * ``0x0046E4BB`` -- a computer mover seen where it starts walks in mode 3,
       and mode 3 opens with ``aSetVisibleStateForUnit(unit, 0)``: the walker
       itself is marked visible before it moves.  Mode 3 also needs the
-      *Enemy Move* option (``0x00460510``), which the remake takes as on
-      (``godot/game/camera_director.gd``).
+      *Enemy Move* option (``0x00460510``, the dword at ``0x005129F4``):
+      with it off the walk is mode 0 and the walker stays as it was.
+      ``enemy_move`` is that option; the remake takes it as on
+      (``godot/game/camera_director.gd``) and ``turn_gold.py`` writes it
+      both ways to pin the arm.
 
     Returns ``(seen_destination, seen_source)`` as the routine's own locals
     hold them after the discard -- the inputs of ``docs/42`` §3.2's table.
@@ -1024,7 +1120,7 @@ def look_before_walk(world: CombatWorld, unit: CombatUnit, tx: int, ty: int,
     seen_source = False
     if unit.player == PLAYER_COMPUTER:
         seen_source = build_visible_map_for_unit(world, unit, unit.x, unit.y)
-        if seen_source:
+        if seen_source and enemy_move:
             set_visible_state(unit, VISIBLE_FULL)
     return seen_destination, seen_source
 
@@ -1071,27 +1167,11 @@ def build_visible_map(world: CombatWorld, player: int) -> None:
                   or unit.type_id in ALWAYS_VISIBLE_TYPES)
         set_visible_state(unit, VISIBLE_FULL if always else VISIBLE_HIDDEN)
 
+    # The contact promotion runs inside each per-unit pass (see there), so a
+    # player with no living unit rebuilds to "all hidden" with no blips.
     for unit in world.units.values():
         if unit.alive and unit.player == player:
             build_visible_map_for_unit(world, unit, unit.x, unit.y)
-
-    # The second pass: a still-hidden neutral unit is promoted to a contact
-    # unless one of its eight neighbours is already one -- which shows one blip
-    # per cluster instead of one per alien.
-    for unit in world.units.values():
-        if (not unit.alive or unit.visibility != VISIBLE_HIDDEN
-                or unit.player != PLAYER_COMPUTER):
-            continue
-        neighbour_contact = False
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                other = world.unit_on(unit.x + dx, unit.y + dy)
-                if other is not None and other.visibility == VISIBLE_CONTACT:
-                    neighbour_contact = True
-        if not neighbour_contact:
-            set_visible_state(unit, VISIBLE_CONTACT)
 
 
 # ---------------------------------------------------------------------------
@@ -1413,6 +1493,15 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         tx, ty = standing.x, standing.y
 
     result = AttackResult(True)
+    # ``0x0046B5DF`` -- weapon 47 is set **to its heat cap** before the
+    # overheat check, inside the same ``maxHeat != 255`` gate: every shot of
+    # it rolls ``aRandom(0, 40)``, and 15 of the 40 outcomes (0..10, 21..24)
+    # damage the weapon before it fires.  Measured in ``turn_gold.py``'s
+    # ``weapon47`` probe, whose first capture rolled a 2 and fired nothing.
+    if attacker.weapon == CONVERTER_WEAPON:
+        cap = max_heat(world, attacker)
+        if cap != 0xFF:
+            attacker.heat = cap
     result.overheat = check_weapon_damage(world, attacker)
     if attacker.malfunction != 0 or attacker.hp == 0:
         result.fired = False
@@ -1480,10 +1569,8 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             # target.absorber` evaluated after the decrement said the
             # opposite.  `godot/core/combat.gd` had it right, which is how the
             # two came to disagree.
-            stunned = not target.absorber
-            if target.absorber:
-                target.absorber -= 1
-            else:
+            stunned = absorber_charges(target) == 0
+            if not spend_absorber(target):
                 target.action_state = 5
                 target.mp = 0
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
@@ -1492,21 +1579,35 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
                                     "stunned": stunned})
             continue
 
-        if target.absorber:
-            # docs/22 section 7.5: a charge nullifies the damage entirely.
-            target.absorber -= 1
-            dealt = 0
-        else:
-            dealt = apply_damage(world, target, damage, attacker.facing)
+        if spend_absorber(target):
+            # docs/22 section 7.5: a charge nullifies the damage -- behind
+            # ``0x00475590``'s equipment gate, like the charge count -- by
+            # **zeroing the argument**, not by skipping the call: ``xor ebp,
+            # ebp`` at ``0x0046BD83`` and ``applyDamage`` still runs at
+            # ``0x0046BD9D``, rolling its dice over a span of nothing.  The
+            # seed says so (``turn_gold.py``, ``absorber_flagged``: two draws,
+            # not one).
+            damage = 0
+        dealt = apply_damage(world, target, damage, attacker.facing)
+        # ``0x0046BDAD`` -- weapon 47 converts what it hits and does not kill:
+        # the charge test is asked **again** after the spend, so a target
+        # whose last charge just went is converted on the same shot.
+        converted = (attacker.weapon == CONVERTER_WEAPON
+                     and absorber_charges(target) == 0 and target.alive)
+        if converted:
+            convert_unit(world, target, attacker.player)
         killed = not target.alive
         if killed:
             # ``aKillUnit`` (``0x00472920``) is the death sequence plus
             # ``aRemoveUnitElement``, which is where the hero counter lives.
             remove_unit_element(world, target)
-        result.outcomes.append({
+        outcome = {
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
-            "dealt": dealt, "chance": chance, "roll": roll})
+            "dealt": dealt, "chance": chance, "roll": roll}
+        if converted:
+            outcome["converted"] = True
+        result.outcomes.append(outcome)
 
     # After the shot: ammunition and heat.
     if weapon is not None:
@@ -1554,6 +1655,10 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
 
 #: ``docs/21`` §4 -- ``ParaBomb``.  A mine resolves as a shot from this weapon.
 BOMB_WEAPON = 36
+#: The heading ``aExecuteBomb`` hands ``applyDamage`` -- ``push 0xFF`` at
+#: ``0x004704BF``.  No octant's arc holds it, so a mine always meets the
+#: **front** armour.  The model used to derive a heading from the centre.
+BOMB_FACING = 0xFF
 
 
 # ---------------------------------------------------------------------------
@@ -1706,12 +1811,11 @@ def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
                                     "marker": MARKER_MISS, "dealt": 0,
                                     "chance": chance, "roll": roll})
             continue
-        if target.absorber:
-            target.absorber -= 1
-            dealt = 0
-        else:
-            dealt = apply_damage(world, target, damage,
-                                 direction(x, y, cx, cy))
+        # No absorber here: ``aExecuteBomb`` never calls ``0x00475590`` or
+        # ``0x004755B0`` -- ``applyDamage`` is reached straight from the roll
+        # (``0x004704C9``).  The model once spent a charge that the engine
+        # does not.
+        dealt = apply_damage(world, target, damage, BOMB_FACING)
         killed = not target.alive
         if killed:
             # ``aKillUnit`` (``0x00472920``) is the death sequence plus
@@ -1921,7 +2025,7 @@ def world_from_map(bm: Any, tables: BalanceTables,
             slot=u.slot, type_id=u.type_id, player=u.player, x=u.x, y=u.y,
             hp=u.hit_points, facing=u.facing, fp=u.fp, mp=u.action_points,
             weapon=u.weapon, ammo=u.ammo, heat=u.heat,
-            malfunction=u.malfunction, absorber=u.absorb,
+            malfunction=u.malfunction, absorber=u.absorb, rested=u.rested,
             armour_front=u.armour_front, armour_rear=u.armour_rear,
             action_state=u.action_state, acted=u.acted, ticket=u.ticket,
             visibility=u.visibility,

@@ -144,6 +144,37 @@ FIELD_BY_OFFSET = {
 
 #: Where the anchor and the routines live, as module-relative addresses.
 BREAKPOINT = "Incubation.exe+0x4bd6f"
+
+#: **The byte writer that needs no injected code page.**  The ``--code``
+#: option that this file's own ``setb`` uses makes ``Incubation.exe`` fault
+#: before it reaches the anchor on some hosts -- ten attempts out of ten,
+#: against the same plan succeeding on the second attempt with the option
+#: removed (``ai_gold.py`` found it).  So every later gold tool writes bytes
+#: with the game's **own imported** ``memcpy``, reached through its IAT slot,
+#: with the value to write sitting in a plain ``--blob``: no executable page
+#: and no page-protection change.  ``memcpy`` is the only one of the three
+#: block routines this image imports, and the bracket form is a dereference
+#: of the import thunk's slot -- the address is read per call, so it works
+#: whatever the loader put there.  Shared here because ``ai_gold``,
+#: ``blob_gold``, ``presentation_gold`` and ``turn_gold`` all write through
+#: it, and one slot address is one fewer to keep in step.
+MEMCPY_SLOT = 0x00525634
+MEMCPY_DECL = f"__cdecl ptr memcpy(ptr,ptr,i32) = [{MEMCPY_SLOT:#x}]"
+
+
+def blob_name(value: int) -> str:
+    """The ``--blob`` that holds one byte value, named by the value."""
+    return f"bv{value & 0xFF:02x}"
+
+
+def blob_lines(values: tuple[int, ...] | list[int]) -> list[str]:
+    """One ``--blob`` line per distinct byte value a plan will write."""
+    return [f"--blob {blob_name(v)}:{v & 0xFF:02x}" for v in sorted(set(values))]
+
+
+def writeb(address: str, value: int) -> str:
+    """One byte into the live process, through the game's own ``memcpy``."""
+    return f"memcpy({address}, &{blob_name(value)}, 1)"
 DECLARATIONS = """\
 __cdecl void aSetSaveMode(i32)              = Incubation.exe+0x48770
 __cdecl i32  aLoadGame(i32)                 = Incubation.exe+0x48e60

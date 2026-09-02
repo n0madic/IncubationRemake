@@ -457,6 +457,31 @@ func _the_passes(h: TestHarness) -> void:
 		Visibility.FULL, "aSetVisibleStateForUnit(unit, 0) at 0x0046E4BB")
 	h.equal("passes.the_source_pass_reveals_the_human", human.visibility,
 		Visibility.FULL)
+
+	# The same walk with the *Enemy Move* option off is mode 0: no self-reveal,
+	# but the walker's own arrival pass promotes it to a contact -- the
+	# cluster rule is inside `aBuildVisibleMapForUnit`, and the engine left
+	# exactly this (`turn_gold.py`, `mode3_off`).
+	var quiet_world: World = _walled_world(UnitState.PLAYER_ALIEN, 1, 3, 0)
+	var quiet_units: Dictionary = {
+		0: UnitState.from_document(TestFixtures.unit(0, 1, 3, 0,
+			UnitState.PLAYER_ALIEN, 4, Visibility.HIDDEN)),
+		1: UnitState.from_document(TestFixtures.unit(1, 5, 1, 0, 0, 4,
+			Visibility.HIDDEN)),
+	}
+	var quiet_walk: Dictionary = _walk(quiet_world, quiet_units, 0, 1, 1)
+	var quiet_alien: UnitState = quiet_units[0]
+	var quiet_human: UnitState = quiet_units[1]
+	var quiet_moved: MoveResult = ExecuteMove.execute(quiet_world.state,
+		quiet_units, quiet_world.unit_types(), quiet_world.ctrlmap(),
+		quiet_alien, quiet_walk, 1, 1, 0, 1, 1, -1, false)
+	h.check("passes.the_option_off_still_asks_the_source",
+		quiet_moved.ok and quiet_moved.seen_source, quiet_moved.reason)
+	h.equal("passes.the_option_off_leaves_the_walker_a_contact",
+		quiet_alien.visibility, Visibility.CONTACT,
+		"no mode-3 write; its own arrival pass promotes it (0x00479786)")
+	h.equal("passes.the_option_off_still_reveals_the_human",
+		quiet_human.visibility, Visibility.FULL)
 	h.equal("passes.the_walker_arrived", Vector2i(alien.x, alien.y),
 		Vector2i(1, 1))
 

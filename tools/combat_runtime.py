@@ -678,8 +678,12 @@ def check_stun(c: Checker, tables: BalanceTables) -> None:
             effect_state=[0] * n, units={}, tables=tables, rng=ARandom(1.0))
         shooter = combat.CombatUnit(slot=0, type_id=kind, player=0, x=1, y=1,
                                     hp=100, fp=5, weapon=weapon_id, ammo=9)
+        # ``0x00475590`` reads the charges behind equipment slot 18, so the
+        # victim carries the absorber whenever it is meant to have charges.
+        carried = frozenset({combat.EQUIP_DAMAGE_ABSORBER} if charges else ())
         victim = combat.CombatUnit(slot=1, type_id=kind, player=255, x=2, y=1,
-                                   hp=100, fp=5, mp=4, absorber=charges)
+                                   hp=100, fp=5, mp=4, absorber=charges,
+                                   equipment_ids=carried)
         for unit in (shooter, victim):
             world.units[unit.slot] = unit
             world.unit_at[world.index(unit.x, unit.y)] = unit.slot
@@ -704,6 +708,160 @@ def check_stun(c: Checker, tables: BalanceTables) -> None:
                  [stun[0].get("stunned"), victim.action_state, victim.mp],
                  [True, combat.STUNNED_ACTION_STATE
                   if hasattr(combat, "STUNNED_ACTION_STATE") else 5, 0])
+
+
+def check_conversion(c: Checker, root: Path, tables: BalanceTables) -> None:
+    """docs/22 §7.3 and §7.5 -- weapon 47, the absorber's gate, the bomb, and
+    where the contact promotion lives.
+
+    Every claim here was measured first (``tools/turn_gold.py``, the
+    ``reveal`` and ``conversion`` phases); these scenes keep the model on the
+    same rules without a capture.
+    """
+    from inclib import interact
+
+    # ``0x00475590`` reads the charges behind equipment slot 18.  Six placed
+    # aliens on ``_C_119.lev`` hold a stale 123 or 126 in ``+0x3A`` and no
+    # absorber in the equipment array; the engine lets a shot through them,
+    # and so, now, does the model.
+    bm = load_lev(str(root / "Missions" / "_C_119.lev"))
+    shipped = combat.world_from_map(bm, tables)
+    stale = [u for u in shipped.units.values()
+             if u.absorber and not u.has(combat.EQUIP_DAMAGE_ABSORBER)]
+    c.expect("absorber.stale_records_on_C_119", len(stale), 6,
+             "+0x3A set with no equipment 18, placed and alive")
+    c.expect("absorber.stale_records_have_no_charges",
+             [combat.absorber_charges(u) for u in stale], [0] * len(stale),
+             "0x00475590 returns 0 without the equipment flag")
+
+    kind = next(iter(sorted(tables.units)))
+    rifle = sorted(combat.PATTERN_FAMILIES["aim_cell_full"])[0]
+
+    def duel(weapon_id: int, charges: int = 0, carried: bool = False,
+             seed: float = 1.0, wall: bool = False
+             ) -> tuple[combat.CombatWorld, combat.CombatUnit,
+                        combat.CombatUnit, combat.CombatUnit]:
+        n = 8 * 8
+        world = combat.CombatWorld(
+            width=8, height=8, cell_height=[0] * n, unit_at=[-1] * n,
+            effect_state=[0] * n, field_type=[0] * n, action_point=[0] * n,
+            units={}, tables=tables, rng=ARandom(seed))
+        shooter = combat.CombatUnit(slot=0, type_id=kind, player=0, x=1, y=1,
+                                    hp=100, fp=5, weapon=weapon_id, ammo=9)
+        equipment = frozenset({combat.EQUIP_DAMAGE_ABSORBER} if carried else ())
+        victim = combat.CombatUnit(slot=1, type_id=kind, player=255, x=3, y=1,
+                                   hp=100, fp=5, mp=0, action_state=5,
+                                   absorber=charges, equipment_ids=equipment)
+        watched = combat.CombatUnit(slot=2, type_id=kind, player=255, x=6, y=1,
+                                    hp=100, fp=5,
+                                    visibility=combat.VISIBLE_HIDDEN)
+        for unit in (shooter, victim, watched):
+            world.units[unit.slot] = unit
+            world.unit_at[world.index(unit.x, unit.y)] = unit.slot
+        if wall:
+            world.cell_height[world.index(4, 1)] = 20000
+        return world, shooter, victim, watched
+
+    # Weapon 47 fires at its heat cap (``0x0046B5DF``): seed 1.0's first
+    # ``aRandom(0, 40)`` is 1, the damaging arm, and nothing fires.
+    world, shooter, victim, _w = duel(combat.CONVERTER_WEAPON)
+    cap = combat.max_heat(world, shooter)
+    refused = combat.attack_unit(world, 1, 1, 3, 1)
+    c.check("convert.weapon_47_fires_at_its_cap",
+            not refused.fired and shooter.heat == cap
+            and shooter.malfunction == 5,
+            f"heat {shooter.heat} of cap {cap}, malfunction "
+            f"{shooter.malfunction}, fired {refused.fired}")
+
+    # A seed that clears the overheat roll and connects, searched as the
+    # native probe's was; the hit converts and the convert looks around.
+    converted = False
+    for seed in range(2, 200):
+        world, shooter, victim, watched = duel(combat.CONVERTER_WEAPON,
+                                               seed=float(seed))
+        shot = combat.attack_unit(world, 1, 1, 3, 1)
+        if not any(o.get("converted") for o in shot.outcomes):
+            continue
+        converted = True
+        c.expect("convert.the_target_changes_sides", victim.player, 0,
+                 "+0x45 becomes the shooter's at 0x0046BDCB")
+        # ``aGetMovePoints`` is asked **before** ``+0x41`` is cleared
+        # (``0x0046BDCE`` then ``0x0046BDE7``), and a stunned unit's allowance
+        # is nothing -- so a convert that was stunned keeps no points this
+        # turn, and only a later refresh gives it any.
+        c.expect("convert.its_points_are_asked_before_the_state_clears",
+                 victim.mp, 0, "stunned when asked, so aGetMovePoints said 0")
+        c.expect("convert.its_action_state_is_cleared", victim.action_state, 0)
+        c.expect("convert.it_looks_around_for_its_new_side",
+                 watched.visibility, combat.VISIBLE_FULL,
+                 "0x0046BDEB, the writing pass from its own cell")
+        c.check("convert.the_target_still_lost_its_hit_points", victim.hp < 100,
+                f"damage landed before the arm: hp {victim.hp}")
+        break
+    c.check("convert.a_seed_below_200_converts", converted,
+            "the overheat roll and the hit roll both have to come out right")
+
+    # The gate: charges without the equipment are ignored; with it, one is
+    # spent, the damage is zeroed **and still rolled** -- the same draws as
+    # the landed hit, which is what the native seed showed.
+    world, _s, unflagged, _w = duel(rifle, charges=5)
+    combat.attack_unit(world, 1, 1, 3, 1)
+    ignored_seed = world.rng.seed
+    c.check("absorber.charges_without_the_equipment_are_ignored",
+            unflagged.hp < 100 and unflagged.absorber == 5,
+            f"hp {unflagged.hp}, charges {unflagged.absorber}")
+    world, _s, flagged, _w = duel(rifle, charges=5, carried=True)
+    combat.attack_unit(world, 1, 1, 3, 1)
+    c.expect("absorber.a_carried_charge_is_spent_and_nullifies",
+             (flagged.hp, flagged.absorber), (100, 4))
+    c.check("absorber.a_spent_charge_still_rolls_the_damage",
+            abs(world.rng.seed - ignored_seed) < 0.5,
+            f"xor ebp, ebp at 0x0046BD83 and applyDamage at 0x0046BD9D: "
+            f"{world.rng.seed} against {ignored_seed}")
+
+    # The bomb never asks: no 0x00475590 call in 0x004702C0.
+    world, _s, victim, _w = duel(rifle, charges=5, carried=True)
+    combat.execute_bomb(world, 3, 1)
+    c.check("absorber.a_mine_ignores_the_absorber",
+            victim.hp < 100 and victim.absorber == 5,
+            f"hp {victim.hp}, charges {victim.absorber}")
+
+    # The contact promotion is the per-unit pass's own (0x00479786 inside
+    # 0x004794B0): one observer's pass promotes a hidden neutral behind a
+    # wall to a lone contact, with no whole-map rebuild involved.
+    world, observer, _v, behind = duel(rifle, wall=True)
+    world.units.pop(1)
+    world.unit_at[world.index(3, 1)] = -1
+    saw = combat.build_visible_map_for_unit(world, observer, 1, 1)
+    c.check("promotion.is_inside_the_per_unit_pass",
+            not saw and behind.visibility == combat.VISIBLE_CONTACT,
+            f"saw {saw}, +0x4F {behind.visibility}")
+
+    # And the relocation of ``0x0047AD90``: the map's link moves and the unit
+    # looks around from where it landed.
+    world, mover, _v, behind = duel(rifle)
+    interact.relocate_unit(world, mover, 5, 1)
+    c.check("relocate.moves_the_link_and_looks_around",
+            world.unit_at[world.index(1, 1)] == -1
+            and world.unit_at[world.index(5, 1)] == 0
+            and (mover.x, mover.y) == (5, 1)
+            and behind.visibility == combat.VISIBLE_FULL,
+            f"at ({mover.x},{mover.y}), watched +0x4F {behind.visibility}")
+
+    # A ride whose destination block is occupied: the relocation is refused,
+    # the rider is not counted, and its source cell **keeps its link** -- a
+    # cleared link would leave a unit the map no longer knows about.
+    world, rider, blocker, _w = duel(rifle)
+    blocker.x, blocker.y = 4, 1
+    world.unit_at[world.index(3, 1)] = -1
+    world.unit_at[world.index(4, 1)] = blocker.slot
+    riders = interact.platform_ride(world, 1, 1, 3, 3)
+    c.check("platform.a_refused_rider_keeps_its_link",
+            riders == [] and (rider.x, rider.y) == (1, 1)
+            and world.unit_at[world.index(1, 1)] == rider.slot
+            and world.unit_at[world.index(4, 1)] == blocker.slot,
+            f"riders {riders}, rider at ({rider.x},{rider.y}), link "
+            f"{world.unit_at[world.index(1, 1)]}")
 
 
 def _require_corpus(root: Path) -> str | None:
@@ -733,6 +891,7 @@ def run_check(root: Path) -> int:
     check_attack(c, root, tables)
     check_reaction(c, tables)
     check_stun(c, tables)
+    check_conversion(c, root, tables)
     return c.report()
 
 

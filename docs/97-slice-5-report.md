@@ -2980,7 +2980,10 @@ fog through the camera.
   (`42` §7.1) and is a later phase; without this interim an alien vanished
   from one place and appeared in another with no camera move at all.
 * **The zoom** scales the offset by 1.15 a notch, never under 6400 units;
-  the engine's height keys move by 2000 and there is no third key here.
+  the engine's height keys move by 2000 and there is no third key here. It
+  is applied at once, like the pan: for one revision it went through the
+  20-fps flight loop and lagged a sixth of the way per frame behind the
+  wheel (corrected 2026-09-02).
 * **The shot's flight runs beside the clip** rather than after it. The
   engine plays the clip to `BREAK`, sets the caption, *then* flies (`42`
   §4); the remake's shot is still the three-stage one of §24 and the
@@ -3134,3 +3137,77 @@ worst miss, and that no normal is longer than 16 384.
 five checks and the limit's three moved out), `execute_move` +14, `combat`
 +7, `turn_native` +6. Still to do by hand in the exported build: what §28.4
 lists, on a map with ceilings such as `_C_141`.
+
+### 28.7 The two left after that — measured, 2026-09-02
+
+§28.6 left the shooter's and target's reveals, the mode-3 self-reveal,
+weapon 47's arm and `0x0047AD90` pinned by instruction only. Three new
+phases of `tools/turn_gold.py` reach all of them inside the live game, each
+probe reloading the save and writing what makes the write observable through
+the game's own `memcpy` (the writer now lives in `movemap_gold`, once, for
+the four gold tools):
+
+* **`reveal`** — both parties written hidden, then `aAttackUnit`: the shooter
+  and its target come out at 0; the same shot with the shooter's `+0x40`
+  written jammed moves neither. Then the human is moved next to the alien
+  with the engine's **own** relocation `0x0047AD90` (which is also what the
+  platform ride uses, so the setup measures it), and the alien walks one
+  step twice, differing only in the *Enemy Move* dword at `0x005129F4`: with
+  it on the alien comes out at 0, with it off at **1**. The human it saw is
+  0 either way.
+* **`conversion`** — the human's weapon byte written to 47 and the seed
+  written to one the model says clears the overheat roll: the alien's
+  `+0x45` becomes 0, `+0x41` is cleared, and its own pass reveals the two
+  other aliens. Then `+0x3A` written to 5 with `+0x33` clear (three hit
+  points lost, five charges kept) and with `+0x33` set (none lost, four
+  kept).
+* **`platform`** — the human relocated to a clear centre and
+  `aPlayPlatformSequence(13, 9, east, 3)`: the rider at `(16, 9)`, every
+  cell's height, type and link as the model's, the source a deep hole, the
+  alien in sight of the new cell revealed.
+
+**Six things the first capture said the model had wrong**, all fixed in both
+twins and each with a synthetic check beside the native one:
+
+1. The **contact promotion** is `aBuildVisibleMapForUnit`'s own tail
+   (`0x00479786`..`0x00479861`), not `aBuildVisibleMap`'s. Every per-unit
+   pass runs it, `aExecuteMove`'s three included — which is what leaves the
+   option-off walker a contact — and a player with no living unit rebuilds
+   to "all hidden" with no blips. `test_render.gd` looks at the slice world
+   as the aliens' player for that reason: its authored units are all theirs.
+2. **Weapon 47 fires at its heat cap** (`0x0046B5DF`), so every shot rolls
+   the overheat table first; the first probe rolled a 2 and fired nothing,
+   which is why the seed is now written.
+3. The absorber's charges are read **behind equipment slot 18**
+   (`0x00475590`): the six placed aliens on `_C_119.lev` with a stale
+   `+0x3A` absorb nothing in the engine and used to absorb everything in the
+   remake until their first refresh — after the human's first turn.
+4. A spent charge **zeroes the damage argument and still calls
+   `applyDamage`**, which rolls; the seed said two draws where the model
+   made one.
+5. **`aExecuteBomb` never asks the absorber** — no call to either routine —
+   and hands `applyDamage` the heading `0xFF`, so a mine meets the front
+   armour. The model spent a charge the engine does not and derived a heading
+   from the centre.
+6. **`0x0047AD90` is `core`'s**, not the presentation's: a script command
+   reaches a permanent write. `Platform.ride` relocates every rider and lets
+   it look around **before** the cell copy, in the engine's x-outer order,
+   which is the one command whose fog pass the interpreter performs rather
+   than records; the closing rebuild for the *selected* unit's player
+   (`0x004130E6`) is the `platform` event, keyed on `World.selected_slot`,
+   which the presentation now keeps in step with its own selection.
+
+What is pinned by instruction rather than by capture, still: the pass-order
+question on the ride — the capture's geometry agrees with copy-then-pass as
+well, and `--check` says so in its report line rather than pretending
+otherwise; the conversion asking `aGetMovePoints` *before* clearing `+0x41`
+(the probe's alien was not stunned); and weapon 47 being reachable at all,
+since no shipped unit carries it.
+
+**The suites:** 2075 → **2128** checks; `combat` +12, `combat_native` +33
+(the nine probes replayed field for field, cells included), `execute_move`
++3, `lcl` +4 (the ride, and a ride whose destination is occupied: the
+refused rider keeps its cell's link rather than being orphaned -- a review
+caught both twins clearing it), `core_loads` +1 (`platform.gd`).
+`turn_gold --check` 120 → 172, `combat_runtime --check` 84 → 100. Still to
+do by hand in the exported build: what §28.4 lists.

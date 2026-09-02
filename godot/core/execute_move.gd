@@ -185,7 +185,9 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 ## [constant ARRIVAL_POINTS_LIMIT] -- and mode 3, a computer unit seen where it
 ## starts, opens with `aSetVisibleStateForUnit(unit, 0)` (`0x0046E4BB`): the
 ## walker is marked visible before it moves. Mode 3 also needs the *Enemy
-## Move* option, which the remake takes as on (docs/92 section 7).
+## Move* option (`0x00460510`, the dword at `0x005129F4`); `enemy_move` is that
+## option, on by default because the remake takes it as on (docs/92
+## section 7), and `test_turn_native.gd` replays it off as well.
 ##
 ## The passes run on the world **as it stands at the call** -- the pre-walk
 ## ones with the mover on its source cell, the arrival one after the map and
@@ -199,7 +201,7 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		ctab: CtrlMapTable, mover: UnitState, walked: Dictionary, tx: int,
 		ty: int, arrival_points: int, human_players: int, game_mode: int,
-		budget: int = -1) -> MoveResult:
+		budget: int = -1, enemy_move: bool = true) -> MoveResult:
 	var moved: MoveResult = run(state, ctab, mover, walked, budget)
 	if not moved.ok and not moved.movement_zeroed:
 		return moved
@@ -212,7 +214,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if mover.player == PLAYER_ALIEN:
 		moved.seen_source = Visibility.look_from(state, units, utab, mover,
 			mover.x, mover.y, human_players, game_mode)
-		if moved.seen_source:
+		if moved.seen_source and enemy_move:
 			Visibility.set_state(mover, Visibility.FULL)
 
 	if moved.steps > 0:

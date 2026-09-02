@@ -118,15 +118,15 @@ UNIT_INFO_STRIDE = 126
 UNIT_INFO_SIZE = 0x7B
 UNIT_INFO_TYPE = 0x4C
 
-#: **No injected code page.**  ``movemap_gold`` and ``turn_gold`` write single
-#: bytes with a three-byte ``mov [ecx], dl; ret`` on a ``--code`` page; on this
-#: host that option makes ``Incubation.exe`` fault before it reaches the
-#: anchor -- ten attempts out of ten, against the same plan succeeding on the
-#: second attempt with the option removed.  So the byte writer here is the
-#: game's own imported ``memcpy``, reached through its IAT slot, with the byte
-#: to write sitting in a plain ``--blob``.  That needs no executable page and
-#: no page protection change.
-MEMCPY_SLOT = 0x00525634
+#: **No injected code page.**  ``movemap_gold`` and ``turn_gold``'s early
+#: phases write single bytes with a three-byte ``mov [ecx], dl; ret`` on a
+#: ``--code`` page; on this host that option makes ``Incubation.exe`` fault
+#: before it reaches the anchor -- ten attempts out of ten, against the same
+#: plan succeeding on the second attempt with the option removed.  So the
+#: byte writer here is the game's own imported ``memcpy``
+#: (:data:`movemap_gold.MEMCPY_DECL`), which this tool established and the
+#: session module now carries for all four gold tools.
+MEMCPY_SLOT = gold.MEMCPY_SLOT
 
 #: How many ordered pairs the predicate sweep covers, and how many cells the
 #: cover score is asked about.  Both are read-only and cheap; the caps keep one
@@ -180,10 +180,7 @@ __cdecl i32  aAISystemControl(i32,i32,ptr)      = Incubation.exe+0x9940
 __cdecl i32  aGetHitProbability(ptr,ptr,i32,i32,i32,ptr,ptr) = Incubation.exe+0x6a270
 """
 
-#: ``memcpy`` is the only one of the three block routines this image imports,
-#: and the bracket form is a dereference of the import thunk's slot -- the
-#: address is read per call, so it works whatever the loader put there.
-MEMCPY_DECL = f"__cdecl ptr memcpy(ptr,ptr,i32) = [{MEMCPY_SLOT:#x}]\n"
+MEMCPY_DECL = gold.MEMCPY_DECL + "\n"
 
 
 class GoldError(Exception):
@@ -257,8 +254,7 @@ def _prologue(slot: int, with_cells: bool = True,
     lines = [DECLARATIONS]
     if bytes_needed:
         lines.append(MEMCPY_DECL.rstrip("\n"))
-        for value in sorted(set(bytes_needed)):
-            lines.append(f"--blob {_blob_name(value)}:{value & 0xFF:02x}")
+        lines += gold.blob_lines(bytes_needed)
     lines += ["aSetSaveMode(0)",
               f"loaded = aLoadGame({slot})",
               "u0 = aGetUnitMapElementPtr(0)"]
@@ -267,13 +263,8 @@ def _prologue(slot: int, with_cells: bool = True,
     return lines
 
 
-def _blob_name(value: int) -> str:
-    return f"bv{value & 0xFF:02x}"
-
-
-def _writeb(address: str, value: int) -> str:
-    """One byte into the live process, through the game's own ``memcpy``."""
-    return f"memcpy({address}, &{_blob_name(value)}, 1)"
+_blob_name = gold.blob_name
+_writeb = gold.writeb
 
 
 def _snapshot(tag: str, cells: bool = False) -> str:
@@ -969,7 +960,7 @@ def _context_from(cells: bytes, units_raw: bytes, tables: BalanceTables,
             fp=units_raw[b + 0x19], mp=units_raw[b + gold.UNIT_MP],
             weapon=units_raw[b + 0x3F], ammo=units_raw[b + 0x3D],
             heat=units_raw[b + 0x3E], malfunction=units_raw[b + 0x40],
-            absorber=units_raw[b + 0x3A],
+            absorber=units_raw[b + 0x3A], rested=units_raw[b + 0x57],
             armour_front=units_raw[b + 0x36],
             armour_rear=units_raw[b + 0x37],
             action_state=units_raw[b + 0x41], visibility=units_raw[b + 0x4F],
@@ -986,7 +977,7 @@ def _context_from(cells: bytes, units_raw: bytes, tables: BalanceTables,
         field_type=field_type, units=units, tables=tables,
         ai_level=ai_level, rng=ARandom(seed))
     delays = {row.type: row.delay for row in tables.ctrlmap.values()}
-    ctx = ai.context_from_world(world, delays, ai_level)
+    ctx = ai.context_from_world(world, delays)
     ctx.state = state
     ctx.mp_left = mp_left
     return ctx

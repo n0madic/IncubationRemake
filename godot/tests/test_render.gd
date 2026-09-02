@@ -38,6 +38,12 @@ func run(h: TestHarness) -> void:
 	_check_hues(h)
 	_check_defaults_hidden(h, document, geometry, world)
 	_check_scenery(h, document, geometry)
+	# The slice world's authored units are all the computer's -- the squad is
+	# the campaign's -- and the fog is the engine's: a player with no living
+	# unit rebuilds to "all hidden" with no blips, because the contact
+	# promotion lives inside the per-unit pass (docs/22 section 9.3). So the
+	# bodies are looked at as their own player, which draws every one.
+	world.turn.current_player = UnitState.PLAYER_ALIEN
 	_check_units(h, world, geometry)
 	_check_overlay(h, world)
 

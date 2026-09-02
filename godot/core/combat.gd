@@ -94,6 +94,13 @@ const EFFECT_SHIELDED: int = 3
 ## about, so a carrier counts itself.
 const EQUIP_BANNER: int = 8
 const BANNER_RANGE: int = 4
+## docs/22 section 7.5 -- equipment 18, whose slot `+0x33` is what
+## `0x00475590` reads before it reads the charges at `+0x3A`.
+const EQUIP_DAMAGE_ABSORBER: int = 18
+## docs/22 section 7.3 -- the one weapon whose hit **converts** its target,
+## `cmp byte [esi+0x3F], 0x2F` at `0x0046BDAD`. `Laser Enhanced` in the shipped
+## table, carried by no shipped unit; `tools/turn_gold.py` writes the byte.
+const CONVERTER_WEAPON: int = 0x2F
 ## The charge stun spends, and the state it leaves behind.
 const STUNNED_ACTION_STATE: int = 5
 
@@ -195,6 +202,10 @@ const NO_PATTERN: Array[int] = [18, 19, 28, 33, 34, 35, 37, 38, 39]
 
 ## docs/21 section 4 -- `ParaBomb`.  A mine resolves as a shot from this.
 const BOMB_WEAPON: int = 36
+## The heading `aExecuteBomb` hands `applyDamage` -- `push 0xFF` at
+## `0x004704BF`. No octant's arc holds it, so a mine always meets the **front**
+## armour. The model used to derive a heading from the centre.
+const BOMB_FACING: int = 0xFF
 
 
 ## `0x0047A8E0`'s three modes. Only mode 2 is reached from `endUnitTurn`; mode
@@ -332,6 +343,43 @@ static func in_arc(centre: int, facing: int) -> bool:
 
 
 ## `0x0046FAD0` in its single-player form -- docs/22 section 7.3.
+## `0x00475590` -- the charges a Damage Absorber has left, or none at all.
+##
+## `+0x3A` is read **only behind `+0x33`**, equipment slot 18: a record whose
+## equipment does not carry the absorber has no charges whatever the byte
+## holds. Six placed aliens on `_C_119.lev` hold a stale 123 or 126 there and
+## are refreshed only at their first hand-over -- after the human's first
+## turn -- and the engine lets that turn's shots through.
+static func absorber_charges(unit: UnitState) -> int:
+	if not unit.has_equipment(EQUIP_DAMAGE_ABSORBER):
+		return 0
+	return unit.absorber
+
+
+## `0x004755B0` -- spend one charge behind the same gate; `true` if spent.
+static func spend_absorber(unit: UnitState) -> bool:
+	if absorber_charges(unit) == 0:
+		return false
+	unit.absorber -= 1
+	return true
+
+
+## `0x0046BDC7`..`0x0046BDEB` -- weapon 47's arm, in its order: the target's
+## player becomes the shooter's, its movement points are refilled by
+## `aGetMovePoints` (whose Banner scan reads the **new** player, which is why
+## the player is written first), its action state is cleared, and it looks
+## around from its own cell for its new side -- the writing pass of docs/22
+## section 9.3. Returns that pass's answer.
+static func convert_unit(state: MapState, units: Dictionary,
+		utab: UnitTypeTable, target: UnitState, player: int, ai_level: int,
+		human_players: int, game_mode: int) -> bool:
+	target.player = player
+	target.mp = Allowance.for_unit(target, utab, units, ai_level)
+	target.action_state = 0
+	return Visibility.look_from(state, units, utab, target, target.x,
+		target.y, human_players, game_mode)
+
+
 static func banner_nearby(unit: UnitState, units: Dictionary) -> bool:
 	for slot: Variant in units:
 		var other: UnitState = units[slot]
@@ -733,6 +781,14 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		ty = standing.y
 
 	result.fired = true
+	# `0x0046B5DF` -- weapon 47 is set **to its heat cap** before the overheat
+	# check, inside the same `maxHeat != 255` gate: every shot of it rolls
+	# `aRandom(0, 40)`, and 15 of the 40 outcomes damage the weapon before it
+	# fires. Measured in `turn_gold.py`'s `weapon47` probe.
+	if attacker.weapon == CONVERTER_WEAPON:
+		var cap: int = max_heat(wtab, attacker)
+		if cap != 0xFF:
+			attacker.heat = cap
 	result.overheat = check_weapon_damage(wtab, attacker, rng)
 	if attacker.malfunction != 0 or attacker.hp == 0:
 		result.fired = false
@@ -802,10 +858,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if marker == MARKER_STUN:
 			# No damage is rolled; unless a Damage Absorber charge is spent the
 			# target loses the rest of its turn.
-			var stunned: bool = target.absorber == 0
-			if target.absorber != 0:
-				target.absorber -= 1
-			else:
+			var stunned: bool = absorber_charges(target) == 0
+			if not spend_absorber(target):
 				target.action_state = STUNNED_ACTION_STATE
 				target.mp = 0
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
@@ -813,21 +867,35 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 				"roll": roll, "stunned": stunned})
 			continue
 
-		var dealt: int = 0
-		if target.absorber != 0:
-			# docs/22 section 7.5: a charge nullifies the damage entirely.
-			target.absorber -= 1
-		else:
-			dealt = apply_damage(target, damage, attacker.facing, ai_level,
-				human_players, game_mode, rng)
+		if spend_absorber(target):
+			# docs/22 section 7.5: a charge nullifies the damage -- behind
+			# `0x00475590`'s equipment gate, like the charge count -- by
+			# **zeroing the argument**, not by skipping the call: `xor ebp, ebp`
+			# at `0x0046BD83` and `applyDamage` still runs at `0x0046BD9D`,
+			# rolling its dice over a span of nothing. The seed says so
+			# (`turn_gold.py`, `absorber_flagged`: two draws, not one).
+			damage = 0
+		var dealt: int = apply_damage(target, damage, attacker.facing, ai_level,
+			human_players, game_mode, rng)
+		# `0x0046BDAD` -- weapon 47 converts what it hits and does not kill.
+		# The charge test is asked **again** after the spend, so a target whose
+		# last charge just went is converted on the same shot.
+		var converted: bool = (attacker.weapon == CONVERTER_WEAPON
+			and absorber_charges(target) == 0 and target.is_alive())
+		if converted:
+			var _saw: bool = convert_unit(state, units, utab, target,
+				attacker.player, ai_level, human_players, game_mode)
 		var killed: bool = not target.is_alive()
 		if killed:
 			# `aKillUnit` (`0x00472920`) is two calls: the death sequence and
 			# `aRemoveUnitElement`, which is where the hero counter lives.
 			UnitState.remove(state, turn, target)
-		result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
+		var outcome: Dictionary = {"slot": target.slot, "x": cx, "y": cy,
 			"marker": MARKER_KILLED if killed else MARKER_HIT, "dealt": dealt,
-			"chance": chance, "roll": roll})
+			"chance": chance, "roll": roll}
+		if converted:
+			outcome["converted"] = true
+		result.outcomes.append(outcome)
 
 	# After the shot: ammunition and heat.  docs/22 section 7.5 gates on
 	# **both** halves -- a weapon whose `mun` column is 255 spends nothing, and

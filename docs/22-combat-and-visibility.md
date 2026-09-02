@@ -570,9 +570,18 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
 1. `aCheckWeaponDamage` (§8) may jam or destroy the weapon. If it leaves
    `unit[+0x40] != 0`, or the attacker's HP is 0, the function returns without
    firing.
+   **Weapon 47 fires at its cap**: inside the same `maxHeat != 255` gate,
+   `cmp byte [esi+0x3F], 0x2F` at `0x0046B5DF` writes `maxHeat` into
+   `unit[+0x3E]` (`0x0046B5EE`) *before* the overheat check, so every shot
+   of `Laser Enhanced` rolls `aRandom(0, 40)` and fifteen of the forty
+   outcomes damage it first. Measured: the first native probe of it rolled a
+   2 and fired nothing (`tools/turn_gold.py`, `weapon47`).
 2. **The shooter is revealed**: `aSetVisibleStateForUnit(attacker, 0)` at
    `0x0046B643` (`aTacTools.cpp:1662`), right after that test — a hidden
-   unit is seen the moment it fires, whatever the shot then does.
+   unit is seen the moment it fires, whatever the shot then does. Measured
+   with both parties written hidden first, and with the shooter's weapon
+   written jammed as the control: the jammed shot reveals neither
+   (`turn_gold.py`, `attack_hidden` / `attack_jammed`).
 3. The attacker turns to face the target: `aChangeUnitViewDirection` writes
    `unit[+0x46]` with `direction(x, y, tx, ty)` (§7.4).
 4. `0x0046AA10` marks every cell the weapon covers.
@@ -697,6 +706,44 @@ if (chance + 10 < roll) { cell[0] = 0x5A; continue; }        /* miss */
 Markers `0x54` and `0x55` overwrite both `chance` and `roll` after this point
 (`0/1` and `1/0` respectively), which is what makes them always resolve as a
 hit regardless of range, cover or accuracy.
+
+**A hit that connects then meets the absorber, and weapon 47's arm**
+(`0x0046BD29`..`0x0046BDEB`, measured 2026-09-02 by `tools/turn_gold.py`'s
+`conversion` phase):
+
+```c
+/* 0x0046BD73: a hit with damage */
+if (absorberCharges(target)) {            /* 0x00475590: equip[18] ? unit[+0x3A] : 0 */
+    damage = 0;                           /* xor ebp, ebp -- the argument, not the call */
+    spendAbsorber(target);                /* 0x004755B0: --unit[+0x3A], behind the same flag */
+}
+applyDamage(target, damage, attackerFacing, &dealt);   /* 0x0046BD9D, and it still rolls */
+if (unit->weapon == 0x2F && !absorberCharges(target) && target->hp) {   /* 0x0046BDAD */
+    target->player = unit->player;        /* 0x0046BDCB */
+    target->mp     = aGetMovePoints(target);   /* the Banner scan reads the NEW side */
+    target->actionState = 0;              /* 0x0046BDE7, after the points were asked */
+    aBuildVisibleMapForUnit(target, target->x, target->y, &saw);   /* 0x0046BDEB, §9.3 */
+}
+```
+
+Four things that settles. The charges are read **behind `+0x33`**, which is
+equipment slot 18 (`+0x21 + 18`, [`10` §5.4](10-lev-mission-format.md)): a
+record whose equipment array does not carry the absorber has no charges
+whatever the byte holds — the six placed aliens on `_C_119.lev` with a stale
+123 or 126 there are refreshed only at their first hand-over, after the
+human's first turn, and a shot in that turn goes through them (a probe with
+`+0x3A` written to 5 and `+0x33` clear lost three hit points; with `+0x33`
+written to 1 it lost none and one charge). A spent charge **zeroes the
+argument and not the call**: `applyDamage` still runs and draws its dice
+over a span of nothing, so the generator moves exactly as it does for a
+landed hit — the seed read after the probe said two draws, and a model that
+skipped the call said one. The charge test is asked **again** after the
+spend, so a target whose last charge just went is converted on the same
+shot. And the movement points are asked before the action state is cleared,
+so a stunned target converts with none this turn. No shipped unit carries
+weapon 47; the probe wrote the byte, the engine changed `+0x45` to 0 and
+cleared `+0x41`, and the converted alien's own pass then revealed the two
+other aliens it could see.
 
 Three things worth stating plainly, because none is guessable from the data
 files:
@@ -829,7 +876,7 @@ unit vectors, independently confirmed by `aGetGradientsOfUnitView`:
 |---|---|
 | ammo | `if (weapon[+0x39] != 255 && attacker type != 0x42) unit[+0x3D] -= weapon[+0x41]` |
 | heat | `if (maxHeat != 255 && unit[+0x3E] < maxHeat) unit[+0x3E]++` |
-| damage absorber | equipment 18 fills `unit[+0x3A]`; a hit that would land spends one charge (`0x004755B0`) and **nullifies the damage entirely** |
+| damage absorber | equipment 18 fills `unit[+0x3A]`; a hit that would land spends one charge (`0x004755B0`) and **nullifies the damage** — by zeroing the argument, so `applyDamage` still rolls — and only while `+0x33` (equipment slot 18) is set: `0x00475590` returns 0 without it (§7.3). **`aExecuteBomb` never asks**: no call to either routine in `0x004702C0`, `applyDamage` is reached straight from the roll (`0x004704C9`) with the heading `0xFF` no octant's arc holds, so a mine meets the front armour |
 | experience | on a kill, unless the victim is species 2 (an inanimate object), its `unitType[+0x7A]` goes to `0x0047AFD0` / `0x0047B090` / `0x0047B100` |
 | dead marker | a unit reduced to 0 HP has `+0x16` set to `0xFF` before removal |
 | script | `aRunLCL` is entered with LCL variables `0x41 = 3`, `0x42 = tx`, `0x43 = ty` |
@@ -934,7 +981,10 @@ for (each own living unit u)
 ```
 
 Everything is hidden first and then revealed, so visibility is recomputed from
-scratch on every call — there is no incremental fog state to persist. Three
+scratch on every call — there is no incremental fog state to persist. The
+contact promotion of §9.3 is the **per-unit** routine's tail and not this
+one's, so a player with no living unit rebuilds to "all hidden" with no blips.
+Three
 unit types (`0x3D`, `0x3E`, `0x3F`) and everything of **species 2** are
 permanently visible. `unitType[+0x79]` is `SetUnitInfo`'s *species* column
 ([`21` §5](21-info-lcl-schema.md)): `0` human, `1` alien, `2` inanimate object,
@@ -958,11 +1008,12 @@ query form, and every one of its six call sites changes `+0x4F` for good
 | `0x0046E330` | `aExecuteMove` | the mover, the **destination** | before the first step; the *answer* is dropped when the destination's `+0x0C` is over 6 ([`42` §3.2](42-mission-presentation.md)), the writes never |
 | `0x0046E385` | `aExecuteMove` | the mover, the **source** | computer movers only (`cmp byte [unit+0x45], 0xFF` at `0x0046E367`) |
 | `0x0046EE55` | `aExecuteMove` | the mover, the arrival cell | after the walk, before the `MoveUnit` event, only while the mover lives |
-| `0x0046BDEB` | `aAttackUnit` | the **converted** unit, its cell | weapon 47's arm: the target's `+0x45` is overwritten with the shooter's, its points reset, and it looks around for its new side. No shipped unit carries weapon 47 (§7.2); named, not modelled |
-| `0x0047AF53` | `0x0047AD90`, `aUnitMap.cpp:5663` | the moved unit, its new cell | a unit relocated cell to cell — called only from the animation module's platform ride (`0x00412F9A`), presentation |
+| `0x0046BDEB` | `aAttackUnit` | the **converted** unit, its cell | weapon 47's arm (§7.3): the target's `+0x45` becomes the shooter's, its points are asked again, and it looks around for its new side. No shipped unit carries weapon 47 (§7.2); measured with the byte written (`turn_gold.py`, `weapon47`), modelled in both twins |
+| `0x0047AF53` | `0x0047AD90`, `aUnitMap.cpp:5663` | the moved unit, its new cell | a unit relocated cell to cell — the map's link, `+0x42`/`+0x43`, the 3D object, then the pass. Its one caller is the platform ride (`0x00412F9A`, [`20` §7.4](20-lcl-language.md)), which relocates every rider this way **before** it copies the cells; measured directly and through the ride (`turn_gold.py`, `relocate` / `platform`), modelled as `Platform.relocate` / `Platform.ride` and `interact.relocate_unit` / `platform_ride` |
 
-`aSetVisibleStateForUnit` itself has fifteen callers: the five inside this
-routine and the four inside `aBuildVisibleMap`, `aExecuteMove`'s mode-3
+`aSetVisibleStateForUnit` itself has fifteen callers: **six** inside this
+routine (the five of the sight and scanner arms and the promotion's at
+`0x00479861`) and three inside `aBuildVisibleMap`, `aExecuteMove`'s mode-3
 self-reveal (`0x0046E4BB`), the shooter and the target in `aAttackUnit`
 (§7.1, §7.3), the target in `aExecuteBomb` (`0x004703A9`), and one in
 `aAnimations.cpp` (`0x00411660`, the spawn of §9.4.2). The remake's `core`
@@ -974,7 +1025,13 @@ passes fails on exactly those slots — and `tools/turn_gold.py --check`, whose
 six `aExecuteMove` probes compare `+0x4F`, `+0x47` and `+0x48` of every live
 record after each walk (nothing changes there: the player's mover sees nothing
 new from its two-step path, so that capture pins the absence of a write rather
-than one).
+than one), and whose `reveal` phase, since later the same day, writes both
+parties hidden and reads what each writer left: the shooter and its target
+go to 0 and a jammed shot moves neither; a human relocated next to an alien
+through `0x0047AD90` reveals it; a computer mover walking one step from a
+cell the human sees comes out at 0 with the *Enemy Move* option written on
+and — by its own arrival pass's promotion — at **1** with it written off,
+while the human it saw is 0 either way.
 
 ```c
 scan = observer->equip[0] ? 1 : 0;          /* +0x21, "Scan Module" */
@@ -1022,7 +1079,13 @@ A second pass then re-examines every unit still hidden (`+0x4F == 3`) and
 neutral (`player == 0xFF`): if **none** of its eight neighbouring cells holds a
 unit that is already a scanner contact (`0x00479410`), it is promoted to a
 contact itself. The effect is to show one blip per cluster instead of one per
-alien.
+alien. **It is this routine's own tail** — `0x00479786`..`0x00479861`, before
+the `ret` at `0x0047989A` — and not `aBuildVisibleMap`'s, so every per-unit
+pass runs it, `aExecuteMove`'s three included: a computer mover that walks
+with the option off, and so is never marked visible, comes out of its own
+arrival pass as a contact. Both models once kept the loop at the end of the
+whole fog pass, where that walk left the mover hidden; the `mode3_off` probe
+is what moved it (2026-09-02).
 
 ---
 

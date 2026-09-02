@@ -337,7 +337,14 @@ walk the same pass is run a third time from the arrival cell (`0x0046EE55`),
 before the `MoveUnit` event, whenever the mover is still alive. The remake's
 `core` runs all three passes and the mode-3 write inside its own
 `aExecuteMove` ([`97` §28.6](97-slice-5-report.md)); the mode byte is then
-decided by the presentation from the two answers the walk reports.
+decided by the presentation from the two answers the walk reports. *(Measured
+2026-09-02, `tools/turn_gold.py`'s `reveal` phase, with the option dword
+written on and off around one step by a computer mover seen where it
+starts: on, the mover comes out at `+0x4F == 0`; off, it comes out a
+**contact**, because the cluster promotion is the per-unit pass's own tail
+([`22` §9.3](22-combat-and-visibility.md)) and its arrival pass runs it. The
+option is a parameter of `core`'s `aExecuteMove` now, on by default —
+[`97` §28.7](97-slice-5-report.md).)*
 
 During every frame of a step in modes 1 and 3 (`0x0040EBB0`), when the view
 mode is neither 0 nor 4, the camera's **position is kept and its target is set
