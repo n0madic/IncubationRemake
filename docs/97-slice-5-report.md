@@ -1929,7 +1929,8 @@ Neither group is a thin capture.
 
 **Arm 56** (kind 59, the emitter) has a six-line branch gated on a byte
 `0x00461E80` returns. It is not in the record, so **no vector written into a
-record can reach it**. Named rather than left implied.
+record can reach it**. Named rather than left implied. *§23.3 reaches it by
+writing what the byte comes from, and identifies what that is.*
 
 **Arm 39** (kind 41) is the interesting one, and it was found the hard way.
 The second sweep vector originally also wrote `vx = 0`, because that is the
@@ -2066,19 +2067,25 @@ that change nothing**:
 | `HEAD_STEP` | shifts an orientation target by one unit, which does not move a 4096th |
 
 This is the arm-line coverage of §21 one level down, and it gets the same
-treatment: named, pinned, and shrinkable by a capture with a second pair of
-tiles.
+treatment: named, pinned, and measured in `--check` rather than asserted.
 
-### 22.5 One thing this did not close
+What it is **not** is a list waiting on a second capture. §23.1 works through
+the six one at a time and finds that four of them cannot be discriminated by a
+perturbation test at any span, and closes all six a different way: the value
+is read back out of the shipped executable at a named address.
+
+### 22.5 One thing this did not close — *closed in §23.2*
 
 The velocities of three of them come from the direction service and a flat
 speed; the positions of one come from the *perpendicular* of that direction.
 Which of the service's three doubles is which axis was read off the stack for
 nine of the ten, and for `0x00424D20` the argument pushes interleave with the
-FPU loads so densely that the assignment was fixed by **matching against the
-capture** instead — over twelve records, four record kinds and three bursts,
-which leaves one assignment standing but is a fit and not a reading. Say so
-rather than let the table above imply otherwise.
+FPU loads so densely that the assignment was, when this section was written,
+fixed by **matching against the capture** instead — over twelve records, four
+record kinds and three bursts, which leaves one assignment standing but is a
+fit and not a reading.
+
+It is a reading now. §23.2 walks the frame.
 
 | | |
 |---|---|
@@ -2086,3 +2093,365 @@ rather than let the table above imply otherwise.
 | Arm lines executed against the engine | 341 -> **377** of 385 |
 | Creators with no named mechanism | 10 -> **0** |
 | Open questions | unchanged at **37**; `28` §12 item 3's residue is closed in place |
+
+## 23. 2026-09-01 — the three residues, and what each one actually needed
+
+§21 and §22 each ended by naming what they had *not* closed. Three items:
+six creator constants no captured record exercises, one creator whose
+component-to-axis mapping was fitted rather than read, and six arm lines
+behind a branch no record can select. They needed three different
+instruments, and only one of them was another capture.
+
+### 23.1 The six constants — the instrument was wrong, not missing
+
+§22.4 listed six constants that `native.creator_constants_discriminated`
+cannot tell from a neighbour and said they were "shrinkable by a capture with
+a second pair of tiles". Working through them one at a time says otherwise.
+
+| Constant | What a ±1 perturbation does | Would another capture see it? |
+|---|---|---|
+| `HEAD_STEP` | shifts an orientation *target* by one unit; the answer is in 4096ths of a circle | **no**, at any span — the result is quantised |
+| `BEAM_UNIT`, `BEAM_BASE`, `TRAIL_UNIT` | move an integer quotient only when the dividend sits on the boundary | **almost never**, at any span |
+| `HEAD_SPEED` | rides on three records `0x00420950` drops for a zero `life` | only with a target far enough that `count >= 2` |
+| `DOT_SPEED` | rides on records past the twelve a read window holds | only with a wider read window |
+
+So four of the six are not a thin capture at all: a perturbation test is the
+wrong instrument for a divisor or for a value that is quantised before it is
+stored, and no amount of Wine changes that.
+
+The right instrument is static, and it is the one this project already uses
+for the creator arities — pinned in `blob_tables.py` "whether or not anybody
+has Wine". `CREATOR_CONSTANT_SITES` names, for every one of the thirteen, the
+address in the shipped `Incubation.exe` that holds it and how that address
+holds it:
+
+* **nine names are doubles** in the constant block at `0x004B12xx` — eleven
+  sites, because two names read a negative cell and its positive twin — and
+  the check requires an `fmul qword [cell]` for each to exist **inside the
+  creator the transcription attributes it to**, bounded by the next creator's
+  entry, so a site cannot be silently credited to the routine after it;
+* **three sites are subtracted immediates** — `lea ecx, [eax - 0xC80]` at
+  `0x004272A0`, `lea ecx, [eax - 0x960]` at `0x004279DA`,
+  `add esi, 0xFFFFF380` at `0x00425AAC`;
+* **two are not in the bytes at all.** `0x00426F90` divides by 2400 as
+  `mov eax, 0x1B4E81B5 / imul ecx / sar edx, 8` and `0x00425810` divides by
+  960 as `mov eax, 0x88888889 / imul esi / add edx, esi / sar edx, 9`. There
+  is no `0x960` and no `0x3C0` to grep for. The check takes the divisor the
+  multiplier implies — the compiler chose `ceil(2 ** (32 + shift) / d)` — and
+  then **replays** the sequence, the multiply, the two-term form's add, the
+  shift and the `shr`/`add` sign fixup, over 85715 dividends either side of
+  zero, requiring it to equal a truncating divide for every one of them;
+* **one is a code sequence**: `TRACER_LEAN`'s 200 is `lea`/`lea`/`shl` over a
+  `sar`, `5 * 5 * 32 >> 2`, read out of the four instructions.
+
+One correction the table forced: `DOT_SPEED` and the positive half of
+`CASING_SPEED` are **the same cell**, `0x004B12B0`, read by two different
+creators. Thirteen Python names stand over twelve distinct cells. The names
+stay one-per-use, because "does this capture exercise this use" is the
+question the discrimination check answers and it is a different question from
+"is this the number the binary holds".
+
+`native.creator_constants_discriminated` is unchanged and still says seven of
+thirteen. That is the honest reach of the capture and it should keep saying
+so. What has changed is that the other six are no longer standing on nothing.
+
+### 23.2 The machine gun's axes — read off the stack
+
+`0x00424D20` places its two tracers **perpendicular** to the line of fire:
+the `x` term reads the `y` ratio and the `y` term the `x`. §22.5 recorded
+that the assignment had been fixed by matching records rather than read,
+because the argument pushes interleave with the FPU loads.
+
+They interleave; they do not hide anything. The frame settles to one baseline
+after the `add esp, 0x28` at `0x00424FE4` and the `add esp, 0x24` at
+`0x004250E5` — call it `S` — and `0x00424FC6` handed the direction service
+its three out-pointers relative to that same baseline, at `S+0x20`, `S+0x28`
+and `S+0x38`. Every term then names its component out loud: each is an
+`fld qword [esp+disp]`, and `disp` minus the stack depth at that instruction
+is the slot.
+
+| Site | `disp` | depth | slot | component | role |
+|---|---|---|---|---|---|
+| `0x00425100` | `0x2C` | `0x0C` | `S+0x20` | `d0` | `lean`, into **y** |
+| `0x0042511A` | `0x54` | `0x2C` | `S+0x28` | `d1` | `spread` ×`-640`, into **y** |
+| `0x0042513A` | `0x54` | `0x2C` | `S+0x28` | `d1` | `lean`, into **x** |
+| `0x00425152` | `0x50` | `0x30` | `S+0x20` | `d0` | `spread` ×`+640`, into **x** |
+| `0x0042519F` | `0x20` | `0x00` | `S+0x20` | `d0` | `lean`, into **y** |
+| `0x004251C1` | `0x54` | `0x2C` | `S+0x28` | `d1` | `spread` ×`+640`, into **y** |
+| `0x004251E1` | `0x54` | `0x2C` | `S+0x28` | `d1` | `lean`, into **x** |
+| `0x004251F9` | `0x50` | `0x30` | `S+0x20` | `d0` | `spread` ×`-640`, into **x** |
+
+Two properties fall straight out of the table and both are checked rather
+than asserted: inside one record a coordinate's two terms name **different**
+components — which is what "perpendicular" means and what an axis-by-axis
+recipe cannot write — and the second record is the first with its two spread
+cells **exchanged**, not negated. The transcription already had all of this
+right; what it did not have was a reason other than the records.
+
+`TRACER_AXIS_TERMS` pins the eight sites and `TRACER_AXIS_BLOCKS` digests the
+two blocks they were read out of, so a change anywhere in those 304 bytes —
+including one the term table has no column for — re-opens the reading instead
+of passing under it.
+
+### 23.3 Kind 59's other half — the byte is the display mode
+
+Six of the eight uncovered arm lines were arm 56's, and §21.2 disposed of
+them as "gated on a byte `0x00461E80` returns... no vector written into a
+record can reach it". True, and incomplete: nobody had asked what the byte
+*is*.
+
+`0x00461E80` is two instructions.
+
+```
+0x00461E80  mov eax, dword [0x00512A78]
+0x00461E85  ret
+```
+
+`0x00512A78` is the **output system's** mode id. `0x00461310` is
+`aCreateOutputSystem` — `trace_names.py` gets that name from a call site's own
+`CHECK` push — and it takes a mode argument `0..11`, configures the display
+through a five-case jump table and writes this global as its last act. What
+each case writes and what it calls to make the surface:
+
+| mode | surface created by | width × height | bytes/pixel | stride |
+|---|---|---|---|---|
+| 0 | nothing; windowed metrics from `GetSystemMetrics` | 640 × 480 | 1 | 640 |
+| 0 | nothing | 320 × 200 | 1 | **640** |
+| 1 | `aCreateMainDDObject` `0x00432CD0` | 640 × 480 | 1 | 640 |
+| **2** | `aCreateMainDDObject` `0x00432CD0` | 640 × 480 | 2 | 1280 |
+| **3** | `Eng3d.dll` ordinal 67 | 640 × 480 | 2 | 1280 |
+
+Every cell of that table is read out of the instruction that carries it and
+checked by `output.mode_table` — the immediate of a `mov r32, imm32` where a
+register is stored, the immediate of the store where it is not — and
+`output.mode_stores` requires each to be stored into the global its column
+names, with each case's whole byte range digested so the register a pinned
+store writes is still the one the pinned load filled. The last two columns were interpretations when §23.3 was first
+written; §23.4 is the reading that replaced them.
+
+And the routine called is now named. `[0x004FA514]` is zero in the shipped
+file because `0x00401000` (`a3DEngine.cpp`, line 436) fills it at start-up:
+it asks `Eng3d.dll` for the export whose ordinal is written out as the
+**decimal string `"67"`** — the same `GetProcAddress`-by-decimal-text idiom
+that names the five blob service hooks — and ordinal 67 of `Eng3d.dll` is
+`_E3DCARD_open_3dcard_screen`. Mode 3 is the **3D accelerator** path: the
+`E3DCARD` family (ordinals 67–82, 86–87) is the card layer, and if that
+ordinal cannot be resolved the start-up code frees `Eng3d.dll` and reports
+`"Function Id 67 not found!"`. Which card it is remains an inference — the
+game ships `3DfxSpl*.dll` — but which *layer* does not.
+
+So the effect is real and conditional: **kind 59 spawns a second emitter only
+when the game is running on a 3D accelerator.** Wine runs it at mode 2, plain
+DirectDraw, which is exactly why eight targeted vectors and two sweeps left
+those six lines cold. That is not something any record could have revealed.
+
+Reaching it needed the same move `docs/93` §11 used for the large-unit
+clearance — write the state the branch reads. The `mode_59` plan takes the
+global's reading, writes 3 into it through the game's own imported `memcpy`,
+steps kind 59's arm at two donor slots under the two sweep vectors, and
+writes the mode back. The restored value is a **pinned** one and not the
+number just read — a plan's text is fixed before its own read happens — so
+`mode.global_readings` pins the reading taken before the write as well, and a
+host running some other display mode fails that check rather than quietly
+having its mode replaced. Three checks, and the middle one is what makes
+the other two mean anything:
+
+* `mode.global_readings` — `[2, 3, 2]`: the mode before the write, after it,
+  and after the restore. The middle value is the proof the branch *could*
+  run; without it an agreeing arm would only show that both sides skipped it.
+* `mode.arms_stepped` / `mode.arms_agree` — arm 56 runs and reproduces the
+  engine's record field for field on the branch.
+* `native.faults` stays empty, which is its own small correction: a plan that
+  failed on one run and landed on the next used to keep its failure entry
+  forever. The creator loop already cleared it; this one does now too.
+
+The plan cost sixteen attempts across three invocations: ten that never
+reached the anchor, then one that landed on its second — and the phase that
+one produced was **thrown away**, because its first reading came back `2`
+where the plan restored `0`. The restore had been written against an assumed
+mode. Re-pinning it to the measured one and re-capturing landed on the fourth
+attempt of the third invocation, and that is the phase in the fixture. The
+attempts themselves are `docs/91` §1 again, an environment result rather than
+a finding; the discarded phase is not, and is the reason
+`mode.global_readings` pins all three readings rather than only the middle
+one.
+
+**Coverage:** 377 → **383 of 385**, 72 → **73 of 74** arms complete. The two
+that remain are kind 41's, and they are a *divergence* rather than a gap: the
+engine faults where the port returns, so there is nothing to compare.
+
+**One product question this raises, and it is not decided silently.** The
+remake's `blob_hooks.gd` reports mode 0, so it never spawns the second
+emitter. That now has a reason rather than a default: the shipped DirectDraw
+path — the one Wine runs and the one a player without the accelerator got —
+does not spawn it either. Making the remake behave like mode 3 is a
+`compat_flags`-shaped choice, not a bug fix, and it belongs in `docs/92` §7
+if it is ever taken.
+
+### 23.4 What `0x00512A9C` actually is
+
+The mode table above had two columns named from their values: a number that
+looked like a pitch because it was `width × 2` in the sixteen-bit modes, and a
+byte that looked like bytes-per-pixel because it was 1 or 2. This project has
+been bitten twice by a name arrived at that way — the fictitious 40×40 lattice
+and kind 41's invented guard — so the interpretation was marked and left. Here
+is the reading.
+
+**It cannot be `width × bytes-per-pixel`.** The 320×200 case *initially*
+writes a stride of **640** for a 320-pixel row at one byte a pixel
+(`0x0046141F`, and the width is the `mov ecx, 0x140` at `0x004613CA`). A
+derived quantity would say 320. A row that reserves more bytes than it holds
+is a stride and nothing else, and this single row of the table is what rules
+the alternative out — `output.stride_is_not_derived` computes it from what was
+read, not from the pin beside it.
+
+"Initially" matters and sharpens rather than weakens the point: the lock
+below overwrites this global from the surface on every call, so what
+`aCreateOutputSystem` leaves here is the author's own starting value — and
+even *his* is not `width × bpp`.
+
+**It is used as one, in both pixel sizes.** `0x00463C40` is the pixel plot. It
+takes six arguments at `+4 +8 +0x0C +0x10 +0x14 +0x18`, and the roles are
+read from what the arms do with them rather than from any symbol: `+4` is
+added last and is the base, `+0x14` is the one multiplied and `+0x0C` the one
+it multiplies — so `+0x0C` is the row and `+8`, added unscaled, the column.
+`0x00463CC0` next door confirms which way round that is: it walks a
+horizontal run and it is `[esp+8]` that its loop increments. The three arms
+then disagree about the multiplied number in exactly the way a byte count
+requires:
+
+| arm | what it does with the stride | the store |
+|---|---|---|
+| format 0 | `imul` by the row, add the column | `mov byte [base + that]` |
+| format 1 | `shr 1`, then `imul` by the row, add the column | `mov word [base + that*2]` |
+| format 2 | the same, with the colour converted RGB565 → RGB555 | `mov word [base + that*2]` |
+
+The eight-bit arm uses the number whole and indexes bytes; the sixteen-bit
+arms **halve** it and index words. Both reach the same address only if it
+counts **bytes per row**. `output.plot_arithmetic` decodes all three — it
+finds the `imul`, follows its register back to the `mov r32, [esp+disp]` that
+loaded it, notes any `shr r32, 1` between them and reads the store's operand
+size and index scale — and nothing in that decoding is matched against an
+expected displacement.
+
+**And it arrives with the surface, not with the mode.** `0x004617B0` is the
+lock: it sets a "locked" flag at `0x00512AA4`, puts the surface pointer in
+`0x00512A98` and this number beside it in `0x00512A9C`, taking it from
+`[obj + 0x28]` of the object `0x00432C30` returns; `0x00461880` is the unlock
+and clears all three. Callers pass the pair around together — `0x00447F60`
+keeps the lock's return value in `ebp` and hands `(ebp, stride)` to every
+draw; `aFont.cpp`'s `0x00439BE0` stores the pair into a font record and its
+renderer feeds both to the plot.
+
+**And `+0x28` is `DDSURFACEDESC.lPitch`** — see §23.5, which is the half this
+section originally left open.
+
+Two neighbours fall out named as well:
+
+* **`0x00512A60` is bytes per pixel.** `0x00461E90` is a six-way
+  output-info getter — no symbol names it; its own error string for an index
+  above five is `"unknown infotype"` — whose other five arms are the x and y
+  offsets, the width, the height and one more, and `0x00512A60` is the only
+  one of the six that masks its dword down to a byte. It is **index 2**, and
+  that had to be read out of the jump table at `0x00461EE8`: the table's order
+  is not the arms' order in the code, and taking the code order would have
+  called it index 5. Then `0x004479DC` does `push 2 / call / cmp eax, 1 /
+  jne` — a caller branching on "is this one byte a pixel" — and the far side
+  of that branch, `0x00447A70`, multiplies a clipped horizontal extent by the
+  same byte. A number you branch on being 1 and then multiply a pixel count
+  by is a bytes-per-pixel.
+* **`0x00512AA0` is the pixel format**, read by `0x00461E70` and switched on
+  by the plot: 0 is eight-bit palettised, 1 a sixteen-bit word written as it
+  comes, 2 a sixteen-bit word converted 565 → 555 (`and 0x1F` for blue, the
+  rest shifted down one and masked to `0x7FE0`, which is precisely dropping
+  green's low bit). Modes 1 and 2 do **not** hard-code it: they read it from
+  the created surface at `[obj + 0xCC]`, so it is what the driver reported.
+  Mode 3 hard-codes 1 and mode 0 hard-codes 0.
+
+None of this needs Wine, so it lives in `blob_tables.py --check` beside the
+creator arities and constants, in the always-run block.
+
+### 23.5 `+0x28` is `DDSURFACEDESC.lPitch`
+
+§23.4 read what the stride *means* and said plainly that it had not read
+where it comes *from*: the lock takes it from `[obj + 0x28]` of whatever
+`0x00432C30` returns, and nothing in this project had a reading of that
+object's layout.
+
+**There is no object.** `0x00432C30` is two instructions —
+`mov eax, 0x004FEC80 / ret` — so it returns the **address of a static block**,
+and the block is aLIB's DirectDraw module state: every routine that touches it
+pushes `C:\aProject\aLIB\aDDraw.cpp` on its error path. `+0x00` is the
+`LPDIRECTDRAW` that `DirectDrawCreate` fills (`0x00432D76` pushes the address
+itself), `+0x04` the interface `QueryInterface` returns into `0x004FEC84`, and
+`+0x18` — `0x004FEC98` — is a **`DDSURFACEDESC`**.
+
+Three readings identify it, and the first is the one that cannot be
+coincidence:
+
+* both lock helpers write **`dwSize = 0x6C`** into `0x004FEC98` before using
+  it. 0x6C is 108, `sizeof(DDSURFACEDESC)` — the v1 structure; `DDSURFACEDESC2`
+  is 0x7C;
+* both then push its address as argument 2 of a call through **vtable slot
+  `+0x64`**. Slot 0x64 is index 25 — IUnknown's three, then
+  `AddAttachedSurface` through `IsLost` — which is
+  `IDirectDrawSurface::Lock`, the same slot in the v1, v2 and v3 interfaces;
+* the label each helper pushes on its failure arm is the string **`"DD_Lock"`**.
+
+So the two numbers are fields of a **public ABI**, not readings of an unknown
+layout. `+0x28` is `0x004FEC98 + 0x10` — `DDSURFACEDESC.lPitch`, documented as
+the distance in bytes to the start of the next line, which is exactly what
+§23.4's arithmetic concluded independently. And the pointer both helpers
+return, `0x004FECBC`, is `+0x24` — `DDSURFACEDESC.lpSurface` — which is what
+`0x00512A98` gets. The pair `(base, stride)` that callers hand around together
+is the pair the API hands back together.
+
+**Neither field is written by any instruction in the image.** A scan of
+`.text` for the two absolute addresses finds *no* reference to `lPitch` at all
+and `lpSurface` only in the two `mov eax, [0x004FECBC] / ret` the helpers end
+on. That is what you expect of a structure DirectDraw fills and would look
+inexplicable otherwise, so `ddraw.fields_are_filled_by_directdraw` asserts it.
+
+**The scope is narrower than "the stride is a DirectDraw pitch", and the
+checks say so.** `0x004617B0` dispatches four ways on the display mode
+through the jump table at `0x00461864`, and `ddraw.lock_arms` classifies each
+arm from its own bytes:
+
+| mode | arm | where the stride comes from |
+|---|---|---|
+| 0, windowed | `0x00461844` | **unchanged** — the arm stores only the base, from the 32-byte table at `0x004FF6F4` |
+| 1, DirectDraw 8-bit | `0x004617EE` | `lPitch` |
+| 2, DirectDraw 16-bit | `0x004617EE` | `lPitch` |
+| 3, 3D card | `0x004617D0` | an Eng3d entry point, called through `0x004FA420`, fills it through a pointer argument |
+
+Mode 0 never rewriting it is why §23.4's headline row survives at all: the
+320×200 case's 640-for-a-320-byte-row is not merely the author's starting
+value, it is the value that mode's frames actually use.
+
+One qualification stays: which surfaces the two helpers lock — the one the
+module holds at `+0x0C`, and entry *n* of the twenty-byte table at
+`0x004FEDE8` — is **not** claimed here. That needs a reading of
+`CreateSurface`/`GetAttachedSurface`, which this project does not have, and
+naming them "primary" and "back" would be exactly the kind of guess with good
+handwriting §23.4 was written against.
+
+Five checks, no Wine, in the always-run block; **43 mutants, 43 caught**.
+
+One thing the battery over these pins found, and it was in the *check* rather
+than in the reading: perturbing the jump-table address made the arm decoder
+read an address outside the image, and `PEFile` raised where it should have
+answered "not the instruction I expected". A battery that stops on an
+exception is a battery that reports a smaller number, and `Binary.mapped`
+exists precisely so it does not. Every read added here goes through a guard
+now, and the digests through one shared helper. **222 mutants, 222 caught.**
+
+| | |
+|---|---|
+| `blob_gold.py --check` | 252 -> **259** |
+| `blob_tables.py --check` | 423 -> **445** |
+| Arm lines executed against the engine | 377 -> **383** of 385 |
+| Arms with every line executed | 72 -> **73** of 74 |
+| Creator constants read back out of the binary | 0 -> **13** of 13 |
+| Output-system fields read rather than inferred | **2** (`0x00512A9C`, `0x00512A60`), and `0x00512A9C`'s source named as `DDSURFACEDESC.lPitch` |
+| Mutation battery over the new pins | **265** mutants, 265 caught |
+| Open questions | unchanged at **37** |

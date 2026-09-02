@@ -76,8 +76,13 @@ var spawns_succeed: bool = true
 var spawn_calls: Array[Dictionary] = []
 var model_calls: PackedStringArray = PackedStringArray()
 var target_calls: PackedInt32Array = PackedInt32Array()
-## `0x00461E80`'s mode byte, which kind 59 branches on. Zero is the ordinary
-## path; three takes the extra emitter.
+## `0x00461E80`'s mode byte, which kind 59 branches on. It is the **output
+## system's** mode id (`0x00512A78`), not a record field: three is the display
+## configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
+## `_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject` --
+## the 3D accelerator path, and the only one that spawns the extra emitter.
+## The default is the shipped DirectDraw path, which does not -- a deliberate
+## choice recorded in docs/97 section 23.3, not an unset field.
 var emitter_mode: int = 0
 
 

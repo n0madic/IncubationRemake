@@ -2919,6 +2919,10 @@ def run_checks(root: str) -> Checker:
     _sound_model_checks(ck, b, c)
     _music_shim_checks(ck, c)
     _creator_reach_checks(ck, b)
+    _creator_constant_checks(ck, b)
+    _tracer_axis_checks(ck, b)
+    _output_system_checks(ck, b)
+    _surface_lock_checks(ck, b)
     _generator_checks(ck, b)
     _setpiece_timing_checks(ck, b)
 
@@ -3349,6 +3353,316 @@ CREATOR_NESTED = {
 #: for every creator here" was an observation about the fifteen that had run
 #: and this makes it a statement about all thirty, with no capture involved.
 CREATOR_NESTING_IS_FLAT = True
+
+
+#: Where every numeric constant of `tools/inclib/blob_creators.py` lives in
+#: `Incubation.exe`.  The ten transcribed creators were read out of their own
+#: instructions, but *"read out of the disassembly"* is only a claim until
+#: something re-reads it: `blob_gold.py`'s capture discriminates seven of the
+#: thirteen and cannot reach the other six, and a constant no record exercises
+#: is checked by nothing at all.  This is that something, and it needs **no
+#: Wine and no capture** -- the same reason `CREATOR_ARITIES` lives here.
+#:
+#: Each entry names the site *and how the site encodes the number*, because
+#: they are not all doubles:
+#:
+#: * ``f64`` -- a cell in the constant block at `0x004B12xx`, reached by an
+#:   ``fmul qword [cell]`` inside the named creator.  Two names share
+#:   `0x004B12B0`: the blue beam's dot speed and the machine gun's casing
+#:   speed are **one cell read by two creators**, so thirteen names stand
+#:   over twelve distinct cells.
+#: * ``lea`` / ``add`` -- an immediate the creator subtracts, held negated as
+#:   the instruction's own disp32.
+#: * ``magic`` -- a divisor the compiler turned into a reciprocal multiply.
+#:   There is no ``0x960`` anywhere in these bytes; the check recovers the
+#:   divisor by **replaying the multiply** over a swept dividend and requiring
+#:   it to agree with a truncating divide everywhere.
+#: * ``scale`` -- `TRACER_LEAN`'s 200, which is a ``lea``/``lea``/``shl``
+#:   product over a ``sar``: `5 * 5 * 32 >> 2`.
+#:
+#: The fourth element is the value the *site* holds, signed as the binary
+#: holds it; the check requires its magnitude to equal the Python constant's,
+#: so a creator that reads the negative cell and one that reads the positive
+#: are both pinned without giving the module two names for one number.
+CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = {
+    "SPARK_SPEED":   (("f64", 0x0042A9D0, 0x004B12B8, 1600.0),),
+    "SHARD_SPEED":   (("f64", 0x004264A0, 0x004B12D0, 1920.0),),
+    "DOT_SPEED":     (("f64", 0x00427410, 0x004B12B0, 80.0),),
+    "CASING_SPEED":  (("f64", 0x00424D20, 0x004B12A8, -80.0),
+                      ("f64", 0x00424D20, 0x004B12B0, 80.0)),
+    "TRACER_SPREAD": (("f64", 0x00424D20, 0x004B1298, -640.0),
+                      ("f64", 0x00424D20, 0x004B12A0, 640.0)),
+    "BEAM_STEP":     (("f64", 0x00424D20, 0x004B1278, -2400.0),),
+    "HEAD_STEP":     (("f64", 0x00427810, 0x004B12E0, -3200.0),),
+    "HEAD_SPEED":    (("f64", 0x00427810, 0x004B12E8, 4800.0),),
+    "TRAIL_STEP":    (("f64", 0x00425810, 0x004B12C0, -960.0),),
+    "BEAM_BASE":     (("lea", 0x00426F90, 0x004272A0, -0xC80),
+                      ("add", 0x00425810, 0x00425AAC, -0xC80)),
+    "BEAM_UNIT":     (("lea", 0x00427810, 0x004279DA, -0x960),
+                      ("magic", 0x00426F90, 0x004272A6, 0x960)),
+    "TRAIL_UNIT":    (("magic", 0x00425810, 0x00425AB2, 0x3C0),),
+    "TRACER_LEAN":   (("scale", 0x00424D20,
+                       (0x00425117, 0x0042511E, 0x00425121, 0x00425132), 200),),
+}
+#: How many dividends the ``magic`` replay sweeps.  A reciprocal multiply that
+#: agrees with a truncating divide over this many values, negative and
+#: positive, is that divisor.
+MAGIC_SWEEP = range(-300000, 300001, 7)
+
+# --------------------------------------------------------------------------
+# The output system, because kind 59's arm branches on it
+# --------------------------------------------------------------------------
+#
+# `docs/97` §23.3 named `0x00512A78` -- the byte kind 59's arm asks
+# `0x00461E80` for -- as the display mode, and tabulated what each of
+# `aCreateOutputSystem`'s five cases writes beside it.  Two columns of that
+# table were **interpretations**: `0x00512A9C` was called a pitch and
+# `0x00512A60` a bytes-per-pixel because their values looked like it.  A
+# number named by its value is a guess with good handwriting, which is the
+# rule this layer has been bitten by twice.  These pins are the reading.
+
+#: The globals `aCreateOutputSystem` `0x00461310` writes and the drawing code
+#: reads.  Named, not inferred -- see the checks below for which reading
+#: names which.
+OUTPUT_MODE_GLOBAL = 0x00512A78
+OUTPUT_WIDTH = 0x00512A54
+OUTPUT_HEIGHT = 0x00512A58
+OUTPUT_BPP = 0x00512A60
+OUTPUT_BASE = 0x00512A98
+OUTPUT_STRIDE = 0x00512A9C
+OUTPUT_FORMAT = 0x00512AA0
+
+#: The five cases, each field as ``(how the value is encoded, where the value
+#: is, where it is stored)``.  ``load`` is a ``mov r32, imm32`` feeding a
+#: later store; ``store_imm``/``store_imm8`` carry the value in the store
+#: itself; ``xor`` is the zeroed register two cases store.  The store site is
+#: checked to target the global its column names, so a pinned value that
+#: stopped feeding that global fails rather than being read anyway.
+OUTPUT_MODE_CASES: tuple[dict[str, Any], ...] = (
+    {"name": "windowed_640",
+     "height": ("load", 0x0046135E, 0x0046136A),
+     "mode":   ("xor", 0x0046133F, 0x0046138B),
+     "width":  ("load", 0x00461375, 0x0046137A),
+     "bpp":    ("load", 0x00461347, 0x0046137F),
+     "stride": ("load", 0x00461375, 0x004613A7)},
+    {"name": "windowed_320",
+     "height": ("load", 0x004613CF, 0x004613EB),
+     "mode":   ("xor", 0x004613C8, 0x004613FC),
+     "width":  ("load", 0x004613CA, 0x004613E5),
+     "bpp":    ("load", 0x004613D4, 0x004613F0),
+     "stride": ("store_imm", 0x0046141F, 0x0046141F)},
+    {"name": "directdraw_8",
+     "height": ("load", 0x00461455, 0x0046146D),
+     "mode":   ("load", 0x00461444, 0x0046147F),
+     "width":  ("load", 0x00461450, 0x00461468),
+     "bpp":    ("load", 0x00461444, 0x00461473),
+     "stride": ("load", 0x00461450, 0x0046149B)},
+    {"name": "directdraw_16",
+     "height": ("load", 0x0046150C, 0x0046152A),
+     "mode":   ("load", 0x00461511, 0x0046153C),
+     "width":  ("load", 0x00461507, 0x00461525),
+     "bpp":    ("load", 0x00461511, 0x00461530),
+     "stride": ("store_imm", 0x00461569, 0x00461569)},
+    {"name": "card_3d",
+     "height": ("load", 0x004615B2, 0x004615B9),
+     "mode":   ("store_imm", 0x004615F4, 0x004615F4),
+     "width":  ("load", 0x004615CB, 0x004615E2),
+     "bpp":    ("store_imm8", 0x004615E7, 0x004615E7),
+     "stride": ("store_imm", 0x0046161F, 0x0046161F)},
+)
+#: ``(name, mode, width, height, bpp, stride)`` as the five cases hold them.
+OUTPUT_MODE_TABLE = (
+    ("windowed_640", 0, 640, 480, 1, 640),
+    ("windowed_320", 0, 320, 200, 1, 640),
+    ("directdraw_8", 1, 640, 480, 1, 640),
+    ("directdraw_16", 2, 640, 480, 2, 1280),
+    ("card_3d", 3, 640, 480, 2, 1280),
+)
+#: The cases whose stride is **not** ``width * bpp``.  This one line is why
+#: `0x00512A9C` cannot be a derived quantity: the 320x200 mode reserves 640
+#: bytes a row for a 320-byte row.  A padded row is a stride and nothing else.
+OUTPUT_STRIDE_NOT_DERIVED = ("windowed_320",)
+
+#: `0x00463C40` -- the pixel plot, and the reading that settles what the
+#: stride *is*.  It takes ``(base, x, y, colour, stride, format)`` on the
+#: stack at ``+4 +8 +0x0C +0x10 +0x14 +0x18`` and has three arms.  Each entry
+#: is ``(arm, stride displacement, row displacement, stride halved first,
+#: store width in bytes, index scale)``.
+#:
+#: The eight-bit arm multiplies the stride by the row and stores a **byte**
+#: at ``base + that + x``; the two sixteen-bit arms **halve** it first and
+#: store a **word** through an index scaled by two -- the same address.  One
+#: number can only behave both ways if it counts *bytes* per row.
+PLOT_ROUTINE = (0x00463C40, 0x00463CB1, "c54b4922322da7cf")
+PLOT_PATHS: tuple[tuple[str, int, int], ...] = (
+    ("palette_8", 0x00463C4A, 0x00463C65),
+    ("rgb565_to_555", 0x00463C65, 0x00463C92),
+    ("rgb_word", 0x00463C92, 0x00463CB1),
+)
+PLOT_EXPECTED = (
+    ("palette_8", 0x14, 0x0C, False, 1, 1),
+    ("rgb565_to_555", 0x14, 0x0C, True, 2, 2),
+    ("rgb_word", 0x14, 0x0C, True, 2, 2),
+)
+#: The two one-instruction getters.
+OUTPUT_GETTERS = (
+    ("stride", 0x00461E60, OUTPUT_STRIDE),
+    ("format", 0x00461E70, OUTPUT_FORMAT),
+)
+#: The five cases' byte ranges, digested.  `output.mode_stores` proves each
+#: pinned store writes the global its column names, but not that the register
+#: it stores is still the one the pinned ``mov r32, imm32`` filled -- nothing
+#: touches those registers in between, and this is what keeps that true.
+OUTPUT_MODE_RANGES = (
+    ("windowed_640", 0x00461339, 0x004613C8, "3bb0bf387de39bdb"),
+    ("windowed_320", 0x004613C8, 0x0046143A, "14cc686da71a9ff0"),
+    ("directdraw_8", 0x0046143A, 0x004614F1, "28e4587692e72ab7"),
+    ("directdraw_16", 0x004614F1, 0x004615B2, "8e98fbfc2808a182"),
+    ("card_3d", 0x004615B2, 0x0046163C, "a40e3822252d2ac2"),
+)
+
+#: `0x00461E90` is the six-way output-info getter -- **not** a recovered
+#: symbol; nothing names it, and its own error string for an index above five
+#: is ``"unknown infotype"``.  Its arms are reached through a jump table at
+#: `OUTPUT_INFO_TABLE`, and the table's order is **not** the arms' order in
+#: the code, which is exactly the trap that makes reading it rather than
+#: eyeballing it worth the twenty lines.
+OUTPUT_INFO_GETTER = 0x00461E90
+OUTPUT_INFO_TABLE = 0x00461EE8
+#: What each index returns, read out of that table.
+OUTPUT_INFO_GLOBALS = (0x00512A4C, 0x00512A50, OUTPUT_BPP, OUTPUT_HEIGHT,
+                       OUTPUT_WIDTH, 0x00512A5C)
+#: The index that is the bytes-per-pixel byte, and the only arm of the six
+#: that masks its dword down to one.
+OUTPUT_INFO_BPP_INDEX = 2
+#: `0x004479DC` -- ``push 2 / call the getter / cmp eax, 1 / jne``: a caller
+#: branching on "is this one byte a pixel", which is what settles what index
+#: 2 holds.  `0x00447A70` is where the far side of that branch multiplies a
+#: clipped horizontal extent by the same byte.
+OUTPUT_BPP_GATE_SITE = 0x004479DC
+OUTPUT_BPP_SCALE_SITE = 0x00447A70
+
+# --------------------------------------------------------------------------
+# Where the stride the lock copies actually comes from
+# --------------------------------------------------------------------------
+#
+# `docs/97` §23.4 named `0x00512A9C` a stride from the drawing code's
+# arithmetic and then said, in as many words, that the *source* was not read:
+# the lock `0x004617B0` takes it from ``[obj + 0x28]`` of whatever
+# `0x00432C30` returns, and nothing here had a reading of that object.
+#
+# There is no object.  `0x00432C30` is ``mov eax, 0x004FEC80 / ret`` -- it
+# returns the **address of a static block**, aLIB's DirectDraw module state,
+# and every routine that touches it pushes ``"C:\aProject\aLIB\aDDraw.cpp"``
+# on its error path.  At ``+0x18`` of that block sits a `DDSURFACEDESC`: both
+# lock helpers write ``dwSize = 0x6C`` into it -- 108, ``sizeof(DDSURFACEDESC)``
+# -- hand its address to the vtable slot at ``+0x64`` and, on failure, push
+# the label ``"DD_Lock"``.  Slot ``0x64`` is index 25, which is
+# ``IDirectDrawSurface::Lock``.
+#
+# So the two numbers are fields of a **public ABI**, not readings of an
+# unknown layout: ``+0x28`` is ``0x4FEC98 + 0x10``, `DDSURFACEDESC.lPitch`,
+# documented as the distance in bytes to the start of the next line; and the
+# pointer those same helpers return, `0x004FECBC`, is ``+0x24``,
+# `DDSURFACEDESC.lpSurface` -- which is what `OUTPUT_BASE` gets.  Neither is
+# written by an instruction anywhere in the image, which is the check below
+# that would look strangest without this paragraph.
+
+#: aLIB's DirectDraw module state, and the accessor that hands out its
+#: address.  The accessor is two instructions and they are pinned whole.
+DDRAW_MODULE = 0x004FEC80
+DDRAW_ACCESSOR = 0x00432C30
+DDRAW_ACCESSOR_BYTES = bytes.fromhex("b880ec4f00" "c3")
+#: The `DDSURFACEDESC` embedded at ``+0x18``, and the three offsets of the
+#: public structure that matter here.  ``dwSize`` is what identifies it.
+DDRAW_DESC_OFFSET = 0x18
+DDRAW_DESC = DDRAW_MODULE + DDRAW_DESC_OFFSET
+DDSURFACEDESC_SIZE = 0x6C
+DDSURFACEDESC_PITCH = 0x10
+DDSURFACEDESC_SURFACE = 0x24
+#: ``IDirectDrawSurface::Lock`` -- vtable index 25, IUnknown's three then
+#: ``AddAttachedSurface`` through ``IsLost``.  The same slot in the v1, v2
+#: and v3 interfaces.
+SURFACE_LOCK_SLOT = 0x64
+#: The two lock helpers, as ``(name, entry, the module field the entry loads,
+#: desc push, dwSize store, vtable call, file push, label push, success
+#: arm)``.  The entry's own ``mov eax, [module field]`` is read too, so the
+#: entry address is a claim rather than a label.  One locks the surface the
+#: module holds at ``+0x0C``; the other locks entry *n* of the twenty-byte
+#: table at `0x004FEDE8`.  Neither surface is named here -- this file has no
+#: reading of where either was created.
+DDRAW_LOCK_HELPERS: tuple[
+    tuple[str, int, int, int, int, int, int, int, int], ...] = (
+    ("table_surface", 0x00433550, 0x004FEC88, 0x00433580, 0x0043358A,
+     0x0043359E, 0x004335A5, 0x004335AF, 0x004335BF),
+    ("module_surface", 0x004335D0, 0x004FEC8C, 0x004335D9, 0x004335E3,
+     0x004335ED, 0x004335F4, 0x004335FE, 0x0043360E),
+)
+DDRAW_SOURCE_FILE = "C:\\aProject\\aLIB\\aDDraw.cpp"
+DDRAW_LOCK_LABEL = "DD_Lock"
+
+#: `0x004617B0`'s four-way dispatch on the display mode, and the span of each
+#: arm.  Only two of the four take the stride from `lPitch`; naming the whole
+#: table a DirectDraw pitch would overclaim by half.
+LOCK_ENTRY = 0x004617B0
+LOCK_JUMP_TABLE = 0x00461864
+#: ``(mode, arm)`` -- modes 1 and 2 share one arm, so the span belongs to the
+#: arm and is kept beside it rather than repeated here.
+LOCK_ARMS: tuple[tuple[int, int], ...] = (
+    (0, 0x00461844), (1, 0x004617EE), (2, 0x004617EE), (3, 0x004617D0),
+)
+#: ``arm -> (span end, where the stride comes from, the span digested)``.  The
+#: source is **derived** from the arm's bytes by `_lock_arm_source`, not
+#: asserted; the digest is what makes the span a claim, so a window quietly
+#: widened past its arm fails.
+LOCK_ARM_SPANS: dict[int, tuple[int, str, str]] = {
+    0x00461844: (0x00461860, "unchanged", "c48e7e33c94c0742"),
+    0x004617EE: (0x00461844, "lPitch", "dba015a454b42bdc"),
+    0x004617D0: (0x004617EE, "eng3d", "b5138c18119b46e1"),
+}
+#: The indirect the third arm calls instead of locking anything: an Eng3d
+#: entry point, which fills the stride through a pointer argument.
+LOCK_ENG3D_SLOT = 0x004FA420
+#: The two ``mov r32, [eax + disp]`` the `lPitch` arm reaches after calling
+#: the accessor.  The displacement is **read** from them, so the arithmetic
+#: below is a reading of the code and not of the constants beside it.
+LOCK_PITCH_READS = (0x00461805, 0x00461831)
+
+
+#: `aBlob_CreateMachineGun`'s two tracers, term by term -- the one place in
+#: the ten transcriptions where a coordinate is built from a **different
+#: axis'** ratio, and the one whose component-to-axis mapping was originally
+#: fixed by matching records rather than read.  It is read now, off the stack:
+#:
+#: ``0x00424FC6`` hands the direction service three out-pointers and the
+#: creator's frame settles back to one baseline ``S`` after the
+#: ``add esp, 0x24`` at ``0x004250E5``, so ``d0``, ``d1`` and ``d2`` live at
+#: ``S+0x20``, ``S+0x28`` and ``S+0x38``.  Each term below names the
+#: ``fld qword [esp+disp]`` that loads its component and the stack **depth**
+#: at that instruction, and ``disp - depth`` is the component's slot.  Two
+#: roles: ``lean`` is the ``lea``/``lea``/``shl``-over-``sar`` product of 200,
+#: ``spread`` the ``fmul`` by the named +-640 cell.
+#:
+#: ``(record, coordinate, role, fld site, disp, depth, cell)``
+TRACER_AXIS_TERMS: tuple[tuple[int, str, str, int, int, int, int | None], ...] = (
+    (0, "y", "lean",   0x00425100, 0x2C, 0x0C, None),
+    (0, "y", "spread", 0x0042511A, 0x54, 0x2C, 0x004B1298),
+    (0, "x", "lean",   0x0042513A, 0x54, 0x2C, None),
+    (0, "x", "spread", 0x00425152, 0x50, 0x30, 0x004B12A0),
+    (1, "y", "lean",   0x0042519F, 0x20, 0x00, None),
+    (1, "y", "spread", 0x004251C1, 0x54, 0x2C, 0x004B12A0),
+    (1, "x", "lean",   0x004251E1, 0x54, 0x2C, None),
+    (1, "x", "spread", 0x004251F9, 0x50, 0x30, 0x004B1298),
+)
+#: The direction service's three out-slots, relative to that baseline.
+TRACER_DIRECTION_SLOTS = {0x20: 0, 0x28: 1, 0x38: 2}
+#: The two blocks the terms were read out of, so a change anywhere in them --
+#: including one this table has no column for -- re-opens the reading rather
+#: than passing under it.  ``(lo, hi, sha256 prefix)``.
+TRACER_AXIS_BLOCKS = (
+    (0x004250F0, 0x0042518A, "599903f18ce9fd0f"),
+    (0x0042519B, 0x00425231, "71593e821b2e71f5"),
+)
 
 
 # --------------------------------------------------------------------------
@@ -3825,6 +4139,649 @@ def _creator_reach_checks(ck: "Checker", b: Binary) -> None:
              REACHABLE_CALLS_WITH_LIFE,
              lambda n: f"{n} of {len(inside)} carry a literal lifetime -- "
                        "what paces the remake's tracers")
+
+
+def _creator_extents() -> dict[int, tuple[int, int]]:
+    """Every creator's half-open byte range, from the creator table itself.
+
+    The boundary is the *next* creator's entry, so a site attributed to one
+    creator cannot silently belong to the routine after it.
+    """
+    starts = sorted(int(k, 16) for k in CREATOR_DRAW_SITES)
+    return {a: (a, starts[i + 1] if i + 1 < len(starts) else a + 0x1000)
+            for i, a in enumerate(starts)}
+
+
+def _fmul_sites(b: Binary, lo: int, hi: int, cell: int) -> list[int]:
+    """Every ``fmul qword [cell]`` (``DC 0D`` + m32) in ``[lo, hi)``."""
+    out: list[int] = []
+    for va in range(lo, hi - 6):
+        if b.u8(va) == 0xDC and b.u8(va + 1) == 0x0D and b.u32(va + 2) == cell:
+            out.append(va)
+    return out
+
+
+def _magic_divisor(b: Binary, va: int) -> int | None:
+    """The divisor of the reciprocal multiply starting at ``mov eax, imm32``.
+
+    The candidate comes from the multiplier -- the compiler chose
+    ``ceil(2 ** (32 + shift) / d)`` -- and is then confirmed by **replay**
+    rather than by trusting the arithmetic: the multiply, the optional
+    ``add edx, r32`` of the two-term form, the ``sar`` and the ``shr``/``add``
+    sign fixup are run over `MAGIC_SWEEP` and required to equal a truncating
+    divide for every dividend in it.  A perturbed magic, shift or form fails
+    that and this answers ``None``, which is what makes a mutated site read as
+    "not the sequence I expected" instead of as a different divisor.
+    """
+    if not b.mapped(va, 5) or b.u8(va) != 0xB8:
+        return None
+    magic, shift, two_term = b.i32(va + 1), None, False
+    for probe in range(va + 5, va + 0x28):
+        if not b.mapped(probe, 3):
+            return None
+        if b.u8(probe) == 0xC1 and b.u8(probe + 1) == 0xFA:
+            shift = b.u8(probe + 2)
+            break
+        # `add edx, r32` -- the form whose multiplier does not fit in 32 bits.
+        if b.u8(probe) == 0x03 and 0xD0 <= b.u8(probe + 1) <= 0xD7:
+            two_term = True
+    if shift is None:
+        return None
+
+    def quotient(n: int) -> int:
+        high = (magic * n) >> 32
+        if two_term:
+            high = _as_i32(high + n)
+        value = high >> shift
+        return _as_i32(value + ((value >> 31) & 1))
+
+    # The divisor comes from the multiplier itself -- the compiler picked
+    # `ceil(2 ** (32 + shift) / d)` -- and is then **verified** over the
+    # sweep.  Deriving it from one quotient instead (`N // (N // d)`) is off
+    # by more than a couple for many divisors, so it happened to work for
+    # these two and would not for the next site added.
+    scale = magic + (1 << 32 if two_term else 0)
+    if scale <= 0:
+        return None
+    candidate = round(2 ** (32 + shift) / scale)
+    if candidate < 1:
+        return None
+    if all(quotient(n) == _trunc_div(n, candidate) for n in MAGIC_SWEEP):
+        return candidate
+    return None
+
+
+def _as_i32(value: int) -> int:
+    value &= 0xFFFFFFFF
+    return value - (1 << 32) if value >> 31 else value
+
+
+def _trunc_div(value: int, divisor: int) -> int:
+    quotient = abs(value) // abs(divisor)
+    return quotient if (value < 0) == (divisor < 0) else -quotient
+
+
+def _constant_site_value(b: Binary, kind: str, where: object) -> object:
+    """What the binary holds at one site, in the site's own encoding."""
+    if kind == "f64":
+        cell = int(where)                       # type: ignore[arg-type]
+        return b.pe.f64(cell) if b.mapped(cell, 8) else None
+    if kind in ("lea", "add"):
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 6):
+            return None
+        # `lea r32, [r32 + disp32]` is `8D` + mod=10; `add r32, imm32` is
+        # `81` + /0.  Anything else is not the instruction claimed.
+        if kind == "lea" and (b.u8(va) != 0x8D or b.u8(va + 1) >> 6 != 0b10):
+            return None
+        if kind == "add" and (b.u8(va) != 0x81
+                              or (b.u8(va + 1) >> 3) & 0x07 != 0):
+            return None
+        return b.i32(va + 2)
+    if kind == "magic":
+        return _magic_divisor(b, int(where))    # type: ignore[arg-type]
+    if kind == "scale":
+        first, second, shl, sar = where         # type: ignore[misc]
+        left, right = b.lea_scale(first), b.lea_scale(second)
+        if left is None or right is None:
+            return None
+        if not (b.u8(shl) == 0xC1 and b.u8(shl + 1) == 0xE0):
+            return None
+        if not (b.u8(sar) == 0xC1 and (b.u8(sar + 1) & 0xF8) == 0xF8):
+            return None
+        return (left * right * (1 << b.u8(shl + 2))) >> b.u8(sar + 2)
+    return None
+
+
+def _creator_constant_checks(ck: "Checker", b: Binary) -> None:
+    """Read every creator constant back out of `Incubation.exe`.
+
+    `tools/blob_gold.py` measures which of them a *capture* can tell apart
+    from a neighbour, and seven of thirteen is the honest answer there.  This
+    is the other half, and it is the half that needs no game running: the
+    value is at a named address in the shipped executable, the instruction
+    that reads it is inside the creator the transcription attributes it to,
+    and both are compared here.  What the capture adds on top is that the
+    constant reaches the *field* -- which is a different claim, and stays a
+    different check.
+    """
+    from inclib import blob_creators
+
+    named = sorted(name for name in vars(blob_creators)
+                   if name.isupper() and not name.startswith("_")
+                   and isinstance(vars(blob_creators)[name], (int, float))
+                   and not isinstance(vars(blob_creators)[name], bool))
+    ck.equal("creators.constant_sites_cover_module", named,
+             sorted(CREATOR_CONSTANT_SITES),
+             lambda v: f"all {len(v)} numeric constant(s) of blob_creators.py "
+                       "have a named site in the binary")
+
+    extents = _creator_extents()
+    read: list[tuple[str, str, str, object]] = []
+    magnitudes: list[str] = []
+    contained: list[str] = []
+    for name, sites in sorted(CREATOR_CONSTANT_SITES.items()):
+        wanted = abs(getattr(blob_creators, name, None) or 0)
+        for kind, creator, where, expected in sites:
+            value = _constant_site_value(b, kind, where)
+            tag = (f"0x{where:08X}" if isinstance(where, int)
+                   else "+".join(f"0x{w:08X}" for w in where))
+            read.append((name, kind, tag, value))
+            if value is None or abs(value) != wanted:
+                magnitudes.append(f"{name}@{tag}")
+            lo, hi = extents.get(creator, (0, 0))
+            addresses = [where] if isinstance(where, int) else list(where)
+            if kind == "f64":
+                addresses = _fmul_sites(b, lo, hi, int(where))
+                if not addresses:
+                    contained.append(f"{name}@{tag}")
+                    continue
+            if not all(lo <= va < hi for va in addresses):
+                contained.append(f"{name}@{tag}")
+
+    ck.equal("creators.constant_values",
+             [(n, k, t, v) for n, k, t, v in read],
+             [(n, k, (f"0x{w:08X}" if isinstance(w, int)
+                      else "+".join(f"0x{x:08X}" for x in w)), e)
+              for n, sites in sorted(CREATOR_CONSTANT_SITES.items())
+              for k, _c, w, e in sites],
+             lambda v: f"{len(v)} creator constant site(s) read back out of "
+                       "Incubation.exe -- doubles, subtracted immediates, two "
+                       "reciprocal multiplies replayed over "
+                       f"{len(MAGIC_SWEEP)} dividends, and one lea/shl product")
+    ck.equal("creators.constant_magnitudes", magnitudes, [],
+             lambda v: "every site holds the magnitude blob_creators.py uses"
+                       if not v else f"{len(v)} site(s) disagree: {v}")
+    ck.equal("creators.constant_sites_contained", contained, [],
+             lambda v: "every site is inside the creator the transcription "
+                       "attributes it to, bounded by the next creator's entry"
+                       if not v else f"{len(v)} site(s) are elsewhere: {v}")
+
+
+def _tracer_axis_checks(ck: "Checker", b: Binary) -> None:
+    """The machine gun's perpendicular tracers, read rather than matched.
+
+    Three separate statements, and the first two are what "perpendicular" and
+    "exchanged" mean once the components are named:
+
+    * every term loads the component `TRACER_AXIS_TERMS` says it does, and
+      multiplies by the cell it says;
+    * inside one record, a coordinate's two terms name **different**
+      components -- an axis-by-axis recipe cannot write that, which is why the
+      fit had a residue here;
+    * the second record is the first with its two spread cells **exchanged**,
+      not negated: same components, same roles, the +-640 swapped between x
+      and y.
+    """
+    import hashlib
+
+    sites: list[tuple[int, str, str, str, int | None]] = []
+    for record, coord, role, va, disp, _depth, cell in TRACER_AXIS_TERMS:
+        loads = (b.mapped(va, 4) and b.u8(va) == 0xDD and b.u8(va + 1) == 0x44
+                 and b.u8(va + 2) == 0x24 and b.u8(va + 3) == disp)
+        found = None
+        if cell is not None:
+            # The `fmul` is the first one after the load; the compiler slides
+            # one or two integer instructions of the other term in between,
+            # so the window is scanned rather than a fixed offset assumed.
+            for probe in range(va + 4, va + 0x10):
+                if (b.mapped(probe, 6) and b.u8(probe) == 0xDC
+                        and b.u8(probe + 1) == 0x0D):
+                    found = b.u32(probe + 2)
+                    break
+        sites.append((record, coord, role,
+                      f"fld [esp+0x{disp:02X}]" if loads else "not an fld",
+                      found))
+    ck.equal("creators.tracer_term_sites", sites,
+             [(r, c, role, f"fld [esp+0x{d:02X}]", cell)
+              for r, c, role, _va, d, _depth, cell in TRACER_AXIS_TERMS],
+             lambda v: f"{len(v)} tracer term(s) load the component and "
+                       "multiply by the cell the reading names")
+
+    def component(disp: int, depth: int) -> int | None:
+        return TRACER_DIRECTION_SLOTS.get(disp - depth)
+
+    parts: dict[tuple[int, str], dict[str, tuple[int | None, int | None]]] = {}
+    for record, coord, role, _va, disp, depth, cell in TRACER_AXIS_TERMS:
+        parts.setdefault((record, coord), {})[role] = (
+            component(disp, depth), cell)
+    crossed = sorted(key for key, roles in parts.items()
+                     if len(roles) == 2
+                     and roles["lean"][0] is not None
+                     and roles["lean"][0] != roles["spread"][0])
+    ck.equal("creators.tracer_terms_perpendicular", crossed,
+             sorted(parts),
+             lambda v: f"all {len(v)} coordinate(s) of both tracers take "
+                       "their two terms from different direction components")
+    mirror = all(parts[(0, coord)][role][0] == parts[(1, coord)][role][0]
+                 for coord in ("x", "y") for role in ("lean", "spread"))
+    exchanged = (parts[(0, "x")]["spread"][1] == parts[(1, "y")]["spread"][1]
+                 and parts[(0, "y")]["spread"][1]
+                 == parts[(1, "x")]["spread"][1]
+                 and parts[(0, "x")]["spread"][1]
+                 != parts[(0, "y")]["spread"][1])
+    ck.check("creators.tracer_records_mirror", mirror and exchanged,
+             "the second tracer keeps the first's components and exchanges "
+             "its two spread cells -- it does not negate them")
+
+    digests = [(f"0x{lo:08X}", hashlib.sha256(
+        _span_bytes(b, lo, hi)).hexdigest()[:16])
+        for lo, hi, _want in TRACER_AXIS_BLOCKS]
+    ck.equal("creators.tracer_blocks_unchanged", digests,
+             [(f"0x{lo:08X}", want) for lo, _hi, want in TRACER_AXIS_BLOCKS],
+             lambda v: f"{len(v)} tracer block(s) byte for byte as read")
+
+
+def _span_bytes(b: Binary, lo: int, hi: int) -> bytes:
+    """``[lo, hi)`` of the image, or empty when the range is not mapped.
+
+    Every digest and every scan below goes through this.  A pin perturbed to
+    an address outside the image has to read as "not what I expected"; the
+    raw accessor raises, and an exception is not a failing check -- it is a
+    battery that stops early and a coverage figure that never gets printed.
+    """
+    if hi <= lo or not b.mapped(lo, hi - lo):
+        return b""
+    return b.pe.bytes_at(lo, hi - lo)
+
+
+def _stores_to(b: Binary, va: int, target: int) -> bool:
+    """Whether the instruction at *va* writes the global at *target*.
+
+    The five forms `aCreateOutputSystem` uses: ``mov [m32], eax`` (``A3``),
+    ``mov [m32], r32`` and ``mov [m32], r8`` (``89``/``88`` with mod 00 and
+    r/m 101), and the two immediate stores.  Anything else answers ``False``,
+    so a pinned value that stopped feeding its global is a failure rather
+    than a number read out of the right address by accident.
+    """
+    if not b.mapped(va, 6):
+        return False
+    opcode = b.u8(va)
+    if opcode == 0xA3:                                  # mov [m32], eax
+        return b.u32(va + 1) == target
+    if opcode in (0x88, 0x89):                          # mov [m32], r8 / r32
+        modrm = b.u8(va + 1)
+        return (modrm >> 6 == 0 and modrm & 0x07 == 0x05
+                and b.u32(va + 2) == target)
+    if opcode in (0xC6, 0xC7):                          # mov [m32], imm
+        return b.u8(va + 1) == 0x05 and b.u32(va + 2) == target
+    return False
+
+
+def _output_value(b: Binary, kind: str, va: int) -> int | None:
+    """One field of an output-system case, in the encoding it is written in."""
+    if not b.mapped(va, 6):
+        return None
+    if kind == "xor":                                   # xor r32, r32
+        modrm = b.u8(va + 1)
+        if b.u8(va) not in (0x31, 0x33) or modrm >> 6 != 3:
+            return None
+        return 0 if (modrm >> 3) & 7 == modrm & 7 else None
+    if kind == "load":                                  # mov r32, imm32
+        return b.i32(va + 1) if 0xB8 <= b.u8(va) <= 0xBF else None
+    if kind == "store_imm":                             # mov [m32], imm32
+        return (b.i32(va + 6) if b.u8(va) == 0xC7 and b.u8(va + 1) == 0x05
+                else None)
+    if kind == "store_imm8":                            # mov [m32], imm8
+        return (b.u8(va + 6) if b.u8(va) == 0xC6 and b.u8(va + 1) == 0x05
+                else None)
+    return None
+
+
+def _esp_disp(b: Binary, va: int, opcode_length: int) -> tuple[int, int] | None:
+    """``(register, disp8)`` of a ``[esp + disp8]`` operand, or ``None``."""
+    if not b.mapped(va, opcode_length + 3):
+        return None
+    modrm = b.u8(va + opcode_length)
+    if modrm >> 6 != 0x01 or modrm & 0x07 != 0x04:
+        return None
+    if b.u8(va + opcode_length + 1) != 0x24:            # SIB: esp, no index
+        return None
+    return (modrm >> 3) & 0x07, b.u8(va + opcode_length + 2)
+
+
+def _plot_path(b: Binary, lo: int, hi: int) -> tuple[Any, ...] | None:
+    """Decode one arm of the pixel plot into what it does with the stride.
+
+    Finds the ``imul r32, [esp+disp]`` -- the row multiply -- then looks back
+    for the ``mov r32, [esp+disp]`` that loaded *that* register and for a
+    ``shr r32, 1`` between them, and forward for the store.  Nothing here is
+    matched against an expected displacement; the arm is read and the answer
+    compared afterwards.
+    """
+    if not _span_bytes(b, lo, hi):
+        return None
+    imul = None
+    for va in range(lo, hi):
+        if not b.mapped(va, 5):
+            break
+        if b.u8(va) == 0x0F and b.u8(va + 1) == 0xAF:
+            found = _esp_disp(b, va, 2)
+            if found is not None:
+                imul = (va, ) + found
+                break
+    if imul is None:
+        return None
+    site, register, row_disp = imul
+    stride_disp, halved = None, False
+    for va in range(lo, site):
+        if not b.mapped(va, 4):
+            break
+        if b.u8(va) == 0x8B:
+            found = _esp_disp(b, va, 1)
+            if found is not None and found[0] == register:
+                stride_disp = found[1]
+        if b.u8(va) == 0xD1 and b.u8(va + 1) == 0xE8 + register:
+            halved = True
+    if stride_disp is None:
+        return None
+    for va in range(site, hi):
+        if not b.mapped(va, 4):
+            break
+        word = b.u8(va) == 0x66 and b.u8(va + 1) == 0x89
+        if not word and b.u8(va) != 0x88:
+            continue
+        modrm = b.u8(va + (2 if word else 1))
+        if modrm >> 6 != 0 or modrm & 0x07 != 0x04:
+            continue
+        sib = b.u8(va + (3 if word else 2))
+        return (stride_disp, row_disp, halved, 2 if word else 1,
+                1 << (sib >> 6))
+    return None
+
+
+def _lock_arm_source(b: Binary, lo: int, hi: int) -> str | None:
+    """Where the arm at *lo* gets `OUTPUT_STRIDE` from, read off its bytes.
+
+    Three shapes, and the classification is by what the span contains rather
+    than by where it sits: an arm that **stores** the global after calling
+    `DDRAW_ACCESSOR` and reading ``[eax + 0x28]`` takes it from the locked
+    surface; an arm that passes the global's *address* to an indirect and
+    stores nothing takes it from that callee; an arm that neither stores nor
+    passes it leaves whatever `aCreateOutputSystem` wrote.
+    """
+    span = _span_bytes(b, lo, hi)
+    if not span:
+        return None
+    cell = struct.pack("<I", OUTPUT_STRIDE)
+    stores = b"\xA3" + cell in span or b"\x89\x0D" + cell in span
+    passes = b"\x68" + cell in span
+    reads_pitch = b"\x8B\x48\x28" in span or b"\x8B\x40\x28" in span
+    calls = any(lo + i + 5 + int.from_bytes(span[i + 1:i + 5], "little",
+                                            signed=True) == DDRAW_ACCESSOR
+                for i in range(len(span) - 4) if span[i] == 0xE8)
+    indirect = b"\xFF\x15" + struct.pack("<I", LOCK_ENG3D_SLOT) in span
+    if stores:
+        return "lPitch" if reads_pitch and calls else "elsewhere"
+    if passes:
+        return "eng3d" if indirect else "elsewhere"
+    return "unchanged"
+
+
+def _surface_lock_checks(ck: "Checker", b: Binary) -> None:
+    """What `0x00512A9C` is *filled from* -- the half `docs/97` §23.4 left.
+
+    §23.4 read the stride's meaning out of the drawing code and said openly
+    that its source was not read: the lock takes it from ``[obj + 0x28]`` of
+    whatever `0x00432C30` returns, and nothing had a reading of that object.
+
+    There is no object to read.  `0x00432C30` returns the **address of a
+    static block** -- aLIB's DirectDraw module state, `C:\\aProject\\aLIB\\aDDraw.cpp`
+    -- and ``+0x18`` of that block is a `DDSURFACEDESC`, identified by the
+    ``dwSize = 0x6C`` both lock helpers write into it before handing its
+    address to vtable slot ``+0x64``, ``IDirectDrawSurface::Lock``, under the
+    error label ``"DD_Lock"``.  ``+0x28`` is therefore ``desc + 0x10``,
+    `lPitch`; the pointer those helpers return is ``desc + 0x24`,
+    `lpSurface`, and it is what `OUTPUT_BASE` gets.  Both are fields of a
+    public ABI, so the stride is no longer named by its value.
+
+    The scope is checked with it: **two** of the four display modes take the
+    stride from `lPitch`.  Mode 0 never rewrites it -- which is why the
+    320x200 case's 640 survives -- and mode 3 has an Eng3d entry point fill
+    it through a pointer.
+    """
+    import hashlib
+
+    ck.equal("ddraw.accessor_returns_a_static_block",
+             _span_bytes(b, DDRAW_ACCESSOR, DDRAW_ACCESSOR + 6),
+             DDRAW_ACCESSOR_BYTES,
+             lambda v: f"0x{DDRAW_ACCESSOR:08X} is mov eax, "
+                       f"0x{DDRAW_MODULE:08X} / ret -- an address, not an "
+                       "allocation, so there is a layout to read")
+
+    read: list[tuple[Any, ...]] = []
+    want: list[tuple[Any, ...]] = []
+    for (name, entry, field, desc_push, size_store, call,
+         file_push, label_push, success) in DDRAW_LOCK_HELPERS:
+        guard = (b.u32(entry + 1)
+                 if b.mapped(entry, 5) and b.u8(entry) == 0xA1 else None)
+        pushes = (b.u32(desc_push + 1)
+                  if b.mapped(desc_push, 5) and b.u8(desc_push) == 0x68
+                  else None)
+        sized = (b.u32(size_store + 6)
+                 if b.mapped(size_store, 10) and b.u8(size_store) == 0xC7
+                 and b.u8(size_store + 1) == 0x05
+                 and b.u32(size_store + 2) == DDRAW_DESC
+                 else None)
+        slot = (b.u8(call + 2)
+                if b.mapped(call, 3) and b.u8(call) == 0xFF
+                and b.u8(call + 1) == 0x51 else None)
+        source = (b.string(b.u32(file_push + 1))
+                  if b.mapped(file_push, 5) and b.u8(file_push) == 0x68
+                  else None)
+        label = (b.string(b.u32(label_push + 1))
+                 if b.mapped(label_push, 5) and b.u8(label_push) == 0x68
+                 else None)
+        returns = (b.u32(success + 1)
+                   if b.mapped(success, 6) and b.u8(success) == 0xA1
+                   and b.u8(success + 5) == 0xC3 else None)
+        read.append((name, guard, pushes, sized, slot, source, label, returns))
+        want.append((name, field, DDRAW_DESC, DDSURFACEDESC_SIZE,
+                     SURFACE_LOCK_SLOT, DDRAW_SOURCE_FILE, DDRAW_LOCK_LABEL,
+                     DDRAW_DESC + DDSURFACEDESC_SURFACE))
+    ck.equal("ddraw.lock_helpers", read, want,
+             lambda v: f"{len(v)} helper(s) fill a DDSURFACEDESC of "
+                       f"0x{DDSURFACEDESC_SIZE:X} bytes and hand it to vtable "
+                       f"+0x{SURFACE_LOCK_SLOT:02X}, returning its lpSurface")
+
+    # The displacement comes off the instruction, so this is the code's
+    # arithmetic and not the constants' own.
+    # The `call` five bytes in front is what makes the base register the
+    # accessor's return rather than any pointer that happens to be in `eax`.
+    landings = [DDRAW_MODULE + b.u8(va + 2)
+                if b.mapped(va - 5, 8) and b.u8(va) == 0x8B
+                and b.u8(va + 1) in (0x40, 0x48)
+                and b.u8(va - 5) == 0xE8
+                and va + b.i32(va - 4) == DDRAW_ACCESSOR else None
+                for va in LOCK_PITCH_READS]
+    ck.equal("ddraw.field_offsets",
+             landings + [b.u32(helper[8] + 1)
+                         if b.mapped(helper[8], 6) else None
+                         for helper in DDRAW_LOCK_HELPERS],
+             [DDRAW_DESC + DDSURFACEDESC_PITCH] * len(LOCK_PITCH_READS)
+             + [DDRAW_DESC + DDSURFACEDESC_SURFACE] * len(DDRAW_LOCK_HELPERS),
+             lambda v: f"{len(LOCK_PITCH_READS)} read(s) through the "
+                       "accessor's return -- each five bytes past the "
+                       "call -- land on the descriptor's lPitch, "
+                       "and both helpers return its lpSurface")
+
+    # Neither field is written by an instruction: DirectDraw fills the
+    # descriptor.  The only absolute references to either are the two
+    # `mov eax, [lpSurface]` the helpers end on.
+    pitch = DDRAW_DESC + DDSURFACEDESC_PITCH
+    surface = DDRAW_DESC + DDSURFACEDESC_SURFACE
+    refs = {pitch: [], surface: []}
+    for cell, sites in refs.items():
+        needle = struct.pack("<I", cell)
+        start = b.pe.va_to_off(b.text_lo)
+        blob = b.pe.data[start:start + (b.text_hi - b.text_lo)]
+        index = blob.find(needle)
+        while index >= 0:
+            sites.append(b.text_lo + index)
+            index = blob.find(needle, index + 1)
+    ck.equal("ddraw.fields_are_filled_by_directdraw",
+             (refs[pitch],
+              [va - 1 for va in refs[surface]]),
+             ([], [helper[8] for helper in DDRAW_LOCK_HELPERS]),
+             lambda v: "no instruction names lPitch at all, and lpSurface "
+                       f"only in the {len(v[1])} helper return(s) -- the "
+                       "descriptor is written by the API")
+
+    arms = []
+    for mode, _arm in LOCK_ARMS:
+        slot = LOCK_JUMP_TABLE + 4 * mode
+        arm = b.u32(slot) if b.mapped(slot, 4) else 0
+        end = LOCK_ARM_SPANS.get(arm, (arm + 0x10, None, None))[0]
+        arms.append((mode, arm, _lock_arm_source(b, arm, end),
+                     hashlib.sha256(
+                         _span_bytes(b, arm, end)).hexdigest()[:16]))
+    ck.equal("ddraw.lock_arms", arms,
+             [(mode, arm) + LOCK_ARM_SPANS.get(arm, (0, None, None))[1:]
+              for mode, arm in LOCK_ARMS],
+             lambda v: f"{len(v)} display mode(s) through the jump table at "
+                       f"0x{LOCK_JUMP_TABLE:08X}: "
+                       + ", ".join(f"{mode}={source}"
+                                   for mode, _arm, source, _d in v))
+
+
+def _output_system_checks(ck: "Checker", b: Binary) -> None:
+    """What `0x00512A9C` and `0x00512A60` are, read rather than inferred.
+
+    `docs/97` §23.3 tabulated the display modes kind 59's arm branches on and
+    marked two of its columns as interpretations -- a stride and a
+    bytes-per-pixel named from their values.  Three readings replace that,
+    and the first is the one that rules out the alternative:
+
+    * the 320x200 case writes a stride of **640** for a 320-pixel row at one
+      byte a pixel.  Whatever the number is, it is not ``width * bpp``;
+    * the pixel plot `0x00463C40` multiplies it by the row and adds the
+      column, storing a **byte**; its two sixteen-bit arms **halve** it first
+      and store a **word** through an index scaled by two.  Both arms reach
+      the same address only if the number counts bytes per row;
+    * the bytes-per-pixel byte is used as one at `0x00447A70`, where a pixel
+      count is multiplied by it.
+
+    Not checked here, and deliberately: which surface field the *lock*
+    `0x004617B0` copies the stride out of.  That routine takes it from
+    `[obj + 0x28]` of whatever `0x00432C30` returns, and this file has no
+    reading of that object's layout.
+    """
+    import hashlib
+
+    read: list[tuple[Any, ...]] = []
+    misplaced: list[str] = []
+    for case in OUTPUT_MODE_CASES:
+        values: list[Any] = [case["name"]]
+        for column, target in (("mode", OUTPUT_MODE_GLOBAL),
+                               ("width", OUTPUT_WIDTH),
+                               ("height", OUTPUT_HEIGHT),
+                               ("bpp", OUTPUT_BPP),
+                               ("stride", OUTPUT_STRIDE)):
+            kind, value_va, store_va = case[column]
+            values.append(_output_value(b, kind, value_va))
+            if not _stores_to(b, store_va, target):
+                misplaced.append(f"{case['name']}.{column}")
+        read.append(tuple(values))
+    ck.equal("output.mode_table", read, list(OUTPUT_MODE_TABLE),
+             lambda v: f"{len(v)} display mode(s) of aCreateOutputSystem, "
+                       "each field read from the instruction that carries it")
+    ck.equal("output.mode_stores", misplaced, [],
+             lambda v: "every pinned value is stored into the global its "
+                       "column names" if not v
+                       else f"{len(v)} store(s) target something else: {v}")
+
+    # **From what was read**, not from the pin beside it: computing this out
+    # of `OUTPUT_MODE_TABLE` would compare a constant with itself.
+    derived = tuple(row[0] for row in read
+                    if None not in row[1:] and row[5] != row[2] * row[4])
+    ck.equal("output.stride_is_not_derived", derived,
+             OUTPUT_STRIDE_NOT_DERIVED,
+             lambda v: f"{len(v)} mode(s) reserve more bytes a row than the "
+                       "row holds -- so 0x00512A9C is a stride and not "
+                       "width times bytes-per-pixel")
+
+    paths = [(name, ) + (_plot_path(b, lo, hi) or ())
+             for name, lo, hi in PLOT_PATHS]
+    ck.equal("output.plot_arithmetic", paths, list(PLOT_EXPECTED),
+             lambda v: f"{len(v)} arm(s) of the pixel plot: the stride "
+                       "multiplies the row, the sixteen-bit arms halve it "
+                       "and index words")
+    lo, hi, want = PLOT_ROUTINE
+    ck.equal("output.plot_unchanged",
+             hashlib.sha256(_span_bytes(b, lo, hi)).hexdigest()[:16], want,
+             lambda v: f"0x{lo:08X}..0x{hi:08X} byte for byte as read")
+
+    getters = [(name, va,
+                b.u32(va + 1) if b.mapped(va, 6) and b.u8(va) == 0xA1
+                else None,
+                b.mapped(va, 6) and b.u8(va + 5) == 0xC3)
+               for name, va, _global in OUTPUT_GETTERS]
+    ck.equal("output.getters", getters,
+             [(name, va, target, True) for name, va, target in OUTPUT_GETTERS],
+             lambda v: f"{len(v)} one-instruction getter(s): mov eax, "
+                       "[global] / ret, and nothing else")
+    ranges = [(name, hashlib.sha256(
+        _span_bytes(b, lo, hi)).hexdigest()[:16])
+        for name, lo, hi, _want in OUTPUT_MODE_RANGES]
+    ck.equal("output.mode_ranges", ranges,
+             [(name, want) for name, _lo, _hi, want in OUTPUT_MODE_RANGES],
+             lambda v: f"{len(v)} case(s) byte for byte -- so the register a "
+                       "pinned store writes is still the one the pinned load "
+                       "filled")
+
+    arms = []
+    for index in range(len(OUTPUT_INFO_GLOBALS)):
+        slot = OUTPUT_INFO_TABLE + 4 * index
+        arm = b.u32(slot) if b.mapped(slot, 4) else 0
+        # The table can be perturbed to garbage, and the address it then
+        # names is not in the image at all.  Both reads are guarded for that
+        # and not for tidiness.
+        plain = b.mapped(arm, 6) and b.u8(arm) == 0xA1
+        masks = (b.mapped(arm, 11) and b.u8(arm + 5) == 0x25
+                 and b.u32(arm + 6) == 0xFF)
+        arms.append((index, b.u32(arm + 1) if plain else None, masks))
+    ck.equal("output.info_getter_arms", arms,
+             [(index, target, index == OUTPUT_INFO_BPP_INDEX)
+              for index, target in enumerate(OUTPUT_INFO_GLOBALS)],
+             lambda v: f"{len(v)} arm(s) of the six-way output-info getter, "
+                       "read through its jump table -- whose order is not the "
+                       "arms' order in the code -- and only index "
+                       f"{OUTPUT_INFO_BPP_INDEX} masks its dword to a byte")
+    gate, scale = OUTPUT_BPP_GATE_SITE, OUTPUT_BPP_SCALE_SITE
+    ck.check("output.bpp_gates_and_scales",
+             b.mapped(gate, 13) and b.mapped(scale, 12)
+             and b.u8(gate) == 0x6A and b.u8(gate + 1) == OUTPUT_INFO_BPP_INDEX
+             and b.u8(gate + 2) == 0xE8
+             and gate + 7 + b.i32(gate + 3) == OUTPUT_INFO_GETTER
+             and b.u8(gate + 10) == 0x83 and b.u8(gate + 11) == 0xF8
+             and b.u8(gate + 12) == 0x01
+             and b.u8(scale) == 0xA1 and b.u32(scale + 1) == OUTPUT_BPP
+             and b.u8(scale + 5) == 0x25 and b.u32(scale + 6) == 0xFF
+             and b.u8(scale + 10) == 0x0F and b.u8(scale + 11) == 0xAF,
+             f"0x{gate:08X} asks the getter for index "
+             f"{OUTPUT_INFO_BPP_INDEX} and branches on it being 1; "
+             f"0x{scale:08X} multiplies a clipped horizontal extent by the "
+             "same byte -- a count of bytes each pixel takes")
 
 
 def _eng_call(eng: "Engine", va: int) -> int | None:

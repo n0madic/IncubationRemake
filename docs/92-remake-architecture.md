@@ -1078,7 +1078,7 @@ framework for the whole remake. Use one representative campaign mission whose
 terrain, objects, unit placement and reachability are already well covered by
 the numbered specs.
 
-### 7.11 Effects and sound — six decisions, one since retracted
+### 7.11 Effects and sound — seven decisions, one since retracted
 
 Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
 a choice the remake is committed to and not a finding.
@@ -1139,6 +1139,19 @@ either of the two it reproduces, so the audio layer holds them under those
 exact names. `technical_box_guard_original` stays in `core`, where it belongs,
 because it does change the simulation. The rule this refines: **a flag lives
 with the thing it changes.**
+
+**The blob pool runs the shipped DirectDraw path's effects, not the
+accelerated one's.** Kind 59's arm asks `0x00461E80` what display mode the
+output system is in and spawns a **second** emitter only for one answer —
+mode 3, the configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
+`_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject`
+([`97`](97-slice-5-report.md) §23.3). `BlobHooks.emitter_mode` is 0, so the
+remake does not spawn it. That is now a decision with a reason rather than an
+unset field: the mode a player without the accelerator got is the one being
+reproduced, and it is also the mode a retail `Incubation.exe` runs at under
+Wine, which is where every arm in this layer was measured. Behaving like mode
+3 instead is a `compat_flags`-shaped option — one visible extra effect on one
+kind — and would want the flag rather than a changed default.
 
 ### 10.1 Conversion
 

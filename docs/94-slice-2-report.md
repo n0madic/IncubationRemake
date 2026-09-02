@@ -186,11 +186,14 @@ re-centred explosion and the filtered spores. A model that marked nothing for
 them would look like a clean miss. The eight that are simulated are the ones
 `_C_140`, `_C_141` and `_C_115` fire.
 
-**`aExecuteBomb` is modelled from the documentation and marked UNVERIFIED.**
-[`26` §4](26-interaction.md) quotes the push's own call site, so an object pushed
-onto a mine detonates it; but the *sibling* path was probed and does not
-detonate. Whether the push's arm is as inert as the walk's is
-[`26` §10](26-interaction.md) item 7.
+~~**`aExecuteBomb` is modelled from the documentation and marked
+UNVERIFIED.**~~ **— Resolved later, in the model's favour**
+([`26` §6.2](26-interaction.md), 2026-09-02). The push's arm carries the
+*identical* `aDeleteSpecialObject` guard the walk's does, so it is no weaker;
+what the walk probe hit was that guard, because its synthetic mine had the
+effect byte and no object. The correction that *does* follow is on the other
+side: the walk arm's "nothing fires" is an artefact of the probe, not the
+engine's rule, and `core/execute_move.gd` carries a `TODO:` for it.
 
 ---
 
@@ -309,7 +312,8 @@ offered.
 3. **What seeds the C runtime's generator.** No `srand` has been traced, so both
    implementations start from the standard's 1 and say so. `InsertUnit`'s counts
    depend on it, and `_C_140` draws it from turn 5.
-4. **`aExecuteBomb` on the push path** — [`26` §10](26-interaction.md) item 7.
+4. ~~**`aExecuteBomb` on the push path**~~ — [`26` §10](26-interaction.md)
+   item 7, **closed**: the same guard, read rather than probed. See §5.
 5. **The eight unsimulated target patterns**, listed in §5.
 6. **The 200-slot spawn rule** is the natural reading of a fixed array and is
    not measured; a capture that inserts a unit and reads back which slot it took

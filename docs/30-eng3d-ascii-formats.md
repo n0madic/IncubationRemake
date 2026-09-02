@@ -1405,11 +1405,37 @@ open.
     are called unconditionally and adjacently at both of their call sites,
     `0x00403312`/`0x00403318` and `0x0047F836`/`0x0047F83C` — no branch, no
     dispatch). The engine keeps two object lists and draws both every frame, so
-    the remaining candidate is **which list an object is checked into**:
+    the remaining candidate was **which list an object is checked into**:
     `_E3D_object_3d_check_in`, ordinal 9, thunk `0x00402070` →
-    implementation `0x00404BD0`. Whether that decision is driven by anything in
-    the `prototyp.bin` record has not been traced. This one is answerable from
-    the shipped binaries.
+    implementation `0x00404BD0`.
+
+    **That last candidate is traced now, and the lead is exhausted.** The
+    decision *is* driven by the `prototyp.bin` record, and the mechanism was
+    already on the books: `+0x20` is the `flags` word and its bit 0 selects
+    the second draw list, documented at `0x00404E4B` in
+    [`31` §2.2](31-prototyp-geometry.md). What is new here is the twin —
+    `0x00404C79`, `test word [edx + 0x20], 1`, inside
+    `_E3D_object_3d_check_in` itself, picking the list head at `0x00414034`
+    over `0x0041403C` — and, decisively, that **nothing else in the record is
+    read to choose a list**. There is one bit, and it is that one.
+
+    The corpus then argues against the identification rather than for it: bit 0
+    is set in exactly **two** of 26 072 records, `L096EE00.3DI` in `World_E00`
+    and `L096EF00.3DI` in `World_F00`, while **all 701 records of
+    `Video/Dialog_03`** — the only container in the release with an
+    `OBJECT.TYP` beside it, and it carries `SORT_OBJECT` for *both* of its
+    `[TYP]` identifiers — have `flags == 2`, bit 0 clear. A directive set for
+    every object of a container that leaves the bit clear in every one of them
+    is not that bit's source.
+
+    That inference carries §2.11's own caveat: it assumes the `.TYP` is the
+    config that built the container beside it, and §2.11 records why that is
+    unproven (`OBJECT` does not occur in `OBJECT.TYP`, and neither `Charisma`
+    nor `Static` occurs in any `.3DW`). The half that stands either way is the
+    exhaustion: the list choice reads one record bit and nothing else, so
+    there is no further candidate to test. `SORT_OBJECT` therefore joins items
+    1, 2, 5 and 6 as **unknowable from the shipped product** rather than
+    untraced, and the item stays open on that footing.
 
 12. **One shipped `.lev` names a world set that does not exist.**
     `Missions/_I_001.lev` — map type 4, the non-battle screen kind

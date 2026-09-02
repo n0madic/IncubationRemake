@@ -88,14 +88,18 @@ layer. Ten of the fifty were wrong when they were first stepped; `docs/97`
 §20.1 lists them.
 
 **And the claim now says how much of each arm it covers.** `arm_lines_covered`
-and `arm_lines_total` carry the figure the capture earned — **377 of 385**
-transcribed arm lines executed by the comparison itself, 72 of the 74 arms
+and `arm_lines_total` carry the figure the capture earned — **383 of 385**
+transcribed arm lines executed by the comparison itself, 73 of the 74 arms
 entirely — and `test_blob.gd` checks both, so a re-emit that lost a vector
-lowers the number rather than keeping the wording. The eight that remain are
-named in `tools/blob_gold.py`'s `COVERAGE_UNCOVERED`; two of them are a
-**deliberate divergence**, where kind 41's arm divides by the record's `vx`
-with no test in front of it and the original dies where this port returns
-(`docs/97` §21.2).
+lowers the number rather than keeping the wording. The two that remain are
+named in `tools/blob_gold.py`'s `COVERAGE_UNCOVERED` and are one **deliberate
+divergence**: kind 41's arm divides by the record's `vx` with no test in front
+of it, and the original dies where this port returns (`docs/97` §21.2).
+
+Kind 59's six were there until `mode_59` reached them. Its branch is gated on
+the **output system's** mode global rather than on the record, so the plan
+writes that global in the live process, steps the arm and puts it back
+(`docs/97` §23.3).
 
 ## What one run held
 

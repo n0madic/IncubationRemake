@@ -1448,9 +1448,15 @@ class CaseHooks(BlobHooks):
         self.target = target
         self.models = models
         self.spawns_ok = spawns
-        #: ``0x00461E80``'s returned byte, which kind 59 branches on.  Without
-        #: a scenario that sets it, both sides would agree about that branch
-        #: by never running it, which is not agreement.
+        #: ``0x00461E80``'s returned byte, which kind 59 branches on.  It is
+        #: the **output system's** mode id at ``0x00512A78``, not anything in
+        #: the record: the extra emitter exists only under the display
+        #: configuration whose surface is made by the runtime-registered
+        #: entry rather than by ``aCreateMainDDObject`` (`docs/97` §23.3).
+        #: Without a scenario that sets it, both sides would agree about that
+        #: branch by never running it, which is not agreement -- so
+        #: `blob_gold.py`'s ``mode_59`` plan writes it in the live process
+        #: and steps the arm under it.
         self.emitter_mode = emitter_mode
 
     def spawn(self, creator: int, args: Sequence[Any], source: Blob) -> bool:
@@ -1670,13 +1676,16 @@ def emit_cases(out: str, root: Optional[str] = None) -> int:
                   "would have passed it.  unresolved_arms is empty.  How "
                   "much of each arm that reached is measured rather than "
                   "assumed: the sweep is run at more than one point of the "
-                  "input space, and 377 of the 385 transcribed arm lines are "
-                  "executed by the comparison itself.  The eight that are "
+                  "input space, and 383 of the 385 transcribed arm lines are "
+                  "executed by the comparison itself.  The two that are "
                   "not are named in tools/blob_gold.py's "
-                  "COVERAGE_UNCOVERED -- two of them a deliberate "
-                  "divergence, where the original divides by zero and this "
-                  "port refuses to (docs/97 section 21.2).",
-        "arm_lines_covered": 377,
+                  "COVERAGE_UNCOVERED, and both are one deliberate "
+                  "divergence: the original divides by zero and this port "
+                  "refuses to (docs/97 section 21.2).  Kind 59's other six "
+                  "used to be here too; they are reached now by writing the "
+                  "output-system mode the branch reads (docs/97 "
+                  "section 23.3).",
+        "arm_lines_covered": 383,
         "arm_lines_total": 385,
         "native_arms": list(NATIVE_ARMS),
         "poked_arms": list(POKED_ARMS),

@@ -43,7 +43,7 @@ const UNRESOLVED_ARMS: int = 0
 ## Transcribed arm lines the native comparison actually executed, and how many
 ## there are. The eight that are missing are named in `blob_gold.py`'s
 ## `COVERAGE_UNCOVERED`; two of them are a deliberate divergence.
-const ARM_LINES_COVERED: int = 377
+const ARM_LINES_COVERED: int = 383
 const ARM_LINES_TOTAL: int = 385
 
 

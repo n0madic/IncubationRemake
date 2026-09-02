@@ -40,14 +40,30 @@ MODELLESS = (2, 3)
 #: `0x004FA524` -- the name buffer classes 2 and 3 pass and the constructor
 #: ignores, `blob_tables.BLOB_NAME_SCRATCH`.
 SCRATCH = "<scratch>"
-#: The flat speed three creators multiply the direction service by.
+# Every number below is at a named address in `Incubation.exe`, and
+# `blob_tables.CREATOR_CONSTANT_SITES` reads each one back out of the shipped
+# executable -- the doubles from the constant block, the subtracted
+# immediates from their own instructions, the two divisors by replaying the
+# reciprocal multiply the compiler left instead of them.  That check needs no
+# capture, which matters: `blob_gold.native.creator_constants_discriminated`
+# measures that the capture tells only seven of the thirteen apart from a
+# neighbour, and a constant no captured record exercises would otherwise be
+# checked by nothing at all.  The two claims are different and both are made.
+
+#: `0x004B12B8` -- the flat speed three creators multiply the direction
+#: service by.
 SPARK_SPEED = 1600.0
 #: `0x004B12D0` -- the blizzard shard's.
 SHARD_SPEED = 1920.0
-#: `0x004B12B0` -- the blue beam's dots carry this much velocity.
+#: `0x004B12B0` -- the blue beam's dots carry this much velocity.  The **same
+#: cell** as the positive half of `CASING_SPEED`: thirteen names here stand
+#: over twelve distinct cells, and one cell is read by two creators.
 DOT_SPEED = 80.0
 #: `0x004B12E0` and `0x004B12E8` -- the plasma beam orients one step further
-#: out than it places, and its heads carry a much larger velocity.
+#: out than it places, and its heads carry a much larger velocity.  `HEAD_STEP`
+#: reaches a *quantised* answer -- it only ever feeds the orientation service,
+#: whose result is in 4096ths of a circle -- so no capture will ever tell it
+#: from a neighbouring value; the address is the whole of the evidence.
 HEAD_STEP = -3200.0
 HEAD_SPEED = 4800.0
 #: `0x004B1278` -- the spacing between the dots of a beam.  Negative, and the
@@ -55,16 +71,30 @@ HEAD_SPEED = 4800.0
 #: use (`docs/28` §7.7.1).
 BEAM_STEP = -2400.0
 #: The beam's own length: `(max(|dx|, |dy|) - 0x0C80) / 0x0960` over the two
-#: symbol objects, truncated toward zero as a signed C divide.
+#: symbol objects, truncated toward zero as a signed C divide.  Neither number
+#: is an immediate everywhere: `0x004272A0`'s `lea ecx, [eax - 0xC80]` holds
+#: the first, while the divide is `mov eax, 0x1B4E81B5 / imul / sar edx, 8`
+#: -- there is no `0x960` in those bytes at all, and the check recovers it by
+#: replaying the multiply rather than by recognising a magic.
 BEAM_BASE = 0xC80
 BEAM_UNIT = 0x960
-#: `0x004B1298` / `0x004B12A0` -- how far apart the two tracers are placed,
-#: and `0x004B12A8` / `0x004B12B0` for the casings' sideways speed.  Both are
-#: **perpendicular**: the x term reads the y ratio and the y term the x.
+#: The machine gun's tracers and casings, and the only place in these ten
+#: where a coordinate is built from a **different axis'** ratio: the x term
+#: reads the y ratio and the y term the x.  That mapping is *read*, not
+#: matched -- `0x00424FC6` hands the direction service out-pointers at
+#: `S+0x20`, `S+0x28` and `S+0x38` off one settled frame, and each term's
+#: `fld qword [esp+disp]` minus the stack depth there names its component.
+#: `blob_tables.TRACER_AXIS_TERMS` carries the eight terms with their sites,
+#: and checks that the two records exchange their spread cells rather than
+#: negating them.  `TRACER_SPREAD` is `0x004B1298`/`0x004B12A0`,
+#: `CASING_SPEED` `0x004B12A8`/`0x004B12B0`, and `TRACER_LEAN` is not a cell
+#: at all: it is `lea`/`lea`/`shl` over a `sar`, `5 * 5 * 32 >> 2`.
 TRACER_SPREAD = 640.0
 TRACER_LEAN = 200
 CASING_SPEED = 80.0
-#: The smoke trail's own spacing: `0x004B12C0` and a ring every `0x3C0`.
+#: The smoke trail's own spacing: `0x004B12C0`, and a ring every `0x3C0` --
+#: the second again a reciprocal multiply (`0x88888889`, `sar edx, 9`) rather
+#: than a literal.
 TRAIL_STEP = -960.0
 TRAIL_UNIT = 0x3C0
 
@@ -462,8 +492,14 @@ def _c00424D20(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
       numbers per axis where a fit was looking for one;
     * the two tracers are placed **perpendicular** to that line, 400 apart:
       `x` takes the horizontal ratio scaled by 640 while `y` takes the other
-      one, and the second record swaps the sign.  An axis-by-axis recipe
-      cannot express a term that reads a *different* axis' ratio;
+      one, and the second record *exchanges* the two cells.  An axis-by-axis
+      recipe cannot express a term that reads a *different* axis' ratio.
+      Which component each term reads is **read off the stack** and not
+      inferred from the records it produced: the frame settles to one
+      baseline after `0x004250E5`, the direction service's three out-slots
+      sit at `+0x20`, `+0x28` and `+0x38` from it, and every term's
+      `fld qword [esp+disp]` minus the depth at that instruction lands on one
+      of them.  `blob_tables.TRACER_AXIS_TERMS` pins all eight;
     * the two casings fly perpendicular too, at 80, and only their vertical is
       drawn -- `aRandom2(0, 0xA0) + 0x140`;
     * and each burst ends by calling **another creator**, `0x00423720`, whose

@@ -262,11 +262,11 @@ static func push_object(state: MapState, units: Dictionary,
 
 ## `aExecuteBomb` `0x004702C0` -- a weapon-36 shot with no shooter.
 ##
-## **UNVERIFIED, and docs/26 section 10 item 7 records why.**  The sibling path
-## -- a mine *stepped* on during a walk -- was probed natively and did **not**
-## detonate.  The push path has never been probed.  What is here is the
-## documented arm; if a later capture shows the push behaves like the step, this
-## is the function to delete.
+## **Correct as written -- docs/26 section 10 item 7 is closed.**  The worry was
+## that the sibling path -- a mine *stepped* on during a walk -- was probed
+## natively and did not detonate, so the push might be as inert.  It is not:
+## `0x0046D8DD` carries the identical guard the walk path does, and what the
+## probe hit was that guard (docs/26 section 6.2).  Neither arm is inert.
 static func execute_bomb(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, x: int, y: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,

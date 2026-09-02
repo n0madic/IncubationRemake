@@ -1466,14 +1466,29 @@ store lands on.
    a mutation battery found by luck. The comparison is line-traced now: it
    executes **377 of the 385** transcribed arm lines, 72 of the 74 arms
    entirely, after a second sweep vector and eight one-arm probes were chosen
-   against the first measurement. The eight lines it does not reach are named
-   by source text in `blob_gold.py`'s `COVERAGE_UNCOVERED`, and neither group
-   is a thin capture: six are kind 59's branch on a byte `0x00461E80` returns,
-   which no record field can set, and two are a **deliberate divergence** —
-   kind 41's arm is `mov eax, 0x200 / cdq / idiv [esi+0x48]` with no test in
-   front of the divide, so a record with no `vx` kills the original. That was
-   measured, once, by a poked record that did exactly that; the guard in the
-   port has no counterpart in the engine to compare against.
+   against the first measurement. *(Updated 2026-09-01, `docs/97` §23.3:
+   **383 of 385**, 73 of the 74 arms entirely.)* The lines it does not reach
+   are named by source text in `blob_gold.py`'s `COVERAGE_UNCOVERED`.
+
+   Six of the original eight were kind 59's branch on a byte `0x00461E80`
+   returns, called there something "no record field can set" — true, and
+   incomplete. The byte is the **output system's** mode id at `0x00512A78`,
+   written by `aCreateOutputSystem` `0x00461310`; the value the branch wants is
+   the display configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
+   `_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject`. So
+   the extra emitter is a **3D-accelerator** effect, and writing the global for the
+   length of one plan runs it: `blob_gold.py`'s `mode_59` phase steps the arm
+   under it and it reproduces the engine's record. All five display modes are
+   pinned field by field in `blob_tables.py` (`output.mode_table`), including
+   what two of those fields *are*: `0x00512A9C` is the scanline stride in
+   bytes and `0x00512A60` is bytes per pixel, both read rather than named from
+   their values (`docs/97` §23.4).
+
+   The two that remain are a **deliberate divergence** — kind 41's arm is
+   `mov eax, 0x200 / cdq / idiv [esi+0x48]` with no test in front of the
+   divide, so a record with no `vx` kills the original. That was measured,
+   once, by a poked record that did exactly that; the guard in the port has
+   no counterpart in the engine to compare against.
 
    **What is still not claimed.** `test_blob.gd` keeps printing
    `executable-Python`, because that suite compares GDScript against Python

@@ -314,7 +314,8 @@ for (n = 4; n > 0; n--) {
     if (!canPush(x, y, u->facing)) break;      /* 0x0047B250 */
     …move the object one cell, four interpolation frames…
     if (destination->effectState == 2) {           /* a mine */
-        …free the mine object, aExecuteBomb(x, y)… /* 0x004702C0 */
+        if (!aDeleteSpecialObject(destination->objectId)) return FALSE;
+        …mark the cell spent, aExecuteBomb(x, y)…  /* 0x004702C0 */
         break;
     }
     if (fieldType(destination) == 4 || fieldType(destination) == 3) {
@@ -325,7 +326,8 @@ for (n = 4; n > 0; n--) {
 ```
 
 So an object can be pushed onto a mine (which detonates as a weapon-36
-`ParaBomb` shot centred on the cell) or into a `Hole` / `Deep Hole`, where it
+`ParaBomb` shot centred on the cell — under §6.2's guard, which is the
+identical three instructions the walk path uses) or into a `Hole` / `Deep Hole`, where it
 falls out of the world. Both are ordinary ways to clear a barrel, and both can
 kill the pusher — which is what §1.1's `hp == 0` test is for.
 
@@ -518,16 +520,18 @@ Two more things happen while walking, both inside `aExecuteMove`
 **Mines.** After each step the engine looks for `+0x10 == 2`. A **small** unit
 (`unitinfo[type].size == 0`, [`21` §5](21-info-lcl-schema.md)) only sets off
 the mine it is standing on; a **large** one sets off a mine on any of its eight
-neighbours, through `0x0047A4B0`. ~~Either way the unit's movement points are
+neighbours, through `0x0047A4B0`. Either way the unit's movement points are
 zeroed and the mine resolves as a shot from weapon **36**, `ParaBomb`
 (`aExecuteBomb` `0x004702C0` → `0x0046AA10`) — 100 damage at 100 hit
-([`21` §4](21-info-lcl-schema.md)).~~
+([`21` §4](21-info-lcl-schema.md)) — **but only if the cell names a live
+special object**, which is the condition §6.2 sets out and which the probe
+below did not create.
 
-**The first half is measured; the second half did not happen.**
-`tools/turn_gold.py` phase 10 writes `+0x10 = 2` onto the second cell of a
-walked path — after the fill and the walk, because the fill refuses to step a
-non-alien mover onto a mine at all ([`23` §7.1](23-ai-system.md)) — and calls
-`aExecuteMove` for real:
+**The first half is measured; the second half did not fire, and §6.2 says
+why.** `tools/turn_gold.py` phase 10 writes `+0x10 = 2` onto the second cell
+of a walked path — after the fill and the walk, because the fill refuses to
+step a non-alien mover onto a mine at all ([`23` §7.1](23-ai-system.md)) — and
+calls `aExecuteMove` for real:
 
 | | measured |
 |---|---|
@@ -542,16 +546,13 @@ non-alien mover onto a mine at all ([`23` §7.1](23-ai-system.md)) — and calls
 | `+0x10` on the cell afterwards | still 2 |
 
 A `ParaBomb` is 100 damage at 100 hit, so it cannot leave an 11-point soldier
-untouched, and a mine that had gone off would not still be on the cell. The
-walk stops, the movement points go, and **nothing fires**. What the mine
-therefore costs a remake is a stopped walk, not a casualty.
+untouched, and a mine that had gone off would not still be on the cell. In
+*that* run the walk stops, the movement points go, and nothing fires.
 
-Two caveats, both worth stating rather than resolving by assertion. The probe
-writes the mine *between* the walk and the call, which is the only way a
-non-alien mover can be standing on one, and it is conceivable — though nothing
-in the disassembly suggests it — that the detonation depends on state the fill
-would have set. And the large-unit neighbour arm (`0x0047A4B0`) is untouched by
-this probe. Both are recorded in §10.
+The second of the two caveats this section used to raise — that the detonation
+might depend on state the probe did not set — turned out to be the whole
+answer, and §6.2 is it. The large-unit neighbour arm is still unrun; that is
+§10 item 8.
 
 **VictoryPoints.** Stepping onto a cell in the band 80–89 claims it:
 
@@ -571,6 +572,65 @@ pseudo-player ([`23` §9](23-ai-system.md)), captures nothing.
 The A branch is now measured too: phase 10 writes action point `0x50` onto the
 destination of a walked path and player 0 arrives on it, and the cell holds
 **`0x51`** afterwards. The step itself still costs 3 — claiming is free.
+
+### 6.2 Why that mine did not fire — **[code] `0x00406960`**
+
+Every cell-based detonation in the game is guarded by the same three
+instructions, and the walk-stop test is **not** them:
+
+```c
+                                  /* the walk already stopped on +0x10 == 2 */
+if (!aDeleteSpecialObject(cell->objectId))   /* +0x0F, 0x00406960 */
+    return FALSE;                            /* CHECK fails; nothing written */
+cell->effectState = 0xFF;                    /* +0x10 */
+cell->effectDelay = 0;                       /* +0x0E */
+aExecuteBomb(cell->x, cell->y);              /* 0x004702C0 */
+```
+
+`aDeleteSpecialObject` accepts object ids **0…80** only. On success it marks
+the object dead — `0xFF` into `[0x004FA828] + id*66 + 0x40` — and returns 1;
+on anything else it prints *"delete invalid special object!"* (for id 255) or
+*"invalid object id"* and returns **0**. The `CHECK` around it takes the
+routine's failure exit, which is `xor eax, eax; ret`.
+
+That accounts for **every field the probe measured**, including two it could
+only report: the return value is FALSE because the guard's failure exit *is*
+the FALSE return, and the cell still reads `+0x10 == 2` because the `0xFF`
+store happens on the far side of the guard. The probe wrote the effect byte
+onto an ordinary cell and never wrote `+0x0F`, so `aDeleteSpecialObject` was
+handed whatever was already there and refused.
+
+**A mine the engine made always passes it.** `0x0042FB30` creates one:
+it calls the special-object constructor `0x004069C0`, and on failure (`-1`)
+writes `+0x0E = 0` and `+0x10 = 0xFF` — no effect at all — while on success it
+writes the returned id to `+0x0F` and `2` to `+0x10` in the **next
+instruction**. Fire (`1`) and shield (`3`) are made the same way at
+`0x0042FA42` and `0x0042FCA1`. So `+0x10 == 2` with no object at `+0x0F` is
+not a state the engine can reach; it is only reachable by writing the byte
+from outside, which is exactly what the probe did.
+
+The four cell-based `aExecuteBomb` call sites all carry the guard, and they
+are every call site but one:
+
+| site | reached by |
+|---|---|
+| `0x0046EDAF` | `aExecuteMove`, the cell the mover stopped on |
+| `0x0046ECA4` | `aExecuteMove`, one of the eight neighbours |
+| `0x0046F109` | `aExecuteWarp` |
+| `0x0046D8DD` | the push executor (§4) |
+| `0x0040B300` | the `ParaBomb` fuse ([`23` §1](23-ai-system.md)) — **unit**-based, no cell object, no guard |
+
+Which of the two `aExecuteMove` arms runs is the size branch at `0x0046EC25`:
+`unitinfo[type].size == 1` sweeps the eight neighbours, anything else takes
+the single cell. `interaction_tables.py` pins all of it —
+`mine.detonation_guard`, `mine.detonations_are_all_of_them`,
+`mine.delete_object_range`, `mine.creation_writes_both` and
+`mine.size_branch`.
+
+**What this costs a remake** is therefore a casualty after all, on an
+authored mine. [`92` §7](92-remake-architecture.md) records the model change
+that follows.
+
 
 ---
 
@@ -739,28 +799,36 @@ reading.
    data can decide that. It is therefore a product call, and it has been made:
    the remake takes the move map's rule —
    [`92` §7.7](92-remake-architecture.md).
-6. **Why the mine on a walked path does not fire.** §6.1's probe measured the
-   whole of the documented arm except the shot: the walk stops, `+0x15` is
-   zeroed, `aExecuteMove` returns FALSE — and `aRandom`'s seed, the mover's
-   hit points and the cell's `+0x10` are all unchanged. `aExecuteBomb`
-   (`0x004702C0`) is reachable from `aExecuteMove` in the disassembly, so
-   either its guard is narrower than the `+0x10 == 2` test that stops the
-   walk, or the detonation is driven from somewhere the probe does not
-   exercise. Distinguishing the two needs a probe that watches the call
-   itself rather than its effects.
-7. **Whether an object *pushed* onto a mine detonates it.** §4 quotes the
-   push's own call site — `…free the mine object, aExecuteBomb(x, y)…` — and
-   `tools/inclib/interact.py` models it that way, as a weapon-36 shot centred
-   on the cell. But the *sibling* path is measured and does not detonate:
-   item 6 above. The two arms are different call sites and may genuinely
-   differ, or the push's may be as inert as the walk's. Nothing has probed it:
-   `aExecuteUse` phase 9's three classes are pickups, and putting a pushable
-   object and a mine in front of one unit needs writes to three cells rather
-   than one. Until it is probed, the model's detonation is the documentation's
-   claim and not a measurement, and it says so in its own docstring.
+6. ~~**Why the mine on a walked path does not fire.**~~ **— Closed, and the
+   first of the two hypotheses is the right one: the guard is narrower.**
+   §6.2 reads it. Every cell-based detonation first calls
+   `aDeleteSpecialObject` (`0x00406960`) on the cell's object id at `+0x0F`
+   and fires only if it returns non-zero; the routine accepts ids 0…80 and
+   returns 0 for anything else, and the `CHECK` around it takes the failure
+   exit — `xor eax, eax; ret` — which *is* the FALSE `aExecuteMove` returned.
+   The cell still reads `+0x10 == 2` afterwards because the `0xFF` store is on
+   the far side of the guard. The probe wrote the effect byte onto an ordinary
+   cell and never wrote `+0x0F`, and `0x0042FB30` shows that combination is
+   one the engine itself cannot produce: it writes the object id and the
+   effect byte in adjacent instructions, and a failed creation writes
+   `+0x10 = 0xFF` instead of 2. **So an authored mine does fire**, and the
+   model that says otherwise is wrong — see the consequence noted in §6.2.
+   No probe was needed; five checks in `interaction_tables.py` pin it.
+7. ~~**Whether an object *pushed* onto a mine detonates it.**~~ **— Closed
+   with item 6, by the same reading.** The push's call site `0x0046D8DD`
+   carries the *identical* guard: `mov cl, [edi+0x0F]` → `aDeleteSpecialObject`
+   → `test eax, eax` → `+0x10 = 0xFF`, `+0x0E = 0` → `aExecuteBomb`. The two
+   arms are not different rules; `mine.detonations_are_all_of_them` shows all
+   four cell-based sites — the two in `aExecuteMove`, one in `aExecuteWarp`
+   and this one — have the same shape, and the fifth `aExecuteBomb` site
+   (`0x0040B300`, the `ParaBomb` fuse) is unit-based and has no cell object to
+   delete. `tools/inclib/interact.py`'s detonation is correct as written, and
+   is no longer only the documentation's claim.
 8. **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
-   mover an eight-neighbour trigger radius. §6.1's probe walks a small unit,
-   and the shipped campaign places no large unit next to a mine, so nothing
-   has ever run it. Writing the `size` byte is the move that would
-   ([`93` §11](93-slice-1-report.md) does it for the clearance ring) — this
-   is untested rather than unknown.
+   mover an eight-neighbour trigger radius, selected by the branch at
+   `0x0046EC25` on `unitinfo[type].size` — read and pinned by
+   `mine.size_branch`, so the *code* is no longer the unknown part. §6.1's
+   probe walks a small unit, and the shipped campaign places no large unit
+   next to a mine, so nothing has ever **run** it. Writing the `size` byte is
+   the move that would ([`93` §11](93-slice-1-report.md) does it for the
+   clearance ring) — this is untested rather than unknown.

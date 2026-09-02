@@ -661,6 +661,19 @@ POKE_VECTORS: tuple[dict[str, Any], ...] = (
 #: twelve reaches zero, which is where the terminal branches are.
 POKE_PROBE_ROUNDS = POKE_ROUNDS_LONG
 
+#: The one plan that writes something outside the pool.  Kind 59 at two donor
+#: slots under the two sweep vectors, with the output-system mode held at
+#: `EMITTER_MODE_SPECIAL` for its length -- the arm's other half, which no
+#: record can select.  It is its own plan for the same reason every creator
+#: is: a plan that dies takes the arms sharing its process with it, and this
+#: one writes engine state the others do not.
+MODE_PHASE = "mode_59"
+MODE_VECTORS: tuple[dict[str, int], ...] = (
+    {"life": POKE_LIFE},
+    {"life": POKE_LIFE_LONG, "aux": 10},
+)
+MODE_ROUNDS = POKE_ROUNDS_LONG
+
 
 def poke_probes(target: tuple[int, int, int] | None
                 ) -> list[tuple[int, int, dict[str, int]]]:
@@ -902,7 +915,7 @@ def poke_writes(kind: int, vector: dict[str, int]) -> list[tuple[int, bytes]]:
 
 def poked_plan(handle: int, donor: int, args: list[int],
                entries: Sequence[tuple[int, int, dict[str, int]]],
-               rounds: int) -> str:
+               rounds: int, mode: int | None = None) -> str:
     """Overwrite each donor record's fields, then step one arm per call.
 
     `docs/97` §18.6 said the fifty arms no creator populates would want
@@ -925,6 +938,15 @@ def poked_plan(handle: int, donor: int, args: list[int],
     class and the model stay the donor's, so it measures the arm and says
     nothing about the arguments the arm would normally see.
 
+    ``mode`` writes `EMITTER_MODE_GLOBAL` for the length of the plan, which
+    is the only way to reach kind 59's special emitter: it branches on a byte
+    the **output system** owns and no record can set.  The global is read
+    before the write and again after the restore, so the check can say the
+    write took and the value it displaced was the one this file pins -- the
+    restore is a static `EMITTER_MODE_MEASURED` rather than the measured
+    number because a plan's text is fixed before the read happens, and the
+    read is what makes a wrong assumption a failure instead of a silence.
+
     The pool is read after **every** call rather than once per round.  A
     poked arm can fault, and a fault costs the rest of the process; per-call
     reads mean the calls before it are still a measurement, and they isolate
@@ -946,13 +968,22 @@ def poked_plan(handle: int, donor: int, args: list[int],
     for index, (_slot, kind, vector) in enumerate(entries):
         for run, (_offset, raw) in enumerate(poke_writes(kind, vector)):
             lines.append(f"--blob pk{index}_{run}:{raw.hex()}")
+    if mode is not None:
+        lines.append("--blob mode_on:"
+                     + int(mode).to_bytes(4, "little").hex())
+        lines.append("--blob mode_off:"
+                     + EMITTER_MODE_MEASURED.to_bytes(4, "little").hex())
     lines += [
         "",
         "aSetSaveMode(0)",
         f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
         "reset = aResetBlobs()",
-        f"c{donor:08X}({', '.join(str(a) for a in args)})",
+        f"c{donor:08X}({', '.join(str(a) for a in args)})"
+        + (f" --read 0x{EMITTER_MODE_GLOBAL:x}:4" if mode is not None else ""),
     ]
+    if mode is not None:
+        lines.append(f"memcpy(0x{EMITTER_MODE_GLOBAL:x}, &mode_on, 4)"
+                     f" --read 0x{EMITTER_MODE_GLOBAL:x}:4")
     for index, (slot, kind, vector) in enumerate(entries):
         for run, (offset, raw) in enumerate(poke_writes(kind, vector)):
             lines.append(
@@ -963,6 +994,9 @@ def poked_plan(handle: int, donor: int, args: list[int],
         for slot, _kind, _vector in entries:
             lines.append(f"aBlob_Update({slot},"
                          f" [0x{entry:x}]+0x{RECORD_BYTES * slot:x}){read}")
+    if mode is not None:
+        lines.append(f"memcpy(0x{EMITTER_MODE_GLOBAL:x}, &mode_off, 4)"
+                     f" --read 0x{EMITTER_MODE_GLOBAL:x}:4")
     return "\n".join(lines) + "\n"
 
 
@@ -990,9 +1024,18 @@ def parse_poked(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
 
     start: dict[str, Any] | None = None
     steps: list[dict[str, Any]] = []
+    # Every reading of the output-system mode, in the order the plan took
+    # them: before the write, after it, and after the restore.  A plan that
+    # never wrote it has none, which is how the check tells the two families
+    # apart without a flag.
+    mode_key = f"0x{EMITTER_MODE_GLOBAL:x}"
+    mode: list[int] = []
     for row in rows:
         if row.get("status") != "ok":
             continue
+        text = (row.get("reads") or {}).get(mode_key)
+        if text and "<" not in text:
+            mode.append(struct.unpack_from("<I", _hex_bytes(text), 0)[0])
         shot = snapshot(row)
         if shot is None:
             continue
@@ -1000,7 +1043,7 @@ def parse_poked(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
             steps.append(shot)
         elif start is None:
             start = shot
-    return {"start": start, "steps": steps}
+    return {"start": start, "steps": steps, "mode": mode}
 
 
 def parse_ticks(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
@@ -1660,6 +1703,37 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
                 document.setdefault("failures", {})[name] = str(err)
                 LOG.warning("%s: %s", name, err)
                 _save(out, document)
+
+    # **The branch a record cannot reach.**  Kind 59 asks the output system
+    # what mode it is in and spawns a second emitter only for one answer;
+    # `docs/97` §23.  The global is written for the length of this plan and
+    # put back at the end of it.
+    if donor_slots and POKE_DONOR in arities and MODE_PHASE not in phases:
+        entries = [(slot, EMITTER_ARM_KIND, dict(vector))
+                   for slot, vector in zip(donor_slots[:len(MODE_VECTORS)],
+                                           MODE_VECTORS)]
+        donor_args = argument_vector(arities[POKE_DONOR], source, target)
+        plan = poked_plan(state["handle"], POKE_DONOR, donor_args, entries,
+                          MODE_ROUNDS, mode=EMITTER_MODE_SPECIAL)
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, plan, MODE_PHASE,
+                                 attempts=attempts)
+            phases[MODE_PHASE] = parse_poked(rows, entry)
+            phases[MODE_PHASE]["slots"] = [s for s, _k, _v in entries]
+            phases[MODE_PHASE]["kinds"] = [k for _s, k, _v in entries]
+            phases[MODE_PHASE]["vectors"] = [v for _s, _k, v in entries]
+            phases[MODE_PHASE]["rounds"] = MODE_ROUNDS
+            phases[MODE_PHASE]["args"] = list(donor_args)
+            # A phase that landed on a later run is not a fault.  The
+            # creator loop already does this; a plan whose failure entry
+            # outlived its success made `native.faults` a record of the
+            # worst attempt rather than of the capture.
+            document.get("failures", {}).pop(MODE_PHASE, None)
+            _save(out, document)
+        except gold.CaptureError as err:
+            document.setdefault("failures", {})[MODE_PHASE] = str(err)
+            LOG.warning("%s: %s", MODE_PHASE, err)
+            _save(out, document)
 
     # A phase written before the seed reads existed is re-taken: it holds the
     # records but cannot answer the velocity question, and merging is the
@@ -3095,6 +3169,52 @@ TICK_ARMS_UNRESOLVED: tuple[int, ...] = ()
 DIVIDING_ARM_KIND = 41
 DIVIDING_ARM_BYTES = bytes.fromhex("b800020000" "99" "f77e48" "66014628")
 
+#: Kind 59's **special emitter**, and the one thing in the seventy-four arms
+#: that no record can switch on.  `0x0041E500`'s arm for kind 59 calls
+#: `0x00461E80` -- whose whole body is `mov eax, [0x00512A78]; ret` -- and
+#: takes the branch only when the answer is 3.
+#:
+#: `0x00512A78` is not a blob field and not a unit field: it is the **output
+#: system's** mode id, written by `0x00461310` (`aOutSys.cpp`) once at
+#: start-up, and 3 is the case its jump table selects for argument 11 -- the
+#: 640x480 configuration whose stride is `0x500` and whose driver entry is
+#: `[0x004FA514]`.  So the extra emitter is a *display-mode* effect: on this
+#: host's Wine session the mode is `EMITTER_MODE_MEASURED` and the branch
+#: never runs, which is why a sweep and eight targeted vectors left its six
+#: lines cold.  Writing the global for the length of one `aBlob_Update` is
+#: the only way in, and it is safe to do because the constructor reaches
+#: none of the getter's other callers -- `0x00420950` calls `0x004604A0`,
+#: which reads a **different** global (`0x00512A00`).
+EMITTER_ARM_KIND = 59
+EMITTER_MODE_GLOBAL = 0x00512A78
+EMITTER_MODE_GETTER = 0x00461E80
+#: `mov eax, [0x00512A78]` / `ret` -- the whole routine.
+EMITTER_GETTER_BYTES = bytes.fromhex("a1782a5100" "c3")
+#: `call 0x00461E80` / `cmp eax, 3` / `jne`, inside the arm.
+EMITTER_CALL_SITE = 0x004200E4
+EMITTER_BRANCH_BYTES = bytes.fromhex("e8971d0400" "83f803" "7561")
+#: The value the branch wants, and the one this host's session actually runs
+#: at.  Both are cases of `0x00461310`'s jump table and both configure
+#: 640x480 with the same 16-bit pixel code; what separates them is **how the
+#: surface is made**.  Mode 2 calls `aCreateMainDDObject` (`0x00432CD0`);
+#: mode 3 calls `[0x004FA514]`, which `0x00401000` (`a3DEngine.cpp` line 436)
+#: fills at start-up with `Eng3d.dll`'s ordinal **67**, asked for by the
+#: decimal string `"67"` -- `_E3DCARD_open_3dcard_screen`.  Mode 3 is the
+#: **3D accelerator** path, and Wine runs mode 2, plain DirectDraw, which is
+#: why the special branch had never executed.
+#:
+#: `EMITTER_MODE_MEASURED` is also what the plan restores.  A plan's text is
+#: fixed before its own read happens, so the restore cannot use the measured
+#: number; instead `mode.global_readings` pins the reading taken *before* the
+#: write, and a host that runs some other mode fails that check rather than
+#: quietly having its mode replaced with this one.
+EMITTER_MODE_SPECIAL = 3
+EMITTER_MODE_MEASURED = 2
+#: How the special branch pays for itself: three extra draws before the
+#: ordinary spawn's four, so the second generator's seed either side says
+#: whether the branch was taken without trusting the record alone.
+EMITTER_SPECIAL_DRAWS = 3
+
 #: The three seeking arms, by jump-table index -- which for this table *is*
 #: the kind, since `0x0041E553` indexes with the record's own `+0x44`.
 #: `docs/28` §7.7.1.  Kind 27 is populated by no creator a weapon switch
@@ -3167,25 +3287,23 @@ POKED_ARMS_DISAGREE: list[int] = []
 #: edit does not silently rename a gap.  If this pin breaks and
 #: `coverage.uncovered_lines` does not, the transcription grew or shrank a
 #: line and the number simply wants updating.
-COVERAGE_ARM_LINES = (377, 385)
-COVERAGE_ARMS_COMPLETE = 72
-#: The eight that remain, and neither group is a gap in the capture:
+COVERAGE_ARM_LINES = (383, 385)
+COVERAGE_ARMS_COMPLETE = 73
+#: The two that remain, and they are one *divergence* rather than a gap:
+#: `0x0041E55A` has no test in front of its `idiv`, so a record with no `vx`
+#: kills the engine -- measured, once (`docs/97` §21.2).  The port's guard has
+#: no counterpart to reach, and reaching it again would cost the arms after
+#: it in the same plan.
 #:
-#: * **arm 39** is a *divergence*.  `0x0041E55A` has no test in front of its
-#:   `idiv`, so a record with no `vx` kills the engine -- measured, once
-#:   (`docs/97` §21.2).  The port's guard has no counterpart to reach.
-#: * **arm 56**'s special-emitter branch is gated on a byte `0x00461E80`
-#:   returns, not on anything in the record, so no vector written into a
-#:   record can reach it.  It is named here rather than left implied.
+#: Arm 56's six lines were here too, on the same footing -- "gated on a byte
+#: `0x00461E80` returns, not on anything in the record".  They are gone
+#: because the byte turned out to be the *output system's* mode global and
+#: writing it for the length of one plan runs the branch: `docs/97` §23.3,
+#: and `MODE_PHASE`.  The lesson is worth keeping attached to this list: a
+#: line called unreachable is a claim about what has been tried.
 COVERAGE_UNCOVERED: list[tuple[int, str]] = [
     (39, 'result.event("division_by_zero", 0x200)'),
     (39, 'return'),
-    (56, 'r1 = _random(hooks, 5, 10)'),
-    (56, 'r2 = _random(hooks, -100, 200)'),
-    (56, 'r3 = _random(hooks, -100, 200)'),
-    (56, '_spawn(blob, hooks, result, CREATE_EMITTER,'),
-    (56, 'BLOB_NAME_SCRATCH, 2, blob.x, blob.y, blob.z,'),
-    (56, '1, 0, 0, 60, 8, r3, r2, r1, 0, 0)'),
 ]
 
 #: The lives and round counts the poked *sweep* phases carry, and how many
@@ -3224,7 +3342,8 @@ def _seek_positions(phases: dict[str, Any]) -> dict[int, tuple[int, int, int]]:
 
 
 def _seek_hooks(seed: float, positions: dict[int, tuple[int, int, int]],
-                tables: Any, handles: dict[str, int] | None = None) -> Any:
+                tables: Any, handles: dict[str, int] | None = None,
+                emitter_mode: int = 0) -> Any:
     """`CaseHooks` whose target is the record's **own** `+0x54`, resolved.
 
     The captured seekers all name slot 1 and the poked kind-27 record names
@@ -3246,7 +3365,8 @@ def _seek_hooks(seed: float, positions: dict[int, tuple[int, int, int]],
                 return super().lookup_model(name)
             return handles.get(name, -1)
 
-    return _Hooks(seed, target=None, tables=tables)
+    return _Hooks(seed, target=None, tables=tables,
+                  emitter_mode=emitter_mode)
 
 
 def _seek_target(phases: dict[str, Any]) -> tuple[int, int, int] | None:
@@ -3304,6 +3424,23 @@ def _seek_checks(ck: "tables.Checker", binary: "tables.Binary",
                        "`mov eax, 0x200 / cdq / idiv [esi+0x48] / add "
                        "[esi+0x28], ax` -- the divisor is the record's vx and "
                        "nothing tests it, so a record with no vx faults")
+    ck.equal("seek.emitter_mode_getter",
+             binary.pe.bytes_at(EMITTER_MODE_GETTER, len(EMITTER_GETTER_BYTES)),
+             EMITTER_GETTER_BYTES,
+             lambda v: f"0x{EMITTER_MODE_GETTER:08X} is `mov eax, "
+                       f"[0x{EMITTER_MODE_GLOBAL:08X}]; ret` and nothing else "
+                       "-- the byte kind 59 branches on is a global, not a "
+                       "record field")
+    emitter_arm = binary.pe.u32(
+        tables.BLOB_UPDATE_TABLE + 4 * EMITTER_ARM_KIND)
+    ck.check("seek.emitter_branch_site",
+             EMITTER_CALL_SITE > emitter_arm
+             and binary.pe.bytes_at(
+                 EMITTER_CALL_SITE, len(EMITTER_BRANCH_BYTES))
+             == EMITTER_BRANCH_BYTES,
+             f"kind {EMITTER_ARM_KIND}'s arm calls it at "
+             f"0x{EMITTER_CALL_SITE:08X} and compares the answer with "
+             f"{EMITTER_MODE_SPECIAL}")
     ck.equal("seek.pull_constant", struct.unpack(
         "<d", binary.pe.bytes_at(SEEK_PULL_ADDRESS, 8))[0], SEEK_PULL,
         lambda v: f"[0x{SEEK_PULL_ADDRESS:08X}] is {v}, the scale every "
@@ -3538,6 +3675,21 @@ def _creator_inputs(root: str, phases: dict[str, Any]) -> Any:
 #: twelve a capture reads back; the three length constants divide a span of
 #: 6400 whose quotient an off-by-one does not move; and `HEAD_STEP` shifts an
 #: orientation target by one unit, which does not move a 4096th.
+#:
+#: **What closes them is not a second capture.**  Only two of the six are the
+#: kind of thing a different tile pair or a wider read window would reach:
+#: `HEAD_STEP` feeds a quantised orientation and `BEAM_UNIT`, `BEAM_BASE` and
+#: `TRAIL_UNIT` are divisors an off-by-one moves for almost no dividend, so a
+#: perturbation test is the wrong instrument for them at *any* span.  The
+#: right one is static, and it is
+#: `blob_tables.CREATOR_CONSTANT_SITES`: every constant's value is read back
+#: out of the shipped `Incubation.exe` at a named address -- the doubles from
+#: the constant block, the subtracted immediates from their own instructions,
+#: the two divisors by replaying the reciprocal multiply the compiler left
+#: instead of the number -- and each site is required to fall inside the
+#: creator the transcription attributes it to.  This list stays as the honest
+#: statement of *the capture's* reach; it is no longer the only thing
+#: standing behind the six.
 CREATOR_CONSTANTS_UNDISCRIMINATED = (
     "BEAM_BASE", "BEAM_UNIT", "DOT_SPEED", "HEAD_SPEED", "HEAD_STEP",
     "TRAIL_UNIT",
@@ -3857,6 +4009,7 @@ def _tick_checks(ck: "tables.Checker", root: str,
     _seek_checks(ck, b, phases, arm_of_kind, tablesets)
     _poked_checks(ck, phases, base, tablesets, positions, handles)
     _probe_checks(ck, phases, base, tablesets, positions, handles)
+    _mode_checks(ck, phases, base, tablesets, positions, handles)
     # The fixture the Godot suite reads carries the same two lists, so the
     # boundary it prints cannot drift from the capture that earned it.
     ck.equal("native.tick_arms_are_the_fixture's",
@@ -4006,7 +4159,8 @@ def _vector_key(phase: dict[str, Any], position: int
 def _replay_poked(phases: dict[str, Any], names: list[str], base: int,
                   tablesets: Any,
                   positions: dict[int, tuple[int, int, int]],
-                  handles: dict[str, int]) -> tuple[
+                  handles: dict[str, int],
+                  emitter_mode: int = 0) -> tuple[
                       dict[int, bool],
                       dict[int, set[tuple[tuple[str, int], ...]]], int]:
     """Replay one family of poked phases against the engine's snapshots.
@@ -4056,7 +4210,7 @@ def _replay_poked(phases: dict[str, Any], names: list[str], base: int,
                 blob = models[slot]
                 if blob.alive:
                     hooks = _seek_hooks(seed or 0.0, positions, tablesets,
-                                        handles)
+                                        handles, emitter_mode)
                     blob_runtime.tick_blob(blob, hooks)
                 was = previous[slot]
                 continues = (after is not None and was is not None
@@ -4115,6 +4269,60 @@ def _probe_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
     ck.equal("probe.vectors", sorted((arm, len(seen))
                                      for arm, seen in stepped_at.items()),
              PROBE_VECTORS_PER_ARM, tables.Checker.brief)
+
+
+#: What kind 59's arm is expected to have been stepped at, and the readings
+#: of the output-system global the plan takes around its write.  The middle
+#: one is the whole point: it says the write **took**, so a run of the arm
+#: that agreed proves the special branch ran rather than that both sides
+#: skipped it.
+MODE_ARM = 56
+MODE_READS = [EMITTER_MODE_MEASURED, EMITTER_MODE_SPECIAL,
+              EMITTER_MODE_MEASURED]
+
+
+def _mode_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                 tablesets: Any,
+                 positions: dict[int, tuple[int, int, int]],
+                 handles: dict[str, int]) -> None:
+    """Kind 59's special emitter, with the display mode written under it.
+
+    Everything else in this file steps an arm by giving it a **record**.
+    This one cannot: `0x004200E4` asks `0x00461E80` what output mode the game
+    is in and takes its second branch only for one answer, so the six lines
+    behind it were the last in the seventy-four that no vector could reach
+    (`docs/97` §21.2 listed them; §23 closes them).  The plan writes the mode
+    for its own length through the game's own imported `memcpy`, steps the
+    arm, and puts it back.
+
+    Three claims, and the third is what makes the first two mean anything:
+    the arm reproduces the engine's record; the global read back **after**
+    the write is `EMITTER_MODE_SPECIAL`, so the branch was taken; and the
+    reading before it is `EMITTER_MODE_MEASURED`, which is both what this
+    host's Wine session runs at and what the restore puts back.
+    """
+    phase = phases.get(MODE_PHASE)
+    ck.check("mode.phase_landed", bool(phase),
+             f"{MODE_PHASE} captured -- the one plan that writes engine "
+             "state outside the pool")
+    if not phase:
+        return
+    ck.equal("mode.global_readings", phase.get("mode") or [], MODE_READS,
+             lambda v: "the output-system mode read before the write, after "
+                       f"it and after the restore: {v} -- the middle value "
+                       "is what says the special branch could run at all")
+    agreed, stepped_at, steps_seen = _replay_poked(
+        phases, [MODE_PHASE], base, tablesets, positions, handles,
+        emitter_mode=EMITTER_MODE_SPECIAL)
+    ck.check("mode.steps_compared", steps_seen > 0,
+             f"{steps_seen} call(s) of kind {EMITTER_ARM_KIND}'s arm "
+             "compared with the special emitter live")
+    ck.equal("mode.arms_stepped", sorted(stepped_at), [MODE_ARM],
+             lambda v: f"arm(s) {v} stepped under the written mode")
+    ck.equal("mode.arms_agree", sorted(a for a, ok in agreed.items() if ok),
+             [MODE_ARM],
+             lambda v: "the arm reproduces the engine's record on the branch "
+                       "no record can select")
 
 
 def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,

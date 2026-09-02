@@ -289,6 +289,12 @@ def push_object(world: CombatWorld, unit: CombatUnit) -> UseResult:
     the pusher, which is what ``docs/26`` §1.1's ``hp == 0`` test is for: the
     object reaches a mine and detonates it as a weapon-36 shot centred on the
     cell, or it reaches a ``Hole`` and falls out of the world.
+
+    The detonation used to be the documentation's claim rather than a
+    measurement (``docs/26`` §10 item 7).  It is read now: ``0x0046D8DD``
+    carries the same ``aDeleteSpecialObject`` guard every other cell-based
+    detonation does, so this arm is no weaker than the walk's -- ``docs/26``
+    §6.2.
     """
     from . import combat as combatmod
 

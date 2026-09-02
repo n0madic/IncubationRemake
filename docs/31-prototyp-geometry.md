@@ -156,7 +156,7 @@ Worked example, `World_A00/Objects/prototyp.bin` record 0 = `A_50A.3DI`,
 
 | Bit | Meaning                                                                  | Read at    | Shipped counts |
 |-----|--------------------------------------------------------------------------|------------|----------------|
-| 0   | queue the clone in the second draw list (`0x414034` instead of `0x41403c`) | `0x404e4b` | 2 records      |
+| 0   | queue the clone in the second draw list (`0x414034` instead of `0x41403c`) | `0x404e4b`, and `0x404c79` in `_E3D_object_3d_check_in` itself | 2 records      |
 | 1   | after check-in, also walk the clone's runtime sub-object list (`clone+0x70`) | `0x404e91` | 23 597 records |
 | 2   | use the alternate bounding-box test in the collision entry                | `0x40665e` | 2 records      |
 

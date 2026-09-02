@@ -134,14 +134,24 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 				"detail": action_point})
 
 		if state.obstacle_at(index) == MapState.OBSTACLE_MINE:
-			# **Measured, and not what docs/26 section 6.1 predicted.** The
-			# walk ends here, `+0x15` is zeroed *inside* the routine and FALSE
-			# comes back with nothing written through argument 5 -- so the
-			# caller's subtraction runs against a cost of 0. What did not
-			# happen in the native probe is the ParaBomb: the generator's seed
-			# was bit-identical either side, the mover's hit points did not
-			# move, and the mine was still on the cell afterwards. The event
-			# says a mine was reached, not that one went off.
+			# **Measured.** The walk ends here, `+0x15` is zeroed *inside* the
+			# routine and FALSE comes back with nothing written through
+			# argument 5 -- so the caller's subtraction runs against a cost of
+			# 0. What did not happen in the native probe is the ParaBomb: the
+			# generator's seed was bit-identical either side, the mover's hit
+			# points did not move, and the mine was still on the cell
+			# afterwards.
+			#
+			# TODO: docs/26 section 6.2 explains that measurement, and it is
+			# not the engine's rule. Every cell-based detonation is guarded by
+			# `aDeleteSpecialObject(cell[+0x0F])`, and the probe's synthetic
+			# mine carried the effect byte with no object, so the guard
+			# refused -- a combination the engine itself never produces. An
+			# **authored** mine does fire. Making this arm detonate changes
+			# `core` behaviour, so it changes the canonical hash and wants
+			# `SaveCodec.SCHEMA_VERSION` with it; it is a product decision for
+			# docs/92 section 7 rather than a bug fix, and is deliberately not
+			# taken here.
 			result.events.append({"kind": "mine", "x": nx, "y": ny,
 				"detail": MINE_WEAPON})
 			result.cost = 0

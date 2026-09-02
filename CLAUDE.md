@@ -46,9 +46,9 @@ python3 tools/typ_parse.py        --check gog_incubation      # 18 checks
 python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
-python3 tools/interaction_tables.py --check gog_incubation    # 109 checks
+python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 423 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 440 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -311,7 +311,7 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture (**252 checks**); taking one needs `--game-copy` and Wine. It also carries the
+the capture (**259 checks**); taking one needs `--game-copy` and Wine. It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through
@@ -352,17 +352,44 @@ record and 50 with a donor's; the second is weaker in one way and no other,
 in that the arm is measured and the arguments a creator would pass it are
 not. **How much of each arm that reached is measured too** (`docs/97` §21):
 the comparison is line-traced and runs **377 of the 385** transcribed arm
-lines, 72 of 74 arms entirely, after a second sweep vector (`life` 12, `aux`
+lines, 73 of 74 arms entirely, after a second sweep vector (`life` 12, `aux`
 10, fourteen rounds) and eight one-arm probes were chosen against the first
 measurement -- one vector is one point of an arm's input space, and the
 kind-76 defect a battery once found was a branch nothing had executed. The
-eight lines left are pinned **by source text** in `COVERAGE_UNCOVERED`: six
-are kind 59's branch on a byte `0x00461E80` returns, which no record field can
-set, and two are a **deliberate divergence** -- kind 41's arm is
+**two** lines left are pinned **by source text** in `COVERAGE_UNCOVERED`, and
+they are one **deliberate divergence** -- kind 41's arm is
 `mov eax, 0x200 / cdq / idiv [esi+0x48]` with nothing in front of the divide,
 so a record with no `vx` kills the original. A poked record did exactly that,
 which is how it was found and why the sweep vector no longer writes `vx`. The
 guard in `blob_runtime` and `blob_kinds.gd` is the **port's**.
+Kind 59's six were there too, called unreachable because the byte
+`0x00461E80` returns is in no record. It is the **output system's** mode id at
+`0x00512A78` (`docs/97` §23.3), so the `mode_59` phase writes that global
+through the game's own `memcpy`, steps the arm under it and puts it back --
+the extra emitter is a **3D-accelerator** effect, present only in the
+configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
+`_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject`. Its three readings of the global, before the write,
+after it and after the restore, are what say the branch could run at all.
+`--check` also reads **all thirteen creator constants back out of the shipped
+executable** -- but in `blob_tables.py`, not here, because that check needs no
+Wine: nine doubles in the `0x004B12xx` block, three subtracted immediates, and
+two divisors that are *not in the bytes at all* and are recovered by replaying
+the reciprocal multiply the compiler left instead of them. The same file also
+pins the **output system** the emitter branch reads (`docs/97` §23.4): all five
+display modes field by field, and what two of their fields *are* --
+`0x00512A9C` is the scanline stride in **bytes**, which the 320x200 mode
+proves by reserving 640 of them for a 320-byte row and the pixel plot
+`0x00463C40` confirms by halving it on its sixteen-bit arms and not on its
+eight-bit one; `0x00512A60` is bytes per pixel. Neither was read off a symbol
+-- there is none -- so neither is left named by its value. The stride's
+*source* is named by a public ABI rather than by its value either
+(`docs/97` §23.5): `0x00432C30` returns the **address of a static block**,
+aLIB's DirectDraw module state, whose `+0x18` is a `DDSURFACEDESC` -- both
+lock helpers write `dwSize = 0x6C` into it, hand its address to vtable slot
+`+0x64` (`IDirectDrawSurface::Lock`) and push `"DD_Lock"` on the failure arm
+-- so `[obj + 0x28]` is `lPitch` and the pointer they return is `lpSurface`.
+It is `lPitch` for **two** of the four display modes: mode 0 never rewrites
+the global and mode 3 has Eng3d fill it.
 
 **The ten creators that had no named mechanism are transcribed** (`docs/97`
 §22): `tools/inclib/blob_creators.py` carries all ten as programs read out of
@@ -561,7 +588,7 @@ breaks only the exported build, and it has done so once.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **37 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 6, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

@@ -310,6 +310,55 @@ PSEUDO_PLAYER = 0xFF
 MOVE_SIZE_SITE = 0x0046E9FB              # unitinfo[+0x7B] -- small or large
 FIND_ADJACENT_MINE = 0x0047A4B0
 MINE_BLAST = 0x004702C0                  # aExecuteBomb
+
+# --- the guard in front of every detonation --------------------------------
+#
+# `docs/26` section 10 item 6 asked why a mine on a walked path did not fire
+# when the native probe wrote ``+0x10 = 2`` onto the cell and walked over it.
+# The answer is a second test the probe could not satisfy: **every** cell-based
+# detonation first calls `aDeleteSpecialObject` on the cell's object id at
+# ``+0x0F`` and fires only if it succeeds.  The routine accepts ids 0..80 and
+# rejects anything else, so a cell carrying the effect byte and no object is
+# inert -- and that is a state the engine itself never produces, because the
+# creator writes the id and the effect byte in adjacent instructions.
+DELETE_SPECIAL_OBJECT = 0x00406960
+CREATE_SPECIAL_OBJECT = 0x004069C0
+SPECIAL_OBJECT_MAX_SITE = 0x00406968     # cmp eax, 0x50
+SPECIAL_OBJECT_MAX = 0x50
+SPECIAL_OBJECT_ARRAY_SITE = 0x0040696D   # mov edx, [0x4FA828]
+SPECIAL_OBJECT_ARRAY = 0x004FA828
+SPECIAL_OBJECT_DEAD_SITE = 0x0040697F    # mov byte [edx+ecx*2+0x40], 0xFF
+SPECIAL_OBJECT_DEAD_FIELD = 0x40
+#: the cell field that names the special object the effect belongs to
+CELL_OBJECT_ID = 0x0F
+#: The four cell-based detonations, as ``(name, the ``mov r8, [cell+0x0F]``,
+#: the guard call, the ``+0x10 = 0xFF`` store, the `aExecuteBomb` call)``.
+#: Two are in `aExecuteMove` -- one per arm of the size branch below -- one is
+#: in `aExecuteWarp` and one on the push path.  The fifth `aExecuteBomb` call
+#: site, `0x0040B300`, is the `ParaBomb` fuse and is unit-based, so it has no
+#: cell object to delete and is not listed here.
+MINE_DETONATIONS: tuple[tuple[str, int, int, int, int], ...] = (
+    ("move_single_cell", 0x0046ED6A, 0x0046ED6E, 0x0046EDA7, 0x0046EDAF),
+    ("move_neighbours", 0x0046EC80, 0x0046EC84, 0x0046EC9C, 0x0046ECA4),
+    ("warp", 0x0046F0C7, 0x0046F0CB, 0x0046F101, 0x0046F109),
+    ("push", 0x0046D8A8, 0x0046D8AC, 0x0046D8BC, 0x0046D8DD),
+)
+#: ``cmp byte [edx*2 + unitinfo+0x7B], 1`` -- which arm of the two the walk
+#: takes.  Not equal to 1 detonates the cell the mover stopped on; equal to 1
+#: sweeps the eight neighbours through `FIND_ADJACENT_MINE`.
+MINE_SIZE_BRANCH_SITE = 0x0046EC25
+MINE_LARGE_SIZE = 1
+#: `0x0042FB30` -- where a mine is made.  The id and the effect byte are two
+#: adjacent stores, and a creation that fails writes ``+0x10 = 0xFF`` instead
+#: of 2, so ``+0x10 == 2`` with no object at ``+0x0F`` is unreachable.
+MINE_CREATE_CALL = 0x0042FB5F
+MINE_CREATE_ID_STORE = 0x0042FB7B        # mov [ebp+0x0F], al
+MINE_CREATE_STATE_STORE = 0x0042FB7E     # mov byte [ebp+0x10], 2
+MINE_CREATE_FAIL_STORE = 0x0042FB70      # mov byte [ebp+0x10], 0xFF
+MINE_NO_EFFECT = 0xFF
+#: `0x0040B300` -- the `ParaBomb` fuse, the fifth and only unit-based
+#: `aExecuteBomb` call site (`docs/23` section 1).
+PARABOMB_FUSE_SITE = 0x0040B300
 MINE_WEAPON_SITE = 0x00470316            # push 0x24
 MINE_WEAPON = 36                         # SetWeaponInfo 36, "ParaBomb"
 FIRE_WEAPON_AT = 0x0046AA10
@@ -1010,6 +1059,64 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not an algorithm
              and pe.u8(MINE_WEAPON_SITE + 1) == MINE_WEAPON
              and t.call_target(MINE_WEAPON_SITE + 2) == FIRE_WEAPON_AT),
             f"a mine resolves as weapon {MINE_WEAPON}")
+
+    # -- the guard in front of the detonation, docs/26 section 10 item 6 ----
+    text_base, text_size, _raw, _rawsize = pe.section(".text")
+    text_lo, text_hi = text_base, text_base + text_size
+    c.equal("mine.size_branch",
+            (pe.u32(MINE_SIZE_BRANCH_SITE + 3),
+             pe.u8(MINE_SIZE_BRANCH_SITE + 7)),
+            (UNIT_INFO_BASE + UNIT_INFO_SIZE, MINE_LARGE_SIZE),
+            lambda v: f"unitinfo[+0x{UNIT_INFO_SIZE:02X}] == {v[1]} picks the "
+                      "eight-neighbour arm, anything else the single cell")
+    shapes = []
+    for name, load, guard, store, blast in MINE_DETONATIONS:
+        shapes.append((
+            name,
+            pe.u8(load) == 0x8A and pe.u8(load + 2) == CELL_OBJECT_ID,
+            t.call_target(guard) == DELETE_SPECIAL_OBJECT,
+            (pe.u8(store) == 0xC6 and pe.u8(store + 2) == CELL_EFFECT_STATE
+             and pe.u8(store + 3) == MINE_NO_EFFECT),
+            t.call_target(blast) == MINE_BLAST,
+            load < guard < store < blast))
+    c.equal("mine.detonation_guard", shapes,
+            [(name, True, True, True, True, True)
+             for name, *_rest in MINE_DETONATIONS],
+            lambda v: f"{len(v)} detonation(s), each reading the cell's "
+                      f"+0x{CELL_OBJECT_ID:02X} object id, calling "
+                      "aDeleteSpecialObject on it and only then marking the "
+                      "cell and firing")
+    c.check("mine.detonations_are_all_of_them",
+            sorted(blast for _n, _l, _g, _s, blast in MINE_DETONATIONS)
+            == sorted(va for va in range(text_lo, text_hi)
+                      if pe.u8(va) == 0xE8 and t.call_target(va) == MINE_BLAST
+                      and va != PARABOMB_FUSE_SITE),
+            "the four are every aExecuteBomb call site but the ParaBomb fuse, "
+            "which is unit-based and has no cell object")
+    c.check("mine.delete_object_range",
+            pe.u8(SPECIAL_OBJECT_MAX_SITE) == 0x83
+            and pe.u8(SPECIAL_OBJECT_MAX_SITE + 2) == SPECIAL_OBJECT_MAX
+            and pe.u32(SPECIAL_OBJECT_ARRAY_SITE + 2) == SPECIAL_OBJECT_ARRAY
+            and pe.u8(SPECIAL_OBJECT_DEAD_SITE) == 0xC6
+            and pe.u8(SPECIAL_OBJECT_DEAD_SITE + 3)
+            == SPECIAL_OBJECT_DEAD_FIELD
+            and pe.u8(SPECIAL_OBJECT_DEAD_SITE + 4) == MINE_NO_EFFECT,
+            f"aDeleteSpecialObject takes ids 0..{SPECIAL_OBJECT_MAX} and marks "
+            f"the object dead at +0x{SPECIAL_OBJECT_DEAD_FIELD:02X} of "
+            f"0x{SPECIAL_OBJECT_ARRAY:08X}; anything else returns 0")
+    c.check("mine.creation_writes_both",
+            t.call_target(MINE_CREATE_CALL) == CREATE_SPECIAL_OBJECT
+            and pe.u8(MINE_CREATE_ID_STORE) == 0x88
+            and pe.u8(MINE_CREATE_ID_STORE + 2) == CELL_OBJECT_ID
+            and MINE_CREATE_STATE_STORE == MINE_CREATE_ID_STORE + 3
+            and pe.u8(MINE_CREATE_STATE_STORE) == 0xC6
+            and pe.u8(MINE_CREATE_STATE_STORE + 2) == CELL_EFFECT_STATE
+            and pe.u8(MINE_CREATE_STATE_STORE + 3) == MINE_STATE
+            and pe.u8(MINE_CREATE_FAIL_STORE + 3) == MINE_NO_EFFECT,
+            f"a mine's object id and its +0x{CELL_EFFECT_STATE:02X} = "
+            f"{MINE_STATE} are adjacent stores, and a failed creation writes "
+            f"0x{MINE_NO_EFFECT:02X} instead -- so an effect byte with no "
+            "object is a state the engine never leaves")
     c.check("move.step_base",
             pe.u8(MOVE_STEP_BASE_SITE) == 0x8A
             and pe.u8(MOVE_STEP_BASE_SITE + 2) == 1,
