@@ -51,7 +51,7 @@ from .cache import SourceReader, Staging
 from .info import BalanceTables, load_info_file
 from .script import (GUI_TEXT_DIR, load_script, script_document,
                      text_catalogue)
-from .png import write_rgb_png
+from .png import write_indexed_png, write_rgb_png
 
 MAP_SCHEMA = "incubation.map/1"
 GEOMETRY_SCHEMA = "incubation.geometry/1"
@@ -143,6 +143,13 @@ class Conversion:
     text_entries: int = 0
     waves: int = 0
     tracks: int = 0
+    #: The campaign layer -- docs/27, docs/24, docs/60.
+    campaign_missions: int = 0
+    briefings: int = 0
+    plates: int = 0
+    briefing_pictures: int = 0
+    ui_libraries: int = 0
+    ui_sprites: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -1115,4 +1122,344 @@ def convert(root: Path, missions: list[str], staging: Staging,
     catalogue = text_catalogue(programs, language, {"files": text_source})
     staging.write_json(f"text/{language}.json", catalogue)
     result.text_entries = sum(len(v) for v in catalogue["gui"].values())
+
+    # The campaign layer.  It is not per-mission: the location graph, the
+    # briefings and the interface art are the same whichever missions were
+    # asked for, so a six-mission slice and a full bake carry the same tables
+    # and the campaign screens work in both.
+    result.campaign_missions = convert_campaign(
+        root, reader, staging, campaign_tables_document(root))
+    result.briefings = convert_briefings(root, reader, staging, language, result)
+    art = convert_art(root, reader, staging, result)
+    result.plates = art["plates"]
+    result.briefing_pictures = art["briefing"]
+    result.ui_libraries = art["libraries"]
+    result.ui_sprites = art["sprites"]
     return result
+
+
+def campaign_tables_document(root: Path) -> dict[str, Any]:
+    """``campaign_tables.py``'s decoding, imported rather than re-derived.
+
+    The tool lives in ``tools/`` and this library in ``tools/inclib/``, so the
+    import is by path: the alternative is a second decoder of the same switch
+    tables, which is exactly what ``docs/27`` §8.2 says a converter should not
+    write.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "campaign_tables",
+        Path(__file__).resolve().parent.parent / "campaign_tables.py")
+    if spec is None or spec.loader is None:
+        raise ConvertError("cannot locate tools/campaign_tables.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.tables_document(str(root))
+
+
+# --- the campaign layer -- docs/27, docs/24, docs/60 -------------------------
+
+#: ``campaign_tables.py`` decodes these out of ``Incubation.exe``; the
+#: converter bakes the result rather than re-deriving it (``docs/27`` §8.2).
+CAMPAIGN_SCHEMA = "incubation.campaign/1"
+BRIEFING_SCHEMA = "incubation.briefing/1"
+ART_SCHEMA = "incubation.art/1"
+
+#: ``docs/24`` -- the three blocks a briefing screen shows.
+BRIEFING_BLOCKS = ("A0", "B0", "C0")
+BRIEFING_DIR = "Briefing"
+#: The screen plates, and where the briefing pictures live.
+PLATE_DIR = ("Graphics", "GUI")
+BRIEFING_ART_DIR = ("Graphics", "Briefing")
+#: The interface libraries.  The four fonts are excluded: `convert_fonts`
+#: already writes them as atlases with their metrics.
+UI_LIB_DIR = "Libs"
+UI_ITEM_DIR = "Items"
+
+
+def campaign_document(root: Path, tables: dict[str, Any],
+                      missions: dict[str, Any], source: dict[str, Any],
+                      ) -> dict[str, Any]:
+    """``tables/campaign.json`` -- the location graph plus the chain.
+
+    Every id-keyed table is emitted as a **list of records** (D12): a JSON
+    object's key is a string, and the cache has to carry integers.  The
+    precedent is `inclib/info.py`, and the trap it avoids is the one
+    `tables/balance.json` already carries -- `equipment` has no id 2, so a
+    position is not an id.
+    """
+    from . import campaign as cammod
+
+    location = cammod.LocationTables.from_json(tables)
+    document: dict[str, Any] = {
+        "schema": CAMPAIGN_SCHEMA,
+        "source": source,
+        **location.to_records(),
+    }
+    # What campaign_tables does not carry: the chain, read from the headers.
+    document["missions"] = [
+        {
+            "name": name,
+            "mission_id": battle.mission_id,
+            "next_map": battle.next_map,
+            "campaign": _campaign_of(battle.mission_id),
+            "deployment_cells": sorted(
+                [c.x, c.y] for c in battle.cells
+                if c.action_point == cammod.LOCATION_BIAS - 49),
+            "ships_a_squad": any(u.placed and u.player == 0
+                                 for u in battle.units),
+        }
+        for name, battle in sorted(missions.items())
+    ]
+    document["campaigns"] = [
+        {
+            "number": number,
+            "first_mission": cammod.CAMPAIGN_FIRST_MISSION[number],
+            "map": cammod.CAMPAIGN_MAP[number],
+            "seeds_a_squad": number == 1,
+        }
+        for number in sorted(cammod.CAMPAIGN_FIRST_MISSION)
+    ]
+    # The three cut locations and the two nothing opens, so a screen that
+    # meets one knows it is shipped data rather than a converter bug.
+    document["cut_locations"] = [
+        {"location": loc, "mission": _CUT_MISSIONS[loc]}
+        for loc in sorted(_CUT_MISSIONS)]
+    document["unreachable_locations"] = sorted(_UNREACHABLE_LOCATIONS)
+    document["economy"] = {
+        "recruit_markup": cammod.RECRUIT_MARKUP,
+        "equipment_point_cap": cammod.EQUIPMENT_POINT_CAP,
+        "resale_scale": cammod.RESALE_SCALE,
+        "ep_per_rank": cammod.EP_PER_RANK,
+        "difficulty_multiplier": list(cammod.DIFFICULTY_MULTIPLIER),
+        "result_base_score": list(cammod.RESULT_BASE_SCORE),
+        "start_equipment_points": cammod.CAMPAIGN_START_EQUIPMENT_POINTS,
+        "start_tech_level": cammod.CAMPAIGN_START_TECH_LEVEL,
+        "start_skill_level": cammod.CAMPAIGN_START_SKILL_LEVEL,
+        "pool_slots": cammod.POOL_USABLE_SLOTS,
+    }
+    document["squad_seed"] = [
+        {"record": record, "offset": offset, "value": value}
+        for (record, offset), value in sorted(
+            _squad_fields(tables).items())
+    ]
+    return document
+
+
+#: ``docs/27`` §2.2 -- table entries naming missions the release does not ship.
+_CUT_MISSIONS = {85: "_C_134", 86: "_C_135", 87: "_C_136"}
+#: ``_C_XXX``'s *TEST EXTRO* and *<<Invalid Location>>*.
+_UNREACHABLE_LOCATIONS = (21, 50)
+
+
+def _squad_fields(tables: dict[str, Any]) -> dict[tuple[int, int], int]:
+    """``campaign_tables``' ``"record:0xNN"`` keys, back to integers."""
+    out: dict[tuple[int, int], int] = {}
+    for key, value in tables.get("squad_fields", {}).items():
+        record, offset = key.split(":")
+        out[(int(record), int(offset, 16))] = int(value)
+    return out
+
+
+def _campaign_of(mission_id: int) -> int:
+    """Which chain a mission id belongs to -- ``docs/27`` §6.6."""
+    if 1 <= mission_id <= 34:
+        return 1
+    if 40 <= mission_id <= 79:
+        return 2
+    return 0
+
+
+def convert_campaign(root: Path, reader: SourceReader, staging: Staging,
+                     tables: dict[str, Any]) -> int:
+    """Bake ``tables/campaign.json`` and return how many missions it names."""
+    exe = reader.record(_find(root, GAME_EXE))
+    missions: dict[str, Any] = {}
+    for path in sorted((root / "Missions").glob("_C_*.lev")):
+        if path.stem.upper() in {"_C_XXX", "_C_YYY"}:
+            continue
+        missions[path.stem] = levmod.load_lev(str(reader.record(path)))
+    document = campaign_document(root, tables, missions, {
+        "exe": reader.rel(exe),
+        "sha256": reader.seen[reader.rel(exe)],
+    })
+    staging.write_json("tables/campaign.json", document)
+    return len(missions)
+
+
+def convert_briefings(root: Path, reader: SourceReader, staging: Staging,
+                      language: str, result: Conversion) -> int:
+    """``text/briefing/<mission>.json`` -- ``docs/24``'s three blocks.
+
+    The markup is written as **structure** (``docs/92`` §3.2): a block is a
+    list of spans carrying their font and colour ramp, so the consumer renders
+    rather than re-parses.  The picture programme rides along, because a
+    briefing screen shows text and pictures from the same file.
+    """
+    from . import brieftext as briefmod
+    from .lcl import decode
+
+    base = _find(root, "DATA", "TXT", language, BRIEFING_DIR)
+    written = 0
+    # `glob("*.txt")` is case-sensitive on macOS and Linux, and five shipped
+    # files are `.TXT` -- the same trap `liblib._existing` exists for.
+    for path in sorted(p for p in base.iterdir()
+                       if p.suffix.lower() == ".txt"):
+        recorded = reader.record(path)
+        try:
+            text = decode(recorded.read_bytes()).decode("latin-1")
+        except Exception as exc:                       # noqa: BLE001
+            result.warnings.append(f"{path.name}: unreadable briefing ({exc})")
+            continue
+        blocks: dict[str, Any] = {}
+        for key in BRIEFING_BLOCKS:
+            offset = briefmod.find_label(text, key)
+            if offset is None:
+                continue
+            blocks[key] = [span.to_dict()
+                           for span in briefmod.spans(text, offset)]
+        if not blocks:
+            # Not a failure: docs/24 records that not every file carries all
+            # three, and a briefing with none is one the screen shows empty.
+            result.warnings.append(
+                f"{path.name}: none of {'/'.join(BRIEFING_BLOCKS)}")
+        pictures = [
+            {"row": entry.row, "picture": entry.picture,
+             "x": entry.x, "y": entry.y,
+             "descriptions": list(entry.descriptions)}
+            for entry in briefmod.program(text, briefmod.BRIEFING_BASE_ROW)
+        ]
+        tips = [
+            {"row": entry.row, "picture": entry.picture,
+             "x": entry.x, "y": entry.y,
+             "descriptions": list(entry.descriptions)}
+            for entry in briefmod.program(text, briefmod.TIP_BASE_ROW)
+        ]
+        staging.write_json(f"text/briefing/{path.stem}.json", {
+            "schema": BRIEFING_SCHEMA,
+            "mission": path.stem,
+            "source": {"txt": reader.rel(recorded),
+                       "sha256": reader.seen[reader.rel(recorded)]},
+            "blocks": blocks,
+            "pictures": pictures,
+            "tips": tips,
+        })
+        written += 1
+    return written
+
+
+def _write_sprites(reader: SourceReader, staging: Staging, root: Path,
+                   lib_path: Path, prefix: str,
+                   result: Conversion) -> dict[str, Any] | None:
+    """One shape library as a directory of indexed PNGs plus its index."""
+    recorded = reader.record(lib_path)
+    try:
+        library = liblib.load_lib(str(recorded))
+    except liblib.LibError as exc:
+        result.warnings.append(f"{lib_path.name}: {exc}")
+        return None
+    palette, source = liblib.find_palette(str(recorded), str(root))
+    # Index 0 is the key colour only where the library actually uses it; a
+    # library with none is written opaque, as `lib_extract` does.
+    keyed = (liblib.TRANSPARENT_INDEX
+             if liblib.uses_transparent_index(library) else None)
+    stem = lib_path.stem.lower()
+    if source is None and stem not in liblib.UNREFERENCED_LIBRARIES:
+        result.warnings.append(
+            f"{lib_path.name}: no palette companion, written greyscale")
+    sprites = []
+    for index, element in enumerate(library.elements):
+        rel = f"{prefix}/{stem}/{index:03d}.png"
+        if element.is_empty:
+            sprites.append({"index": index, "width": element.width,
+                            "height": element.height, "file": None,
+                            "x": element.delta_x, "y": element.delta_y})
+            continue
+        target = staging.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_indexed_png(str(target), element.width, element.height,
+                          bytes(element.pixels), palette, keyed)
+        staging.files[rel] = "written"
+        sprites.append({"index": index, "width": element.width,
+                        "height": element.height,
+                        "file": f"{index:03d}.png",
+                        "x": element.delta_x, "y": element.delta_y})
+    return {
+        "name": stem,
+        "palette": None if source is None else reader.rel(Path(source)),
+        "unreferenced": stem in liblib.UNREFERENCED_LIBRARIES,
+        "sprites": sprites,
+    }
+
+
+def convert_art(root: Path, reader: SourceReader, staging: Staging,
+                result: Conversion) -> dict[str, int]:
+    """The screen plates, the briefing pictures and the interface sprites.
+
+    The plates and pictures are 8-bit BMPs (``inclib/bmp.py``); the interface
+    is shape libraries drawn with the palette ``liblib.find_palette`` resolves.
+    """
+    from . import bmp as bmpmod
+
+    counts = {"plates": 0, "briefing": 0, "libraries": 0, "sprites": 0}
+
+    def write_bmp(path: Path, rel: str) -> dict[str, Any] | None:
+        recorded = reader.record(path)
+        try:
+            image = bmpmod.parse(recorded.read_bytes())
+        except bmpmod.BmpError as exc:
+            result.warnings.append(f"{path.name}: {exc}")
+            return None
+        target = staging.root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # A plate is opaque: unlike a sprite, index 0 is an ordinary colour.
+        image.write_png(str(target), None)
+        staging.files[rel] = "written"
+        return {"name": path.stem.lower(), "file": Path(rel).name,
+                "width": image.width, "height": image.height}
+
+    plates = []
+    plate_dir = _find(root, *PLATE_DIR)
+    for path in sorted(plate_dir.iterdir()):
+        if path.suffix.lower() != ".bmp":
+            continue
+        entry = write_bmp(path, f"art/plates/{path.stem.lower()}.png")
+        if entry is not None:
+            plates.append(entry)
+            counts["plates"] += 1
+
+    pictures = []
+    picture_dir = _find(root, *BRIEFING_ART_DIR)
+    for path in sorted(picture_dir.iterdir()):
+        if path.suffix.lower() != ".bmp":
+            continue
+        entry = write_bmp(path, f"art/briefing/{path.stem.lower()}.png")
+        if entry is not None:
+            pictures.append(entry)
+            counts["briefing"] += 1
+
+    libraries = []
+    lib_dir = _find(root, UI_LIB_DIR)
+    candidates = [p for p in sorted(lib_dir.iterdir())
+                  if p.suffix.lower() == ".lib"
+                  and not p.stem.lower().startswith("font_")]
+    item_dir = lib_dir / UI_ITEM_DIR
+    if item_dir.is_dir():
+        candidates += [p for p in sorted(item_dir.iterdir())
+                       if p.suffix.lower() == ".lib"]
+    for path in candidates:
+        entry = _write_sprites(reader, staging, root, path, "ui", result)
+        if entry is None:
+            continue
+        libraries.append(entry)
+        counts["libraries"] += 1
+        counts["sprites"] += sum(1 for s in entry["sprites"] if s["file"])
+
+    staging.write_json("art/index.json", {
+        "schema": ART_SCHEMA,
+        "plates": plates,
+        "briefing": pictures,
+        "libraries": libraries,
+    })
+    return counts

@@ -629,8 +629,15 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 #: 29 prototypes of its scene alone (10.5 MiB, well under its own ceiling).
 #: That is the check working as intended -- the growth had a name before the
 #: number was changed.
-CACHE_CEILING_KIB_MUSIC = 37 * 1024
-CACHE_CEILING_KIB_SILENT = 13 * 1024
+#:
+#: They moved again for the sixth slice, 37 -> 42 and 13 -> 17, and the growth
+#: has a name here too: the campaign layer's art.  1400 interface sprites and
+#: 118 screen plates and briefing pictures are ~8 MiB, and they are **not**
+#: per-mission -- the location graph, the briefings and the interface are the
+#: same whichever missions were asked for, so this is a one-off step and not a
+#: slope.  The measured numbers behind the two are 41.9 and 15.2 MiB.
+CACHE_CEILING_KIB_MUSIC = 42 * 1024
+CACHE_CEILING_KIB_SILENT = 17 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).
 SPRITE_COMPUTED_CALLS = 18
@@ -807,6 +814,122 @@ def missions_in_cache(cache_dir: Path) -> list[str]:
                   if p.is_dir())
 
 
+def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
+    """The campaign tables, the briefings and the interface art.
+
+    These three categories are **not** per-mission: whichever missions were
+    asked for, the location graph, the 116 briefings and the 21 interface
+    libraries are the same, so the campaign screens work off a six-mission
+    slice as well as off a full bake.  That is what the first check states.
+    """
+    document = json.loads((cache_dir / "tables" / "campaign.json").read_text())
+    c.expect("campaign.schema", document["schema"],
+             convertmod.CAMPAIGN_SCHEMA)
+    c.expect("campaign.missions", len(document["missions"]), 75,
+             "every shipped campaign mission, not only the converted ones")
+    c.expect("campaign.map_names", len(document["map_names"]), 77)
+    c.expect("campaign.unlock_graph", len(document["unlock_graph"]), 74,
+             "79 arms less the five mission ids 35..39 have none")
+    c.expect("campaign.upgrade_locations", len(document["upgrade"]), 15)
+    c.expect("campaign.cut_locations",
+             [row["mission"] for row in document["cut_locations"]],
+             ["_C_134", "_C_135", "_C_136"])
+    c.expect("campaign.unreachable", document["unreachable_locations"], [21, 50])
+
+    # D12: every id-keyed table is a list of records with an integer id, so a
+    # consumer never has to parse a key back out of a string.
+    for table, key in (("map_names", "location"), ("unlock_graph", "mission"),
+                       ("dialogue", "location"), ("upgrade", "location")):
+        rows = document[table]
+        c.check(f"campaign.records.{table}",
+                isinstance(rows, list)
+                and all(isinstance(row.get(key), int) for row in rows),
+                f"{len(rows)} records keyed by an integer {key!r}")
+
+    campaigns = {row["number"]: row for row in document["campaigns"]}
+    c.expect("campaign.first_missions",
+             (campaigns[1]["first_mission"], campaigns[2]["first_mission"]),
+             ("_C_100", "_C_140"), "0x0043AF57 and 0x0043AF2A")
+    c.expect("campaign.seeds",
+             (campaigns[1]["seeds_a_squad"], campaigns[2]["seeds_a_squad"]),
+             (True, False), "aCreateUnitPoolForCampaign(2) is a bare return")
+    c.expect("campaign.economy_start",
+             (document["economy"]["start_equipment_points"],
+              document["economy"]["start_tech_level"],
+              document["economy"]["start_skill_level"]),
+             (100, 1, 0), "the campaign arm 0x0043AE76")
+    c.expect("campaign.result_base_score",
+             document["economy"]["result_base_score"],
+             [0, 100, 200, 300, -100], "0x0043BBB8")
+
+    with_cells = [row for row in document["missions"] if row["deployment_cells"]]
+    c.expect("campaign.deployment_cells", len(with_cells), 73,
+             "of 75; _C_131 ships its own squad and _C_180 is the epilogue")
+    over = [row["name"] for row in document["missions"]
+            if len(row["deployment_cells"]) > 10]
+    c.expect("campaign.deployment_ring", over, [],
+             "the header's ring holds ten records")
+    ships = [row["name"] for row in document["missions"] if row["ships_a_squad"]]
+    c.expect("campaign.missions_shipping_a_squad", len(ships), 31,
+             "the other 44 need the roster to deploy one")
+    linked = [row for row in document["missions"] if row["next_map"]]
+    names = {row["name"] for row in document["missions"]}
+    dangling = sorted(row["next_map"] for row in linked
+                      if row["next_map"] not in names
+                      and not row["next_map"].upper().startswith("_C_Y")
+                      and not row["next_map"].upper().startswith("_C_X"))
+    c.expect("campaign.chain_resolves", dangling, [],
+             f"{len(linked)} linked headers")
+
+    # The briefings.
+    briefings = sorted((cache_dir / "text" / "briefing").glob("*.json"))
+    c.expect("campaign.briefings", len(briefings), 116)
+    with_blocks = 0
+    structured = True
+    for path in briefings:
+        brief = json.loads(path.read_text())
+        if brief["blocks"]:
+            with_blocks += 1
+        for spans in brief["blocks"].values():
+            for span in spans:
+                if not isinstance(span.get("font"), int) \
+                        or not isinstance(span.get("colour"), int) \
+                        or not isinstance(span.get("text"), str):
+                    structured = False
+    c.check("campaign.briefing_blocks", with_blocks >= 110,
+            f"{with_blocks} of {len(briefings)} carry A0/B0/C0")
+    c.check("campaign.briefing_is_structured", structured,
+            "docs/92 3.2: spans carry their font and colour, not a marked-up "
+            "string the consumer would have to re-parse")
+
+    # The art.
+    art = json.loads((cache_dir / "art" / "index.json").read_text())
+    c.expect("art.schema", art["schema"], convertmod.ART_SCHEMA)
+    c.expect("art.plates", len(art["plates"]), 7)
+    c.expect("art.briefing_pictures", len(art["briefing"]), 96)
+    c.expect("art.libraries", len(art["libraries"]), 54,
+             "21 interface libraries plus the 33 item ones")
+    sprites = sum(1 for lib in art["libraries"] for s in lib["sprites"]
+                  if s["file"])
+    c.expect("art.sprites", sprites, 1400,
+             "410 in the 21 interface libraries and 990 in the 33 item ones")
+    missing = [lib["name"] for lib in art["libraries"]
+               if lib["palette"] is None and not lib["unreferenced"]]
+    c.expect("art.every_library_has_a_palette", missing, [],
+             "addons and addons2 take the screen plate's, measured at "
+             "0x0044B290/0x0044B2C4 and 0x0045D492/0x0045D4C9")
+    unreferenced = [lib["name"] for lib in art["libraries"] if lib["unreferenced"]]
+    c.expect("art.unreferenced", unreferenced, ["uicons2"],
+             "named in no string of any shipped binary and in no .lcl")
+    for entry in art["plates"] + art["briefing"]:
+        path = cache_dir / ("art/plates" if entry in art["plates"]
+                            else "art/briefing") / entry["file"]
+        if not path.is_file():
+            c.check(f"art.file.{entry['name']}", False, "declared but absent")
+    c.check("art.files_present", True, f"{len(art['plates'])} plates, "
+            f"{len(art['briefing'])} pictures")
+
+
 def run_checks(root: Path, missions: list[str], language: str) -> int:
     c = Checker()
     if not (root / "Missions").is_dir():
@@ -851,6 +974,7 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         check_bodies(c, root, first.root, missions)
         check_fonts(c, first.root)
         check_audio(c, root, first.root, True)
+        check_campaign(c, root, first.root)
         c.expect("bodies.cross_set_identical",
                  [w for w in result.warnings if "differs between" in w], [],
                  "unit meshes are the same geometry in every world set")
@@ -887,6 +1011,79 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
                  (manifest_a["music"], silent_manifest["music"]), (True, False),
                  "the manifest says which of the two caches it is")
         silent.discard()
+    return c.report()
+
+
+#: The whole campaign set: 75 missions, the two campaign maps and the 15
+#: upgrade screens.  It is behind its own flag rather than in `--check`
+#: because `--check` runs **three** full conversions and this set is fifteen
+#: times the slice -- 26 s and 86 MiB against 4 s and 42 MiB (docs/98).
+CAMPAIGN_MAP_GLOBS = ("_C_*.lev", "upgrade_*.lev")
+#: What a full bake must reach, measured: nine world sets and 31 distinct
+#: scenes across 92 maps.
+CAMPAIGN_WORLD_SETS = 9
+CAMPAIGN_MAPS = 92
+#: The full bake's own ceiling.  Measured at 85.9 MiB; this is that plus the
+#: same headroom the slice ceilings carry.
+CAMPAIGN_CEILING_KIB = 95 * 1024
+
+
+def campaign_map_set(root: Path) -> list[str]:
+    """Every map the campaign can load, in one sorted list."""
+    names: set[str] = set()
+    for pattern in CAMPAIGN_MAP_GLOBS:
+        names |= {p.stem for p in (root / "Missions").glob(pattern)}
+    return sorted(names)
+
+
+def run_campaign_checks(root: Path, language: str) -> int:
+    """One full bake of every campaign map -- D9.
+
+    `--check`'s job is that the pipeline is deterministic and correct; this
+    one's is that the **whole** campaign converts at all, which is a different
+    question and fifteen times the work.  So it converts once.
+    """
+    c = Checker()
+    if not (root / "Missions").is_dir():
+        c.check("root", False, f"no Missions/ under {root}")
+        return c.report()
+    missions = campaign_map_set(root)
+    c.expect("campaign_bake.map_count", len(missions), CAMPAIGN_MAPS,
+             "75 campaign missions, two campaign maps, 15 upgrade screens")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        caches_root = Path(tmp) / "caches"
+        started = time.perf_counter()
+        staged, manifest, result = run_conversion(root, missions, caches_root,
+                                                  language)
+        elapsed = time.perf_counter() - started
+        c.check("campaign_bake.converts",
+                sorted(result.missions) == missions,
+                f"{len(result.missions)} maps in {elapsed:.1f}s")
+        c.expect("campaign_bake.world_sets", len(result.world_sets),
+                 CAMPAIGN_WORLD_SETS)
+        scenes = set()
+        for name in missions:
+            document = json.loads(
+                (staged.root / "missions" / name / "map.json").read_text())
+            header = document["header"]
+            scenes.add((header["world_set"], header["world_scene"]))
+        c.check("campaign_bake.scenes", len(scenes) >= 31,
+                f"{len(scenes)} distinct (world set, scene) pairs")
+
+        # Nothing may be missing: a campaign that cannot load one of its own
+        # maps is not a campaign.
+        missing = [w for w in result.warnings if "absent from prototyp.din" in w]
+        c.expect("campaign_bake.no_missing_prototypes", missing, [])
+        check_campaign(c, root, staged.root)
+
+        size = sum(p.stat().st_size for p in staged.root.rglob("*")
+                   if p.is_file())
+        c.check("campaign_bake.size", size / 1024 <= CAMPAIGN_CEILING_KIB,
+                f"{size / 1024:.0f} KiB <= {CAMPAIGN_CEILING_KIB} KiB")
+        c.expect("campaign_bake.manifest_language", manifest["language"],
+                 language)
+        staged.discard()
     return c.report()
 
 
@@ -1122,6 +1319,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="two conversions, the as_dict oracle, PNG stability")
     ap.add_argument("--check-cache", action="store_true",
                     help="partial cache refused, valid cache survives failure")
+    ap.add_argument("--check-campaign", action="store_true",
+                    help="bake every campaign map once and check the result")
     ap.add_argument("--no-music", dest="music", action="store_false",
                     help="leave the CD-audio tracks out of the cache; they are "
                          "most of its size and none of its rules")
@@ -1135,6 +1334,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.check_cache:
             return run_cache_checks()
+        if args.check_campaign:
+            if args.root is None:
+                ap.error("--check-campaign needs the game root")
+            return run_campaign_checks(args.root, args.language)
         if args.check:
             if args.root is None:
                 ap.error("--check needs the game root")

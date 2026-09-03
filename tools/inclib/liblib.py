@@ -33,6 +33,8 @@ such as 0x81CCB500 appear); parsers must ignore it.
 
 from __future__ import annotations
 
+import os
+
 import logging
 import struct
 from dataclasses import dataclass
@@ -149,3 +151,106 @@ def parse_lib(data: bytes) -> ShapeLibrary:
 def load_lib(path: str) -> ShapeLibrary:
     with open(path, "rb") as fh:
         return parse_lib(fh.read())
+
+
+# --- palette companions ------------------------------------------------------
+
+#: Libraries whose palette does not share their basename. Recovered from
+#: `Incubation.exe`, which builds both names from the same id:
+#: `0x00458B98` pairs `"%sItems\Item_e%d.lib"` with `"%sItems_e.pal"`
+#: unconditionally, and `0x00458809`..`0x004588A6` pairs
+#: `"%sItems\Item_w%d.lib"` with `"%sItm_w_13.pal"` .. `"%sItm_w_16.pal"` for
+#: ids 13..16 (`add eax,-13; cmp eax,3; ja` -> the default) and with
+#: `"%sItems_w.pal"` for every other id.
+NAMED_PALETTES: dict[str, str] = {}
+for _n in range(0, 32):
+    NAMED_PALETTES[f"item_e{_n}"] = "items_e"
+    NAMED_PALETTES[f"item_w{_n}"] = f"itm_w_{_n}" if 13 <= _n <= 16 else "items_w"
+del _n
+
+#: Libraries that ship **no** palette of their own because the screen that
+#: draws them has already set one.  Measured, not guessed: `aInitGUI` loads
+#: `GUI\plate_1.bmp` at `0x0044B290` and `AddOns.Lib` at `0x0044B2C4`, and the
+#: debriefing loads the same plate at `0x0045D492` and `AddOns2.Lib` at
+#: `0x0045D4C9` -- 0x38 bytes apart, with no palette load between them.  A BMP
+#: carries its own 256-entry table, so the plate's is what these are drawn
+#: with.
+PLATE_PALETTES: dict[str, str] = {
+    "addons": "GUI/plate_1.bmp",
+    "addons2": "GUI/plate_1.bmp",
+}
+
+#: Libraries nothing loads.  `uicons2` appears in no string of
+#: `Incubation.exe`, `iDesigner.exe` or `Eng3d.dll`, in no format string that
+#: could produce it, and in no shipped `.lcl` -- so it has no palette because
+#: it has no reader.  Named here rather than given an invented one.
+UNREFERENCED_LIBRARIES: frozenset[str] = frozenset({"uicons2"})
+
+
+def find_palette(lib_path: str, game_root: str | None
+                 ) -> tuple[list[tuple[int, int, int]], str | None]:
+    """Locate the colour table a library is drawn with.
+
+    Most libraries share their basename with a `.pal`.  The `Libs/Items/` set
+    does not and :data:`NAMED_PALETTES` says what it uses instead.  The two
+    `AddOns` libraries have no `.pal` at all and take the screen plate's table
+    (:data:`PLATE_PALETTES`), which is a BMP rather than a palette file.
+
+    Returns the table and the file it came from, or a greyscale ramp and
+    ``None`` when there is neither -- which for the shipped data means the four
+    fonts, whose ramp is the caller's (``docs/60`` §5), and `uicons2`, which
+    nothing reads at all.
+    """
+    from . import bmp as bmpmod
+    from .palette import grayscale_palette, load_palette
+
+    stem = os.path.splitext(os.path.basename(lib_path))[0]
+    roots = [game_root] if game_root else []
+    roots.append(os.path.dirname(os.path.dirname(lib_path)))
+
+    plate = PLATE_PALETTES.get(stem.lower())
+    if plate is not None:
+        for root in roots:
+            found = _existing(os.path.join(root, "Graphics", *plate.split("/")))
+            if found is not None:
+                return bmpmod.load(found).palette, found
+
+    stems = [stem]
+    mapped = NAMED_PALETTES.get(stem.lower())
+    if mapped:
+        stems.append(mapped)
+    candidates = [os.path.join(os.path.dirname(lib_path), s + ".pal")
+                  for s in stems]
+    for root in roots:
+        candidates += [os.path.join(root, "Graphics", s + ".pal") for s in stems]
+    for candidate in candidates:
+        found = _existing(candidate)
+        if found is not None:
+            return load_palette(found), found
+    return grayscale_palette(), None
+
+
+def _existing(path: str) -> str | None:
+    """*path*, or its case-insensitive match -- listings are case-sensitive
+    on macOS and Linux and the shipped names are not consistent."""
+    if os.path.isfile(path):
+        return path
+    folder = os.path.dirname(path)
+    target = os.path.basename(path).lower()
+    if os.path.isdir(folder):
+        for name in os.listdir(folder):
+            if name.lower() == target:
+                return os.path.join(folder, name)
+    return None
+
+
+#: Palette slot 0 is the shape libraries' transparent key colour
+#: (``docs/60`` §3).  A library that never uses it is written opaque, which is
+#: what the original does: with no index 0 in the data there is nothing to key.
+TRANSPARENT_INDEX = 0
+
+
+def uses_transparent_index(lib: ShapeLibrary) -> bool:
+    """Whether any pixel in *lib* is :data:`TRANSPARENT_INDEX`."""
+    return any(TRANSPARENT_INDEX in e.pixels
+               for e in lib.elements if not e.is_empty)

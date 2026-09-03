@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from inclib import liblib                                            # noqa: E402
 from inclib.liblib import (  # noqa: E402
     ShapeLibrary, LibError, VisnContainerError, load_lib,
 )
@@ -30,7 +31,7 @@ from inclib.png import write_indexed_png, write_rgb_png  # noqa: E402
 
 LOG = logging.getLogger("lib_extract")
 
-TRANSPARENT_INDEX = 0
+TRANSPARENT_INDEX = liblib.TRANSPARENT_INDEX
 """Palette slot treated as transparent when a library actually uses it.
 
 Only libraries that contain index 0 get a `tRNS` entry. 33 of the 58 shape
@@ -40,18 +41,10 @@ leaving the real background opaque. What the engine keys on for those is
 **UNVERIFIED**; see `docs/60-lib-sprites.md`.
 """
 
-#: Libraries whose palette does not share their basename. Recovered from
-#: `Incubation.exe`, which builds both names from the same id:
-#: `0x00458B98` pairs `"%sItems\Item_e%d.lib"` with `"%sItems_e.pal"`
-#: unconditionally, and `0x00458809`..`0x004588A6` pairs
-#: `"%sItems\Item_w%d.lib"` with `"%sItm_w_13.pal"` .. `"%sItm_w_16.pal"` for
-#: ids 13..16 (`add eax,-13; cmp eax,3; ja` -> the default) and with
-#: `"%sItems_w.pal"` for every other id.
-NAMED_PALETTES: dict[str, str] = {}
-for _n in range(0, 32):
-    NAMED_PALETTES[f"item_e{_n}"] = "items_e"
-    NAMED_PALETTES[f"item_w{_n}"] = f"itm_w_{_n}" if 13 <= _n <= 16 else "items_w"
-del _n
+#: The palette companions, and the two families that have none: see
+#: :data:`inclib.liblib.NAMED_PALETTES`, :data:`inclib.liblib.PLATE_PALETTES`
+#: and :data:`inclib.liblib.UNREFERENCED_LIBRARIES`.
+NAMED_PALETTES = liblib.NAMED_PALETTES
 
 HOTSPOT_MARK = 4
 """Half-length, in pixels, of the crosshair arms drawn by --hotspots."""
@@ -68,42 +61,12 @@ def find_libs(root: str) -> list[str]:
     return sorted(out)
 
 
-def find_palette(lib_path: str, game_root: str | None) -> tuple[Palette, str | None]:
-    """Locate the .pal companion for a library.
-
-    Most libraries share their basename with their palette. The `Libs/Items/`
-    set does not, and guessing is unnecessary: the game builds the library and
-    palette names side by side from one id, so the mapping is read off the
-    binary rather than inferred. See :data:`NAMED_PALETTES`.
-    """
-    stem = os.path.splitext(os.path.basename(lib_path))[0]
-    stems = [stem]
-    mapped = NAMED_PALETTES.get(stem.lower())
-    if mapped:
-        stems.append(mapped)
-    candidates = [os.path.join(os.path.dirname(lib_path), s + ".pal") for s in stems]
-    roots = [game_root] if game_root else []
-    roots.append(os.path.dirname(os.path.dirname(lib_path)))
-    for root in roots:
-        for s in stems:
-            candidates.append(os.path.join(root, "Graphics", s + ".pal"))
-    for cand in candidates:
-        if os.path.isfile(cand):
-            return load_palette(cand), cand
-        # Directory listings are case-sensitive on macOS/Linux; retry case-insensitively.
-        folder = os.path.dirname(cand)
-        target = os.path.basename(cand).lower()
-        if os.path.isdir(folder):
-            for name in os.listdir(folder):
-                if name.lower() == target:
-                    found = os.path.join(folder, name)
-                    return load_palette(found), found
-    return grayscale_palette(), None
+#: The palette lookup lives in `inclib.liblib` so the converter and this CLI
+#: share one implementation rather than two.
+find_palette = liblib.find_palette
 
 
-def uses_transparent_index(lib: ShapeLibrary) -> bool:
-    """Whether any pixel in the library is :data:`TRANSPARENT_INDEX`."""
-    return any(TRANSPARENT_INDEX in e.pixels for e in lib.elements if not e.is_empty)
+uses_transparent_index = liblib.uses_transparent_index
 
 
 def export(lib: ShapeLibrary, palette: Palette, outdir: str, stem: str) -> int:

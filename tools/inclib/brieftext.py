@@ -288,6 +288,94 @@ def layout(text: str, start: int, width: int, fonts: Mapping[int, Font],
             for a, b in zip(starts, starts[1:])]
 
 
+# --- the markup as structure ------------------------------------------------
+
+@dataclass(frozen=True)
+class Span:
+    """One run of drawable text under one font and one colour ramp.
+
+    ``docs/92`` §3.2 requires the cache to carry markup as structure rather
+    than as a string, because a consumer that re-parsed the string would be a
+    second implementation of this parser.  A span is what
+    ``aPrintGUITextBox`` draws between two state changes.
+    """
+
+    text: str
+    font: int
+    colour: int
+    #: True when a hard ``@`` break precedes this span.
+    break_before: bool = False
+
+    def to_dict(self) -> dict:
+        return {"text": self.text, "font": self.font, "colour": self.colour,
+                "break_before": self.break_before}
+
+
+def spans(text: str, start: int = 0, font: int = 0,
+          colour: int = 0) -> list[Span]:
+    """Split a block into :class:`Span` runs, stopping at ``{*}``.
+
+    The state machine is ``visible``'s, with the two commands recorded instead
+    of skipped: a ``{§n}`` changes the font of everything after it and a
+    ``{#n}`` the colour ramp, both until the next one or the end of the block.
+    An empty run is not emitted, so two commands in a row produce one span.
+    """
+    out: list[Span] = []
+    buffer: list[str] = []
+    pending_break = False
+
+    def flush() -> None:
+        nonlocal pending_break, buffer
+        if buffer:
+            out.append(Span("".join(buffer), font, colour, pending_break))
+            pending_break = False
+            buffer = []
+
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == TAG_OPEN and i + 1 < n:
+            intro = text[i + 1]
+            if intro == END:
+                break
+            if intro == COLOUR_INTRO:
+                flush()
+                colour = _tag_digit(text, i + 2, colour)
+                i += 4
+                continue
+            if intro == FONT_INTRO:
+                flush()
+                selected = _tag_digit(text, i + 2, font)
+                if selected not in FONT_IDS:
+                    raise BriefError(f"{{\xa7{selected}}} selects no font")
+                font = selected
+                i += 4
+                continue
+            if intro == LABEL_INTRO:
+                # A following label ends this block: the engine's reader stops
+                # at the next tag, and running on would merge two entries.
+                break
+        if ch == BREAK:
+            flush()
+            pending_break = True
+            i += 1
+            continue
+        if ord(ch) >= 0x20:
+            buffer.append(ch)
+        i += 1
+    flush()
+    return out
+
+
+def _tag_digit(text: str, index: int, fallback: int) -> int:
+    """The digit inside ``{#n}`` / ``{§n}``; a non-digit leaves the state."""
+    if index >= len(text):
+        return fallback
+    value = ord(text[index]) - 0x30
+    return value if 0 <= value <= 9 else fallback
+
+
 # --- the briefing program --------------------------------------------------
 
 BRIEFING_BASE_ROW = 0
