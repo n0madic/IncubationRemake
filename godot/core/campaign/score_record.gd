@@ -54,7 +54,25 @@ var result: int = RESULT_NOTHING
 var heroes_lost: int = 0
 
 
-## `resetScoreboard` `0x0043B990`.
+## Zero the **mission** half of each pair, leaving the campaign half alone.
+##
+## The engine has no such routine: `resetScoreboard` runs once, at campaign
+## start, and the mission halves are zeroed by whatever loads the next mission.
+## This remake needs it explicitly, because its `CampaignState` outlives the
+## `World` that carried the counters -- and because `reset()` is the wrong tool
+## for it. `reset()` is `resetScoreboard`, and calling it between missions
+## would wipe the campaign totals the debriefing has just added to.
+func reset_mission() -> void:
+	kills = 0
+	losses = 0
+	lost_to_enemy = 0
+	heroes_lost = 0
+	score = 0
+	result = RESULT_NOTHING
+
+
+## `resetScoreboard` `0x0043B990` -- **the whole record**, campaign halves
+## included. The engine calls it at campaign start and nowhere else.
 func reset() -> void:
 	kills = 0
 	campaign_kills = 0

@@ -446,8 +446,26 @@ class ScoreRecord:
     result: int = RESULT_NOTHING    # +0x20
     heroes_lost: int = 0            # +0x24
 
+    def reset_mission(self) -> None:
+        """Zero the **mission** half of each pair, leaving the campaign half.
+
+        The engine has no such routine -- ``resetScoreboard`` runs once, at
+        campaign start -- but a remake whose campaign state outlives the world
+        that carried the counters needs it, and ``reset`` is the wrong tool:
+        calling that between missions wipes the campaign totals the debriefing
+        has just added to.
+        """
+        self.kills = self.losses = self.lost_to_enemy = 0
+        self.heroes_lost = 0
+        self.score = 0
+        self.result = RESULT_NOTHING
+
     def reset(self) -> None:
-        """``resetScoreboard`` ``0x0043B990``: zero +0x00..+0x1C, +0x20 = 1."""
+        """``resetScoreboard`` ``0x0043B990``: zero +0x00..+0x1C, +0x20 = 1.
+
+        **The whole record**, campaign halves included; the engine calls it at
+        campaign start and nowhere else.
+        """
         self.kills = self.campaign_kills = 0
         self.losses = self.campaign_losses = 0
         self.lost_to_enemy = self.campaign_lost_to_enemy = 0

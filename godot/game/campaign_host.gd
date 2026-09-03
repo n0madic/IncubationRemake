@@ -298,8 +298,10 @@ func advance() -> String:
 	# screen with row 1 empty. What clears it is not traced, but that it is
 	# gone by then is what makes *replay* a debriefing button and not a map one.
 	state.roster.clear_snapshot()
-	state.scoreboard[0].kills = 0
-	state.scoreboard[0].losses = 0
+	# Only the mission halves: the campaign totals are what the debriefing has
+	# just added to, and `reset()` -- which is `resetScoreboard` -- would wipe
+	# them.
+	state.scoreboard[0].reset_mission()
 	screen = SCREEN_MAP
 	if tables.has_mission(state.mission):
 		location = tables.location_of(tables.mission_id(state.mission))
@@ -315,7 +317,17 @@ func replay() -> String:
 		return ""
 	state.roster.restore()
 	state.roster.clear_snapshot()
-	state.scoreboard[0].reset()
+	# The same rule, and here it is the one that mattered: *Try Again* used to
+	# call `reset()`, which wiped the campaign score along with the mission's.
+	# A replay undoes the mission, not the campaign -- and the score the
+	# debriefing added has to come back off the total, because the replayed
+	# mission will add its own.
+	var board: ScoreRecord = state.scoreboard[0]
+	board.campaign_kills -= board.kills
+	board.campaign_losses -= board.losses
+	board.campaign_lost_to_enemy -= board.lost_to_enemy
+	board.total -= board.score
+	board.reset_mission()
 	screen = SCREEN_MAP
 	_mission_world = null
 	return state.mission

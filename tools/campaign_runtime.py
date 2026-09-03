@@ -437,6 +437,22 @@ def check_score(ck: Checker, ctx: Context) -> None:
     ck.expect("score.reset", (reset.kills, reset.score, reset.total,
                               reset.result), (0, 0, 0, cam.RESULT_NOTHING))
 
+    # The two resets are not the same routine. `reset` is `resetScoreboard`
+    # and clears the campaign halves; between missions only the mission halves
+    # go, or a replay costs the player their whole campaign score.
+    carried = cam.ScoreRecord(kills=4, losses=1, lost_to_enemy=1,
+                              heroes_lost=1, score=140, campaign_kills=29,
+                              campaign_losses=4, campaign_lost_to_enemy=4,
+                              total=259, result=2)
+    carried.reset_mission()
+    ck.expect("score.reset_mission_keeps_the_campaign",
+              (carried.campaign_kills, carried.campaign_losses,
+               carried.campaign_lost_to_enemy, carried.total), (29, 4, 4, 259))
+    ck.expect("score.reset_mission_clears_the_mission",
+              (carried.kills, carried.losses, carried.lost_to_enemy,
+               carried.heroes_lost, carried.score, carried.result),
+              (0, 0, 0, 0, 0, cam.RESULT_NOTHING))
+
 
 def check_chain(ck: Checker, ctx: Context) -> None:
     """``docs/27`` §6.6 -- the header's next-map field and its LCL override."""
