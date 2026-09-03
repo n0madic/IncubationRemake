@@ -114,7 +114,7 @@ object's position and that no creator reads the terrain height at all
 | `prototyp.bin` | 21 | 3D prototype geometry — a bytecode program, not a mesh struct | **Solved**, 26072/26072 records | `prototyp_parse.py` | [31](31-prototyp-geometry.md) |
 | `OBJECT.TYP` | 1 | Config for the object exporter — **the tool that never shipped** | **Solved** (213 bytes, one file, full grammar). Read by nothing; it explains two corpus-wide uniformities and reclassifies eight opcodes as unselected exporter settings | `typ_parse.py` | [30 §2.11](30-eng3d-ascii-formats.md) |
 | `.bmp` | 118 | Briefing art, backgrounds, install screens; the briefing program names 89 of them | Standard Windows BMP | — | [24 §8](24-briefing-text.md) |
-| `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE | — | — |
+| `.wav` | 407 | Speech, SFX | Standard RIFF/WAVE, 8-bit 22050 Hz mono. **125 of the 407 end one byte past their own `RIFF` size** (407/407 scanned): the `data` chunk is odd, the writer added the pad byte RIFF requires and did not count it. Every player reads them; a strict loader warns | — | [97 §43](97-slice-5-report.md) |
 | `.ogg` | 32 | Music (GOG re-encode of the CD audio) | Standard Ogg Vorbis | — | — |
 | `Rec_0.dat` | 1 | Orphaned file under `DATA/Misc/` | **Dead data** — no shipped binary references it | — | see below |
 

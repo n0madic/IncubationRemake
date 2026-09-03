@@ -206,6 +206,20 @@ func _check_overlay(h: TestHarness, world: World) -> void:
 		"one quad per marked cell, and nothing else")
 	# The mover's own cell is always marked, so the highlight covers it.
 	var view: Dictionary = world.unit_view(world.unit_slots()[0])
+	# The marking is a state byte on the cell (docs/10 section 4.5), so the
+	# engine draws it as terrain and whatever stands in front of a marked field
+	# hides it. Pinned because the opposite -- painting the mesh over the whole
+	# picture -- looks like a rendering preference and is not one (docs/97
+	# section 45).
+	var highlight_material: StandardMaterial3D = \
+		highlight.material_override as StandardMaterial3D
+	h.check("highlight.depth_tested",
+		highlight_material != null and not highlight_material.no_depth_test,
+		"a marked cell is hidden by what stands in front of it")
+	h.check("highlight.unshaded",
+		highlight_material != null and highlight_material.shading_mode
+			== BaseMaterial3D.SHADING_MODE_UNSHADED,
+		"and is not lit by the scene, so it reads on dark scenery")
 	h.check("highlight.covers_mover",
 		result.is_reachable(DictRead.as_int(view["x"]),
 			DictRead.as_int(view["y"])),

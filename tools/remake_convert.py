@@ -69,8 +69,15 @@ LOG = logging.getLogger("remake_convert")
 #: `_C_115` is what the first slice rendered; `_C_141` is where the native
 #: oracle is taken, because it is the mission the slot-6 save is on; `_C_100`
 #: is the second entry that keeps determinism honest across two maps sharing a
-#: world set and scene with `_C_141`.
-SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100", "_C_132"]
+#: world set and scene with `_C_141`.  `_C_129` is the presentation slice's
+#: (docs/97 §42): it is the only converted mission that plays a **`CrushWall`**
+#: on its own -- its `NextTurn` fires three of them, each behind a
+#: `MoveCamera`, when the turn counter reaches 3 -- and it places a hero, so
+#: the set piece can be reached by pressing SPACE three times rather than only
+#: in a suite.  It is also one of the three missions whose `CrushWall`
+#: footprints are measured in the engine by `presentation_gold.py` (§41.7), so
+#: what the build shows has a native capture behind it.
+SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100", "_C_132", "_C_129"]
 
 #: Files the converter reads that are not reached through a mission, but whose
 #: identity the manifest has to carry.
@@ -615,7 +622,14 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 #: quoted one would pass on the other by luck.  The ceilings are the measured
 #: sizes rounded up to the next whole MiB -- close enough that a new asset
 #: family shows, loose enough that one more converted texture does not.
-CACHE_CEILING_KIB_MUSIC = 33 * 1024
+#:
+#: The music ceiling moved from 33 to 37 when `_C_129` joined the set: it is
+#: the first mission here to name a **sixth** CD track, and one track is about
+#: 4 MiB, so the cache went 33.0 -> 36.1 MiB while the silent one moved by the
+#: 29 prototypes of its scene alone (10.5 MiB, well under its own ceiling).
+#: That is the check working as intended -- the growth had a name before the
+#: number was changed.
+CACHE_CEILING_KIB_MUSIC = 37 * 1024
 CACHE_CEILING_KIB_SILENT = 13 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).

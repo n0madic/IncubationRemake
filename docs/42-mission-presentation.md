@@ -1095,7 +1095,12 @@ and the set pieces by [`97` §32](97-slice-5-report.md) and
 [§33](97-slice-5-report.md); the door row, which had been left un-struck after
 §32 animated it, and the six rows below the script camera on 2026-09-03 by
 [`97` §41](97-slice-5-report.md); `CrushWall`'s row is the one that still
-stands.)*
+stands. Every row a player can reach was then looked at **in a running build**
+on 2026-09-03 by [`97` §42](97-slice-5-report.md) -- the selection's four
+arrows, the walk and its camera, the shot's stages with its number, the
+caption, the death's blood, the idle scheduler, the jump, the statue's beam,
+the script camera, `CrushWall`, and the door with its flight down and back on
+`_C_103`, whose squad starts two cells from one.)*
 
 ---
 

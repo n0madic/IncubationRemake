@@ -13,8 +13,9 @@ extends Node
 ##
 ## **Streams come out of the cache, not out of `res://`.** The cache lives in
 ## `user://` and never goes through Godot's import pipeline, so the waves are
-## opened with `AudioStreamWAV.load_from_file` and the music with
-## `AudioStreamOggVorbis.load_from_file`. Each is loaded once and kept: the
+## opened with `AudioStreamWAV.load_from_buffer` (through [method
+## with_pad_counted], which is why it is not `load_from_file`) and the music
+## with `AudioStreamOggVorbis.load_from_file`. Each is loaded once and kept: the
 ## whole wave set is about 2.6 MiB and a firefight would otherwise re-read the
 ## same file several times a second.
 ##
@@ -33,6 +34,11 @@ const DEFAULT_MUSIC_VOLUME: int = -600
 ## milliseconds. Fifty was the measured threshold headless; this is twice it,
 ## and it is spent once, on the way out.
 const SHUTDOWN_WAIT_MS: int = 100
+
+## `"RIFF"` read as a little-endian dword, and the one byte a padded wave is
+## longer than its own header claims.
+const RIFF_MAGIC: int = 0x46464952
+const RIFF_PAD: int = 1
 
 var _tables: AudioTables = null
 var _events: AudioEvents = null
@@ -156,13 +162,32 @@ func play_cue(cue: Dictionary, tag: String = "") -> int:
 	player.stream = stream
 	player.volume_db = AudioTables.volume_db(volume)
 	# A one-shot frees its slot when the sample ends; a looping one does not,
-	# because its sequence decides. Connecting per play and disconnecting on
-	# the way out keeps the two cases in one place.
-	if not loop:
-		player.finished.connect(_on_slot_finished.bind(slot),
-			CONNECT_ONE_SHOT)
+	# because its sequence decides.
+	arm_slot_end(player, _on_slot_finished.bind(slot), loop)
 	player.play()
 	return slot
+
+
+## Arm (or disarm) the "this slot's sample ended" connection for one player.
+##
+## The connection is `CONNECT_ONE_SHOT`, and one-shot means *disconnected when
+## the signal fires* -- not when the sound stops. `AudioStreamPlayer.stop()`
+## does not emit `finished`, so every cue that was cut short by [method
+## stop_slot] or [method stop_tag] -- which is every sound a sequence owns
+## (docs/28 section 1.4) -- leaves its connection behind. The next cue the pool
+## puts on that slot then connects the **same** bound callable a second time,
+## and Godot refuses it with an error from inside the shot sequence.
+##
+## So the pending connection is dropped before a new one is made, which also
+## covers the other order: a looping cue landing on a slot whose one-shot
+## connection is still armed would have been freed under its own sequence the
+## moment the previous sample would have ended.
+static func arm_slot_end(player: AudioStreamPlayer, on_end: Callable,
+		loop: bool) -> void:
+	if player.finished.is_connected(on_end):
+		player.finished.disconnect(on_end)
+	if not loop:
+		player.finished.connect(on_end, CONNECT_ONE_SHOT)
 
 
 ## Play every cue an event starts, and answer the slots they took.
@@ -265,13 +290,43 @@ func _stream_for(wave: String) -> AudioStream:
 		_unopenable[wave] = true
 		push_warning("audio: %s is not in the cache" % wave)
 		return null
-	var stream: AudioStreamWAV = AudioStreamWAV.load_from_file(path)
+	var stream: AudioStreamWAV = AudioStreamWAV.load_from_buffer(
+		with_pad_counted(FileAccess.get_file_as_bytes(path)))
 	if stream == null:
 		_unopenable[wave] = true
 		push_warning("audio: %s did not open" % wave)
 		return null
 	_streams[wave] = stream
 	return stream
+
+
+## A wave whose header counts the byte the file actually ends with.
+##
+## **125 of the 407 shipped `.wav` files are one byte longer than their `RIFF`
+## size claims**, and all 125 for the same reason: the `data` chunk has an odd
+## length, RIFF requires a pad byte after it, and the writer left the `RIFF`
+## size at `36 + data` without counting that byte. The file is what a player
+## expects -- `sp_hum_1.wav`, `w_lcg_0.wav` and fourteen more of the eighty-one
+## the cache carries are in that set -- but Godot's loader compares the buffer
+## against `RIFF size + 8` and prints a warning per file, from inside the shot
+## sequence, every time one is opened.
+##
+## So the header is corrected in memory rather than the sample being touched:
+## the decoded frames, mix rate, format, channel count and loop mode are
+## identical either way, and nothing in the cache changes. **Only the exact
+## one-byte case**, so a truncated file, a file with trailing rubbish or one
+## that is not RIFF at all still reaches the loader as it is and still reports
+## itself. Trimming the pad byte off instead is what does not work: the loader
+## then seeks past the end of its own buffer and turns the warning into an
+## error.
+static func with_pad_counted(bytes: PackedByteArray) -> PackedByteArray:
+	if bytes.size() < 12 or bytes.decode_u32(0) != RIFF_MAGIC:
+		return bytes
+	if bytes.size() != bytes.decode_u32(4) + 8 + RIFF_PAD:
+		return bytes
+	var fixed: PackedByteArray = bytes.duplicate()
+	fixed.encode_u32(4, fixed.size() - 8)
+	return fixed
 
 
 func _music_stream(path: String) -> AudioStream:

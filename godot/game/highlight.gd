@@ -7,7 +7,18 @@ extends MeshInstance3D
 ## with `tools/lev_parse.py --png` -- same field-type ramp, same amber action
 ## points -- so it has to stay faithful and subtle.  The highlight's job is to
 ## be *seen* on top of dark, unshaded 1997 scenery, so it is built only from
-## the marked cells and drawn without depth testing.
+## the marked cells, drawn unshaded and lifted clear of the floor.
+##
+## **It depth-tests**, and that is the engine's shape rather than a taste:
+## docs/10 section 4.5's marking is a *state byte on the cell*, so the original
+## draws it as part of the terrain and anything standing in front of a marked
+## field hides it.  This mesh was drawn with `no_depth_test` until 2026-09-03,
+## which painted every marked cell over the whole picture -- over crates, over
+## the far wall, and over the lower half of any unit standing between the eye
+## and a marked field, which on a map with fields at several heights reads as
+## green sheets stacked through the scene (docs/97 section 45).  The lift below
+## is what keeps it off the floor it sits on; depth testing is what keeps it
+## behind everything else.
 ##
 ## docs/10 section 4.5: cell state 10 is walkable and 60 is a warp target.
 
@@ -28,8 +39,10 @@ func _init() -> void:
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.vertex_color_use_as_albedo = true
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.no_depth_test = true
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Depth testing stays **on**: see the class comment. The lift above is what
+	# stops the quad fighting the floor tile it covers.
+	material.no_depth_test = false
 	material_override = material
 
 

@@ -64,6 +64,93 @@ func run(h: TestHarness) -> void:
 	_check_case_map(h, tables, document)
 	_check_playlists(h, document)
 	_check_compat(h, tables, document)
+	_check_wave_padding(h)
+	_check_slot_end_arming(h)
+
+
+## The slot's "sample ended" connection, and the error it used to raise.
+##
+## `CONNECT_ONE_SHOT` disconnects when the signal **fires**, and
+## `AudioStreamPlayer.stop()` does not fire it -- so every cue a sequence cut
+## short left its connection armed, and the next cue on that slot connected the
+## same bound callable again, which Godot refuses with an error. [method
+## AudioSystem.arm_slot_end] is the one place that is decided now.
+func _check_slot_end_arming(h: TestHarness) -> void:
+	var player: AudioStreamPlayer = AudioStreamPlayer.new()
+	var on_end: Callable = _slot_ended.bind(7)
+	AudioSystem.arm_slot_end(player, on_end, false)
+	h.equal("slot_end.armed_once", player.finished.get_connections().size(), 1,
+		"a one-shot cue arms the connection")
+	AudioSystem.arm_slot_end(player, on_end, false)
+	h.equal("slot_end.rearmed_not_doubled",
+		player.finished.get_connections().size(), 1,
+		"the slot re-used after a stop arms it again, not twice")
+	AudioSystem.arm_slot_end(player, on_end, true)
+	h.equal("slot_end.loop_disarms", player.finished.get_connections().size(),
+		0, "a looping cue on the same slot drops the pending connection")
+	AudioSystem.arm_slot_end(player, on_end, true)
+	h.equal("slot_end.loop_stays_disarmed",
+		player.finished.get_connections().size(), 0,
+		"and arming a loop twice is not an error either")
+	AudioSystem.arm_slot_end(player, on_end, false)
+	h.equal("slot_end.armed_after_loop",
+		player.finished.get_connections().size(), 1,
+		"a one-shot after a loop arms it once more")
+	player.free()
+
+
+## The callable the arming test binds; it is never called.
+func _slot_ended(_slot: int) -> void:
+	pass
+
+
+## The RIFF pad byte, and the one place the remake corrects a shipped header.
+##
+## 125 of the 407 shipped `.wav` files end one byte past what their `RIFF` size
+## claims -- an odd `data` chunk and the pad byte RIFF requires after it, which
+## the writer did not count. [method AudioSystem.with_pad_counted] fixes the
+## header in memory so Godot's loader stops warning per file, and it must fix
+## **only** that case: a truncated file or a file with trailing rubbish is a
+## real defect and has to reach the loader as it is.
+func _check_wave_padding(h: TestHarness) -> void:
+	var padded: PackedByteArray = _riff(40, 31)
+	var counted: PackedByteArray = AudioSystem.with_pad_counted(padded)
+	h.equal("wave_pad.size_kept", counted.size(), padded.size(),
+		"the sample is not touched, only the header")
+	h.equal("wave_pad.header_corrected", counted.decode_u32(4),
+		padded.size() - 8, "the header now counts the pad byte")
+	h.equal("wave_pad.body_kept", counted.slice(8), padded.slice(8),
+		"every byte past the size field is the shipped one")
+	h.equal("wave_pad.source_untouched", padded.decode_u32(4), 31,
+		"the buffer handed in is not written through")
+	h.equal("wave_pad.exact_left_alone",
+		AudioSystem.with_pad_counted(_riff(40, 32)).decode_u32(4), 32,
+		"a file whose header already agrees is passed on unchanged")
+	h.equal("wave_pad.short_left_alone",
+		AudioSystem.with_pad_counted(_riff(40, 33)).decode_u32(4), 33,
+		"a file shorter than its header claims still reports itself")
+	h.equal("wave_pad.two_over_left_alone",
+		AudioSystem.with_pad_counted(_riff(40, 30)).decode_u32(4), 30,
+		"two bytes over is not a pad byte and is left to the loader")
+	var alien: PackedByteArray = _riff(40, 31)
+	alien.encode_u8(0, 0x52 + 1)
+	h.equal("wave_pad.not_riff_left_alone",
+		AudioSystem.with_pad_counted(alien).decode_u32(4), 31,
+		"a buffer that does not open with RIFF is not rewritten")
+	h.equal("wave_pad.too_short_left_alone",
+		AudioSystem.with_pad_counted(PackedByteArray([0x52, 0x49])).size(), 2,
+		"a buffer too short to hold a header is passed straight through")
+
+
+## A buffer of `total` bytes whose `RIFF` size field says `claimed`.
+static func _riff(total: int, claimed: int) -> PackedByteArray:
+	var out: PackedByteArray = PackedByteArray()
+	out.resize(total)
+	out.encode_u32(0, 0x46464952)
+	out.encode_u32(4, claimed)
+	for i: int in range(8, total):
+		out.encode_u8(i, i & 0xFF)
+	return out
 
 
 func _check_attenuation(h: TestHarness, tables: AudioTables,

@@ -4980,3 +4980,395 @@ than by hand — the one unpaired entry it finds is `_C_156`'s key 104),
 **2757** checks. The whole always-run block, `dbgcall/selftest.sh` and all
 five gold captures (712, `blob_gold` 259, `turn_gold` 198, `ai_gold` 47,
 `movemap_gold` 41) are green.
+
+---
+
+## 42. 2026-09-03 — slice G: the pass in a running build
+
+The last item of the presentation plan. §41.9 left it as the one thing not
+done, and this is it: the shipping export rebuilt and launched, and every row
+of `docs/42` §11 that a player can reach looked at **in a running game** rather
+than in a suite.
+
+**What the hand is.** Nobody can sit at this keyboard, so the hand is
+synthetic and the report says so wherever it matters. What is *not* synthetic
+is the path: every key and every click below is pushed into the viewport with
+[`Viewport.push_input`](../godot/tour.gd), so `SliceMain._unhandled_input`,
+`_pick`, `_may_command_now`, `_cell_under` and everything under them run
+exactly as they do under a mouse. The synthetic part is which pixel is clicked
+and when. The one question this pass therefore still does not answer is
+§25.5's — whether a shot *reads* as a shot to a person watching it — and that
+stays open on purpose.
+
+### 42.1 The harness: `godot/tour.gd`
+
+A `SceneTree` driver beside `shot.gd`, on the precedent of §24.5's temporary
+one, and excluded from the shipping preset the same way:
+
+```bash
+godot --path godot --script res://tour.gd --resolution 1280x800 -- \
+    --dir=/some/scratch/dir --mission=_C_140
+```
+
+**The directory is the protocol.** The driver waits for `cmd-0001.txt`, runs
+its lines, writes `res-0001.json` beside it and waits for `cmd-0002.txt`; a
+sender writes each command file with `mv` so a half-written one is never read.
+The commands are `key NAME`, `click X Y` (a left click on the centre of a map
+cell, projected with the rig's own camera), `click_unit SLOT`, `walk_to X Y`
+(the reachable cell nearest a place — the harness's convenience, still
+delivered as a click on a highlighted square), `chance A B`, `wait N`,
+`idle [MAX]`, `shot NAME`, `note TEXT` and `quit`.
+
+Every reply carries the state the pass reports on -- the turn and the player,
+every unit's slot, owner, cell, hit points and weapon, the selection's fill and
+its warp cells, the sequence on the queue with its frames left, the blob pool
+**by kind**, the overlay's caption and entry count, the camera's eye, target
+and quadrant, and the status line. That is what makes a screenshot checkable:
+the picture and the numbers behind it come out of the same frame.
+
+It reads `SliceMain`'s own members rather than asking for new accessors:
+`game/` gains nothing for this file's benefit, and `main.gd` was not touched.
+
+A screenshot is the viewport's own image, not the desktop's: this host does
+not grant Screen Recording to the terminal, so `screencapture` returns
+*"could not create image from display"* and the pictures below are all
+`root.get_texture().get_image()`.
+
+### 42.2 The shipping export
+
+Rebuilt from the current tree with `--export-release "macOS"` (templates
+4.7.1) and launched twice, on `_C_140` and on `_C_132`, for 120 s and 60 s:
+the window comes up, the mission builds and **stderr is empty** -- no script
+error, which is the check §24.5 introduced and the reason the export is
+rebuilt on every change. `tour.gd` joined `shot.gd` in the preset's
+`exclude_filter`, so the shipping `.pck` does not carry the driver.
+
+One thing to know for next time: the macOS exporter **removes
+`export/incubation-slice.command`**, the console wrapper, on every export. It
+is generated content in a gitignored directory and was written back by hand
+after each of the two exports here.
+
+### 42.3 What was looked at
+
+All of it through the input path, with the reply's numbers quoted from the
+same frame as the picture.
+
+| # | Row of `docs/42` §11 | Mission | What the running build did |
+|---|---|---|---|
+| 1 | selection | `_C_140` | `TAB` selects slot 2 and the pool holds **exactly four blobs of kind 14** -- the four `A_ARROW` markers of §7.3 -- with five cells in the fill and `Sgt. Bratt MP 3 HP 10 FP 5 ammo 10` on the HUD |
+| 2 | walk, walk camera | `_C_140` | a click on a highlighted cell walks the body, spends the movement points, moves the camera's target and changes the world hash |
+| 3 | idle | `_C_140` | the scheduler's counters climb -- `idle_starts` 5 → 108 and `idle_frees` 2 → 106 over four turns of one session -- and between commands the `playing` list holds **one to three** slots. It is not a count of the four idle slots: `is_playing` answers for any clip, so the five slots seen during a computer turn are walkers |
+| 4 | shot, its stages | `_C_140` | `sequence: shot.clip` → pool kind 11 (the muzzle) and 15 (the round) → kind 17 ×12 at the target with `overlay.entries: 1, fading: true`. The number drawn is a **`0`**: `chance 4 -> 6` reads **88 %**, the shot hits, and the alien's four hit points do not move -- armour, not a miss |
+| 5 | fight camera | `_C_140` | the eye is behind the shooter for the shot and stays there while the round flies. It is set rather than flown -- `flying: false` four frames in -- which is §4.3's near arm |
+| 6 | computer turn | `_C_140` | `playback: true` with `walking: true`, the HUD line *"the aliens are moving -- advances 6 (any key skips the replay)"*, and the camera flown to the walker |
+| 7 | captions, experience | `_C_132` | `chance 46 -> 25` reads **92 %** on a one-hit-point alien; the click kills it and the caption reads **"Cpt. Rutherford received 1 experience points"** for six frames -- §4.2's caption over slice A's experience model |
+| 8 | blood, death | `_C_132` | `dying: [25]` while the round flies, then **kind 17 ×15 and kind 18 ×4** on the victim's cell at `gore_level` **2**, gone four samples later |
+| 9 | jump | `_C_132` | the fill draws **59 warp cells** beside the walk's; a click on one runs `jump.fly` then `jump.pool` with kinds 9 ×20, 10 ×16 and 50 ×4, and the marine is in the air with the trail behind him |
+| 10 | statue beam | `_C_178` | `Statue2 (110,112)` from the mission's own `NextTurn`: three cells carry those action points, and each fires `statue` (17 frames) → `setpiece.pool` with **kind 62 ×24 and ×28** → `setpiece.flight`. Each cell's beam is drawn along one axis, and the three differ; the **alternation turn to turn** that §41.1's `+0x0B` toggle predicts was not checked here -- that wants the same cell on two consecutive turns |
+| 11 | script camera, `CrushWall` | `_C_129` | turn 3 runs `script.camera` (the `MoveCamera` flight) → `crush_wall` → `setpiece.pool` with kinds 10 and 5 (the debris of `0x004238C0`), three times, once per call |
+| 12 | own door | `_C_103` | `U` with the marine facing the door at (5,8) -- shut on the first press, open again on the second: `setpiece.flight` (the camera down to the door's own place) → **`open_door`** → `setpiece.back`, the eye returning to within a few world units of where it left. The HUD reads `door`, one movement point is spent, and the **fill is the proof the rule ran**: (5,8) drops out of it while the panel is up and comes back, with (4,8) behind it, when a second `U` opens it |
+| 13 | mission result | `_C_140`, `_C_178`, `_C_129` | the report draws -- *"Mission Report / Mission failed / You were defeated! / Turns 9"* on `_C_140`, and turns 2 and 3 on the two one-hero missions |
+
+Rows 10, 11 and 12 needed missions the slice set does not carry. The published
+cache was widened twice -- to seven for `_C_178` and `_C_129`, then to six for
+`_C_103` -- and the five-mission cache was **republished after each**. It came
+back at the same content-addressed id both times,
+`1-0.15.0-English-4b78eb1431e2-be2eb4bcf223`, and the suites are green on it.
+
+### 42.4 What could not be reached, and the one that could after a second look
+
+Not "not done": **not reachable by hand in a converted mission**, with the
+reason in each case. A scan of every shipped `Missions/*.lev` for a *placed*
+player-0 unit against its `.lcl`'s commands is what settles it -- **37 of the
+138** mission files place a squad at all.
+
+* **`OpenTube`, `Elevator`, `MovePosition`, `MoveTarget`, `RoofUnit`.**
+  `_C_115` and `_C_141` carry them, and neither places its squad: their five
+  player-0 records are unplaced and the campaign roster fills them, so the
+  turn never comes back to the player and their scripts cannot be triggered
+  from a keyboard. (`_C_141`'s `RoofUnit` waits on turn 10, which that mission
+  never reaches on its own.)
+* **`_C_140`'s own `OpenTube` pair.** Its `NextTurn` opens them only when
+  `GetActPt (9,11)` is **30**; the shipped cell holds **31**, and nothing in
+  this mission's `Use` handler writes it -- it is the campaign that does.
+* **`SetGroundFire`, `ParaBombs`.** `_C_116`, `_S_007`, `_C_110` and `_C_111`
+  are the only missions that call them, and none places a squad.
+* **The map-changing weapons (40, 42, 43).** The two playable missions' units
+  carry weapons 1, 2, 3 and 15; no shipped starting squad in them carries a
+  Flamer, a mine layer or the Plasma Gun, so the fires, the mine and the shield
+  of §37 cannot be produced by firing.
+
+**The door was the exception, and it is now row 12.** `_C_140` carries two
+(the cells at (9,11) and (12,14) hold action point 31), and its squad
+**cannot get to them**: the fill out of the starting corner is five cells
+wide, and over seven turns of walking west the aliens killed three of the four
+marines before any of them was within reach. A door is a *cell* whose action
+point is one of 30..33 (`Interact.DOOR_IDS`), not an object, so the same scan
+that found the squads found the doors: **`_C_103` starts two cells from one**,
+with two marines and the nearest alien seven cells off. It was converted, the
+door was worked by hand -- it ships **open** (action point 30), so the first
+`U` shuts it and the second opens it again -- and the five-mission cache was
+republished afterwards, to the same id again.
+
+Getting the marine to *face* the door is the one thing the harness cannot do
+in a single click, and that is the game's rule rather than a gap: a walk sets
+the facing from its **last step**, so the sequence is a step east to (7,8) and
+a step west back to (6,8), which leaves `facing: 1` and one movement point for
+the `U`.
+
+### 42.5 Three things the pass showed that no suite says
+
+* **The damage number is a mid grey on a dark scene, and is nearly
+  invisible.** `FloatingTexts.TEXT_COLOUR` is `0x5ACB` read as RGB565 --
+  (90, 89, 90) -- and the code already marks it **UNVERIFIED as a colour**
+  because whether the engine's text drawer takes that word as a pixel or as a
+  palette index is not read. In the two shots where the number is on screen it
+  takes a zoom to find. That is not a defect to fix by choosing a nicer
+  colour; it is a reason the word wants reading, and the note stays.
+* **A run of shots that changes nothing has two different reasons in it.**
+  Twelve shots left the type-51 alien's four hit points untouched, and the
+  `chance` probe is what separated them: marine 4, at **88 %**, hit and drew a
+  `0` -- armour ate the damage -- while marines 2, 3 and 5 read **0 %**, having
+  no line of sight to that cell, and fired anyway, which is what the original
+  lets a player do. Without the probe the whole run looked like one broken
+  attack, which is why the harness grew one.
+* **A mission whose script keeps running after the squad is dead keeps
+  playing its set pieces.** `_C_178`'s statue and `_C_129`'s crush wall both
+  fired *under* the "Mission failed" report, because `NextTurn` still runs.
+  That is the engine's shape too -- the report is drawn by the interface, not
+  by the interpreter -- and it is worth knowing before somebody calls it a
+  bug.
+
+### 42.6 Verification
+
+| | |
+|---|---|
+| `bash godot/run_tests.sh` | 33 suites, **2757** checks, 0 failures, on the republished five-mission cache |
+| Shipping export | rebuilt headless; launched on `_C_140` and `_C_132`; stderr empty |
+| `remake_convert.py --check-cache` | 29/29, after the two widenings and the two republishes; the restored cache id is byte-identical to the one before the pass |
+| `tools/verify_untouched.sh` | **1989 entries identical** against the snapshot taken before the pass; `Work/` unchanged |
+
+Nothing in `core/` or `game/` changed for this pass. `godot/tour.gd` is new,
+`godot/export_presets.cfg` gained `tour.gd` in the shipping preset's
+`exclude_filter`, and this section and `docs/42` §11's closing note are the
+only other edits.
+
+### 42.7 Where the plan stands now
+
+**Slices A through G are done**, and the plan's list is complete: the door,
+which the first pass could not reach, was reached on a sixth mission. The
+plan's slice G also asked for
+`docs/92` §7.10 to stop calling the clip speeds a choice; §7.10 was already
+revised for that on 2026-09-03, when `42` §1.2's start slot gave `M` 2.0, `F`
+6.0 and `S` 1.5, so nothing was owed there. The presentation plan's list is
+closed, with two things named rather than quietly dropped: `CrushWall`'s remaining one or
+two cells per call, which want a converter that projects the scene's standard
+objects onto the control map (§41.7), and the by-eye question of §25.5, which
+no automated pass can answer.
+
+---
+
+## 43. 2026-09-03 — the pad byte 125 of the shipped waves do not count
+
+Slice G's play turned up a warning the suites never see, because no suite opens
+a real wave:
+
+```
+WARNING: File size 40056 is larger than the expected size 40055.
+     at: load_from_buffer (scene/resources/audio_stream_wav.cpp:684)
+         [0] _stream_for (res://game/audio/audio_system.gd:268)
+         ...
+         [4] <anonymous lambda> (res://game/shot_sequence.gd:180)
+```
+
+### 43.1 What it is
+
+`sp_hum_1.wav` and `sp_hum_2.wav` -- the pain voices of `docs/28` §4.1, played
+from the shot's fifth stage. Both are **one byte** longer than their header
+says, and so are fourteen more of the eighty-one waves the cache carries.
+
+The cause is in the shipped data, and it is the same in every case. A RIFF
+`data` chunk of odd length must be followed by a pad byte; these files have
+one. What the writer did **not** do is count it: the `RIFF` size stayed at
+`36 + data`, so the file ends one byte past `RIFF size + 8`. Godot's loader
+compares those two numbers and warns.
+
+A scan of the whole installation says how general it is -- **125 of the 407
+shipped `.wav` files**, 407/407 examined, every one of them for that reason
+(the last chunk is `data` and its length is odd in all 125), and no other
+difference anywhere: the deltas are exactly 0 (282 files) and 1 (125 files).
+
+**Nothing is wrong with the sound.** Decoded either way, the two buffers give
+identical frames, mix rate, format, channel count and loop mode; the sample is
+whole, and every other player reads these files without a word.
+
+### 43.2 The fix, and the two that were rejected
+
+`AudioSystem.with_pad_counted` corrects the **header in memory** -- it writes
+the length the buffer actually has into the `RIFF` size field -- and
+`_stream_for` hands the result to `AudioStreamWAV.load_from_buffer` instead of
+calling `load_from_file` on the path. Nothing in the cache is touched, so the
+converter's byte-identical inventory still holds.
+
+It corrects **only the exact one-byte case**. A buffer that is not RIFF, is
+too short to hold a header, is shorter than its header claims, or is two or
+more bytes over goes to the loader unchanged, so a genuinely damaged file
+still reports itself rather than being quietly repaired.
+
+Two other routes were tried or considered and are recorded here so they are not
+tried again:
+
+* **Trim the pad byte instead.** Measured: it silences the warning and
+  produces an *error* -- the loader walks chunks with `pos += size + (size &
+  1)` and then seeks past the end of its own shorter buffer
+  (`file_access_memory.cpp:101`). Worse than what it fixes.
+* **Re-encode the waves to Ogg in the converter.** No. The pipeline has **no
+  third-party dependencies** and runs on the player's machine, so it would
+  need an external encoder (`ffmpeg`, `oggenc`) as a new hard requirement; the
+  whole wave set is ~2.6 MiB, so there is nothing to save; the samples are
+  8-bit 22050 Hz and a lossy pass would change what the player hears, against
+  this project's rule that the original is the gold standard; and `.wav`
+  decodes to PCM once while Ogg costs CPU on every shot. The music is already
+  Ogg, which is where the megabytes actually are. A cosmetic warning is not a
+  reason to stop shipping the game's own bytes.
+
+### 43.3 Verification
+
+| | |
+|---|---|
+| every cached wave, old path | **16** warnings over 81 files |
+| every cached wave, through `with_pad_counted` | **0** warnings, 81/81 opened, no errors |
+| `bash godot/run_tests.sh` | 33 suites, 2757 → **2766** checks, 0 failures |
+| `test_sound` | 43 → **52**: the corrected header, the untouched sample, the caller's buffer not written through, and the five shapes that must be left alone |
+
+`docs/00`'s `.wav` row carries the corpus fact now, since it is a property of
+the shipped data rather than of the remake.
+
+---
+
+## 44. 2026-09-03 — `_C_129` joins the shipped set, for its crush wall
+
+`docs/42` §8's `CrushWall` was the last set piece the build could not show:
+§42 had to widen the cache by hand to reach it, and put it back afterwards.
+That is a poor place to leave the one rule this project measured cell by cell
+in the engine (§41.7), so the mission is now part of the slice.
+
+### 44.1 Which mission, and why that one
+
+Three shipped missions call `CrushWall` -- `_C_129`, `_C_142` and `_O_061` --
+and those are exactly the three `presentation_gold.py` takes its nine
+footprints on. `_C_129` is the one that can be *played* to it:
+
+* its `NextTurn` fires **three** of them, each behind a `MoveCamera`, on the
+  plain condition `EnvVarCmpNum (_B,3)` -- so three presses of SPACE reach it,
+  with no action point to arrange and no cell to stand on;
+* it **places a hero**, which `_C_115` and `_C_141` do not (their squads come
+  from the campaign roster, so their turn never returns to the player);
+* its world set `A00` is already converted; only the scene `Level01d` and its
+  29 prototypes are new.
+
+`SLICE_MISSIONS` is therefore six. As in `docs/95` §1, this is a **content**
+republication and nothing else: `CONVERTER_VERSION` stays `0.15.0`, the schema
+does not move, and the cache id changes because the inventory does.
+
+### 44.2 One check fired, and it was right to
+
+`cache.size_with_music` failed at **37006 KiB against a 33 MiB ceiling**. The
+growth had a name before the number was touched: `_C_129` is the first mission
+in the set to ask for a **sixth** CD track, and one track is about 4 MiB. The
+silent cache moved by its 29 prototypes alone -- 10528 KiB, comfortably inside
+its own 13 MiB ceiling -- which is what `cache.music_is_the_growth` says too.
+The music ceiling is now 37 MiB, the comment records why, and the tripwire is
+still a tripwire.
+
+### 44.3 Seen in the build
+
+Played through `tour.gd` on the published six-mission cache, with the new
+`cell X Y` probe reading the control map either side:
+
+| | before turn 3 | after |
+|---|---|---|
+| (16, 18) | height **3280**, field type **2 (Wall)** | height **0**, field type **1 (Free Place)** |
+| (16, 20) | height 3280, field type 2 | height 0, field type 1 |
+| (18, 23) | height 3280, field type 2 | height 0, field type 1 |
+
+Those are the same three sites, and the same two transitions, that the engine
+itself left in `presentation_gold`'s capture (§41.7). On the way the queue runs
+`script.camera` → `crush_wall` → `setpiece.pool` with the debris of
+`0x004238C0` (kinds 10 and 5) in it, three times, once per call.
+
+### 44.4 Verification
+
+| | |
+|---|---|
+| `remake_convert.py --check` | 181 → **190** (six missions instead of five) |
+| `remake_convert.py --check-cache` | 29/29 |
+| `bash godot/run_tests.sh` | 33 suites, **2766** checks, 0 failures on the republished cache |
+| Shipping export | rebuilt and launched; stderr empty |
+| the mission itself | `_C_129 (6/6) 30x30 A00/Level01d`, and the crush wall reached by pressing SPACE three times |
+
+`tour.gd` gained `cell X Y` for this -- the control map's height, field type,
+action point and unit for one cell, which is how a terrain change is read back
+by hand rather than inferred from a screenshot.
+
+---
+
+## 45. 2026-09-03 — two things play found that no suite could
+
+Both came out of running the build rather than the suites, and both are the
+kind of defect a headless check cannot see: one needs a real
+`AudioStreamPlayer`, the other needs a camera.
+
+### 45.1 A slot's `finished` connected twice
+
+```
+ERROR: Signal 'finished' is already connected to given callable
+       'Node(AudioSystem)::_on_slot_finished' in that object.
+       [0] play_cue (res://game/audio/audio_system.gd:168)
+```
+
+`play_cue` armed the slot's end with `CONNECT_ONE_SHOT`, and one-shot means
+*disconnected when the signal fires* -- **not** when the sound stops.
+`AudioStreamPlayer.stop()` emits nothing, so every cue that
+[method AudioSystem.stop_slot] or [method AudioSystem.stop_tag] cut short --
+which is every sound a sequence owns, `docs/28` §1.4's rule -- left its
+connection armed. The next cue the pool handed that slot connected the **same**
+bound callable a second time, and Godot refused it. The louder the fight, the
+more often the pool recycles a slot, so the error arrived from inside the shot
+sequence.
+
+[method AudioSystem.arm_slot_end] is now the one place that decides it: the
+pending connection is dropped before a new one is made, and a *looping* cue
+landing on a slot disarms it outright -- otherwise the loop would have been
+freed under its own sequence at the moment the previous sample would have
+ended. Five checks in `test_sound` hold the four transitions, and they need no
+audio device: connecting a signal does not touch the server.
+
+### 45.2 The move map was drawn over the world
+
+The green cells came out in sheets that cut through crates and through the
+lower half of any unit standing between the eye and a marked field. It looked
+like several layers of overlay; it was one mesh with `no_depth_test = true`,
+set in the first slice so the marking would read on dark, unshaded 1997
+scenery.
+
+The engine does not draw it that way, and `docs/10` §4.5 says why: the marking
+is a **state byte on the cell**, so the original colours the terrain tile
+itself and whatever stands in front of a marked field hides it. Two frames of
+the same view, one with the flag and one without, settle the legibility
+worry the flag was there for -- with depth testing on, the quads are just as
+visible (they are unshaded, alpha 0.72, and lifted 0.06 off the floor) and the
+alien in the middle distance stops being cut in half.
+
+`Highlight` therefore depth-tests. `test_render` pins both halves of that --
+depth-tested **and** unshaded -- because "paint it over everything" looks like
+a rendering preference and is not one.
+
+### 45.3 Verification
+
+| | |
+|---|---|
+| `bash godot/run_tests.sh` | 33 suites, 2766 → **2773** checks, 0 failures |
+| `test_sound` | 52 → **57**: the four arming transitions and the double-arm that used to error |
+| `test_render` | 19 → **21**: the highlight depth-tests and is unshaded |
+| in the build | `_C_129` selected, eyes and unit views: the marine is drawn on top of its own marked cell, and no quad crosses the machinery |

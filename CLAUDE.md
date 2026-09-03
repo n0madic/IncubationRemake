@@ -64,9 +64,9 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/h
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
-python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
+python3 tools/remake_convert.py     gog_incubation --check   # 190 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 33 suites, 2757 checks
+bash   godot/run_tests.sh                                    # 33 suites, 2773 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -611,9 +611,27 @@ python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
+godot --path godot --script res://tour.gd --resolution 1280x800 -- \
+    --dir=/some/scratch/dir --mission=_C_140   # drive the game from outside
 ```
 
 `docs/93` has the two-command first run.
+
+`godot/tour.gd` is how the game is played without a player (`docs/97` §42).
+It is a `SceneTree` driver beside `shot.gd`, excluded from the shipping preset,
+and **the directory it is given is the whole protocol**: it waits for
+`cmd-0001.txt`, runs the lines in it, writes `res-0001.json` beside it and
+waits for `cmd-0002.txt`. Write each command file with `mv` from a
+neighbouring name so a half-written one is never read. The lines are
+`key NAME`, `click X Y`, `click_unit SLOT`, `walk_to X Y`, `cell X Y`,
+`chance A B`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`; every reply
+carries the turn, every unit, the selection's fill and warp cells, the
+sequence on the queue, the blob pool **by kind**, the overlay, the camera and
+the status line, so a screenshot and the numbers behind it come from the same
+frame. Keys and clicks go in through `Viewport.push_input`, so the game's own
+`_unhandled_input` and `_pick` run -- what is synthetic is the hand, not the
+path. It needs a **window**: screenshots come from the viewport's texture and
+`--headless` has no renderer, so run it with a `timeout` rather than headless.
 
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is
