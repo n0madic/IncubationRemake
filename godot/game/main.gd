@@ -26,6 +26,10 @@ var world: World = null
 ## the world's canonical hash would move every hash the first five slices
 ## pinned (D7).
 var campaign: CampaignHost = null
+## The campaign screen that is up, or `null` when the mission view is.
+var _screen: CampaignScreen = null
+## The interface art, loaded once from the cache.
+var _art: Art = null
 
 var _missions: PackedStringArray = PackedStringArray()
 var _mission: String = ""
@@ -246,6 +250,7 @@ func _ready() -> void:
 	# The campaign layer. `--mission=` still enters a mission directly, past
 	# the campaign, which is what it has always been for; the host is what the
 	# campaign flow drives, and `tour.gd` reaches it by name.
+	_art = Art.open(_cache_dir)
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
 	_build(_wanted_mission())
@@ -263,6 +268,139 @@ func _refresh_after_deploy() -> void:
 	# does change is visibility, and that is `UnitsView.build`'s to redraw.
 	_units.build(world, _geometry, _textures)
 	_refresh_status()
+
+
+# --- the campaign screens ----------------------------------------------------
+
+## Put one campaign screen up, taking down whatever was there.
+##
+## The screens are built fresh each time rather than kept and hidden: they are
+## small, and a kept one would go stale against a roster the last screen sold
+## a soldier out of.
+func show_campaign_screen(name: String) -> CampaignScreen:
+	close_campaign_screen()
+	if campaign == null:
+		return null
+	var screen: CampaignScreen = null
+	match name:
+		CampaignHost.SCREEN_MAP:
+			var map: CampaignMapScreen = CampaignMapScreen.new()
+			map.host = campaign
+			screen = map
+		CampaignHost.SCREEN_BRIEFING:
+			var briefing: BriefingScreen = BriefingScreen.new()
+			briefing.mission = campaign.state.mission
+			briefing.cache_dir = _cache_dir
+			briefing.document = CacheLoader.read_json(
+				"%s/text/briefing/%s.json" % [_cache_dir,
+				campaign.state.mission])
+			screen = briefing
+		CampaignHost.SCREEN_SELECT:
+			var select: SelectUnitsScreen = SelectUnitsScreen.new()
+			select.host = campaign
+			screen = select
+		CampaignHost.SCREEN_HQ, CampaignHost.SCREEN_RECRUIT:
+			var hq: HqScreen = HqScreen.new()
+			hq.host = campaign
+			screen = hq
+		CampaignHost.SCREEN_UPGRADE:
+			var upgrade: UpgradeScreen = UpgradeScreen.new()
+			upgrade.host = campaign
+			screen = upgrade
+		CampaignHost.SCREEN_DEBRIEFING:
+			var debriefing: DebriefingScreen = DebriefingScreen.new()
+			debriefing.report = campaign.last_report
+			debriefing.board = campaign.state.scoreboard[0]
+			screen = debriefing
+	if screen == null:
+		return null
+	screen.setup(_art, _strings, GameFont.load_from(_cache_dir, GAME_FONT))
+	screen.chose.connect(_on_campaign_choice)
+	add_child(screen)
+	_screen = screen
+	return screen
+
+
+func close_campaign_screen() -> void:
+	if _screen == null:
+		return
+	remove_child(_screen)
+	_screen.free()
+	_screen = null
+
+
+## What a screen's button means. The host owns the state machine; this only
+## turns a button into a call on it.
+func _on_campaign_choice(action: String) -> void:
+	if campaign == null:
+		return
+	if action.begins_with("location:"):
+		var parts: PackedStringArray = action.split(":")
+		if parts.size() >= 3 and parts[2] == CampaignMap.KIND_BATTLE:
+			var _shown: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_BRIEFING)
+		elif parts.size() >= 3 and parts[2] == CampaignMap.KIND_UPGRADE:
+			var _up: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_UPGRADE)
+		return
+	match action:
+		"enter":
+			_build(campaign.state.mission)
+			if world != null:
+				campaign.begin_mission(world)
+			var _select: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_SELECT)
+		"deployed":
+			_refresh_after_deploy()
+		"start":
+			if campaign.may_start():
+				campaign.enter_mission()
+				close_campaign_screen()
+		"debriefing":
+			var _report: Dictionary = campaign.finish_mission(world)
+			var _screen_up: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_DEBRIEFING)
+		"advance":
+			var target: String = campaign.advance()
+			if target != "":
+				var _map: CampaignScreen = show_campaign_screen(
+					CampaignHost.SCREEN_MAP)
+		"replay":
+			var _again: String = campaign.replay()
+			var _back: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_MAP)
+		"map":
+			var _to_map: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_MAP)
+		"hq":
+			var _hq: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_HQ)
+		"recruit":
+			var _slot: int = campaign.recruit()
+			var hq_screen: HqScreen = _screen as HqScreen
+			if hq_screen != null:
+				hq_screen.refresh()
+		"dismiss":
+			var hq: HqScreen = _screen as HqScreen
+			if hq != null and hq.selected != Roster.NO_SLOT:
+				var _refund: int = campaign.dismiss(hq.selected)
+				hq.selected = Roster.NO_SLOT
+				hq.refresh()
+		"save":
+			var _written: bool = campaign.save(
+				world if campaign.screen == CampaignHost.SCREEN_MISSION
+				else null)
+		"weapons", "equipment":
+			var catalogue: UpgradeScreen = _screen as UpgradeScreen
+			if catalogue != null:
+				catalogue.catalogue_kind = action
+				catalogue.refresh()
+		"briefing", "conditions", "tips":
+			var brief: BriefingScreen = _screen as BriefingScreen
+			if brief != null:
+				var blocks: Dictionary = {"briefing": "A0",
+					"conditions": "B0", "tips": "C0"}
+				brief.show_block(DictRead.as_string(blocks[action]))
 
 
 ## The missions the manifest declares, in the order the converter emitted them.
@@ -1248,6 +1386,10 @@ func _present_ai_event(event: Dictionary, kind: String) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# A campaign screen owns the input while it is up: without this the mouse
+	# reached the 3D pick behind the plate and selected units through it.
+	if _screen != null:
+		return
 	if world == null:
 		return
 	# The computer's turn holds the input while it is being shown. One key

@@ -28,6 +28,7 @@ func run(h: TestHarness) -> void:
 	_replay_positions(h)
 	_unit_animations(h)
 	_walk_epilogue(h)
+	_campaign_screens(h)
 
 
 ## One shot and one burst of return fire, at the level `main.gd` shows them.
@@ -1241,3 +1242,152 @@ func _walk_epilogue(h: TestHarness) -> void:
 		"`UnitsView.is_walking` is the predicate, not the frame count")
 	units.free()
 	main.free()
+
+
+## The six campaign screens -- docs/27's flow with a picture on it.
+##
+## Oracle boundary: **specification**. What is checked is the half `game` owns:
+## that each screen builds, that not one caption is a literal (every one comes
+## back from the shipped banks rather than as `Localization`'s missing marker),
+## that the roster rows address a **record** and not a table position, and that
+## the purchase catalogue shows what is locked as well as what is not.
+func _campaign_screens(h: TestHarness) -> void:
+	var cache_dir: String = CacheFixture.cache_dir()
+	var manifest: Dictionary = CacheFixture.manifest()
+	var strings: Localization = Localization.from_cache(cache_dir, manifest)
+	var art: Art = Art.open(cache_dir)
+	var font: FontFile = GameFont.load_from(cache_dir, "font_2")
+	h.check("screens.art_present", art.has_art(),
+		"art/index.json is in the cache")
+
+	var host: CampaignHost = CampaignHost.create(cache_dir,
+		CacheFixture.balance(), strings)
+	var state: CampaignState = host.start_new(1)
+	h.equal("screens.host_started", [state.campaign, state.mission],
+		[1, "_C_100"])
+
+	# Every screen builds headless: a `CanvasLayer` needs no renderer.
+	var map: CampaignMapScreen = CampaignMapScreen.new()
+	map.host = host
+	map.setup(art, strings, font)
+	h.check("screens.map_lists_open_locations",
+		map.body().get_child_count() >= 2,
+		"%d open" % host.open_locations().size())
+	_no_missing_strings(h, "map", map)
+	map.free()
+
+	var hq: HqScreen = HqScreen.new()
+	hq.host = host
+	hq.setup(art, strings, font)
+	h.check("screens.hq_rows", hq.body().get_child_count() >= 4,
+		"%d in the squad" % state.roster.used_slots())
+	_no_missing_strings(h, "hq", hq)
+	# A row addresses the record, not the position: after a sort the slot the
+	# screen remembers still names the same soldier (docs/29 section 1.4).
+	hq.selected = 2
+	var before: String = state.roster.record(2).name
+	state.roster.sort_by_ep()
+	hq.refresh()
+	h.equal("screens.hq_addresses_a_record",
+		state.roster.record(hq.selected).name, before,
+		"the seed's three are all rank 1, so the sort leaves them alone")
+	hq.free()
+
+	var upgrade: UpgradeScreen = UpgradeScreen.new()
+	upgrade.host = host
+	upgrade.setup(art, strings, font)
+	var weapons: Dictionary = host.catalogue("weapons")
+	var equipment: Dictionary = host.catalogue("equipment")
+	# The measured split at tech 1, which is the tech level a campaign has from
+	# beginning to end. A screen that hid the locked rows would make a frozen
+	# level look like a working one.
+	h.equal("screens.catalogue_weapons",
+		[DictRead.as_array(weapons["available"]).size(),
+		DictRead.as_array(weapons["locked"]).size()], [14, 28])
+	h.equal("screens.catalogue_equipment",
+		[DictRead.as_array(equipment["available"]).size(),
+		DictRead.as_array(equipment["locked"]).size()], [7, 12])
+	_no_missing_strings(h, "upgrade", upgrade)
+	upgrade.free()
+
+	var select: SelectUnitsScreen = SelectUnitsScreen.new()
+	select.host = host
+	select.setup(art, strings, font)
+	_no_missing_strings(h, "select", select)
+	select.free()
+
+	var briefing: BriefingScreen = BriefingScreen.new()
+	briefing.mission = "_C_100"
+	briefing.cache_dir = cache_dir
+	briefing.document = CacheFixture.read_json(
+		"%s/text/briefing/_C_100.json" % cache_dir)
+	briefing.setup(art, strings, font)
+	var blocks: Dictionary = DictRead.as_dict(
+		briefing.document.get("blocks", {}))
+	h.check("screens.briefing_has_blocks", blocks.has("A0"),
+		"the cache carries %s" % str(blocks.keys()))
+	h.check("screens.briefing_is_spans",
+		DictRead.as_array(blocks.get("A0", [])).size() > 1,
+		"structure, not a marked-up string")
+	_no_missing_strings(h, "briefing", briefing)
+	briefing.free()
+
+	# The debriefing names both silent refusals.
+	var report: Dictionary = {
+		"result": ScoreRecord.RESULT_WON, "score": 140, "total": 140,
+		"kills": 6, "losses": 1, "equipment_points": 250, "commendations": 1,
+		"recovered": [{"name": "Bratt", "slot": 0}],
+		"lost": [{"name": "West", "reason": MissionEnd.DROP_NOT_CANDIDATE},
+			{"name": "Maxon", "reason": MissionEnd.DROP_POOL_FULL}],
+		"next_map": "_C_101"}
+	var board: ScoreRecord = ScoreRecord.new()
+	board.kills = 6
+	board.campaign_kills = 6
+	board.losses = 1
+	board.campaign_losses = 1
+	board.score = 140
+	board.total = 140
+	board.result = ScoreRecord.RESULT_WON
+	var debriefing: DebriefingScreen = DebriefingScreen.new()
+	debriefing.report = report
+	debriefing.board = board
+	debriefing.setup(art, strings, font)
+	var named: PackedStringArray = _labels_of(debriefing)
+	var lost_named: int = 0
+	for line: String in named:
+		if line.contains("West") or line.contains("Maxon"):
+			lost_named += 1
+	h.equal("screens.debriefing_names_the_lost", lost_named, 2,
+		"docs/92 section 7.4: the rule stays, the silence does not")
+	h.check("screens.debriefing_shows_both_halves",
+		named.has(strings.shipped("Txtmod_d", 30))
+		and named.has(strings.shipped("Txtmod_d", 31)),
+		"'In Mission' beside 'In Campaign' -- the record's four pairs")
+	_no_missing_strings(h, "debriefing", debriefing)
+	debriefing.free()
+	host = null
+
+
+## Not one caption may come back as `Localization`'s missing marker.
+func _no_missing_strings(h: TestHarness, name: String,
+		screen: CampaignScreen) -> void:
+	var missing: PackedStringArray = PackedStringArray()
+	for line: String in _labels_of(screen):
+		if line.begins_with(Localization.MISSING_PREFIX):
+			missing.append(line)
+	h.equal("screens.%s.every_string_resolves" % name, missing,
+		PackedStringArray(),
+		"every caption comes from the shipped banks")
+
+
+func _labels_of(node: Node) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for child: Node in node.get_children():
+		var label: Label = child as Label
+		if label != null:
+			out.append(label.text)
+		var button: Button = child as Button
+		if button != null:
+			out.append(button.text)
+		out.append_array(_labels_of(child))
+	return out

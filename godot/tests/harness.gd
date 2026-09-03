@@ -57,7 +57,7 @@ const LEAST_CHECKS: Dictionary = {
 	"effects": 250,
 	"mission": 17,
 	"campaign": 290,
-	"game_ui": 110,
+	"game_ui": 145,
 	"game_loads": 12,
 	"save": 17,
 	"cache": 10,

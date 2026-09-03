@@ -256,6 +256,16 @@ func _run(line: String) -> void:
 				_log.append("deploy: wants SLOT X Y")
 		"screen":
 			_screen(parts[1] if parts.size() > 1 else "")
+		"ui":
+			# Put one campaign screen up. The flow itself reaches them through
+			# `location` and the buttons; this is how a driver photographs one.
+			if parts.size() > 1:
+				var shown: CampaignScreen = _main.show_campaign_screen(parts[1])
+				_log.append("ui %s: %s" % [parts[1],
+					"up" if shown != null else "no such screen"])
+			else:
+				_main.close_campaign_screen()
+				_log.append("ui: closed")
 		"enter":
 			# A debugging entry past the location map, the way `--mission=` is
 			# a debugging entry past the campaign. The flow itself goes through
