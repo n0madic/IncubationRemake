@@ -3926,6 +3926,12 @@ this reading written down rather than half-built.
 
 ## 36. 2026-09-03 — where the presentation plan stands
 
+> **Superseded the same day by [§41](#41-2026-09-03--the-three-rule-gaps-and-the-four-presentation-tails).**
+> This list was written before slice E was built (§37–§38) and before the three
+> core gaps and the four presentation tails below it were closed. It is kept as
+> written rather than edited, because the items it names are what §37 onwards
+> answer one by one. §41.6 has the list as it stands now.
+
 Slices A through D and most of F of the mission-presentation plan are in.
 What is **not**, with the reason:
 
@@ -4322,7 +4328,10 @@ centre.
 **148**, `ai_runtime` **84**, `turn_runtime` **61**, `movemap_runtime` **28**,
 `presentation_tables` **627**, and the Godot suites **33 / 2713**.
 *(§40 moved them again: `blob_tables` **458**, `turn_gold` **198**,
-`presentation_tables` **644**, and the Godot suites **33 / 2727**.)*
+`presentation_tables` **644**, and the Godot suites **33 / 2727**; and §41
+once more: `lcl_runtime` **58**, `movemap_runtime` **31**,
+`presentation_tables` **687**, `presentation_gold` **712** and the Godot
+suites **33 / 2757**.)*
 
 
 ---
@@ -4646,3 +4655,328 @@ full pool leaves the flag down and the engine waits its hundred frames.
 `presentation_tables`' `arrived.creator_stores_are_the_table_ones`,
 `arrived.only_one_store_follows_an_allocation` and their two neighbours pin the
 whole inventory, so a creator that started writing the flag late would fail.
+
+---
+
+## 41. 2026-09-03 — the three rule gaps and the four presentation tails
+
+§36 listed what the mission-presentation plan had left. §37 and §38 built
+slice E; this section closes three of the four remaining **rule** gaps of
+§31.3's class and all four **presentation** tails, and says exactly what the
+fourth rule gap needs.
+
+### 41.1 The statue's beam, in `core`
+
+`Statue` `0x00442310` and `Statue2` `0x004424B0` both reach
+`aPlayRotateStatueSequence` `0x00413A40` — `Statue2` through `0x00413500`,
+which sweeps the control map and calls it once per cell whose action-point
+byte falls in the command's inclusive range. Both twins recorded an event and
+killed nobody. Reading the routine settled three things at once, two of them
+corrections to [`42` §8.1](42-mission-presentation.md):
+
+* **The axis is the action-point byte's bit 0, after a toggle.** `0x00413C31`
+  is `mov al, [ebx+0x0B] / test al, 1 / dec al` on odd and `inc al` on even,
+  and `0x00413C5A` reads the *result*: 0 walks `+y`, 1 walks `+x`. So the same
+  statue alternates its axis call to call, and the byte it flips is the one
+  `aExecuteTeleporter` keys on and `FootBridge2` clears.
+* **The reach is six cells each way, not five.** `0x00413C97` is
+  `cmp dword [esp+0x3c], 6`, the counter starts at zero and is advanced only
+  after the cell survives the null and field-type-2 tests, so distances 1..6
+  are examined. `presentation_tables`' pin had the right bytes under the wrong
+  name (`setpiece.statue.path_5_x2`); it is `path_6_x2` now. `FixedStatue`'s
+  own sequence `0x00414000` is **ten** (`0x00414164`, `cmp eax, 0x0A`), which
+  is what `STATUE_REACH` already said and what §8.1's "nine" did not.
+* **One victim per arm, not one per cell.** `[esp+0x24]` is set to 1 before
+  the null test and cleared **only** on the no-unit branch, so `0x00413D67`
+  re-enters the loop only when the cell was empty; a cell holding a unit ends
+  that arm. Hence exactly two `0x0043B8D0`/`aRemoveUnitElement` pairs
+  (`0x00413F4E`, `0x00413F94`) and exactly two `aBlob_CreateFireDeath` calls.
+
+`LclInterpreter._statue`/`_statue_walk` and `inclib.lcl_runtime._statue` are
+the twins. They write the toggled byte, walk both arms, emit one `statue`
+event carrying the axis, both endpoints and both step counts, and then a
+`statue_kill` per victim in the engine's order — forward arm first. The kill
+goes through the same `UnitState.remove` / `LclWorld.kill` every other set
+piece uses, so the hero counter and the `+0x16` write of §40 come along.
+The scoreboard's Losses pair is still not carried, the same way `FixedStatue`
+and `Barrier` do not carry it.
+
+The endpoint the beam is drawn to is the cell that **stopped** the walk — a
+wall cell, the victim's cell, or the sixth. Walking off the map leaves the
+engine holding a null cell pointer at `0x00413D77`, which would fault; the
+remake draws to the last cell it did reach instead. That is the one place
+this deviates from the instructions and it is a fault the original cannot
+reach on a bounded map.
+
+The picture consumes the event rather than re-deriving it. `core` puts
+**fifteen** numbers on `statue` — the cell, the axis, each arm's endpoint and
+step count, and each arm's victim as `slot, x, y` with `-1, -1, -1` for an arm
+that found nobody — because by the time `_setpiece_extra` runs the byte it
+would read has already been toggled and the victims are already off the map.
+`statue2` left `SetpieceDriver.ANIMATED` for `INSTANT` with `statue_kill`: the
+batch form is a loop, and the animation belongs to the `statue` events emitted
+inside it. Its **sound alias went with it** — `AudioEvents.EVENT_ALIASES` used
+to map `statue2` to `statue`'s cues, which was right while the marker was the
+only event a batch produced and would now play `stone.wav` once more than the
+engine does.
+
+`test_lcl.gd` gained ten checks over a 9×9 synthetic world — the toggle in
+both directions, the axis following the new bit, the kill each way, the
+victims leaving their cells, the unit off the axis spared, the second unit on
+an arm spared, the wall stop, the sixth cell in reach and the seventh out of
+it, and `Statue2` running the sequence on every matched cell — and
+`lcl_runtime.py --check` gained the **same table** as twelve `statue.*` checks
+of its own, because the GDScript suite compares GDScript against GDScript and
+the Python twin had nothing asserting it (43 → 55).
+
+### 41.2 The teleporter, in `core`
+
+[`26` §5](26-interaction.md) has had the four instructions since the
+interaction package; neither twin acted on them. `aExecuteMove` breaks out at
+`0x0046EA73` (`mov al, [esi+0x0D] / cmp al, 9 / je`) **after** charging the
+step — `0x0046EA42` subtracts the budget before the test — and does not set
+the "keep walking" flag, so the walk ends on the entry cell. The epilogue then
+runs, in this order: the mover's alive gate `0x0046EDDC`, the
+`aExecuteTeleporter` call `0x0046EE03`, the gate **again** at `0x0046EE30`,
+and only then `aBuildVisibleMapForUnit` from `+0x42`/`+0x43`. So the closing
+visibility pass and the caller's `MoveUnit` event both see the **exit** cell,
+and a traveller a blocked exit killed gets neither.
+
+`ExecuteMove._teleport` and `inclib.ai._teleport` carry the rule:
+key = the entry's `+0x0B`, exit = the first cell in a row-major sweep with
+field type 10 and a matching key, no exit and nothing happens, an occupied
+exit removes the traveller from the **entry** cell. `MoveResult.teleporter` /
+`ExecuteResult.teleporter` carry the break out of the walk and are kept out of
+both `to_dict`s, which the native capture pins. The engine's own
+`mov byte [esi+0x16], 0` at `0x00470232` is redundant beside
+`aRemoveUnitElement` (§40) and is not repeated. The
+`0x004529D0(x, y, 5, 5, 0, 1)` between the two link writes is the **camera**
+— `aMI.cpp`, *invalid cameratargetposition* — not a rule.
+
+The picture follows: `main.gd._present_teleport` queues
+`aPlayTeleporterSequence`'s seventy frames on the **entry** cell with the exit
+as the stream's target, on the player's walk and on the computer's, before the
+reaction drain for the same reason the mine's blast goes there. The traveller
+is suppressed at frame 40 and, at 10, **placed on the exit's own object** and
+shown -- `0x00416554` moves the unit there before it shows it, and the walk's
+last step had left the body standing on the entry cell, so a sequence that
+only flipped `visible` put it back where it started. `teleporter_blocked`
+draws the stream with the sound table's `warp` (`0x00416840`) and nobody to
+move. The computer's walk aims its opening camera flight at the **path's own
+last cell** rather than at the event's `tx`/`ty`, which are the same cell on
+every walk but this one: after `_teleport` the event reports the exit, and the
+camera has to fly to where the body is about to walk.
+
+**One ordering nit, stated rather than hidden:** the walk is played by
+`UnitsView` and the set piece by `SequenceQueue`, so the stream starts while
+the body is still walking to the entry cell, where the engine finishes the
+walk and only then enters the sequence. The mine's blast has had exactly this
+overlap since §29 and it is the same seam — the two clocks are independent by
+design (`92` §2) — so it is named here rather than papered over with a delay
+number nothing measured.
+
+`movemap_runtime`'s corpus sweep now counts the arm rather than excusing it:
+**17** of its 4587 walks end on a teleporter entry
+(`execute.corpus_teleporter_stops`), which is the first time any check
+exercised field type 9 at all — and `teleporter.corpus_entries` /
+`teleporter.corpus_unpaired` walk all 155 maps with the **model's own** scan
+and reproduce [`26` §5.1](26-interaction.md)'s table: 22 entries, of which
+exactly one, `_C_156`'s at (39, 9) with key 104, reaches no exit. `test_execute_move.gd` gained six checks on a
+corridor with an entry on (2, 1) and an exit on (5, 1): the arrival, the event
+order, the cell link, the `MoveUnit` event's view of the exit, the inert
+unpaired entry — `_C_156`'s key-104 authoring bug — and the blocked exit's
+kill.
+
+### 41.3 The skill orbit's gate, and the bomber's target triple
+
+`0x00410190` opens with `call 0x0043B740 / cmp eax, 1 / jne` — the game-mode
+getter of [`25` §2](25-turn-and-round.md), 1 being the campaign. The skill
+orbit is the **only** one of the four with that gate (`0x0040F420`,
+`0x004104A0` and `0x0040FC50` all open on something else), and `main.gd` now
+reads `TurnState.mode` for it.
+
+The bomber's target triple was marked UNVERIFIED in §32 because "where it
+flies to comes from two of the routine's own locals that were not traced".
+Both halves turned out to be readable and neither is a tile:
+
+* the **creator** takes six literals — `0x00415EE1` pushes
+  `aBlob_CreateBomber(-320000, -320000, 320000, 48000, 48000, 320000)` — so
+  the fly-past is a fixed diagonal across the scene and reads no cell;
+* the **camera** is a separate call, and the untraced locals are its own:
+  `0x00415F2C` reads all six of the camera's numbers back through
+  `0x00403780` before the flight-path switch picks the eye, and `0x00415FB4`
+  sets position `(-16000, 0, 320000)` with **the target it just read**.
+  `0x00416014` puts all six back afterwards.
+
+So the bomber aims the camera nowhere: it slides the eye onto the flight path
+and keeps looking at whatever the scene was already looking at. The remake was
+spawning the creator at the camera's entry point and aiming it at the box's
+cell; it now passes the literals and calls `set_camera(eye, camera_target())`.
+
+### 41.4 `CrushWall`'s footprint — read, and why it is not in `core`
+
+"`0x004238C0` on every cell" hid a mechanism, transcribed in
+[`42` §8.2](42-mission-presentation.md): `0x00415D6D` calls
+`0x0042F410(wallObject, 1, 0, 1)`, which sweeps the control map and casts
+**four probes** per cell from that cell's own symbol object — `x ± 200`,
+`y ± 200`, from `z = 100000` — against the wall object. A cell any probe hits
+has its object dropped to z 0, its height set to 0, its field type set to
+**1 (`Free Place`)** and its state byte set to 2; `0x00415D87` then sweeps for
+state 2, throws the debris and puts the byte back to 1.
+
+That makes a crushed wall walkable floor over a **geometry-derived** set, and
+it is the one gap of the four that this pass does not close. `core/` holds no
+meshes by decision ([`92` §2](92-remake-architecture.md)), so the footprint
+has to come from outside it, and there are exactly two honest routes:
+
+1. a `presentation_gold` phase on wrapped saves of `_C_129`, `_C_142` and
+   `_O_061` — the three missions holding all nine shipped `CrushWall` calls —
+   reading the whole control map before and after each call, the way the ten
+   `special_*` phases of §37 do. `0x00406F20` and `0x0042F410` do not render,
+   so unlike `aPlayCrushWallAnimation` itself they are callable under
+   `dbgcall`. That gives 9/9 and says whether a map-data proxy exists;
+2. failing a proxy, the footprint belongs on `MapResource` from the converter,
+   which means a `CONVERTER_VERSION` bump in both places and a republish —
+   a slice-sized item, not a tail.
+
+What is done here is the reading and the pins
+(`setpiece.crush_wall.*`, `special.probe.*`). **§41.7 then took route 1 and
+measured all nine**, which is what settles which half can be closed.
+
+### 41.5 The between-players screen — the engine skips it here
+
+§35.1 read `0x0047C2C0` as the between-players screen and left it unbuilt.
+Reading its **case 0**, the arm a mission hand-over takes, closes it instead
+of building it:
+
+```c
+if (humanPlayerCount() == 1 && !multiHumanSession()) {  /* 0x0047C3FF */
+    SendMessage(hwnd, WM_LBUTTONDOWN, 0, 0);
+    return 1;                                           /* nothing is drawn */
+}
+```
+
+`0x0043B700` is [`25` §2](25-turn-and-round.md)'s own human-player count --
+the slots at `0x00509E20` whose kind is exactly 1 -- and `0x0043B1F0` is
+`0x00509F08` non-zero **and** the game mode among 2, 3 and 4, which is to say
+a network, local or play-by-mail session. With one human player the routine
+posts its own left-button-down and returns before the first line. The remake is a one-human campaign, so **not** having
+the screen is the faithful behaviour, and the HUD line it was being compared
+against was never a smaller version of it. The hot-seat and session arms —
+cases 2 to 6, and the `Txtmod` ids 125, 127 and 132 they read out of a
+different active text module — stay unbuilt because the remake has no
+hot-seat; that is a `docs/29` item, not a presentation one.
+
+### 41.6 The jump's and the push's frames
+
+Unchanged and unchangeable by this method: both routines render inside their
+frame loop and fault under `dbgcall`, the same boundary `0x00403CC0` has
+(§19.2). They are transcribed from their instructions and pinned in
+`presentation_tables`, and there is nothing to build.
+
+### 41.7 `CrushWall`, measured — all nine shipped call sites
+
+§41.4 named two routes and this took the first. Nine `presentation_gold`
+phases, one process each: the mission is wrapped into `_6_.sav`'s fixed blocks
+by `sav_parse.py --wrap` and staged as its own slot (8, 9 and 10 for `_C_129`,
+`_C_142` and `_O_061` — all three are `World_A00`'s `Level01d`), the phase
+finds the wall the way `0x00415D00` does and calls
+`0x0042F410(wall, 1, 0, 1)` with the **whole** 900-cell control map read
+either side. `aPlayCrushWallAnimation` itself is not called: everything after
+the mark renders, which is `docs/42` §4's own limit, but the two calls that
+decide the footprint do not.
+
+What a marked cell does is exactly three bytes:
+
+| | before | after |
+|---|---|---|
+| `+0x00` state | 1 | 2 — and back to 1 in the debris sweep (`0x00415DA4`) |
+| `+0x01` height | 3280 | **0** |
+| `+0x0D` field type | 2 | **1**, `Free Place` |
+
+Nothing else in the 23-byte record moves, on any of the twenty marked cells.
+
+The footprints are in [`42` §8.2](42-mission-presentation.md). Every one is a
+**straight run of two or three cells** with the command's own cell in it, and
+the runs **tile** the wall: `_C_129`'s column at x 16 is five identical cells
+that split 2 + 3, `_O_061`'s row at y 19 is seven that split 2 + 2 + 3. That
+split is the finding. It is not in the `.lev`: `0x00406F20` walks the
+**standard object** array at `[0x004FA80C]` with stride 66 and count
+`[0x004FA7B4]`, which is neither the map's 900-entry land lattice (one object
+per cell, prototype and all) nor `LEVEL01D.3DW`'s 27 `[CLO]` blocks — the wall
+pieces are objects the engine builds when it expands the scene's prototypes,
+and no reader of the shipped files can separate them.
+
+So the honest division, and what is built:
+
+* **The rule is in `core`.** `LclInterpreter._crush_wall` and
+  `inclib.lcl_runtime._c_crush_wall` write height 0 and field type 1, and the
+  event carries the cells they changed. That is a real change from "the event
+  records that it happened and nothing moves": a crushed wall is now walkable
+  where the command names it, and the picture throws `0x004238C0` on exactly
+  the cells `core` changed rather than on a cell it assumed.
+* **The deficit is one or two cells per call**, named and measured rather than
+  guessed, and `presentation_gold --check` pins all nine footprints cell by
+  cell (603 → **712** checks) so a remake that ever grows a footprint source
+  has an oracle waiting for it.
+* **The source, if it is ever wanted, is the converter** projecting the
+  scene's standard objects onto the control map — the same thing `0x0042F410`
+  does, and now transcribed. It is a slice of its own and it is not started.
+
+None of the three missions is among the five the converter ships, so nothing
+in the remake reaches `CrushWall` today; the rule is there for when one does.
+
+**One consequence worth naming.** The cell now has a real 3280 → 0 height drop,
+and `_paint_setpiece` interpolates a set piece's cell over its frames -- so the
+crushed cell *sinks* across the pool wait rather than snapping. The engine does
+neither: `0x0042F410` writes the cell's height to 0 **before** the frame loop
+and the loop drops the **block object** 480 and turns it 102 a frame until the
+pool empties, then frees it with `aDeleteLand`. The remake has no separate
+block node -- `Scenery` draws the cell -- so sinking the cell over the same
+open-ended wait is the remake's reading of that fall, and it is the same
+mechanism the lift and the door already use. Named here rather than left to be
+discovered.
+
+The capture is also a `docs/91` §1 data point: eight of the nine phases reached
+the anchor on attempt 1 or 2, and `crush_wall_o_061_11_23` failed all ten
+attempts of one run and then reached it on attempt 1 of the next. That is Wine
+start-up, not the plan.
+
+### 41.8 The walk and its own epilogue
+
+One seam this pass also closed rather than only naming. `aExecuteMove`'s step
+loop **blocks**, so the mine's `aExecuteBomb` (`0x0046EDAF`) and the
+teleporter's `aExecuteTeleporter` (`0x0046EE03`) are drawn after the last step.
+In the remake the body is walked by `UnitsView` and the set pieces by
+`SequenceQueue`, two clocks that are independent by design
+([`92` §2](92-remake-architecture.md)), so both were starting while the body
+was still on its way to the cell they belong to — the blast since §29 and the
+teleporter's stream since §41.2.
+
+`SliceMain._hold_for_walk` is the stage that joins them: an `enqueue_until`
+whose bound is the walk's **own** length in frames and whose predicate is
+`UnitsView.is_walking`, which is true from `start_walk` onwards, the camera
+flight's delay included. It is queued only when the walk's events carry
+something to serialise (`_walk_has_epilogue`), so a plain walk does not hold
+the queue for nothing, and it is on the player's path and the computer's
+alike. The reaction drain needed nothing: `_drain_pending_reactions` has
+always waited on the same `is_walking`.
+
+### 41.9 Where the plan stands now
+
+Slices A through F are in, and every item §36 listed is closed except one:
+**slice G**, the by-hand pass in an exported build, has still not been run.
+`CrushWall`'s footprint is measured and pinned (§41.7) with its remaining
+half — a converter that projects scene objects onto the control map — named
+and deliberately not started.
+
+Green after this pass, with the counters that moved: `lcl_runtime` at **58**
+checks (twelve `statue.*` and three `crush_wall.*`, the twins of
+`test_lcl.gd`'s), `movemap_runtime` at **31** (the walks that stop on an entry,
+and `docs/26` §5.1's 22-entry table re-derived by the model's own scan rather
+than by hand — the one unpaired entry it finds is `_C_156`'s key 104),
+`presentation_tables` at **687**, `presentation_gold` at **712** (the nine
+`CrushWall` footprints) and `bash godot/run_tests.sh` at 33 suites and
+**2757** checks. The whole always-run block, `dbgcall/selftest.sh` and all
+five gold captures (712, `blob_gold` 259, `turn_gold` 198, `ai_gold` 47,
+`movemap_gold` 41) are green.

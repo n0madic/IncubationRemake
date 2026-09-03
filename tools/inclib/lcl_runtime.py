@@ -86,6 +86,11 @@ ACTPT_NO_SPAWN = 71
 
 #: ``docs/20`` §7.4 -- the control-map types the set pieces write.
 CTRL_TYPE_WALL = 2
+#: ``0x00415d66`` -- ``CrushWall`` marks its footprint with this field type.
+CTRL_TYPE_FREE_PLACE = 1
+# ``Statue`` reaches at most this far, each way -- ``0x00413c97``,
+# ``cmp dword [esp+0x3c], 6``.
+STATUE_BEAM_REACH = 6
 CTRL_TYPE_DEEP_HOLE = 4
 
 #: ``docs/20`` §7.4 -- ``GetHeight``/``SetHeight`` speak in units of 160 world
@@ -1135,15 +1140,90 @@ def _c_foot_bridge2(it: Interpreter, p: Params) -> str | None:
     return None
 
 
+def _statue_walk(w: LclWorld, x: int, y: int, dx: int, dy: int):
+    """One arm of :func:`_statue`: ``(end x, end y, cells stepped, victim)``."""
+    cx, cy, stepped = x, y, 0
+    while stepped < STATUE_BEAM_REACH:
+        nx, ny = cx + dx, cy + dy
+        if not w.in_bounds(nx, ny):
+            break
+        if w.ctrl_type[w.index(nx, ny)] == CTRL_TYPE_WALL:
+            return nx, ny, stepped, None
+        cx, cy = nx, ny
+        stepped += 1
+        victim = w.unit_on(cx, cy)
+        if victim is not None:
+            return cx, cy, stepped, victim
+    return cx, cy, stepped, None
+
+
+def _statue(it: Interpreter, x: int, y: int) -> None:
+    """``0x00413a40``, ``aPlayRotateStatueSequence`` -- the rule half.
+
+    The statue's own action-point byte toggles bit 0 (``0x00413c31``: an odd
+    byte goes down by one, an even one up by one) and the **new** bit picks the
+    axis -- 0 walks ``+y``, 1 walks ``+x`` (``0x00413c5a``).  The beam then runs
+    both ways from the statue's cell, at most :data:`STATUE_BEAM_REACH` cells
+    each (``0x00413c97``, ``cmp dword [esp+0x3c], 6``), and stops at the map
+    edge, at a cell of field type 2, or at the **first** unit it meets:
+    ``0x00413d67`` re-enters the loop only on the no-unit branch, which is why
+    the routine has exactly two kill sites (``0x00413f4e``, ``0x00413f94``).
+    Each victim is booked as a loss (``0x0043b8d0``) and taken off the map by
+    ``aRemoveUnitElement`` ``0x004779c0``.
+
+    The endpoint the beam is drawn to is the cell that stopped the walk.
+    Running off the map leaves the engine with a null cell pointer there, so
+    the remake draws to the last cell it did reach instead -- the remake's, and
+    the only place this differs from the instructions.
+    """
+    w = it.world
+    if not w.in_bounds(x, y):
+        return
+    cell = w.index(x, y)
+    flipped = w.actpt[cell]
+    flipped = (flipped - 1) if flipped & 1 else (flipped + 1)
+    flipped &= 0xFF
+    w.actpt[cell] = flipped
+    axis = flipped & 1
+    dx, dy = (1, 0) if axis else (0, 1)
+    forward = _statue_walk(w, x, y, dx, dy)
+    backward = _statue_walk(w, x, y, -dx, -dy)
+    # Fifteen numbers, fixed width: the statue's cell, the axis the toggle
+    # chose, each arm's endpoint and step count, and each arm's victim as
+    # ``slot, x, y`` with ``-1, -1, -1`` for an arm that found nobody.  The
+    # picture cannot re-derive any of it -- the byte it would read has already
+    # been toggled and the victims are already off the map by the time it runs.
+    values = [x, y, axis,
+              forward[0], forward[1], forward[2],
+              backward[0], backward[1], backward[2]]
+    for reached in (forward, backward):
+        victim = reached[3]
+        values += [-1, -1, -1] if victim is None else [victim.slot, victim.x,
+                                                       victim.y]
+    it.event("statue", *values)
+    for reached in (forward, backward):
+        if reached[3] is not None:
+            w.kill(reached[3])
+            it.event("statue_kill", reached[0], reached[1])
+
+
 def _c_statue2(it: Interpreter, p: Params) -> str | None:
-    """``0x004424b0`` -- the batch form of ``Statue``, over an ActPt range."""
-    it.event("statue2", p.n(0), p.n(1),
-             len(it.world.cells_with_actpt(p.n(0), p.n(1))))
+    """``0x004424b0`` -> ``0x00413500`` -- the batch form, over an ActPt range.
+
+    The engine reads the byte fresh at each cell of a row-major sweep, and the
+    toggle only ever touches the cell being processed, so the matched set is
+    the one taken up front.
+    """
+    w = it.world
+    cells = w.cells_with_actpt(p.n(0), p.n(1))
+    it.event("statue2", p.n(0), p.n(1), len(cells))
+    for cell in cells:
+        _statue(it, cell % w.width, cell // w.width)
     return None
 
 
 def _c_statue(it: Interpreter, p: Params) -> str | None:
-    it.event("statue", p.n(0), p.n(1))
+    _statue(it, p.n(0), p.n(1))
     return None
 
 
@@ -1252,6 +1332,36 @@ def _c_para_bombs(it: Interpreter, p: Params) -> str | None:
     # move the generator a second time.
     it.event("para_bombs", x, y, bw, bh, len(tiles),
              *[c for tile in tiles for c in tile])
+    return None
+
+
+def _c_crush_wall(it: Interpreter, p: Params) -> str | None:
+    """``aPlayCrushWallAnimation`` ``0x00415c70`` -- ``docs/42`` §8.2.
+
+    Before it throws any debris the routine calls ``0x0042f410(wall, 1, 0, 1)``,
+    which sweeps the whole control map, casts four probes per cell from that
+    cell's **own** symbol object -- ``x`` and ``y`` each 200 either way, from
+    ``z = 100000`` -- against the wall's standard object, and for every cell a
+    probe hits writes the height 0, the field type 1 (`Free Place`) and the
+    state byte 2.  The state byte goes back to 1 in the debris sweep
+    (``0x00415da4``), so what lasts is **the height and the field type**.
+
+    **The footprint is a query against the scene, and this model holds no
+    meshes.**  Measured on all nine shipped call sites (``docs/97`` §41.7):
+    every one is a straight run of two or three cells and the command's own
+    cell is always in it, but which two or three is the wall piece's geometry
+    and nothing in the ``.lev`` records it.  So the rule is applied to the
+    cell this can name, and the deficit is one or two cells per call.
+    """
+    w = it.world
+    x, y = p.n(0), p.n(1)
+    values = [x, y]
+    if w.in_bounds(x, y):
+        cell = w.index(x, y)
+        w.cell_height[cell] = 0
+        w.ctrl_type[cell] = CTRL_TYPE_FREE_PLACE
+        values += [x, y]
+    it.event("crush_wall", *values)
     return None
 
 
@@ -1374,7 +1484,7 @@ COMMANDS: dict[str, Callable[[Interpreter, Params], "str | None"]] = {
     "OpenTube": _c_tile_effect("open_tube"),
     "OpenPlantTube": _c_tile_effect("open_plant_tube"),
     "OpenFrontDoor": _c_tile_effect("open_front_door"),
-    "CrushWall": _c_tile_effect("crush_wall"),
+    "CrushWall": _c_crush_wall,
     "Bridge": _c_tile_effect("bridge"),
     "FireCircle": _c_tile_effect("fire_circle"),
     "MoveObjects": _c_actpt_range("move_objects"),

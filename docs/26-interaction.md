@@ -401,6 +401,16 @@ every band the legend names.
 loss is booked into the scoreboard's Losses pair ([`11` §5.5](11-save-game-format.md))
 through `0x0043B8D0`.
 
+*(Modelled 2026-09-03, [`97` §41.2](97-slice-5-report.md).* `aExecuteMove`
+breaks the walk on the entry cell — the step is charged first (`0x0046EA42`
+subtracts the budget before `0x0046EA73` tests the field type) and the
+"keep walking" flag is not set on that arm — and the epilogue calls this
+between the mover's alive gate at `0x0046EDDC` and the closing visibility
+pass, so the pass and the `MoveUnit` event both see the **exit** cell.
+`ExecuteMove._teleport` and `inclib.ai._teleport` are the two twins; the
+`0x004529D0(x, y, 5, 5, 0, 1)` between the two writes is the camera
+(`aMI.cpp`'s *invalid cameratargetposition*), not a rule.*)
+
 ### 5.1 The corpus, and one authoring bug
 
 Seven shipped maps carry teleporters: 22 entries and 20 exits.

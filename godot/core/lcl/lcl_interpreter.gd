@@ -41,13 +41,18 @@ const SPECIES_MACHINE: int = 3
 const ACTPT_NO_SPAWN: int = 71
 ## The control-map types the set pieces write.
 const CTRL_TYPE_WALL: int = 2
+## `0x00415D66` -- `CrushWall` marks its footprint with this field type.
+const CTRL_TYPE_FREE_PLACE: int = 1
 const CTRL_TYPE_DEEP_HOLE: int = 4
 ## `Elevator` moves five height levels per step.
 const ELEVATOR_STEP: int = 800
 ## `ParaBombs` makes exactly this many attempts to lay a mine.
 const PARA_BOMB_TRIES: int = 60
-## `FixedStatue` reaches at most this far.
+## `FixedStatue` reaches at most this far -- `0x00414164`, `cmp eax, 0xa`.
 const STATUE_REACH: int = 10
+## `Statue` reaches at most this far, each way -- `0x00413C97`,
+## `cmp dword [esp+0x3c], 6`.
+const STATUE_BEAM_REACH: int = 6
 
 ## docs/20 sections 2.3 and 7.4 -- the two directions a set piece can be given,
 ## which do **not** agree on the north/south axis. Keeping both spellings is the
@@ -570,10 +575,9 @@ func _set_piece(instr: Dictionary, name: String) -> String:
 		"FootBridge2":
 			_foot_bridge2(instr)
 		"Statue":
-			_event("statue", [_n(instr, 0), _n(instr, 1)])
+			_statue(_n(instr, 0), _n(instr, 1))
 		"Statue2":
-			_event("statue2", [_n(instr, 0), _n(instr, 1),
-				_context.cells_with_actpt(_n(instr, 0), _n(instr, 1)).size()])
+			_statue2(_n(instr, 0), _n(instr, 1))
 		"GrowingLand":
 			_growing_land(instr)
 		"FallingSpores":
@@ -593,7 +597,7 @@ func _set_piece(instr: Dictionary, name: String) -> String:
 		"OpenFrontDoor":
 			_event("open_front_door", [_n(instr, 0), _n(instr, 1)])
 		"CrushWall":
-			_event("crush_wall", [_n(instr, 0), _n(instr, 1)])
+			_crush_wall(_n(instr, 0), _n(instr, 1))
 		"Bridge":
 			_event("bridge", [_n(instr, 0), _n(instr, 1)])
 		"FireCircle":
@@ -773,6 +777,127 @@ func _barrier(instr: Dictionary) -> void:
 			by += DIR_BARRIER_DY[direction]
 	_event("barrier_on", [x, y, direction, killed])
 
+
+## `0x00413A40`, `aPlayRotateStatueSequence` -- the rule half of the statue.
+##
+## The statue's own action-point byte toggles bit 0 (`0x00413C31`: an odd byte
+## goes down by one, an even one up by one) and the **new** bit picks the axis
+## -- 0 walks `+y`, 1 walks `+x` (`0x00413C5A`). The beam then runs both ways
+## from the statue's cell, at most [constant STATUE_BEAM_REACH] cells each
+## (`0x00413C97`, `cmp dword [esp+0x3c], 6`), and stops at the map edge, at a
+## cell of field type 2, or at the **first** unit it meets: `0x00413D67`
+## re-enters the loop only on the no-unit branch, which is why the routine has
+## exactly two kill sites (`0x00413F4E`, `0x00413F94`). Each victim is booked
+## as a loss (`0x0043B8D0`) and taken off the map by `aRemoveUnitElement`
+## `0x004779C0`.
+##
+## The endpoint the beam is drawn to is the cell that stopped the walk. Running
+## off the map leaves the engine with a null cell pointer there, so the remake
+## draws to the last cell it did reach instead -- the remake's, and the only
+## place this differs from the instructions.
+func _statue(x: int, y: int) -> void:
+	if not _context.in_bounds(x, y):
+		return
+	var cell: int = _context.index(x, y)
+	var flipped: int = _context.state.action_point_at(cell)
+	flipped = (flipped - 1) if (flipped & 1) != 0 else (flipped + 1)
+	flipped &= 0xFF
+	_context.state.set_action_point(cell, flipped)
+	var axis: int = flipped & 1
+	var dx: int = 1 if axis == 1 else 0
+	var dy: int = 0 if axis == 1 else 1
+	var victims: Array[UnitState] = [null, null]
+	var forward: Vector3i = _statue_walk(x, y, dx, dy, victims, 0)
+	var backward: Vector3i = _statue_walk(x, y, -dx, -dy, victims, 1)
+	# Fifteen numbers, fixed width: the statue's cell, the axis the toggle
+	# chose, each arm's endpoint and step count, and each arm's victim as
+	# `slot, x, y` with `-1, -1, -1` for an arm that found nobody. The picture
+	# cannot re-derive any of it -- the byte it would read has already been
+	# toggled and the victims are already off the map by the time it runs.
+	var values: Array[int] = [x, y, axis,
+		forward.x, forward.y, forward.z,
+		backward.x, backward.y, backward.z]
+	for victim: UnitState in victims:
+		if victim == null:
+			values.append_array([-1, -1, -1])
+		else:
+			values.append_array([victim.slot, victim.x, victim.y])
+	_event("statue", values)
+	for victim: UnitState in victims:
+		if victim == null:
+			continue
+		var vx: int = victim.x
+		var vy: int = victim.y
+		_context.kill(victim)
+		_event("statue_kill", [vx, vy])
+
+
+## One arm of [method _statue]. Returns the cell that stopped the walk and the
+## number of cells stepped, and writes the one unit it found -- if it found
+## one -- into `victims[arm]`.
+func _statue_walk(x: int, y: int, dx: int, dy: int,
+		victims: Array[UnitState], arm: int) -> Vector3i:
+	var cx: int = x
+	var cy: int = y
+	var stepped: int = 0
+	while stepped < STATUE_BEAM_REACH:
+		var nx: int = cx + dx
+		var ny: int = cy + dy
+		if not _context.in_bounds(nx, ny):
+			break
+		if _context.state.field_type_at(_context.index(nx, ny)) \
+				== CTRL_TYPE_WALL:
+			return Vector3i(nx, ny, stepped)
+		cx = nx
+		cy = ny
+		stepped += 1
+		var victim: UnitState = _context.unit_on(cx, cy)
+		if victim != null:
+			victims[arm] = victim
+			return Vector3i(cx, cy, stepped)
+	return Vector3i(cx, cy, stepped)
+
+
+## `0x004424B0` -> `0x00413500` -- the batch form: every cell whose action
+## point falls in the inclusive range runs [method _statue]. The engine reads
+## the byte fresh at each cell of a row-major sweep, and the toggle only ever
+## touches the cell being processed, so the matched set is the one taken up
+## front.
+func _statue2(low: int, high: int) -> void:
+	var cells: PackedInt32Array = _context.cells_with_actpt(low, high)
+	_event("statue2", [low, high, cells.size()])
+	for cell: int in cells:
+		_statue(cell % _context.state.width, cell / _context.state.width)
+
+
+
+## `aPlayCrushWallAnimation` `0x00415C70` -- the rule half, docs/42 section 8.2.
+##
+## Before it throws any debris the routine calls `0x0042F410(wall, 1, 0, 1)`,
+## which sweeps the whole control map, casts four probes per cell from that
+## cell's **own** symbol object -- `x` and `y` each 200 either way, from
+## `z = 100000` -- against the wall's standard object, and for every cell a
+## probe hits writes the height 0, the field type 1 (`Free Place`) and the
+## state byte 2. The state byte goes back to 1 in the debris sweep
+## (`0x00415DA4`), so what lasts is **the height and the field type**: a
+## crushed wall becomes walkable floor at ground level.
+##
+## **The footprint is a query against the scene, and `core` holds no meshes.**
+## Measured on all nine shipped call sites (docs/97 section 41.7): every one is
+## a straight run of two or three cells, and the command's own cell is always
+## in it -- but which two or three is decided by the wall piece's geometry and
+## nothing in the `.lev` records it. So the rule is applied to the cells this
+## **can** name, which today is the command's own, and the deficit is one or
+## two cells per call rather than the whole thing. The event carries what was
+## changed so the picture throws its debris on exactly those cells.
+func _crush_wall(x: int, y: int) -> void:
+	var values: Array[int] = [x, y]
+	if _context.in_bounds(x, y):
+		var at: int = _context.index(x, y)
+		_context.state.set_height(at, 0)
+		_context.state.set_field_type(at, CTRL_TYPE_FREE_PLACE)
+		values.append_array([x, y])
+	_event("crush_wall", values)
 
 ## `0x00442370` -- up to ten cells along `dir`; the first unit dies.
 func _fixed_statue(instr: Dictionary) -> void:

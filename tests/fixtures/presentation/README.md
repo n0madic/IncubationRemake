@@ -184,3 +184,26 @@ than deriving it from the cells.
 **What is still not measured**: `0x00470AB0`'s ignition. It calls
 `aPlayGroundFireAnimation`, which renders, and no `aPlay*` can be called under
 the debugger — a boundary of the method rather than a gap in this capture.
+
+## The `CrushWall` phases *(added 2026-09-03)*
+
+Nine more, one per shipped `CrushWall` call site (`docs/42` §8.2,
+`docs/97` §41.7). They do **not** run on `_6_.sav`: each loads a save wrapped
+from its own mission, and the three have to be staged before the capture is
+taken:
+
+```bash
+python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \
+    --wrap gog_incubation/Missions/_C_129.lev --out "$COPY/Work/Saves2/_8_.sav"
+python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \
+    --wrap gog_incubation/Missions/_C_142.lev --out "$COPY/Work/Saves2/_9_.sav"
+python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \
+    --wrap gog_incubation/Missions/_O_061.lev --out "$COPY/Work/Saves2/_10_.sav"
+```
+
+All three are `World_A00`'s `Level01d`, 30x30. Each phase reads the whole
+900-cell control map, calls `0x00406F20` the way `0x00415D00` does and then
+`0x0042F410(wall, 1, 0, 1)`, and reads the map again — so what the check
+compares is every cell, not the one the command names.
+`aPlayCrushWallAnimation` itself is never called: everything after the mark
+renders.

@@ -70,6 +70,10 @@ const NEIGHBOURS: Array[Vector2i] = [Vector2i(-1, -1), Vector2i(0, -1),
 ## call sites (docs/20's camera family), so the second is what a script
 ## reaches -- and `docs/42` §8's "-320 000" had the sign of the **x** on the
 ## height. The remake takes path 0.
+## `0x00415EE1` -- `aBlob_CreateBomber(-320000, -320000, 320000, 48000,
+## 48000, 320000)`, six literals the routine never varies.
+const BOMBER_FROM: Vector3i = Vector3i(-320000, -320000, 320000)
+const BOMBER_TO: Vector3i = Vector3i(48000, 48000, 320000)
 const BOMBER_START_X: int = -16000
 const BOMBER_START_Z: int = 320000
 const BOMBER_START_Z_PATH_1: int = 80000
@@ -243,11 +247,11 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return GROUND_RISE_FRAMES + GROUND_CARRY_FRAMES + 1
-		"statue", "statue2":
+		"statue":
 			# docs/42 section 8.1: the flight to 32000 above the camera's own
 			# position looking at the statue, thirteen frames of +80 on the
 			# object's rotation word and a fourteenth writing the original
-			# plus a quarter turn (`Statue2` has no turn at all), then the
+			# plus a quarter turn, then the
 			# beam -- `FireDeath` on every unit in its path, hidden, and
 			# `0x00428BF0` from the statue to the last cell each way.
 			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
@@ -353,14 +357,19 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			# the camera target follows it, and one `0x0042B070` per tile.
 			queue.enqueue(STAGE_LEAD, 1,
 				func(_frame: int, _total: int) -> void:
-					# `mov edi, -16000 / xor ebx, ebx / mov ebp, 320000` --
-					# three coordinates, and the middle one is **zero**. The
-					# target triple is the routine's own `var_14h`/`var_1ch`
-					# and is **UNVERIFIED**: the box's cell at the entry
-					# height is the remake's reading of it.
-					host.spawn_at(BlobPrograms.BOMBER,
-						Vector3i(BOMBER_START_X, 0, BOMBER_START_Z),
-						PackedInt32Array([centre.x, centre.y, BOMBER_START_Z]))
+					# `0x00415EE1`..`0x00415EFF` -- six **literals**, not
+					# tiles: the fly-past is a fixed diagonal across the
+					# scene and reads no cell at all.
+					host.spawn_at(BlobPrograms.BOMBER, BOMBER_FROM,
+						PackedInt32Array([BOMBER_TO.x, BOMBER_TO.y,
+							BOMBER_TO.z]))
+					# `0x00415F2C` reads all six camera numbers back and
+					# `0x00415FB4` sets the eye on the flight path with the
+					# **target it just read** -- so the two locals docs/97
+					# section 32 left UNVERIFIED are the camera's own target,
+					# and the bomber aims the camera nowhere.
+					host.set_camera(Vector3i(BOMBER_START_X, 0,
+						BOMBER_START_Z), host.camera_target())
 					var index: int = 0
 					for entry: Variant in DictRead.as_array(extra.get("tiles", [])):
 						var at: PackedInt32Array = DictRead.as_int32_array(entry)
@@ -392,7 +401,15 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					# ShotHost.hide_unit] frees the node.
 					if left == TELEPORT_HIDE_AT and unit >= 0:
 						host.suppress_unit(unit)
+					# `0x00416554` -- at ten the unit is **moved to the target
+					# object** and only then shown again. `core` relinked it
+					# when the walk ended, but the body was left standing on
+					# the entry cell by the walk's own last step, so without
+					# this it blinks out and back in on the wrong cell.
 					if left == TELEPORT_MOVE_AT and unit >= 0:
+						host.place_body(unit, host.cell_object(
+							DictRead.as_int(extra.get("tx", cell.x)),
+							DictRead.as_int(extra.get("ty", cell.y))))
 						host.show_unit(unit)
 					paint.call(frame, total),
 				cues)

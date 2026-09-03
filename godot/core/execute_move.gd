@@ -37,6 +37,8 @@ const PLAYER_ALIEN: int = 255
 ## docs/26 section 5 -- the field type that starts a teleport, and the only one
 ## `aExecuteMove` tests for other than through the delay column.
 const FIELD_TELEPORT_IN: int = 9
+## The other half of the pair -- `0x004701B2`, `cmp byte [esi+0x0D], 0x0A`.
+const FIELD_TELEPORT_OUT: int = 10
 
 ## docs/21 section 4 -- the weapon a mine would resolve as.
 const MINE_WEAPON: int = 36
@@ -138,8 +140,17 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 				"detail": claimed})
 
 		if state.field_type_at(index) == FIELD_TELEPORT_IN:
+			# `0x0046EA73` -- the walk ends on the entry cell. The step has
+			# already been charged (`0x0046EA42` subtracts the budget before
+			# the test), the "keep walking" flag is not set on this arm, and
+			# the epilogue calls `aExecuteTeleporter` with the position the
+			# mover now holds. [method execute] is what resolves it, because
+			# `0x0046EE03` sits behind the alive gate.
 			result.events.append({"kind": "teleporter", "x": nx, "y": ny,
 				"detail": action_point})
+			result.teleporter = true
+			result.ok = true
+			return result
 
 		if state.obstacle_at(index) == MapState.OBSTACLE_MINE:
 			# **Measured.** The walk ends here, `+0x15` is zeroed *inside* the
@@ -251,6 +262,55 @@ static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			return
 
 
+## `aExecuteTeleporter` `0x00470150` -- docs/26 section 5, four instructions.
+##
+## The entry cell's action point (`+0x0B`, `0x00470199`) is the key; the exit
+## is the **first** cell in row-major order whose field type is
+## [constant FIELD_TELEPORT_OUT] and whose action point matches
+## (`0x004701B2`), so two exits sharing a key make the earlier one win and two
+## entries sharing an exit is legal. No exit at all and nothing happens
+## (`0x004701CA`) -- which is `_C_156`'s key-104 entry, the one authoring bug
+## of docs/26 section 5.1.
+##
+## **An occupied exit kills the traveller** (`0x004701DD`): the loss is booked
+## into the scoreboard's Losses pair through `0x0043B8D0` -- a field the
+## remake's save does not carry, so this books nothing, the same way
+## [method LclInterpreter._fixed_statue] does not -- and `aRemoveUnitElement`
+## takes the unit off the **entry** cell. The engine's own
+## `mov byte [esi+0x16], 0` at `0x00470232` is redundant beside it and is not
+## repeated here.
+##
+## Otherwise the cell link moves, `+0x42`/`+0x43` follow it, and the epilogue's
+## closing visibility pass and `MoveUnit` event both see the **exit** cell.
+static func _teleport(state: MapState, turn: TurnState, mover: UnitState,
+		moved: MoveResult) -> void:
+	var entry: int = state.index_of(moved.x, moved.y)
+	var key: int = state.action_point_at(entry)
+	var exit_at: int = -1
+	for i: int in range(state.cell_count()):
+		if state.field_type_at(i) == FIELD_TELEPORT_OUT \
+				and state.action_point_at(i) == key:
+			exit_at = i
+			break
+	if exit_at < 0:
+		return
+	if state.unit_at(exit_at) != MapState.NO_UNIT:
+		UnitState.remove(state, turn, mover)
+		moved.events.append({"kind": "teleporter_blocked", "x": moved.x,
+			"y": moved.y, "detail": key})
+		return
+	var ex: int = exit_at % state.width
+	var ey: int = exit_at / state.width
+	state.set_unit(entry, MapState.NO_UNIT)
+	state.set_unit(exit_at, mover.slot)
+	mover.x = ex
+	mover.y = ey
+	moved.x = ex
+	moved.y = ey
+	moved.events.append({"kind": "teleported", "x": ex, "y": ey,
+		"detail": key})
+
+
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		ctab: CtrlMapTable, wtab: WeaponTable, mover: UnitState,
 		walked: Dictionary, tx: int, ty: int, arrival_points: int,
@@ -301,6 +361,11 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if moved.stopped_on_mine:
 		_detonate(state, units, utab, wtab, mover, moved, ai_level,
 			human_players, game_mode, turn, rng)
+	# `0x0046EDDC` gates the teleport on the mover's `+0x16` and `0x0046EE30`
+	# reads it again afterwards, so a traveller the blocked exit killed gets
+	# no closing pass either.
+	if mover.is_alive() and moved.teleporter:
+		_teleport(state, turn, mover, moved)
 	# The bomb arm returns first when the mine killed the walker
 	# (`0x0046ECB5`, `0x0046EDE1`, `0x0046EE35`), so the third pass runs only
 	# while the mover lives.

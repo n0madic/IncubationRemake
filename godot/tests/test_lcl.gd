@@ -422,7 +422,8 @@ static func _program(body: Array, labels: Dictionary = {}) -> LclProgram:
 
 ## Runs one hand-built program on a `w x h` world with the given units.
 static func _run_synthetic(program: LclProgram, units: Array,
-		width: int = 4, height: int = 4) -> Dictionary:
+		width: int = 4, height: int = 4,
+		cells: Dictionary = {}) -> Dictionary:
 	var zeros: Array = []
 	var links: Array = []
 	# The idle value of the three object slots and the obstacle byte.
@@ -431,17 +432,22 @@ static func _run_synthetic(program: LclProgram, units: Array,
 		zeros.append(0)
 		links.append(-1)
 		idle.append(255)
+	# `cells` overrides single arrays -- a set piece that reads the field type
+	# or the action point needs a map that carries one.
+	var grid: Dictionary = {"height": zeros, "field_type": zeros,
+		"action_point": zeros, "unit": links, "effect0": zeros,
+		"effect1": idle, "effect2": idle, "effect3": idle,
+		"effect4": zeros, "effect5": idle,
+		"land": zeros, "start_index": links}
+	for key: Variant in cells:
+		grid[key] = cells[key]
 	var res: MapResource = MapResource.from_document({
 		"width": width, "height": height,
 		"header": {"name": "synthetic", "next_map": "", "map_type": 0,
 			"mission_id": 0, "world_set": "", "world_scene": "",
 			"camera_height": 0, "equip_points": [0, 0, 0, 0],
 			"skill_level": 0, "tech_level": 0},
-		"cells": {"height": zeros, "field_type": zeros,
-			"action_point": zeros, "unit": links, "effect0": zeros,
-			"effect1": idle, "effect2": idle, "effect3": idle,
-			"effect4": zeros, "effect5": idle,
-			"land": zeros, "start_index": links},
+		"cells": grid,
 	})
 	var state: MapState = MapState.from_resource(res)
 	var roster: Dictionary = {}
@@ -736,11 +742,177 @@ func _synthetic(h: TestHarness) -> void:
 	h.equal("synthetic.an_unknown_type_spawns_nameless", found, "",
 		"UnitTypeTable.description answers 'type 99' and must not be used here")
 
+	_statues(h)
+	_crush_wall(h)
+
 	# A program with no `[END]` falls off the end, which is an outcome and not
 	# an error (docs/20 section 2).
 	var fell: LclOutcome = _fell_off()
 	h.equal("synthetic.no_end_falls_off", fell.kind, LclOutcome.FELL_OFF,
 		"the loop runs out of buffer; docs/20 section 2")
+
+
+
+## Whether the unit in a [method _run_synthetic] roster is still alive.
+static func _alive(run: Dictionary, slot: int) -> bool:
+	var roster: Dictionary = run["units"]
+	var unit: UnitState = roster[slot]
+	return unit.is_alive()
+
+
+## `Statue` / `Statue2` -- `aPlayRotateStatueSequence` `0x00413A40`, the beam
+## that kills. docs/42 section 8.1 as corrected by docs/97 section 41.
+func _statues(h: TestHarness) -> void:
+	# A 9x9 world so the six-cell reach fits either side of the middle.
+	var wide: int = 9
+	var walls: Array = []
+	for _i: int in range(wide * wide):
+		walls.append(0)
+	# The statue on (4, 4) with action point 0: the toggle makes it 1, so the
+	# beam runs along **x**.
+	var points: Array = walls.duplicate()
+	points[4 * wide + 4] = 0
+	var run: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(4), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 6, "y": 4},
+		{"slot": 1, "player": 0, "x": 1, "y": 4},
+		{"slot": 2, "player": 0, "x": 4, "y": 7},
+	], wide, wide, {"field_type": walls, "action_point": points})
+	var state: MapState = run["state"]
+	h.equal("statue.toggles_the_action_point",
+		state.action_point_at(state.index_of(4, 4)), 1,
+		"`0x00413C31` flips bit 0 of the statue's own `+0x0B`")
+	h.equal("statue.the_beam_kills_one_each_way",
+		[_alive(run, 0), _alive(run, 1), _alive(run, 2)],
+		[false, false, true],
+		"the new bit picks x, so the unit off the axis is spared")
+	h.equal("statue.the_victims_leave_the_map",
+		[state.unit_at(state.index_of(6, 4)),
+		state.unit_at(state.index_of(1, 4))],
+		[MapState.NO_UNIT, MapState.NO_UNIT],
+		"`aRemoveUnitElement` takes them off their cells")
+
+	# The nearer of two on one arm is the only one taken: `0x00413D67`
+	# re-enters the loop only on the no-unit branch.
+	var near: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(4), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 5, "y": 4},
+		{"slot": 1, "player": 0, "x": 7, "y": 4},
+	], wide, wide, {"field_type": walls, "action_point": points})
+	h.equal("statue.only_the_first_unit_on_an_arm_dies",
+		[_alive(near, 0), _alive(near, 1)], [false, true],
+		"one kill site per direction, not one per cell")
+
+	# Field type 2 stops the walk before the unit behind it.
+	var blocked: Array = walls.duplicate()
+	blocked[4 * wide + 6] = 2
+	var stopped: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(4), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 7, "y": 4},
+	], wide, wide, {"field_type": blocked, "action_point": points})
+	h.equal("statue.a_wall_stops_the_beam",
+		_alive(stopped, 0), true,
+		"`cmp byte [esi+0x0D], 2` at `0x00413CCA`")
+
+	# The reach is six cells, so the sixth dies and the seventh does not.
+	var sixth: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(7), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 1, "y": 4},
+	], wide, wide, {"field_type": walls, "action_point": points})
+	h.equal("statue.the_sixth_cell_is_in_reach",
+		_alive(sixth, 0), false,
+		"`cmp dword [esp+0x3c], 6` at `0x00413C97`")
+	var seventh: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(8), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 1, "y": 4},
+	], wide, wide, {"field_type": walls, "action_point": points})
+	h.equal("statue.the_seventh_is_not",
+		_alive(seventh, 0), true,
+		"the counter exits at six before the step is taken")
+
+	# An odd action point toggles **down**, which picks the other axis.
+	var odd: Array = walls.duplicate()
+	odd[4 * wide + 4] = 5
+	var turned: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue", [_num(4), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 6, "y": 4},
+		{"slot": 1, "player": 0, "x": 4, "y": 6},
+	], wide, wide, {"field_type": walls, "action_point": odd})
+	var turned_state: MapState = turned["state"]
+	h.equal("statue.an_odd_point_toggles_down",
+		turned_state.action_point_at(turned_state.index_of(4, 4)), 4,
+		"`0x00413C38` is `dec al`, so 5 becomes 4 and the axis is y")
+	h.equal("statue.the_axis_follows_the_new_bit",
+		[_alive(turned, 0), _alive(turned, 1)], [true, false],
+		"an even byte after the toggle walks +y")
+
+	# `Statue2` runs the same sequence on every cell in the ActPt range.
+	var batch: Array = walls.duplicate()
+	batch[1 * wide + 1] = 40
+	batch[6 * wide + 6] = 41
+	var swept: Dictionary = _run_synthetic(_program([
+		_instr("command", "Statue2", [_num(40), _num(41)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 3, "y": 1},
+		{"slot": 1, "player": 0, "x": 6, "y": 4},
+	], wide, wide, {"field_type": walls, "action_point": batch})
+	h.equal("statue2.runs_every_matched_cell",
+		[_alive(swept, 0), _alive(swept, 1)], [false, false],
+		"40 toggles to 41 and walks x; 41 toggles to 40 and walks y")
+
+
+## `CrushWall` -- `0x00415C70` through `0x0042F410`, docs/42 section 8.2.
+##
+## The twin of `lcl_runtime.py`'s `crush_wall.*`: a wall cell becomes floor at
+## ground level, and the event carries the cells that changed. What it does
+## **not** carry is the other one or two cells of the wall piece -- the
+## footprint is the piece's own geometry (docs/97 section 41.7).
+func _crush_wall(h: TestHarness) -> void:
+	var walls: Array = []
+	var heights: Array = []
+	for _i: int in range(8 * 8):
+		walls.append(0)
+		heights.append(0)
+	walls[4 * 8 + 3] = 2
+	heights[4 * 8 + 3] = 3280
+	var run: Dictionary = _run_synthetic(_program([
+		_instr("command", "CrushWall", [_num(3), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [], 8, 8, {"field_type": walls, "height": heights})
+	var state: MapState = run["state"]
+	var at: int = state.index_of(3, 4)
+	h.equal("crush_wall.becomes_free_place_at_ground",
+		[state.field_type_at(at), state.height_at(at)], [1, 0],
+		"`0x0042F410` writes the field type argument and a zero height")
+	var outcome: LclOutcome = run["outcome"]
+	var carried: Array = []
+	for entry: Variant in outcome.events:
+		var event: Dictionary = DictRead.as_dict(entry)
+		if DictRead.as_string(event["name"]) == "crush_wall":
+			carried = DictRead.as_array(event["values"])
+	h.equal("crush_wall.the_event_carries_the_cells", carried, [3, 4, 3, 4],
+		"the command's cell, then every cell it changed")
 
 
 ## A program with no `[END]`, run on the smallest world there is.

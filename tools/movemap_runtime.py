@@ -47,6 +47,8 @@ from inclib.movemap import (  # noqa: E402
     cases_document,
     make_case,
     DELAY_IMPASSABLE,
+    FIELD_TELEPORT_IN,
+    FIELD_TELEPORT_OUT,
     OBSTACLE_FIRE,
     OBSTACLE_MINE,
     OBSTACLE_NONE,
@@ -118,6 +120,17 @@ EXPECTED_WARP_CELLS = 13168
 #: docs/23 §8's tie-break produces: accepting `v > best` instead of `v >= best`
 #: moves it, and a mere "greater than zero" would not notice.
 EXPECTED_WALK_DIAGONALS = 2772
+
+#: Walks the corpus sweep ends on a teleporter entry (``docs/26`` §5.1).  A
+#: measurement, not an invariant: it moves when the fill or the walk moves.
+EXPECTED_TELEPORTER_STOPS = 17
+
+#: ``docs/26`` §5.1's table, re-derived by :func:`inclib.ai._teleport`'s own
+#: scan: 22 entries over seven maps, of which exactly one carries a key no
+#: exit answers -- ``_C_156``'s, whose fourth exit cell was left at action
+#: point 0.
+EXPECTED_TELEPORTER_ENTRIES = 22
+EXPECTED_TELEPORTER_UNPAIRED = ["_C_156.lev[39,9] key 104"]
 
 #: How many walk targets each fill contributes to the corpus check.  Walking
 #: to every reachable cell of every fill would multiply the run time by the
@@ -243,6 +256,9 @@ def run_checks(root: Path) -> int:
     exec_victory = 0
     exec_mines = 0
     exec_failures: list[str] = []
+    exec_teleporters = 0
+    teleporter_entries = 0
+    teleporter_inert: list[str] = []
 
     for path in paths:
         try:
@@ -253,6 +269,22 @@ def run_checks(root: Path) -> int:
         files += 1
         grid = grid_of(bm)
         hooks = hooks_of(bm)
+        # docs/26 §5.1's table, walked with the **model's own** scan: for
+        # every field-type-9 cell, look for the first cell in row-major order
+        # whose field type is 10 and whose action point matches.  Nothing
+        # exercised this path until the rule went into `core`
+        # (docs/97 §41.2), and the one entry with no exit is `_C_156`'s
+        # key-104 authoring bug.
+        for i, kind in enumerate(grid.field_types):
+            if kind != FIELD_TELEPORT_IN:
+                continue
+            teleporter_entries += 1
+            key = grid.action_points[i]
+            if not any(t == FIELD_TELEPORT_OUT
+                       and grid.action_points[j] == key
+                       for j, t in enumerate(grid.field_types)):
+                teleporter_inert.append(f"{path.name}[{i % grid.width},"
+                                        f"{i // grid.width}] key {key}")
         for unit in bm.active_units:
             if not unit.placed:
                 continue
@@ -313,6 +345,7 @@ def run_checks(root: Path) -> int:
                 exec_tenths += stats["tenths"]
                 exec_victory += stats["victory"]
                 exec_mines += stats["mines"]
+                exec_teleporters += stats["teleporters"]
                 exec_failures += stats["exec_failures"]
             if len(results) == 2:
                 strict = set(results[False].reachable_cells())
@@ -386,6 +419,20 @@ def run_checks(root: Path) -> int:
              f"on {executed} corpus paths -- the fill refuses a mine cell "
              f"(docs/23 §7.1) and no shipped VictoryPoint sits where a squad "
              f"walks, so both arms are exercised synthetically and natively")
+    # The teleporter arm the corpus **does** reach: seven shipped maps carry
+    # entries (docs/26 §5.1) and the fill offers them like any other walkable
+    # cell, so a walk that crosses one ends there.  Pinned as a number so a
+    # walk that stopped silently getting shorter shows up.
+    c.expect("execute.corpus_teleporter_stops", exec_teleporters,
+             EXPECTED_TELEPORTER_STOPS,
+             f"walks ended on a teleporter entry over {executed} corpus paths")
+    # docs/26 §5.1's own table, re-derived by the rule rather than by hand.
+    c.expect("teleporter.corpus_entries", teleporter_entries,
+             EXPECTED_TELEPORTER_ENTRIES,
+             "field-type-9 cells over all 155 shipped maps")
+    c.expect("teleporter.corpus_unpaired", teleporter_inert,
+             EXPECTED_TELEPORTER_UNPAIRED,
+             "an entry whose key no exit carries is inert (0x004701CA)")
     _execute_arm_checks(c, delays)
     c.check("walk.stays_inside", walk_outside == 0,
             f"{walk_outside} of {walk_ok} paths leave the highlighted region; "
@@ -493,7 +540,8 @@ def _walk_checks(grid: Grid, mover: Mover, delays: dict[int, int],
     """
     out: dict[str, Any] = {"walks": 0, "ok": 0, "diagonals": 0, "outside": 0,
                            "failures": [], "executed": 0, "tenths": 0,
-                           "victory": 0, "mines": 0, "exec_failures": []}
+                           "victory": 0, "mines": 0, "teleporters": 0,
+                           "exec_failures": []}
     start = grid.index(mover.x, mover.y)
     targets = [i for i in result.reachable_cells() if i != start]
     if not targets:
@@ -574,7 +622,10 @@ def _execute_checks(grid: Grid, mover: Mover, delays: dict[int, int],
         out["exec_failures"].append(f"{where}: {moved.reason}")
         return
     target = answer.path[0]
-    stopped = moved.movement_zeroed
+    # `0x0046EA73` breaks the walk on a teleporter entry the same way the mine
+    # arm breaks it, so neither reaches the target it was asked for.
+    out["teleporters"] += 1 if moved.teleporter else 0
+    stopped = moved.movement_zeroed or moved.teleporter
     if not stopped and (moved.x, moved.y) != (target % grid.width,
                                               target // grid.width):
         out["exec_failures"].append(

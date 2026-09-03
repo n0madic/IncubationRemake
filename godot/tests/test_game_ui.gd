@@ -27,6 +27,7 @@ func run(h: TestHarness) -> void:
 	_rebuild(h)
 	_replay_positions(h)
 	_unit_animations(h)
+	_walk_epilogue(h)
 
 
 ## One shot and one burst of return fire, at the level `main.gd` shows them.
@@ -1164,3 +1165,79 @@ func _game_font(h: TestHarness) -> void:
 	h.check("font.has_ink", opaque > 100,
 		"%d fully opaque texels of %d" % [opaque,
 			image.get_width() * image.get_height()])
+
+
+## The walk and the walk's own epilogue, in the engine's order.
+##
+## `aExecuteMove`'s step loop blocks, so the mine's blast (`0x0046EDAF`) and
+## the teleporter's stream (`0x0046EE03`) are drawn after the last step. The
+## body walks on [UnitsView]'s clock and the set pieces on [SequenceQueue]'s,
+## and [method SliceMain._hold_for_walk] is the stage that joins them --
+## queued only when the walk has an epilogue at all, so a plain walk does not
+## hold the queue for nothing.
+func _walk_epilogue(h: TestHarness) -> void:
+	h.equal("walk.a_plain_walk_has_no_epilogue",
+		[SliceMain._walk_has_epilogue([]),
+		SliceMain._walk_has_epilogue([{"kind": "victory_point"}]),
+		SliceMain._walk_has_epilogue([{"kind": "teleporter"}])],
+		[false, false, false],
+		"the entry event alone is the walk's, not the epilogue's")
+	h.equal("walk.the_three_that_do",
+		[SliceMain._walk_has_epilogue([{"kind": "mine_detonated"}]),
+		SliceMain._walk_has_epilogue([{"kind": "teleported"}]),
+		SliceMain._walk_has_epilogue([{"kind": "teleporter_blocked"}])],
+		[true, true, true])
+
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("walk.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = -1
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
+			slot = candidate
+			break
+	if slot < 0:
+		h.check("walk.units", false, "_C_140 has no live unit")
+		return
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	main._sequences = SequenceQueue.create(null)
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+
+	h.check("walk.no_hold_without_a_walk", not main._hold_for_walk(1.0),
+		"nothing to wait for, so nothing is queued")
+
+	var view: Dictionary = world.unit_view(slot)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	var width: int = world.resource.width
+	var route: PackedInt32Array = PackedInt32Array([
+		world.state.index_of(x, y), world.state.index_of(x + 1, y)])
+	units.start_walk(slot, route, width, 1.0)
+	h.check("walk.the_hold_is_queued", main._hold_for_walk(1.0),
+		"the body is walking, so the epilogue waits")
+	h.equal("walk.the_hold_is_the_first_stage", main._sequences.current(),
+		SliceMain.STAGE_AFTER_WALK)
+	# Ten of the twenty frames go by with the body still walking: the stage
+	# is bounded by the walk's own length but ended by the walk itself.
+	for _i: int in range(10):
+		var _went: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("walk.the_hold_outlasts_the_bounds_first_half",
+		main._sequences.current(), SliceMain.STAGE_AFTER_WALK)
+	units.finish_walks(world)
+	var _ended: bool = main._sequences.advance(
+		1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.check("walk.the_hold_ends_with_the_walk",
+		not main._sequences.is_running(),
+		"`UnitsView.is_walking` is the predicate, not the frame count")
+	units.free()
+	main.free()

@@ -32,6 +32,12 @@ var movement_zeroed: bool = false
 ## Whether the walk ended on a mine. `0x0046EC0F` gates the whole detonation
 ## block on it, and the arm it then picks is [method ExecuteMove._detonate]'s.
 var stopped_on_mine: bool = false
+## Whether the walk ended on a teleporter entry. `0x0046EA73` breaks the walk
+## there and `0x0046EDEB` gates the epilogue's `aExecuteTeleporter` call on the
+## same flag; [method ExecuteMove._teleport] is what resolves it, so
+## [member x] and [member y] are the **exit** cell afterwards. Kept out of
+## [method to_dict] for the same reason as [member route].
+var teleporter: bool = false
 ## The cells an **authored** mine went off on, as `[x0, y0, x1, y1, ...]` and
 ## empty when none did -- a mover of size 1 can set off more than one, because
 ## its arm sweeps the eight neighbours rather than the cell it stopped on.  The walk

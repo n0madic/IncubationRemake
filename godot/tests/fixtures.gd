@@ -116,7 +116,8 @@ static func unit(slot: int, x: int, y: int, type_id: int = 0, player: int = 0,
 
 ## A `w` x `h` grid of Free Place at height 0, with the given units on it.
 static func map_document(w: int, h: int, units: Array,
-		field_types: Array = [], heights: Array = []) -> Dictionary:
+		field_types: Array = [], heights: Array = [],
+		action_points: Array = []) -> Dictionary:
 	var n: int = w * h
 	var ft: Array = field_types
 	if ft.is_empty():
@@ -136,6 +137,11 @@ static func map_document(w: int, h: int, units: Array,
 		zeros.append(0)
 		links.append(-1)
 		idle.append(255)
+	var ap: Array = action_points
+	if ap.is_empty():
+		ap = []
+		for _i: int in range(n):
+			ap.append(0)
 	for record: Variant in units:
 		var view: Dictionary = record
 		links[DictRead.as_int(view["y"]) * w + DictRead.as_int(view["x"])] = DictRead.as_int(view["slot"])
@@ -150,7 +156,7 @@ static func map_document(w: int, h: int, units: Array,
 		},
 		"width": w, "height": h,
 		"cells": {
-			"height": hs, "field_type": ft, "action_point": zeros.duplicate(),
+			"height": hs, "field_type": ft, "action_point": ap,
 			"unit": links, "effect0": zeros.duplicate(),
 			# The idle values all 184162 shipped cells carry: no object at
 			# `+0x0F`, `+0x11` or `+0x13`, and no obstacle at `+0x10`.

@@ -53,20 +53,20 @@ python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
-python3 tools/presentation_tables.py --check gog_incubation   # 644 checks, docs/42
+python3 tools/presentation_tables.py --check gog_incubation   # 687 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
-python3 tools/lcl_runtime.py        --check gog_incubation   # 43 checks, 942 invocations
+python3 tools/lcl_runtime.py        --check gog_incubation   # 58 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 61 checks, 1863 units
 python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/hit/damage/reaction/experience/jam/warp/placers
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
-python3 tools/movemap_runtime.py    --check gog_incubation   # 28 checks, 3726 fills, 4587 paths, 4587 walks
+python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 33 suites, 2727 checks
+bash   godot/run_tests.sh                                    # 33 suites, 2757 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -618,7 +618,12 @@ godot --path godot -- --mission=_C_141        # run one of the converted maps
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is
 gitignored (`tests/fixtures/presentation/README.md` records what it holds) and
-fails without one (**603 checks** since 2026-09-03, when the four cell
+fails without one (**712 checks** since 2026-09-03, when the nine shipped
+`CrushWall` call sites joined it -- one process each, on saves wrapped from
+`_C_129`, `_C_142` and `_O_061` with `sav_parse.py --wrap` and staged as
+slots 8, 9 and 10, reading the whole 900-cell control map either side of
+`0x0042F410` so the footprint is measured cell by cell (`docs/97` §41.7) --
+and, before them, the four cell
 placers of `docs/42` §9.1 joined it -- ten `special_*` phases that read the
 **whole** control map and the **whole** 80-slot array `[0x004FA828]` before and
 after every call, so what is compared is every cell, every slot **and every
@@ -637,7 +642,7 @@ unit-animation creators of `docs/42` §7 -- the marker's arrows, the landing
 dust, the two flash circles, the zoom bob, the jump's trail and the push's
 dust, the last three called at the marine's own object position through
 `[$s_m+0x10]`-style reads -- joined those: 364 records across twenty-six
-calls, all field for field, `docs/97` §31). Fifty-one phases, one process each, at `docs/91`'s anchor
+calls, all field for field, `docs/97` §31). Sixty phases, one process each, at `docs/91`'s anchor
 with the fixture save: `idle_random` calls the engine's idle starter two
 hundred times with `aRandom2`'s seed read either side of every call and
 replays the draws, which is what pinned that the starter's **type search never

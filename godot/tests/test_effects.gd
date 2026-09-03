@@ -363,6 +363,18 @@ func _check_setpieces(h: TestHarness) -> void:
 	h.equal("setpiece.teleporter", SetpieceDriver.frames_for(
 		{"name": "teleporter", "values": [3, 3]}),
 		SetpieceDriver.TELEPORTER_FRAMES)
+	# `Statue2` `0x004424B0` is a loop over an ActPt range, so the animation
+	# belongs to the `statue` events `core` emits inside it, and the marker
+	# itself has nothing to draw; `statue_kill` is already drawn by the beam's
+	# own stage (docs/97 section 41.1).
+	h.equal("setpiece.statue2_is_instant",
+		[SetpieceDriver.is_animated("statue2"),
+		SetpieceDriver.INSTANT.has("statue2"),
+		AudioEvents.EVENT_ALIASES.has("statue2")], [false, true, false],
+		"the marker draws nothing and makes no sound; its cells do both")
+	h.equal("setpiece.statue_kill_is_instant",
+		[SetpieceDriver.is_animated("statue_kill"),
+		SetpieceDriver.INSTANT.has("statue_kill")], [false, true])
 	h.equal("setpiece.instant", SetpieceDriver.frames_for(
 		{"name": "growing_land", "values": [3, 3]}), 0)
 	h.check("setpiece.instant_named",
@@ -1597,11 +1609,18 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	h.equal("camera.para_bombs.one_per_tile", bombs.programs,
 		["%s:5,5,0" % BlobPrograms.PARA_BOMB,
 		"%s:6,7,%d" % [BlobPrograms.PARA_BOMB, SetpieceCamera.BOMB_SPACING]])
-	h.check("camera.para_bombs.bomber_flies_in",
-		bombs.spawned_at.size() == 1
-			and bombs.spawned_at[0].begins_with(BlobPrograms.BOMBER)
-			and bombs.spawned_at[0].contains(str(SetpieceCamera.BOMBER_START_X)),
-		str(bombs.spawned_at))
+	# `0x00415EE1` pushes six literals: the fly-past reads no tile at all.
+	h.equal("camera.para_bombs.bomber_flies_in", bombs.spawned_at,
+		["%s@(%d, %d, %d)" % [BlobPrograms.BOMBER,
+			SetpieceCamera.BOMBER_FROM.x, SetpieceCamera.BOMBER_FROM.y,
+			SetpieceCamera.BOMBER_FROM.z]],
+		"aBlob_CreateBomber(-320000, -320000, 320000, 48000, 48000, 320000)")
+	# `0x00415FB4` -- the eye on the flight path, the target left alone.
+	h.equal("camera.para_bombs.the_camera_keeps_its_target",
+		[bombs.eye, bombs.target],
+		[Vector3i(SetpieceCamera.BOMBER_START_X, 0,
+			SetpieceCamera.BOMBER_START_Z), Vector3i(10, 20, 30)],
+		"`0x00415F2C` reads the target back and hands it straight on")
 
 	# The teleporter: the stream, the traveller hidden at 40 and back at 10.
 	var port: RecordingHost = RecordingHost.new()
@@ -1622,6 +1641,12 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		port.targets_set >= SetpieceCamera.TELEPORT_HIDE_AT
 			- SetpieceCamera.TELEPORT_MOVE_AT,
 		"%d frames of following" % port.targets_set)
+	# `0x00416554` -- at ten the unit is moved to the **target** object and
+	# only then shown. The walk left the body on the entry cell, so a
+	# sequence that only flipped `visible` put it back where it started.
+	h.equal("camera.teleporter.the_body_lands_on_the_exit", port.placed,
+		[port.cell_object(9, 6)] as Array[Vector3i],
+		"the exit's own object, once, at the frame the engine moves it")
 
 	# The programs themselves, on the cache's tables.
 	var geometry: Eng3dGeometry = Eng3dGeometry.from_cache(CacheFixture.cache_dir())

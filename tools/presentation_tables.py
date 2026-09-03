@@ -70,6 +70,8 @@ ORBIT_HEAL = (0x0040FBE0, 0x0040FF30)
 ORBIT_POISON = (0x0040F8F0, 0x0040FBE0)
 ORBIT_OVERHEAT = (0x0040F420, 0x0040F8F0)
 ORBIT_ROTATING = (0x0040FF30, 0x00410190)
+#: `0x0043B740` -- the game-mode getter of `docs/25` §2; 1 is the campaign.
+GAME_MODE_GETTER = 0x0043B740
 # docs/42 §7 -- the creators the unit animations call, measured by
 # `presentation_gold.py`'s seven `death_*` phases of 2026-09-03.
 ARROWS = (0x00422D40, 0x00422EF1)
@@ -114,6 +116,14 @@ PLATFORM = (0x00412A00, 0x004131C0)
 BARRIER = (0x00413560, 0x00413A40)
 GROUND_FIRE = (0x004157B0, 0x00415C70)
 CRUSH_WALL = (0x00415C70, 0x00415E90)
+#: `ParaBombs` `0x00415E90` -- the bomber's fly-past and one bomb per tile.
+PARA_BOMBS = (0x00415E90, 0x004160F0)
+#: `0x0042F410(object, fieldType, keepHeight, mark)` -- the four-probe sweep
+#: that decides which cells a scene object stands on (`docs/97` §41.4).
+MARK_UNDER_OBJECT = (0x0042F410, 0x0042F650)
+#: `0x0047C2C0` -- the between-players screen the AI's redraw callback draws
+#: (`docs/23` §2, `docs/97` §35.1 and §41.5).
+BETWEEN_PLAYERS = (0x0047C2C0, 0x0047D064)
 MINE_PLACER = (0x0042FA70, 0x0042FB90)       # docs/42 §9.1
 FIRE_PLACER = (0x0042F840, 0x0042FA70)
 GLOW_PLACER = (0x0042FCB0, 0x0042FE80)
@@ -395,6 +405,12 @@ BLOOD_DOUBLES = {0x004B1248: 16.0, 0x004B1250: 160.0, 0x004B1258: -1280.0,
 STATUE = (0x00413A40, 0x00414000)
 STATUE_2 = (0x00414000, 0x00414360)
 STATUE_BEAM = (0x00428BF0, 0x00428E30)
+#: `0x00413500` -- `Statue2`'s ActPt sweep, which calls the rotating sequence
+#: once per matched cell (`docs/97` §41).
+STATUE_2_BATCH = (0x00413500, 0x00413560)
+#: `aExecuteTeleporter` `0x00470150` (`docs/26` §5), reached from
+#: `aExecuteMove`'s epilogue at `0x0046EE03`.
+EXECUTE_TELEPORTER = (0x00470150, 0x004702C0)
 FOOTBRIDGE = (0x00414A70, 0x00415110)
 FOOTBRIDGE_2 = (0x00415110, 0x004157B0)
 GROUND_UNIT = (0x00411FB0, 0x004125D0)
@@ -1208,14 +1224,31 @@ def _check_others(ck: Checker, b: Binary) -> None:
     _pin_bytes(ck, b, "setpiece.statue.height_32000", STATUE, _push32(0x7D00), 1)
     _pin_bytes(ck, b, "setpiece.statue.frames_13", STATUE, b"\x0d\x00\x00\x00", 1, at_least=True)
     _pin_bytes(ck, b, "setpiece.statue.settle_plus_0x400", STATUE, b"\x81\xc2\x00\x04\x00\x00", 1)
-    _pin_bytes(ck, b, "setpiece.statue.path_5_x2", STATUE, b"\x83\x7c\x24\x3c\x06", 2)
+    # §8.1 as corrected by §41: the walk examines **six** cells each way, not
+    # five, and the counter is only advanced past the null and field-type-2
+    # tests.  The rule half of both is `LclInterpreter._statue`.
+    _pin_bytes(ck, b, "setpiece.statue.path_6_x2", STATUE, b"\x83\x7c\x24\x3c\x06", 2)
+    # `0x00413C31`..`0x00413C40` -- the statue's own action-point byte toggles
+    # bit 0, and the new bit picks the axis.
+    _pin_at(ck, b, "setpiece.statue.actpt_toggle", 0x00413C31,
+            b"\x8a\x43\x0b\xa8\x01\x74\x04\xfe\xc8\xeb\x02\xfe\xc0"
+            b"\xa8\x01\x88\x43\x0b")
+    # Two loss bookings, one per arm, beside the two `aRemoveUnitElement`
+    # calls: the beam takes at most **one** unit each way.
+    _pin_calls(ck, b, "setpiece.statue.loss_x2", STATUE, 0x0043B8D0, 2)
     _pin_calls(ck, b, "setpiece.statue.flight", STATUE, A_FLIGHT, 1)
     _pin_calls(ck, b, "setpiece.statue.fire_death_x2", STATUE, 0x0042B1D0, 2)
     _pin_calls(ck, b, "setpiece.statue.beam_x2", STATUE, 0x00428BF0, 2)
     _pin_calls(ck, b, "setpiece.statue.hide_x2", STATUE, A_HIDE, 2)
     _pin_calls(ck, b, "setpiece.statue.remove_x2", STATUE, 0x004779C0, 2)
     _pin_bytes(ck, b, "setpiece.statue2.height_32000", STATUE_2, _push32(0x7D00), 1)
-    _pin_bytes(ck, b, "setpiece.statue2.path_9", STATUE_2, b"\x83\xf8\x0a", 1)
+    _pin_bytes(ck, b, "setpiece.statue2.path_10", STATUE_2, b"\x83\xf8\x0a", 1)
+    # `Statue2` `0x004424B0` is a loop over an ActPt range, not a sequence of
+    # its own: `0x00413500` calls `aPlayRotateStatueSequence` per matched cell.
+    _pin_calls(ck, b, "setpiece.statue2.batch_loop", STATUE_2_BATCH,
+               0x00413A40, 1)
+    _pin_bytes(ck, b, "setpiece.statue2.batch_stride_23", STATUE_2_BATCH,
+               b"\x83\xc6\x17", 1)
     _pin_calls(ck, b, "setpiece.statue2.beam", STATUE_2, 0x00428BF0, 1)
     _pin_bytes(ck, b, "setpiece.statue_beam.kind_62_life_7", STATUE_BEAM, _push8(0x07) + _push8(0x3E), 2)
     _pin_bytes(ck, b, "setpiece.statue_beam.dots_z_3200", STATUE_BEAM, _push32(0xC80), 2)
@@ -1415,6 +1448,182 @@ def _check_ground_objects(ck: Checker, b: Binary) -> None:
                    1)
 
 
+def _check_between_players(ck: Checker, b: Binary) -> None:
+    """``0x0047C2C0`` -- the between-players screen, and when it draws nothing.
+
+    ``docs/97`` §35.1 read it as "the between-players screen, read and not
+    built".  Its **case 0** -- the arm a mission hand-over takes -- opens with
+
+    .. code-block:: c
+
+       if (humanPlayerCount() == 1 && !multiHumanSession())   /* 0x0047C3FF */
+           { SendMessage(hwnd, WM_LBUTTONDOWN, 0, 0); return 1; }
+
+    ``0x0043B700`` is ``docs/25`` §2's human-player count -- the slots at
+    ``0x00509E20`` whose kind is exactly 1 -- and ``0x0043B1F0`` is
+    ``0x00509F08`` non-zero **and** the game mode among 2, 3 and 4, a network,
+    local or play-by-mail session.  So in a **one-human campaign** the screen
+    posts its own
+    left-button-down and returns before it draws a line: the remake, which is
+    a one-human campaign, is faithful by not having it (`docs/97` §41.5).
+    """
+    _pin_at(ck, b, "screen.between_players.human_count_gate", 0x0047C3FF,
+            b"\xe8\xfc\xf2\xfb\xff\x83\xf8\x01\x75")
+    _pin_at(ck, b, "screen.between_players.session_gate", 0x0047C409,
+            b"\xe8\x72\xee\xfb\xff\xe8\xdd\xed\xfb\xff\x85\xc0"
+            b"\x75")
+    # `push 0x201` is WM_LBUTTONDOWN: the arm dismisses itself.
+    _pin_at(ck, b, "screen.between_players.dismisses_itself", 0x0047C41F,
+            b"\x68\x01\x02\x00\x00")
+    _pin_calls(ck, b, "screen.between_players.blanks_the_frame",
+               BETWEEN_PLAYERS, 0x00447B80, 1)
+    _pin_bytes(ck, b, "screen.between_players.blank_is_640x480",
+               BETWEEN_PLAYERS,
+               _push32(0x1DF) + _push32(0x27F) + _push8(0) + _push8(0), 1)
+
+
+def _check_crush_wall(ck: Checker, b: Binary) -> None:
+    """``aPlayCrushWallAnimation`` ``0x00415C70`` -- which cells it reaches.
+
+    ``docs/42`` §8 said only "``0x004238C0`` on every cell".  The cells are
+    **marked first**: ``0x00415D6D`` calls ``0x0042F410(obj, 1, 0, 1)``, which
+    sweeps the whole control map and, for each cell, casts four probes from
+    the cell's own symbol object at ``x +/- 200`` and ``y +/- 200`` (from
+    ``z = 0x186A0``) against the wall's land object.  A cell any probe hits
+    has its object dropped to ``z 0``, its height ``+0x01`` set to 0, its
+    field type ``+0x0D`` set to **1** (`Free Place`) and its state byte
+    ``+0x00`` set to 2.  ``0x00415D87`` then sweeps for state 2, spawns
+    ``0x004238C0`` there and puts the byte back to 1.
+
+    So the footprint is a **3D query against the scene**, not a control-map
+    one, which is why `core` cannot derive it: see `docs/97` §41.4.
+    """
+    _pin_calls(ck, b, "setpiece.crush_wall.marks_the_footprint", CRUSH_WALL,
+               0x0042F410, 1)
+    _pin_at(ck, b, "setpiece.crush_wall.mark_arguments", 0x00415D66,
+            b"\x6a\x01\x6a\x00\x6a\x01\x56")
+    # `0x00415D87` -- the state-2 sweep, the debris and the byte going back.
+    _pin_at(ck, b, "setpiece.crush_wall.state_2_sweep", 0x00415D87,
+            b"\x80\x3f\x02")
+    _pin_at(ck, b, "setpiece.crush_wall.puts_the_state_back", 0x00415DA4,
+            b"\xc6\x07\x01")
+    _pin_calls(ck, b, "setpiece.crush_wall.debris", CRUSH_WALL, 0x004238C0, 1)
+    _pin_bytes(ck, b, "setpiece.crush_wall.sweep_stride_23", CRUSH_WALL,
+               b"\x83\xc7\x17", 1)
+    # The probe itself: +/- 200 in x and y, cast from 100000 up.
+    # Four probes: two add 200 and two subtract it, one pair per axis.
+    _pin_bytes(ck, b, "special.probe.offset_plus_200", MARK_UNDER_OBJECT,
+               b"\x81\xc2\xc8\x00\x00\x00", 2)
+    _pin_bytes(ck, b, "special.probe.offset_minus_200", MARK_UNDER_OBJECT,
+               b"\x81\xe9\xc8\x00\x00\x00", 2)
+    _pin_bytes(ck, b, "special.probe.from_100000", MARK_UNDER_OBJECT,
+               b"\xc7\x44\x24\x24\xa0\x86\x01\x00", 4)
+    # `0x0042F609` / `0x0042F612` -- the field type and the height it writes.
+    _pin_at(ck, b, "special.probe.writes_field_type_and_height", 0x0042F602,
+            b"\x8a\x44\x24\x50\x8b\x56\x18\x88\x43\x0d")
+    _pin_calls(ck, b, "special.probe.marks_the_state", MARK_UNDER_OBJECT,
+               0x0042F780, 1)
+
+
+def _check_bomber_arguments(ck: Checker, b: Binary) -> None:
+    """``ParaBombs`` ``0x00415E90`` -- the six arguments it hands the creator,
+    and the camera triple ``docs/97`` §32 left UNVERIFIED.
+
+    ``0x00415EE1``..``0x00415EFF`` pushes six **literals**:
+    ``aBlob_CreateBomber(-320000, -320000, 320000, 48000, 48000, 320000)`` --
+    the fly-past is a fixed diagonal across the scene and reads no tile at all.
+
+    The camera is a separate call and is where the two untraced locals were:
+    ``0x00415F2C`` reads all six of the camera's own numbers back through
+    ``0x00403780`` **before** the flight-path arm picks the eye, and
+    ``0x00415FB4`` sets position ``(-16000, 0, 320000 | 80000)`` with the
+    **target it just read**.  So the bomber does not aim the camera anywhere:
+    it slides the eye and keeps looking at whatever the scene was looking at.
+    """
+    _pin_at(ck, b, "setpiece.bomber.creator_arguments", 0x00415EE1,
+            _push32(0x0004E200) + _push32(0x0000BB80) + _push32(0x0000BB80)
+            + _push32(0x0004E200) + _push32(0xFFFB1E00)
+            + _push32(0xFFFB1E00))
+    _pin_calls(ck, b, "setpiece.bomber.creator", PARA_BOMBS, 0x0042A8E0, 1)
+    # The camera getter runs before the flight-path switch, and its last three
+    # out-parameters are the setter's last three arguments.
+    _pin_calls(ck, b, "setpiece.bomber.reads_the_camera_back", PARA_BOMBS,
+               A_READ_CAMERA, 1)
+    _pin_at(ck, b, "setpiece.bomber.keeps_the_camera_target", 0x00415FA2,
+            b"\x8b\x4c\x24\x1c\x8b\x54\x24\x14\x8b\x44\x24\x10"
+            b"\x51\x52\x50\x55\x53\x57")
+    # Twice: `0x00415FB4` puts the eye on the flight path and `0x00416014`
+    # puts all six numbers back afterwards.
+    _pin_calls(ck, b, "setpiece.bomber.sets_the_camera", PARA_BOMBS,
+               A_SET_CAMERA, 2)
+
+
+def _check_orbit_gate(ck: Checker, b: Binary) -> None:
+    """``0x00410190`` -- the skill orbit plays in the campaign and nowhere else.
+
+    Its first five instructions are the gate: ``call 0x0043B740`` (the game
+    mode getter, ``docs/25`` §2) and ``cmp eax, 1``.  ``main.gd`` reads
+    ``TurnState.mode`` for it.
+    """
+    # The gate itself, at the skill orbit's own first instruction past its
+    # seven-byte prologue: `call 0x0043B740 / cmp eax, 1 / jne`.
+    _pin_at(ck, b, "orbit.skill.campaign_gate", 0x00410197,
+            b"\xe8\xa4\xb5\x02\x00\x83\xf8\x01\x0f\x85")
+    # And that it is the **only** orbit that asks. Counting the calls over
+    # each routine's own range is the test; reading a fixed offset was not --
+    # every one of the six opens with `83 ec XX`, so a byte compare against
+    # `E8` at the entry passed whatever the routine went on to do.
+    _pin_calls(ck, b, "orbit.skill.asks_the_game_mode_once", ORBIT_SKILL,
+               GAME_MODE_GETTER, 1)
+    for name, rng in (("overheat", ORBIT_OVERHEAT), ("jam", ORBIT_JAM),
+                      ("heal", ORBIT_HEAL), ("poison", ORBIT_POISON),
+                      ("rotating", ORBIT_ROTATING)):
+        _pin_calls(ck, b, f"orbit.{name}.never_asks_the_game_mode", rng,
+                   GAME_MODE_GETTER, 0)
+
+
+def _check_teleporter(ck: Checker, b: Binary) -> None:
+    """``aExecuteTeleporter`` ``0x00470150`` -- ``docs/26`` §5, the rule half.
+
+    Four instructions decide everything: the entry's action point is the key,
+    the exit is the first cell in a row-major sweep whose field type is 10 and
+    whose key matches, an unpaired entry is inert, and an **occupied** exit
+    kills the traveller.  ``ExecuteMove._teleport`` and
+    :func:`inclib.ai._teleport` are the twins.
+    """
+    # `0x00470199` -- `mov bl, byte [ebp+0x0B]`, the key.
+    _pin_at(ck, b, "teleporter.key_is_the_action_point", 0x00470199,
+            b"\x8a\x5d\x0b")
+    # `0x004701B2` -- field type 10, then the key, over a stride-23 sweep.
+    _pin_at(ck, b, "teleporter.exit_is_field_type_10", 0x004701B2,
+            b"\x80\x7e\x0d\x0a\x75\x05\x38\x5e\x0b")
+    _pin_bytes(ck, b, "teleporter.sweep_stride_23", EXECUTE_TELEPORTER,
+               b"\x83\xc6\x17", 1)
+    # `0x004701D4`..`0x004701DD` -- the exit's unit word against 0xFFFF.
+    _pin_at(ck, b, "teleporter.blocked_exit_test", 0x004701D4,
+            b"\xbb\xff\xff\x00\x00\x66\x39\x5e\x07")
+    # The blocked arm books a loss and removes the traveller; the clear arm
+    # moves the cell link and plays the sequence.
+    _pin_calls(ck, b, "teleporter.blocked_books_a_loss", EXECUTE_TELEPORTER,
+               0x0043B8D0, 1)
+    _pin_calls(ck, b, "teleporter.blocked_removes_the_unit",
+               EXECUTE_TELEPORTER, 0x004779C0, 1)
+    _pin_calls(ck, b, "teleporter.plays_the_sequence", EXECUTE_TELEPORTER,
+               0x004164F0, 1)
+    # `0x00470260`/`0x00470264` -- the link moves from the entry to the exit.
+    _pin_at(ck, b, "teleporter.moves_the_cell_link", 0x00470260,
+            b"\x66\x89\x56\x07\x66\x89\x5d\x07")
+    # `0x0046EA73` -- the walk's only field-type test besides the delay
+    # column, and the break it takes.
+    _pin_at(ck, b, "teleporter.the_walk_breaks_on_it", 0x0046EA73,
+            b"\x8a\x46\x0d\x3c\x09\x74\x66")
+    # `0x0046EDDC`..`0x0046EE03` -- the alive gate, then the call.
+    _pin_at(ck, b, "teleporter.sits_behind_the_alive_gate", 0x0046EDDC,
+            b"\x8a\x47\x16\x84\xc0")
+    _pin_calls(ck, b, "teleporter.called_once_from_the_walk",
+               EXECUTE_MOVE, 0x00470150, 1)
+
+
 def _check_bomb_picture(ck: Checker, b: Binary) -> None:
     """Where the mine's explosion is drawn, and therefore when.
 
@@ -1564,6 +1773,11 @@ def run_check(root: str) -> Checker:
     _check_bomb_picture(ck, b)
     _check_remove_unit_sites(ck, b)
     _check_arrived_ordering(ck, b)
+    _check_teleporter(ck, b)
+    _check_orbit_gate(ck, b)
+    _check_bomber_arguments(ck, b)
+    _check_crush_wall(ck, b)
+    _check_between_players(ck, b)
     _check_corpus(ck, root)
     return ck
 

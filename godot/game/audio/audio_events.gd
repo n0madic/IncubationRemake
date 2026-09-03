@@ -26,9 +26,11 @@ extends RefCounted
 ## different name. Everything not listed is looked up as itself, so this table
 ## holds only the genuine renames and stays short enough to read.
 const EVENT_ALIASES: Dictionary[String, String] = {
-	# `Statue2` is the batch form of `Statue` -- docs/20 section 7.4: it walks
-	# the cell array and runs the same `0x00413a40` sequence per cell.
-	"statue2": "statue",
+	# `Statue2` used to alias `statue`, and must not: since docs/97 section
+	# 41.1 the interpreter runs the sequence itself once per matched cell and
+	# emits a `statue` event for each, so the batch marker aliasing the same
+	# cues would play `stone.wav` once more than the engine does. It is silent
+	# on purpose; the cells it swept make the noise.
 	# `MoveFireCircles` runs `0x004131c0`, the sequence `FireCircle` itself
 	# calls; `MoveSpores` runs `0x004147d0`, the one `Spores` calls.
 	"move_fire_circles": "fire_circle",

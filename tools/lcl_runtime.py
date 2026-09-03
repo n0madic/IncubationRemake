@@ -219,6 +219,131 @@ def _ground_checks(c: Checker) -> None:
              "60 attempts over a 3x3 block, and a mined cell is skipped")
 
 
+def _statue_checks(c: Checker) -> None:
+    """``Statue`` / ``Statue2`` -- ``0x00413A40``, ``docs/97`` §41.1.
+
+    The twin of ``test_lcl.gd``'s ``statue.*`` block, on the same 9x9 world
+    and the same eight facts: the action-point toggle in both directions, the
+    axis the **new** bit picks, one victim per arm, the field-type-2 stop, the
+    six-cell reach and the seventh cell out of it, and ``Statue2`` running the
+    sequence on every cell in its range.
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    def world(points: dict[tuple[int, int], int],
+              walls: set[tuple[int, int]],
+              units: dict[int, tuple[int, int]]) -> runtime.LclWorld:
+        w = runtime.LclWorld(_FlatMap(9, 9), _TABLES, seed=1.0)
+        for (x, y), value in points.items():
+            w.actpt[w.index(x, y)] = value
+        for x, y in walls:
+            w.ctrl_type[w.index(x, y)] = 2
+        for slot, (x, y) in units.items():
+            w.units[slot] = runtime.RuntimeUnit(slot=slot, player=0, type_id=0,
+                                                x=x, y=y, hit_points=10)
+            w.unit_at[w.index(x, y)] = slot
+        return w
+
+    def run(w: runtime.LclWorld, *instructions: dict[str, Any]):
+        return runtime.run({"instructions": list(instructions)
+                            + [{"kind": "end", "line": 9}], "labels": {}}, w)
+
+    def alive(w: runtime.LclWorld, *slots: int) -> list[bool]:
+        return [w.units[s].alive for s in slots]
+
+    # An even action point toggles **up**, so the axis is x.
+    w = world({}, set(), {0: (6, 4), 1: (1, 4), 2: (4, 7)})
+    run(w, command("Statue", 4, 4))
+    c.expect("statue.toggles_the_action_point", w.actpt[w.index(4, 4)], 1,
+             "0x00413C31 flips bit 0 of the statue's own +0x0B")
+    c.expect("statue.the_beam_kills_one_each_way", alive(w, 0, 1, 2),
+             [False, False, True],
+             "the new bit picks x, so the unit off the axis is spared")
+    c.expect("statue.the_victims_leave_the_map",
+             [w.unit_at[w.index(6, 4)], w.unit_at[w.index(1, 4)]], [-1, -1])
+
+    # One kill site per direction, not one per cell.
+    w = world({}, set(), {0: (5, 4), 1: (7, 4)})
+    run(w, command("Statue", 4, 4))
+    c.expect("statue.only_the_first_unit_on_an_arm_dies", alive(w, 0, 1),
+             [False, True], "0x00413D67 re-enters only on the no-unit branch")
+
+    # Field type 2 stops the walk before the unit behind it.
+    w = world({}, {(6, 4)}, {0: (7, 4)})
+    run(w, command("Statue", 4, 4))
+    c.expect("statue.a_wall_stops_the_beam", alive(w, 0), [True],
+             "cmp byte [esi+0x0D], 2 at 0x00413CCA")
+
+    # Six cells is in reach and seven is not.
+    w = world({}, set(), {0: (1, 4)})
+    run(w, command("Statue", 7, 4))
+    c.expect("statue.the_sixth_cell_is_in_reach", alive(w, 0), [False],
+             "cmp dword [esp+0x3c], 6 at 0x00413C97")
+    w = world({}, set(), {0: (1, 4)})
+    run(w, command("Statue", 8, 4))
+    c.expect("statue.the_seventh_is_not", alive(w, 0), [True])
+
+    # An odd action point toggles **down**, which picks the other axis.
+    w = world({(4, 4): 5}, set(), {0: (6, 4), 1: (4, 6)})
+    run(w, command("Statue", 4, 4))
+    c.expect("statue.an_odd_point_toggles_down", w.actpt[w.index(4, 4)], 4,
+             "0x00413C38 is `dec al`, so 5 becomes 4 and the axis is y")
+    c.expect("statue.the_axis_follows_the_new_bit", alive(w, 0, 1),
+             [True, False])
+
+    # `Statue2` runs the sequence on every cell in the inclusive range.
+    w = world({(1, 1): 40, (6, 6): 41}, set(), {0: (3, 1), 1: (6, 4)})
+    out = run(w, command("Statue2", 40, 41))
+    c.expect("statue2.runs_every_matched_cell", alive(w, 0, 1),
+             [False, False],
+             "40 toggles to 41 and walks x; 41 toggles to 40 and walks y")
+    c.expect("statue2.runs_once_per_cell",
+             [name for name, _ in out.events].count("statue"), 2,
+             "0x00413500 sweeps row-major and calls the sequence per match")
+    c.expect("statue2.the_event_carries_fifteen_numbers",
+             sorted({len(values) for name, values in out.events
+                     if name == "statue"}),
+             [15], "cell, axis, both endpoints and both victims")
+
+
+def _crush_wall_checks(c: Checker) -> None:
+    """``CrushWall`` -- ``0x00415c70`` through ``0x0042f410``, ``docs/42`` §8.2.
+
+    The lasting writes are the height and the field type; the state byte the
+    mark leaves at 2 is put back to 1 by the debris sweep, so it is not
+    modelled.  The footprint is the wall piece's own geometry and this model
+    reaches only the command's cell (``docs/97`` §41.7).
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+    cell = w.index(3, 4)
+    w.ctrl_type[cell] = 2
+    w.cell_height[cell] = 3280
+    out = runtime.run({"instructions": [command("CrushWall", 3, 4),
+                                        {"kind": "end", "line": 9}],
+                       "labels": {}}, w)
+    c.expect("crush_wall.becomes_free_place_at_ground",
+             [w.ctrl_type[cell], w.cell_height[cell]], [1, 0],
+             "0x0042F410 writes the field type argument and a zero height")
+    c.expect("crush_wall.the_event_carries_the_cells",
+             [values for name, values in out.events if name == "crush_wall"],
+             [[3, 4, 3, 4]],
+             "the command's cell, then every cell it changed")
+    # Off the map: no write, and the event still records the call.
+    w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+    out = runtime.run({"instructions": [command("CrushWall", 99, 99),
+                                        {"kind": "end", "line": 9}],
+                       "labels": {}}, w)
+    c.expect("crush_wall.off_the_map_changes_nothing",
+             [values for name, values in out.events if name == "crush_wall"],
+             [[99, 99]])
+
+
 def _synthetic_checks(c: Checker) -> None:
     """The mechanics of ``docs/20`` §2 that the corpus does not exercise.
 
@@ -498,6 +623,8 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     _corpus_shape_checks(c, root)
     _synthetic_checks(c)
     _ground_checks(c)
+    _statue_checks(c)
+    _crush_wall_checks(c)
 
     if show_stats:
         print("\ncommand usage (corpus / implemented):")

@@ -915,6 +915,8 @@ VICTORY_B_BASE = 0x56
 #: ``docs/26`` §5 -- the field type that starts a teleport, and the only one
 #: ``aExecuteMove`` tests for other than through the delay column.
 FIELD_TELEPORT_IN = 9
+#: The other half of the pair -- ``0x004701B2``, ``cmp byte [esi+0x0D], 0x0A``.
+FIELD_TELEPORT_OUT = 10
 
 #: ``docs/21`` §4 -- the weapon a mine resolves as, 100 damage at 100 hit.
 MINE_WEAPON = 36
@@ -1024,6 +1026,13 @@ class ExecuteResult:
     #: and which cannot grow a field the engine never had.  It is presentation
     #: data, carried in the AI move event's payload instead.
     route: list[int] = field(default_factory=list)
+    #: Whether the walk ended on a teleporter entry.  ``0x0046EA73`` breaks the
+    #: walk there and ``0x0046EDEB`` gates the epilogue's
+    #: ``aExecuteTeleporter`` call on the same flag, so resolving it is the
+    #: caller's (:func:`inclib.ai._teleport`) and :attr:`x`/:attr:`y` are the
+    #: entry cell until it runs.  Absent from :meth:`to_dict` for the same
+    #: reason as :attr:`route`.
+    teleporter: bool = False
     reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -1118,8 +1127,16 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
             events.append(MoveEvent("victory_point", nx, ny, claimed))
 
         if grid.field_types[index] == FIELD_TELEPORT_IN:
+            # ``0x0046EA73`` -- the walk ends on the entry cell.  The step has
+            # already been charged (``0x0046EA42`` subtracts the budget before
+            # the test) and the "keep walking" flag is not set on this arm.
             events.append(MoveEvent("teleporter", nx, ny,
                                     grid.action_points[index]))
+            return ExecuteResult(ok=True, x=nx, y=ny, cost=cost, steps=steps,
+                                 walked=tenths, facing=facing,
+                                 action_point_writes=writes, events=events,
+                                 movement_zeroed=zeroed, route=entered,
+                                 teleporter=True)
 
         if hooks.obstacle_at(nx, ny) == OBSTACLE_MINE:
             # **Measured, and not what docs/26 §6.1 predicted.**  A mine under

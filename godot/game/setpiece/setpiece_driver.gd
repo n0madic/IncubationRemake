@@ -32,13 +32,20 @@ extends RefCounted
 ## The events this driver animates, and how it works out their length.
 const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 	"roof_unit", "bridge", "foot_bridge", "foot_bridge2", "open_tube",
-	"open_plant_tube", "open_front_door", "ground_unit", "statue", "statue2",
+	"open_plant_tube", "open_front_door", "ground_unit", "statue",
 	"barrier_on", "fire_circle", "crush_wall", "teleporter", "para_bombs"]
 
 ## The events that get their sound and their state change with no motion.
 ## Named rather than merely absent: an event that is silently unhandled and one
 ## that is deliberately instant look identical from outside.
-const INSTANT: Array[String] = ["fixed_statue_kill", "barrier_off",
+## `Statue2` `0x004424B0` is a **loop**, not a sequence: `0x00413500` calls
+## `aPlayRotateStatueSequence` once per cell whose action point falls in the
+## command's range, so the animation belongs to the `statue` events `core`
+## emits inside it (docs/97 section 41.1) and the `statue2` marker itself has
+## nothing to draw. `statue_kill` is the same: the beam's stage already hides
+## the victim and fires its `FireDeath`.
+const INSTANT: Array[String] = ["fixed_statue_kill", "statue_kill", "statue2",
+	"barrier_off",
 	"falling_spores", "set_ground_fire", "growing_land",
 	"move_objects", "move_fire_circles", "move_spores"]
 ## The three tubes' own `cmp esi, 0x13` (docs/42 section 8).
@@ -116,8 +123,6 @@ static func frames_for(event: Dictionary) -> int:
 			return GROUND_UNIT_FRAMES
 		"statue":
 			return STATUE_TURN_FRAMES
-		"statue2":
-			return 1
 		"barrier_on":
 			return BARRIER_FRAMES
 		"fire_circle":

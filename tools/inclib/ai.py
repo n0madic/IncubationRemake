@@ -1286,6 +1286,54 @@ def _detonate(ctx: AIContext, unit: CombatUnit,
             return
 
 
+def _teleport(ctx: AIContext, unit: CombatUnit,
+              moved: movemap.ExecuteResult) -> None:
+    """``aExecuteTeleporter`` ``0x00470150`` -- ``docs/26`` §5.
+
+    The entry cell's action point (``+0x0B``, ``0x00470199``) is the key; the
+    exit is the **first** cell in row-major order whose field type is
+    :data:`movemap.FIELD_TELEPORT_OUT` and whose action point matches
+    (``0x004701B2``), so two exits sharing a key make the earlier one win and
+    two entries sharing an exit is legal.  No exit at all and nothing happens
+    (``0x004701CA``) -- ``_C_156``'s key-104 entry, the one authoring bug of
+    ``docs/26`` §5.1.
+
+    **An occupied exit kills the traveller** (``0x004701DD``): the loss is
+    booked into the scoreboard's Losses pair through ``0x0043B8D0``, a field
+    this model does not carry, and ``aRemoveUnitElement`` takes the unit off
+    the **entry** cell.  The engine's own ``mov byte [esi+0x16], 0`` at
+    ``0x00470232`` is redundant beside it and is not repeated here.
+
+    ``0x0046EDDC`` gates the call on the mover's ``+0x16`` and ``0x0046EE30``
+    reads it again afterwards, so a traveller the blocked exit killed gets no
+    closing pass either.
+    """
+    if not moved.teleporter or not unit.alive:
+        return
+    world = ctx.world
+    entry = ctx.index(moved.x, moved.y)
+    key = ctx.grid.action_points[entry]
+    exit_at = -1
+    for i in range(len(ctx.grid.field_types)):
+        if (ctx.grid.field_types[i] == movemap.FIELD_TELEPORT_OUT
+                and ctx.grid.action_points[i] == key):
+            exit_at = i
+            break
+    if exit_at < 0:
+        return
+    if world.unit_at[exit_at] != movemap.NO_UNIT:
+        combatmod.remove_unit_element(world, unit)
+        moved.events.append(movemap.MoveEvent("teleporter_blocked",
+                                              moved.x, moved.y, key))
+        return
+    ex, ey = exit_at % ctx.grid.width, exit_at // ctx.grid.width
+    world.unit_at[entry] = movemap.NO_UNIT
+    world.unit_at[exit_at] = unit.slot
+    unit.x, unit.y = ex, ey
+    moved.x, moved.y = ex, ey
+    moved.events.append(movemap.MoveEvent("teleported", ex, ey, key))
+
+
 def _apply_move(ctx: AIContext, unit: CombatUnit,
                 moved: movemap.ExecuteResult, tx: int, ty: int) -> None:
     """What the caller of ``aExecuteMove`` does with the result it reports."""
@@ -1312,6 +1360,9 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
     # the fill lets into a mine cell (docs/23 §7.3), so this arm is the rule's
     # main consumer and not an edge.
     _detonate(ctx, unit, moved)
+    # `0x0046EE03` -- the teleport, between the alive gate and the closing
+    # pass, so `moved.x`/`moved.y` and the `MoveUnit` event see the exit cell.
+    _teleport(ctx, unit, moved)
     # `path` is the one thing a playback cannot recover for itself.  By the
     # time `game/ai_playback.gd` reaches this event the world is already at the
     # end of the turn, so re-deriving the route would derive it against the

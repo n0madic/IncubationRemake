@@ -173,13 +173,9 @@ const PUSH_KINDS: Array[String] = ["push", "push_onto_mine", "push_into_hole"]
 const PUSH_INTO_HOLE: String = "push_into_hole"
 ## The computer's event names against the set pieces they queue.
 const AI_SETPIECE_KINDS: Dictionary[String, String] = {"door": "open_door"}
-## docs/42 section 8.1 -- how far each statue's beam reaches, and the two
-## axes it fires along. **Which pair** is the cell's own `+0x0B` bit 0
-## *after* the routine flips it (`0x00413C31`): 0 fires along y, 1 along x.
-const STATUE_REACH: int = 5
-const STATUE_2_REACH: int = 9
-const STATUE_AXES_Y: Array[Vector2i] = [Vector2i(0, 1), Vector2i(0, -1)]
-const STATUE_AXES_X: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0)]
+## The queue stage that waits for a walk before its own epilogue -- see
+## [method _hold_for_walk].
+const STAGE_AFTER_WALK: String = "move.after_walk"
 ## docs/92 section 7.5.3, revised 2026-09-03 (docs/97 section 34): the
 ## engine's hand-over calls no camera routine, so neither does this by
 ## default. The flag restores the remake's own return to the first unit,
@@ -774,8 +770,18 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			# runs on has lost the ones that died later in the turn.
 			var from_x: int = DictRead.as_int(event["x"])
 			var from_y: int = DictRead.as_int(event["y"])
-			var to_x: int = DictRead.as_int(event["tx"])
-			var to_y: int = DictRead.as_int(event["ty"])
+			# **The path's own end, not the event's `tx`/`ty`.** They are
+			# the same cell on every walk but one: a walk that ended on a
+			# teleporter entry reports the **exit** it was relinked to
+			# (docs/97 section 41.2), and the camera has to fly to where the
+			# body is about to walk, not to where it will reappear.
+			var path: PackedInt32Array = DictRead.to_int32(payload["path"])
+			var last: int = path[path.size() - 1] if not path.is_empty() \
+				else -1
+			var to_x: int = last % world.resource.width if last >= 0 \
+				else DictRead.as_int(event["tx"])
+			var to_y: int = last / world.resource.width if last >= 0 \
+				else DictRead.as_int(event["ty"])
 			var mode: CameraDirector.WalkMode = CameraDirector.walk_mode(false,
 				DictRead.as_bool(payload.get("seen_source", false)),
 				DictRead.as_bool(payload.get("seen_destination", false)))
@@ -791,7 +797,17 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			for entry: Variant in DictRead.as_array(
 					payload.get("events", [])):
 				moves.append(DictRead.as_dict(entry))
-			return maxf(walk, _present_mine(slot, moves))
+			# The epilogue waits for the walk here too -- the computer's
+			# aliens are the fill's only movers into a mine cell and the
+			# teleporter entries are open to both sides.
+			if _walk_has_epilogue(moves):
+				var _held_queue: bool = _hold_for_walk(walk)
+			var blast: float = _present_mine(slot, moves)
+			# The same walk can end on a teleporter: `0x0046EE03` is inside
+			# `aExecuteMove`, so the stream plays as part of the move
+			# (docs/97 section 41.2).
+			_present_teleport(slot, moves)
+			return walk + blast
 	elif kind == "warp":
 		# docs/42 section 7.1: the computer's jump, with a scream for the
 		# trail. The event's cells are the routine's own arguments.
@@ -1489,7 +1505,11 @@ func move_selected(x: int, y: int) -> MoveResult:
 		var width: int = world.resource.width
 		delay = _camera_before_walk(slot, moved.route[0] % width,
 			moved.route[0] / width, x, y, CameraDirector.WalkMode.OWN)
-	_walk_body(slot, moved.route, moved.steps, delay)
+	var walked_for: float = _walk_body(slot, moved.route, moved.steps, delay)
+	# The walk's epilogue waits for the walk, as the engine's blocking loop
+	# makes it: `_hold_for_walk` is the stage that serialises the two clocks.
+	if _walk_has_epilogue(moved.events):
+		var _held_queue: bool = _hold_for_walk(delay + walked_for)
 	# **The blast goes on the queue before the reactions**, because the engine
 	# draws it before it has one: `aExecuteBomb` `0x004702C0` ends by calling
 	# `aPlayFightAnimation` `0x0040BD70` itself (`0x004705F5`), and the walk
@@ -1499,6 +1519,10 @@ func move_selected(x: int, y: int) -> MoveResult:
 	# (docs/23 section 5.3). So the explosion is over before the first
 	# reaction shot is fired.
 	var _blast: float = _present_mine(slot, moved.events)
+	# `0x0046EE03` runs inside `aExecuteMove`, before the caller's
+	# `aExecuteFight`, so the teleport is over before the first reaction shot
+	# -- the same order the mine's blast keeps above.
+	_present_teleport(slot, moved.events)
 	# **After** the walk starts and after `_after_command`, which clears the
 	# queue: `World.submit_move` resolves the whole move's reactions in one
 	# call at its end, so the end of the walk is where the picture reaches
@@ -1506,6 +1530,89 @@ func move_selected(x: int, y: int) -> MoveResult:
 	_queue_reactions(moved.reactions, slot, x, y)
 	return moved
 
+
+## `aPlayTeleporterSequence` `0x004164F0` -- the stream, the traveller hidden
+## at frame 40 of the countdown and shown again at 10 (docs/42 section 8.1).
+##
+## `core` has already relinked the unit (`ExecuteMove._teleport`, docs/97
+## section 41.2), so this is only the picture: the sequence is queued on the
+## **entry** cell with the exit as its target, which is what
+## `0x0042A120(sx, sy, tx, ty)` is given, and the body is suppressed rather
+## than freed because it comes back thirty frames later.
+##
+## The killing teleporter `0x00416840` is the `teleporter_blocked` arm: the
+## traveller is already off the map, so there is nothing to hide and nothing
+## to move, and only the stream is drawn.
+func _present_teleport(slot: int, events: Array[Dictionary]) -> void:
+	for entry: Dictionary in events:
+		var kind: String = DictRead.as_string(entry.get("kind", ""))
+		if kind != "teleported" and kind != "teleporter_blocked":
+			continue
+		var from: Vector2i = _teleport_entry(events)
+		if from.x < 0:
+			continue
+		var to: Vector2i = Vector2i(DictRead.as_int(entry["x"]),
+			DictRead.as_int(entry["y"])) if kind == "teleported" else from
+		# `0x004164F0` opens `teleport.wav` and `teleport2.wav`; the killing
+		# form `0x00416840` is the sound table's `warp` (docs/28's names come
+		# from the routine that owns them, and that one is
+		# `aPlayWarpSequence`).
+		var cues: Array[Dictionary] = []
+		if _events != null:
+			cues = _events.for_event_kind(
+				"teleporter" if kind == "teleported" else "warp")
+		_queue_setpiece({"name": "teleporter",
+			"values": [from.x, from.y, to.x, to.y]},
+			SetpieceDriver.TELEPORTER_FRAMES, cues,
+			slot if kind == "teleported" else MapState.NO_UNIT)
+
+
+## The cell the walk stopped on, off the `teleporter` event the walk records.
+static func _teleport_entry(events: Array[Dictionary]) -> Vector2i:
+	for entry: Dictionary in events:
+		if DictRead.as_string(entry.get("kind", "")) == "teleporter":
+			return Vector2i(DictRead.as_int(entry["x"]),
+				DictRead.as_int(entry["y"]))
+	return Vector2i(-1, -1)
+
+
+
+## The stage that puts the walk and the walk's own epilogue back in order.
+##
+## `aExecuteMove`'s step loop **blocks**: the mine's `aExecuteBomb`
+## (`0x0046EDAF`) and the teleporter's `aExecuteTeleporter` (`0x0046EE03`) run
+## after the last step has been drawn, not beside it. In the remake the body is
+## walked by [UnitsView] on its own clock and the set pieces by
+## [SequenceQueue], and the two clocks are independent by design (docs/92
+## section 2) -- so without this the stream and the blast start while the body
+## is still on its way to the cell they belong to.
+##
+## The bound is the walk's **own** length in frames and not a number of the
+## remake's; [method UnitsView.is_walking] is what actually ends the stage, and
+## it is true from [method UnitsView.start_walk] onwards, the camera flight's
+## delay included. Returns whether a stage was queued.
+func _hold_for_walk(seconds: float) -> bool:
+	if _sequences == null or _units == null or not _units.is_walking():
+		return false
+	var frames: int = ceili(seconds * SequenceQueue.FRAMES_PER_SECOND)
+	if frames <= 0:
+		return false
+	_sequences.enqueue_until(STAGE_AFTER_WALK, frames,
+		func() -> bool: return not _units.is_walking())
+	return true
+
+
+## Whether a walk's own events carry anything [method _present_mine] or
+## [method _present_teleport] will put on the queue -- the test that keeps a
+## plain walk from holding the queue for nothing.
+static func _walk_has_epilogue(events: Array) -> bool:
+	for entry: Variant in events:
+		var kind: String = DictRead.as_string(
+			DictRead.as_dict(entry).get("kind", ""))
+		if kind == "mine_detonated" or kind == "teleported" \
+				or kind == "teleporter_blocked":
+			return true
+	return false
 
 ## The blast a mine under a walker left, drawn as the shot it is.
 ##
@@ -1699,7 +1806,9 @@ func _present_shot_orbits(shooter: int, view: Dictionary,
 			OrbitSequence.KIND_OVERHEAT,
 			_strings.shipped(MODULE_FIGHT, DictRead.as_int(ID_OVERHEAT_BY_KIND[kind])),
 			[], kind)
-	if attack.skill_raised > 0:
+	# `0x00410190` opens with `call 0x0043B740 / cmp eax, 1 / jne`: the skill
+	# orbit plays in the **campaign** and in no other game mode.
+	if attack.skill_raised > 0 and world.turn.mode == TurnState.MODE_CAMPAIGN:
 		var cues: Array[Dictionary] = []
 		if _events != null:
 			cues = _events.for_event_kind("skill")
@@ -2005,34 +2114,33 @@ func _setpiece_extra(name: String, cell: Vector2i,
 	var values: PackedInt32Array = SetpieceDriver._numbers(event)
 	var out: Dictionary = {}
 	match name:
-		"statue", "statue2":
-			# docs/42 section 8.1: up to five cells each way for the turning
-			# statue and nine for the fixed one, stopped by a wall.
-			var reach: int = STATUE_REACH if name == "statue" else STATUE_2_REACH
+		"statue":
+			# **Carried, not re-derived** (docs/97 section 41.1). `core` walks
+			# both arms and puts fifteen numbers on the event: the cell, the
+			# axis `0x00413C31`'s toggle chose, each arm's endpoint and step
+			# count, and each arm's victim as `slot, x, y`. Re-deriving any of
+			# it here would read a byte that has already been toggled and a
+			# map the victims have already left.
 			var beams: Array = []
-			# `0x00413C31` flips bit 0 of the cell's `+0x0B` and the result
-			# picks the axis; `Statue2` takes its direction argument.
-			var flipped: int = (world.state.action_point_at(
-				world.state.index_of(cell.x, cell.y)) + 1) & 1
-			var axis: Array[Vector2i] = (STATUE_AXES_X if flipped == 1
-				else STATUE_AXES_Y) if name == "statue" \
-				else [_facing_step(_at_or(values, 2, 0))]
-			for step: Vector2i in axis:
-				var last: Vector2i = cell
-				var cells: int = 0
-				for i: int in range(1, reach + 1):
-					var at: Vector2i = cell + step * i
-					if not world.state.in_bounds(at.x, at.y):
-						break
-					if world.state.field_type_at(
-							world.state.index_of(at.x, at.y)) == Interact.FIELD_TYPE_WALL:
-						break
-					last = at
-					cells = i
+			var killed: Array = []
+			for arm: int in [0, 1]:
+				var cells: int = _at_or(values, 5 + arm * 3, 0)
 				if cells > 0:
-					beams.append({"x": last.x, "y": last.y, "cells": cells})
+					beams.append({"x": _at_or(values, 3 + arm * 3, cell.x),
+						"y": _at_or(values, 4 + arm * 3, cell.y),
+						"cells": cells})
+				var slot: int = _at_or(values, 9 + arm * 3, -1)
+				if slot >= 0:
+					killed.append({"slot": slot,
+						"x": _at_or(values, 10 + arm * 3, cell.x),
+						"y": _at_or(values, 11 + arm * 3, cell.y)})
 			out["beams"] = beams
-			out["killed"] = []
+			out["killed"] = killed
+		"teleporter":
+			# `[entry x, entry y, exit x, exit y]`, the four numbers
+			# `_present_teleport` puts on its synthetic event.
+			out["tx"] = _at_or(values, 2, cell.x)
+			out["ty"] = _at_or(values, 3, cell.y)
 		"barrier_on":
 			out["direction"] = _at_or(values, 2, 0)
 			var step: Vector2i = _facing_step(_at_or(values, 2, 0))
@@ -2050,7 +2158,13 @@ func _setpiece_extra(name: String, cell: Vector2i,
 			out["cells"] = maxi(1, cells)
 			out["killed"] = []
 		"crush_wall":
-			out["cells"] = [[cell.x, cell.y]]
+			# `core` carries the cells it changed -- the command's own today,
+			# and whatever a footprint gives it later (docs/97 section 41.7).
+			var wall: Array = []
+			for i: int in range(2, values.size() - 1, 2):
+				wall.append([values[i], values[i + 1]])
+			out["cells"] = wall if not wall.is_empty() \
+				else [[cell.x, cell.y]]
 		"para_bombs":
 			var tiles: Array = []
 			for i: int in range(5, values.size() - 1, 2):

@@ -29,6 +29,7 @@ func run(h: TestHarness) -> void:
 	_the_caller_spends(h)
 	_the_move_unit_event(h)
 	_the_passes(h)
+	_teleporters(h)
 
 
 ## A world whose mover has room to take a two-step path with one orthogonal
@@ -642,3 +643,75 @@ static func _walk(world: World, units: Dictionary, slot: int, tx: int,
 		Allowance.for_unit(mover, world.unit_types(), units, 1))
 	return WalkMap.path(world.state, units, world.ctrlmap(), fill, mover.x,
 		mover.y, tx, ty)
+
+
+## `aExecuteTeleporter` `0x00470150` -- docs/26 section 5, reached from
+## `aExecuteMove`'s own epilogue at `0x0046EE03`.
+##
+## A corridor on row 1 with an entry on (2, 1) and an exit on (5, 1), both
+## keyed 100.
+static func _teleporter_world(exit_key: int, blocker: bool) -> World:
+	var width: int = 7
+	var height: int = 3
+	var field_types: Array = []
+	var points: Array = []
+	for y: int in range(height):
+		for x: int in range(width):
+			field_types.append(1 if y == 1 else 2)
+			points.append(0)
+	field_types[1 * width + 2] = 9
+	field_types[1 * width + 5] = 10
+	points[1 * width + 2] = 100
+	points[1 * width + 5] = exit_key
+	var units: Array = [TestFixtures.unit(0, 0, 1, 0, 0, 8)]
+	if blocker:
+		units.append(TestFixtures.unit(1, 5, 1, 0, 0, 0))
+	return World.create(TestFixtures.map_document(width, height, units,
+		field_types, [], points), TestFixtures.balance(), 1.0)
+
+
+static func _kinds(moved: MoveResult) -> Array:
+	var out: Array = []
+	for event: Dictionary in moved.events:
+		out.append(DictRead.as_string(event["kind"]))
+	return out
+
+
+func _teleporters(h: TestHarness) -> void:
+	var world: World = _teleporter_world(100, false)
+	var moved: MoveResult = world.submit_move(MoveCommand.create(0, 4, 1))
+	h.equal("teleporter.the_walk_ends_on_the_entry_and_the_unit_leaves_it",
+		[moved.steps, Vector2i(moved.x, moved.y)], [2, Vector2i(5, 1)],
+		"two steps to (2, 1), then `0x0046EE03` puts it on the exit")
+	h.equal("teleporter.the_events_are_in_order", _kinds(moved),
+		["teleporter", "teleported"],
+		"the walk records the entry, the epilogue records the arrival")
+	h.equal("teleporter.the_map_follows",
+		[world.state.unit_at(world.state.index_of(2, 1)),
+		world.state.unit_at(world.state.index_of(5, 1))],
+		[MapState.NO_UNIT, 0],
+		"the cell link moves with the record")
+	h.equal("teleporter.the_move_unit_event_sees_the_exit",
+		Vector2i(DictRead.as_int(world.unit_view(0)["x"]),
+		DictRead.as_int(world.unit_view(0)["y"])), Vector2i(5, 1))
+
+	# `0x004701CA` -- no exit carries the key, so nothing happens at all.
+	# This is `_C_156`'s key-104 entry, docs/26 section 5.1's authoring bug.
+	var orphan: World = _teleporter_world(0, false)
+	var stuck: MoveResult = orphan.submit_move(MoveCommand.create(0, 4, 1))
+	h.equal("teleporter.an_unpaired_entry_is_inert",
+		[Vector2i(stuck.x, stuck.y), _kinds(stuck)],
+		[Vector2i(2, 1), ["teleporter"]],
+		"the walk still ends on the entry; the traveller stays there")
+
+	# `0x004701DD` -- an occupied exit kills the traveller on the entry cell.
+	var blocked: World = _teleporter_world(100, true)
+	var died: MoveResult = blocked.submit_move(MoveCommand.create(0, 4, 1))
+	var alive: bool = DictRead.as_int(blocked.unit_view(0)["hp"]) > 0
+	h.equal("teleporter.an_occupied_exit_kills_the_traveller",
+		[alive, _kinds(died)],
+		[false, ["teleporter", "teleporter_blocked"]],
+		"`aRemoveUnitElement` takes it off the entry cell")
+	h.equal("teleporter.the_dead_traveller_leaves_the_entry",
+		blocked.state.unit_at(blocked.state.index_of(2, 1)),
+		MapState.NO_UNIT)

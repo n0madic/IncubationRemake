@@ -814,11 +814,11 @@ here is the camera and the effects each one adds:
 | statues `0x00413A40` / `0x00414000` | flight to 32 000 (20 m) above | `FireDeath` on every unit in the path, `0x00428BF0` beam | the "knocked-down" state 3 of §1.3 |
 | `FireCircle` `0x004131C0` | flight to the cell (when asked) | `KillFire` on the eight neighbours, `0x00422F00` | |
 | `aPlayGroundFireAnimation` `0x004157B0` | free-position search, then `(9, 7, 1)` on the unit | units hidden, `BloodFlood`, `FlyingDebris`, `TubeSmoke` | |
-| `aPlayCrushWallAnimation` `0x00415C70` | none | `0x004238C0` on every cell | |
+| `aPlayCrushWallAnimation` `0x00415C70` | none | `0x004238C0` on every cell of the **footprint** -- §8.2 | |
 | `RoofUnit` `0x00411B00` | flight to the drop | `0x00422460`, landing dust | `28` §13's drop rate |
 | `GroundUnit` `0x00411FB0` | flight | `0x00422610`, a `L110EX00.3DI` object inserted, dust | 8 + 6 frames of rise |
 | teleporters `0x004164F0` / `0x00416840` | camera target follows the effect (`0x0042B4B0`) | `0x0042A120`; the unit hidden at frame 40, moved at frame 10 | |
-| bomber `0x00415E90`, para bomb `0x004160F0` | target follows the bomber / the bombs (`0x0042B4B0`) | `0x0042A8E0` at −320 000; `0x0042B070` per bomb | ends on the *arrived* flag of §4.6 |
+| bomber `0x00415E90`, para bomb `0x004160F0` | eye to `(-16000, 0, 320000)`; the target is the camera's **own**, read back at `0x00415F2C` and handed straight to `0x00415FB4` -- so the fly-past aims the camera nowhere | `0x0042A8E0(-320000, -320000, 320000, 48000, 48000, 320000)`, six literals; `0x0042B070` per bomb | ends on the *arrived* flag of §4.6 |
 | `MoveWorld` `0x0040F230` | set every frame | none | `0x00407E30` translates the world |
 | lever `0x00416AD0` | flight to +0xC80 | none | |
 | mine `0x00416DE0`, entry point `0x00416CF0` | none | `SmallFireExplosion`, `FireExplosion` | |
@@ -850,7 +850,11 @@ plays once, the frame loop runs until the pool is empty, and the remembered
 units are removed from the map (`0x0043B8D0`, `aRemoveUnitElement`
 `0x004779C0`). `aPlayStatueSequence` `0x00414000(x, y, dir)` is the same
 without the turn: the direction argument picks the axis and the sign, the
-walk is up to **nine** cells, one beam, one unit remembered.
+walk is up to **ten** cells (`0x00414164`, `cmp eax, 0x0A`), one beam, one
+unit remembered. It is what the LCL command `FixedStatue` `0x00442370` calls;
+`Statue` `0x00442310` calls the rotating one and `Statue2` `0x004424B0` runs
+it, through `0x00413500`, once per cell whose action point falls in an
+inclusive range.
 
 **`aPlayFootBridgeSequence` `0x00414A70(x, y, frames, wave)`** — `bridge2.wav`
 at 78 or 100 by the wave argument; the 3×3 cells around the block are set to
@@ -906,6 +910,63 @@ that *kills*: `0x0042A2F0`, `teleport.wav`, `SP_HUM_0.wav`; after **ten**
 frames the object is hidden and — by the gore level of §4.8.1 — either the
 bloodless puff `0x004297F0` (levels 1 and 2) or `aBlob_CreateFlyingDebris`
 `0x004216D0` (level 3) marks the spot.
+
+### 8.2 `CrushWall`'s footprint — **[code] `0x0042F410`** *(read 2026-09-03)*
+
+"`0x004238C0` on every cell" left out which cells those are, and the answer is
+not in the control map at all.
+
+`aPlayCrushWallAnimation` finds the wall's land object within a
+`5000 x 5000 x 9600` box of the command's cell (`0x00406F20`) and then calls
+**`0x0042F410(object, 1, 0, 1)`** at `0x00415D6D`. That routine sweeps the
+whole control map and, for every cell, casts **four probes** from the cell's
+own symbol object — `x ± 200` and `y ± 200`, from `z = 100000` — against the
+object (`0x00403E90` builds the ray, `0x0042F300` intersects it). A cell that
+**any** probe hits gets:
+
+| what | value |
+|---|---|
+| the cell's symbol object `+0x18` (its z) | 0, because the third argument is 0 |
+| the cell's height `+0x01` | that same 0 |
+| the cell's field type `+0x0D` | the second argument, **1** (`Free Place`) |
+| the cell's state `+0x00` | 2, through `0x0042F780(cell, 2)`, because the fourth argument is non-zero |
+
+`0x00415D87` then sweeps for state 2, spawns `0x004238C0` on each such cell
+and writes the state back to 1; afterwards the block turns by 102 and drops
+480 a frame until the pool empties, and `aDeleteLand` `0x00406C30` frees the
+object.
+
+So a crushed wall **becomes walkable floor at height 0** over a set decided by
+scene geometry — the state byte goes back to 1 in the sweep, so the height and
+the field type are what last.
+
+**Measured on all nine shipped call sites** *(2026-09-03,
+[`97` §41.7](97-slice-5-report.md))*. Every one is a **straight run of two or
+three cells**, all of them field type 2 at height 3280 beforehand, and the
+command's own cell is always among them:
+
+| Mission | Command | Marked |
+|---|---|---|
+| `_C_129` | (16, 18) | (16, 18) (16, 19) |
+| `_C_129` | (16, 20) | (16, 20) (16, 21) (16, 22) |
+| `_C_129` | (18, 23) | (17, 23) (18, 23) |
+| `_C_142` | (22, 11) | (22, 11) (22, 12) |
+| `_O_061` | (16, 23) | (15, 23) (16, 23) |
+| `_O_061` | (11, 23) | (10, 23) (11, 23) |
+| `_O_061` | (11, 19) | (10, 19) (11, 19) |
+| `_O_061` | (13, 19) | (12, 19) (13, 19) |
+| `_O_061` | (14, 19) | (14, 19) (15, 19) (16, 19) |
+
+The runs **tile** the wall and the control map cannot tell them apart:
+`_C_129`'s column at x 16 is five identical cells that split 2 + 3, and
+`_O_061`'s row at y 19 is seven that split 2 + 2 + 3, which is exactly why
+that mission authors three calls on one row. The object `0x00406F20` answers
+with is a **standard object** — the array at `[0x004FA80C]`, stride 66,
+counted by `[0x004FA7B4]`, which is neither the `.lev`'s 900-entry land
+lattice nor the scene's 27 `[CLO]` blocks — so the split is the wall piece's
+own geometry and nothing a `.lev` reader can recover. `core` applies the rule
+to the cell it *can* name, the command's own, and the deficit is one or two
+cells per call.
 
 ---
 
@@ -981,10 +1042,16 @@ itself (§8), and **every change to the map happens on screen in the frame it
 happens**, because the sequence that changes it is the one drawing. The
 redraw callback the AI is handed (`0x0047C2C0`, `23` §2) draws the turn banner
 and the HUD; it moves no camera. *(Read 2026-09-03,
-[`97` §35.1](97-slice-5-report.md): it is the **between-players screen** --
-it blanks all 640x480 and draws four formatted lines centred at x 320 from
+[`97` §35.1](97-slice-5-report.md): it is the **between-players screen** -- it
+blanks all 640x480 and draws four formatted lines centred at x 320 from
 `Txtmod` ids 12, 20, 22, 25, 26, 125, 127 and 132 -- so "banner" understates
-it, and the remake's HUD line is not a smaller version of the same thing.)*
+it, and the remake's HUD line is not a smaller version of the same thing.
+Read again the same day, [`97` §41.5](97-slice-5-report.md): its **case 0**,
+the arm a mission hand-over takes, opens with
+`if (humanPlayerCount() == 1 && !multiHumanSession()) { SendMessage(hwnd,
+WM_LBUTTONDOWN); return; }` at `0x0047C3FF` -- so with one human player it
+posts its own click and draws nothing at all, and the screen is a hot-seat
+and session feature.)*
 
 ---
 
@@ -1007,11 +1074,17 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | jump | parabola, trail, dust | ~~teleport on rebuild~~ `JumpSequence`, the player's and the computer's (`97` §31) |
 | selection | four arrow blobs | ~~cell highlight~~ the four arrows on a selection and after a command, the highlight kept for the cells (`97` §31) |
 | push, orbits | §7.2, §7.4–§7.5 | ~~sound only~~ `PushSequence`, `OrbitSequence` (`97` §31) |
-| own / AI door | flight, 10 frames, flight back | instant swap + sound |
+| own / AI door | flight, 10 frames, flight back | ~~instant swap + sound~~ the flight, the ten frames and the flight back, on the queue (`97` §32) |
 | set pieces | camera + effects | ~~7 animated without either, 18 instant~~ 18 animated with the camera and their creators, 8 instant (`97` §32, §33) |
 | fires, glows, mines | state-byte rotation | ~~not created~~ the four placers in `core`, the states drawn and turned (`97` §37) |
 | AI terrain | changes in the event's frame | ~~all applied before the replay~~ the cells ride on the event and are painted in its frame; the computer's door now opens the cell at all (`97` §35) |
 | script camera | seven commands | ~~events with no action~~ six of them as flights on the queue; `MoveWorld` is the scenery's (`97` §34) |
+| statue beam | the axis bit flipped, one unit each way removed | ~~an event that kills nobody~~ the toggle and both arms in `core` (`97` §41.1) |
+| teleporters | entry paired to exit by ActPt; an occupied exit kills | ~~an event that moves nobody~~ `ExecuteMove._teleport` and `inclib.ai._teleport` (`97` §41.2) |
+| skill orbit | campaign only (`0x0043B740 == 1`) | ~~ungated~~ gated on `TurnState.mode` (`97` §41.3) |
+| bomber fly-past | six literals; the camera keeps its own target | ~~aimed at the box's cell~~ the literals, and the camera's target kept (`97` §41.3) |
+| between-players screen | skipped outright with one human player | nothing drawn -- which is what the engine does here (`97` §41.5) |
+| `CrushWall`'s cells | a four-probe 3D query against the wall object; the run becomes floor at height 0 | ~~nothing at all~~ the command's own cell becomes floor at height 0 and the debris lands on it; the other one or two cells of the run are measured (§8.2) and not derivable from a `.lev` (`97` §41.7) |
 
 The plan that follows from this table is the remake's business and is recorded
 in `docs/97`'s next addendum, not here. *(The camera rows were closed on
@@ -1019,7 +1092,10 @@ in `docs/97`'s next addendum, not here. *(The camera rows were closed on
 by [`97` §29](97-slice-5-report.md), the idle by [`97` §30](97-slice-5-report.md)
 the jump, selection, push and orbits by [`97` §31](97-slice-5-report.md)
 and the set pieces by [`97` §32](97-slice-5-report.md) and
-[§33](97-slice-5-report.md); the others stand.)*
+[§33](97-slice-5-report.md); the door row, which had been left un-struck after
+§32 animated it, and the six rows below the script camera on 2026-09-03 by
+[`97` §41](97-slice-5-report.md); `CrushWall`'s row is the one that still
+stands.)*
 
 ---
 

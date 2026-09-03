@@ -604,9 +604,83 @@ def special_plan(name: str, tiles: dict[str, dict[str, int]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+
+#: `CrushWall` `0x00415C70`'s **footprint**, `docs/42` §8.2: before it throws a
+#: single piece of debris it calls `0x0042F410(wallObject, 1, 0, 1)`, and that
+#: is what decides which cells it reaches.  The routine sweeps the whole
+#: control map and casts four probes per cell -- `x +/- 200` and `y +/- 200`
+#: from `z = 100000`, cast from the cell's **own** symbol object -- against the
+#: object; a cell any probe hits has its field type set to the second argument,
+#: its height to 0 and its state byte to 2.
+#:
+#: All **nine** shipped call sites are on `World_A00`'s `Level01d`, in three
+#: missions, and every one of them is measured: the mission is wrapped into
+#: `_6_.sav`'s fixed blocks and staged as its own slot, and each site gets a
+#: process of its own so a plan that dies takes one site with it and not five.
+CRUSH_WALL_WIDTH = 30
+CRUSH_WALL_HEIGHT = 30
+#: `0x00415CE0`'s search box and `0x00415D6D`'s own four arguments.
+CRUSH_WALL_BOX = (0x1388, 0x1388, 0x2580)
+CRUSH_WALL_MARK = (1, 0, 1)
+#: `(mission, save slot, ((x, y), ...))` -- the sites, in script order.
+CRUSH_WALL_MISSIONS = (
+    ("_C_129", 8, ((16, 18), (16, 20), (18, 23))),
+    ("_C_142", 9, ((22, 11),)),
+    ("_O_061", 10, ((16, 23), (11, 23), (11, 19), (13, 19), (14, 19))),
+)
+
+
+def crush_wall_sites() -> dict[str, tuple[str, int, int, int]]:
+    """Phase name -> ``(mission, slot, x, y)``, one phase per call site."""
+    out: dict[str, tuple[str, int, int, int]] = {}
+    for mission, slot, cells in CRUSH_WALL_MISSIONS:
+        for x, y in cells:
+            out[f"crush_wall{mission.lower()}_{x}_{y}"] = (mission, slot, x, y)
+    return out
+
+
+CRUSH_WALL_DECLARATIONS = DEATH_DECLARATIONS + """\
+__cdecl ptr aFindNearestObject(i32,i32,i32,i32,i32,i32,ptr)   = Incubation.exe+0x6f20
+__cdecl i32 aMarkCellsUnderObject(ptr,i32,i32,i32)            = Incubation.exe+0x2f410
+"""
+
+
+def crush_wall_plan(name: str) -> str:
+    """One process: load the mission, find the wall, mark, read the map twice.
+
+    The two calls are `aPlayCrushWallAnimation`'s own first two -- the object
+    search of `0x00415D00` and the mark of `0x00415D6D` -- and nothing after
+    them, because everything after them renders.  `aDeleteLand` is left out
+    for the same reason it is not needed: what is being measured is the
+    footprint, not the wall going away.
+    """
+    _mission, slot, x, y = crush_wall_sites()[name]
+    symbol = y * CRUSH_WALL_WIDTH + x
+    cells = CRUSH_WALL_WIDTH * CRUSH_WALL_HEIGHT * gold.CELL_STRIDE
+    box = ", ".join(str(v) for v in CRUSH_WALL_BOX)
+    mark = ", ".join(str(v) for v in CRUSH_WALL_MARK)
+    return "\n".join([
+        f"# {name}: the footprint of docs/42 section 8.2",
+        CRUSH_WALL_DECLARATIONS.rstrip("\n"),
+        "--buf near:64",
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({slot})",
+        f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+        # The cell's own symbol object is `cell[+0x05]`, which every shipped
+        # map fills row-major from zero -- the same reading
+        # `SPECIAL_D00_SYMBOL` is.
+        f"s = aGetSymbolObjectPtr({symbol})"
+        f" --read $s:{blob_gold.SYMBOL_RECORD_BYTES}",
+        f"wall = aFindNearestObject([$s+0x10], [$s+0x14], [$s+0x18],"
+        f" {box}, &near)",
+        f"aMarkCellsUnderObject($wall, {mark}) --read $c0:{cells}",
+    ]) + "\n"
+
+
 PLAN_NAMES = ("idle_random", "idle_pose", "deaths_state") + tuple(
     "death_" + name for name, _c, _a, _s in DEATH_CALLS) \
-    + tuple(SPECIAL_CALLS) + tuple(SPECIAL_D00_CALLS)
+    + tuple(SPECIAL_CALLS) + tuple(SPECIAL_D00_CALLS) \
+    + tuple(crush_wall_sites())
 
 
 # --------------------------------------------------------------------------
@@ -1830,6 +1904,116 @@ def emit_special_cases(path: Path, root: str, out: Path) -> int:
     return 0
 
 
+#: What the nine shipped `CrushWall` footprints turned out to be
+#: (`docs/97` §41.7, measured 2026-09-03): phase -> the cells `0x0042F410`
+#: marked, in row-major order.  Every one is a **straight run of two or three
+#: cells** and the command's own cell is always in it -- but which run is the
+#: wall piece's own geometry, and nothing in the `.lev` records it: the wall
+#: column `_C_129` crushes at x 16 is five identical cells that split 2 + 3,
+#: and `_O_061`'s row at y 19 is seven that split 2 + 2 + 3.
+CRUSH_WALL_FOOTPRINTS: dict[str, tuple[tuple[int, int], ...]] = {
+    "crush_wall_c_129_16_18": ((16, 18), (16, 19)),
+    "crush_wall_c_129_16_20": ((16, 20), (16, 21), (16, 22)),
+    "crush_wall_c_129_18_23": ((17, 23), (18, 23)),
+    "crush_wall_c_142_22_11": ((22, 11), (22, 12)),
+    "crush_wall_o_061_16_23": ((15, 23), (16, 23)),
+    "crush_wall_o_061_11_23": ((10, 23), (11, 23)),
+    "crush_wall_o_061_11_19": ((10, 19), (11, 19)),
+    "crush_wall_o_061_13_19": ((12, 19), (13, 19)),
+    "crush_wall_o_061_14_19": ((14, 19), (15, 19), (16, 19)),
+}
+#: What a marked cell was and became: field type 2 at 3280 -> field type 1 at
+#: 0, with the state byte on 2 until the debris sweep puts it back.
+CRUSH_WALL_BEFORE = (2, 3280)
+CRUSH_WALL_AFTER = (1, 0)
+CRUSH_WALL_MARKED_STATE = 2
+
+
+def check_crush_wall(ck: Checker, phases: dict[str, Any]) -> None:
+    """`CrushWall`'s footprint, on all nine shipped call sites -- `docs/42` §8.2.
+
+    Each phase loads its own mission, finds the wall the way `0x00415D00`
+    does and calls `0x0042F410(wall, 1, 0, 1)` with the **whole** control map
+    read either side, so what is compared is every one of the 900 cells and
+    not the one the command names.
+    """
+    sites = crush_wall_sites()
+    for name, (mission, _slot, x, y) in sites.items():
+        rows = (phases.get(name) or {}).get("rows")
+        ck.pin(f"{name}.captured", bool(rows), "phase missing -- re-take it")
+        if not rows:
+            continue
+        found = _row_after(rows, "aFindNearestObject")
+        ck.pin(f"{name}.found_the_wall", bool(found and int(
+            (found or {}).get("eax", "0x0"), 16)),
+            "0x00406F20 answered nothing, so the mark would fall back to the "
+            "last land object")
+        before = _cells_of(_row_after(rows, "aGetCtrlMapElementPtr"))
+        after = _cells_of(_row_after(rows, "aMarkCellsUnderObject"))
+        if before is None or after is None:
+            ck.pin(f"{name}.reads", False, "the map was not read either side")
+            continue
+        stride = gold.CELL_STRIDE
+        marked: list[tuple[int, int]] = []
+        for index in range(CRUSH_WALL_WIDTH * CRUSH_WALL_HEIGHT):
+            was = before[index * stride:(index + 1) * stride]
+            now = after[index * stride:(index + 1) * stride]
+            if was != now:
+                marked.append((index % CRUSH_WALL_WIDTH,
+                               index // CRUSH_WALL_WIDTH))
+        want = list(CRUSH_WALL_FOOTPRINTS[name])
+        ck.pin(f"{name}.footprint", marked == want,
+               f"{mission} ({x},{y}) marked {marked}, expected {want}")
+        ck.pin(f"{name}.the_command_cell_is_in_it", (x, y) in marked,
+               f"({x},{y}) not among {marked}")
+        # Two or three cells sharing a column or a row: enough to say "a run
+        # along one axis" for a footprint of this size, and no more than that.
+        ck.pin(f"{name}.is_one_straight_run",
+               len(marked) > 1
+               and (len({c[0] for c in marked}) == 1
+                    or len({c[1] for c in marked}) == 1),
+               f"{marked} is not a run along one axis")
+        for cx, cy in marked:
+            index = cy * CRUSH_WALL_WIDTH + cx
+            was = before[index * stride:(index + 1) * stride]
+            now = after[index * stride:(index + 1) * stride]
+            ck.pin(f"{name}.{cx}_{cy}.was",
+                   (was[CELL_FIELD_TYPE],
+                    struct.unpack_from("<i", was, CELL_HEIGHT)[0])
+                   == CRUSH_WALL_BEFORE,
+                   f"({cx},{cy}) was not a wall at 3280")
+            ck.pin(f"{name}.{cx}_{cy}.became",
+                   (now[CELL_FIELD_TYPE],
+                    struct.unpack_from("<i", now, CELL_HEIGHT)[0])
+                   == CRUSH_WALL_AFTER
+                   and now[0] == CRUSH_WALL_MARKED_STATE,
+                   f"({cx},{cy}) became "
+                   f"{(now[CELL_FIELD_TYPE], struct.unpack_from('<i', now, CELL_HEIGHT)[0], now[0])}")
+            # Everything between the height and the field type -- the symbol
+            # object at `+0x05`, the unit word at `+0x07`, the action point at
+            # `+0x0B` and the damage byte at `+0x0C` -- and everything after
+            # the field type. `CELL_HEIGHT` is 1, so the first slice has to
+            # start at `CELL_HEIGHT + 4`; starting it at 5 spelled the same
+            # number and read nothing at all.
+            ck.pin(f"{name}.{cx}_{cy}.nothing_else_moved",
+                   was[CELL_HEIGHT + 4:CELL_FIELD_TYPE]
+                   == now[CELL_HEIGHT + 4:CELL_FIELD_TYPE]
+                   and was[CELL_FIELD_TYPE + 1:] == now[CELL_FIELD_TYPE + 1:],
+                   "a byte outside the state, the height and the field type "
+                   "changed")
+    # The finding that decides where the footprint can come from: the runs
+    # tile a wall that the control map cannot tell apart.
+    ck.pin("crush_wall.every_site_is_two_or_three_cells",
+           sorted({len(v) for v in CRUSH_WALL_FOOTPRINTS.values()}) == [2, 3],
+           "the nine footprints are runs of two or three")
+    for mission, _slot, _cells in CRUSH_WALL_MISSIONS:
+        pooled = [c for name, cells in CRUSH_WALL_FOOTPRINTS.items()
+                  for c in cells if sites[name][0] == mission]
+        ck.pin(f"crush_wall.{mission}.the_runs_tile_the_wall",
+               len(pooled) == len(set(pooled)),
+               f"{mission}: two calls marked the same cell")
+
+
 def check(path: Path, root: str) -> int:
     if not path.is_file():
         LOG.error("%s: no capture; take one with --game-copy", path)
@@ -1848,6 +2032,7 @@ def check(path: Path, root: str) -> int:
             fn(ck, root, rows)
     check_deaths(ck, root, phases)
     check_special(ck, root, phases)
+    check_crush_wall(ck, phases)
     for line in ck.failed:
         print("FAIL " + line)
     print(f"presentation_gold: {ck.passed}/{ck.passed + len(ck.failed)} checks passed")
@@ -1903,6 +2088,21 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int,
             plan = idle_pose_plan(pose_movements(str(game_copy), phases))
         elif name == "deaths_state":
             plan = deaths_state_plan()
+        elif name in crush_wall_sites():
+            mission, slot, _x, _y = crush_wall_sites()[name]
+            slot_file = game_copy / "Work" / "Saves2" / f"_{slot}_.sav"
+            if not slot_file.is_file():
+                LOG.error(
+                    "%s loads slot %d, which is not staged. Build it:\n"
+                    "  python3 tools/sav_parse.py "
+                    "tests/fixtures/saves/_6_.sav --wrap "
+                    "gog_incubation/Missions/%s.lev --out %s\n"
+                    "It is one of the three missions that call CrushWall "
+                    "(docs/42 section 8.2).",
+                    name, slot, mission, slot_file)
+                status = 1
+                continue
+            plan = crush_wall_plan(name)
         elif name in SPECIAL_D00_CALLS:
             slot_file = (game_copy / "Work" / "Saves2"
                          / f"_{SPECIAL_D00_SLOT}_.sav")
