@@ -66,7 +66,7 @@ python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 f
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 190 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 33 suites, 2773 checks
+bash   godot/run_tests.sh                                    # 33 suites, 2775 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7

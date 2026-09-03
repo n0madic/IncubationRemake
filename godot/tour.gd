@@ -26,6 +26,8 @@ extends SceneTree
 ## | `click_unit SLOT` | a left click on the cell a unit stands on |
 ## | `walk_to X Y` | a left click on the reachable cell nearest `(X, Y)` |
 ## | `cell X Y` | the control map's cell: height, field type, action point |
+## | `blobs` | every live blob: kind, class, model, position, velocity, rotation |
+## | `watch N` | `blobs` on each of the next N drawn frames |
 ## | `chance A B` | `core`'s hit chance for unit A shooting unit B |
 ## | `wait N` | N drawn frames |
 ## | `idle [MAX]` | frames until the picture is idle, at most MAX |
@@ -76,6 +78,7 @@ var _index: int = 1
 var _frame: int = 0
 var _boot: int = 0
 var _wait: int = 0
+var _watch: int = 0
 var _idle_left: int = 0
 var _queue: PackedStringArray = PackedStringArray()
 var _log: Array[String] = []
@@ -115,6 +118,10 @@ func _process(_delta: float) -> bool:
 		return true
 	if _wait > 0:
 		_wait -= 1
+		return false
+	if _watch > 0:
+		_watch -= 1
+		_blobs()
 		return false
 	if _idle_left > 0:
 		_idle_left -= 1
@@ -208,6 +215,11 @@ func _run(line: String) -> void:
 				_log.append("click: wants X and Y")
 		"click_unit":
 			_click_unit(parts[1].to_int() if parts.size() > 1 else -1)
+		"blobs":
+			_blobs()
+		"watch":
+			_watch = maxi(1, parts[1].to_int() if parts.size() > 1 else 20)
+			_log.append("watch %d frames" % _watch)
 		"cell":
 			if parts.size() > 2:
 				_cell(parts[1].to_int(), parts[2].to_int())
@@ -312,6 +324,25 @@ func _walk_to(x: int, y: int) -> void:
 	_log.append("walk_to %d,%d picks %d,%d (%d away)"
 		% [x, y, best.x, best.y, best_distance])
 	_click_cell(best.x, best.y)
+
+
+## Every live blob, field by field -- kind, class, model, position, velocity
+## and the rotation triple. What a projectile is actually doing is not
+## readable from a screenshot, and the pool is where the answer is.
+func _blobs() -> void:
+	var pool: BlobPool = _main._fx
+	if pool == null:
+		_log.append("blobs: no pool")
+		return
+	var queue: SequenceQueue = _main._sequences
+	_log.append("-- frame %d, %d live, stage %s" % [_frame, pool.live(),
+		queue.current() if queue != null else ""])
+	for blob: Blob in pool.blobs():
+		_log.append(("blob kind %d class %d model %d at (%d, %d, %d) "
+			+ "v (%d, %d, %d) rot (%d, %d, %d) life %d aux %d")
+			% [blob.kind, blob.class_id, blob.model, blob.x, blob.y, blob.z,
+				blob.vx, blob.vy, blob.vz, blob.rot_x, blob.rot_y, blob.rot_z,
+				blob.life, blob.aux])
 
 
 ## One cell of the control map, as `core` holds it -- the height, the field

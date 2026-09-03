@@ -170,7 +170,44 @@ func _create(call: Dictionary, at: Vector3i, towards: Vector3i) -> int:
 		fields["aux"] = _sprite_field(sprite, "size", DEFAULT_SIZE)
 	elif call["model"] != null:
 		fields["model_name"] = DictRead.as_string(call["model"])
+		var facing: Vector3i = _facing(at, towards)
+		fields["rot_x"] = facing.x
+		fields["rot_y"] = facing.y
+		fields["rot_z"] = facing.z
 	return _pool.create_blob(fields)
+
+
+## Which way a **model** blob points when it is made, as the engine's own
+## orientation service answers it.
+##
+## The class comment's caveat applies here and is the reason this exists: the
+## thirty creators a weapon selects are *not* transcribed (docs/97 section 14.5),
+## so the record this class builds carries the call site's real kind, class,
+## life and model and a trajectory of the remake's own. The rotation triple was
+## left at **zero**, and for a class-0 blob that is not a neutral value: the
+## tracer's `A_LINE5.3DI`, the laser's `A_LASERG.3DI` and the plasma bolt are
+## *shaped* models, so a round crossing the map on any bearing but the one they
+## are authored along flew visibly sideways (docs/97 section 46).
+##
+## The rule is **read out of the capture, not chosen**. `blob_gold.py`'s
+## records for `0x00424D20` -- a burst of two tracers and two casings -- carry
+## `(65528, 0, 2344)` on *every* record of the call, and 2344 is exactly what
+## `0x00403AA0` answers for that burst's own direction: one triple per call,
+## along the line, the middle word zero. The casings keep it although their own
+## velocities point elsewhere, which is why this is stamped per call here
+## rather than derived per blob.
+##
+## So the direction comes from [method BlobHooks.orient], `0x00403AA0`'s
+## **measured** arithmetic -- a 4096-unit yaw in the third word, the pitch in
+## the first. What stays the remake's is the small spread the creators put on
+## that line before they orient (the capture's yaws are 2344 and 2379 against
+## the line's own 2350, and their pitches differ with it); this uses the line
+## itself. The creator's own arithmetic replaces it the day those thirty are
+## transcribed.
+func _facing(from: Vector3i, to: Vector3i) -> Vector3i:
+	if _pool == null or from == to:
+		return Vector3i.ZERO
+	return _pool.hooks().orient(from, to)
 
 
 func _sprite_field(sprite: Dictionary, name: String, fallback: int) -> int:

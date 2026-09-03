@@ -83,11 +83,23 @@ static func yaw_basis(yaw: int) -> Basis:
 static func joint_basis(ax: int, ay: int, az: int) -> Basis:
 	# Each engine axis, in Godot's frame, under the `(x, z, -y)` mapping at the
 	# top of this file: engine X is Godot X, engine Y is Godot -Z, engine Z is
-	# Godot Y -- which is why the third component reaches [method yaw_basis]'s
-	# own axis and sign.
-	var rx: Basis = Basis(Vector3.RIGHT, _turns(ax))
-	var ry: Basis = Basis(Vector3.BACK, -_turns(ay))
-	var rz: Basis = Basis(Vector3.UP, _turns(az))
+	# Godot Y. `BACK` is the *negated* image of engine Y, which is why that one
+	# term carries an extra minus beyond the negation below.
+	#
+	# **The angles are negated**, which is the builder's own first three
+	# instructions (`neg ebx / neg ecx / neg edx`, `97` section 18.1) and was
+	# missing here until 2026-09-03. Two independent things say so besides the
+	# listing: an Eng3d model is authored along engine **+Y** (`A_LINE5.3DI` is
+	# 1600 units long in Y and 242 wide in X) and `0x00403AA0` measures its
+	# bearing from **+Y** toward +X, so a model turned by its own bearing must
+	# rotate the short way round -- and [method charisma_yaw_basis], which was
+	# measured against `10` section 5.10's facing table long before this, is
+	# `2048 - yaw`: the same negation plus the half turn a body's -Y forward
+	# needs. With the sign the wrong way a shot's tracer flew across its own
+	# path (`97` section 46.5).
+	var rx: Basis = Basis(Vector3.RIGHT, -_turns(ax))
+	var ry: Basis = Basis(Vector3.BACK, _turns(ay))
+	var rz: Basis = Basis(Vector3.UP, -_turns(az))
 	return rz * rx * ry
 
 

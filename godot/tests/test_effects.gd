@@ -232,6 +232,23 @@ func _check_triggers(h: TestHarness) -> void:
 	var made: int = triggers.muzzle(2, from, to)
 	h.check("triggers.muzzle", made > 0,
 		"weapon 2 makes %d muzzle effect(s)" % made)
+	# **A model blob points along the shot.** The engine's own capture stamps
+	# one orientation triple -- the burst's direction through `0x00403AA0` --
+	# on every record of a creator's call, and the remake had left it at zero,
+	# which flew a shaped model like `A_LINE5.3DI` sideways (docs/97 section 46).
+	var pointed: int = 0
+	var flat: int = 0
+	var want: Vector3i = pool.hooks().orient(from, to)
+	for blob: Blob in pool.blobs():
+		if blob.class_id >= 2:
+			continue
+		if blob.rot_z == want.z and blob.rot_y == 0 and blob.rot_x == want.x:
+			pointed += 1
+		else:
+			flat += 1
+	h.check("triggers.model_points_along_the_shot", pointed > 0 and flat == 0,
+		"%d model blob(s) carry the shot's own triple, %d do not"
+			% [pointed, flat])
 	h.equal("triggers.sound", triggers.impact_wave(2), "ricochet.wav")
 	h.equal("triggers.silent", triggers.impact_wave(15), "",
 		"a melee weapon's impact makes no sound, which is a real answer")
@@ -1270,6 +1287,27 @@ func _check_models(h: TestHarness) -> void:
 	h.check("models.quarter_turn_moves",
 		not quarter.is_equal_approx(identity),
 		"and 0x400 is the panel's flip")
+
+	# **A bearing turns a model onto it.** An Eng3d model is authored along
+	# engine **+Y** -- `A_LINE5.3DI` is 1600 units long in Y and 242 wide in X
+	# -- and `0x00403AA0` measures a bearing from +Y toward +X, so the basis a
+	# bearing makes must send the model's forward, Godot -Z, along that
+	# direction. The four cardinal bearings need no trig table to state.
+	# Pinned because the sign was the other way until docs/97 section 46.5, and
+	# a tracer then flew across its own path with every check still green.
+	var cardinals: Array[Vector3i] = [
+		Vector3i(0, 0, 3200), Vector3i(1024, 3200, 0),
+		Vector3i(2048, 0, -3200), Vector3i(3072, -3200, 0)]
+	var pointed: int = 0
+	for entry: Vector3i in cardinals:
+		var forward: Vector3 = WorldSpace.joint_basis(0, 0, entry.x) \
+			* Vector3(0.0, 0.0, -1.0)
+		var want: Vector3 = WorldSpace.to_godot(entry.y, entry.z,
+			0).normalized()
+		if forward.dot(want) > 0.999:
+			pointed += 1
+	h.equal("models.bearing_points_the_model", pointed, cardinals.size(),
+		"the model's +Y forward lands on its own bearing")
 
 	# The pool draws only the model half: a sprite blob is [BlobSprites]'s.
 	var pool: BlobPool = BlobPool.create(1.0)

@@ -899,6 +899,28 @@ A drawn rotation is `aRandom(0, 4096)`: the **4096-unit circle** of
 [`70`](70-img-tables.md) again, the same one §7.4.2's orientation helper
 answers in and §7.8's joint angles are masked to.
 
+### 7.6.3 A shot's model blobs carry **one** orientation, and it is the burst's
+
+Read out of the same capture, and worth stating because a class-0 blob's
+rotation is not decoration: the model is drawn in it.
+
+`0x00424D20` -- a burst of two tracers (kind 15) and two casings (kind 11) --
+leaves **`(65528, 0, 2344)` on every one of the four records**. 2344 is what
+§7.4.2's helper answers for that burst's own direction: the pitch in the first
+word, zero in the second, the 4096-unit yaw in the third. The casings keep the
+triple although their own velocities point elsewhere, so the creator orients
+**once, per call, on the direction it fires along** and stamps the result.
+
+The line's own angle is 2350 and two successive calls of the same creator
+record 2344 and 2379, so what each burst is oriented on is the line **plus the
+creator's own spread**, not the line itself. `0x00425CA0` shows the yaw is the
+line's exactly (2350) while its pitch is not the helper's answer for its
+velocity, so the pitch is per creator and is **UNVERIFIED** beyond that.
+
+Nothing in `aBlob_Update` re-orients kind 15 -- its arm is a move and a
+death -- so a tracer keeps the creator's triple for its whole flight. A remake
+that leaves the triple at zero draws the streak across its own path.
+
 **Two more shapes, neither of them a draw.** A field can vary across a
 creator's records without the generator being involved at all, and looking
 only for a line in the draws reports such a creator as unexplained:

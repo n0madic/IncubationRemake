@@ -5372,3 +5372,121 @@ a rendering preference and is not one.
 | `test_sound` | 52 → **57**: the four arming transitions and the double-arm that used to error |
 | `test_render` | 19 → **21**: the highlight depth-tests and is unshaded |
 | in the build | `_C_129` selected, eyes and unit views: the marine is drawn on top of its own marked cell, and no quad crosses the machinery |
+
+---
+
+## 46. 2026-09-03 — why the rounds flew sideways
+
+Reported from play: *"выстрелы выглядят странно — как снаряды летящие часто
+боком"*. They were, and the reason is one field.
+
+### 46.1 What the pool said
+
+`tour.gd` grew `blobs` and `watch N` for this -- every live blob's fields, on
+every drawn frame -- because what a projectile is doing is not readable from a
+screenshot. One shot of weapon 3 on `_C_132`:
+
+```
+blob kind 15 class 0 model 24 at (38400, 54400, 1000) v (800, -600, 350) rot (0, 0, 0) life 16
+blob kind 11 class 0 model 8  at (38400, 54400, 1000) v (640, -480, 280) rot (0, 0, 0) life 20
+```
+
+Model 24 in `World_C00` is **`A_LINE5.3DI`**, the tracer streak, and model 8 is
+`A_CASE.3DI`, the ejected casing -- the right models, the right kinds, a
+straight flight. And a rotation of **zero**, which for a shaped model is not a
+neutral value: the streak is drawn along whatever axis it was authored on, so
+every shot on any other bearing crossed the screen sideways. Kind 15's update
+arm is a move and a death and never touches the rotation, so the zero survives
+the whole flight.
+
+*(One false step on the way, recorded because it was nearly a wrong fix: model
+24 is `A_PANEL.3DI` in `tables/blobs.json`'s alphabetical list, which made this
+look like a model-index mismatch. It is not -- `BlobHooks.model_index` is built
+from the **world set's own** prototype order, and 24 is `A_LINE5.3DI` there.
+The list in the tables is not the index space.)*
+
+### 46.2 What the engine does, from its own capture
+
+`tests/fixtures/blob/cases_native.json` already held the answer.
+`0x00424D20`'s burst -- two tracers and two casings -- carries
+**`(65528, 0, 2344)` on every record**, and `0x00403AA0` answers **2344** for
+that burst's own direction. So the creator orients once per call and stamps the
+triple on everything it makes; the casings keep it although their velocities
+point elsewhere. The line's own angle is 2350 and two calls record 2344 and
+2379, so the burst is oriented on the line **plus the creator's spread**.
+`docs/28` §7.6.3 now carries this.
+
+### 46.3 The fix
+
+`BlobTriggers._create` gives every class-0 or class-1 blob the triple
+[method BlobTriggers._facing] computes -- `BlobHooks.orient`, which is
+`0x00403AA0`'s measured arithmetic -- for the shot's own line. Sprites are
+untouched: for a class-2 or class-3 blob those same words are the atlas row and
+column, not a rotation.
+
+What stays the remake's is the **spread** the creators put on the line before
+they orient, and the per-blob speed §14.5 already named. The line itself is the
+engine's, the arithmetic on it is the engine's, and the triple is now stamped
+per call as the engine stamps it.
+
+Measured after the fix, the same shot:
+
+```
+blob kind 15 class 0 model 24 ... v (800, -600, 350) rot (65317, 0, 1443)
+```
+
+and `inclib.eng3d.orient((0,0,0), (800,-600,350))` is `(-219, 1443)` --
+`65317` is `-219` as a word. The two sides agree without sharing code.
+
+### 46.5 The half that was still wrong: the sign of the drawn angle
+
+The field was now written and the rounds still flew across their path, which
+put the fault on the other side of the seam -- in what `game/` does with the
+word. Three measurements settle it, and none of them is a screenshot:
+
+* **An Eng3d model is authored along engine +Y.** `A_LINE5.3DI` is 1600 units
+  long in Y against 242 in X and 160 in Z; `A_LASERG.3DI` is 3200 in Y;
+  `A_CASE.3DI` is 192 in Y. Read straight out of the converted geometry.
+* **`0x00403AA0` measures a bearing from +Y toward +X**: it answers 0 for
+  `(0, 3200)`, 1024 for `(3200, 0)`, 2048 for `(0, -3200)`. So a model turned
+  by its own bearing must rotate *against* the sense of a positive rotation,
+  which takes +X toward +Y.
+* **`E3D_init_matrix_RzRxRy` negates all three angles** before it indexes the
+  table -- `neg ebx / neg ecx / neg edx`, §18.1's first of the three properties
+  that had to be right together. `WorldSpace.joint_basis` reproduced the
+  builder's *order* and not that negation: it carried a minus on the Y term,
+  which is the axis flip of `(x, z, -y)`, and none on X or Z.
+
+With the negation restored, `joint_basis(0, 0, bearing)` sends the model's
+forward -- Godot `-Z`, the image of engine +Y -- along that bearing on every
+cardinal and on the pitched sample, dot product 1.000. Before it, the streak
+was mirrored about the +Y axis, which is "sideways" for every bearing off the
+axis and right on it.
+
+**A fourth thing agrees, and it was measured a slice earlier.**
+[method WorldSpace.charisma_yaw_basis] is `2048 - yaw`, found by making
+`docs/10` §5.10's facing table come out right for all eight facings: that is
+this same negation plus the half turn a Charisma body's **-Y** forward needs.
+Two authored forwards, one sign.
+
+**Left open deliberately:** [method WorldSpace.yaw_basis], which places
+*scenery* and unit nodes, still takes the engine word as a positive rotation.
+The same argument says it should not, but scenery orientation was accepted by
+eye in the first slice and turning every crate and door in the game on the
+strength of an inference is not a change to make quietly. It wants its own
+check -- an asymmetric object with a known yaw, against the original -- and
+until then it is named here and nowhere else.
+
+### 46.6 Verification
+
+| | |
+|---|---|
+| `bash godot/run_tests.sh` | 33 suites, 2773 → **2775** checks, 0 failures |
+| `test_effects` | 276 → **278**: every model blob of a muzzle carries the shot's own triple and no sprite does, and a bearing sends a model's +Y forward onto itself |
+| in the build | the streak lies along the line from the shooter to the target, checked against both cells' own projections rather than by eye |
+
+**Still open, and now visible in play**: the thirty creators a weapon selects
+are transcribed nowhere, so their spread, their per-blob speeds and their exact
+pitch are the remake's stand-ins. Closing that is a `blob_gold.py` capture of
+those thirty, which is the same item `docs/97` §14.5 named and the reason this
+section could be written from a capture at all.
