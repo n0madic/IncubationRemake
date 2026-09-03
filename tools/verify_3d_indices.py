@@ -254,19 +254,28 @@ def verify_stale_worlds(root: str, stats: Stats, stale: list[str]) -> int:
 #: the triple are zero (``or ax, cx / je``), and it agrees with ``+0x411BF6``
 #: on a pure yaw.
 ROTATION_OPCODES = {
-    8: "+0x411A59",   # joint_rotate_1
-    9: "+0x411A59 / +0x411BF6",   # joint_rotate_3, fast path / general
-    10: "+0x411A59 / +0x411A93",  # joint_rotate_3_alt
-    13: "+0x411BF6",  # matrix_from_angle
+    8: "+0x41204F, one angle",  # joint_rotate_1 (+0x405FCD)
+    9: "+0x411A59 + +0x41204F fast path, else +0x411BF6",   # joint_rotate_3
+    10: "+0x411A59 + +0x41204F fast path, else +0x411A93",  # joint_rotate_3_alt
+    13: "+0x411BF6, first component only",  # matrix_from_angle
     14: "+0x411BF6",  # matrix_from_angles_b
     15: "+0x411A93",  # matrix_from_angles -- the one that does not negate
     18: "+0x411BF6",  # joint_place
 }
 
-#: The opcodes whose **pure-yaw** path negates the angle, which is what
-#: ``WorldSpace.yaw_basis`` in the remake reproduces.  Opcode 15 is absent on
-#: purpose: it goes straight to ``_E3D_init_matrix_RyRxRz`` with no fast path,
-#: and a heading through it would turn the other way.
+#: The opcodes whose **pure-yaw** path answers the same rotation as
+#: ``_E3D_init_matrix_RzRxRy``, which is what ``WorldSpace.yaw_basis`` in the
+#: remake reproduces.  Opcode 15 is absent on purpose: it goes straight to
+#: ``_E3D_init_matrix_RyRxRz`` with no fast path, and a heading through it
+#: would turn the other way.
+#:
+#: The fast path is worth reading rather than assuming.  ``+0x411A59`` writes
+#: ``[[c, -s, 0], [s, c, 0], [0, 0, 1]]`` from the table **without** negating
+#: the angle, and ``+0x41204F`` then composes the parent matrix with a Z
+#: rotation it builds *again* from the same two tables and the same signs --
+#: it does not read ``+0x411A59``'s output at all.  Both therefore answer what
+#: ``+0x411BF6`` answers for a triple whose first two components are zero,
+#: which is every shipped record.
 NEGATING_FOR_A_PURE_YAW = {8, 9, 10, 13, 14, 18}
 
 #: The one shipped special object whose prototype carries no rotation opcode at
@@ -334,8 +343,46 @@ def verify_object_rotations(root: str, stats: Stats) -> int:
                 f"{path}: {name} turns its heading with opcode(s) "
                 f"{sorted(ops)}, one of which does not negate")
 
+    # The scene clones go through the same `Scenery` code path in the remake,
+    # and they are **not** in the `.lev`: only their count is saved ([`10` §9
+    # item 5), so they are read back out of the `.3DW` the header names.  Their
+    # `ROTATION` is in sixteenths of an engine angle unit -- `fcn.00407640`
+    # multiplies by 16 on the way into `+0x20` -- so a heading is any value the
+    # multiply does not send to a whole turn.
+    for path in find_files(root, ".3dw"):
+        try:
+            world = w3dw.parse_3dw(path, strict=True)
+        except ParseError:
+            continue  # 3dw.parse reports it
+        for clone in world.clones:
+            name = str(clone["prototyp"]).upper()
+            if name not in at_zero:
+                continue  # 3dw.proto_refs_resolve_anywhere reports it
+            if (clone["rotation"][2] * 16) % 4096 == 0:
+                continue
+            yawed += 1
+            ops = at_zero[name]
+            if not ops:
+                unturned[name] = unturned.get(name, 0) + 1
+                continue
+            stats.check(
+                "rotation.heading_negates_the_angle",
+                ops <= NEGATING_FOR_A_PURE_YAW,
+                f"{path}: clone {name} turns its heading with opcode(s) "
+                f"{sorted(ops)}, one of which does not negate")
+
+    # And the ground lattice, which is 181 337 of the 194 105 records and one
+    # prototype: `S003_00X.3DI`, the editor's cell marker.  One check, not
+    # 181 337 of them, because the name is a constant of the converter.
+    lattice = prototyp.LATTICE_PROTOTYPE.upper()
+    stats.check("rotation.lattice_negates_the_angle",
+                bool(at_zero.get(lattice)) and
+                at_zero[lattice] <= NEGATING_FOR_A_PURE_YAW,
+                f"the lattice marker {lattice} rotates with "
+                f"{sorted(at_zero.get(lattice, ()))}")
+
     stats.check("rotation.corpus_has_headings", yawed > 0,
-                f"{yawed} special objects carry a heading")
+                f"{yawed} placed objects carry a heading")
     stats.check("rotation.unturned_are_the_known_ones",
                 unturned == UNTURNED_YAWED_PROTOTYPES,
                 f"prototypes with a heading and no rotation opcode at offset 0: "

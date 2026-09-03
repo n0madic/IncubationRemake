@@ -59,9 +59,10 @@ const SKELETON_TO_WORLD: float = 16.0
 ##   way to within **1.9 degrees** (`charisma_tables.py --check`);
 ## * the bind pose puts the weapon hand out in front of the chest at
 ##   `y = -1266` and the toes of both feet ahead of their ankles, both in -Y;
-## * it is the only forward for which an angle convention exists that sends
-##   all eight of `docs/10` section 5.10's facings the right way -- see
-##   [method WorldSpace.charisma_yaw_basis], which is that convention.
+## * with it, `docs/10` section 5.10's eight facings come out right under a
+##   plain **half turn** on top of the object's own heading, and under nothing
+##   else -- see [method WorldSpace.charisma_yaw_basis], which is that half
+##   turn and the whole of the difference from Eng3d geometry.
 ##
 ## Engine -Y is Godot +Z, which is Godot's own forward with the sign it takes
 ## after [method WorldSpace.to_godot_v].

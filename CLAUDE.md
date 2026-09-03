@@ -37,7 +37,7 @@ python3 tools/cha_parse.py        --check gog_incubation      # 245/245
 python3 tools/cha_parse.py        --verify-convention gog_incubation
 python3 tools/font_render.py      --check gog_incubation
 python3 tools/img_tables.py       gog_incubation
-python3 tools/verify_3d_indices.py --root gog_incubation      # 38 check kinds
+python3 tools/verify_3d_indices.py --root gog_incubation      # 39 check kinds
 python3 tools/combat_tables.py    --check gog_incubation      # 56 checks, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
 python3 tools/sav_tables.py       --check gog_incubation      # 69 checks

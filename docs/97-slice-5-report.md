@@ -5541,6 +5541,15 @@ Measured, not assumed, across all 155 shipped `.lev` and all 26 072 prototypes:
 | …whose prototype rotates at anim offset 0 | **6 332** |
 | …and does so with an opcode that negates | **6 332 of 6 332** |
 | the exception | one `L096EF00.3DI` record, which the engine draws unturned |
+| scene clones with a heading | **0 of 1 125** — the `.3DW` `ROTATION` is zero in every `[CLO]` |
+| the ground lattice | one prototype, `S003_00X.3DI`, checked once |
+
+The clones are worth a line of their own: `docs/10` §9 item 5 says the array is
+never saved and is re-parsed from the `.3DW`, and the converter does read the
+`.3DW` (`convert.scene_clones`), so the `.lev`'s own scene-object rotations —
+which `docs/10` §6 counts as 1 450 of 1 530 on quarter turns — are stale
+runtime state that nothing in the remake reads. Not one shipped clone is
+turned at all.
 
 And the render stream — the only one of a prototype's three that draws —
 carries exactly three of the seven rotation opcodes, at exactly three anim
@@ -5554,17 +5563,40 @@ offsets:
 
 `matrix_from_angles` (15), the one opcode that goes straight to the
 non-negating builder with no fast path, appears in **no render stream at all**.
+
 The fast path is `or ax, cx / je` at `+0x40601E` and `+0x406093`: when the
 first two components of the triple are zero — which they are in all 194 105
-shipped records, `lev_parse.py --check` 155/155 — the handler calls the
-single-angle builder `+0x411A59` instead of a three-angle one, and `+0x411A59`
-answers the same rotation as `+0x411BF6` for a pure yaw.
+shipped records, `lev_parse.py --check` 155/155 — the handler leaves the
+three-angle builders alone entirely. It is worth reading rather than assuming
+an equivalence, because it is the path **every** shipped object takes.
+`+0x411A59` writes
+
+```
+[  cos  -sin   0 ]
+[  sin   cos   0 ]
+[   0     0    1 ]
+```
+
+straight out of the two tables at `0x48E6C0` and `0x48EEC0` and **does not
+negate**; `+0x41204F` then composes the parent matrix with a Z rotation it
+builds *again* from the same two tables with the same signs — it never reads
+`+0x411A59`'s output at `0x41A864` at all, so the pair is one rotation written
+twice. With an identity parent `+0x41204F` produces `+0x411A59`'s own matrix
+entry for entry, and both answer what `+0x411BF6` answers for a pure yaw
+(checked over the shipped `TRIG.IMG`, direction identical, the two roundings
+differing by at most one unit in 1600).
 
 So **every rotation the renderer applies negates its angle**. There is no
 residue: the three anim offsets `BlobModels._triple_basis` honours, 0, 6 and
 12, are the three that exist, and no drawn rotation reaches `+0x411A93`.
 
 ### 47.3 The engine agreeing with itself
+
+The sweep below runs `eng3d.matrix3`, which is the `+0x411BF6` model rather
+than the fast path a shipped object actually takes. §47.2's reading of
+`+0x411A59` and `+0x41204F` is what makes that substitution legitimate, and it
+is why that paragraph reads the two routines instead of asserting an
+optimisation.
 
 The chain above ends at `_E3D_init_matrix_RzRxRy`, which §18.1 reproduces 8/8
 inside a running `Incubation.exe`. Run the shipped `TRIG.IMG` through it for
@@ -5613,9 +5645,13 @@ Three stale claims went with it, all of them ones this measurement contradicts:
   yaw against `yaw_basis`". No test does; what pins it is the bone sweep, every
   bone's full local matrix at one frame against `cha_parse.py`'s.
 * it also said no shipped joint prototype uses `joint_rotate_3_alt` or
-  `matrix_from_angles`. The first is used 367 times and the second is used in
-  the collision and part-info streams; neither reads anim offset 0 in a render
-  stream, which is the claim that was wanted.
+  `matrix_from_angles`. `joint_rotate_3_alt` is used 367 times, all at anim
+  offset 0, and is saved only by its fast path. Slots 14, 15 and 18 do appear
+  in the collision and part-info streams — with the render stream's own counts,
+  1959 / 367 / 213, which says those are the same instructions under a
+  different dispatch table rather than three more uses; **what those tables
+  dispatch them to was not read here**, and is `docs/31`'s question. The claim
+  that was wanted, and that holds, is about anim offset 0 in a render stream.
 * `docs/10` §9 item 6 named three call sites reading `[ebx + 0x20]` and left
   which builder they reach open. All seven are enumerated above.
 
@@ -5626,10 +5662,12 @@ Three stale claims went with it, all of them ones this measurement contradicts:
 | `bash godot/run_tests.sh` | 33 suites, 2775 → **2778** checks, 0 failures |
 | `test_effects` | 278 → **280**: a heading equals the joint triple's third component, and turns geometry the way `Eng3dGeometry`'s measured builder does |
 | `test_charisma` | +1: `facing.eng3d_forward_walks_forwards`, an object's +Y against the step, all eight |
-| `verify_3d_indices.py` | 31 → **38** check kinds: the 6 332 headings, the eight facings, and the one prototype that has a heading and no opcode |
+| `verify_3d_indices.py` | 31 → **39** check kinds: the 6 332 headings, the 1 125 clones, the lattice, the eight facings, and the one prototype that has a heading and no opcode |
 | mutation | the sign put back: 4 checks fail, `2` of `8` on both arithmetic ones — the two a sign cannot move |
 
-`_C_140` was looked at afterwards, and that is all the looking is worth: 481
+`_C_140` was looked at afterwards -- in the editor project through
+`shot.gd`, not in an exported build -- and that is all the looking is
+worth: 481
 scenery instances as before, the pipe runs continuous, the crates flush, and
 nothing came apart. It is not evidence for the sign — half the shipped geometry
 is symmetric end for end, which is the whole reason the wrong sign survived a

@@ -385,7 +385,9 @@ Two caveats for a remake:
   record, so `.3DW` alone does not fix it. Both agree on the single-axis cases
   above, which is what the yaw question needed. **Which one each opcode
   picks is now read out of the handlers** — open question 7 below has the
-  table; the two the shipped joint programs reach both build `RzRxRy`. The
+  table, and a 2026-09-04 census of every render stream
+  ([`97` §47](97-slice-5-report.md)) says which opcodes the shipped programs
+  reach and where. The
   call graph now says something stronger from the other end: `Incubation.exe`
   resolves ordinal 14, `_E3D_init_matrix_RyRxRz`, into `0x004FA4A0` like it
   resolves 86 of the DLL's 89 exports — and **nothing in `.text` calls or even
@@ -1343,21 +1345,28 @@ open.
    (2.5: the third); which builder runs is selected by the opcode, and the
    opcode names it in a `call rel32`. Read out of `Eng3d.dll`:
 
-   | Opcode | Handler | Builder |
-   |---|---|---|
-   | `joint_rotate_1` (8) | `+0x405FCD` | `+0x41204F`, one angle |
-   | `joint_rotate_3` (9) | `+0x405FFC` | **`+0x411BF6`, `RzRxRy`** |
-   | `joint_rotate_3_alt` (10) | `+0x406071` | `+0x411A93`, `RyRxRz` |
-   | `matrix_from_angle` (13) | `+0x405EEC` | `+0x411BF6` |
-   | `matrix_from_angles_b` (14) | `+0x405F1A` | `+0x411BF6` |
-   | `matrix_from_angles` (15) | `+0x405F4C` | `+0x411A93` |
-   | `joint_place` (18) | `+0x4060F0` | **`+0x411BF6`, `RzRxRy`** |
+   | Opcode | Handler | Builder | In render streams |
+   |---|---|---|---|
+   | `joint_rotate_1` (8) | `+0x405FCD` | `+0x41204F`, one angle | 0 |
+   | `joint_rotate_3` (9) | `+0x405FFC` | fast path, else **`+0x411BF6`** | 1959, all at anim offset 0 |
+   | `joint_rotate_3_alt` (10) | `+0x406071` | fast path, else `+0x411A93` | 367, all at anim offset 0 |
+   | `matrix_from_angle` (13) | `+0x405EEC` | `+0x411BF6` | 0 |
+   | `matrix_from_angles_b` (14) | `+0x405F1A` | `+0x411BF6` | 0 |
+   | `matrix_from_angles` (15) | `+0x405F4C` | `+0x411A93` | 0 |
+   | `joint_place` (18) | `+0x4060F0` | **`+0x411BF6`** | 213, at offsets 6 and 12 |
 
-   The two the shipped joint programs actually reach are 9 and 18
-   ([`28` §7.8](28-effects-and-sound.md)'s operand census), and **both build
-   `RzRxRy`**. So a jointed prototype's three angles compose in that order, for
-   every prototype the game draws. `blob_tables.py` pins the seven call targets,
-   that 9 and 18 agree, and that the three builders are distinct.
+   The last column is a 2026-09-04 census over all 26 072 prototypes, and it
+   corrects an earlier reading of this table. Three opcodes are reached, not
+   two: 9 and 10 carry the object's own triple at anim offset 0 and 18 carries
+   the two sub-part triples. **9 and 18 build `RzRxRy`**, so a jointed
+   prototype's three angles compose in that order. 10 nominally builds
+   `RyRxRz`, which negates nothing and would turn the other way — but both 9
+   and 10 branch first on `or ax, cx / je`, and with the first two components
+   zero (which is every shipped placed object) they take a single-angle path,
+   `+0x411A59` composed by `+0x41204F`, that agrees with `RzRxRy`. So every
+   rotation the renderer applies negates its angle
+   ([`97` §47](97-slice-5-report.md)). `blob_tables.py` pins the seven call
+   targets, that 9 and 18 agree, and that the three builders are distinct.
 
 8. **`texture.din` name field — 13 chars without a terminator.** Resolved
    *practically* (4.2: treat it as 12 + NUL, because lookup uses `strcmp` and a
@@ -1473,7 +1482,7 @@ open.
 | Was | Now |
 |---|---|
 | `ROTATION` component order | **Closed** — the third component is the yaw; 2.5 |
-| `ROTATION` composition order | **Closed** — the opcode names its builder in a `call`; the two the joint data reaches both build `RzRxRy`; open question 7 |
+| `ROTATION` composition order | **Closed** — the opcode names its builder in a `call`; the shipped render streams reach 9, 10 and 18, and all three answer `RzRxRy`'s rotation for the pure-yaw triples the data holds; open question 7 |
 | `POSITION` axis handling | **Corrected** — the loader *reorders*, it does not merely negate; 2.5 |
 | `prototyp.dir` col 4 | **Closed** — bounding/cull radius; 5.2 and `31-…` |
 | Is the `.dir` read at runtime? | **Closed** — no, by three independent arguments; 3.4 |
