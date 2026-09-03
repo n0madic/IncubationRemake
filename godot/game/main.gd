@@ -21,6 +21,11 @@ const MISSION_ARG: String = "--mission="
 const DEV_CACHE: String = "res://generated/cache"
 
 var world: World = null
+## The campaign, or `null` until [method _ready] has read the cache. It is
+## **not** part of [World]: a campaign outlives a mission, and folding it into
+## the world's canonical hash would move every hash the first five slices
+## pinned (D7).
+var campaign: CampaignHost = null
 
 var _missions: PackedStringArray = PackedStringArray()
 var _mission: String = ""
@@ -238,7 +243,26 @@ func _ready() -> void:
 	_texts.use_font(font)
 	add_child(_texts)
 	_shot_host = MainShotHost.new(self)
+	# The campaign layer. `--mission=` still enters a mission directly, past
+	# the campaign, which is what it has always been for; the host is what the
+	# campaign flow drives, and `tour.gd` reaches it by name.
+	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
+		_cache_dir + "/tables/balance.json"), _strings)
 	_build(_wanted_mission())
+
+
+## Redraw after a deployment put a unit on the map.
+##
+## `UnitsView.build` frees every unit node and rebuilds from the world, which
+## is what a newly placed record needs; the overlay follows because deployment
+## rebuilds visibility and the fog it draws is now a different one.
+func _refresh_after_deploy() -> void:
+	if world == null or _units == null:
+		return
+	# The terrain overlay is not rebuilt: deployment changes no cell. What it
+	# does change is visibility, and that is `UnitsView.build`'s to redraw.
+	_units.build(world, _geometry, _textures)
+	_refresh_status()
 
 
 ## The missions the manifest declares, in the order the converter emitted them.

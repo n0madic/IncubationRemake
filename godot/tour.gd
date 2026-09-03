@@ -244,6 +244,27 @@ func _run(line: String) -> void:
 			_log.append("idle up to %d" % _idle_left)
 		"shot":
 			_shoot(parts[1] if parts.size() > 1 else "shot-%d" % _index)
+		"campaign":
+			_campaign(parts[1].to_int() if parts.size() > 1 else 2)
+		"location":
+			_location(parts[1].to_int() if parts.size() > 1 else 0)
+		"deploy":
+			if parts.size() > 3:
+				_deploy(parts[1].to_int(), parts[2].to_int(),
+					parts[3].to_int())
+			else:
+				_log.append("deploy: wants SLOT X Y")
+		"screen":
+			_screen(parts[1] if parts.size() > 1 else "")
+		"enter":
+			# A debugging entry past the location map, the way `--mission=` is
+			# a debugging entry past the campaign. The flow itself goes through
+			# `location`.
+			if parts.size() > 1:
+				_main.campaign.state.mission = parts[1]
+				_enter(parts[1])
+			else:
+				_log.append("enter: wants a mission name")
 		"note":
 			_log.append(line.substr(5))
 		"quit":
@@ -411,6 +432,115 @@ func _shoot(name: String) -> void:
 	_log.append("shot %s" % path)
 
 
+# --- the campaign ------------------------------------------------------------
+
+## `campaign N` -- begin a new campaign in chain N and load its first mission.
+##
+## Chain 1 opens at `_C_100` with Bratt, West and Maxon in the roster; chain 2
+## opens at `_C_140` with an empty one, which is what makes `_C_140`'s own four
+## placed units the squad that reaches the pool at its debriefing.
+func _campaign(number: int) -> void:
+	if _main.campaign == null:
+		_log.append("campaign: the host is not ready")
+		return
+	var state: CampaignState = _main.campaign.start_new(number)
+	if state == null or state.mission == "":
+		_log.append("campaign %d: no such chain" % number)
+		return
+	_log.append("campaign %d -> %s, roster %d, open %s"
+		% [number, state.mission, state.roster.used_slots(),
+		str(_main.campaign.open_locations())])
+	_enter(state.mission)
+
+
+## `location N` -- click a location on the campaign map.
+func _location(id: int) -> void:
+	if _main.campaign == null:
+		_log.append("location: the host is not ready")
+		return
+	var clicked: Dictionary = _main.campaign.click_location(id)
+	var kind: String = DictRead.as_string(clicked["kind"])
+	var target: String = DictRead.as_string(clicked["target"])
+	_log.append("location %d: %s %s" % [id, kind, target])
+	if kind == CampaignMap.KIND_BATTLE and target != "":
+		_enter(target)
+
+
+## Load a mission and take the entry snapshot, as `SelectUnits` does.
+func _enter(mission: String) -> void:
+	_main._build(mission)
+	if _main.world == null:
+		_log.append("enter %s: the cache does not carry it" % mission)
+		return
+	_main.campaign.begin_mission(_main.world)
+	var cells: Array[Vector2i] = _main.campaign.deployment_cells()
+	var names: Array = []
+	for cell: Vector2i in cells:
+		names.append([cell.x, cell.y])
+	_log.append("enter %s: %d deployment cell(s) %s"
+		% [mission, cells.size(), str(names)])
+
+
+## `deploy SLOT X Y` -- put one roster record on a deployment cell.
+func _deploy(slot: int, x: int, y: int) -> void:
+	if _main.campaign == null:
+		_log.append("deploy: the host is not ready")
+		return
+	var placed: Dictionary = _main.campaign.deploy(slot, x, y)
+	var outcome: String = DictRead.as_string(placed["result"])
+	if outcome != World.DEPLOY_OK:
+		# **Named, not silent** -- docs/92 section 7.4 applies to deployment
+		# too, and a refusal a driver could not see would look like a hang.
+		_log.append("deploy %d at %d,%d refused: %s" % [slot, x, y, outcome])
+		return
+	_log.append("deploy %d at %d,%d -> unit slot %d"
+		% [slot, x, y, DictRead.as_int(placed["slot"])])
+	_main._refresh_after_deploy()
+
+
+## `screen NAME` -- drive the campaign flow past a screen this slice has no
+## picture for yet: `debriefing`, `advance`, `replay`, `recruit`, `save`,
+## `load`.
+func _screen(name: String) -> void:
+	if _main.campaign == null:
+		_log.append("screen: the host is not ready")
+		return
+	var host: CampaignHost = _main.campaign
+	match name:
+		"debriefing":
+			var report: Dictionary = host.finish_mission(_main.world)
+			_log.append("debriefing: score %d total %d, recovered %d, lost %s"
+				% [DictRead.as_int(report["score"]),
+				DictRead.as_int(report["total"]),
+				(DictRead.as_array(report["recovered"])).size(),
+				str(report["lost"])])
+		"advance":
+			var target: String = host.advance()
+			_log.append("advance -> %s" % target)
+			if target != "":
+				_enter(target)
+		"replay":
+			var again: String = host.replay()
+			_log.append("replay -> %s, roster %d"
+				% [again, host.state.roster.used_slots()])
+			if again != "":
+				_enter(again)
+		"recruit":
+			var slot: int = host.recruit()
+			_log.append("recruit -> slot %d, purse %d"
+				% [slot, host.state.points(0)])
+		"save":
+			_log.append("save: %s" % str(host.save(_main.world)))
+		"load":
+			var decoded: Dictionary = host.load_save()
+			_log.append("load: %s, mission %s, roster %d"
+				% [CampaignCodec.result_name(DictRead.as_int(decoded["result"])),
+				host.state.mission if host.state != null else "-",
+				host.state.roster.used_slots() if host.state != null else 0])
+		_:
+			_log.append("screen: no such step %s" % name)
+
+
 # --- what a reply reports ----------------------------------------------------
 
 func _state() -> Dictionary:
@@ -432,6 +562,7 @@ func _state() -> Dictionary:
 		"pool": _pool(),
 		"overlay": _overlay(),
 		"camera": _camera(),
+		"campaign": _main.campaign.view() if _main.campaign != null else {},
 	}
 
 
