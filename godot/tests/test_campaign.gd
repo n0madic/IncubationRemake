@@ -1,0 +1,560 @@
+extends TestSuite
+
+## Oracle boundary: **executable Python** -- `tools/inclib/campaign.py`, run
+## over the corpus by `tools/campaign_runtime.py`, which is in turn diffed
+## against the immediates `campaign_tables.py` reads out of `Incubation.exe`,
+## against `Info.lcl`'s prices, against the cells of `_C_XXX`/`_C_YYY` and
+## against the six real saves. This suite compares `core/campaign/` with that
+## model, so what it prints is `executable-Python` and not `native-runtime`.
+##
+## The fixture carries **whole inputs**, the same discipline the move-map cases
+## follow: a scoring case names its difficulty, result, kills and losses, so
+## the two implementations receive identical inputs by construction rather than
+## by agreement.
+
+## `res://generated` first, `user://` second -- the order that keeps a stale
+## copy from shadowing a fresh one (see [MoveMapCaseRunner]).
+const DEV_CASES_DIR: String = "res://generated/campaign"
+const USER_CASES_DIR: String = "user://campaign"
+const SCHEMA: String = "incubation.campaign-cases/1"
+
+## D7: the campaign layer must not move [World]'s canonical hash. These three
+## were measured on the commit **before** this slice and are unchanged by it;
+## a suite that only compared a hash with itself would not notice a drift, and
+## `test_cache.gd` and `test_mission.gd` both do exactly that.
+const PINNED_HASHES: Dictionary = {
+	"_C_140": "d1ad0f008ed34b9c44bf883e42c5b681d3d1f32181cd0295f6f8affca475b802",
+	"_C_141": "ec28d7c8a45db29dedf8332b63cbe0f659e8be469ffc3cec976d75a7c51f1062",
+	"_C_115": "aaca942b823c6e13090db54ceac414e45752d2bfd457aa8721854ecccc7b9974",
+}
+
+
+static func cases_path() -> String:
+	var in_dev: String = DEV_CASES_DIR + "/campaign.json"
+	if FileAccess.file_exists(in_dev):
+		return in_dev
+	return USER_CASES_DIR + "/campaign.json"
+
+
+func run(h: TestHarness) -> void:
+	h.begin("campaign", TestHarness.ORACLE_PYTHON)
+	var path: String = cases_path()
+	if not FileAccess.file_exists(path):
+		# **Not a skip.** A missing fixture is the gap being reported, which is
+		# what keeps a run from silently shrinking.
+		h.check("cases.present", false,
+			"%s is absent -- run campaign_runtime.py --emit-cases" % path)
+		_pinned_hashes(h)
+		return
+	var parsed: Variant = JSON.parse_string(
+		FileAccess.get_file_as_string(path))
+	if typeof(parsed) != TYPE_DICTIONARY:
+		h.check("cases.parse", false, path)
+		_pinned_hashes(h)
+		return
+	var cases: Dictionary = parsed
+	h.equal("cases.schema", DictRead.as_string(cases["schema"]), SCHEMA)
+	h.equal("cases.oracle", DictRead.as_string(cases["oracle"]),
+		TestHarness.ORACLE_PYTHON)
+
+	_seed(h, cases)
+	_economy(h, cases)
+	_sort(h, cases)
+	_banks(h, cases)
+	_survival(h, cases)
+	_score(h, cases)
+	_payouts(h, cases)
+	_tables(h, cases)
+	_deployment(h, cases)
+	_codec(h, cases)
+	_pinned_hashes(h)
+
+
+func _state(cases: Dictionary, number: int) -> CampaignState:
+	return CampaignState.begin(number,
+		DictRead.as_int(cases["weapon_zero_cost"]),
+		DictRead.as_int(cases["recruit_hit_points"]),
+		_seed_names(cases))
+
+
+func _seed_names(cases: Dictionary) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	var seeded: Dictionary = DictRead.as_dict(cases["seed"])
+	for entry: Variant in DictRead.as_array(
+			DictRead.as_dict(seeded["1"])["roster"]):
+		out.append(DictRead.as_string(DictRead.as_dict(entry)["name"]))
+	return out
+
+
+## docs/27 section 3.1 -- and the campaign arm `0x0043AE76` behind it.
+func _seed(h: TestHarness, cases: Dictionary) -> void:
+	var seeded: Dictionary = DictRead.as_dict(cases["seed"])
+	for number: int in [1, 2]:
+		var want: Dictionary = DictRead.as_dict(seeded[str(number)])
+		var state: CampaignState = _state(cases, number)
+		h.equal("seed.%d.mission" % number, state.mission,
+			DictRead.as_string(want["mission"]))
+		h.equal("seed.%d.tech" % number, state.tech_level,
+			DictRead.as_int(want["tech_level"]))
+		h.equal("seed.%d.skill" % number, state.skill_level,
+			DictRead.as_int(want["skill_level"]))
+		h.equal("seed.%d.players" % number, state.player_count,
+			DictRead.as_int(want["player_count"]))
+		h.equal_ints("seed.%d.points" % number, state.equipment_points,
+			DictRead.to_int32(want["equipment_points"]))
+		var roster: Array = DictRead.as_array(want["roster"])
+		h.equal("seed.%d.pool_size" % number, state.roster.used_slots(),
+			roster.size())
+		for entry: Variant in roster:
+			var record: Dictionary = entry
+			var slot: int = DictRead.as_int(record["slot"])
+			var unit: UnitState = state.roster.record(slot)
+			if unit == null:
+				h.check("seed.%d.slot_%d" % [number, slot], false, "empty")
+				continue
+			h.equal("seed.%d.slot_%d.name" % [number, slot], unit.name,
+				DictRead.as_string(record["name"]))
+			h.equal("seed.%d.slot_%d.ep" % [number, slot], unit.ep,
+				DictRead.as_int(record["ep"]))
+			h.equal("seed.%d.slot_%d.tp" % [number, slot], unit.tp,
+				DictRead.as_int(record["tp"]))
+			h.equal("seed.%d.slot_%d.rank" % [number, slot],
+				unit.ep / Roster.EP_PER_RANK, DictRead.as_int(record["rank"]))
+			h.equal("seed.%d.slot_%d.type" % [number, slot], unit.type_id,
+				DictRead.as_int(record["unit_type"]))
+			h.equal("seed.%d.slot_%d.pool_flag" % [number, slot],
+				unit.pool_flag, DictRead.as_int(record["pool_flag"]))
+			h.equal("seed.%d.slot_%d.speech" % [number, slot], unit.speech,
+				DictRead.as_int(record["speech"]))
+			h.equal_ints("seed.%d.slot_%d.skills" % [number, slot],
+				unit.skills, DictRead.to_int32(record["skills"]))
+			h.equal_ints("seed.%d.slot_%d.equipment" % [number, slot],
+				unit.equipment, DictRead.to_int32(record["equipment"]))
+
+	# The sixteen field writes, against the block campaign_tables decodes out of
+	# `0x0047883B`..`0x004788A5`. The mapping from offset to field is this
+	# suite's; the values are the executable's.
+	var state_one: CampaignState = _state(cases, 1)
+	for entry: Variant in DictRead.as_array(cases["squad_fields"]):
+		var row: Dictionary = entry
+		var record_index: int = DictRead.as_int(row["record"])
+		var offset: int = DictRead.as_int(row["offset"])
+		var unit: UnitState = state_one.roster.record(record_index)
+		if unit == null:
+			continue
+		var got: int = _field_at(unit, offset)
+		if got < 0:
+			continue
+		h.equal("seed.field.%d.%d" % [record_index, offset], got,
+			DictRead.as_int(row["value"]))
+
+
+## The record offsets the seed writes, as this remake's fields. `-1` means the
+## offset is one the suite does not map, which is reported by not checking it
+## rather than by a false pass.
+func _field_at(unit: UnitState, offset: int) -> int:
+	match offset:
+		0x17: return unit.ep
+		0x18: return unit.tp
+		0x4C: return unit.type_id
+		0x4D: return unit.pool_flag
+		0x55: return unit.speech
+	if offset >= 0x1A and offset <= 0x1F:
+		return unit.skills[offset - 0x1A]
+	if offset >= 0x21 and offset <= 0x35:
+		return 1 if unit.has_equipment(offset - 0x21) else 0
+	return -1
+
+
+func _economy(h: TestHarness, cases: Dictionary) -> void:
+	var state: CampaignState = _state(cases, 2)
+	h.equal("economy.recruit_cost", state.recruit_cost(),
+		DictRead.as_int(cases["recruit_cost"]))
+	var steps: Array = DictRead.as_array(cases["economy"])
+	for entry: Variant in steps:
+		var step: Dictionary = entry
+		var name: String = DictRead.as_string(step["step"])
+		match name:
+			"start":
+				pass
+			"recruit":
+				state.recruit(0, 1)
+			"dismiss":
+				state.dismiss(0, 0, {0: DictRead.as_int(
+					cases["weapon_zero_cost"])})
+			"cap":
+				state.set_points(0, 9990)
+				state.add_points(0, 100)
+		h.equal("economy.%s.purse" % name, state.points(0),
+			DictRead.as_int(step["purse"]))
+		h.equal("economy.%s.used" % name, state.roster.used_slots(),
+			DictRead.as_int(step["used"]))
+
+	# The two refusals, which the fixture's happy path does not reach.
+	var poor: CampaignState = _state(cases, 2)
+	poor.set_points(0, 10)
+	h.equal("economy.recruit_refused_when_poor", poor.recruit(0, 1),
+		Roster.NO_SLOT)
+	h.equal("economy.poor_purse_unchanged", poor.points(0), 10)
+	h.equal("economy.spend_refuses", poor.spend_points(0, 20000), false)
+	h.equal("economy.empty_slot_holds_nothing", poor.add_points(3, 100), false)
+
+	# A weapon swap costs the difference and refunds first.
+	var swap: CampaignState = _state(cases, 2)
+	swap.recruit(0, 1)
+	var costs: Dictionary = {0: 10, 5: 30}
+	h.check("economy.buy_weapon", swap.buy_weapon(0, 0, 5, costs))
+	h.equal("economy.swap_costs_difference", swap.points(0), 100 - 60 + 10 - 30)
+	var upgraded: UnitState = swap.roster.record(0)
+	h.equal("economy.weapon_changed", upgraded.weapon, 5)
+	h.equal("economy.resale_after_swap", Roster.refund_for(30), 80)
+
+
+## `0x00478630` -- and the case that makes it more than a `sort_custom`.
+func _sort(h: TestHarness, cases: Dictionary) -> void:
+	var index: int = 0
+	for entry: Variant in DictRead.as_array(cases["sorts"]):
+		var case: Dictionary = entry
+		var roster: Roster = Roster.create()
+		for pair: Variant in DictRead.as_array(case["before"]):
+			var xy: Array = pair
+			var unit: UnitState = UnitState.new()
+			unit.hp = 5
+			unit.ep = DictRead.as_int(xy[1])
+			unit.name = "u%d" % DictRead.as_int(xy[0])
+			roster.put(DictRead.as_int(xy[0]), unit)
+		roster.sort_by_ep()
+		var got: Array = []
+		for slot: int in roster.occupied_slots():
+			got.append([slot, roster.record(slot).ep])
+		var want: Array = []
+		for pair: Variant in DictRead.as_array(case["after"]):
+			var xy: Array = pair
+			want.append([DictRead.as_int(xy[0]), DictRead.as_int(xy[1])])
+		h.equal("sort.%d" % index, got, want)
+		index += 1
+
+
+## docs/27 section 3.5 as corrected: row 0 live, row 1 the entry snapshot.
+func _banks(h: TestHarness, cases: Dictionary) -> void:
+	var state: CampaignState = _state(cases, 1)
+	var roster: Roster = state.roster
+	for entry: Variant in DictRead.as_array(cases["banks"]):
+		var step: Dictionary = entry
+		var name: String = DictRead.as_string(step["step"])
+		match name:
+			"start":
+				pass
+			"snapshot":
+				roster.snapshot()
+			"deployed":
+				for slot: int in [0, 1, 2]:
+					roster.clear(slot)
+			"restore":
+				roster.restore()
+			"debriefing_over":
+				roster.clear_snapshot()
+		h.equal("banks.%s.live" % name, roster.used_slots(Roster.ROW_LIVE),
+			DictRead.as_int(step["live"]))
+		h.equal("banks.%s.snapshot" % name,
+			roster.used_slots(Roster.ROW_SNAPSHOT),
+			DictRead.as_int(step["snapshot"]))
+
+
+## docs/27 section 3.4 -- `+0x4D` and the full-pool refusal, both of which the
+## engine performs in silence and this remake names (docs/92 section 7.4).
+func _survival(h: TestHarness, cases: Dictionary) -> void:
+	var index: int = 0
+	for entry: Variant in DictRead.as_array(cases["survival"]):
+		var case: Dictionary = entry
+		var state: CampaignState = _state(cases, 2)
+		var full: bool = DictRead.as_bool(case.get("full", false))
+		if full:
+			for slot: int in range(Roster.USABLE_SLOTS):
+				var filler: UnitState = UnitState.new()
+				filler.hp = 7
+				filler.pool_flag = Roster.POOL_CANDIDATE
+				filler.name = "u%d" % slot
+				state.roster.put(slot, filler)
+		var unit: UnitState = UnitState.new()
+		unit.hp = 7
+		unit.name = "late" if full else "u"
+		unit.pool_flag = DictRead.as_int(case["pool_flag"])
+		unit.player = 0
+		var survivors: Array[UnitState] = [unit]
+		var report: Dictionary = MissionEnd.recover(state, survivors, 0)
+		var recovered: Array = report["recovered"]
+		var lost: Array = report["lost"]
+		h.equal("survival.%d.kept" % index, recovered.size(),
+			DictRead.as_int(case["kept"]))
+		var reason: Variant = case["reason"]
+		if reason == null:
+			h.equal("survival.%d.nothing_lost" % index, lost.size(), 0)
+		else:
+			h.equal("survival.%d.reason" % index,
+				DictRead.as_string(DictRead.as_dict(lost[0])["reason"]),
+				DictRead.as_string(reason))
+		index += 1
+
+	# A unit of another player is not this player's to recover.
+	var other: CampaignState = _state(cases, 2)
+	var theirs: UnitState = UnitState.new()
+	theirs.hp = 7
+	theirs.player = 1
+	theirs.pool_flag = Roster.POOL_CANDIDATE
+	theirs.name = "theirs"
+	var ignored: Array[UnitState] = [theirs]
+	var out: Dictionary = MissionEnd.recover(other, ignored, 0)
+	var out_recovered: Array = DictRead.as_array(out["recovered"])
+	var out_lost: Array = DictRead.as_array(out["lost"])
+	h.equal("survival.other_players_ignored",
+		out_recovered.size() + out_lost.size(), 0)
+
+
+## docs/27 section 6.2 -- five results by three difficulties by three shapes.
+func _score(h: TestHarness, cases: Dictionary) -> void:
+	var index: int = 0
+	for entry: Variant in DictRead.as_array(cases["scores"]):
+		var case: Dictionary = entry
+		var state: CampaignState = _state(cases, 2)
+		state.difficulty = DictRead.as_int(case["difficulty"])
+		var board: ScoreRecord = state.scoreboard[0]
+		board.kills = DictRead.as_int(case["kills"])
+		board.losses = DictRead.as_int(case["losses"])
+		board.result = DictRead.as_int(case["result"])
+		var reports: Array[Dictionary] = MissionEnd.score(state)
+		h.equal("score.%d.one_report" % index, reports.size(), 1)
+		h.equal("score.%d.value" % index,
+			DictRead.as_int(reports[0]["score"]),
+			DictRead.as_int(case["score"]))
+		h.equal("score.%d.total" % index, state.scoreboard[0].total,
+			DictRead.as_int(case["total"]))
+		index += 1
+
+	var reset: ScoreRecord = ScoreRecord.new()
+	reset.kills = 9
+	reset.score = 5
+	reset.total = 77
+	reset.result = 4
+	reset.reset()
+	h.equal("score.reset.kills", reset.kills, 0)
+	h.equal("score.reset.total", reset.total, 0)
+	h.equal("score.reset.result", reset.result, ScoreRecord.RESULT_NOTHING)
+
+
+func _payouts(h: TestHarness, cases: Dictionary) -> void:
+	var index: int = 0
+	for entry: Variant in DictRead.as_array(cases["payouts"]):
+		var case: Dictionary = entry
+		var state: CampaignState = _state(cases, 2)
+		state.mode = DictRead.as_int(case["mode"])
+		state.game_control[MissionEnd.SLOT_EQUIPMENT_POINTS] = 250
+		state.game_control[MissionEnd.SLOT_COMMENDATIONS] = 2
+		state.scoreboard[0].result = DictRead.as_int(case["result"])
+		var reports: Array[Dictionary] = MissionEnd.score(state)
+		h.equal("payout.%d.points" % index,
+			DictRead.as_int(reports[0]["equipment_points"]),
+			DictRead.as_int(case["equipment_points"]))
+		h.equal("payout.%d.commendations" % index,
+			DictRead.as_int(reports[0]["commendations"]),
+			DictRead.as_int(case["commendations"]))
+		h.equal("payout.%d.purse" % index, state.points(0),
+			DictRead.as_int(case["purse"]))
+		index += 1
+
+
+## docs/27 section 2 -- the location graph, off the baked cache.
+func _tables(h: TestHarness, cases: Dictionary) -> void:
+	var document: Dictionary = CacheFixture.read_json(
+		CacheFixture.cache_dir() + "/tables/campaign.json")
+	if document.is_empty():
+		h.check("tables.present", false, "tables/campaign.json is absent")
+		return
+	var map: CampaignMap = CampaignMap.from_document(document)
+	var want: Dictionary = DictRead.as_dict(cases["tables"])
+
+	h.equal("tables.location_bias", CampaignMap.LOCATION_BIAS,
+		DictRead.as_int(want["location_bias"]))
+	var names: Array = DictRead.as_array(want["map_names"])
+	var matched: int = 0
+	for entry: Variant in names:
+		var row: Dictionary = entry
+		if map.mission_of(DictRead.as_int(row["location"])) \
+				== DictRead.as_string(row["mission"]):
+			matched += 1
+	h.equal("tables.map_names", matched, names.size())
+
+	var graph: Array = DictRead.as_array(want["unlock_graph"])
+	var graph_matched: int = 0
+	for entry: Variant in graph:
+		var row: Dictionary = entry
+		if map.open_locations(DictRead.as_int(row["mission"])) \
+				== DictRead.to_int32(row["opens"]):
+			graph_matched += 1
+	h.equal("tables.unlock_graph", graph_matched, graph.size())
+
+	# `location = missionId + 50`, and `aMapName` is its exact inverse -- which
+	# is a table and not a subtraction, because `_C_104` and `_C_105` cross.
+	h.equal("tables.location_of", map.location_of(1), 51)
+	h.equal("tables.crossed_pair",
+		[map.mission_of(55), map.mission_of(58)], ["_C_105", "_C_104"])
+	h.equal("tables.campaign1_start", map.open_locations(1),
+		PackedInt32Array([1, 10, 51]))
+	h.equal("tables.campaign2_start", map.open_locations(40),
+		PackedInt32Array([90]))
+	h.equal("tables.kinds",
+		[map.kind_of(1), map.kind_of(10), map.kind_of(90), map.kind_of(999)],
+		[CampaignMap.KIND_UPGRADE, CampaignMap.KIND_DIALOGUE,
+		CampaignMap.KIND_BATTLE, CampaignMap.KIND_NONE])
+	# docs/27 section 2.4 -- locations 3 and 6 load each other's map (D6).
+	h.equal("tables.upgrade_3_6_crossed",
+		[map.upgrade_map(3), map.upgrade_map(6)], ["upgrade_6", "upgrade_3"])
+	h.equal("tables.cut_locations", map.cut_locations(),
+		PackedInt32Array([85, 86, 87]))
+	h.equal("tables.unreachable", map.unreachable_locations(),
+		PackedInt32Array([21, 50]))
+
+	# The chain, against every shipped header.
+	var chain: Dictionary = DictRead.as_dict(cases["chain"])
+	var chain_matched: int = 0
+	for name: Variant in chain:
+		var mission: String = name
+		if map.next_map(mission) == DictRead.as_string(chain[mission]):
+			chain_matched += 1
+	h.equal("tables.chain", chain_matched, chain.size())
+	h.equal("tables.epilogue_ends", map.next_map("_C_180"), "")
+	h.equal("tables.campaign1_hands_over", map.next_map("_C_133"), "_C_YYY")
+	h.equal("tables.map_of_campaign",
+		[DictRead.as_string(CampaignState.CAMPAIGN_MAP[1]),
+		DictRead.as_string(CampaignState.CAMPAIGN_MAP[2])],
+		["_C_XXX", "_C_YYY"])
+
+
+## docs/29 section 1.2 -- deployment is `action_point == player + 1`, read from
+## [MapState] and not from a second list (D4).
+func _deployment(h: TestHarness, cases: Dictionary) -> void:
+	var wanted: Dictionary = DictRead.as_dict(cases["deployment_cells"])
+	var balance: Dictionary = CacheFixture.balance()
+	var checked: int = 0
+	for name: String in ["_C_141", "_C_115"]:
+		var document: Dictionary = CacheFixture.mission(name)
+		if document.is_empty() or not wanted.has(name):
+			continue
+		var world: World = World.create(document, balance, 0.0)
+		var got: Array[Vector2i] = world.deployment_cells(0)
+		var want: Array[Vector2i] = []
+		for pair: Variant in DictRead.as_array(wanted[name]):
+			var xy: Array = pair
+			want.append(Vector2i(DictRead.as_int(xy[0]),
+				DictRead.as_int(xy[1])))
+		want.sort()
+		got.sort()
+		h.equal("deploy.%s.cells" % name, got, want)
+		checked += 1
+
+		# One record out of a roster, onto the first cell, and the four ways it
+		# is refused.
+		var unit: UnitState = UnitState.new()
+		unit.hp = 9
+		unit.name = "Deployed"
+		unit.pool_flag = Roster.POOL_CANDIDATE
+		unit.type_id = 0
+		var before: int = world.unit_slots().size()
+		var cell: Vector2i = want[0]
+		var placed: Dictionary = world.deploy_from_pool(0, unit, cell.x, cell.y)
+		h.equal("deploy.%s.result" % name,
+			DictRead.as_string(placed["result"]), World.DEPLOY_OK)
+		h.equal("deploy.%s.added_a_unit" % name,
+			world.unit_slots().size(), before + 1)
+		var slot: int = DictRead.as_int(placed["slot"])
+		var view: Dictionary = world.unit_view(slot)
+		h.equal("deploy.%s.at_the_cell" % name,
+			[DictRead.as_int(view["x"]), DictRead.as_int(view["y"])],
+			[cell.x, cell.y])
+		h.equal("deploy.%s.is_ours" % name, DictRead.as_int(view["player"]), 0)
+
+		h.equal("deploy.%s.cell_taken" % name,
+			DictRead.as_string(world.deploy_from_pool(
+				0, unit, cell.x, cell.y)["result"]), World.DEPLOY_CELL_TAKEN)
+		h.equal("deploy.%s.not_a_cell" % name,
+			DictRead.as_string(world.deploy_from_pool(
+				0, unit, 0, 0)["result"]), World.DEPLOY_NOT_A_CELL)
+		h.equal("deploy.%s.empty_record" % name,
+			DictRead.as_string(world.deploy_from_pool(
+				0, UnitState.new(), cell.x, cell.y)["result"]),
+			World.DEPLOY_EMPTY_RECORD)
+
+		# And back out: the survivors the debriefing judges.
+		var survivors: Array[UnitState] = world.survivors_of(0)
+		h.check("deploy.%s.survivors" % name, survivors.size() >= 1,
+			"%d unit(s) of player 0" % survivors.size())
+		var removed: int = world.clear_units_of(0)
+		h.check("deploy.%s.cleared" % name, removed >= 1,
+			"%d taken off the map" % removed)
+	h.check("deploy.missions_checked", checked == 2,
+		"%d of 2 slice missions read from the cache" % checked)
+
+
+func _codec(h: TestHarness, cases: Dictionary) -> void:
+	var state: CampaignState = _state(cases, 1)
+	state.roster.snapshot()
+	state.difficulty = 2
+	state.mission = "_C_105"
+	state.scoreboard[0].total = 119
+	var digest: String = state.digest_hex()
+
+	var blob: PackedByteArray = CampaignCodec.encode(state)
+	var decoded: Dictionary = CampaignCodec.decode(blob)
+	h.equal("codec.round_trip", DictRead.as_int(decoded["result"]),
+		CampaignCodec.Result.OK)
+	var back: CampaignState = decoded["state"]
+	h.equal("codec.digest", back.digest_hex(), digest)
+	h.equal("codec.mission", back.mission, "_C_105")
+	h.equal("codec.roster", back.roster.used_slots(), 3)
+	h.equal("codec.snapshot", back.roster.used_slots(Roster.ROW_SNAPSHOT), 3)
+	var empty_blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
+	h.equal("codec.no_mission_blob", empty_blob.size(), 0)
+
+	# A mission save rides inside, opaque: `SaveCodec` refuses a blob whose map
+	# name is not the world's, which is right for a mission and wrong for a
+	# campaign, so the container never opens it (D10).
+	var payload: PackedByteArray = PackedByteArray([1, 2, 3, 4, 5])
+	var nested: Dictionary = CampaignCodec.decode(
+		CampaignCodec.encode(state, payload))
+	h.equal("codec.nested_blob", nested["mission"], payload)
+
+	# The four refusals, each a different answer.
+	h.equal("codec.truncated",
+		DictRead.as_int(CampaignCodec.decode(
+			PackedByteArray([1, 2, 3]))["result"]),
+		CampaignCodec.Result.TRUNCATED)
+	var wrong_magic: PackedByteArray = blob.duplicate()
+	wrong_magic[0] = 0x58
+	h.equal("codec.bad_magic",
+		DictRead.as_int(CampaignCodec.decode(wrong_magic)["result"]),
+		CampaignCodec.Result.BAD_MAGIC)
+	var corrupted: PackedByteArray = blob.duplicate()
+	corrupted[blob.size() - 1] ^= 0xFF
+	h.equal("codec.bad_digest",
+		DictRead.as_int(CampaignCodec.decode(corrupted)["result"]),
+		CampaignCodec.Result.BAD_DIGEST)
+	var bad_schema: PackedByteArray = blob.duplicate()
+	bad_schema[4] = 0x7F
+	h.equal("codec.bad_schema",
+		DictRead.as_int(CampaignCodec.decode(bad_schema)["result"]),
+		CampaignCodec.Result.BAD_DIGEST,
+		"a schema byte is inside the digest, so corruption is reported first")
+
+
+## D7 -- the campaign layer must not move [World]'s canonical hash.
+func _pinned_hashes(h: TestHarness) -> void:
+	var balance: Dictionary = CacheFixture.balance()
+	for name: String in PINNED_HASHES:
+		var document: Dictionary = CacheFixture.mission(name)
+		if document.is_empty():
+			h.check("hash.%s.present" % name, false, "not in the cache")
+			continue
+		var world: World = World.create(document, balance, 0.0)
+		h.equal("hash.%s" % name, world.canonical_hash_hex(),
+			DictRead.as_string(PINNED_HASHES[name]),
+			"measured before this slice; D7 says it does not move")

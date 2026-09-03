@@ -1050,3 +1050,114 @@ func load_save(data: PackedByteArray) -> int:
 ## dictionary when nothing has been loaded.
 func restored_camera() -> Dictionary:
 	return _camera.duplicate(true)
+
+
+# --- deployment -- docs/29 section 1.2, docs/27 section 3.4 -------------------
+
+## `0x00431118` -- a deployment cell is one whose action point is the player's
+## slot plus one.
+const DEPLOYMENT_ACTION_POINT_BIAS: int = 1
+
+## Why [method deploy_from_pool] refused.
+const DEPLOY_OK: String = ""
+const DEPLOY_NOT_A_CELL: String = "not_a_deployment_cell"
+const DEPLOY_CELL_TAKEN: String = "cell_occupied"
+const DEPLOY_NO_SLOT: String = "no_free_unit_slot"
+const DEPLOY_EMPTY_RECORD: String = "empty_roster_record"
+
+
+## The cells *player* may deploy onto, in map order.
+##
+## **Not `start_index`.** `+0x14` is the VictoryPoints band 80..85 that
+## docs/10 section 4.2 marks *only Multiplayer*; deployment is the action-point
+## byte `+0x0B`, and the corpus shows no cell is both.
+func deployment_cells(player: int) -> Array[Vector2i]:
+	var want: int = player + DEPLOYMENT_ACTION_POINT_BIAS
+	var out: Array[Vector2i] = []
+	for y: int in range(state.height):
+		for x: int in range(state.width):
+			# From [MapState], not [MapResource] (D4): the action-point byte is
+			# cell state a mission can rewrite, and there is no second list of
+			# deployment cells to keep in step with it.
+			if state.action_point_at(state.index_of(x, y)) == want:
+				out.append(Vector2i(x, y))
+	return out
+
+
+## `aTransferUnitFromPoolToMap` `0x00478D10` -- put one roster record on the map.
+##
+## Returns `{"result": String, "slot": int}`. `result` is [constant DEPLOY_OK]
+## on success and one of the four refusals otherwise -- the engine's own
+## `aUI_SetUnit` path simply fails, and docs/92 section 7.4's rule that the
+## silence does not stay applies to deployment as much as to the mission end.
+##
+## The record is **not** removed from the roster here: the caller owns the
+## roster, `core` does not, and the engine's own routine takes the slot out of
+## the pool only after `aUI_SetUnit` succeeds.
+func deploy_from_pool(player: int, record: UnitState, x: int,
+		y: int) -> Dictionary:
+	if record == null or not record.is_placed():
+		return {"result": DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
+	if not state.in_bounds(x, y):
+		return {"result": DEPLOY_NOT_A_CELL, "slot": MapState.NO_UNIT}
+	if state.action_point_at(state.index_of(x, y)) \
+			!= player + DEPLOYMENT_ACTION_POINT_BIAS:
+		return {"result": DEPLOY_NOT_A_CELL, "slot": MapState.NO_UNIT}
+	if not UnitState.free_cell(state, _units, x, y):
+		return {"result": DEPLOY_CELL_TAKEN, "slot": MapState.NO_UNIT}
+	var slot: int = UnitState.free_slot(_units)
+	# `free_slot` answers with the **last** slot when the array is full rather
+	# than with a refusal, so a full array has to be recognised here or a
+	# deployment would silently overwrite slot 199.
+	if _units.has(slot) and DictRead.as_int(slot) >= 0:
+		var sitting: UnitState = _units[slot]
+		if sitting.is_alive():
+			return {"result": DEPLOY_NO_SLOT, "slot": MapState.NO_UNIT}
+
+	var unit: UnitState = UnitState.from_view(record.view())
+	unit.slot = slot
+	unit.player = player
+	unit.x = x
+	unit.y = y
+	unit.turn_start_x = x
+	unit.turn_start_y = y
+	_units[slot] = unit
+	state.set_unit(state.index_of(x, y), slot)
+	# `aTransferUnitFromPoolToMap` rebuilds visibility before it returns, which
+	# is what makes a squad see the map it was just placed on.
+	Visibility.build(state, _units, _unit_types, player, turn.human_count(),
+		turn.mode)
+	return {"result": DEPLOY_OK, "slot": slot}
+
+
+## `aTransferAllUnitsFromMapToPool` `0x00478E50` -- every live unit of *player*,
+## as the records the roster's gate then judges.
+##
+## The gate itself is [method MissionEnd.recover]: `core` hands back the
+## survivors and the campaign decides which of them the pool accepts, because
+## the pool is campaign state and this object is a mission.
+func survivors_of(player: int) -> Array[UnitState]:
+	var out: Array[UnitState] = []
+	for slot: int in unit_slots():
+		var unit: UnitState = _units[slot]
+		if unit.player != player or not unit.is_placed():
+			continue
+		# The engine recomputes each unit's stats on the way out, so what
+		# reaches the pool is a refreshed record rather than one still carrying
+		# the last turn's movement.
+		Refresh.recompute_stats(unit, _unit_types, _units, turn.ai_level)
+		out.append(UnitState.from_view(unit.view()))
+	return out
+
+
+## Take a player's units off the map -- what the debriefing leaves behind.
+func clear_units_of(player: int) -> int:
+	var removed: int = 0
+	for slot: int in unit_slots():
+		var unit: UnitState = _units[slot]
+		if unit.player != player:
+			continue
+		state.set_unit(state.index_of(unit.x, unit.y), MapState.NO_UNIT)
+		_units.erase(slot)
+		removed += 1
+	return removed

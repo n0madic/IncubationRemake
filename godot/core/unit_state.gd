@@ -21,6 +21,8 @@ const SKILL_CON: int = 0
 const SKILL_LW: int = 1
 const SKILL_HW: int = 2
 const SKILL_TS: int = 3
+const SKILL_MS: int = 4
+const SKILL_LS: int = 5
 
 var slot: int = NO_UNIT
 var name: String = ""

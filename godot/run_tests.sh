@@ -66,6 +66,16 @@ rm -f "$HERE/generated/turn/handover.json"
     && cp "$REPO/tests/fixtures/turn/cases_handover.json" \
           "$HERE/generated/turn/handover.json"
 
+# The campaign cases, on the same terms.  `test_campaign.gd` reads this file
+# for what the rules must come out as and the published cache for the location
+# graph, so a missing fixture makes the suite report the gap rather than the
+# run quietly shrinking.
+mkdir -p "$HERE/generated/campaign"
+rm -f "$HERE/generated/campaign/campaign.json"
+[ -f "$REPO/tests/fixtures/campaign/cases_campaign.json" ] \
+    && cp "$REPO/tests/fixtures/campaign/cases_campaign.json" \
+          "$HERE/generated/campaign/campaign.json"
+
 # The AI replay cases, on the same terms.
 mkdir -p "$HERE/generated/ai"
 rm -f "$HERE/generated/ai/ai.json"
