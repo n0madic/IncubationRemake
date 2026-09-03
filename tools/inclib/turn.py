@@ -476,6 +476,12 @@ class HandOverResult:
     previous_player: int
     turn_script: Any = None
     """The ``NEXT TURN`` invocation's outcome, or ``None`` if it did not run."""
+    ground: Any = None
+    """What the two ground sweeps did, or ``None`` when the round did not turn.
+
+    ``0x00470AB0`` and ``0x0042ED60`` run between the turn counter going up and
+    the ``NEXT TURN`` event, so they are a **round** tick: glows ignite and
+    kill, then glows, fires and shields decay (``docs/42`` §9.1)."""
     player_script: Any = None
     """The ``NEXT PLAYER`` invocation's outcome, or ``None``."""
     mission_ended: bool = False
@@ -495,6 +501,7 @@ class HandOverResult:
             "previous_player": self.previous_player,
             "turn_script": (None if self.turn_script is None
                             else self.turn_script.to_dict()),
+            "ground": self.ground,
             "player_script": (None if self.player_script is None
                               else self.player_script.to_dict()),
             "mission_ended": self.mission_ended,
@@ -518,7 +525,8 @@ def hand_over(state: TurnState, units: Sequence[TurnUnit],
               game_control: Sequence[int],
               run_script: Callable[[int, dict[int, int]], Any],
               banner_of: Callable[[TurnUnit], bool],
-              arg: int = 0) -> HandOverResult:
+              arg: int = 0,
+              ground_tick: Callable[[], Any] | None = None) -> HandOverResult:
     """``0x0047D600`` -- the five steps, in the order the body has them.
 
     ``run_script(call_type, env)`` runs the mission program and returns
@@ -553,6 +561,10 @@ def hand_over(state: TurnState, units: Sequence[TurnUnit],
         if not any_player_left_this_turn(state, live_units):
             state.advance_turn()
             result.turn = state.turn
+            # `0x00470AB0(); 0x0042ED60();` -- between the counter and the
+            # event, which is what makes the ground effects a round tick.
+            if ground_tick is not None:
+                result.ground = ground_tick()
             result.turn_script = run_script(
                 CALL_NEXT_TURN, mission_env(CALL_NEXT_TURN, turn=state.turn))
             if not result.turn_script.ok:

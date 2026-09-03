@@ -48,6 +48,14 @@ var game_control: GameControl = null
 
 ## docs/23 section 5.3 -- what the move's caller writes into `unit[+0x39]`.
 const ACTED_MOVED: int = 3
+## `0x0047304A` -- what the pad's warp arm writes there after a jump.
+const ACTED_WARPED: int = 5
+## docs/92 section 7.5.5, revised 2026-09-03 (docs/97 section 34): the
+## engine's per-command fog probe **wakes** the groups it sees, because its
+## save and restore cover `+0x4F` and not the orders `alert_group` promotes.
+## That is reproduced by default; this flag restores the quiet probe this
+## remake used to have.
+const COMPAT_FOG_PROBE_QUIET: String = "fog_probe_does_not_wake_groups"
 ## [member UseResult.kind] for the one interaction whose animation rebuilds
 ## the fog -- see [method submit_use].
 const DOOR_USE_KIND: String = "door"
@@ -60,12 +68,24 @@ const ELEVATOR_EVENT: String = "elevator"
 ## permanent rebuild for the **selected** unit's player (`0x004130E6`, docs/22
 ## section 9.4) and skips it when nothing is selected -- see [method run_script].
 const PLATFORM_EVENT: String = "platform"
+## The LCL `?_` command (docs/20 section 8): dword 10 of `Game.opt`, which
+## `0x004604A0` returns and the death creators branch on (docs/42 section
+## 4.8.1). Both interpreters record it as `unit_draw_path`.
+const GORE_EVENT: String = "unit_draw_path"
+## docs/42 section 4.8.1 -- the gore level: 1 every death is the puff, 2 the
+## computer's units bleed, 3 everything bleeds. **The default is the
+## remake's**: 2 is what the game copy's `Game.opt` holds, and no shipped
+## file sets the option; the options screen does not write it either.
+const GORE_DEFAULT: int = 2
 
 ## The slot the interface has selected, or [constant MapState.NO_UNIT] --
 ## `0x005162F8`, read by `0x00471F70`. The presentation writes it; `core` reads
 ## it in exactly one place, the platform's closing rebuild, which is the one
 ## rule that keys on the selection rather than on the turn.
 var selected_slot: int = MapState.NO_UNIT
+## `Game.opt` dword 10 -- see [constant GORE_EVENT]. Presentation reads it;
+## no rule does, so it is outside the canonical hash and the save.
+var gore_level: int = GORE_DEFAULT
 
 ## The [MissionScript] seam. Assign a real runner and the hand-over and the
 ## walk start driving the mission program; leave it and they run
@@ -118,11 +138,18 @@ var next_map: String = ""
 var _hand_over_initialised: bool = false
 
 
+## `special_models` is the placer model names the mission's **world set**
+## carries, out of the geometry cache: leaving it empty skips the gate, which
+## is right for a synthetic map and wrong for a real one -- only `World_D00`
+## has `GLOW1/2`, so a `SetGroundFire` elsewhere writes nothing (docs/42
+## section 9.1).
 static func create(map_document: Dictionary, balance: Dictionary,
-		rng_seed: float = 0.0) -> World:
+		rng_seed: float = 0.0,
+		special_models: PackedStringArray = PackedStringArray()) -> World:
 	var world: World = World.new()
 	world.resource = MapResource.from_document(map_document)
 	world.state = MapState.from_resource(world.resource)
+	world.state.set_special_models(special_models)
 	world._ctrlmap = CtrlMapTable.from_rows(DictRead.as_array(balance["ctrlmap"]))
 	world._unit_types = UnitTypeTable.from_rows(DictRead.as_array(balance["units"]))
 	# Required, not optional: an empty weapon table would silently disable the
@@ -335,8 +362,9 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# are inside [method ExecuteMove.execute]; `mp_left_at` is the destination's
 	# `+0x0C`, which only the presentation mode of a computer walk reads.
 	var moved: MoveResult = ExecuteMove.execute(state, _units, _unit_types,
-		_ctrlmap, unit, walked, command.x, command.y,
-		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode)
+		_ctrlmap, _weapons, unit, walked, command.x, command.y,
+		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode,
+		turn.ai_level, turn, rng)
 	if moved.steps == 0:
 		return moved
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
@@ -353,13 +381,22 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# `_D` is the cell's height field divided by 160, and the division is C's:
 	# GDScript truncates toward zero on integers exactly as the original does,
 	# so a cell below datum gives the same level in both.
+	#
+	# **And it is behind the mover's own alive gate.** `0x0046EDDC` is
+	# `mov al, [edi+0x16] / test al, al / je 0x46EF2A`, placed immediately
+	# after the mine's `aExecuteBomb` and immediately before the teleporter,
+	# `aBuildVisibleMapForUnit`, the six `aSetLCLVariable` writes and
+	# `aRunLCL` `0x0046EEFD`. A mover the mine on its stop cell has just
+	# killed therefore runs **none** of them, and the script never sees a
+	# `MoveUnit` for a walk that ended in a body.
 	var arrived: int = state.index_of(moved.x, moved.y)
-	moved.script_result = DictRead.as_dict(_script_callable().call(
-		MissionScript.CALL_MOVE_UNIT,
-		MissionScript.env(MissionScript.CALL_MOVE_UNIT, turn.turn,
-			unit.player, moved.x, moved.y,
-			state.height_at(arrived) / MissionScript.HEIGHT_LEVEL_UNITS,
-			state.action_point_at(arrived), unit.slot)))
+	if unit.is_alive():
+		moved.script_result = DictRead.as_dict(_script_callable().call(
+			MissionScript.CALL_MOVE_UNIT,
+			MissionScript.env(MissionScript.CALL_MOVE_UNIT, turn.turn,
+				unit.player, moved.x, moved.y,
+				state.height_at(arrived) / MissionScript.HEIGHT_LEVEL_UNITS,
+				state.action_point_at(arrived), unit.slot)))
 
 	unit.acted = ACTED_MOVED
 	if moved.movement_zeroed:
@@ -546,6 +583,9 @@ func _run_mission_script(call_type: int,
 				continue
 			Visibility.build(state, _units, _unit_types, values[0],
 				turn.human_count(), turn.mode)
+		elif name == GORE_EVENT:
+			if not values.is_empty():
+				gore_level = values[0]
 		elif name == ELEVATOR_EVENT:
 			if values.size() < 2 or not state.in_bounds(values[0], values[1]):
 				continue
@@ -627,6 +667,88 @@ func submit_stimulant(command: SpendStimulantCommand) -> bool:
 	return true
 
 
+## docs/29 section 1.1's button 2 -- the medic kit (`0x00470890` under the
+## pad arm at `0x004733BB`, docs/97 section 31). Answers [method
+## Interact.heal]'s dictionary; a refusal changes nothing but `acted`, which
+## the pad writes either way.
+## `0x0047B4C0` under the pad's `+0x15 >= 1` -- whether button 2 is offered
+## for a slot. The gate is the pad's, so it lives beside the command and not
+## inside it, as [method Interact.may_use] does for `Use`.
+func may_heal(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if not unit.is_alive() or unit.mp < 1:
+		return false
+	return Interact.may_heal(state, _units, _unit_types, unit)
+
+
+func submit_heal(command: HealCommand) -> Dictionary:
+	if not _units.has(command.unit_slot):
+		return {"ok": false, "reason": "no such unit", "target": -1,
+			"delta": 0, "self_heal": false}
+	var unit: UnitState = _units[command.unit_slot]
+	if not unit.is_alive():
+		return {"ok": false, "reason": "the unit is dead", "target": -1,
+			"delta": 0, "self_heal": false}
+	return Interact.heal_command(state, _units, _unit_types, unit)
+
+
+## The Jet Pack's jump -- `aExecuteWarp` under the pad arm at `0x00472F10`
+## (docs/97 section 31). The cell must be one the movement query marked as
+## a warp target, which is the same gate a walk has: `core` re-fills rather
+## than trusting the picture.
+##
+## After the routine, for a mover still alive: the movement points go to
+## zero, `+0x39` is written 5, and the reaction queue is drained at the
+## landing cell. The `MoveUnit` script call is the routine's own
+## (`0x0046F196`: var 0x41 written 2, x, y and the cell's action point), and
+## it fires **before** the pad's charge, as the walk's does.
+func submit_warp(command: WarpCommand) -> WarpResult:
+	if not _units.has(command.unit_slot):
+		return WarpResult.failed(0, 0, "no such unit")
+	var unit: UnitState = _units[command.unit_slot]
+	var fill: MoveMapResult = submit_move_query(
+		MoveQueryCommand.create(command.unit_slot))
+	if not fill.is_warp_target(command.x, command.y):
+		return WarpResult.failed(unit.x, unit.y,
+			"the cell is not a warp target")
+	var from_x: int = unit.x
+	var from_y: int = unit.y
+	var done: Dictionary = ExecuteWarp.execute(state, _units, _unit_types,
+		_weapons, unit, command.x, command.y, turn.human_count(), turn.mode,
+		turn.ai_level, turn, rng)
+	if not DictRead.as_bool(done["ok"]):
+		return WarpResult.failed(unit.x, unit.y,
+			DictRead.as_string(done["reason"]))
+	var result: WarpResult = WarpResult.new()
+	result.ok = true
+	result.from_x = from_x
+	result.from_y = from_y
+	result.x = unit.x
+	result.y = unit.y
+	result.blast = DictRead.as_dict(done.get("blast", {}))
+	# The `MoveUnit` call is behind the mover's own alive gate, exactly as the
+	# walk's is: `0x0046F133` is `mov al, [esi+0x16] / test al, al /
+	# je 0x46F200`, and `0x46F200` is the bare `mov eax, 1 / ret`. So a mover
+	# the mine under its landing has just killed runs neither the fog rebuild
+	# (`0x0046F144`, inside [ExecuteWarp]) nor `aRunLCL` (`0x0046F1D6`).
+	var arrived: int = state.index_of(unit.x, unit.y)
+	if unit.is_alive():
+		result.script_result = DictRead.as_dict(_script_callable().call(
+			MissionScript.CALL_MOVE_UNIT,
+			MissionScript.env(MissionScript.CALL_MOVE_UNIT, turn.turn,
+				unit.player, unit.x, unit.y,
+				state.height_at(arrived) / MissionScript.HEIGHT_LEVEL_UNITS,
+				state.action_point_at(arrived), unit.slot)))
+		unit.mp = 0
+		unit.acted = ACTED_WARPED
+		result.reactions = Reaction.drain(state, _units, _unit_types,
+			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
+			turn, rng)
+	return result
+
+
 ## `0x00477BF0` -- how many live units a player owns.
 func live_unit_count(player: int) -> int:
 	var n: int = 0
@@ -692,6 +814,37 @@ func hit_chance(shooter_slot: int, target_slot: int) -> int:
 
 
 ## `0x0046FAD0` -- whether this unit is in range of a Banner.
+## `0x00470AB0` then `0x0042ED60` -- the round's two ground sweeps, in the
+## order the hand-over has them.
+##
+## Every glow that reached phase 1 ignites, and the flames **remove** every
+## unit on the eight cells around it plus its own that is not standing in a
+## shield; then the glows, fires and shields decay one step (docs/42 section
+## 9.1).  It is not damage: `aPlayGroundFireAnimation` hides each object and
+## calls `aRemoveUnitElement` for it.
+func _ground_tick() -> Dictionary:
+	var ignited: PackedInt32Array = CellObjects.glows_to_ignite(state)
+	var killed: PackedInt32Array = PackedInt32Array()
+	for at: int in ignited:
+		var cells: PackedInt32Array = CellObjects.ground_fire_cells(
+			state, at % state.width, at / state.width)
+		for cell: int in cells:
+			var slot: int = state.unit_at(cell)
+			if slot < 0 or not _units.has(slot):
+				continue
+			var victim: UnitState = _units[slot]
+			# `aRemoveUnitElement` and **nothing else**: it bumps the hero
+			# counter, frees the 3D object, clears the cell link and -- with
+			# its last instruction, `0x00477ABD` -- zeroes the hit points.
+			# So the flames kill; no damage roll runs, but the victim is dead
+			# and not merely unlinked (docs/97 section 40 corrects section 38).
+			var _counted: bool = UnitState.remove(state, turn, victim)
+			killed.append(slot)
+	var changed: PackedInt32Array = CellObjects.round_tick(state)
+	return {"ignited": Array(ignited), "killed": Array(killed),
+		"changed": Array(changed)}
+
+
 func banner_in_range(slot: int) -> bool:
 	if not _units.has(slot):
 		return false
@@ -714,7 +867,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	_first_hand_over()
 	var result: TurnResult = TurnSequence.hand_over(turn, _units, game_control,
 		_unit_types, _weapons, _script_callable(), banner_in_range,
-		live_unit_count, command.arg)
+		live_unit_count, command.arg, _ground_tick)
 	if result.refreshed:
 		# `aBuildVisibleMap` for whoever now holds the turn. It runs here and
 		# not in [Refresh] for the reason that file states: visibility is a map
@@ -781,7 +934,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			played = one if played == null else played.followed_by(one)
 		result = TurnSequence.hand_over(turn, _units, game_control,
 			_unit_types, _weapons, _script_callable(), banner_in_range,
-			live_unit_count, EndTurnCommand.create().arg)
+			live_unit_count, EndTurnCommand.create().arg, _ground_tick)
 		if result.refreshed:
 			Visibility.build(state, _units, _unit_types, turn.current_player,
 				turn.human_count(), turn.mode)
@@ -802,6 +955,26 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 func display_visibility() -> Dictionary[int, int]:
 	return Visibility.states_for(state, _units, _unit_types,
 		turn.current_player, turn.human_count(), turn.mode)
+
+
+## `0x00481F00` once, as `aViewPlayer.cpp`'s dispatcher runs it: **before a
+## player command**, not on every rebuild.
+##
+## The probe restores every `+0x4F`, so what it saw is a query -- that is
+## [method display_visibility]. What it does **not** restore is the orders
+## `alert_group` promotes, so a group the current player can see switches to
+## its second order and stays switched. That is a defect of the engine's,
+## and this remake used to decline to reproduce it (docs/92 section 7.5.5);
+## it reproduces it now, because the original is the standard and the defect
+## costs the player no control (docs/97 section 34). [constant
+## COMPAT_FOG_PROBE_QUIET] restores the quiet probe.
+##
+## Answers how many units the wake promoted, for a caller and a suite.
+func probe_fog() -> int:
+	if compat_flags.has(COMPAT_FOG_PROBE_QUIET):
+		return 0
+	return Visibility.probe(state, _units, _unit_types, turn.current_player,
+		turn.human_count(), turn.mode)
 
 
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.
@@ -846,7 +1019,13 @@ func load_save(data: PackedByteArray) -> int:
 	var code: int = DictRead.as_int(decoded["result"])
 	if code != SaveCodec.Result.OK:
 		return code
+	# The world set's placer models are the **mission's**, not the save's, and
+	# `SaveCodec` neither stores nor could store them -- so they are carried
+	# across rather than lost, or a resumed mission would let a
+	# `SetGroundFire` work where the engine does nothing (docs/42 section 9.1).
+	var models: PackedStringArray = state.special_models()
 	state = decoded["state"]
+	state.set_special_models(models)
 	_units = decoded["units"]
 	turn = decoded["turn"]
 	game_control = decoded["game_control"]

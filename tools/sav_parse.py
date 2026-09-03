@@ -440,6 +440,42 @@ def selftest(root: Path) -> int:
     return 0
 
 
+def wrap(save: Path, lev: Path, out: Path) -> int:
+    """Write a save carrying `lev` instead of the one `save` holds.
+
+    A save is a ``.lev`` image between a 7541-byte prefix and a 149-byte
+    suffix (:func:`selftest` round-trips exactly that), so swapping the image
+    swaps the **mission**: the prefix's game-control block, unit pool and
+    player state are the ones the played save left, and the mission, its
+    scene, its world set and its whole map come from the ``.lev``.
+
+    What it is for: reaching a mission no shipped save is on.  The glow of
+    ``docs/42`` §9.1 only exists in ``World_D00`` -- ``GLOW1/2.3DI`` are in
+    that one prototype container -- and every real save in
+    ``tests/fixtures/saves`` is on `_C_140` or `_C_141`, which are ``A00`` and
+    ``B00``.  Wrapping `_C_116.lev` gives a save the debugger harness can load
+    to measure the placer and its decay (``docs/97`` §37).
+
+    The result is **not** a played save and must not be treated as one: only
+    the map and what the game derives from it are trustworthy in it.
+    """
+    raw = save.read_bytes()
+    image = lev.read_bytes()
+    # The suffix is whatever the parsed save has after its own map -- derived
+    # rather than named, so a save with the untruncated tail docs/11 1
+    # describes is wrapped as correctly as a clean one.
+    parsed = parse(save)
+    carried = LEV_HEADER + LEV_CELL * parsed.width * parsed.height + LEV_TAIL
+    suffix = len(raw) - OFF_BATTLE_MAP - carried
+    if suffix < 0:
+        raise SavError(f"{save}: the map runs past the end of the file")
+    built = raw[:OFF_BATTLE_MAP] + image + raw[len(raw) - suffix:]
+    out.write_bytes(built)
+    log.info("%s: %d bytes, %s in place of the parsed map",
+             out, len(built), lev.name)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("path", type=Path,
@@ -452,6 +488,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--lev", type=Path, metavar="OUT",
                     help="write the embedded battle map as a standalone .lev")
+    ap.add_argument("--wrap", type=Path, metavar="LEV",
+                    help="write a save carrying this .lev instead of the "
+                         "parsed one's; needs --out")
+    ap.add_argument("--out", type=Path, metavar="PATH",
+                    help="where --wrap writes")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -463,6 +504,12 @@ def main(argv: list[str] | None = None) -> int:
         except SavError as exc:
             log.error("%s", exc)
             return 1
+
+    if args.wrap is not None:
+        if args.out is None:
+            log.error("--wrap needs --out")
+            return 1
+        return wrap(args.path, args.wrap, args.out)
 
     if args.scan:
         files = sorted(args.path.rglob("_*_.sav"))

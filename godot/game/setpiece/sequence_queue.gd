@@ -43,9 +43,20 @@ class Step extends RefCounted:
 	var cues: Array[Dictionary] = []
 	var elapsed: int = 0
 	var started: bool = false
+	## An open-ended step ends on the first frame this answers true, or at
+	## `frames` -- the engine's own bound -- whichever comes first.
+	var until: Callable = Callable()
 
 	func seconds() -> float:
 		return float(frames) / FRAMES_PER_SECOND
+
+	func done() -> bool:
+		if elapsed >= frames:
+			return true
+		if until.is_valid():
+			var stop: bool = until.call()
+			return stop
+		return false
 
 
 var _steps: Array[Step] = []
@@ -77,6 +88,35 @@ func enqueue(name: String, frames: int, paint: Callable,
 	step.cues = cues.duplicate()
 	_steps.append(step)
 	_running = true
+
+
+## Add a sequence that runs **until** `until` answers true, and for at most
+## `frames` frames. This is what the original's "spin until the pool is
+## empty" loops are (docs/42 sections 4.6 and 4.9): every one of them has a
+## bound -- 100 frames for the round in flight, 20 for the numbers -- and
+## the bound is what is passed here, never a number of the remake's.
+##
+## `paint` is called with `(frame, frames)` on every frame it runs, so a
+## step that only waits passes an invalid callable.
+func enqueue_until(name: String, frames: int, until: Callable,
+		paint: Callable = Callable(), cues: Array[Dictionary] = []) -> void:
+	if frames <= 0:
+		return
+	var step: Step = Step.new()
+	step.name = name
+	step.frames = frames
+	step.paint = paint
+	step.until = until
+	step.cues = cues.duplicate()
+	_steps.append(step)
+	_running = true
+
+
+## The name of the step now on screen, or `""`; for a suite.
+func current() -> String:
+	if not _running or _index >= _steps.size():
+		return ""
+	return _steps[_index].name
 
 
 func is_running() -> bool:
@@ -129,7 +169,7 @@ func _step_once() -> bool:
 	if step.paint.is_valid():
 		step.paint.call(step.elapsed, step.frames)
 		_painted += 1
-	if step.elapsed >= step.frames:
+	if step.done():
 		_end_step(step)
 		_index += 1
 		if _index >= _steps.size():

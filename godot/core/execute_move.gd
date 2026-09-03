@@ -40,6 +40,8 @@ const FIELD_TELEPORT_IN: int = 9
 
 ## docs/21 section 4 -- the weapon a mine would resolve as.
 const MINE_WEAPON: int = 36
+## `unitinfo[type].size` the ring arm is selected by -- `cmp byte [...], 1`.
+const LARGE_UNIT_SIZE: int = 1
 
 ## `0x0046E357` -- `cmp byte [dest + 0x0C], 6 / jbe`: the destination's
 ## answer from the pass before the walk is discarded when the fill left more
@@ -148,18 +150,21 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 			# points did not move, and the mine was still on the cell
 			# afterwards.
 			#
-			# TODO: docs/26 section 6.2 explains that measurement, and it is
-			# not the engine's rule. Every cell-based detonation is guarded by
-			# `aDeleteSpecialObject(cell[+0x0F])`, and the probe's synthetic
-			# mine carried the effect byte with no object, so the guard
-			# refused -- a combination the engine itself never produces. An
-			# **authored** mine does fire. Making this arm detonate changes
-			# `core` behaviour, so it changes the canonical hash and wants
-			# `SaveCodec.SCHEMA_VERSION` with it; it is a product decision for
-			# docs/92 section 7 rather than a bug fix, and is deliberately not
-			# taken here.
+			# **That measurement is the guard, not the rule** (docs/26 section
+			# 6.2). Every cell-based detonation runs
+			# `aDeleteSpecialObject(cell[+0x0F])` first and fires only if it
+			# answers non-zero; the probe wrote the effect byte onto an
+			# ordinary cell and left `+0x0F` at 255, so the guard refused and
+			# took the routine's FALSE exit. Since docs/97 section 37 the
+			# placers write `+0x0F` beside `+0x10`, so an **authored** mine
+			# passes the guard and goes off -- and a hand-written one still
+			# does exactly what the capture saw.
+			# **The detonation is [method execute]'s.** `0x0046EC0F` gates
+			# the whole block on this flag, and `0x0046EC25` then picks the
+			# arm by `unitinfo[type].size` -- which `run` has no table for.
 			result.events.append({"kind": "mine", "x": nx, "y": ny,
 				"detail": MINE_WEAPON})
+			result.stopped_on_mine = true
 			result.cost = 0
 			result.movement_zeroed = true
 			result.reason = "a mine ended the walk"
@@ -198,10 +203,60 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 ## `arrival_points` is the destination's `+0x0C`, the fill's movement points
 ## left on arrival; `aWalkMoveMap` stamps the destination 100 before its
 ## closing sweep and so leaves the byte alive for the test.
+## The mine block of `0x0046EC0F`..`0x0046EDB7`, both arms.
+##
+## It runs **only** when the walk stopped on a mine, and `0x0046EC25` picks
+## the arm by `unitinfo[type].size`:
+##
+## * a **small** mover detonates the cell it stopped on (`0x0046EDAF`);
+## * a mover of size 1 sweeps its **eight neighbours** through `0x004308C0`
+##   with the diagonal flag set and detonates every mine among them
+##   (`0x0046ECA4`) -- the stop cell itself is not one of them.
+##
+## Each cell is behind the `aDeleteSpecialObject` guard of docs/26 section
+## 6.2, and the ring stops the moment the mover's `+0x16` reaches zero
+## (`0x0046ECB0`). The shipped campaign places no large unit next to a mine,
+## so the ring is read and transcribed rather than exercised by any map;
+## `test_execute_move` writes the `size` byte to reach it, the way docs/93
+## section 11 reached the large-unit clearance.
+static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		wtab: WeaponTable, mover: UnitState, moved: MoveResult, ai_level: int,
+		human_players: int, game_mode: int, turn: TurnState,
+		rng: IncRandom) -> void:
+	var cells: Array[Vector2i] = []
+	if utab.unit_size(mover.type_id) == LARGE_UNIT_SIZE:
+		for step: Vector2i in CellObjects.STEP_DELTA:
+			if state.in_bounds(mover.x + step.x, mover.y + step.y):
+				cells.append(Vector2i(mover.x + step.x, mover.y + step.y))
+	else:
+		cells.append(Vector2i(moved.x, moved.y))
+	for at: Vector2i in cells:
+		var index: int = state.index_of(at.x, at.y)
+		if state.obstacle_at(index) != MapState.OBSTACLE_MINE:
+			continue
+		if not CellObjects.delete_object(
+				state, state.effect_at(MapState.OBJECT_SLOT, index)):
+			continue
+		state.set_effect(MapState.OBJECT_SLOT, index, MapState.NO_OBJECT)
+		state.set_obstacle(index, MapState.OBSTACLE_NONE)
+		state.set_effect(MapState.TIMER_SLOT, index, 0)
+		moved.detonate.append(at.x)
+		moved.detonate.append(at.y)
+		moved.blast = Interact.execute_bomb(state, units, utab, wtab, at.x,
+			at.y, ai_level, human_players, game_mode, turn, rng).to_dict()
+		moved.events.append({"kind": "mine_detonated", "x": at.x, "y": at.y,
+			"detail": 0, "blast": moved.blast})
+		# `0x0046ECB0` -- the ring stops the moment the mover is dead.
+		if not mover.is_alive():
+			return
+
+
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
-		ctab: CtrlMapTable, mover: UnitState, walked: Dictionary, tx: int,
-		ty: int, arrival_points: int, human_players: int, game_mode: int,
-		budget: int = -1, enemy_move: bool = true) -> MoveResult:
+		ctab: CtrlMapTable, wtab: WeaponTable, mover: UnitState,
+		walked: Dictionary, tx: int, ty: int, arrival_points: int,
+		human_players: int, game_mode: int, ai_level: int, turn: TurnState,
+		rng: IncRandom, budget: int = -1,
+		enemy_move: bool = true) -> MoveResult:
 	var moved: MoveResult = run(state, ctab, mover, walked, budget)
 	if not moved.ok and not moved.movement_zeroed:
 		return moved
@@ -236,9 +291,19 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# comes from [method run] in that order.
 		state.set_action_point(write.x, write.y)
 
+	# **The mine goes off here, not in the caller.** `0x0046EDAF` is inside
+	# `aExecuteMove`, between the relink and the closing pass, and the closing
+	# pass is behind the mover's `+0x16`: `0x0046EDDC` reads it and returns
+	# TRUE without looking when the bomb killed the walker. Firing it from the
+	# caller would run the pass on a mover the mine was about to kill, and the
+	# pass **writes** -- it reveals what the mover sees and wakes groups -- so
+	# the order is the difference between two canonical hashes, not a detail.
+	if moved.stopped_on_mine:
+		_detonate(state, units, utab, wtab, mover, moved, ai_level,
+			human_players, game_mode, turn, rng)
 	# The bomb arm returns first when the mine killed the walker
-	# (`0x0046ECB5`, `0x0046EDE1`); `core` does not detonate, so this is the
-	# guard and not a reachable branch.
+	# (`0x0046ECB5`, `0x0046EDE1`, `0x0046EE35`), so the third pass runs only
+	# while the mover lives.
 	if mover.is_alive():
 		var _saw: bool = Visibility.look_from(state, units, utab, mover,
 			mover.x, mover.y, human_players, game_mode)

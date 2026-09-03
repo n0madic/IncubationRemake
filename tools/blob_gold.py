@@ -3288,7 +3288,7 @@ POKED_ARMS_DISAGREE: list[int] = []
 #: edit does not silently rename a gap.  If this pin breaks and
 #: `coverage.uncovered_lines` does not, the transcription grew or shrank a
 #: line and the number simply wants updating.
-COVERAGE_ARM_LINES = (383, 385)
+COVERAGE_ARM_LINES = (384, 386)
 COVERAGE_ARMS_COMPLETE = 73
 #: The two that remain, and they are one *divergence* rather than a gap:
 #: `0x0041E55A` has no test in front of its `idiv`, so a record with no `vx`
@@ -3700,6 +3700,15 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
     # these five is told from its neighbour.
     "BLOOD_LIFT", "BLOOD_STEP", "BLOOD_VELOCITY", "BLOOD_VELOCITY_LARGE",
     "SPECIES_COIN",
+    # The unit animations' and the set pieces' constants (`docs/97` §31,
+    # §32): no weapon switch reaches those creators either, and it is
+    # `presentation_gold.py`'s own `death_*` phases that run them.
+    "BOMBER_SPEED", "BOMB_CEILING", "BOMB_DROP", "BOMB_FALL",
+    "DUST_RADIUS", "DUST_TURN",
+    "FIRE_CIRCLE_FLAMES", "FIRE_CIRCLE_RADIUS", "FIRE_CIRCLE_TURN",
+    "FLASH_RADIUS", "FLASH_RADIUS_LARGE", "LASER_OFFSET", "LASER_STEP",
+    "PLATFORM_DUST_SPREAD", "PLATFORM_DUST_UP", "RING_RADIUS",
+    "RING_RADIUS_LARGE", "STREAM_RECORDS", "STREAM_STEP", "TUBE_PAIRS",
 )
 #: The ones it does pin, so the check is a measurement in both directions
 #: rather than a list of excuses.

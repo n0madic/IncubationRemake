@@ -148,8 +148,19 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
 			game_mode, turn, rng)
 		reactor.facing = facing
-		fired.append({"reactor": reactor.slot, "ticket": reactor.ticket,
-			"attack": result.to_dict()})
+		var shot: Dictionary = {"reactor": reactor.slot,
+			"ticket": reactor.ticket, "attack": result.to_dict(),
+			"jammed": false}
+		# `0x0046CE06` / `0x0046D088` -- in **both** loops: a shot that fired
+		# and left the magazine empty, or the heat counter at `0x00475340`'s
+		# cap, plays the jam orbit (docs/42 section 7.4) and takes the
+		# reactor out of the queue with `mov byte [esi + 0x59], 0`. The
+		# ticket in `shot` is the one it fired with.
+		if result.fired and (reactor.ammo == 0
+				or reactor.heat == Combat.max_heat(wtab, reactor)):
+			shot["jammed"] = true
+			reactor.ticket = 0
+		fired.append(shot)
 		if not mover.is_alive():
 			break
 	return fired

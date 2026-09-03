@@ -146,3 +146,22 @@ pool — empty, bank 0, both banks, bank 1.
 
 `MissionObjectives` is 28 zero bytes in all nine: `aMultiPlayer.cpp` owns it and
 a single-player campaign never fills it. That block needs a `net session` save.
+
+
+## A wrapped save is not one of these
+
+`sav_parse.py --wrap` writes a save carrying a different mission's `.lev`
+between one of these saves' fixed blocks. It is how `presentation_gold.py`
+reaches `World_D00`, the one world set with `GLOW1/2.3DI`
+([`docs/97` §38.1](../../../docs/97-slice-5-report.md)):
+
+```bash
+python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \
+    --wrap gog_incubation/Missions/_C_116.lev --out /path/to/copy/Work/Saves2/_7_.sav
+```
+
+The game loads it and `sav_parse.py` reads it back as `_C_116` on `Level04b`
+in `World_D00`, 34 × 40. **It is not a played save**: the prefix's
+game-control block, unit pool and player state are `_6_.sav`'s, and only the
+map and what the game derives from it are trustworthy in it. Nothing is
+committed and no `--check` depends on one.

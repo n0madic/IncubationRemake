@@ -45,10 +45,17 @@ static func end_unit_turn(ctx: AIContext, unit: UnitState,
 
 ## `0x0040A600` -- step up to a closed door and play the sequence.
 ##
-## What survives the sequence is the facing, one movement point and the *acted*
-## flag, so those are what this applies. The door's own cell is **not** changed
-## here: `aDoorOpenSequence` (`0x00410A20`) rewrites the action point, and it is
-## a set-piece, recorded as an event exactly as docs/94 recorded the others.
+## The routine calls `aDoorOpenSequence` (`0x00410A20`) at `0x0040A6B5` and
+## keeps its answer, so what survives is the facing, one movement point, the
+## *acted* flag **and the door itself**: the sequence rewrites the action
+## point and the height, which is [method Interact.toggle_door]. Modelling
+## only the first three left a door the computer had walked through still
+## closed in the rules (docs/97 section 35); the cells it changed ride on
+## the event so the picture can apply them in the frame it shows.
+##
+## The fog is **not** rebuilt: both of the sequence's rebuild sites are
+## guarded by `aGetCurrentPlayer() != 0xFF`, and the computer holds the turn
+## here -- the same guard [method World.submit_use] reads for the player.
 static func open_door(ctx: AIContext, unit: UnitState) -> bool:
 	if unit.hp == 0:
 		return false
@@ -65,8 +72,12 @@ static func open_door(ctx: AIContext, unit: UnitState) -> bool:
 		unit.facing = Combat.direction(unit.x, unit.y, nx, ny)
 		unit.acted = ACTED
 		unit.mp -= DOOR_MP_COST
+		var index: int = ctx.map.index_of(nx, ny)
+		Interact.toggle_door(ctx.map, index)
 		ctx.emit(AIEvent.make("door", unit.slot, unit.x, unit.y, nx, ny,
-			ACTION_POINT_CLOSED_DOOR))
+			ACTION_POINT_CLOSED_DOOR, "", {"cells": [index],
+				"action_point": ctx.map.action_point_at(index),
+				"height": ctx.map.height_at(index)}))
 		return true
 	return false
 

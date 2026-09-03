@@ -40,7 +40,7 @@ the document's own `oracle` field says so.
 | `attenuation` | 182 | `docs/28` §1.3's formula over 26 base volumes × 7 percentages, including the silence gate either side of −2000 and the clip at 0 |
 | `scaled` | 416 | every one of the 103 defined ids plus `-1`, at four base volumes |
 | `pool` | 28 | 23 loads into 20 slots — three dropped — three kills, `kill_looping` and the live count |
-| `voices` | 13 | both cursors interleaved, `SP_HUM_*` sharing the human one, species 2 silent |
+| `voices` | 16 | both cursors interleaved, `SP_HUM_*` sharing the human one, species 2 silent; each call carries the **`type_id`** it was made with, two of them muted (`docs/42` §4.5), one on a `death` of species 3 so the machine's explosion is gated too |
 | `footsteps` | 138 | all 69 unit types, `Faithful` and corrected — 39 silent, type 24's id 45 against 91 |
 | `weapons` | 84 | all 42 `SetWeaponInfo2` rows, `Faithful` and corrected; weapon 35 resolves to nothing in the first |
 | `catalogue` | 40 events | the 59 non-computed call sites, each with its wave, volume id and loop flag |

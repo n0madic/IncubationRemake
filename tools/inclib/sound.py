@@ -458,11 +458,17 @@ ALIEN_PAIN_VOLUME_IDS = (59, 60, 61)
 #: The second human set, which shares the human cursor.
 SECOND_HUMAN_WAVES = ("SP_HUM_0.wav", "SP_HUM_1.wav", "SP_HUM_2.wav")
 SECOND_HUMAN_VOLUME_IDS = (50, 51, 52)
-#: Defined by ``Info.lcl`` and named by no call site, before the correction and
-#: after it.  ``Info.lcl`` labels them ``SP_HUM_0/1/2`` a second time, so what
-#: they were for is not recoverable; they are listed so a check can assert they
-#: stay unnamed rather than leave the fact unstated.
-UNNAMED_VOLUME_IDS = (53, 54, 55)
+#: The death scream (``docs/42`` §4.5): the same ``SP_HUM_0/1/2`` waves, off
+#: the human cursor at 50..52 and off the **alien** cursor at 53..55 -- the
+#: three ids ``Info.lcl`` labels ``SP_HUM`` a second time, which an earlier
+#: reading called "named by no call site" because the fight loads them with
+#: ``mov edi, imm`` (``0x0040CA23``, ``0x0040C9FD``, ``0x0040C9D7``) rather
+#: than a ``push``.  A species-3 death is ``explosion.wav`` @63
+#: (``0x0040C9A7``); species 2 dies silently.
+DEATH_ALIEN_VOLUME_IDS = (53, 54, 55)
+DEATH_EXPLOSION_WAVE = "explosion.wav"
+DEATH_EXPLOSION_VOLUME_ID = 63
+SPECIES_MACHINE = 3
 #: Two independent cursors, one per species (0x004FC018 and 0x004FC01C).
 PAIN_CURSOR_MODULUS = 3
 
@@ -475,18 +481,34 @@ class VoiceCursors:
     cursor, which is why the two sets interleave.
     """
 
+    #: ``0x0040CBE2``..``0x0040CBEC`` -- ``cmp al, 0x16 / je``,
+    #: ``cmp al, 0x18 / jbe``, ``cmp al, 0x1A / ja``: types 22, 25 and 26 make
+    #: no sound when they are hit or killed.
+    MUTE_TYPES = frozenset({0x16, 0x19, 0x1A})
+
     def __init__(self, *, fix_alien_volume: bool = True) -> None:
         self.cursors = {SPECIES_HUMAN: 0, SPECIES_ALIEN: 0}
         self.fix_alien_volume = fix_alien_volume
 
-    def pain(self, species: int) -> Optional[Cue]:
-        """The scream a unit of *species* makes, or ``None`` -- every species
-        but human and alien is silent."""
+    def pain(self, species: int, type_id: int = -1) -> Optional[Cue]:
+        """The scream a unit of *species* makes, or ``None``.
+
+        Every species but human and alien is silent, and so are **unit types
+        22, 25 and 26** -- ``0x0040CBDF`` reads ``+0x4C`` and clears the play
+        flag for them (``docs/42`` §4.5).  All three have species 0, so the
+        species test alone lets Cpt. Rutherford, the Scout and Major
+        Rutherford scream where the engine says nothing.
+
+        The cursor advances either way: the gate is at ``0x0040CBF2``, past
+        the round robin that picked the wave.
+        """
         waves = PAIN_WAVES.get(species)
         if waves is None:
             return None
         cursor = self.cursors[species]
         self.cursors[species] = (cursor + 1) % PAIN_CURSOR_MODULUS
+        if type_id in self.MUTE_TYPES:
+            return None
         ids = ALIEN_PAIN_VOLUME_IDS \
             if species == SPECIES_ALIEN and self.fix_alien_volume \
             else PAIN_VOLUME_IDS
@@ -498,6 +520,35 @@ class VoiceCursors:
         self.cursors[SPECIES_HUMAN] = (cursor + 1) % PAIN_CURSOR_MODULUS
         return Cue(SECOND_HUMAN_WAVES[cursor], SECOND_HUMAN_VOLUME_IDS[cursor],
                    False, 0x00416916)
+
+    def death(self, species: int, type_id: int = -1) -> Optional[Cue]:
+        """The scream of a unit that died (``docs/42`` §4.5, severity 3).
+
+        Humans and aliens scream ``SP_HUM_n`` off their own cursor -- the
+        human at 50..52, the alien at 53..55 -- a machine explodes, and an
+        object (species 2) makes no sound at all.
+
+        **The mute of :attr:`MUTE_TYPES` covers this too**, and the machine's
+        explosion with it: every arm of the cascade -- ``0x0040C9AC`` from the
+        explosion, ``0x0040C9E6`` and its neighbours from the screams --
+        ``jmp``\ s to ``0x0040CBD6``, and the type test at ``0x0040CBDB`` is
+        the next thing after it.  The cursor advances either way, because the
+        gate is past the round robin that picked the wave.
+        """
+        cue: Optional[Cue] = None
+        if species == SPECIES_MACHINE:
+            cue = Cue(DEATH_EXPLOSION_WAVE, DEATH_EXPLOSION_VOLUME_ID, False,
+                      0x0040C99C)
+        elif species in (SPECIES_HUMAN, SPECIES_ALIEN):
+            cursor = self.cursors[species]
+            self.cursors[species] = (cursor + 1) % PAIN_CURSOR_MODULUS
+            ids = SECOND_HUMAN_VOLUME_IDS if species == SPECIES_HUMAN \
+                else DEATH_ALIEN_VOLUME_IDS
+            cue = Cue(SECOND_HUMAN_WAVES[cursor], ids[cursor], False,
+                      0x0040CC15)
+        if type_id in self.MUTE_TYPES:
+            return None
+        return cue
 
 
 # --------------------------------------------------------------------------

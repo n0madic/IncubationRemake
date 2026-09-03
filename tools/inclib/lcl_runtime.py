@@ -39,6 +39,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import ctrlmap as ctrlmapmod
 from . import lev as levmod
 from .info import BalanceTables
 from .rng import ARandom, CRandom
@@ -222,6 +223,20 @@ class LclWorld:
         self.ctrl_type = [c.field_type for c in cells]
         self.cell_height = [c.height for c in cells]
         self.unit_at = [-1 if c.unit is None else c.unit for c in cells]
+        #: ``+0x0E``..``+0x13`` -- the transient-object block of
+        #: ``docs/42`` §9.1.  ``SetGroundFire`` and ``ParaBombs`` write it
+        #: through :mod:`inclib.ctrlmap`, so the language touches **six** cell
+        #: fields rather than the four ``docs/20`` §7.4 tabulates.
+        self.effect_timer = [c.raw[0x0E] for c in cells]
+        self.effect_object = [c.raw[0x0F] for c in cells]
+        self.effect_state = [c.raw[0x10] for c in cells]
+        self.decal_object = [c.raw[0x11] for c in cells]
+        self.decal_phase = [c.raw[0x12] for c in cells]
+        self.decal_state = [c.raw[0x13] for c in cells]
+        self.special_objects: list[int] = []
+        #: The placer models the mission's world set carries; ``None`` skips
+        #: the gate (``inclib.ctrlmap``).
+        self.special_models: frozenset[str] | None = None
         self.units: dict[int, RuntimeUnit] = {}
         for u in bm.units:
             if not u.placed:
@@ -255,6 +270,23 @@ class LclWorld:
     def index(self, x: int, y: int) -> int:
         return y * self.width + x
 
+    def ctrlmap(self) -> ctrlmapmod.CtrlMap:
+        """The placers' view of these cells, aliasing the columns."""
+        cells = ctrlmapmod.CtrlMap(
+            width=self.width, height=self.height,
+            cell_height=self.cell_height, unit_at=self.unit_at,
+            action_point=self.actpt, field_type=self.ctrl_type,
+            effect_timer=self.effect_timer,
+            effect_object=self.effect_object,
+            effect_state=self.effect_state,
+            decal_object=self.decal_object, decal_phase=self.decal_phase,
+            decal_state=self.decal_state, objects=self.special_objects,
+            models=self.special_models)
+        if not self.special_objects:
+            ctrlmapmod.rebuild_objects(cells)
+            self.special_objects = cells.objects
+        return cells
+
     def species(self, type_id: int) -> int:
         row = self.tables.units.get(type_id)
         return 0 if row is None else row.species
@@ -273,6 +305,11 @@ class LclWorld:
     #: The player record's ``+0x24`` is one byte.
     HERO_COUNT_WRAP = 256
 
+    def remove_slot(self, slot: int) -> bool:
+        """:meth:`remove` addressed by slot -- what the ground fire hands over."""
+        unit = self.units.get(slot)
+        return False if unit is None else self.remove(unit)
+
     def remove(self, unit: RuntimeUnit) -> bool:
         """``aRemoveUnitElement`` (``0x004779C0``) -- and its hero counter.
 
@@ -286,6 +323,9 @@ class LclWorld:
         ``+0x24`` is what ``HeroKilled`` reads (``0x004409E0``), and the gate
         is the turn counter at ``0x00509E1D``: a hero taken off the map before
         the first hand-over does not count.  Returns whether it moved.
+
+        Its last instruction, ``0x00477ABD``, is ``mov byte [esi+0x16], 0``:
+        the routine kills as well as unlinks, so a removed unit is a dead one.
         """
         counted = False
         if (unit.pool_flag >= self.HERO_POOL_FLAG and self.turn != 0
@@ -297,10 +337,11 @@ class LclWorld:
             at = self.index(unit.x, unit.y)
             if self.unit_at[at] == unit.slot:
                 self.unit_at[at] = -1
+        # ``0x00477ABD`` -- the routine's own last write.
+        unit.hit_points = 0
         return counted
 
     def kill(self, unit: RuntimeUnit) -> None:
-        unit.hit_points = 0
         self.remove(unit)
 
     def free_cell(self, x: int, y: int) -> bool:
@@ -1150,39 +1191,67 @@ def _c_falling_spores(it: Interpreter, p: Params) -> str | None:
 
 
 def _c_set_ground_fire(it: Interpreter, p: Params) -> str | None:
-    """``0x00442730`` -- ``tries`` attempts at a tile of the right type and height."""
+    """``0x00442730`` -- ``tries`` attempts at a tile of the right type and height.
+
+    What it lays is a **glow**, not a flame: ``0x0042FCB0(x, y, 2)`` writes
+    ``+0x11``, ``+0x12`` and ``+0x13`` and nothing else, so a fresh
+    ``SetGroundFire`` blocks nobody.  The fuse is two hand-overs long -- the
+    round tick decays the glow to phase 1 and the next round's sweep burns it,
+    removing every unit the flames reach (``docs/42`` §9.1,
+    :func:`inclib.ctrlmap.ground_effects_tick`).  The cell must have no glow on
+    it already, control-map type 0 or 1, and a height of exactly
+    ``level * 160``.
+    """
     w = it.world
     x, y, level, bw, bh, tries = (p.n(0), p.n(1), p.n(2), p.n(3), p.n(4),
                                   p.n(5))
-    lit = 0
+    cells = w.ctrlmap()
+    lit: list[tuple[int, int]] = []
     for _ in range(max(tries, 0)):
         tx, ty = w.rng(x, bw), w.rng(y, bh)
         if not w.in_bounds(tx, ty):
             continue
         cell = w.index(tx, ty)
-        if (w.ctrl_type[cell] in (0, 1)
-                and w.cell_height[cell] == level * HEIGHT_LEVEL_UNITS):
-            lit += 1
-    it.event("set_ground_fire", x, y, level, bw, bh, tries, lit)
+        if (w.decal_state[cell] == ctrlmapmod.DECAL_NONE
+                and w.ctrl_type[cell] in (0, 1)
+                and w.cell_height[cell] == level * HEIGHT_LEVEL_UNITS
+                and ctrlmapmod.place_glow(
+                    cells, tx, ty, ctrlmapmod.GLOW_PHASE_FRESH) >= 0):
+            lit.append((tx, ty))
+    # The tiles ride on the event after the count, as `ParaBombs`' do: the
+    # picture puts a glow on each and must not re-draw them.
+    it.event("set_ground_fire", x, y, level, bw, bh, tries, len(lit),
+             *[c for tile in lit for c in tile])
     return None
 
 
 def _c_para_bombs(it: Interpreter, p: Params) -> str | None:
     """``0x00442270`` -- the fly-past, then **60** attempts to lay a mine.
 
-    A mine is cell ``+0x10 = 2``, which this model does not carry: the cell
-    effect columns are `MapState`'s, not the script layer's.  The attempts are
-    still drawn, because they advance the generator and a later capture will
-    compare the stream.
+    ``0x00470845`` takes a cell with no unit on it and ``+0x10 == 255`` and
+    calls the mine placer, which writes ``+0x10 = 2`` -- a rule the move map
+    reads, so this one *is* the script layer's business (``docs/20``,
+    ``docs/23`` §7.3).
     """
     w = it.world
     x, y, bw, bh = p.n(0), p.n(1), p.n(2), p.n(3)
+    cells = w.ctrlmap()
     tiles: list[tuple[int, int]] = []
     for _ in range(60):
         tx, ty = w.rng(x, bw), w.rng(y, bh)
-        if w.in_bounds(tx, ty) and w.unit_on(tx, ty) is None:
+        # `cmp word [eax + 7], 0xFFFF` -- the cell's unit **link**, so a slot
+        # whose unit is dead still keeps the bomber off the tile.
+        if not w.in_bounds(tx, ty) or w.unit_at[w.index(tx, ty)] >= 0:
+            continue
+        if w.effect_state[w.index(tx, ty)] != ctrlmapmod.OBSTACLE_NONE:
+            continue
+        if ctrlmapmod.place_mine(cells, tx, ty) >= 0:
             tiles.append((tx, ty))
-    it.event("para_bombs", x, y, bw, bh, len(tiles))
+    # The tiles themselves ride on the event after the count: the picture
+    # (`docs/42` §8) drops one bomb on each, and re-drawing them there would
+    # move the generator a second time.
+    it.event("para_bombs", x, y, bw, bh, len(tiles),
+             *[c for tile in tiles for c in tile])
     return None
 
 

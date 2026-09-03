@@ -64,8 +64,9 @@ var turn_start_y: int = 0
 var stimulant: int = 0
 ## `+0x59`, the reaction-fire ticket -- docs/25 section 6's FIFO order.
 var ticket: int = 0
-## `+0x1B`, experience. The fitness cap is `max(3, ep / 12)`, so the refresh
-## reads it even though nothing in this slice awards any.
+## `+0x17`, experience. The fitness cap is `max(3, ep / 12)`, and a kill
+## awards the victim type's `exp` byte (docs/22 section 7.5,
+## [method Combat.award_kill]).
 var ep: int = 0
 
 # --- what combat reads (docs/22 sections 7 and 9) ---------------------------
@@ -94,9 +95,14 @@ var group: int = 0
 # mission script **writes** them -- `InsertUnit` sets the first two and
 # `LinkChrWithGroup` the third -- and a remake that dropped them could not be
 # compared with the executable model on any script that calls those commands.
-## `+0x1C`, the skill-point pool. `InsertUnit` sets it to `rank * 12`, the same
-## value it puts in `ep`.
+## `+0x18`, the skill-point pool. `InsertUnit` sets it to `rank * 12`, the same
+## value it puts in `ep`; a kill adds to it behind the experience gate.
 var tp: int = 0
+## `+0x53`, the kill counter `0x0047AF90` saturates at 255. **Zero on every
+## shipped record** (docs/10 section 5: all-zero on at least 1855 of them), so
+## the authored map does not carry it and [method from_document] starts it
+## at zero rather than reading a column that does not exist.
+var kills: int = 0
 ## `+0x4D`: 0 none, 1 unit-pool candidate, 2 hero.
 var pool_flag: int = 0
 ## `+0x55`, the voice sample set.
@@ -141,6 +147,7 @@ static func from_document(record: Dictionary) -> UnitState:
 	unit.order2_param = DictRead.as_int(record["order2_param"])
 	unit.group = DictRead.as_int(record["group"])
 	unit.tp = DictRead.as_int(record["tp"])
+	unit.kills = 0
 	unit.pool_flag = DictRead.as_int(record["pool_flag"])
 	unit.speech = DictRead.as_int(record["speech"])
 	var skill_map: Dictionary = DictRead.as_dict(record["skills"])
@@ -193,6 +200,7 @@ static func from_view(record: Dictionary) -> UnitState:
 	unit.order2_param = DictRead.as_int(record["order2_param"])
 	unit.group = DictRead.as_int(record["group"])
 	unit.tp = DictRead.as_int(record["tp"])
+	unit.kills = DictRead.as_int(record["kills"])
 	unit.pool_flag = DictRead.as_int(record["pool_flag"])
 	unit.speech = DictRead.as_int(record["speech"])
 	unit.skills = DictRead.to_int32(record["skills"])
@@ -241,7 +249,7 @@ const RECORD_FIELDS: Array[String] = ["type_id", "player", "x", "y", "hp",
 	"mp", "fp", "facing", "acted", "action_state", "heat", "ammo",
 	"malfunction", "absorber", "visibility", "armour_front", "armour_rear",
 	"order", "order_param", "order2", "order2_param", "group", "weapon",
-	"ticket", "walked", "turn_start_x", "turn_start_y"]
+	"ticket", "walked", "turn_start_x", "turn_start_y", "ep", "tp", "kills"]
 
 
 func has_equipment(equip_id: int) -> bool:
@@ -294,6 +302,7 @@ func view() -> Dictionary:
 		"order2_param": order2_param,
 		"group": group,
 		"tp": tp,
+		"kills": kills,
 		"pool_flag": pool_flag,
 		"speech": speech,
 		"skills": skills.duplicate(),
@@ -310,6 +319,8 @@ func hash_into(ctx: HashingContext) -> void:
 		# Combat's own columns, in the order this file declares them.
 		armour_front, armour_rear, absorber, order, order_param, order2,
 		order2_param, group, tp, pool_flag, speech,
+		# The kill award's counter (docs/22 section 7.5).
+		kills,
 		equipment.size()])
 	ctx.update(scalars.to_byte_array())
 	# Fixed length, so no count is needed in front of it.
@@ -449,6 +460,14 @@ static func generate(state: MapState, units: Dictionary,
 ## `0x00509E1D` is still zero, which is the same test docs/25 section 3.1 uses
 ## to recognise the first hand-over.
 ##
+## **Its last instruction kills.** `0x00477ABD` is `mov byte [esi+0x16], 0`,
+## with `esi` the unit record it has held since `0x00477A38` -- the same
+## record `aExecuteWarp` reads `+0x16` from to decide whether the mover is
+## still alive. So "off the map" and "dead" are one state, not two: every
+## caller of this routine leaves the record at zero hit points whether or not
+## it wrote them itself, and [method live_unit_count]'s `+0x16` sweep
+## (`0x00477BF0`) stops counting the unit for that reason alone.
+##
 ## Returns whether the counter moved, so a caller can report it.
 static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
 	var counted: bool = false
@@ -464,4 +483,6 @@ static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
 		var at: int = state.index_of(unit.x, unit.y)
 		if state.unit_at(at) == unit.slot:
 			state.set_unit(at, MapState.NO_UNIT)
+	# `0x00477ABD` -- the routine's own last write.
+	unit.hp = 0
 	return counted

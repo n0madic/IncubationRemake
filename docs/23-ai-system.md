@@ -757,8 +757,10 @@ the field**, and its three values are named by the models their makers insert:
 Each of the three clears the byte to 255, inserts a symbol object through
 `0x004069C0` with the matching kind tag, stores its slot in `+0x0F` and then
 writes the value above. A fourth maker, `0x0042FCB0` (`aCtrlMap.cpp:1845`,
-`GLOW1/2.3DI`), is the ground fire's *glow* phase and writes `+0x0E`, `+0x12`
-and `+0x13` instead — which is why `SetGroundFire`
+`GLOW1/2.3DI`), is the ground fire's *glow* phase and writes `+0x11`, `+0x12`
+and `+0x13` instead — its **own** object slot, so a cell can carry a glow and
+an obstacle at once *(corrected 2026-09-03: this line said `+0x0E`;
+`0x0042FE15` writes `+0x11`, [`97` §37](97-slice-5-report.md))* — which is why `SetGroundFire`
 ([`20`](20-lcl-language.md)) reaches it and not `0x0042F840`.
 
 The byte is persistent state rather than scratch: `aBuild3DSpecialObjects`
@@ -961,6 +963,16 @@ test excludes, 80…89, is the one the game's own legend heads
 fields, which is what the heading implies.
 [`21` §3](21-info-lcl-schema.md)'s equipment table did not list id 7 among the
 ids with a decoded effect; it does now.
+
+**The player's jump** *(added 2026-09-03)*: the pad arm at `0x00472F10` calls
+`aExecuteWarp(sx, sy, tx, ty, 1)` for a click on a cell the fill marked 60,
+and for a mover still alive afterwards writes `+0x15 = 0`, `+0x39 = 5` and
+drains the reaction queue at the landing cell (`0x00473046`…`0x0047304E`); a
+mover the mine arm killed is deselected. The routine itself fires the
+`MoveUnit` script call (`0x0046F196`, var 0x41 written 2) and rebuilds the fog
+for the mover's own player, as it does for the computer. `combat.warp_unit`,
+`ExecuteWarp` and `World.submit_warp` are the twins
+([`97` §31.3](97-slice-5-report.md)).
 
 ### 7.6 `anyFriendlyBlocked` carries no information about friendlies
 

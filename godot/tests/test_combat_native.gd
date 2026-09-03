@@ -375,8 +375,9 @@ func _use_cases(h: TestHarness, combat: Dictionary, types: Dictionary,
 ## list `tools/turn_gold.py` diffs (`PROBE_RECORD_FIELDS`).
 const PROBE_FIELDS: Array[String] = ["visibility", "order", "order_param",
 	"player", "mp", "action_state", "absorber", "hp", "x", "y", "heat",
-	"malfunction"]
-const PROBE_PHASES: Array[String] = ["reveal", "conversion", "platform"]
+	"malfunction", "ep", "tp", "kills"]
+const PROBE_PHASES: Array[String] = ["reveal", "conversion", "platform",
+	"experience"]
 
 
 ## Phases 11..13 of the capture: the reveals no earlier probe reached
@@ -444,6 +445,11 @@ func _probe_cases(h: TestHarness, doc: Dictionary, combat: Dictionary,
 					var slot: int = DictRead.as_int(walk_doc["slot"])
 					var mover: UnitState = units[slot]
 					var ctrlmap: CtrlMapTable = _ctrlmap_of(moves)
+					# The mine arm's four; no probe carries a mine, so the
+					# bomb never fires and they need only be well-formed.
+					var move_weapons: WeaponTable = WeaponTable.from_rows(
+						DictRead.as_array(types["weapons"]))
+					var move_rng: IncRandom = IncRandom.new()
 					var fill: MoveMapResult = MoveMap.build(state, units, utypes,
 						ctrlmap, slot, false, mover.mp,
 						Allowance.for_unit(mover, utypes, units, ai_level))
@@ -456,8 +462,9 @@ func _probe_cases(h: TestHarness, doc: Dictionary, combat: Dictionary,
 							== DictRead.as_int(walk_doc["steps"]),
 						DictRead.as_string(walked["reason"]))
 					var moved: MoveResult = ExecuteMove.execute(state, units,
-						utypes, ctrlmap, mover, walked, tx, ty,
-						fill.mp_left_at(tx, ty), players, mode, -1,
+						utypes, ctrlmap, move_weapons, mover, walked, tx, ty,
+						fill.mp_left_at(tx, ty), players, mode, ai_level,
+						_turn(mode), move_rng, -1,
 						DictRead.as_int(probe["option"]) != 0)
 					returned = 1 if moved.ok else 0
 					h.equal("%s.cost" % tag, moved.cost,

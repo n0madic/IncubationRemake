@@ -784,6 +784,14 @@ def move_plan(probes: list[dict[str, Any]], width: int) -> str:
 UNIT_WEAPON = 0x3F
 UNIT_MALFUNCTION = 0x40
 UNIT_ABSORBER = 0x3A
+#: ``+0x17``, ``+0x18`` and ``+0x53`` -- the three bytes the kill award of
+#: ``docs/22`` §7.5 writes (``inclib.combat.award_kill``).
+UNIT_EP = 0x17
+UNIT_TP = 0x18
+UNIT_KILLS = 0x53
+#: Hit points written into the experience probes' victim: one, so the shot
+#: that connects is a kill and the award block at ``0x0046BF53`` is entered.
+EXPERIENCE_TARGET_HP = 1
 #: ``+0x33`` -- equipment slot 18, the Damage Absorber, which ``0x00475590``
 #: reads before it reads the charges.  Named by its origin, not its offset.
 UNIT_ABSORBER_FLAG = gold.UNIT_EQUIPMENT + combatmod.EQUIP_DAMAGE_ABSORBER
@@ -876,6 +884,65 @@ def conversion_seed(payload: dict[str, Any], scene: dict[str, Any],
         if any(o.get("converted") for o in result.outcomes):
             return float(seed)
     return None
+
+
+def experience_seed(payload: dict[str, Any], scene: dict[str, Any],
+                    tables: BalanceTables) -> float | None:
+    """A seed under which the model's shot kills the one-point alien.
+
+    ``PROBE_SEED``'s first roll connects, but the armour subtraction can
+    still leave a one-point target alive, so the seed is searched with the
+    model rather than assumed.
+    """
+    for seed in range(1, SEED_SEARCH_LIMIT + 1):
+        world = _world_from_capture(payload, payload["units_before"], tables)
+        world.rng = ARandom(float(seed))
+        human, alien = world.units[scene["human"]], world.units[scene["alien"]]
+        alien.hp = EXPERIENCE_TARGET_HP
+        combatmod.attack_unit(world, human.x, human.y, alien.x, alien.y)
+        if not alien.alive:
+            return float(seed)
+    return None
+
+
+def experience_probes(payload: dict[str, Any], scene: dict[str, Any],
+                      tables: BalanceTables) -> list[dict[str, Any]]:
+    """Phase 14 -- the kill award of ``docs/22`` §7.5, natively.
+
+    No captured shot has killed anything but a case (species 2, which the
+    award skips), so the three bytes it writes -- ``+0x17``, ``+0x18`` and
+    ``+0x53`` -- were never seen to move.  Four probes, each a kill of the
+    one-point alien: as loaded; with the shooter's experience written one
+    short of what the gain would carry past 144, so ``0x0047B100`` caps and
+    ``0x0047B090`` returns without touching the pool; with the pool written
+    to 143, so it caps; and with the kill counter at 254, so it saturates.
+    The campaign arm of ``0x0047AFD0`` is what these measure; the session
+    ladder is pinned by instructions in ``combat_tables.py``.
+    """
+    human, alien = scene["human"], scene["alien"]
+    hx, hy = scene["human_at"]
+    ax, ay = scene["alien_at"]
+    seed = experience_seed(payload, scene, tables)
+    if seed is None:
+        LOG.warning("no seed below %d kills the one-point alien; the "
+                    "experience phase has no probes", SEED_SEARCH_LIMIT)
+        return []
+    world = _world_from_capture(payload, payload["units_before"], tables)
+    exp = tables.units[world.units[alien].type_id].exp
+    kill = [_unit_write(alien, gold.UNIT_HP, EXPERIENCE_TARGET_HP),
+            _seed_write(seed)]
+    call = [hx, hy, ax, ay]
+    return [
+        {"tag": "kill", "kind": "attack", "relocate": None,
+         "writes": list(kill), "call": call},
+        {"tag": "kill_ep_cap", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(human, UNIT_EP, 144 - exp + 1)] + kill,
+         "call": call},
+        {"tag": "kill_tp_cap", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(human, UNIT_TP, 143)] + kill, "call": call},
+        {"tag": "kill_counter_cap", "kind": "attack", "relocate": None,
+         "writes": [_unit_write(human, UNIT_KILLS, 254)] + kill, "call": call},
+    ]
 
 
 def _live_units(world: combatmod.CombatWorld) -> list[combatmod.CombatUnit]:
@@ -1215,6 +1282,9 @@ PROBE_PHASES: tuple[tuple[str, str, str], ...] = (
                    "equipment gate.", "turn_conversion"),
     ("platform", "Phase 13: aPlayPlatformSequence with a rider.",
      "turn_platform"),
+    ("experience", "Phase 14: the kill award -- aAttackUnit killing the "
+                   "one-point alien, with +0x17, +0x18 and +0x53 written to "
+                   "reach the caps.", "turn_experience"),
 )
 
 
@@ -1803,6 +1873,7 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
                 "reveal": lambda: reveal_probes(payload, scene, tables),
                 "conversion": lambda: conversion_probes(payload, scene, tables),
                 "platform": lambda: platform_probes(payload, scene, tables),
+                "experience": lambda: experience_probes(payload, scene, tables),
             }
             for key, header, name in PROBE_PHASES:
                 if payload.get(key):
@@ -2025,6 +2096,7 @@ COMBAT_UNIT_FIELDS = {
     "visibility": gold.UNIT_VISIBILITY, "order": 0x47, "order_param": 0x48,
     "order2": 0x49, "order2_param": 0x4A, "group": 0x4E,
     "turn_start_x": 0x51, "turn_start_y": 0x52,
+    "ep": UNIT_EP, "tp": UNIT_TP, "kills": UNIT_KILLS,
 }
 
 
@@ -2245,6 +2317,7 @@ def _case_rows(payload: dict[str, Any], root: Path) -> dict[str, Any]:
             "id": type_id, "mp_max": row.mp_max, "fp_max": row.fp_max,
             "hp_max": row.hp_max, "special": row.special, "size": row.size,
             "species": row.species, "height": row.height,
+            "exp": row.exp,
             "model": row.model, "description": row.description,
         })
     # The weapons a *shot* is asked about are not only the ones the live units
@@ -2321,6 +2394,8 @@ def _world_from_capture(payload: dict[str, Any], unit_hex: str,
             armour_front=units_raw[b + 0x36],
             armour_rear=units_raw[b + 0x37],
             action_state=units_raw[b + 0x41], visibility=units_raw[b + 0x4F],
+            ep=units_raw[b + UNIT_EP], tp=units_raw[b + UNIT_TP],
+            kills=units_raw[b + UNIT_KILLS],
             order=units_raw[b + 0x47], order_param=units_raw[b + 0x48],
             order2=units_raw[b + 0x49], order2_param=units_raw[b + 0x4A],
             group=units_raw[b + 0x4E], turn_start_x=units_raw[b + 0x51],
@@ -2445,6 +2520,9 @@ PROBE_RECORD_FIELDS: tuple[tuple[int, str], ...] = (
     # The heat and the malfunction byte are what pin weapon 47 firing at its
     # cap and the jammed control: without them those two were a printout.
     (0x3E, "heat"), (UNIT_MALFUNCTION, "malfunction"),
+    # The kill award's three bytes (docs/22 section 7.5): compared on every
+    # probe, so the phases on which nothing died pin that nothing moved.
+    (UNIT_EP, "ep"), (UNIT_TP, "tp"), (UNIT_KILLS, "kills"),
 )
 
 
@@ -2664,10 +2742,19 @@ def _probe_checks(c: Checker, payload: dict[str, Any], key: str,
                                         tables,
                                         cells_hex=block["cells_before"][i])
             _ride_copy_first(other, px, py, direction, dist)
-            c.check(f"{label}.pass_before_copy_is_the_order_measured", True,
-                    "copy-then-pass also agrees" if not _record_diff(other, after, live)
-                    else "copy-then-pass disagrees: "
-                         f"{_record_diff(other, after, live)[:3]}")
+            # What this probe can and cannot settle. The engine's order --
+            # the rider's pass **before** the cell copy -- is what
+            # `cells_match_native` above is replayed with and is therefore the
+            # thing the phase pins. Replaying the other way round on this
+            # scene produces the same records, so the probe does **not**
+            # discriminate between the two orders; asserting the agreement is
+            # what it actually proves, and a literal `True` here once asserted
+            # nothing at all.
+            other_diff = _record_diff(other, after, live)
+            c.check(f"{label}.copy_then_pass_also_agrees", not other_diff,
+                    "this scene does not discriminate the two orders"
+                    if not other_diff
+                    else f"copy-then-pass disagrees: {other_diff[:3]}")
         if probe["kind"] == "attack" and tag == "weapon47":
             alien = scene["alien"] * gold.UNIT_STRIDE
             c.expect(f"{label}.engine_converted_the_target",
@@ -2677,6 +2764,31 @@ def _probe_checks(c: Checker, payload: dict[str, Any], key: str,
                      "+0x45 is the shooter's and +0x41 is cleared")
             c.expect(f"{label}.model_converted_the_same_record",
                      notes["converted"], [scene["alien"]])
+        if key == "experience":
+            human_rec = scene["human"] * gold.UNIT_STRIDE
+            alien_rec = scene["alien"] * gold.UNIT_STRIDE
+            c.expect(f"{label}.engine_killed_the_alien",
+                     after[alien_rec + gold.UNIT_HP], 0)
+            c.check(f"{label}.engine_moved_the_award_bytes",
+                    (after[human_rec + UNIT_EP], after[human_rec + UNIT_TP],
+                     after[human_rec + UNIT_KILLS])
+                    != (before[human_rec + UNIT_EP], before[human_rec + UNIT_TP],
+                        before[human_rec + UNIT_KILLS]),
+                    f"ep {before[human_rec + UNIT_EP]} -> "
+                    f"{after[human_rec + UNIT_EP]}, tp "
+                    f"{before[human_rec + UNIT_TP]} -> {after[human_rec + UNIT_TP]}, "
+                    f"kills {before[human_rec + UNIT_KILLS]} -> "
+                    f"{after[human_rec + UNIT_KILLS]}")
+            if tag == "kill_ep_cap":
+                c.expect(f"{label}.engine_capped_ep_and_left_tp",
+                         (after[human_rec + UNIT_EP],
+                          after[human_rec + UNIT_TP] == before[human_rec + UNIT_TP]),
+                         (144, True))
+            if tag == "kill_tp_cap":
+                c.expect(f"{label}.engine_capped_tp", after[human_rec + UNIT_TP], 144)
+            if tag == "kill_counter_cap":
+                c.expect(f"{label}.engine_saturated_the_counter",
+                         after[human_rec + UNIT_KILLS], 255)
         if tag == "absorber_unflagged":
             alien = scene["alien"] * gold.UNIT_STRIDE
             c.check(f"{label}.engine_ignored_the_charges",
@@ -2691,6 +2803,15 @@ def _probe_checks(c: Checker, payload: dict[str, Any], key: str,
                      (after[alien + gold.UNIT_HP], after[alien + UNIT_ABSORBER]),
                      (before[alien + gold.UNIT_HP], ABSORBER_PROBE_CHARGES - 1),
                      "the damage is nullified and +0x3A drops by one")
+    if key == "conversion":
+        # The phase's headline claim is weapon 47's conversion arm, and
+        # :func:`conversion_probes` writes the phase anyway when
+        # :func:`conversion_seed` finds no seed -- so without this the two
+        # absorber probes alone would pass as a captured `conversion`.
+        c.check("conversion.weapon47_probe_present",
+                "weapon47" in {p["tag"] for p in probes},
+                "no seed cleared the always-at-the-cap overheat roll; "
+                "re-take the phase")
     if key == "reveal":
         c.check("reveal.mode3_probes_present",
                 {"mode3_on", "mode3_off"} <= {p["tag"] for p in probes},

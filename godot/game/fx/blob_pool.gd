@@ -29,6 +29,14 @@ var _hooks: BlobHooks = null
 ## Effects the pool had no room for. Counted so a frame budget can be argued
 ## about with a number rather than with an impression.
 var _drops: int = 0
+## `0x004FE63C` -- the *projectile arrived* flag of docs/42 section 4.6. A
+## projectile creator writes it before it returns -- 0 while a round is in
+## flight, 1 when there is nothing to wait for -- and the update arms of
+## fourteen kinds set it when their record lands, while arm 45 clears it on
+## every tick (`mov [flag], ebp` with the sweep's zero). The fight waits on
+## it for up to 100 frames. [method tick_all] applies the arms' writes in slot
+## order, which is the order the sweep makes them.
+var arrived: bool = true
 
 
 static func create(seed_value: float = 1.0, slots: int = SLOTS) -> BlobPool:
@@ -52,6 +60,11 @@ func capacity() -> int:
 
 func drops() -> int:
 	return _drops
+
+
+## What a projectile creator writes over the flag before it returns.
+func set_arrived(value: bool) -> void:
+	arrived = value
 
 
 func live() -> int:
@@ -124,7 +137,15 @@ func tick_all() -> Array[BlobKinds.TickResult]:
 		var blob: Blob = _blobs[slot]
 		if blob == null or not blob.alive:
 			continue
-		results.append(BlobKinds.tick(blob, _hooks))
+		var result: BlobKinds.TickResult = BlobKinds.tick(blob, _hooks)
+		# The two writes, in the order the arms make them: a clear first
+		# would be undone by a set later in the same sweep and a set first
+		# by a later clear, exactly as the engine's global is.
+		if result.global_signal:
+			arrived = true
+		if result.global_signal_clear:
+			arrived = false
+		results.append(result)
 		if not blob.alive:
 			_blobs[slot] = null
 	return results
@@ -134,6 +155,7 @@ func clear() -> void:
 	for slot: int in range(_blobs.size()):
 		_blobs[slot] = null
 	_drops = 0
+	arrived = true
 
 
 ## SHA-256 over every live record, in slot order.

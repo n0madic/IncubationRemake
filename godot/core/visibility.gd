@@ -201,12 +201,11 @@ static func build(state: MapState, units: Dictionary, utab: UnitTypeTable,
 ## restore cover only the first. So what is drawn follows the probe and what
 ## the AI and the rules read does not.
 ##
-## **No group is woken.** The engine's probe can wake one -- the orders it
-## promotes are not in the buffer it restores -- and that is a bug rather than
-## a rule, so [method for_unit]'s documented "run the pass without waking
-## anybody" arm is used instead.
+## **No group is woken here.** This is a query and stays one; the wake the
+## engine's probe leaves behind is [method World.probe_fog]'s, run once per
+## player command where `aViewPlayer.cpp` runs it (docs/97 section 34).
 ##
-## Returns slot -> `+0x4F`, and leaves `units` exactly as it found it.
+## Returns slot -> `+0x4F`, and leaves every `+0x4F` exactly as it found it.
 static func states_for(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, player: int, human_players: int,
 		game_mode: int) -> Dictionary[int, int]:
@@ -221,6 +220,33 @@ static func states_for(state: MapState, units: Dictionary,
 		seen[unit.slot] = unit.visibility
 		unit.visibility = saved[unit.slot]
 	return seen
+
+
+## `0x00481F00` -- the engine's per-command probe, wake and all.
+##
+## It saves every `+0x4F`, runs the pass **with** the wake, and restores the
+## bytes: the restore covers `+0x4F` and nothing else, so the orders
+## `alert_group` promotes survive it. Waking is therefore the pass's own
+## arm -- an observer that *sees* a unit on an alerting order -- and not a
+## second rule derived from what the pass left behind, which would wake on
+## a scan blip and on the beacons the pass marks without a line of sight.
+##
+## Answers how many units were promoted. [method states_for] is the query
+## half and does not wake; [method World.probe_fog] is the caller.
+static func probe(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		player: int, human_players: int, game_mode: int) -> int:
+	var saved: Dictionary[int, int] = {}
+	for slot: Variant in units:
+		var unit: UnitState = units[slot]
+		saved[unit.slot] = unit.visibility
+	var promoted: Array[int] = [0]
+	var wake: Callable = func(group: int) -> void:
+		promoted[0] += alert_group(units, group)
+	_pass(state, units, utab, player, human_players, game_mode, wake)
+	for slot: Variant in units:
+		var unit: UnitState = units[slot]
+		unit.visibility = saved[unit.slot]
+	return promoted[0]
 
 
 static func _pass(state: MapState, units: Dictionary, utab: UnitTypeTable,

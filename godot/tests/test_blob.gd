@@ -182,7 +182,8 @@ func _check_ticks(h: TestHarness, document: Dictionary) -> void:
 							DictRead.as_int(expect[field])])
 			var flags: Dictionary = result.to_dict()
 			for flag: String in ["ran", "delayed", "dispatched", "deleted",
-					"delete_requested", "global_signal", "target_missing",
+					"delete_requested", "global_signal", "global_signal_clear",
+					"target_missing",
 					"model_missing"]:
 				compared += 1
 				if DictRead.as_int(flags[flag]) \

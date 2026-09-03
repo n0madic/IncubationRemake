@@ -35,7 +35,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from inclib import combat, interact                                 # noqa: E402
+from inclib.lev import FACING_STEPS  # noqa: E402
+from inclib import combat, ctrlmap, interact                        # noqa: E402
 from inclib.check import Checker                                    # noqa: E402
 from inclib.info import BalanceTables, load_info_file               # noqa: E402
 from inclib.lev import load_lev                                     # noqa: E402
@@ -337,13 +338,32 @@ def check_pickups(c: Checker, tables: BalanceTables) -> None:
             not interact.may_use(world, unit),
             "0x0047B410 reads +0x19 as well as the equipment slot")
     unit.fp = 1
+    # The cell's field type is 0 here, so the placer's four-type gate would
+    # let it burn anyway; `entry.the_71_is_what_lets_it_burn` below takes that
+    # away and shows the action point carrying the call on its own.
     interact.execute_use(world, unit)
+    at = world.index(2, 1)
     c.expect("entry.it_burns_and_becomes_71",
-             [world.action_point[world.index(2, 1)],
-              world.effect_state[world.index(2, 1)],
-              world.cell_height[world.index(2, 1)]],
-             [interact.ENTRY_POINT_DESTROYED, interact.ENTRY_POINT_EFFECT,
-              0x200 - interact.ENTRY_POINT_Z_DROP])
+             [world.action_point[at], world.effect_state[at],
+              world.effect_timer[at], world.effect_object[at],
+              world.cell_height[at]],
+             [interact.ENTRY_POINT_DESTROYED, ctrlmap.OBSTACLE_FIRE,
+              interact.ENTRY_POINT_FIRE_SUBTYPE, 0, 0x200],
+             "0x0042F840(x, y, 6, height - 0xA0) writes +0x0E/+0x0F/+0x10; "
+             "nothing writes the height")
+
+    # The same use on a cell the placer's field-type gate refuses: the 71 the
+    # arm writes first is the whole reason it still burns (0x0042F894).
+    world = _blank(4, 4, tables)
+    unit = _place(world, 0, 0, 1, 1, weapon=0, fp=1,
+                  equipment_ids=frozenset({interact.EQUIP_EXPLOSION_PACK}))
+    at = world.index(2, 1)
+    world.action_point[at] = interact.ENTRY_POINT
+    world.field_type[at] = 2                       # a wall: not 0, 1, 6 or 8
+    interact.execute_use(world, unit)
+    c.expect("entry.the_71_is_what_lets_it_burn",
+             [world.action_point[at], world.effect_state[at]],
+             [interact.ENTRY_POINT_DESTROYED, ctrlmap.OBSTACLE_FIRE])
 
 
 def check_doors(c: Checker, tables: BalanceTables) -> None:
@@ -467,7 +487,14 @@ def check_push_and_mines(c: Checker, tables: BalanceTables) -> None:
     unit = _place(world, 0, 0, 1, 5, weapon=0, facing=3)
     _place(world, 1, pushable_type, 2, 5, player=252)
     victim = _place(world, 2, 0, 3, 6, player=0, hp=200, weapon=0)
-    world.effect_state[world.index(3, 5)] = interact.EFFECT_MINE
+    # Laid by the placer, not by writing the byte: `docs/26` §6.2's guard is
+    # `aDeleteSpecialObject(cell[+0x0F])`, and a mine with no object is a
+    # state the engine cannot produce.
+    ctrlmap.place_mine(world.ctrlmap(), 3, 5)
+    c.expect("push.the_placer_names_an_object",
+             [world.effect_state[world.index(3, 5)],
+              world.effect_object[world.index(3, 5)]],
+             [ctrlmap.OBSTACLE_MINE, 0])
     result = interact.execute_use(world, unit)
     c.expect("push.a_mine_detonates_under_it",
              [result.kind, world.effect_state[world.index(3, 5)]],
@@ -487,6 +514,82 @@ def check_push_and_mines(c: Checker, tables: BalanceTables) -> None:
              [result.kind, world.effect_state[world.index(2, 5)],
               bystander.hp, result.fires_script_event],
              ["defuse_mine", interact.EFFECT_NONE, 200, False])
+
+
+def check_heal(c: Checker, tables: BalanceTables) -> None:
+    """docs/29 §1.1 button 2 -- the heal command (docs/97 §31)."""
+    kind = next(t for t, row in sorted(tables.units.items()) if row.hp_max >= 4)
+    base = tables.units[kind].hp_max
+
+    def scene(**healer: Any) -> tuple[combat.CombatWorld, combat.CombatUnit,
+                                      combat.CombatUnit]:
+        world = _blank(5, 5, tables)
+        fields: dict[str, Any] = dict(hp=base - 2, mp=2, facing=0,
+                                      equipment_ids=frozenset({interact.EQUIP_SMALL_MEDIC_KIT}))
+        fields.update(healer)
+        h = _place(world, 1, kind, 2, 2, **fields)
+        # Facing 0 looks at +y (`FACING_STEPS`); the patient stands there.
+        step = FACING_STEPS[0]
+        p = _place(world, 2, kind, 2 + step[0], 2 + step[1], hp=base - 3, mp=2)
+        return world, h, p
+
+    world, healer, patient = scene()
+    c.expect("heal.power.small_kit", interact.heal_power(healer), 1)
+    c.expect("heal.power.large_kit", interact.heal_power(combat.CombatUnit(
+        slot=9, type_id=kind, player=0, x=0, y=0, hp=1,
+        equipment_ids=frozenset({interact.EQUIP_LARGE_MEDIC_KIT}))), 3)
+    c.expect("heal.power.none", interact.heal_power(combat.CombatUnit(
+        slot=9, type_id=kind, player=0, x=0, y=0, hp=1)), 0)
+    c.expect("heal.max_hp.type_plus_ep_over_12",
+             interact.max_hit_points(world, combat.CombatUnit(
+                 slot=9, type_id=kind, player=0, x=0, y=0, hp=1, ep=25)),
+             min(15, base + 2))
+    c.expect("heal.max_hp.computer_is_type",
+             interact.max_hit_points(world, combat.CombatUnit(
+                 slot=9, type_id=kind, player=0xFF, x=0, y=0, hp=1, ep=143)), base)
+    c.expect("heal.max_hp.cap_15",
+             interact.max_hit_points(world, combat.CombatUnit(
+                 slot=9, type_id=kind, player=0, x=0, y=0, hp=1, ep=143)), min(15, base + 11))
+    result = interact.heal_command(world, healer)
+    c.check("heal.front.heals_the_patient", result.ok and result.target == 2
+            and patient.hp == base - 2 and result.delta == 1, result.to_dict())
+    c.expect("heal.front.charges_one_point", healer.mp, 1)
+    c.expect("heal.front.acted_3", healer.acted, interact.ACTED_HEALED)
+    world, healer, patient = scene()
+    patient.hp = base
+    result = interact.heal_command(world, healer)
+    c.check("heal.full_patient.falls_back_to_self",
+            result.ok and result.self_heal and healer.hp == base - 1, result.to_dict())
+    world, healer, patient = scene()
+    patient.player = 1
+    result = interact.heal_command(world, healer)
+    c.check("heal.other_player.falls_back_to_self",
+            result.ok and result.self_heal and patient.hp == base - 3, result.to_dict())
+    world, healer, patient = scene(hp=base)
+    patient.hp = base
+    result = interact.heal_command(world, healer)
+    c.check("heal.nothing_to_heal.answers_0_and_still_acts",
+            not result.ok and healer.mp == 2 and healer.acted == interact.ACTED_HEALED,
+            result.to_dict())
+    world, healer, patient = scene(mp=0)
+    result = interact.heal_command(world, healer)
+    c.check("heal.no_mp.refused", not result.ok and patient.hp == base - 3, result.reason)
+    # The pad's own gate, `0x0047B4C0`: a kit and somebody to heal.
+    world, healer, patient = scene()
+    c.check("heal.gate.offered_with_a_kit_and_a_patient", interact.may_heal(world, healer), "")
+    world, healer, patient = scene(equipment_ids=frozenset())
+    c.check("heal.gate.no_kit_not_offered", not interact.may_heal(world, healer), "")
+    world, healer, patient = scene(hp=base)
+    patient.hp = base
+    c.check("heal.gate.nobody_to_heal_not_offered", not interact.may_heal(world, healer), "")
+    patient.player = 1
+    healer.hp = base - 1
+    c.check("heal.gate.self_under_the_ceiling_is_offered", interact.may_heal(world, healer), "")
+    world, healer, patient = scene(equipment_ids=frozenset({interact.EQUIP_LARGE_MEDIC_KIT}))
+    patient.hp = base - 1
+    result = interact.heal_command(world, healer)
+    c.check("heal.large_kit.clamps_at_the_ceiling",
+            result.ok and patient.hp == base and result.delta == 1, result.to_dict())
 
 
 def check_facing(c: Checker, root: Path, tables: BalanceTables) -> None:
@@ -535,6 +638,7 @@ def run_check(root: Path) -> int:
     check_doors(c, tables)
     check_levers(c, tables)
     check_push_and_mines(c, tables)
+    check_heal(c, tables)
     check_facing(c, root, tables)
     return c.report()
 

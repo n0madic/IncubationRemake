@@ -155,9 +155,16 @@ func _check_voices(h: TestHarness, tables: AudioTables,
 	var bad: PackedStringArray = PackedStringArray()
 	for index: int in range(trace.size()):
 		var kase: Dictionary = DictRead.as_dict(trace[index])
-		var got: Dictionary = events.second_human() \
-			if DictRead.as_string(kase["call"]) == "second_human" \
-			else events.pain(DictRead.as_int(kase["species"]))
+		var call: String = DictRead.as_string(kase["call"])
+		var type_id: int = DictRead.as_int(kase["type_id"]) \
+			if kase.has("type_id") else -1
+		var got: Dictionary = {}
+		if call == "second_human":
+			got = events.second_human()
+		elif call == "death":
+			got = events.death_voice(DictRead.as_int(kase["species"]), type_id)
+		else:
+			got = events.pain(DictRead.as_int(kase["species"]), type_id)
 		var wave: String = "" if got.is_empty() \
 			else DictRead.as_string(got["wave"])
 		var volume: int = 0 if got.is_empty() \
@@ -182,8 +189,46 @@ func _check_voices(h: TestHarness, tables: AudioTables,
 				DictRead.as_dict(tables.voices())["alien_volume_ids"])[0]),
 		"the alien scream carries its own id, not the human one"
 			+ ("" if human_ids.is_empty() else " "))
+	# docs/42 section 4.5 -- three unit types are silent whatever their
+	# species, and the cursor still moves past them.
+	var loud: AudioEvents = AudioEvents.open(fresh.tables(), {})
+	var mute: AudioEvents = AudioEvents.open(fresh.tables(), {})
+	h.check("mute_type.22_and_26_say_nothing",
+		mute.pain(AudioEvents.SPECIES_HUMAN, 0x16).is_empty()
+		and mute.death_voice(AudioEvents.SPECIES_HUMAN, 0x1A).is_empty(),
+		"0x0040CBE2 clears the play flag for 22, 25 and 26")
+	# Two calls were spent on each; the loud one spends the same two and both
+	# must land on the same wave next, which is what "the cursor still moved"
+	# means with a modulus of three.
+	var _a: Dictionary = loud.pain(AudioEvents.SPECIES_HUMAN)
+	var _b: Dictionary = loud.death_voice(AudioEvents.SPECIES_HUMAN)
+	h.equal("mute_type.the_cursor_still_moved",
+		DictRead.as_string(mute.pain(AudioEvents.SPECIES_HUMAN)["wave"]),
+		DictRead.as_string(loud.pain(AudioEvents.SPECIES_HUMAN)["wave"]),
+		"the gate is at 0x0040CBF2, past the round robin")
 	h.check("silent_species", fresh.pain(2).is_empty(),
 		"every species but human and alien is silent")
+	# docs/42 section 4.5 -- the death scream: an alien off its own cursor at
+	# the ids docs/28 once called unnamed, a machine's explosion, an object's
+	# silence.
+	var dying: AudioEvents = AudioEvents.open(tables, {})
+	var alien_death: Dictionary = dying.death_voice(AudioEvents.SPECIES_ALIEN)
+	h.check("death_alien_ids",
+		not alien_death.is_empty() and DictRead.as_int(alien_death["volume_id"])
+			== DictRead.as_int(DictRead.as_array(DictRead.as_dict(
+				tables.voices())["death_alien_volume_ids"])[0]),
+		"the alien death scream carries 53..55, %s" % str(alien_death))
+	var blast: Dictionary = dying.death_voice(AudioEvents.SPECIES_MACHINE)
+	h.check("death_machine_explodes",
+		DictRead.as_string(blast.get("wave", "")) == "explosion.wav",
+		str(blast))
+	h.check("death_object_silent", dying.death_voice(2).is_empty(),
+		"species 2 dies without a sound")
+	# And the mute covers the explosion: the machine's arm jumps into the same
+	# `0x0040CBD6` the screams do, and `0x0040CBDB` is the next thing after it.
+	h.check("death_machine_is_muted",
+		dying.death_voice(AudioEvents.SPECIES_MACHINE, 0x1A).is_empty(),
+		"type 26 explodes silently")
 
 
 func _check_footsteps(h: TestHarness, tables: AudioTables,

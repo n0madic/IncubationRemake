@@ -58,9 +58,17 @@ func remaining() -> int:
 
 
 ## Drive from `_process`. Returns true while the playback still holds the input.
-func advance(delta: float) -> bool:
+##
+## `busy` is the picture's word: while a shot sequence, a walk, a set piece
+## or a flight is still on screen the event's timer does not run, so the
+## next event waits for the picture rather than for a number. [constant
+## STEP_SECONDS] stays the floor *between* events -- the original's every
+## `aPlay*` routine is blocking, and this is what blocking means here.
+func advance(delta: float, busy: bool = false) -> bool:
 	if not _running:
 		return false
+	if busy:
+		return _running
 	_elapsed += delta
 	while _running and _elapsed >= _hold:
 		_elapsed -= _hold

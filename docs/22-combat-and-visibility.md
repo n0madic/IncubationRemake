@@ -877,12 +877,39 @@ unit vectors, independently confirmed by `aGetGradientsOfUnitView`:
 | ammo | `if (weapon[+0x39] != 255 && attacker type != 0x42) unit[+0x3D] -= weapon[+0x41]` |
 | heat | `if (maxHeat != 255 && unit[+0x3E] < maxHeat) unit[+0x3E]++` |
 | damage absorber | equipment 18 fills `unit[+0x3A]`; a hit that would land spends one charge (`0x004755B0`) and **nullifies the damage** — by zeroing the argument, so `applyDamage` still rolls — and only while `+0x33` (equipment slot 18) is set: `0x00475590` returns 0 without it (§7.3). **`aExecuteBomb` never asks**: no call to either routine in `0x004702C0`, `applyDamage` is reached straight from the roll (`0x004704C9`) with the heading `0xFF` no octant's arc holds, so a mine meets the front armour |
-| experience | on a kill, unless the victim is species 2 (an inanimate object), its `unitType[+0x7A]` goes to `0x0047AFD0` / `0x0047B090` / `0x0047B100` |
+| experience | on a kill — gated on the damage **argument** (`test ebp, ebp` at `0x0046BF47`, zero after an absorber charge), skipped for species 2 and for a victim of the shooter's own player — the victim type's `exp` byte (`+0x7A`) goes to `0x0047AFD0` / `0x0047B090` / `0x0047B100` and the kill counter `+0x53` to `0x0047AF90`; see below |
 | dead marker | a unit reduced to 0 HP has `+0x16` set to `0xFF` before removal |
 | script | `aRunLCL` is entered with LCL variables `0x41 = 3`, `0x42 = tx`, `0x43 = ty` |
 
 `maxHeat` (`0x00475340`) is `weapon[+0x3A]`, doubled when the unit carries
 equipment 19 (`"Cooler"`, unit `+0x34`). `255` disables heat for that weapon.
+
+**The kill award** *(read and measured 2026-09-03; `combat_tables.py` pins
+46 sites, `turn_gold.py`'s `experience` phase measures the campaign arm,
+`inclib.combat.award_kill` is the model)*:
+
+```c
+float gain(unit, exp) {                       /* 0x0047AFD0 */
+    exp &= 0xFF;
+    if (gameMode() == 1) return exp;          /* the campaign: the byte as is */
+    m = {0: 4, 1: 3, 2: 1}[aiLevel()] or 2;   /* the dec/je chain, as it is */
+    e = unit[+0x17];
+    if (e < 72)  return (m - m*e/72) * exp;   /* 0x38E38E39 / sar 4 = /72 */
+    if (e > 108) return exp == 1 ? 0 : exp * 0.5;   /* cmp cl, 1: the argument */
+    return exp;
+}
+/* 0x0047B090 */ if (unit[+0x17] + gain < 144) unit[+0x18] = min(144, ftol(unit[+0x18] + gain));
+/* 0x0047B100 */ unit[+0x17] = min(144, ftol(unit[+0x17] + gain));
+/* 0x0047AF90 */ unit[+0x53] = min(255, unit[+0x53] + 1);
+total += ftol(gain);                          /* aAttackUnit's return value, the caption's number */
+```
+
+`0x0047B090` runs **before** `0x0047B100`, so its gate reads the pre-award
+experience. After `aPlayFightAnimation`, if the shooter is alive, its
+`+0x18 / 12` rose over the value saved at entry (`0x0046B588`) and its species
+is 0, the skill orbit `0x00410190` (`docs/42` §7.5) plays with the difference.
+The three player-record counters the block moves (`0x0043B8D0`, `0x0043B860`
+on the victim's player, `0x0043B810` on the shooter's) are the debriefing's.
 
 ---
 
@@ -1306,6 +1333,24 @@ if (al >= 2 && getTurnCounter() != 0) {          /* 0x00477A3B, 0x0043B280 */
 * `playerRecord` is `lea eax,[eax+eax*4]` then `lea eax,[eax*8 + 0x00509F48]`
   — base `0x00509F48`, stride 40 — the array §9.4.1's reset walks;
 * the counter is **one byte**, incremented with `inc cl`, so it wraps at 256.
+
+**Its last instruction kills.** `0x00477ABD` is `mov byte [esi+0x16], 0` —
+`esi` is the unit record, held since `lea esi, [ecx+edx*2]` at `0x00477A38` —
+so "off the map" and "dead" are one state. Five of the twenty call sites reach
+it with the hit points already down and the dead marker `0xFF` written over
+them (`0x0046BF49`, the table row above) — `aAttackUnit`, `aCheckWeaponDamage`
+twice, `aExecuteBomb` and `aKillUnit` — and **fifteen** reach it with the
+victim alive: `aAnimations.cpp`'s statues, laser barrier and foot bridge,
+`aPlayGroundFireAnimation`, `aExecuteTeleporter`, the hatch arm of
+`0x0046F210`, the para bomb in `aAI_SpecialPlayerControl`, the battle system's
+object sweep at `0x0041CA5E`, and this module's own two sweeps —
+`aUI_KillUnit` `0x004783D0` (twice) and `lKillPlayerUnits` `0x0047BC60`, whose
+loop condition at `0x0047BC74` **is** `+0x16`, so it says outright that what it
+removes is alive. At those fifteen this write is the death; there is no roll
+and no armour on any of those paths. `presentation_tables`' `remove_unit.*`
+pins the addresses and the split. *(Read 2026-09-03; [`42` §12](42-mission-presentation.md) item 2
+and [`97` §38.2](97-slice-5-report.md) first recorded the opposite, on a
+reading that stopped one instruction short.)*
 
 **What reads it is the LCL predicate `HeroKilled`.** `0x004409E0` is four
 instructions — `playerRecord(g_50BEF8)[+0x24] != 0` — and its single caller is

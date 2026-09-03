@@ -286,6 +286,69 @@ FOG_ARGUMENTS = (
     (0x0047DCCD, "6a00", "push 0 -- a literal player 0"),
 )
 
+#: ``docs/22`` §7.5 -- the kill award, byte for byte: the three routines
+#: ``0x0047AFD0`` / ``0x0047B090`` / ``0x0047B100``, the counter
+#: ``0x0047AF90``, and their one caller in ``aAttackUnit``.  ``inclib.combat``
+#: transcribes them; this is what keeps the transcription honest without a
+#: capture, and the campaign arm is measured by ``turn_gold.py``'s
+#: ``experience`` phase besides.
+EXPERIENCE_SITES = (
+    # 0x0047AFD0 -- experience_gain
+    (0x0047AFD2, "e86907fcff", "call 0x0043B740, the game-mode getter"),
+    (0x0047AFD7, "83f801", "cmp eax, 1 -- the campaign returns exp unchanged"),
+    (0x0047AFE0, "25ff000000", "and eax, 0xFF -- the exp byte"),
+    (0x0047AFF0, "be02000000", "mov esi, 2 -- the default multiplier"),
+    (0x0047AFF5, "e85654feff", "call 0x00460450, aiLevel()"),
+    (0x0047B005, "be01000000", "mov esi, 1 -- difficulty 2"),
+    (0x0047B00C, "be03000000", "mov esi, 3 -- difficulty 1"),
+    (0x0047B013, "be04000000", "mov esi, 4 -- difficulty 0"),
+    (0x0047B032, "8a4217", "mov al, [edx+0x17] -- the attacker's experience"),
+    (0x0047B035, "83f848", "cmp eax, 0x48 -- the 72 band"),
+    (0x0047B045, "b8398ee338", "mov eax, 0x38E38E39 -- a divide by 72"),
+    (0x0047B04C, "c1fa04", "sar edx, 4 -- the shift of that divide"),
+    (0x0047B067, "83f86c", "cmp eax, 0x6C -- the 108 band"),
+    (0x0047B06C, "80f901", "cmp cl, 1 -- the argument byte, not the unit"),
+    (0x0047B073, "d90538164b00", "fld [0x004B1638] -- 0.0 for exp 1 above 108"),
+    (0x0047B07C, "d80d3c164b00", "fmul [0x004B163C] -- 0.5 above 108"),
+    # 0x0047B090 -- award_training
+    (0x0047B0A5, "8a4e17", "mov cl, [esi+0x17] -- ep before the award"),
+    (0x0047B0B2, "d81d40164b00", "fcomp [0x004B1640] -- ep + gain against 144"),
+    (0x0047B0CA, "8a5618", "mov dl, [esi+0x18] -- the pool"),
+    (0x0047B0E4, "c6461890", "mov byte [esi+0x18], 0x90 -- the pool capped"),
+    (0x0047B0F4, "884618", "mov [esi+0x18], al -- the pool plus the gain"),
+    # 0x0047B100 -- award_experience
+    (0x0047B120, "d81540164b00", "fcom [0x004B1640] -- ep + gain against 144"),
+    (0x0047B12F, "c6461790", "mov byte [esi+0x17], 0x90 -- ep capped"),
+    (0x0047B13F, "884617", "mov [esi+0x17], al -- ep plus the gain"),
+    # 0x0047AF90 -- count_kill
+    (0x0047AF9A, "8a4a53", "mov cl, [edx+0x53] -- the kill counter"),
+    (0x0047AFAF, "81feff000000", "cmp esi, 0xFF -- saturation"),
+    (0x0047AFB7, "c64253ff", "mov byte [edx+0x53], 0xFF"),
+    # aAttackUnit's kill block
+    (0x0046B588, "8a5618", "mov dl, [esi+0x18] -- the pool saved at entry"),
+    (0x0046BF47, "85ed", "test ebp, ebp -- the damage argument gates the award"),
+    (0x0046BF4D, "0f8edc000000", "jle -- no award without damage"),
+    (0x0046BF5F, "803c4d99c0510002", "cmp byte [ecx*2+0x51C099], 2 -- species 2"),
+    (0x0046BF7C, "3ad0", "cmp dl, al -- the victim's player against the shooter's"),
+    (0x0046BFA2, "8a144d9ac05100", "mov dl, [ecx*2+0x51C09A] -- the victim type's exp"),
+    (0x0046BFAB, "e820f00000", "call 0x0047AFD0"),
+    (0x0046BFB3, "e8fe270400", "call _ftol -- the gain truncated into the total"),
+    (0x0046BFD7, "e8b4f00000", "call 0x0047B090"),
+    (0x0046BFF4, "e807f10000", "call 0x0047B100"),
+    (0x0046BFFC, "6a01", "push 1 -- one kill"),
+    (0x0046BFFF, "e88cef0000", "call 0x0047AF90"),
+    # the skill orbit's gate, after the animation
+    (0x0046C216, "8a4616", "mov al, [esi+0x16] -- the attacker still alive"),
+    (0x0046C223, "b8abaaaa2a", "mov eax, 0x2AAAAAAB -- a divide by 12"),
+    (0x0046C228, "8a4e18", "mov cl, [esi+0x18] -- the pool after"),
+    (0x0046C254, "7d35", "jge -- no orbit unless the level rose"),
+    (0x0046C262, "8a044d99c05100", "mov al, [ecx*2+0x51C099] -- the attacker's species"),
+    (0x0046C26B, "751e", "jne -- species 0 only"),
+    (0x0046C283, "e8083ffaff", "call 0x00410190, the skill orbit"),
+)
+#: The three single-precision constants the award reads.
+EXPERIENCE_FLOATS = ((0x004B1638, 0.0), (0x004B163C, 0.5), (0x004B1640, 144.0))
+
 #: ``0x0043BA00`` -- the player record: ``lea eax,[eax+eax*4]`` then
 #: ``lea eax,[eax*8 + 0x00509F48]``, i.e. base ``0x00509F48`` and stride 40.
 #: ``0x0043B770``'s loop runs its pointer at ``record + 8`` -- it starts at
@@ -1067,6 +1130,15 @@ def run_check(root: str) -> int:
         got = tables.pe.bytes_at(va, len(want) // 2).hex()
         stats.check("fog.player_record", got == want,
                     f"{va:#010x} is {got}, expected {want} ({what})")
+    # 1f-bis. docs/22 section 7.5 -- the kill award, instruction by instruction
+    for va, want, what in EXPERIENCE_SITES:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("experience.site", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for va, value in EXPERIENCE_FLOATS:
+        got = struct.unpack("<f", tables.pe.bytes_at(va, 4))[0]
+        stats.check("experience.float", got == value,
+                    f"{va:#010x} is {got}, expected {value}")
     for va, want, what in VIEW_PLAYER_BLOCK:
         got = tables.pe.bytes_at(va, len(want) // 2).hex()
         stats.check("fog.view_player_block", got == want,

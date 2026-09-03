@@ -1171,6 +1171,23 @@ has `+0x13 == 255`, control-map type 0 or 1, and a height of exactly
 `height · 160`, sets it alight (`0x0042fcb0(x', y', 2)` — the *glow* phase,
 `GLOW1/2.3DI`; the flames proper are `0x0042f840`, `A_FIRE1/2/3.3DI`, and are
 what sets `cell[+0x10] = 1`, see [`23` §7.1](23-ai-system.md)).
+
+**A glow blocks nobody, and two rounds later it kills.** The command writes
+`+0x11`, `+0x12` and `+0x13` and no obstacle byte, so nothing about movement
+changes. The hand-over's round tick `0x0042ED60` decays the glow from phase 2
+to phase 1; the *next* round's sweep `0x00470AB0` frees it and plays
+`aPlayGroundFireAnimation` `0x004157B0`, which removes — with no roll and no
+armour — every unit on the cell and its eight neighbours that is not standing
+on a shield. [`42` §9.1](42-mission-presentation.md) has the table.
+
+**And it only works in `World_D00`.** `GLOW1.3DI` and `GLOW2.3DI` are in that
+one prototype container of the nine, so `aCreateSpecialObject` answers -1
+anywhere else and the placer writes nothing at all. Both missions that use the
+command — `_C_116` and `_S_007` — are `D00` missions; measured in the live
+engine both ways ([`97` §37.4](97-slice-5-report.md) and
+[§38.1](97-slice-5-report.md)): the same call writes nothing on `World_A00`
+and all three bytes on `_C_116`, and the round tick then decays the glow from
+phase 2 to phase 1 and leaves it there.
 `_C_116.lcl` uses `SetGroundFire (12,29,0,1,1,255);` — a 1×1 area with 255
 tries, i.e. "set this one tile on fire, retrying until it takes" — and
 `_S_007.lcl` `SetGroundFire (12,13,0,9,14,5);` scatters five fires over a

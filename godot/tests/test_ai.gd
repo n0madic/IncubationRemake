@@ -45,6 +45,8 @@ func run(h: TestHarness) -> void:
 	_constants(h)
 	_spores(h)
 	_merge(h)
+	_door_opens_the_cell(h)
+	_a_mine_under_an_alien(h)
 
 
 ## Two computer turns inside one hand-over, merged rather than dropped.
@@ -510,3 +512,99 @@ static func _sorted(source: Dictionary) -> String:
 	for key: Variant in keys:
 		parts.append("%s=%d" % [str(key), DictRead.as_int(source[key])])
 	return ", ".join(parts)
+
+## docs/97 section 37 -- an alien that walks onto an authored mine sets it off.
+##
+## The aliens are the only mover the fill lets *into* a mine cell (docs/23
+## section 7.3), so this arm is the rule's main consumer. The mine is laid by
+## the placer and not by writing the byte: a mine with no object at `+0x0F` is
+## a state the engine cannot produce and the guard would refuse it.
+func _a_mine_under_an_alien(h: TestHarness) -> void:
+	var alien: Dictionary = TestFixtures.unit(1, 1, 3, 0, UnitState.PLAYER_ALIEN)
+	alien["order"] = 0
+	var world: World = World.create(TestFixtures.map_document(7, 7,
+		[TestFixtures.unit(0, 6, 6), alien]), TestFixtures.balance(), 1.0)
+	var target: int = world.state.index_of(3, 3)
+	h.check("ai_mine.placed",
+		CellObjects.place_mine(world.state, 3, 3) >= 0,
+		"the placer names an object, which is what the guard reads")
+	var ctx: AIContext = AIContext.create(world.state, world.units_for_ai(),
+		world.unit_types(), world.weapons(), world.ctrlmap(), world.turn,
+		world.rng)
+	var unit: UnitState = world.units_for_ai()[1]
+	unit.mp = 6
+	ctx.reset_overlay()
+	var filled: bool = AIPlan.build_move_map(ctx, unit, 0)
+	h.check("ai_mine.filled", filled, "the alien has a move map")
+	if not filled:
+		return
+	var committed: bool = AIPlan.commit(ctx, unit, target)
+	h.check("ai_mine.walked", committed, "the walk ran")
+	h.equal("ai_mine.cell_is_clear",
+		[world.state.obstacle_at(target),
+		world.state.effect_at(MapState.OBJECT_SLOT, target)],
+		[MapState.OBSTACLE_NONE, MapState.NO_OBJECT],
+		"the guard's two writes are on its far side")
+	var kinds: PackedStringArray = PackedStringArray()
+	for event: AIEvent in ctx.result.events:
+		if event.kind != "move":
+			continue
+		var payload: Dictionary = DictRead.as_dict(event.to_dict()["payload"])
+		var moves: Array = DictRead.as_array(payload.get("events", []))
+		for entry: Variant in moves:
+			kinds.append(DictRead.as_string(DictRead.as_dict(entry)["kind"]))
+	h.check("ai_mine.event_says_it_went_off", kinds.has("mine_detonated"),
+		"%s -- the playback runs after the turn, so the blast rides on the "
+		% [kinds] + "event")
+
+
+## docs/97 section 35 -- the computer's door: it opens the cell, and the
+## cells it changed ride on the event so the picture can paint them in
+## that event's own frame.
+func _door_opens_the_cell(h: TestHarness) -> void:
+	var alien: Dictionary = TestFixtures.unit(1, 3, 3, 0, 1)
+	alien["order"] = 0
+	var world: World = World.create(TestFixtures.map_document(7, 7,
+		[TestFixtures.unit(0, 6, 6), alien]), TestFixtures.balance(), 1.0)
+	var index: int = world.state.index_of(4, 3)
+	# `cmp byte [eax + 0xB], 0x1F` -- the AI opens action point 31 only, and
+	# an odd id is a closed panel: opening it drops the cell to 0 and makes
+	# it a Free Place.
+	world.state.set_action_point(index, AIUnitTurn.ACTION_POINT_CLOSED_DOOR)
+	world.state.set_height(index, Interact.DOOR_HEIGHT_STEP)
+	world.state.set_field_type(index, Interact.FIELD_TYPE_WALL)
+	var ctx: AIContext = AIContext.create(world.state, world.units_for_ai(),
+		world.unit_types(), world.weapons(), world.ctrlmap(), world.turn,
+		world.rng)
+	var unit: UnitState = world.units_for_ai()[1]
+	unit.mp = 4
+	var opened: bool = AIUnitTurn.open_door(ctx, unit)
+	h.check("ai_door.opened", opened, "a closed door one field east")
+	h.equal("ai_door.action_point_flips",
+		world.state.action_point_at(index),
+		AIUnitTurn.ACTION_POINT_CLOSED_DOOR - 1,
+		"`aDoorOpenSequence` rewrites it; `open_door` calls the sequence")
+	h.equal("ai_door.height_drops", world.state.height_at(index), 0,
+		"the panel goes back into the floor")
+	h.equal("ai_door.field_type_opens",
+		world.state.field_type_at(index), Interact.FIELD_TYPE_FREE)
+	# The context's own grid is written beside the world: a second unit
+	# beside the same door must not find it closed and toggle it shut
+	# (docs/97 section 35).
+	var again: UnitState = world.units_for_ai()[0]
+	again.x = 4
+	again.y = 2
+	again.mp = 4
+	h.check("ai_door.a_second_unit_does_not_close_it",
+		not AIUnitTurn.open_door(ctx, again)
+			and world.state.action_point_at(index)
+				== AIUnitTurn.ACTION_POINT_CLOSED_DOOR - 1,
+		"the guard reads the cell the first call left open")
+
+	var events: Array[AIEvent] = ctx.result.events
+	var last: Dictionary = events[events.size() - 1].to_dict() \
+		if not events.is_empty() else {}
+	h.check("ai_door.event_carries_the_cell",
+		DictRead.as_int32_array(DictRead.as_dict(
+			last.get("payload", {})).get("cells", [])).has(index),
+		"the picture paints it in this event's frame")

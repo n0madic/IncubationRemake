@@ -61,6 +61,8 @@ const OVERHEAT_CUES: Dictionary[String, String] = {
 
 const SPECIES_HUMAN: int = 0
 const SPECIES_ALIEN: int = 1
+## docs/21 section 2 -- species 3, whose death is `explosion.wav`.
+const SPECIES_MACHINE: int = 3
 
 ## docs/28 section 3.1 -- `SetWeaponInfo2` names `W_BAY0_0.wav` for weapon 35
 ## and no such file ships, so that weapon fires silently. Reproduced by default.
@@ -296,14 +298,25 @@ func overheat_cue(outcome: String) -> Dictionary:
 	return {} if cue.is_empty() else _cue(cue)
 
 
+## `0x0040CBE2`..`0x0040CBEC` -- `cmp al, 0x16 / je`, `cmp al, 0x18 / jbe`,
+## `cmp al, 0x1A / ja`: unit types 22, 25 and 26 make no sound when they are
+## hit or killed (docs/42 section 4.5).
+const MUTE_TYPES: Array[int] = [0x16, 0x19, 0x1A]
+
 # --- section 4.1: the pain voice -------------------------------------------
 
-## The scream a unit of `species` makes, or an empty dictionary -- species 0
-## and 1 have three variants each and every other species is silent.
+## The scream a unit of `species` makes, or an empty dictionary.
+##
+## Species 0 and 1 have three variants each and every other species is silent
+## -- and so are **unit types 22, 25 and 26**: `0x0040CBDF` reads `+0x4C` and
+## clears the play flag for them (docs/42 section 4.5). All three have species
+## 0, so the species test alone let Cpt. Rutherford, the Scout and Major
+## Rutherford scream where the engine says nothing.
 ##
 ## The cursor advances on **every** use, including the ones whose wave is
-## never played, because the original advances it in the same place.
-func pain(species: int) -> Dictionary:
+## never played, because the original advances it in the same place: the type
+## gate is at `0x0040CBF2`, past the round robin that picked the wave.
+func pain(species: int, type_id: int = -1) -> Dictionary:
 	var voices: Dictionary = _tables.voices()
 	if voices.is_empty():
 		return {}
@@ -315,11 +328,50 @@ func pain(species: int) -> Dictionary:
 	var modulus: int = DictRead.as_int(voices["cursor_modulus"])
 	var cursor: int = _cursors[species]
 	_cursors[species] = (cursor + 1) % modulus
+	if MUTE_TYPES.has(type_id):
+		return {}
 	var ids: Array = DictRead.as_array(
 		voices["alien_volume_ids"] if species == SPECIES_ALIEN
 			and _fix_alien_volume else voices["volume_ids"])
 	return {"wave": DictRead.as_string(waves[cursor]),
 		"volume_id": DictRead.as_int(ids[cursor]), "loop": false}
+
+
+## The death scream of docs/42 section 4.5 -- what a shot of severity 3 plays.
+##
+## Humans and aliens scream `SP_HUM_n` off their **own** cursor -- the same
+## two cursors the pain voice advances -- the human at ids 50..52 and the
+## alien at 53..55, the three ids an earlier reading of docs/28 called unnamed
+## (the fight loads them with `mov edi`, not a `push`). A machine (species 3)
+## explodes, and an object (species 2) dies without a sound, which is a real
+## answer and not a missing one.
+func death_voice(species: int, type_id: int = -1) -> Dictionary:
+	var voices: Dictionary = _tables.voices()
+	if voices.is_empty():
+		return {}
+	# The mute of `MUTE_TYPES` covers the **explosion** too: every arm of the
+	# cascade jumps to `0x0040CBD6` -- the machine's from `0x0040C9AC` -- and
+	# the type test at `0x0040CBDB` is the next thing after it. So the gate is
+	# applied once at the end, past every cursor, and not per arm.
+	var cue: Dictionary = {}
+	if species == SPECIES_MACHINE:
+		var blast: Dictionary = DictRead.as_dict(voices.get("death_explosion", {}))
+		if not blast.is_empty():
+			cue = {"wave": DictRead.as_string(blast["wave"]),
+				"volume_id": DictRead.as_int(blast["volume_id"]), "loop": false}
+	elif species == SPECIES_HUMAN or species == SPECIES_ALIEN:
+		var waves: Array = DictRead.as_array(voices["second_human"])
+		var ids: Array = DictRead.as_array(
+			voices["second_human_volume_ids"] if species == SPECIES_HUMAN
+				else voices["death_alien_volume_ids"])
+		var modulus: int = DictRead.as_int(voices["cursor_modulus"])
+		var cursor: int = _cursors[species]
+		_cursors[species] = (cursor + 1) % modulus
+		cue = {"wave": DictRead.as_string(waves[cursor]),
+			"volume_id": DictRead.as_int(ids[cursor]), "loop": false}
+	if MUTE_TYPES.has(type_id):
+		return {}
+	return cue
 
 
 ## The second human set, `SP_HUM_*`, off the **human** cursor.

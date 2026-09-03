@@ -149,6 +149,21 @@ func _check_units(h: TestHarness, world: World, geometry: Dictionary) -> void:
 	h.equal("units.positions", ", ".join(misplaced), "",
 		"every node sits on its unit's own field, taken from unit_view")
 
+	# docs/42 section 6 -- at most four bodies idle at once, and none loops.
+	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {}, "_C_140")
+	units.build(world, geometry, {})
+	units.presentation_rng = IncRandom.new()
+	units.presentation_rng.randomize_seed(7.0)
+	var most: int = 0
+	for _i: int in range(600):
+		units.animate(1.0 / CharismaState.FRAMES_PER_SECOND, world)
+		most = maxi(most, units.scheduler.idling().size())
+	h.check("units.at_most_four_idle", most <= IdleScheduler.SLOTS.size(),
+		"%d idling at the busiest frame" % most)
+	h.check("units.some_idle_started", units.scheduler.starts > 0,
+		"%d start(s), %d draw(s) in 600 frames"
+			% [units.scheduler.starts, units.scheduler.draws])
+
 	# Scene nodes are never authoritative: move one and rebuild.
 	if slots.size() > 0:
 		var node: Node3D = units.get_child(0) as Node3D

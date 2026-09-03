@@ -59,7 +59,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import movemap_gold as gold                                     # noqa: E402
 import blob_gold                                                # noqa: E402
-from inclib import blob_creators, charisma                      # noqa: E402
+from inclib import blob_creators, charisma, ctrlmap, eng3d      # noqa: E402
+from inclib.info import load_info_file                          # noqa: E402
 from inclib.charisma_tables import SelectorKey, SelectorTables  # noqa: E402
 from inclib.pe import PEFile                                    # noqa: E402
 from inclib.rng import ARandom                                  # noqa: E402
@@ -192,7 +193,17 @@ DEATH_MODELS = ("A_BLUT1.3DI", "A_BLUT2.3DI", "A_BLUT3.3DI", "A_BLUT4.3DI",
                 "A_SPLAT1.3DI", "A_SPLAT2.3DI", "A_SPLAT3.3DI", "A_SPLAT4.3DI",
                 "A_SPLAT5.3DI", "A_BDEBI0.3DI", "A_BDEBI1.3DI",
                 "A_50A.3DI", "A_50B.3DI", "A_50C.3DI", "A_51A.3DI", "A_51B.3DI",
-                "A_51C.3DI", "A_56A.3DI", "A_56B.3DI", "A_56C.3DI")
+                "A_51C.3DI", "A_56A.3DI", "A_56B.3DI", "A_56C.3DI",
+                # The case's own model (`unitInfo + 0x6C` of type 32), which
+                # `aBlob_CreateFlyingUnit` names -- the one death creator
+                # whose model is the victim's.
+                "A_BOX.3DI",
+                # docs/42 section 7 -- the marker's arrows, the poison flash's
+                # skulls and the heal flash's four crosses.
+                "A_ARROW.3DI", "A_SKULL.3DI", "A_CROSS3.3DI", "A_CROSS2.3DI",
+                "A_CROSS1.3DI", "A_CROSS.3DI",
+                # docs/42 section 8 -- the set pieces' models.
+                "A_DEBRIS.3DI", "A_LASERG.3DI", "L069EE00.3DI", "A_PARAB1.3DI")
 #: The tiles the calls use, by the unit standing there: the one marine
 #: candidate, the one `Ray'Ther` (type 50, the computer's), and a case.
 DEATH_TILE_SLOTS = {"m": POSE_UNIT_SLOT, "a": STARTER_TYPE_SLOT, "c": 0}
@@ -207,7 +218,9 @@ DEATH_SEED_OTHER = 4242.0
 #: and how many of the clip's bound parts end away from their bind record.
 #: Both are what the kept capture measured, pinned exactly so a thinner
 #: re-take fails rather than comparing less.
-DEATH_RECORDS_COMPARED = 253
+#: 364 for the deaths and the unit animations, 239 for the set pieces of
+#: docs/42 section 8 -- both capped at the 48 records a phase reads back.
+DEATH_RECORDS_COMPARED = 364 + 239
 POSE_PARTS_MOVED_AT_END = 10
 #: `(phase, creator, argument tiles or literals, seed)`.
 DEATH_CALLS: tuple[tuple[str, int, tuple[Any, ...], float], ...] = (
@@ -225,7 +238,48 @@ DEATH_CALLS: tuple[tuple[str, int, tuple[Any, ...], float], ...] = (
     ("species_burst_alien", 0x00421C50, ("a",), DEATH_SEED_SPECIES),
     ("species_burst_alien_other", 0x00421C50, ("a",), DEATH_SEED_OTHER),
     ("species_burst_marine", 0x00421C50, ("m",), DEATH_SEED),
+    # docs/42 section 4.8 -- the three the first capture did not reach.
+    # KillFire's third argument is the delay base: 0 from the fight's
+    # death switch (0x0040DCE2), 20 from FireCircle (0x0041332C).
+    ("kill_fire_marine", 0x00423AD0, ("m", 0), DEATH_SEED),
+    ("kill_fire_circle", 0x00423AD0, ("m", 20), DEATH_SEED),
+    ("fire_death_marine", 0x0042B1D0, ("m",), DEATH_SEED),
+    # FlyingUnit takes twice the type's size byte; a case is small, so 0
+    # is what the fight passes (0x0040DB68) -- 2 is used here so the delay
+    # field is seen to be the argument rather than a constant.
+    ("flying_unit_case", 0x00429700, ("c", 2), DEATH_SEED),
+    # The species-3 and barrel death, and three impact arms: nine rings of
+    # three from the tile's object, the third argument unread.
+    ("fire_explosion_alien", 0x00429A80, ("a", 2), DEATH_SEED),
+    # docs/42 section 7 -- the unit animations' creators (2026-09-03): the
+    # selection marker, the landing dust, the two flash circles, and the
+    # three position creators called at the marine's own object position
+    # (`("@", "m")` expands to three dword reads of its `+0x10/+0x14/+0x18`).
+    ("arrows_marine", 0x00422D40, ("m",), DEATH_SEED),
+    ("landing_dust_marine", 0x004227C0, ("m",), DEATH_SEED),
+    ("heal_flash_marine", 0x00423030, ("m",), DEATH_SEED),
+    ("poison_flash_marine", 0x004232E0, ("m",), DEATH_SEED),
+    ("zoombob_marine", 0x00423720, (("@", "m"), 4, 10, 3), DEATH_SEED),
+    ("trail_marine", 0x00423670, (("@", "m"),), DEATH_SEED),
+    ("push_dust_marine", 0x0042A6E0, (("@", "m"),), DEATH_SEED),
+    # docs/42 section 8 -- the set pieces' creators (2026-09-03, docs/97 §32).
+    ("tube_puffs_marine", 0x00423770, ("m",), DEATH_SEED),
+    ("platform_dust_marine", 0x004234C0, (("@", "m"),), DEATH_SEED),
+    ("ground_debris_marine", 0x00422610, ("m", 4800), DEATH_SEED),
+    ("roof_debris_marine", 0x00422460, ("m", 8000), DEATH_SEED),
+    ("wall_debris_marine", 0x004238C0, ("m",), DEATH_SEED),
+    ("fire_circle_marine", 0x00422F00, ("m",), DEATH_SEED),
+    ("laser_barrier_marine", 0x00428990, ("m", 0, 2), DEATH_SEED),
+    ("laser_barrier_marine_x", 0x00428990, ("m", 1, 1), DEATH_SEED),
+    ("statue_beam_marine", 0x00428BF0, ("m", "a", 3), DEATH_SEED),
+    ("teleport_stream_marine", 0x0042A120, ("m", "a"), DEATH_SEED),
+    ("bomber_marine", 0x0042A8E0, (("@", "m"), ("@", "a")), DEATH_SEED),
+    ("para_bomb_marine", 0x0042B070, ("m", 3), DEATH_SEED),
 )
+#: The one call that spawns the victim type's own model: its record count
+#: is pinned so a model the set does not carry cannot pass as agreement on
+#: nothing.
+DEATH_MUST_SPAWN = {"flying_unit_case": 1}
 
 
 def deaths_state_plan() -> str:
@@ -270,6 +324,8 @@ def death_tiles(state_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
         symbol = struct.unpack_from("<H", cells, base + blob_gold.CELL_OBJECT)[0]
         out[key] = {"x": x, "y": y, "symbol": symbol, "slot": slot,
                     "type": record[UNIT_TYPE], "player": record[UNIT_PLAYER],
+                    "cell_height": struct.unpack_from("<i", cells,
+                                                      base + CELL_HEIGHT)[0],
                     "height": height_rows[index] if index < len(height_rows) else -1}
     del heights
     return out
@@ -278,9 +334,12 @@ def death_tiles(state_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
 def death_plan(name: str, creator: int, spec: tuple[Any, ...], seed: float,
                tiles: dict[str, dict[str, int]], handle: int) -> str:
     """One process: the symbol objects, the reset, the seed, the call, the pool."""
-    args = []
+    args: list[Any] = []
     for item in spec:
-        if isinstance(item, str):
+        if isinstance(item, tuple):
+            key = item[1]
+            args += [f"[$s_{key}+0x10]", f"[$s_{key}+0x14]", f"[$s_{key}+0x18]"]
+        elif isinstance(item, str):
             args += [tiles[item]["x"], tiles[item]["y"]]
         else:
             args.append(item)
@@ -403,8 +462,151 @@ def idle_pose_plan(movements: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --------------------------------------------------------------------------
+# The four cell placers -- docs/42 §9.1
+# --------------------------------------------------------------------------
+
+#: ``[0x004FA828]`` is a **pointer** to the 80-slot special-object array; each
+#: record is 66 bytes and its state byte is at ``+0x40``, the subtype at
+#: ``+0x41`` (``aCreateSpecialObject``'s last two arguments).
+SPECIAL_ARRAY = 0x004FA828
+SPECIAL_RECORD_BYTES = 66
+SPECIAL_SLOTS = 80
+SPECIAL_STATE = 0x40
+SPECIAL_SUBTYPE = 0x41
+#: The cell bytes the placers write, relative to the 23-byte record.
+CELL_HEIGHT = 0x01
+CELL_ACTION_POINT = 0x0B
+CELL_FIELD_TYPE = 0x0D
+CELL_EFFECT_TIMER = 0x0E
+CELL_EFFECT_OBJECT = 0x0F
+CELL_EFFECT_STATE = 0x10
+CELL_DECAL_OBJECT = 0x11
+CELL_DECAL_PHASE = 0x12
+CELL_DECAL_STATE = 0x13
+
+SPECIAL_DECLARATIONS = DEATH_DECLARATIONS + """\
+__cdecl i32 aMakeFire(i32,i32,i32,i32)   = Incubation.exe+0x2f840
+__cdecl i32 aMakeMine(i32,i32)           = Incubation.exe+0x2fa70
+__cdecl i32 aMakeShield(i32,i32)         = Incubation.exe+0x2fb90
+__cdecl i32 aMakeGlow(i32,i32,i32)       = Incubation.exe+0x2fcb0
+__cdecl i32 aGroundEffectsTick()         = Incubation.exe+0x2ed60
+"""
+
+#: Each phase's calls, as ``(routine, arguments)``.  ``"x"``/``"y"`` name the
+#: marine's tile, ``"z"`` its cell's own height and ``"z+"`` a height half a
+#: field above it -- the fire placer's window test is the one gate a literal
+#: can reach.  The alien's tile is ``"ax"``/``"ay"``.
+SPECIAL_CALLS: dict[str, tuple[tuple[str, tuple[Any, ...]], ...]] = {
+    # The nine-fire arm's centre: subtype 4, at the cell's own height.
+    "special_fire": (("aMakeFire", ("x", "y", 4, "z")),),
+    # The same call a full window above the cell -- refused, nothing written.
+    "special_fire_out_of_window": (("aMakeFire", ("x", "y", 4, "z+")),),
+    # A fire laid on top of a mine deletes the mine's object without firing it.
+    "special_fire_over_a_mine": (("aMakeMine", ("x", "y")),
+                                 ("aMakeFire", ("x", "y", 3, "z"))),
+    "special_mine": (("aMakeMine", ("x", "y")),),
+    # Twice: the second call refreshes +0x0E and makes no second object.
+    "special_shield": (("aMakeShield", ("x", "y")),
+                       ("aMakeShield", ("x", "y"))),
+    # A fire refuses a shielded cell outright.
+    "special_fire_onto_a_shield": (("aMakeShield", ("x", "y")),
+                                   ("aMakeFire", ("x", "y", 4, "z"))),
+    "special_glow": (("aMakeGlow", ("x", "y", 2)),),
+    # One of everything, then two round ticks.
+    "special_tick": (("aMakeFire", ("x", "y", 4, "z")),
+                     ("aMakeShield", ("ax", "ay")),
+                     ("aMakeGlow", ("x", "y", 2)),
+                     ("aGroundEffectsTick", ()),
+                     ("aGroundEffectsTick", ())),
+}
+#: How many cell records each phase reads back around its calls.  The whole
+#: control map, so a placer that wrote somewhere unexpected is visible.
+SPECIAL_TILE_KEYS = {"x": ("m", "x"), "y": ("m", "y"),
+                     "ax": ("a", "x"), "ay": ("a", "y")}
+#: The cells whose own object a placer positions around, by tile key.
+SPECIAL_TILE_OBJECTS = {"m": "m", "a": "a"}
+#: Written before every call, so each one's draws replay on their own.
+SPECIAL_SEED = 11.0
+
+#: ``SetGroundFire``'s glow needs ``GLOW1/2.3DI``, which only ``World_D00``
+#: carries, so the two phases that reach the glow's own lifecycle run on a
+#: **second** save: `_C_116.lev` -- a D00 mission, and one of the two that use
+#: the command -- wrapped in `_6_.sav`'s fixed blocks by
+#: ``tools/sav_gold.py`` and staged as slot 7.
+SPECIAL_D00_SLOT = 7
+SPECIAL_D00_WIDTH = 34
+SPECIAL_D00_HEIGHT = 40
+SPECIAL_D00_WORLD_SET = "D00"
+#: The cell `_C_116.lcl` itself sets alight -- `SetGroundFire (12,29,0,1,1,255)`
+#: -- and its land object, read out of the shipped `.lev`.
+SPECIAL_D00_CELL = (12, 29)
+SPECIAL_D00_SYMBOL = 998
+
+#: The phases that run on that save, and the calls they make.
+SPECIAL_D00_CALLS: dict[str, tuple[tuple[str, tuple[Any, ...]], ...]] = {
+    # The placer the A00 phase measured refusing: here it works.
+    "special_glow_d00": (("aMakeGlow", ("gx", "gy", 2)),),
+    # And the decay: phase 2 becomes phase 1, a new object in place of the
+    # old one, once per round tick.
+    "special_glow_tick_d00": (("aMakeGlow", ("gx", "gy", 2)),
+                              ("aGroundEffectsTick", ()),
+                              ("aGroundEffectsTick", ())),
+}
+
+
+def special_plan(name: str, tiles: dict[str, dict[str, int]]) -> str:
+    """One process: load, read the map and the array, call, read them again."""
+    d00 = name in SPECIAL_D00_CALLS
+    width = SPECIAL_D00_WIDTH if d00 else gold.CAPTURE_WIDTH
+    height = SPECIAL_D00_HEIGHT if d00 else gold.CAPTURE_HEIGHT
+    slot = SPECIAL_D00_SLOT if d00 else gold.CAPTURE_SLOT
+    calls = SPECIAL_D00_CALLS[name] if d00 else SPECIAL_CALLS[name]
+    symbols = {"g": SPECIAL_D00_SYMBOL} if d00 else {
+        key: tiles[SPECIAL_TILE_OBJECTS[key]]["symbol"]
+        for key in SPECIAL_TILE_OBJECTS}
+    cells = width * height * gold.CELL_STRIDE
+    array = SPECIAL_SLOTS * SPECIAL_RECORD_BYTES
+
+    def resolve(item: Any) -> Any:
+        if item == "gx":
+            return SPECIAL_D00_CELL[0]
+        if item == "gy":
+            return SPECIAL_D00_CELL[1]
+        if item in SPECIAL_TILE_KEYS:
+            key, field = SPECIAL_TILE_KEYS[item]
+            return tiles[key][field]
+        if item == "z":
+            return tiles["m"]["cell_height"]
+        if item == "z+":
+            return tiles["m"]["cell_height"] + 0x640
+        return item
+
+    reads = (f" --read $c0:{cells} --read [0x{SPECIAL_ARRAY:x}]:{array}"
+             f" --read 0x{ARANDOM2_SEED:x}:8")
+    lines = [f"# {name}: the cell placers of docs/42 section 9.1",
+             SPECIAL_DECLARATIONS.rstrip("\n"),
+             f"--blob seed:{struct.pack('<d', SPECIAL_SEED).hex()}",
+             "aSetSaveMode(0)", f"loaded = aLoadGame({slot})"]
+    # The cells' own objects: the origin every placer positions around
+    # (`aGetSymbolObjectPtr(cell[+0x05])`, `docs/42` §9.1).
+    for key in sorted(symbols):
+        lines.append(f"s_{key} = aGetSymbolObjectPtr({symbols[key]})"
+                     f" --read $s_{key}:{blob_gold.SYMBOL_RECORD_BYTES}")
+    lines.append(f"c0 = aGetCtrlMapElementPtr(0,0){reads}")
+    for routine, spec in calls:
+        args = ", ".join(str(resolve(item)) for item in spec)
+        # The seed is written before **every** call, so each one's draws are
+        # replayable on their own rather than only as a chain.
+        lines.append(f"memcpy(0x{ARANDOM2_SEED:x}, &seed, 8)"
+                     f" --read 0x{ARANDOM2_SEED:x}:8")
+        lines.append(f"{routine}({args}){reads}")
+    return "\n".join(lines) + "\n"
+
+
 PLAN_NAMES = ("idle_random", "idle_pose", "deaths_state") + tuple(
-    "death_" + name for name, _c, _a, _s in DEATH_CALLS)
+    "death_" + name for name, _c, _a, _s in DEATH_CALLS) \
+    + tuple(SPECIAL_CALLS) + tuple(SPECIAL_D00_CALLS)
 
 
 # --------------------------------------------------------------------------
@@ -634,7 +836,9 @@ def idle_clip_of(root: str, record: bytes) -> charisma.Animation | None:
     pe = PEFile(str(Path(root) / "Incubation.exe"))
     key = SelectorKey(record[UNIT_TYPE], record[UNIT_WEAPON], record[UNIT_PLAYER])
     outcomes = SelectorTables(pe, [key]).lookup("idle", key)
-    if not outcomes:
+    # A present-but-null name is the selector's own "no clip" (docs/40
+    # section 7.2.1), which the starter answers by returning 1.
+    if not outcomes or outcomes[0].name is None:
         return None
     path = Path(root) / "CHData" / "Animations" / (outcomes[0].name + ".cha")
     return charisma.parse_animation_file(str(path))
@@ -887,8 +1091,39 @@ def check_pose(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
            str({r.get("esp_delta") for r in sims}))
 
 
+def corpus_type_models(root: str) -> dict[int, str]:
+    """`unitInfo[type] + 0x6C` for every type, from the root's `Info.lcl`."""
+    tables = load_info_file(str(Path(root) / "DATA" / "Info.lcl"))
+    return {type_id: row.model for type_id, row in tables.units.items()}
+
+
+def corpus_sizes(root: str) -> dict[int, int]:
+    """`unitInfo[type] + 0x7B` for every type -- the large flag the ring
+    creators pick their radius by."""
+    tables = load_info_file(str(Path(root) / "DATA" / "Info.lcl"))
+    return {type_id: row.size for type_id, row in tables.units.items()}
+
+
+def call_args(spec: tuple[Any, ...], tiles: dict[str, dict[str, int]],
+              inputs: blob_creators.DeathInputs) -> list[int]:
+    """The arguments a spec expands to, with the object positions the
+    capture read for the `("@", key)` items."""
+    args: list[int] = []
+    for item in spec:
+        if isinstance(item, tuple):
+            args += list(inputs.object(tiles[item[1]]["x"], tiles[item[1]]["y"]))
+        elif isinstance(item, str):
+            args += [tiles[item]["x"], tiles[item]["y"]]
+        else:
+            args.append(item)
+    return args
+
+
 def death_inputs(state_rows: list[dict[str, Any]], call_rows: list[dict[str, Any]],
-                 tiles: dict[str, dict[str, int]]) -> blob_creators.DeathInputs:
+                 tiles: dict[str, dict[str, int]],
+                 type_models: dict[int, str] | None = None,
+                 tables: Any = None, sizes: dict[int, int] | None = None
+                 ) -> blob_creators.DeathInputs:
     symbols = {}
     for row in call_rows:
         if row.get("call") != "aGetSymbolObjectPtr":
@@ -910,7 +1145,9 @@ def death_inputs(state_rows: list[dict[str, Any]], call_rows: list[dict[str, Any
         if tile["type"] and tile["height"] >= 0 and tile["slot"] is not None:
             unit = blob_creators.DeathUnit(tile["type"], tile["player"], tile["height"])
         table[(tile["x"], tile["y"])] = (tuple(symbols[key]), unit)
-    return blob_creators.DeathInputs(tiles=table, gore=gore, display_mode=mode, models=models)
+    return blob_creators.DeathInputs(tiles=table, gore=gore, display_mode=mode,
+                                     models=models, type_models=type_models or {},
+                                     tables=tables, sizes=sizes or {})
 
 
 def check_deaths(ck: Checker, root: str, phases: dict[str, Any]) -> None:
@@ -929,6 +1166,9 @@ def check_deaths(ck: Checker, root: str, phases: dict[str, Any]) -> None:
     ck.pin("deaths_state.height_is_type_byte_x160",
            all(tiles[k]["height"] % blob_creators.Death.HEIGHT_UNIT == 0 for k in tiles), str(tiles))
     handle_state = _read_dword(state, f"0x{blob_gold.POOL_HANDLE:x}")
+    type_models = corpus_type_models(root)
+    sizes = corpus_sizes(root)
+    trig = eng3d.load(root)
     compared = 0
     for name, creator, spec, seed in DEATH_CALLS:
         phase = (phases.get("death_" + name) or {}).get("rows")
@@ -941,7 +1181,7 @@ def check_deaths(ck: Checker, root: str, phases: dict[str, Any]) -> None:
             continue
         ck.pin(f"death.{name}.pool_handle_stable",
                _read_dword(phase, f"0x{blob_gold.POOL_HANDLE:x}") == handle_state, "")
-        inputs = death_inputs(state, phase, tiles)
+        inputs = death_inputs(state, phase, tiles, type_models, trig, sizes)
         seeded = _row_after(phase, "memcpy", 0)
         made = _row_after(phase, f"c{creator:08X}", 0)
         after = _row_after(phase, "aGetUnitMapElementPtr", 0)
@@ -950,9 +1190,7 @@ def check_deaths(ck: Checker, root: str, phases: dict[str, Any]) -> None:
                str(made and made.get("result")))
         pool_raw = next((raw for key, raw in _reads(after).items() if key.startswith("[0x")), b"")
         records = blob_gold.parse_records(pool_raw)
-        args = []
-        for item in spec:
-            args += [tiles[item]["x"], tiles[item]["y"]] if isinstance(item, str) else [item]
+        args = call_args(spec, tiles, inputs)
         arity, program = blob_creators.DEATH_PROGRAMS[creator]
         ck.pin(f"death.{name}.arity", arity == len(args), f"{arity} vs {len(args)}")
         pool = blob_creators.Pool(inputs)
@@ -977,12 +1215,16 @@ def check_deaths(ck: Checker, root: str, phases: dict[str, Any]) -> None:
                     wrong.append((index, field, record[field], built[field]))
             compared += 1
         ck.pin(f"death.{name}.records_field_for_field", not wrong, str(wrong[:6]))
+        if name in DEATH_MUST_SPAWN:
+            ck.pin(f"death.{name}.spawned", len(records) >= DEATH_MUST_SPAWN[name],
+                   f"{len(records)} record(s); the type's model must resolve")
     ck.pin("deaths.records_compared", compared == DEATH_RECORDS_COMPARED,
            f"{compared} records compared, {DEATH_RECORDS_COMPARED} pinned")
     # Each of the five doubles the programs carry is told from its neighbour
     # by this capture: perturbed by one, some phase's replay changes.
     undiscriminated = [name for name in DEATH_CONSTANTS
-                       if not _death_constant_discriminated(name, state, phases, tiles)]
+                       if not _death_constant_discriminated(
+                           name, state, phases, tiles, root, type_models)]
     ck.pin("deaths.constants_discriminated",
            undiscriminated == list(DEATH_CONSTANTS_UNDISCRIMINATED), str(undiscriminated))
 
@@ -998,16 +1240,18 @@ DEATH_CONSTANTS_UNDISCRIMINATED = ("BLOOD_LIFT",)
 
 
 def _death_replays(state: list[dict[str, Any]], phases: dict[str, Any],
-                   tiles: dict[str, dict[str, int]]) -> list[Any]:
+                   tiles: dict[str, dict[str, int]], root: str,
+                   type_models: dict[int, str] | None = None) -> list[Any]:
     out: list[Any] = []
+    geometry = eng3d.load(root)
+    sizes = corpus_sizes(root)
     for name, creator, spec, seed in DEATH_CALLS:
         phase = (phases.get("death_" + name) or {}).get("rows")
         if not phase or any(r.get("status") != "ok" for r in phase):
             continue
-        inputs = death_inputs(state, phase, tiles)
-        args: list[int] = []
-        for item in spec:
-            args += [tiles[item]["x"], tiles[item]["y"]] if isinstance(item, str) else [item]
+        inputs = death_inputs(state, phase, tiles, type_models, geometry,
+                              sizes)
+        args = call_args(spec, tiles, inputs)
         pool = blob_creators.Pool(inputs)
         draws = blob_creators.Draws(seed)
         blob_creators.DEATH_PROGRAMS[creator][1](pool, draws, args, inputs)
@@ -1017,14 +1261,573 @@ def _death_replays(state: list[dict[str, Any]], phases: dict[str, Any],
 
 def _death_constant_discriminated(name: str, state: list[dict[str, Any]],
                                   phases: dict[str, Any],
-                                  tiles: dict[str, dict[str, int]]) -> bool:
-    base = _death_replays(state, phases, tiles)
+                                  tiles: dict[str, dict[str, int]], root: str,
+                                  type_models: dict[int, str]) -> bool:
+    """Whether moving one creator constant changes what the programs build.
+
+    ``type_models`` is handed over rather than left to default: without it
+    ``FlyingUnit`` names no model and builds **no record at all**, so the one
+    phase whose model is the victim's own would sit out the sweep it is part
+    of.
+    """
+    base = _death_replays(state, phases, tiles, root, type_models)
     was = getattr(blob_creators, name)
     setattr(blob_creators, name, was + 1.0)
     try:
-        return _death_replays(state, phases, tiles) != base
+        return _death_replays(state, phases, tiles, root,
+                              type_models) != base
     finally:
         setattr(blob_creators, name, was)
+
+
+DEATH_CASES_SCHEMA = "incubation.death-cases/1"
+
+
+def emit_death_cases(path: Path, root: str, out: Path) -> int:
+    """Write the death creators' cases for `godot/tests/test_presentation_native.gd`.
+
+    One case per captured phase: the arguments, the seed written, everything
+    the creator read (`DeathInputs`, as the capture measured it), the draw
+    count the seed answers and **the engine's own records** -- so the
+    GDScript programs of `game/fx/blob_programs.gd` are compared with what
+    `Incubation.exe` left in its pool, not with this file's Python.  The
+    oracle boundary is therefore **native**, and the fixture says so.
+    """
+    if not path.is_file():
+        LOG.error("%s: no capture; take one with --game-copy", path)
+        return 1
+    document = json.loads(path.read_text(encoding="utf-8"))
+    phases = document.get("phases") or {}
+    state = (phases.get("deaths_state") or {}).get("rows")
+    if not state:
+        LOG.error("the capture holds no deaths_state phase")
+        return 1
+    tiles = death_tiles(state)
+    type_models = corpus_type_models(root)
+    geometry = eng3d.load(root)
+    sizes = corpus_sizes(root)
+    cases: list[dict[str, Any]] = []
+    for name, creator, spec, seed in DEATH_CALLS:
+        phase = (phases.get("death_" + name) or {}).get("rows")
+        if not phase or any(r.get("status") != "ok" for r in phase):
+            # **Refused, not skipped.**  `check_deaths` requires every phase
+            # by name, so a warning here would write a case file thin enough
+            # to pass the Godot suite's minimums while `--check` failed on
+            # the same capture -- the two would disagree about whether the
+            # capture is whole.  `emit_special_cases` has always refused.
+            LOG.error("death_%s: not captured; re-take it before emitting",
+                      name)
+            return 1
+        inputs = death_inputs(state, phase, tiles, type_models, geometry,
+                              sizes)
+        after = _row_after(phase, "aGetUnitMapElementPtr", 0)
+        pool_raw = next((raw for key, raw in _reads(after).items() if key.startswith("[0x")), b"")
+        records = blob_gold.parse_records(pool_raw)
+        args = call_args(spec, tiles, inputs)
+        pool = blob_creators.Pool(inputs)
+        draws = blob_creators.Draws(seed)
+        blob_creators.DEATH_PROGRAMS[creator][1](pool, draws, args, inputs)
+        used_types = {u.type_id for _o, u in inputs.tiles.values() if u is not None}
+        cases.append({
+            "name": name, "creator": f"0x{creator:08X}", "args": args, "seed": seed,
+            "inputs": {
+                "tiles": [{"x": x, "y": y, "object": list(obj),
+                           "unit": None if unit is None else
+                           {"type": unit.type_id, "player": unit.player,
+                            "height": unit.height}}
+                          for (x, y), (obj, unit) in sorted(inputs.tiles.items())],
+                "gore": inputs.gore, "display_mode": inputs.display_mode,
+                "models": dict(inputs.models),
+                "type_models": {str(t): type_models.get(t, "") for t in sorted(used_types)},
+                "sizes": {str(t): inputs.sizes.get(t, 0) for t in sorted(used_types)},
+            },
+            "draws": draws.count,
+            "records_built": len(pool.records),
+            "records_read": DEATH_READ_RECORDS,
+            "records": [{f: r[f] for f in blob_creators.FIELDS} for r in records],
+        })
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"schema": DEATH_CASES_SCHEMA, "oracle": "native-runtime",
+                               "fields": list(blob_creators.FIELDS),
+                               "cases": cases}, indent=1), encoding="utf-8")
+    LOG.info("wrote %s (%d case(s))", out, len(cases))
+    return 0 if cases else 1
+
+
+IDLE_CASES_SCHEMA = "incubation.idle-cases/1"
+
+
+def emit_idle_cases(path: Path, root: str, out: Path) -> int:
+    """Write the idle scheduler's cases for `godot/tests/test_presentation_native.gd`.
+
+    From the `idle_random` phase: every starter call as the engine made it
+    -- the seed before and after, slot 1's countdown and occupancy either
+    side -- classified by the replay, plus the guard inputs of all 200 unit
+    records (alive, `+0x4F`, `+0x56`, the selector's answer, the object's
+    model) so the GDScript scheduler classifies from the fixture and not
+    from a `World`.  From `idle_pose`: the forced start's clock -- length,
+    speed, the three stops -- and the bind snap after the free.
+    """
+    if not path.is_file():
+        LOG.error("%s: no capture; take one with --game-copy", path)
+        return 1
+    document = json.loads(path.read_text(encoding="utf-8"))
+    phases = document.get("phases") or {}
+    rows = (phases.get("idle_random") or {}).get("rows")
+    pose = (phases.get("idle_pose") or {}).get("rows")
+    if not rows or not pose:
+        LOG.error("the capture holds no idle_random / idle_pose phase")
+        return 1
+    unit_base, units = unit_array(rows)
+    objects = object_array(rows)
+    guards = IdleGuards(root, units, objects)
+    records = []
+    for slot in range(UNIT_SLOTS):
+        record = unit_record(units, slot)
+        clip = idle_clip_of(root, record) if record[UNIT_HP] else None
+        base = record[UNIT_OBJECT] * OBJECT_STRIDE
+        records.append({
+            "slot": slot, "hp": record[UNIT_HP], "visibility": record[UNIT_HIDDEN],
+            "animating": record[UNIT_ANIMATING], "type": record[UNIT_TYPE],
+            "weapon": record[UNIT_WEAPON], "player": record[UNIT_PLAYER],
+            "has_model": int(base + OBJECT_STRIDE <= len(objects)
+                             and objects[base + OBJECT_MODEL] != 0),
+            "has_idle": int(clip is not None),
+            "idle_clip": clip.name if clip is not None else "",
+            "idle_length": engine_length(clip) if clip is not None else 0.0,
+            "refused": guards.refuses(slot),
+        })
+    calls = []
+    prev_seed: float | None = None
+    prev_slot: tuple[int, ...] | None = None
+    for row in rows:
+        seed = seed_of(row)
+        slot = slot_of(row)
+        if row.get("call") != "aStartIdleAnimation":
+            if seed is not None:
+                prev_seed = seed
+            if slot is not None:
+                prev_slot = slot
+            continue
+        if seed is None or slot is None or prev_seed is None or prev_slot is None:
+            continue
+        drawn = -1
+        if seed != prev_seed:
+            drawn = int(ARandom(prev_seed).raw(0, 200))
+        calls.append({
+            "seed_before": prev_seed, "seed_after": seed,
+            "countdown_before": prev_slot[SLOT_COUNTDOWN],
+            "countdown_after": slot[SLOT_COUNTDOWN],
+            "active_before": prev_slot[SLOT_ACTIVE], "active_after": slot[SLOT_ACTIVE],
+            "drawn": drawn,
+            "unit_after": ((slot[SLOT_UNIT] - unit_base) // UNIT_STRIDE
+                           if slot[SLOT_ACTIVE] else -1),
+        })
+        prev_seed, prev_slot = seed, slot
+    replay = replay_random(rows, guards, unit_base)
+    _base_pose, pose_units = unit_array(pose)
+    pose_clip = idle_clip_of(root, unit_record(pose_units, POSE_UNIT_SLOT))
+    stops = snapshot_rows(pose)
+    parts_moved = 0
+    if "end" in stops and "bind" in stops:
+        end_parts = parse_snapshot(stops["end"])
+        bind_parts = parse_snapshot(stops["bind"])
+        parts_moved = sum(1 for a, b in zip(end_parts, bind_parts)
+                          if a is not None and b is not None and a["record"] != b["record"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "schema": IDLE_CASES_SCHEMA, "oracle": "native-runtime",
+        "slots": [1, 2, 4, 5], "slot_read": IDLE_SLOT,
+        "type_argument": STARTER_TYPE_ARGUMENT,
+        "units": records, "calls": calls,
+        "summary": {"ticks": replay["ticks"], "misses": replay["misses"],
+                    "starts": len(replay["starts"]), "frees": replay["frees"],
+                    "draws": replay["draws"]},
+        "pose": {"seed": POSE_SEED, "unit": POSE_UNIT_SLOT,
+                 "clip": pose_clip.name if pose_clip else "",
+                 "length": engine_length(pose_clip) if pose_clip else 0.0,
+                 "speed": IDLE_SPEED, "steps": list(POSE_STEPS),
+                 "parts_moved_at_end": parts_moved},
+    }, indent=1), encoding="utf-8")
+    LOG.info("wrote %s (%d call(s), %d unit(s))", out, len(calls), len(records))
+    return 0 if calls else 1
+
+
+def _cells_of(row: dict[str, Any] | None) -> bytes:
+    return _reads(row).get("$c0", b"")
+
+
+def _array_of(row: dict[str, Any] | None) -> bytes:
+    return _reads(row).get(f"[0x{SPECIAL_ARRAY:x}]", b"")
+
+
+def _model_columns(cells: bytes, width: int = gold.CAPTURE_WIDTH,
+                   height: int = gold.CAPTURE_HEIGHT) -> ctrlmap.CtrlMap:
+    """A `CtrlMap` over the captured control map, as the model's own lists."""
+    n = len(cells) // gold.CELL_STRIDE
+
+    def column(offset: int) -> list[int]:
+        return [cells[i * gold.CELL_STRIDE + offset] for i in range(n)]
+
+    heights = [struct.unpack_from("<i", cells,
+                                  i * gold.CELL_STRIDE + CELL_HEIGHT)[0]
+               for i in range(n)]
+    return ctrlmap.CtrlMap(
+        width=width, height=height,
+        cell_height=heights, unit_at=[-1] * n,
+        action_point=column(CELL_ACTION_POINT),
+        field_type=column(CELL_FIELD_TYPE),
+        effect_timer=column(CELL_EFFECT_TIMER),
+        effect_object=column(CELL_EFFECT_OBJECT),
+        effect_state=column(CELL_EFFECT_STATE),
+        decal_object=column(CELL_DECAL_OBJECT),
+        decal_phase=column(CELL_DECAL_PHASE),
+        decal_state=column(CELL_DECAL_STATE))
+
+
+def _engine_columns(cells: bytes) -> dict[str, list[int]]:
+    n = len(cells) // gold.CELL_STRIDE
+    return {name: [cells[i * gold.CELL_STRIDE + off] for i in range(n)]
+            for name, off in (("effect_timer", CELL_EFFECT_TIMER),
+                              ("effect_object", CELL_EFFECT_OBJECT),
+                              ("effect_state", CELL_EFFECT_STATE),
+                              ("decal_object", CELL_DECAL_OBJECT),
+                              ("decal_phase", CELL_DECAL_PHASE),
+                              ("decal_state", CELL_DECAL_STATE))}
+
+
+def _engine_slots(array: bytes) -> list[int]:
+    return [array[i * SPECIAL_RECORD_BYTES + SPECIAL_STATE]
+            for i in range(SPECIAL_SLOTS)]
+
+
+def _engine_subtypes(array: bytes) -> list[int]:
+    return [array[i * SPECIAL_RECORD_BYTES + SPECIAL_SUBTYPE]
+            for i in range(SPECIAL_SLOTS)]
+
+
+def _model_subtypes(cells: ctrlmap.CtrlMap) -> dict[int, int]:
+    """The subtype `aCreateSpecialObject` was handed, by object id.
+
+    Not carried by the model: every placer passes the cell byte it has just
+    written, so it is derivable and derived here rather than stored twice.
+    """
+    out: dict[int, int] = {}
+    for i in range(len(cells.effect_state)):
+        if cells.effect_state[i] in (ctrlmap.OBSTACLE_FIRE,
+                                     ctrlmap.OBSTACLE_MINE,
+                                     ctrlmap.OBSTACLE_SHIELD):
+            out[cells.effect_object[i]] = cells.effect_timer[i]
+        if cells.decal_state[i] == ctrlmap.DECAL_GLOW:
+            out[cells.decal_object[i]] = cells.decal_phase[i]
+    return out
+
+
+#: The world set the fixture save is on (`_C_141`, `Level01e`).
+CAPTURE_WORLD_SET = "A00"
+
+
+def special_models(root: str, world_set: str) -> frozenset[str]:
+    """The placer model names a world set's prototype container carries."""
+    from inclib import prototyp  # noqa: PLC0415
+    path = (Path(root) / "WorldSet" / f"World_{world_set}" / "Objects"
+            / "prototyp.din")
+    wanted = {ctrlmap.FIRE_MODEL_SMALL, ctrlmap.FIRE_MODEL_MEDIUM,
+              ctrlmap.FIRE_MODEL_LARGE, ctrlmap.MINE_MODEL,
+              ctrlmap.SHIELD_MODEL, *ctrlmap.GLOW_MODELS.values()}
+    container = prototyp.load_container(str(path))
+    return frozenset(set(container.names) & wanted)
+
+
+def _origin_of(rows: list[dict[str, Any]], key: str) -> tuple[int, int, int]:
+    """The cell's own object position -- ``+0x10``/``+0x14``/``+0x18``."""
+    for row in rows:
+        raw = _reads(row).get(f"$s_{key}")
+        if raw is not None and len(raw) >= 0x1C:
+            return tuple(struct.unpack_from("<iii", raw, 0x10))  # type: ignore
+    return (0, 0, 0)
+
+
+def _record_position(array: bytes, object_id: int) -> tuple[int, int, int]:
+    """One special-object record's position."""
+    at = object_id * SPECIAL_RECORD_BYTES
+    return tuple(struct.unpack_from("<iii", array, at + 0x10))  # type: ignore
+
+
+def _draws_between(rows: list[dict[str, Any]],
+                   row: dict[str, Any]) -> int:
+    """How many `aRandom2` draws the engine spent on this call.
+
+    The seed is written afresh before every call, so the count is whatever
+    turns the written seed into the one the call left.
+    """
+    seed_key = f"[0x{ARANDOM2_SEED:x}]"
+    del seed_key
+    after = _reads(row).get(f"0x{ARANDOM2_SEED:x}")
+    if after is None:
+        return -1
+    from inclib.rng import ARandom  # noqa: PLC0415
+    rng = ARandom(SPECIAL_SEED)
+    want = struct.unpack("<d", after)[0]
+    for n in range(64):
+        if rng.seed == want:
+            return n
+        rng.raw(0, 1)
+    return -1
+
+
+def check_special(ck: Checker, root: str, phases: dict[str, Any]) -> None:
+    """docs/42 §9.1 -- the four placers and the round tick, in the engine.
+
+    Each phase reads the whole control map and the whole 80-slot array before
+    and after every call, so what is compared is not "the cell the placer was
+    aimed at" but every cell and every slot.  The model is
+    :mod:`inclib.ctrlmap`, replayed from the captured *before* state.
+    """
+    tiles: dict[str, dict[str, int]] = {}
+    state = (phases.get("deaths_state") or {}).get("rows")
+    if state:
+        tiles = death_tiles(state)
+    # The capture runs on `_C_141`, which is `World_A00` -- and A00 carries no
+    # `GLOW1/2.3DI`.  Handing the model set over is what makes the glow phase a
+    # check of the name gate rather than a failure.
+    models = special_models(root, CAPTURE_WORLD_SET)
+    ck.pin("special.world_set_has_no_glow",
+           ctrlmap.GLOW_MODELS[2] not in models,
+           f"{CAPTURE_WORLD_SET} carries {sorted(models)}")
+    d00_models = special_models(root, SPECIAL_D00_WORLD_SET)
+    ck.pin("special.d00_has_the_glow",
+           ctrlmap.GLOW_MODELS[2] in d00_models,
+           f"{SPECIAL_D00_WORLD_SET} carries {sorted(d00_models)}")
+    every: dict[str, Any] = dict(SPECIAL_CALLS)
+    every.update(SPECIAL_D00_CALLS)
+    for name, calls in every.items():
+        rows = (phases.get(name) or {}).get("rows")
+        ck.pin(f"{name}.captured", bool(rows), "phase missing -- re-take it")
+        if not rows:
+            continue
+        placed = [r for r in rows if r.get("call") in
+                  ("aMakeFire", "aMakeMine", "aMakeShield", "aMakeGlow",
+                   "aGroundEffectsTick")]
+        ck.pin(f"{name}.calls", len(placed) == len(calls),
+               f"{len(placed)} row(s) for {len(calls)} call(s)")
+        if len(placed) != len(calls):
+            continue
+        before = _cells_of(_row_after(rows, "aGetCtrlMapElementPtr"))
+        array0 = _array_of(_row_after(rows, "aGetCtrlMapElementPtr"))
+        origins = {key: _origin_of(rows, key)
+                   for key in (("g",) if name in SPECIAL_D00_CALLS
+                               else tuple(SPECIAL_TILE_OBJECTS))}
+        # **The array is seeded from the capture, not rebuilt.**
+        # `rebuild_objects` only knows the cell-owned objects, and `_C_116`
+        # loads with slot 0 already holding a **state-5** one -- the static
+        # kind `0x00431F45` makes, which no cell names. Rebuilding would put
+        # the model's first object in a slot the engine had taken and every
+        # comparison after it would be off by one id.
+        ck.pin(f"{name}.array_seeded",
+               len(_engine_slots(array0)) == ctrlmap.SPECIAL_OBJECT_SLOTS,
+               "the phase read the whole array before its first call")
+        d00 = name in SPECIAL_D00_CALLS
+        cells = _model_columns(
+            before, SPECIAL_D00_WIDTH if d00 else gold.CAPTURE_WIDTH,
+            SPECIAL_D00_HEIGHT if d00 else gold.CAPTURE_HEIGHT)
+        cells.models = d00_models if d00 else models
+        cells.objects = _engine_slots(array0)
+
+        def resolve(item: Any) -> Any:
+            if item == "gx":
+                return SPECIAL_D00_CELL[0]
+            if item == "gy":
+                return SPECIAL_D00_CELL[1]
+            if item in SPECIAL_TILE_KEYS:
+                key, field = SPECIAL_TILE_KEYS[item]
+                return tiles[key][field]
+            if item == "z":
+                return tiles["m"]["cell_height"]
+            if item == "z+":
+                return tiles["m"]["cell_height"] + 0x640
+            return item
+
+        for step, ((routine, spec), row) in enumerate(zip(calls, placed)):
+            args = [resolve(item) for item in spec]
+            draws = blob_creators.Draws(SPECIAL_SEED)
+            made = -1
+            state = 0
+            if routine == "aMakeFire":
+                made = ctrlmap.place_fire(cells, *args)
+                state = ctrlmap.OBSTACLE_FIRE
+            elif routine == "aMakeMine":
+                made = ctrlmap.place_mine(cells, *args)
+                state = ctrlmap.OBSTACLE_MINE
+            elif routine == "aMakeShield":
+                made = ctrlmap.place_shield(cells, *args)
+                state = ctrlmap.OBSTACLE_SHIELD
+            elif routine == "aMakeGlow":
+                made = ctrlmap.place_glow(cells, *args)
+                state = ctrlmap.DECAL_GLOW
+            else:
+                ctrlmap.round_tick(cells)
+            # **The position, and the draws it spends.**  The cell's own
+            # object is the origin; the fire and the glow scatter around it
+            # with two `aRandom2` draws each and the mine and the shield take
+            # it exactly (`docs/42` §9.1).
+            if made >= 0:
+                key = "g" if name in SPECIAL_D00_CALLS else (
+                    "a" if routine == "aMakeShield" and args[0:2] == [
+                        tiles["a"]["x"], tiles["a"]["y"]] else "m")
+                want = _record_position(_array_of(row), made)
+                got = ctrlmap.object_position(origins[key], state, draws)
+                ck.pin(f"{name}.{step}.{routine}.position", want == got,
+                       f"engine {want} model {got}")
+                ck.pin(f"{name}.{step}.{routine}.draws",
+                       draws.count == _draws_between(rows, row),
+                       f"model {draws.count}, engine "
+                       f"{_draws_between(rows, row)}")
+            want = _engine_columns(_cells_of(row))
+            got = {"effect_timer": cells.effect_timer,
+                   "effect_object": cells.effect_object,
+                   "effect_state": cells.effect_state,
+                   "decal_object": cells.decal_object,
+                   "decal_phase": cells.decal_phase,
+                   "decal_state": cells.decal_state}
+            for column in sorted(want):
+                bad = [(i, want[column][i], got[column][i])
+                       for i in range(len(want[column]))
+                       if want[column][i] != got[column][i]]
+                ck.pin(f"{name}.{step}.{routine}.{column}", not bad,
+                       f"{len(bad)} cell(s) differ, first {bad[:2]}")
+            slots = _engine_slots(_array_of(row))
+            ck.pin(f"{name}.{step}.{routine}.array", slots == cells.objects,
+                   f"engine {[ (i,v) for i,v in enumerate(slots) if v != 255 ]}"
+                   f" model {[ (i,v) for i,v in enumerate(cells.objects) if v != 255 ]}")
+            subtypes = _engine_subtypes(_array_of(row))
+            derived = _model_subtypes(cells)
+            bad = [(oid, subtypes[oid], value) for oid, value in derived.items()
+                   if subtypes[oid] != value]
+            ck.pin(f"{name}.{step}.{routine}.subtypes", not bad, str(bad[:2]))
+
+
+SPECIAL_CASES_SCHEMA = "incubation.special-cases/1"
+#: The idle value of each of the six columns, in `MapState` slot order.
+SPECIAL_IDLE = (0, 255, 255, 255, 0, 255)
+
+
+def _sparse(cells: ctrlmap.CtrlMap) -> list[list[int]]:
+    """Every cell away from idle, as ``[index, +0x0E .. +0x13]``."""
+    columns = (cells.effect_timer, cells.effect_object, cells.effect_state,
+               cells.decal_object, cells.decal_phase, cells.decal_state)
+    out: list[list[int]] = []
+    for i in range(len(cells.effect_state)):
+        row = [column[i] for column in columns]
+        if tuple(row) != SPECIAL_IDLE:
+            out.append([i] + row)
+    return out
+
+
+def emit_special_cases(path: Path, root: str, out: Path) -> int:
+    """The eight placer phases as a case file the GDScript twin replays.
+
+    Sparse rather than whole: every cell away from idle, before and after each
+    call, plus the object slots that are taken.  A model that wrote a cell the
+    engine left alone shows up as an extra row, so the sparse form asserts the
+    same thing the whole map does.
+    """
+    if not path.is_file():
+        LOG.error("%s: no capture; take one with --game-copy", path)
+        return 1
+    document = json.loads(path.read_text(encoding="utf-8"))
+    phases = document.get("phases") or {}
+    state = (phases.get("deaths_state") or {}).get("rows")
+    if not state:
+        LOG.error("the deaths_state phase is missing; re-take the capture")
+        return 1
+    tiles = death_tiles(state)
+    models = sorted(special_models(root, CAPTURE_WORLD_SET))
+    cases: list[dict[str, Any]] = []
+    d00_models = sorted(special_models(root, SPECIAL_D00_WORLD_SET))
+    every: dict[str, Any] = dict(SPECIAL_CALLS)
+    every.update(SPECIAL_D00_CALLS)
+    for name, calls in every.items():
+        rows = (phases.get(name) or {}).get("rows")
+        if not rows:
+            LOG.error("%s: phase missing", name)
+            return 1
+        placed = [r for r in rows if r.get("call") in
+                  ("aMakeFire", "aMakeMine", "aMakeShield", "aMakeGlow",
+                   "aGroundEffectsTick")]
+        # The same refusal :func:`check_special` makes: `zip` truncates, so a
+        # phase that lost a row would emit a shorter case file and pass.
+        if len(placed) != len(calls):
+            LOG.error("%s: %d placer row(s) for %d call(s) -- re-take the "
+                      "capture", name, len(placed), len(calls))
+            return 1
+        d00 = name in SPECIAL_D00_CALLS
+        head = _row_after(rows, "aGetCtrlMapElementPtr")
+        before = _model_columns(
+            _cells_of(head),
+            SPECIAL_D00_WIDTH if d00 else gold.CAPTURE_WIDTH,
+            SPECIAL_D00_HEIGHT if d00 else gold.CAPTURE_HEIGHT)
+        origins = {key: list(_origin_of(rows, key))
+                   for key in (("g",) if d00 else tuple(SPECIAL_TILE_OBJECTS))}
+        steps: list[dict[str, Any]] = []
+        for (routine, spec), row in zip(calls, placed):
+            args = []
+            for item in spec:
+                if item == "gx":
+                    args.append(SPECIAL_D00_CELL[0])
+                elif item == "gy":
+                    args.append(SPECIAL_D00_CELL[1])
+                elif item in SPECIAL_TILE_KEYS:
+                    key, field = SPECIAL_TILE_KEYS[item]
+                    args.append(tiles[key][field])
+                elif item == "z":
+                    args.append(tiles["m"]["cell_height"])
+                elif item == "z+":
+                    args.append(tiles["m"]["cell_height"] + 0x640)
+                else:
+                    args.append(item)
+            after = _model_columns(
+                _cells_of(row),
+                SPECIAL_D00_WIDTH if d00 else gold.CAPTURE_WIDTH,
+                SPECIAL_D00_HEIGHT if d00 else gold.CAPTURE_HEIGHT)
+            slots = _engine_slots(_array_of(row))
+            array = _array_of(row)
+            steps.append({
+                "routine": routine, "args": args,
+                # Which of the phase's origins this call places against --
+                # the checker's own choice, written down rather than
+                # re-derived by the GDScript twin from the phase's name.
+                "origin": ("g" if d00 else
+                           ("a" if routine == "aMakeShield"
+                            and args[0:2] == [tiles["a"]["x"], tiles["a"]["y"]]
+                            else "m")),
+                "cells": _sparse(after),
+                "objects": [[i, v] for i, v in enumerate(slots) if v != 255],
+                # Every taken slot's position, so the GDScript twin's scatter
+                # is compared against the engine's and not only its own.
+                "positions": [[i] + list(_record_position(array, i))
+                              for i, v in enumerate(slots) if v != 255],
+            })
+        cases.append({"name": name, "seed": SPECIAL_SEED,
+                      "origins": origins,
+                      "models": d00_models if d00 else models,
+                      "objects_before": [[i, v] for i, v
+                                         in enumerate(_engine_slots(
+                                             _array_of(head)))
+                                         if v != 255],
+                      "width": before.width,
+                      "height": before.height,
+                      "heights": list(before.cell_height),
+                      "field_types": list(before.field_type),
+                      "action_points": list(before.action_point),
+                      "before": _sparse(before), "steps": steps})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"schema": SPECIAL_CASES_SCHEMA,
+                               "world_set": CAPTURE_WORLD_SET,
+                               "models": models, "cases": cases}, indent=1),
+                   encoding="utf-8")
+    LOG.info("wrote %s -- %d case(s)", out, len(cases))
+    return 0
 
 
 def check(path: Path, root: str) -> int:
@@ -1044,6 +1847,7 @@ def check(path: Path, root: str) -> int:
         if rows:
             fn(ck, root, rows)
     check_deaths(ck, root, phases)
+    check_special(ck, root, phases)
     for line in ck.failed:
         print("FAIL " + line)
     print(f"presentation_gold: {ck.passed}/{ck.passed + len(ck.failed)} checks passed")
@@ -1099,6 +1903,29 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int,
             plan = idle_pose_plan(pose_movements(str(game_copy), phases))
         elif name == "deaths_state":
             plan = deaths_state_plan()
+        elif name in SPECIAL_D00_CALLS:
+            slot_file = (game_copy / "Work" / "Saves2"
+                         / f"_{SPECIAL_D00_SLOT}_.sav")
+            if not slot_file.is_file():
+                LOG.error(
+                    "%s loads slot %d, which is not staged. Build it:\n"
+                    "  python3 tools/sav_parse.py "
+                    "tests/fixtures/saves/_6_.sav --wrap "
+                    "gog_incubation/Missions/_C_116.lev --out %s\n"
+                    "It is a `World_D00` mission, the one world set with "
+                    "GLOW1/2.3DI (docs/97 §38.1).",
+                    name, SPECIAL_D00_SLOT, slot_file)
+                status = 1
+                continue
+            state = (phases.get("deaths_state") or {}).get("rows")
+            plan = special_plan(name, death_tiles(state) if state else {})
+        elif name in SPECIAL_CALLS:
+            state = (phases.get("deaths_state") or {}).get("rows")
+            if not state:
+                LOG.error("%s needs the deaths_state phase first", name)
+                status = 1
+                continue
+            plan = special_plan(name, death_tiles(state))
         else:
             state = (phases.get("deaths_state") or {}).get("rows")
             if not state:
@@ -1138,6 +1965,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="movement count for --print-plan idle_pose")
     parser.add_argument("--check", metavar="ROOT",
                         help="re-read the capture against the game root")
+    parser.add_argument("--emit-death-cases", metavar="PATH", type=Path,
+                        help="write the death creators' cases for the Godot suite")
+    parser.add_argument("--emit-idle-cases", metavar="PATH", type=Path,
+                        help="write the idle scheduler's cases for the Godot suite")
+    parser.add_argument("--emit-special-cases", metavar="PATH", type=Path,
+                        help="write the cell placers' cases for the Godot suite")
+    parser.add_argument("--root", default="gog_incubation",
+                        help="game root for --emit-death-cases")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -1153,6 +1988,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("a death plan is rendered from the deaths_state phase; "
                          "take that phase and read the copy's pres_death_*.plan")
         return 0
+    if args.emit_death_cases:
+        return emit_death_cases(args.out, args.root, args.emit_death_cases)
+    if args.emit_idle_cases:
+        return emit_idle_cases(args.out, args.root, args.emit_idle_cases)
+    if args.emit_special_cases:
+        return emit_special_cases(args.out, args.root, args.emit_special_cases)
     if args.check:
         return check(args.out, args.check)
     if args.game_copy is None or args.dbgcall is None:

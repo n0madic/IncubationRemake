@@ -26,6 +26,7 @@ func run(h: TestHarness) -> void:
 	_shots_and_reactions(h)
 	_rebuild(h)
 	_replay_positions(h)
+	_unit_animations(h)
 
 
 ## One shot and one burst of return fire, at the level `main.gd` shows them.
@@ -78,11 +79,14 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	var sx: int = DictRead.as_int(us["x"])
 	var sy: int = DictRead.as_int(us["y"])
 	var ax: int = sx + 1 if sx + 1 < world.resource.width else sx - 1
+	# Enough hit points to survive the player's shot below: a killed alien
+	# is hidden by the shot's own death stage, and the checks after it read
+	# its body.
 	var _placed: bool = world.apply_unit_record(reactor, {
 		"x": ax, "y": sy, "facing": Combat.direction(ax, sy, sx, sy),
 		"action_state": Reaction.WAITING, "ticket": 1,
 		"mp": Reaction.MIN_MP, "malfunction": 0, "heat": 0,
-		"visibility": 0})
+		"visibility": 0, "hp": 200})
 	var mover: UnitState = world.units_for_ai()[shooter]
 	var entries: Array[Dictionary] = Reaction.drain(world.state,
 		world.units_for_ai(), world.unit_types(), world.weapons(), mover,
@@ -118,16 +122,30 @@ func _shots_and_reactions(h: TestHarness) -> void:
 			fire_clip)
 
 	# --- the player\'s own shot ------------------------------------------
+	# The shot is a sequence on the queue (docs/42 section 4): nothing has
+	# moved until the queue is advanced, and the first frame starts the clip.
+	main._sequences = SequenceQueue.create(null)
+	main._strings = Localization.new()
 	var hold: float = main._present_attack(shooter, sx, sy, ax, sy,
 		DictRead.as_int(us["weapon"]), shot)
+	h.check("shot.is_queued", main._sequences.is_running(),
+		"the nine stages are on the queue")
+	h.equal("shot.first_stage_is_the_clip", main._sequences.current(),
+		ShotSequence.STAGE_CLIP)
+	var _went: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
 	h.equal("shot.body_plays_f", units.states[shooter].mode,
 		CharismaState.Mode.FIRE, "the shooter is playing its combat clip")
 	h.check("shot.body_is_busy", units.states[shooter].is_busy(),
 		"and the caller is told to wait for it")
 	h.check("shot.hold_covers_the_clip",
-		hold >= fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND,
-		"%.3f s asked for a clip that breaks at %.3f s"
-			% [hold, fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND])
+		hold >= float(units.states[shooter].frames_to_break())
+			/ CharismaState.FRAMES_PER_SECOND,
+		"%.3f s asked for a clip that breaks after %d frame(s) at speed 6"
+			% [hold, units.states[shooter].frames_to_break()])
+	# Whatever is left of the sequence is let go, so the reactions below can
+	# be queued and drained on their own terms.
+	main._sequences.skip()
+	units.states[shooter].rest()
 
 	# --- the return fire it drew ------------------------------------------
 	main._queue_reactions(entries, shooter, sx, sy)
@@ -148,6 +166,7 @@ func _shots_and_reactions(h: TestHarness) -> void:
 		DictRead.as_int(mover_inputs.get("height", 0)) > 0
 			and DictRead.as_int(mover_inputs.get("x", -1)) == empty_x,
 		"the mover's own height on the event's cell, %s" % str(mover_inputs))
+	units.states[shooter].fire()
 	h.equal("shot.waits_for_the_shot", main._drain_pending_reactions(), 1,
 		"the shooter\'s own clip runs before the answer to it")
 	units.states[shooter].rest()
@@ -162,9 +181,13 @@ func _shots_and_reactions(h: TestHarness) -> void:
 
 	h.equal("shot.drains_when_the_picture_is_free",
 		main._drain_pending_reactions(), 0, "nothing walking, nothing shooting")
+	h.check("shot.the_reaction_is_queued", main._sequences.is_running(),
+		"the return fire is a shot sequence of its own")
+	var _fired: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
 	h.equal("shot.the_reactor_shoots_back", units.states[reactor].mode,
 		CharismaState.Mode.FIRE,
 		"the unit on overwatch animates its own shot, which nothing drew before")
+	main._sequences.skip()
 
 	# --- the computer\'s two events ---------------------------------------
 	units.states[shooter].rest()
@@ -173,11 +196,21 @@ func _shots_and_reactions(h: TestHarness) -> void:
 		0, str(DictRead.as_int(us["weapon"])), shot.to_dict()).to_dict()
 	var fire_hold: float = main._play_event_body(fire_event, "fire")
 	h.check("shot.event_fire_holds",
-		fire_hold >= fire_clip.break_time() / CharismaState.FRAMES_PER_SECOND,
+		fire_hold >= float(units.states[shooter].frames_to_break())
+			/ CharismaState.FRAMES_PER_SECOND,
 		"a `fire` event asks for %.3f s, not the %.2f s floor"
 			% [fire_hold, AIPlayback.STEP_SECONDS])
+	# The hold is the engine's deterministic frames only: the open-ended
+	# waits are the picture's business (`AIPlayback.advance`'s `busy`), and
+	# a hold that summed their bounds stalled every computer shot for half
+	# a minute.
+	h.check("shot.event_fire_hold_is_bounded", fire_hold < 3.0,
+		"%.3f s: clip, spin, muzzle, impact and resume, no safety bounds"
+			% fire_hold)
+	var _shown: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
 	h.equal("shot.event_fire_plays_the_body", units.states[shooter].mode,
 		CharismaState.Mode.FIRE, "and the body it names is the one playing")
+	main._sequences.skip()
 	units.states[shooter].rest()
 
 	var reaction_event: Dictionary = AIEvent.make("reactions", shooter, sx, sy,
@@ -187,9 +220,18 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	h.check("shot.event_reactions_hold", reaction_hold > 0.0,
 		"a drawn reactor\'s clip is what the replay waits for, %.3f s"
 			% reaction_hold)
+	var _answered: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
 	h.equal("shot.event_reactions_play_the_body", units.states[reactor].mode,
 		CharismaState.Mode.FIRE,
 		"the computer\'s turn shows return fire too")
+	main._sequences.skip()
+
+	# --- a kill, through the real pool ------------------------------------
+	# The death stage runs the creators of docs/42 section 4.8 into the live
+	# pool: the casualty's record has left its cell in `core`, so the
+	# creator's inputs must find it by its coordinates, and blood must
+	# actually appear. A recording host cannot show that; this does.
+	_check_kill_spawns(h, main, units, world, shooter, ax, sy)
 
 	# --- the ammunition gate ----------------------------------------------
 	# `aAttackUnit`'s spend is an 8-bit `sub` with no check (`0x0046C308`), so
@@ -234,6 +276,102 @@ func _shots_and_reactions(h: TestHarness) -> void:
 
 	units.free()
 	main.free()
+
+
+## One kill of the alien at `(ax, ay)` with a real [BlobPool] behind the
+## host: the victim is hidden at the impact stage and the pool holds the
+## death creator's records afterwards.
+func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
+		world: World, shooter: int, ax: int, ay: int) -> void:
+	# The victim is an alien whose type awards experience (docs/22 section
+	# 7.5): a neutral prop or a species-2 object would kill silently.
+	var victim: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == UnitState.PLAYER_ALIEN \
+				and world.unit_types().exp(DictRead.as_int(view["type_id"])) > 0:
+			victim = slot
+			break
+	h.check("kill.an_alien_worth_experience", victim >= 0, "none on the map")
+	if victim < 0:
+		return
+	# Whoever stood on the target cell moves aside; the victim takes it.
+	var standing: int = world.state.unit_at(world.state.index_of(ax, ay))
+	if standing >= 0 and standing != victim:
+		var free: Vector2i = Vector2i(-1, -1)
+		for y: int in range(world.resource.height):
+			for x: int in range(world.resource.width):
+				if world.state.unit_at(world.state.index_of(x, y)) < 0 \
+						and free.x < 0:
+					free = Vector2i(x, y)
+		var _aside: bool = world.apply_unit_record(standing, {"x": free.x,
+			"y": free.y})
+	var geometry: Dictionary = CacheFixture.geometry("A00")
+	main._fx = BlobPool.create(1.0)
+	var index: Dictionary[String, int] = {}
+	var next_id: int = 0
+	for name: Variant in DictRead.as_dict(geometry.get("prototypes", {})):
+		index[DictRead.as_string(name)] = next_id
+		next_id += 1
+	main._fx.hooks().model_index = index
+	var killer: Dictionary = world.unit_view(shooter)
+	var sx: int = DictRead.as_int(killer["x"])
+	var sy: int = DictRead.as_int(killer["y"])
+	var killed: AttackResult = null
+	var last: String = ""
+	for seed_value: int in range(1, 300):
+		# One hit point and no armour, so any hit that connects kills.
+		var _alive: bool = world.apply_unit_record(victim, {"hp": 1, "x": ax,
+			"y": ay, "armour_front": 0, "armour_rear": 0, "absorber": 0})
+		var _ready: bool = world.apply_unit_record(shooter,
+			{"hp": DictRead.as_int(killer["hp"]), "mp": 40, "acted": 0,
+			"ammo": 30, "heat": 0, "action_state": 0, "malfunction": 0})
+		world.rng.randomize_seed(float(seed_value))
+		var attempt: AttackResult = world.submit_attack(
+			AttackCommand.create(shooter, ax, ay))
+		if attempt.fired and DictRead.as_int(world.unit_view(victim)["hp"]) == 0:
+			killed = attempt
+			break
+		last = "fired %s (%s), %d outcome(s), victim hp %d at (%d,%d) vs (%d,%d)" % [
+			str(attempt.fired), attempt.reason, attempt.outcomes.size(),
+			DictRead.as_int(world.unit_view(victim)["hp"]),
+			DictRead.as_int(world.unit_view(victim)["x"]),
+			DictRead.as_int(world.unit_view(victim)["y"]), ax, ay]
+	h.check("kill.found_a_killing_seed", killed != null,
+		"no seed below 300 kills a one-point target; last: " + last)
+	if killed == null:
+		return
+	h.check("kill.awards_experience", killed.xp > 0,
+		"%d point(s) for the alien" % killed.xp)
+	var _marked: int = main._mark_dying(killed.outcomes)
+	if units.get_node_or_null(NodePath("unit_%d" % victim)) == null:
+		var node: Node3D = Node3D.new()
+		node.name = "unit_%d" % victim
+		units.add_child(node)
+	main._sequences = SequenceQueue.create(null)
+	var _hold: float = main._present_attack(shooter, sx, sy, ax, ay,
+		DictRead.as_int(killer["weapon"]), killed)
+	var frames: int = 0
+	var reached_impact: bool = false
+	while main._sequences.is_running() and frames < 400:
+		var _going: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+		if main._sequences.current() == ShotSequence.STAGE_POOL \
+				or main._sequences.current() == ShotSequence.STAGE_RESUME:
+			reached_impact = true
+			break
+	h.check("kill.reached_the_impact", reached_impact,
+		"%d frame(s), on %s" % [frames, main._sequences.current()])
+	h.check("kill.victim_hidden_at_the_impact",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
+		"0x00405320(obj, 5) in the death stage")
+	h.check("kill.death_creator_filled_the_pool", main._fx.live() > 0,
+		"%d live record(s) -- the dead record was found by its cell"
+			% main._fx.live())
+	main._sequences.skip()
+	main._fx = null
 
 
 ## The first `F` clip in the cache that carries a `BREAK` note, by name.
@@ -308,21 +446,27 @@ func _rebuild(h: TestHarness) -> void:
 	h.check("rebuild.the_record_survives_the_death", world.has_unit(victim),
 		"`core` keeps it: the hero counter and the win conditions read it")
 
-	# **Held for as long as the shot that killed it takes to draw.** The
-	# rebuild that drops a casualty runs *before* the event that killed it is
-	# presented -- for the computer's replay always -- so a marine vanished and
-	# the sound of what killed it arrived afterwards.
-	units.linger(victim, SliceMain.DEATH_LINGER_SECONDS)
+	# **Held until the shot that killed it hides it.** The rebuild that drops
+	# a casualty runs *before* the event that killed it is presented -- for
+	# the computer's replay always -- so a marine vanished and the sound of
+	# what killed it arrived afterwards. The engine hides the object in the
+	# death stage of `aPlayFightAnimation` (docs/42 section 4.8), and that is
+	# the one moment it leaves the picture; there is no timer.
+	units.mark_dying(victim)
 	units.build(world, geometry, {})
 	h.check("rebuild.a_casualty_is_held",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) != null,
 		"still drawn while its killer's shot is on screen")
-	units.animate(SliceMain.DEATH_LINGER_SECONDS + 0.01, world)
+	units.animate(5.0, world)
+	h.check("rebuild.no_timer_drops_it",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) != null,
+		"five seconds later it is still there: only the shot hides it")
+	h.check("rebuild.hidden_by_the_death_stage", units.hide_now(victim),
+		"0x00405320(obj, 5) -- gone in this frame")
 	h.check("rebuild.and_then_it_goes",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
-		"%.2f s later, without waiting for another rebuild"
-			% SliceMain.DEATH_LINGER_SECONDS)
-	h.equal("rebuild.the_hold_is_released", units.lingering().size(), 0)
+		"without waiting for another rebuild")
+	h.equal("rebuild.the_hold_is_released", units.dying().size(), 0)
 	units.build(world, geometry, {})
 	h.check("rebuild.the_dead_are_not_drawn",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
@@ -340,6 +484,17 @@ func _rebuild(h: TestHarness) -> void:
 	if mover < 0:
 		units.free()
 		return
+	# docs/42 section 6: a body idles only when a scheduler slot starts its
+	# clip, so one is started here the way the slot would start it.
+	var moving: Dictionary = world.unit_view(mover)
+	var roll: IncRandom = IncRandom.new()
+	roll.randomize_seed(1.0)
+	var idle_clip: CharismaClip = units.library.idle_clip_for(
+		DictRead.as_int(moving["type_id"]), DictRead.as_int(moving["weapon"]),
+		DictRead.as_int(moving["player"]), roll)
+	if idle_clip == null:
+		idle_clip = _clip_with_break()
+	var _idle_length: float = units.states[mover].start_idle(idle_clip)
 	units.animate(0.5, world)
 	var before: Dictionary = units.states[mover].playback()
 	h.check("rebuild.the_idle_has_run",
@@ -369,6 +524,25 @@ func _rebuild(h: TestHarness) -> void:
 	else:
 		h.check("rebuild.a_shot_survives", true,
 			"slot %d has no `F` clip; the carry is checked on its idle" % mover)
+	# **The 60 m freeze stops the clip, not the walk.** docs/42 section 1.3
+	# freezes Charisma above `FREEZE_HEIGHT`; `aExecuteMove` still steps the
+	# unit field to field. `_picture_busy()` and the pending-reaction drain
+	# both gate on `is_walking()`, so a frozen `animate` that returned before
+	# the walk loop left `_walks` full for ever and stalled the replay.
+	var walker: int = -1
+	for slot: int in units.states.keys():
+		walker = slot
+		break
+	if walker >= 0:
+		var cells: PackedInt32Array = PackedInt32Array([
+			world.state.index_of(2, 2), world.state.index_of(3, 2)])
+		units.start_walk(walker, cells, world.state.width, 0.2)
+		h.check("freeze.the_walk_started", units.is_walking())
+		for _step: int in range(8):
+			units.animate(0.1, world, true)
+		h.check("freeze.a_frozen_body_still_finishes_its_walk",
+			not units.is_walking(),
+			"the freeze is the clip's, and `_walks` must still drain")
 	units.free()
 
 
@@ -384,6 +558,106 @@ func _rebuild(h: TestHarness) -> void:
 ## and then jumped back to its source and set off. Placing the body on its
 ## first cell in `start_walk` fixed the one-frame flash of that and not the
 ## rest, which is why this exists as well.
+## docs/42 section 7 at the level `main.gd` queues it (docs/97 section 31):
+## the orbits ahead of a shot, the jam after a reaction, the jump, and the
+## marker on a real pool.
+func _unit_animations(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("anim.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	world.turn.current_player = 0
+	var shooter: int = -1
+	var alien: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == 0 and shooter < 0:
+			shooter = slot
+		elif DictRead.as_int(view["player"]) != 0 and alien < 0:
+			alien = slot
+	if shooter < 0 or alien < 0:
+		h.check("anim.units", false, "_C_140 has no live pair")
+		return
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	main._sequences = SequenceQueue.create(null)
+	main._strings = Localization.new()
+	var us: Dictionary = world.unit_view(shooter)
+	var sx: int = DictRead.as_int(us["x"])
+	var sy: int = DictRead.as_int(us["y"])
+
+	# A shot that raised a skill level: the orbit is queued **before** the
+	# nine stages, as `aAttackUnit` plays it before its caller's animation.
+	var attack: AttackResult = AttackResult.new()
+	attack.fired = true
+	attack.skill_raised = 1
+	var _hold: float = main._present_attack(shooter, sx, sy, sx + 1, sy,
+		DictRead.as_int(us["weapon"]), attack)
+	h.equal("anim.skill_orbit_first", main._sequences.current(),
+		OrbitSequence.STAGE_RAISE)
+	var seen: Array[String] = []
+	var frames: int = 0
+	while main._sequences.is_running() and frames < 400:
+		var stage: String = main._sequences.current()
+		if seen.is_empty() or seen[seen.size() - 1] != stage:
+			seen.append(stage)
+		var _went: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+	h.check("anim.shot_follows_the_orbit",
+		seen.find(OrbitSequence.STAGE_BACK) >= 0
+			and seen.find(ShotSequence.STAGE_CLIP) > seen.find(OrbitSequence.STAGE_BACK),
+		str(seen))
+	# An overheat that destroyed the carrier: kind 1, no wave of its own.
+	main._sequences = SequenceQueue.create(null)
+	var hot: AttackResult = AttackResult.new()
+	hot.fired = true
+	hot.overheat = Combat.OVERHEAT_DESTROYED
+	main._present_shot_orbits(shooter, us, hot)
+	h.equal("anim.overheat_orbit_queued", main._sequences.current(),
+		OrbitSequence.STAGE_RAISE)
+	h.equal("anim.overheat_kinds", [
+		DictRead.as_int(SliceMain.OVERHEAT_KINDS[Combat.OVERHEAT_DESTROYED]),
+		DictRead.as_int(SliceMain.OVERHEAT_KINDS[Combat.OVERHEAT_JAM]),
+		DictRead.as_int(SliceMain.OVERHEAT_KINDS[Combat.OVERHEAT_DAMAGE])],
+		[1, 2, 3], "docs/22 section 8: explosion, jam, damage")
+	# The jam after a reaction, and the jump.
+	main._sequences = SequenceQueue.create(null)
+	main._present_jam(alien)
+	h.equal("anim.jam_orbit_queued", main._sequences.current(),
+		OrbitSequence.STAGE_RAISE)
+	main._sequences = SequenceQueue.create(null)
+	var jump_frames: int = main._present_jump(shooter, Vector2i(sx, sy),
+		Vector2i(sx + 1, sy), true)
+	h.equal("anim.jump_frames", jump_frames, 1 + 6 + 1)
+	h.equal("anim.jump_queued", main._sequences.current(),
+		JumpSequence.STAGE_LEAVE)
+	# The marker on a real pool: four arrows for the selected unit, none
+	# without a selection.
+	main._selected = shooter
+	main._fx = BlobPool.create(1.0, 64)
+	main._fx.hooks().model_index["A_ARROW.3DI"] = 1
+	main._eng3d = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
+	main._raise_marker()
+	h.equal("anim.marker_four_arrows", main._fx.live(), 4,
+		"`0x00473920` raises `0x00422D40` once for the selected unit")
+	main._selected = -1
+	main._raise_marker()
+	h.equal("anim.marker_needs_a_selection", main._fx.live(), 4)
+	main._selected = shooter
+	units.scheduler.enabled = false
+	main._raise_marker()
+	h.equal("anim.marker_off_at_animation_level_1", main._fx.live(), 4,
+		"`0x004604D0() == 1` returns before the creator")
+	units.free()
+	main.free()
+
+
 func _replay_positions(h: TestHarness) -> void:
 	# The events are the real shape: `AIPlan` emits a move with the **source**
 	# in `x`/`y` and the destination in `tx`/`ty`.

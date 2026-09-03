@@ -64,6 +64,16 @@ static func to_int32(value: Variant) -> PackedInt32Array:
 	return out
 
 
+## An `Array` of JSON strings as a typed string array.
+static func to_strings(value: Variant) -> PackedStringArray:
+	var source: Array = as_array(value)
+	var out: PackedStringArray = PackedStringArray()
+	out.resize(source.size())
+	for i: int in range(source.size()):
+		out[i] = as_string(source[i])
+	return out
+
+
 ## An `Array` of JSON numbers as a typed byte array.
 static func to_bytes(value: Variant) -> PackedByteArray:
 	var source: Array = as_array(value)

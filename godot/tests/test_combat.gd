@@ -46,9 +46,12 @@ func run(h: TestHarness) -> void:
 	_reveals(h)
 	_defence_gate(h)
 	_reaction_queue(h)
+	_jam_and_warp(h)
+	_heal(h)
 	_interaction(h)
 	_the_hatch(h)
 	_the_hero_counter(h)
+	_fog_probe(h)
 
 
 # --- the tables --------------------------------------------------------------
@@ -105,10 +108,13 @@ static func _scene(w: int = SCENE_SIZE, hgt: int = SCENE_SIZE) -> Scene:
 	var zeros: Array = []
 	var ones: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(n):
 		zeros.append(0)
 		ones.append(Interact.FIELD_TYPE_FREE)
 		links.append(-1)
+		idle.append(255)
 	var document: Dictionary = {
 		"width": w, "height": hgt,
 		"header": {"name": "combat_spec", "next_map": "", "map_type": 0,
@@ -116,9 +122,10 @@ static func _scene(w: int = SCENE_SIZE, hgt: int = SCENE_SIZE) -> Scene:
 			"camera_height": 0, "equip_points": [0, 0, 0, 0],
 			"skill_level": 0, "tech_level": 0},
 		"cells": {"height": zeros, "field_type": ones, "action_point": zeros,
-			"unit": links, "effect0": zeros, "effect1": zeros,
-			"effect2": zeros, "effect3": zeros, "land": zeros,
-			"start_index": links, "decal0": zeros, "decal1": zeros},
+			"unit": links, "effect0": zeros, "effect1": idle,
+			"effect2": idle, "effect3": idle, "effect4": zeros,
+			"effect5": idle, "land": zeros,
+			"start_index": links},
 	}
 	var res: MapResource = MapResource.from_document(document)
 	var scene: Scene = Scene.new()
@@ -500,8 +507,9 @@ func _visibility(h: TestHarness) -> void:
 		probed[seen.slot],
 		"the probe is the same computation, not a second one")
 
-	# A woken group would survive a probe -- the orders are not in the buffer
-	# the engine restores -- so the probe does not wake one at all.
+	# The pass itself is a query and wakes nobody; the wake the engine's
+	# restore misses is [method World.probe_fog]'s, once per player command
+	# (docs/97 section 34), and it is checked on a real world below.
 	var quiet: Scene = _scene()
 	_place(quiet, 0, 0, 1, 1, 0)
 	var sleeper_probe: UnitState = _place(quiet, 1, UnitState.PLAYER_ALIEN, 3,
@@ -510,7 +518,7 @@ func _visibility(h: TestHarness) -> void:
 	sleeper_probe.order2 = 9
 	var _probe: Dictionary[int, int] = Visibility.states_for(quiet.state,
 		quiet.units, quiet.types, 0, 1, 1)
-	h.equal("fog.the_probe_wakes_nobody", sleeper_probe.order,
+	h.equal("fog.the_pass_itself_wakes_nobody", sleeper_probe.order,
 		Visibility.ALERTING_ORDERS[0],
 		"a query that promoted an order would be a command")
 
@@ -718,6 +726,189 @@ func _reaction_queue(h: TestHarness) -> void:
 	h.check("reaction.death_stops_the_drain",
 		not frail.is_alive() and stopped.size() == 1,
 		"%d shot(s) before hp %d" % [stopped.size(), frail.hp])
+
+
+## docs/25 section 6's jam arm and the pad's warp arm (docs/97 section 31).
+func _jam_and_warp(h: TestHarness) -> void:
+	# A reactor whose magazine the shot empties leaves the queue: the shot
+	# reports it, and its ticket is cleared for the next drain.
+	var scene: Scene = _reaction_scene()
+	var mover: UnitState = _at(scene, 0)
+	var first: UnitState = _at(scene, 2)
+	first.ammo = 1
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	var fired: Array[Dictionary] = Reaction.drain(scene.state, scene.units,
+		scene.types, scene.weapons, mover, 1, 1, TurnState.MODE_CAMPAIGN,
+		_turn(), rng)
+	var by_slot: Dictionary = {}
+	for shot: Dictionary in fired:
+		by_slot[DictRead.as_int(shot["reactor"])] = shot
+	h.check("jam.empty_magazine_jams", by_slot.has(2)
+		and DictRead.as_bool(DictRead.as_dict(by_slot[2])["jammed"])
+		and first.ticket == 0,
+		"0x0046CE0E: `+0x3D == 0` after the shot clears `+0x59`")
+	h.check("jam.the_other_reactor_keeps_its_ticket", by_slot.has(1)
+		and not DictRead.as_bool(DictRead.as_dict(by_slot[1])["jammed"])
+		and _at(scene, 1).ticket == 2, "")
+	h.equal("jam.the_shot_reports_its_own_ticket",
+		DictRead.as_int(DictRead.as_dict(by_slot[2])["ticket"]), 1,
+		"the ticket in the entry is the one the reactor fired with")
+	# A heat counter one under the cap reaches it on the reaction shot.
+	var hot: Scene = _reaction_scene()
+	var heated: UnitState = _at(hot, 2)
+	heated.heat = Combat.max_heat(hot.weapons, heated) - 1
+	rng.randomize_seed(1.0)
+	var hot_fired: Array[Dictionary] = Reaction.drain(hot.state, hot.units,
+		hot.types, hot.weapons, _at(hot, 0), 1, 1, TurnState.MODE_CAMPAIGN,
+		_turn(), rng)
+	h.check("jam.heat_at_cap_jams", hot_fired.size() >= 1
+		and DictRead.as_bool(hot_fired[0]["jammed"]) and heated.ticket == 0,
+		"heat %d, cap %d" % [heated.heat, Combat.max_heat(hot.weapons, heated)])
+
+	# The warp: the fill is the gate, the record relinks, the points go to
+	# zero, `+0x39` is 5, and the queue drains at the landing cell.
+	var jumper: Dictionary = TestFixtures.unit(0, 2, 2, 0, 0, 4, 0,
+		[UnitState.JET_PACK_EQUIP_ID])
+	var world: World = World.create(TestFixtures.map_document(7, 7,
+		[jumper, TestFixtures.unit(1, 6, 6, 0, 1)]), TestFixtures.balance(),
+		1.0)
+	var fill: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(0))
+	h.check("warp.the_fill_marks_targets", fill.warp_count() > 0,
+		"%d warp cell(s)" % fill.warp_count())
+	var refused: WarpResult = world.submit_warp(WarpCommand.create(0, 2, 3))
+	h.check("warp.a_reachable_cell_is_not_a_warp",
+		not refused.ok and DictRead.as_int(world.unit_view(0)["x"]) == 2,
+		refused.reason)
+	var target: Vector2i = Vector2i(-1, -1)
+	for y: int in range(7):
+		for x: int in range(7):
+			if fill.is_warp_target(x, y) and target.x < 0:
+				target = Vector2i(x, y)
+	var jumped: WarpResult = world.submit_warp(
+		WarpCommand.create(0, target.x, target.y))
+	var after: Dictionary = world.unit_view(0)
+	h.check("warp.relinks_the_record", jumped.ok
+		and DictRead.as_int(after["x"]) == target.x
+		and DictRead.as_int(after["y"]) == target.y
+		and world.state.unit_at(world.state.index_of(2, 2)) == MapState.NO_UNIT
+		and world.state.unit_at(world.state.index_of(target.x, target.y)) == 0,
+		"%s -> %s" % [jumped.reason, str(target)])
+	h.equal("warp.from_is_kept", Vector2i(jumped.from_x, jumped.from_y),
+		Vector2i(2, 2))
+	h.equal("warp.mp_zeroed", DictRead.as_int(after["mp"]), 0,
+		"`mov byte [esi + 0x15], 0` at 0x00473046")
+	h.equal("warp.acted_5", DictRead.as_int(after["acted"]), World.ACTED_WARPED,
+		"`mov byte [esi + 0x39], 5` at 0x0047304A")
+	h.check("warp.a_stale_slot_is_refused",
+		not world.submit_warp(WarpCommand.create(9, 1, 1)).ok, "")
+
+
+## docs/29 section 1.1's button 2 -- the heal command (docs/97 section 31).
+func _heal(h: TestHarness) -> void:
+	var scene: Scene = _scene()
+	# The fixture type's 20 hit points are **above** the 15 the routine caps
+	# a human at (`cmp eax, 0xF`), so every value here stays under 15: a
+	# record over the cap is pulled *down* to it by `0x0047B180`.
+	var healer: UnitState = _place(scene, 0, 0, 2, 2, 0)
+	healer.hp = 13
+	healer.equipment = PackedInt32Array([Interact.EQUIP_SMALL_MEDIC_KIT])
+	# Facing 0 looks at +y (`Interact.FACING_DY[0]`); the patient stands there.
+	var patient: UnitState = _place(scene, 1, 0, 2, 3, 0)
+	patient.hp = 12
+	h.equal("heal.power.small_kit", Interact.heal_power(healer), 1)
+	var large: UnitState = _place(scene, 5, 0, 5, 5, 0)
+	large.equipment = PackedInt32Array([Interact.EQUIP_LARGE_MEDIC_KIT])
+	h.equal("heal.power.large_kit", Interact.heal_power(large), 3)
+	h.equal("heal.power.none", Interact.heal_power(patient), 0)
+	large.ep = 25
+	h.equal("heal.max_hp.type_plus_ep_over_12",
+		Interact.max_hit_points(scene.types, large), 15,
+		"20 + 2 capped at 15")
+	large.player = UnitState.PLAYER_ALIEN
+	h.equal("heal.max_hp.computer_is_type",
+		Interact.max_hit_points(scene.types, large), 20)
+	var result: Dictionary = Interact.heal_command(scene.state, scene.units,
+		scene.types, healer)
+	h.check("heal.front.heals_the_patient", DictRead.as_bool(result["ok"])
+		and DictRead.as_int(result["target"]) == 1 and patient.hp == 13
+		and DictRead.as_int(result["delta"]) == 1, str(result))
+	h.equal("heal.front.charges_one_point", healer.mp, 3)
+	h.equal("heal.front.acted_3", healer.acted, Interact.ACTED_HEALED)
+	patient.hp = 17
+	result = Interact.heal_command(scene.state, scene.units, scene.types,
+		healer)
+	h.check("heal.over_the_cap_is_pulled_down_to_it", patient.hp == 15
+		and DictRead.as_int(result["delta"]) == 2,
+		"`0x0047B180` writes the ceiling whenever hp + power is not under it")
+	# A patient at its ceiling, or another player's, sends the heal home.
+	patient.hp = 15
+	healer.hp = 14
+	result = Interact.heal_command(scene.state, scene.units, scene.types,
+		healer)
+	h.check("heal.full_patient.falls_back_to_self",
+		DictRead.as_bool(result["ok"]) and DictRead.as_bool(result["self_heal"])
+		and healer.hp == 15, str(result))
+	patient.hp = 10
+	patient.player = 1
+	healer.hp = 14
+	result = Interact.heal_command(scene.state, scene.units, scene.types,
+		healer)
+	h.check("heal.other_player.falls_back_to_self",
+		DictRead.as_bool(result["ok"]) and patient.hp == 10 and healer.hp == 15,
+		str(result))
+	# Nothing to heal: the command answers 0, the pad still writes `acted`.
+	healer.hp = 15
+	healer.mp = 4
+	healer.acted = 0
+	result = Interact.heal_command(scene.state, scene.units, scene.types,
+		healer)
+	h.check("heal.nothing_to_heal.answers_0_and_still_acts",
+		not DictRead.as_bool(result["ok"]) and healer.mp == 4
+		and healer.acted == Interact.ACTED_HEALED,
+		"the join at 0x004733F3 is after both branches")
+	healer.mp = 0
+	healer.hp = 10
+	result = Interact.heal_command(scene.state, scene.units, scene.types,
+		healer)
+	h.check("heal.no_mp.refused", not DictRead.as_bool(result["ok"])
+		and healer.hp == 10, DictRead.as_string(result["reason"]))
+	# The pad's gate `0x0047B4C0`: a kit and somebody to heal.
+	healer.hp = 13
+	healer.mp = 4
+	patient.hp = 12
+	patient.player = 0
+	h.check("heal.gate.offered_with_a_kit_and_a_patient",
+		Interact.may_heal(scene.state, scene.units, scene.types, healer), "")
+	healer.equipment = PackedInt32Array()
+	h.check("heal.gate.no_kit_not_offered",
+		not Interact.may_heal(scene.state, scene.units, scene.types, healer), "")
+	healer.equipment = PackedInt32Array([Interact.EQUIP_SMALL_MEDIC_KIT])
+	healer.hp = 15
+	patient.hp = 15
+	h.check("heal.gate.nobody_to_heal_not_offered",
+		not Interact.may_heal(scene.state, scene.units, scene.types, healer), "")
+	patient.player = 1
+	healer.hp = 14
+	h.check("heal.gate.self_under_the_ceiling_is_offered",
+		Interact.may_heal(scene.state, scene.units, scene.types, healer), "")
+	# The world's own command. The fixture's unit carries no kit, so the
+	# power is 0: the engine still answers 1 (the unit is under its ceiling),
+	# heals nothing, and the pad charges the point -- the pad only offers
+	# the button with a kit, which is the UI's gate and not this routine's.
+	var world: World = TestFixtures.tiny_world()
+	var healed: Dictionary = world.submit_heal(HealCommand.create(0))
+	var after: Dictionary = world.unit_view(0)
+	h.check("heal.world.no_kit_heals_nothing_but_still_charges",
+		DictRead.as_bool(healed["ok"]) and DictRead.as_int(healed["delta"]) == 0
+		and DictRead.as_int(after["hp"]) == 10 and DictRead.as_int(after["mp"]) == 3
+		and DictRead.as_int(after["acted"]) == Interact.ACTED_HEALED,
+		str(healed))
+	h.check("heal.world.no_such_unit",
+		not DictRead.as_bool(world.submit_heal(HealCommand.create(9))["ok"]), "")
+	h.check("heal.world.gate_refuses_without_a_kit", not world.may_heal(0),
+		"the pad never offers button 2 to a unit with no kit")
 
 
 ## One unit out of a scene, narrowed.  `scene.units` is an untyped
@@ -985,6 +1176,42 @@ func _world_wiring(h: TestHarness) -> void:
 		DictRead.as_int(DictRead.as_dict(world.unit_view(1))["visibility"]),
 		Visibility.FULL,
 		"in the open at four fields, so the ray is clear")
+
+	# --- the ground fire, end to end -------------------------------------
+	# docs/42 section 9.1: a glow laid at phase 2 is decayed to 1 by one
+	# hand-over's tick and burnt by the next one's sweep, and the flames
+	# **remove** what they reach -- which since `0x00477ABD` means kill.
+	# The mechanism is pinned above (`hero.removal_zeroes_the_hit_points`);
+	# this is the path, through `World`, because "removed" and "still counted"
+	# is exactly the state that used to leave a burned marine standing.
+	var burn: World = _wired_world()
+	burn.state.set_special_models(PackedStringArray([
+		CellObjects.GLOW_MODEL_LIT, CellObjects.GLOW_MODEL_FRESH]))
+	var victim: Dictionary = burn.unit_view(0)
+	h.check("ground.the_victim_starts_alive",
+		DictRead.as_int(victim["hp"]) > 0 and burn.live_unit_count(0) > 0)
+	var counted: int = burn.live_unit_count(0)
+	h.check("ground.the_glow_was_laid",
+		CellObjects.place_glow(burn.state, DictRead.as_int(victim["x"]),
+			DictRead.as_int(victim["y"]), CellObjects.GLOW_PHASE_FRESH) >= 0,
+		"phase 2, on the marine's own cell")
+	var first_hand: TurnResult = burn.submit_end_turn(EndTurnCommand.create())
+	h.check("ground.the_first_hand_over_only_decays",
+		first_hand.ok and DictRead.as_int(burn.unit_view(0)["hp"]) > 0,
+		"the sweep runs before the decay, so phase 2 does not ignite")
+	var passes: int = 0
+	while passes < 8 and DictRead.as_int(burn.unit_view(0).get("hp", 0)) > 0:
+		var _next: TurnResult = burn.submit_end_turn(EndTurnCommand.create())
+		passes += 1
+	var burnt: Dictionary = burn.unit_view(0)
+	h.equal("ground.the_flames_killed_and_unlinked",
+		[DictRead.as_int(burnt["hp"]),
+			burn.state.unit_at(burn.state.index_of(
+				DictRead.as_int(victim["x"]), DictRead.as_int(victim["y"]))),
+			burn.live_unit_count(0)],
+		[0, MapState.NO_UNIT, counted - 1],
+		"aRemoveUnitElement's own 0x00477ABD, and aGetLiveUnitCount stops "
+		+ "counting it for that reason alone")
 
 	# --- the reaction drain, after a move --------------------------------
 	var battle: World = _wired_world()
@@ -1494,6 +1721,22 @@ func _the_hero_counter(h: TestHarness) -> void:
 		[true, 0],
 		"`mov cl, [eax+0x24]; inc cl; mov [eax], cl` is byte-wide")
 
+	# `0x00477ABD` -- the routine's own last instruction, `mov byte
+	# [esi+0x16], 0`. Removal kills, which is the whole of a ground fire's
+	# lethality (`aPlayGroundFireAnimation` is the one of its twenty call
+	# sites that arrives without a damage call first).
+	var alive_turn: TurnState = _turn()
+	var burnt_scene: Scene = _scene()
+	burnt_scene.types = types
+	var burnt: UnitState = _place(burnt_scene, 0, 0, 3, 3, 0)
+	var before_hp: int = burnt.hp
+	var _c: bool = UnitState.remove(burnt_scene.state, alive_turn, burnt)
+	h.equal("hero.removal_zeroes_the_hit_points",
+		[before_hp > 0, burnt.hp, burnt.is_alive(),
+			burnt_scene.state.unit_at(burnt_scene.state.index_of(3, 3))],
+		[true, 0, false, MapState.NO_UNIT],
+		"0x00477ABD is the last thing aRemoveUnitElement does")
+
 	# The hatch removes its carrier through the same routine.
 	var carrier_type: int = 57
 	var brood: UnitTypeTable = UnitTypeTable.from_rows([
@@ -1719,3 +1962,59 @@ func _conversion_and_absorber(h: TestHarness) -> void:
 	h.check("promotion.is_inside_the_per_unit_pass",
 		not saw and behind.visibility == Visibility.CONTACT,
 		"hidden behind the wall, promoted to a lone contact by one pass")
+
+
+## docs/97 section 34 -- the per-command fog probe: it restores what it saw
+## and leaves the groups it woke woken, unless the flag asks for the quiet
+## probe this remake used to have.
+func _fog_probe(h: TestHarness) -> void:
+	# The wake is the computer's own: `unit.player == PLAYER_ALIEN` guards it.
+	var alien: Dictionary = TestFixtures.unit(1, 4, 2, 0,
+		UnitState.PLAYER_ALIEN)
+	alien["order"] = Visibility.ALERTING_ORDERS[0]
+	alien["order2"] = 9
+	alien["order2_param"] = 7
+	alien["group"] = 3
+	var world: World = World.create(TestFixtures.map_document(7, 7,
+		[TestFixtures.unit(0, 2, 2), alien]), TestFixtures.balance(), 1.0)
+	var seen: Dictionary[int, int] = world.display_visibility()
+	h.check("probe.the_query_sees_the_alien",
+		DictRead.as_int(seen.get(1, Visibility.HIDDEN)) != Visibility.HIDDEN,
+		"an alien two fields away on flat ground")
+	var woken: int = world.probe_fog()
+	h.check("probe.wakes_the_group", woken >= 1
+		and DictRead.as_int(world.unit_view(1)["order"]) == 9,
+		"%d unit(s) promoted" % woken)
+	h.equal("probe.restores_the_visibility_byte",
+		DictRead.as_int(world.unit_view(1)["visibility"]), 0,
+		"the byte the fixture placed it with, put back by the probe")
+	# A blip is not a sight: an alien the observer only scans keeps its
+	# order, because the wake is the pass's own line-of-sight arm and not a
+	# rule about the byte the pass left behind.
+	var scanner: Dictionary = TestFixtures.unit(0, 2, 2, 0, 0, 4, 0,
+		[Visibility.EQUIP_SCAN_MODULE])
+	var far: Dictionary = TestFixtures.unit(1, 2, 6, 0, UnitState.PLAYER_ALIEN)
+	far["order"] = Visibility.ALERTING_ORDERS[0]
+	far["order2"] = 9
+	far["group"] = 3
+	var blip_world: World = World.create(TestFixtures.map_document(7, 7,
+		[scanner, far]), TestFixtures.balance(), 1.0)
+	var wall: int = blip_world.state.index_of(2, 4)
+	blip_world.state.set_field_type(wall, Interact.FIELD_TYPE_WALL)
+	blip_world.state.set_height(wall, 32000)
+	var blip_seen: Dictionary[int, int] = blip_world.display_visibility()
+	var _woke: int = blip_world.probe_fog()
+	h.check("probe.a_blip_is_not_a_sight",
+		DictRead.as_int(blip_seen.get(1, Visibility.HIDDEN))
+			== Visibility.HIDDEN
+		or DictRead.as_int(blip_world.unit_view(1)["order"])
+			== Visibility.ALERTING_ORDERS[0],
+		"a unit the pass marks without a line of sight wakes nobody")
+
+	var flagged: World = World.create(TestFixtures.map_document(7, 7,
+		[TestFixtures.unit(0, 2, 2), alien]), TestFixtures.balance(), 1.0)
+	flagged.compat_flags = PackedStringArray([World.COMPAT_FOG_PROBE_QUIET])
+	h.equal("probe.the_flag_makes_it_quiet", flagged.probe_fog(), 0)
+	h.equal("probe.the_flag_leaves_the_order",
+		DictRead.as_int(flagged.unit_view(1)["order"]),
+		Visibility.ALERTING_ORDERS[0])

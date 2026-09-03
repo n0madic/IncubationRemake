@@ -469,6 +469,15 @@ def _execute_arm_checks(c: Checker, delays: dict[int, int]) -> None:
             and (clean.x, clean.y) == target,
             f"the same walk without the mine runs to the target: "
             f"{clean.steps} step(s), at ({clean.x},{clean.y})")
+    # `docs/26` §6.2 -- the whole detonation block is the caller's
+    # (`0x0046EC0F` gates it and `0x0046EC25` picks the arm by the type's
+    # size), so what the walk reports is that it stopped on one.
+    c.check("execute.mine_stop_is_reported_for_the_caller",
+            not mined.ok and mined.stopped_on_mine
+            and [e.kind for e in mined.events] == ["mine"]
+            and mined.detonate == [],
+            "the routine says a mine ended it; `inclib.ai._detonate` is the "
+            "arm that fires, and `ai_runtime.check_mine` runs it")
 
 
 def _walk_checks(grid: Grid, mover: Mover, delays: dict[int, int],

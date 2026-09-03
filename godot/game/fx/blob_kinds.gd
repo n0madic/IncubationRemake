@@ -81,6 +81,9 @@ class TickResult extends RefCounted:
 	var deleted: bool = false
 	var delete_requested: bool = false
 	var global_signal: bool = false
+	## Arm 45's `mov [0x4FE63C], ebp` -- `ebp` is the sweep's zero, so the arm
+	## **clears** the arrived flag every tick (docs/42 section 4.6).
+	var global_signal_clear: bool = false
 	var target_missing: bool = false
 	var model_missing: bool = false
 	var spawns: Array[Dictionary] = []
@@ -92,6 +95,7 @@ class TickResult extends RefCounted:
 			"deleted": 1 if deleted else 0,
 			"delete_requested": 1 if delete_requested else 0,
 			"global_signal": 1 if global_signal else 0,
+			"global_signal_clear": 1 if global_signal_clear else 0,
 			"target_missing": 1 if target_missing else 0,
 			"model_missing": 1 if model_missing else 0,
 			"spawns": spawns.duplicate(), "models": models.duplicate()}
@@ -700,9 +704,10 @@ static func _kind_44(b: Blob, h: BlobHooks, r: TickResult) -> void:
 		_spawn(b, h, r, CREATE_PLASMA_SPARKS, [b.x, b.y, b.z, 10, 10])
 
 
-static func _kind_45(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
+static func _kind_45(b: Blob, _h: BlobHooks, r: TickResult) -> void:
 	_move_quarter(b)
 	b.rot_y = IncInt.u16(7 - (b.life >> 1))
+	r.global_signal_clear = true
 
 
 static func _kind_46(b: Blob, _h: BlobHooks, _r: TickResult) -> void:

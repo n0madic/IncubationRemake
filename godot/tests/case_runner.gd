@@ -190,9 +190,12 @@ static func build_world(case: Dictionary) -> Dictionary:
 
 	var zeros: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(width * height):
 		zeros.append(0)
 		links.append(-1)
+		idle.append(255)
 
 	var document: Dictionary = {
 		"width": width,
@@ -210,9 +213,9 @@ static func build_world(case: Dictionary) -> Dictionary:
 			"unit": cells["unit"],
 			# The fill reads none of these; they are zeroed rather than
 			# invented, so a case file never looks like it asserts them.
-			"effect0": zeros, "effect1": zeros, "effect2": zeros,
-			"effect3": zeros, "land": zeros, "start_index": links,
-			"decal0": zeros, "decal1": zeros,
+			"effect0": zeros, "effect1": idle, "effect2": idle,
+			"effect3": idle, "effect4": zeros, "effect5": idle,
+			"land": zeros, "start_index": links,
 		},
 	}
 	var res: MapResource = MapResource.from_document(document)
@@ -244,9 +247,12 @@ static func build_combat_world(case: Dictionary, types_doc: Dictionary,
 
 	var zeros: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(width * height):
 		zeros.append(0)
 		links.append(-1)
+		idle.append(255)
 	var document: Dictionary = {
 		"width": width, "height": height,
 		"header": {
@@ -258,9 +264,9 @@ static func build_combat_world(case: Dictionary, types_doc: Dictionary,
 		"cells": {
 			"height": cells["height"], "field_type": cells["field_type"],
 			"action_point": cells["action_point"], "unit": cells["unit"],
-			"effect0": zeros, "effect1": zeros, "effect2": zeros,
-			"effect3": zeros, "land": zeros, "start_index": links,
-			"decal0": zeros, "decal1": zeros,
+			"effect0": zeros, "effect1": idle, "effect2": idle,
+			"effect3": idle, "effect4": zeros, "effect5": idle,
+			"land": zeros, "start_index": links,
 		},
 	}
 	var res: MapResource = MapResource.from_document(document)
@@ -315,6 +321,9 @@ static func combat_unit(record: Dictionary) -> UnitState:
 	unit.group = DictRead.as_int(record["group"])
 	unit.turn_start_x = DictRead.as_int(record["turn_start_x"])
 	unit.turn_start_y = DictRead.as_int(record["turn_start_y"])
+	unit.ep = DictRead.as_int(record["ep"])
+	unit.tp = DictRead.as_int(record["tp"])
+	unit.kills = DictRead.as_int(record["kills"])
 	unit.skills = DictRead.to_int32(record["skills"])
 	unit.equipment = DictRead.to_int32(record["equipment_ids"])
 	return unit
@@ -334,9 +343,12 @@ static func build_lcl_world(case: Dictionary) -> Dictionary:
 	var cells: Dictionary = DictRead.as_dict(case["cells"])
 	var zeros: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(width * height):
 		zeros.append(0)
 		links.append(-1)
+		idle.append(255)
 	var document: Dictionary = {
 		"width": width, "height": height,
 		"header": {
@@ -348,9 +360,9 @@ static func build_lcl_world(case: Dictionary) -> Dictionary:
 		"cells": {
 			"height": cells["height"], "field_type": cells["field_type"],
 			"action_point": cells["action_point"], "unit": cells["unit"],
-			"effect0": zeros, "effect1": zeros, "effect2": zeros,
-			"effect3": zeros, "land": zeros, "start_index": links,
-			"decal0": zeros, "decal1": zeros,
+			"effect0": zeros, "effect1": idle, "effect2": idle,
+			"effect3": idle, "effect4": zeros, "effect5": idle,
+			"land": zeros, "start_index": links,
 		},
 	}
 	var res: MapResource = MapResource.from_document(document)

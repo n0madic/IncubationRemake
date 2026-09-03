@@ -30,6 +30,7 @@ func run(h: TestHarness) -> void:
 	_check_shots(h)
 	_inside_the_level(h)
 	_hands_the_view_back(h)
+	_check_orbits(h)
 
 
 ## A flat map with one rig on it, no tree needed.
@@ -604,6 +605,95 @@ func _check_shots(h: TestHarness) -> void:
 ## A turn that would take the eye out of the level is **refused** -- unless
 ## no quadrant fits at all, where refusing every direction would only trap
 ## the player. Over every field of `_C_140` at all four quadrants.
+## A [ShotHost] over a real rig and the engine's tables, so an orbit's
+## forty turns run the same arithmetic the camera does.
+class RigHost extends ShotHost:
+	var rig: CameraRig = null
+	var geometry: Eng3dGeometry = null
+	var object: Vector3i = Vector3i.ZERO
+	var height: int = 0
+	var last_offset: Vector3i = Vector3i.ZERO
+	var sets: int = 0
+
+	func object_of(_slot: int) -> Vector3i:
+		return object
+
+	func unit_height(_slot: int) -> int:
+		return height
+
+	func camera_eye() -> Vector3i:
+		return rig.eye()
+
+	func camera_target() -> Vector3i:
+		return rig.target()
+
+	func fly(eye_at: Vector3i, target_at: Vector3i) -> int:
+		return rig.fly(eye_at, target_at)
+
+	func camera_flying() -> bool:
+		return rig.is_flying()
+
+	func set_camera(eye_at: Vector3i, target_at: Vector3i) -> void:
+		rig.set_now(eye_at, target_at)
+		last_offset = eye_at - target_at
+		sets += 1
+
+	func rotate(v: Vector3i, angles: Vector3i) -> Vector3i:
+		return geometry.rotate(v, angles)
+
+
+## docs/42 section 7.5 -- the orbits' forty turns through `0x004039A0`
+## on a real rig: `+100 * 40 = 4000` of 4096 for the skill orbit, `-40 *
+## 40 = -1600` for the heal's, and the flight back to the six numbers
+## read at the start (docs/97 section 31).
+func _check_orbits(h: TestHarness) -> void:
+	var geometry: Eng3dGeometry = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
+	if geometry == null or not geometry.is_loaded():
+		h.check("orbit.tables", false, "no Eng3d tables in the cache")
+		return
+	for kind: String in [OrbitSequence.KIND_SKILL, OrbitSequence.KIND_HEAL]:
+		var rig: CameraRig = _flat_rig(20, 20)
+		var host: RigHost = RigHost.new()
+		host.rig = rig
+		host.geometry = geometry
+		host.object = _v(5 * FIELD, 5 * FIELD, 0)
+		host.height = BODY
+		var eye0: Vector3i = host.object + _v(-9000, -12000, 8000)
+		rig.set_now(eye0, host.object)
+		var queue: SequenceQueue = SequenceQueue.create(null)
+		var _bound: int = OrbitSequence.enqueue(queue, host, 0, kind, "", [])
+		var frames: int = 0
+		while queue.is_running() and frames < 2000:
+			var _still: bool = queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+			var _flying: bool = rig.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+			frames += 1
+		var spec: Dictionary = OrbitSequence.spec(kind)
+		var start: Vector3i = spec["start"]
+		var step: int = DictRead.as_int(spec["step"])
+		h.equal("orbit.%s.sets_40" % kind, host.sets, OrbitSequence.FRAMES)
+		h.equal("orbit.%s.offset_after_40_turns" % kind, host.last_offset,
+			OrbitSequence.turned(host, start, step, OrbitSequence.FRAMES),
+			"the same accumulation the sequence runs")
+		var from: int = geometry.angle(start.x, start.y)
+		var to: int = geometry.angle(host.last_offset.x, host.last_offset.y)
+		var swept: int = posmod(to - from, WorldSpace.ANGLE_FULL_TURN)
+		var expected: int = posmod(step * OrbitSequence.FRAMES,
+			WorldSpace.ANGLE_FULL_TURN)
+		h.check("orbit.%s.sweeps_%d" % [kind, step * OrbitSequence.FRAMES],
+			absi(swept - expected) <= 8 or absi(swept - expected)
+				>= WorldSpace.ANGLE_FULL_TURN - 8,
+			"swept %d of 4096, expected %d" % [swept, expected])
+		h.equal("orbit.%s.radius_kept" % kind,
+			Eng3dGeometry.distance_2d(host.last_offset.x, host.last_offset.y)
+				>= Eng3dGeometry.distance_2d(start.x, start.y) - 40, true,
+			"the table arithmetic loses a little each turn, never a lot")
+		h.equal("orbit.%s.flies_back" % kind, rig.eye_goal(), eye0,
+			"the six numbers read at the start")
+		h.check("orbit.%s.ends" % kind, not queue.is_running(),
+			"%d frames" % frames)
+		rig.free()
+
+
 func _inside_the_level(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	if loaded.is_empty():

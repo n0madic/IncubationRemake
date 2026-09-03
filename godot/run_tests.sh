@@ -109,6 +109,23 @@ rm -f "$HERE/generated/blob/native.json"
     && cp "$REPO/tests/fixtures/blob/cases_native.json" \
           "$HERE/generated/blob/native.json"
 
+# The presentation's death-creator cases, on the same terms: every record
+# the engine left for the seven-plus-three death creators, replayed by the
+# GDScript programs.
+mkdir -p "$HERE/generated/presentation"
+rm -f "$HERE/generated/presentation/death.json"
+[ -f "$REPO/tests/fixtures/presentation/cases_death.json" ] \
+    && cp "$REPO/tests/fixtures/presentation/cases_death.json" \
+          "$HERE/generated/presentation/death.json"
+rm -f "$HERE/generated/presentation/special.json"
+[ -f "$REPO/tests/fixtures/presentation/cases_special.json" ] \
+    && cp "$REPO/tests/fixtures/presentation/cases_special.json" \
+          "$HERE/generated/presentation/special.json"
+rm -f "$HERE/generated/presentation/idle.json"
+[ -f "$REPO/tests/fixtures/presentation/cases_idle.json" ] \
+    && cp "$REPO/tests/fixtures/presentation/cases_idle.json" \
+          "$HERE/generated/presentation/idle.json"
+
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1
 

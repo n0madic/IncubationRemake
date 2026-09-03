@@ -79,6 +79,30 @@ Two gates in `0x00472570`, before any target is looked at:
 
 ---
 
+### 1.3 The medic kit — **[code] `0x00470890`** *(added 2026-09-03)*
+
+Button 2 of the pad ([`29` §1.1](29-interface-contract.md)) is not a `Use`:
+it calls `0x00470890(unit)` and takes its own charge. The command refuses a
+unit with no movement points, reads its power from `0x004753C0` (3 with a
+Large Medic Kit at `+0x31`, else 1 with a Small one at `+0x30`, else 0), and
+picks its patient: the unit in front (`0x004308C0`) when it is under its
+ceiling and belongs to the same player, else the healer itself. The ceiling is
+`0x00475240` — the type's hit points for a computer unit, the type's plus
+`ep / 12` capped at 15 otherwise — and `0x0047B180` writes `hp + power` while
+that stays under it, else the ceiling itself, which lowers a record found
+above it. The self arm alone answers 0, when the healer is already full;
+`aPlayHealAnimation(x, y, |delta|)` follows either heal. The pad arm at
+`0x004733BB` then takes one movement point if the command answered 1 and
+there was one, and writes `+0x39 = 3` **unconditionally** (the store at
+`0x004733F3` is past the join). The pad **offers** the button only past
+`0x0047B4C0` — a kit, and a patient in front under its ceiling and of the
+same player, or the healer under its own — and `+0x15 >= 1` (`case 2` of
+`0x00472570`), so a press that would heal nothing is never for sale.
+Transcribed in `inclib/interact.py` (`heal`, `heal_command`, `may_heal`)
+and `core/interact.gd`, pinned in `presentation_tables.py` (`heal.*`),
+checked by `interact_runtime` and `test_combat`
+([`97` §31.3](97-slice-5-report.md)).
+
 ## 2. What may be used — **[code] `0x0047A530`** and three more predicates
 
 The Use button lights when **any** of four predicates accepts the situation.
@@ -823,8 +847,28 @@ reading.
    and this one — have the same shape, and the fifth `aExecuteBomb` site
    (`0x0040B300`, the `ParaBomb` fuse) is unit-based and has no cell object to
    delete. `tools/inclib/interact.py`'s detonation is correct as written, and
-   is no longer only the documentation's claim.
-8. **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
+   is no longer only the documentation's claim. *(2026-09-03: the remake's
+   walk arm detonates too. It carried a `TODO:` because `core` had no writer
+   for `+0x0F`; the four cell placers of
+   [`42` §9.1](42-mission-presentation.md) are transcribed now, so an authored
+   mine names an object and passes the guard while a hand-written one still
+   does not -- which is why `movemap_gold.py --check` is unchanged.
+   [`97` §37.5](97-slice-5-report.md).)*
+8. ~~**The large-unit mine ring is unexercised.**~~ **— Closed 2026-09-03**
+   ([`97` §38.3](97-slice-5-report.md)): the arm is read to its end and
+   transcribed into both twins. `0x0046EC0F` gates the whole detonation block
+   on "a mine stopped the walk"; `0x0046EC25` then picks the arm, and a
+   `size`-1 mover sweeps its eight neighbours through `0x004308C0` with the
+   diagonal flag **set** and leaves the cell it stopped on alone. Each cell
+   carries the same `aDeleteSpecialObject` guard, and the ring stops the
+   moment the mover's `+0x16` reaches zero (`0x0046ECB0`). Still no shipped
+   map runs it, so both twins reach it by writing the `size` byte the way
+   [`93` §11](93-slice-1-report.md) reached the large-unit clearance:
+   `ai_runtime.check_mine` and `test_execute_move._the_large_unit_ring` mine
+   the stop cell *and* one neighbour and require the ring to take the
+   neighbour. The original entry follows.
+
+   **The large-unit mine ring is unexercised.** `0x0047A4B0` gives a `size`-1
    mover an eight-neighbour trigger radius, selected by the branch at
    `0x0046EC25` on `unitinfo[type].size` — read and pinned by
    `mine.size_branch`, so the *code* is no longer the unknown part. §6.1's

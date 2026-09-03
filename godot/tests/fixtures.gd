@@ -130,9 +130,12 @@ static func map_document(w: int, h: int, units: Array,
 			hs.append(0)
 	var zeros: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(n):
 		zeros.append(0)
 		links.append(-1)
+		idle.append(255)
 	for record: Variant in units:
 		var view: Dictionary = record
 		links[DictRead.as_int(view["y"]) * w + DictRead.as_int(view["x"])] = DictRead.as_int(view["slot"])
@@ -149,11 +152,12 @@ static func map_document(w: int, h: int, units: Array,
 		"cells": {
 			"height": hs, "field_type": ft, "action_point": zeros.duplicate(),
 			"unit": links, "effect0": zeros.duplicate(),
-			"effect1": zeros.duplicate(), "effect2": zeros.duplicate(),
-			"effect3": zeros.duplicate(), "land": zeros.duplicate(),
-			"start_index": links.duplicate(), "decal0": zeros.duplicate(),
-			"decal1": zeros.duplicate(),
-		},
+			# The idle values all 184162 shipped cells carry: no object at
+			# `+0x0F`, `+0x11` or `+0x13`, and no obstacle at `+0x10`.
+			"effect1": idle.duplicate(), "effect2": idle.duplicate(),
+			"effect3": idle.duplicate(), "effect4": zeros.duplicate(),
+			"effect5": idle.duplicate(), "land": zeros.duplicate(),
+			"start_index": links.duplicate(), 		},
 		"units": units,
 		"land": {"prototype": "S003_00X.3DI", "x": [], "y": [], "z": [],
 			"yaw": [], "grid_x": [], "grid_y": []},
@@ -165,9 +169,9 @@ static func map_document(w: int, h: int, units: Array,
 	}
 
 
-static func tiny_world() -> World:
+static func tiny_world(rng_seed: float = 1.0) -> World:
 	var units: Array = [unit(0, 2, 2), unit(1, 4, 2, 0, 1)]
-	return World.create(map_document(7, 7, units), balance(), 1.0)
+	return World.create(map_document(7, 7, units), balance(), rng_seed)
 
 
 ## A different authored map, so a save from one can be offered to the other.

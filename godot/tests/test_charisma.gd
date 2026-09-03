@@ -380,27 +380,33 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	var length: float = state.fire()
 	h.equal("fire_mode", state.mode, CharismaState.Mode.FIRE)
 	h.check("fire_is_busy", state.is_busy(), "a one-shot is running")
-	var to_break: float = with_break.break_time() \
-		/ CharismaState.FRAMES_PER_SECOND
-	h.check("fire_reports_its_length",
-		absf(length - (to_break + CharismaState.HOLD_SECONDS)) < 0.000001,
-		"%.3f s: %.3f to the note plus the %.2f s hold"
-			% [length, to_break, CharismaState.HOLD_SECONDS])
+	# docs/42 section 1.2 -- the `F` clip runs at speed 6.0, so the note at
+	# 17..36 key units is reached in three to six frames, not in 0.85 s.
+	var frames_to_break: int = ceili(with_break.break_time()
+		/ CharismaState.SPEED_FIGHT)
+	h.equal("fire_frames_to_break", state.frames_to_break(), frames_to_break,
+		"%s breaks at %.1f: %d frame(s) at speed 6"
+			% [with_break.name, with_break.break_time(), frames_to_break])
+	h.check("fire_reports_frames_at_speed_6",
+		absf(length - float(frames_to_break) / CharismaState.FRAMES_PER_SECOND)
+			< 0.000001, "%.3f s to the note" % length)
+	h.equal("fire_spin_frames", state.spin_frames(),
+		int(with_break.duration / CharismaState.SPEED_FIGHT) / 3,
+		"int(len / 6) / 3 -- a third of the clip's length in frames")
 
-	# Advance past the note but well short of the clip's end. It must have
-	# stopped, which is the whole difference `BREAK` makes.
-	state.advance(to_break + 0.05)
+	# Advance to the note. It must have stopped, which is the whole
+	# difference `BREAK` makes -- and it takes speed 6 into account.
+	state.advance(float(frames_to_break) / CharismaState.FRAMES_PER_SECOND)
 	h.check("fire_stops_at_break", not state.is_playing(),
 		"halted at %.1f, %.1f short of the clip's %.1f"
 			% [with_break.break_time(),
 				with_break.duration - with_break.break_time(),
 				with_break.duration])
+	h.check("fire_is_at_break", state.is_at_break(), "stopped at the note")
 
-	# **The pose is held, and this is the defect the hold exists for.** The
-	# clip used to be stopped at the note and the body rested to idle frame 0
-	# in the same `animate()` call, so only the frames up to the note were ever
-	# seen and the figure snapped. `is_busy()` covers the hold, so a caller
-	# that rests on it rests at the end of the shot.
+	# **The pose is held for the shot.** The engine's routine is blocking
+	# and the body is its until the resume (docs/42 section 4.9); a body
+	# rested the frame its clip stopped snapped to idle frame 0.
 	h.check("break_pose_is_held", state.is_busy(),
 		"a frame past the note, the body is still the shot's")
 	state.advance(1.0 / CharismaState.FRAMES_PER_SECOND)
@@ -408,12 +414,22 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 		"the callback halts the animation at the note and leaves it there")
 	h.check("break_pose_still_held", state.is_busy(),
 		"and it is still held a frame later")
-	state.advance(CharismaState.HOLD_SECONDS)
-	h.check("break_pose_released", not state.is_busy(),
-		"%.2f s after the note the body is free" % CharismaState.HOLD_SECONDS)
-	h.equal("break_pose_kept_to_the_end", state._time, with_break.break_time(),
-		"and the pose was the shot's for all of it")
+
+	# `aContCHAnimation` -- the clip runs on past the note to its end.
+	var left: int = state.resume_past_break()
+	h.equal("resume_reports_remaining_frames", left,
+		ceili((with_break.duration - with_break.break_time())
+			/ CharismaState.SPEED_FIGHT),
+		"the frames from the note to the end at speed 6")
+	h.check("resume_plays", state.is_playing(), "the clip advances again")
+	state.advance(float(left) / CharismaState.FRAMES_PER_SECOND)
+	h.check("resume_plays_out", not state.is_playing(),
+		"and stops at its own end, %.1f" % with_break.duration)
+	h.equal("resume_reaches_the_end", state._time, with_break.duration)
+	h.check("resume_still_held", state.is_busy(),
+		"held until the routine rests it")
 	state.rest()
+	h.check("rest_releases", not state.is_busy(), "the shot is over")
 	h.equal("rests_after_fire", state.mode, CharismaState.Mode.IDLE)
 
 	# **A fire clip with no `BREAK` note.** Four of the 33 shipped `F` clips
@@ -423,20 +439,25 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	var once: CharismaState = CharismaState.create(null, without, without,
 		without)
 	var once_length: float = once.fire()
-	once.advance((without.duration + 1.0) / CharismaState.FRAMES_PER_SECOND)
+	once.advance((without.duration / CharismaState.SPEED_FIGHT + 1.0)
+		/ CharismaState.FRAMES_PER_SECOND)
 	h.check("fire_without_break_plays_out", not once.is_playing(),
 		"%s has no BREAK and ends at its own %.1f"
 			% [without.name, without.duration])
 	h.check("fire_without_break_holds", once.is_busy(),
-		"and owes the same hold a clip with a note does")
-	once.advance(CharismaState.HOLD_SECONDS)
+		"and is the shot's until it is rested, like a clip with a note")
+	h.equal("fire_without_break_has_nothing_to_resume",
+		once.resume_past_break(), 0, "it ran to its end already")
+	once.rest()
 	h.check("fire_without_break_stops", not once.is_busy(),
 		"%s has no BREAK and ends at its own %.1f"
 			% [without.name, without.duration])
 	h.check("fire_without_break_length",
-		absf(once_length - (without.duration / CharismaState.FRAMES_PER_SECOND
-			+ CharismaState.HOLD_SECONDS)) < 0.000001,
-		"a clip with no note reports its whole length, %.3f s" % once_length)
+		absf(once_length - float(ceili(without.duration
+			/ CharismaState.SPEED_FIGHT)) / CharismaState.FRAMES_PER_SECOND)
+			< 0.000001,
+		"a clip with no note reports its whole length at speed 6, %.3f s"
+			% once_length)
 
 	# **A type with no `F` clip at all** -- seven of the shipped ones (docs/40
 	# section 7.2.1: Spider, Dec'Ther, Norc'Yn, Bea'Ther, Bea'Coo and types 62
@@ -462,19 +483,39 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	h.check("null_clips_survive", true,
 		"a type with no clip holds its bind pose")
 
-	# The loop, which is the reason an idle can play for a whole mission -- and
-	# it is checked through `rest()`, the path a body actually takes after a
-	# shot, not only through the initial state. `mode` alone cannot show this:
-	# it stays `IDLE` whether the clip loops or has quietly stopped.
-	var looping: CharismaState = CharismaState.create(null, without, without,
+	# docs/42 section 6 -- the idle is a scheduler's, not a loop's: a fresh
+	# body holds its bind pose, a started `S` plays **once** at speed 1.5
+	# (two thirds of its length in frames), holds its last frame, and the
+	# free snaps it back to bind. `rest()` after a shot is the bind pose too.
+	var idle: CharismaState = CharismaState.create(null, without, without,
 		with_break)
-	looping.fire()
-	looping.rest()
-	looping.advance((without.duration * 2.5) / CharismaState.FRAMES_PER_SECOND)
-	h.equal("idle_loops", looping.mode, CharismaState.Mode.IDLE)
-	h.check("idle_still_playing", looping.is_playing(),
-		"two and a half lengths of %s after a shot, still running"
-			% without.name)
+	h.check("idle_starts_in_bind", not idle.is_idling() and not idle.is_playing(),
+		"no clip attached until a slot starts one")
+	var idle_length: float = idle.start_idle(without)
+	h.equal("idle_start_reports_length", idle_length, without.duration,
+		"the countdown the slot stores is the clip's length")
+	h.check("idle_plays_once", idle.is_playing() and idle.is_idling(), "")
+	var frame: float = 1.0 / CharismaState.FRAMES_PER_SECOND
+	var half: int = ceili(without.duration / CharismaState.SPEED_IDLE / 2.0)
+	for _i: int in range(half):
+		idle.advance(frame)
+	h.check("idle_advances_1_5_a_frame",
+		absf(idle._time - minf(float(half) * CharismaState.SPEED_IDLE,
+			without.duration)) < 0.001,
+		"%.1f key units after %d frames" % [idle._time, half])
+	for _i: int in range(ceili(without.duration / CharismaState.SPEED_IDLE) + 2):
+		idle.advance(frame)
+	h.check("idle_holds_its_last_frame",
+		not idle.is_playing() and idle.is_idling()
+			and absf(idle._time - without.duration) < 0.001,
+		"finished at %.1f and still attached" % idle._time)
+	idle.detach_idle()
+	h.check("idle_free_snaps_to_bind", not idle.is_idling(),
+		"aFreeCHAnimation: the bind pose on the next step")
+	idle.fire()
+	idle.rest()
+	h.check("rest_is_the_bind_pose", not idle.is_idling() and not idle.is_playing(),
+		"aStopCHAnimation detaches the clip; no loop takes over")
 
 
 func _strings(value: Variant) -> PackedStringArray:
@@ -597,10 +638,15 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 	for _i: int in range(3):
 		units.animate(tick, world)
 		elapsed += tick
+	# The body is the shot's until the routine rests it (docs/42 section
+	# 4.9): the note holds the pose, nothing on a timer takes it away.
+	h.equal("shot.held_past_the_note", units.states[slot].mode,
+		CharismaState.Mode.FIRE,
+		"%.3f s in, the pose is still the shot's" % elapsed)
+	units.rest(slot)
 	h.equal("shot.returns_to_the_idle", units.states[slot].mode,
 		CharismaState.Mode.IDLE,
-		"%.3f s in, the idle is back -- which is what plays when nothing else does"
-			% elapsed)
+		"rested by the shot's end -- which is what plays when nothing else does")
 
 	# The type with no `F`: nothing to wait for, and back to the idle on the
 	# very next frame rather than never.

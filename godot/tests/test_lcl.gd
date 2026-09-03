@@ -52,6 +52,7 @@ func run(h: TestHarness) -> void:
 	if DictRead.as_string(doc["schema"]) != SCHEMA:
 		h.check("fixture.schema", false, DictRead.as_string(doc["schema"]))
 		return
+	_script_cameras(h)
 
 	var arrays: PackedStringArray = PackedStringArray()
 	for name: Variant in DictRead.as_array(doc["cell_arrays"]):
@@ -424,9 +425,12 @@ static func _run_synthetic(program: LclProgram, units: Array,
 		width: int = 4, height: int = 4) -> Dictionary:
 	var zeros: Array = []
 	var links: Array = []
+	# The idle value of the three object slots and the obstacle byte.
+	var idle: Array = []
 	for _i: int in range(width * height):
 		zeros.append(0)
 		links.append(-1)
+		idle.append(255)
 	var res: MapResource = MapResource.from_document({
 		"width": width, "height": height,
 		"header": {"name": "synthetic", "next_map": "", "map_type": 0,
@@ -435,9 +439,9 @@ static func _run_synthetic(program: LclProgram, units: Array,
 			"skill_level": 0, "tech_level": 0},
 		"cells": {"height": zeros, "field_type": zeros,
 			"action_point": zeros, "unit": links, "effect0": zeros,
-			"effect1": zeros, "effect2": zeros, "effect3": zeros,
-			"land": zeros, "start_index": links, "decal0": zeros,
-			"decal1": zeros},
+			"effect1": idle, "effect2": idle, "effect3": idle,
+			"effect4": zeros, "effect5": idle,
+			"land": zeros, "start_index": links},
 	})
 	var state: MapState = MapState.from_resource(res)
 	var roster: Dictionary = {}
@@ -748,3 +752,122 @@ static func _fell_off() -> LclOutcome:
 		"labels": {},
 	})
 	return _run_synthetic(program, [])["outcome"]
+
+## docs/42 section 2.4 -- the script's own camera commands, as flights on
+## the queue (docs/97 section 34).
+func _script_cameras(h: TestHarness) -> void:
+	var host: RecordingCameraHost = RecordingCameraHost.new()
+	var queue: SequenceQueue = SequenceQueue.create(null)
+	var saved: Array[Array] = []
+	h.check("script_camera.handles",
+		ScriptCamera.handles("move_camera")
+			and ScriptCamera.handles("rotating_camera")
+			and not ScriptCamera.handles("open_door"),
+		"six commands, and nothing else")
+	# `MoveCamera (5, 21, 2, 21, 8)` -- the eye on the first tile at
+	# `h * 1600`, the target on the second at z 0.
+	var _c: int = ScriptCamera.enqueue(queue, host, "move_camera",
+		PackedInt32Array([5, 21, 2, 21, 8]), saved)
+	var frames: int = 0
+	while queue.is_running() and frames < 400:
+		var _still: bool = queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+	h.equal("script_camera.move_camera", host.flights[0],
+		[Vector3i(5 * WorldSpace.WORLD_UNITS_PER_FIELD,
+			21 * WorldSpace.WORLD_UNITS_PER_FIELD,
+			8 * ScriptCamera.MOVE_CAMERA_SCALE),
+		Vector3i(2 * WorldSpace.WORLD_UNITS_PER_FIELD,
+			21 * WorldSpace.WORLD_UNITS_PER_FIELD, 0)],
+		"the object on (5, 21) at h * 1600, looking at (2, 21) at z 0")
+	# `MoveTarget` keeps the eye; `MovePosition` keeps the target.
+	host.eye = Vector3i(11, 22, 33)
+	host.target = Vector3i(44, 55, 66)
+	var target_queue: SequenceQueue = SequenceQueue.create(null)
+	var _t: int = ScriptCamera.enqueue(target_queue, host, "move_target",
+		PackedInt32Array([3, 4]), saved)
+	while target_queue.is_running():
+		var _s: bool = target_queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("script_camera.move_target_keeps_the_eye",
+		host.flights[1][0], Vector3i(11, 22, 33))
+	h.equal("script_camera.move_target_cell", host.flights[1][1],
+		Vector3i(3 * WorldSpace.WORLD_UNITS_PER_FIELD,
+			4 * WorldSpace.WORLD_UNITS_PER_FIELD, 0))
+	host.eye = Vector3i(11, 22, 33)
+	host.target = Vector3i(44, 55, 66)
+	var position_queue: SequenceQueue = SequenceQueue.create(null)
+	var _p: int = ScriptCamera.enqueue(position_queue, host, "move_position",
+		PackedInt32Array([6, 7, 2]), saved)
+	while position_queue.is_running():
+		var _s: bool = position_queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("script_camera.move_position_keeps_the_target",
+		host.flights[2][1], Vector3i(44, 55, 66))
+	h.equal("script_camera.move_position_height",
+		host.flights[2][0].z, 2 * ScriptCamera.MOVE_POSITION_SCALE,
+		"`h * 3200`, not the MoveCamera scale")
+	# Save and load round-trip through the caller's stack.
+	host.eye = Vector3i(1, 2, 3)
+	host.target = Vector3i(4, 5, 6)
+	var save_queue: SequenceQueue = SequenceQueue.create(null)
+	var _sv: int = ScriptCamera.enqueue(save_queue, host, "save_camera",
+		PackedInt32Array(), saved)
+	while save_queue.is_running():
+		var _s: bool = save_queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("script_camera.save_pushes_six", saved.size(), 1)
+	host.eye = Vector3i(9, 9, 9)
+	var load_queue: SequenceQueue = SequenceQueue.create(null)
+	var _ld: int = ScriptCamera.enqueue(load_queue, host, "load_camera",
+		PackedInt32Array(), saved)
+	while load_queue.is_running():
+		var _s: bool = load_queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("script_camera.load_pops_them_back",
+		host.flights[host.flights.size() - 1],
+		[Vector3i(1, 2, 3), Vector3i(4, 5, 6)])
+	h.equal("script_camera.stack_is_empty_again", saved.size(), 0)
+	# **A skipped pair must not leak an entry.** `skip()` paints each remaining
+	# step once at its last frame, so a `frame == 1` guard never fired for the
+	# load: the push happened (a one-frame step) and the pop did not, and every
+	# later `LoadCamera` in the mission restored an older view.
+	host.eye = Vector3i(7, 7, 7)
+	host.target = Vector3i(8, 8, 8)
+	var skip_save: SequenceQueue = SequenceQueue.create(null)
+	var _ss: int = ScriptCamera.enqueue(skip_save, host, "save_camera",
+		PackedInt32Array(), saved)
+	skip_save.skip()
+	var skip_load: SequenceQueue = SequenceQueue.create(null)
+	var _sl: int = ScriptCamera.enqueue(skip_load, host, "load_camera",
+		PackedInt32Array(), saved)
+	skip_load.skip()
+	h.equal("script_camera.a_skipped_pair_leaks_nothing",
+		[saved.size(), host.flights[host.flights.size() - 1]],
+		[0, [Vector3i(7, 7, 7), Vector3i(8, 8, 8)]],
+		"the pop is guarded by a once-flag, not by the frame number")
+	# `RotatingCamera` is the orbit of docs/42 section 7.5 with `h * 160`.
+	var orbit_queue: SequenceQueue = SequenceQueue.create(null)
+	var orbit_frames: int = ScriptCamera.enqueue(orbit_queue, host,
+		"rotating_camera", PackedInt32Array([16, 37, 80]), saved)
+	h.equal("script_camera.rotating_is_the_orbit", orbit_frames,
+		1 + OrbitSequence.FRAMES)
+
+
+## A [ShotHost] that records flights and answers cells, for the commands
+## above; no scene, no rig.
+class RecordingCameraHost extends ShotHost:
+	var eye: Vector3i = Vector3i.ZERO
+	var target: Vector3i = Vector3i.ZERO
+	var flights: Array[Array] = []
+
+	func camera_eye() -> Vector3i:
+		return eye
+
+	func camera_target() -> Vector3i:
+		return target
+
+	func cell_object(x: int, y: int) -> Vector3i:
+		return Vector3i(x * WorldSpace.WORLD_UNITS_PER_FIELD,
+			y * WorldSpace.WORLD_UNITS_PER_FIELD, 0)
+
+	func fly(to_eye: Vector3i, to_target: Vector3i) -> int:
+		flights.append([to_eye, to_target])
+		eye = to_eye
+		target = to_target
+		return 0

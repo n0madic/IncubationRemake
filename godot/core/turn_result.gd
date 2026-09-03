@@ -25,6 +25,10 @@ var ran_turn_script: bool = false
 var player_script: Dictionary = {}
 var ran_player_script: bool = false
 var mission_ended: bool = false
+## What the round's two ground sweeps did, empty when the round did not turn:
+## `ignited` the cells whose glow caught, `killed` the unit slots the flames
+## removed, `changed` the cells the decay touched (docs/42 section 9.1).
+var ground: Dictionary = {}
 var refreshed: PackedInt32Array = PackedInt32Array()
 ## Whether the incoming player is 255 -- that is, whether the computer's turn
 ## is what comes next. docs/23's planner runs it, and [member ai_result]
@@ -54,6 +58,7 @@ func to_dict() -> Dictionary:
 			else {},
 		"mission_ended": mission_ended,
 		"refreshed": refreshed.duplicate(),
+		"ground": ground.duplicate(true),
 		"ai_turn": ai_turn,
 		"ai_result": {} if ai_result == null else ai_result.to_dict(),
 		"fog_rebuilt": fog_rebuilt,

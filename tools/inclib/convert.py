@@ -299,12 +299,16 @@ def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
             "effect1": [c.raw[0x0F] for c in cells],
             "effect2": [c.raw[0x10] for c in cells],
             "effect3": [c.raw[0x11] for c in cells],
+            # `+0x12` and `+0x13` -- the glow's phase and state (docs/42
+            # §9.1).  `+0x12` is 1 on 44 of the 184162 shipped cells and 0 on
+            # the rest; with `+0x13` at 255 everywhere they are inert
+            # leftovers, but they are the columns `SetGroundFire` writes.
+            "effect4": [c.raw[0x12] for c in cells],
+            "effect5": [c.raw[0x13] for c in cells],
             # Immutable -- MapResource keeps these.
             "land": [c.land for c in cells],
             "start_index": [-1 if c.start_index == levmod.NO_LINK
                             else c.start_index for c in cells],
-            "decal0": [c.raw[0x12] for c in cells],
-            "decal1": [c.raw[0x13] for c in cells],
         },
         "units": [
             {
@@ -914,9 +918,21 @@ def effect_models(root: Path) -> list[str]:
     return _sound_tables().blob_models(_sound_tables().Binary(str(root)))
 
 
+#: ``docs/42`` §9.1 -- the seven models the four cell placers name.  They are
+#: ordinary world-object prototypes and resolve through the same chain the
+#: blob models do, with the same consequence for a set that lacks one: the
+#: constructor answers -1 and the placer writes nothing.  **Only ``D00`` has
+#: the two glows**, and both missions that use ``SetGroundFire`` are in it.
+SPECIAL_OBJECT_MODELS = ("A_FIRE1.3DI", "A_FIRE2.3DI", "A_FIRE3.3DI",
+                         "A_MINE.3DI", "A_SHILD.3DI", "GLOW1.3DI", "GLOW2.3DI")
+SPECIAL_OBJECT_MODELS_RARE = {"GLOW1.3DI": ("D00",), "GLOW2.3DI": ("D00",)}
+
+
 def rare_effect_models(root: Path) -> dict[str, tuple[str, ...]]:
     """``model -> the world sets that have it``, for the four that are rare."""
-    return dict(_sound_tables().BLOB_MODELS_RARE)
+    out = dict(_sound_tables().BLOB_MODELS_RARE)
+    out.update(SPECIAL_OBJECT_MODELS_RARE)
+    return out
 
 
 def _any_scene(root: Path, world_set: str) -> str:
@@ -1014,6 +1030,7 @@ def convert(root: Path, missions: list[str], staging: Staging,
         wanted_by_set.setdefault(bm.world_set, set()).update(
             prototype_names(document, tables, _lattice_prototype(bm)))
         wanted_by_set[bm.world_set].update(effects)
+        wanted_by_set[bm.world_set].update(SPECIAL_OBJECT_MODELS)
         scenes_by_set.setdefault(bm.world_set, set()).add(bm.world_scene)
         selector_keys |= unit_selector_keys(document)
 
@@ -1044,6 +1061,10 @@ def convert(root: Path, missions: list[str], staging: Staging,
         genuinely_missing = [n for n in document["missing"]
                              if n not in absent_effects]
         document["absent_effects"] = absent_effects
+        # The placer models this set actually has -- `MapState` gates on it,
+        # because a `SetGroundFire` outside `World_D00` writes nothing.
+        document["special_models"] = [n for n in SPECIAL_OBJECT_MODELS
+                                      if n in document["prototypes"]]
         if absent_effects:
             result.warnings.append(
                 f"{world_set}: effect models this set does not have, so the "

@@ -56,8 +56,10 @@ const LEVER_DOWN: int = 37
 ## sets the cell on fire before the sequence plays.
 const ENTRY_POINT: int = 70
 const ENTRY_POINT_DESTROYED: int = 71
-const ENTRY_POINT_EFFECT: int = 6
-const ENTRY_POINT_Z_DROP: int = 0xA0
+## The placer's third argument -- the fire's intensity, which is also its
+## countdown: a subtype-6 fire burns for five more rounds.
+const ENTRY_POINT_FIRE_SUBTYPE: int = CellObjects.ENTRY_POINT_FIRE_SUBTYPE
+const ENTRY_POINT_Z_DROP: int = CellObjects.ENTRY_POINT_FIRE_Z_DROP
 
 ## docs/26 section 3.1 -- the equipment ids the pickups grant, and the one that
 ## doubles a magazine.
@@ -206,6 +208,9 @@ static func toggle_door(state: MapState, index: int) -> void:
 
 ## `0x0046DB80` -- the effect object is freed and nothing explodes.
 static func defuse_mine(state: MapState, index: int) -> UseResult:
+	var _freed: bool = CellObjects.delete_object(
+		state, state.effect_at(MapState.OBJECT_SLOT, index))
+	state.set_effect(MapState.OBJECT_SLOT, index, MapState.NO_OBJECT)
 	state.set_obstacle(index, EFFECT_NONE)
 	var out: UseResult = UseResult.new()
 	out.ok = true
@@ -246,15 +251,21 @@ static func push_object(state: MapState, units: Dictionary,
 		obj.y = at[1]
 		out.pushed.append(at.duplicate())
 		if state.obstacle_at(into) == EFFECT_MINE:
-			state.set_obstacle(into, EFFECT_NONE)
-			execute_bomb(state, units, utab, wtab, at[0], at[1], ai_level,
-				human_players, game_mode, turn, rng)
-			out.kind = "push_onto_mine"
-			break
+			# `0x0046D8DD` carries the same guard the walk's arm does (docs/26
+			# section 6.2): the object is deleted first and the two cell bytes
+			# are cleared only on the far side of it.
+			if CellObjects.delete_object(
+					state, state.effect_at(MapState.OBJECT_SLOT, into)):
+				state.set_effect(MapState.OBJECT_SLOT, into, MapState.NO_OBJECT)
+				state.set_obstacle(into, EFFECT_NONE)
+				state.set_effect(MapState.TIMER_SLOT, into, 0)
+				execute_bomb(state, units, utab, wtab, at[0], at[1], ai_level,
+					human_players, game_mode, turn, rng)
+				out.kind = "push_onto_mine"
+				break
 		var ft: int = state.field_type_at(into)
 		if ft == FIELD_TYPE_HOLE or ft == FIELD_TYPE_DEEP_HOLE:
 			UnitState.remove(state, turn, obj)
-			obj.hp = 0
 			out.kind = "push_into_hole"
 			break
 	return out
@@ -405,15 +416,133 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		state.set_action_point(index, 0)
 		out.kind = "equipment"
 	elif ap == ENTRY_POINT:
-		state.set_obstacle(index, ENTRY_POINT_EFFECT)
-		state.set_height(index, state.height_at(index) - ENTRY_POINT_Z_DROP)
+		# `0x0046E0BF`: the action point becomes 71 **first**, then the cell is
+		# set alight.  The 71 is what lets the fire placer accept a cell whose
+		# field type is not one of its four (docs/23 section 7.1), and the
+		# `- 0xA0` is the placer's z argument, which reaches only its
+		# half-a-field height window -- nothing writes the cell's height.
 		state.set_action_point(index, ENTRY_POINT_DESTROYED)
+		var _lit: int = CellObjects.place_fire(state, index % state.width,
+			index / state.width, ENTRY_POINT_FIRE_SUBTYPE,
+			state.height_at(index) - ENTRY_POINT_Z_DROP)
 		out.kind = "entry_point"
 	else:
 		# The default arm: 19..29, 34, 35, 43..49 and everything outside the
 		# switch's own 11..70 band.  It is the LCL event and nothing else.
 		out.kind = "script_only"
 	return out
+
+
+# --- the heal command: docs/29 section 1.1 button 2, `0x00470890` ----------
+
+## `unit + 0x30` / `+0x31` -- the two medic kits, by equipment id.
+const EQUIP_SMALL_MEDIC_KIT: int = 15
+const EQUIP_LARGE_MEDIC_KIT: int = 16
+## `0x004753C0` -- what one press restores.
+const HEAL_POWER_LARGE: int = 3
+const HEAL_POWER_SMALL: int = 1
+## `0x00475240` -- a human unit's ceiling: the type's hit points plus
+## `ep / 12`, never above 15; a computer unit's is the type's alone.
+const MAX_HIT_POINTS_CAP: int = 15
+const EXPERIENCE_PER_HIT_POINT: int = 12
+## `+0x39` after the heal pad arm, written whether or not anything was
+## healed (the join at `0x004733F3`).
+const ACTED_HEALED: int = 3
+
+
+## `0x004753C0` -- 3 with a Large Medic Kit, else 1 with a Small one, else 0.
+static func heal_power(unit: UnitState) -> int:
+	if unit.has_equipment(EQUIP_LARGE_MEDIC_KIT):
+		return HEAL_POWER_LARGE
+	return HEAL_POWER_SMALL if unit.has_equipment(EQUIP_SMALL_MEDIC_KIT) else 0
+
+
+## `0x00475240` -- the ceiling a heal fills to.
+static func max_hit_points(utab: UnitTypeTable, unit: UnitState) -> int:
+	var base: int = utab.hp_max(unit.type_id)
+	if unit.player == UnitState.PLAYER_ALIEN:
+		return base
+	return mini(MAX_HIT_POINTS_CAP, base + unit.ep / EXPERIENCE_PER_HIT_POINT)
+
+
+## `0x0047B180` -- `hp += power` while that stays under the ceiling, else
+## the ceiling itself.
+static func apply_heal(utab: UnitTypeTable, unit: UnitState, power: int) -> void:
+	var cap: int = max_hit_points(utab, unit)
+	unit.hp = unit.hp + power if unit.hp + power < cap else cap
+
+
+## `0x00470890` -- the heal command, in the order it runs. The twin of
+## `inclib/interact.py`'s `heal`, checked by `interact_runtime.py`.
+##
+## Refused with no movement points. The unit in front is healed when it is
+## below its ceiling and belongs to the healer's player; otherwise -- off the
+## map, an empty cell, at full health, or somebody else's -- the healer heals
+## itself, and that arm alone answers `ok: false` when the healer is at its
+## own ceiling. A network game relaxes the owner test to players 0..3; the
+## remake has no network and keeps the local arm.
+##
+## Answers `{ok, reason, target, delta, self_heal}`; `delta` is the orbit's
+## third argument (docs/42 section 7.5).
+static func heal(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		unit: UnitState) -> Dictionary:
+	if unit.mp == 0:
+		return {"ok": false, "reason": "no movement points", "target": -1,
+			"delta": 0, "self_heal": false}
+	var power: int = heal_power(unit)
+	var at: PackedInt32Array = cell_in_front(state, unit)
+	var target: UnitState = null
+	if not at.is_empty():
+		var slot: int = state.unit_at(state.index_of(at[0], at[1]))
+		if slot >= 0 and units.has(slot):
+			var candidate: UnitState = units[slot]
+			if candidate.hp != max_hit_points(utab, candidate) \
+					and candidate.player == unit.player:
+				target = candidate
+	if target != null:
+		var before: int = target.hp
+		apply_heal(utab, target, power)
+		return {"ok": true, "reason": "", "target": target.slot,
+			"delta": absi(target.hp - before), "self_heal": false}
+	if unit.hp == max_hit_points(utab, unit):
+		return {"ok": false, "reason": "already at full health",
+			"target": unit.slot, "delta": 0, "self_heal": true}
+	var was: int = unit.hp
+	apply_heal(utab, unit, power)
+	return {"ok": true, "reason": "", "target": unit.slot,
+		"delta": absi(unit.hp - was), "self_heal": true}
+
+
+## `0x0047B4C0` -- whether the pad offers button 2 at all: a kit, and
+## either a patient in front under its ceiling and of the same player, or
+## the healer itself under its own. The pad's arm at `0x0047262D` adds
+## `mp >= 1` on top, which [method heal] refuses again on its own.
+static func may_heal(state: MapState, units: Dictionary, utab: UnitTypeTable,
+		unit: UnitState) -> bool:
+	if heal_power(unit) == 0:
+		return false
+	var at: PackedInt32Array = cell_in_front(state, unit)
+	if not at.is_empty():
+		var slot: int = state.unit_at(state.index_of(at[0], at[1]))
+		if slot >= 0 and units.has(slot):
+			var patient: UnitState = units[slot]
+			if patient.player == unit.player \
+					and patient.hp != max_hit_points(utab, patient):
+				return true
+	return unit.hp != max_hit_points(utab, unit)
+
+
+## The pad's arm around [method heal] (`0x004733BB`): one movement point off
+## when the command answered 1 and there was one to take, and `+0x39`
+## written to 3 **either way** -- the join at `0x004733F3` is after both
+## branches, so a press that healed nothing still marks the unit as acted.
+static func heal_command(state: MapState, units: Dictionary,
+		utab: UnitTypeTable, unit: UnitState) -> Dictionary:
+	var result: Dictionary = heal(state, units, utab, unit)
+	if DictRead.as_bool(result["ok"]) and unit.mp > 0:
+		unit.mp -= 1
+	unit.acted = ACTED_HEALED
+	return result
 
 
 ## One implant box.  `guard` is the skill index the arm actually compares

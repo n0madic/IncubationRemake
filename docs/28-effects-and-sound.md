@@ -315,10 +315,17 @@ shares the **human** cursor.
 
 **The alien scream is scaled by the human volume ids.** Ids 59, 60 and 61 —
 which `Info.lcl` labels `S_ALI_0/1/2` — are used only by the fall sequence
-(`aPlayJumpAnimaion`); the combat path passes 56, 57, 58 for both species. Ids
-**53, 54 and 55 are defined by `Info.lcl` and named by no call site at all.**
+(`aPlayJumpAnimaion`); the combat path passes 56, 57, 58 for both species.
 This is the one audio defect the remake fixes unconditionally rather than
 reproduces — see [`92` §7.1](92-remake-architecture.md) for why.
+
+~~Ids **53, 54 and 55 are defined by `Info.lcl` and named by no call site at
+all.**~~ *(Corrected 2026-09-03.)* They are the **alien death scream's**:
+`aPlayFightAnimation`'s severity-3 arm plays `SP_HUM_0/1/2.wav` @53/54/55 for
+an alien off the alien cursor, @50/51/52 for a human off the human cursor,
+and `explosion.wav` @63 for species 3 — loading the id with `mov edi, imm`
+(`0x0040CA23`, `0x0040C9FD`, `0x0040C9D7`, `0x0040C9A7`) rather than a push,
+which is what the site scanner did not read ([`42` §4.5](42-mission-presentation.md)).
 
 ### 4.2 Speech
 

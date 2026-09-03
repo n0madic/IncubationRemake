@@ -871,9 +871,16 @@ func _falling_spores(instr: Dictionary) -> void:
 
 
 ## `0x00442730` -- `tries` attempts at a tile of the right type and height.
+##
+## What it lays is a **glow**, not a flame: `0x0042FCB0(x, y, 2)` writes
+## `+0x11`, `+0x12` and `+0x13` and nothing else, so a fresh `SetGroundFire`
+## blocks nobody.  The fuse is two hand-overs long -- the round tick decays the
+## glow to phase 1 and the next round's sweep burns it, removing every unit the
+## flames reach (docs/42 section 9.1).  The cell must carry no glow already,
+## control-map type 0 or 1, and a height of exactly `level * 160`.
 func _set_ground_fire(instr: Dictionary) -> void:
 	var level: int = _n(instr, 2)
-	var lit: int = 0
+	var lit: Array[int] = []
 	for _i: int in range(maxi(_n(instr, 5), 0)):
 		var tx: int = _context.rng.draw(_n(instr, 0), _n(instr, 3))
 		var ty: int = _context.rng.draw(_n(instr, 1), _n(instr, 4))
@@ -881,24 +888,49 @@ func _set_ground_fire(instr: Dictionary) -> void:
 			continue
 		var cell: int = _context.index(tx, ty)
 		var kind: int = _context.state.field_type_at(cell)
+		if _context.state.effect_at(MapState.DECAL_STATE_SLOT, cell) \
+				!= MapState.DECAL_NONE:
+			continue
 		if (kind == 0 or kind == 1) and _context.state.height_at(cell) \
-				== level * LclEnv.HEIGHT_LEVEL_UNITS:
-			lit += 1
-	_event("set_ground_fire", [_n(instr, 0), _n(instr, 1), level, _n(instr, 3),
-		_n(instr, 4), _n(instr, 5), lit])
+				== level * LclEnv.HEIGHT_LEVEL_UNITS \
+				and CellObjects.place_glow(_context.state, tx, ty,
+					CellObjects.GLOW_PHASE_FRESH) >= 0:
+			lit.append(tx)
+			lit.append(ty)
+	# The tiles ride on the event after the count, as `ParaBombs`' do: the
+	# picture puts a glow on each and must not re-draw them.
+	var values: Array[int] = [_n(instr, 0), _n(instr, 1), level, _n(instr, 3),
+		_n(instr, 4), _n(instr, 5), lit.size() / 2]
+	values.append_array(lit)
+	_event("set_ground_fire", values)
 
 
 ## `0x00442270` -- the fly-past, then **60** attempts to lay a mine.
 ##
-## A mine is cell `+0x10 = 2`, which this command does not write: laying one is
-## the effect object's, and the attempts are drawn here because they advance the
-## generator and a later capture will compare the stream.
+## `0x00470845` takes a cell with no unit on it and `+0x10 == 255` and calls the
+## mine placer, which writes `+0x10 = 2` -- a rule the move map reads, so this
+## one *is* the script layer's business (docs/23 section 7.3).
 func _para_bombs(instr: Dictionary) -> void:
-	var tiles: int = 0
+	var tiles: Array[int] = []
 	for _i: int in range(PARA_BOMB_TRIES):
 		var tx: int = _context.rng.draw(_n(instr, 0), _n(instr, 2))
 		var ty: int = _context.rng.draw(_n(instr, 1), _n(instr, 3))
-		if _context.in_bounds(tx, ty) and _context.unit_on(tx, ty) == null:
-			tiles += 1
-	_event("para_bombs", [_n(instr, 0), _n(instr, 1), _n(instr, 2),
-		_n(instr, 3), tiles])
+		if not _context.in_bounds(tx, ty):
+			continue
+		# `cmp word [eax + 7], 0xFFFF` -- the cell's unit **link**, so a slot
+		# whose unit is dead still keeps the bomber off the tile.
+		var cell: int = _context.index(tx, ty)
+		if _context.state.unit_at(cell) >= 0:
+			continue
+		if _context.state.obstacle_at(cell) != MapState.OBSTACLE_NONE:
+			continue
+		if CellObjects.place_mine(_context.state, tx, ty) >= 0:
+			tiles.append(tx)
+			tiles.append(ty)
+	# The tiles themselves ride on the event after the count: the picture
+	# (docs/42 section 8) drops one bomb on each, and re-drawing them there
+	# would move the generator a second time.
+	var values: Array[int] = [_n(instr, 0), _n(instr, 1), _n(instr, 2),
+		_n(instr, 3), tiles.size() / 2]
+	values.append_array(tiles)
+	_event("para_bombs", values)

@@ -3211,3 +3211,1438 @@ refused rider keeps its cell's link rather than being orphaned -- a review
 caught both twins clearing it), `core_loads` +1 (`platform.gd`).
 `turn_gold --check` 120 → 172, `combat_runtime --check` 84 → 100. Still to
 do by hand in the exported build: what §28.4 lists.
+
+---
+
+## 29. 2026-09-03 — the shot, whole: experience, nine stages, and what the second reading corrected
+
+`docs/42` §11 listed what the remake still did differently from
+`aPlayFightAnimation`, and the first row of it was not presentation at all:
+**`core` awarded no experience**. `UnitState.ep` was read by the fitness cap
+and written by nothing, so the caption of `42` §4.2 and the skill orbit of
+§7.5 had nothing to show. This section closes that row and the shot's own,
+in the order the plan runs them: tools first, then the picture.
+
+### 29.1 The kill award, read and measured
+
+`docs/22` §7.5 named three addresses and no formula. Read out of them
+(`combat_tables.py` now pins forty-six instruction sites and three
+single-precision constants):
+
+* `0x0047AFD0(unit, exp)` returns the gain as a float. In the **campaign**
+  (`0x0043B740` == 1) it is the victim type's `exp` byte unchanged. In a
+  session the difficulty picks a multiplier — `aiLevel()` 0, 1, 2 select
+  4, 3, **1**, anything else keeps the 2 the routine starts with — and the
+  attacker's own experience bends it: below 72 the gain is
+  `(m − m·e/72) × exp` (the `0x38E38E39 / sar 4` reciprocal is a divide by
+  72), from 72 to 108 it is `exp`, above 108 it is half — or **nothing**
+  when the byte is exactly 1, because `cmp cl, 1` reads the *argument's* low
+  byte. The ladder is transcribed and pinned, never measured: the fixture
+  save is a campaign.
+* `0x0047B090` adds the gain to the skill-point pool `+0x18`, capped at
+  144, **unless** `ep + gain` would itself reach 144, in which case it
+  returns without touching the pool; `0x0047B100` adds it to `+0x17`, capped
+  at 144; `0x0047AF90` adds one to the kill counter `+0x53`, saturating at
+  255. The caller gates the block on **the damage argument** (`test ebp,
+  ebp / jle` at `0x0046BF47` — what `applyDamage` was handed, zero after an
+  absorber charge), skips species 2 and a victim of the attacker's own
+  player, and sums `_ftol(gain)` into `aAttackUnit`'s return value — the
+  sixth argument of `aPlayFightAnimation`, the caption's number.
+* After the animation, if the attacker is alive, its pool's level
+  (`+0x18 / 12`) rose over the value saved at entry (`0x0046B588`) and its
+  species is 0, the skill orbit `0x00410190` plays with the difference.
+
+`inclib.combat` carries all of it (`experience_gain`, `award_training`,
+`award_experience`, `count_kill`, `award_kill`, `skill_levels_raised`);
+`AttackResult` gained `xp` and `skill_raised`; `CombatUnit` and `UnitState`
+gained `ep`/`tp`/`kills` where they lacked them (the save schema is 7).
+`combat_runtime.py` exercises every arm synthetically — 100 → **117** checks.
+And the campaign arm is **measured**: `turn_gold.py`'s new `experience` phase
+kills the one-point alien four times, as loaded and with the shooter's
+`+0x17`, `+0x18` and `+0x53` written to the caps, and the engine moves
+exactly the bytes the model moves — ep 73 → 74, tp 13 → 14, kills 13 → 14;
+144 stays 144 and the pool is left alone; 143 → 144; 254 → 255. The three
+bytes joined `PROBE_RECORD_FIELDS`, so the reveal and conversion probes now
+pin that nothing died on them either. `turn_gold --check` 172 → **197**.
+
+The player-record counters the block also moves (`0x0043B8D0`,
+`0x0043B860` on the victim's player, `0x0043B810` on the attacker's) are the
+debriefing's and are left as a `TODO` in both twins.
+
+### 29.2 The shot as the engine plays it
+
+`_present_attack` used to start the clip, fly the camera beside it, spawn
+the muzzle and impact together, and hold a fixed 0.35 s (§24.2). It is now a
+[ShotSequence] on the [SequenceQueue] — nine steps in `aPlayFightAnimation`'s
+order, each with the engine's frame count where the engine has one:
+
+1. the `F` clip at speed **6.0** to its `BREAK` note, then `int(len/6)/3`
+   frames (`0x0040BEC9`);
+2. the caption *"<name> received N experience points"* for the player's own
+   unit with `xp > 0`, the empty string otherwise;
+3. the camera of §28 — **after** the clip now, which closes the deviation
+   §28.3 recorded;
+4. the weapon's wave, the overheat cue and **one** voice by the shot's
+   severity and the last marked unit's species; the muzzle switch; the
+   creator's write over the arrived flag;
+5. up to **100 frames** until the flag, unless the weapon's muzzle arm skips
+   the wait (`WAIT_SKIPPED_WEAPONS`, measured off the arms: 15, 17, 20, 21,
+   27, 30–32, 36, 37);
+6. the impact switch, the deaths (§29.3), the floating texts projected to
+   the screen, overlay 0 — the texts rise 2 px a frame and fade over 15;
+7. up to **20 frames** until the pool is empty;
+8. `aContCHAnimation` — the clip resumed past its note, for the frames it
+   has left, unless the type is 0x37;
+9. the play-out until the pool is empty, the fade is over and the clip has
+   stopped; then the idle.
+
+`CharismaState` got the engine's three speeds (`M` 2.0, `F` 6.0, `S` 1.5),
+`frames_to_break`, `spin_frames` and `resume_past_break`; `HOLD_SECONDS` is
+gone. The queue got `enqueue_until(name, bound, predicate)` for the spins
+the engine leaves open-ended, and the bound is always the engine's — 100
+and 20 — except for the camera's flight and the final play-out, where the
+engine has none and `SAFETY_FRAMES` (300) is **the remake's** safety net,
+named as one. The new `FloatingTexts` overlay draws the caption at (80, 54)
+and the numbers in colour `0x5ACB` (RGB565, a mid grey — §23.4 has the
+format); its scale from 640×480 to the viewport is the remake's factor and
+says so. The replay's `AIPlayback.advance` takes a `busy` flag: while a
+shot, a walk, a set piece or a flight is on screen the event timer does not
+run, so an event waits for the picture rather than for a number.
+
+**The casualty is hidden by the shot**, in step 6, the way `0x00405320(obj,
+5)` hides it; `DEATH_LINGER_SECONDS` (0.7 s, §26.3) is gone with the hold.
+`UnitsView.mark_dying` keeps the body through the rebuild and
+`hide_now` removes it in the death stage; a new command clears stale marks.
+
+### 29.3 What the second reading corrected
+
+Three things in `docs/42` were wrong, and each is now pinned by
+`presentation_tables.py` (425 → **472** checks):
+
+* **The death switch branches on the weapon, not on the severity.** The
+  slot the sweep fills with the severity (`[esp+0x1C]`) is zeroed at
+  `0x0040CC49`, just before the muzzle switch, and the muzzle arms write
+  the value the death switch reads at `0x0040DD05`: 3 for the four sniper
+  arms (weapons 15, 30, 31, 32), 1 for five (9, 11, 17, 22, 44), 2 for
+  weapon 40 — `FireDeath` — and 0, the switch's default, for every other
+  weapon. Read off the jump table and the byte index by
+  `_muzzle_arm_writes`, alongside the wait flag the same arms clear. The
+  severity still selects the voice (§4.5); it never selected the death.
+* **The arrived flag is set by fourteen arms and cleared by one.** The
+  nearest-arm-start attribution of §4.6 missed kind 2, which falls into
+  kind 49's tail, and kind 61, whose seeker runs straight into kind 28's
+  arm at `0x004204D2`; and it counted arm 45, which writes **`ebp`** — the
+  zero the sweep keeps as `aRandom2`'s base — i.e. it *clears* the flag on
+  every tick. `blob_runtime.py` had it right all along (fourteen
+  `_request_delete` sites and one `global_signal_clear`); the pin is now by
+  control flow, `TickResult` carries `global_signal_clear` in both twins,
+  and `BlobPool.arrived` applies the arms' writes in slot order. The
+  creators' own writes are inventoried too: eight literal 1s, six literal
+  0s and twelve `steps <= 0` stores.
+* **The damage arm reads the last marked unit, not a stale local.** r2
+  labels `[ebp+0x45]` and `[ebp+0x4C]` as stack slots; they are the
+  player and type of the unit the sweep looked at last (`[esp+0x34]`), one
+  local for the whole switch. So a multi-target shot sprays every damaged
+  unit by the last one's player and size — reproduced, and the large spray
+  `0x00421360` is reached by a large **target**, as `42` §4.8 said.
+
+Two smaller ones: the end loop waits **at most** 20 frames while the pool
+lives (`0x0040E256`..`0x0040E262`), not "at least 20"; and the reaction
+drain of `42` §3.3 is not per step — `0x0046CCA0` has five callers and none
+is inside `aExecuteMove`, so `core`, which follows `25` §6, stands.
+
+### 29.4 The death creators, all ten measured
+
+`presentation_gold.py` grew five phases: `KillFire` `0x00423AD0` with its
+third argument 0 (the fight) and 20 (`FireCircle`), `FireDeath`
+`0x0042B1D0`, `FlyingUnit` `0x00429700` on the case's tile — whose record
+is the victim type's own `.3DI`, `A_BOX.3DI`, and whose count is pinned so
+a model the set does not carry cannot pass as agreement on nothing — and
+`FireExplosion` `0x00429A80` as the death switch calls it. All 321 records
+across the nineteen calls agree field for field; 182 → **228** checks. The
+third argument of `FireExplosion` is pushed by all thirteen callers and read
+by none. `Pool.spawn` now refuses a class-0/1 record whose model does not
+resolve, as `0x00420950` does.
+
+`godot/game/fx/blob_programs.gd` is the GDScript twin of all ten programs,
+and `tests/test_presentation_native.gd` replays the **engine's** records
+against it from `--emit-death-cases` — the sixth native suite, 100 checks,
+every record of every case. The live pool receives the records through
+`BlobPrograms.spawn_into`, drawing from the pool's own generator.
+
+### 29.5 The voice, corrected
+
+`docs/28` §4.1 said ids 53–55 were "named by no call site". They are the
+**alien death scream's**: the fight's severity-3 arm loads them with `mov
+edi, imm` rather than a `push`, which the site scanner did not read.
+Humans die to `SP_HUM_n` @50–52 off the human cursor, aliens to the same
+waves @53–55 off the alien cursor, a machine to `explosion.wav` @63, an
+object silently. `sound.py` carries `VoiceCursors.death`, `AudioEvents`
+`death_voice`, the voices document its two new keys (the converter is
+**0.13.0**, both copies), and `blob_tables --check` 449 → **455**.
+
+### 29.6 Decisions of the remake, named
+
+* `SAFETY_FRAMES` = 300, the bound on the two open-ended spins;
+* `FloatingTexts.scale()`, 640×480 to the viewport;
+* `World.gore_level` defaults to **2**, the game copy's `Game.opt`; the LCL
+  `?_` command writes it, as in the engine;
+* `SliceMain.DISPLAY_MODE` = 2: the debris loop reads the output mode, and
+  the remake plays the software 640×480 mode's arm;
+* the animation-slot-0x0B exception to the resume is not reproduced: the
+  remake has no animation slot table, and no shipped unit reaches it.
+
+### 29.7 Verification
+
+`bash godot/run_tests.sh`: 31 → **32** suites, 2128 → **2295** checks;
+`charisma` 29 → 67 (the speeds, the resume), `effects` 88 → 121 (the
+open-ended steps, the flag, the nine stages on a recording host), `game_ui`
+→ 110 (a kill through the real pool: the dead record found by its cell,
+blood in the pool), `combat_native` → 72, `presentation_native` 100 (new). The suite
+minimums in `harness.gd` were raised to match. `remake_convert --check`,
+`--check-cache`, and the whole always-run block pass with `__pycache__`
+cleared; `user://caches` republished at 0.13.0.
+
+Still to do by hand in the exported build: a shot with its numbers, a
+death with blood at level 2, the caption on a kill (`docs/42` §11's rows for
+idle, jump, selection, set pieces, environment, AI terrain and the script
+camera stand).
+
+---
+
+## 30. 2026-09-03 — the idle is a scheduler, and the bodies stand still between its picks
+
+`docs/42` §6 measured what the engine does with a body nobody is walking or
+firing: **nothing**, until one of four slots draws it. The remake looped
+every body's `S` clip from the first frame (`92` §7.10's "chosen, not
+recovered"), which is not what the original looks like — its map is mostly
+still, with one to four figures moving at any moment and each of them
+snapping back to its bind pose when its slot lets go.
+
+`game/charisma/idle_scheduler.gd` is `0x004060B0` for the four slots the
+refresh runs it on: a positive countdown counts down and nothing else;
+otherwise the slot frees what it held, draws `aRandom2(0, 200)` as a unit
+index, and takes the unit only if it is alive, its `+0x4F` is 0 (the
+**stored** byte, not the display pass — the engine reads the record), it is
+not animating, the selector names an idle clip and it has a body; then the
+clip plays once at speed 1.5 and the countdown is its length in frames. The
+type argument is dead as §6.1 says: it takes unit 0 without a draw when
+unit 0 is of the asked type, which is `_C_118`'s boss and nothing else.
+`CharismaState` gained `start_idle`, `detach_idle` and `is_idling`; its
+default and its `rest()` are the **bind pose**, the last frame is held once
+the clip has played out, and the free snaps to bind on the next step. The
+selector's randomised arm (`0x0042DF77`) is rolled **per start** off the
+pool's own generator — the one `aRandom2` stream the creators, the fight's
+coin and the scheduler share in the engine — rather than once per rebuild
+off Godot's. Above the camera eye's z of 96 000 the bodies are not
+simulated while the slots still run (`0x00406FC0` reads the third output of
+`0x00403750`, the position getter; pinned).
+
+**Measured.** `presentation_gold --emit-idle-cases` turns the `idle_random`
+phase into a fixture of all two hundred starter calls with the seed and
+slot 1's table either side, plus the guard inputs of every unit record, and
+`test_presentation_native.gd` replays it call for call: the countdown ticks
+draw nothing (91), every later call draws exactly once (109), every draw
+is refused by the guard the engine refused it with or takes the one
+candidate — the drawn unit, the seed after and the countdown after agree on
+all 200 — and the forced start of `idle_pose` runs on the cache's own
+`P0_S0_000`: length 90, the clock at 67.5 after 45 steps, at 90 after 60,
+held two steps later, bind after the free. `test_render` drives 600 frames
+of a `_C_140` map and finds at most four bodies idling and at least one
+start.
+
+**The remake's own, named:** the *Cursor and animation level* option is
+`IdleScheduler.enabled`; the shared generator's seed is the mission's, as
+the pool's already was (the engine seeds `GetTickCount()`).
+
+`bash godot/run_tests.sh`: 2295 → **2317** checks; `presentation_native`
+100 → 114, `charisma` 67 → 72, `render` 17 → 19.
+
+## 31. 2026-09-03 — the selection, the jump, the push and the orbits; three rules `core` had not got
+
+Slice C of the presentation plan (`docs/42` §7). What it found is in three
+groups: seven more creators measured, three gameplay rules the remake was
+missing, and one reading that the plan had wrong.
+
+### 31.1 Seven creators, measured before code
+
+`tools/inclib/blob_creators.py` carries seven more programs read out of
+their own instructions — the selection marker `0x00422D40`, the landing dust
+`0x004227C0`, the heal and poison flash circles `0x00423030` / `0x004232E0`,
+`aBlob_CreateZoomBob` `0x00423720`, the jump's trail `0x00423670` and the
+push's dust `0x0042A6E0` — and `tools/presentation_gold.py` has a `death_*`
+phase for each: a written `aRandom2` seed, one call with controlled
+arguments, the pool read back. The position creators take the marine's own
+object through `dbgcall`'s `[$s_m+0x10]` reads, so the arguments are the
+engine's and not the model's. `--check` is 228 → **291**; 364 records across
+the twenty-six phases agree field for field, the draw count by the seed
+either side. Two of the seven were wrong as first transcribed and the
+capture corrected them:
+
+* the poison flash's four skulls sit at the **flash** radius (`mov edi,
+  0x640` / `0x1900` at `0x004233BF` / `0x004233B0`), not the marker's 4800;
+  the reading had taken the heal circle's neighbour for the marker's;
+* the trail's four sprites are delayed **by their index** — `push esi`, the
+  loop counter, is the constructor's last argument — so a trail lasts four
+  frames longer than a single puff.
+
+The rings are the engine's table arithmetic and not a division of the
+circle: each offset is the previous one turned by the step through
+`0x004039A0`, and the arrows are aimed along the line from the object to
+themselves by `0x00403AA0`. The heal flash's three crosses load their model
+names by `mov edi, str` rather than `push`, which is why `blob_tables.py`'s
+constructor reader had never listed them (`BLOB_MODEL_MOV_SITES`, 30 → 34
+models, all in all nine world sets) and why the geometry cache had no
+`A_CROSS*.3DI` at all — `CONVERTER_VERSION` 0.13.0 → **0.14.0**, and the
+`.3DI` reader meets its first draw kind `0x0C` (the half-blended flat fill of
+`docs/31` §4.4) in the shipped effect models. `blob_tables.py` reads all six
+new radius and turn constants back out of the creators (`mov r32, imm32` and
+`mov word [esp+d], imm16` sites, 455 → 456); `presentation_tables.py` pins
+the seven creators' literals and call counts (472 → **533**).
+
+`godot/game/fx/blob_programs.gd` has the seven twins, `Inputs` gained the
+type sizes and the Eng3d tables, and `test_presentation_native.gd` replays
+the engine's records for all twenty-six phases (114 → 149 checks).
+
+### 31.2 The marker is a flash on a selection, not a ring re-raised per frame
+
+The plan assumed `aUI.cpp` restarts the four arrows every fifteen frames.
+It does not. `0x00473920` — gate on the animation level (`0x004604D0`) and a
+selected unit (`word [0x5162F8] != 0xFFFF`), then `0x00422D40` — has three
+callers: the select routine `0x00471E00` (`0x00471F4C`) and the command pad
+`0x004714B0` (`0x00471A49`, `0x00471A72`, after the pad's own refresh). The
+frame loop `0x0041C010`–`0x0041D2A0` calls neither it nor the creator; the
+four orbits raise the arrows themselves. So the marker is raised **once on a
+selection and once after every pad command**, lives kind 14's fifteen ticks,
+and is gone until the next click. `main.gd` does exactly that
+(`_raise_marker` from `select_unit` and `_after_command`), and
+`presentation_tables.py` pins the three sites and the loop's zero.
+
+### 31.3 Three rules `core` was missing
+
+All three are pinned by bytes in `presentation_tables.py` (`heal.*`,
+`warp.*`, `drain.*`), transcribed in `inclib/interact.py` and
+`inclib/combat.py`, checked by `interact_runtime.py` (59 → **73**) and
+`combat_runtime.py` (117 → **126**), and twinned in `core/` with the same
+checks in `test_combat.gd` (160 → 192).
+
+**The heal command** (`docs/29` §1.1 button 2, `0x00470890` under the pad
+arm at `0x004733BB`). Refused with no movement points. The power is
+`0x004753C0`: 3 with a Large Medic Kit (`+0x31`, equipment 16), else 1 with
+a Small one (`+0x30`, equipment 15), else 0. The ceiling is `0x00475240`: the
+type's hit points for a computer unit, else the type's plus `ep / 12` capped
+at **15** — and `0x0047B180` writes `hp + power` only while that stays under
+the ceiling, else the ceiling itself, which pulls a record *above* the cap
+down to it. The unit in front (`0x004308C0`) is healed when it is under its
+ceiling and the healer's own player's; otherwise — off the map, empty, full,
+or somebody else's — the healer heals itself, and only that arm answers 0,
+when the healer is at its own ceiling. The pad then takes one movement point
+if the command answered 1 and there was one to take, and writes `+0x39 = 3`
+**either way** — the store at `0x004733F3` is after the join of both
+branches. `aPlayHealAnimation(x, y, |delta|)` follows on both arms.
+`World.submit_heal` and `Interact.heal_command` are the twins; the remake
+has no network, so the arm that relaxes the owner test to players 0..3 is
+named and not taken. **The pad's offer is its own gate**: `case 2` of
+`0x00472570` shows the button only past `0x0047B4C0` — a kit, and either a
+patient in front under its ceiling and of the same player or the healer
+itself under its own — and `+0x15 >= 1` (`0x0047262D`). The command behind
+it charges a point even when it heals nothing, so a remake that skipped the
+gate would sell a press the original never offers; `World.may_heal` and
+`Interact.may_heal` are the gate's twins and `main.gd` asks it first, as it
+asks `may_use` before a `Use`.
+
+**The player's jump** (`aExecuteWarp` `0x0046EF50` under the pad arm at
+`0x00472F10`). `core` had the fill's warp marks and the computer's
+`execute_warp`, but no command a player could submit onto a warp cell. The
+routine relinks the record and rebuilds the fog for the mover's own player;
+it also fires the `MoveUnit` script call itself (`0x0046F196`: var 0x41
+written 2, then x, y and the cell's action point, then the hook) — the same
+call as a walk's, which `World.submit_warp` makes. The pad's arm, for a
+mover still alive, zeroes the movement points, writes `+0x39 = 5` and
+drains the reaction queue at the landing cell; a mover the mine arm killed
+(no shipped cell carries one) is deselected instead. `combat.warp_unit`
+and `ExecuteWarp` are the twins; a click on a cell the last query marked as
+a warp target now jumps.
+
+**The drain's jam arm** (`docs/25` §6). After a reaction shot that fired, a
+magazine at zero (`+0x3D`) or a heat counter equal to `0x00475340`'s cap
+plays the jam orbit `0x004104A0` and clears the reactor's ticket
+(`mov byte [esi + 0x59], 0`) — in **both** of the drain's loops, the
+campaign's by ticket and the other modes' by slot (`0x0046CE0E`,
+`0x0046D090`; `docs/25` §6.1). `core` never cleared the ticket, so a reactor with an empty
+magazine kept its place in the queue. `Reaction.drain` and
+`combat.drain_reactions` now report `jammed` per shot and clear it.
+
+### 31.4 The sequences
+
+Three new drivers on the `SequenceQueue`, each over the same narrow host
+the shot uses (`ShotHost` grew the camera, geometry and body methods they
+need) so that `test_effects.gd` runs them on a recording double:
+
+* **`OrbitSequence`** — the six orbits of `docs/42` §7.5 and the jam of
+  §7.4: raise (the arrows, or a flash circle), fly to the start offset
+  (`(0, +0xC80, h + 0xC80)`; `(0, +0x1900, h + 0xC80)` for heal and poison;
+  `(0, +0xC80, h)` for `RotatingCamera`), the centred caption (overlay 3)
+  and the wave, forty frames turning the eye's offset by +100 or −40 through
+  `0x004039A0` with the camera set each frame, and the flight back to the
+  six numbers read at the start. `test_camera.gd` runs the skill and the
+  heal orbit on a real rig with the cache's tables: 4000 and 2496 of 4096
+  swept, the radius kept, the eye back where it began. The overheat orbit's
+  kind is `0x0040F420`'s own — 1 the carrier destroyed (text 14, and the
+  unit hidden behind `FireExplosion` and `BloodFlood(x, y, x, y, 0)`), 2 a
+  jam (15), 3 damage (16) — read off the `dec eax / je` ladder at
+  `0x0040F5A4`, not off `docs/42`'s row order, which listed them as if the
+  ids ran with the severity. The skill and overheat orbits are queued
+  **ahead** of the shot's nine stages, where `aAttackUnit` plays them.
+* **`JumpSequence`** — `0x00411460`: the body turned to the landing cell,
+  the source object lifted by `0x0047AD30(0)` = 2400, `steps = max(|dx|,
+  |dy|) / 480` frames along `0x0046D400`'s direction times 480 with `vz =
+  (steps / 2) * 160 + dz` falling 160 a frame, the target on the flyer and
+  the eye kept, the trail at `z + 0x640` each frame for the player's unit,
+  the landing dust at both ends with `jump.wav` and `drop.wav`; a computer
+  unit draws `aRandom2(0, 3)` once for `S_ALI_n` and raises no dust at the
+  source (the dust call at `0x004117A1` is on the player's arm alone). The
+  replay's interim `focus_on` for a computer warp is gone — and with it its
+  `Fog.is_drawn` test, on purpose: `aExecuteWarp` plays the jump whenever
+  its fifth argument is 1 (`0x0046EFE2`), which the computer's call passes,
+  and neither it nor `0x00411460` reads `+0x4F`. A hidden alien's jump is
+  therefore an invisible flyer the camera's target follows, which is what
+  the remake does too: a slot the fog gives no node has nothing to place,
+  and only the target moves.
+* **`PushSequence`** — `0x0046D530`: the flight to `0x0047AD30(pusher)` =
+  half the height plus 800 above the pusher, looking at the same height
+  above the pushed object; four frames a cell moving the object by a third
+  of what is left with a dust puff at its position each frame, then the
+  snap to the cell at `+0xA0`; a hole's fifty steps of `z −= 320`; the pool
+  waited for, and no flight back.
+
+The jump's and the push's arithmetic is **read, not measured**: both
+routines render inside the frame loop and cannot be called under `dbgcall`,
+which is the same limit `docs/42` §4's nine stages have.
+
+### 31.5 What the corpus says about the poison sweep
+
+`0x004706A0(player)` — two fitness points off every one of the player's
+units standing on a control-type-6 cell, with the poison orbit — has one
+caller, `aInitBattleGround` `0x00419D90` (`0x0041A6D1`), which the main
+loop and the main controller run at mission start; the hand-over does not
+call it. Four placed units in the whole corpus stand on a type-6 cell at
+start, all in `_C_118` and all the computer's (slots 0, 34, 35, 36), and the
+sweep at start runs for `aGetCurrentPlayer()` (`0x0043B2C0` at
+`0x0041A6C6`, `docs/22` §9), who at mission start is human. The sweep is
+therefore unreachable in the shipped game and is **not modelled**; the
+poison orbit and its flash circle are implemented and measured for the
+`FlashCircle` the plan asked for, and nothing calls them yet.
+
+### 31.6 The remake's own, named
+
+* `JumpSequence.POOL_WAIT_FRAMES` and `PushSequence.POOL_WAIT_FRAMES` = 60:
+  the engine spins until the pool is empty with no bound; the remake's
+  bound is longer than any record the two leave lives.
+* `FloatingTexts.set_centred_caption` centres overlay 3's text over the
+  viewport with the label's alignment; the original centres by the text's
+  pixel width in a 640-wide frame.
+* The heal's keyboard binding (H) and the warp's click on a marked cell —
+  the pad's buttons are not drawn; `docs/29` §1.1's command ids are what
+  they map to.
+* `OrbitSequence` plays no wave of its own for the overheat: the shot's
+  cues already carry `AudioEvents.overheat_cue`, and the engine's orbit
+  would play the same file a second time from inside `aAttackUnit`.
+
+### 31.7 Counts
+
+`presentation_gold --check` 228 → 291; `blob_tables` 455 → 456;
+`presentation_tables` 472 → 538; `interact_runtime` 59 → 77;
+`combat_runtime` 117 → 126; `bash godot/run_tests.sh` 2317 → **2464**
+checks (`combat` 160 → 197, `effects` 115 → 173, `camera` 135 → 147,
+`game_ui` 114 → 124, `presentation_native` 114 → 149).
+
+### 31.8 Left open
+
+* The jump's and the push's frames are unmeasured (§31.4) — a capture would
+  need a hook that steps the routine outside the frame loop.
+* `RotatingCamera` is wired in `OrbitSequence` but not yet driven from the
+  LCL event; slice F's script cameras take it.
+* The alien's jump scream is drawn from the pool's stream as the engine
+  draws it, but which of the three waves each draw picks is read off the
+  `je` ladder at `0x00411950` (0 → `S_ALI_0`, 1 → `S_ALI_1`, 2 →
+  `S_ALI_2`) and not heard under Wine.
+
+## 32. 2026-09-03 — the set pieces get their camera and their effects (D-a)
+
+Slice D-a of the presentation plan: the rows of `docs/42` §8 that the
+cached missions reach. Eleven more creators measured, four sequences that
+were instant made animated, and the camera each one moves.
+
+### 32.1 Eleven creators, measured before code
+
+`tools/inclib/blob_creators.py` carries all eleven as programs read out of
+their own instructions, and `tools/presentation_gold.py` has a `death_*`
+phase for each (twelve phases: the laser barrier is taken twice, along
+`+y` and along `-x`, because its direction switch is the only argument
+that changes the geometry). **All twelve agreed field for field on the
+first run** — 239 more records, `--check` 291 → **399**:
+
+| Creator | What it leaves |
+|---|---|
+| tube puffs `0x00423770` | fifteen **pairs** of class-2 sprites at the object, kind 10, life 20, aux 10, each pair delayed by its index |
+| platform dust `0x004234C0` | four sprites at the block's corners, 4800 out and 1600 up, kind 10, life 12 |
+| ground-unit debris `0x00422610` | twenty `A_DEBRIS` and four `A_SPLAT1`, kind 29, life 50, thrown 300 up; the third draw is taken and **discarded** (`fstp st(0)`) |
+| roof-unit debris `0x00422460` | the same twenty and four, kind **0**, with that third draw kept as the vertical: `aRandom2(40, -100)`, a span the wrong way round, so the pieces fall |
+| crush-wall debris `0x004238C0` | thirty sprites scattered ±1600 (seven draws each) and five `A_DEBRIS` of kind 5, life 100, spun by three draws of 0..4095 |
+| fire-circle ring `0x00422F00` | 150 flames on a ring of a field's radius, each offset the previous turned by **60**, a field *below* the object, delayed `i / 8` |
+| laser barrier `0x00428990` | three dots one field back along the line, then three `A_LASERG.3DI` per count a field further; no draw |
+| statue beam `0x00428BF0` | `2 × cells − 1` dots stepping 1600 along the line at z 3200, then six sparks with rotations alternating `(0, 3)` and `(2, 0)` |
+| teleporter stream `0x0042A120` | two hundred records one every 16 units up, each with a **point** near the target in its velocity slots; four draws, every one converted with its addend inside |
+| bomber `0x0042A8E0` | one `L069EE00.3DI` flying a field a tick along the direction; it clears the *arrived* flag |
+| para bomb `0x0042B070` | one `A_PARAB1.3DI` dropped from 48000, its life the fall from 35200 at 800 a tick |
+
+`blob_tables.py` reads thirteen more constants back out of the creators
+(three doubles and ten immediates, through four new site encodings — `cmp`
+with an 8- and a 32-bit immediate, `add r32, imm8`, and a signed `push`);
+`presentation_tables.py` pins each creator's record counts, kinds and
+lives, and the camera sites of the six sequences below (533 → **583**).
+`godot/game/fx/blob_programs.gd` has the eleven twins and
+`test_presentation_native.gd` replays the engine's records for all
+**thirty-eight** phases (149 → 209 checks).
+
+### 32.2 The camera, and four sequences that were instant
+
+`game/setpiece/setpiece_camera.gd` is a layer over `SetpieceDriver`: the
+same frame counts, with the camera and the creators each routine adds
+around them. It takes the same `ShotHost` the shot and the orbits use, so
+`test_effects.gd` runs every one of them on the recording double.
+
+* **`OpenDoor`** — a flight from the opener's head (`0x0047AD70` twice) to
+  the panel at the same height, ten frames, a flight back. It runs for the
+  player's own Use and for the computer's opener, both of which pass real
+  tiles; the LCL wrapper passes `-1` and gets no camera, which is the
+  routine's own test (`cmp esi, -1`) and is checked as such.
+* **The three tubes** — `OpenTube`, `OpenPlantTube`, `OpenFrontDoor`:
+  **nineteen** frames (`cmp esi, 0x13`), no flight, and `OpenTube` alone
+  raises its puffs on the tenth (`cmp esi, 0xA`). They were `INSTANT`.
+* **`Elevator` and `Platform`** — the eye kept, one flight of the target to
+  the block, then the target set on it every frame; the platform raises
+  `0x004234C0` at the block each frame.
+* **`RoofUnit`** — the target flown to the drop's start, the debris there,
+  five lead frames, then the fall with the target on the body and the body
+  drawn 160 above its z, the landing dust, the pool waited for.
+* **`GroundUnit`** — the body placed 3200 below the ground cell's top less
+  its own height, the debris 1600 above the object, **eight** frames of
+  1120 up drawn 1280 higher, **six** frames carrying it a fifth of the way
+  to its own cell, the dust. It was `INSTANT`.
+
+`SetpieceDriver.ANIMATED` is now eleven kinds and `INSTANT` fourteen; the
+two lists are still disjoint and still checked.
+
+### 32.3 The remake's own, named
+
+* `SetpieceCamera.POOL_WAIT_FRAMES` = 100, as the jump's and the push's:
+  the engine spins with no bound.
+* The tube's **object rotation** (`add word [edi + 0x26], 0x33` a frame) is
+  not drawn: the remake's scenery has no per-object rotation yet. The cell's
+  state flips as it did, and the puffs are there.
+* `RoofUnit`'s four-frame wait for an odd type's scream is not taken — the
+  sound layer plays the cue without holding the picture.
+* The `L110EX00.3DI` object `GroundUnit` inserts is in no cached world set,
+  so nothing is inserted; the debris and the dust are.
+
+### 32.4 Counts
+
+`presentation_gold --check` 291 → 399; `blob_tables` 456 (four new site
+encodings, thirteen more constants); `presentation_tables` 538 → 583;
+`bash godot/run_tests.sh` 2464 → **2590** (`effects` 173 → 238,
+`presentation_native` 149 → 209).
+
+### 32.5 Left open
+
+The rows of `docs/42` §8 no cached mission reaches are still `INSTANT` and
+still say so: the statue and its beam, the laser barrier, the crush wall,
+the teleporters, the bomber and the para bombs, the fire circle. Their
+**creators are measured and their twins are in `blob_programs.gd`** — what
+is missing is the driver that walks each routine's own frames, which is
+slice D-b.
+
+## 33. 2026-09-03 — the rest of the set pieces (D-b)
+
+The rows of `docs/42` §8 no cached mission reaches. Their creators were
+already measured in §32; this is the driver that walks each routine's own
+frames, so `SetpieceDriver.ANIMATED` is now **eighteen** kinds and
+`INSTANT` eight.
+
+| Sequence | Frames | What the picture does |
+|---|---|---|
+| `Statue` `0x00413A40` | 13 + 1 | a flight to `push 0x7D00` = 32000 above the camera's own position looking at the statue; the object's rotation word turned by +80 a frame and then written its original plus a quarter turn; the beam: `FireDeath` on each unit in the path, hidden, and `0x00428BF0` from the statue to the last cell each way; the pool |
+| `Statue2` `0x00414000` | 1 | the same without the turn: one axis, one beam, up to nine cells |
+| `barrier_on` `0x00413560` | 40 | the beam `0x00428990` along the direction, a flight to it, forty frames, `BloodFlood` and `FlyingDebris` on every unit it killed, the pool |
+| `FireCircle` `0x004131C0` | 10 | `KillFire` with delay **20** on the eight neighbours (`cmp ebx, 7`), a flight, the ring `0x00422F00`, ten frames (`mov esi, 0xA`), the pool |
+| `CrushWall` `0x00415C70` | pool | `0x004238C0` on each cell, then the pool |
+| `ParaBombs` `0x004160F0` | *arrived* | the bomber in from `mov edi, 0xFFFFC180` = -16000, **y 0** (`xor ebx, ebx`) at **320000** -- the routine has two height arms and its `flightpath` argument picks them (`0x00415F59`: 0 → `0x4E200`, 1 → `0x13880`, anything else its own *unknown flightpath* assertion), and the four shipped calls all pass 0 -- one `0x0042B070` per tile, ending on the flag of §4.6 |
+| `teleporter` `0x004164F0` | 70 | the stream `0x0042A120`, the camera target on the pool's first live record between frame 40 and frame 10, the traveller hidden at 40 and shown at 10 |
+
+**The paths are re-walked in `game` from the terrain**, not carried on the
+event: which cells the beam crossed is a fact about the map that the
+picture may read, and the statue's axis is the cell's own `+0x0B` bit 0
+after the routine flips it (`0x00413C31`) -- 0 fires along y, 1 along x. The **para
+bombs' tiles are the exception** and are now on the event — they come from
+the mission's own generator, and drawing them again in the picture would
+move the seed a second time. Both interpreter twins append them after the
+count (`lcl_runtime.py` and `core/lcl/lcl_interpreter.gd`); the change is
+additive and `lcl_runtime --check` is unchanged at 34.
+
+### 33.1 Left open
+
+* **The statue's beam kills nobody in `core`.** Both interpreter twins'
+  `Statue` and `Statue2` arms emit `[x, y]` and change no unit: the hide,
+  the `FireDeath` and the `aRemoveUnitElement` of `docs/42` §8.1 are not
+  modelled, so `SetpieceCamera` draws the beam and no victim. The picture
+  is right about where the beam goes and silent about who is under it.
+  That is a core gap of §31.3's class and is **not** closed here.
+* **The statue's `+0x0B` bit is never flipped in `core`.** The routine
+  flips it and the *result* picks the beam's axis, so a second `Statue` on
+  the same cell alternates; neither twin writes the byte, so the remake
+  fires along the same axis every time.
+* **The bomber's target triple is UNVERIFIED.** Its entry is read
+  (`-16000, 0, 320000`); where it flies to comes from two of the routine's
+  own locals that were not traced, and the picture aims it at the box's
+  cell.
+* **The teleporter's rule is still not in `core`.** `aExecuteMove` breaks
+  out at field type 9 and calls `aExecuteTeleporter` (`docs/26` §5): the
+  exit is found by scanning for a field type 10 with the same action point,
+  an occupied exit kills the traveller and books a loss, and otherwise the
+  unit is relinked. Both twins record the event and **change nothing**, so
+  the sequence above has no traveller to move on the 21 shipped entries
+  that do pair. That is a sixth core gap of the same class as §31.3's
+  three, and it is not closed here.
+* `CrushWall` is given its own cell only; the routine runs its creator on
+  every cell of the wall, and which those are is not on the event.
+* The statue's own object rotation is applied to the record `core` holds,
+  not drawn — the same limit the tube's has (§32.3).
+
+## 34. 2026-09-03 — the script's camera, and two decisions revised to the engine's
+
+### 34.1 The camera commands (`docs/42` §2.4)
+
+`game/setpiece/script_camera.gd` drives the six the mission scripts use,
+each read out of its own handler and each a **flight** through
+`0x0040EEE0`, queued like every other driver so a script that moves the
+camera twice shows both moves:
+
+| Command | What it sets |
+|---|---|
+| `MoveCamera (fx, fy, tx, ty, h)` `0x00441AA0` | the eye on the first tile's object at `h * 1600`, the target on the second's at z 0 — 230 uses |
+| `MoveTarget (x, y)` `0x00441C40` | the eye kept, the target on that object at z 0 |
+| `MovePosition (x, y, h)` `0x00441D00` | the target kept, the eye on that object at `h * 3200` |
+| `RotatingCamera (x, y, h)` `0x00440FC0` | the orbit of §7.5 around the tile at `h * 160` |
+| `SaveCamera` / `LoadCamera` `0x00441B90` / `0x00441C00` | all six numbers pushed to and popped from the scene's own stack, the engine's `0x0050C088` |
+
+`OrbitSequence` grew a cell argument for the one orbit that has no unit.
+`MoveWorld` is deliberately not here: it translates the scene
+(`0x00407E30`), which is the scenery's business. The mode the rig is left
+in is `View.SCRIPT`, which is mode 0 — "what a script leaves behind".
+`test_lcl.gd` runs all six on a recording host.
+
+### 34.2 Two decisions revised, both to the engine, both behind a flag
+
+The plan's principle is that the original is the standard, so two of
+`docs/92` §7's choices are revised:
+
+* **§7.5.5, the fog probe.** `0x00481F00` saves every `+0x4F`, rebuilds the
+  fog for the current player, and restores the bytes — but **not** the
+  orders `alert_group` promotes, so every player command wakes the groups
+  that player can see and they stay woken. This remake called that a bug
+  and declined to reproduce it; it reproduces it now, in
+  `World.probe_fog()` called once from the start of every player command
+  where `aViewPlayer.cpp`'s dispatcher calls it. The wake is the pass's
+  **own** line-of-sight arm -- `Visibility.probe` runs `_pass` with it and
+  puts every `+0x4F` back afterwards -- so a scan blip and the beacons the
+  pass marks without a sight wake nobody, and only the computer's own units
+  (`player == 0xFF`) are promoted. `Visibility.states_for` stays a pure
+  query, which is what the player *sees*.
+  `World.COMPAT_FOG_PROBE_QUIET` restores the quiet probe.
+* **§7.5.3, the camera on hand-over.** The engine's hand-over calls no
+  camera routine (`docs/42` §2.6), so neither does this any more.
+  `SliceMain.COMPAT_CAMERA_RETURNS` restores the remake's own return to the
+  first friendly unit, which is what made 4 of 4 of the squad visible when
+  the turn came back instead of 0 of 4. The measurement stands; the default
+  does not.
+
+Both flags are in the world's `compat_flags`, so both reach the canonical
+hash and a save records which game it was.
+
+### 34.3 The para bombs' tiles
+
+`ParaBombs` draws sixty candidate tiles from the mission's generator and
+keeps the free ones. Both interpreter twins now put those tiles on the
+event after the count, because the picture drops one bomb on each and
+re-drawing them there would move the seed a second time. Additive in both;
+`lcl_runtime --check` is unchanged at 34.
+
+## 35. 2026-09-03 — the computer's door, and the terrain in the event's own frame
+
+`docs/42` §10's row: the terrain a computer turn changed was applied in
+`core` when the event happened and drawn **all at once** before the replay
+started, so a door the computer walked through opened at the top of the
+replay and everything else caught up at the end.
+
+Two halves, and the first is a rule rather than a picture.
+
+**The AI's `open_door` did not open the door.** Both twins stopped at the
+facing, the movement point and the *acted* flag, on the reading that
+`aDoorOpenSequence` is a set piece; but `0x0040A600` **calls** that sequence
+at `0x0040A6B5` and keeps its answer, so in the engine the panel goes down.
+Both twins now call `toggle_door` at the cell -- the same routine the
+player's Use reaches -- and neither rebuilds the fog, because both of the
+sequence's rebuild sites are guarded by `aGetCurrentPlayer() != 0xFF` and
+the computer holds the turn. `ai_runtime --check` is unchanged at 71 and
+`ai_gold --check` at 47, so nothing the capture measured moved;
+`test_ai.gd` checks the flip, the height, the field type and the event.
+
+**The cells ride on the event.** `AIEvent`'s payload carries the indices the
+event changed, and `_on_ai_step` paints exactly those before the event's
+body plays -- **unless** the event queues a set piece of its own, which owns
+the cells it animates: painting the door to its final height and then
+running its ten frames would snap it open, snap it shut and animate it open
+again. The whole-map redraw at the end of the replay stays, so a list that
+is short costs nothing.
+
+Two things a review caught in the first cut of this, both fixed: the
+context's `grid` is a **copy** of the world's cells, so writing only the
+world left the guard reading "closed" and a second unit beside the same
+door toggled it shut again; and the beam walk of `barrier_on` looped for
+ever on a direction outside the eight, because the out-of-range answer is
+the zero step.
+
+### 35.1 The turn banner, read and not built
+
+`0x0047C2C0` is **not** a banner. It blanks the whole frame
+(`0, 0, 639, 479`), then draws centred text at (320, 160/190/200/220) with
+`"%s %d"`, `"%s (%s %d)"`, `"%s (%s %d) - %s"` and `"*** %s %s ***"` from
+`Txtmod` ids 12, 20, 22, 25, 26, 125, 127 and 132, over a seven-arm switch
+on `0x0047DBD0`'s answer. It is the **between-players screen**, and the
+remake's HUD line is not a smaller version of it. Building it is a piece of
+interface work rather than a presentation one, and it is left open with
+this reading written down rather than half-built.
+
+## 36. 2026-09-03 — where the presentation plan stands
+
+Slices A through D and most of F of the mission-presentation plan are in.
+What is **not**, with the reason:
+
+* **Slice E, the environment (`docs/42` §9).** The special-object state byte,
+  its four animated states and the four placers are read and pinned, and
+  nothing is built. The blocking question is not the picture: it is that the
+  three arms which change the map -- weapon 40's nine fires, weapon 42's
+  mine, weapon 43's shield -- live in `aPlayFightAnimation`, the
+  **presentation** routine, and not in `aAttackUnit`. Where they go in a
+  remake whose `core` owns no drawing is a design decision of the same
+  weight as `docs/92` §7's, and it wants the project owner rather than a
+  guess. The converter's model list, `CONVERTER_VERSION` and the republish
+  ride on that answer.
+* **The teleporter's rule** (§33.1) and **the statue's kills** (§33.1) --
+  two more core gaps of §31.3's class, both read and neither modelled.
+* **`CrushWall`'s cells**: the routine runs its creator on every cell of the
+  wall and only the command's own cell is on the event.
+* **The between-players screen** `0x0047C2C0` (§35.1): read, not built.
+* **The jump's and the push's frames** are transcribed and not measured
+  (§31.4); both routines render inside the frame loop and fault under
+  `dbgcall`, which is `docs/42` §4's own limit.
+* **The skill orbit has no campaign gate.** `0x00410190` opens with
+  `0x0043B740 == 1` and this does not test it; the remake is campaign-only
+  today, so it is named here rather than added.
+* **Slice G's by-hand pass** has not been run: everything above is checked
+  by the suites and the captures, and nobody has watched it.
+
+Everything that *is* in is green: the whole always-run block, the four gold
+captures (`presentation_gold` 399, `blob_gold` 259, `ai_gold` 47,
+`turn_gold` 197, `movemap_gold` 41) and `bash godot/run_tests.sh` at 32
+suites and **2632** checks.
+
+
+---
+
+## 37. 2026-09-03 — the environment, and the three weapons that change the map (E)
+
+Slice E of the presentation plan: the four **cell placers** of
+[`42` §9.1](42-mission-presentation.md), the rules they write, the round tick
+that takes them back, and the objects the picture draws for them. The division
+the slice was built on is the one the instructions settle, not one this project
+chose: an arm that writes `cell[+0x10]` is a rule and goes into `core`, an arm
+that only fills an object slot is a picture. Reading the four placers put the
+mine and the shield on the first side and the ground fire's *glow* on the
+second.
+
+### 37.1 What was wrong before it
+
+Four things, all of them `core`'s:
+
+1. **Weapons 40, 42 and 43 changed nothing.** `aPlayFightAnimation`'s impact
+   switch selects an arm per weapon id, and three of the forty arms place a
+   transient object: 40 calls the fire placer **nine** times around the target
+   (`0x0040D962`…`0x0040D9FF`), 42 lays a mine (`0x0040D76A`), 43 a shield
+   (`0x0040D5F8`). `MapState.EFFECT_SHIELDED` was *read* by the move map and
+   written by nobody.
+2. **`ParaBombs` drew its sixty tiles and wrote none of them.** `0x00470845`
+   lays a mine on every tile with no unit and `+0x10 == 255`.
+3. **The entry point burned wrong.** `execute_use`'s id-70 arm wrote
+   `+0x10 = 6` — not a value the byte takes — and subtracted `0xA0` from the
+   cell's **height**. `0x0046E0BF` writes the action point 71 first and then
+   calls `aMakeFire(x, y, 6, cellHeight - 0xA0)`; the 6 is the fire's
+   *subtype*, the placer writes `+0x0E = 6`, `+0x0F = id` and `+0x10 = 1`, and
+   the `- 0xA0` never leaves the placer's own half-a-field window test. Nothing
+   writes the height.
+4. **Nothing ever cleared any of it**, because nothing had written any of it.
+   `0x0047D600` runs `0x00470AB0()` and `0x0042ED60()` between the turn counter
+   going up and the `NEXT TURN` event, so the decay is a **round** tick.
+
+### 37.2 The four placers, read
+
+| routine | writes | gate |
+|---|---|---|
+| `0x0042F840` fire | `+0x0E` subtype, `+0x0F` id, `+0x10 = 1` | action point **71** *or* field type ∈ {0,1,6,8}; `abs(cellHeight − z) < 0x640`; refuses a cell whose `+0x10` is 3 and **deletes** any other object there |
+| `0x0042FA70` mine | `+0x0E = 0`, `+0x0F`, `+0x10 = 2` | field type only; deletes nothing, refuses nothing |
+| `0x0042FB90` shield | `+0x0E = 2` **first**, `+0x0F`, `+0x10 = 3` | field type; returns early when `+0x10` is already 3 — so a second Plasma hit refreshes the countdown and makes no second object |
+| `0x0042FCB0` glow | `+0x11` id, `+0x12` phase, `+0x13 = 4` | none at all; writes nothing on failure |
+
+The fire placer's first gate is the cell's **action point**, not a prototype
+letter: `cmp al, 0x47` at `0x0042F894` is 71, `ENTRY_POINT_DESTROYED`. That is
+why a destroyed entry point burns whatever its field type says, and it is the
+one line that makes item 3 above a two-part correction rather than one.
+
+Weapon 40's nine calls are a 3 × 3 block on the target cell: the centre at
+subtype **4** and the eight neighbours at **3**, every one of them passed the
+**centre** cell's height, so a neighbour half a field or more above or below it
+does not catch. Subtype selects the model — 0/1 `A_FIRE3`, 2/3 `A_FIRE2`,
+otherwise `A_FIRE1` — so the centre burns biggest and longest.
+
+The target cell is the one `aAttackUnit` adjusted: `0x0046B535`…`0x0046B57A`
+replaces arguments 2 and 3 with the standing unit's own `+0x42`/`+0x43` before
+anything else, and `0x0046C050` reloads argument 2 into `ebx` for the call. So
+the placers land where the *victim* stands, not on the raw aim point — and they
+run whether the shot hit, missed or found nothing, because the impact switch
+reads no outcome.
+
+### 37.3 The round tick, and the ground fire that kills
+
+`0x0042ED60` sweeps every cell once per round:
+
+| `+0x10` / `+0x13` | what one round does |
+|---|---|
+| glow at phase 2 | the object is deleted and a phase-1 glow made in its place |
+| fire | the object is deleted; `+0x0E ≤ 1` puts it out (`+0x10 = 255`), otherwise it is re-placed one subtype lower |
+| shield | `+0x0E == 1` deletes it and clears the cell, otherwise `+0x0E` and the **object's** subtype both go down one |
+| mine | nothing — a mine stands until something walks on it |
+
+So a weapon-40 centre burns four rounds and its ring three; a shield lasts two,
+turning at 51 units a frame and then at 25.
+
+`0x00470AB0` runs **first**, and it is the other half of `SetGroundFire`: every
+cell whose glow has reached phase 1 has its object freed, `+0x13` cleared and
+`aPlayGroundFireAnimation` `0x004157B0` played on it. That routine is not only
+an animation. It collects the eight neighbours through `0x004308C0` **with the
+diagonal flag set** (`push 1` at `0x00415963`) plus the centre, skips any cell
+whose `+0x10` is a shield, hides each unit's object, drops blood and debris on
+it, and then calls `aRemoveUnitElement` `0x004779C0` for every one of them.
+There is no roll and no armour: **a ground fire kills whatever it reaches.**
+The fuse is two hand-overs — laid at phase 2, decayed to 1 by the tick, burnt
+by the next round's sweep.
+
+`aRemoveUnitElement` bumps the hero counter, frees the 3D object, clears the
+cell link and — with its own last instruction, `0x00477ABD` — zeroes the hit
+points. Both twins do exactly that. §38.2 first read this the other way round;
+§40.1 corrects it with the instruction.
+
+### 37.4 `SetGroundFire` works in one world set
+
+The capture found this rather than the listing. `special_glow` calls
+`0x0042FCB0(x, y, 2)` in the live engine on the fixture save and the engine
+writes **nothing at all** — no cell byte, no array slot. `aCreateSpecialObject`
+resolves the model name through `0x004038F0` and answers -1 for one the loaded
+world set does not carry, exactly as `28` §7.5 records for the blob models, and
+the fixture save is on `World_A00`.
+
+Reading the nine containers: every set carries `A_FIRE1/2/3`, `A_MINE` and
+`A_SHILD`; **only `World_D00` carries `GLOW1.3DI` and `GLOW2.3DI`**. The two
+missions that use `SetGroundFire` — `_C_116` and `_S_007` — are both `D00`. It
+is a designed pairing, not an accident, and it means the command is inert in
+any set it was not written for.
+
+The model gate is therefore part of both models: `CtrlMap.models` /
+`MapState.special_models()`, filled from the geometry document's new
+`special_models` list. A world built without it will let a `SetGroundFire`
+appear to work where the engine does nothing.
+
+### 37.5 The mine on a walked path now fires
+
+[`26` §6.2](26-interaction.md) closed the question in 2026-09-01 and the remake
+carried a `TODO:` because the fix needed a `core` change. It is taken now, and
+it needed no new decision: every cell-based detonation runs
+`aDeleteSpecialObject(cell[+0x0F])` and fires only when it answers non-zero,
+and the placers now write `+0x0F` beside `+0x10`. The native probe's synthetic
+mine — the effect byte on an ordinary cell with no object — still returns FALSE
+and still detonates nothing, so `movemap_gold.py --check` is unchanged at
+41/41. `MoveMapHooks` gained `delete_object` and `detonate` whose **defaults
+are the probe's answer**, which is what keeps a capture taken before they
+existed honest.
+
+The push arm and the defuse were brought onto the same guard, and both twins
+free the array slot.
+
+### 37.6 What was measured
+
+`presentation_gold.py` gained eight phases, one process each, at `91`'s anchor
+with the fixture save. Each loads the mission, reads the **whole** control map
+and the **whole** 80-slot array `[0x004FA828]`, calls one placer with
+controlled tiles, and reads both back — so what is compared is not the cell the
+placer was aimed at but every cell and every slot:
+
+| phase | what it reaches |
+|---|---|
+| `special_fire` | the nine-fire arm's centre, at the cell's own height |
+| `special_fire_out_of_window` | the same call a full window above — refused, nothing written |
+| `special_fire_over_a_mine` | a fire on a mine: the mine's object deleted, no detonation |
+| `special_mine` | `+0x0E = 0`, `+0x0F = 0`, `+0x10 = 2` |
+| `special_shield` | twice — the second refreshes `+0x0E` and makes no second object |
+| `special_fire_onto_a_shield` | the fire refuses the cell outright |
+| `special_glow` | §37.4: nothing, because `A00` has no `GLOW1` |
+| `special_tick` | a fire, a shield and a glow, then two round ticks |
+
+`--check` is **544/544** (was 399), and `inclib/ctrlmap.py` reproduces the
+engine field for field on the first run. `--emit-special-cases` turns the same
+capture into `tests/fixtures/presentation/cases_special.json`, which the new
+`test_ctrl_map.gd` replays: 34 checks at oracle **`native-runtime`**, the third
+suite in the project to earn that label.
+
+The static side: 41 new pins in `presentation_tables.py` (**624/624**) — the
+impact switch's three arms by weapon id, the nine call sites with the subtype
+each pushes, every cell write of all four placers, the tick's extinguish
+threshold and its shield decrement, the ignition sweep, and the two calls the
+hand-over makes. New model checks: `combat_runtime` **147/147**,
+`interact_runtime` **79/79**, `lcl_runtime` **43/43**, `turn_runtime`
+**60/60**, `movemap_runtime` **29/29**.
+
+### 37.7 What the picture does, and what is the remake's
+
+`game/special_objects.gd` draws what the cells say and turns it every displayed
+frame, on the same 20 fps clock the effects use: the fire's two flame
+billboards take a fresh `aRandom2(0, 4096)` heading each, a mine turns +51, a
+shield +25/+51/+102 by its subtype, a glow a fresh random heading. It owns no
+state but the last snapshot it drew — an object exists exactly while a cell
+says it does — and it draws through [BlobModels], which was made reusable
+(`place`, `keep_only`) rather than copied: a special object is a record of the
+same shape with the same three joint triples.
+
+*(The paragraph that stood here said the positions were the remake's, because
+the rules need the slot and not the position. That was true of `core` and
+wrong about the picture: §38.4 measured them.)*
+
+**All four things this section first listed as open are closed in §38.**
+
+### 37.8 Storage, and the versions
+
+`MapState` went from four effect columns to **six**: the glow lives in `+0x11`,
+`+0x12` and `+0x13`, and a model that stopped at `+0x11` could carry its slot
+index and neither its phase nor the byte that says it is there. The converter
+emits `effect4` and `effect5`, the canonical hash covers them, and both
+`CONVERTER_VERSION`s went to **0.15.0** with `SaveCodec.SCHEMA_VERSION` to
+**8** — the mine detonation changes `core` behaviour, which is what that
+version is for. `user://caches` was republished.
+
+`+0x12` is the byte `10` §4 recorded as *"set on 44 of 184162 cells, no
+correlation found"*. It is the glow's phase; with `+0x13` at 255 on every
+shipped cell those 44 are inert leftovers of the editor, and the entry can stop
+saying no correlation was found.
+
+The 80-slot array is **derived**, not stored: `aBuild3DSpecialObjects`
+`0x004079D0` rebuilds it from the same cell bytes after every load, so
+`MapState.rebuild_objects()` runs at both loading boundaries and the array is
+neither hashed nor saved.
+
+
+### 37.9 What a second reading of the wiring caught
+
+Four things the suites above could not have, because they exercise the models
+and not the game:
+
+1. **The picture would never have appeared.** `_redraw_terrain_now` returned
+   early when `TerrainDiff` reported nothing, and `TerrainDiff` deliberately
+   does not look at the effect planes — they change what stands on a cell, not
+   what the cell is. A mine, a shield and the round tick's decay change nothing
+   else, so the objects synced only when something *also* moved or died.
+   `SpecialObjects.sync` runs before that return now and answers the cells it
+   touched, which join the overlay's rebuild: a mine's tint was as stale as its
+   model.
+2. **The computer never detonated.** The clearing went into
+   `ExecuteMove.execute` and the shot was left to the caller;
+   `World.submit_move` fired it and `AIPlan` did not. The aliens are the
+   **only** mover the fill lets into a mine cell, so that was the rule's main
+   consumer rather than an edge. Both twins fire it now and both put a
+   `mine_detonated` event on the walk — which the Python one had to do *after*
+   the relink, because `aExecuteBomb` marks cells and reads whoever is standing
+   on them. `ai_runtime.check_mine` walks an alien onto a placed mine and the
+   blast kills it; `test_ai._a_mine_under_an_alien` is the GDScript half.
+3. **The blast had no picture.** `_present_mine` draws it as the shot it is:
+   `aExecuteBomb` calls `aPlayFightAnimation(x, y, x, y, ...)` with source and
+   target on the bomb's own cell, and that routine's `sx == tx && sy == ty` arm
+   reads no shooter and takes weapon 36. The mover is passed as the slot
+   because the stages need a body to hold the camera on, and it *is* the unit
+   standing there.
+4. **The warp landed on mines for free.** `0x0046F088`..`0x0046F109` carries
+   the identical guard, and both twins said "not simulated: no shipped cell
+   carries one" — true of the authored maps and no longer the whole story.
+   `aExecuteWarp` detonates before it rebuilds the fog, and the rebuild is
+   behind the same `+0x16` gate: a mover the mine just killed rebuilds nothing.
+
+And one narrower: `CombatWorld.ctrlmap()` used to materialise `action_point`
+and `field_type` as zeros for a world that had not filled them. Field type 0 is
+one the placers accept, so that world would have burned everywhere; it raises
+now, which is what `interact._require_cells` already existed to do.
+
+
+---
+
+## 38. 2026-09-03 — closing slice E's four loose ends
+
+§37.7 listed four. All four are closed; two of them by measurement that had
+looked out of reach, and one of the answers is not what the entry assumed.
+
+### 38.1 The glow's own lifecycle — measured, on a second save
+
+The obstacle was that `GLOW1/2.3DI` live in `World_D00` alone and every save in
+`tests/fixtures/saves` is on `_C_140` or `_C_141`. The way round it is a tool
+this project already had most of: `sav_parse.py --selftest` wraps a corpus
+`.lev` in a save's fixed blocks and requires a byte-identical round trip, so
+the same wrap makes a **loadable** save for any mission. `--wrap` is that,
+promoted to a command: `_C_116.lev` — a `D00` mission, and one of the two that
+use `SetGroundFire` — in `_6_.sav`'s prefix and suffix.
+
+```bash
+python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \
+    --wrap gog_incubation/Missions/_C_116.lev --out /path/to/copy/Work/Saves2/_7_.sav
+```
+
+It reads back as `_C_116` on `Level04b` in `World_D00`, 34 × 40, and the game
+loads it. Two phases run on it:
+
+* **`special_glow_d00`** — the placer the `A00` phase measured *refusing* here
+  writes `+0x11 = 1`, `+0x12 = 2`, `+0x13 = 4`, and its object lands at the
+  cell's own object plus the two-draw scatter. The same call, the same
+  arguments, the opposite answer, and the only difference is the world set:
+  that is what a name gate looks like from the outside.
+* **`special_glow_tick_d00`** — the glow and then two round ticks. The engine
+  leaves `+0x12 = 1` after the first and `1` after the second, so the 2 → 1
+  decay is measured and its idempotence with it.
+
+`inclib/ctrlmap.py` reproduces both on the first run. What stays unstepped is
+`0x00470AB0`'s **ignition**, and not for want of a save: it calls
+`aPlayGroundFireAnimation`, which renders, and every `aPlay*` is out of reach
+of the debugger harness for that one reason (`97` §19.2). That is a standing
+boundary of the method, not a question about this routine.
+
+The capture also found something the `A00` phases could not: `_C_116` loads
+with **slot 0 already taken, by a state-5 object no cell names** — the static
+kind `0x00431F45` makes. `rebuild_objects` derives occupancy from the cells, so
+it cannot see one, and seeding the model's array from the capture rather than
+rebuilding it is what the check and the case file now do. The `A_MK_*` caveat
+`ctrlmap.py` carried in prose is a measured fact.
+
+The before-state of the very cell the phases use reads `+0x12 = 1` with
+`+0x13 = 255` — one of the 44 leftovers `10` §4 records, on the mission that
+record names. The identification in §37.8 is confirmed from the other side.
+
+### 38.2 "Removed" and "dead" — read, and they are the same state
+
+*(This section originally concluded the opposite, on a reading of
+`aRemoveUnitElement` that stopped one instruction short. §40.1 has the
+instruction and the correction; what follows is the corrected text.)*
+
+`aGetLiveUnitCount` `0x00477BF0` walks the 200 records at stride 91 and counts
+`[record + 0x16]` — the **hit points** — against `[record + 0x45]`. The map
+link is not read. That much stands.
+
+But `aRemoveUnitElement` **does** write `+0x16`: `0x00477ABD` is
+`mov byte [esi+0x16], 0`, the last instruction before it returns 1, with `esi`
+the unit record it has held since `lea esi, [ecx + edx*2]` at `0x00477A38` —
+the same record `aExecuteWarp` reads `+0x16` from at `0x0046F133` to decide
+whether the mover it just walked onto a mine is still alive. So removal kills.
+Fifteen of its twenty call sites reach it with the victim alive — the set
+pieces of `aAnimations.cpp`, the teleporter, the hatch, the para bomb, the
+battle system's own object sweep, the two interface sweeps and
+`aPlayGroundFireAnimation` — and at all fifteen this write is the death: there
+is no roll and no armour on any of those paths. §40.1 has the table. The ground
+fire is the one that had nothing standing in for it in this remake, which is
+why it is the site the correction changes.
+
+Both twins now carry the write inside `remove` itself rather than at the call
+sites, which is where the engine has it: every other caller — the hatch, the
+push into a hole, the LCL `KillUnit`, the para bomb that survived its own
+blast — used to set the hit points beside the call and no longer needs to.
+
+### 38.3 The large-unit mine ring — implemented, both twins
+
+`0x0046EC0F` gates the whole detonation block on "a mine stopped the walk", and
+`0x0046EC25` then picks the arm by `unitinfo[type].size`:
+
+* a **small** mover detonates the cell it stopped on (`0x0046EDAF`);
+* a mover of **size 1** sweeps its eight neighbours through `0x004308C0` with
+  the diagonal flag set and detonates every mine among them (`0x0046ECA4`) —
+  and the cell it stopped on is *not* one of them.
+
+Each cell is behind the same `aDeleteSpecialObject` guard, and the ring stops
+the moment the mover's `+0x16` reaches zero (`0x0046ECB0`). Both twins carry
+it. Reading it moved the whole block from `run`/`execute_move` — which has no
+type table — to its caller, which is where the engine has it too.
+
+No shipped map places a large unit next to a mine, so the `size` byte is
+written to reach it, the move `93` §11 made for the large-unit clearance:
+`ai_runtime.check_mine` and `test_execute_move._the_large_unit_ring` both mine
+the stop cell **and** one neighbour and require the ring to take the neighbour
+and leave the stop cell's mine standing.
+
+### 38.4 The positions are the engine's, not the remake's
+
+§37.7 called them a remake decision because the capture read the array's state
+bytes. It read the whole 66-byte record all along — the position is at
+`+0x10`/`+0x14`/`+0x18` — so what was missing was the origin, the seed and a
+transcription. All three are there now: the eight phases read
+`aGetSymbolObjectPtr(cell[+0x05])` for every tile they use and write
+`aRandom2`'s seed before **every** call, and `ctrlmap.object_position` is the
+arithmetic — the mine and the shield take the cell's object position exactly,
+the fire and the glow scatter with `aRandom2(-300, 600)` twice, the **first**
+draw on y and the second on x.
+
+Every placement in every phase agrees, position and draw count, and
+`test_ctrl_map` replays the same comparison in GDScript. `special_objects.gd`
+now calls the shared arithmetic instead of putting each object at its cell's
+centre.
+
+### 38.5 What the counters moved to
+
+`presentation_gold --check` **603** (was 544; 51 phases), `combat_runtime`
+**148**, `ai_runtime` **84**, `turn_runtime` **61**, `movemap_runtime` **28**,
+`presentation_tables` **627**, and the Godot suites **33 / 2713**.
+*(§40 moved them again: `blob_tables` **458**, `turn_gold` **198**,
+`presentation_tables` **644**, and the Godot suites **33 / 2727**.)*
+
+
+---
+
+## 39. 2026-09-03 — what a second review of slice E found
+
+Fifteen findings over the working tree. Five are worth a paragraph because each
+is a rule read out of the binary or a reading reversed; the rest were one-line
+fixes and are listed after them.
+
+### 39.1 The damage sweep walks the marked list, not the cell array
+
+`ShotSequence._deaths` and `Main._shot_voice` both model the same engine local
+— `[esp+0x34]`, "the last unit the sweep looked at" — and they disagreed:
+`_deaths` sorted the targets by cell index and `_shot_voice` did not. One had
+to be wrong, and the listing says which. The loop at `0x0040DA83` walks the
+**marked** arrays — the markers at `0x004FBFF8` and the coordinates at
+`0x004FBE54`/`0x004FBE72`, indexed up to the count at `[esp+0x2C]` — which
+`aMarkTargetCells` filled in the weapon's own order. The whole-cell-array sweep
+two dozen instructions above it (`0x0040DA07`) is the **hatch** pass and a
+different loop.
+
+So the sort was the wrong half, and it is gone. This **reverses** a fix made
+the day before from the other direction: a previous review read `_shot_voice`'s
+"highest cell index" as the bug and it was changed to sweep order, which is
+right; the same reading should have been applied to `_deaths` and was not.
+Both are now the pattern's order, and both comments name the loop that decides
+it — so the next reader has the address rather than an assertion.
+
+### 39.2 Three unit types are silent
+
+`0x0040CBDF` reads the target's `+0x4C` and clears the play flag for types
+**22, 25 and 26** (`cmp al, 0x16 / je`, `cmp al, 0x18 / jbe`,
+`cmp al, 0x1A / ja`) — `docs/42` §4.5 records it and neither twin gated on it.
+All three have species 0, so the species test alone let Cpt. Rutherford, the
+Scout and Major Rutherford scream where the engine says nothing.
+
+The gate is at `0x0040CBF2`, **past** the round robin that picked the wave, so
+the cursor still moves and only the play is skipped — the same shape the
+species arm already had. Both twins take the type now, three pins in
+`presentation_tables.py`, and `test_sound` asserts that a muted call still
+advances the cursor.
+
+### 39.3 The idle guard was rolling the branch twice
+
+`docs/42` §6.1 gates the pick on "an idle clip the selector is willing to name"
+and then item 4 resolves it. The remake asked `idle_clip_for` for both, and
+that selector **draws** for a type whose entry has branches — so the guard
+approved one clip and the start played another, and the seed moved twice.
+
+The capture measured **one** draw per call past the countdown, and its
+candidate has no branch, so it does not settle whether the engine's own guard
+draws. `has_idle_clip` is the reading that spends the roll once, at the start:
+it answers whether any arm names a clip without drawing. That is a choice under
+uncertainty and it is written down as one, in the function's own comment.
+
+### 39.4 The detonation had to move inside `aExecuteMove`
+
+Slice E put the mine's cell writes in `ExecuteMove.execute` and left the shot
+to the caller. That is one instruction's worth of ordering away from the
+engine and it matters: `0x0046EDDC` reads the mover's `+0x16` **after** the
+bomb and returns without the closing visibility pass when the bomb killed it.
+Firing from the caller ran that pass on a mover the mine was about to kill, and
+the pass *writes* — it reveals what the mover sees and wakes groups — so the
+two orders are two canonical hashes.
+
+Reading it also moved the whole block, in both twins, to where the type table
+is: that is what made the large-unit ring of §38.3 implementable at all. And
+the computer never detonated: `World.submit_move` consumed the result and
+`AIPlan` did not, so the one mover the fill lets *into* a mine cell was the one
+that walked over them for free.
+
+### 39.5 The picture could not have appeared
+
+`_redraw_terrain_now` returned early when `TerrainDiff` reported nothing, and
+`TerrainDiff` deliberately ignores the effect planes — they change what stands
+on a cell, not what the cell is. A mine, a shield and the round tick's decay
+change nothing else, so the objects synced only when something *also* moved or
+died. `SpecialObjects.sync` runs before that return now and answers the cells
+it touched, which join the overlay's rebuild.
+
+Two more of the same kind: the teleporter's traveller was **freed** rather than
+hidden (`hide_unit` destroys the node and `show_unit` could not undo it, so the
+body never came back), and `_saved_cameras` and the floating texts outlived a
+mission change — a script that saved a camera without loading it handed its
+coordinates to the next mission's first `LoadCamera`.
+
+### 39.6 The rest
+
+`emit_death_cases` warned and continued on a missing phase, which could write a
+case file thin enough to pass the Godot minimums while `--check` failed on the
+same capture; it refuses now, as `emit_special_cases` always did.
+`_death_replays` was called without `type_models`, so the constant-
+discrimination sweep ran with `FlyingUnit` building no record at all.
+`objects.full_array_writes_255` asserted a byte that was already 255 before the
+call. `CombatWorld.ctrlmap()` fabricated `action_point` and `field_type` as
+zeros — and field type 0 is one the placers accept, so a world that never
+filled them would have burned everywhere; it raises now, which is what
+`interact._require_cells` already existed to do. The warp's mine arm was
+"named here and not simulated" in three places and is implemented in all
+three. `MapState`'s `+0x12`/`+0x13` had arrived as `effect4`/`effect5` beside
+the older `decal0`/`decal1`, which nothing read: the duplicates are gone. The
+new suite had no minimum check count, and `SCHEMA_VERSION` 8 had no line
+saying what raised it.
+
+## 40. 2026-09-03 — what a third review of slice E found
+
+Fifteen findings. Five of them changed a rule rather than a picture, and the
+first is a correction to a conclusion §38.2 reached the day before.
+
+### 40.1 `aRemoveUnitElement` kills — the reading was one instruction short
+
+§38.2 concluded that "off the map" and "dead" are different states, because
+`aGetLiveUnitCount` `0x00477BF0` counts `[record + 0x16]` and the removal was
+read as leaving that byte alone. The count is right; the removal is not.
+`0x00477ABD` is
+
+```asm
+mov byte [esi + 0x16], 0
+```
+
+the **last** instruction before `aRemoveUnitElement` returns 1, with `esi` the
+unit record it has held since `lea esi, [ecx + edx*2]` at `0x00477A38` — the
+same record `aExecuteWarp` reads `+0x16` from at `0x0046F133` to decide whether
+the mover it just walked onto a mine is still alive. Removal kills.
+
+**Which matters at more than half of its twenty call sites.** The twenty were
+resolved to routines through `trace_names.py`'s symbol table:
+
+| Arrive with the victim already dead | Arrive with it alive |
+|---|---|
+| `aAttackUnit` `0x0046C1F9` | `aAI_SpecialPlayerControl` `0x0040B316` — the para bomb that survived its own blast |
+| `aCheckWeaponDamage` `0x0046D34C`, `0x0046D95C` | `aAnimations.cpp`'s set pieces: the statues `0x00413459`, `0x00413F5E`, `0x00413FA4`, `0x004142EC`, the laser barrier `0x00413903`, the foot bridge `0x00414F9C`, `0x00415663` |
+| `aExecuteBomb` `0x0047063F` | `aPlayGroundFireAnimation` `0x00415B8D` |
+| `aKillUnit` `0x00472920` at `0x0047296E` | `aExecuteTeleporter` `0x00470208` |
+| | the hatch arm inside `0x0046F210`, at `0x0046F2FB` |
+| | `aBattleSystem.cpp:3999` `0x0041CA5E` — the object that clears the unit standing on its own cell, beside the `"kill object: %d"` trace |
+| | `aUI_KillUnit` `0x004783D0` at `0x00478420` and `0x00478465` |
+| | `lKillPlayerUnits` `0x0047BC60` at `0x0047BCA0` |
+
+**Five and fifteen.** The four this section first left unclassified are the
+last three rows: `aUI_KillUnit` sweeps the two hundred slots and removes every
+one whose `+0x45` is not `0xFF` and whose type's species does not match its
+argument (`0x004783FE` is the gate, `cmp byte [esi], 0xFF`), and
+`lKillPlayerUnits` sweeps them removing every unit of one player whose `+0x16`
+is **non-zero** — its gate, `0x0047BC74`, is the hit points themselves, so it
+says in as many words that what it removes is alive. Both push their own name
+on the failure arm rather than the callee's, which is the paste this project's
+notes warn about and is what identifies them.
+
+At the five, `applyDamage` has already zeroed the hit points and the dead
+marker `0xFF` has been written over them (`0x0046BF49`), so the write is
+redundant. At the fifteen it **is** the death: there is no roll and no armour
+on any of those paths. The ground fire is one of them and not the only one,
+which is what makes carrying the write inside `remove` the right shape rather
+than a special case — every one of the fifteen the remake models had been
+zeroing the hit points by hand beside its own call, except the ground fire,
+which had nothing. `aExecuteTeleporter` writes them a second time itself, at
+`0x00470232`, immediately after the call returns.
+`presentation_tables`' `remove_unit.*` pins the twenty addresses, the split and
+the two gates, so the classification cannot rot.
+
+Both twins now carry it **inside** `remove` / `remove_unit_element`, which is
+where the engine has it. The hatch, the push into a hole, the LCL `KillUnit`
+and the para bomb that survived its own blast each used to set the hit points
+beside the call and no longer do. `turn_runtime`'s `handover.ground.removal_*`
+check is inverted with them, `docs/22` §9.5 gains the instruction, and
+`docs/42` §12 item 2 is rewritten in place.
+
+### 40.2 The two `MoveUnit` calls were outside the mover's alive gate
+
+`0x0046EDDC` in `aExecuteMove` and `0x0046F133` in `aExecuteWarp` are the same
+three instructions — `mov al, [record+0x16] / test al, al / je <epilogue>` —
+placed immediately after the mine's `aExecuteBomb` and immediately before
+everything that follows it: `aBuildVisibleMapForUnit`, the six
+`aSetLCLVariable` writes and `aRunLCL` (`0x0046EEFD` and `0x0046F1D6`). In both
+routines the epilogue is a bare `mov eax, 1 / ret`.
+
+`ExecuteWarp` already honoured the gate for the fog rebuild, which is inside
+it. The `MoveUnit` call is the **caller's** in this remake, and `World` fired it
+unconditionally on both paths — so a mover the mine under its landing or its
+stop cell had just killed ran a mission-script handler the engine runs nothing
+of. That is not a picture — `MoveUnit` is the hook a mission script uses to notice
+where a unit has got to. Both are gated now, and `test_execute_move` walks an alien
+onto a mine (the fill refuses a mined cell to everybody else, `move_map.gd`)
+with one hit point and a weapon 36 the shared fixture does not carry, searching
+the seed rather than writing one down.
+
+### 40.3 The mute covers the explosion, and the Python twin had no gate at all
+
+`docs/42` §4.5's three silent types are gated at `0x0040CBDB`, and **every** arm
+of the cascade reaches it: the machine's explosion jumps there from
+`0x0040C9AC` exactly as the screams do from `0x0040C9E6` and its neighbours. So
+a type-26 machine dies silently. `AudioEvents.death_voice` applied the mute only
+on the human/alien arm and returned the explosion before it;
+`inclib.sound.VoiceCursors.death` took no type id at all, so the model answered
+`SP_HUM_n` where the engine says nothing and the fixture could not express the
+difference. Both are fixed, the case emitter carries a type id per call — two of
+the eleven muted, one of them on a `death` step of species 3 — and
+`blob_tables` pins the machine's silence and that the cursor still moves.
+
+### 40.4 `_ftol` is a service, and one of its callers was `int()`
+
+`blob_creators.ftol` was a bare `int(value)` where `blob_runtime._ftol` and
+`eng3d_geometry.gd` both answer **zero** for a NaN or an infinity — x87's
+64-bit indefinite is `0x8000000000000000` and every caller keeps `eax`
+(§20). Two creators can produce one: `_c00428990` when its direction falls
+through `LASER_DIRECTIONS`' `(0, 0)` default, which makes the target the
+source, and `_c0042A8E0` when source and target share a column. The GDScript
+twin answered 0 and the Python one raised. The function now lives in
+`inclib/eng3d.py`, where its twin already was, and both callers use it.
+
+### 40.5 Three checks that could not fail, and one case file that could not
+
+`turn_gold`'s `pass_before_copy_is_the_order_measured` asserted the literal
+`True` — the diff it computed went into the message and nowhere else, so
+breaking the replay left `--check` green. It asserts the diff now, under a name
+that says what the probe proves: the two orders agree on this scene, which
+means the probe does **not** discriminate them and the engine's order is what
+the phase pins. `conversion_probes` wrote its phase even when no seed cleared
+weapon 47's overheat roll, and nothing pinned the probe's presence, so the two
+absorber probes alone passed as a captured `conversion`; `reveal` had exactly
+such a pin and `conversion` now does too. And `presentation_gold`'s
+`emit_special_cases` checked only that a phase existed where `check_special`
+pins `len(placed) == len(calls)`, so `zip` could truncate silently — it refuses
+now, like its sibling.
+
+### 40.6 The picture
+
+The Godot suite exited 1 on a tree whose harness printed `HARNESS-RESULT: OK`:
+`test_ctrl_map._positions` derived the origin key from the phase name, and the
+two `World_D00` phases carry only `"g"`, so both threw on a missing key and
+skipped the `.position` check while the suite still reported its full count.
+The emitter writes the key **per step** now — it is the checker's own choice,
+written down rather than re-derived — and `_model_columns` gets the D00
+dimensions it was missing on the same line.
+
+Five more, each a thing that could not appear:
+
+* `SetpieceCamera`'s ground-unit carry read `st["step"]`, which only frame 1
+  wrote, and `SequenceQueue.skip()` paints every remaining step once at its
+  **last** frame — so a key press during a `GroundUnit` threw and the body was
+  never placed or settled. `ScriptCamera` had the same shape twice: a skipped
+  `LoadCamera` never popped, leaking a view onto the stack for every later
+  `LoadCamera` in the mission, and a skipped `MoveCamera` left the view alone.
+  Both are guarded by a once-flag now, not by the frame number.
+* The mine's casualties were never marked dying — they are in the event's own
+  `blast` and not in the command's outcomes — so the rebuild freed their nodes
+  before `_present_mine` queued the explosion and the body vanished a frame
+  before the shot that killed it. Same on the computer's replay.
+* A jump onto a mine presented nothing at all: `WarpResult.blast` reached no
+  presenter on either path.
+* An overheat that destroyed its own reactor left the shooter unmarked — the
+  outcome writes `hp = 0` and the shooter is in nobody's outcome list — so the
+  orbit that hides it flew to a fallback position.
+* `UnitsView.animate` returned on `frozen` before the walk loop. The 60 m rule
+  of `docs/42` §1.3 freezes **Charisma**; `aExecuteMove` still steps the unit
+  field to field, and `_picture_busy()` gates on `is_walking()` — so above
+  `FREEZE_HEIGHT` the computer's replay and the pending reaction fire stalled
+  rather than merely freezing bodies.
+
+And one that is a deliberate reproduction rather than a fix: `MainShotHost.muzzle`
+set `arrived` from the weapon alone and never reconsidered, so a shot whose
+creator made nothing burned the full hundred frames of `WAIT_FRAMES`. **A
+creator writes `0x004FE63C` before it allocates**, so a full pool leaves the
+flag where the creator put it and the engine really does wait. That is now read
+for all of them rather than for three (§40.7). That is kept. The
+wait is cut short only when the refusal is one the engine could not have had:
+a computed kind the switch does not name, or a model this world set does not
+carry.
+
+### 40.7 The three things §40 left open, read
+
+**The mine's blast is drawn before the reactions, and the engine says so.**
+`aExecuteBomb` `0x004702C0` ends by calling `aPlayFightAnimation` `0x0040BD70`
+itself, at `0x004705F5` — the blast's picture is the routine's own, not its
+caller's. Both commands reach `aExecuteBomb` from **inside** their own routine:
+the walk at `0x0046ECA4` and `0x0046EDAF` (the pair `0x0046EC25` picks between
+by the mover's `size` — the ring and the stop cell, docs/26 §6.2 item 8) and
+the jump at `0x0046F109`. Neither draws a fight of its own. And `aExecuteFight`
+— what drains the reactions — is the **caller's**, run only after
+`aExecuteMove` has returned (docs/23 §5.3). So the explosion is over before the
+first reaction shot is fired, and `game` now queues it in that order on both
+paths; it had the reactions first on the walk, and the jump had copied that.
+The computer's replay was already right, because `AIPlan.execute_warp` carries
+the blast inside its own `warp` event and the reactions are a later one.
+`presentation_tables`' `bomb.*` pins the five call counts.
+
+**The last four `aRemoveUnitElement` sites are live removals.** §40.1's table
+now has all twenty. `aUI_KillUnit` `0x004783D0` — which pushes its own name at
+`0x00478436` rather than the callee's — sweeps the two hundred slots and
+removes every one whose `+0x45` is not `0xFF` and whose type's species does not
+match its argument, twice over (`0x00478420` and `0x00478465`).
+`lKillPlayerUnits` `0x0047BC60` sweeps them for one player and gates on
+`0x0047BC74`, `mov al, [esi-0x2D] / test al, al` — `esi` is the record plus
+`0x43`, so the byte is `+0x16`, the hit points: the loop's own condition is
+that the unit is **alive**. `0x0041CA5E` is `aBattleSystem.cpp:3999`, beside
+the `"kill object: %d"` trace, taking the unit off the cell an object is being
+placed on. Five arrive dead, fifteen alive.
+
+**Every creator writes the flag before it allocates — all twenty-six.** The
+address `0x004FE63C` appears **42** times in `.text`: thirteen inside
+`aBlob_Update` (twelve stores of 1 and arm 45's `mov [flag], ebp`, the clear),
+and twenty-nine outside — twenty-six stores and three reads, one of which,
+`0x0042B480`, is the flag's whole two-instruction getter. Of the twenty-six
+stores, **twenty-five** precede the first `call 0x00420950` — the blob
+constructor, the 116-site allocator — in their own function. Twenty-three of
+those are unambiguous against the named-symbol boundaries outright; the other
+two, `0x0042B0E3` and `0x0042B490`, are in unnamed creators that begin
+immediately behind a `ret` (`0x0042B0CF`, and the getter at `0x0042B480`),
+verified byte by byte.
+
+The single store that follows an allocation is `0x0042420D`, inside
+`aBlob_CreateTracerBullet`'s record loop, and it writes **1** — a tracer has
+nothing to arrive — so it cannot be the reason anybody waits at any pool state.
+`0x004287D3`, the one this report flagged as sitting on a branch, is on the
+`steps > 0` arm of `aBlob_CreateLaser`'s count; its other arm at `0x004287E8`
+writes the same computed `steps <= 0`, and **both** are ahead of that
+function's first constructor call. So the reproduction stands as written: a
+full pool leaves the flag down and the engine waits its hundred frames.
+`presentation_tables`' `arrived.creator_stores_are_the_table_ones`,
+`arrived.only_one_store_follows_an_allocation` and their two neighbours pin the
+whole inventory, so a creator that started writing the flag late would fail.

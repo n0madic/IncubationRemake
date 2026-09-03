@@ -960,10 +960,16 @@ class MoveEvent:
     y: int
     #: The action point or obstacle that caused it, or the weapon a mine fired.
     detail: int = 0
+    #: What the event carries beyond its cell.  Only ``mine_detonated`` uses
+    #: it, and it holds :meth:`inclib.combat.AttackResult.to_dict`.
+    payload: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
-        return {"kind": self.kind, "x": self.x, "y": self.y,
-                "detail": self.detail}
+        out: dict[str, object] = {"kind": self.kind, "x": self.x,
+                                  "y": self.y, "detail": self.detail}
+        if self.payload:
+            out["blast"] = self.payload
+        return out
 
 
 @dataclass(frozen=True)
@@ -996,6 +1002,15 @@ class ExecuteResult:
     #: ``(cell index, new action point)`` for every VictoryPoint claimed.
     action_point_writes: list[tuple[int, int]] = field(default_factory=list)
     events: list[MoveEvent] = field(default_factory=list)
+    #: Whether the walk ended on a mine.  ``0x0046EC0F`` gates the whole
+    #: detonation block on it, and ``0x0046EC25`` then picks the arm by
+    #: ``unitinfo[type].size`` -- which this routine has no table for, so the
+    #: block is the caller's (:func:`inclib.ai._detonate`).
+    stopped_on_mine: bool = False
+    #: The cells an authored mine went off on.  More than one is possible: a
+    #: mover of size 1 sweeps its **eight neighbours** rather than the cell it
+    #: stopped on.
+    detonate: list[tuple[int, int]] = field(default_factory=list)
     #: Set when a mine stopped the walk: ``docs/26`` §6.1 zeroes the mover's
     #: movement points, which the caller applies along with the cost.
     movement_zeroed: bool = False
@@ -1115,12 +1130,18 @@ def execute(grid: Grid, hooks: MoveMapHooks, delays: Mapping[int, int],
             # none.  What did **not** happen in the native probe is the
             # ParaBomb: ``aRandom``'s seed was bit-identical either side, the
             # mover's hit points did not move, and the mine was still on the
-            # cell afterwards.  The shot is therefore *not* modelled here; the
-            # event says a mine was reached, not that one went off.
+            # cell afterwards.  **That measurement is the guard, not the
+            # rule** (``docs/26`` §6.2): the probe wrote ``+0x10`` onto an
+            # ordinary cell and left ``+0x0F`` at 255, so
+            # ``aDeleteSpecialObject`` refused and took the routine's FALSE
+            # exit.  An authored mine names its object and does go off, which
+            # is what :attr:`MoveMapHooks.delete_object` decides -- and its
+            # default is the probe's answer, so the capture still agrees.
             events.append(MoveEvent("mine", nx, ny, MINE_WEAPON))
             return ExecuteResult(ok=False, x=nx, y=ny, cost=0, steps=steps,
                                  walked=tenths, facing=facing,
                                  action_point_writes=writes, events=events,
+                                 stopped_on_mine=True,
                                  movement_zeroed=True, route=entered,
                                  reason="a mine ended the walk")
 

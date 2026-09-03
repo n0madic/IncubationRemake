@@ -264,8 +264,10 @@ func _check_corpus_kinds(h: TestHarness) -> void:
 		% faces)
 	var kinds: Array = found.keys()
 	kinds.sort()
-	h.equal("corpus.kinds", str(kinds), str([0, 8, 16, 20, 28]),
-		"flat, affine texture, perspective texture, masked and additive")
+	h.equal("corpus.kinds", str(kinds), str([0, 8, 12, 16, 20, 28]),
+		"flat, affine texture, half-blended flat (the heal flash's three "
+		+ "crosses, carried since 2026-09-03), perspective texture, masked "
+		+ "and additive")
 	var sizes: Array = polygons.keys()
 	sizes.sort()
 	h.check("corpus.polygon_sizes", DictRead.as_int(sizes[sizes.size() - 1]) > 4,

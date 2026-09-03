@@ -48,25 +48,25 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 449 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 458 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
-python3 tools/presentation_tables.py --check gog_incubation   # 425 checks, docs/42
+python3 tools/presentation_tables.py --check gog_incubation   # 644 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
-python3 tools/lcl_runtime.py        --check gog_incubation   # 34 checks, 942 invocations
-python3 tools/turn_runtime.py       --check gog_incubation   # 57 checks, 1863 units
-python3 tools/combat_runtime.py     --check gog_incubation   # 100 checks, LOS/hit/damage/reaction
-python3 tools/interact_runtime.py   --check gog_incubation   # 59 checks, aExecuteUse
-python3 tools/movemap_runtime.py    --check gog_incubation   # 27 checks, 3726 fills, 4587 paths, 4587 walks
-python3 tools/ai_runtime.py         --check gog_incubation   # 71 checks, 108 missions
+python3 tools/lcl_runtime.py        --check gog_incubation   # 43 checks, 942 invocations
+python3 tools/turn_runtime.py       --check gog_incubation   # 61 checks, 1863 units
+python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/hit/damage/reaction/experience/jam/warp/placers
+python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
+python3 tools/movemap_runtime.py    --check gog_incubation   # 28 checks, 3726 fills, 4587 paths, 4587 walks
+python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/remake_convert.py     gog_incubation --check   # 181 checks
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 31 suites, 2128 checks
+bash   godot/run_tests.sh                                    # 33 suites, 2727 checks
 ```
 
 The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -98,6 +98,23 @@ python3 tools/blob_tables.py     --emit-sound-cases tests/fixtures/sound/cases_s
     --root gog_incubation
 python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json \
     --root gog_incubation
+python3 tools/presentation_gold.py --emit-death-cases tests/fixtures/presentation/cases_death.json \
+    --root gog_incubation
+python3 tools/presentation_gold.py --emit-idle-cases tests/fixtures/presentation/cases_idle.json \
+    --root gog_incubation
+python3 tools/presentation_gold.py --emit-special-cases tests/fixtures/presentation/cases_special.json \
+    --root gog_incubation
+#   ^ the seventh native suite's fixture (`test_ctrl_map.gd`): the cells and
+#     the 80-slot object array the engine left after each of the four cell
+#     placers of docs/42 §9.1 and two round ticks, replayed by
+#     `godot/core/cell_objects.gd`.  One of the eight phases is the refusal
+#     that matters most -- the capture is on `World_A00`, which carries no
+#     `GLOW1/2.3DI`, so `SetGroundFire`'s placer writes nothing at all.
+#   ^ the sixth native suite's fixtures (`test_presentation_native.gd`): the
+#     engine's own records for the ten death creators of docs/42 §4.8.1,
+#     replayed by `game/fx/blob_programs.gd`, and the idle starter's two
+#     hundred calls of docs/42 §6, replayed by `game/charisma/idle_scheduler.gd`;
+#     both need the capture below.
 ```
 
 The last two are the fifth slice's, and `blob_runtime.py --emit-cases` still
@@ -450,7 +467,7 @@ game's own imported `memcpy` reached through its IAT slot with the byte in a
 plain `--blob`.
 
 `tests/fixtures/turn/README.md` records what the capture holds; `--check` is
-172 checks over 86 unit pairs (hit probability **and** line of sight), the
+198 checks over 86 unit pairs (hit probability **and** line of sight), the
 refresh of every player that owns a live unit, the records those refreshes must
 leave alone, the fog pass, the lone stat recompute, and twelve steps of the
 rotation with the twelve game-control slots beside it, and one `NextPlayer`
@@ -467,7 +484,10 @@ hidden, a jammed control, the engine's own relocation `0x0047AD90`, and one
 step by a computer mover with the *Enemy Move* dword written on and off),
 `conversion` (weapon 47 with the byte written and the seed written to one
 that clears its always-at-the-cap overheat roll, and the absorber's `+0x33`
-gate) and `platform` (`aPlayPlatformSequence` with a rider). Their scene is
+gate) and `platform` (`aPlayPlatformSequence` with a rider); a fourth,
+`experience` (2026-09-03), kills the one-point alien four times with the
+shooter's `+0x17`/`+0x18`/`+0x53` written to the caps, which is what measures
+the kill award of `docs/22` §7.5 (`inclib.combat.award_kill`). Their scene is
 chosen with the model and the `--check` pins what the engine itself changed,
 so a capture on which nothing moved cannot pass as agreement (`docs/97`
 §28.7).
@@ -598,7 +618,26 @@ godot --path godot -- --mission=_C_141        # run one of the converted maps
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is
 gitignored (`tests/fixtures/presentation/README.md` records what it holds) and
-fails without one. Seventeen phases, one process each, at `docs/91`'s anchor
+fails without one (**603 checks** since 2026-09-03, when the four cell
+placers of `docs/42` §9.1 joined it -- ten `special_*` phases that read the
+**whole** control map and the **whole** 80-slot array `[0x004FA828]` before and
+after every call, so what is compared is every cell, every slot **and every
+object's position** rather than the one the placer was aimed at (`docs/97` §37
+and §38). Two of the ten run on a **second save**, built with
+`sav_parse.py --wrap` from `_C_116.lev` because `GLOW1/2.3DI` live in
+`World_D00` alone -- and, before them, the eleven
+set-piece creators of `docs/42` §8 joined it -- the tube's puffs, the
+platform's dust, the ground unit's and the roof unit's debris, the crush
+wall's, the fire circle's ring, the laser barrier, the statue's beam, the
+teleporter's stream, the bomber and one para bomb, twelve phases and 239
+records, all field for field on the first run (`docs/97` §32) -- and five more death
+phases -- `KillFire` with both delay arguments, `FireDeath`, `FlyingUnit` on
+the case's tile and `FireExplosion` -- joined the fourteen, and seven
+unit-animation creators of `docs/42` §7 -- the marker's arrows, the landing
+dust, the two flash circles, the zoom bob, the jump's trail and the push's
+dust, the last three called at the marine's own object position through
+`[$s_m+0x10]`-style reads -- joined those: 364 records across twenty-six
+calls, all field for field, `docs/97` §31). Fifty-one phases, one process each, at `docs/91`'s anchor
 with the fixture save: `idle_random` calls the engine's idle starter two
 hundred times with `aRandom2`'s seed read either side of every call and
 replays the draws, which is what pinned that the starter's **type search never
@@ -625,7 +664,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 4, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **34 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

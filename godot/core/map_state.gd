@@ -5,7 +5,12 @@ extends RefCounted
 ##
 ## One `Packed*Array` per documented byte offset, each `width * height` long:
 ## height `+0x01`, field type `+0x0D`, the action point `+0x0B`, the unit link
-## `+0x07` and the four effect bytes `+0x0E`..`+0x11`.
+## `+0x07` and the **six** effect bytes `+0x0E`..`+0x13`.
+##
+## It was four (`+0x0E`..`+0x11`) until 2026-09-03 (docs/97 section 37): the
+## glow `SetGroundFire` lays lives in `+0x11`, `+0x12` and `+0x13`, so a model
+## that stopped at `+0x11` could carry its slot index and neither its phase nor
+## the state byte that says it is there at all.
 ##
 ## **The transient obstacle is `+0x10`, which is effect slot 2 -- one byte, not
 ## two.**  It used to be modelled twice: a synthesised `_obstacle` array filled
@@ -28,10 +33,24 @@ const OBSTACLE_NONE: int = 255
 const OBSTACLE_FIRE: int = 1
 const OBSTACLE_MINE: int = 2
 const OBSTACLE_SHIELD: int = 3
+## `cell[+0x13]` while a `SetGroundFire` glow stands on the cell.
+const DECAL_GLOW: int = 4
+const DECAL_NONE: int = 255
+## `aCreateSpecialObject` `0x004069C0` scans ids 0..79 for a free slot.
+const SPECIAL_OBJECT_SLOTS: int = 80
+const NO_OBJECT: int = 255
 const NO_UNIT: int = -1
-const EFFECT_SLOTS: int = 4
-## Which effect slot is `cell[+0x10]`, the transient obstacle.
+const EFFECT_SLOTS: int = 6
+## Which effect slot is which byte.  `+0x0E` is a countdown, `+0x0F` and
+## `+0x11` are slot indices into the 80-entry special-object array, `+0x10` is
+## the transient obstacle the rules read, and `+0x12`/`+0x13` are the glow's
+## phase and state (docs/42 section 9.1).
+const TIMER_SLOT: int = 0
+const OBJECT_SLOT: int = 1
 const OBSTACLE_SLOT: int = 2
+const DECAL_OBJECT_SLOT: int = 3
+const DECAL_PHASE_SLOT: int = 4
+const DECAL_STATE_SLOT: int = 5
 
 var width: int = 0
 var height: int = 0
@@ -41,6 +60,8 @@ var _field_type: PackedByteArray = PackedByteArray()
 var _action_point: PackedByteArray = PackedByteArray()
 var _unit: PackedInt32Array = PackedInt32Array()
 var _effect: Array[PackedByteArray] = []
+var _objects: PackedByteArray = PackedByteArray()
+var _special_models: PackedStringArray = PackedStringArray()
 
 
 static func from_resource(res: MapResource) -> MapState:
@@ -54,6 +75,7 @@ static func from_resource(res: MapResource) -> MapState:
 	state._effect = []
 	for slot: int in range(EFFECT_SLOTS):
 		state._effect.append(res.effects(slot))
+	state.rebuild_objects()
 	return state
 
 
@@ -118,6 +140,53 @@ func set_obstacle(index: int, value: int) -> void:
 	set_effect(OBSTACLE_SLOT, index, value)
 
 
+## The 80 special-object slots, `0xFF` where one is free.  **Derived**: the
+## engine's `aBuild3DSpecialObjects` rebuilds it from the same cell bytes after
+## every load, so it is neither hashed nor saved -- [method rebuild_objects] is
+## what a loader calls instead.
+func objects() -> PackedByteArray:
+	return _objects.duplicate()
+
+
+func object_state(object_id: int) -> int:
+	return _objects[object_id]
+
+
+func set_object_state(object_id: int, value: int) -> void:
+	_objects[object_id] = value & 0xFF
+
+
+## The placer model names the mission's world set carries.  Empty means "no
+## world set behind this map", which skips the gate; a real map must set it, or
+## a `SetGroundFire` outside `World_D00` will appear to work (docs/97 §37).
+func special_models() -> PackedStringArray:
+	return _special_models.duplicate()
+
+
+func set_special_models(names: PackedStringArray) -> void:
+	_special_models = names.duplicate()
+
+
+## `aBuild3DSpecialObjects` `0x004079D0`, as occupancy only: every cell whose
+## `+0x10` is 1, 2 or 3 owns the slot at `+0x0F`, and every cell whose `+0x13`
+## is 4 owns the one at `+0x11`.
+func rebuild_objects() -> void:
+	_objects = PackedByteArray()
+	_objects.resize(SPECIAL_OBJECT_SLOTS)
+	_objects.fill(NO_OBJECT)
+	for i: int in range(cell_count()):
+		var state: int = _effect[OBSTACLE_SLOT][i]
+		var oid: int = _effect[OBJECT_SLOT][i]
+		if (state == OBSTACLE_FIRE or state == OBSTACLE_MINE \
+				or state == OBSTACLE_SHIELD) \
+				and oid >= 0 and oid < SPECIAL_OBJECT_SLOTS:
+			_objects[oid] = state
+		if _effect[DECAL_STATE_SLOT][i] == DECAL_GLOW:
+			oid = _effect[DECAL_OBJECT_SLOT][i]
+			if oid >= 0 and oid < SPECIAL_OBJECT_SLOTS:
+				_objects[oid] = DECAL_GLOW
+
+
 ## A copy of every array, for rendering.  `game` gets its own storage: a
 ## `Packed*Array` returned from a function aliases the original in Godot 4.7.
 func snapshot() -> Dictionary:
@@ -179,4 +248,5 @@ func load_bytes(data: PackedByteArray) -> bool:
 	for _slot: int in range(EFFECT_SLOTS):
 		_effect.append(data.slice(at, at + n))
 		at += n
+	rebuild_objects()
 	return true

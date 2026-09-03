@@ -115,8 +115,15 @@ def _step(source: Tuple[int, int, int], d: Sequence[float], index: int,
 
 
 def ftol(value: float) -> int:
-    """`_ftol` `0x004AE7B6`, for a value a creator is known to keep in range."""
-    return int(value)
+    """`_ftol` `0x004AE7B6` -- :func:`inclib.eng3d.ftol`.
+
+    Not `int(value)`: two creators can hand it a NaN or an infinity.
+    `_c00428990` does when its direction falls through
+    `LASER_DIRECTIONS`' `(0, 0)` default, which makes the target the source,
+    and `_c0042A8E0` does when source and target share a column.  The engine
+    answers **zero** there and `int()` raises.
+    """
+    return eng3d.ftol(value)
 
 
 def trunc_div(value: int, divisor: int) -> int:
@@ -206,8 +213,17 @@ class Pool:
         if life & 0xFF == 0:
             self.refused += 1
             return
+        # **And so is a class-0 or class-1 record whose model does not
+        # resolve.**  `0x00420950` looks the name up through `0x004038F0`
+        # and returns before a slot is found when the answer is negative
+        # (`docs/28` §7.5) -- which is how `aBlob_CreateFlyingUnit` on a
+        # unit whose type's `.3DI` the set does not carry spawns nothing.
+        model = self.inputs.handle(name, class_id)
+        if class_id not in MODELLESS and model < 0:
+            self.refused += 1
+            return
         self.records.append({
-            "model": self.inputs.handle(name, class_id),
+            "model": model,
             "class_id": class_id, "x": x, "y": y, "z": z,
             "rot_x": rot_x & 0xFFFF, "rot_y": rot_y & 0xFFFF,
             "rot_z": rot_z & 0xFFFF,
@@ -281,7 +297,11 @@ def _c0042AF10(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
 
 @program(0x00429A80, 3)
 def _c00429A80(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
-    """`aBlob_CreateSmokeColumn`: nine rings of three, rising 0x3C0 a ring.
+    """`aBlob_CreateFireExplosion` (`blob_tables`' name table, `0x0040CCE5`):
+    nine rings of three, rising 0x3C0 a ring.  The fight's death switch
+    calls it on species 3 and on a class-0x0C barrel (`docs/42` §4.8), the
+    impact switch on three weapons.  Its third argument is pushed by every
+    caller and read by none -- the routine's own frame names two.
 
     The `delay` is the ring index, which is the stagger `docs/28` §7.6.1 names
     as "the loop counter" -- and the rotation word is a **flag** that turns on
@@ -290,7 +310,12 @@ def _c00429A80(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
     why fitting it as a plain `aRandom2(base, span)` was hopeless from the
     fourth record on.
     """
-    x, y, z = pool.inputs.source
+    _fire_explosion_at(pool, draw, pool.inputs.source)
+
+
+def _fire_explosion_at(pool: Pool, draw: Draws, at: Tuple[int, int, int]) -> None:
+    """The ring loop of `aBlob_CreateFireExplosion`, from a position."""
+    x, y, z = at
     step = 0
     ring = 0
     while step <= 0x11:
@@ -639,6 +664,18 @@ class DeathInputs:
     gore: int
     display_mode: int
     models: Dict[str, int]
+    #: `unitInfo[type] + 0x6C` -- the type's own `.3DI` name (`docs/21` §2),
+    #: which `aBlob_CreateFlyingUnit` hands the constructor as the model.
+    type_models: Dict[int, str] = field(default_factory=dict)
+    #: `0x004039A0` and `0x00403AA0`, for the ring creators of `docs/42` §7:
+    #: an :class:`inclib.eng3d.Tables`, or `None` for a program that needs
+    #: neither.
+    tables: Any = None
+    #: `unitInfo[type] + 0x7B` per type, for the radius the ring creators pick.
+    sizes: Dict[int, int] = field(default_factory=dict)
+
+    def large(self, unit: "DeathUnit") -> bool:
+        return self.sizes.get(unit.type_id, 0) == 1
 
     def handle(self, name: str, class_id: int) -> int:
         if class_id in MODELLESS:
@@ -905,3 +942,488 @@ def _c00421C50(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs
         for m in range(1, 5):
             pool.spawn(BLOOD_TRAIL[m - 1], 0, ox, oy, oz + half + dz, 0, 0, 0, 0x12, 0x1E,
                        vx, vy, vz, 0, m)
+
+
+@death_program(0x00423AD0, 3)
+def _c00423AD0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateKillFire(x, y, delay)`: ten class-2 flames, kind 10,
+    life 20, scattered ±800 around the placed object on every axis, drifting
+    ±48 sideways and rising 320..480, each delayed `aRandom2(0, 3)` frames
+    **plus the third argument** -- 0 from the fight's death switch
+    (`0x0040DCE2`, the class-0x10 `Bea'Coo`), 20 from `FireCircle`
+    (`0x0041332C`).  The add is a byte add (`add al, [arg]`), which the
+    constructor's own `delay & 0xFF` already reproduces.  Seven draws a
+    flame, in the order velocity x, y, z, the delay, then z, y, x of the
+    position."""
+    x, y, delay_base = args
+    ox, oy, oz = inputs.object(x, y)
+    for _ in range(10):
+        vx = draw(-0x30, 0x60)
+        vy = draw(-0x30, 0x60)
+        vz = draw(0x140, 0xA0)
+        delay = draw(0, 3) + delay_base
+        z = draw(-0x320, 0x640) + oz
+        py = draw(-0x320, 0x640) + oy
+        px = draw(-0x320, 0x640) + ox
+        pool.spawn(SCRATCH, 2, px, py, z, 0, 0, 0, 0xA, 0x14, vx, vy, vz, 0x14, delay)
+
+
+@death_program(0x0042B1D0, 2)
+def _c0042B1D0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateFireDeath(x, y)`: a column of twenty class-2 records,
+    kind 60, life 8, sprite row 4, stacked 20 units apart from the object's
+    own height, each delayed by its index -- so the column burns upward one
+    record a frame.  Velocity ±480 sideways and 160..1760 up, `aux`
+    `aRandom2(5, 20)`; four draws a record.  The fight reaches it through
+    death style 2, which only weapon 40's muzzle arm selects (`docs/42`
+    §4.8)."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    for i in range(20):
+        vx = draw(-0x1E0, 0x3C0)
+        vy = draw(-0x1E0, 0x3C0)
+        vz = draw(0xA0, 0x640)
+        aux = draw(5, 0x14)
+        pool.spawn(SCRATCH, 2, ox, oy, oz + i * 20, 4, 0, 0, 0x3C, 8, vx, vy, vz, aux, i)
+
+
+@death_program(0x00429700, 3)
+def _c00429700(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateFlyingUnit(x, y, delay)`: **one** class-0 record whose
+    model is the unit type's own `.3DI` (`unitInfo + 0x6C`, `docs/21` §2),
+    kind 3, life 10, thrown straight up at 800 with no rotation and no draw,
+    delayed by the argument -- the fight passes twice the type's size byte
+    (`0x0040DB68`).  The barrel death of class 0x0C: the object itself
+    leaves the cell, and `aBlob_CreateFireExplosion` follows it.  A type
+    whose model the set does not carry spawns nothing, by the constructor's
+    own refusal."""
+    x, y, delay = args
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    ox, oy, oz = inputs.object(x, y)
+    name = inputs.type_models.get(unit.type_id, "")
+    pool.spawn(name, 0, ox, oy, oz, 0, 0, 0, 3, 0xA, 0, 0, 0x320, 0, delay)
+
+
+@death_program(0x00429A80, 3)
+def _c00429A80_death(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateFireExplosion(x, y, _)` as the death switch calls it: the
+    same nine rings, from the tile's placed object.  The third argument is
+    pushed and never read (`docs/42` §4.8)."""
+    x, y, _unused = args
+    _fire_explosion_at(pool, draw, inputs.object(x, y))
+
+
+# --------------------------------------------------------------------------
+# The unit animations' creators -- docs/42 §7: the selection marker, the
+# jump's trail and dust, the push's dust, the two flash circles
+# --------------------------------------------------------------------------
+
+#: `0x00422D40` / `0x004232E0` -- the ring radius: 4800, or 9600 for a large
+#: type (`unitInfo + 0x7B`).
+RING_RADIUS = 0x12C0
+RING_RADIUS_LARGE = 0x2580
+#: `0x00423030` -- the heal flash's radius: 1600, or 6400 for a large type.
+FLASH_RADIUS = 0x640
+FLASH_RADIUS_LARGE = 0x1900
+#: `0x004227C0` -- the landing dust's twenty puffs, 3200 out and turned 204
+#: angle units (18 degrees) a puff, thrown at a third of the offset.
+DUST_RADIUS = 0xC80
+DUST_TURN = 0xCC
+#: The heal flash's four crosses, in the order the index selects them
+#: (`0x004232D0`'s jump table: 0 -> A_CROSS3).
+CROSS_MODELS = ("A_CROSS3.3DI", "A_CROSS2.3DI", "A_CROSS1.3DI", "A_CROSS.3DI")
+
+
+def _ring(inputs: DeathInputs, radius: int, turn: int, count: int
+          ) -> List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]]:
+    """`count` offsets, each the previous one turned by `turn` through
+    `0x004039A0` -- the rotation accumulates, so the ring is the engine's
+    table arithmetic and not a clean division of the circle -- paired with
+    the orientation `0x00403AA0` gives the line from the object to that
+    point."""
+    tables = inputs.tables
+    offset = (radius, 0, 0)
+    out = []
+    for _ in range(count):
+        offset = tables.rotate(offset, (0, 0, turn))
+        out.append(offset)
+    return out
+
+
+@death_program(0x00422D40, 2)
+def _c00422D40(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateArrowMarker` (this project's name for `0x00422D40`,
+    docs/42 §7.3): four `A_ARROW.3DI` model blobs, kind 14, life 15, ninety
+    degrees apart at a radius of 4800 -- 9600 for a large type -- around the
+    unit's object, each oriented along the line from the object to itself,
+    with the object's own x and y in `vx`/`vy` for kind 14's arm to turn them
+    around.  No draw."""
+    x, y = args
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    ox, oy, oz = inputs.object(x, y)
+    radius = RING_RADIUS_LARGE if inputs.large(unit) else RING_RADIUS
+    for dx, dy, dz in _ring(inputs, radius, 0x400, 4):
+        pitch, yaw = inputs.tables.orient((ox, oy, oz), (ox + dx, oy + dy, oz))
+        pool.spawn("A_ARROW.3DI", 0, ox + dx, oy + dy, oz, pitch, 0, yaw,
+                   0xE, 0xF, ox, oy, 0, 0, 0)
+
+
+@death_program(0x004227C0, 2)
+def _c004227C0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateLandingDust` (this project's name for `0x004227C0`,
+    docs/42 §7.1): twenty class-2 puffs from the object, kind 9, life 10,
+    row 4, thrown at a third of an offset that turns 204 units a puff from
+    3200 out, rising at 800.  No draw."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    for dx, dy, _dz in _ring(inputs, DUST_RADIUS, DUST_TURN, 20):
+        pool.spawn(SCRATCH, 2, ox, oy, oz, 4, 0, 0, 9, 10,
+                   trunc_div(dx, 3), trunc_div(dy, 3), 0x320, 10, 0)
+
+
+@death_program(0x00423030, 2)
+def _c00423030(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateFlashCircle` (`0x00423030`, the heal orbit's, docs/42
+    §7.3): four crosses `A_CROSS3/2/1/A_CROSS` at 30-degree steps around
+    the unit, each paired with its mirror image, kind 37, life 40, at half
+    the unit's height, oriented along their own line, the object's x and y
+    in `vx`/`vy`.  Eight records, no draw."""
+    x, y = args
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    ox, oy, oz = inputs.object(x, y)
+    half = trunc_div(unit.height, 2)
+    radius = FLASH_RADIUS_LARGE if inputs.large(unit) else FLASH_RADIUS
+    for index, (dx, dy, _dz) in enumerate(_ring(inputs, radius, 0x155, 4)):
+        pitch, yaw = inputs.tables.orient((ox, oy, oz), (ox + dx, oy + dy, oz))
+        name = CROSS_MODELS[index]
+        pool.spawn(name, 0, ox + dx, oy + dy, oz + half, pitch, 0, yaw,
+                   0x25, 0x28, ox, oy, 0, 0, 0)
+        pool.spawn(name, 0, ox - dx, oy - dy, oz + half, pitch, 0, yaw,
+                   0x25, 0x28, ox, oy, 0, 0, 0)
+
+
+@death_program(0x004232E0, 2)
+def _c004232E0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The poison orbit's flash circle (`0x004232E0`): four `A_SKULL.3DI`
+    ninety degrees apart at the **flash's** radius (`mov edi, 0x640` /
+    `0x1900` at `0x004233BF` / `0x004233B0` -- the heal circle's, not the
+    marker's, which the capture corrected), kind 37, life 40, at half the
+    unit's height.  No draw."""
+    x, y = args
+    unit = inputs.unit(x, y)
+    if unit is None:
+        return
+    ox, oy, oz = inputs.object(x, y)
+    half = trunc_div(unit.height, 2)
+    radius = FLASH_RADIUS_LARGE if inputs.large(unit) else FLASH_RADIUS
+    for dx, dy, _dz in _ring(inputs, radius, 0x400, 4):
+        pitch, yaw = inputs.tables.orient((ox, oy, oz), (ox + dx, oy + dy, oz))
+        pool.spawn("A_SKULL.3DI", 0, ox + dx, oy + dy, oz + half, pitch, 0, yaw,
+                   0x25, 0x28, ox, oy, 0, 0, 0)
+
+
+@death_program(0x00423720, 6)
+def _c00423720(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateZoomBob(x, y, z, row, aux, life)`: one class-2 record at a
+    position, kind 50, no velocity, no draw."""
+    x, y, z, row, aux, life = args
+    pool.spawn(SCRATCH, 2, x, y, z, row, 0, 0, 0x32, life, 0, 0, 0, aux, 0)
+
+
+@death_program(0x00423670, 3)
+def _c00423670(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The jump's trail (`0x00423670(x, y, z)`, docs/42 §7.1): a `ZoomBob`
+    (row 4, aux 10, life 3) and four class-2 sprites of kind 10, life 11,
+    row 4, drifting ±48 sideways and falling 640..592, each delayed by its
+    index (`push esi`, the loop counter, is the constructor's last argument)
+    -- three draws each, in the order z, y, x."""
+    x, y, z = args
+    _c00423720(pool, draw, (x, y, z, 4, 10, 3), inputs)
+    for index in range(4):
+        vz = draw(0, 0x30) - 0x280
+        vy = draw(-0x30, 0x60)
+        vx = draw(-0x30, 0x60)
+        pool.spawn(SCRATCH, 2, x, y, z, 4, 0, 0, 0xA, 0xB, vx, vy, vz, 0xB, index)
+
+
+@death_program(0x0042A6E0, 3)
+def _c0042A6E0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The push's dust (`0x0042A6E0(x, y, z)`, docs/42 §7.2): one class-2
+    sprite of row 4, kind 10, life 20, drifting ±48 and rising 320..480 --
+    three draws, in the order x, y, z."""
+    x, y, z = args
+    vx = draw(-0x30, 0x60)
+    vy = draw(-0x30, 0x60)
+    vz = draw(0x140, 0xA0)
+    pool.spawn(SCRATCH, 2, x, y, z, 4, 0, 0, 0xA, 0x14, vx, vy, vz, 10, 0)
+
+
+# ---------------------------------------------------------------------------
+# The set pieces' creators -- docs/42 §8, docs/97 §32
+# ---------------------------------------------------------------------------
+
+#: `0x004B1270` / `0x004B12E0` -- the laser barrier lays its three dots one
+#: field along the line (`-1600.0`, subtracted) and steps its models one field
+#: further per count (`-3200.0`, subtracted).
+LASER_OFFSET = -1600.0
+LASER_STEP = -3200.0
+#: `0x004B1300` -- the bomber's velocity is the direction times a field.
+BOMBER_SPEED = 3200.0
+#: `0x00423770` -- the tube's puffs, fifteen pairs.
+TUBE_PAIRS = 15
+#: `0x004234C0` -- the platform's four corner puffs, 4800 out, 1600 up.
+PLATFORM_DUST_SPREAD = 0x12C0
+PLATFORM_DUST_UP = 0x640
+#: `0x00422F00` -- the fire circle's 150 flames, 60 units of turn apart at a
+#: field's radius, a field below the object.
+FIRE_CIRCLE_FLAMES = 150
+FIRE_CIRCLE_TURN = 0x3C
+FIRE_CIRCLE_RADIUS = 0xC80
+#: `0x0042A120` -- the teleporter's two hundred records, sixteen units apart.
+STREAM_RECORDS = 200
+STREAM_STEP = 16
+#: `0x0042B070` -- the para bomb's life is its fall from 35200 at 800 a tick;
+#: it is dropped from 48000.
+BOMB_CEILING = 0x8980
+BOMB_DROP = 0xBB80
+BOMB_FALL = 800
+
+
+@death_program(0x00423770, 2)
+def _c00423770(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The tube's puffs (this project's name for `0x00423770`, docs/42 §8:
+    `OpenTube` at its tenth frame): fifteen pairs of class-2 sprites at the
+    object, kind 10, life 20, row 4, aux 10, drifting ±48 and rising
+    320..480, each pair delayed by its index -- three draws a record, in the
+    order x, y, z."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    for index in range(TUBE_PAIRS):
+        for _ in range(2):
+            vx = draw(-0x30, 0x60)
+            vy = draw(-0x30, 0x60)
+            vz = draw(0x140, 0xA0)
+            pool.spawn(SCRATCH, 2, ox, oy, oz, 4, 0, 0, 0xA, 0x14, vx, vy, vz, 10, index)
+
+
+@death_program(0x004234C0, 3)
+def _c004234C0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The platform's dust (`0x004234C0(x, y, z)`, docs/42 §8, once a frame):
+    four class-2 sprites at the block's corners, 4800 out and 1600 up, kind
+    10, life 12, row 4, aux 10, rising 320..368 and drifting ±48 -- three
+    draws a record, in the order z, y, x."""
+    x, y, z = args
+    up = z + PLATFORM_DUST_UP
+    s = PLATFORM_DUST_SPREAD
+    for cx, cy in ((x - s, y - s), (x - s, y + s), (x + s, y + s), (x + s, y - s)):
+        vz = draw(0, 0x30) + 0x140
+        vy = draw(-0x30, 0x60)
+        vx = draw(-0x30, 0x60)
+        pool.spawn(SCRATCH, 2, cx, cy, up, 4, 0, 0, 0xA, 0xC, vx, vy, vz, 10, 0)
+
+
+def _debris_pair(pool: Pool, draw: Draws, ox: int, oy: int, z: int, kind: int,
+                 vz: int, third: Tuple[int, int], splat_third: Tuple[int, int],
+                 vz_drawn: bool) -> None:
+    """Twenty `A_DEBRIS` and four `A_SPLAT1` thrown from `(ox, oy, z)`: the
+    shape `0x00422610` and `0x00422460` share.  Each record draws its x and
+    y velocity in ±200..300 and a third value -- taken and **discarded** by
+    the ground unit's (`fstp st(0)`), kept as the vertical by the roof's --
+    then its delay in 0..3."""
+    for name, count, span in (("A_DEBRIS.3DI", 20, third), ("A_SPLAT1.3DI", 4, splat_third)):
+        for _ in range(count):
+            vx = draw(-200, 300)
+            vy = draw(-200, 300)
+            drawn = draw(span[0], span[1])
+            delay = draw(0, 4)
+            pool.spawn(name, 0, ox, oy, z, 0, 0, 0, kind, 0x32, vx, vy,
+                       drawn if vz_drawn else vz, 0, delay)
+
+
+@death_program(0x00422610, 3)
+def _c00422610(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The ground unit's debris (`0x00422610(x, y, z)`, docs/42 §8.1): twenty
+    `A_DEBRIS` and four `A_SPLAT1` from the object's x, y at the given z,
+    kind 29, life 50, thrown ±200..300 sideways and 300 up, delayed 0..3;
+    the third draw (40..180 / 40..140) is taken and never converted."""
+    x, y, z = args
+    ox, oy, _oz = inputs.object(x, y)
+    _debris_pair(pool, draw, ox, oy, z, 0x1D, 0x12C, (40, 140), (40, 100), False)
+
+
+@death_program(0x00422460, 3)
+def _c00422460(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The roof unit's debris (`0x00422460(x, y, z)`, docs/42 §8): the same
+    twenty and four, kind **0**, life 50, with the third draw kept as the
+    vertical velocity -- `aRandom2(40, -100)`, a span the wrong way round,
+    so the pieces fall 40..-60."""
+    x, y, z = args
+    ox, oy, _oz = inputs.object(x, y)
+    _debris_pair(pool, draw, ox, oy, z, 0, 0, (40, -100), (40, -100), True)
+
+
+@death_program(0x004238C0, 2)
+def _c004238C0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The crush wall's debris (`0x004238C0(x, y)`, docs/42 §8, once a cell):
+    thirty class-2 sprites scattered ±1600 around the object -- kind 10,
+    life 20, row 4, aux 30, drifting ±48, rising 320..480, delayed 0..2;
+    seven draws in the order vx, vy, vz, delay, z, y, x -- then five
+    `A_DEBRIS` of kind 5, life 100, thrown vz 100..600, vx and vy ±300..600,
+    spun by three draws of 0..4095 (rot_z, rot_y, rot_x)."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    for _ in range(30):
+        vx = draw(-0x30, 0x60)
+        vy = draw(-0x30, 0x60)
+        vz = draw(0x140, 0xA0)
+        delay = draw(0, 3)
+        z = draw(-0x640, 0xC80) + oz
+        py = draw(-0x640, 0xC80) + oy
+        px = draw(-0x640, 0xC80) + ox
+        pool.spawn(SCRATCH, 2, px, py, z, 4, 0, 0, 0xA, 0x14, vx, vy, vz, 0x1E, delay)
+    for _ in range(5):
+        vz = draw(100, 500)
+        vx = draw(-300, 600)
+        vy = draw(-300, 600)
+        rz = draw(0, 0x1000)
+        ry = draw(0, 0x1000)
+        rx = draw(0, 0x1000)
+        pool.spawn("A_DEBRIS.3DI", 0, ox, oy, oz, rx, ry, rz, 5, 100, vx, vy, vz, 0, 0)
+
+
+@death_program(0x00422F00, 2)
+def _c00422F00(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The fire circle's ring (`0x00422F00(x, y)`, docs/42 §8): 150 class-2
+    flames on a ring of a field's radius, each offset the previous turned
+    by 60 through `0x004039A0`, a field **below** the object, kind 67, life
+    6, aux 20, delayed by `i / 8`, the pitch drawn 0..2 -- one draw each."""
+    x, y = args
+    ox, oy, oz = inputs.object(x, y)
+    tables = inputs.tables
+    offset = (FIRE_CIRCLE_RADIUS, 0, 0)
+    for index in range(FIRE_CIRCLE_FLAMES):
+        offset = tables.rotate(offset, (0, 0, FIRE_CIRCLE_TURN))
+        pitch = draw(0, 3)
+        pool.spawn(SCRATCH, 2, ox + offset[0], oy + offset[1], oz - FIRE_CIRCLE_RADIUS,
+                   pitch, 0, 0, 0x43, 6, 0, 0, 0, 0x14, index >> 3)
+
+
+#: `0x00428990`'s direction switch: 0 → +y, 1 → -x, 2 → -y, 3 → +x.
+LASER_DIRECTIONS = {0: (0, 1), 1: (-1, 0), 2: (0, -1), 3: (1, 0)}
+
+
+@death_program(0x00428990, 4)
+def _c00428990(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`aBlob_CreateLaserBarrier(x, y, dir, count)` (`0x00428990`, docs/42
+    §8): from the object 2400 down, aimed 100 units along `dir`, three
+    class-2 dots one field back along the line (kind 51, life 16, aux 10,
+    pitch 5) at z, z + 800, z + 1600; then `count` times: the line moves a
+    field along the direction and three `A_LASERG.3DI` models (kind 1, life
+    9) are laid at the same three heights, aimed by `0x00403AA0`.  No draw."""
+    x, y, direction, count = args
+    ox, oy, oz = inputs.object(x, y)
+    tables = inputs.tables
+    z0 = oz - 0x960
+    dx, dy = LASER_DIRECTIONS.get(direction & 0xFF, (0, 0))
+    source = (ox, oy, z0)
+    target = (ox + dx * 100, oy + dy * 100, z0)
+    d = tables.direction(source, target, 1)
+    pitch, yaw = tables.orient(source, target)
+    sx, sy = ox, oy
+    for step in range(3):
+        pool.spawn(SCRATCH, 2, sx - ftol(d[0] * LASER_OFFSET), sy - ftol(d[1] * LASER_OFFSET),
+                   z0 + step * 0x320, 5, 0, 0, 0x33, 0x10, 0, 0, 0, 10, 0)
+    lx, ly, lz = ox, oy, z0
+    for _ in range(count & 0xFF):
+        lx -= ftol(d[0] * LASER_STEP)
+        ly -= ftol(d[1] * LASER_STEP)
+        lz -= ftol(d[2] * LASER_STEP)
+        for step in range(3):
+            pool.spawn("A_LASERG.3DI", 0, lx, ly, lz + step * 0x320, pitch, 0, yaw,
+                       1, 9, 0, 0, 0, 0, 0)
+
+
+@death_program(0x00428BF0, 5)
+def _c00428BF0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The statue's beam (`0x00428BF0(sx, sy, tx, ty, cells)`, docs/42 §8.1):
+    from the source object, stepping `1600 * direction` a dot, `2 * cells -
+    1` class-2 dots at z 3200 (kind 62, life 7, aux 25, rot_y 3, delayed by
+    index), then six sparks from the last dot, kind 62, life 7, aux 30,
+    rising 800 and thrown ±3000..6000 (two draws, vy then vx), rotations
+    alternating `(0, 3)` and `(2, 0)`, delayed `j / 2` plus the dot count."""
+    sx, sy, tx, ty, cells = args
+    ox, oy, oz = inputs.object(sx, sy)
+    ax, ay, _az = inputs.object(tx, ty)
+    d = inputs.tables.direction((ox, oy, oz), (ax, ay, oz), 1)
+    px = ox + ftol(d[0] * SPARK_SPEED)
+    py = oy + ftol(d[1] * SPARK_SPEED)
+    dots = 2 * cells - 1
+    for index in range(dots):
+        px += ftol(d[0] * SPARK_SPEED)
+        py += ftol(d[1] * SPARK_SPEED)
+        pool.spawn(SCRATCH, 2, px, py, 0xC80, 0, 3, 0, 0x3E, 7, 0, 0, 0, 0x19, index)
+    for j in range(6):
+        rx, ry = (2, 0) if j & 1 else (0, 3)
+        vy = draw(-3000, 6000)
+        vx = draw(-3000, 6000)
+        pool.spawn(SCRATCH, 2, px, py, 0xC80, rx, ry, 0, 0x3E, 7, vx, vy, 0x320, 0x1E,
+                   (j // 2 + dots) & 0xFF)
+
+
+@death_program(0x0042A120, 4)
+def _c0042A120(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The teleporter's stream (`0x0042A120(sx, sy, tx, ty)`, docs/42 §8.1):
+    two hundred class-2 records, kind 65, life 70, aux 5, one every 16 units
+    up from the source object's z, scattered ±1600..3200 around the source
+    in x and y and given, in the velocity slots, a point ±1600..3200 around
+    the target at its height plus 3200 less the rise -- four draws each,
+    every one converted with its addend inside (`fiadd` / `fadd`), in the
+    order vy, vx, y, x; delayed `i / 10`."""
+    sx, sy, tx, ty = args
+    ox, oy, oz = inputs.object(sx, sy)
+    ax, ay, az = inputs.object(tx, ty)
+    for index in range(STREAM_RECORDS):
+        rise = index * STREAM_STEP
+        vz = az - rise + 0xC80
+        vy = draw.biased(-0x640, 0xC80, ay)
+        vx = draw.biased(-0x640, 0xC80, ax)
+        py = draw.biased(-0x640, 0xC80, oy)
+        px = draw.biased(-0x640, 0xC80, ox)
+        pool.spawn(SCRATCH, 2, px, py, oz + rise, 5, 0, 0, 0x41, 0x46, vx, vy, vz, 5,
+                   index // 10)
+
+
+@death_program(0x0042A8E0, 6)
+def _c0042A8E0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """The bomber (`0x0042A8E0(x, y, z, tx, ty, tz)`, docs/42 §8): one
+    `L069EE00.3DI` model at the source, kind 52, life 150, flying a field a
+    tick along `0x0046D400`'s direction, aimed by `0x00403AA0`.  It clears
+    the *arrived* flag and writes its start into `0x004FE3F8..`; no draw."""
+    x, y, z, tx, ty, tz = args
+    d = inputs.tables.direction((x, y, z), (tx, ty, tz), 1)
+    pitch, yaw = inputs.tables.orient((x, y, z), (tx, ty, tz))
+    pool.spawn("L069EE00.3DI", 0, x, y, z, pitch, 0, yaw, 0x34, 0x96,
+               ftol(d[0] * BOMBER_SPEED), ftol(d[1] * BOMBER_SPEED),
+               ftol(d[2] * BOMBER_SPEED), 0, 0)
+
+
+@death_program(0x0042B070, 3)
+def _c0042B070(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """One para bomb (`0x0042B070(x, y, delay)`, docs/42 §8): an
+    `A_PARAB1.3DI` dropped from 48000 over the object, kind 25, falling 800 a
+    tick, its life the fall from 35200 to the object's height at that rate
+    (a reciprocal multiply, then `abs`), rot_y 64 and rot_z drawn 0..4095;
+    it clears the *arrived* flag.  One draw."""
+    x, y, delay = args
+    ox, oy, oz = inputs.object(x, y)
+    life = abs(trunc_div(BOMB_CEILING - oz, BOMB_FALL))
+    rz = draw(0, 0x1000)
+    pool.spawn("A_PARAB1.3DI", 0, ox, oy, BOMB_DROP, 0, 0x40, rz, 0x19, life, 0, 0,
+               -BOMB_FALL, 0, delay)
+

@@ -34,6 +34,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from inclib import eng3d  # noqa: E402
 from inclib.eng3d import direction_vector  # noqa: E402
 from inclib.rng import ARandom  # noqa: E402
 
@@ -149,6 +150,9 @@ class TickResult:
     deleted: bool = False
     delete_requested: bool = False
     global_signal: bool = False
+    #: Arm 45's `mov [0x4FE63C], ebp` -- `ebp` is the sweep's zero, so the
+    #: arm **clears** the arrived flag every tick (`docs/42` §4.6).
+    global_signal_clear: bool = False
     target_missing: bool = False
     model_missing: bool = False
     events: List[Tuple[str, Any]] = field(default_factory=list)
@@ -370,23 +374,8 @@ SEEK_HIT = 0x640
 
 
 def _ftol(value: float) -> int:
-    """`0x004AE7B6` -- MSVC's `_ftol`, which is `fistp qword` and truncates.
-
-    It stores **64 bits** and returns the pair in `edx:eax`; every caller here
-    keeps `eax`, so the answer is the *low dword* of the truncation.  That
-    matters for the invalid conversion: x87's 64-bit integer indefinite is
-    `0x8000000000000000`, whose low dword is **zero**, so a NaN steers a
-    seeker by nothing at all rather than by `INT_MIN`.
-
-    Measured, not reasoned: the poked kind-27 record of `docs/97` §20 sits
-    exactly on its target's column, the direction service answers `NaN, NaN,
-    inf` (the `hooks` phase has those three deltas), and the engine's record
-    comes back damped by a sixth with **no** steering term.
-    """
-
-    if math.isnan(value) or math.isinf(value) or not -2**63 <= value < 2**63:
-        return 0
-    return i32(int(value) & I32_MASK)
+    """`0x004AE7B6` -- `inclib.eng3d.ftol`, where both callers of it live."""
+    return eng3d.ftol(value)
 
 
 def _seek(blob: Blob, hooks: BlobHooks, result: TickResult,
@@ -845,6 +834,7 @@ def _kind_44(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
 def _kind_45(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     _move_quarter(blob)
     blob.rot_y = u16(7 - (blob.life >> 1))
+    result.global_signal_clear = True
     result.event("global_signal_clear")
 
 
@@ -1534,6 +1524,7 @@ def _case_tick(blob: Blob, hooks: CaseHooks) -> Dict[str, Any]:
         "deleted": int(result.deleted),
         "delete_requested": int(result.delete_requested),
         "global_signal": int(result.global_signal),
+        "global_signal_clear": int(result.global_signal_clear),
         "target_missing": int(result.target_missing),
         "model_missing": int(result.model_missing),
         "spawns": [{"creator": spawn.creator,

@@ -101,8 +101,37 @@ TRIG_PERIOD = 4096
 COSINE_OFFSET = 1024
 
 
+#: A 32-bit two's-complement mask, for the truncations below.
+I32_MASK = 0xFFFFFFFF
+
+
 class Eng3dError(Exception):
     """Raised instead of returning a partial or invented table."""
+
+
+def ftol(value: float) -> int:
+    """``_ftol`` ``0x004AE7B6`` -- MSVC's, which is ``fistp qword``.
+
+    It stores **64 bits** and returns the pair in ``edx:eax``; every caller in
+    this project keeps ``eax``, so the answer is the *low dword* of the
+    truncation.  That matters for the invalid conversion: x87's 64-bit integer
+    indefinite is ``0x8000000000000000``, whose low dword is **zero**, so a
+    NaN converts to nothing at all rather than to ``INT_MIN``.
+
+    Measured, not reasoned: the poked kind-27 record of ``docs/97`` §20 sits
+    exactly on its target's column, the direction service answers
+    ``NaN, NaN, inf`` (the `hooks` phase has those three deltas), and the
+    engine's record comes back damped by a sixth with **no** steering term.
+
+    It lives here rather than in a caller because both callers need it --
+    :mod:`tools.blob_runtime`'s update arms and
+    :mod:`inclib.blob_creators`'s creator programs -- and because
+    ``godot/game/fx/eng3d_geometry.gd`` is already this module's twin.
+    """
+    if math.isnan(value) or math.isinf(value) or not -2**63 <= value < 2**63:
+        return 0
+    value = int(value) & I32_MASK
+    return value - 0x100000000 if value >= 0x80000000 else value
 
 
 def _trunc_shift(value: int) -> int:

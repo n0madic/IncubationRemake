@@ -325,7 +325,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **35 items are
+in place with the evidence that closed them rather than deleted. **34 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -344,7 +344,7 @@ still open:**
 | [30](30-eng3d-ascii-formats.md) | 9 | authoring-side meanings of `.dir` metadata, tokens the shipped readers skip, two raised by the leaked exporter config (§2.11) — what `SORT_OBJECT` selected and whether `DETAIL_METHODE`'s numbering is the engine's — and one shipped `.lev` that names a world set which does not exist. The stale-worlds item is now **closed**: no mission loads either file. `SORT_OBJECT`'s last candidate is **eliminated** (2026-09-02): the check-in list *is* chosen by the record — `0x00404C79` tests `flags` bit 0 — but that bit is clear in all 701 records of `Video/Dialog_03`, the only container whose config sets `SORT_OBJECT`, and set in just two records elsewhere, so the item is now unknowable rather than untraced |
 | [31](31-prototyp-geometry.md) | 1 | what a Voodoo did with Glide blend factor `0xf`. Runtime confirmation is **closed as not needed** — the item it was wanted for was settled by reading the code |
 | [40](40-charisma-model-animation.md) | 6 | enumerator names, the `J` animation family, the four synthetically-validated reader branches, and whether the −Y authored forward (§5.4) is reconciled by a rotation or by a mirror |
-| [42](42-mission-presentation.md) | 0 | none. The six it carried are closed in §12 with their evidence: the pose after detach is measured (bind on the next step, the last frame held before it), the clip length is the first movement's last key time, state 3 is the shield, the four set pieces are transcribed, the start slot's class is `KeyFramedAnimationInterface`, and the starter's type search never advances so the draw decides |
+| [42](42-mission-presentation.md) | 0 | none. The two it carried for a day — the glow's lifecycle and what a ground-fire removal costs — are closed in §12 with their evidence (`97` §38), and the six before them too: the pose after detach is measured (bind on the next step, the last frame held before it), the clip length is the first movement's last key time, state 3 is the shield, the four set pieces are transcribed, the start slot's class is `KeyFramedAnimationInterface`, and the starter's type search never advances so the draw decides |
 | [41](41-sequence-player.md) | 0 | nothing open; the manifest, the lifecycle, the 30 fps clock and the trigger are pinned to the image, and speech/subtitles are closed **negatively** — the player carries no scheduler and no `Video/` directory holds a wave or a text file. Two residual items are *decisions*, not unknowns: the camera ids `9..19` belong to the 3D scene, and presentation/input live outside the module |
 | [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |

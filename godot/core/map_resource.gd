@@ -53,10 +53,9 @@ static func from_document(document: Dictionary) -> MapResource:
 	res._unit = _ints(cells["unit"])
 	res._land = _ints(cells["land"])
 	res._start_index = _ints(cells["start_index"])
-	res._effect = [
-		_bytes(cells["effect0"]), _bytes(cells["effect1"]),
-		_bytes(cells["effect2"]), _bytes(cells["effect3"]),
-	]
+	res._effect = []
+	for slot: int in range(MapState.EFFECT_SLOTS):
+		res._effect.append(_bytes(cells["effect%d" % slot]))
 	return res
 
 

@@ -15,6 +15,9 @@ const DEBRIS: int = 5
 const FREE_PLACE: int = 1
 ## docs/26 section 6.1 -- VictoryPoint A, unclaimed.
 const VICTORY_UNCLAIMED: int = 0x50
+## How many seeds [method _the_dead_mover_fires_nothing] tries before it gives
+## up. The remake's, and only a bound on the search.
+const SEED_SEARCH: int = 40
 
 
 func run(h: TestHarness) -> void:
@@ -208,6 +211,68 @@ func _mine(h: TestHarness) -> void:
 		1)
 	h.equal("execute_move.and_it_is_a_mine",
 		DictRead.as_string(moved.events[0]["kind"]), "mine")
+	h.check("execute_move.the_stop_is_reported_for_the_caller",
+		moved.stopped_on_mine and moved.detonate.is_empty(),
+		"0x0046EC0F gates the block and 0x0046EC25 picks its arm by the "
+		+ "type's size, which `run` has no table for")
+	_the_large_unit_ring(h)
+
+
+## docs/26 section 6.2 item 8 -- the ring a `size`-1 mover triggers.
+##
+## `0x0046EC25` picks the arm at the **arrival**, so the `size` byte is
+## written after the walk and before the block: the fill would refuse a large
+## mover its 3x3 clearance, and the branch does not read it. That is the same
+## move docs/93 section 11 made to reach the clearance itself. No shipped map
+## places a large unit next to a mine, so this is the only thing that runs it.
+func _the_large_unit_ring(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var found: Dictionary = _mixed_path(world, 0)
+	if not h.check("execute_move.ring_path_exists", not found.is_empty()):
+		return
+	var route: PackedInt32Array = DictRead.as_int32_array(found["route"])
+	var stop: int = route[1]
+	var width: int = world.state.width
+	var sx: int = stop % width
+	var sy: int = stop / width
+	h.check("execute_move.ring_stop_mine",
+		CellObjects.place_mine(world.state, sx, sy) >= 0, "the stop cell")
+	# One neighbour, and not one the walk crosses.
+	var walked: Dictionary = {}
+	var neighbour: int = -1
+	for step: Vector2i in CellObjects.STEP_DELTA:
+		var nx: int = sx + step.x
+		var ny: int = sy + step.y
+		if not world.state.in_bounds(nx, ny):
+			continue
+		if route.has(world.state.index_of(nx, ny)):
+			continue
+		if CellObjects.place_mine(world.state, nx, ny) >= 0:
+			neighbour = world.state.index_of(nx, ny)
+			break
+	if not h.check("execute_move.ring_neighbour_mine", neighbour >= 0):
+		return
+	var _w: Dictionary = walked
+	var unit: UnitState = world.units_for_ai()[0]
+	unit.x = 2
+	unit.y = 2
+	# The type's size, written for this call only.
+	var types: UnitTypeTable = world.unit_types()
+	var was: int = types.unit_size(unit.type_id)
+	types.set_unit_size(unit.type_id, ExecuteMove.LARGE_UNIT_SIZE)
+	var moved: MoveResult = ExecuteMove.execute(world.state,
+		world.units_for_ai(), types, world.ctrlmap(), world.weapons(), unit,
+		DictRead.as_dict(found["walk"]), sx, sy, 0, 1, 1,
+		world.turn.ai_level, world.turn, world.rng)
+	types.set_unit_size(unit.type_id, was)
+	var fired: PackedInt32Array = moved.detonate
+	h.check("execute_move.ring_fired", fired.size() >= 2, "%s" % [fired])
+	h.equal("execute_move.ring_left_the_stop_cell",
+		world.state.obstacle_at(stop), MapState.OBSTACLE_MINE,
+		"0x0046ECA4 sweeps the eight neighbours and not the cell the walk "
+		+ "stopped on")
+	h.equal("execute_move.ring_cleared_the_neighbour",
+		world.state.obstacle_at(neighbour), MapState.OBSTACLE_NONE)
 
 
 ## The seam docs/23 section 5.3 draws and docs/93 section 11 measured: the
@@ -312,6 +377,75 @@ func _the_move_unit_event(h: TestHarness) -> void:
 	# reports as "resources still in use at exit" and nothing else notices.
 	# `run_tests.sh` treats that line as a failure, which is how it was found.
 	world.script_runner = Callable(MissionScript, "no_op")
+	_the_dead_mover_fires_nothing(h)
+
+
+## [method TestFixtures.tiny_world] with a weapon 36 in the table.
+##
+## The shared fixture has none, so `aExecuteBomb` rolled against a hit quote of
+## zero and a damage of zero and could never kill anything. The row is this
+## suite's own so the other suites' counts do not move with it.
+static func _bombable_world(rng_seed: float) -> World:
+	var bal: Dictionary = TestFixtures.balance()
+	var weapons: Array = DictRead.as_array(bal["weapons"]).duplicate()
+	weapons.append({"id": Combat.BOMB_WEAPON, "heat": 255, "toggle": 0,
+		"mun": 0, "hit": 100, "damage": 40, "range_min": 1, "range_max": 1,
+		"type": 1, "special": 0, "def_mode": 0, "mun_per_fight": 0})
+	bal["weapons"] = weapons
+	var units: Array = [TestFixtures.unit(0, 2, 2),
+		TestFixtures.unit(1, 4, 2, 0, 1)]
+	return World.create(TestFixtures.map_document(7, 7, units), bal, rng_seed)
+
+
+## `0x0046EDDC` -- the walk's own alive gate, and `0x0046F133` the jump's.
+##
+## Both are `mov al, [record+0x16] / test al, al / je <epilogue>`, placed
+## immediately after the mine's `aExecuteBomb` and immediately before the
+## fog rebuild, the six `aSetLCLVariable` writes and `aRunLCL`. A mover the
+## mine has just killed therefore fires **no** `MoveUnit`, which is what the
+## caller has to honour, because the caller is where the remake makes the call.
+func _the_dead_mover_fires_nothing(h: TestHarness) -> void:
+	# The blast is a roll, so the seed that kills is **searched for** rather
+	# than written down: a hard-coded one would be asserting the generator's
+	# arithmetic by accident, and the walk consumes the mine either way.
+	var calls: Array[int] = []
+	var killed: bool = false
+	var moved: MoveResult = null
+	var world: World = null
+	for attempt: int in range(SEED_SEARCH):
+		world = _bombable_world(float(attempt + 1))
+		# **An alien mover**, because [MoveMap] refuses a mined cell to
+		# everybody else: the fill this command rebuilds would otherwise route
+		# around the mine and the walk would never reach it.
+		var mover: UnitState = world.units_for_ai()[0]
+		mover.player = UnitState.PLAYER_ALIEN
+		var found: Dictionary = _mixed_path(world, 0)
+		if found.is_empty():
+			continue
+		var route: PackedInt32Array = DictRead.as_int32_array(found["route"])
+		var stop: int = route[1]
+		if CellObjects.place_mine(world.state, stop % world.state.width,
+				stop / world.state.width) < 0:
+			continue
+		mover.hp = 1
+		calls = []
+		world.script_runner = func(call_type: int, _e: Dictionary) -> Dictionary:
+			calls.append(call_type)
+			return {"ok": true, "ran": true}
+		moved = world.submit_move(MoveCommand.create(0,
+			DictRead.as_int(found["x"]), DictRead.as_int(found["y"])))
+		killed = moved.stopped_on_mine and not mover.is_alive()
+		# The same `RefCounted` cycle the event test breaks, for the same
+		# reason, on every attempt and not only the last.
+		world.script_runner = Callable(MissionScript, "no_op")
+		if killed:
+			break
+	if not h.check("execute_move.the_mine_killed_the_mover", killed,
+			"no seed below %d let the blast kill the mover" % SEED_SEARCH):
+		return
+	h.equal("execute_move.a_dead_mover_fires_no_move_unit",
+		[calls.size(), moved.script_result], [0, {}],
+		"0x0046EDDC jumps past aRunLCL at 0x0046EEFD")
 
 
 ## `blocked != 0` -- a path that runs over another unit is **abandoned**
@@ -412,8 +546,9 @@ func _the_passes(h: TestHarness) -> void:
 	var walker: UnitState = units[0]
 	var watched: UnitState = units[1]
 	var discarded: MoveResult = ExecuteMove.execute(direct.state, units,
-		direct.unit_types(), direct.ctrlmap(), walker, walked, 1, 3,
-		ExecuteMove.ARRIVAL_POINTS_LIMIT + 1, 1, 1)
+		direct.unit_types(), direct.ctrlmap(), direct.weapons(), walker,
+		walked, 1, 3, ExecuteMove.ARRIVAL_POINTS_LIMIT + 1, 1, 1,
+		direct.turn.ai_level, direct.turn, direct.rng)
 	h.check("passes.over_the_limit_discards_the_flag",
 		discarded.ok and not discarded.seen_destination,
 		"cmp byte [dest + 0x0C], 6; jbe")
@@ -429,8 +564,9 @@ func _the_passes(h: TestHarness) -> void:
 	var limit_walk: Dictionary = _walk(at_limit, kept, 0, 1, 3)
 	var kept_walker: UnitState = kept[0]
 	var held: MoveResult = ExecuteMove.execute(at_limit.state, kept,
-		at_limit.unit_types(), at_limit.ctrlmap(), kept_walker, limit_walk,
-		1, 3, ExecuteMove.ARRIVAL_POINTS_LIMIT, 1, 1)
+		at_limit.unit_types(), at_limit.ctrlmap(), at_limit.weapons(),
+		kept_walker, limit_walk, 1, 3, ExecuteMove.ARRIVAL_POINTS_LIMIT, 1, 1,
+		at_limit.turn.ai_level, at_limit.turn, at_limit.rng)
 	h.check("passes.at_the_limit_the_flag_stands",
 		held.ok and held.seen_destination, "six is not over six")
 
@@ -448,7 +584,8 @@ func _the_passes(h: TestHarness) -> void:
 	var human: UnitState = alien_units[1]
 	var alien_moved: MoveResult = ExecuteMove.execute(alien_world.state,
 		alien_units, alien_world.unit_types(), alien_world.ctrlmap(),
-		alien, alien_walk, 1, 1, 0, 1, 1)
+		alien_world.weapons(), alien, alien_walk, 1, 1, 0, 1, 1,
+		alien_world.turn.ai_level, alien_world.turn, alien_world.rng)
 	h.check("passes.a_computer_mover_asks_the_source",
 		alien_moved.ok and alien_moved.seen_source, alien_moved.reason)
 	h.check("passes.the_wall_hides_the_destination",
@@ -474,7 +611,9 @@ func _the_passes(h: TestHarness) -> void:
 	var quiet_human: UnitState = quiet_units[1]
 	var quiet_moved: MoveResult = ExecuteMove.execute(quiet_world.state,
 		quiet_units, quiet_world.unit_types(), quiet_world.ctrlmap(),
-		quiet_alien, quiet_walk, 1, 1, 0, 1, 1, -1, false)
+		quiet_world.weapons(), quiet_alien, quiet_walk, 1, 1, 0, 1, 1,
+		quiet_world.turn.ai_level, quiet_world.turn, quiet_world.rng, -1,
+		false)
 	h.check("passes.the_option_off_still_asks_the_source",
 		quiet_moved.ok and quiet_moved.seen_source, quiet_moved.reason)
 	h.equal("passes.the_option_off_leaves_the_walker_a_contact",

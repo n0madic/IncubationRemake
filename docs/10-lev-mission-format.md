@@ -202,12 +202,12 @@ named from `fcn.0042ed60` (the per-turn cell-effect tick), `fcn.0042f410` and
 | `+0x0B` | `u8` | **Action point id**, `0` = none | confirmed |
 | `+0x0C` | `u8` | **Damage the unit on this cell took** in the attack just resolved; written by `fcn.0046b450` alongside the `+0x00` result marker and cleared with it by `fcn.0042ee90`. `0` in all cells. See [`22` §7.3](22-combat-and-visibility.md) | confirmed |
 | `+0x0D` | `u8` | **Field type**, see §4.1 | confirmed |
-| `+0x0E` | `u8` | Effect countdown (frames). `0` in all cells | high |
+| `+0x0E` | `u8` | **Effect countdown / intensity** — the fire's subtype and the shield's two-round countdown ([`42` §9.1](42-mission-presentation.md)); it is rounds, not frames. `0` in all cells | confirmed |
 | `+0x0F` | `u8` | Effect object — slot in the engine's runtime dynamic-object array (81 slots, `fcn.00404c00`), `0xFF` = none. `0xFF` in all cells | high |
-| `+0x10` | `u8` | Effect state (`1`, `3` at runtime), `0xFF` = idle. `0xFF` in all cells | high |
+| `+0x10` | `u8` | **Transient obstacle** — `1` burning ground, `2` a mine, `3` a shield, `0xFF` idle ([`23` §7.1](23-ai-system.md)). `0xFF` in all cells | confirmed |
 | `+0x11` | `u8` | Decal object — slot in the same runtime array, `0xFF` = none. `0xFF` in all cells | high |
-| `+0x12` | `u8` | Decal state (`2` at runtime). `0` on all but 44 cells of `_C_116.lev`, which are leftover runtime state | high |
-| `+0x13` | `u8` | Decal state (`4` at runtime), `0xFF` = idle. `0xFF` in all cells | high |
+| `+0x12` | `u8` | **The glow's phase**, `1` or `2` — `SetGroundFire`'s two-round fuse ([`42` §9.1](42-mission-presentation.md)). `0` on all but 44 cells of `_C_116.lev`, and `_C_116` is one of the two missions that use the command: with `+0x13` at `0xFF` on every shipped cell they are leftover runtime state, which is now named rather than uncorrelated *(2026-09-03, [`97` §37.8](97-slice-5-report.md))* | confirmed |
+| `+0x13` | `u8` | **The glow's state**, `4` while one stands on the cell, `0xFF` idle. `0xFF` in all cells | confirmed |
 | `+0x14` | `u8` | **Deployment-field ordinal**, `0xFF` = not a deployment field | high |
 | `+0x15`..`+0x16` | 2 bytes | Uninitialised padding (`0xCDCD` or `0x0000`) — **ignore** | confirmed |
 

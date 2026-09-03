@@ -42,6 +42,9 @@ static func from_rows(rows: Array) -> UnitTypeTable:
 			"special": DictRead.as_int(record["special"]),
 			"size": DictRead.as_int(record["size"]),
 			"species": DictRead.as_int(record["species"]),
+			# Absent from the hand-built move-map fixtures, like the armour
+			# columns; the published cache is held to carry it by `test_cache`.
+			"exp": DictRead.as_int(record.get("exp", 0)),
 			"height": DictRead.as_int(record["height"]),
 			"armour_front": DictRead.as_int(record.get("armour_front", 0)),
 			"armour_rear": DictRead.as_int(record.get("armour_rear", 0)),
@@ -111,6 +114,24 @@ func armour_rear(type_id: int) -> int:
 
 func unit_size(type_id: int) -> int:
 	return _field(type_id, "size", 0)
+
+
+## Write one type's `size` byte.
+##
+## For reaching a branch no shipped map does: `0x0046EC25` picks the mine
+## ring by it and `docs/93` section 11 wrote it to reach the large-unit
+## clearance. Nothing in `core` or `game` calls this -- the tables are the
+## mission's data and are not edited at play -- and a suite that uses it must
+## put the old value back.
+func set_unit_size(type_id: int, value: int) -> void:
+	if _rows.has(type_id):
+		DictRead.as_dict(_rows[type_id])["size"] = value
+
+
+## `+0x7A`, the experience a kill of this type awards (docs/21 section 2);
+## `Combat.award_kill` is its one reader.
+func exp(type_id: int) -> int:
+	return _field(type_id, "exp", 0)
 
 
 func species(type_id: int) -> int:

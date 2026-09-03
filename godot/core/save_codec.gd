@@ -32,9 +32,14 @@ const MAGIC: String = "INCS"
 ## combat reads -- armour, the absorber charges, both orders, the AI group and
 ## the six skills; and to 6 when the mission script arrived -- the C runtime's
 ## generator, which `InsertUnit` draws from, and the three unit columns a script
-## writes.  An older save is refused **by name** rather than misread, which is
-## the whole point of the field.
-const SCHEMA_VERSION: int = 6
+## writes; and to 7 when the kill award arrived -- the kill counter `+0x53`
+## joined the record; and to **8** when the cell placers of docs/42 section 9.1
+## went in -- [MapState] gained the glow's `+0x12` and `+0x13`, which makes the
+## serialised block two columns longer, and an authored mine now detonates
+## under a walker, which changes what a resumed game does.  An older save is
+## refused **by name** rather than misread, which is the whole point of the
+## field.
+const SCHEMA_VERSION: int = 8
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 

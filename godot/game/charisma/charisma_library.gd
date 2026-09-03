@@ -120,6 +120,55 @@ func idle_roll() -> float:
 	return _rng.randf() * 10.0
 
 
+## The idle clip the selector names for a unit **at one start** -- with the
+## randomised arm's `frand(0, 10)` drawn from `rng` only when the entry has
+## a branch, as `0x0042DF77` draws from `0x004638E0` only on that arm. The
+## scheduler passes the pool's generator, the `aRandom2` stream the engine's
+## draw moves; a null answer is the selector's own "no clip", which the
+## starter refuses.
+## Whether the idle selector names a clip for this unit at all -- **without
+## drawing**.
+##
+## docs/42 section 6.1 item 3 gates the pick on "an idle clip the selector is
+## willing to name", and item 4 then resolves it. Asking [method
+## idle_clip_for] twice spends the branch roll twice and lets the two answers
+## disagree: the guard approves one clip and the start plays the other. The
+## capture measured **one** draw per call past the countdown
+## (`presentation_gold`'s `idle_random`), and its candidate has no branch, so
+## whether the engine's own guard draws is not measured -- this takes the
+## reading that spends the roll once, at the start.
+func has_idle_clip(type_id: int, weapon: int, player: int) -> bool:
+	var table: Dictionary = DictRead.as_dict(_selectors.get(SELECTOR_IDLE, {}))
+	var entries: Dictionary = DictRead.as_dict(table.get("entries", {}))
+	var key: String = "%d,%d,%d" % [type_id, weapon, player]
+	if not entries.has(key):
+		return false
+	# Every arm a branch can take, so "the selector is willing to name one" is
+	# the same answer whichever way the roll would have gone.
+	for roll: float in [0.0, 10.0]:
+		if clip(name_for(SELECTOR_IDLE, type_id, weapon, player, roll)) != null:
+			return true
+	return false
+
+
+func idle_clip_for(type_id: int, weapon: int, player: int,
+		rng: IncRandom) -> CharismaClip:
+	var table: Dictionary = DictRead.as_dict(_selectors.get(SELECTOR_IDLE, {}))
+	var entries: Dictionary = DictRead.as_dict(table.get("entries", {}))
+	var key: String = "%d,%d,%d" % [type_id, weapon, player]
+	if not entries.has(key):
+		return null
+	var roll: float = 0.0
+	for entry: Variant in DictRead.as_array(entries[key]):
+		if DictRead.as_dict(entry).has("branches"):
+			# `frand(0, 10)`: the x87 value before any truncation, compared
+			# against the 5.0 at `0x004B1380` as a double.
+			var _drawn: int = rng.draw(0, 10)
+			roll = 10.0 * (rng.seed / IncRandom.MODULUS)
+			break
+	return clip(name_for(SELECTOR_IDLE, type_id, weapon, player, roll))
+
+
 ## The three clips a unit's `(type, weapon, player)` selects, in the order
 ## [method CharismaState.create] wants them: idle, move, fire. Any of them may
 ## be null, and for nine unit types at least one always is.

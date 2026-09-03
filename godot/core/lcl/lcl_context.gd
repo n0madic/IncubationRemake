@@ -72,7 +72,6 @@ func free_cell(x: int, y: int) -> bool:
 
 
 func kill(unit: UnitState) -> void:
-	unit.hp = 0
 	UnitState.remove(state, turn, unit)
 
 

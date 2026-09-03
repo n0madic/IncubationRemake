@@ -45,7 +45,7 @@ extends RefCounted
 static func hand_over(state: TurnState, units: Dictionary,
 		control: GameControl, types: UnitTypeTable, weapons: WeaponTable,
 		run_script: Callable, banner_of: Callable, live_units: Callable,
-		arg: int = 0) -> TurnResult:
+		arg: int = 0, ground_tick: Callable = Callable()) -> TurnResult:
 	var result: TurnResult = TurnResult.new()
 	result.code = TurnResult.OK
 	result.turn = state.turn
@@ -56,6 +56,11 @@ static func hand_over(state: TurnState, units: Dictionary,
 		if not Rotation.any_player_left_this_turn(state, live_units):
 			state.advance_turn()
 			result.turn = state.turn
+			# `0x00470AB0(); 0x0042ED60();` -- between the counter and the
+			# event, which is what makes the ground effects a round tick and
+			# not a per-player one (docs/42 section 9.1).
+			if ground_tick.is_valid():
+				result.ground = DictRead.as_dict(ground_tick.call())
 			result.ran_turn_script = true
 			result.turn_script = DictRead.as_dict(run_script.call(
 				MissionScript.CALL_NEXT_TURN,

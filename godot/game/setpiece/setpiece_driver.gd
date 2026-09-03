@@ -31,16 +31,35 @@ extends RefCounted
 
 ## The events this driver animates, and how it works out their length.
 const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
-	"roof_unit", "bridge", "foot_bridge", "foot_bridge2"]
+	"roof_unit", "bridge", "foot_bridge", "foot_bridge2", "open_tube",
+	"open_plant_tube", "open_front_door", "ground_unit", "statue", "statue2",
+	"barrier_on", "fire_circle", "crush_wall", "teleporter", "para_bombs"]
 
 ## The events that get their sound and their state change with no motion.
 ## Named rather than merely absent: an event that is silently unhandled and one
 ## that is deliberately instant look identical from outside.
-const INSTANT: Array[String] = ["open_tube", "open_plant_tube",
-	"open_front_door", "crush_wall", "statue", "statue2", "fixed_statue_kill",
-	"fire_circle", "barrier_on", "barrier_off", "ground_unit",
-	"falling_spores", "set_ground_fire", "growing_land", "para_bombs",
+const INSTANT: Array[String] = ["fixed_statue_kill", "barrier_off",
+	"falling_spores", "set_ground_fire", "growing_land",
 	"move_objects", "move_fire_circles", "move_spores"]
+## The three tubes' own `cmp esi, 0x13` (docs/42 section 8).
+const TUBE_FRAMES: int = 19
+## `GroundUnit`'s eight frames of rise and six of carry (docs/42 section 8.1).
+const GROUND_UNIT_FRAMES: int = 8 + 6
+## `mov edi, 0xD` then one settling frame -- the statue's quarter turn
+## (docs/42 section 8.1); `Statue2` has no turn and goes straight to its beam.
+const STATUE_TURN_FRAMES: int = 13 + 1
+const STATUE_TURN_STEP: int = 0x50
+const STATUE_SETTLE: int = 0x400
+## `mov ecx, 0x28` in `aPlayLaserBarrier` -- the beam's own count, which is
+## also how long the routine holds before its second flight.
+const BARRIER_FRAMES: int = 40
+## `mov esi, 0xA` after `FireCircle`'s ring.
+const FIRE_CIRCLE_FRAMES: int = 10
+## `mov esi, 0x46` -- the teleporter counts down from seventy.
+const TELEPORTER_FRAMES: int = 70
+## The crush wall and the para bombs spin on the pool and on the *arrived*
+## flag; the frames here are the picture's bound, **the remake's**.
+const POOL_ONLY_FRAMES: int = 40
 
 ## `aDoorOpenSequence`'s own `for (n = 10; n; n--)`.
 const DOOR_FRAMES: int = 10
@@ -91,6 +110,22 @@ static func frames_for(event: Dictionary) -> int:
 			return mini(_at(values, 2, 1), MAX_FRAMES)
 		"foot_bridge2":
 			return mini(_at(values, 1, 1), MAX_FRAMES)
+		"open_tube", "open_plant_tube", "open_front_door":
+			return TUBE_FRAMES
+		"ground_unit":
+			return GROUND_UNIT_FRAMES
+		"statue":
+			return STATUE_TURN_FRAMES
+		"statue2":
+			return 1
+		"barrier_on":
+			return BARRIER_FRAMES
+		"fire_circle":
+			return FIRE_CIRCLE_FRAMES
+		"crush_wall", "para_bombs":
+			return POOL_ONLY_FRAMES
+		"teleporter":
+			return TELEPORTER_FRAMES
 	return 0
 
 

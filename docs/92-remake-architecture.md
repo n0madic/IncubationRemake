@@ -745,6 +745,14 @@ verified rather than UNVERIFIED. The four-orientation decision of §7.5 stands
 — the engine's own quadrant `0x00510700` supports it; the rest of the camera
 is planned in `docs/97`'s next addendum.)*
 
+**Revised 2026-09-03** ([`97` §34.2](97-slice-5-report.md)): the default is
+now the engine's, which is to move no camera at all on hand-over. The
+measurement above stands and is why the behaviour survives -- behind
+`SliceMain.COMPAT_CAMERA_RETURNS` -- rather than why it is the default. The
+reason is the presentation plan's principle: where the remake and the
+original differ, the original is the standard, and a player who cannot see
+their squad can still reach it with the cycle key.
+
 ### 7.5.4 The rotation never hands the interface a turn the computer holds
 
 Reported as "the enemy turn hangs and I can select and move an enemy unit",
@@ -773,6 +781,14 @@ unreachable through the rotation; it stays for the stopped hand-over, where
 every player is out and no mission end is behind it.
 
 ### 7.5.5 What is drawn is a fresh fog pass; what is decided is not
+
+**Revised 2026-09-03** ([`97` §34.2](97-slice-5-report.md)): the default is
+now the engine's, which is that the probe's wake **sticks**. The reading
+below is unchanged -- the save and restore cover `+0x4F` and not the
+promoted orders, and that is a defect -- but reproducing it costs the
+player no control, so it is reproduced. `World.COMPAT_FOG_PROBE_QUIET`
+restores the quiet probe this section used to describe.
+
 
 An enemy that walked into the squad's sight stayed a blip until the turn
 changed, because `Visibility.build` ran only in the hand-over.
@@ -964,15 +980,59 @@ into an expression:
   engine's own pace a move of more than one field outlasts the old fixed
   window and the next event's rebuild would cut the walk in half. `skip()`
   still means "stop drawing" rather than "stop simulating".
-* **`M` loops while a unit walks and `S` resumes when nothing else plays.**
-  [`40` §7.2](40-charisma-model-animation.md) marks the playback set-up of
-  `kind` 0 and `kind` 4 UNVERIFIED — the interface slots `+0x44`, `+0x2C` and
-  `+0x34` are not decompiled — so these are chosen, not recovered. `kind == 4`
-  and its one fixed literal `P0_M2_000` are not implemented at all.
+* ~~**`M` loops while a unit walks and `S` resumes when nothing else plays.**~~
+  **Revised 2026-09-03.** [`42` §1.2](42-mission-presentation.md) decompiled
+  the start slot: `M` loops (`+0x44(100000)`) at speed **2.0**, `F` plays once
+  at **6.0** to its `BREAK` note and is resumed past it by the fight routine,
+  `S` plays once at **1.5** and is a scheduler's, not a loop's ([`42` §6](42-mission-presentation.md)).
+  `CharismaState` carries the three speeds and the resume; the idle scheduler
+  is the next slice's. `kind == 4` and its one fixed literal `P0_M2_000`
+  (speed 1.0) are not implemented at all.
 
 What is **not** a choice, and is measured, is the bone-to-mesh scale of 16
 ([`40` §5.3](40-charisma-model-animation.md)) and the `BREAK` note that stops a
 combat animation ([`40` §9](40-charisma-model-animation.md)).
+
+### 7.12 The environment's objects — three decisions and one correction (2026-09-03)
+
+Slice E of the presentation plan ([`97` §37](97-slice-5-report.md)) put the
+four cell placers of [`42` §9.1](42-mission-presentation.md) into `core`. Three
+things about that are the remake's and one is a correction to what this
+document said before.
+
+**The obstacle byte is a rule; the object's position is a picture — but it is
+still the engine's.** `core` draws nothing: it writes `+0x0E`..`+0x13` and
+takes a slot in the 80-entry array, because those decide movement and the
+mine's detonation. Where the object *goes* is
+`CellObjects.object_position`, which the picture calls with the presentation's
+own generator — the mine and the shield take the cell's object position
+exactly and the fire and the glow scatter around it with `aRandom2(-300, 600)`
+twice. *(Revised 2026-09-03, [`97` §38.4](97-slice-5-report.md): this
+paragraph first said the picture put each object at its cell's centre and that
+the centre was the remake's. The eight `special_*` phases read every record's
+position back and the arithmetic is the engine's, origin included — the cell's
+**corner**, not its centre.)*
+
+**The 80-slot array is derived and is neither hashed nor saved.**
+`aBuild3DSpecialObjects` `0x004079D0` rebuilds it from the same cell bytes
+after every load, so `MapState.rebuild_objects()` runs at both loading
+boundaries. Storing it would be storing the same fact twice, and the two would
+drift the way the obstacle byte once did (§7.2).
+
+**A placer model the world set does not carry is a refusal, not a warning.**
+`MapState` gates on the geometry document's `special_models`, so a
+`SetGroundFire` outside `World_D00` writes nothing — which is what the engine
+does, measured. A world built with no model list skips the gate, and that is
+right for a synthetic test map and wrong for a mission.
+
+**Corrected:** the entry point (`docs/26`, action point 70) used to drop the
+cell's height by `0xA0` and write `6` into the obstacle byte. Neither is the
+engine's: the `- 0xA0` is the fire placer's z argument and reaches only its
+height window, the `6` is the fire's subtype, and the byte the placer writes is
+`1`. `SaveCodec.SCHEMA_VERSION` went to 8 with the two new effect columns and
+the mine detonation, and both `CONVERTER_VERSION`s to 0.15.0.
+
+---
 
 ## 8. Standing constraints
 

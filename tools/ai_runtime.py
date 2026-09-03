@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inclib import ai                                              # noqa: E402
 from inclib import combat as combatmod                             # noqa: E402
+from inclib import ctrlmap                                         # noqa: E402
 from inclib import movemap                                         # noqa: E402
 from inclib import rng as rngmod                                   # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
@@ -1070,6 +1071,148 @@ def check_commit(c: Checker, root: Path, tables: BalanceTables,
              "blocked != 0 zeroes the step count in the original")
 
 
+def check_mine(c: Checker, root: Path, tables: BalanceTables,
+               delays: dict[int, int]) -> None:
+    """An alien that walks onto an authored mine sets it off -- ``docs/26`` §6.2.
+
+    The aliens are the **only** mover the fill lets into a mine cell
+    (``docs/23`` §7.3), so this arm is the rule's main consumer.  The mine is
+    laid by the placer rather than by writing the byte: a mine with no object
+    at ``+0x0F`` is a state the engine cannot produce, and the guard would
+    refuse it.
+    """
+    ctx = context_for(mission_paths(root)[0], tables, delays)
+    aliens = aliens_of(ctx)
+    c.check("mine.scene", bool(aliens), f"{len(aliens)} alien(s)")
+    if not aliens:
+        return
+    unit = aliens[0]
+    ai.reset_overlay(ctx)
+    if ai.build_move_map(ctx, unit, 0) is None:
+        c.check("mine.reachable", False, "the mover has no move map")
+        return
+    reachable = [i for i, marker in enumerate(ctx.state)
+                 if marker == movemap.STATE_REACHABLE
+                 and (ctx.cell_x(i), ctx.cell_y(i)) != (unit.x, unit.y)]
+    c.check("mine.reachable", bool(reachable), f"{len(reachable)} cell(s)")
+    if not reachable:
+        return
+    target = reachable[0]
+    tx, ty = ctx.cell_x(target), ctx.cell_y(target)
+    made = ctrlmap.place_mine(ctx.world.ctrlmap(), tx, ty)
+    c.check("mine.placed", made >= 0, f"object {made}")
+    hp_before = unit.hp
+    # Re-fill: `_commit` walks the overlay, and the mine is new state.
+    ai.reset_overlay(ctx)
+    if ai.build_move_map(ctx, unit, 0) is None:
+        c.check("mine.refilled", False, "the mover has no move map")
+        return
+    committed = ai._commit(ctx, unit, target)
+    events = [e for e in ctx.result.events if e.kind == "move"]
+    c.check("mine.the_walk_happened", committed and bool(events),
+            f"committed {committed}, {len(events)} move event(s)")
+    if not events:
+        return
+    moves = events[-1].payload.get("events", [])
+    kinds = [dict(e).get("kind") for e in moves]
+    c.expect("mine.event_says_it_went_off", "mine_detonated" in kinds, True,
+             f"{kinds}")
+    c.expect("mine.the_cell_is_clear",
+             [ctx.world.effect_state[target],
+              ctx.world.ctrlmap().effect_object[target]],
+             [ctrlmap.OBSTACLE_NONE, ctrlmap.NO_OBJECT],
+             "the guard's two writes are on its far side")
+    blast = next((dict(e).get("blast") for e in moves
+                  if dict(e).get("kind") == "mine_detonated"), None)
+    c.check("mine.the_blast_resolved",
+            isinstance(blast, dict) and bool(blast.get("marked")),
+            f"{None if blast is None else sorted(blast)}")
+    if isinstance(blast, dict):
+        hit = [o for o in blast.get("outcomes", [])
+               if o.get("slot") == unit.slot]
+        c.check("mine.the_walker_is_in_the_pattern", bool(hit),
+                f"{len(blast.get('outcomes', []))} outcome(s); the roll may "
+                f"still miss, so the damage itself is not asserted")
+    c.check("mine.hit_points_did_not_rise", unit.hp <= hp_before,
+            f"{hp_before} -> {unit.hp} hit points")
+
+    # **The large-unit ring** (`docs/26` §6.2 item 8).  `0x0046EC25` picks the
+    # arm by `unitinfo[type].size` at the **arrival**, so the byte is written
+    # after the walk and before the block -- the fill would refuse a large
+    # mover 3x3 clearance on this map, and the branch does not read it.  This
+    # is the move `docs/93` §11 made for the large-unit clearance.
+    ctx = context_for(mission_paths(root)[0], tables, delays)
+    aliens = aliens_of(ctx)
+    if not aliens:
+        return
+    unit = aliens[0]
+    ai.reset_overlay(ctx)
+    if ai.build_move_map(ctx, unit, 0) is None:
+        c.check("mine.ring.filled", False, "the mover has no move map")
+        return
+    reachable = [i for i, marker in enumerate(ctx.state)
+                 if marker == movemap.STATE_REACHABLE
+                 and (ctx.cell_x(i), ctx.cell_y(i)) != (unit.x, unit.y)]
+    if not reachable:
+        c.check("mine.ring.reachable", False, "nowhere to walk")
+        return
+    stop = reachable[0]
+    sx, sy = ctx.cell_x(stop), ctx.cell_y(stop)
+    cells = ctx.world.ctrlmap()
+    # One mine on the stop cell -- which the ring does **not** touch -- and
+    # one on a neighbour, which it does.
+    made = ctrlmap.place_mine(cells, sx, sy)
+    # **Exactly one** neighbour, and not one the walk could step on first:
+    # mining the whole ring would stop the walk early and the sweep would
+    # then be around the wrong cell.
+    ring: list[int] = []
+    walked_cells = set()
+    ring_probe = movemap.walk(ctx.grid, movemap.MoveMapResult(
+        width=ctx.world.width, height=ctx.world.height, state=list(ctx.state),
+        mp_left=list(ctx.mp_left), any_friendly_blocked=False, ret=True),
+        unit.x, unit.y, sx, sy, ctx.delays, ctx.hooks())
+    if ring_probe.ok:
+        walked_cells = set(ring_probe.path)
+    for dx, dy in ctrlmap.STEP_DELTA:
+        nx, ny = sx + dx, sy + dy
+        if not ctx.in_bounds(nx, ny) or ctx.index(nx, ny) in walked_cells:
+            continue
+        if ctrlmap.place_mine(cells, nx, ny) >= 0:
+            ring.append(ctx.index(nx, ny))
+            break
+    c.check("mine.ring.scene", made >= 0 and bool(ring),
+            f"stop {made}, neighbour {ring}")
+    if made < 0 or not ring:
+        return
+    ai.reset_overlay(ctx)
+    if ai.build_move_map(ctx, unit, 0) is None:
+        return
+    walked = movemap.walk(ctx.grid, movemap.MoveMapResult(
+        width=ctx.world.width, height=ctx.world.height, state=list(ctx.state),
+        mp_left=list(ctx.mp_left), any_friendly_blocked=False, ret=True),
+        unit.x, unit.y, sx, sy, ctx.delays, ctx.hooks())
+    moved = movemap.execute(ctx.grid, ctx.hooks(), ctx.delays,
+                            ctx.mover(unit, unit.mp), walked, budget=unit.mp)
+    c.check("mine.ring.stopped", moved.stopped_on_mine,
+            f"the walk ended on the stop cell's mine: {moved.reason}")
+    row = ctx.world.tables.units.get(unit.type_id)
+    was = row.size
+    object.__setattr__(row, "size", movemap.SIZE_LARGE)
+    try:
+        unit.x, unit.y = moved.x, moved.y
+        ai._detonate(ctx, unit, moved)
+    finally:
+        object.__setattr__(row, "size", was)
+    fired = [(x, y) for x, y in moved.detonate]
+    c.expect("mine.ring.sweeps_the_neighbours_not_the_stop_cell",
+             [(sx, sy) in fired,
+              ctx.world.effect_state[ctx.index(sx, sy)]],
+             [False, ctrlmap.OBSTACLE_MINE],
+             f"{fired} -- 0x0046ECA4 detonates the ring and leaves the cell "
+             f"the walk stopped on")
+    c.check("mine.ring.fired", bool(fired), f"{fired}")
+
+
 # ---------------------------------------------------------------------------
 # The whole turn -- docs/23 section 2
 # ---------------------------------------------------------------------------
@@ -1393,6 +1536,7 @@ def run_check(root: Path) -> int:
     check_shot_reasons(c, root, tables, delays)
     check_fire(c, root, tables, delays)
     check_commit(c, root, tables, delays)
+    check_mine(c, root, tables, delays)
     turns = check_turns(c, root, tables, delays)
     check_orders(c, root, tables, delays, turns["orders"])
     check_ties(c, root, tables, delays)

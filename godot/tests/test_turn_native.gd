@@ -102,10 +102,19 @@ func _move_cases(h: TestHarness, doc: Dictionary) -> void:
 		var expected: Dictionary = DictRead.as_dict(probe["expected"])
 		var tx: int = DictRead.as_int(moves["tx"])
 		var ty: int = DictRead.as_int(moves["ty"])
+		# The four the mine arm needs; no probe carries one, so the bomb
+		# never fires and they only have to be well-formed.
+		var probe_turn: TurnState = TurnState.create()
+		var probe_rng: IncRandom = IncRandom.new()
+		probe_rng.randomize_seed(1.0)
+		var probe_weapons: WeaponTable = WeaponTable.from_rows(
+			DictRead.as_array(DictRead.as_dict(doc["types"])["weapons"]))
 		var moved: MoveResult = ExecuteMove.execute(state, units, unit_types,
-			ctrlmap, mover, walked, tx, ty, fill.mp_left_at(tx, ty),
+			ctrlmap, probe_weapons, mover, walked, tx, ty,
+			fill.mp_left_at(tx, ty),
 			DictRead.as_int(doc["human_count"]),
-			DictRead.as_int(DictRead.as_dict(doc["combat"])["game_mode"]))
+			DictRead.as_int(DictRead.as_dict(doc["combat"])["game_mode"]),
+			DictRead.as_int(doc["ai_level"]), probe_turn, probe_rng)
 		h.equal("move.%s.returns" % tag, 1 if moved.ok else 0,
 			DictRead.as_int(expected["returns"]))
 		h.equal("move.%s.cost" % tag, moved.cost,

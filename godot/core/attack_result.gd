@@ -17,6 +17,15 @@ var facing: int = 0
 var marked: Array[PackedInt32Array] = []
 ## One entry per marked cell that held a unit.
 var outcomes: Array[Dictionary] = []
+## `aAttackUnit`'s own return value: the experience the shot earned, summed
+## over its kills (`0x0046BFB8`), which `aPlayFightAnimation` takes as its
+## sixth argument and puts in the caption (docs/42 section 4.2).
+var xp: int = 0
+## How many skill levels the attacker's pool rose by -- the argument of the
+## skill orbit `0x00410190` (docs/42 section 7.5), zero when the orbit does
+## not play: the level compare at `0x0046C252` and the species test at
+## `0x0046C269` both gate it.
+var skill_raised: int = 0
 ## What `aExecuteFight` drained after the shot. The *caller* of `aAttackUnit`
 ## runs it -- both the UI at `0x004731F5` and the computer's fire routine at
 ## `0x0040A5AB` -- so it is filled in by [method World.submit_attack] and left
@@ -29,7 +38,8 @@ func to_dict() -> Dictionary:
 	for m: PackedInt32Array in marked:
 		cells.append(Array(m))
 	return {"fired": fired, "reason": reason, "overheat": overheat,
-		"facing": facing, "marked": cells, "outcomes": outcomes.duplicate()}
+		"facing": facing, "marked": cells, "outcomes": outcomes.duplicate(),
+		"xp": xp, "skill_raised": skill_raised}
 
 
 ## The same document read back, for a caller that only has the dictionary.
@@ -52,4 +62,9 @@ static func from_dict(document: Dictionary) -> AttackResult:
 		result.marked.append(DictRead.to_int32(cell))
 	for entry: Variant in DictRead.as_array(document.get("outcomes", [])):
 		result.outcomes.append(DictRead.as_dict(entry))
+	# `.get`, like every field above: a case file emitted before the
+	# experience model existed carries neither key, and a hard index turns
+	# that into a run-ending error rather than a shot with no experience.
+	result.xp = DictRead.as_int(document.get("xp", 0))
+	result.skill_raised = DictRead.as_int(document.get("skill_raised", 0))
 	return result

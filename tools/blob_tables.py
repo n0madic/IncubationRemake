@@ -155,7 +155,7 @@ FX_VOLUME_GLOBAL = 0x005129E4
 INFO_VOLUME_IDS = 103               # SetVolumeCtrl 0..102 in Info.lcl
 INFO_VOLUME_SPECIAL = {62: 50, 90: 80, 91: 50, 92: 50, 93: 50, 96: 70, 102: 101}
 WEAPON_VOLUME_BAND = 50             # ids 0..49 are "see weapons"
-VOLUME_IDS_UNUSED = (53, 54, 55)    # defined in Info.lcl, named by no call site
+VOLUME_IDS_UNUSED = ()              # 53..55 are the alien death scream's (VOICE_ARMS)
 
 # -- path building ---------------------------------------------------------
 
@@ -339,7 +339,13 @@ BLOB_CREATORS = 81
 BLOB_CTOR_CALLS = 116
 BLOB_FOREIGN_CALLERS = {0x00473942: "aUI.cpp", 0x0046D85F: "aTacTools.cpp"}
 BLOB_MODEL_WORLDS = 9
-BLOB_MODELS_EVERYWHERE = 26
+BLOB_MODELS_EVERYWHERE = 30
+#: The heal flash's four crosses (`aBlob_CreateFlashCircle` `0x00423030`,
+#: docs/42 §7.3) reach the constructor through `mov edi, str` rather than a
+#: `push`, one per quarter of its loop, so :data:`BLOB_CALLS`'s push reader
+#: never sees them.  Read at their own sites, and in all nine world sets.
+BLOB_MODEL_MOV_SITES = {0x004231A9: "A_CROSS3.3DI", 0x004231B4: "A_CROSS2.3DI",
+                        0x004231BF: "A_CROSS1.3DI", 0x004231CA: "A_CROSS.3DI"}
 BLOB_MODELS_RARE = {"A_PARAB1.3DI": ("World_E00", "World_F00"),
                     "A_SPOTL.3DI": ("World_E00",),
                     "L049EE00.3DI": ("World_E00",),
@@ -416,7 +422,7 @@ CASE_MISMATCHED = ('alarm.wav', 'bridge2.wav', 'explosion2.wav', 'firecircle.wav
 VOLUME_IDS_USED = [50, 59, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
                    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
                    89, 94, 95, 96, 97, 98, 99, 100, 101, 102]
-BLOB_MODEL_COUNT = 30
+BLOB_MODEL_COUNT = 34
 
 # -- the pinned tables, generated from the binary -------------------------
 
@@ -733,6 +739,12 @@ WALK_ARMS = {
 }
 
 VOICE_ARMS = (
+    # The death scream, severity 3 (docs/42 section 4.5): a machine explodes,
+    # an alien screams SP_HUM off its own cursor at 53..55.
+    (0x40c99c, 'explosion.wav', 0x40c9a7, 63),
+    (0x40c9cc, 'SP_HUM_2.wav', 0x40c9d7, 55),
+    (0x40c9f2, 'SP_HUM_1.wav', 0x40c9fd, 54),
+    (0x40ca18, 'SP_HUM_0.wav', 0x40ca23, 53),
     (0x40ca52, 'SP_HUM_2.wav', 0x40ca5d, 52),
     (0x40ca78, 'SP_HUM_1.wav', 0x40ca83, 51),
     (0x40ca9e, 'SP_HUM_0.wav', 0x40caa9, 50),
@@ -2513,7 +2525,11 @@ def run_checks(root: str) -> Checker:
                  for m, cls, _k, _l in calls.values() if cls in BLOB_CTOR_MODELLESS),
              "classes 2 and 3 all pass the same unused buffer")
 
-    models = sorted({m for m, _c, _k, _l in calls.values() if isinstance(m, str)})
+    models = blob_models(b)
+    ck.equal("blob.model_mov_sites",
+             {s: (b.string(b.mov_imm32(s) or 0, 40) if b.mov_imm32(s) else None)
+              for s in BLOB_MODEL_MOV_SITES},
+             BLOB_MODEL_MOV_SITES, Checker.brief)
     ck.equal("blob.model_count", len(models), BLOB_MODEL_COUNT)
     everywhere = [m for m in models
                   if len(c.worlds_with(m)) == BLOB_MODEL_WORLDS]
@@ -3453,11 +3469,52 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     "BLOOD_STEP":           (("f64", 0x00420D80, 0x004B1258, -1280.0),
                              ("f64", 0x00421360, 0x004B1258, -1280.0)),
     "SPECIES_COIN":         (("f64", 0x00421C50, 0x004B1268, 6.0),),
+    # docs/42 §7 -- the unit animations' creators (docs/97 §31): the radii
+    # are `mov r32, imm32` and the turns `mov word [esp+d], imm16`, read
+    # at their own instructions.
+    "RING_RADIUS":          (("mov", 0x00422D40, 0x00422E13, 0x12C0),),
+    "RING_RADIUS_LARGE":    (("mov", 0x00422D40, 0x00422E0C, 0x2580),),
+    "FLASH_RADIUS":         (("mov", 0x00423030, 0x00423117, 0x640),
+                             ("mov", 0x004232E0, 0x004233BF, 0x640)),
+    "FLASH_RADIUS_LARGE":   (("mov", 0x00423030, 0x0042310C, 0x1900),
+                             ("mov", 0x004232E0, 0x004233B0, 0x1900)),
+    "DUST_RADIUS":          (("mov", 0x004227C0, 0x00422834, 0xC80),),
+    "DUST_TURN":            (("word", 0x004227C0, 0x00422868, 0xCC),),
+    # docs/42 §8 -- the set pieces' creators (docs/97 §32).
+    "LASER_OFFSET":         (("f64", 0x00428990, 0x004B1270, -1600.0),),
+    "LASER_STEP":           (("f64", 0x00428990, 0x004B12E0, -3200.0),),
+    "BOMBER_SPEED":         (("f64", 0x0042A8E0, 0x004B1300, 3200.0),),
+    "TUBE_PAIRS":           (("cmp", 0x00423770, 0x004238AC, 15),),
+    "PLATFORM_DUST_SPREAD": (("lea", 0x004234C0, 0x004234DE, -0x12C0),),
+    "PLATFORM_DUST_UP":     (("lea", 0x004234C0, 0x004234D8, 0x640),),
+    "FIRE_CIRCLE_FLAMES":   (("cmp32", 0x00422F00, 0x00423010, 150),),
+    "FIRE_CIRCLE_TURN":     (("word", 0x00422F00, 0x00422FA2, 0x3C),),
+    "FIRE_CIRCLE_RADIUS":   (("mov", 0x00422F00, 0x00422F74, 0xC80),),
+    "STREAM_RECORDS":       (("cmp32", 0x0042A120, 0x0042A2D5, 200),),
+    "STREAM_STEP":          (("add8", 0x0042A120, 0x0042A2D1, 16),),
+    "BOMB_CEILING":         (("mov", 0x0042B070, 0x0042B0D3, 0x8980),),
+    "BOMB_DROP":            (("push", 0x0042B070, 0x0042B12E, 0xBB80),),
+    "BOMB_FALL":            (("push", 0x0042B070, 0x0042B103, -800),),
 }
 #: The death creators are not in `CREATOR_DRAW_SITES` (no weapon switch
 #: reaches them), so their extents are written down: each ends where the
 #: next routine begins.
 DEATH_CREATOR_EXTENTS = {
+    0x00423770: (0x00423770, 0x004238BF),
+    0x004234C0: (0x004234C0, 0x00423668),
+    0x00422610: (0x00422610, 0x004227B0),
+    0x00422460: (0x00422460, 0x00422603),
+    0x004238C0: (0x004238C0, 0x00423ABF),
+    0x00422F00: (0x00422F00, 0x00423024),
+    0x00428990: (0x00428990, 0x00428BCD),
+    0x00428BF0: (0x00428BF0, 0x00428E21),
+    0x0042A120: (0x0042A120, 0x0042A2E9),
+    0x0042A8E0: (0x0042A8E0, 0x0042A9BA),
+    0x0042B070: (0x0042B070, 0x0042B149),
+    0x00422D40: (0x00422D40, 0x00422EF1),
+    0x004227C0: (0x004227C0, 0x004228E8),
+    0x00423030: (0x00423030, 0x004232CF),
+    0x004232E0: (0x004232E0, 0x004234B2),
     0x00420D80: (0x00420D80, 0x00421360),
     0x00421360: (0x00421360, 0x004216D0),
     0x00421C50: (0x00421C50, 0x00422460),
@@ -4298,6 +4355,38 @@ def _constant_site_value(b: Binary, kind: str, where: object) -> object:
                               or (b.u8(va + 1) >> 3) & 0x07 != 0):
             return None
         return b.i32(va + 2)
+    if kind == "mov":
+        return b.mov_imm32(int(where))          # type: ignore[arg-type]
+    if kind == "cmp":
+        # `cmp r32, imm8` is `83 /7 ib`.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 3) or b.u8(va) != 0x83 or (b.u8(va + 1) >> 3) & 7 != 7:
+            return None
+        v = b.u8(va + 2)
+        return v - 0x100 if v >= 0x80 else v
+    if kind == "cmp32":
+        # `cmp r32, imm32` is `81 /7 id`.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 6) or b.u8(va) != 0x81 or (b.u8(va + 1) >> 3) & 7 != 7:
+            return None
+        return b.i32(va + 2)
+    if kind == "add8":
+        # `add r32, imm8` is `83 /0 ib`.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 3) or b.u8(va) != 0x83 or (b.u8(va + 1) >> 3) & 7 != 0:
+            return None
+        v = b.u8(va + 2)
+        return v - 0x100 if v >= 0x80 else v
+    if kind == "push":
+        va = int(where)                         # type: ignore[arg-type]
+        v = b.push_imm(va) if b.mapped(va, 5) else None
+        return None if v is None else (v - (1 << 32) if v >= 0x80000000 else v)
+    if kind == "word":
+        # `mov word [esp + disp8], imm16` is `66 C7 44 24 dd ww ww`.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 7) or bytes(b.u8(va + i) for i in range(4)) != b"\x66\xc7\x44\x24":
+            return None
+        return b.u8(va + 5) | (b.u8(va + 6) << 8)
     if kind == "magic":
         return _magic_divisor(b, int(where))    # type: ignore[arg-type]
     if kind == "scale":
@@ -5025,7 +5114,7 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
     alien = [voices.pain(sound.SPECIES_ALIEN) for _ in range(3)]
     ck.equal("sound.voice_human",
              [(cue.wave, cue.volume_id) for cue in human],
-             [(n, v) for _s, n, _vs, v in reversed(VOICE_ARMS[6:9])],
+             [(n, v) for _s, n, _vs, v in reversed(VOICE_ARMS[10:13])],
              Checker.brief)
     ck.equal("sound.voice_alien_fixed",
              [cue.volume_id for cue in alien],
@@ -5044,8 +5133,28 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
              sound.SECOND_HUMAN_WAVES[1])
     ck.equal("sound.voice_silent_species",
              sound.VoiceCursors().pain(2), None)
-    ck.equal("sound.voice_unnamed_ids", sound.UNNAMED_VOLUME_IDS,
-             VOLUME_IDS_UNUSED)
+    death = sound.VoiceCursors()
+    ck.equal("sound.death_alien_ids",
+             [death.death(sound.SPECIES_ALIEN).volume_id for _ in range(3)],
+             list(sound.DEATH_ALIEN_VOLUME_IDS))
+    ck.equal("sound.death_machine_explodes",
+             (death.death(sound.SPECIES_MACHINE).wave,
+              death.death(sound.SPECIES_MACHINE).volume_id),
+             (sound.DEATH_EXPLOSION_WAVE, sound.DEATH_EXPLOSION_VOLUME_ID))
+    ck.equal("sound.death_object_is_silent", death.death(2), None)
+    # The mute covers the **explosion**: `0x0040C9AC` jumps into the same
+    # `0x0040CBD6` every scream does, and `0x0040CBDB` is the next thing.
+    ck.equal("sound.death_machine_is_muted",
+             death.death(sound.SPECIES_MACHINE, 0x1A), None)
+    muted = sound.VoiceCursors()
+    ck.equal("sound.death_mute_still_moves_the_cursor",
+             (muted.death(sound.SPECIES_HUMAN, 0x16),
+              muted.death(sound.SPECIES_HUMAN).wave),
+             (None, sound.SECOND_HUMAN_WAVES[1]),
+             "the gate at 0x0040CBF2 is past the round robin")
+    ck.equal("sound.death_shares_the_pain_cursor",
+             sound.VoiceCursors().death(sound.SPECIES_HUMAN).wave,
+             sound.SECOND_HUMAN_WAVES[0])
 
     # ---- 5: the eight footstep arms
     walk = b.walk_arms()
@@ -5153,13 +5262,24 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
     ck.equal("sound.alien_ids_from_fall",
              tuple(sound.ALIEN_PAIN_VOLUME_IDS),
              tuple(fall[n] for n in sorted(fall)))
-    # The second human set's ids are the first three voice arms', decoded.
+    # The second human set's ids are the human death arms', decoded; the
+    # alien death arms carry the same waves at 53..55, and a machine's death
+    # is `explosion.wav` @63 (docs/42 section 4.5).
     ck.equal("sound.second_human_ids",
              tuple(sound.SECOND_HUMAN_VOLUME_IDS),
-             tuple(v for _n, v in reversed(b.voice_arms()[0:3])))
+             tuple(v for _n, v in reversed(b.voice_arms()[4:7])))
     ck.equal("sound.second_human_waves",
              tuple(sound.SECOND_HUMAN_WAVES),
-             tuple(n for n, _v in reversed(b.voice_arms()[0:3])))
+             tuple(n for n, _v in reversed(b.voice_arms()[4:7])))
+    ck.equal("sound.death_alien_ids_decoded",
+             tuple(sound.DEATH_ALIEN_VOLUME_IDS),
+             tuple(v for _n, v in reversed(b.voice_arms()[1:4])))
+    ck.equal("sound.death_alien_waves_decoded",
+             tuple(sound.SECOND_HUMAN_WAVES),
+             tuple(n for n, _v in reversed(b.voice_arms()[1:4])))
+    ck.equal("sound.death_explosion_decoded",
+             (sound.DEATH_EXPLOSION_WAVE, sound.DEATH_EXPLOSION_VOLUME_ID),
+             b.voice_arms()[0])
     ck.equal("sound.cursor_modulus", sound.PAIN_CURSOR_MODULUS,
              len(sound.PAIN_WAVES[sound.SPECIES_HUMAN]))
     ck.equal("sound.footstep_stray_id", sound.FOOTSTEP_STRAY_VOLUME_ID,
@@ -5280,16 +5400,32 @@ def emit_sound_cases(root: str, out: str) -> int:
 
     voices = sound.VoiceCursors()
     voice_trace = []
+    # The type id each call is made with.  Two of the eleven are in
+    # :attr:`sound.VoiceCursors.MUTE_TYPES` so the trace exercises the gate at
+    # ``0x0040CBDB`` rather than only the waves: one of them lands on a
+    # ``death`` step of species 3, which is the machine's explosion arm -- the
+    # one whose mute both twins used to skip.
+    voice_types = (1, 0x16, 2, 3, 4, 5, 0x1A, 7, 8, 9, 10)
     for step, species in enumerate((0, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1)):
-        cue = voices.pain(species)
+        type_id = voice_types[step]
+        cue = voices.pain(species, type_id)
         voice_trace.append({"call": "pain", "species": species,
+                            "type_id": type_id,
                             "wave": cue.wave.lower() if cue else "",
                             "volume_id": cue.volume_id if cue else 0})
         if step % 4 == 3:
             second = voices.second_human()
             voice_trace.append({"call": "second_human", "species": 0,
+                                "type_id": -1,
                                 "wave": second.wave.lower(),
                                 "volume_id": second.volume_id})
+        if step % 3 == 2:
+            died = voices.death(species if species != 2 else 3, type_id)
+            voice_trace.append({"call": "death",
+                                "species": species if species != 2 else 3,
+                                "type_id": type_id,
+                                "wave": died.wave.lower() if died else "",
+                                "volume_id": died.volume_id if died else 0})
 
     footsteps = []
     for unit_type in range(sound.FOOTSTEP_TYPES):
@@ -5640,6 +5776,9 @@ def sound_document(root: str) -> dict:
             "volume_ids": list(sound.PAIN_VOLUME_IDS),
             "alien_volume_ids": list(sound.ALIEN_PAIN_VOLUME_IDS),
             "second_human_volume_ids": list(sound.SECOND_HUMAN_VOLUME_IDS),
+            "death_alien_volume_ids": list(sound.DEATH_ALIEN_VOLUME_IDS),
+            "death_explosion": {"wave": sound.DEATH_EXPLOSION_WAVE.lower(),
+                                "volume_id": sound.DEATH_EXPLOSION_VOLUME_ID},
             "cursor_modulus": sound.PAIN_CURSOR_MODULUS,
         },
         "footsteps": [
@@ -5668,9 +5807,16 @@ def sound_document(root: str) -> dict:
 
 
 def blob_models(b: Binary) -> list:
-    """Every ``.3DI`` name the 116 constructor calls pass, sorted."""
-    return sorted({model for model, _cl, _k, _l in b.blob_calls().values()
-                   if isinstance(model, str)})
+    """Every ``.3DI`` name the 116 constructor calls pass, plus the four the
+    heal flash loads by ``mov`` (:data:`BLOB_MODEL_MOV_SITES`), sorted."""
+    names = {model for model, _cl, _k, _l in b.blob_calls().values()
+             if isinstance(model, str)}
+    for site in BLOB_MODEL_MOV_SITES:
+        value = b.mov_imm32(site)
+        name = b.string(value, 40) if value else None
+        if name:
+            names.add(name)
+    return sorted(names)
 
 
 def blob_document(root: str) -> dict:

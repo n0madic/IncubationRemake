@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
 
 from . import combat as combatmod
+from . import ctrlmap as ctrlmapmod
+from . import interact as interactmod
 from . import movemap
 from .combat import CombatUnit, CombatWorld
 
@@ -1233,6 +1235,57 @@ def _commit(ctx: AIContext, unit: CombatUnit, best_cell: int) -> bool:
     return True
 
 
+def _detonate(ctx: AIContext, unit: CombatUnit,
+              moved: movemap.ExecuteResult) -> None:
+    """The mine block of ``0x0046EC0F``..``0x0046EDB7``, both arms.
+
+    It runs **only** when the walk stopped on a mine, and ``0x0046EC25`` picks
+    the arm by ``unitinfo[type].size``:
+
+    * a **small** mover detonates the cell it stopped on (``0x0046EDAF``);
+    * a mover of size 1 sweeps its **eight neighbours** through ``0x004308C0``
+      with the diagonal flag set and detonates every mine among them
+      (``0x0046ECA4``) -- the stop cell itself is not one of them.
+
+    Every cell is behind the ``aDeleteSpecialObject`` guard of ``docs/26``
+    §6.2, and the ring stops the moment the mover's ``+0x16`` reaches zero
+    (``0x0046ECB0``).  The event is what makes the blast visible: the playback
+    runs after the turn, so a detonation with no record of it would take the
+    damage off the roster with nothing on screen.
+
+    The shipped campaign places no large unit next to a mine, so the ring is
+    transcribed rather than exercised by any map.
+    """
+    if not moved.stopped_on_mine:
+        return
+    world = ctx.world
+    row = world.tables.units.get(unit.type_id)
+    cells: list[tuple[int, int]] = []
+    if row is not None and row.size == movemap.SIZE_LARGE:
+        for dx, dy in ctrlmapmod.STEP_DELTA:
+            if ctx.in_bounds(unit.x + dx, unit.y + dy):
+                cells.append((unit.x + dx, unit.y + dy))
+    else:
+        cells.append((moved.x, moved.y))
+    for x, y in cells:
+        at = ctx.index(x, y)
+        cellmap = world.ctrlmap()
+        if cellmap.effect_state[at] != ctrlmapmod.OBSTACLE_MINE:
+            continue
+        if not ctrlmapmod.delete_object(cellmap, cellmap.effect_object[at]):
+            continue
+        cellmap.effect_object[at] = ctrlmapmod.NO_OBJECT
+        cellmap.effect_state[at] = ctrlmapmod.OBSTACLE_NONE
+        cellmap.effect_timer[at] = 0
+        moved.detonate.append((x, y))
+        blast = combatmod.execute_bomb(world, x, y)
+        moved.events.append(movemap.MoveEvent("mine_detonated", x, y,
+                                              payload=blast.to_dict()))
+        # `0x0046ECB0` -- the ring stops the moment the mover is dead.
+        if not unit.alive:
+            return
+
+
 def _apply_move(ctx: AIContext, unit: CombatUnit,
                 moved: movemap.ExecuteResult, tx: int, ty: int) -> None:
     """What the caller of ``aExecuteMove`` does with the result it reports."""
@@ -1249,15 +1302,23 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
     seen_destination, seen_source = combatmod.look_before_walk(
         world, unit, tx, ty,
         ctx.mp_left[ctx.index(tx, ty)] & 0xFF if ctx.in_bounds(tx, ty) else 0)
+    source_x, source_y = unit.x, unit.y
     world.unit_at[ctx.index(unit.x, unit.y)] = movemap.NO_UNIT
     world.unit_at[ctx.index(moved.x, moved.y)] = unit.slot
+    unit.x, unit.y = moved.x, moved.y
+    # The mine the walk stopped on, if it named a live object.  **After the
+    # relink**, because `aExecuteBomb` marks cells and reads whoever is
+    # standing on them -- the mover included.  The aliens are the only mover
+    # the fill lets into a mine cell (docs/23 §7.3), so this arm is the rule's
+    # main consumer and not an edge.
+    _detonate(ctx, unit, moved)
     # `path` is the one thing a playback cannot recover for itself.  By the
     # time `game/ai_playback.gd` reaches this event the world is already at the
     # end of the turn, so re-deriving the route would derive it against the
     # wrong state -- the same reason every other event carries what it needs.
     # It is the walk's own route: source first, in travel order, truncated
     # where the walk actually stopped.
-    ctx.emit(AIEvent("move", unit.slot, unit.x, unit.y, moved.x, moved.y,
+    ctx.emit(AIEvent("move", unit.slot, source_x, source_y, moved.x, moved.y,
                      detail=moved.cost,
                      payload={"steps": moved.steps, "facing": moved.facing,
                               "path": list(moved.route),
@@ -1284,10 +1345,11 @@ def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
     """``aExecuteWarp(sx, sy, tx, ty, 1)`` ``0x0046EF50``, reduced to its state.
 
     The routine plays a jump animation, clears the source cell's unit id,
-    writes the mover's into the target's, and moves the record.  Its one other
-    arm fires when the **target** carries a mine (``cell[+0x10] == 2``), which
-    no shipped cell does -- ``docs/23`` §7.1 measures the byte as 255 in all
-    184162 of them -- so it is named here and not simulated.
+    writes the mover's into the target's, moves the record and **detonates a
+    mine under the landing** (``0x0046F088``..``0x0046F109``), the same arm
+    :func:`inclib.combat.warp_unit` carries for the player.  The fog rebuild
+    is behind the mover's ``+0x16``, so a jump the mine killed rebuilds
+    nothing.
     """
     world = ctx.world
     source = ctx.index(unit.x, unit.y)
@@ -1296,16 +1358,25 @@ def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
         ctx.result.refuse("warp from a cell that does not hold the mover")
         return False
     target = ctx.index(tx, ty)
-    if world.effect_state[target] == movemap.OBSTACLE_MINE:
-        ctx.result.refuse("a warp onto a mine is not simulated")
     world.unit_at[source] = movemap.NO_UNIT
     world.unit_at[target] = unit.slot
     ctx.state[source] = movemap.STATE_RESET
-    ctx.emit(AIEvent("warp", unit.slot, unit.x, unit.y, tx, ty))
+    source_x, source_y = unit.x, unit.y
     unit.x, unit.y = tx, ty
+    payload: dict[str, Any] = {}
+    if world.effect_state[target] == movemap.OBSTACLE_MINE:
+        cells = world.ctrlmap()
+        if ctrlmapmod.delete_object(cells, cells.effect_object[target]):
+            cells.effect_object[target] = ctrlmapmod.NO_OBJECT
+            cells.effect_state[target] = ctrlmapmod.OBSTACLE_NONE
+            cells.effect_timer[target] = 0
+            payload["blast"] = combatmod.execute_bomb(world, tx, ty).to_dict()
+    ctx.emit(AIEvent("warp", unit.slot, source_x, source_y, tx, ty,
+                     payload=payload))
     # `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
     # on every warp its mine arm did not kill it on (docs/22 §9.4).
-    combatmod.build_visible_map(world, unit.player)
+    if unit.alive:
+        combatmod.build_visible_map(world, unit.player)
     return True
 
 
@@ -1337,11 +1408,18 @@ def end_unit_turn(ctx: AIContext, unit: CombatUnit,
 def open_door(ctx: AIContext, unit: CombatUnit) -> bool:
     """``0x0040A600`` -- step up to a closed door and play the sequence.
 
-    The sequence itself is presentation; what survives it is the facing, one
-    movement point and the *acted* flag, so those are what this applies.  The
-    door's own cell is **not** changed by this routine -- ``aDoorOpenSequence``
-    (``0x00410A20``) is what rewrites the action point, and it is a set-piece,
-    recorded as an event exactly as ``docs/94`` recorded the others.
+    The routine **calls** ``aDoorOpenSequence`` (``0x00410A20``) at
+    ``0x0040A6B5`` and keeps its answer, so what survives is the facing, one
+    movement point, the *acted* flag **and the door itself**: the sequence
+    rewrites the action point and the height, which is
+    :func:`inclib.interact.toggle_door`.  Modelling only the first three left
+    a door the computer had walked through still closed in the rules
+    (``docs/97`` §35); the cells it changed ride on the event so the picture
+    can apply them in the frame it shows.
+
+    The fog is **not** rebuilt: both of the sequence's rebuild sites are
+    guarded by ``aGetCurrentPlayer() != 0xFF``, and the computer holds the
+    turn here.
     """
     if unit.hp == 0:
         return False
@@ -1357,8 +1435,21 @@ def open_door(ctx: AIContext, unit: CombatUnit) -> bool:
         unit.facing = combatmod.direction(unit.x, unit.y, nx, ny)
         unit.acted = ACTED
         unit.mp -= DOOR_MP_COST
+        index = ctx.index(nx, ny)
+        interactmod.toggle_door(ctx.world, index)
+        # **Both**, as every other writer here does (`execute_move`'s
+        # action-point writes are the model): ``ctx.grid`` is a *copy* the
+        # context made, and the guard above and every later fill read it.
+        # Writing only the world left the door closed for the next unit,
+        # which would toggle it shut again.
+        ctx.grid.action_points[index] = ctx.world.action_point[index]
+        ctx.grid.field_types[index] = ctx.world.field_type[index]
+        ctx.grid.heights[index] = ctx.world.cell_height[index]
         ctx.emit(AIEvent("door", unit.slot, unit.x, unit.y, nx, ny,
-                         detail=ACTION_POINT_CLOSED_DOOR))
+                         detail=ACTION_POINT_CLOSED_DOOR,
+                         payload={"cells": [index],
+                                  "action_point": ctx.world.action_point[index],
+                                  "height": ctx.world.cell_height[index]}))
         return True
     return False
 

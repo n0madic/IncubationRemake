@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import combat
+from . import ctrlmap as ctrlmapmod
 from .combat import CombatUnit, CombatWorld, PLAYER_COMPUTER  # noqa: F401
 from .lev import FACING_STEPS
 
@@ -76,8 +77,10 @@ LEVER_UP, LEVER_DOWN = 36, 37
 #: The entry point and what it becomes.  ``0x0042F840(x, y, 6, height - 0xA0)``
 #: sets the cell on fire (``docs/23`` §7.1) before the sequence plays.
 ENTRY_POINT, ENTRY_POINT_DESTROYED = 70, 71
-ENTRY_POINT_EFFECT = 6
-ENTRY_POINT_Z_DROP = 0xA0
+#: The placer's third argument -- the fire's intensity, which is also its
+#: countdown: a subtype-6 fire burns for five more rounds.
+ENTRY_POINT_FIRE_SUBTYPE = ctrlmapmod.ENTRY_POINT_FIRE_SUBTYPE
+ENTRY_POINT_Z_DROP = ctrlmapmod.ENTRY_POINT_FIRE_Z_DROP
 
 #: ``docs/26`` §3.1 -- the equipment ids the pickups grant, and the one that
 #: doubles a magazine.
@@ -146,6 +149,131 @@ class UseResult:
             "fires_script_event": self.fires_script_event,
             "pushed": [list(p) for p in self.pushed],
         }
+
+
+# ---------------------------------------------------------------------------
+# The heal command -- docs/29 §1.1 button 2, `0x00470890` (docs/97 §31)
+# ---------------------------------------------------------------------------
+
+#: ``unit + 0x30`` / ``+0x31`` -- the two medic kits, by equipment id.
+EQUIP_SMALL_MEDIC_KIT = 15
+EQUIP_LARGE_MEDIC_KIT = 16
+#: ``0x004753C0`` -- what one press restores.
+HEAL_POWER_LARGE = 3
+HEAL_POWER_SMALL = 1
+#: ``0x00475240`` -- a human unit's ceiling: the type's hit points plus
+#: ``ep / 12``, never above 15; a computer unit's is the type's alone.
+MAX_HIT_POINTS_CAP = 15
+EXPERIENCE_PER_HIT_POINT = 12
+#: ``docs/23`` §5.3's ``+0x39`` after the heal pad arm, written whether or
+#: not anything was healed (the join at ``0x004733F3``).
+ACTED_HEALED = 3
+
+
+@dataclass
+class HealResult:
+    """What one press of the heal button did (``0x00470890``)."""
+
+    #: The command's own return: 1 when a heal happened, 0 otherwise.
+    ok: bool
+    reason: str = ""
+    #: The slot healed -- the unit in front, or the healer itself.
+    target: int = -1
+    #: Hit points restored, the orbit's third argument.
+    delta: int = 0
+    #: True when the heal fell back to the healer's own record.
+    self_heal: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "reason": self.reason, "target": self.target,
+                "delta": self.delta, "self_heal": self.self_heal}
+
+
+def heal_power(unit: CombatUnit) -> int:
+    """``0x004753C0`` -- 3 with a Large Medic Kit, else 1 with a Small one,
+    else 0."""
+    if unit.has(EQUIP_LARGE_MEDIC_KIT):
+        return HEAL_POWER_LARGE
+    return HEAL_POWER_SMALL if unit.has(EQUIP_SMALL_MEDIC_KIT) else 0
+
+
+def max_hit_points(world: CombatWorld, unit: CombatUnit) -> int:
+    """``0x00475240`` -- the ceiling a heal fills to."""
+    base = world.tables.units[unit.type_id].hp_max
+    if unit.player == PLAYER_COMPUTER:
+        return base
+    return min(MAX_HIT_POINTS_CAP, base + unit.ep // EXPERIENCE_PER_HIT_POINT)
+
+
+def apply_heal(world: CombatWorld, unit: CombatUnit, power: int) -> None:
+    """``0x0047B180`` -- ``hp += power`` while that stays under the ceiling,
+    else the ceiling itself."""
+    cap = max_hit_points(world, unit)
+    unit.hp = unit.hp + power if unit.hp + power < cap else cap
+
+
+def heal(world: CombatWorld, unit: CombatUnit) -> HealResult:
+    """``0x00470890`` -- the heal command, in the order it runs.
+
+    Refused with no movement points.  The unit in front is healed when it
+    is below its ceiling and belongs to the healer's player; otherwise --
+    off the map, an empty cell, at full health, or somebody else's -- the
+    healer heals itself, and that arm alone answers 0 when the healer is at
+    its own ceiling.  A network game relaxes the owner test to players
+    0..3; the remake has no network and keeps the local arm.
+    """
+    if unit.mp == 0:
+        return HealResult(False, "no movement points")
+    power = heal_power(unit)
+    at = cell_in_front(world, unit)
+    target: CombatUnit | None = None
+    if at is not None:
+        slot = world.unit_at[world.index(*at)]
+        if slot >= 0:
+            candidate = world.units[slot]
+            if candidate.hp != max_hit_points(world, candidate) \
+                    and candidate.player == unit.player:
+                target = candidate
+    if target is not None:
+        before = target.hp
+        apply_heal(world, target, power)
+        return HealResult(True, target=target.slot, delta=abs(target.hp - before))
+    if unit.hp == max_hit_points(world, unit):
+        return HealResult(False, "already at full health", target=unit.slot,
+                          self_heal=True)
+    before = unit.hp
+    apply_heal(world, unit, power)
+    return HealResult(True, target=unit.slot, delta=abs(unit.hp - before),
+                      self_heal=True)
+
+
+def may_heal(world: CombatWorld, unit: CombatUnit) -> bool:
+    """``0x0047B4C0`` -- whether the pad offers button 2 at all: a kit, and
+    either a patient in front under its ceiling and of the same player, or
+    the healer itself under its own.  The pad's arm at ``0x0047262D`` adds
+    ``mp >= 1`` on top, which :func:`heal` refuses again on its own."""
+    if heal_power(unit) == 0:
+        return False
+    at = cell_in_front(world, unit)
+    if at is not None:
+        slot = world.unit_at[world.index(*at)]
+        if slot >= 0:
+            patient = world.units[slot]
+            if patient.player == unit.player \
+                    and patient.hp != max_hit_points(world, patient):
+                return True
+    return unit.hp != max_hit_points(world, unit)
+
+
+def heal_command(world: CombatWorld, unit: CombatUnit) -> HealResult:
+    """The pad's arm around :func:`heal` (``0x004733BB``): one movement point
+    off when the command answered 1 and there was one to take, and ``+0x39``
+    written to 3 **either way**."""
+    result = heal(world, unit)
+    if result.ok and unit.mp > 0:
+        unit.mp -= 1
+    unit.acted = ACTED_HEALED
+    return result
 
 
 def cell_in_front(world: CombatWorld, unit: CombatUnit) -> tuple[int, int] | None:
@@ -278,6 +406,9 @@ def _raise_skill(unit: CombatUnit, which: int, guard: int) -> None:
 
 def defuse_mine(world: CombatWorld, index: int) -> UseResult:
     """``0x0046DB80`` -- the effect object is freed and nothing explodes."""
+    cells = world.ctrlmap()
+    ctrlmapmod.delete_object(cells, cells.effect_object[index])
+    cells.effect_object[index] = ctrlmapmod.NO_OBJECT
     world.effect_state[index] = EFFECT_NONE
     return UseResult(True, "defuse_mine",
                      cell=(index % world.width, index // world.width))
@@ -318,10 +449,17 @@ def push_object(world: CombatWorld, unit: CombatUnit) -> UseResult:
         obj.x, obj.y = at
         result.pushed.append(at)
         if world.effect_state[into] == EFFECT_MINE:
-            world.effect_state[into] = EFFECT_NONE
-            combatmod.execute_bomb(world, at[0], at[1])
-            result.kind = "push_onto_mine"
-            break
+            # `0x0046D8DD` carries the same guard the walk's arm does
+            # (`docs/26` §6.2): the object is deleted first and the two cell
+            # bytes are cleared only on the far side of it.
+            cells = world.ctrlmap()
+            if ctrlmapmod.delete_object(cells, cells.effect_object[into]):
+                cells.effect_object[into] = ctrlmapmod.NO_OBJECT
+                world.effect_state[into] = EFFECT_NONE
+                cells.effect_timer[into] = 0
+                combatmod.execute_bomb(world, at[0], at[1])
+                result.kind = "push_onto_mine"
+                break
         if world.field_type[into] in (FIELD_TYPE_HOLE, FIELD_TYPE_DEEP_HOLE):
             world.unit_at[into] = -1
             obj.hp = 0
@@ -404,9 +542,16 @@ def execute_use(world: CombatWorld, unit: CombatUnit) -> UseResult:
         _consume(world, index)
         result.kind = "equipment"
     elif ap == ENTRY_POINT:
-        world.effect_state[index] = ENTRY_POINT_EFFECT
-        world.cell_height[index] -= ENTRY_POINT_Z_DROP
+        # ``0x0046E0BF``: the action point becomes 71 **first**, then the cell
+        # is set alight.  The 71 is what lets the fire placer accept a cell
+        # whose field type is not one of its four (``docs/23`` §7.1), and the
+        # ``- 0xA0`` is the placer's z argument, which reaches only its
+        # half-a-field height window -- nothing writes the cell's height.
         world.action_point[index] = ENTRY_POINT_DESTROYED
+        cells = world.ctrlmap()
+        ctrlmapmod.place_fire(cells, index % world.width, index // world.width,
+                              ENTRY_POINT_FIRE_SUBTYPE,
+                              world.cell_height[index] - ENTRY_POINT_Z_DROP)
         result.kind = "entry_point"
     else:
         # The default arm: 19..29, 34, 35, 43..49 and everything outside the

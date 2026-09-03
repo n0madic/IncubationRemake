@@ -560,6 +560,19 @@ the one this section names, clearing `+0x41` after the first shot.
 
 ---
 
+### 6.1 The jam arm — **[code] `0x0046CE0E`, `0x0046D090`** *(added 2026-09-03)*
+
+After `aAttackUnit` returns non-zero for a reactor, both loops test the
+reactor's magazine (`+0x3D == 0`) and, failing that, its heat against
+`0x00475340`'s cap: either plays the jam orbit `0x004104A0` ([`42`
+§7.4](42-mission-presentation.md)) and writes `+0x59 = 0`. The ticket is
+cleared, `+0x41` still is not — the unit stays on overwatch and is found by
+neither the ticket loop (which starts at 1) nor, for that matter, by anything
+until the hand-over re-stamps it. `inclib/combat.py`'s `drain_reactions`
+and `core/reaction.gd` report `jammed` per shot; `combat_runtime` and
+`test_combat` pin an empty magazine and a counter one under the cap
+([`97` §31.3](97-slice-5-report.md)).
+
 ## 7. Weapon modes — **[code] `aToggleWeaponModes` `0x0047A8C0`**
 
 `Info.lcl`'s `SetWeaponInfo2` header calls its second column **Toggle**, and

@@ -35,6 +35,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from inclib import ctrlmap                                          # noqa: E402
 from inclib import lcl                                              # noqa: E402
 from inclib import lcl_runtime as lclrt                             # noqa: E402
 from inclib import turn as turnmod                                  # noqa: E402
@@ -352,10 +353,15 @@ def check_hand_over(c: Checker, root: Path, tables: BalanceTables) -> None:
         world.player = state.current_player
         return lclrt.run(document, world, env)
 
+    def ground_tick() -> Any:
+        """`0x00470AB0(); 0x0042ED60();` -- the round's ground sweeps."""
+        return ctrlmap.ground_effects_tick(world.ctrlmap(), world.remove_slot)
+
     def step() -> Any:
         calls.clear()
         return turnmod.hand_over(state, units, tables, world.game_control,
-                                 run_script, _banner_of(units))
+                                 run_script, _banner_of(units),
+                                 ground_tick=ground_tick)
 
     # Hand-over 1, from player 0.  `0x0043B490` answers with the solo flag
     # because the computer still owes a turn, so the counter does **not**
@@ -384,6 +390,25 @@ def check_hand_over(c: Checker, root: Path, tables: BalanceTables) -> None:
     c.check("handover.second.refreshed_the_squad",
             len(second.refreshed) == 4,
             f"{len(second.refreshed)} unit(s) of player 0")
+    # The ground sweeps ride on the **turn** advance, not on every hand-over:
+    # `0x0047D600` calls them between the counter and NEXT TURN.
+    c.expect("handover.first.no_ground_tick", first.ground, None,
+             "the counter did not move, so neither sweep ran")
+    c.check("handover.second.ground_tick_ran",
+            isinstance(second.ground, dict)
+            and second.ground["ignited"] == []
+            and second.ground["changed"] == [],
+            f"{second.ground} -- _C_140 authors no fire, mine or glow")
+
+    # A fire and a shield laid before the next round advance, so the sweep is
+    # shown doing something rather than only being reached.
+    cells = world.ctrlmap()
+    burning = world.index(1, 1)
+    shielded = world.index(2, 1)
+    ctrlmap.place_fire(cells, 1, 1, 4, world.cell_height[burning])
+    ctrlmap.place_shield(cells, 2, 1)
+    before = [world.effect_state[burning], world.effect_timer[burning],
+              world.effect_state[shielded], world.effect_timer[shielded]]
 
     # Hand-over 3, back from player 0.  The counter is 1 now, so the
     # `if (g_turn != 0)` guard passes and NEXT PLAYER fires -- but the computer
@@ -398,6 +423,34 @@ def check_hand_over(c: Checker, root: Path, tables: BalanceTables) -> None:
     # The rotation is two members wide and the counter goes up once per full
     # cycle, not once per hand-over.
     fourth = step()
+    # **What the ground fire's removal does, read.**
+    # `aGetLiveUnitCount` `0x00477BF0` counts a record whose `+0x16` is
+    # non-zero and whose `+0x45` matches -- the **hit points**, read at
+    # `0x00477C05`, not the map link. `aRemoveUnitElement`'s own last
+    # instruction is `mov byte [esi+0x16], 0` at `0x00477ABD`, so removal
+    # kills as well as unlinks: the ground fire is the one caller that reaches
+    # it without a damage call first, and that write is the whole of its
+    # lethality. Both twins carry it inside `remove`, not at the call sites.
+    victim = next(u for u in units if u.alive)
+    at = world.index(victim.x, victim.y)
+    world.unit_at[at] = victim.slot
+    lclrt.LclWorld.remove(world, world.units[victim.slot]) \
+        if victim.slot in world.units else None
+    c.expect("handover.ground.removal_kills",
+             [world.units[victim.slot].hit_points
+              if victim.slot in world.units else None,
+              world.unit_at[at]],
+             [0, -1],
+             "0x00477ABD zeroes +0x16 and the cell link is cleared")
+
+    c.expect("handover.ground.the_fire_and_the_shield_decayed",
+             [before,
+              [world.effect_state[burning], world.effect_timer[burning],
+               world.effect_state[shielded], world.effect_timer[shielded]],
+              sorted((fourth.ground or {}).get("changed", []))],
+             [[1, 4, 3, 2], [1, 3, 3, 1], sorted([burning, shielded])],
+             "one round: the fire loses an intensity, the shield a count, "
+             "and the answer names their two cells")
     c.expect("handover.fourth.calls", calls,
              [lclrt.CALL_NEXT_TURN, lclrt.CALL_NEXT_PLAYER])
     c.expect("handover.fourth.turn_counter", fourth.turn, 2)

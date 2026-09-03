@@ -621,6 +621,20 @@ func screen_position(point: Vector3i) -> Dictionary:
 		and fraction <= 1.0, "y": fraction}
 
 
+## `0x00403960` -- a world point on the screen, in pixels of the viewport,
+## for the floating texts of docs/42 section 4.4. `visible` is false behind
+## the camera or with no viewport, and the engine's own answer to a failed
+## projection is a y of 0, which is what [FloatingTexts] draws it at.
+func screen_point(point: Vector3i) -> Dictionary:
+	if _camera == null or not _camera.is_inside_tree():
+		return {"visible": false, "x": 0.0, "y": 0.0}
+	var at: Vector3 = WorldSpace.to_godot(point.x, point.y, point.z)
+	if _camera.is_position_behind(at):
+		return {"visible": false, "x": 0.0, "y": 0.0}
+	var on: Vector2 = _camera.unproject_position(at)
+	return {"visible": true, "x": on.x, "y": on.y}
+
+
 # --- persistence -------------------------------------------------------------
 
 func state() -> Dictionary:

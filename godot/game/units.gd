@@ -72,6 +72,18 @@ var _lifts: Dictionary[int, int] = {}
 ## The world this view was last built from, so a lift can work out the height
 ## it is an offset *from* without the caller passing it in each frame.
 var world_ref: World = null
+## docs/42 section 6 -- the four idle slots.
+var scheduler: IdleScheduler = IdleScheduler.new()
+## The `aRandom2` stream the scheduler and the idle selector draw from: the
+## pool's own, set by the scene; a fresh one for a suite.
+var presentation_rng: IncRandom = null
+## Whole displayed frames for the scheduler, carried like the pool's.
+var _idle_carry: float = 0.0
+## `cmp eax, 0x17700` in the refresh (docs/42 section 1.3): the camera eye's
+## z at or above which the bodies stop being simulated.
+const FREEZE_HEIGHT: int = 96000
+## At most this many scheduler frames a displayed frame, the pool's own cap.
+const MAX_IDLE_TICKS: int = 4
 
 
 func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
@@ -113,7 +125,7 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		# [method UnitState.remove] only clears the map cell. Without this the
 		# body stood there until some later rebuild happened to drop it, which
 		# for a unit killed on the player's turn was the next hand-over.
-		if DictRead.as_int(view["hp"]) == 0 and not _linger.has(slot):
+		if DictRead.as_int(view["hp"]) == 0 and not _dying.has(slot):
 			continue
 		if seen.has(slot):
 			view["visibility"] = seen[slot]
@@ -178,7 +190,10 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		bodies[slot] = body
 		var clips: Array[CharismaClip] = library.clips_for(type_id,
 			DictRead.as_int(view["weapon"]), player)
-		states[slot] = CharismaState.create(body, clips[0], clips[1], clips[2])
+		# The idle is the scheduler's to start, never the state's to loop:
+		# a fresh body holds its bind pose (docs/42 section 6.2).
+		states[slot] = CharismaState.create(body, null, clips[1], clips[2])
+		states[slot].clip_lookup = library.clip
 		if carried.has(slot):
 			var _resumed: bool = states[slot].resume(carried[slot])
 		node.add_child(body)
@@ -209,23 +224,34 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 ##
 ## Driven from `_process`. A rebuild throws the states away with the nodes, so
 ## nothing here outlives the world state it was built from.
-func animate(delta: float, world: World) -> void:
-	for slot: int in states:
-		var state: CharismaState = states[slot]
-		var _busy: bool = state.advance(delta)
-		# A one-shot that has ended -- clip stopped **and** its end pose
-		# held for [constant CharismaState.HOLD_SECONDS] -- returns the body
-		# to the idle, which is what plays when nothing else does (docs/40
-		# section 7.2).
-		#
-		# The test is the **mode**, not an edge of `is_busy()`. A type with
-		# no `F` clip is never busy for a frame, so an edge test never fired
-		# for it and left the body in `FIRE` for the rest of the mission.
-		if state.mode == CharismaState.Mode.FIRE and not state.is_busy():
-			state.rest()
+## `frozen` is the refresh's 60 m rule: above [constant FREEZE_HEIGHT] the
+## bodies are not simulated, but the scheduler still runs its four slots
+## (it is called before the height test, docs/42 section 1.3).
+func animate(delta: float, world: World, frozen: bool = false) -> void:
+	_run_scheduler(delta, world)
+	# **The freeze is the clip, not the walk.** docs/42 section 1.3 stops
+	# Charisma above 60 m; `aExecuteMove` still steps the unit field to field,
+	# and the picture's walk is what `is_walking()` reports -- which
+	# `_picture_busy()` and the pending-reaction drain both gate on. Returning
+	# here left `_walks` full for ever and stalled the computer's replay,
+	# which is worse than a frozen body and is not what the engine does.
+	if not frozen:
+		for slot: int in states:
+			var state: CharismaState = states[slot]
+			var _busy: bool = state.advance(delta)
+			# A one-shot that has ended -- clip stopped **and** its end pose
+			# held for [constant CharismaState.HOLD_SECONDS] -- returns the
+			# body to the idle, which is what plays when nothing else does
+			# (docs/40 section 7.2).
+			#
+			# The test is the **mode**, not an edge of `is_busy()`. A type
+			# with no `F` clip is never busy for a frame, so an edge test
+			# never fired for it and left the body in `FIRE` for the rest of
+			# the mission.
+			if state.mode == CharismaState.Mode.FIRE and not state.is_busy():
+				state.rest()
 	for slot: int in _walks.keys():
 		_advance_walk(slot, delta, world)
-	_age_the_dead(delta)
 
 
 ## Face `slot`'s body at `(tx, ty)` and play its combat clip once.
@@ -260,6 +286,104 @@ func fire(slot: int, tx: int, ty: int) -> float:
 			var facing: int = Combat.direction(from_x, from_y, tx, ty)
 			_face(node, _body_of(slot), facing)
 	return states[slot].fire()
+
+
+## The scheduler at the engine's frame: whole ticks, the remainder carried.
+func _run_scheduler(delta: float, world: World) -> void:
+	if world == null or library == null:
+		return
+	if presentation_rng == null:
+		presentation_rng = IncRandom.new()
+		presentation_rng.randomize_seed(1.0)
+	_idle_carry += delta * CharismaState.FRAMES_PER_SECOND
+	var ticks: int = mini(int(_idle_carry), MAX_IDLE_TICKS)
+	_idle_carry -= float(int(_idle_carry))
+	var first: Dictionary = world.unit_view(0)
+	var unit0_type: int = DictRead.as_int(first.get("type_id", -1)) \
+		if not first.is_empty() else -1
+	for _tick: int in range(ticks):
+		scheduler.tick(presentation_rng, unit0_type,
+			func(unit: int) -> String: return idle_refusal(unit, world),
+			func(unit: int) -> float: return _start_idle(unit, world),
+			func(unit: int) -> void: _free_idle(unit))
+
+
+## The starter's guards, in its order (docs/42 section 6.1 item 3): the
+## record, alive, `+0x4F` clear -- the **stored** byte, not the display
+## pass, because the engine reads the record -- not animating, an idle clip
+## the selector names, a model. `""` takes the unit.
+func idle_refusal(unit: int, world: World) -> String:
+	var view: Dictionary = world.unit_view(unit)
+	if view.is_empty():
+		return IdleScheduler.REFUSED_NO_RECORD
+	if DictRead.as_int(view["hp"]) == 0:
+		return IdleScheduler.REFUSED_DEAD
+	if DictRead.as_int(view["visibility"]) != 0:
+		return IdleScheduler.REFUSED_HIDDEN
+	if states.has(unit):
+		var state: CharismaState = states[unit]
+		if state.mode != CharismaState.Mode.IDLE or state.is_idling():
+			return IdleScheduler.REFUSED_ANIMATING
+	# **Without drawing**: the start below spends the branch roll, and asking
+	# twice let the guard approve one clip and the start play another.
+	if not library.has_idle_clip(DictRead.as_int(view["type_id"]),
+			DictRead.as_int(view["weapon"]), DictRead.as_int(view["player"])):
+		return IdleScheduler.REFUSED_SELECTOR
+	if not states.has(unit):
+		return IdleScheduler.REFUSED_NO_MODEL
+	return ""
+
+
+func _start_idle(unit: int, world: World) -> float:
+	var view: Dictionary = world.unit_view(unit)
+	# The selector runs for the start (`0x0042DDF0`, docs/42 section 6.1 item
+	# 4) and this is the **only** call that draws: the guard above asks
+	# whether a clip exists without spending the branch roll.
+	var clip: CharismaClip = library.idle_clip_for(
+		DictRead.as_int(view["type_id"]), DictRead.as_int(view["weapon"]),
+		DictRead.as_int(view["player"]), presentation_rng)
+	return states[unit].start_idle(clip)
+
+
+func _free_idle(unit: int) -> void:
+	if states.has(unit):
+		states[unit].detach_idle()
+
+
+## The combat clip's frame counts at speed 6.0 for `slot` (docs/42 section
+## 1.2), for [ShotSequence]: to the note, the spin after it, and from the
+## note to the end. Zeros for a slot with no state or no `F` clip.
+func body_frames(slot: int) -> Dictionary:
+	if not states.has(slot):
+		return {"to_break": 0, "spin": 0, "after_break": 0}
+	var state: CharismaState = states[slot]
+	var to_break: int = state.frames_to_break()
+	var after: int = 0
+	if to_break > 0 and state._fire != null:
+		var stop: float = state._fire.break_time()
+		if stop < 0.0:
+			stop = state._fire.duration
+		after = maxi(ceili((state._fire.duration - stop)
+			/ CharismaState.SPEED_FIGHT), 0)
+	return {"to_break": to_break, "spin": state.spin_frames(),
+		"after_break": after}
+
+
+## `aContCHAnimation` on one body; the frames left to its end.
+func resume_past_break(slot: int) -> int:
+	if not states.has(slot):
+		return 0
+	return states[slot].resume_past_break()
+
+
+## `aStopCHAnimation` on one body: back to its idle.
+func rest(slot: int) -> void:
+	if states.has(slot):
+		states[slot].rest()
+
+
+func is_playing(slot: int) -> bool:
+	return states.has(slot) and states[slot].is_playing()
 
 
 ## True while any body is still playing a one-shot, so a caller can wait for
@@ -610,46 +734,54 @@ func hold_at(cells: Dictionary[int, Vector2i]) -> void:
 func held_at() -> Dictionary[int, Vector2i]:
 	return _held_at.duplicate()
 
-## Slot -> how many seconds a **dead** unit is still drawn for.
+## The casualties of the shot now on screen, kept drawn although the world
+## says they are dead, until the shot's own death stage hides them.
 ##
-## `aKillUnit` removes the object at once and there is no death clip in
-## Charisma at all (docs/40 section 7.2.1), so a corpse is not a thing the
-## engine has. What it does have is an order: the shot is drawn, and *then* the
-## unit is gone. Dropping the record the moment `core` reports the kill put the
-## removal **before** the shot that caused it -- the computer's rebuild runs
-## ahead of its own event -- so a marine vanished and only afterwards came the
-## sound of what killed it.
-##
-## The duration is therefore the remake's and not the engine's: long enough
-## that the shot is seen first, short enough to still read as dying at once.
-var _linger: Dictionary[int, float] = {}
+## The rebuild that drops a casualty runs *before* the event that killed it is
+## presented -- for the computer's replay always -- so without this a marine
+## vanished and the sound of what killed it arrived afterwards. The engine
+## hides the object **at once** in the death stage of `aPlayFightAnimation`
+## (`0x00405320(obj, 5)`, docs/42 section 4.8), which is the moment
+## [method hide_now] reproduces; there is no timer, and the 0.7 s linger this
+## replaced was the remake's number.
+var _dying: Dictionary[int, bool] = {}
 
 
-## Keep drawing `slot` for `seconds` although the world says it is dead.
-func linger(slot: int, seconds: float) -> void:
-	_linger[slot] = maxf(DictRead.as_float(_linger.get(slot, 0.0)), seconds)
+## Keep drawing `slot` although the world says it is dead, until [method
+## hide_now].
+func mark_dying(slot: int) -> void:
+	_dying[slot] = true
 
 
-## Slot -> the time left, for a caller and a suite.
-func lingering() -> Dictionary[int, float]:
-	return _linger.duplicate()
+## The slots still drawn past their death, for a caller and a suite.
+func dying() -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for slot: int in _dying:
+		out.append(slot)
+	out.sort()
+	return out
 
 
-## Count the lingering down and drop whoever has run out.
-func _age_the_dead(delta: float) -> void:
-	for slot: int in _linger.keys():
-		var left: float = _linger[slot] - delta
-		if left > 0.0:
-			_linger[slot] = left
-			continue
-		_linger.erase(slot)
-		bodies.erase(slot)
-		states.erase(slot)
-		_walks.erase(slot)
-		var node: Node3D = _node_of(slot)
-		if node != null:
-			remove_child(node)
-			node.free()
+## `0x00405320(obj, 5)` -- the object leaves the picture in this frame.
+## Answers whether a node was there to remove.
+func hide_now(slot: int) -> bool:
+	_dying.erase(slot)
+	bodies.erase(slot)
+	states.erase(slot)
+	_walks.erase(slot)
+	var node: Node3D = _node_of(slot)
+	if node == null:
+		return false
+	remove_child(node)
+	node.free()
+	return true
+
+
+## Drop every death hold -- a new command's rebuild, which is where the
+## dead leave the picture whether or not their shot was shown to the end.
+func clear_dying() -> void:
+	_dying.clear()
+
 
 ## Slot -> the offset currently in force, for a caller and a suite.
 func lifts() -> Dictionary[int, int]:
@@ -671,6 +803,45 @@ func _place(slot: int, world_units: int) -> void:
 
 
 ## The height the world puts this unit's node at, before any lift.
+## The body drawn at a world position this frame -- the jump's parabola
+## and the push's slide (docs/42 sections 7.1 and 7.2). A slot with no node
+## is left alone; [method settle] puts a moved body back on its cell.
+func place_at(slot: int, at: Vector3i) -> bool:
+	var node: Node3D = _node_of(slot)
+	if node == null:
+		return false
+	node.position = WorldSpace.to_godot(at.x, at.y, at.z)
+	return true
+
+
+## The body turned to a yaw in 4096ths (`0x004051E0`), not to one of the
+## eight facings.
+func turn_to(slot: int, yaw: int) -> bool:
+	var node: Node3D = _node_of(slot)
+	if node == null:
+		return false
+	node.basis = WorldSpace.yaw_basis(yaw)
+	var body: CharismaBody = _body_of(slot)
+	if body != null:
+		body.basis = node.basis.inverse() * WorldSpace.charisma_yaw_basis(yaw)
+	return true
+
+
+## The body back on the cell the world has it on, as a rebuild would put it.
+func settle(slot: int) -> bool:
+	var node: Node3D = _node_of(slot)
+	if node == null or world_ref == null:
+		return false
+	var view: Dictionary = world_ref.unit_view(slot)
+	if view.is_empty():
+		return false
+	var index: int = world_ref.state.index_of(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	node.position = _cell_position(index, world_ref.resource.width, world_ref)
+	_place(slot, DictRead.as_int(_lifts.get(slot, 0)))
+	return true
+
+
 func _floor_y(slot: int) -> float:
 	if world_ref == null:
 		return 0.0

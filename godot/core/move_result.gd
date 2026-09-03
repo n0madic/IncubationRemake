@@ -29,6 +29,21 @@ var events: Array[Dictionary] = []
 ## Set when a mine stopped the walk. The engine zeroes `+0x15` itself on that
 ## arm, so the caller must not also subtract [member cost].
 var movement_zeroed: bool = false
+## Whether the walk ended on a mine. `0x0046EC0F` gates the whole detonation
+## block on it, and the arm it then picks is [method ExecuteMove._detonate]'s.
+var stopped_on_mine: bool = false
+## The cells an **authored** mine went off on, as `[x0, y0, x1, y1, ...]` and
+## empty when none did -- a mover of size 1 can set off more than one, because
+## its arm sweeps the eight neighbours rather than the cell it stopped on.  The walk
+## clears `+0x10`, `+0x0E` and the object slot itself, as `aExecuteMove` does;
+## firing the weapon-36 shot is the caller's, because the engine's own
+## `aExecuteBomb` call is the last thing on that arm and the caller is what
+## owns the units (docs/26 section 6.2).
+var detonate: PackedInt32Array = PackedInt32Array()
+## What that mine did, empty when none went off. The same document
+## [AttackResult.to_dict] makes, and the same one the `mine_detonated` event
+## carries -- the caller needs it for the picture and nothing else.
+var blast: Dictionary = {}
 var reason: String = ""
 ## What the `MoveUnit` event returned, or an empty dictionary when the walk
 ## never got far enough to fire it. docs/20 section 5: the event fires **after**

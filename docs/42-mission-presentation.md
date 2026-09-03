@@ -358,11 +358,17 @@ comes out of the fog is seen from its own eyes.
 
 ### 3.3 The rest of the step
 
-Per step: the walked-distance byte (`25` §5.1), the mine test (`26` §6.1), the
-cell marker rewrite, the reaction drain, a teleporter cell (type 9) ending the
-path, the visibility rebuild, and the six script variables `0x41…0x46` followed
-by the mission hook `0x0043F6E0` — none of which draws anything. The jump
+Per step: the walked-distance byte (`25` §5.1), the mine test (`26` §6.1),
+the cell marker rewrite, a teleporter cell (type 9) ending the path, the
+visibility rebuild, and the six script variables `0x41…0x46` followed by the
+mission hook `0x0043F6E0` — none of which draws anything. The jump
 (`aExecuteWarp`) is §7.1.
+
+*(Corrected 2026-09-03: an earlier version listed "the reaction drain" among
+the per-step work. `0x0046CCA0` has five callers — the AI's plan runner and
+the three UI command sites [`25` §6](25-turn-and-round.md) names — and none
+is inside `aExecuteMove`; the drain runs once, after the move, and `core`
+follows `25`.)*
 
 ---
 
@@ -444,16 +450,33 @@ wave by weapon id (`ricochet.wav` @80, `explosion2.wav` @81, `aexplosion.wav`
 @95 — `28` §8.1), and one voice by severity and the target's species: 2 →
 `S_HUM_n` / `S_ALI_n` round robin (`28` §4.1); **3 → the death scream
 `SP_HUM_n`, ids 0x32…0x34 for humans and 0x35…0x37 for aliens, `explosion.wav`
-for species 3**; unit types 0x16 and 0x19…0x1A are silent.
+@63 for species 3**, species 2 silent; unit types 0x16 and 0x19…0x1A are
+silent. Both screams advance the **same** per-species cursors (`0x004FC018`,
+`0x004FC01C`), and the species read is the last marked unit's. The alien ids
+53…55 are the ones `28` §4.1 once called unnamed: the arm loads them with
+`mov edi, imm` (`0x0040CA23`, `0x0040C9FD`, `0x0040C9D7`) rather than a push
+(corrected 2026-09-03).
 
 ### 4.6 The projectile
 
 The muzzle switch of `28` §8.1 spawns the effect, the weapon wave is played,
 the overlay type is 4, and the routine **waits up to 100 frames for the flag
-`0x004FE63C`**, the *projectile arrived* flag: every projectile creator clears
-it and thirteen update arms set it when their record lands — kinds 1, 15, 25,
-26, 27, 28, 32, 45, 47, 49, 69, 71, 74 (pinned by arm). Weapons 0x0F, 0x11, 0x14,
-0x15, 0x1B, 0x1E…0x20, 0x24, 0x25 skip the wait.
+`0x004FE63C`**, the *projectile arrived* flag. Every projectile creator writes
+it before it returns — 0 while a round begins its flight, 1 when there is
+nothing to wait for, and in twelve creators `steps <= 0`, so an adjacent target
+arrives at once — and **fourteen** update arms set it when their record lands:
+kinds 1, 2, 15, 25, 26, 27, 28, 32, 47, 49, 61, 69, 71, 74. Kind 2 falls into
+kind 49's tail (`0x0041E842` → `0x0041E84E`) and kind 61's seeker runs into
+kind 28's arm at `0x004204D2`; **kind 45 clears it** on every tick — its
+`mov [0x004FE63C], ebp` writes the zero the sweep keeps as `aRandom2`'s base.
+*(Corrected 2026-09-03: the first reading attributed each store to the nearest
+preceding arm start, missed both shared tails and counted 45 as a setter.
+`presentation_tables.py` pins the set by control flow, and `blob_runtime.py`'s
+fourteen `_request_delete` sites had it right.)* The wait loop is at most 100
+frames (`cmp ecx, 0x64` at `0x0040D4C1`). Weapons 0x0F, 0x11, 0x14, 0x15,
+0x1B, 0x1E…0x20, 0x24, 0x25 skip the wait: their muzzle arms write 0 over
+the wait flag `[esp+0x10]`, which the routine initialises to 1 at
+`0x0040CC4D`.
 
 ### 4.7 The impact
 
@@ -467,11 +490,25 @@ change the map rather than the pool: weapon 40 sets nine cells on fire
 `aKillUnit` `0x00472920` is a network message and `aRemoveUnitElement`. **The
 visible death is here**, per floating-text entry:
 
+**The switch does not branch on the severity** *(corrected 2026-09-03)*.
+The slot the sweep fills with the severity (`[esp+0x1C]`) is zeroed at
+`0x0040CC49`, just before the muzzle switch, and the muzzle arms write the
+value the death switch reads at `0x0040DD05` — a **death style** per weapon:
+**3** for weapons 15, 30, 31, 32; **1** for 9, 11, 17, 22, 44; **2** for
+weapon 40; **0**, the switch's default arm, for every other weapon
+(`presentation_tables.py` reads it off the jump table and the byte index).
+The severity selects the voice (§4.5) and nothing else. The "class" tested is
+the `special` column (`unitInfo + 0x07`), `bl` is the size flag (`+0x7B`) and
+`cl` the species (`+0x79`) of the killed unit:
+
 | Entry type | What is drawn |
 |---|---|
-| 2 damage | `aBlob_CreateBloodFlood` `0x00420D80(shooter cell, target cell, 0)` — the blood flies **from the shooter towards the target**; `0x00421360` for types with the `+0x7B` flag |
-| 3 killed | **the object is hidden at once** (`0x00405320(obj, 5)`); then unit class `unitInfo + 0x00 == 0x10` → `aBlob_CreateKillFire` `0x00423AD0`; else by severity and species: severity 1 → `BloodFlood` mode 1 or `aBlob_CreateFireExplosion` `0x00429A80` for species 3; severity 2 → `aBlob_CreateFireDeath` `0x0042B1D0`; severity 3 → `BloodFlood` mode 2 and `aBlob_CreateFlyingDebris` `0x004216D0`, or `0x00420B80` / `0x00421C50` by species |
-| 5 killed, species 2 | hidden; class 0x0C → `aBlob_CreateFlyingUnit` `0x00429700(x, y, size × 2)` **plus** `FireExplosion` and `explosion2.wav` — the barrel flies; class 0x0D → `0x004298D0` |
+| 2 damage | `aBlob_CreateBloodFlood` `0x00420D80(shooter cell, target cell, 0)` — the blood flies **from the shooter towards the target**; `0x00421360` when the **last marked unit** is the player's and its type is large. The arm reads one local for the whole switch — `[esp+0x34]`, the unit the sweep looked at last (`[ebp+0x45]`, `[ebp+0x4C]`, which r2 labels as stack slots) — so a multi-target shot sprays every damaged unit by the last one's player and size |
+| 3 killed | **the object is hidden at once** (`0x00405320(obj, 5)`); then `special == 0x10` → `aBlob_CreateKillFire` `0x00423AD0(x, y, 0)`; else by the weapon's death style, with species 3 always `aBlob_CreateFireExplosion` `0x00429A80`: style 1 → `BloodFlood` mode 2 for a large type, mode 1 otherwise; style 2 → `aBlob_CreateFireDeath` `0x0042B1D0`; style 3 → mode 2 for a large type, `0x00420B80` (`blood_burst`) otherwise; style 0 → mode 2 **and** `aBlob_CreateFlyingDebris` `0x004216D0` for a large type, `0x00421C50` (`species_burst`) otherwise |
+| 5 killed, species 2 | hidden; `special` 0x0C → `aBlob_CreateFlyingUnit` `0x00429700(x, y, size × 2)` **plus** `FireExplosion` and `explosion2.wav` — the barrel flies; 0x0D → `0x004298D0` |
+
+Types 0, 1 and 4 draw nothing. `FireExplosion`'s third argument is pushed by
+all thirteen callers and read by none.
 
 Four of those creators — `0x00420B80`, `0x00421360`, `0x00421C50`,
 `0x004298D0` — carry no developer name (`blob_tables.py` lists them as
@@ -497,6 +534,15 @@ are not developer names are this project's.
 | `0x004216D0(x, y)` | `aBlob_CreateFlyingDebris` | splats `A_SPLAT1..5` thrown from the tile (kind 18, life 50), each trailed by four blood pieces `A_BLUT1, A_BLUT1, A_BLUT2, A_BLUT3` (life 30) — twelve throws in output mode 3, five otherwise — then five lower splats |
 | `0x00421C50(x, y)` | `death_species_burst` | for types 50, 51 and 56: seven times in ten (`aRandom2(0, 10) <= 6.0`, compared as a double) two `A_SPLAT5`, two class-2 bursts (kind 51, life 16) and the type's own three pieces `A_50A/B/C` (`A_51*`, `A_56*`) each with a four-piece blood trail; otherwise, and for every other type, a mode-1 `BloodFlood` and `FlyingDebris` on the tile. Type 57's arm (`A_57A` four times) is in the switch and unreachable |
 | `0x004298D0(x, y)` | `death_barrel_burst` | ten tumbling `A_BDEBI1` / `A_BDEBI0` (kind 5, life 100) from the object's own position, rotations `aRandom2(0, 4096)` on all three axes — the class-0x0D death beside `aBlob_CreateFlyingUnit`'s class-0x0C one |
+| `0x00423AD0(x, y, delay)` | `aBlob_CreateKillFire` | ten class-2 flames, kind 10, life 20, scattered ±800 around the object on every axis, drifting ±48 and rising 320…480, each delayed `aRandom2(0, 3)` **plus the argument** — 0 from the fight, 20 from `FireCircle` (§8) |
+| `0x0042B1D0(x, y)` | `aBlob_CreateFireDeath` | a column of twenty class-2 records, kind 60, life 8, sprite row 4, stacked 20 units apart and delayed by index; ±480 sideways, 160…1760 up, `aux` `aRandom2(5, 20)` |
+| `0x00429700(x, y, delay)` | `aBlob_CreateFlyingUnit` | **one** class-0 record whose model is the victim type's own `.3DI` (`unitInfo + 0x6C`), kind 3, life 10, thrown straight up at 800, no draw; a type whose model the set does not carry spawns nothing, by the constructor's refusal |
+| `0x00429A80(x, y, _)` | `aBlob_CreateFireExplosion` | nine rings of three class-2 records rising 0x3C0 a ring, kind 50, life 8, the ring as the delay, `aux` drawn with the ring's height counter added inside the conversion |
+
+*(Added 2026-09-03: these four were transcribed and measured in a second
+capture — 321 records across nineteen calls, `presentation_gold --check`
+228 — and `godot/game/fx/blob_programs.gd` is the twin of all ten,
+replayed against the engine's records by `tests/test_presentation_native.gd`.)*
 
 **The gore level.** `0x004604A0` returns dword 10 of `Game.opt` (`0x00512A00`,
 [`20` §8](20-lcl-language.md)), which the LCL `?_` command writes and the
@@ -533,13 +579,15 @@ is read back out of the executable by `blob_tables.py` instead.
 
 ### 4.9 The end
 
-Overlay type 0; at least 20 frames and until the pool is empty
-(`0x004FE640`, the live-blob count the sweep maintains); then
+Overlay type 0; then, when the weapon waited for its round, **at most 20
+frames** while the pool lives (`0x004FE640`, the live-blob count the sweep
+maintains; `cmp eax, 0x14` at `0x0040E256` with the count tested after every
+tick — *corrected 2026-09-03 from "at least 20"*); then
 **`aContCHAnimation` `0x004054D0` resumes the `F` clip past `BREAK`** and the
 routine spins until the clip has played out (`0x00405460` reports its
-remaining frames), the pool is empty and the caption has faded; then
-`aStopCHAnimation` and the sound buffers are freed. Unit type 0x37 and
-animation slot 0x0B skip the resume.
+remaining frames), the pool is empty and the caption has faded (the countdown
+`0x004FC0A0`); then `aStopCHAnimation` and the sound buffers are freed. Unit
+type 0x37 and animation slot 0x0B skip the resume.
 
 So one shot is: aim in 3–6 frames, hold while the round flies (≤ 100 frames),
 the numbers rise for 20+ frames, the arm comes down. A remake that holds a
@@ -679,10 +727,15 @@ The body is turned to face the landing cell (`0x004051E0` with the angles of
 `0x00403AA0`); the flight is a **parabola**: `steps = max(|dx|, |dy|) / 480`,
 `vz = +(steps / 2) × 160` falling by 160 per frame, position by `delta /
 steps`; every frame the camera **keeps its position and looks at the flying
-unit**. A player's unit leaves a trail (`0x00423670`: a `ZoomBob` and four
-sprites of kind 11 per frame) and raises landing dust `0x004227C0` at both
-ends, with `jump.wav` @69 and `drop.wav` @70; a computer unit screams
-`S_ALI_n` instead of the trail. The routine waits for the pool to empty.
+unit**. The source object is lifted by `0x0047AD30(0)` = 2400 before the
+flight. A player's unit leaves a trail (`0x00423670`: a `ZoomBob` and four
+sprites of kind 10, life 11, each delayed by its index, at `z + 0x640` per
+frame) and raises landing dust `0x004227C0` at both ends, with `jump.wav`
+@69 and `drop.wav` @70; a computer unit draws `aRandom2(0, 3)` **once** for
+`S_ALI_0/1/2` @59/60/61 instead, and raises no dust at the source
+(`0x004117A1` is on the player's arm). The routine waits for the pool to
+empty. *(Corrected 2026-09-03, [`97` §31](97-slice-5-report.md): the trail
+and both dusts are measured; the parabola is read.)*
 
 ### 7.2 The push — `0x0046D530`
 
@@ -697,13 +750,29 @@ detonates (`26` §4).
 radius of 4800 (9600 for large types) around the unit — this is `28` §8's
 "arrow marker" in `aUI.cpp`, the ring of arrows around the selected unit. The
 skill, jam, overheat and `RotatingCamera` orbits of §7.5 raise it too; heal and
-poison raise a `FlashCircle` (`0x00423030`, `0x004232E0`) instead.
+poison raise a `FlashCircle` (`0x00423030`, `0x004232E0`) instead — the heal's
+four crosses `A_CROSS3/2/1/A_CROSS` with their mirror images at 1600 (6400
+large), 30° apart, and the poison's four `A_SKULL.3DI` at the **same** 1600 /
+6400, 90° apart, both at half the unit's height, kind 37, life 40.
+
+**When it is raised** (measured 2026-09-03, [`97` §31.2](97-slice-5-report.md)):
+`0x00473920` — the animation level not 1, a unit selected — has three
+callers, the select routine `0x00471E00` and two arms of the command pad
+`0x004714B0`, and the frame loop calls neither it nor the creator. The
+arrows are a fifteen-frame flash on a selection and after each pad command,
+not a ring kept alive. All seven creators of this section are measured
+(`presentation_gold.py`, 291 checks).
 
 ### 7.4 The reaction-fire jam — `0x004104A0`
 
-Called from the drain (`25` §6) when the reactor cannot fire: the arrows, a
-flight to the unit, `jammed.wav`, the centred caption *Weapon runs hot!* (id 6)
-or *Out of ammo!* (id 7, when `+0x3D == 0`), and the orbit below.
+Called from the drain (`25` §6) **after** a reaction shot that fired, when
+the magazine is then empty (`+0x3D == 0`) or the heat counter equals
+`0x00475340`'s cap — in both of the drain's loops (`0x0046CE0E`,
+`0x0046D090`) — and the reactor's ticket is cleared with it
+(`mov byte [esi + 0x59], 0`): the arrows, a flight to the unit,
+`jammed.wav`, the centred caption *Weapon runs hot!* (id 6) or *Out of
+ammo!* (id 7), and the orbit below. *(Read 2026-09-03, [`97`
+§31.3](97-slice-5-report.md).)*
 
 ### 7.5 The orbits — skill, heal, poison, overheat, `RotatingCamera`
 
@@ -717,7 +786,7 @@ step each frame (`0x004039A0`), then fly back:
 | skill `0x00410190` (from `aAttackUnit`) | `(0, +0xC80, height + 0xC80)` | +100 | *increased skill level* `"%s %d"` |
 | heal `0x0040FBE0` | `(0, +0x1900, height + 0xC80)` | −40 | `"%s: %s %d"` with *increased hit points by* |
 | poison `0x0040F8F0` | `(0, +0x1900, height + 0xC80)` | −40 | *Fightingpower reduced!* |
-| overheat `0x0040F420` | flight to the unit first | +100 | ids 14/15/16: *Technical problems with weapon* / *Weapon jammed* / *Weapon damaged*; kind 1 also hides the unit with `FireExplosion` + `BloodFlood` |
+| overheat `0x0040F420` | `(0, +0xC80, height + 0xC80)`, as skill | +100 | by `kind` (`22` §8: 1 explosion, 2 jam, 3 damage): 1 → id 14 @63 and the unit hidden behind `FireExplosion` + `BloodFlood(x, y, x, y, 0)`; 2 → id 15, `jammed.wav` @64; 3 → id 16, `damage.wav` @65 — the `dec eax / je` ladder at `0x0040F5A4` |
 | jam `0x004104A0` | `(0, +0xC80, height + 0xC80)` | +100 | ids 6/7 |
 | `RotatingCamera` `0x0040FF30` (LCL) | `(0, +0xC80, h)` | +100 | none |
 
@@ -859,7 +928,35 @@ of §1.3 animates them every frame:
 | 0xFF | dead | `aDeleteSpecialObject` |
 
 So a mine turns slowly, a shield turns at the same pace, a glow flickers by
-turning at random, a fire's two billboards face a new way every frame. The
+turning at random, a fire's two billboards face a new way every frame.
+
+**The model name is a gate.** `aCreateSpecialObject` resolves it through
+`0x004038F0` and answers -1 for one the loaded world set does not carry, and
+the placer then writes nothing. Every set has `A_FIRE1/2/3`, `A_MINE` and
+`A_SHILD`; **only `World_D00` has `GLOW1/2`**, and both missions that use
+`SetGroundFire` are in it. *(Measured 2026-09-03 in the live engine:
+`0x0042FCB0(x, y, 2)` on `World_A00` writes no cell byte and takes no slot --
+[`97` §37.4](97-slice-5-report.md).)*
+
+**They take themselves back.** `0x0047D600` runs `0x00470AB0()` and then
+`0x0042ED60()` between the turn counter going up and the `NEXT TURN` event
+([`25` §4](25-turn-and-round.md)), so the decay is a **round** tick:
+
+| what | one round |
+|---|---|
+| a glow at phase 2 | its object is freed and a phase-1 glow made in its place |
+| a fire | its object is freed; `+0x0E ≤ 1` puts it out, otherwise it is re-placed one subtype lower -- so a weapon-40 centre burns four rounds and its ring three |
+| a shield | `+0x0E == 1` clears the cell, otherwise `+0x0E` and the object's `+0x41` both go down one, and it turns at 25 instead of 51 |
+| a mine | nothing; it stands until something walks on it |
+
+`0x00470AB0` runs **first** and is the other half of `SetGroundFire`: a glow
+that has reached phase 1 is freed, `+0x13` cleared, and
+`aPlayGroundFireAnimation` `0x004157B0` played on the cell. That routine
+collects the eight neighbours through `0x004308C0` **with the diagonal flag
+set** plus the centre, skips any cell whose `+0x10` is a shield, and calls
+`aRemoveUnitElement` `0x004779C0` on every unit it found. There is no roll:
+**a ground fire kills whatever it reaches**, two hand-overs after the command
+that laid the glow. The
 shield placer has two callers: the object seeding at load (`0x004079D0`) for
 a cell whose kind byte is 3 — none shipped — and `aPlayFightAnimation`'s
 weapon-43 arm (`Plasma Gun`, `Info.lcl`), which places one on the target
@@ -883,7 +980,11 @@ camera behind the shooter or the victim (§4.3), a door flies the camera to
 itself (§8), and **every change to the map happens on screen in the frame it
 happens**, because the sequence that changes it is the one drawing. The
 redraw callback the AI is handed (`0x0047C2C0`, `23` §2) draws the turn banner
-and the HUD; it moves no camera.
+and the HUD; it moves no camera. *(Read 2026-09-03,
+[`97` §35.1](97-slice-5-report.md): it is the **between-players screen** --
+it blanks all 640x480 and draws four formatted lines centred at x 320 from
+`Txtmod` ids 12, 20, 22, 25, 26, 125, 127 and 132 -- so "banner" understates
+it, and the remake's HUD line is not a smaller version of the same thing.)*
 
 ---
 
@@ -897,29 +998,62 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | unit camera | behind / by quadrant, clear-line search | ~~pivot on the cell~~ §2.3 transcribed, the quadrant kept discrete; the search over the map's heights |
 | walk | target tracks the unit; enemy ride | ~~no camera during a walk~~ §3.2's modes, the ride included |
 | views | eyes / unit / map; right-drag rotate; middle-drag pan | ~~four yaws, zoom; no pan~~ eyes / unit / map on 1, 2, 3; the pan; no free rotation, by decision |
-| fight camera | behind shooter / victim; reaction coin toss | ~~none~~ §4.3, both arms, the flight beside the clip rather than after it |
-| clip speeds | 2.0 / 6.0 / 1.5 / 1.0 | 1.0 everywhere |
-| shot | 9 stages, clip resumed past `BREAK` | clip to `BREAK` + 0.35 s hold |
-| captions, damage numbers | drawn, rising, fading | none |
-| blood, death | per species and class, object hidden at once; seven creators measured (§4.8.1) | 0.7 s linger, then gone |
-| idle | 4 slots, random unit, once, snap to bind | every body loops |
-| jump | parabola, trail, dust | teleport on rebuild |
-| selection | four arrow blobs | cell highlight |
+| fight camera | behind shooter / victim; reaction coin toss | ~~none~~ ~~§4.3, both arms, the flight beside the clip rather than after it~~ §4.3, after the clip (`97` §29) |
+| clip speeds | 2.0 / 6.0 / 1.5 / 1.0 | ~~1.0 everywhere~~ 2.0 / 6.0 / 1.5; `M2` not implemented (`97` §29) |
+| shot | 9 stages, clip resumed past `BREAK` | ~~clip to `BREAK` + 0.35 s hold~~ the nine stages on the queue, the clip resumed (`97` §29) |
+| captions, damage numbers | drawn, rising, fading | ~~none~~ `FloatingTexts` (`97` §29) |
+| blood, death | per species and class, object hidden at once; seven creators measured (§4.8.1) | ~~0.7 s linger, then gone~~ hidden in the death stage; all ten creators measured and replayed (`97` §29) |
+| idle | 4 slots, random unit, once, snap to bind | ~~every body loops~~ `IdleScheduler`, replayed call for call (`97` §30) |
+| jump | parabola, trail, dust | ~~teleport on rebuild~~ `JumpSequence`, the player's and the computer's (`97` §31) |
+| selection | four arrow blobs | ~~cell highlight~~ the four arrows on a selection and after a command, the highlight kept for the cells (`97` §31) |
+| push, orbits | §7.2, §7.4–§7.5 | ~~sound only~~ `PushSequence`, `OrbitSequence` (`97` §31) |
 | own / AI door | flight, 10 frames, flight back | instant swap + sound |
-| set pieces | camera + effects | 7 animated without either, 18 instant |
-| fires, glows, mines | state-byte rotation | not created |
-| AI terrain | changes in the event's frame | all applied before the replay |
-| script camera | seven commands | events with no action |
+| set pieces | camera + effects | ~~7 animated without either, 18 instant~~ 18 animated with the camera and their creators, 8 instant (`97` §32, §33) |
+| fires, glows, mines | state-byte rotation | ~~not created~~ the four placers in `core`, the states drawn and turned (`97` §37) |
+| AI terrain | changes in the event's frame | ~~all applied before the replay~~ the cells ride on the event and are painted in its frame; the computer's door now opens the cell at all (`97` §35) |
+| script camera | seven commands | ~~events with no action~~ six of them as flights on the queue; `MoveWorld` is the scenery's (`97` §34) |
 
 The plan that follows from this table is the remake's business and is recorded
 in `docs/97`'s next addendum, not here. *(The camera rows were closed on
-2026-09-02 by [`97` §28](97-slice-5-report.md); the others stand.)*
+2026-09-02 by [`97` §28](97-slice-5-report.md), the shot's five on 2026-09-03
+by [`97` §29](97-slice-5-report.md), the idle by [`97` §30](97-slice-5-report.md)
+the jump, selection, push and orbits by [`97` §31](97-slice-5-report.md)
+and the set pieces by [`97` §32](97-slice-5-report.md) and
+[§33](97-slice-5-report.md); the others stand.)*
 
 ---
 
 ## 12. Open questions
 
-None. The one this section carried on 2026-09-02 — *the walk's pre-walk
+None. The two this section carried for a day, both opened on 2026-09-03 by
+§9.1's placers, were closed the same day
+([`97` §38](97-slice-5-report.md)):
+
+1. ~~*The glow's own lifecycle has no capture behind it.*~~ **Measured.**
+   `GLOW1/2.3DI` live in `World_D00` alone, so the phases that reach the glow
+   run on a save built by wrapping `_C_116.lev` in `_6_.sav`'s fixed blocks
+   (`sav_parse.py --wrap`). The placer that *refused* on `A00` writes all
+   three bytes there, and the round tick decays phase 2 to phase 1 and leaves
+   it. `0x00470AB0`'s ignition stays unstepped because it calls
+   `aPlayGroundFireAnimation` — every `aPlay*` renders and none of them can be
+   called under the debugger, which is a boundary of the method rather than a
+   question about this routine.
+2. ~~*A unit the ground fire takes keeps its hit points.*~~ **Read, and it
+   does not.** `aGetLiveUnitCount` `0x00477BF0` counts `[record + 0x16]`, the
+   hit points, and never looks at the map link — that much is right. But
+   `aRemoveUnitElement`'s **last instruction**, `0x00477ABD`, is
+   `mov byte [esi+0x16], 0`, with `esi` the unit record it has held since
+   `0x00477A38`. Removal therefore kills, and at fifteen of its twenty call
+   sites — the set pieces of `aAnimations.cpp`, the teleporter, the hatch, the
+   para bomb, the battle system's object sweep, the two interface sweeps and
+   `aPlayGroundFireAnimation` — that write is the whole of the lethality,
+   there being no roll and no armour on any of those paths
+   ([`97` §40.1](97-slice-5-report.md) has the table). Both twins now carry it
+   inside `remove` itself, which is where the engine has it; the answer
+   recorded here on 2026-09-03 was the opposite and was wrong, corrected the
+   same day ([`97` §40.1](97-slice-5-report.md)).
+
+The one this section carried on 2026-09-02 — *the walk's pre-walk
 visibility pass writes, and the remake's does not* — was closed the same day
 in §3.2 and [`97` §28.6](97-slice-5-report.md): `core` now runs the three
 passes of `aExecuteMove` as the writing passes they are, from the destination,

@@ -70,7 +70,45 @@ ORBIT_HEAL = (0x0040FBE0, 0x0040FF30)
 ORBIT_POISON = (0x0040F8F0, 0x0040FBE0)
 ORBIT_OVERHEAT = (0x0040F420, 0x0040F8F0)
 ORBIT_ROTATING = (0x0040FF30, 0x00410190)
+# docs/42 §7 -- the creators the unit animations call, measured by
+# `presentation_gold.py`'s seven `death_*` phases of 2026-09-03.
+ARROWS = (0x00422D40, 0x00422EF1)
+LANDING_DUST = (0x004227C0, 0x004228E8)
+FLASH_HEAL = (0x00423030, 0x004232CF)
+FLASH_POISON = (0x004232E0, 0x004234B2)
+TRAIL = (0x00423670, 0x0042371E)
+# docs/42 §7.3 -- who raises the marker: the select routine and the command
+# pad, never the frame loop.
+MARKER_RAISE = (0x00473920, 0x0047394B)
+#: The whole of `.text`, for a count that must hold across the image.
+TEXT_SECTION = (0x00401000, 0x004AF000)
+SELECT_UNIT = (0x00471E00, 0x00471F63)
+COMMAND_PAD = (0x004714B0, 0x00471AC2)
+# docs/42 §7.4 / docs/25 §6 -- the drain's jam arm, in both of its loops.
+DRAIN = (0x0046CCA0, 0x0046D162)
+# docs/29 §1.1 button 2 -- the heal command and its three helpers, and the
+# pad arm that charges it; the warp arm of the same pad.
+HEAL_COMMAND = (0x00470890, 0x00470AA4)
+HEAL_POWER = (0x004753C0, 0x004753E0)
+MAX_HIT_POINTS = (0x00475240, 0x00475299)
+HEAL_APPLY = (0x0047B180, 0x0047B1D8)
+HEAL_PAD_ARM = (0x004733BB, 0x00473410)
+# The pad's offer of button 2 (`case 2` of `0x00472570`) and its gate.
+HEAL_OFFER = (0x0047261C, 0x00472641)
+MAY_HEAL = (0x0047B4C0, 0x0047B5BC)
+WARP_PAD = (0x00472F10, 0x00473072)
 DOOR = (0x00410A20, 0x00410DA0)              # docs/42 §8
+TUBE = (0x00410F10, 0x00411150)
+ROOF_UNIT = (0x00411B00, 0x00411FB0)
+# docs/42 §8 -- the set pieces' creators, measured 2026-09-03 (docs/97 §32).
+TUBE_PUFFS = (0x00423770, 0x004238BF)
+PLATFORM_DUST = (0x004234C0, 0x00423668)
+ROOF_DEBRIS = (0x00422460, 0x00422603)
+WALL_DEBRIS = (0x004238C0, 0x00423ABF)
+FIRE_CIRCLE_RING = (0x00422F00, 0x00423024)
+LASER_BEAM = (0x00428990, 0x00428BCD)
+BOMBER_CREATOR = (0x0042A8E0, 0x0042A9BA)
+PARA_BOMB_CREATOR = (0x0042B070, 0x0042B149)
 ELEVATOR = (0x004125D0, 0x00412A00)
 PLATFORM = (0x00412A00, 0x004131C0)
 BARRIER = (0x00413560, 0x00413A40)
@@ -79,6 +117,30 @@ CRUSH_WALL = (0x00415C70, 0x00415E90)
 MINE_PLACER = (0x0042FA70, 0x0042FB90)       # docs/42 §9.1
 FIRE_PLACER = (0x0042F840, 0x0042FA70)
 GLOW_PLACER = (0x0042FCB0, 0x0042FE80)
+#: ``0x0042ED60`` -- the round tick the hand-over runs (``docs/25`` §4), and
+#: ``0x00470AB0`` -- the ignition sweep just before it.
+GROUND_TICK = (0x0042ED60, 0x0042EE90)
+GROUND_IGNITE = (0x00470AB0, 0x00470B50)
+#: ``aPlayGroundFireAnimation`` -- what an ignited glow does.
+GROUND_FIRE_ANIM = (0x004157B0, 0x00415C70)
+A_GROUND_FIRE_ANIM = 0x004157B0
+A_STEP = 0x004308C0
+A_REMOVE_UNIT = 0x004779C0
+A_DELETE_SPECIAL = 0x00406960
+A_FIRE_PLACER = 0x0042F840
+A_MINE_PLACER = 0x0042FA70
+A_GLOW_PLACER = 0x0042FCB0
+A_GROUND_TICK = 0x0042ED60
+A_GROUND_IGNITE = 0x00470AB0
+#: ``0x0047D600``, the hand-over (``docs/25`` §4).
+HAND_OVER = (0x0047D600, 0x0047DA00)
+#: The impact arms of the three weapons that change the map, and the switch
+#: that selects them.
+IMPACT_PLACER_WEAPONS = {40: 0x0040D93D, 42: 0x0040D76A, 43: 0x0040D5F8}
+#: ``0x0040D962``..``0x0040D9FF`` -- (call site, subtype) in call order.
+NINE_FIRE_SITES = ((0x0040D962, 3), (0x0040D975, 3), (0x0040D988, 3),
+                   (0x0040D99B, 3), (0x0040D9B1, 3), (0x0040D9CB, 3),
+                   (0x0040D9DB, 4), (0x0040D9EB, 3), (0x0040D9FF, 3))
 CREATE_SPECIAL = (0x004069C0, 0x00406A40)
 FREE_ANIMATION = (0x00406000, 0x00406070)
 TEXT_BANKS = (0x00449CA0, 0x00449D10)        # docs/42 §4.2
@@ -86,12 +148,138 @@ BLOB_UPDATE = (0x0041E500, 0x00420814)       # docs/42 §4.6
 BLOB_JUMP_TABLE = 0x00420814
 BLOB_KINDS = 78
 ARRIVED_FLAG = 0x004FE63C
-ARRIVED_KINDS = frozenset({1, 15, 25, 26, 27, 28, 32, 45, 47, 49, 69, 71, 74})
+#: The arms that **set** the flag (`mov dword [0x004FE63C], 1`), by control
+#: flow rather than by which arm's start precedes the store: kind 2 falls
+#: into kind 49's tail (`0x0041E842` -> `0x0041E84E`) and kind 61's seeker
+#: runs straight into kind 28's arm at `0x004204D2`, whose store is at
+#: `0x004204DD`.  The first
+#: reading of this table attributed each store to the nearest preceding arm
+#: start and so missed both and counted arm 45 -- which writes **`ebp`**,
+#: the zero the sweep keeps as `aRandom2`'s base, i.e. it *clears* the flag
+#: (`docs/42` §4.6, corrected 2026-09-03).  `tools/blob_runtime.py` had it
+#: right all along: fourteen `_request_delete` sites and one
+#: `global_signal_clear`.
+ARRIVED_KINDS = frozenset({1, 2, 15, 25, 26, 27, 28, 32, 47, 49, 61, 69, 71, 74})
+ARRIVED_CLEAR_KIND = 45
+ARRIVED_SET_STORES = 12
+#: Where kind 2's arm tests its life and where the shared store is.
+ARRIVED_KIND_2_TAIL = (0x0041E842, 0x0041E84E)
+ARRIVED_KIND_61_STORE = 0x004204DD
+ARRIVED_KIND_61_FALLS_INTO_28 = 0x004204CE
+ARRIVED_KIND_45_STORE = 0x0041F65D
+#: The creators' own writes, outside the update: eight literal 1s (nothing
+#: to wait for), six literal 0s (a flight begins), and twelve register
+#: stores whose value is `steps <= 0` -- a `setle` or a `jle` around the
+#: record count the creator just computed, so an adjacent target arrives at
+#: once.  Counted so the inventory cannot shrink unnoticed.
+ARRIVED_CREATOR_WRITES = {"set": 8, "clear": 6, "computed": 12}
+#: The blob constructor every creator allocates through -- 116 call sites.
+A_BLOB_CTOR = 0x00420950
+#: Every creator-side store to the flag, mapped to the start of the function
+#: that makes it.  Read 2026-09-03 by walking back to the instruction after
+#: the previous `ret`; the three the named-symbol table gets wrong are marked.
+#: The point of the table is the ordering claim below it: a creator clears
+#: the flag **before** it allocates, so a refusal -- a full pool -- leaves it
+#: down and the caller waits its hundred frames.
+ARRIVED_CREATOR_STORES = {
+    0x00420AC2: 0x00420AC2, 0x00424079: 0x00423FB1,
+    0x0042420D: 0x00423D80,  # `aBlob_CreateTracerBullet`, inside its loop
+    0x0042455D: 0x0042448D, 0x00424568: 0x0042448D,
+    0x00424AB7: 0x004249F1, 0x00424AC3: 0x004249F1,
+    0x0042500B: 0x00424FE2, 0x00425017: 0x00424FE2,
+    0x0042573B: 0x0042567A, 0x00425AD6: 0x00425A8A,
+    0x00425F97: 0x00425F63, 0x004263B7: 0x004261DC,
+    0x004267D7: 0x0042672A, 0x00426A97: 0x00426A1E,
+    0x00426E67: 0x00426E33, 0x004272D2: 0x00427293,
+    0x00427690: 0x004275D8, 0x004279FF: 0x0042797D,
+    0x00427EFF: 0x00427E69, 0x0042846F: 0x00428433,
+    0x004287D3: 0x00428745, 0x004287E8: 0x00428745,
+    0x0042A938: 0x0042A8E0,
+    0x0042B0E3: 0x0042B0D0,  # an unnamed creator behind the `ret` at 0x0042B0CF
+    0x0042B490: 0x0042B490,  # ditto, behind the flag's own getter at 0x0042B480
+}
+#: The one store that follows an allocation, and what it writes.  It sits
+#: inside `aBlob_CreateTracerBullet`'s record loop and writes **1** -- a
+#: tracer has nothing to arrive -- so it creates no wait at any pool state.
+ARRIVED_STORE_AFTER_ALLOCATION = (0x0042420D, 1)
+#: Reads of the flag outside the update, one of which is its whole getter.
+ARRIVED_READS_OUTSIDE = (0x00424727, 0x004250E0, 0x0042B480)
+ARRIVED_GETTER = 0x0042B480
+
+#: docs/23 §5.3 and docs/42 §4 -- where the mine's blast is drawn.
+EXECUTE_WARP = (0x0046EF50, 0x00470150)
+EXECUTE_BOMB = (0x004702C0, 0x004706A0)
+A_EXECUTE_BOMB = 0x004702C0
+A_PLAY_FIGHT = 0x0040BD70
+
+#: Every call site of `aRemoveUnitElement`, by the routine that makes it
+#: (`trace_names.py`'s symbol table, read 2026-09-03).  Its own last
+#: instruction is `mov byte [esi+0x16], 0` at `0x00477ABD`, so removal kills:
+#: the split below is between the sites that arrive with the victim already
+#: dead and the sites where this write **is** the death.
+REMOVE_UNIT_KILL_PATH = {
+    0x0046C1F9: "aAttackUnit",
+    0x0046D34C: "aCheckWeaponDamage",
+    0x0046D95C: "aCheckWeaponDamage",
+    0x0047063F: "aExecuteBomb",
+    0x0047296E: "aKillUnit",
+}
+REMOVE_UNIT_LIVE = {
+    0x0040B316: "aAI_SpecialPlayerControl",
+    0x00413459: "aPlayRotateStatueSequence",
+    0x00413903: "aPlayLaserBarrier",
+    0x00413F5E: "aPlayStatueSequence",
+    0x00413FA4: "aPlayStatueSequence",
+    0x004142EC: "aPlayStatueSequence",
+    0x00414F9C: "aPlayFootBridgeSequence",
+    0x00415663: "aPlayFootBridgeSequence",
+    0x00415B8D: "aPlayGroundFireAnimation",
+    0x0041CA5E: "aBattleSystem.cpp:3999",
+    0x0046F2FB: "the hatch arm of 0x0046F210",
+    0x00470208: "aExecuteTeleporter",
+    0x00478420: "aUI_KillUnit",
+    0x00478465: "aUI_KillUnit",
+    0x0047BCA0: "lKillPlayerUnits",
+}
+#: The two loops whose own gate says the victim is alive.
+UI_KILL_UNIT = (0x004783D0, 0x004784A0)
+KILL_PLAYER_UNITS = (0x0047BC60, 0x0047BCCD)
+#: `docs/42` §4.6 -- the muzzle arms that write 0 over the wait flag
+#: (`[esp+0x10]`, initialised to 1 at `0x0040CC4D`).
+WAIT_SKIPPED_WEAPONS = frozenset({0x0F, 0x11, 0x14, 0x15, 0x1B, 0x1E, 0x1F, 0x20,
+                                  0x24, 0x25})
+#: `docs/42` §4.8 (corrected 2026-09-03) -- the death switch does not branch
+#: on the severity: `[esp+0x1C]` is zeroed at `0x0040CC49`, just before the
+#: muzzle switch, and the muzzle arms write the value the death switch reads
+#: at `0x0040DD05`.  So the "style" is the weapon's: 3 for the four sniper
+#: arms, 1 for five, 2 for weapon 40 (FireDeath), and 0 -- the default arm
+#: of the switch -- for every other weapon.
+DEATH_STYLE_BY_WEAPON = {**{w: 3 for w in (15, 30, 31, 32)},
+                         **{w: 1 for w in (9, 11, 17, 22, 44)}, 40: 2}
+MUZZLE_INDEX = 0x0040E5A4
+MUZZLE_JUMP = 0x0040E524
+#: The impact switch: the byte index table, its jump table, and the weapon id
+#: the first entry stands for (``lea eax, [edx - 7]`` at ``0x0040D4DF``).
+IMPACT_INDEX = 0x0040E614
+IMPACT_JUMP = 0x0040E5D4
+IMPACT_FIRST_WEAPON = 7
+IMPACT_ENTRIES = 0x28
+MUZZLE_WEAPON_FIRST = 2
+MUZZLE_WEAPONS = 46
+MUZZLE_ARMS = 32
+MUZZLE_DEFAULT_ARM = 0x0040D42C
+IMPACT_SWITCH_ENTRY = 0x0040D472
+#: `KillFire`, `FireDeath` and `FlyingUnit` -- the three death creators the
+#: second capture reached (`blob_creators.DEATH_PROGRAMS`).
+KILL_FIRE = (0x00423AD0, 0x00423C20)
+FIRE_DEATH = (0x0042B1D0, 0x0042B2F0)
+FLYING_UNIT = (0x00429700, 0x004297F0)
 EMPTY_CAPTION = 0x004FA524
 TEXT = (0x00401000, 0x004B0000)
 
 # Callees, for `call rel32` pins.
 A_SET_CAMERA = 0x00403560
+A_CAMERA_POSITION = 0x00403750
 A_ROTATE = 0x00403600
 A_MOVE = 0x004037D0
 A_FLIGHT = 0x0040EEE0
@@ -151,6 +339,25 @@ A_CTOR = 0x00420950
 A_CREATE_SPECIAL = 0x004069C0
 A_FLASH_CIRCLE_HEAL = 0x00423030
 A_FLASH_CIRCLE_POISON = 0x004232E0
+A_ORIENT = 0x00403AA0
+A_ZOOMBOB = 0x00423720
+A_MARKER_RAISE = 0x00473920
+A_JAM_ORBIT = 0x004104A0
+A_HEAT_CAP = 0x00475340
+A_ATTACK_UNIT = 0x0046B450
+A_HEAL_COMMAND = 0x00470890
+A_HEAL_POWER = 0x004753C0
+A_MAX_HIT_POINTS = 0x00475240
+A_HEAL_APPLY = 0x0047B180
+A_HEAL_ORBIT = 0x0040FBE0
+A_MAY_HEAL = 0x0047B4C0
+A_TUBE_PUFFS = 0x00423770
+A_ROOF_DEBRIS = 0x00422460
+A_READ_CAMERA = 0x00403780
+A_UNIT_HEIGHT = 0x0047AD70
+A_CELL_IN_FRONT = 0x004308C0
+A_EXECUTE_WARP = 0x0046EF50
+A_DRAIN = 0x0046CCA0
 A_BEAM = 0x00428990
 A_BARRIER_HIT_A = 0x0042AB40
 A_BARRIER_HIT_B = 0x0042A9D0
@@ -546,6 +753,14 @@ def _check_clocks(ck: Checker, b: Binary) -> None:
     _pin_bytes(ck, b, "refresh.C118_string", VIEW_REFRESH, b"\xbe\x70\x04\x4c\x00", 1)
     _pin_bytes(ck, b, "refresh.freeze_above_96000", VIEW_REFRESH,
                b"\x3d\x00\x77\x01\x00", 1)
+    # What is compared is the third output of `0x00403750(&px, &py, &pz)`
+    # -- the camera **eye's z**: the three locals are pushed x, y, z and
+    # `[esp+0x10]`, the last, is the one the compare reads.
+    _pin_calls(ck, b, "refresh.freeze_reads_camera_position", VIEW_REFRESH,
+               A_CAMERA_POSITION, 1)
+    _pin_at(ck, b, "refresh.freeze_compares_third_output", 0x0040703F,
+            b"\x8d\x44\x24\x10\x8d\x4c\x24\x14\x8d\x54\x24\x18\x50\x51\x52")
+    _pin_at(ck, b, "refresh.freeze_reads_esp_0x10", 0x004070EC, b"\x8b\x44\x24\x14")
     _pin_bytes(ck, b, "refresh.simulate_1_0", VIEW_REFRESH, _push32(0x3F800000), 1)
     _pin_bytes(ck, b, "refresh.simulate_slot_0x40", VIEW_REFRESH, b"\xff\x50\x40", 1)
     _pin_bytes(ck, b, "refresh.knocked_down_model", VIEW_REFRESH,
@@ -675,36 +890,22 @@ def _check_fight(ck: Checker, b: Binary) -> None:
     for name, va in (("SP_HUM_0", 0x004C1124), ("SP_HUM_1", 0x004C1134),
                      ("SP_HUM_2", 0x004C1144)):
         _pin_bytes(ck, b, f"fight.scream_{name}_x2", FIGHT, _push32(va), 2)
+    # docs/42 §4.5 -- the three unit types the voice arm silences, read at
+    # `+0x4C` **after** the round robin that picked the wave, so the cursor
+    # moves and only the play is skipped.
+    _pin_at(ck, b, "fight.voice_reads_the_type", 0x0040CBDF, b"\x8a\x40\x4c")
+    _pin_at(ck, b, "fight.voice_mutes_22", 0x0040CBE2, b"\x3c\x16")
+    _pin_at(ck, b, "fight.voice_mutes_25_and_26", 0x0040CBE6,
+            b"\x3c\x18\x76\x06\x3c\x1a\x77\x02")
     _pin_bytes(ck, b, "fight.scream_species_3_explosion", FIGHT,
                _push32(0x004C1154), 1, at_least=True)
     # §4.6 -- the projectile wait and the flag.
     _pin_bytes(ck, b, "fight.wait_100_frames", FIGHT, b"\x83\xf9\x64", 1)
     _pin_calls(ck, b, "fight.arrived_flag", FIGHT, A_ARRIVED, 1)
-    writes = []
-    lo, hi = BLOB_UPDATE
-    blob = b.span(lo, hi)
-    one = b"\xc7\x05" + struct.pack("<I", ARRIVED_FLAG) + struct.pack("<I", 1)
-    reg = b"\x89\x2d" + struct.pack("<I", ARRIVED_FLAG)
-    start = 0
-    while True:
-        i = blob.find(one, start)
-        j = blob.find(reg, start)
-        cands = [c for c in (i, j) if c >= 0]
-        if not cands:
-            break
-        k = min(cands)
-        writes.append(lo + k)
-        start = k + 1
-    arms = [b.u32(BLOB_JUMP_TABLE + 4 * i) for i in range(BLOB_KINDS)]
-    starts = sorted(set(arms))
-    kinds = set()
-    for site in writes:
-        arm = max(s for s in starts if s <= site)
-        kinds |= {k for k, a in enumerate(arms) if a == arm}
-    ck.check("fight.arrived_flag_written_by_13_arms", len(writes) == 13,
-             str([hex(w) for w in writes]))
-    ck.check("fight.arrived_flag_kinds", kinds == ARRIVED_KINDS,
-             str(sorted(kinds)))
+    # The flag's writers are pinned by control flow in
+    # `_check_fight_corrections`: the nearest-arm-start attribution that
+    # stood here counted arm 45's *clear* and missed the two arms that enter
+    # a store from another arm's tail.
     # §4.8 -- the death switch's creators and the hide.
     for name, va in DEATH_CREATORS.items():
         n = len(b.calls(FIGHT, va))
@@ -763,6 +964,178 @@ def _check_fight(ck: Checker, b: Binary) -> None:
                _push8(0x14) + _push8(0x0A), 1)
 
 
+def _muzzle_arm_writes(b: Binary) -> dict[int, tuple[int | None, int | None]]:
+    """Per muzzle arm: what it writes over `[esp+0x1C]` and `[esp+0x10]`.
+
+    Scans each arm up to the next arm's start for the compiler's two forms --
+    an immediate store and a register store of the `1` in `ebx` or the `0` in
+    `edi` -- which is exact here because every arm is laid out contiguously
+    and ends in a `jmp` to one of the two exits.
+    """
+    arms = sorted({b.u32(MUZZLE_JUMP + 4 * i) for i in range(MUZZLE_ARMS)})
+    ends = arms[1:] + [IMPACT_SWITCH_ENTRY]
+    out: dict[int, tuple[int | None, int | None]] = {}
+    for start, end in zip(arms, ends):
+        code = b.span(start, end)
+        style: int | None = None
+        wait: int | None = None
+        for i in range(len(code) - 3):
+            if code[i:i + 4] == b"\xc7\x44\x24\x1c":
+                style = struct.unpack_from("<i", code, i + 4)[0]
+            elif code[i:i + 4] == b"\x89\x5c\x24\x1c":       # mov [esp+0x1c], ebx (1)
+                style = 1
+            elif code[i:i + 4] == b"\xc7\x44\x24\x10":
+                wait = struct.unpack_from("<i", code, i + 4)[0]
+            elif code[i:i + 4] == b"\x89\x7c\x24\x10":       # mov [esp+0x10], edi (0)
+                wait = 0
+        out[start] = (style, wait)
+    return out
+
+
+def _check_fight_corrections(ck: Checker, b: Binary) -> None:
+    """What a second reading of `aPlayFightAnimation` corrected on 2026-09-03."""
+    # --- the arrived flag: fourteen setters, one clearer ----------------
+    lo, hi = BLOB_UPDATE
+    blob = b.span(lo, hi)
+    one = b"\xc7\x05" + struct.pack("<I", ARRIVED_FLAG) + struct.pack("<I", 1)
+    sets = []
+    start = 0
+    while True:
+        i = blob.find(one, start)
+        if i < 0:
+            break
+        sets.append(lo + i)
+        start = i + 1
+    ck.check("arrived.update_stores_of_1", len(sets) == ARRIVED_SET_STORES,
+             str([hex(x) for x in sets]))
+    _pin_at(ck, b, "arrived.kind_45_stores_ebp", ARRIVED_KIND_45_STORE,
+            b"\x89\x2d" + struct.pack("<I", ARRIVED_FLAG))
+    # `ebp` is the sweep's zero: arm 2 pushes it as `aRandom2(0, 0x1000)`'s
+    # base three times over.
+    _pin_at(ck, b, "arrived.ebp_is_the_zero_base", 0x0041E7A7,
+            b"\x68\x00\x10\x00\x00\x55")
+    _pin_at(ck, b, "arrived.kind_2_tests_life_then_shares_49s_store",
+            ARRIVED_KIND_2_TAIL[0], b"\x0f\x85\xbd\x1f\x00\x00\x68\x90\x01\x00\x00\x55" + one)
+    arms = [b.u32(BLOB_JUMP_TABLE + 4 * i) for i in range(BLOB_KINDS)]
+    starts = sorted(set(arms))
+    def arm_of(site: int) -> set[int]:
+        arm = max(s for s in starts if s <= site)
+        return {k for k, a in enumerate(arms) if a == arm}
+    ck.check("arrived.kind_61_shares_28s_store", arm_of(ARRIVED_KIND_61_STORE) == {28},
+             str(arm_of(ARRIVED_KIND_61_STORE)))
+    # Arm 61's last instruction is a plain store, and the next byte is arm
+    # 28's start: the seeker falls into the tail that sets the flag.
+    _pin_at(ck, b, "arrived.kind_61_falls_into_28", ARRIVED_KIND_61_FALLS_INTO_28,
+            b"\xc6\x46\x45\x00\x8a\x46\x45\x84\xc0\x0f\x85\x28\x03\x00\x00" + one)
+    ck.check("arrived.kind_28_starts_at_the_shared_tail",
+             b.u32(BLOB_JUMP_TABLE + 4 * 28) == ARRIVED_KIND_61_FALLS_INTO_28 + 4,
+             hex(b.u32(BLOB_JUMP_TABLE + 4 * 28)))
+    ck.check("arrived.kind_45_owns_the_clear", arm_of(ARRIVED_KIND_45_STORE) == {ARRIVED_CLEAR_KIND},
+             str(arm_of(ARRIVED_KIND_45_STORE)))
+    by_start = set()
+    for site in sets:
+        by_start |= arm_of(site)
+    # The nearest-start attribution reaches every setter but the two that
+    # enter a store from another arm; with those added the set is pinned.
+    ck.check("arrived.setters_by_flow", by_start | {2, 61} == ARRIVED_KINDS
+             and not by_start & {2, 61}, str(sorted(by_start)))
+    # The creators' writes, outside the update's range.
+    text = b.span(*TEXT)
+    stores = {"set": 0, "clear": 0, "computed": 0}
+    flag = struct.pack("<I", ARRIVED_FLAG)
+    i = 0
+    while True:
+        i = text.find(flag, i)
+        if i < 0:
+            break
+        va = TEXT[0] + i
+        if not lo <= va < hi:
+            head = text[i - 2:i]
+            if head == b"\xc7\x05":
+                value = struct.unpack_from("<I", text, i + 4)[0]
+                stores["set" if value == 1 else "clear"] += 1
+            elif head[1:] in (b"\x2d", b"\x3d", b"\x1d", b"\x0d") and head[0] == 0x89:
+                stores["computed"] += 1
+            elif text[i - 1] == 0xA3:
+                stores["computed"] += 1
+        i += 4
+    ck.check("arrived.creator_writes", stores == ARRIVED_CREATOR_WRITES, str(stores))
+
+    # --- the death style is the muzzle arm's, not the severity ----------
+    _pin_at(ck, b, "fight.severity_slot_zeroed_before_muzzle", 0x0040CC3C,
+            b"\x33\xff\x83\xc0\xfe\xbb\x01\x00\x00\x00\x83\xf8\x2d\x89\x7c\x24\x1c\x89\x5c\x24\x10")
+    _pin_at(ck, b, "fight.death_switch_reads_the_slot", 0x0040DD05,
+            b"\x8b\x4c\x24\x1c\x49")
+    _pin_at(ck, b, "fight.wait_flag_read_before_the_loop", 0x0040D4B1,
+            b"\x8b\x44\x24\x14")
+    writes = _muzzle_arm_writes(b)
+    index = list(b.span(MUZZLE_INDEX, MUZZLE_INDEX + MUZZLE_WEAPONS))
+    style_by_weapon = {}
+    wait_skipped = set()
+    for w in range(MUZZLE_WEAPON_FIRST, MUZZLE_WEAPON_FIRST + MUZZLE_WEAPONS):
+        arm = b.u32(MUZZLE_JUMP + 4 * index[w - MUZZLE_WEAPON_FIRST])
+        style, wait = writes[arm]
+        if style:
+            style_by_weapon[w] = style
+        if wait == 0:
+            wait_skipped.add(w)
+    ck.check("fight.death_style_by_weapon", style_by_weapon == DEATH_STYLE_BY_WEAPON,
+             str(sorted(style_by_weapon.items())))
+    ck.check("fight.wait_skipped_weapons", wait_skipped == WAIT_SKIPPED_WEAPONS,
+             str(sorted(wait_skipped)))
+    ck.check("fight.muzzle_default_arm_writes_nothing",
+             writes.get(MUZZLE_DEFAULT_ARM) == (None, None), str(writes.get(MUZZLE_DEFAULT_ARM)))
+    # The damage arm reads the **last marked unit's** player and type
+    # (`ebp` is `[esp+0x34]`, the sweep's unit), not a stale local: the
+    # encodings are `[ebp+0x45]` and `[ebp+0x4C]`.
+    _pin_at(ck, b, "fight.damage_arm_reads_target_player", 0x0040E01D, b"\x80\x7d\x45\xff")
+    _pin_at(ck, b, "fight.damage_arm_reads_target_type", 0x0040E025, b"\x8a\x45\x4c")
+    _pin_at(ck, b, "fight.damage_arm_large_flag", 0x0040E02F, b"\x8a\x04\x55\x9b\xc0\x51\x00")
+    # The death switch's own tests: special 0x10, 0x0C and 0x0D, and the
+    # size flag `bl`.
+    _pin_at(ck, b, "fight.death_special_0x10", 0x0040DCCD, b"\x80\xb8\x27\xc0\x51\x00\x10")
+    _pin_at(ck, b, "fight.death_special_0x0c_0x0d", 0x0040DB1B, b"\x83\xe8\x0c\x74\x39\x48")
+    _pin_at(ck, b, "fight.death_size_flag", 0x0040DC95, b"\x8a\x1c\x4d\x9b\xc0\x51\x00")
+    # The end: at most twenty ticks while the pool lives, then the resume
+    # unless type 0x37 or slot 0x0B, then ticks while the pool, the clip or
+    # the fade is still going.
+    _pin_at(ck, b, "fight.end_wait_is_at_most_20_while_alive", 0x0040E256,
+            b"\x83\xf8\x14\x7d\x09\xe8\x40\xd2\x01\x00\x85\xc0\x75\xea")
+    _pin_at(ck, b, "fight.end_resume_skips_type_0x37", 0x0040E272, b"\x80\x7e\x4c\x37")
+    _pin_at(ck, b, "fight.end_resume_skips_slot_0x0b", 0x0040E28E, b"\x3c\x0b")
+    _pin_at(ck, b, "fight.end_loop_pool_clip_fade", 0x0040E2F8,
+            b"\xe8\xa3\xd1\x01\x00\x85\xc0\x75\xf1\x85\xff\x7f\xed\xa1\xa0\xc0\x4f\x00\x85\xc0\x7f\xe4")
+    # --- the three creators the second capture reached ------------------
+    _pin_bytes(ck, b, "death.kill_fire.kind_10_life_20", KILL_FIRE, _push8(0x14) + _push8(0x0A), 1)
+    _pin_bytes(ck, b, "death.kill_fire.aux_20", KILL_FIRE, b"\x50\x6a\x14\x53\x55\x57", 1)
+    _pin_bytes(ck, b, "death.kill_fire.ten_flames", KILL_FIRE, b"\xc7\x44\x24\x18\x0a\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "death.kill_fire.drift_x2", KILL_FIRE, _push8(0x60) + _push8(-0x30 & 0xFF), 2)
+    _pin_bytes(ck, b, "death.kill_fire.rise", KILL_FIRE, _push32(0xA0) + _push32(0x140), 1)
+    _pin_bytes(ck, b, "death.kill_fire.delay_draw", KILL_FIRE, _push8(3) + _push8(0), 1)
+    _pin_bytes(ck, b, "death.kill_fire.scatter_x3", KILL_FIRE,
+               _push32(0x640) + _push32(0xFFFFFCE0), 3)
+    _pin_at(ck, b, "death.kill_fire.delay_adds_argument", 0x00423B91, b"\x02\x44\x24\x1c")
+    _pin_at(ck, b, "fight.kill_fire_delay_0", 0x0040DCE2, b"\x6a\x00\x50\x51\xe8\xe5\x5d\x01\x00")
+    _pin_at(ck, b, "fire_circle.kill_fire_delay_20", 0x0041332C, b"\x6a\x14\x52\x50\xe8")
+    _pin_bytes(ck, b, "death.fire_death.kind_60_life_8", FIRE_DEATH, _push8(8) + _push8(0x3C), 1)
+    _pin_bytes(ck, b, "death.fire_death.row_4", FIRE_DEATH, b"\x6a\x00\x6a\x00\x03\xd7\x6a\x04", 1)
+    _pin_bytes(ck, b, "death.fire_death.drift_x2", FIRE_DEATH, _push32(0x3C0) + _push32(0xFFFFFE20), 2)
+    _pin_bytes(ck, b, "death.fire_death.rise", FIRE_DEATH, _push32(0x640) + _push32(0xA0), 1)
+    _pin_bytes(ck, b, "death.fire_death.aux_5_20", FIRE_DEATH, _push8(0x14) + _push8(5), 1)
+    _pin_at(ck, b, "death.fire_death.step_20_to_400", 0x0042B2D5,
+            b"\x83\xc7\x14\x42\x81\xff\x90\x01\x00\x00")
+    _pin_bytes(ck, b, "death.flying_unit.kind_3_life_10_up_800", FLYING_UNIT,
+               _push32(0x320) + _push8(0) + _push8(0) + _push8(0x0A) + _push8(3), 1)
+    _pin_at(ck, b, "death.flying_unit.model_is_the_types", 0x004297CA,
+            b"\x8d\x04\x55\x8c\xc0\x51\x00")
+    _pin_at(ck, b, "fight.flying_unit_delay_is_size_x2", 0x0040DB68,
+            b"\xd0\xe1\x51\x52\x50\xe8\x8e\xbb\x01\x00")
+    # FireExplosion's third argument is pushed by all twelve callers and read
+    # by none: the routine's frame names two (`[esp+8]` and `[esp+4]` only).
+    ck.check("death.fire_explosion_callers_push_3",
+             len(b.calls(TEXT, 0x00429A80)) == 13, str(len(b.calls(TEXT, 0x00429A80))))
+
+
 def _check_others(ck: Checker, b: Binary) -> None:
     # §7.1 -- the jump.
     _pin_calls(ck, b, "jump.trail", JUMP, A_TRAIL, 1)
@@ -806,6 +1179,11 @@ def _check_others(ck: Checker, b: Binary) -> None:
     _pin_calls(ck, b, "orbit.overheat.fire_explosion", ORBIT_OVERHEAT, 0x00429A80, 1)
     _pin_calls(ck, b, "orbit.overheat.blood", ORBIT_OVERHEAT, 0x00420D80, 1)
     _pin_calls(ck, b, "orbit.overheat.hide", ORBIT_OVERHEAT, A_HIDE, 1)
+    _check_unit_animation_creators(ck, b)
+    _check_marker_sites(ck, b)
+    _check_command_arms(ck, b)
+    _check_setpiece_cameras(ck, b)
+    _check_setpiece_creators(ck, b)
     # §8 -- set pieces: the camera and the effects.
     _pin_calls(ck, b, "setpiece.door.flights_x2", DOOR, A_FLIGHT, 2)
     _pin_bytes(ck, b, "setpiece.door.frames_10", DOOR, b"\xbd\x0a\x00\x00\x00", 1)
@@ -924,6 +1302,221 @@ def _check_others(ck: Checker, b: Binary) -> None:
     _pin_calls(ck, b, "objects.random_headings", VIEW_REFRESH, A_RANDOM2, 2)
 
 
+def _check_ground_objects(ck: Checker, b: Binary) -> None:
+    """docs/42 §9.1 -- who lays a transient object, and what clears it.
+
+    Three of ``aPlayFightAnimation``'s impact arms change the map; the
+    hand-over's two sweeps take it back.  Everything here is read out of the
+    instructions: no capture reaches the placers, which is why
+    ``inclib/ctrlmap.py`` is a transcription.
+    """
+    # The impact switch selects the three arms, by weapon id.
+    arms = {}
+    for n in range(IMPACT_ENTRIES):
+        arm = b.u32(IMPACT_JUMP + 4 * b.pe.u8(IMPACT_INDEX + n))
+        arms[IMPACT_FIRST_WEAPON + n] = arm
+    for weapon, expect in sorted(IMPACT_PLACER_WEAPONS.items()):
+        ck.check(f"objects.impact_arm_{weapon}", arms.get(weapon) == expect,
+                 f"{arms.get(weapon, 0):#010x} != {expect:#010x}")
+    # Weapon 40 calls the fire placer nine times, and the subtype each call
+    # pushes is the byte after its `push`.
+    sites = tuple(b.calls(FIGHT, A_FIRE_PLACER))
+    want = tuple(site for site, _ in NINE_FIRE_SITES)
+    ck.check("objects.fight_lays_nine_fires", sites == want,
+             f"{[hex(v) for v in sites]}")
+    def pushed_subtype(site: int) -> int:
+        """The last `push imm8` before the call -- the placer's third argument.
+
+        Its distance from the call varies with how the compiler ordered the
+        `lea`s around it, so it is searched for rather than read at a fixed
+        offset.
+        """
+        window = b.pe.bytes_at(site - 16, 16)
+        for i in range(len(window) - 2, -1, -1):
+            if window[i] == 0x6A:
+                return window[i + 1]
+        return -1
+
+    got = tuple((site, pushed_subtype(site)) for site, _ in NINE_FIRE_SITES)
+    ck.check("objects.nine_fire_subtypes", got == NINE_FIRE_SITES,
+             f"{[(hex(a), n) for a, n in got]}")
+    _pin_calls(ck, b, "objects.fight_lays_one_mine", FIGHT, A_MINE_PLACER, 1)
+    _pin_calls(ck, b, "objects.fight_lays_one_shield", FIGHT, A_SHIELD_PLACER,
+               1)
+    # The fire placer's two gates and its three cell writes.
+    _pin_at(ck, b, "objects.fire_gate_is_action_point_71", 0x0042F894,
+            b"\x3c\x47")
+    _pin_at(ck, b, "objects.fire_height_window_0x640", 0x0042F8C9,
+            b"\x3d\x40\x06\x00\x00")
+    _pin_at(ck, b, "objects.fire_refuses_a_shield", 0x0042F8DB, b"\x3c\x03")
+    _pin_at(ck, b, "objects.fire_writes_state_1", 0x0042FA4F,
+            b"\xc6\x45\x10\x01")
+    _pin_at(ck, b, "objects.fire_failure_writes_255", 0x0042FA36,
+            b"\xc6\x45\x10\xff")
+    _pin_calls(ck, b, "objects.fire_deletes_what_stood_there", FIRE_PLACER,
+               A_DELETE_SPECIAL, 1)
+    _pin_at(ck, b, "objects.mine_writes_state_2", 0x0042FB7E,
+            b"\xc6\x45\x10\x02")
+    _pin_calls(ck, b, "objects.mine_deletes_nothing", MINE_PLACER,
+               A_DELETE_SPECIAL, 0)
+    _pin_at(ck, b, "objects.shield_writes_state_3", 0x0042FCA4,
+            b"\xc6\x45\x10\x03")
+    _pin_at(ck, b, "objects.shield_already_there_returns", 0x0042FC2A,
+            b"\x80\x7d\x10\x03")
+    # The glow's own three bytes -- +0x11, +0x12 and +0x13, not +0x0E.
+    _pin_at(ck, b, "objects.glow_writes_slot_0x11", 0x0042FE15,
+            b"\x88\x45\x11")
+    _pin_at(ck, b, "objects.glow_writes_state_4", 0x0042FE1F,
+            b"\xc6\x45\x13\x04")
+    _pin_at(ck, b, "objects.glow_writes_phase_0x12", 0x0042FE23,
+            b"\x88\x45\x12")
+    # The two script sources: SetGroundFire lays a glow, ParaBombs a mine.
+    _pin_calls(ck, b, "objects.set_ground_fire_lays_a_glow",
+               (0x00442730, 0x004428B0), A_GLOW_PLACER, 1)
+    _pin_calls(ck, b, "objects.para_bombs_lay_a_mine", (0x00470790, 0x00470AB0),
+               A_MINE_PLACER, 1)
+    _pin_at(ck, b, "objects.para_bombs_need_an_empty_cell", 0x0047083D,
+            b"\x80\x78\x10\xff")
+    # The round tick: a fire loses one level and goes out at 1, a shield loses
+    # one from its countdown and the object's subtype with it.
+    _pin_calls(ck, b, "objects.tick_relights_the_fire", GROUND_TICK,
+               A_FIRE_PLACER, 1)
+    _pin_calls(ck, b, "objects.tick_decays_the_glow", GROUND_TICK,
+               A_GLOW_PLACER, 1)
+    _pin_calls(ck, b, "objects.tick_deletes_three_ways", GROUND_TICK,
+               A_DELETE_SPECIAL, 3)
+    _pin_at(ck, b, "objects.tick_fire_goes_out_at_1", 0x0042EE6D, b"\x3c\x01")
+    _pin_at(ck, b, "objects.tick_shield_expires_at_1", 0x0042EDDE,
+            b"\x80\x7e\xfb\x01")
+    _pin_at(ck, b, "objects.tick_shield_counts_down", 0x0042EE29,
+            b"\xfe\x4e\xfb")
+    _pin_at(ck, b, "objects.tick_shield_object_subtype", 0x0042EE3A,
+            b"\xfe\x48\x41")
+    _pin_at(ck, b, "objects.tick_glow_decays_at_phase_2", 0x0042ED8D,
+            b"\x83\xe8\x02")
+    # The ignition sweep, and what an ignited glow does.
+    _pin_at(ck, b, "objects.ignite_reads_state_4", 0x00470AD0, b"\x80\x3e\x04")
+    _pin_at(ck, b, "objects.ignite_clears_the_state", 0x00470B10,
+            b"\xc6\x06\xff")
+    _pin_calls(ck, b, "objects.ignite_plays_the_fire", GROUND_IGNITE,
+               A_GROUND_FIRE_ANIM, 1)
+    _pin_bytes(ck, b, "objects.ground_fire_walks_eight_directions",
+               GROUND_FIRE_ANIM, b"\x83\xfe\x08", 1)
+    _pin_calls(ck, b, "objects.ground_fire_steps", GROUND_FIRE_ANIM, A_STEP, 1)
+    _pin_at(ck, b, "objects.ground_fire_step_takes_diagonals", 0x00415963,
+            b"\x6a\x01")
+    _pin_at(ck, b, "objects.ground_fire_spares_a_shield", 0x004159AE,
+            b"\x80\x78\x10\x03")
+    _pin_calls(ck, b, "objects.ground_fire_removes_the_units",
+               GROUND_FIRE_ANIM, A_REMOVE_UNIT, 1)
+    # The hand-over runs the two sweeps between the counter and NEXT TURN.
+    for name, va in (("ignite", A_GROUND_IGNITE), ("tick", A_GROUND_TICK)):
+        _pin_calls(ck, b, f"objects.hand_over_runs_the_{name}", HAND_OVER, va,
+                   1)
+
+
+def _check_bomb_picture(ck: Checker, b: Binary) -> None:
+    """Where the mine's explosion is drawn, and therefore when.
+
+    `aExecuteBomb` `0x004702C0` ends by calling `aPlayFightAnimation`
+    `0x0040BD70` itself, and both the walk and the jump reach `aExecuteBomb`
+    from **inside** their own routine -- `0x0046EDAF` and `0x0046F109`.
+    `aExecuteFight`, which drains the reactions, is the caller's and runs only
+    after `aExecuteMove` has returned (docs/23 section 5.3).  So the blast is
+    over before the first reaction shot, which is the order `game` queues in.
+    """
+    _pin_calls(ck, b, "bomb.plays_its_own_fight_animation", EXECUTE_BOMB,
+               A_PLAY_FIGHT, 1)
+    # **Two** in the walk, which is the pair of arms `0x0046EC25` picks
+    # between by the mover's `size`: `0x0046ECA4` walks the eight neighbours
+    # of a large unit and `0x0046EDAF` is the stop cell's (docs/26 6.2 item 8).
+    _pin_calls(ck, b, "bomb.the_walk_detonates_inside_itself", EXECUTE_MOVE,
+               A_EXECUTE_BOMB, 2)
+    _pin_calls(ck, b, "bomb.the_jump_detonates_inside_itself", EXECUTE_WARP,
+               A_EXECUTE_BOMB, 1)
+    # Neither routine draws a fight of its own, so the blast's picture can
+    # only be the one `aExecuteBomb` played before returning.
+    _pin_calls(ck, b, "bomb.the_walk_draws_no_fight_itself", EXECUTE_MOVE,
+               A_PLAY_FIGHT, 0)
+    _pin_calls(ck, b, "bomb.the_jump_draws_no_fight_itself", EXECUTE_WARP,
+               A_PLAY_FIGHT, 0)
+
+
+def _check_remove_unit_sites(ck: Checker, b: Binary) -> None:
+    """The twenty call sites of `aRemoveUnitElement`, split by what reaches it.
+
+    `0x00477ABD` -- `mov byte [esi+0x16], 0` -- is the routine's own last
+    instruction, so removal kills.  Five sites arrive with the hit points
+    already down; at the other fifteen this write **is** the death.
+    """
+    sites = set(b.calls(TEXT, A_REMOVE_UNIT))
+    declared = set(REMOVE_UNIT_KILL_PATH) | set(REMOVE_UNIT_LIVE)
+    ck.check("remove_unit.every_site_is_accounted_for", sites == declared,
+             f"only in the image: {sorted(hex(a) for a in sites - declared)}; "
+             f"only in the table: {sorted(hex(a) for a in declared - sites)}")
+    ck.check("remove_unit.five_arrive_dead_and_fifteen_alive",
+             (len(REMOVE_UNIT_KILL_PATH), len(REMOVE_UNIT_LIVE)) == (5, 15),
+             f"{len(REMOVE_UNIT_KILL_PATH)} + {len(REMOVE_UNIT_LIVE)}")
+    _pin_at(ck, b, "remove_unit.its_last_instruction_kills", 0x00477ABD,
+            b"\xc6\x46\x16\x00")
+    # The two sweeps that reach it with a live unit and say so themselves:
+    # `lKillPlayerUnits` gates on `+0x16` being non-zero, and `aUI_KillUnit`
+    # on the slot carrying a player at all.
+    _pin_at(ck, b, "remove_unit.kill_player_units_gates_on_hp", 0x0047BC74,
+            b"\x8a\x46\xd3\x84\xc0")
+    _pin_at(ck, b, "remove_unit.ui_kill_unit_gates_on_the_player", 0x004783FE,
+            b"\x80\x3e\xff")
+    for name, rng, expect in (("ui_kill_unit", UI_KILL_UNIT, 2),
+                              ("kill_player_units", KILL_PLAYER_UNITS, 1),
+                              ("execute_bomb", EXECUTE_BOMB, 1)):
+        _pin_calls(ck, b, f"remove_unit.{name}", rng, A_REMOVE_UNIT, expect)
+
+
+def _check_arrived_ordering(ck: Checker, b: Binary) -> None:
+    """A creator clears the *arrived* flag **before** it allocates.
+
+    Which is what says a **full pool** leaves the flag down and the caller
+    waits its hundred frames -- so the remake reproducing that wait is
+    faithful, and cutting it short is only right for a refusal the engine
+    could not have had (docs/97 section 40.6).
+    """
+    flag = struct.pack("<I", ARRIVED_FLAG)
+    text = b.span(*TEXT)
+    found: set[int] = set()
+    i = 0
+    while True:
+        i = text.find(flag, i)
+        if i < 0:
+            break
+        va = TEXT[0] + i
+        if not BLOB_UPDATE[0] <= va - 2 < BLOB_UPDATE[1]:
+            if text[i - 2:i] == b"\xc7\x05" or (
+                    text[i - 2] == 0x89 and text[i - 1] in
+                    (0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D)):
+                found.add(va - 2)
+            elif text[i - 1] == 0xA3:
+                found.add(va - 1)
+        i += 4
+    ck.check("arrived.creator_stores_are_the_table_ones",
+             found == set(ARRIVED_CREATOR_STORES),
+             f"image {sorted(hex(a) for a in found - set(ARRIVED_CREATOR_STORES))}, "
+             f"table {sorted(hex(a) for a in set(ARRIVED_CREATOR_STORES) - found)}")
+    after = []
+    for store, start in sorted(ARRIVED_CREATOR_STORES.items()):
+        if b.calls((start, store), A_BLOB_CTOR):
+            after.append(store)
+    ck.check("arrived.only_one_store_follows_an_allocation",
+             after == [ARRIVED_STORE_AFTER_ALLOCATION[0]],
+             f"{[hex(a) for a in after]}")
+    # And that one writes 1, so it can never be the reason anybody waits.
+    _pin_at(ck, b, "arrived.the_one_that_follows_writes_one",
+            ARRIVED_STORE_AFTER_ALLOCATION[0],
+            b"\xc7\x05" + flag + struct.pack("<I",
+                                              ARRIVED_STORE_AFTER_ALLOCATION[1]))
+    _pin_at(ck, b, "arrived.the_flag_has_its_own_getter", ARRIVED_GETTER,
+            b"\xa1" + flag + b"\xc3")
+
+
 def _check_corpus(ck: Checker, root: str) -> None:
     """The two corpus facts docs/42 §1.2 and §6.1 lean on."""
     import glob
@@ -965,7 +1558,12 @@ def run_check(root: str) -> Checker:
     _check_walk(ck, b)
     _check_clocks(ck, b)
     _check_fight(ck, b)
+    _check_fight_corrections(ck, b)
     _check_others(ck, b)
+    _check_ground_objects(ck, b)
+    _check_bomb_picture(ck, b)
+    _check_remove_unit_sites(ck, b)
+    _check_arrived_ordering(ck, b)
     _check_corpus(ck, root)
     return ck
 
@@ -974,7 +1572,7 @@ def document(root: str) -> dict:
     b = Binary(os.path.join(root, GAME_EXE))
     table = [b.u32(0x00452E80 + 4 * i) for i in range(4)]
     return {
-        "schema": "presentation-tables/1",
+        "schema": "presentation-tables/2",
         "flight": {"snap_units": 0x7D00, "fast_threshold": 500, "stop_threshold": 30,
                    "fast_divisor": 3, "slow_divisor": 6},
         "unit_camera": {"quadrant_arms": [f"0x{t:08X}" for t in table],
@@ -983,8 +1581,175 @@ def document(root: str) -> dict:
         "speeds": {"walk": 2.0, "fight": 6.0, "idle": 1.5, "m2": 1.0},
         "idle_slots": [1, 2, 4, 5],
         "orbit_frames": 40,
+        "orbit_text_ids": {"skill": 3, "heal": 4, "jam_hot": 6, "jam_ammo": 7,
+                           "overheat": {"1": 14, "2": 15, "3": 16}},
+        "marker_life": 15,
+        "heal": {"power_large_kit": 3, "power_small_kit": 1, "max_hp_cap": 15,
+                 "equipment_small_kit": 15, "equipment_large_kit": 16},
+        "warp_acted": 5,
         "arrived_flag_kinds": sorted(ARRIVED_KINDS),
+        "arrived_flag_clear_kind": ARRIVED_CLEAR_KIND,
+        "death_style_by_weapon": {str(k): v for k, v in sorted(DEATH_STYLE_BY_WEAPON.items())},
+        "wait_skipped_weapons": sorted(WAIT_SKIPPED_WEAPONS),
     }
+
+
+def _check_setpiece_cameras(ck: Checker, b: Binary) -> None:
+    """docs/42 §8 as `SetpieceCamera` reads it (docs/97 §32): the door's
+    two heights and two flights, the tube's puffs at its tenth of nineteen
+    frames, the lift's and the block's camera read once and set per frame,
+    the roof's flight, debris, lead, drop and dust."""
+    _pin_calls(ck, b, "setpiece.door.unit_height_x2", DOOR, A_UNIT_HEIGHT, 2)
+    _pin_calls(ck, b, "setpiece.door.nearest_object_x2", DOOR, 0x00406F20, 2)
+    _pin_calls(ck, b, "setpiece.door.camera_read", DOOR, A_READ_CAMERA, 1)
+    _pin_bytes(ck, b, "setpiece.tube.puff_frame_10", TUBE, b"\x83\xfe\x0a", 1)
+    _pin_bytes(ck, b, "setpiece.tube.frames_19", TUBE, b"\x83\xfe\x13", 1)
+    _pin_calls(ck, b, "setpiece.tube.puffs", TUBE, A_TUBE_PUFFS, 1)
+    _pin_calls(ck, b, "setpiece.tube.no_flight", TUBE, A_FLIGHT, 0)
+    _pin_calls(ck, b, "setpiece.elevator.camera_read", ELEVATOR, A_READ_CAMERA, 1)
+    _pin_calls(ck, b, "setpiece.platform.camera_read", PLATFORM, A_READ_CAMERA, 1)
+    _pin_calls(ck, b, "setpiece.roof.camera_read", ROOF_UNIT, A_READ_CAMERA, 1)
+    _pin_calls(ck, b, "setpiece.roof.flight", ROOF_UNIT, A_FLIGHT, 1)
+    _pin_calls(ck, b, "setpiece.roof.debris", ROOF_UNIT, A_ROOF_DEBRIS, 1)
+    _pin_bytes(ck, b, "setpiece.roof.lead_5", ROOF_UNIT, b"\xbf\x05\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "setpiece.roof.scream_wait_4", ROOF_UNIT, b"\xbf\x04\x00\x00\x00", 1)
+    _pin_calls(ck, b, "setpiece.roof.camera_per_frame", ROOF_UNIT, A_SET_CAMERA, 1)
+    _pin_bytes(ck, b, "setpiece.roof.drawn_160_up", ROOF_UNIT, b"\x05\xa0\x00\x00\x00", 1)
+    _pin_calls(ck, b, "setpiece.roof.landing_dust", ROOF_UNIT, A_LANDING_DUST, 1)
+
+
+def _check_setpiece_creators(ck: Checker, b: Binary) -> None:
+    """The eleven set-piece creators' shape, as the programs read them."""
+    _pin_bytes(ck, b, "creator.tube_puffs.pairs_15", TUBE_PUFFS, b"\x83\xff\x0f", 1)
+    _pin_calls(ck, b, "creator.tube_puffs.ctor_x2", TUBE_PUFFS, A_CTOR, 2)
+    _pin_calls(ck, b, "creator.platform_dust.ctor_x4", PLATFORM_DUST, A_CTOR, 4)
+    _pin_calls(ck, b, "creator.platform_dust.draws_x12", PLATFORM_DUST, A_RANDOM2, 12)
+    _pin_bytes(ck, b, "creator.ground_debris.twenty", GROUND_UNIT_DEBRIS, b"\xc7\x44\x24\x18\x14\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.ground_debris.kind_29_life_50", GROUND_UNIT_DEBRIS, _push8(0x32) + _push8(0x1D), 2)
+    _pin_bytes(ck, b, "creator.ground_debris.discarded_draw_x2", GROUND_UNIT_DEBRIS, b"\xdd\xd8", 2)
+    _pin_bytes(ck, b, "creator.roof_debris.kind_0_life_50", ROOF_DEBRIS, _push8(0x32) + _push8(0), 2)
+    _pin_bytes(ck, b, "creator.roof_debris.span_40_minus_100", ROOF_DEBRIS, _push8(0x9C) + _push8(0x28), 2)
+    _pin_bytes(ck, b, "creator.wall_debris.thirty", WALL_DEBRIS, b"\xc7\x44\x24\x18\x1e\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.wall_debris.five", WALL_DEBRIS, b"\xbd\x05\x00\x00\x00", 1)
+    _pin_calls(ck, b, "creator.wall_debris.draws_x13", WALL_DEBRIS, A_RANDOM2, 13)
+    _pin_bytes(ck, b, "creator.fire_circle.kind_67_life_6", FIRE_CIRCLE_RING, _push8(6) + _push8(0x43), 1)
+    _pin_calls(ck, b, "creator.fire_circle.rotate", FIRE_CIRCLE_RING, A_ROTATE_VECTOR, 1)
+    _pin_bytes(ck, b, "creator.laser.three_x2", LASER_BEAM, b"\xc7\x44\x24\x38\x03\x00\x00\x00", 2)
+    _pin_calls(ck, b, "creator.laser.direction", LASER_BEAM, A_DIRECTION, 1)
+    _pin_calls(ck, b, "creator.laser.orient", LASER_BEAM, A_ORIENT, 1)
+    _pin_bytes(ck, b, "creator.laser.kind_51_life_16", LASER_BEAM, _push8(0x10) + _push8(0x33), 1)
+    _pin_bytes(ck, b, "creator.laser.model_kind_1_life_9", LASER_BEAM, _push8(9) + _push8(1), 1)
+    _pin_bytes(ck, b, "creator.laser.down_2400", LASER_BEAM, b"\x81\xed\x60\x09\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.stream.kind_65_life_70", TELEPORTER_STREAM, _push8(0x46) + _push8(0x41), 1)
+    _pin_calls(ck, b, "creator.stream.draws_x4", TELEPORTER_STREAM, A_RANDOM2, 4)
+    _pin_bytes(ck, b, "creator.bomber.kind_52_life_150", BOMBER_CREATOR,
+               _push32(0x96) + _push8(0x34), 1)
+    _pin_calls(ck, b, "creator.bomber.direction", BOMBER_CREATOR, A_DIRECTION, 1)
+    _pin_bytes(ck, b, "creator.bomber.clears_arrived", BOMBER_CREATOR, b"\xc7\x05\x3c\xe6\x4f\x00\x00\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.para_bomb.kind_25", PARA_BOMB_CREATOR, _push8(0x19), 1)
+    _pin_bytes(ck, b, "creator.para_bomb.rot_y_64", PARA_BOMB_CREATOR, _push8(0x40), 1)
+    _pin_bytes(ck, b, "creator.para_bomb.clears_arrived", PARA_BOMB_CREATOR, b"\xc7\x05\x3c\xe6\x4f\x00\x00\x00\x00\x00", 1)
+
+
+def _check_unit_animation_creators(ck: Checker, b: Binary) -> None:
+    """docs/42 §7 -- the seven creators' literals, as the programs in
+    `blob_creators.py` read them (docs/97 §31)."""
+    word = lambda disp, value: b"\x66\xc7\x44\x24" + bytes([disp]) + struct.pack("<H", value)
+    # The marker: two radii, a quarter turn, one orientation, one constructor.
+    _pin_bytes(ck, b, "creator.arrows.radius_large", ARROWS, b"\xbf\x80\x25\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.arrows.radius", ARROWS, b"\xbf\xc0\x12\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.arrows.quarter_turn", ARROWS, word(0x28, 0x400), 1)
+    _pin_calls(ck, b, "creator.arrows.rotate", ARROWS, A_ROTATE_VECTOR, 1)
+    _pin_calls(ck, b, "creator.arrows.orient", ARROWS, A_ORIENT, 1)
+    _pin_calls(ck, b, "creator.arrows.ctor", ARROWS, A_CTOR, 1)
+    # The landing dust: 3200 out, 204 a puff, rising 800.
+    _pin_bytes(ck, b, "creator.landing_dust.radius", LANDING_DUST, b"\xbf\x80\x0c\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.landing_dust.turn", LANDING_DUST, word(0x20, 0xCC), 1)
+    _pin_bytes(ck, b, "creator.landing_dust.rise", LANDING_DUST, b"\x68\x20\x03\x00\x00", 1)
+    _pin_calls(ck, b, "creator.landing_dust.ctor", LANDING_DUST, A_CTOR, 1)
+    # The heal flash: the flash radii, a twelfth of a turn, two constructors
+    # (the cross and its mirror image).
+    _pin_bytes(ck, b, "creator.flash_heal.radius_large", FLASH_HEAL, b"\xbd\x00\x19\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.flash_heal.radius", FLASH_HEAL, b"\xbd\x40\x06\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.flash_heal.twelfth_turn", FLASH_HEAL, word(0x34, 0x155), 1)
+    _pin_calls(ck, b, "creator.flash_heal.ctor_x2", FLASH_HEAL, A_CTOR, 2)
+    # The poison flash: the **flash** radii, not the marker's, a quarter turn.
+    _pin_bytes(ck, b, "creator.flash_poison.radius_large", FLASH_POISON, b"\xbf\x00\x19\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.flash_poison.radius", FLASH_POISON, b"\xbf\x40\x06\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.flash_poison.quarter_turn", FLASH_POISON, word(0x28, 0x400), 1)
+    _pin_calls(ck, b, "creator.flash_poison.ctor", FLASH_POISON, A_CTOR, 1)
+    # The trail: one zoom bob, four sprites falling from 640, delayed by index.
+    _pin_calls(ck, b, "creator.trail.zoombob", TRAIL, A_ZOOMBOB, 1)
+    _pin_bytes(ck, b, "creator.trail.fall_640", TRAIL, b"\x2d\x80\x02\x00\x00", 1)
+    _pin_bytes(ck, b, "creator.trail.four", TRAIL, b"\x83\xfe\x04", 1)
+    _pin_calls(ck, b, "creator.trail.ctor", TRAIL, A_CTOR, 1)
+
+
+def _check_marker_sites(ck: Checker, b: Binary) -> None:
+    """docs/42 §7.3 -- the marker is raised **on a selection and after a pad
+    command**, never per frame: `0x00473920` gates on the animation level and
+    a selected unit, and its three callers are the select routine and the
+    command pad.  The frame loop calls neither it nor the creator."""
+    _pin_calls(ck, b, "marker.raise.anim_level_gate", MARKER_RAISE, A_ANIM_LEVEL, 1)
+    _pin_bytes(ck, b, "marker.raise.selected_gate", MARKER_RAISE,
+               b"\x66\x81\x3d\xf8\x62\x51\x00\xff\xff", 1)
+    _pin_calls(ck, b, "marker.raise.creator", MARKER_RAISE, A_ARROWS, 1)
+    _pin_calls(ck, b, "marker.select_raises", SELECT_UNIT, A_MARKER_RAISE, 1)
+    _pin_calls(ck, b, "marker.pad_raises_x2", COMMAND_PAD, A_MARKER_RAISE, 2)
+    sites = len(b.calls(TEXT_SECTION, A_MARKER_RAISE))
+    ck.check("marker.raise_sites", sites == 3, f"{sites} call site(s) in .text")
+    _pin_calls(ck, b, "marker.frame_loop_never", MAIN_LOOP, A_ARROWS, 0)
+    _pin_calls(ck, b, "marker.frame_loop_never_raises", MAIN_LOOP, A_MARKER_RAISE, 0)
+    # The four orbits raise it themselves (docs/42 §7.5).
+    for name, rng in (("skill", ORBIT_SKILL), ("jam", ORBIT_JAM),
+                      ("overheat", ORBIT_OVERHEAT), ("rotating", ORBIT_ROTATING)):
+        _pin_calls(ck, b, f"marker.orbit_{name}_raises", rng, A_ARROWS, 1)
+
+
+def _check_command_arms(ck: Checker, b: Binary) -> None:
+    """The three `core` rules slice C found missing (docs/97 §31): the drain's
+    jam arm, the heal command, and the pad's warp arm."""
+    # docs/25 §6 -- after a reaction shot, an empty magazine or a heat counter
+    # at the cap plays the jam orbit and clears the ticket, in **both** loops.
+    _pin_calls(ck, b, "drain.attack_x2", DRAIN, A_ATTACK_UNIT, 2)
+    _pin_bytes(ck, b, "drain.ammo_read_x4", DRAIN, b"\x8a\x46\x3d", 4)
+    _pin_calls(ck, b, "drain.heat_cap_x4", DRAIN, A_HEAT_CAP, 4)
+    _pin_calls(ck, b, "drain.jam_orbit_x2", DRAIN, A_JAM_ORBIT, 2)
+    _pin_bytes(ck, b, "drain.ticket_cleared_x2", DRAIN, b"\xc6\x46\x59\x00", 2)
+    # docs/29 §1.1 button 2 -- the heal command.
+    _pin_bytes(ck, b, "heal.power.large_kit_is_3", HEAL_POWER, b"\x38\x48\x31", 1)
+    _pin_bytes(ck, b, "heal.power.small_kit_is_1", HEAL_POWER, b"\x8a\x58\x30", 1)
+    _pin_bytes(ck, b, "heal.power.three", HEAL_POWER, b"\xb8\x03\x00\x00\x00", 1)
+    _pin_bytes(ck, b, "heal.max_hp.alien_is_type", MAX_HIT_POINTS, b"\x80\x79\x45\xff", 1)
+    _pin_bytes(ck, b, "heal.max_hp.ep_over_12", MAX_HIT_POINTS, b"\xb8\xab\xaa\xaa\x2a", 1)
+    _pin_bytes(ck, b, "heal.max_hp.cap_15", MAX_HIT_POINTS, b"\x83\xf8\x0f", 1)
+    _pin_calls(ck, b, "heal.apply.reads_max", HEAL_APPLY, A_MAX_HIT_POINTS, 2)
+    _pin_bytes(ck, b, "heal.apply.adds_power", HEAL_APPLY, b"\x02\xc3\x88\x46\x16", 1)
+    _pin_bytes(ck, b, "heal.command.mp_gate", HEAL_COMMAND, b"\x8a\x46\x15", 1)
+    _pin_calls(ck, b, "heal.command.power", HEAL_COMMAND, A_HEAL_POWER, 1)
+    _pin_calls(ck, b, "heal.command.cell_in_front", HEAL_COMMAND, A_CELL_IN_FRONT, 1)
+    _pin_calls(ck, b, "heal.command.max_x2", HEAL_COMMAND, A_MAX_HIT_POINTS, 2)
+    _pin_calls(ck, b, "heal.command.apply_x2", HEAL_COMMAND, A_HEAL_APPLY, 2)
+    _pin_calls(ck, b, "heal.command.orbit_x2", HEAL_COMMAND, A_HEAL_ORBIT, 2)
+    _pin_bytes(ck, b, "heal.command.other_player_skipped", HEAL_COMMAND, b"\x8a\x4e\x45\x8a\x47\x45", 1)
+    # The pad arm: one movement point off only when the command answered 1,
+    # `+0x39 = 3` **unconditionally** -- the join at 0x004733F3.
+    _pin_calls(ck, b, "heal.pad.command", HEAL_PAD_ARM, A_HEAL_COMMAND, 1)
+    _pin_bytes(ck, b, "heal.pad.charge_one", HEAL_PAD_ARM, b"\xfe\xc8\x88\x46\x15", 1)
+    _pin_bytes(ck, b, "heal.pad.acted_3", HEAL_PAD_ARM, b"\xc6\x46\x39\x03", 1)
+    # The offer: `0x0047B4C0` (a kit, a patient or self under the ceiling)
+    # and `cmp byte [esi + 0x15], 1 / jb`.
+    _pin_calls(ck, b, "heal.offer.gate", HEAL_OFFER, A_MAY_HEAL, 1)
+    _pin_bytes(ck, b, "heal.offer.needs_a_point", HEAL_OFFER, b"\x80\x7e\x15\x01", 1)
+    _pin_calls(ck, b, "heal.gate.power", MAY_HEAL, A_HEAL_POWER, 1)
+    _pin_calls(ck, b, "heal.gate.cell_in_front", MAY_HEAL, A_CELL_IN_FRONT, 1)
+    _pin_calls(ck, b, "heal.gate.max_x2", MAY_HEAL, A_MAX_HIT_POINTS, 2)
+    # The warp arm: `aExecuteWarp`, then for a mover still alive `mp = 0`,
+    # `+0x39 = 5` and the drain.
+    _pin_calls(ck, b, "warp.pad.execute", WARP_PAD, A_EXECUTE_WARP, 1)
+    _pin_bytes(ck, b, "warp.pad.mp_zeroed", WARP_PAD, b"\xc6\x46\x15\x00", 1)
+    _pin_bytes(ck, b, "warp.pad.acted_5", WARP_PAD, b"\xc6\x46\x39\x05", 1)
+    _pin_calls(ck, b, "warp.pad.drain", WARP_PAD, A_DRAIN, 1)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -209,9 +209,10 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 			var sx: int = unit.x
 			var sy: int = unit.y
 			var moved: MoveResult = ExecuteMove.execute(ctx.map, ctx.units,
-				ctx.utab, ctx.ctab, unit, walked, tx, ty,
+				ctx.utab, ctx.ctab, ctx.wtab, unit, walked, tx, ty,
 				IncInt.u8(ctx.mp_left[best_cell]), ctx.turn.human_count(),
-				ctx.turn.mode, unit.mp)
+				ctx.turn.mode, ctx.turn.ai_level, ctx.turn, ctx.rng,
+				unit.mp)
 			if not moved.ok and not moved.movement_zeroed:
 				return false
 			_apply_move(ctx, unit, moved, sx, sy)
@@ -263,10 +264,10 @@ static func _apply_move(ctx: AIContext, unit: UnitState,
 ## `aExecuteWarp(sx, sy, tx, ty, 1)` `0x0046EF50`, reduced to its state.
 ##
 ## The routine plays a jump animation, clears the source cell's unit id,
-## writes the mover's into the target's and moves the record. Its one other
-## arm fires when the target carries a mine, which no shipped cell does --
-## docs/23 section 7.1 measures the byte as 255 in all 184162 of them -- so it
-## is named here and not simulated.
+## writes the mover's into the target's, moves the record and **detonates a
+## mine under the landing** (`0x0046F088`..`0x0046F109`), the same arm
+## [ExecuteWarp] carries for the player. The fog rebuild is behind the mover's
+## `+0x16`, so a jump the mine killed rebuilds nothing.
 static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		ty: int) -> bool:
 	var source: int = ctx.map.index_of(unit.x, unit.y)
@@ -275,16 +276,27 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		ctx.refuse("warp from a cell that does not hold the mover")
 		return false
 	var target: int = ctx.map.index_of(tx, ty)
-	if ctx.map.obstacle_at(target) == MapState.OBSTACLE_MINE:
-		ctx.refuse("a warp onto a mine is not simulated")
 	ctx.map.set_unit(source, MapState.NO_UNIT)
 	ctx.map.set_unit(target, unit.slot)
 	ctx.state[source] = AIOverlay.STATE_RESET
-	ctx.emit(AIEvent.make("warp", unit.slot, unit.x, unit.y, tx, ty))
+	var payload: Dictionary = {}
+	var sx: int = unit.x
+	var sy: int = unit.y
 	unit.x = tx
 	unit.y = ty
+	if ctx.map.obstacle_at(target) == MapState.OBSTACLE_MINE \
+			and CellObjects.delete_object(
+				ctx.map, ctx.map.effect_at(MapState.OBJECT_SLOT, target)):
+		ctx.map.set_effect(MapState.OBJECT_SLOT, target, MapState.NO_OBJECT)
+		ctx.map.set_obstacle(target, MapState.OBSTACLE_NONE)
+		ctx.map.set_effect(MapState.TIMER_SLOT, target, 0)
+		payload["blast"] = Interact.execute_bomb(ctx.map, ctx.units, ctx.utab,
+			ctx.wtab, tx, ty, ctx.turn.ai_level, ctx.turn.human_count(),
+			ctx.turn.mode, ctx.turn, ctx.rng).to_dict()
+	ctx.emit(AIEvent.make("warp", unit.slot, sx, sy, tx, ty, 0, "", payload))
 	# `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
 	# on every warp its mine arm did not kill it on (docs/22 section 9.4).
-	Visibility.build(ctx.map, ctx.units, ctx.utab, unit.player,
-		ctx.turn.human_count(), ctx.turn.mode)
+	if unit.hp > 0:
+		Visibility.build(ctx.map, ctx.units, ctx.utab, unit.player,
+			ctx.turn.human_count(), ctx.turn.mode)
 	return true

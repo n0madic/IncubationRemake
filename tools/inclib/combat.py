@@ -51,6 +51,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from . import ctrlmap as ctrlmapmod
 from .allowance import AllowanceUnit, movement_allowance
 from .info import BalanceTables
 from .movemap import distance
@@ -109,6 +110,8 @@ PLAYER_NEUTRAL = 0xFC
 #: ``docs/22`` §9.2 -- permanently visible whatever the fog says.
 ALWAYS_VISIBLE_TYPES = frozenset({0x3D, 0x3E, 0x3F})
 SPECIES_OBJECT = 2
+#: ``docs/21`` §2 -- species 1 is an alien; only the death voice reads it here.
+SPECIES_ALIEN = 1
 #: The two beacon types: every observer's pass marks them visible and they
 #: observe nothing themselves (``docs/22`` §9.3).
 BEACON_TYPES = frozenset({0x3D, 0x3E})
@@ -478,6 +481,13 @@ class CombatUnit:
     acted: int = 0            # +0x39
     ticket: int = 0           # +0x59
     visibility: int = 0       # +0x4F
+    #: ``+0x17`` and ``+0x18`` -- experience and the skill-point pool, the
+    #: two bytes the kill award of §7.5 writes (:func:`award_kill`).
+    ep: int = 0
+    tp: int = 0
+    #: ``+0x53`` -- the kill counter ``0x0047AF90`` saturates at 255.  Zero on
+    #: every shipped record (``docs/10`` §5); a runtime count.
+    kills: int = 0
     order: int = 0            # +0x47
     order2: int = 0           # +0x49
     order2_param: int = 0     # +0x4A
@@ -548,6 +558,23 @@ class CombatWorld:
     #: LCL predicate ``HeroKilled`` reads.
     hero_killed: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     rng: ARandom = field(default_factory=ARandom)
+    #: ``+0x0E``, ``+0x0F``, ``+0x11``, ``+0x12`` and ``+0x13`` -- the rest of
+    #: the transient-object block ``inclib.ctrlmap`` writes (``docs/42`` §9.1).
+    #: Empty by default and materialised at their idle values by
+    #: :meth:`ctrlmap`, which is what all 184162 shipped cells carry: 0, 255,
+    #: 255, 0 and 255.
+    effect_timer: list[int] = field(default_factory=list)
+    effect_object: list[int] = field(default_factory=list)
+    decal_object: list[int] = field(default_factory=list)
+    decal_phase: list[int] = field(default_factory=list)
+    decal_state: list[int] = field(default_factory=list)
+    #: The 80 slots of ``[0x004FA828]``, derived from the cells by
+    #: ``aBuild3DSpecialObjects`` and therefore neither saved nor hashed.
+    special_objects: list[int] = field(default_factory=list)
+    #: The placer model names the mission's world set carries -- ``None`` skips
+    #: the gate.  Only ``World_D00`` has ``GLOW1/2``, so a world built without
+    #: this will let ``SetGroundFire`` work where the engine does nothing.
+    special_models: "frozenset[str] | None" = None
 
     def in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < self.width and 0 <= y < self.height
@@ -568,6 +595,49 @@ class CombatWorld:
             return None
         unit = self.units.get(slot)
         return unit if unit is not None and unit.alive else None
+
+    # --- the transient objects (docs/42 §9.1) -----------------------------
+
+    def ctrlmap(self) -> "ctrlmapmod.CtrlMap":
+        """The placers' view of these cells, aliasing the columns.
+
+        The five columns ``docs/22`` never needed are materialised at their
+        idle values on first use rather than being required of every caller --
+        the same courtesy :attr:`action_point` gets, except that these have one
+        right answer instead of needing the map.
+        """
+        n = len(self.effect_state)
+        if not self.effect_timer:
+            self.effect_timer = [0] * n
+        if not self.effect_object:
+            self.effect_object = [ctrlmapmod.NO_OBJECT] * n
+        if not self.decal_object:
+            self.decal_object = [ctrlmapmod.NO_OBJECT] * n
+        if not self.decal_phase:
+            self.decal_phase = [0] * n
+        if not self.decal_state:
+            self.decal_state = [ctrlmapmod.DECAL_NONE] * n
+        # `action_point` and `field_type` are **not** materialised: they have
+        # no right default (field type 0 is one the placers accept, so a world
+        # that never filled them would burn everywhere), and
+        # `interact._require_cells` exists to refuse exactly that world.
+        if not self.action_point or not self.field_type:
+            raise CombatError(
+                "this world carries no action points or field types; the cell "
+                "placers read both (docs/42 §9.1)")
+        cells = ctrlmapmod.CtrlMap(
+            width=self.width, height=self.height,
+            cell_height=self.cell_height, unit_at=self.unit_at,
+            action_point=self.action_point,
+            field_type=self.field_type, effect_timer=self.effect_timer,
+            effect_object=self.effect_object, effect_state=self.effect_state,
+            decal_object=self.decal_object, decal_phase=self.decal_phase,
+            decal_state=self.decal_state, objects=self.special_objects,
+            models=self.special_models)
+        if not self.special_objects:
+            ctrlmapmod.rebuild_objects(cells)
+            self.special_objects = cells.objects
+        return cells
 
     # --- heights ----------------------------------------------------------
 
@@ -1190,6 +1260,15 @@ class AttackResult:
     """``(x, y, marker)`` for every cell the weapon covers."""
     outcomes: list[dict[str, Any]] = field(default_factory=list)
     """One entry per marked cell that held a unit."""
+    xp: int = 0
+    """``aAttackUnit``'s own return value -- the experience the shot earned,
+    summed over its kills (``0x0046BFB8``), which ``aPlayFightAnimation``
+    takes as its sixth argument and puts in the caption (``docs/42`` §4.2)."""
+    skill_raised: int = 0
+    """How many skill levels the attacker's pool rose by -- the argument of
+    the skill orbit ``0x00410190`` (``docs/42`` §7.5), zero when the orbit does
+    not play: the level compare at ``0x0046C252`` and the species test at
+    ``0x0046C269`` both gate it."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1197,6 +1276,7 @@ class AttackResult:
             "overheat": self.overheat, "facing": self.facing,
             "marked": [list(m) for m in self.marked],
             "outcomes": self.outcomes,
+            "xp": self.xp, "skill_raised": self.skill_raised,
         }
 
 
@@ -1467,6 +1547,39 @@ def marker_damage(world: CombatWorld, marker: int, weapon_id: int) -> int:
     return 0                          # 0x54 and 0x55 roll no damage at all
 
 
+def place_impact_objects(world: CombatWorld, weapon_id: int,
+                         tx: int, ty: int) -> list[tuple[int, int, int]]:
+    """The three impact arms of ``docs/42`` §9.1 that change the map.
+
+    ``0x0040D93D`` (weapon 40) calls the fire placer nine times around the
+    target -- the centre at subtype 4 and the eight neighbours at 3, every one
+    of them at the **centre** cell's height, so a neighbour more than half a
+    field above or below it does not catch.  ``0x0040D76A`` (42) lays one mine
+    and ``0x0040D5F8`` (43) one shield, both on the target cell.
+
+    Answers ``(x, y, state)`` for each cell that changed, in call order.
+    """
+    if weapon_id not in (ctrlmapmod.WEAPON_GROUND_FIRE, ctrlmapmod.WEAPON_MINE,
+                         ctrlmapmod.WEAPON_SHIELD):
+        return []
+    cells = world.ctrlmap()
+    placed: list[tuple[int, int, int]] = []
+    if weapon_id == ctrlmapmod.WEAPON_GROUND_FIRE:
+        if not world.in_bounds(tx, ty):
+            return []
+        z = world.cell_height[world.index(tx, ty)]
+        for dx, dy, subtype in ctrlmapmod.NINE_FIRES:
+            if ctrlmapmod.place_fire(cells, tx + dx, ty + dy, subtype, z) >= 0:
+                placed.append((tx + dx, ty + dy, ctrlmapmod.OBSTACLE_FIRE))
+    elif weapon_id == ctrlmapmod.WEAPON_MINE:
+        if ctrlmapmod.place_mine(cells, tx, ty) >= 0:
+            placed.append((tx, ty, ctrlmapmod.OBSTACLE_MINE))
+    else:
+        if ctrlmapmod.place_shield(cells, tx, ty) >= 0:
+            placed.append((tx, ty, ctrlmapmod.OBSTACLE_SHIELD))
+    return placed
+
+
 def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
                 ty: int) -> AttackResult:
     """``aAttackUnit`` ``0x0046B450`` -- ``docs/22`` §7, in the order it runs.
@@ -1493,6 +1606,8 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         tx, ty = standing.x, standing.y
 
     result = AttackResult(True)
+    # ``0x0046B588`` -- the pool at entry, for the skill-orbit compare.
+    tp_before = attacker.tp
     # ``0x0046B5DF`` -- weapon 47 is set **to its heat cap** before the
     # overheat check, inside the same ``maxHeat != 255`` gate: every shot of
     # it rolls ``aRandom(0, 40)``, and 15 of the 40 outcomes (0..10, 21..24)
@@ -1601,6 +1716,11 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             # ``aKillUnit`` (``0x00472920``) is the death sequence plus
             # ``aRemoveUnitElement``, which is where the hero counter lives.
             remove_unit_element(world, target)
+            # ``0x0046BF47`` -- ``test ebp, ebp / jle``: the award is gated
+            # on the damage **argument** (``ebp`` is what ``applyDamage`` was
+            # handed, zero after an absorber charge), not on what was dealt.
+            if damage > 0:
+                result.xp += award_kill(world, attacker, target)
         outcome = {
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
@@ -1633,6 +1753,18 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
     # effect dispatcher ``0x0046F210`` with phase 4 for every cell whose marker
     # byte is ``0x5C`` -- hit, and not ``0x5D``, killed.  Only ``special`` 9
     # has a ``case 4``, so that sweep is :func:`hatch` and nothing else.
+    # **The impact arm lays a transient object for three weapons**
+    # (``docs/42`` §9.1): 40 burns nine cells, 42 lays a mine, 43 a shield.
+    # ``aPlayFightAnimation``'s impact switch dispatches on the shooter's
+    # weapon **whether the shot hit or missed**, and on the target cell after
+    # the standing-unit adjustment above, so this is a consequence of firing
+    # rather than of connecting.  It runs before the hatch sweep below, which
+    # is the order the animation has them in.
+    place_impact_objects(world, attacker.weapon, tx, ty)
+
+    # ``0x0046C216`` -- after the animation: the skill orbit's argument.
+    result.skill_raised = skill_levels_raised(world, attacker, tp_before)
+
     for outcome in result.outcomes:
         if outcome["marker"] != MARKER_HIT:
             continue
@@ -1647,6 +1779,154 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             outcome["hatched"] = made
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Experience -- docs/22 section 7.5, ``0x0047AFD0`` / ``0x0047B090`` /
+# ``0x0047B100`` / ``0x0047AF90``
+# ---------------------------------------------------------------------------
+
+#: ``0x0043B740`` returns the game mode; 1 is the campaign (``docs/11``), and
+#: the gain routine returns the type's ``exp`` byte unchanged for it
+#: (``0x0047AFD7``).  The ladder below is reached only by the three session
+#: modes, which the remake does not play -- so it is transcribed and pinned
+#: (``combat_tables.py``), never measured.
+GAME_MODE_CAMPAIGN = 1
+#: ``0x0047AFF5``..``0x0047B013`` -- ``aiLevel()`` 0, 1 and 2 select 4, 3 and
+#: **1**; anything else keeps the 2 the routine starts with.  That 2 -> 1 and
+#: 3 -> 2 is what the ``dec / je`` chain does, and it is kept as it is.
+DIFFICULTY_MULTIPLIER = {0: 4, 1: 3, 2: 1}
+DIFFICULTY_MULTIPLIER_DEFAULT = 2
+#: ``cmp eax, 0x48`` and ``cmp eax, 0x6C`` at ``0x0047B035`` / ``0x0047B067``
+#: -- the experience bands of the session-mode ladder.
+EXPERIENCE_LOW = 72
+EXPERIENCE_HIGH = 108
+#: ``fcomp dword [0x4B1640]`` -- 144.0, the cap on both bytes; and
+#: ``fmul dword [0x4B163C]`` -- 0.5, the halved gain above 108.
+EXPERIENCE_CAP = 144
+EXPERIENCE_HALF = 0.5
+#: ``0x0047B04A`` -- ``imul 0x38E38E39 / sar edx, 4`` is a signed divide by
+#: 72, the same magic ``docs/10`` §5.11's rank uses for 12 with a different
+#: shift.
+EXPERIENCE_DIVISOR = 72
+#: ``0x0047AFB5`` -- the kill counter saturates at 255.
+KILL_COUNT_CAP = 0xFF
+#: ``docs/21`` §2 -- species 0 is human; only a human's pool raise plays the
+#: skill orbit (``0x0046C269``).
+SPECIES_HUMAN = 0
+#: ``docs/10`` §5 -- a skill level is twelve points of the pool.
+POINTS_PER_SKILL_LEVEL = 12
+
+
+def experience_gain(world: CombatWorld, attacker: CombatUnit,
+                    exp: int) -> float:
+    """``0x0047AFD0(unit, exp)`` -- the gain one kill is worth, as the
+    ``float`` the routine leaves in ``st(0)``.
+
+    In the campaign it is the victim type's ``exp`` byte.  In a session the
+    difficulty picks a multiplier ``m`` and the attacker's own experience
+    ``e`` bends it: below 72 the gain is ``(m - m*e/72) * exp``, from 72 to
+    108 it is ``exp``, and above 108 it is half -- or **nothing** when the
+    byte is exactly 1 (``cmp cl, 1`` at ``0x0047B06C`` reads the argument's
+    low byte, not the unit).
+    """
+    exp &= 0xFF
+    if world.game_mode == GAME_MODE_CAMPAIGN:
+        return float(exp)
+    m = DIFFICULTY_MULTIPLIER.get(world.ai_level, DIFFICULTY_MULTIPLIER_DEFAULT)
+    e = attacker.ep
+    if e < EXPERIENCE_LOW:
+        # ``imul ecx, eax`` then the reciprocal divide; ``m * e`` is small and
+        # non-negative, so truncation and floor agree.
+        return float(m - (m * e) // EXPERIENCE_DIVISOR) * exp
+    if e > EXPERIENCE_HIGH:
+        return 0.0 if exp == 1 else exp * EXPERIENCE_HALF
+    return float(exp)
+
+
+def _ftol(value: float) -> int:
+    """``_ftol`` -- the C runtime's truncation toward zero; every value here
+    is a small non-negative number."""
+    return int(value)
+
+
+def award_training(world: CombatWorld, attacker: CombatUnit, exp: int) -> None:
+    """``0x0047B090(unit, exp)`` -- the skill-point pool, ``+0x18``.
+
+    Skipped entirely when ``ep + gain`` would reach 144 (``0x0047B0B2``);
+    otherwise the pool takes the gain and is capped at 144.  It is called
+    **before** ``+0x17`` moves (``0x0046BFD7`` then ``0x0046BFF4``), so the
+    gate reads the pre-award experience.
+    """
+    gain = experience_gain(world, attacker, exp)
+    if attacker.ep + gain >= EXPERIENCE_CAP:
+        return
+    total = gain + attacker.tp
+    attacker.tp = EXPERIENCE_CAP if total >= EXPERIENCE_CAP else _ftol(total)
+
+
+def award_experience(world: CombatWorld, attacker: CombatUnit, exp: int) -> None:
+    """``0x0047B100(unit, exp)`` -- experience, ``+0x17``, capped at 144."""
+    total = experience_gain(world, attacker, exp) + attacker.ep
+    attacker.ep = EXPERIENCE_CAP if total >= EXPERIENCE_CAP else _ftol(total)
+
+
+def count_kill(attacker: CombatUnit, count: int = 1) -> None:
+    """``0x0047AF90(unit, n)`` -- ``+0x53`` plus ``n``, saturating at 255."""
+    total = (attacker.kills & 0xFF) + (count & 0xFF)
+    attacker.kills = KILL_COUNT_CAP if total > KILL_COUNT_CAP else total
+
+
+def award_kill(world: CombatWorld, attacker: CombatUnit,
+               victim: CombatUnit) -> int:
+    """The kill block of ``aAttackUnit`` at ``0x0046BF53``..``0x0046C004``.
+
+    Nothing for a species-2 victim, nothing for one of the attacker's own
+    player; otherwise the three player-record counters move, the gain is
+    truncated into the shot's total, both bytes are awarded and the kill is
+    counted.  Returns what the total grew by.
+
+    The counters -- ``0x0043B8D0`` and ``0x0043B860`` on the victim's player,
+    ``0x0043B810`` on the attacker's -- are the debriefing's statistics
+    (``docs/27``) and nothing in ``docs/22``'s scope reads them.
+    TODO: model the player-record kill and loss counters when the debriefing
+    is transcribed.
+    """
+    if world.species(victim) == SPECIES_OBJECT:
+        return 0
+    if victim.player == attacker.player:
+        return 0
+    exp = _type_exp(world, victim)
+    gained = _ftol(experience_gain(world, attacker, exp))
+    award_training(world, attacker, exp)
+    award_experience(world, attacker, exp)
+    count_kill(attacker)
+    return gained
+
+
+def _type_exp(world: CombatWorld, unit: CombatUnit) -> int:
+    """``unitInfo[type] + 0x7A`` -- the ``exp`` column of ``docs/21`` §2."""
+    row = world.tables.units.get(unit.type_id)
+    return 0 if row is None else row.exp
+
+
+def skill_levels_raised(world: CombatWorld, attacker: CombatUnit,
+                        tp_before: int) -> int:
+    """``0x0046C216``..``0x0046C283`` -- whether the skill orbit plays.
+
+    The attacker must still be alive, its pool's level (``+0x18 / 12``) must
+    have risen over the value saved at entry, and its species must be 0 --
+    then ``0x00410190`` is called with the difference.  Zero otherwise.
+    """
+    if not attacker.alive:
+        return 0
+    before = tp_before // POINTS_PER_SKILL_LEVEL
+    after = attacker.tp // POINTS_PER_SKILL_LEVEL
+    if after <= before:
+        return 0
+    if world.species(attacker) != SPECIES_HUMAN:
+        return 0
+    return after - before
 
 
 # ---------------------------------------------------------------------------
@@ -1714,6 +1994,13 @@ def remove_unit_element(world: CombatWorld, unit: CombatUnit) -> bool:
     (``0x004409E0``).  The gate is the turn counter at ``0x00509E1D``, so a
     hero taken off the map before the first hand-over does not count.
 
+    **Its last instruction kills.**  ``0x00477ABD`` is
+    ``mov byte [esi+0x16], 0``, with ``esi`` the unit record it has held since
+    ``0x00477A38`` -- the same record ``aExecuteWarp`` reads ``+0x16`` from to
+    decide whether the mover is still alive.  So "off the map" and "dead" are
+    one state and not two: every caller leaves the record at zero hit points
+    whether or not it wrote them itself.
+
     Returns whether the counter moved.
     """
     counted = False
@@ -1726,6 +2013,8 @@ def remove_unit_element(world: CombatWorld, unit: CombatUnit) -> bool:
         at = world.index(unit.x, unit.y)
         if world.unit_at[at] == unit.slot:
             world.unit_at[at] = -1
+    # ``0x00477ABD`` -- the routine's own last write.
+    unit.hp = 0
     return counted
 
 
@@ -1751,11 +2040,10 @@ def hatch(world: CombatWorld, target: CombatUnit,
         return -1
 
     x, y, group = target.x, target.y, target.group
-    # ``aRemoveUnitElement`` (``0x004779C0``) frees the record and clears the
-    # cell; it does not kill the unit, so no death bookkeeping runs -- but its
-    # own hero counter does, which is what :func:`remove_unit_element` adds.
+    # ``aRemoveUnitElement`` (``0x004779C0``) frees the record, clears the cell
+    # and zeroes the hit points; no death bookkeeping runs, but its own hero
+    # counter does, which is what :func:`remove_unit_element` adds.
     remove_unit_element(world, target)
-    target.hp = 0
 
     row = world.tables.units.get(HATCH_TYPE)
     made = CombatUnit(slot=free_slot(world), type_id=HATCH_TYPE,
@@ -1921,9 +2209,14 @@ class Reaction:
     reactor: int
     ticket: int
     attack: AttackResult
+    #: ``0x0046CE0E`` -- after the shot, an empty magazine or a heat counter
+    #: at the cap plays the jam orbit (``docs/42`` §7.4) and clears the
+    #: reactor's ticket; ``ticket`` above is the one it fired with.
+    jammed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {"reactor": self.reactor, "ticket": self.ticket,
+                "jammed": self.jammed,
                 "attack": self.attack.to_dict()}
 
 
@@ -1995,10 +2288,87 @@ def drain_reactions(world: CombatWorld, mover: CombatUnit) -> list[Reaction]:
         facing = reactor.facing
         result = attack_unit(world, reactor.x, reactor.y, mover.x, mover.y)
         reactor.facing = facing
-        fired.append(Reaction(reactor.slot, reactor.ticket, result))
+        shot = Reaction(reactor.slot, reactor.ticket, result)
+        # ``0x0046CE06`` / ``0x0046D088`` -- both loops: a shot that fired
+        # and left the magazine empty, or the heat at ``0x00475340``'s cap,
+        # jams the reactor out of the queue (``mov byte [esi + 0x59], 0``).
+        if result.fired and (reactor.ammo == 0
+                             or reactor.heat == max_heat(world, reactor)):
+            shot.jammed = True
+            reactor.ticket = 0
+        fired.append(shot)
         if not mover.alive:
             break
     return fired
+
+
+#: ``0x0047304A`` -- what the pad writes into ``+0x39`` after a warp.
+ACTED_WARPED = 5
+
+
+@dataclass
+class WarpResult:
+    """The player's jump (``aExecuteWarp`` ``0x0046EF50`` under the pad arm
+    at ``0x00472F10``), as a value."""
+
+    ok: bool
+    reason: str = ""
+    x: int = 0
+    y: int = 0
+    reactions: list[Reaction] = field(default_factory=list)
+    #: What a mine under the landing cell did, empty when there was none.
+    blast: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "ok": self.ok, "reason": self.reason, "x": self.x, "y": self.y,
+            "reactions": [r.to_dict() for r in self.reactions]}
+        if self.blast:
+            out["blast"] = self.blast
+        return out
+
+
+def warp_unit(world: CombatWorld, unit: CombatUnit, tx: int, ty: int) -> WarpResult:
+    """``aExecuteWarp(sx, sy, tx, ty, 1)`` and the pad arm around it.
+
+    The routine relinks the record, **detonates a mine under the landing**
+    (``0x0046F088``..``0x0046F109``) and then rebuilds the fog for the mover's
+    own player -- gated, like everything after it, on the mover still being
+    alive (``0x0046F133`` reads ``+0x16``).  The arm around it zeroes the
+    movement points, writes 5 into ``+0x39`` and drains the reaction queue at
+    the landing cell.  The caller decides the cell is a warp target;
+    ``docs/23`` §7.5's fill is the gate.
+
+    The mine arm used to be documented here as "not simulated: no shipped cell
+    carries one".  That was true of the *authored* maps and stopped being the
+    whole story when the placers of ``docs/42`` §9.1 went in: a mine is made
+    during play, and this is the same guard the walk and the push carry.
+    """
+    source = world.index(unit.x, unit.y)
+    if world.unit_at[source] != unit.slot:
+        return WarpResult(False, "no unit on start path field")
+    if not world.in_bounds(tx, ty):
+        return WarpResult(False, "the target is off the map")
+    target = world.index(tx, ty)
+    world.unit_at[source] = -1
+    world.unit_at[target] = unit.slot
+    unit.x, unit.y = tx, ty
+    result = WarpResult(True, x=tx, y=ty)
+    if world.effect_state[target] == ctrlmapmod.OBSTACLE_MINE:
+        cells = world.ctrlmap()
+        if ctrlmapmod.delete_object(cells, cells.effect_object[target]):
+            cells.effect_object[target] = ctrlmapmod.NO_OBJECT
+            cells.effect_state[target] = ctrlmapmod.OBSTACLE_NONE
+            cells.effect_timer[target] = 0
+            result.blast = execute_bomb(world, tx, ty).to_dict()
+    if not unit.alive:
+        return result
+    build_visible_map(world, unit.player)
+    if unit.alive:
+        unit.mp = 0
+        unit.acted = ACTED_WARPED
+        result.reactions = drain_reactions(world, unit)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2028,7 +2398,7 @@ def world_from_map(bm: Any, tables: BalanceTables,
             malfunction=u.malfunction, absorber=u.absorb, rested=u.rested,
             armour_front=u.armour_front, armour_rear=u.armour_rear,
             action_state=u.action_state, acted=u.acted, ticket=u.ticket,
-            visibility=u.visibility,
+            visibility=u.visibility, ep=u.ep, tp=u.tp, kills=u.raw[0x53],
             order=u.order, order_param=u.order_param, order2=u.order2,
             order2_param=u.order2_param, group=u.group,
             turn_start_x=u.turn_start_x, turn_start_y=u.turn_start_y,
@@ -2039,6 +2409,11 @@ def world_from_map(bm: Any, tables: BalanceTables,
         cell_height=[c.height for c in cells],
         unit_at=[-1 if c.unit is None else c.unit for c in cells],
         effect_state=[c.raw[0x10] for c in cells],
+        effect_timer=[c.raw[0x0E] for c in cells],
+        effect_object=[c.raw[0x0F] for c in cells],
+        decal_object=[c.raw[0x11] for c in cells],
+        decal_phase=[c.raw[0x12] for c in cells],
+        decal_state=[c.raw[0x13] for c in cells],
         action_point=[c.action_point for c in cells],
         field_type=[c.field_type for c in cells],
         units=units, tables=tables, rng=ARandom(seed))

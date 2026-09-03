@@ -34,6 +34,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from inclib import ctrlmap                                          # noqa: E402
 from inclib import lcl                                              # noqa: E402
 from inclib import lcl_runtime as runtime                           # noqa: E402
 from inclib.check import Checker                                    # noqa: E402
@@ -141,6 +142,81 @@ class _EmptyMap:
         self.cells: list[Any] = []
         self.units: list[Any] = []
         self.next_map = ""
+
+
+class _FlatCell:
+    """One open, flat cell -- the shape ``LclWorld`` reads out of a ``.lev``."""
+
+    def __init__(self) -> None:
+        self.action_point = 0
+        self.field_type = 0
+        self.height = 0
+        self.unit: int | None = None
+        self.raw = bytes([0] * 0x0E + [0, 0xFF, 0xFF, 0xFF, 0, 0xFF]
+                         + [0] * 3)
+
+
+class _FlatMap(_EmptyMap):
+    """`_EmptyMap` with cells: what the two ground commands need."""
+
+    def __init__(self, width: int, height: int) -> None:
+        super().__init__(width, height)
+        self.cells = [_FlatCell() for _ in range(width * height)]
+
+
+def _ground_checks(c: Checker) -> None:
+    """``SetGroundFire`` and ``ParaBombs`` -- ``docs/20``, ``docs/42`` §9.1.
+
+    Both were modelled as draws with no cell write until 2026-09-03
+    (``docs/97`` §37).  Reading their handlers settles which is a rule: the
+    bomber's mines are ``+0x10 = 2`` and stop a walk, while the ground fire
+    lays a **glow** in its own three bytes and reaches nobody until it ignites
+    two rounds later.
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    def run(world: runtime.LclWorld, *instructions: dict[str, Any]) -> None:
+        runtime.run({"instructions": list(instructions)
+                     + [{"kind": "end", "line": 9}], "labels": {}}, world)
+
+    # SetGroundFire (x, y, height, w, h, tries) over a 3x3 block, 40 tries.
+    w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+    run(w, command("SetGroundFire", 2, 2, 0, 3, 3, 40))
+    glowing = [i for i, v in enumerate(w.decal_state)
+               if v == ctrlmap.DECAL_GLOW]
+    c.check("ground_fire.lays_glows", bool(glowing),
+            f"{len(glowing)} cell(s) of the 9 in the block")
+    c.expect("ground_fire.phase_is_2",
+             sorted({w.decal_phase[i] for i in glowing}),
+             [ctrlmap.GLOW_PHASE_FRESH])
+    c.expect("ground_fire.blocks_nobody",
+             sorted({w.effect_state[i] for i in glowing}),
+             [ctrlmap.OBSTACLE_NONE],
+             "0x0042FCB0 writes +0x11/+0x12/+0x13 and no obstacle byte")
+    c.expect("ground_fire.inside_the_block",
+             sorted({(i % 8, i // 8) for i in glowing})[:1] and
+             all(2 <= i % 8 < 5 and 2 <= i // 8 < 5 for i in glowing), True)
+    c.expect("ground_fire.one_glow_per_cell",
+             len(glowing),
+             len({w.decal_object[i] for i in glowing}),
+             "+0x13 == 255 is the handler's own gate, so no cell is re-lit")
+
+    # ParaBombs (x, y, w, h, a, b) -- 60 attempts, a mine on each free tile.
+    w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+    run(w, command("ParaBombs", 2, 2, 3, 3, 20, 0))
+    mined = [i for i, v in enumerate(w.effect_state)
+             if v == ctrlmap.OBSTACLE_MINE]
+    c.check("para_bombs.lay_mines", bool(mined), f"{len(mined)} mine(s)")
+    c.expect("para_bombs.every_mine_names_an_object",
+             sorted({w.effect_object[i] == ctrlmap.NO_OBJECT for i in mined}),
+             [False],
+             "docs/26 §6.2: +0x10 == 2 with no object is unreachable")
+    c.expect("para_bombs.inside_the_block",
+             all(2 <= i % 8 < 5 and 2 <= i // 8 < 5 for i in mined), True)
+    c.expect("para_bombs.at_most_nine", len(mined) <= 9, True,
+             "60 attempts over a 3x3 block, and a mined cell is skipped")
 
 
 def _synthetic_checks(c: Checker) -> None:
@@ -421,6 +497,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
 
     _corpus_shape_checks(c, root)
     _synthetic_checks(c)
+    _ground_checks(c)
 
     if show_stats:
         print("\ncommand usage (corpus / implemented):")
@@ -590,6 +667,7 @@ def _case_types(world: runtime.LclWorld,
                      "fp_max": row.fp_max, "hp_max": row.hp_max,
                      "special": row.special, "size": row.size,
                      "species": row.species, "height": row.height,
+                     "exp": row.exp,
                      "model": row.model, "description": row.description})
     return rows
 

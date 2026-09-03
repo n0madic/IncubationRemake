@@ -28,15 +28,12 @@ extends Node3D
 ## [BlobSprites] makes for its single [ImmediateMesh], applied to the half of
 ## the system that cannot be one mesh.
 
-## The joint-buffer offsets docs/28 section 7.8 found in the shipped data, and
-## the blob fields that hold each triple. Triple 0 is the object's own
-## rotation, which is [member Blob.rot_x] and friends; 6 and 12 are the two
-## the arms write.
-const TRIPLE_FIELDS: Dictionary = {
-	0: ["rot_x", "rot_y", "rot_z"],
-	6: ["angle0", "angle1", "angle2"],
-	12: ["angle3", "angle4", "angle5"],
-}
+## The joint-buffer offsets docs/28 section 7.8 found in the shipped data.
+## Triple 0 is the object's own rotation; 6 and 12 are the two the arms write,
+## and the two the special-object refresh writes (docs/42 section 9.1).
+const TRIPLE_ROOT: int = 0
+const TRIPLE_FIRST: int = 6
+const TRIPLE_SECOND: int = 12
 
 var _prototypes: Dictionary = {}
 var _textures: Dictionary = {}
@@ -102,15 +99,33 @@ func rebuild(pool: BlobPool) -> int:
 
 func _place(slot: int, blob: Blob) -> bool:
 	var name: String = _names.get(blob.model, "")
+	if name.is_empty():
+		return false
+	return place(slot, name, Vector3i(blob.x, blob.y, blob.z),
+		[Vector3i(blob.rot_x, blob.rot_y, blob.rot_z),
+		Vector3i(blob.angle0, blob.angle1, blob.angle2),
+		Vector3i(blob.angle3, blob.angle4, blob.angle5)])
+
+
+## Draw one model under `key`, at `position`, with its **three joint triples**.
+##
+## Triple 0 is the object's own rotation and 1 and 2 are the two the shipped
+## data's `joint_place` offsets 6 and 12 name (docs/28 section 7.8). Public
+## because the special objects of docs/42 section 9.1 are records of the same
+## shape animated by the same three triples -- they are not blobs, but they are
+## drawn and turned exactly like one, so they take a second instance of this
+## node rather than a second copy of it.
+func place(key: int, name: String, position: Vector3i,
+		triples: Array[Vector3i]) -> bool:
 	if name.is_empty() or not _prototypes.has(name):
 		return false
-	var node: Node3D = _node_for(slot, name)
+	var node: Node3D = _node_for(key, name)
 	if node == null:
 		return false
 	node.visible = true
 	node.transform = Transform3D(
-		WorldSpace.joint_basis(blob.rot_x, blob.rot_y, blob.rot_z),
-		WorldSpace.to_godot(blob.x, blob.y, blob.z))
+		WorldSpace.joint_basis(triples[0].x, triples[0].y, triples[0].z),
+		WorldSpace.to_godot(position.x, position.y, position.z))
 	# The parts, each under the triple its own `joint_place` names.
 	var parts: Array = DictRead.as_array(
 		DictRead.as_dict(_prototypes[name]).get("parts", []))
@@ -120,9 +135,21 @@ func _place(slot: int, blob: Blob) -> bool:
 		if part == null:
 			continue
 		var entry: Dictionary = DictRead.as_dict(parts[index])
-		part.transform = Transform3D(_basis_of(blob, entry.get("anim", null)),
+		part.transform = Transform3D(
+			_triple_basis(triples, entry.get("anim", null)),
 			_translation_of(entry))
 	return true
+
+
+## Hide every node whose key is not in `keep`, and answer how many are shown.
+func keep_only(keep: Dictionary) -> int:
+	var shown: int = 0
+	for key: int in _nodes:
+		if keep.has(key):
+			shown += 1
+		else:
+			_nodes[key].visible = false
+	return shown
 
 
 ## The triple a part's `anim` offset names, as a basis.
@@ -130,14 +157,17 @@ func _place(slot: int, blob: Blob) -> bool:
 ## An offset the shipped data does not use -- anything but 0, 6 or 12 -- leaves
 ## the part unrotated rather than reading whatever field happens to be nearby;
 ## docs/28 section 7.8 measured the three and only the three.
-func _basis_of(blob: Blob, anim: Variant) -> Basis:
-	if anim == null or not TRIPLE_FIELDS.has(DictRead.as_int(anim)):
+static func _triple_basis(triples: Array[Vector3i], anim: Variant) -> Basis:
+	if anim == null:
 		return Basis.IDENTITY
-	var fields: Array = TRIPLE_FIELDS[DictRead.as_int(anim)]
-	return WorldSpace.joint_basis(
-		DictRead.as_int(blob.get(DictRead.as_string(fields[0]))),
-		DictRead.as_int(blob.get(DictRead.as_string(fields[1]))),
-		DictRead.as_int(blob.get(DictRead.as_string(fields[2]))))
+	var which: int = DictRead.as_int(anim)
+	if which == 0:
+		return WorldSpace.joint_basis(triples[0].x, triples[0].y, triples[0].z)
+	if which == 6:
+		return WorldSpace.joint_basis(triples[1].x, triples[1].y, triples[1].z)
+	if which == 12:
+		return WorldSpace.joint_basis(triples[2].x, triples[2].y, triples[2].z)
+	return Basis.IDENTITY
 
 
 static func _translation_of(part: Dictionary) -> Vector3:

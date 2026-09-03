@@ -222,6 +222,38 @@ const FACING_ACTION_POINT_LOW: int = 30
 const FACING_ACTION_POINT_HIGH: int = 34
 ## docs/21 section 5 -- species 2 is an inanimate object.
 const SPECIES_OBJECT: int = 2
+## docs/21 section 2 -- species 0 is human; only a human's pool raise plays the
+## skill orbit (`0x0046C269`).
+const SPECIES_HUMAN: int = 0
+
+# --- docs/22 section 7.5: the kill award -------------------------------------
+# `0x0047AFD0` / `0x0047B090` / `0x0047B100` / `0x0047AF90`, transcribed from
+# their instructions (`combat_tables.py` pins every one) and measured in the
+# campaign arm by `turn_gold.py`'s `experience` phase. Same names as
+# `inclib.combat`.
+
+## `0x0043B740` returns the game mode; 1 is the campaign (docs/11), and the
+## gain routine returns the type's `exp` byte unchanged for it (`0x0047AFD7`).
+const GAME_MODE_CAMPAIGN: int = 1
+## `0x0047AFF5`..`0x0047B013` -- `aiLevel()` 0, 1 and 2 select 4, 3 and **1**;
+## anything else keeps the 2 the routine starts with. That 2 -> 1 and 3 -> 2 is
+## what the `dec / je` chain does, and it is kept as it is. Reached only by
+## the session modes the remake does not play.
+const DIFFICULTY_MULTIPLIER: Dictionary = {0: 4, 1: 3, 2: 1}
+const DIFFICULTY_MULTIPLIER_DEFAULT: int = 2
+## `cmp eax, 0x48` and `cmp eax, 0x6C` -- the bands of the session ladder.
+const EXPERIENCE_LOW: int = 72
+const EXPERIENCE_HIGH: int = 108
+## `fcomp [0x4B1640]` -- 144.0, the cap on both bytes; `fmul [0x4B163C]` --
+## 0.5, the halved gain above 108.
+const EXPERIENCE_CAP: int = 144
+const EXPERIENCE_HALF: float = 0.5
+## `imul 0x38E38E39 / sar edx, 4` -- a signed divide by 72.
+const EXPERIENCE_DIVISOR: int = 72
+## `0x0047AFB5` -- the kill counter saturates at 255.
+const KILL_COUNT_CAP: int = 0xFF
+## docs/10 section 5 -- a skill level is twelve points of the pool.
+const POINTS_PER_SKILL_LEVEL: int = 12
 ## The player numbers the net-session gate calls human.
 const LAST_HUMAN_PLAYER: int = 4
 
@@ -781,6 +813,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		ty = standing.y
 
 	result.fired = true
+	# `0x0046B588` -- the pool at entry, for the skill-orbit compare.
+	var tp_before: int = attacker.tp
 	# `0x0046B5DF` -- weapon 47 is set **to its heat cap** before the overheat
 	# check, inside the same `maxHeat != 255` gate: every shot of it rolls
 	# `aRandom(0, 40)`, and 15 of the 40 outcomes damage the weapon before it
@@ -890,6 +924,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			# `aKillUnit` (`0x00472920`) is two calls: the death sequence and
 			# `aRemoveUnitElement`, which is where the hero counter lives.
 			UnitState.remove(state, turn, target)
+			# `0x0046BF47` -- `test ebp, ebp / jle`: the award is gated on the
+			# damage **argument** (what `applyDamage` was handed, zero after
+			# an absorber charge), not on what was dealt.
+			if damage > 0:
+				result.xp += award_kill(utab, attacker, target, game_mode,
+					ai_level)
 		var outcome: Dictionary = {"slot": target.slot, "x": cx, "y": cy,
 			"marker": MARKER_KILLED if killed else MARKER_HIT, "dealt": dealt,
 			"chance": chance, "roll": roll}
@@ -915,6 +955,21 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if cap != HEAT_NONE and attacker.heat < cap:
 			attacker.heat += 1
 
+	# `0x0046C216` -- after the animation: the skill orbit's argument.
+	# **The impact arm lays a transient object for three weapons** (docs/42
+	# section 9.1): 40 burns nine cells, 42 lays a mine, 43 a shield.
+	# `aPlayFightAnimation`'s impact switch dispatches on the shooter's weapon
+	# **whether the shot hit or missed**, and on the target cell after the
+	# standing-unit adjustment above -- so this is a consequence of firing
+	# rather than of connecting.  It runs before the hatch sweep below, which
+	# is the order the animation has them in.
+	# The cells it changed are not on the result: `AttackResult.to_dict()`'s
+	# shape is pinned to the Python twin's, and the picture reads the terrain
+	# diff for this (docs/42 section 9.1) rather than a second channel.
+	var _placed: PackedInt32Array = CellObjects.place_impact(
+		state, attacker.weapon, tx, ty)
+	result.skill_raised = skill_levels_raised(utab, attacker, tp_before)
+
 	# **`aPlayFightAnimation` runs after `aAttackUnit`, and it is not only an
 	# animation.**  `0x0040BD70` sweeps the whole cell array and calls the
 	# effect dispatcher `0x0046F210` with phase 4 for every cell whose marker
@@ -939,6 +994,104 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if made >= 0:
 			outcome["hatched"] = made
 	return result
+
+
+## `0x0047AFD0(unit, exp)` -- the gain one kill is worth, as the float the
+## routine leaves in `st(0)`.
+##
+## In the campaign it is the victim type's `exp` byte. In a session the
+## difficulty picks a multiplier `m` and the attacker's own experience `e`
+## bends it: below 72 the gain is `(m - m*e/72) * exp`, from 72 to 108 it is
+## `exp`, and above 108 it is half -- or **nothing** when the byte is exactly
+## 1 (`cmp cl, 1` at `0x0047B06C` reads the argument's low byte, not the unit).
+static func experience_gain(attacker: UnitState, exp: int, game_mode: int,
+		ai_level: int) -> float:
+	exp = exp & 0xFF
+	if game_mode == GAME_MODE_CAMPAIGN:
+		return float(exp)
+	var m: int = DictRead.as_int(DIFFICULTY_MULTIPLIER.get(ai_level,
+		DIFFICULTY_MULTIPLIER_DEFAULT))
+	var e: int = attacker.ep
+	if e < EXPERIENCE_LOW:
+		# `imul ecx, eax` then the reciprocal divide; `m * e` is small and
+		# non-negative, so truncation and floor agree.
+		return float(m - (m * e) / EXPERIENCE_DIVISOR) * float(exp)
+	if e > EXPERIENCE_HIGH:
+		return 0.0 if exp == 1 else float(exp) * EXPERIENCE_HALF
+	return float(exp)
+
+
+## `0x0047B090(unit, exp)` -- the skill-point pool, `+0x18`.
+##
+## Skipped entirely when `ep + gain` would reach 144 (`0x0047B0B2`);
+## otherwise the pool takes the gain and is capped at 144. It is called
+## **before** `+0x17` moves, so the gate reads the pre-award experience.
+static func award_training(attacker: UnitState, exp: int, game_mode: int,
+		ai_level: int) -> void:
+	var gain: float = experience_gain(attacker, exp, game_mode, ai_level)
+	if float(attacker.ep) + gain >= float(EXPERIENCE_CAP):
+		return
+	var total: float = gain + float(attacker.tp)
+	# `_ftol` truncates toward zero, which is what `int()` does.
+	attacker.tp = EXPERIENCE_CAP if total >= float(EXPERIENCE_CAP) \
+		else int(total)
+
+
+## `0x0047B100(unit, exp)` -- experience, `+0x17`, capped at 144.
+static func award_experience(attacker: UnitState, exp: int, game_mode: int,
+		ai_level: int) -> void:
+	var total: float = experience_gain(attacker, exp, game_mode, ai_level) \
+		+ float(attacker.ep)
+	attacker.ep = EXPERIENCE_CAP if total >= float(EXPERIENCE_CAP) \
+		else int(total)
+
+
+## `0x0047AF90(unit, n)` -- `+0x53` plus `n`, saturating at 255.
+static func count_kill(attacker: UnitState, count: int = 1) -> void:
+	var total: int = (attacker.kills & 0xFF) + (count & 0xFF)
+	attacker.kills = KILL_COUNT_CAP if total > KILL_COUNT_CAP else total
+
+
+## The kill block of `aAttackUnit` at `0x0046BF53`..`0x0046C004`.
+##
+## Nothing for a species-2 victim, nothing for one of the attacker's own
+## player; otherwise the gain is truncated into the shot's total, both bytes
+## are awarded and the kill is counted. Returns what the total grew by.
+##
+## The three player-record counters the block also moves (`0x0043B8D0`,
+## `0x0043B860`, `0x0043B810`) are the debriefing's statistics and nothing in
+## docs/22's scope reads them.
+## TODO: model the player-record kill and loss counters with the debriefing.
+static func award_kill(utab: UnitTypeTable, attacker: UnitState,
+		victim: UnitState, game_mode: int, ai_level: int) -> int:
+	if utab.species(victim.type_id) == SPECIES_OBJECT:
+		return 0
+	if victim.player == attacker.player:
+		return 0
+	var exp: int = utab.exp(victim.type_id)
+	var gained: int = int(experience_gain(attacker, exp, game_mode, ai_level))
+	award_training(attacker, exp, game_mode, ai_level)
+	award_experience(attacker, exp, game_mode, ai_level)
+	count_kill(attacker)
+	return gained
+
+
+## `0x0046C216`..`0x0046C283` -- whether the skill orbit plays.
+##
+## The attacker must still be alive, its pool's level (`+0x18 / 12`) must
+## have risen over the value saved at entry, and its species must be 0 --
+## then `0x00410190` is called with the difference. Zero otherwise.
+static func skill_levels_raised(utab: UnitTypeTable, attacker: UnitState,
+		tp_before: int) -> int:
+	if not attacker.is_alive():
+		return 0
+	var before: int = tp_before / POINTS_PER_SKILL_LEVEL
+	var after: int = attacker.tp / POINTS_PER_SKILL_LEVEL
+	if after <= before:
+		return 0
+	if utab.species(attacker.type_id) != SPECIES_HUMAN:
+		return 0
+	return after - before
 
 
 ## `0x0046F210` `case 4` with `special == 9` -- see [constant SPECIAL_HATCH].
@@ -973,8 +1126,8 @@ static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var x: int = target.x
 	var y: int = target.y
 	var group: int = target.group
+	# `remove` is what zeroes the hit points -- `0x00477ABD`.
 	UnitState.remove(state, turn, target)
-	target.hp = 0
 	var made: UnitState = UnitState.generate(state, units, utab, HATCH_PLAYER,
 		HATCH_TYPE, "", 0, 0, x, y, true)
 	if made == null:

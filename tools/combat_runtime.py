@@ -38,7 +38,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from inclib import combat                                           # noqa: E402
+from inclib import combat, ctrlmap                                  # noqa: E402
 from inclib.check import Checker                                    # noqa: E402
 from inclib.info import BalanceTables, load_info_file               # noqa: E402
 from inclib.lev import load_lev                                     # noqa: E402
@@ -864,6 +864,211 @@ def check_conversion(c: Checker, root: Path, tables: BalanceTables) -> None:
             f"{world.unit_at[world.index(1, 1)]}")
 
 
+def _duel_scene(tables: BalanceTables, attacker_type: int, victim_type: int,
+                game_mode: int = combat.GAME_MODE_CAMPAIGN, ai_level: int = 1,
+                seed: float = 1.0
+                ) -> tuple[combat.CombatWorld, combat.CombatUnit,
+                           combat.CombatUnit]:
+    """Two units side by side on flat ground, the victim at one hit point."""
+    n = 4 * 4
+    world = combat.CombatWorld(
+        width=4, height=4, cell_height=[0] * n, unit_at=[-1] * n,
+        effect_state=[0] * n, units={}, tables=tables, rng=ARandom(seed),
+        game_mode=game_mode, ai_level=ai_level)
+    rifle = sorted(combat.PATTERN_FAMILIES["aim_cell_full"])[0]
+    attacker = combat.CombatUnit(slot=0, type_id=attacker_type, player=0,
+                                 x=1, y=1, hp=10, facing=3, fp=5, mp=4,
+                                 weapon=rifle, ammo=15)
+    victim = combat.CombatUnit(slot=1, type_id=victim_type,
+                               player=combat.PLAYER_COMPUTER, x=2, y=1, hp=1,
+                               facing=1, fp=5, mp=4, weapon=rifle, ammo=15)
+    for unit in (attacker, victim):
+        world.units[unit.slot] = unit
+        world.unit_at[world.index(unit.x, unit.y)] = unit.slot
+    return world, attacker, victim
+
+
+def _seed_that_kills(tables: BalanceTables, attacker_type: int,
+                     victim_type: int) -> float:
+    """The first integer seed whose shot kills the one-point victim."""
+    for seed in range(1, 200):
+        world, attacker, victim = _duel_scene(tables, attacker_type,
+                                              victim_type, seed=float(seed))
+        combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+        if not victim.alive:
+            return float(seed)
+    raise AssertionError("no seed below 200 kills a one-point target")
+
+
+def check_jam_and_warp(c: Checker, tables: BalanceTables) -> None:
+    """docs/25 §6's jam arm and the pad's warp arm (docs/97 §31)."""
+    # A reactor whose magazine the shot empties leaves the queue.
+    world, mover, first, second = _reaction_scene(tables)
+    first.ammo = 1
+    world.rng = ARandom(1.0)
+    fired = combat.drain_reactions(world, mover)
+    shots = {r.reactor: r for r in fired}
+    c.check("jam.empty_magazine_jams", first.slot in shots
+            and shots[first.slot].jammed and first.ticket == 0,
+            f"ammo {first.ammo}, ticket {first.ticket}")
+    c.check("jam.the_other_reactor_keeps_its_ticket",
+            second.slot in shots and not shots[second.slot].jammed
+            and second.ticket != 0, f"ticket {second.ticket}")
+    # A reactor at the heat cap after its shot jams too.
+    world, mover, first, second = _reaction_scene(tables)
+    cap = combat.max_heat(world, first)
+    # One shot heats by one (`0x0046C0B5`), so a counter one under the cap
+    # reaches it on the reaction shot itself.
+    first.heat = cap - 1
+    world.rng = ARandom(1.0)
+    fired = combat.drain_reactions(world, mover)
+    shots = {r.reactor: r for r in fired}
+    c.check("jam.heat_at_cap_jams", cap != 0xFF and first.slot in shots
+            and shots[first.slot].jammed and first.heat == cap
+            and first.ticket == 0, f"heat {first.heat} cap {cap}")
+    c.check("jam.to_dict_carries_it", "jammed" in fired[0].to_dict(), "")
+    # The warp: relink, no movement points, acted 5, the drain at the landing.
+    world, mover, first, second = _reaction_scene(tables)
+    source = world.index(mover.x, mover.y)
+    tx, ty = mover.x, mover.y + 1
+    if not world.in_bounds(tx, ty) or world.unit_at[world.index(tx, ty)] >= 0:
+        tx, ty = mover.x + 1, mover.y
+    world.rng = ARandom(1.0)
+    result = combat.warp_unit(world, mover, tx, ty)
+    c.check("warp.relinks", result.ok and world.unit_at[source] == -1
+            and world.unit_at[world.index(tx, ty)] == mover.slot
+            and (mover.x, mover.y) == (tx, ty), result.to_dict())
+    c.expect("warp.mp_zeroed", mover.mp, 0)
+    c.expect("warp.acted_5", mover.acted, combat.ACTED_WARPED)
+    c.check("warp.drains_the_queue", len(result.reactions) == 2,
+            f"{len(result.reactions)} reaction(s)")
+    stale = combat.CombatUnit(slot=77, type_id=mover.type_id, player=0, x=0, y=0, hp=10)
+    world.units[77] = stale
+    c.check("warp.refuses_an_unlinked_mover",
+            not combat.warp_unit(world, stale, 1, 1).ok, "")
+
+
+def check_experience(c: Checker, tables: BalanceTables) -> None:
+    """``docs/22`` §7.5 -- the kill award, the three routines and the gates.
+
+    Every arm of ``0x0047AFD0`` is exercised: the campaign's pass-through, the
+    session ladder's three bands with their difficulty multipliers, the two
+    144 caps, the species and same-player gates of the caller, the damage
+    gate, the kill counter's saturation and the skill orbit's argument.  The
+    campaign arm is what ``turn_gold.py``'s ``experience`` phase measures;
+    the ladder is transcription only, because the fixture save is a campaign.
+    """
+    humans = [t for t, row in sorted(tables.units.items())
+              if row.species == combat.SPECIES_HUMAN]
+    # An exp of at least 2, so the halved band and the caps are not the
+    # exp-1 special case (which has its own check below).
+    aliens = [t for t, row in sorted(tables.units.items())
+              if row.species == combat.SPECIES_ALIEN and row.exp > 1]
+    objects = [t for t, row in sorted(tables.units.items())
+               if row.species == combat.SPECIES_OBJECT]
+    c.check("experience.types_available",
+            bool(humans) and bool(aliens) and bool(objects),
+            f"{len(humans)} human, {len(aliens)} alien with exp, "
+            f"{len(objects)} object types")
+    if not (humans and aliens and objects):
+        return
+    human, alien, prop = humans[0], aliens[0], objects[0]
+    exp = tables.units[alien].exp
+    seed = _seed_that_kills(tables, human, alien)
+
+    # --- the campaign: the type's exp byte, on both bytes and the counter --
+    world, attacker, victim = _duel_scene(tables, human, alien, seed=seed)
+    attacker.ep, attacker.tp = 10, 5
+    result = combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+    c.check("experience.campaign_kill", not victim.alive, "the seed kills")
+    c.expect("experience.campaign_returns_exp", result.xp, exp,
+             "aAttackUnit's total is the victim type's exp byte")
+    c.expect("experience.campaign_ep", attacker.ep, 10 + exp)
+    c.expect("experience.campaign_tp", attacker.tp, 5 + exp)
+    c.expect("experience.campaign_kills", attacker.kills, 1)
+    c.expect("experience.skill_raised_when_a_level_is_crossed",
+             result.skill_raised, (5 + exp) // 12 - 5 // 12,
+             "the pool's level delta, for a human attacker")
+
+    # --- the caps: +0x18 is skipped when +0x17 would reach 144, and both
+    #     saturate at 144 -------------------------------------------------
+    world, attacker, victim = _duel_scene(tables, human, alien, seed=seed)
+    attacker.ep, attacker.tp = 144 - exp + 1, 20
+    combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+    c.expect("experience.ep_capped_at_144", attacker.ep, 144)
+    c.expect("experience.tp_untouched_when_ep_would_cap", attacker.tp, 20,
+             "0x0047B0B2 returns before the pool moves")
+    world, attacker, victim = _duel_scene(tables, human, alien, seed=seed)
+    attacker.ep, attacker.tp = 10, 143
+    combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+    c.expect("experience.tp_capped_at_144", attacker.tp, 144)
+
+    # --- the gates: species 2, the attacker's own player, no damage ------
+    world, attacker, victim = _duel_scene(tables, human, prop, seed=seed)
+    victim.hp = 1
+    result = combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+    c.expect("experience.none_for_an_object",
+             (result.xp, attacker.ep, attacker.tp, attacker.kills), (0, 0, 0, 0),
+             f"victim alive {victim.alive}")
+    world, attacker, victim = _duel_scene(tables, human, alien, seed=seed)
+    victim.player = attacker.player
+    result = combat.attack_unit(world, attacker.x, attacker.y, victim.x, victim.y)
+    c.expect("experience.none_for_own_player",
+             (result.xp, attacker.kills), (0, 0), f"victim alive {victim.alive}")
+    c.expect("experience.kill_counter_saturates",
+             _saturated_kills(), 255, "0x0047AF90 at 254 + 1 + 1")
+
+    # --- the ladder, transcribed: every band and multiplier --------------
+    ladder = []
+    for ai_level in (0, 1, 2, 3):
+        for ep in (0, 36, 72, 108, 109):
+            world, attacker, victim = _duel_scene(
+                tables, human, alien, game_mode=3, ai_level=ai_level, seed=seed)
+            attacker.ep = ep
+            ladder.append(combat.experience_gain(world, attacker, exp))
+    m = [4, 3, 1, 2]
+    want = []
+    for i in range(4):
+        want += [float(m[i]) * exp, float(m[i] - m[i] * 36 // 72) * exp,
+                 float(exp), float(exp), exp * 0.5]
+    c.expect("experience.session_ladder", ladder, want,
+             "multiplier 4/3/1/2 by difficulty; bands at 72 and 108")
+    world, attacker, victim = _duel_scene(tables, human, alien, game_mode=3,
+                                          seed=seed)
+    attacker.ep = 120
+    c.expect("experience.session_exp_1_above_108_is_nothing",
+             combat.experience_gain(world, attacker, 1), 0.0,
+             "cmp cl, 1 at 0x0047B06C reads the argument byte")
+
+    # --- the orbit does not play for an alien attacker ------------------
+    world, attacker, victim = _duel_scene(tables, alien, human, seed=seed)
+    victim.player = 0
+    attacker.player = combat.PLAYER_COMPUTER
+    attacker.tp = 11
+    victim.hp = 1
+    kill_seed = None
+    for trial in range(1, 200):
+        w2, a2, v2 = _duel_scene(tables, alien, human, seed=float(trial))
+        a2.player, v2.player = combat.PLAYER_COMPUTER, 0
+        a2.tp = 11
+        r2 = combat.attack_unit(w2, a2.x, a2.y, v2.x, v2.y)
+        if not v2.alive:
+            kill_seed = float(trial)
+            c.expect("experience.no_orbit_for_a_computer_species",
+                     (r2.xp > 0, r2.skill_raised), (True, 0),
+                     "0x0046C269 tests the attacker's species byte")
+            break
+    c.check("experience.alien_kill_found", kill_seed is not None, "no seed kills")
+
+
+def _saturated_kills() -> int:
+    unit = combat.CombatUnit(slot=0, type_id=0, player=0, x=0, y=0, hp=1,
+                             kills=254)
+    combat.count_kill(unit)
+    combat.count_kill(unit)
+    return unit.kills
+
+
 def _require_corpus(root: Path) -> str | None:
     if not (root / "DATA" / "Info.lcl").is_file():
         return f"{root}: no DATA/Info.lcl -- this is not a game installation"
@@ -871,6 +1076,171 @@ def _require_corpus(root: Path) -> str | None:
         return (f"{root}: no .lev found; a check that examined nothing is not "
                 f"a check that passed")
     return None
+
+
+def _placer_scene(tables: BalanceTables, weapon: int, size: int = 9
+                  ) -> tuple[combat.CombatWorld, combat.CombatUnit]:
+    """A shooter with `weapon` on flat, open ground, aimed at the middle."""
+    n = size * size
+    kind = next(iter(sorted(tables.units)))
+    world = combat.CombatWorld(
+        width=size, height=size, cell_height=[0] * n, unit_at=[-1] * n,
+        effect_state=[ctrlmap.OBSTACLE_NONE] * n, units={}, tables=tables,
+        action_point=[0] * n, field_type=[0] * n, rng=ARandom(1.0))
+    shooter = combat.CombatUnit(slot=0, type_id=kind, player=0, x=0, y=0,
+                               hp=100, fp=5, mp=4, weapon=weapon, ammo=99)
+    world.units[0] = shooter
+    world.unit_at[0] = 0
+    return world, shooter
+
+
+def check_impact_objects(c: Checker, tables: BalanceTables) -> None:
+    """docs/42 §9.1 -- the three impact arms that change the map.
+
+    Weapon 40 lays nine fires round the target, 42 a mine and 43 a shield, and
+    all three do it whether the shot hit, missed or found nothing there: the
+    impact switch is dispatched after the projectile arrives and reads no
+    outcome.  The remake had none of them (`docs/97` §37).
+    """
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_GROUND_FIRE)
+    combat.attack_unit(world, 0, 0, 4, 4)
+    burning = [i for i, v in enumerate(world.effect_state)
+               if v == ctrlmap.OBSTACLE_FIRE]
+    c.expect("objects.fire.nine_cells", len(burning), 9)
+    c.expect("objects.fire.centre_is_the_big_one",
+             world.effect_timer[world.index(4, 4)], 4,
+             "the centre goes down at subtype 4, the ring at 3")
+    c.expect("objects.fire.ring_subtype",
+             sorted({world.effect_timer[i] for i in burning}), [3, 4])
+    c.expect("objects.fire.models",
+             [ctrlmap.fire_model(4), ctrlmap.fire_model(3)],
+             [ctrlmap.FIRE_MODEL_LARGE, ctrlmap.FIRE_MODEL_MEDIUM])
+    c.expect("objects.fire.nine_slots_taken",
+             sum(1 for v in world.special_objects if v != ctrlmap.NO_OBJECT), 9)
+
+    # A neighbour half a field or more away in height does not catch: the z
+    # every one of the nine is placed at is the **centre** cell's.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_GROUND_FIRE)
+    world.cell_height[world.index(5, 4)] = ctrlmap.FIRE_HEIGHT_WINDOW
+    combat.attack_unit(world, 0, 0, 4, 4)
+    c.expect("objects.fire.height_window",
+             world.effect_state[world.index(5, 4)], ctrlmap.OBSTACLE_NONE,
+             "cmp eax, 0x640 at 0x0042F8C9")
+
+    # A mine, and the shield that refuses to be replaced by a fire.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_MINE)
+    combat.attack_unit(world, 0, 0, 4, 4)
+    at = world.index(4, 4)
+    c.expect("objects.mine.laid",
+             [world.effect_state[at], world.effect_object[at],
+              world.effect_timer[at]], [ctrlmap.OBSTACLE_MINE, 0, 0])
+
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_SHIELD)
+    combat.attack_unit(world, 0, 0, 4, 4)
+    c.expect("objects.shield.laid",
+             [world.effect_state[at], world.effect_timer[at]],
+             [ctrlmap.OBSTACLE_SHIELD, ctrlmap.SHIELD_TIMER])
+    # A second hit refreshes the countdown without a second object.
+    world.effect_timer[at] = 1
+    combat.attack_unit(world, 0, 0, 4, 4)
+    c.expect("objects.shield.second_hit_refreshes",
+             [world.effect_timer[at],
+              sum(1 for v in world.special_objects
+                  if v != ctrlmap.NO_OBJECT)],
+             [ctrlmap.SHIELD_TIMER, 1],
+             "+0x0E is written before the already-a-shield return")
+    # And a fire refuses the cell outright while the shield stands.
+    cells = world.ctrlmap()
+    c.expect("objects.fire.refuses_a_shield",
+             ctrlmap.place_fire(cells, 4, 4, 4, 0), -1)
+
+    # The array is 80 slots, and a full one leaves the cell alone.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_MINE, size=16)
+    cells = world.ctrlmap()
+    cells.objects[:] = [ctrlmap.OBSTACLE_MINE] * ctrlmap.SPECIAL_OBJECT_SLOTS
+    # The cell is put in a state the failure arm has to **change**: writing
+    # 255 onto a cell that already reads 255 is not an observation, and a
+    # placer that touched the byte at all would pass it.
+    world.effect_state[world.index(4, 4)] = ctrlmap.OBSTACLE_FIRE
+    world.effect_timer[world.index(4, 4)] = 3
+    c.expect("objects.full_array_refuses", ctrlmap.place_mine(cells, 4, 4), -1)
+    c.expect("objects.full_array_writes_255",
+             [world.effect_state[world.index(4, 4)],
+              world.effect_timer[world.index(4, 4)]],
+             [ctrlmap.OBSTACLE_NONE, 0],
+             "0x0042FB6C writes +0x0E = 0 and +0x10 = 0xFF when the "
+             "constructor answers -1")
+
+    # And the model gate: a world set with no `A_MINE` refuses the same way.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_MINE)
+    world.special_models = frozenset({ctrlmap.SHIELD_MODEL})
+    cells = world.ctrlmap()
+    c.expect("objects.unknown_model_refuses", ctrlmap.place_mine(cells, 4, 4),
+             -1, "0x004069F4 -- 'unknown object!'")
+
+    # The round tick: a fire loses one intensity a round and goes out, a
+    # shield expires after two, a mine is untouched.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_GROUND_FIRE)
+    combat.attack_unit(world, 0, 0, 4, 4)
+    ctrlmap.place_mine(world.ctrlmap(), 7, 7)
+    centre = world.index(4, 4)
+    seen = []
+    for _ in range(5):
+        ctrlmap.ground_effects_tick(world.ctrlmap())
+        seen.append((world.effect_state[centre], world.effect_timer[centre]))
+    c.expect("objects.fire.decays_one_a_round", seen,
+             [(1, 3), (1, 2), (1, 1), (255, 0), (255, 0)])
+    c.expect("objects.mine.outlives_the_tick",
+             world.effect_state[world.index(7, 7)], ctrlmap.OBSTACLE_MINE)
+    c.expect("objects.tick_frees_the_slots",
+             sum(1 for v in world.special_objects
+                 if v != ctrlmap.NO_OBJECT), 1, "only the mine is left")
+
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_SHIELD)
+    combat.attack_unit(world, 0, 0, 4, 4)
+    ctrlmap.ground_effects_tick(world.ctrlmap())
+    c.expect("objects.shield.first_round_counts_down",
+             [world.effect_state[centre], world.effect_timer[centre]], [3, 1])
+    ctrlmap.ground_effects_tick(world.ctrlmap())
+    c.expect("objects.shield.expires_after_two",
+             [world.effect_state[centre], world.effect_timer[centre]],
+             [ctrlmap.OBSTACLE_NONE, 0])
+
+    # The glow's two-round fuse, and what the flames do when it lands.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_MINE)
+    victim = combat.CombatUnit(slot=1, type_id=shooter.type_id, player=1,
+                               x=4, y=5, hp=100, fp=5, mp=4, weapon=0)
+    world.units[1] = victim
+    world.unit_at[world.index(4, 5)] = 1
+    cells = world.ctrlmap()
+    ctrlmap.place_glow(cells, 4, 4, ctrlmap.GLOW_PHASE_FRESH)
+    c.expect("objects.glow.blocks_nobody",
+             world.effect_state[world.index(4, 4)], ctrlmap.OBSTACLE_NONE,
+             "0x0042FCB0 writes +0x11/+0x12/+0x13 and no obstacle byte")
+    first = ctrlmap.ground_effects_tick(cells)
+    c.expect("objects.glow.first_round_only_decays",
+             [first["ignited"], first["killed"],
+              world.decal_phase[world.index(4, 4)]],
+             [[], [], ctrlmap.GLOW_PHASE_LIT])
+    removed: list[int] = []
+    second = ctrlmap.ground_effects_tick(cells, removed.append)
+    c.expect("objects.glow.second_round_ignites",
+             [second["ignited"], second["killed"], removed,
+              world.decal_state[world.index(4, 4)]],
+             [[world.index(4, 4)], [1], [1], ctrlmap.DECAL_NONE],
+             "aPlayGroundFireAnimation removes what the flames reach")
+    # A shield is the one thing that survives standing in it.
+    world, shooter = _placer_scene(tables, ctrlmap.WEAPON_MINE)
+    world.units[1] = combat.CombatUnit(slot=1, type_id=shooter.type_id,
+                                       player=1, x=4, y=5, hp=100, fp=5, mp=4,
+                                       weapon=0)
+    world.unit_at[world.index(4, 5)] = 1
+    cells = world.ctrlmap()
+    ctrlmap.place_shield(cells, 4, 5)
+    ctrlmap.place_glow(cells, 4, 4, ctrlmap.GLOW_PHASE_LIT)
+    out = ctrlmap.ground_effects_tick(cells)
+    c.expect("objects.ground_fire_spares_a_shielded_cell", out["killed"], [],
+             "cmp byte [eax + 0x10], 3 at 0x004159AE")
 
 
 def run_check(root: Path) -> int:
@@ -892,6 +1262,9 @@ def run_check(root: Path) -> int:
     check_reaction(c, tables)
     check_stun(c, tables)
     check_conversion(c, root, tables)
+    check_experience(c, tables)
+    check_jam_and_warp(c, tables)
+    check_impact_objects(c, tables)
     return c.report()
 
 
