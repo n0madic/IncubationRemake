@@ -373,11 +373,34 @@ It has exactly **two** call sites and they are the two directions:
 | `0x0045A914` (`aMissionControl.cpp`) | `aCopyUnitPool(0, 1)` | entering a mission |
 | `0x0045E9D9` (`aMissionEnd.cpp`) | `aCopyUnitPool(1, 0)` | leaving it |
 
-**Row 0 is the between-missions bank and row 1 is the mission's working copy.**
-[`11` §5.7](11-save-game-format.md) inferred exactly this from real saves and
-recorded that one campaign's saves could not settle it; the two call sites do.
-That also sharpens the flat-write bug recorded there: the row that loses its
-last slot to the save's 5460-byte write is row 1, the working copy.
+**Row 0 is the live roster and row 1 is the mission-entry snapshot.**
+*(Corrected 2026-09-04; see [`98` §4](98-slice-6-report.md).)* This section
+first read the two call sites as "row 0 the between-missions bank, row 1 the
+mission's working copy". The first half is right and the second is not, and
+the four fixture saves that carry a pool settle it:
+
+| Save | Moment | Row 0 | Row 1 |
+|---|---|---|---|
+| `_5_.sav` | the campaign map | Sgt. Bratt | — |
+| `_31_.sav` | the entry snapshot for `_C_141` | Sgt. Bratt | Sgt. Bratt |
+| `_6_.sav`, `_33_.sav` | inside `_C_141` | **empty** | Sgt. Bratt |
+
+Inside a mission row 0 is *empty*, because `aTransferUnitFromPoolToMap` took
+the records out of it, and row 1 still holds the squad. So the working copy is
+the **map**, `aCopyUnitPool(0, 1)` on entry is a snapshot, and
+`aCopyUnitPool(1, 0)` on the debriefing's *back to the map* button restores
+the **pre-mission** roster — which makes that button a replay rather than a
+step forward. `docs/11` §5.7's own reading, "mission-entry snapshot", was the
+right one.
+
+One thing the saves do not explain: `_5_.sav` is on the map screen with row 1
+**empty**, though neither debriefing button clears it. What clears it is not
+traced; that the snapshot does not outlive the debriefing is what the save
+shows, and it is why *replay* belongs to the debriefing screen — which is
+where `0x0045E9CB` physically puts it.
+
+The flat-write bug `docs/11` §5.7 records is unaffected: the row that loses
+its last slot to the save's 5460-byte write is row 1, whatever it is called.
 
 `aAddUnitToUnitPool(player, unit)` `0x00478C10` copies the record verbatim into
 the first free slot and, **only** when there is more than one human player or
@@ -439,16 +462,38 @@ cannot hold money.
 
 ### 5.2 The tech level gates the catalogue
 
-`0x00509F04` holds the mission's tech level, from the header's `+0x21E`. Six of
-its seven readers are in `aMenuSystem.cpp`; the seventh, `0x0045BF4B`, stores it
-into `0x00510A35` beside a companion byte at `0x00510A34` — a limit pair the
-item screens read. **UNVERIFIED**: which of the pair is the skill limit and
-which the tech limit is not pinned here, and belongs to package F. The item
-tables carry the requirement:
-`SetEquipInfo`'s `+0x21` and `SetWeaponInfo`'s tech column
-([`21` §3, §4](21-info-lcl-schema.md)). No shipped header sets either level
-above 12, which is what makes the three tech-99 items unbuyable
-([`21` §3](21-info-lcl-schema.md)).
+`0x00509F04` holds **the campaign's** tech level. *(Corrected 2026-09-04, with
+§4; see [`98` §3](98-slice-6-report.md).)* It was written here as "the
+mission's tech level, from the header's `+0x21E`", and that is the front
+end's path rather than a campaign's: the whole image contains **four** `.text`
+references to the global — `0x0043ADAB` (the multiplayer init arm, writing 4),
+`0x0043AEBB` (the campaign arm, writing **1**), and the setter's and getter's
+own. So a campaign's tech level is 1 from beginning to end, which is the value
+all six fixture saves carry, including three taken inside `_C_141` whose own
+header says 0.
+
+Six of the getter's seven readers are in `aMenuSystem.cpp`; the seventh,
+`0x0045BF4B`, stores it into `0x00510A35` beside a companion byte at
+`0x00510A34`. **That pair is now pinned** — the §5.2 that stood here marked it
+UNVERIFIED and guessed at "skill limit and tech limit", and it is neither:
+
+```c
+/* 0x0045BF44 */  byte [0x00510A34] = 0;                 /* the low limit  */
+/* 0x0045BF4B */  byte [0x00510A35] = getTechLevel();    /* the high limit */
+```
+
+`0x0045AF21` reads the two as **one word** — `al` the low and `ah` the high —
+and hands them to the list builders `0x0047A090` (equipment, 42-byte stride)
+and `0x0047A1B0` (weapons). Each walks its table backwards, skips a record
+whose name is empty, and accepts one whose requirement byte satisfies
+`low <= b <= high`. The item tables carry that byte: `SetEquipInfo`'s `+0x21`
+and `SetWeaponInfo`'s tech column ([`21` §3, §4](21-info-lcl-schema.md)).
+
+Two consequences. At tech 1 the catalogue is **14 of 42 weapons and 7 of 19
+items**, and no shipped header sets either level above 12, which is what makes
+the three tech-99 items unbuyable ([`21` §3](21-info-lcl-schema.md)). And the
+ten alien weapons — requirement 0, non-empty name, cost 0 — pass the filter at
+every level; nothing else in the two builders excludes them.
 
 ### 5.3 Buying and selling
 
@@ -721,17 +766,34 @@ header field and all 74 `EnterNameOfNextMap` arguments name a shipped mission.
 `_C_133`'s next map is `_C_YYY` — the campaign-2 map — which is how one
 campaign hands over to the other.
 
-**A clean campaign start enters the second chain, at `_C_140`.** The two chains
-are `_C_100`…`_C_133`→`_C_YYY` and `_C_140`…`_C_17x`, and it is `_C_100` whose
-header carries mission id 1 — so the obvious reading, that a new game begins
-there, is wrong. The evidence is a save the game wrote itself:
+**There are two clean starts, and the campaign number picks between them.**
+*(Sharpened 2026-09-04; see [`98` §2](98-slice-6-report.md).)* The two chains
+are `_C_100`…`_C_133`→`_C_YYY` and `_C_140`…`_C_179`→`_C_180`, and
+`aInitGameControl`'s campaign arm ends by switching on the campaign number:
+
+```c
+switch (campaignNumber()) {                    /* 0x0043B760 */
+  case 1: strcpy(GameControl.mapName, "_C_100"); break;   /* 0x0043AF57 */
+  case 2: strcpy(GameControl.mapName, "_C_140"); break;   /* 0x0043AF2A */
+  default: error("...", aGameControl.cpp);
+}
+```
+
+so `_C_100`, whose header carries mission id 1, is campaign **1**'s start and
+`_C_140` is campaign **2**'s. What this section said before — that a clean
+start enters the second chain — was a reading of one save:
 `tests/fixtures/saves/_0_.sav` is "the only fixture from a session that went
-straight into the campaign", with untouched password slots and no four-player
-residue in its equipment points, and the mission it names is **`_C_140`**
-(`tests/fixtures/saves/README.md`). Noticed while choosing a mission for the
-first vertical slice's native capture ([`93` §9](93-slice-1-report.md)), which
-is why `_C_141` — the second mission actually played — is the one the capture
-runs on.
+straight into the campaign" and the mission it names is `_C_140`
+(`tests/fixtures/saves/README.md`). That shows **that session** chose campaign
+2, not that the other start does not exist. All six fixtures carry
+`campaign = 2` at `GameControl + 0x1D1`, which is consistent with both.
+
+It is also what makes §3.1's seed campaign 1's: campaign 2 seeds nothing, and
+its opening squad is the four units `_C_140.lev` places itself — Sgt. Bratt
+`+0x4D = 2` and Rock, Austin and Knox `+0x4D = 1` — which reach the pool at its
+debriefing. Noticed while choosing a mission for the first vertical slice's
+native capture ([`93` §9](93-slice-1-report.md)), which is why `_C_141` — the
+second mission actually played — is the one the capture runs on.
 
 ---
 
@@ -765,8 +827,9 @@ one is `DATA/TXT/English/GUI/Campaign.lcl`, text bank 1.
 2. **The location map** as data: `location = missionId + 50`, the 79-arm unlock
    graph, and the location → mission-file table. `campaign_tables.py --json`
    emits all three; a converter can bake them out rather than re-deriving them.
-3. **The roster rules**: seed a new campaign with Bratt/West/Maxon exactly as
-   §3.1 gives them; hire for 60 points; sort by EP descending; carry over only
+3. **The roster rules**: seed a new **campaign 1** with Bratt/West/Maxon
+   exactly as §3.1 gives them (campaign 2 seeds nothing and takes its squad
+   off `_C_140`'s own map); hire for 60 points; sort by EP descending; carry over only
    units with `+0x4D != 0`, and drop when the 30 slots are full. That choice is
    **decided** in [`92` §7.4](92-remake-architecture.md): the rule stays, but
    the silence does not — the mission-end screen names the survivors that were

@@ -336,6 +336,35 @@ Four records of 40 bytes. `0x0043B990` resets one by writing nine dwords —
 `+0x00`…`+0x1C` to 0 and `+0x20` to 1 — so at least the first 36 bytes are
 live and the last 4 are padding.
 
+**The record is four pairs, and every field is named.** *(2026-09-04; see
+[`98` §5](98-slice-6-report.md).)* The debriefing reads it in two passes —
+`0x0045DF24`…`0x0045DF4B` take `+0x1C/+0x14/+0x0C/+0x04` and
+`0x0045E3D0`…`0x0045E3FA` take `+0x18/+0x10/+0x08/+0x00` — and `Txtmod_d` 30
+and 31, *"In Mission"* and *"In Campaign"*, are the two column headings it
+prints them under:
+
+| Pair | This mission | The campaign | Written by |
+|---|---|---|---|
+| kills | `+0x00` | `+0x04` | `0x0043B810`, the **shooter's** record, on a kill whose two players differ |
+| units lost | `+0x08` | `+0x0C` | `0x0043B8D0`, the **victim's**, from all eleven death paths |
+| lost to an enemy | `+0x10` | `+0x14` | `0x0043B860`, the victim's, beside `0x0043B810` |
+| score | `+0x18` | `+0x1C` | the scorer `0x0043BA10` |
+| heroes lost | `+0x24` | — | `aRemoveUnitElement` `0x00477A4E`; the LCL predicate `HeroKilled` `0x004409E0` reads it |
+
+`+0x08` is the half the scorer doubles, so a friendly-fire death and a
+set-piece death cost the same as one an enemy inflicted. All three
+incrementers share one guard — unit type at most 30 and not 24, and a player
+slot inside the four — except `0x0043B810`, which carries **no player guard**
+and so writes `40 * 255` bytes past the array when an alien makes the kill.
+
+The seventeen callers of the record accessor `0x0043BA00` are all reads bar
+`aRemoveUnitElement`'s, which is why a sweep of the accessor alone does not
+find the writers: the three address the array directly.
+
+All six fixture saves agree with the reading: `+0x04 = 25`, `+0x0C = 3`,
+`+0x14 = 3`, `+0x1C = 119` — 25 kills, three units lost, all three of them to
+an enemy.
+
 `+0x20` is the **mission result**, and the end-of-mission scorer at
 `0x0043BA10` maps it to a base score:
 
@@ -501,13 +530,21 @@ index **0** on the location screen, at index **31** once the next mission is
 running, and at **both** in the mission-entry snapshot (§4). Index 31 is
 `(1 * 31 + 0)`, exactly what the formula above predicts for the second row.
 Both copies carry `+0x45 = 0` — the same owning player — so the campaign is not
-using row 1 as "player 1's roster" but as a **working copy for the mission in
-progress**, with row 0 as the between-missions bank.
+using row 1 as "player 1's roster" but as a **snapshot taken on entering the
+mission**, with row 0 as the live roster.
 
-That sharpens the flat-write bug above: the row that loses its last slot to the
-5460-byte write is row 1, the one a campaign mission actually runs on. One
-campaign's saves cannot say whether multiplayer uses the rows differently, so
-this is recorded as observed and not extrapolated.
+*(Corrected 2026-09-04; see [`98` §4](98-slice-6-report.md).)* This paragraph
+said "a working copy for the mission in progress". The four saves that carry a
+pool say otherwise, and the deciding one is negative: **inside** a mission
+(`_6_.sav`, `_33_.sav`) row 0 is *empty* and row 1 holds the squad, because
+`aTransferUnitFromPoolToMap` removes each record from row 0 as it places it.
+The mission's working copy is the map. Row 1 is what the debriefing's *back to
+the map* button copies back, which makes that button a replay.
+
+That still sharpens the flat-write bug above: the row that loses its last slot
+to the 5460-byte write is row 1, whatever it is called. One campaign's saves
+cannot say whether multiplayer uses the rows differently, so this is recorded
+as observed and not extrapolated.
 
 **The code says the same thing.** `aCopyUnitPool` (`0x00478910`) copies one
 whole usable row — 2730 bytes — and has exactly two call sites: `0x0045A914`
@@ -724,7 +761,12 @@ committed and records what each one pins, with digests.
    MissionObjectives block is all-zero in a campaign save and can only move on a
    multiplayer one.
 
-3. **Slot 32** (§4). Deleted by name from one call site; no code names it. A
+3. **Slot 32** (§4) — *narrowed 2026-09-04.* Deleted by name from one call
+   site; no code names it. Slot 31 is now settled: it is the **mission-entry
+   snapshot**, which §5.7 read correctly and [`27` §3.5](27-campaign.md) has
+   been corrected to agree with (`_31_.sav` carries the squad in both pool
+   rows, `_6_`/`_33_` carry it in row 1 alone). What remains open is 32 and 33
+   only. A
    real run shows the game writing slots 31 and 33 by itself, so the three form
    one internal group — which of them is which is still open.
 

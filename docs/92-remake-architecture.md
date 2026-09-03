@@ -417,6 +417,17 @@ be a compatibility promise that permanently pins the state model to another
 game's — a fixed slot 32, no field for the camera, a whole `.lev` embedded in
 every file ([`11`](11-save-game-format.md)).
 
+**A campaign save is a container over this one** ([§7.13](#713-the-campaign--twelve-decisions-2026-09-04) D10): `SaveCodec` refuses a
+blob whose map name is not the world's, which is exactly right for a mission
+save and exactly wrong for a campaign that outlives one, so the campaign
+document is its own and a mission in progress rides inside it as an opaque
+blob. The **flat-write defect** [`11` §5.7](11-save-game-format.md) records —
+the pool's second row losing its last slot to a 5460-byte write over a
+`[5][31]` array — therefore does **not** reproduce here, and saying so
+explicitly matters: under §7.1's faithful-by-default rule it would otherwise
+read as a defect this remake keeps. It is not reproduced because the remake's
+save is its own format and stores the two rows as two lists.
+
 **Reading** original saves is a one-way import that constrains nothing, so it is
 deferred rather than rejected: worth doing after 1.0, and worth remembering
 that it is also the cheapest route into what remains open in
@@ -1118,11 +1129,18 @@ four things this file now carries:
   `CONVERTER_VERSION` bump and no schema change — the second slice's save still
   loads — which is the shape the pipeline was designed for.
 
-Of the other two, **the campaign layer** ([`27`](27-campaign.md)) is untouched,
-which is why `_C_115` cannot be played even though it converts and draws; and
-**bodies, animation and sound** ([`40`](40-charisma-model-animation.md),
-[`41`](41-sequence-player.md), [`28`](28-effects-and-sound.md)) are still a
-capsule and a ground marker.
+Of the other two, **the campaign layer** ([`27`](27-campaign.md)) was untouched
+at the time, which is why `_C_115` could not be played even though it converted
+and drew; and **bodies, animation and sound**
+([`40`](40-charisma-model-animation.md), [`41`](41-sequence-player.md),
+[`28`](28-effects-and-sound.md)) were still a capsule and a ground marker.
+
+> **Both are now done.** Bodies and sound came with the fourth and fifth slices
+> ([`96`](96-slice-4-report.md), [`97`](97-slice-5-report.md)), and the sixth
+> ([`98`](98-slice-6-report.md)) built the campaign: `_C_115` and `_C_141` are
+> played from a roster, which is what the missing deployment was blocking. Only
+> **31 of the 75** shipped campaign missions place a player-0 squad of their
+> own; the other 44 needed the roster to exist before they could start at all.
 
 Nothing remains from that list. The large-unit clearance was the last one, and
 [`93` §11](93-slice-1-report.md) closed it: an earlier edition of this
@@ -1168,6 +1186,27 @@ The first slice proves one narrow path end to end rather than building a
 framework for the whole remake. Use one representative campaign mission whose
 terrain, objects, unit placement and reachability are already well covered by
 the numbered specs.
+
+### 7.13 The campaign — twelve decisions (2026-09-04)
+
+The sixth slice's, and the first place this document has had to decide
+anything about a layer that outlives a mission. [`98`](98-slice-6-report.md)
+reports the slice; these are the choices no evidence settles.
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | The **campaign number** is the first field of the campaign's state, and it selects the seed, the first mission, the map and the band of locations | all four are switches on it in `aInitGameControl`'s campaign arm ([`27` §2.1, §6.6](27-campaign.md)) |
+| D2 | Pool row 0 is live and row 1 is an **explicit snapshot**, living until the debriefing ends; *replay* is a debriefing button | [`27` §3.5](27-campaign.md) as corrected, and [`27` §8](27-campaign.md) item 4 allows "the same thing with an explicit snapshot" |
+| D3 | The campaign map is `_C_XXX`/`_C_YYY` through the **existing renderer**, and its `.lcl` is not run | [`27` §8](27-campaign.md) permits a remake's own map; there is already a renderer, and a campaign map's script is the original front end's |
+| D4 | Deployment cells come from `MapState`, with no parallel list | [`29` §1.2](29-interface-contract.md): the action-point byte is cell state a mission can rewrite, and a second list would drift from it |
+| D5 | Dialogue locations open, are **named**, and play nothing | the sequence player is [`41`](41-sequence-player.md)'s and a slice of its own |
+| D6 | The 3↔6 upgrade crossing is reproduced as it is | [`27` §2.4](27-campaign.md): shipped behaviour, and §7.1's default |
+| D7 | `CanonicalHash` does not move; the campaign carries its own digest | otherwise every hash the first five slices pinned changes. Verified rather than assumed: three mission hashes measured on the commit before the slice are pinned as literals in `test_campaign.gd` |
+| D8 | A recruit's voice is drawn from a **deterministic** stream, not the engine's `GetTickCount`-seeded one | a save has to reproduce. The engine's `aRandom(1, 6)` here comes from `0x004638E0`, which is seeded from the clock ([`28` §3.2](28-effects-and-sound.md)) |
+| D9 | The converter's `--check` stays on six missions; a full campaign bake is `--check-campaign` | `--check` runs **three** full conversions; the campaign set is fifteen times the slice — 26 s and 86 MiB against 4 s and 42 MiB |
+| D10 | The campaign save is a container **over** `SaveCodec`, and the file write lives in `game/` | `SaveCodec` refuses a blob whose map name is not the world's, which is right for a mission and wrong for a campaign; and `core/` never touches the filesystem |
+| D11 | Equipment points, tech level and skill level are **campaign** state; entering a mission does not apply the header | [`27` §4, §5.2](27-campaign.md) as corrected — the header's fields are the single-mission front end's |
+| D12 | `tables/campaign.json` carries **lists of records**, not objects keyed by id | a JSON object's key is a string and the cache must carry integers; `inclib/info.py` set the precedent, and `tables/balance.json`'s `equipment` — which has no id 2, so a position is not an id — is the trap |
 
 ### 7.11 Effects and sound — seven decisions, one since retracted
 

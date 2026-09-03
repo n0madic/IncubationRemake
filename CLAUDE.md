@@ -47,7 +47,7 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 237 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 245 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 458 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
@@ -64,12 +64,13 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/h
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
-python3 tools/remake_convert.py     gog_incubation --check   # 190 checks, 6 missions
+python3 tools/campaign_runtime.py   --check gog_incubation   # 479 checks, docs/27
+python3 tools/remake_convert.py     gog_incubation --check   # 220 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 33 suites, 2778 checks
+bash   godot/run_tests.sh                                    # 34 suites, 3126 checks
 ```
 
-The last five belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
+The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
 and gates on the harness's sentinel line rather than on the exit status, because
 Godot exits 0 even when the main script fails to load. It also needs its inputs
 present -- a suite whose fixture is missing **fails**, deliberately, the same way
@@ -98,6 +99,8 @@ python3 tools/blob_tables.py     --emit-sound-cases tests/fixtures/sound/cases_s
     --root gog_incubation
 python3 tools/blob_runtime.py    --emit-cases tests/fixtures/blob/cases_blob.json \
     --root gog_incubation
+python3 tools/campaign_runtime.py --emit-cases \
+    tests/fixtures/campaign/cases_campaign.json --root gog_incubation
 python3 tools/presentation_gold.py --emit-death-cases tests/fixtures/presentation/cases_death.json \
     --root gog_incubation
 python3 tools/presentation_gold.py --emit-idle-cases tests/fixtures/presentation/cases_idle.json \
@@ -554,6 +557,24 @@ calls, and their arguments come from the un-validated hooks above -- so the
 reach is **measured and pinned** instead, and closing it wants a `dbgcall`
 capture of the live pool.
 
+`docs/98` reports the sixth -- the campaign: both chains, the location map,
+the two roster banks, deployment onto the `action_point == player + 1` cells,
+the mission end with its score and payouts, the economy and six screens on the
+shipped art. It is the slice that made the content reachable -- of the 75
+shipped campaign missions **only 31 place a player-0 squad of their own**, so
+the other 44 could not start at all. It corrected three delivered documents:
+`aInitGameControl` has **two arms** and a campaign runs the one `docs/27` §4
+did not quote, so the equipment points, tech level and skill level are campaign
+state a mission entry never touches -- and the tech level **does not grow**,
+its global having exactly four `.text` references in the whole image; the unit
+pool's row 0 is the **live** roster and row 1 the **mission-entry snapshot**,
+which four fixture saves settle; and the scoreboard's four "unknown" fields are
+the campaign halves of four pairs, which the debriefing's own `Txtmod_d`
+headings name aloud. It also closed `docs/27` §5.2's **UNVERIFIED** limit pair:
+`0x00510A34`/`0x00510A35` are the low and high ends of one range and the high
+is the tech level, so at tech 1 the catalogue is 14 of 42 weapons and 7 of 19
+items.
+
 `docs/96` reports the fourth -- the bodies: Charisma models, skeletons and the
 three gameplay animation families, `_C_140` played with bodies that walk and
 shoot. Its two corrections to a delivered spec are that the model selector is
@@ -592,7 +613,8 @@ Six things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice**, in `tools/inclib/cache.py` and
+* **`CONVERTER_VERSION` is written down twice** (0.16.0 as of the sixth slice), in
+  `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump
   both **and** republish `user://caches`; the suites read the published cache,
@@ -617,6 +639,17 @@ godot --path godot --script res://tour.gd --resolution 1280x800 -- \
 
 `docs/93` has the two-command first run.
 
+`godot/` also holds the campaign since the sixth slice (`docs/98`):
+`core/campaign/` are the rules, `game/campaign_host.gd` the state machine of
+`docs/27` §1.1, and `game/screens/` the six screens, drawn on the shipped
+plates with the game's own bitmap font. **Not one caption is a literal** -- they
+come from `Txtmod_a/b/d`, `Txtmod_h` and `Campaign`, and `test_game_ui.gd`
+fails on any that comes back as the missing marker. `CampaignState` is
+deliberately **outside** `World`'s canonical hash and carries its own digest;
+`test_campaign.gd` pins three mission hashes measured on the commit before the
+slice, because every other suite compares a hash only with itself and would not
+notice a drift.
+
 `godot/tour.gd` is how the game is played without a player (`docs/97` §42).
 It is a `SceneTree` driver beside `shot.gd`, excluded from the shipping preset,
 and **the directory it is given is the whole protocol**: it waits for
@@ -624,7 +657,11 @@ and **the directory it is given is the whole protocol**: it waits for
 waits for `cmd-0002.txt`. Write each command file with `mv` from a
 neighbouring name so a half-written one is never read. The lines are
 `key NAME`, `click X Y`, `click_unit SLOT`, `walk_to X Y`, `cell X Y`,
-`chance A B`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`; every reply
+`chance A B`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`,
+plus the campaign's `campaign N`, `location N`, `deploy SLOT X Y`,
+`screen NAME`, `ui NAME`, `enter NAME` and `gamecontrol SLOT VALUE` --
+the last three are debugging entries past the location map, the way
+`--mission=` is one past the campaign; every reply
 carries the turn, every unit, the selection's fill and warp cells, the
 sequence on the queue, the blob pool **by kind**, the overlay, the camera and
 the status line, so a screenshot and the numbers behind it come from the same
@@ -632,6 +669,22 @@ frame. Keys and clicks go in through `Viewport.push_input`, so the game's own
 `_unhandled_input` and `_pick` run -- what is synthetic is the hand, not the
 path. It needs a **window**: screenshots come from the viewport's texture and
 `--headless` has no renderer, so run it with a `timeout` rather than headless.
+
+`campaign_runtime.py` is the sixth slice's (`docs/98`) and is in the always-run
+block; two of its modes are not. `--emit-cases` writes the fixture
+`godot/tests/test_campaign.gd` replays, and
+`python3 tools/campaign_runtime.py --check-saves tests/fixtures/saves`
+(**160 checks**) diffs the model against the six real saves -- the two pool
+rows, the campaign economy and the scoreboard's four pairs. It is outside the
+block because those files are gitignored and it exits non-zero when there is
+nothing to read.
+
+`python3 tools/remake_convert.py gog_incubation --check-campaign` (**37
+checks**) is the other one outside it: it bakes **all 92** campaign maps once
+-- 75 missions, `_C_XXX`/`_C_YYY` and the 15 upgrade screens, 31 scenes and 9
+world sets -- and checks the result. It is separate from `--check` because
+`--check` runs **three** full conversions and this set is fifteen times the
+slice: 26 s and 86 MiB against 4 s and 42 MiB (`docs/92` §7.13 D9).
 
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is
@@ -685,7 +738,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 `docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the nine product decisions in its §7 that the numbered specs point at; nothing architectural is left open there.
+The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 
 Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **34 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 

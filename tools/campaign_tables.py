@@ -227,6 +227,31 @@ SKILL_LEVEL_GLOBAL = 0x00509F00
 SKILL_LEVEL_GET = 0x0043B0D0
 SKILL_LEVEL_SET = 0x0043B0E0
 TECH_LEVEL_GLOBAL = 0x00509F04
+#: Every ``.text`` reference to the tech-level global: the multiplayer init
+#: arm, the campaign init arm, and the setter's and getter's own stores.  Four,
+#: which is what says a campaign's tech level cannot move (``docs/27`` §5.2).
+TECH_LEVEL_GLOBAL_REFS = (0x0043ADAB, 0x0043AEBD, 0x0043AF95, 0x0043AFA1)
+#: ``setTechLevel``'s five call sites, all in ``aMenuSystem.cpp``.
+TECH_LEVEL_SETTER_SITES = (0x0044D816, 0x0044EDAA, 0x0044EE36, 0x0044FDB4,
+                           0x0044FFF2)
+
+# --- aInitGameControl 0x0043AD20: two arms, and the campaign's is 0x0043AE76 -
+#: ``mov byte [0x509F04], 4`` in the multiplayer arm; imm8 at +6.
+GAME_CONTROL_TECH_MP_SITE = 0x0043ADA9
+GAME_CONTROL_TECH_MP = 4
+#: ``mov byte [0x509F04], 1`` in the campaign arm.
+GAME_CONTROL_TECH_CAMPAIGN_SITE = 0x0043AEBB
+GAME_CONTROL_TECH_CAMPAIGN = 1
+#: ``mov dword [ebx + 0xCC], 0x64`` -- the campaign's 100 equipment points.
+GAME_CONTROL_POINTS_CAMPAIGN_SITE = 0x0043AE96
+GAME_CONTROL_POINTS_CAMPAIGN = 0x64
+#: ``mov byte [0x509E30], 1`` -- the campaign's player count, which is also the
+#: loop bound, so the arm writes player 0 alone.
+GAME_CONTROL_PLAYERS_CAMPAIGN_SITE = 0x0043AE76
+GAME_CONTROL_PLAYERS_CAMPAIGN = 1
+#: ``push str._C_100`` / ``push str._C_140`` -- ``mov edi, imm32``, u32 at +1.
+GAME_CONTROL_FIRST_MISSION_SITES = {1: 0x0043AF57, 2: 0x0043AF2A}
+CAMPAIGN_FIRST_MISSION = {1: "_C_100", 2: "_C_140"}
 TECH_LEVEL_GET = 0x0043AFA0
 TECH_LEVEL_SET = 0x0043AF90
 ENLARGE_RANK_SCALE_SITE = 0x00478A6C     # `mov dl, 0x0C`, imm8 at +1
@@ -1150,7 +1175,7 @@ def run_checks(root: str) -> Checker:
              f"weapon 0 costs {price}, a recruit "
              f"{None if price is None else price + RECRUIT_MARKUP}")
 
-    # -- 14. skill and tech level come from the .lev header -----------------
+    # -- 14. skill and tech level are the campaign's, not the mission's -----
     ck.equal("level.skill_global", b.u32(SKILL_LEVEL_SET + 5),
              SKILL_LEVEL_GLOBAL, hex)
     ck.equal("level.tech_global", b.u32(TECH_LEVEL_SET + 5),
@@ -1160,6 +1185,28 @@ def run_checks(root: str) -> Checker:
     ck.check("level.skill_readers",
              ENLARGE_RANK_CALL in b.calls_to(SKILL_LEVEL_GET),
              "the recruit seeding is the one game-side reader")
+    ck.equal("level.tech_writers", tuple(b.calls_to(TECH_LEVEL_SET)),
+             TECH_LEVEL_SETTER_SITES, _hexlist)
+    # The whole image holds exactly four instruction-level references to the
+    # tech-level global: the two init arms and the setter's and getter's own.
+    # That is what says a campaign's tech level cannot move -- docs/27 5.2.
+    tech_refs = tuple(va for va in b.absolute_refs(TECH_LEVEL_GLOBAL)
+                      if b.text_lo <= va < b.text_hi)
+    ck.equal("level.tech_global_refs", tech_refs, TECH_LEVEL_GLOBAL_REFS,
+             _hexlist)
+    ck.equal("level.multiplayer_arm_tech", b.u8(GAME_CONTROL_TECH_MP_SITE + 6),
+             GAME_CONTROL_TECH_MP, str)
+    ck.equal("level.campaign_arm_tech", b.u8(GAME_CONTROL_TECH_CAMPAIGN_SITE + 6),
+             GAME_CONTROL_TECH_CAMPAIGN, str)
+    ck.equal("level.campaign_arm_points",
+             b.u32(GAME_CONTROL_POINTS_CAMPAIGN_SITE + 6),
+             GAME_CONTROL_POINTS_CAMPAIGN, str)
+    ck.equal("level.campaign_arm_players",
+             b.u8(GAME_CONTROL_PLAYERS_CAMPAIGN_SITE + 6),
+             GAME_CONTROL_PLAYERS_CAMPAIGN, str)
+    for number, site in sorted(GAME_CONTROL_FIRST_MISSION_SITES.items()):
+        ck.equal(f"level.campaign_{number}_first_mission",
+                 b.string(b.u32(site + 1)), CAMPAIGN_FIRST_MISSION[number])
     skills = {h["skill"] for h in c.headers.values()}
     techs = {h["tech"] for h in c.headers.values()}
     ck.check("level.skill_range", max(skills) <= 12,
