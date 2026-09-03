@@ -1422,11 +1422,17 @@ def report_locations(root: str) -> None:
               f"{opened}")
 
 
-def report_json(root: str) -> None:
+def tables_document(root: str) -> dict:
+    """The decoded tables, as the JSON document ``--json`` prints.
+
+    Split out of :func:`report_json` so the converter and
+    ``campaign_runtime.py`` read the same tables through the same code rather
+    than each re-deriving them from the binary.
+    """
     b = Binary(root)
     graph = {str(k): (None if v is None else [list(p) for p in v])
              for k, v in b.location_map().items()}
-    print(json.dumps({
+    return {
         "location_bias": LOCATION_BIAS,
         "map_names": {str(k): v for k, v in b.map_names().items()},
         "unlock_graph": graph,
@@ -1435,7 +1441,11 @@ def report_json(root: str) -> None:
         "squad_fields": {f"{r}:{o:#04x}": v
                          for (r, o), v in sorted(b.squad_fields().items())},
         "payout_scores": b.payout_scores(),
-    }, indent=2))
+    }
+
+
+def report_json(root: str) -> None:
+    print(json.dumps(tables_document(root), indent=2))
 
 
 def main(argv=None) -> int:
