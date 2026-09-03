@@ -10,6 +10,7 @@ extends TestSuite
 
 func run(h: TestHarness) -> void:
 	h.begin("save", TestHarness.ORACLE_SPEC)
+	_campaign_container(h)
 	var world: World = TestFixtures.tiny_world()
 
 	# Move the simulation off its initial state, so a round trip that silently
@@ -95,3 +96,100 @@ func run(h: TestHarness) -> void:
 	h.check("negative.map_mismatch_left_alone",
 		other.canonical_hash_hex() != before,
 		"a refused save changes nothing")
+
+
+## The campaign container -- a save **over** [SaveCodec] (D10).
+##
+## [SaveCodec] refuses a blob whose map name is not the world's, which is
+## exactly right for a mission save and exactly wrong for a campaign: the whole
+## point is that the campaign outlives the mission. So a mission save rides
+## inside as an opaque blob, and the container's own four refusals are
+## [SaveCodec]'s shape -- four different answers, not one `null`.
+func _campaign_container(h: TestHarness) -> void:
+	var state: CampaignState = CampaignState.begin(1, 10, 5,
+		PackedStringArray(["Bratt", "West", "Maxon"]))
+	state.mission = "_C_105"
+	state.difficulty = 2
+	state.set_points(0, 4321)
+	state.scoreboard[0].total = 119
+	state.scoreboard[0].campaign_kills = 25
+	state.roster.snapshot()
+	state.roster.clear(1)
+	var digest: String = state.digest_hex()
+
+	# A mission in progress rides inside, and comes back byte for byte.
+	var world: World = TestFixtures.tiny_world()
+	var blob: PackedByteArray = world.save({})
+	var container: PackedByteArray = CampaignCodec.encode(state, blob)
+	var decoded: Dictionary = CampaignCodec.decode(container)
+	h.equal("campaign_save.round_trip", DictRead.as_int(decoded["result"]),
+		CampaignCodec.Result.OK)
+	var back: CampaignState = decoded["state"]
+	h.equal("campaign_save.digest", back.digest_hex(), digest,
+		"campaign, mission, purse, roster, snapshot and scoreboard")
+	h.equal("campaign_save.mission_blob", DictRead.to_bytes(decoded["mission"]),
+		blob, "opaque to the container, and unchanged by it")
+	h.equal("campaign_save.rows",
+		[back.roster.used_slots(Roster.ROW_LIVE),
+		back.roster.used_slots(Roster.ROW_SNAPSHOT)], [2, 3],
+		"the live row lost a slot; the entry snapshot did not")
+
+	# The nested blob still goes through `SaveCodec`, which is what checks the
+	# map: a campaign that changed mission carries a blob for the old one.
+	var reloaded: World = TestFixtures.tiny_world()
+	h.equal("campaign_save.mission_still_checked",
+		reloaded.load_save(DictRead.to_bytes(decoded["mission"])),
+		SaveCodec.Result.OK)
+	var wrong_map: World = TestFixtures.other_world()
+	h.equal("campaign_save.other_map_refused",
+		wrong_map.load_save(DictRead.to_bytes(decoded["mission"])),
+		SaveCodec.Result.MAP_MISMATCH,
+		"the container carries the blob; SaveCodec still owns the map check")
+
+	# A campaign between missions carries no blob at all.
+	var between: Dictionary = CampaignCodec.decode(CampaignCodec.encode(state))
+	h.equal("campaign_save.no_mission",
+		DictRead.to_bytes(between["mission"]).size(), 0)
+
+	# The four refusals.
+	h.equal("campaign_save.truncated",
+		DictRead.as_int(CampaignCodec.decode(
+			PackedByteArray([1, 2, 3]))["result"]),
+		CampaignCodec.Result.TRUNCATED)
+	var magic: PackedByteArray = container.duplicate()
+	magic[1] = 0x58
+	h.equal("campaign_save.bad_magic",
+		DictRead.as_int(CampaignCodec.decode(magic)["result"]),
+		CampaignCodec.Result.BAD_MAGIC)
+	var torn: PackedByteArray = container.duplicate()
+	torn[container.size() - 2] ^= 0xFF
+	h.equal("campaign_save.bad_digest",
+		DictRead.as_int(CampaignCodec.decode(torn)["result"]),
+		CampaignCodec.Result.BAD_DIGEST)
+	# `BAD_SCHEMA` is reachable only from a **newer** writer, so it needs one:
+	# the schema dword is inside the digest, and flipping it alone reports
+	# corruption instead. This builds the save a future version would write.
+	var ahead: PackedByteArray = _reschemad(state, CampaignCodec.SCHEMA_VERSION + 1)
+	h.equal("campaign_save.bad_schema",
+		DictRead.as_int(CampaignCodec.decode(ahead)["result"]),
+		CampaignCodec.Result.BAD_SCHEMA,
+		"a save from a build this one does not speak")
+
+
+## What a writer one schema ahead would produce: the same layout, a different
+## version dword, and a digest that matches it.
+func _reschemad(state: CampaignState, version: int) -> PackedByteArray:
+	var document: PackedByteArray = JSON.stringify(
+		state.view(), "", true, true).to_utf8_buffer()
+	var body: PackedByteArray = PackedByteArray()
+	body.append_array(PackedInt32Array([version, document.size(),
+		0]).to_byte_array())
+	body.append_array(document)
+	var ctx: HashingContext = HashingContext.new()
+	var started: Error = ctx.start(HashingContext.HASH_SHA256)
+	assert(started == OK)
+	ctx.update(body)
+	var out: PackedByteArray = CampaignCodec.MAGIC.to_utf8_buffer()
+	out.append_array(body)
+	out.append_array(ctx.finish())
+	return out

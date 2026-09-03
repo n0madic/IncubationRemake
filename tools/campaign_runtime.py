@@ -233,8 +233,10 @@ def check_economy(ck: Checker, ctx: Context) -> None:
     # The cap and the floor.
     state.set_points(0, 9990)
     state.add_points(0, 100)
-    ck.expect("economy.cap", state.equipment_points[0],
-              cam.EQUIPMENT_POINT_CAP)
+    # The literal, not `cam.EQUIPMENT_POINT_CAP`: a check that reads the
+    # constant it is checking passes whatever the constant says.
+    ck.expect("economy.cap", state.equipment_points[0], 10000,
+              "0x0043B010 clamps here")
     ck.check("economy.spend_refuses", not state.spend_points(0, 20000),
              "a purchase never goes negative")
     ck.expect("economy.spend_refused_unchanged", state.equipment_points[0],
@@ -251,8 +253,15 @@ def check_economy(ck: Checker, ctx: Context) -> None:
     ck.expect("economy.swap_costs_difference", state.equipment_points[0],
               100 - 60 + 10 - 30)
     ck.expect("economy.resale_recomputed",
-              state.roster.row(cam.ROW_LIVE)[0].resale,
-              (30 + cam.RECRUIT_MARKUP) // cam.RESALE_SCALE)
+              state.roster.row(cam.ROW_LIVE)[0].resale, 8,
+              "+0x5A is (cost + 50) / 10, in tens")
+    ck.expect("economy.resale_scale_is_tens",
+              cam.PoolRecord().raw[cam.OFF_RESALE], 0)
+    fresh = ctx.begin(2)
+    fresh.recruit(0, weapon_zero_cost=cost, speech=1)
+    ck.expect("economy.recruit_resale",
+              fresh.roster.row(cam.ROW_LIVE)[0].resale, 6,
+              "(10 + 50) / 10 -- the value dismissing refunds ten times")
 
 
 def check_sort(ck: Checker) -> None:
@@ -339,9 +348,46 @@ def check_survival(ck: Checker) -> None:
               [d["reason"] for d in overflow], [cam.DROP_POOL_FULL])
 
 
+def check_counters(ck: Checker) -> None:
+    """``0x0043B810``, ``0x0043B860`` and ``0x0043B8D0`` -- the scoreboard's
+    three incrementers and the guard all three share."""
+    ck.expect("counters.type_bounds",
+              (cam.SCORED_TYPE_MAX, cam.SCORED_TYPE_EXCLUDED), (30, 24),
+              "cmp cl, 0x1e / ja and cmp cl, 0x18 / je")
+    for type_id, player, want in ((0, 0, True), (30, 0, True),
+                                  (31, 0, False), (24, 0, False),
+                                  (0, 4, False), (0, 255, False)):
+        ck.expect(f"counters.guard.{type_id}.{player}",
+                  cam.scores_as_a_loss(type_id, player), want)
+
+    board = [cam.ScoreRecord() for _ in range(cam.PLAYER_SLOTS)]
+    # Every death counts as a loss, whatever killed it.
+    cam.count_unit_lost(board, 0, 0)
+    cam.count_unit_lost(board, 24, 0)      # the excluded type
+    cam.count_unit_lost(board, 31, 0)      # past the bound
+    ck.expect("counters.lost", board[0].losses, 1)
+
+    # A kill credits the shooter and charges the victim, only when the two
+    # players differ.
+    cam.count_kill_and_loss(board, 0, 0, 1)
+    ck.expect("counters.kill", (board[0].kills, board[1].lost_to_enemy), (1, 1))
+    cam.count_kill_and_loss(board, 0, 0, 0)
+    ck.expect("counters.friendly_fire_is_not_a_kill",
+              (board[0].kills, board[0].lost_to_enemy), (1, 0),
+              "0x0046BF7C's cmp dl, al skips both")
+    # The alien killer the engine would write out of bounds for.
+    cam.count_kill_and_loss(board, 255, 0, 0)
+    ck.expect("counters.alien_killer_is_bounded",
+              [r.kills for r in board], [1, 0, 0, 0],
+              "0x0043B810 carries no player guard; this one does")
+
+
 def check_score(ck: Checker, ctx: Context) -> None:
     """``docs/27`` §6.2 -- all five results by all three difficulties."""
-    for difficulty, multiplier in enumerate(cam.DIFFICULTY_MULTIPLIER):
+    ck.expect("score.difficulty_multipliers",
+              list(cam.DIFFICULTY_MULTIPLIER), [1, 2, 3],
+              "0x0043BAC8, from 0x00460450's three settings")
+    for difficulty, multiplier in enumerate([1, 2, 3]):
         for result in range(1, 6):
             state = ctx.begin(2)
             state.difficulty = difficulty
@@ -790,6 +836,7 @@ def run_check(root: Path) -> int:
     check_seed(ck, ctx)
     check_economy(ck, ctx)
     check_sort(ck)
+    check_counters(ck)
     check_banks(ck, ctx)
     check_survival(ck)
     check_score(ck, ctx)

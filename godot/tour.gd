@@ -56,6 +56,8 @@ const BOOT_LIMIT: int = 900
 ## The keys `SliceMain._unhandled_input` reads, by the name a command uses.
 const KEYS: Dictionary[String, int] = {
 	"TAB": KEY_TAB,
+	"F5": KEY_F5,
+	"F9": KEY_F9,
 	"SPACE": KEY_SPACE,
 	"Q": KEY_Q,
 	"E": KEY_E,

@@ -270,6 +270,58 @@ func _refresh_after_deploy() -> void:
 	_refresh_status()
 
 
+
+# --- the quick save ----------------------------------------------------------
+
+## `F5` -- write the campaign and, when a mission is up, the mission inside it.
+##
+## One file and one slot: a save-slot screen is out of this slice
+## (docs/92 section 7.9). The mission blob is [SaveCodec]'s and stays opaque to
+## the container, because that codec refuses a blob whose map name is not the
+## world's -- right for a mission, wrong for a campaign that outlives one (D10).
+func quick_save() -> bool:
+	if campaign == null or campaign.state == null:
+		_refresh_status("no campaign to save")
+		return false
+	var written: bool = campaign.save(world)
+	_refresh_status("saved" if written else "save failed")
+	return written
+
+
+## `F9` -- read it back, and rebuild whatever it was holding.
+##
+## The order matters: the campaign comes back first because it names the
+## mission, then the mission is built, and only then is the mission blob handed
+## to [World] -- which is the one that checks the map name.
+func quick_load() -> bool:
+	if campaign == null:
+		return false
+	var decoded: Dictionary = campaign.load_save()
+	var code: int = DictRead.as_int(decoded["result"])
+	if code != CampaignCodec.Result.OK:
+		_refresh_status("load refused: " + CampaignCodec.result_name(code))
+		return false
+	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
+	if blob.is_empty():
+		close_campaign_screen()
+		var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+		_refresh_status("loaded")
+		return true
+	_build(campaign.state.mission)
+	if world == null:
+		_refresh_status("loaded, but the cache has no " + campaign.state.mission)
+		return false
+	var restored: int = world.load_save(blob)
+	if restored != SaveCodec.Result.OK:
+		_refresh_status("mission refused: " + SaveCodec.result_name(restored))
+		return false
+	close_campaign_screen()
+	campaign.enter_mission()
+	_refresh_after_deploy()
+	_refresh_status("loaded")
+	return true
+
+
 # --- the campaign screens ----------------------------------------------------
 
 ## Put one campaign screen up, taking down whatever was there.
@@ -1421,7 +1473,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
-		if key.keycode == KEY_TAB:
+		if key.keycode == KEY_F5:
+			quick_save()
+		elif key.keycode == KEY_F9:
+			quick_load()
+		elif key.keycode == KEY_TAB:
 			var _cycled: int = cycle_friendly()
 		elif key.keycode == KEY_Q:
 			_rig.rotate_step(-1)
