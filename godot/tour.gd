@@ -268,6 +268,17 @@ func _run(line: String) -> void:
 			else:
 				_main.close_campaign_screen()
 				_log.append("ui: closed")
+		"gamecontrol":
+			# `SetGameControl` -- what a mission script writes to end a
+			# mission (docs/20 section 7). Writing it here is the same act,
+			# and it is how a driver reaches a **won** debriefing without
+			# playing a mission to its end.
+			if parts.size() > 2:
+				_main.world.game_control.set_slot(parts[1].to_int(),
+					parts[2].to_int())
+				_log.append("gamecontrol %s = %s" % [parts[1], parts[2]])
+			else:
+				_log.append("gamecontrol: wants SLOT VALUE")
 		"enter":
 			# A debugging entry past the location map, the way `--mission=` is
 			# a debugging entry past the campaign. The flow itself goes through
