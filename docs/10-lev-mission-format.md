@@ -1433,5 +1433,21 @@ is left is small and mostly unfalsifiable from the shipped data.
      full chain and the resulting axis convention.
 
    Which of `+0x20` and `+0x22` is pitch and which is roll is still
-   **UNVERIFIED** — no shipped record sets either, and the two matrix builders
-   differ only in composition order, which nothing in the shipped data selects.
+   **UNVERIFIED** — no shipped record sets either.
+
+   **What the builders do with the yaw is closed** (2026-09-04,
+   [`97` §47](97-slice-5-report.md)). They do *not* "differ only in composition
+   order": `_E3D_init_matrix_RzRxRy` (`+0x411BF6`) opens with
+   `neg ebx / neg ecx / neg edx` and `_E3D_init_matrix_RyRxRz` (`+0x411A93`)
+   does not, so on a pure yaw they answer opposite rotations. Which one a
+   heading reaches is a property of the **prototype**, not of the renderer:
+   `_E3D_object_3d_check_in` (`+0x404BD0`) reads only `+0x10/+0x14/+0x18` and
+   culls, while seven opcode handlers read the triple as the fallback source
+   for a joint angle — `+0x1C` is the joint-buffer pointer and `+0x20` the
+   inline default it falls back to, which is why `+0x1C` is `0` in 100 % of
+   records. Measured over all 155 `.lev` and all 26 072 prototypes: **6 332 of
+   the 6 333** special objects with a heading rotate at anim offset 0, all of
+   them through an opcode that negates, and the render stream carries only
+   `joint_rotate_3` and `joint_rotate_3_alt` at offset 0 and `joint_place` at 6
+   and 12. `verify_3d_indices.py` checks it, and the result lands §5.10's eight
+   facing angles on their own steps, 8/8.

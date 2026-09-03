@@ -1309,6 +1309,39 @@ func _check_models(h: TestHarness) -> void:
 	h.equal("models.bearing_points_the_model", pointed, cardinals.size(),
 		"the model's +Y forward lands on its own bearing")
 
+	# **A placed object's heading is the same word through the same machinery.**
+	# 6332 of the 6333 yawed special objects in the shipped missions are drawn
+	# by a prototype that turns the object record's own triple with
+	# `joint_rotate_3` at anim offset 0 (`verify_3d_indices.py`), so scenery and
+	# a model blob must not be two rules. They were until docs/97 section 47.
+	var yaws: Array[int] = [0, 200, 512, 1024, 1536, 2048, 3072, 3900]
+	var same: int = 0
+	for yaw: int in yaws:
+		if WorldSpace.yaw_basis(yaw).is_equal_approx(
+				WorldSpace.joint_basis(0, 0, yaw)):
+			same += 1
+	h.equal("models.scenery_yaw_is_a_joint_angle", same, yaws.size(),
+		"a heading is the joint triple's third component and nothing else")
+
+	# And against the engine's own arithmetic rather than against ourselves:
+	# [Eng3dGeometry] is `tools/inclib/eng3d.py`'s twin, and its three-angle
+	# builder reproduces `E3D_init_matrix_RzRxRy` 8/8 inside a running
+	# `Incubation.exe`. A point on engine +Y turned by the engine must land
+	# where the same point turned by this basis lands.
+	var measured: Eng3dGeometry = Eng3dGeometry.from_cache(
+		CacheFixture.cache_dir())
+	var agreed: int = 0
+	for yaw: int in yaws:
+		var turned: Vector3i = Eng3dGeometry.transform(
+			measured.matrix3(0, 0, yaw), Vector3i(0, 1600, 0))
+		var engine: Vector3 = WorldSpace.to_godot_v(Vector3(turned)).normalized()
+		var mine: Vector3 = (WorldSpace.yaw_basis(yaw)
+			* WorldSpace.to_godot(0, 1600, 0)).normalized()
+		if mine.dot(engine) > 0.9999:
+			agreed += 1
+	h.equal("models.scenery_yaw_matches_the_engine_matrix", agreed, yaws.size(),
+		"the heading turns geometry the way Eng3d's own matrix builder does")
+
 	# The pool draws only the model half: a sprite blob is [BlobSprites]'s.
 	var pool: BlobPool = BlobPool.create(1.0)
 	var index: Dictionary[String, int] = {}

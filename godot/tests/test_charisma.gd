@@ -245,6 +245,7 @@ func _facing(h: TestHarness) -> void:
 
 	var wrong: PackedStringArray = PackedStringArray()
 	var marker: PackedStringArray = PackedStringArray()
+	var geometry: PackedStringArray = PackedStringArray()
 	var units: UnitsView = UnitsView.new()
 	var node: Node3D = Node3D.new()
 	var body: CharismaBody = CharismaBody.new()
@@ -266,11 +267,24 @@ func _facing(h: TestHarness) -> void:
 		# the ground marker under it is drawn with.
 		if not node.basis.is_equal_approx(WorldSpace.yaw_basis(angle)):
 			marker.append("facing %d" % facing)
+		# The Eng3d half of the same table, and the half that fails on a wrong
+		# sign: Eng3d geometry is authored along engine **+Y**, so an object
+		# turned by this facing's own angle must point where the step goes.
+		# The body's half above cannot catch that on its own -- it went on
+		# agreeing while [method WorldSpace.yaw_basis] turned the wrong way,
+		# because the correction it carries absorbed the error (docs/97 §47).
+		var eng3d: Vector3 = (WorldSpace.yaw_basis(angle)
+			* WorldSpace.to_godot(0, 1600, 0)).normalized()
+		if eng3d.distance_to(want) > 0.0001:
+			geometry.append("facing %d points %s, walks %s"
+				% [facing, str(eng3d), str(want)])
 	units.free()
 	h.equal("facing.body_walks_forwards", ", ".join(wrong), "",
 		"all eight facings, body forward against the step it takes")
 	h.equal("facing.marker_keeps_engine_yaw", ", ".join(marker), "",
 		"the node stays on docs/10 section 5.10's own angle")
+	h.equal("facing.eng3d_forward_walks_forwards", ", ".join(geometry), "",
+		"all eight facings, an object's +Y against the step it takes")
 
 
 ## The stride a movement clip carries, and that a walk takes it back out.

@@ -5477,6 +5477,9 @@ strength of an inference is not a change to make quietly. It wants its own
 check -- an asymmetric object with a known yaw, against the original -- and
 until then it is named here and nowhere else.
 
+**Closed on 2026-09-04 by §47**, and by something better than the screenshot
+that sentence asked for.
+
 ### 46.6 Verification
 
 | | |
@@ -5490,3 +5493,148 @@ are transcribed nowhere, so their spread, their per-blob speeds and their exact
 pitch are the remake's stand-ins. Closing that is a `blob_gold.py` capture of
 those thirty, which is the same item `docs/97` §14.5 named and the reason this
 section could be written from a capture at all.
+
+## 47. 2026-09-04 — the same sign, in the half that places the world
+
+§46.5 left `WorldSpace.yaw_basis` alone on purpose. It places every piece of
+scenery and every unit node, the argument for changing it was an inference, and
+the check it wanted was named as "an asymmetric object with a known yaw,
+against the original". That check turned out to be unnecessary: the engine
+answers the question itself, and the answer is measured end to end.
+
+### 47.1 Where a placed object's heading actually goes
+
+The obvious reading is that the renderer builds an object's matrix from its
+rotation triple and then runs the prototype. It does not, and that matters,
+because the two matrix builders `Eng3d.dll` exports **disagree** on a pure yaw:
+`_E3D_init_matrix_RzRxRy` (`+0x411BF6`) opens with `neg ebx / neg ecx / neg edx`
+and `_E3D_init_matrix_RyRxRz` (`+0x411A93`) does not. Which one a heading
+reaches is therefore the whole question, and it is not a property of the
+renderer — it is a property of *the prototype's own bytecode*.
+
+`_E3D_object_3d_check_in` (`+0x404BD0`) reads only `+0x10/+0x14/+0x18`: it
+culls against the view box and never touches the rotation. The triple is read
+by seven opcode handlers in the range `+0x405EEC`..`+0x4060F0`, all of which
+open the same way:
+
+```asm
+mov  ebx, [0x414084]      ; the object being drawn
+mov  esi, [ebx + 0x1c]    ; its joint buffer
+test esi, esi
+jne  ...
+lea  esi, [ebx + 0x20]    ; ...or the record's own triple, when there is none
+add  esi, eax             ; plus the opcode's anim offset
+```
+
+So `+0x1C` — which `docs/10` §6 records as "always written as `0`", in 100 % of
+records — is the *joint buffer pointer*, and `+0x20` is the inline default the
+handlers fall back to. A placed object's heading is a joint angle at anim
+offset 0, and the opcode that reads it is written into the prototype.
+
+### 47.2 Which opcode, over the whole corpus
+
+Measured, not assumed, across all 155 shipped `.lev` and all 26 072 prototypes:
+
+| | |
+|---|---|
+| special objects with a heading | 6 333 |
+| …whose prototype rotates at anim offset 0 | **6 332** |
+| …and does so with an opcode that negates | **6 332 of 6 332** |
+| the exception | one `L096EF00.3DI` record, which the engine draws unturned |
+
+And the render stream — the only one of a prototype's three that draws —
+carries exactly three of the seven rotation opcodes, at exactly three anim
+offsets:
+
+| opcode | builder | anim offset | occurrences |
+|---|---|---|---|
+| `joint_rotate_3` (9) | `+0x411A59` fast path, else `+0x411BF6` | 0 | 1 959 |
+| `joint_rotate_3_alt` (10) | `+0x411A59` fast path, else `+0x411A93` | 0 | 367 |
+| `joint_place` (18) | `+0x411BF6` | 6 and 12 | 213 |
+
+`matrix_from_angles` (15), the one opcode that goes straight to the
+non-negating builder with no fast path, appears in **no render stream at all**.
+The fast path is `or ax, cx / je` at `+0x40601E` and `+0x406093`: when the
+first two components of the triple are zero — which they are in all 194 105
+shipped records, `lev_parse.py --check` 155/155 — the handler calls the
+single-angle builder `+0x411A59` instead of a three-angle one, and `+0x411A59`
+answers the same rotation as `+0x411BF6` for a pure yaw.
+
+So **every rotation the renderer applies negates its angle**. There is no
+residue: the three anim offsets `BlobModels._triple_basis` honours, 0, 6 and
+12, are the three that exist, and no drawn rotation reaches `+0x411A93`.
+
+### 47.3 The engine agreeing with itself
+
+The chain above ends at `_E3D_init_matrix_RzRxRy`, which §18.1 reproduces 8/8
+inside a running `Incubation.exe`. Run the shipped `TRIG.IMG` through it for
+`docs/10` §5.10's eight facing angles and ask where an object's authored +Y
+lands:
+
+| facing | angle | +Y turns to | the step `aExecuteUse` takes |
+|---|---|---|---|
+| 0 | 0 | `(0, +1599)` | `(0, +1)` |
+| 1 | 3072 | `(-1600, 0)` | `(-1, 0)` |
+| 2 | 2048 | `(0, -1600)` | `(0, -1)` |
+| 3 | 1024 | `(+1599, -1)` | `(+1, 0)` |
+| 4 | 1536 | `(+1131, -1132)` | `(+1, -1)` |
+| 5 | 3584 | `(-1132, +1131)` | `(-1, +1)` |
+| 6 | 512 | `(+1131, +1131)` | `(+1, +1)` |
+| 7 | 2560 | `(-1132, -1132)` | `(-1, -1)` |
+
+Eight of eight. With the angle taken positively, six of the eight are wrong and
+the two that agree are the two a sign cannot move. Neither of the two tables is
+the remake's: `FACING_ANGLES` is `fcn.0046A6E0`'s switch and `FACING_STEPS` was
+confirmed natively by sweeping `aExecuteUse` over all eight facings
+(`inclib/lev.py`).
+
+### 47.4 What changed, and what did not
+
+`WorldSpace.yaw_basis` negates. `WorldSpace.charisma_yaw_basis` was
+`yaw_basis(2048 - yaw)` and is now `yaw_basis(yaw + 2048)`; those are the same
+angle modulo a full turn, so **no body moved** — the old formula was fitted
+against `docs/10` §5.10 while `yaw_basis` turned the wrong way, and it had been
+silently absorbing the error. The reason improved with it: a correction shaped
+like `2048 - yaw` looks like a reflection, and the earlier note had to argue a
+mirror away with the marine's `Hand_R`; a *half turn* is exactly what a model
+authored facing **-Y** wants when the geometry around it is authored along
+**+Y**, and there is nothing left for a mirror to explain.
+
+What moved is scenery, and only half of it. Negating a yaw maps 1024 to 3072
+and leaves 0 and 2048 alone, so of the 99.5 % of records on quarter turns
+(`docs/10` §6) exactly half were a half turn out. The shipped world is built of
+walls, floor tiles and crates that are symmetric end for end, which is why a
+slice of looking at it did not catch this and why the by-eye check §46.5 asked
+for would have been a poor instrument anyway.
+
+Three stale claims went with it, all of them ones this measurement contradicts:
+
+* `world_space.gd` said `test_charisma.gd` pins `engine_matrix` with "an engine
+  yaw against `yaw_basis`". No test does; what pins it is the bone sweep, every
+  bone's full local matrix at one frame against `cha_parse.py`'s.
+* it also said no shipped joint prototype uses `joint_rotate_3_alt` or
+  `matrix_from_angles`. The first is used 367 times and the second is used in
+  the collision and part-info streams; neither reads anim offset 0 in a render
+  stream, which is the claim that was wanted.
+* `docs/10` §9 item 6 named three call sites reading `[ebx + 0x20]` and left
+  which builder they reach open. All seven are enumerated above.
+
+### 47.5 Verification
+
+| | |
+|---|---|
+| `bash godot/run_tests.sh` | 33 suites, 2775 → **2778** checks, 0 failures |
+| `test_effects` | 278 → **280**: a heading equals the joint triple's third component, and turns geometry the way `Eng3dGeometry`'s measured builder does |
+| `test_charisma` | +1: `facing.eng3d_forward_walks_forwards`, an object's +Y against the step, all eight |
+| `verify_3d_indices.py` | 31 → **38** check kinds: the 6 332 headings, the eight facings, and the one prototype that has a heading and no opcode |
+| mutation | the sign put back: 4 checks fail, `2` of `8` on both arithmetic ones — the two a sign cannot move |
+
+`_C_140` was looked at afterwards, and that is all the looking is worth: 481
+scenery instances as before, the pipe runs continuous, the crates flush, and
+nothing came apart. It is not evidence for the sign — half the shipped geometry
+is symmetric end for end, which is the whole reason the wrong sign survived a
+slice — and it is recorded as a sanity check and not as a verification.
+
+**Not done, and named:** the four checks above say nothing about whether the
+*converted* geometry carries its prototype's parts in the order the engine
+draws them. That is the by-eye half of `docs/93` §10.4 and it is unchanged.

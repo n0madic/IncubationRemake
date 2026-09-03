@@ -49,9 +49,38 @@ static func cell_centre(x: int, y: int, h: int) -> Vector3:
 
 ## An engine yaw as a Godot basis.  Taken modulo a full turn because the corpus
 ## carries accumulated values well past 4096.
+##
+## **The angle is negated**, and that is measured rather than argued.  A placed
+## object's heading is the third component of the rotation triple at `+0x20`
+## (docs/10 section 6), and the engine turns it with exactly the machinery a
+## joint angle goes through -- so this *is* [method joint_basis] with only its
+## third component, and `test_effects.gd` pins the two together rather than
+## letting them be two rules.  Every link of the chain:
+##
+## * **6332 of the 6333** yawed special objects in the 155 shipped `.lev` are
+##   drawn by a prototype whose render program carries `joint_rotate_3` at anim
+##   offset **0**, which is the object record's own triple.  The one that is
+##   not is a single `L096EF00.3DI`, which the engine therefore draws unturned.
+##   At offset 0 the whole 26 072-prototype corpus uses only that opcode and
+##   its `_alt`; no placed heading reaches `_E3D_init_matrix_RyRxRz`, which is
+##   the one builder that does **not** negate.
+## * `+0x20` and `+0x22` are zero in all 194 105 records (`lev_parse.py
+##   --check`, 155/155), so that opcode takes its own pure-yaw fast path --
+##   `or ax, cx / je` at `Eng3d.dll+0x40601E` -- into the single-angle builder
+##   `+0x411A59` rather than into a three-angle one.
+## * `+0x411A59` and `E3D_init_matrix_RzRxRy` (`+0x411BF6`) answer the same
+##   rotation for a pure yaw, and the second is reproduced 8/8 against a live
+##   `Incubation.exe` (docs/97 section 18.1).
+## * the result lands docs/10 section 5.10's eight headings on the eight steps
+##   `aExecuteUse` takes -- **8 of 8**, where the un-negated angle agrees only
+##   on the two a sign cannot move.
+##
+## Until 2026-09-04 this was `+turns`, which is right on yaw 0 and 2048 and
+## half a turn out on 1024 and 3072.  The shipped world is built on quarter
+## turns and most of its geometry is symmetric end for end, which is why it
+## survived being looked at (docs/97 section 47).
 static func yaw_basis(yaw: int) -> Basis:
-	var turns: float = float(posmod(yaw, ANGLE_FULL_TURN)) / float(ANGLE_FULL_TURN)
-	return Basis(Vector3.UP, turns * TAU)
+	return Basis(Vector3.UP, -_turns(yaw))
 
 
 ## A joint-angle triple as a Godot basis: the three-axis rotation the engine's
@@ -63,9 +92,19 @@ static func yaw_basis(yaw: int) -> Basis:
 ## not a format constant"); it is readable, and the fifth slice read it: the two
 ## opcodes that place a jointed part, `joint_rotate_3` (`Eng3d.dll+0x405FFC`)
 ## and `joint_place` (`Eng3d.dll+0x4060F0`), both call
-## `E3D_init_matrix_RzRxRy` at `Eng3d.dll+0x411BF6`. (`joint_rotate_3_alt` and
-## `matrix_from_angles` call the other one, `+0x411A93`; no shipped joint
-## prototype uses them.) So the order here is not a guess.
+## `E3D_init_matrix_RzRxRy` at `Eng3d.dll+0x411BF6`. So the order here is not a
+## guess.
+##
+## Nor is the **completeness** of that, measured on 2026-09-04: over all 26 072
+## prototypes the *render* stream -- the only one that draws -- carries exactly
+## three of the seven rotation opcodes, `joint_rotate_3` at anim offset 0
+## (1959), `joint_rotate_3_alt` at 0 (367) and `joint_place` at 6 and 12 (213).
+## The third opcode that reaches the non-negating `_E3D_init_matrix_RyRxRz`,
+## `matrix_from_angles`, appears in no render stream at all, and
+## `joint_rotate_3_alt` branches into the single-angle builder `+0x411A59` for
+## the pure-yaw triples the shipped data holds -- which agrees with `+0x411BF6`.
+## So **every rotation the renderer applies negates its angle**, and the three
+## offsets [method BlobModels._triple_basis] honours are the three that exist.
 ##
 ## The components are in **engine axis order and are not reordered** (docs/30
 ## section 2.5): the first is about engine X, the second about engine Y, the
@@ -92,11 +131,10 @@ static func joint_basis(ax: int, ay: int, az: int) -> Basis:
 	# listing: an Eng3d model is authored along engine **+Y** (`A_LINE5.3DI` is
 	# 1600 units long in Y and 242 wide in X) and `0x00403AA0` measures its
 	# bearing from **+Y** toward +X, so a model turned by its own bearing must
-	# rotate the short way round -- and [method charisma_yaw_basis], which was
-	# measured against `10` section 5.10's facing table long before this, is
-	# `2048 - yaw`: the same negation plus the half turn a body's -Y forward
-	# needs. With the sign the wrong way a shot's tracer flew across its own
-	# path (`97` section 46.5).
+	# rotate the short way round -- and [method charisma_yaw_basis], measured
+	# against `10` section 5.10's facing table long before this, is the same
+	# negation plus the half turn a body's -Y forward needs. With the sign the
+	# wrong way a shot's tracer flew across its own path (`97` section 46.5).
 	var rx: Basis = Basis(Vector3.RIGHT, -_turns(ax))
 	var ry: Basis = Basis(Vector3.BACK, _turns(ay))
 	var rz: Basis = Basis(Vector3.UP, -_turns(az))
@@ -109,28 +147,32 @@ static func _turns(angle: int) -> float:
 
 ## The same engine yaw, for a Charisma **body** rather than for Eng3d geometry.
 ##
-## It is not [method yaw_basis] and the difference is measured, not a nudge to
-## make a screenshot look right.  A Charisma model is authored facing engine
-## **-Y** ([constant CharismaBody.AUTHORED_FORWARD]), and with that forward
-## there is **no** angle convention under which `docs/10` section 5.10's own
-## facing table sends all eight facings the right way: taken as a plain
-## rotation it agrees on the two facings along X and is mirrored in Y on the
-## other six.  Half a turn minus the angle agrees on all eight, and it is the
-## only such correction:
+## It is not [method yaw_basis], and the difference is now a single geometric
+## fact rather than a fitted correction.  Eng3d geometry is authored along
+## engine **+Y**; a Charisma model is authored facing engine **-Y**
+## ([constant CharismaBody.AUTHORED_FORWARD]).  So a body needs its object's
+## heading plus **half a turn**, and nothing else:
 ##
 ##     facing  0    1    2    3     4     5     6     7     (docs/10 5.10)
 ##     angle   0    3072 2048 1024  1536  3584  512   2560
 ##     step   +y   -x   -y   +x    +x-y  -x+y  +x+y  -x-y   (`FACING_OF_STEP`)
-##     needed  180  270  0    90    45    225   135   315   = 2048 - angle
 ##
-## **Where the engine does this is UNVERIFIED**, exactly as `docs/40` section
-## 5.3's scale is: the Charisma-to-Eng3d bridge is not decompiled.  A rotation
-## is chosen over the mirror that would also fit because a mirror flips the
-## body left for right, and the marine carries its weapon in `Hand_R`.  One
-## screenshot of the original showing the weapon in the *left* hand closes that
-## question the other way.
+## `test_charisma.gd` walks that table and checks both halves of it: the body's
+## forward against the step, and the Eng3d forward the node carries against the
+## same step.
+##
+## This used to read `2048 - yaw`, fitted against the table while
+## [method yaw_basis] still turned the wrong way.  `-(yaw + 2048)` and
+## `2048 - yaw` are the same angle modulo a full turn, so no body moved when
+## the sign was corrected on 2026-09-04 -- only the reason did, and it is a
+## better one: the earlier note had to weigh a **mirror** that would fit the
+## table equally well, and a half turn for a backwards-authored model leaves
+## nothing for a mirror to explain.
+##
+## **Where the engine does this is still UNVERIFIED**, exactly as `docs/40`
+## section 5.3's scale is: the Charisma-to-Eng3d bridge is not decompiled.
 static func charisma_yaw_basis(yaw: int) -> Basis:
-	return yaw_basis(ANGLE_FULL_TURN / 2 - yaw)
+	return yaw_basis(yaw + ANGLE_FULL_TURN / 2)
 
 
 ## A whole engine matrix -- 16 floats, row-major, applied as `M * v`
@@ -149,9 +191,11 @@ static func charisma_yaw_basis(yaw: int) -> Basis:
 ## transposition that has to happen exactly once and here.
 ##
 ## The failure modes are unmistakable if looked at: a wrong permutation lays
-## the body on its side, a wrong handedness mirrors it. `test_charisma.gd`
-## checks the three properties that pin it -- identity, composition, and an
-## engine yaw against [method yaw_basis].
+## the body on its side, a wrong handedness mirrors it. What pins it is
+## `test_charisma.gd`'s bone sweep -- every bone's **full local matrix** at one
+## frame against `tools/cha_parse.py`'s, for every (model, clip) pairing -- so
+## a permutation or a handedness error shows up as a numeric difference rather
+## than as something to notice in a screenshot.
 static func engine_matrix(m: PackedFloat64Array) -> Transform3D:
 	var basis: Basis = Basis(
 		Vector3(m[0], m[8], -m[4]),

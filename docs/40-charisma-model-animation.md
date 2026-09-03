@@ -999,26 +999,33 @@ quantisation is the human set's and not a rule of the format.
 Two independent readings agree with it: in the bind pose the weapon hand sits
 at `y = −1266` and both feet put their toes ahead of their ankles, all in −y.
 
-**The consequence for a renderer** is that `docs/10` §5.10's facing table
-cannot be applied to a body as a plain rotation. With a −Y forward there is no
-angle convention that sends all eight facings the right way — taken directly it
-agrees on the two facings along x and is mirrored in y on the other six. **Half
-a turn minus the tabulated angle** agrees on all eight, and is the only such
-correction:
+**The consequence for a renderer** is that a body does not take `docs/10`
+§5.10's facing angle the way a piece of Eng3d geometry standing on the same
+cell does. Eng3d geometry is authored along **+Y** and a Charisma body faces
+**−Y**, so the body needs the object's heading **plus half a turn** — and that
+is the whole of the difference:
 
 | facing | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 |---|---|---|---|---|---|---|---|---|
 | angle (§5.10) | 0 | 3072 | 2048 | 1024 | 1536 | 3584 | 512 | 2560 |
 | step (`aExecuteMove`) | +y | −x | −y | +x | +x−y | −x+y | +x+y | −x−y |
-| body yaw | 2048 | 1024 | 0 | 3072 | 512 | 2560 | 1536 | 3584 |
+| body heading | 2048 | 1024 | 0 | 3072 | 3584 | 1536 | 2560 | 512 |
+
+A heading turns geometry **against** the sense that takes +x toward +y — the
+engine's own matrix builder negates its angle, and its render opcodes reach no
+builder that does not ([`97` §47](97-slice-5-report.md)). This paragraph
+previously read "half a turn *minus* the tabulated angle", which is the same
+eight rotations written against the opposite convention; the remake carried
+both errors and they cancelled, so the bodies were right and the reason was
+not.
 
 **Where the engine does this is UNVERIFIED**, for the same reason §5.3's scale
-is: it is in the Charisma-to-Eng3d bridge, which is not decompiled. A **mirror
-in y** fits the eight facings equally well and is not excluded by anything
-measured here; the remake uses the rotation because a mirror also swaps the
-body left for right, and the marine carries its weapon in `Hand_R`. One
-screenshot of the original showing the weapon in the **left** hand settles it
-the other way.
+is: it is in the Charisma-to-Eng3d bridge, which is not decompiled. What is no
+longer open is *what kind* of correction it is: a **mirror in y** was once said
+to fit the eight facings equally well, and it does — but only against the
+reflection-shaped formula above. A half turn for a backwards-authored model
+leaves a mirror nothing to explain, and the `Hand_R` argument it needed is now
+supporting rather than load-bearing.
 
 The remake carries this as `WorldSpace.charisma_yaw_basis` and
 `CharismaBody.AUTHORED_FORWARD`, checked by `godot/tests/test_charisma.gd`;

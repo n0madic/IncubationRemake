@@ -47,8 +47,10 @@ from typing import Any, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from inclib import eng3d, prototyp  # noqa: E402
 from inclib.binio import ParseError  # noqa: E402
-from inclib.lev import load_lev  # noqa: E402
+from inclib.eng3d import Eng3dError  # noqa: E402
+from inclib.lev import FACING_ANGLES, FACING_STEPS, load_lev  # noqa: E402
 
 LOG = logging.getLogger("verify3d")
 
@@ -241,6 +243,124 @@ def verify_stale_worlds(root: str, stats: Stats, stale: list[str]) -> int:
     stats.check("stale.no_referenced_world_is_stale", not overlap,
                 f"a referenced scene resolves only in another world set: {overlap}")
     return len(stale)
+
+
+#: Prototype render opcodes that turn a part by a rotation triple, and the
+#: matrix builder each reaches inside ``Eng3d.dll``.  Two of the builders
+#: negate their angles before indexing the sine table and one does not, so
+#: *which* opcode carries a placed object's heading decides which way the
+#: world turns -- it cannot be assumed.  ``+0x411A59`` is the single-angle
+#: builder that opcodes 9 and 10 branch into when the first two components of
+#: the triple are zero (``or ax, cx / je``), and it agrees with ``+0x411BF6``
+#: on a pure yaw.
+ROTATION_OPCODES = {
+    8: "+0x411A59",   # joint_rotate_1
+    9: "+0x411A59 / +0x411BF6",   # joint_rotate_3, fast path / general
+    10: "+0x411A59 / +0x411A93",  # joint_rotate_3_alt
+    13: "+0x411BF6",  # matrix_from_angle
+    14: "+0x411BF6",  # matrix_from_angles_b
+    15: "+0x411A93",  # matrix_from_angles -- the one that does not negate
+    18: "+0x411BF6",  # joint_place
+}
+
+#: The opcodes whose **pure-yaw** path negates the angle, which is what
+#: ``WorldSpace.yaw_basis`` in the remake reproduces.  Opcode 15 is absent on
+#: purpose: it goes straight to ``_E3D_init_matrix_RyRxRz`` with no fast path,
+#: and a heading through it would turn the other way.
+NEGATING_FOR_A_PURE_YAW = {8, 9, 10, 13, 14, 18}
+
+#: The one shipped special object whose prototype carries no rotation opcode at
+#: anim offset 0 although its record has a heading; the engine draws it
+#: unturned.  Named so that a second one is a failure rather than a shrug.
+UNTURNED_YAWED_PROTOTYPES = {"L096EF00.3DI": 1}
+
+
+def verify_object_rotations(root: str, stats: Stats) -> int:
+    """How a placed object's heading reaches a matrix, over the whole corpus.
+
+    A ``.lev`` object record carries its heading in the third component of the
+    rotation triple at ``+0x20`` ([`10` §6]), and **nothing in the engine turns
+    the object with it directly**: the triple is the fallback source the
+    prototype's own render program reads when the object has no joint buffer
+    (``mov esi, [ebx+0x1c] / jne / lea esi, [ebx+0x20]``, seven opcode handlers
+    in ``Eng3d.dll``).  So the heading's sign is a property of *which opcode the
+    prototype uses*, and that is what this measures rather than assumes.
+
+    It is the corpus half of the remake's ``WorldSpace.yaw_basis``; the
+    arithmetic half is ``test_effects.gd``'s comparison against the natively
+    verified matrix builder.
+    """
+    missions = find_files(root, ".lev")
+    containers = prototyp.find_containers(root)
+    if not missions or not containers:
+        stats.check("rotation.corpus", False,
+                    f"no .lev or no prototyp container under {root!r}")
+        return 0
+    stats.check("rotation.corpus", True,
+                f"{len(missions)} missions, {len(containers)} containers")
+
+    #: prototype name -> the rotation opcodes its render program uses at anim
+    #: offset 0, which is where the object record's own triple sits.
+    at_zero: dict[str, set[int]] = {}
+    for din_path, bin_path in containers:
+        for proto in prototyp.load_container(din_path, bin_path):
+            found = {c.op for c in proto.render_cmds
+                     if c.op in ROTATION_OPCODES and c.operand == 0}
+            at_zero.setdefault(proto.name.upper(), set()).update(found)
+
+    unturned: dict[str, int] = {}
+    yawed = 0
+    for path in missions:
+        try:
+            battle = load_lev(path)
+        except Exception as exc:  # noqa: BLE001 - lev_parse reports this too
+            stats.check("rotation.lev_parse", False, f"{path}: {exc}")
+            continue
+        for rec in battle.special:
+            name = rec.prototype_name(battle.world_set).upper()
+            if not stats.check("rotation.prototype_resolves", name in at_zero,
+                               f"{path}: {name} is in no container"):
+                continue
+            if rec.rotation[2] % 4096 == 0:
+                continue
+            yawed += 1
+            ops = at_zero[name]
+            if not ops:
+                unturned[name] = unturned.get(name, 0) + 1
+                continue
+            stats.check(
+                "rotation.heading_negates_the_angle",
+                ops <= NEGATING_FOR_A_PURE_YAW,
+                f"{path}: {name} turns its heading with opcode(s) "
+                f"{sorted(ops)}, one of which does not negate")
+
+    stats.check("rotation.corpus_has_headings", yawed > 0,
+                f"{yawed} special objects carry a heading")
+    stats.check("rotation.unturned_are_the_known_ones",
+                unturned == UNTURNED_YAWED_PROTOTYPES,
+                f"prototypes with a heading and no rotation opcode at offset 0: "
+                f"{unturned} (expected {UNTURNED_YAWED_PROTOTYPES})")
+
+    # The other half of the same claim, and the one a screenshot cannot make:
+    # `docs/10` §5.10's eight facing angles, turned by the engine's own matrix
+    # builder, must send an object's authored +Y along the step the unit takes.
+    # With the angle un-negated only facings 0 and 2 -- the two a sign cannot
+    # move -- agree.  `eng3d.matrix3` is `_E3D_init_matrix_RzRxRy`, reproduced
+    # 8/8 inside a running `Incubation.exe` (docs/97 §18.1).
+    try:
+        tables = eng3d.load(root)
+    except (OSError, Eng3dError) as exc:
+        stats.check("rotation.trig_tables", False, f"{exc}")
+        return len(missions)
+    stats.check("rotation.trig_tables", True)
+    for facing, angle in sorted(FACING_ANGLES.items()):
+        turned = eng3d.transform(eng3d.matrix3(tables, 0, 0, angle), (0, 1600, 0))
+        sign = tuple((v > 40) - (v < -40) for v in turned[:2])
+        stats.check("rotation.facing_points_the_step",
+                    sign == FACING_STEPS[facing],
+                    f"facing {facing} (angle {angle}) turns +Y to {sign}, "
+                    f"walks {FACING_STEPS[facing]}")
+    return len(missions)
 
 
 def verify_pairs(root: str, stats: Stats) -> tuple[int, int]:
@@ -440,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     stale: list[str] = []
     n_3dw = verify_3dw(args.root, stats, notes, stale)
     verify_stale_worlds(args.root, stats, stale)
+    verify_object_rotations(args.root, stats)
     n_dir, n_din = verify_pairs(args.root, stats)
 
     print(f"corpus: {n_3dw} .3DW, {n_dir} .dir, {n_din} .din under {args.root}")
