@@ -877,7 +877,8 @@ What each group covers:
 | `squad.*` | the three names resolved out of `Txtmod_h.lcl`, all sixteen field writes, the hero's type name in `Info.lcl` |
 | `recruit.*` | the seeding, every store by the record offset it targets, the four player unit types |
 | `money.*`, `cost.*` | the array, the cap, the no-debt guard, the five cost sites, the 60-point recruit cross-checked against `Info.lcl` |
-| `level.*` | skill and tech levels and where they come from |
+| `level.*` | skill and tech levels and where they come from — including that the tech-level global has exactly **four** `.text` references (the two `aInitGameControl` arms and the setter/getter), which is what says a campaign's cannot move, and the two init arms' own immediates and first-mission strings |
+| `catalogue.*` | the purchase filter of §5.2: the two limit writes at `0x0045BF44`/`0x0045BF4B`, and both iterators' record stride, name offset and empty-string buffer |
 | `payout.*` | the five-arm score table read through the jump table, the multipliers, the two gates |
 | `result.*` | the reset value, the five-slot OR gate, the defeat stamp on all four players, the three win grades, all 30 setter sites classified, and the two mechanical tests that put the twelve multiplayer ones on network code |
 | `rotation.*` | both "nobody can take a turn" exits and the shared block they land in |

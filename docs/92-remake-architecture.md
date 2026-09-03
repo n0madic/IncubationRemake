@@ -1004,6 +1004,81 @@ What is **not** a choice, and is measured, is the bone-to-mesh scale of 16
 ([`40` §5.3](40-charisma-model-animation.md)) and the `BREAK` note that stops a
 combat animation ([`40` §9](40-charisma-model-animation.md)).
 
+### 7.11 Effects and sound — seven decisions, one since retracted
+
+Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
+a choice the remake is committed to and not a finding.
+
+**The effect clock is the gameplay clock.** A blob ticks once per displayed
+frame in the original, and a `aPlay*Sequence` runs its loop against the same
+tick. §7.10 established that frame as 20 fps for gameplay, so the blob pool and
+the set-piece queue run at `CharismaState.FRAMES_PER_SECOND` and the bodies,
+the particles and the lifts cannot drift apart. It is an **inference from a
+measurement**, not a second measurement: what was measured is the gameplay
+frame, and what is asserted is that the blob tick is that frame.
+
+**The engine's trig tables ship in the cache; they are not regenerated.**
+`TRIG.IMG` and `ATN.IMG` are one content across all 21 world sets, and the
+converter copies them into `tables/trig.json` rather than letting GDScript
+build them from the formula. [`70`](70-img-tables.md)'s first open question is
+that the generation rounding is unknown and `img_tables.py` can only show the
+formula agrees to **within one unit** — and one unit of a 4096-unit circle is
+one unit of every angle built on it, which is the size of the thing
+[`28` §7.4.2](28-effects-and-sound.md)'s orientation sweep measured. 12 KiB of
+cache buys exactness against the engine; a formula would buy a number that is
+almost right. This is why `CONVERTER_VERSION` moved to 0.11.0.
+
+**The sprite blend is additive, on the strength of a name.** `Eng3d` exports
+three zoom-bob entry points — `alpha_plus`, `alpha_minus` and `masked` — and
+`a3DEngine.cpp` resolves all three at start-up, but **only `alpha_plus` is
+ever called** ([`28` §7.3](28-effects-and-sound.md)). The other two import
+slots are written by the resolver and read by nothing, so the entry point's
+name is the only evidence there is. "Plus" is read as a saturating add, with
+depth writing off. A native frame capture is what would settle it.
+
+**~~Music plays the `Track` family.~~ Music plays `Arack`, and it is no longer
+a decision.** This entry was a choice for exactly as long as it took to read the
+right file. `music/` ships `Track02…20` and `Arack02…14`, byte-identical for
+02–08 and different from 09 on — and `Incubation.exe`'s **import descriptor**
+names `audio.dll` where the 1997 build named `WINMM.dll`, taking the nine
+`winmm` entry points from it, while nothing at all imports `sound.dll`.
+`audio.dll` is the shim built with `Arack`. See
+[`28` §6.1](28-effects-and-sound.md); the remake plays what the game plays, and
+this is kept in the list as a **retracted** decision rather than deleted,
+because the useful lesson is that "the selector is inside a shim no tool reads"
+was an assumption about where the answer lived.
+
+**The sound pool is twenty slots, and a full pool drops.** [`28` §1.1](28-effects-and-sound.md)
+shows the loader hands out a twenty-first buffer the play routine then refuses,
+so slot 20 is allocated, filled, freed and never heard; sizing at twenty makes
+that a counted drop instead of a silent allocation. The **drop itself is
+reproduced** under §7.1's first half: a crowded turn losing a sound is output
+the player perceives.
+
+**Two of the compatibility flags are presentation and live outside
+`World.compat_flags`.** §7.1 says every compatibility choice gets a stable
+named flag, and it does — but `compat_flags` is item 6 of
+`CanonicalHash.compute`, and `weapon_35_missing_sound` and
+`unit_24_footstep_volume_original` change what is **heard** and no rule. An
+audio preset that moved the simulation's hash would be a worse defect than
+either of the two it reproduces, so the audio layer holds them under those
+exact names. `technical_box_guard_original` stays in `core`, where it belongs,
+because it does change the simulation. The rule this refines: **a flag lives
+with the thing it changes.**
+
+**The blob pool runs the shipped DirectDraw path's effects, not the
+accelerated one's.** Kind 59's arm asks `0x00461E80` what display mode the
+output system is in and spawns a **second** emitter only for one answer —
+mode 3, the configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
+`_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject`
+([`97`](97-slice-5-report.md) §23.3). `BlobHooks.emitter_mode` is 0, so the
+remake does not spawn it. That is now a decision with a reason rather than an
+unset field: the mode a player without the accelerator got is the one being
+reproduced, and it is also the mode a retail `Incubation.exe` runs at under
+Wine, which is where every arm in this layer was measured. Behaving like mode
+3 instead is a `compat_flags`-shaped option — one visible extra effect on one
+kind — and would want the flag rather than a changed default.
+
 ### 7.12 The environment's objects — three decisions and one correction (2026-09-03)
 
 Slice E of the presentation plan ([`97` §37](97-slice-5-report.md)) put the
@@ -1044,6 +1119,27 @@ height window, the `6` is the fire's subtype, and the byte the placer writes is
 the mine detonation, and both `CONVERTER_VERSION`s to 0.15.0.
 
 ---
+
+### 7.13 The campaign — twelve decisions (2026-09-04)
+
+The sixth slice's, and the first place this document has had to decide
+anything about a layer that outlives a mission. [`98`](98-slice-6-report.md)
+reports the slice; these are the choices no evidence settles.
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | The **campaign number** is the first field of the campaign's state, and it selects the seed, the first mission, the map and the band of locations | all four are switches on it in `aInitGameControl`'s campaign arm ([`27` §2.1, §6.6](27-campaign.md)) |
+| D2 | Pool row 0 is live and row 1 is an **explicit snapshot**, living until the debriefing ends; *replay* is a debriefing button | [`27` §3.5](27-campaign.md) as corrected, and [`27` §8](27-campaign.md) item 4 allows "the same thing with an explicit snapshot" |
+| D3 | The campaign map is `_C_XXX`/`_C_YYY` through the **existing renderer**, and its `.lcl` is not run | [`27` §8](27-campaign.md) permits a remake's own map; there is already a renderer, and a campaign map's script is the original front end's |
+| D4 | Deployment cells come from `MapState`, with no parallel list | [`29` §1.2](29-interface-contract.md): the action-point byte is cell state a mission can rewrite, and a second list would drift from it |
+| D5 | Dialogue locations open, are **named**, and play nothing | the sequence player is [`41`](41-sequence-player.md)'s and a slice of its own |
+| D6 | The 3↔6 upgrade crossing is reproduced as it is | [`27` §2.4](27-campaign.md): shipped behaviour, and §7.1's default |
+| D7 | `CanonicalHash` does not move; the campaign carries its own digest | otherwise every hash the first five slices pinned changes. Verified rather than assumed: three mission hashes measured on the commit before the slice are pinned as literals in `test_campaign.gd` |
+| D8 | A recruit's voice is drawn from a **deterministic** stream, not the engine's `GetTickCount`-seeded one | a save has to reproduce. The engine's `aRandom(1, 6)` here comes from `0x004638E0`, which is seeded from the clock ([`28` §3.2](28-effects-and-sound.md)) |
+| D9 | The converter's `--check` stays on six missions; a full campaign bake is `--check-campaign` | `--check` runs **three** full conversions; the campaign set is fifteen times the slice — 26 s and 86 MiB against 4 s and 42 MiB |
+| D10 | The campaign save is a container **over** `SaveCodec`, and the file write lives in `game/` | `SaveCodec` refuses a blob whose map name is not the world's, which is right for a mission and wrong for a campaign; and `core/` never touches the filesystem |
+| D11 | Equipment points, tech level and skill level are **campaign** state; entering a mission does not apply the header | [`27` §4, §5.2](27-campaign.md) as corrected — the header's fields are the single-mission front end's |
+| D12 | `tables/campaign.json` carries **lists of records**, not objects keyed by id | a JSON object's key is a string and the cache must carry integers; `inclib/info.py` set the precedent, and `tables/balance.json`'s `equipment` — which has no id 2, so a position is not an id — is the trap |
 
 ## 8. Standing constraints
 
@@ -1186,102 +1282,6 @@ The first slice proves one narrow path end to end rather than building a
 framework for the whole remake. Use one representative campaign mission whose
 terrain, objects, unit placement and reachability are already well covered by
 the numbered specs.
-
-### 7.13 The campaign — twelve decisions (2026-09-04)
-
-The sixth slice's, and the first place this document has had to decide
-anything about a layer that outlives a mission. [`98`](98-slice-6-report.md)
-reports the slice; these are the choices no evidence settles.
-
-| # | Decision | Why |
-|---|---|---|
-| D1 | The **campaign number** is the first field of the campaign's state, and it selects the seed, the first mission, the map and the band of locations | all four are switches on it in `aInitGameControl`'s campaign arm ([`27` §2.1, §6.6](27-campaign.md)) |
-| D2 | Pool row 0 is live and row 1 is an **explicit snapshot**, living until the debriefing ends; *replay* is a debriefing button | [`27` §3.5](27-campaign.md) as corrected, and [`27` §8](27-campaign.md) item 4 allows "the same thing with an explicit snapshot" |
-| D3 | The campaign map is `_C_XXX`/`_C_YYY` through the **existing renderer**, and its `.lcl` is not run | [`27` §8](27-campaign.md) permits a remake's own map; there is already a renderer, and a campaign map's script is the original front end's |
-| D4 | Deployment cells come from `MapState`, with no parallel list | [`29` §1.2](29-interface-contract.md): the action-point byte is cell state a mission can rewrite, and a second list would drift from it |
-| D5 | Dialogue locations open, are **named**, and play nothing | the sequence player is [`41`](41-sequence-player.md)'s and a slice of its own |
-| D6 | The 3↔6 upgrade crossing is reproduced as it is | [`27` §2.4](27-campaign.md): shipped behaviour, and §7.1's default |
-| D7 | `CanonicalHash` does not move; the campaign carries its own digest | otherwise every hash the first five slices pinned changes. Verified rather than assumed: three mission hashes measured on the commit before the slice are pinned as literals in `test_campaign.gd` |
-| D8 | A recruit's voice is drawn from a **deterministic** stream, not the engine's `GetTickCount`-seeded one | a save has to reproduce. The engine's `aRandom(1, 6)` here comes from `0x004638E0`, which is seeded from the clock ([`28` §3.2](28-effects-and-sound.md)) |
-| D9 | The converter's `--check` stays on six missions; a full campaign bake is `--check-campaign` | `--check` runs **three** full conversions; the campaign set is fifteen times the slice — 26 s and 86 MiB against 4 s and 42 MiB |
-| D10 | The campaign save is a container **over** `SaveCodec`, and the file write lives in `game/` | `SaveCodec` refuses a blob whose map name is not the world's, which is right for a mission and wrong for a campaign; and `core/` never touches the filesystem |
-| D11 | Equipment points, tech level and skill level are **campaign** state; entering a mission does not apply the header | [`27` §4, §5.2](27-campaign.md) as corrected — the header's fields are the single-mission front end's |
-| D12 | `tables/campaign.json` carries **lists of records**, not objects keyed by id | a JSON object's key is a string and the cache must carry integers; `inclib/info.py` set the precedent, and `tables/balance.json`'s `equipment` — which has no id 2, so a position is not an id — is the trap |
-
-### 7.11 Effects and sound — seven decisions, one since retracted
-
-Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
-a choice the remake is committed to and not a finding.
-
-**The effect clock is the gameplay clock.** A blob ticks once per displayed
-frame in the original, and a `aPlay*Sequence` runs its loop against the same
-tick. §7.10 established that frame as 20 fps for gameplay, so the blob pool and
-the set-piece queue run at `CharismaState.FRAMES_PER_SECOND` and the bodies,
-the particles and the lifts cannot drift apart. It is an **inference from a
-measurement**, not a second measurement: what was measured is the gameplay
-frame, and what is asserted is that the blob tick is that frame.
-
-**The engine's trig tables ship in the cache; they are not regenerated.**
-`TRIG.IMG` and `ATN.IMG` are one content across all 21 world sets, and the
-converter copies them into `tables/trig.json` rather than letting GDScript
-build them from the formula. [`70`](70-img-tables.md)'s first open question is
-that the generation rounding is unknown and `img_tables.py` can only show the
-formula agrees to **within one unit** — and one unit of a 4096-unit circle is
-one unit of every angle built on it, which is the size of the thing
-[`28` §7.4.2](28-effects-and-sound.md)'s orientation sweep measured. 12 KiB of
-cache buys exactness against the engine; a formula would buy a number that is
-almost right. This is why `CONVERTER_VERSION` moved to 0.11.0.
-
-**The sprite blend is additive, on the strength of a name.** `Eng3d` exports
-three zoom-bob entry points — `alpha_plus`, `alpha_minus` and `masked` — and
-`a3DEngine.cpp` resolves all three at start-up, but **only `alpha_plus` is
-ever called** ([`28` §7.3](28-effects-and-sound.md)). The other two import
-slots are written by the resolver and read by nothing, so the entry point's
-name is the only evidence there is. "Plus" is read as a saturating add, with
-depth writing off. A native frame capture is what would settle it.
-
-**~~Music plays the `Track` family.~~ Music plays `Arack`, and it is no longer
-a decision.** This entry was a choice for exactly as long as it took to read the
-right file. `music/` ships `Track02…20` and `Arack02…14`, byte-identical for
-02–08 and different from 09 on — and `Incubation.exe`'s **import descriptor**
-names `audio.dll` where the 1997 build named `WINMM.dll`, taking the nine
-`winmm` entry points from it, while nothing at all imports `sound.dll`.
-`audio.dll` is the shim built with `Arack`. See
-[`28` §6.1](28-effects-and-sound.md); the remake plays what the game plays, and
-this is kept in the list as a **retracted** decision rather than deleted,
-because the useful lesson is that "the selector is inside a shim no tool reads"
-was an assumption about where the answer lived.
-
-**The sound pool is twenty slots, and a full pool drops.** [`28` §1.1](28-effects-and-sound.md)
-shows the loader hands out a twenty-first buffer the play routine then refuses,
-so slot 20 is allocated, filled, freed and never heard; sizing at twenty makes
-that a counted drop instead of a silent allocation. The **drop itself is
-reproduced** under §7.1's first half: a crowded turn losing a sound is output
-the player perceives.
-
-**Two of the compatibility flags are presentation and live outside
-`World.compat_flags`.** §7.1 says every compatibility choice gets a stable
-named flag, and it does — but `compat_flags` is item 6 of
-`CanonicalHash.compute`, and `weapon_35_missing_sound` and
-`unit_24_footstep_volume_original` change what is **heard** and no rule. An
-audio preset that moved the simulation's hash would be a worse defect than
-either of the two it reproduces, so the audio layer holds them under those
-exact names. `technical_box_guard_original` stays in `core`, where it belongs,
-because it does change the simulation. The rule this refines: **a flag lives
-with the thing it changes.**
-
-**The blob pool runs the shipped DirectDraw path's effects, not the
-accelerated one's.** Kind 59's arm asks `0x00461E80` what display mode the
-output system is in and spawns a **second** emitter only for one answer —
-mode 3, the configuration whose surface comes from `Eng3d.dll`'s ordinal 67,
-`_E3DCARD_open_3dcard_screen`, rather than from `aCreateMainDDObject`
-([`97`](97-slice-5-report.md) §23.3). `BlobHooks.emitter_mode` is 0, so the
-remake does not spawn it. That is now a decision with a reason rather than an
-unset field: the mode a player without the accelerator got is the one being
-reproduced, and it is also the mode a retail `Incubation.exe` runs at under
-Wine, which is where every arm in this layer was measured. Behaving like mode
-3 instead is a `compat_flags`-shaped option — one visible extra effect on one
-kind — and would want the flag rather than a changed default.
 
 ### 10.1 Conversion
 

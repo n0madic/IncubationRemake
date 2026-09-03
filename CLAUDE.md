@@ -47,7 +47,7 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 245 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 253 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 458 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
@@ -64,10 +64,10 @@ python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/h
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
-python3 tools/campaign_runtime.py   --check gog_incubation   # 479 checks, docs/27
+python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 220 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 34 suites, 3126 checks
+bash   godot/run_tests.sh                                    # 34 suites, 3133 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7

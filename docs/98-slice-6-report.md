@@ -33,7 +33,7 @@ already delivered. They are §2 through §6.
 | New cache categories | `tables/campaign.json`, `text/briefing/*.json`, `art/`, `ui/` |
 | New `core` | `core/campaign/` — `campaign_state`, `roster`, `score_record`, `campaign_map`, `mission_end`, `campaign_codec` |
 | New `game` | `campaign_host`, `art`, `briefing_text`, `screens/` (six) |
-| Checks | `campaign_runtime --check` **479**, `remake_convert --check-campaign` **37**, `campaign_tables --check` 237 → **245**, `remake_convert --check` 190 → **220**, suites 33 → **34**, 2778 → **3126** |
+| Checks | `campaign_runtime --check` **481**, `remake_convert --check-campaign` **37**, `campaign_tables --check` 237 → **253**, `remake_convert --check` 190 → **220**, suites 33 → **34**, 2778 → **3133** |
 | `CONVERTER_VERSION` | 0.15.0 → 0.16.0 |
 | `SaveCodec.SCHEMA_VERSION` | 8 → 9 |
 
@@ -52,7 +52,7 @@ already delivered. They are §2 through §6.
 There is no native capture of the campaign layer and this report does not
 pretend otherwise. `campaign_gold.py` is named in [`27` §10](27-campaign.md)'s
 successor list as the next step, not this one's: the layer is pinned statically
-at 245 checks and confirmed by six saves the game itself produced, which is
+at 253 checks and confirmed by six saves the game itself produced, which is
 rank 3 evidence, and the routines a capture would call
 (`aCreateUnitPoolForCampaign`, `aEnlargeUnitPool`, `aCopyUnitPool`,
 `0x00478630`, `0x0043BA10`) touch no engine global a static reading cannot
@@ -354,20 +354,20 @@ missions were asked for.
 | 10. The installation is untouched | **met** — `verify_untouched.sh` |
 
 Criterion 9's two increases are intended and named here rather than hidden.
-`campaign_tables --check` went 237 → **245**: the eight new checks pin the
-tech-level finding of §3, which would otherwise be a claim in a document with
+`campaign_tables --check` went 237 → **253**: the sixteen new checks pin the
+tech-level finding of §3 and the catalogue filter of §3.1, which would otherwise be a claim in a document with
 nothing verifying it. `remake_convert --check` went 190 → **220**: the campaign
 categories are emitted on every conversion, so checking them belongs in the
 check that runs. `brief_parse` (55), `sav_tables` (69) and `--check-cache` (29)
 are unchanged.
 
 ```bash
-python3 tools/campaign_runtime.py  --check gog_incubation          # 479
+python3 tools/campaign_runtime.py  --check gog_incubation          # 481
 python3 tools/campaign_runtime.py  --check-saves tests/fixtures/saves  # 160
-python3 tools/campaign_tables.py   --check gog_incubation          # 245
+python3 tools/campaign_tables.py   --check gog_incubation          # 253
 python3 tools/remake_convert.py    gog_incubation --check          # 220
 python3 tools/remake_convert.py    gog_incubation --check-campaign  # 37
-bash   godot/run_tests.sh                                          # 34 suites, 3126
+bash   godot/run_tests.sh                                          # 34 suites, 3133
 ```
 
 ### 9.1 Mutation battery
@@ -382,6 +382,18 @@ are literals now. The other two survivors were the type bounds the three
 scoreboard counters share (`<= 30`, `!= 24`), which had no check at all;
 `check_counters` covers them, the friendly-fire skip, and the bounded
 out-of-bounds write.
+
+### 9.2 One defect the battery did not find, and what did
+
+`CampaignHost.replay()` called `ScoreRecord.reset()` — which is
+`resetScoreboard` `0x0043B990`, the **whole** record — so pressing *Try Again*
+wiped the campaign score along with the mission's. The battery could not see
+it: it mutates `inclib/campaign.py`, and this was in `game/`. What found it was
+reading `advance()` and `replay()` against §5's pairing and noticing that
+`advance()` zeroed two of the four mission halves by hand. `reset_mission()`
+is the routine that was missing, both twins carry it, and both suites pin the
+difference. Driven end to end: `_C_140` won for 200, `_C_141` for 100 (total
+300), *Try Again* → total 200 and the roster restored.
 
 ---
 
@@ -411,8 +423,20 @@ out-of-bounds write.
    consequence is not in doubt — the snapshot does not outlive the debriefing —
    but the instruction that clears it is not traced. It matters only to a
    remake that wanted to offer *replay* somewhere else.
-2. **Whether the Upgrade screen filters further than the tech range.** §3.1
-   pins the range filter completely, and it admits the ten zero-cost alien
-   weapons. Nothing in either list builder excludes them. Whether the shipped
-   screen looks the same is a question a screenshot of the original would
-   settle in a second and no amount of static reading will.
+2. ~~**Whether the Upgrade screen filters further than the tech range.**~~
+   **Closed**, and statically. The first draft of this section said a
+   screenshot would be needed; it is not, because `0x0047A090` and
+   `0x0047A1B0` are not list *builders* — each is a "yield the previous
+   acceptable id" iterator that the screen loops. It walks its table backwards
+   by one record, skips one whose name is empty, and returns the first whose
+   requirement byte satisfies `low <= b <= high`, writing that index into the
+   caller's out-parameter. There is no list to filter afterwards and no second
+   predicate anywhere on the path, so what the screen shows is exactly what
+   the range admits.
+
+   [`21` §4](21-info-lcl-schema.md) settles the last link: the byte the
+   iterator reads is the weapon record's `+0x38`, which that table already
+   names as the tech level, and the equipment record's `+0x21`, likewise. So
+   the ten alien weapons — tech 0, non-empty name, cost 0 — do appear on the
+   original's Upgrade screen. `campaign_tables.py` pins both iterators' stride,
+   name offset and empty-string buffer, and the two limit writes.

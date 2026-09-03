@@ -252,6 +252,28 @@ GAME_CONTROL_PLAYERS_CAMPAIGN = 1
 #: ``push str._C_100`` / ``push str._C_140`` -- ``mov edi, imm32``, u32 at +1.
 GAME_CONTROL_FIRST_MISSION_SITES = {1: 0x0043AF57, 2: 0x0043AF2A}
 CAMPAIGN_FIRST_MISSION = {1: "_C_100", 2: "_C_140"}
+
+# --- the purchase catalogue's filter -- docs/27 5.2, closed by docs/98 3.1 ---
+#: ``mov byte [0x00510A34], 0`` -- the **low** limit; imm8 at +6.
+CATALOGUE_LOW_SITE = 0x0045BF44
+CATALOGUE_LOW = 0
+#: ``call getTechLevel`` immediately after it -- the **high** limit, stored
+#: into ``0x00510A35``.  So the pair is one range and not two limits of
+#: different kinds, which is what §5.2 marked UNVERIFIED.
+CATALOGUE_HIGH_CALL_SITE = 0x0045BF4B
+#: The two iterators the screens page the catalogue with: each walks its table
+#: backwards, skips a record whose name is empty and yields the first whose
+#: requirement byte is ``low <= b <= high``.  ``(site of the `sub edi, imm8`,
+#: the record stride, the name's offset inside the record)``.
+#: ``(site of the `sub edi, imm8`, site of the `lea eax, [edi - imm8]`,
+#: the record stride, the name's offset inside the record)``.
+CATALOGUE_BUILDERS = {
+    "equipment": (0x0047A0B0, 0x0047A0BD, 42, 0x1F),
+    "weapons":   (0x0047A1CD, 0x0047A1DA, 67, 0x37),
+}
+#: The buffer both compare a record's name against.  It is in ``.bss``, so the
+#: file carries no bytes for it and it is zero at load -- the empty string.
+CATALOGUE_EMPTY_STRING = 0x004FA524
 TECH_LEVEL_GET = 0x0043AFA0
 TECH_LEVEL_SET = 0x0043AF90
 ENLARGE_RANK_SCALE_SITE = 0x00478A6C     # `mov dl, 0x0C`, imm8 at +1
@@ -1204,6 +1226,23 @@ def run_checks(root: str) -> Checker:
     ck.equal("level.campaign_arm_players",
              b.u8(GAME_CONTROL_PLAYERS_CAMPAIGN_SITE + 6),
              GAME_CONTROL_PLAYERS_CAMPAIGN, str)
+    # The catalogue filter -- docs/27 5.2, which this closed.
+    ck.equal("catalogue.low_limit_write", b.u8(CATALOGUE_LOW_SITE + 6),
+             CATALOGUE_LOW, str)
+    ck.equal("catalogue.high_limit_is_tech",
+             b.call_target(CATALOGUE_HIGH_CALL_SITE), TECH_LEVEL_GET, hex)
+    for name, entry in sorted(CATALOGUE_BUILDERS.items()):
+        step_site, name_site, stride, offset = entry
+        # `sub edi, imm8` -- the record stride the iterator steps back by.
+        ck.equal(f"catalogue.{name}_stride", b.u8(step_site + 2), stride, str)
+        # `lea eax, [edi - imm8]` -- where the name it compares against "" is.
+        ck.equal(f"catalogue.{name}_name_offset",
+                 -b.i8(name_site + 2), offset, str)
+        # ...and that "" is a `.bss` buffer, so it really is empty.
+        # The `mov esi, imm32` immediately before it names that buffer.
+        ck.equal(f"catalogue.{name}_empty_string",
+                 b.u32(name_site - 4), CATALOGUE_EMPTY_STRING, hex)
+
     for number, site in sorted(GAME_CONTROL_FIRST_MISSION_SITES.items()):
         ck.equal(f"level.campaign_{number}_first_mission",
                  b.string(b.u32(site + 1)), CAMPAIGN_FIRST_MISSION[number])
