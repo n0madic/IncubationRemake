@@ -727,6 +727,25 @@ def check_saves(ck: Checker, directory: Path) -> None:
                       "debriefing")
             ck.expect(f"save.{name}.board{player}.score",
                       _dword(data, base + 0x18), 0)
+            # The four pairs. Every mission half is zero -- these saves were
+            # taken at a mission's start or on the map screen, never after a
+            # kill was scored except `_2_`, which is mid-mission.
+            lost = _dword(data, base + 0x08)
+            lost_to_enemy = _dword(data, base + 0x10)
+            ck.check(f"save.{name}.board{player}.lost_is_a_superset",
+                     lost >= lost_to_enemy,
+                     f"{lost} lost, {lost_to_enemy} of them to an enemy -- "
+                     "0x0043B8D0 fires on every death and 0x0043B860 only "
+                     "where 0x0043B810 does")
+            campaign_lost = _dword(data, base + 0x0C)
+            campaign_to_enemy = _dword(data, base + 0x14)
+            ck.check(f"save.{name}.board{player}.campaign_lost_is_a_superset",
+                     campaign_lost >= campaign_to_enemy,
+                     f"{campaign_lost} over the campaign, "
+                     f"{campaign_to_enemy} to an enemy")
+            ck.check(f"save.{name}.board{player}.pairs_are_ordered",
+                     _dword(data, base + 0x04) >= _dword(data, base + 0x00),
+                     "the campaign half of a pair is at least its mission half")
 
     # The two rows, which is what settles docs/27 3.5's naming.
     rows = {}

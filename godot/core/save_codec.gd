@@ -39,7 +39,7 @@ const MAGIC: String = "INCS"
 ## under a walker, which changes what a resumed game does.  An older save is
 ## refused **by name** rather than misread, which is the whole point of the
 ## field.
-const SCHEMA_VERSION: int = 8
+const SCHEMA_VERSION: int = 9
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -196,6 +196,10 @@ static func _turn_from(view: Dictionary) -> TurnState:
 	turn.reaction_counter = _int_array(
 		DictRead.as_array(view["reaction_counter"]))
 	turn.hero_killed = _int_array(DictRead.as_array(view["hero_killed"]))
+	turn.mission_kills = _int_array(DictRead.as_array(view["mission_kills"]))
+	turn.mission_lost = _int_array(DictRead.as_array(view["mission_lost"]))
+	turn.mission_lost_to_enemy = _int_array(
+		DictRead.as_array(view["mission_lost_to_enemy"]))
 	turn.turn_control = DictRead.as_int(view["turn_control"])
 	return turn
 

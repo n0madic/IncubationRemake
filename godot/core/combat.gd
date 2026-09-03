@@ -921,6 +921,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 				attacker.player, ai_level, human_players, game_mode)
 		var killed: bool = not target.is_alive()
 		if killed:
+			# `0x0046BF84`..`0x0046BF93`: the shooter's kill and the victim's
+			# "lost to an enemy", both **only** when the two players differ.
+			# The engine calls them before `aKillUnit`; the order does not
+			# matter here because neither reads the other's counter.
+			turn.count_kill_and_loss(attacker.player, target.type_id,
+				target.player)
 			# `aKillUnit` (`0x00472920`) is two calls: the death sequence and
 			# `aRemoveUnitElement`, which is where the hero counter lives.
 			UnitState.remove(state, turn, target)

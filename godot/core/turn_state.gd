@@ -62,6 +62,29 @@ var reaction_counter: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
 ## of a **hero** on a turn that has started that moves one (docs/22 section
 ## 9.5). Each is one byte in the engine, so it wraps at 256.
 var hero_killed: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
+## The rest of the campaign scoreboard's per-mission halves -- `0x00509F48`,
+## stride 40, four records. The engine's record is **four pairs**, each "this
+## mission" beside "the campaign", which is what the debriefing's two reading
+## passes show (`0x0045DF24`..`0x0045E44B` read `+0x1C/+0x14/+0x0C/+0x04` and
+## `+0x18/+0x10/+0x08/+0x00`):
+##
+## | Pair | Mission | Campaign | Written by |
+## | --- | --- | --- | --- |
+## | kills | `+0x00` | `+0x04` | `0x0043B810`, the shooter's, on a kill whose players differ |
+## | lost | `+0x08` | `+0x0C` | `0x0043B8D0`, the victim's, from **every** death path -- 11 callers |
+## | lost to an enemy | `+0x10` | `+0x14` | `0x0043B860`, the victim's, only where `0x0043B810` also fires |
+## | score | `+0x18` | `+0x1C` | the scorer `0x0043BA10` |
+##
+## `+0x08` is the one the scorer doubles, and `+0x24` is [member hero_killed].
+##
+## **Outside the canonical hash, and deliberately** (docs/98, D7): the
+## scoreboard is `GameControl`-block state rather than the mission's, the
+## campaign carries the totals, and folding these in would move every hash the
+## first five slices pinned. They are in [method view] because a mid-mission
+## save has to bring them back.
+var mission_kills: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
+var mission_lost: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
+var mission_lost_to_enemy: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
 ## `0x004418B0` writes its one argument into `0x0043BE00`. **UNVERIFIED**: what
 ## reads it has not been traced. Carried so a later capture has something to
 ## compare, and so a script that sets it round-trips through a save.
@@ -117,6 +140,9 @@ func view() -> Dictionary:
 		"mode": mode,
 		"reaction_counter": reaction_counter.duplicate(),
 		"hero_killed": hero_killed.duplicate(),
+		"mission_kills": mission_kills.duplicate(),
+		"mission_lost": mission_lost.duplicate(),
+		"mission_lost_to_enemy": mission_lost_to_enemy.duplicate(),
 		"turn_control": turn_control,
 	}
 
@@ -134,5 +160,43 @@ func clone() -> TurnState:
 	copy.mode = mode
 	copy.reaction_counter = reaction_counter.duplicate()
 	copy.hero_killed = hero_killed.duplicate()
+	copy.mission_kills = mission_kills.duplicate()
+	copy.mission_lost = mission_lost.duplicate()
+	copy.mission_lost_to_enemy = mission_lost_to_enemy.duplicate()
 	copy.turn_control = turn_control
 	return copy
+
+
+## `0x0043B8D0`, `0x0043B860` and `0x0043B810` all guard the same way before
+## they index the scoreboard: unit type at most 30 and not 24, and a player
+## slot inside the four.
+##
+## **`0x0043B810` does not carry the player guard**, so an alien killer --
+## player 255 -- makes the engine write 40 * 255 bytes past the array. That is
+## an out-of-bounds write, not a rule, and it is bounded here rather than
+## reproduced.
+const SCORED_TYPE_MAX: int = 30
+const SCORED_TYPE_EXCLUDED: int = 24
+
+
+static func scores_as_a_loss(type_id: int, player: int) -> bool:
+	return type_id <= SCORED_TYPE_MAX and type_id != SCORED_TYPE_EXCLUDED \
+		and player >= 0 and player < PLAYER_SLOTS
+
+
+## `0x0043B8D0` -- every death of a unit that counts, whatever killed it.
+func count_unit_lost(type_id: int, player: int) -> void:
+	if scores_as_a_loss(type_id, player):
+		mission_lost[player] += 1
+
+
+## `0x0043B810` (the killer) and `0x0043B860` (the victim), which fire together
+## and only when the two players differ.
+func count_kill_and_loss(killer: int, victim_type: int,
+		victim_player: int) -> void:
+	if killer == victim_player:
+		return
+	if killer >= 0 and killer < PLAYER_SLOTS:
+		mission_kills[killer] += 1
+	if scores_as_a_loss(victim_type, victim_player):
+		mission_lost_to_enemy[victim_player] += 1

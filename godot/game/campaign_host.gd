@@ -234,8 +234,19 @@ func finish_mission(mission_world: World) -> Dictionary:
 	_mission_world = mission_world
 	var board: ScoreRecord = state.scoreboard[0]
 	board.result = mission_world.game_control.mission_result(0)
-	board.kills = _kills_of(mission_world, 0)
-	board.losses = _losses_of(mission_world, 0)
+	# The mission's own halves of the scoreboard, counted where the engine
+	# counts them rather than summed here: `+0x00` at `0x0043B810`, `+0x08` at
+	# `0x0043B8D0` and `+0x10` at `0x0043B860`. A sum over the survivors would
+	# lose every kill made by a unit that later died.
+	var turn: TurnState = mission_world.turn
+	board.kills = turn.mission_kills[0]
+	board.losses = turn.mission_lost[0]
+	board.lost_to_enemy = turn.mission_lost_to_enemy[0]
+	# The campaign halves accumulate, which is what the pairing means.
+	board.campaign_kills += board.kills
+	board.campaign_losses += board.losses
+	board.campaign_lost_to_enemy += board.lost_to_enemy
+	board.heroes_lost = mission_world.turn.hero_killed[0]
 	# The mission script's payout slots, carried over so the scorer can read
 	# what the mission that just ended wrote.
 	state.game_control = mission_world.game_control.values()
@@ -264,28 +275,6 @@ func finish_mission(mission_world: World) -> Dictionary:
 	}
 	screen = SCREEN_DEBRIEFING
 	return last_report
-
-
-func _kills_of(mission_world: World, player: int) -> int:
-	var total: int = 0
-	for slot: int in mission_world.unit_slots():
-		var view: Dictionary = mission_world.unit_view(slot)
-		if DictRead.as_int(view["player"]) == player:
-			total += DictRead.as_int(view["kills"])
-	return total
-
-
-## What the squad lost: the records that went in and did not come out.
-func _losses_of(mission_world: World, player: int) -> int:
-	var alive: int = 0
-	for slot: int in mission_world.unit_slots():
-		var view: Dictionary = mission_world.unit_view(slot)
-		if DictRead.as_int(view["player"]) == player \
-				and DictRead.as_int(view["hp"]) > 0:
-			alive += 1
-	var sent: int = state.roster.used_slots(Roster.ROW_SNAPSHOT) \
-		- state.roster.used_slots(Roster.ROW_LIVE)
-	return maxi(0, sent - alive)
 
 
 ## docs/27 section 6.6 -- the header's next-map field, overridable by

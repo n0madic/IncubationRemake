@@ -1672,6 +1672,37 @@ func _the_hero_counter(h: TestHarness) -> void:
 		"`inc cl` at 0x00477A5C, into player 2's own record; %s"
 			% [shot.outcomes])
 
+	# The other three counters of the same record, which fire on the same kill:
+	# `0x0043B810` credits the shooter's `+0x00`, `0x0043B860` charges the
+	# victim's `+0x10`, and `0x0043B8D0` charges the victim's `+0x08` from
+	# **every** death path rather than only from a kill.
+	h.equal("scoreboard.a_kill_counts_three_ways",
+		[live.mission_kills, live.mission_lost, live.mission_lost_to_enemy],
+		[PackedInt32Array([1, 0, 0, 0]), PackedInt32Array([0, 0, 1, 0]),
+		PackedInt32Array([0, 0, 1, 0])],
+		"the shooter is player 0 and the hero player 2")
+
+	# Friendly fire is a loss and **not** a kill: `0x0046BF7C`'s `cmp dl, al`
+	# skips both `0x0043B860` and `0x0043B810` when the players match.
+	var own: Scene = _scene()
+	own.types = types
+	own.weapons = weapons
+	var friend: UnitState = _place(own, 0, 0, 1, 1, 3)
+	friend.weapon = REACTION_WEAPON
+	var comrade: UnitState = _place(own, 1, 0, 3, 1, 0)
+	comrade.hp = 1
+	var friendly: TurnState = _turn()
+	var own_rng: IncRandom = IncRandom.new()
+	own_rng.randomize_seed(1.0)
+	var _own_shot: AttackResult = Combat.attack(own.state, own.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, friendly, own_rng)
+	h.equal("scoreboard.friendly_fire_is_a_loss_not_a_kill",
+		[comrade.is_alive(), friendly.mission_kills, friendly.mission_lost,
+		friendly.mission_lost_to_enemy],
+		[false, PackedInt32Array([0, 0, 0, 0]), PackedInt32Array([1, 0, 0, 0]),
+		PackedInt32Array([0, 0, 0, 0])],
+		"0x0043B8D0 fires either way; the other two do not")
+
 	# The same shot against a unit whose `+0x4D` is one short of the bound.
 	var plain: Scene = _scene()
 	plain.types = types

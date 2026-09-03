@@ -473,6 +473,10 @@ static func generate(state: MapState, units: Dictionary,
 ## Returns whether the counter moved, so a caller can report it.
 static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
 	var counted: bool = false
+	# `0x0043B8D0`, from `aAttackUnit`'s `0x0046BF6E` and ten other death
+	# paths -- the set-piece killers, the bomb and the teleporter among them.
+	# Every one of them ends here, so counting here counts all eleven.
+	turn.count_unit_lost(unit.type_id, unit.player)
 	if unit.pool_flag >= HERO_POOL_FLAG and turn.turn != 0 \
 			and unit.player >= 0 and unit.player < turn.hero_killed.size():
 		turn.hero_killed[unit.player] = \

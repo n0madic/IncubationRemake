@@ -417,31 +417,51 @@ class Roster:
 class ScoreRecord:
     """One player's 40-byte scoreboard record -- ``docs/11`` §5.5.
 
-    ``+0x04``, ``+0x0C`` and ``+0x14`` are carried and **not interpreted**: the
-    scorer reads neither, and the six saves disagree on them.  Naming them would
-    be a guess.
+    The record is **four pairs**, each "this mission" beside "the campaign",
+    which is what the debriefing's two reading passes show
+    (``0x0045DF24``..``0x0045E44B`` read ``+0x1C/+0x14/+0x0C/+0x04`` and then
+    ``+0x18/+0x10/+0x08/+0x00``):
+
+    ===================  =======  ========  ============================
+    Pair                 Mission  Campaign  Written by
+    ===================  =======  ========  ============================
+    kills                ``+0x00``  ``+0x04``  ``0x0043B810``, the shooter's
+    lost                 ``+0x08``  ``+0x0C``  ``0x0043B8D0``, all 11 deaths
+    lost to an enemy     ``+0x10``  ``+0x14``  ``0x0043B860``
+    score                ``+0x18``  ``+0x1C``  the scorer ``0x0043BA10``
+    ===================  =======  ========  ============================
+
+    ``+0x24`` is the hero counter ``aRemoveUnitElement`` keeps and the LCL
+    predicate ``HeroKilled`` reads (``0x004409E0``).
     """
 
-    kills: int = 0          # +0x00
-    unknown_04: int = 0     # +0x04
-    losses: int = 0         # +0x08
-    unknown_0c: int = 0     # +0x0C
-    unknown_10: int = 0     # +0x10
-    unknown_14: int = 0     # +0x14
-    score: int = 0          # +0x18 -- this mission
-    total: int = 0          # +0x1C -- the campaign
-    result: int = RESULT_NOTHING   # +0x20
-    unknown_24: int = 0     # +0x24
+    kills: int = 0                  # +0x00
+    campaign_kills: int = 0         # +0x04
+    losses: int = 0                 # +0x08
+    campaign_losses: int = 0        # +0x0C
+    lost_to_enemy: int = 0          # +0x10
+    campaign_lost_to_enemy: int = 0  # +0x14
+    score: int = 0                  # +0x18
+    total: int = 0                  # +0x1C
+    result: int = RESULT_NOTHING    # +0x20
+    heroes_lost: int = 0            # +0x24
 
     def reset(self) -> None:
         """``resetScoreboard`` ``0x0043B990``: zero +0x00..+0x1C, +0x20 = 1."""
-        self.kills = self.unknown_04 = self.losses = self.unknown_0c = 0
-        self.unknown_10 = self.unknown_14 = self.score = self.total = 0
+        self.kills = self.campaign_kills = 0
+        self.losses = self.campaign_losses = 0
+        self.lost_to_enemy = self.campaign_lost_to_enemy = 0
+        self.score = self.total = 0
         self.result = RESULT_NOTHING
+        self.heroes_lost = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kills": self.kills, "losses": self.losses, "score": self.score,
-                "total": self.total, "result": self.result}
+        return {"kills": self.kills, "campaign_kills": self.campaign_kills,
+                "losses": self.losses, "campaign_losses": self.campaign_losses,
+                "lost_to_enemy": self.lost_to_enemy,
+                "campaign_lost_to_enemy": self.campaign_lost_to_enemy,
+                "score": self.score, "total": self.total,
+                "result": self.result, "heroes_lost": self.heroes_lost}
 
 
 # --- the whole state ---------------------------------------------------------
@@ -646,6 +666,10 @@ class CampaignState:
             score = board.kills * multiplier - 2 * board.losses + base
             board.score = score
             board.total += score
+            # The campaign half of each pair accumulates its mission half.
+            board.campaign_kills += board.kills
+            board.campaign_losses += board.losses
+            board.campaign_lost_to_enemy += board.lost_to_enemy
             paid_points = paid_commendations = 0
             if self.mode == MODE_CAMPAIGN and result != RESULT_DEFEAT:
                 bonus = self.game_control[SLOT_EQUIPMENT_POINTS]
@@ -787,3 +811,43 @@ class LocationTables:
             "upgrade": [{"location": k, "map": v}
                         for k, v in sorted(self.upgrade.items())],
         }
+
+
+# --- the scoreboard's counters -- 0x0043B810, 0x0043B860, 0x0043B8D0 ---------
+
+#: All three guard the same way before they index the scoreboard.
+SCORED_TYPE_MAX = 30
+SCORED_TYPE_EXCLUDED = 24
+
+
+def scores_as_a_loss(type_id: int, player: int) -> bool:
+    return (type_id <= SCORED_TYPE_MAX and type_id != SCORED_TYPE_EXCLUDED
+            and 0 <= player < PLAYER_SLOTS)
+
+
+def count_unit_lost(board: list[ScoreRecord], type_id: int,
+                    player: int) -> None:
+    """``0x0043B8D0`` -- every death of a unit that counts, whatever killed it.
+
+    Eleven callers: the six set-piece killers, ``aAttackUnit``,
+    ``aCheckWeaponDamage``, ``aExecuteTeleporter`` and ``aExecuteBomb``.
+    """
+    if scores_as_a_loss(type_id, player):
+        board[player].losses += 1
+
+
+def count_kill_and_loss(board: list[ScoreRecord], killer: int,
+                        victim_type: int, victim_player: int) -> None:
+    """``0x0043B810`` and ``0x0043B860``, which fire together and only when the
+    two players differ.
+
+    ``0x0043B810`` carries **no** player guard, so an alien killer -- player
+    255 -- makes the engine write 40 * 255 bytes past the array.  That is an
+    out-of-bounds write rather than a rule, and it is bounded here.
+    """
+    if killer == victim_player:
+        return
+    if 0 <= killer < PLAYER_SLOTS:
+        board[killer].kills += 1
+    if scores_as_a_loss(victim_type, victim_player):
+        board[victim_player].lost_to_enemy += 1
