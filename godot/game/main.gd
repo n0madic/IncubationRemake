@@ -684,6 +684,13 @@ func _build_effects(mission: String, world_set: String,
 	# item 5 of the canonical hash and must not learn about the frame rate.
 	_footstep_cues.clear()
 	_fx = BlobPool.create(float(hash(mission) % 1000000 + 1))
+	# An arm's spawn request is **run** in a mission rather than written down
+	# ([GameBlobHooks]); the diff's own hooks keep recording it, which is what
+	# `tests/test_blob.gd` compares. The pool's seeded stream is carried over
+	# so the mission still looks the same every run.
+	var arm_hooks: GameBlobHooks = GameBlobHooks.over(_fx, null)
+	arm_hooks.rng.randomize_seed(_fx.hooks().rng.seed)
+	_fx.set_hooks(arm_hooks)
 	# The pool resolves a model name against **this world set's** prototypes.
 	# A blob model the set does not carry comes back -1 and the effect is
 	# cancelled, which is the original's own behaviour: four of the thirty
@@ -704,6 +711,9 @@ func _build_effects(mission: String, world_set: String,
 	if _eng3d == null:
 		_eng3d = Eng3dGeometry.from_cache(_cache_dir)
 	_fx.hooks().geometry = _eng3d
+	# What a creator an arm calls reads. Built after the model index and the
+	# geometry, because it is made of them.
+	arm_hooks.inputs = _position_inputs()
 	# One `aRandom2` stream for the effects, the idle scheduler and the idle
 	# selector's coin, as the engine keeps one (`0x00514070`).
 	if _units != null:
@@ -1252,6 +1262,10 @@ func _process(delta: float) -> void:
 	_follow_walks()
 	if _rig != null:
 		var _flying: bool = _rig.advance(delta)
+	# The pool first: a sequence that reads what a tick left -- the bomb run
+	# and its *arrived* flag -- must see this frame's tick and not the last
+	# one ([method _tick_effects]).
+	var _ticks: int = _tick_effects(delta)
 	if _sequences != null and _sequences.is_running():
 		# The picture is held, never the world: `core` returned the finished
 		# state before any of this was queued.
@@ -1262,7 +1276,7 @@ func _process(delta: float) -> void:
 			if _units != null:
 				var _shown: int = _units.reveal_all()
 				var _dropped: int = _units.drop_lifts()
-	_advance_effects(delta)
+	_draw_effects()
 
 
 ## Whether something the replay must wait for is still on screen: a shot
@@ -1277,15 +1291,23 @@ func _picture_busy() -> bool:
 	return false
 
 
-## The blob pool at the engine's own frame, and the sprite cloud from it.
+## The blob pool at the engine's own frame. Answers the ticks it ran.
 ##
 ## The pool is ticked a **whole** number of times per displayed frame and the
 ## remainder is carried, so a slow frame runs the arms twice rather than
 ## stretching them: the arms count in ticks, not in seconds, and half a tick is
 ## not a thing any of them can do.
-func _advance_effects(delta: float) -> void:
+##
+## **Before the sequences, not after.** Every `aPlay*Sequence` in the original
+## is a loop whose body does its work, calls the frame tick `0x0040B6F0` and
+## then reads what the tick left -- the bomb run `0x004160F0` asks
+## `0x0042B480` on the instruction after its tick. A queue advanced before the
+## pool would read the previous frame's answer, so a crump would land a frame
+## after its bomb; drawing after both is what puts a record spawned by this
+## frame's sequence on the screen in this frame rather than the next.
+func _tick_effects(delta: float) -> int:
 	if _fx == null:
-		return
+		return 0
 	_fx_carry += delta * CharismaState.FRAMES_PER_SECOND
 	var ticks: int = int(_fx_carry)
 	_fx_carry -= float(ticks)
@@ -1295,17 +1317,26 @@ func _advance_effects(delta: float) -> void:
 	ticks = mini(ticks, MAX_EFFECT_TICKS)
 	for _step: int in range(ticks):
 		var _results: Array[BlobKinds.TickResult] = _fx.tick_all()
-	if _sprites != null and _rig != null and _rig.camera() != null:
-		var _drawn: int = _sprites.rebuild(_fx.blobs(),
-			_rig.camera().global_transform.basis)
-	if _models != null:
-		var _shown: int = _models.rebuild(_fx)
 	# The environment turns on the same 20 fps clock the effects do, and for
 	# the same number of ticks: `aRefreshView` walks the object array once a
 	# displayed frame (docs/42 sections 1.3 and 9.1).
 	if _special != null:
 		for _step: int in range(ticks):
 			var _turned: int = _special.advance()
+	return ticks
+
+
+## The sprite cloud and the model half of the pool, from wherever the records
+## are **now** -- which is after this frame's tick and after anything this
+## frame's sequences spawned.
+func _draw_effects() -> void:
+	if _fx == null:
+		return
+	if _sprites != null and _rig != null and _rig.camera() != null:
+		var _drawn: int = _sprites.rebuild(_fx.blobs(),
+			_rig.camera().global_transform.basis)
+	if _models != null:
+		var _shown: int = _models.rebuild(_fx)
 
 
 ## One event of the computer's turn: lead the camera to it and say what it was.
@@ -1426,12 +1457,17 @@ func _present_ai_event(event: Dictionary, kind: String) -> void:
 				var _door: PackedInt32Array = _audio.play_cues(
 					_events.for_event_kind("open_door"), "ai")
 		"parabomb":
-			# The LCL command runs two routines in order, so the driver asks
-			# for both phases rather than letting the alias hide the second.
-			var _bomber: PackedInt32Array = _audio.play_cues(
-				_events.for_event_kind("bomber"), "ai")
-			var _bomb: PackedInt32Array = _audio.play_cues(
-				_events.for_event_kind("para_bomb"), "ai")
+			# The command runs two routines in order
+			# ([constant AudioEvents.EVENT_PHASES]) and this path has no
+			# picture to stage them against: the replay is sound only, so
+			# the fly-past's loop and one crump are started together. That
+			# is **not** the shape [SetpieceCamera] gives the same event --
+			# there the bomb run opens silent and plays one crump per
+			# landing (`0x00416364`) -- and it is not meant to be: with no
+			# pool to watch there is no landing to hear. Which two routines
+			# they are is the table's business, not this arm's.
+			var _both: PackedInt32Array = _audio.play_cues(
+				_events.for_event_kind(kind), "ai")
 		"fire_heat_blocked":
 			var _jam: PackedInt32Array = _audio.play_cues(
 				_events.for_event_kind("reaction_jam"), "ai")
@@ -2314,12 +2350,24 @@ func _queue_setpiece(event: Dictionary, frames: int,
 		var own: Vector2i = Vector2i(values[2], values[3])
 		extra["own"] = own
 		about = world.state.unit_at(world.state.index_of(own.x, own.y))
+	# A command that runs two routines gets its sounds as two stages: the
+	# first routine's with the set piece's opening stage, the second's with
+	# the stage that stands for the second routine
+	# ([constant AudioEvents.EVENT_PHASES]). `cues` is what the caller looked
+	# up for the whole event, which for a phased one is every phase at once --
+	# right for a sound-only path and wrong here, so the phases are taken
+	# apart again rather than played together.
+	var lead: Array[Dictionary] = cues
+	var late: Array[Dictionary] = []
+	if _events != null and AudioEvents.phases_of(name).size() > 1:
+		lead = _events.for_event_phase(name, 0)
+		late = _events.for_event_phase(name, 1)
 	var _frames: int = SetpieceCamera.enqueue(_sequences, _host(), name, frames,
 		cell, from, to, about, extra,
 		func(frame: int, total: int) -> void:
 			_paint_setpiece(index, from, to, frame, total)
 			_carry_rider(rider, from, to, frame, total),
-		cues)
+		lead, late)
 
 
 ## What each of docs/42 section 8's sequences needs beyond its cell: the
@@ -2921,6 +2969,14 @@ class MainShotHost extends ShotHost:
 	func pool_live() -> int:
 		return 0 if main._fx == null else main._fx.live()
 
+	func clear_arrived() -> void:
+		if main._fx != null:
+			main._fx.set_arrived(false)
+
+	func clear_pool() -> void:
+		if main._fx != null:
+			main._fx.clear()
+
 	func pool_first() -> Vector3i:
 		if main._fx == null:
 			return Vector3i.ZERO
@@ -2960,6 +3016,12 @@ class MainShotHost extends ShotHost:
 			main._fx.hooks().rng.seed if main._fx.hooks().rng.seed != 0.0 else 1.0)
 		if not BlobPrograms.run(creator, pool, draws, args, inputs):
 			return
+		# The creator's own write over the *arrived* flag (docs/42 section
+		# 4.6). Only the two a set piece runs carry it; the three weapon
+		# projectiles that write the same zero are modelled at the muzzle
+		# instead, and everything else leaves the flag alone.
+		if pool.clears_arrived:
+			main._fx.set_arrived(false)
 		# The program drew from the pool's own generator, which is what the
 		# arms will keep drawing from: one stream, as `aRandom2` is.
 		main._fx.hooks().rng.randomize_seed(draws.rng.seed)

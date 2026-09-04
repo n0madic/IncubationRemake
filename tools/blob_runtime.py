@@ -609,7 +609,7 @@ def _kind_15(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     if blob.life == 0:
         _request_delete(blob, result)
         _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z,
-               1, _random(hooks, 5, 15))
+               1, _random(hooks, 5, 15), 8)
 
 
 def _kind_16(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -729,8 +729,12 @@ def _kind_32(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     set_aux(blob, _random(hooks, 5, 0x28))
     if blob.life == 0:
         _request_delete(blob, result)
-        _spawn(blob, hooks, result, CREATE_STING_SPARKS, blob.x, blob.y, blob.z,
-               blob.vx, blob.vy)
+    # **Every tick, not only the last** (measured 2026-09-04): `0x0041F577`'s
+    # `jne` skips the flag write alone and the creator call at `0x0041F583` is
+    # on the common path.  The poked family could not see this -- the sparks
+    # are a child and its window held only the donor's own slots.
+    _spawn(blob, hooks, result, CREATE_STING_SPARKS, blob.x, blob.y, blob.z,
+           blob.vx, blob.vy)
 
 
 def _kind_33(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -906,10 +910,22 @@ def _kind_56(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.rot_y = add_word(blob.rot_y, delta)
     blob.rot_z = add_word(blob.rot_z, delta)
     _move(blob)
+    # **Every tick, not only the last** (measured 2026-09-04: a record poked
+    # to kind 56 with `life` 6 left a `rot_x` 7, `aux` 5, `life` 7 child after
+    # one `aBlob_Update`).  The arm `0x0041FF6A` has no `life` test at all;
+    # `0x00420037`'s `vz` step is the tail it shares with the wrapper's
+    # success path, which is why it reads like a guarded branch and is not.
+    #
+    # `0x0041FFB9` draws the aux, then one jitter per coordinate in z, y, x
+    # order -- and each is added to the record's own coordinate **before**
+    # `_ftol` truncates it (`fiadd` at `0x0041FFD6`), which is the other way
+    # round from kind 77's `movsx` add two arms above.
+    aux = _random(hooks, 2, 5)
+    jz = _ftol(hooks.random_float(-50, 100) + blob.z)
+    jy = _ftol(hooks.random_float(-50, 100) + blob.y)
+    jx = _ftol(hooks.random_float(-50, 100) + blob.x)
+    _spawn(blob, hooks, result, CREATE_ZOOM_BOB, jx, jy, jz, 7, aux, 7)
     blob.vz = i32(blob.vz - 0x64)
-    if blob.life == 0:
-        _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z,
-               1, _random(hooks, 2, 5))
 
 
 def _kind_57(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -930,21 +946,30 @@ def _kind_59(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     # by the optional ``emitter_mode`` attribute; absent means the ordinary
     # (non-special) path.
     mode = getattr(hooks, "emitter_mode", 0)
+    # **Two draws for the velocity, not three, and the first draw is the
+    # `aux`** (2026-09-04): both branches push `ebp` -- the sweep's zero --
+    # for `vz` (`0x00420101`, `0x00420162`), so the emitter rises by nothing
+    # and its aux is the size draw.  The **ordinary** branch is measured by
+    # the child it makes; the special one runs only under a written output
+    # mode whose capture window holds no child, so there the draw *count* is
+    # measured -- seven against four -- and the two identical instruction
+    # triples are pinned in `blob_tables.py`.  The model drew a third value
+    # here, which also left every arm after it in the sweep one draw out of
+    # step; the poked family cannot see either, both being the child's.
     if mode == 3:
-        r1 = _random(hooks, 5, 10)
-        r2 = _random(hooks, -100, 200)
-        r3 = _random(hooks, -100, 200)
+        aux = _random(hooks, 5, 10)
+        vy = _random(hooks, -100, 200)
+        vx = _random(hooks, -100, 200)
         _spawn(blob, hooks, result, CREATE_EMITTER,
                BLOB_NAME_SCRATCH, 2, blob.x, blob.y, blob.z,
-               1, 0, 0, 60, 8, r3, r2, r1, 0, 0)
+               1, 0, 0, 60, 8, vx, vy, 0, aux, 0)
     size = _random(hooks, 5, 20)
-    rz = _random(hooks, -1000, 2000)
-    ry = _random(hooks, -1000, 2000)
-    rx = _random(hooks, -1000, 2000)
+    vy = _random(hooks, -1000, 2000)
+    vx = _random(hooks, -1000, 2000)
     _spawn(blob, hooks, result, CREATE_EMITTER,
            BLOB_NAME_SCRATCH, 2, blob.x, blob.y, blob.z,
            1, 0, 0, 60, 8,
-           rx, ry, rz, size, 0)
+           vx, vy, 0, size, 0)
 
 
 def _kind_60(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -971,15 +996,20 @@ def _kind_62(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     # The x87 comparison is against the literal 5.0: C0/C3 skip the branch,
     # so the spark burst is taken for rolls strictly greater than five.
     if hooks.random_float(0, 10) > 5.0:
-        rz = _random(hooks, -1000, 2000)
-        ry = _random(hooks, -1000, 2000)
-        rx = _random(hooks, -1000, 2000)
-        _spawn(blob, hooks, result, CREATE_PLASMA_SPARKS,
-               i32(blob.x + rx), i32(blob.y + ry), i32(blob.z + rz), 1, 10)
+        # `fiadd` at `0x0041E8EA` and its two neighbours: the coordinate is
+        # added to the draw and the **sum** truncated, as kind 56 does and
+        # kind 77 does not.  Measured 2026-09-04 -- the two readings differ
+        # only where a draw is negative with a fraction.
+        jz = _ftol(hooks.random_float(-1000, 2000) + blob.z)
+        jy = _ftol(hooks.random_float(-1000, 2000) + blob.y)
+        jx = _ftol(hooks.random_float(-1000, 2000) + blob.x)
+        _spawn(blob, hooks, result, CREATE_PLASMA_SPARKS, jx, jy, jz, 1, 10)
     if blob.life == 0:
+        # `0x0041E95A`: the 800 is the **vertical** and the 20 the aux, with
+        # `ebp` for both horizontals.
         _spawn(blob, hooks, result, CREATE_EMITTER,
                BLOB_NAME_SCRATCH, 2, blob.x, blob.y, blob.z,
-               4, 0, 0, 10, 10, 0x320, 0x14, 0, 0, 0)
+               4, 0, 0, 10, 10, 0, 0, 0x320, 0x14, 0)
 
 
 def _kind_63(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -1031,11 +1061,11 @@ def _kind_67(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     blob.rot_y = u16(_random(hooks, 0, 7))
     set_aux(blob, min(blob.life, 20))
     if blob.life == 0:
-        rz = _random(hooks, -1000, 2000)
-        ry = _random(hooks, -1000, 2000)
-        rx = _random(hooks, -1000, 2000)
-        _spawn(blob, hooks, result, CREATE_PLASMA_SPARKS,
-               i32(blob.x + rx), i32(blob.y + ry), i32(blob.z + rz), 1, 10)
+        # `fiadd` at `0x0041EE98` and its two neighbours, as kind 62's is.
+        jz = _ftol(hooks.random_float(-1000, 2000) + blob.z)
+        jy = _ftol(hooks.random_float(-1000, 2000) + blob.y)
+        jx = _ftol(hooks.random_float(-1000, 2000) + blob.x)
+        _spawn(blob, hooks, result, CREATE_PLASMA_SPARKS, jx, jy, jz, 1, 10)
 
 
 def _kind_68(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -1051,7 +1081,7 @@ def _kind_69(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     if blob.life == 0:
         _request_delete(blob, result)
         _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z,
-               6, _random(hooks, 5, 15))
+               6, _random(hooks, 5, 15), 8)
 
 
 def _kind_71(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
@@ -1071,7 +1101,7 @@ def _kind_73(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     _move(blob)
     if blob.life == 0:
         _spawn(blob, hooks, result, CREATE_ZOOM_BOB, blob.x, blob.y, blob.z,
-               1, _random(hooks, 5, 15))
+               1, _random(hooks, 5, 15), 8)
         _spawn(blob, hooks, result, CREATE_PLASMA_SPARKS_2, blob.x, blob.y, blob.z, 20, 30)
 
 
@@ -1131,8 +1161,11 @@ def _kind_77(blob: Blob, hooks: BlobHooks, result: TickResult) -> None:
     rz = _random(hooks, -20, 40)
     ry = _random(hooks, -20, 40)
     rx = _random(hooks, -20, 40)
+    # `push ebp` at `0x0041F776` -- and `ebp` is the sweep's own zero
+    # (`xor ebp, ebp` at `0x0041E50A`), not a literal five.  Measured
+    # 2026-09-04: the child comes back with `rot_x` 0 and `life` 8.
     _spawn(blob, hooks, result, CREATE_ZOOM_BOB,
-           i32(blob.x + rx), i32(blob.y + ry), i32(blob.z + rz), 5, size)
+           i32(blob.x + rx), i32(blob.y + ry), i32(blob.z + rz), 0, size, 8)
     _move(blob)
     blob.rot_x = add_word(blob.rot_x, 0x64)
     blob.rot_y = add_word(blob.rot_y, 0x64)
@@ -1214,18 +1247,29 @@ _ARM_MUTATIONS = (
     'x,y,z,rot_y,vz', 'x,y,z,rot_y,aux', 'x,y,z,rot_x,rot_y,rot_z,vz',
 )
 
+#: Kind 59 lost a draw on 2026-09-04: its emitter takes **two** velocity
+#: values and a literal zero, not three (`docs/97` §49).  An extra draw is
+#: not a private mistake -- the whole sweep shares one `aRandom2`, so every
+#: arm after it in the frame drew from the wrong place.
 _ARM_RNG_CALLS = (
     3, 0, 3, 0, 0, 0, 0, 0, 6, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1, 0, 5,
+    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 4, 1, 0, 4,
     0, 0, 1, 0, 0, 1, 1, 1, 2, 1, 1, 0, 0, 0, 0, 0, 2, 4,
 )
 
 _ARM_SPAWNS = {
     6: (CREATE_ZOOM_BOB,),
     22: (CREATE_SPORE_SPARKS,),
+    # Kind 32 joined the unconditional spawners when its child was read back
+    # out of the engine's pool: `0x0041F577`'s branch guards the flag write
+    # and not the creator call (2026-09-04).
+    32: (CREATE_STING_SPARKS,),
     36: (CREATE_HITTING_BLOBS_2,),
     52: (CREATE_PARA_BOMB,),
+    # Kind 56 joined the unconditional spawners when its arm was stepped
+    # inside the engine: it has no `life` test (2026-09-04).
+    56: (CREATE_ZOOM_BOB,),
     59: (CREATE_EMITTER,),
     71: (CREATE_LASER_HIT,),
     77: (CREATE_ZOOM_BOB,),
@@ -1371,9 +1415,11 @@ def _selftest() -> None:
     assert r.spawns[0].creator == CREATE_SPORE_SPARKS
     assert r.spawns[0].args[-2:] == (10, 16)
 
+    # The emitter's last five: two velocities, a literal zero for the
+    # vertical, the size draw as `aux` and no delay (`docs/97` §49).
     b = Blob(kind=59, life=2, x=100, y=200, z=1000)
-    r = tick_blob(b, _ScriptedHooks((7, 9, -900, -800, -700)))
-    assert r.spawns[0].args[10:] == (-700, -800, -900, 9, 0)
+    r = tick_blob(b, _ScriptedHooks((7, 9, -900, -800)))
+    assert r.spawns[0].args[10:] == (-800, -900, 0, 9, 0)
 
     b = Blob(kind=62, life=1, x=100, y=-200, z=1000)
     r = tick_blob(b, _ScriptedHooks((6.25, 11, 22, 33)))

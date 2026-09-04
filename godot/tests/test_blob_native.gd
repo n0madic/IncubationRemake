@@ -32,6 +32,9 @@ extends TestSuite
 ## refused rather than skipping them.
 
 const CASES: String = "res://generated/blob/native.json"
+## The transcription fixture beside it, for the shipped trig tables alone:
+## two of the thirteen creators an arm calls ask `0x00403AA0` for a rotation.
+const BLOB_CASES: String = "res://generated/blob/blob.json"
 const SCHEMA: String = "incubation.blob-native/1"
 ## docs/30 section 2.5 -- one map field, in world units.
 const FIELD_UNITS: int = 3200
@@ -127,6 +130,7 @@ func run(h: TestHarness) -> void:
 	_check_generators(h, phases, creators)
 	_check_z_probe(h, phases)
 	_check_triggers(h, phases, creators)
+	_check_arm_creators(h, phases)
 
 
 ## Which generator the creators draw from, replayed on this side too.
@@ -247,3 +251,191 @@ func _check_triggers(h: TestHarness, phases: Dictionary,
 			% [elevations[0] if not elevations.is_empty() else -1,
 				elevations[elevations.size() - 1] if not elevations.is_empty() else -1,
 				BlobTriggers.MUZZLE_HEIGHT])
+
+
+## The **arms'** own creators, replayed against the engine -- docs/97 §49.
+##
+## The thirty creators above are the ones a weapon switch names. Thirteen more
+## are reached from an update arm instead, twelve of them from nowhere else in
+## the game, and until this capture nothing in the remake had ever run one: a
+## request found no program in [BlobPrograms] and made nothing. What is
+## replayed here is both halves at once -- [method BlobKinds.tick] for the arm,
+## which decides the **arguments**, and [method BlobPrograms.run] for the
+## creator, which turns them into records -- against the pool the engine left
+## after the same single `aBlob_Update`.
+##
+## `blob_gold.py`'s two spawning families give each entry a pool of its own
+## (reset, donor, one poked record) and read it wide enough to hold the child,
+## which the poked family's twelve-slot window never was. A brood bigger than
+## the window is compared as the prefix it is; `spawn.*` on the Python side
+## checks the generator's seed afterwards, which accounts for the rest.
+func _check_arm_creators(h: TestHarness, phases: Dictionary) -> void:
+	var names: Array[String] = []
+	for key: String in phases:
+		if key.begins_with("zoom_bob_") or key.begins_with("spawn_"):
+			names.append(key)
+	names.sort()
+	if names.is_empty():
+		h.check("arm_creators.phases", false,
+			"the capture carries no spawning family; re-take it")
+		return
+	var inputs: BlobPrograms.Inputs = _arm_inputs(phases)
+	if inputs.geometry == null:
+		h.check("arm_creators.geometry", false,
+			"the blob fixture carries no trig tables; two of the thirteen "
+			+ "creators cannot be replayed without them")
+		return
+	var positions: Dictionary[int, Vector3i] = _object_positions(phases)
+	var base: int = DictRead.as_int(
+		DictRead.as_dict(phases.get("state", {})).get("base", 0))
+	var kinds: Dictionary[int, bool] = {}
+	var creators: Dictionary[int, bool] = {}
+	var compared: int = 0
+	var wrong: Array[String] = []
+	for name: String in names:
+		var phase: Dictionary = DictRead.as_dict(phases[name])
+		var slot: int = DictRead.as_int(phase.get("slot", 0))
+		var entries: Array = DictRead.as_array(phase.get("entries", []))
+		var kind_list: Array = DictRead.as_array(phase.get("kinds", []))
+		var seed_list: Array = DictRead.as_array(phase.get("seeds", []))
+		for index: int in range(entries.size()):
+			var entry: Dictionary = DictRead.as_dict(entries[index])
+			var start: Variant = entry.get("start")
+			if not (start is Dictionary):
+				continue
+			var kind: int = DictRead.as_int(kind_list[index])
+			var seed_value: float = DictRead.as_float(seed_list[index])
+			var record: Dictionary = _record_at(
+				DictRead.as_string(DictRead.as_dict(start)["pool"]), slot)
+			if record.is_empty() or DictRead.as_int(record["kind"]) != kind:
+				continue
+			kinds[kind] = true
+			var blob: Blob = Blob.make(record)
+			blob.slot_tag = (base + 0x58 * slot) & 0xFF
+			for step_entry: Variant in DictRead.as_array(entry.get("steps", [])):
+				var step: Dictionary = DictRead.as_dict(step_entry)
+				if not blob.alive:
+					break
+				var made: Array[Dictionary] = _replay_arm(blob, seed_value,
+					inputs, positions, creators)
+				var born: Array = DictRead.as_array(step.get("born", []))
+				var full: bool = DictRead.as_int(step.get("full", 0)) != 0
+				if full and born.size() < made.size():
+					made = made.slice(0, born.size())
+				if made.size() != born.size():
+					wrong.append("%s kind %d: %d record(s), not %d"
+						% [name, kind, made.size(), born.size()])
+					break
+				for j: int in range(made.size()):
+					compared += 1
+					var problem: String = _record_problem(made[j],
+						DictRead.as_dict(born[j]))
+					if problem != "":
+						wrong.append("%s kind %d record %d: %s"
+							% [name, kind, j, problem])
+	h.check("arm_creators.replayed", compared > 0,
+		"%d child record(s) from %d arm(s) and %d creator(s), each the arm's "
+		% [compared, kinds.size(), creators.size()]
+		+ "own arguments through the creator's own program")
+	var none: Array[String] = []
+	h.equal("arm_creators.agree", wrong.slice(0, 3), none,
+		"every one is the engine's, field for field")
+
+
+## One `aBlob_Update` of the model: the arm, then what the arm asked for.
+##
+## The engine keeps **one** `aRandom2` stream, so the creator continues from
+## where the arm left it -- which is what [GameBlobHooks] does in a mission
+## and what this reproduces without a [BlobPool] to put the records in.
+func _replay_arm(blob: Blob, seed_value: float, inputs: BlobPrograms.Inputs,
+		positions: Dictionary[int, Vector3i],
+		creators: Dictionary[int, bool]) -> Array[Dictionary]:
+	var hooks: BlobHooks = BlobHooks.new()
+	hooks.rng.randomize_seed(seed_value)
+	hooks.model_index = inputs.models
+	hooks.has_target = positions.has(blob.aux)
+	hooks.target = positions.get(blob.aux, Vector3i.ZERO)
+	var result: BlobKinds.TickResult = BlobKinds.tick(blob, hooks)
+	var pool: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var draws: BlobPrograms.Draws = BlobPrograms.Draws.create(hooks.rng.seed)
+	for request: Dictionary in result.spawns:
+		var creator: int = DictRead.as_int(request["creator"])
+		creators[creator] = true
+		var args: PackedInt32Array = PackedInt32Array()
+		for value: Variant in DictRead.as_array(request["args"]):
+			args.append(DictRead.as_int(value))
+		if not BlobPrograms.run(GameBlobHooks.program_of(creator), pool, draws,
+				args, inputs):
+			return []
+	return pool.records
+
+
+## What the creators read: the engine's own model handles and its trig tables.
+## The handles come from this capture's `models` phase and the tables from the
+## blob fixture beside it, so neither is this side's invention.
+func _arm_inputs(phases: Dictionary) -> BlobPrograms.Inputs:
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	for name: String in DictRead.as_dict(phases.get("models", {})):
+		inputs.models[name] = DictRead.as_int(
+			DictRead.as_dict(phases["models"])[name])
+	if FileAccess.file_exists(BLOB_CASES):
+		var document: Dictionary = CacheLoader.read_json(BLOB_CASES)
+		var raw: Variant = document.get("eng3d")
+		if raw is Dictionary:
+			inputs.geometry = Eng3dGeometry.from_document(DictRead.as_dict(raw))
+	return inputs
+
+
+## `object id -> position`, exactly as the `hooks` phase measured it.
+func _object_positions(phases: Dictionary) -> Dictionary[int, Vector3i]:
+	var out: Dictionary[int, Vector3i] = {}
+	var hooks: Dictionary = DictRead.as_dict(phases.get("hooks", {}))
+	var ids: Array = DictRead.as_array(hooks.get("object_ids", []))
+	var table: Array = DictRead.as_array(hooks.get("object", []))
+	for index: int in range(mini(ids.size(), table.size())):
+		var item: Dictionary = DictRead.as_dict(table[index])
+		if DictRead.as_int(item.get("ok", 0)) == 0:
+			continue
+		out[DictRead.as_int(ids[index])] = Vector3i(
+			DictRead.as_int(item["x"]), DictRead.as_int(item["y"]),
+			DictRead.as_int(item["z"]))
+	return out
+
+
+## One record out of a pool snapshot, or an empty dictionary for a free slot.
+## The layout is docs/28 section 7.2's; `blob_gold.py`'s `parse_records` is the
+## other reading of it, and the two disagreeing is a failing check rather than
+## a silent one -- every field below is compared against what that one parsed.
+func _record_at(pool: String, slot: int) -> Dictionary:
+	var raw: PackedByteArray = _hex(pool.substr(slot * 0x58 * 2, 0x58 * 2))
+	if raw.size() < 0x58 or raw.decode_u32(0) == 0:
+		return {}
+	return {
+		"model": raw.decode_s32(0x0C), "class_id": raw.decode_u8(0x08),
+		"x": raw.decode_s32(0x14), "y": raw.decode_s32(0x18),
+		"z": raw.decode_s32(0x1C),
+		"rot_x": raw.decode_u16(0x38), "rot_y": raw.decode_u16(0x3A),
+		"rot_z": raw.decode_u16(0x3C),
+		"kind": raw.decode_u8(0x44), "life": raw.decode_u8(0x45),
+		"vx": raw.decode_s32(0x48), "vy": raw.decode_s32(0x4C),
+		"vz": raw.decode_s32(0x50),
+		"aux": raw.decode_u8(0x54), "delay": raw.decode_u8(0x55),
+	}
+
+
+func _hex(text: String) -> PackedByteArray:
+	var out: PackedByteArray = PackedByteArray()
+	for index: int in range(0, text.length() - 1, 2):
+		out.append(text.substr(index, 2).hex_to_int())
+	return out
+
+
+## The first field of a model record that is not the engine's, or "".
+func _record_problem(made: Dictionary, engine: Dictionary) -> String:
+	for field: String in BlobPrograms.FIELDS:
+		if not engine.has(field):
+			continue
+		if DictRead.as_int(made[field]) != DictRead.as_int(engine[field]):
+			return "%s %d != %d" % [field, DictRead.as_int(made[field]),
+				DictRead.as_int(engine[field])]
+	return ""

@@ -48,12 +48,12 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 253 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 458 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 465 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
-python3 tools/presentation_tables.py --check gog_incubation   # 687 checks, docs/42
+python3 tools/presentation_tables.py --check gog_incubation   # 700 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -67,7 +67,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 223 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 34 suites, 3133 checks
+bash   godot/run_tests.sh                                    # 34 suites, 3154 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -336,7 +336,7 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture (**259 checks**); taking one needs `--game-copy` and Wine. It also carries the
+the capture (**268 checks**); taking one needs `--game-copy` and Wine. It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through
@@ -375,7 +375,23 @@ after ten of them were fixed (`docs/97` §20), which is what that experiment
 was for. So **74 of 74 arms are stepped and agree**, 24 with a creator's
 record and 50 with a donor's; the second is weaker in one way and no other,
 in that the arm is measured and the arguments a creator would pass it are
-not. **How much of each arm that reached is measured too** (`docs/97` §21):
+not -- which is what the **`zoom_bob_*` and `spawn_*`** families close
+(`docs/97` §49). The thirteen creator addresses an update arm can reach were
+the third family of creators and the only one nothing had ever run: the poked
+window is the donor's own slots and a child lands past them, so an arm's
+arguments to its creator were measured by nothing. These give every entry a
+pool of its own (reset, donor, one poked record), **write** `aRandom2`'s seed
+before every call and read forty-four slots back. They found six more
+corrections in four arms -- kind 32 spawns every tick and not at `life == 0`,
+kind 59's emitter takes two velocity draws and a literal zero with the first
+draw as its `aux` (so the port drew once too often, which is wrong about
+**every other arm's** record in the same frame), and kinds 62 and 67 add the
+coordinate to the jitter with `fiadd` rather than truncating first. That last
+one is measured rather than read: a seed is chosen that puts every jitter
+where the two readings differ, and the check requires the two candidates to
+differ before comparing the engine against either. All twelve creators are
+transcribed in `inclib/blob_creators.py` and `game/fx/blob_programs.gd`, and
+`test_blob_native.gd` replays the **GDScript** side of the same capture. **How much of each arm that reached is measured too** (`docs/97` §21):
 the comparison is line-traced and runs **383 of the 385** transcribed arm
 lines, 73 of 74 arms entirely, after a second sweep vector (`life` 12, `aux`
 10, fourteen rounds) and eight one-arm probes were chosen against the first
@@ -599,7 +615,7 @@ ladder rule, a mutation test of the wave-queue guard, and the model bug the
 first of those exposed -- the fill's direction loop runs 0..7, and
 `anyFriendlyBlocked` is therefore a constant (docs/23 §7.6).
 
-Six things about it that are easy to trip over:
+Eight things about it that are easy to trip over:
 
 * **Warnings are errors, project-wide.** A script with an untyped declaration
   or an unsafe call argument does not *load*, so a broken file makes the suites
@@ -635,6 +651,17 @@ Six things about it that are easy to trip over:
   includes the source and output inventories. Publish, pointer switch and
   collection share one inter-process lock; do not reintroduce an in-place
   replacement of the directory `active.json` names.
+* **A reference cycle between two `RefCounted`s fails the suites.** Godot
+  counts references and never collects a cycle, so the leaked objects' scripts
+  are still held at shutdown and Godot prints
+  `ERROR: N resources still in use at exit` — which `run_tests.sh` gates on,
+  because it gates on runtime errors and not only on the sentinel — beside a
+  `WARNING: N ObjectDB instances were leaked at exit` that it lets pass. The
+  run then exits non-zero with every check green. `GameBlobHooks` holds its
+  pool through `weakref` for that reason: the pool owns the hooks, so the
+  pointer back has to be weak. Read the object back with an **assignment**
+  (`var held: BlobPool = ref.get_ref()`), which is checked at run time;
+  `as BlobPool` is `UNSAFE_CAST`, and warnings are errors.
 
 ```bash
 python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish

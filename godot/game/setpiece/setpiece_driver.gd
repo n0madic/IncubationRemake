@@ -64,9 +64,27 @@ const BARRIER_FRAMES: int = 40
 const FIRE_CIRCLE_FRAMES: int = 10
 ## `mov esi, 0x46` -- the teleporter counts down from seventy.
 const TELEPORTER_FRAMES: int = 70
-## The crush wall and the para bombs spin on the pool and on the *arrived*
-## flag; the frames here are the picture's bound, **the remake's**.
+## The crush wall spins on the pool and on the *arrived* flag; the frames here
+## are the picture's bound, **the remake's**.
 const POOL_ONLY_FRAMES: int = 40
+## `ParaBombs` -- the ticks between one bomb starting and the next.
+##
+## **The remake's**, and the one number in this set piece that is: `0x00416231`
+## draws `aRandom2(0, 200)` per bomb, so the original's strike is spread over
+## ten seconds of falling. Everything else about the sequence's length is read
+## out of the game and derived from this.
+const BOMB_SPACING: int = 3
+## Where a `para_bombs` event's tile pairs start in its values.
+const PARA_BOMB_TILES_AT: int = 5
+## How long one bomb falls: `0x0042B070` starts it at `BOMB_CEILING` above the
+## object and drops it `BOMB_FALL` a tick, and a floor at height zero is the
+## longest fall a map can give it.
+const BOMB_FALL_FRAMES: int = BlobPrograms.BOMB_CEILING / BlobPrograms.BOMB_FALL
+## `0x0042A8E0` writes `life = 150` into the bomber's record (pinned as
+## `creator.bomber.kind_52_life_150`), and 3200 world units a tick along its
+## 520 000-unit diagonal would need 163 -- so the plane runs out of life
+## before it arrives, and its own record is what ends the fly-past.
+const BOMBER_LIFE_FRAMES: int = 150
 
 ## `aDoorOpenSequence`'s own `for (n = 10; n; n--)`.
 const DOOR_FRAMES: int = 10
@@ -127,8 +145,17 @@ static func frames_for(event: Dictionary) -> int:
 			return BARRIER_FRAMES
 		"fire_circle":
 			return FIRE_CIRCLE_FRAMES
-		"crush_wall", "para_bombs":
+		"crush_wall":
 			return POOL_ONLY_FRAMES
+		"para_bombs":
+			# The strike's own length rather than a flat bound: the last
+			# bomb starts `(tiles - 1) * BOMB_SPACING` ticks in and then
+			# falls. `core` carries the tiles it actually mined (docs/97
+			# section 33), so this counts the bombs that will be laid and
+			# not the command's sixty attempts.
+			var tiles: int = (values.size() - PARA_BOMB_TILES_AT) / 2
+			return mini(maxi(1, maxi(0, tiles - 1) * BOMB_SPACING
+				+ BOMB_FALL_FRAMES + 1), MAX_FRAMES)
 		"teleporter":
 			return TELEPORTER_FRAMES
 	return 0

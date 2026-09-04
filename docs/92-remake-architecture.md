@@ -1195,6 +1195,55 @@ reports the slice; these are the choices no evidence settles.
 | D11 | Equipment points, tech level and skill level are **campaign** state; entering a mission does not apply the header | [`27` §4, §5.2](27-campaign.md) as corrected — the header's fields are the single-mission front end's |
 | D12 | `tables/campaign.json` carries **lists of records**, not objects keyed by id | a JSON object's key is a string and the cache must carry integers; `inclib/info.py` set the precedent, and `tables/balance.json`'s `equipment` — which has no id 2, so a position is not an id — is the trap |
 
+### 7.14 An arm's spawn request is run in a mission, and the pool ticks before the queue (2026-09-04)
+
+Two decisions the `ParaBombs` set piece forced, both about the seam between
+the blob pool and everything that watches it.
+
+**A mission runs an arm's spawn request; the diff still records it.**
+`BlobKinds._spawn` is the arms' own `aBlob_Create*` call, and `BlobHooks`
+answered it by writing the request down and returning success. That is exactly
+what an oracle wants — `test_blob.gd` compares the request and
+`blob_runtime.py` records the same one, arm for arm — and it is not what a
+game wants: the child effect never reached the pool, so an arm that throws
+debris threw nothing and the *arrived* flag of [`42` §4.6](42-mission-presentation.md)
+had nothing to raise it. `game/fx/game_blob_hooks.gd` is a subclass that runs
+the creator **inline**, where the arm calls it, so it draws from the one
+`aRandom2` stream at that moment and its record lands in the first free slot —
+which `aCheckInBlobObjects` `0x0041E3D0` visits later in the same sweep when
+the slot is above the one being ticked, and not at all when it is below.
+`BlobPool.tick_all` walks by index for that reason. The base class is
+untouched, so the oracle's contract is untouched. It holds the pool through
+`weakref`: the pool owns its hooks, so a strong pointer back is a reference
+cycle, and Godot counts references rather than collecting them. The run then
+ends with `ERROR: N resources still in use at exit` — the leaked objects'
+scripts — which `run_tests.sh` gates on, and exits non-zero with all 3150
+checks green. That exit status is how this one was found.
+
+**Thirteen creator addresses are reachable from an arm and all thirteen are
+transcribed** ([`97` §49](97-slice-5-report.md)). Twelve of them were reached
+from nowhere else in the game — no weapon switch names them and no set piece
+calls them — so nothing had needed them before `GameBlobHooks` ran a request,
+and a request found no program and made nothing, which is what the whole layer
+used to do. They were not read off the disassembly and left there: two capture
+families step every arm that asks for one, with the second generator's seed
+written and the pool read wide enough to hold the child, and both twins are
+compared against the records the engine left. That found six more corrections
+in four arms — including an arm that drew once too often, which is wrong about
+**every other arm's** record in the same frame, the sweep sharing one
+`aRandom2`.
+
+**The pool ticks before the sequence queue, and the picture is drawn after
+both.** Every `aPlay*Sequence` is a loop whose body does its work, calls the
+frame tick `0x0040B6F0` and reads what the tick left on the next instruction —
+the bomb run `0x004160F0` asks `0x0042B480` immediately after its tick. A
+queue advanced before the pool reads the previous frame's answer, so a sound
+chosen by a flag lands a frame after the thing that raised it. `Main._process`
+therefore runs `_tick_effects`, then the queue, then `_draw_effects` — which
+also puts a record spawned by this frame's sequence on the screen in this
+frame rather than the next. The order is verified by reading: `Main` is a
+scene node and no suite instantiates it.
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:

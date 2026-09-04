@@ -118,6 +118,14 @@ GROUND_FIRE = (0x004157B0, 0x00415C70)
 CRUSH_WALL = (0x00415C70, 0x00415E90)
 #: `ParaBombs` `0x00415E90` -- the bomber's fly-past and one bomb per tile.
 PARA_BOMBS = (0x00415E90, 0x004160F0)
+#: `0x004160F0` -- the bomb run, the **second** of the two routines the
+#: `ParaBombs` handler drives (`docs/20` §7.4).
+PARA_BOMB_RUN = (0x004160F0, 0x00416470)
+#: `0x00470790` -- the handler itself, which runs the two in order.
+PARA_BOMBS_HANDLER = (0x00470790, 0x00470AB0)
+#: The two creators the set piece runs, and the two the remake models as
+#: clearing the *arrived* flag.
+PARA_BOMBS_CREATORS = (0x0042A8E0, 0x0042B070)
 #: `0x0042F410(object, fieldType, keepHeight, mark)` -- the four-probe sweep
 #: that decides which cells a scene object stands on (`docs/97` §41.4).
 MARK_UNDER_OBJECT = (0x0042F410, 0x0042F650)
@@ -1558,6 +1566,123 @@ def _check_bomber_arguments(ck: Checker, b: Binary) -> None:
                A_SET_CAMERA, 2)
 
 
+def _check_para_bombs_phases(ck: Checker, b: Binary) -> None:
+    """``ParaBombs`` ``0x00470790`` runs **two** routines, in order.
+
+    ``docs/20`` §7.4 says so and ``docs/28`` §2 gives each its own wave --
+    ``bomber.wav`` @87 looping under the fly-past ``0x00415E90`` and
+    ``crush.wav`` @89 under the bomb run ``0x004160F0`` -- but nothing pinned
+    the pairing, and the remake's sound layer mapped the whole command to the
+    fly-past alone, so the second wave was never played.  These are the three
+    facts that reading holds: the handler calls each routine once, the
+    fly-past is the one that comes first, and the two are separate blocking
+    routines rather than one with two sounds.
+
+    The last is what ``0x004160B4`` settles: the fly-past's own last act is
+    ``aDeleteAllBlobs`` ``0x0041E370``, so the bombs cannot already be in the
+    pool when it returns.
+
+    ``0x00416271``'s ``mov edi, 3`` is recorded here for the scale-down it
+    bounds: the bomb run loads **three** ``crush.wav`` buffers and plays them
+    round-robin, one per landing (``0x00416364``..``0x004163A9``), where the
+    remake plays the wave once as its stage opens.
+    """
+    fly = _pin_calls(ck, b, "setpiece.para_bombs.fly_past",
+                     PARA_BOMBS_HANDLER, PARA_BOMBS[0], 1)
+    run = _pin_calls(ck, b, "setpiece.para_bombs.bomb_run",
+                     PARA_BOMBS_HANDLER, PARA_BOMB_RUN[0], 1)
+    ck.check("setpiece.para_bombs.fly_past_first",
+             bool(fly) and bool(run) and fly[0] < run[0],
+             f"0x{fly[0]:08X} < 0x{run[0]:08X}" if fly and run
+             else "one of the two calls is missing")
+    _pin_calls(ck, b, "setpiece.para_bombs.fly_past_empties_the_pool",
+               PARA_BOMBS, 0x0041E370, 1)
+    _pin_calls(ck, b, "setpiece.para_bombs.bomb_run_lays_the_bombs",
+               PARA_BOMB_RUN, PARA_BOMB_CREATOR[0], 1)
+    _pin_at(ck, b, "setpiece.para_bombs.three_crush_buffers", 0x00416271,
+            b"\xbf\x03\x00\x00\x00")
+    # The bomb run's own loops, which are what "one crump per landing" is.
+    # `0x0042B480` is read in **two** of them: `0x0041632F` spins until the
+    # first bomb lands -- the run opens silent, with the camera on the first
+    # live record -- and `0x00416369` is the crump loop proper. The first
+    # landing therefore reaches `0x0041633F`'s play and then the loop's own
+    # on the next frame, both on `buffer[0]`, so it restarts one buffer
+    # rather than making two sounds. `0x0042B490` acknowledges, and
+    # `0x0042B4A0` -- the **live count**, not the flag -- is what ends it.
+    _pin_calls(ck, b, "setpiece.para_bombs.spins_for_the_first_landing",
+               PARA_BOMB_RUN, ARRIVED_READ, 2)
+    _pin_calls(ck, b, "setpiece.para_bombs.acknowledges_each_crump",
+               PARA_BOMB_RUN, ARRIVED_CLEAR, 1)
+    _pin_calls(ck, b, "setpiece.para_bombs.ends_on_the_live_count",
+               PARA_BOMB_RUN, LIVE_COUNT, 1)
+    _pin_at(ck, b, "setpiece.para_bombs.live_count_reads_0x004FE640",
+            LIVE_COUNT, b"\xa1\x40\xe6\x4f\x00\xc3")
+    _check_arrived_writers(ck, b)
+
+
+#: `0x004FE63C` -- the *arrived* flag of `docs/42` §4.6, and the three
+#: one-line helpers a sequence reaches it through.
+ARRIVED_FLAG = 0x004FE63C
+ARRIVED_READ = 0x0042B480
+ARRIVED_CLEAR = 0x0042B490
+#: `0x004FE640` -- the live-record count, read by `0x0042B4A0`.
+LIVE_COUNT = 0x0042B4A0
+#: Every site in `.text` that writes a **zero** to the flag, and the routine
+#: it is in.  Five are creators; the sixth is the clear helper itself.
+ARRIVED_CLEARED_BY: dict[int, tuple[int, str]] = {
+    0x004263B7: (0x00426070, "aBlob_CreateGrenade"),
+    0x004267D7: (0x004264A0, "aBlob_EnergyCannon"),
+    0x004287D3: (0x00428570, "aBlob_CreateLaser"),
+    0x0042A938: (0x0042A8E0, "aBlob_CreateBomber"),
+    0x0042B0E3: (0x0042B070, "the para bomb"),
+    0x0042B490: (0x0042B490, "the clear helper"),
+}
+
+
+def _check_arrived_writers(ck: Checker, b: Binary) -> None:
+    """Who writes a **zero** over the *arrived* flag, and who therefore has
+    something in flight to wait for (`docs/42` §4.6).
+
+    The flag starts raised -- "nothing to wait for" -- and a creator that
+    makes something worth waiting on writes a zero before it returns.  There
+    are exactly **six** such sites in `.text` and five of them are inside a
+    creator: the three weapon projectiles, which the remake's shot path
+    models at the muzzle instead of per creator, and the two `ParaBombs`
+    runs, which are the pair `game/fx/blob_programs.gd` and
+    `inclib/blob_creators.py` carry as `clears_arrived`.
+
+    Counting them matters as much as naming them: modelling two of five is a
+    decision, and a decision that nothing counted would look like an
+    oversight the first time somebody added a sixth.
+    """
+    blob = b.span(0x00401000, 0x004B0000)
+    store = struct.pack("<HI I", 0x05C7, ARRIVED_FLAG, 0)
+    found: list[int] = []
+    start = 0
+    while True:
+        i = blob.find(store, start)
+        if i < 0:
+            break
+        found.append(0x00401000 + i)
+        start = i + 1
+    want = sorted(ARRIVED_CLEARED_BY)
+    ck.check("arrived.cleared_by", found == want,
+             f"{[hex(v) for v in found]} != {[hex(v) for v in want]}")
+    # And each really is inside the routine the table names.
+    bad = [f"0x{site:08X}" for site, (owner, _) in sorted(ARRIVED_CLEARED_BY.items())
+           if not owner <= site < owner + 0x400]
+    ck.check("arrived.sites_inside_their_creator", not bad,
+             f"{len(ARRIVED_CLEARED_BY)} sites, each in its own routine: "
+             f"{', '.join(bad) if bad else 'all'}")
+    # The two the remake models, spelled out so a rename on either side of
+    # the pair shows up here rather than as a set piece that never ends.
+    modelled = sorted({owner for owner, _ in ARRIVED_CLEARED_BY.values()
+                       if owner in PARA_BOMBS_CREATORS})
+    ck.check("arrived.modelled_pair", modelled == sorted(PARA_BOMBS_CREATORS),
+             f"{[hex(v) for v in modelled]} of the five creators are the "
+             f"pair `blob_programs.gd` carries")
+
+
 def _check_orbit_gate(ck: Checker, b: Binary) -> None:
     """``0x00410190`` -- the skill orbit plays in the campaign and nowhere else.
 
@@ -1776,6 +1901,7 @@ def run_check(root: str) -> Checker:
     _check_teleporter(ck, b)
     _check_orbit_gate(ck, b)
     _check_bomber_arguments(ck, b)
+    _check_para_bombs_phases(ck, b)
     _check_crush_wall(ck, b)
     _check_between_players(ck, b)
     _check_corpus(ck, root)

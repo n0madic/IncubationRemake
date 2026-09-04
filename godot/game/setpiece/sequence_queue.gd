@@ -46,6 +46,13 @@ class Step extends RefCounted:
 	## An open-ended step ends on the first frame this answers true, or at
 	## `frames` -- the engine's own bound -- whichever comes first.
 	var until: Callable = Callable()
+	## The routine's **last act**, run once however the step ended: at the
+	## bound, on [member until], or because the showing was skipped. A
+	## blocking routine's tail is not part of any frame it paints -- the
+	## fly-past `0x00415E90` empties the pool at `0x004160B4` after its loop
+	## has left, whatever left it -- so painting it at the last frame would
+	## be right only for the one ending that reaches that frame.
+	var on_end: Callable = Callable()
 
 	func seconds() -> float:
 		return float(frames) / FRAMES_PER_SECOND
@@ -99,7 +106,8 @@ func enqueue(name: String, frames: int, paint: Callable,
 ## `paint` is called with `(frame, frames)` on every frame it runs, so a
 ## step that only waits passes an invalid callable.
 func enqueue_until(name: String, frames: int, until: Callable,
-		paint: Callable = Callable(), cues: Array[Dictionary] = []) -> void:
+		paint: Callable = Callable(), cues: Array[Dictionary] = [],
+		on_end: Callable = Callable()) -> void:
 	if frames <= 0:
 		return
 	var step: Step = Step.new()
@@ -108,6 +116,7 @@ func enqueue_until(name: String, frames: int, until: Callable,
 	step.paint = paint
 	step.until = until
 	step.cues = cues.duplicate()
+	step.on_end = on_end
 	_steps.append(step)
 	_running = true
 
@@ -186,6 +195,8 @@ func _step_once() -> bool:
 ## so a queue that let the sample decide would either cut the door's hum short
 ## or leave it running for ever.
 func _end_step(step: Step) -> void:
+	if step.on_end.is_valid():
+		step.on_end.call()
 	if _audio == null or step.cues.is_empty():
 		return
 	var _killed: int = _audio.stop_tag(TAG)
@@ -202,6 +213,9 @@ func skip() -> void:
 		if step.paint.is_valid():
 			step.paint.call(step.frames, step.frames)
 			_painted += 1
+		# A skipped step still **ended**, so its last act runs -- the same
+		# reason its last frame is painted.
+		_end_step(step)
 		_index += 1
 	if _audio != null:
 		var _killed: int = _audio.stop_tag(TAG)

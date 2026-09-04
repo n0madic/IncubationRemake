@@ -41,6 +41,21 @@ const GRAVITY_LOW: int = -32
 
 ## Constructor entry points, by the address the arm calls. Keeping the
 ## addresses makes a spawn in a remake trace comparable with a static one.
+## `aBlob_CreateZoomBob`, and the arm that made this whole family measurable.
+##
+## The callee reads **six** arguments -- `x` at `+0x04`, `y`, `z`, `row` at
+## `+0x10`, `aux` at `+0x14`, `life` at `+0x18` -- and all fourteen of its call
+## sites clean six dwords. Five of the seven requests below used to carry
+## five, and nothing noticed while an arm's request was only ever written
+## down; [GameBlobHooks] runs it, which is what made the count load-bearing.
+##
+## The five were settled by **stepping the arms inside `Incubation.exe`**
+## (2026-09-04, docs/97 section 48): a donor record poked to each kind, one
+## `aBlob_Update`, and the child's `rot_x`, `aux` and `life` read back out of
+## the pool. Reading the push blocks alone would have got two of them wrong --
+## kind 77's `row` is the sweep's own zero and not a literal five, and kind 56
+## has no `life` test at all, so it drops a zoom bob on **every** tick.
+## `blob_tables.py`'s `arm_spawn.arity` keeps the count honest from here.
 const CREATE_ZOOM_BOB: int = 0x423720
 const CREATE_PARA_BOMB: int = 0x42B150
 const CREATE_BARREL_DEBRIS: int = 0x42B300
@@ -493,7 +508,7 @@ static func _kind_15(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	if b.life == 0:
 		_request_delete(b, r)
 		_spawn(b, h, r, CREATE_ZOOM_BOB,
-			[b.x, b.y, b.z, 1, h.random(5, 15)])
+			[b.x, b.y, b.z, 1, h.random(5, 15), 8])
 
 
 static func _kind_16(b: Blob, h: BlobHooks, r: TickResult) -> void:
@@ -613,7 +628,10 @@ static func _kind_32(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	_set_aux(b, h.random(5, 0x28))
 	if b.life == 0:
 		_request_delete(b, r)
-		_spawn(b, h, r, CREATE_STING_SPARKS, [b.x, b.y, b.z, b.vx, b.vy])
+	# **Every tick, not only the last** (measured 2026-09-04, docs/97 §49):
+	# `0x0041F577`'s `jne` skips the flag write alone, and the creator call at
+	# `0x0041F583` is on the common path.
+	_spawn(b, h, r, CREATE_STING_SPARKS, [b.x, b.y, b.z, b.vx, b.vy])
 
 
 static func _kind_33(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
@@ -781,10 +799,25 @@ static func _kind_56(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	b.rot_y = _add_word(b.rot_y, delta)
 	b.rot_z = _add_word(b.rot_z, delta)
 	_move(b)
+	# **Every tick, not only the last** (measured 2026-09-04: a record poked
+	# to kind 56 with `life` 6 left a `rot_x` 7, `aux` 5, `life` 7 child
+	# after one `aBlob_Update`). The arm `0x0041FF6A` has no `life` test at
+	# all; `0x00420037`'s `vz` step is the tail it shares with the wrapper's
+	# success path, which is why it reads like a guarded branch and is not.
+	#
+	# `0x0041FFB9` draws the aux, then one jitter per coordinate in z, y, x
+	# order -- and each is added to the record's own coordinate **before**
+	# `_ftol` truncates it (`fiadd` at `0x0041FFD6`), which is the other way
+	# round from kind 77's `movsx` add two arms above. That half is
+	# **measured** too (docs/97 section 49.4): the two forms differ only where
+	# a draw is negative and fractional, so the `zoom_bob_*` capture writes a
+	# seed whose draws all are, and the engine's child matched `fiadd`.
+	var aux: int = h.random(2, 5)
+	var jz: int = Eng3dGeometry.ftol(h.random_float(-50, 100) + float(b.z))
+	var jy: int = Eng3dGeometry.ftol(h.random_float(-50, 100) + float(b.y))
+	var jx: int = Eng3dGeometry.ftol(h.random_float(-50, 100) + float(b.x))
+	_spawn(b, h, r, CREATE_ZOOM_BOB, [jx, jy, jz, 7, aux, 7])
 	b.vz = IncInt.i32(b.vz - 0x64)
-	if b.life == 0:
-		_spawn(b, h, r, CREATE_ZOOM_BOB,
-			[b.x, b.y, b.z, 1, h.random(2, 5)])
 
 
 static func _kind_57(b: Blob, h: BlobHooks, _r: TickResult) -> void:
@@ -803,18 +836,27 @@ static func _kind_58(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
 static func _kind_59(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	b.z = IncInt.i32(b.z + 0x258)
 	b.vz = h.random(5, 15)
+	# **Two draws for the velocity, not three, and the first draw is the
+	# `aux`** (docs/97 §49): both branches push `ebp` -- the sweep's own zero
+	# -- for `vz` (`0x00420101`, `0x00420162`), and the two are the same three
+	# instructions (`blob_tables.py`'s `spawn.emitter_vz_is_ebp`). The
+	# **ordinary** branch is measured by the child it makes; the special one
+	# runs only under an output mode whose capture holds no child, so what is
+	# measured there is the count -- seven draws against four
+	# (`mode.special_draws`) -- and the bytes say where they go. The third
+	# draw the port used to take also left every arm after this one in the
+	# sweep reading `aRandom2` one step out of place.
 	if h.emitter_mode == 3:
-		var r1: int = h.random(5, 10)
-		var r2: int = h.random(-100, 200)
-		var r3: int = h.random(-100, 200)
+		var aux: int = h.random(5, 10)
+		var vy: int = h.random(-100, 200)
+		var vx: int = h.random(-100, 200)
 		_spawn(b, h, r, CREATE_EMITTER,
-			[NAME_SCRATCH, 2, b.x, b.y, b.z, 1, 0, 0, 60, 8, r3, r2, r1, 0, 0])
+			[NAME_SCRATCH, 2, b.x, b.y, b.z, 1, 0, 0, 60, 8, vx, vy, 0, aux, 0])
 	var size: int = h.random(5, 20)
-	var rz: int = h.random(-1000, 2000)
-	var ry: int = h.random(-1000, 2000)
-	var rx: int = h.random(-1000, 2000)
+	var wy: int = h.random(-1000, 2000)
+	var wx: int = h.random(-1000, 2000)
 	_spawn(b, h, r, CREATE_EMITTER,
-		[NAME_SCRATCH, 2, b.x, b.y, b.z, 1, 0, 0, 60, 8, rx, ry, rz, size, 0])
+		[NAME_SCRATCH, 2, b.x, b.y, b.z, 1, 0, 0, 60, 8, wx, wy, 0, size, 0])
 
 
 # `0x55555556` with **no** shift is a third. The seeker's damping uses the
@@ -841,16 +883,21 @@ static func _kind_62(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	b.rot_y = IncInt.u16(b.life)
 	b.z = IncInt.i32(b.z - 0xA0)
 	if h.random_float(0, 10) > 5.0:
-		var rz: int = h.random(-1000, 2000)
-		var ry: int = h.random(-1000, 2000)
-		var rx: int = h.random(-1000, 2000)
-		_spawn(b, h, r, CREATE_PLASMA_SPARKS,
-			[IncInt.i32(b.x + rx), IncInt.i32(b.y + ry),
-			 IncInt.i32(b.z + rz), 1, 10])
+		# `fiadd` at `0x0041E8EA` and its two neighbours: the coordinate joins
+		# the draw and the **sum** is truncated, as kind 56 does and kind 77
+		# does not. Measured 2026-09-04 (docs/97 §49) -- the two readings
+		# differ only where a draw is negative with a fraction, and the seed
+		# the capture writes puts every one of them there.
+		var jz: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.z))
+		var jy: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.y))
+		var jx: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.x))
+		_spawn(b, h, r, CREATE_PLASMA_SPARKS, [jx, jy, jz, 1, 10])
 	if b.life == 0:
+		# `0x0041E95A`: the 800 is the **vertical** and the 20 the aux, with
+		# the sweep's zero for both horizontals.
 		_spawn(b, h, r, CREATE_EMITTER,
 			[NAME_SCRATCH, 2, b.x, b.y, b.z, 4, 0, 0, 10, 10,
-			 0x320, 0x14, 0, 0, 0])
+			 0, 0, 0x320, 0x14, 0])
 
 
 static func _kind_63(b: Blob, _h: BlobHooks, _r: TickResult) -> void:
@@ -901,12 +948,11 @@ static func _kind_67(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	b.rot_y = IncInt.u16(h.random(0, 7))
 	_set_aux(b, mini(b.life, 20))
 	if b.life == 0:
-		var rz: int = h.random(-1000, 2000)
-		var ry: int = h.random(-1000, 2000)
-		var rx: int = h.random(-1000, 2000)
-		_spawn(b, h, r, CREATE_PLASMA_SPARKS,
-			[IncInt.i32(b.x + rx), IncInt.i32(b.y + ry),
-			 IncInt.i32(b.z + rz), 1, 10])
+		# `fiadd` at `0x0041EE98` and its two neighbours, as kind 62's is.
+		var jz: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.z))
+		var jy: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.y))
+		var jx: int = Eng3dGeometry.ftol(h.random_float(-1000, 2000) + float(b.x))
+		_spawn(b, h, r, CREATE_PLASMA_SPARKS, [jx, jy, jz, 1, 10])
 
 
 static func _kind_68(b: Blob, h: BlobHooks, _r: TickResult) -> void:
@@ -922,7 +968,7 @@ static func _kind_69(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	if b.life == 0:
 		_request_delete(b, r)
 		_spawn(b, h, r, CREATE_ZOOM_BOB,
-			[b.x, b.y, b.z, 6, h.random(5, 15)])
+			[b.x, b.y, b.z, 6, h.random(5, 15), 8])
 
 
 static func _kind_71(b: Blob, h: BlobHooks, r: TickResult) -> void:
@@ -942,7 +988,7 @@ static func _kind_73(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	_move(b)
 	if b.life == 0:
 		_spawn(b, h, r, CREATE_ZOOM_BOB,
-			[b.x, b.y, b.z, 1, h.random(5, 15)])
+			[b.x, b.y, b.z, 1, h.random(5, 15), 8])
 		_spawn(b, h, r, CREATE_PLASMA_SPARKS_2, [b.x, b.y, b.z, 20, 30])
 
 
@@ -998,9 +1044,12 @@ static func _kind_77(b: Blob, h: BlobHooks, r: TickResult) -> void:
 	var rz: int = h.random(-20, 40)
 	var ry: int = h.random(-20, 40)
 	var rx: int = h.random(-20, 40)
+	# `push ebp` at `0x0041F776` -- and `ebp` is the sweep's own zero
+	# (`xor ebp, ebp` at `0x0041E50A`), not a literal five. Measured: the
+	# child comes back with `rot_x` 0 and `life` 8.
 	_spawn(b, h, r, CREATE_ZOOM_BOB,
 		[IncInt.i32(b.x + rx), IncInt.i32(b.y + ry), IncInt.i32(b.z + rz),
-		 5, size])
+		 0, size, 8])
 	_move(b)
 	b.rot_x = _add_word(b.rot_x, 0x64)
 	b.rot_y = _add_word(b.rot_y, 0x64)

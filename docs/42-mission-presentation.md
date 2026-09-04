@@ -478,6 +478,21 @@ frames (`cmp ecx, 0x64` at `0x0040D4C1`). Weapons 0x0F, 0x11, 0x14, 0x15,
 the wait flag `[esp+0x10]`, which the routine initialises to 1 at
 `0x0040CC4D`.
 
+**Which creators write the zero is countable** *(added 2026-09-04)*. Exactly
+**six** sites in `.text` store an immediate 0 into `0x004FE63C`, and five of
+them are inside a creator: `aBlob_CreateGrenade` `0x00426070`,
+`aBlob_EnergyCannon` `0x004264A0` and `aBlob_CreateLaser` `0x00428570` — the
+three weapon projectiles — and `aBlob_CreateBomber` `0x0042A8E0` and the para
+bomb `0x0042B070`, which are `ParaBombs`' own and are reached from a set piece
+rather than from a shot. The sixth is `0x0042B490`, the one-line helper a
+sequence calls to acknowledge a landing; its two siblings are `0x0042B480`,
+which reads the flag, and `0x0042B4A0`, which reads the live-record count
+`0x004FE640`. The bomb run `0x004160F0` uses all three: it spins on the flag
+until the first bomb lands, plays `crush.wav` @89, and then plays the next of
+**three** buffers (`0x00416271`, `mov edi, 3`) on every further raise,
+acknowledging each — while its loop ends on the live count and not on the flag.
+`presentation_tables.py`'s `arrived.cleared_by` pins the set of six.
+
 ### 4.7 The impact
 
 The impact switch of `28` §8.1 at the target cell, plus the three arms that

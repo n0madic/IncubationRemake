@@ -468,6 +468,48 @@ func _check_catalogue(h: TestHarness, tables: AudioTables,
 	h.check("aliases_resolve", unresolved.is_empty(),
 		"%d of core's own event names reach a cue: %s"
 			% [AudioEvents.EVENT_ALIASES.size(), ", ".join(unresolved)])
+	# One command, **two routines**: `ParaBombs` `0x00470790` runs the
+	# fly-past and then the bomb run, so an alias could name only the first
+	# and `crush.wav` @89 was never played. Every phase must reach a cue of
+	# its own, or one of the two is silent again and nothing says so.
+	var phase_bad: PackedStringArray = PackedStringArray()
+	for kind: String in AudioEvents.EVENT_PHASES:
+		var names: PackedStringArray = AudioEvents.phases_of(kind)
+		if names.size() < 2:
+			phase_bad.append("%s: %d phase(s)" % [kind, names.size()])
+		for index: int in range(names.size()):
+			if events.for_event_phase(kind, index).is_empty():
+				phase_bad.append("%s[%d] %s" % [kind, index, names[index]])
+	h.check("phases_resolve",
+		phase_bad.is_empty() and not AudioEvents.EVENT_PHASES.is_empty(),
+		"%d commands run two routines each, and both make a sound%s"
+			% [AudioEvents.EVENT_PHASES.size(),
+				"" if phase_bad.is_empty() else "; first: " + phase_bad[0]])
+	# The two waves themselves, in the order `0x00470790` runs them:
+	# `bomber.wav` @87 looping for `0x00415E90`, `crush.wav` @89 for
+	# `0x004160F0` (docs/28 section 2).
+	h.equal("para_bombs_phase_waves",
+		[_waves_of(events.for_event_phase("para_bombs", 0)),
+		_waves_of(events.for_event_phase("para_bombs", 1))],
+		[PackedStringArray(["bomber.wav"]), PackedStringArray(["crush.wav"])],
+		"the fly-past's wave, then the bomb run's")
+	# A caller that cannot stage the phases gets both, in the same order --
+	# which is what the computer's sound-only replay asks for.
+	h.equal("para_bombs_whole_event",
+		_waves_of(events.for_event_kind("para_bombs")),
+		PackedStringArray(["bomber.wav", "crush.wav"]))
+	h.equal("para_bombs_no_third_phase",
+		events.for_event_phase("para_bombs", 2).size(), 0,
+		"a phase the event does not have is empty, not an error")
+
+
+## The waves of a cue list, for a check that is about which sound and not
+## about how loud.
+static func _waves_of(cues: Array[Dictionary]) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for cue: Dictionary in cues:
+		out.append(DictRead.as_string(cue["wave"]))
+	return out
 
 
 func _check_case_map(h: TestHarness, tables: AudioTables,

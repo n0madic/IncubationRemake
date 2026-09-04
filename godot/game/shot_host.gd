@@ -114,6 +114,24 @@ func pool_live() -> int:
 	return 0
 
 
+## `0x0042B490` -- put the *arrived* flag back down.
+##
+## The other half of [method pool_arrived]: a sequence that acts on a landing
+## must acknowledge it, or the next frame sees the same one again. The bomb
+## run `0x004160F0` is the sequence that does, once per crump.
+func clear_arrived() -> void:
+	pass
+
+
+## `aDeleteAllBlobs` `0x0041E370` -- every record dropped at once.
+##
+## One sequence ends with it: the bomber's fly-past `0x00415E90`, whose last
+## act before returning is to empty the pool so the bomb run that follows
+## starts with nothing of its own in it.
+func clear_pool() -> void:
+	pass
+
+
 ## `0x0042B4B0` -- the position of the pool's first live record, which two
 ## sequences point the camera's target at.
 func pool_first() -> Vector3i:

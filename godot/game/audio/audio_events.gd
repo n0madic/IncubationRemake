@@ -41,14 +41,32 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 	# The barrier toggles; both directions run `aPlayLaserBarrier`.
 	"barrier_on": "barrier",
 	"barrier_off": "barrier",
-	# `ParaBombs` runs the bomber fly-past and **then** the bomb, so one event
-	# owns two routines. This alias reaches only the fly-past.
-	# TODO: the set-piece driver must ask for "bomber" and then "para_bomb"
-	# as two phases; until it does, `crush.wav` @89 is not played.
-	"para_bombs": "bomber",
-	# The computer's own names for the same two things.
-	"parabomb": "bomber",
+	# `ParaBombs` and the computer's own `parabomb` are **not** here: one
+	# command owns two routines, which is [constant EVENT_PHASES], not a
+	# rename.
 	"warp": "warp",
+}
+
+## The events whose one command runs **two** routines in order, and those
+## routines' own names.
+##
+## `ParaBombs` `0x00470790` runs the fly-past `0x00415E90` to completion and
+## only then the bomb run `0x004160F0` (docs/20 section 7.4), and each is a
+## blocking routine with a sound of its own -- `bomber.wav` @87 looping for
+## the flight, `crush.wav` @89 for the bombs. An alias can name only one
+## routine, so mapping the event to the fly-past left the second sound
+## unplayed however carefully the driver staged the picture.
+##
+## The table is the **one** place that pairing is written down: the script's
+## set piece stages the phases ([SetpieceCamera]) and the computer's replay
+## plays them together, and both read it from here.
+##
+## The value type is a plain [Array] because a `PackedStringArray` is not a
+## constant expression and the file would not parse; [method phases_of] is
+## what hands out the packed form.
+const EVENT_PHASES: Dictionary[String, Array] = {
+	"para_bombs": ["bomber", "para_bomb"],
+	"parabomb": ["bomber", "para_bomb"],
 }
 
 ## `Combat`'s overheat outcome names against the three
@@ -202,8 +220,42 @@ func for_event(event: Dictionary) -> Array[Dictionary]:
 	return for_event_kind(name_of(event))
 
 
+## Every cue an event starts, in the order its routines run.
+##
+## A phased event answers **all** of its phases, which is the right answer for
+## a caller that cannot stage them -- the computer's replay plays the pair at
+## once -- and the wrong one for a caller that can. [method for_event_phase]
+## is what a driver that stages them asks instead.
 func for_event_kind(kind: String) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for name: String in phases_of(kind):
+		out.append_array(_routine_cues(name))
+	return out
+
+
+## The routines one event's command runs, in order. An event that is not
+## phased answers its own single routine, so a caller can walk the phases of
+## anything without asking whether it has more than one.
+static func phases_of(kind: String) -> PackedStringArray:
+	if EVENT_PHASES.has(kind):
+		return PackedStringArray(EVENT_PHASES[kind])
 	var name: String = EVENT_ALIASES.get(kind, kind)
+	return PackedStringArray([name])
+
+
+## The cues of one phase of an event, counted from zero. A phase this event
+## does not have is **empty**, not an error: a driver that stages two phases
+## of a one-phase event queues the second one silent.
+func for_event_phase(kind: String, phase: int) -> Array[Dictionary]:
+	var names: PackedStringArray = phases_of(kind)
+	if phase < 0 or phase >= names.size():
+		return []
+	return _routine_cues(names[phase])
+
+
+## The cues one docs/28 routine loads, by the name the catalogue files it
+## under.
+func _routine_cues(name: String) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for entry: Variant in _tables.cues(name):
 		out.append(_cue(DictRead.as_dict(entry)))

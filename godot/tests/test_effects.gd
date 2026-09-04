@@ -54,6 +54,86 @@ func run(h: TestHarness) -> void:
 	_check_models(h)
 	_check_unit_animations(h)
 	_check_setpiece_camera(h)
+	_check_arm_spawns(h)
+
+
+## An arm's spawn request, **run** (docs/28 section 7.1, [GameBlobHooks]).
+##
+## The base [BlobHooks] writes the request down and returns success, which is
+## what `tests/test_blob.gd` and `tools/blob_runtime.py` compare and what a
+## mission must not do -- the child effect never reached the pool. Three
+## answers are possible and all three are checked here, because "the pool
+## gained nothing" is the same silence for all of them: the program ran, the
+## address carries no program (twelve of the thirteen an arm can reach), or
+## the request is one value short of the creator's own arity -- none is, since
+## docs/97 section 48 measured the seven `0x00423720` requests in the engine
+## and `blob_tables.py`'s `arm_spawn.arity` now expects none, so that one is
+## driven synthetically here.
+## Every creator address an arm can ask for -- [BlobKinds]' own `CREATE_*`
+## constants, which `blob_tables.py`'s `arm_spawn.arity` reads back out of
+## `Incubation.exe` call site by call site.
+const ARM_CREATORS: Array[int] = [
+	BlobKinds.CREATE_ZOOM_BOB, BlobKinds.CREATE_PARA_BOMB,
+	BlobKinds.CREATE_BARREL_DEBRIS, BlobKinds.CREATE_HITTING_BLOBS,
+	BlobKinds.CREATE_HITTING_BLOBS_2, BlobKinds.CREATE_HITTING_BLOBS_3,
+	BlobKinds.CREATE_SPORE_SPARKS, BlobKinds.CREATE_PLASMA_SPARKS,
+	BlobKinds.CREATE_PLASMA_SPARKS_2, BlobKinds.CREATE_STING_SPARKS,
+	BlobKinds.CREATE_SPORES, BlobKinds.CREATE_LASER_HIT,
+	BlobKinds.CREATE_EMITTER,
+]
+
+
+func _check_arm_spawns(h: TestHarness) -> void:
+	var pool: BlobPool = BlobPool.create(1.0)
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	var hooks: GameBlobHooks = GameBlobHooks.over(pool, inputs)
+	hooks.rng.randomize_seed(1.0)
+	pool.set_hooks(hooks)
+	var source: Blob = Blob.make({"kind": 6, "life": 1, "class_id": 2,
+		"x": 0, "y": 0, "z": 3200})
+	# The zoom bob is the one creator an arm can reach that is transcribed,
+	# and the two requests that carry all six of its values are kinds 6 and
+	# 26. Six values in: a record comes out.
+	var full: bool = hooks.spawn(BlobKinds.CREATE_ZOOM_BOB,
+		[0, 0, 3200, 4, 0x0A, 8], source)
+	h.equal("arm_spawn.runs", [full, hooks.executed, hooks.made, pool.live()],
+		[true, 1, 1, 1], "one `0x00423720` request, one record in the pool")
+	# One value short: refused and counted, not indexed past the end. Since
+	# docs/97 section 48 no request in [BlobKinds] is short, so this is what
+	# one **would** do -- the guard outlived the defect that earned it.
+	var short: bool = hooks.spawn(BlobKinds.CREATE_ZOOM_BOB,
+		[0, 0, 3200, 1, 5], source)
+	h.equal("arm_spawn.short_call_refused",
+		[short, hooks.short_call.get(BlobKinds.CREATE_ZOOM_BOB, 0),
+		hooks.executed, pool.live()], [true, 1, 1, 1],
+		"the creator takes six; the request carried five")
+	# An address with no program: the whole layer's old answer, now counted.
+	# `0x00424250` is a **weapon** creator (docs/97 section 22 transcribes it
+	# in Python, for the oracle), so nothing in [BlobKinds] asks for it and
+	# this is the counter working rather than a case that runs.
+	var none: bool = hooks.spawn(0x00424250, [0, 0, 3200], source)
+	h.equal("arm_spawn.unhandled_counted",
+		[none, hooks.unhandled.get(0x00424250, 0), pool.live()], [true, 1, 1],
+		"an address [BlobPrograms] does not carry makes nothing, and says so")
+	# And every address an arm **does** ask for has one, which is the half
+	# that had been missing: twelve of the thirteen were reached from nowhere
+	# else in the game and so had never been written (docs/97 section 49).
+	var missing: Array[String] = []
+	for creator: int in ARM_CREATORS:
+		if BlobPrograms.args_needed(GameBlobHooks.program_of(creator)) < 0:
+			missing.append(GameBlobHooks.program_of(creator))
+	h.equal("arm_spawn.every_creator_has_a_program", missing, [] as Array[String],
+		"all %d creator addresses [BlobKinds] can ask for" % ARM_CREATORS.size())
+	# And a creator that draws leaves the pool's own stream where it stopped:
+	# one `aRandom2`, as the engine keeps one, so the arms after it in the
+	# sweep continue from there. The zoom bob makes no draw of its own, so
+	# the creator asked here is the jump's trail -- the check is about the
+	# hook's stream and not about which creator an arm can reach.
+	var before: float = pool.hooks().rng.seed
+	var _trail: bool = hooks.spawn(0x00423670, [0, 0, 3200], source)
+	h.check("arm_spawn.one_stream",
+		pool.hooks().rng.seed != before and hooks.executed == 2,
+		"the creator drew from `aRandom2` where the arm called it")
 
 
 ## The diff itself, on synthetic snapshots -- no cache needed, and every branch
@@ -512,6 +592,80 @@ func _check_arrived_flag(h: TestHarness) -> void:
 
 
 ## A recording [ShotHost]: every call the stages make, in order.
+## An [AudioSystem] that opens no stream: what a sequence played, and how many
+## sequence-ends had gone by when it did. `SequenceQueue.create(null)` is
+## enough for a check about the picture, and nothing at all for one about which
+## stage a sound belongs to.
+class RecordingAudio extends AudioSystem:
+	var plays: PackedStringArray = PackedStringArray()
+	## The number of [method stop_tag] calls that had happened before each
+	## play, so "the first sound was killed before the second started" is a
+	## number rather than an impression.
+	var stops_before_play: PackedInt32Array = PackedInt32Array()
+	var stops: int = 0
+
+	func play_cues(cues: Array[Dictionary], _tag: String = "") -> PackedInt32Array:
+		var out: PackedInt32Array = PackedInt32Array()
+		for cue: Dictionary in cues:
+			plays.append(DictRead.as_string(cue["wave"]))
+			stops_before_play.append(stops)
+			out.append(plays.size() - 1)
+		return out
+
+	func stop_tag(_tag: String) -> int:
+		stops += 1
+		return 0
+
+
+## The pool as the bomb run sees it: a spawned creator puts a record in it,
+## [method land] takes one out and raises the *arrived* flag the way
+## [method BlobKinds._kind_25] does, and the two acknowledgements the run owes
+## -- `0x0042B490` per crump and `0x0041E370` once -- are counted.
+##
+## Its own class rather than fields on [RecordingHost]: the shot suites drive
+## `pool_arrived` as a countdown and would answer a raised flag on every frame
+## of the bomb run, which is one crump a frame.
+class BombRunHost extends RecordingHost:
+	var flag: bool = false
+	var records: int = 0
+	var cleared_pool: int = 0
+	var cleared_arrived: int = 0
+	var played: Array[String] = []
+
+	func pool_arrived() -> bool:
+		return flag
+
+	func pool_live() -> int:
+		return records
+
+	func clear_arrived() -> void:
+		cleared_arrived += 1
+		flag = false
+
+	func clear_pool() -> void:
+		cleared_pool += 1
+		records = 0
+
+	func play_cues(cues: Array[Dictionary]) -> void:
+		for cue: Dictionary in cues:
+			played.append(DictRead.as_string(cue["wave"]))
+
+	func spawn_program(creator: String, args: PackedInt32Array) -> void:
+		super(creator, args)
+		records += 1
+
+	func spawn_at(creator: String, at: Vector3i,
+			extra: PackedInt32Array = PackedInt32Array()) -> void:
+		super(creator, at, extra)
+		records += 1
+
+	## One bomb reaching the ground.
+	func land() -> void:
+		if records > 0:
+			records -= 1
+		flag = true
+
+
 class RecordingHost extends ShotHost:
 	var calls: Array[String] = []
 	var arrived: bool = false
@@ -1669,17 +1823,65 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		["%s:7,2" % BlobPrograms.WALL_DEBRIS,
 		"%s:8,2" % BlobPrograms.WALL_DEBRIS])
 
-	# The para bombs: the bomber in from -16000, one bomb a tile.
-	var bombs: RecordingHost = RecordingHost.new()
-	bombs.live = 1
-	var bombs_queue: SequenceQueue = SequenceQueue.create(null)
+	# The para bombs: the bomber in from -16000, one bomb a tile -- and the
+	# two are **two stages**, because `0x00470790` runs the fly-past
+	# `0x00415E90` to completion and only then the bomb run `0x004160F0`
+	# (docs/20 section 7.4). Each carries its own routine's sound, which is
+	# what a single stage could not do: `crush.wav` @89 went unplayed while
+	# the event resolved to the fly-past alone.
+	var bombs: BombRunHost = BombRunHost.new()
+	var audio: RecordingAudio = RecordingAudio.new()
+	var bombs_queue: SequenceQueue = SequenceQueue.create(audio)
+	var bomber_cue: Array[Dictionary] = [{"wave": "bomber.wav",
+		"volume_id": 87, "loop": true}]
+	var bomb_cue: Array[Dictionary] = [{"wave": "crush.wav",
+		"volume_id": 89, "loop": false}]
+	# The length is the strike's own, not a flat bound: two tiles three ticks
+	# apart, and the last of them falling `BOMB_FALL_FRAMES`.
+	var bomb_event: Dictionary = {"name": "para_bombs",
+		"values": [5, 5, 3, 3, 20, 5, 5, 6, 7]}
+	var bomb_frames: int = SetpieceDriver.frames_for(bomb_event)
+	h.equal("setpiece.para_bombs.frames", bomb_frames,
+		SetpieceDriver.BOMB_SPACING + SetpieceDriver.BOMB_FALL_FRAMES + 1,
+		"two tiles: the second starts one spacing in and then falls")
 	var _bombs: int = SetpieceCamera.enqueue(bombs_queue, bombs, "para_bombs",
-		SetpieceDriver.POOL_ONLY_FRAMES, Vector2i(5, 5), 0, 0, -1,
-		{"tiles": [[5, 5], [6, 7]]}, paint, no_cues)
-	var _bombs_ran: Dictionary = _run_queue(bombs_queue)
+		bomb_frames, Vector2i(5, 5), 0, 0, -1,
+		{"tiles": [[5, 5], [6, 7]]}, paint, bomber_cue, bomb_cue)
+	# The bombs must not exist while the bomber flies: `0x004160F0` lays them
+	# after the fly-past has returned, and a stage that spawned them with the
+	# bomber would be one phase wearing two names. The run is driven a frame
+	# at a time so a bomb can be landed on a frame of the test's choosing --
+	# which is the only way to see one crump per landing rather than one per
+	# stage.
+	var during_lead: int = -1
+	var lead_frames: int = 0
+	var run_frames: int = 0
+	var spun: int = 0
+	while bombs_queue.is_running() and spun < 2000:
+		var stage: String = bombs_queue.current()
+		if stage == SetpieceCamera.STAGE_LEAD:
+			during_lead = bombs.programs.size()
+			lead_frames += 1
+		elif stage == "para_bombs":
+			run_frames += 1
+			# Two landings, five frames apart, once both bombs are in the
+			# pool: `_kind_25` deletes the record and raises the flag.
+			if run_frames == 3 or run_frames == 8:
+				bombs.land()
+		var _still: bool = bombs_queue.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		spun += 1
+	h.equal("camera.para_bombs.two_stages",
+		[during_lead, lead_frames],
+		[0, SetpieceCamera.BOMBER_FRAMES],
+		"the fly-past holds its own stage, lays no bomb, and lasts the life "
+			+ "`0x0042A8E0` gives the plane")
+	h.equal("camera.para_bombs.the_fly_past_empties_the_pool",
+		bombs.cleared_pool, 1,
+		"`aDeleteAllBlobs` `0x0041E370` at `0x004160B4`")
 	h.equal("camera.para_bombs.one_per_tile", bombs.programs,
 		["%s:5,5,0" % BlobPrograms.PARA_BOMB,
-		"%s:6,7,%d" % [BlobPrograms.PARA_BOMB, SetpieceCamera.BOMB_SPACING]])
+		"%s:6,7,%d" % [BlobPrograms.PARA_BOMB, SetpieceDriver.BOMB_SPACING]])
 	# `0x00415EE1` pushes six literals: the fly-past reads no tile at all.
 	h.equal("camera.para_bombs.bomber_flies_in", bombs.spawned_at,
 		["%s@(%d, %d, %d)" % [BlobPrograms.BOMBER,
@@ -1692,6 +1894,57 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		[Vector3i(SetpieceCamera.BOMBER_START_X, 0,
 			SetpieceCamera.BOMBER_START_Z), Vector3i(10, 20, 30)],
 		"`0x00415F2C` reads the target back and hands it straight on")
+	# The whole point of the two stages: each starts the sound of the routine
+	# it stands for. `crush.wav` @89 is `0x004160F0`'s and nothing else's, and
+	# it was never played while the event resolved to `0x00415E90` alone.
+	h.equal("camera.para_bombs.each_phase_its_own_wave",
+		[audio.plays, bombs.played],
+		[PackedStringArray(["bomber.wav"]), ["crush.wav", "crush.wav"]],
+		"`bomber.wav` @87 opens the fly-past; `crush.wav` @89 waits for a bomb")
+	# And the fly-past's loop dies with its own stage rather than running over
+	# the bombs -- docs/28 section 1.4's rule, applied per phase.
+	h.equal("camera.para_bombs.the_loop_dies_with_its_stage",
+		audio.stops_before_play, PackedInt32Array([0]))
+	# `0x004162D6` spins until a bomb lands, so the run opens **silent**; then
+	# `0x00416364`..`0x004163A9` plays one crump per raised *arrived*, each
+	# acknowledged with `0x0042B490`. Two bombs landed, so two crumps.
+	h.equal("camera.para_bombs.one_crump_per_landing",
+		[bombs.played.size(), bombs.cleared_arrived], [2, 2],
+		"the engine's three buffers are its cap on overlap, not its count")
+	# And the run ends the way `0x004163A9` does -- when the pool is empty,
+	# not when the picture's bound runs out.
+	h.check("camera.para_bombs.the_run_ends_with_the_pool",
+		run_frames < bomb_frames and bombs.pool_live() == 0,
+		"%d of %d frames; `while (live)`" % [run_frames, bomb_frames])
+	audio.free()
+
+	# `0x004160B4` is the fly-past **routine's** last act and not its last
+	# frame. `0x00415E90`'s loop leaves on the *arrived* flag as readily as on
+	# its bound -- a record the pool was already holding is enough -- and the
+	# pool is emptied either way. A bomb run that started on those leftovers
+	# would wait on them for its own end and crump once for each of them.
+	var early: BombRunHost = BombRunHost.new()
+	early.records = 1
+	var early_queue: SequenceQueue = SequenceQueue.create(null)
+	var _early: int = SetpieceCamera.enqueue(early_queue, early, "para_bombs",
+		bomb_frames, Vector2i(5, 5), 0, 0, -1,
+		{"tiles": [[5, 5], [6, 7]]}, paint, no_cues)
+	var early_lead: int = 0
+	var early_spun: int = 0
+	while early_queue.is_running() and early_spun < 2000:
+		if early_queue.current() != SetpieceCamera.STAGE_LEAD:
+			break
+		early_lead += 1
+		# The leftover reaches the end of its life on the third frame.
+		if early_lead == 3:
+			early.flag = true
+		var _spinning: bool = early_queue.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		early_spun += 1
+	h.equal("camera.para_bombs.an_early_fly_past_still_empties_the_pool",
+		[early_lead, early.cleared_pool, early.pool_live()], [3, 1, 0],
+		"the fly-past left on the flag after 3 of %d frames and still ran "
+			% SetpieceCamera.BOMBER_FRAMES + "`aDeleteAllBlobs`")
 
 	# The teleporter: the stream, the traveller hidden at 40 and back at 10.
 	var port: RecordingHost = RecordingHost.new()
@@ -1740,6 +1993,7 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		[BlobPrograms.BOMBER, PackedInt32Array([0, 0, 0, 3200, 0, 0]), 1, 0],
 		[BlobPrograms.PARA_BOMB, PackedInt32Array([2, 2, 3]), 1, 1],
 	]
+	var clearing: Array[String] = []
 	for shape: Array in shapes:
 		var creator: String = shape[0]
 		var pool: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
@@ -1751,4 +2005,14 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 			DictRead.as_int(shape[2]))
 		h.equal("setpiece_creator.%s.draws" % creator, draws.count,
 			DictRead.as_int(shape[3]))
+		if pool.clears_arrived:
+			clearing.append(creator)
+	# Which of them write **0** over the *arrived* flag -- "there is something
+	# in flight to wait for" (docs/42 section 4.6). Five creators in the whole
+	# image do; three are the weapon projectiles the shot path models at the
+	# muzzle, and these two are the pair a set piece runs.
+	# `presentation_tables.py`'s `arrived.cleared_by` pins the five.
+	h.equal("setpiece_creator.clears_arrived", clearing,
+		[BlobPrograms.BOMBER, BlobPrograms.PARA_BOMB],
+		"and nothing else in the set-piece family touches the flag")
 

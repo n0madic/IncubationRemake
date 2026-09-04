@@ -40,6 +40,9 @@ MODELLESS = (2, 3)
 #: `0x004FA524` -- the name buffer classes 2 and 3 pass and the constructor
 #: ignores, `blob_tables.BLOB_NAME_SCRATCH`.
 SCRATCH = "<scratch>"
+#: The same address as a **number**, which is what an arm that calls the
+#: constructor itself passes for the model name (`docs/97` §49).
+NAME_SCRATCH = 0x004FA524
 # Every number below is at a named address in `Incubation.exe`, and
 # `blob_tables.CREATOR_CONSTANT_SITES` reads each one back out of the shipped
 # executable -- the doubles from the constant block, the subtracted
@@ -190,6 +193,16 @@ class Draws:
         self.count += 1
         return self._rng.raw(0, 1)
 
+    @property
+    def seed(self) -> float:
+        """Where the generator stands.
+
+        A creator an update **arm** calls draws from the same stream the arm
+        did and leaves it where the arms after it in the sweep continue from
+        (`docs/97` §49), so a caller has to be able to read it back.
+        """
+        return self._rng.seed
+
 
 class Pool:
     """The records a creator leaves, in the order `0x00420950` fills them."""
@@ -199,6 +212,19 @@ class Pool:
         self.records: List[Dict[str, int]] = []
         #: How many records the constructor refused for a zero `life`.
         self.refused = 0
+        #: Whether the creator wrote **0** over the *arrived* flag of
+        #: `docs/42` §4.6 -- "there is something in flight to wait for".
+        #:
+        #: Exactly six sites in `.text` write a zero to ``0x004FE63C``, and
+        #: five are inside a creator: ``aBlob_CreateGrenade`` ``0x00426070``,
+        #: ``aBlob_EnergyCannon`` ``0x004264A0`` and ``aBlob_CreateLaser``
+        #: ``0x00428570`` -- the three weapon projectiles -- and the bomber
+        #: ``0x0042A8E0`` and the para bomb ``0x0042B070``, the two a set
+        #: piece runs.  The sixth is ``0x0042B490``, the helper a sequence
+        #: calls to acknowledge a landing.  ``presentation_tables.py`` pins
+        #: all six; the two set-piece ones are modelled here, because they
+        #: are the two the remake's own driver waits on.
+        self.clears_arrived = False
 
     def spawn(self, name: str, class_id: int, x: int, y: int, z: int,
               rot_x: int, rot_y: int, rot_z: int, kind: int, life: int,
@@ -1406,6 +1432,8 @@ def _c0042A8E0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs
     tick along `0x0046D400`'s direction, aimed by `0x00403AA0`.  It clears
     the *arrived* flag and writes its start into `0x004FE3F8..`; no draw."""
     x, y, z, tx, ty, tz = args
+    # `0x0042A938` -- the fly-past is something to wait for.
+    pool.clears_arrived = True
     d = inputs.tables.direction((x, y, z), (tx, ty, tz), 1)
     pitch, yaw = inputs.tables.orient((x, y, z), (tx, ty, tz))
     pool.spawn("L069EE00.3DI", 0, x, y, z, pitch, 0, yaw, 0x34, 0x96,
@@ -1421,9 +1449,272 @@ def _c0042B070(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs
     (a reciprocal multiply, then `abs`), rot_y 64 and rot_z drawn 0..4095;
     it clears the *arrived* flag.  One draw."""
     x, y, delay = args
+    # `0x0042B0E3` -- and so is each bomb, until it lands.
+    pool.clears_arrived = True
     ox, oy, oz = inputs.object(x, y)
     life = abs(trunc_div(BOMB_CEILING - oz, BOMB_FALL))
     rz = draw(0, 0x1000)
     pool.spawn("A_PARAB1.3DI", 0, ox, oy, BOMB_DROP, 0, 0x40, rz, 0x19, life, 0, 0,
                -BOMB_FALL, 0, delay)
 
+
+# --------------------------------------------------------------------------
+# The twelve an update **arm** calls -- `docs/97` §49
+# --------------------------------------------------------------------------
+#
+# `docs/28` §8.1's weapon switches name thirty creators and `docs/42` §§7-9
+# another twenty-nine; these are the rest, and they are reached from a third
+# place entirely -- an update arm's own `aBlob_Create*` call, `docs/28` §7.1.
+# The remake recorded such a request and never ran it until `game_blob_hooks`
+# did, which is why nothing here needed a program before and why every one of
+# them needed one at once.
+#
+# All twelve are stepped in a live `Incubation.exe`: `blob_gold.py`'s
+# `zoom_bob_*` and `spawn_*` families poke a donor record to the kind whose
+# arm calls each, write the second generator's seed, step one `aBlob_Update`
+# and read the pool **wide enough to hold the child** -- which the poked
+# family's twelve-record window never did.
+
+
+def _sparking_rain(pool: Pool, draw: Draws, x: int, y: int, z: int,
+                   count: int, speed: int) -> None:
+    """`aBlob_SparkingRain` `0x0042ADD0(x, y, z, count, speed)`.
+
+    Not a program of its own: nothing but `0x0042A410` calls it.  ``speed``
+    is a **two-value enumeration** and the third value is a `CHECK` --
+    `0x0042ADF2` pushes `"unknown speed"` and the routine returns without
+    making anything, which is the one arm of it a capture cannot reach
+    because no caller passes a third value.  0 is the slow rain (a life of
+    30 and the sideways draws as they come), 1 the fast one (a life of 5 and
+    both doubled).
+    """
+    if speed == 0:
+        multiplier, life = 1, 30
+    elif speed == 1:
+        multiplier, life = 2, 5
+    else:
+        return
+    for _ in range(count & 0xFF):
+        vz = draw(5, 10) << 5
+        vy = (draw(-10, 20) * multiplier) << 4
+        vx = (draw(-10, 20) * multiplier) << 4
+        pool.spawn("A_FUNKE.3DI", 0, x, y, z, 0, 0, 0, 0x14, life,
+                   vx, vy, vz, 0, 0)
+
+
+@death_program(0x00420950, 15)
+def _c00420950(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """The **constructor itself**, which two arms call directly.
+
+    `0x00420950` is not a creator and has no arithmetic of its own -- it is
+    the record writer every creator here ends in -- so the program is
+    :meth:`Pool.spawn` and nothing else.  The name argument is a pointer, and
+    the only one an arm passes is `0x004FA524`, the scratch buffer
+    `blob_tables.BLOB_NAME_SCRATCH` pins: a class-2 record ignores it.
+    """
+    (name, class_id, x, y, z, rot_x, rot_y, rot_z, kind, life,
+     vx, vy, vz, aux, delay) = args
+    pool.spawn(SCRATCH if name == NAME_SCRATCH else str(name), class_id,
+               x, y, z, rot_x, rot_y, rot_z, kind, life, vx, vy, vz,
+               aux, delay)
+
+
+@death_program(0x00428E30, 5)
+def _c00428E30(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x00428E30(x, y, z, count, life)` -- the spore sparks: ``count``
+    class-2 records of kind 23 at one point, row 6, aux 3, delayed one frame
+    past the next, rising 100..400 and drifting +-100.  Three draws each, and
+    the **middle one is the sideways x** rather than the y: the compiler
+    evaluated the two `aRandom2(-100, 200)` calls in source order and pushed
+    them in reverse, so the second draw is the tenth argument."""
+    x, y, z, count, life = args
+    for _ in range(count & 0xFF):
+        vz = draw(100, 300)
+        vx = draw(-100, 200)
+        vy = draw(-100, 200)
+        pool.spawn(SCRATCH, 2, x, y, z, 6, 0, 0, 0x17, life,
+                   vx, vy, vz, 3, 2)
+
+
+@death_program(0x00428ED0, 5)
+def _c00428ED0(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x00428ED0(x, y, z, count, life)` -- the plasma sparks: the spore
+    sparks' body with a **model** rather than a sprite (`A_FUNKE.3DI`, class
+    0), no row and no aux."""
+    x, y, z, count, life = args
+    for _ in range(count & 0xFF):
+        vz = draw(100, 300)
+        vx = draw(-100, 200)
+        vy = draw(-100, 200)
+        pool.spawn("A_FUNKE.3DI", 0, x, y, z, 0, 0, 0, 0x17, life,
+                   vx, vy, vz, 0, 2)
+
+
+@death_program(0x00428F70, 5)
+def _c00428F70(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x00428F70(x, y, z, count, _)` -- the big plasma burst, and the one
+    creator here whose **speed is drawn per component**.
+
+    It is called with **five** dwords and reads four.  The fifth is the
+    sibling sparks' `life` and this one draws its own instead; the slot is
+    never read, and the compiler uses the *fourth* argument's slot as the
+    scratch its three `fild`s load from, which is what makes the omission
+    easy to misread as a use.
+
+    Three draws before the loop pick one scattered point (+-12800 sideways,
+    12800..25600 up) and every spark then aims within +-160 of *that*, so the
+    burst is a cone rather than a sphere.  Each spark's velocity is
+    `0x0046D400`'s direction times a speed of its own -- `aRandom2(160, 160)`
+    upward and `aRandom2(480, 320)` sideways, each truncated **before** the
+    multiply (`fild` of the stored integer) and again after it.  Eight draws
+    a spark, in the order x, y, z, delay, then the three speeds z, y, x, then
+    the life.
+    """
+    x, y, z, count = args[:4]
+    ax = x + draw(-0x3200, 0x6400)
+    ay = y + draw(-0x3200, 0x6400)
+    az = z + draw(0x3200, 0x3200)
+    for _ in range(count & 0xFF):
+        aim = (ax + draw(-0xA0, 0x140), ay + draw(-0xA0, 0x140),
+               az + draw(-0xA0, 0x1E0))
+        d = inputs.tables.direction((x, y, z), aim, 1)
+        pitch, yaw = inputs.tables.orient((x, y, z), aim)
+        delay = draw(0, 4)
+        vz = ftol(draw(0xA0, 0xA0) * d[2])
+        vy = ftol(draw(0x1E0, 0x140) * d[1])
+        vx = ftol(draw(0x1E0, 0x140) * d[0])
+        life = draw(0xA, 0xF)
+        pool.spawn("A_SPARK.3DI", 0, x, y, z, pitch, 0, yaw, 0x48, life,
+                   vx, vy, vz, 0, delay)
+
+
+@death_program(0x00429390, 4)
+def _c00429390(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x00429390(x, y, z, count)` -- the spores: the same three draws
+    again, into kind 40 at row 3 with a fixed life of 8."""
+    x, y, z, count = args
+    for _ in range(count & 0xFF):
+        vz = draw(100, 300)
+        vx = draw(-100, 200)
+        vy = draw(-100, 200)
+        pool.spawn(SCRATCH, 2, x, y, z, 3, 0, 0, 0x28, 8, vx, vy, vz, 3, 2)
+
+
+@death_program(0x00429430, 5)
+def _c00429430(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x00429430(x, y, z, vx, vy)` -- the sting sparks, and the one creator
+    here that **draws nothing**.
+
+    Two class-2 records of kind 33, row 3, life 8, whose velocities are the
+    caller's own turned a quarter turn either way and cut to a fifth:
+    `(-vy/5, vx/5)` and `(vy/5, -vx/5)`.  The divide is the compiler's
+    reciprocal multiply (`0x66666667` and `0x99999999` with `sar edx, 1`),
+    which is a C divide and truncates toward zero -- Python's `//` does not.
+    """
+    x, y, z, vx, vy = args
+    fifth_x = trunc_div(vx, 5)
+    fifth_y = trunc_div(vy, 5)
+    pool.spawn(SCRATCH, 2, x, y, z, 3, 0, 0, 0x21, 8,
+               -fifth_y, fifth_x, 0, 5, 1)
+    pool.spawn(SCRATCH, 2, x, y, z, 3, 0, 0, 0x21, 8,
+               fifth_y, -fifth_x, 0, 5, 1)
+
+
+@death_program(0x0042A410, 4)
+def _c0042A410(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x0042A410(x, y, z, delay)` -- one hit flash over a fast sparking
+    rain.  The rain is `0x0042ADD0` with a count of 1 and a speed of 1, both
+    literals, and the flash is an `A_HIT1.3DI` of kind 16 and life 4 that
+    carries the caller's delay."""
+    x, y, z, delay = args
+    _sparking_rain(pool, draw, x, y, z, 1, 1)
+    pool.spawn("A_HIT1.3DI", 0, x, y, z, 0, 0, 0, 0x10, 4, 0, 0, 0, 0, delay)
+
+
+@death_program(0x0042A480, 4)
+def _c0042A480(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x0042A480(x, y, z, delay)` -- the same flash with `A_EXPL04.3DI` and
+    without the rain.  No draw."""
+    x, y, z, delay = args
+    pool.spawn("A_EXPL04.3DI", 0, x, y, z, 0, 0, 0, 0x10, 4, 0, 0, 0, 0, delay)
+
+
+@death_program(0x0042A7A0, 4)
+def _c0042A7A0(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x0042A7A0(x, y, z, delay)` -- **a hundred** `A_LINE2.3DI` streaks.
+
+    The body is `0x00429180`'s (`docs/97` §22) at a different scale: each
+    streak aims at a point scattered around the origin, takes its rotation
+    from `0x00403AA0` and its velocity from `0x0046D400` scaled by the same
+    flat 1600, and lives `aRandom2(4, 15)` ticks.  The scatter is the wide
+    one -- +-12800 sideways and -3200..22400 up -- and the aim is built by
+    truncating each draw and **then** adding the coordinate, which is the
+    plain `add` at `0x0042A7DA` and not kind 56's `fiadd`.
+    """
+    x, y, z, delay = args
+    for _ in range(0x64):
+        sx = x + draw(-0x3200, 0x6400)
+        sy = y + draw(-0x3200, 0x6400)
+        sz = z + draw(-0xC80, 0x6400)
+        aim = (sx, sy, sz)
+        d = inputs.tables.direction((x, y, z), aim, 1)
+        pitch, yaw = inputs.tables.orient((x, y, z), aim)
+        life = draw(4, 0xF)
+        pool.spawn("A_LINE2.3DI", 0, x, y, z, pitch, 0, yaw, 0x13, life,
+                   ftol(d[0] * SPARK_SPEED), ftol(d[1] * SPARK_SPEED),
+                   ftol(d[2] * SPARK_SPEED), 0, delay)
+
+
+@death_program(0x0042A9D0, 4)
+def _c0042A9D0_arm(pool: Pool, draw: Draws, args: Sequence[int],
+                   inputs: DeathInputs) -> None:
+    """`0x0042A9D0` again -- the laser hit, which is both a weapon creator
+    and an arm's.
+
+    The program is `PROGRAMS`' (`docs/97` §22, measured against the engine's
+    own pool through a weapon switch); this entry only makes it reachable
+    from the registry the arms go through, so the two cannot drift apart.
+    """
+    PROGRAMS[0x0042A9D0][1](pool, draw, args)
+
+
+@death_program(0x0042B150, 3)
+def _c0042B150(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x0042B150(x, y, z)` -- **the arm's** para bomb, and not
+    `0x0042B070`'s: no object lookup, no ceiling, no *arrived* flag.  One
+    `A_PARAB1.3DI` of kind 25 and life 200 at the point given, falling 800 a
+    tick with +-500 of sideways drift and a rotation drawn 0..4095.  Three
+    draws, in the order y, x, spin."""
+    x, y, z = args
+    vy = draw(-500, 1000)
+    vx = draw(-500, 1000)
+    spin = draw(0, 0x1000)
+    pool.spawn("A_PARAB1.3DI", 0, x, y, z, 0x100, 0, spin, 0x19, 0xC8,
+               vx, vy, -800, 0, 0)
+
+
+@death_program(0x0042B300, 3)
+def _c0042B300(pool: Pool, draw: Draws, args: Sequence[int],
+               inputs: DeathInputs) -> None:
+    """`0x0042B300(x, y, z)` -- twenty tumbling `A_DEBRIS.3DI` of kind 39 and
+    life 50.  Each takes four draws: two sideways at +-600, one upward
+    40..1440 and one delay 0..5 -- and its **rotation is its velocity**, the
+    same three registers pushed twice."""
+    x, y, z = args
+    for _ in range(0x14):
+        vx = draw(-600, 1200)
+        vy = draw(-600, 1200)
+        vz = draw(40, 1400)
+        delay = draw(0, 6)
+        pool.spawn("A_DEBRIS.3DI", 0, x, y, z, vx, vy, vz, 0x27, 0x32,
+                   vx, vy, vz, 0, delay)

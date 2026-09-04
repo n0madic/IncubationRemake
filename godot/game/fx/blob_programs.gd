@@ -102,6 +102,25 @@ const STATUE_BEAM: String = "0x00428BF0"
 const TELEPORT_STREAM: String = "0x0042A120"
 const BOMBER: String = "0x0042A8E0"
 const PARA_BOMB: String = "0x0042B070"
+## The twelve an update **arm** calls (docs/97 section 49). They reach this
+## file from a third place: not a weapon switch (docs/28 section 8.1) and not
+## a set piece (docs/42), but [method BlobKinds._spawn], which [GameBlobHooks]
+## runs. All twelve are stepped in a live `Incubation.exe`.
+const EMITTER: String = "0x00420950"
+const SPORE_SPARKS: String = "0x00428E30"
+const PLASMA_SPARKS: String = "0x00428ED0"
+const PLASMA_SPARKS_BURST: String = "0x00428F70"
+const SPORES: String = "0x00429390"
+const STING_SPARKS: String = "0x00429430"
+const HITTING_BLOBS: String = "0x0042A410"
+const HITTING_BLOBS_2: String = "0x0042A480"
+const HITTING_BLOBS_3: String = "0x0042A7A0"
+const SPARKS: String = "0x0042A9D0"
+const ARM_PARA_BOMB: String = "0x0042B150"
+const BARREL_DEBRIS: String = "0x0042B300"
+## `0x004FA524` -- the name buffer classes 2 and 3 pass and the constructor
+## ignores. An arm that calls the constructor itself passes it as a number.
+const NAME_SCRATCH: int = 0x004FA524
 ## `0x004B1270` / `0x004B12E0` / `0x004B1300` -- the laser's offset and
 ## step, and the bomber's speed, as doubles the creators multiply the
 ## direction by. `0x004B12B8` is the statue beam's 1600 (`SPARK_SPEED`).
@@ -200,6 +219,18 @@ class Pool extends RefCounted:
 	## How many the constructor refused -- a zero `life`, or a class-0/1
 	## model the set does not carry (docs/28 section 7.5).
 	var refused: int = 0
+	## Whether the creator wrote **0** over the *arrived* flag of docs/42
+	## section 4.6 -- "there is something in flight to wait for".
+	##
+	## Exactly six sites in `.text` write a zero to `0x004FE63C`, and five of
+	## them are inside a creator: `aBlob_CreateGrenade` `0x00426070`,
+	## `aBlob_EnergyCannon` `0x004264A0` and `aBlob_CreateLaser` `0x00428570`
+	## -- the three weapon projectiles, which the shot path models at the
+	## muzzle instead ([method ShotSequence.waits_for_projectile]) -- and the
+	## bomber `0x0042A8E0` and the para bomb `0x0042B070`, the two a set piece
+	## runs. The sixth is `0x0042B490`, the helper a sequence calls to
+	## acknowledge a landing. `presentation_tables.py` pins all six.
+	var clears_arrived: bool = false
 
 	static func create(with: Inputs) -> Pool:
 		var pool: Pool = Pool.new()
@@ -227,10 +258,56 @@ class Pool extends RefCounted:
 		})
 
 
+## The **arity of the creator** each program transcribes -- which is what a
+## caller has to supply, and not always what the program reads: `0x00428F70`
+## below is handed five values and uses four.
+##
+## The engine's creators are `__cdecl`, so the count lives at the **call
+## site**, in its own `add esp, K`; `blob_tables.py`'s `arm_spawn.args_needed`
+## reads it there for every site of every creator an arm can call and compares
+## it with this table, so a program written against a signature the binary
+## does not have is a failing check rather than a wrong effect. An entry
+## raised above the real arity would be worse than a wrong effect and quieter:
+## every request for that creator would come back as one of
+## [member GameBlobHooks.short_call] and nothing would be made at all.
+##
+## It is also a guard. A caller with fewer values than the program reads would
+## index past the end of its array -- a runtime error and a lost effect -- and
+## for one day five of the seven `0x00423720` requests in [BlobKinds] did
+## exactly that. They are fixed and measured now (`blob_kinds.gd`'s own note),
+## so nothing trips this today; it stays because refusing is what the original
+## does for an effect it cannot make (docs/28 section 7.1) and indexing past
+## the end is not.
+const ARGS_NEEDED: Dictionary[String, int] = {
+	BLOOD_BURST: 2, BLOOD_FLOOD: 5, BLOOD_SPRAY_LARGE: 5, FLYING_DEBRIS: 2,
+	SPECIES_BURST: 2, ROOF_DEBRIS: 3, GROUND_DEBRIS: 3, LANDING_DUST: 2,
+	ARROWS: 2, FIRE_CIRCLE: 2, HEAL_FLASH: 2, POISON_FLASH: 2,
+	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, WALL_DEBRIS: 2,
+	KILL_FIRE: 3, LASER_BARRIER: 4, STATUE_BEAM: 5, FLYING_UNIT: 3, PUFF: 2,
+	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
+	BOMBER: 6, PARA_BOMB: 3, FIRE_DEATH: 2,
+	EMITTER: 15, SPORE_SPARKS: 5, PLASMA_SPARKS: 5,
+	# `0x00428F70` is called with five dwords and reads four: the fifth is
+	# the sibling sparks' `life` and this one draws its own.
+	PLASMA_SPARKS_BURST: 5,
+	SPORES: 4, STING_SPARKS: 5, HITTING_BLOBS: 4, HITTING_BLOBS_2: 4,
+	HITTING_BLOBS_3: 4, SPARKS: 4, ARM_PARA_BOMB: 3, BARREL_DEBRIS: 3,
+}
+
+
+## How many values a creator needs, or -1 for an address this file does not
+## carry. The two answers are different and a caller that wants to say why it
+## made nothing needs both.
+static func args_needed(creator: String) -> int:
+	return ARGS_NEEDED.get(creator, -1)
+
+
 ## Run the creator at `creator` with `args`. Answers false for an address
-## this file does not carry.
+## this file does not carry, and for a call with too few values to run.
 static func run(creator: String, pool: Pool, draws: Draws,
 		args: PackedInt32Array, inputs: Inputs) -> bool:
+	if args.size() < args_needed(creator):
+		return false
 	match creator:
 		PUFF:
 			puff(pool, draws, inputs.object(args[0], args[1]))
@@ -295,6 +372,37 @@ static func run(creator: String, pool: Pool, draws: Draws,
 				Vector3i(args[3], args[4], args[5]), inputs)
 		PARA_BOMB:
 			para_bomb(pool, draws, args[0], args[1], args[2], inputs)
+		EMITTER:
+			emitter(pool, args)
+		SPORE_SPARKS:
+			spore_sparks(pool, draws, Vector3i(args[0], args[1], args[2]),
+				args[3], args[4])
+		PLASMA_SPARKS:
+			plasma_sparks(pool, draws, Vector3i(args[0], args[1], args[2]),
+				args[3], args[4])
+		PLASMA_SPARKS_BURST:
+			plasma_sparks_burst(pool, draws,
+				Vector3i(args[0], args[1], args[2]), args[3], inputs)
+		SPORES:
+			spores(pool, draws, Vector3i(args[0], args[1], args[2]), args[3])
+		STING_SPARKS:
+			sting_sparks(pool, Vector3i(args[0], args[1], args[2]), args[3],
+				args[4])
+		HITTING_BLOBS:
+			hitting_blobs(pool, draws, Vector3i(args[0], args[1], args[2]),
+				args[3])
+		HITTING_BLOBS_2:
+			hitting_blobs_2(pool, Vector3i(args[0], args[1], args[2]), args[3])
+		HITTING_BLOBS_3:
+			hitting_blobs_3(pool, draws, Vector3i(args[0], args[1], args[2]),
+				args[3], inputs)
+		SPARKS:
+			sparks(pool, draws, Vector3i(args[0], args[1], args[2]), args[3],
+				inputs)
+		ARM_PARA_BOMB:
+			arm_para_bomb(pool, draws, Vector3i(args[0], args[1], args[2]))
+		BARREL_DEBRIS:
+			barrel_debris(pool, draws, Vector3i(args[0], args[1], args[2]))
 		_:
 			return false
 	return true
@@ -998,6 +1106,8 @@ static func bomber(pool: Pool, from: Vector3i, to: Vector3i, inputs: Inputs
 		return
 	var d: PackedFloat64Array = Eng3dGeometry.direction(from, to, 1)
 	var aim: Vector2i = inputs.geometry.orient(from, to)
+	# `0x0042A938` -- the fly-past is something to wait for.
+	pool.clears_arrived = true
 	pool.spawn("L069EE00.3DI", 0, from.x, from.y, from.z, aim.x, 0, aim.y, 0x34,
 		0x96, Eng3dGeometry.ftol(d[0] * BOMBER_SPEED),
 		Eng3dGeometry.ftol(d[1] * BOMBER_SPEED),
@@ -1012,6 +1122,229 @@ static func para_bomb(pool: Pool, draws: Draws, x: int, y: int, delay: int,
 	var at: Vector3i = inputs.object(x, y)
 	var life: int = absi(IncInt.div_trunc(BOMB_CEILING - at.z, BOMB_FALL))
 	var rz: int = draws.draw(0, 0x1000)
+	# `0x0042B0E3` -- and so is each bomb, until it lands.
+	pool.clears_arrived = true
 	pool.spawn("A_PARAB1.3DI", 0, at.x, at.y, BOMB_DROP, 0, 0x40, rz, 0x19, life,
 		0, 0, -BOMB_FALL, 0, delay)
 
+
+# --- docs/97 section 49: the twelve an update arm calls ----------------------
+#
+# `docs/28` section 8.1's weapon switches name thirty creators and docs/42's
+# set pieces and unit animations another twenty-nine; these are the rest, and
+# an update arm is the only thing that calls them. The remake **recorded** such
+# a request and never ran it until [GameBlobHooks] did, which is why none of
+# them needed a program before and all twelve needed one at once.
+#
+# Every one is stepped inside a live `Incubation.exe`: `blob_gold.py`'s
+# `zoom_bob_*` and `spawn_*` families poke a donor record to a kind whose arm
+# calls it, write the second generator's seed, step one `aBlob_Update` and read
+# the pool wide enough to hold the child.
+
+
+## `0x0042ADD0` -- `aBlob_SparkingRain(x, y, z, count, speed)`, which only
+## [method hitting_blobs] calls. `speed` is a two-value enumeration and the
+## third value is a `CHECK`: `0x0042ADF2` pushes "unknown speed" and the
+## routine makes nothing. 0 is the slow rain (life 30, the draws as they come)
+## and 1 the fast one (life 5, both sideways draws doubled).
+static func _sparking_rain(pool: Pool, draws: Draws, at: Vector3i, count: int,
+		speed: int) -> void:
+	var multiplier: int = 0
+	var life: int = 0
+	if speed == 0:
+		multiplier = 1
+		life = 30
+	elif speed == 1:
+		multiplier = 2
+		life = 5
+	else:
+		return
+	for _i: int in range(count & 0xFF):
+		var vz: int = draws.draw(5, 10) << 5
+		var vy: int = (draws.draw(-10, 20) * multiplier) << 4
+		var vx: int = (draws.draw(-10, 20) * multiplier) << 4
+		pool.spawn("A_FUNKE.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 0x14, life,
+			vx, vy, vz, 0, 0)
+
+
+## `0x00420950` -- **the constructor itself**, which two arms call directly.
+## It is not a creator and has no arithmetic of its own, so the program is
+## [method Pool.spawn] and nothing else. The only name an arm passes is
+## [constant NAME_SCRATCH], which a class-2 record ignores.
+static func emitter(pool: Pool, args: PackedInt32Array) -> void:
+	var name: String = SCRATCH if args[0] == NAME_SCRATCH else str(args[0])
+	pool.spawn(name, args[1], args[2], args[3], args[4], args[5], args[6],
+		args[7], args[8], args[9], args[10], args[11], args[12], args[13],
+		args[14])
+
+
+## `0x00428E30` -- the spore sparks: `count` class-2 records of kind 23 at one
+## point, row 6, aux 3, one frame of delay, rising 100..400 and drifting 100
+## either way. Three draws each, and the **middle one is the sideways x**
+## rather than the y: the compiler evaluated the two `aRandom2(-100, 200)`
+## calls in source order and pushed them in reverse.
+static func spore_sparks(pool: Pool, draws: Draws, at: Vector3i, count: int,
+		life: int) -> void:
+	for _i: int in range(count & 0xFF):
+		var vz: int = draws.draw(100, 300)
+		var vx: int = draws.draw(-100, 200)
+		var vy: int = draws.draw(-100, 200)
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 6, 0, 0, 0x17, life,
+			vx, vy, vz, 3, 2)
+
+
+## `0x00428ED0` -- the plasma sparks: [method spore_sparks]' body with a
+## **model** rather than a sprite, no row and no aux.
+static func plasma_sparks(pool: Pool, draws: Draws, at: Vector3i, count: int,
+		life: int) -> void:
+	for _i: int in range(count & 0xFF):
+		var vz: int = draws.draw(100, 300)
+		var vx: int = draws.draw(-100, 200)
+		var vy: int = draws.draw(-100, 200)
+		pool.spawn("A_FUNKE.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 0x17, life,
+			vx, vy, vz, 0, 2)
+
+
+## `0x00428F70` -- the big plasma burst, and the one creator here whose
+## **speed is drawn per component**. It is called with five dwords and reads
+## four; the fifth is the sibling sparks' `life`, which this one draws. Three draws before the loop pick one
+## scattered point (12800 either way, 12800..25600 up) and every spark then
+## aims within 160 of *that*, so the burst is a cone rather than a sphere.
+## Each velocity is `0x0046D400`'s direction times a speed of its own, the
+## draw truncated **before** the multiply (`fild` of the stored integer) and
+## again after it. Eight draws a spark: x, y, z, delay, the speeds z, y, x,
+## and the life.
+static func plasma_sparks_burst(pool: Pool, draws: Draws, at: Vector3i,
+		count: int, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var base: Vector3i = Vector3i(at.x + draws.draw(-0x3200, 0x6400),
+		at.y + draws.draw(-0x3200, 0x6400), at.z + draws.draw(0x3200, 0x3200))
+	for _i: int in range(count & 0xFF):
+		var aim: Vector3i = Vector3i(base.x + draws.draw(-0xA0, 0x140),
+			base.y + draws.draw(-0xA0, 0x140),
+			base.z + draws.draw(-0xA0, 0x1E0))
+		var d: PackedFloat64Array = Eng3dGeometry.direction(at, aim, 1)
+		var turn: Vector2i = inputs.geometry.orient(at, aim)
+		var delay: int = draws.draw(0, 4)
+		var vz: int = Eng3dGeometry.ftol(draws.draw(0xA0, 0xA0) * d[2])
+		var vy: int = Eng3dGeometry.ftol(draws.draw(0x1E0, 0x140) * d[1])
+		var vx: int = Eng3dGeometry.ftol(draws.draw(0x1E0, 0x140) * d[0])
+		pool.spawn("A_SPARK.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			0x48, draws.draw(0xA, 0xF), vx, vy, vz, 0, delay)
+
+
+## `0x00429390` -- the spores: the same three draws again, into kind 40 at
+## row 3 with a fixed life of 8.
+static func spores(pool: Pool, draws: Draws, at: Vector3i, count: int) -> void:
+	for _i: int in range(count & 0xFF):
+		var vz: int = draws.draw(100, 300)
+		var vx: int = draws.draw(-100, 200)
+		var vy: int = draws.draw(-100, 200)
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 3, 0, 0, 0x28, 8,
+			vx, vy, vz, 3, 2)
+
+
+## `0x00429430` -- the sting sparks, and the one creator here that **draws
+## nothing**. Two class-2 records of kind 33, row 3, life 8, whose velocities
+## are the caller's own turned a quarter turn either way and cut to a fifth.
+## The divide is the compiler's reciprocal multiply, which truncates toward
+## zero.
+static func sting_sparks(pool: Pool, at: Vector3i, vx: int, vy: int) -> void:
+	var fifth_x: int = IncInt.div_trunc(vx, 5)
+	var fifth_y: int = IncInt.div_trunc(vy, 5)
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 3, 0, 0, 0x21, 8,
+		-fifth_y, fifth_x, 0, 5, 1)
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 3, 0, 0, 0x21, 8,
+		fifth_y, -fifth_x, 0, 5, 1)
+
+
+## `0x0042A410` -- one hit flash over a fast sparking rain. The rain is
+## [method _sparking_rain] with a count of 1 and a speed of 1, both literals;
+## the flash is an `A_HIT1.3DI` of kind 16 and life 4 carrying the caller's
+## delay.
+static func hitting_blobs(pool: Pool, draws: Draws, at: Vector3i,
+		delay: int) -> void:
+	_sparking_rain(pool, draws, at, 1, 1)
+	pool.spawn("A_HIT1.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 0x10, 4,
+		0, 0, 0, 0, delay)
+
+
+## `0x0042A480` -- the same flash with `A_EXPL04.3DI` and without the rain.
+## No draw.
+static func hitting_blobs_2(pool: Pool, at: Vector3i, delay: int) -> void:
+	pool.spawn("A_EXPL04.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 0x10, 4,
+		0, 0, 0, 0, delay)
+
+
+## `0x0042A7A0` -- **a hundred** `A_LINE2.3DI` streaks. The body is
+## [method sparks]' at a different scale: each streak aims at a point
+## scattered around the origin, takes its rotation from `0x00403AA0` and its
+## velocity from `0x0046D400` scaled by a flat 1600, and lives
+## `aRandom2(4, 15)` ticks. The scatter is the wide one, and the aim
+## truncates each draw and **then** adds the coordinate -- the plain `add` at
+## `0x0042A7DA`, not kind 56's `fiadd`.
+static func hitting_blobs_3(pool: Pool, draws: Draws, at: Vector3i, delay: int,
+		inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	for _i: int in range(0x64):
+		var aim: Vector3i = Vector3i(at.x + draws.draw(-0x3200, 0x6400),
+			at.y + draws.draw(-0x3200, 0x6400),
+			at.z + draws.draw(-0xC80, 0x6400))
+		var d: PackedFloat64Array = Eng3dGeometry.direction(at, aim, 1)
+		var turn: Vector2i = inputs.geometry.orient(at, aim)
+		pool.spawn("A_LINE2.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			0x13, draws.draw(4, 0xF),
+			Eng3dGeometry.ftol(d[0] * SPARK_SPEED),
+			Eng3dGeometry.ftol(d[1] * SPARK_SPEED),
+			Eng3dGeometry.ftol(d[2] * SPARK_SPEED), 0, delay)
+
+
+## `0x0042A9D0` -- `aBlob_CreateSparks`: one emitter, then fifty sparks along
+## a ray. It is both a weapon creator (docs/97 section 22, measured through a
+## weapon switch) and an arm's, and it takes a **position** rather than a tile,
+## so it reads nothing before it draws.
+static func sparks(pool: Pool, draws: Draws, at: Vector3i, delay: int,
+		inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 5, 0, 0, 0x33, 0x10, 0, 0, 0,
+		0x28, delay)
+	for _i: int in range(0x32):
+		var aim: Vector3i = Vector3i(at.x + draws.draw(-0x3200, 0x6400),
+			at.y + draws.draw(-0x3200, 0x6400),
+			at.z + draws.draw(-0xC80, 0x2580))
+		var d: PackedFloat64Array = Eng3dGeometry.direction(at, aim, 1)
+		var turn: Vector2i = inputs.geometry.orient(at, aim)
+		pool.spawn("A_SPARK.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			0x22, draws.draw(4, 0xF),
+			Eng3dGeometry.ftol(d[0] * SPARK_SPEED),
+			Eng3dGeometry.ftol(d[1] * SPARK_SPEED),
+			Eng3dGeometry.ftol(d[2] * SPARK_SPEED), 0, delay)
+
+
+## `0x0042B150` -- **the arm's** para bomb, and not [method para_bomb]'s: no
+## object lookup, no ceiling and no *arrived* flag. One `A_PARAB1.3DI` of
+## kind 25 and life 200 at the point given, falling 800 a tick with 500 of
+## sideways drift and a rotation drawn 0..4095. Three draws: y, x, spin.
+static func arm_para_bomb(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	var vy: int = draws.draw(-500, 1000)
+	var vx: int = draws.draw(-500, 1000)
+	var spin: int = draws.draw(0, 0x1000)
+	pool.spawn("A_PARAB1.3DI", 0, at.x, at.y, at.z, 0x100, 0, spin, 0x19, 0xC8,
+		vx, vy, -BOMB_FALL, 0, 0)
+
+
+## `0x0042B300` -- twenty tumbling `A_DEBRIS.3DI` of kind 39 and life 50. Each
+## takes four draws: two sideways at 600, one upward 40..1440 and one delay
+## 0..5 -- and its **rotation is its velocity**, the same three registers
+## pushed twice.
+static func barrel_debris(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	for _i: int in range(0x14):
+		var vx: int = draws.draw(-600, 1200)
+		var vy: int = draws.draw(-600, 1200)
+		var vz: int = draws.draw(40, 1400)
+		var delay: int = draws.draw(0, 6)
+		pool.spawn("A_DEBRIS.3DI", 0, at.x, at.y, at.z, vx, vy, vz, 0x27, 0x32,
+			vx, vy, vz, 0, delay)

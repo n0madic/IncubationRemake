@@ -51,6 +51,7 @@ import json
 import logging
 import os
 import bisect
+import re
 import struct
 import sys
 from pathlib import Path
@@ -2980,6 +2981,8 @@ def run_checks(root: str) -> Checker:
     _surface_lock_checks(ck, b)
     _generator_checks(ck, b)
     _setpiece_timing_checks(ck, b)
+    _check_arm_spawn_arity(ck, b)
+    _check_zoom_bob_arguments(ck, b)
 
     return ck
 
@@ -3469,6 +3472,13 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     "BLOOD_STEP":           (("f64", 0x00420D80, 0x004B1258, -1280.0),
                              ("f64", 0x00421360, 0x004B1258, -1280.0)),
     "SPECIES_COIN":         (("f64", 0x00421C50, 0x004B1268, 6.0),),
+    # `docs/97` §49 -- the scratch **name** buffer, which an arm hands the
+    # constructor for a class-2 record and which the constructor ignores.  It
+    # is an address, so the two creators below push it rather than compute
+    # with it; `BLOB_NAME_SCRATCH` above is the same number read from the
+    # constructor's own guard.
+    "NAME_SCRATCH":         (("push", 0x00428E30, 0x00428EAC, 0x004FA524),
+                             ("push", 0x00429390, 0x00429409, 0x004FA524)),
     # docs/42 §7 -- the unit animations' creators (docs/97 §31): the radii
     # are `mov r32, imm32` and the turns `mov word [esp+d], imm16`, read
     # at their own instructions.
@@ -3518,6 +3528,20 @@ DEATH_CREATOR_EXTENTS = {
     0x00420D80: (0x00420D80, 0x00421360),
     0x00421360: (0x00421360, 0x004216D0),
     0x00421C50: (0x00421C50, 0x00422460),
+    # `docs/97` §49 -- the twelve an update **arm** calls.  Ends are the
+    # function's own last byte, as above.
+    0x00420950: (0x00420950, 0x00420A49),
+    0x00428E30: (0x00428E30, 0x00428ECD),
+    0x00428ED0: (0x00428ED0, 0x00428F6D),
+    0x00428F70: (0x00428F70, 0x00429173),
+    0x00429390: (0x00429390, 0x0042942A),
+    0x00429430: (0x00429430, 0x004294DD),
+    0x0042A410: (0x0042A410, 0x0042A47A),
+    0x0042A480: (0x0042A480, 0x0042A4BA),
+    0x0042A7A0: (0x0042A7A0, 0x0042A8D9),
+    0x0042ADD0: (0x0042ADD0, 0x0042AF00),
+    0x0042B150: (0x0042B150, 0x0042B1CF),
+    0x0042B300: (0x0042B300, 0x0042B3AA),
 }
 #: How many dividends the ``magic`` replay sweeps.  A reciprocal multiply that
 #: agrees with a truncating divide over this many values, negative and
@@ -3818,6 +3842,292 @@ def _sites_with_volume(sites: dict, volume_id: int) -> set[str]:
 #: file rather than the working directory: a check that cannot find its input
 #: must fail, not quietly pass.
 REMAKE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "godot" / "game" / "audio"
+
+
+#: Where the remake keeps the arms and the creator programs.
+REMAKE_FX_DIR = Path(__file__).resolve().parent.parent / "godot" / "game" / "fx"
+
+#: `blob_kinds.gd` requests that carry **fewer values than the creator takes**,
+#: as `creator constant -> (values passed, how many sites)`.  **Empty**, and
+#: the emptiness is the point.
+#:
+#: It was not, for one day.  Wiring the arms' spawn requests to the creator
+#: programs for the first time (`godot/game/fx/game_blob_hooks.gd`) made the
+#: count load-bearing, and five of the seven `0x00423720` requests turned out
+#: to be one value short: the callee reads six arguments -- `x` at `+0x04`
+#: through `life` at `+0x18` -- and all fourteen of its call sites clean six
+#: dwords.  Both twins carried the same shortfall, so the arm capture could
+#: not see it: it compared the stepped record's fields and the request list,
+#: GDScript against Python, and never a request against the engine's own push
+#: block.
+#:
+#: The five were settled by **stepping the arms inside `Incubation.exe`**
+#: (2026-09-04, `docs/97` §48): a donor record poked to each kind, one
+#: `aBlob_Update`, and the child's `rot_x`, `aux` and `life` read back out of
+#: the pool.  That measured two things a static reading had wrong as well --
+#: kind 77's `row` is the sweep's own zero rather than a literal five, and
+#: kind 56 has no `life` test at all -- and it is why this table is a table
+#: rather than a comment: a request that goes short again fails here.
+KNOWN_SHORT_ARM_SPAWNS: dict[str, tuple[int, int]] = {}
+
+
+def _arm_spawn_counts() -> dict[str, list[int]] | None:
+    """`blob_kinds.gd`'s `_spawn` requests as `creator constant -> [values]`."""
+    path = REMAKE_FX_DIR / "blob_kinds.gd"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    out: dict[str, list[int]] = {}
+    for match in re.finditer(r"_spawn\(b, h, r, (CREATE_[A-Z0-9_]+),\s*(\[.*?\])",
+                             text, re.S):
+        name, args = match.group(1), match.group(2)
+        depth, count = 0, 1
+        for ch in args[1:-1]:
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                count += 1
+        out.setdefault(name, []).append(count)
+    return out
+
+
+def _arm_creator_addresses() -> dict[str, int] | None:
+    """`blob_kinds.gd`'s `CREATE_*` constants."""
+    path = REMAKE_FX_DIR / "blob_kinds.gd"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    return {name: int(value, 16) for name, value in
+            re.findall(r"^const (CREATE_[A-Z0-9_]+): int = (0x[0-9A-Fa-f]+)",
+                       text, re.M)}
+
+
+def _program_args_needed() -> dict[int, int] | None:
+    """`blob_programs.gd`'s `ARGS_NEEDED`, keyed by the creator's address.
+
+    The table the remake actually gates on: `GameBlobHooks` refuses a request
+    carrying fewer values than the entry says, so an entry raised above the
+    creator's real arity turns an effect into a silently counted refusal and
+    an entry below it lets a program index past the end of its array.  Its
+    keys are the constant names three hundred lines above it, so both are
+    read and joined here.
+    """
+    path = REMAKE_FX_DIR / "blob_programs.gd"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    addresses = {name: int(value, 16) for name, value in
+                 re.findall(r'^const ([A-Z0-9_]+): String = "(0x[0-9A-Fa-f]+)"',
+                            text, re.M)}
+    body = re.search(r"const ARGS_NEEDED: Dictionary\[String, int\] = \{(.*?)^\}",
+                     text, re.S | re.M)
+    if body is None:
+        return {}
+    out: dict[int, int] = {}
+    for name, count in re.findall(r"([A-Z][A-Z0-9_]*):\s*(\d+)", body.group(1)):
+        if name in addresses:
+            out[addresses[name]] = int(count)
+    return out
+
+
+def _check_arm_spawn_arity(ck: "Checker", b: Binary) -> None:
+    """Does an arm's spawn request carry the number of values the creator takes?
+
+    The creators are `__cdecl`, so the count lives at the **call site**, in its
+    own `add esp, K`.  Every site of every creator an arm can reach agrees,
+    which is what makes it a measurement rather than a reading of one site;
+    the request the remake's arm writes must carry the same number, or the
+    creator runs on values that are not there.
+
+    Nothing checked this while an arm's request was only ever written down.
+    `godot/game/fx/game_blob_hooks.gd` runs it, and `ARGS_NEEDED` in
+    `blob_programs.gd` refuses a short one -- so the count stopped being
+    documentation and started being load-bearing.  **Both** ends are compared
+    with the engine here, the request the arm writes and the arity the gate
+    reads: they can disagree with each other silently, an over-stated
+    `ARGS_NEEDED` turning every request for that creator into a counted
+    refusal with every other check still green.
+    """
+    passed = _arm_spawn_counts()
+    addresses = _arm_creator_addresses()
+    needed = _program_args_needed()
+    if passed is None or addresses is None or needed is None:
+        ck.check("arm_spawn.source", False,
+                 f"{REMAKE_FX_DIR} has no blob_kinds.gd / blob_programs.gd")
+        return
+    text_lo, text_hi = b.text_lo, b.text_hi
+    blob = b.pe.bytes_at(text_lo, text_hi - text_lo)
+    sites: dict[int, list[int]] = {}
+    wanted = set(addresses.values())
+    for offset in range(len(blob) - 5):
+        if blob[offset] != 0xE8:
+            continue
+        rel = struct.unpack_from("<i", blob, offset + 1)[0]
+        target = text_lo + offset + 5 + rel
+        if target in wanted:
+            sites.setdefault(target, []).append(text_lo + offset)
+    disagree = []
+    short: dict[str, tuple[int, int]] = {}
+    gate: list[str] = []
+    checked = 0
+    gated = 0
+    for name, counts in sorted(passed.items()):
+        address = addresses[name]
+        cleanups = {b.cleanup_dwords(site) for site in sites.get(address, [])}
+        cleanups.discard(None)
+        if len(cleanups) != 1:
+            disagree.append(f"{name}: sites clean {sorted(cleanups)}")
+            continue
+        engine = cleanups.pop()
+        checked += 1
+        bad = [n for n in counts if n != engine]
+        if bad:
+            short[name] = (bad[0], len(bad))
+        if address in needed:
+            gated += 1
+            if needed[address] != engine:
+                gate.append(f"{name}: ARGS_NEEDED {needed[address]} != {engine}")
+        else:
+            gate.append(f"{name}: no ARGS_NEEDED entry")
+    ck.check("arm_spawn.sites_agree", not disagree and checked > 0,
+             f"{checked} creators, every call site cleaning the same; "
+             f"{'; '.join(disagree) if disagree else 'all'}")
+    ck.equal("arm_spawn.arity", short, KNOWN_SHORT_ARM_SPAWNS, Checker.brief)
+    ck.check("arm_spawn.args_needed", not gate and gated > 0,
+             f"{gated} creator(s) an arm can reach carry the engine's own "
+             f"`add esp, K` in `ARGS_NEEDED`; "
+             f"{'; '.join(gate) if gate else 'all'}")
+
+
+#: The seven arm call sites of `aBlob_CreateZoomBob` `0x00423720`, as
+#: `kind -> (call site, arm entry, the three pushes that were in doubt)`.
+#:
+#: `row`, `aux` and `life` are the creator's fourth, fifth and sixth
+#: arguments, and each entry gives the byte at the site that supplies it --
+#: `None` where the value is computed rather than pushed as an immediate.
+#: Measured against the engine on 2026-09-04 by stepping each arm
+#: (`docs/97` §48); pinned here because the reading, not the measurement, is
+#: what a later edit would break.
+ZOOM_BOB_PUSHES: dict[int, tuple[int, int, dict[str, tuple[int, bytes]]]] = {
+    6:  (0x0041F8C5, 0x0041F8B6, {"row": (0x0041F8BD, b"\x6a\x04"),
+                                  "aux": (0x0041F8BB, b"\x6a\x0a"),
+                                  "life": (0x0041F8B9, b"\x6a\x08")}),
+    15: (0x00420789, 0x00420734, {"row": (0x00420784, b"\x6a\x01"),
+                                  "life": (0x0042075D, b"\x6a\x08")}),
+    26: (0x0041FB1E, 0x0041F92F, {"row": (0x0041FB19, b"\x6a\x00"),
+                                  "aux": (0x0041FB17, b"\x6a\x1e"),
+                                  "life": (0x0041FB15, b"\x6a\x10")}),
+    56: (0x0042000A, 0x0041FF6A, {"row": (0x0041FFCC, b"\x6a\x07"),
+                                  "life": (0x0041FFA3, b"\x6a\x07")}),
+    69: (0x00420603, 0x0042059A, {"row": (0x004205FE, b"\x6a\x06"),
+                                  "life": (0x004205D7, b"\x6a\x08")}),
+    73: (0x0042067F, 0x00420634, {"row": (0x0042067A, b"\x6a\x01"),
+                                  "life": (0x0042065D, b"\x6a\x08")}),
+    # `push ebp`, and `ebp` is the sweep's own zero (`xor ebp, ebp` at
+    # `0x0041E50A`) -- which is what a static reading called a literal five.
+    77: (0x0041F7C2, 0x0041F75D, {"row": (0x0041F776, b"\x55"),
+                                  "life": (0x0041F75D, b"\x6a\x08")}),
+}
+
+#: `mov al, byte [esi+0x45]` -- the `life` read an arm makes before a guarded
+#: spawn.  The kinds whose zoom bob is **unconditional** have none between
+#: their entry and their call, and kind 56 is one of them, which is the half
+#: of the correction no push block could show.
+LIFE_READ = b"\x8a\x46\x45"
+#: **How each arm adds a draw to a coordinate**, as the three instructions
+#: that do it.  Four arms jitter a spawn's position and they do not agree:
+#: three add the coordinate to the draw and truncate the **sum** (`fiadd`,
+#: with the record offset in the modrm byte), and one truncates the draw and
+#: adds the coordinate through a sign-extended sixteen-bit move.  The two
+#: readings differ only where a draw is negative with a fraction, so a capture
+#: settles it only on a seed chosen to land there (`docs/97` §49 does exactly
+#: that); this is the same fact read out of the bytes, which needs no Wine.
+JITTER_SITES: dict[int, tuple[str, tuple[tuple[int, bytes], ...]]] = {
+    56: ("fiadd", ((0x0041FFD6, b"\xda\x46\x1c"), (0x0041FFEA, b"\xda\x46\x18"),
+                   (0x0041FFFE, b"\xda\x46\x14"))),
+    62: ("fiadd", ((0x0041E8EA, b"\xda\x46\x1c"), (0x0041E905, b"\xda\x46\x18"),
+                   (0x0041E920, b"\xda\x46\x14"))),
+    67: ("fiadd", ((0x0041EE98, b"\xda\x46\x1c"), (0x0041EEB3, b"\xda\x46\x18"),
+                   (0x0041EECE, b"\xda\x46\x14"))),
+    77: ("movsx", ((0x0041F78A, b"\x0f\xbf\xc8"), (0x0041F7A3, b"\x0f\xbf\xd0"),
+                   (0x0041F7BC, b"\x0f\xbf\xc0"))),
+}
+ZOOM_BOB_UNCONDITIONAL: tuple[int, ...] = (6, 56, 77)
+
+#: **Kind 59's two emitters, where their `vz` argument comes from.**  Both
+#: branches are `call _ftol` / `push eax` / `push ebp`: the truncated draw is
+#: the emitter's `aux` and the vertical velocity is `ebp`, the sweep's own
+#: zero (`xor ebp, ebp` at `0x0041E50A`), so the arm takes **two** velocity
+#: draws and not three.  The ordinary branch `0x0042015C` is measured -- the
+#: `spawn_*` family compares the child it makes -- and the special one
+#: `0x004200FB` is not, because it runs only under an output mode the capture
+#: writes for a plan whose window holds no child (`blob_gold.py`'s
+#: `mode.special_draws` measures how many draws it takes, not where they go).
+#: These bytes are the evidence for the half that has none.
+EMITTER_VZ_SITES: dict[str, int] = {
+    "special": 0x004200FB,
+    "ordinary": 0x0042015C,
+}
+#: `push eax` (the truncated draw) then `push ebp` (the literal zero).
+EMITTER_VZ_PUSHES = b"\x50\x55"
+
+
+def _check_zoom_bob_arguments(ck: "Checker", b: Binary) -> None:
+    """The three arguments the arms hand `aBlob_CreateZoomBob`.
+
+    All seven sites push six dwords -- `arm_spawn.arity` says so -- but which
+    six was wrong in both twins until the arms were stepped inside the engine
+    (`docs/97` §48).  Two of the errors were beyond a push block's reach: kind
+    77's `row` is a register the wrapper zeroes, and kind 56's spawn is not
+    guarded at all, so the arm drops a zoom bob every tick rather than on its
+    last.  Both are pinned here as bytes, because bytes are what an edit to
+    this file would have to disagree with.
+    """
+    wrong = []
+    for kind, (site, entry, pushes) in sorted(ZOOM_BOB_PUSHES.items()):
+        for name, (address, expect) in sorted(pushes.items()):
+            got = b.pe.bytes_at(address, len(expect))
+            if got != expect:
+                wrong.append(f"kind {kind} {name}: {got.hex()} != {expect.hex()}")
+        if not entry <= site:
+            wrong.append(f"kind {kind}: call 0x{site:08X} before its arm")
+    ck.check("zoom_bob.pushes", not wrong,
+             f"{sum(len(p) for _s, _e, p in ZOOM_BOB_PUSHES.values())} bytes "
+             f"over {len(ZOOM_BOB_PUSHES)} arms; "
+             f"{'; '.join(wrong) if wrong else 'all'}")
+    guarded = []
+    for kind, (site, entry, _pushes) in sorted(ZOOM_BOB_PUSHES.items()):
+        reads = b.pe.bytes_at(entry, site - entry).count(LIFE_READ)
+        if (reads == 0) != (kind in ZOOM_BOB_UNCONDITIONAL):
+            guarded.append(f"kind {kind}: {reads} life read(s)")
+    ck.check("zoom_bob.unconditional", not guarded,
+             f"kinds {list(ZOOM_BOB_UNCONDITIONAL)} spawn on every tick; "
+             f"{'; '.join(guarded) if guarded else 'all as measured'}")
+    forms = []
+    for kind, (form, sites) in sorted(JITTER_SITES.items()):
+        for address, expect in sites:
+            got = b.pe.bytes_at(address, len(expect))
+            if got != expect:
+                forms.append(f"kind {kind} 0x{address:08X}: {got.hex()} "
+                             f"!= {expect.hex()} ({form})")
+    ck.check("spawn.jitter_forms", not forms,
+             f"{sum(len(s) for _f, s in JITTER_SITES.values())} instruction(s) "
+             f"over {len(JITTER_SITES)} arms -- three `fiadd` and one "
+             f"`movsx`; {'; '.join(forms) if forms else 'all as measured'}")
+    emitters = []
+    for name, site in sorted(EMITTER_VZ_SITES.items()):
+        if b.call_target(site) != FTOL:
+            emitters.append(f"{name} 0x{site:08X}: not a call to _ftol")
+        got = b.pe.bytes_at(site + 5, len(EMITTER_VZ_PUSHES))
+        if got != EMITTER_VZ_PUSHES:
+            emitters.append(f"{name} 0x{site + 5:08X}: {got.hex()} "
+                            f"!= {EMITTER_VZ_PUSHES.hex()}")
+    ck.check("spawn.emitter_vz_is_ebp", not emitters,
+             f"kind 59's {len(EMITTER_VZ_SITES)} emitter site(s) truncate a "
+             "draw into the `aux` and push `ebp` for `vz`; "
+             f"{'; '.join(emitters) if emitters else 'both'}")
 
 
 def _flag_names_in_remake() -> str | None:

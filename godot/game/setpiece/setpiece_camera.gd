@@ -77,9 +77,30 @@ const BOMBER_TO: Vector3i = Vector3i(48000, 48000, 320000)
 const BOMBER_START_X: int = -16000
 const BOMBER_START_Z: int = 320000
 const BOMBER_START_Z_PATH_1: int = 80000
-## The delay between bombs; **the remake's**, so a stick of them does not
-## land in one frame -- the engine spaces them by the loop's own timing.
-const BOMB_SPACING: int = 3
+## The delay between bombs -- [constant SetpieceDriver.BOMB_SPACING], which is
+## where the compression of `0x00416231`'s `aRandom2(0, 200)` is written down.
+const BOMB_SPACING: int = SetpieceDriver.BOMB_SPACING
+## How long the fly-past holds the picture, at most.
+##
+## `0x00415E90` has no count of its own: it spins on the *arrived* flag of
+## docs/42 section 4.6 until something raises it. In the engine that is the
+## first para bomb the plane drops in flight (`aRandom(0, 8) == 0` in
+## [BlobKinds]' kind 52, through `0x0042B150`, life **200**) reaching the end
+## of its life, which puts the original's fly-past at some two hundred ticks.
+##
+## The remake drops those bombs too -- `0x0042B150` is transcribed since
+## docs/97 section 49 and [GameBlobHooks] runs the request -- but it does not
+## wait for one to land: their kind-25 record carries a life of 200 and the
+## plane's carries 150, so no bomb the plane drops raises the flag inside this
+## stage, and a two-hundred-tick fly-past would in any case sit oddly against
+## [constant SetpieceDriver.BOMB_SPACING]'s deliberate compression of the
+## strike. What ends it here is the bomber's **own record**:
+## [constant SetpieceDriver.BOMBER_LIFE_FRAMES] is the life `0x0042A8E0`
+## gives it. The engine's condition is still asked first, and it is a real
+## question rather than a formality -- the creator clears the flag, as
+## `0x0042A938` does, so anything the pool was already holding can still end
+## the fly-past early, exactly as it would in the original.
+const BOMBER_FRAMES: int = SetpieceDriver.BOMBER_LIFE_FRAMES
 ## `cmp esi, 0x28` and `cmp esi, 0xA` -- the teleporter's two marks, counted
 ## from its end.
 const TELEPORT_HIDE_AT: int = 40
@@ -98,9 +119,17 @@ const STAGE_POOL: String = "setpiece.pool"
 ## (the door's user, the roof's cargo, the ground unit's victim), or -1;
 ## `extra` carries the ground unit's own cell as `own`. `paint` is the
 ## caller's per-frame picture. Answers the deterministic frames.
+##
+## `cues` are the sounds of the routine the set piece starts with; `cues_late`
+## those of the **second** routine, for the one command that runs two
+## ([constant AudioEvents.EVENT_PHASES]). When and how often the second
+## routine's sounds are heard is that routine's own business -- the bomb run
+## plays them once per bomb, not once per stage -- so `cues_late` is handed to
+## the arm rather than to the queue. Every other kind ignores it.
 static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 		frames: int, cell: Vector2i, from_h: int, to_h: int, unit: int,
-		extra: Dictionary, paint: Callable, cues: Array[Dictionary]) -> int:
+		extra: Dictionary, paint: Callable, cues: Array[Dictionary],
+		cues_late: Array[Dictionary] = []) -> int:
 	var st: Dictionary = {"saved_eye": Vector3i.ZERO, "saved_target": Vector3i.ZERO,
 		"at": Vector3i.ZERO}
 	var centre: Vector3i = Vector3i(cell.x * WorldSpace.WORLD_UNITS_PER_FIELD,
@@ -353,10 +382,25 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 				func() -> bool: return host.pool_live() == 0, paint)
 			return 1
 		"para_bombs":
-			# docs/42 section 8: the bomber flies in from -16000 at 80000,
-			# the camera target follows it, and one `0x0042B070` per tile.
-			queue.enqueue(STAGE_LEAD, 1,
-				func(_frame: int, _total: int) -> void:
+			# docs/42 section 8, and **two routines rather than one**:
+			# `0x00470790` runs the fly-past `0x00415E90` to completion and
+			# only then the bomb run `0x004160F0` (docs/20 section 7.4).
+			# Each is a blocking routine with a sound of its own, so each is
+			# a stage of its own here -- the fly-past's looping `bomber.wav`
+			# dies with its stage, and the bombs' `crush.wav` starts with
+			# theirs. One stage carrying both could only ever play the first,
+			# whatever the picture did.
+			queue.enqueue_until(STAGE_LEAD, BOMBER_FRAMES,
+				# `0x00416086` -- the fly-past's loop asks one question, and
+				# the creator's own `0x0042A938` is what makes it a question
+				# rather than a formality. The second half is the remake's:
+				# with the plane gone there is nothing left to show, and no
+				# world set that lacks `L069EE00.3DI` holds the picture for
+				# a hundred and fifty frames of empty sky.
+				func() -> bool: return host.pool_arrived() or host.pool_live() == 0,
+				func(frame: int, _total: int) -> void:
+					if frame != 1:
+						return
 					# `0x00415EE1`..`0x00415EFF` -- six **literals**, not
 					# tiles: the fly-past is a fixed diagonal across the
 					# scene and reads no cell at all.
@@ -369,19 +413,60 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					# section 32 left UNVERIFIED are the camera's own target,
 					# and the bomber aims the camera nowhere.
 					host.set_camera(Vector3i(BOMBER_START_X, 0,
-						BOMBER_START_Z), host.camera_target())
-					var index: int = 0
-					for entry: Variant in DictRead.as_array(extra.get("tiles", [])):
-						var at: PackedInt32Array = DictRead.as_int32_array(entry)
-						if at.size() >= 2:
-							host.spawn_program(BlobPrograms.PARA_BOMB,
-								PackedInt32Array([at[0], at[1],
-									index * BOMB_SPACING]))
-						index += 1)
+						BOMBER_START_Z), host.camera_target()),
+				cues,
+				# `0x004160B4` -- the fly-past's last act, so the bomb run
+				# starts with an empty pool. It is the routine's tail and not
+				# its last frame: the loop above leaves on the *arrived* flag
+				# as readily as on its bound, and the engine clears the pool
+				# either way. A **total** sweep in the original too --
+				# anything else the pool held, the selection's own arrows
+				# included, goes with it.
+				func() -> void: host.clear_pool())
+			# The bombs are laid **in the second routine**, not with the
+			# bomber: `0x004160F0` picks its tiles and calls `0x0042B070`
+			# once each, after the fly-past has returned and emptied the pool.
+			#
+			# The stage ends the way `0x004163A9` does -- `while (live)`, and
+			# nothing else. The *arrived* flag is not part of that test in the
+			# original either: it is what selects a **sound**, below.
 			queue.enqueue_until(kind, frames,
-				func() -> bool: return host.pool_arrived() and host.pool_live() == 0,
-				paint, cues)
-			return 1
+				func() -> bool: return host.pool_live() == 0,
+				func(frame: int, total: int) -> void:
+					if frame == 1:
+						var index: int = 0
+						for entry: Variant in DictRead.as_array(
+								extra.get("tiles", [])):
+							var at: PackedInt32Array = DictRead.as_int32_array(entry)
+							if at.size() >= 2:
+								host.spawn_program(BlobPrograms.PARA_BOMB,
+									PackedInt32Array([at[0], at[1],
+										index * BOMB_SPACING]))
+							index += 1
+					# **One crump per bomb, and the run opens silent.**
+					# `0x004162D6` spins with the camera on the first live
+					# record until a bomb lands, and only then does
+					# `0x0041633F` play. After that `0x00416364`'s loop plays
+					# the next of three `crush.wav` buffers (`0x00416271`,
+					# `mov edi, 3`) on every raised *arrived*, acknowledging
+					# each with `0x0042B490` -- so the first landing reaches
+					# both plays, one frame apart and both on `buffer[0]`,
+					# which restarts one sound rather than making two. A para
+					# bomb raises the flag from its own arm when its life runs
+					# out ([method BlobKinds._kind_25]), so a stick of nine is
+					# nine crumps. The three buffers are the original's cap on
+					# how many may overlap; the remake's [AudioPool] owns that
+					# question and is not told it here.
+					#
+					# The flag read here is **this** frame's:
+					# [method Main._tick_effects] runs before the queue, as
+					# the engine's own loop ticks before it asks
+					# (`0x00416364` then `0x00416369`).
+					elif host.pool_arrived():
+						host.play_cues(cues_late)
+						host.clear_arrived()
+					paint.call(frame, total))
+			return BOMBER_FRAMES
 		"teleporter":
 			# docs/42 section 8.1: the stream `0x0042A120`, seventy frames
 			# with the camera target on the first live record between 40 and

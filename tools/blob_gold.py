@@ -472,7 +472,7 @@ def arms_plan(handle: int, creator: int, args: list[int],
     return "\n".join(lines) + "\n"
 
 
-#: The donor whose pool the poked phases borrow.  It has to fill twelve slots
+#: The donor whose pool the poked phases borrow.  It has to fill its slots
 #: with **class 0** records that carry a model handle, because an arm that
 #: poses a model or swaps one dereferences it: a class-2 donor would turn every
 #: such arm into a fault rather than a comparison.  `aBlob_SparkingPlug` is the
@@ -520,11 +520,21 @@ CREATOR_MODELS = (
     "A_PLSMA1.3DI", "A_SPARK.3DI",
 )
 
+#: The same, for the twelve creators an update **arm** calls (`docs/97` §49).
+#: They are a separate tuple rather than more entries above because they are
+#: reached from a different place -- no weapon switch names them -- and
+#: because adding a name here is what re-takes the `models` phase.
+ARM_CREATOR_MODELS = (
+    "A_DEBRIS.3DI", "A_EXPL04.3DI", "A_FUNKE.3DI", "A_HIT1.3DI",
+    "A_LINE2.3DI", "A_PARAB1.3DI",
+)
+
 
 def _model_names() -> tuple[str, ...]:
     """The two swap arms' names and the creators', in one stable order."""
     import blob_runtime
-    return tuple(blob_runtime.CASE_MODELS) + CREATOR_MODELS
+    return (tuple(blob_runtime.CASE_MODELS) + CREATOR_MODELS
+            + ARM_CREATOR_MODELS)
 
 
 def models_plan(names: Sequence[str]) -> str:
@@ -745,6 +755,220 @@ def probe_batches(donor_slots: list[int],
     return out
 
 
+# --------------------------------------------------------------------------
+# The arms that spawn: what a creator is *given*
+# --------------------------------------------------------------------------
+
+#: How many records the two spawning families read back.  The donor fills
+#: **thirty** slots and a child lands in the first free one past them, so the
+#: `READ_RECORDS` window every other pool read uses comes back holding no
+#: child at all -- which is what the first run of this family measured.
+#: Forty-four leaves fourteen for a brood, and three of the thirteen creators
+#: make more than that (`0x0042A7A0` a hundred, `0x0042B300` and `0x00429390`
+#: twenty each): those are compared as the **prefix** they are, with the
+#: generator's seed after the call accounting for the records past it.
+SPAWN_READ_RECORDS = 44
+#: Rounds and life, the poked family's -- a spawn behind `life == 0` is
+#: reached by the same eight rounds that reach every other terminal branch.
+SPAWN_ROUNDS = POKE_ROUNDS
+
+#: **The two seeds a spawning arm is stepped under.**  `docs/97` §48 read two
+#: jitters out of the bytes and could not tell them apart by measurement: kind
+#: 56 adds the coordinate to the draw and truncates the sum (`fiadd`), kind 77
+#: truncates the draw and adds the coordinate (`movsx`), and the two agree
+#: everywhere except where the draw is **negative with a fraction** -- there
+#: they differ by exactly one.  The engine's own seed comes from
+#: `GetTickCount()`, so whether a capture lands on such a draw is luck; these
+#: two are chosen instead.  Under 6.0 every one of the three jitters both arms
+#: take is negative and fractional, so every coordinate discriminates; under
+#: 2.0 every one is positive, which is the same arms on the side where the two
+#: readings agree.  Both are pinned rather than searched for at capture time:
+#: a seed the check did not know could not be replayed.
+SPAWN_SEED_NEGATIVE = 6.0
+SPAWN_SEED_POSITIVE = 2.0
+SPAWN_SEEDS = (SPAWN_SEED_NEGATIVE, SPAWN_SEED_POSITIVE)
+
+#: The seven arms that ask for `0x00423720`, the zoom bob -- `docs/97` §48's
+#: table, and the reason this family exists.  Each is stepped under both
+#: seeds.
+ZOOM_BOB_KINDS = (6, 15, 26, 56, 69, 73, 77)
+ZOOM_BOB_PREFIX = "zoom_bob_"
+#: Every other arm that asks a creator for something.  One seed each: their
+#: creators' arguments are integers the arm computes, and the second seed
+#: buys nothing there -- it is the two jitters above that need both signs.
+SPAWN_OTHER_KINDS = (3, 19, 22, 25, 32, 36, 44, 47, 52, 59, 62, 67, 71, 75)
+SPAWN_PREFIX = "spawn_"
+#: Kind 26 is a **seeker** and spawns only when it arrives, so it is stepped
+#: at `poke_probes`' arrival vector rather than the sweep's -- the same
+#: recipe, named once and used twice.
+SPAWN_ARRIVAL_KINDS = (26,)
+#: An arm whose spawn is behind a **roll** needs a seed that passes it, and
+#: the two above do not: kind 52 asks `aRandom2(0, 8)` for a zero and drops a
+#: para bomb only then, so a seed of 1.0 -- whose first draw is that zero --
+#: is what reaches `0x0042B150` at all.  Written down rather than searched
+#: for at capture time, so the check can replay it.
+#:
+#: Kind 62's is the other: its spark burst is behind `aRandom2(0, 10) > 5.0`
+#: and 6.0's first draw is 1.73, so the branch never ran and its jitter went
+#: unmeasured while the note beside it said otherwise.  19.0 rolls 5.49 and
+#: then three **negative fractional** jitters, which is both halves at once --
+#: the branch taken and the arithmetic discriminated.
+SPAWN_SEED_OVERRIDES: dict[int, float] = {52: 1.0, 62: 19.0}
+
+
+def spawn_entries(kinds: Sequence[int], seeds: Sequence[float],
+                  target: tuple[int, int, int] | None
+                  ) -> list[tuple[int, dict[str, int], float]]:
+    """`(kind, vector, seed)` for one family, in a stable order.
+
+    The seeds vary **inside** a kind rather than across the list so a plan
+    that dies loses both readings of one arm rather than one reading of every
+    arm -- the same reason every creator gets a plan of its own.
+    """
+    out: list[tuple[int, dict[str, int], float]] = []
+    for kind in kinds:
+        vector: dict[str, int] = {"life": POKE_LIFE}
+        if kind in SPAWN_ARRIVAL_KINDS and target is not None:
+            vector |= {"aux": SEEK_UNIT_SLOT, "vx": 0, "vy": 0, "vz": 0,
+                       "x": target[0], "y": target[1], "z": target[2]}
+        for seed in seeds:
+            out.append((kind, dict(vector),
+                        SPAWN_SEED_OVERRIDES.get(kind, float(seed))))
+    return out
+
+
+def spawn_batches(entries: Sequence[tuple[int, dict[str, int], float]]
+                  ) -> list[list[tuple[int, dict[str, int], float]]]:
+    """One family's entries, cut into one plan's worth each.
+
+    An entry is a whole pool of its own here rather than a slot in a shared
+    one, so the batch size is about how much a single process should carry
+    and not about how many donor records there are: a plan that dies takes
+    every entry after it, and six is what the poked family settled on.
+    """
+    return [list(entries[start:start + POKE_SLOTS])
+            for start in range(0, len(entries), POKE_SLOTS)]
+
+
+def spawn_plan(handle: int, donor: int, args: list[int], slot: int,
+               entries: Sequence[tuple[int, dict[str, int], float]],
+               rounds: int) -> str:
+    """One **fresh pool per entry**: reset, donor, poke, then step one arm.
+
+    The poked family shares one pool across a plan's six records, which is
+    right when what is being measured is the records themselves.  It is wrong
+    here.  A spawning arm's children go into the pool as well, and one arm's
+    brood can be a hundred records (`0x0042A7A0`): the read window fills, the
+    next arm's child lands past its end, and the comparison silently stops
+    finding children -- which is exactly what the first run of this family
+    did, from round two onward.
+
+    So every entry opens with `aResetBlobs` and a fresh call to the donor,
+    and only one record is poked.  Whatever is past the donor's own slots
+    afterwards is **this** arm's, and the window has to hold one round of one
+    brood rather than eight rounds of six.  A brood bigger than the window --
+    the hundred streaks -- is compared as the prefix it is, with the seed
+    read either side of every call saying how many draws the rest took.
+    """
+    entry = _entry_address(handle)
+    signature = ",".join("i32" for _ in args)
+    read = (f" --read [0x{entry:x}]:{SPAWN_READ_RECORDS * RECORD_BYTES}"
+            f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
+    seed_read = f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}"
+    lines = [
+        "# One pool per entry -- reset, donor, poke, step.  See spawn_plan:",
+        "# a shared pool loses every child past the read window.",
+        DECLARATIONS,
+        f"__cdecl i32 aBlob_Update(i32,ptr) = Incubation.exe+0x{BLOB_ARM - 0x400000:x}",
+        f"__cdecl i32 c{donor:08X}({signature})"
+        f" = Incubation.exe+0x{donor - 0x400000:x}",
+        MEMCPY_DECL,
+    ]
+    for index, (kind, vector, seed) in enumerate(entries):
+        for run, (_offset, raw) in enumerate(poke_writes(kind, vector)):
+            lines.append(f"--blob pk{index}_{run}:{raw.hex()}")
+        lines.append("--blob sd%d:%s"
+                     % (index, struct.pack("<d", float(seed)).hex()))
+    lines += ["", "aSetSaveMode(0)", f"loaded = aLoadGame({gold.CAPTURE_SLOT})"]
+    for index, (kind, vector, _seed) in enumerate(entries):
+        lines.append("")
+        lines.append(f"# kind {kind} at slot {slot}")
+        lines.append("reset = aResetBlobs()")
+        lines.append(f"c{donor:08X}({', '.join(str(a) for a in args)})")
+        for run, (offset, raw) in enumerate(poke_writes(kind, vector)):
+            lines.append(
+                f"memcpy([0x{entry:x}]+0x{RECORD_BYTES * slot + offset:x},"
+                f" &pk{index}_{run}, {len(raw)})")
+        lines.append(f"memcpy(0x{ARANDOM2_SEED:x}, &sd{index},"
+                     f" {ARANDOM_SEED_BYTES}){seed_read}")
+        lines.append(f"aGetUnitMapElementPtr(0){read}")
+        for _round in range(rounds):
+            lines.append(f"memcpy(0x{ARANDOM2_SEED:x}, &sd{index},"
+                         f" {ARANDOM_SEED_BYTES}){seed_read}")
+            lines.append(f"aBlob_Update({slot},"
+                         f" [0x{entry:x}]+0x{RECORD_BYTES * slot:x}){read}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_spawn(rows: list[dict[str, Any]], entry: int) -> dict[str, Any]:
+    """One `{start, steps, written}` per entry, split on the pool resets.
+
+    A plan that faulted part way simply has fewer entries, and an entry that
+    faulted mid-round fewer steps -- the check counts both rather than
+    assuming a rectangle, the same way :func:`parse_poked` does.
+    """
+    key = f"[0x{entry:x}]"
+    seed_key = f"0x{ARANDOM2_SEED:x}"
+    out: list[dict[str, Any]] = []
+    for row in rows:  # noqa: PLR1702 -- one pass, four row kinds
+        if row.get("status") != "ok":
+            continue
+        reads = row.get("reads") or {}
+        text = reads.get(seed_key)
+        seed = (struct.unpack_from("<d", _hex_bytes(text), 0)[0]
+                if text and "<" not in text else None)
+        if row.get("call") == "aResetBlobs":
+            out.append({"start": None, "steps": [], "written": []})
+            continue
+        if not out:
+            continue
+        if row.get("call") == "memcpy" and key not in reads:
+            if seed is not None:
+                out[-1]["written"].append(seed)
+            continue
+        if key not in reads or "<" in reads[key]:
+            continue
+        shot = {"pool": reads[key].replace(" ", ""), "seed": seed}
+        if row.get("call") == "aBlob_Update":
+            out[-1]["steps"].append(shot)
+        elif out[-1]["start"] is None:
+            out[-1]["start"] = shot
+    for item in out:
+        _fill_born(item)
+    return {"entries": out}
+
+
+def _fill_born(entry: dict[str, Any]) -> None:
+    """Give every step the records that **appeared** in it, already parsed.
+
+    The pools are stored as raw hex because a snapshot after a tick is not a
+    contiguous run of live records and `parse_records` would stop at the first
+    free slot.  What a reader of this family wants is the difference, though,
+    and one of them is a GDScript suite: writing it here keeps the record
+    layout of `docs/28` §7.2 read in one place rather than two.
+    """
+    start = entry.get("start")
+    if not start:
+        return
+    previous = parse_slots(bytes.fromhex(start["pool"]))
+    for step in entry.get("steps") or []:
+        current = parse_slots(bytes.fromhex(step["pool"]))
+        step["born"] = [record for slot, record in enumerate(current)
+                        if record is not None and previous[slot] is None]
+        step["full"] = all(record is not None for record in current)
+        previous = current
+
+
 #: `aGetSymbolObjectPtr` and the unit-height helper the creators open with.
 #: Every one of the ten unexplained creators starts the same way: the tile
 #: argument through `aGetCtrlMapElementPtr`, the cell's `+5` through this
@@ -951,6 +1175,9 @@ def poked_plan(handle: int, donor: int, args: list[int],
     poked arm can fault, and a fault costs the rest of the process; per-call
     reads mean the calls before it are still a measurement, and they isolate
     one arm's writes instead of twelve arms' together.
+
+    A spawning arm's **child** is not in this window and is not meant to be:
+    :func:`spawn_plan` is the family that measures those.
     """
     entry = _entry_address(handle)
     signature = ",".join("i32" for _ in args)
@@ -1735,6 +1962,60 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             document.setdefault("failures", {})[MODE_PHASE] = str(err)
             LOG.warning("%s: %s", MODE_PHASE, err)
             _save(out, document)
+
+    # **What a creator is given.**  The poked family measures an arm's own
+    # record and stops there: its window is the donor's twelve slots and a
+    # child lands past them, so every argument an arm hands a creator went
+    # unmeasured -- which is how `docs/97` §48's five wrong ones survived a
+    # capture that says all seventy-four arms agree.  These two families step
+    # the twenty-one arms that ask for a creator, with the second generator's
+    # seed **written** before every call and the pool read wide enough to hold
+    # the children.
+    if donor_slots and POKE_DONOR in arities:
+        donor_args = argument_vector(arities[POKE_DONOR], source, target)
+        arrival = _seek_target(phases)
+        families = (
+            (ZOOM_BOB_PREFIX,
+             spawn_entries(ZOOM_BOB_KINDS, SPAWN_SEEDS, arrival)),
+            (SPAWN_PREFIX,
+             spawn_entries(SPAWN_OTHER_KINDS, SPAWN_SEEDS[:1], arrival)),
+        )
+        for prefix, entries in families:
+            for index, batch in enumerate(spawn_batches(entries)):
+                name = f"{prefix}{index:02d}"
+                if name in phases:
+                    continue
+                plan = spawn_plan(state["handle"], POKE_DONOR, donor_args,
+                                  donor_slots[0], batch, SPAWN_ROUNDS)
+                try:
+                    rows = gold.run_plan(game_copy, dbgcall, plan, name,
+                                         attempts=attempts)
+                    phases[name] = parse_spawn(rows, entry)
+                    phases[name]["slot"] = donor_slots[0]
+                    phases[name]["kinds"] = [k for k, _v, _sd in batch]
+                    phases[name]["vectors"] = [v for _k, v, _sd in batch]
+                    phases[name]["seeds"] = [sd for _k, _v, sd in batch]
+                    phases[name]["rounds"] = SPAWN_ROUNDS
+                    phases[name]["args"] = list(donor_args)
+                    phases[name]["read_records"] = SPAWN_READ_RECORDS
+                    document.get("failures", {}).pop(name, None)
+                    _save(out, document)
+                except gold.CaptureError as err:
+                    document.setdefault("failures", {})[name] = str(err)
+                    LOG.warning("%s: %s", name, err)
+                    _save(out, document)
+
+    # A spawning phase captured before the parsed diff existed gets it here:
+    # it is pure arithmetic over the pools the phase already holds, so it
+    # costs no process and re-taking one would.
+    for name, phase in phases.items():
+        if not (name.startswith(ZOOM_BOB_PREFIX)
+                or name.startswith(SPAWN_PREFIX)):
+            continue
+        for item in phase.get("entries") or []:
+            if any("born" not in step for step in item.get("steps") or []):
+                _fill_born(item)
+                _save(out, document)
 
     # A phase written before the seed reads existed is re-taken: it holds the
     # records but cannot answer the velocity question, and merging is the
@@ -3211,9 +3492,20 @@ EMITTER_BRANCH_BYTES = bytes.fromhex("e8971d0400" "83f803" "7561")
 #: quietly having its mode replaced with this one.
 EMITTER_MODE_SPECIAL = 3
 EMITTER_MODE_MEASURED = 2
+#: How many draws kind 59's arm takes in the ordinary display mode: `vz`,
+#: then the ordinary emitter's size and two velocities.
+EMITTER_ARM_DRAWS = 4
 #: How the special branch pays for itself: three extra draws before the
 #: ordinary spawn's four, so the second generator's seed either side says
 #: whether the branch was taken without trusting the record alone.
+#: `mode.special_draws` measures exactly this -- the same arm advances the
+#: second generator by seven under the written mode and by four without it,
+#: which is what says the second emitter takes **two** velocity draws and an
+#: `aux` rather than three velocities.  Where the three draws *go* is the one
+#: half the capture cannot see: the child is not in a poked window, and the
+#: `spawn_*` family runs in this host's own display mode, so the literal zero
+#: for `vz` stays `push ebp` at `0x00420101` -- the same instruction the
+#: ordinary branch has at `0x00420162`, and that one *is* measured by a child.
 EMITTER_SPECIAL_DRAWS = 3
 
 #: The three seeking arms, by jump-table index -- which for this table *is*
@@ -3288,7 +3580,7 @@ POKED_ARMS_DISAGREE: list[int] = []
 #: edit does not silently rename a gap.  If this pin breaks and
 #: `coverage.uncovered_lines` does not, the transcription grew or shrank a
 #: line and the number simply wants updating.
-COVERAGE_ARM_LINES = (384, 386)
+COVERAGE_ARM_LINES = (383, 385)
 COVERAGE_ARMS_COMPLETE = 73
 #: The two that remain, and they are one *divergence* rather than a gap:
 #: `0x0041E55A` has no test in front of its `idiv`, so a record with no `vx`
@@ -3709,6 +4001,12 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
     "FLASH_RADIUS", "FLASH_RADIUS_LARGE", "LASER_OFFSET", "LASER_STEP",
     "PLATFORM_DUST_SPREAD", "PLATFORM_DUST_UP", "RING_RADIUS",
     "RING_RADIUS_LARGE", "STREAM_RECORDS", "STREAM_STEP", "TUBE_PAIRS",
+    # `docs/97` §49's twelve are reached by the `zoom_bob_*` and `spawn_*`
+    # families here rather than by a weapon switch, so this list is where
+    # their one shared constant sits: the scratch **name**, which is an
+    # address and not an arithmetic constant at all -- nothing can tell it
+    # from a neighbouring value because it is compared as a pointer.
+    "NAME_SCRATCH",
 )
 #: The ones it does pin, so the check is a measurement in both directions
 #: rather than a list of excuses.
@@ -4026,6 +4324,7 @@ def _tick_checks(ck: "tables.Checker", root: str,
     _poked_checks(ck, phases, base, tablesets, positions, handles)
     _probe_checks(ck, phases, base, tablesets, positions, handles)
     _mode_checks(ck, phases, base, tablesets, positions, handles)
+    _spawn_checks(ck, phases, base, tablesets, positions, handles)
     # The fixture the Godot suite reads carries the same two lists, so the
     # boundary it prints cannot drift from the capture that earned it.
     ck.equal("native.tick_arms_are_the_fixture's",
@@ -4339,6 +4638,56 @@ def _mode_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
              [MODE_ARM],
              lambda v: "the arm reproduces the engine's record on the branch "
                        "no record can select")
+    # **What the branch costs the stream.**  The record comparison above
+    # re-seeds from the engine before every call and so cannot see a draw
+    # count at all; the seed either side can.  A step that found the record
+    # already gone advances nothing, so the zeros are dropped and both sides
+    # are required to have something left.
+    special = _kind_advances(phases, [MODE_PHASE], EMITTER_ARM_KIND)
+    ordinary = _kind_advances(
+        phases,
+        sorted(n for n in phases if n.startswith("poked_")),
+        EMITTER_ARM_KIND)
+    ck.check("mode.special_draws",
+             bool(special) and bool(ordinary)
+             and set(special) == {EMITTER_ARM_DRAWS + EMITTER_SPECIAL_DRAWS}
+             and set(ordinary) == {EMITTER_ARM_DRAWS},
+             f"kind {EMITTER_ARM_KIND}'s arm advances the second generator "
+             f"by {sorted(set(special))} under the written mode over "
+             f"{len(special)} call(s) and by {sorted(set(ordinary))} without "
+             f"it over {len(ordinary)} -- the special emitter's "
+             f"{EMITTER_SPECIAL_DRAWS} draws, measured rather than counted "
+             "off the listing")
+
+
+def _kind_advances(phases: dict[str, Any], names: list[str],
+                   kind: int) -> list[int]:
+    """How far each call of one poked kind advanced the second generator.
+
+    One entry per `aBlob_Update` of a record poked to ``kind``, in call order,
+    with the calls that advanced nothing dropped -- those are the steps that
+    found the record already expired, and a dead record's arm is not a draw
+    count.
+    """
+    out: list[int] = []
+    for name in names:
+        phase = phases.get(name) or {}
+        slots = phase.get("slots") or []
+        kinds = phase.get("kinds") or []
+        steps = phase.get("steps") or []
+        start = phase.get("start") or {}
+        if not slots or kind not in kinds:
+            continue
+        wanted = {index for index, k in enumerate(kinds) if k == kind}
+        seed = start.get("seed")
+        for index, step in enumerate(steps):
+            after = step.get("seed")
+            moved = (seed_advance(seed, after)
+                     if seed is not None and after is not None else None)
+            seed = after
+            if index % len(slots) in wanted and moved:
+                out.append(moved)
+    return out
 
 
 def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
@@ -4504,6 +4853,90 @@ def _tick_disagrees_when_perturbed(phases: dict[str, Any], landed: list[str],
     return False
 
 
+#: **The four arms that add a draw to a coordinate**, and what each draws
+#: before the first jitter.  ``fiadd`` says which reading the bytes carry:
+#: three add the coordinate to the draw and truncate the sum, one truncates
+#: the draw and adds the coordinate through `movsx ecx, ax`.
+#: `blob_tables.py`'s `spawn.jitter_forms` pins the twelve instructions; this
+#: is the measurement beside that reading, and the seeds are chosen so every
+#: jitter lands where the two forms disagree.
+JITTER_ARMS: dict[int, dict[str, Any]] = {
+    56: {"first": (2, 5), "jitter": (-50, 100), "fiadd": True},
+    62: {"first": (0, 10), "jitter": (-1000, 2000), "fiadd": True},
+    67: {"first": (0, 7), "jitter": (-1000, 2000), "fiadd": True},
+    77: {"first": (5, 10), "jitter": (-20, 40), "fiadd": False},
+}
+
+
+def _jitter_forms(seed: float, kind: int, position: tuple[int, int, int]
+                  ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The two readings of one arm's jitter, **from the seed and nothing else**.
+
+    Neither is the transcription's: both are rebuilt here from the generator
+    and the record's position, so the check compares the engine against two
+    candidates rather than against itself.  Returned in `(x, y, z)` order,
+    which is the constructor's; the draws come in the other one.
+    """
+    from inclib import blob_creators as creators
+    from inclib.rng import ARandom
+
+    spec = JITTER_ARMS[kind]
+    rng = ARandom(seed)
+    rng.raw(*spec["first"])
+    added, truncated = [], []
+    for coordinate in (position[2], position[1], position[0]):
+        value = rng.raw(*spec["jitter"])
+        added.append(creators.ftol(value + coordinate))
+        truncated.append(coordinate + creators.ftol(value))
+    return tuple(reversed(added)), tuple(reversed(truncated))
+
+
+def _spawn_hooks(seed: float, positions: dict[int, tuple[int, int, int]],
+                 tables: Any, handles: dict[str, int]) -> Any:
+    """:func:`_seek_hooks` that also records **where** each spawn was asked.
+
+    An arm may ask before its own `_move` or after it, and the jitter check
+    needs the position at the moment of the call rather than either end of
+    the tick.
+    """
+    base = _seek_hooks(seed, positions, tables, handles)
+
+    class _Hooks(type(base)):                                  # type: ignore
+        def __init__(self, *args: Any, **kw: Any) -> None:
+            super().__init__(*args, **kw)
+            self.spawn_positions: list[tuple[int, int, int]] = []
+
+        def spawn(self, creator: int, args: Any, source: Any) -> bool:
+            self.spawn_positions.append((source.x, source.y, source.z))
+            return super().spawn(creator, args, source)
+
+    return _Hooks(seed, target=None, tables=tables)
+
+
+def _run_arm_creators(result: Any, seed: float, tables: Any,
+                      handles: dict[str, int], gore: int
+                      ) -> tuple[Any, Any] | None:
+    """Run what the arm asked for, from where the arm left the generator.
+
+    The engine has **one** `aRandom2` stream and a creator called from an arm
+    draws from it at the moment of the call, so the model's creator has to
+    start where the model's arm stopped.  Answers ``None`` for a request this
+    file has no program for, which is a gap rather than a disagreement.
+    """
+    from inclib import blob_creators as creators
+
+    inputs = creators.DeathInputs(tiles={}, gore=gore, display_mode=0,
+                                  models=handles, tables=tables)
+    pool = creators.Pool(inputs)
+    draws = creators.Draws(seed)
+    for event in result.spawns:
+        entry = creators.DEATH_PROGRAMS.get(event.creator)
+        if entry is None:
+            return None
+        entry[1](pool, draws, event.args, inputs)
+    return pool, draws
+
+
 def _tick_agrees(blob: Any, record: dict[str, Any] | None) -> bool:
     """Whether the model's blob is the engine's record, field for field."""
     if record is None:
@@ -4596,6 +5029,191 @@ def _scatter_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
              lambda n: f"the creator moves rand() {draws} time(s) -- "
                        + ("neither generator; the scatter is data"
                           if n == 0 else "the C runtime's"))
+
+
+#: What the two spawning families reached, pinned so a thinner capture fails
+#: rather than reporting less.  The kinds are every arm the transcription asks
+#: a creator from, and the creators are the thirteen an arm can reach --
+#: twelve of them named nowhere else, which is the gap `docs/97` §49 closes.
+SPAWN_KINDS_STEPPED = [3, 6, 15, 19, 22, 25, 26, 32, 36, 44, 47, 52, 56, 59,
+                       62, 67, 69, 71, 73, 75, 77]
+SPAWN_CREATORS_REACHED = [0x00420950, 0x00423720, 0x00428E30, 0x00428ED0,
+                          0x00428F70, 0x00429390, 0x00429430, 0x0042A410,
+                          0x0042A480, 0x0042A7A0, 0x0042A9D0, 0x0042B150,
+                          0x0042B300]
+#: Arms whose children the capture and the transcription disagree about.
+SPAWN_ARMS_DISAGREE: list[int] = []
+
+
+def _replay_spawn(phases: dict[str, Any], names: list[str], base: int,
+                  tablesets: Any, positions: dict[int, tuple[int, int, int]],
+                  handles: dict[str, int], gore: int) -> dict[str, Any]:
+    """Replay the spawning families: the arm, then what the arm asked for.
+
+    Each entry is a pool of its own -- reset, donor, one poked record -- so
+    everything alive past the donor's own slots after a call is that arm's
+    brood, and the diff is a diff of the **creator's arguments**, which no
+    other phase here measures.
+
+    Three things are compared per call: the poked record itself, exactly as
+    the poked family compares it; the records the arm's creator left, field
+    for field and in slot order; and the generator's seed afterwards, which
+    accounts for the draws of a brood too big for the read window.
+    """
+    import blob_runtime
+
+    agreed: dict[int, bool] = {}
+    creators_seen: dict[int, int] = {}
+    children = 0
+    calls = 0
+    truncated = 0
+    discriminated: list[tuple[int, float]] = []
+    for name in names:
+        phase = phases[name]
+        slot = phase["slot"]
+        for index, entry in enumerate(phase.get("entries") or []):
+            kind = phase["kinds"][index]
+            seed = phase["seeds"][index]
+            start = entry.get("start")
+            if not start:
+                continue
+            first = parse_slots(bytes.fromhex(start["pool"]))
+            record = first[slot]
+            if record is None or record["kind"] != kind:
+                continue
+            blob = blob_runtime.Blob(
+                **{f: record[f] for f in TICK_FIELDS},
+                slot_tag=(base + RECORD_BYTES * slot) & 0xFF)
+            agreed.setdefault(kind, True)
+            previous = first
+            for step in entry["steps"]:
+                after = parse_slots(bytes.fromhex(step["pool"]))
+                born = [r for position, r in enumerate(after)
+                        if r is not None and previous[position] is None]
+                full = all(r is not None for r in after)
+                if step.get("born") is not None and step["born"] != born:
+                    agreed[kind] = False
+                if not blob.alive:
+                    previous = after
+                    continue
+                hooks = _spawn_hooks(seed, positions, tablesets, handles)
+                result = blob_runtime.tick_blob(blob, hooks)
+                calls += 1
+                if not _tick_agrees(blob, after[slot]):
+                    agreed[kind] = False
+                made = _run_arm_creators(result, hooks.rng.seed, tablesets,
+                                         handles, gore)
+                for event in result.spawns:
+                    creators_seen[event.creator] = \
+                        creators_seen.get(event.creator, 0) + 1
+                if made is None:
+                    if result.spawns:
+                        agreed[kind] = False
+                    previous = after
+                    continue
+                pool, draws = made
+                wanted = pool.records
+                # A brood bigger than the window is compared as the prefix it
+                # is; the seed below still accounts for the rest.
+                if full and len(born) < len(wanted):
+                    wanted = wanted[:len(born)]
+                    truncated += 1
+                if len(wanted) != len(born):
+                    agreed[kind] = False
+                for model_record, engine_record in zip(wanted, born):
+                    children += 1
+                    if any(model_record[f] != engine_record[f]
+                           for f in TICK_FIELDS if f in model_record):
+                        agreed[kind] = False
+                if result.spawns and step["seed"] is not None \
+                        and draws.seed != step["seed"]:
+                    agreed[kind] = False
+                if kind in JITTER_ARMS and hooks.spawn_positions and born:
+                    added, cut = _jitter_forms(seed, kind,
+                                               hooks.spawn_positions[0])
+                    if added != cut:
+                        engine = (born[0]["x"], born[0]["y"], born[0]["z"])
+                        wanted_form = (added if JITTER_ARMS[kind]["fiadd"]
+                                       else cut)
+                        discriminated.append((kind, seed))
+                        if engine != wanted_form:
+                            agreed[kind] = False
+                previous = after
+    return {"agreed": agreed, "creators": creators_seen, "children": children,
+            "calls": calls, "truncated": truncated,
+            "discriminated": discriminated}
+
+
+def _spawn_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
+                  tablesets: Any, positions: dict[int, tuple[int, int, int]],
+                  handles: dict[str, int]) -> None:
+    """What a creator is **given** -- `docs/97` §49.
+
+    The poked family measures an arm's own record and reads twelve slots; a
+    child lands past them, so an arm's arguments to its creator were the one
+    thing about the effect layer nothing here measured.  `docs/97` §48 found
+    five wrong ones by stepping the arms by hand, which is what said this
+    needed a phase family rather than a note.
+    """
+    landed = sorted(n for n in phases
+                    if n.startswith(ZOOM_BOB_PREFIX) or n.startswith(SPAWN_PREFIX))
+    ck.equal("spawn.phases", len(landed),
+             len(spawn_batches(spawn_entries(ZOOM_BOB_KINDS, SPAWN_SEEDS,
+                                             (0, 0, 0))))
+             + len(spawn_batches(spawn_entries(SPAWN_OTHER_KINDS,
+                                               SPAWN_SEEDS[:1], (0, 0, 0)))),
+             lambda v: f"{v} plan(s) of the two spawning families landed")
+    if not landed:
+        return
+    gore = (phases.get("gore") or {}).get("value", 3)
+    out = _replay_spawn(phases, landed, base, tablesets, positions, handles,
+                        gore)
+    ck.check("spawn.calls_compared", out["calls"] > 0,
+             f"{out['calls']} single-arm call(s) replayed, "
+             f"{out['children']} child record(s) compared field for field")
+    ck.equal("spawn.arms_stepped", sorted(out["agreed"]), SPAWN_KINDS_STEPPED,
+             lambda v: f"{len(v)} arm(s) that ask a creator for something "
+                       "were stepped with the pool read wide enough to hold "
+                       "the child")
+    ck.equal("spawn.creators_reached", sorted(out["creators"]),
+             SPAWN_CREATORS_REACHED,
+             lambda v: f"{len(v)} creator(s) an arm calls ran in the engine "
+                       "and in the model on the same arguments")
+    ck.equal("spawn.arms_disagree",
+             sorted(k for k, ok in out["agreed"].items() if not ok),
+             SPAWN_ARMS_DISAGREE,
+             lambda v: f"{len(v)} disagree and are named rather than rounded "
+                       "off")
+    # **The jitter check has to be able to fail.**  Two readings of kinds 56
+    # and 77 agree everywhere except where a draw is negative with a
+    # fraction, so a capture whose seed drifted positive would compare two
+    # identical candidates and pass without measuring anything.  The seeds are
+    # chosen to put every jitter there and this counts the calls where the
+    # two candidates actually differed.
+    ck.equal("spawn.jitter_discriminated",
+             sorted({kind for kind, _seed in out["discriminated"]}),
+             sorted(JITTER_ARMS),
+             lambda v: f"{len(v)} arm(s) stepped on a draw where the two "
+                       "readings give different answers, so the engine chose "
+                       "between them")
+    # **Read the overrides back out of the capture**, not out of the constant
+    # beside them: comparing a table with itself is a check that cannot fail,
+    # and this file keeps `native.tick_diff_is_discriminating` for exactly
+    # that reason.  A fixture taken before an override was added fails here.
+    overridden = sorted({kind for name in landed
+                         for kind, seed in zip(phases[name]["kinds"],
+                                               phases[name]["seeds"])
+                         if seed not in SPAWN_SEEDS})
+    ck.equal("spawn.seed_overrides", overridden, sorted(SPAWN_SEED_OVERRIDES),
+             lambda v: f"{len(v)} arm(s) were stepped at a seed of their own, "
+                       "their spawn being behind a roll neither sweep seed "
+                       "passes")
+    ck.check("spawn.jitter_seeds",
+             {seed for _kind, seed in out["discriminated"]}
+             <= {SPAWN_SEED_NEGATIVE} | set(SPAWN_SEED_OVERRIDES.values()),
+             "the discriminating calls are the negative-jitter seed's and the "
+             "overrides'; the positive seed is the same arms where the two "
+             "readings agree")
 
 
 def _z_probe_checks(ck: "tables.Checker", phases: dict[str, Any],

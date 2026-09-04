@@ -5676,3 +5676,213 @@ slice — and it is recorded as a sanity check and not as a verification.
 **Not done, and named:** the four checks above say nothing about whether the
 *converted* geometry carries its prototype's parts in the order the engine
 draws them. That is the by-eye half of `docs/93` §10.4 and it is unchanged.
+
+## 48. 2026-09-04 — the zoom bob's six arguments, stepped
+
+`aBlob_CreateZoomBob` `0x00423720` is the one creator an arm can reach that
+[`blob_programs.gd`](../godot/game/fx/blob_programs.gd) transcribes, and
+wiring the arms' spawn requests to the creator programs for the first time
+(§7.14 of [`92`](92-remake-architecture.md)) made its argument count
+load-bearing. It did not survive the first look: the callee reads **six**
+arguments — `x` at `+0x04`, `y` at `+0x08`, `z` at `+0x0C`, `row` at `+0x10`,
+`aux` at `+0x14`, `life` at `+0x18` — and all fourteen of its call sites clean
+six dwords, but **five of the seven arm requests carried five**. Both twins
+had the same shortfall, which is why the arm capture never saw it: it compared
+the stepped record's own fields and the request *list*, GDScript against
+Python, and never a request against the engine's push block.
+
+Reading the push blocks settled three of the five and got two wrong. What
+settled all seven was **stepping the arms inside `Incubation.exe`**: a donor
+pool, one record poked to each kind, one `aBlob_Update` per record, and the
+child read back out of the pool — its `rot_x` is the `row` argument, its `aux`
+the fifth and its `life` the sixth. Two runs, at a poked `life` of 6 and of 1,
+so both sides of every guard were reached.
+
+| kind | row | aux | life | when |
+|---|---|---|---|---|
+| 6 | 4 | 10 | 8 | every tick |
+| 15 | 1 | `aRandom2(5, 15)` | **8** | `life == 0` |
+| 26 | 0 | 30 | 16 | `life == 0` |
+| 56 | **7** | `aRandom2(2, 5)` | **7** | **every tick** |
+| 69 | 6 | `aRandom2(5, 15)` | **8** | `life == 0` |
+| 73 | 1 | `aRandom2(5, 15)` | **8** | `life == 0` |
+| 77 | **0** | `aRandom2(5, 10)` | **8** | every tick |
+
+The bold entries are what the twins had wrong. Three are the missing `life`.
+The other two are the ones a static reading could not have got right:
+
+* **Kind 77's `row` is `push ebp`, and `ebp` is the sweep's own zero**
+  (`xor ebp, ebp` at `0x0041E50A`, the same register arm 45 writes over the
+  *arrived* flag). Both twins had a literal 5 — the `push 5` two instructions
+  earlier, which is `aRandom2`'s base.
+* **Kind 56's arm has no `life` test at all.** Both twins guarded its spawn
+  with `if life == 0`, so the arm dropped one zoom bob at the end of a
+  record's life where the engine drops one on **every** tick — and with three
+  coordinate jitters of `aRandom2(-50, 100)` that the twins did not draw
+  either, which is one draw against four on the shared `aRandom2` stream.
+  `0x00420037`'s `vz` step is the tail the arm shares with the wrapper's
+  success path, which is what makes the arm read like a guarded branch when it
+  is not.
+
+The jitters are not the same arithmetic in the two arms, and that is the
+engine's: kind 56 adds the coordinate to the draw with `fiadd` and truncates
+the sum (`0x0041FFD6`), while kind 77 truncates first and adds through
+`movsx ecx, ax` (`0x0041F78A`). That one was **by the bytes and not by the
+measurement** when this was written — the two forms differ only when a draw's
+fractional part straddles an integer, and the three deltas the trace showed
+(+38, +45, +27) are the same either way. §49 measured it: a written seed puts
+every jitter on the side where the two readings differ, and the engine chose.
+
+`blob_tables.py` gained two checks: `arm_spawn.arity`, which compares every
+`_spawn` request's value count against the `add esp, K` at every call site of
+that creator — thirteen creators, and it is what would have caught this — and
+`zoom_bob.pushes` / `zoom_bob.unconditional`, which pin the sixteen bytes the
+table above rests on and the three arms that carry no `life` read. A third,
+`arm_spawn.args_needed`, holds the **other** end of the same request against
+the same `add esp, K`: `blob_programs.gd`'s `ARGS_NEEDED` is what
+`GameBlobHooks` refuses a short call by, and an entry raised above the real
+arity would turn every request for that creator into a counted refusal with
+every other check still green.
+`BlobPrograms.ARGS_NEEDED` refuses a short request rather than indexing past
+the end of its array, which is what the defect did while it lasted.
+
+
+## 49. 2026-09-04 — what a creator is *given*
+
+§48 fixed five wrong arguments to one creator and closed with two loose ends:
+twelve creator addresses an update arm can reach that no program anywhere
+carried, and a jitter arithmetic settled by reading bytes rather than by
+measuring. Both are closed here, by the same experiment.
+
+### 49.1 The gap, and why nothing had noticed it
+
+Three families of creators exist. [`28` §8.1](28-effects-and-sound.md)'s
+weapon switches name **thirty**, measured by `blob_gold.py` (§15, §22);
+[`42`](42-mission-presentation.md)'s deaths, unit animations and set pieces
+name **twenty-nine**, measured by `presentation_gold.py` (§31, §32, §37). The
+third family is an update arm's own `aBlob_Create*` call, `docs/28` §7.1 —
+**thirteen** addresses, twelve of them reached from nowhere else in the game.
+
+Nothing in the remake had ever run one. `BlobHooks.spawn` records a request
+and returns success, which is what an oracle wants and what a game must not
+do; `GameBlobHooks` (§7.14 of [`92`](92-remake-architecture.md)) runs it, and
+found twelve addresses with no program behind them. And no capture measured
+them either: the **poked** family steps an arm with a donor record and reads
+`READ_RECORDS = 12` slots, which is the donor's own — a child lands past them
+and was never in the window. So an arm's arguments to its creator were the one
+part of the effect layer that neither a capture nor a twin diff looked at, and
+§48's five wrong ones are what that costs.
+
+### 49.2 The two families
+
+`blob_gold.py` gained `zoom_bob_*` (the seven arms that ask for the zoom bob,
+each under two seeds) and `spawn_*` (the other fourteen). Three things about
+them are the experiment rather than the plumbing:
+
+* **A pool per entry.** Reset, donor, one poked record, then eight rounds.
+  The poked family shares one pool across six records, which is right when
+  the record is what is measured and wrong here: one arm's brood can be a
+  hundred records (`0x0042A7A0`), the window fills, and every later child
+  lands past its end. The first run of this family did exactly that and went
+  quiet from round two onward.
+* **A written seed.** `aRandom2`'s seed is written through the game's own
+  `memcpy` before **every** call and read back on the same line. That is what
+  turns a measurement of an arm into a measurement of an *arithmetic*: under
+  6.0 every jitter both zoom-bob arms take is negative with a fraction, which
+  is the only place `fiadd` and `movsx` disagree; under 2.0 every one is
+  positive, which is the same arms where the two readings agree. The check
+  computes **both** candidates from the seed and requires them to differ
+  before comparing the engine against either, so a seed that drifted could
+  not pass by comparing a value with itself.
+* **A window of forty-four records.** The donor's thirty plus room for a
+  brood. A brood bigger than that is compared as the prefix it is, with the
+  generator's seed after the call accounting for the rest.
+
+Two arms needed a seed of their own, and `SPAWN_SEED_OVERRIDES` is the same
+shape as `poke_probes`' targeted vectors. Kind 52 drops its para bomb only
+when `aRandom2(0, 8)` rolls a zero, which neither sweep seed does, so it gets
+1.0 — the reason `0x0042B150` is reached at all. Kind 62's spark burst is
+behind `aRandom2(0, 10) > 5.0`, and 6.0's first draw is 1.73: its branch had
+not run **and its jitter had not been measured** while the note beside it said
+otherwise. 19.0 rolls 5.49 and then three negative fractional jitters, which
+takes the branch and discriminates the arithmetic in one call.
+
+### 49.3 What it found: four more arms, six corrections
+
+| kind | what the child said |
+|---|---|
+| 32 | the sting sparks are spawned on **every** tick; `0x0041F577`'s branch guards the *arrived* flag write alone |
+| 59 | the emitter takes **two** velocity draws and a literal zero, and the first draw is its `aux` — the ordinary branch by the child (`0x00420162`), the special one by the same three bytes (`0x00420101`) and by its draw count |
+| 59 | so the arm drew a value it does not draw, which put every arm after it in the sweep one step out of the shared stream |
+| 62 | its plasma-spark jitter is `fiadd` (`0x0041E8EA`), not truncate-then-add |
+| 62 | its terminal emitter's 800 is the **vertical** and its 20 the `aux` (`0x0041E95A`), with the sweep's zero for both horizontals |
+| 67 | the same `fiadd` jitter (`0x0041EE98`) |
+
+Every one is invisible to a diff of the record's own fields, which is what
+every earlier check of this layer was. Kind 59's extra draw is the one worth
+staring at: an arm that draws once too often is correct about its own record
+and wrong about **every other arm's** in the same frame, because the engine
+keeps one `aRandom2`.
+
+### 49.4 The jitter, measured
+
+Four arms add a draw to a coordinate and three arithmetics were claimed for
+them. The engine's answer, on a seed that discriminates:
+
+| arm | site | reading |
+|---|---|---|
+| 56 | `0x0041FFD6` | `fiadd` — the coordinate joins the draw, the **sum** truncated |
+| 62 | `0x0041E8EA` | `fiadd` |
+| 67 | `0x0041EE98` | `fiadd` |
+| 77 | `0x0041F78A` | `movsx ecx, ax` — the **draw** truncated, then added |
+
+`0x0042A7A0` is a fifth case and the plain one: `add esi, ebx` after `_ftol`,
+truncate-then-add, inside the creator rather than the arm.
+
+### 49.5 The twelve, transcribed
+
+`tools/inclib/blob_creators.py` and `godot/game/fx/blob_programs.gd` carry all
+thirteen now (`0x0042A9D0` was already the weapon family's; the arm registry
+delegates to it rather than transcribing it twice), plus `0x0042ADD0`, the
+sparking rain only `0x0042A410` calls. Four things in them are easy to get
+wrong and are measured:
+
+* `0x00428F70` is called with **five** dwords and reads four. The fifth is
+  the sibling sparks' `life` and this one draws its own; the compiler uses the
+  *fourth* argument's slot as the scratch its three `fild`s load from, which
+  is what makes the omission look like a use.
+* `0x0042ADD0`'s `speed` is a two-value enumeration and the third value is a
+  `CHECK` — `"unknown speed"`, and nothing made. 0 is a life of 30 with the
+  sideways draws as they come, 1 a life of 5 with both doubled.
+* `0x00429430` draws **nothing**: two records whose velocities are the
+  caller's own turned a quarter turn either way and cut to a fifth by the
+  compiler's reciprocal multiply, which truncates toward zero.
+* `0x0042B150` is **not** `0x0042B070`. The arm's para bomb reads no object,
+  has no ceiling and does not touch the *arrived* flag; the set piece's does
+  all three.
+
+### 49.6 What is checked, and where
+
+`blob_gold.py --check` is **268 checks**: `spawn.arms_stepped` (21 arms),
+`spawn.creators_reached` (13), `spawn.arms_disagree` (none),
+`spawn.jitter_discriminated` (all four arms, on calls where the two candidate
+readings actually differ) and `spawn.seed_overrides`, which reads the
+overrides back out of the capture rather than out of the table beside it.
+`blob_tables.py`'s `spawn.jitter_forms` pins the same four arms' twelve
+instructions, which needs no capture at all.
+
+One branch stays outside all of that and is worth naming: kind 59's **special**
+emitter runs only under an output mode `mode_59` writes, and that plan is a
+poked one whose window holds no child. What is measured there is the branch's
+*cost* — `mode.special_draws` reads `aRandom2`'s seed either side of every
+call and finds seven draws against the ordinary four, which is the "two
+velocities and an `aux`, not three velocities" half — and what says where the
+three go is `spawn.emitter_vz_is_ebp`: both sites are the same `call _ftol` /
+`push eax` / `push ebp`, and the ordinary one of the two *is* compared against
+a child. `test_blob_native.gd`
+replays the **GDScript** side of the same capture — `BlobKinds.tick` for the
+arguments and `BlobPrograms.run` for the records — so the remake's own path is
+compared against the engine rather than against Python. `blob_tables.py` pins
+the scratch name to the two `push` sites that hand it to the constructor, and
+`test_effects.gd` requires every address `BlobKinds` can ask for to have a
+program.

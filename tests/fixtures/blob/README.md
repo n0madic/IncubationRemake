@@ -99,7 +99,11 @@ of it, and the original dies where this port returns (`docs/97` §21.2).
 Kind 59's six were there until `mode_59` reached them. Its branch is gated on
 the **output system's** mode global rather than on the record, so the plan
 writes that global in the live process, steps the arm and puts it back
-(`docs/97` §23.3).
+(`docs/97` §23.3). It is a poked plan, so its window holds the arm's record
+and not the emitter the branch asks for: what the seed either side measures
+there is the **count**, seven draws against the ordinary four, and the
+arguments those three draws become are pinned as bytes instead
+(`blob_tables.py`'s `spawn.emitter_vz_is_ebp`).
 
 ## What one run held
 
@@ -189,6 +193,26 @@ Its `phases` map holds:
   go through the engine's CHECK reporter, and a plan that puts a message box up
   never reaches its next line. Those branches are read statically instead;
   there is nothing in them to measure.
+* `zoom_bob_*` and `spawn_*` — **what a creator is given** (`docs/97` §49).
+  Every arm that asks a creator for something, stepped with `aRandom2`'s seed
+  **written** before each call and the pool read forty-four records wide. The
+  shape is one `entries` list per plan, each entry a pool of its own: `start`
+  (the snapshot after the poke), `steps` (one per `aBlob_Update`, each with
+  `pool`, `seed`, the already-parsed `born` records that appeared in it, and
+  `full` when the window has no free slot left), `written` (every value a seed
+  write left in the generator), and the plan's `kinds`, `seeds`, `vectors`,
+  `slot` and `rounds`.
+
+  A pool per entry rather than one per plan, because a brood can be a hundred
+  records and a shared window loses every child after the first big one. Three
+  creators make more than the window holds; those are compared as the prefix
+  they are, with the seed after the call accounting for the rest. Two arms
+  carry a seed of their own (`SPAWN_SEED_OVERRIDES`): their spawn is behind a
+  roll neither sweep seed passes.
+* `models` — `0x004038F0`'s handle for every model name the swap arms and the
+  creators can ask for, the six the arm-called creators add included. A
+  creator's record carries the handle, so a transcription that guessed one
+  would be comparing an invented index against a measured one.
 * `failures` — creators whose plan the harness refused, with what it said.
   They are kept **out** of `phases`, so a re-run retries them; a creator that
   faults is a result and is not the same thing as one that refuses a tile.
