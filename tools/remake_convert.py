@@ -930,12 +930,25 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
             f"{len(art['briefing'])} pictures")
 
 
+def check_mission_selection(c: Checker, root: Path) -> None:
+    """What each form of the mission argument resolves to -- no conversion."""
+    c.expect("select.default", missions_from_args(root, False, None),
+             SLICE_MISSIONS, "no argument is the slices' six")
+    c.expect("select.explicit",
+             missions_from_args(root, False, "_C_140, _C_115 ,,"),
+             ["_C_140", "_C_115"], "spaces trimmed, empty entries dropped")
+    c.expect("select.campaign_maps", missions_from_args(root, True, None),
+             campaign_map_set(root),
+             f"{CAMPAIGN_MAPS} maps, the set --check-campaign bakes")
+
+
 def run_checks(root: Path, missions: list[str], language: str) -> int:
     c = Checker()
     if not (root / "Missions").is_dir():
         c.check("root", False, f"no Missions/ under {root}")
         return c.report()
     check_png_stability(c)
+    check_mission_selection(c, root)
 
     with tempfile.TemporaryDirectory() as tmp:
         caches_root = Path(tmp) / "caches"
@@ -1034,6 +1047,23 @@ def campaign_map_set(root: Path) -> list[str]:
     for pattern in CAMPAIGN_MAP_GLOBS:
         names |= {p.stem for p in (root / "Missions").glob(pattern)}
     return sorted(names)
+
+
+def missions_from_args(root: Path | None, campaign_maps: bool,
+                       missions: str | None) -> list[str]:
+    """The mission list a command line asks for.
+
+    ``--campaign-maps`` is the whole campaign -- the same set
+    :func:`campaign_map_set` gives ``--check-campaign`` -- and replaces
+    ``--missions`` rather than adding to it; without either, the six the
+    slices need.  It is a separate function so ``--check`` can pin all three
+    answers without a conversion behind them.
+    """
+    if campaign_maps:
+        assert root is not None, "--campaign-maps is refused without a root"
+        return campaign_map_set(root)
+    text = ",".join(SLICE_MISSIONS) if missions is None else missions
+    return [name.strip() for name in text.split(",") if name.strip()]
 
 
 def run_campaign_checks(root: Path, language: str) -> int:
@@ -1308,9 +1338,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="a read-only game installation")
     ap.add_argument("-o", "--out", type=Path,
                     help="the caches directory to publish into")
-    ap.add_argument("--missions", type=str,
-                    default=",".join(SLICE_MISSIONS),
-                    help="comma-separated mission names")
+    ap.add_argument("--missions", type=str, default=None,
+                    help="comma-separated mission names (default: the six the "
+                         "slices need)")
+    ap.add_argument("--campaign-maps", action="store_true",
+                    help="every map the campaign can load -- 75 missions, two "
+                         "campaign maps and 15 upgrade screens -- instead of "
+                         "--missions")
     ap.add_argument("--language", default=cachemod.DEFAULT_LANGUAGE,
                     help="source language; part of the cache id (docs/92 §7.6)")
     ap.add_argument("--dev-fixtures", type=Path,
@@ -1329,7 +1363,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s: %(message)s")
-    missions = [m for m in args.missions.split(",") if m.strip()]
+    if args.campaign_maps and args.missions is not None:
+        ap.error("--campaign-maps replaces --missions; give one of them")
+    if args.campaign_maps and args.root is None:
+        ap.error("--campaign-maps needs the game root, to list its Missions/")
+    missions = missions_from_args(args.root, args.campaign_maps, args.missions)
 
     try:
         if args.check_cache:

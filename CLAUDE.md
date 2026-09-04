@@ -65,7 +65,7 @@ python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecu
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
-python3 tools/remake_convert.py     gog_incubation --check   # 220 checks, 6 missions
+python3 tools/remake_convert.py     gog_incubation --check   # 223 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
 bash   godot/run_tests.sh                                    # 34 suites, 3133 checks
 ```
@@ -638,6 +638,8 @@ Six things about it that are easy to trip over:
 
 ```bash
 python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish
+python3 tools/remake_convert.py gog_incubation --campaign-maps \
+    -o "$(...)/caches"                             # the whole campaign, 92 maps
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
@@ -693,6 +695,13 @@ checks**) is the other one outside it: it bakes **all 92** campaign maps once
 world sets -- and checks the result. It is separate from `--check` because
 `--check` runs **three** full conversions and this set is fifteen times the
 slice: 26 s and 86 MiB against 4 s and 42 MiB (`docs/92` §7.13 D9).
+**`--campaign-maps`** is the same set as a mission argument rather than as a
+check: it replaces `--missions` (giving both is refused, as is giving it
+without a root) and is what a cache the campaign can actually be *played*
+through is published with -- the default six are the slices' own set, not a
+chain's, and a mission the cache does not carry stops the campaign where it
+stands. `--check` pins all three forms of the argument in
+`check_mission_selection`.
 
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is
