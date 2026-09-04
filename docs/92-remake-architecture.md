@@ -294,6 +294,61 @@ private object layouts.
 ([`22` §3](22-combat-and-visibility.md)), so a remake seeded identically can be
 compared trace against trace, not just outcome against outcome.
 
+### 5.1 Where an executable Python model is required, and where it is not (2026-09-04)
+
+§5's rank 2 says Python "supplies **selected** data/function oracles" and is
+"not described as the reference for every rule". Six slices later that sentence
+needs a rule that can be applied to the seventh, because the twin is real work:
+about **13 200** lines of `inclib` -- `combat`, `ai`, `lcl_runtime`,
+`blob_creators`, `movemap`, `campaign`, `sound`, `interact`, `turn`, `ctrlmap`,
+`eng3d`, `pose`, `allowance`, `script` and `rng` -- transcribe behaviour that
+`core/` also implements, in about 29 900 lines of GDScript, and the
+`*_runtime.py` check drivers over them are more.
+
+**The criterion.** An executable Python model is required where a
+specification's claim is **arithmetic that has to be run over the whole
+corpus**. Where the claim is **structural**, a parser check plus a native
+capture is the whole of it, and no twin is written.
+
+**The rule, from this slice on: no new Python twin for a new subject.** The
+existing ones stay. Nothing here changes the parsers, `convert.py`, the
+`*_tables.py` binary readers or the `dbgcall` gold tools -- none of those has a
+GDScript counterpart and none is duplicated work.
+
+Three things the existing models carry that `core/` cannot, and that are the
+reason they are frozen rather than retired:
+
+* **The corpus.** `movemap_runtime` runs 3726 fills, 4587 paths and 4587 walks;
+  `ai_runtime` 108 missions; `turn_runtime` 1863 units; `lcl_runtime` 942
+  invocations. The Godot suites run against **six** converted missions, because
+  `--dev-fixtures` is six. These are different orders of coverage, not the same
+  check twice.
+* **An oracle that needs no Wine.** Every fixture is gitignored
+  (`.gitignore`: `tests/fixtures/*/*.json`; only the `README.md` beside each is
+  in git). A Python-emitted fixture regenerates from the corpus alone; a native
+  one needs Wine, an intermittent start ([`91` §1](91-wine-runtime-probes.md))
+  and a copy of the game. Of the 34 suites, 11 take an executable-Python oracle
+  and 8 a native one -- and on a fresh clone with the game installed, only the
+  first 11 rebuild their own fixtures.
+* **Measurement.** Line coverage of a transcribed arm (383 of 385,
+  [`97` §21](97-slice-5-report.md)) and the mutation batteries are Python-side;
+  Godot has no coverage tool. The battery mutates Python and re-runs the whole
+  check set, which reaches the remake wherever a suite reads a re-emitted
+  fixture -- [`97` §12](97-slice-5-report.md) records a re-run that found a
+  defect in `BlobPool` rather than in the model.
+
+**First application: the sequence player** ([`41`](41-sequence-player.md)). Its
+claims are structural -- a compiled manifest, a lifecycle, a 30 fps clock --
+and `seq_parse.py --check` already pins them over 130/130 files with 75 checks.
+So the seventh slice writes the player in GDScript with a specification-only or
+native suite, and **no `inclib/seq_runtime.py`**.
+
+**Where retirement would be cheap, if it is ever wanted.** A subject that has a
+native capture and no corpus dimension: the blob pool (`test_blob` and
+`test_blob_native` stand on the same material) and the campaign, once
+`campaign_gold.py` exists. Neither is proposed here; both are named so a later
+reader does not have to re-derive the shortlist.
+
 ---
 
 ## 6. What can be built today

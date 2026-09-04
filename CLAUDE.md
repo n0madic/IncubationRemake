@@ -376,7 +376,7 @@ was for. So **74 of 74 arms are stepped and agree**, 24 with a creator's
 record and 50 with a donor's; the second is weaker in one way and no other,
 in that the arm is measured and the arguments a creator would pass it are
 not. **How much of each arm that reached is measured too** (`docs/97` §21):
-the comparison is line-traced and runs **377 of the 385** transcribed arm
+the comparison is line-traced and runs **383 of the 385** transcribed arm
 lines, 73 of 74 arms entirely, after a second sweep vector (`life` 12, `aux`
 10, fourteen rounds) and eight one-arm probes were chosen against the first
 measurement -- one vector is one point of an arm's input space, and the
@@ -514,6 +514,14 @@ built by any of the format tools; `docs/92` records its architecture,
 `docs/93` reports the first vertical slice that established it, and `docs/94`
 the second — the turn, combat, visibility, interaction and the mission-script
 interpreter, with `_C_140` played and won in an exported build.
+
+**No new Python twin for a new subject** (`docs/92` §5.1, 2026-09-04). An
+executable model in `inclib` is written where a spec's claim is arithmetic that
+has to run over the whole corpus; where the claim is structural, a parser check
+plus a native capture is the whole of it and the rule goes straight into
+GDScript. The existing models are frozen, not retired -- they carry the corpus
+runs the six-mission fixtures cannot, and they are the only oracle that
+regenerates without Wine, every fixture being gitignored.
 
 `game/charisma/` is the fourth slice's: the model, the clip, the track
 sampler, `V100Part::Update`, the body and its state machine. `core/lcl/` is a
