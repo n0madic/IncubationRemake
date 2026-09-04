@@ -471,9 +471,8 @@ and everything else from `aRandom` ([`20` §7.4](20-lcl-language.md)), so the
 save and the hash carry both streams. A save that dropped the second would come
 back a different mission the moment the next reinforcement fired.
 
-What is still a checklist rather than a decision: the campaign phase has no
-representation because the campaign layer does not exist, and migration between
-schema versions has a version field but no migration to test. The compatibility
+What is still a checklist rather than a decision: migration between schema
+versions has a version field but no migration to test. The compatibility
 flags are in the hash from the first day so that later ones cannot be added
 without changing it.
 

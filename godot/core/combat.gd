@@ -1065,9 +1065,10 @@ static func count_kill(attacker: UnitState, count: int = 1) -> void:
 ## are awarded and the kill is counted. Returns what the total grew by.
 ##
 ## The three player-record counters the block also moves (`0x0043B8D0`,
-## `0x0043B860`, `0x0043B810`) are the debriefing's statistics and nothing in
-## docs/22's scope reads them.
-## TODO: model the player-record kill and loss counters with the debriefing.
+## `0x0043B860`, `0x0043B810`) are the debriefing's statistics, so they are
+## [TurnState]'s rather than this function's: the sixth slice wired the kill
+## pair at the call site that resolves the shot and `0x0043B8D0` into
+## [method UnitState.remove], which is the one death path every killer reaches.
 static func award_kill(utab: UnitTypeTable, attacker: UnitState,
 		victim: UnitState, game_mode: int, ai_level: int) -> int:
 	if utab.species(victim.type_id) == SPECIES_OBJECT:

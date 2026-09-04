@@ -1888,9 +1888,11 @@ def award_kill(world: CombatWorld, attacker: CombatUnit,
 
     The counters -- ``0x0043B8D0`` and ``0x0043B860`` on the victim's player,
     ``0x0043B810`` on the attacker's -- are the debriefing's statistics
-    (``docs/27``) and nothing in ``docs/22``'s scope reads them.
-    TODO: model the player-record kill and loss counters when the debriefing
-    is transcribed.
+    (``docs/27``) and nothing in ``docs/22``'s scope reads them.  The sixth
+    slice transcribed them into :mod:`inclib.campaign` -- ``count_unit_lost``
+    and ``count_kill_and_loss`` -- against a scoreboard :class:`CombatWorld`
+    does not carry, which is why this model does not move them and the
+    GDScript twin, whose world and campaign share one ``TurnState``, does.
     """
     if world.species(victim) == SPECIES_OBJECT:
         return 0
