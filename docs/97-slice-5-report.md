@@ -383,9 +383,11 @@ names them. §14.1 took them back and re-measured.
   every cache and their `InitMap` is four `7_fire` emitters each, so the
   command has a consumer. `game/fx/bgb_emitters.gd` is the twenty-slot table
   and `0x0041E1A0`'s cadence, and `BlobPrograms.main_map_fire` is
-  `aBlob_CreateMainMapFire` `0x0042A660`. Types 2..6 create their object at
-  registration and none of those creators is transcribed; they are counted
-  rather than dropped.
+  `aBlob_CreateMainMapFire` `0x0042A660`. **All seven creators followed on
+  2026-09-05**, together with the finding that the command has *two* jump
+  tables and no type is in both: types 2..6 make their object at registration
+  and tick to a bare return, so the tally that had counted them as unmade was
+  reporting the engine's own silence as a gap.
 * ~~**Model blobs and joint angles are not drawn**~~ — **closed in §14.1.**
   The text below is what the slice reported; the pool's model half now draws,
   and the panel flickers.

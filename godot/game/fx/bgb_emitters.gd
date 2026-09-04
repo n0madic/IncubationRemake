@@ -27,10 +27,20 @@ const COORD_SHIFT: int = 4
 ## An empty slot. `type` 0 is an error at registration and skipped by the
 ## sweep.
 const TYPE_NONE: int = 0
-## The two types the tick drives. Types 2..6 create their object **once**, at
-## registration, and are not made here -- see [member unmade].
+## The two types the **tick** drives, and the five between them that the
+## **registration** drives. No type is in both tables.
 const TYPE_SMOKE: int = 1
+const TYPE_WARNING_LIGHT: int = 2
+const TYPE_COMPUTER_LIGHT: int = 3
+const TYPE_FIRE3: int = 4
+const TYPE_SPOT: int = 5
+const TYPE_LAMP: int = 6
 const TYPE_FIRE: int = 7
+## `0x0041DFA7` -- `cmp ecx, 6 / ja`, so a type above 6 registers with no
+## object of its own. `0x0041E24E`'s `cmp eax, 6 / ja` is the same bound one
+## lower, and its fall-through is the *"invalid creator"* assert -- see
+## [member refused].
+const TYPE_MAX_AT_REGISTRATION: int = 6
 ## `0x0041E239` -- a countdown of 255 is never decremented; it gates instead.
 const HELD: int = 0xFF
 
@@ -46,13 +56,32 @@ const HELD: int = 0xFF
 const LEVEL_OFF: int = 1
 const LEVEL_DEFAULT: int = 2
 
-## The creator each driven type calls, by address, as [BlobPrograms] names
-## them. `TYPE_SMOKE`'s `aBlob_CreateSmoke2` `0x0042A5E0` is **not**
-## transcribed: both shipped calls that ask for it are commented out in their
-## own scripts, so nothing reaches it and a program written for it would be
-## checked by nothing.
+## The creator the **sweep** calls for a type, by address, as [BlobPrograms]
+## names them -- `0x0041E300`, seven entries, indexed by `type - 1`.
+##
+## Five of the seven point at one `mov eax, 1 / ret`: **types 2..6 spawn
+## nothing per tick**, and their whole effect is the one object
+## [constant AT_REGISTRATION] makes. That is the engine's own answer and not
+## a gap in this file.
 const CREATORS: Dictionary[int, String] = {
+	TYPE_SMOKE: BlobPrograms.BGB_SMOKE,
 	TYPE_FIRE: BlobPrograms.MAIN_MAP_FIRE,
+}
+
+## The creator **registration** calls for a type -- `0x0041E120`, seven
+## entries, indexed by `type`. Entry 0 is the *"invalid creator type"* assert
+## and entry 1 a bare success, so the table starts at 2.
+##
+## These run **once**, from `aEnterBGBCreator` itself, and are not behind the
+## animation-level gate: the gate is the first thing in the tick and nothing
+## in front of these. A warning light therefore turns even at
+## [constant LEVEL_OFF], where the fires do not.
+const AT_REGISTRATION: Dictionary[int, String] = {
+	TYPE_WARNING_LIGHT: BlobPrograms.BGB_WARNING_LIGHT,
+	TYPE_COMPUTER_LIGHT: BlobPrograms.BGB_COMPUTER_LIGHT,
+	TYPE_FIRE3: BlobPrograms.BGB_FIRE3,
+	TYPE_SPOT: BlobPrograms.BGB_SPOT,
+	TYPE_LAMP: BlobPrograms.BGB_LAMP,
 }
 
 
@@ -73,10 +102,16 @@ class Slot:
 ## an assumption. The remake has no control for it and no reason to invent
 ## one, so it stays at the shipped default.
 var level: int = LEVEL_DEFAULT
-## How many spawn requests were made for a type this file does not carry a
-## creator for, by type. Counted rather than dropped: docs/92 section 7.1 --
-## an effect that silently does nothing is the defect, not the absence.
-var unmade: Dictionary[int, int] = {}
+## How many ticks landed on a type the sweep's own table has no entry for,
+## by type -- the count of times `0x0041E2DD`'s *"invalid creator"* assert
+## would have fired. Only a type above 7 can reach it, because registration
+## refuses 0 and lets everything else through. Counted rather than dropped:
+## docs/92 section 7.1 -- an effect that silently does nothing is the defect,
+## not the absence.
+##
+## Types 2..6 are **not** counted here. They tick to a bare return in the
+## original too, so counting them would report a faithful no-op as a gap.
+var refused: Dictionary[int, int] = {}
 
 var _slots: Array[Slot] = []
 
@@ -90,8 +125,14 @@ static func create() -> BgbEmitters:
 
 ## `aEnterBGBCreator` `0x0041DF10`. Answers false for an id outside the table
 ## or a type of 0, which are the routine's own two refusals.
+##
+## Registration is **not only** a table write: types 2..6 make their one
+## object here and never again. Pass *hooks* to get that object; without them
+## the call fills the table and nothing else, which is what a suite reading
+## what a script asked for wants.
 func register(id: int, type_id: int, x: int, y: int, z: int,
-		live: int, random: int, gamma: int) -> bool:
+		live: int, random: int, gamma: int,
+		hooks: GameBlobHooks = null) -> bool:
 	if id < 0 or id >= SLOTS or type_id == TYPE_NONE:
 		return false
 	var slot: Slot = _slots[id]
@@ -105,6 +146,16 @@ func register(id: int, type_id: int, x: int, y: int, z: int,
 	slot.live = live & 0xFF
 	slot.random = random & 0xFF
 	slot.gamma = gamma
+	if hooks != null and AT_REGISTRATION.has(type_id):
+		# `0x0041DFDD` and its four siblings read the coordinates back out of
+		# the record they have just written, so what the creator sees is the
+		# shifted value and not the script's. The computer light is the one
+		# that also takes the gamma, shifted again by ten at the call site.
+		var creator: int = AT_REGISTRATION[type_id].hex_to_int()
+		var args: Array = [slot.x, slot.y, slot.z]
+		if type_id == TYPE_COMPUTER_LIGHT:
+			args.append(slot.gamma << BlobPrograms.BGB_GAMMA_SHIFT)
+		var _made: bool = hooks.emit(creator, args)
 	return true
 
 
@@ -113,17 +164,18 @@ func register(id: int, type_id: int, x: int, y: int, z: int,
 ## The interpreter records the eight arguments in the command's own order
 ## (`core/lcl/lcl_interpreter.gd`), so this is the seam between the script and
 ## the pool and the only place that order is written down twice.
-func register_event(numbers: PackedInt32Array) -> bool:
+func register_event(numbers: PackedInt32Array,
+		hooks: GameBlobHooks = null) -> bool:
 	if numbers.size() < 8:
 		return false
 	return register(numbers[0], numbers[1], numbers[2], numbers[3],
-		numbers[4], numbers[5], numbers[6], numbers[7])
+		numbers[4], numbers[5], numbers[6], numbers[7], hooks)
 
 
 func clear() -> void:
 	for slot: Slot in _slots:
 		slot.type_id = TYPE_NONE
-	unmade.clear()
+	refused.clear()
 
 
 func live_slots() -> int:
@@ -163,7 +215,12 @@ func tick(pool: BlobPool, hooks: GameBlobHooks) -> int:
 		if slot.countdown != HELD:
 			slot.countdown = (slot.countdown - 1) & 0xFF
 		if not CREATORS.has(slot.type_id):
-			unmade[slot.type_id] = unmade.get(slot.type_id, 0) + 1
+			# Five of the sweep's seven entries are a bare `mov eax, 1`, so
+			# a registered warning light or spot ticks to nothing here and
+			# that is right. Anything above 7 is past the table's own bound
+			# and is what the original asserts on.
+			if slot.type_id > TYPE_FIRE:
+				refused[slot.type_id] = refused.get(slot.type_id, 0) + 1
 			continue
 		var creator: int = CREATORS[slot.type_id].hex_to_int()
 		if hooks.emit(creator, [slot.x, slot.y, slot.z]):

@@ -1398,6 +1398,61 @@ column, and its last four ticks write the column back down — a flame guttering
 out. `blob_tables.py`'s `bgb.*` checks pin the gate, the three record bytes,
 both live arms' position reads and every constant of the creator.
 
+**The other six creators**, which the table above named and this section did
+not carry. All seven call the one constructor `0x00420950`, and no two of them
+are far apart; what differs is the model, the kind and whether anything is
+drawn first.
+
+| Creator | `type` | Model | class | kind | life | Draws |
+|---|---|---|---|---|---|---|
+| `aBlob_CreateSmoke2` `0x0042A5E0` | 1, tick | *(scratch)* | 3 | 10 | 12 | three |
+| `aBlob_CreateWarningLight` `0x0042A4C0` | 2 | `A_FLIGHT.3DI` | 1 | 41 | 255 | one |
+| `aBlob_CreateComputerLight` `0x0042A760` | 3 | `A_PANEL.3DI` | 1 | 42 | 255 | none |
+| `0x0042A520` | 4 | `A_FIRE3.3DI` | 1 | 54 | 255 | none |
+| `aBlob_CreateSpot` `0x0042A5A0` | 5 | `A_SPOTL.3DI` | 1 | 55 | 255 | none |
+| `0x0042A560` | 6 | `L049EE00.3DI` | 1 | 57 | 255 | none |
+| `aBlob_CreateMainMapFire` `0x0042A660` | 7, tick | *(scratch)* | 3 | 58 | 12 | three |
+
+Types 4 and 6 push the name *"aBlob_CreateCreateFire"* on their `CHECK`
+failure path — the same string type 4 pushes, and neither is a fire. A
+programmer pasted a neighbour's line, so those two are named by address here
+rather than by the image's own word for them.
+
+Three things about the six that a port has to get right:
+
+* **`life` 255 never expires** (§7.2, `+0x45`), so the five one-shots stand
+  for the whole mission. Their motion is entirely the arm's: kind 41 turns the
+  model by `0x200 / vx` a tick, and `aBlob_CreateWarningLight`'s one draw is a
+  coin — `aRandom2(0, 100) >= 50` — that picks `vx` as **+5 or −5**, so the
+  light sweeps one way or the other. Kind 42 rolls the panel between `0x400`
+  and `0x1000` every tick, which is the flicker of §7.8; kind 54 draws two
+  fresh full-circle angles a tick, kind 55 advances `rot_z` by `0x33` and kind
+  57 draws a fresh one.
+* **The command's own shift reaches the creator.** The three coordinates are
+  read back out of the registered record, so they carry [`20`
+  §7.4](20-lcl-language.md)'s `<< 4`; and type 3 alone takes a fourth
+  argument, `gamma << 10` (`shl edx, 0xA` at `0x0041DFE3`), which becomes the
+  record's third rotation. One unit of a script's `gamma` is a quarter of
+  Eng3d's 4096-unit circle.
+* **The registration creators are not behind the animation-level gate.** The
+  gate is the first instruction of the tick and there is nothing in front of
+  `aEnterBGBCreator`'s switch, so a warning light is placed even at level 1,
+  where the fires do not burn.
+
+`aBlob_CreateSmoke2` is `aBlob_CreateMainMapFire`'s shape with three literals
+changed — the same `aRandom2(-48, 96)` twice and `aRandom2(320, 160)` once,
+into a class-3 record with sprite row 4, kind 10, life 12 and `aux` 10.
+**Nothing in the shipped corpus reaches it**: all four `1_smoke` lines, two in
+`_C_XXX.lcl` and two in `_C_YYY.lcl`, are commented out in their own scripts.
+It is transcribed because the sweep dispatches on it, and checked against the
+executable's own bytes rather than against a record anything makes.
+
+The corpus asks for four of the seven types. `_C_XXX` and `_C_YYY` light four
+`7_fire` each; `_C_102` and `_S_005` place two `2_warninglight` each;
+`_C_118`'s two type-2 calls are the same; and the `1_smoke` and
+`3_computerlight` lines are commented out. **Types 4, 5 and 6 are asked for by
+nothing at all.**
+
 ---
 
 ## 9. What a `.cha` note does *not* do

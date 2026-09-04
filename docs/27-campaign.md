@@ -292,16 +292,104 @@ Two things that are **not** where a remake would look for them:
   Every other arm is empty except `_C_YYY`'s `NextPlayer`, which counts
   players and sets a win condition that no one reads.
 * **The map's own frame callback moves the camera.** `0x00457570`, registered
-  with `0x0043E5D0` at `0x004576A6`, calls `0x004558F0` once a frame. That
-  routine turns the eye about the target by an angle it accumulates in
-  `0x00510C50` (step in `0x00510D28`, halved toward zero when the request is
-  smaller than the step) and clamps the eye's height into
-  `[−9600, 19200]` — `cmp eax, 0x4B00` at `0x00455991` and
-  `cmp eax, 0xFFFFDA80` at `0x004559A7`. The frame callback passes zero
-  deltas, so the accumulator decays and the constants above are where the view
-  rests. **UNVERIFIED**: which input feeds a non-zero delta, and in what
-  units. The two call sites inside `fcn.004543A0` (`0x00454E6C`,
-  `0x00454EEF`) are the map screen's own input handling.
+  with `0x0043E5D0` at `0x004576A6`, calls `0x004558F0` once a frame — §2.6.1.
+
+#### 2.6.1 What turns the map, and by how much — **[code] `0x004558F0`**
+
+`0x004558F0(surface, stride, turn, rise)` is called from two places inside the
+map's own loop: `0x00454E6C` with the pair of deltas below, and `0x00454EEF`
+with **two zeros**. The second is what makes the first work.
+
+**The request is a pointer drag.** `0x00455560` runs only while the screen id
+`0x00510A38` is 6 and the button byte `0x00511B09` (set through `0x0045EFD0`,
+read through `0x0045F000`) is 1, and it writes the two globals the call site
+above spends:
+
+```c
+0x00510C44 = 2   * (cursor.x - anchor.x);   /* 0x0045558C: shl eax, 1     */
+0x00510C48 = -50 * (cursor.y - anchor.y);   /* 0x0045559A: neg/shl/sub/lea/shl */
+0x0045EEF0();    /* SetCursorPos back to the anchor */
+```
+
+`0x0045EF30` and `0x0045EF40` are `cursor − anchor`, and `0x0045EEF0` warps
+the cursor back onto the anchor with `SetCursorPos`, so what the routine reads
+is **travel since the last frame** and never a growing displacement. The −50
+is five instructions and no immediate — `neg ecx / shl ecx, 2 / sub ecx, eax /
+lea ecx, [ecx+ecx*4] / shl ecx, 1` — so `campaign_tables.py` replays them
+rather than reading a constant that is not there.
+
+**The turn's units are Eng3d's 4096ths.** The step goes into the accumulator
+`0x00510C50`, whose **low word** (`0x00455960`, `mov word [esp+0xc], cx`) is
+handed to `0x004039A0` as the **third** of three angles with the other two
+zero — a rotation about z. So 2 units per pixel is one 2048th of a turn per
+pixel, and about 180 pixels of drag is a quarter turn. The rise is in world
+units and is added to the eye's own height, clamped into `[−9600, 19200]`
+(`cmp eax, 0x4B00` at `0x00455991`, `cmp eax, 0xFFFFDA80` at `0x004559A7`).
+
+**The step has inertia, and it decays.** `0x0045593A`:
+
+```c
+step = (abs(request) > abs(step)) ? request : step / 2;   /* toward zero */
+angle += step;
+```
+
+A larger request replaces the step; anything smaller **halves** it. That is
+why the frame callback's own zero call matters: it is what brings a released
+drag to rest, in about ten frames, and a port that only ran the routine while
+the pointer moved would stop the map dead instead.
+
+**The eye it turns is the fixed one.** `aSetCameraPosition` `0x00403560`
+hands its six arguments to Eng3d and writes none of the globals back — the
+only writer of `0x00510BB8` is `0x004541B2`, the screen's own initialiser — so
+each frame rotates the **constant** eye of the table above by the accumulated
+angle:
+
+```c
+eye.xy = target.xy + Rz(angle) * (EYE.xy - TARGET.xy);
+eye.z  = clamp(eye.z + rise, -9600, 19200);
+```
+
+Only the height carries forward. Reading it the other way — nudging the eye
+the last frame left — makes the map accelerate away, and is the mistake the
+accumulator invites.
+
+Three sites clear the accumulator and all three are entries rather than
+frames: `0x004541F7` (the screen's initialiser, which also clears the step at
+`0x00454203`), `0x004554C9` (the map being raised) and `0x0045D134` (the
+camera-preset helper).
+
+#### 2.6.2 The perspective is a constant, not a field of view — **[code] `0x00403460`**
+
+The 3D window says where the picture goes; it does not say how wide the lens
+is, and a remake has to know. `0x00403460` — the wrapper the map calls at
+`0x00455A16` and a mission at `0x00417E39` — computes the **focal length from
+the window's width alone** and hands it to `Eng3d.dll`'s
+`_E3D_init_3d_screen` (ordinal 3) as its fifth argument:
+
+```c
+focal = (0x004FA500 != 0) ? width / 0x004FA500
+                          : (int)(width * 10.0/13.0);   /* 0x004B1010 */
+```
+
+Inside the DLL that value lands at `Eng3d.dll+0x14FE8` — whose own initialiser
+is **256** — with `1/focal` computed beside it at `+0x14FF0`, which is the
+divide a perspective projection is. So a camera-space point lands at
+
+```
+screen = window centre + coord * focal / depth
+```
+
+and the constant is 10/13 rather than an angle. For the map's 518-wide window
+that is 398; for a mission's 520 (`0x00419D90`, `(60, 34)` by 520 × 340) it is
+400. The zoom divisor `0x004FA500` is written by five sites, with 0 and with
+4, none of them on the mission or map path — the fours are in the dialogue
+screens — so 10/13 is what a played game sees.
+
+The **centre** is the window's, not the screen's: `0x00404730` stores the
+window's origin and extent and works from them, so the axis of the map's view
+passes through (324, 210) of a 640 × 480 picture and not through (320, 240).
+A remake that draws its 3D full-screen behind a plate with a hole in it has to
+carry that thirty-pixel offset, because nothing else cancels it.
 
 ---
 
@@ -968,21 +1056,26 @@ What each group covers:
    winconditions"* block and then set the slots from their own predicates, so
    there is no engine rule to recover — only 153 individual answers, which
    [`20` §7](20-lcl-language.md) gives the vocabulary for.
-4. **What turns the campaign map's camera, and by how much.** §2.6 has the
-   view itself as six constants and `0x004558F0` as the routine that swings the
-   eye about the target, with its height clamp `[−9600, 19200]` measured. What
-   is **UNVERIFIED** is the rotation delta: the map's frame callback passes
-   zero, and the two other call sites inside `fcn.004543A0` (`0x00454E6C`,
-   `0x00454EEF`) take theirs from `0x00461E60` and a register the surrounding
-   input handling sets. The angle accumulator `0x00510C50` and its step
-   `0x00510D28` are named but their units are not. Nothing in the shipped data
-   settles it; a `dbgcall` capture of the screen's own loop would.
+4. ~~**What turns the campaign map's camera, and by how much.**~~ **Closed** —
+   §2.6.1. The request is a pointer drag read with the cursor warped back to
+   its anchor every frame (`0x00455560`, gated on screen id 6 and the button
+   byte `0x00511B09`): the horizontal travel doubled into `0x00510C44`, the
+   vertical multiplied by −50 into `0x00510C48`. The units follow from where
+   the angle goes — the accumulator's low word is `0x004039A0`'s third angle,
+   so Eng3d's 4096ths, and the rise is world units into the measured
+   `[−9600, 19200]` band. It also settled two things that read backwards: the
+   step **decays by halving** rather than clamping, which is what the frame
+   callback's own zero call is for, and the eye that is rotated is the
+   constant one, because `aSetCameraPosition` writes no global back. No
+   capture was needed; the earlier entry's guess that `0x00461E60` fed the
+   delta was wrong — that routine returns the scanline stride, and it is the
+   call's *second* argument.
 
-4. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
+5. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
    have cells. The remainder are dialogue ids 12–14, 16–20 and 24–27, and
    location 130, *Epilogue* — which is what `_C_180` would be if its mission id
    were 80 instead of 180. Nothing reads them.
-5. ~~**`0x00510DC0` and the dialogue screen's mission-id special cases.**~~
+6. ~~**`0x00510DC0` and the dialogue screen's mission-id special cases.**~~
    **Closed** — §2.3.  The ids select logical sequence 0, the intercepted
    static extro screen, and logical sequence 1; the flag selects full-screen
    versus framed presentation and the background callback.

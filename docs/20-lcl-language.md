@@ -1067,8 +1067,11 @@ effect emitter in a 20-slot table (`id` 0..19, 28-byte records at
 `+0x10` and `+0x11`, `random` to `+0x12`, `gamma` to `+0x18`. `type` 0 is an
 error; types 2..6 create their object immediately (`0x0042a4c0`, `0x0042a760`,
 `0x0042a520`, `0x0042a5a0`, `0x0042a560`); types 1 and 7 are driven by the
-per-frame ticker `0x0041e140`. Type 3 additionally uses `gamma << 10` as a
-rotation. Every argument name comes from the corpus's own annotations, e.g.
+per-frame ticker `0x0041e1a0`, which `aCheckInBlobObjects` `0x0041e3d0` calls
+once per registered slot before it walks the blob pool.  (`0x0041e140` is the
+**teardown** beside it — it frees each slot's sound handle at `+0x14` and
+clears the type — and this entry named it as the ticker until 2026-09-05.)
+Type 3 additionally uses `gamma << 10` as a rotation. Every argument name comes from the corpus's own annotations, e.g.
 `_S_005.lcl`:
 
 ```

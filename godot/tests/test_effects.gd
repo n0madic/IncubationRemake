@@ -115,16 +115,106 @@ func _check_emitters(h: TestHarness) -> void:
 	for _step: int in range(8):
 		burst += steady.tick(pool, hooks)
 	h.equal("bgb.random_zero_never_pauses", burst, 8)
-	# And a type the tick drives but no creator here carries is counted rather
-	# than dropped: `aBlob_CreateSmoke2` `0x0042A5E0` is not transcribed
-	# because both shipped calls for it are commented out in their own scripts.
+	# Type 1 is the sweep's other entry: `aBlob_CreateSmoke2` `0x0042A5E0`,
+	# the fire's shape with kind 10, sprite row 4 and `aux` 10. No shipped
+	# script reaches it -- all four `1_smoke` lines are commented out in their
+	# own scripts -- so what checks it is the executable's bytes.
 	var smoke: BgbEmitters = BgbEmitters.create()
 	var _reg: bool = smoke.register(0, BgbEmitters.TYPE_SMOKE, 0, 0, 0, 2, 0, 0)
-	h.equal("bgb.untranscribed_type_says_so",
-		[smoke.tick(pool, hooks), smoke.unmade.get(BgbEmitters.TYPE_SMOKE, 0)],
-		[0, 1])
+	var before: int = pool.live()
+	h.equal("bgb.smoke_is_driven_too", smoke.tick(pool, hooks), 1)
+	var puff: Blob = pool.blobs()[before]
+	h.equal("bgb.smoke_record",
+		[puff.class_id, puff.kind, puff.life, puff.rot_x, puff.aux],
+		[3, 0xA, 0xC, 4, 10],
+		"class 3, kind 10, life 12, row 4, aux 10 -- 0x0042A646")
 
+	# **Types 2..6 tick to nothing, and that is the engine's answer.** Five of
+	# the sweep's seven jump-table entries are one `mov eax, 1 / ret`; their
+	# whole effect is the object registration makes. Only a type past the
+	# table's bound reaches the `invalid creator` assert.
+	var lights: BgbEmitters = BgbEmitters.create()
+	var _light: bool = lights.register(0, BgbEmitters.TYPE_WARNING_LIGHT,
+		0, 0, 0, 2, 0, 0)
+	var _over: bool = lights.register(1, BgbEmitters.TYPE_FIRE + 1,
+		0, 0, 0, 2, 0, 0)
+	h.equal("bgb.registration_types_do_not_tick",
+		[lights.tick(pool, hooks),
+		lights.refused.get(BgbEmitters.TYPE_WARNING_LIGHT, 0),
+		lights.refused.get(BgbEmitters.TYPE_FIRE + 1, 0)],
+		[0, 0, 1],
+		"0x0041E300 sends 2..6 to `mov eax,1`; past 7 is the assert")
+
+	_check_registration_creators(h, pool, inputs)
 	_check_map_fires(h)
+
+
+## The five one-shots `aEnterBGBCreator` makes for itself -- `0x0041E120`.
+##
+## Registration is the other half of `CreateBGB` and had none of it: a
+## `_C_102` warning light was a table row and no light. These run **once**,
+## from the command rather than from the sweep, and so are not behind the
+## animation-level gate the fires are.
+func _check_registration_creators(h: TestHarness, pool: BlobPool,
+		inputs: BlobPrograms.Inputs) -> void:
+	# Class 1 is a model blob, and the constructor refuses one whose name the
+	# world set does not carry (docs/28 section 7.5) -- so the five models have
+	# to resolve before any of this can be seen at all.
+	var models: Dictionary[String, int] = {}
+	var names: Array[String] = [BlobPrograms.BGB_WARNING_MODEL,
+		BlobPrograms.BGB_PANEL_MODEL, BlobPrograms.BGB_FIRE3_MODEL,
+		BlobPrograms.BGB_SPOT_MODEL, BlobPrograms.BGB_LAMP_MODEL]
+	for index: int in range(names.size()):
+		models[names[index]] = index
+	inputs.models = models
+	var lit: BlobPool = BlobPool.create(1.0)
+	var hooks: GameBlobHooks = GameBlobHooks.over(lit, inputs)
+	hooks.rng.randomize_seed(1.0)
+	hooks.model_index = models
+	lit.set_hooks(hooks)
+
+	var table: BgbEmitters = BgbEmitters.create()
+	# `_C_102.lcl:118` -- the one shipped call that is not commented out.
+	var _two: bool = table.register(0, BgbEmitters.TYPE_WARNING_LIGHT,
+		2400, 2600, 260, 0, 0, 0, hooks)
+	h.equal("bgb.registration_lights_at_once", lit.live(), 1,
+		"the object is the command's, not the sweep's")
+	var light: Blob = lit.blobs()[0]
+	h.equal("bgb.warning_light_record",
+		[light.class_id, light.kind, light.life,
+		light.x, light.y, light.z],
+		[1, 0x29, 0xFF, 2400 << 4, 2600 << 4, 260 << 4],
+		"class 1, kind 41, life 255 -- and the shifted coordinates")
+	h.check("bgb.warning_light_spins_either_way",
+		absi(light.vx) == BlobPrograms.BGB_WARNING_SPIN,
+		"the coin picks the sign of `0x200 / vx`, vx = %d" % light.vx)
+	# `life` 255 is the never-expire value, which is what makes these last the
+	# mission: a light that died after thirteen seconds would be the defect.
+	h.equal("bgb.one_shots_never_expire",
+		BgbEmitters.HELD, 0xFF, "`+0x45` of 0xFF is not counted down")
+
+	# `_S_005.lcl:121` -- `3_computerlight ... 1_gamma`, shifted left by ten
+	# on its way into the record's `rot_z`, which kind 42 copies to angle 2.
+	var _three: bool = table.register(1, BgbEmitters.TYPE_COMPUTER_LIGHT,
+		1000, 2700, 460, 0, 0, 1, hooks)
+	var panel: Blob = lit.blobs()[1]
+	h.equal("bgb.computer_light_takes_the_gamma",
+		[panel.class_id, panel.kind, panel.life, panel.rot_z],
+		[1, 0x2A, 0xFF, 1 << BlobPrograms.BGB_GAMMA_SHIFT])
+
+	# The three no shipped script asks for. Registration dispatches on them,
+	# so they are transcribed; they share one body and differ by kind alone.
+	var kinds: Array[int] = [0x36, 0x37, 0x39]
+	var types: Array[int] = [BgbEmitters.TYPE_FIRE3, BgbEmitters.TYPE_SPOT,
+		BgbEmitters.TYPE_LAMP]
+	var made: Array[int] = []
+	for index: int in range(types.size()):
+		var _reg: bool = table.register(2 + index, types[index],
+			0, 0, 0, 0, 0, 0, hooks)
+		made.append(lit.blobs()[2 + index].kind)
+	h.equal("bgb.unused_types_still_register", made, kinds,
+		"types 4, 5 and 6: A_FIRE3, A_SPOTL, L049EE00")
+	h.equal("bgb.registration_made_all_five", lit.live(), 5)
 
 
 ## The campaign maps' own `InitMap`, end to end: the script the cache carries,
@@ -142,10 +232,18 @@ func _check_map_fires(h: TestHarness) -> void:
 		h.check("bgb.map_has_a_script.%s" % name, attached)
 		var table: BgbEmitters = BgbEmitters.create()
 		var lit: int = 0
-		for entry: Variant in DictRead.as_array(
-				map.run_init_map().get("events", [])):
+		var program: String = ""
+		var opening: Dictionary = map.run_init_map()
+		for entry: Variant in DictRead.as_array(opening.get("events", [])):
 			var event: Dictionary = AudioEvents.as_event(entry)
-			if AudioEvents.name_of(event) != SliceMain.CREATE_BGB:
+			var kind: String = AudioEvents.name_of(event)
+			if kind == SliceMain.CD_TRACK_PROGRAM:
+				var values: Array = DictRead.as_array(
+					event.get("values", []))
+				if not values.is_empty():
+					program = DictRead.as_string(values[0])
+				continue
+			if kind != SliceMain.CREATE_BGB:
 				continue
 			if table.register_event(SetpieceDriver._numbers(event)):
 				lit += 1
@@ -154,6 +252,17 @@ func _check_map_fires(h: TestHarness) -> void:
 			+ "of a campaign map's script")
 		h.equal("bgb.map_fires_are_type_7.%s" % name,
 			table.slot(0).type_id, BgbEmitters.TYPE_FIRE)
+		# The other half of the same `INIT MAP`. It was recorded and thrown
+		# away for exactly as long as the emitters were.
+		h.equal("bgb.map_asks_for_a_cd_track.%s" % name, program, "5.3.4.2")
+		var playlist: PackedInt32Array = AudioTables.parse_playlist(program)
+		h.equal("bgb.map_playlist.%s" % name, Array(playlist), [5, 3, 4, 2])
+		var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+		var player: MusicPlayer = MusicPlayer.from_program(program,
+			tables.tracks())
+		h.check("bgb.map_track_is_in_the_cache.%s" % name,
+			player.first_playable() > 0,
+			"the map's own playlist has to reach a track the cache carries")
 		map = null
 
 

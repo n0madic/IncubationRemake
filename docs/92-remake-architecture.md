@@ -1604,13 +1604,45 @@ different plate and 570 x 356. The deployment screen keeps the **mission's**
 viewport instead, `(60, 34)` by 520 x 340 (`0x00419D90`), because that is what
 it is a picture of.
 
-**The six numbers are the engine's; the projection is not.** The rig's camera
-is a plain `Camera3D` at Godot's own field of view with no frustum offset,
-while the engine projects into the 518 x 306 window centred on (324, 210) --
-so the same eye and target through a different frustum is not pixel for pixel
-the same framing. Eng3d's own perspective constant is not measured and nothing
-here compensates for the window's offset; the view is the original's stance
-rather than its projection, and that is stated rather than tuned by eye.
+**The projection is the engine's too (2026-09-05).** For one pass it was not:
+the rig's camera was a plain `Camera3D` at Godot's default 75-degree field of
+view with its axis through the middle of the render, and the engine's is
+neither. Eng3d's perspective is a **constant, not an angle** -- `0x00403460`
+computes the focal length from the 3D window's width alone,
+`_ftol(width * 10/13)` through the double at `0x004B1010`, and hands it to
+`_E3D_init_3d_screen` as its fifth argument, where the DLL keeps it beside its
+reciprocal (`Eng3d.dll+0x14FE8`, whose own initialiser is 256) because that
+reciprocal is the divide a projection is. So 398 for the map's 518-wide window
+and 400 for the mission's 520, against Godot's implied 313 at 75 degrees --
+everything had been too wide. And the **axis is the window's centre**, which
+is not the render's: the 3D fills 640 x 480 with the plate drawn as four
+strips around the hole, so the map's centre is (324, 210) and thirty pixels of
+it do not cancel. `CameraRig.frame_projection` carries both as a frustum --
+the height gives the focal length, the offset moves the axis -- and
+`test_shell.gd` checks the **agreement** rather than the constants: a point
+through Godot's own frustum matrix has to land where
+`centre + coord * focal / depth` puts it, to within a hundredth of a pixel,
+for both windows. The zoom divisor `0x004FA500` that would replace 10/13 is
+written by five sites, none of them on the mission or map path, and is a
+parameter here rather than an assumption (docs/27 §2.6.2).
+
+**And the map turns.** `0x004558F0` was named as the routine that swings the
+eye and its height clamp measured, with the delta left **UNVERIFIED** -- docs
+/27's fourth open question, now closed in §2.6.1. It is a pointer drag:
+`0x00455560` runs while the screen id is 6 and the button byte is set,
+doubling the horizontal travel into the turn and multiplying the vertical by
+-50 into the height, with the cursor warped back to the drag's anchor every
+frame so what is read is travel and not displacement. Two halves of it read
+backwards and the port has both: the step **decays by halving** when the
+request is the smaller, which is what the frame callback's own zero call is
+for and why a released drag coasts to rest in about ten frames; and the eye
+that is rotated is the **constant** one, because `aSetCameraPosition` writes no
+global back -- rotating the eye the last frame left makes the map accelerate
+away. `CameraRig.swing_map` is the routine and `_tick_backdrop_swing` the
+zero call. What the remake does not copy is the cursor capture: the map is a
+screen with buttons on it, and stealing the pointer to turn a picture would
+take the buttons with it, so the drag is the middle button as in a mission and
+`Q`/`E` stand in for a keyboard.
 
 **The city burns.** `_C_XXX.lcl` and `_C_YYY.lcl` each light four buildings
 with `CreateBGB (n, 7_fire, ...)`, and that plus a `CDTrackProgram` is the
@@ -1625,10 +1657,26 @@ twenty-slot table and `0x0041E1A0`'s cadence (docs/28 §8.2, pinned by
 `aBlob_CreateMainMapFire` -- three draws and one constructor call. The map gets
 a pool and a sprite cloud of its own, on the same 20 fps clock a mission's runs
 at; a mission gets the same table, so the other ten shipped calls now have
-somewhere to land. Two things it does **not** do: types 2..6 create their
-object at registration and none of those creators is transcribed, so they are
-counted in `BgbEmitters.unmade` rather than dropped; and the map's CD track is
-still not played.
+somewhere to land.
+
+**All seven creators, and the track (2026-09-05).** The first pass carried
+type 7 alone and counted the rest in a `BgbEmitters.unmade` tally -- which was
+reporting a **non-defect**. `CreateBGB` has *two* jump tables and no type is
+in both: `0x0041E120` at registration, `0x0041E300` in the sweep. Five of the
+sweep's seven entries are one `mov eax, 1 / ret`, so types 2..6 tick to
+nothing in the original as well, and their whole effect is the object
+registration makes once. The tally was counting faithful silence as a gap.
+All six missing creators are now transcribed -- they share one constructor and
+differ by a model, a kind and, for type 2, a coin that picks which way the
+warning light sweeps -- and `BgbEmitters.register` takes the hooks so the
+one-shots are made where the command makes them, which is also **not** behind
+the animation-level gate the tick is. What is left of the tally is
+`BgbEmitters.refused`, and only a type above 7 can reach it: that is the
+`invalid creator` assert, and nothing else. `_C_102`'s two warning lights are
+the first shipped call other than the maps' fires that this remake answers.
+The map's `CDTrackProgram` plays as well, out of the **same** `INIT MAP` run
+its emitters come from rather than out of the cache's playlist row, which is
+what makes the two halves of that block one thing.
 
 **And the dots are picked on the screen, not on the ground.** `cell_under`
 crosses the pointer's ray with each cell's own height, which is the right

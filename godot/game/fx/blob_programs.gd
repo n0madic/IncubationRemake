@@ -78,6 +78,40 @@ const PUSH_DUST: String = "0x0042A6E0"
 ## reaches: `CreateBGB` type 7 calls it once a tick (docs/28 section 8.2), and
 ## the campaign maps' own `InitMap` is where the shipped data uses it.
 const MAIN_MAP_FIRE: String = "0x0042A660"
+## The five one-shot creators `CreateBGB` runs **at registration**, and the
+## smoke emitter its tick runs beside the fire.
+##
+## `aEnterBGBCreator`'s own jump table (`0x0041E120`, indexed by `type`) and
+## the sweep's (`0x0041E300`, indexed by `type - 1`) are two different tables,
+## and no type is in both: types 2..6 make their object once and are never
+## touched again, types 1 and 7 make one per tick and nothing at registration.
+## `blob_tables.py` pins both tables entry for entry.
+##
+## Types 4 and 6 push the name *"aBlob_CreateCreateFire"* on their failure
+## path -- the same string type 4 pushes, and neither is a fire. A programmer
+## pasted their neighbour's `CHECK` line, so these two are named by their
+## model rather than by the image's own word for them.
+const BGB_WARNING_LIGHT: String = "0x0042A4C0"
+const BGB_FIRE3: String = "0x0042A520"
+const BGB_LAMP: String = "0x0042A560"
+const BGB_SPOT: String = "0x0042A5A0"
+const BGB_SMOKE: String = "0x0042A5E0"
+const BGB_COMPUTER_LIGHT: String = "0x0042A760"
+## The five models those creators name, and the `A_PANEL.3DI` the flicker
+## rides on. `L049EE00.3DI` is a world-set object name rather than an `A_`
+## effect model, which is why type 6 is *the lamp* here and not a fire.
+const BGB_WARNING_MODEL: String = "A_FLIGHT.3DI"
+const BGB_FIRE3_MODEL: String = "A_FIRE3.3DI"
+const BGB_LAMP_MODEL: String = "L049EE00.3DI"
+const BGB_SPOT_MODEL: String = "A_SPOTL.3DI"
+const BGB_PANEL_MODEL: String = "A_PANEL.3DI"
+## `0x0042A4C0`'s coin: `aRandom2(0, 100) >= 50` picks the sign of the spin
+## kind 41 divides `0x200` by, so the light turns one way or the other.
+const BGB_WARNING_COIN: int = 50
+const BGB_WARNING_SPIN: int = 5
+## `0x0042A760` shifts the script's `gamma` left by ten before it becomes the
+## panel's `rot_z` -- one unit of `gamma` is a quarter turn of Eng3d's 4096.
+const BGB_GAMMA_SHIFT: int = 10
 ## The marker's and the poison flash's radius (`push 0x12C0`), doubled for
 ## a large type (`push 0x2580`); the heal flash's (`0x640` / `0x1900`); the
 ## landing dust's (`0xC80`) and the 204-unit turn between its puffs.
@@ -289,7 +323,8 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, WALL_DEBRIS: 2,
 	KILL_FIRE: 3, LASER_BARRIER: 4, STATUE_BEAM: 5, FLYING_UNIT: 3, PUFF: 2,
 	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
-	MAIN_MAP_FIRE: 3,
+	MAIN_MAP_FIRE: 3, BGB_WARNING_LIGHT: 3, BGB_FIRE3: 3, BGB_LAMP: 3,
+	BGB_SPOT: 3, BGB_SMOKE: 3, BGB_COMPUTER_LIGHT: 4,
 	BOMBER: 6, PARA_BOMB: 3, FIRE_DEATH: 2,
 	EMITTER: 15, SPORE_SPARKS: 5, PLASMA_SPARKS: 5,
 	# `0x00428F70` is called with five dwords and reads four: the fifth is
@@ -355,6 +390,20 @@ static func run(creator: String, pool: Pool, draws: Draws,
 			push_dust(pool, draws, Vector3i(args[0], args[1], args[2]))
 		MAIN_MAP_FIRE:
 			main_map_fire(pool, draws, Vector3i(args[0], args[1], args[2]))
+		BGB_WARNING_LIGHT:
+			bgb_warning_light(pool, draws,
+				Vector3i(args[0], args[1], args[2]))
+		BGB_FIRE3:
+			bgb_fire3(pool, Vector3i(args[0], args[1], args[2]))
+		BGB_LAMP:
+			bgb_lamp(pool, Vector3i(args[0], args[1], args[2]))
+		BGB_SPOT:
+			bgb_spot(pool, Vector3i(args[0], args[1], args[2]))
+		BGB_SMOKE:
+			bgb_smoke(pool, draws, Vector3i(args[0], args[1], args[2]))
+		BGB_COMPUTER_LIGHT:
+			bgb_computer_light(pool, Vector3i(args[0], args[1], args[2]),
+				args[3])
 		TUBE_PUFFS:
 			tube_puffs(pool, draws, args[0], args[1], inputs)
 		PLATFORM_DUST:
@@ -912,6 +961,95 @@ static func main_map_fire(pool: Pool, draws: Draws, at: Vector3i) -> void:
 	var vz: int = draws.draw(0x140, 0xA0)
 	pool.spawn(SCRATCH, 3, at.x, at.y, at.z, 0, 0, 0, 0x3A, 0xC, vx, vy, vz,
 		5, 0)
+
+
+## `0x0042A5E0` -- one puff of a `CreateBGB` type-1 emitter.
+##
+## The same three draws and the same shape as [method main_map_fire] -- the
+## two are the only creators the sweep reaches -- with kind 10 instead of 58,
+## sprite row 4, and `aux` 10 instead of 5. Kind 10 walks the record up and
+## reverses its atlas column over the last four ticks, so this is the flame's
+## quieter sibling rather than a different mechanism.
+##
+## **Nothing in the shipped corpus reaches it.** All four `1_smoke` lines --
+## two in `_C_XXX.lcl`, two in `_C_YYY.lcl` -- are commented out in their own
+## scripts, so the type is registered by no mission and the program is checked
+## against the executable's bytes (`blob_tables.py`'s `bgb.smoke_*`) rather
+## than against a record anything makes.
+static func bgb_smoke(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	var vx: int = draws.draw(-0x30, 0x60)
+	var vy: int = draws.draw(-0x30, 0x60)
+	var vz: int = draws.draw(0x140, 0xA0)
+	pool.spawn(SCRATCH, 3, at.x, at.y, at.z, 4, 0, 0, 0xA, 0xC, vx, vy, vz,
+		10, 0)
+
+
+## `0x0042A4C0` -- `CreateBGB` type 2, made **once, at registration**.
+##
+## A class-1 `A_FLIGHT.3DI` model with `life` 255, which never expires
+## (`blob.gd`, `+0x45`), so the light turns for the whole mission. Its one
+## draw is a coin: `aRandom2(0, 100) >= 50` gives `vx` +5 and anything under
+## it -5, and kind 41 turns the model by `0x200 / vx` a tick -- so the sign is
+## which way it sweeps and the magnitude the rate. Kind 41 divides by `vx`
+## with nothing in front of the divide, which is why the port guards a zero
+## the original would fault on; +/-5 never reaches that guard.
+##
+## `_C_102.lcl` and `_S_005.lcl` light two each.
+static func bgb_warning_light(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	var spin: int = BGB_WARNING_SPIN \
+		if draws.draw(0, 100) >= BGB_WARNING_COIN else -BGB_WARNING_SPIN
+	pool.spawn(BGB_WARNING_MODEL, 1, at.x, at.y, at.z, 0, 0, 0, 0x29, 0xFF,
+		spin, 0, 0, 0, 0)
+
+
+## `0x0042A760` -- `CreateBGB` type 3, made once at registration.
+##
+## The only one of the six that reads a fourth argument: the command shifts
+## the script's `gamma` left by ten on its way in, and the creator hands that
+## straight to the record's `rot_z`. Kind 42 copies `rot_x` and `rot_z` into
+## the model's first and third angles and rolls the second between `0x400`
+## and `0x1000` every tick, which is a panel flipping edge-on and face-on --
+## the flicker of docs/28 section 7.8.
+##
+## The one shipped call, `_S_005.lcl`'s `3_computerlight ... 1_gamma`, is
+## commented out; the gamma is transcribed because the shift is the command's
+## and is read from its bytes.
+static func bgb_computer_light(pool: Pool, at: Vector3i, gamma: int) -> void:
+	pool.spawn(BGB_PANEL_MODEL, 1, at.x, at.y, at.z, 0, 0, gamma, 0x2A, 0xFF,
+		0, 0, 0, 0, 0)
+
+
+## `0x0042A520` -- `CreateBGB` type 4, `A_FIRE3.3DI`, kind 54.
+##
+## Three of the six share one body byte for byte and differ only in the model
+## and the kind: no draw, no velocity, `life` 255, everything else zero. Kind
+## 54 rolls two of the model's angles over the full 4096 each tick, which is a
+## fire that never settles.
+##
+## **No shipped script asks for type 4, 5 or 6.** They are transcribed because
+## registration dispatches on them, not because the corpus reaches them.
+static func bgb_fire3(pool: Pool, at: Vector3i) -> void:
+	_bgb_still(pool, BGB_FIRE3_MODEL, at, 0x36)
+
+
+## `0x0042A5A0` -- `CreateBGB` type 5, `A_SPOTL.3DI`, kind 55: a spotlight
+## turning `0x33` a tick, one twentieth of a turn a second at 20 fps.
+static func bgb_spot(pool: Pool, at: Vector3i) -> void:
+	_bgb_still(pool, BGB_SPOT_MODEL, at, 0x37)
+
+
+## `0x0042A560` -- `CreateBGB` type 6, `L049EE00.3DI`, kind 57, which sets
+## `rot_z` to a fresh full-circle draw every tick rather than advancing it.
+static func bgb_lamp(pool: Pool, at: Vector3i) -> void:
+	_bgb_still(pool, BGB_LAMP_MODEL, at, 0x39)
+
+
+## The body types 4, 5 and 6 share: a class-1 model at the emitter's own
+## place, `life` 255 and no motion of any sort. What moves is the arm.
+static func _bgb_still(pool: Pool, model: String, at: Vector3i,
+		kind: int) -> void:
+	pool.spawn(model, 1, at.x, at.y, at.z, 0, 0, 0, kind, 0xFF,
+		0, 0, 0, 0, 0)
 
 
 # --- docs/42 section 8: the set pieces' creators ------------------------------

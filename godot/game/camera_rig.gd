@@ -95,11 +95,28 @@ const CAMPAIGN_EYE: Vector3i = Vector3i(-19088, 98112, 9088)
 const CAMPAIGN_TARGET: Vector3i = Vector3i(56800, 56800, 0)
 ## `0x004558F0` is what moves it: it turns the eye about the target by an
 ## angle it accumulates, and clamps the eye's height into this pair. The map's
-## own frame callback `0x00457570` calls it with zero deltas every frame, so
-## the accumulator decays and the view above is where it rests. **The turn
-## itself is not transcribed** -- the remake offers no rotation on this screen.
+## own frame callback calls it with zero deltas every frame, so the step
+## decays and the view above is where it rests -- [method swing_map] is the
+## whole routine.
 const CAMPAIGN_HEIGHT_LOW: int = -0x2580
 const CAMPAIGN_HEIGHT_HIGH: int = 0x4B00
+
+## What a drag on the map asks for, per pixel of pointer movement:
+## `0x0045558C`'s `shl eax, 1` on the horizontal delta, and `0x0045559A`'s
+## `neg / shl 2 / sub / lea *5 / shl 1` -- which is -50 -- on the vertical.
+##
+## The horizontal one is in Eng3d's 4096ths, because the accumulator's low
+## word is handed straight to `0x004039A0` as its **third** angle; the
+## vertical one is in world units and is added to the eye's own height. So
+## about 180 pixels of drag is a quarter turn, and one pixel raises the eye
+## by 50.
+const MAP_TURN_PER_PIXEL: int = 2
+const MAP_RISE_PER_PIXEL: int = -50
+## How much pointer travel a keypress stands in for. The original offers the
+## map no key at all -- the drag is the whole of it -- so this is the remake's
+## own, sized so that `Q` and `E` turn it at about the rate a comfortable drag
+## does rather than at a mission's quarter-turn step.
+const MAP_KEY_TURN: float = 6.0
 
 ## Section 2.4 -- the eyes view and the map view.
 const EYES_FORWARD: int = 800
@@ -141,6 +158,12 @@ enum View { SCRIPT = 0, EYES = 1, UNIT = 2, MAP = 4 }
 var eng3d: Eng3dGeometry = null
 
 var _camera: Camera3D = null
+## The campaign map's turn: `0x00510C50` the accumulated angle, `0x00510D28`
+## the step it is growing by and `0x00510BC0` the eye's own height, which is
+## the one coordinate the turn carries forward.
+var _map_angle: int = 0
+var _map_step: int = 0
+var _map_height: int = CAMPAIGN_EYE.z
 var _eye: Vector3i = Vector3i.ZERO
 var _target: Vector3i = Vector3i.ZERO
 var _eye_goal: Vector3i = Vector3i.ZERO
@@ -190,6 +213,153 @@ func setup(map_width: int, map_height: int, heights: PackedInt32Array,
 
 func camera() -> Camera3D:
 	return _camera
+
+
+## The campaign map's own turn -- `0x004558F0`, in full.
+##
+## docs/27 section 2.6. Three things about it are worth stating, because two
+## of them read backwards:
+##
+## **The eye it turns is the fixed one.** `SetCameraPosition` `0x00403560`
+## hands its arguments to Eng3d and writes none of the globals back, and the
+## only writer of `0x00510BB8` is the screen's own initialiser -- so the
+## routine rotates [constant CAMPAIGN_EYE] by the **accumulated** angle every
+## frame rather than nudging where the eye already is. Reading it the other
+## way makes the map spin away.
+##
+## **The step has inertia.** A request whose magnitude exceeds the current
+## step replaces it; anything smaller **halves** the step instead, truncating
+## toward zero. So the map keeps turning after the pointer stops and comes to
+## rest in about ten frames, and the frame callback's own zero request is what
+## drives that decay.
+##
+## **Only the height accumulates.** `0x00510BC0` is read, added to and written
+## back inside the clamp; x and y are recomputed from the constants each time.
+##
+## Returns the eye to place, with the target unchanged.
+func swing_map(turn: int, rise: int) -> Vector3i:
+	if absi(turn) > absi(_map_step):
+		_map_step = turn
+	else:
+		# `cdq / sub eax, edx / sar eax, 1` -- an arithmetic halving biased so
+		# that it truncates toward zero rather than toward minus infinity.
+		_map_step = int(float(_map_step) / 2.0)
+	_map_angle = IncInt.i32(_map_angle + _map_step)
+	_map_height = clampi(_map_height + rise, CAMPAIGN_HEIGHT_LOW,
+		CAMPAIGN_HEIGHT_HIGH)
+	var arm: Vector3i = Vector3i(CAMPAIGN_EYE.x - CAMPAIGN_TARGET.x,
+		CAMPAIGN_EYE.y - CAMPAIGN_TARGET.y, 0)
+	var turned: Vector3i = arm
+	if eng3d != null:
+		# The angles are `(0, 0, accumulator)` -- the low **word** of it, so
+		# the accumulator wraps through the 4096-unit circle on its own.
+		turned = eng3d.rotate(arm, Vector3i(0, 0, IncInt.u16(_map_angle)))
+	return Vector3i(CAMPAIGN_TARGET.x + turned.x,
+		CAMPAIGN_TARGET.y + turned.y, _map_height)
+
+
+## Put the map's turn back where the screen's initialiser leaves it --
+## `0x004541F7` and `0x004554C9` both zero the accumulator, and `0x00454203`
+## the step.
+func reset_map_swing() -> void:
+	_map_angle = 0
+	_map_step = 0
+	_map_height = CAMPAIGN_EYE.z
+
+
+func map_angle() -> int:
+	return _map_angle
+
+
+func map_step() -> int:
+	return _map_step
+
+
+## Eng3d's own perspective, as `0x00403460` computes it.
+##
+## The engine's screen is set up by `_E3D_init_3d_screen` (`Eng3d.dll`
+## ordinal 3), and the **focal length is the fifth argument**: the wrapper at
+## `0x00403460` computes it from the window's width alone --
+## `_ftol(width * 10 / 13)` through the double at `0x004B1010` -- and the DLL
+## stores it at `0x414FE8` (whose own default is 256) beside its reciprocal at
+## `0x414FF0`, which is the divide a projection is. So a point projects to
+## `centre + coord * focal / depth`, and the constant is 10/13 rather than a
+## field of view.
+##
+## The one thing that can change it is the zoom divisor `0x004FA500`: when it
+## is non-zero the focal length is `width / divisor` instead. Five sites write
+## it, with 0 and with 4, and none of them is on the mission or map path --
+## the fours are in the dialogue screens -- so 10/13 is what a played game
+## sees. The divisor is a parameter here rather than an assumption.
+const FOCAL_NUMERATOR: float = 10.0
+const FOCAL_DENOMINATOR: float = 13.0
+## `[0x414FE8]`'s own initialiser inside `Eng3d.dll` -- what the projection
+## would be if nothing set it. Nothing in a played game leaves it there; it is
+## here so the check has the engine's own default to compare against.
+const FOCAL_ENG3D_DEFAULT: float = 256.0
+
+
+static func focal_length(window_width: float, zoom_divisor: int = 0) -> float:
+	if zoom_divisor != 0:
+		return floorf(window_width / float(zoom_divisor))
+	return floorf(window_width * FOCAL_NUMERATOR / FOCAL_DENOMINATOR)
+
+
+## Where the engine would put a camera-space point on the screen, in the
+## render's own pixels: `window centre + coord * focal / depth`.
+##
+## *at* is in the camera's own space, x right, y up, **depth positive
+## forward** -- which is Godot's `-z`. The answer is in the same top-left
+## pixel space [method Camera3D.unproject_position] answers in, so the two can
+## be compared directly, which is what pins the frustum below.
+static func project(at: Vector3, window: Rect2, zoom_divisor: int = 0
+		) -> Vector2:
+	if at.z <= 0.0:
+		return Vector2.ZERO
+	var focal: float = focal_length(window.size.x, zoom_divisor)
+	var centre: Vector2 = window.position + window.size * 0.5
+	return Vector2(centre.x + at.x * focal / at.z,
+		centre.y - at.y * focal / at.z)
+
+
+## Give *camera* the engine's projection for a 3D window of *window* inside a
+## render of *render* pixels.
+##
+## Two things are wrong with a plain [Camera3D] here and both are visible.
+## Its default field of view is 75 degrees where the engine's works out at
+## about 62, so everything was too small and too wide; and its principal
+## point is the render's centre, `(320, 240)`, where the engine's is the
+## **window's** -- `(324, 210)` for the campaign map, which is thirty pixels
+## up. The 3D fills the whole render and the plate is drawn as four strips
+## around the window ([CampaignScreen]), so the window's centre is not the
+## render's and the difference does not cancel.
+##
+## A frustum projection carries both: the height gives the focal length and
+## the offset moves the axis off the render's centre.
+static func frame_projection(camera: Camera3D, window: Rect2,
+		render: Vector2, zoom_divisor: int = 0) -> void:
+	if camera == null or render.x <= 0.0 or render.y <= 0.0:
+		return
+	var focal: float = focal_length(window.size.x, zoom_divisor)
+	if focal <= 0.0:
+		return
+	# The frustum is stated at the near plane, so every length here is a
+	# pixel count divided by the focal length and multiplied by `near`.
+	var near: float = camera.near
+	var height: float = render.y * near / focal
+	# Where the engine's axis lands, as a fraction of the render's own half
+	# extents: positive x right, positive y **up**, so the pixel delta in y
+	# is negated once here and nowhere else.
+	var centre: Vector2 = window.position + window.size * 0.5
+	var axis: Vector2 = Vector2(centre.x - render.x * 0.5,
+		render.y * 0.5 - centre.y)
+	# Shifting the frustum by `+o` moves the image by `-o`, so the offset is
+	# the axis's own displacement negated.
+	camera.projection = Camera3D.PROJECTION_FRUSTUM
+	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+	camera.frustum_offset = Vector2(-axis.x * near / focal,
+		-axis.y * near / focal)
+	camera.size = height
 
 
 ## The height of a map field, in world units, or zero off the map.

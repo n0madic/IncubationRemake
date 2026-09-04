@@ -33,15 +33,23 @@ const DOT_UPGRADE: int = 2
 const DOT_DIALOGUE: int = 3
 const RING_SELECTED: int = 7
 
-## How large one texel of a marker is drawn, with `fixed_size` on: chosen so
-## the shipped 10x10 dots come out at about the ten units of the 640x480
-## layout space they are drawn at in the original -- and so the 17x17 ring
-## keeps being the larger of the two, which normalising each sprite to one
-## screen size would have thrown away.
-const PIXEL_SIZE: float = 0.003
 ## Clear of the floor, in Godot units, so a marker on a cell with something
 ## standing on it is still the topmost thing drawn there.
 const LIFT: float = 0.1
+
+
+## How large one texel of a marker is drawn, with `fixed_size` on.
+##
+## A `fixed_size` sprite is held at a constant size on screen, and that size
+## is `pixel_size` through the **projection's own scale** -- so it is not
+## independent of the camera at all, and it changed the moment the rig took
+## Eng3d's focal length instead of Godot's default field of view. The
+## reciprocal of that focal length makes one texel exactly one pixel of the
+## 640x480 layout space, which is what the shipped 10x10 dots and 17x17 ring
+## are drawn at in the original -- so this is derived rather than tuned, and
+## the ring stays the larger of the two by being larger.
+static func pixel_size() -> float:
+	return 1.0 / CameraRig.focal_length(CampaignScreen.PLATE_WINDOW.size.x)
 
 ## cell -> the marker standing on it, so a hover can ring one without
 ## rebuilding the set.
@@ -165,5 +173,5 @@ func _sprite(texture: Texture2D) -> Sprite3D:
 	mark.double_sided = true
 	mark.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	mark.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-	mark.pixel_size = PIXEL_SIZE
+	mark.pixel_size = pixel_size()
 	return mark

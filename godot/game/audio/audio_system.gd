@@ -43,7 +43,17 @@ const RIFF_PAD: int = 1
 var _tables: AudioTables = null
 var _events: AudioEvents = null
 var _pool: AudioPool = null
+## The tag that tells a `CDTrackProgram` from a mission name in
+## [method music_source].
+const MUSIC_PROGRAM: String = "program:"
+
 var _music: MusicPlayer = null
+## What the playlist now loaded was asked for by -- a mission's name, or
+## [constant MUSIC_PROGRAM] and a `CDTrackProgram` string. Held here rather
+## than by the caller so that **every** way music stops clears it: a caller's
+## own copy goes stale the moment the shell silences the mixer, and the map
+## then declines to restart the track it thinks is already playing.
+var _music_source: String = ""
 var _fx_volume: int = DEFAULT_FX_VOLUME
 var _music_volume: int = DEFAULT_MUSIC_VOLUME
 var _streams: Dictionary[String, AudioStream] = {}
@@ -248,6 +258,22 @@ func start_music(mission: String) -> int:
 	if _tables == null:
 		return -1
 	_music = MusicPlayer.for_mission(_tables, mission)
+	_music_source = mission
+	return _play_track(_music.first_playable())
+
+
+## The same, from a `CDTrackProgram` string rather than from a mission name.
+##
+## The campaign map is a script and not a mission: the cache keys its playlist
+## under `_C_XXX` like any other, but the map's `InitMap` is run for its
+## `CreateBGB` lines anyway, and taking the programme out of the same run is
+## what makes the two halves of that block one thing. It also works for a map
+## the converter has no playlist row for.
+func start_program(program: String) -> int:
+	if _tables == null or program.is_empty():
+		return -1
+	_music = MusicPlayer.from_program(program, _tables.tracks())
+	_music_source = MUSIC_PROGRAM + program
 	return _play_track(_music.first_playable())
 
 
@@ -270,12 +296,19 @@ func _play_track(track: int) -> int:
 
 
 func stop_music() -> void:
+	_music_source = ""
 	if _music_player != null:
 		_music_player.stop()
 
 
 func music() -> MusicPlayer:
 	return _music
+
+
+## What [method start_music] or [method start_program] was last given, or `""`
+## when nothing is playing. A caller asks this instead of remembering.
+func music_source() -> String:
+	return _music_source
 
 
 # --- streams ----------------------------------------------------------------

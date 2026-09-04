@@ -46,6 +46,8 @@ func run(h: TestHarness) -> void:
 	_screens(h)
 	_deploy_screen(h)
 	_map_picture(h)
+	_projection(h)
+	_map_turn(h)
 	_root_plates(h)
 	_clean_scratch()
 
@@ -871,6 +873,164 @@ func _deploy_screen(h: TestHarness) -> void:
 ## computed at all -- it is `aMissionControl.cpp`'s own six numbers -- so what
 ## is checked about it is that it is those numbers and that they mean what
 ## `0x00403560`'s two triples mean.
+## The campaign map's turn -- docs/27 section 2.6, the fourth open question.
+##
+## The delta was **UNVERIFIED** for a slice: `0x004558F0` was named as the
+## routine that swings the eye, its height clamp was measured, and where its
+## request came from was not. It is a pointer drag -- `0x00455566` runs while
+## the screen id is 6 and the button byte is set, doubling the horizontal
+## travel and multiplying the vertical by -50, with the cursor warped back to
+## the drag's anchor each frame so the next reading is fresh.
+##
+## Two halves of it read backwards and both are checked here: the step
+## **decays** rather than clamping, and the eye that is turned is the fixed
+## one rather than the one the last frame left.
+func _map_turn(h: TestHarness) -> void:
+	h.equal("turn.rates",
+		[CameraRig.MAP_TURN_PER_PIXEL, CameraRig.MAP_RISE_PER_PIXEL],
+		[2, -50],
+		"`shl eax, 1` and the five instructions that come to -50")
+	var rig: CameraRig = CameraRig.new()
+	rig.eng3d = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
+	rig.reset_map_swing()
+	# **Not exactly the constants**, and the original is not either: a zero
+	# angle still goes through Eng3d's Q14 matrix, whose products are shifted
+	# down and truncated, so the arm comes back a few units short. It is a
+	# fixed offset rather than a drift, because the arm is recomputed from the
+	# constants every frame instead of being carried forward -- which is one
+	# more reason the engine rotates the fixed eye and not the moving one.
+	var resting: Vector3i = rig.swing_map(0, 0)
+	h.check("turn.rests_where_the_constants_say",
+		Vector2(resting.x, resting.y).distance_to(Vector2(
+			CameraRig.CAMPAIGN_EYE.x, CameraRig.CAMPAIGN_EYE.y)) < 16.0
+		and resting.z == CameraRig.CAMPAIGN_EYE.z,
+		"a frame that asks for nothing rests at %s, a Q14 truncation off "
+		% resting + str(CameraRig.CAMPAIGN_EYE))
+
+	# A drag, then the pointer stops. The step is replaced while the request
+	# grows and halved once it does not, so the map coasts and settles.
+	rig.reset_map_swing()
+	var _first: Vector3i = rig.swing_map(40, 0)
+	h.equal("turn.request_becomes_the_step", rig.map_step(), 40)
+	var _smaller: Vector3i = rig.swing_map(3, 0)
+	h.equal("turn.smaller_request_halves_it", rig.map_step(), 20,
+		"`cmp ebx, eax / jle` then `sar eax, 1` -- not a clamp to the request")
+	var frames: int = 0
+	while rig.map_step() != 0 and frames < 40:
+		var _idle: Vector3i = rig.swing_map(0, 0)
+		frames += 1
+	h.check("turn.coasts_to_a_stop", frames > 1 and frames < 12,
+		"the step reached zero after %d idle frames" % frames)
+
+	# The angle is absolute: the arm rotated is always the constant one, so a
+	# full circle in **one** call comes back to where it started. Checking the
+	# call after it would not -- the step halves and accumulates again, which
+	# is the whole point of the decay.
+	rig.reset_map_swing()
+	var full: Vector3i = rig.swing_map(Eng3dGeometry.ANGLE_UNITS, 0)
+	h.check("turn.a_full_circle_is_a_no_op",
+		Vector2(full.x, full.y).distance_to(Vector2(resting.x, resting.y))
+			< 16.0,
+		"4096 units is one turn; landed at %s against %s" % [full, resting])
+
+	# And it is a turn about **z**. A full circle is a no-op about any axis,
+	# so what says the angle is the third of the three is that a quarter turn
+	# keeps the arm's length and puts it square to where it was.
+	rig.reset_map_swing()
+	var quarter: Vector3i = rig.swing_map(Eng3dGeometry.ANGLE_UNITS / 4, 0)
+	var arm: Vector2 = Vector2(CameraRig.CAMPAIGN_EYE.x
+		- CameraRig.CAMPAIGN_TARGET.x,
+		CameraRig.CAMPAIGN_EYE.y - CameraRig.CAMPAIGN_TARGET.y)
+	var swung: Vector2 = Vector2(quarter.x - CameraRig.CAMPAIGN_TARGET.x,
+		quarter.y - CameraRig.CAMPAIGN_TARGET.y)
+	h.check("turn.is_about_z",
+		absf(swung.length() - arm.length()) < 16.0
+		and absf(arm.normalized().dot(swung.normalized())) < 0.001
+		and quarter.z == CameraRig.CAMPAIGN_EYE.z,
+		"the arm keeps its length %.0f -> %.0f and turns square to itself"
+		% [arm.length(), swung.length()])
+
+	# And the height is the one coordinate that carries forward, into the
+	# band `0x00455991` and `0x004559A7` clamp it to.
+	rig.reset_map_swing()
+	var high: Vector3i = rig.swing_map(0, 100000)
+	var low: Vector3i = rig.swing_map(0, -1000000)
+	h.equal("turn.height_band", [high.z, low.z],
+		[CameraRig.CAMPAIGN_HEIGHT_HIGH, CameraRig.CAMPAIGN_HEIGHT_LOW])
+	rig.free()
+
+
+## Eng3d's own perspective, against Godot's own projection.
+##
+## The camera was a plain [Camera3D] at its default 75-degree field of view
+## with its axis through the middle of the render. The engine's focal length
+## is `_ftol(width * 10 / 13)` -- 398 for the map's 518-wide window, 400 for
+## the mission's 520 -- and its axis goes through the **window's** centre,
+## which the plate's four strips put thirty pixels above the render's.
+##
+## What is checked is not the constants but the **agreement**: a point put in
+## front of the camera has to come out of Godot's own frustum matrix where
+## `centre + coord * focal / depth` puts it. That is the whole claim, and it
+## fails if either half is wrong.
+func _projection(h: TestHarness) -> void:
+	h.equal("projection.focal_lengths",
+		[CameraRig.focal_length(CampaignScreen.PLATE_WINDOW.size.x),
+		CameraRig.focal_length(SelectUnitsScreen.DEPLOY_WINDOW.size.x),
+		CameraRig.focal_length(CampaignScreen.PLATE_SIZE.x),
+		CameraRig.focal_length(CampaignScreen.PLATE_SIZE.x, 4)],
+		[398.0, 400.0, 492.0, 160.0],
+		"`_ftol(width * 10 / 13)`, and `width / divisor` when 0x004FA500 is set")
+	h.check("projection.eng3d_default_is_not_used",
+		CameraRig.FOCAL_ENG3D_DEFAULT == 256.0
+		and CameraRig.focal_length(CampaignScreen.PLATE_WINDOW.size.x)
+			!= CameraRig.FOCAL_ENG3D_DEFAULT,
+		"0x414FE8 ships at 256 and every call site overwrites it")
+
+	# **No scene tree here**, so the check goes through Godot's own frustum
+	# matrix rather than through [method Camera3D.unproject_position], which
+	# needs a viewport to know how large the render is. `Camera3D` builds this
+	# very [Projection] from the four properties [method
+	# CameraRig.frame_projection] sets, so what is compared is those four
+	# against the engine's arithmetic.
+	var camera: Camera3D = Camera3D.new()
+	var render: Vector2 = CampaignScreen.PLATE_SIZE
+	for window: Rect2 in [CampaignScreen.PLATE_WINDOW,
+			SelectUnitsScreen.DEPLOY_WINDOW]:
+		CameraRig.frame_projection(camera, window, render)
+		var tag: String = "%dx%d" % [int(window.size.x), int(window.size.y)]
+		h.equal("projection.is_a_frustum.%s" % tag,
+			[camera.projection, camera.keep_aspect],
+			[Camera3D.PROJECTION_FRUSTUM, Camera3D.KEEP_HEIGHT],
+			"a field of view cannot move the axis off centre")
+		var matrix: Projection = Projection.create_frustum_aspect(
+			camera.size, render.x / render.y, camera.frustum_offset,
+			camera.near, camera.far, false)
+		var worst: float = 0.0
+		var ahead: Vector2 = _through(matrix, Vector3(0.0, 0.0, 10.0), render)
+		var centre: Vector2 = window.position + window.size * 0.5
+		h.check("projection.axis_is_the_window_centre.%s" % tag,
+			ahead.distance_to(centre) < 0.01,
+			"straight ahead lands at %.2f, %.2f; the window's centre is %.2f, %.2f"
+			% [ahead.x, ahead.y, centre.x, centre.y])
+		for at: Vector3 in [Vector3(3.0, 2.0, 20.0), Vector3(-5.0, 4.0, 12.0),
+				Vector3(7.0, -3.0, 30.0), Vector3(-1.0, -6.0, 8.0)]:
+			worst = maxf(worst, _through(matrix, at, render).distance_to(
+				CameraRig.project(at, window)))
+		h.check("projection.matches_eng3d.%s" % tag, worst < 0.01,
+			"worst disagreement %.4f px over four points" % worst)
+	camera.free()
+
+
+## A camera-space point through *matrix* into the render's own top-left
+## pixels. *at* carries depth forward, which is Godot's -z.
+func _through(matrix: Projection, at: Vector3, render: Vector2) -> Vector2:
+	var clip: Vector4 = matrix * Vector4(at.x, at.y, -at.z, 1.0)
+	if is_zero_approx(clip.w):
+		return Vector2.ZERO
+	return Vector2((clip.x / clip.w + 1.0) * 0.5 * render.x,
+		(1.0 - clip.y / clip.w) * 0.5 * render.y)
+
+
 func _map_picture(h: TestHarness) -> void:
 	var built: Dictionary = CacheFixture.load_world("_C_140")
 	if built.is_empty():

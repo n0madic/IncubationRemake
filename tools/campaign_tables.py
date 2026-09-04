@@ -521,6 +521,7 @@ class Binary:
         path = os.path.join(root, GAME_EXE)
         if not os.path.isfile(path):
             raise SystemExit(f"{path}: not found -- is {root!r} the game root?")
+        self.root = root
         self.pe = PEFile(path)
         base, size, _raw, _rawsize = self.pe.section(".text")
         self.text_lo, self.text_hi = base, base + size
@@ -905,6 +906,101 @@ CAMPAIGN_VIEWPORT = (65, 57, 518, 306)
 CAMERA_HEIGHT_CLAMP = (0x00455991, 0x004559A7)
 CAMPAIGN_HEIGHT_BAND = (-9600, 19200)
 
+#: docs/27 §2.6 -- **what turns the map, and by how much.**  This was the
+#: document's fourth open question, and the answer is a cursor drag:
+#: `0x00455566` runs only while the screen id `0x00510A38` is 6 and the button
+#: byte `0x00511B09` is 1, and it writes the two deltas `0x004558F0` reads.
+#: The cursor is warped back to the drag's anchor every frame
+#: (`0x0045EEF0`'s `SetCursorPos`), so what it reads is per-frame travel.
+ROTATE_INPUT = 0x00455560
+ROTATE_SCREEN_SITE = 0x00455566
+ROTATE_SCREEN_CMP = 0x0045556E
+ROTATE_SCREEN_ID = 6
+SCREEN_ID_GLOBAL = 0x00510A38
+ROTATE_BUTTON_GETTER = 0x0045F000
+ROTATE_BUTTON_BYTE = 0x00511B09
+#: `call 0x0045EF30 / shl eax, 1` -- the horizontal travel doubled, in Eng3d's
+#: 4096ths, into `0x00510C44`.
+ROTATE_DX_CALL = 0x00455587
+ROTATE_DX_SHIFT_SITE = 0x0045558C
+ROTATE_TURN_PER_PIXEL = 2
+ROTATE_DELTA_STORE = 0x0045558E
+ROTATE_DELTA_GLOBAL = 0x00510C44
+#: `neg / shl 2 / sub / lea [ecx+ecx*4] / shl 1` -- the vertical travel by
+#: **-50**, in world units, into `0x00510C48`.  Written out as five
+#: instructions because the compiler had no multiply worth using.
+ROTATE_DY_CALL = 0x00455593
+ROTATE_RISE_SITES = (0x0045559A, 0x0045559C, 0x0045559F, 0x004555A1,
+                     0x004555A4)
+ROTATE_RISE_PER_PIXEL = -50
+ROTATE_HEIGHT_STORE = 0x004555A6
+ROTATE_HEIGHT_GLOBAL = 0x00510C48
+#: The pointer accessors themselves: current minus anchor, and the warp back.
+ROTATE_DX_GETTER = 0x0045EF30
+ROTATE_DY_GETTER = 0x0045EF40
+ROTATE_WARP = 0x0045EEF0
+ROTATE_CURSOR = (0x00511AF8, 0x00511AFC)
+ROTATE_ANCHOR = (0x00511B00, 0x00511B04)
+#: The two call sites of `0x004558F0` inside the map's own loop: the drag's,
+#: and the frame callback's own **zero**, which is what decays the step.
+ROTATE_APPLY = 0x004558F0
+ROTATE_APPLY_SITES = (0x00454E6C, 0x00454EEF)
+ROTATE_IDLE_PUSHES = (0x00454EE4, 0x00454EE6)
+#: `0x004558F0`'s inertia: `cmp ebx, eax / jle` takes the request when its
+#: magnitude is the larger and **halves** the step otherwise -- `sar eax, 1`
+#: after a `cdq / sub`, so it truncates toward zero.
+ROTATE_INERTIA_CMP = 0x0045593A
+ROTATE_INERTIA_JLE = 0x0045593C
+ROTATE_HALVE_SITE = 0x00455947
+#: The accumulator and the step, and the three sites that clear the first.
+ROTATE_ANGLE_GLOBAL = 0x00510C50
+ROTATE_STEP_GLOBAL = 0x00510D28
+ROTATE_ANGLE_READ = 0x00455949
+ROTATE_ANGLE_STORE = 0x0045595A
+ROTATE_STEP_STORE = 0x0045594F
+ROTATE_ANGLE_CLEARS = (0x004541F7, 0x004554C9, 0x0045D134)
+#: `mov word [esp+0xc], cx` -- the accumulator's **low word**, handed to
+#: `0x004039A0` as the **third** angle, which is what says the units are
+#: Eng3d's 4096ths and the turn is about z.
+ROTATE_ANGLE_WORD_SITE = 0x00455960
+ROTATE_MATRIX_CALL = 0x0045597E
+ROTATE_MATRIX = 0x004039A0
+#: `SetCameraPosition` `0x00403560` writes **none** of the globals back, and
+#: the eye's own x is written only by the screen's initialiser -- so the turn
+#: rotates the fixed eye by the accumulated angle rather than nudging the eye
+#: it has.  Reading it the other way makes the map run away.
+CAMERA_EYE_X_GLOBAL = 0x00510BB8
+CAMERA_EYE_Z_GLOBAL = 0x00510BC0
+ROTATE_CAMERA_CALL = 0x004559DC
+
+#: docs/27 §2.6 -- **Eng3d's own perspective.**  `0x00403460` is the wrapper
+#: `aInit3dScreen`, and the focal length is not a field of view at all: it is
+#: the window's width times the double at `0x004B1010`, truncated.  The DLL
+#: stores it at `Eng3d.dll+0x14FE8` beside `1/f`, whose own initialiser is
+#: 256.  A non-zero zoom divisor `0x004FA500` replaces it with `width /
+#: divisor`; five sites write that, with 0 and with 4, and none is on the
+#: mission or map path.
+PROJECTION_INIT = 0x00403460
+PROJECTION_CONSTANT_SITE = 0x0040348E
+PROJECTION_CONSTANT = 10.0 / 13.0
+PROJECTION_FTOL_SITE = 0x00403494
+PROJECTION_ZOOM_GLOBAL = 0x004FA500
+PROJECTION_ZOOM_SETTER = 0x004034E0
+PROJECTION_WIDTH_SITE = 0x0040346C
+PROJECTION_ENG3D_ENTRY = "_E3D_init_3d_screen"
+PROJECTION_ENG3D_DEFAULT = 256
+#: `_ftol` -- the same import thunk `blob_tables.py` names.
+FTOL = 0x004AE7B6
+#: Where `Eng3d.dll` keeps the focal length, as an RVA off its own image base
+#: (0x00400000, which it never loads at -- the loader relocates it, so this is
+#: read out of the file rather than out of a running process).
+ENG3D_DLL = "Eng3d.dll"
+ENG3D_FOCAL_RVA = 0x00014FE8
+#: The map's own `aInit3dScreen` call, and the viewport it names -- the same
+#: rectangle `0x00454102` sets, read a second way.
+PROJECTION_MAP_SITE = 0x00455A16
+PROJECTION_MAP_PUSHES = (0x004559FA, 0x004559F8, 0x004559F0, 0x004559EB)
+
 
 
 def check_screen_camera(ck: Checker, b: Binary) -> None:
@@ -973,6 +1069,163 @@ def check_screen_camera(ck: Checker, b: Binary) -> None:
     ck.check("screen.eye_inside_the_band",
              CAMPAIGN_HEIGHT_BAND[0] < CAMPAIGN_EYE[2] < CAMPAIGN_HEIGHT_BAND[1],
              f"eye z {CAMPAIGN_EYE[2]}")
+
+
+def check_screen_rotation(ck: Checker, b: Binary) -> None:
+    """docs/27 §2.6 -- what turns the map, and by how much.
+
+    This was the document's fourth open question, and both halves of it are
+    here: the **source** is a cursor drag with the pointer warped back to its
+    anchor every frame, and the **delta** is that travel doubled for the turn
+    and multiplied by -50 for the height.  The units follow from where the
+    angle goes -- `0x004039A0`'s third angle, so Eng3d's 4096ths.
+    """
+    ck.equal("rotate.screen_id", _cmp_imm(b, ROTATE_SCREEN_CMP),
+             ROTATE_SCREEN_ID, str)
+    ck.equal("rotate.screen_global", b.u32(ROTATE_SCREEN_SITE + 1),
+             SCREEN_ID_GLOBAL, hex)
+    ck.equal("rotate.button_getter", b.call_target(ROTATE_INPUT + 0x18),
+             ROTATE_BUTTON_GETTER, hex)
+    ck.check("rotate.button_is_a_byte",
+             b.pe.bytes_at(ROTATE_BUTTON_GETTER, 2) == b"\x33\xc0"
+             and b.u32(ROTATE_BUTTON_GETTER + 3) == ROTATE_BUTTON_BYTE,
+             "0x0045F000 answers with one byte of state")
+    # The two deltas.  The horizontal is a shift; the vertical is five
+    # instructions that come to a multiply by -50.
+    ck.equal("rotate.dx_source", b.call_target(ROTATE_DX_CALL),
+             ROTATE_DX_GETTER, hex)
+    # `d1 e0` -- `shl eax, 1`, whose count is in the opcode and not in an
+    # immediate, so the doubling is read off the encoding.
+    ck.equal("rotate.turn_per_pixel",
+             2 if b.pe.bytes_at(ROTATE_DX_SHIFT_SITE, 2) == b"\xd1\xe0"
+             else 0, ROTATE_TURN_PER_PIXEL)
+    ck.equal("rotate.turn_store", b.u32(ROTATE_DELTA_STORE + 1),
+             ROTATE_DELTA_GLOBAL, hex)
+    ck.equal("rotate.dy_source", b.call_target(ROTATE_DY_CALL),
+             ROTATE_DY_GETTER, hex)
+    ck.equal("rotate.rise_per_pixel", _rise_factor(b), ROTATE_RISE_PER_PIXEL)
+    ck.equal("rotate.rise_store", b.u32(ROTATE_HEIGHT_STORE + 2),
+             ROTATE_HEIGHT_GLOBAL, hex)
+    # The pointer itself: current minus anchor, and the warp that makes the
+    # next frame's reading fresh.
+    ck.equal("rotate.dx_is_travel",
+             (b.u32(ROTATE_DX_GETTER + 1), b.u32(ROTATE_DX_GETTER + 7)),
+             (ROTATE_CURSOR[0], ROTATE_ANCHOR[0]))
+    ck.equal("rotate.dy_is_travel",
+             (b.u32(ROTATE_DY_GETTER + 1), b.u32(ROTATE_DY_GETTER + 7)),
+             (ROTATE_CURSOR[1], ROTATE_ANCHOR[1]))
+    ck.check("rotate.cursor_is_warped_back",
+             b.u32(ROTATE_WARP + 2) == ROTATE_ANCHOR[1]
+             and b.u32(ROTATE_WARP + 7) == ROTATE_ANCHOR[0],
+             "0x0045EEF0 puts the pointer back on the anchor")
+    # `0x004558F0` itself.
+    ck.equal("rotate.apply_sites",
+             [hex(b.call_target(site)) for site in ROTATE_APPLY_SITES],
+             [hex(ROTATE_APPLY)] * len(ROTATE_APPLY_SITES))
+    ck.equal("rotate.idle_call_asks_for_nothing",
+             tuple(_push_value(b, site) for site in ROTATE_IDLE_PUSHES),
+             (0, 0))
+    ck.check("rotate.inertia_halves_the_step",
+             b.pe.bytes_at(ROTATE_INERTIA_CMP, 2) == b"\x3b\xd8"
+             and b.u8(ROTATE_INERTIA_JLE) == 0x7E
+             and b.pe.bytes_at(ROTATE_HALVE_SITE, 2) == b"\xd1\xf8",
+             "`cmp ebx, eax / jle` then `sar eax, 1` -- decay, not a clamp")
+    ck.equal("rotate.accumulator",
+             (b.u32(ROTATE_ANGLE_READ + 2), b.u32(ROTATE_ANGLE_STORE + 2),
+              b.u32(ROTATE_STEP_STORE + 1)),
+             (ROTATE_ANGLE_GLOBAL, ROTATE_ANGLE_GLOBAL, ROTATE_STEP_GLOBAL))
+    ck.check("rotate.angle_is_a_word",
+             b.pe.bytes_at(ROTATE_ANGLE_WORD_SITE, 3) == b"\x66\x89\x4c",
+             "the accumulator's low word is what becomes the angle")
+    ck.equal("rotate.angle_goes_through_eng3d",
+             b.call_target(ROTATE_MATRIX_CALL), ROTATE_MATRIX, hex)
+    # And the reason the turn is absolute: the camera call writes nothing
+    # back, so the eye it rotates is the constant one.
+    ck.equal("rotate.camera_call", b.call_target(ROTATE_CAMERA_CALL),
+             SET_CAMERA_POSITION, hex)
+    ck.check("rotate.eye_is_never_written_back",
+             all(site < SET_CAMERA_POSITION or site > SET_CAMERA_POSITION + 0x80
+                 for site in b.absolute_refs(CAMERA_EYE_X_GLOBAL)),
+             "0x00403560 hands the eye to Eng3d and keeps no copy")
+    ck.check("rotate.height_is_the_one_that_accumulates",
+             b.u32(CAMERA_HEIGHT_CLAMP[0] - 0xE + 1) == CAMERA_EYE_Z_GLOBAL,
+             "0x00510BC0 is read, added to and written back")
+
+
+def check_projection(ck: Checker, b: Binary) -> None:
+    """docs/27 §2.6 -- Eng3d's perspective is a constant, not a field of view.
+
+    `0x00403460` computes the focal length from the **window's width alone**,
+    `_ftol(width * 10 / 13)`, and hands it to `_E3D_init_3d_screen` as its
+    fifth argument; the DLL keeps it at `+0x14FE8` with its reciprocal beside
+    it, which is the divide a projection is.  The remake had a default 75
+    degree `Camera3D` with its axis through the middle of the render, and the
+    engine's axis is the **window's** centre.
+    """
+    ck.check("projection.constant_is_ten_thirteenths",
+             b.pe.bytes_at(PROJECTION_CONSTANT_SITE, 2) == b"\xdc\x0d"
+             and abs(b.pe.f64(b.u32(PROJECTION_CONSTANT_SITE + 2))
+                     - PROJECTION_CONSTANT) < 1e-12,
+             f"fmul qword -- {PROJECTION_CONSTANT!r}")
+    ck.equal("projection.truncates", b.call_target(PROJECTION_FTOL_SITE),
+             FTOL, hex)
+    ck.check("projection.width_is_the_only_input",
+             b.pe.bytes_at(PROJECTION_WIDTH_SITE, 4) == b"\x8b\x74\x24\x20",
+             "the fifth argument -- the window's width -- and nothing else")
+    ck.equal("projection.zoom_divisor",
+             (b.u32(PROJECTION_INIT + 2), b.u32(PROJECTION_ZOOM_SETTER + 5)),
+             (PROJECTION_ZOOM_GLOBAL, PROJECTION_ZOOM_GLOBAL))
+    eng3d = PEFile(os.path.join(b.root, ENG3D_DLL))
+    listing = eng3d.exports()
+    names = [name for _ordinal, _rva, name, _fwd in (listing[1] if listing
+                                                     else [])]
+    ck.check("projection.entry_point", PROJECTION_ENG3D_ENTRY in names,
+             "Eng3d.dll ordinal 3 takes the focal length as its fifth")
+    ck.equal("projection.eng3d_default",
+             eng3d.u32(eng3d.image_base + ENG3D_FOCAL_RVA),
+             PROJECTION_ENG3D_DEFAULT,
+             lambda v: f"{v} at Eng3d.dll+{ENG3D_FOCAL_RVA:#x}")
+    # The map's own call names the same rectangle 0x00454102 does, which is
+    # the viewport read a second way.
+    ck.equal("projection.map_window",
+             tuple(_push_value(b, site) for site in PROJECTION_MAP_PUSHES),
+             CAMPAIGN_VIEWPORT)
+    ck.equal("projection.map_focal_length",
+             int(CAMPAIGN_VIEWPORT[2] * PROJECTION_CONSTANT), 398)
+
+
+def _cmp_imm(b: Binary, va: int) -> int | None:
+    """`cmp r32, imm` in either of the two encodings the compiler uses."""
+    op = b.u8(va)
+    if op == 0x83:
+        return b.i8(va + 2)
+    if op == 0x3D:
+        return b.i32(va + 1)
+    return None
+
+
+def _push_value(b: Binary, va: int) -> int | None:
+    return b._push_imm(va)[0]
+
+
+def _rise_factor(b: Binary) -> int:
+    """`0x0045559A`'s five instructions, as the number they multiply by.
+
+    `neg / shl 2 / sub / lea [ecx+ecx*4] / shl 1` is `-50`, and no single
+    instruction in the block says so -- which is why it is replayed here
+    rather than read off an immediate.
+    """
+    forms = (b"\xf7\xd9", b"\xc1\xe1\x02", b"\x2b\xc8",
+             b"\x8d\x0c\x89", b"\xd1\xe1")
+    for site, form in zip(ROTATE_RISE_SITES, forms):
+        if b.pe.bytes_at(site, len(form)) != form:
+            return 0
+    value, original = 1, 1
+    value = -value                      # neg ecx
+    value <<= 2                         # shl ecx, 2
+    value -= original                   # sub ecx, eax
+    value += value * 4                  # lea ecx, [ecx + ecx*4]
+    return value << 1                   # shl ecx, 1
 
 
 def _pushed_globals(b: Binary, start: int, call_site: int) -> list[int]:
@@ -1632,6 +1885,8 @@ def run_checks(root: str) -> Checker:
                  for stem, h in c.headers.items() if h["name"]),
              "every header's own-name field matches its filename")
     check_screen_camera(ck, b)
+    check_screen_rotation(ck, b)
+    check_projection(ck, b)
 
     ck.check("chain.last_mission",
              chained.get(MAP_NAME_ORPHAN[0]) is None,

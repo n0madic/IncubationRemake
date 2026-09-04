@@ -68,6 +68,14 @@ var _backdrop_hooks: GameBlobHooks = null
 var _backdrop_bgb: BgbEmitters = null
 var _backdrop_sprites: BlobSprites = null
 var _backdrop_carry: float = 0.0
+## The map's own `CDTrackProgram` argument, taken from the same `INIT MAP`
+## run its emitters come from. What is sounding now is [AudioSystem]'s to
+## remember, so that every way music stops clears it.
+var _backdrop_music: String = ""
+## The pointer travel one frame of the map's turn should answer to, in the
+## plate's own pixels. Held rather than applied at once so the decay and the
+## drag are the same call.
+var _swing_carry: Vector2 = Vector2.ZERO
 ## location -> the cell whose action point is its id, out of whichever campaign
 ## map is up (docs/27 section 2.1).
 var _location_cells: Dictionary[int, Vector2i] = {}
@@ -250,6 +258,8 @@ const TEST_RUNNER: String = "res://tests/runner.gd"
 ## What the interpreter calls a `CreateBGB` line
 ## (`core/lcl/lcl_interpreter.gd`).
 const CREATE_BGB: String = "create_bgb"
+## docs/20 section 7.3 -- the other command `INIT MAP` carries.
+const CD_TRACK_PROGRAM: String = "cd_track_program"
 ## What the test build's own window says while it is not the game.
 const TEST_CAPTION: String = \
 	"Incubation - Remake -- the test harness, not the game\n\n" \
@@ -526,6 +536,10 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			# the screen a list; the frame is drawn around a hole only when
 			# there is something behind it.
 			map.has_picture = _backdrop_root != null
+			# The other half of the map's `INIT MAP`. Here rather than in
+			# the backdrop's build, because the backdrop is kept across a
+			# mission and the music is not.
+			_play_map_music()
 			screen = map
 		CampaignHost.SCREEN_BRIEFING:
 			var briefing: BriefingScreen = BriefingScreen.new()
@@ -1326,6 +1340,11 @@ func _build_backdrop(mission: String) -> void:
 	_backdrop_rig.setup(_backdrop_world.resource.width,
 		_backdrop_world.resource.height, _backdrop_world.resource.heights(),
 		_backdrop_world.resource.camera_height)
+	# Eng3d's own perspective for the map's 518x306 window, which is not the
+	# render's centre: the plate is drawn as strips around it, so the window
+	# sits thirty pixels above the middle of the picture.
+	CameraRig.frame_projection(_backdrop_rig.camera(),
+		CampaignScreen.PLATE_WINDOW, CampaignScreen.PLATE_SIZE)
 	_backdrop_rig.camera().current = true
 
 	var environment: WorldEnvironment = WorldEnvironment.new()
@@ -1374,7 +1393,9 @@ func _build_backdrop_fires(mission: String, geometry: Dictionary,
 	hooks.inputs = inputs
 
 	_backdrop_bgb = BgbEmitters.create()
-	var _lit: int = _register_emitters(_backdrop_bgb, opening)
+	var _lit: int = _register_emitters(_backdrop_bgb, opening,
+		_backdrop_hooks)
+	_backdrop_music = _map_music_program(opening)
 	_backdrop_carry = 0.0
 
 	_backdrop_sprites = BlobSprites.new()
@@ -1388,6 +1409,25 @@ func _build_backdrop_fires(mission: String, geometry: Dictionary,
 	var atlas: Texture2D = plain.get(atlas_id) if plain.has(atlas_id) else null
 	if atlas != null:
 		_backdrop_sprites.setup(atlas, _blob_tables)
+
+
+## The `CDTrackProgram` argument out of a script run's events, or `""`.
+##
+## docs/20 section 7.3: the command takes one string and 111 of the shipped
+## missions call it, always from `INIT MAP`. A map that calls it twice keeps
+## the last, which is what the engine's own single global does.
+func _map_music_program(outcome: Dictionary) -> String:
+	if outcome.is_empty():
+		return ""
+	var program: String = ""
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		if event.is_empty() or AudioEvents.name_of(event) != CD_TRACK_PROGRAM:
+			continue
+		var values: Array = DictRead.as_array(event.get("values", []))
+		if not values.is_empty():
+			program = DictRead.as_string(values[0])
+	return program
 
 
 ## One frame of the map's own effects, on the same 20 fps clock a mission's
@@ -1419,6 +1459,10 @@ func _tick_backdrop_fires(delta: float) -> void:
 func _frame_map() -> void:
 	if _backdrop_rig == null:
 		return
+	# `0x004554C9` zeroes the accumulator when the map is raised, so a turn
+	# does not survive the mission that was entered from it.
+	_backdrop_rig.reset_map_swing()
+	_swing_carry = Vector2.ZERO
 	_backdrop_rig.set_now(CameraRig.CAMPAIGN_EYE, CameraRig.CAMPAIGN_TARGET)
 
 
@@ -1439,6 +1483,8 @@ func _clear_backdrop() -> void:
 	_backdrop_bgb = null
 	_backdrop_sprites = null
 	_backdrop_carry = 0.0
+	_backdrop_music = ""
+	_swing_carry = Vector2.ZERO
 	_location_cells.clear()
 
 
@@ -1600,7 +1646,8 @@ func _build(mission: String) -> void:
 	_units.build(world, geometry, textures)
 
 	_build_effects(mission, world_set, textures)
-	_register_emitters(_bgb, opening_script)
+	var _emitters: int = _register_emitters(_bgb, opening_script,
+		_fx_hooks)
 	# `INIT MAP` is where every shipped mission puts its `CDTrackProgram`, and
 	# the return value was being discarded. The set pieces it may also run are
 	# applied by `core` before this point, so what is left for `game` is the
@@ -1613,6 +1660,11 @@ func _build(mission: String) -> void:
 	_scene_root.add_child(_rig)
 	_rig.setup(world.resource.width, world.resource.height,
 		world.resource.heights(), world.resource.camera_height)
+	# The same rule with the **mission's** own window, `0x00419D90`'s
+	# `(60, 34)` by 520x340: a focal length of 400 rather than the map's 398,
+	# and an axis four pixels right and thirty-six pixels up of centre.
+	CameraRig.frame_projection(_rig.camera(),
+		SelectUnitsScreen.DEPLOY_WINDOW, CampaignScreen.PLATE_SIZE)
 	_rig.camera().current = true
 	_director = CameraDirector.create(_rig)
 	_walk_cameras.clear()
@@ -1628,6 +1680,50 @@ func _build(mission: String) -> void:
 	_refresh_status()
 
 
+## The sound layer, opened on demand.
+##
+## It used to be built only by [method _build_effects], which is a mission's
+## own path -- so the campaign map, which is shown before any mission and
+## after every one, had no way to reach it and its `CDTrackProgram` played
+## nowhere. *quiet* says whether whatever is already sounding should be cut
+## first: a mission cuts the map, and the map's own arrival does not cut the
+## mission it is being shown over.
+func _open_audio(quiet: bool) -> AudioSystem:
+	var tables: AudioTables = AudioTables.open(_cache_dir)
+	_blob_tables = CacheLoader.read_json(_cache_dir + "/tables/blobs.json")
+	_events = AudioEvents.open(tables, _blob_tables)
+	if _audio == null:
+		_audio = AudioSystem.new()
+		_audio.name = "Audio"
+		add_child(_audio)
+		_audio.setup(tables, _events)
+	elif quiet:
+		_audio.stop_all()
+		_audio.stop_music()
+	return _audio
+
+
+## The campaign map's own `CDTrackProgram`, played from the same `INIT MAP`
+## run its fires come from.
+##
+## `_C_XXX.lcl`'s whole script is four `CreateBGB` lines and one
+## `CDTrackProgram ("5.3.4.2")`; the first half was written down and consumed
+## by nothing until this slice, and this is the second. Called on every
+## arrival at the map rather than on the backdrop's build, because the
+## backdrop survives a mission and the music does not -- but only when the
+## programme is not already the one playing, so stepping in and out of a
+## briefing does not restart the track.
+func _play_map_music() -> void:
+	if _backdrop_music.is_empty() or _cache_dir.is_empty():
+		return
+	if _audio != null and _audio.music_source() \
+			== AudioSystem.MUSIC_PROGRAM + _backdrop_music:
+		return
+	var audio: AudioSystem = _open_audio(true)
+	settings.apply_audio(audio, _events)
+	var _track: int = audio.start_program(_backdrop_music)
+
+
 ## The sound layer and the blob pool, per mission.
 ##
 ## Both read the cache and nothing else; a cache converted with `--no-music`,
@@ -1637,21 +1733,11 @@ func _build(mission: String) -> void:
 ## sound that finds no free buffer (section 7.1).
 func _build_effects(mission: String, world_set: String,
 		textures: Dictionary) -> void:
-	var tables: AudioTables = AudioTables.open(_cache_dir)
-	_blob_tables = CacheLoader.read_json(_cache_dir + "/tables/blobs.json")
-	_events = AudioEvents.open(tables, _blob_tables)
-	if _audio == null:
-		_audio = AudioSystem.new()
-		_audio.name = "Audio"
-		add_child(_audio)
-		_audio.setup(tables, _events)
-	else:
-		_audio.stop_all()
-		_audio.stop_music()
+	var _sound: AudioSystem = _open_audio(true)
 	settings.apply_audio(_audio, _events)
 	# After the volumes, so the first track opens at the chosen one rather
 	# than at full and then dropping.
-	_audio.start_music(mission)
+	var _first: int = _audio.start_music(mission)
 
 	# The pool is seeded from the mission name, so a mission's particles look
 	# the same every run without any of it reaching `World.rng` -- which is
@@ -2263,6 +2349,7 @@ func _process(delta: float) -> void:
 	# The location map is a picture with a clock of its own: no simulation
 	# behind it, and nothing below this line applies to it.
 	_tick_backdrop_fires(delta)
+	_tick_backdrop_swing()
 	if _playback.is_running():
 		var _going: bool = _playback.advance(delta, _picture_busy())
 	if _units != null:
@@ -2648,6 +2735,44 @@ func _toggle_shell() -> void:
 ## The camera half is deliberately a short, named list rather than a fall
 ## through to `_unhandled_input`'s own: a screen is up, and everything it does
 ## not name still belongs to the screen.
+## One call of `0x004558F0` with the pointer's own travel -- docs/27 §2.6.
+##
+## The original reads the travel every frame with the cursor pinned to where
+## the drag began, so what reaches the routine is a per-frame delta; Godot's
+## `relative` already is one, and the warp is what Godot's captured mouse
+## would be. What is not offered here is the capture itself: the map is a
+## screen with buttons on it, and stealing the pointer to turn a picture would
+## take the buttons away with it.
+func _swing_backdrop(travel: Vector2) -> void:
+	if _backdrop_rig == null:
+		return
+	# **Accumulated, not applied.** The routine runs once a frame in the
+	# original -- the cursor warp is what makes each frame's reading fresh --
+	# so several motion events inside one Godot frame are one request between
+	# them, and applying each on arrival would both double the rise and feed
+	# the decay a second request of its own size.
+	_swing_carry += travel
+
+
+## The decay half. `0x004558F0` is called **every frame** with a zero request,
+## which is what halves the step and brings the map to rest; a frame that only
+## ran while the pointer moved would stop it dead instead.
+func _tick_backdrop_swing() -> void:
+	if _backdrop_rig == null or _screen == null:
+		return
+	if _swing_carry == Vector2.ZERO and _backdrop_rig.map_step() == 0:
+		return
+	_apply_swing()
+	_swing_carry = Vector2.ZERO
+
+
+func _apply_swing() -> void:
+	var eye: Vector3i = _backdrop_rig.swing_map(
+		int(_swing_carry.x) * CameraRig.MAP_TURN_PER_PIXEL,
+		int(_swing_carry.y) * CameraRig.MAP_RISE_PER_PIXEL)
+	_backdrop_rig.set_now(eye, CameraRig.CAMPAIGN_TARGET)
+
+
 func _screen_input(event: InputEvent) -> void:
 	if _screen == null or not _screen.takes_world_clicks():
 		return
@@ -2662,14 +2787,16 @@ func _screen_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
-		# **Rotating is the mission's, not the map's.** The map's eye is the
-		# fixed pair of [constant CameraRig.CAMPAIGN_EYE] and the rig's
-		# quadrant is still 0, so a quarter turn there would jump rather than
-		# pivot. The original does turn this view -- `0x004558F0` swings the
-		# eye about the target -- but by an angle it accumulates and decays,
-		# which is not transcribed; the deployment view is an ordinary mission
-		# camera and turns like one.
-		if not on_backdrop and key.keycode == KEY_Q:
+		# **The map turns a different way from a mission.** A mission's `Q`
+		# and `E` step the rig's quadrant; the map's eye is the fixed pair of
+		# [constant CameraRig.CAMPAIGN_EYE] and `0x004558F0` swings it about
+		# the target by an accumulated angle instead, which is a drag rather
+		# than a step -- see [method _swing_backdrop].
+		if on_backdrop and (key.keycode == KEY_Q or key.keycode == KEY_E):
+			_swing_backdrop(Vector2(
+				CameraRig.MAP_KEY_TURN if key.keycode == KEY_E
+				else -CameraRig.MAP_KEY_TURN, 0.0))
+		elif not on_backdrop and key.keycode == KEY_Q:
 			rig.rotate_step(-1)
 		elif not on_backdrop and key.keycode == KEY_E:
 			rig.rotate_step(1)
@@ -2693,6 +2820,14 @@ func _screen_input(event: InputEvent) -> void:
 		# docs/42 section 2.5: the middle button held drags the view, here as
 		# in a mission.
 		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
+			# On the map that same drag is the original's own: `0x0045558C`
+			# reads the pointer's travel since the last frame, doubles it for
+			# the turn and multiplies it by -50 for the height, and warps the
+			# cursor back to where the drag started so the next frame's
+			# reading is fresh again.
+			if on_backdrop:
+				_swing_backdrop(motion.relative)
+				return
 			rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
 			return
 		at = motion.position
@@ -3490,7 +3625,8 @@ func _drain_pending_reactions() -> int:
 ## each campaign map. The interpreter records the eight arguments and nothing
 ## consumed them until now, which is why the burning buildings on the location
 ## map were not burning.
-func _register_emitters(table: BgbEmitters, outcome: Dictionary) -> int:
+func _register_emitters(table: BgbEmitters, outcome: Dictionary,
+		hooks: GameBlobHooks) -> int:
 	if table == null or outcome.is_empty():
 		return 0
 	var made: int = 0
@@ -3498,7 +3634,10 @@ func _register_emitters(table: BgbEmitters, outcome: Dictionary) -> int:
 		var event: Dictionary = AudioEvents.as_event(entry)
 		if event.is_empty() or AudioEvents.name_of(event) != CREATE_BGB:
 			continue
-		if table.register_event(SetpieceDriver._numbers(event)):
+		# The hooks go in because registration is half of `CreateBGB`: types
+		# 2..6 make their one object here and never tick. Without them a
+		# `_C_102` warning light would be a table row and no light.
+		if table.register_event(SetpieceDriver._numbers(event), hooks):
 			made += 1
 	return made
 

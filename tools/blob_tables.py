@@ -417,6 +417,66 @@ MAIN_MAP_FIRE_DRAWS = ((0x0042A664, 0x0042A662, 0x0042A666, -0x30, 0x60),
 MAIN_MAP_FIRE_DELAY_SITE = 0x0042A69F
 MAIN_MAP_FIRE_DELAY = 0
 MAIN_MAP_FIRE_CONSTRUCTOR = 0x0042A6C6
+
+#: `aBlob_CreateSmoke2` `0x0042A5E0` -- the sweep's **other** live arm, and
+#: the one nothing in the corpus reaches: all four `1_smoke` lines are
+#: commented out in `_C_XXX.lcl` and `_C_YYY.lcl`.  It is the same three
+#: draws and the same shape as the fire (its constructor call `0x0042A646`
+#: is in :data:`BLOB_CALLS` as scratch/class 3/kind 10/life 12 and in
+#: :data:`BLOB_SPRITE` as row 4, rotation 0, `aux` 10), which is why
+#: transcribing it needs no capture: what differs from a verified creator is
+#: three literals, and these pin them.
+SMOKE2 = 0x0042A5E0
+SMOKE2_DRAWS = ((0x0042A5E4, 0x0042A5E2, 0x0042A5E6, -0x30, 0x60),
+                (0x0042A5F5, 0x0042A5F3, 0x0042A5F9, -0x30, 0x60),
+                (0x0042A60B, 0x0042A606, 0x0042A612, 0x140, 0xA0))
+SMOKE2_DELAY_SITE = 0x0042A61F
+SMOKE2_DELAY = 0
+SMOKE2_CONSTRUCTOR = 0x0042A646
+
+#: `aBlob_CreateWarningLight` `0x0042A4C0` -- `CreateBGB` type 2, and the one
+#: of the five registration creators that draws at all.  `aRandom2(0, 100)`
+#: against 50 picks the sign of the `vx` kind 41 divides `0x200` by, so the
+#: coin is which way the light sweeps.  `and ecx, 0xFFFFFFF6 / add ecx, 5`
+#: turns the `setge`'s 0/-1 into +5/-5 without a branch.
+WARNING_LIGHT = 0x0042A4C0
+WARNING_LIGHT_DRAW = (0x0042A4C2, 0x0042A4C0, 0x0042A4C4, 0, 100)
+WARNING_LIGHT_COIN_SITE = 0x0042A4D3
+WARNING_LIGHT_COIN = 50
+WARNING_LIGHT_MASK_SITE = 0x0042A4DC
+WARNING_LIGHT_MASK = -10
+WARNING_LIGHT_BIAS_SITE = 0x0042A4E3
+WARNING_LIGHT_BIAS = 5
+WARNING_LIGHT_CONSTRUCTOR = 0x0042A50E
+
+#: `aBlob_CreateComputerLight` `0x0042A760` -- type 3, the only one of the
+#: seven that reads a fourth argument.  The **shift is the command's**, not
+#: the creator's: `0x0041DFE3` shifts the script's `gamma` left by ten on its
+#: way into the call, and the creator hands it straight to the record's
+#: third rotation, which kind 42 copies into the model's `angle2`.
+COMPUTER_LIGHT = 0x0042A760
+COMPUTER_LIGHT_GAMMA_SHIFT_SITE = 0x0041DFE3
+COMPUTER_LIGHT_GAMMA_SHIFT = 10
+COMPUTER_LIGHT_ROT_SITE = 0x0042A77D
+COMPUTER_LIGHT_CONSTRUCTOR = 0x0042A790
+
+#: The three registration creators no shipped script asks for -- types 4, 5
+#: and 6 -- as `type -> (creator, constructor call)`.  They share one body
+#: byte for byte and differ only in the model and the kind, so what is pinned
+#: is that they are that body: no draw, and the same `push` shape.
+#: :data:`BLOB_CALLS` carries the models and kinds.
+BGB_STILL_CREATORS = {4: (0x0042A520, 0x0042A54D),
+                      5: (0x0042A5A0, 0x0042A5CD),
+                      6: (0x0042A560, 0x0042A58D)}
+
+#: `0x0041E140` -- **not** the ticker.  `docs/20` §7.3 named it as the
+#: per-frame half; it walks the same twenty records freeing the sound handle
+#: at `+0x14` and clearing the type, which is the teardown.  The ticker is
+#: :data:`BGB_TICK`, reached from the sweep at `0x0041E3DF`.
+BGB_CLEAR = 0x0041E140
+BGB_SWEEP = 0x0041E3D0
+BGB_SWEEP_TICK_SITE = 0x0041E3DF
+BGB_SOUND_OFFSET = 0x14
 #: `aRandom2` `0x004638E0`, not `aRandom`: the effects' own stream
 #: (`docs/22` §3.2).
 RANDOM2 = 0x004638E0
@@ -2319,6 +2379,26 @@ def _bgb_field(b: Binary, site: int) -> int | None:
     return b.u32(site + 2) - BGB_TABLE
 
 
+def _calls_between(b: Binary, start: int, end: int) -> set:
+    """Every `call rel32` target in `[start, end]`.
+
+    Used to say what a routine does **not** do: types 4, 5 and 6 reach their
+    constructor with no draw in front of it, which is the difference between
+    them and type 2 and is not visible in a table of literals.
+    """
+    out = set()
+    va = start
+    while va <= end:
+        if b.u8(va) == 0xE8:
+            target = b.call_target(va)
+            if target is not None:
+                out.add(target)
+            va += 5
+            continue
+        va += 1
+    return out
+
+
 def check_bgb_tick(ck: Checker, b: Binary) -> None:
     """`0x0041E1A0`, the per-frame half of `CreateBGB` -- docs/28 sec.8.2.
 
@@ -2371,6 +2451,62 @@ def check_bgb_tick(ck: Checker, b: Binary) -> None:
                  b.call_target(call_site), RANDOM2, hex)
     ck.equal("bgb.fire_delay", b.push_imm(MAIN_MAP_FIRE_DELAY_SITE),
              MAIN_MAP_FIRE_DELAY)
+
+    # The sweep reaches the tick, and the routine `docs/20` named as the
+    # ticker is the teardown beside it.
+    ck.equal("bgb.sweep_calls_the_tick", b.call_target(BGB_SWEEP_TICK_SITE),
+             BGB_TICK, hex)
+    ck.check("bgb.clear_is_not_the_tick",
+             BGB_CLEAR != BGB_TICK
+             and b.u32(BGB_CLEAR + 3) == BGB_TABLE + BGB_SOUND_OFFSET,
+             "0x0041E140 walks the sound handles, it does not spawn")
+
+    # `aBlob_CreateSmoke2`: the same three draws as the fire, one delay, and
+    # the constructor `BLOB_CALLS` already carries.
+    ck.equal("bgb.smoke_constructor", b.call_target(SMOKE2_CONSTRUCTOR),
+             BLOB_CTOR, hex)
+    for i, (base_site, span_site, call_site, base, span) in enumerate(
+            SMOKE2_DRAWS):
+        ck.equal("bgb.smoke_draw%d" % i,
+                 (b.push_imm(base_site), b.push_imm(span_site)),
+                 (base, span), Checker.brief)
+        ck.equal("bgb.smoke_draw%d_stream" % i,
+                 b.call_target(call_site), RANDOM2, hex)
+    ck.equal("bgb.smoke_delay", b.push_imm(SMOKE2_DELAY_SITE), SMOKE2_DELAY)
+
+    # The five one-shots registration makes for itself.
+    base_site, span_site, call_site, base, span = WARNING_LIGHT_DRAW
+    ck.equal("bgb.warning_light_draw",
+             (b.push_imm(base_site), b.push_imm(span_site)), (base, span),
+             Checker.brief)
+    ck.equal("bgb.warning_light_stream", b.call_target(call_site), RANDOM2,
+             hex)
+    ck.equal("bgb.warning_light_coin", b.cmp_imm(WARNING_LIGHT_COIN_SITE),
+             WARNING_LIGHT_COIN)
+    # `83 e1 f6` / `83 c1 05` -- both sign-extended byte forms, which is why
+    # the mask reads as -10 rather than as 0xFFFFFFF6.
+    ck.equal("bgb.warning_light_spin",
+             (b.i8(WARNING_LIGHT_MASK_SITE + 2),
+              b.i8(WARNING_LIGHT_BIAS_SITE + 2)),
+             (WARNING_LIGHT_MASK, WARNING_LIGHT_BIAS), Checker.brief)
+    ck.equal("bgb.warning_light_constructor",
+             b.call_target(WARNING_LIGHT_CONSTRUCTOR), BLOB_CTOR, hex)
+    ck.equal("bgb.computer_light_gamma_shift",
+             b.u8(COMPUTER_LIGHT_GAMMA_SHIFT_SITE + 2),
+             COMPUTER_LIGHT_GAMMA_SHIFT)
+    ck.equal("bgb.computer_light_constructor",
+             b.call_target(COMPUTER_LIGHT_CONSTRUCTOR), BLOB_CTOR, hex)
+    ck.check("bgb.computer_light_passes_the_gamma",
+             b.u8(COMPUTER_LIGHT_ROT_SITE) == 0x50,
+             "`push eax` -- the shifted gamma, into the third rotation")
+    for type_id, (creator, constructor) in sorted(BGB_STILL_CREATORS.items()):
+        ck.equal("bgb.still%d_constructor" % type_id,
+                 b.call_target(constructor), BLOB_CTOR, hex)
+        ck.equal("bgb.still%d_is_the_registration_arm" % type_id,
+                 BGB_ARMS[type_id][1], creator, hex)
+        ck.check("bgb.still%d_draws_nothing" % type_id,
+                 RANDOM2 not in _calls_between(b, creator, constructor),
+                 "types 4, 5 and 6 have no draw at all")
 
 
 

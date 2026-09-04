@@ -47,8 +47,8 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 276 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 486 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 306 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 513 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -67,7 +67,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 35 suites, 3344 checks
+bash   godot/run_tests.sh                                    # 35 suites, 3375 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -596,6 +596,33 @@ average `random` of nothing. The gate in front of all of it is the **cursor
 and animation level** (`Game.opt` +0x20), and level 1 is the value that turns
 the emitters *off*; the shipped default is 2. Missions get the same table.
 
+**All seven `CreateBGB` creators, and the track** (2026-09-05). The command
+has **two** jump tables and no type is in both -- `0x0041E120` at
+registration, `0x0041E300` in the sweep -- and five of the sweep's seven
+entries are one `mov eax, 1 / ret`. So types 2..6 tick to nothing in the
+original too: their whole effect is the object registration makes once, which
+is also the one part of `CreateBGB` **not** behind the animation-level gate.
+A tally that counted them as unmade was reporting faithful silence as a gap;
+what is left of it, `BgbEmitters.refused`, only a type above 7 can reach.
+The six missing creators are transcribed (`A_FLIGHT`, `A_PANEL`, `A_FIRE3`,
+`A_SPOTL`, `L049EE00` at `life` 255, and `aBlob_CreateSmoke2`), and the map's
+`CDTrackProgram` plays out of the **same** `INIT MAP` run its emitters come
+from. Types 4, 5 and 6 are asked for by no shipped script at all.
+
+**The map turns, and the projection is Eng3d's** (2026-09-05, `docs/27`
+§2.6.1 and §2.6.2). The turn was `docs/27`'s fourth open question: it is a
+pointer drag doubled into the angle and multiplied by -50 into the height,
+with the cursor warped back to its anchor every frame, and two halves of it
+read backwards -- the step **decays by halving**, which is what the frame
+callback's own zero call is for, and the eye that is rotated is the
+**constant** one, because `aSetCameraPosition` writes no global back. The
+perspective is a **constant and not an angle**: `_ftol(width * 10/13)` is the
+focal length `_E3D_init_3d_screen` divides by (398 for the map's 518-wide
+window, 400 for a mission's 520, against Godot's implied 313 at its default
+75 degrees), and the axis goes through the **window's** centre rather than the
+render's -- thirty pixels that do not cancel behind a plate with a hole in it.
+`CameraRig.frame_projection` carries both as a frustum.
+
 **The shipping build builds again** (`docs/92` §7.15). Godot 4.7.2's export
 templates are installed -- the 4.7.1 ones against a 4.7.2 engine are what put
 this on the open list -- and both presets export. `macOS Tests` runs the
@@ -871,7 +898,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 3, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **34 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 
