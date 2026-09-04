@@ -25,10 +25,33 @@ const BANK_SQUAD: String = "Txtmod_h"
 const ID_CONTINUE: int = 4
 const ID_BACK: int = 2
 const ID_CANCEL: int = 1
+## `Txtmod_h` 24/25 -- *Save game* and *Load game*, the in-mission pair.
+const ID_SAVE_GAME: int = 24
+const ID_LOAD_GAME: int = 25
+
+## The remake's own keys these screens use. The original reached its options
+## through icons with hover hints and never named the screen, so there is no
+## shipped caption to read; [method Localization.text] is the seam docs/92
+## section 7.6 provides for exactly that, and it is not a literal.
+const OWN_OPTIONS: String = "shell.options"
 
 ## The layer the screens draw on. Above the HUD, so a screen covers the mission
 ## view rather than sharing it.
 const SCREEN_LAYER: int = 8
+
+## The plates' own size. Every one of the twelve is 640x480, and the shipped
+## layout tables in `DATA/GUI/*.lcl` are written in that space.
+const PLATE_SIZE: Vector2 = Vector2(640.0, 480.0)
+
+## Where the action row sits on the plate, in the plate's own units. Inside
+## the frame, which is about 40 units deep on `plate_1`.
+const BUTTON_ROW_MARGIN: float = 46.0
+const BUTTON_ROW_TOP: float = 424.0
+const BUTTON_ROW_HEIGHT: float = 30.0
+const BUTTON_ROW_GAP: float = 6.0
+## The action row's caption size when the readable face is in use, in the
+## plate's units. The widest shipped caption is *Enter Location*.
+const ACTION_FONT_SIZE: int = 13
 
 ## Emitted when a button is pressed; the host decides what it means.
 signal chose(action: String)
@@ -39,7 +62,7 @@ var font: FontFile = null
 
 var _root: Control = null
 var _body: Control = null
-var _buttons: HBoxContainer = null
+var _buttons: Control = null
 
 
 func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
@@ -57,7 +80,7 @@ func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
 	backdrop.stretch_mode = TextureRect.STRETCH_SCALE
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if art != null:
-		backdrop.texture = art.plate(PLATE)
+		backdrop.texture = art.plate(plate_name())
 	if backdrop.texture == null:
 		# A cache with no art still shows a legible screen: the frame is what
 		# is missing, not the campaign.
@@ -76,21 +99,26 @@ func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
 	_body.offset_bottom = -72.0
 	_root.add_child(_body)
 
-	_buttons = HBoxContainer.new()
-	_buttons.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_buttons.offset_left = 56.0
-	_buttons.offset_top = -60.0
-	_buttons.offset_right = -56.0
-	_buttons.offset_bottom = -18.0
-	_buttons.alignment = BoxContainer.ALIGNMENT_CENTER
-	_buttons.add_theme_constant_override("separation", 16)
+	# A plain [Control] and not a container. See [method _lay_out_buttons].
+	_buttons = Control.new()
+	_buttons.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_buttons.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_buttons)
 	build()
+	_lay_out_buttons()
 
 
 ## Subclasses fill [member _body] and add their buttons here.
 func build() -> void:
 	pass
+
+
+## The plate this screen sits on. Overridden where a screen has one of its own
+## -- the shell's menu sits on `Title` -- and answered as a **name** rather
+## than a texture so a cache that does not carry it degrades to the base
+## class's [ColorRect] instead of failing to open.
+func plate_name() -> String:
+	return PLATE
 
 
 ## What a screen shows on top of the plate.
@@ -100,10 +128,27 @@ func body() -> Control:
 
 ## One shipped string. A bank or id the catalogue has no line for renders as
 ## its marker, which is a great deal easier to diagnose than a blank.
+##
+## A screen set up with **no** catalogue at all takes the same marker, prefix
+## and all. It used to return a bare `module/id`, which reads as a caption and
+## slipped straight through the suites' gate on
+## [constant Localization.MISSING_PREFIX] -- so the one case where every
+## caption is missing was the one the gate could not see.
 func label_for(module: String, id: int) -> String:
 	if strings == null:
-		return "%s/%d" % [module, id]
+		return "%s%s/%d" % [Localization.MISSING_PREFIX, module, id]
 	return strings.shipped(module, id)
+
+
+## One of the remake's own strings, by key -- the other half of the seam.
+##
+## Used only where the original has no caption to read, and it takes the same
+## missing marker as [method label_for] when there is no catalogue, so the
+## suites' one gate covers both halves.
+func strings_own(key: String) -> String:
+	if strings == null:
+		return Localization.MISSING_PREFIX + key
+	return strings.text(key)
 
 
 ## A label in the game's own bitmap font.
@@ -125,19 +170,132 @@ func add_button(action: String, module: String, id: int,
 	button.text = label_for(module, id)
 	if font != null:
 		button.add_theme_font_override("font", font)
+	else:
+		# The row divides the plate five ways at most, so a caption is drawn
+		# to fit its share rather than being cut: *Enter Location* at the
+		# default size came out as *Enter Locati*.
+		button.add_theme_font_size_override("font_size", ACTION_FONT_SIZE)
 	if art != null and sprite_index >= 0:
 		var face: Texture2D = art.sprite(BUTTON_LIBRARY, sprite_index)
 		if face != null:
 			button.icon = face
 			button.expand_icon = true
-	button.custom_minimum_size = Vector2(140.0, 34.0)
+	# A caption or an icon wider than the button's share is cut, rather than
+	# pushing its neighbours off the plate.
+	button.clip_text = true
 	button.pressed.connect(_on_pressed.bind(action))
 	_buttons.add_child(button)
 	return button
 
 
+## A button for the screen's **body** rather than for the action row at the
+## bottom.
+##
+## The shell's screens are lists -- a menu of five, eight save slots, a
+## catalogue of missions -- and a list is not what [member _buttons] is: that
+## one is a centred row of at most a handful. The caption is passed in already
+## resolved, because a list row is usually a shipped string with a number or a
+## name beside it.
+func make_button(action: String, text: String) -> Button:
+	var button: Button = Button.new()
+	button.text = text
+	if font != null:
+		button.add_theme_font_override("font", font)
+	button.pressed.connect(_on_pressed.bind(action))
+	return button
+
+
+## A row button that is going into the action row rather than into a list, so
+## it takes the row's caption size and its clipping.
+func make_action_button(action: String, text: String) -> Button:
+	var button: Button = make_button(action, text)
+	button.clip_text = true
+	if font == null:
+		button.add_theme_font_size_override("font_size", ACTION_FONT_SIZE)
+	return button
+
+
 func _on_pressed(action: String) -> void:
 	chose.emit(action)
+
+
+## Put a control where the plate's own layout space says, rather than where
+## the pixel count would.
+##
+## The plate is stretched to the whole viewport, so a coordinate read out of a
+## shipped layout table is a **fraction** of 640x480 and not a pixel count:
+## the viewport is whatever window the player opened, and twice that again on
+## a display with a 2x backing scale -- measured here at 2560x1600 for a
+## window asked for as 1280x800. Anchors carry the fraction, so nothing has to
+## know the size and nothing has to wait for a layout pass to learn it.
+##
+## A zero *size* keeps the control's own, which is what a label wants.
+func place_on_plate(control: Control, at: Vector2,
+		size: Vector2 = Vector2.ZERO) -> void:
+	control.anchor_left = at.x / PLATE_SIZE.x
+	control.anchor_top = at.y / PLATE_SIZE.y
+	control.anchor_right = (at.x + size.x) / PLATE_SIZE.x
+	control.anchor_bottom = (at.y + size.y) / PLATE_SIZE.y
+	control.offset_left = 0.0
+	control.offset_top = 0.0
+	control.offset_right = 0.0
+	control.offset_bottom = 0.0
+
+
+## The full-screen [Control] a screen's own layout hangs off -- the one the
+## plate covers, so [method place_on_plate]'s fractions are of the plate.
+func root() -> Control:
+	return _root
+
+
+## The action row itself, for a screen adding a button whose caption is not a
+## shipped one and so cannot go through [method add_button].
+func _buttons_row() -> Control:
+	return _buttons
+
+
+## Spread the action buttons along the bottom of the plate, in its own units.
+##
+## **Measured, not left to a container.** An [HBoxContainer] sizes its children
+## from their minimum, and a `buttons.LIB` face plus a caption like *Enter
+## Location* makes that ~144 of the plate's 640 units -- so a row of five ran
+## 116 units past the right edge of its own frame, and `clip_text` does not
+## help because the icon is in the minimum too. Five buttons is what the
+## briefing has, so the row divides what there is by however many there are
+## and each one gets an explicit rectangle.
+func _lay_out_buttons() -> void:
+	var row: Array[Button] = []
+	for child: Node in _buttons.get_children():
+		var button: Button = child as Button
+		if button != null:
+			row.append(button)
+	if row.is_empty():
+		return
+	var span: float = PLATE_SIZE.x - 2.0 * BUTTON_ROW_MARGIN
+	var width: float = (span - BUTTON_ROW_GAP * float(row.size() - 1)) \
+		/ float(row.size())
+	for index: int in range(row.size()):
+		var at: Vector2 = Vector2(
+			BUTTON_ROW_MARGIN + float(index) * (width + BUTTON_ROW_GAP),
+			BUTTON_ROW_TOP)
+		place_on_plate(row[index], at, Vector2(width, BUTTON_ROW_HEIGHT))
+
+
+## Empty a container that is about to be rebuilt.
+##
+## **`remove_child` and then `queue_free`, never a bare `free`.** A list is
+## almost always rebuilt from inside one of its own rows' `pressed` signals,
+## and Godot locks an object while it is emitting: `free` then fails with
+## "Attempted to free a locked object", the row stays alive off the list, and
+## the rebuild that follows silently loses every row after it -- which is what
+## a click on the difficulty row did to the two volume rows above it. Removing
+## first is what makes the deferred delete safe: the children are out of the
+## tree in this frame, so a later `get_children()` cannot see them, and gone
+## by the end of it.
+func clear_children(node: Node) -> void:
+	for child: Node in node.get_children():
+		node.remove_child(child)
+		child.queue_free()
 
 
 ## A titled panel, which is the shape every one of these screens uses.

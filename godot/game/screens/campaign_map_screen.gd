@@ -34,15 +34,23 @@ func build() -> void:
 
 	add_button("hq", BANK_MISSION, ID_HQ, 0)
 	add_button("save", BANK_MISSION, ID_SAVE, 1)
+	# **The map is where the difficulty is editable**, and `Txtmod_h` 58 says
+	# so aloud -- *Set Difficulty Level (only in main map during campaign)*.
+	# Without a way in from here that was the one place the shipped string
+	# promises the control works and the one place the player could not reach:
+	# `ESC` refuses while a campaign plate is up, deliberately, because the
+	# shell shares `_screen` with it.
+	var _options: Button = make_action_button("options",
+		strings_own(OWN_OPTIONS))
+	_buttons_row().add_child(_options)
+	_lay_out_buttons()
 	refresh()
 
 
 func refresh() -> void:
 	if host == null or host.state == null or _list == null:
 		return
-	for child: Node in _list.get_children():
-		_list.remove_child(child)
-		child.free()
+	clear_children(_list)
 	_list.add_child(make_label("%s  %s  %d" % [
 		host.state.mission, host.map_mission(), host.state.points(0)]))
 	for id: int in host.open_locations():

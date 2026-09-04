@@ -526,6 +526,30 @@ and everything else from `aRandom` ([`20` §7.4](20-lcl-language.md)), so the
 save and the hash carry both streams. A save that dropped the second would come
 back a different mission the moment the next reinforcement fired.
 
+**The schema numbers, brought up to date** — the narrative above stopped at 6
+while the constant had reached 9, which is the shape of a version field nobody
+can read. `SaveCodec.SCHEMA_VERSION` continued 7 when the kill counter `+0x53`
+joined the unit record ([`22` §7.5](22-combat-and-visibility.md)), 8 when the
+cell placers of [`42` §9.1](42-mission-presentation.md) gave `MapState` the
+glow's `+0x12` and `+0x13` and made an authored mine detonate under a walker,
+and **9** with the campaign slice: `TurnState` gained the three per-mission
+counters the scoreboard reads — `mission_kills`, `mission_lost`,
+`mission_lost_to_enemy` — so that the debriefing stops summing survivors, a sum
+that lost every kill made by a unit which later died. Those three are in the
+save and **out** of the canonical hash, so D7 holds. The reason for 9 is
+recovered from the commit that made it (`Slice 6: the campaign scoreboard has
+no unknown fields`) and not reconstructed from the number.
+
+`CampaignCodec.SCHEMA_VERSION` is a different field with its own history, and
+the shell slice raised it 1 → **2**: the container document gained the stamp a
+slot row shows, and the campaign state moved under its own key so a header read
+never has to know what is beside it. The stamp is **two fields**, `saved_at` in
+Unix seconds and `saved_at_text` as the writer's own clock said it. Two rather
+than one because `core` may not call `Time` at all
+(`godot/tests/test_isolation.gd`), so the offset that turns the first into the
+second is not available on that side: the number orders slots, the string is
+what a row shows, and `game/` is the only place that reads a clock.
+
 What is still a checklist rather than a decision: migration between schema
 versions has a version field but no migration to test. The compatibility
 flags are in the hash from the first day so that later ones cannot be added
@@ -1244,6 +1268,229 @@ also puts a record spawned by this frame's sequence on the screen in this
 frame rather than the next. The order is verified by reading: `Main` is a
 scene node and no suite instantiates it.
 
+### 7.15 The shell — what makes six slices reachable (2026-09-04)
+
+Six slices built a game that no person could start. `campaign.start_new()` had
+exactly one caller in the whole project — `godot/tour.gd`, which the shipping
+preset excludes — so a built game went straight into `_C_140`, `campaign.state`
+stayed `null`, and the campaign layer of §7.13 was reachable only from a test
+driver. There was no menu, no chain to choose, one save file on `F5`, and no
+options screen at all.
+
+The shell is **the remake's own design and could not be anything else**.
+[`90` §2.1](90-binaries-and-source-layout.md) records, on `aMenuSystem.cpp`'s
+row of the runtime-module map, that the original's front-end flow is
+deliberately outside the replacement contract, and
+[`29` §1.2](29-interface-contract.md) puts save and load among the
+"application-level actions, not map edits" that a replacement interface need
+not reproduce. So there is no engine behaviour to diff against here, and
+`godot/tests/test_shell.gd` declares `specification-only` — the strongest
+boundary this subject admits. The one concrete number the contract does let
+slip is that `0x0041DA20` owns "save/load UI and its **three** load slots";
+eight is this remake's choice and a deliberate divergence, recorded here rather
+than left to look like a misreading.
+What is reused instead is the *data*: not one caption is a literal, and the
+handful the original never had to say go through
+[Localization]'s own-string half rather than into the code.
+
+The six decisions, referred to by these labels from the code:
+
+| | Decision |
+| --- | --- |
+| **S1** | Saves are **eight numbered slots** with metadata, plus a separate quick save on `F5`/`F9`. |
+| **S2** | Options carry **only what is actually connected**; §7.1 makes an inert control a defect of the remake's own. |
+| **S3** | The layout is the remake's own, built on `CampaignScreen` — the same plates, font, `buttons.LIB` faces and localisation seam. |
+| **S4** | The intro (`Video/Seq_1`, logical id 0) is a **named empty step**, `_play_intro()`, for the sequence player to fill. |
+| **S5** | Direct entry to a level is **kept and supported**, not a side effect: `--mission=`, the new `--campaign=`, and `tour.gd`. |
+| **S6** | The authority for difficulty is `CampaignState.difficulty`; `GameSettings` holds only the default for the next campaign. |
+
+**Eight numbered slots, and the quick save is not one of them.** `F5`/`F9` keep
+a file of their own beside the eight, so a reflex quick save cannot cost the
+player a slot they meant to keep. A row is built from
+`CampaignCodec.decode_header`, which reads the campaign, the mission, the score
+and the stamp without unrolling the roster, the scoreboard or the mission blob:
+eight rows must not cost eight campaigns. A slot this build cannot read is
+**shown carrying its refusal**, never hidden — a save that vanished because the
+schema moved would look exactly like a slot the player never used, which is
+§7.4's rule applied to a list. Refusals are always named through the codec that
+issued them, because `CampaignCodec.Result` and `SaveCodec.Result` do not agree
+numerically: `TRUNCATED` is 3 in the first and 1 in the second.
+
+**Only connected options exist.** The original has eight option icons and
+`Txtmod_h` 50–58 are their hover hints. Four of them — the speaker position,
+the speech volume, the cursor and animation level, the animation resolution —
+have nothing behind them in this remake, and §7.1 classes a control that does
+nothing as a defect in the remake's own interface rather than a period detail.
+They are **absent**, not disabled. The same rule removes `Network Game` and
+`Load PBM Game` from the main menu (§7.9 puts multiplayer outside the
+programme) and leaves `Load Game` out until a slot holds something. The
+language is shown as a line and not as a selector: the cache carries one
+`text/<language>.json`, so a selector would have a single entry.
+
+**The `Faithful` caption currently promises more than it controls**, and that
+is a gap rather than a decision. §7.1 names three stable flags behind the one
+preset — `weapon_35_missing_sound`, `unit_24_footstep_volume_original` and
+`technical_box_guard_original` — and only the first two exist:
+`AudioEvents.COMPAT_FLAGS` carries them, and the third has no flag in `core`
+at all, so §7.8's `technical` box keeps its bug unconditionally and the toggle
+does not reach it. Turning the preset off therefore changes what is heard and
+not what that box does. Named here so the next person meets it as a known hole
+and not as a surprise. What is
+connected: both volumes, the difficulty, the gore level of `Game.opt`'s dword
+10 — no mission of the 92 writes `unit_draw_path`, so it is a live control and
+not a default something overrides — and the `Faithful` preset over
+`AudioEvents.COMPAT_FLAGS`.
+
+**The authority for difficulty is `CampaignState.difficulty`.** This is the
+decision the §7.13 slice left implicit and it has a hard reason: `ai_level` is
+item 5 of `CanonicalHash.compute`, so writing difficulty into a running mission
+would move the hash of a game in progress and a slot saved before the change
+would stop matching the world it restores. The campaign's own digest already
+carries `difficulty`, so changing it *there* is a lawful change of campaign
+state. The options screen therefore writes the campaign's value only while the
+player is on the campaign map — which is what `Txtmod_h` 58 says aloud, *Set
+Difficulty Level (only in main map during campaign)* — writes the settings
+file's default anywhere else, and shows no difficulty row at all inside a
+mission. `GameSettings` holds the default for the **next** campaign and never
+the live value. Its default is `Allowance.DEFAULT_AI_LEVEL`, the same 1 that
+`TurnState.ai_level` starts at, because the two are one engine setting
+(`0x00460450`) and defaulting them differently would have moved every
+campaign-built world's canonical hash the first time one was written into the
+other.
+
+**All three ways in stay open**, and that is checked by a suite rather than
+tried by hand: `SliceMain.boot_choice` is static and pure so a build's command
+line does not have to be injected to test it. `--mission=NAME` builds a mission
+immediately and never raises the shell — an unknown name still warns and falls
+back, as it always did; `--campaign=N` is new and enters a chain's map past the
+menu; `tour.gd` runs the sixth slice's scenarios unedited. The shell must not
+become a compulsory door.
+
+**A load lands on the fog pass's answer, and only then is a round trip exact.**
+Measuring criterion 5 turned up a property nothing had written down. The engine
+ends every load with `aBuildVisibleMap(aGetCurrentPlayer())` (`aLoad.cpp:1649`,
+[`22` §9.4](22-combat-and-visibility.md)) and `World.load_save` reproduces it,
+while a hand-over rebuilds the fog only when it refreshed — deliberately, so a
+hand-over a script stopped leaves the same player looking at the same world. A
+save taken while those two disagree therefore comes back with the pass applied,
+at exactly the state the pass produces, and from there every trip is
+byte-identical. It converges rather than drifting, and it is the engine's own
+behaviour rather than a defect in the codec. Both halves are pinned in
+`test_shell.gd`, the second against the pass run directly rather than against
+the first load.
+
+**Two defects the end-to-end walk found, both older than this slice.** A screen
+freed from inside one of its own button signals leaves a corpse: Godot locks an
+object while it is emitting, so `free` fails, the plate stays alive off the
+tree and the next screen is stacked on it. `remove_child` and then `queue_free`
+is the fix, and the same shape was in all seven `refresh()` methods — one click
+on the difficulty row silently took the two volume rows above it away. And
+"a mission is being played" is **not** `world != null`: the campaign map sits
+over the last mission's view, so a shell raised from the map offered *Continue*
+and *Save game* on the grounds that a finished `_C_140` was still in memory.
+`SliceMain.in_mission()` answers the narrow question and `ShellHost.behind` the
+wider one.
+
+**The screens are laid out in the plate's units, not in the window's pixels
+(2026-09-04, after the first play).** This was the change the slice most needed
+and did not have. Nothing set a content scale, so a "pixel" of a layout written
+for a 640x480 plate *was* a window pixel: on a 2560x1600 backing the game's own
+17 px bitmap font came out about two millimetres tall and nothing moved when
+the window did. `canvas_items` with a 640x480 base fixes it -- chosen over
+`viewport` because the 2D layer is then scaled by a transform while the 3D view
+still renders at the window's real resolution, so the mission keeps its detail
+while the interface grows; and `expand` over `keep` because a 16:9 window
+should show more world rather than black bars. Two consequences had to be
+followed through: an `HBoxContainer` sizes children from their minimum, and a
+`buttons.LIB` face plus a caption like *Enter Location* is ~144 of the plate's
+640 units, so a row of five ran 116 units off the right edge of its own frame
+-- the action row now divides the width it has and gives each button an
+explicit rectangle. And the HUD's hint line and the developer line wrap instead
+of being cut; the developer line stopped naming all 92 missions, which on a
+640-unit screen was a wall of text across the playing field.
+
+**One font decides for the whole interface, and the readable one is the
+default (2026-09-04).** The HUD carried the shipped bitmap face and the
+developer line carried nothing, so the same screen showed a hard-edged 2x
+bitmap beside a smooth vector one -- a difference nobody chose. `font_2` is a
+17 px bitmap out of the `.LIB` atlas (docs/60): it cannot be antialiased and
+cannot be scaled, so past the 640x480 base it is drawn at hard-edged multiples.
+`SliceMain.interface_font()` is now the single answer for the HUD, the floating
+numbers and all eleven plates, and `GameSettings.game_font` chooses which face
+it is. **The default is the readable one**, which is the one place in this
+remake where fidelity is traded for comfort by default -- a deliberate change
+of default and not an omission, made because the alternative is text the player
+cannot read; the period face is one click away in the options. Three sizes go
+with it, all in plate units: the hints at 10, because Godot's default 16 put
+three wrapped lines of key legend across half the playing field; the developer
+line at 9, because it is a diagnostic; and the action row's captions at 13,
+because five buttons divide 640 units and *Enter Location* was being clipped to
+*Enter Locati*. The briefing body follows the same decision -- it was drawn in
+`font_0`, an **8 px** bitmap, so a briefing came out as legible headings over
+body text nobody could read.
+
+**Every refusal on the deployment screen is spoken (2026-09-04).** This is what
+actually stopped the campaign being playable, and it is section 7.4 exactly: a
+landing cell clicked with no soldier picked did nothing, and *Continue* on an
+empty map did nothing, so a player who did not already know that a name has to
+be clicked before a position could not start a campaign and had no way to find
+out. The original needs no words because its screen is a picture of the map
+with the squad standing on it; a pair of lists does. `World`'s own refusal
+names are turned into sentences one for one, and a name with no line comes back
+as the missing marker rather than as a blank.
+
+**One shipped Charisma part has no name.** `PC_011.cho`'s part 2 is authored
+with an empty name and the mesh `PC_011_`, and Godot refuses an empty node name
+(`Condition "p_name.is_empty()" is true`). It is authored data and not a
+converter defect -- `cho_parse.py` reads the same empty string out of the file.
+The geometry is real and is drawn, under a positional name; what an unnamed
+part cannot do is be driven by an animation track, because a track binds by
+name and will never match it. Unit type 61 selects that model and `_C_118` is
+the one shipped mission that places one, which is why the wider mission
+catalogue reached it and the six-mission set never had.
+
+**What a review of the finished slice found (2026-09-04).** Six defects, all
+in the shell's own seams rather than in what it drives, and two of them were
+the same mistake twice. `ESC` at the boot menu took the plate down over
+nothing and was then dead itself -- no shell, no plate, no mission -- leaving
+the window's close button as the only way out; `ShellHost.behind` is the
+question and `back_from()` was already asking it, so `_toggle_shell` now does
+too. `interface_font()` was read two lines *before* `settings.load_from_disk()`,
+so a saved choice of the shipped face reached every plate and not the HUD --
+the exact inconsistency that function exists to prevent. Switching the font
+back the other way left the bitmap `FontFile` attached in both the HUD and the
+floating texts, which then drew a 17 px bitmap scaled to 10 rather than the
+vector face; a `remove_theme_font_override` was missing in one and an early
+return made the other a complete no-op. `_campaign_difficulty_writable()` was
+**unreachable**: the shell cannot be raised over a campaign plate, so the one
+place `Txtmod_h` 58 says the difficulty is editable was the one place the
+player could not get to -- the campaign map now carries an *Options* button,
+and with it `Back` had to learn to leave the shell from the screen it was
+**opened at** rather than funnelling through a menu that offered to start a
+new campaign over the one being played. The `load_slot` comment claimed a
+refused load could be backed out of, which it cannot: the campaign and the
+world are both already replaced by the time [SaveCodec] can check the blob at
+all, and the comment now says so.
+
+**And `tour.gd`'s screenshots were frozen.** Every capture after the first in a
+session came back byte-identical to it, because `root.get_texture()` inside
+`_process` reads a framebuffer the renderer has not necessarily redrawn -- so a
+transition that had happened in the tree looked, in the picture, like a screen
+that had not changed. `RenderingServer.force_draw(false)` before the read fixes
+it. Worth recording because it cost a wrong diagnosis: the first reading of
+"the old plate is still up" was the driver's camera, not the game.
+
+**The converter learned five more plates.** `Graphics/*.bmp` — `Title`,
+`Credits`, `Ship`, `MsgScr`, `Bluebyte` — sat beside `Graphics/GUI` and
+`Graphics/Briefing` and were baked by nothing, so 103 of the installation's 108
+BMPs reached the cache. All 108 do now, through the existing writer;
+`CONVERTER_VERSION` is 0.17.0. `Title` is the shell's backdrop and `Credits` is
+there for a screen this slice does not build; the other three come along
+because the loop is one loop, and are named as having no consumer rather than
+left to look intentional.
+
+---
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:
@@ -1295,7 +1542,8 @@ afterwards** and are recorded in [`93` §10](93-slice-1-report.md):
 turn, movement execution, line of sight, the fog pass, combat, reaction fire,
 interaction and the mission-script interpreter, with `_C_140` played and won in
 an exported build. What it settled and this file now carries: the difficulty
-level is [TurnState]'s own field and enters the canonical hash (§7.9 below), the
+level is [TurnState]'s own field and enters the canonical hash (§7.14 below,
+which settles who writes it), the
 save schema carries **both** generators because `InsertUnit` draws from the C
 runtime's and not from `aRandom`, and the set pieces apply their state change
 instantly while recording the animation as an event.

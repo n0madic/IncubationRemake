@@ -29,7 +29,10 @@ func build() -> void:
 	title.position = Vector2(8.0, 0.0)
 	body().add_child(title)
 
-	_text = BriefingText.create(cache_dir)
+	# `font` is the interface's, and `null` there means the readable face was
+	# chosen -- so the body follows the same decision the headings did instead
+	# of always being the shipped 8 px bitmap.
+	_text = BriefingText.create(cache_dir, font != null)
 	_text.position = Vector2(8.0, 28.0)
 	_text.custom_minimum_size = Vector2(520.0, 300.0)
 	_text.size = Vector2(520.0, 300.0)

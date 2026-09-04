@@ -8,6 +8,21 @@ extends CampaignScreen
 ## one of each places a unit. The header's deployment ring holds **ten**
 ## records, so ten is the upper bound on a sortie whatever the map offers --
 ## and no shipped mission offers more.
+##
+## **Every refusal here is said out loud** (docs/92 section 7.4). It used to
+## say nothing at all: a cell clicked with no soldier picked did nothing, and
+## *Continue* with an empty map did nothing, so a player who did not already
+## know that a name has to be clicked before a position could not start the
+## campaign and had no way to find out. The original does not need the words
+## because its screen is a picture of the map with the squad standing on it;
+## a pair of lists does.
+
+## The remake's own, because this screen's silences are the remake's own too.
+const OWN_HINT: String = "deploy.hint"
+const OWN_PICK_FIRST: String = "deploy.pick_a_soldier"
+const OWN_NEED_ONE: String = "deploy.need_one"
+## `deploy.<result>` for each of [World]'s refusal names.
+const OWN_REFUSAL: String = "deploy.%s"
 
 const ID_TITLE: int = 13
 const ID_POSITIONS: int = 87
@@ -21,6 +36,8 @@ var selected: int = Roster.NO_SLOT
 
 var _squad: VBoxContainer = null
 var _cells: VBoxContainer = null
+## What the last click meant, shown under the two lists.
+var _message: Label = null
 
 
 func build() -> void:
@@ -28,12 +45,19 @@ func build() -> void:
 	title.position = Vector2(8.0, 0.0)
 	body().add_child(title)
 
+	# The hint sits under the title and the lists under the hint. The three
+	# offsets were 0 / 16 / 36 and the title is about 20 units tall at the
+	# readable size, so the hint was written across the bottom of it.
+	_message = make_label(strings_own(OWN_HINT))
+	_message.position = Vector2(8.0, 22.0)
+	body().add_child(_message)
+
 	_squad = VBoxContainer.new()
-	_squad.position = Vector2(8.0, 36.0)
+	_squad.position = Vector2(8.0, 44.0)
 	body().add_child(_squad)
 
 	_cells = VBoxContainer.new()
-	_cells.position = Vector2(300.0, 36.0)
+	_cells.position = Vector2(300.0, 44.0)
 	body().add_child(_cells)
 
 	add_button("start", BANK_MISSION, ID_CONTINUE_BUTTON, 0)
@@ -44,12 +68,8 @@ func build() -> void:
 func refresh() -> void:
 	if host == null or host.state == null or _squad == null:
 		return
-	for child: Node in _squad.get_children():
-		_squad.remove_child(child)
-		child.free()
-	for child: Node in _cells.get_children():
-		_cells.remove_child(child)
-		child.free()
+	clear_children(_squad)
+	clear_children(_cells)
 
 	_squad.add_child(make_label("%s %d" % [
 		label_for(BANK_MISSION, ID_IN_SQUAD),
@@ -85,10 +105,27 @@ func _pick(slot: int) -> void:
 
 
 func _place(cell: Vector2i) -> void:
-	if host == null or selected == Roster.NO_SLOT:
+	if host == null:
+		return
+	if selected == Roster.NO_SLOT:
+		say(strings_own(OWN_PICK_FIRST))
 		return
 	var placed: Dictionary = host.deploy(selected, cell.x, cell.y)
-	if DictRead.as_string(placed["result"]) == World.DEPLOY_OK:
+	var outcome: String = DictRead.as_string(placed["result"])
+	if outcome == World.DEPLOY_OK:
 		selected = Roster.NO_SLOT
+		say(strings_own(OWN_HINT))
 		chose.emit("deployed")
+	else:
+		# [World]'s own refusal name, turned into a sentence. A name the
+		# catalogue has no line for comes back as the marker rather than as a
+		# blank, so a new refusal is visible instead of silent.
+		say(strings_own(OWN_REFUSAL % outcome))
 	refresh()
+
+
+## Put one line under the title. The host calls it too, for the refusal only
+## it can see -- that a mission may not start with an empty map.
+func say(line: String) -> void:
+	if _message != null:
+		_message.text = line

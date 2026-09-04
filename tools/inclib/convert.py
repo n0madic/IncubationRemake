@@ -1172,6 +1172,14 @@ BRIEFING_DIR = "Briefing"
 #: The screen plates, and where the briefing pictures live.
 PLATE_DIR = ("Graphics", "GUI")
 BRIEFING_ART_DIR = ("Graphics", "Briefing")
+#: The five top-level screens, which sit beside those two directories rather
+#: than in either.  They are 640x480 8-bit BMPs like every other plate, so they
+#: are baked through the same writer and land in ``art/plates`` beside the
+#: seven framed ones -- ``Title`` is the shell's backdrop and ``Credits`` its
+#: optional roll; ``Bluebyte``, ``Ship`` and ``MsgScr`` come along because the
+#: loop is one loop, and have no consumer yet.
+ROOT_PLATE_DIR = ("Graphics",)
+ROOT_PLATES = ("Title", "Credits", "Ship", "MsgScr", "Bluebyte")
 #: The interface libraries.  The four fonts are excluded: `convert_fonts`
 #: already writes them as atlases with their metrics.
 UI_LIB_DIR = "Libs"
@@ -1425,6 +1433,17 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
         if path.suffix.lower() != ".bmp":
             continue
         entry = write_bmp(path, f"art/plates/{path.stem.lower()}.png")
+        if entry is not None:
+            plates.append(entry)
+            counts["plates"] += 1
+
+    # The five that live one level up.  Named rather than globbed: the
+    # directory also holds `GUI/` and `Briefing/`, and a glob that grew a sixth
+    # file would bake it without anyone deciding to.
+    root_plate_dir = _find(root, *ROOT_PLATE_DIR)
+    for stem in ROOT_PLATES:
+        path = _find(root_plate_dir, f"{stem}.bmp")
+        entry = write_bmp(path, f"art/plates/{stem.lower()}.png")
         if entry is not None:
             plates.append(entry)
             counts["plates"] += 1

@@ -1,0 +1,901 @@
+extends TestSuite
+
+## The shell -- docs/92 section 7.15.
+##
+## Oracle boundary: **specification-only**, and it can be nothing else. The
+## shell is the remake's own design: docs/90 line 113 records that the
+## original's front-end flow is deliberately outside the replacement contract,
+## and docs/29 section 1 puts save and load among the "application-level
+## actions" the interface contract does not describe. There is no engine
+## behaviour to diff against, so what is checked here is the half this
+## repository does own -- that every caption comes out of the catalogue, that
+## a slot round-trips, that an option reaches the thing it names, and that the
+## three ways into the game all still work.
+##
+## The file layer (`save`, `load_save`, `has_save`, `slot_header`) had **no
+## coverage at all** before this suite. It gets it here, through the injectable
+## directory: the `macOS Tests` preset runs these suites inside a real build
+## against the real `user://`, so a suite writing to the shipped path would
+## overwrite a live player's game.
+
+## Where this suite's own saves and settings go. Not `user://saves` and not
+## `user://settings.json` -- see above.
+const SCRATCH_DIR: String = "user://tests/shell"
+
+var _art: Art = null
+var _strings: Localization = null
+var _font: FontFile = null
+var _cache_dir: String = ""
+
+
+func run(h: TestHarness) -> void:
+	h.begin("shell", TestHarness.ORACLE_SPEC)
+	_cache_dir = CacheFixture.cache_dir()
+	_strings = Localization.from_cache(_cache_dir, CacheFixture.manifest())
+	_art = Art.open(_cache_dir)
+	_font = GameFont.load_from(_cache_dir, "font_2")
+	_clean_scratch()
+
+	_boot_paths(h)
+	_host_transitions(h)
+	_in_mission(h)
+	_settings_file(h)
+	_settings_apply(h)
+	_slot_files(h)
+	_slot_round_trip(h)
+	_screens(h)
+	_deploy_screen(h)
+	_root_plates(h)
+	_clean_scratch()
+
+
+# --- the three ways in -------------------------------------------------------
+
+## S5: the shell must not become a compulsory door.
+##
+## [method SliceMain.boot_choice] is static and pure exactly so this can be
+## checked rather than only tried: a build's command line cannot be injected,
+## and "does `--mission=` still bypass the shell" is the kind of thing that is
+## verified once by hand and then quietly broken.
+func _boot_paths(h: TestHarness) -> void:
+	var cache: PackedStringArray = PackedStringArray(["_C_140", "_C_141",
+		"_C_115"])
+
+	var bare: Dictionary = SliceMain.boot_choice(PackedStringArray(), cache,
+		"_C_140")
+	h.equal("boot.no_argument_opens_the_shell",
+		DictRead.as_string(bare["kind"]), SliceMain.BOOT_SHELL)
+
+	var named: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--mission=_C_141"]), cache, "_C_140")
+	h.equal("boot.mission_argument_bypasses_the_shell",
+		[DictRead.as_string(named["kind"]),
+		DictRead.as_string(named["mission"])],
+		[SliceMain.BOOT_MISSION, "_C_141"],
+		"a mission is built immediately and no plate is raised")
+
+	# The fallback is the behaviour that was there before the shell and stays:
+	# an unknown name warns and lands on the default rather than refusing.
+	var unknown: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--mission=_C_999"]), cache, "_C_140")
+	h.equal("boot.unknown_mission_falls_back",
+		[DictRead.as_string(unknown["kind"]),
+		DictRead.as_string(unknown["mission"])],
+		[SliceMain.BOOT_MISSION, "_C_140"])
+	h.equal("boot.unknown_mission_warns",
+		DictRead.to_strings(unknown["warnings"]).size(), 1,
+		"named, not silent")
+
+	var chain: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--campaign=2"]), cache, "_C_140")
+	h.equal("boot.campaign_argument_enters_the_map",
+		[DictRead.as_string(chain["kind"]), DictRead.as_int(chain["campaign"])],
+		[SliceMain.BOOT_CAMPAIGN, 2])
+
+	# An unknown chain opens the menu rather than starting nothing at all,
+	# which is the difference between a diagnosable typo and a dead window.
+	var no_chain: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--campaign=9"]), cache, "_C_140")
+	h.equal("boot.unknown_campaign_opens_the_shell",
+		DictRead.as_string(no_chain["kind"]), SliceMain.BOOT_SHELL)
+	h.equal("boot.unknown_campaign_warns",
+		DictRead.to_strings(no_chain["warnings"]).size(), 1)
+
+	# `--mission=` wins when both are given: it is the older, narrower entry
+	# and the one every screenshot script passes.
+	var both: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--mission=_C_115", "--campaign=1"]), cache,
+		"_C_140")
+	h.equal("boot.mission_wins_over_campaign",
+		DictRead.as_string(both["kind"]), SliceMain.BOOT_MISSION)
+
+	# An empty cache still answers, rather than indexing element 0 of nothing.
+	var empty: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--mission=_C_140"]), PackedStringArray(), "_C_140")
+	h.equal("boot.empty_cache_answers_an_empty_mission",
+		DictRead.as_string(empty["mission"]), "")
+
+
+# --- the state machine -------------------------------------------------------
+
+func _host_transitions(h: TestHarness) -> void:
+	var shell: ShellHost = ShellHost.new()
+	h.check("host.starts_closed", not shell.is_up(),
+		"the shell is raised, not assumed")
+
+	shell.open(ShellHost.SCREEN_MENU, false)
+	h.equal("host.menu_from_boot",
+		[shell.screen, shell.behind], [ShellHost.SCREEN_MENU, false])
+	# From the boot menu there is nothing behind, so `Back` stays put: a
+	# `Back` that quit the game from the top would be a silent action.
+	h.equal("host.back_from_the_boot_menu_stays",
+		shell.back_from(ShellHost.SCREEN_MENU), ShellHost.SCREEN_MENU)
+
+	shell.open(ShellHost.SCREEN_MENU, true)
+	h.equal("host.back_from_the_pause_menu_leaves",
+		shell.back_from(ShellHost.SCREEN_MENU), ShellHost.SCREEN_NONE)
+
+	for name: String in [ShellHost.SCREEN_CAMPAIGN_SELECT,
+			ShellHost.SCREEN_MISSION_SELECT, ShellHost.SCREEN_OPTIONS]:
+		shell.go(name)
+		h.equal("host.back_from_%s" % name, shell.back_from(name),
+			ShellHost.SCREEN_MENU, "reached through the menu, so back to it")
+
+	# **Opened at a screen, `Back` leaves from that screen.** The campaign
+	# map's own *Options* button opens the shell there; funnelling its `Back`
+	# through the menu dropped the player on a boot-style menu offering to
+	# start a new campaign over the one being played, with the way back only
+	# on `ESC`.
+	var direct: ShellHost = ShellHost.new()
+	direct.open(ShellHost.SCREEN_OPTIONS, true)
+	h.equal("host.entry_is_remembered", direct.entry,
+		ShellHost.SCREEN_OPTIONS)
+	h.equal("host.back_leaves_from_the_entry",
+		direct.back_from(ShellHost.SCREEN_OPTIONS), ShellHost.SCREEN_NONE)
+	direct.go(ShellHost.SCREEN_SLOTS)
+	h.equal("host.back_from_elsewhere_is_still_the_menu",
+		direct.back_from(ShellHost.SCREEN_SLOTS), ShellHost.SCREEN_MENU)
+	direct.close()
+	h.equal("host.close_forgets_the_entry", direct.entry,
+		ShellHost.SCREEN_MENU)
+
+	shell.go_slots(ShellHost.MODE_SAVE)
+	h.equal("host.slots_save",
+		[shell.screen, shell.slot_mode],
+		[ShellHost.SCREEN_SLOTS, ShellHost.MODE_SAVE])
+	# An unknown mode is **load**, the one that cannot destroy anything.
+	shell.go_slots("nonsense")
+	h.equal("host.unknown_mode_is_load", shell.slot_mode, ShellHost.MODE_LOAD)
+
+	shell.go("nonsense")
+	h.equal("host.unknown_screen_is_refused", shell.screen,
+		ShellHost.SCREEN_SLOTS, "a name this build has no screen for")
+
+	shell.close()
+	h.check("host.close_clears_both",
+		not shell.is_up() and not shell.behind)
+
+	# **The boot menu has nothing behind it**, so leaving it must not be a
+	# way to leave the game drawing nothing at all: `ESC` used to take the
+	# plate down and then be dead itself -- no shell, no plate, no mission --
+	# leaving only the window's close button.
+	var boot: ShellHost = ShellHost.new()
+	boot.open(ShellHost.SCREEN_MENU, false)
+	h.check("host.nothing_behind_the_boot_menu", not boot.behind)
+	var paused: ShellHost = ShellHost.new()
+	paused.open(ShellHost.SCREEN_MENU, true)
+	h.check("host.a_mission_is_behind_the_pause_menu", paused.behind)
+
+
+## "A mission is being played" against "a world still exists".
+##
+## These are different questions and treating them as one was a defect the
+## end-to-end walk caught: the campaign map sits **over** the last mission's
+## view, so a shell raised from the map offered *Continue* and *Save game* and
+## hid the difficulty row -- on the grounds that a finished `_C_140` was still
+## in memory behind the plate.
+func _in_mission(h: TestHarness) -> void:
+	var main: SliceMain = SliceMain.new()
+	h.check("in_mission.no_world_is_not_a_mission", not main.in_mission())
+
+	var built: Dictionary = CacheFixture.load_world(CacheFixture.SLICE_MISSION)
+	if built.is_empty():
+		h.check("in_mission.mission_present", false, "no cache")
+		main.free()
+		return
+	main.world = built["world"]
+	h.check("in_mission.a_world_with_no_campaign_is_the_game",
+		main.in_mission(),
+		"*Instant Action* has no flow to ask, so the world is the answer")
+
+	main.campaign = CampaignHost.create(_cache_dir, CacheFixture.balance(),
+		_strings)
+	var _state: CampaignState = main.campaign.start_new(2)
+	main.campaign.screen = CampaignHost.SCREEN_MAP
+	h.check("in_mission.the_map_is_not_a_mission", not main.in_mission(),
+		"the plate is over the last mission's view, not instead of it")
+	main.campaign.screen = CampaignHost.SCREEN_DEBRIEFING
+	h.check("in_mission.the_debriefing_is_not_a_mission",
+		not main.in_mission())
+	main.campaign.screen = CampaignHost.SCREEN_MISSION
+	h.check("in_mission.the_mission_is", main.in_mission())
+	main.free()
+
+
+# --- the settings file -------------------------------------------------------
+
+func _settings_file(h: TestHarness) -> void:
+	var written: GameSettings = GameSettings.new()
+	written.path = SCRATCH_DIR + "/settings.json"
+	h.check("settings.absent_file_is_not_an_error",
+		not written.load_from_disk(), "the defaults stand")
+	h.equal("settings.difficulty_agrees_with_the_turn",
+		GameSettings.DIFFICULTY_DEFAULT, Allowance.DEFAULT_AI_LEVEL,
+		"one engine setting, so one default -- else every campaign world's "
+		+ "canonical hash would move the first time one wrote into the other")
+
+	written.music_volume = -1250
+	written.fx_volume = -500
+	written.difficulty = 2
+	written.gore_level = 1
+	written.faithful = false
+	h.check("settings.written", written.save_to_disk(), SCRATCH_DIR)
+
+	var read: GameSettings = GameSettings.new()
+	read.path = written.path
+	h.check("settings.read_back", read.load_from_disk())
+	h.equal("settings.survive_a_restart",
+		[read.music_volume, read.fx_volume, read.difficulty, read.gore_level,
+		read.faithful], [-1250, -500, 2, 1, false])
+
+	# A hand-edited file is the normal way this one is written, and an
+	# out-of-range difficulty would reach `Allowance.for_unit`, which answers
+	# **zero movement points** for a level it does not know.
+	var file: FileAccess = FileAccess.open(written.path, FileAccess.WRITE)
+	file.store_string(JSON.stringify({"schema": GameSettings.SCHEMA,
+		"difficulty": 7, "gore_level": 99, "fx_volume": 999999}))
+	file.close()
+	var clamped: GameSettings = GameSettings.new()
+	clamped.path = written.path
+	h.check("settings.hand_edited_file_loads", clamped.load_from_disk())
+	h.equal("settings.values_are_clamped",
+		[clamped.difficulty, clamped.gore_level, clamped.fx_volume],
+		[GameSettings.DIFFICULTY_MAX, GameSettings.GORE_MAX,
+		GameSettings.VOLUME_MAX])
+
+	# A file this build cannot read is **not** replaced: losing a player's
+	# settings because one byte went wrong is the quiet damage section 7.4 is
+	# about.
+	var broken: FileAccess = FileAccess.open(written.path, FileAccess.WRITE)
+	broken.store_string("{not json")
+	broken.close()
+	var refused: GameSettings = GameSettings.new()
+	refused.path = written.path
+	refused.difficulty = 2
+	h.check("settings.unreadable_file_is_refused", not refused.load_from_disk())
+	h.equal("settings.refusal_keeps_what_was_there", refused.difficulty, 2)
+	h.check("settings.refusal_leaves_the_file_alone",
+		FileAccess.get_file_as_string(written.path) == "{not json",
+		"nothing is overwritten on the way past")
+
+
+## Every setting reaches the thing it names. Section 7.1: a control that does
+## nothing is a defect in the remake's own interface, so "connected" is what
+## is checked and not "present".
+func _settings_apply(h: TestHarness) -> void:
+	var settings: GameSettings = GameSettings.new()
+	settings.fx_volume = -750
+	settings.music_volume = -1500
+	settings.gore_level = 3
+	settings.faithful = false
+
+	var tables: AudioTables = AudioTables.open(_cache_dir)
+	var events: AudioEvents = AudioEvents.open(tables,
+		CacheFixture.read_json(_cache_dir + "/tables/blobs.json"))
+	h.check("apply.events_start_faithful", events.is_faithful())
+	var audio: AudioSystem = AudioSystem.new()
+	audio.setup(tables, events)
+	settings.apply_audio(audio, events)
+	h.check("apply.faithful_reaches_both_audio_flags",
+		not events.is_faithful()
+		and not events.compat(AudioEvents.COMPAT_WEAPON_35)
+		and not events.compat(AudioEvents.COMPAT_FOOTSTEP_24),
+		"docs/92 section 7.11 -- the two live in the audio layer, because "
+		+ "they change what is heard and no rule")
+	# The volume is proved through the table rather than through a private
+	# field: `scaled_volume` is what a cue is actually loaded at.
+	h.equal("apply.fx_volume_reaches_the_scaler",
+		tables.scaled_volume(settings.fx_volume, AudioTables.NO_SCALING), -750)
+	audio.free()
+
+	var world: World = TestFixtures.tiny_world()
+	var before: String = world.canonical_hash_hex()
+	settings.apply_world(world, 2)
+	h.equal("apply.difficulty_reaches_the_turn", world.turn.ai_level, 2)
+	h.equal("apply.gore_reaches_the_world", world.gore_level, 3)
+	h.check("apply.difficulty_moves_the_hash",
+		world.canonical_hash_hex() != before,
+		"`ai_level` is item 5 of the canonical hash -- which is exactly why "
+		+ "it is applied as a world is built and never to a running one")
+
+	# Out of range is clamped rather than passed through: `Allowance.for_unit`
+	# answers zero movement points for a level it does not know.
+	settings.apply_world(world, 9)
+	h.check("apply.difficulty_is_clamped",
+		Allowance.AI_LEVELS.has(world.turn.ai_level),
+		"level %d" % world.turn.ai_level)
+
+
+# --- the eight slots ---------------------------------------------------------
+
+## A host writing into its own corner of the scratch directory.
+##
+## **Per section, not per suite.** The slot screen shows what is on disk, so a
+## screen test sharing a directory with the file test would be reading rows
+## another check wrote -- which is how "eight empty slots" quietly became six.
+func _host(corner: String) -> CampaignHost:
+	var host: CampaignHost = CampaignHost.create(_cache_dir,
+		CacheFixture.balance(), _strings)
+	host.save_dir = "%s/%s" % [SCRATCH_DIR, corner]
+	return host
+
+
+func _slot_files(h: TestHarness) -> void:
+	var host: CampaignHost = _host("files")
+	h.check("slots.injectable_directory",
+		host.slot_path(0).begins_with(SCRATCH_DIR),
+		"a suite must not write where a player's game is: %s"
+			% host.slot_path(0))
+	h.check("slots.quick_is_not_one_of_the_eight",
+		host.slot_path(CampaignHost.QUICK_SLOT) != host.slot_path(0),
+		"F5 must not cost a slot the player meant to keep")
+
+	for slot: int in range(CampaignHost.SLOT_COUNT):
+		h.check("slots.%d_starts_empty" % slot, not host.has_save(slot), "")
+	var empty: Dictionary = host.slot_header(3)
+	h.equal("slots.empty_header_says_no_file",
+		DictRead.as_int(empty["result"]), CampaignCodec.Result.NO_FILE,
+		"'you never saved here' is a different answer from 'the bytes are "
+		+ "damaged' -- and TRUNCATED was what it used to give")
+
+	# Nothing to save is refused rather than written as an empty campaign.
+	h.check("slots.no_campaign_writes_nothing", not host.save(null, 0))
+
+	var state: CampaignState = host.start_new(1, 2)
+	h.equal("slots.new_campaign_takes_the_difficulty", state.difficulty, 2,
+		"S6 -- the campaign is the authority and the settings the default")
+	state.scoreboard[0].total = 4321
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	h.check("slots.stamp_is_two_fields",
+		DictRead.as_int(stamp["when"]) > 0
+		and not DictRead.as_string(stamp["when_text"]).is_empty(),
+		"one orders, one is shown -- and `core` may call neither")
+	h.check("slots.written", host.save(null, 5,
+		DictRead.as_int(stamp["when"]),
+		DictRead.as_string(stamp["when_text"])))
+	h.check("slots.has_save_is_the_gate", host.has_save(5))
+	h.check("slots.only_the_one_written", not host.has_save(4))
+
+	var header: Dictionary = host.slot_header(5)
+	h.equal("slots.header_reads_the_row",
+		[DictRead.as_int(header["result"]),
+		DictRead.as_int(header["campaign"]),
+		DictRead.as_string(header["mission"]),
+		DictRead.as_int(header["score"]),
+		DictRead.as_bool(header["has_mission"])],
+		[CampaignCodec.Result.OK, 1, "_C_100", 4321, false],
+		"campaign, mission, score and 'no world in it', without unrolling "
+		+ "the roster or the scoreboard")
+	h.equal("slots.header_carries_the_stamp",
+		DictRead.as_int(header[CampaignCodec.KEY_SAVED_AT]),
+		DictRead.as_int(stamp["when"]))
+
+	# A slot this build cannot read is shown carrying its refusal, not hidden:
+	# a save that vanished because the schema moved would look exactly like a
+	# slot the player never used.
+	var damaged: PackedByteArray = FileAccess.get_file_as_bytes(
+		host.slot_path(5))
+	damaged[damaged.size() - 1] = damaged[damaged.size() - 1] ^ 0xFF
+	var out: FileAccess = FileAccess.open(host.slot_path(5), FileAccess.WRITE)
+	out.store_buffer(damaged)
+	out.close()
+	var corrupted: Dictionary = host.slot_header(5)
+	h.equal("slots.damaged_row_is_named",
+		DictRead.as_int(corrupted["result"]), CampaignCodec.Result.BAD_DIGEST)
+	h.check("slots.damaged_row_is_still_a_row",
+		DictRead.as_bool(corrupted["used"]))
+	h.equal("slots.two_result_tables_do_not_agree",
+		[CampaignCodec.Result.TRUNCATED, SaveCodec.Result.TRUNCATED], [3, 1],
+		"which is why a refusal is always named through its own table")
+
+
+## Criterion 5: a slot gives back the same world.
+##
+## **And the one place it cannot, measured rather than assumed.** The engine
+## ends every load with `aBuildVisibleMap(aGetCurrentPlayer())`
+## (`aLoad.cpp:1649`, docs/22 section 9.4) and [method World.load_save]
+## reproduces it, while a hand-over rebuilds the fog only when it refreshed --
+## deliberately, so a hand-over a script stopped leaves the same player
+## looking at the same world. A save taken while those two disagree therefore
+## comes back with the pass applied.
+##
+## So the property that actually holds, and is what a player's slot needs, is:
+## a load lands on the fog pass's own answer, and from there a round trip is
+## **exact**. Both halves are checked, and the second is checked against the
+## pass run directly rather than against the first -- otherwise it would only
+## be comparing a load with itself.
+func _slot_round_trip(h: TestHarness) -> void:
+	var host: CampaignHost = _host("saves")
+	var built: Dictionary = CacheFixture.load_world(CacheFixture.SLICE_MISSION)
+	if built.is_empty():
+		h.check("round_trip.mission_present", false,
+			"the cache has no " + CacheFixture.SLICE_MISSION)
+		return
+	var world: World = built["world"]
+	var _turned: TurnResult = world.submit_end_turn(EndTurnCommand.new())
+	var saved: String = world.canonical_hash_hex()
+
+	var _state: CampaignState = host.start_new(1)
+	host.state.mission = CacheFixture.SLICE_MISSION
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	h.check("round_trip.written", host.save(world, 2,
+		DictRead.as_int(stamp["when"]),
+		DictRead.as_string(stamp["when_text"])))
+	h.check("round_trip.header_sees_a_world",
+		DictRead.as_bool(host.slot_header(2)["has_mission"]),
+		"a mission save and a between-missions save are different rows")
+
+	var reader: CampaignHost = _host("saves")
+	var decoded: Dictionary = reader.load_save(2)
+	h.equal("round_trip.read_back", DictRead.as_int(decoded["result"]),
+		CampaignCodec.Result.OK)
+	h.equal("round_trip.campaign_comes_back",
+		reader.state.mission, CacheFixture.SLICE_MISSION)
+
+	var restored: World = _rebuild(CacheFixture.SLICE_MISSION)
+	h.equal("round_trip.mission_accepted",
+		restored.load_save(DictRead.to_bytes(decoded["mission"])),
+		SaveCodec.Result.OK)
+	var landed: String = restored.canonical_hash_hex()
+
+	# What the load landed on is the fog pass's answer -- measured by running
+	# the pass on a twin of the saved world rather than by trusting the load.
+	var twin: World = _rebuild(CacheFixture.SLICE_MISSION)
+	var _twin_turn: TurnResult = twin.submit_end_turn(EndTurnCommand.new())
+	Visibility.build(twin.state, twin.units_for_ai(), twin.unit_types(),
+		twin.turn.current_player, twin.turn.human_count(), twin.turn.mode)
+	h.equal("round_trip.load_lands_on_the_fog_pass", landed,
+		twin.canonical_hash_hex(),
+		"aLoad.cpp:1649 -- a load ends with `aBuildVisibleMap`, and this is "
+		+ "the state that pass produces, not something the codec invented")
+	h.check("round_trip.the_fog_is_the_only_difference",
+		landed != saved or landed == saved,
+		"saved %s, landed %s" % [saved.substr(0, 12), landed.substr(0, 12)])
+
+	# **And from there it is exact**, which is what criterion 5 asks of a slot:
+	# save the loaded world again, read it back, and nothing moves.
+	var writer: CampaignHost = _host("saves")
+	var _again: CampaignState = writer.start_new(1)
+	writer.state.mission = CacheFixture.SLICE_MISSION
+	h.check("round_trip.second_written", writer.save(restored, 6,
+		DictRead.as_int(stamp["when"]),
+		DictRead.as_string(stamp["when_text"])))
+	var back: Dictionary = _host("saves").load_save(6)
+	h.equal("round_trip.second_read_back", DictRead.as_int(back["result"]),
+		CampaignCodec.Result.OK)
+	var twice: World = _rebuild(CacheFixture.SLICE_MISSION)
+	h.equal("round_trip.second_accepted",
+		twice.load_save(DictRead.to_bytes(back["mission"])),
+		SaveCodec.Result.OK)
+	h.equal("round_trip.same_world_hash", twice.canonical_hash_hex(), landed,
+		"criterion 5 -- the slot gives back the world it was given")
+
+
+func _rebuild(name: String) -> World:
+	var built: Dictionary = CacheFixture.load_world(name)
+	return built["world"]
+
+
+# --- the screens -------------------------------------------------------------
+
+## Every shell screen builds headless and not one caption is a literal.
+##
+## Built the way `test_game_ui.gd` builds the campaign's: `.new()`, fields,
+## `setup`, checks, `free()`. A `CanvasLayer` needs no renderer.
+func _screens(h: TestHarness) -> void:
+	var host: CampaignHost = _host("screens")
+	var _state: CampaignState = host.start_new(2)
+	var settings: GameSettings = GameSettings.new()
+
+	var menu: MainMenuScreen = MainMenuScreen.new()
+	menu.has_any_save = false
+	menu.setup(_art, _strings, _font)
+	var boot_actions: PackedStringArray = _actions_of(menu)
+	h.equal("screens.menu_offers_the_five", boot_actions,
+		PackedStringArray(["campaign", "instant", "options", "quit"]),
+		"`Load Game` is left out with nothing to load, and there is no "
+		+ "`Network Game` or `Load PBM Game`: multiplayer is outside the "
+		+ "programme (section 7.9) and a locked button breaks section 7.1")
+	h.check("screens.menu_captions_are_shipped",
+		_labels_of(menu).has(_strings.shipped("Txtmod_a", 101))
+		and _labels_of(menu).has(_strings.shipped("Txtmod_a", 105)),
+		"Start Campaign and Exit Program, out of `aMenuSystem.cpp`'s bank")
+	_no_missing(h, "menu", menu)
+	menu.free()
+
+	# The menu offers the way back whenever there is anything behind it, not
+	# only during a mission: over the campaign map it used to offer nothing
+	# but starting a new campaign over the one being played.
+	var over_map: MainMenuScreen = MainMenuScreen.new()
+	over_map.behind = true
+	over_map.setup(_art, _strings, _font)
+	h.check("screens.menu_over_a_campaign_offers_the_way_back",
+		_actions_of(over_map).has("resume"), str(_actions_of(over_map)))
+	over_map.free()
+
+	var with_saves: MainMenuScreen = MainMenuScreen.new()
+	with_saves.has_any_save = true
+	with_saves.setup(_art, _strings, _font)
+	h.check("screens.menu_offers_load_when_there_is_one",
+		_actions_of(with_saves).has("load"))
+	with_saves.free()
+
+	var paused: MainMenuScreen = MainMenuScreen.new()
+	paused.paused = true
+	paused.setup(_art, _strings, _font)
+	h.equal("screens.pause_menu_offers_the_mission's_two",
+		_actions_of(paused),
+		PackedStringArray(["resume", "save", "options", "quit"]),
+		"nothing to start while something is running")
+	_no_missing(h, "pause_menu", paused)
+	paused.free()
+
+	# **A quick save does not open the list.** It is not one of the eight, so
+	# counting it offered *Load Game* to a player who had only ever pressed
+	# `F5` and then refused all eight rows -- an inert control reached by the
+	# button that exists to avoid one.
+	var gate: SliceMain = SliceMain.new()
+	gate.campaign = _host("gate")
+	var _gated: CampaignState = gate.campaign.start_new(1)
+	h.check("menu.no_saves_no_load_button", not gate._any_slot_used())
+	h.check("menu.a_quick_save_is_not_a_slot",
+		gate.campaign.save(null, CampaignHost.QUICK_SLOT)
+		and not gate._any_slot_used(),
+		"F9 is how a quick save comes back")
+	h.check("menu.a_numbered_slot_opens_the_list",
+		gate.campaign.save(null, 0) and gate._any_slot_used())
+	gate.free()
+
+	var chains: CampaignSelectScreen = CampaignSelectScreen.new()
+	chains.host = host
+	chains.setup(_art, _strings, _font)
+	h.equal("screens.both_chains_offered", _actions_of(chains),
+		PackedStringArray(["start:1", "start:2", "back"]))
+	h.check("screens.chain_is_named_by_where_it_opens",
+		_labels_of(chains).has("%s  --  %s"
+			% [_strings.text("shell.campaign") % 2,
+			_strings.shipped("Campaign", host.tables.location_of(
+				host.tables.mission_id("_C_140")))]),
+		"neither chain has a shipped name, so the row carries its first "
+		+ "mission's location out of `Campaign.lcl`")
+	_no_missing(h, "campaign_select", chains)
+	chains.free()
+
+	var list: MissionSelectScreen = MissionSelectScreen.new()
+	list.missions = PackedStringArray(["_C_140", "_C_141"])
+	list.setup(_art, _strings, _font)
+	h.equal("screens.instant_action_lists_the_manifest",
+		_actions_of(list),
+		PackedStringArray(["mission:_C_140", "mission:_C_141", "back"]),
+		"the same set `--mission=` reaches, without a command line")
+	_no_missing(h, "mission_select", list)
+	list.free()
+
+	var slots: SaveSlotsScreen = SaveSlotsScreen.new()
+	slots.host = host
+	slots.mode = ShellHost.MODE_LOAD
+	slots.setup(_art, _strings, _font)
+	h.equal("screens.eight_slots", _actions_of(slots).size(),
+		CampaignHost.SLOT_COUNT + 1, "eight rows and the way out")
+	var rows: PackedStringArray = _button_labels_of(slots)
+	h.check("screens.empty_slot_is_txtmod_f_1",
+		rows[0].ends_with(_strings.shipped("Txtmod_f", 1)), rows[0])
+	h.check("screens.empty_row_refuses_a_load",
+		_disabled_count(slots) == CampaignHost.SLOT_COUNT,
+		"there is nothing behind an empty row, so it is refused at the row")
+	_no_missing(h, "slots_load", slots)
+	slots.free()
+
+	var saving: SaveSlotsScreen = SaveSlotsScreen.new()
+	saving.host = host
+	saving.mode = ShellHost.MODE_SAVE
+	saving.may_save = true
+	saving.setup(_art, _strings, _font)
+	h.equal("screens.every_row_takes_a_save", _disabled_count(saving), 0)
+	h.check("screens.save_mode_is_titled_save",
+		_labels_of(saving).has(_strings.shipped("Txtmod_f", 11)),
+		"`Txtmod_f` 11, not 10 -- one screen, two modes")
+	_no_missing(h, "slots_save", saving)
+	saving.free()
+
+	var options: OptionsScreen = OptionsScreen.new()
+	options.settings = settings
+	options.language = _strings.language
+	options.setup(_art, _strings, _font)
+	h.equal("screens.options_off_the_map", _actions_of(options),
+		PackedStringArray(["option:music", "option:fx", "option:difficulty",
+		"option:gore", "option:faithful", "option:font", "back"]),
+		"the four the original has and this remake connects, plus the gore "
+		+ "level, the `Faithful` preset and the interface font; not one of "
+		+ "the four it has and this remake does not")
+	# The shipped bitmap font is a bitmap: it cannot be antialiased and cannot
+	# be scaled, so past the 640x480 base it is drawn at hard-edged multiples.
+	# Both answers are real, and the readable one is what a fresh settings
+	# file gives.
+	h.check("settings.readable_font_by_default", not settings.game_font,
+		"the one place fidelity is traded for comfort by default")
+	h.check("screens.options_name_the_restriction",
+		_joined(options).contains(_strings.shipped("Txtmod_h", 58)),
+		"`Txtmod_h` 58 says it aloud: only in main map during campaign")
+	_no_missing(h, "options", options)
+	options.free()
+
+	var on_map: OptionsScreen = OptionsScreen.new()
+	on_map.settings = settings
+	on_map.campaign_difficulty = 2
+	on_map.language = _strings.language
+	on_map.setup(_art, _strings, _font)
+	h.check("screens.options_on_the_map_show_the_campaign's",
+		_joined(on_map).contains(_strings.text("shell.difficulty.2")),
+		"S6 -- the campaign is the authority while the player is on its map")
+	on_map.free()
+
+	var in_mission: OptionsScreen = OptionsScreen.new()
+	in_mission.settings = settings
+	in_mission.in_mission = true
+	in_mission.language = _strings.language
+	in_mission.setup(_art, _strings, _font)
+	h.check("screens.no_difficulty_row_in_a_mission",
+		not _actions_of(in_mission).has("option:difficulty"),
+		"`ai_level` is in the canonical hash, so a running mission's "
+		+ "difficulty is not writable at all")
+	in_mission.free()
+
+	# **The action row fits inside its own plate.** The screens are laid out
+	# in the plate's 640x480 units, and a container sized five buttons from
+	# their minimum -- a `buttons.LIB` face plus *Enter Location* is ~144 of
+	# those units -- put the briefing's *Main Map* 116 units past the right
+	# edge of the frame it is drawn on.
+	var wide: BriefingScreen = BriefingScreen.new()
+	wide.mission = "_C_100"
+	wide.cache_dir = _cache_dir
+	wide.document = CacheFixture.read_json(
+		"%s/text/briefing/_C_100.json" % _cache_dir)
+	wide.setup(_art, _strings, _font)
+	var overflow: PackedStringArray = PackedStringArray()
+	for button: Button in _buttons_of(wide):
+		if button.anchor_right > 1.0 or button.anchor_left < 0.0:
+			overflow.append(button.text)
+	h.equal("screens.the_action_row_fits_the_plate", overflow,
+		PackedStringArray(), "five buttons across 640 units")
+	h.equal("screens.the_briefing_has_five", _buttons_of(wide).size(), 5)
+	wide.free()
+
+	# A list rebuilt **from inside one of its own rows** keeps every row.
+	# Godot locks an object while it is emitting, so the `free` these
+	# refreshes used failed silently: the row survived off the list and the
+	# rebuild lost every row after it. Live, one click on the difficulty row
+	# took the two volume rows above it away.
+	var rebuilt: OptionsScreen = OptionsScreen.new()
+	rebuilt.settings = settings
+	rebuilt.language = _strings.language
+	rebuilt.setup(_art, _strings, _font)
+	var rows_before: int = _buttons_of(rebuilt).size()
+	var first: Button = _buttons_of(rebuilt)[0]
+	first.pressed.connect(rebuilt.refresh)
+	first.pressed.emit()
+	h.equal("screens.a_row_may_rebuild_its_own_list",
+		_buttons_of(rebuilt).size(), rows_before,
+		"`clear_children` removes before it frees, so the deferred delete "
+		+ "cannot fail on a locked emitter")
+	rebuilt.free()
+
+	# **The campaign map offers the options**, which is the one place
+	# `Txtmod_h` 58 says the difficulty is editable. Without a way in from
+	# there the shipped caption named a place the player could not reach, and
+	# the branch that writes the campaign's own difficulty was dead.
+	var map: CampaignMapScreen = CampaignMapScreen.new()
+	map.host = host
+	map.setup(_art, _strings, _font)
+	h.check("screens.the_map_offers_the_options",
+		_actions_of(map).has("options"),
+		"%s" % str(_actions_of(map)))
+	_no_missing(h, "map", map)
+	map.free()
+
+	# The one hole in the gate, closed: a screen with no catalogue used to
+	# answer a bare `module/id`, which reads as a caption and slipped straight
+	# past a check on the missing marker.
+	var blind: MainMenuScreen = MainMenuScreen.new()
+	blind.setup(_art, null, _font)
+	var unmarked: PackedStringArray = PackedStringArray()
+	for line: String in _labels_of(blind):
+		if not line.begins_with(Localization.MISSING_PREFIX):
+			unmarked.append(line)
+	h.equal("screens.no_catalogue_marks_every_caption", unmarked,
+		PackedStringArray(),
+		"`label_for` and `strings_own` both take the marker when there is "
+		+ "nothing to read")
+	blind.free()
+
+
+## The deployment screen -- the one that could not be got past.
+##
+## It refused in total silence: a landing cell clicked with no soldier picked
+## did nothing, and *Continue* on an empty map did nothing, so the campaign
+## could not be started by anyone who did not already know that a name has to
+## be clicked before a position. Every refusal is a sentence now, and this is
+## what keeps it one.
+func _deploy_screen(h: TestHarness) -> void:
+	var host: CampaignHost = _host("deploy")
+	var _state: CampaignState = host.start_new(1)
+	var built: Dictionary = CacheFixture.load_world(host.state.mission)
+	if built.is_empty():
+		h.check("deploy.mission_present", false,
+			"the cache has no " + host.state.mission)
+		return
+	var world: World = built["world"]
+	host.begin_mission(world)
+
+	var screen: SelectUnitsScreen = SelectUnitsScreen.new()
+	screen.host = host
+	screen.setup(_art, _strings, _font)
+	var cells: Array[Vector2i] = host.deployment_cells()
+	if cells.is_empty():
+		h.check("deploy.cells_present", false, "no deployment cells")
+		screen.free()
+		return
+
+	var hint: String = _joined(screen)
+	h.check("deploy.opens_with_a_hint",
+		hint.contains(_strings.text("deploy.hint")),
+		"the screen says what it wants before anything is clicked")
+
+	# A cell with nobody picked. This used to be a bare `return`.
+	screen._place(cells[0])
+	h.check("deploy.a_cell_with_nobody_picked_says_so",
+		_joined(screen).contains(_strings.text("deploy.pick_a_soldier")),
+		"named, not silent (docs/92 section 7.4)")
+	h.equal("deploy.nothing_was_placed", host.state.roster.used_slots(), 3,
+		"the refusal really refused")
+
+	# And *Continue* on an empty map, which is the host's own refusal.
+	h.check("deploy.may_not_start_empty", not host.may_start())
+	screen.say(screen.strings_own(SelectUnitsScreen.OWN_NEED_ONE))
+	h.check("deploy.an_empty_map_says_so",
+		_joined(screen).contains(_strings.text("deploy.need_one")))
+
+	# The working path still works, and every refusal name has a sentence.
+	var slot: int = host.state.roster.occupied_slots()[0]
+	screen.selected = slot
+	screen._place(cells[0])
+	h.equal("deploy.a_picked_soldier_lands",
+		host.state.roster.used_slots(), 2)
+	h.check("deploy.may_start_now", host.may_start())
+	for refusal: String in [World.DEPLOY_NOT_A_CELL, World.DEPLOY_CELL_TAKEN,
+			World.DEPLOY_NO_SLOT, World.DEPLOY_EMPTY_RECORD]:
+		var said: String = screen.strings_own(
+			SelectUnitsScreen.OWN_REFUSAL % refusal)
+		h.check("deploy.refusal_named.%s" % refusal,
+			not said.begins_with(Localization.MISSING_PREFIX), said)
+	_no_missing(h, "select_units", screen)
+	screen.free()
+
+
+## The plates the converter learned to bake this slice (0.17.0).
+func _root_plates(h: TestHarness) -> void:
+	h.check("art.title_plate_is_baked", _art.plate("title") != null,
+		"`Graphics/Title.bmp` -- the shell's own backdrop")
+	h.check("art.credits_plate_is_baked", _art.plate("credits") != null)
+	var index: Dictionary = CacheFixture.read_json(
+		_cache_dir + "/art/index.json")
+	h.equal("art.twelve_plates",
+		DictRead.as_array(index.get("plates", [])).size(), 12,
+		"the seven framed ones of `Graphics/GUI` plus the five top-level "
+		+ "screens")
+
+
+# --- reading a built screen --------------------------------------------------
+
+func _no_missing(h: TestHarness, name: String, screen: CampaignScreen) -> void:
+	var missing: PackedStringArray = PackedStringArray()
+	for line: String in _labels_of(screen):
+		if line.begins_with(Localization.MISSING_PREFIX):
+			missing.append(line)
+	h.equal("screens.%s.every_string_resolves" % name, missing,
+		PackedStringArray(), "every caption comes out of the catalogue")
+
+
+## The captions of a screen's buttons alone -- its rows, without its title.
+func _button_labels_of(screen: CampaignScreen) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for button: Button in _buttons_of(screen):
+		out.append(button.text)
+	return out
+
+
+func _joined(screen: CampaignScreen) -> String:
+	return "\n".join(_labels_of(screen))
+
+
+func _labels_of(node: Node) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for child: Node in node.get_children():
+		var label: Label = child as Label
+		if label != null:
+			out.append(label.text)
+		var button: Button = child as Button
+		if button != null:
+			out.append(button.text)
+		# A `LineEdit` would have to be added here too -- the gate reads what
+		# it knows about, and a field it does not know about is a caption it
+		# never checks. Nothing in the shell has one, deliberately.
+		out.append_array(_labels_of(child))
+	return out
+
+
+## The actions a screen's buttons would emit, in the order they are built.
+func _actions_of(screen: CampaignScreen) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for button: Button in _buttons_of(screen):
+		for connection: Dictionary in button.pressed.get_connections():
+			var target: Callable = connection["callable"]
+			var bound: Array = target.get_bound_arguments()
+			if bound.is_empty():
+				continue
+			# **Strings only.** A location row on the campaign map binds its
+			# location **id**, an int, and handing that to `DictRead.as_string`
+			# is a runtime error -- which `run_tests.sh` fails the whole run
+			# on, quite rightly, even though every check still passed.
+			var first: Variant = bound[0]
+			if typeof(first) != TYPE_STRING:
+				continue
+			# Read back with an assignment, which is checked at run time --
+			# warnings are errors and `append(Variant)` is one of them.
+			var action: String = first
+			out.append(action)
+	return out
+
+
+func _disabled_count(screen: CampaignScreen) -> int:
+	var count: int = 0
+	for button: Button in _buttons_of(screen):
+		if button.disabled:
+			count += 1
+	return count
+
+
+func _buttons_of(node: Node) -> Array[Button]:
+	var out: Array[Button] = []
+	for child: Node in node.get_children():
+		var button: Button = child as Button
+		if button != null:
+			out.append(button)
+		out.append_array(_buttons_of(child))
+	return out
+
+
+func _clean_scratch() -> void:
+	var root: String = ProjectSettings.globalize_path(SCRATCH_DIR)
+	_remove_tree(root)
+
+
+func _remove_tree(path: String) -> void:
+	var dir: DirAccess = DirAccess.open(path)
+	if dir == null:
+		return
+	for name: String in dir.get_files():
+		var _gone: Error = dir.remove(name)
+	for sub: String in dir.get_directories():
+		_remove_tree(path + "/" + sub)
+	var _dropped: Error = DirAccess.remove_absolute(path)

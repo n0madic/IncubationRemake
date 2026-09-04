@@ -67,7 +67,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 223 checks, 6 missions
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 34 suites, 3154 checks
+bash   godot/run_tests.sh                                    # 35 suites, 3284 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -531,6 +531,22 @@ built by any of the format tools; `docs/92` records its architecture,
 the second — the turn, combat, visibility, interaction and the mission-script
 interpreter, with `_C_140` played and won in an exported build.
 
+**The game starts from a menu** (`docs/92` §7.15). A built game used to boot
+straight into `_C_140` with `campaign.state` left `null`, and the campaign was
+reachable only from `tour.gd`, which the shipping preset excludes. `game/`
+now carries a shell — `shell_host.gd` and five screens under `game/screens/`:
+a main menu on the shipped `Title` plate, the chain chooser, *Instant Action*
+over the cache manifest, **eight save slots** beside a separate quick save on
+`F5`/`F9`, and an options screen carrying only the controls that are actually
+connected. `ESC` opens it over a running mission. **All three ways past it
+stay open and are checked rather than tried**: `--mission=NAME` builds a
+mission immediately and never raises the shell, the new `--campaign=N` enters
+a chain's map, and `tour.gd` runs the sixth slice's scenarios unedited —
+`SliceMain.boot_choice` is static and pure so `test_shell.gd` can check the
+decision without a command line. `tour.gd` gained `menu`, `slot`, `option`,
+`click_screen` and `buttons`, and no longer requires a world to exist before
+it will read a command.
+
 **No new Python twin for a new subject** (`docs/92` §5.1, 2026-09-04). An
 executable model in `inclib` is written where a spec's claim is arithmetic that
 has to run over the whole corpus; where the claim is structural, a parser check
@@ -637,7 +653,7 @@ Eight things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.16.0 as of the sixth slice), in
+* **`CONVERTER_VERSION` is written down twice** (0.17.0 as of the shell slice), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump

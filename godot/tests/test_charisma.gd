@@ -67,6 +67,9 @@ const REQUIRED_KEY_CLASSES: Array[String] = ["LinearRotationKey",
 
 func run(h: TestHarness) -> void:
 	h.begin("charisma", TestHarness.ORACLE_PYTHON)
+	# **Before the fixture gate**, because this one needs no oracle: a model
+	# either builds or it does not.
+	_unnamed_part(h)
 	if not FileAccess.file_exists(CASES):
 		h.check("fixture", false,
 			"run python3 tools/charisma_tables.py gog_incubation "
@@ -754,3 +757,46 @@ func _walking(h: TestHarness) -> void:
 		node.position.distance_to(last) < 0.001,
 		"%.3f m from the destination centre" % node.position.distance_to(last))
 	units.free()
+
+
+## `PC_011.cho` has a part with **no name at all**, and it must still build.
+##
+## Part 2 of that model is authored with an empty name and the mesh `PC_011_`;
+## Godot refuses an empty node name outright (`Condition "p_name.is_empty()"
+## is true`), so the body used to be built with an engine error printed for it
+## and the mesh left unnamed. Unit type 61 selects this model and `_C_118` is
+## the one shipped mission that places one, so `[`/`]` or *Instant Action*
+## reaches it.
+func _unnamed_part(h: TestHarness) -> void:
+	var cache_dir: String = CacheFixture.cache_dir()
+	var document: Dictionary = CacheFixture.read_json(
+		"%s/models/PC_011.json" % cache_dir)
+	if document.is_empty():
+		h.check("unnamed.model_present", false,
+			"the cache carries no PC_011 -- publish one with --campaign-maps")
+		return
+	var model: CharismaModel = CharismaModel.from_document(document)
+	var empty: int = 0
+	for bone: String in model.bones:
+		if bone.is_empty():
+			empty += 1
+	h.equal("unnamed.the_shipped_model_has_one", empty, 1,
+		"authored data, not a converter defect")
+
+	var library: CharismaLibrary = CharismaLibrary.open(cache_dir,
+		CacheFixture.texture_index("A00"), "_C_118")
+	var body: CharismaBody = CharismaBody.create(model, library)
+	if body == null:
+		h.check("unnamed.body_builds", false,
+			"no mesh for PC_011 in this cache")
+		return
+	var blank: PackedStringArray = PackedStringArray()
+	for child: Node in body.get_children():
+		if String(child.name).is_empty():
+			blank.append("(empty)")
+	h.equal("unnamed.no_node_is_unnamed", blank, PackedStringArray(),
+		"an unnamed part takes a positional name and is still drawn")
+	h.check("unnamed.the_part_is_still_drawn",
+		body.get_child_count() >= empty,
+		"%d node(s) built" % body.get_child_count())
+	body.free()

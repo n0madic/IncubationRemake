@@ -13,9 +13,22 @@ extends RefCounted
 ## writes the save file -- which is why it lives in `game/` and not in `core/`:
 ## `core` never touches the filesystem (D10).
 
-## Where the campaign save goes. One slot; a save-slot **screen** is out of
-## this slice (docs/92 section 7.9).
-const SAVE_PATH: String = "user://campaign.sav"
+## Where the campaign saves go, and **a field rather than a constant**.
+##
+## The `macOS Tests` export preset runs the suites inside a real build, against
+## the real `user://`. A suite that wrote to the shipped path would overwrite a
+## live player's game, so the directory is injectable and the suites point it
+## at a scratch one (docs/92 section 7.15).
+const DEFAULT_SAVE_DIR: String = "user://saves"
+## The eight numbered slots the shell shows.
+const SLOT_COUNT: int = 8
+## The quick save is **not** one of them: `F5` must not cost the player a slot
+## they meant to keep, so it has a file of its own beside the eight.
+const QUICK_SLOT: int = -1
+const QUICK_NAME: String = "quick.sav"
+const SLOT_NAME: String = "slot-%d.sav"
+
+var save_dir: String = DEFAULT_SAVE_DIR
 
 ## The screens, in the order the flow reaches them.
 const SCREEN_MAP: String = "map"
@@ -76,13 +89,22 @@ static func create(cache_dir: String, balance: Dictionary,
 ## `aCreateUnitPoolForCampaign(2)` is a bare `return TRUE`. Campaign 2's
 ## opening squad is the four units `_C_140.lev` places itself, which reach the
 ## roster at its debriefing.
-func start_new(number: int) -> CampaignState:
+## *difficulty* is what the shell's options screen last chose, and it is set
+## here rather than left at [CampaignState]'s own default because the two
+## defaults are **not** the same number: the class starts at 0 and
+## [member TurnState.ai_level] at 1, and they are one engine setting
+## (`0x00460450`). Passing it at the one place a campaign begins is what keeps
+## a campaign-built world's canonical hash where every other caller's is.
+func start_new(number: int,
+		difficulty: int = GameSettings.DIFFICULTY_DEFAULT) -> CampaignState:
 	var names: PackedStringArray = _seed_names()
 	var speech: PackedInt32Array = PackedInt32Array()
 	for _index: int in range(CampaignState.SEED_NAMES.size()):
 		speech.append(_draw_speech())
 	state = CampaignState.begin(number, _weapon_zero_cost(),
 		_recruit_hit_points(), names, speech)
+	state.difficulty = clampi(difficulty, GameSettings.DIFFICULTY_MIN,
+		GameSettings.DIFFICULTY_MAX)
 	screen = SCREEN_MAP
 	location = tables.location_of(tables.mission_id(state.mission))
 	last_report = {}
@@ -376,32 +398,61 @@ func catalogue(kind: String) -> Dictionary:
 
 # -- the save file -------------------------------------------------------------
 
+## The file one slot lives in. [constant QUICK_SLOT] is the quick save; 0..7
+## are the numbered ones.
+func slot_path(slot: int = QUICK_SLOT) -> String:
+	if slot == QUICK_SLOT:
+		return "%s/%s" % [save_dir, QUICK_NAME]
+	return "%s/%s" % [save_dir, SLOT_NAME % slot]
+
+
 ## Write the campaign, and optionally the mission in progress.
 ##
 ## The mission blob is [SaveCodec]'s and stays opaque here: that codec refuses
 ## a blob whose map name is not the world's, which is right for a mission save
 ## and wrong for a campaign container (D10).
-func save(mission_world: World = null) -> bool:
+##
+## *when* and *when_text* are the stamp the slot row shows. They come from the
+## caller because `core` may not call `Time` and the codec is `core`'s
+## (`godot/tests/test_isolation.gd`); [method stamp_now] is the one place in
+## `game/` that reads the clock.
+func save(mission_world: World = null, slot: int = QUICK_SLOT,
+		when: int = 0, when_text: String = "") -> bool:
 	if state == null:
 		return false
 	var blob: PackedByteArray = PackedByteArray()
 	if mission_world != null:
 		blob = mission_world.save({})
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var made: Error = DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(save_dir))
+	if made != OK and made != ERR_ALREADY_EXISTS:
+		return false
+	var file: FileAccess = FileAccess.open(slot_path(slot), FileAccess.WRITE)
 	if file == null:
 		return false
-	file.store_buffer(CampaignCodec.encode(state, blob))
+	file.store_buffer(CampaignCodec.encode(state, blob, when, when_text))
 	file.close()
 	return true
 
 
+## The clock, read in the one place `game/` reads it for a save.
+static func stamp_now() -> Dictionary:
+	return {"when": int(Time.get_unix_time_from_system()),
+		"when_text": Time.get_datetime_string_from_system(false, true)}
+
+
 ## Returns `{"result": int, "mission": PackedByteArray}`; `result` is one of
 ## [enum CampaignCodec.Result].
-func load_save() -> Dictionary:
-	if not FileAccess.file_exists(SAVE_PATH):
-		return {"result": CampaignCodec.Result.TRUNCATED,
+##
+## An **absent** file is reported as [constant CampaignCodec.Result.NO_FILE]
+## and not as a truncated one: "you never saved here" and "the bytes are
+## damaged" are different answers, and the slot screen shows different rows
+## for them.
+func load_save(slot: int = QUICK_SLOT) -> Dictionary:
+	if not has_save(slot):
+		return {"result": CampaignCodec.Result.NO_FILE,
 			"mission": PackedByteArray()}
-	var data: PackedByteArray = FileAccess.get_file_as_bytes(SAVE_PATH)
+	var data: PackedByteArray = FileAccess.get_file_as_bytes(slot_path(slot))
 	var decoded: Dictionary = CampaignCodec.decode(data)
 	if DictRead.as_int(decoded["result"]) != CampaignCodec.Result.OK:
 		return decoded
@@ -412,8 +463,27 @@ func load_save() -> Dictionary:
 	return decoded
 
 
-func has_save() -> bool:
-	return FileAccess.file_exists(SAVE_PATH)
+func has_save(slot: int = QUICK_SLOT) -> bool:
+	return FileAccess.file_exists(slot_path(slot))
+
+
+## What one slot's row says, without building the campaign behind it:
+## `{"result": int, "used": bool, "campaign": int, "mission": String,
+## "score": int, "saved_at": int, "saved_at_text": String,
+## "has_mission": bool}`.
+##
+## A row for a file this build cannot read is **shown**, carrying its refusal
+## code, rather than being hidden -- a slot that vanished because the schema
+## moved would look like a slot the player never used.
+func slot_header(slot: int) -> Dictionary:
+	if not has_save(slot):
+		return {"result": CampaignCodec.Result.NO_FILE, "used": false,
+			"campaign": 0, "mission": "", "score": 0, "saved_at": 0,
+			"saved_at_text": "", "has_mission": false}
+	var header: Dictionary = CampaignCodec.decode_header(
+		FileAccess.get_file_as_bytes(slot_path(slot)))
+	header["used"] = true
+	return header
 
 
 # -- reporting -----------------------------------------------------------------

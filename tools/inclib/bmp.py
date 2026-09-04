@@ -2,7 +2,7 @@
 
 `inclib/palette.py` already reads the colour table out of a BMP -- that is what
 a `.pal` file is -- but it stops there, because a `.pal`'s pixels are a dummy
-thumbnail nobody displays.  The 118 files under `Graphics/` are the opposite
+thumbnail nobody displays.  The 108 files under `Graphics/` are the opposite
 case: the pixels *are* the payload.  This module reads them.
 
 Every shipped file is `BM`, a 40-byte `BITMAPINFOHEADER`, 8 bits per pixel,

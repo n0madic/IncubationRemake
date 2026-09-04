@@ -36,7 +36,12 @@ const MAGIC: String = "INCS"
 ## joined the record; and to **8** when the cell placers of docs/42 section 9.1
 ## went in -- [MapState] gained the glow's `+0x12` and `+0x13`, which makes the
 ## serialised block two columns longer, and an authored mine now detonates
-## under a walker, which changes what a resumed game does.  An older save is
+## under a walker, which changes what a resumed game does; and to **9** with
+## the campaign slice, when [TurnState] gained the three per-mission counters
+## the scoreboard reads -- `mission_kills`, `mission_lost` and
+## `mission_lost_to_enemy` -- so the debriefing stops summing survivors, a sum
+## that lost every kill made by a unit which later died. Those three are in
+## the save and **out** of the canonical hash, so D7 holds.  An older save is
 ## refused **by name** rather than misread, which is the whole point of the
 ## field.
 const SCHEMA_VERSION: int = 9

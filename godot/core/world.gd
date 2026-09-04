@@ -74,8 +74,11 @@ const PLATFORM_EVENT: String = "platform"
 const GORE_EVENT: String = "unit_draw_path"
 ## docs/42 section 4.8.1 -- the gore level: 1 every death is the puff, 2 the
 ## computer's units bleed, 3 everything bleeds. **The default is the
-## remake's**: 2 is what the game copy's `Game.opt` holds, and no shipped
-## file sets the option; the options screen does not write it either.
+## remake's**: 2 is what the game copy's `Game.opt` holds, and no shipped file
+## sets the option -- not one of the 92 campaign missions writes
+## [constant GORE_EVENT], which is what makes the shell's own gore control a
+## live one rather than a default some mission overrides (docs/92 section
+## 7.14). [method GameSettings.apply_world] writes it as the world is built.
 const GORE_DEFAULT: int = 2
 
 ## The slot the interface has selected, or [constant MapState.NO_UNIT] --

@@ -92,6 +92,42 @@ const OWN: Dictionary = {
 	"ai.parabomb": {"English": "a parabomb goes off"},
 	"ai.reactions": {"English": "draws reaction fire"},
 	"ai.promote_order": {"English": "changes its orders"},
+	# The shell (docs/92 section 7.15). Everything the original's own front
+	# end says is read out of `Txtmod_a`, `Txtmod_d`, `Txtmod_f` and
+	# `Txtmod_h`; these are the few things it never had to say, because it
+	# reached its options through hover-hinted icons inside a mission and had
+	# no screen to title, no slot metadata to head and no chain to choose
+	# between by name.
+	"shell.options": {"English": "Options"},
+	"shell.difficulty.0": {"English": "Easy"},
+	"shell.difficulty.1": {"English": "Normal"},
+	"shell.difficulty.2": {"English": "Hard"},
+	"shell.gore": {"English": "Blood and Debris"},
+	"shell.gore.1": {"English": "None"},
+	"shell.gore.2": {"English": "Aliens only"},
+	"shell.gore.3": {"English": "Everyone"},
+	"shell.faithful": {"English": "Faithful to the original"},
+	"shell.font": {"English": "Interface font"},
+	"shell.font.game": {"English": "the game's own"},
+	"shell.font.readable": {"English": "readable"},
+	"shell.language": {"English": "Language"},
+	"shell.campaign": {"English": "Campaign %d"},
+	"shell.slot": {"English": "Slot %d"},
+	"shell.on": {"English": "on"},
+	"shell.off": {"English": "off"},
+	"shell.no_mission": {"English": "between missions"},
+	# The deployment screen, which used to refuse in total silence -- see
+	# `SelectUnitsScreen`. The original says none of this because its screen
+	# is a picture of the map with the squad on it; a list needs telling.
+	"deploy.hint": {"English": "pick a soldier, then a landing position"},
+	"deploy.pick_a_soldier": {
+		"English": "pick a soldier first, then a landing position"},
+	"deploy.need_one": {
+		"English": "put at least one soldier on the map before starting"},
+	"deploy.not_a_deployment_cell": {"English": "not a landing position"},
+	"deploy.cell_occupied": {"English": "somebody is standing there"},
+	"deploy.no_free_unit_slot": {"English": "the map is full"},
+	"deploy.empty_roster_record": {"English": "that roster slot is empty"},
 }
 
 ## What a missing key renders as. Visible on purpose.

@@ -24,6 +24,8 @@ extends SceneTree
 ## | `key NAME` | one press and release of a key `_unhandled_input` knows |
 ## | `click X Y` | a left click on the centre of map cell `(X, Y)` |
 ## | `click_unit SLOT` | a left click on the cell a unit stands on |
+## | `click_screen X Y` | a left click at raw viewport pixels |
+## | `buttons` | every button on the screen that is up, with its rectangle |
 ## | `walk_to X Y` | a left click on the reachable cell nearest `(X, Y)` |
 ## | `cell X Y` | the control map's cell: height, field type, action point |
 ## | `blobs` | every live blob: kind, class, model, position, velocity, rotation |
@@ -33,6 +35,9 @@ extends SceneTree
 ## | `idle [MAX]` | frames until the picture is idle, at most MAX |
 ## | `shot NAME` | writes `NAME.png` beside the command files |
 ## | `note TEXT` | one line in the reply's log |
+## | `menu [NAME]` | raise the shell at one of its screens, or toggle it |
+## | `slot N [load\|save]` | read or write one of the eight numbered slots |
+## | `option NAME VALUE` | set one option and apply it |
 ## | `quit` | leaves the game |
 ##
 ## A line starting with `#` is a comment. Every reply carries the whole state
@@ -112,12 +117,21 @@ func _process(_delta: float) -> bool:
 		return true
 	if _main == null:
 		return true
-	if _main.world == null:
+	# **A raised plate counts as booted.** The game no longer starts in a
+	# mission unless `--mission=` says so, so waiting only for a world made
+	# every scenario time out on the main menu -- 900 frames of a driver
+	# staring at a screen it was never going to be given. The test is any
+	# screen and not only a shell one: between missions the campaign flow owns
+	# the picture, and its map is as much "the game is up" as a mission is.
+	if _main.world == null and _main.screen_shown() == null:
 		_boot += 1
 		if _boot < BOOT_LIMIT:
 			return false
-		printerr("tour: no world after %d frames" % _boot)
+		printerr("tour: neither a world nor a screen after %d frames" % _boot)
 		return true
+	# Reset, so the allowance is per wait and not per session: a driver that
+	# sat on the menu for a while would otherwise have spent it.
+	_boot = 0
 	if _wait > 0:
 		_wait -= 1
 		return false
@@ -215,6 +229,13 @@ func _run(line: String) -> void:
 				_click_cell(parts[1].to_int(), parts[2].to_int())
 			else:
 				_log.append("click: wants X and Y")
+		"click_screen":
+			if parts.size() > 2:
+				_click_screen(parts[1].to_float(), parts[2].to_float())
+			else:
+				_log.append("click_screen: wants X and Y in pixels")
+		"buttons":
+			_buttons()
 		"click_unit":
 			_click_unit(parts[1].to_int() if parts.size() > 1 else -1)
 		"blobs":
@@ -256,6 +277,19 @@ func _run(line: String) -> void:
 					parts[3].to_int())
 			else:
 				_log.append("deploy: wants SLOT X Y")
+		"menu":
+			# The shell, by the name of one of its screens: `menu`,
+			# `campaign_select`, `mission_select`, `slots`, `options`. With no
+			# argument it toggles, which is what `ESC` does.
+			_menu(parts[1] if parts.size() > 1 else "")
+		"slot":
+			_slot(parts[1].to_int() if parts.size() > 1 else 0,
+				parts[2] if parts.size() > 2 else ShellHost.MODE_SAVE)
+		"option":
+			if parts.size() > 2:
+				_option(parts[1], parts[2])
+			else:
+				_log.append("option: wants NAME VALUE")
 		"screen":
 			_screen(parts[1] if parts.size() > 1 else "")
 		"ui":
@@ -273,21 +307,25 @@ func _run(line: String) -> void:
 			# mission (docs/20 section 7). Writing it here is the same act,
 			# and it is how a driver reaches a **won** debriefing without
 			# playing a mission to its end.
-			if parts.size() > 2:
+			if parts.size() <= 2:
+				_log.append("gamecontrol: wants SLOT VALUE")
+			elif _main.world == null:
+				_log.append("gamecontrol: no mission is up")
+			else:
 				_main.world.game_control.set_slot(parts[1].to_int(),
 					parts[2].to_int())
 				_log.append("gamecontrol %s = %s" % [parts[1], parts[2]])
-			else:
-				_log.append("gamecontrol: wants SLOT VALUE")
 		"enter":
 			# A debugging entry past the location map, the way `--mission=` is
 			# a debugging entry past the campaign. The flow itself goes through
 			# `location`.
-			if parts.size() > 1:
+			if parts.size() <= 1:
+				_log.append("enter: wants a mission name")
+			elif _main.campaign == null or _main.campaign.state == null:
+				_log.append("enter: no campaign is running")
+			else:
 				_main.campaign.state.mission = parts[1]
 				_enter(parts[1])
-			else:
-				_log.append("enter: wants a mission name")
 		"note":
 			_log.append(line.substr(5))
 		"quit":
@@ -326,6 +364,23 @@ func _click_cell(x: int, y: int) -> void:
 	if at.x < 0.0:
 		_log.append("click %d,%d: not on screen" % [x, y])
 		return
+	_push_click(at)
+	_log.append("click %d,%d at (%.0f, %.0f)" % [x, y, at.x, at.y])
+
+
+## A left click at raw viewport pixels.
+##
+## The same press-and-release [method Viewport.push_input] a map click uses,
+## without the projection: a plate's buttons are `Control`s and are hit by
+## where they are on screen, not by which cell is under them. It is how a
+## scenario presses a shell button through the game's own input path rather
+## than by calling the handler behind it.
+func _click_screen(x: float, y: float) -> void:
+	_push_click(Vector2(x, y))
+	_log.append("click_screen (%.0f, %.0f)" % [x, y])
+
+
+func _push_click(at: Vector2) -> void:
 	var press: InputEventMouseButton = InputEventMouseButton.new()
 	press.button_index = MOUSE_BUTTON_LEFT
 	press.pressed = true
@@ -338,7 +393,6 @@ func _click_cell(x: int, y: int) -> void:
 	release.position = at
 	release.global_position = at
 	root.push_input(release, true)
-	_log.append("click %d,%d at (%.0f, %.0f)" % [x, y, at.x, at.y])
 	_wait = 1
 
 
@@ -393,6 +447,9 @@ func _blobs() -> void:
 ## type, the action point and the unit on it. It is how a terrain change is
 ## read back: a crushed wall, an opened door, a fire written into a cell.
 func _cell(x: int, y: int) -> void:
+	if _main.world == null:
+		_log.append("cell: no mission is up")
+		return
 	var view: Dictionary = _main.world.cell_view(x, y)
 	if view.is_empty():
 		_log.append("cell %d,%d: off the map" % [x, y])
@@ -408,11 +465,17 @@ func _cell(x: int, y: int) -> void:
 ## What `core` says one unit's chance of hitting another is, so a run of
 ## misses can be read against the number behind them rather than guessed at.
 func _chance(shooter: int, target: int) -> void:
+	if _main.world == null:
+		_log.append("chance: no mission is up")
+		return
 	_log.append("chance %d -> %d: %d%%"
 		% [shooter, target, _main.world.hit_chance(shooter, target)])
 
 
 func _click_unit(slot: int) -> void:
+	if _main.world == null:
+		_log.append("click_unit: no mission is up")
+		return
 	var view: Dictionary = _main.world.unit_view(slot)
 	if view.is_empty():
 		_log.append("click_unit %d: no such unit" % slot)
@@ -427,6 +490,8 @@ func _screen_of(x: int, y: int) -> Vector2:
 	var camera: Camera3D = rig.camera()
 	if camera == null or not camera.is_inside_tree():
 		return Vector2(-1.0, -1.0)
+	if _main.world == null:
+		return Vector2(-1.0, -1.0)
 	var cell: Dictionary = _main.world.cell_view(x, y)
 	if cell.is_empty():
 		return Vector2(-1.0, -1.0)
@@ -438,6 +503,12 @@ func _screen_of(x: int, y: int) -> Vector2:
 
 
 func _shoot(name: String) -> void:
+	# **Force the frame first.** `root.get_texture()` hands back whatever is
+	# in the framebuffer, and inside `_process` that is a frame the renderer
+	# may not have redrawn since the last capture: every screenshot after the
+	# first in a session came back byte-identical to it, so a transition
+	# looked like a screen that had not changed when the tree said it had.
+	RenderingServer.force_draw(false)
 	var texture: ViewportTexture = root.get_texture()
 	if texture == null:
 		_log.append("shot %s: no viewport texture" % name)
@@ -491,6 +562,12 @@ func _location(id: int) -> void:
 
 ## Load a mission and take the entry snapshot, as `SelectUnits` does.
 func _enter(mission: String) -> void:
+	# The shell would otherwise sit over the mission this just built and eat
+	# every key and click after it. `_enter` is already a debugging entry
+	# past the campaign's own screens, so taking the shell down with them is
+	# the same act rather than a new one.
+	_main.shell.close()
+	_main.close_campaign_screen()
 	_main._build(mission)
 	if _main.world == null:
 		_log.append("enter %s: the cache does not carry it" % mission)
@@ -568,25 +645,54 @@ func _screen(name: String) -> void:
 
 func _state() -> Dictionary:
 	var world: World = _main.world
-	return {
+	# **The world half is conditional now.** The shell means the game can be
+	# up with no mission behind it, and this used to read `world.turn`
+	# unconditionally -- so the first reply written on the menu would have
+	# taken the driver down rather than reporting where it was.
+	var document: Dictionary = {
 		"mission": _main._mission,
 		"frame": _frame,
-		"turn": world.turn.turn,
-		"player": world.turn.current_player,
-		"selected": _main.selected_slot(),
-		"gore_level": world.gore_level,
 		"status": _main._status.text if _main._status != null else "",
 		"note": _main._ai_note,
 		"busy": _busy(),
-		"units": _units(),
-		"reachable": _query(false),
-		"warp": _query(true),
 		"picture": _picture(),
 		"pool": _pool(),
 		"overlay": _overlay(),
 		"camera": _camera(),
+		"shell": _shell(),
 		"campaign": _main.campaign.view() if _main.campaign != null else {},
+		"settings": _main.settings.view(),
 	}
+	if world == null:
+		return document
+	document["turn"] = world.turn.turn
+	document["player"] = world.turn.current_player
+	document["selected"] = _main.selected_slot()
+	document["gore_level"] = world.gore_level
+	document["ai_level"] = world.turn.ai_level
+	document["units"] = _units()
+	document["reachable"] = _query(false)
+	document["warp"] = _query(true)
+	document["hash"] = world.canonical_hash_hex()
+	return document
+
+
+## Which screen is up: the shell's own, or the campaign flow's.
+func _shell() -> Dictionary:
+	var view: Dictionary = _main.shell.view()
+	view["campaign_screen"] = _main.campaign.screen \
+		if _main.campaign != null else ""
+	view["screen_class"] = _main.screen_up()
+	# How many plates are actually on the tree. One is right; more than one
+	# means a screen was taken down in the tree and not on the screen.
+	var plates: Array[String] = []
+	for child: Node in _main.get_children():
+		var plate: CampaignScreen = child as CampaignScreen
+		if plate != null:
+			plates.append("%s in_tree=%s visible=%s" % [child.name,
+				str(plate.is_inside_tree()), str(plate.visible)])
+	view["plates"] = plates
+	return view
 
 
 ## The cells the last selection's fill marked, as `[x, y]` pairs -- the walk
@@ -603,6 +709,107 @@ func _query(warp: bool) -> Array:
 			if marked:
 				out.append([x, y])
 	return out
+
+
+## Every button the screen that is up carries, with the rectangle it occupies.
+##
+## This is what makes `click_screen` usable from outside: a scenario reads the
+## centres out of one reply and clicks them in the next, so the coordinates
+## come from the layout rather than from a guess that would rot the first time
+## a row moved.
+func _buttons() -> void:
+	var screen: CampaignScreen = _main.screen_shown()
+	if screen == null:
+		_log.append("buttons: no screen is up")
+		return
+	for control: Button in _buttons_in(screen):
+		var rect: Rect2 = control.get_global_rect()
+		_log.append("button %-40s at (%.0f, %.0f) size (%.0f, %.0f) %s"
+			% [control.text, rect.position.x, rect.position.y,
+			rect.size.x, rect.size.y,
+			"disabled" if control.disabled else "enabled"])
+
+
+func _buttons_in(node: Node) -> Array[Button]:
+	var out: Array[Button] = []
+	for child: Node in node.get_children():
+		var button: Button = child as Button
+		if button != null:
+			out.append(button)
+		out.append_array(_buttons_in(child))
+	return out
+
+
+## `menu [NAME]` -- raise the shell at one of its screens, or toggle it.
+func _menu(name: String) -> void:
+	if name.is_empty():
+		if _main.shell.is_up():
+			_main.close_shell()
+			_log.append("menu: closed")
+		else:
+			var _up: CampaignScreen = _main.open_shell()
+			_log.append("menu: %s" % _main.shell.screen)
+		return
+	if not ShellHost.SCREENS.has(name):
+		_log.append("menu: no such screen %s" % name)
+		return
+	var _shown: CampaignScreen = _main.open_shell(name)
+	_log.append("menu %s: %s" % [name, _main.screen_up()])
+
+
+## `slot N [load|save]` -- write or read one of the eight numbered slots.
+func _slot(slot: int, mode: String) -> void:
+	if _main.campaign == null:
+		_log.append("slot: the host is not ready")
+		return
+	if mode == ShellHost.MODE_LOAD:
+		var loaded: bool = _main.load_slot(slot)
+		_log.append("slot %d load: %s, mission %s" % [slot, str(loaded),
+			_main.campaign.state.mission if _main.campaign.state != null
+			else "-"])
+		return
+	if _main.campaign.state == null:
+		_log.append("slot %d save: no campaign" % slot)
+		return
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	var written: bool = _main.campaign.save(_main.world, slot,
+		DictRead.as_int(stamp["when"]),
+		DictRead.as_string(stamp["when_text"]))
+	var header: Dictionary = _main.campaign.slot_header(slot)
+	_log.append("slot %d save: %s, header %s" % [slot, str(written),
+		JSON.stringify(header)])
+
+
+## `option NAME VALUE` -- set one option and apply it, without the click path.
+##
+## The values are the same numbers the screen cycles through, so a scenario
+## can put the game in a known configuration rather than clicking a row an
+## unknown number of times.
+func _option(name: String, value: String) -> void:
+	var settings: GameSettings = _main.settings
+	match name:
+		"music":
+			settings.music_volume = value.to_int()
+		"fx":
+			settings.fx_volume = value.to_int()
+		"difficulty":
+			settings.difficulty = clampi(value.to_int(),
+				GameSettings.DIFFICULTY_MIN, GameSettings.DIFFICULTY_MAX)
+			if _main.campaign != null and _main.campaign.state != null:
+				_main.campaign.state.difficulty = settings.difficulty
+		"gore":
+			settings.gore_level = clampi(value.to_int(),
+				GameSettings.GORE_MIN, GameSettings.GORE_MAX)
+			if _main.world != null:
+				_main.world.gore_level = settings.gore_level
+		"faithful":
+			settings.faithful = value.to_lower() in ["1", "true", "on", "yes"]
+		_:
+			_log.append("option: no such setting %s" % name)
+			return
+	settings.apply_audio(_main._audio, _main._events)
+	var written: bool = settings.save_to_disk()
+	_log.append("option %s = %s (written %s)" % [name, value, str(written)])
 
 
 func _units() -> Array[Dictionary]:

@@ -13,6 +13,27 @@ config/name="Incubation - Remake"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 run/main_scene="res://game/main.tscn"
 
+[display]
+
+; The shipped art is 640x480 and so are the layout tables in `DATA/GUI/*.lcl`,
+; so that is the coordinate space every screen is written in.  Without this the
+; window's pixels *were* those units: on a 2560x1600 backing the game's own
+; 17 px bitmap font came out about two millimetres tall and nothing changed
+; when the window did.
+;
+; `canvas_items` rather than `viewport`: the 2D layer is scaled by a transform
+; and the 3D view still renders at the window's real resolution, so the mission
+; keeps its detail while the interface grows.  `expand` rather than `keep`
+; because a 16:9 window should show more of the world rather than black bars --
+; the plates are drawn stretched to the whole rect and were already written
+; that way.
+window/size/viewport_width=640
+window/size/viewport_height=480
+window/size/window_width_override=1280
+window/size/window_height_override=960
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
 [debug]
 
 gdscript/warnings/enable=true

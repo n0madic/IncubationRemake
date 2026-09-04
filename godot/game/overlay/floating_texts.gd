@@ -65,8 +65,17 @@ func use_font(font: FontFile) -> void:
 	_apply_font(_caption)
 
 
+## `null` **takes the override off** rather than doing nothing.
+##
+## The early return this used to open with made switching back to the vector
+## face a no-op here: the caption kept the 17 px bitmap while every plate
+## around it had changed.
 func _apply_font(label: Label) -> void:
+	if label == null:
+		return
 	if _font == null:
+		label.remove_theme_font_override("font")
+		label.remove_theme_font_size_override("font_size")
 		return
 	label.add_theme_font_override("font", _font)
 	label.add_theme_font_size_override("font_size", _font.fixed_size)

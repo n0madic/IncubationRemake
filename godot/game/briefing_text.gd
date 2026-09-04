@@ -14,6 +14,10 @@ extends RichTextLabel
 
 ## `{§0}` and `{§1}`.
 const FONT_NAMES: Array[String] = ["font_0", "font_1"]
+## The body's size when it is not drawn in the shipped faces, in the plate's
+## own units: small enough that a long `A0` still fits the box, large enough
+## to read beside a heading.
+const READABLE_SIZE: int = 12
 
 ## `COLOUR_RAMPS` at `0x0043E445`, as RGB565 converted to sRGB: ramp 0 restores
 ## the box's own colours, 1 is the green-grey body text and 2 the red one.
@@ -31,12 +35,25 @@ const SCROLL_STEP: float = 24.0
 var _fonts: Array[FontFile] = []
 
 
-static func create(cache_dir: String) -> BriefingText:
+## *game_font* asks for the shipped faces `font_0` and `font_1`, which is what
+## `{§n}` selects and what the original draws a briefing in.
+##
+## They are **8 px bitmaps**, the smallest of the four (docs/60), so on the
+## 640x480 layout space they are a third the height of the headings around
+## them and cannot be antialiased -- which is exactly how a briefing came out:
+## legible headings over body text nobody could read. With the readable face
+## the override is left off entirely and a size is set instead, and the span
+## colours and the bold of `font_1` are unaffected either way.
+static func create(cache_dir: String, game_font: bool = true) -> BriefingText:
 	var label: BriefingText = BriefingText.new()
 	label.bbcode_enabled = true
 	label.scroll_active = true
 	label.fit_content = false
 	label.mouse_filter = Control.MOUSE_FILTER_PASS
+	if not game_font:
+		label.add_theme_font_size_override("normal_font_size", READABLE_SIZE)
+		label.add_theme_font_size_override("bold_font_size", READABLE_SIZE)
+		return label
 	for name: String in FONT_NAMES:
 		var font: FontFile = GameFont.load_from(cache_dir, name)
 		label._fonts.append(font)

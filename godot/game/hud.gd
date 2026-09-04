@@ -40,10 +40,43 @@ var _strings: Localization = null
 var _font: FontFile = null
 
 
+## The bottom edge of the hint block, in the plate's units.
+##
+## It is not a constant: the hint line wraps, so how far down the HUD reaches
+## depends on the font and on how wide the window is. Whatever is drawn under
+## the HUD asks rather than assuming, which is what stopped the developer line
+## being written across the HUD's last row.
+func bottom() -> float:
+	if _lines == null:
+		return 0.0
+	return _lines.position.y + _lines.get_minimum_size().y
+
+
+## The two sizes the readable face is drawn at, in the plate's own units.
+##
+## **Deliberately small.** The hints are three wrapped lines of key legend and
+## Godot's default 16 put them across half the playing field; the game is what
+## the player came to look at. The shipped bitmap face has no choice of size --
+## it is a bitmap and `fixed_size` is what it is.
+const READABLE_LINES_SIZE: int = 10
+const READABLE_REPORT_SIZE: int = 16
+
+
 func use_font(font: FontFile) -> void:
 	_font = font
 	for label: Label in [_lines, _report]:
-		if label == null or font == null:
+		if label == null:
+			continue
+		if font == null:
+			# **Removed, not merely resized.** Leaving the override in place
+			# and asking for 10 px draws the 17 px *bitmap* scaled down --
+			# blurry, and not the vector face the option promised. The plates
+			# rebuild from scratch and so switch cleanly; the HUD is not
+			# rebuilt, so it has to let go by hand.
+			label.remove_theme_font_override("font")
+			label.add_theme_font_size_override("font_size",
+				READABLE_REPORT_SIZE if label == _report
+				else READABLE_LINES_SIZE)
 			continue
 		label.add_theme_font_override("font", font)
 		label.add_theme_font_size_override("font_size", font.fixed_size)
@@ -53,6 +86,12 @@ func _init(strings: Localization) -> void:
 	_strings = strings
 	_lines = Label.new()
 	_lines.position = Vector2(12.0, 8.0)
+	# The screen is 640 of the plate's units wide now (docs/92 section 7.15),
+	# so a hint line that used to have a whole 2560-pixel window to run along
+	# is cut off instead. It wraps rather than being clipped: the keys it
+	# names are the only place they are written down.
+	_lines.size = Vector2(CampaignScreen.PLATE_SIZE.x - 24.0, 0.0)
+	_lines.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(_lines)
 	_result = Control.new()
 	_result.set_anchors_preset(Control.PRESET_FULL_RECT)

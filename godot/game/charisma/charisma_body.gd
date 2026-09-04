@@ -96,7 +96,19 @@ static func create(model: CharismaModel,
 		instance.mesh = mesh
 		# Bone names carry spaces and dots (`Bip01 L Finger0`); Godot node
 		# names may not contain `.`, and a clash would be renamed silently.
-		instance.name = bone.replace(".", "_")
+		#
+		# **And one shipped part has no name at all.** `PC_011.cho`'s part 2 is
+		# authored with an empty name and the mesh `PC_011_`, and Godot refuses
+		# an empty node name outright -- `Condition "p_name.is_empty()" is
+		# true`. The geometry is real and is drawn, under a positional name
+		# instead. What an unnamed part cannot do is be driven by an animation
+		# track, because a track binds by name and will never match this one;
+		# it therefore holds its bind transform, which is what the engine's own
+		# name lookup does with it too.
+		var node_name: String = bone.replace(".", "_")
+		if node_name.is_empty():
+			node_name = "part_%d" % body._nodes.size()
+		instance.name = node_name
 		body.add_child(instance)
 		body._nodes[bone] = instance
 	if body._nodes.is_empty():

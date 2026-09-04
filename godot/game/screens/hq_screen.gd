@@ -58,9 +58,7 @@ func build() -> void:
 func refresh() -> void:
 	if host == null or host.state == null or _rows == null:
 		return
-	for child: Node in _rows.get_children():
-		_rows.remove_child(child)
-		child.free()
+	clear_children(_rows)
 	_purse.text = "%s %d" % [label_for(BANK_MISSION, ID_POINTS),
 		host.state.points(0)]
 	var costs: Dictionary = host.weapon_costs()

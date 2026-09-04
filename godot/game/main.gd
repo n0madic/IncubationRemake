@@ -17,17 +17,33 @@ extends Node3D
 ## campaign layer (docs/94).
 const DEFAULT_MISSION: String = "_C_140"
 const MISSION_ARG: String = "--mission="
+## `--campaign=N` -- start chain N and go straight to its map, past the menu.
+## The campaign's own equivalent of `--mission=`, and a supported way in
+## rather than a side effect (docs/92 section 7.15 S5).
+const CAMPAIGN_ARG: String = "--campaign="
+## What [method boot_choice] answers.
+const BOOT_MISSION: String = "mission"
+const BOOT_CAMPAIGN: String = "campaign"
+const BOOT_SHELL: String = "shell"
 ## Where a development run finds the same bytes production reads from `user://`.
 const DEV_CACHE: String = "res://generated/cache"
 
 var world: World = null
+## What the player chose, read once at start-up and written by the options
+## screen. Never `null` after [method _ready]: a run with no file on disk uses
+## the defaults rather than having no settings at all.
+var settings: GameSettings = GameSettings.new()
 ## The campaign, or `null` until [method _ready] has read the cache. It is
 ## **not** part of [World]: a campaign outlives a mission, and folding it into
 ## the world's canonical hash would move every hash the first five slices
 ## pinned (D7).
 var campaign: CampaignHost = null
-## The campaign screen that is up, or `null` when the mission view is.
+## The campaign or shell screen that is up, or `null` when the mission view
+## is. One at a time: the shell replaces a campaign screen and vice versa.
 var _screen: CampaignScreen = null
+## The shell's own state machine -- which of its screens is up, and whether
+## there is a mission behind it.
+var shell: ShellHost = ShellHost.new()
 ## The interface art, loaded once from the cache.
 var _art: Art = null
 
@@ -48,6 +64,12 @@ var _director: CameraDirector = null
 var _walk_cameras: Dictionary[int, CameraDirector.WalkMode] = {}
 ## docs/60 section 5 -- the largest of the four shipped fonts, 17 px.
 const GAME_FONT: String = "font_2"
+## Where the developer line sits before the HUD has a height to answer with,
+## and how far under the HUD it sits once it has.
+const STATUS_FALLBACK_Y: float = 120.0
+const STATUS_GAP: float = 4.0
+## The developer line's size in the plate's units. Smaller than the HUD's.
+const STATUS_FONT_SIZE: int = 9
 ## How many rendered frames the engine spends crossing one map field.
 ##
 ## **Measured, and it was a guess before.** `aExecuteMove`'s two walk helpers,
@@ -209,7 +231,13 @@ func _ready() -> void:
 	get_tree().auto_accept_quit = false
 	_status = Label.new()
 	# Below the HUD, which owns the top of the screen.
-	_status.position = Vector2(12.0, 120.0)
+	_status.position = Vector2(12.0, STATUS_FALLBACK_Y)
+	# The developer line wraps too; [method _refresh_status] then puts it
+	# under whatever height the HUD's own wrapped hints came to. It is
+	# smaller than the HUD: it is a diagnostic, not something to play by.
+	_status.size = Vector2(CampaignScreen.PLATE_SIZE.x - 24.0, 0.0)
+	_status.add_theme_font_size_override("font_size", STATUS_FONT_SIZE)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	var layer: CanvasLayer = CanvasLayer.new()
 	layer.add_child(_status)
 	add_child(layer)
@@ -237,10 +265,18 @@ func _ready() -> void:
 	# The strings come before anything that says one. docs/92 section 7.6: a
 	# localization seam retrofitted later means finding every literal.
 	_strings = Localization.from_cache(_cache_dir, manifest)
+	# **Before the first thing that reads one.** `interface_font()` is a
+	# setting, and reading it two lines below this while the file was still
+	# unread gave the HUD the default face and every plate built afterwards
+	# the chosen one -- the exact inconsistency `interface_font()` exists to
+	# prevent. The volumes and the difficulty were never affected, being
+	# applied later still, but the ordering is now unconditional rather than
+	# true by luck.
+	var _had_settings: bool = settings.load_from_disk()
 	_hud = Hud.new(_strings)
 	# docs/60 -- the game's own bitmap font, the 17 px one. A cache built by an
 	# older converter has no fonts and the HUD stays on Godot's default.
-	var font: FontFile = GameFont.load_from(_cache_dir, GAME_FONT)
+	var font: FontFile = interface_font()
 	_hud.use_font(font)
 	add_child(_hud)
 	_texts = FloatingTexts.new()
@@ -253,7 +289,97 @@ func _ready() -> void:
 	_art = Art.open(_cache_dir)
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
-	_build(_wanted_mission())
+	_boot()
+
+
+## The three ways in, and all three stay open (docs/92 section 7.15 S5).
+##
+## `--mission=NAME` builds a mission **immediately** and never raises the
+## shell, which is what it has always done and what `shot.gd`, `tour.gd` and
+## every screenshot depend on. `--campaign=N` is the campaign's equivalent:
+## the chain starts and its map comes up, past the menu. With neither, the
+## shell opens -- which is the whole of this slice.
+func _boot() -> void:
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	var choice: Dictionary = boot_choice(args, _missions, DEFAULT_MISSION)
+	for line: String in DictRead.to_strings(choice["warnings"]):
+		push_warning(line)
+	match DictRead.as_string(choice["kind"]):
+		BOOT_MISSION:
+			_build(DictRead.as_string(choice["mission"]))
+		BOOT_CAMPAIGN:
+			var _started: CampaignState = campaign.start_new(
+				DictRead.as_int(choice["campaign"]), settings.difficulty)
+			var _map: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_MAP)
+		_:
+			var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+
+
+## Which of the three entries the command line names.
+##
+## **Static and pure**, so the decision is checked by a suite rather than only
+## by hand: a build's arguments cannot be injected, and "does `--mission=`
+## still bypass the shell" is exactly the kind of thing that would otherwise
+## be verified once and then quietly broken (docs/92 section 7.15 S5).
+##
+## Returns `{"kind": String, "mission": String, "campaign": int,
+## "warnings": PackedStringArray}`. An unknown mission name still falls back
+## to *fallback* and still warns -- the cache is the authority on what exists
+## -- and an unknown chain opens the shell rather than starting nothing.
+static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
+		fallback: String) -> Dictionary:
+	var warnings: PackedStringArray = PackedStringArray()
+	var landing: String = fallback if missions.has(fallback) \
+		else (missions[0] if not missions.is_empty() else "")
+	for arg: String in args:
+		if arg.begins_with(MISSION_ARG):
+			var name: String = arg.substr(MISSION_ARG.length())
+			if not missions.has(name):
+				warnings.append("no mission %s in the cache; showing %s"
+					% [name, landing])
+				name = landing
+			return {"kind": BOOT_MISSION, "mission": name, "campaign": 0,
+				"warnings": warnings}
+		if arg.begins_with(CAMPAIGN_ARG):
+			var chain: int = arg.substr(CAMPAIGN_ARG.length()).to_int()
+			if not CampaignState.FIRST_MISSION.has(chain):
+				warnings.append("no campaign %d; opening the menu" % chain)
+				return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
+					"warnings": warnings}
+			return {"kind": BOOT_CAMPAIGN, "mission": "", "campaign": chain,
+				"warnings": warnings}
+	return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
+		"warnings": warnings}
+
+
+## The difficulty the next world is built at -- docs/92 section 7.15's S6.
+##
+## **The campaign is the authority when there is one.** [member
+## CampaignState.difficulty] is campaign state, already inside that object's
+## own digest, and it is what the map screen's option writes. Outside a
+## campaign -- *Instant Action*, or `--mission=` -- there is no campaign state
+## to ask, so the settings' default is the whole answer.
+func difficulty_now() -> int:
+	if campaign != null and campaign.state != null:
+		return campaign.state.difficulty
+	return settings.difficulty
+
+
+## The font every label and button in the interface is drawn in, or `null` for
+## Godot's own.
+##
+## One place decides, because the answer has to be the same for the HUD, the
+## floating numbers and all eleven plates -- and it used to differ by accident:
+## the HUD carried the shipped bitmap font and the developer line carried
+## nothing, so the same screen showed both a hard-edged 2x bitmap and a smooth
+## vector face. See [member GameSettings.game_font] for why the default is the
+## readable one.
+func interface_font() -> FontFile:
+	if not settings.game_font:
+		return null
+	return GameFont.load_from(_cache_dir, GAME_FONT)
 
 
 ## Redraw after a deployment put a unit on the map.
@@ -275,15 +401,19 @@ func _refresh_after_deploy() -> void:
 
 ## `F5` -- write the campaign and, when a mission is up, the mission inside it.
 ##
-## One file and one slot: a save-slot screen is out of this slice
-## (docs/92 section 7.9). The mission blob is [SaveCodec]'s and stays opaque to
-## the container, because that codec refuses a blob whose map name is not the
-## world's -- right for a mission, wrong for a campaign that outlives one (D10).
+## The quick save has a file of its own beside the eight numbered slots
+## (docs/92 section 7.15 S1), so `F5` cannot cost the player a slot they meant
+## to keep. The mission blob is [SaveCodec]'s and stays opaque to the
+## container, because that codec refuses a blob whose map name is not the
+## world's -- right for a mission, wrong for a campaign that outlives one
+## (D10).
 func quick_save() -> bool:
 	if campaign == null or campaign.state == null:
 		_refresh_status("no campaign to save")
 		return false
-	var written: bool = campaign.save(world)
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	var written: bool = campaign.save(world, CampaignHost.QUICK_SLOT,
+		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]))
 	_refresh_status("saved" if written else "save failed")
 	return written
 
@@ -295,6 +425,13 @@ func quick_save() -> bool:
 ## to [World] -- which is the one that checks the map name.
 func quick_load() -> bool:
 	if campaign == null:
+		return false
+	# `has_save` is the gate, and it had no caller at all. Without it an
+	# absent file came back as a refusal code and the line read "load
+	# refused: TRUNCATED", which says the bytes are damaged about a file that
+	# was never written.
+	if not campaign.has_save():
+		_refresh_status("nothing quick-saved yet")
 		return false
 	var decoded: Dictionary = campaign.load_save()
 	var code: int = DictRead.as_int(decoded["result"])
@@ -366,18 +503,381 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			screen = debriefing
 	if screen == null:
 		return null
-	screen.setup(_art, _strings, GameFont.load_from(_cache_dir, GAME_FONT))
+	screen.setup(_art, _strings, interface_font())
 	screen.chose.connect(_on_campaign_choice)
 	add_child(screen)
 	_screen = screen
 	return screen
 
 
+# --- the shell ---------------------------------------------------------------
+
+## Raise the shell at one of its screens, over the mission when there is one.
+##
+## The shell and the campaign screens share [member _screen]: only one plate is
+## ever up, and a shell raised over a campaign screen would leave the campaign
+## one unreachable behind it. That is why `ESC` only opens the shell from a
+## mission view (see [method _unhandled_input]).
+func open_shell(name: String = ShellHost.SCREEN_MENU) -> CampaignScreen:
+	shell.open(name, _behind_the_shell())
+	return _show_shell_screen()
+
+
+## Whether a mission is actually being **played**, as opposed to a world that
+## merely still exists behind a campaign plate.
+##
+## `world != null` is not the question and using it was a real defect: the map
+## screen sits over the last mission's view, so a shell raised from the map
+## offered *Continue* and *Save game* and hid the difficulty row, on the
+## grounds that a finished `_C_140` was still in memory. What decides is where
+## the campaign flow says it is -- and a mission entered past the campaign has
+## no flow, so there the world is the game.
+func in_mission() -> bool:
+	if world == null:
+		return false
+	if campaign == null or campaign.state == null:
+		return true
+	return campaign.screen == CampaignHost.SCREEN_MISSION
+
+
+## Whether there is anything behind the shell to go back to. A different
+## question from [method in_mission]: the campaign map is behind it too.
+func _behind_the_shell() -> bool:
+	return world != null or (campaign != null and campaign.state != null)
+
+
+## Whether the difficulty the options screen writes is the **campaign's**.
+##
+## S6, and `Txtmod_h` 58 says it aloud: only on the main map, during a
+## campaign. Written once, because the screen and the button that steps it
+## must not be able to disagree about which of the two values is being
+## changed.
+func _campaign_difficulty_writable() -> bool:
+	return campaign != null and campaign.state != null \
+		and campaign.screen == CampaignHost.SCREEN_MAP and not in_mission()
+
+
+## Take the shell down and go back to whatever was behind it.
+func close_shell() -> void:
+	shell.close()
+	close_campaign_screen()
+	# The campaign flow owns the picture between missions, so leaving the
+	# shell there has to put its screen back rather than reveal a dead map.
+	#
+	# `not in_mission()` and not `world == null`: the campaign map is drawn
+	# over the **last mission's** view, so a shell closed on the map with a
+	# finished world still in memory used to restore nothing at all.
+	if not in_mission() and campaign != null and campaign.state != null:
+		var _back: CampaignScreen = show_campaign_screen(campaign.screen)
+
+
+func _show_shell_screen() -> CampaignScreen:
+	close_campaign_screen()
+	var screen: CampaignScreen = null
+	match shell.screen:
+		ShellHost.SCREEN_MENU:
+			var menu: MainMenuScreen = MainMenuScreen.new()
+			menu.paused = in_mission()
+			menu.behind = shell.behind
+			menu.has_any_save = _any_slot_used()
+			screen = menu
+		ShellHost.SCREEN_CAMPAIGN_SELECT:
+			var chains: CampaignSelectScreen = CampaignSelectScreen.new()
+			chains.host = campaign
+			screen = chains
+		ShellHost.SCREEN_MISSION_SELECT:
+			var list: MissionSelectScreen = MissionSelectScreen.new()
+			list.missions = _missions
+			screen = list
+		ShellHost.SCREEN_SLOTS:
+			var slots: SaveSlotsScreen = SaveSlotsScreen.new()
+			slots.host = campaign
+			slots.mode = shell.slot_mode
+			slots.may_save = campaign != null and campaign.state != null
+			screen = slots
+		ShellHost.SCREEN_OPTIONS:
+			var options: OptionsScreen = OptionsScreen.new()
+			options.settings = settings
+			options.in_mission = in_mission()
+			if _campaign_difficulty_writable():
+				options.campaign_difficulty = campaign.state.difficulty
+			options.language = _strings.language if _strings != null \
+				else Localization.FALLBACK_LANGUAGE
+			screen = options
+	if screen == null:
+		return null
+	screen.setup(_art, _strings, interface_font())
+	screen.chose.connect(_on_shell_choice)
+	add_child(screen)
+	_screen = screen
+	return screen
+
+
+## Whether any of the **eight** holds something, which is what decides whether
+## the menu offers *Load Game*.
+##
+## The quick save is deliberately not counted. It is not one of the eight (S1),
+## and counting it meant a player who had only ever pressed `F5` was offered a
+## list of eight rows every one of which refused the click -- the inert control
+## section 7.1 forbids, reached by the very button that exists to avoid it.
+## `F9` is how a quick save comes back.
+func _any_slot_used() -> bool:
+	if campaign == null:
+		return false
+	for slot: int in range(CampaignHost.SLOT_COUNT):
+		if campaign.has_save(slot):
+			return true
+	return false
+
+
+## What a shell button means. The host owns the transitions; this turns one
+## into a call, exactly as [method _on_campaign_choice] does for the campaign.
+func _on_shell_choice(action: String) -> void:
+	if action.begins_with("slot:"):
+		_use_slot(action.substr(5).to_int())
+		return
+	if action.begins_with("start:"):
+		_start_campaign(action.substr(6).to_int())
+		return
+	if action.begins_with("mission:"):
+		_start_instant_action(action.substr(8))
+		return
+	if action.begins_with("option:"):
+		_step_option(action.substr(7))
+		return
+	match action:
+		"campaign":
+			shell.go(ShellHost.SCREEN_CAMPAIGN_SELECT)
+			var _chains: CampaignScreen = _show_shell_screen()
+		"instant":
+			shell.go(ShellHost.SCREEN_MISSION_SELECT)
+			var _list: CampaignScreen = _show_shell_screen()
+		"load":
+			shell.go_slots(ShellHost.MODE_LOAD)
+			var _slots: CampaignScreen = _show_shell_screen()
+		"save":
+			shell.go_slots(ShellHost.MODE_SAVE)
+			var _saving: CampaignScreen = _show_shell_screen()
+		"options":
+			shell.go(ShellHost.SCREEN_OPTIONS)
+			var _options: CampaignScreen = _show_shell_screen()
+		"resume":
+			close_shell()
+		"back":
+			var target: String = shell.back_from(shell.screen)
+			if target == ShellHost.SCREEN_NONE:
+				close_shell()
+			else:
+				shell.go(target)
+				var _up: CampaignScreen = _show_shell_screen()
+		"quit":
+			# **Never `get_tree().quit()` from a screen.** The audio server
+			# needs its frames to let go of a playing stream, and a quit in
+			# the same frame leaks it -- which `run_tests.sh` would report as
+			# a runtime error and a red run (docs/92 section 7.15).
+			_quit()
+
+
+## docs/92 section 7.15 S4 -- the intro, `Video/Seq_1` (logical id 0).
+##
+## A **named empty step**, not a forgotten one. The sequence player is a slice
+## of its own (docs/41 is the spec; nothing plays one yet), and the campaign
+## must be reachable before it exists. When the player lands, this is the one
+## place it is called from.
+##
+## TODO: play `Video/Seq_1` (logical id 0) here once the sequence player of
+## docs/41 exists.
+func _play_intro() -> void:
+	pass
+
+
+func _start_campaign(chain: int) -> void:
+	if campaign == null or not CampaignState.FIRST_MISSION.has(chain):
+		return
+	var _state: CampaignState = campaign.start_new(chain, settings.difficulty)
+	_play_intro()
+	shell.close()
+	var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+
+
+## One mission, past the campaign -- what `--mission=` reaches, from a list.
+##
+## The campaign state is **cleared**, not left over: a mission played this way
+## has no roster, no scoreboard and no next mission, and a stale campaign
+## behind it would send its debriefing somewhere the player never was.
+func _start_instant_action(mission: String) -> void:
+	if not _missions.has(mission):
+		_refresh_status("the cache has no " + mission)
+		return
+	if campaign != null:
+		campaign.state = null
+		campaign.screen = CampaignHost.SCREEN_MAP
+	shell.close()
+	close_campaign_screen()
+	_build(mission)
+
+
+## Load or save the numbered slot the player clicked.
+func _use_slot(slot: int) -> void:
+	if campaign == null:
+		return
+	if shell.slot_mode == ShellHost.MODE_SAVE:
+		if campaign.state == null:
+			_refresh_status("no campaign to save")
+			return
+		var stamp: Dictionary = CampaignHost.stamp_now()
+		var written: bool = campaign.save(world, slot,
+			DictRead.as_int(stamp["when"]),
+			DictRead.as_string(stamp["when_text"]))
+		_refresh_status("saved to slot %d" % (slot + 1) if written
+			else "slot %d refused the write" % (slot + 1))
+		var _again: CampaignScreen = _show_shell_screen()
+		return
+	var loaded: bool = load_slot(slot)
+	if not loaded:
+		var _back: CampaignScreen = _show_shell_screen()
+
+
+## Read one slot back and rebuild whatever it was holding.
+##
+## The order is [method quick_load]'s and for the same reason: the campaign
+## names the mission, so it comes back first; then the mission is built; and
+## only then is the mission blob handed to [World], which is the one that
+## checks the map name.
+func load_slot(slot: int) -> bool:
+	if campaign == null:
+		return false
+	var decoded: Dictionary = campaign.load_save(slot)
+	var code: int = DictRead.as_int(decoded["result"])
+	if code != CampaignCodec.Result.OK:
+		_refresh_status("slot %d refused: %s"
+			% [slot + 1, CampaignCodec.result_name(code)])
+		return false
+	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
+	if blob.is_empty():
+		shell.close()
+		close_campaign_screen()
+		var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+		_refresh_status("loaded slot %d" % (slot + 1))
+		return true
+	_build(campaign.state.mission)
+	if world == null:
+		_refresh_status("loaded, but the cache has no " + campaign.state.mission)
+		return false
+	var restored: int = world.load_save(blob)
+	if restored != SaveCodec.Result.OK:
+		_refresh_status("mission refused: " + SaveCodec.result_name(restored))
+		return false
+	# **Only now.** Taking the shell down before the world was confirmed left
+	# the slot screen on the tree with `shell.is_up()` already false, so the
+	# refusal was shown on a plate the shell no longer believed it owned and
+	# `Back` from it went nowhere.
+	#
+	# What it does **not** promise is that a refused load can be undone: by
+	# this point `campaign.load_save` has already replaced the campaign and
+	# `_build` the world, and the mission blob is the last thing checked
+	# because [SaveCodec] needs the world to check it against. A refusal
+	# therefore leaves the campaign loaded and its mission freshly built
+	# rather than restored -- said in the status line, and the shell stays up
+	# so another slot can be picked.
+	shell.close()
+	close_campaign_screen()
+	campaign.enter_mission()
+	_refresh_after_deploy()
+	_refresh_status("loaded slot %d" % (slot + 1))
+	return true
+
+
+## Step one option to its next value, apply it, and write the file.
+##
+## Every row here is click-to-cycle, which is also what the original's own
+## option icons are. The write is immediate rather than on leaving the screen:
+## a settings file that only appeared on a clean exit would lose the choice of
+## anyone who closed the window.
+func _step_option(name: String) -> void:
+	match name:
+		"music":
+			settings.music_volume = _step_volume(settings.music_volume)
+		"fx":
+			settings.fx_volume = _step_volume(settings.fx_volume)
+		"difficulty":
+			if _campaign_difficulty_writable():
+				# On the map the campaign is the authority, and the settings
+				# keep only the default for the **next** new campaign.
+				campaign.state.difficulty = wrapi(
+					campaign.state.difficulty + 1,
+					GameSettings.DIFFICULTY_MIN,
+					GameSettings.DIFFICULTY_MAX + 1)
+			else:
+				settings.difficulty = wrapi(settings.difficulty + 1,
+					GameSettings.DIFFICULTY_MIN,
+					GameSettings.DIFFICULTY_MAX + 1)
+		"gore":
+			settings.gore_level = wrapi(settings.gore_level + 1,
+				GameSettings.GORE_MIN, GameSettings.GORE_MAX + 1)
+			# The gore level is presentation and outside the canonical hash,
+			# so unlike the difficulty it may be applied to a running world.
+			if world != null:
+				world.gore_level = settings.gore_level
+		"faithful":
+			settings.faithful = not settings.faithful
+		"font":
+			settings.game_font = not settings.game_font
+			# Every plate and the HUD are rebuilt from one place, so the
+			# choice cannot land on some of them and not others.
+			_reapply_font()
+		_:
+			return
+	settings.apply_audio(_audio, _events)
+	var _written: bool = settings.save_to_disk()
+	var options: OptionsScreen = _screen as OptionsScreen
+	if options == null:
+		return
+	# The screen keeps its own copy of the campaign's difficulty -- it is not
+	# the settings' -- so a step that wrote the campaign has to hand the new
+	# value back, or the row redraws with the value it was built with and the
+	# control looks dead while working perfectly.
+	if _campaign_difficulty_writable():
+		options.campaign_difficulty = campaign.state.difficulty
+	options.refresh()
+
+
+## Put the chosen font on everything that is already on screen.
+##
+## The screens take theirs at `setup` and the HUD at `_ready`, so a change made
+## while one is up has to reach them. The plate that is up is rebuilt rather
+## than patched: its labels were made with the old font and a screen is cheap.
+func _reapply_font() -> void:
+	var font: FontFile = interface_font()
+	if _hud != null:
+		_hud.use_font(font)
+	if _texts != null:
+		_texts.use_font(font)
+	if _screen != null and shell.is_up():
+		var _again: CampaignScreen = _show_shell_screen()
+	elif _screen != null and campaign != null:
+		var _back: CampaignScreen = show_campaign_screen(campaign.screen)
+
+
+func _step_volume(hundredths: int) -> int:
+	var next: int = hundredths + GameSettings.VOLUME_STEP
+	if next > GameSettings.VOLUME_MAX:
+		next = GameSettings.VOLUME_MIN
+	return next
+
+
 func close_campaign_screen() -> void:
 	if _screen == null:
 		return
 	remove_child(_screen)
-	_screen.free()
+	# **`queue_free`, not `free`.** A screen is almost always taken down from
+	# inside one of its own button signals, and Godot locks an object while it
+	# is emitting: `free` then fails with "Attempted to free a locked object",
+	# the plate stays alive off the tree, and the next screen is stacked on a
+	# corpse that is still in the input path. The `remove_child` above is what
+	# makes the deferred delete safe -- it is out of the picture and out of
+	# the input path this frame, and gone by the end of it.
+	_screen.queue_free()
 	_screen = null
 
 
@@ -408,6 +908,16 @@ func _on_campaign_choice(action: String) -> void:
 			if campaign.may_start():
 				campaign.enter_mission()
 				close_campaign_screen()
+			else:
+				# **Named, not silent.** An empty map refused the button and
+				# said nothing, which is what stopped a campaign being
+				# startable at all by anyone who did not already know the
+				# screen (docs/92 section 7.4).
+				var select_screen: SelectUnitsScreen = _screen \
+					as SelectUnitsScreen
+				if select_screen != null:
+					select_screen.say(select_screen.strings_own(
+						SelectUnitsScreen.OWN_NEED_ONE))
 		"debriefing":
 			var _report: Dictionary = campaign.finish_mission(world)
 			var _screen_up: CampaignScreen = show_campaign_screen(
@@ -424,6 +934,12 @@ func _on_campaign_choice(action: String) -> void:
 		"map":
 			var _to_map: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
+		"options":
+			# Into the shell, over the map. Leaving it puts the map back --
+			# see [method close_shell] -- and the difficulty row is the
+			# campaign's here rather than the settings' default.
+			var _options: CampaignScreen = open_shell(
+				ShellHost.SCREEN_OPTIONS)
 		"hq":
 			var _hq: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_HQ)
@@ -439,9 +955,12 @@ func _on_campaign_choice(action: String) -> void:
 				hq.selected = Roster.NO_SLOT
 				hq.refresh()
 		"save":
+			var stamp: Dictionary = CampaignHost.stamp_now()
 			var _written: bool = campaign.save(
 				world if campaign.screen == CampaignHost.SCREEN_MISSION
-				else null)
+				else null, CampaignHost.QUICK_SLOT,
+				DictRead.as_int(stamp["when"]),
+				DictRead.as_string(stamp["when_text"]))
 		"weapons", "equipment":
 			var catalogue: UpgradeScreen = _screen as UpgradeScreen
 			if catalogue != null:
@@ -462,24 +981,6 @@ func _missions_in(manifest: Dictionary) -> PackedStringArray:
 	for entry: Variant in names:
 		out.append(DictRead.as_string(entry))
 	return out
-
-
-## `--mission=NAME`, from either side of a `--` separator, else the default.
-## An unknown name falls back rather than failing: the cache is the authority
-## on what exists, and it names them in the status line.
-func _wanted_mission() -> String:
-	var args: PackedStringArray = OS.get_cmdline_args()
-	args.append_array(OS.get_cmdline_user_args())
-	for arg: String in args:
-		if arg.begins_with(MISSION_ARG):
-			var name: String = arg.substr(MISSION_ARG.length())
-			if _missions.has(name):
-				return name
-			push_warning("no mission %s in the cache; showing %s"
-				% [name, DEFAULT_MISSION])
-	if _missions.has(DEFAULT_MISSION):
-		return DEFAULT_MISSION
-	return _missions[0]
 
 
 ## The runner is loaded by path, never named as a class: the shipping preset
@@ -579,6 +1080,11 @@ func _build(mission: String) -> void:
 		DictRead.as_dict(map_document["header"])["world_set"])
 	world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(_geometry_for(set_name).get("special_models", [])))
+	# **Before** the script runs and before the first hand-over. `ai_level`
+	# steers the movement allowance and the experience multiplier, and it is
+	# item 5 of the canonical hash, so it has to be right from the world's
+	# first byte rather than applied to a running one (docs/92 section 7.15).
+	settings.apply_world(world, difficulty_now())
 	# The mission's own program, so the turn runs the script the way the engine
 	# does. A mission with none still plays: `attach_script` returns false and
 	# `World`'s default runner lets every hand-over through.
@@ -677,6 +1183,9 @@ func _build_effects(mission: String, world_set: String,
 	else:
 		_audio.stop_all()
 		_audio.stop_music()
+	settings.apply_audio(_audio, _events)
+	# After the volumes, so the first track opens at the chosen one rather
+	# than at full and then dropping.
 	_audio.start_music(mission)
 
 	# The pool is seeded from the mission name, so a mission's particles look
@@ -1176,6 +1685,25 @@ func units_view() -> UnitsView:
 	return _units
 
 
+## The class name of the screen that is up, or `""`. What a driver reports, so
+## that "which plate am I looking at" is answerable from the reply rather than
+## only from the screenshot.
+func screen_shown() -> CampaignScreen:
+	return _screen
+
+
+func screen_up() -> String:
+	if _screen == null:
+		return ""
+	# Read back with an **assignment**, which is checked at run time; `as` is
+	# `UNSAFE_CAST` and warnings are errors project-wide.
+	var attached: Variant = _screen.get_script()
+	if not (attached is GDScript):
+		return ""
+	var script: GDScript = attached
+	return String(script.get_global_name())
+
+
 func scenery_count() -> int:
 	return 0 if _scenery == null else _scenery.built_count()
 
@@ -1185,6 +1713,11 @@ func scenery_count() -> int:
 ## world set and a digest, and translating any of those would be wrong.
 func _refresh_status(extra: String = "") -> void:
 	if world == null:
+		# No mission, so there is no line to build -- but a message still has
+		# somewhere to go, which is what the shell needs when a slot refuses
+		# before any world exists.
+		if extra != "":
+			_status.text = extra
 		return
 	var line: String = "%s (%d/%d)  %dx%d  %s/%s  %d units  scenery %d  hash %s" % [
 		world.resource.mission, _missions.find(_mission) + 1, _missions.size(),
@@ -1192,12 +1725,20 @@ func _refresh_status(extra: String = "") -> void:
 		world.resource.world_set, world.resource.world_scene,
 		world.unit_slots().size(), _scenery.built_count(),
 		world.canonical_hash_hex().substr(0, 12)]
+	# **The mission names are not listed.** A cache published with
+	# `--campaign-maps` carries 92 of them, and naming every one turned the
+	# developer line into a wall of text across the playing screen. The
+	# position in the set is already on the line above -- `(1/92)` -- and
+	# which mission is next is what the keys are for.
 	line += "\nQ/E rotate, wheel or pinch or +/- zooms, T the field-type " \
-		+ "overlay, G the editor's cell markers" \
-		+ "\n[ and ] switch mission: " + ", ".join(_missions)
+		+ "overlay, G the editor's cell markers, [ and ] switch mission"
 	_status.text = line
 	if _hud != null:
 		_hud.refresh(world, _selected, extra)
+		# **Under the HUD, wherever the HUD ends.** Both blocks wrap now, so a
+		# fixed offset wrote the developer line across the hint line's last
+		# row whenever the hints needed a fourth.
+		_status.position.y = _hud.bottom() + STATUS_GAP
 
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
@@ -1277,6 +1818,33 @@ func _process(delta: float) -> void:
 				var _shown: int = _units.reveal_all()
 				var _dropped: int = _units.drop_lifts()
 	_draw_effects()
+	_check_mission_end()
+
+
+## The mission that ended reaches its own debriefing, by itself.
+##
+## The campaign loop docs/27 closes was open at exactly this step: the
+## `"debriefing"` action had two senders, a button on a screen that is never
+## up during a mission and `tour.gd`, so a mission won in the game simply
+## stopped on a dead map.
+##
+## `screen == SCREEN_MISSION` is the once-guard -- [method
+## CampaignHost.finish_mission] moves it on -- and it is also what keeps
+## *Instant Action* out: a mission entered past the campaign has no state, no
+## scoreboard to write and no next mission to go to, so it correctly gets
+## nothing.
+func _check_mission_end() -> void:
+	if campaign == null or campaign.state == null or _screen != null:
+		return
+	if campaign.screen != CampaignHost.SCREEN_MISSION:
+		return
+	if world == null or not _mission_over():
+		return
+	# The picture goes first. The shot that ended the mission is still being
+	# drawn, and a plate dropped over it would cut it off mid-explosion.
+	if _picture_busy() or _playback.is_running():
+		return
+	_on_campaign_choice("debriefing")
 
 
 ## Whether something the replay must wait for is still on screen: a shot
@@ -1474,8 +2042,19 @@ func _present_ai_event(event: Dictionary, kind: String) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# A campaign screen owns the input while it is up: without this the mouse
-	# reached the 3D pick behind the plate and selected units through it.
+	# `ESC` goes **before** the screen guard, and that ordering is the whole
+	# of the fix: the guard below returns before anything else runs, so with a
+	# plate up no key reached the game at all and the shell would have been a
+	# room with no door. Only `ESC` is let past; everything else still belongs
+	# to whatever is on screen.
+	if event is InputEventKey and event.is_pressed():
+		var pressed: InputEventKey = event
+		if pressed.keycode == KEY_ESCAPE:
+			_toggle_shell()
+			return
+	# A campaign screen owns the rest of the input while it is up: without
+	# this the mouse reached the 3D pick behind the plate and selected units
+	# through it.
 	if _screen != null:
 		return
 	if world == null:
@@ -1554,6 +2133,31 @@ func _unhandled_input(event: InputEvent) -> void:
 		var motion: InputEventMouseMotion = event
 		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
 			_rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
+
+
+## `ESC` -- open the shell over a running mission, and close it again.
+##
+## Three cases and only three. The shell is up, so it goes down and whatever
+## was behind it comes back. A mission is up with nothing over it, so the
+## shell opens paused. A **campaign** screen is up -- the map, a briefing, the
+## roster -- and `ESC` does nothing, because the shell shares [member _screen]
+## with those and would take one down with no way back to it.
+func _toggle_shell() -> void:
+	if shell.is_up():
+		# **Only when there is something behind it.** At the boot menu there
+		# is not: closing it left the window blank with nothing to draw, and
+		# `ESC` was then dead too -- no shell up, no plate, no mission -- so
+		# the game could only be quit from the window's own close button.
+		# [member ShellHost.behind] is the question, and [method
+		# ShellHost.back_from] was already asking it.
+		if shell.behind:
+			close_shell()
+		return
+	if _screen != null:
+		return
+	if not in_mission():
+		return
+	var _up: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
 
 
 ## docs/42 section 2.4's three views, on keys 1, 2 and 3 -- the remake's

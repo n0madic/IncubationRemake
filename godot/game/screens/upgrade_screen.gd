@@ -69,9 +69,7 @@ func build() -> void:
 func refresh() -> void:
 	if host == null or host.state == null or _list == null:
 		return
-	for child: Node in _list.get_children():
-		_list.remove_child(child)
-		child.free()
+	clear_children(_list)
 	_purse.text = "%s %d   tech %d" % [
 		label_for(BANK_MISSION, ID_POINTS), host.state.points(0),
 		host.state.tech_level]

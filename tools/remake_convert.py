@@ -632,10 +632,16 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 #:
 #: They moved again for the sixth slice, 37 -> 42 and 13 -> 17, and the growth
 #: has a name here too: the campaign layer's art.  1400 interface sprites and
-#: 118 screen plates and briefing pictures are ~8 MiB, and they are **not**
+#: 103 screen plates and briefing pictures are ~8 MiB, and they are **not**
 #: per-mission -- the location graph, the briefings and the interface are the
 #: same whichever missions were asked for, so this is a one-off step and not a
-#: slope.  The measured numbers behind the two are 41.9 and 15.2 MiB.
+#: slope.
+#:
+#: The seventh slice added the shell's five top-level screens -- 103 plates and
+#: pictures became 108 -- and **neither ceiling moved**: five 640x480 8-bit
+#: images are ~0.2 MiB, which is the "one more converted texture" case these
+#: numbers are deliberately loose enough to absorb.  Re-measured with them in,
+#: the two are 41.5 and 15.4 MiB.
 CACHE_CEILING_KIB_MUSIC = 42 * 1024
 CACHE_CEILING_KIB_SILENT = 17 * 1024
 #: Sprite constructor calls that build a row, column or size in a
@@ -905,7 +911,8 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     # The art.
     art = json.loads((cache_dir / "art" / "index.json").read_text())
     c.expect("art.schema", art["schema"], convertmod.ART_SCHEMA)
-    c.expect("art.plates", len(art["plates"]), 7)
+    c.expect("art.plates", len(art["plates"]), 12,
+             "the seven framed plates of GUI/ plus the five top-level screens")
     c.expect("art.briefing_pictures", len(art["briefing"]), 96)
     c.expect("art.libraries", len(art["libraries"]), 54,
              "21 interface libraries plus the 33 item ones")
