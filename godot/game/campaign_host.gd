@@ -226,6 +226,24 @@ func deployment_cells() -> Array[Vector2i]:
 	return _mission_world.deployment_cells(0)
 
 
+## Whether the pool holds nobody at all to put on the map.
+##
+## **A chain can start this way by design.** `aCreateUnitPoolForCampaign(2)`
+## is a bare return, so campaign 2 begins with an empty pool and `_C_140`
+## places its own squad; the debriefing then recovers that squad into the pool
+## and every mission after it deploys normally. Of the 75 campaign missions
+## only 31 ship a player-0 squad (docs/98), and those 31 are exactly where
+## this can be true.
+##
+## [SliceMain] uses it to skip the deployment screen rather than to refuse
+## anything: a screen offering a roster of nobody, a map of dots nobody can
+## stand on and one button was read as the campaign being broken.
+func nobody_to_deploy() -> bool:
+	if state == null:
+		return true
+	return state.roster.occupied_slots().is_empty()
+
+
 ## Whether the mission may start: the engine's own screen refuses an empty map.
 func may_start() -> bool:
 	if _mission_world == null:
@@ -239,6 +257,26 @@ func may_start() -> bool:
 
 func enter_mission() -> void:
 	screen = SCREEN_MISSION
+
+
+## Leaving the deployment screen for the map without starting the sortie.
+##
+## `aCopyUnitPool(1, 0)` again -- the same call the debriefing's *replay*
+## makes, for the same reason: whoever has already been put on the map has
+## been **taken out of the pool** (docs/27 section 3.4), and the map screen
+## then takes the mission's whole scene down. Without this, backing out of a
+## deployment cost the campaign every soldier already standing on it.
+##
+## Only from [constant SCREEN_SELECT]: it is the one screen where the squad
+## can be on a map that has not been played.
+func abandon_mission() -> void:
+	if state == null:
+		return
+	if screen == SCREEN_SELECT:
+		state.roster.restore()
+		state.roster.clear_snapshot()
+		_mission_world = null
+	screen = SCREEN_MAP
 
 
 # -- the end of a mission ------------------------------------------------------

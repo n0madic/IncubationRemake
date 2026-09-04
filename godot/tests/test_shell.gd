@@ -45,6 +45,7 @@ func run(h: TestHarness) -> void:
 	_slot_round_trip(h)
 	_screens(h)
 	_deploy_screen(h)
+	_map_picture(h)
 	_root_plates(h)
 	_clean_scratch()
 
@@ -545,10 +546,35 @@ func _screens(h: TestHarness) -> void:
 	paused.setup(_art, _strings, _font)
 	h.equal("screens.pause_menu_offers_the_mission's_two",
 		_actions_of(paused),
-		PackedStringArray(["resume", "save", "options", "quit"]),
+		PackedStringArray(["resume", "save", "options",
+			MainMenuScreen.MAIN_MENU, "quit"]),
 		"nothing to start while something is running")
+	# **The way out that is not quitting the program.** `ESC` over a mission
+	# used to offer going on or leaving the game and nothing between, so the
+	# only route back to a chain chooser or a save slot was to shut the game
+	# down. It drops the mission and the campaign, so it asks first -- with
+	# the shipped question, `Txtmod_d` 60.
+	paused._on_pressed(MainMenuScreen.MAIN_MENU)
+	var asked: PackedStringArray = _labels_of(paused)
+	h.check("screens.pause_menu_main_menu_asks_first",
+		asked.has(_strings.shipped("Txtmod_d", 60))
+		and asked.has(_strings.shipped("Txtmod_d", 61))
+		and asked.has(_strings.shipped("Txtmod_d", 62)),
+		"'Back to the Main Menu without saving?' with Yes and No")
+	paused._on_pressed(CampaignScreen.CANCEL)
+	h.check("screens.pause_menu_main_menu_can_be_refused",
+		_actions_of(paused).has("resume"),
+		"*No* puts the ordinary cascade back")
 	_no_missing(h, "pause_menu", paused)
 	paused.free()
+
+	# At the boot menu there is nothing to go back **to**, so the entry is
+	# absent rather than inert: this screen *is* the main menu.
+	var boot: MainMenuScreen = MainMenuScreen.new()
+	boot.setup(_art, _strings, _font)
+	h.check("screens.boot_menu_has_no_way_back_to_itself",
+		not _actions_of(boot).has(MainMenuScreen.MAIN_MENU))
+	boot.free()
 
 	# **A quick save does not open the list.** It is not one of the eight, so
 	# counting it offered *Load Game* to a player who had only ever pressed
@@ -662,9 +688,9 @@ func _screens(h: TestHarness) -> void:
 	in_mission.free()
 
 	# **The action row fits inside its own plate.** The screens are laid out
-	# in the plate's 640x480 units, and a container sized five buttons from
-	# their minimum -- a `buttons.LIB` face plus *Enter Location* is ~144 of
-	# those units -- put the briefing's *Main Map* 116 units past the right
+	# in the plate's 640x480 units, and a container sized the row's buttons
+	# from their minimum -- a `buttons.LIB` face plus *Enter Location* is ~144
+	# of those units -- put the briefing's *Main Map* 116 units past the right
 	# edge of the frame it is drawn on.
 	var wide: BriefingScreen = BriefingScreen.new()
 	wide.mission = "_C_100"
@@ -677,8 +703,21 @@ func _screens(h: TestHarness) -> void:
 		if button.anchor_right > 1.0 or button.anchor_left < 0.0:
 			overflow.append(button.text)
 	h.equal("screens.the_action_row_fits_the_plate", overflow,
-		PackedStringArray(), "five buttons across 640 units")
-	h.equal("screens.the_briefing_has_five", _buttons_of(wide).size(), 5)
+		PackedStringArray(), "the row divides 640 units by however many")
+	# **Three, as the original has**: *Back*, the tips toggle and *Continue*.
+	# It carried five while `B0` had a button of its own, and docs/24
+	# section 7.1's call sites put `B0` on the unit-selection and map screens
+	# and never on this one.
+	h.equal("screens.the_briefing_has_three", _buttons_of(wide).size(), 3,
+		"docs/24 section 7.1 -- this screen asks for `A0` and `C0` only")
+	# One screen, two blocks: the middle button swaps the caption `Txtmod_b`
+	# carries twice for exactly this.
+	h.equal("screens.the_briefing_opens_on_a0", wide.block, "A0")
+	wide.show_block("C0")
+	var toggled: PackedStringArray = _labels_of(wide)
+	h.check("screens.the_tips_button_offers_the_briefing_back",
+		toggled.has(_strings.shipped("Txtmod_b", 32)),
+		"`Txtmod_b` 32 is the word for the way back")
 	wide.free()
 
 	# A list rebuilt **from inside one of its own rows** keeps every row.
@@ -756,13 +795,31 @@ func _deploy_screen(h: TestHarness) -> void:
 		screen.free()
 		return
 
+	# **Campaign 2 starts with nobody to deploy, and that is the data.**
+	# `aCreateUnitPoolForCampaign(2)` is a bare return and `_C_140` places its
+	# own squad, so the screen would open on a roster of nobody. `SliceMain`
+	# skips it there and only there.
+	h.check("deploy.chain_1_has_a_squad", not host.nobody_to_deploy(),
+		"%d in the pool" % host.state.roster.occupied_slots().size())
+	var empty_host: CampaignHost = _host("deploy2")
+	var _two: CampaignState = empty_host.start_new(2)
+	h.check("deploy.chain_2_has_none", empty_host.nobody_to_deploy(),
+		"docs/27 section 3.1 -- the pool creator's arm for campaign 2 returns")
+
 	var hint: String = _joined(screen)
 	h.check("deploy.opens_with_a_hint",
 		hint.contains(_strings.text("deploy.hint")),
 		"the screen says what it wants before anything is clicked")
+	# **Somebody is picked from the start.** The map is the screen now, so the
+	# first thing a player does is click a cell, and a first click that
+	# refused because no name had been selected would be the same silence in
+	# a new place.
+	h.equal("deploy.opens_with_a_soldier_picked", screen.selected,
+		host.state.roster.occupied_slots()[0])
 
-	# A cell with nobody picked. This used to be a bare `return`.
-	screen._place(cells[0])
+	# A cell with nobody picked -- which is what an empty squad leaves.
+	screen.selected = Roster.NO_SLOT
+	screen.world_click(cells[0])
 	h.check("deploy.a_cell_with_nobody_picked_says_so",
 		_joined(screen).contains(_strings.text("deploy.pick_a_soldier")),
 		"named, not silent (docs/92 section 7.4)")
@@ -778,7 +835,7 @@ func _deploy_screen(h: TestHarness) -> void:
 	# The working path still works, and every refusal name has a sentence.
 	var slot: int = host.state.roster.occupied_slots()[0]
 	screen.selected = slot
-	screen._place(cells[0])
+	screen.world_click(cells[0])
 	h.equal("deploy.a_picked_soldier_lands",
 		host.state.roster.used_slots(), 2)
 	h.check("deploy.may_start_now", host.may_start())
@@ -790,6 +847,95 @@ func _deploy_screen(h: TestHarness) -> void:
 			not said.begins_with(Localization.MISSING_PREFIX), said)
 	_no_missing(h, "select_units", screen)
 	screen.free()
+
+	# **Backing out puts the squad back.** The map screen frees the mission's
+	# whole scene, and whoever is already standing on it has been taken out of
+	# the pool -- so *Main Map* from here without `aCopyUnitPool(1, 0)` cost
+	# the campaign a soldier per cell already clicked.
+	h.equal("deploy.one_is_on_the_map", host.state.roster.used_slots(), 2)
+	host.abandon_mission()
+	h.equal("deploy.leaving_puts_the_squad_back",
+		host.state.roster.used_slots(), 3,
+		"`aCopyUnitPool(1, 0)`, the same call the debriefing's replay makes")
+	h.equal("deploy.leaving_goes_to_the_map", host.screen,
+		CampaignHost.SCREEN_MAP)
+
+
+## The location map's picture: its cells, and the camera the original puts on
+## it.
+##
+## The campaign maps themselves -- `_C_XXX` and `_C_YYY` -- are baked into
+## every cache now that `CAMPAIGN_FRAME_MAPS` joins every selection, but the
+## *rule* is checked here on a mission every set carries: an action point is a
+## location's cell. The camera is no longer
+## computed at all -- it is `aMissionControl.cpp`'s own six numbers -- so what
+## is checked about it is that it is those numbers and that they mean what
+## `0x00403560`'s two triples mean.
+func _map_picture(h: TestHarness) -> void:
+	var built: Dictionary = CacheFixture.load_world("_C_140")
+	if built.is_empty():
+		h.check("map.mission_present", false, "the cache has no _C_140")
+		return
+	var world: World = built["world"]
+	var cells: Dictionary[int, Vector2i] = SliceMain.location_cells_of(world)
+	var counted: int = 0
+	var wrong: PackedStringArray = PackedStringArray()
+	for y: int in range(world.resource.height):
+		for x: int in range(world.resource.width):
+			var id: int = world.state.action_point_at(
+				world.state.index_of(x, y))
+			if id <= 0:
+				continue
+			counted += 1
+			if not cells.has(id):
+				wrong.append("%d has no cell" % id)
+	h.check("map.every_action_point_is_a_cell", counted > 0,
+		"_C_140 carries %d" % counted)
+	h.equal("map.every_id_answered", wrong, PackedStringArray(),
+		"docs/27 section 2.1 -- a location *is* an action point")
+	h.equal("map.no_cell_for_an_unused_id",
+		cells.has(0), false, "0 is 'no action point', never a location")
+
+	# `0x00453F80` writes these six and `0x00457695` hands them to
+	# `aSetCameraPosition`. `tools/campaign_tables.py` pins them against the
+	# shipped executable; this pins the port against the same numbers.
+	h.equal("map.camera_eye", CameraRig.CAMPAIGN_EYE,
+		Vector3i(-19088, 98112, 9088), "0x00510BB8/BC/C0")
+	h.equal("map.camera_target", CameraRig.CAMPAIGN_TARGET,
+		Vector3i(56800, 56800, 0), "0x00510BC4/C8/CC, 0xDDE0 twice")
+	h.check("map.camera_looks_down_at_the_city",
+		CameraRig.CAMPAIGN_EYE.z > CameraRig.CAMPAIGN_TARGET.z
+			and CameraRig.CAMPAIGN_EYE.y > CameraRig.CAMPAIGN_TARGET.y,
+		"the eye stands above and north of the target")
+	h.check("map.camera_is_not_boxed",
+		CameraRig.CAMPAIGN_EYE.x < CameraRig.BOX_MARGIN,
+		"the engine writes it past 0x00453420's box, so x stays negative")
+	h.check("map.camera_height_band",
+		CameraRig.CAMPAIGN_HEIGHT_LOW < CameraRig.CAMPAIGN_EYE.z
+			and CameraRig.CAMPAIGN_EYE.z < CameraRig.CAMPAIGN_HEIGHT_HIGH,
+		"0x004558F0 clamps the eye's height into [-9600, 19200]")
+
+	# The window the frame leaves clear is the engine's own viewport, and the
+	# plate whose picture frame it is.
+	h.equal("map.window_is_the_engines", CampaignScreen.PLATE_WINDOW,
+		Rect2(65.0, 57.0, 518.0, 306.0), "0x0040B670 at 0x00454102")
+	h.equal("map.deploy_window_is_the_missions",
+		SelectUnitsScreen.DEPLOY_WINDOW, Rect2(60.0, 34.0, 520.0, 340.0),
+		"0x0040B670 at 0x0041A4C6")
+	h.equal("map.plate_is_the_framed_one", CampaignMapScreen.PLATE_MAP,
+		"plate_3", "aInitGUI(\"GUI\\plate_3.bmp\") at 0x00454245")
+
+	# **No picture, no hole.** A cache published before the campaign maps
+	# joined every selection carries no `_C_XXX`, and a frame cut around
+	# nothing is a black rectangle where the plate should be.
+	var frame: CampaignMapScreen = CampaignMapScreen.new()
+	h.equal("map.no_picture_leaves_the_plate_whole", frame.plate_window(),
+		Rect2(), "the screen falls back to a list of the open locations")
+	frame.has_picture = true
+	h.equal("map.a_picture_cuts_the_window", frame.plate_window(),
+		CampaignScreen.PLATE_WINDOW)
+	frame.free()
+	world = null
 
 
 ## The plates the converter learned to bake this slice (0.17.0).

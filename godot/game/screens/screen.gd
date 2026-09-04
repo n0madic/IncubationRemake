@@ -29,6 +29,15 @@ const ID_CANCEL: int = 1
 const ID_SAVE_GAME: int = 24
 const ID_LOAD_GAME: int = 25
 
+## `Txtmod_d` 60/61/62 -- *Back to the Main Menu without saving?* and its two
+## answers, which the original asks before it drops a campaign.
+const ID_CONFIRM: int = 60
+const ID_YES: int = 61
+const ID_NO: int = 62
+## The remake's own action name for the *No* half; the two shipped words are
+## the captions and the original action is what the host sees on *Yes*.
+const CANCEL: String = "cancel"
+
 ## The remake's own keys these screens use. The original reached its options
 ## through icons with hover hints and never named the screen, so there is no
 ## shipped caption to read; [method Localization.text] is the seam docs/92
@@ -42,6 +51,37 @@ const SCREEN_LAYER: int = 8
 ## The plates' own size. Every one of the twelve is 640x480, and the shipped
 ## layout tables in `DATA/GUI/*.lcl` are written in that space.
 const PLATE_SIZE: Vector2 = Vector2(640.0, 480.0)
+
+## What [method plate_name] answers for a screen that wants **no** plate at
+## all -- the deployment screen, which is the mission's own view with a
+## caption over it. It is not the same as a plate the cache does not carry:
+## that one degrades to the base class's [ColorRect], and this one deliberately
+## draws nothing so the world behind stays visible.
+const PLATE_NONE: String = ""
+
+## The 3D window the original opens inside a campaign plate, **read out of the
+## executable**: `(65, 57)`, 518 x 306. `aMissionControl.cpp` sets it with
+## `0x0040B670` on the way into the campaign screens (`0x00454102`) and again
+## on every frame the map is up (`0x004559FA`), with the centre `0x0040B6B0`
+## takes at half of it. docs/27 section 2.3 read the same numbers as the
+## sequence screen's; they are the campaign screens' generally, and the dark
+## interior of `plate_3` is exactly that rectangle.
+##
+## It used to be `(34, 36, 570, 356)` -- the whole interior of `plate_1`'s
+## frame, measured off the bitmap -- which is a **different plate** and put
+## world over the inner bevel the original leaves painted.
+##
+## A screen that answers this from [method plate_window] gets the plate drawn
+## as **four strips around the rectangle** instead of one full-screen picture,
+## so what is behind the [CanvasLayer] -- the 3D view -- shows through it. The
+## shipped plates are opaque 8-bit bitmaps with no alpha, so a hole cannot be
+## painted; it has to be left.
+const PLATE_WINDOW: Rect2 = Rect2(65.0, 57.0, 518.0, 306.0)
+
+## The cartouche across the top of `plate_1`, between the two gargoyles: the
+## band the original writes every framed screen's own name in.
+const TITLE_TOP: float = 6.0
+const TITLE_HEIGHT: float = 24.0
 
 ## Where the action row sits on the plate, in the plate's own units. Inside
 ## the frame, which is about 40 units deep on `plate_1`.
@@ -59,6 +99,14 @@ signal chose(action: String)
 var art: Art = null
 var strings: Localization = null
 var font: FontFile = null
+## The action a second press will let through, or `""`.
+##
+## Two buttons in this shell drop something that may never have been saved --
+## the map's *End game* and the pause menu's *Main Menu* -- and docs/92
+## section 7.4 counts a click that cannot be undone and says nothing as a
+## defect. Both ask once: the first press records the action and rebuilds the
+## buttons through [method _show_actions], the second lets it through.
+var pending: String = ""
 
 var _root: Control = null
 var _body: Control = null
@@ -72,24 +120,15 @@ func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
 	layer = SCREEN_LAYER
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# **Neither the root nor the body eats a click.** A [Control] stops mouse
+	# events by default, and a screen with a window in its plate needs the
+	# clicks that land in the window to reach the 3D pick behind it. The
+	# buttons keep their own [constant Control.MOUSE_FILTER_STOP], so what
+	# passes through is exactly what nothing on the plate wanted.
+	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
 
-	var backdrop: TextureRect = TextureRect.new()
-	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-	backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	backdrop.stretch_mode = TextureRect.STRETCH_SCALE
-	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if art != null:
-		backdrop.texture = art.plate(plate_name())
-	if backdrop.texture == null:
-		# A cache with no art still shows a legible screen: the frame is what
-		# is missing, not the campaign.
-		var solid: ColorRect = ColorRect.new()
-		solid.set_anchors_preset(Control.PRESET_FULL_RECT)
-		solid.color = Color(0.05, 0.05, 0.06)
-		solid.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_root.add_child(solid)
-	_root.add_child(backdrop)
+	_draw_plate()
 
 	_body = Control.new()
 	_body.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -97,6 +136,7 @@ func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
 	_body.offset_top = 40.0
 	_body.offset_right = -48.0
 	_body.offset_bottom = -72.0
+	_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_body)
 
 	# A plain [Control] and not a container. See [method _lay_out_buttons].
@@ -113,12 +153,115 @@ func build() -> void:
 	pass
 
 
+## Whether a click inside [method plate_window] means something to this screen.
+##
+## The two screens drawn around a hole answer yes, and [SliceMain] then turns
+## the click into a map field and hands it here. Everything else answers no
+## and keeps the old rule: a plate up means the world behind it takes no
+## input at all.
+func takes_world_clicks() -> bool:
+	return false
+
+
+## A map field the player clicked in the window, `(-1, -1)` for a click that
+## landed on no cell.
+func world_click(_cell: Vector2i) -> void:
+	pass
+
+
+## The map field the pointer is over, for a screen that names what is under
+## it. `(-1, -1)` when the pointer is on no cell.
+func world_hover(_cell: Vector2i) -> void:
+	pass
+
+
 ## The plate this screen sits on. Overridden where a screen has one of its own
 ## -- the shell's menu sits on `Title` -- and answered as a **name** rather
 ## than a texture so a cache that does not carry it degrades to the base
 ## class's [ColorRect] instead of failing to open.
 func plate_name() -> String:
 	return PLATE
+
+
+## The rectangle the plate must leave clear, in the plate's own units, or an
+## empty [Rect2] for a plate drawn whole.
+##
+## The two screens that answer it -- the location map and the deployment view
+## -- are pictures of the world with a frame around them, and the world is a
+## 3D scene in the root viewport rather than anything this [CanvasLayer] can
+## hold. So the frame is drawn around a hole and the scene shows through.
+func plate_window() -> Rect2:
+	return Rect2()
+
+
+## Draw the plate: whole, as a frame around [method plate_window], or not at
+## all when [method plate_name] answers [constant PLATE_NONE].
+func _draw_plate() -> void:
+	var name: String = plate_name()
+	if name == PLATE_NONE:
+		return
+	var picture: Texture2D = art.plate(name) if art != null else null
+	if picture == null:
+		# A cache with no art still shows a legible screen: the frame is what
+		# is missing, not the campaign. A screen that asked for a window keeps
+		# it, because painting the hole over would hide the very thing the
+		# window exists to show.
+		var solid: ColorRect = ColorRect.new()
+		solid.color = Color(0.05, 0.05, 0.06)
+		solid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if plate_window().size == Vector2.ZERO:
+			solid.set_anchors_preset(Control.PRESET_FULL_RECT)
+			_root.add_child(solid)
+		return
+	var window: Rect2 = plate_window()
+	if window.size == Vector2.ZERO:
+		_root.add_child(_plate_piece(picture,
+			Rect2(Vector2.ZERO, PLATE_SIZE)))
+		return
+	# Four strips, each one the plate's own pixels put back where they came
+	# from: top, bottom, left and right of the window.
+	var right: float = window.position.x + window.size.x
+	var below: float = window.position.y + window.size.y
+	for piece: Rect2 in [
+			Rect2(0.0, 0.0, PLATE_SIZE.x, window.position.y),
+			Rect2(0.0, below, PLATE_SIZE.x, PLATE_SIZE.y - below),
+			Rect2(0.0, window.position.y, window.position.x, window.size.y),
+			Rect2(right, window.position.y, PLATE_SIZE.x - right,
+				window.size.y)]:
+		if piece.size.x <= 0.0 or piece.size.y <= 0.0:
+			continue
+		_root.add_child(_plate_piece(picture, piece))
+
+
+## One rectangle of the plate, drawn where it belongs.
+func _plate_piece(picture: Texture2D, piece: Rect2) -> TextureRect:
+	var view: TextureRect = TextureRect.new()
+	var slice: AtlasTexture = AtlasTexture.new()
+	slice.atlas = picture
+	# The plate is 640x480 and so is the layout space, so a rectangle in the
+	# one is the same rectangle in the other.
+	slice.region = piece
+	view.texture = slice
+	view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	view.stretch_mode = TextureRect.STRETCH_SCALE
+	view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_on_plate(view, piece.position, piece.size)
+	return view
+
+
+## The screen's own name, centred in the plate's top band.
+##
+## Every framed screen in the original writes it there and nowhere else, which
+## is why it is here rather than in each screen's [method build].
+func place_title(text: String) -> Label:
+	var title: Label = make_label(text)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_on_plate(title, Vector2(0.0, TITLE_TOP),
+		Vector2(PLATE_SIZE.x, TITLE_HEIGHT))
+	_root.add_child(title)
+	return title
 
 
 ## What a screen shows on top of the plate.
@@ -215,8 +358,38 @@ func make_action_button(action: String, text: String) -> Button:
 	return button
 
 
+## Whether *action* is one the screen asks about before doing.
+func needs_confirming(_action: String) -> bool:
+	return false
+
+
+## Rebuild whatever carries this screen's buttons. Called by [method build]
+## and again on each side of a confirmation. A screen with a fixed row does
+## not need it.
+func _show_actions() -> void:
+	pass
+
+
 func _on_pressed(action: String) -> void:
+	if action == CANCEL:
+		pending = ""
+		_show_actions()
+		refresh()
+		return
+	if needs_confirming(action) and pending != action:
+		pending = action
+		_show_actions()
+		refresh()
+		return
+	pending = ""
 	chose.emit(action)
+
+
+## Redraw what the screen shows. The base does nothing; the screens that have
+## something to redraw override it, and the confirmation calls it so the
+## question can be written where the screen writes its own lines.
+func refresh() -> void:
+	pass
 
 
 ## Put a control where the plate's own layout space says, rather than where

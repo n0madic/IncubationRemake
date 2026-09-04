@@ -47,8 +47,8 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 253 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 465 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 276 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 486 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
@@ -65,9 +65,9 @@ python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecu
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
-python3 tools/remake_convert.py     gog_incubation --check   # 223 checks, 6 missions
+python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 35 suites, 3284 checks
+bash   godot/run_tests.sh                                    # 35 suites, 3344 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -544,8 +544,70 @@ mission immediately and never raises the shell, the new `--campaign=N` enters
 a chain's map, and `tour.gd` runs the sixth slice's scenarios unedited —
 `SliceMain.boot_choice` is static and pure so `test_shell.gd` can check the
 decision without a command line. `tour.gd` gained `menu`, `slot`, `option`,
-`click_screen` and `buttons`, and no longer requires a world to exist before
-it will read a command.
+`click_screen`, `buttons`, `press` and `map_click`, and no longer requires a
+world to exist before it will read a command.
+
+**Four of the screens are pictures, not lists** (`docs/92` §7.15). The shipped
+plates are opaque with no alpha, so a screen that wants the 3D behind it names
+a rectangle (`CampaignScreen.plate_window()`) and the base class draws the
+plate as **four strips around the hole**. The location map is then the chain's
+own `_C_XXX`/`_C_YYY` rendered behind the frame -- a `_backdrop_world` with a
+root and a rig of its own, built with no script and no simulation, and
+deliberately not `world`, which half of `game` reads as "a mission is being
+played". Each open location is a `map.LIB` dot standing on the cell whose
+action point is its id (`docs/27` §2.1) and a click goes through
+`SliceMain.cell_under`, the mission's own pick generalised to any camera over
+any world. Deployment is the mission's view with a dot on every **free**
+landing cell; the briefing and the tips are laid out in `docs/24` §7.1's own
+box coordinates with the briefing programme's pictures at their own `x, y`.
+Backing out of a deployment calls `CampaignHost.abandon_mission()` --
+`aCopyUnitPool(1, 0)` -- because the map screen frees the mission's scene and
+anyone already deployed had been taken out of the pool. **The map's camera,
+its window and its plate are the original's own constants** (`docs/27` §2.6):
+eye `(-19088, 98112, 9088)` and target `(56800, 56800, 0)` out of
+`aMissionControl.cpp`, the 3D window `(65, 57)` by 518x306, and `plate_3` --
+the one shipped plate with a picture frame inset in it. It was a computed view
+for one pass, on the belief that the original's came from a front-end script;
+`_C_XXX.lcl` sets no camera at all, only four `CreateBGB` fires and a CD
+track. The pointed-at location takes the shipped 17x17 ring (`map.LIB` 7) and
+is named at the top of the window. Deployment opens in `docs/42` §2.4's map
+view, in the **mission's** 3D window `(60, 34)` by 520x340, and the mission's
+own camera keys work under it (`2`/`3`, `Q`/`E`, wheel, middle-drag). `ESC`
+over a mission offers *Main Menu* beside *Exit Program*; it and the map's *End
+game* both ask `Txtmod_d` 60 through one seam in `CampaignScreen`
+(`pending` / `needs_confirming()` / `_show_actions()`).
+
+**`_C_XXX` and `_C_YYY` are in every cache** since 2026-09-04: they are not
+missions but the screen the missions are chosen from, and a cache published
+without `--campaign-maps` used to open the location map onto nothing. A cache
+made before that still works -- with no picture the map screen draws its plate
+whole and lists the open locations as rows. And **the deployment screen is
+skipped where there is nobody to deploy and the mission ships its own squad**,
+which is how campaign 2 starts: `aCreateUnitPoolForCampaign(2)` is a bare
+return and `_C_140` places its own marines.
+
+**The location map burns** since 2026-09-04. `CreateBGB` -- the one effect a
+script places by itself -- was recorded by the interpreter and consumed by
+nothing, and each campaign map's `InitMap` is four `7_fire` emitters and a CD
+track. `game/fx/bgb_emitters.gd` is `0x0041E1A0`'s twenty slots and its
+cadence: a running countdown spawns **every** tick, and at zero a
+`aRandom2(0, random)` gate reloads it -- `live` frames of flame, then on
+average `random` of nothing. The gate in front of all of it is the **cursor
+and animation level** (`Game.opt` +0x20), and level 1 is the value that turns
+the emitters *off*; the shipped default is 2. Missions get the same table.
+
+**The shipping build builds again** (`docs/92` §7.15). Godot 4.7.2's export
+templates are installed -- the 4.7.1 ones against a 4.7.2 engine are what put
+this on the open list -- and both presets export. `macOS Tests` runs the
+suites inside a real build against the published cache with all 92 campaign
+maps, and that run is what found that **the warnings gate is the editor's**:
+`project.binary` omits the two settings that are at the engine's own default,
+and the compiler that turns those levels into errors has already run, so the
+violating fixture compiles at load under the runtime's levels. The gate names
+which build it is in; the four non-default levels are checked in both. That
+build steps the suites **one per frame** behind a caption naming the build and
+counting them off -- the whole run inside `_ready` was a black frozen window
+for the length of it, and was reported as a hang.
 
 **No new Python twin for a new subject** (`docs/92` §5.1, 2026-09-04). An
 executable model in `inclib` is written where a spec's claim is arithmetic that
@@ -678,6 +740,15 @@ Eight things about it that are easy to trip over:
   pointer back has to be weak. Read the object back with an **assignment**
   (`var held: BlobPool = ref.get_ref()`), which is checked at run time;
   `as BlobPool` is `UNSAFE_CAST`, and warnings are errors.
+* **A `static var` anywhere keeps the whole dependency tree loaded**, and
+  **only the exported build says so**. A script that declares one is kept for
+  the life of the process, and a kept script keeps every script it names — one
+  `static var` in one suite was `ERROR: 103 resources still in use at exit`
+  from the `macOS Tests` build, 103 being that file's transitive closure over
+  `core/` and `game/`. The editor's shutdown reports none of it, so
+  `run_tests.sh` cannot see it. `@static_unload` does **not** lift it while the
+  run still holds an instance; move the variable off the class. There is no
+  `static var` in the project, and that is the state to keep it in.
 
 ```bash
 python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish
@@ -800,7 +871,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **34 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **35 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 3, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

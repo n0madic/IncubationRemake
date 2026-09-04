@@ -214,7 +214,7 @@ func _idle(h: TestHarness) -> void:
 			% DictRead.as_int(pose["parts_moved_at_end"]))
 
 
-static func _inputs_of(document: Dictionary) -> BlobPrograms.Inputs:
+func _inputs_of(document: Dictionary) -> BlobPrograms.Inputs:
 	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
 	for entry: Variant in DictRead.as_array(document["tiles"]):
 		var tile: Dictionary = DictRead.as_dict(entry)
@@ -244,12 +244,34 @@ static func _inputs_of(document: Dictionary) -> BlobPrograms.Inputs:
 	return inputs
 
 
-static var _cached_geometry: Eng3dGeometry = null
+## The one static variable in the project, and the reason for the
+## `@static_unload` at the top of this file.
+##
+## A script that declares a `static var` is **kept loaded for the life of the
+## process** unless it is annotated, and a kept script keeps every script it
+## names -- which from here is nearly the whole of `core/` and `game/`. In an
+## exported build that came out at the end as
+## `ERROR: 103 resources still in use at exit`, 103 being the transitive
+## closure of this file. The editor's own teardown does not report it, so the
+## one line of evidence was a build nothing gated on.
+
+
+## The engine's tables, read once per run and **held on the suite** rather
+## than statically.
+##
+## It was a `static var`, which is the one thing in this project that made an
+## exported build end with `ERROR: 103 resources still in use at exit`: a
+## script that declares one is kept for the life of the process, and a kept
+## script keeps every script it names -- from here, nearly all of `core/` and
+## `game/`.  `@static_unload` does **not** lift it while the run still holds an
+## instance; moving the variable off the class does.  The editor's own teardown
+## never reported any of it.
+var _cached_geometry: Eng3dGeometry = null
 
 
 ## The engine's tables from the cache: the rings and the arrows' aim are its
 ## arithmetic, not a division of the circle.
-static func _geometry() -> Eng3dGeometry:
+func _geometry() -> Eng3dGeometry:
 	if _cached_geometry == null:
 		_cached_geometry = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
 	return _cached_geometry

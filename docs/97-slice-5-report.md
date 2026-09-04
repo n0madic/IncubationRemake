@@ -378,8 +378,14 @@ names them. §14.1 took them back and re-measured.
 * **Ambience** — [`28` §6](28-effects-and-sound.md) proves the subsystem never
   plays anything. The ten `amb_*.wav` and four other unreferenced waves are
   excluded from the cache, and a check asserts none of them is in it.
-* **`CreateBGB`** — 14 calls in the whole corpus and none in the five
-  converted missions.
+* ~~**`CreateBGB`**~~ — **closed on 2026-09-04.** It was 14 calls in the whole
+  corpus and none in the five converted missions; the campaign maps are now in
+  every cache and their `InitMap` is four `7_fire` emitters each, so the
+  command has a consumer. `game/fx/bgb_emitters.gd` is the twenty-slot table
+  and `0x0041E1A0`'s cadence, and `BlobPrograms.main_map_fire` is
+  `aBlob_CreateMainMapFire` `0x0042A660`. Types 2..6 create their object at
+  registration and none of those creators is transcribed; they are counted
+  rather than dropped.
 * ~~**Model blobs and joint angles are not drawn**~~ — **closed in §14.1.**
   The text below is what the slice reported; the pool's model half now draws,
   and the panel flickers.

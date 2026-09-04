@@ -55,6 +55,106 @@ func run(h: TestHarness) -> void:
 	_check_unit_animations(h)
 	_check_setpiece_camera(h)
 	_check_arm_spawns(h)
+	_check_emitters(h)
+
+
+
+## `CreateBGB`, the one effect a **script** places -- docs/28 section 8.2.
+##
+## The command was recorded by the interpreter and consumed by nothing, so the
+## campaign maps' four burning buildings were not burning. What is checked here
+## is the registration's own shift, the tick's cadence and the fire's record;
+## `tools/blob_tables.py`'s `bgb.*` pins all of it against the executable, and
+## this is the port reading the same numbers.
+func _check_emitters(h: TestHarness) -> void:
+	var table: BgbEmitters = BgbEmitters.create()
+	h.equal("bgb.id_bound", [table.register(BgbEmitters.SLOTS, 7, 0, 0, 0, 1, 0, 0),
+		table.register(0, BgbEmitters.TYPE_NONE, 0, 0, 0, 1, 0, 0)],
+		[false, false], "`invalid bgbcreator id`, and type 0 is an error")
+	# docs/20 section 7.4: the command shifts all three coordinates left by
+	# four before it stores them, so `_C_XXX.lcl`'s own 5905 is 94480 units --
+	# which is what puts the fire on a roof instead of in the first field.
+	var _ok: bool = table.register(0, BgbEmitters.TYPE_FIRE,
+		5905, 2095, 555, 30, 40, 0)
+	var slot: BgbEmitters.Slot = table.slot(0)
+	h.equal("bgb.coordinates_shift", [slot.x, slot.y, slot.z],
+		[5905 << 4, 2095 << 4, 555 << 4])
+	h.equal("bgb.countdown_starts_at_live", [slot.countdown, slot.live],
+		[30, 30], "`live` reaches both bytes, so it burns from the first tick")
+
+	var pool: BlobPool = BlobPool.create(1.0)
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	var hooks: GameBlobHooks = GameBlobHooks.over(pool, inputs)
+	hooks.rng.randomize_seed(1.0)
+	pool.set_hooks(hooks)
+	# The gate is off at animation level 1 and on at every other value: the
+	# tick's `jne` skips a bare `ret`, and the shipped default is 2.
+	table.level = BgbEmitters.LEVEL_OFF
+	h.equal("bgb.level_1_makes_nothing", table.tick(pool, hooks), 0,
+		"`Game.opt` +0x20 -- the one value that turns the emitters off")
+	table.level = BgbEmitters.LEVEL_DEFAULT
+	h.equal("bgb.default_level_burns", table.tick(pool, hooks), 1)
+	var flame: Blob = pool.blobs()[0]
+	h.equal("bgb.fire_record",
+		[flame.class_id, flame.kind, flame.life, flame.aux, flame.delay],
+		[3, 0x3A, 0x0C, 5, 0],
+		"class 3, kind 58, life 12, aux 5 -- `BLOB_CALLS` at 0x0042A6C6")
+	h.equal("bgb.fire_stands_where_the_script_said",
+		[flame.x, flame.y, flame.z], [slot.x, slot.y, slot.z])
+	h.check("bgb.fire_rises",
+		flame.vz >= 0x140 and flame.vz < 0x140 + 0xA0
+		and absi(flame.vx) <= 0x30 and absi(flame.vy) <= 0x30,
+		"48 either way and 320..480 up: vx %d vy %d vz %d"
+		% [flame.vx, flame.vy, flame.vz])
+
+	# The cadence: a running countdown spawns **every** tick, and `random` 0
+	# reloads unconditionally -- a flame that never stops.
+	var steady: BgbEmitters = BgbEmitters.create()
+	var _lit: bool = steady.register(0, BgbEmitters.TYPE_FIRE, 0, 0, 0, 2, 0, 0)
+	var burst: int = 0
+	for _step: int in range(8):
+		burst += steady.tick(pool, hooks)
+	h.equal("bgb.random_zero_never_pauses", burst, 8)
+	# And a type the tick drives but no creator here carries is counted rather
+	# than dropped: `aBlob_CreateSmoke2` `0x0042A5E0` is not transcribed
+	# because both shipped calls for it are commented out in their own scripts.
+	var smoke: BgbEmitters = BgbEmitters.create()
+	var _reg: bool = smoke.register(0, BgbEmitters.TYPE_SMOKE, 0, 0, 0, 2, 0, 0)
+	h.equal("bgb.untranscribed_type_says_so",
+		[smoke.tick(pool, hooks), smoke.unmade.get(BgbEmitters.TYPE_SMOKE, 0)],
+		[0, 1])
+
+	_check_map_fires(h)
+
+
+## The campaign maps' own `InitMap`, end to end: the script the cache carries,
+## through the interpreter, into the table.
+func _check_map_fires(h: TestHarness) -> void:
+	for name: String in ["_C_XXX", "_C_YYY"]:
+		var built: Dictionary = CacheFixture.load_world(name)
+		if built.is_empty():
+			h.check("bgb.map_present.%s" % name, false,
+				"the cache has no " + name)
+			continue
+		var map: World = built["world"]
+		var attached: bool = map.attach_script(CacheLoader.read_json(
+			"%s/missions/%s/script.json" % [CacheFixture.cache_dir(), name]))
+		h.check("bgb.map_has_a_script.%s" % name, attached)
+		var table: BgbEmitters = BgbEmitters.create()
+		var lit: int = 0
+		for entry: Variant in DictRead.as_array(
+				map.run_init_map().get("events", [])):
+			var event: Dictionary = AudioEvents.as_event(entry)
+			if AudioEvents.name_of(event) != SliceMain.CREATE_BGB:
+				continue
+			if table.register_event(SetpieceDriver._numbers(event)):
+				lit += 1
+		h.equal("bgb.map_lights_four.%s" % name, lit, 4,
+			"four `CreateBGB (n, 7_fire, ...)`, and a CD track, is the whole "
+			+ "of a campaign map's script")
+		h.equal("bgb.map_fires_are_type_7.%s" % name,
+			table.slot(0).type_id, BgbEmitters.TYPE_FIRE)
+		map = null
 
 
 ## An arm's spawn request, **run** (docs/28 section 7.1, [GameBlobHooks]).

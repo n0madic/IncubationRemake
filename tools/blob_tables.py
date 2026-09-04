@@ -366,6 +366,61 @@ BGB_TICK = 0x0041E1A0
 BGB_TICK_BOUND_SITE = 0x0041E24E
 BGB_TICK_JUMP_TABLE = 0x0041E300
 
+#: The emitter tick's own gate.  `0x0041E1A0` opens
+#: `call 0x004604D0 / cmp eax, 1 / jne body` -- so the **animation level**
+#: (`Game.opt` +0x20, `docs/20` §8.2, default 2, forced 2 by the accelerated
+#: renderer) turns the emitters *off* at level 1 and leaves them on at every
+#: other value.  The sense is the easy thing to get backwards, so the `jne`'s
+#: target is pinned as well as the comparison.
+BGB_LEVEL_GETTER = 0x004604D0
+BGB_TICK_GATE_CALL = 0x0041E1A1
+BGB_TICK_GATE_CMP = 0x0041E1A6
+BGB_TICK_GATE_JNE = 0x0041E1A9
+BGB_TICK_GATE_LEVEL = 1
+BGB_TICK_BODY = 0x0041E1AD
+BGB_TICK_ID_BOUND_SITE = 0x0041E1B1
+#: The three bytes of a record the tick reads, as `field -> the site that
+#: reads it`: the countdown, the reload it takes and the gate's span.
+BGB_COUNTDOWN_SITE = 0x0041E1E4
+BGB_RANDOM_SITE = 0x0041E1F2
+BGB_LIVE_SITES = (0x0041E219, 0x0041E227)
+BGB_TYPE_SITE = 0x0041E247
+BGB_COUNTDOWN_OFFSET = 0x10
+BGB_LIVE_OFFSET = 0x11
+BGB_RANDOM_OFFSET = 0x12
+#: `aRandom2(0, random)` -- the gate's own draw, and `0xFF` is the countdown
+#: that never decrements.
+BGB_GATE_DRAW_BASE_SITE = 0x0041E202
+BGB_HELD = 0xFF
+BGB_HELD_SITES = (0x0041E1EE, 0x0041E239)
+#: Where the two live arms read the position from, in the order they push it:
+#: z, y, x.
+BGB_POSITION_SITES = {1: (0x0041E25E, 0x0041E264, 0x0041E26A),
+                      7: (0x0041E29A, 0x0041E2A0, 0x0041E2A6)}
+BGB_POSITION_OFFSETS = (0x0C, 0x08, 0x04)
+
+#: `aBlob_CreateMainMapFire` `0x0042A660` -- what `CreateBGB` type 7 spawns,
+#: and the only creator the campaign maps' own scripts reach.  Its constructor
+#: call `0x0042A6C6` is already in :data:`BLOB_CALLS` (the scratch name,
+#: class 3, kind 58, life 12) and in :data:`BLOB_SPRITE` (both rotations 0,
+#: `aux` 5); what is pinned here is the three velocity draws it takes first
+#: and the zero `delay` it ends with.
+MAIN_MAP_FIRE = 0x0042A660
+#: `(base site, span site, call site, base, span)` per draw, in the order the
+#: compiler emitted them: two horizontal, then the rising one.  A `__cdecl`
+#: call takes its first argument from the **last** push, so the base is the
+#: later site; the call is named outright because the compiler slid a `mov`
+#: between the pushes and the call in two of the three.
+MAIN_MAP_FIRE_DRAWS = ((0x0042A664, 0x0042A662, 0x0042A666, -0x30, 0x60),
+                       (0x0042A675, 0x0042A673, 0x0042A679, -0x30, 0x60),
+                       (0x0042A68B, 0x0042A686, 0x0042A692, 0x140, 0xA0))
+MAIN_MAP_FIRE_DELAY_SITE = 0x0042A69F
+MAIN_MAP_FIRE_DELAY = 0
+MAIN_MAP_FIRE_CONSTRUCTOR = 0x0042A6C6
+#: `aRandom2` `0x004638E0`, not `aRandom`: the effects' own stream
+#: (`docs/22` §3.2).
+RANDOM2 = 0x004638E0
+
 # -- .cha note callbacks: exactly one kind is ever registered -------------
 
 NOTE_CALLBACK_REGISTER = 0x0042C5D0
@@ -2255,6 +2310,70 @@ class Checker:
         self.check(name, False, detail)
 
 
+def _bgb_field(b: Binary, site: int) -> int | None:
+    """The record offset a ``mov r8/r32, [esi + disp32]`` at *site* reads."""
+    if b.u8(site) not in (0x8A, 0x8B):
+        return None
+    if b.u8(site + 1) & 0xC0 != 0x80:
+        return None
+    return b.u32(site + 2) - BGB_TABLE
+
+
+def check_bgb_tick(ck: Checker, b: Binary) -> None:
+    """`0x0041E1A0`, the per-frame half of `CreateBGB` -- docs/28 sec.8.2.
+
+    The switch itself is pinned above; this is the cadence around it, which
+    is what a port has to reproduce and what `docs/28` only summarised.  The
+    gate's **sense** is pinned by the `jne`'s target rather than by the
+    comparison alone: the fall-through is a bare `ret`, so level 1 is the
+    value that turns the emitters off.
+    """
+    ck.equal("bgb.tick_gate_getter", b.call_target(BGB_TICK_GATE_CALL),
+             BGB_LEVEL_GETTER, hex)
+    ck.equal("bgb.tick_gate_level", b.cmp_imm(BGB_TICK_GATE_CMP),
+             BGB_TICK_GATE_LEVEL)
+    ck.check("bgb.tick_gate_skips_on_that_level",
+             b.u8(BGB_TICK_GATE_JNE) == 0x75
+             and BGB_TICK_GATE_JNE + 2 + b.i8(BGB_TICK_GATE_JNE + 1)
+             == BGB_TICK_BODY
+             and b.u8(BGB_TICK_GATE_JNE + 2) == 0x5E
+             and b.u8(BGB_TICK_GATE_JNE + 3) == 0xC3,
+             "jne body over a pop/ret: the emitters run at every level but 1")
+    ck.equal("bgb.tick_id_bound", b.cmp_imm(BGB_TICK_ID_BOUND_SITE), BGB_SLOTS)
+    ck.equal("bgb.record_countdown", _bgb_field(b, BGB_COUNTDOWN_SITE),
+             BGB_COUNTDOWN_OFFSET, hex)
+    ck.equal("bgb.record_random", _bgb_field(b, BGB_RANDOM_SITE),
+             BGB_RANDOM_OFFSET, hex)
+    ck.equal("bgb.record_live",
+             tuple(_bgb_field(b, site) for site in BGB_LIVE_SITES),
+             (BGB_LIVE_OFFSET,) * len(BGB_LIVE_SITES), Checker.brief)
+    ck.equal("bgb.record_type", _bgb_field(b, BGB_TYPE_SITE), 0, hex)
+    ck.equal("bgb.gate_draw", b.call_target(BGB_GATE_DRAW_BASE_SITE + 2),
+             RANDOM2, hex)
+    ck.equal("bgb.gate_draw_base", b.push_imm(BGB_GATE_DRAW_BASE_SITE), 0)
+    ck.equal("bgb.countdown_held",
+             tuple(b.cmp_imm(site) for site in BGB_HELD_SITES),
+             (BGB_HELD - 0x100,) * len(BGB_HELD_SITES), Checker.brief)
+    for arm, sites in sorted(BGB_POSITION_SITES.items()):
+        ck.equal("bgb.position_arm%d" % arm,
+                 tuple(_bgb_field(b, site) for site in sites),
+                 BGB_POSITION_OFFSETS, Checker.brief)
+
+    # ---- aBlob_CreateMainMapFire ----------------------------------------
+    ck.equal("bgb.fire_constructor",
+             b.call_target(MAIN_MAP_FIRE_CONSTRUCTOR), BLOB_CTOR, hex)
+    for i, (base_site, span_site, call_site, base, span) in enumerate(
+            MAIN_MAP_FIRE_DRAWS):
+        ck.equal("bgb.fire_draw%d" % i,
+                 (b.push_imm(base_site), b.push_imm(span_site)),
+                 (base, span), Checker.brief)
+        ck.equal("bgb.fire_draw%d_stream" % i,
+                 b.call_target(call_site), RANDOM2, hex)
+    ck.equal("bgb.fire_delay", b.push_imm(MAIN_MAP_FIRE_DELAY_SITE),
+             MAIN_MAP_FIRE_DELAY)
+
+
+
 def run_checks(root: str) -> Checker:
     ck = Checker()
     b = Binary(root)
@@ -2778,6 +2897,7 @@ def run_checks(root: str) -> Checker:
     ck.equal("bgb.arms", b.bgb_arms(), BGB_ARMS, Checker.brief)
     ck.equal("bgb.tick_bound", b.cmp_imm(BGB_TICK_BOUND_SITE), BGB_TYPE_BOUND)
     ck.equal("bgb.tick_arms", b.bgb_tick_arms(), BGB_TICK_ARMS, Checker.brief)
+    check_bgb_tick(ck, b)
 
     # ---- .cha notes never drive an effect --------------------------------
     ck.equal("notes.callback_sites",

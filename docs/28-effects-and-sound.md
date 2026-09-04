@@ -1351,7 +1351,52 @@ a blob:
 | 7 | *(out of range: nothing)* | `aBlob_CreateMainMapFire` |
 
 Types 2…6 create their object once, at registration; types 1 and 7 are emitters
-that spawn one blob every `live` ticks, gated by `rand(0, random)`.
+the per-frame sweep drives.
+
+**The cadence, exactly** (`0x0041E1A0`, read instruction by instruction because
+the summary above is not enough to port). `aCheckInBlobObjects` `0x0041E3D0`
+walks the twenty slots **before** it walks the blob records, so a flame lit this
+frame is ticked this frame. Per slot, with the record's countdown at `+0x10`,
+its reload `live` at `+0x11` and the gate's span `random` at `+0x12`:
+
+```c
+if (animationLevel() == 1) return;                 /* 0x0041E1A6 */
+if (countdown == 0 || countdown == 0xFF) {
+    if (random != 0 && (u8)aRandom2(0, random) != 0) return;   /* no spawn */
+    countdown = live;
+}
+if (countdown != 0xFF) countdown--;
+switch (type) { case 1: aBlob_CreateSmoke2(x,y,z);
+                case 7: aBlob_CreateMainMapFire(x,y,z); }
+```
+
+So an emitter spawns on **every** tick while its countdown runs down, and when
+it reaches zero the gate opens with probability `1/(random+1)` per frame and
+reloads: `live` frames of flame, then on average `random` frames of nothing.
+`random == 0` reloads unconditionally — a flame that never stops. `live` is
+written into both bytes at registration, so a fresh emitter burns from its
+first tick.
+
+**The gate is an option, and its sense is the easy half to get wrong.**
+`0x004604D0` returns the **cursor and animation level** ([`20` §8.2](20-lcl-language.md),
+`Game.opt` +0x20, default 2, forced to 2 by the accelerated renderer), and the
+`jne` at `0x0041E1A9` jumps *over* a bare `pop esi; ret` — so **level 1 turns
+the emitters off** and every other value leaves them on. The shipped default
+burns.
+
+`aBlob_CreateMainMapFire` `0x0042A660` is the whole of what type 7 makes, and
+it is three draws and one constructor call:
+
+```c
+vx = aRandom2(-48, 96); vy = aRandom2(-48, 96); vz = aRandom2(320, 160);
+aBlob_Create(scratch, /*class*/ 3, x, y, z, 0, 0, 0,
+             /*kind*/ 58, /*life*/ 12, vx, vy, vz, /*aux*/ 5, /*delay*/ 0);
+```
+
+A class-3 record is a sprite, kind 58 walks it up and advances its atlas
+column, and its last four ticks write the column back down — a flame guttering
+out. `blob_tables.py`'s `bgb.*` checks pin the gate, the three record bytes,
+both live arms' position reads and every constant of the creator.
 
 ---
 

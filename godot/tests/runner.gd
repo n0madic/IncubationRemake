@@ -50,32 +50,68 @@ const SUITES: Array[String] = [
 
 ## Returns the process exit code.
 static func run_all() -> int:
+	var h: TestHarness = begin_run()
+	for path: String in SUITES:
+		run_suite(h, path)
+	return finish_run(h)
+
+
+## The three pieces `run_all` is made of, so a caller that owns a frame can put
+## one suite between two of them.  The exported build does: the whole run
+## inside `_ready` is a black window for the length of it, which reads as a
+## hang (`game/main.gd`, [method SliceMain._run_tests_and_quit]).
+static func suite_count() -> int:
+	return SUITES.size()
+
+
+## What a caller with a window puts on it beside the count: a suite blocks the
+## main thread for its whole length, so a number alone stops moving and reads
+## as a hang all over again.
+static func suite_name(index: int) -> String:
+	if index < 0 or index >= SUITES.size():
+		return ""
+	return SUITES[index].get_file().get_basename().trim_prefix("test_")
+
+
+static func run_suite_at(h: TestHarness, index: int) -> void:
+	if index < 0 or index >= SUITES.size():
+		return
+	run_suite(h, SUITES[index])
+
+
+static func begin_run() -> TestHarness:
 	var h: TestHarness = TestHarness.new()
 	print("Incubation - Remake -- headless tests")
 	print("")
 	check_scripts_load(h, "core_loads", CORE_DIR, 10)
 	check_scripts_load(h, "game_loads", GAME_DIR, 6)
-	for path: String in SUITES:
-		if not ResourceLoader.exists(path):
-			# **Not a skip.**  A renamed file or a typo in SUITES used to print
-			# one informational line, drop that suite's checks and still exit
-			# 0 -- the same shape of silent shrinkage a stale fixture caused.
-			h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
-			h.check("suite_present", false, "%s is not in this build" % path)
-			continue
-		var script: GDScript = ResourceLoader.load(path, "GDScript") as GDScript
-		if script == null or not script.can_instantiate():
-			h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
-			h.check("script_loads", false,
-				"script failed to parse -- typed-warning error or syntax error")
-			continue
-		var instance: Object = script.new()
-		var suite: TestSuite = instance as TestSuite
-		if suite == null:
-			h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
-			h.check("extends_test_suite", false, "not a TestSuite")
-			continue
-		suite.run(h)
+	return h
+
+
+static func run_suite(h: TestHarness, path: String) -> void:
+	if not ResourceLoader.exists(path):
+		# **Not a skip.**  A renamed file or a typo in SUITES used to print
+		# one informational line, drop that suite's checks and still exit
+		# 0 -- the same shape of silent shrinkage a stale fixture caused.
+		h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
+		h.check("suite_present", false, "%s is not in this build" % path)
+		return
+	var script: GDScript = ResourceLoader.load(path, "GDScript") as GDScript
+	if script == null or not script.can_instantiate():
+		h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
+		h.check("script_loads", false,
+			"script failed to parse -- typed-warning error or syntax error")
+		return
+	var instance: Object = script.new()
+	var suite: TestSuite = instance as TestSuite
+	if suite == null:
+		h.begin(path.get_file(), TestHarness.ORACLE_SPEC)
+		h.check("extends_test_suite", false, "not a TestSuite")
+		return
+	suite.run(h)
+
+
+static func finish_run(h: TestHarness) -> int:
 	h.expect_suite_count(SUITES.size() + 2)
 	return h.finish()
 

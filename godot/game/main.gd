@@ -52,6 +52,28 @@ var _mission: String = ""
 var _geometry_cache: Dictionary = {}
 var _texture_cache: Dictionary = {}
 var _scene_root: Node3D = null
+## The chain's own map, drawn behind the location screen's frame: `_C_XXX` or
+## `_C_YYY` as a picture and nothing else. It is deliberately **not** [member
+## world] -- half of `game` reads that as "a mission is being played", and the
+## conflation was already a defect once (see [method in_mission]).
+var _backdrop_root: Node3D = null
+var _backdrop_world: World = null
+var _backdrop_rig: CameraRig = null
+var _backdrop_mission: String = ""
+## The campaign map's own effects. Its `InitMap` is four `CreateBGB` fires and
+## a CD track, and a picture built with no script at all left the city not
+## burning -- which is the one thing about it a player can see moving.
+var _backdrop_fx: BlobPool = null
+var _backdrop_hooks: GameBlobHooks = null
+var _backdrop_bgb: BgbEmitters = null
+var _backdrop_sprites: BlobSprites = null
+var _backdrop_carry: float = 0.0
+## location -> the cell whose action point is its id, out of whichever campaign
+## map is up (docs/27 section 2.1).
+var _location_cells: Dictionary[int, Vector2i] = {}
+## The dots on the map: the campaign's open locations, or the deployment
+## screen's free cells. It hangs off whichever 3D root is up.
+var _markers: MapMarkers = null
 var _scenery: Scenery = null
 var _overlay: TerrainOverlay = null
 var _highlight: Highlight = null
@@ -113,6 +135,11 @@ var _ai_note: String = ""
 var _audio: AudioSystem = null
 var _events: AudioEvents = null
 var _fx: BlobPool = null
+## The pool's own hooks, kept typed: [method BlobPool.hooks] answers the base
+## class and the emitter needs the game's.
+var _fx_hooks: GameBlobHooks = null
+## `CreateBGB`'s twenty slots -- the only effect a **script** places by itself.
+var _bgb: BgbEmitters = null
 var _sprites: BlobSprites = null
 var _models: BlobModels = null
 var _special: SpecialObjects = null
@@ -220,11 +247,21 @@ const DISPLAY_MODE: int = 2
 
 const TEST_FEATURE: String = "run_tests"
 const TEST_RUNNER: String = "res://tests/runner.gd"
+## What the interpreter calls a `CreateBGB` line
+## (`core/lcl/lcl_interpreter.gd`).
+const CREATE_BGB: String = "create_bgb"
+## What the test build's own window says while it is not the game.
+const TEST_CAPTION: String = \
+	"Incubation - Remake -- the test harness, not the game\n\n" \
+	+ "%d / %d suites -- running %s\n\nabout two minutes, then it quits"
 
 
 func _ready() -> void:
-	if OS.has_feature(TEST_FEATURE) and _run_tests_and_quit():
-		return
+	if OS.has_feature(TEST_FEATURE):
+		var runner: GDScript = _test_runner()
+		if runner != null:
+			_run_tests_and_quit(runner)
+			return
 	# The window's close button must not end the process on the spot: the audio
 	# server needs a few more frames to let go of a playing Ogg stream, and a
 	# quit in the same frame leaks it. See [method AudioSystem.shutdown].
@@ -393,6 +430,10 @@ func _refresh_after_deploy() -> void:
 	# The terrain overlay is not rebuilt: deployment changes no cell. What it
 	# does change is visibility, and that is `UnitsView.build`'s to redraw.
 	_units.build(world, _geometry, _textures)
+	# One free cell fewer, so the dots are re-laid: a marker still standing on
+	# an occupied cell is a control that refuses its own click.
+	if campaign != null:
+		_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
 	_refresh_status()
 
 
@@ -473,8 +514,18 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 	var screen: CampaignScreen = null
 	match name:
 		CampaignHost.SCREEN_MAP:
+			# The map is a **picture of the chain's own map**, so the mission's
+			# scene comes down and `_C_XXX` or `_C_YYY` goes up behind the
+			# frame. Two 3D scenes under one root would render into each other.
+			_clear_mission()
+			_build_backdrop(campaign.map_mission())
 			var map: CampaignMapScreen = CampaignMapScreen.new()
 			map.host = campaign
+			map.location_cells = _location_cells
+			# A cache the chain's map is not in leaves the plate whole and
+			# the screen a list; the frame is drawn around a hole only when
+			# there is something behind it.
+			map.has_picture = _backdrop_root != null
 			screen = map
 		CampaignHost.SCREEN_BRIEFING:
 			var briefing: BriefingScreen = BriefingScreen.new()
@@ -507,7 +558,67 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 	screen.chose.connect(_on_campaign_choice)
 	add_child(screen)
 	_screen = screen
+	_sync_hud()
+	# The dots go on **after** the screen is up, because which ones there are
+	# is the screen's own question: the map's are its open locations and the
+	# deploy screen's the free cells.
+	match name:
+		CampaignHost.SCREEN_MAP:
+			_show_markers(CampaignMapScreen.marks_for(campaign,
+				_location_cells))
+			_frame_map()
+		CampaignHost.SCREEN_SELECT:
+			_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
+			_frame_deployment()
 	return screen
+
+
+## The deployment cells nobody is standing on yet.
+##
+## [method World.deployment_cells] answers the cells the *map* offers, which
+## is the right question for the rule and the wrong one for the picture: a dot
+## left on an occupied cell is a control whose only answer is a refusal, and
+## section 7.1 counts that as a defect.
+func _free_landings() -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if campaign == null or world == null:
+		return out
+	for cell: Vector2i in campaign.deployment_cells():
+		var view: Dictionary = world.cell_view(cell.x, cell.y)
+		if DictRead.as_int(view["unit"]) == MapState.NO_UNIT:
+			out.append(cell)
+	return out
+
+
+## Put the camera over the cells the squad is about to be put on.
+##
+## [method _frame_units] cannot: it frames a **unit**, and at this point the
+## player has none on the map -- which is the whole of what the screen is for.
+## So the deployment area is framed instead, on the cell nearest its own
+## middle, because the middle itself is not somewhere anyone can stand.
+func _frame_deployment() -> void:
+	_set_deploy_view(CameraRig.View.MAP)
+
+
+## The deployment cell nearest the middle of the deployment area, or `(-1, -1)`.
+##
+## The middle itself is not where anybody can stand, and the original's own
+## camera routines all take a cell.
+func _deployment_centre() -> Vector2i:
+	if campaign == null:
+		return Vector2i(-1, -1)
+	var cells: Array[Vector2i] = campaign.deployment_cells()
+	if cells.is_empty():
+		return Vector2i(-1, -1)
+	var sum: Vector2i = Vector2i.ZERO
+	for cell: Vector2i in cells:
+		sum += cell
+	var middle: Vector2 = Vector2(sum) / float(cells.size())
+	var at: Vector2i = cells[0]
+	for cell: Vector2i in cells:
+		if Vector2(cell).distance_to(middle) < Vector2(at).distance_to(middle):
+			at = cell
+	return at
 
 
 # --- the shell ---------------------------------------------------------------
@@ -610,6 +721,7 @@ func _show_shell_screen() -> CampaignScreen:
 	screen.chose.connect(_on_shell_choice)
 	add_child(screen)
 	_screen = screen
+	_sync_hud()
 	return screen
 
 
@@ -661,6 +773,12 @@ func _on_shell_choice(action: String) -> void:
 		"options":
 			shell.go(ShellHost.SCREEN_OPTIONS)
 			var _options: CampaignScreen = _show_shell_screen()
+		MainMenuScreen.MAIN_MENU:
+			# The pause menu's own way out, and the screen has already asked
+			# `Txtmod_d` 60. *Without saving* is the whole of it: the mission
+			# goes and so does the campaign, exactly as *End game* does from
+			# the map.
+			_end_campaign()
 		"resume":
 			close_shell()
 		"back":
@@ -676,6 +794,22 @@ func _on_shell_choice(action: String) -> void:
 			# the same frame leaks it -- which `run_tests.sh` would report as
 			# a runtime error and a red run (docs/92 section 7.15).
 			_quit()
+
+
+## Drop the campaign and whatever is on the screen, and come back at the boot
+## menu.
+##
+## Reached from two buttons -- the map's *End game* and the pause menu's *Main
+## Menu* -- and written once, because they mean the same thing and the second
+## of them was added by copying the first. Both ask `Txtmod_d` 60 first; this
+## is only what happens after the answer.
+func _end_campaign() -> void:
+	if campaign != null:
+		campaign.state = null
+		campaign.screen = CampaignHost.SCREEN_MAP
+	_clear_backdrop()
+	_clear_mission()
+	var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
 
 
 ## docs/92 section 7.15 S4 -- the intro, `Video/Seq_1` (logical id 0).
@@ -879,12 +1013,30 @@ func close_campaign_screen() -> void:
 	# the input path this frame, and gone by the end of it.
 	_screen.queue_free()
 	_screen = null
+	_sync_hud()
+
+
+## The HUD belongs to the mission view and to nothing else.
+##
+## It used to be left up under every plate, which cost nothing while a plate
+## covered the whole screen -- and shows through the moment one has a window
+## in it, as the mission's status line drawn across a campaign map.
+func _sync_hud() -> void:
+	if _hud != null:
+		_hud.visible = _screen == null
+	if _status != null:
+		_status.visible = _screen == null
 
 
 ## What a screen's button means. The host owns the state machine; this only
 ## turns a button into a call on it.
 func _on_campaign_choice(action: String) -> void:
 	if campaign == null:
+		return
+	if action.begins_with("pick:"):
+		var deploy: SelectUnitsScreen = _screen as SelectUnitsScreen
+		if deploy != null:
+			deploy.pick(action.substr(5).to_int())
 		return
 	if action.begins_with("location:"):
 		var parts: PackedStringArray = action.split(":")
@@ -897,9 +1049,23 @@ func _on_campaign_choice(action: String) -> void:
 		return
 	match action:
 		"enter":
+			# `_build` takes the campaign map down: the mission's own view is
+			# what the deploy screen's window shows.
 			_build(campaign.state.mission)
 			if world != null:
 				campaign.begin_mission(world)
+			# **A deployment with nobody to deploy is not a screen.** A chain
+			# whose pool is empty and whose mission ships its own squad --
+			# campaign 2 on `_C_140`, which is how it starts -- went to a
+			# roster of nobody over a map of dots nobody could stand on, and
+			# read as the campaign being broken. Where the pool is empty and
+			# the mission has no squad either the screen still opens, because
+			# then there really is nothing to start and the screen is what
+			# says so.
+			if campaign.nobody_to_deploy() and campaign.may_start():
+				campaign.enter_mission()
+				close_campaign_screen()
+				return
 			var _select: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_SELECT)
 		"deployed":
@@ -932,6 +1098,10 @@ func _on_campaign_choice(action: String) -> void:
 			var _back: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
 		"map":
+			# The squad comes back off the map first: the location screen
+			# frees the mission's whole scene, and anyone already deployed
+			# had been taken out of the pool to stand on it.
+			campaign.abandon_mission()
 			var _to_map: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
 		"options":
@@ -966,12 +1136,16 @@ func _on_campaign_choice(action: String) -> void:
 			if catalogue != null:
 				catalogue.catalogue_kind = action
 				catalogue.refresh()
-		"briefing", "conditions", "tips":
+		"tips":
+			# One button for both directions, because the screen is one screen
+			# -- `Txtmod_b` carries *Tips* and *Briefing* for exactly this and
+			# the title stays *Briefing* either way (docs/24 section 7.1).
 			var brief: BriefingScreen = _screen as BriefingScreen
 			if brief != null:
-				var blocks: Dictionary = {"briefing": "A0",
-					"conditions": "B0", "tips": "C0"}
-				brief.show_block(DictRead.as_string(blocks[action]))
+				brief.show_block("A0" if brief.block == "C0" else "C0")
+		"end_game":
+			# `Txtmod_b` 18, and the map screen has already asked.
+			_end_campaign()
 
 
 ## The missions the manifest declares, in the order the converter emitted them.
@@ -1008,18 +1182,60 @@ func _quit() -> void:
 	get_tree().quit()
 
 
-func _run_tests_and_quit() -> bool:
+## The runner this build carries, or `null` when it carries none.
+func _test_runner() -> GDScript:
 	if not ResourceLoader.exists(TEST_RUNNER):
 		push_warning("%s asked for tests, but %s is not in this build"
 			% [TEST_FEATURE, TEST_RUNNER])
-		return false
+		return null
 	var script: GDScript = ResourceLoader.load(TEST_RUNNER, "GDScript") \
 		as GDScript
 	if script == null or not script.can_instantiate():
 		push_warning("%s did not load" % TEST_RUNNER)
-		return false
-	get_tree().quit(DictRead.as_int(script.call("run_all")))
-	return true
+		return null
+	return script
+
+
+## Run the suites **one per frame**, over a window that says what it is.
+##
+## The whole run used to happen inside `_ready`, which is a black frozen
+## window for the forty seconds it takes -- indistinguishable from a hang, and
+## reported as one. A suite between two frames costs the run nothing and gives
+## the window a caption and a count that move.
+##
+## The runner is reached by name rather than by class: `tests/` is not in the
+## shipping preset, so a direct `TestRunner.run_all()` here would stop
+## `main.gd` from loading in the build that matters.
+func _run_tests_and_quit(script: GDScript) -> void:
+	var note: Label = Label.new()
+	note.set_anchors_preset(Control.PRESET_FULL_RECT)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.add_child(note)
+	add_child(layer)
+	var count: int = DictRead.as_int(script.call("suite_count"))
+	note.text = TEST_CAPTION % [0, count,
+		DictRead.as_string(script.call("suite_name", 0))]
+	# Two frames: the first draws the caption, the second makes sure it is on
+	# the screen before the main thread stops answering for a suite's length.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var harness: Variant = script.call("begin_run")
+	for index: int in range(count):
+		# The name matters as much as the number: the count stands still for
+		# the length of a suite, and the longest of them is a minute.
+		note.text = TEST_CAPTION % [index, count,
+			DictRead.as_string(script.call("suite_name", index))]
+		await get_tree().process_frame
+		script.call("run_suite_at", harness, index)
+	note.text = TEST_CAPTION % [count, count, ""]
+	var code: int = DictRead.as_int(script.call("finish_run", harness))
+	# **Not in the same frame as the last suite.** docs/97 section 14 found the
+	# same shape in the audio shutdown: quitting inside the frame that let go
+	# of the last reference leaves the release to the engine's own teardown.
+	await get_tree().process_frame
+	get_tree().quit(code)
 
 
 func _fail(reason: String) -> void:
@@ -1031,7 +1247,230 @@ func _fail(reason: String) -> void:
 ## previous scene first: the whole visible tree is rebuilt from the world's
 ## views, and nothing is carried across.  Geometry and textures are kept per
 ## world set, because two of the slice's three missions share `A00`.
-func _build(mission: String) -> void:
+# --- the campaign map as a picture --------------------------------------------
+
+## Which cell each location stands on, out of a campaign map's own action
+## points (docs/27 section 2.1: *a location is an action point*).
+##
+## Static and taking a [World], so a suite can ask it the question without a
+## scene: the answer is the whole of what makes the dots land where the chain
+## says they do.
+static func location_cells_of(map: World) -> Dictionary[int, Vector2i]:
+	var out: Dictionary[int, Vector2i] = {}
+	if map == null:
+		return out
+	var width: int = map.resource.width
+	for y: int in range(map.resource.height):
+		for x: int in range(width):
+			var id: int = map.state.action_point_at(y * width + x)
+			if id > 0 and not out.has(id):
+				out[id] = Vector2i(x, y)
+	return out
+
+
+## The chain's own map as a **picture**: terrain and scenery, no script, no
+## simulation and no effects.
+##
+## `_C_XXX` and `_C_YYY` are ordinary `.lev` files, so the mission renderer
+## draws them unchanged -- but their `.lcl` is the original front end's and is
+## deliberately not run, and nothing here is played, so none of `_build`'s
+## simulation half applies.
+func _build_backdrop(mission: String) -> void:
+	if _backdrop_root != null and _backdrop_mission == mission:
+		return
+	_clear_backdrop()
+	var balance: Dictionary = CacheLoader.read_json(
+		_cache_dir + "/tables/balance.json")
+	var map_document: Dictionary = CacheLoader.read_json(
+		"%s/missions/%s/map.json" % [_cache_dir, mission])
+	if balance.is_empty() or map_document.is_empty():
+		# A cache published with the six default missions carries no campaign
+		# map. The screen still opens -- the frame, the buttons and the
+		# locations' names are all it needs -- and the window shows nothing.
+		_refresh_status("cache does not contain " + mission)
+		return
+	var header: Dictionary = DictRead.as_dict(map_document["header"])
+	var world_set: String = DictRead.as_string(header["world_set"])
+	var geometry: Dictionary = _geometry_for(world_set)
+	var textures: Dictionary = _textures_for(world_set)
+	_backdrop_world = World.create(map_document, balance, 1.0,
+		DictRead.to_strings(geometry.get("special_models", [])))
+	_backdrop_mission = mission
+	_location_cells = location_cells_of(_backdrop_world)
+	# **The one part of the script this picture does run.** `_C_XXX.lcl` and
+	# `_C_YYY.lcl` are ordinary mission scripts whose `InitMap` is four
+	# `CreateBGB` fires and a `CDTrackProgram`, and nothing else -- no camera,
+	# no simulation, nothing a turn would reach. Running it is what makes the
+	# city burn; the events it records are read for `create_bgb` and for
+	# nothing else, so the rest of `_build`'s simulation half still does not
+	# apply here.
+	var opening: Dictionary = {}
+	if _backdrop_world.attach_script(CacheLoader.read_json(
+			"%s/missions/%s/script.json" % [_cache_dir, mission])):
+		opening = _backdrop_world.run_init_map()
+
+	_backdrop_root = Node3D.new()
+	_backdrop_root.name = "Backdrop_" + mission
+	add_child(_backdrop_root)
+
+	var scenery: Scenery = Scenery.new()
+	scenery.name = "Scenery"
+	_backdrop_root.add_child(scenery)
+	scenery.build(map_document, geometry, textures)
+	var _placed: int = scenery.apply_all(_backdrop_world.terrain_snapshot())
+
+	_backdrop_rig = CameraRig.new()
+	_backdrop_rig.name = "CameraRig"
+	_backdrop_rig.eng3d = _eng3d
+	_backdrop_root.add_child(_backdrop_rig)
+	_backdrop_rig.setup(_backdrop_world.resource.width,
+		_backdrop_world.resource.height, _backdrop_world.resource.heights(),
+		_backdrop_world.resource.camera_height)
+	_backdrop_rig.camera().current = true
+
+	var environment: WorldEnvironment = WorldEnvironment.new()
+	var env: Environment = Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color8(18, 20, 26)
+	environment.environment = env
+	_backdrop_root.add_child(environment)
+
+	_build_backdrop_fires(mission, geometry, textures, opening)
+
+
+
+## The campaign map's four burning buildings.
+##
+## A pool of its own, because the mission's is gone by the time this runs and
+## the two never coexist. It is the sprite half only: `CreateBGB` type 7 makes
+## class-3 records, which are atlas tiles, so there is no model half to build
+## and no cell placers, triggers or sequences either.
+##
+## The seed is the map's name, as a mission's is its own, so the fires look the
+## same every time the map is raised without any of it reaching a world.
+func _build_backdrop_fires(mission: String, geometry: Dictionary,
+		textures: Dictionary, opening: Dictionary) -> void:
+	_backdrop_fx = BlobPool.create(float(hash(mission) % 1000000 + 1))
+	var hooks: GameBlobHooks = GameBlobHooks.over(_backdrop_fx, null)
+	hooks.rng.randomize_seed(_backdrop_fx.hooks().rng.seed)
+	_backdrop_fx.set_hooks(hooks)
+	_backdrop_hooks = hooks
+	var prototypes: Dictionary = DictRead.as_dict(
+		geometry.get("prototypes", {}))
+	var index: Dictionary[String, int] = {}
+	var next_id: int = 0
+	for name: Variant in prototypes:
+		index[DictRead.as_string(name)] = next_id
+		next_id += 1
+	hooks.model_index = index
+	if _eng3d == null:
+		_eng3d = Eng3dGeometry.from_cache(_cache_dir)
+	hooks.geometry = _eng3d
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	inputs.gore = BlobPrograms.GORE_FULL
+	inputs.display_mode = DISPLAY_MODE
+	inputs.models = index
+	inputs.geometry = _eng3d
+	hooks.inputs = inputs
+
+	_backdrop_bgb = BgbEmitters.create()
+	var _lit: int = _register_emitters(_backdrop_bgb, opening)
+	_backdrop_carry = 0.0
+
+	_backdrop_sprites = BlobSprites.new()
+	_backdrop_sprites.name = "Effects"
+	_backdrop_root.add_child(_backdrop_sprites)
+	var by_name: Dictionary = DictRead.as_dict(
+		textures.get(MeshBuilder.BY_NAME, {}))
+	var plain: Dictionary = DictRead.as_dict(
+		textures.get(MeshBuilder.PLAIN, {}))
+	var atlas_id: int = DictRead.as_int(by_name.get(ATLAS_TEXTURE, -1))
+	var atlas: Texture2D = plain.get(atlas_id) if plain.has(atlas_id) else null
+	if atlas != null:
+		_backdrop_sprites.setup(atlas, _blob_tables)
+
+
+## One frame of the map's own effects, on the same 20 fps clock a mission's
+## run at.
+func _tick_backdrop_fires(delta: float) -> void:
+	if _backdrop_fx == null or _backdrop_bgb == null:
+		return
+	_backdrop_carry += delta * CharismaState.FRAMES_PER_SECOND
+	var ticks: int = mini(int(_backdrop_carry), MAX_EFFECT_TICKS)
+	_backdrop_carry -= float(int(_backdrop_carry))
+	for _step: int in range(ticks):
+		var _lit: int = _backdrop_bgb.tick(_backdrop_fx, _backdrop_hooks)
+		var _results: Array[BlobKinds.TickResult] = _backdrop_fx.tick_all()
+	if _backdrop_sprites != null and _backdrop_rig != null \
+			and _backdrop_rig.camera() != null:
+		var _drawn: int = _backdrop_sprites.rebuild(_backdrop_fx.blobs(),
+			_backdrop_rig.camera().global_transform.basis)
+
+
+## Put the map's camera where `aMissionControl.cpp` puts it.
+##
+## [constant CameraRig.CAMPAIGN_EYE] and [constant CameraRig.CAMPAIGN_TARGET]
+## are the engine's own six numbers, so this is a set and not a fit: the
+## original's campaign map is one fixed view of the city for both chains and
+## for every mission in them.
+##
+## Still called every time the map is raised rather than once when the picture
+## is built, because the mission's own rig takes the camera in between.
+func _frame_map() -> void:
+	if _backdrop_rig == null:
+		return
+	_backdrop_rig.set_now(CameraRig.CAMPAIGN_EYE, CameraRig.CAMPAIGN_TARGET)
+
+
+func _clear_backdrop() -> void:
+	if _markers != null and _markers.get_parent() == _backdrop_root:
+		_markers = null
+	if _backdrop_root != null:
+		remove_child(_backdrop_root)
+		_backdrop_root.free()
+	_backdrop_root = null
+	_backdrop_rig = null
+	_backdrop_world = null
+	_backdrop_mission = ""
+	# The pool and the sprites were children of the root that has just been
+	# freed; the handles go with them, or the next frame ticks a freed node.
+	_backdrop_fx = null
+	_backdrop_hooks = null
+	_backdrop_bgb = null
+	_backdrop_sprites = null
+	_backdrop_carry = 0.0
+	_location_cells.clear()
+
+
+## The dots on whichever 3D scene is up.
+func _show_markers(marks: Dictionary[Vector2i, int]) -> void:
+	var scene: Node3D = _backdrop_root if _backdrop_root != null \
+		else _scene_root
+	var at: World = _backdrop_world if _backdrop_root != null else world
+	if scene == null or at == null:
+		_markers = null
+		return
+	if _markers == null or _markers.get_parent() != scene:
+		_markers = MapMarkers.new()
+		_markers.name = "Markers"
+		scene.add_child(_markers)
+	_markers.show_marks(_art, marks, at.resource.heights(),
+		at.resource.width)
+
+
+## Take the mission's whole scene down and forget the world it drew.
+##
+## Called at the head of every [method _build] and by the campaign map, which
+## replaces the mission's view with the chain's own: two 3D scenes under the
+## same root would render into one another, and the map is drawn around a hole
+## in its plate rather than over it.
+func _clear_mission() -> void:
+	# The dots may be the **campaign map's**, hanging off the backdrop rather
+	# than off this scene; only the handle to a set that is about to be freed
+	# with the scene is dropped. Nulling it either way left a second markers
+	# node behind on the backdrop, drawn over the first.
+	if _markers != null and _markers.get_parent() == _scene_root:
+		_markers = null
 	if _scene_root != null:
 		remove_child(_scene_root)
 		_scene_root.free()
@@ -1048,9 +1487,28 @@ func _build(mission: String) -> void:
 	_units = null
 	_special = null
 	_rig = null
+	# **Everything [method _process] touches, not only what [method _build]
+	# happened to reset first.** This used to be `_build`'s own head and so
+	# only ever ran with a rebuild immediately behind it; the campaign map
+	# calls it and then leaves the game with no world for as long as the map
+	# is up. `_sprites` and `_models` are children of the scene that was just
+	# freed, so a frame after this with either still set called a method on a
+	# freed instance -- and `_fx` and `_special` would have gone on ticking a
+	# pool for a mission that is not there.
+	_sprites = null
+	_models = null
+	_fx = null
+	_fx_carry = 0.0
+	_triggers = null
+	_sequences = null
+	_director = null
+	_walk_cameras.clear()
+	_footstep_cues.clear()
+	_pending_reactions.clear()
+	_drawn_terrain = {}
+	_last_query = null
 	world = null
 	_selected = -1
-	_mission = mission
 	# `SaveCamera` puts six numbers here and `LoadCamera` takes them out
 	# (docs/42 section 2.4). A mission whose script saves without loading
 	# would otherwise hand its coordinates to the next mission's first
@@ -1063,6 +1521,12 @@ func _build(mission: String) -> void:
 	if _texts != null:
 		_texts.clear()
 		_texts.clear_caption()
+
+
+func _build(mission: String) -> void:
+	_clear_backdrop()
+	_clear_mission()
+	_mission = mission
 
 	var balance: Dictionary = CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json")
@@ -1136,6 +1600,7 @@ func _build(mission: String) -> void:
 	_units.build(world, geometry, textures)
 
 	_build_effects(mission, world_set, textures)
+	_register_emitters(_bgb, opening_script)
 	# `INIT MAP` is where every shipped mission puts its `CDTrackProgram`, and
 	# the return value was being discarded. The set pieces it may also run are
 	# applied by `core` before this point, so what is left for `game` is the
@@ -1200,6 +1665,10 @@ func _build_effects(mission: String, world_set: String,
 	var arm_hooks: GameBlobHooks = GameBlobHooks.over(_fx, null)
 	arm_hooks.rng.randomize_seed(_fx.hooks().rng.seed)
 	_fx.set_hooks(arm_hooks)
+	_fx_hooks = arm_hooks
+	# `CreateBGB`'s table is the script's own effects, so it is built with the
+	# pool and filled from `INIT MAP` once that has run.
+	_bgb = BgbEmitters.create()
 	# The pool resolves a model name against **this world set's** prototypes.
 	# A blob model the set does not carry comes back -1 and the effect is
 	# cancelled, which is the original's own behaviour: four of the thirty
@@ -1791,6 +2260,9 @@ static func zoom_delta_for(event: InputEvent) -> float:
 
 
 func _process(delta: float) -> void:
+	# The location map is a picture with a clock of its own: no simulation
+	# behind it, and nothing below this line applies to it.
+	_tick_backdrop_fires(delta)
 	if _playback.is_running():
 		var _going: bool = _playback.advance(delta, _picture_busy())
 	if _units != null:
@@ -1884,6 +2356,11 @@ func _tick_effects(delta: float) -> int:
 	# same shape as the walk's own.
 	ticks = mini(ticks, MAX_EFFECT_TICKS)
 	for _step: int in range(ticks):
+		# **The emitters first**, as `aCheckInBlobObjects` `0x0041E3D0` does:
+		# its twenty-slot loop runs before the record sweep, so a flame lit
+		# this frame is ticked this frame.
+		if _bgb != null:
+			var _lit: int = _bgb.tick(_fx, _fx_hooks)
 		var _results: Array[BlobKinds.TickResult] = _fx.tick_all()
 	# The environment turns on the same 20 fps clock the effects do, and for
 	# the same number of ticks: `aRefreshView` walks the object array once a
@@ -2054,8 +2531,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 	# A campaign screen owns the rest of the input while it is up: without
 	# this the mouse reached the 3D pick behind the plate and selected units
-	# through it.
+	# through it. A screen drawn **around a window** wants exactly that pick
+	# back, for the part of the picture its own frame does not cover.
 	if _screen != null:
+		_screen_input(event)
 		return
 	if world == null:
 		return
@@ -2158,6 +2637,133 @@ func _toggle_shell() -> void:
 	if not in_mission():
 		return
 	var _up: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+
+
+## A click, a hover or a camera command inside a screen's own window.
+##
+## The bounds test is done as a **fraction of the viewport** rather than in
+## pixels: the plate is stretched to the whole of it, so a plate coordinate is
+## a fraction and nothing here has to know which space the event arrived in.
+##
+## The camera half is deliberately a short, named list rather than a fall
+## through to `_unhandled_input`'s own: a screen is up, and everything it does
+## not name still belongs to the screen.
+func _screen_input(event: InputEvent) -> void:
+	if _screen == null or not _screen.takes_world_clicks():
+		return
+	var on_backdrop: bool = _backdrop_root != null
+	var showing: World = _backdrop_world if on_backdrop else world
+	var rig: CameraRig = _backdrop_rig if on_backdrop else _rig
+	if showing == null or rig == null:
+		return
+	var zoom: float = zoom_delta_for(event)
+	if not is_zero_approx(zoom):
+		rig.zoom_by(zoom)
+		return
+	if event is InputEventKey and event.is_pressed():
+		var key: InputEventKey = event
+		# **Rotating is the mission's, not the map's.** The map's eye is the
+		# fixed pair of [constant CameraRig.CAMPAIGN_EYE] and the rig's
+		# quadrant is still 0, so a quarter turn there would jump rather than
+		# pivot. The original does turn this view -- `0x004558F0` swings the
+		# eye about the target -- but by an angle it accumulates and decays,
+		# which is not transcribed; the deployment view is an ordinary mission
+		# camera and turns like one.
+		if not on_backdrop and key.keycode == KEY_Q:
+			rig.rotate_step(-1)
+		elif not on_backdrop and key.keycode == KEY_E:
+			rig.rotate_step(1)
+		elif not on_backdrop and key.keycode == KEY_1:
+			_set_deploy_view(CameraRig.View.EYES)
+		elif not on_backdrop and key.keycode == KEY_2:
+			_set_deploy_view(CameraRig.View.UNIT)
+		elif not on_backdrop and key.keycode == KEY_3:
+			_set_deploy_view(CameraRig.View.MAP)
+		return
+	var at: Vector2 = Vector2.ZERO
+	var clicked: bool = false
+	if event is InputEventMouseButton:
+		var click: InputEventMouseButton = event
+		if not click.pressed or click.button_index != MOUSE_BUTTON_LEFT:
+			return
+		at = click.position
+		clicked = true
+	elif event is InputEventMouseMotion:
+		var motion: InputEventMouseMotion = event
+		# docs/42 section 2.5: the middle button held drags the view, here as
+		# in a mission.
+		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
+			rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
+			return
+		at = motion.position
+	else:
+		return
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	if size.x <= 0.0 or size.y <= 0.0:
+		return
+	var window: Rect2 = _screen.plate_window()
+	var fraction: Vector2 = at / size
+	if not Rect2(window.position / CampaignScreen.PLATE_SIZE,
+			window.size / CampaignScreen.PLATE_SIZE).has_point(fraction):
+		# **The pointer leaving the picture is an answer too.** A name and a
+		# ring left standing on the last cell the pointer crossed read as a
+		# selection that was never made.
+		if not clicked:
+			_screen.world_hover(Vector2i(-1, -1))
+			if _markers != null:
+				_markers.clear_ring()
+		return
+	# **The dots are aimed at first.** They are overlay sprites, so what the
+	# pointer is on is a sprite and not a patch of ground; the ray pick is
+	# what answers for the ground the dots do not cover. On the campaign map
+	# the ray meets its height plane at about six degrees and a dot was
+	# unclickable without it (see [method MapMarkers.cell_at]).
+	var cell: Vector2i = Vector2i(-1, -1)
+	if _markers != null:
+		cell = _markers.cell_at(rig.camera(), at)
+	if cell.x < 0:
+		cell = cell_under(rig.camera(), showing, at, 1.0)
+	if clicked:
+		_screen.world_click(cell)
+	elif _markers != null:
+		_screen.world_hover(cell)
+		_markers.ring(_art, cell)
+
+
+## docs/42 section 2.4's three views on the deployment screen.
+##
+## [method _set_view] cannot be used: it frames a **unit**, and the whole of
+## what this screen is for is that the player has none on the map yet. The
+## deployment area is the subject instead, and the map view is what the
+## screen opens in -- the original deploys from above.
+func _set_deploy_view(mode: CameraRig.View) -> void:
+	if _rig == null or world == null or _director == null:
+		return
+	var at: Vector2i = _deployment_centre()
+	if at.x < 0:
+		return
+	if mode == CameraRig.View.MAP:
+		var _flight: float = _director.view_map(world, at.x, at.y)
+		_rig.settle()
+		return
+	# A soldier already on the map is the better subject, and the engine's own
+	# "on the unit" placement takes one. Before the first is placed there is
+	# nothing to frame but the landing area, so the same placement is made
+	# over the cell instead of over a body.
+	var slot: int = next_friendly_slot(world, -1)
+	if slot >= 0:
+		var _flown: float = _director.view_unit(world, slot)
+		_rig.settle()
+		return
+	var view: Dictionary = world.cell_view(at.x, at.y)
+	var centre: Vector3i = CameraRig.cell_object(at.x, at.y,
+		DictRead.as_int(view["height"]))
+	var goal: Dictionary = _rig.place_on_unit(centre, 0, Vector2i(0, 1),
+		8, 7, 0)
+	_rig.set_view_mode(mode)
+	_rig.set_now(DictRead.as_vector3i(goal["eye"]),
+		DictRead.as_vector3i(goal["target"]))
+	_rig.settle()
 
 
 ## docs/42 section 2.4's three views, on keys 1, 2 and 3 -- the remake's
@@ -2321,23 +2927,40 @@ func turn_player() -> int:
 ## rather than against one flat plane -- the map is not flat, and a single-plane
 ## test picks the wrong cell on anything raised.
 func _cell_under(screen: Vector2) -> Vector2i:
-	var camera: Camera3D = _rig.camera()
+	return cell_under(_rig.camera(), world, screen)
+
+
+## The same question asked of any camera over any world, which is what the
+## campaign map needs: its picture is a world of its own and is drawn by a
+## rig of its own.
+## *tolerance* is how far from a cell's centre the ray may land, in Godot
+## units, where a cell is two of them across. The mission view asks for a
+## third of a cell, which is what a click on a *unit* wants; a campaign map
+## asks for the whole cell, because there the cell **is** the target and the
+## camera is the length of a city away from it.
+static func cell_under(camera: Camera3D, at: World, screen: Vector2,
+		tolerance: float = 0.7) -> Vector2i:
+	if camera == null or at == null:
+		return Vector2i(-1, -1)
 	var origin: Vector3 = camera.project_ray_origin(screen)
 	var direction: Vector3 = camera.project_ray_normal(screen)
 	if absf(direction.y) < 0.0001:
 		return Vector2i(-1, -1)
 	var best: Vector2i = Vector2i(-1, -1)
 	var best_distance: float = INF
-	for y: int in range(world.resource.height):
-		for x: int in range(world.resource.width):
-			var cell: Dictionary = world.cell_view(x, y)
+	# The height straight off the state rather than through `cell_view`: this
+	# runs on every mouse motion over a campaign map, and building a
+	# ten-field dictionary per cell to read one of them was the whole cost.
+	var width: int = at.resource.width
+	for y: int in range(at.resource.height):
+		for x: int in range(width):
 			var centre: Vector3 = WorldSpace.cell_centre(x, y,
-				DictRead.as_int(cell["height"]))
+				at.state.height_at(y * width + x))
 			var t: float = (centre.y - origin.y) / direction.y
 			if t <= 0.0:
 				continue
 			var distance: float = (origin + direction * t).distance_to(centre)
-			if distance < 0.7 and distance < best_distance:
+			if distance < tolerance and distance < best_distance:
 				best_distance = distance
 				best = Vector2i(x, y)
 	return best
@@ -2858,6 +3481,26 @@ func _drain_pending_reactions() -> int:
 		DictRead.as_int(batch["mover"]), DictRead.as_int(batch["x"]),
 		DictRead.as_int(batch["y"]))
 	return _pending_reactions.size()
+
+
+## Fill a `CreateBGB` table from a script's outcome -- docs/28 section 8.2.
+##
+## The command is the one effect a **script** places by itself, and `INIT MAP`
+## is where every shipped call sits: fourteen in the corpus, four of them on
+## each campaign map. The interpreter records the eight arguments and nothing
+## consumed them until now, which is why the burning buildings on the location
+## map were not burning.
+func _register_emitters(table: BgbEmitters, outcome: Dictionary) -> int:
+	if table == null or outcome.is_empty():
+		return 0
+	var made: int = 0
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		if event.is_empty() or AudioEvents.name_of(event) != CREATE_BGB:
+			continue
+		if table.register_event(SetpieceDriver._numbers(event)):
+			made += 1
+	return made
 
 
 ## The sounds one run of a mission script asks for.

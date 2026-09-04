@@ -88,6 +88,20 @@ func spawn(creator: int, args: Array, source: Blob) -> bool:
 	var target: BlobPool = pool()
 	if target == null or inputs == null:
 		return super(creator, args, source)
+	return emit(creator, args)
+
+
+## The same request with **no record asking for it**.
+##
+## Every other creator here is reached from an arm, which is a blob asking for
+## a child; `CreateBGB`'s emitter is a line of `INIT MAP` and a slot of the
+## twenty-entry table, so there is no source (`0x0041E2AF` calls the creator
+## from the sweep and not from a record). [method spawn] is this with the
+## no-pool fallback in front of it.
+func emit(creator: int, args: Array) -> bool:
+	var target: BlobPool = pool()
+	if target == null or inputs == null:
+		return false
 	var numbers: PackedInt32Array = PackedInt32Array()
 	for value: Variant in args:
 		numbers.append(DictRead.as_int(value))

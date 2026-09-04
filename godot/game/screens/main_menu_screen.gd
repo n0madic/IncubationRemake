@@ -24,6 +24,24 @@ const ID_INSTANT_ACTION: int = 103
 const ID_MENU_LOAD_GAME: int = 104
 const ID_EXIT: int = 105
 
+## The action that leaves a running mission for the boot menu.
+##
+## The original's pause menu has no such entry -- its `Exit` leaves the
+## *program* -- but this remake's shell is the only way back to a chain
+## chooser or a save slot, and `ESC` over a mission used to offer nothing
+## between going on and quitting the game altogether. The question it asks is
+## the shipped one: `Txtmod_d` 60, *Back to the Main Menu without saving?*
+const MAIN_MENU: String = "main_menu"
+
+## Where the question and its two answers go. Not in the cascade: that is
+## `Menu_a.lcl`'s table for a *menu*, and it runs a question's answers
+## diagonally away from each other and the question itself into the screen's
+## own name at (500, 50).
+const QUESTION_AT: Vector2 = Vector2(0.0, 170.0)
+const QUESTION_SIZE: Vector2 = Vector2(640.0, 24.0)
+const ANSWER_AT: Vector2 = Vector2(225.0, 210.0)
+const ANSWER_STEP: Vector2 = Vector2(0.0, 40.0)
+
 ## `Menu_a.lcl`'s own cascade, read out of the `:MainMenu` block. The plate is
 ## 640x480 and so is the window, so these are screen coordinates.
 const TITLE_AT: Vector2 = Vector2(500.0, 50.0)
@@ -51,6 +69,10 @@ var behind: bool = false
 ## button that promises a game is the inert control section 7.1 forbids.
 var has_any_save: bool = false
 
+## The cascade, so a confirmation can rebuild it without taking the plate's
+## own frame and title down with it.
+var _entries: Control = null
+
 
 func plate_name() -> String:
 	return PLATE if paused else TITLE_PLATE
@@ -63,29 +85,65 @@ func build() -> void:
 	root().add_child(title)
 	place_on_plate(title, TITLE_AT)
 
+	_entries = Control.new()
+	_entries.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_entries.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root().add_child(_entries)
+	_show_actions()
+
+
+## Leaving a mission for the boot menu drops it, and the campaign with it.
+func needs_confirming(action: String) -> bool:
+	return action == MAIN_MENU
+
+
+func _show_actions() -> void:
+	if _entries == null:
+		return
+	clear_children(_entries)
 	var entries: Array[Array] = []
-	# The way back comes first whenever there is anything to go back to --
-	# a running mission **or** a campaign whose map is behind the plate.
-	# Without it the menu reached from the map offered only to start a new
-	# campaign over the one being played.
-	if paused or behind:
-		entries.append(["resume", label_for(BANK_MISSION, ID_CONTINUE)])
-	if paused:
-		entries.append(["save", label_for(BANK_SQUAD, ID_SAVE_GAME)])
+	if pending == MAIN_MENU:
+		var question: Label = make_label(label_for(BANK_REPORT, ID_CONFIRM))
+		question.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		question.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_entries.add_child(question)
+		place_on_plate(question, QUESTION_AT, QUESTION_SIZE)
+		entries.append([CANCEL, label_for(BANK_REPORT, ID_NO)])
+		entries.append([MAIN_MENU, label_for(BANK_REPORT, ID_YES)])
 	else:
-		entries.append(["campaign", label_for(BANK_MENU, ID_START_CAMPAIGN)])
-		entries.append(["instant", label_for(BANK_MENU, ID_INSTANT_ACTION)])
-	if has_any_save:
-		entries.append(["load", label_for(BANK_MENU, ID_MENU_LOAD_GAME)])
-	entries.append(["options", strings_own(OWN_OPTIONS)])
-	entries.append(["quit", label_for(BANK_MENU, ID_EXIT)])
+		# The way back comes first whenever there is anything to go back to --
+		# a running mission **or** a campaign whose map is behind the plate.
+		# Without it the menu reached from the map offered only to start a new
+		# campaign over the one being played.
+		if paused or behind:
+			entries.append(["resume", label_for(BANK_MISSION, ID_CONTINUE)])
+		if paused:
+			entries.append(["save", label_for(BANK_SQUAD, ID_SAVE_GAME)])
+		else:
+			entries.append(["campaign",
+				label_for(BANK_MENU, ID_START_CAMPAIGN)])
+			entries.append(["instant",
+				label_for(BANK_MENU, ID_INSTANT_ACTION)])
+		if has_any_save:
+			entries.append(["load", label_for(BANK_MENU, ID_MENU_LOAD_GAME)])
+		entries.append(["options", strings_own(OWN_OPTIONS)])
+		# Only where there is something to leave: at the boot menu this **is**
+		# the main menu, and a button that led back to the screen it is on is
+		# the inert control section 7.1 forbids.
+		if paused or behind:
+			entries.append([MAIN_MENU, label_for(BANK_MENU, ID_TITLE)])
+		entries.append(["quit", label_for(BANK_MENU, ID_EXIT)])
 
 	for index: int in range(entries.size()):
 		var row: Array = entries[index]
 		var button: Button = make_button(DictRead.as_string(row[0]),
 			DictRead.as_string(row[1]))
 		var at: Vector2 = FIRST_AT + STEP * float(index)
-		if index == entries.size() - 1:
+		if pending != "":
+			at = ANSWER_AT + ANSWER_STEP * float(index)
+		elif index == entries.size() - 1:
+			# The cascade's last entry sits lower than the step alone would
+			# put it -- that is `Menu_a.lcl`'s own table.
 			at = LAST_AT
-		root().add_child(button)
+		_entries.add_child(button)
 		place_on_plate(button, at, BUTTON_SIZE)

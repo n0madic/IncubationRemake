@@ -1480,6 +1480,265 @@ that had not changed. `RenderingServer.force_draw(false)` before the read fixes
 it. Worth recording because it cost a wrong diagnosis: the first reading of
 "the old plate is still up" was the driver's camera, not the game.
 
+**The four screens the original draws as pictures (2026-09-04).** The shell
+made the campaign reachable; it did not make it *look* like the game. Four of
+its screens were lists where the original has a picture, and the fix in each
+case was to stop inventing a layout and read the one the shipped data already
+carries.
+
+| Screen | Was | Is |
+|---|---|---|
+| the location map | a column of buttons on a full plate | the chain's own `.lev` behind a frame, one dot per open location |
+| the briefing | a 520x300 text box, pictures 30 units off the right edge | docs/24 §7.1's box `84, 77, 280, 276`, pictures at the programme's own `x, y` |
+| the tips | a third button on the same screen | the same screen with `C0` in the `230`-wide box and the tip programme's pictures |
+| deployment | two lists, names against `x, y` pairs | the mission's own view with a dot on every free landing cell |
+
+Four decisions behind that, and the first is the one the rest hang off.
+
+**A plate with a window in it, not a plate over a picture.** The shipped plates
+are opaque 8-bit bitmaps with no alpha, so a hole cannot be painted — it has to
+be *left*. `CampaignScreen.plate_window()` names a rectangle in the plate's own
+640x480 units and the base class then draws the plate as **four strips** around
+it, each an `AtlasTexture` of the plate's own pixels put back where they came
+from. What shows through is the root viewport, which is where the 3D already
+is. `plate_1`'s interior was measured off the bitmap rather than guessed: the
+frame's metal highlights stop at x 34 and y 36 and the bottom band starts at
+412, and the window stops short of that band at 392 so a screen has somewhere
+inside its own frame to write a line that is not over the picture. `_root` and
+`_body` became `MOUSE_FILTER_IGNORE` for the same reason — a [Control] stops
+mouse events by default, and the clicks that land in the window have to reach
+the pick behind it.
+
+**The map's picture is a world of its own, and it is not `world`.** `_C_XXX`
+and `_C_YYY` are ordinary `.lev` files, so the mission renderer draws them
+unchanged — but half of `game` reads `world != null` as *a mission is being
+played*, and conflating the two was already a defect once (§7.15's
+`in_mission()`). So the backdrop is `_backdrop_world` with a root and a rig of
+its own, built with **no script, no `run_init_map`, no effects and no
+`apply_world`**: a campaign map's `.lcl` is the original front end's and this
+remake's flow is its own (D3). Two 3D scenes cannot share a root, so opening
+the map frees the mission's scene and `_build` frees the backdrop; the view is
+computed from the map's own span rather than read from the script that is not
+run.
+
+**The dots are 3D and the clicks go through the pick the game already has.**
+The alternative was to `unproject_position` each cell and move a [Button]
+there every frame, which needs the window-pixel to plate-unit conversion the
+`canvas_items` stretch introduces and is a second implementation of "which
+cell is that". A [Sprite3D] with `fixed_size` and `no_depth_test` stands on
+the cell — which is what a location **is**, docs/27 §2.1's action point — and
+`SliceMain.cell_under` answers the click, generalised from the mission's own
+`_cell_under` to any camera over any world. The marker art is the shipped
+`map.LIB`: 0 red for a battle, 2 blue for an upgrade, 3 yellow for a dialogue.
+A location the chain enables but its map has no cell for — docs/27 §2.5 names
+two on `_C_XXX` — is skipped rather than drawn at the origin.
+
+**`B0` is not on the briefing screen.** docs/24 §7.1's eight call sites are the
+whole set, and the short conditions block is asked for by the unit-selection
+and map screens; this screen asks for `A0` and `C0` and nothing else. So the
+action row is three, as the original's is: *Back*, a toggle whose caption is
+`Txtmod_b` 31 or 32 — the bank carries *Tips* and *Briefing* for exactly this
+— and *Continue*. The title stays *Briefing* on both. The toggle is absent
+where the file has no `C0` at all, which 25 of the 116 do not.
+
+Two defects fell out of the change rather than being looked for. Backing out
+of a deployment **cost the campaign a soldier per cell already clicked**:
+`aTransferUnitFromPoolToMap` takes the record out of the pool, and the map
+screen now frees the mission's whole scene, so the units were simply gone —
+`CampaignHost.abandon_mission()` is `aCopyUnitPool(1, 0)`, the same call the
+debriefing's *replay* makes, and it also puts `campaign.screen` back, which
+the old *Main Map* arm never did. And a dot stayed on a cell somebody was
+already standing on, which §7.1 counts as a control whose only answer is a
+refusal; the picture is laid out from the **free** landings now. The
+deployment screen also picks the next soldier itself, so the one refusal a
+player could not diagnose — a cell clicked with nobody selected — is left for
+the case it actually means, an empty squad.
+
+*End game* — `Txtmod_b` 18, which the original puts on this bar beside *Save
+game* — **asks first**. It drops a campaign that may never have been saved, and
+`Txtmod_d` 60/61/62 is the question and its two answers: the bank carries
+*Back to the Main Menu without saving? / Yes / No* for exactly this button. The
+first press swaps the action row for those two and writes the question where
+the location's name goes; the second does it. A click that cannot be undone
+and says nothing is what §7.4 forbids, and this is the only button on any of
+these plates that can.
+
+**And `_build`'s head became a teardown.** Freeing the mission's scene was
+only ever the first half of building the next one, so it reset what `_build`
+was about to overwrite and no more. The map screen calls it and then leaves
+the game with **no world for as long as the map is up**, with `_process` still
+running every frame — and `_sprites` and `_models` are children of the scene
+that was just freed, so the first frame after would have called a method on a
+freed instance. `_clear_mission()` now clears everything a frame touches: the
+two effect nodes, the pool and its carry, the triggers, the sequence queue,
+the camera director, the walk cameras, the footstep cues, the pending
+reactions, the drawn terrain and the last query.
+
+The HUD is a mission's and nothing else's. It used to be left up under every
+plate, which cost nothing while a plate covered the whole screen and shows
+through the moment one has a window in it. `tour.gd` gained `press CAPTION`
+and `map_click X Y` for the same reason a driver cannot click a plate
+coordinate any more: the buttons are laid out in the plate's units and the
+window is not.
+
+**A second pass over the four, and the shipping build (2026-09-04).** What the
+first pass delivered was the shape; four things it did not deliver were the
+reasons a player could read it.
+
+**The map's camera is the original's, and it is a constant.** This was a
+computed view for one pass -- a distance from the box of open locations and a
+height from the map's own span -- on the belief that the original's was set up
+by a front-end script this remake does not run. It is not: `_C_XXX.lcl` and
+`_C_YYY.lcl` set no camera at all (four `CreateBGB` fires and a
+`CDTrackProgram`, and nothing else), and the view is six immediates in
+`aMissionControl.cpp` handed to `aSetCameraPosition` when the map is raised --
+eye `(-19088, 98112, 9088)`, target `(56800, 56800, 0)`, one fixed view of the
+city for both chains and every mission in them (docs/27 §2.6, pinned by
+`campaign_tables.py --check`). The computed view put the eye four times higher
+than the header's own camera height and nowhere the original ever puts it.
+Two things came with it: the window the plate leaves clear is the engine's own
+3D viewport, `(65, 57)` by 518 x 306, and the plate is `plate_3` -- the one
+shipped plate with a picture frame inset in it, whose dark interior is exactly
+that rectangle. The window had been measured off `plate_1`'s frame, which is a
+different plate and 570 x 356. The deployment screen keeps the **mission's**
+viewport instead, `(60, 34)` by 520 x 340 (`0x00419D90`), because that is what
+it is a picture of.
+
+**The six numbers are the engine's; the projection is not.** The rig's camera
+is a plain `Camera3D` at Godot's own field of view with no frustum offset,
+while the engine projects into the 518 x 306 window centred on (324, 210) --
+so the same eye and target through a different frustum is not pixel for pixel
+the same framing. Eng3d's own perspective constant is not measured and nothing
+here compensates for the window's offset; the view is the original's stance
+rather than its projection, and that is stated rather than tuned by eye.
+
+**The city burns.** `_C_XXX.lcl` and `_C_YYY.lcl` each light four buildings
+with `CreateBGB (n, 7_fire, ...)`, and that plus a `CDTrackProgram` is the
+whole of their `InitMap`. The command was recorded by the interpreter and read
+by nothing -- the fifth slice left it out because none of its six missions
+calls it -- so the backdrop, built with no script at all, was a still city. It
+now runs **that one arm** of the map's own program and takes the `create_bgb`
+events out of the outcome; nothing else about the script is used, and no turn,
+no simulation and no set piece applies. `game/fx/bgb_emitters.gd` is the
+twenty-slot table and `0x0041E1A0`'s cadence (docs/28 §8.2, pinned by
+`blob_tables.py`'s `bgb.*`), and `BlobPrograms.main_map_fire` is
+`aBlob_CreateMainMapFire` -- three draws and one constructor call. The map gets
+a pool and a sprite cloud of its own, on the same 20 fps clock a mission's runs
+at; a mission gets the same table, so the other ten shipped calls now have
+somewhere to land. Two things it does **not** do: types 2..6 create their
+object at registration and none of those creators is transcribed, so they are
+counted in `BgbEmitters.unmade` rather than dropped; and the map's CD track is
+still not played.
+
+**And the dots are picked on the screen, not on the ground.** `cell_under`
+crosses the pointer's ray with each cell's own height, which is the right
+answer under a mission's camera and a fragile one under this: 2.8 fields above
+a city 27 fields away, the ray meets a height plane at about six degrees, so
+one pixel of pointer movement is half a field of ground and a dot two pixels
+across became unclickable the moment the camera became faithful. The markers
+are overlay sprites -- `no_depth_test`, `fixed_size`, drawn after the world --
+so what the player aims at is the sprite: `MapMarkers.cell_at` answers with
+the nearest projected marker inside ten plate units, and the ray pick answers
+for the ground the dots do not cover. Both screens use it, and on the
+deployment screen it also means a click a hair off a landing dot lands on it.
+
+**The dots are depth-tested — no, they are not, and that was measured.** A dot
+drawn over whatever tower stood in front of its cell looks as if it were
+floating somewhere of its own, so honouring the depth buffer was tried. It
+hides them: a campaign map's visible ground is the `.3DW` clones and a
+location's height is the **control map's**, so the dot sits under the street
+it belongs to, and campaign 1's three open locations disappeared entirely.
+`no_depth_test` stays, which is also what the original does — these are
+overlay sprites drawn after the world. What answers *which* dot is which is
+the ring: `map.LIB` 7, the shipped 17x17 the original rings the pointed-at
+location with, moved rather than one per cell, and taken down when the pointer
+leaves the picture. The name moved with it, from the bottom band — where it
+shared a line with the purse and a row of button captions — to the top of the
+window, over the sky.
+
+**Deployment is from above.** `aSelectUnits` deploys top-down and so does this:
+the screen opens in docs/42 §2.4's map view over the deployment area, and the
+mission's own view keys work under it — `2` for the ordinary angled view, `3`
+for the map, `Q`/`E` to turn, the wheel to zoom and the middle button to drag.
+Before the first soldier is placed there is no unit to frame, so the engine's
+own *on the unit* placement is made over the landing cell instead; after one
+is placed it frames the soldier. The camera half of `_screen_input` is a short
+**named** list rather than a fall-through: a screen is up, and everything it
+does not name still belongs to the screen. Turning is the mission's and not
+the map's — the map's eye is the fixed pair above while the rig's quadrant is
+still 0, so a turn there would jump rather than pivot. The original *does*
+turn that view: `0x004558F0` swings the eye about the target by an angle it
+accumulates and decays, clamping the height into `[-9600, 19200]`. What feeds
+it a non-zero delta is left UNVERIFIED in docs/27 §2.6 and nothing here
+transcribes the turn.
+
+**`ESC` over a mission has a way out that is not quitting the program.** The
+pause menu offered *Continue*, *Save game*, *Options* and *Exit Program*, so
+the only route back to a chain chooser or a save slot was to shut the game
+down. *Main Menu* (`Txtmod_a` 100) drops the mission and the campaign, which
+is why it asks the same `Txtmod_d` 60 the map's *End game* asks — and both now
+go through one seam in [CampaignScreen]: `pending`, `needs_confirming()` and
+`_show_actions()`, because the second of them was written by copying the
+first. It is absent at the boot menu, where this screen **is** the main menu.
+
+**The shipping build is built again.** Godot 4.7.2's export templates are
+installed (they were 4.7.1 against a 4.7.2 engine, which is why this was on
+the open list), and both presets export: the shipping one and `macOS Tests`,
+which runs the suites inside a real build against the published cache — all 92
+campaign maps. That run found what the editor's cannot: **the warnings gate is
+the editor's**, and it now says so. Two of its six settings are at the
+engine's own default, so `project.binary` omits them and reading them with a
+wrong fallback reported the gate as off; and the compiler that turns those
+levels into errors has already run, so the deliberately violating fixture --
+shipped as source by that preset -- compiles at load under the runtime's own
+levels and is accepted. The four levels that are not at the default are still
+checked in both worlds.
+
+That run also reported `ERROR: 103 resources still in use at exit`, which the
+editor's does not, and the first reading of it -- that an exported build holds
+the `class_name` table to the end -- was wrong. **It was one `static var`.**
+A shipping build made to `load()` all 140 scripts and quit reported nothing;
+disabling the suites' own script-loading probe changed nothing; running the
+suites one at a time put the whole of it on the twenty-third,
+`test_presentation_native.gd`, whose `static var _cached_geometry` was the only
+static variable in the project. A script that declares one is kept for the
+life of the process, and a kept script keeps every script it names -- 103 of
+them from there, the transitive closure of that file. `@static_unload` does
+**not** lift it while the run still holds an instance; moving the variable onto
+the suite does, and the exported run is now clean of both the error and the
+123 leaked `GDScript`/`GDScriptNativeClass` instances beside it. It is a
+second way into the same failure the reference-cycle rule guards, and
+`CLAUDE.md` carries it beside that one.
+
+**The test build says what it is.** It ran all thirty-two suites inside
+`_ready`, which is a black frozen window for the length of the run and was
+reported as a hang. The runner is now three pieces -- `begin_run`,
+`run_suite_at`, `finish_run` -- and the exported build steps them **one suite
+per frame** behind a caption that names the build and counts them off.
+`tests/main.gd`'s headless entry still calls `run_all`, which is those three
+composed.
+
+**The campaign's own two maps are in every cache.** `_C_XXX` and `_C_YYY` are
+not missions -- they are the screen the missions are chosen from -- and they
+arrived only with `--campaign-maps`, so the default six-mission cache that
+every developer has opened the location map onto nothing. Every selection
+carries them now, an explicit `--missions` included; they are 40x40 `A00` maps
+and cost 1.1 MiB over a set that already has an `A00` mission, which is
+what moved the two cache ceilings by one MiB each. The degradation stays for a
+cache made before this: with no picture behind it the map screen draws its
+plate whole and offers the open locations as a list of rows, which is what the
+screen was before the picture existed. A hole cut for a picture that is not
+there is a black rectangle where the frame should be.
+
+**A deployment with nobody to deploy is not a screen.** Campaign 2 starts with
+an empty pool -- `aCreateUnitPoolForCampaign(2)` is a bare return -- and
+`_C_140` places its own squad, which the debriefing then recovers into the
+pool. The deployment screen still opened: a roster of nobody, a map of dots
+nobody could stand on, and one button. It is skipped where the pool is empty
+**and** the mission ships a player-0 squad of its own. Where the pool is empty
+and the mission has no squad either it still opens, because then there really
+is nothing to start and the screen is what says so.
+
 **The converter learned five more plates.** `Graphics/*.bmp` — `Title`,
 `Credits`, `Ship`, `MsgScr`, `Bluebyte` — sat beside `Graphics/GUI` and
 `Graphics/Briefing` and were baked by nothing, so 103 of the installation's 108

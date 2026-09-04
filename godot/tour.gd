@@ -25,7 +25,10 @@ extends SceneTree
 ## | `click X Y` | a left click on the centre of map cell `(X, Y)` |
 ## | `click_unit SLOT` | a left click on the cell a unit stands on |
 ## | `click_screen X Y` | a left click at raw viewport pixels |
+## | `hover X Y` | a mouse motion at raw viewport pixels |
 ## | `buttons` | every button on the screen that is up, with its rectangle |
+## | `press CAPTION` | push the button whose caption contains CAPTION |
+## | `map_click X Y` | a click on one map field of a screen's own window |
 ## | `walk_to X Y` | a left click on the reachable cell nearest `(X, Y)` |
 ## | `cell X Y` | the control map's cell: height, field type, action point |
 ## | `blobs` | every live blob: kind, class, model, position, velocity, rotation |
@@ -229,6 +232,14 @@ func _run(line: String) -> void:
 				_click_cell(parts[1].to_int(), parts[2].to_int())
 			else:
 				_log.append("click: wants X and Y")
+		"hover":
+			# `hover X Y` -- a mouse **motion** at raw viewport pixels. The
+			# location map answers a hover with a name and a ring, and a
+			# driver that could only click could not photograph either.
+			if parts.size() > 2:
+				_hover(parts[1].to_float(), parts[2].to_float())
+			else:
+				_log.append("hover: wants X and Y in pixels")
 		"click_screen":
 			if parts.size() > 2:
 				_click_screen(parts[1].to_float(), parts[2].to_float())
@@ -236,6 +247,24 @@ func _run(line: String) -> void:
 				_log.append("click_screen: wants X and Y in pixels")
 		"buttons":
 			_buttons()
+		"press":
+			# `press CAPTION` -- push the button whose caption contains
+			# CAPTION. A screen's buttons are laid out in the plate's own
+			# units and the window is not, so clicking one by pixel means
+			# reproducing the stretch; naming it does not.
+			if parts.size() > 1:
+				_press(line.substr(6).strip_edges())
+			else:
+				_log.append("press: wants part of a caption")
+		"map_click":
+			# `map_click X Y` -- a click on a map **field** in the window of a
+			# screen drawn around one, which is what the location map and the
+			# deploy screen take. The ray is what a mouse goes through; this
+			# is the same answer handed straight to the screen.
+			if parts.size() > 2:
+				_map_click(parts[1].to_int(), parts[2].to_int())
+			else:
+				_log.append("map_click: wants a cell X and Y")
 		"click_unit":
 			_click_unit(parts[1].to_int() if parts.size() > 1 else -1)
 		"blobs":
@@ -295,6 +324,9 @@ func _run(line: String) -> void:
 		"ui":
 			# Put one campaign screen up. The flow itself reaches them through
 			# `location` and the buttons; this is how a driver photographs one.
+			# `ui map` takes the mission down: the location map is a
+			# picture of the chain's own `.lev` and two 3D scenes cannot
+			# share a root.
 			if parts.size() > 1:
 				var shown: CampaignScreen = _main.show_campaign_screen(parts[1])
 				_log.append("ui %s: %s" % [parts[1],
@@ -378,6 +410,15 @@ func _click_cell(x: int, y: int) -> void:
 func _click_screen(x: float, y: float) -> void:
 	_push_click(Vector2(x, y))
 	_log.append("click_screen (%.0f, %.0f)" % [x, y])
+
+
+func _hover(x: float, y: float) -> void:
+	var motion: InputEventMouseMotion = InputEventMouseMotion.new()
+	motion.position = Vector2(x, y)
+	motion.global_position = motion.position
+	root.push_input(motion, true)
+	_wait = 1
+	_log.append("hover (%.0f, %.0f)" % [x, y])
 
 
 func _push_click(at: Vector2) -> void:
@@ -728,6 +769,34 @@ func _buttons() -> void:
 			% [control.text, rect.position.x, rect.position.y,
 			rect.size.x, rect.size.y,
 			"disabled" if control.disabled else "enabled"])
+
+
+## `press CAPTION` -- the button a player would click, by its own caption.
+func _press(caption: String) -> void:
+	var screen: CampaignScreen = _main.screen_shown()
+	if screen == null:
+		_log.append("press: no screen is up")
+		return
+	var wanted: String = caption.to_lower()
+	for control: Button in _buttons_in(screen):
+		if control.disabled or not control.text.to_lower().contains(wanted):
+			continue
+		_log.append("press %s" % control.text)
+		control.pressed.emit()
+		_wait = 1
+		return
+	_log.append("press: no enabled button matches %s" % caption)
+
+
+## `map_click X Y` -- a click on one map field of the screen's own window.
+func _map_click(x: int, y: int) -> void:
+	var screen: CampaignScreen = _main.screen_shown()
+	if screen == null or not screen.takes_world_clicks():
+		_log.append("map_click: no screen with a map window is up")
+		return
+	screen.world_click(Vector2i(x, y))
+	_log.append("map_click (%d, %d) on %s" % [x, y, _main.screen_up()])
+	_wait = 1
 
 
 func _buttons_in(node: Node) -> Array[Button]:

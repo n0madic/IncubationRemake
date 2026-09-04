@@ -1,77 +1,156 @@
 class_name BriefingScreen
 extends CampaignScreen
 
-## docs/24's three blocks and the mission's picture programme.
+## docs/24's blocks and the mission's picture programme, in the original's own
+## layout.
 ##
-## `A0` is the briefing, `B0` the victory conditions and `C0` the tips -- the
-## same three `Txtmod_b` 30/31/32 name. Six of the 116 shipped `A0`s do not fit
-## the box, which is why [BriefingText] scrolls.
+## `A0` is the full briefing and `C0` the tips, and the screen is one screen
+## for both: the title stays *Briefing* (`Txtmod_b` 30) and the middle button
+## swaps between *Tips* (31) and *Briefing* (32), which is exactly what the
+## shipped bank carries two words for. `B0` -- the short conditions -- is not
+## here: docs/24 section 7.1's call sites put it on the unit-selection and map
+## screens, and this screen never asks for it.
+##
+## **The coordinates are the game's own.** docs/24 section 7.1 records the text
+## box as `84, 77, 280, 276` for `A0` and `84, 77, 230, 276` for `C0`, and the
+## briefing programme (section 8) gives every picture its own `x, y` inside
+## 640x480 with its description lines printed underneath. So the layout is read
+## out of the shipped data rather than invented -- the pictures used to be
+## placed at a fixed column that was 30 units off the right edge of the plate,
+## where nothing could see them.
 
-## `Txtmod_b` -- 'Briefing', 'Tips', 'Briefing'.
+## `Txtmod_b` -- 'Briefing' is both the screen's name and the button back to it.
 const ID_BRIEFING: int = 30
 const ID_TIPS: int = 31
-## `Txtmod_b` 11 -- 'Information'. `B0` is the in-mission objective summary;
-## the victory and defeat conditions are inside `A0` itself.
-const ID_CONDITIONS: int = 11
-const ID_ENTER: int = 141
-const ID_MAIN_MAP: int = 140
+const ID_BACK_TO_BRIEFING: int = 32
+
+## docs/24 section 7.1 -- `0x00456DE0` and `0x00456D96`.
+const BOX_AT: Vector2 = Vector2(84.0, 77.0)
+const BOX_SIZE_BRIEFING: Vector2 = Vector2(280.0, 276.0)
+const BOX_SIZE_TIPS: Vector2 = Vector2(230.0, 276.0)
+## How much room a picture's description lines are given under it, and how
+## wide the line is allowed to run either side of the picture's centre.
+##
+## The tips screen puts **three** pictures across the bottom of the plate, so
+## a caption may not be much wider than its own share: at 220 units and the
+## default size the three ran into one another and read as one sentence.
+const CAPTION_GAP: float = 3.0
+const CAPTION_HEIGHT: float = 36.0
+const CAPTION_SPREAD: float = 168.0
+## The caption's size when the readable face is in use. The original draws
+## these in `font_0`, the 8 px bitmap, under a picture 50 to 180 units wide.
+const CAPTION_FONT_SIZE: int = 10
 
 var mission: String = ""
 var document: Dictionary = {}
 var cache_dir: String = ""
+## Which block is up -- `A0` or `C0`.
+var block: String = "A0"
 
 var _text: BriefingText = null
+var _pictures: Control = null
+var _toggle: Button = null
 
 
 func build() -> void:
-	var title: Label = make_label(
-		"%s  %s" % [label_for(BANK_MISSION, ID_BRIEFING), mission])
-	title.position = Vector2(8.0, 0.0)
-	body().add_child(title)
+	var _title: Label = place_title(label_for(BANK_MISSION, ID_BRIEFING))
 
 	# `font` is the interface's, and `null` there means the readable face was
 	# chosen -- so the body follows the same decision the headings did instead
 	# of always being the shipped 8 px bitmap.
 	_text = BriefingText.create(cache_dir, font != null)
-	_text.position = Vector2(8.0, 28.0)
-	_text.custom_minimum_size = Vector2(520.0, 300.0)
-	_text.size = Vector2(520.0, 300.0)
-	body().add_child(_text)
-	show_block("A0")
+	place_on_plate(_text, BOX_AT, BOX_SIZE_BRIEFING)
+	root().add_child(_text)
 
-	var pictures: Control = Control.new()
-	pictures.position = Vector2(540.0, 28.0)
-	body().add_child(pictures)
-	var top: float = 0.0
-	for entry: Variant in DictRead.as_array(document.get("pictures", [])):
+	_pictures = Control.new()
+	_pictures.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pictures.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root().add_child(_pictures)
+
+	add_button("map", BANK_MISSION, ID_BACK, 0)
+	# **Only where there is one.** 25 of the 116 shipped briefings carry no
+	# `C0` at all (docs/24 section 7.1), and a button that opened an empty
+	# screen would be the inert control section 7.1 calls a defect.
+	if _has_block("C0"):
+		_toggle = add_button("tips", BANK_MISSION, ID_TIPS, 1)
+	add_button("enter", BANK_MISSION, ID_CONTINUE, 2)
+	_lay_out_buttons()
+	show_block(block)
+
+
+## One of `A0` or `C0`. A block the file does not carry shows empty rather
+## than erroring: docs/24 records that not every briefing has all three.
+func show_block(key: String) -> void:
+	block = key
+	if _text == null:
+		return
+	var blocks: Dictionary = DictRead.as_dict(document.get("blocks", {}))
+	_text.show_block(DictRead.as_array(blocks.get(key, [])))
+	place_on_plate(_text, BOX_AT,
+		BOX_SIZE_TIPS if key == "C0" else BOX_SIZE_BRIEFING)
+	if _toggle != null:
+		_toggle.text = label_for(BANK_MISSION,
+			ID_BACK_TO_BRIEFING if key == "C0" else ID_TIPS)
+	_show_pictures("tips" if key == "C0" else "pictures")
+
+
+## The briefing programme's own rows: the picture at its `x, y` with its
+## description lines centred underneath (docs/24 section 8).
+##
+## The rows come from two lists because the programme has two base rows -- 0
+## for the objectives screen and 5 for the tips one -- and the converter keeps
+## them apart under those names.
+func _show_pictures(key: String) -> void:
+	if _pictures == null:
+		return
+	clear_children(_pictures)
+	for entry: Variant in DictRead.as_array(document.get(key, [])):
 		var row: Dictionary = entry
 		var name: String = DictRead.as_string(row["picture"])
 		if name == "" or art == null:
 			continue
 		var texture: Texture2D = art.briefing_picture(name)
 		if texture == null:
+			# `_C_132`'s tip picture is named `No` and no such bitmap ships,
+			# so the original draws nothing there either (docs/24 section 8).
 			continue
+		var at: Vector2 = Vector2(float(DictRead.as_int(row["x"])),
+			float(DictRead.as_int(row["y"])))
+		var size: Vector2 = Vector2(float(texture.get_width()),
+			float(texture.get_height()))
 		var view: TextureRect = TextureRect.new()
 		view.texture = texture
-		view.position = Vector2(0.0, top)
-		view.stretch_mode = TextureRect.STRETCH_KEEP
-		pictures.add_child(view)
-		top += float(texture.get_height()) + 8.0
+		view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		view.stretch_mode = TextureRect.STRETCH_SCALE
+		view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		place_on_plate(view, at, size)
+		_pictures.add_child(view)
 
-	add_button("briefing", BANK_MISSION, ID_BRIEFING, 0)
-	add_button("conditions", BANK_MISSION, ID_CONDITIONS, 1)
-	add_button("tips", BANK_MISSION, ID_TIPS, 2)
-	add_button("enter", BANK_MISSION, ID_ENTER, 3)
-	add_button("map", BANK_MISSION, ID_MAIN_MAP, 4)
+		var lines: PackedStringArray = DictRead.to_strings(
+			row.get("descriptions", []))
+		if lines.is_empty():
+			continue
+		# Centred on the picture and allowed to run wider than it: the shipped
+		# lines are sentences and the pictures are 50 to 180 units across, so
+		# a caption bounded by its picture would wrap to four words a line.
+		# The original centres them the same way and lets them overhang.
+		var caption: Label = make_label("\n".join(lines))
+		if font == null:
+			caption.add_theme_font_size_override("font_size",
+				CAPTION_FONT_SIZE)
+		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		place_on_plate(caption,
+			Vector2(at.x + size.x * 0.5 - CAPTION_SPREAD * 0.5,
+				at.y + size.y + CAPTION_GAP),
+			Vector2(CAPTION_SPREAD, CAPTION_HEIGHT))
+		_pictures.add_child(caption)
 
 
-## One of `A0`, `B0`, `C0`. A block the file does not carry shows empty rather
-## than erroring: docs/24 records that not every briefing has all three.
-func show_block(key: String) -> void:
-	if _text == null:
-		return
+func _has_block(key: String) -> bool:
 	var blocks: Dictionary = DictRead.as_dict(document.get("blocks", {}))
-	_text.show_block(DictRead.as_array(blocks.get(key, [])))
+	return not DictRead.as_array(blocks.get(key, [])).is_empty()
 
 
 func scroll(lines: float) -> void:

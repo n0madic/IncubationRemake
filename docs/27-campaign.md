@@ -187,7 +187,8 @@ selects value 16 (intercepted by the static extro screen before the sequence
 player), and mission 255 selects id 1.  `0x00510DC0` is the
 presentation variant: non-zero chooses the full 640×480 viewport and skips the
 framed-screen background callback; zero chooses the 518×306 viewport at
-(65,57).  It does not alter the sequence manifest.
+(65,57).  It does not alter the sequence manifest.  That rectangle is not the
+sequence's own — it is the campaign screens' 3D window, §2.6.
 
 ### 2.4 Upgrade locations are maps of their own
 
@@ -247,6 +248,60 @@ map, and the checker verifies both directions. Campaign 2's two sets match
 exactly. Campaign 1's do not, by two cells: **`_C_XXX` carries locations 21 and
 50 that no arm ever opens**, and `Campaign.lcl` names them *TEST EXTRO* and
 *&lt;&lt;Invalid Location&gt;&gt;* — leftovers, and pinned as such.
+
+### 2.6 The screen the map is drawn in — **[code] `0x00453F80`, `0x00457590`**
+
+A remake needs three things this section did not carry: which plate, which
+rectangle of it the 3D goes in, and where the camera stands. All three are
+constants in `aMissionControl.cpp`, and `campaign_tables.py --check` pins
+them.
+
+| What | Where | Value |
+|---|---|---|
+| the plate | `aInitGUI` `0x00454245`, again `0x004576C2` | `GUI\plate_3.bmp` |
+| the 3D window | `0x0040B670` at `0x00454102`, centre `0x0040B6B0` at `0x00454118` | `(65, 57)`, 518 × 306 |
+| the camera's eye | `0x00510BB8/BC/C0`, three `mov dword` immediates at `0x004541B2/BC/C6` | `(−19088, 98112, 9088)` |
+| the camera's target | `0x00510BC4/C8/CC`, `mov eax, 0xDDE0` at `0x0045414B` spent twice, then the prologue's zeroed `ebx` | `(56800, 56800, 0)` |
+
+`0x00457695` loads all six and hands them to `aSetCameraPosition`
+`0x00403560` when the map is raised. **Neither triple is clamped**: the box of
+[`42` §2.1](42-mission-presentation.md) belongs to the unit-camera placement
+and is not on this path, which is why the eye's x may be off the west edge of
+the map. The target is field (17.75, 17.75) of a 40×40 map at height 0 and the
+eye stands north-west of it and above — one fixed view of the city, the same
+for both chains and for every mission in them.
+
+The 518 × 306 viewport at (65, 57) is the one §2.3 reads as the sequence
+screen's. It is the **campaign screens'** generally: `0x00454102` sets it on
+the way in, `0x004559FA` sets it again on every frame the map is up, and the
+dark interior of `plate_3.bmp` is exactly that rectangle.
+
+`Menu_b.lcl`'s `:MainMap` block is the rest of the screen, and like
+`Menu_a.lcl`'s `:MainMenu` it is a flat table rather than a program: window
+`(0, 0, 640, 480)`; `Txtmod_b[140]` at (320, 26) in `font_2`, centred; and
+three buttons on one row at y = 402, six tiles wide — *End game*
+(`Txtmod_b` 18) at x = 60, *Save game* (19) at x = 232 and *Enter Location*
+(141) at x = 408.
+
+Two things that are **not** where a remake would look for them:
+
+* **The campaign maps' own `.lcl` sets no camera.** `_C_XXX.lcl` and
+  `_C_YYY.lcl` are ordinary mission scripts whose `InitMap` arm holds four
+  `CreateBGB (n, 7_fire, x, y, z, live, random, gamma)` calls — the burning
+  buildings on the map — and one `CDTrackProgram ("5.3.4.2")`. Nothing else.
+  Every other arm is empty except `_C_YYY`'s `NextPlayer`, which counts
+  players and sets a win condition that no one reads.
+* **The map's own frame callback moves the camera.** `0x00457570`, registered
+  with `0x0043E5D0` at `0x004576A6`, calls `0x004558F0` once a frame. That
+  routine turns the eye about the target by an angle it accumulates in
+  `0x00510C50` (step in `0x00510D28`, halved toward zero when the request is
+  smaller than the step) and clamps the eye's height into
+  `[−9600, 19200]` — `cmp eax, 0x4B00` at `0x00455991` and
+  `cmp eax, 0xFFFFDA80` at `0x004559A7`. The frame callback passes zero
+  deltas, so the accumulator decays and the constants above are where the view
+  rests. **UNVERIFIED**: which input feeds a non-zero delta, and in what
+  units. The two call sites inside `fcn.004543A0` (`0x00454E6C`,
+  `0x00454EEF`) are the map screen's own input handling.
 
 ---
 
@@ -913,6 +968,15 @@ What each group covers:
    winconditions"* block and then set the slots from their own predicates, so
    there is no engine rule to recover — only 153 individual answers, which
    [`20` §7](20-lcl-language.md) gives the vocabulary for.
+4. **What turns the campaign map's camera, and by how much.** §2.6 has the
+   view itself as six constants and `0x004558F0` as the routine that swings the
+   eye about the target, with its height clamp `[−9600, 19200]` measured. What
+   is **UNVERIFIED** is the rotation delta: the map's frame callback passes
+   zero, and the two other call sites inside `fcn.004543A0` (`0x00454E6C`,
+   `0x00454EEF`) take theirs from `0x00461E60` and a register the surrounding
+   input handling sets. The angle accumulator `0x00510C50` and its step
+   `0x00510D28` are named but their units are not. Nothing in the shipped data
+   settles it; a `dbgcall` capture of the screen's own loop would.
 
 4. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
    have cells. The remainder are dialogue ids 12–14, 16–20 and 24–27, and

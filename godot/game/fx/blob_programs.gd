@@ -74,6 +74,10 @@ const POISON_FLASH: String = "0x004232E0"
 const ZOOMBOB: String = "0x00423720"
 const TRAIL: String = "0x00423670"
 const PUSH_DUST: String = "0x0042A6E0"
+## `0x0042A660` -- `aBlob_CreateMainMapFire`, the one creator a **script**
+## reaches: `CreateBGB` type 7 calls it once a tick (docs/28 section 8.2), and
+## the campaign maps' own `InitMap` is where the shipped data uses it.
+const MAIN_MAP_FIRE: String = "0x0042A660"
 ## The marker's and the poison flash's radius (`push 0x12C0`), doubled for
 ## a large type (`push 0x2580`); the heal flash's (`0x640` / `0x1900`); the
 ## landing dust's (`0xC80`) and the 204-unit turn between its puffs.
@@ -285,6 +289,7 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, WALL_DEBRIS: 2,
 	KILL_FIRE: 3, LASER_BARRIER: 4, STATUE_BEAM: 5, FLYING_UNIT: 3, PUFF: 2,
 	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
+	MAIN_MAP_FIRE: 3,
 	BOMBER: 6, PARA_BOMB: 3, FIRE_DEATH: 2,
 	EMITTER: 15, SPORE_SPARKS: 5, PLASMA_SPARKS: 5,
 	# `0x00428F70` is called with five dwords and reads four: the fifth is
@@ -348,6 +353,8 @@ static func run(creator: String, pool: Pool, draws: Draws,
 			trail(pool, draws, Vector3i(args[0], args[1], args[2]))
 		PUSH_DUST:
 			push_dust(pool, draws, Vector3i(args[0], args[1], args[2]))
+		MAIN_MAP_FIRE:
+			main_map_fire(pool, draws, Vector3i(args[0], args[1], args[2]))
 		TUBE_PUFFS:
 			tube_puffs(pool, draws, args[0], args[1], inputs)
 		PLATFORM_DUST:
@@ -888,6 +895,23 @@ static func push_dust(pool: Pool, draws: Draws, at: Vector3i) -> void:
 	var vz: int = draws.draw(0x140, 0xA0)
 	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 4, 0, 0, 0xA, 0x14, vx, vy, vz,
 		10, 0)
+
+
+## `0x0042A660` -- one flame of a `CreateBGB` type-7 emitter.
+##
+## The same three draws as the push's dust -- 48 either way and 320..480 up --
+## into a **class-3** record with no rotation, kind 58, life 12 and `aux` 5.
+## Kind 58 walks it up, advances its atlas column and, in its last four ticks,
+## writes the column down again, which is a flame guttering out.
+##
+## The whole of the creator is those three draws and one constructor call;
+## `blob_tables.py`'s `bgb.fire_*` pins both halves against the executable.
+static func main_map_fire(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	var vx: int = draws.draw(-0x30, 0x60)
+	var vy: int = draws.draw(-0x30, 0x60)
+	var vz: int = draws.draw(0x140, 0xA0)
+	pool.spawn(SCRATCH, 3, at.x, at.y, at.z, 0, 0, 0, 0x3A, 0xC, vx, vy, vz,
+		5, 0)
 
 
 # --- docs/42 section 8: the set pieces' creators ------------------------------

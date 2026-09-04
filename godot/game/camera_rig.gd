@@ -71,6 +71,36 @@ const SEARCH_LOOK_UP: int = 0x960
 ## camera height in z.
 const BOX_MARGIN: int = 800
 
+## The campaign map's camera, **read out of the executable** rather than
+## computed.
+##
+## `aMissionControl.cpp`'s screen entry `0x00453F80` writes six globals before
+## anything else happens on that screen -- `0x00510BB8/BC/C0` the eye and
+## `0x00510BC4/C8/CC` the target, as three `mov dword` immediates and one
+## `mov eax, 0xDDE0` used twice -- and `0x00457695` hands all six to
+## `aSetCameraPosition` `0x00403560` when the map is raised. Both chains take
+## the same numbers: it is one fixed view of the city, not a fit to anything
+## on the map.
+##
+## The target is field `(17.75, 17.75)` of a 40x40 map at height 0, and the eye
+## stands off the map's west edge and above it. **Neither is clamped**: the
+## engine writes the camera straight through `aSetCameraPosition`, past
+## `0x00453420`'s box, so the negative x stands.
+##
+## The remake computed a view over the open locations before this was found --
+## a distance from their bounding box and a height from the map's own span --
+## which put the eye four times higher than the header's camera height and
+## nowhere the original ever puts it.
+const CAMPAIGN_EYE: Vector3i = Vector3i(-19088, 98112, 9088)
+const CAMPAIGN_TARGET: Vector3i = Vector3i(56800, 56800, 0)
+## `0x004558F0` is what moves it: it turns the eye about the target by an
+## angle it accumulates, and clamps the eye's height into this pair. The map's
+## own frame callback `0x00457570` calls it with zero deltas every frame, so
+## the accumulator decays and the view above is where it rests. **The turn
+## itself is not transcribed** -- the remake offers no rotation on this screen.
+const CAMPAIGN_HEIGHT_LOW: int = -0x2580
+const CAMPAIGN_HEIGHT_HIGH: int = 0x4B00
+
 ## Section 2.4 -- the eyes view and the map view.
 const EYES_FORWARD: int = 800
 const EYES_UP: int = 0x280

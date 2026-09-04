@@ -1269,10 +1269,58 @@ func _campaign_screens(h: TestHarness) -> void:
 	# Every screen builds headless: a `CanvasLayer` needs no renderer.
 	var map: CampaignMapScreen = CampaignMapScreen.new()
 	map.host = host
+	# **The map is a picture now, not a list.** Every open location is a dot
+	# standing on the cell whose action point is its id, so what is checked is
+	# the set of dots and what a click on one of them means -- the screen no
+	# longer has a row per location to count.
+	var open: PackedInt32Array = host.open_locations()
+	var cells: Dictionary[int, Vector2i] = {}
+	for index: int in range(open.size()):
+		cells[open[index]] = Vector2i(index, 1)
+	map.location_cells = cells
 	map.setup(art, strings, font)
-	h.check("screens.map_lists_open_locations",
-		map.body().get_child_count() >= 2,
-		"%d open" % host.open_locations().size())
+	var marks: Dictionary[Vector2i, int] = CampaignMapScreen.marks_for(host,
+		cells)
+	h.equal("screens.map_marks_every_open_location", marks.size(), open.size(),
+		"one dot per open location")
+	h.equal("screens.map_click_names_the_location",
+		map.location_at(Vector2i(0, 1)), open[0],
+		"a click on a cell is `aLocationHandling` on the location standing there")
+	h.equal("screens.map_click_off_the_locations",
+		map.location_at(Vector2i(-1, -1)), -1)
+	# docs/27 section 2.5: campaign 1 opens two locations `_C_XXX` has no cell
+	# for. A location with nowhere to stand is skipped, not drawn at the origin.
+	var homeless: Dictionary[int, Vector2i] = {}
+	h.equal("screens.map_skips_a_location_with_no_cell",
+		CampaignMapScreen.marks_for(host, homeless).size(), 0,
+		"docs/27 section 2.5's two cells that are not on the map")
+	# **The one irreversible button on this plate asks first.** *End game*
+	# drops a campaign that may never have been saved, and `Txtmod_d` 60/61/62
+	# is the question and its two answers -- the bank carries them for this
+	# button. A click that cannot be undone and says nothing is what
+	# docs/92 section 7.4 forbids.
+	map._on_pressed("end_game")
+	var asked: PackedStringArray = _labels_of(map)
+	h.check("screens.map_end_game_asks_first",
+		asked.has(strings.shipped("Txtmod_d", 60))
+		and asked.has(strings.shipped("Txtmod_d", 61))
+		and asked.has(strings.shipped("Txtmod_d", 62)),
+		"'Back to the Main Menu without saving?' with Yes and No")
+	map._on_pressed(CampaignScreen.CANCEL)
+	h.check("screens.map_end_game_can_be_refused",
+		_labels_of(map).has(strings.shipped("Txtmod_b", 18)),
+		"*No* puts the ordinary row back")
+	# The pointer over a location names it, and leaving the picture clears
+	# the name: one left standing reads as a selection nobody made.
+	map.world_hover(Vector2i(0, 1))
+	h.check("screens.map_names_what_is_under_the_pointer",
+		_labels_of(map).has("%s  --  %s" % [
+			strings.shipped("Campaign", open[0]),
+			strings.shipped("Txtmod_b", 141)]),
+		"`Campaign.lcl` names every location")
+	h.equal("screens.map_hover_is_the_location", map.hovered, open[0])
+	map.world_hover(Vector2i(-1, -1))
+	h.equal("screens.map_hover_clears", map.hovered, -1)
 	_no_missing_strings(h, "map", map)
 	map.free()
 

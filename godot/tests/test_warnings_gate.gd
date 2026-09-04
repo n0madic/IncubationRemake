@@ -15,6 +15,10 @@ extends TestSuite
 ##
 ## The engine also exits 0 when the main script fails to load, which is why
 ## `godot/run_tests.sh` gates on the harness sentinel and not on the exit code.
+##
+## **It is the editor's gate, and since 2026-09-04 it says so.** The same
+## suites run inside an exported build through the `macOS Tests` preset, and
+## there the claim cannot hold: see [method run].
 
 const VIOLATION: String = "res://tests/fixtures/violations/untyped_declaration.gd"
 const TWIN: String = "res://tests/fixtures/violations/typed_twin.gd"
@@ -35,11 +39,32 @@ const WARNING_LEVEL_ERROR: int = 2
 func run(h: TestHarness) -> void:
 	h.begin("warnings_gate", TestHarness.ORACLE_SPEC)
 
-	h.check("settings.enabled",
-		DictRead.as_bool(ProjectSettings.get_setting(
+	# **Two builds, one claim, and only one of them can test it.**
+	#
+	# `OS.has_feature("template")` is Godot's own answer to "is this an
+	# exported build", and the `macOS Tests` preset runs these suites inside
+	# one. Two things are different there. `project.binary` carries only the
+	# settings whose value differs from the engine's own default, so `enable`
+	# and `inference_on_variant` -- which are at it -- are simply not there,
+	# and reading them with a *wrong* fallback reported the gate as off. And
+	# the compiler that turns these levels into errors has already run: a
+	# script compiled at load by a running build gets the runtime's levels,
+	# whatever the project says, so the violating fixture loads.
+	#
+	# So the gate names which world it is in rather than failing in the other
+	# one. The four levels that are not at the engine's default are still
+	# checked in both.
+	var exported: bool = OS.has_feature("template")
+	h.check("settings.enabled", exported
+		or DictRead.as_bool(ProjectSettings.get_setting(
 			"debug/gdscript/warnings/enable", false)),
-		"GDScript warnings are on")
+		"an exported build carries the levels and not the switch" if exported
+		else "GDScript warnings are on")
 	for key: String in REQUIRED_ERRORS:
+		if exported and not ProjectSettings.has_setting(key):
+			h.check("settings." + key.get_file(), true,
+				"at the engine's own default, so `project.binary` omits it")
+			continue
 		h.equal("settings." + key.get_file(),
 			DictRead.as_int(ProjectSettings.get_setting(key, 0)),
 			WARNING_LEVEL_ERROR)
@@ -49,8 +74,9 @@ func run(h: TestHarness) -> void:
 	var violation: GDScript = ResourceLoader.load(VIOLATION, "GDScript") \
 		as GDScript
 	h.check("violation.rejected",
-		violation == null or not violation.can_instantiate(),
-		"a script with an untyped declaration does not load")
+		exported or violation == null or not violation.can_instantiate(),
+		"compiled at load by a running build, which is not what the gate is"
+		if exported else "a script with an untyped declaration does not load")
 
 	var twin: GDScript = ResourceLoader.load(TWIN, "GDScript") as GDScript
 	h.check("twin.accepted", twin != null and twin.can_instantiate(),

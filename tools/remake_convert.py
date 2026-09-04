@@ -79,6 +79,16 @@ LOG = logging.getLogger("remake_convert")
 #: what the build shows has a native capture behind it.
 SLICE_MISSIONS = ["_C_140", "_C_115", "_C_141", "_C_100", "_C_132", "_C_129"]
 
+#: The two maps the campaign *frame* is drawn on -- `docs/27` §2.1.  They are
+#: not missions: they are the screen the missions are chosen from, and a cache
+#: without them opens the location map onto nothing.  Which is what happened:
+#: they arrived only with `--campaign-maps`, so the default six-mission cache
+#: -- the one every developer has -- had a location map with no map in it.
+#: Every selection carries them, including an explicit `--missions`.  They are
+#: 40x40 `A00` maps and cost 1.1 MiB over a set that already has an `A00`
+#: mission -- measured, both with and without the music.
+CAMPAIGN_FRAME_MAPS = ["_C_XXX", "_C_YYY"]
+
 #: Files the converter reads that are not reached through a mission, but whose
 #: identity the manifest has to carry.
 EXTRA_SOURCES = ["Incubation.exe"]
@@ -642,8 +652,13 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 #: images are ~0.2 MiB, which is the "one more converted texture" case these
 #: numbers are deliberately loose enough to absorb.  Re-measured with them in,
 #: the two are 41.5 and 15.4 MiB.
-CACHE_CEILING_KIB_MUSIC = 42 * 1024
-CACHE_CEILING_KIB_SILENT = 17 * 1024
+#:
+#: Both moved when :data:`CAMPAIGN_FRAME_MAPS` joined every selection: two more
+#: 40x40 maps and the `A00` scenery they stand on, 1.1 MiB either way --
+#: measured at 42.6 and 16.5 MiB against 41.5 and 15.4.  Rounded up with the
+#: same headroom the numbers above carry.
+CACHE_CEILING_KIB_MUSIC = 44 * 1024
+CACHE_CEILING_KIB_SILENT = 18 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).
 SPRITE_COMPUTED_CALLS = 18
@@ -940,13 +955,22 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
 def check_mission_selection(c: Checker, root: Path) -> None:
     """What each form of the mission argument resolves to -- no conversion."""
     c.expect("select.default", missions_from_args(root, False, None),
-             SLICE_MISSIONS, "no argument is the slices' six")
+             SLICE_MISSIONS + CAMPAIGN_FRAME_MAPS,
+             "no argument is the slices' six, plus the campaign frame")
     c.expect("select.explicit",
              missions_from_args(root, False, "_C_140, _C_115 ,,"),
-             ["_C_140", "_C_115"], "spaces trimmed, empty entries dropped")
+             ["_C_140", "_C_115"] + CAMPAIGN_FRAME_MAPS,
+             "spaces trimmed, empty entries dropped, the frame added")
+    c.expect("select.frame_is_not_doubled",
+             missions_from_args(root, False, "_C_XXX,_C_140"),
+             ["_C_XXX", "_C_140", "_C_YYY"],
+             "a frame map named outright keeps its place in the list")
     c.expect("select.campaign_maps", missions_from_args(root, True, None),
              campaign_map_set(root),
              f"{CAMPAIGN_MAPS} maps, the set --check-campaign bakes")
+    c.check("select.frame_is_in_the_full_set",
+            all(n in campaign_map_set(root) for n in CAMPAIGN_FRAME_MAPS),
+            "--campaign-maps already carries them")
 
 
 def run_checks(root: Path, missions: list[str], language: str) -> int:
@@ -1070,7 +1094,8 @@ def missions_from_args(root: Path | None, campaign_maps: bool,
         assert root is not None, "--campaign-maps is refused without a root"
         return campaign_map_set(root)
     text = ",".join(SLICE_MISSIONS) if missions is None else missions
-    return [name.strip() for name in text.split(",") if name.strip()]
+    chosen = [name.strip() for name in text.split(",") if name.strip()]
+    return chosen + [n for n in CAMPAIGN_FRAME_MAPS if n not in chosen]
 
 
 def run_campaign_checks(root: Path, language: str) -> int:

@@ -871,6 +871,157 @@ class Checker:
                    fmt(got) if got == want else f"got {fmt(got)} want {fmt(want)}")
 
 
+
+# --- the campaign screen's own camera and window (docs/27 section 2.6) ------
+#: `aMissionControl.cpp`'s campaign-screen entry, which writes the camera.
+SCREEN_ENTRY = 0x00453F80
+#: `xor ebx, ebx` at the top of it: the function's zero register, which is
+#: what the target's z is written from.
+SCREEN_ENTRY_ZERO = 0x00453F86
+#: `aSetCameraPosition(px, py, pz, tx, ty, tz)`, `a3DEngine.cpp`.
+SET_CAMERA_POSITION = 0x00403560
+#: The 3D viewport setter and the six camera globals it is fed from.
+SET_VIEWPORT = 0x0040B670
+CAMERA_EYE_GLOBAL = 0x00510BB8
+CAMERA_TARGET_GLOBAL = 0x00510BC4
+#: The three `mov dword [global], imm32` that write the eye, in order.
+CAMERA_EYE_WRITES = (0x004541B2, 0x004541BC, 0x004541C6)
+#: `mov eax, 0xDDE0` and the two `mov [global], eax` that spend it, then the
+#: `mov [global], ebx` that writes the target's z.
+CAMERA_TARGET_LOAD = 0x0045414B
+CAMERA_TARGET_STORES = (0x004541A2, 0x004541A7)
+CAMERA_TARGET_Z_STORE = 0x004541AC
+#: Where the map screen loads all six and hands them to `aSetCameraPosition`.
+CAMERA_HANDOVER_BLOCK = 0x00457673
+CAMERA_HANDOVER = 0x0045769E
+#: What they come to.
+CAMPAIGN_EYE = (-19088, 98112, 9088)
+CAMPAIGN_TARGET = (56800, 56800, 0)
+#: `0x0040B670(x, y, w, h)` on the way into the campaign screens.
+VIEWPORT_SITE = 0x00454102
+CAMPAIGN_VIEWPORT = (65, 57, 518, 306)
+#: `0x004558F0`'s clamp on the eye's height, `cmp eax, 0x4B00` and
+#: `cmp eax, 0xFFFFDA80`.
+CAMERA_HEIGHT_CLAMP = (0x00455991, 0x004559A7)
+CAMPAIGN_HEIGHT_BAND = (-9600, 19200)
+
+
+
+def check_screen_camera(ck: Checker, b: Binary) -> None:
+    """docs/27 section 2.6 -- the campaign screen's camera is a constant.
+
+    The remake computed a view over the open locations because nothing said
+    where the original stands.  `aMissionControl.cpp` says: six globals
+    written as immediates on the way into the screen and handed to
+    `aSetCameraPosition` unchanged when the map is raised.  Neither is
+    clamped -- the eye's x is off the west edge of the map.
+    """
+    for i, (site, want) in enumerate(zip(CAMERA_EYE_WRITES, CAMPAIGN_EYE)):
+        head = b.pe.bytes_at(site, 6)
+        ck.equal(f"screen.eye{i}_target",
+                 struct.unpack("<I", head[2:6])[0], CAMERA_EYE_GLOBAL + 4 * i,
+                 hex)
+        ck.check(f"screen.eye{i}_is_an_immediate", head[:2] == b"\xc7\x05",
+                 f"{site:#x}: mov dword [global], imm32")
+        ck.equal(f"screen.eye{i}", b.i32(site + 6), want)
+
+    ck.check("screen.target_load",
+             b.pe.bytes_at(CAMERA_TARGET_LOAD, 5)
+             == b"\xb8" + struct.pack("<I", CAMPAIGN_TARGET[0]),
+             f"{CAMERA_TARGET_LOAD:#x}: mov eax, {CAMPAIGN_TARGET[0]:#x}")
+    for i, site in enumerate(CAMERA_TARGET_STORES):
+        ck.check(f"screen.target{i}_store",
+                 b.pe.bytes_at(site, 5)
+                 == b"\xa3" + struct.pack("<I", CAMERA_TARGET_GLOBAL + 4 * i),
+                 f"{site:#x}: mov [{CAMERA_TARGET_GLOBAL + 4 * i:#x}], eax")
+    ck.equal("screen.target_x_equals_y", CAMPAIGN_TARGET[0],
+             CAMPAIGN_TARGET[1])
+    # The z is the register the prologue cleared, so it is zero rather than a
+    # number anybody chose.
+    ck.check("screen.target_z_store",
+             b.pe.bytes_at(CAMERA_TARGET_Z_STORE, 6)
+             == b"\x89\x1d" + struct.pack("<I", CAMERA_TARGET_GLOBAL + 8),
+             f"{CAMERA_TARGET_Z_STORE:#x}: mov [global], ebx")
+    ck.check("screen.ebx_is_zero",
+             b.pe.bytes_at(SCREEN_ENTRY_ZERO, 2) == b"\x33\xdb"
+             and SCREEN_ENTRY < SCREEN_ENTRY_ZERO < CAMERA_TARGET_Z_STORE,
+             f"xor ebx, ebx at {SCREEN_ENTRY_ZERO:#x}")
+    ck.equal("screen.target_z", CAMPAIGN_TARGET[2], 0)
+
+    # The map screen pushes all six, eye first, and calls the setter.
+    ck.equal("screen.camera_handover", b.call_target(CAMERA_HANDOVER),
+             SET_CAMERA_POSITION, hex)
+    pushes = _pushed_globals(b, CAMERA_HANDOVER_BLOCK, CAMERA_HANDOVER)
+    ck.equal("screen.camera_argument_order", pushes,
+             [CAMERA_EYE_GLOBAL + 4 * i for i in range(6)],
+             lambda v: str([hex(x) for x in v]))
+
+    # The window the plate leaves clear.
+    ck.equal("screen.viewport_call", b.call_target(VIEWPORT_SITE),
+             SET_VIEWPORT, hex)
+    ck.equal("screen.viewport", _pushed_literals(b, VIEWPORT_SITE, 4),
+             list(CAMPAIGN_VIEWPORT))
+
+    # `0x004558F0` is what moves the eye afterwards; its height clamp is the
+    # band the constant sits in.
+    for i, (site, want) in enumerate(zip(CAMERA_HEIGHT_CLAMP,
+                                         reversed(CAMPAIGN_HEIGHT_BAND))):
+        ck.check(f"screen.height_clamp{i}",
+                 b.pe.bytes_at(site, 1) == b"\x3d"
+                 and b.i32(site + 1) == want,
+                 f"{site:#x}: cmp eax, {want}")
+    ck.check("screen.eye_inside_the_band",
+             CAMPAIGN_HEIGHT_BAND[0] < CAMPAIGN_EYE[2] < CAMPAIGN_HEIGHT_BAND[1],
+             f"eye z {CAMPAIGN_EYE[2]}")
+
+
+def _pushed_globals(b: Binary, start: int, call_site: int) -> list[int]:
+    """The globals pushed between *start* and *call_site*, in argument order.
+
+    The compiler interleaves `mov r32, [imm32]` with the pushes that spend
+    them, so this decodes **forwards** over the four instruction forms the
+    block is made of and pairs each `push r32` with the global that register
+    was last loaded from.  A cdecl call takes its first argument from the last
+    push, so the answer is the push order reversed.
+    """
+    loads: dict[int, int] = {}
+    pushed: list[int] = []
+    va = start
+    while va < call_site:
+        head = b.pe.bytes_at(va, 6)
+        if head[0] == 0xA1:                                   # mov eax, [m32]
+            loads[0] = struct.unpack("<I", head[1:5])[0]
+            va += 5
+        elif head[0] == 0x8B and (head[1] & 0xC7) == 0x05:     # mov r32, [m32]
+            loads[(head[1] >> 3) & 7] = struct.unpack("<I", head[2:6])[0]
+            va += 6
+        elif 0x50 <= head[0] <= 0x57:                          # push r32
+            pushed.append(loads.get(head[0] - 0x50, -1))
+            va += 1
+        elif head[0] == 0x83 and head[1] == 0xC4:              # add esp, imm8
+            va += 3
+        else:
+            return []                                # an unexpected form: fail
+    pushed.reverse()
+    return pushed
+
+
+def _pushed_literals(b: Binary, call_site: int, count: int) -> list[int]:
+    """The `push imm` chain before *call_site*, in argument order."""
+    out: list[int] = []
+    va = call_site
+    while len(out) < count:
+        if b.pe.bytes_at(va - 5, 1) == b"\x68":
+            out.append(b.i32(va - 4))
+            va -= 5
+        elif b.pe.bytes_at(va - 2, 1) == b"\x6a":
+            out.append(b.i8(va - 1))
+            va -= 2
+        else:
+            break
+    return out
+
+
 def run_checks(root: str) -> Checker:
     ck = Checker()
     b = Binary(root)
@@ -1480,6 +1631,8 @@ def run_checks(root: str) -> Checker:
              all(h["name"].upper() == stem.upper()
                  for stem, h in c.headers.items() if h["name"]),
              "every header's own-name field matches its filename")
+    check_screen_camera(ck, b)
+
     ck.check("chain.last_mission",
              chained.get(MAP_NAME_ORPHAN[0]) is None,
              f"{MAP_NAME_ORPHAN[0]} names no successor")
