@@ -331,3 +331,102 @@ static func _is_digits(text: String) -> bool:
 		if code < 0x30 or code > 0x39:
 			return false
 	return true
+
+
+# --- section 2.5: the mission interface's own clicks -------------------------
+
+## The interface actions the original makes a noise for. Names, not addresses:
+## the cache carries the wave each one reaches through the module global its
+## handle lives in, and docs/28 section 2.5 is the join.
+const INTERFACE_ORDER_MOVE: String = "order_move"
+const INTERFACE_ORDER_WARP: String = "order_warp"
+const INTERFACE_RESELECT: String = "reselect"
+const INTERFACE_BUTTON: String = "button"
+const INTERFACE_HOVER_CELL: String = "hover_cell"
+const INTERFACE_HOVER_BUTTON: String = "hover_button"
+const INTERFACE_MAP_CLICK: String = "map_click"
+const INTERFACE_COMPASS: String = "compass"
+const INTERFACE_VIEW_MAP: String = "view_map"
+## **The sound a selection makes.** `fcn.004533D0` re-applies the view on the
+## new selection's cell and the unit-view placer plays `select.wav` from inside
+## it, so the click a player hears when they pick a marine is the camera's.
+const INTERFACE_VIEW_UNIT: String = "view_unit"
+
+## The cue one interface action makes, or an empty dictionary when the cache
+## predates docs/28 section 2.5.
+func interface_cue(action: String) -> Dictionary:
+	var row: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(_document.get("mission_interface", {})).get(action, {}))
+	if row.is_empty():
+		return {}
+	return {"wave": DictRead.as_string(row["wave"]),
+		"volume_id": DictRead.as_int(row["volume_id"]), "loop": false}
+
+
+# --- section 4.3: unit speech ------------------------------------------------
+
+## `-1`: speech is never scaled by the `SetVolumeCtrl` table, only by the
+## options record's own speech field (docs/20 section 8).
+func speech_volume_id() -> int:
+	return DictRead.as_int(_speech().get("volume_id", NO_SCALING))
+
+
+## The arguments one remake event pushes, in the order the original's branch
+## takes them: for `select` the healthy one first and the hurt one second.
+func speech_arguments(event: String) -> PackedInt32Array:
+	var events: Dictionary = DictRead.as_dict(_speech().get("events", {}))
+	if not events.has(event):
+		return PackedInt32Array()
+	return DictRead.to_int32(events[event])
+
+
+## One arm of the ten-case switch: `{"category", "cursor", "modulus", "draw"}`.
+## An argument the switch sends to its own default answers empty, which is the
+## `0000` that names no shipped file.
+func speech_arm(argument: int) -> Dictionary:
+	return DictRead.as_dict(
+		DictRead.as_dict(_speech().get("arms", {})).get(str(argument), {}))
+
+
+## Hit points and fitness points at or above this are the healthy argument.
+func speech_hurt_threshold() -> int:
+	return DictRead.as_int(_speech().get("hurt_threshold", 3))
+
+
+## The unit type `0x0047B872` refuses, and the owner `0x0047B868` refuses.
+func speech_mute_type() -> int:
+	return DictRead.as_int(_speech().get("mute_type", 0x14))
+
+
+func speech_unowned() -> int:
+	return DictRead.as_int(_speech().get("unowned", 0xFF))
+
+
+## `{"set": int, "category": int, "draw": [base, span]}` -- the one set whose
+## arm throws the caller's category away and draws its own index.
+func speech_random() -> Dictionary:
+	return {"set": DictRead.as_int(_speech().get("random_set", 12)),
+		"category": DictRead.as_int(_speech().get("random_category", 0)),
+		"draw": DictRead.to_int32(_speech().get("random_draw", [0, 5]))}
+
+
+## The cache key of one speech file, or `""` when the tree has no such file.
+##
+## **A miss is silence and not an error**: `0x0047BB6E` asks the filesystem
+## whether the name exists and returns when it does not, and every one of the
+## four drawing arms can produce a name that never shipped.
+func speech_wave(set_id: int, category: int, index: int) -> String:
+	var sets: Dictionary = DictRead.as_dict(_speech().get("sets", {}))
+	if not sets.has(str(set_id)):
+		return ""
+	var row: Dictionary = DictRead.as_dict(sets[str(set_id)])
+	var name: String = "%s/%s%02d%02d.wav" % [
+		DictRead.as_string(row["directory"]).to_lower(),
+		DictRead.as_string(row["prefix"]).to_lower(), category, index]
+	if not DictRead.as_dict(_speech().get("files", {})).has(name):
+		return ""
+	return "speech/%s" % name
+
+
+func _speech() -> Dictionary:
+	return DictRead.as_dict(_document.get("speech", {}))

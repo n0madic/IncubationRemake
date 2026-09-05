@@ -292,13 +292,13 @@ func _show_turn(world: World) -> void:
 	_turn.size = _turn.get_minimum_size()
 
 
-## The turn as it is on screen -- empty while the watcher's bare plate is up.
 ## Whether the last refresh moved the progress bar -- one tick of
 ## `progress.wav`, docs/43 section 7.1.
 func progress_stepped() -> bool:
 	return _progress_stepped
 
 
+## The turn as it is on screen -- empty while the watcher's bare plate is up.
 func turn_text() -> String:
 	return _turn.text if _turn.visible else ""
 

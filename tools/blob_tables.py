@@ -2017,6 +2017,61 @@ class Binary:
             return None
         return self.u8(site + 2), self.u8(site + 3)
 
+    def abs_load(self, va: int) -> tuple[int, int] | None:
+        """``mov r32, dword [disp32]`` -> ``(disp32, instruction length)``.
+
+        Both encodings the interface uses: ``A1 disp32`` for ``eax`` and
+        ``8B /r`` with ``mod = 00`` and ``r/m = 101`` for any register.
+        """
+        if not self.mapped(va, 6):
+            return None
+        if self.u8(va) == 0xA1:
+            return self.u32(va + 1), 5
+        if self.u8(va) == 0x8B and self.u8(va + 1) & 0xC7 == 0x05:
+            return self.u32(va + 2), 6
+        return None
+
+    def cmp_abs_imm(self, va: int) -> tuple[int, int] | None:
+        """``cmp dword [disp32], imm8`` -- ``83 3D disp32 ii``."""
+        if not self.mapped(va, 7):
+            return None
+        if self.u8(va) != 0x83 or self.u8(va + 1) != 0x3D:
+            return None
+        return self.u32(va + 2), self.u8(va + 6)
+
+    def esp_byte_imm(self, va: int) -> tuple[int, int] | None:
+        """``mov byte [esp + dd], ii`` -- ``C6 44 24 dd ii``."""
+        if not self.mapped(va, 5):
+            return None
+        if self.u8(va) != 0xC6 or self.u8(va + 1) != 0x44 \
+                or self.u8(va + 2) != 0x24:
+            return None
+        return self.u8(va + 3), self.u8(va + 4)
+
+    def mov_reg_imm32(self, va: int) -> int | None:
+        """``mov r32, imm32`` -- ``B8+r imm32``."""
+        if not self.mapped(va, 5):
+            return None
+        if 0xB8 <= self.u8(va) <= 0xBF:
+            return self.u32(va + 1)
+        return None
+
+    def arm_strings(self, arm: int, arms=(), limit: int = 200) -> list[str]:
+        """Every string a ``mov r32, imm32`` inside one switch arm names."""
+        end = self._extent(arm, arms, limit)
+        out: list[str] = []
+        va = arm
+        while va < end:
+            value = self.mov_reg_imm32(va)
+            if value is not None:
+                text = self.string(value, 16)
+                if text:
+                    out.append(text)
+                va += 5
+                continue
+            va += 1
+        return out
+
     def bgb_arms(self) -> dict[int, tuple[int, int | None]]:
         out = {}
         creators = self.blob_creators()
@@ -3034,6 +3089,9 @@ def run_checks(root: str) -> Checker:
     ck.equal("bgb.tick_bound", b.cmp_imm(BGB_TICK_BOUND_SITE), BGB_TYPE_BOUND)
     ck.equal("bgb.tick_arms", b.bgb_tick_arms(), BGB_TICK_ARMS, Checker.brief)
     check_bgb_tick(ck, b)
+
+    # ---- the mission interface's own sounds (docs/28 2.5 and 4.3) -------
+    check_mission_sound(ck, b)
 
     # ---- .cha notes never drive an effect --------------------------------
     ck.equal("notes.callback_sites",
@@ -4086,6 +4144,215 @@ def _scaled(b: Binary, sites) -> int | None:
             return None
         total *= factor
     return total
+
+
+def check_mission_sound(ck: Checker, b: Binary) -> None:
+    """docs/28 2.5 and 4.3 -- the mission interface's clicks and unit speech.
+
+    Two readings that share no code with ``inclib.sound``: every claim here is
+    decoded out of ``Incubation.exe``'s bytes at the address the table names.
+    """
+    # ---- 2.5  the four buffers aInitBattleGround loads -------------------
+    ck.equal("mission_sound.interface_loads",
+             {wave: (b.push_str(push), b.push_imm(push + 0x10))
+              for wave, (push, _global) in sorted(sound.INTERFACE_LOADS.items())},
+             {wave: (wave, handle)
+              for wave, (_push, handle) in sorted(sound.INTERFACE_LOADS.items())},
+             Checker.brief)
+    # The id-96 set of 2.1 minus the two the mission never reaches.
+    ck.equal("mission_sound.interface_partition",
+             tuple(sorted(sound.INTERFACE_LOADS)),
+             tuple(sorted(w.lower() for w in sound.INTERFACE_WAVES
+                          if w not in sound.INTERFACE_OUTSIDE_THE_MISSION
+                          and w != "textbeep.wav")),
+             Checker.brief)
+    # ---- 2.5  every play site, and the handle it really loads ------------
+    ck.equal("mission_sound.interface_cues",
+             {name: (b.abs_load(cue.load) or (None, 0))[0]
+              for name, cue in sorted(sound.INTERFACE_CUES.items())},
+             {name: cue.buffer
+              for name, cue in sorted(sound.INTERFACE_CUES.items())},
+             Checker.brief)
+    ck.check("mission_sound.interface_load_feeds_play",
+             all(cue.load < cue.site <= cue.load
+                 + (b.abs_load(cue.load) or (0, 0))[1] + 4
+                 for cue in sound.INTERFACE_CUES.values()),
+             "each load is the play call's own, three pushes in front of it")
+    ck.equal("mission_sound.interface_play_targets",
+             sorted({b.call_target(cue.site)
+                     for cue in sound.INTERFACE_CUES.values()}),
+             [SOUND_PLAY], _hexlist)
+    # Every buffer a cue names is one of the six the two modules were handed,
+    # and every one of the six is used by at least one cue.
+    ck.equal("mission_sound.interface_buffers",
+             sorted({cue.buffer for cue in sound.INTERFACE_CUES.values()}),
+             sorted(sound.INTERFACE_BUFFERS), _hexlist)
+    ck.equal("mission_sound.interface_buffer_waves",
+             sorted({sound.INTERFACE_BUFFERS[cue.buffer]
+                     for cue in sound.INTERFACE_CUES.values()}),
+             sorted(sound.INTERFACE_LOADS), Checker.brief)
+
+    # ---- 4.3  the speech routine's two switches --------------------------
+    ck.equal("speech.category_bound", b.cmp_imm(sound.SPEECH_CATEGORY_BOUND_SITE),
+             sound.SPEECH_CATEGORY_CASES - 1)
+    ck.equal("speech.set_bound", b.cmp_imm(sound.SPEECH_SET_BOUND_SITE),
+             sound.SPEECH_SET_CASES - 1)
+    arms = b.jump_table(sound.SPEECH_CATEGORY_TABLE, sound.SPEECH_CATEGORY_CASES)
+    ck.equal("speech.category_arms",
+             {i: a for i, a in enumerate(arms) if i in sound.SPEECH_ARMS},
+             {i: arm.site for i, arm in sorted(sound.SPEECH_ARMS.items())},
+             _hexmap)
+    # The three arguments that print `0000`: their entries are the arm the
+    # bound test jumps to, so they are the switch's own default.
+    default = {a for i, a in enumerate(arms) if i not in sound.SPEECH_ARMS}
+    ck.equal("speech.silent_arguments",
+             tuple(sorted(i for i, a in enumerate(arms)
+                          if i not in sound.SPEECH_ARMS)),
+             sound.SPEECH_SILENT_ARGUMENTS)
+    ck.check("speech.silent_arguments_share_one_arm", len(default) == 1,
+             "the three send the switch to one address")
+    # Each arm's own category immediate, read at the `mov byte [esp+0x10]`
+    # the arm ends with.
+    ck.equal("speech.categories",
+             {i: _speech_category(b, arm)
+              for i, arm in sorted(sound.SPEECH_ARMS.items())},
+             {i: arm.category for i, arm in sorted(sound.SPEECH_ARMS.items())},
+             Checker.brief)
+    # The cursor arms: the global, and the value that wraps it.
+    ck.equal("speech.cursors",
+             {i: _speech_cursor(b, arm.site)
+              for i, arm in sorted(sound.SPEECH_ARMS.items())
+              if arm.cursor is not None},
+             {i: (arm.cursor, arm.modulus)
+              for i, arm in sorted(sound.SPEECH_ARMS.items())
+              if arm.cursor is not None}, Checker.brief)
+    ck.equal("speech.unused_cursor",
+             b.cmp_abs_imm(sound.SPEECH_ARMS[0].site),
+             sound.SPEECH_UNUSED_CURSOR)
+    # The drawing arms: `push span / push base / call aRandom2`.
+    ck.equal("speech.draws",
+             {i: _speech_draw(b, arm.site)
+              for i, arm in sorted(sound.SPEECH_ARMS.items())
+              if arm.draw is not None},
+             {i: arm.draw for i, arm in sorted(sound.SPEECH_ARMS.items())
+              if arm.draw is not None}, Checker.brief)
+    ck.check("speech.draws_are_the_presentation_generator",
+             all(b.call_target(_speech_draw_site(b, arm.site))
+                 == sound.SPEECH_RANDOM
+                 for arm in sound.SPEECH_ARMS.values() if arm.draw),
+             "every index draw goes to aRandom2 and not to aRandom")
+    # ---- 4.3  the twelve speech sets -------------------------------------
+    set_arms = b.jump_table(sound.SPEECH_SET_TABLE, sound.SPEECH_SET_CASES)
+    named = {i + 1: a for i, a in enumerate(set_arms)}
+    ck.equal("speech.sets",
+             {i: _speech_set(b, named[i], set_arms)
+              for i in sorted(sound.SPEECH_SETS)},
+             {i: (prefix, directory)
+              for i, (directory, prefix) in sorted(sound.SPEECH_SETS.items())},
+             Checker.brief)
+    ck.equal("speech.silent_sets",
+             tuple(i for i in range(1, sound.SPEECH_SET_CASES + 1)
+                   if i not in sound.SPEECH_SETS), (8, 9))
+    ck.equal("speech.random_set_gate",
+             b.cmp_imm(SPEECH_RANDOM_GATE), sound.SPEECH_RANDOM_SET)
+    ck.equal("speech.random_set_draw",
+             _speech_draw(b, SPEECH_RANDOM_GATE), sound.SPEECH_RANDOM_DRAW)
+    # ---- 4.3  the format, the buffer and the gates -----------------------
+    ck.equal("speech.format",
+             tuple(b.push_str(site) for site in sound.SPEECH_FORMAT_SITES),
+             (sound.SPEECH_FORMAT,) * len(sound.SPEECH_FORMAT_SITES),
+             Checker.brief)
+    ck.equal("speech.buffer",
+             sorted({b.push_imm(SPEECH_BUFFER_PUSH)}), [sound.SPEECH_BUFFER],
+             _hexlist)
+    ck.equal("speech.hurt_threshold",
+             sorted({b.u8(site + 1) for site in SPEECH_HURT_SITES}),
+             [sound.SPEECH_HURT_THRESHOLD])
+    ck.equal("speech.mute_type", b.u8(SPEECH_MUTE_SITE + 3),
+             sound.SPEECH_MUTE_TYPE)
+    ck.equal("speech.unowned", b.u8(SPEECH_UNOWNED_SITE + 3),
+             sound.SPEECH_UNOWNED)
+    # ---- 4.3  who asks, and for what -------------------------------------
+    ck.equal("speech.calls",
+             sorted(site for sites in sound.SPEECH_CALLS.values()
+                    for site in sites),
+             sorted(b.calls_to(SPEECH_ROUTINE)), _hexlist)
+    ck.equal("speech.arguments",
+             {event: tuple(sorted({b.push_imm(site) for site in sites}))
+              for event, sites in sorted(sound.SPEECH_ARGUMENT_SITES.items())},
+             {event: tuple(sorted(args)) for event, args
+              in sorted(sound.SPEECH_EVENT_ARGUMENTS.items())},
+             Checker.brief)
+    # Two whole shipped categories nothing asks for: 6 wants argument 6 and 7
+    # wants argument 7, and no site pushes either.
+    asked = {b.push_imm(site)
+             for sites in sound.SPEECH_ARGUMENT_SITES.values() for site in sites}
+    reached = {arm.category for i, arm in sound.SPEECH_ARMS.items()
+               if i in asked}
+    ck.equal("speech.dead_categories",
+             tuple(c for c in sound.SPEECH_SHIPPED_CATEGORIES
+                   if c not in reached),
+             sound.SPEECH_DEAD_CATEGORIES)
+
+
+#: ``aDirectSoundPlay`` -- the one routine every play site above calls.
+SOUND_PLAY = 0x00436EF0
+#: ``fcn.0047B660``, the speech routine itself.
+SPEECH_ROUTINE = 0x0047B660
+#: ``cmp dl, 0x0C`` -- the random set's own test, past the name build.
+SPEECH_RANDOM_GATE = 0x0047BAD5
+#: ``push 0x00518350`` -- the buffer handed to the create call.
+SPEECH_BUFFER_PUSH = 0x0047BB84
+#: The two ``mov al, 3`` / ``cmp`` pairs the selection sites gate on.
+SPEECH_HURT_SITES = (0x00471A15, 0x00471F19)
+#: ``cmp byte [esi + 0x4C], 0x14`` and ``cmp byte [esi + 0x45], 0xFF``.
+SPEECH_MUTE_SITE = 0x0047B872
+SPEECH_UNOWNED_SITE = 0x0047B868
+
+
+def _speech_category(b: Binary, arm: sound.SpeechArm) -> int | None:
+    """The ``mov byte [esp + 0x10], ii`` an arm leaves the category in."""
+    found = b.esp_byte_imm(arm.category_site)
+    if found is None or found[0] != sound.SPEECH_CATEGORY_SLOT:
+        return None
+    return found[1]
+
+
+def _speech_cursor(b: Binary, arm: int) -> tuple[int, int] | None:
+    """``mov eax, [cursor] / cmp eax, N`` -> ``(cursor, N)``."""
+    load = b.abs_load(arm)
+    if load is None:
+        return None
+    return load[0], b.cmp_imm(arm + load[1])
+
+
+def _speech_draw_site(b: Binary, arm: int) -> int:
+    """The ``call aRandom2`` inside one drawing arm."""
+    for va in range(arm, arm + 0x40):
+        if b.u8(va) == 0xE8 and b.call_target(va) == sound.SPEECH_RANDOM:
+            return va
+    return arm
+
+
+def _speech_draw(b: Binary, arm: int) -> tuple[int, int] | None:
+    """``push span / push base / call aRandom2`` -> ``(base, span)``."""
+    site = _speech_draw_site(b, arm)
+    if site == arm:
+        return None
+    return b.push_imm(site - 2), b.push_imm(site - 4)
+
+
+def _speech_set(b: Binary, arm: int, arms) -> tuple[str, str] | None:
+    """One set arm's ``(file prefix, directory)``, both as ``mov`` immediates."""
+    strings = b.arm_strings(arm, arms)
+    if len(strings) < 2:
+        return None
+    return strings[0], strings[-1]
+
+
+def _hexmap(value) -> str:
+    return "{" + ", ".join("%d: 0x%08X" % (k, v)
+                           for k, v in sorted(value.items())) + "}"
 
 
 def _sites_with_volume(sites: dict, volume_id: int) -> set[str]:
@@ -6293,6 +6560,41 @@ ATLAS_NAME = ATLAS_TEXTURE
 ATLAS_HALF_EXTENT_SCALE = SIZE_SCALE
 
 
+def _speech_document(root: str) -> dict:
+    """docs/28 4.3 as data: the sets, the arms, the gates and the tree."""
+    files: dict[str, str] = {}
+    speech_root = Path(root) / WAVES_DIR / sound.SPEECH_DIRECTORY
+    for entry in sorted(speech_root.glob("*/*")):
+        # `.wav` only.  The tree is browsed by hand often enough that a stray
+        # `.DS_Store` would otherwise join the closure, be copied into the
+        # cache and move the file count the suites pin -- with nothing here
+        # failing first.
+        if not entry.is_file() or entry.suffix.lower() != ".wav":
+            continue
+        key = ("%s/%s" % (entry.parent.name, entry.name)).lower()
+        files[key] = "%s/%s" % (entry.parent.name, entry.name)
+    return {
+        "volume_id": sound.SPEECH_VOLUME_ID,
+        "sets": {str(i): {"directory": directory, "prefix": prefix}
+                 for i, (directory, prefix) in sorted(sound.SPEECH_SETS.items())},
+        "arms": {str(i): {"category": arm.category,
+                          "cursor": ("0x%08X" % arm.cursor) if arm.cursor else "",
+                          "modulus": arm.modulus if arm.modulus is not None else -1,
+                          "draw": list(arm.draw) if arm.draw else []}
+                 for i, arm in sorted(sound.SPEECH_ARMS.items())},
+        "events": {event: list(args) for event, args
+                   in sorted(sound.SPEECH_EVENT_ARGUMENTS.items())},
+        "hurt_threshold": sound.SPEECH_HURT_THRESHOLD,
+        "mute_type": sound.SPEECH_MUTE_TYPE,
+        "unowned": sound.SPEECH_UNOWNED,
+        "random_set": sound.SPEECH_RANDOM_SET,
+        "random_category": sound.SPEECH_RANDOM_CATEGORY,
+        "random_draw": list(sound.SPEECH_RANDOM_DRAW),
+        "dead_categories": list(sound.SPEECH_DEAD_CATEGORIES),
+        "files": files,
+    }
+
+
 def sound_document(root: str) -> dict:
     """The sound layer as portable data, waves named by their cache file.
 
@@ -6370,6 +6672,17 @@ def sound_document(root: str) -> dict:
                    for name, entry in sorted(sound.IMPACT_CUES.items())},
         "interface": {"volume_id": sound.INTERFACE_VOLUME_ID,
                       "waves": [w.lower() for w in sound.INTERFACE_WAVES]},
+        # docs/28 2.5: the mission interface's own clicks.  The wave is
+        # reached through the module global the handle lives in, so the
+        # document joins the two here and the remake never repeats an address.
+        "mission_interface": {
+            name: {"wave": sound.INTERFACE_BUFFERS[cue.buffer].lower(),
+                   "volume_id": sound.INTERFACE_VOLUME_ID}
+            for name, cue in sorted(sound.INTERFACE_CUES.items())},
+        # docs/28 4.3: unit speech.  `files` is the whole shipped tree keyed
+        # as the cache names it, because the original builds a name and asks
+        # the filesystem -- a name that resolves to nothing is silence.
+        "speech": _speech_document(root),
         # docs/43 section 7: the watched player's own two buffers.  Neither is
         # scaled by the volume table, and only `progress` is reachable outside
         # a network game.

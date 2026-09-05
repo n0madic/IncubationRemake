@@ -765,6 +765,10 @@ func _state() -> Dictionary:
 	# every press while it is (docs/43 section 5.2), which is invisible from
 	# the world alone.
 	document["replay"] = _main._playback.is_running()
+	# What the pool holds right now, by wave: the clicks and the voices of
+	# docs/28 sections 2.5 and 4.3 are single frames of sound, so a drive that
+	# only read the world could not tell a silent interface from a noisy one.
+	document["sounds"] = _sounds()
 	document["gore_level"] = world.gore_level
 	document["ai_level"] = world.turn.ai_level
 	document["units"] = _units()
@@ -772,6 +776,17 @@ func _state() -> Dictionary:
 	document["warp"] = _query(true)
 	document["hash"] = world.canonical_hash_hex()
 	return document
+
+
+## Every wave the twenty-slot pool is holding, in slot order.
+func _sounds() -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	if _main._audio == null or _main._audio.pool() == null:
+		return out
+	var pool: AudioPool = _main._audio.pool()
+	for index: int in pool.live():
+		out.append(DictRead.as_string(pool.slot(index)["path"]))
+	return out
 
 
 ## Which screen is up: the shell's own, or the campaign flow's.

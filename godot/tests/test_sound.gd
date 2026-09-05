@@ -54,6 +54,8 @@ func run(h: TestHarness) -> void:
 		DictRead.as_dict(document["volume_table"]).size())
 
 	_check_view_player(h, tables, document)
+	_check_mission_interface(h, tables, document)
+	_check_speech(h, tables, document)
 	_check_attenuation(h, tables, document)
 	_check_scaled(h, tables, document)
 	_check_pool(h, tables, document)
@@ -502,6 +504,117 @@ func _check_catalogue(h: TestHarness, tables: AudioTables,
 	h.equal("para_bombs_no_third_phase",
 		events.for_event_phase("para_bombs", 2).size(), 0,
 		"a phase the event does not have is empty, not an error")
+
+
+## docs/28 section 2.5 -- the ten interface sites and the four waves they
+## reach through the two modules' globals.
+func _check_mission_interface(h: TestHarness, tables: AudioTables,
+		document: Dictionary) -> void:
+	var copied: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(document["document"])["waves"])
+	var interface: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(document["document"])["interface"])
+	var seen: Dictionary[String, bool] = {}
+	for action: String in [AudioTables.INTERFACE_ORDER_MOVE,
+			AudioTables.INTERFACE_ORDER_WARP, AudioTables.INTERFACE_RESELECT,
+			AudioTables.INTERFACE_BUTTON, AudioTables.INTERFACE_HOVER_CELL,
+			AudioTables.INTERFACE_HOVER_BUTTON, AudioTables.INTERFACE_MAP_CLICK,
+			AudioTables.INTERFACE_COMPASS, AudioTables.INTERFACE_VIEW_MAP,
+			AudioTables.INTERFACE_VIEW_UNIT]:
+		var cue: Dictionary = tables.interface_cue(action)
+		h.check("interface_%s" % action, not cue.is_empty(),
+			"the sound document names the cue")
+		if cue.is_empty():
+			continue
+		var wave: String = DictRead.as_string(cue["wave"])
+		seen[wave] = true
+		h.check("interface_%s_copied" % action, copied.has(wave),
+			"%s is in the conversion's closure" % wave)
+		# Every one of them is the id the authors labelled *gui-sounds*.
+		h.equal("interface_%s_volume" % action,
+			DictRead.as_int(cue["volume_id"]),
+			DictRead.as_int(interface["volume_id"]))
+	# The three ring arms really do reach three different actions, and the
+	# selection's is `select.wav` rather than a click.
+	h.equal("interface_ring_arms",
+		[DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_ORDER_MOVE)["wave"]),
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_ORDER_WARP)["wave"]),
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_RESELECT)["wave"])],
+		["click_5.wav", "click_5.wav", "click_5.wav"])
+	h.equal("interface_selection_is_select_wav",
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_VIEW_UNIT)["wave"]), "select.wav")
+	# Four waves reached, and `textbeep` -- the shell's -- reached by none.
+	h.equal("interface_waves_reached", seen.keys().size(), 4)
+	h.check("interface_textbeep_is_the_shells",
+		not seen.has("textbeep.wav"),
+		"no mission action reaches the aGUI.cpp beep")
+	h.check("interface_unknown_is_empty",
+		tables.interface_cue("no-such-action").is_empty(),
+		"an unnamed action is an empty cue, not a made-up one")
+
+
+## docs/28 section 4.3 -- the speech switch, replayed through [SpeechPlayer].
+func _check_speech(h: TestHarness, tables: AudioTables,
+		document: Dictionary) -> void:
+	var speech: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(document["document"])["speech"])
+	h.equal("speech_volume_id", tables.speech_volume_id(),
+		AudioTables.NO_SCALING)
+	h.equal("speech_sets", DictRead.as_dict(speech["sets"]).keys().size(), 10)
+	h.equal("speech_files", DictRead.as_dict(speech["files"]).keys().size(),
+		233)
+	# The switch's own default, and the id an ordinary spawn leaves behind.
+	h.equal("speech_unset_id_is_silent", tables.speech_wave(0, 1, 1), "")
+	h.equal("speech_name", tables.speech_wave(11, 3, 2), "speech/5/rrd0302.wav")
+	# `Mrd` ships no `0104`, so a name the arithmetic can produce resolves to
+	# nothing -- which is silence and not an error.
+	h.equal("speech_missing_file_is_silence", tables.speech_wave(6, 1, 4), "")
+
+	var player: SpeechPlayer = SpeechPlayer.new()
+	player.setup(tables)
+	var healthy: Dictionary = {"player": 0, "type_id": 0, "hp": 10, "fp": 10,
+		"speech": 1}
+	var hurt: Dictionary = {"player": 0, "type_id": 0, "hp": 1, "fp": 10,
+		"speech": 1}
+	# The two selection arguments print two different categories -- 01 for a
+	# marine that is fit and 02 for one that is not -- and both draw, so this
+	# asks which category and not which index.
+	var categories: Dictionary[int, bool] = {}
+	for i: int in range(64):
+		for unit: Dictionary in [healthy, hurt]:
+			var cue: Dictionary = player.line("select", unit, 0)
+			if cue.is_empty():
+				continue
+			categories[int(DictRead.as_string(cue["wave"]).substr(
+				"speech/1/mano".length(), 2))] = true
+	h.equal("speech_select_categories", categories.keys().size(), 2)
+	h.check("speech_select_healthy_is_01", categories.has(1), "category 01")
+	h.check("speech_select_hurt_is_02", categories.has(2), "category 02")
+	# The cycle walks a cursor rather than drawing: `1, 2, 3, 4, 5, 0`, and the
+	# two of those that name no shipped file are silence.
+	var cycled: PackedStringArray = PackedStringArray()
+	for i: int in range(6):
+		var cue: Dictionary = player.line("cycle", healthy, 0)
+		cycled.append("" if cue.is_empty() else DictRead.as_string(cue["wave"]))
+	h.equal("speech_cycle_cursor", cycled, PackedStringArray([
+		"speech/1/mano0301.wav", "speech/1/mano0302.wav",
+		"speech/1/mano0303.wav", "speech/1/mano0304.wav", "", ""]))
+	# The three gates in front of the whole routine.
+	h.check("speech_other_seat_is_silent",
+		player.line("select", healthy, 1).is_empty(),
+		"a unit the current player does not own says nothing")
+	var muted: Dictionary = healthy.duplicate()
+	muted["type_id"] = tables.speech_mute_type()
+	h.check("speech_mute_type_is_silent",
+		player.line("select", muted, 0).is_empty(),
+		"unit type 0x14 says nothing")
+	h.check("speech_unknown_event_is_silent",
+		player.line("no-such-event", healthy, 0).is_empty(),
+		"an event no site asks for says nothing")
 
 
 ## docs/43 section 7 -- `aViewPlayer.cpp`'s own two buffers.

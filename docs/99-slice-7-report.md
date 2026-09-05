@@ -449,3 +449,57 @@ one seat end another's turn. It predates this slice.
   decisions with the reading named, not implementations.
 * Nothing from §6 is left; the para bomb's own residue was closed the same
   day (§6's last bullet).
+
+
+---
+
+## 8. The mission's own sound *(2026-09-05)*
+
+Reported as "the level has no sound: units speak when they are picked, clicks
+on the action points and on the turn are voiced". Both halves were real and
+both were **missing rather than wrong** — nothing in the remake had ever
+reached them.
+
+**The clicks.** [`28` §2.5](28-effects-and-sound.md) is new: four of the five
+id-96 waves belong to the mission interface, and no widget names one. They are
+loaded once by `aInitBattleGround` and handed to `aUI.cpp` and `aMI.cpp` as
+handles, so a play site names a **global** and the wave is two hops away. Ten
+sites, read out of the bytes at each site's own `mov`. The finding worth
+carrying: **`select.wav` is the camera's, not the click's** — it is played from
+inside the two view placers, which `fcn.004533D0` runs after every successful
+select, so the noise a player hears when they pick a marine belongs to the view
+being re-applied. The remake plays it from `select_unit` for that reason and
+not from `_pick`.
+
+**The voices.** [`28` §4.2.1](28-effects-and-sound.md) reads `fcn.0047B660`
+whole: a ten-case category switch, four cursors (two of which are **shared**,
+so arguments 2 and 7 interleave), three drawing arms on `aRandom2` — the
+presentation generator, never the simulation's — a twelve-case set switch, and
+`0x0047BB6E`, which asks the filesystem whether the name exists. **A miss is
+silence**, and it is not an edge case: `MANO` ships four indices where the arm
+draws six, so a fit marine says nothing to two selections in six. Sixteen call
+sites in four groups; the selection's argument depends on the marine's own hit
+points and fitness. Two whole shipped categories, about fifty files, are
+unreachable — no arm prints `06` at all, and `07` is printed only by an
+argument nothing pushes.
+
+**The cache grew.** The 233 speech files are in the closure since
+`CONVERTER_VERSION` 0.19.0, copied whole rather than by reachable name because
+the original builds a name and asks the directory. 5.4 MiB; the two size
+ceilings in `remake_convert.py` were raised with the reason recorded.
+
+Not done, and deliberate:
+
+* **`hover_button` is pinned and not played.** The button columns have no
+  hover state in the remake, so the second of the two `click_1` ticks has
+  nowhere to come from. `hover_cell` is played, gated the way the original
+  gates it — only while a command is armed, which is exactly the window the
+  ring is up in.
+* **`map_click`, `compass` and `view_map` are pinned and not played.** They
+  belong to `aMI.cpp`'s map interface, which the seventh slice draws as a
+  radar and not as a clickable map.
+* **Speech rides the FX volume.** The original scales it by the options
+  record's own speech field ([`20` §8](20-lcl-language.md)) and by nothing
+  else. The options screen still has no speech row, which [`92`
+  §7.1](92-remake-architecture.md) permits — that rule is about controls that
+  do nothing, not about settings that have no control.

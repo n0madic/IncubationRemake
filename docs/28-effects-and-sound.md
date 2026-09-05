@@ -235,6 +235,56 @@ played alone never reaches it. Both are copied — the closure is what the game
 can reach — and only the first is played by the remake
 ([`43` §7.3](43-battle-hud.md)).
 
+### 2.5 The mission interface's own clicks — `aUI.cpp` and `aMI.cpp`
+
+*(2026-09-05.)* Four of the id-96 waves are the **mission interface's**, and no
+widget names one. `aInitBattleGround` `0x00419D90` loads them into four buffers
+of its own and hands the handles to the two interface modules:
+
+| Wave | pushed at | handle | to |
+|---|---|---|---|
+| `click_1.wav` | `0x00419EFC` | `0x004FE340` | both |
+| `click_2.wav` | `0x00419F4B` | `0x004FE344` | both |
+| `click_5.wav` | `0x00419F9A` | `0x004FE348` | `aUI.cpp` only |
+| `select.wav` | `0x00419FE9` | `0x004FE34C` | `aMI.cpp` only |
+
+`aInitUnitInterface` `0x004710E0` keeps its three in `0x00516304`,
+`0x00516308` and `0x0051630C`; `aInitMapInterface` `0x00450A80` keeps its three
+in `0x0050FE74`, `0x0050FE78` and `0x0050FE7C`. So the wave a widget makes is
+**two hops from its call site**, and the ten play sites are:
+
+| Action | site | handle | wave |
+|---|---|---|---|
+| a click on a warp cell (state `0x3C`) | `0x00471622` | `0x0051630C` | `click_5` |
+| a click on a reachable cell (state `0x0A`) | `0x00471675` | `0x0051630C` | `click_5` |
+| the selected unit clicked again | `0x00471892` | `0x0051630C` | `click_5` |
+| a column button, past its availability gate | `0x004713E7` | `0x00516308` | `click_2` |
+| the hovered cell changed, a command armed | `0x00471DC4` | `0x00516304` | `click_1` |
+| the hovered column button changed | `0x00472544` | `0x00516304` | `click_1` |
+| a click on the map interface | `0x00450E51` | `0x0050FE78` | `click_2` |
+| the compass | `0x00451A40` | `0x0050FE74` | `click_1` |
+| the map-view placer `fcn.00450F60` | `0x00450FB0` | `0x0050FE7C` | `select` |
+| the unit-view placer `fcn.004510A0` | `0x00451102` | `0x0050FE7C` | `select` |
+
+**`select.wav` is the camera's, not the click's.** It is played from inside the
+two view placers, and `fcn.004533D0` runs one of them after every successful
+select ([`43` §4.5](43-battle-hud.md)) — so the sound a player hears when they
+pick a marine comes from the view being re-applied to the new selection's cell.
+A remake that hung it on the click would be right by accident and wrong the
+moment the selection changes without one.
+
+`click_3.wav` and `click_4.wav` carry id `-1` and belong to `aBattleMap.cpp`,
+`aLoad.cpp` and `aMultiPlayer.cpp`; `textbeep.wav` is `aGUI.cpp`'s, loaded by
+`fcn.0043BF30` into `0x0050B2A0`..`0x0050B2A8` for the shell. None of the three
+is reached by a mission action, which completes the partition of the seven.
+
+`sound.INTERFACE_LOADS`, `sound.INTERFACE_BUFFERS` and `sound.INTERFACE_CUES`
+carry the three tables; `blob_tables.py`'s `mission_sound.*` checks read the
+handle out of each play site's own `mov` and compare it with the claim, so the
+join is measured rather than asserted.
+
+---
+
 ### 2.2 Case, and what a remake on a case-sensitive filesystem must do
 
 All 50 literal wave names resolve against the shipped `Waves/` directory
@@ -347,6 +397,64 @@ audio-side anchoring: the two sites that build
 pass volume id `-1` — speech is never scaled by the `SetVolumeCtrl` table, only
 by its own options field ([`20` §8](20-lcl-language.md)) — and that the ten
 shipped directories `1`…`9`, `A` hold 252 files between them.
+
+#### 4.2.1 The routine, in full *(2026-09-05)*
+
+`fcn.0047B660(x, y, argument)` takes a **cell**, not a unit. It finds the unit
+standing on it and returns at once unless the unit is the current player's
+(`0x0047B6DF`), its owner is not `0xFF` (`0x0047B868`) and its type is not
+`0x14` (`0x0047B872`). It then kills whatever `0x00518350` holds — **one voice
+at a time**, and a second unit cuts the first one off — and builds two numbers.
+
+The **category** is the first `%02d` and comes from a ten-case switch on the
+argument (`cmp eax, 9 / ja`, table `0x0047BC00`); the **index** is the second
+and is either a walked cursor or a draw from `aRandom2` `0x004638E0`, the
+presentation generator of [`22` §3.2](22-combat-and-visibility.md) — never from
+the simulation's `aRandom`:
+
+| arg | arm | prints | index |
+|---:|---|---:|---|
+| 0 | `0x0047B752` | 01 | `aRandom2(0, 6)` → 0..5 |
+| 1 | `0x0047B7A2` | 03 | cursor `0x00518358`, 1..5 then 0 |
+| 2 | `0x0047B7D5` | 04 | cursor `0x0051835C`, 1..5 then 0 |
+| 3, 4, 5 | the switch's own default | 00 | 0 |
+| 6 | `0x0047B84B` | **05** | cursor `0x00518360`, 1..4 then 0 |
+| 7 | `0x0047B802` | 07 | cursor `0x0051835C` — **shared with arg 2** |
+| 8 | `0x0047B82F` | 02 | `aRandom2(0, 5)` → 0..4 |
+| 9 | `0x0047B78C` | 05 | `aRandom2(1, 6)` → 1..6 |
+
+Argument 0 walks a fifth cursor, `0x00518354`, and then **ignores it**: the
+index is drawn. The walk is a side effect the original really performs and is
+reproduced.
+
+`0x0047BAD5` then tests the speech id for 12: the `spdy` set throws the
+caller's category away, prints `00` and draws `aRandom2(0, 5)` — so
+`spdy0005.wav` is shipped and never played.
+
+The name is `wsprintf`'d at `0x0047BB12` (the random set) or `0x0047BB4F`
+(everybody else), and **`0x0047BB6E` asks whether the file exists**. A category
+and index that name no shipped file are silence, not an error, and that is not
+an edge case: `MANO` ships `0101`..`0104`, so a fit marine says nothing to two
+selections in six.
+
+Sixteen call sites ask, in four groups:
+
+| Event | sites | argument |
+|---|---|---:|
+| a unit selected | `0x00471A41` (the click, `fcn.004714B0`), `0x00471F44` (the ask, `fcn.00471E00`) | 0 when `+0x16 >= 3` **and** `+0x19 >= 3`, else 8 |
+| the cycle landed on a unit | `0x00471CF3` (`fcn.00471AD0`, only when `+0x15 != 0`) | 1 |
+| a shot, past `aAttackUnit` | `0x0046C15E` (`aTacTools.cpp`) | 2 |
+| an item used | thirteen arms of the equipment switch, `0x0046DD8C`..`0x0046E019` | 9 |
+
+**Two whole shipped categories are unreachable**, for two different reasons:
+no arm prints `06` at all — the arm that looks as though it should, argument 6,
+prints `05` — and `07` is printed only by argument 7, which no site pushes.
+About fifty files the shipped game never plays.
+
+The tree is **in the conversion's closure** since `CONVERTER_VERSION` 0.19.0:
+all 233 files, copied whole rather than by reachable name, because the original
+builds a name and asks the filesystem. `sound.SPEECH_*` carries the tables and
+`blob_tables.py`'s `speech.*` checks decode every one of them out of the bytes.
 
 ---
 

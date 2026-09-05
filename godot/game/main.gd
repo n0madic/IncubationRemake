@@ -169,6 +169,9 @@ var _ai_note: String = ""
 ## section 8's structural fact -- effects are driven by the animation
 ## routines, and the simulation only calls those.
 var _audio: AudioSystem = null
+## The voices of docs/28 section 4.3. Its cursors and its index generator are
+## the mission's, so it lives beside [member _audio] and not inside it.
+var _speech: SpeechPlayer = null
 var _events: AudioEvents = null
 var _fx: BlobPool = null
 ## The pool's own hooks, kept typed: [method BlobPool.hooks] answers the base
@@ -270,6 +273,9 @@ const AI_SETPIECE_KINDS: Dictionary[String, String] = {"door": "open_door"}
 ## The queue stage that waits for a walk before its own epilogue -- see
 ## [method _hold_for_walk].
 const STAGE_AFTER_WALK: String = "move.after_walk"
+## The tag every spoken line takes, so the next one can end it: the original
+## keeps speech in one buffer and kills it before the next name (docs/28 4.3).
+const SPEECH_TAG: String = "speech"
 ## docs/92 section 7.5.3, revised 2026-09-03 (docs/97 section 34): the
 ## engine's hand-over calls no camera routine, so neither does this by
 ## default. The flag restores the remake's own return to the first unit,
@@ -1847,6 +1853,9 @@ func _open_audio(quiet: bool) -> AudioSystem:
 	elif quiet:
 		_audio.stop_all()
 		_audio.stop_music()
+	if _speech == null:
+		_speech = SpeechPlayer.new()
+	_speech.setup(tables)
 	return _audio
 
 
@@ -1989,7 +1998,8 @@ func show_mission(step: int) -> void:
 ## Submits the movement query for one slot and highlights the answer.
 ## Public because a screenshot or a demo run drives the same path a click does;
 ## the scene never becomes the source of the selection either way.
-func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
+func select_unit(slot: int, pass_friendlies: bool,
+		event: String = "select") -> MoveMapResult:
 	_selected = slot
 	world.selected_slot = slot
 	var result: MoveMapResult = world.submit_move_query(
@@ -2015,6 +2025,12 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 	# re-centres the view without throwing away how the player had arranged it.
 	if _director != null:
 		var _flight: float = _director.select(world, slot)
+	# **`select.wav` is the camera's, not the click's** (docs/28 section 2.5):
+	# `fcn.004533D0` re-applies the view mode on the new selection's cell and
+	# the unit-view placer `fcn.004510A0` plays it from inside that.
+	_play_interface(AudioTables.INTERFACE_VIEW_UNIT)
+	# And the marine answers: argument 0 or 8 for a click, 1 for the cycle.
+	_speak(event, slot)
 	_refresh_status("slot %d %s: %d reachable, %d warp, mp %d, pf %s" % [
 		slot, DictRead.as_string(view["name"]), result.reachable_count(),
 		result.warp_count(), result.mp, str(pass_friendlies)])
@@ -2047,7 +2063,7 @@ func cycle_friendly() -> int:
 	var slot: int = next_friendly_slot(world, _selected)
 	if slot < 0:
 		return -1
-	var _map: MoveMapResult = select_unit(slot, false)
+	var _map: MoveMapResult = select_unit(slot, false, "cycle")
 	# docs/42 section 2.3's cycle row: `0x00453D42` places the camera on the
 	# unit with `(8, 7, 0)`, which is the engine's own answer to a squad
 	# member the camera is not pointing at.
@@ -2194,11 +2210,33 @@ static func first_friendly_slot(mission_world: World) -> int:
 func _resume_selection() -> void:
 	if world == null or world.game_control.mission_ended():
 		return
-	var slot: int = resumed_slot(world, _selection_before_turn)
+	var slot: int = hand_back_slot(world, _selected, _selection_before_turn)
 	_selection_before_turn = -1
 	if slot < 0:
 		return
-	var _map: MoveMapResult = select_unit(slot, false)
+	# The **ask** speaks only for a unit that has not moved: `0x00471F44` sits
+	# behind `unit[+0x15] >= fcn.00475160(unit)` inside `fcn.00471E00`, so a
+	# marine that spent part of its allowance last turn is picked in silence
+	# (docs/28 section 4.3). The click site has no such gate.
+	var moved: bool = DictRead.as_int(world.unit_view(slot)["mp"]) \
+		!= world.movement_allowance(slot, world.turn.ai_level)
+	var _map: MoveMapResult = select_unit(slot, false,
+		"" if moved else "select")
+
+
+## The whole hand-back rule, as one pure function: which unit to select now,
+## or -1 for "leave it alone".
+##
+## **A selection that already stands is left alone.** A quiet computer turn
+## hands back *twice* -- [method AIPlayback.play] finishes inside its own call
+## when no event survives its filter, so `_on_ai_step({})` runs before [method
+## end_turn] reaches its own no-replay path -- and re-running the select would
+## put the camera on a second unit and speak over the first line.
+static func hand_back_slot(mission_world: World, selected: int,
+		previous: int) -> int:
+	if selected >= 0:
+		return -1
+	return resumed_slot(mission_world, previous)
 
 
 ## Which unit the turn comes back on: *previous* while the computer left it
@@ -2557,6 +2595,40 @@ func _refresh_status(extra: String = "") -> void:
 ## It is played straight rather than through [AudioEvents]: `aInitViewPlayer`
 ## loads the wave into a buffer of its own and plays it with a bare zero, so
 ## there is no volume-control id to look up and no event table entry to read.
+## One of the mission interface's own clicks (docs/28 section 2.5).
+##
+## The wave is the cache's: the original reaches it through the module global
+## `aInitBattleGround` put the handle in, and the conversion has already done
+## that join.
+func _play_interface(action: String) -> void:
+	if _audio == null:
+		return
+	var cue: Dictionary = _audio.tables().interface_cue(action)
+	if cue.is_empty():
+		return
+	var _slot: int = _audio.play_cue(cue)
+
+
+## What *slot* says about *event*, if anything (docs/28 section 4.3).
+##
+## Silence is the common answer and is not a failure: a speech id no arm names
+## -- which is what an ordinary spawn leaves behind -- and a drawn index that
+## names no shipped file both end here with nothing played.
+func _speak(event: String, slot: int) -> void:
+	if _audio == null or _speech == null or world == null:
+		return
+	if slot < 0 or not world.has_unit(slot):
+		return
+	var cue: Dictionary = _speech.line(event, world.unit_view(slot),
+		world.turn.current_player)
+	if cue.is_empty():
+		return
+	# One voice at a time: `0x0047B6F2` kills the buffer before the next name
+	# is built, so a second marine cuts the first one off.
+	var _stopped: int = _audio.stop_tag(SPEECH_TAG)
+	var _slot: int = _audio.play_cue(cue, SPEECH_TAG)
+
+
 func _play_progress() -> void:
 	if _audio == null:
 		return
@@ -3393,6 +3465,17 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 func _raise_ring(cell: Vector2i, mode: int) -> void:
 	if _hud == null or _selected < 0:
 		return
+	# The click that raises the ring is the one that makes the noise, and all
+	# three arms have a site of their own -- `0x00471622` the warp cell,
+	# `0x00471675` the reachable cell and `0x00471892` the selected unit
+	# clicked again (docs/28 section 2.5). Same wave, three sites; a remake
+	# that played one of them for all three would be right by accident.
+	var action: String = AudioTables.INTERFACE_ORDER_MOVE
+	if mode == HudTables.RING_MODE_WARP:
+		action = AudioTables.INTERFACE_ORDER_WARP
+	elif mode == HudTables.RING_MODE_TURN:
+		action = AudioTables.INTERFACE_RESELECT
+	_play_interface(action)
 	_hud.ring.place(_art, world, cell, mode)
 	_refresh_status("")
 
@@ -3677,6 +3760,8 @@ func attack_cell(x: int, y: int) -> AttackResult:
 	_begin_command()
 	var shot: AttackResult = world.submit_attack(
 		AttackCommand.create(slot, x, y))
+	# `0x0046C15E`, past `aAttackUnit`: the shooter says something about it.
+	_speak("attack", slot)
 	# **Before `_after_command`**, which rebuilds and would otherwise drop the
 	# body this shot is about to be drawn hitting: the casualties are marked,
 	# and the shot is queued so the rebuild sees a running sequence and keeps
@@ -4442,6 +4527,11 @@ func use_in_front() -> UseResult:
 			DictRead.as_int(pusher["y"]) + Interact.FACING_DY[facing])
 		if world.state.in_bounds(front.x, front.y):
 			pushed = world.state.unit_at(world.state.index_of(front.x, front.y))
+	# **Whose voice**, captured before the command: `_after_command` below
+	# drops the selection when the use spends the unit's last movement point,
+	# and the thirteen speaking arms would then be silent for exactly the uses
+	# that end a turn.
+	var user: int = _selected
 	var used: UseResult = world.submit_use(UseCommand.create(_selected))
 	if used.ok and used.kind == World.DOOR_USE_KIND and _sequences != null \
 			and world.state.in_bounds(front.x, front.y):
@@ -4472,6 +4562,11 @@ func use_in_front() -> UseResult:
 			and used.kind == World.DOOR_USE_KIND and _sequences != null):
 		var _slots: PackedInt32Array = _audio.play_cues(
 			_events.for_use(used), "use")
+	# Thirteen of the equipment switch's arms speak, all of them argument 9
+	# (docs/28 section 4.3) -- and every one of them past the arm's own work,
+	# so a refused use says nothing.
+	if used.ok:
+		_speak("use", user)
 	return used
 
 
@@ -4602,6 +4697,19 @@ func end_turn() -> TurnResult:
 		var _turn_sounds: int = _present_script(result.turn_script)
 	if result.ran_player_script:
 		var _player_sounds: int = _present_script(result.player_script)
+	# **Before the replay starts**, and the drop with it: [method
+	# AIPlayback.play] finishes *inside its own call* when no event survives
+	# `SHOWN_KINDS`, so `_on_ai_step({})` -- and the hand-back in it -- runs
+	# before anything below this line. Capturing after the call gave a quiet
+	# computer turn `_selection_before_turn == -1`, which is the fallback and
+	# not the carry-over: the seat came back on the lowest marine rather than
+	# on the one the player had.
+	#
+	# The drop is the remake's and the engine has no such thing:
+	# `[0x005162F0]` carries the selection straight through the computer's
+	# turn. See [method _resume_selection].
+	_selection_before_turn = _selected
+	_deselect()
 	if result.ai_result != null:
 		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
 	# **Before the rebuild `_after_command` does below.** [method
@@ -4625,11 +4733,6 @@ func end_turn() -> TurnResult:
 	# UnitsView.hide_now] takes them out one at a time in the death stage.
 	if _playback.is_running():
 		var _doomed: int = _mark_dying_slots(_playback.pending_casualties())
-	# **Before the drop**, because the drop is the remake's and the engine has
-	# no such thing: `[0x005162F0]` carries the selection straight through the
-	# computer's turn. See [method _resume_selection].
-	_selection_before_turn = _selected
-	_deselect()
 	# A turn with nothing to replay hands back here rather than through
 	# [method _on_ai_step]; the same flag decides whether the view moves.
 	if not _playback.is_running() \
@@ -4748,6 +4851,12 @@ func _update_hover(pointer: Vector2) -> void:
 	if _hud.ring.is_up():
 		var _changed: bool = _hud.ring.hover(_rig.camera(), pointer)
 	if cell != _hover:
+		# `0x00471DC4`: the hover tick, and it is **gated on a command being
+		# armed** -- `fcn.00471D10` only reaches it with the UI mode
+		# `[0x516310]` at 1, 2 or 3, which is exactly the window in which the
+		# ring is up. Ungated it would be a machine gun on plain mouse motion.
+		if _hud.ring.is_up() and cell.x >= 0:
+			_play_interface(AudioTables.INTERFACE_HOVER_CELL)
 		_hover = cell
 		_refresh_overlay()
 
@@ -4837,6 +4946,10 @@ func _command_available(number: int) -> bool:
 func _on_hud_event(number: int) -> void:
 	if not _event_available(number):
 		return
+	# `fcn.00471310` plays `click_2` on the button the column press dispatches
+	# to, past the availability gate and not in front of it -- an unavailable
+	# button is silent as well as inert (docs/28 section 2.5).
+	_play_interface(AudioTables.INTERFACE_BUTTON)
 	match number:
 		HudTables.EVENT_FREE_CAMERA:
 			_rig.set_view_mode(CameraRig.View.SCRIPT)

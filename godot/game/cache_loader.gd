@@ -22,7 +22,7 @@ extends RefCounted
 
 ## Must match `inclib/cache.py`.
 const CACHE_SCHEMA_VERSION: int = 1
-const CONVERTER_VERSION: String = "0.18.0"
+const CONVERTER_VERSION: String = "0.19.0"
 
 const CACHES_DIR: String = "user://caches"
 const ACTIVE_NAME: String = "active.json"

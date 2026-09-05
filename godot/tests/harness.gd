@@ -49,7 +49,7 @@ const LEAST_CHECKS: Dictionary = {
 	"combat_native": 70,
 	"lcl": 62,
 	"charisma": 60,
-	"sound": 35,
+	"sound": 60,
 	"blob": 40,
 	"blob_native": 6,
 	"presentation_native": 150,

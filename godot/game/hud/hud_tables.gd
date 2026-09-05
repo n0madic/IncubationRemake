@@ -291,9 +291,10 @@ const PROGRESS_SEGMENTS: int = 22
 const PROGRESS_STEPS: int = 21
 const PROGRESS_LIT: int = 0
 const PROGRESS_DARK: int = 1
-## `0x0047C03F` -- the click one step of the bar makes. **Not in the cache**:
-## the conversion's wave closure is the animation call sites plus the id-96
-## interface set, and this one is a literal in `aViewPlayer.cpp` alone.
+## `0x0047C03F` -- the click one step of the bar makes. **In the cache** since
+## `CONVERTER_VERSION` 0.18.0 (`sound.VIEW_PLAYER_CUES`); the game reads it
+## through [method AudioTables.view_player_cue] and this constant is the name
+## the suites check that against.
 const PROGRESS_WAVE: String = "progress.wav"
 
 # --- the plate ---------------------------------------------------------------

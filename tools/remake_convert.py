@@ -657,8 +657,11 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 #: 40x40 maps and the `A00` scenery they stand on, 1.1 MiB either way --
 #: measured at 42.6 and 16.5 MiB against 41.5 and 15.4.  Rounded up with the
 #: same headroom the numbers above carry.
-CACHE_CEILING_KIB_MUSIC = 44 * 1024
-CACHE_CEILING_KIB_SILENT = 18 * 1024
+# Raised from 44/18 MiB on 2026-09-05, when the 233 speech files of docs/28
+# 4.3 joined the closure: 5.4 MiB of wave, and the mission interface is
+# silent without them.
+CACHE_CEILING_KIB_MUSIC = 50 * 1024
+CACHE_CEILING_KIB_SILENT = 24 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).
 SPRITE_COMPUTED_CALLS = 18

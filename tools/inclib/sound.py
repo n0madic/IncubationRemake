@@ -712,6 +712,254 @@ VIEW_PLAYER_ALARM_MODE = 2
 
 
 # --------------------------------------------------------------------------
+# 2.5  The mission interface's own click set -- aUI.cpp and aMI.cpp
+# --------------------------------------------------------------------------
+
+#: ``aInitBattleGround`` ``0x00419D90`` loads four of the id-96 waves into
+#: buffers of its own and hands the handles to the two interface modules:
+#: ``aInitUnitInterface`` ``0x004710E0`` takes ``click_1``, ``click_2`` and
+#: ``click_5``, ``aInitMapInterface`` ``0x00450A80`` takes ``click_1``,
+#: ``click_2`` and ``select``.  Each module keeps them in globals of its own and
+#: plays them by handle, so the wave a widget makes is not at the widget's call
+#: site -- it is two hops away, and this table is the join.
+INTERFACE_LOADS: dict[str, tuple[int, int]] = {
+    # wave -> (the push of its name, the global the handle is stored in)
+    "click_1.wav": (0x00419EFC, 0x004FE340),
+    "click_2.wav": (0x00419F4B, 0x004FE344),
+    "click_5.wav": (0x00419F9A, 0x004FE348),
+    "select.wav": (0x00419FE9, 0x004FE34C),
+}
+
+#: The two modules' own copies of those handles, in the order the init call
+#: passes them.  ``aUI.cpp`` never receives ``select.wav`` and ``aMI.cpp`` never
+#: receives ``click_5.wav``.
+INTERFACE_BUFFERS: dict[int, str] = {
+    0x00516304: "click_1.wav",   # aUI.cpp
+    0x00516308: "click_2.wav",
+    0x0051630C: "click_5.wav",
+    0x0050FE74: "click_1.wav",   # aMI.cpp
+    0x0050FE78: "click_2.wav",
+    0x0050FE7C: "select.wav",
+}
+
+
+@dataclass(frozen=True)
+class InterfaceCue:
+    """One ``aDirectSoundPlay`` site in the mission interface."""
+
+    #: The module global the handle comes from -- :data:`INTERFACE_BUFFERS`
+    #: says which wave that is, so the wave is never written down twice.
+    buffer: int
+    #: The play site itself.
+    site: int
+    #: The ``mov r32, dword [buffer]`` that feeds it.  Pinned rather than
+    #: searched for: the check reads the global out of *these* bytes and
+    #: compares it with :attr:`buffer`, so the pairing is measured.
+    load: int = 0
+
+
+#: Remake action -> the site that makes its noise.  The names are the remake's;
+#: the addresses are the original's, and ``blob_tables.py`` reads the handle
+#: each one loads straight out of the bytes rather than trusting the name.
+INTERFACE_CUES: dict[str, InterfaceCue] = {
+    # aUI.cpp -- fcn.004714B0, the click on the 3D window
+    "order_warp": InterfaceCue(0x0051630C, 0x00471622, 0x0047161A),
+    "order_move": InterfaceCue(0x0051630C, 0x00471675, 0x0047166D),
+    "reselect": InterfaceCue(0x0051630C, 0x00471892, 0x0047188A),
+    # aUI.cpp -- fcn.00471310, the button a column press dispatches to
+    "button": InterfaceCue(0x00516308, 0x004713E7, 0x004713DF),
+    # aUI.cpp -- the two hover ticks: fcn.00471D10 over the world while a
+    # command is armed, fcn.004723E0 over the button columns
+    "hover_cell": InterfaceCue(0x00516304, 0x00471DC4, 0x00471DBB),
+    "hover_button": InterfaceCue(0x00516304, 0x00472544, 0x0047253C),
+    # aMI.cpp -- fcn.00450D70's map click, fcn.004518E0's compass
+    "map_click": InterfaceCue(0x0050FE78, 0x00450E51, 0x00450E48),
+    "compass": InterfaceCue(0x0050FE74, 0x00451A40, 0x00451A38),
+    # aMI.cpp -- the two view placers of docs/42 2.4.  **This is the sound a
+    # selection makes**: the camera is re-applied to the new selection's cell
+    # by fcn.004533D0, and both placers play `select.wav` from inside it.
+    "view_map": InterfaceCue(0x0050FE7C, 0x00450FB0, 0x00450FA7),
+    "view_unit": InterfaceCue(0x0050FE7C, 0x00451102, 0x004510F9),
+}
+
+#: ``click_3.wav`` and ``click_4.wav`` carry volume id ``-1`` and belong to
+#: ``aBattleMap.cpp``, ``aLoad.cpp`` and ``aMultiPlayer.cpp`` -- the map screen,
+#: the loader and the network lobby, none of which is the mission interface.
+#: Named here so the partition of the seven click waves is complete.
+INTERFACE_OUTSIDE_THE_MISSION = ("click_3.wav", "click_4.wav")
+
+
+# --------------------------------------------------------------------------
+# 4.3  Unit speech -- aUnitMap.cpp fcn.0047B660
+# --------------------------------------------------------------------------
+
+#: ``unit[+0x55]`` -> ``(directory, file prefix)``, the twelve-arm switch at
+#: ``0x0047B896``.  Ids 8 and 9 fall through to the default and are silent, and
+#: so is id 0 -- the ``dec eax`` in front of the bound test means an unset
+#: speech id reaches no arm at all.  docs/20 7.4 reads the same switch from
+#: the language's side.
+SPEECH_SETS: dict[int, tuple[str, str]] = {
+    1: ("1", "mano"),
+    2: ("2", "mano"),
+    3: ("3", "maco"),
+    4: ("4", "mami"),
+    5: ("7", "mara"),
+    6: ("9", "mrd"),
+    7: ("A", "feno"),
+    10: ("6", "brno"),
+    11: ("5", "Rrd"),
+    12: ("8", "spdy"),
+}
+#: The set whose arm ignores the caller's category entirely: ``0x0047BAD5``
+#: tests the id for 12 **after** the name has been built and replaces both
+#: numbers with ``0`` and a fresh draw.
+SPEECH_RANDOM_SET = 12
+SPEECH_RANDOM_CATEGORY = 0
+#: ``aRandom2(0, 5)`` -- so ``spdy0005.wav`` is shipped and never played.
+SPEECH_RANDOM_DRAW = (0, 5)
+
+#: ``"%sSpeech\\%s\\%s%02d%02d.wav"`` at ``0x004CCE9C``: root, directory,
+#: prefix, category, index -- in that order, and the first ``%02d`` is the
+#: category.
+SPEECH_FORMAT = r"%sSpeech\%s\%s%02d%02d.wav"
+SPEECH_DIRECTORY = "Speech"
+#: The two ``wsprintf`` sites: the random set's and everybody else's.
+SPEECH_FORMAT_SITES = (0x0047BB12, 0x0047BB4F)
+#: ``fcn.00438AA0`` -- the file is opened only if it exists, so a category and
+#: index that name no shipped file are **silence** and not an error.  Every one
+#: of the four drawing arms can produce one.
+SPEECH_EXISTS_GATE = 0x0047BB6E
+#: One voice at a time: ``0x0047B6F2`` kills whatever is in this buffer before
+#: the new name is even built, so a second unit cuts the first off.
+SPEECH_BUFFER = 0x00518350
+#: ``fcn.00460480(-1)`` -- speech is scaled by the options record's own speech
+#: field and never by the ``SetVolumeCtrl`` table (docs/20 8).
+SPEECH_VOLUME_ID = NO_SCALING
+
+
+@dataclass(frozen=True)
+class SpeechArm:
+    """One arm of the ten-case switch at ``0x0047B74B``.
+
+    *category* is the first ``%02d``.  Exactly one of *cursor* and *draw* is
+    set: a cursor arm walks ``0 .. modulus`` and uses the walked value as the
+    index, a drawing arm takes ``aRandom2(base, span)`` and truncates it.
+    """
+
+    category: int
+    site: int
+    cursor: Optional[int] = None
+    #: ``cmp [cursor], N / jne`` -- the value that wraps back to zero, so the
+    #: sequence is ``0 .. N`` inclusive and ``N + 1`` values long.
+    modulus: Optional[int] = None
+    draw: Optional[tuple[int, int]] = None
+    #: The ``mov byte [esp + 0x10], ii`` the arm leaves the category in.
+    #: Pinned rather than searched for: arms 6 and 9 share one, three
+    #: instructions past the end of arm 9's own code.
+    category_site: int = 0
+
+
+#: The caller's argument -> what it prints.  Ten cases; three of them (3, 4 and
+#: 5) are the switch's own default and print ``0000``, which names no shipped
+#: file in any set but the random one.
+SPEECH_ARMS: dict[int, SpeechArm] = {
+    0: SpeechArm(1, 0x0047B752, draw=(0, 6), category_site=0x0047B782),
+    1: SpeechArm(3, 0x0047B7A2, cursor=0x00518358, modulus=5,
+                 category_site=0x0047B7AE),
+    2: SpeechArm(4, 0x0047B7D5, cursor=0x0051835C, modulus=5,
+                 category_site=0x0047B7E1),
+    6: SpeechArm(5, 0x0047B84B, cursor=0x00518360, modulus=4,
+                 category_site=0x0047B863),
+    7: SpeechArm(7, 0x0047B802, cursor=0x0051835C, modulus=5,
+                 category_site=0x0047B80E),
+    8: SpeechArm(2, 0x0047B82F, draw=(0, 5), category_site=0x0047B844),
+    9: SpeechArm(5, 0x0047B78C, draw=(1, 6), category_site=0x0047B863),
+}
+#: The category switch itself: ``cmp eax, 9 / ja`` at ``0x0047B742`` and the
+#: ten-entry table at ``0x0047BC00``; the set switch is ``dec eax /
+#: cmp eax, 0x0B / ja`` at ``0x0047B88D`` with the twelve-entry table at
+#: ``0x0047BC28`` -- which is why an id of 0 reaches no arm.
+SPEECH_CATEGORY_TABLE = 0x0047BC00
+SPEECH_CATEGORY_CASES = 10
+SPEECH_CATEGORY_BOUND_SITE = 0x0047B742
+SPEECH_SET_TABLE = 0x0047BC28
+SPEECH_SET_CASES = 12
+SPEECH_SET_BOUND_SITE = 0x0047B88D
+#: The stack slots the two numbers are built in: ``[esp+0x10]`` is the
+#: category and ``[esp+0x0C]`` the index, both zeroed at ``0x0047B733`` and
+#: ``0x0047B73D`` before the switch runs.
+SPEECH_CATEGORY_SLOT = 0x10
+SPEECH_INDEX_SLOT = 0x0C
+#: ``aRandom2`` -- the presentation generator of ``docs/22`` 3.2, seeded from
+#: ``GetTickCount``, **not** the simulation's ``aRandom``.
+SPEECH_RANDOM = 0x004638E0
+
+#: The three arguments the switch table sends to its own default.
+SPEECH_SILENT_ARGUMENTS = (3, 4, 5)
+#: Case 0 walks this cursor and then ignores it -- the index is drawn.  Kept
+#: because the walk is a side effect the original really performs.
+SPEECH_UNUSED_CURSOR = (0x00518354, 4)
+
+#: Every call site, and the argument it pushes.  Two of the four ask for one of
+#: two categories, on the selected unit's own condition.
+SPEECH_CALLS: dict[str, tuple[int, ...]] = {
+    # A unit that has just been selected: fcn.004714B0's click on it, and
+    # fcn.00471E00's ask.  `unit[+0x16] >= 3 and unit[+0x19] >= 3` is argument
+    # 0, and anything below either is argument 8 -- hit points and fitness
+    # points, so a hurt or exhausted marine answers differently.  The ask has
+    # one gate in front of both: `unit[+0x15] >= fcn.00475160(unit)`, so a unit
+    # that has already spent movement says nothing when the seat comes to it.
+    "select": (0x00471A41, 0x00471F44),
+    # aUI.cpp fcn.00471AD0 -- the cycle, which speaks only when the unit it
+    # landed on still has movement (`unit[+0x15] != 0`); a spent one makes it
+    # ask for another selection instead.
+    "cycle": (0x00471CF3,),
+    # aTacTools.cpp fcn.0046B450 -- the fire command, past `aAttackUnit`.
+    "attack": (0x0046C15E,),
+    # aInteraction's equipment switch -- thirteen arms, one per item that says
+    # something, all of them argument 9.
+    "use": (0x0046DD8C, 0x0046DDC5, 0x0046DE0A, 0x0046DE4F, 0x0046DE94,
+            0x0046DEDD, 0x0046DF1A, 0x0046DF55, 0x0046DF8A, 0x0046DFBB,
+            0x0046DFEC, 0x0046E019),
+}
+#: Where each argument is pushed.  Not derivable from the call site: the two
+#: selection sites choose between two arguments with a ``jmp`` into the same
+#: call, so one of the two pushes is fifteen bytes further back.
+SPEECH_ARGUMENT_SITES: dict[str, tuple[int, ...]] = {
+    "select": (0x00471A2C, 0x00471A3D, 0x00471F2F, 0x00471F40),
+    "cycle": (0x00471CEF,),
+    "attack": (0x0046C15A,),
+    "use": (0x0046DD88, 0x0046DDC1, 0x0046DE06, 0x0046DE4B, 0x0046DE90,
+            0x0046DED9, 0x0046DF16, 0x0046DF51, 0x0046DF86, 0x0046DFB7,
+            0x0046DFE8, 0x0046E015),
+}
+
+#: Remake event -> the argument its sites push.  ``select`` is the pair.
+SPEECH_EVENT_ARGUMENTS: dict[str, tuple[int, ...]] = {
+    "select": (0, 8),
+    "cycle": (1,),
+    "attack": (2,),
+    "use": (9,),
+}
+#: The gate the two selection sites share: hit points at ``+0x16`` and fitness
+#: at ``+0x19``, both compared against this.
+SPEECH_HURT_THRESHOLD = 3
+#: The three gates in front of the whole routine: the unit must be the current
+#: player's (``0x0047B6DF``), its owner must not be ``0xFF``
+#: (``0x0047B868``) and its type must not be ``0x14`` (``0x0047B872``).
+SPEECH_UNOWNED = 0xFF
+SPEECH_MUTE_TYPE = 0x14
+
+#: The categories the shipped ``Waves/Speech`` tree carries, ``01`` .. ``07``.
+SPEECH_SHIPPED_CATEGORIES = tuple(range(1, 8))
+#: The two of them no caller can reach, for two different reasons: **no arm
+#: prints 6 at all** -- the arm that looks like it should, argument 6, prints 5
+#: -- and 7 is printed only by argument 7, which no site pushes.  Two whole
+#: shipped categories, about fifty files, the game never plays.
+SPEECH_DEAD_CATEGORIES = (6, 7)
+
+
+# --------------------------------------------------------------------------
 # 6  Ambience is a stub, and fourteen waves are dead
 # --------------------------------------------------------------------------
 

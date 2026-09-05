@@ -692,11 +692,6 @@ func _unit_animations(h: TestHarness) -> void:
 	main.free()
 
 
-## The bar's two counts on a real world -- docs/43 section 7.
-##
-## The world holds the end of the computer's turn from its first frame, so the
-## tally is masked by what the replay has played; a spent unit nobody has seen
-## move must not be on the bar yet.
 ## docs/43 section 4.5 -- the selection the hand-over gives back.
 ##
 ## Reported as "in the original one of my soldiers is selected when the
@@ -764,6 +759,19 @@ func _hand_back_selection(h: TestHarness) -> void:
 	for other: int in mine:
 		world._units[other].mp = kept[other]
 
+	# **The quiet computer turn hands back twice.** `AIPlayback.play` finishes
+	# inside its own call when no event survives its filter, so `_on_ai_step`
+	# runs the hand-back before `end_turn` reaches its own; the second must be
+	# a no-op or the camera moves to a second unit and a second voice cuts the
+	# first one off.
+	h.equal("handback.first_hand_back_selects",
+		SliceMain.hand_back_slot(world, -1, other_slot), other_slot)
+	h.equal("handback.second_hand_back_is_a_no_op",
+		SliceMain.hand_back_slot(world, other_slot, -1), -1,
+		"a selection that already stands is the engine's own state")
+	h.equal("handback.a_standing_selection_is_never_replaced",
+		SliceMain.hand_back_slot(world, other_slot, slot), -1)
+
 	# And a side with nothing alive answers "none" -- 0x00477CE0's 0xFFFF.
 	var was: int = world.turn.current_player
 	world.turn.current_player = 7
@@ -774,6 +782,11 @@ func _hand_back_selection(h: TestHarness) -> void:
 	world.turn.current_player = was
 
 
+## The bar's two counts on a real world -- docs/43 section 7.
+##
+## The world holds the end of the computer's turn from its first frame, so the
+## tally is masked by what the replay has played; a spent unit nobody has seen
+## move must not be on the bar yet.
 func _replay_progress(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	if loaded.is_empty():

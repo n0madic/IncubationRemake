@@ -855,6 +855,19 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
         source = _find(root, WAVES_DIR, shipped)
         staging.write_bytes(f"audio/waves/{lower}", reader.read_bytes(source))
 
+    # docs/28 §4.3 -- the speech tree.  Copied whole rather than by closure:
+    # the original builds `Speech\\<dir>\\<prefix><category><index>.wav` and
+    # asks the filesystem, so which names it can reach is a property of the
+    # directory and not of a table, and a name that resolves to nothing is
+    # silence.  Case is resolved here for the same reason it is for the flat
+    # waves -- three of the ten directories are shipped in a case the binary's
+    # own literals do not match, and one of those is a directory name.
+    speech = document["speech"]["files"]
+    for lower, shipped in sorted(speech.items()):
+        source = root / WAVES_DIR / soundmod.SPEECH_DIRECTORY / shipped
+        staging.write_bytes(f"audio/waves/speech/{lower}",
+                            reader.read_bytes(source))
+
     # Exactly one name in the closure resolves to nothing, and it is a
     # recorded defect rather than a broken corpus: ``docs/28`` §3.1.
     for name in document["unresolved"]:
