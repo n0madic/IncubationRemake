@@ -1080,8 +1080,9 @@ limit — widens the range of bad outcomes rather than narrowing it:
 | anything else | none | `0` |
 
 Non-zero `+0x40` **blocks firing**: `fcn.004753E0`, the "can attack" gate the UI
-consults, returns 0 outright when it is set, and the HUD `fcn.00417E70` branches
-on it when drawing the unit's status. `fcn.004759E0` clears it.
+consults, returns 0 outright when it is set, and the ground overlay
+`fcn.00417E70` ([`43` §3.2](43-battle-hud.md)) draws `mp[50]` over the unit
+in place of its hit-point digit while it is set. `fcn.004759E0` clears it.
 
 **`+0x59` — reaction ticket.** `fcn.00478500` marks a unit as having a pending
 reaction (`unit[+0x41] = 1`) and stamps it with a **per-player monotonic
@@ -1161,8 +1162,8 @@ rest of the file parseable:
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|
-| `+0x000` | `u32` | **Deployment-ring placed** flag. `fcn.004721A0` builds the ring (below) and then sets it to 1; `fcn.00471AD0` clears it; the HUD and mouse handlers (`fcn.00450E80`, `fcn.00450EA0`, `fcn.00450F10`, `fcn.00417E70`) gate on it. Runtime state — `0` in every file | high |
-| `+0x004` | `10 x 64` | Ten 3D-object records: the squad-**deployment ring** (`fcn.00406C00` indexes them with stride `0x40`) | high |
+| `+0x000` | `u32` | **Direction-ring placed** flag. `fcn.004721A0` builds the ring (below) and then sets it to 1; `fcn.00471AD0` clears it; the overlay and mouse handlers (`fcn.00450E80`, `fcn.00450EA0`, `fcn.00450F10`, `fcn.00417E70`) gate on it. Runtime state — `0` in every file. *(Named the "deployment ring" until 2026-09-05; it is the **direction ring** of [`43` §4.2](43-battle-hud.md) -- the `dir.LIB` letters a click on a reachable cell raises around it.)* | high |
+| `+0x004` | `10 x 64` | Ten 3D-object records: the **direction ring**'s nine positions and the cancel (`fcn.00406C00` indexes them with stride `0x40`; `fcn.00406AA0` fills them at `±0xDDE` and `±0x93E` around the clicked cell's object) | high |
 | `+0x284` | `u32` | `0` in every file; no accessor found | UNVERIFIED |
 | `+0x288` | `u32` | **Land object count** — number of valid records in block 3 | confirmed |
 | `+0x28C` | `u32` | **Special object count** — number of valid records in block 2 | confirmed |

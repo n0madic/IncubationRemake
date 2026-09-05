@@ -243,8 +243,12 @@ full redraw. The call sites and their arguments, all pinned:
 
 * **event 2 → `0x00451150` → view mode 1, the unit's eyes** (`0x00452E90`):
   the camera at `obj + gradient × 800`, `z = obj.z + unitHeight + 640`, the
-  target one field ahead along the facing at `−320`; a flight; the HUD hidden
-  and redrawn (`0x0041A980`).
+  target one field ahead along the facing at `−320`; a flight; the HUD
+  redrawn (`0x0041A980`). **The plate stays up**: that routine never reads
+  the view mode, and the only thing that suppresses it is an `aOptions.cpp`
+  setting ([`43` §2](43-battle-hud.md), corrected 2026-09-05 — this line
+  previously read "hidden and redrawn", which a later pass took for "the
+  eyes view draws no plate").
 * **event 4 → `0x004510A0` → view mode 2, on the unit**: `0x004529D0(8, 7, 0)`.
 * **event 3 → `0x00450F60` → view mode 4, the map** (`0x00453150`,
   `0x00453270`): the camera **24 000 units (15 m) above the cell**, target
@@ -1087,7 +1091,8 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | blood, death | per species and class, object hidden at once; seven creators measured (§4.8.1) | ~~0.7 s linger, then gone~~ hidden in the death stage; all ten creators measured and replayed (`97` §29) |
 | idle | 4 slots, random unit, once, snap to bind | ~~every body loops~~ `IdleScheduler`, replayed call for call (`97` §30) |
 | jump | parabola, trail, dust | ~~teleport on rebuild~~ `JumpSequence`, the player's and the computer's (`97` §31) |
-| selection | four arrow blobs | ~~cell highlight~~ the four arrows on a selection and after a command, the highlight kept for the cells (`97` §31) |
+| selection | four arrow blobs | ~~cell highlight~~ the four arrows on a selection and after a command, ~~the highlight kept for the cells~~ the ground overlay of [`43` §3](43-battle-hud.md) -- the digits, the bands and the frames, blitted after the frame with no depth test, as the original draws them (2026-09-05; the green quads were the remake's invention) |
+| interface | `plate_5`, two columns, panel, pad, radar (`43`) | ~~three lines of text~~ the plate as an adaptive layout, the columns, the panel, the pad, the radar and the direction ring ([`43` §7](43-battle-hud.md), 2026-09-05) |
 | push, orbits | §7.2, §7.4–§7.5 | ~~sound only~~ `PushSequence`, `OrbitSequence` (`97` §31) |
 | own / AI door | flight, 10 frames, flight back | ~~instant swap + sound~~ the flight, the ten frames and the flight back, on the queue (`97` §32) |
 | set pieces | camera + effects | ~~7 animated without either, 18 instant~~ 18 animated with the camera and their creators, 8 instant (`97` §32, §33) |

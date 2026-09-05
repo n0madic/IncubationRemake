@@ -120,6 +120,68 @@ static func starts_in(events: Array[Dictionary],
 			DictRead.as_int(event["y"]))
 	return out
 
+
+## Every unit an unplayed event kills, as slots the caller may hold on screen.
+##
+## `core` decides the whole turn in one call, so the world has already lost
+## everything the computer is about to kill from the first rebuild of the
+## replay: a marine shot on the fourth event was gone before the first one was
+## drawn, and came back only when [method SliceMain._mark_dying] held it for
+## its own event. Marking the whole list up front is what keeps it standing
+## until the shot that kills it.
+##
+## The answer is **candidates**, not casualties: the hit points are the
+## world's business and the caller filters on them.
+func pending_casualties() -> PackedInt32Array:
+	return casualties_in(_events, _index)
+
+
+## The same, as a function of its arguments, so a suite can ask it directly
+## and one event can be passed as a list of one.
+##
+## The four shapes a payload carries a death in, and all four are here rather
+## than in the caller: a shot's own `outcomes` (a `fire`, and a `parabomb`,
+## whose payload **is** the blast), the drained `reactions` of a `reactions`
+## event, the `mine_detonated` entries of a walk's `events`, and the `blast` a
+## `warp` landed on.
+static func casualties_in(events: Array[Dictionary],
+		from_index: int) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for i: int in range(maxi(from_index, 0), events.size()):
+		for slot: int in casualties_of(
+				DictRead.as_dict(events[i].get("payload", {}))):
+			if not out.has(slot):
+				out.append(slot)
+	return out
+
+
+## The candidate slots one event's payload names.
+static func casualties_of(payload: Dictionary) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	_slots_of(DictRead.as_array(payload.get("outcomes", [])), out)
+	for item: Variant in DictRead.as_array(payload.get("reactions", [])):
+		var entry: Dictionary = DictRead.as_dict(item)
+		_slots_of(DictRead.as_array(DictRead.as_dict(
+			entry.get("attack", {})).get("outcomes", [])), out)
+	for item: Variant in DictRead.as_array(payload.get("events", [])):
+		var entry: Dictionary = DictRead.as_dict(item)
+		if DictRead.as_string(entry.get("kind", "")) != "mine_detonated":
+			continue
+		_slots_of(DictRead.as_array(DictRead.as_dict(
+			entry.get("blast", {})).get("outcomes", [])), out)
+	_slots_of(DictRead.as_array(DictRead.as_dict(
+		payload.get("blast", {})).get("outcomes", [])), out)
+	return out
+
+
+static func _slots_of(outcomes: Array, out: PackedInt32Array) -> void:
+	for item: Variant in outcomes:
+		var slot: int = DictRead.as_int(
+			DictRead.as_dict(item).get("slot", -1))
+		if slot >= 0 and not out.has(slot):
+			out.append(slot)
+
+
 func _step() -> void:
 	if _index >= _events.size():
 		_finish()

@@ -136,6 +136,14 @@ rm -f "$HERE/generated/presentation/idle.json"
     && cp "$REPO/tests/fixtures/presentation/cases_idle.json" \
           "$HERE/generated/presentation/idle.json"
 
+# The battle interface's tables (docs/43), read out of the binary and the
+# plate by `hud_tables.py --emit-cases`; `test_hud.gd` fails without them.
+mkdir -p "$HERE/generated/hud"
+rm -f "$HERE/generated/hud/hud.json"
+[ -f "$REPO/tests/fixtures/hud/cases_hud.json" ] \
+    && cp "$REPO/tests/fixtures/hud/cases_hud.json" \
+          "$HERE/generated/hud/hud.json"
+
 # The import pass reports missing optional resources on stderr; it is not the gate.
 "$GODOT" --headless --path "$HERE" --import >/dev/null 2>&1
 

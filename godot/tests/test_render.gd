@@ -192,37 +192,44 @@ func _check_overlay(h: TestHarness, world: World) -> void:
 		world.resource.cell_count() * CORNERS_PER_QUAD,
 		"one quad per map field")
 
-	var highlight: Highlight = Highlight.new()
+	# The ground overlay of docs/43 section 3 replaced the depth-tested quads
+	# of `highlight.gd` on 2026-09-05: the marks are a blit **after** the
+	# frame (`fcn.00417E70` through `fcn.004475D0`), so nothing standing in
+	# front of a marked field hides it, and docs/97 section 45.2's reading of
+	# the opposite was wrong. What this pins is that reading: overlay sprites,
+	# one per marked cell while the pointer is on a legal one, none depth
+	# tested.
+	var ground: GroundSprites = GroundSprites.new()
+	var art: Art = Art.open(CacheFixture.cache_dir())
 	var result: MoveMapResult = world.submit_move_query(
 		MoveQueryCommand.create(world.unit_slots()[0], false))
-	highlight.show_result(result, world.resource.heights())
-	var marked: int = result.reachable_count() + result.warp_count()
-	var highlight_mesh: ArrayMesh = highlight.mesh as ArrayMesh
-	var highlight_arrays: Array = highlight_mesh.surface_get_arrays(0)
-	var highlight_vertices: PackedVector3Array = \
-		highlight_arrays[Mesh.ARRAY_VERTEX]
-	h.equal("highlight.quads", highlight_vertices.size(),
-		marked * CORNERS_PER_QUAD,
-		"one quad per marked cell, and nothing else")
-	# The mover's own cell is always marked, so the highlight covers it.
 	var view: Dictionary = world.unit_view(world.unit_slots()[0])
-	# The marking is a state byte on the cell (docs/10 section 4.5), so the
-	# engine draws it as terrain and whatever stands in front of a marked field
-	# hides it. Pinned because the opposite -- painting the mesh over the whole
-	# picture -- looks like a rendering preference and is not one (docs/97
-	# section 45).
-	var highlight_material: StandardMaterial3D = \
-		highlight.material_override as StandardMaterial3D
-	h.check("highlight.depth_tested",
-		highlight_material != null and not highlight_material.no_depth_test,
-		"a marked cell is hidden by what stands in front of it")
-	h.check("highlight.unshaded",
-		highlight_material != null and highlight_material.shading_mode
-			== BaseMaterial3D.SHADING_MODE_UNSHADED,
-		"and is not lit by the scene, so it reads on dark scenery")
-	h.check("highlight.covers_mover",
-		result.is_reachable(DictRead.as_int(view["x"]),
-			DictRead.as_int(view["y"])),
-		"the unit's own field is part of its move map")
-	highlight.free()
+	var own: Vector2i = Vector2i(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
+	var hover: Vector2i = Vector2i(-1, -1)
+	for y: int in range(result.height):
+		for x: int in range(result.width):
+			if result.is_reachable(x, y) and Vector2i(x, y) != own and hover.x < 0:
+				hover = Vector2i(x, y)
+	ground.refresh(art, world, world.unit_slots()[0], result, hover, {},
+		DictRead.as_int(view["player"]), false)
+	var marked: int = result.reachable_count() - 1 + result.warp_count()
+	var digits: int = 0
+	var depth_tested: int = 0
+	for child: Node in ground.get_children():
+		var mark: Sprite3D = child as Sprite3D
+		if mark == null:
+			continue
+		if not mark.no_depth_test:
+			depth_tested += 1
+		if mark.texture != null and mark.texture.get_width() == 9 \
+				and mark.texture.get_height() == 9 and mark.fixed_size:
+			digits += 1
+	h.equal("ground.one_digit_per_marked_cell", digits, marked,
+		"%d 9x9 marks for %d marked cells" % [digits, marked])
+	h.equal("ground.none_depth_tested", depth_tested, 0,
+		"a marked cell is never hidden by what stands in front of it")
+	h.check("ground.covers_mover",
+		result.is_reachable(own.x, own.y) and ground.drawn_at(own).has(["mp", 51]),
+		"the unit's own field is part of its move map and wears the path frame")
+	ground.free()
 	overlay.free()

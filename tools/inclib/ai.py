@@ -1448,7 +1448,8 @@ def end_unit_turn(ctx: AIContext, unit: CombatUnit,
     if unit.hp == 0:
         return False
     facing = combatmod.end_turn_facing(ctx.world, unit.x, unit.y,
-                                       combatmod.FACING_MODE_ANY_ENEMY)
+                                       combatmod.FACING_MODE_ANY_ENEMY,
+                                       states=ctx.state)
     if facing != combatmod.FACING_NONE:
         unit.facing = facing
     unit.mp = 0

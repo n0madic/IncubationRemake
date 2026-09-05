@@ -336,11 +336,17 @@ static func project(at: Vector3, window: Rect2, zoom_divisor: int = 0
 ##
 ## A frustum projection carries both: the height gives the focal length and
 ## the offset moves the axis off the render's centre.
+##
+## *focal_width* names the window width the focal length is taken from when
+## it is not *window*'s own: the battle interface widens its window with the
+## canvas (docs/43 section 7) and keeps the original's 400, so a wider
+## screen shows more world at the same scale rather than a larger picture.
 static func frame_projection(camera: Camera3D, window: Rect2,
-		render: Vector2, zoom_divisor: int = 0) -> void:
+		render: Vector2, zoom_divisor: int = 0, focal_width: float = 0.0) -> void:
 	if camera == null or render.x <= 0.0 or render.y <= 0.0:
 		return
-	var focal: float = focal_length(window.size.x, zoom_divisor)
+	var focal: float = focal_length(
+		focal_width if focal_width > 0.0 else window.size.x, zoom_divisor)
 	if focal <= 0.0:
 		return
 	# The frustum is stated at the near plane, so every length here is a
@@ -360,6 +366,60 @@ static func frame_projection(camera: Camera3D, window: Rect2,
 	camera.frustum_offset = Vector2(-axis.x * near / focal,
 		-axis.y * near / focal)
 	camera.size = height
+
+
+## The world-space ray through a screen point, as `[origin, direction]`.
+##
+## Not [method Camera3D.project_ray_origin] and [method
+## Camera3D.project_ray_normal]: for a frustum projection Godot builds the
+## origin with the orthogonal formula and the normal from the near plane's
+## half extents **without the frustum offset**, so with the axis 36 units
+## above the render's centre ([method frame_projection]) the ray it answered
+## landed about a cell away from the pixel it was asked about -- a unit
+## clicked at its own cell was missed, and its neighbour taken. This inverts
+## the camera's actual projection instead, so the ray through a pixel meets
+## the point [method Camera3D.unproject_position] put there. *render* is the
+## viewport's visible rectangle in the same units as *screen*.
+static func ray_through(camera: Camera3D, screen: Vector2, render: Vector2
+		) -> PackedVector3Array:
+	var out: PackedVector3Array = PackedVector3Array()
+	if camera == null or render.x <= 0.0 or render.y <= 0.0:
+		return out
+	var matrix: Projection = projection_of(camera, render)
+	var inverse: Projection = matrix.inverse()
+	var ndc: Vector2 = Vector2(screen.x / render.x * 2.0 - 1.0,
+		1.0 - screen.y / render.y * 2.0)
+	var near_clip: Vector4 = inverse * Vector4(ndc.x, ndc.y, -1.0, 1.0)
+	var far_clip: Vector4 = inverse * Vector4(ndc.x, ndc.y, 1.0, 1.0)
+	if is_zero_approx(near_clip.w) or is_zero_approx(far_clip.w):
+		return out
+	var near_point: Vector3 = Vector3(near_clip.x, near_clip.y, near_clip.z) / near_clip.w
+	var far_point: Vector3 = Vector3(far_clip.x, far_clip.y, far_clip.z) / far_clip.w
+	# The global transform needs a tree; a camera a suite holds on its own has
+	# only its local one, which is the same thing for a camera with no parent.
+	var placement: Transform3D = camera.global_transform if camera.is_inside_tree() \
+		else camera.transform
+	var origin: Vector3 = placement * near_point
+	var direction: Vector3 = (placement * far_point - origin).normalized()
+	out.append(origin)
+	out.append(direction)
+	return out
+
+
+## The [Projection] a camera set up by [method frame_projection] renders
+## with, for a render of *render* units -- what [method Camera3D.get_camera_projection]
+## answers inside a tree, built here from the four properties so a suite
+## without a viewport gets the same matrix.
+static func projection_of(camera: Camera3D, render: Vector2) -> Projection:
+	if camera.projection == Camera3D.PROJECTION_FRUSTUM:
+		return Projection.create_frustum_aspect(camera.size, render.x / render.y,
+			camera.frustum_offset, camera.near, camera.far,
+			camera.keep_aspect == Camera3D.KEEP_WIDTH)
+	if camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		return Projection.create_orthogonal_aspect(camera.size, render.x / render.y,
+			camera.near, camera.far, camera.keep_aspect == Camera3D.KEEP_WIDTH)
+	return Projection.create_perspective(camera.fov, render.x / render.y,
+		camera.near, camera.far, camera.keep_aspect == Camera3D.KEEP_WIDTH)
 
 
 ## The height of a map field, in world units, or zero off the map.

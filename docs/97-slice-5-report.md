@@ -5023,8 +5023,11 @@ its lines, writes `res-0001.json` beside it and waits for `cmd-0002.txt`; a
 sender writes each command file with `mv` so a half-written one is never read.
 The commands are `key NAME`, `click X Y` (a left click on the centre of a map
 cell, projected with the rig's own camera), `click_unit SLOT`, `walk_to X Y`
-(the reachable cell nearest a place — the harness's convenience, still
-delivered as a click on a highlighted square), `chance A B`, `wait N`,
+(the reachable cell nearest a place — the harness's convenience, delivered as
+a click on a highlighted square and, since the seventh slice put the direction
+ring behind that click, an answer to the ring with the direction of travel;
+`hud ring N` is for a scenario that chooses the facing itself),
+`chance A B`, `wait N`,
 `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`.
 
 Every reply carries the state the pass reports on -- the turn and the player,
@@ -5371,6 +5374,17 @@ alien in the middle distance stops being cut in half.
 `Highlight` therefore depth-tests. `test_render` pins both halves of that --
 depth-tested **and** unshaded -- because "paint it over everything" looks like
 a rendering preference and is not one.
+
+*(Corrected 2026-09-05 by [`43` §3](43-battle-hud.md): the premise was wrong.
+The marking **is** a state byte on the cell, but the original does not colour
+the terrain tile -- `fcn.00417E70` projects each marked cell and blits a
+`mp1.LIB` digit or a `mp.LIB` frame through `fcn.004475D0`, **after** the 3D
+frame and with no depth test, so a marked field is never hidden by what stands
+in front of it. `aSetStateOfStdObject` and `aChangeStdObjectProtoype` are not
+called from the battle map at all. The depth-tested quads this section
+introduced were built on that misreading and were replaced by the ground
+overlay of `game/overlay/ground_sprites.gd`; `test_render.gd` now pins the
+opposite of what it pinned here.)*
 
 ### 45.3 Verification
 

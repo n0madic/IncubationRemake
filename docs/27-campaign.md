@@ -391,6 +391,21 @@ passes through (324, 210) of a 640 × 480 picture and not through (320, 240).
 A remake that draws its 3D full-screen behind a plate with a hole in it has to
 carry that thirty-pixel offset, because nothing else cancels it.
 
+#### 2.6.3 The map's own markers — **[code] `fcn.00418F40`** *(2026-09-05)*
+
+The location dots are drawn by `aMissionControl.cpp`'s own overlay pass,
+`fcn.00418F40`, a sibling of the mission's ground overlay
+([`43` §3](43-battle-hud.md)) over the same projection and blitter: **every
+state-3 cell** — an open location — gets `map[7]`, the 17x17 ring; the cell
+under the pointer gets `map[15]`, `map[12]` or `map[9]` and the selected one
+`map[14]`, `map[11]` or `map[8]`, the three chosen by the location's
+action-point band (1..8 or 210..217; 10..24; 50..129), with the location's
+name written beside it. The remake's dots are coloured **by kind** and ring
+the hovered one ([`98` §6](98-slice-6-report.md)); changing
+`CampaignMapScreen.marks_for` to the band table touches `test_shell` and
+`test_campaign` and is recorded as a decision of the seventh slice
+([`43` §10 D6](43-battle-hud.md)), not done there.
+
 ---
 
 ## 3. The unit pool

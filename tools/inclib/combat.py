@@ -337,31 +337,46 @@ def direction(x0: int, y0: int, x1: int, y1: int) -> int:
 
 
 #: ``0x0047A8E0``'s three modes.  Only mode 2 is reached from ``endUnitTurn``;
-#: mode 0 looks for an action point in the multiplayer band and mode 1 is
-#: mode 2 **plus a visibility test**.  The three are modelled together because
-#: the difference between 1 and 2 is the interesting part.
-FACING_MODE_ACTION_POINT = 0
+#: mode 0 looks for a cell whose **state** byte carries a target band -- the
+#: interface's own mode, corrected 2026-09-05 (``docs/43`` §4.4) -- and mode 1
+#: is mode 2 **plus a visibility test**.  The three are modelled together
+#: because the difference between 1 and 2 is the interesting part.
+FACING_MODE_TARGET_BAND = 0
 FACING_MODE_VISIBLE_ENEMY = 1
 FACING_MODE_ANY_ENEMY = 2
 
 #: ``0x0047A8E0``'s answer when it finds nobody: the caller skips the write.
 FACING_NONE = 0xFF
 
-#: The action-point band mode 0 accepts -- the multiplayer victory points
-#: (``docs/10`` §4.6).
-FACING_ACTION_POINT_BAND = (30, 34)
+#: The cell state bytes mode 0 accepts -- the target overlay's hit bands
+#: (``docs/23`` §6).  The **state** byte, ``cell[+0x00]``, not the action point.
+FACING_STATE_BAND = (30, 34)
+#: ``cell[+0x00]`` after ``0x0042EE90``'s reset -- what every cell reads as
+#: when a caller has no overlay to hand over.
+FACING_STATE_PLAIN = 1
 
 
 def end_turn_facing(world: "CombatWorld", x: int, y: int,
                     mode: int = FACING_MODE_ANY_ENEMY,
-                    net_gate: bool = False) -> int:
+                    net_gate: bool = False,
+                    states: "list[int] | None" = None) -> int:
     """``0x0047A8E0(x, y, mode)`` -- which way the unit on a cell turns.
 
     ``endUnitTurn`` (``0x0040B380``) calls this with mode 2 and writes the
-    answer into ``unit[+0x44]`` unless it is ``0xFF``.  What it does:
+    answer into ``unit[+0x44]`` unless it is ``0xFF``; the interface's click
+    handler (``0x004714B0``) calls it with mode 0 after an attack and after a
+    deselection, so the shooter turns to face its best target band.  What it
+    does:
 
     * take the unit standing on ``(x, y)``; no cell or no unit is ``0xFF``;
     * sweep the **whole control map in index order** for a candidate;
+    * mode 0 accepts a cell whose **state byte** ``cell[+0x00]`` is a target
+      band 30..34 (``docs/23`` §6) -- ``states`` is that byte per cell, the
+      AI context's overlay, and a caller without one reads every cell as the
+      reset value 1.  Until 2026-09-05 both twins read the **action point**
+      ``+0x0B`` here and in the ratchet below, on a mislabelled line of
+      ``docs/23`` §3.6's pseudocode; the decompile tests ``*cell`` in both
+      places;
     * mode 2 accepts any cell holding a unit of another player, mode 1 the
       same **plus** ``other[+0x4F] == 0`` -- so **the end-of-turn facing does
       not care whether the enemy can be seen.**  A unit turns towards
@@ -371,11 +386,12 @@ def end_turn_facing(world: "CombatWorld", x: int, y: int,
       ``0x51C099 + type * 0x7E`` is ``SetUnitInfo``'s ``+0x79`` column, and
       the three accepted values 0, 1 and 3 are human, alien and machine.
       Props do not attract a turn;
-    * the winner is chosen by a **ratchet**: a candidate must have an action
-      point byte ``>=`` the best so far **and** be strictly nearer than the
-      best so far.  Both halves matter and neither is a plain minimum -- a
-      candidate that is nearer but sits on a lower action point loses, and a
-      later candidate at the same distance loses to the earlier one.
+    * the winner is chosen by a **ratchet**: a candidate must have a state
+      byte ``>=`` the best so far **and** be strictly nearer than the best so
+      far.  Both halves matter and neither is a plain minimum -- a candidate
+      that is nearer but sits on a lower band loses, and a later candidate at
+      the same distance loses to the earlier one.  With every cell at 1 the
+      ratchet is the nearest candidate.
 
     The net-session gate (``0x0043B1F0``) suppresses the whole thing between
     two human players; it is false in a campaign, so it defaults to false here
@@ -387,21 +403,22 @@ def end_turn_facing(world: "CombatWorld", x: int, y: int,
     me = world.units.get(slot) if slot >= 0 else None
     if me is None:
         return FACING_NONE
-    if not world.action_point:
+    cell_count = world.width * world.height
+    if states is not None and len(states) != cell_count:
         raise CombatError(
-            "end_turn_facing needs the control map's action points; this "
-            "world was built without them")
+            f"end_turn_facing: {len(states)} state bytes for {cell_count} cells")
 
     best_index = -1
-    best_action_point = 0
+    best_state = 0
     best_distance = 0xFFFFFFFF
-    low, high = FACING_ACTION_POINT_BAND
-    for index in range(world.width * world.height):
+    low, high = FACING_STATE_BAND
+    for index in range(cell_count):
         occupant_slot = world.unit_at[index]
         other = world.units.get(occupant_slot) if occupant_slot >= 0 else None
+        state = states[index] if states is not None else FACING_STATE_PLAIN
         matched = False
-        if mode == FACING_MODE_ACTION_POINT:
-            matched = low <= world.action_point[index] <= high
+        if mode == FACING_MODE_TARGET_BAND:
+            matched = low <= state <= high
         elif mode in (FACING_MODE_VISIBLE_ENEMY, FACING_MODE_ANY_ENEMY):
             if other is not None and other.player != me.player:
                 both_human = (net_gate and other.player <= 4
@@ -422,9 +439,8 @@ def end_turn_facing(world: "CombatWorld", x: int, y: int,
             continue
         cell_x, cell_y = index % world.width, index // world.width
         gap = distance(cell_x, cell_y, x, y)
-        if world.action_point[index] >= best_action_point \
-                and gap < best_distance:
-            best_action_point = world.action_point[index]
+        if state >= best_state and gap < best_distance:
+            best_state = state
             best_distance = gap
             best_index = index
     if best_index < 0:

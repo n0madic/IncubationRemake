@@ -55,6 +55,7 @@ python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 700 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
+python3 tools/hud_tables.py         --check gog_incubation    # 130 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
@@ -67,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 35 suites, 3375 checks
+bash   godot/run_tests.sh                                    # 36 suites, 3667 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -107,6 +108,12 @@ python3 tools/presentation_gold.py --emit-idle-cases tests/fixtures/presentation
     --root gog_incubation
 python3 tools/presentation_gold.py --emit-special-cases tests/fixtures/presentation/cases_special.json \
     --root gog_incubation
+python3 tools/hud_tables.py      --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
+#   ^ the battle interface's tables (docs/43) as `test_hud.gd` reads them:
+#     the overlay's state map, the ring, the pad, the columns, the radar,
+#     the plate's measured pieces and twelve libraries' anchors -- a second
+#     reading of the binary, not a Python twin (docs/92 §5.1). It refuses to
+#     write when any of its 130 checks fails.
 #   ^ the seventh native suite's fixture (`test_ctrl_map.gd`): the cells and
 #     the 80-slot object array the engine left after each of the four cell
 #     placers of docs/42 §9.1 and two round ticks, replayed by
@@ -179,7 +186,7 @@ It emits the Godot pose fixture too, with the root **positional**:
 
 **CLI inconsistency to watch for:** the game root is a positional argument for `lcl_parse`, `lev_parse`, `lib_extract`, `visn_decode`; but it is the *argument to* `--check` for `cho_parse`, `cha_parse`, `font_render`, `combat_tables`,
 `sav_tables`, `typ_parse`, `ai_tables`, `brief_parse`, `turn_tables`,
-`interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`,
+`interaction_tables`, `campaign_tables`, `blob_tables`, `interface_tables`, `hud_tables` (whose `--emit-cases` wants `--root`),
 `info_parse`, `movemap_runtime`, `movemap_gold`, `turn_runtime`,
 `combat_runtime`, `interact_runtime`, `lcl_runtime` and `trace_names`; and `--root` for `prototyp_parse` and `verify_3d_indices`.
 `remake_convert` takes it positionally **and** wants `--check` as a bare flag;
@@ -809,14 +816,18 @@ waits for `cmd-0002.txt`. Write each command file with `mv` from a
 neighbouring name so a half-written one is never read. The lines are
 `key NAME`, `click X Y`, `click_unit SLOT`, `walk_to X Y`, `cell X Y`,
 `chance A B`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`,
-plus the campaign's `campaign N`, `location N`, `deploy SLOT X Y`,
+plus the battle interface's `markers` and `hud event|pad|ring|radar N`
+(`docs/43`) and the campaign's `campaign N`, `location N`, `deploy SLOT X Y`,
 `screen NAME`, `ui NAME`, `enter NAME` and `gamecontrol SLOT VALUE` --
 the last three are debugging entries past the location map, the way
 `--mission=` is one past the campaign; every reply
 carries the turn, every unit, the selection's fill and warp cells, the
-sequence on the queue, the blob pool **by kind**, the overlay, the camera and
-the status line, so a screenshot and the numbers behind it come from the same
-frame. Keys and clicks go in through `Viewport.push_input`, so the game's own
+sequence on the queue, the blob pool **by kind**, the overlay, the camera,
+the interface, whether a body is still walking and whether the computer's
+turn is being replayed, so a screenshot and the numbers behind it come from
+the same frame. **A click on a reachable cell
+raises the direction ring** since the seventh slice, so `walk_to` answers it
+with the direction of travel and `hud ring N` is what chooses a facing. Keys and clicks go in through `Viewport.push_input`, so the game's own
 `_unhandled_input` and `_pick` run -- what is synthetic is the hand, not the
 path. It needs a **window**: screenshots come from the viewport's texture and
 `--headless` has no renderer, so run it with a `timeout` rather than headless.
@@ -894,11 +905,11 @@ not use `--code`** here either: the byte writer is the game's imported
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `43` the battle interface — the plate's pixel layout, the ground overlay, the direction ring, the pad, the columns, the panel and the radar (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
-The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
+The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`; package I, the battle interface's own layout, is `docs/43`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **34 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `60`: 2, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **33 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `43`: 1, `60`: 0, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

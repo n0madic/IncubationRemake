@@ -113,6 +113,21 @@ fields are the campaign halves of four pairs, which the debriefing's own
 `Txtmod_d` headings — *"In Mission"* and *"In Campaign"* — name aloud
 ([`11` §5.5](11-save-game-format.md)).
 
+**The seventh slice is the battle interface** — the plate, the two button
+columns, the unit panel, the command pad, the radar and, on the ground, the
+digits and bands the original blits after the frame:
+[`99-slice-7-report.md`](99-slice-7-report.md), on the reading in
+[`43-battle-hud.md`](43-battle-hud.md), the one pixel layout the programme had
+left out on purpose. It corrected four delivered documents: the move map is
+**not** the terrain tile coloured ([`97` §45.2](97-slice-5-report.md)) but a
+sprite pass with no depth test; the game's own blitter sits inside the range
+[`60` §1](60-lib-sprites.md) had given to LibMaker's writer, and its
+`cmp al, 0` closes both of `60`'s open items; interface events 12 and 14 were
+the other way round in [`29` §1.2](29-interface-contract.md); and
+`aGetDirectionTo` reads the cell's **state byte**, not its action point, in
+its mode-0 test and its ratchet ([`23` §3.6](23-ai-system.md)) — a mislabelled
+line both executable models had inherited.
+
 ---
 
 ## 2. Format inventory
@@ -195,6 +210,7 @@ The game-logic research programme is complete at its documented
 | F | replacement-interface contract | [29](29-interface-contract.md) | `interface_tables.py` | information and operation boundary, not pixel layout |
 | G | sequence player | [41](41-sequence-player.md) | `seq_parse.py` | compiled manifest, lifecycle, 30 fps timing, triggers |
 | H | mission presentation | [42](42-mission-presentation.md) | `presentation_tables.py`, `presentation_gold.py` | the camera, the animation drivers and their speeds, the shot's nine stages, the idle scheduler, set-piece staging, the scenery state byte |
+| I | battle interface | [43](43-battle-hud.md) | `hud_tables.py` | the plate's layout and its pieces, the ground overlay's state table, the direction ring, the pad's gates, the columns' events, the panel's blocks, the radar — pixel layout, which F left out |
 
 Multiplayer and play-by-mail are deliberately outside this programme; the
 preserved boundary and rationale are in [`92` §7.9](92-remake-architecture.md).
@@ -347,7 +363,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **34 items are
+in place with the evidence that closed them rather than deleted. **33 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -368,7 +384,8 @@ still open:**
 | [40](40-charisma-model-animation.md) | 6 | enumerator names, the `J` animation family, the four synthetically-validated reader branches, and whether the −Y authored forward (§5.4) is reconciled by a rotation or by a mirror |
 | [42](42-mission-presentation.md) | 0 | none. The two it carried for a day — the glow's lifecycle and what a ground-fire removal costs — are closed in §12 with their evidence (`97` §38), and the six before them too: the pose after detach is measured (bind on the next step, the last frame held before it), the clip length is the first movement's last key time, state 3 is the shield, the four set pieces are transcribed, the start slot's class is `KeyFramedAnimationInterface`, and the starter's type search never advances so the draw decides |
 | [41](41-sequence-player.md) | 0 | nothing open; the manifest, the lifecycle, the 30 fps clock and the trigger are pinned to the image, and speech/subtitles are closed **negatively** — the player carries no scheduler and no `Video/` directory holds a wave or a text file. Two residual items are *decisions*, not unknowns: the camera ids `9..19` belong to the 3D scene, and presentation/input live outside the module |
-| [60](60-lib-sprites.md) | 2 | which out-of-bounds sprite anchors are deliberate; which index the blitter keys for the 34 libraries with no index 0 |
+| [43](43-battle-hud.md) | 1 | whether a blocking animation redraws the ground overlay through the callback pointer `fcn.0047D600` stores (§3.1) — it decides whether the player's marked path is on screen for one frame or for the whole walk, and play says neither is visible. The three other things reading could not settle are decisions with the reading that would settle them named — the magnifier's `Data` info page, the campaign map's band-coloured rings, the two plate fonts' handles |
+| [60](60-lib-sprites.md) | 0 | none, since 2026-09-05: the blitter is `fcn.004475D0` in the module's own range and keys index 0 for every library, and the anchors are read only by the callers that subtract them — the overlay, the panel, the radar, the cursor — never by the columns or the pad ([`43` §3.4](43-battle-hud.md)) |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 
 Almost all of these are open **in principle**, not merely untraced. Three

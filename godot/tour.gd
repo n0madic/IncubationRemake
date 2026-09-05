@@ -70,13 +70,26 @@ const KEYS: Dictionary[String, int] = {
 	"Q": KEY_Q,
 	"E": KEY_E,
 	"T": KEY_T,
+	"Y": KEY_Y,
 	"G": KEY_G,
 	"U": KEY_U,
 	"D": KEY_D,
 	"H": KEY_H,
+	"R": KEY_R,
+	"S": KEY_S,
+	"W": KEY_W,
+	"B": KEY_B,
+	"BACKSPACE": KEY_BACKSPACE,
+	"F1": KEY_F1,
+	"F2": KEY_F2,
+	"F3": KEY_F3,
+	"F4": KEY_F4,
+	"LEFT": KEY_LEFT,
+	"RIGHT": KEY_RIGHT,
 	"1": KEY_1,
 	"2": KEY_2,
 	"3": KEY_3,
+	"4": KEY_4,
 	"NEXT_MISSION": KEY_BRACKETRIGHT,
 	"PREV_MISSION": KEY_BRACKETLEFT,
 	"ESCAPE": KEY_ESCAPE,
@@ -267,6 +280,19 @@ func _run(line: String) -> void:
 				_log.append("map_click: wants a cell X and Y")
 		"click_unit":
 			_click_unit(parts[1].to_int() if parts.size() > 1 else -1)
+		"markers":
+			# `markers` -- every cell the ground overlay drew on, with its
+			# library and element (docs/43 section 3), so a screenshot's
+			# digits can be read against the fill behind them.
+			_markers()
+		"hud":
+			# `hud event N`, `hud pad N`, `hud ring N`, `hud radar +1|-1`:
+			# the interface's own controls, pressed by number rather than by
+			# pixel -- the plate's units are not the window's (docs/43).
+			if parts.size() > 2:
+				_hud(parts[1], parts[2])
+			else:
+				_log.append("hud: wants event|pad|ring|radar and a number")
 		"blobs":
 			_blobs()
 		"watch":
@@ -463,6 +489,25 @@ func _walk_to(x: int, y: int) -> void:
 	_log.append("walk_to %d,%d picks %d,%d (%d away)"
 		% [x, y, best.x, best.y, best_distance])
 	_click_cell(best.x, best.y)
+	# **The click only raises the direction ring now** (docs/43 section 4):
+	# the walk runs when a letter is chosen. A driver's `walk_to` still means
+	# "walk there", so the ring is answered here with the direction of travel
+	# -- `Combat.direction` from the unit's cell to the one picked, which is
+	# the facing a straight path ends on. `hud ring N` is the command for a
+	# scenario that wants to choose the facing itself.
+	if _main._hud == null or not _main._hud.ring.is_up():
+		return
+	var slot: int = _main._selected
+	if slot < 0 or _main.world == null or not _main.world.has_unit(slot):
+		return
+	var view: Dictionary = _main.world.unit_view(slot)
+	var facing: int = Combat.direction(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]), best.x, best.y)
+	if facing < 0:
+		facing = 0
+	var chosen: bool = _main.choose_ring_record(facing)
+	_log.append("walk_to completes the ring facing %d: %s"
+		% [facing, str(chosen)])
 
 
 ## Every live blob, field by field -- kind, class, model, position, velocity
@@ -709,6 +754,17 @@ func _state() -> Dictionary:
 	document["turn"] = world.turn.turn
 	document["player"] = world.turn.current_player
 	document["selected"] = _main.selected_slot()
+	document["hud"] = _main.hud_view()
+	document["markers"] = _drawn_markers()
+	document["visible_rect"] = _visible_rect()
+	# Whether a body is on its way. The world moves in one call and the
+	# picture does not: a walk that never played looks exactly like a walk
+	# that finished if only the endpoint is read.
+	document["walking"] = _main._units != null and _main._units.is_walking()
+	# Whether the computer's turn is being replayed. The interface refuses
+	# every press while it is (docs/43 section 5.2), which is invisible from
+	# the world alone.
+	document["replay"] = _main._playback.is_running()
 	document["gore_level"] = world.gore_level
 	document["ai_level"] = world.turn.ai_level
 	document["units"] = _units()
@@ -734,6 +790,52 @@ func _shell() -> Dictionary:
 				str(plate.is_inside_tree()), str(plate.visible)])
 	view["plates"] = plates
 	return view
+
+
+## The viewport's visible rectangle in the units events and the interface
+## use: 640x480 on 4:3, wider or taller elsewhere (docs/43 section 7).
+func _visible_rect() -> Array:
+	var size: Vector2 = root.get_visible_rect().size
+	return [size.x, size.y]
+
+
+## What the ground overlay drew, as `[x, y, library, element]` rows.
+func _drawn_markers() -> Array:
+	var out: Array = []
+	var ground: GroundSprites = _main.ground_overlay()
+	if ground == null:
+		return out
+	for cell: Vector2i in ground.drawn_cells():
+		for sprite: Variant in ground.drawn_at(cell):
+			var pair: Array = DictRead.as_array(sprite)
+			out.append([cell.x, cell.y, pair[0], pair[1]])
+	return out
+
+
+func _markers() -> void:
+	for row: Array in _drawn_markers():
+		_log.append("marker %d,%d %s[%d]" % [row[0], row[1], row[2], row[3]])
+
+
+## `hud KIND N` -- a column event, a pad command, a ring record or a radar
+## step, through the same paths a click takes.
+func _hud(kind: String, argument: String) -> void:
+	var number: int = argument.to_int()
+	match kind:
+		"event":
+			_log.append("hud event %d %s" % [number,
+				"pressed" if _main.press_hud_event(number) else "dark"])
+		"pad":
+			_log.append("hud pad %d %s" % [number,
+				"pressed" if _main.press_pad_command(number) else "dark"])
+		"ring":
+			_log.append("hud ring %d %s" % [number,
+				"chosen" if _main.choose_ring_record(number) else "no ring"])
+		"radar":
+			_log.append("hud radar scale %d" % _main.step_radar(number))
+		_:
+			_log.append("hud: unknown kind %s" % kind)
+	_wait = 1
 
 
 ## The cells the last selection's fill marked, as `[x, y]` pairs -- the walk

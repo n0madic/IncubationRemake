@@ -46,6 +46,13 @@ var turn: TurnState = null
 ## hand-over reads to decide the mission is over.
 var game_control: GameControl = null
 
+## `0x00479330` -- the three unit types `aChangeUnitViewDirection` will not
+## turn.
+const ROTATE_REFUSED_TYPE_LOW: int = 61
+const ROTATE_REFUSED_TYPE_HIGH: int = 63
+## docs/21 section 5 -- the species column's machines, which the pad offers
+## neither *Rest* nor *Use* (`0x00472658`, `0x00472697`).
+const SPECIES_MACHINE: int = 3
 ## docs/23 section 5.3 -- what the move's caller writes into `unit[+0x39]`.
 const ACTED_MOVED: int = 3
 ## `0x0047304A` -- what the pad's warp arm writes there after a jump.
@@ -307,7 +314,7 @@ func terrain_snapshot() -> Dictionary:
 func submit_move_query(command: MoveQueryCommand) -> MoveMapResult:
 	if not _units.has(command.unit_slot):
 		# Sized, not empty: the result declares the map's dimensions, and a
-		# caller that trusts them -- `game/highlight.gd` walks width x height --
+		# caller that trusts them -- `game/overlay/ground_sprites.gd` walks width x height --
 		# would index past the end of a zero-length array for every cell.
 		var overlay: PackedByteArray = PackedByteArray()
 		overlay.resize(state.cell_count())
@@ -670,10 +677,171 @@ func submit_stimulant(command: SpendStimulantCommand) -> bool:
 	return true
 
 
-## docs/29 section 1.1's button 2 -- the medic kit (`0x00470890` under the
-## pad arm at `0x004733BB`, docs/97 section 31). Answers [method
-## Interact.heal]'s dictionary; a refusal changes nothing but `acted`, which
-## the pad writes either way.
+## `aChangeUnitViewDirection` (`0x004792A0`) -- the direction ring's own
+## command (docs/43 section 4). Writes `+0x46` and nothing else: no point is
+## charged and no visibility rebuilt. Unit types 61..63 refuse
+## (`0x00479330`), as do a dead unit and a facing outside 0..7.
+func submit_rotate(command: RotateCommand) -> bool:
+	if not _units.has(command.unit_slot):
+		return false
+	var unit: UnitState = _units[command.unit_slot]
+	if not unit.is_alive():
+		return false
+	if command.facing < 0 or command.facing >= Interact.FACING_DX.size():
+		return false
+	if unit.type_id >= ROTATE_REFUSED_TYPE_LOW \
+			and unit.type_id <= ROTATE_REFUSED_TYPE_HIGH:
+		return false
+	unit.facing = command.facing
+	return true
+
+
+## `0x004753E0` -- whether the pad offers button 1, *Def*
+## ([method Reaction.may_enter_defence] over a slot).
+func may_defend(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	return unit.is_alive() and Reaction.may_enter_defence(_weapons, unit)
+
+
+## `0x00475430` -- whether the pad offers button 5, *Change weapon mode*.
+##
+## The weapon must have another mode (`toggle != id`), the unit must carry at
+## least the **other** mode's rounds per shot (`+0x41` of the toggle) and at
+## least its action points (`+0x3C` of the toggle). Read against the toggle
+## and not the current weapon, which is what makes a mode with no ammunition
+## left unreachable rather than merely useless.
+func may_toggle_weapon(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if not unit.is_alive():
+		return false
+	var other: int = _weapons.toggle(unit.weapon)
+	if other == unit.weapon:
+		return false
+	if unit.ammo < _weapons.mun_per_fight(other):
+		return false
+	return unit.mp >= _weapons.ap(other)
+
+
+## `aToggleWeaponModes` (`0x0047A8C0`) -- `unit[+0x3F] = weapon[+0x3D]`,
+## behind the pad's own gate. Answers whether the mode changed.
+func submit_toggle_weapon(command: ToggleWeaponCommand) -> bool:
+	if not may_toggle_weapon(command.unit_slot):
+		return false
+	var unit: UnitState = _units[command.unit_slot]
+	unit.weapon = _weapons.toggle(unit.weapon)
+	return true
+
+
+## `0x00472641` -- whether the pad offers button 7, *Rest*: the unit has not
+## acted this turn (`+0x39 == 0`) and is not a machine (species 3).
+func may_stand_down(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if not unit.is_alive():
+		return false
+	return unit.acted == 0 \
+		and _unit_types.species(unit.type_id) != SPECIES_MACHINE
+
+
+## `0x004725F4` -- whether the pad offers button 3, *Take stimulants*: a
+## charge that is neither absent nor already spent this turn, and a point.
+func may_take_stimulant(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if not unit.is_alive() or unit.mp < 1:
+		return false
+	return unit.stimulant != 0 and unit.stimulant != Refresh.STIMULANT_SPENT
+
+
+## `0x0047268B` -- whether the pad offers button 8, *Use*: not a machine, a
+## point left, and something in front to use ([method Interact.may_use]).
+func may_use(slot: int) -> bool:
+	if not _units.has(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	if not unit.is_alive() or unit.mp < 1:
+		return false
+	if _unit_types.species(unit.type_id) == SPECIES_MACHINE:
+		return false
+	return Interact.may_use(state, _units, _unit_types, unit)
+
+
+## `aBuildTargetOverlay` (`0x0042FF30`) for the **player's** selection: the
+## cells docs/23 section 6's bands are stamped on, keyed by cell. What the
+## ground overlay draws as `mp[43..47]` (docs/43 section 3) and what [method
+## facing_to_target] turns the shooter towards.
+##
+## **The routine is [method AIOverlay.build], not a second transcription of
+## it.** The player's select (`0x00472990`) and the computer's plan call the
+## same `0x0042FF30`, so its exclusions are the same for both: the fitness
+## gate, the never-target and immune types, the two weapon overrides and the
+## `special` hook. A short reading of it here banded a `Norc'Yn` and a
+## Concrete Block -- cells the engine's overlay leaves at state 1 -- and made
+## the shooter turn towards them after a shot. The context is a fresh one per
+## call: it is one array of map size, and a selection is a click, not a frame.
+func target_bands(shooter_slot: int) -> Dictionary[Vector2i, int]:
+	var bands: Dictionary[Vector2i, int] = {}
+	if not _units.has(shooter_slot):
+		return bands
+	var overlay: PackedByteArray = target_overlay(shooter_slot)
+	for index: int in range(overlay.size()):
+		var marker: int = overlay[index]
+		if marker < AIOverlay.MARKER_MIN or marker > AIOverlay.MARKER_MAX:
+			continue
+		bands[Vector2i(index % state.width, index / state.width)] = marker
+	return bands
+
+
+## The overlay bytes themselves -- `cell[+0x00]` as `0x0042FF30` leaves them,
+## reset to [constant AIOverlay.STATE_RESET] and stamped with the bands.
+##
+## Only the `units` arm of the dispatcher is transcribed (docs/43 section 10,
+## D10): the other arms stamp 35, 36 and 37 for the weapons that aim at a
+## special object, at empty ground or at any unit, and `AIOverlay.build`
+## records that refusal rather than inventing it.
+func target_overlay(shooter_slot: int) -> PackedByteArray:
+	if not _units.has(shooter_slot):
+		return PackedByteArray()
+	var shooter: UnitState = _units[shooter_slot]
+	var ctx: AIContext = AIContext.create(state, _units, _unit_types, _weapons,
+		_ctrlmap, turn, rng)
+	var _stamped: bool = AIOverlay.build(ctx, shooter, turn.human_count(),
+		turn.mode)
+	return ctx.state
+
+
+## `aGetDirectionTo(x, y, 0)` as the click handler calls it after an attack
+## (`0x0047181C`): the facing towards the best target band, or
+## [constant Combat.FACING_NONE] with nothing to face. The bands are the
+## selection's own ([method target_bands]), written into a cell-state array
+## the way the engine's overlay leaves them on `cell[+0x00]`.
+func facing_to_target(shooter_slot: int) -> int:
+	if not _units.has(shooter_slot):
+		return Combat.FACING_NONE
+	var shooter: UnitState = _units[shooter_slot]
+	# The overlay's own bytes, not a dictionary written back into an array:
+	# `aGetDirectionTo` reads `cell[+0x00]` and this is that array
+	# (docs/43 section 4.4).
+	var states: PackedByteArray = target_overlay(shooter_slot)
+	return Combat.end_turn_facing(state, _units, _unit_types, shooter.x,
+		shooter.y, Combat.FACING_MODE_TARGET_BAND, false, states)
+
+
+## `0x00475240` -- the hit points a unit can have, for the panel's `hp/max`
+## ([method Interact.max_hit_points] over a slot).
+func max_hit_points(slot: int) -> int:
+	if not _units.has(slot):
+		return 0
+	var unit: UnitState = _units[slot]
+	return Interact.max_hit_points(_unit_types, unit)
+
+
 ## `0x0047B4C0` under the pad's `+0x15 >= 1` -- whether button 2 is offered
 ## for a slot. The gate is the pad's, so it lives beside the command and not
 ## inside it, as [method Interact.may_use] does for `Use`.
@@ -686,6 +854,10 @@ func may_heal(slot: int) -> bool:
 	return Interact.may_heal(state, _units, _unit_types, unit)
 
 
+## docs/29 section 1.1's button 2 -- the medic kit (`0x00470890` under the
+## pad arm at `0x004733BB`, docs/97 section 31). Answers [method
+## Interact.heal]'s dictionary; a refusal changes nothing but `acted`, which
+## the pad writes either way.
 func submit_heal(command: HealCommand) -> Dictionary:
 	if not _units.has(command.unit_slot):
 		return {"ok": false, "reason": "no such unit", "target": -1,
@@ -762,13 +934,18 @@ func live_unit_count(player: int) -> int:
 	return n
 
 
-## `0x00477DF0`'s three tests -- whether the player holding the turn may give
-## this slot an order.
+## Whether the player holding the turn may give this slot an order.
 ##
-## Alive, `+0x45` equal to `aGetCurrentPlayer`, and `+0x4F` not hidden. That
-## routine is what `0x00453CF0` -- the game's own "cycle the selected friendly
-## unit", docs/29's command 14 -- walks the 200 slots with, so it is the
-## engine's own notion of a unit you can command.
+## Alive (`+0x16`) and `+0x45` equal to the player it is passed are the first
+## two of `0x00477D40`'s three tests -- the walker `0x00471E00`, the game's own
+## "select the next friendly unit" (interface event 12), runs over the 200
+## slots; its third, `+0x15` not zero, is [method may_select]'s. `+0x4F` not
+## hidden is the remake's own guard on top: an own unit is never hidden by
+## the fog pass, so it costs nothing and keeps a click and the cycle on the
+## same rule. (Until 2026-09-05 this comment named `0x00477DF0`, which is the
+## *other* walker: the first live unit **not** of the current player with
+## `+0x4F == 0`, the one event 14 -- *Jump to visible enemy* -- puts the
+## camera on. docs/43 section 5.2.)
 ##
 ## In `core` rather than in `game` because it is a rule about the simulation
 ## and not about the mouse: a demo run, a click and a test all have to agree
@@ -794,6 +971,17 @@ func may_command(slot: int) -> bool:
 	if unit.player != turn.current_player:
 		return false
 	return unit.visibility != UnitState.VISIBILITY_HIDDEN
+
+
+## `0x004714B0`'s own selection rule on top of [method may_command]: a unit
+## with no movement points left cannot be selected (`0x00471CB6` returns
+## before `0x00472990`), and the click handler deselects after any command
+## that leaves none. docs/43 section 4.
+func may_select(slot: int) -> bool:
+	if not may_command(slot):
+		return false
+	var unit: UnitState = _units[slot]
+	return unit.mp > 0
 
 
 ## `aGetHitProbability` (`0x0046A270`) for one shooter and one target.

@@ -5,8 +5,8 @@ extends TestSuite
 ##
 ## `game/` is not `core/` and most of it is a picture, but three of its files
 ## make decisions rather than draw them: [Localization] decides what a string
-## is, [Fog] decides whether a unit is drawn at all, and [Hud] decides what the
-## player is told. Those are checkable and are checked here.
+## is, [Fog] decides whether a unit is drawn at all, and [MissionHud] decides what
+## the player is told. Those are checkable and are checked here.
 ##
 ## The one this suite exists for is the **missing-string** rule. A localization
 ## seam whose misses render as `""` looks like a layout bug; one whose misses
@@ -21,6 +21,7 @@ func run(h: TestHarness) -> void:
 	_localization(h)
 	_fog(h)
 	_hud(h)
+	_mission_result(h)
 	_command_gate(h)
 	_game_font(h)
 	_shots_and_reactions(h)
@@ -686,6 +687,37 @@ func _replay_positions(h: TestHarness) -> void:
 	h.equal("replay.nothing_is_held_at_the_end",
 		AIPlayback.starts_in(events, events.size()).size(), 0)
 
+	# The casualties, the other half of the same rule: the world has lost
+	# every one of them before the replay draws its first frame, so the whole
+	# list has to be held from the start or a marine vanishes as the computer's
+	# turn opens and comes back a second before it dies.
+	var deaths: Array[Dictionary] = [
+		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "",
+			{"outcomes": [{"slot": 11, "killed": true}]}).to_dict(),
+		AIEvent.make("reactions", 5, 2, 3, 0, 0, 1, "",
+			{"reactions": [{"attack": {"outcomes": [{"slot": 12}]}}]}).to_dict(),
+		AIEvent.make("move", 5, 2, 3, 9, 9, 0, "",
+			{"path": [1, 2], "events": [{"kind": "mine_detonated",
+				"blast": {"outcomes": [{"slot": 13}]}}]}).to_dict(),
+		AIEvent.make("warp", 6, 3, 4, 8, 8, 0, "",
+			{"blast": {"outcomes": [{"slot": 14}]}}).to_dict(),
+		# The payload of a parabomb **is** the blast (`AISpecialPlayer`), and
+		# the four-branch block this replaced had no arm for it at all.
+		AIEvent.make("parabomb", 7, 5, 5, 0, 0, 0, "",
+			{"outcomes": [{"slot": 15}]}).to_dict(),
+	]
+	h.equal("replay.every_shape_of_death_is_found",
+		Array(AIPlayback.casualties_in(deaths, 0)), [11, 12, 13, 14, 15],
+		"a shot, a reaction, a mine under a walk, a landing and a para bomb")
+	h.equal("replay.a_played_death_is_not_held",
+		Array(AIPlayback.casualties_in(deaths, 3)), [14, 15])
+	h.equal("replay.one_event_answers_alone",
+		Array(AIPlayback.casualties_of(DictRead.as_dict(deaths[2]["payload"]))),
+		[13], "the same extractor takes a single payload")
+	h.equal("replay.nothing_dies_in_a_bare_event",
+		AIPlayback.casualties_in(events, 0).size(), 0,
+		"the moves above carry no outcome")
+
 	# And the view really draws them there.
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	var geometry: Dictionary = CacheFixture.geometry("A00")
@@ -901,9 +933,9 @@ func _localization(h: TestHarness) -> void:
 	var foreign: Localization = Localization.new()
 	foreign.language = "Klingon"
 	h.equal("text.an_unknown_language_falls_back",
-		foreign.text("hud.end_turn"),
+		foreign.text("hud.no_selection"),
 		DictRead.as_string(DictRead.as_dict(
-			Localization.OWN["hud.end_turn"])[Localization.FALLBACK_LANGUAGE]))
+			Localization.OWN["hud.no_selection"])[Localization.FALLBACK_LANGUAGE]))
 
 
 ## docs/22 section 9.1 -- three states, and the middle one is the interesting
@@ -956,6 +988,9 @@ func _the_blip(h: TestHarness) -> void:
 
 
 func _hud(h: TestHarness) -> void:
+	# The text HUD became the battle interface of docs/43 on 2026-09-05; its
+	# own suite is `test_hud.gd`. What stays here is the seam this suite
+	# guards everywhere: the words are the game's and none is the marker.
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	if loaded.is_empty():
 		h.check("hud.cache", false, "no _C_140 in the cache")
@@ -963,19 +998,13 @@ func _hud(h: TestHarness) -> void:
 	var world: World = loaded["world"]
 	var strings: Localization = Localization.from_cache(
 		CacheFixture.cache_dir(), CacheFixture.manifest())
-	var hud: Hud = Hud.new(strings)
-	hud.refresh(world, -1, "")
-	var idle: String = _hud_text(hud)
-	h.check("hud.says_the_mission_and_the_turn",
-		idle.contains(world.resource.mission) and idle.contains(
-			strings.shipped(Localization.MODULE_MISSION,
-				Localization.ID_TURN)),
-		idle.split("\n")[0])
-	h.check("hud.says_nothing_is_selected",
-		idle.contains(strings.text("hud.no_selection")), idle)
-	h.check("hud.renders_no_missing_string",
-		not idle.contains(Localization.MISSING_PREFIX), idle)
-
+	var hud: MissionHud = MissionHud.new()
+	hud.setup(null, strings, null, null, null)
+	var yes: Callable = func(_number: int) -> bool: return true
+	hud.refresh(world, -1, yes, yes, Vector2(0, -1), Vector2(1, 0), {}, false)
+	h.equal("hud.says_the_turn", hud.turn_text(), str(world.turn.turn))
+	h.check("hud.no_report_before_the_end", not hud.report_visible(),
+		"slots 0..4 are clear")
 	var squad: PackedInt32Array = PackedInt32Array()
 	for slot: int in world.unit_slots():
 		if DictRead.as_int(world.unit_view(slot)["player"]) == 0:
@@ -985,23 +1014,21 @@ func _hud(h: TestHarness) -> void:
 	if squad.is_empty():
 		hud.free()
 		return
-	hud.refresh(world, squad[0], "")
-	var selected: String = _hud_text(hud)
-	h.check("hud.names_the_selected_unit",
-		selected.contains(DictRead.as_string(
-			world.unit_view(squad[0])["name"])), selected)
-	h.check("hud.renders_no_missing_string_when_selected",
-		not selected.contains(Localization.MISSING_PREFIX), selected)
-
-	# The report appears only once the game-control slots say the mission is
-	# over (docs/20 section 7), and it is the debriefing rather than a word.
-	h.check("hud.no_report_before_the_end", not _report_visible(hud),
-		"slots 0..4 are clear")
+	hud.refresh(world, squad[0], yes, yes, Vector2(0, -1), Vector2(1, 0), {}, false)
+	var texts: PackedStringArray = hud.panel.texts()
+	var named: bool = false
+	var missing: bool = false
+	for text: String in texts:
+		if text.begins_with(DictRead.as_string(world.unit_view(squad[0])["name"])):
+			named = true
+		if text.contains(Localization.MISSING_PREFIX):
+			missing = true
+	h.check("hud.names_the_selected_unit", named, ", ".join(texts))
+	h.check("hud.renders_no_missing_string_when_selected", not missing, ", ".join(texts))
 	world.game_control.set_slot(0, 1)
-	hud.refresh(world, squad[0], "")
-	h.check("hud.the_report_appears_on_a_win", _report_visible(hud),
-		"slot 0 is set")
-	var won: String = _report_text(hud)
+	hud.refresh(world, squad[0], yes, yes, Vector2(0, -1), Vector2(1, 0), {}, false)
+	h.check("hud.the_report_appears_on_a_win", hud.report_visible(), "slot 0 is set")
+	var won: String = hud.report_text()
 	h.check("hud.the_report_is_the_game_s_own_words",
 		won.contains(strings.shipped(Localization.MODULE_MISSION,
 			Localization.ID_COMPLETED))
@@ -1012,59 +1039,20 @@ func _hud(h: TestHarness) -> void:
 			Localization.ID_REPORT_SUCCESS)), won.replace("\n", " | "))
 	h.check("hud.the_report_renders_no_missing_string",
 		not won.contains(Localization.MISSING_PREFIX), won)
-
-	# The three grades are three different lines, in docs/27 section 6.3's
-	# order. A report that printed one word for every win would pass every
-	# check above.
 	var grades: Array[String] = []
 	for value: int in [1, 2, 3]:
 		world.game_control.set_slot(0, value)
-		hud.refresh(world, squad[0], "")
-		grades.append(_report_text(hud))
+		hud.refresh(world, squad[0], yes, yes, Vector2(0, -1), Vector2(1, 0), {}, false)
+		grades.append(hud.report_text())
 	h.check("hud.the_three_win_grades_differ",
 		grades[0] != grades[1] and grades[1] != grades[2]
 		and grades[0] != grades[2], " | ".join(grades).replace("\n", " / "))
 	h.check("hud.the_best_grade_is_the_glorious_one",
 		grades[2].contains(strings.shipped(Localization.MODULE_REPORT,
 			Localization.ID_REPORT_GLORIOUS)), grades[2].replace("\n", " | "))
-
-	# The payout lines are shown only when the slot carries something and only
-	# when the result is not 5 -- both of docs/27 section 6.2's own tests.
-	var equipment: String = strings.shipped(Localization.MODULE_REPORT,
-		Localization.ID_REPORT_EQUIPMENT)
-	h.check("hud.an_unset_payout_is_not_printed",
-		not grades[0].contains(equipment), grades[0].replace("\n", " | "))
-	world.game_control.set_slot(0, 1)
-	world.game_control.set_slot(GameControl.SLOT_EQUIPMENT_POINTS, 50)
-	hud.refresh(world, squad[0], "")
-	h.check("hud.a_set_payout_is_printed",
-		_report_text(hud).contains(equipment),
-		_report_text(hud).replace("\n", " | "))
-
-	world.game_control.set_slot(0, 0)
-	world.game_control.set_slot(4, 1)
-	hud.refresh(world, squad[0], "")
-	var lost: String = _report_text(hud)
-	h.check("hud.a_loss_says_so",
-		lost.contains(strings.shipped(Localization.MODULE_MISSION,
-			Localization.ID_FAILED))
-		and lost.contains(strings.shipped(Localization.MODULE_REPORT,
-			Localization.ID_REPORT_DEFEATED)), lost.replace("\n", " | "))
-	h.check("hud.a_loss_forfeits_the_payout",
-		not lost.contains(equipment), lost.replace("\n", " | "))
 	hud.free()
 
-	_mission_result(h)
 
-
-## docs/27 section 6.3 -- `0x0047D600`'s classification, which is one order of
-## operations and not a lookup.
-##
-## The vector that matters is the third: **another player's slot ends the
-## mission and this player is defeated by it.** The OR chain stamps 5 on
-## everybody first and only then does each player's own slot put a grade back,
-## so an implementation that reads its own slot and slot 4 answers every other
-## case correctly and this one wrongly.
 func _mission_result(h: TestHarness) -> void:
 	var control: GameControl = GameControl.create()
 	h.equal("result.nothing_happened_while_it_runs", control.mission_result(0),
@@ -1095,29 +1083,6 @@ func _mission_result(h: TestHarness) -> void:
 	control.set_slot(0, 9)
 	h.equal("result.an_unaccounted_value_leaves_the_five_standing",
 		control.mission_result(0), GameControl.RESULT_DEFEAT)
-
-
-## The HUD's two labels, read back out of the node it built.
-##
-## Reaching into the children rather than exposing the text: the HUD's job is
-## to *put* it on screen, and an accessor for the benefit of a test would be a
-## second definition of what it says.
-static func _hud_text(hud: Hud) -> String:
-	var label: Label = hud.get_child(0)
-	return label.text
-
-
-## The report panel is the HUD's second child, and the words are the Label
-## inside it -- the first child of the panel is what dims the map.
-static func _report_visible(hud: Hud) -> bool:
-	var panel: Control = hud.get_child(1)
-	return panel.visible
-
-
-static func _report_text(hud: Hud) -> String:
-	var panel: Control = hud.get_child(1)
-	var label: Label = panel.get_child(1)
-	return label.text
 
 
 ## The game's own bitmap font, built from the cache (docs/60 section 5).

@@ -84,7 +84,30 @@ var _location_cells: Dictionary[int, Vector2i] = {}
 var _markers: MapMarkers = null
 var _scenery: Scenery = null
 var _overlay: TerrainOverlay = null
-var _highlight: Highlight = null
+## The ground overlay -- the digits, bands and frames of docs/43 section 3.
+var _ground: GroundSprites = null
+## The map field under the pointer, `(-1, -1)` off the map or off the window.
+var _hover: Vector2i = Vector2i(-1, -1)
+## The selection's target overlay: cell -> hit band 30..34.
+var _bands: Dictionary[Vector2i, int] = {}
+## The 100 ms counter's clock and its bit 0.
+var _blink_clock: float = 0.0
+var _blink_odd: bool = false
+## Where the pointer was when the hover was last read, so the ray pick runs
+## only when it moves.
+var _pointer: Vector2 = Vector2(-1.0, -1.0)
+## The viewport's own pointer at the last poll, so the poll fires on a move.
+var _polled: Vector2 = Vector2(-1.0, -1.0)
+## A facing the ring chose that waits for the walk it followed to end
+## (`aChangeUnitViewDirection` runs after the blocking walk in the original).
+var _pending_turn: Dictionary = {}
+## Whether the last overlay refresh was the far view, so a camera crossing
+## the zoom gate redraws it.
+var _far_drawn: bool = false
+## Which mission each interface save slot holds, so the two undo buttons and
+## *Recall position* are not lit for another mission's autosave. See
+## [method _slot_holds_this_mission].
+var _slot_owner: Dictionary[int, String] = {}
 var _units: UnitsView = null
 var _rig: CameraRig = null
 ## The camera's choreography -- docs/42's decisions over the rig.
@@ -125,7 +148,7 @@ const FRAMES_PER_FIELD: int = 6
 const WALK_SECONDS_PER_STEP: float = \
 	float(FRAMES_PER_FIELD) / CharismaState.FRAMES_PER_SECOND
 var _status: Label = null
-var _hud: Hud = null
+var _hud: MissionHud = null
 var _strings: Localization = null
 var _selected: int = -1
 var _cache_dir: String = ""
@@ -320,12 +343,9 @@ func _ready() -> void:
 	# applied later still, but the ordering is now unconditional rather than
 	# true by luck.
 	var _had_settings: bool = settings.load_from_disk()
-	_hud = Hud.new(_strings)
 	# docs/60 -- the game's own bitmap font, the 17 px one. A cache built by an
 	# older converter has no fonts and the HUD stays on Godot's default.
 	var font: FontFile = interface_font()
-	_hud.use_font(font)
-	add_child(_hud)
 	_texts = FloatingTexts.new()
 	_texts.use_font(font)
 	add_child(_texts)
@@ -334,6 +354,19 @@ func _ready() -> void:
 	# the campaign, which is what it has always been for; the host is what the
 	# campaign flow drives, and `tour.gd` reaches it by name.
 	_art = Art.open(_cache_dir)
+	# The battle interface (docs/43): the plate, the columns, the pad, the
+	# panel and the radar, drawn on the shipped art and captioned from
+	# `Txtmod_h`. Its two plate faces are the 13 px and 10 px bitmap fonts.
+	_hud = MissionHud.new()
+	_hud.name = "MissionHud"
+	_hud.setup(_art, _strings, font,
+		GameFont.load_from(_cache_dir, MissionHud.TEXT_FONT),
+		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT))
+	_hud.event.connect(_on_hud_event)
+	_hud.command.connect(_on_pad_command)
+	_hud.radar_rescaled.connect(func(_fields: int) -> void: _refresh_status())
+	add_child(_hud)
+	get_viewport().size_changed.connect(_on_canvas_resized)
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
 	_boot()
@@ -458,15 +491,64 @@ func _refresh_after_deploy() -> void:
 ## container, because that codec refuses a blob whose map name is not the
 ## world's -- right for a mission, wrong for a campaign that outlives one
 ## (D10).
-func quick_save() -> bool:
+func quick_save(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	if campaign == null or campaign.state == null:
 		_refresh_status("no campaign to save")
 		return false
 	var stamp: Dictionary = CampaignHost.stamp_now()
-	var written: bool = campaign.save(world, CampaignHost.QUICK_SLOT,
+	var written: bool = campaign.save(world, slot,
 		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]))
 	_refresh_status("saved" if written else "save failed")
 	return written
+
+
+## The interface's own autosaves (docs/43 section 5): the mission's start
+## (slot 31, *Undo mission*) and each turn's start (slot 33, *Undo last
+## turn*), written the way `0x0041DA20`'s commands write them. Silent: an
+## *Instant Action* game has no campaign to write and the two buttons stay
+## dark for it.
+## The mission's start, saved twice: *Undo mission* returns here, and so does
+## *Undo last turn* until a turn has been played.
+func _autosave_mission_start() -> void:
+	_autosave(HudTables.SLOT_UNDO_MISSION)
+	_autosave(HudTables.SLOT_UNDO_TURN)
+
+
+func _autosave(slot: int) -> void:
+	if campaign == null or campaign.state == null or world == null:
+		return
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	var written: bool = campaign.save(world, slot,
+		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]))
+	if written:
+		_slot_owner[slot] = campaign.state.mission
+
+
+## Whether one of the interface's own save slots holds **this** mission.
+##
+## The three slot numbers are fixed (docs/43 section 5.4) and nothing ever
+## deletes the files, so an autosave taken in another mission -- or by another
+## session, in another chain -- outlives the mission it was taken in, and the
+## bare "the file is there" test offers it: *Undo mission* would then drop the
+## player into a mission they are not playing, and the mission blob's own map
+## check cannot catch it because the world is rebuilt from the save's own
+## campaign state. The guard is the remake's; the original's slot files have
+## the same staleness by construction.
+##
+## The header is read once per slot and remembered: this session is the only
+## writer, and [method _autosave] records what it wrote.
+func _slot_holds_this_mission(slot: int) -> bool:
+	if campaign == null or campaign.state == null:
+		return false
+	if not campaign.has_save(slot):
+		return false
+	if not _slot_owner.has(slot):
+		var header: Dictionary = campaign.slot_header(slot)
+		var readable: bool = DictRead.as_int(header["result"]) \
+			== CampaignCodec.Result.OK
+		_slot_owner[slot] = DictRead.as_string(header["mission"]) if readable \
+			else ""
+	return _slot_owner[slot] == campaign.state.mission
 
 
 ## `F9` -- read it back, and rebuild whatever it was holding.
@@ -474,17 +556,17 @@ func quick_save() -> bool:
 ## The order matters: the campaign comes back first because it names the
 ## mission, then the mission is built, and only then is the mission blob handed
 ## to [World] -- which is the one that checks the map name.
-func quick_load() -> bool:
+func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	if campaign == null:
 		return false
 	# `has_save` is the gate, and it had no caller at all. Without it an
 	# absent file came back as a refusal code and the line read "load
 	# refused: TRUNCATED", which says the bytes are damaged about a file that
 	# was never written.
-	if not campaign.has_save():
+	if not campaign.has_save(slot):
 		_refresh_status("nothing quick-saved yet")
 		return false
-	var decoded: Dictionary = campaign.load_save()
+	var decoded: Dictionary = campaign.load_save(slot)
 	var code: int = DictRead.as_int(decoded["result"])
 	if code != CampaignCodec.Result.OK:
 		_refresh_status("load refused: " + CampaignCodec.result_name(code))
@@ -1035,11 +1117,56 @@ func close_campaign_screen() -> void:
 ## It used to be left up under every plate, which cost nothing while a plate
 ## covered the whole screen -- and shows through the moment one has a window
 ## in it, as the mission's status line drawn across a campaign map.
+##
+## **The view does not hide it.** `fcn.0041A980` does not read the view mode
+## `[0x005106D8]` at all -- corrected 2026-09-05, docs/43 section 2 -- so the
+## plate is drawn through the eyes view as through any other; the one thing
+## that suppresses it is an `aOptions.cpp` setting (`[0x005129F8] == 1`,
+## `0x004604D0`), which this remake does not offer.
 func _sync_hud() -> void:
 	if _hud != null:
-		_hud.visible = _screen == null
+		_hud.visible = _screen == null and world != null
 	if _status != null:
 		_status.visible = _screen == null
+	_frame_mission_camera()
+
+
+## The mission camera's projection for the window the screen has now.
+##
+## With the interface up the window is what the plate leaves: `(60, 34)` by
+## the canvas less 120 by the canvas less 140 (docs/43 section 7), and the
+## focal length stays the original's 400 -- the one `_ftol(520 * 10 / 13)`
+## gives -- however wide the window is, so a wider screen shows more world at
+## the same scale rather than a larger picture. A campaign screen over the
+## mission keeps its own stretched window, as before; the eyes view fills the
+## render.
+## The window changed shape: the camera's frustum follows it, and so does
+## what the interface has already drawn.
+##
+## The plate's pieces and the two button columns re-anchor themselves on
+## `Control.resized`, but the panel's icons and the radar's marks are placed
+## where they are *drawn* -- so without this a resize leaves them at the
+## anchors of the old canvas until the next command.
+func _on_canvas_resized() -> void:
+	_frame_mission_camera()
+	if _hud != null and _hud.visible and world != null:
+		_refresh_status()
+
+
+func _frame_mission_camera() -> void:
+	if _rig == null or _rig.camera() == null or not is_inside_tree():
+		return
+	var canvas: Vector2 = get_viewport().get_visible_rect().size
+	if _screen != null:
+		CameraRig.frame_projection(_rig.camera(),
+			SelectUnitsScreen.DEPLOY_WINDOW, CampaignScreen.PLATE_SIZE)
+		return
+	if _hud != null and not _hud.visible:
+		CameraRig.frame_projection(_rig.camera(), Rect2(Vector2.ZERO, canvas),
+			canvas, 0, float(HudTables.WINDOW.size.x))
+		return
+	CameraRig.frame_projection(_rig.camera(), HudTables.window_for(canvas),
+		canvas, 0, float(HudTables.WINDOW.size.x))
 
 
 ## What a screen's button means. The host owns the state machine; this only
@@ -1079,6 +1206,7 @@ func _on_campaign_choice(action: String) -> void:
 			if campaign.nobody_to_deploy() and campaign.may_start():
 				campaign.enter_mission()
 				close_campaign_screen()
+				_autosave_mission_start()
 				return
 			var _select: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_SELECT)
@@ -1088,6 +1216,7 @@ func _on_campaign_choice(action: String) -> void:
 			if campaign.may_start():
 				campaign.enter_mission()
 				close_campaign_screen()
+				_autosave_mission_start()
 			else:
 				# **Named, not silent.** An empty map refused the button and
 				# said nothing, which is what stopped a campaign being
@@ -1529,7 +1658,12 @@ func _clear_mission() -> void:
 	_scene_root = null
 	_scenery = null
 	_overlay = null
-	_highlight = null
+	_ground = null
+	_hover = Vector2i(-1, -1)
+	_bands.clear()
+	_pending_turn = {}
+	if _hud != null:
+		_hud.ring.take_down()
 	_units = null
 	_special = null
 	_rig = null
@@ -1632,9 +1766,9 @@ func _build(mission: String) -> void:
 	_drawn_terrain = world.terrain_snapshot()
 	_overlay.build(_drawn_terrain)
 
-	_highlight = Highlight.new()
-	_highlight.name = "Highlight"
-	_scene_root.add_child(_highlight)
+	_ground = GroundSprites.new()
+	_ground.name = "Ground"
+	_scene_root.add_child(_ground)
 
 	_units = UnitsView.new()
 	_units.name = "Units"
@@ -1662,10 +1796,11 @@ func _build(mission: String) -> void:
 		world.resource.heights(), world.resource.camera_height)
 	# The same rule with the **mission's** own window, `0x00419D90`'s
 	# `(60, 34)` by 520x340: a focal length of 400 rather than the map's 398,
-	# and an axis four pixels right and thirty-six pixels up of centre.
-	CameraRig.frame_projection(_rig.camera(),
-		SelectUnitsScreen.DEPLOY_WINDOW, CampaignScreen.PLATE_SIZE)
+	# and an axis four pixels right and thirty-six pixels up of centre --
+	# and, with the interface up, the window the plate leaves on this canvas
+	# ([method _frame_mission_camera]).
 	_rig.camera().current = true
+	_frame_mission_camera()
 	_director = CameraDirector.create(_rig)
 	_walk_cameras.clear()
 	_frame_units(world)
@@ -1848,7 +1983,12 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 	var result: MoveMapResult = world.submit_move_query(
 		MoveQueryCommand.create(slot, pass_friendlies))
 	_last_query = result
-	_highlight.show_result(result, world.resource.heights())
+	# `0x00472990`: the select resets the cells, fills the move map and stamps
+	# the target overlay -- the bands the ground shows and the shooter turns
+	# towards.
+	_bands = world.target_bands(slot)
+	_hud.ring.take_down()
+	_refresh_overlay()
 	# docs/42 section 7.3: the select routine `0x00471E00` raises the four
 	# arrows once (`0x00473920`), and they live their fifteen ticks.
 	_raise_marker()
@@ -1876,8 +2016,12 @@ func selected_slot() -> int:
 func _deselect() -> void:
 	_selected = -1
 	_last_query = null
+	_bands.clear()
+	if _hud != null:
+		_hud.ring.take_down()
 	if world != null:
 		world.selected_slot = MapState.NO_UNIT
+	_refresh_overlay()
 
 
 ## Select the next unit the current player owns, and look at it.
@@ -1956,17 +2100,18 @@ func _frame_units(mission_world: World) -> void:
 
 ## The next unit the current player may command, after `after` and wrapping.
 ##
-## docs/29 section 3's command **14** -- "cycle the selected friendly unit"
-## (`0x00453CF0`) -- which the engine binds to a key and which this remake did
-## not have at all. `after` of -1 asks for the first; -1 comes back when the
-## current player has nothing on the map it may command.
+## Interface event **12**, *Jump to the next unit* (docs/43 section 5.2):
+## `0x00471E00(1)` walks the 200 slots with `0x00477D40`. `after` of -1 asks
+## for the first; -1 comes back when the current player has nothing on the
+## map it may select.
 ##
-## **The gate is [method World.may_command], the same one a click goes
-## through**, because `0x00453CF0` walks `0x00477DF0` and that is what
-## `0x00477DF0` is. Owner alone is not enough: a dead squad member stays in
-## `unit_slots()` and the fog pass leaves an own corpse fully visible, so a
-## cycle that filtered on the player byte would offer a body the mouse
-## refuses -- and the hand-back below would park the camera on it.
+## **The gate is [method World.may_select], the same one a click goes
+## through**: `0x00477D40`'s three tests are `+0x16` alive, `+0x45` the
+## player it is passed and `+0x15` not zero, and `may_select` is exactly
+## those over [method World.may_command]. Owner alone is not enough: a dead squad
+## member stays in `unit_slots()` and the fog pass leaves an own corpse fully
+## visible, so a cycle that filtered on the player byte would offer a body
+## the mouse refuses -- and the hand-back below would park the camera on it.
 ##
 ## A contact is excluded on top of that even though a friendly one cannot
 ## occur: the rule is "a cell the player can click", and [method
@@ -1976,7 +2121,9 @@ static func next_friendly_slot(mission_world: World, after: int) -> int:
 	var start: int = slots.find(after) + 1
 	for step: int in range(slots.size()):
 		var slot: int = slots[(start + step) % slots.size()]
-		if not mission_world.may_command(slot):
+		# `0x00477D40`: the next unit **with movement points** -- a unit that
+		# has none cannot be selected (docs/43 section 4).
+		if not mission_world.may_select(slot):
 			continue
 		var view: Dictionary = mission_world.unit_view(slot)
 		if view.is_empty() or not Fog.is_drawn(view) or Fog.is_contact(view):
@@ -2285,15 +2432,20 @@ func _refresh_status(extra: String = "") -> void:
 	# developer line into a wall of text across the playing screen. The
 	# position in the set is already on the line above -- `(1/92)` -- and
 	# which mission is next is what the keys are for.
-	line += "\nQ/E rotate, wheel or pinch or +/- zooms, T the field-type " \
+	line += "\nQ/E rotate, wheel or pinch or +/- zooms, Y the field-type " \
 		+ "overlay, G the editor's cell markers, [ and ] switch mission"
+	if extra != "":
+		line += "\n" + extra
 	_status.text = line
 	if _hud != null:
-		_hud.refresh(world, _selected, extra)
-		# **Under the HUD, wherever the HUD ends.** Both blocks wrap now, so a
-		# fixed offset wrote the developer line across the hint line's last
-		# row whenever the hints needed a fourth.
-		_status.position.y = _hud.bottom() + STATUS_GAP
+		var axes: Array[Vector2] = _radar_axes()
+		_hud.refresh(world, _selected, Callable(self, "_event_available"),
+			Callable(self, "_command_available"), axes[0], axes[1], _bands,
+			false)
+		# **Inside the window, under the top band.** The developer line is a
+		# tool and not part of the plate, so it goes where the plate is not.
+		_status.position = Vector2(float(HudTables.WINDOW.position.x) + STATUS_GAP,
+			_hud.bottom() + STATUS_GAP)
 
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
@@ -2362,6 +2514,7 @@ func _process(delta: float) -> void:
 	_follow_walks()
 	if _rig != null:
 		var _flying: bool = _rig.advance(delta)
+	_tick_interface(delta)
 	# The pool first: a sequence that reads what a tick left -- the bomb run
 	# and its *arrived* flag -- must see this frame's tick and not the last
 	# one ([method _tick_effects]).
@@ -2516,18 +2669,12 @@ func _on_ai_step(event: Dictionary) -> float:
 	# this event's own casualties must still be on screen while the event is
 	# presented, and the rebuild below is what takes them away.
 	var payload: Dictionary = DictRead.as_dict(event["payload"])
-	if kind == "fire":
-		var _held: int = _mark_dying(
-			DictRead.as_array(payload.get("outcomes", [])))
-	elif kind == "reactions":
-		var _held_back: int = _mark_dying_by(
-			DictRead.as_array(payload.get("reactions", [])))
-	elif kind == "move":
-		var _blasted: int = _mark_dying_by_mine(
-			DictRead.as_array(payload.get("events", [])))
-	elif kind == "warp" and payload.has("blast"):
-		var _landed: int = _mark_dying(DictRead.as_array(
-			DictRead.as_dict(payload["blast"]).get("outcomes", [])))
+	# **Every shape at once**, through the one extractor the whole replay was
+	# marked with in [method end_turn]: this is the re-mark that survives a
+	# rebuild, and a payload kind it did not know about was a body that never
+	# came back. The `parabomb` was exactly that -- its payload *is* the
+	# blast, and the branch that used to stand here had no arm for it.
+	var _held: int = _mark_dying_payload(payload)
 	# Where every unit whose move is still to come is standing. The world has
 	# held the end of the turn since `submit_end_turn` returned, so without
 	# this a unit stood at its destination until its own event came round and
@@ -2670,10 +2817,38 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_view(CameraRig.View.UNIT)
 		elif key.keycode == KEY_3:
 			_set_view(CameraRig.View.MAP)
-		elif key.keycode == KEY_T:
+		elif key.keycode == KEY_Y:
 			_overlay.toggle()
 		elif key.keycode == KEY_G:
 			_scenery.toggle_lattice()
+		# The interface's own keys (docs/43 section 5): the pad's six and the
+		# columns' events, as `aMI.cpp` and `aUI.cpp` bind them.
+		elif key.keycode == KEY_R:
+			_on_pad_command(HudTables.COMMAND_REST)
+		elif key.keycode == KEY_S:
+			_on_pad_command(HudTables.COMMAND_STIMULANT)
+		elif key.keycode == KEY_W:
+			_on_pad_command(HudTables.COMMAND_WEAPON_MODE)
+		elif key.keycode == KEY_B:
+			_on_hud_event(HudTables.EVENT_BRIEFING)
+		elif key.keycode == KEY_T:
+			_on_hud_event(HudTables.EVENT_VISIBLE_ENEMY)
+		elif key.keycode == KEY_BACKSPACE:
+			_on_hud_event(HudTables.EVENT_UNDO_TURN)
+		elif key.keycode == KEY_F1:
+			_on_hud_event(HudTables.EVENT_REMIND_POSITION)
+		elif key.keycode == KEY_F2:
+			_on_hud_event(HudTables.EVENT_RECALL_POSITION)
+		elif key.keycode == KEY_F3:
+			_on_hud_event(HudTables.EVENT_SAVE)
+		elif key.keycode == KEY_F4:
+			_on_hud_event(HudTables.EVENT_LOAD)
+		elif key.keycode == KEY_4:
+			_on_hud_event(HudTables.EVENT_FREE_CAMERA)
+		elif key.keycode == KEY_LEFT:
+			_rig.rotate_step(-1)
+		elif key.keycode == KEY_RIGHT:
+			_rig.rotate_step(1)
 		elif key.keycode == KEY_BRACKETRIGHT:
 			show_mission(1)
 		elif key.keycode == KEY_BRACKETLEFT:
@@ -2682,23 +2857,32 @@ func _unhandled_input(event: InputEvent) -> void:
 			if _may_command_now():
 				end_turn()
 		elif key.keycode == KEY_U:
-			if _may_command_now():
-				use_in_front()
+			_on_pad_command(HudTables.COMMAND_USE)
 		elif key.keycode == KEY_D:
-			if _may_command_now():
-				hold_fire()
+			_on_pad_command(HudTables.COMMAND_DEFEND)
 		elif key.keycode == KEY_H:
-			if _may_command_now():
-				var _healed: Dictionary = heal_selected()
+			_on_pad_command(HudTables.COMMAND_HEAL)
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
 		if click.button_index == MOUSE_BUTTON_LEFT and _may_command_now():
 			_pick(click.position, click.shift_pressed)
+	elif event is InputEventMouseButton:
+		# The right button, released: the camera turns a step, left of the
+		# window's middle one way and right of it the other (`0x0041BA30`).
+		var release: InputEventMouseButton = event
+		if release.button_index == MOUSE_BUTTON_RIGHT and _rig != null:
+			var middle: float = get_viewport().get_visible_rect().size.x * 0.5
+			_rig.rotate_step(-1 if release.position.x < middle else 1)
 	elif event is InputEventMouseMotion:
 		# docs/42 section 2.5: the middle button held drags the view.
 		var motion: InputEventMouseMotion = event
 		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
 			_rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
+		else:
+			# The hover cell, read off the event as well as polled: a driver's
+			# synthetic motion reaches here before the viewport's own pointer
+			# moves (docs/43 section 3).
+			_update_hover(motion.position)
 
 
 ## `ESC` -- open the shell over a running mission, and close it again.
@@ -2925,6 +3109,7 @@ func _set_view(mode: CameraRig.View) -> void:
 				DictRead.as_int(view["y"]))
 		_:
 			_flight = _director.view_unit(world, slot)
+	_sync_hud()
 
 
 ## Whether the mission has ended -- in which case no command is taken any more.
@@ -2965,8 +3150,22 @@ func _may_command_now() -> bool:
 ## The scene tree is used to find *which* cell was clicked and for nothing else.
 func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 	var camera: Camera3D = _rig.camera()
-	var origin: Vector3 = camera.project_ray_origin(screen)
-	var direction: Vector3 = camera.project_ray_normal(screen)
+	# The ring takes every click while it is up (`0x00471AD0`): the nearest
+	# of its nine records, the X cancelling.
+	if _hud != null and _hud.ring.is_up():
+		var record: int = _hud.ring.hit(camera, screen)
+		if record == DirectionRing.CANCEL_RECORD or record < 0:
+			_hud.ring.take_down()
+			_refresh_status("")
+		else:
+			_complete_ring(record)
+		return
+	var ray: PackedVector3Array = CameraRig.ray_through(camera, screen,
+		get_viewport().get_visible_rect().size)
+	if ray.size() != 2:
+		return
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	if absf(direction.y) < 0.0001:
 		return
 	var best_slot: int = -1
@@ -3015,6 +3214,17 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 			else:
 				_refresh_status(_strings.text("hud.not_yours"))
 			return
+		# The selected unit clicked again raises the ring on its own cell:
+		# mode 2, a turn in place (`0x004718B5`).
+		if best_slot == _selected:
+			_raise_ring(Vector2i(DictRead.as_int(view["x"]),
+				DictRead.as_int(view["y"])), HudTables.RING_MODE_TURN)
+			return
+		# **A unit with no movement points cannot be selected**
+		# (`0x00471CB6`): the click does nothing at all.
+		if not world.may_select(best_slot):
+			_refresh_status(_strings.text("hud.no_points"))
+			return
 		var _result: MoveMapResult = select_unit(best_slot, pass_friendlies)
 		return
 
@@ -3024,15 +3234,68 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 	var cell: Vector2i = _cell_under(screen)
 	if _selected < 0 or cell.x < 0:
 		_deselect()
-		_highlight.clear()
 		_refresh_status(_strings.text("hud.no_selection"))
 		return
 	# A cell the query marked as a warp target is the Jet Pack's jump, not a
-	# walk (docs/23 section 7.5); `core` re-fills before it agrees.
+	# walk (docs/23 section 7.5), and a reachable one a walk; either raises
+	# the ring first (`0x00471645`, `0x00471698`) and the command runs when
+	# a letter is chosen. `core` re-fills before it agrees to any of it.
 	if _last_query != null and _last_query.is_warp_target(cell.x, cell.y):
-		var _jumped: WarpResult = warp_selected(cell.x, cell.y)
+		_raise_ring(cell, HudTables.RING_MODE_WARP)
 		return
-	move_selected(cell.x, cell.y)
+	if _last_query != null and _last_query.is_reachable(cell.x, cell.y):
+		_raise_ring(cell, HudTables.RING_MODE_MOVE)
+		return
+	# A band cell is a target: the enemy standing on it takes the shot.
+	if _bands.has(cell):
+		attack_cell(cell.x, cell.y)
+		return
+	_deselect()
+	_refresh_status(_strings.text("hud.no_selection"))
+
+
+## Raise the direction ring on *cell* for *mode* (docs/43 section 4).
+func _raise_ring(cell: Vector2i, mode: int) -> void:
+	if _hud == null or _selected < 0:
+		return
+	_hud.ring.place(_art, world, cell, mode)
+	_refresh_status("")
+
+
+## A ring letter was chosen: the command the ring was raised for, then the
+## facing, then the reselect or the deselect (`0x00471AD0`).
+func _complete_ring(record: int) -> void:
+	var facing: int = DirectionRing.facing_of(record)
+	var mode: int = _hud.ring.mode
+	var cell: Vector2i = _hud.ring.cell
+	var slot: int = _selected
+	_hud.ring.take_down()
+	if facing < 0 or slot < 0 or not world.has_unit(slot):
+		return
+	match mode:
+		HudTables.RING_MODE_MOVE:
+			var _moved: MoveResult = move_selected(cell.x, cell.y)
+		HudTables.RING_MODE_WARP:
+			var _jumped: WarpResult = warp_selected(cell.x, cell.y)
+	if not world.has_unit(slot):
+		return
+	var _turned: bool = world.submit_rotate(RotateCommand.create(slot, facing))
+	# The body turns when its walk is over, as the object does after the
+	# original's blocking walk; a turn in place turns it now.
+	if _units != null and _units.is_walking():
+		_pending_turn = {"slot": slot, "facing": facing}
+	elif _units != null:
+		var _faced: bool = _units.turn_to(slot, HudTables.FACING_ANGLES[facing])
+	# **No second `_after_command` here.** The move and the warp have run it
+	# already, from inside `move_selected` and `warp_selected`, and it
+	# rebuilds `UnitsView` -- which frees every body and clears the walk this
+	# ring has just started, and overwrites the reaction count with nothing.
+	# The turn that follows a move is free (`docs/43` section 4.3: no point
+	# charged and no visibility rebuilt) and no band reads the shooter's
+	# facing (`core/hit_chance.gd` never looks at one), so the only thing left
+	# to do is to let the interface re-read the world.
+	if mode == HudTables.RING_MODE_TURN and _selected == slot:
+		_refresh_status("")
 
 
 ## Whether a picked unit is something to shoot at rather than something to
@@ -3075,10 +3338,14 @@ func _cell_under(screen: Vector2) -> Vector2i:
 ## camera is the length of a city away from it.
 static func cell_under(camera: Camera3D, at: World, screen: Vector2,
 		tolerance: float = 0.7) -> Vector2i:
-	if camera == null or at == null:
+	if camera == null or at == null or not camera.is_inside_tree():
 		return Vector2i(-1, -1)
-	var origin: Vector3 = camera.project_ray_origin(screen)
-	var direction: Vector3 = camera.project_ray_normal(screen)
+	var ray: PackedVector3Array = CameraRig.ray_through(camera, screen,
+		camera.get_viewport().get_visible_rect().size)
+	if ray.size() != 2:
+		return Vector2i(-1, -1)
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	if absf(direction.y) < 0.0001:
 		return Vector2i(-1, -1)
 	var best: Vector2i = Vector2i(-1, -1)
@@ -3108,6 +3375,12 @@ func move_selected(x: int, y: int) -> MoveResult:
 	_begin_command()
 	var moved: MoveResult = world.submit_move(
 		MoveCommand.create(slot, x, y))
+	# **The player's own walk marks nothing.** `aWalkMoveMap` `0x004305E0` is
+	# what writes state 100 along a path, and it is reached from one place:
+	# `0x00472D40`, an arm of the command dispatcher `0x0047DE90` that only
+	# `0x0047C2C0` -- the redraw callback `aAISystemControl` is handed
+	# (docs/23 section 2) -- calls. So the marks are how the *computer's*
+	# steps are shown, and the player walks unmarked (docs/43 section 3.1).
 	# A move that drew return fire can lose the mover to it; the same order
 	# applies, and the walk still plays because the body is still there.
 	var _held: int = _mark_dying_by(moved.reactions)
@@ -3275,6 +3548,12 @@ func attack_cell(x: int, y: int) -> AttackResult:
 	# the marks. The stages themselves run on later frames, after the rebuild.
 	var _held: int = _mark_dying(shot.outcomes)
 	var _held_back: int = _mark_dying_by(shot.reactions)
+	# `0x0047181C`: after the shot the shooter turns towards its best target
+	# band -- `aGetDirectionTo(x, y, 0)`, then `aChangeUnitViewDirection`.
+	if shot.fired and world.has_unit(slot):
+		var facing: int = world.facing_to_target(slot)
+		if facing != Combat.FACING_NONE:
+			var _turned: bool = world.submit_rotate(RotateCommand.create(slot, facing))
 	var view: Dictionary = world.unit_view(slot)
 	if not view.is_empty():
 		var _hold: float = _present_attack(slot, DictRead.as_int(view["x"]),
@@ -3301,12 +3580,25 @@ func attack_cell(x: int, y: int) -> AttackResult:
 ## for the computer's replay it runs ahead of the event's own presentation.
 ## Returns how many were marked, for a caller and a suite.
 func _mark_dying(outcomes: Array) -> int:
+	return _mark_dying_payload({"outcomes": outcomes})
+
+
+## The same for a whole event payload, whatever shape it carries its dead in
+## ([method AIPlayback.casualties_of]).
+func _mark_dying_payload(payload: Dictionary) -> int:
+	return _mark_dying_slots(AIPlayback.casualties_of(payload))
+
+
+## Hold these slots on screen, the ones the world says are dead.
+##
+## The hit points are the filter and they are the world's: a unit an outcome
+## names but that survived the hit is alive, and holding it would draw a body
+## the next rebuild has to take away again.
+func _mark_dying_slots(slots: PackedInt32Array) -> int:
 	if _units == null or world == null:
 		return 0
 	var held: int = 0
-	for entry: Variant in outcomes:
-		var outcome: Dictionary = DictRead.as_dict(entry)
-		var slot: int = DictRead.as_int(outcome.get("slot", -1))
+	for slot: int in slots:
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty() or DictRead.as_int(view["hp"]) != 0:
 			continue
@@ -3317,12 +3609,7 @@ func _mark_dying(outcomes: Array) -> int:
 
 ## The same, for every reaction one command drained.
 func _mark_dying_by(entries: Array) -> int:
-	var held: int = 0
-	for item: Variant in entries:
-		var entry: Dictionary = DictRead.as_dict(item)
-		var attack: Dictionary = DictRead.as_dict(entry.get("attack", {}))
-		held += _mark_dying(DictRead.as_array(attack.get("outcomes", [])))
-	return held
+	return _mark_dying_payload({"reactions": entries})
 
 
 ## The same, for the blast a mine under a walk or a landing left.
@@ -3332,14 +3619,7 @@ func _mark_dying_by(entries: Array) -> int:
 ## rebuild before [method _present_mine] ever queued the explosion, and the
 ## body vanished a frame before the shot that killed it.
 func _mark_dying_by_mine(events: Array) -> int:
-	var held: int = 0
-	for item: Variant in events:
-		var entry: Dictionary = DictRead.as_dict(item)
-		if DictRead.as_string(entry.get("kind", "")) != "mine_detonated":
-			continue
-		var blast: Dictionary = DictRead.as_dict(entry.get("blast", {}))
-		held += _mark_dying(DictRead.as_array(blast.get("outcomes", [])))
-	return held
+	return _mark_dying_payload({"events": events})
 
 ## One shot, as `aPlayFightAnimation` shows it (docs/42 section 4), queued
 ## on the [SequenceQueue] through [ShotSequence].
@@ -4201,14 +4481,25 @@ func end_turn() -> TurnResult:
 		if _playback.is_running():
 			owed = _playback.pending_starts()
 		_units.hold_at(owed)
+	# **And the other half of the same defect.** The world has held the end of
+	# the turn since `submit_end_turn` returned, so the rebuild below drops
+	# every unit the computer is *going* to kill -- a marine shot on the
+	# fourth event vanished as the replay opened and reappeared when its own
+	# event marked it, a second before it died. The whole list is held from
+	# here instead; each event re-marks its own, and [method
+	# UnitsView.hide_now] takes them out one at a time in the death stage.
+	if _playback.is_running():
+		var _doomed: int = _mark_dying_slots(_playback.pending_casualties())
 	_deselect()
-	_highlight.clear()
 	# A turn with nothing to replay hands back here rather than through
 	# [method _on_ai_step]; the same flag decides whether the view moves.
 	if not _playback.is_running() \
 			and world.compat_flags.has(COMPAT_CAMERA_RETURNS):
 		var _back: int = focus_on_friendly(_rig, world)
 	_after_command("")
+	# The turn's autosave, for *Undo last turn* (docs/43 section 5).
+	if _may_command_now():
+		_autosave(HudTables.SLOT_UNDO_TURN)
 	return result
 
 
@@ -4232,14 +4523,325 @@ func _after_command(note: String) -> void:
 	_units.build(world, _geometry, _textures)
 	_redraw_terrain()
 	if _selected >= 0 and world.has_unit(_selected):
-		var again: MoveMapResult = world.submit_move_query(
-			MoveQueryCommand.create(_selected))
-		_last_query = again
-		_highlight.show_result(again, world.resource.heights())
-		# The pad raises the marker again after its command (`0x00471A49`,
-		# `0x00471A72`).
-		_raise_marker()
+		# `0x00472B10`: a unit left with no movement points is deselected
+		# after its command (docs/43 section 4).
+		if DictRead.as_int(world.unit_view(_selected)["mp"]) == 0:
+			_deselect()
+		else:
+			var again: MoveMapResult = world.submit_move_query(
+				MoveQueryCommand.create(_selected))
+			_last_query = again
+			_bands = world.target_bands(_selected)
+			# The pad raises the marker again after its command
+			# (`0x00471A49`, `0x00471A72`).
+			_raise_marker()
+	_refresh_overlay()
 	_refresh_status(note)
+
+
+# --- the battle interface (docs/43) ---------------------------------------
+
+## Redraw the ground overlay from the world and the selection.
+func _refresh_overlay() -> void:
+	if _ground == null or world == null:
+		return
+	_far_drawn = _far_view()
+	_ground.refresh(_art, world, _selected, _last_query, _hover, _bands,
+		turn_player(), _far_drawn)
+
+
+## Whether the camera is above the zoom gate, where the overlay switches to
+## the far view's flags (`0x00418343`).
+func _far_view() -> bool:
+	return _rig != null and _rig.eye().z >= HudTables.ZOOM_GATE
+
+
+## The interface's own clock: the blink, the ring's projection, the hover,
+## the far/near switch and the turn a walk owed.
+func _tick_interface(delta: float) -> void:
+	if world == null or _hud == null or _rig == null:
+		return
+	_blink_clock += delta
+	if _blink_clock >= HudTables.BLINK_PERIOD_SECONDS:
+		_blink_clock = fmod(_blink_clock, HudTables.BLINK_PERIOD_SECONDS)
+		_blink_odd = not _blink_odd
+		if _ground != null:
+			_ground.tick(_blink_odd)
+	_hud.ring.update(_rig.camera(), _hud.window(), _blink_odd)
+	if _far_view() != _far_drawn:
+		_refresh_overlay()
+	if not _pending_turn.is_empty() and (_units == null or not _units.is_walking()):
+		if _units != null:
+			var _faced: bool = _units.turn_to(DictRead.as_int(_pending_turn["slot"]),
+				HudTables.FACING_ANGLES[DictRead.as_int(_pending_turn["facing"])])
+		_pending_turn = {}
+	_poll_hover()
+
+
+## The cell under the pointer, read when the pointer moves: inside the
+## window it is the ray pick's answer, outside it none. The hovered cell
+## gates the digits and wears the frame (docs/43 section 3), and the ring
+## reads it for its tiers.
+func _poll_hover() -> void:
+	if _screen != null or not _hud.visible:
+		return
+	# Only when the viewport's own pointer moved: a driver's synthetic motion
+	# (`tour.gd`) sets the hover through the event, and re-reading a pointer
+	# that has not moved would undo it every frame.
+	var pointer: Vector2 = get_viewport().get_mouse_position()
+	if pointer == _polled:
+		return
+	_polled = pointer
+	_update_hover(pointer)
+
+
+func _update_hover(pointer: Vector2) -> void:
+	if _screen != null or _hud == null or _rig == null or world == null:
+		return
+	if pointer == _pointer:
+		return
+	_pointer = pointer
+	var cell: Vector2i = Vector2i(-1, -1)
+	if _hud.window().has_point(pointer):
+		cell = cell_under(_rig.camera(), world, pointer, 1.0)
+	if _hud.ring.is_up():
+		var _changed: bool = _hud.ring.hover(_rig.camera(), pointer)
+	if cell != _hover:
+		_hover = cell
+		_refresh_overlay()
+
+
+## The screen-space directions of the map's `+y` and `+x` as the camera shows
+## them, for the radar's turn: unit vectors, y down.
+func _radar_axes() -> Array[Vector2]:
+	var axes: Array[Vector2] = [Vector2(0.0, -1.0), Vector2(1.0, 0.0)]
+	if _rig == null or _rig.camera() == null or world == null \
+			or not _rig.camera().is_inside_tree():
+		return axes
+	var camera: Camera3D = _rig.camera()
+	var target: Vector3i = _rig.target()
+	var origin: Vector3 = WorldSpace.to_godot(target.x, target.y, target.z)
+	var north: Vector3 = origin + WorldSpace.to_godot_v(
+		Vector3(0.0, float(WorldSpace.WORLD_UNITS_PER_FIELD), 0.0))
+	var east: Vector3 = origin + WorldSpace.to_godot_v(
+		Vector3(float(WorldSpace.WORLD_UNITS_PER_FIELD), 0.0, 0.0))
+	if camera.is_position_behind(origin) or camera.is_position_behind(north) \
+			or camera.is_position_behind(east):
+		return axes
+	var at: Vector2 = camera.unproject_position(origin)
+	var to_north: Vector2 = camera.unproject_position(north) - at
+	var to_east: Vector2 = camera.unproject_position(east) - at
+	if to_north.length() > 0.0:
+		axes[0] = to_north.normalized()
+	if to_east.length() > 0.0:
+		axes[1] = to_east.normalized()
+	return axes
+
+
+## Whether a column button's event can run now (docs/43 section 5): the two
+## undo buttons and *Recall position* need their slot written, the four save
+## paths and the briefing need a campaign, *Jump to visible enemy* needs one,
+## and the magnifier -- an info page out of `Data` the cache does not carry
+## -- is never offered.
+func _event_available(number: int) -> bool:
+	if world == null or _mission_over() or _playback.is_running():
+		return false
+	var has_campaign: bool = campaign != null and campaign.state != null
+	match number:
+		HudTables.EVENT_LOAD:
+			return true
+		HudTables.EVENT_SAVE, HudTables.EVENT_REMIND_POSITION, \
+				HudTables.EVENT_BRIEFING:
+			return has_campaign
+		HudTables.EVENT_RECALL_POSITION:
+			return _slot_holds_this_mission(HudTables.SLOT_REMIND)
+		HudTables.EVENT_UNDO_TURN:
+			return _slot_holds_this_mission(HudTables.SLOT_UNDO_TURN)
+		HudTables.EVENT_UNDO_MISSION:
+			return _slot_holds_this_mission(HudTables.SLOT_UNDO_MISSION)
+		HudTables.EVENT_MAGNIFIER:
+			return false
+		HudTables.EVENT_NEXT_UNIT:
+			return _may_command_now() and next_friendly_slot(world, _selected) >= 0
+		HudTables.EVENT_VISIBLE_ENEMY:
+			return _visible_enemy_after(-1) >= 0
+		HudTables.EVENT_GIVE_UP, HudTables.EVENT_NEXT_PLAYER:
+			return _may_command_now()
+	return true
+
+
+## Whether a pad socket is lit for the selection (`0x00472570`).
+func _command_available(number: int) -> bool:
+	if world == null or _selected < 0 or not _may_command_now() \
+			or not world.has_unit(_selected) or _playback.is_running():
+		return false
+	match number:
+		HudTables.COMMAND_DEFEND:
+			return world.may_defend(_selected)
+		HudTables.COMMAND_HEAL:
+			return world.may_heal(_selected)
+		HudTables.COMMAND_STIMULANT:
+			return world.may_take_stimulant(_selected)
+		HudTables.COMMAND_WEAPON_MODE:
+			return world.may_toggle_weapon(_selected)
+		HudTables.COMMAND_REST:
+			return world.may_stand_down(_selected)
+		HudTables.COMMAND_USE:
+			return world.may_use(_selected)
+	return false
+
+
+## A column button, or its key: one of the sixteen interface events of
+## `0x00453900` (docs/29 section 1.2, docs/43 section 5).
+func _on_hud_event(number: int) -> void:
+	if not _event_available(number):
+		return
+	match number:
+		HudTables.EVENT_FREE_CAMERA:
+			_rig.set_view_mode(CameraRig.View.SCRIPT)
+			_sync_hud()
+		HudTables.EVENT_UNIT_VIEW:
+			_set_view(CameraRig.View.EYES)
+		HudTables.EVENT_MAP_VIEW:
+			_set_view(CameraRig.View.MAP)
+		HudTables.EVENT_USER_VIEW:
+			_set_view(CameraRig.View.UNIT)
+		HudTables.EVENT_LOAD:
+			shell.open(ShellHost.SCREEN_SLOTS, _behind_the_shell())
+			shell.go_slots(ShellHost.MODE_LOAD)
+			var _load: CampaignScreen = _show_shell_screen()
+		HudTables.EVENT_SAVE:
+			shell.open(ShellHost.SCREEN_SLOTS, _behind_the_shell())
+			shell.go_slots(ShellHost.MODE_SAVE)
+			var _save: CampaignScreen = _show_shell_screen()
+		HudTables.EVENT_RECALL_POSITION:
+			var _recalled: bool = quick_load(HudTables.SLOT_REMIND)
+		HudTables.EVENT_REMIND_POSITION:
+			var _reminded: bool = quick_save(HudTables.SLOT_REMIND)
+		HudTables.EVENT_GIVE_UP:
+			# `0x0047BC60(player)`: every unit of the player is removed, and
+			# the turn goes on without them.
+			var _gone: int = world.clear_units_of(turn_player())
+			_deselect()
+			var _turn: TurnResult = end_turn()
+		HudTables.EVENT_NEXT_PLAYER:
+			var _ended: TurnResult = end_turn()
+		HudTables.EVENT_BRIEFING:
+			var _briefing: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_BRIEFING)
+		HudTables.EVENT_NEXT_UNIT:
+			var _next: int = cycle_friendly()
+		HudTables.EVENT_VISIBLE_ENEMY:
+			_jump_to_visible_enemy()
+		HudTables.EVENT_UNDO_TURN:
+			var _undone: bool = quick_load(HudTables.SLOT_UNDO_TURN)
+		HudTables.EVENT_UNDO_MISSION:
+			var _restarted: bool = quick_load(HudTables.SLOT_UNDO_MISSION)
+
+
+## A pad socket, or its key: one of the six commands (docs/29 section 1.1).
+## The gate runs here as well as on the pad, because the key has no socket.
+func _on_pad_command(number: int) -> void:
+	if not _command_available(number):
+		return
+	match number:
+		HudTables.COMMAND_DEFEND:
+			var _ticket: int = hold_fire()
+		HudTables.COMMAND_HEAL:
+			var _healed: Dictionary = heal_selected()
+		HudTables.COMMAND_STIMULANT:
+			_begin_command()
+			var _spent: bool = world.submit_stimulant(
+				SpendStimulantCommand.create(_selected))
+			_after_command("")
+		HudTables.COMMAND_WEAPON_MODE:
+			_begin_command()
+			var _toggled: bool = world.submit_toggle_weapon(
+				ToggleWeaponCommand.create(_selected))
+			_after_command("")
+		HudTables.COMMAND_REST:
+			_begin_command()
+			var _rested: bool = world.submit_stand_down(
+				StandDownCommand.create(_selected))
+			_after_command("")
+		HudTables.COMMAND_USE:
+			var _used: UseResult = use_in_front()
+
+
+## The interface as scalars, for `tour.gd`.
+func hud_view() -> Dictionary:
+	return _hud.view() if _hud != null else {}
+
+
+func ground_overlay() -> GroundSprites:
+	return _ground
+
+
+## A column button by its event, as a click on it (`tour.gd`'s `hud event`).
+func press_hud_event(number: int) -> bool:
+	if _hud == null or world == null:
+		return false
+	return _hud.columns.press_event(number)
+
+
+## A pad socket by its command, as a click on it (`hud pad`).
+func press_pad_command(number: int) -> bool:
+	if _hud == null or world == null:
+		return false
+	return _hud.pad.press(number)
+
+
+## A ring record by its number, as a click on its letter (`hud ring`).
+func choose_ring_record(record: int) -> bool:
+	if _hud == null or not _hud.ring.is_up() or not _may_command_now():
+		return false
+	if record == DirectionRing.CANCEL_RECORD:
+		_hud.ring.take_down()
+		_refresh_status("")
+		return true
+	if record < 0 or record >= DirectionRing.CANCEL_RECORD:
+		return false
+	_complete_ring(record)
+	return true
+
+
+## The radar's scale, stepped as a click on its screen (`hud radar`).
+func step_radar(direction: int) -> int:
+	if _hud == null:
+		return 0
+	return _hud.radar.step(direction)
+
+
+## `0x00477DF0` as `0x00453CF0` walks it: the next live unit of another
+## player that is fully visible, after *after* in slot order, or -1.
+func _visible_enemy_after(after: int) -> int:
+	if world == null:
+		return -1
+	var slots: PackedInt32Array = world.unit_slots()
+	var start: int = slots.find(after) + 1
+	for step: int in range(slots.size()):
+		var slot: int = slots[(start + step) % slots.size()]
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == turn_player():
+			continue
+		if DictRead.as_int(view["visibility"]) != AIOverlay.VISIBILITY_VISIBLE:
+			continue
+		return slot
+	return -1
+
+
+## *Jump to visible enemy* (event 14): the camera goes to the next visible
+## enemy, with the placement the cycle uses (`0x00453D42`).
+var _enemy_shown: int = -1
+func _jump_to_visible_enemy() -> void:
+	var slot: int = _visible_enemy_after(_enemy_shown)
+	if slot < 0:
+		return
+	_enemy_shown = slot
+	if _director != null:
+		var _flight: float = _director.cycle(world, slot)
 
 
 ## [ShotHost] over this scene: the bodies, the camera, the overlay, the

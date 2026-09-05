@@ -41,6 +41,14 @@ is worth knowing twice over: it names the writer responsible for the
 uninitialised `delta_y` documented in §2, and it means the *game's* sprite
 drawing is somewhere else entirely — see §2's transparency question.
 
+*(Narrowed 2026-09-05 by [`43` §3.4](43-battle-hud.md): "somewhere else
+entirely" was too strong. The **game's own blitter is inside this range** --
+`fcn.004475D0(lib, index, dst, pitch, x, y)`, with 79 callers across the
+interface, the ground overlay and the panel, and the two anchor readers
+`0x00446200`/`0x00446220` beside it. `aLibTools.cpp` holds the writer and the
+reader both; what the `__FILE__` partition bounded was the file, not the
+tool.)*
+
 The game still ships the authoring tool: `Incubation.exe -debugx` opens a
 developer menu with a **Librarytool** entry (`aLibTool.cpp`) that opens and
 saves these files. It does *not* open `texture.lib`.
@@ -157,6 +165,12 @@ GUI and screen-tool modules are the candidates — which belongs to the interfac
 work, the replacement-interface contract ([`29`](29-interface-contract.md)), not to this
 document. The better route may be the writer rather than the reader: LibMaker
 is in the binary and can be read.
+
+*(Settled 2026-09-05, [`43` §3.4](43-battle-hud.md): the drawing path was in
+**this** module after all. `fcn.004475D0` is the blitter, its inner loops skip
+source index 0 with `cmp al, 0` (`0x0044772D`) for every library, and the
+idiom sweep above missed it because the test is on `al` after a byte load, not
+`test r8, r8` on the loaded register. §6's two items are closed on it.)*
 
 `lib_extract.py` therefore writes a `tRNS` entry **only for libraries that
 actually contain index 0** and writes the rest fully opaque, rather than
@@ -296,25 +310,30 @@ python3 tools/font_render.py --check gog_incubation
 
 ## 6. Open questions
 
-1. Which of the 15 "anchor outside the sprite" libraries carry a deliberate
-   screen placement and which are simply more uninitialised memory that happens
-   to fall in a plausible range. The `buttons` / `mi` / `medal` clustering
-   around the edges of a 320 x 240 screen is suggestive but not proof, and no
-   shipped code path was traced that reads those particular values.
-   **UNVERIFIED.** Note this only affects placement convenience: the sprite
-   pixels themselves are unambiguous.
+**None.** Both items this section carried are closed by
+[`43` §3.4](43-battle-hud.md) (2026-09-05):
 
-2. **Which palette index the blitter keys as transparent for the 34 libraries
-   that contain no index 0** (the 33 `Libs/Items/*` and `options.LIB`). Index 0
-   is right for the other 24 and is what `lib_extract.py` uses there.
-   **UNVERIFIED**; the tool writes those libraries opaque rather than guessing.
+1. ~~Which of the 15 "anchor outside the sprite" libraries carry a deliberate
+   screen placement~~ — **closed: none of those are read.** The anchors
+   `+0x1C`/`+0x20` are read only by `0x00446200`/`0x00446220`, and only the
+   callers that subtract them before the blit consult them: the ground overlay
+   (`fcn.00417E70`), the unit panel's icons, the radar's marks and the cursor.
+   The button columns (`mi`) and the command pad (`ui`) blit at their slot's
+   top-left and never read theirs, and no shipped path reads `buttons`' or
+   `medal`'s either. The out-of-range values are uninitialised memory, as §2
+   suspected, and the pixels are unaffected.
 
-   §2 now bounds the search rather than merely reporting it: the drawing path
-   is **not** in `aLibTools.cpp` (that module is LibMaker, the writer), it is
-   **not** DirectDraw colour-keying (`aDDraw.cpp` locks the surface and has no
-   `SetColorKey` or `Blt`), and it is **not** written in the usual
-   `test r8, r8; jz` idiom (a module-attributed sweep of all of `.text` finds no
-   such loop in any of the library or DIB modules). What remains is a copy loop
-   in one of the GUI or screen-tool modules, which is **package F's** work
-   ([`29`](29-interface-contract.md)) — the interface is where sprites
-   are drawn. Doing it here would duplicate that.
+2. ~~**Which palette index the blitter keys as transparent for the 34 libraries
+   that contain no index 0**~~ — **closed: index 0, always.** The blitter is
+   `fcn.004475D0` in this very range, and its inner loops test `cmp al, 0`
+   (`0x0044772D`) on every source byte for every library; the 16-bit path then
+   maps through the remap table `fcn.00447BB0` sets. The 34 libraries with no
+   index 0 are therefore simply opaque, which is exactly how `lib_extract.py`
+   writes them. `hud_tables.py --check` pins the test and the arithmetic.
+
+   The search this entry once described — not `aLibTools.cpp`, which is
+   LibMaker the writer; not DirectDraw colour-keying, `aDDraw.cpp` having
+   neither `SetColorKey` nor `Blt`; not the `test r8, r8; jz` idiom — ended
+   where it was pointed: the copy loop is `fcn.004475D0`, reached from the
+   interface ([`43` §3.4](43-battle-hud.md)), which is where §2 expected a
+   drawing path to be.

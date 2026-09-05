@@ -108,11 +108,19 @@ GUI protocol, but their complete boundary is:
 | 9 | run the mode-dependent give-up/mission-end path, return 1 |
 | 10 | return BattleSystem command 2 |
 | 11 | open briefing/info when allowed, otherwise set its pending flag; return 0 |
-| 12 | finish the current player's interaction and advance; return 0 |
+| 12 | select the **next own unit with movement points** (`0x00471E00(1)`, walked with `0x00477D40`); return 0 |
 | 13 | toggle the map-view flag/cursor presentation; return 0 |
-| 14 | cycle the selected friendly unit (`0x00453CF0`); return 0 |
+| 14 | put the camera on the **next visible enemy** (`0x00453CF0`, walked with `0x00477DF0`); return 0 |
 | 15, 16 | return BattleSystem command 7, 8 |
 | anything else | return 9 |
+
+*(Corrected 2026-09-05 by [`43` §5.2](43-battle-hud.md): this table had 12 as
+"finish the current player's interaction and advance" and 14 as "cycle the
+selected friendly unit". `0x00453CF0` walks `0x00477DF0`, whose test is a live
+unit **not** of the current player with `+0x4F == 0` -- event 14 is *Jump to
+visible enemy*, a camera move -- and it is event 12's `0x00471E00(1)` that
+selects the next own unit, one **with points left**. Event 10 is *Next
+player*, the end of the turn. The captions `Txtmod_h` 30 and 37 say the same.)*
 
 Commands `1…8` are then owned by `0x0041DA20`: give-up/session handling,
 save/load UI and its three load slots. Those are application-level actions,
@@ -257,7 +265,9 @@ and a future renderer independent of the UI.
 
 None for the replacement interface. The original HUD view model and all 16
 `aMI.cpp` event arms are now pinned at their operation boundary; their pixel
-rendering and raw input encoding are intentionally outside the contract.
+rendering and raw input encoding are intentionally outside the contract --
+and are, since 2026-09-05, the subject of [`43`](43-battle-hud.md), which
+reads the layout the remake now draws.
 `PressDown`'s original values 1 and 2
 have no recoverable behavioural distinction ([`20` §5.4](20-lcl-language.md));
 they are layout metadata outside this contract. Likewise, the map event

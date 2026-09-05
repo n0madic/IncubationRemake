@@ -45,8 +45,9 @@ func run(h: TestHarness) -> void:
 
 ## An unknown slot still gets a result the map's own size.  It used to return
 ## one that *declared* the width and height but carried zero-length arrays, so
-## `game/highlight.gd` -- which walks width x height -- indexed past the end for
-## every cell of the map.
+## the ground overlay (`game/overlay/ground_sprites.gd`, once `highlight.gd`)
+## -- which walks width x height -- indexed past the end for every cell of
+## the map.
 func _check_empty_result_is_sized(h: TestHarness) -> void:
 	var world: World = TestFixtures.tiny_world()
 	var result: MoveMapResult = world.submit_move_query(

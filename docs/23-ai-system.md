@@ -364,11 +364,11 @@ cell = aGetCtrlMapElementPtr(x, y);   if (!cell) return 0xFF;   /* 0x0042F730 */
 me   = aGetUnitMapElementPtr(cell->unit /* +0x07 */);
 if (!me) return 0xFF;                                           /* 0x00477AE0 */
 
-best = NULL;  bestActPt = 0;  bestDist = 0xFFFFFFFF;
+best = NULL;  bestState = 0;  bestDist = 0xFFFFFFFF;
 for (c = ctrlMapBase(); i < ctrlMapCount(); c += 0x17, i++) {    /* 0x0042F650 / 0x0042F660 */
     match = 0;
     switch (mode & 0xFF) {
-      case 0: match = (c->actPt /* +0x00 */ >= 30 && c->actPt <= 34); break;
+      case 0: match = (c->state /* +0x00 */ >= 30 && c->state <= 34); break;
       case 1:
       case 2:
         if (c->unit == 0xFFFF) break;
@@ -384,8 +384,8 @@ for (c = ctrlMapBase(); i < ctrlMapCount(); c += 0x17, i++) {    /* 0x0042F650 /
     u = aGetUnitMapElementPtr(c->unit);
     if (unitInfo[u->type].species /* +0x79 */ not in {0, 1, 3}) continue;
     d = aGetDistance(c->x /* +0x09 */, c->y /* +0x0A */, x, y);
-    if (c->actPt >= bestActPt && d < bestDist) {
-        bestActPt = c->actPt;  bestDist = d;  best = c;
+    if (c->state >= bestState && d < bestDist) {     /* the state byte, +0x00 */
+        bestState = c->state;  bestDist = d;  best = c;
     }
 }
 if (!best) return 0xFF;
@@ -398,11 +398,19 @@ check would notice:
 * **Mode 2 has no visibility test and mode 1 does.** `endUnitTurn` uses mode 2,
   so a unit finishing its turn **turns towards an enemy it cannot see**. A fog
   test added "for consistency" would be wrong.
-* **The choice is a ratchet, not a minimum.** A candidate needs an action point
-  byte `>=` the best so far **and** a distance strictly less than the best so
-  far. Once a cell with action point 31 has been taken, a nearer cell with 0
-  cannot replace it; and a later candidate at the same distance loses to the
-  earlier one, because the distance test is strict.
+* **The choice is a ratchet, not a minimum.** A candidate needs a **state
+  byte** `>=` the best so far **and** a distance strictly less than the best so
+  far. Once a cell on band 33 has been taken, a nearer cell on 31 cannot
+  replace it; and a later candidate at the same distance loses to the earlier
+  one, because the distance test is strict. *(Corrected 2026-09-05: the
+  pseudocode above had labelled the byte the mode-0 test and the ratchet read
+  `actPt`, and both `inclib/combat.py` and `core/combat.gd` read the action
+  point `+0x0B` there. The decompile tests `*cell`, the state byte `+0x00`,
+  in both places -- which is what makes the ratchet mean anything: with the
+  target overlay up, the shooter turns to its **best band**, nearer or not.
+  Both twins now take the overlay as a parameter; the captures could not tell
+  the two readings apart, every cell reading 1 and every action point on an
+  enemy's cell 0. [`43` §4.4](43-battle-hud.md).)*
 * **Species 2 does not attract a turn.** The table read is
   `byte[0x51C099 + type * 0x7E]`, which is `SetUnitInfo + 0x79` — the species
   column ([`21` §5](21-info-lcl-schema.md)) — and the accepted values 0, 1 and
@@ -1088,7 +1096,10 @@ is what the highlight already expresses.
 
 Cell state **100** is a fourth movement overlay value, alongside 10 and 60. It
 survives the final sweep, so after `aWalkMoveMap` the grid holds the chosen
-path and nothing else.
+path and nothing else. Every move in the game leaves it behind — the two call
+sites of `aWalkMoveMap` are also the only two of `aExecuteMove`, one the
+computer's and one the player's — and **none of them shows it**:
+[`43` §3.1](43-battle-hud.md) traces what draws the overlay and when.
 
 `0x004308C0(dir, x, y, *ox, *oy, allowDiagonal)` is the shared stepper, and its
 direction encoding is fixed by the table at `0x00430A20`:

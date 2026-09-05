@@ -111,6 +111,21 @@ func mun_per_fight(weapon_id: int) -> int:
 	return _field(weapon_id, "mun_per_fight", 0)
 
 
+## `weapon[+0x42]` -- the `uweapons.LIB` element the unit panel draws for
+## this weapon (`0x00474354`, docs/43 section 5).
+func icon(weapon_id: int) -> int:
+	return _field(weapon_id, "icon", 0)
+
+
+## The weapon's own name, `weapon[+0x01]` -- what the unit panel writes beside
+## its frame. Empty for an id with no row.
+func name_of(weapon_id: int) -> String:
+	if not _rows.has(weapon_id):
+		return ""
+	var row: Dictionary = _rows[weapon_id]
+	return DictRead.as_string(row.get("name", ""))
+
+
 ## `weapon[+0x3C]` -- the movement points one shot costs.
 ##
 ## docs/23 section 4: the computer's fire routine refuses before it marks

@@ -209,17 +209,21 @@ const BOMB_FACING: int = 0xFF
 
 
 ## `0x0047A8E0`'s three modes. Only mode 2 is reached from `endUnitTurn`; mode
-## 0 looks for an action point in the multiplayer band and mode 1 is mode 2
-## **plus a visibility test**.
-const FACING_MODE_ACTION_POINT: int = 0
+## 0 looks for a cell whose **state** byte carries a target band -- the
+## interface's own mode, corrected 2026-09-05 (docs/43 section 4.4) -- and
+## mode 1 is mode 2 **plus a visibility test**.
+const FACING_MODE_TARGET_BAND: int = 0
 const FACING_MODE_VISIBLE_ENEMY: int = 1
 const FACING_MODE_ANY_ENEMY: int = 2
 ## What it answers when it finds nobody: the caller skips the write.
 const FACING_NONE: int = 0xFF
-## docs/10 section 4.6 -- the multiplayer victory points, which mode 0 looks
-## for.
-const FACING_ACTION_POINT_LOW: int = 30
-const FACING_ACTION_POINT_HIGH: int = 34
+## The cell state bytes mode 0 accepts -- the target overlay's hit bands
+## (docs/23 section 6). The **state** byte `cell[+0x00]`, not the action point.
+const FACING_STATE_LOW: int = 30
+const FACING_STATE_HIGH: int = 34
+## `cell[+0x00]` after `0x0042EE90`'s reset -- what every cell reads as when
+## the caller hands over no overlay.
+const FACING_STATE_PLAIN: int = 1
 ## docs/21 section 5 -- species 2 is an inanimate object.
 const SPECIES_OBJECT: int = 2
 ## docs/21 section 2 -- species 0 is human; only a human's pool raise plays the
@@ -274,36 +278,51 @@ const LAST_HUMAN_PLAYER: int = 4
 ##   `0x51C099 + type * 0x7E` is `SetUnitInfo`'s `+0x79` column, and the three
 ##   accepted values 0, 1 and 3 are human, alien and machine. Props do not
 ##   attract a turn;
-## * the winner is chosen by a **ratchet**: a candidate needs an action point
-##   byte `>=` the best so far **and** a distance strictly less than the best
-##   so far. Neither half is a plain minimum, and a later candidate at the same
-##   distance loses to the earlier one.
+## * mode 0 accepts a cell whose **state byte** is a target band 30..34;
+##   `states` is that byte per cell ([member AIContext.state]), and a caller
+##   without an overlay reads every cell as 1. Until 2026-09-05 this read the
+##   action point here and in the ratchet, on a mislabelled line of docs/23
+##   section 3.6's pseudocode; the decompile tests `*cell` in both places;
+## * the winner is chosen by a **ratchet**: a candidate needs a state byte
+##   `>=` the best so far **and** a distance strictly less than the best so
+##   far. Neither half is a plain minimum, and a later candidate at the same
+##   distance loses to the earlier one; with every cell at 1 the ratchet is
+##   the nearest candidate.
 ##
 ## The net-session gate (`0x0043B1F0`) suppresses the whole thing between two
 ## human players; it is false in a campaign, so it defaults to false the way it
 ## does everywhere else in `core`.
 static func end_turn_facing(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, x: int, y: int,
-		mode: int = FACING_MODE_ANY_ENEMY, net_gate: bool = false) -> int:
+		mode: int = FACING_MODE_ANY_ENEMY, net_gate: bool = false,
+		states: PackedByteArray = PackedByteArray()) -> int:
 	if not state.in_bounds(x, y):
 		return FACING_NONE
 	var slot: int = state.unit_at(state.index_of(x, y))
 	if slot == MapState.NO_UNIT or not units.has(slot):
 		return FACING_NONE
 	var me: UnitState = units[slot]
+	var has_states: bool = states.size() == state.cell_count()
+	if not states.is_empty() and not has_states:
+		# The Python twin raises here (`inclib/combat.py`), and a silent
+		# "no overlay" would be a different answer rather than a refusal:
+		# every cell would read as plain and the turn would go to the
+		# nearest candidate instead of the best band.
+		push_error("end_turn_facing: %d state bytes for %d cells"
+			% [states.size(), state.cell_count()])
 	var best_index: int = -1
-	var best_action_point: int = 0
+	var best_state: int = 0
 	var best_distance: int = 0x7FFFFFFF
 	for index: int in range(state.cell_count()):
 		var occupant_slot: int = state.unit_at(index)
 		var other: UnitState = null
 		if occupant_slot != MapState.NO_UNIT and units.has(occupant_slot):
 			other = units[occupant_slot]
+		var cell_state: int = states[index] if has_states else FACING_STATE_PLAIN
 		var matched: bool = false
-		if mode == FACING_MODE_ACTION_POINT:
-			var point: int = state.action_point_at(index)
-			matched = point >= FACING_ACTION_POINT_LOW \
-				and point <= FACING_ACTION_POINT_HIGH
+		if mode == FACING_MODE_TARGET_BAND:
+			matched = cell_state >= FACING_STATE_LOW \
+				and cell_state <= FACING_STATE_HIGH
 		elif other != null and other.player != me.player:
 			var both_human: bool = net_gate \
 				and other.player <= LAST_HUMAN_PLAYER \
@@ -323,9 +342,8 @@ static func end_turn_facing(state: MapState, units: Dictionary,
 		var cell_x: int = index % state.width
 		var cell_y: int = index / state.width
 		var gap: int = MoveMap.distance(cell_x, cell_y, x, y)
-		if state.action_point_at(index) >= best_action_point \
-				and gap < best_distance:
-			best_action_point = state.action_point_at(index)
+		if cell_state >= best_state and gap < best_distance:
+			best_state = cell_state
 			best_distance = gap
 			best_index = index
 	if best_index < 0:

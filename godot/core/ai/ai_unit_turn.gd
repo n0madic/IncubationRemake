@@ -34,7 +34,7 @@ static func end_unit_turn(ctx: AIContext, unit: UnitState,
 	if unit.hp == 0:
 		return false
 	var facing: int = Combat.end_turn_facing(ctx.map, ctx.units, ctx.utab,
-		unit.x, unit.y)
+		unit.x, unit.y, Combat.FACING_MODE_ANY_ENEMY, false, ctx.state)
 	if facing != Combat.FACING_NONE:
 		unit.facing = facing
 	unit.mp = 0
