@@ -374,6 +374,35 @@ func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
 		"%d live record(s) -- the dead record was found by its cell"
 			% main._fx.live())
 	main._sequences.skip()
+
+	# The computer's para bomb, through its event. The payload **is** the
+	# blast (`AISpecialPlayer` writes `AttackResult.to_dict()` into it), and
+	# until [method SliceMain._play_event_body] staged it the arm was sound
+	# only: the casualties the replay holds from its first frame had nothing
+	# to take them away and stood until the end of the turn.
+	var bomb_body: Node3D = Node3D.new()
+	bomb_body.name = "unit_%d" % victim
+	units.add_child(bomb_body)
+	var _held_by_the_bomb: int = main._mark_dying(killed.outcomes)
+	main._sequences = SequenceQueue.create(null)
+	var bomb: Dictionary = AIEvent.make("parabomb", shooter, ax, ay, 0, 0, 0,
+		"", killed.to_dict()).to_dict()
+	var bomb_hold: float = main._play_event_body(bomb, "parabomb")
+	h.check("kill.parabomb_event_is_shown",
+		bomb_hold > 0.0 and main._sequences.is_running(),
+		"the fuse's blast is a shot sequence of its own, %.3f s" % bomb_hold)
+	var bomb_frames: int = 0
+	while main._sequences.is_running() and bomb_frames < 400:
+		var _stepped: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		bomb_frames += 1
+		if units.get_node_or_null(NodePath("unit_%d" % victim)) == null:
+			break
+	h.check("kill.parabomb_releases_its_dead",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
+		"%d frame(s): the death stage is the only caller of `hide_now`"
+			% bomb_frames)
+	main._sequences.skip()
 	main._fx = null
 
 

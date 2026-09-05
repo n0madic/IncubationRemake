@@ -2270,6 +2270,22 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			DictRead.as_int(event["ty"]),
 			DictRead.as_string(event["note"]).to_int(),
 			AttackResult.from_dict(DictRead.as_dict(event["payload"])))
+	elif kind == "parabomb":
+		# `aAI_SpecialPlayerControl` `0x0040B2D0` is the fuse and nothing
+		# else: it calls `aExecuteBomb` `0x004702C0` and `aRemoveUnitElement`
+		# `0x004779C0`, and no sound routine at all. So the computer's para
+		# bomb is **one blast on its own cell**, shown by the presenter the
+		# walk's mine and the jump's landing already use, with
+		# `Combat.BOMB_WEAPON`'s own cues. The payload *is* the blast --
+		# `AISpecialPlayer` writes `AttackResult.to_dict()` straight into it.
+		#
+		# **And this is what takes its dead off the screen.** The casualties
+		# are held from the start of the replay ([method
+		# AIPlayback.pending_casualties]); the death stage of a shot is the
+		# only thing that calls [method UnitsView.hide_now], so an event that
+		# showed nothing left them standing to the end of the turn.
+		return _present_blast(slot, DictRead.as_int(event["x"]),
+			DictRead.as_int(event["y"]), DictRead.as_dict(event["payload"]))
 	elif kind == "reactions":
 		# The event's own cell is the **mover's**: `AIFire` and `AIPlan` emit
 		# this for the unit that drew the fire, and the reactors are in the
@@ -2735,18 +2751,13 @@ func _present_ai_event(event: Dictionary, kind: String) -> void:
 			else:
 				var _door: PackedInt32Array = _audio.play_cues(
 					_events.for_event_kind("open_door"), "ai")
-		"parabomb":
-			# The command runs two routines in order
-			# ([constant AudioEvents.EVENT_PHASES]) and this path has no
-			# picture to stage them against: the replay is sound only, so
-			# the fly-past's loop and one crump are started together. That
-			# is **not** the shape [SetpieceCamera] gives the same event --
-			# there the bomb run opens silent and plays one crump per
-			# landing (`0x00416364`) -- and it is not meant to be: with no
-			# pool to watch there is no landing to hear. Which two routines
-			# they are is the table's business, not this arm's.
-			var _both: PackedInt32Array = _audio.play_cues(
-				_events.for_event_kind(kind), "ai")
+		# **No `parabomb` arm.** It played the fly-past loop and one crump
+		# together, on the reading that the computer's fuse ran the script
+		# command's two routines ([constant AudioEvents.EVENT_PHASES]).
+		# It does not: `0x0040B2D0` calls `aExecuteBomb` and
+		# `aRemoveUnitElement` and nothing else, and the fly-past belongs to
+		# `ParaBombs` `0x00470790`, which only a script fires. The blast --
+		# sound, picture and death stage -- is [method _play_event_body]'s.
 		"fire_heat_blocked":
 			var _jam: PackedInt32Array = _audio.play_cues(
 				_events.for_event_kind("reaction_jam"), "ai")

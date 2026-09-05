@@ -41,9 +41,11 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 	# The barrier toggles; both directions run `aPlayLaserBarrier`.
 	"barrier_on": "barrier",
 	"barrier_off": "barrier",
-	# `ParaBombs` and the computer's own `parabomb` are **not** here: one
-	# command owns two routines, which is [constant EVENT_PHASES], not a
-	# rename.
+	# `ParaBombs` is **not** here: one command owns two routines, which is
+	# [constant EVENT_PHASES], not a rename. Neither is the computer's own
+	# `parabomb`, for the opposite reason -- its fuse `0x0040B2D0` plays no
+	# sound of its own at all; what is heard is the blast's, through the
+	# weapon (see [constant EVENT_PHASES]).
 	"warp": "warp",
 }
 
@@ -64,9 +66,14 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 ## The value type is a plain [Array] because a `PackedStringArray` is not a
 ## constant expression and the file would not parse; [method phases_of] is
 ## what hands out the packed form.
+## **Only the script command is here** (2026-09-05). The computer's own
+## `parabomb` event was too, on the reading that its fuse ran the same two
+## routines; `aAI_SpecialPlayerControl` `0x0040B2D0` calls `aExecuteBomb`
+## `0x004702C0` and `aRemoveUnitElement` `0x004779C0` and nothing else, so a
+## fuse that runs out is one blast with the bomb weapon's own cues, and the
+## fly-past is the script's alone.
 const EVENT_PHASES: Dictionary[String, Array] = {
 	"para_bombs": ["bomber", "para_bomb"],
-	"parabomb": ["bomber", "para_bomb"],
 }
 
 ## `Combat`'s overheat outcome names against the three

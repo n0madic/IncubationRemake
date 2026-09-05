@@ -118,6 +118,7 @@ UNIT_PANIC_SPRITE = 0x00418735                 # mov [esp+0x24], 54
 # between, and that redraw is before the walk.
 WALK_MOVE_MAP = 0x004305E0
 EXECUTE_MOVE = 0x0046E220
+EXECUTE_MOVE_SIZE = 3364
 HUD_REDRAW = 0x0041A980
 GROUND_OVERLAY = 0x00417E70
 AI_MOVE_MARK = 0x0040AB95                      # fcn.0040A750 -> aWalkMoveMap
@@ -135,6 +136,17 @@ NET_MOVE = 0x0047E3C1                          # fcn.0047DE90 -> fcn.00472D40
 GAME_MODE_READ = 0x0043B740                    # mov eax, [0x509EE8] & 0xFF
 GAME_MODE_GLOBAL = 0x00509EE8
 NETWORK_MODE = 2
+# The one function pointer in the picture (docs/43 section 3.1): `fcn.0047D600`
+# hands `fcn.0047C2C0` to `aAISystemControl`, which stores it and calls it
+# between its own commands. Nothing else in the image names either address.
+AI_SYSTEM_CONTROL = 0x00409940
+AI_SYSTEM_CONTROL_SIZE = 2619
+FRAME_ROUTINE = 0x0047C2C0
+FRAME_ROUTINE_PUSH = 0x0047D68F                # push fcn.0047C2C0
+CALLBACK_GLOBAL = 0x004FAE38
+CALLBACK_STORE = 0x00409956                    # mov [0x4FAE38], esi
+CALLBACK_CALLS = (0x00409971, 0x00409BE0, 0x00409C92)
+OVERLAY_CALL_SITES = (0x0041AD8B, 0x004567A5, 0x004568BD, 0x0047CC8E)
 ZOOM_GATE = 0x17700
 TICK_COUNTER = 0x00523068
 DRAW_COUNTER = 0x004FE264
@@ -791,6 +803,47 @@ def calls_between(pe: PEFile, start: int, end: int, target: int) -> list[int]:
             if pe.u8(va) == 0xE8 and call_target(pe, va) == target]
 
 
+def image_hits(pe: PEFile, needle: bytes) -> list[int]:
+    """Every virtual address in `.text` holding *needle*."""
+    base, size, raw, _rawsize = pe.section(".text")
+    body = pe.data[raw:raw + size]
+    out: list[int] = []
+    at = body.find(needle)
+    while at >= 0:
+        out.append(base + at)
+        at = body.find(needle, at + 1)
+    return out
+
+
+def direct_calls(pe: PEFile) -> list[tuple[int, int]]:
+    """Every `E8 rel32` in `.text` as `(site, target)`, targets in `.text`.
+
+    A linear byte sweep, so an immediate that happens to read as `E8` adds an
+    edge; it never hides one. Both readers below want that direction -- one
+    asks for an exact caller set and would fail loudly on a stray edge, the
+    other asks whether a target is **un**reachable, which extra edges can
+    only make harder to claim.
+    """
+    base, size, raw, _rawsize = pe.section(".text")
+    body = pe.data[raw:raw + size]
+    out: list[tuple[int, int]] = []
+    at = body.find(b"\xE8")
+    while at >= 0:
+        if at + 5 <= len(body):
+            site = base + at
+            target = site + 5 + int.from_bytes(body[at + 1:at + 5],
+                                               "little", signed=True)
+            if base <= target < base + size:
+                out.append((site, target))
+        at = body.find(b"\xE8", at + 1)
+    return out
+
+
+def all_calls_to(pe: PEFile, target: int) -> list[int]:
+    """Every `E8 rel32` in `.text` that reaches *target*."""
+    return [site for site, to in direct_calls(pe) if to == target]
+
+
 def check_path_marks(ck: Checker, pe: PEFile) -> None:
     """Cell state 100 is written by every move and drawn by none.
 
@@ -817,9 +870,12 @@ def check_path_marks(ck: Checker, pe: PEFile) -> None:
              [HUD_REDRAW, HUD_REDRAW, True, True],
              "the player's mark is painted once, and before aExecuteMove")
     ck.check("path.the_walk_never_reblits",
-             not calls_between(pe, EXECUTE_MOVE, EXECUTE_MOVE + 0x2000,
-                               GROUND_OVERLAY),
-             "aExecuteMove does not call the overlay pass itself")
+             not [site for site in all_calls_to(pe, GROUND_OVERLAY)
+                  if EXECUTE_MOVE <= site < EXECUTE_MOVE + EXECUTE_MOVE_SIZE]
+             and not [site for site in all_calls_to(pe, HUD_REDRAW)
+                      if EXECUTE_MOVE <= site
+                      < EXECUTE_MOVE + EXECUTE_MOVE_SIZE],
+             "no redraw is called from inside aExecuteMove")
     ck.equal("path.the_second_dispatcher_is_the_network",
              [call_target(pe, NET_MODE_READ), cmp_imm(pe, NET_MODE_CMP),
               pe.bytes_at(NET_MODE_CMP + 3, 2), call_target(pe, NET_DISPATCH),
@@ -827,6 +883,27 @@ def check_path_marks(ck: Checker, pe: PEFile) -> None:
              [GAME_MODE_READ, NETWORK_MODE, b"\x0F\x85", 0x0047DE90,
               0x00472D40],
              "fcn.0047DE90 runs only with the mode global at 2")
+    ck.equal("path.the_callback_is_handed_over_once",
+             [pe.bytes_at(FRAME_ROUTINE_PUSH, 5),
+              image_hits(pe, FRAME_ROUTINE.to_bytes(4, "little"))],
+             [b"\x68" + FRAME_ROUTINE.to_bytes(4, "little"),
+              [FRAME_ROUTINE_PUSH + 1]],
+             "fcn.0047C2C0's address is written once, as fcn.0047D600's push")
+    ck.equal("path.the_callback_lives_in_the_ai_system",
+             [pe.bytes_at(CALLBACK_STORE, 6),
+              [pe.bytes_at(va, 6) for va in CALLBACK_CALLS],
+              all(AI_SYSTEM_CONTROL <= va
+                  < AI_SYSTEM_CONTROL + AI_SYSTEM_CONTROL_SIZE
+                  for va in image_hits(
+                      pe, CALLBACK_GLOBAL.to_bytes(4, "little")))],
+             [b"\x89\x35" + CALLBACK_GLOBAL.to_bytes(4, "little"),
+              [b"\xFF\x15" + CALLBACK_GLOBAL.to_bytes(4, "little")] * 3,
+              True],
+             "stored and called only inside aAISystemControl")
+    ck.equal("path.the_overlay_has_four_callers",
+             sorted(all_calls_to(pe, GROUND_OVERLAY)),
+             sorted(OVERLAY_CALL_SITES),
+             "the HUD redraw, aMissionControl twice, and the frame routine")
     ck.check("path.the_mode_global",
              pe.bytes_at(GAME_MODE_READ, 5)
              == b"\xA1" + GAME_MODE_GLOBAL.to_bytes(4, "little"),

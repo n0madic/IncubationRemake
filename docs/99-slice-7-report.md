@@ -11,7 +11,7 @@ mission screen was three lines of text over a full-screen 3D view
 ## 1. What was read, and what it changed
 
 The reading is [`43`](43-battle-hud.md) and its checker is
-`tools/hud_tables.py --check gog_incubation` (**130 checks**, in the
+`tools/hud_tables.py --check gog_incubation` (**133 checks**, in the
 always-run block). Four things came out of it that no earlier document had:
 
 * **The move map is a sprite pass, not coloured terrain.** `fcn.00417E70`
@@ -82,7 +82,7 @@ and reports `hud`, `markers` and `visible_rect`.
 ```
 python3 tools/hud_tables.py --check gog_incubation      123/123
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
-bash godot/run_tests.sh                                  36 suites, 3667 checks, 0 failures
+bash godot/run_tests.sh                                  36 suites, 3669 checks, 0 failures
 ```
 
 The whole always-run block passes (41 commands, exit 0 each), `ai_gold`,
@@ -126,12 +126,11 @@ is not in the cache), the campaign map's band-coloured rings
 (`fcn.00418F40`, recorded in [`27` §2.6.3](27-campaign.md)), the two plate
 fonts, the options bar (its nine controls are the shell's), the campaign
 screens staying on `place_on_plate`, and D10, the target overlay's one
-transcribed arm (§5). Two were closed, and **one was added** by §6's second
-reading of the ground overlay — whether a blocking animation redraws it
-through the callback pointer `fcn.0047D600` stores, which is what decides
-whether the player's own marked path is on screen for one frame or for the
-length of the walk ([`43`](43-battle-hud.md) open question 1). The set stands
-at 33.
+transcribed arm (§5). Two were closed. §6's second reading of the ground
+overlay opened a third and closed it the same day — whether a blocking
+animation redraws the overlay through the callback pointer `fcn.0047D600`
+stores; it does not, and [`43` §3.1](43-battle-hud.md) carries the trace.
+The set stands at 32.
 
 Outside the plan and left as it was: the pale bracket under every body is
 the unit's **own ground object**, built from its type's model column
@@ -235,7 +234,8 @@ replay.
   one. Nothing draws the mark while a body walks either. The overlay
   produces no state 100 at all now, `GroundSprites.cell_states` has no path
   argument left, and the corrected chain is pinned by seven new `path.*`
-  checks in `hud_tables.py` ([`43` §3.1](43-battle-hud.md)).
+  checks in `hud_tables.py` — ten with the callback's trace
+  ([`43` §3.1](43-battle-hud.md)).
 * **A unit the computer was about to kill vanished as its turn opened and
   came back a second before it died.** Not a reading — a race in the replay.
   `core` decides the whole turn in one call, so the world has already lost
@@ -246,11 +246,24 @@ replay.
   the same extractor — which also found a payload the per-event code had no
   arm for at all: a **para bomb**'s payload *is* its blast, so anything it
   killed vanished at the start of the turn and never came back.
+* **And the para bomb had no picture either**, which the hold turned from a
+  disappearance into a body that stood to the end of the turn: the only
+  caller of [method UnitsView.hide_now] is a shot's death stage, and the
+  computer's `parabomb` arm was sound alone. It is a blast now, through the
+  presenter the walk's mine and the jump's landing already use. The sound it
+  played was wrong as well: `aAI_SpecialPlayerControl` `0x0040B2D0` calls
+  `aExecuteBomb` and `aRemoveUnitElement` and **no sound routine at all**,
+  so the fly-past and the crump it started belong to the script command
+  `ParaBombs` `0x00470790` and not to a fuse running out. `AudioEvents`
+  keeps the pair for the script and no longer claims it for the computer
+  ([`23` §9](23-ai-system.md)).
 
 `test_hud.gd` gained the two checks that would have caught the first and the
 second of these, and the digit gate was mutation-tested: removing it fails
 `hud.overlay.no_digit_without_points`. `test_game_ui.gd` gained four for the
-casualty hold, over all five payload shapes.
+casualty hold, over all five payload shapes, and two more for the para
+bomb's own event — that it is shown at all, and that its death stage is what
+takes its dead off the screen.
 
 **Both of the last two are driven**, on the cache's other missions rather
 than on `_C_140` — the sixth mission of the six is what the earlier passes
@@ -262,12 +275,11 @@ were missing:
   appear on selection is state 50's, on the selected unit's own cell.
 * `_C_132` kills a marine on its first computer turn: slot 46 reports
   `hp == 0` in the world and stands in `picture.dying` from the **first**
-  frame of the replay through all eighty frames the drive watched. Removing
-  the one call that holds it puts `dying` back to `[]` on that first frame
-  and fills it on the next — the defect, reproduced by mutation and gone
-  with the fix. What the drive did **not** see is the release: the replay
-  was still running when the watch ended, so `hide_now` taking the body away
-  in the death stage is checked by reading and by the suites, not on screen.
+  frame of the replay until the stage that kills it — `shot.pool`, 84 polls
+  in, where [method UnitsView.hide_now] takes it away and `dying` goes
+  empty. Removing the one call that holds it puts `dying` back to `[]` on
+  that first frame and fills it on the next — the defect, reproduced by
+  mutation and gone with the fix.
 
 The plate's own visibility is driven too, and was the third thing this pass
 found a way to reach: with `key 3`, `key 2` and `key 1` walking the camera
@@ -302,11 +314,5 @@ one seat end another's turn. It predates this slice.
   not by eye** — the Wine screenshot could not be taken (§3).
 * **The magnifier's page (D4) and the campaign map's band rings (D6)** are
   decisions with the reading named, not implementations.
-* **A para bomb's casualties linger to the end of the replay.** The hold of
-  §6 now covers them — before it they vanished as the computer's turn opened
-  — but nothing releases them: `_present_ai_event`'s `parabomb` arm is sound
-  only, with no blast staged and so no death stage to call
-  [method UnitsView.hide_now], and the bodies stand until the end-of-replay
-  `clear_dying`. Strictly better than the disappearance it replaced and
-  still wrong; closing it means staging the blast the way `warp` does
-  (`_present_blast`), which is a change of its own.
+* Nothing from §6 is left; the para bomb's own residue was closed the same
+  day (§6's last bullet).

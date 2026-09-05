@@ -55,7 +55,7 @@ python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 700 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
-python3 tools/hud_tables.py         --check gog_incubation    # 130 checks, docs/43
+python3 tools/hud_tables.py         --check gog_incubation    # 133 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 36 suites, 3667 checks
+bash   godot/run_tests.sh                                    # 36 suites, 3669 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -113,7 +113,7 @@ python3 tools/hud_tables.py      --emit-cases tests/fixtures/hud/cases_hud.json 
 #     the overlay's state map, the ring, the pad, the columns, the radar,
 #     the plate's measured pieces and twelve libraries' anchors -- a second
 #     reading of the binary, not a Python twin (docs/92 §5.1). It refuses to
-#     write when any of its 130 checks fails.
+#     write when any of its 133 checks fails.
 #   ^ the seventh native suite's fixture (`test_ctrl_map.gd`): the cells and
 #     the 80-slot object array the engine left after each of the four cell
 #     placers of docs/42 §9.1 and two round ticks, replayed by
@@ -909,7 +909,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`; package I, the battle interface's own layout, is `docs/43`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 
-Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **33 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `43`: 1, `60`: 0, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
+Every doc ends with an **Open questions** section — `21` gained an explicit empty one, having previously had none at all and so been skipped by the tally. **32 items remain open** across the set (`10`: 4, `11`: 3, `20`: 0, `21`: 0, `22`: 0, `23`: 0, `24`: 0, `25`: 2, `26`: 3, `27`: 2, `28`: 1, `29`: 0, `30`: 9, `31`: 1, `40`: 6, `41`: 0, `42`: 0, `43`: 0, `60`: 0, `70`: 1); the rest are marked closed in place, each with the evidence. Keep those sections honest — when you close an item, move it into the body with the evidence, and when you find a new unknown, add it.
 
 Most of what remains is open *in principle*, not merely untraced: no symbols (enumerator names, the `J` animation family), an authoring tool that never shipped (`class_code`, `type_code`, `EDITORDETAIL`), or all-zero fields that no amount of data can characterise. Before spending effort on one, read what the entry already says was tried.
 

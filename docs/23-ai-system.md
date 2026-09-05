@@ -1140,6 +1140,15 @@ Unit type 31 is **`Parabomb`**, and `Info.lcl` gives it `py = 252` and
 The HP decrement is the fuse for any longer-lived member of the same family;
 nothing shipped uses it.
 
+**The fuse has no presentation of its own** (2026-09-05). `0x0040B2D0`'s
+whole body is the sweep above: `aExecuteBomb`, `aRemoveUnitElement` and the
+unit-array accessor, and no sound or camera routine at all. The fly-past and
+the bomb run — `0x00415E90` then `0x004160F0`, [`28` §3](28-effects-and-sound.md)'s
+`bomber.wav` and `crush.wav` — belong to the **script** command `ParaBombs`
+`0x00470790` ([`20` §7.4](20-lcl-language.md)), which the computer never
+runs. What a fuse running out looks and sounds like is one `aExecuteBomb`
+blast, weapon 36's.
+
 Player 252 is [`10` §5.7](10-lev-mission-format.md)'s neutral-prop owner. This
 is the only routine that acts on it.
 

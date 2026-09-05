@@ -146,11 +146,30 @@ window the walk's own frames re-render. **Neither is visible in play**, which
 is what the original shows, so the remake draws nothing along a walk and
 `GroundSprites` produces no state 100.
 
-`hud_tables.py`'s seven `path.*` checks pin the readings above out of the
-bytes. What is **not** traced is an indirect call: `fcn.0047D600` stores
-`0x0047C2C0` as a callback at `0x0047D68F`, and `axt` cannot follow it, so
-whether a blocking animation reaches the overlay through a function pointer
-is unknown. The remake's rule rests on the observation, not on that.
+**The indirect call is traced too** (2026-09-05, closing this section's own
+first open question). `fcn.0047D600` pushes `0x0047C2C0` at `0x0047D68F` and
+hands it to `aAISystemControl` as its third argument; `fcn.00409940` stores
+that argument in `[0x004FAE38]` (`0x00409956`) and calls it at `0x00409971`,
+`0x00409BE0` and `0x00409C92`. Those four instructions are **every**
+reference to the global in the image, and `0x0047C2C0`'s own address is
+written exactly once — in that one push. The frame routine is therefore
+reachable only from inside the computer's turn, between its commands, and
+never from a blocking animation. `aExecuteMove` holds no indirect call at
+all, and over the binary's whole call graph (2246 nodes) the 754 functions
+reachable from it by direct calls include neither `fcn.00417E70` nor
+`fcn.0041A980` nor `fcn.0047C2C0`; the computer's mover `fcn.0040A750`
+reaches the overlay by no route (810 nodes), and the player's `fcn.00472D40`
+by exactly one — `0x00472D40` → `0x0041A980` → `0x00417E70`, the redraw
+before the walk.
+
+So the player's marked path is on screen for that single redraw and is gone
+with the walk's first rendered frame; the computer's is never drawn at all.
+`hud_tables.py`'s ten `path.*` checks pin the readings out of the bytes —
+the two movers' calls, the redraw's position, the network gate, the
+callback's confinement and the overlay's four call sites. The transitive
+half is a call-graph result rather than a byte check: the tool has no
+function boundaries, and an approximation that guessed them merged uncalled
+routines into their neighbours and produced a path that does not exist.
 
 Two gates sit in front of the table:
 
@@ -620,16 +639,11 @@ raised, the report.
 
 ## Open questions
 
-1. **Does anything redraw the ground overlay from inside a blocking
-   animation?** (opened 2026-09-05) `fcn.00417E70` has four direct call
-   sites and none is in `aExecuteMove`, but `fcn.0047D600` stores
-   `0x0047C2C0` — the routine that carries one of those four — as a callback
-   at `0x0047D68F`, and a call through that pointer is invisible to `axt`.
-   It matters only for §3.1's mark: if a walk's own frame loop reaches the
-   overlay indirectly, the player's marked path is on screen for the length
-   of the walk rather than for one frame. Play says it is not, which is what
-   the remake follows; settling it wants the callback's own callers, or a
-   `dbgcall` breakpoint on `0x00417E70` while a move runs.
+**None.** One was opened and closed on the same day: whether a blocking
+animation reaches the ground overlay through the callback pointer
+`fcn.0047D600` stores. It does not, and the evidence is in §3.1 — the
+pointer's only reader is `aAISystemControl`, and `aExecuteMove` reaches no
+redraw at all.
 
 Everything else this document could not settle by reading is a decision
 above, with the reading that would settle it named beside it:

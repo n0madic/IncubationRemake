@@ -363,7 +363,7 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **33 items are
+in place with the evidence that closed them rather than deleted. **32 items are
 still open:**
 
 | Spec | Open | What they are |
@@ -384,7 +384,7 @@ still open:**
 | [40](40-charisma-model-animation.md) | 6 | enumerator names, the `J` animation family, the four synthetically-validated reader branches, and whether the −Y authored forward (§5.4) is reconciled by a rotation or by a mirror |
 | [42](42-mission-presentation.md) | 0 | none. The two it carried for a day — the glow's lifecycle and what a ground-fire removal costs — are closed in §12 with their evidence (`97` §38), and the six before them too: the pose after detach is measured (bind on the next step, the last frame held before it), the clip length is the first movement's last key time, state 3 is the shield, the four set pieces are transcribed, the start slot's class is `KeyFramedAnimationInterface`, and the starter's type search never advances so the draw decides |
 | [41](41-sequence-player.md) | 0 | nothing open; the manifest, the lifecycle, the 30 fps clock and the trigger are pinned to the image, and speech/subtitles are closed **negatively** — the player carries no scheduler and no `Video/` directory holds a wave or a text file. Two residual items are *decisions*, not unknowns: the camera ids `9..19` belong to the 3D scene, and presentation/input live outside the module |
-| [43](43-battle-hud.md) | 1 | whether a blocking animation redraws the ground overlay through the callback pointer `fcn.0047D600` stores (§3.1) — it decides whether the player's marked path is on screen for one frame or for the whole walk, and play says neither is visible. The three other things reading could not settle are decisions with the reading that would settle them named — the magnifier's `Data` info page, the campaign map's band-coloured rings, the two plate fonts' handles |
+| [43](43-battle-hud.md) | 0 | none; one was opened and closed the same day — the callback pointer `fcn.0047D600` stores is read only by `aAISystemControl`, so no blocking animation redraws the ground overlay (§3.1). The three things reading could not settle are decisions with the reading that would settle them named — the magnifier's `Data` info page, the campaign map's band-coloured rings, the two plate fonts' handles |
 | [60](60-lib-sprites.md) | 0 | none, since 2026-09-05: the blitter is `fcn.004475D0` in the module's own range and keys index 0 for every library, and the anchors are read only by the callers that subtract them — the overlay, the panel, the radar, the cursor — never by the columns or the pad ([`43` §3.4](43-battle-hud.md)) |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 
