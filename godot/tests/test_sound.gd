@@ -53,6 +53,7 @@ func run(h: TestHarness) -> void:
 	h.equal("volume_ids", tables.volume_ids().size(),
 		DictRead.as_dict(document["volume_table"]).size())
 
+	_check_view_player(h, tables, document)
 	_check_attenuation(h, tables, document)
 	_check_scaled(h, tables, document)
 	_check_pool(h, tables, document)
@@ -501,6 +502,35 @@ func _check_catalogue(h: TestHarness, tables: AudioTables,
 	h.equal("para_bombs_no_third_phase",
 		events.for_event_phase("para_bombs", 2).size(), 0,
 		"a phase the event does not have is empty, not an error")
+
+
+## docs/43 section 7 -- `aViewPlayer.cpp`'s own two buffers.
+##
+## The point of this one is the **closure**: the screen is the single place
+## outside `aAnimations.cpp` and the id-96 set that names a wave, so a cue that
+## resolved to a name the conversion does not copy would leave the whole
+## computer turn silent with nothing failing.
+func _check_view_player(h: TestHarness, tables: AudioTables,
+		document: Dictionary) -> void:
+	var copied: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(document["document"])["waves"])
+	for name: String in [AudioTables.VIEW_PLAYER_PROGRESS,
+			AudioTables.VIEW_PLAYER_ALARM]:
+		var cue: Dictionary = tables.view_player_cue(name)
+		h.check("view_player_%s" % name, not cue.is_empty(),
+			"the sound document names the cue")
+		if cue.is_empty():
+			continue
+		var wave: String = DictRead.as_string(cue["wave"])
+		h.check("view_player_%s_copied" % name, copied.has(wave),
+			"%s is in the conversion's closure" % wave)
+		# Neither goes through the volume table: `aDirectSoundPlay(handle, 0)`
+		# takes the buffer and nothing else.
+		h.equal("view_player_%s_volume" % name,
+			DictRead.as_int(cue["volume_id"]), AudioTables.NO_SCALING)
+	h.check("view_player_unknown_is_empty",
+		tables.view_player_cue("no-such-buffer").is_empty(),
+		"an unnamed buffer is an empty cue, not a made-up one")
 
 
 ## The waves of a cue list, for a check that is about which sound and not

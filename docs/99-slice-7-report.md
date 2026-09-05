@@ -11,7 +11,7 @@ mission screen was three lines of text over a full-screen 3D view
 ## 1. What was read, and what it changed
 
 The reading is [`43`](43-battle-hud.md) and its checker is
-`tools/hud_tables.py --check gog_incubation` (**133 checks**, in the
+`tools/hud_tables.py --check gog_incubation` (**194 checks**, in the
 always-run block). Four things came out of it that no earlier document had:
 
 * **The move map is a sprite pass, not coloured terrain.** `fcn.00417E70`
@@ -80,14 +80,14 @@ and reports `hud`, `markers` and `visible_rect`.
 ## 3. Verification
 
 ```
-python3 tools/hud_tables.py --check gog_incubation      123/123
+python3 tools/hud_tables.py --check gog_incubation      194/194
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
-bash godot/run_tests.sh                                  36 suites, 3672 checks, 0 failures
+bash godot/run_tests.sh                                  36 suites, 3751 checks, 0 failures
 ```
 
 The whole always-run block passes (41 commands, exit 0 each), `ai_gold`,
 `turn_gold` and `combat_runtime` included after the facing correction.
-`test_hud.gd` (**282 checks**) holds `HudTables` to the fixture table for
+`test_hud.gd` (**329 checks**) holds `HudTables` to the fixture table for
 table, lays the plate out on 640x480, 853x480, 640x512 and 1120x480, pins the
 anchor sign, the cell-state translation, the live overlay with and without a
 hover, the ring, the radar's arithmetic, the selection rules, the state-byte
@@ -115,12 +115,12 @@ in this session has no screen-recording permission ("could not create image
 from display"), so no picture could be taken. `gog_incubation/` was read
 only. The blit tables were cross-checked against the binary's bytes instead
 (§1); the one thing a screenshot would have added is the two panel fonts'
-identity, which is decision D7 in [`43` §10](43-battle-hud.md).
+identity, which is decision D7 in [`43` §11](43-battle-hud.md).
 
 ## 4. Decisions
 
 Every reading the slice could not settle is a decision in
-[`43` §10](43-battle-hud.md) with the reading that would settle it named:
+[`43` §11](43-battle-hud.md) with the reading that would settle it named:
 the magnifier's info page (its button is present and dark — the `Data` bank
 is not in the cache), the campaign map's band-coloured rings
 (`fcn.00418F40`, recorded in [`27` §2.6.3](27-campaign.md)), the two plate
@@ -206,9 +206,10 @@ interface running after a surrender.
 
 ## 6. What playing it found (2026-09-05)
 
-Seven defects the suites and the driver both missed, reported from the
-screen. Six were the reading and not the code; the other is the one race in
-the replay.
+Nine defects the suites and the driver both missed, reported from the
+screen. Six were the reading and not the code, one is the one race in the
+replay, one is a whole screen this slice had not read at all (§6.1), and the
+ninth is a global the reading had not looked for (§6.2).
 
 * **The plate vanished in the eyes view.** §2 of [`43`](43-battle-hud.md) had
   the first-person view drawing no plate, from
@@ -298,11 +299,126 @@ clip **not** playing for the first two frames, then both together; putting
 the cycle start back where it was makes the clip play from the first frame
 over a body that has not moved.
 
+* **The computer's turn had no bar.** The eighth, from a shipped
+  screenshot: while the aliens move, the original shows twenty-two red
+  capsules across the panel and nothing else — no column icon, no pad face,
+  no unit panel, no radar mark, no turn number. That screen is
+  `aViewPlayer.cpp`'s, not the battle interface's: `aInitViewPlayer` loads
+  `plate_5.bmp` whole and `fcn.0047D090` copies the plate's **four strips**
+  back over the frame (34, 106, 340 and 340 rows, the interface's own three
+  heights), and `fcn.0047DA00` lights `acted · 21 / live + 1`
+  of the capsules — the fraction of that side's live units that have already
+  spent movement. Read, pinned by seventeen byte checks and built:
+  [`43` §7](43-battle-hud.md), `game/hud/turn_progress.gd`. Its wave
+  `progress.wav` was outside the cache's closure and is now inside it, with
+  the alert `alarm.wav` beside it (§8).
+
+The bar is driven: on `_C_129`, ending turns until the aliens act, the reply
+shows `hud.progress` at **1** on the first frame of the replay and 2, 3, 4 as
+they move, with `hud.panel_icons`, `hud.radar_marks` and `hud.turn_text`
+empty throughout and the interface back the moment the replay ends. The screenshot beside those
+numbers is the plate with one lit capsule, which is the shipped frame.
+
 The plate's own visibility is driven too, and was the third thing this pass
 found a way to reach: with `key 3`, `key 2` and `key 1` walking the camera
 through the map, unit and first-person views, every reply carries
 `hud.visible` true with the panel's twenty icons and the radar's marks still
 drawn. Nothing of §6 is left checked by reading alone.
+
+## 6.1 The two things §7 first left open, closed the same day
+
+**The bar now ticks.** The conversion's wave closure was the `aAnimations.cpp`
+call sites plus the id-96 interface set, and `aViewPlayer.cpp` is the one
+place outside both that names a wave — so the whole computer turn was silent.
+`sound.VIEW_PLAYER_CUES` carries both of the screen's waves, `wanted_waves`
+copies them, `tables/sound.json` gained a `view_player` block, and
+`CONVERTER_VERSION` went **0.17.0 → 0.18.0** in `tools/inclib/cache.py` and
+`godot/game/cache_loader.gd` with `user://caches` republished
+(`--campaign-maps`, all 92). Neither wave is scaled by the volume table: the
+original plays them with `aDirectSoundPlay(handle, 0)`, so both are
+`NO_SCALING`. `TurnProgress.refresh` answers whether the fill moved —
+`0x0047DA5F`'s own compare — `MissionHud.progress_stepped` carries it up and
+`Main._play_progress` plays it; the interface still makes no sound of its own.
+
+**And the screen the bar sits on was read.** It is not an overlay on the
+battle interface but a **whole game state**: `fcn.0044AAE0` runs it as one
+arm and `fcn.0047D600` hands it to `aAISystemControl` as the per-frame
+callback. Seven arms on `[0x005229D4]`, two text banks (`txtmod_g`, whose
+header names it `_ViewPlayers`, and `aMain`'s shared `txtmod_h`), twenty
+string fetches over eighteen sites. **The computer's turn is state 2 and its arm holds no
+`aPrintLibText` call at all** — every caption the function carries belongs to
+the hand-over, the end of the game or the network game, which the arm states
+2, 3 and 4 share leaves at once unless the mode is 2. So the remake printing
+nothing there is now measured rather than assumed. `alarm.wav` is the network
+"it is your turn" alert, gated on the game mode `[0x00509EE8]` being 2 and the
+turn counter being non-zero; it is copied and played by nothing. Two things
+this pass got wrong on the first reading and the byte checks caught: state 1
+is written at `0x0047DE3C`, not by the init, and **"Scay'Ger (Computer)" is a
+multi-player caption** — mode 1 takes its own arm at `0x0047C549`, leaves the
+player line empty and posts `WM_LBUTTONDOWN` to dismiss its own pause, which
+is why the shipped game shows no hand-over screen when it is played alone.
+Twenty-four new byte checks in `hud_tables.py`, one of which reads the eleven
+captions back out of the shipped banks so the ids cannot mean whatever a
+document says they mean. [`43` §7.3](43-battle-hud.md); docs/43's open questions are
+now **none**, and the set is at **32**.
+
+## 6.2 The ninth: the turn came back with nobody selected (2026-09-05)
+
+Reported from play: *in the original, when the computer's turn ends one of my
+soldiers is selected; here it is done by hand.* The reading is
+[`43` §4.5](43-battle-hud.md) and there is no hand-over routine in it — the
+selected slot is a global `[0x005162F0]` that **five** instructions in the
+whole image write, none of them on the turn's path, so the marine the player
+last had simply survives the computer's turn. The other half is
+`fcn.004721F0`'s first branch, which refills an empty selection from
+`fcn.00477CE0` before it even reads its mode: two passes over the unit array,
+the second dropping the movement test the first makes, which is why the
+original still has somebody selected at the end of a turn on which everything
+has moved.
+
+The remake drops the selection for the length of the replay — the watched
+screen has nothing to draw it on — and `SliceMain.resumed_slot` puts it back
+at both hand-back points: the same unit when the computer left it alive and
+able to move, and `SliceMain.first_friendly_slot` otherwise. It moves no
+camera, because the engine's hand-over calls none.
+
+Two things the first reading of this got wrong and the checks corrected:
+`0x00472CFB` **clears** the selection rather than setting one — it is
+`fcn.00472CC0`, the tail every player command runs, so three sites clear it
+and two set it — and `aInitBattleGround` is not the only caller that asks for
+a selection without a click: the `SelectNextUnit` script command is the other,
+and no shipped `.lcl` uses it. The count is a check of its own now: exactly
+seven instructions in `.text` name `0x005162F0`, which is what "the hand-over
+does not touch it" actually rests on.
+
+Fourteen new byte checks in `hud_tables.py` (four mutations bite), three in
+`test_hud.gd` against the fixture and fourteen in `test_game_ui.gd` over a
+real `_C_140` — including the two branches a drive cannot stage, the previous
+marine dead and the previous marine spent, and the second pass, driven by
+zeroing every marine's movement and requiring the answer to be a unit a click
+could **not** select.
+
+A second report the same day — *"in the original a unit is selected **and the
+camera centres on it**, both at level start and after the computer's turn"* —
+sent this back to the binary and found two more things. **The engine's select
+camera is traced after all**: every caller that gets a `1` back from
+`fcn.00471E00` calls `fcn.004533D0`, which re-applies the current view mode on
+the cell the select just wrote, and mode 2 — the one a mission opens in — is
+`fcn.004529D0(x, y, 8, 7, 0)`, the placement [`42` §2.3] had recorded for the
+cycle alone. So a selection moving the camera is the engine's behaviour, not a
+remake decision, and the hand-back now does it; [`42` §2.6] and
+[`97` §28.3](97-slice-5-report.md) are corrected in place. And **a mission
+opens with a unit selected**: `aInitBattleGround` `0x0041A738` asks for one and
+`0x0041A74D` puts the camera on it with `fcn.004510A0`. Which of that routine's
+two arms a *fresh* mission takes is the one thing here taken from the report
+rather than read — the state machine suggests the counter is still 0 at that
+point — and it is marked **UNVERIFIED** in [`43` §4.5](43-battle-hud.md) with
+the paragraph to correct if it turns out otherwise.
+
+Driven on `_C_140` with the replay gated rather than waited out: at load,
+`selected 2` with the camera target on its own cell (18, 1); marine 5 picked
+by hand; `replay True` with `selected -1` while the computer moved; and
+**`selected 5`** with the camera back on cell (17, 0) when it handed back.
 
 ## 7. What is left
 

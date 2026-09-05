@@ -151,6 +151,11 @@ var _status: Label = null
 var _hud: MissionHud = null
 var _strings: Localization = null
 var _selected: int = -1
+## What was selected when the player ended their turn, for [method
+## _resume_selection] to hand back. The engine keeps the selection in a global
+## across the whole computer turn (`[0x005162F0]`); this is that global,
+## carried over the window in which the remake has the interface down.
+var _selection_before_turn: int = -1
 var _cache_dir: String = ""
 var _geometry: Dictionary = {}
 var _textures: Dictionary = {}
@@ -1134,7 +1139,7 @@ func _sync_hud() -> void:
 ## The mission camera's projection for the window the screen has now.
 ##
 ## With the interface up the window is what the plate leaves: `(60, 34)` by
-## the canvas less 120 by the canvas less 140 (docs/43 section 7), and the
+## the canvas less 120 by the canvas less 140 (docs/43 section 8), and the
 ## focal length stays the original's 400 -- the one `_ftol(520 * 10 / 13)`
 ## gives -- however wide the window is, so a wider screen shows more world at
 ## the same scale rather than a larger picture. A campaign screen over the
@@ -1689,6 +1694,7 @@ func _clear_mission() -> void:
 	_last_query = null
 	world = null
 	_selected = -1
+	_selection_before_turn = -1
 	# `SaveCamera` puts six numbers here and `LoadCamera` takes them out
 	# (docs/42 section 2.4). A mission whose script saves without loading
 	# would otherwise hand its coordinates to the next mission's first
@@ -1804,6 +1810,12 @@ func _build(mission: String) -> void:
 	_director = CameraDirector.create(_rig)
 	_walk_cameras.clear()
 	_frame_units(world)
+	# **A mission opens with a unit selected**, as `aInitBattleGround` does:
+	# `0x0041A738` asks `fcn.00471E00(1)` for one, and on the first turn
+	# (`0x0041A74D`) puts the camera on it with `fcn.004510A0`'s `(8, 7, 0)` --
+	# which is what [method _frame_units] just did. See [method
+	# _resume_selection] for the same thing at the other end of a turn.
+	_resume_selection()
 
 	var environment: WorldEnvironment = WorldEnvironment.new()
 	var env: Environment = Environment.new()
@@ -1993,12 +2005,14 @@ func select_unit(slot: int, pass_friendlies: bool) -> MoveMapResult:
 	# arrows once (`0x00473920`), and they live their fifteen ticks.
 	_raise_marker()
 	var view: Dictionary = world.unit_view(slot)
-	# docs/29 section 3's command 2 is "execute the selected-unit/map **focus**
-	# path": selecting a unit puts the camera on it. The engine's own select
-	# camera is not traced (docs/42 section 2.6), so this is the remake's:
-	# [method CameraRig.focus_on] flies the target to the unit and keeps the
-	# eye's offset, so a selection re-centres the view without throwing away
-	# how the player had arranged it.
+	# **Selecting a unit puts the camera on it**, and that is the engine's,
+	# not the remake's: `fcn.004533D0` runs after every successful select and
+	# re-applies the *current view mode* on the new selection's cell -- mode 4
+	# `fcn.00453150`, mode 2 the `(8, 7, 0)` of docs/42 section 2.3, mode 1 the
+	# map view, mode 0 the map's centre (docs/43 section 4.5). Which of those
+	# the remake uses here is still its own: [method CameraRig.focus_on] flies
+	# the target to the unit and keeps the eye's offset, so a selection
+	# re-centres the view without throwing away how the player had arranged it.
 	if _director != null:
 		var _flight: float = _director.select(world, slot)
 	_refresh_status("slot %d %s: %d reachable, %d warp, mp %d, pf %s" % [
@@ -2090,7 +2104,9 @@ func _frame_units(mission_world: World) -> void:
 	# The placement is the engine's "on the unit" view, `(8, 7, 0)` from the
 	# current quadrant with the free-position search (docs/42 section 2.3),
 	# settled at once because there is no previous view to fly from.
-	var slot: int = focus_on_friendly(_rig, mission_world)
+	# **The engine's own first unit**, so the unit the view opens on and the
+	# unit the interface opens with selected are the same one.
+	var slot: int = first_friendly_slot(mission_world)
 	if slot < 0:
 		return
 	if _director != null:
@@ -2130,6 +2146,75 @@ static func next_friendly_slot(mission_world: World, after: int) -> int:
 			continue
 		return slot
 	return -1
+
+
+## The current player's first selectable unit -- `fcn.00477CE0`, the search
+## `0x004721F0` runs whenever the interface is asked to move the selection and
+## there is none.
+##
+## **Two passes, and the second one drops the movement test.** The first takes
+## the lowest-numbered live unit of the side that still has movement points;
+## only if the side has none does it take the lowest-numbered live one. That
+## second pass is why the original always has somebody selected even at the
+## end of a turn on which everything has moved. Returns -1 when the side has
+## no live unit at all, which is `0x00477CE0`'s own `0xFFFF`.
+static func first_friendly_slot(mission_world: World) -> int:
+	if mission_world == null:
+		return -1
+	for slot: int in mission_world.unit_slots():
+		if mission_world.may_select(slot):
+			return slot
+	for slot: int in mission_world.unit_slots():
+		if mission_world.may_command(slot):
+			return slot
+	return -1
+
+
+## Put the selection back when the turn comes back to the player.
+##
+## **The engine never drops the selection.** `[0x005162F0]` is written to
+## `0xFFFF` in exactly two places -- `fcn.004710E0`, once, from
+## `aInitBattleGround`, and the arm of `0x004721F0` that finds the side has no
+## unit at all -- and the hand-over is neither, so the marine the player last
+## had is still selected when the computer is done. Anything that asks to move
+## the selection while there is none takes [method first_friendly_slot]
+## instead (`0x004721F0`'s own first branch), so the interface is never left
+## with nothing.
+##
+## The remake clears the selection for the length of the replay, because the
+## watched screen has no panel, no pad and no overlay to show it on
+## (docs/43 section 7). This puts it back: the same unit if the computer left
+## it alive and able to move, and the side's first otherwise.
+##
+## **It moves the camera onto the unit**, through [method select_unit], which
+## is what a select does in the original: `fcn.004533D0` re-applies the current
+## view mode on the new selection's cell. [constant COMPAT_CAMERA_RETURNS] is
+## a different thing -- the remake's own camera return with *no* selection
+## behind it -- and stays off by default.
+func _resume_selection() -> void:
+	if world == null or world.game_control.mission_ended():
+		return
+	var slot: int = resumed_slot(world, _selection_before_turn)
+	_selection_before_turn = -1
+	if slot < 0:
+		return
+	var _map: MoveMapResult = select_unit(slot, false)
+
+
+## Which unit the turn comes back on: *previous* while the computer left it
+## alive and able to move -- the engine's global, which no hand-over writes --
+## and [method first_friendly_slot] otherwise, which is `0x004721F0`'s own
+## answer to an empty selection. -1 when the side has nobody at all.
+##
+## Static and pure so the rule can be checked against a real world without a
+## scene: it is the whole of the fix, and the branch that matters is the one a
+## drive cannot stage on demand -- the previously selected marine being dead.
+static func resumed_slot(mission_world: World, previous: int) -> int:
+	if mission_world == null:
+		return -1
+	if previous >= 0 and mission_world.may_select(previous):
+		return previous
+	return first_friendly_slot(mission_world)
 
 
 ## Put the camera pivot on the current player's first unit. Returns the slot,
@@ -2457,11 +2542,46 @@ func _refresh_status(extra: String = "") -> void:
 		var axes: Array[Vector2] = _radar_axes()
 		_hud.refresh(world, _selected, Callable(self, "_event_available"),
 			Callable(self, "_command_available"), axes[0], axes[1], _bands,
-			false)
+			false, _watching(world))
+		if _hud.progress_stepped():
+			_play_progress()
 		# **Inside the window, under the top band.** The developer line is a
 		# tool and not part of the plate, so it goes where the plate is not.
 		_status.position = Vector2(float(HudTables.WINDOW.position.x) + STATUS_GAP,
 			_hud.bottom() + STATUS_GAP)
+
+
+## One tick of `progress.wav` -- `0x0047DA6B`, the sound the original makes
+## every time the watched turn's bar moves a step.
+##
+## It is played straight rather than through [AudioEvents]: `aInitViewPlayer`
+## loads the wave into a buffer of its own and plays it with a bare zero, so
+## there is no volume-control id to look up and no event table entry to read.
+func _play_progress() -> void:
+	if _audio == null:
+		return
+	var cue: Dictionary = _audio.tables().view_player_cue(
+		AudioTables.VIEW_PLAYER_PROGRESS)
+	if cue.is_empty():
+		return
+	var _slot: int = _audio.play_cue(cue)
+
+
+## The watched side's turn, for the progress bar of docs/43 section 8: empty
+## while the seat is the player's own, and `{"player", "acted", "live"}` while
+## the computer's turn is being replayed.
+##
+## The seat is the **replay's**, not the world's: the computer's turn runs
+## inside [method World.submit_end_turn] and hands over again by itself, so
+## `world.turn.current_player` is back on the marines before the first alien
+## is drawn moving.
+func _watching(world: World) -> Dictionary:
+	if world == null or _playback == null or not _playback.is_running():
+		return {}
+	var player: int = _playback.player()
+	var counts: Vector2i = TurnProgress.tally(world, player,
+		_playback.played_slots(), _playback.pending_casualties())
+	return {"player": player, "acted": counts.x, "live": counts.y}
 
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
@@ -2664,6 +2784,10 @@ func _on_ai_step(event: Dictionary) -> float:
 			_units.hold_at({} as Dictionary[int, Vector2i])
 		_begin_command()
 		_after_command("")
+		# The turn is the player's again, so somebody of theirs is selected
+		# again -- `0x004721F0`'s own rule, and the reason the original never
+		# hands a turn back with an empty panel.
+		_resume_selection()
 		return 0.0
 	var kind: String = DictRead.as_string(event["kind"])
 	var to_x: int = DictRead.as_int(event["tx"])
@@ -4501,6 +4625,10 @@ func end_turn() -> TurnResult:
 	# UnitsView.hide_now] takes them out one at a time in the death stage.
 	if _playback.is_running():
 		var _doomed: int = _mark_dying_slots(_playback.pending_casualties())
+	# **Before the drop**, because the drop is the remake's and the engine has
+	# no such thing: `[0x005162F0]` carries the selection straight through the
+	# computer's turn. See [method _resume_selection].
+	_selection_before_turn = _selected
 	_deselect()
 	# A turn with nothing to replay hands back here rather than through
 	# [method _on_ai_step]; the same flag decides whether the view moves.
@@ -4508,6 +4636,8 @@ func end_turn() -> TurnResult:
 			and world.compat_flags.has(COMPAT_CAMERA_RETURNS):
 		var _back: int = focus_on_friendly(_rig, world)
 	_after_command("")
+	if not _playback.is_running():
+		_resume_selection()
 	# The turn's autosave, for *Undo last turn* (docs/43 section 5).
 	if _may_command_now():
 		_autosave(HudTables.SLOT_UNDO_TURN)

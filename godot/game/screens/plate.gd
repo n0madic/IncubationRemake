@@ -1,7 +1,7 @@
 class_name PlateLayout
 extends Control
 
-## `plate_5` as a layout rather than a picture -- docs/43 section 7.
+## `plate_5` as a layout rather than a picture -- docs/43 section 8.
 ##
 ## The shipped battle plate is 640x480 with a 520x340 hole, and the original
 ## draws it as four strips around that hole (`0x0041A980`). A modern window is

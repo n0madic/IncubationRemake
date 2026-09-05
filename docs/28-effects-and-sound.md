@@ -226,6 +226,15 @@ binding — where the two disagree, the call site above is the evidence.
 Id 96 — the one the authors labelled *gui-sounds* — is the only interface id,
 and it is the only place a non-`-1` id appears outside `aAnimations.cpp`.
 
+**The two `aViewPlayer.cpp` waves are in the conversion's closure** since
+2026-09-05 (`sound.VIEW_PLAYER_CUES`). `progress.wav` ticks whenever the
+watched turn's progress bar changes fill (`0x0047DA6B`); `alarm.wav` is the
+network game's "it is your turn" alert, played at `0x0047DE0B` only when the
+game mode `[0x00509EE8]` is 2 and the turn counter is not zero, so a mission
+played alone never reaches it. Both are copied — the closure is what the game
+can reach — and only the first is played by the remake
+([`43` §7.3](43-battle-hud.md)).
+
 ### 2.2 Case, and what a remake on a case-sensitive filesystem must do
 
 All 50 literal wave names resolve against the shipped `Waves/` directory

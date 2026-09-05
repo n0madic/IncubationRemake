@@ -39,6 +39,7 @@ func run(h: TestHarness) -> void:
 	_column_tables(h)
 	_radar_tables(h)
 	_frame_tables(h)
+	_progress_tables(h)
 	_plate_segments(h)
 	_layouts(h)
 	_anchor_sign(h)
@@ -51,6 +52,7 @@ func run(h: TestHarness) -> void:
 	_facing_state_byte(h)
 	_ray_round_trip(h)
 	_hud_live(h)
+	_progress_arithmetic(h)
 
 
 # --- the tables against the binary -------------------------------------------
@@ -266,6 +268,39 @@ func _radar_tables(h: TestHarness) -> void:
 	var lamps: Dictionary = DictRead.as_dict(radar["lamp_sprites"])
 	h.equal("radar.lamp_sprites", [HudTables.RADAR_LAMP_VISIBLE, HudTables.RADAR_LAMP_DETECTED],
 		[DictRead.as_int(lamps["enemy_visible"]), DictRead.as_int(lamps["enemy_detected"])])
+
+
+## docs/43 section 7 -- the watched player's bar, against the binary.
+func _progress_tables(h: TestHarness) -> void:
+	var bar: Dictionary = DictRead.as_dict(_cases["progress"])
+	var origin: Array = DictRead.as_array(bar["origin"])
+	h.equal("progress.origin", HudTables.PROGRESS_ORIGIN,
+		Vector2i(DictRead.as_int(origin[0]), DictRead.as_int(origin[1])))
+	h.equal("progress.segments", HudTables.PROGRESS_SEGMENTS,
+		DictRead.as_int(bar["segments"]))
+	h.equal("progress.steps", HudTables.PROGRESS_STEPS,
+		DictRead.as_int(bar["steps"]))
+	h.equal("progress.elements",
+		[HudTables.PROGRESS_LIT, HudTables.PROGRESS_DARK],
+		[DictRead.as_int(bar["lit_element"]),
+			DictRead.as_int(bar["dark_element"])])
+	h.equal("progress.library", HudTables.LIB_PROGRESS,
+		DictRead.as_string(bar["library"]))
+	h.equal("progress.wave", HudTables.PROGRESS_WAVE,
+		DictRead.as_string(bar["wave"]))
+	# The capsules are one element width apart, and the fixture carries both
+	# elements of the library the engine steps through.
+	var vp: Array = DictRead.as_array(
+		DictRead.as_dict(_cases["libs"])["vp"])
+	h.equal("progress.capsule_count", vp.size(), 2)
+	h.equal("progress.capsule_size",
+		[DictRead.as_int(DictRead.as_dict(vp[0])["w"]),
+			DictRead.as_int(DictRead.as_dict(vp[1])["w"])], [15, 15])
+	h.check("progress.bar_fits_the_panel",
+		HudTables.PROGRESS_ORIGIN.x
+		+ HudTables.PROGRESS_SEGMENTS * DictRead.as_int(
+			DictRead.as_dict(vp[0])["w"]) <= HudTables.PLATE_SIZE.x,
+		"twenty-two capsules of fifteen from x 59 stay on the plate")
 
 
 func _frame_tables(h: TestHarness) -> void:
@@ -810,6 +845,50 @@ func _hud_live(h: TestHarness) -> void:
 	h.check("hud.pad_lit_for_the_selection", hud.pad.is_enabled(1) and hud.pad.is_enabled(8), "")
 	h.check("hud.radar_marks_the_squad", hud.radar.mark_count() > 4,
 		"%d marks" % hud.radar.mark_count())
+	# docs/43 section 7 -- the watched player's screen replaces all of that.
+	var watching: Dictionary = {"player": UnitState.PLAYER_ALIEN,
+		"acted": 0, "live": 8}
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, watching)
+	h.equal("hud.progress.one_capsule_at_the_opening",
+		DictRead.as_int(hud.view()["progress"]), 1)
+	h.equal("hud.progress.the_panel_goes", hud.panel.icon_count(), 0)
+	h.equal("hud.progress.the_radar_goes",
+		DictRead.as_int(hud.view()["radar_marks"]), 0)
+	h.check("hud.progress.the_columns_and_the_pad_go",
+		not hud.columns.visible and not hud.pad.visible,
+		"the bare plate of aViewPlayer.cpp")
+	h.equal("hud.progress.the_turn_number_goes", hud.turn_text(), "",
+		"the top strip is painted back before anything is written on it")
+	# `0x0047DA5F`: an unchanged fill makes no sound, and neither does the
+	# opening frame of a turn nobody has moved on yet.
+	h.check("hud.progress.the_opening_is_silent", not hud.progress_stepped(),
+		"fill 0 against a bar that was reset with the seat")
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, watching)
+	h.check("hud.progress.a_still_bar_is_silent", not hud.progress_stepped(),
+		"the same fill twice ticks progress.wav once, not twice")
+	watching["acted"] = 4
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, watching)
+	h.equal("hud.progress.half_the_side_moved",
+		DictRead.as_int(hud.view()["progress"]), 11)
+	h.check("hud.progress.a_step_ticks", hud.progress_stepped(),
+		"the fill moved, so the bar ticks")
+	watching["acted"] = 8
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, watching)
+	h.equal("hud.progress.the_whole_bar_at_the_end",
+		DictRead.as_int(hud.view()["progress"]),
+		HudTables.PROGRESS_SEGMENTS)
+	# And it comes back when the seat does.
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false)
+	h.equal("hud.progress.the_bar_goes_with_the_turn",
+		DictRead.as_int(hud.view()["progress"]), 0)
+	h.check("hud.progress.the_seat_returning_is_silent",
+		not hud.progress_stepped(),
+		"putting the bar away is not a step of it")
+	h.equal("hud.progress.the_turn_number_returns", hud.turn_text(),
+		str(world.turn.turn))
+	h.check("hud.progress.the_interface_returns",
+		hud.columns.visible and hud.pad.visible and hud.panel.icon_count() > 0,
+		"%d icons" % hud.panel.icon_count())
 	var pressed: Array[int] = []
 	hud.command.connect(func(number: int) -> void: pressed.append(number))
 	h.check("hud.pad_press_raises_the_command", hud.pad.press(1) and pressed == [1], str(pressed))
@@ -860,3 +939,61 @@ static func _first_of_player(world: World, player: int) -> int:
 		if DictRead.as_int(view["player"]) == player and DictRead.as_int(view["hp"]) > 0:
 			return slot
 	return -1
+
+
+## `0x0047DA38`..`0x0047DA4C` and the two runs after it: the fill, and what the
+## replay counts it from.
+func _progress_arithmetic(h: TestHarness) -> void:
+	h.equal("progress.no_unit_is_no_fill", TurnProgress.fill_for(0, 0), 0)
+	h.equal("progress.none_acted_is_zero", TurnProgress.fill_for(0, 8), 0)
+	h.equal("progress.one_of_eight", TurnProgress.fill_for(1, 8), 2)
+	h.equal("progress.half_of_eight", TurnProgress.fill_for(4, 8), 10)
+	h.equal("progress.all_of_eight", TurnProgress.fill_for(8, 8), 21)
+	h.equal("progress.rounds_down", TurnProgress.fill_for(1, 22), 0)
+	# The lit run is `fill + 1`, so a side that has not moved still burns one.
+	var lit: Array[int] = []
+	for acted: int in [0, 1, 4, 8]:
+		lit.append(TurnProgress.fill_for(acted, 8) + 1)
+	h.equal("progress.lit_counts", lit, [1, 3, 11, 22])
+	# `played_in` is what the tally counts against: events `[0, index)`.
+	var events: Array[Dictionary] = [{"slot": 3}, {"slot": 5}, {"slot": 3}]
+	h.equal("progress.nothing_played_at_the_start",
+		AIPlayback.played_in(events, 0), PackedInt32Array())
+	h.equal("progress.one_played", AIPlayback.played_in(events, 1),
+		PackedInt32Array([3]))
+	h.equal("progress.each_slot_once", AIPlayback.played_in(events, 3),
+		PackedInt32Array([3, 5]))
+	# docs/43 section 4.5 -- the selection the hand-over gives back. The rule
+	# read out of the binary; `test_game_ui.gd` runs the search itself.
+	var selection: Dictionary = DictRead.as_dict(_cases["selection"])
+	h.check("selection.kept_over_the_hand_over",
+		DictRead.as_bool(selection["kept_over_the_hand_over"]),
+		"no hand-over routine writes 0x005162F0")
+	h.check("selection.empty_takes_the_first_unit",
+		DictRead.as_bool(selection["empty_takes_the_first_unit"])
+		and DictRead.as_bool(selection["second_pass_ignores_movement"]),
+		"and an empty one is refilled by fcn.00477CE0's two passes")
+	h.equal("selection.passes", DictRead.as_int(selection["first_unit_passes"]),
+		2)
+	# docs/43 section 7.3 -- the screen the bar is drawn on. The two facts a
+	# remake needs out of it: which state the computer's turn is, and that it
+	# is the one arm of the seven that prints nothing.
+	var screen: Dictionary = DictRead.as_dict(_cases["view_player"])
+	h.check("view_player.watched_turn_is_silent",
+		DictRead.as_bool(screen["prints_nothing"]),
+		"state %d prints nothing at all" %
+		DictRead.as_int(screen["watched_state"]))
+	h.equal("view_player.alarm_is_network_only",
+		DictRead.as_int(screen["alarm_mode"]), 2,
+		"the alert needs the network mode; a mission played alone is mode 1")
+	h.check("view_player.the_computer_is_named",
+		DictRead.as_string(DictRead.as_dict(screen["captions"])["132"])
+		!= "", "txtmod_h 132 names the computer on a multi-player hand-over")
+	# And the wave the remake plays is the screen's own, not the alert.
+	h.equal("view_player.wave_is_the_bars",
+		[HudTables.PROGRESS_WAVE, AudioTables.VIEW_PLAYER_PROGRESS],
+		[DictRead.as_string(DictRead.as_dict(_cases["progress"])["wave"]),
+			"progress"])
+	h.equal("view_player.alarm_wave",
+		DictRead.as_string(screen["alarm_wave"]), "alarm.wav",
+		"copied into the cache, played by nothing")

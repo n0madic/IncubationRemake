@@ -5807,6 +5807,13 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
              f"{len(wanted)} shipped waves in the closure")
     ck.equal("sound.wanted_missing", tuple(missing),
              (WEAPON_WAVE_FORMAT % c.weapon_waves[WEAPON_WAVE_TYPO[0]],))
+    # docs/43 section 7: the watched player's screen is the one place outside
+    # `aAnimations.cpp` and the id-96 set that names a wave, and a cache built
+    # before it existed was silent under the whole computer turn.
+    ck.check("sound.view_player_in_closure",
+             all(index.get(cue.wave.lower()) in wanted
+                 for cue in sound.VIEW_PLAYER_CUES.values()),
+             f"{len(sound.VIEW_PLAYER_CUES)} aViewPlayer waves are copied")
     ck.check("sound.wanted_excludes_dead",
              not (set(wanted) & {c.resolves(n) for n in sound.DEAD_WAVES}),
              f"none of the {len(sound.DEAD_WAVES)} unreferenced waves is wanted")
@@ -6363,6 +6370,12 @@ def sound_document(root: str) -> dict:
                    for name, entry in sorted(sound.IMPACT_CUES.items())},
         "interface": {"volume_id": sound.INTERFACE_VOLUME_ID,
                       "waves": [w.lower() for w in sound.INTERFACE_WAVES]},
+        # docs/43 section 7: the watched player's own two buffers.  Neither is
+        # scaled by the volume table, and only `progress` is reachable outside
+        # a network game.
+        "view_player": {name: cue(entry) for name, entry
+                        in sorted(sound.VIEW_PLAYER_CUES.items())},
+        "view_player_alarm_mode": sound.VIEW_PLAYER_ALARM_MODE,
         "compat_flags": list(sound.COMPAT_FLAGS),
         "weapon_missing_sound": sound.WEAPON_MISSING_SOUND,
         "music": {"format": sound.MUSIC_FORMAT,

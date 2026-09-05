@@ -280,11 +280,27 @@ const TEXT_NO_AMMO: int = 73
 ## The interface's own bank (`0x00470FE0` reads module 3).
 const BANK_INTERFACE: String = "Txtmod_h"
 
+# --- the watched player's progress bar ---------------------------------------
+
+## `aViewPlayer.cpp`'s bar (docs/43 section 7). `fcn.0047DA00` blits
+## twenty-two `vp.LIB` capsules on row 406 from x 59, one element width apart,
+## and lights `fill + 1` of them where `fill = acted * 21 / live`.
+const LIB_PROGRESS: String = "vp"
+const PROGRESS_ORIGIN: Vector2i = Vector2i(59, 406)
+const PROGRESS_SEGMENTS: int = 22
+const PROGRESS_STEPS: int = 21
+const PROGRESS_LIT: int = 0
+const PROGRESS_DARK: int = 1
+## `0x0047C03F` -- the click one step of the bar makes. **Not in the cache**:
+## the conversion's wave closure is the animation call sites plus the id-96
+## interface set, and this one is a literal in `aViewPlayer.cpp` alone.
+const PROGRESS_WAVE: String = "progress.wav"
+
 # --- the plate ---------------------------------------------------------------
 
 const PLATE: String = "plate_5"
 const PLATE_SIZE: Vector2i = Vector2i(640, 480)
-## How the plate is cut (docs/43 section 7). `fixed` pieces keep their pixel
+## How the plate is cut (docs/43 section 8). `fixed` pieces keep their pixel
 ## size and their corner; a `band` is tiled across the width the canvas has
 ## beyond 640; a `filler` is a slice of the column tiled down the height it
 ## has beyond 480. The fixture carries the same list from `hud_tables.py`.

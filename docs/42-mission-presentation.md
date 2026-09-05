@@ -281,6 +281,21 @@ Everything in §3–§8. The only thing that does **not** is the hand-over:
 routine, so the remake's "hand the view back to the first own unit"
 (`92` §7.5.3, marked UNVERIFIED there) is the remake's own and not the engine's.
 
+**And the selection — added 2026-09-05, and it was missing from this list.**
+Selecting a unit moves the camera onto it, without the player asking for a
+view. It is not a camera routine of its own: every caller that gets a `1` back
+from the select entry `fcn.00471E00` calls `fcn.004533D0`, which re-applies
+the *current* view mode on the cell the select just wrote — mode 0 the map's
+centre, mode 1 §2.4's map view, mode 2 `fcn.004529D0(x, y, 8, 7, 0)` and
+mode 4 `fcn.00453150`. So the `(8, 7, 0)` §2.3 records as *the cycle's*
+placement is the placement of **any** select while the game is in mode 2,
+which is the mode a mission opens in (`fcn.00452940`). Five sites re-apply it:
+`aInitBattleGround` `0x0041A754`, `SelectNextUnit` `0x0044127E`, the drop of a
+spent unit `0x0047149B`, the click `0x004717E8` and the direction ring
+`0x00471C42`. [`43` §4.5](43-battle-hud.md) reads the whole of it and
+`hud_tables.py` pins it; this closes the "the engine's own select camera is
+not traced" note the remake's `CameraDirector.select` carried.
+
 ---
 
 ## 3. A walk — `aExecuteMove` `0x0046E220`
@@ -1103,7 +1118,7 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | idle | 4 slots, random unit, once, snap to bind | ~~every body loops~~ `IdleScheduler`, replayed call for call (`97` §30) |
 | jump | parabola, trail, dust | ~~teleport on rebuild~~ `JumpSequence`, the player's and the computer's (`97` §31) |
 | selection | four arrow blobs | ~~cell highlight~~ the four arrows on a selection and after a command, ~~the highlight kept for the cells~~ the ground overlay of [`43` §3](43-battle-hud.md) -- the digits, the bands and the frames, blitted after the frame with no depth test, as the original draws them (2026-09-05; the green quads were the remake's invention) |
-| interface | `plate_5`, two columns, panel, pad, radar (`43`) | ~~three lines of text~~ the plate as an adaptive layout, the columns, the panel, the pad, the radar and the direction ring ([`43` §7](43-battle-hud.md), 2026-09-05) |
+| interface | `plate_5`, two columns, panel, pad, radar (`43`) | ~~three lines of text~~ the plate as an adaptive layout, the columns, the panel, the pad, the radar, the direction ring and the watched player's progress bar ([`43` §7](43-battle-hud.md) and §8, 2026-09-05) |
 | push, orbits | §7.2, §7.4–§7.5 | ~~sound only~~ `PushSequence`, `OrbitSequence` (`97` §31) |
 | own / AI door | flight, 10 frames, flight back | ~~instant swap + sound~~ the flight, the ten frames and the flight back, on the queue (`97` §32) |
 | set pieces | camera + effects | ~~7 animated without either, 18 instant~~ 18 animated with the camera and their creators, 8 instant (`97` §32, §33) |

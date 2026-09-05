@@ -22,6 +22,7 @@ const SHOWN_KINDS: Array[String] = ["move", "warp", "fire",
 	"fire_heat_blocked", "door", "parabomb", "reactions", "promote_order"]
 
 var _events: Array[Dictionary] = []
+var _player: int = -1
 var _index: int = 0
 var _elapsed: float = 0.0
 var _running: bool = false
@@ -37,6 +38,7 @@ var _hold: float = STEP_SECONDS
 ## empty dictionary when it ends.
 func play(result: AITurnResult, on_step: Callable) -> void:
 	_events = []
+	_player = result.player
 	for event: Dictionary in result.event_dicts():
 		if SHOWN_KINDS.has(DictRead.as_string(event["kind"])):
 			_events.append(event)
@@ -51,6 +53,13 @@ func play(result: AITurnResult, on_step: Callable) -> void:
 
 func is_running() -> bool:
 	return _running
+
+
+## The side whose turn is being replayed. The world's own seat is no answer:
+## the computer's turn hands over again inside the same call, so by the time
+## the first event is drawn the rotation has moved on (docs/23 section 2).
+func player() -> int:
+	return _player
 
 
 func remaining() -> int:
@@ -152,6 +161,27 @@ static func casualties_in(events: Array[Dictionary],
 				DictRead.as_dict(events[i].get("payload", {}))):
 			if not out.has(slot):
 				out.append(slot)
+	return out
+
+
+## The slots whose events the replay has already shown.
+##
+## The turn's progress bar (docs/43 section 7) counts the side's units that
+## have spent movement, and `core` spent all of it before the first frame --
+## so what the picture may count is what it has already played.
+func played_slots() -> PackedInt32Array:
+	return played_in(_events, _index)
+
+
+## The same, as a function of its arguments, so a suite can ask it directly.
+## Events `[0, from_index)` have been shown; the last of them is on screen.
+static func played_in(events: Array[Dictionary],
+		from_index: int) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for i: int in range(mini(from_index, events.size())):
+		var slot: int = DictRead.as_int(events[i].get("slot", -1))
+		if slot >= 0 and not out.has(slot):
+			out.append(slot)
 	return out
 
 

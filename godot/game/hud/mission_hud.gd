@@ -50,6 +50,11 @@ var pad: CommandPad = null
 var panel: UnitPanel = null
 var radar: Radar = null
 var ring: DirectionRing = null
+var progress: TurnProgress = null
+## Whether the last [method refresh] moved the bar. The interface makes no
+## sound of its own -- it says what happened and the caller decides -- so this
+## is read back rather than played here.
+var _progress_stepped: bool = false
 
 var _root: Control = null
 var _turn: Label = null
@@ -121,6 +126,11 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	ring = DirectionRing.new()
 	ring.name = "Ring"
 	_root.add_child(ring)
+
+	progress = TurnProgress.new()
+	progress.name = "Progress"
+	_root.add_child(progress)
+	progress.setup(art)
 
 	_result = Control.new()
 	_result.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -219,14 +229,34 @@ func _layout() -> void:
 ## `(command) -> bool`; *north* and *east* are the radar's camera directions;
 ## *bands* the selection's target overlay; *magnifier* whether event 13's
 ## mode is on.
+##
+## *watching* is empty while the seat is the player's own, and otherwise carries
+## the watched side's `acted` and `live` counts. It is the whole of docs/43
+## section 8: the original swaps this screen for the bare plate and one bar, so
+## the four widgets that carry the player's own state go with it.
 func refresh(world: World, selected: int, event_available: Callable,
 		command_available: Callable, north: Vector2, east: Vector2,
-		bands: Dictionary[Vector2i, int], magnifier: bool) -> void:
+		bands: Dictionary[Vector2i, int], magnifier: bool,
+		watching: Dictionary = {}) -> void:
+	var watched: bool = not watching.is_empty()
 	columns.refresh(event_available, magnifier)
 	pad.refresh(command_available)
-	panel.refresh(world, selected)
+	panel.refresh(world, -1 if watched else selected)
 	var player: int = world.turn.current_player if world != null else -1
 	radar.refresh(world, selected, north, east, bands, player)
+	columns.visible = not watched
+	pad.visible = not watched
+	radar.visible = not watched
+	# The turn goes with them: it is printed into the top strip by the
+	# interface's own redraw, and the watcher paints that strip back from the
+	# bare plate before anything else (docs/43 section 7).
+	_turn.visible = not watched
+	if watched:
+		_progress_stepped = progress.refresh(
+			DictRead.as_int(watching.get("acted", 0)),
+			DictRead.as_int(watching.get("live", 0)))
+	else:
+		_progress_stepped = progress.refresh(0, 0)
 	_show_turn(world)
 	_show_result(world)
 	_layout()
@@ -262,8 +292,15 @@ func _show_turn(world: World) -> void:
 	_turn.size = _turn.get_minimum_size()
 
 
+## The turn as it is on screen -- empty while the watcher's bare plate is up.
+## Whether the last refresh moved the progress bar -- one tick of
+## `progress.wav`, docs/43 section 7.1.
+func progress_stepped() -> bool:
+	return _progress_stepped
+
+
 func turn_text() -> String:
-	return _turn.text
+	return _turn.text if _turn.visible else ""
 
 
 ## The debriefing, in the game's own words -- docs/20 section 7 says whether
@@ -338,13 +375,17 @@ func view() -> Dictionary:
 		"canvas": [canvas.x, canvas.y],
 		"window": [win.position.x, win.position.y, win.size.x, win.size.y],
 		"visible": visible,
-		"turn_text": _turn.text,
+		"turn_text": turn_text(),
 		"hint": hint_text(),
 		"report": report_text(),
 		"radar_fields": radar.fields,
-		"radar_marks": radar.mark_count(),
+		# Zero while another player moves: the marks are still built, and
+		# the radar they are on is not on screen (docs/43 section 7).
+		"radar_marks": radar.mark_count() if radar.visible else 0,
 		"panel_texts": panel.texts(),
 		"panel_icons": panel.icon_count(),
 		"ring": ring.report(),
 		"ring_mode": ring.mode,
+		"progress": progress.lit_count(),
+		"progress_stepped": progress_stepped(),
 	}

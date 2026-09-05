@@ -682,6 +682,36 @@ INTERFACE_WAVES = ("click_1.wav", "click_2.wav", "click_5.wav",
 
 
 # --------------------------------------------------------------------------
+# 2.4  The watched player's screen -- aViewPlayer.cpp
+# --------------------------------------------------------------------------
+
+#: The two waves ``aInitViewPlayer`` ``0x0047BCF0`` loads into buffers of its
+#: own, at ``0x0047C03F`` and ``0x0047C08C``.  Neither goes through the volume
+#: table: they are played by ``aDirectSoundPlay`` with the buffer handle and a
+#: bare zero, so their id is :data:`NO_SCALING` rather than a load id -- see
+#: ``docs/43`` section 7.
+#:
+#: ``progress`` ticks whenever the turn bar's fill changes (``0x0047DA6B``, the
+#: gate two instructions above it being ``fill != the previous frame's``).
+#: ``alarm`` is the network game's "it is your turn" alert: it sounds at
+#: ``0x0047DE0B`` only when the game mode ``[0x00509EE8]`` is 2 **and** the turn
+#: counter is not zero, on the transition to the hand-over screen.  A remake
+#: with no network game reaches the first and not the second, and the wave is
+#: still copied -- the closure is what the *game* can reach, not what this
+#: remake happens to play.
+VIEW_PLAYER_CUES: dict[str, Cue] = {
+    "progress": Cue("progress.wav", NO_SCALING, False, 0x0047DA6B),
+    "alarm": Cue("alarm.wav", NO_SCALING, False, 0x0047DE0B),
+}
+
+#: The mode value ``alarm`` needs, out of ``fcn.0043B740`` ``[0x00509EE8]``.
+#: 1 is the single-player campaign; 2 is the network game, which the strings
+#: the same screen prints name aloud (``txtmod_h`` 193/194/197/199).  3 and 4
+#: are the two remaining multi-player forms and are **UNVERIFIED**.
+VIEW_PLAYER_ALARM_MODE = 2
+
+
+# --------------------------------------------------------------------------
 # 6  Ambience is a stub, and fourteen waves are dead
 # --------------------------------------------------------------------------
 
@@ -707,7 +737,8 @@ def wanted_waves(sites: Mapping[int, tuple[Optional[str], Optional[int]]],
 
     The closure is the tables' own: every literal wave of section 2, every
     weapon's own wave of section 3, the nine voice files, the five footstep
-    files and -- unless *interface* is cleared -- the id-96 click set.  A name
+    files, the watched player's two (:data:`VIEW_PLAYER_CUES`) and -- unless
+    *interface* is cleared -- the id-96 click set.  A name
     that does not resolve comes back in the second list rather than raising,
     because exactly one does and it is a recorded defect, not a corpus error.
     """
@@ -734,6 +765,8 @@ def wanted_waves(sites: Mapping[int, tuple[Optional[str], Optional[int]]],
     for _types, step in FOOTSTEP_ARMS.values():
         if step is not None:
             want(step.wave)
+    for cue in VIEW_PLAYER_CUES.values():
+        want(cue.wave)
     if interface:
         for name in INTERFACE_WAVES:
             want(name)

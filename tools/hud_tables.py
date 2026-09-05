@@ -440,13 +440,332 @@ LIB_COUNTS = {"mp": 55, "mp1": 22, "dir": 18, "sm": 12, "ui": 14, "mi": 37,
               "uweapons": 17, "uequip": 17, "inv": 12, "vp": 2}
 #: Libraries whose every element the fixture carries with its anchor.
 FIXTURE_LIBS = ("mp", "mp1", "dir", "sm", "ui", "mi", "uicons", "map",
-                "mouse", "inv", "umun", "uweapons")
+                "mouse", "inv", "umun", "uweapons", "vp")
 LIB_SHAPES = {("mp1", 0): (9, 9, 4, 4), ("dir", 0): (13, 15, 6, 7),
               ("dir", 4): (9, 11, 4, 5), ("mp", 43): (25, 16, 12, 5),
               ("mp", 48): (19, 19, 9, 9), ("mp", 51): (20, 20, 9, 9),
               ("mp", 49): (7, 9, 3, 3), ("mp", 50): (8, 8, 3, 3),
               ("mp", 54): (9, 9, 4, 4), ("mp", 0): (3, 5, 1, 2),
-              ("map", 0): (10, 10, 4, 4), ("sm", 0): (5, 5, 2, 2)}
+              ("map", 0): (10, 10, 4, 4), ("sm", 0): (5, 5, 2, 2),
+              ("vp", 0): (15, 34, 320, 259), ("vp", 1): (15, 34, 320, 259)}
+
+# --------------------------------------------------------------------------
+# aViewPlayer.cpp -- the watched player's progress bar
+# --------------------------------------------------------------------------
+
+#: ``aInitViewPlayer`` -- the engine names itself at 0x0047BD5A, "aInitViewPlayer
+#: (Render_BMP)".  It loads a whole-screen bitmap out of `plate_5.bmp`, `vp.lib`
+#: with its own `vp.pal` remap, and two waves.
+VIEW_PLAYER_INIT = (0x0047BCF0, 1176)
+VIEW_PLAYER_PLATE = 0x0047BDB1               # push "GUI\plate_5.bmp"
+VIEW_PLAYER_LIB_HANDLE = 0x0047BF43          # push &0x00522A04
+VIEW_PLAYER_LIB_NAME = 0x0047BF52            # push "vp.lib"
+VIEW_PLAYER_LIB = 0x00522A04
+VIEW_PLAYER_SOUND_NAME = 0x0047C03F          # push "progress.wav"
+VIEW_PLAYER_SOUND_HANDLE = 0x0047C04F        # push &0x00522E10
+VIEW_PLAYER_SOUND = 0x00522E10
+VIEW_PLAYER_PREV_RESET = 0x0047C0CF          # mov dword [0x00522E18], 0
+#: ``fcn.0047DA00`` -- the bar itself, and ``fcn.0047D090``'s last call.
+#: ``fcn.0047D090`` -- the frame the watcher draws: the plate's four strips
+#: out of the whole-screen bitmap, then the bar. Twice a frame, once per
+#: buffer (``0x0047D026``, ``0x0047D045``).
+VIEW_PLAYER_FRAME = 0x0047D090
+VIEW_PLAYER_FRAME_CALLS = (0x0047D026, 0x0047D045)
+STRIP_COPY = 0x0044B1B0
+VIEW_PLAYER_STRIPS = (0x0047D0C9, 0x0047D13A, 0x0047D1A8, 0x0047D240)
+#: The rows each strip copies: the top band, the bottom band and the two
+#: columns -- the same 34, 106 and 340 the interface's own redraw pushes.
+VIEW_PLAYER_STRIP_ROWS = ((0x0047D09E, 34), (0x0047D0DC, 106),
+                          (0x0047D14A, 340), (0x0047D1B8, 340))
+PROGRESS_BAR = (0x0047DA00, 444)
+PROGRESS_CALL = 0x0047D25A                   # call 0x0047DA00
+PROGRESS_PLAYER = 0x0047D24F                 # call 0x0043B2C0, the seat
+CURRENT_PLAYER_READ = 0x0043B2C0
+#: The two gates, in call order: the turn counter must have moved and the
+#: seat must not be a second human's.
+PROGRESS_GATE_TURN = 0x0047DA04
+PROGRESS_GATE_SEAT = 0x0047DA11
+TURN_COUNTER_READ = 0x0043B280
+SEAT_READ = 0x0043B240
+#: The two sweeps of the 200-unit array, both at stride 91.
+PROGRESS_LIVE_CALL = 0x0047DA23
+PROGRESS_ACTED_CALL = 0x0047DA2E
+COUNT_LIVE = 0x00477BF0
+COUNT_ACTED = 0x00477FB0
+UNIT_ARRAY_BASE = 0x00477AD0
+UNIT_STRIDE = 0x5B
+UNIT_COUNT = 0xC8
+ALLOWANCE = 0x00475160
+#: ``0x0047DA3E``: `shl ecx, 3 / sub ecx, eax / lea eax, [ecx+ecx*2]` is
+#: `acted * 21`, and `div edi` divides by the live count.
+PROGRESS_SCALE = 0x0047DA3E
+PROGRESS_DIV = 0x0047DA46
+#: ``0x00522E18`` -- last frame's fill, drawn when it is the larger.
+PROGRESS_PREV = 0x00522E18
+#: `mov esi, 0x3B` before the lit run and `add esi, 0x3B` before the dark one.
+PROGRESS_X = (0x0047DB05, 0x0047DB5C)
+PROGRESS_ORIGIN_X = 0x3B
+#: `push 0x196` -- the row both runs blit on.
+PROGRESS_Y = (0x0047DB1A, 0x0047DB88)
+PROGRESS_ORIGIN_Y = 0x196
+#: `cmp esi, 0x15` skips the dark run, `mov eax, 0x16` counts it.
+PROGRESS_LIMIT = 0x0047DB4B
+PROGRESS_SEGMENTS_AT = 0x0047DB57
+PROGRESS_SEGMENTS = 22
+PROGRESS_STEPS = 21
+#: `push 0` in the lit run, `push 1` in the dark one.
+PROGRESS_ELEMENTS = (0x0047DB25, 0x0047DB93)
+#: `fcn.004461C0(0, lib)` -- element 0's width, the step between capsules.
+PROGRESS_WIDTH_CALL = 0x0047DADC
+ELEMENT_WIDTH = 0x004461C0
+#: Both runs go through the same blitter, and neither reads an anchor.
+PROGRESS_BLITS = (0x0047DB32, 0x0047DB9D)
+
+# --------------------------------------------------------------------------
+# The selection is a global, and the interface refills it -- aUI.cpp
+# --------------------------------------------------------------------------
+
+#: `[0x005162F0]` is the selected unit's slot, `0xFFFF` for none, with its
+#: cell cached beside it in `[0x005162E8]`/`[0x005162EC]`.
+SELECTION = 0x005162F0
+SELECTION_X = 0x005162E8
+SELECTION_Y = 0x005162EC
+SELECTION_NONE = 0xFFFF
+#: Every write to it in the whole image.  **Three clear it and two set it**,
+#: and the hand-over is none of the five: the marine the player last had is
+#: still selected when the computer is done.
+SELECTION_WRITES = ((0x00471220, SELECTION_NONE), (0x00472320, SELECTION_NONE),
+                    (0x00472CFB, SELECTION_NONE),
+                    (0x0047225B, None), (0x00472305, None))
+#: The two that write the sentinel as an immediate.
+SELECTION_CLEAR_IMM = (0x00471220, 0x00472320)
+#: And the one that writes it out of `cx`: `fcn.00472CC0`, the tail every
+#: player command runs, which is docs/43 section 4's "a unit that has spent
+#: its movement is dropped after its command".  Its four callers are command
+#: executors of `aUI.cpp`, reached from the click, the ring and `0x00471310`
+#: -- and, for a remote player's command, from the network pump.
+SELECTION_CLEAR_REG = 0x00472CFB
+COMMAND_TAIL = 0x00472CC0
+COMMAND_TAIL_SENTINEL = 0x00472CF3            # mov ecx, 0xFFFF
+COMMAND_TAIL_CALLERS = (0x00472EF0, 0x0047305D, 0x00473233, 0x0047353E)
+#: The one that runs once, from `aInitBattleGround`.
+SELECTION_RESET = 0x004710E0
+SELECTION_RESET_CALL = 0x0041A54C
+BATTLE_GROUND_INIT = 0x00419D90
+#: Every instruction in `.text` that names the global at all: the five writes
+#: plus the two reads, `0x00471E49` and `0x004721F0`.  This is what "the
+#: hand-over does not touch it" actually rests on, so it is counted rather
+#: than taken from one `axt`.
+SELECTION_REFERENCES = 7
+
+#: `fcn.004721F0(mode)` -- move the selection.  Its **first** branch is the
+#: one that matters here: with nothing selected it takes `fcn.00477CE0`'s
+#: answer and returns, whatever the mode was.
+MOVE_SELECTION = 0x004721F0
+MOVE_SELECTION_EMPTY_TEST = 0x004721F0        # cmp word [0x5162F0], 0xFFFF
+MOVE_SELECTION_FIRST_CALL = 0x00472207        # call fcn.00477CE0
+FIRST_UNIT = 0x00477CE0
+#: The two searches the modes select: 0 is `fcn.00477EC0`, 1 `fcn.00477D40`.
+MOVE_SELECTION_MODES = ((0x004722AF, 0x00477EC0), (0x0047228B, 0x00477D40))
+#: `fcn.00471E00(mode)` is what every caller actually calls; it refuses before
+#: the first hand-over and when the side has no live unit.
+SELECT_ENTRY = 0x00471E00
+SELECT_ENTRY_GATES = ((0x00471E01, TURN_COUNTER_READ),
+                      (0x00471E1C, COUNT_LIVE))
+SELECT_ENTRY_CALL = 0x00471E34
+#: `aInitBattleGround`'s own call, mode 1, at the start of the first turn.
+#: With the `SelectNextUnit` script command below, the only two places that
+#: ask for a selection without a click.
+SELECT_AT_START = (0x0041A738, 1)
+#: `SelectNextUnit` -- `fcn.00441270` calls `fcn.00471E00(0)`, and the LCL
+#: dispatcher `fcn.00442DE0` reaches it from the command name at `0x0044438D`.
+#: **No shipped script uses it**, which is why it changes nothing here.
+SCRIPT_SELECT_NEXT = 0x00441270
+SCRIPT_SELECT_NEXT_MODE = 0x00441270          # push 0
+SCRIPT_SELECT_NEXT_CALL = 0x00441272
+SCRIPT_SELECT_NEXT_NAME = 0x004C53C0          # "SelectNextUnit"
+#: **The camera follows the selection**, and it is not a routine of its own:
+#: every caller that gets a `1` back from `fcn.00471E00` calls `fcn.004533D0`,
+#: which re-applies the *current view mode* on the selection's cell.  The cell
+#: comes from `fcn.00471F70`, which reads the **current** selection
+#: `[0x005162F8]` and its cell `[0x005162FC]`/`[0x00516300]` -- the word
+#: `fcn.00472990`, the select itself, writes.
+VIEW_APPLY = 0x004533D0
+VIEW_MODE = 0x005106D8
+#: `[0x005106D8]` -> the placer, out of the `sub/dec/dec` cascade at
+#: `0x004533D8`..`0x004533E0`.  Mode 2 is the default a mission opens in
+#: (`fcn.00452940`) and is `(8, 7, 0)` on the unit -- the same placement
+#: `docs/42` section 2.3 recorded for the cycle.
+VIEW_MODE_ARMS = ((0, 0x00453410), (1, 0x00451150), (2, 0x004510A0),
+                  (3, 0x00450F60))
+VIEW_UNIT_PLACE = 0x00451141                  # call fcn.004529D0(x, y, 8,7,0)
+VIEW_UNIT_ARGS = 0x00451131                   # push 7 / push 8
+VIEW_UNIT_MODE_WRITE = 0x00451137             # mov [0x005106D8], 2
+VIEW_DEFAULT_MODE = 0x00452940                # mov [0x005106D8], 2 at start
+VIEW_SELECTION_READ = 0x00471F74              # mov cx, word [0x005162F8]
+SELECTION_CURRENT = 0x005162F8
+SELECTION_CURRENT_CELL = (0x005162FC, 0x00516300)
+SELECT_CELL = 0x00472990                      # writes it at 0x00472A90
+SELECT_CELL_WRITE = 0x00472A90
+#: The callers that re-apply the view after a select: `aInitBattleGround`,
+#: `SelectNextUnit`, the click, the ring, and the drop of a spent unit.
+VIEW_APPLY_AFTER_SELECT = (0x0041A754, 0x0044127E, 0x0047149B, 0x004717E8,
+                           0x00471C42)
+
+#: `fcn.00477CE0`'s two passes: alive at `+0x16`, owned at `+0x45`, and -- in
+#: the first pass only -- movement left at `+0x15`.
+FIRST_UNIT_PASSES = (0x00477CF1, 0x00477D1E)
+FIRST_UNIT_MOVEMENT_TEST = 0x00477D00
+FIRST_UNIT_NONE = 0x00477D38
+
+# --------------------------------------------------------------------------
+# aViewPlayer.cpp -- the screen the whole watched turn is drawn on
+# --------------------------------------------------------------------------
+
+#: `fcn.0047C2C0` and its length.  It is not an overlay on the battle screen
+#: but a whole game state: `fcn.0044AAE0`'s dispatcher runs it as one arm, and
+#: `fcn.0047D600` hands it to `aAISystemControl` as the per-frame callback --
+#: which is why the computer's turn is drawn on it at all.
+VIEW_PLAYER_SCREEN = (0x0047C2C0, 3490)
+#: `[0x005229D4]`, the screen's own state; `fcn.0047DBD0` reads it and
+#: `fcn.0047DBC0` writes it.
+VIEW_PLAYER_STATE = 0x005229D4
+VIEW_PLAYER_STATE_READ = 0x0047DBD0
+VIEW_PLAYER_STATE_WRITE = 0x0047DBC0
+#: `jmp dword [eax*4 + 0x0047D064]`, and the seven arms it names.  States 2, 3
+#: and 4 share an entry point and separate later; 0 is the hand-over pause,
+#: 1 the end of the game, 5 and 6 the two network aborts.
+VIEW_PLAYER_STATE_SWITCH = 0x0047D064
+VIEW_PLAYER_STATE_DISPATCH = 0x0047C350
+VIEW_PLAYER_STATE_ARMS = (0x0047C3FF, 0x0047C357, 0x0047C985, 0x0047C985,
+                          0x0047C985, 0x0047C8AE, 0x0047C7E5)
+
+#: `aTxtSys.cpp`: set the active module, read it back, fetch a string, open a
+#: module into a slot.
+TEXT_MODULE_SET = 0x00471090
+TEXT_MODULE_GET = 0x004710D0
+TEXT_STRING = 0x00470FE0
+TEXT_MODULE_OPEN = 0x00470B50
+#: `(the site that pushes the slot, the slot, the site that pushes the name,
+#: the name)`.  Slot 0 is the ViewPlayer's own bank -- `_ViewPlayers`, whose
+#: header names Andreas Nitsche and October 1996 -- and slot 3 is `aMain`'s,
+#: the shared one every network caption comes out of.
+VIEW_PLAYER_MODULES = ((0x0047BCFD, 0, 0x0047BCF8, "txtmod_g.lcl"),
+                       (0x00449CB7, 3, 0x00449CB2, "txtmod_h.lcl"))
+
+#: Every string id the screen fetches, at the instruction that pushes it.
+#: Eighteen sites, twenty ids -- the three of state 1 share one call.
+VIEW_PLAYER_STRINGS = (
+    (0x0047C37A, 26), (0x0047C37E, 25), (0x0047C382, 22),
+    (0x0047C444, 20), (0x0047C469, 12), (0x0047C4D7, 132),
+    (0x0047C505, 128), (0x0047C6A1, 125), (0x0047C719, 2),
+    (0x0047C728, 128), (0x0047C812, 127), (0x0047C882, 125),
+    (0x0047C8DB, 128), (0x0047C8E9, 126), (0x0047C959, 125),
+    (0x0047CA11, 197), (0x0047CCB3, 128), (0x0047CCD5, 129),
+    (0x0047CD8C, 196), (0x0047CDD8, 193),
+)
+
+#: The two waves the screen owns, by the name the cache writes them under.
+VIEW_PLAYER_CUE_WAVE = "progress.wav"
+VIEW_PLAYER_ALARM_WAVE = "alarm.wav"
+
+#: The one call the three ids of state 1 share; each is pushed on its own arm
+#: and every arm jumps here.
+VIEW_PLAYER_STRING_JOIN = 0x0047C384
+
+#: What those ids say, read back out of the two shipped banks.  This is the
+#: half of the reading the disassembly cannot give: the ids alone would let a
+#: document invent any meaning for them.
+VIEW_PLAYER_CAPTIONS = {
+    ("Txtmod_g.lcl", 12): "Turn",
+    ("Txtmod_g.lcl", 20): "Prepare for battle",
+    ("Txtmod_g.lcl", 22): "End of game",
+    ("Txtmod_g.lcl", 25): "Mission completed",
+    ("Txtmod_g.lcl", 26): "Mission failed",
+    ("Txtmod_h.lcl", 125): "(Press left mouse button to continue)",
+    ("Txtmod_h.lcl", 126): "Game stopped by",
+    ("Txtmod_h.lcl", 127): "Game canceled by",
+    ("Txtmod_h.lcl", 128): "Player",
+    ("Txtmod_h.lcl", 129): "Waiting for",
+    ("Txtmod_h.lcl", 132): "Scay'Ger (Computer)",
+}
+
+#: The four `wsprintf` templates the screen composes its lines with.
+VIEW_PLAYER_FORMATS = ((0x0047C47B, "%s %d"), (0x0047C52E, "%s (%s %d)"),
+                       (0x0047C747, "%s (%s %d) - %s"),
+                       (0x0047CCEA, "%s %s (%s %d)"))
+
+#: `aPrintLibText`, and the two centred lines state 0 puts in the window.
+PRINT_TEXT = 0x00439610
+VIEW_PLAYER_LINES = ((0x0047C5E7, 320, 0x0047C5DB, 190),
+                     (0x0047C65B, 320, 0x0047C64F, 160))
+
+#: `fcn.0043B740` -- `[0x00509EE8] & 0xFF`, the game mode.  1 is the
+#: single-player campaign; 2 is the network game, which the captions of the
+#: same screen name aloud.  3 and 4 are the other two multi-player forms and
+#: are **UNVERIFIED**.
+GAME_MODE_READ = 0x0043B740
+GAME_MODE_WRITE = 0x0043B730
+GAME_MODE = 0x00509EE8
+NETWORK_MODE = 2
+
+#: `fcn.0047D600`, the step that decides whose turn it is next, and the two
+#: states it sets.  `push 2` immediately precedes `aAISystemControl`: **the
+#: computer's turn is state 2**, and `fcn.0047C2C0` is passed to it as the
+#: callback that draws every frame of it.
+NEXT_PLAYER = (0x0047D600, 986)
+WATCHED_STATE_PUSH = 0x0047D656
+WATCHED_STATE = 2
+AI_TURN_CALLBACK = 0x0047D68F
+AI_TURN_CALL = 0x0047D6A0
+AI_SYSTEM_CONTROL = 0x00409940
+
+#: `fcn.0047DC60`, the hand-over, and its three state writes.  Its case 1 is
+#: the one the alert hangs off.
+HANDOVER = (0x0047DC60, 533)
+HANDOVER_STATE_WRITES = ((0x0047DDD2, 3), (0x0047DDE5, 0), (0x0047DE3C, None))
+#: The alarm's gate, instruction by instruction: the mode is read and compared
+#: with 2, the turn counter must be non-zero, and only then is the second
+#: buffer handed to `aDirectSoundPlay`.
+ALARM_MODE_CALL = 0x0047DDEF
+ALARM_MODE_CMP = 0x0047DDF4
+ALARM_TURN_CALL = 0x0047DDF9
+ALARM_HANDLE_READ = 0x0047DE02
+ALARM_PLAY = 0x0047DE0B
+VIEW_PLAYER_ALARM_NAME = 0x0047C08C           # push "alarm.wav"
+VIEW_PLAYER_ALARM_HANDLE_PUSH = 0x0047C09C    # push &0x00522E14
+VIEW_PLAYER_ALARM = 0x00522E14
+DIRECT_SOUND_PLAY = 0x00436EF0
+#: And the bar's own play site, with the compare that silences an unchanged
+#: fill two instructions above it.
+PROGRESS_PLAY_GATE = 0x0047DA61
+PROGRESS_PLAY = 0x0047DA6B
+
+#: State 3 -- a network peer is moving -- draws the battle map and the ground
+#: overlay and prints one caption over it; state 2, the computer's turn, draws
+#: the map through `fcn.00417E10` and prints **nothing at all**.
+PEER_ARM = 0x0047CBD2
+PEER_OVERLAY_CALL = 0x0047CC8E
+PEER_CAPTION_ORIGIN = (0x0047CD61, 54)
+WATCHED_ARM = (0x0047CF5D, 0x0047D016)
+WATCHED_MAP_CALL = 0x0047D009
+BATTLE_MAP_DRAW = 0x00417E10
+NETWORK_ONLY_GATE = 0x0047C98D
+#: The peer caption's colour is picked per side out of a four-arm switch and
+#: packed as RGB565 -- red in bits 11..15, green in 5..10, blue in 0..4.
+CAPTION_COLOUR_SWITCH = 0x0047CD04
+CAPTION_COLOUR_TABLE = 0x0047D080
+CAPTION_COLOUR_ARMS = (0x0047CD0B, 0x0047CD33, 0x0047CD19, 0x0047CD25)
+CAPTION_COLOUR_PACK = 0x0047CD3F
+
+#: Mode 1 -- a mission played alone -- takes its own arm of state 0 and leaves
+#: the player's line empty, so neither *Player N* nor *Scay'Ger (Computer)* is
+#: reachable there; and the pause dismisses itself by posting `WM_LBUTTONDOWN`
+#: to the game's own window when there is exactly one player.
+SOLO_LINE_BRANCH = 0x0047C48E
+SOLO_LINE_ARM = 0x0047C549
+SOLO_DISMISS_PUSH = 0x0047C41F
+WM_LBUTTONDOWN = 0x201
 
 TEXT_BANKS = {"Txtmod_h.lcl": list(range(20, 47)) + list(range(50, 59))
               + [70, 71, 72, 73],
@@ -480,7 +799,7 @@ PLATE_FEATURES = {
     #: A hair inside the engine's clip (501, 389, 90, 66).
     "radar_screen": [503, 392, 89, 63],
 }
-#: How the remake cuts the plate (docs/43 §7).  A `fixed` piece keeps its
+#: How the remake cuts the plate (docs/43 §8).  A `fixed` piece keeps its
 #: pixel size at the canvas scale and sits at its corner; a `band` is drawn in
 #: place and tiled across whatever width the canvas has beyond 640; a `filler`
 #: is a slice of the column tiled down whatever height it has beyond 480.
@@ -552,6 +871,40 @@ def cmp_imm(pe: PEFile, va: int) -> int | None:
         if modrm & 0xC0 == 0x40:
             return pe.u32(va + 3)
     return None
+
+
+def u16(pe: PEFile, va: int) -> int:
+    """A little-endian word; `PEFile` reads bytes, dwords and doubles only."""
+    return int.from_bytes(pe.bytes_at(va, 2), "little")
+
+
+def mov_store_imm16(pe: PEFile, va: int) -> tuple[int, int] | None:
+    """`(target, immediate)` of `mov word [abs32], imm16` at *va*."""
+    if pe.bytes_at(va, 3) != b"\x66\xC7\x05":
+        return None
+    return pe.u32(va + 3), u16(pe, va + 7)
+
+
+def mov_store_word_target(pe: PEFile, va: int) -> int | None:
+    """Target of a 16-bit store to an absolute address at *va*.
+
+    Two encodings: `66 89 /r` with a `disp32` mod-r/m, and `66 A3 disp32`,
+    the short form the assembler picks for `ax`.
+    """
+    if pe.bytes_at(va, 2) == b"\x66\xA3":
+        return pe.u32(va + 2)
+    if pe.bytes_at(va, 2) != b"\x66\x89":
+        return None
+    if pe.u8(va + 2) & 0xC7 != 0x05:
+        return None
+    return pe.u32(va + 3)
+
+
+def branch_target(pe: PEFile, va: int) -> int | None:
+    """Target of a near `call` or `jmp` at *va*; both are rel32."""
+    if pe.u8(va) not in (0xE8, 0xE9):
+        return None
+    return (va + 5 + pe.i32(va + 1)) & 0xFFFFFFFF
 
 
 def push_imm(pe: PEFile, va: int) -> int | None:
@@ -908,6 +1261,372 @@ def check_path_marks(ck: Checker, pe: PEFile) -> None:
              pe.bytes_at(GAME_MODE_READ, 5)
              == b"\xA1" + GAME_MODE_GLOBAL.to_bytes(4, "little"),
              "fcn.0043B740 is a read of [0x00509EE8]")
+
+
+def check_progress(ck: Checker, pe: PEFile) -> None:
+    """The watched player's progress bar -- `aViewPlayer.cpp`, docs/43 section 7.
+
+    A computer or network turn is drawn by `fcn.0047C2C0`, and what it puts
+    over the plate is not the battle interface: `aInitViewPlayer` loads
+    `plate_5.bmp` whole and `fcn.0047D090` blits it back, so no column icon,
+    no pad face and no panel is on screen while another player moves. The one
+    thing drawn on top is `fcn.0047DA00`'s bar of twenty-two `vp.LIB` capsules.
+    """
+    ck.equal("progress.library",
+             [pe.cstring(push_imm(pe, VIEW_PLAYER_LIB_NAME) or 0, 32),
+              push_imm(pe, VIEW_PLAYER_LIB_HANDLE)],
+             ["vp.lib", VIEW_PLAYER_LIB],
+             "aInitViewPlayer loads vp.lib into 0x00522A04")
+    ck.check("progress.bare_plate",
+             pe.cstring(push_imm(pe, VIEW_PLAYER_PLATE) or 0, 32).lower()
+             == "gui\\plate_5.bmp",
+             "and the whole plate into a bitmap of its own -- the icons go")
+    ck.equal("progress.sound",
+             [pe.cstring(push_imm(pe, VIEW_PLAYER_SOUND_NAME) or 0, 32),
+              push_imm(pe, VIEW_PLAYER_SOUND_HANDLE)],
+             ["progress.wav", VIEW_PLAYER_SOUND],
+             "progress.wav is the click a step of the bar makes")
+    ck.equal("progress.four_strips",
+             [call_target(pe, va) for va in VIEW_PLAYER_STRIPS]
+             + [push_imm(pe, va) for va, _rows in VIEW_PLAYER_STRIP_ROWS],
+             [STRIP_COPY] * 4 + [rows for _va, rows in VIEW_PLAYER_STRIP_ROWS],
+             "top 34, bottom 106 and both columns 340 -- the whole interface")
+    ck.equal("progress.both_buffers",
+             [call_target(pe, va) for va in VIEW_PLAYER_FRAME_CALLS],
+             [VIEW_PLAYER_FRAME, VIEW_PLAYER_FRAME],
+             "the watcher's frame is drawn once per buffer")
+    ck.equal("progress.is_drawn_by_the_watcher",
+             [call_target(pe, PROGRESS_CALL), call_target(pe, PROGRESS_PLAYER)],
+             [PROGRESS_BAR[0], CURRENT_PLAYER_READ],
+             "fcn.0047D090 draws it for the seat 0x00509E32 names")
+    ck.equal("progress.gates",
+             [call_target(pe, PROGRESS_GATE_TURN),
+              call_target(pe, PROGRESS_GATE_SEAT)],
+             [TURN_COUNTER_READ, SEAT_READ],
+             "nothing before the first hand-over, nothing in a hot seat")
+    ck.equal("progress.counts",
+             [call_target(pe, PROGRESS_LIVE_CALL),
+              call_target(pe, PROGRESS_ACTED_CALL)],
+             [COUNT_LIVE, COUNT_ACTED],
+             "the live units divide, the ones that spent movement multiply")
+    ck.check("progress.live_predicate",
+             call_target(pe, COUNT_LIVE + 2) == UNIT_ARRAY_BASE
+             and contains(pe, COUNT_LIVE, 48, b"\x8A\x51\xD1")
+             and contains(pe, COUNT_LIVE, 48,
+                          b"\x83\xC1" + bytes([UNIT_STRIDE]))
+             and pe.u8(COUNT_LIVE + 0x10) == 0xB8
+             and pe.u32(COUNT_LIVE + 0x11) == UNIT_COUNT,
+             "alive at +0x16 and owned at +0x45, 200 records of 91 bytes")
+    ck.check("progress.acted_predicate",
+             call_target(pe, COUNT_ACTED + 4) == UNIT_ARRAY_BASE
+             and contains(pe, COUNT_ACTED, 68, b"\x8A\x46\x16")
+             and contains(pe, COUNT_ACTED, 68, b"\x8A\x46\x45")
+             and contains(pe, COUNT_ACTED, 68, b"\x8A\x4E\x15")
+             and any(call_target(pe, COUNT_ACTED + i) == ALLOWANCE
+                     for i in range(68))
+             and pe.u8(COUNT_ACTED + 0x11) == 0xBF
+             and pe.u32(COUNT_ACTED + 0x12) == UNIT_COUNT,
+             "and +0x15 read back against 0x00475160's own allowance")
+    ck.check("progress.scale",
+             pe.bytes_at(PROGRESS_SCALE, 8)
+             == b"\xC1\xE1\x03\x2B\xC8\x8D\x04\x49"
+             and pe.bytes_at(PROGRESS_DIV, 2) == b"\xF7\xF7",
+             "fill = acted * 21 / live, in that order")
+    ck.check("progress.previous",
+             mov_store_imm32(pe, VIEW_PLAYER_PREV_RESET) == 0
+             and pe.u32(VIEW_PLAYER_PREV_RESET + 2) == PROGRESS_PREV,
+             "0x00522E18 keeps last frame's fill and is zeroed once, at init")
+    ck.equal("progress.geometry",
+             [pe.u32(PROGRESS_X[0] + 1), pe.u8(PROGRESS_X[1] + 2),
+              push_imm(pe, PROGRESS_Y[0]), push_imm(pe, PROGRESS_Y[1])],
+             [PROGRESS_ORIGIN_X, PROGRESS_ORIGIN_X,
+              PROGRESS_ORIGIN_Y, PROGRESS_ORIGIN_Y],
+             "both runs start at x 59 and blit on row 406")
+    ck.equal("progress.segments",
+             [pe.u8(PROGRESS_LIMIT + 2), pe.u32(PROGRESS_SEGMENTS_AT + 1)],
+             [PROGRESS_SEGMENTS - 1, PROGRESS_SEGMENTS],
+             "twenty-two capsules; the dark run is skipped past twenty-one")
+    ck.equal("progress.elements",
+             [push_imm(pe, PROGRESS_ELEMENTS[0]),
+              push_imm(pe, PROGRESS_ELEMENTS[1])],
+             [0, 1], "element 0 is lit, element 1 is not")
+    ck.check("progress.step",
+             call_target(pe, PROGRESS_WIDTH_CALL) == ELEMENT_WIDTH
+             and pe.bytes_at(ELEMENT_WIDTH + 0x12, 4) == b"\x8B\x44\x91\x04",
+             "the step between capsules is element 0's own width")
+    ck.equal("progress.blits",
+             [call_target(pe, va) for va in PROGRESS_BLITS]
+             + [any(call_target(pe, PROGRESS_BAR[0] + i) == ANCHOR_X
+                    for i in range(PROGRESS_BAR[1]))],
+             [BLITTER, BLITTER, False],
+             "one blitter for both runs, and no anchor is subtracted")
+
+
+def check_selection(ck: Checker, pe: PEFile) -> None:
+    """The selection is a global the hand-over does not touch -- docs/43 §4.5.
+
+    Reported as "after the computer's turn the original has one of my soldiers
+    selected and the remake has nobody".  It is not a hand-over routine: the
+    slot lives in `[0x005162F0]`, nothing on the turn's path writes it, and
+    anything that asks to move a selection that is not there takes
+    `fcn.00477CE0`'s first unit instead.
+    """
+    ck.equal("selection.cleared_by_an_immediate",
+             [mov_store_imm16(pe, va) for va in SELECTION_CLEAR_IMM],
+             [(SELECTION, SELECTION_NONE)] * 2,
+             "init and the empty side write 0xFFFF straight in")
+    ck.check("selection.cleared_by_the_command_tail",
+             mov_store_word_target(pe, SELECTION_CLEAR_REG) == SELECTION
+             and pe.u8(COMMAND_TAIL_SENTINEL) == 0xB9
+             and pe.u32(COMMAND_TAIL_SENTINEL + 1) == SELECTION_NONE
+             and all(call_target(pe, va) == COMMAND_TAIL
+                     for va in COMMAND_TAIL_CALLERS),
+             "and fcn.00472CC0 clears it out of cx after every command")
+    ck.check("selection.is_a_word",
+             all(mov_store_word_target(pe, va) == SELECTION
+                 for va, want in SELECTION_WRITES if want is None),
+             "the two that select a unit write the same word")
+    va, size, _raw, _rawsize = pe.section(".text")
+    ck.equal("selection.reference_count",
+             pe.bytes_at(va, size).count(SELECTION.to_bytes(4, "little")),
+             SELECTION_REFERENCES,
+             "five writes and two reads name it, and nothing else does")
+    ck.check("selection.cleared_once_at_init",
+             call_target(pe, SELECTION_RESET_CALL) == SELECTION_RESET
+             and BATTLE_GROUND_INIT < SELECTION_RESET_CALL,
+             "aInitBattleGround is the only caller of the reset")
+    ck.check("selection.empty_takes_the_first",
+             pe.bytes_at(MOVE_SELECTION_EMPTY_TEST, 3) == b"\x66\x81\x3D"
+             and pe.u32(MOVE_SELECTION_EMPTY_TEST + 3) == SELECTION
+             and u16(pe, MOVE_SELECTION_EMPTY_TEST + 7) == SELECTION_NONE
+             and call_target(pe, MOVE_SELECTION_FIRST_CALL) == FIRST_UNIT,
+             "0x004721F0 fills an empty selection before it reads its mode")
+    ck.equal("selection.modes",
+             [call_target(pe, va) for va, _t in MOVE_SELECTION_MODES],
+             [t for _va, t in MOVE_SELECTION_MODES],
+             "mode 0 and mode 1 are the two searches")
+    ck.equal("selection.entry_gates",
+             [call_target(pe, va) for va, _t in SELECT_ENTRY_GATES],
+             [t for _va, t in SELECT_ENTRY_GATES],
+             "nothing before the first hand-over, nothing for an empty side")
+    ck.check("selection.entry_calls_the_mover",
+             call_target(pe, SELECT_ENTRY_CALL) == MOVE_SELECTION,
+             "fcn.00471E00 is the door every caller uses")
+    ck.check("selection.first_turn_asks_for_one",
+             push_imm(pe, SELECT_AT_START[0]) == SELECT_AT_START[1]
+             and call_target(pe, SELECT_AT_START[0] + 2) == SELECT_ENTRY,
+             "aInitBattleGround asks for a selection once, with mode 1")
+    ck.check("selection.the_script_can_ask_too",
+             push_imm(pe, SCRIPT_SELECT_NEXT_MODE) == 0
+             and call_target(pe, SCRIPT_SELECT_NEXT_CALL) == SELECT_ENTRY
+             and pe.cstring(SCRIPT_SELECT_NEXT_NAME, 32) == "SelectNextUnit",
+             "SelectNextUnit is the other caller, and no shipped script uses it")
+    ck.check("selection.first_unit_two_passes",
+             pe.bytes_at(FIRST_UNIT_PASSES[0], 3) == b"\x8A\x51\xD1"
+             and pe.bytes_at(FIRST_UNIT_PASSES[1], 3) == b"\x8A\x51\xD1"
+             and pe.bytes_at(FIRST_UNIT_MOVEMENT_TEST, 3) == b"\x8A\x51\xD0"
+             and not contains(pe, FIRST_UNIT_PASSES[1],
+                              FIRST_UNIT_NONE - FIRST_UNIT_PASSES[1],
+                              b"\x8A\x51\xD0"),
+             "the second pass drops the +0x15 test the first one makes")
+    ck.check("selection.first_unit_answers_none",
+             pe.u8(FIRST_UNIT_NONE) == 0xB8
+             and pe.u32(FIRST_UNIT_NONE + 1) == SELECTION_NONE,
+             "and a side with no live unit answers 0xFFFF")
+    ck.equal("selection.view_modes",
+             [pe.u32(VIEW_MODE + 0) if False else call_target(pe, va)
+              for _mode, va in
+              ((0, 0x004533EB), (1, 0x004533F6), (2, 0x00453401),
+               (3, 0x004533E0))],
+             [0x004510A0, 0x00451150, 0x00453410, 0x00450F60],
+             "0x004533D0's cascade names one placer per view mode")
+    ck.check("selection.view_reads_the_selection",
+             pe.u32(VIEW_APPLY + 1) == VIEW_MODE
+             and pe.u32(VIEW_SELECTION_READ + 3) == SELECTION_CURRENT
+             and mov_store_word_target(pe, SELECT_CELL_WRITE)
+             == SELECTION_CURRENT,
+             "the placers take the cell fcn.00472990 left, not a camera global")
+    ck.check("selection.the_camera_follows",
+             all(branch_target(pe, va) == VIEW_APPLY
+                 for va in VIEW_APPLY_AFTER_SELECT),
+             f"{len(VIEW_APPLY_AFTER_SELECT)} callers re-apply the view after "
+             "a select")
+    ck.equal("selection.unit_view_is_8_7_0",
+             [push_imm(pe, VIEW_UNIT_ARGS), push_imm(pe, VIEW_UNIT_ARGS + 2),
+              call_target(pe, VIEW_UNIT_PLACE),
+              mov_store_imm32(pe, VIEW_UNIT_MODE_WRITE),
+              mov_store_imm32(pe, VIEW_DEFAULT_MODE)],
+             [7, 8, 0x004529D0, 2, 2],
+             "mode 2 is the default and places the camera at (8, 7, 0)")
+    ck.check("selection.the_hand_over_leaves_it_alone",
+             not any(pe.u8(NEXT_PLAYER[0] + i) == 0xE8
+                     and call_target(pe, NEXT_PLAYER[0] + i)
+                     in (SELECT_ENTRY, MOVE_SELECTION, SELECTION_RESET,
+                         COMMAND_TAIL)
+                     for i in range(NEXT_PLAYER[1]))
+             and not any(pe.u8(HANDOVER[0] + i) == 0xE8
+                         and call_target(pe, HANDOVER[0] + i)
+                         in (SELECT_ENTRY, MOVE_SELECTION, SELECTION_RESET,
+                             COMMAND_TAIL)
+                         for i in range(HANDOVER[1])),
+             "neither fcn.0047D600 nor fcn.0047DC60 touches the selection")
+
+
+def check_view_player(ck: Checker, pe: PEFile, root: Path) -> None:
+    """The watched player's screen itself -- `aViewPlayer.cpp`, docs/43 §7.3.
+
+    The bar above is only what is drawn on top.  The screen under it is a
+    whole game state with seven arms, two text banks and one alert, and the
+    two facts a remake needs out of it are that **the computer's turn is state
+    2 and prints nothing at all**, and that `alarm.wav` is the network game's
+    "it is your turn" alert rather than anything a single-player mission can
+    reach.
+    """
+    ck.equal("view_player.state",
+             [pe.u32(VIEW_PLAYER_STATE_READ + 1),
+              pe.u32(VIEW_PLAYER_STATE_WRITE + 5)],
+             [VIEW_PLAYER_STATE, VIEW_PLAYER_STATE],
+             "0x005229D4 is read by fcn.0047DBD0 and written by fcn.0047DBC0")
+    ck.equal("view_player.state_arms",
+             [pe.u32(VIEW_PLAYER_STATE_SWITCH + 4 * i)
+              for i in range(len(VIEW_PLAYER_STATE_ARMS))],
+             list(VIEW_PLAYER_STATE_ARMS),
+             "seven arms, states 2..4 sharing an entry point")
+    ck.check("view_player.state_is_the_index",
+             pe.bytes_at(VIEW_PLAYER_STATE_DISPATCH, 3) == b"\xFF\x24\x85"
+             and pe.u32(VIEW_PLAYER_STATE_DISPATCH + 3)
+             == VIEW_PLAYER_STATE_SWITCH,
+             "the switch is indexed by the state and by nothing else")
+    ck.equal("view_player.modules",
+             [(push_imm(pe, slot_at),
+               pe.cstring(push_imm(pe, name_at) or 0, 32).lower())
+              for slot_at, _slot, name_at, _name in VIEW_PLAYER_MODULES],
+             [(slot, name) for _s, slot, _n, name in VIEW_PLAYER_MODULES],
+             "txtmod_g into slot 0, txtmod_h into slot 3")
+    ck.check("view_player.modules_are_opened",
+             all(any(pe.u8(site + i) == 0xE8
+                     and call_target(pe, site + i) == TEXT_MODULE_OPEN
+                     for i in range(2, 24))
+                 for site, _slot, _n, _name in VIEW_PLAYER_MODULES),
+             "both slot pushes are arguments to aTxtSys's own open")
+    ck.equal("view_player.string_ids",
+             [push_imm(pe, va) for va, _id in VIEW_PLAYER_STRINGS],
+             [ident for _va, ident in VIEW_PLAYER_STRINGS],
+             f"{len(VIEW_PLAYER_STRINGS)} caption ids at their own pushes")
+    reaches = []
+    for va, _ident in VIEW_PLAYER_STRINGS:
+        after = va + (2 if pe.u8(va) == 0x6A else 5)
+        reaches.append(
+            (pe.u8(after) == 0xE8 and call_target(pe, after) == TEXT_STRING)
+            or (pe.u8(after) == 0xEB
+                and after + 2 + signed8(pe.u8(after + 1))
+                == VIEW_PLAYER_STRING_JOIN))
+    ck.check("view_player.strings_are_fetched", all(reaches),
+             "each id is the argument of aTxtSys's string fetch")
+    ck.equal("view_player.formats",
+             [pe.cstring(push_imm(pe, va) or 0, 32)
+              for va, _text in VIEW_PLAYER_FORMATS],
+             [text for _va, text in VIEW_PLAYER_FORMATS],
+             "the four wsprintf templates the lines are composed with")
+    ck.check("view_player.solo_prints_no_player",
+             pe.bytes_at(SOLO_LINE_BRANCH, 2) == b"\x0F\x84"
+             and SOLO_LINE_BRANCH + 6 + pe.u32(SOLO_LINE_BRANCH + 2)
+             == SOLO_LINE_ARM
+             and push_imm(pe, SOLO_DISMISS_PUSH) == WM_LBUTTONDOWN,
+             "mode 1 takes its own arm and the pause clicks itself away")
+    ck.equal("view_player.centred_lines",
+             [(push_imm(pe, x_at), push_imm(pe, y_at))
+              for x_at, _x, y_at, _y in VIEW_PLAYER_LINES],
+             [(x, y) for _xa, x, _ya, y in VIEW_PLAYER_LINES],
+             "state 0 centres its two lines at x 320, rows 190 and 160")
+
+    # ---- the computer's turn is state 2, and it is silent ----------------
+    ck.equal("view_player.watched_state",
+             [push_imm(pe, WATCHED_STATE_PUSH),
+              call_target(pe, WATCHED_STATE_PUSH + 2)],
+             [WATCHED_STATE, VIEW_PLAYER_STATE_WRITE],
+             "fcn.0047D600 sets state 2 before it runs the computer's turn")
+    ck.equal("view_player.frame_is_the_ai_callback",
+             [push_imm(pe, AI_TURN_CALLBACK), call_target(pe, AI_TURN_CALL)],
+             [VIEW_PLAYER_SCREEN[0], AI_SYSTEM_CONTROL],
+             "and hands this very screen to aAISystemControl as the callback")
+    ck.check("view_player.watched_turn_draws_the_map",
+             call_target(pe, WATCHED_MAP_CALL) == BATTLE_MAP_DRAW,
+             "state 2 still draws the battle map under the bare plate")
+    span = WATCHED_ARM[1] - WATCHED_ARM[0]
+    ck.check("view_player.watched_turn_prints_nothing",
+             not any(pe.u8(WATCHED_ARM[0] + i) == 0xE8
+                     and call_target(pe, WATCHED_ARM[0] + i) == PRINT_TEXT
+                     for i in range(span)),
+             f"and no aPrintLibText in the {span} bytes of its arm")
+    ck.check("view_player.captions_are_network_only",
+             pe.bytes_at(NETWORK_ONLY_GATE, 2) == b"\x0F\x85"
+             and pe.bytes_at(NETWORK_ONLY_GATE - 3, 3) == b"\x83\xF8"
+             + bytes([NETWORK_MODE]),
+             "the arm states 2..4 share leaves at once unless the mode is 2")
+    ck.check("view_player.peer_turn_prints_one",
+             call_target(pe, PEER_OVERLAY_CALL) == OVERLAY
+             and push_imm(pe, PEER_CAPTION_ORIGIN[0])
+             == PEER_CAPTION_ORIGIN[1],
+             "state 3 -- a network peer -- captions the map on row 54")
+    ck.equal("view_player.caption_colours",
+             [pe.u32(CAPTION_COLOUR_TABLE + 4 * i)
+              for i in range(len(CAPTION_COLOUR_ARMS))],
+             list(CAPTION_COLOUR_ARMS),
+             "one colour arm per side, chosen by 0x00509E32")
+    ck.check("view_player.caption_colour_is_rgb565",
+             pe.bytes_at(CAPTION_COLOUR_PACK, 2) == b"\x25\xF8"
+             and pe.bytes_at(CAPTION_COLOUR_PACK + 5, 2) == b"\x81\xE1"
+             and contains(pe, CAPTION_COLOUR_PACK, 32, b"\x66\xC1\xEA\x03"),
+             "red masked to five bits, green to six, blue shifted down three")
+
+    # ---- the two sounds --------------------------------------------------
+    ck.equal("view_player.alarm_buffer",
+             [pe.cstring(push_imm(pe, VIEW_PLAYER_ALARM_NAME) or 0, 32),
+              push_imm(pe, VIEW_PLAYER_ALARM_HANDLE_PUSH)],
+             ["alarm.wav", VIEW_PLAYER_ALARM],
+             "aInitViewPlayer loads a second buffer beside progress.wav")
+    ck.check("view_player.alarm_gate",
+             call_target(pe, ALARM_MODE_CALL) == GAME_MODE_READ
+             and pe.bytes_at(ALARM_MODE_CMP, 3)
+             == b"\x83\xF8" + bytes([NETWORK_MODE])
+             and call_target(pe, ALARM_TURN_CALL) == TURN_COUNTER_READ
+             and pe.u32(ALARM_HANDLE_READ + 2) == VIEW_PLAYER_ALARM
+             and call_target(pe, ALARM_PLAY) == DIRECT_SOUND_PLAY,
+             "the alert needs mode 2 and a turn already played -- network only")
+    ck.equal("view_player.alarm_is_the_handover",
+             [push_imm(pe, va) for va, want in HANDOVER_STATE_WRITES
+              if want is not None],
+             [want for _va, want in HANDOVER_STATE_WRITES
+              if want is not None],
+             "and it rides the write that opens the next player's screen")
+    ck.check("view_player.progress_is_played",
+             pe.u8(PROGRESS_PLAY_GATE) == 0x74
+             and pe.u32(PROGRESS_PLAY - 7) == VIEW_PLAYER_SOUND
+             and call_target(pe, PROGRESS_PLAY) == DIRECT_SOUND_PLAY,
+             "an unchanged fill is silent; a changed one ticks progress.wav")
+    ck.check("view_player.game_mode",
+             pe.u32(GAME_MODE_READ + 1) == GAME_MODE
+             and pe.u32(GAME_MODE_WRITE + 5) == GAME_MODE,
+             "the mode is one byte at 0x00509EE8, written by fcn.0043B730")
+
+    # ---- and what the ids actually say, out of the shipped banks ---------
+    banks: dict[str, dict[int, str]] = {}
+    for bank in sorted({b for b, _i in VIEW_PLAYER_CAPTIONS}):
+        path = root / TEXT_DIR / bank
+        try:
+            program = lcl.parse_bytes(path.read_bytes(), str(path))
+        except (OSError, lcl.ParseError) as exc:
+            ck.check(f"view_player.captions.{bank}", False, str(exc))
+            return
+        banks[bank] = {n.index: n.text for r in program.routines
+                       for n in r.body if isinstance(n, lcl.TextEntry)}
+    ck.equal("view_player.captions",
+             [banks[bank].get(ident)
+              for bank, ident in sorted(VIEW_PLAYER_CAPTIONS)],
+             [VIEW_PLAYER_CAPTIONS[key]
+              for key in sorted(VIEW_PLAYER_CAPTIONS)],
+             f"{len(VIEW_PLAYER_CAPTIONS)} captions read back out of the banks")
 
 
 def check_ring(ck: Checker, pe: PEFile) -> None:
@@ -1330,6 +2049,9 @@ def run_checks(root_name: str) -> Checker:
         ck.check("binary.open", False, str(exc))
         return ck
     check_overlay(ck, pe)
+    check_progress(ck, pe)
+    check_view_player(ck, pe, root)
+    check_selection(ck, pe)
     check_ring(ck, pe)
     check_clicks(ck, pe)
     check_pad(ck, pe)
@@ -1433,6 +2155,38 @@ def emit_cases(root_name: str, out_path: str) -> int:
             "strips": [list(s) for s in PLATE_STRIPS],
             "turn_text": list(FRAME_TURN),
             "turn_red_within": FRAME_TURN_RED_WITHIN,
+        },
+        "progress": {
+            "origin": [PROGRESS_ORIGIN_X, PROGRESS_ORIGIN_Y],
+            "segments": PROGRESS_SEGMENTS,
+            "steps": PROGRESS_STEPS,
+            "lit_element": 0,
+            "dark_element": 1,
+            "library": "vp",
+            "wave": VIEW_PLAYER_CUE_WAVE,
+        },
+        # docs/43 section 4.5: the selection survives the hand-over, and an
+        # empty one is refilled with the side's first unit -- two passes, the
+        # second without the movement test.
+        "selection": {
+            "none": SELECTION_NONE,
+            "kept_over_the_hand_over": True,
+            "empty_takes_the_first_unit": True,
+            "first_unit_passes": 2,
+            "second_pass_ignores_movement": True,
+        },
+        # docs/43 section 7.3: the screen the bar is drawn on.  The remake
+        # needs three things out of it -- which state the computer's turn is,
+        # that the state prints nothing, and that the alert belongs to a mode
+        # the remake has no way to be in.
+        "view_player": {
+            "watched_state": WATCHED_STATE,
+            "prints_nothing": True,
+            "captions": {str(ident): text for (_bank, ident), text
+                         in sorted(VIEW_PLAYER_CAPTIONS.items())},
+            "alarm_wave": VIEW_PLAYER_ALARM_WAVE,
+            "alarm_mode": NETWORK_MODE,
+            "peer_caption_row": PEER_CAPTION_ORIGIN[1],
         },
         "plate": {
             "size": list(PLATE_SIZE),

@@ -335,6 +335,120 @@ overlay bytes as a parameter (the AI passes its context's `state`, the
 interface the selection's bands), `test_hud.gd` pins that a farther target
 on band 33 beats a nearer one on 31, and all the gold checks still pass.
 
+### 4.5 The selection is a global, and the hand-over does not touch it (2026-09-05)
+
+Reported as *"in the original, when the computer's turn ends one of my
+soldiers is selected; in the remake nobody is"*. It is not a hand-over
+routine. The selected slot lives in **`[0x005162F0]`** — `0xFFFF` for none —
+with its cell cached beside it in `[0x005162E8]`/`[0x005162EC]`, and the whole
+image writes it in five places:
+
+| site | writes | what it is |
+|---|---|---|
+| `0x00471220` | `0xFFFF` | `fcn.004710E0`, called once, from `aInitBattleGround` `0x0041A54C` |
+| `0x00472320` | `0xFFFF` | the arm of `fcn.004721F0` that finds the side has no live unit at all |
+| `0x00472CFB` | `0xFFFF` (out of `cx`) | `fcn.00472CC0`, the tail every player command runs — §4's "a unit that has spent its movement is dropped after its command". Its four callers are `aUI.cpp`'s command executors, reached from the click, the ring and `0x00471310`, and from the network pump for a remote player's command |
+| `0x0047225B`, `0x00472305` | a slot | the two that select one |
+
+Seven instructions in the whole `.text` name `0x005162F0` — those five and the
+two reads at `0x00471E49` and `0x004721F0` — and `hud_tables.py` counts them
+rather than trusting one cross-reference listing. **Neither `fcn.0047D600` nor
+`fcn.0047DC60` is among them**, so the marine the player last had is still
+selected when the computer is done: the global simply survives the turn. That
+is the whole mechanism.
+
+There is a **second** word beside it. `0x005162F0` is what has been *asked
+for*; `0x005162F8` is the selection the interface is actually on, with its
+cell in `0x005162FC`/`0x00516300`, and it is written by the select itself
+(`fcn.00472990` at `0x00472A90`). `fcn.00471E00` compares the two
+(`0x00471E49`, `0x00471E56`) and runs the select only when they differ. Its
+own resets are the same shape: `fcn.004712A0`, once, from the same mission
+init, and the two command tails `fcn.00472B10` and `fcn.00472CC0` — again
+nothing on the turn's path.
+
+The other half is what happens when it *is* empty. `fcn.004721F0(mode)` is
+the one routine that moves the selection, and its **first** branch runs before
+it looks at its mode: if the slot is `0xFFFF` it takes `fcn.00477CE0`'s answer
+and returns. Everything reaches it through `fcn.00471E00(mode)`, which refuses
+twice first — `0x0043B280`, no selection before the first hand-over, and
+`fcn.00477BF0(side)`, none for a side with no live unit.
+
+`fcn.00477CE0(side)` is **two passes over the 200-record array**, and the
+second one drops a test the first makes:
+
+1. the lowest-numbered unit with `+0x16 != 0` (alive), `+0x45 == side` and
+   `+0x15 != 0` (movement left);
+2. failing that, the lowest-numbered one with only the first two;
+3. failing that, `0xFFFF`.
+
+The second pass is why the original still has somebody selected at the end of
+a turn on which everything has moved. The modes are `fcn.00477EC0` (0) and
+`fcn.00477D40` (1), the two cycles. Two places ask for a selection without a
+click: `aInitBattleGround` `0x0041A738`, `mode 1`, at the start of the first
+turn — and the turn-counter gate above means it does nothing there, so a
+mission opens with **nothing** selected until the first hand-over — and the
+**`SelectNextUnit` script command**, `fcn.00441270` → `fcn.00471E00(0)`,
+which the LCL dispatcher reaches by name at `0x0044438D` and which **no
+shipped `.lcl` uses**, so it changes nothing in the shipped game. The remake matches that: on `_C_140` the reply reads
+`selected -1` at turn 0 and `selected 2` at turn 1.
+
+**And the camera follows the selection** — which closes
+[`42` §2.6](42-mission-presentation.md)'s "the engine's select camera is not
+traced". It is not a camera routine of its own: every caller that gets a `1`
+back from `fcn.00471E00` calls **`fcn.004533D0`**, which re-applies the
+*current view mode* on `fcn.00471F70`'s cell — the cell the select just wrote
+into `0x005162FC`/`0x00516300`. Five sites do it: `aInitBattleGround`
+`0x0041A754`, `SelectNextUnit` `0x0044127E` (a tail `jmp`), the drop of a
+spent unit `0x0047149B`, the click `0x004717E8` and the ring `0x00471C42`.
+
+| `[0x005106D8]` | placer | what it does |
+|---:|---|---|
+| 0 | `fcn.00453410` → `fcn.004532A0` | the map's centre at height `0x23A50` — no unit in it |
+| 1 | `fcn.00451150` → `fcn.00452E90` | the map view on the unit's cell |
+| 2 | `fcn.004510A0` → `fcn.004529D0(x, y, 8, 7, 0)` | **on the unit**, and the same `(8, 7, 0)` [`42` §2.3](42-mission-presentation.md) had recorded for the cycle alone |
+| 3+ | `fcn.00450F60` → `fcn.00453150` | the normal view on the unit's cell |
+
+Mode **2 is what a mission opens in** (`fcn.00452940` writes it), so selecting
+a unit puts the camera on it at `(8, 7, 0)` unless the player has changed the
+view. Modes 1, 2 and 4 all fall back to `fcn.00450F60` when there is no
+selection to centre on.
+
+**At the start of a mission** `aInitBattleGround` does both at once: `0x0041A738`
+asks `fcn.00471E00(1)` for a selection and, when the turn counter is exactly 1
+(`0x0041A74D`), applies `fcn.004510A0` — the unit view on the unit it just
+selected. The counter-0 arm beside it is the other entry: view mode 2 with no
+placement (`fcn.00452940`) and the camera on the landing zone
+(`fcn.00452420`, the first control-map cell in `'F'..'I'`).
+
+> **UNVERIFIED — which of the two arms a fresh mission takes.** The controller
+> enters `aInitBattleGround` as one request (`fcn.0042E690` case 7) and it
+> leaves the game in state 3, whose per-frame case is `fcn.004543A0` — and
+> that is what increments the counter, so a first entry would find it at 0 and
+> take the landing-zone arm, with the counter-1 arm reached only on a re-entry
+> such as a load. **The shipped game nevertheless opens a mission with a unit
+> selected and the camera on it**, which is a report from play rather than
+> something read here, and it is the counter-1 arm that describes it. The
+> remake does that; if the ordering turns out otherwise, this is the paragraph
+> to correct.
+
+**In the remake** the selection *is* dropped, for the length of the replay
+only: the watched screen has no panel, no pad and no overlay to show it on
+(§7). `SliceMain._resume_selection` puts it back where the turn comes back to
+the player — both paths, the replay's end in `_on_ai_step` and the
+nothing-to-replay path in `end_turn` — and it is the engine's rule twice over:
+the same unit if the computer left it alive and able to move
+(`_selection_before_turn`, which is `[0x005162F0]` carried over the window),
+and `SliceMain.first_friendly_slot`, both of `fcn.00477CE0`'s passes,
+otherwise, and `SliceMain._frame_units` selects the same unit it opens the
+view on at mission load. **The camera goes with the selection**, through
+`select_unit`, because that is what a select does above;
+`COMPAT_CAMERA_RETURNS` is a different thing — the remake's own camera return
+with *no* selection behind it — and stays off by default. Which of the four
+placers the remake uses is still its own choice
+([`92` §7.5.3](92-remake-architecture.md)): `CameraRig.focus_on` flies the
+target onto the unit and keeps the eye's offset, so a selection re-centres the
+view without discarding how the player had arranged it.
+
 ## 5. The interface
 
 ### 5.1 The command pad — `aUI.cpp`
@@ -491,7 +605,167 @@ one; `+0x4F == 1` → `sm[5]`. The lamp at (616, 453) is `sm[11]` while any
 enemy is visible, `sm[10]` while one is only detected. With no selection the
 screen shows the compass alone.
 
-## 7. The remake's layout — `game/hud/`, `game/overlay/`, `game/screens/plate.gd`
+## 7. The watched player's turn — `aViewPlayer.cpp`
+
+**While another player moves, the battle interface is not on screen.**
+`fcn.0047C2C0` is the frame `aAISystemControl` calls through the pointer
+`fcn.0047D600` hands it (§3.1), and what it draws is `aViewPlayer.cpp`'s own
+screen. `aInitViewPlayer 0x0047BCF0` — the engine names itself, pushing
+`"aInitViewPlayer (Render_BMP)"` at `0x0047BD5A` — allocates a whole-screen
+bitmap (`0x00461E90(2)·(3)·(4)`: the display's width, height and bytes per
+pixel), loads **`GUI\plate_5.bmp`** into it at `0x0047BDB1`, and
+`fcn.0047D090` copies **the plate's own four strips** back over the frame —
+`fcn.0044B1B0(src, dst, src pitch, dst pitch, bytes, rows)` at `0x0047D0C9`,
+`0x0047D13A`, `0x0047D1A8` and `0x0047D240`, with 34, 106, 340 and 340 rows,
+the same three heights `fcn.0041A980` pushes for its own strips (§2) — twice
+a frame, once per buffer (`0x0047D026`, `0x0047D045`). So no column icon, no
+pad face, no unit panel, no radar mark and **no turn number** is on screen
+while the computer plays: the **bare plate** is, and one thing on top of it.
+
+What it prints depends on **which** screen it is: `fcn.0047C2C0` is a
+seven-arm state machine, and the computer's turn is one arm of it that prints
+nothing at all. §7.3 reads all seven.
+
+`vp` is *view player*. `vp.LIB` and its own `vp.pal` are loaded at
+`0x0047BF52`/`0x0047BFDA` into `[0x00522A04]` and `[0x00522A08]`, and
+`0x00463A60` builds a remap table from the palette into `[0x00522E0C]`. Two
+waves come with them — `progress.wav` into `[0x00522E10]` and `alarm.wav`
+into `[0x00522E14]`, the two [`28` §2.1](28-effects-and-sound.md) already
+lists as `aViewPlayer.cpp`'s.
+
+### 7.1 The bar — `fcn.0047DA00`
+
+Twenty-two capsules on row **406** from x **59**, one element width (15)
+apart, through `fcn.004475D0` with **no anchor subtracted**: `vp[0]` is the
+lit capsule and `vp[1]` the dark one, both 15x34.
+
+| | |
+|---|---|
+| gate | `0x0043B280` — the turn counter `0x00509E1D` must not be 0 |
+| gate | `0x0043B240` — `(solo == 0) ? [0x00509F0C] : 0` must be 0 |
+| side | `0x0043B2C0` — the seat `[0x00509E32]`, passed in by `fcn.0047D090` |
+| divisor | `fcn.00477BF0(side)` — units with `+0x16 != 0` and `+0x45 == side` |
+| numerator | `fcn.00477FB0(side)` — the same, and `+0x15 != 0x00475160(unit)` |
+| fill | `acted · 21 / live` (`0x0047DA3E`), and **0** when nothing has acted |
+| drawn | `max(fill, [0x00522E18]) + 1` capsules lit |
+| sound | `progress.wav` whenever `fill` differs from the last frame's |
+
+Both sweeps walk the 200-record unit array at stride 91 from
+`fcn.00477AD0`. The numerator's test is the unit's current movement `+0x15`
+against `0x00475160`'s own allowance ([`25` §5](25-turn-and-round.md)), so the
+bar is **the fraction of the side's live units that have already spent
+movement** — a progress bar for the turn, not a pool of action points. One
+capsule therefore burns from the first frame of every computer turn, which is
+what a shipped screenshot of the moment the aliens take over shows.
+
+`[0x00522E18]` is zeroed once, at `0x0047C0CF` in the init, and not per turn,
+so the engine's *second* computer turn opens on one frame of the previous
+one's last fill and one stray `progress.wav`. The remake resets it instead.
+
+### 7.2 In the remake — `game/hud/turn_progress.gd`
+
+`core` decides the whole computer turn in one call and the world holds its end
+from the first rebuild ([`23` §2](23-ai-system.md)), so neither count can be
+read straight off it: every alien's movement is already spent before the first
+of them is drawn moving. `TurnProgress.tally` takes the engine's own two
+predicates and masks them with **what the replay has already played**
+(`AIPlayback.played_slots`, the events `[0, index)`); a casualty the replay is
+still holding on its feet (`AIPlayback.pending_casualties`) stays in the
+divisor, because the divisor is the side as the turn started. The side is the
+replay's own (`AIPlayback.player`) and **not** `world.turn.current_player`:
+the computer's turn runs inside `World.submit_end_turn` and hands over again
+by itself, so the seat is back on the marines before the first event is drawn.
+
+`MissionHud.refresh` takes the same switch to the rest of the interface — the
+panel is refreshed with no selection and the columns, the pad, the radar and
+the turn number are hidden, which is the bare plate above. `tour.gd`'s reply carries the lit
+count as `hud.progress` and the tick as `hud.progress_stepped`, and
+`hud.radar_marks` reads 0 while the radar is off screen.
+
+**`progress.wav` ticks with the bar** (2026-09-05). The conversion's wave
+closure was the `aAnimations.cpp` call sites plus the id-96 interface set
+([`28` §6](28-effects-and-sound.md)), and this screen is the one place outside
+both that names a wave, so a cache built before this section was silent under
+the whole computer turn. `sound.VIEW_PLAYER_CUES` now carries both of the
+screen's waves and `wanted_waves` copies them; `tables/sound.json` gained a
+`view_player` block, `CONVERTER_VERSION` went 0.17.0 → 0.18.0 in its two
+places, and the published cache was re-made. Neither wave has a
+volume-control id — the original plays them with `aDirectSoundPlay(handle, 0)`
+and nothing from the volume table — so both are `NO_SCALING`.
+
+The remake plays it exactly where the original does: `TurnProgress.refresh`
+answers whether the fill moved, `MissionHud.progress_stepped` carries that up,
+and `Main._play_progress` plays `AudioTables.view_player_cue("progress")`.
+The interface itself makes no sound; it reports and the caller decides.
+`alarm.wav` is copied and never played — see §7.3.
+
+### 7.3 The screen the bar is drawn on (2026-09-05)
+
+`fcn.0047C2C0` is not an overlay on the battle screen. It is a **whole game
+state**: `fcn.0044AAE0`'s dispatcher runs it as one arm, and `fcn.0047D600`
+hands it to `aAISystemControl` at `0x0047D6A0` as the per-frame callback
+(`push 0x0047C2C0` at `0x0047D68F`) — which is why the computer's turn is
+drawn on it at all.
+
+Everything it prints hangs off its own state `[0x005229D4]`
+(`fcn.0047DBD0` reads it, `fcn.0047DBC0` writes it) through a seven-entry jump
+table at `0x0047D064`. Text comes from **two** banks of `aTxtSys.cpp`, set
+active with `fcn.00471090` and fetched with `fcn.00470FE0`: slot **0** is
+`txtmod_g.lcl`, whose header names it `_ViewPlayers` and is opened by
+`aInitViewPlayer` itself, and slot **3** is `txtmod_h.lcl`, `aMain`'s shared
+bank (`0x00449CB7`).
+
+| state | set at | what it is | what it prints |
+|---:|---|---|---|
+| 0 | `0x0047DDE5`, `0x0047C138` | a turn opens — the hand-over pause | `g:12` *Turn* + the number, or `g:20` *Prepare for battle* before the first; the player's line; `h:125` *(Press left mouse button to continue)* |
+| 1 | `0x0047DE3C` | the game is over | `g:22` *End of game*, or `g:25` *Mission completed* / `g:26` *Mission failed* when the mode is 1 |
+| **2** | `0x0047D656` | **the computer's turn** | **nothing** |
+| 3 | `0x0047DDD2` | a network peer's turn | `h:129` *Waiting for* + `h:128` *Player*, over the map |
+| 4 | — | reached by no writer found | — |
+| 5 | `0x0047E198` | the game was stopped | `h:126` *Game stopped by* + `h:128` |
+| 6 | `0x0047E03D` | the game was cancelled | `h:127` *Game canceled by* + `h:128` |
+
+State 0's two lines are centred in the 3D window at **(320, 190)** and
+**(320, 160)**, and the *press to continue* line at (320, 220); each is
+skipped when its buffer is still the empty string at `0x004FA524`. The
+composition templates are `"%s %d"`, `"%s (%s %d)"`, `"%s (%s %d) - %s"` and
+`"%s %s (%s %d)"`, so the player's line reads *Andreas (Player 2)* — or
+`h:132` **"Scay'Ger (Computer)"** when `fcn.004822F0` says the next seat is
+the computer's.
+
+**But not in a single-player mission.** `0x0047C48E` sends mode **1** to
+`0x0047C549`, which copies the *Turn* line across and leaves the player's
+buffer as the empty string, so neither of those captions is reachable alone —
+they are the multi-player hand-over's. And the pause dismisses itself:
+`0x0047C3FF` posts `WM_LBUTTONDOWN` (`0x201`) to the game's own window at
+`0x0047C425` when there is exactly one player and `fcn.0043B1F0` is zero. A
+mission played alone therefore shows this screen for one frame, which is why
+the shipped game never seems to have a *press to continue* between turns.
+
+**State 2 prints nothing**, and that is read rather than assumed: its arm runs
+`0x0047CF5D`…`0x0047D016`, rebuilds the visible map, draws the battle map
+through `fcn.00417E10` and contains **no `aPrintLibText` call** in its 185
+bytes. The arm states 2, 3 and 4 share leaves at once unless the mode is 2
+(`cmp eax, 2 / jne 0x0047CB3E` at `0x0047C98A`), so every caption above is a
+multi-player caption. State 3 is the one that does print over the map: after
+the ground overlay `fcn.00417E70` at `0x0047CC8E` it puts *Waiting for
+&lt;name&gt; (Player N)* on **row 54** in the acting side's own colour, chosen
+by a four-arm switch on `[0x00509E32]` (`0x0047D080`) and packed as RGB565 at
+`0x0047CD3F`.
+
+**`alarm.wav` is the network game's "it is your turn" alert.** It sounds at
+`0x0047DE0B` on exactly one path: the hand-over `fcn.0047DC60` sets state 0
+(`0x0047DDE5`), and then `fcn.0043B740` — the game mode byte `[0x00509EE8]`,
+written by `fcn.0043B730` — must be **2** *and* the turn counter must not be
+zero. Mode 1 is the single-player campaign, so a mission played alone never
+reaches it; 3 and 4 are the other two multi-player forms and are
+**UNVERIFIED**. That the mode-2 screen is the network one is the captions'
+own doing: the same bank prints *SYSTEM: Out of Sync*, *Lost connection* and
+*(Press F12 to chat; F5-F8 to toggle receiver; ESC to abort the network
+game)*. The remake copies the wave — the closure is what the *game* can
+reach — and plays it nowhere, because it has no network game to be in.
+
+## 8. The remake's layout — `game/hud/`, `game/overlay/`, `game/screens/plate.gd`
 
 **The plate is a layout, not a picture.** The canvas is `canvas_items` with
 `expand`, so it is always ≥ 640 by ≥ 480 of the plate's units at one uniform
@@ -538,10 +812,10 @@ debriefing keeps the interface font setting (`font_2` or the readable
 face). The four fonts' rows are the same 13/13/20/10 the cache's
 `fonts/index.json` measures.
 
-## 8. Verification
+## 9. Verification
 
 ```bash
-python3 tools/hud_tables.py --check gog_incubation          # 123 checks
+python3 tools/hud_tables.py --check gog_incubation          # 194 checks
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
 bash godot/run_tests.sh                                       # test_hud.gd
 ```
@@ -562,25 +836,57 @@ anchors; the four loaders' names and handles; fourteen libraries' counts and
 twelve elements' shapes; forty-three caption ids in `Txtmod_h` and
 `Txtmod_g`; the plate's size, its dark window, the radar screen, the pad
 sockets, the slot columns, the turn window and the panel inset measured
-from the pixels, and that the ten pieces tile the frame. It fails on an
-empty corpus.
+from the pixels, and that the ten pieces tile the frame; and the watched
+player's screen of §7 — `vp.lib` and its handle, `plate_5.bmp` loaded whole,
+`progress.wav` and its handle, the four strips the watcher paints back and
+their row counts, the two gates, the two unit sweeps with their
+`+0x15`/`+0x16`/`+0x45` reads and the allowance call, the `· 21 / live`
+arithmetic, the previous fill and where it is zeroed, x 59 and row 406 in
+both runs, the 21/22 limits, elements 0 and 1, the width helper and that
+both runs blit through one blitter with no anchor; and the screen itself of
+§7.3 — the state global and its two accessors, the seven-arm switch and that
+the state is its only index, the two text banks at their slots, twenty string
+ids at their own pushes with the fetch each reaches, the four `wsprintf`
+templates, state 0's two centred lines and its solo arm with the
+`WM_LBUTTONDOWN` it posts, the write that opens the computer's turn and the
+callback `aAISystemControl` is given, that state 2's arm contains no
+`aPrintLibText` at all, the mode gate in front of every caption, state 3's
+overlay call and caption row, the four-arm colour switch and its RGB565
+packing, both sound buffers with the alarm's mode-and-turn gate and the bar's
+own play site, and the eleven captions read back out of the shipped banks; and the selection of §4.5 — all five writes to `[0x005162F0]`, that the reset has one caller, that `fcn.004721F0` fills an empty selection before it reads its mode, the two cycle modes, `fcn.00471E00`'s two gates, `aInitBattleGround`'s single mode-1 ask, `fcn.00477CE0`'s two passes with the movement test present in the first and absent from the second, its `0xFFFF`, that neither hand-over routine calls any of them, the reference count of `[0x005162F0]` over the whole `.text`, the four view-mode placers of the select camera with the `(8, 7, 0)` mode 2 opens in, and that the five sites that re-apply the view all reach `fcn.004533D0`. It fails on an empty corpus.
 
-`test_hud.gd` (**281 checks**): every table above against the fixture; the
+`test_hud.gd` (**329 checks**): every table above against the fixture; the
 layout on 640x480, 853x480, 640x512 and 1120x480 — no overlap, fixed pieces
 their own size, the window the remainder, every widget on the canvas, 4:3
 the plate to the pixel; the anchor sign; every library's anchors and sizes
 against the fixture; the cell-state translation; the live overlay with and
 without a legal hover, its far view, and that no mark is depth tested; the
 ring's records; the radar's arithmetic and its scale's bounds; the
-selection rules (`may_select`, `submit_rotate`); the state-byte facing; and
-the interface itself — the turn text with and without a par, every caption
-shipped, the panel naming its unit, the pad's gate at the press, the events
-raised, the report.
+selection rules (`may_select`, `submit_rotate`); the state-byte facing; the
+progress bar's geometry, segments, elements and fill arithmetic against the
+same fixture, and the live interface swapping for it -- one capsule at the
+opening, eleven at half the side, all twenty-two at the end, the panel, the
+columns, the pad and the radar's marks gone while it is up and back when the
+seat is; and the interface itself — the turn text with and without a
+par, every caption shipped, the panel naming its unit, the pad's gate at the
+press, the events raised, the report.
+
+`test_game_ui.gd` carries the hand-back of §4.5 on a real `_C_140` — the
+first unit is the lowest-numbered one of the side, a previous selection the
+computer left alive and able to move comes back, a dead or spent one falls
+back to the first, a side that has moved everything still hands one back and
+that one is a unit a click could **not** select, and a side with nothing alive
+hands back none — and the bar's two counts: the turn
+opens at zero with the whole side in the divisor, a unit that has spent
+movement is not counted until its own event has been played, a played unit
+that did not move is never counted, a casualty leaves the divisor unless the
+replay is still holding it, and the side is the replay's rather than the
+world's seat.
 
 `tour.gd` gained `markers`, `hud event|pad|ring|radar N`, and `hud`,
 `markers` and `visible_rect` in every reply.
 
-## 9. Corrections to other documents (2026-09-05)
+## 10. Corrections to other documents (2026-09-05)
 
 * [`97` §45.2](97-slice-5-report.md) — the move map is **not** the terrain
   tile coloured; it is a sprite pass after the frame with no depth test (§3).
@@ -598,7 +904,7 @@ raised, the report.
   action-point band (1..8 or 210..217 / 10..24 / 50..129), with its name
   written beside it. The remake's dots-by-kind stay as they are (decision D6).
 
-## 10. Decisions
+## 11. Decisions
 
 * **D1 — the ring is the rotation.** The plan's "choose a direction by
   clicking a cell" is the original's own mechanism, reproduced: a reachable
@@ -608,7 +914,7 @@ raised, the report.
   out**, as `0x004714B0` and `0x00471AD0` do; the keyboard cycle skips them
   too (`0x00477D40`).
 * **D3 — the plate adapts, the original's does not.** Pieces, bands and
-  fillers (§7); the window takes the surplus; the focal length stays 400.
+  fillers (§8); the window takes the surplus; the focal length stays 400.
 * **D4 — the magnifier button is present and never lit.** Its effect is an
   info page out of `Data.txt` for the clicked alien's type (§5.2, through
   the activator [`24` §7.2](24-briefing-text.md) already documents), which
@@ -617,7 +923,7 @@ raised, the report.
 * **D5 — the options bar is the options screen.** Its nine controls are the
   shell's; the bar's slide-in is not drawn.
 * **D6 — the campaign map keeps its dots by kind.** `fcn.00418F40`'s
-  band-coloured rings are recorded in §9 for a later pass; changing
+  band-coloured rings are recorded in §10 for a later pass; changing
   `CampaignMapScreen.marks_for` touches `test_shell` and `test_campaign`
   and is outside this slice.
 * **D7 — two plate fonts.** `font_0` for the band texts and `font_3` for the
@@ -636,14 +942,37 @@ raised, the report.
   invented, so a weapon that aims at ground shows no marks until the arm is
   read. Nothing in the shipped set needs it to fire: an enemy is still shot by
   clicking the unit itself.
+* **D11 — both of the screen's waves are copied, one is played.** The
+  conversion's closure was the `aAnimations.cpp` call sites plus the id-96
+  interface set ([`28` §6](28-effects-and-sound.md)), and `aViewPlayer.cpp` is
+  the one place outside both that names a wave — so `progress.wav` had no file
+  in the cache and the whole computer turn was silent. `sound.VIEW_PLAYER_CUES`
+  now carries both, `CONVERTER_VERSION` went 0.17.0 → 0.18.0 in its two places
+  and `user://caches` was republished with `--campaign-maps`. `alarm.wav` is
+  copied and played by nothing: the closure is what the **game** can reach, and
+  a remake with no network game is not a reason to leave a named wave out of
+  the cache (§7.3).
 
 ## Open questions
 
-**None.** One was opened and closed on the same day: whether a blocking
-animation reaches the ground overlay through the callback pointer
+**None.**
+
+Two questions were opened and closed on the same day. The first: whether a
+blocking animation reaches the ground overlay through the callback pointer
 `fcn.0047D600` stores. It does not, and the evidence is in §3.1 — the
 pointer's only reader is `aAISystemControl`, and `aExecuteMove` reaches no
 redraw at all.
+
+The second: what the watched player's screen prints, and when `alarm.wav`
+sounds. Both are in §7.3. The screen is a seven-arm state machine on
+`[0x005229D4]` with two text banks behind it; **the computer's turn is state
+2 and its arm contains no `aPrintLibText` call at all**, so the captions the
+function carries are the hand-over's, the end of the game's and the network
+game's. `alarm.wav` is the network alert, gated on the game mode being 2. One
+thing named in the old entry is still untraced and is **not** an open question
+about this document: the second bitmap `[0x00522A00]`, which
+`aInitViewPlayer` fills and three routines read — it is a render target of the
+screen's own and nothing about the interface's layout depends on it.
 
 Everything else this document could not settle by reading is a decision
 above, with the reading that would settle it named beside it:

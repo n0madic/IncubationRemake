@@ -793,7 +793,7 @@ func _shell() -> Dictionary:
 
 
 ## The viewport's visible rectangle in the units events and the interface
-## use: 640x480 on 4:3, wider or taller elsewhere (docs/43 section 7).
+## use: 640x480 on 4:3, wider or taller elsewhere (docs/43 section 8).
 func _visible_rect() -> Array:
 	var size: Vector2 = root.get_visible_rect().size
 	return [size.x, size.y]

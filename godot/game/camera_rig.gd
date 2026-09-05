@@ -339,7 +339,7 @@ static func project(at: Vector3, window: Rect2, zoom_divisor: int = 0
 ##
 ## *focal_width* names the window width the focal length is taken from when
 ## it is not *window*'s own: the battle interface widens its window with the
-## canvas (docs/43 section 7) and keeps the original's 400, so a wider
+## canvas (docs/43 section 8) and keeps the original's 400, so a wider
 ## screen shows more world at the same scale rather than a larger picture.
 static func frame_projection(camera: Camera3D, window: Rect2,
 		render: Vector2, zoom_divisor: int = 0, focal_width: float = 0.0) -> void:

@@ -201,6 +201,30 @@ func weapon_missing_sound() -> int:
 	return DictRead.as_int(_document.get("weapon_missing_sound", 35))
 
 
+# --- section 2.4: the watched player's screen -------------------------------
+
+## The bar's own tick, the one of the screen's two waves a remake reaches.
+const VIEW_PLAYER_PROGRESS: String = "progress"
+## The network game's "it is your turn" alert. Named so the cache's own key is
+## not a literal at the two places that read it; nothing plays it.
+const VIEW_PLAYER_ALARM: String = "alarm"
+
+## The cue one of `aViewPlayer.cpp`'s own buffers makes, or an empty dictionary
+## when the cache is older than the closure that copies them.
+##
+## Neither wave goes through the volume table: the original plays them with
+## `aDirectSoundPlay` and a bare zero, so their id is [constant NO_SCALING].
+## `"progress"` is the turn bar's tick (docs/43 section 7.1); `"alarm"` is the
+## network game's "it is your turn" alert and nothing in the remake reaches it.
+func view_player_cue(name: String) -> Dictionary:
+	var row: Dictionary = DictRead.as_dict(
+		DictRead.as_dict(_document.get("view_player", {})).get(name, {}))
+	if row.is_empty():
+		return {}
+	return {"wave": DictRead.as_string(row["wave"]),
+		"volume_id": DictRead.as_int(row["volume_id"]), "loop": false}
+
+
 # --- section 5: footsteps ---------------------------------------------------
 
 ## `{"wave": String, "volume_id": int, "period": int}` for a unit type that

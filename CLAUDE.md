@@ -48,14 +48,14 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 306 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 513 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 514 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 700 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
-python3 tools/hud_tables.py         --check gog_incubation    # 133 checks, docs/43
+python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 36 suites, 3672 checks
+bash   godot/run_tests.sh                                    # 36 suites, 3751 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -113,7 +113,7 @@ python3 tools/hud_tables.py      --emit-cases tests/fixtures/hud/cases_hud.json 
 #     the overlay's state map, the ring, the pad, the columns, the radar,
 #     the plate's measured pieces and twelve libraries' anchors -- a second
 #     reading of the binary, not a Python twin (docs/92 §5.1). It refuses to
-#     write when any of its 133 checks fails.
+#     write when any of its 194 checks fails.
 #   ^ the seventh native suite's fixture (`test_ctrl_map.gd`): the cells and
 #     the 80-slot object array the engine left after each of the four cell
 #     placers of docs/42 §9.1 and two round ticks, replayed by
@@ -749,7 +749,7 @@ Eight things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.17.0 as of the shell slice), in
+* **`CONVERTER_VERSION` is written down twice** (0.18.0 since the watched player's two waves joined the closure), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump
@@ -905,7 +905,7 @@ not use `--code`** here either: the byte writer is the game's imported
 
 ## Documentation
 
-`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `43` the battle interface — the plate's pixel layout, the ground overlay, the direction ring, the pad, the columns, the panel and the radar (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
+`docs/00-overview.md` is the entry point and carries the format inventory table with per-format status and coverage. Numbered by family: `10` `.lev`, `11` `.sav` (the only format the game writes; it embeds a whole `.lev`), `20`/`21` LCL and the game-balance schema, `22` combat and visibility, `23` the AI turn, `25` the turn and the round, `26` interaction and set-pieces, `27` the campaign layer, `28` effects and sound, `29` the interface contract (**behaviour, not file formats**), `24` the briefing and info text markup, `30`/`31` Eng3d ASCII formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the mission's presentation layer — the camera, the animation drivers and what a turn looks like (**behaviour, not a file format**), `43` the battle interface — the plate's pixel layout, the ground overlay, the direction ring, the pad, the columns, the panel, the radar and the watched player's screen (**behaviour, not a file format**), `50` VISN, `60` sprites/fonts, `70` lookup tables, `90` binaries.
 
 The runtime-research package matrix is in `docs/00-overview.md`; packages A through G are **delivered** as `docs/25` through `docs/29` and `docs/41`; package H, the mission's presentation layer, is `docs/42`; package I, the battle interface's own layout, is `docs/43`. The permanent module map and research method are in `docs/90-binaries-and-source-layout.md`. `docs/92-remake-architecture.md` records the remake's own decisions — Godot 4, GDScript for the game logic, the Python pipeline converting on the player's machine, and the product decisions in its §7 — §7.1 through §7.13 that the numbered specs point at; nothing architectural is left open there.
 

@@ -404,7 +404,7 @@ name written beside it. The remake's dots are coloured **by kind** and ring
 the hovered one ([`98` §6](98-slice-6-report.md)); changing
 `CampaignMapScreen.marks_for` to the band table touches `test_shell` and
 `test_campaign` and is recorded as a decision of the seventh slice
-([`43` §10 D6](43-battle-hud.md)), not done there.
+([`43` §11 D6](43-battle-hud.md)), not done there.
 
 ---
 

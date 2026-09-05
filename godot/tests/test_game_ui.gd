@@ -27,6 +27,8 @@ func run(h: TestHarness) -> void:
 	_shots_and_reactions(h)
 	_rebuild(h)
 	_replay_positions(h)
+	_replay_progress(h)
+	_hand_back_selection(h)
 	_unit_animations(h)
 	_walk_epilogue(h)
 	_campaign_screens(h)
@@ -690,6 +692,146 @@ func _unit_animations(h: TestHarness) -> void:
 	main.free()
 
 
+## The bar's two counts on a real world -- docs/43 section 7.
+##
+## The world holds the end of the computer's turn from its first frame, so the
+## tally is masked by what the replay has played; a spent unit nobody has seen
+## move must not be on the bar yet.
+## docs/43 section 4.5 -- the selection the hand-over gives back.
+##
+## Reported as "in the original one of my soldiers is selected when the
+## computer's turn ends; in the remake nobody is". The engine's selection is a
+## global no hand-over routine writes, and `0x004721F0` refills an empty one
+## from `fcn.00477CE0`; this is that search, over a real mission.
+func _hand_back_selection(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("handback.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = SliceMain.first_friendly_slot(world)
+	h.check("handback.somebody_is_selectable", slot >= 0,
+		"the side the turn belongs to has a unit to select")
+	h.equal("handback.the_first_is_the_players",
+		DictRead.as_int(world.unit_view(slot)["player"]),
+		world.turn.current_player)
+	# **The lowest-numbered one**, not the first the iteration happens to hit:
+	# `fcn.00477CE0` walks the unit array from slot 0.
+	var mine: PackedInt32Array = PackedInt32Array()
+	for other: int in world.unit_slots():
+		if world.may_command(other):
+			mine.append(other)
+	h.check("handback.the_side_is_not_empty", mine.size() >= 2,
+		"_C_140 places a squad: %s" % str(mine))
+	h.equal("handback.takes_the_lowest_slot", slot, mine[0])
+
+	# The carry-over: the engine's selection is a global no hand-over writes,
+	# so the marine the player last had comes back.
+	var other_slot: int = mine[mine.size() - 1]
+	h.check("handback.the_squad_has_a_second", other_slot != slot, "")
+	h.equal("handback.keeps_the_previous",
+		SliceMain.resumed_slot(world, other_slot), other_slot,
+		"a marine the computer left alive and able to move stays selected")
+	h.equal("handback.nothing_selected_takes_the_first",
+		SliceMain.resumed_slot(world, -1), slot)
+	# And the branch a drive cannot stage: the computer killed them.
+	var was_hp: int = world._units[other_slot].hp
+	world._units[other_slot].hp = 0
+	h.equal("handback.a_dead_previous_falls_back",
+		SliceMain.resumed_slot(world, other_slot), slot)
+	world._units[other_slot].hp = was_hp
+	# So does one it left with nothing to spend.
+	var was_mp: int = world._units[other_slot].mp
+	world._units[other_slot].mp = 0
+	h.equal("handback.a_spent_previous_falls_back",
+		SliceMain.resumed_slot(world, other_slot), slot)
+	world._units[other_slot].mp = was_mp
+
+	# The second pass: with nobody left able to move, the search still answers
+	# -- and it answers with a unit that has no movement at all.
+	var kept: Dictionary[int, int] = {}
+	for other: int in mine:
+		kept[other] = world._units[other].mp
+		world._units[other].mp = 0
+	h.equal("handback.second_pass_ignores_movement",
+		SliceMain.first_friendly_slot(world), mine[0],
+		"a side that has moved everything still has somebody selected")
+	h.equal("handback.and_it_cannot_be_selected_by_a_click",
+		world.may_select(mine[0]), false,
+		"which is the one thing the two passes disagree about")
+	h.equal("handback.a_spent_side_still_hands_one_back",
+		SliceMain.resumed_slot(world, -1), mine[0])
+	for other: int in mine:
+		world._units[other].mp = kept[other]
+
+	# And a side with nothing alive answers "none" -- 0x00477CE0's 0xFFFF.
+	var was: int = world.turn.current_player
+	world.turn.current_player = 7
+	h.equal("handback.no_units_no_selection",
+		SliceMain.first_friendly_slot(world), -1)
+	h.equal("handback.no_units_no_hand_back",
+		SliceMain.resumed_slot(world, -1), -1)
+	world.turn.current_player = was
+
+
+func _replay_progress(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("progress.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var player: int = UnitState.PLAYER_ALIEN
+	var slots: PackedInt32Array = PackedInt32Array()
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == player \
+				and DictRead.as_int(view["hp"]) > 0:
+			slots.append(slot)
+	h.check("progress.the_side_has_units", slots.size() > 0,
+		"_C_140 places aliens")
+	var none: PackedInt32Array = PackedInt32Array()
+	var opening: Vector2i = TurnProgress.tally(world, player, none, none)
+	h.equal("progress.the_turn_opens_at_zero", opening.x, 0,
+		"nothing has been played, so nothing is counted")
+	h.equal("progress.live_is_the_whole_side", opening.y, slots.size())
+	h.equal("progress.one_capsule_at_the_opening",
+		TurnProgress.fill_for(opening.x, opening.y) + 1, 1)
+	# Spend one unit's movement, the way the turn does.
+	var mover: int = slots[0]
+	var units: Dictionary = world.units_for_ai()
+	var unit: UnitState = units[mover]
+	unit.mp = maxi(world.movement_allowance(mover, world.turn.ai_level) - 1, 0)
+	h.equal("progress.a_spent_unit_is_not_counted_before_its_event",
+		TurnProgress.tally(world, player, none, none).x, 0,
+		"the world is the end of the turn from the first frame")
+	h.equal("progress.and_is_counted_once_it_is_played",
+		TurnProgress.tally(world, player, PackedInt32Array([mover]), none).x, 1)
+	h.equal("progress.a_played_unit_that_did_not_move_is_not",
+		TurnProgress.tally(world, player, PackedInt32Array([slots[1]]),
+			none).x, 0)
+	# A casualty the replay is still holding belongs to the divisor.
+	var doomed: int = slots[1]
+	units[doomed].hp = 0
+	h.equal("progress.the_dead_leave_the_divisor",
+		TurnProgress.tally(world, player, none, none).y, slots.size() - 1)
+	h.equal("progress.unless_the_replay_still_holds_them",
+		TurnProgress.tally(world, player, none,
+			PackedInt32Array([doomed])).y, slots.size())
+	# And the side is the replay's own. The computer's turn hands over again
+	# inside `submit_end_turn`, so the world's seat is the marines' before the
+	# first alien is drawn moving -- a bar read off `world.turn` would count
+	# the player's own squad.
+	var result: AITurnResult = AITurnResult.new()
+	result.player = player
+	result.add(AIEvent.make("move", mover, 1, 1, 2, 2))
+	var playback: AIPlayback = AIPlayback.new()
+	playback.play(result, Callable())
+	h.equal("progress.the_side_is_the_replays_own", playback.player(), player)
+	h.equal("progress.the_world_seat_is_not_it", world.turn.current_player == player,
+		false, "_C_140 opens on the marines")
+	playback.skip()
+
+
 func _replay_positions(h: TestHarness) -> void:
 	# The events are the real shape: `AIPlan` emits a move with the **source**
 	# in `x`/`y` and the destination in `tx`/`ty`.
@@ -746,6 +888,17 @@ func _replay_positions(h: TestHarness) -> void:
 	h.equal("replay.nothing_dies_in_a_bare_event",
 		AIPlayback.casualties_in(events, 0).size(), 0,
 		"the moves above carry no outcome")
+
+	# The turn's progress bar (docs/43 section 7) counts against the same
+	# split: what the replay has already shown is what it may count.
+	h.equal("replay.progress.nothing_played_yet",
+		AIPlayback.played_in(events, 0).size(), 0)
+	h.equal("replay.progress.the_actor_is_the_events_own",
+		Array(AIPlayback.played_in(events, 2)), [4, 6],
+		"the fire and the warp, in the order they were shown")
+	h.equal("replay.progress.each_actor_once",
+		AIPlayback.played_in(events, events.size()).size(), 3,
+		"slot 5 moves, fires and moves again")
 
 	# And the view really draws them there.
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")

@@ -131,6 +131,10 @@ func pool() -> AudioPool:
 	return _pool
 
 
+func tables() -> AudioTables:
+	return _tables
+
+
 func events() -> AudioEvents:
 	return _events
 

@@ -2973,8 +2973,14 @@ fog through the camera.
 ### 28.3 The remake's own decisions, named
 
 * **A selection** flies the target to the unit with the eye's offset kept.
-  The engine's select camera is not traced and its hand-over calls no camera
-  routine (`42` §2.6); the hand-back keeps the same rule.
+  *(Corrected 2026-09-05: the engine's select camera **is** traced —
+  `fcn.004533D0` re-applies the current view mode on the new selection's cell,
+  and mode 2, the one a mission opens in, is `(8, 7, 0)` on the unit
+  ([`43` §4.5](43-battle-hud.md)). That a selection moves the camera is
+  therefore the engine's; which of the four placers the remake uses is still
+  its own. The hand-over calling no camera routine stands, and is a separate
+  thing — the remake's `COMPAT_CAMERA_RETURNS` moves the view with **no**
+  selection behind it.)*
 * **The clear-line test** runs over the map's heights, sampled a quarter
   field at a time, where `0x00453490` walks the special-object and clone
   arrays. Same data policy as every other guard here, same blind spot: a

@@ -801,7 +801,7 @@ func target_bands(shooter_slot: int) -> Dictionary[Vector2i, int]:
 ## The overlay bytes themselves -- `cell[+0x00]` as `0x0042FF30` leaves them,
 ## reset to [constant AIOverlay.STATE_RESET] and stamped with the bands.
 ##
-## Only the `units` arm of the dispatcher is transcribed (docs/43 section 10,
+## Only the `units` arm of the dispatcher is transcribed (docs/43 section 11,
 ## D10): the other arms stamp 35, 36 and 37 for the weapons that aim at a
 ## special object, at empty ground or at any unit, and `AIOverlay.build`
 ## records that refusal rather than inventing it.
