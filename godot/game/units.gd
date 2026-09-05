@@ -410,8 +410,8 @@ func start_walk(slot: int, cells: PackedInt32Array, width: int,
 	# **before** the first step and that flight blocks (docs/42 section 2.2),
 	# so the body waits on its first cell for as long as the flight takes.
 	_walks[slot] = {"cells": cells, "width": width, "elapsed": 0.0,
-		"seconds": seconds, "step_frames": step_frames, "frames": 0.0,
-		"steps": 0, "delay": maxf(delay, 0.0)}
+		"seconds": seconds, "step_frames": step_frames,
+		"steps": 0, "delay": maxf(delay, 0.0), "started": false}
 	# **On its own first cell, now, and not on the next frame.** The node was
 	# left wherever the rebuild put it, which for the computer's replay is
 	# where the unit stands at the *end* of the whole turn -- so an alien
@@ -423,15 +423,35 @@ func start_walk(slot: int, cells: PackedInt32Array, width: int,
 		var heading: int = _facing_of(cells[0], cells[1], width)
 		if heading >= 0:
 			_face(start, _body_of(slot), heading)
+	# **Not while the camera is still flying.** `aExecuteMove` runs its camera
+	# arm first -- `aPlaySelectUnitAnimation3` `0x0040EDB0` at `0x0046E514`
+	# and `0x0046E56F`, or one of the other three -- and every arm joins at
+	# `0x0046E577`, where the clip is started (`0x004055E0(3, unit, 0)`,
+	# docs/42 section 3.1) and then `aStartWalkAnimationSound` `0x0040E640`
+	# at `0x0046E593`. Starting them here instead made every unit tread its
+	# first step on the spot while the camera flew to it, and put a footstep
+	# under it.
+	if delay <= 0.0:
+		_begin_walk_cycle(slot)
+
+
+## Start the walk cycle and its first footstep -- the join at `0x0046E577`.
+##
+## The original starts the walk sound with the walk animation and repeats it
+## every `step_frames` frames after that. That the *first* step is at frame
+## zero rather than at the first boundary is this remake's reading of
+## `aStartWalkAnimationSound`, whose caller is not decompiled; a walk shorter
+## than one period would otherwise be silent, and the shortest shipped path
+## is one field, which is six frames against periods of 2 to 8.
+func _begin_walk_cycle(slot: int) -> void:
 	if states.has(slot):
 		states[slot].walk()
-	# The original starts the walk sound with the walk animation and repeats it
-	# every `step_frames` frames after that. That the *first* step is at frame
-	# zero rather than at the first boundary is this remake's reading of
-	# `aStartWalkAnimationSound`, whose caller is not decompiled; a walk shorter
-	# than one period would otherwise be silent, and the shortest shipped path
-	# is one field, which is six frames against periods of 2 to 8.
-	if step_frames > 0:
+	if not _walks.has(slot):
+		return
+	var walk: Dictionary = _walks[slot]
+	walk["started"] = true
+	_walks[slot] = walk
+	if DictRead.as_int(walk["step_frames"]) > 0:
 		_steps.append(slot)
 
 
@@ -475,15 +495,24 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 	if elapsed < 0.0:
 		_walks[slot] = walk
 		return
+	# The flight is over: the cycle and the first footstep begin here, as
+	# they do past `0x0046E577`.
+	if not DictRead.as_bool(walk.get("started", false)):
+		walk["started"] = true
+		_walks[slot] = walk
+		_begin_walk_cycle(slot)
+		walk = _walks[slot]
 	if elapsed >= seconds:
 		_snap_to_end(slot, world)
 		_walks.erase(slot)
 		return
+	# **Counted from the walk, not from the tick.** The frames are read off
+	# `elapsed`, which is already the time past the camera's flight, so the
+	# tick that crosses the flight's end contributes only its own remainder;
+	# accumulating whole deltas gave that tick a step it had not walked.
 	var step_frames: int = DictRead.as_int(walk["step_frames"])
 	if step_frames > 0:
-		var frames: float = DictRead.as_float(walk["frames"]) \
-			+ delta * CharismaState.FRAMES_PER_SECOND
-		walk["frames"] = frames
+		var frames: float = elapsed * CharismaState.FRAMES_PER_SECOND
 		var due: int = int(frames) / step_frames
 		var taken: int = DictRead.as_int(walk["steps"])
 		while taken < due:

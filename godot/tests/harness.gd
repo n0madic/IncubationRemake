@@ -54,7 +54,7 @@ const LEAST_CHECKS: Dictionary = {
 	"blob_native": 6,
 	"presentation_native": 150,
 	"ctrl_map": 30,
-	"effects": 250,
+	"effects": 253,
 	"mission": 17,
 	"campaign": 290,
 	"game_ui": 156,

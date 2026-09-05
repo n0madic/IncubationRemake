@@ -82,7 +82,7 @@ and reports `hud`, `markers` and `visible_rect`.
 ```
 python3 tools/hud_tables.py --check gog_incubation      123/123
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
-bash godot/run_tests.sh                                  36 suites, 3669 checks, 0 failures
+bash godot/run_tests.sh                                  36 suites, 3672 checks, 0 failures
 ```
 
 The whole always-run block passes (41 commands, exit 0 each), `ai_gold`,
@@ -206,9 +206,9 @@ interface running after a surrender.
 
 ## 6. What playing it found (2026-09-05)
 
-Six defects the suites and the driver both missed, reported from the screen.
-Five were the reading and not the code; the sixth is the one race in the
-replay.
+Seven defects the suites and the driver both missed, reported from the
+screen. Six were the reading and not the code; the other is the one race in
+the replay.
 
 * **The plate vanished in the eyes view.** §2 of [`43`](43-battle-hud.md) had
   the first-person view drawing no plate, from
@@ -258,6 +258,17 @@ replay.
   keeps the pair for the script and no longer claims it for the computer
   ([`23` §9](23-ai-system.md)).
 
+* **Every unit trod one step on the spot before setting off.** The camera
+  flies to the walker before the first field and the walk waits for it
+  ([`42` §3.2](42-mission-presentation.md)); the remake started the `M` clip
+  and its first footstep with the walk record, so both ran through the
+  flight over a body that had not moved. `aExecuteMove` starts them at
+  `0x0046E577`, the join every camera arm reaches, and
+  [method UnitsView.start_walk] now does the same — with the footstep frames
+  counted from the walk's own clock rather than from the tick that crosses
+  the flight's end, which was worth a spurious step of its own
+  ([`42` §3.1](42-mission-presentation.md)).
+
 `test_hud.gd` gained the two checks that would have caught the first and the
 second of these, and the digit gate was mutation-tested: removing it fails
 `hud.overlay.no_digit_without_points`. `test_game_ui.gd` gained four for the
@@ -280,6 +291,12 @@ were missing:
   empty. Removing the one call that holds it puts `dying` back to `[]` on
   that first frame and fills it on the next — the defect, reproduced by
   mutation and gone with the fix.
+
+The tread is driven as well: on `_C_140`, with the camera parked on one
+marine and another one walked, the reply shows `walking` true and the body's
+clip **not** playing for the first two frames, then both together; putting
+the cycle start back where it was makes the clip play from the first frame
+over a body that has not moved.
 
 The plate's own visibility is driven too, and was the third thing this pass
 found a way to reach: with `key 3`, `key 2` and `key 1` walking the camera

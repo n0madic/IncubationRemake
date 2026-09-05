@@ -29,6 +29,8 @@ const STEP_WIDTH: int = 20
 const STEP_SECONDS: float = 1.0
 ## Inside docs/28 section 5's shipped range of 2 to 8 frames.
 const STEP_PERIOD: int = 4
+## A camera flight in front of a walk, long enough to tick twice inside.
+const STEP_DELAY: float = 0.4
 ## docs/28 section 7.8 -- the two effect models with articulated sub-objects,
 ## and how many parts each has.
 const JOINT_MODELS: Dictionary = {"A_PANEL.3DI": 1, "A_FIRE3.3DI": 2}
@@ -1608,6 +1610,27 @@ func _check_steps(h: TestHarness) -> void:
 	units.finish_walks(null)
 	units.start_walk(STEP_SLOT, cells, STEP_WIDTH, STEP_SECONDS, 0)
 	h.equal("steps.silent_type", units.steps_taken().size(), 0)
+
+	# **Nothing starts while the camera is still flying.** `aExecuteMove`
+	# runs its camera arm first and every arm joins at `0x0046E577`, where
+	# the `M` clip is started and `aStartWalkAnimationSound` `0x0040E640`
+	# follows (docs/42 section 3.1). Starting them with the walk itself made
+	# every unit tread its first step on the spot for the length of the
+	# flight, with a footstep under it.
+	units.finish_walks(null)
+	units.start_walk(STEP_SLOT, cells, STEP_WIDTH, STEP_SECONDS, STEP_PERIOD,
+		STEP_DELAY)
+	h.equal("steps.none_during_the_flight", units.steps_taken().size(), 0,
+		"the walk sound waits for the camera")
+	units.animate(STEP_DELAY * 0.5, null)
+	h.equal("steps.still_none_half_way", units.steps_taken().size(), 0,
+		"%.2f s into a %.2f s flight" % [STEP_DELAY * 0.5, STEP_DELAY])
+	# Just past the flight, and by less than one period: the step that lands
+	# is the join's own and not a boundary's.
+	units.animate(STEP_DELAY * 0.5 + 0.01, null)
+	h.equal("steps.the_first_lands_at_the_join",
+		units.steps_taken(), [STEP_SLOT] as Array[int],
+		"the first step comes with the clip, past the flight")
 	units.free()
 
 

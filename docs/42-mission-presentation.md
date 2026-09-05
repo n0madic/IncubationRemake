@@ -291,7 +291,18 @@ Six frames per field, position interpolated by sixths with `+0xA0` in z
 ([`40` §4.8](40-charisma-model-animation.md) 3c), the `M` clip started once for
 the whole path (`0x004055E0(3, unit, 0)`, slot 3, speed 2.0, 100 000 loops) and
 stopped at its end (`0x00405D40`), the footstep sound started and stopped around
-it. **The facing is written and the object's rotation set in the same
+it.
+
+**The clip starts after the camera, not with the walk** (2026-09-05).
+`aExecuteMove` runs its camera arm first — `aPlaySelectUnitAnimation3`
+`0x0040EDB0` at `0x0046E514` and `0x0046E56F`, or `fcn.004536D0` /
+`fcn.004529D0` / `fcn.00453150` for the other modes of §3.2 — and all four
+arms join at `0x0046E577`, where `0x004055E0(3, unit, 0)` starts the clip and
+`aStartWalkAnimationSound` `0x0040E640` follows at `0x0046E593`. The flight
+blocks (§2.2), so a body stands still and idle for the length of it and the
+cycle begins with the first field. Starting the two together — which the
+remake did until this was read — makes every unit tread one step on the spot
+before it sets off, with a footstep under it. **The facing is written and the object's rotation set in the same
 instruction pair** (`aChangeUnitViewDirection` `0x004792A0` → `0x004051E0`):
 there is no turn animation; a body snaps to each new heading. Types 61…63
 (the Norc'Yn and its arms) are never rotated.
