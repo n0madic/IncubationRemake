@@ -41,10 +41,14 @@ const MAGIC: String = "INCS"
 ## the scoreboard reads -- `mission_kills`, `mission_lost` and
 ## `mission_lost_to_enemy` -- so the debriefing stops summing survivors, a sum
 ## that lost every kill made by a unit which later died. Those three are in
-## the save and **out** of the canonical hash, so D7 holds.  An older save is
+## the save and **out** of the canonical hash, so D7 holds; and to **10** when
+## the full derived-stat recompute `0x004759E0` went in -- [CampaignState]
+## gained `recruit_ammo`, and a squad deployed by an older build reached the
+## map with an empty magazine, so a save from one is not a state this build
+## can resume into a playable mission. An older save is
 ## refused **by name** rather than misread, which is the whole point of the
 ## field.
-const SCHEMA_VERSION: int = 9
+const SCHEMA_VERSION: int = 10
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 

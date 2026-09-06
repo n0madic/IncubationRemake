@@ -74,6 +74,10 @@ var game_control: PackedInt32Array = PackedInt32Array()
 var recruit_hit_points: int = 1
 ## `Info.lcl`'s weapon 0 cost, which prices a recruit at `cost + 50`.
 var weapon_zero_cost: int = 10
+## `Info.lcl`'s weapon 0 `mun`. `aEnlargeUnitPool` gives a recruit weapon 0 and
+## the closing `recomputeUnitStats` fills the magazine from it, so a roster
+## record does carry ammunition -- the pool row of every save fixture shows it.
+var recruit_ammo: int = 0
 
 
 static func create() -> CampaignState:
@@ -91,7 +95,7 @@ static func create() -> CampaignState:
 ## them from its own deterministic stream rather than the `GetTickCount`-seeded
 ## one the engine uses, because a save has to reproduce (D8).
 static func begin(number: int, weapon_zero: int, hit_points: int,
-		names: PackedStringArray = PackedStringArray(),
+		magazine: int, names: PackedStringArray = PackedStringArray(),
 		speech: PackedInt32Array = PackedInt32Array()) -> CampaignState:
 	var state: CampaignState = CampaignState.create()
 	if not FIRST_MISSION.has(number):
@@ -99,6 +103,7 @@ static func begin(number: int, weapon_zero: int, hit_points: int,
 	state.campaign = number
 	state.weapon_zero_cost = weapon_zero
 	state.recruit_hit_points = hit_points
+	state.recruit_ammo = magazine
 	state.player_count = START_PLAYER_COUNT
 	for player: int in range(state.player_count):
 		state.equipment_points[player] = START_EQUIPMENT_POINTS
@@ -121,7 +126,8 @@ func seed_pool(names: PackedStringArray = PackedStringArray(),
 		return
 	for index: int in range(SEED_NAMES.size()):
 		var drawn: int = speech[index] if index < speech.size() else 1
-		roster.enlarge(0, mode, skill_level, drawn, recruit_hit_points)
+		roster.enlarge(0, mode, skill_level, drawn, recruit_hit_points,
+			recruit_ammo)
 	for index: int in range(SEED_NAMES.size()):
 		var unit: UnitState = roster.record(index)
 		if unit == null:
@@ -220,7 +226,8 @@ func recruit(player: int, speech: int) -> int:
 		return Roster.NO_SLOT
 	if not spend_points(player, cost):
 		return Roster.NO_SLOT
-	return roster.enlarge(player, mode, skill_level, speech, recruit_hit_points)
+	return roster.enlarge(player, mode, skill_level, speech,
+		recruit_hit_points, recruit_ammo)
 
 
 ## The Recruit screen's other button. Returns the points refunded.
@@ -289,6 +296,7 @@ func view() -> Dictionary:
 		"mode": mode,
 		"game_control": game_control.duplicate(),
 		"recruit_hit_points": recruit_hit_points,
+		"recruit_ammo": recruit_ammo,
 		"weapon_zero_cost": weapon_zero_cost,
 		"scoreboard": boards,
 		"roster": roster.view(),
@@ -309,6 +317,7 @@ static func from_view(record: Dictionary) -> CampaignState:
 	state.mode = DictRead.as_int(record["mode"])
 	state.game_control = DictRead.to_int32(record["game_control"])
 	state.recruit_hit_points = DictRead.as_int(record["recruit_hit_points"])
+	state.recruit_ammo = DictRead.as_int(record["recruit_ammo"])
 	state.weapon_zero_cost = DictRead.as_int(record["weapon_zero_cost"])
 	var boards: Array[ScoreRecord] = []
 	for entry: Variant in DictRead.as_array(record["scoreboard"]):
@@ -325,7 +334,7 @@ func digest_hex() -> String:
 	assert(started == OK)
 	ctx.update(mission.to_utf8_buffer())
 	ctx.update(PackedInt32Array([campaign, difficulty, tech_level, skill_level,
-		player_count, mode, recruit_hit_points,
+		player_count, mode, recruit_hit_points, recruit_ammo,
 		weapon_zero_cost]).to_byte_array())
 	ctx.update(equipment_points.to_byte_array())
 	ctx.update(commendations.to_byte_array())

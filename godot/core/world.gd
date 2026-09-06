@@ -21,6 +21,10 @@ extends RefCounted
 ## computer is handed the turn and does not act (see [method submit_end_turn]).
 const AI_TURNS_PER_HAND_OVER: int = 4
 
+## docs/21 section 5's species 2, `Info.lcl`'s *inanimate object* -- the one
+## owner test [method load_sweep] forgives.
+const SPECIES_INANIMATE: int = 2
+
 var resource: MapResource = null
 var state: MapState = null
 var rng: IncRandom = null
@@ -182,6 +186,83 @@ static func create(map_document: Dictionary, balance: Dictionary,
 			continue
 		world._units[unit.slot] = unit
 	return world
+
+
+## `0x004783D0` -- the post-load sweep, run by `aLoadBattleMap`'s own caller at
+## `0x00417D18` before anything else touches the map.
+##
+## **Not part of [method create]**, for the same reason it is not part of
+## `aLoadBattleMap`: it is a separate routine the loader's caller runs, and it
+## reads *session* state -- who is playing -- rather than the map. `game`'s
+## mission entry calls it; a save's restore does not, because `load_save`
+## replaces the whole unit array afterwards, and a hand-built world calls it
+## only when it means to be a freshly loaded battle map.
+##
+## It walks all 200 unit slots and does one of two things to every live record:
+## takes it off the map, or hands it to the **full** derived-stat recompute
+## `0x004759E0` ([method Refresh.recompute_full]). So a `.lev`'s own `+0x3D`,
+## `+0x16`, `+0x15`, `+0x19`, `+0x36`/`+0x37`, `+0x3A` and `+0x58` are
+## authored values that the engine overwrites before the first turn, and the
+## shipped bytes are whatever the editor last saved. Measured over the 155
+## shipped missions: of 1826 placed units 45 carry an ammunition byte that is
+## not their weapon's magazine and 58 carry hit points below their ceiling.
+##
+## The branch, in the engine's order:
+##
+## [codeblock]
+## if (rec[+0x16] == 0)            continue;         /* free slot */
+## if (playerKind(rec.player) == 0) {                /* 0x0043B6E0 */
+##     if (rec.player == 255)      goto alien;
+##     if (species(rec.type) == 2) goto keep;        /* a barrel outlives its owner */
+##     aUI_KillUnit(rec.x, rec.y); continue;
+## }
+## keep:
+## if (rec.player != 255)          { recompute(rec); continue; }
+## alien:
+## if (humanCount() <= 1)          { recompute(rec); continue; }   /* 0x0043B700 */
+## if (isNetworkSession())         { recompute(rec); continue; }   /* 0x0043B1F0 */
+## aUI_KillUnit(rec.x, rec.y);
+## [/codeblock]
+##
+## `playerKind` is the dword array at `0x00509E20`, indexed 0..3 and answering
+## 0 for anything else -- which is why players 252 (the scenery owner of 181
+## shipped barrels and cases) and 255 both take the out-of-session arm, and why
+## the species exception exists at all. The alien arm removes the aliens from a
+## local game with more than one human; a campaign has exactly one, so it
+## recomputes.
+##
+## Answers how many records it took off the map.
+func load_sweep() -> int:
+	var removed: int = 0
+	var humans: int = turn.human_count()
+	for slot: int in unit_slots():
+		var unit: UnitState = _units[slot]
+		if not unit.is_placed():
+			continue
+		var in_session: bool = _player_kind_of(unit.player) != 0
+		var alien: bool = unit.player == UnitState.PLAYER_ALIEN
+		if not in_session and not alien \
+				and _unit_types.species(unit.type_id) != SPECIES_INANIMATE:
+			var _hero: bool = UnitState.take_off_map(state, turn, unit)
+			removed += 1
+			continue
+		# `0x0043B1F0` is the network gate, and this remake has no network
+		# session (docs/92 section 7.9), so the alien arm turns on the human
+		# count alone.
+		if alien and humans > 1:
+			var _hero: bool = UnitState.take_off_map(state, turn, unit)
+			removed += 1
+			continue
+		Refresh.recompute_full(unit, _unit_types, _weapons, _units,
+			turn.ai_level)
+	return removed
+
+
+## `0x0043B6E0` -- `playerKind[player]`, and 0 for an index outside 0..3.
+func _player_kind_of(player: int) -> int:
+	if player < 0 or player >= turn.player_kind.size():
+		return 0
+	return turn.player_kind[player]
 
 
 ## `aNextPlayerHandling`'s one-shot -- `0x0047DCA7`..`0x0047DCD4`.
@@ -1314,6 +1395,12 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 	unit.turn_start_y = y
 	_units[slot] = unit
 	state.set_unit(state.index_of(x, y), slot)
+	# `0x00478DD1`, between `aUI_SetUnit` and the pool removal: the **full**
+	# recompute, not the hand-over's short one. A roster record carries no
+	# ammunition byte of its own -- `aEnlargeUnitPool` never writes one -- so
+	# without this every deployed squad reaches the map with an empty weapon,
+	# which is what made `_C_100` unplayable.
+	Refresh.recompute_full(unit, _unit_types, _weapons, _units, turn.ai_level)
 	# `aTransferUnitFromPoolToMap` rebuilds visibility before it returns, which
 	# is what makes a squad see the map it was just placed on.
 	Visibility.build(state, _units, _unit_types, player, turn.human_count(),
@@ -1333,10 +1420,14 @@ func survivors_of(player: int) -> Array[UnitState]:
 		var unit: UnitState = _units[slot]
 		if unit.player != player or not unit.is_placed():
 			continue
-		# The engine recomputes each unit's stats on the way out, so what
+		# `0x00478EA1` -- the same full recompute deployment runs, so what
 		# reaches the pool is a refreshed record rather than one still carrying
-		# the last turn's movement.
-		Refresh.recompute_stats(unit, _unit_types, _units, turn.ai_level)
+		# the last turn's movement. It heals the survivor to the ceiling and
+		# refills the magazine, which is what the pool row of every save
+		# fixture shows: Sgt. Bratt comes back at `hp 11` with `ammo 10`, his
+		# maximum and weapon 2's magazine exactly.
+		Refresh.recompute_full(unit, _unit_types, _weapons, _units,
+			turn.ai_level)
 		out.append(UnitState.from_view(unit.view()))
 	return out
 

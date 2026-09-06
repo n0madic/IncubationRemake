@@ -1541,6 +1541,9 @@ func _build_backdrop(mission: String) -> void:
 	var world_set: String = DictRead.as_string(header["world_set"])
 	var geometry: Dictionary = _geometry_for(world_set)
 	var textures: Dictionary = _textures_for(world_set)
+	# No [method World.load_sweep] here: the campaign maps place no units at
+	# all -- `_C_XXX` and `_C_YYY` are 200 free slots each -- so the sweep
+	# would walk an empty array. This is a backdrop, not a battle map.
 	_backdrop_world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(geometry.get("special_models", [])))
 	_backdrop_mission = mission
@@ -1837,6 +1840,13 @@ func _build(mission: String) -> void:
 		DictRead.as_dict(map_document["header"])["world_set"])
 	world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(_geometry_for(set_name).get("special_models", [])))
+	# `0x00417D18` -- what `aLoadBattleMap`'s caller does with the map it has
+	# just loaded, before anything else touches it: the units of players who
+	# are not in the session come off, and every record left is handed to the
+	# full derived-stat recompute. A `.lev`'s own ammunition, hit-point,
+	# movement, fitness, armour, absorber and stimulant bytes are authored
+	# values the engine overwrites here ([method World.load_sweep]).
+	var _swept: int = world.load_sweep()
 	# **Before** the script runs and before the first hand-over. `ai_level`
 	# steers the movement allowance and the experience multiplier, and it is
 	# item 5 of the canonical hash, so it has to be right from the world's

@@ -472,11 +472,27 @@ static func generate(state: MapState, units: Dictionary,
 ##
 ## Returns whether the counter moved, so a caller can report it.
 static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
-	var counted: bool = false
 	# `0x0043B8D0`, from `aAttackUnit`'s `0x0046BF6E` and ten other death
 	# paths -- the set-piece killers, the bomb and the teleporter among them.
-	# Every one of them ends here, so counting here counts all eleven.
+	# Every one of them ends here, so counting here counts all eleven. It is
+	# **not** inside `aUI_KillUnit`: the loss counter belongs to the call
+	# sites, which is why [method take_off_map] below is a routine of its own.
 	turn.count_unit_lost(unit.type_id, unit.player)
+	return take_off_map(state, turn, unit)
+
+
+## `aUI_KillUnit` `0x004779C0` alone -- the hero counter, the cell and the
+## hit-point byte, and nothing else.
+##
+## Split out of [method remove] for the one caller that is not a death: the
+## post-load sweep `0x004783D0` ([method World.load_sweep]) takes the units of
+## players who are not in the session off the map, and reaches this routine
+## directly. Nothing has died there and no loss is counted -- and the hero
+## counter cannot fire either, its gate being the turn counter, which at load
+## is still zero.
+static func take_off_map(state: MapState, turn: TurnState,
+		unit: UnitState) -> bool:
+	var counted: bool = false
 	if unit.pool_flag >= HERO_POOL_FLAG and turn.turn != 0 \
 			and unit.player >= 0 and unit.player < turn.hero_killed.size():
 		turn.hero_killed[unit.player] = \

@@ -468,8 +468,16 @@ rec[+0x45] = player;
 rec[+0x4D] = 1;                                   /* pool candidate */
 rec[+0x5A] = (weapon[rec[+0x3F]].cost + 50) / 10; /* cached resale value */
 rec[+0x55] = aRandom(1, 6);                       /* speech set */
-recomputeUnitStats(rec);                         /* 0x004759E0 */
+recomputeUnitStats(rec);                         /* 0x004759E0, at 0x00478B4A */
 ```
+
+**The closing recompute is not decoration.** `0x004759E0` is the *full*
+derived-stat rewrite, not the hand-over's short `0x004759B0`
+([`25` §5](25-turn-and-round.md)), and none of the fields it writes is seeded
+above: `+0x16` hit points, `+0x15` movement, `+0x19` fitness, `+0x36`/`+0x37`
+armour, `+0x3A` absorber charges, `+0x58` stimulant and — the one that matters
+here — `+0x3D`, the magazine, taken from `0x004752A0` for the weapon 0 the line
+above gave them. A recruit therefore leaves this routine already loaded.
 
 **`unitType = player` is deliberate, not a slip.** `Info.lcl` names unit types
 0…3 `Human Soldier (1)` … `(4)`, one per player slot, differing only in the
@@ -497,10 +505,21 @@ Two routines move a record between the roster and the map, and they are not
 symmetric.
 
 **`aTransferUnitFromPoolToMap(player, slot, x, y)` `0x00478D10`** — places the
-record on the map through `aUI_SetUnit` (`0x00472780`, `aUI.cpp`), rebuilds
-visibility, then removes the slot from the pool. It refuses `slot > 30`. Its
-only caller is the deploy screen, `aPI.cpp` — which is what identifies that
-module ([`90` §2](90-binaries-and-source-layout.md)).
+record on the map through `aUI_SetUnit` (`0x00472780`, `aUI.cpp`), **runs the
+full derived-stat recompute on the placed record** (`0x004759E0`, called at
+`0x00478DD1` from the pointer `aGetUnitPtr` `0x00477AE0` returns for the id the
+new cell carries), rebuilds visibility, then removes the slot from the pool. It
+refuses `slot > 30`. Its only caller is the deploy screen, `aPI.cpp` — which is
+what identifies that module ([`90` §2](90-binaries-and-source-layout.md)).
+
+**That recompute is what fills the magazine.** A roster record's `+0x3D` comes
+from nowhere else on the deployment path — `aUI_SetUnit` copies the record
+verbatim — so a remake that skips it deploys a squad with an empty weapon.
+`_C_100` is where that shows first and worst: it places no player-0 unit of its
+own ([`98` §2](98-slice-6-report.md)), so *every* marine in the campaign's
+opening mission comes out of the pool. *(Found 2026-09-06 by the remake, which
+had transcribed only the short `0x004759B0`; see [`25` §5](25-turn-and-round.md)
+for why the two are easy to confuse.)*
 
 **`aTransferUnitFromMapToPool(player, x, y)` `0x00478F20`** — the survival gate:
 
@@ -518,8 +537,16 @@ Both failures are silent: the routine returns TRUE and the unit is simply gone.
 A remake that wants to warn the player has to add the warning itself.
 
 `aTransferAllUnitsFromMapToPool(player)` `0x00478E50` walks every cell, filters
-on `u[+0x45] == player`, recomputes the unit's stats and calls the above. It has
-exactly one caller: the debriefing screen, and only in game mode 1 (§6.1).
+on `u[+0x45] == player`, recomputes the unit's stats — the **full**
+`0x004759E0` again, at `0x00478EA1` — and calls the above. It has exactly one
+caller: the debriefing screen, and only in game mode 1 (§6.1).
+
+So a survivor reaches the pool **healed to their ceiling and reloaded**: the
+recompute writes `+0x16` from `0x00475240`, `+0x3D` from `0x004752A0` and
+zeroes the heat, the jam and the action state. The fixture saves show the
+result rather than the rule — `_31_.sav`'s pool record for Sgt. Bratt reads
+`hp 11` with `ep 73` (`min(15, 5 + 73/12)` = 11, his exact ceiling) and
+`ammo 10` beside `weapon 2`, whose `mun` is 10.
 
 ### 3.5 The two banks — **[code] `aCopyUnitPool` `0x00478910`**
 

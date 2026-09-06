@@ -440,8 +440,69 @@ save carries, not a derived quantity.
 ```
 
 `0x004759B0` does the three things above and nothing else. `0x004759E0` is the
-longer rewrite — `+0x3A`, `+0x16`, `+0x15`, `+0x19`, … — and the hand-over does
-not call it.
+longer rewrite and the hand-over does not call it. Since it is the routine a
+remake is most likely to skip, here it is in full — nine helper answers and
+four clears, in the order the code stores them:
+
+| Store | From | What |
+|---|---|---|
+| `+0x3A` | `0x00475580` | 4 with equipment 18 (*Damage Absorber*), else 0 |
+| `+0x16` | `0x00475240` | the hit-point ceiling — the type's alone for player 255, else `min(15, type + EP/12)` |
+| `+0x15` | `0x00475160` | `aGetMovePoints`, [`10` §5.5](10-lev-mission-format.md) |
+| `+0x19` | `0x00475120` | the fitness cap — 255 where the type has none, else `max(3, EP/12)` |
+| `+0x58` | `0x00475320` | 1 with equipment 3, else 2 with equipment 4, else 0 |
+| `+0x36` | `0x00475490` | front armour, [`10` §5.4](10-lev-mission-format.md) |
+| `+0x37` | `0x004754F0` | rear armour |
+| `+0x41` | — | 0, the action state |
+| `+0x3D` | `0x004752A0` | **the magazine** — the weapon's `mun`, doubled by equipment 6 (*Ammo Pack*) and stored as a byte |
+| `+0x3E`, `+0x40`, `+0x39` | — | 0: heat, malfunction, "has acted" |
+
+Its four call sites are all outside the turn: `aEnlargeUnitPool`'s last act
+(`0x00478B4A`), deployment (`0x00478DD1`) and recovery (`0x00478EA1`) — all
+three [`27` §3](27-campaign.md) — and the post-load sweep `0x004783D0`, §5.1
+below. The magazine row is the one that bites: a roster record's `+0x3D` is
+written **only** here, so a remake that transcribes `0x004759B0` alone deploys
+an empty weapon.
+
+### 5.1 The post-load sweep — **[code] `0x004783D0`**
+
+`aLoadBattleMap`'s own caller runs it on the map it has just loaded
+(`0x00417D18`), before the script, before the first hand-over and before
+anything else touches the unit array. It walks all 200 slots:
+
+```c
+if (rec[+0x16] == 0)             continue;         /* free slot */
+if (playerKind(rec[+0x45]) == 0) {                 /* 0x0043B6E0 */
+    if (rec[+0x45] == 255)       goto alien;
+    if (species(rec[+0x4C]) == 2) goto keep;       /* a barrel outlives its owner */
+    aUI_KillUnit(rec.x, rec.y);  continue;
+}
+keep:
+if (rec[+0x45] != 255)           { recomputeUnitStats(rec); continue; }
+alien:
+if (humanCount() <= 1)           { recomputeUnitStats(rec); continue; }  /* 0x0043B700 */
+if (isNetworkSession())          { recomputeUnitStats(rec); continue; }  /* 0x0043B1F0 */
+aUI_KillUnit(rec.x, rec.y);
+```
+
+`playerKind` is the dword array at `0x00509E20`, indexed 0..3 and answering 0
+for anything else — which is why players 252 (the scenery owner of 181 shipped
+barrels and cases) and 255 both take the out-of-session arm, and why the
+species exception exists at all. `aUI_KillUnit` `0x004779C0` is **not** a
+death: it frees the model, clears the cell and writes `+0x16 = 0`, and the loss
+counter `0x0043B8D0` sits at the eleven *other* call sites, not in it. Its one
+side effect is the hero counter, and that is gated on the turn counter, which
+at load is still zero.
+
+**So seven of a `.lev`'s unit bytes are authored values the engine overwrites
+before the player ever sees them** — `+0x3D`, `+0x16`, `+0x15`, `+0x19`,
+`+0x36`/`+0x37`, `+0x3A` and `+0x58`. Measured over the 155 shipped missions:
+of 1826 placed units, 45 carry an ammunition byte that is not their weapon's
+magazine and 58 carry hit points below their ceiling (40 of them type 56,
+`Pyr'Coo`, at 4 of 6). The kill arm reaches almost nothing in a one-human
+session — two `Spider` records, in `_O_058` and `_S_070`, both owned by player
+1 — because no shipped campaign mission places a unit for a player slot the
+campaign does not use.
 
 **Fitness moves by at most three in one turn** — one for having stood down,
 then one or two for the Banner — and snaps to the cap rather than overshooting.
@@ -766,6 +827,12 @@ it covers.
    two orthogonal steps and `35` is two orthogonal plus one diagonal, both
    uniquely; `40` and `55` each have two decompositions, so the step mix behind
    them is not recoverable from the value alone.
+
+4. ~~**The post-load sweep `0x004783D0`.**~~ **Closed** — §5.1 below, and
+   ported *(2026-09-06)*. It is decoded, transcribed as `World.load_sweep()`
+   and called by the remake's mission entry, the way `aLoadBattleMap`'s own
+   caller calls it. Checked end to end on `_C_122`, whose eleven `Pyr'Coo` are
+   authored at 4 hit points and come up at their type's 6.
 
 The ViewPlayer block is **not** listed here. §10's sweep partitions it and the
 result is tabulated where it belongs, in

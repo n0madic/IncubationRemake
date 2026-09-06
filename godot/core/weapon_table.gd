@@ -67,6 +67,18 @@ func magazine(weapon_id: int) -> int:
 	return _field(weapon_id, "mun", 0)
 
 
+## `0x004752A0` -- the rounds a record is filled to: the weapon's `mun`,
+## doubled when the unit carries an Ammo Pack (`+0x27`, equipment 6).
+##
+## The engine stores the answer in the record's `+0x3D` **byte**, so a doubled
+## 255 lands as 254 rather than saturating. Transcribed rather than guarded:
+## the truncation is what the store does, and inventing a clamp here would put
+## a number in the record that the original never writes.
+func magazine_for(weapon_id: int, double_munition: bool) -> int:
+	var mun: int = magazine(weapon_id)
+	return (mun * 2) & 0xFF if double_munition else mun
+
+
 ## docs/21 section 6 -- `Hit (%)`, the accuracy the curve starts from.
 func hit(weapon_id: int) -> int:
 	return _field(weapon_id, "hit", 0)

@@ -60,6 +60,7 @@ SKILL_COUNT = 6
 OFF_EQUIPMENT = 0x21
 EQUIPMENT_COUNT = 21
 OFF_DECORATIONS = 0x38
+OFF_AMMO = 0x3D
 OFF_WEAPON = 0x3F
 OFF_X = 0x42
 OFF_Y = 0x43
@@ -202,6 +203,8 @@ class PoolRecord:
     ep = property(lambda s: s._get(OFF_EP), lambda s, v: s._set(OFF_EP, v))
     tp = property(lambda s: s._get(OFF_TP), lambda s, v: s._set(OFF_TP, v))
     fp = property(lambda s: s._get(OFF_FP), lambda s, v: s._set(OFF_FP, v))
+    ammo = property(lambda s: s._get(OFF_AMMO),
+                    lambda s, v: s._set(OFF_AMMO, v))
     weapon = property(lambda s: s._get(OFF_WEAPON),
                       lambda s, v: s._set(OFF_WEAPON, v))
     player = property(lambda s: s._get(OFF_PLAYER),
@@ -251,6 +254,7 @@ class PoolRecord:
             "tp": self.tp,
             "fp": self.fp,
             "rank": self.rank,
+            "ammo": self.ammo,
             "weapon": self.weapon,
             "player": self.player,
             "unit_type": self.unit_type,
@@ -300,7 +304,7 @@ class Roster:
     # -- mutation -------------------------------------------------------------
 
     def enlarge(self, player: int, *, mode: int, skill_level: int,
-                weapon_cost: int, speech: int, hit_points: int,
+                weapon_cost: int, speech: int, hit_points: int, ammo: int = 0,
                 row: int = ROW_LIVE) -> int | None:
         """``aEnlargeUnitPool`` ``0x004789B0`` -- seed the first free slot.
 
@@ -308,11 +312,15 @@ class Roster:
         caller's draw: ``docs/27`` §3.2 has the engine call ``aRandom(1, 6)``
         here, and which generator that is belongs to the caller (D8).
 
-        *hit_points* is what the closing ``recomputeUnitStats`` leaves -- the
-        unit type's ``hp_max`` from ``Info.lcl``.  It is an argument rather
-        than a constant because a zero HP byte **is** the free-slot marker: a
+        *hit_points* and *ammo* are what the closing ``recomputeUnitStats``
+        (``0x004759E0``, called at ``0x00478B4A``) leaves -- the unit type's
+        ``hp_max`` and weapon 0's ``mun`` from ``Info.lcl``.  They are
+        arguments rather than constants because this model holds no balance
+        tables, and because a zero HP byte **is** the free-slot marker: a
         recruit the model left at zero would be seeded into its own slot again
-        by the next call.
+        by the next call.  The pool row of every ``.sav`` fixture carries the
+        magazine: Sgt. Bratt reads ``+0x3D = 10`` beside ``+0x3F = 2``, and
+        weapon 2's ``mun`` is 10.
         """
         if hit_points <= 0:
             raise CampaignError(
@@ -334,6 +342,7 @@ class Roster:
         rec.resale = (weapon_cost + RECRUIT_MARKUP) // RESALE_SCALE
         rec.speech = speech
         rec.hit_points = hit_points
+        rec.ammo = ammo
         self.row(row)[slot] = rec
         return slot
 
@@ -510,12 +519,15 @@ class CampaignState:
     #: ``Info.lcl``'s ``hp_max`` for the recruit's unit type, which is the
     #: player slot (``docs/27`` §3.2's deliberate ``unitType = player``).
     recruit_hit_points: int = 1
+    #: ``Info.lcl``'s weapon 0 ``mun``.  ``aEnlargeUnitPool`` gives a recruit
+    #: weapon 0 and its closing recompute fills the magazine from it.
+    recruit_ammo: int = 0
 
     # -- start ----------------------------------------------------------------
 
     @classmethod
     def begin(cls, campaign: int, *, speech: Iterable[int] = (),
-              weapon_cost: int = 10, hit_points: int = 1,
+              weapon_cost: int = 10, hit_points: int = 1, magazine: int = 0,
               names: Iterable[str] = SEED_NAMES) -> "CampaignState":
         """A new campaign -- ``0x0043AE76`` then ``aCreateUnitPoolForCampaign``.
 
@@ -529,6 +541,7 @@ class CampaignState:
             raise CampaignError(f"no such campaign: {campaign}")
         state = cls(campaign=campaign)
         state.recruit_hit_points = hit_points
+        state.recruit_ammo = magazine
         state.player_count = CAMPAIGN_PLAYER_COUNT
         for p in range(state.player_count):
             state.equipment_points[p] = CAMPAIGN_START_EQUIPMENT_POINTS
@@ -558,7 +571,7 @@ class CampaignState:
             slot = self.roster.enlarge(
                 0, mode=self.mode, skill_level=self.skill_level,
                 weapon_cost=weapon_cost, speech=drawn,
-                hit_points=self.recruit_hit_points)
+                hit_points=self.recruit_hit_points, ammo=self.recruit_ammo)
             if slot is None:
                 raise CampaignError("a fresh pool has no free slot")
         listed = list(names)
@@ -619,7 +632,7 @@ class CampaignState:
         return self.roster.enlarge(
             player, mode=self.mode, skill_level=self.skill_level,
             weapon_cost=weapon_zero_cost, speech=speech,
-            hit_points=self.recruit_hit_points)
+            hit_points=self.recruit_hit_points, ammo=self.recruit_ammo)
 
     def dismiss(self, player: int, slot: int) -> int:
         """The Recruit screen's other button -- refunds ``+0x5A * 10``."""

@@ -158,13 +158,16 @@ static func _heat_limit(view: Dictionary, wtab: WeaponTable) -> int:
 
 
 ## `0x004752A0` -- the magazine, doubled by Double Munition (`+0x27`).
+##
+## The 255 arm is the panel's, not the routine's: a weapon that never consumes
+## ammunition is drawn as `-/-`, so the doubling the engine would still do is
+## not asked for.
 static func _ammo_max(view: Dictionary, wtab: WeaponTable) -> int:
-	var magazine: int = wtab.magazine(DictRead.as_int(view["weapon"]))
-	if magazine == Refresh.HEAT_NONE:
-		return magazine
-	if DictRead.to_int32(view["equipment"]).has(Interact.EQUIP_DOUBLE_MUNITION):
-		magazine *= 2
-	return magazine
+	var weapon: int = DictRead.as_int(view["weapon"])
+	if wtab.magazine(weapon) == Refresh.HEAT_NONE:
+		return Refresh.HEAT_NONE
+	return wtab.magazine_for(weapon, DictRead.to_int32(
+		view["equipment"]).has(Interact.EQUIP_DOUBLE_MUNITION))
 
 
 ## `0x00474DD0(x, y + 10)`: the frame, the class icon, the two armour

@@ -22,6 +22,13 @@ const SCHEMA: String = "incubation.campaign-cases/1"
 ## were measured on the commit **before** this slice and are unchanged by it;
 ## a suite that only compared a hash with itself would not notice a drift, and
 ## `test_cache.gd` and `test_mission.gd` both do exactly that.
+##
+## **They are pre-sweep, deliberately.** [method World.load_sweep] rewrites
+## seven bytes of every unit record (docs/25 section 5.1) and a played mission
+## therefore never has these hashes -- `game`'s mission entry runs the sweep
+## right after [method World.create], and this pins what the loader alone
+## produces. Keeping the pins on the loader is what lets a converter change and
+## a sweep change stay apart: one moves these, the other does not.
 const PINNED_HASHES: Dictionary = {
 	"_C_140": "d1ad0f008ed34b9c44bf883e42c5b681d3d1f32181cd0295f6f8affca475b802",
 	"_C_141": "ec28d7c8a45db29dedf8332b63cbe0f659e8be469ffc3cec976d75a7c51f1062",
@@ -88,6 +95,9 @@ func _fixture_is_current(h: TestHarness, cases: Dictionary) -> void:
 		"the fixture and the cache read one Info.lcl")
 	h.equal("cases.recruit_hit_points", state.recruit_hit_points,
 		DictRead.as_int(cases["recruit_hit_points"]))
+	h.equal("cases.recruit_ammo", state.recruit_ammo,
+		DictRead.as_int(cases["recruit_ammo"]),
+		"weapon 0's mun, which the seed's closing recompute puts in +0x3D")
 	h.equal("cases.recruit_cost", state.recruit_cost(),
 		DictRead.as_int(cases["recruit_cost"]))
 	h.equal("cases.mission_count",
@@ -99,6 +109,7 @@ func _state(cases: Dictionary, number: int) -> CampaignState:
 	return CampaignState.begin(number,
 		DictRead.as_int(cases["weapon_zero_cost"]),
 		DictRead.as_int(cases["recruit_hit_points"]),
+		DictRead.as_int(cases["recruit_ammo"]),
 		_seed_names(cases))
 
 
@@ -155,6 +166,11 @@ func _seed(h: TestHarness, cases: Dictionary) -> void:
 				unit.skills, DictRead.to_int32(record["skills"]))
 			h.equal_ints("seed.%d.slot_%d.equipment" % [number, slot],
 				unit.equipment, DictRead.to_int32(record["equipment"]))
+			# `0x00478B4A` -- `aEnlargeUnitPool` closes with the full
+			# recompute, so a seeded record already carries weapon 0's
+			# magazine.
+			h.equal("seed.%d.slot_%d.ammo" % [number, slot], unit.ammo,
+				DictRead.as_int(record["ammo"]))
 
 	# The sixteen field writes, against the block campaign_tables decodes out of
 	# `0x0047883B`..`0x004788A5`. The mapping from offset to field is this
@@ -578,6 +594,19 @@ func _deployment(h: TestHarness, cases: Dictionary) -> void:
 			[DictRead.as_int(view["x"]), DictRead.as_int(view["y"])],
 			[cell.x, cell.y])
 		h.equal("deploy.%s.is_ours" % name, DictRead.as_int(view["player"]), 0)
+		# `0x00478DD1` -- the full recompute deployment runs. A roster record
+		# carries no magazine of its own, so without it the whole squad lands
+		# with an empty weapon and `_C_100` cannot be played at all.
+		var wtab: WeaponTable = world.weapons()
+		h.equal("deploy.%s.magazine" % name, DictRead.as_int(view["ammo"]),
+			wtab.magazine_for(DictRead.as_int(view["weapon"]), false),
+			"weapon %d's mun" % DictRead.as_int(view["weapon"]))
+		h.check("deploy.%s.magazine_is_not_zero" % name,
+			DictRead.as_int(view["ammo"]) > 0,
+			"%d rounds" % DictRead.as_int(view["ammo"]))
+		h.equal("deploy.%s.healed" % name, DictRead.as_int(view["hp"]),
+			world.max_hit_points(slot),
+			"the recompute fills the hit points to the ceiling")
 
 		h.equal("deploy.%s.cell_taken" % name,
 			DictRead.as_string(world.deploy_from_pool(
@@ -594,6 +623,17 @@ func _deployment(h: TestHarness, cases: Dictionary) -> void:
 		var survivors: Array[UnitState] = world.survivors_of(0)
 		h.check("deploy.%s.survivors" % name, survivors.size() >= 1,
 			"%d unit(s) of player 0" % survivors.size())
+		# `0x00478EA1` -- recovery runs the same full recompute, so a survivor
+		# reaches the pool healed to the ceiling and reloaded. That is what the
+		# fixture saves show: `_31_.sav` holds Sgt. Bratt at `hp 11` (his
+		# exact ceiling) with `ammo 10`, weapon 2's magazine.
+		if survivors.size() >= 1:
+			var back: UnitState = survivors[0]
+			h.equal("deploy.%s.recovered_ammo" % name, back.ammo,
+				wtab.magazine_for(back.weapon, false))
+			h.equal("deploy.%s.recovered_hp" % name, back.hp,
+				Interact.max_hit_points(world.unit_types(), back),
+				"the recompute heals a survivor on the way out")
 		var removed: int = world.clear_units_of(0)
 		h.check("deploy.%s.cleared" % name, removed >= 1,
 			"%d taken off the map" % removed)

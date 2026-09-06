@@ -31,7 +31,57 @@ func run(h: TestHarness) -> void:
 	_turn_counter(h)
 	_refresh(h)
 	_stand_down_and_stimulant(h)
+	_load_sweep(h)
 	_hash_and_save(h)
+
+
+## `0x004783D0` -- the post-load sweep, all three of its arms.
+##
+## The session is the default one every campaign save reads,
+## `player_kind = [1, 0, 0, 0]` with one human, so: player 0 and player 255
+## stay and are recomputed, a player-1 marine comes off the map, and a
+## player-1 *inanimate* (species 2, the owner of 181 shipped barrels and
+## cases) stays because the sweep forgives it. Weapon 3 is the Sniper Rifle,
+## whose magazine is 15 -- authored here as 1 so the recompute is visible.
+func _load_sweep(h: TestHarness) -> void:
+	var mine: Dictionary = TestFixtures.unit(0, 1, 1, 0, 0, 4, 0, [], 3, 1)
+	var alien: Dictionary = TestFixtures.unit(1, 3, 1, 0,
+		UnitState.PLAYER_ALIEN, 4, 0, [], 3, 1)
+	var absent: Dictionary = TestFixtures.unit(2, 5, 1, 0, 1, 4, 0, [], 3, 1)
+	var barrel: Dictionary = TestFixtures.unit(3, 1, 3,
+		TestFixtures.INANIMATE_TYPE, 1, 4, 0, [], 3, 1)
+	var world: World = World.create(TestFixtures.map_document(7, 7,
+		[mine, alien, absent, barrel]), TestFixtures.balance(), 1.0)
+	# One human, which is what every campaign save reads.
+	h.equal_ints("load_sweep.session", world.turn.player_kind,
+		PackedInt32Array([1, 0, 0, 0]))
+
+	var removed: int = world.load_sweep()
+	h.equal("load_sweep.removed", removed, 1,
+		"only the player-1 marine; the barrel's species forgives its owner")
+	# The record stays in the array with a zero hit-point byte -- that byte
+	# **is** the free-slot marker, and `0x00477ABD` is all `aUI_KillUnit`
+	# writes. So the slot is still there and no longer alive.
+	h.equal_ints("load_sweep.slots_stay", world.unit_slots(),
+		PackedInt32Array([0, 1, 2, 3]))
+	h.equal("load_sweep.the_absent_owner_is_dead",
+		DictRead.as_int(world.unit_view(2)["hp"]), 0)
+	h.equal("load_sweep.the_absent_owner_is_off_the_cell",
+		world.state.unit_at(world.state.index_of(5, 1)), MapState.NO_UNIT)
+	# `aUI_KillUnit` is not a death: `0x0043B8D0` is at the call sites.
+	h.equal_ints("load_sweep.nothing_was_counted_as_lost",
+		world.turn.mission_lost, PackedInt32Array([0, 0, 0, 0]))
+
+	var magazine: int = world.weapons().magazine(3)
+	h.check("load_sweep.the_fixture_authored_a_wrong_magazine", magazine != 1,
+		"weapon 3 holds %d, the record was authored with 1" % magazine)
+	for slot: int in [0, 1, 3]:
+		var view: Dictionary = world.unit_view(slot)
+		h.equal("load_sweep.slot_%d.ammo" % slot,
+			DictRead.as_int(view["ammo"]), magazine)
+		h.equal("load_sweep.slot_%d.hp" % slot, DictRead.as_int(view["hp"]),
+			world.max_hit_points(slot),
+			"the recompute fills the hit points to the ceiling")
 
 
 ## docs/25 section 8 -- the two one-screen routines, and the hand-over that

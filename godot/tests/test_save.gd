@@ -106,7 +106,7 @@ func run(h: TestHarness) -> void:
 ## inside as an opaque blob, and the container's own four refusals are
 ## [SaveCodec]'s shape -- four different answers, not one `null`.
 func _campaign_container(h: TestHarness) -> void:
-	var state: CampaignState = CampaignState.begin(1, 10, 5,
+	var state: CampaignState = CampaignState.begin(1, 10, 5, 7,
 		PackedStringArray(["Bratt", "West", "Maxon"]))
 	state.mission = "_C_105"
 	state.difficulty = 2

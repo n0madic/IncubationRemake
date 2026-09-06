@@ -27,6 +27,9 @@ const HEAT_NONE: int = 255
 const WEAPON_ALTERNATE_MIN: int = 20
 ## docs/25 section 8 -- 255 is "spent this turn"; the refresh turns it back on.
 const STIMULANT_SPENT: int = 255
+## `0x00475320` reads `+0x24` then `+0x25` -- equipment 3 and 4.
+const EQUIP_LIGHT_STIMULANT: int = 3
+const EQUIP_HEAVY_STIMULANT: int = 4
 
 
 ## docs/25 section 5 -- the jam ladder, one rung per hand-over.
@@ -104,6 +107,48 @@ static func recompute_stats(unit: UnitState, types: UnitTypeTable,
 	if unit.acted > 0:
 		unit.acted = 0
 	unit.mp = Allowance.for_unit(unit, types, units, ai_level)
+
+
+## `0x00475320` -- the stimulant charge equipment gives: a Light Stimulant is
+## one, a Heavy one is two, and carrying neither is none.
+static func stimulant_charge(unit: UnitState) -> int:
+	if unit.has_equipment(EQUIP_LIGHT_STIMULANT):
+		return 1
+	return 2 if unit.has_equipment(EQUIP_HEAVY_STIMULANT) else 0
+
+
+## `0x004759E0` -- the **full** derived-stat rewrite, and not `0x004759B0`.
+##
+## The two are different routines and the project has long carried only the
+## short one ([method recompute_stats], which the hand-over calls). This is the
+## one every roster path funnels through: `aEnlargeUnitPool` ends with it,
+## `aTransferUnitFromPoolToMap` calls it on the record it has just placed
+## (`0x00478DD1`, before the pool removal) and `aTransferAllUnitsFromMapToPool`
+## calls it on every survivor (`0x00478EA1`). It is what fills a magazine --
+## a roster record carries no ammunition byte of its own, so a squad deployed
+## from the pool without this reaches the map with an empty weapon.
+##
+## The nine writes are in the engine's own order. `+0x3D` is stored last but
+## one because the two zeroes after it (`+0x3E` heat, `+0x40` malfunction) and
+## the `+0x41` before it are plain clears, not helper answers.
+static func recompute_full(unit: UnitState, types: UnitTypeTable,
+		weapons: WeaponTable, units: Dictionary,
+		ai_level: int = Allowance.DEFAULT_AI_LEVEL) -> void:
+	unit.absorber = Interact.ABSORBER_CHARGES if unit.has_equipment(
+		Combat.EQUIP_DAMAGE_ABSORBER) else 0
+	unit.hp = Interact.max_hit_points(types, unit)
+	unit.mp = Allowance.for_unit(unit, types, units, ai_level)
+	unit.fp = max_fp(unit, types, unit.ep)
+	unit.stimulant = stimulant_charge(unit)
+	var armour: Vector2i = AIFire.armour_of(types, unit)
+	unit.armour_front = armour.x
+	unit.armour_rear = armour.y
+	unit.action_state = 0
+	unit.ammo = weapons.magazine_for(unit.weapon,
+		unit.has_equipment(Interact.EQUIP_DOUBLE_MUNITION))
+	unit.heat = 0
+	unit.malfunction = 0
+	unit.acted = 0
 
 
 ## `0x004781C0` -- the whole pass, for one player. Returns the slots it touched.

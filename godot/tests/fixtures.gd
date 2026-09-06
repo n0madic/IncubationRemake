@@ -53,15 +53,20 @@ const WEAPON_ROWS: Array[Dictionary] = [
 ]
 
 
+## docs/21 section 5 column 12 -- species 2, *inanimate object*: the one owner
+## the post-load sweep `0x004783D0` forgives ([method World.load_sweep]).
+const INANIMATE_TYPE: int = 98
+
+
 static func unit_type(id: int, special: int = 0, unit_size: int = 0,
-		mp_max: int = 6, fp_max: int = 0) -> Dictionary:
+		mp_max: int = 6, fp_max: int = 0, species: int = 0) -> Dictionary:
 	return {
 		# docs/21 section 5 column 7 -- a flag: 0 is "this kind has fitness",
 		# 255 is "it has none".  The shipped file sets 0 for the 70 human types
 		# and 255 for everything else, and the refresh reads it.
 		"id": id, "mp_max": mp_max, "fp_max": fp_max, "hp_max": 20,
 		"special": special,
-		"size": unit_size, "species": 0, "height": 18,
+		"size": unit_size, "species": species, "height": 18,
 		# docs/10 section 5.4 -- 255 is "derive it from the four armour items",
 		# which is what [AIFire]'s post-shot recompute reads.
 		"armour_front": 255, "armour_rear": 255,
@@ -73,6 +78,7 @@ static func balance(extra_types: Array = []) -> Dictionary:
 	var types: Array = [
 		unit_type(0), unit_type(1, 1), unit_type(14, 14), unit_type(15, 15),
 		unit_type(99, 0, 1),
+		unit_type(INANIMATE_TYPE, 0, 0, 6, 0, World.SPECIES_INANIMATE),
 	]
 	types.append_array(extra_types)
 	return {"ctrlmap": CTRLMAP_ROWS, "units": types, "weapons": WEAPON_ROWS}

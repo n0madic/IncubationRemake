@@ -92,6 +92,20 @@ def recruit_hit_points(root: Path, player: int = 0) -> int:
     return row.hp_max
 
 
+def recruit_ammo(root: Path) -> int:
+    """The magazine that same recompute leaves.
+
+    ``aEnlargeUnitPool`` writes ``weapon = 0`` and ``0x004759E0`` fills
+    ``+0x3D`` from ``0x004752A0``, which is that weapon's ``mun``.  Every
+    ``.sav`` fixture's pool row shows the byte set: Sgt. Bratt reads
+    ``+0x3D = 10`` beside ``+0x3F = 2``, weapon 2's ``mun``.
+    """
+    row = load_info(str(root)).weapons.get(0)
+    if row is None:
+        raise SystemExit("Info.lcl carries no weapon 0 -- is this the game root?")
+    return row.mun
+
+
 @dataclass(frozen=True)
 class Context:
     """Everything the checks read, loaded once."""
@@ -105,6 +119,8 @@ class Context:
     cost: int
     #: What ``recomputeUnitStats`` leaves a recruit.
     hp: int
+    #: ...and the magazine it leaves them, weapon 0's ``mun``.
+    ammo: int
     #: ``Txtmod_h.lcl`` 60..62, the three seeded names.
     seeded: list[str]
 
@@ -121,6 +137,7 @@ class Context:
             missions=campaign_missions(root),
             cost=weapon_zero_cost(corpus),
             hp=recruit_hit_points(root),
+            ammo=recruit_ammo(root),
             seeded=[names.get(i, n) for i, n in
                     zip(ctables.SQUAD_NAME_IDS, ctables.SQUAD_NAMES)],
         )
@@ -129,6 +146,7 @@ class Context:
         """A fresh campaign, with the corpus's own prices and names."""
         return cam.CampaignState.begin(
             campaign, weapon_cost=self.cost, hit_points=self.hp,
+            magazine=self.ammo,
             names=self.seeded if campaign == 1 else cam.SEED_NAMES)
 
 
@@ -195,6 +213,14 @@ def check_seed(ck: Checker, ctx: Context) -> None:
     ck.expect("seed.hero_flag", hero.pool_flag, cam.HERO_POOL_FLAG)
     ck.expect("seed.ranks", [r.rank for _, r in state.roster.occupied()],
               [1, 1, 1], "docs/27 3.1: all three start at rank 1")
+    ck.expect("seed.magazines",
+              [r.ammo for _, r in state.roster.occupied()],
+              [ctx.ammo] * 3,
+              "0x004759E0 closes aEnlargeUnitPool and fills +0x3D from "
+              "weapon 0's mun; a roster record with no magazine deploys an "
+              "empty weapon")
+    ck.check("seed.magazine_is_not_zero", ctx.ammo > 0,
+             f"weapon 0's mun is {ctx.ammo}")
     ck.check("seed.medic_kit",
              state.roster.row(cam.ROW_LIVE)[1].has_equipment(
                  cam.MEDIC_EQUIPMENT_ID),
@@ -664,6 +690,7 @@ def build_cases(root: Path) -> dict[str, Any]:
     return {
         "schema": "incubation.campaign-cases/1",
         "recruit_hit_points": ctx.hp,
+        "recruit_ammo": ctx.ammo,
         "oracle": "executable-Python",
         "recruit_cost": cost + cam.RECRUIT_MARKUP,
         "weapon_zero_cost": cost,

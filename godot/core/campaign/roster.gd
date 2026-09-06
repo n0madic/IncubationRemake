@@ -125,12 +125,16 @@ func first_free(row: int = ROW_LIVE) -> int:
 ## that is belongs to the caller -- the campaign uses its own deterministic one
 ## so a save reproduces (D8).
 ##
-## *hit_points* is what the closing `recomputeUnitStats` leaves, the unit
-## type's `hp_max`. It is an argument rather than a constant because a zero HP
-## byte **is** the free-slot marker: a recruit left at zero would be seeded
-## into its own slot again by the next call.
+## *hit_points* and *ammo* are what the closing `recomputeUnitStats`
+## (`0x004759E0`, at `0x00478B4A`) leaves: the unit type's `hp_max` and weapon
+## 0's magazine. They are arguments rather than constants because `core`'s
+## campaign half holds no balance tables -- and because a zero HP byte **is**
+## the free-slot marker, so a recruit left at zero would be seeded into its own
+## slot again by the next call. The rest of that recompute writes zeroes into a
+## record that is already zeroed here.
 func enlarge(player: int, mode: int, skill_level: int,
-		speech: int, hit_points: int, row: int = ROW_LIVE) -> int:
+		speech: int, hit_points: int, ammo: int,
+		row: int = ROW_LIVE) -> int:
 	var slot: int = first_free(row)
 	if slot == NO_SLOT:
 		return NO_SLOT
@@ -152,6 +156,7 @@ func enlarge(player: int, mode: int, skill_level: int,
 	unit.pool_flag = POOL_CANDIDATE
 	unit.speech = speech
 	unit.hp = hit_points
+	unit.ammo = ammo
 	_row(row)[slot] = unit
 	return slot
 

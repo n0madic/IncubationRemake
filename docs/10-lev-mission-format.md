@@ -735,6 +735,17 @@ The result is cached in `+0x36`/`+0x37`, and the engine rewrites those two bytes
 after every fight and whenever a unit is created (`fcn.00479ba0`), so a remake
 should treat them as a cache and recompute.
 
+**And every one of those twelve bytes is rewritten the moment the map is
+loaded.** `fcn.004783D0`, which `aLoadBattleMap`'s own caller runs at
+`0x00417D18`, hands every live record in the array to `fcn.004759E0` before the
+script runs and before the first hand-over
+([`25` §5.1](25-turn-and-round.md)). So `+0x3D`, `+0x16`, `+0x15`, `+0x19`,
+`+0x36`/`+0x37`, `+0x3A` and `+0x58` in a shipped `.lev` are **authored values
+the player never sees** — whatever the editor last wrote — and the 45 records
+whose ammunition byte is not their weapon's magazine and the 58 whose hit
+points are below their ceiling are editor state, not data. Read them for what
+the editor stored; do not read them for what the mission plays with.
+
 ### 5.5 The action-point formula
 
 `fcn.00475160` is the single source of a unit's MP, and it is now fully

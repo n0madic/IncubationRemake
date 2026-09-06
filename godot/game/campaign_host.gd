@@ -102,7 +102,7 @@ func start_new(number: int,
 	for _index: int in range(CampaignState.SEED_NAMES.size()):
 		speech.append(_draw_speech())
 	state = CampaignState.begin(number, _weapon_zero_cost(),
-		_recruit_hit_points(), names, speech)
+		_recruit_hit_points(), _recruit_ammo(), names, speech)
 	state.difficulty = clampi(difficulty, GameSettings.DIFFICULTY_MIN,
 		GameSettings.DIFFICULTY_MAX)
 	screen = SCREEN_MAP
@@ -136,6 +136,17 @@ func _weapon_zero_cost() -> int:
 		if DictRead.as_int(row["id"]) == 0:
 			return DictRead.as_int(row["cost"])
 	return 10
+
+
+## Weapon 0's `mun` -- what `aEnlargeUnitPool`'s closing recompute puts in a
+## recruit's magazine, `aEnlargeUnitPool` having just given them weapon 0.
+func _recruit_ammo() -> int:
+	var weapons: Array = DictRead.as_array(_balance.get("weapons", []))
+	for entry: Variant in weapons:
+		var row: Dictionary = entry
+		if DictRead.as_int(row["id"]) == 0:
+			return DictRead.as_int(row["mun"])
+	return 0
 
 
 func _recruit_hit_points(player: int = 0) -> int:
