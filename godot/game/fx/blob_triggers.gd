@@ -174,10 +174,16 @@ const IMMORTAL_LIFE: int = 0xFF
 ## [method SliceMain._muzzle_of]).
 const MUZZLE_HEIGHT: int = 1000
 
+## No burst creator ran, so nothing wrote the flag.
+const ARRIVED_UNWRITTEN: int = -1
+
 var _pool: BlobPool = null
 var _document: Dictionary = {}
 ## Nested creators a point-blank burst asked for, in the order it asked.
 var _programs: Array[Dictionary] = []
+## What the last burst creator wrote over the *arrived* flag, or
+## [constant ARRIVED_UNWRITTEN] when none ran -- see [method arrived_write].
+var _arrived_write: int = ARRIVED_UNWRITTEN
 ## `creator address -> the constructor calls inside it`, built once.
 var _by_creator: Dictionary[String, Array] = {}
 
@@ -225,7 +231,25 @@ static func _keys_of(from: Dictionary[String, Array]) -> Array[String]:
 func muzzle(weapon_id: int, from: Vector3i, to: Vector3i,
 		joints: Dictionary[String, Vector3i] = {}) -> int:
 	_programs.clear()
+	_arrived_write = ARRIVED_UNWRITTEN
 	return _fire("weapon_muzzle", weapon_id, from, to, joints)
+
+
+## What the last [method muzzle] wrote over the *arrived* flag `0x004FE63C`.
+##
+## 1 when nothing is in flight and 0 when a round has just left, or
+## [constant ARRIVED_UNWRITTEN] when no creator wrote it at all. **A burst
+## creator writes it whether or not it then makes anything**: the three of
+## them open with `cmp steps, 0 / jle`, and the point-blank arm writes the
+## **1** before it runs the branch that lays its zoom bobs
+## (`0x0042420D` for the flash, `0x0042456A` for the needles, `0x00424AC3`
+## for the tracer, against the flight's zero at `0x0042407B`, `0x0042455E`
+## and `0x00424AB9`). Twelve creators carry that shape (docs/42 section 4.6,
+## `presentation_tables.py`'s `arrived.creator_writes` counts them), which is
+## what makes an adjacent target arrive at once even though the burst still
+## fills the pool.
+func arrived_write() -> int:
+	return _arrived_write
 
 
 ## The nested creators the last [method muzzle] asked for, and clears them.
@@ -345,6 +369,11 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		if burst_creator:
 			life = maxi(_burst_life(from, towards,
 				DictRead.as_int(shape[SHAPE_UNIT])), 0)
+		# The creator's own write over `0x004FE63C`, ahead of everything it
+		# makes: a flight begins at 0, and a span inside one spacing -- the
+		# point-blank branch -- says there is nothing to wait for.
+		if burst_creator:
+			_arrived_write = 1 if life <= 0 else 0
 		if burst_creator and life <= 0 and key == FLASH_CREATOR:
 			_point_blank_flash(towards, burst.x)
 		for round_index: int in range(burst.x):

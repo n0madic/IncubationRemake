@@ -284,7 +284,12 @@ func for_use(result: UseResult) -> Array[Dictionary]:
 		"lever":
 			return for_event_kind("lever")
 		"full_munition", "equipment_points", "weapon_skills", "condition", \
-		"technical", "equipment", "class":
+		"technical", "equipment", "class", "message_only":
+			# **`message_only` too.** Action points 11 and 41 touch nothing,
+			# but they reach `0x00410780` like the other eleven pickups, and
+			# `box.wav` is that routine's own sound (`0x0041093C`). Only the
+			# *voice* line is missing from 11, and that is a different
+			# routine (`0x0047B660`, [method InfoText.speaks]).
 			return for_event_kind("pickup")
 		"entry_point":
 			return for_event_kind("destroy_entrypoint")

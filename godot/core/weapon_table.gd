@@ -149,7 +149,19 @@ func ap(weapon_id: int) -> int:
 	return _field(weapon_id, "ap", 0)
 
 
-## `weapon[+0x3F]` -- the id `special` 1 falls back to when the weapon is
-## jammed or out of ammunition. docs/21 section 6 calls it `param`.
+## `weapon[+0x3F]` -- docs/21 section 6's `param`, the id a `special` names.
+##
+## For `special` 1 it is the **close-combat** weapon, and the pairing is
+## symmetric: each of the three guns names its bayonet and each bayonet names
+## the gun back, which is how `0x0046F7E0` gets away with one field for both
+## directions ([method Combat.close_combat_swap]).  `special` 2 and 3 read the
+## same byte for their own replacements.
+##
+## `aBuildTargetOverlay` `0x0042FF30` reads it a third way, and that one is
+## **not** close combat: a unit whose weapon is jammed or empty falls back to
+## `param` if and only if its `special` is 1, which is what
+## [method AIOverlay.effective_weapon] models.  So the same field is the
+## bayonet a rifle stabs with and the one it is left holding when the magazine
+## is gone.
 func param(weapon_id: int) -> int:
 	return _field(weapon_id, "param", weapon_id)

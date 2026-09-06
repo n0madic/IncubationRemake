@@ -57,6 +57,27 @@ const MARKER_KILLED: int = 0x5D
 const HIT_BONUS: int = 10
 const HIT_SPAN: int = 100
 
+## docs/21 section 6 -- the weapon `special` column's value 1: *the weapon
+## changes in close combat into the weapon named by `param`*.  Three shipped
+## guns carry it -- `Advanced Combat Gun`, `Standard Assault Rifle` and
+## `Light Plasma Gun` -- and each names one of the three `Light Bayonet` rows,
+## which name it back.
+const SPECIAL_CLOSE_COMBAT: int = 1
+## `cmp cl, 0x1E` / `0x1F` / `0x20` at `0x0046F8E8` -- the three ids the revert
+## arm accepts.  The test is on the weapon the unit is **holding**, which is
+## what keeps the swap from undoing itself on the way in: a gun with
+## `special` 1 that is not one of these three is on its way to a bayonet, and
+## one that is, is on its way back.
+const CLOSE_COMBAT_WEAPONS: Array[int] = [30, 31, 32]
+## The distance the swap wants, after the large-unit subtraction of
+## docs/22 section 5.1 -- `cmp eax, 1` at `0x0046FA1B`.
+const CLOSE_COMBAT_DISTANCE: int = 1
+## `cmp edx, 0x10` at `0x0046FAAC`, over `abs(dh) / 160` -- the two cells may
+## stand sixteen height levels apart and no more.  The reciprocal multiply is
+## `0x66666667` with `sar 6`, which is a truncating divide by
+## [constant UnitTypeTable.HEIGHT_UNIT].
+const CLOSE_COMBAT_HEIGHT_LEVELS: int = 16
+
 ## docs/22 section 7 -- target `special` values that force the hit and the
 ## damage.  12 is `Barrel`/`Parabomb`, 13 is `Case`.
 const GUARANTEED_HIT_SPECIALS: Array[int] = [12, 13]
@@ -812,11 +833,78 @@ static func marker_damage(wtab: WeaponTable, marker: int,
 	return 0                     # 0x54 and 0x55 roll no damage at all
 
 
+## `0x0046F7E0` phase 0's `special` 1 arm -- **the bayonet**, docs/21 section 6.
+##
+## `aAttackUnit` calls the weapon-special dispatcher three times, and the
+## phase is the argument: **0** before the shot (`0x0046B5C7`), **2** on each
+## unit it hit (`0x0046BE1C`) and **1** at the very end (`0x0046C325`).  Phase
+## 0 owns two arms, `special` 1 and `special` 2; this is the first.
+##
+## The swap is a write over the attacker's own weapon byte, so **everything
+## downstream reads the bayonet row**: heat 255 disables the overheat roll,
+## `hit` 100 and `range max` 1 make the chance flat, the damage is the
+## bayonet's, and -- the reason a player notices at all -- `mun` 255 means the
+## subtraction after the shot is skipped entirely.  Stabbing costs no
+## ammunition because the weapon that fired had none to spend.
+##
+## Returns whether it swapped.  Four conditions, in the engine's own order:
+## a unit is standing on the aim point at all (`test edi, edi` at
+## `0x0046F9C5`), the weapon's `special` is 1, the distance is
+## [constant CLOSE_COMBAT_DISTANCE] after a field is taken off for each large
+## participant, and the two cells are within
+## [constant CLOSE_COMBAT_HEIGHT_LEVELS] of each other.
+static func close_combat_swap(state: MapState, utab: UnitTypeTable,
+		wtab: WeaponTable, attacker: UnitState, target: UnitState) -> bool:
+	if target == null:
+		return false
+	if wtab.special(attacker.weapon) != SPECIAL_CLOSE_COMBAT:
+		return false
+	if not state.in_bounds(attacker.x, attacker.y) \
+			or not state.in_bounds(target.x, target.y):
+		return false
+	var fields: int = MoveMap.distance(attacker.x, attacker.y,
+		target.x, target.y)
+	if utab.unit_size(attacker.type_id) == UnitTypeTable.SIZE_LARGE:
+		fields -= 1
+	if utab.unit_size(target.type_id) == UnitTypeTable.SIZE_LARGE:
+		fields -= 1
+	if fields != CLOSE_COMBAT_DISTANCE:
+		return false
+	var drop: int = absi(state.height_at(state.index_of(attacker.x, attacker.y))
+		- state.height_at(state.index_of(target.x, target.y)))
+	if IncInt.div_trunc(drop, UnitTypeTable.HEIGHT_UNIT) \
+			>= CLOSE_COMBAT_HEIGHT_LEVELS:
+		return false
+	attacker.weapon = wtab.param(attacker.weapon)
+	return true
+
+
+## `0x0046F7E0` phase 1's `special` 1 arm -- back to the gun.
+##
+## It runs at `0x0046C325`, **after** the ammunition subtraction of
+## docs/22 section 7.5 and before the hatch sweep, so the round the bayonet
+## did not spend is already not spent by the time the rifle comes back.  Both
+## halves are gated on the same thing the swap is: a shot marked a reaction
+## reaches neither (`0x0046B592` and `0x0046C319` read `aAttackUnit`'s fifth
+## argument and jump past the call).
+static func close_combat_revert(wtab: WeaponTable,
+		attacker: UnitState) -> bool:
+	if wtab.special(attacker.weapon) != SPECIAL_CLOSE_COMBAT:
+		return false
+	if not CLOSE_COMBAT_WEAPONS.has(attacker.weapon):
+		return false
+	attacker.weapon = wtab.param(attacker.weapon)
+	return true
+
+
 ## `aAttackUnit` `0x0046B450` -- docs/22 section 7, in the order it runs.
+## `reaction` is `aAttackUnit`'s fifth argument, the one
+## [method Reaction.drain] passes as 1: it gates the two close-combat arms and
+## nothing else here.
 static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, x: int, y: int, tx: int, ty: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> AttackResult:
+		rng: IncRandom, reaction: bool = false) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
 	if attacker == null:
@@ -831,6 +919,14 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		ty = standing.y
 
 	result.fired = true
+	# `0x0046B5C7` -- the weapon-special dispatcher's **phase 0**, before the
+	# weapon is even checked for damage: a `special` 1 gun standing next to
+	# what it is aiming at becomes its bayonet for the length of the shot
+	# ([method close_combat_swap]).  A reaction skips it -- `0x0046B592` reads
+	# the fifth argument and jumps straight to the heat cap.
+	if not reaction:
+		var _bayonet: bool = close_combat_swap(state, utab, wtab, attacker,
+			standing)
 	# `0x0046B588` -- the pool at entry, for the skill-orbit compare.
 	var tp_before: int = attacker.tp
 	# `0x0046B5DF` -- weapon 47 is set **to its heat cap** before the overheat
@@ -978,6 +1074,16 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var cap: int = max_heat(wtab, attacker)
 		if cap != HEAT_NONE and attacker.heat < cap:
 			attacker.heat += 1
+
+	# `0x0046C325` -- the dispatcher's **phase 1**, and the other half of the
+	# bayonet: the gun comes back the moment the shot is paid for.  Everything
+	# below this line -- the impact placer, the hatch sweep and the whole of
+	# `aPlayFightAnimation`, which runs after this routine returns -- therefore
+	# sees the **gun**, so every switch the presentation dispatches on a weapon
+	# id takes the gun's arm.  What still differs is the camera, which docs/42
+	# section 4.1 places by the *distance* to the target and not by the weapon.
+	if not reaction:
+		var _gun: bool = close_combat_revert(wtab, attacker)
 
 	# `0x0046C216` -- after the animation: the skill orbit's argument.
 	# **The impact arm lays a transient object for three weapons** (docs/42

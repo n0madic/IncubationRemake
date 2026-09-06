@@ -115,6 +115,16 @@ func run(h: TestHarness) -> void:
 	# project has been able to show it: **the computer can win.** docs/23's
 	# planner is what closes on the squad, and `_C_140`'s own
 	# `SetGameControl (4,1)` is what records it.
+	# **One of the two runs must have carried the script's reinforcements into
+	# a save.** Each run alone may end before turn 5 -- the `live` one is
+	# meant to be losable -- so the codec claim is made of the pair.
+	h.check("outcome.a_save_carried_the_scripts_units",
+		DictRead.as_int(played["saved_units"]) > 0
+			or DictRead.as_int(held["saved_units"]) > 0,
+		"neither run reached a roster the .lev does not describe: live %d, "
+		% DictRead.as_int(played["saved_units"])
+		+ "held_fire %d" % DictRead.as_int(held["saved_units"]))
+
 	h.check("outcome.defeat_is_reachable",
 		DictRead.as_bool(played["computer_won"])
 			or DictRead.as_bool(played["hero_died"]),
@@ -259,8 +269,20 @@ func _play(h: TestHarness, label: String, world: World,
 					# reinforcements a few turns later -- and commanding it
 					# would be commanding an alien.
 					continue
-				shots += _fight(world, squad[i])
-				if _step(world, squad[i], potential[i]):
+				# **Fight the opening, then walk.** Up to and including the
+				# turn the script starts inserting reinforcements the squad
+				# spends everything on what is in front of it; after that it
+				# takes its step first and fires with what is left. Both
+				# halves are needed and neither works alone -- see the note
+				# on [method _step].
+				var stepped: bool = false
+				if world.turn.turn <= FIRST_INSERT_TURN:
+					shots += _fight(world, squad[i])
+					stepped = _step(world, squad[i], potential[i], false)
+				else:
+					stepped = _step(world, squad[i], potential[i], true)
+					shots += _fight(world, squad[i])
+				if stepped:
 					moves += 1
 					continue
 				# It could not move: either it is out of points or the path
@@ -385,9 +407,17 @@ func _play(h: TestHarness, label: String, world: World,
 	
 
 	# The mid-mission save, with the script's own reinforcements in it.
-	h.check("%s.save_taken_mid_mission" % label, not saved.is_empty(),
-		"%d unit(s) at the time, against the %d the .lev places"
-			% [saved_units, squad.size() + 2])
+	#
+	# **A run that ended before turn 5 has none to take**, and that is not a
+	# failure of the codec: `_C_140` inserts nothing until
+	# [constant FIRST_INSERT_TURN]. Both runs pass that turn under the policy
+	# of [method _step], so this is a demand and not an excuse -- the
+	# `or ended` clause that stood here while the `live` run was dying at
+	# round 5 made it unfalsifiable, and is gone.
+	h.check("%s.save_taken_mid_mission" % label,
+		not saved.is_empty() or world.turn.turn < FIRST_INSERT_TURN,
+		"%d unit(s) at the time, against the %d the .lev places, at turn %d"
+			% [saved_units, squad.size() + 2, world.turn.turn])
 	if saved.is_empty():
 		return _outcome(world, summary)
 	h.check("%s.save_carries_inserted_units" % label, saved_units > squad.size() + 2,
@@ -399,14 +429,18 @@ func _play(h: TestHarness, label: String, world: World,
 		"including both generators, the turn and the game-control slots")
 	h.equal("%s.save_round_trip_preserves_the_roster" % label,
 		restored.unit_slots().size(), saved_units)
-	return _outcome(world, summary)
+	return _outcome(world, summary, saved_units)
 
 
 ## What the run came to, for the caller that compares the two.
-static func _outcome(world: World, summary: String) -> Dictionary:
+static func _outcome(world: World, summary: String,
+		saved_units: int = 0) -> Dictionary:
 	return {
 		"computer_won": world.game_control.get_slot(4) == 1,
 		"squad_won": world.game_control.get_slot(0) == 1,
+		# How many records the mid-mission save carried, or 0 when the run
+		# never reached a grown roster -- see `save_taken_mid_mission`.
+		"saved_units": saved_units,
 		# The hero is the one type the squad cannot lose: `_C_140`'s own
 		# `HeroKilled (0)` is what sets slot 4 beside a wipe-out.
 		"hero_died": not _hero_alive(world),
@@ -443,6 +477,8 @@ static func _fight(world: World, slot: int) -> int:
 		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
 			return shots
 		var weapon: int = DictRead.as_int(view["weapon"])
+		# Everything that is left, the walk having already happened -- see
+		# [method _step], which is what keeps a shot affordable.
 		if DictRead.as_int(view["mp"]) < world.weapons().ap(weapon):
 			return shots
 		# **Only what is close enough to matter.** Every alien on this map is
@@ -578,9 +614,37 @@ static func _potential(document: Dictionary, utab: UnitTypeTable,
 		FLOOD_MP).mp_left()
 
 
-## One unit's move for one turn: the reachable cell with the highest potential.
+## One unit's move for one turn: the reachable cell with the highest potential,
+## preferring one that still pays for a shot when *keep_a_shot* asks for it.
+##
+## **Why the policy has two halves, both measured.** The close-combat swap of
+## docs/21 section 6 is what made this visible: a `special` 1 gun becomes a
+## bayonet with `mun` 255 when the target is next door, so a squad in contact
+## never runs dry again. The magazine had been doing a movement reserve's job
+## by accident, and once it stopped:
+##
+## * firing first with everything, every turn, is 200 rounds of stabbing the
+##   reinforcements and 37 moves -- the squad never leaves the middle of the
+##   map (measured);
+## * a flat one-point reserve in [method _fight] buys the walk back and costs
+##   a round of fire a turn: `held_fire` still wins and `live` is dead by
+##   turn 5, before `_C_140` has inserted anything at all, so the mid-mission
+##   save has nothing to carry (measured);
+## * walking first and firing with the remainder is better at the walk and no
+##   better at surviving -- `held_fire` wins in 16, `live` still dies at turn
+##   5 with 8 shots fired (measured);
+## * **fighting the opening and walking after it** is what does both:
+##   everything goes into the fight up to and including
+##   [constant FIRST_INSERT_TURN], and from the turn after that the step comes
+##   first and keeps one shot affordable. `held_fire` wins, and `live` lives
+##   to turn 6 -- one turn past the first insertion -- so its mid-mission save
+##   carries a roster the `.lev` does not describe (measured).
+##
+## The reserve itself is the fill's own `mp_left`: it says what each reachable
+## cell leaves behind, so the cells that still pay for a round are preferred
+## and the rest are tried after them rather than refused.
 static func _step(world: World, slot: int,
-		potential: PackedInt32Array) -> bool:
+		potential: PackedInt32Array, keep_a_shot: bool) -> bool:
 	var view: Dictionary = world.unit_view(slot)
 	if DictRead.as_int(view["hp"]) <= 0:
 		return false
@@ -594,6 +658,12 @@ static func _step(world: World, slot: int,
 	# it for `> 0` capped every step at the unit's allowance minus one and
 	# left the squad shuffling: 24 moves in 120 rounds, measured.
 	var reach: PackedByteArray = fill.states()
+	# What each reachable cell leaves behind, so a step can stop one cell
+	# short and still pay for the shot [method _fight] takes after it.
+	var left: PackedInt32Array = fill.mp_left()
+	var keep: int = 0
+	if keep_a_shot and _enemy_within(world, slot, ENGAGE_RANGE):
+		keep = world.weapons().ap(DictRead.as_int(view["weapon"]))
 	# **Every candidate, best first, until one of them can actually be
 	# walked.** `submit_move` refuses a path that runs through a unit
 	# (docs/23 section 5.3: `blocked != 0` moves nothing), and with four
@@ -610,7 +680,19 @@ static func _step(world: World, slot: int,
 		return false
 	candidates.sort_custom(func(a: int, b: int) -> bool:
 		return potential[a] > potential[b])
+	# **The cells that still pay for a shot, best first, and then the rest.**
+	# Not a filter: a squad that refused to move because no affordable cell
+	# was better off would stand in front of an alien rather than walk past
+	# it, which is neither the mission nor a fight.
+	var order: Array[int] = []
+	if keep > 0:
+		for index: int in candidates:
+			if left[index] >= keep:
+				order.append(index)
 	for index: int in candidates:
+		if not order.has(index):
+			order.append(index)
+	for index: int in order:
 		var moved: MoveResult = world.submit_move(MoveCommand.create(slot,
 			index % world.state.width, index / world.state.width))
 		if moved.ok and moved.steps > 0:

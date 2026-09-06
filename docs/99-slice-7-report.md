@@ -510,3 +510,123 @@ Not done, and deliberate:
   else. The options screen still has no speech row, which [`92`
   §7.1](92-remake-architecture.md) permits — that rule is about controls that
   do nothing, not about settings that have no control.
+
+## 9. What a second play found (2026-09-06)
+
+Five things reported from the screen. Two are the original's own behaviour and
+one of those is a rule the remake had never carried; two are the remake's, and
+one is a gap.
+
+* **A shot at an adjacent target hung for five seconds.** The muzzle stage
+  waits up to [constant `ShotSequence.WAIT_FRAMES`] frames — a hundred, five
+  seconds at the sequence's twenty a second — for the *arrived* flag
+  ([`42` §4.6](42-mission-presentation.md)), and the remake raised it early
+  only when the muzzle made **nothing**. That is not the engine's test. All
+  three burst creators open with `cmp steps, 0 / jle` and the point-blank arm
+  writes the flag's **1** *before* it goes on to fill the pool with zoom bobs
+  and sparks at the target (`0x0042420D`, `0x0042456A`, `0x00424AC3`, against
+  the flight's zero at `0x0042407B`, `0x0042455E`, `0x00424AB9`); twelve
+  creators carry that shape, which `presentation_tables.py`'s
+  `arrived.creator_writes` has counted all along. `BlobTriggers` now reports
+  the write and `ShotHost.muzzle` applies it, so a stab lands in its own
+  frame. The `made == 0` fallback stays for the remake's own refusals — a
+  creator the constructor table cannot build is not a creator that decided
+  nothing was in flight.
+* **A marine next to an alien fired, and could miss.** The original stabs:
+  weapon `special` 1 swaps the gun for its bayonet for the length of the shot
+  and back again afterwards, which is why the stab has a flat chance and
+  spends no ammunition. The rule was read off `0x0046F7E0` and is written up
+  in [`21` §6](21-info-lcl-schema.md) with a new step 0 in
+  [`22` §7.1](22-combat-and-visibility.md); `Combat.close_combat_swap` and
+  `close_combat_revert` are the model, `combat_tables.py`'s eleven `close.*`
+  checks are the binary's, and `test_combat.gd`'s are the model's. Two things
+  in it are easy to get backwards and both are pinned: the revert runs
+  **after** the ammunition subtraction, which is the whole of "a stab is
+  free", and a **reaction reaches neither arm** — a unit on overwatch shoots
+  whatever walks up to it.
+* **A cloaked alien walking into view stayed a beam until the turn ended.**
+  Mostly faithful: the fog pass runs on the hand-over and not in between
+  ([`22` §9.4](22-combat-and-visibility.md)), so an alien that comes out of an
+  unseen cell is a contact for the whole of its walk in the original too. The
+  remake's own half was `aExecuteMove`'s **mode 3** (`0x0046E4BB`): a computer
+  mover that can see somebody from the cell it starts on marks *itself*
+  visible **before the first step**, and the replay's visibility hold was
+  overriding that with the pre-turn answer for the length of the event. The
+  hold now forces [constant `Visibility.FULL`] for a mover whose event carries
+  `seen_source`, rather than releasing the slot — releasing would hand it the
+  **end** of the turn, and a walker that shows itself and then leaves the room
+  ends the turn hidden. **The same mechanism has a second arm**, and the same
+  hold was hiding it: `aAttackUnit` marks the shooter visible at `0x0046B643`
+  the moment its weapon is cleared to fire
+  ([`22` §7.1](22-combat-and-visibility.md)), so an alien that walks up
+  under cover and then attacks was a beam swinging its claws — and, being a
+  beam, a shot with no body for the fight clip to play on.
+  `SliceMain._event_reveals_its_actor` carries both writes and nothing else;
+  a jammed shot reveals nobody, which is why the test is the attack's own
+  `fired`.
+* **Overwatch spends nothing, and that is the original.** `0x00478500` stamps
+  `+0x41` and `+0x39`, hands out a ticket and charges no points; only a
+  *second* press zeroes what movement is left ([`25` §6](25-turn-and-round.md)).
+  No change.
+* **And the bayonet broke a suite, which is the finding under the finding.**
+  `test_mission.gd` plays `_C_140` twice with a scripted player, and its
+  `_fight` fired while the unit had any movement point left. That terminated
+  only because the magazine ran out -- so the squad shot for two turns, went
+  dry and then walked. A free close-range weapon removes that stop, and the
+  held-fire run spent all 200 rounds stabbing the reinforcement queue and
+  never reached the evacuation zone. The policy now keeps the one point back
+  that the caller's own comment has always said it does
+  ([constant `MOVE_RESERVE`]); the magazine had been doing the reserve's job
+  by accident. Diagnosed by A/B, twice -- and the first A/B was wrong, because
+  a Godot run started without `--import` reads the *previous* import of an
+  edited script and reported the change as innocent. Run the import step
+  before every one-off run.
+  **The first policy that fixed it cost coverage, and the second does not.**
+  A flat one-point reserve in `_fight` bought the walk back and ended the live
+  run around round 5, before `_C_140` inserts anything, so its mid-mission
+  save had nothing to carry. Four policies were measured against the same two
+  runs, and the one in the suite is *fight the opening, walk after it*: up to
+  and including the first insertion turn a squad member spends everything on
+  what is in front of it, and from the turn after that it takes its step first
+  and prefers a cell the fill's own `mp_left` says still pays for a round.
+  The held-fire run wins, the live run lives to turn 6, and both take a
+  mid-mission save -- so the `or ended` escape that had made
+  `save_taken_mid_mission` unfalsifiable is gone. The other three are recorded
+  with their numbers in `_step`'s own comment. The suite is **4128 checks**
+  against 4050 before this pass.
+* **Opening a supply box says nothing. Fixed.** The arm hands two characters
+  to `0x00410780`, which draws `DATA/TXT/<lang>/Info/Events.txt` through
+  `aActivateInfo` and plays `box.wav` ([`26` §3](26-interaction.md)); the
+  remake played the sound and showed no box. It is a cache-schema change, so
+  it was asked about first: `inclib.convert.convert_info_events` now writes
+  `text/info/events.json` as spans, `CONVERTER_VERSION` is 0.23.0 in both
+  places, `InfoText` **reads** the action-point-to-label map out of the same
+  document -- `InteractionTables.cases()`'s own decoding of the switch, so
+  neither side transcribes it and `remake_convert --check` compares the
+  baking with docs/26 §3 pair by pair -- and `MissionHud`
+  draws the box at [`24` §7.2](24-briefing-text.md)'s own `230, 200, 180, 400`
+  with the original's own hold on the mission input. **The hold is two
+  halves.** The keyboard's is `SliceMain._unhandled_input`; the mouse's cannot
+  be, because a Godot `Control` answers a click before `_unhandled_input` sees
+  it and the plate's own buttons would have gone on working behind the
+  message. `0x0041B6E0` is explicit about this: its keyboard shortcut lookup
+  `0x00450D50` is called at `0x0041BA96`, *before* the flag test at
+  `0x0041BB44`, and the interface's own **mouse** hit test `0x00450F10` at
+  `0x0041BB5F`, *after* it -- so a click on a button does nothing while a box
+  is up. `MissionHud._info_shield` is that: a full-rect `Control` with
+  `MOUSE_FILTER_STOP`, added last so it picks in front of every widget, and it
+  is also what takes the message down. The original dismisses on the right
+  button alone (cases `0x204`/`0x206` -> `0x0043F130`); this answers any of
+  them, which takes nothing away because the left click the original swallows
+  here does nothing at all. Two neighbours went with it: the two `message_only` arms were
+  silent where the original clicks, and the voice line was played for every
+  successful use rather than for the twelve arms that have one.
+* **A reaction shot did not reveal its shooter in the replay.** The `reactions`
+  event is emitted for the unit that *drew* the fire, so the visibility hold
+  was keyed on the mover and the overwatch shooters kept their pre-turn
+  answer -- a hidden alien that answered the squad's own walk stayed a contact
+  beam. `SliceMain._event_reveals` now returns the slots an event revealed
+  rather than a flag, and a `reactions` event names every reactor whose attack
+  `fired`; a jam reveals nobody. `core` already made the write
+  (`Reaction.drain` fires through `Combat.attack`, `0x0046B643`), so this was
+  presentation only.

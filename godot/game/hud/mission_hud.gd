@@ -41,6 +41,20 @@ const SMALL_FONT: String = "font_3"
 ## The turn counter's colours (`0x0041B1D1`).
 const COLOUR_TURN: int = 0xFFFF
 const COLOUR_TURN_LATE: int = 0xF800
+## The info box's own frame: a dark ground with a thin border, so the text is
+## legible over whatever the 3D window is showing under it. The original draws
+## the block straight onto the rendered frame with `aPrintGUITextBox`'s own
+## ramps and no ground at all; a deliberate divergence, for the same reason
+## [method BriefingText.to_bbcode] wraps by Godot's rules and not by 1997's.
+const INFO_GROUND: Color = Color(0.04, 0.05, 0.04, 0.88)
+const INFO_BORDER: Color = Color(0.36, 0.44, 0.36, 1.0)
+const INFO_BORDER_WIDTH: int = 1
+const INFO_PADDING: float = 6.0
+## The readable face's report size for the info box when the shipped faces are
+## not in use -- the same decision [method use_font] makes for the report.
+const INFO_READABLE_SIZE: int = 13
+## How close to the bottom edge the box may run before its height is trimmed.
+const INFO_BOTTOM_MARGIN: float = 8.0
 ## The readable face's size for the band texts when the cache has no fonts,
 ## or when the player chose the readable interface font. The hint has one of
 ## its own: it is a caption for the button under the pointer, not a number
@@ -66,6 +80,17 @@ var _turn: Label = null
 var _hint: Label = null
 var _result: Control = null
 var _report: Label = null
+## The pickup message of docs/24 section 7.2 -- see [method show_info].
+var _info: PanelContainer = null
+var _info_text: BriefingText = null
+## What holds the mission while the message is up: a full-rect [Control] with
+## [constant Control.MOUSE_FILTER_STOP], added last so it picks in front of
+## every widget on the plate. See [method show_info].
+var _info_shield: Control = null
+## The spans the box is showing, so [method view] can report it and
+## [method use_font] can put it back after a face change.
+var _info_spans: Array = []
+var _cache_dir: String = ""
 var _strings: Localization = null
 var _art: Art = null
 var _font: FontFile = null
@@ -77,8 +102,10 @@ var _small_font: FontFile = null
 ## or null for the readable one); *text_font* and *small_font* the two plate
 ## faces, which a cache without fonts leaves null.
 func setup(art: Art, strings: Localization, font: FontFile,
-		text_font: FontFile, small_font: FontFile) -> void:
+		text_font: FontFile, small_font: FontFile,
+		cache_dir: String = "") -> void:
 	_art = art
+	_cache_dir = cache_dir
 	_strings = strings
 	_font = font
 	_text_font = text_font
@@ -153,6 +180,36 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	_result.add_child(_report)
 	_result.visible = false
 	_root.add_child(_result)
+
+	# The pickup message. It is built here, with the rest of the interface,
+	# rather than on first use: `aActivateInfo` writes into a text box the
+	# module already owns (box 2, `0x0043ECE0`), and a widget made mid-command
+	# would be one more thing that can fail while a crate is being opened.
+	_info_shield = Control.new()
+	_info_shield.name = "InfoShield"
+	_info_shield.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# **The whole screen, not the box.** `0x0041BB44` returns from the
+	# mission's input handler while a text box is up, and the interface's own
+	# mouse hit test `0x00450F10` sits *past* that return (`0x0041BB5F`) --
+	# so a click on a button of the plate does nothing either. In Godot a
+	# `Control` answers before `_unhandled_input` does, so the plate's widgets
+	# would have gone on working behind the message; this is what stops them,
+	# and it is also what takes the message down.
+	_info_shield.mouse_filter = Control.MOUSE_FILTER_STOP
+	_info_shield.visible = false
+	_info_shield.gui_input.connect(_on_info_input)
+	_info = PanelContainer.new()
+	_info.name = "Info"
+	_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_info.add_theme_stylebox_override("panel", _info_style())
+	_info_text = BriefingText.create(cache_dir, font != null)
+	_info_text.fit_content = true
+	_info_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_info_text.scroll_active = false
+	_info_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_info.add_child(_info_text)
+	_info_shield.add_child(_info)
+	_root.add_child(_info_shield)
 	use_font(font)
 	_root.resized.connect(_layout)
 	_layout()
@@ -179,6 +236,11 @@ func use_font(font: FontFile) -> void:
 		_report.add_theme_font_size_override("font_size", READABLE_REPORT_SIZE)
 	else:
 		_apply_font(_report, font)
+	if _info_text != null:
+		# The box follows the same setting the rest of the interface does: a
+		# readable interface with an 8 px bitmap message in the middle of it
+		# is the mismatch docs/24's own note about the briefing describes.
+		_info_text.use_game_font(_cache_dir, font != null, INFO_READABLE_SIZE)
 	if panel != null:
 		panel.use_font(_band_font(), _panel_font())
 	_layout()
@@ -247,6 +309,7 @@ func _layout() -> void:
 		else float(HINT_FALLBACK_SIZE)
 	_hint.position = Vector2(float(HudTables.CAPTION_AT.x),
 		float(HudTables.CAPTION_AT.y) - hint_height)
+	_layout_info()
 
 
 ## Redraw everything from the world.
@@ -393,6 +456,109 @@ static func _grade_text_id(outcome: int) -> int:
 	return Localization.ID_REPORT_RUNNING
 
 
+## The pickup message of docs/24 section 7.2, over the 3D window.
+##
+## `aActivateInfo` `0x0043E740` puts one block of `Events.txt` in box 2 at
+## `230, 200, 180, 400` and raises `0x0050B2B0`; while that flag is up
+## `0x0041BB44` returns from the mission's input handler at once, so nothing
+## else in the mission answers, and cases `0x204`/`0x206` of the same
+## dispatch -- the **right** mouse button -- call `0x0043F130`, which kills
+## the box and clears the flag. Both halves are the host's; this draws it.
+##
+## The original's box is also revealed a word at a time (`aActivateInfo`'s
+## eighth argument is 0, docs/24 section 5) and this shows it whole -- the
+## typewriter is a sound-driven effect this layer has no cue for.
+func show_info(spans: Array) -> void:
+	if _info_shield == null or _info_text == null:
+		return
+	_info_spans = spans
+	_info_text.show_block(spans)
+	_info_shield.visible = not spans.is_empty()
+	_layout_info()
+
+
+func hide_info() -> void:
+	if _info_shield == null:
+		return
+	_info_spans = []
+	_info_shield.visible = false
+
+
+func info_visible() -> bool:
+	return _info_shield != null and _info_shield.visible
+
+
+## Any mouse button takes the message down, wherever on the plate it lands.
+##
+## The original's own dismissal is the **right** button alone -- cases `0x204`
+## and `0x206` of `0x0041B6E0`'s mouse dispatch call `0x0043F130` -- and its
+## left click, while a box is up, does nothing whatever. Answering that one as
+## well therefore takes no behaviour away, and a trackpad's right button is a
+## chord.
+func _on_info_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.is_pressed():
+		hide_info()
+		_info_shield.accept_event()
+
+
+## The modal [Control] the message sits on, so a suite can ask what it stops
+## and drive its dismissal without a window.
+func info_shield() -> Control:
+	return _info_shield
+
+
+## What the box is saying, as plain text -- for the driver and the suites.
+func info_text() -> String:
+	if _info_text == null or not info_visible():
+		return ""
+	return _info_text.get_parsed_text()
+
+
+## Where the box stands on this canvas.
+##
+## The plate is 640x480 and every pixel of a larger canvas goes to the 3D
+## window ([method HudTables.window_for]), so a box drawn over the window
+## keeps its offset from the **window's** centre rather than from the plate's
+## origin. At 640x480 the two are the same thing, and the shipped box happens
+## to be centred on the window's own column: `230 + 180/2` is 320, and so is
+## `60 + 520/2`.
+static func info_box_rect(canvas: Vector2) -> Rect2:
+	var win: Rect2 = HudTables.window_for(canvas)
+	var plate: Rect2 = Rect2(Vector2(HudTables.WINDOW.position),
+		Vector2(HudTables.WINDOW.size))
+	var at: Vector2 = InfoText.BOX_AT + win.get_center() - plate.get_center()
+	# The height is a layout bound and not a drawn rectangle -- docs/24
+	# section 7.1's `B0` box is 500 tall on a 480 screen -- so what is left
+	# under the box's top edge is the bound that matters here.
+	var height: float = maxf(0.0, minf(InfoText.BOX_SIZE.y,
+		canvas.y - at.y - INFO_BOTTOM_MARGIN))
+	return Rect2(at, Vector2(InfoText.BOX_SIZE.x, height))
+
+
+func _layout_info() -> void:
+	if _info == null or _info_text == null:
+		return
+	var box: Rect2 = info_box_rect(canvas_size())
+	_info_text.custom_minimum_size = Vector2(
+		maxf(0.0, box.size.x - 2.0 * INFO_PADDING), 0.0)
+	# The box's own position is inside the shield, which is the whole canvas,
+	# so the two coordinate spaces are the same one.
+	_info.position = box.position
+	_info.size = Vector2(box.size.x, 0.0)
+	# `fit_content` grows the label and the container with it; the box's own
+	# height is the cap the original lays out inside.
+	_info.custom_minimum_size = Vector2(box.size.x, 0.0)
+
+
+static func _info_style() -> StyleBoxFlat:
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = INFO_GROUND
+	style.border_color = INFO_BORDER
+	style.set_border_width_all(INFO_BORDER_WIDTH)
+	style.set_content_margin_all(INFO_PADDING)
+	return style
+
+
 func report_visible() -> bool:
 	return _result.visible
 
@@ -412,6 +578,7 @@ func view() -> Dictionary:
 		"turn_text": turn_text(),
 		"hint": hint_text(),
 		"report": report_text(),
+		"info": info_text(),
 		"radar_fields": radar.fields,
 		# Zero while another player moves: the marks are still built, and
 		# the radar they are on is not on screen (docs/43 section 7).

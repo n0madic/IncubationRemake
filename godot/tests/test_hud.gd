@@ -800,6 +800,48 @@ func _hud_live(h: TestHarness) -> void:
 	var east: Vector2 = Vector2(1.0, 0.0)
 	hud.refresh(world, -1, all_on, none_on, north, east, {}, false)
 	h.equal("hud.turn_text", hud.turn_text(), str(world.turn.turn))
+	# The pickup message of docs/24 section 7.2, and the hold it puts on the
+	# rest of the plate. `0x0041BB44` returns from the mission's input handler
+	# while a box is up and the interface's own mouse hit test `0x00450F10`
+	# sits past that return, so a click on a button does nothing either -- in
+	# Godot that is a full-rect `Control` in front of every widget, because a
+	# `Control` answers a click before `_unhandled_input` does.
+	h.check("hud.no_message_before_a_pickup", not hud.info_visible(),
+		"nothing has been opened")
+	h.equal("hud.no_message_text", hud.info_text(), "")
+	var said: Array = InfoText.load_from(cache).spans_for(13)
+	h.check("hud.the_message_has_spans", not said.is_empty(),
+		"action point 13 is Events.txt E2")
+	hud.show_info(said)
+	h.check("hud.a_pickup_raises_the_message", hud.info_visible())
+	h.check("hud.the_message_is_the_labels_text",
+		hud.info_text().contains("Equipment"),
+		"{:E2} is `Found Equipment for our stock`: " + hud.info_text())
+	var shield: Control = hud.info_shield()
+	h.equal("hud.the_message_covers_the_plate",
+		shield.anchor_right - shield.anchor_left, 1.0,
+		"a full-rect Control, so no widget behind it is picked")
+	h.equal("hud.the_message_stops_the_mouse", shield.mouse_filter,
+		Control.MOUSE_FILTER_STOP,
+		"0x00450F10 sits past the return at 0x0041BB44")
+	var press: InputEventMouseButton = InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	shield.gui_input.emit(press)
+	h.check("hud.a_click_takes_the_message_down", not hud.info_visible(),
+		"0x0043F130 -- the original's own is the right button alone")
+	hud.show_info(said)
+	var release: InputEventMouseButton = InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	shield.gui_input.emit(release)
+	h.check("hud.a_release_leaves_it_up", hud.info_visible(),
+		"the press is the dismissal, as `is_pressed` says")
+	hud.hide_info()
+	h.check("hud.an_empty_message_never_shows", not hud.info_visible())
+	hud.show_info([])
+	h.check("hud.a_label_with_no_spans_shows_nothing", not hud.info_visible(),
+		"an arm whose label the file does not carry raises no box")
 	h.check("hud.no_report_before_the_end", not hud.report_visible(), "slots 0..4 clear")
 	h.equal("hud.panel_empty_without_a_selection", hud.panel.icon_count(), 0)
 	# `0x00451FE3` returns before the marks **and** before both lamps, so a

@@ -220,6 +220,30 @@ opens the file by its literal name `"Events"`, draws the box through
 play unit speech event 9 (`0x0047B660`); **id 11 does not** — "Found nothing"
 gets no voice line.
 
+**Both halves of the sequence are the routine's, and both are the whole of
+what a pickup does for the player.** `0x0041093C` loads `box.wav`, so all
+thirteen click -- including the two that touch nothing, ids 11 and 41 -- and
+`0x004107AC` puts the label's block on screen. Only the *voice* line is
+selective: the twelve `0x0047B660` call sites are all inside the equipment
+switch (`inclib.sound.SPEECH_CALLS["use"]`), so a door, a lever, a push, the
+entry point and the mine defuse say nothing at all, and neither does id 11.
+
+The remake had the click without the message until 2026-09-06, which is what
+a player reports as "opening a crate does nothing but make a sound"; the box
+is now `text/info/events.json` in the cache (`CONVERTER_VERSION` 0.23.0,
+`inclib.convert.convert_info_events`) and is drawn where
+[`24` §7.2](24-briefing-text.md) says. **The `Text` and speech columns above
+ride in the same document**, decoded by `InteractionTables.cases()` rather
+than transcribed on either side — the arm that pushes two characters to
+`0x00410780` is what names the label and the arm that calls `0x0047B660` is
+what has a voice line, so the game reads the switch instead of a copy of it.
+`remake_convert --check` compares that baking with this table pair by pair
+(`info.action_points`, `info.speech`); a hand-written map on the game side
+could have disagreed by a swapped pair and passed a check on the label set. Two neighbouring
+defects went with it: the sound was skipped for the two `message_only` arms,
+and the voice line was played for **every** successful use rather than for
+the twelve arms that have one.
+
 The four equipment ids the pickups grant are 9 `Explosion Pack`, 17 `Hydraulic
 Crowbar`, 18 `Damage Absorber` and 19 `Cooler`. Three of them — 17, 18, 19 —
 require **tech level 99** in `SetEquipInfo` ([`21` §3](21-info-lcl-schema.md))

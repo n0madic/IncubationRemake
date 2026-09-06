@@ -32,6 +32,166 @@ func run(h: TestHarness) -> void:
 	_unit_animations(h)
 	_walk_epilogue(h)
 	_campaign_screens(h)
+	_pickup_message(h)
+
+
+## The crate's message -- docs/26 section 3 and docs/24 section 7.2.
+##
+## Oracle boundary: **specification**. The action-point-to-label map is the
+## switch's own, decoded by `interaction_tables.InteractionTables.cases()` and
+## baked into `text/info/events.json`; `remake_convert --check` compares that
+## baking with docs/26 section 3's table pair by pair. **There is no copy of
+## it on this side**, so what is checked here is that the reader is faithful
+## to the document and that the document is whole.
+func _pickup_message(h: TestHarness) -> void:
+	var info: InfoText = InfoText.load_from(CacheFixture.cache_dir())
+	var points: PackedInt32Array = info.action_points()
+	h.equal("info.table_size", points.size(), 13,
+		"the thirteen arms of aExecuteUse that show something")
+	h.equal("info.first_label", info.label_for(11), "E0",
+		"action point 11 is `Found nothing`")
+	h.equal("info.last_label", info.label_for(42), "EC",
+		"action point 42 is the explosion pack")
+	h.equal("info.batteries_has_one", info.label_for(41), "EB",
+		"docs/26 section 3.2: 41 is absent from the picker legend and the "
+		+ "switch still shows a message for it")
+	h.equal("info.a_door_says_nothing", info.label_for(30), "",
+		"only the pickup arms hand a label to 0x00410780")
+	h.equal("info.an_unknown_action_point_says_nothing",
+		info.label_for(0), "")
+	# **The whole map, without a table to compare it against.** The thirteen
+	# arms take the thirteen labels in id order -- `E0`..`E9`, then `EA`,
+	# `EB`, `EC` -- so a pair swapped anywhere in the chain from the switch to
+	# this reader breaks the run, which a check on the label *set* alone
+	# cannot see.
+	h.equal("info.labels_run_in_id_order", info.labels_out_of_order(),
+		PackedStringArray())
+	# And the rule can fail, which is the point of it: the same reader over a
+	# document with two of the pairs exchanged says so.
+	var swapped: InfoText = InfoText.new()
+	var rows: Array = []
+	for ap: int in points:
+		# The pair the shipped table gives 14 and 15, exchanged; every other
+		# row is left as the cache has it.
+		var takes: int = ap
+		if ap == 14:
+			takes = 15
+		elif ap == 15:
+			takes = 14
+		rows.append({"action_point": ap, "label": info.label_for(takes),
+			"speech": 9})
+	swapped.read({"schema": InfoText.SCHEMA, "blocks": {}, "pickups": rows})
+	h.equal("info.a_swapped_pair_is_caught",
+		swapped.labels_out_of_order().size(), 2,
+		"14 and 15 exchanged: a check on the label set alone sees nothing")
+	# Twelve of the thirteen also speak; `Found nothing` does not. Read out of
+	# the arms, not written down: the quiet one is whichever pushes no
+	# argument to `0x0047B660`.
+	var quiet: PackedInt32Array = PackedInt32Array()
+	var arguments: PackedInt32Array = PackedInt32Array()
+	for ap: int in points:
+		if info.speaks(ap):
+			if not arguments.has(info.speech_argument(ap)):
+				arguments.append(info.speech_argument(ap))
+		else:
+			quiet.append(ap)
+	h.equal("info.one_arm_is_quiet", quiet, PackedInt32Array([11]),
+		"`Found nothing` gets no voice line (docs/26 section 3)")
+	h.equal("info.every_voice_line_is_event_9", arguments,
+		PackedInt32Array([9]), "docs/28 section 4.3")
+	h.check("info.a_door_never_speaks", not info.speaks(30),
+		"every one of the twelve 0x0047B660 sites is inside the equipment "
+		+ "switch, so a door, a lever and a push are silent")
+
+	var missing: PackedStringArray = PackedStringArray()
+	var empty: PackedStringArray = PackedStringArray()
+	var seen: PackedStringArray = PackedStringArray()
+	var repeated: PackedStringArray = PackedStringArray()
+	for ap: int in points:
+		var label: String = info.label_for(ap)
+		if seen.has(label):
+			repeated.append(label)
+		seen.append(label)
+		var spans: Array = info.spans_for(ap)
+		if spans.is_empty():
+			missing.append("%d/%s" % [ap, label])
+			continue
+		var body: String = BriefingText.to_bbcode(spans)
+		if body.strip_edges() == "" \
+				or body.contains(Localization.MISSING_PREFIX):
+			empty.append("%d/%s" % [ap, label])
+	h.equal("info.every_arm_resolves", missing, PackedStringArray(),
+		"text/info/events.json carries a block for each")
+	h.equal("info.every_arm_has_words", empty, PackedStringArray())
+	h.equal("info.no_two_arms_share_a_label", repeated, PackedStringArray())
+	h.check("info.is_structured",
+		not info.spans_for(11).is_empty()
+			and DictRead.as_dict(info.spans_for(11)[0]).has("font"),
+		"docs/92 3.2: spans, not a marked-up string")
+
+	# **The reader carries pairs, not an order.** A document whose ids and
+	# labels are deliberately not in the shipped arrangement has to come back
+	# exactly as written; a reader that assumed either would pass every check
+	# above and answer the wrong text for a crate.
+	var made_up: InfoText = InfoText.new()
+	made_up.read({"schema": InfoText.SCHEMA,
+		"blocks": {"ZZ": [{"text": "second", "font": 0, "colour": 0,
+			"break_before": false}],
+			"AA": [{"text": "first", "font": 1, "colour": 1,
+				"break_before": false}]},
+		"pickups": [{"action_point": 42, "label": "ZZ", "speech": 9},
+			{"action_point": 11, "label": "AA", "speech": -1}]})
+	h.equal("info.the_reader_keeps_the_pairing",
+		[made_up.label_for(11), made_up.label_for(42)], ["AA", "ZZ"])
+	h.equal("info.the_reader_orders_by_id", made_up.action_points(),
+		PackedInt32Array([11, 42]))
+	h.equal("info.the_reader_carries_the_speech",
+		[made_up.speaks(11), made_up.speaks(42)], [false, true])
+	h.equal("info.the_reader_finds_the_block",
+		BriefingText.to_bbcode(made_up.spans_for(11)).contains("first"), true)
+	# A cache that predates the document, and one whose schema is not this
+	# one, both answer nothing rather than half of something.
+	var absent: InfoText = InfoText.new()
+	absent.read({})
+	h.equal("info.no_document_is_no_message", absent.action_points().size(), 0)
+	var wrong: InfoText = InfoText.new()
+	wrong.read({"schema": "incubation.info/99",
+		"pickups": [{"action_point": 11, "label": "E0", "speech": -1}]})
+	h.equal("info.a_foreign_schema_is_refused", wrong.label_for(11), "")
+
+	# The box's own rectangle. At 640x480 it is the shipped literal; on a
+	# larger canvas it keeps its offset from the 3D window's centre, because
+	# that is where every extra pixel goes ([method HudTables.window_for]).
+	var shipped: Rect2 = MissionHud.info_box_rect(
+		Vector2(HudTables.PLATE_SIZE))
+	h.equal("info.box_at", shipped.position, InfoText.BOX_AT,
+		"0x004107A2/0x0041079D push 230, 200")
+	h.equal("info.box_width", shipped.size.x, InfoText.BOX_SIZE.x,
+		"0x00410798 pushes 180")
+	h.check("info.box_height_is_bounded_by_the_screen",
+		shipped.size.y < InfoText.BOX_SIZE.y and shipped.size.y > 0.0,
+		"400 tall on a 480 screen that starts it at 200: the height is a "
+		+ "layout bound, as docs/24 7.1's 500-tall B0 box is")
+	var wide: Rect2 = MissionHud.info_box_rect(Vector2(1280.0, 800.0))
+	h.equal("info.box_follows_the_window",
+		wide.position - shipped.position,
+		Vector2(320.0, 160.0),
+		"half of each extra dimension, the window's centre having moved by "
+		+ "that much")
+	h.equal("info.box_stays_the_width_it_was", wide.size.x,
+		InfoText.BOX_SIZE.x, "the plate's units are the plate's units")
+
+	# The sound: all thirteen reach `0x00410780`, whose own cue is `box.wav`.
+	var events: AudioEvents = AudioEvents.open(
+		AudioTables.open(CacheFixture.cache_dir()),
+		CacheFixture.read_json(CacheFixture.cache_dir() + "/tables/blobs.json"))
+	var opened: UseResult = UseResult.new()
+	opened.ok = true
+	opened.kind = "message_only"
+	h.equal("info.a_silent_pickup_still_clicks",
+		events.for_use(opened).is_empty(), false,
+		"action points 11 and 41 hand their label to the same routine the "
+		+ "other eleven do")
 
 
 ## One shot and one burst of return fire, at the level `main.gd` shows them.
@@ -888,6 +1048,61 @@ func _replay_positions(h: TestHarness) -> void:
 		mid.has(9) and SliceMain.visibility_hold_in(before,
 			PackedInt32Array([4, 5, 9]), -1).has(9) == false,
 		"nothing moved it, so nothing changed what may be seen of it")
+	# `aExecuteMove`'s mode 3 (`0x0046E4BB`): a computer mover that can see
+	# somebody from the cell it starts on is marked visible **before the first
+	# step**, and no pass takes that back until the hand-over -- so its own
+	# event shows it as a unit and not as the contact beam it was.
+	var revealed: Dictionary[int, int] = SliceMain.visibility_hold_in(before,
+		PackedInt32Array([9]), 9, PackedInt32Array([9]))
+	h.equal("replay.mode_3_walks_in_the_open", revealed.get(9, -1), Fog.FULL,
+		"a contact that reveals itself walks as a body")
+	h.equal("replay.mode_3_is_forced_and_not_released", revealed.has(9), true,
+		"released, it would take the end of the turn instead")
+	h.equal("replay.mode_3_leaves_the_others_alone", revealed.get(4, -1),
+		Fog.FULL, "the write is the mover's own")
+	# The three writes that qualify, and the one that does not: a move carries
+	# `seen_source` (`0x0046E4BB`), a shot that fired carries the shooter's
+	# own reveal (`0x0046B643`), a `reactions` event carries that same reveal
+	# for every reactor that pulled the trigger, and a shot that jammed
+	# reveals nobody.
+	h.equal("replay.a_move_reveals_on_seen_source",
+		SliceMain._event_reveals("move", 7, {"seen_source": true}),
+		PackedInt32Array([7]), "aExecuteMove mode 3")
+	h.equal("replay.a_still_move_reveals_nobody",
+		SliceMain._event_reveals("move", 7, {"seen_source": false}),
+		PackedInt32Array())
+	h.equal("replay.a_shot_reveals_its_shooter",
+		SliceMain._event_reveals("fire", 7, {"fired": true}),
+		PackedInt32Array([7]),
+		"aAttackUnit marks the shooter visible before it turns to aim")
+	h.equal("replay.a_jammed_shot_reveals_nobody",
+		SliceMain._event_reveals("fire", 7, {"fired": false}),
+		PackedInt32Array(), "the reveal is past the weapon-damage gate")
+	h.equal("replay.a_door_reveals_nobody",
+		SliceMain._event_reveals("door", 7, {"fired": true}),
+		PackedInt32Array(), "only the writes core actually makes")
+	# **The one event whose actor is not its slot.** `AIFire` and `AIPlan`
+	# emit `reactions` for the unit that drew the fire; the overwatch shooters
+	# are in the payload, and each of them ran `0x0046B643` inside
+	# [method Reaction.drain].
+	var drained: Dictionary = {"reactions": [
+		{"reactor": 11, "attack": {"fired": true}},
+		{"reactor": 12, "attack": {"fired": false}},
+		{"reactor": 11, "attack": {"fired": true}}]}
+	h.equal("replay.a_reaction_reveals_its_reactors",
+		SliceMain._event_reveals("reactions", 7, drained),
+		PackedInt32Array([11]),
+		"the mover's own slot 7 is not one of them, and a reactor that "
+		+ "answered twice is named once")
+	h.equal("replay.a_jammed_reaction_reveals_nobody",
+		SliceMain._event_reveals("reactions", 7, {"reactions": [
+			{"reactor": 12, "attack": {"fired": false}}]}),
+		PackedInt32Array(), "a jam is not a shot")
+	var reacted: Dictionary[int, int] = SliceMain.visibility_hold_in(
+		{4: Fog.FULL, 9: Fog.CONTACT} as Dictionary[int, int],
+		PackedInt32Array(), 5, PackedInt32Array([9]))
+	h.equal("replay.a_reactor_is_drawn_as_a_body", reacted.get(9, -1),
+		Fog.FULL, "the hold no longer answers the pre-turn contact for it")
 
 	# The casualties, the other half of the same rule: the world has lost
 	# every one of them before the replay draws its first frame, so the whole

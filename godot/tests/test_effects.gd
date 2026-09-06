@@ -698,6 +698,52 @@ func _check_triggers(h: TestHarness) -> void:
 	h.equal("triggers.needles_point_blank", wanted,
 		[BlobPrograms.ZOOMBOB, BlobPrograms.PLASMA_SPARKS_BURST],
 		"a bob and the plasma burst, once for the whole call")
+	# **The flag a burst creator writes, which is not "did it make anything".**
+	# `cmp steps, 0 / jle` opens all three burst creators: a flight writes 0
+	# and the point-blank arm writes **1** before it fills the pool at the
+	# target (`0x00424AC3`, `0x0042420D`, `0x0042456A` -- docs/42 section 4.6).
+	# A shot that waited on an empty pool instead sat out the whole hundred
+	# frames of `ShotSequence.WAIT_FRAMES` on every adjacent target.
+	h.equal("triggers.arrived_write_point_blank", triggers.arrived_write(), 1,
+		"nothing is in flight, even though the burst made %d record(s)"
+			% pool.live())
+	h.check("triggers.point_blank_still_fills_the_pool",
+		not needle_asks.is_empty(),
+		"which is why `made == 0` could never be the test")
+	pool.clear()
+	var _far: int = triggers.muzzle(16, from, to)
+	var _far_drain: Array[Dictionary] = triggers.take_programs()
+	h.equal("triggers.arrived_write_in_flight", triggers.arrived_write(), 0,
+		"a round that has to cross four fields is waited for")
+	pool.clear()
+	var _no_burst: int = triggers.muzzle(8, from, to)
+	var _no_burst_drain: Array[Dictionary] = triggers.take_programs()
+	h.equal("triggers.arrived_unwritten_without_a_burst",
+		triggers.arrived_write(), BlobTriggers.ARRIVED_UNWRITTEN,
+		"the mine thrower's grenade is not one of the three burst creators")
+	# And the decision the muzzle stage makes out of it, which is the four
+	# lines that used to sit inside `SliceMain.ShotHost` where nothing could
+	# reach them.
+	h.check("arrived.point_blank_does_not_wait",
+		ShotSequence.arrived_after_muzzle(true, 1, 12, false),
+		"the creator said there is nothing in flight, whatever it then made")
+	h.check("arrived.a_round_in_flight_is_waited_for",
+		not ShotSequence.arrived_after_muzzle(true, 0, 12, false),
+		"and this is the case the hundred frames exist for")
+	h.check("arrived.a_creators_zero_beats_an_empty_pool",
+		not ShotSequence.arrived_after_muzzle(true, 0, 0, false),
+		"a creator that wrote is not second-guessed by the record count")
+	h.check("arrived.nothing_made_is_not_waited_for",
+		ShotSequence.arrived_after_muzzle(true,
+			BlobTriggers.ARRIVED_UNWRITTEN, 0, false),
+		"a refusal of the remake's own is not a round in flight")
+	h.check("arrived.a_full_pool_still_waits",
+		not ShotSequence.arrived_after_muzzle(true,
+			BlobTriggers.ARRIVED_UNWRITTEN, 0, true),
+		"the engine leaves the flag down there too")
+	h.check("arrived.a_weapon_that_skips_the_wait_never_looks",
+		ShotSequence.arrived_after_muzzle(false, 0, 12, false),
+		"its muzzle arm writes 0 over the wait flag instead")
 	pool.clear()
 	var _back: int = triggers.muzzle(2, from, to)
 	var _drain: Array[Dictionary] = triggers.take_programs()

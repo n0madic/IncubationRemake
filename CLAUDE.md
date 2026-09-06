@@ -38,7 +38,7 @@ python3 tools/cha_parse.py        --verify-convention gog_incubation
 python3 tools/font_render.py      --check gog_incubation
 python3 tools/img_tables.py       gog_incubation
 python3 tools/verify_3d_indices.py --root gog_incubation      # 39 check kinds
-python3 tools/combat_tables.py    --check gog_incubation      # 56 checks, 48/48 patterns
+python3 tools/combat_tables.py    --check gog_incubation      # 69 check kinds, 48/48 patterns
 python3 tools/trace_names.py      --check gog_incubation      # 324 + 146 names
 python3 tools/sav_tables.py       --check gog_incubation      # 69 checks
 python3 tools/sav_parse.py        gog_incubation --selftest   # 31 map sizes
@@ -66,9 +66,9 @@ python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecu
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
-python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
+python3 tools/remake_convert.py     gog_incubation --check   # 250 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 37 suites, 4050 checks
+bash   godot/run_tests.sh                                    # 37 suites, 4128 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -728,7 +728,7 @@ ladder rule, a mutation test of the wave-queue guard, and the model bug the
 first of those exposed -- the fill's direction loop runs 0..7, and
 `anyFriendlyBlocked` is therefore a constant (docs/23 §7.6).
 
-Eight things about it that are easy to trip over:
+Nine things about it that are easy to trip over:
 
 * **Warnings are errors, project-wide.** A script with an untyped declaration
   or an unsafe call argument does not *load*, so a broken file makes the suites
@@ -750,7 +750,7 @@ Eight things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.21.0 since the muzzle burst and its joint names joined the blob document), in
+* **`CONVERTER_VERSION` is written down twice** (0.23.0 since `text/info/events.json` -- the pickup messages of docs/26 section 3 and the action-point-to-label map behind them -- joined the cache), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump
@@ -760,6 +760,13 @@ Eight things about it that are easy to trip over:
   Write-mutate-restore completes inside one filesystem mtime tick, so CPython
   accepts the stale bytecode and the *mutated* module keeps running after the
   source is restored. It reported a clean tree as 112/114 once.
+* **A one-off `godot --script` run needs `--import` in front of it**, for the
+  same reason. `class_name` globals aside, a `--script` run after an edit
+  executes the **previously imported** version of the file, so an A/B that
+  disables a suspected cause reports the change as innocent. It cost one wrong
+  conclusion while bisecting a `test_mission.gd` failure -- disabling
+  `Combat.close_combat_swap` "made no difference", and it was the whole cause.
+  `run_tests.sh` does the import step; a hand-rolled run does not.
 * **Published cache directories are immutable and content-addressed.** Their id
   includes the source and output inventories. Publish, pointer switch and
   collection share one inter-process lock; do not reintroduce an in-place
@@ -864,7 +871,7 @@ rows, the campaign economy and the scoreboard's four pairs. It is outside the
 block because those files are gitignored and it exits non-zero when there is
 nothing to read.
 
-`python3 tools/remake_convert.py gog_incubation --check-campaign` (**37
+`python3 tools/remake_convert.py gog_incubation --check-campaign` (**44
 checks**) is the other one outside it: it bakes **all 92** campaign maps once
 -- 75 missions, `_C_XXX`/`_C_YYY` and the 15 upgrade screens, 31 scenes and 9
 world sets -- and checks the result. It is separate from `--check` because

@@ -144,9 +144,14 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 
 	for reactor: UnitState in order:
 		var facing: int = reactor.facing
+		# **The fifth argument is 1 here**, which is what marks the shot a
+		# reaction -- and the close-combat swap of docs/21 section 6 is
+		# behind it: `0x0046B592` and `0x0046C319` both jump past the
+		# dispatcher when it is set, so a unit on overwatch never reaches for
+		# its bayonet, however close the mover walks.
 		var result: AttackResult = Combat.attack(state, units, utab, wtab,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
-			game_mode, turn, rng)
+			game_mode, turn, rng, true)
 		reactor.facing = facing
 		var shot: Dictionary = {"reactor": reactor.slot,
 			"ticket": reactor.ticket, "attack": result.to_dict(),

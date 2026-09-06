@@ -315,7 +315,7 @@ only the full briefing ever needs the scroll bar.
 
 | Routine | Address | Mode | Used for |
 |---|---|---|---|
-| `aActivateInfo` | `0x0043E740` | caller's | the `ActivateInfo` LCL command ([`20` §6](20-lcl-language.md)), which no shipped script uses |
+| `aActivateInfo` | `0x0043E740` | caller's | the pickup sequence `0x00410780` ([`26` §3](26-interaction.md)) and the `ActivateInfo` LCL command ([`20` §6](20-lcl-language.md)), which no shipped script uses |
 | — | `0x0043E850` | 2 | `Data.txt` (three call sites) and `Campaign.txt`; **this is the one that retries with `{:**}`** |
 | `aActivateDialogInfo` | `0x0043E980` | 3 | the dialogue screens |
 
@@ -327,7 +327,24 @@ on, and `{:**}`, `{:*1}`, `{:*2}` are the three *"No information available."*
 fallbacks.
 
 `Events.txt` uses `E0`…`EC` and is opened by the literal `"Events"`
-(`0x004C1304`) at `0x004107AC`.
+(`0x004C1304`) at `0x004107AC`. The pickup sequence's call is fully literal
+too — `aActivateInfo("Events", 230, 200, 180, 400, c1, c2, 0)`, the four
+numbers pushed at `0x004107A2`, `0x0041079D`, `0x00410798` and `0x00410793` —
+so the box is **180 wide at (230, 200)**, and its 400 of height is a layout
+bound rather than a drawn rectangle, exactly as the 500 of the `B0` box above
+is on a 480-line screen. The eighth argument is 0, so the block is revealed a
+word at a time (§5).
+
+**What takes it down, and what it holds up.** `0x0050B2B0` is *a text box is
+open*; while it is set, the mission's input handler returns at `0x0041BB44`
+without doing anything, so nothing else in the mission answers. The mouse
+dispatch of the same routine biases by `0x201` and bounds at 5, and its cases
+`0x204` and `0x206` — `WM_RBUTTONDOWN` and `WM_RBUTTONDBLCLK` — call
+`0x0043F130`, which kills box 2 and clears the flag. **The right button is
+the only thing that closes it**; `0x0043F250` clears the same flag as part of
+the mission teardown at `0x0041A830`. The remake answers *any* mouse button,
+which takes nothing away: the left click the original swallows here does
+nothing at all.
 
 **Two of the four info files are unreachable in this build.** `Data` and
 `Events` are the only info file names that exist in `Incubation.exe` as

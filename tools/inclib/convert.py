@@ -146,6 +146,8 @@ class Conversion:
     #: The campaign layer -- docs/27, docs/24, docs/60.
     campaign_missions: int = 0
     briefings: int = 0
+    #: ``Events.txt`` labels -- the pickup messages, docs/26 section 3.
+    info_labels: int = 0
     plates: int = 0
     briefing_pictures: int = 0
     ui_libraries: int = 0
@@ -1144,12 +1146,62 @@ def convert(root: Path, missions: list[str], staging: Staging,
     result.campaign_missions = convert_campaign(
         root, reader, staging, campaign_tables_document(root))
     result.briefings = convert_briefings(root, reader, staging, language, result)
+    result.info_labels = convert_info_events(root, reader, staging, language,
+                                             result)
     art = convert_art(root, reader, staging, result)
     result.plates = art["plates"]
     result.briefing_pictures = art["briefing"]
     result.ui_libraries = art["libraries"]
     result.ui_sprites = art["sprites"]
     return result
+
+
+def interaction_tables_document(exe: Path) -> dict[str, Any]:
+    """Which action point shows which ``Events.txt`` label, and which speaks.
+
+    Read out of ``Incubation.exe`` by ``interaction_tables.py``'s own decoder
+    rather than transcribed: the arm that hands two characters to the pickup
+    sequence ``0x00410780`` is what names the label, and the arm that calls
+    ``0x0047B660`` is what has a voice line.  A hand-written table on either
+    side of the cache would be a second copy that could disagree by a swapped
+    pair and pass both checks.
+
+    Records, not an object keyed by the id: ``docs/92`` D12 -- a JSON object's
+    key is a string and the cache carries integers.
+    """
+    module = _tool_module("interaction_tables")
+    tables = module.InteractionTables(chatables.PEFile(str(exe)))
+    out: list[dict[str, Any]] = []
+    for action_point, case in sorted(tables.cases().items()):
+        if "text" not in case:
+            continue
+        out.append({
+            "action_point": action_point,
+            "label": case["text"],
+            # ``docs/26`` section 3: twelve of the thirteen arms also play
+            # speech event 9, and *Found nothing* is the one that does not.
+            "speech": case.get("speech", -1),
+        })
+    return {"pickups": out}
+
+
+def _tool_module(name: str):
+    """One of ``tools/*.py``, imported by path.
+
+    The tools live beside ``tools/inclib/`` rather than inside it, so an
+    ordinary import would depend on how the caller set ``sys.path``.
+    ``campaign_tables_document`` established this route (``docs/27`` section
+    8.2): the alternative is a second decoder of the same tables.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parent.parent / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ConvertError(f"cannot locate tools/{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def campaign_tables_document(root: Path) -> dict[str, Any]:
@@ -1183,6 +1235,15 @@ ART_SCHEMA = "incubation.art/1"
 #: ``docs/24`` -- the three blocks a briefing screen shows.
 BRIEFING_BLOCKS = ("A0", "B0", "C0")
 BRIEFING_DIR = "Briefing"
+INFO_SCHEMA = "incubation.info/1"
+#: ``DATA/TXT/<lang>/Info`` -- the info files ``aActivateInfo`` opens by name.
+INFO_DIR = "Info"
+#: Only ``Events`` is baked.  ``docs/24`` §7.2 enumerates the four info files
+#: and finds that ``Errors`` and ``Campaign`` are unreachable in this build,
+#: and ``Data`` is the unit/weapon/equipment encyclopaedia rather than
+#: anything a mission shows -- the pickup sequence ``0x00410780`` opens
+#: ``Events`` and nothing else does.
+INFO_EVENTS = "Events"
 #: The screen plates, and where the briefing pictures live.
 PLATE_DIR = ("Graphics", "GUI")
 BRIEFING_ART_DIR = ("Graphics", "Briefing")
@@ -1369,6 +1430,61 @@ def convert_briefings(root: Path, reader: SourceReader, staging: Staging,
         })
         written += 1
     return written
+
+
+def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
+                        language: str, result: Conversion) -> int:
+    """``text/info/events.json`` -- what a pickup says (docs/26 section 3).
+
+    ``aExecuteUse``'s thirteen pickup arms hand a two-character label to the
+    shared pickup sequence ``0x00410780``, which opens ``Events`` and draws it
+    through ``aActivateInfo`` ``0x0043E740``.  The labels are **read out of the
+    file** rather than listed here: ``interaction_tables.EXPECTED_TEXT`` is the
+    check that the shipped set is ``E0``..``EC``, and a second copy of it here
+    would be a table the emitter could not disagree with.
+
+    The markup is written as structure, exactly as :func:`convert_briefings`
+    writes a briefing block, so the consumer renders rather than re-parses
+    (``docs/92`` section 3.2), and the action-point-to-label map rides along
+    from :func:`interaction_tables_document` so that the game side has no
+    table of its own to disagree with.
+    """
+    from . import brieftext as briefmod
+    from .lcl import decode
+
+    base = _find(root, "DATA", "TXT", language, INFO_DIR)
+    path = _find(base, f"{INFO_EVENTS}.txt")
+    recorded = reader.record(path)
+    exe = reader.record(_find(root, GAME_EXE))
+    try:
+        text = decode(recorded.read_bytes()).decode("latin-1")
+    except Exception as exc:                           # noqa: BLE001
+        result.warnings.append(f"{path.name}: unreadable info text ({exc})")
+        return 0
+    blocks: dict[str, Any] = {}
+    for label in briefmod.labels(text):
+        # The first definition of a label wins, which is `aFindGUITextBoxTag`'s
+        # own rule: it takes the first match and never looks further.
+        if label.key in blocks:
+            continue
+        blocks[label.key] = [span.to_dict()
+                             for span in briefmod.spans(text, label.value)]
+    if not blocks:
+        result.warnings.append(f"{path.name}: no {{:xy}} label at all")
+    document: dict[str, Any] = {
+        "schema": INFO_SCHEMA,
+        "name": INFO_EVENTS,
+        "source": {"txt": reader.rel(recorded),
+                   "sha256": reader.seen[reader.rel(recorded)],
+                   "exe": reader.rel(exe),
+                   "exe_sha256": reader.seen[reader.rel(exe)]},
+        "blocks": blocks,
+    }
+    # Which action point shows which of those blocks, and which one speaks --
+    # decoded out of the switch rather than listed here or in the consumer.
+    document.update(interaction_tables_document(exe))
+    staging.write_json(f"text/info/{INFO_EVENTS.lower()}.json", document)
+    return len(blocks)
 
 
 def _write_sprites(reader: SourceReader, staging: Staging, root: Path,

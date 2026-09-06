@@ -46,6 +46,9 @@ var _screen: CampaignScreen = null
 var shell: ShellHost = ShellHost.new()
 ## The interface art, loaded once from the cache.
 var _art: Art = null
+## `Events.txt` -- what a pickup says, and which action point says it
+## (docs/26 section 3). Empty when the cache predates the document.
+var _info: InfoText = null
 
 var _missions: PackedStringArray = PackedStringArray()
 var _mission: String = ""
@@ -391,6 +394,7 @@ func _ready() -> void:
 	# the campaign, which is what it has always been for; the host is what the
 	# campaign flow drives, and the agent server reaches it by name.
 	_art = Art.open(_cache_dir)
+	_info = InfoText.load_from(_cache_dir)
 	# The battle interface (docs/43): the plate, the columns, the pad, the
 	# panel and the radar, drawn on the shipped art and captioned from
 	# `Txtmod_h`. Its two plate faces are the 13 px and 10 px bitmap fonts.
@@ -398,7 +402,7 @@ func _ready() -> void:
 	_hud.name = "MissionHud"
 	_hud.setup(_art, _strings, font,
 		GameFont.load_from(_cache_dir, MissionHud.TEXT_FONT),
-		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT))
+		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT), _cache_dir)
 	_hud.event.connect(_on_hud_event)
 	_hud.command.connect(_on_pad_command)
 	_hud.radar_rescaled.connect(func(_fields: int) -> void: _refresh_status())
@@ -2239,20 +2243,85 @@ func camera_director() -> CameraDirector:
 ## names -- a marine standing still, an alien with nothing to do -- keeps its
 ## pre-turn answer for the whole replay, which is what the fog rule of
 ## docs/22 section 9 says: the pass runs on the hand-over and not in between.
-func _visibility_hold(current: int) -> Dictionary[int, int]:
+##
+## **The one exception is `aExecuteMove`'s mode 3**, the self-reveal at
+## `0x0046E4BB`: a computer mover that can see somebody from the cell it
+## starts on marks *itself* visible **before the first step**, and nothing
+## rebuilds the fog until the hand-over, so it stays visible for the whole of
+## its walk however the walk ends. `revealed` is that write, taken off the
+## event's own [member MoveResult.seen_source]; the answer is forced to
+## [constant Visibility.FULL] rather than released, because releasing would
+## hand the slot the **end** of the turn -- and a walker that shows itself and
+## then leaves the room ends the turn hidden.
+## Which units this event marked visible **as it happened**, and so must be
+## drawn as bodies for the length of it rather than as whatever the fog said
+## before the turn.
+##
+## Three writes qualify, and `core` has already made all three:
+##
+## * `aExecuteMove`'s **mode 3** (`0x0046E4BB`), before the first step, when
+##   the mover could see somebody from the cell it set off from -- the walk's
+##   own [member MoveResult.seen_source];
+## * `aAttackUnit`'s **shooter reveal** (`0x0046B643`,
+##   docs/22 section 7.1), the moment the weapon is cleared to fire. A shot
+##   that jammed reveals nobody, which is why the test is the attack's own
+##   `fired` and not the presence of a shot event.
+## * the **same reveal for a reaction**: `Reaction.drain` fires through
+##   [method Combat.attack], so a unit in overwatch that pulls the trigger runs
+##   `0x0046B643` too. This is the one event whose actor is **not** its slot --
+##   `AIFire` and `AIPlan` emit `reactions` for the unit that *drew* the fire,
+##   and the shooters are in the payload -- so the answer is a list rather than
+##   a flag.
+##
+## Without the second, an alien that walks up under cover and then attacks was
+## drawn as a contact beam swinging its claws -- and, being a beam, with no
+## body for the fight clip to play on. Without the third, the same happened to
+## a hidden alien whose overwatch answered the squad's own mover.
+static func _event_reveals(kind: String, slot: int,
+		payload: Dictionary) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	if kind == "move":
+		if DictRead.as_bool(payload.get("seen_source", false)) and slot >= 0:
+			out.append(slot)
+		return out
+	if kind == "fire":
+		if DictRead.as_bool(payload.get("fired", false)) and slot >= 0:
+			out.append(slot)
+		return out
+	if kind == "reactions":
+		for item: Variant in DictRead.as_array(
+				payload.get("reactions", [])):
+			var entry: Dictionary = DictRead.as_dict(item)
+			var reactor: int = DictRead.as_int(entry.get("reactor", -1))
+			var attack: Dictionary = DictRead.as_dict(
+				entry.get("attack", {}))
+			if reactor >= 0 and DictRead.as_bool(attack.get("fired", false)) \
+					and not out.has(reactor):
+				out.append(reactor)
+	return out
+
+
+func _visibility_hold(current: int,
+		revealed: PackedInt32Array = PackedInt32Array()) -> Dictionary[int, int]:
 	return visibility_hold_in(_seen_before_turn, _playback.played_slots(),
-		current)
+		current, revealed)
 
 
 ## The same, as a function of its arguments, so a suite can ask it directly --
 ## the pattern [method AIPlayback.starts_in] and its neighbours follow.
 static func visibility_hold_in(seen: Dictionary[int, int],
-		shown: PackedInt32Array, current: int) -> Dictionary[int, int]:
+		shown: PackedInt32Array, current: int,
+		revealed: PackedInt32Array = PackedInt32Array()) -> Dictionary[int, int]:
 	var out: Dictionary[int, int] = {}
 	for slot: int in seen:
 		if slot != current and shown.has(slot):
 			continue
 		out[slot] = seen[slot]
+	# The answer is forced to [constant Visibility.FULL] rather than released,
+	# because releasing would hand the slot the **end** of the turn -- and a
+	# walker that shows itself and then leaves the room ends the turn hidden.
+	for slot: int in revealed:
+		out[slot] = Visibility.FULL
 	return out
 
 
@@ -3181,8 +3250,12 @@ func _on_ai_step(event: Dictionary) -> float:
 	# only then walked there.
 	_units.hold_at(_playback.pending_starts())
 	# The event on screen keeps the pre-turn answer -- it is walking now, and
-	# what it walks into is not known until it arrives.
-	_units.hold_visibility(_visibility_hold(DictRead.as_int(event["slot"])))
+	# what it walks into is not known until it arrives. Unless it revealed
+	# itself before it set off, which is `aExecuteMove`'s mode 3 and is
+	# exactly the case a player reads as a bug: an alien that steps out in
+	# plain sight and stays a contact beam until the turn is over.
+	_units.hold_visibility(_visibility_hold(DictRead.as_int(event["slot"]),
+		_event_reveals(kind, DictRead.as_int(event["slot"]), payload)))
 	_units.build(world, _geometry, _textures)
 	# **After** the rebuild, not before. `UnitsView.build` frees every unit
 	# node and clears the bodies, the states and the walks, so an event handed
@@ -3269,6 +3342,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		_screen_input(event)
 		return
 	if world == null:
+		return
+	# **The pickup message holds the mission.** `0x0041BB44` asks
+	# `0x0043E730` whether a text box is up and returns from the mission's
+	# input handler at once when it is, so nothing else answers.
+	#
+	# This is the **keyboard** half of that hold. The mouse half cannot live
+	# here: a `Control` answers a click before `_unhandled_input` ever sees
+	# it, so the plate's own buttons would have gone on working behind the
+	# message -- [member MissionHud._info_shield] is what stops them, and it
+	# is what takes the message down (`0x0043F130`).
+	if _hud != null and _hud.info_visible():
 		return
 	# The computer's turn holds the input while it is being shown. One key
 	# ends the showing; the world does not change either way.
@@ -4970,10 +5054,24 @@ func use_in_front() -> UseResult:
 			and used.kind == World.DOOR_USE_KIND and _sequences != null):
 		var _slots: PackedInt32Array = _audio.play_cues(
 			_events.for_use(used), "use")
+	# **The message the crate opens with** -- docs/26 section 3. Thirteen arms
+	# hand a two-character label to `0x00410780`, which is what draws the box
+	# and plays `box.wav`; the remake had the sound and not the box, so the
+	# only thing a crate did was click. It goes up after the arm's own work,
+	# as the original's does, and holds the mission until it is dismissed
+	# ([method _unhandled_input]).
+	if used.ok and _hud != null and _info != null:
+		var said: Array = _info.spans_for(used.action_point)
+		if not said.is_empty():
+			_hud.show_info(said)
 	# Twelve of the equipment switch's arms speak, all of them argument 9
 	# (docs/28 section 4.3) -- and every one of them past the arm's own work,
-	# so a refused use says nothing.
-	if used.ok:
+	# so a refused use says nothing. **Twelve, not every arm**: the twelve
+	# `0x0047B660` sites of `inclib.sound.SPEECH_CALLS["use"]` are all inside
+	# the equipment switch, so a door, a lever, a push, the entry point and
+	# the defuse are silent, and so is action point 11 -- *Found nothing* is
+	# the one pickup with no voice line.
+	if used.ok and _info != null and _info.speaks(used.action_point):
 		_speak("use", user)
 	return used
 
@@ -5682,8 +5780,16 @@ class MainShotHost extends ShotHost:
 				DictRead.as_vector3i(request["at"]),
 				DictRead.as_int32_array(request["extra"]))
 			made += 1
-		if waits and made == 0 and main._fx.live() < BlobPool.SLOTS:
-			main._fx.set_arrived(true)
+		# **The creator's own write, which is not the same test as "it made
+		# nothing"** -- the whole rule, and why, is
+		# [method ShotSequence.arrived_after_muzzle]. Waiting on `made == 0`
+		# alone burned the whole hundred frames on every shot at an adjacent
+		# target: nothing in the pool raises the flag for a burst, so the
+		# sequence sat out five seconds of dead screen before the impact
+		# stage killed the victim.
+		main._fx.set_arrived(ShotSequence.arrived_after_muzzle(waits,
+			main._triggers.arrived_write(), made,
+			main._fx.live() >= BlobPool.SLOTS))
 
 	func impact(weapon: int, tx: int, ty: int) -> void:
 		if main._triggers != null:

@@ -127,6 +127,30 @@ static func waits_for_projectile(weapon: int) -> bool:
 	return not WAIT_SKIPPED_WEAPONS.has(weapon)
 
 
+## What the *arrived* flag stands at once the muzzle has been made.
+##
+## `creator_write` is [method BlobTriggers.arrived_write]: the value the last
+## burst creator stored, or [constant BlobTriggers.ARRIVED_UNWRITTEN] when no
+## creator wrote one. **It wins whenever there is one**, because the engine's
+## own test is `steps <= 0` and not "the creator made nothing": a point-blank
+## burst writes the 1 and *then* fills the pool with zoom bobs at the target.
+##
+## The two fallbacks are the remake's own and neither is in the original.
+## A weapon that skips the wait never looks at the flag, and a muzzle that
+## made nothing at all with room to spare made nothing for a reason the engine
+## could not have had -- a computed kind the switch does not name, or a model
+## this world set does not carry -- so waiting on it would be waiting for a
+## refusal. A **full** pool is different: the engine leaves the flag down
+## there too, and so does this.
+static func arrived_after_muzzle(waits: bool, creator_write: int, made: int,
+		pool_full: bool) -> bool:
+	if not waits:
+		return true
+	if creator_write != BlobTriggers.ARRIVED_UNWRITTEN:
+		return creator_write == 1
+	return made == 0 and not pool_full
+
+
 ## Queue the whole shot. `shot` carries what `core` resolved and what the
 ## scene knows about the units on the marked cells:
 ## [codeblock]

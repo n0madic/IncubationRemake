@@ -50,16 +50,31 @@ static func create(cache_dir: String, game_font: bool = true) -> BriefingText:
 	label.scroll_active = true
 	label.fit_content = false
 	label.mouse_filter = Control.MOUSE_FILTER_PASS
+	label.use_game_font(cache_dir, game_font)
+	return label
+
+
+## Swap between the shipped faces and the readable one **in place**, so a
+## label already on screen follows the interface setting without being rebuilt.
+##
+## *size* overrides [constant READABLE_SIZE] for the readable face; the box the
+## pickup message is drawn in is narrower than a briefing's and reads better a
+## point larger.
+func use_game_font(cache_dir: String, game_font: bool,
+		size: int = READABLE_SIZE) -> void:
+	_fonts.clear()
+	remove_theme_font_override("normal_font")
+	remove_theme_font_size_override("normal_font_size")
+	remove_theme_font_size_override("bold_font_size")
 	if not game_font:
-		label.add_theme_font_size_override("normal_font_size", READABLE_SIZE)
-		label.add_theme_font_size_override("bold_font_size", READABLE_SIZE)
-		return label
+		add_theme_font_size_override("normal_font_size", size)
+		add_theme_font_size_override("bold_font_size", size)
+		return
 	for name: String in FONT_NAMES:
 		var font: FontFile = GameFont.load_from(cache_dir, name)
-		label._fonts.append(font)
-	if not label._fonts.is_empty() and label._fonts[0] != null:
-		label.add_theme_font_override("normal_font", label._fonts[0])
-	return label
+		_fonts.append(font)
+	if not _fonts.is_empty() and _fonts[0] != null:
+		add_theme_font_override("normal_font", _fonts[0])
 
 
 static func ramp_colour(index: int) -> Color:

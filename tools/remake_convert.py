@@ -45,6 +45,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import interaction_tables  # noqa: E402
 import lev_parse  # noqa: E402
 from inclib import cache as cachemod  # noqa: E402
 from inclib.check import Checker  # noqa: E402
@@ -925,6 +926,40 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     c.check("campaign.briefing_is_structured", structured,
             "docs/92 3.2: spans carry their font and colour, not a marked-up "
             "string the consumer would have to re-parse")
+
+    # The pickup messages -- docs/26 section 3, `Events.txt`.
+    events = json.loads(
+        (cache_dir / "text" / "info" / "events.json").read_text())
+    c.expect("info.schema", events["schema"], convertmod.INFO_SCHEMA)
+    c.expect("info.labels", sorted(events["blocks"]),
+             sorted(interaction_tables.EXPECTED_TEXT.values()),
+             "the thirteen labels aExecuteUse's pickup arms name")
+    # **The map itself, pair by pair.** The document carries the decoding of
+    # the switch and the game side reads it, so this is the one place the two
+    # can be compared against docs/26 section 3's own table -- a swapped pair
+    # is what a check on the label *set* alone would let through.
+    c.expect("info.action_points",
+             {row["action_point"]: row["label"] for row in events["pickups"]},
+             interaction_tables.EXPECTED_TEXT,
+             "action point -> Events.txt label, out of the arm that pushes it")
+    c.expect("info.every_arm_has_its_block",
+             sorted(row["label"] for row in events["pickups"]
+                    if row["label"] not in events["blocks"]), [])
+    c.expect("info.speech",
+             {row["action_point"]: row["speech"] for row in events["pickups"]},
+             {ap: (interaction_tables.SPEECH_EVENT
+                   if ap != interaction_tables.NO_SPEECH_ID else -1)
+              for ap in interaction_tables.EXPECTED_TEXT},
+             "twelve of the thirteen arms call 0x0047B660 with argument 9")
+    empty = sorted(key for key, spans in events["blocks"].items()
+                   if not "".join(span["text"] for span in spans).strip())
+    c.expect("info.every_label_has_text", empty, [])
+    c.check("info.is_structured",
+            all(isinstance(span.get("font"), int)
+                and isinstance(span.get("colour"), int)
+                and isinstance(span.get("text"), str)
+                for spans in events["blocks"].values() for span in spans),
+            "docs/92 3.2, as the briefings are")
 
     # The art.
     art = json.loads((cache_dir / "art" / "index.json").read_text())

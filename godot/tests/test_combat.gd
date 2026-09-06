@@ -18,6 +18,11 @@ extends TestSuite
 ## reaction check pass by refusing.
 const REACTION_WEAPON: int = 3
 const SCENE_SIZE: int = 8
+## docs/21 section 6 -- the `special` 1 pair, by their shipped ids.
+const CLOSE_COMBAT_GUN: int = 2
+const CLOSE_COMBAT_BAYONET: int = 30
+## A `size` 1 unit type, for the swap's large-unit subtraction.
+const LARGE_TYPE: int = 40
 
 
 ## One built world, with **typed** members.
@@ -45,6 +50,7 @@ func run(h: TestHarness) -> void:
 	_visibility(h)
 	_reveals(h)
 	_defence_gate(h)
+	_close_combat(h)
 	_reaction_queue(h)
 	_jam_and_warp(h)
 	_heal(h)
@@ -83,6 +89,19 @@ static func _weapons() -> WeaponTable:
 			"toggle": Combat.CONVERTER_WEAPON, "mun": 255, "hit": 90,
 			"damage": 1, "range_min": 0, "range_max": 40, "type": 3,
 			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		# The `special` 1 pair of docs/21 section 6, with the shipped ids
+		# because [constant Combat.CLOSE_COMBAT_WEAPONS] is read off the
+		# revert arm's own three `cmp`s: `Standard Assault Rifle` names
+		# `Light Bayonet` 30 and 30 names it back.
+		{"id": CLOSE_COMBAT_GUN, "heat": 4, "toggle": CLOSE_COMBAT_GUN,
+			"mun": 10, "hit": 4, "damage": 4, "range_min": 1,
+			"range_max": 20, "type": 1, "special": Combat.SPECIAL_CLOSE_COMBAT,
+			"param": CLOSE_COMBAT_BAYONET, "def_mode": 1, "mun_per_fight": 1},
+		{"id": CLOSE_COMBAT_BAYONET, "heat": 255,
+			"toggle": CLOSE_COMBAT_BAYONET, "mun": 255, "hit": 100,
+			"damage": 3, "range_min": 1, "range_max": 1, "type": 4,
+			"special": Combat.SPECIAL_CLOSE_COMBAT, "param": CLOSE_COMBAT_GUN,
+			"def_mode": 0, "mun_per_fight": 1},
 	])
 
 
@@ -100,6 +119,12 @@ static func _types() -> UnitTypeTable:
 		{"id": 30, "mp_max": 0, "fp_max": 255, "hp_max": 10, "special": 0,
 			"size": 0, "species": 2, "height": 40, "model": "",
 			"description": "barrel"},
+		# A large unit, for the swap's own distance: docs/22 section 5.1
+		# takes a field off for each large participant, so one of these
+		# reaches a bayonet from two cells away.
+		{"id": LARGE_TYPE, "mp_max": 4, "fp_max": 0, "hp_max": 20,
+			"special": 0, "size": UnitTypeTable.SIZE_LARGE, "species": 0,
+			"height": 20, "model": "", "description": "combot"},
 	])
 
 
@@ -639,6 +664,97 @@ func _turn(player: int = 0, counter: int = 1) -> TurnState:
 	out.current_player = player
 	out.turn = counter
 	return out
+
+
+# --- docs/21 section 6: the bayonet ------------------------------------------
+
+## `0x0046F7E0` phases 0 and 1 -- the weapon a `special` 1 gun becomes when
+## what it is shooting at is standing next to it.
+##
+## The rule is invisible in the shipped corpus's own captures: all six native
+## shots of `tests/fixtures/turn/cases_turn.json` are weapon 2 -- a
+## `special` 1 gun -- and every one of them is nine fields out or more, so the
+## engine never took this branch there and the model agreed with it by not
+## having the branch at all.
+func _close_combat(h: TestHarness) -> void:
+	var scene: Scene = _scene()
+	var shooter: UnitState = _place(scene, 0, 0, 2, 2, 0)
+	shooter.weapon = CLOSE_COMBAT_GUN
+	shooter.ammo = 10
+	var next_door: UnitState = _place(scene, 1, 1, 3, 2, 0)
+	h.check("close.swaps_when_adjacent",
+		Combat.close_combat_swap(scene.state, scene.types, scene.weapons,
+			shooter, next_door),
+		"a `special` 1 gun one field away becomes its `param`")
+	h.equal("close.becomes_the_param", shooter.weapon, CLOSE_COMBAT_BAYONET)
+	h.check("close.reverts", Combat.close_combat_revert(scene.weapons, shooter),
+		"and phase 1 puts the gun back")
+	h.equal("close.back_to_the_gun", shooter.weapon, CLOSE_COMBAT_GUN)
+	# The revert reads the **held** weapon's id, not only its `special`, which
+	# is what stops the swap from undoing itself on the way in.
+	h.check("close.a_gun_is_not_reverted",
+		not Combat.close_combat_revert(scene.weapons, shooter),
+		"only ids 30, 31 and 32 are on the way back")
+
+	# The distance, and the two things that move it.
+	var far: UnitState = _place(scene, 2, 1, 4, 2, 0)
+	h.check("close.refuses_at_two_fields",
+		not Combat.close_combat_swap(scene.state, scene.types, scene.weapons,
+			shooter, far), "`cmp eax, 1` and nothing else")
+	far.type_id = LARGE_TYPE
+	h.check("close.a_large_target_is_one_field_nearer",
+		Combat.close_combat_swap(scene.state, scene.types, scene.weapons,
+			shooter, far), "docs/22 section 5.1's own subtraction")
+	shooter.weapon = CLOSE_COMBAT_GUN
+	far.type_id = 0
+	# The height gate: `abs(dh) / 160 < 16`.
+	var levels: int = Combat.CLOSE_COMBAT_HEIGHT_LEVELS
+	var step: int = UnitTypeTable.HEIGHT_UNIT
+	scene.state.set_height(scene.state.index_of(3, 2), levels * step)
+	h.check("close.refuses_a_storey_too_far",
+		not Combat.close_combat_swap(scene.state, scene.types, scene.weapons,
+			shooter, next_door), "sixteen levels is already too many")
+	scene.state.set_height(scene.state.index_of(3, 2), (levels - 1) * step)
+	h.check("close.accepts_the_level_below_it",
+		Combat.close_combat_swap(scene.state, scene.types, scene.weapons,
+			shooter, next_door), "fifteen is still close combat")
+	scene.state.set_height(scene.state.index_of(3, 2), 0)
+	shooter.weapon = CLOSE_COMBAT_GUN
+
+	# And the whole of it through `aAttackUnit`, which is where a player meets
+	# it: **the round is not spent**, because the weapon that fired had
+	# `mun` 255 by the time the subtraction of docs/22 section 7.5 read it.
+	var rng: IncRandom = IncRandom.new()
+	var before: int = shooter.ammo
+	var stab: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, shooter.x, shooter.y, next_door.x,
+		next_door.y, 0, 1, 1, _turn(), rng)
+	h.check("close.the_stab_fired", stab.fired, stab.reason)
+	h.equal("close.no_round_is_spent", shooter.ammo, before,
+		"the bayonet's magazine is 255, so the subtraction is skipped")
+	h.equal("close.the_gun_is_back_after_the_shot", shooter.weapon,
+		CLOSE_COMBAT_GUN,
+		"phase 1 runs before the routine returns, so the animation sees a gun")
+	# The control: the same gun at range spends its round.
+	var distant: UnitState = _place(scene, 3, 1, 2, 7, 0)
+	var spent_before: int = shooter.ammo
+	var shot: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, shooter.x, shooter.y, distant.x,
+		distant.y, 0, 1, 1, _turn(), rng)
+	h.check("close.the_distant_shot_fired", shot.fired, shot.reason)
+	h.equal("close.a_round_is_spent_at_range", shooter.ammo, spent_before - 1,
+		"nothing swapped, so the gun's own magazine is read")
+	# A reaction reaches neither arm: `0x0046B592` and `0x0046C319` jump past
+	# the dispatcher when `aAttackUnit`'s fifth argument is set.
+	var reaction_before: int = shooter.ammo
+	var reacted: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, shooter.x, shooter.y, next_door.x,
+		next_door.y, 0, 1, 1, _turn(), rng, true)
+	h.check("close.the_reaction_fired", reacted.fired, reacted.reason)
+	h.equal("close.a_reaction_never_reaches_for_it", shooter.ammo,
+		reaction_before - 1,
+		"a unit on overwatch shoots, whatever walks into the next cell")
+	h.equal("close.and_keeps_its_gun", shooter.weapon, CLOSE_COMBAT_GUN)
 
 
 func _reaction_queue(h: TestHarness) -> void:

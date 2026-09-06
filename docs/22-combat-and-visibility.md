@@ -567,6 +567,14 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
 
 ### 7.1 Before the shot
 
+0. **The close-combat swap.** `0x0046B5C7` calls the weapon-special dispatcher
+   `0x0046F7E0` with phase 0, which is where a `special` 1 gun standing next
+   to what it is aiming at becomes its bayonet — the whole rule, and the
+   arithmetic behind it, is [`21` §6](21-info-lcl-schema.md)'s *`special` 1 is
+   the bayonet*. Everything below this line therefore reads the **swapped**
+   weapon, and phase 1 at `0x0046C325` puts the gun back after §7.5's
+   subtraction has already been skipped. `0x0046B592` jumps past this call for
+   a **reaction**.
 1. `aCheckWeaponDamage` (§8) may jam or destroy the weapon. If it leaves
    `unit[+0x40] != 0`, or the attacker's HP is 0, the function returns without
    firing.

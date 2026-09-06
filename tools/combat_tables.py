@@ -155,6 +155,54 @@ EXPECTED_OPT_ROWS = [50, 51, 52, 57, 55, 54, 56, 58]
 #: Row 7 is `aiLevel`, `Game.opt +0x18`, help line 58 "Set Difficulty Level ...".
 OPT_DIFFICULTY_ROW = 7
 
+# --- docs/21 6: the close-combat swap ---------------------------------------
+
+#: ``aWeaponSpecial`` -- the weapon ``special`` dispatcher ``aAttackUnit``
+#: calls three times.  The phase is its fourth argument, pushed first.
+WEAPON_SPECIAL = 0x0046F7E0
+#: ``(call site, phase, the byte pushed at the site)``.  Phase 0 runs before
+#: the shot, phase 2 on each unit it hit, phase 1 at the very end -- **after**
+#: the ammunition subtraction, which is why a bayonet's ``mun`` of 255 is what
+#: the subtraction reads and no round is spent.
+WEAPON_SPECIAL_CALLS = {0x0046B5C7: 0, 0x0046BE1C: 2, 0x0046C325: 1}
+#: The gates in front of the two close-combat phases: both read
+#: ``aAttackUnit``'s fifth argument -- the flag [`25` 6]'s reaction drain
+#: passes as 1 -- and jump past the call.  ``mov eax, [esp+0x84] / test eax,
+#: eax / jne``.
+WEAPON_SPECIAL_REACTION_GATES = {
+    0x0046B581: b"\x8b\x84\x24\x84\x00\x00\x00",
+    0x0046C310: b"\x8b\x84\x24\x84\x00\x00\x00",
+}
+#: The ammunition subtraction, and the phase-1 call that follows it: the two
+#: are 0x23 bytes apart and in that order.
+AMMO_SUBTRACT = 0x0046C302
+#: ``cmp cl, 0x1E`` / ``0x1F`` / ``0x20`` at ``0x0046F8E8`` -- the three ids
+#: the revert arm accepts, read out of its own comparisons.
+CLOSE_COMBAT_REVERT_TEST = 0x0046F8E8
+CLOSE_COMBAT_WEAPONS = (0x1E, 0x1F, 0x20)
+#: ``cmp eax, 1`` at ``0x0046FA1B`` -- the distance, after a field is taken
+#: off for each large participant.
+CLOSE_COMBAT_DISTANCE_TEST = 0x0046FA1B
+#: ``cmp edx, 0x10`` at ``0x0046FAAC`` -- the height gate, over the reciprocal
+#: multiply ``0x66666667`` with ``sar edx, 6``, which is a truncating divide
+#: by 160.
+CLOSE_COMBAT_HEIGHT_TEST = 0x0046FAAC
+CLOSE_COMBAT_HEIGHT_MAGIC = 0x66666667
+CLOSE_COMBAT_HEIGHT_MAGIC_AT = 0x0046FA98
+CLOSE_COMBAT_HEIGHT_SHIFT = 6
+CLOSE_COMBAT_HEIGHT_SHIFT_AT = 0x0046FAA2
+CLOSE_COMBAT_HEIGHT_LEVELS = 0x10
+#: ``mov al, byte [ebx + 0x51B2FB]`` at ``0x0046F823`` -- the dispatcher's
+#: own read of the ``special`` column, and ``mov dl, byte [ebx + 0x51B2FF]``
+#: at ``0x0046FAB1``, the swap's write of ``param``.  Both are indexed by
+#: ``67 * weapon id``, the record's size.
+SPECIAL_COLUMN_READ = 0x0046F825
+PARAM_COLUMN_WRITE = 0x0046FAB3
+#: The weapon record's base, so ``special`` (+0x3B) and ``param`` (+0x3F) can
+#: be read back out of the arm's own displacements.
+WEAPON_TABLE_BASE = 0x0051B2C0
+
+
 # --- provably private globals -----------------------------------------------
 
 #: `unitType[+0x07]`, the `special` column.  Every site that reads it, so that
@@ -1032,6 +1080,78 @@ def corpus_unit_names(root: str) -> dict[int, str]:
     return out
 
 
+def _check_close_combat(tables: "CombatTables", stats: "Stats") -> None:
+    """``docs/21`` 6's ``special`` 1 -- the bayonet -- as bytes.
+
+    Nothing in the corpus exercises it: a swap needs a ``special`` 1 gun
+    standing next to what it fires at, which is a *runtime* arrangement and
+    not a field in any file.  So what is pinned here is the arm itself -- the
+    three call sites and their phases, the gate that keeps a reaction out, the
+    order against the ammunition subtraction, and the four constants
+    ``Combat.close_combat_swap`` transcribes.
+    """
+    pe = tables.pe
+
+    # The three calls, and the phase each pushes first.
+    for site, phase in sorted(WEAPON_SPECIAL_CALLS.items()):
+        rel = struct.unpack("<i", pe.bytes_at(site + 1, 4))[0]
+        stats.check("close.dispatcher",
+                    pe.u8(site) == 0xE8 and site + 5 + rel == WEAPON_SPECIAL,
+                    f"{site:#010x} does not call {WEAPON_SPECIAL:#010x}")
+        # The push block is five or six bytes and the phase is its first
+        # push, `6a XX`, because the fourth argument goes on the stack first.
+        block = pe.bytes_at(site - 6, 6)
+        head = block[0:2] if block[0] == 0x6A else block[1:3]
+        stats.check("close.phase", head == bytes((0x6A, phase)),
+                    f"{site:#010x} pushes {head.hex()} where phase {phase} "
+                    f"wants {bytes((0x6A, phase)).hex()}")
+
+    # Both close-combat phases are behind aAttackUnit's fifth argument.
+    for site, want in sorted(WEAPON_SPECIAL_REACTION_GATES.items()):
+        stats.check("close.reaction_gate", pe.bytes_at(site, len(want)) == want,
+                    f"{site:#010x} does not read [esp+0x84]")
+
+    # Phase 1 runs **after** the round is subtracted, which is the whole of
+    # "a stab costs no ammunition": the subtraction reads the bayonet's own
+    # `mun` of 255 and is skipped.
+    stats.check("close.revert_follows_the_ammo",
+                AMMO_SUBTRACT < 0x0046C325 < AMMO_SUBTRACT + 0x40,
+                f"the subtraction at {AMMO_SUBTRACT:#010x} and the phase-1 "
+                f"call are not in that order")
+    stats.check("close.ammo_reads_the_held_weapon",
+                pe.bytes_at(AMMO_SUBTRACT - 0x1E, 5)
+                == b"\x33\xc0\x8a\x46\x3f",
+                "the subtraction indexes on something other than unit[+0x3F]")
+
+    # The revert arm's own three comparisons, and the swap's two constants.
+    revert = pe.bytes_at(CLOSE_COMBAT_REVERT_TEST, 13)
+    want_ids = tuple(revert[i] for i in (2, 7, 12))
+    stats.check("close.revert_ids", want_ids == CLOSE_COMBAT_WEAPONS,
+                f"the revert arm compares {want_ids}, not {CLOSE_COMBAT_WEAPONS}")
+    stats.check("close.distance",
+                pe.bytes_at(CLOSE_COMBAT_DISTANCE_TEST, 3) == b"\x83\xf8\x01",
+                "the swap does not test `cmp eax, 1`")
+    stats.check("close.height_levels",
+                pe.bytes_at(CLOSE_COMBAT_HEIGHT_TEST, 3)
+                == bytes((0x83, 0xFA, CLOSE_COMBAT_HEIGHT_LEVELS)),
+                f"the height gate is not `cmp edx, {CLOSE_COMBAT_HEIGHT_LEVELS:#x}`")
+    # `mov eax, 0x66666667 ... sar edx, 6` -- a truncating divide by 160, the
+    # same height unit `unitinfo[+0x7C]` counts in.
+    stats.check("close.height_divisor",
+                pe.u32(CLOSE_COMBAT_HEIGHT_MAGIC_AT)
+                == CLOSE_COMBAT_HEIGHT_MAGIC
+                and pe.bytes_at(CLOSE_COMBAT_HEIGHT_SHIFT_AT, 3)
+                == bytes((0xC1, 0xFA, CLOSE_COMBAT_HEIGHT_SHIFT)),
+                "the reciprocal multiply is not 0x66666667 >> 6, i.e. not /160")
+    # The two weapon columns the arm reads, by their own displacements.
+    stats.check("close.reads_special",
+                pe.u32(SPECIAL_COLUMN_READ) == WEAPON_TABLE_BASE + 0x3B,
+                "the dispatcher does not index the `special` column")
+    stats.check("close.writes_param",
+                pe.u32(PARAM_COLUMN_WRITE) == WEAPON_TABLE_BASE + 0x3F,
+                "the swap does not write the `param` column")
+
+
 def run_check(root: str) -> int:
     exe = os.path.join(root, GAME_EXE)
     if not os.path.isfile(exe):
@@ -1309,6 +1429,9 @@ def run_check(root: str) -> int:
         stats.check("rng.private", not stray,
                     f"{name}: the RNG globals are referenced outside "
                     f"{lo_va:#x}..{hi_va:#x} at {[hex(v) for v in stray]}")
+
+    # 6c. docs/21 6: the close-combat swap, read out of the dispatcher
+    _check_close_combat(tables, stats)
 
     # 7. the hit curve over every shipped weapon
     weapons = load_weapons(root)

@@ -257,7 +257,7 @@ SetWeaponInfo2 (0, "W_LCG_0", 0,   1,    0,    "A");
 | +0x38 | 1 | 1 | 14 (`num[12]`) | **tech** level | header only |
 | +0x39 | 1 | 1 | 15 (`num[13]`) | **mun** — magazine size; `255` means the weapon never consumes ammo, and the subtraction below is skipped | confirmed: a new unit's ammo byte (`unit+0x3d`) is initialised from it (`0x00479cf0`); the `!= 255` guard is in `0x0046B450` |
 | +0x3a | 1 | 1 | 16 (`num[14]`) | **heat** — the heat *cap*, doubled by equipment 19 (`Cooler`). `255` disables the mechanic. Reaching it triggers the overheat roll | confirmed (`0x00475340`; see [`10` §5.12](10-lev-mission-format.md) and [`22` §8](22-combat-and-visibility.md)) |
-| +0x3b | 1 | 1 | 18 (`num[16]`) | **special** 0..6; `6` = *attack the defender's position of the last turn*, which is the one value with a decoded effect | confirmed (`== 6` in `0x0046f7e0` and in `0x0046A270`, where it swaps the target cell for unit `+0x51`/`+0x52`; `!= 1` in `0x0042ff30`) |
+| +0x3b | 1 | 1 | 18 (`num[16]`) | **special** 0..6; the dispatcher `0x0046F7E0` decodes 1, 3, 4 and 5, `0x0046A270` decodes 6, and only 2 has no shipped carrier — see *`special` 1 is the bayonet* below | confirmed (`== 6` in `0x0046f7e0` and in `0x0046A270`, where it swaps the target cell for unit `+0x51`/`+0x52`; `!= 1` in `0x0042ff30`) |
 | +0x3c | 1 | 1 | 12 (`num[10]`) | **AP** — action points per shot | confirmed: subtracted from `unit+0x15` before firing (`0x0040a440`); GUI text 130 `"Action Pts:"` |
 | +0x3d | 1 | 2 | 3 (`num[1]`) | **weapon toggle** — the id of this weapon's other firing mode; an involution over all 42 records, 26 fixed points and 8 pairs. `aToggleWeaponModes` (`0x0047a8c0`) is `unit[+0x3f] = weapon[+0x3d]`, and the engine only ever reverts, never toggles into a mode. See [`25` §7](25-turn-and-round.md) | confirmed |
 | +0x3e | 1 | 1 | 17 (`num[15]`) | **cost** in equipment points | confirmed (GUI text 122 `"Equipment Pts:"`; compared against the player's points before purchase in `0x00457da0`) |
@@ -357,6 +357,63 @@ be put on overwatch.**
 | 4 | set the defender's player id to the attacker's and zero all its action points |
 | 5 | copy the attacked unit into the unit pool if its unit-pool flag is set |
 | 6 | attack the defender's position of the last turn |
+
+### `special` 1 is the bayonet — **[code] `0x0046F7E0`**
+
+The dispatcher `aAttackUnit` calls three times, with the **phase** as its
+fourth argument: `0` before the shot (`0x0046B5C7`), `2` on each unit the shot
+hit (`0x0046BE1C`) and `1` at the very end (`0x0046C325`). Phase 0 owns
+`special` 1 and 2, phase 1 owns 1 and 3, phase 2 owns 4 and 5.
+
+```c
+/* phase 0, 0x0046F9C1 -- the swap */
+if (!target) return;
+d = aGetDistance(a->x, a->y, t->x, t->y);      /* 0x0044AE10 */
+if (unitInfo[a->type].size == 1) d--;          /* docs/22 §5.1 */
+if (unitInfo[t->type].size == 1) d--;
+if (d != 1) return;
+if (abs(cellA->height - cellT->height) / 160 >= 16) return;
+a->weapon = weapon[a->weapon].param;           /* 0x0046FAB1 */
+
+/* phase 1, 0x0046F8E8 -- the revert */
+if (a->weapon == 30 || a->weapon == 31 || a->weapon == 32)
+    a->weapon = weapon[a->weapon].param;
+```
+
+Three consequences, and the first is the one a player notices:
+
+* **the round is not spent.** The revert runs at `0x0046C325`, *after* the
+  ammunition subtraction of [`22` §7.5](22-combat-and-visibility.md) — and the
+  subtraction reads `unit[+0x3F]`, which is the bayonet, whose `mun` is 255.
+  So a stab costs nothing, exactly as the shipped table intends;
+* **everything else in the shot is the bayonet's too**: `hit` 100 over
+  `range max` 1 (a flat chance), damage 3/3/5, `type` 4, heat cap 255. The
+  chance the interface *displayed* before the shot is still the gun's —
+  `0x0046A270` is not on this path;
+* **a reaction never reaches either arm.** `0x0046B592` and `0x0046C319` read
+  `aAttackUnit`'s fifth argument, the flag [`25` §6](25-turn-and-round.md)'s
+  drain passes as 1, and jump past the call. A unit on overwatch shoots
+  whatever walks into the next cell.
+
+The three shipped pairs are 1↔31, 2↔30 and 16↔32; `param` names the partner in
+both directions, which is how one field serves both. `combat_tables.py`'s
+`close.*` checks pin the call sites, the phases, the gate, the ordering
+against the subtraction and all four constants; `test_combat.gd`'s
+`close.*` are the model's.
+
+**The executable model is `godot/core/combat.gd` and not `inclib/combat.py`**
+([`92` §5.1](92-remake-architecture.md)): the claim is structural, no corpus
+run can exercise it — a swap needs two units standing next to each other,
+which is runtime state and not a field in any file — and the Python twin is
+frozen. What stands behind the rule is the byte pins above and the six shots
+of `tests/fixtures/turn/cases_turn.json`, every one of them fired by a
+`special` 1 gun from nine fields or more, which is the engine agreeing that
+nothing happens at range.
+
+> The row for `+0x3b` above previously called 6 "the one value with a decoded
+> effect". Five of the seven are decoded: 1, 3 (phase 1), 4, 5 (phase 2) and 6.
+> Only 2 — the energy-pack swap the authors themselves marked untested — has
+> no shipped carrier.
 
 `damage`: 0–200 base hit-point damage; **254** forces exactly one hit point of
 damage; 255 reserved.
