@@ -77,6 +77,13 @@ max_hit_points}`, `WeaponTable.{icon, name_of}`, `CameraRig.{frame_projection
 `highlight.gd` removed. `tour.gd` gained `markers`, `hud event|pad|ring|radar N`
 and reports `hud`, `markers` and `visible_rect`.
 
+> **2026-09-06.** `godot/tour.gd` is gone: the verbs and the reply document
+> moved to `godot/game/agent/` behind the control server of
+> [`docs/92` §7.16](92-remake-architecture.md), reached by `--agent-port=` on an
+> ordinary launch. Every command named in this report still exists under that
+> name; what changed is the transport, and this report is left describing the
+> drive as it happened.
+
 ## 3. Verification
 
 ```

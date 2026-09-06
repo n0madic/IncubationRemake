@@ -178,7 +178,7 @@ Two gates sit in front of the table:
   or 60 (`0x00417ED7`, `0x00417EDB`), and arms 1 and 12 return without a
   blit when it is clear (`0x00418254`, `0x00418263`). The fill is therefore
   **invisible until the pointer is on it**, which is what a screenshot of the
-  original shows and what the remake's tour scenario has to hover for.
+  original shows and what the remake's agent scenario has to hover for.
 * **The hovered cell blinks and takes the frame.** With its state 10 or in
   30..73 its own digit is dropped on every odd 100 ms tick
   (`test byte [0x00523068], 1` at `0x00418329`) and `mp[48]`, the 19x19 frame,
@@ -698,7 +698,7 @@ by itself, so the seat is back on the marines before the first event is drawn.
 
 `MissionHud.refresh` takes the same switch to the rest of the interface — the
 panel is refreshed with no selection and the columns, the pad, the radar and
-the turn number are hidden, which is the bare plate above. `tour.gd`'s reply carries the lit
+the turn number are hidden, which is the bare plate above. The agent's `/state` carries the lit
 count as `hud.progress` and the tick as `hud.progress_stepped`, and
 `hud.radar_marks` reads 0 while the radar is off screen.
 
@@ -824,7 +824,7 @@ right and **up**, measured with the generated mesh and pinned in
 so the table consulted is the engine's own. **The ring is 2D**
 (`DirectionRing`), for the clamp; under the stretch the camera's
 `unproject_position`, the mouse and the layer all speak plate units, which
-`tour.gd`'s `visible_rect` reports.
+the agent's `/state.visible_rect` reports.
 
 **Fonts.** The turn, the hints and the panel's name are the 13 px `font_0`;
 the panel's numbers the 10 px `font_3`, the one face that fits its rows; the
@@ -903,8 +903,10 @@ that did not move is never counted, a casualty leaves the divisor unless the
 replay is still holding it, and the side is the replay's rather than the
 world's seat.
 
-`tour.gd` gained `markers`, `hud event|pad|ring|radar N`, and `hud`,
-`markers` and `visible_rect` in every reply.
+The driver gained `markers` and `hud event|pad|ring|radar N`, and reports
+`hud`, `markers` and `visible_rect` in every reply. (Since 2026-09-06 the
+driver is the control server of `docs/92` §7.16, reached by `--agent-port=`;
+the verbs kept their names.)
 
 ## 10. Corrections to other documents (2026-09-05)
 

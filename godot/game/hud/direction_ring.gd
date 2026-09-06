@@ -16,7 +16,7 @@ extends Control
 ## do, and the letters are read against the pointer in screen space anyway.
 ## Under the `canvas_items` stretch a [Camera3D]'s `unproject_position`, a
 ## mouse event and this layer all speak the plate's own units, so no
-## conversion happens here -- `test_hud.gd` pins the projection and `tour.gd`
+## conversion happens here -- `test_hud.gd` pins the projection and the agent
 ## reports the visible rectangle so a driver can see that it stays true.
 
 ## The nine records: eight facings and the cancel.

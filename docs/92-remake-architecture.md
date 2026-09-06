@@ -1271,8 +1271,9 @@ scene node and no suite instantiates it.
 ### 7.15 The shell — what makes six slices reachable (2026-09-04)
 
 Six slices built a game that no person could start. `campaign.start_new()` had
-exactly one caller in the whole project — `godot/tour.gd`, which the shipping
-preset excludes — so a built game went straight into `_C_140`, `campaign.state`
+exactly one caller in the whole project — the outside driver, which the shipping
+preset excluded (§7.16 replaced it on 2026-09-06) — so a built game went
+straight into `_C_140`, `campaign.state`
 stayed `null`, and the campaign layer of §7.13 was reachable only from a test
 driver. There was no menu, no chain to choose, one save file on `F5`, and no
 options screen at all.
@@ -1301,7 +1302,7 @@ The six decisions, referred to by these labels from the code:
 | **S2** | Options carry **only what is actually connected**; §7.1 makes an inert control a defect of the remake's own. |
 | **S3** | The layout is the remake's own, built on `CampaignScreen` — the same plates, font, `buttons.LIB` faces and localisation seam. |
 | **S4** | The intro (`Video/Seq_1`, logical id 0) is a **named empty step**, `_play_intro()`, for the sequence player to fill. |
-| **S5** | Direct entry to a level is **kept and supported**, not a side effect: `--mission=`, the new `--campaign=`, and `tour.gd`. |
+| **S5** | Direct entry to a level is **kept and supported**, not a side effect: `--mission=`, the new `--campaign=`, and the outside driver (the agent server since §7.16). |
 | **S6** | The authority for difficulty is `CampaignState.difficulty`; `GameSettings` holds only the default for the next campaign. |
 
 **Eight numbered slots, and the quick save is not one of them.** `F5`/`F9` keep
@@ -1363,8 +1364,8 @@ tried by hand: `SliceMain.boot_choice` is static and pure so a build's command
 line does not have to be injected to test it. `--mission=NAME` builds a mission
 immediately and never raises the shell — an unknown name still warns and falls
 back, as it always did; `--campaign=N` is new and enters a chain's map past the
-menu; `tour.gd` runs the sixth slice's scenarios unedited. The shell must not
-become a compulsory door.
+menu; the outside driver runs the sixth slice's scenarios unedited. The shell
+must not become a compulsory door.
 
 **A load lands on the fog pass's answer, and only then is a round trip exact.**
 Measuring criterion 5 turned up a property nothing had written down. The engine
@@ -1472,13 +1473,15 @@ refused load could be backed out of, which it cannot: the campaign and the
 world are both already replaced by the time [SaveCodec] can check the blob at
 all, and the comment now says so.
 
-**And `tour.gd`'s screenshots were frozen.** Every capture after the first in a
+**And the driver's screenshots were frozen.** Every capture after the first in a
 session came back byte-identical to it, because `root.get_texture()` inside
 `_process` reads a framebuffer the renderer has not necessarily redrawn -- so a
 transition that had happened in the tree looked, in the picture, like a screen
 that had not changed. `RenderingServer.force_draw(false)` before the read fixes
 it. Worth recording because it cost a wrong diagnosis: the first reading of
-"the old plate is still up" was the driver's camera, not the game.
+"the old plate is still up" was the driver's camera, not the game. The call now
+lives in `AgentSession.capture_png` (§7.16), which is the **one** place a frame
+is read, so `GET /shot` and the `shot` verb cannot drift apart.
 
 **The four screens the original draws as pictures (2026-09-04).** The shell
 made the campaign reachable; it did not make it *look* like the game. Four of
@@ -1576,7 +1579,7 @@ reactions, the drawn terrain and the last query.
 
 The HUD is a mission's and nothing else's. It used to be left up under every
 plate, which cost nothing while a plate covered the whole screen and shows
-through the moment one has a window in it. `tour.gd` gained `press CAPTION`
+through the moment one has a window in it. The driver gained `press CAPTION`
 and `map_click X Y` for the same reason a driver cannot click a plate
 coordinate any more: the buttons are laid out in the plate's units and the
 window is not.
@@ -1797,6 +1800,127 @@ because the loop is one loop, and are named as having no consumer rather than
 left to look intentional.
 
 ---
+
+### 7.16 The control server — a socket instead of a directory (2026-09-06)
+
+Automatic driving used to go through `godot/tour.gd`: a `SceneTree` script
+outside `game/`, excluded from the shipping preset, that waited for
+`cmd-0001.txt`, ran its lines and wrote `res-0001.json` beside it. The protocol
+worked and drove three slices. What it could not do is answer a question **now**:
+a reply was a file written after a batch finished, so "what does the screen look
+like in the middle of this walk" and "is the computer's turn still being
+replayed" were questions with no way to ask them, and the file numbering made
+the conversation sequential by construction.
+
+The cost of replacing it was low and worth naming, because it is what made the
+decision easy: no script in the repository ever wrote a command file (the
+protocol had prose in `docs/97` §42 and `CLAUDE.md`, and no client), nothing
+under `godot/tests/` named the driver, and the transport was about forty lines
+of a 1091-line file. The verb table, the snapshot builder and the screenshot
+did not depend on it at all.
+
+| # | Decision |
+|---|---|
+| **A1** | The file protocol is **removed**, not kept beside the socket. A second door to the same verbs, in a file no suite and no export exercises, is exactly the shape of rot the warnings gate exists to prevent. |
+| **A2** | The server attaches to an **ordinary** launch, by `--agent-port=N`. What is driven is then the build a player runs, not a driver-shaped copy of it. |
+| **A3** | It therefore lives under `game/` — `game/agent/` — and is covered by the warnings gate, `test_isolation` and `runner.gd`'s `game_loads` sweep, none of which ever scanned the repository root. |
+| **A4** | It **ships** with the game and is inert: nothing listens without the flag, the bind is `127.0.0.1` only, and a port that cannot be taken is a warning rather than a refusal to start. |
+| **A5** | The request parser, the routing decision and the two command-line flags are **static and pure**, on `SliceMain.boot_choice`'s precedent, so `tests/test_agent.gd` pins them with no socket, no window and no game. |
+
+**A2 reverses `docs/97` §42.1's own rule** that `game/` gains nothing for the
+driver's benefit. That rule was right for a file the export excluded; it stops
+applying the moment the driver *is* `game/`. About 850 lines moved across and
+still read `SliceMain`'s private members — which compiles cleanly, because the
+reference is typed.
+
+**The routes.**
+
+| Route | Answered |
+|---|---|
+| `GET /health` | immediately, before a world exists; `booted` is what a client waits on |
+| `GET /state` | immediately, **including while a `POST /command` is running** |
+| `GET /shot` | immediately; the body is `image/png`, and `?save=NAME` files it under `--agent-dir=` and returns `X-Agent-Shot` |
+| `GET /help` | `AgentSession.VERBS` |
+| `POST /command` | when the batch finishes, which may be hundreds of frames later |
+
+The concurrency is the whole point and it falls out of one ordering inside
+`AgentBridge._process`: poll the socket and answer every read **first**, then
+step the session. A parked `POST` is a connection held open in the server's
+table; everything else is answered in the frame it landed. One batch runs at a
+time — a second `POST /command` is `409` with `Retry-After` — and reads never
+queue behind one.
+
+**What replaced the two watchdogs.** The driver gave up after 900 frames
+without a world and after twenty minutes without a command file. Neither
+belongs in a game: a running game must not exit because nobody talked to it.
+The boot limit became `/health`'s `booted` flag and the client's `wait-up`, and
+the silence limit became the caller's own `timeout` around the process.
+
+The boot **gate** inside a batch is a different thing and had to keep a limit of
+its own. A batch waits for a world so that a click sent the moment the port
+answers does not run against nothing — but a command can take the world down
+legitimately (`ui` with no argument closes the campaign map; `location N` can
+name a mission the cache does not carry), and the first pass gated on that
+condition for ever. The batch then never finished, its socket stayed open, and
+every later command — `quit` included — was answered 409 with no way back. The
+gate is now lifted for the rest of the batch as soon as the game is up, given
+up on after `BOOT_LIMIT` frames with a line in the reply's log, and never
+re-applied within a batch. What is
+still bounded is per-connection: a half-read request is dropped after two
+minutes, a body over 1 MiB is `413`, a header block over 16 KiB is `431`, and a
+ninth simultaneous connection is `503`.
+
+**`VERBS` is the one source of truth.** The driver's header table had drifted
+to sixteen entries of about thirty and nothing noticed, because nothing read
+it. The constant is now what `run_line` dispatches through, what `GET /help`
+prints, and what `test_agent.gd` compares — set for set — against the handler
+table. A verb with no help line, or a help line with no verb, fails the run.
+
+**`--agent-dir=` moves the screenshots and nothing else.** A driven session
+writes its saves and its settings into the live `user://`, exactly as a played
+one does. That was already true of the file driver; it is now true of any launch
+carrying the flag, which is a wider blast radius and is said here rather than
+discovered.
+
+**Screenshots still need a window.** `RenderingServer.force_draw(false)` is
+carried over from §7.15 and is in exactly one place, `AgentSession.capture_png`.
+Under `--headless` there is no renderer and `GET /shot` answers `503` rather
+than a zero-byte PNG, which a client would otherwise file as an empty picture.
+
+**What the existing GDScript servers do, and why none of it was taken.** The
+two that come up — `xaltaq/GDHTTPServer` and `fbcosentino/godot-rest-api-server`
+(itself over `deep-entertainment/GodotTPD`) — are Godot 3 code, and their
+shapes are worth naming as decisions rather than as omissions:
+
+* **A dedicated accept thread**, polled with a 100 ms sleep. Refused. A reply
+  here has to be a *frame's* truth: `/state` is read after `SliceMain._process`
+  and `/shot` forces a draw, both of which are the main thread's. Answering
+  from a thread would either need a hand-off back to it or would report a
+  frame nobody drew.
+* **Route parameters** (`users/:name/slots/:n`) and a signal per method. Not
+  needed for five fixed routes, and `route` being one static function with a
+  table of five is what makes it a suite's subject.
+* **Keep-alive.** Neither has it either. `Connection: close` is kept, because
+  the parked-connection rule already gives long commands what keep-alive would
+  be for, and a persistent connection would have to be reconciled with the
+  one-batch-at-a-time policy.
+* **CORS.** Deliberately absent, but that is not the defence it looks like:
+  omitting `Access-Control-Allow-Origin` stops a page **reading** the answer,
+  not sending the request, so while the flag is set any page the player has
+  open could fire a `text/plain` `POST /command` or an `<img src=".../shot">`
+  at `127.0.0.1`. What actually closes it is two lines: a request carrying an
+  `Origin` header is answered **403** -- a browser stamps it on exactly those
+  requests and no client of this server sends one -- and `?save=` is put
+  through `AgentSession.safe_shot_name`, so a name off the network cannot walk
+  out of `--agent-dir=`. Both were found by review after the first pass shipped
+  the wrong claim.
+* Their two documented weaknesses are the two things measured here. GDHTTPServer
+  "doesn't buffer incomplete lines across multiple `get_data()` calls
+  efficiently" and has **no timeout at all**; `parse_request` is a pure function
+  over the whole accumulated buffer, so fragmentation is not a case it can get
+  wrong, `tests/test_agent.gd` sends a body in two writes over a real socket to
+  prove it, and `IDLE_MSEC` / `MAX_HEAD` / `MAX_BODY` / `MAX_CONNS` bound the
+  four ways a peer could otherwise sit on the game's frame.
 
 ## 8. Standing constraints
 

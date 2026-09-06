@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 481 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 243 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 36 suites, 3800 checks
+bash   godot/run_tests.sh                                    # 37 suites, 4023 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -540,7 +540,8 @@ interpreter, with `_C_140` played and won in an exported build.
 
 **The game starts from a menu** (`docs/92` §7.15). A built game used to boot
 straight into `_C_140` with `campaign.state` left `null`, and the campaign was
-reachable only from `tour.gd`, which the shipping preset excludes. `game/`
+reachable only from the outside driver, which the shipping preset excluded.
+`game/`
 now carries a shell — `shell_host.gd` and five screens under `game/screens/`:
 a main menu on the shipped `Title` plate, the chain chooser, *Instant Action*
 over the cache manifest, **eight save slots** beside a separate quick save on
@@ -548,11 +549,11 @@ over the cache manifest, **eight save slots** beside a separate quick save on
 connected. `ESC` opens it over a running mission. **All three ways past it
 stay open and are checked rather than tried**: `--mission=NAME` builds a
 mission immediately and never raises the shell, the new `--campaign=N` enters
-a chain's map, and `tour.gd` runs the sixth slice's scenarios unedited —
+a chain's map, and the agent server runs the sixth slice's scenarios unedited —
 `SliceMain.boot_choice` is static and pure so `test_shell.gd` can check the
-decision without a command line. `tour.gd` gained `menu`, `slot`, `option`,
-`click_screen`, `buttons`, `press` and `map_click`, and no longer requires a
-world to exist before it will read a command.
+decision without a command line. The verb table gained `menu`, `slot`,
+`option`, `click_screen`, `buttons`, `press` and `map_click`, and no longer
+requires a world to exist before it will read a command.
 
 **Four of the screens are pictures, not lists** (`docs/92` §7.15). The shipped
 plates are opaque with no alpha, so a screen that wants the 3D behind it names
@@ -791,8 +792,10 @@ python3 tools/remake_convert.py gog_incubation --campaign-maps \
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
-godot --path godot --script res://tour.gd --resolution 1280x800 -- \
-    --dir=/some/scratch/dir --mission=_C_140   # drive the game from outside
+godot --path godot --resolution 1280x800 -- \
+    --mission=_C_140 --agent-port=8787         # ...and drive it from outside
+python3 tools/agent_client.py wait-up
+python3 tools/agent_client.py cmd "click_unit 0" idle
 ```
 
 `docs/93` has the two-command first run.
@@ -808,29 +811,49 @@ deliberately **outside** `World`'s canonical hash and carries its own digest;
 slice, because every other suite compares a hash only with itself and would not
 notice a drift.
 
-`godot/tour.gd` is how the game is played without a player (`docs/97` §42).
-It is a `SceneTree` driver beside `shot.gd`, excluded from the shipping preset,
-and **the directory it is given is the whole protocol**: it waits for
-`cmd-0001.txt`, runs the lines in it, writes `res-0001.json` beside it and
-waits for `cmd-0002.txt`. Write each command file with `mv` from a
-neighbouring name so a half-written one is never read. The lines are
-`key NAME`, `click X Y`, `click_unit SLOT`, `walk_to X Y`, `cell X Y`,
-`chance A B`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT` and `quit`,
-plus the battle interface's `markers` and `hud event|pad|ring|radar N`
-(`docs/43`) and the campaign's `campaign N`, `location N`, `deploy SLOT X Y`,
-`screen NAME`, `ui NAME`, `enter NAME` and `gamecontrol SLOT VALUE` --
-the last three are debugging entries past the location map, the way
-`--mission=` is one past the campaign; every reply
-carries the turn, every unit, the selection's fill and warp cells, the
-sequence on the queue, the blob pool **by kind**, the overlay, the camera,
-the interface, whether a body is still walking and whether the computer's
-turn is being replayed, so a screenshot and the numbers behind it come from
-the same frame. **A click on a reachable cell
-raises the direction ring** since the seventh slice, so `walk_to` answers it
-with the direction of travel and `hud ring N` is what chooses a facing. Keys and clicks go in through `Viewport.push_input`, so the game's own
-`_unhandled_input` and `_pick` run -- what is synthetic is the hand, not the
-path. It needs a **window**: screenshots come from the viewport's texture and
-`--headless` has no renderer, so run it with a `timeout` rather than headless.
+**The agent control server is how the game is played without a player**
+(`docs/92` §7.16, replacing the command-file driver of `docs/97` §42).
+`--agent-port=N` on an **ordinary** launch raises it —
+`godot --path godot -- --mission=_C_140 --agent-port=8787` — so what is driven
+is the shipping build and not a driver-shaped copy of it. It lives in
+`godot/game/agent/` (the socket, the session, the snapshot and the routing),
+ships inside the export, is **inert without the flag** and binds `127.0.0.1`
+only; `--agent-port=0` takes a free port and prints it. `--agent-dir=` moves
+the screenshot files and **nothing else** — a driven session writes its saves
+and settings into the live `user://`, exactly as a played one does.
+
+Five routes, and `tools/agent_client.py` is a thin client over them (`curl`
+does just as well):
+
+| Route | Answer |
+|---|---|
+| `GET /health` | liveness, answered before a world exists; `booted` is what `wait-up` polls |
+| `GET /state` | the snapshot, **answered in the frame it lands even while a command runs** |
+| `GET /shot` | the current frame as `image/png`; `?save=NAME` files it too and returns `X-Agent-Shot` |
+| `GET /help` | `AgentSession.VERBS`, the one source of truth for the command table |
+| `POST /command` | a batch of verbs, plain text or `{"lines": [...]}`; the reply is the old `res-NNNN.json` document |
+
+One batch runs at a time and a second `POST /command` is **409**; reads never
+queue behind one. The verbs are `key NAME`, `click X Y`, `click_unit SLOT`,
+`click_screen X Y`, `hover X Y`, `walk_to X Y`, `cell X Y`, `chance A B`,
+`blobs`, `watch N`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT`,
+`buttons`, `press CAPTION`, `map_click X Y`, `menu [NAME]`, `slot N
+[load|save]`, `option NAME VALUE` and `quit`, plus the battle interface's
+`markers` and `hud event|pad|ring|radar N` (`docs/43`) and the campaign's
+`campaign N`, `location N`, `deploy SLOT X Y`, `screen NAME`, `ui NAME`,
+`enter NAME` and `gamecontrol SLOT VALUE` — the last three are debugging
+entries past the location map, the way `--mission=` is one past the campaign.
+Every reply carries the turn, every unit, the selection's fill and warp cells,
+the sequence on the queue, the blob pool **by kind**, the overlay, the camera,
+the interface, whether a body is still walking and whether the computer's turn
+is being replayed, so a screenshot and the numbers behind it come from the same
+frame. **A click on a reachable cell raises the direction ring** since the
+seventh slice, so `walk_to` answers it with the direction of travel and
+`hud ring N` is what chooses a facing. Keys and clicks go in through
+`Viewport.push_input`, so the game's own `_unhandled_input` and `_pick` run --
+what is synthetic is the hand, not the path. It needs a **window**: screenshots
+come from the viewport's texture and `--headless` has no renderer, so run it
+with a `timeout` rather than headless.
 
 `campaign_runtime.py` is the sixth slice's (`docs/98`) and is in the always-run
 block; two of its modes are not. `--emit-cases` writes the fixture

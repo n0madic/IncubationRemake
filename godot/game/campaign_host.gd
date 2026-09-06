@@ -540,7 +540,7 @@ func slot_header(slot: int) -> Dictionary:
 
 # -- reporting -----------------------------------------------------------------
 
-## Everything a screen or `tour.gd` needs, as scalars.
+## Everything a screen or the agent server needs, as scalars.
 func view() -> Dictionary:
 	if state == null:
 		return {"screen": screen, "campaign": 0, "mission": ""}

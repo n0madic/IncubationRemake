@@ -29,7 +29,7 @@ const SCREEN_SLOTS: String = "slots"
 const SCREEN_OPTIONS: String = "options"
 
 ## Every screen this host can put up, so a caller can validate a name -- the
-## `tour.gd` driver names them from outside.
+## agent server names them from outside.
 const SCREENS: Array[String] = [SCREEN_MENU, SCREEN_CAMPAIGN_SELECT,
 	SCREEN_MISSION_SELECT, SCREEN_SLOTS, SCREEN_OPTIONS]
 

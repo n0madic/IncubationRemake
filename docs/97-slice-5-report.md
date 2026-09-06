@@ -5146,7 +5146,7 @@ than in a suite.
 **What the hand is.** Nobody can sit at this keyboard, so the hand is
 synthetic and the report says so wherever it matters. What is *not* synthetic
 is the path: every key and every click below is pushed into the viewport with
-[`Viewport.push_input`](../godot/tour.gd), so `SliceMain._unhandled_input`,
+[`Viewport.push_input`](../godot/game/agent/agent_session.gd), so `SliceMain._unhandled_input`,
 `_pick`, `_may_command_now`, `_cell_under` and everything under them run
 exactly as they do under a mouse. The synthetic part is which pixel is clicked
 and when. The one question this pass therefore still does not answer is
@@ -5154,6 +5154,14 @@ and when. The one question this pass therefore still does not answer is
 stays open on purpose.
 
 ### 42.1 The harness: `godot/tour.gd`
+
+> **Superseded 2026-09-06.** The command-file protocol described below was
+> replaced by the HTTP control server of [`docs/92` §7.16](92-remake-architecture.md);
+> `godot/tour.gd` is deleted and its verbs, snapshot and screenshot live in
+> `godot/game/agent/`, reached by `--agent-port=` on an ordinary launch. What
+> this section records is the pass **as it was driven**, and it is left as it
+> was written -- only the link above, which pointed at the deleted file, now
+> names the code that carries it.
 
 A `SceneTree` driver beside `shot.gd`, on the precedent of §24.5's temporary
 one, and excluded from the shipping preset the same way:

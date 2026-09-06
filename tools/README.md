@@ -65,6 +65,10 @@ seq_parse.py          verify and print the hard-coded sequence manifest: logical
                       ids, video parts, actors, camera/rate and corpus; the
                       per-arm checks pin each part's directory, stems and camera
                       to aSetSeqPlayerVideoPart itself (docs/41)
+
+agent_client.py       drive a running remake build over its control server:
+                      state, screenshot and commands, answered while a command
+                      is still running (docs/92 7.16)
 ```
 
 ## Corpus checks

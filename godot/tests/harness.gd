@@ -63,6 +63,7 @@ const LEAST_CHECKS: Dictionary = {
 	"game_loads": 12,
 	"save": 26,
 	"cache": 10,
+	"agent": 120,
 	"warnings_gate": 10,
 }
 

@@ -389,7 +389,7 @@ func _ready() -> void:
 	_shot_host = MainShotHost.new(self)
 	# The campaign layer. `--mission=` still enters a mission directly, past
 	# the campaign, which is what it has always been for; the host is what the
-	# campaign flow drives, and `tour.gd` reaches it by name.
+	# campaign flow drives, and the agent server reaches it by name.
 	_art = Art.open(_cache_dir)
 	# The battle interface (docs/43): the plate, the columns, the pad, the
 	# panel and the radar, drawn on the shipped art and captioned from
@@ -407,13 +407,45 @@ func _ready() -> void:
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
 	_boot()
+	_start_agent()
+
+
+## The control server, when the command line asks for one (docs/92 section
+## 7.16).
+##
+## Inert without `--agent-port=`, and bound to the loopback address only: it
+## ships with the game, so what keeps it from being a hole is that nothing is
+## listening unless somebody on this machine asked for it. A port that cannot
+## be bound is a warning and not a refusal to start -- a game must never fail
+## to come up because a socket was taken.
+func _start_agent() -> void:
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	var port: int = AgentBridge.port_from_args(args)
+	if port == 0:
+		var refused: String = AgentBridge.port_warning(args)
+		if refused != "":
+			push_warning(refused)
+		return
+	var bridge: AgentBridge = AgentBridge.new()
+	bridge.name = "AgentBridge"
+	# After `SliceMain._process`, so a snapshot read in this frame is this
+	# frame's and not the last one's.
+	bridge.process_priority = AgentBridge.PRIORITY
+	add_child(bridge)
+	var opened: Error = bridge.begin(self, port,
+		AgentBridge.dir_from_args(args))
+	if opened != OK:
+		push_warning("agent: cannot listen on 127.0.0.1:%d (%d)"
+			% [port, opened])
+		bridge.queue_free()
 
 
 ## The three ways in, and all three stay open (docs/92 section 7.15 S5).
 ##
 ## `--mission=NAME` builds a mission **immediately** and never raises the
-## shell, which is what it has always done and what `shot.gd`, `tour.gd` and
-## every screenshot depend on. `--campaign=N` is the campaign's equivalent:
+## shell, which is what it has always done and what `shot.gd`, the agent
+## server's scenarios and every screenshot depend on. `--campaign=N` is the campaign's equivalent:
 ## the chain starts and its map comes up, past the menu. With neither, the
 ## shell opens -- which is the whole of this slice.
 func _boot() -> void:
@@ -2931,7 +2963,7 @@ func _process(delta: float) -> void:
 ##
 ## The campaign loop docs/27 closes was open at exactly this step: the
 ## `"debriefing"` action had two senders, a button on a screen that is never
-## up during a mission and `tour.gd`, so a mission won in the game simply
+## up during a mission and the agent server, so a mission won in the game simply
 ## stopped on a dead map.
 ##
 ## `screen == SCREEN_MISSION` is the once-guard -- [method
@@ -5242,7 +5274,7 @@ func _poll_hover() -> void:
 	if _screen != null or not _hud.visible:
 		return
 	# Only when the viewport's own pointer moved: a driver's synthetic motion
-	# (`tour.gd`) sets the hover through the event, and re-reading a pointer
+	# (the agent server) sets the hover through the event, and re-reading a pointer
 	# that has not moved would undo it every frame.
 	var pointer: Vector2 = get_viewport().get_mouse_position()
 	if pointer == _polled:
@@ -5443,7 +5475,7 @@ func _on_pad_command(number: int) -> void:
 			var _used: UseResult = use_in_front()
 
 
-## The interface as scalars, for `tour.gd`.
+## The interface as scalars, for the agent server's `/state`.
 func hud_view() -> Dictionary:
 	return _hud.view() if _hud != null else {}
 
@@ -5452,7 +5484,7 @@ func ground_overlay() -> GroundSprites:
 	return _ground
 
 
-## A column button by its event, as a click on it (`tour.gd`'s `hud event`).
+## A column button by its event, as a click on it (the agent's `hud event`).
 func press_hud_event(number: int) -> bool:
 	if _hud == null or world == null:
 		return false
