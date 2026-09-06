@@ -48,12 +48,12 @@ python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 306 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 543 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 546 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 39 checks
-python3 tools/charisma_tables.py    --check gog_incubation    # 40 checks
-python3 tools/presentation_tables.py --check gog_incubation   # 700 checks, docs/42
+python3 tools/charisma_tables.py    --check gog_incubation    # 42 checks
+python3 tools/presentation_tables.py --check gog_incubation   # 705 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
 python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
@@ -343,7 +343,7 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture (**268 checks**); taking one needs `--game-copy` and Wine. It also carries the
+the capture (**269 checks**); taking one needs `--game-copy` and Wine. It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through
@@ -749,7 +749,7 @@ Eight things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.19.0 since the 233 speech files joined the closure), in
+* **`CONVERTER_VERSION` is written down twice** (0.21.0 since the muzzle burst and its joint names joined the blob document), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump

@@ -95,7 +95,8 @@ func play_cues(_cues: Array[Dictionary]) -> void:
 
 
 ## The muzzle switch and the projectile flag it writes.
-func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int) -> void:
+func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int,
+		_shooter: int = -1) -> void:
 	pass
 
 

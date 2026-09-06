@@ -184,6 +184,22 @@ def _check_resolution(ck: Checker, tables: SelectorTables, root: str,
     ck.check("corpus present", bool(models) and bool(animations),
              f"{len(models)} .cho, {len(animations)} .cha")
 
+    # **The muzzle parts.**  `docs/28` §8.1.1's seven muzzle call sites push a
+    # part name as their seventh argument, and `0x0042C660` answers with that
+    # part's world position -- so which models carry one decides whether a
+    # shot leaves the barrel or the body's axis.  Six sites push `"M"` and
+    # one, weapon 12's second call, pushes `"MM"`; the counts are read off
+    # the whole shipped corpus here so neither claim is a reading of one file.
+    carry: dict[str, int] = {"M": 0, "MM": 0}
+    for path in sorted(models.values()):
+        names = {part.name for part in charisma.parse_model_file(path).parts}
+        for part in carry:
+            if part in names:
+                carry[part] += 1
+    ck.expect("muzzle part M", carry["M"], 89, f"of {len(models)} models")
+    ck.expect("muzzle part MM", carry["MM"], 1,
+              "weapon 12's second barrel, and only P0_020 has it")
+
     wanted_models = sorted(tables.names("model"))
     resolved = [n for n in wanted_models if n in models]
     ck.expect("model names resolve", len(resolved), len(wanted_models),

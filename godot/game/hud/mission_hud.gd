@@ -41,8 +41,13 @@ const SMALL_FONT: String = "font_3"
 ## The turn counter's colours (`0x0041B1D1`).
 const COLOUR_TURN: int = 0xFFFF
 const COLOUR_TURN_LATE: int = 0xF800
-## The readable face's size for the band texts when the cache has no fonts.
+## The readable face's size for the band texts when the cache has no fonts,
+## or when the player chose the readable interface font. The hint has one of
+## its own: it is a caption for the button under the pointer, not a number
+## the game is played by, and at the turn counter's size it read as loudly as
+## the turn did.
 const FALLBACK_TEXT_SIZE: int = 13
+const HINT_FALLBACK_SIZE: int = 9
 
 var plate: PlateLayout = null
 var columns: ButtonColumns = null
@@ -153,13 +158,22 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	_layout()
 
 
-## The interface font setting changed. The plate's own two faces stay: they
-## are the size their rows are, and the readable option is about the wrapped
-## paragraphs of the shell and the report.
+## The interface font setting changed -- and it changes **this screen too**.
+##
+## The plate's own two faces used to stay whatever the setting said, on the
+## reading that the readable option was about the wrapped paragraphs of the
+## shell and the report and that the interface's rows are the size the shipped
+## faces are. The consequence was that the one screen the game is played on
+## was the one screen the setting did not reach: the hint line, the turn and
+## the whole unit panel stayed in `font_0`/`font_3` while every plate around
+## them was antialiased. The setting is the interface's, so it is the
+## interface's here as well; a null *font* means the readable face and
+## [method _band_font] and [method _panel_font] answer null with it, which is
+## what makes a [Label] fall back to Godot's own at the row's own height.
 func use_font(font: FontFile) -> void:
 	_font = font
-	for label: Label in [_turn, _hint]:
-		_apply_font(label, _band_font())
+	_apply_font(_turn, _band_font())
+	_apply_font(_hint, _band_font(), HINT_FALLBACK_SIZE)
 	if font == null:
 		_report.remove_theme_font_override("font")
 		_report.add_theme_font_size_override("font_size", READABLE_REPORT_SIZE)
@@ -171,19 +185,27 @@ func use_font(font: FontFile) -> void:
 
 
 func _band_font() -> FontFile:
+	if _font == null:
+		return null
 	return _text_font if _text_font != null else _font
 
 
 func _panel_font() -> FontFile:
+	if _font == null:
+		return null
 	return _small_font if _small_font != null else _band_font()
 
 
-static func _apply_font(label: Label, font: FontFile) -> void:
+static func _apply_font(label: Label, font: FontFile,
+		fallback_size: int = FALLBACK_TEXT_SIZE) -> void:
 	if label == null:
 		return
 	if font == null:
 		label.remove_theme_font_override("font")
-		label.remove_theme_font_size_override("font_size")
+		# **The size is kept, not dropped.** Godot's default is 16 px and the
+		# rows this line sits in are 13; letting it fall all the way back put
+		# the hint through the groove above it.
+		label.add_theme_font_size_override("font_size", fallback_size)
 		return
 	label.add_theme_font_override("font", font)
 	label.add_theme_font_size_override("font_size", font.fixed_size)
@@ -219,8 +241,12 @@ func _layout() -> void:
 	var turn_at: Vector2 = PlateLayout.anchored(Vector2(HudTables.TURN_TEXT_AT),
 		canvas, "top_right")
 	_turn.position = Vector2(turn_at.x - _turn.size.x, turn_at.y - height)
+	# The hint sits on the same row 22 and is the smaller of the two, so its
+	# own height is what its baseline is measured from.
+	var hint_height: float = float(band_font.fixed_size) if band_font != null \
+		else float(HINT_FALLBACK_SIZE)
 	_hint.position = Vector2(float(HudTables.CAPTION_AT.x),
-		float(HudTables.CAPTION_AT.y) - height)
+		float(HudTables.CAPTION_AT.y) - hint_height)
 
 
 ## Redraw everything from the world.
@@ -237,7 +263,7 @@ func _layout() -> void:
 func refresh(world: World, selected: int, event_available: Callable,
 		command_available: Callable, north: Vector2, east: Vector2,
 		bands: Dictionary[Vector2i, int], magnifier: bool,
-		watching: Dictionary = {}) -> void:
+		watching: Dictionary = {}, held: bool = false) -> void:
 	var watched: bool = not watching.is_empty()
 	columns.refresh(event_available, magnifier)
 	pad.refresh(command_available)
@@ -258,7 +284,7 @@ func refresh(world: World, selected: int, event_available: Callable,
 	else:
 		_progress_stepped = progress.refresh(0, 0)
 	_show_turn(world)
-	_show_result(world)
+	_show_result(world, held)
 	_layout()
 
 
@@ -306,12 +332,20 @@ func turn_text() -> String:
 ## The debriefing, in the game's own words -- docs/20 section 7 says whether
 ## the mission is over, docs/27 section 6 says what the outcome was worth.
 ##
+## *held* keeps it down while the picture is still showing what ended the
+## mission. `core` decides a whole computer turn in one call, so
+## `mission_ended()` is true from the first frame of the replay: the shot that
+## killed the last marine had not been drawn yet and the plate was already
+## over it, on a dimmed map with the defeat playing on underneath. It is the
+## same gate [method SliceMain._check_mission_end] makes for the debriefing
+## screen, which is the screen this panel stands in front of.
+##
 ## Every line comes out of `Txtmod_d`, the module `aMissionEnd.cpp` builds its
 ## own screen from, except the headline, which is `Txtmod_g`'s two-word verdict
 ## the map already used. The two payout slots are shown because the mission
 ## script writes them and they are in the world already.
-func _show_result(world: World) -> void:
-	if world == null or not world.game_control.mission_ended():
+func _show_result(world: World, held: bool = false) -> void:
+	if world == null or held or not world.game_control.mission_ended():
 		_result.visible = false
 		return
 	var control: GameControl = world.game_control

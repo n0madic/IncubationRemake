@@ -916,7 +916,7 @@ SPEECH_CALLS: dict[str, tuple[int, ...]] = {
     "cycle": (0x00471CF3,),
     # aTacTools.cpp fcn.0046B450 -- the fire command, past `aAttackUnit`.
     "attack": (0x0046C15E,),
-    # aInteraction's equipment switch -- thirteen arms, one per item that says
+    # aInteraction's equipment switch -- twelve arms, one per item that says
     # something, all of them argument 9.
     "use": (0x0046DD8C, 0x0046DDC5, 0x0046DE0A, 0x0046DE4F, 0x0046DE94,
             0x0046DEDD, 0x0046DF1A, 0x0046DF55, 0x0046DF8A, 0x0046DFBB,

@@ -245,6 +245,19 @@ func _check_views(h: TestHarness) -> void:
 	h.equal("view.map_target", rig.target_goal(),
 		_v(obj.x, obj.y + 0xC80, CameraRig.BOX_MARGIN),
 		"a field further along y, at the object's height as the box clamps it")
+	# docs/43 section 2's mode 0, the overview map: `fcn.004532A0` reads the
+	# **box's** own centre and a constant height the box does not clamp. On a
+	# 20x20 the box is 800..60800 on both axes, so the centre is 30800.
+	_frames = rig.view_overview()
+	h.equal("view.overview_mode", rig.view_mode(), CameraRig.View.SCRIPT)
+	h.equal("view.overview_eye", rig.eye_goal(),
+		_v(30800, 30800 - CameraRig.OVERVIEW_LEAN, CameraRig.OVERVIEW_HEIGHT),
+		"the box's centre, a hundred units short on y, at 0x23A50")
+	h.equal("view.overview_target", rig.target_goal(), _v(30800, 30800, 0),
+		"straight down at the centre, and the target's z is a literal zero")
+	h.check("view.overview_stands_above_the_ceiling",
+		rig.eye_goal().z > CEILING,
+		"the one placement the header's camera height does not cap")
 	# The ride: the eye on the head, the target on the destination's head.
 	rig.ride(obj, BODY, CameraRig.cell_object(7, 6, 0))
 	h.equal("view.ride_eye", rig.eye(), _v(obj.x, obj.y, BODY))

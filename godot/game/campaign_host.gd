@@ -197,6 +197,15 @@ func click_location(id: int) -> Dictionary:
 func begin_mission(mission_world: World) -> void:
 	if state == null:
 		return
+	# **Re-entering a mission that was already begun.** The briefing raised
+	# over the deployment screen carries its own *Continue*, and that rebuilds
+	# the mission's scene -- so whoever was already standing on the old map
+	# goes with it, and they had been taken out of the live row to get there.
+	# Without putting them back first the snapshot below would freeze the
+	# depleted row, and the squad was then lost for good: the map's own
+	# `aCopyUnitPool(1, 0)` had nothing left to restore.
+	if state.roster.used_slots(Roster.ROW_SNAPSHOT) > 0:
+		state.roster.restore()
 	state.roster.snapshot()
 	_mission_world = mission_world
 	screen = SCREEN_SELECT
@@ -272,7 +281,12 @@ func enter_mission() -> void:
 func abandon_mission() -> void:
 	if state == null:
 		return
-	if screen == SCREEN_SELECT:
+	# **Whenever a mission is left without finishing it**, not only from the
+	# deployment screen. The map frees the mission's scene either way, and
+	# everyone standing in it had been taken out of the live row to get there
+	# -- so a mission abandoned from any other screen left the squad nowhere:
+	# the roster came back empty and the next location had nobody to deploy.
+	if screen == SCREEN_SELECT or screen == SCREEN_MISSION:
 		state.roster.restore()
 		state.roster.clear_snapshot()
 		_mission_world = null

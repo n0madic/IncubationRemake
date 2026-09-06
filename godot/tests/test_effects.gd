@@ -540,6 +540,167 @@ func _check_triggers(h: TestHarness) -> void:
 	h.check("triggers.model_points_along_the_shot", pointed > 0 and flat == 0,
 		"%d model blob(s) carry the shot's own triple, %d do not"
 			% [pointed, flat])
+	# **The transcribed creator's own two shapes** (`inclib/blob_creators.py`
+	# `_c004247C0`): the streak lives one frame per 2240 units of the wider
+	# horizontal span, and the casing is thrown a **third of the round's delta
+	# behind** the muzzle at the muzzle's own height -- backwards out of the
+	# breech, where it used to start at the muzzle point itself.
+	var streak: Blob = null
+	var case: Blob = null
+	for blob: Blob in pool.blobs():
+		if blob.kind == 15:
+			streak = blob
+		elif blob.kind == BlobTriggers.CASING_KIND:
+			case = blob
+	h.check("triggers.tracer_and_casing", streak != null and case != null,
+		"weapon 2's round is a streak and a case")
+	if streak != null and case != null:
+		h.equal("triggers.tracer_life", streak.life,
+			(to.x - from.x) / BlobTriggers.TRACER_UNIT - 1,
+			"max(|dx|, |dy|) / 2240 - 1, the reciprocal multiply's own answer")
+		h.equal("triggers.tracer_carries_the_delta",
+			Vector3i(streak.vx, streak.vy, streak.vz),
+			Vector3i(streak.x, streak.y, streak.z) - from,
+			"the round's offset from the muzzle is also its velocity")
+		h.equal("triggers.casing_is_thrown_backwards",
+			Vector3i(case.x, case.y, case.z),
+			Vector3i(from.x - IncInt.div_trunc(streak.vx, 3),
+				from.y - IncInt.div_trunc(streak.vy, 3), from.z),
+			"a third of the delta behind, and at the muzzle's own height")
+		h.check("triggers.casing_rises",
+			case.vz >= BlobTriggers.CASING_RISE_BASE
+				and case.vz <= BlobTriggers.CASING_RISE_BASE
+					+ BlobTriggers.CASING_RISE_SPAN,
+			"vz %d is 0x140 + aRandom2(0, 0xA0)" % case.vz)
+	# **A shot is a burst.** `aBlob_CreateTracerBullet` takes a round count
+	# and a stagger step as its fifth and sixth arguments and loops them, so
+	# weapon 2's site pushing 10 is ten tracers and ten cases leaving one
+	# frame apart -- not the one round this class made until the count was
+	# read off the call site (`blob_tables.py` `MUZZLE_BURSTS`).
+	var rounds: Vector2i = BlobTriggers.burst_at(
+		triggers.bursts("weapon_muzzle", 2), 0)
+	h.equal("triggers.burst_rounds", rounds, Vector2i(10, 1),
+		"weapon 2's call site pushes ten rounds one frame apart")
+	var streaks: Array[int] = []
+	var cases: Array[int] = []
+	for blob: Blob in pool.blobs():
+		if blob.kind == 15:
+			streaks.append(blob.delay)
+		elif blob.kind == BlobTriggers.CASING_KIND:
+			cases.append(blob.delay)
+	streaks.sort()
+	cases.sort()
+	var want_delays: Array[int] = []
+	for i: int in range(rounds.x):
+		want_delays.append(i * rounds.y)
+	h.equal("triggers.burst_streaks", streaks, want_delays,
+		"one streak per round, delayed by its own index")
+	h.equal("triggers.burst_cases", cases, want_delays,
+		"and one case beside it")
+	# **Weapon 12 has two barrels.** Its arm calls the tracer creator twice,
+	# and the second call names the part `"MM"` where every other site names
+	# `"M"` -- so a shooter whose model carries both fires the two bursts
+	# from two places, and one whose model carries neither fires both from
+	# the body's axis.
+	var twelve: Array = triggers.joints("weapon_muzzle", 12)
+	h.equal("triggers.joint_names", twelve, ["M", "MM"],
+		"weapon 12's two call sites name two different parts")
+	h.equal("triggers.joint_default",
+		triggers.joints("weapon_muzzle", 60), ["M"],
+		"and the default arm names the muzzle like the rest")
+	h.equal("triggers.joint_none", triggers.joints("weapon_muzzle", 17),
+		["", "", "", ""],
+		"a creator of any other arity pushes no part name at all")
+	pool.clear()
+	# A field apart, and each case is scored against the **nearer** barrel:
+	# the round's own scatter is hundreds of units wide, so a fixed radius
+	# around one of them would catch the other's rounds too.
+	var barrel_one: Vector3i = from + Vector3i(
+		MapResource.WORLD_UNITS_PER_FIELD, 0, 0)
+	var barrel_two: Vector3i = from - Vector3i(
+		MapResource.WORLD_UNITS_PER_FIELD, 0, 0)
+	var placed: Dictionary[String, Vector3i] = {
+		"M": barrel_one, "MM": barrel_two}
+	var _both: int = triggers.muzzle(12, from, to, placed)
+	var first: int = 0
+	var second: int = 0
+	for blob: Blob in pool.blobs():
+		if blob.kind != BlobTriggers.CASING_KIND:
+			continue
+		if absi(blob.x - barrel_one.x) <= absi(blob.x - barrel_two.x):
+			first += 1
+		else:
+			second += 1
+	h.equal("triggers.two_barrels", [first, second], [9, 9],
+		"nine cases from each of weapon 12's two bursts")
+	pool.clear()
+	var _again: int = triggers.muzzle(2, from, to)
+	# **The other two burst creators.** Weapon 16's needles are nine sprites a
+	# round down the round's own delta, and its constructor call computes its
+	# kind -- so before `aBlob_CreateNeedles` was transcribed the table said
+	# `null` and the weapon made **no muzzle effect at all**. Weapon 29's
+	# flash is one sprite a round.
+	pool.clear()
+	var _needles: int = triggers.muzzle(16, from, to)
+	var last: int = 0
+	var body: int = 0
+	var seen: Dictionary[Vector3i, bool] = {}
+	for blob: Blob in pool.blobs():
+		if blob.kind == BlobTriggers.NEEDLE_KIND_LAST:
+			last += 1
+		elif blob.kind == BlobTriggers.NEEDLE_KIND:
+			body += 1
+		seen[Vector3i(blob.x, blob.y, blob.z)] = true
+	h.equal("triggers.needles", [last, body], [3, 24],
+		"three rounds of nine, one of each nine ending the streak")
+	h.equal("triggers.needles_are_apart", seen.size(), 27,
+		"and no two of the twenty-seven share a position")
+	pool.clear()
+	var _flashes: int = triggers.muzzle(29, from, to)
+	var flashes: int = 0
+	for blob: Blob in pool.blobs():
+		if blob.kind == 69:
+			flashes += 1
+	h.equal("triggers.flashes", flashes, 10,
+		"weapon 29's ten rounds are ten sprites")
+	pool.clear()
+	var _restore: int = triggers.muzzle(2, from, to)
+	# **The nested creators a burst asks for.** The tracer makes a zoom bob a
+	# fifth of every round's delta along, and point-blank the other two make
+	# theirs at the *target* instead of the records the round loop builds --
+	# which the constructor table cannot carry either way, so they come back
+	# as requests for [BlobPrograms].
+	pool.clear()
+	var _ten: int = triggers.muzzle(2, from, to)
+	var asked: Array[Dictionary] = triggers.take_programs()
+	h.equal("triggers.tracer_asks_for_a_bob", asked.size(), 10,
+		"one zoom bob a round, and only through the program seam")
+	h.equal("triggers.and_the_list_is_taken_once",
+		triggers.take_programs().size(), 0)
+	pool.clear()
+	var close: Vector3i = BlobTriggers.muzzle_point(2, 2, 0)
+	var _point_blank: int = triggers.muzzle(29, from, close)
+	var flash_asks: Array[Dictionary] = triggers.take_programs()
+	h.equal("triggers.flash_point_blank", flash_asks.size(), 10,
+		"ten rounds inside one spacing are ten bobs at the target")
+	var close_flashes: int = 0
+	for blob: Blob in pool.blobs():
+		if blob.kind == 69:
+			close_flashes += 1
+	h.equal("triggers.flash_point_blank_drops_its_sprites", close_flashes, 0,
+		"and every sprite the round loop built is dropped for a zero life")
+	pool.clear()
+	var _needles_close: int = triggers.muzzle(16, from, close)
+	var needle_asks: Array[Dictionary] = triggers.take_programs()
+	var wanted: Array[String] = []
+	for request: Dictionary in needle_asks:
+		wanted.append(DictRead.as_string(request["creator"]))
+	h.equal("triggers.needles_point_blank", wanted,
+		[BlobPrograms.ZOOMBOB, BlobPrograms.PLASMA_SPARKS_BURST],
+		"a bob and the plasma burst, once for the whole call")
+	pool.clear()
+	var _back: int = triggers.muzzle(2, from, to)
+	var _drain: Array[Dictionary] = triggers.take_programs()
 	h.equal("triggers.sound", triggers.impact_wave(2), "ricochet.wav")
 	h.equal("triggers.silent", triggers.impact_wave(15), "",
 		"a melee weapon's impact makes no sound, which is a real answer")
@@ -565,9 +726,10 @@ func _check_triggers(h: TestHarness) -> void:
 	# rather than the engine: the table starts at id 2, so weapons 0 and 1 --
 	# the two guns the campaign starts with -- reached the default and fired
 	# invisibly in the remake. `blob_tables.py` pins the arm now.
-	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 2,
+	# Two records a round, and the default arm's site pushes five rounds.
+	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 10,
 		"the switch's default arm, the same creator weapon 2 uses")
-	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 2,
+	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 10,
 		"the Light Combat Gun is not a gun with no muzzle flash")
 	# The impact switch's default makes no blob, and that **is** the engine:
 	# `0x0040DA07` goes straight on to the unit sweep.
@@ -960,7 +1122,8 @@ class RecordingHost extends ShotHost:
 	func play_cues(cues: Array[Dictionary]) -> void:
 		calls.append("cues:%d" % cues.size())
 
-	func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int) -> void:
+	func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int,
+			_shooter: int = -1) -> void:
 		calls.append("muzzle")
 
 	func impact(_weapon: int, _tx: int, _ty: int) -> void:
@@ -1339,6 +1502,23 @@ func _check_shot_stages(h: TestHarness) -> void:
 	h.equal("stages.hidden", host.hidden, PackedInt32Array([9]))
 	h.check("stages.waited_for_the_round", frames > 6 + 3 + 2 + 1,
 		"%d frame(s): the flight stage waited for the flag" % frames)
+
+	# **A shooter with no fight clip.** A type whose Charisma model or clip
+	# the cache does not carry answers zero for all three counts, and the
+	# whole shot then collapsed into about three frames -- the target vanished
+	# with no attack visible. The floor is [constant
+	# ShotSequence.NO_CLIP_FRAMES].
+	var clipless: RecordingHost = RecordingHost.new()
+	clipless.frames = {"to_break": 0, "spin": 0, "after_break": 0}
+	var slow: SequenceQueue = SequenceQueue.create(null)
+	var floored: int = ShotSequence.enqueue(slow, clipless, shot)
+	h.equal("stages.no_clip_floor", floored,
+		ShotSequence.NO_CLIP_FRAMES + 1 + 1,
+		"the clip stage takes the floor, the muzzle and the impact one each")
+	while slow.is_running() and slow.current() != ShotSequence.STAGE_MUZZLE:
+		var _running: bool = slow.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("stages.no_clip_clip_first", clipless.hidden,
+		PackedInt32Array(), "nothing is hidden before the muzzle")
 
 	# A weapon whose muzzle arm skips the wait: no flight and no pool stage.
 	var quick: RecordingHost = RecordingHost.new()

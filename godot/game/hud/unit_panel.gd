@@ -48,9 +48,23 @@ const INVENTORY_STEP: Vector2i = Vector2i(18, 19)
 const SPECIES_HUMAN: int = 0
 const SPECIES_ALIEN: int = 1
 const SPECIES_MACHINE: int = 3
-## The readable face's size for the panel's numbers when the cache has no
-## bitmap fonts.
-const FALLBACK_TEXT_SIZE: int = 10
+## The readable face's sizes, used both when the cache has no bitmap fonts and
+## when the player chose the readable interface font ([method
+## MissionHud._panel_font] answers null for it). **Two of them**: the panel's
+## numbers are `font_3`'s rows and the name line is the 13 px `font_0`'s, and
+## one size for both drew the unit's name at the size of the digits under it.
+##
+## The digits are **8 and not the bitmap's 10**: the rows are the original's
+## measured coordinates -- the ammunition at `uicons[7].width - 7` and the
+## movement disc at `+235` (`0x0047454F`) -- and they are laid out for a face
+## whose glyphs are five pixels wide. The disc is drawn after the weapon block
+## in the engine's own order, so a proportional face wide enough to reach it
+## goes *under* it: at 10 and at 9 `10/10` loses its last digit, at 8 the row
+## ends clear of the disc. The anchors themselves are untouched.
+const FALLBACK_TEXT_SIZE: int = 8
+const FALLBACK_NAME_SIZE: int = 13
+## How far short of the movement disc the ammunition row has to stop.
+const AMMO_DISC_GAP: float = 3.0
 
 var _art: Art = null
 var _strings: Localization = null
@@ -109,7 +123,8 @@ func _name_line(view: Dictionary, wtab: WeaponTable) -> void:
 		text += " " + _strings.shipped(HudTables.BANK_INTERFACE, status)
 	var at: Vector2 = Vector2(_origin.x, _origin.y
 		- float(HudTables.PANEL_ORIGIN.y - HudTables.PANEL_NAME_Y))
-	_text(text, at, _font, COLOUR_TEXT, COLOUR_SHADOW)
+	_text(text, at, _font, COLOUR_TEXT, COLOUR_SHADOW, false,
+		FALLBACK_NAME_SIZE)
 
 
 ## `0x00474C40` -- the word after the name: panic at no fitness, light panic
@@ -236,8 +251,12 @@ func _weapon_block(view: Dictionary, wtab: WeaponTable) -> void:
 	var ammo_max: int = _ammo_max(view, wtab)
 	var ammo_text: String = "-/-" if wtab.magazine(weapon) == Refresh.HEAT_NONE \
 		else "%d/%d" % [ammo, ammo_max]
+	# The movement disc is drawn after this block and sits at `+235`, so the
+	# ammunition row is what a wide face loses a digit of.
 	_text(ammo_text, base + Vector2(frame_width - 7, 36), _small,
-		COLOUR_RED if ammo == 0 else COLOUR_TEXT, COLOUR_SHADOW)
+		COLOUR_RED if ammo == 0 else COLOUR_TEXT, COLOUR_SHADOW, false,
+		FALLBACK_TEXT_SIZE,
+		_origin.x + float(HudTables.PANEL_BLOCK_MOVEMENT.x) - AMMO_DISC_GAP)
 	var heat: int = DictRead.as_int(view["heat"])
 	var limit: int = _heat_limit(view, wtab)
 	if limit != Refresh.HEAT_NONE:
@@ -331,12 +350,22 @@ func _icon(library: String, element: int, at: Vector2,
 ## *centred* moves **both** by half the text's width: the shadow is a second
 ## label and not a property of the first, so centring the returned one alone
 ## leaves the dark copy standing where the number used to start.
+## *right_limit*, where it is given, is the panel-space x the text must not
+## run past. It moves the pair **left**, and only for the readable face: the
+## shipped bitmap is narrow enough that every row already clears its
+## neighbour, and the anchors are the original's measured ones (docs/43
+## section 5). A proportional face is not, and the plate's own draw order --
+## the weapon block, then the movement disc over it -- turns the overrun into
+## a digit hidden under the disc rather than into a wider row.
 func _text(text: String, at: Vector2, font: FontFile, colour: int,
-		shadow: int, centred: bool = false) -> Label:
-	var under: Label = _label(text, at + Vector2(1, 1), font, shadow)
+		shadow: int, centred: bool = false,
+		fallback_size: int = FALLBACK_TEXT_SIZE,
+		right_limit: float = 0.0) -> Label:
+	var under: Label = _label(text, at + Vector2(1, 1), font, shadow,
+		fallback_size)
 	add_child(under)
 	_items.append(under)
-	var over: Label = _label(text, at, font, colour)
+	var over: Label = _label(text, at, font, colour, fallback_size)
 	add_child(over)
 	_items.append(over)
 	if centred:
@@ -345,20 +374,36 @@ func _text(text: String, at: Vector2, font: FontFile, colour: int,
 		under.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		over.position.x -= half
 		under.position.x -= half
+	if font == null and right_limit > 0.0:
+		var overrun: float = over.position.x \
+			+ over.get_minimum_size().x - right_limit
+		if overrun > 0.0:
+			over.position.x -= overrun
+			under.position.x -= overrun
 	return over
 
 
-func _label(text: String, at: Vector2, font: FontFile, colour: int) -> Label:
+func _label(text: String, at: Vector2, font: FontFile, colour: int,
+		fallback_size: int = FALLBACK_TEXT_SIZE) -> Label:
 	var label: Label = Label.new()
 	label.text = text
-	var height: int = font.fixed_size if font != null else FALLBACK_TEXT_SIZE
-	label.position = at - Vector2(0.0, float(height))
+	var height: int = font.fixed_size if font != null else fallback_size
+	# **The anchor is a baseline, not a top edge.** The engine's own
+	# `aPrintLibText` draws from the row's bottom, and a shipped bitmap face
+	# is all ascent -- its `fixed_size` *is* the distance the text rises above
+	# the anchor. A readable face is not: about a fifth of its size is descent,
+	# so lifting by the nominal size dropped every line that fifth too low and
+	# is what pushed the name onto the portrait and `10/10` onto the disc.
+	var lift: float = float(height)
+	if font == null and ThemeDB.fallback_font != null:
+		lift = ThemeDB.fallback_font.get_ascent(fallback_size)
+	label.position = at - Vector2(0.0, lift)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if font != null:
 		label.add_theme_font_override("font", font)
 		label.add_theme_font_size_override("font_size", font.fixed_size)
 	else:
-		label.add_theme_font_size_override("font_size", FALLBACK_TEXT_SIZE)
+		label.add_theme_font_size_override("font_size", fallback_size)
 	label.add_theme_color_override("font_color", rgb565(colour))
 	return label
 

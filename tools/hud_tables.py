@@ -272,7 +272,14 @@ PAD_DRAW_BLIT = (0x004723AA, 0x004475D0)
 #: (column, row) -> command, docs/29 §1.1 (pinned by interface_tables too).
 PAD_COMMANDS = {(0, 0): 1, (0, 1): 3, (1, 0): 2, (1, 1): 7, (2, 0): 5,
                 (2, 1): 8}
-PAD_KEYS = {"D": 1, "H": 2, "S": 3, "W": 5, "R": 7, "U": 8}
+#: **The keyboard is the remake's and is not written down here.**  There used
+#: to be a `PAD_KEYS` and a `COLUMN_KEYS` in this file, emitted into the
+#: fixture and read by nothing -- a third copy of a binding this tool has no
+#: way to check, and one that had already drifted (`D`/`S`/`W` where the game
+#: binds `F`/`X`/`C`, `WASD` being the pan).  The original's keyboard
+#: translator was never read, so `docs/43` §5.1's key column is the remake's;
+#: `HudTables.EVENT_KEYS` and `COMMAND_KEYS` are that column and the binding
+#: both.
 
 PANEL_CALLER = 0x00473960
 PANEL_RESTORE = (0x004739C3, 0x004758F0)
@@ -350,10 +357,6 @@ COLUMN_RIGHT_SHIFT = 0x247                     # 583 = 594 - 11
 COLUMN_HOVER = 0x004518E0
 COLUMN_HOVER_Y = 0x00451927                    # add edx, 66
 COLUMN_HOVER_X = 0x0045192A                    # add eax, 11
-COLUMN_KEYS = {"Tab": 12, "Backspace": 15, "F1": 7, "F2": 8, "F3": 6,
-               "F4": 5, "1": 1, "2": 2, "3": 3, "4": 4, "B": 11, "H": 13,
-               "T": 14}
-
 RADAR = 0x00451E50
 RADAR_CLIP_PUSH = 0x00451E72                   # push 66; push 90; push 389; push 501
 RADAR_CLIP = (501, 389, 90, 66)
@@ -2116,7 +2119,6 @@ def emit_cases(root_name: str, out_path: str) -> int:
             "rect": PAD_RECT,
             "commands": [[c, r, cmd] for (c, r), cmd in sorted(PAD_COMMANDS.items())],
             "sprites": {str(k): v for k, v in PAD_SPRITES.items()},
-            "keys": PAD_KEYS,
         },
         "panel": {
             "origin": list(PANEL_ORIGIN),
@@ -2133,7 +2135,6 @@ def emit_cases(root_name: str, out_path: str) -> int:
             "empty_sprite": COLUMN_EMPTY_SPRITE,
             "captions": {str(k): v for k, v in COLUMN_CAPTIONS.items()},
             "caption_pos": [60, 22],
-            "keys": COLUMN_KEYS,
         },
         "radar": {
             "clip": list(RADAR_CLIP),

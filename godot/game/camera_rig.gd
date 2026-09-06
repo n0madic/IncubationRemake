@@ -133,6 +133,12 @@ const MAP_VIEW_AHEAD: int = 0xC80
 const PAN_UNITS_PER_PIXEL: int = 400
 const PAN_REFERENCE_WIDTH: float = 640.0
 
+## Section 2.4 -- view mode 0, the overview map: `fcn.004532A0` puts the eye
+## at `0x23A50` over the **box's** own centre, looking straight down at it
+## from a hundred units short on y (which is what gives the view its up).
+const OVERVIEW_HEIGHT: int = 0x23A50
+const OVERVIEW_LEAN: int = 100
+
 ## Section 3.2 -- a computer walker is re-placed when the camera is at or
 ## below this height.
 const LOW_CAMERA: int = 0x3200
@@ -854,6 +860,21 @@ func view_map(obj: Vector3i) -> int:
 	var at: Vector3i = clamp_box(obj)
 	var target_at: Vector3i = Vector3i(at.x, at.y + MAP_VIEW_AHEAD, at.z)
 	return fly(Vector3i(at.x, at.y, MAP_VIEW_HEIGHT), target_at)
+
+
+## Section 2.4, view mode 0: the whole map from above, with no unit in it.
+##
+## `fcn.004532A0` reads the clamp box of section 2.1 rather than the map's
+## dimensions -- so the centre is `(lo + hi) / 2` on each axis, truncated
+## toward zero -- and the height is a constant `0x23A50` that the box does
+## **not** clamp: this is the one placement in the game that may stand above
+## the header's own camera ceiling. Returns the flight's frames.
+func view_overview() -> int:
+	_view = View.SCRIPT
+	var cx: int = IncInt.div_trunc(_box_lo.x + _box_hi.x, 2)
+	var cy: int = IncInt.div_trunc(_box_lo.y + _box_hi.y, 2)
+	return fly(Vector3i(cx, cy - OVERVIEW_LEAN, OVERVIEW_HEIGHT),
+		Vector3i(cx, cy, 0))
 
 
 ## Section 3.2 -- the ride: the eye on the walker's head, the target on the

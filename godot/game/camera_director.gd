@@ -123,6 +123,35 @@ func select(world: World, slot: int) -> float:
 		DictRead.as_int(inputs["y"]), obj.z))
 
 
+## `fcn.004533D0` -- re-apply the **current view mode** on a unit's cell.
+##
+## docs/43 section 4.5's table, which is what the engine runs after every
+## successful select. [method select] is the remake's softer version of it --
+## a pivot that keeps the player's own arrangement -- and that is right for a
+## click, because the arrangement is worth keeping. It is **wrong on the way
+## back from the computer's turn**: the replay's own camera (section 4.3's
+## shot and reaction placements) leaves the eye a metre and a half behind
+## whichever alien fired last, and a pivot that keeps *that* offset hands the
+## turn back with the camera in a marine's boots or, for a shot taken across
+## the map, somewhere off the edge of it. Returns seconds.
+func apply_view_mode(world: World, slot: int) -> float:
+	if rig == null or world == null:
+		return 0.0
+	match rig.view_mode():
+		CameraRig.View.SCRIPT:
+			return view_overview()
+		CameraRig.View.EYES:
+			return view_eyes(world, slot)
+		CameraRig.View.MAP:
+			var view: Dictionary = world.unit_view(slot)
+			if view.is_empty():
+				return 0.0
+			return view_map(world, DictRead.as_int(view["x"]),
+				DictRead.as_int(view["y"]))
+		_:
+			return _place(world, slot, CYCLE_PLACEMENT)
+
+
 ## Section 2.3's cycle row: `0x00453D42`, `(8, 7, 0)` on the next own unit.
 ## Returns seconds.
 func cycle(world: World, slot: int) -> float:
@@ -145,6 +174,14 @@ func view_unit(world: World, slot: int) -> float:
 	if rig != null:
 		rig.set_view_mode(CameraRig.View.UNIT)
 	return _place(world, slot, CYCLE_PLACEMENT)
+
+
+## docs/43 section 2 -- view mode 0, the overview map: the whole box from
+## above, with no unit in it and nothing else on screen changed.
+func view_overview() -> float:
+	if rig == null:
+		return 0.0
+	return _seconds(rig.view_overview())
 
 
 ## Section 2.4 -- view mode 4, the map, 15 m over a cell.

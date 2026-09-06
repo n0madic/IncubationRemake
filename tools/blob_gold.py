@@ -147,6 +147,33 @@ FILL_ARGUMENT = 0
 #: while one per plan turns it into one retryable creator.
 GROUP_SIZE = 1
 
+#: **The three seven-argument creators, called the way a weapon calls them.**
+#:
+#: `argument_vector` fills everything past the four tile coordinates with
+#: zero, and `docs/28` §8.1.1's fifth argument is a **round count** -- so the
+#: first capture ran `aBlob_CreateTracerBullet`, `aBlob_CreateNeedles` and
+#: `aBlob_CreateFlash` with an empty loop and read no records from any of
+#: them.  That is why all three sit in `DRAW_SITES_NOT_TAKEN` and why their
+#: transcriptions had nothing to be compared against.  These are the numbers
+#: the muzzle switch's own arms push (`blob_tables.MUZZLE_BURSTS`), one site
+#: per creator: `(rounds, stagger, joint)`.
+#:
+#: The joint is the address of the shipped one-character string ``"M"``.  It
+#: is only dereferenced when the shooter's `+0x56` is set, which it is not on
+#: a save nobody has animated -- so what this measures is the **body-axis**
+#: branch, which is the branch the remake takes for a unit that is not
+#: animating.
+BURST_JOINT = 0x004C10D8
+BURST_ARGS: dict[int, tuple[int, int, int]] = {
+    0x00423D80: (10, 1, BURST_JOINT),
+    0x00424250: (3, 2, BURST_JOINT),
+    0x004247C0: (10, 1, BURST_JOINT),
+}
+BURST_PREFIX = "burst_"
+#: A ten-round tracer is thirty records and a three-round needle burst is
+#: twenty-seven; `READ_RECORDS`' twelve would cut both off.
+BURST_READ_RECORDS = 44
+
 
 # -- the five service hooks -------------------------------------------------
 #
@@ -1411,8 +1438,14 @@ def state_plan() -> str:
     ]) + "\n"
 
 
-def creator_plan(handle: int, group: list[dict[str, Any]]) -> str:
-    """Reset the pool, run one creator, read the records it left -- per creator."""
+def creator_plan(handle: int, group: list[dict[str, Any]],
+                 records: int = READ_RECORDS) -> str:
+    """Reset the pool, run one creator, read the records it left -- per creator.
+
+    `records` is how many slots the read covers.  It is a parameter because a
+    burst creator called with the rounds its arm pushes leaves far more than
+    the twelve every other creator's read takes (`BURST_READ_RECORDS`).
+    """
     entry = _entry_address(handle)
     lines = [
         "# The pool is reset before every creator, so its records are the",
@@ -1451,7 +1484,7 @@ def creator_plan(handle: int, group: list[dict[str, Any]]) -> str:
         # CHECK-abort path and is not it. `aGetUnitMapElementPtr` is a pure
         # lookup and was already declared.
         lines.append(f"aGetUnitMapElementPtr(0) --read [0x{entry:x}]:"
-                     f"{READ_RECORDS * RECORD_BYTES}"
+                     f"{records * RECORD_BYTES}"
                      f" --read 0x{ARANDOM_SEED:x}:{ARANDOM_SEED_BYTES} --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}")
     return "\n".join(lines) + "\n"
 
@@ -2057,6 +2090,37 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             phases[f"0x{item['creator']:08X}"] = phase
             failures.pop(f"0x{item['creator']:08X}", None)
         _save(out, document)
+    # **The burst creators, called with the arguments their arms push.**
+    # Their own phases: the zero-argument family above ran their loops zero
+    # times, so this is the only pass that reaches a round at all.  One plan
+    # per creator, like the family above and for the same reason.
+    for creator, tail in sorted(BURST_ARGS.items()):
+        name = BURST_PREFIX + f"0x{creator:08X}"
+        if name in phases or creator not in arities:
+            continue
+        args = argument_vector(4, source, target) + list(tail)
+        plan = creator_plan(state["handle"],
+                            [{"creator": creator, "args": args}],
+                            records=BURST_READ_RECORDS)
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, plan, name,
+                                 attempts=attempts)
+        except gold.CaptureError as err:
+            failures[name] = str(err)
+            LOG.warning("%s: %s", name, err)
+            _save(out, document)
+            continue
+        seeds = _seeds_in_order(rows)
+        reads = list(_reads_in_order(rows))
+        phase = {"args": list(args),
+                 "records": parse_records(reads[0]) if reads else []}
+        if len(seeds) >= 2:
+            (phase["seed_before"], phase["seed2_before"]) = seeds[0]
+            (phase["seed_after"], phase["seed2_after"]) = seeds[1]
+        phases[name] = phase
+        failures.pop(name, None)
+        _save(out, document)
+
     # The z probe: the creator that produced records, called again on the
     # same tile with the floor raised under it.  Its own phase, so a re-run
     # can add it to a capture that predates it.
@@ -2715,7 +2779,14 @@ PLAN_DIGESTS = {
 #: How many creators the capture in hand holds, and which plans never landed.
 #: Both are pinned so a thinner capture fails rather than reporting less.
 NATIVE_COVERAGE = 30
-NATIVE_FAULTS: list[str] = []
+#: The three `burst_*` plans are here because **this host stopped starting
+#: the game**: `--probe-startup 10` reached the anchor 0 times out of 10 on
+#: 2026-09-06, with the `state` plan that had landed before, so what these
+#: record is an environment result and not a plan that faults (`docs/91`
+#: §1).  They are pinned rather than tolerated: a run on a host where Wine
+#: works has to empty this list, and `BURST_UNCAPTURED` with it.
+NATIVE_FAULTS: list[str] = ["burst_0x00423D80", "burst_0x00424250",
+                            "burst_0x004247C0"]
 #: How many of the thirty produced records on the captured tile, and how many
 #: records in all.  The rest refused the tile, which is a measurement of which
 #: tile a creator will act on rather than a hole.
@@ -2737,6 +2808,10 @@ CREATOR_DRAWS: dict[str, int] = {
 #: How many creators advance the second stream at all.
 CREATORS_THAT_DRAW = 14
 #: Creators that carry a call to the generator but do not reach it here.
+#: The three seven-argument burst creators are among them for a reason that
+#: is not the tile: `argument_vector` gave them a **round count of zero**, so
+#: their loops -- and every draw inside those loops -- never ran.  See
+#: `BURST_ARGS`.
 DRAW_SITES_NOT_TAKEN: list[str] = [
     "0x00420A50", "0x004227C0", "0x00422B80", "0x00423D80", "0x00424250",
     "0x004247C0", "0x00426070", "0x00426B70", "0x00427C80", "0x00428570",
@@ -3906,7 +3981,13 @@ def _unit_object_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
 #: The ten creators `docs/28` §7.6.1 left with "a residue of fields with no
 #: named mechanism", now transcribed instruction by instruction in
 #: `tools/inclib/blob_creators.py` -- `docs/97` §22.
-CREATOR_PROGRAMS_EXPECTED = 10
+CREATOR_PROGRAMS_EXPECTED = 13
+#: The burst creators whose `burst_*` phase this capture does not hold.
+#: Empty is the goal; each name here is a transcription **nothing in this
+#: repository executes** -- `_creator_program_checks` skips past it -- so the
+#: report has to say so rather than let the green count imply otherwise.
+BURST_UNCAPTURED = ("0x00423D80", "0x00424250", "0x004247C0")
+
 #: How many draws each takes from the second generator, and how many records
 #: the constructor refuses for a zero `life`.  Both are pinned because both
 #: are checked against the **measured** seed either side of the call: the
@@ -3992,6 +4073,12 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
     # these five is told from its neighbour.
     "BLOOD_LIFT", "BLOOD_STEP", "BLOOD_VELOCITY", "BLOOD_VELOCITY_LARGE",
     "SPECIES_COIN",
+    # The three burst creators' own seven (`docs/28` §8.1.1): this capture
+    # called all three with a round count of zero, so not one of their
+    # numbers was reached.  They move the day a `burst_*` phase lands --
+    # see `BURST_UNCAPTURED`.
+    "FLASH_STEP", "FLASH_UNIT", "NEEDLE_STEP", "NEEDLE_UNIT",
+    "TRACER_STEP", "TRACER_UNIT", "TRACER_CASING_SPEED",
     # The unit animations' and the set pieces' constants (`docs/97` §31,
     # §32): no weapon switch reaches those creators either, and it is
     # `presentation_gold.py`'s own `death_*` phases that run them.
@@ -4091,15 +4178,26 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
                        "instruction")
     arities = creator_arities(root)
     wrong: list[Any] = []
+    uncaptured: list[str] = []
     counts: dict[str, tuple[int, int]] = {}
     seeds: list[str] = []
     compared = 0
     for address, (arity, program) in sorted(blob_creators.PROGRAMS.items()):
         name = f"0x{address:08X}"
-        phase = phases.get(name) or {}
+        # A burst creator's own phase, where it has one: the family above
+        # called it with a round count of zero and it left nothing.
+        phase = phases.get(BURST_PREFIX + name) or phases.get(name) or {}
         records = phase.get("records") or []
         if not records or phase.get("seed2_before") is None:
-            wrong.append((name, "not captured"))
+            # **A burst creator with no burst phase is a pinned gap, not a
+            # disagreement.**  The zero-argument family ran its loop zero
+            # times, so the only pass that reaches a round is `burst_*`, and
+            # this host has not been able to take one -- `--probe-startup`
+            # answers 0 of 10 (`docs/91` §1).  Anything else missing is still
+            # a failure.
+            (uncaptured if address in BURST_ARGS
+             else wrong).append(name if address in BURST_ARGS
+                                else (name, "not captured"))
             continue
         ck.equal(f"native.creator_arity_{name}", arities.get(address), arity,
                  lambda v, n=name: f"{n} takes {v} dword argument(s), as its "
@@ -4123,6 +4221,10 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
                 if record[field] != built[field]:
                     wrong.append((name, index, field, record[field],
                                   built[field]))
+    ck.equal("native.creator_burst_uncaptured", sorted(uncaptured),
+             sorted(BURST_UNCAPTURED),
+             lambda v: f"{len(v)} burst creator(s) still without a "
+                       "`burst_*` phase")
     ck.equal("native.creator_program_records", wrong, [],
              lambda v: f"{compared} record(s) across "
                        f"{len(blob_creators.PROGRAMS)} creator(s) reproduced "

@@ -345,6 +345,15 @@ A_NOTE_CALLBACK = 0x0042C5D0
 A_ENEMY_MOVE = 0x00460510
 A_ANIM_LEVEL = 0x004604D0
 A_IDLE_SELECT = 0x0042DDF0
+#: `docs/42` §6.3 -- the unit record's `+0x56`, the running animation handle.
+#: `aUnitMap.cpp`'s three one-line accessors: write, clear, read.
+UNIT_ANIMATION_SET = 0x00477970
+UNIT_ANIMATION_CLEAR = 0x00477980
+UNIT_ANIMATION_READ = 0x00477990
+#: `and eax, 0xFF / push eax / call aContCHAnimation`, the site that says
+#: what the byte is for.
+UNIT_ANIMATION_TO_CONT = 0x0040E2A3
+A_CONT_ANIMATION = 0x004054D0
 A_RIDE = 0x0040EA30
 A_TRACK = 0x0040EBB0
 A_FIGHT = 0x0040BD70
@@ -801,7 +810,30 @@ def _check_clocks(ck: Checker, b: Binary) -> None:
     # §6.2 -- freeing detaches through the model's slot 2.
     _pin_bytes(ck, b, "idle.free_calls_model_slot_2", FREE_ANIMATION,
                b"\xff\x50\x08", 1)
-    _pin_calls(ck, b, "idle.free_clears_unit_slot", FREE_ANIMATION, 0x00477980, 1)
+    _pin_calls(ck, b, "idle.free_clears_unit_slot", FREE_ANIMATION,
+               UNIT_ANIMATION_CLEAR, 1)
+    # §6.3 -- **what `+0x56` is.**  `docs/10`:596 read the byte as a runtime
+    # sound-channel back-reference; it is the unit's running **Charisma
+    # animation handle**.  Three accessors and three witnesses, all here:
+    # the starter writes it, `aFreeCHAnimation` clears it, and the reader's
+    # answer is handed straight to `aContCHAnimation` `0x004054D0` as its
+    # only argument -- an animation call, not a sound one.  Nothing in the
+    # image passes it to a sound routine.  The burst creators of `docs/28`
+    # §8.1.1 read the same byte as "is this shooter animating", which is the
+    # same fact from the other side.
+    _pin_at(ck, b, "idle.slot_writer", UNIT_ANIMATION_SET,
+            bytes.fromhex("8b4c24048a442408884156c3"))
+    _pin_at(ck, b, "idle.slot_clearer", UNIT_ANIMATION_CLEAR,
+            bytes.fromhex("8b442404c640560" "0c3"))
+    _pin_calls(ck, b, "idle.starter_sets_unit_slot", IDLE_STARTER,
+               UNIT_ANIMATION_SET, 1)
+    _pin_at(ck, b, "idle.slot_feeds_cont_animation", UNIT_ANIMATION_TO_CONT,
+            bytes.fromhex("25ff00000050"))
+    ck.check("idle.slot_is_continued_as_an_animation",
+             b.pe.u8(UNIT_ANIMATION_TO_CONT + 6) == 0xE8
+             and UNIT_ANIMATION_TO_CONT + 11
+             + b.pe.i32(UNIT_ANIMATION_TO_CONT + 7) == A_CONT_ANIMATION,
+             "the byte read from +0x56 is aContCHAnimation's argument")
     # §6.1 -- the type search compares unit 0's type two hundred times and
     # never advances, so the argument is dead and the draw decides (measured
     # by presentation_gold's idle_random phase).

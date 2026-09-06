@@ -103,7 +103,11 @@ func caption_for(number: int) -> String:
 	var id: int = DictRead.as_int(HudTables.PAD_CAPTIONS.get(number, 0))
 	if id == 0:
 		return ""
-	return _strings.shipped(HudTables.BANK_INTERFACE, id)
+	# The remake's key after the shipped words, from the table that **is**
+	# the binding -- see [constant HudTables.COMMAND_KEYS].
+	return HudTables.with_key(
+		_strings.shipped(HudTables.BANK_INTERFACE, id),
+		HudTables.command_key(number))
 
 
 func _on_pressed(number: int) -> void:

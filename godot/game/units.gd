@@ -116,6 +116,13 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	var seen: Dictionary[int, int] = world.display_visibility()
 	for slot: int in world.unit_slots():
 		var view: Dictionary = world.unit_view(slot)
+		# **A held record wins over the world's.** The slot may have been
+		# refilled by a mission script while the turn that killed its owner
+		# was being decided; until the death is shown, this is still the
+		# casualty's tile and the casualty's body.
+		var ghost: bool = _held_views.has(slot)
+		if ghost:
+			view = (_held_views[slot] as Dictionary).duplicate()
 		if view.is_empty():
 			continue
 		# **A dead unit is not drawn.** `aKillUnit` (`0x00472920`) is the death
@@ -127,8 +134,18 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		# for a unit killed on the player's turn was the next hand-over.
 		if DictRead.as_int(view["hp"]) == 0 and not _dying.has(slot):
 			continue
-		if seen.has(slot):
+		# **Not for a held record.** `seen` is keyed by slot, and a slot whose
+		# record was refilled by a mission script answers for its *new* owner
+		# -- so a reinforcement the player cannot see would take the casualty
+		# being held on it out of the picture, which is the very defect the
+		# hold exists to fix.
+		if seen.has(slot) and not ghost:
 			view["visibility"] = seen[slot]
+		# **A unit held at its old cell keeps its old answer.** See
+		# [member _held_visibility]: the live pass reads the end of the turn,
+		# and this one has not walked yet.
+		if _held_visibility.has(slot) and not ghost:
+			view["visibility"] = _held_visibility[slot]
 		# docs/22 section 9: a hidden unit is not drawn and a contact is a blip.
 		# The rule is [Fog]'s, so a change to what visibility means is one edit
 		# and not a search through the renderer.
@@ -753,15 +770,48 @@ func drop_lifts() -> int:
 var _held_at: Dictionary[int, Vector2i] = {}
 
 
+## What a held unit's `+0x4F` was **before** the computer's turn ran.
+##
+## The other half of the same defect [member _held_at] fixes, and the same
+## argument: [method World.display_visibility] is computed from where the
+## units are *now*, and after `submit_end_turn` that is where they end the
+## turn. An alien that walks out of sight was therefore a contact beam --
+## docs/22 section 9.1's `+0x4F == 1` -- from the very first frame of the
+## replay, standing on the cell it had not left yet.
+##
+## The set is the **caller's**, not [member _held_at]'s. Two units are in one
+## and not the other and both were drawn wrong while the two were the same
+## test: the unit whose event is on screen *now* has left `_held_at` -- the
+## playback advances its index before it calls back -- so a walker heading out
+## of sight turned into a beam the instant its own walk began; and a marine
+## the computer kills mid-turn is an observer the world has already lost, so
+## the aliens only it could see were hidden from the first frame although the
+## marine is still standing on screen. [method SliceMain._visibility_hold]
+## decides which slots are in it and releases each one after its own event has
+## been shown.
+var _held_visibility: Dictionary[int, int] = {}
+
+
 ## Draw these slots on these cells until told otherwise. An empty dictionary
 ## puts everyone back where the world says they are.
 func hold_at(cells: Dictionary[int, Vector2i]) -> void:
 	_held_at = cells.duplicate()
 
 
+## The visibility a held slot is drawn with -- see [member _held_visibility].
+## Cleared with the same empty dictionary [method hold_at] takes.
+func hold_visibility(seen: Dictionary[int, int]) -> void:
+	_held_visibility = seen.duplicate()
+
+
 ## Slot -> the cell it is held on, for a caller and a suite.
 func held_at() -> Dictionary[int, Vector2i]:
 	return _held_at.duplicate()
+
+
+## Slot -> the visibility it is held at, for a caller and a suite.
+func held_visibility() -> Dictionary[int, int]:
+	return _held_visibility.duplicate()
 
 ## The casualties of the shot now on screen, kept drawn although the world
 ## says they are dead, until the shot's own death stage hides them.
@@ -774,12 +824,71 @@ func held_at() -> Dictionary[int, Vector2i]:
 ## [method hide_now] reproduces; there is no timer, and the 0.7 s linger this
 ## replaced was the remake's number.
 var _dying: Dictionary[int, bool] = {}
+## The record a dying slot is drawn from, where the world's own is no longer
+## the unit that died -- see [method mark_dying] and
+## [member SliceMain._views_before_turn]. Empty for the ordinary case, where
+## the world still carries the casualty's own record with its hit points at
+## zero.
+var _held_views: Dictionary[int, Dictionary] = {}
 
 
 ## Keep drawing `slot` although the world says it is dead, until [method
 ## hide_now].
-func mark_dying(slot: int) -> void:
+## `view` is the record to draw it from, and is given only where the world's
+## own record for the slot has already been taken by somebody else: a mission
+## script's `InsertUnit` reuses a slot the same turn emptied.
+func mark_dying(slot: int, view: Dictionary = {}) -> void:
 	_dying[slot] = true
+	if not view.is_empty():
+		_held_views[slot] = view.duplicate()
+
+
+## The part a Charisma model puts at the end of the weapon, and the name six
+## of the seven muzzle call sites push: the one-character string `"M"`
+## (`0x004C10D8`), which 89 of the 114 shipped models carry a part for.
+##
+## It is the **default and not the only one**. The seventh site --
+## `0x0040D230`, weapon 12's second call -- pushes `"MM"`, and exactly one
+## shipped model has a part by that name (`P0_020.cho`), so that weapon
+## really does fire its second burst from a second barrel. Which name a shot
+## uses comes from `tables/blobs.json`'s `weapon_muzzle_joint`, per call, and
+## is passed in rather than assumed here.
+const MUZZLE_PART: String = "M"
+
+
+## Whether `slot` has a body whose model carries the named part.
+func has_muzzle(slot: int, part: String = MUZZLE_PART) -> bool:
+	if part.is_empty() or not bodies.has(slot):
+		return false
+	var body: CharismaBody = bodies[slot]
+	return body != null and body.has_part(part)
+
+
+## Where that part is now, in the engine's own world units.
+##
+## The engine takes this branch when the shooter's `+0x56` says it is playing
+## an animation (docs/42 section 6.2.1 -- the byte is the running Charisma
+## animation handle, which a fight animation sets), so this is what an
+## ordinary shot comes out of, and the body's axis at eye height is the
+## fallback for a body that is standing still.
+func muzzle_point(slot: int, part: String = MUZZLE_PART) -> Vector3i:
+	if not has_muzzle(slot, part):
+		return Vector3i.ZERO
+	var body: CharismaBody = bodies[slot]
+	return WorldSpace.from_godot(body.part_position(part))
+
+
+## Whether this slot is being held on screen past its death.
+func is_dying(slot: int) -> bool:
+	return _dying.has(slot)
+
+
+## The record a dying slot is being drawn from, or an empty dictionary where
+## the world's own record is still the casualty's. See [member _held_views].
+func held_view(slot: int) -> Dictionary:
+	if not _held_views.has(slot):
+		return {}
+	return (_held_views[slot] as Dictionary).duplicate()
 
 
 ## The slots still drawn past their death, for a caller and a suite.
@@ -795,6 +904,7 @@ func dying() -> PackedInt32Array:
 ## Answers whether a node was there to remove.
 func hide_now(slot: int) -> bool:
 	_dying.erase(slot)
+	_held_views.erase(slot)
 	bodies.erase(slot)
 	states.erase(slot)
 	_walks.erase(slot)
@@ -810,6 +920,7 @@ func hide_now(slot: int) -> bool:
 ## dead leave the picture whether or not their shot was shown to the end.
 func clear_dying() -> void:
 	_dying.clear()
+	_held_views.clear()
 
 
 ## Slot -> the offset currently in force, for a caller and a suite.

@@ -871,33 +871,89 @@ func _replay_positions(h: TestHarness) -> void:
 	h.equal("replay.nothing_is_held_at_the_end",
 		AIPlayback.starts_in(events, events.size()).size(), 0)
 
+	# The visibility hold's release rule: everybody is held when the replay
+	# opens, the slot whose event is on screen stays held for the length of
+	# it, a slot whose event has been shown is released, and a slot the replay
+	# never names keeps its pre-turn answer to the end.
+	var before: Dictionary[int, int] = {4: Fog.FULL, 5: Fog.FULL, 9: Fog.CONTACT}
+	h.equal("replay.everybody_is_held_when_the_replay_opens",
+		SliceMain.visibility_hold_in(before, PackedInt32Array(), -1).size(), 3)
+	var mid: Dictionary[int, int] = SliceMain.visibility_hold_in(before,
+		PackedInt32Array([4, 5]), 5)
+	h.check("replay.the_event_on_screen_stays_held", mid.has(5),
+		"a walker keeps the answer it set off with")
+	h.check("replay.a_shown_slot_is_released", not mid.has(4),
+		"its own event has been drawn, so the live pass answers for it")
+	h.check("replay.an_unnamed_slot_is_held_to_the_end",
+		mid.has(9) and SliceMain.visibility_hold_in(before,
+			PackedInt32Array([4, 5, 9]), -1).has(9) == false,
+		"nothing moved it, so nothing changed what may be seen of it")
+
 	# The casualties, the other half of the same rule: the world has lost
 	# every one of them before the replay draws its first frame, so the whole
 	# list has to be held from the start or a marine vanishes as the computer's
 	# turn opens and comes back a second before it dies.
+	var killed: int = Combat.MARKER_KILLED
 	var deaths: Array[Dictionary] = [
 		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "",
-			{"outcomes": [{"slot": 11, "killed": true}]}).to_dict(),
+			{"outcomes": [{"slot": 11, "marker": killed}]}).to_dict(),
 		AIEvent.make("reactions", 5, 2, 3, 0, 0, 1, "",
-			{"reactions": [{"attack": {"outcomes": [{"slot": 12}]}}]}).to_dict(),
+			{"reactions": [{"attack": {"outcomes":
+				[{"slot": 12, "marker": killed}]}}]}).to_dict(),
 		AIEvent.make("move", 5, 2, 3, 9, 9, 0, "",
 			{"path": [1, 2], "events": [{"kind": "mine_detonated",
-				"blast": {"outcomes": [{"slot": 13}]}}]}).to_dict(),
+				"blast": {"outcomes":
+					[{"slot": 13, "marker": killed}]}}]}).to_dict(),
 		AIEvent.make("warp", 6, 3, 4, 8, 8, 0, "",
-			{"blast": {"outcomes": [{"slot": 14}]}}).to_dict(),
+			{"blast": {"outcomes":
+				[{"slot": 14, "marker": killed}]}}).to_dict(),
 		# The payload of a parabomb **is** the blast (`AISpecialPlayer`), and
 		# the four-branch block this replaced had no arm for it at all.
 		AIEvent.make("parabomb", 7, 5, 5, 0, 0, 0, "",
-			{"outcomes": [{"slot": 15}]}).to_dict(),
+			{"outcomes": [{"slot": 15, "marker": killed}]}).to_dict(),
 	]
 	h.equal("replay.every_shape_of_death_is_found",
 		Array(AIPlayback.casualties_in(deaths, 0)), [11, 12, 13, 14, 15],
 		"a shot, a reaction, a mine under a walk, a landing and a para bomb")
 	h.equal("replay.a_played_death_is_not_held",
 		Array(AIPlayback.casualties_in(deaths, 3)), [14, 15])
+	# `all_casualties` walks the **unfiltered** list: a kind the replay does
+	# not stop on still kills, and the hold taken before the first frame has
+	# to cover it.
+	var quiet: Array[Dictionary] = [
+		AIEvent.make("defence", 3, 1, 1, 1, 1, 0, "",
+			{"outcomes": [{"slot": 21}]}).to_dict(),
+		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "",
+			{"outcomes": [{"slot": 22}]}).to_dict(),
+	]
+	var shown_only: Array[Dictionary] = []
+	for event: Dictionary in quiet:
+		if AIPlayback.SHOWN_KINDS.has(DictRead.as_string(event["kind"])):
+			shown_only.append(event)
+	h.equal("replay.a_filtered_kind_still_kills",
+		Array(AIPlayback.casualties_in(quiet, 0)), [21, 22])
+	h.equal("replay.and_the_shown_list_alone_would_miss_it",
+		Array(AIPlayback.casualties_in(shown_only, 0)), [22])
 	h.equal("replay.one_event_answers_alone",
 		Array(AIPlayback.casualties_of(DictRead.as_dict(deaths[2]["payload"]))),
 		[13], "the same extractor takes a single payload")
+	# **A survivor is not a casualty**, and the marker is what says so. The
+	# hit points cannot: the replay runs over the world at the end of the
+	# turn, where a converted unit answers for its new owner and a killed
+	# slot may already hold a reinforcement.
+	var mixed: Array[Dictionary] = [
+		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "", {"outcomes": [
+			{"slot": 31, "marker": killed},
+			{"slot": 32, "marker": Combat.MARKER_HIT},
+			{"slot": 33, "marker": Combat.MARKER_MISS},
+			{"slot": 34, "marker": Combat.MARKER_HIT, "converted": true},
+		]}).to_dict(),
+	]
+	h.equal("replay.candidates_are_every_outcome",
+		Array(AIPlayback.casualties_in(mixed, 0)), [31, 32, 33, 34])
+	h.equal("replay.only_the_killed_are_held",
+		Array(AIPlayback.casualties_in(mixed, 0, true)), [31],
+		"a hit, a miss and a conversion are all survivors")
 	h.equal("replay.nothing_dies_in_a_bare_event",
 		AIPlayback.casualties_in(events, 0).size(), 0,
 		"the moves above carry no outcome")
@@ -963,6 +1019,99 @@ func _replay_positions(h: TestHarness) -> void:
 		back != null and back.position.distance_to(home) < 0.001,
 		"the rebuild after the replay is what returns everyone")
 	h.equal("replay.the_hold_is_empty", units.held_at().size(), 0)
+
+	# The visibility hold, the third half of the same rule. The world's own
+	# pass reads where the units are **after** the turn, so an alien that
+	# walks out of sight is a contact beam from the first frame; the hold
+	# carries what it was before the turn until the replay reaches its event.
+	var seen: Dictionary[int, int] = {slot: Fog.FULL}
+	units.hold_visibility(seen)
+	h.equal("replay.the_visibility_hold_round_trips",
+		units.held_visibility(), seen)
+	# Full beats whatever the live pass says, and hidden beats it too: the
+	# unit is not built at all.
+	units.hold_visibility({slot: Fog.HIDDEN} as Dictionary[int, int])
+	units.build(world, geometry, {})
+	h.check("replay.a_held_hidden_unit_is_not_drawn",
+		units.get_node_or_null(NodePath("unit_%d" % slot)) == null,
+		"the pre-turn answer decides, not the post-turn one")
+	units.hold_visibility({} as Dictionary[int, int])
+	units.build(world, geometry, {})
+	h.check("replay.the_release_shows_it_again",
+		units.get_node_or_null(NodePath("unit_%d" % slot)) != null,
+		"an empty hold hands every slot back to the live pass")
+
+	# **The muzzle part is really there, and it is not the body's axis.**
+	# `aBlob_CreateTracerBullet` puts the round at the shooter's `"M"` part
+	# (`0x0042C660` over the three source coordinates), and the whole of that
+	# hangs on the part name being the key the body draws under.
+	# The shooter is a marine, not the first live record: slot 0 on `_C_140`
+	# is a Barrel, and a barrel has no muzzle -- which [method
+	# UnitsView.has_muzzle] answering false for it is the other half of this.
+	var shooter: int = -1
+	for candidate: int in world.unit_slots():
+		var record: Dictionary = world.unit_view(candidate)
+		if DictRead.as_int(record["player"]) == 0 \
+				and DictRead.as_int(record["hp"]) > 0:
+			shooter = candidate
+			break
+	h.check("muzzle.part_is_found", shooter >= 0 and units.has_muzzle(shooter),
+		"slot %d's model carries the part the creator names" % shooter)
+	h.check("muzzle.scenery_has_none", not units.has_muzzle(slot),
+		"and slot %d, a Barrel, does not" % slot)
+	if shooter >= 0 and units.has_muzzle(shooter):
+		var stand: Dictionary = world.unit_view(shooter)
+		var barrel: Vector3i = units.muzzle_point(shooter)
+		var axis: Vector3i = BlobTriggers.muzzle_point(
+			DictRead.as_int(stand["x"]), DictRead.as_int(stand["y"]),
+			world.state.height_at(world.state.index_of(
+				DictRead.as_int(stand["x"]), DictRead.as_int(stand["y"]))),
+			HitChance.eye_height(world.unit_types(),
+				DictRead.as_int(stand["type_id"])))
+		var apart: int = absi(barrel.x - axis.x) + absi(barrel.y - axis.y)
+		h.check("muzzle.is_off_the_axis", apart > 200,
+			"%d units from the body's own axis" % apart)
+		h.check("muzzle.is_on_the_unit",
+			absi(barrel.x - axis.x) < MapResource.WORLD_UNITS_PER_FIELD
+				and absi(barrel.y - axis.y)
+					< MapResource.WORLD_UNITS_PER_FIELD,
+			"and still inside the shooter's own field")
+		# **The part name is a parameter, not a constant.** Weapon 12's
+		# second call site names `"MM"`, and only `P0_020.cho` carries a
+		# part by that name -- so `has_muzzle` must answer for the name it
+		# is given rather than for `"M"` whatever is asked.
+		h.check("muzzle.second_barrel_is_asked_for_by_name",
+			units.has_muzzle(shooter, UnitsView.MUZZLE_PART)
+				and not units.has_muzzle(shooter, "no-such-part"),
+			"a name the model does not carry is not the default's answer")
+		h.check("muzzle.no_part_is_no_muzzle", not units.has_muzzle(shooter, ""),
+			"a creator that names no part gets no joint")
+
+	# **A casualty whose slot the mission script has already refilled.** A
+	# reinforcement takes the first free record, and the turn that killed the
+	# marine freed one inside the same `submit_end_turn` -- so the world's
+	# record for the slot is somebody else standing somewhere else. The
+	# pre-turn record is handed to [method UnitsView.mark_dying] and is what
+	# the body is drawn from until the death is shown.
+	var ghost: Dictionary = world.unit_view(slot).duplicate()
+	ghost["x"] = (DictRead.as_int(ghost["x"]) + 2) % world.resource.width
+	units.mark_dying(slot, ghost)
+	h.equal("replay.the_held_record_round_trips",
+		DictRead.as_int(units.held_view(slot)["x"]),
+		DictRead.as_int(ghost["x"]))
+	units.build(world, geometry, {})
+	var held_node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	var held_at: Vector3 = WorldSpace.cell_centre(
+		DictRead.as_int(ghost["x"]), DictRead.as_int(ghost["y"]),
+		world.state.height_at(world.state.index_of(
+			DictRead.as_int(ghost["x"]), DictRead.as_int(ghost["y"]))))
+	h.check("replay.the_held_record_is_what_is_drawn",
+		held_node != null and held_node.position.distance_to(held_at) < 0.001,
+		"the casualty's own record, not the slot's new owner")
+	var _gone: bool = units.hide_now(slot)
+	h.equal("replay.hiding_drops_the_held_record",
+		units.held_view(slot).size(), 0,
+		"the slot is the new owner's again once the death has been shown")
 	units.free()
 
 

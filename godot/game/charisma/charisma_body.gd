@@ -125,6 +125,37 @@ func part_count() -> int:
 	return _nodes.size()
 
 
+## Whether this body draws a part by that name.
+func has_part(bone: String) -> bool:
+	return _nodes.has(bone)
+
+
+## Where one part sits **now**, in world space, at whatever pose the body is
+## holding this frame.
+##
+## `aBlob_CreateTracerBullet` asks for exactly this: `0x0042C660` takes the
+## part named by the creator's own argument, adds the object's position to the
+## part's own and scales by the 16 of docs/40 section 5.3 -- which is what
+## [constant SKELETON_TO_WORLD] already did when the pose was applied, so the
+## node's own transform is the answer.
+func part_position(bone: String) -> Vector3:
+	if not _nodes.has(bone):
+		return Vector3.ZERO
+	var node: MeshInstance3D = _nodes[bone]
+	if node.is_inside_tree():
+		return node.global_position
+	# **Outside the tree the chain has to be walked.** A suite builds a
+	# [UnitsView] without parenting it, and the part sits under the body which
+	# sits under the unit's own node -- so the body's own offset alone is the
+	# pose without the cell, which is a whole map away.
+	var at: Vector3 = node.position
+	var parent: Node = node.get_parent()
+	while parent is Node3D:
+		at = (parent as Node3D).transform * at
+		parent = parent.get_parent()
+	return at
+
+
 ## Put the body in one pose.
 ##
 ## A part whose bone the pose does not know keeps its last transform rather

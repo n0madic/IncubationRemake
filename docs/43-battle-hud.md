@@ -461,19 +461,34 @@ element + 1):
 
 | (col, row) | command | `ui` | gate `0x00472570` | executor `0x00473250` | key (remake) |
 |---|---:|---:|---|---|---|
-| (0, 0) | 1 **Def** | 2 | `0x004753E0`: `mp ≥ 2`, `+0x40 == 0`, `+0x3D != 0`, `+0x41 != 1`, `weapon[+0x32] & 1` | `0x00478500` — `+0x41 = 1`, ticket; mp zeroed if already waiting | D |
+| (0, 0) | 1 **Def** | 2 | `0x004753E0`: `mp ≥ 2`, `+0x40 == 0`, `+0x3D != 0`, `+0x41 != 1`, `weapon[+0x32] & 1` | `0x00478500` — `+0x41 = 1`, ticket; mp zeroed if already waiting | F |
 | (1, 0) | 2 **heal** | 4 | `0x0047B4C0` and `+0x15 ≥ 1` | `0x00470890` — `mp − 1`, `+0x39 = 3` | H |
-| (0, 1) | 3 **stimulant** | 8 | `+0x58` not 0 and not 255, and a point | `0x004785B0` | S |
-| (2, 0) | 5 **weapon mode** | 6 | `0x00475430`: `toggle != id`, `+0x3D ≥ toggle[+0x41]`, `+0x15 ≥ toggle[+0x3C]` | `0x0047A8C0` — `+0x3F = weapon[+0x3D]` | W |
+| (0, 1) | 3 **stimulant** | 8 | `+0x58` not 0 and not 255, and a point | `0x004785B0` | X |
+| (2, 0) | 5 **weapon mode** | 6 | `0x00475430`: `toggle != id`, `+0x3D ≥ toggle[+0x41]`, `+0x15 ≥ toggle[+0x3C]` | `0x0047A8C0` — `+0x3F = weapon[+0x3D]` | C |
 | (1, 1) | 7 **rest** | 10 | `+0x39 == 0` and species ≠ 3 | `0x00478570` — `+0x41 = 7`, `mp = 0` | R |
 | (2, 1) | 8 **use** | 12 | species ≠ 3, a point, and a target (`0x0047A530`: AP 10..49 but 32/33, or `0x0047B250`/`0x0047B410`/`0x0047B480`) | `aExecuteUse` — `mp − 1`, `+0x39 = 3` | U |
 
 Sockets are blitted at `(404 + 30·col, 382 + 48·row)` top-left
 (`0x00472330`). The hint for the socket under the pointer is `Txtmod_h`
 **40, 43, 41, 42, 44, 45** for commands 1, 2, 3, 5, 7, 8 (`0x004720F8`), at
-(60, 22). The key column here and in §5.2 is the **remake's** binding
-(`main.gd`); the original's keyboard translator was not read in this pass,
-and nothing in this document claims a key of the original's.
+(60, 22). The key column here and in §5.2 is the **remake's** binding; the
+original's keyboard translator was not read in this pass, and nothing in this
+document claims a key of the original's. The remake **shows** these keys on
+the hint line, after the shipped caption and in brackets, and shows them from
+the table it dispatches on: `HudTables.EVENT_KEYS` and `COMMAND_KEYS` map a
+button to a Godot keycode, `_unhandled_input` looks the pressed key up there
+instead of testing it branch by branch, and the hint is Godot's own name for
+the same code. So the key that acts and the key that is printed cannot
+differ. They were two hand-kept lists until 2026-09-06 — the labels here and
+`keycode ==` branches in `main.gd`, with a comment saying the two had to be
+changed together and nothing that made them — and a third, already drifted,
+in `hud_tables.py`, which emitted it into the fixture where nothing read it.
+The keys used to be a line of running text across the playing screen, which
+is neither where the original puts a hint nor somewhere a player looks.
+
+Pressing a button's key is now **pressing the button**: it runs the same
+availability gate and plays the same `click_2` the socket does, where three
+of them (the view keys `1`, `2`, `3`) used to bypass both.
 
 ### 5.2 The button columns — `aMI.cpp`
 
@@ -504,7 +519,12 @@ Two click columns, `x 11..49` and `594..632`, `y 66..345`, row
 | right 5 | 14 | 22 | 37 *Jump to visible enemy* | `0x00453CF0`: the camera to the next unit of another player with `+0x4F == 0` (`0x00477DF0`) | T |
 | right 6 | 13 | 18 | 32 / 33 *(De)activate magnifying glass* | toggles `[0x005106CC]`; with it on, a click on a visible alien opens its **info page** (`0x00432AB0` → `0x00432B20` → `0x0043E850("Data", …, key)`, the mode-2 info activator of [`24` §7.2](24-briefing-text.md)) | — (`H` is the pad's heal; the button is dark, D4) |
 | right 7 | — | 31 | — | empty | — |
-| right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | — |
+| right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | Space |
+
+`D`, `S` and `W` were the first three of these and are now `F`, `X` and `C`:
+the remake pans the camera with `WASD` (§ 2.5 of [`42`](42-mission-presentation.md)
+is a middle-button drag, and a trackpad has no middle button), and a key
+cannot be both.
 
 Also from `0x00450D62/0x00450E75`: `Left`/`Right` turn the camera one step,
 `Space` runs the camera path, and a **right-button release** turns the

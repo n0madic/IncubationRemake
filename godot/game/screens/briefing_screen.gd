@@ -46,6 +46,10 @@ var document: Dictionary = {}
 var cache_dir: String = ""
 ## Which block is up -- `A0` or `C0`.
 var block: String = "A0"
+## Whether this screen was raised **over a running mission** -- interface
+## event 11, the `B` key -- rather than as the campaign's own briefing step.
+## It decides which buttons the screen has; see [method build].
+var over_mission: bool = false
 
 var _text: BriefingText = null
 var _pictures: Control = null
@@ -67,13 +71,24 @@ func build() -> void:
 	_pictures.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root().add_child(_pictures)
 
-	add_button("map", BANK_MISSION, ID_BACK, 0)
+	# **Back to where it was opened from.** `B` raises this screen over a
+	# running mission (docs/43 section 5.2's event 11, `0x0043B150`), and the
+	# original's own button returns to the mission -- so the map's *Back* and
+	# *Continue* are not this screen's buttons in that case. They were, and
+	# both were wrong: *Back* went to the location map, which frees the
+	# mission and, through `abandon_mission`, used to lose the squad standing
+	# on it; *Continue* rebuilt the mission from scratch under the player.
+	if over_mission:
+		add_button("resume", BANK_MISSION, ID_BACK, 0)
+	else:
+		add_button("map", BANK_MISSION, ID_BACK, 0)
 	# **Only where there is one.** 25 of the 116 shipped briefings carry no
 	# `C0` at all (docs/24 section 7.1), and a button that opened an empty
 	# screen would be the inert control section 7.1 calls a defect.
 	if _has_block("C0"):
 		_toggle = add_button("tips", BANK_MISSION, ID_TIPS, 1)
-	add_button("enter", BANK_MISSION, ID_CONTINUE, 2)
+	if not over_mission:
+		add_button("enter", BANK_MISSION, ID_CONTINUE, 2)
 	_lay_out_buttons()
 	show_block(block)
 

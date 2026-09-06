@@ -33,6 +33,10 @@ const POOL_FRAMES: int = 20
 ## ends. A flight always arrives and a blob always dies, so the bound is a
 ## safety net and not a timing; it is named so nobody mistakes it for one.
 const SAFETY_FRAMES: int = 300
+## What a shot lasts when its shooter has no fight clip to measure -- see
+## the `clip_frames` floor below. `AIPlayback.STEP_SECONDS` at the engine's
+## own twenty frames a second.
+const NO_CLIP_FRAMES: int = 9
 ## docs/42 section 4.6 -- the muzzle arms that write 0 over the wait flag.
 const WAIT_SKIPPED_WEAPONS: Array[int] = [0x0F, 0x11, 0x14, 0x15, 0x1B, 0x1E,
 	0x1F, 0x20, 0x24, 0x25]
@@ -156,7 +160,28 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	var to_break: int = DictRead.as_int(frames.get("to_break", 0))
 	var spin: int = DictRead.as_int(frames.get("spin", 0))
 	var after_break: int = DictRead.as_int(frames.get("after_break", 0))
+	# **A shooter with no clip still takes a moment.** `aPlayFightAnimation`
+	# always has a fight animation to play (docs/42 section 4), so the frames
+	# to its break are what every stage after it is measured from. A shooter
+	# the *fire* selector has no entry for answers zero for all three, and the
+	# whole shot then collapses into about three frames: the muzzle, the
+	# impact and the death stage all inside a sixth of a second, so the target
+	# is hit with no attack visible at all.
+	#
+	# **It is a real set, not a hypothesis.** Over the six cached missions'
+	# nineteen `(type, weapon, player)` triples, three reach no `fire` entry:
+	# the Barrel and the Case, which carry weapon 0 and never shoot, and
+	# **the Dec'Ther** -- type 52 with weapon 22 on `A_MK_0B.3DI` -- which
+	# does. `docs/40` section 7.2 as amended is the rule behind it: nine unit
+	# types get fewer than three clips and two get none at all.
+	#
+	# The floor is **the remake's own number** and is the same one
+	# [constant AIPlayback.STEP_SECONDS] uses for an event's minimum, so a
+	# clipless shot lasts as long as the replay's own step rather than as long
+	# as nothing.
 	var clip_frames: int = maxi(1, to_break + spin)
+	if to_break + spin <= 0:
+		clip_frames = NO_CLIP_FRAMES
 	queue.enqueue(STAGE_CLIP, clip_frames,
 		func(frame: int, _total: int) -> void:
 			if frame == 1:
@@ -179,7 +204,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 		func(_frame: int, _total: int) -> void:
 			host.play_cues(cues_shot)
 			host.muzzle(weapon, DictRead.as_int(shot["sx"]),
-				DictRead.as_int(shot["sy"]), tx, ty))
+				DictRead.as_int(shot["sy"]), tx, ty, shooter))
 	total += 1
 	if waits:
 		queue.enqueue_until(STAGE_FLIGHT, WAIT_FRAMES,

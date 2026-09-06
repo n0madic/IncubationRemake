@@ -207,6 +207,63 @@ IMPACT_SOUND_BOUND_SITE = 0x0040C81B
 MUZZLE_DEFAULT_JA = 0x0040CC51
 MUZZLE_DEFAULT = (0x0040D42C, ((0x0040D44D, 0x004247C0),))
 
+# -- the burst: how many rounds one shot is -------------------------------
+#
+# Three of the muzzle creators are `__cdecl` with **seven** arguments --
+# `aBlob_CreateTracerBullet` 0x004247C0, `aBlob_CreateNeedles` 0x00424250 and
+# `aBlob_CreateFlash` 0x00423D80 -- and all three have the same shape: the
+# unit, the target's three coordinates, a **round count**, a **stagger step**
+# and the name of the Charisma part the round leaves from.  Each one loops the
+# count, and the constructor's last field is `(index * step) & 0xFF`, the
+# blob's own `delay` -- so the rounds leave one frame after another rather
+# than together.  `0x00424108`'s `imul byte [arg_58h]` is that multiply in
+# `aBlob_CreateFlash`; `0x00424B8C` is the tracer's.
+#
+# So a single shot is a burst of 3 to 10 rounds in the original, and neither
+# the jump table nor the constructor table carries the count: it is pushed at
+# the **call site**, which is why it is pinned per site here.  A `None` stagger
+# is the two sites that push `ebx`, which the switch's own prologue sets to 1
+# at `MUZZLE_BURST_EBX_SITE` and no arm writes again.
+#
+# The seventh argument is the **name of the Charisma part the round leaves
+# from**, and it is per site too: six sites push the one-character string
+# `"M"` and one pushes `"MM"`.  Exactly one shipped model carries a part
+# called `MM` -- `P0_020.cho` -- so weapon 12's second call really is a
+# second barrel and not dead code.
+#
+# site -> (rounds push, stagger push or None, joint push, rounds, stagger, joint)
+MUZZLE_BURST_EBX_SITE = 0x0040CC41    # mov ebx, 1, before the switch
+MUZZLE_BURST_EBX = 1
+MUZZLE_BURSTS = {
+    0x0040CC88: (0x0040CC82, 0x0040CC80, 0x0040CC7B, 3, 2, "M"),   # 16, Needles
+    0x0040CE9E: (0x0040CE98, None, 0x0040CE8B, 10, 1, "M"),        # 29, Flash
+    0x0040CEF4: (0x0040CEEE, None, 0x0040CEE1, 10, 1, "M"),        # 2, 3, 5, 6
+    0x0040D20D: (0x0040D207, 0x0040D205, 0x0040D200, 9, 1, "M"),   # 12, barrel 1
+    0x0040D23D: (0x0040D237, 0x0040D235, 0x0040D230, 9, 1, "MM"),  # 12, barrel 2
+    0x0040D2A3: (0x0040D29D, 0x0040D29B, 0x0040D296, 9, 1, "M"),   # 41
+    0x0040D44D: (0x0040D447, None, 0x0040D43A, 5, 1, "M"),         # the default arm
+}
+#: What a call site that pushes no part name answers -- every creator of an
+#: arity below seven.  The body axis at eye height is the origin then, which
+#: is also the seven's own fallback for a shooter that is not animating.
+MUZZLE_NO_JOINT = ""
+
+
+def muzzle_burst(site: int) -> tuple:
+    """`(rounds, stagger)` for a call site, `(1, 0)` where there is no loop.
+
+    A creator of any other arity makes its records once; answering `(1, 0)`
+    rather than refusing is what lets one loop in the caller cover both.
+    """
+    entry = MUZZLE_BURSTS.get(site)
+    return (1, 0) if entry is None else (entry[3], entry[4])
+
+
+def muzzle_joint(site: int) -> str:
+    """The Charisma part name a call site pushes, or `MUZZLE_NO_JOINT`."""
+    entry = MUZZLE_BURSTS.get(site)
+    return MUZZLE_NO_JOINT if entry is None else entry[5]
+
 # -- the pain voice --------------------------------------------------------
 
 SPECIES_OFFSET = 0x79                # SetUnitInfo record, docs/21 sec.5
@@ -3063,6 +3120,30 @@ def run_checks(root: str) -> Checker:
     ck.check("weapon.muzzle_default_is_outside_the_table",
              all(w >= MUZZLE_SWITCH[3] for w in WEAPON_MUZZLE),
              "weapons below %d are the ones it answers for" % MUZZLE_SWITCH[3])
+    # ---- the burst ------------------------------------------------------
+    # The round count and the stagger step are pushed at the call site, so
+    # they are read back from it here: an arity-7 creator called with a count
+    # of 1 would be one round where the original fires ten, and nothing else
+    # in this file would notice.
+    read = {}
+    for site, entry in sorted(MUZZLE_BURSTS.items()):
+        rounds_site, stagger_site, joint_site = entry[0], entry[1], entry[2]
+        stagger = (MUZZLE_BURST_EBX if stagger_site is None
+                   else b.push_imm(stagger_site))
+        read[site] = (rounds_site, stagger_site, joint_site,
+                      b.push_imm(rounds_site), stagger,
+                      b.push_str(joint_site))
+    ck.equal("weapon.muzzle_burst", read, MUZZLE_BURSTS, Checker.brief)
+    ck.equal("weapon.muzzle_burst_ebx", b.mov_imm32(MUZZLE_BURST_EBX_SITE),
+             MUZZLE_BURST_EBX)
+    # Every burst site is a call to a creator the caller cleans seven dwords
+    # for, and every seven-dword muzzle site is a burst site: the count and
+    # the step are the fifth and sixth arguments, so the two sets are one.
+    seven = {site for _w, (_a, calls) in
+             list(WEAPON_MUZZLE.items()) + [(None, MUZZLE_DEFAULT)]
+             for site, _t in calls if b.cleanup_dwords(site) == 7}
+    ck.equal("weapon.muzzle_burst_sites", seven, set(MUZZLE_BURSTS),
+             lambda xs: _hexlist(sorted(xs)))
     ck.equal("weapon.impact", b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT),
              WEAPON_IMPACT, Checker.brief)
     ck.equal("weapon.impact_sound", b.weapon_sounds(), WEAPON_IMPACT_SOUND,
@@ -3739,10 +3820,12 @@ CREATOR_NESTING_IS_FLAT = True
 #: they are not all doubles:
 #:
 #: * ``f64`` -- a cell in the constant block at `0x004B12xx`, reached by an
-#:   ``fmul qword [cell]`` inside the named creator.  Two names share
-#:   `0x004B12B0`: the blue beam's dot speed and the machine gun's casing
-#:   speed are **one cell read by two creators**, so thirteen names stand
-#:   over twelve distinct cells.
+#:   ``fmul qword [cell]`` inside the named creator.  **A cell can be read by
+#:   more than one creator**, which is why the attribution here is per site
+#:   and not per name: four cells carry two names each -- `0x004B12B0` is the
+#:   blue beam's dot speed and the machine gun's casing speed, `0x004B12E0`
+#:   the plasma head's step and the laser's, `0x004B1270` the laser's offset
+#:   and the flash's step, and `0x004B1278` the beam's step and the needle's.
 #: * ``lea`` / ``add`` -- an immediate the creator subtracts, held negated as
 #:   the instruction's own disp32.
 #: * ``magic`` -- a divisor the compiler turned into a reciprocal multiply.
@@ -3765,6 +3848,21 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     "TRACER_SPREAD": (("f64", 0x00424D20, 0x004B1298, -640.0),
                       ("f64", 0x00424D20, 0x004B12A0, 640.0)),
     "BEAM_STEP":     (("f64", 0x00424D20, 0x004B1278, -2400.0),),
+    # `aBlob_CreateTracerBullet`'s own three, all inside `0x004247C0`: the
+    # step and the casing's two signed cells are `fmul` operands, and the
+    # spacing is the reciprocal multiply at `0x00424A9A` -- the two-term form,
+    # whose multiplier does not fit in 32 bits -- replayed like `BEAM_UNIT`'s.
+    "TRACER_STEP":   (("f64", 0x004247C0, 0x004B1280, -2240.0),),
+    "TRACER_UNIT":   (("magic", 0x004247C0, 0x00424A9A, 2240),),
+    "TRACER_CASING_SPEED": (("f64", 0x004247C0, 0x004B1288, -128.0),
+                            ("f64", 0x004247C0, 0x004B1290, 128.0)),
+    # The other two burst creators (`docs/28` §8.1.1), read the same way.
+    # `NEEDLE_STEP` is the cell `BEAM_STEP` names -- one cell, two creators,
+    # which is why the attribution is per site rather than per name.
+    "FLASH_STEP":    (("f64", 0x00423D80, 0x004B1270, -1600.0),),
+    "FLASH_UNIT":    (("magic", 0x00423D80, 0x00424058, 1600),),
+    "NEEDLE_STEP":   (("f64", 0x00424250, 0x004B1278, -2400.0),),
+    "NEEDLE_UNIT":   (("magic", 0x00424250, 0x00424540, 2400),),
     "HEAD_STEP":     (("f64", 0x00427810, 0x004B12E0, -3200.0),),
     "HEAD_SPEED":    (("f64", 0x00427810, 0x004B12E8, 4800.0),),
     "TRAIL_STEP":    (("f64", 0x00425810, 0x004B12C0, -960.0),),
@@ -6560,11 +6658,35 @@ ATLAS_NAME = ATLAS_TEXTURE
 ATLAS_HALF_EXTENT_SCALE = SIZE_SCALE
 
 
+def _case_path(root: Path, *parts: str) -> Path | None:
+    """The shipped tree mixes cases freely; resolve each part or answer None."""
+    current = root
+    for part in parts:
+        if (current / part).exists():
+            current = current / part
+            continue
+        if not current.is_dir():
+            return None
+        lower = part.lower()
+        for entry in sorted(current.iterdir()):
+            if entry.name.lower() == lower:
+                current = entry
+                break
+        else:
+            return None
+    return current
+
+
 def _speech_document(root: str) -> dict:
     """docs/28 4.3 as data: the sets, the arms, the gates and the tree."""
     files: dict[str, str] = {}
-    speech_root = Path(root) / WAVES_DIR / sound.SPEECH_DIRECTORY
-    for entry in sorted(speech_root.glob("*/*")):
+    # Case-insensitive, like every other path into the shipped tree: three of
+    # the ten speech directories are shipped in a case the binary's own
+    # literals do not match, and a literal path that missed here would return
+    # no files at all -- a conversion that copied no speech and said nothing.
+    speech_root = _case_path(Path(root), WAVES_DIR, sound.SPEECH_DIRECTORY)
+    for entry in sorted(speech_root.glob("*/*")) if speech_root is not None \
+            else []:
         # `.wav` only.  The tree is browsed by hand often enough that a stray
         # `.DS_Store` would otherwise join the closure, be copied into the
         # cache and move the file count the suites pin -- with nothing here
@@ -6767,6 +6889,25 @@ def blob_document(root: str) -> dict:
         # and 1, the two starting guns.  See MUZZLE_DEFAULT.
         "weapon_muzzle_default": [f"0x{t:08X}"
                                   for _s, t in MUZZLE_DEFAULT[1]],
+        # `[rounds, stagger]` per call above, in the same order: the count the
+        # site pushes and the frames between one round and the next.  See
+        # MUZZLE_BURSTS -- a shot is a burst, and the switch tables do not
+        # carry it.
+        "weapon_muzzle_burst": {str(k): [list(muzzle_burst(s))
+                                         for s, _t in calls]
+                                for k, (_a, calls) in
+                                sorted(WEAPON_MUZZLE.items())},
+        "weapon_muzzle_default_burst": [list(muzzle_burst(s))
+                                        for s, _t in MUZZLE_DEFAULT[1]],
+        # The Charisma part each call above fires from, in the same order.
+        # `""` is a creator that pushes no name and leaves from the body
+        # axis, which is also the named ones' fallback for a shooter that is
+        # not animating.
+        "weapon_muzzle_joint": {str(k): [muzzle_joint(s) for s, _t in calls]
+                                for k, (_a, calls) in
+                                sorted(WEAPON_MUZZLE.items())},
+        "weapon_muzzle_default_joint": [muzzle_joint(s)
+                                        for s, _t in MUZZLE_DEFAULT[1]],
         "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
         "weapon_impact_sound": {str(k): (w[1].lower() if w else None)
@@ -6832,6 +6973,25 @@ def report_json(root: str) -> None:
         # and 1, the two starting guns.  See MUZZLE_DEFAULT.
         "weapon_muzzle_default": [f"0x{t:08X}"
                                   for _s, t in MUZZLE_DEFAULT[1]],
+        # `[rounds, stagger]` per call above, in the same order: the count the
+        # site pushes and the frames between one round and the next.  See
+        # MUZZLE_BURSTS -- a shot is a burst, and the switch tables do not
+        # carry it.
+        "weapon_muzzle_burst": {str(k): [list(muzzle_burst(s))
+                                         for s, _t in calls]
+                                for k, (_a, calls) in
+                                sorted(WEAPON_MUZZLE.items())},
+        "weapon_muzzle_default_burst": [list(muzzle_burst(s))
+                                        for s, _t in MUZZLE_DEFAULT[1]],
+        # The Charisma part each call above fires from, in the same order.
+        # `""` is a creator that pushes no name and leaves from the body
+        # axis, which is also the named ones' fallback for a shooter that is
+        # not animating.
+        "weapon_muzzle_joint": {str(k): [muzzle_joint(s) for s, _t in calls]
+                                for k, (_a, calls) in
+                                sorted(WEAPON_MUZZLE.items())},
+        "weapon_muzzle_default_joint": [muzzle_joint(s)
+                                        for s, _t in MUZZLE_DEFAULT[1]],
         "weapon_impact": {str(k): [f"0x{t:08X}" for _s, t in calls]
                           for k, (_a, calls) in sorted(WEAPON_IMPACT.items())},
         "weapon_impact_sound": {str(k): (w[1] if w else None)

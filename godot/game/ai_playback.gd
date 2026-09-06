@@ -22,6 +22,10 @@ const SHOWN_KINDS: Array[String] = ["move", "warp", "fire",
 	"fire_heat_blocked", "door", "parabomb", "reactions", "promote_order"]
 
 var _events: Array[Dictionary] = []
+## Every event the turn produced, `SHOWN_KINDS` or not. Only [method
+## all_casualties] reads it: a kind the replay does not stop on still kills,
+## and a body nothing held vanished before the turn was drawn.
+var _every: Array[Dictionary] = []
 var _player: int = -1
 var _index: int = 0
 var _elapsed: float = 0.0
@@ -38,8 +42,10 @@ var _hold: float = STEP_SECONDS
 ## empty dictionary when it ends.
 func play(result: AITurnResult, on_step: Callable) -> void:
 	_events = []
+	_every = []
 	_player = result.player
 	for event: Dictionary in result.event_dicts():
+		_every.append(event)
 		if SHOWN_KINDS.has(DictRead.as_string(event["kind"])):
 			_events.append(event)
 	_index = 0
@@ -142,7 +148,17 @@ static func starts_in(events: Array[Dictionary],
 ## The answer is **candidates**, not casualties: the hit points are the
 ## world's business and the caller filters on them.
 func pending_casualties() -> PackedInt32Array:
-	return casualties_in(_events, _index)
+	return casualties_in(_events, _index, true)
+
+
+## Everything the **whole** turn kills, filtered or not.
+##
+## [method pending_casualties] walks the shown events, which is right for the
+## re-mark each event makes; the hold taken once before the first frame has to
+## cover the turn's every death, including one an event kind the replay does
+## not stop on carried. A body nobody held was gone from the first rebuild.
+func all_casualties() -> PackedInt32Array:
+	return casualties_in(_every, 0, true)
 
 
 ## The same, as a function of its arguments, so a suite can ask it directly
@@ -154,11 +170,11 @@ func pending_casualties() -> PackedInt32Array:
 ## event, the `mine_detonated` entries of a walk's `events`, and the `blast` a
 ## `warp` landed on.
 static func casualties_in(events: Array[Dictionary],
-		from_index: int) -> PackedInt32Array:
+		from_index: int, killed_only: bool = false) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
 	for i: int in range(maxi(from_index, 0), events.size()):
 		for slot: int in casualties_of(
-				DictRead.as_dict(events[i].get("payload", {}))):
+				DictRead.as_dict(events[i].get("payload", {})), killed_only):
 			if not out.has(slot):
 				out.append(slot)
 	return out
@@ -186,28 +202,41 @@ static func played_in(events: Array[Dictionary],
 
 
 ## The candidate slots one event's payload names.
-static func casualties_of(payload: Dictionary) -> PackedInt32Array:
+##
+## `killed_only` narrows candidates to **deaths**, by the outcome's own
+## marker. Every outcome carries one ([constant Combat.MARKER_KILLED] and its
+## three siblings), and the two callers that hold a body on screen want the
+## narrow answer: a survivor held is a body the next rebuild takes away
+## again, and a unit *converted* by weapon 47 is a survivor whose owner
+## changed -- which the world cannot be asked about afterwards, because by
+## then it is the new owner's unit.
+static func casualties_of(payload: Dictionary,
+		killed_only: bool = false) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
-	_slots_of(DictRead.as_array(payload.get("outcomes", [])), out)
+	_slots_of(DictRead.as_array(payload.get("outcomes", [])), out, killed_only)
 	for item: Variant in DictRead.as_array(payload.get("reactions", [])):
 		var entry: Dictionary = DictRead.as_dict(item)
 		_slots_of(DictRead.as_array(DictRead.as_dict(
-			entry.get("attack", {})).get("outcomes", [])), out)
+			entry.get("attack", {})).get("outcomes", [])), out, killed_only)
 	for item: Variant in DictRead.as_array(payload.get("events", [])):
 		var entry: Dictionary = DictRead.as_dict(item)
 		if DictRead.as_string(entry.get("kind", "")) != "mine_detonated":
 			continue
 		_slots_of(DictRead.as_array(DictRead.as_dict(
-			entry.get("blast", {})).get("outcomes", [])), out)
+			entry.get("blast", {})).get("outcomes", [])), out, killed_only)
 	_slots_of(DictRead.as_array(DictRead.as_dict(
-		payload.get("blast", {})).get("outcomes", [])), out)
+		payload.get("blast", {})).get("outcomes", [])), out, killed_only)
 	return out
 
 
-static func _slots_of(outcomes: Array, out: PackedInt32Array) -> void:
+static func _slots_of(outcomes: Array, out: PackedInt32Array,
+		killed_only: bool = false) -> void:
 	for item: Variant in outcomes:
-		var slot: int = DictRead.as_int(
-			DictRead.as_dict(item).get("slot", -1))
+		var outcome: Dictionary = DictRead.as_dict(item)
+		if killed_only and DictRead.as_int(outcome.get("marker", 0)) \
+				!= Combat.MARKER_KILLED:
+			continue
+		var slot: int = DictRead.as_int(outcome.get("slot", -1))
 		if slot >= 0 and not out.has(slot):
 			out.append(slot)
 

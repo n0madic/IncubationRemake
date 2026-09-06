@@ -818,6 +818,67 @@ func _hud_live(h: TestHarness) -> void:
 			no_missing = false
 	h.check("hud.every_caption_is_shipped", no_missing,
 		"sixteen events and six commands out of Txtmod_h")
+	# docs/43 sections 5.1 and 5.2's "key (remake)" column, on the hint line
+	# rather than as a legend across the playing screen.
+	h.equal("hud.a_button_with_no_key_keeps_its_hint",
+		HudTables.with_key("Overview map", ""), "Overview map")
+	h.equal("hud.a_button_with_a_key_says_so",
+		HudTables.with_key("Overview map", "4"), "Overview map  [4]")
+	h.check("hud.every_key_names_a_button",
+		_keys_name_buttons(), "EVENT_KEYS and COMMAND_KEYS only name real buttons")
+	# **One table, and it is the binding.** The hint and the dispatch read the
+	# same entry, so the round trip is what says a re-bound key cannot leave
+	# the plate telling the player the old one -- and no keycode may stand for
+	# two buttons, or the first of them would swallow the other's key.
+	var round_trip: bool = true
+	var codes: Dictionary[int, int] = {}
+	for number: int in HudTables.EVENT_KEYS:
+		var code: int = HudTables.EVENT_KEYS[number]
+		if HudTables.event_for_key(code) != number or codes.has(code):
+			round_trip = false
+		codes[code] = number
+		if HudTables.event_key(number) != OS.get_keycode_string(code):
+			round_trip = false
+	for number: int in HudTables.COMMAND_KEYS:
+		var code: int = HudTables.COMMAND_KEYS[number]
+		if HudTables.command_for_key(code) != number or codes.has(code):
+			round_trip = false
+		codes[code] = number
+		if HudTables.command_key(number) != OS.get_keycode_string(code):
+			round_trip = false
+	h.check("hud.every_key_presses_its_own_button", round_trip,
+		"%d distinct keycodes, each answering for one button and labelled by"
+			% codes.size() + " Godot's own name for it")
+	h.equal("hud.an_unbound_key_presses_nothing",
+		[HudTables.event_for_key(KEY_W), HudTables.command_for_key(KEY_W)],
+		[-1, -1], "the pan keys belong to no button")
+	# **And the mission host really dispatches through it.** The round trip
+	# above pins the table against itself; this pins the *only* other place a
+	# key could be decided. Re-adding an `elif key.keycode == KEY_T:` above
+	# the lookup would put the two-copy state back with every check still
+	# green, so the source is read and required to hold no direct branch on a
+	# key either table names. `script_export_mode` is Text for the test
+	# preset, so it runs in the exported build too.
+	var host: GDScript = load("res://game/main.gd")
+	var source: String = host.source_code
+	h.check("hud.main_source_is_readable", source.length() > 0,
+		"%d characters of game/main.gd" % source.length())
+	h.check("hud.main_dispatches_through_the_table",
+		source.contains("HudTables.event_for_key(")
+			and source.contains("HudTables.command_for_key("),
+		"_unhandled_input looks a pressed key up in the binding table")
+	var rebranched: Array[String] = []
+	for code: int in _bound_keycodes():
+		var name: String = "KEY_" + OS.get_keycode_string(code).to_upper()
+		if source.contains("keycode == %s:" % name) \
+				or source.contains("keycode == %s " % name):
+			rebranched.append(name)
+	h.equal("hud.no_key_is_branched_on_twice", rebranched, [],
+		"no button's key is also tested by hand in _unhandled_input")
+	h.check("hud.the_column_hint_carries_the_key",
+		hud.columns.caption_for(HudTables.EVENT_FREE_CAMERA).ends_with("[4]")
+		and hud.pad.caption_for(HudTables.COMMAND_USE).ends_with("[U]"),
+		hud.columns.caption_for(HudTables.EVENT_FREE_CAMERA))
 	h.equal("hud.event_13_hint_follows_the_magnifier",
 		[hud.columns.caption_for(13) == strings.shipped("Txtmod_h", 32)], [true])
 	h.check("hud.slots_carry_their_events",
@@ -922,6 +983,17 @@ func _hud_live(h: TestHarness) -> void:
 		" | ".join(grades).replace("\n", " / "))
 	h.check("hud.the_report_renders_no_missing_string",
 		not won.contains(Localization.MISSING_PREFIX), won)
+	# The report waits for the picture. `core` decides a whole computer turn
+	# in one call, so `mission_ended()` is true from the first frame of the
+	# replay -- the plate used to drop over the shot that was still killing
+	# the last marine.
+	world.game_control.set_slot(0, 1)
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, {}, true)
+	h.check("hud.the_report_waits_for_the_picture", not hud.report_visible(),
+		"held while the replay or a sequence is still on screen")
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false, {}, false)
+	h.check("hud.the_report_comes_back_when_the_hold_lifts",
+		hud.report_visible(), "and the frame the hold lifts on shows it")
 	# The turn counter with a par: `"%d/%s"`, red inside three turns.
 	world.turn.turn_control = world.turn.turn + 2
 	hud.refresh(world, slot, all_on, all_on, north, east, {}, false)
@@ -931,6 +1003,27 @@ func _hud_live(h: TestHarness) -> void:
 	h.check("hud.view_has_the_keys", view.has("window") and view.has("panel_texts")
 		and view.has("radar_fields") and view.has("ring_mode"), str(view.keys()))
 	hud.free()
+
+
+## Every key belongs to a button the interface actually has.
+## Every keycode either table binds, as one list.
+static func _bound_keycodes() -> Array[int]:
+	var out: Array[int] = []
+	for number: int in HudTables.EVENT_KEYS:
+		out.append(HudTables.EVENT_KEYS[number])
+	for number: int in HudTables.COMMAND_KEYS:
+		out.append(HudTables.COMMAND_KEYS[number])
+	return out
+
+
+static func _keys_name_buttons() -> bool:
+	for number: int in HudTables.EVENT_KEYS:
+		if not HudTables.COLUMN_CAPTIONS.has(number):
+			return false
+	for number: int in HudTables.COMMAND_KEYS:
+		if not HudTables.PAD_CAPTIONS.has(number):
+			return false
+	return true
 
 
 static func _first_of_player(world: World, player: int) -> int:

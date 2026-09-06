@@ -719,6 +719,32 @@ bind in the records of **10 of its 20 bound parts** (`pose.parts_away_from_bind_
 The chain above is what §12 item 1 once called undecompiled; it is now read
 and the measurement stands on its own regardless.
 
+### 6.2.1 `+0x56` is the animation handle, not a sound channel
+
+The unit record's `+0x56` is what the starter's third guard reads, and
+[`10` §…](10-lev-mission-format.md)'s field table used to call it a runtime
+**sound-channel back-reference**. It is not. `aUnitMap.cpp` gives the byte
+three one-line accessors — `0x00477970` writes it, `0x00477980` clears it,
+`0x00477990` reads it — and three call sites settle what it holds:
+
+* the **idle starter** itself (`0x004060B0…0x004064F0`) is the only writer in
+  its range, and writes it beside the length it has just stored;
+* `aFreeCHAnimation` `0x00406000` clears it, which is §6.2's detach path;
+* `0x0040E2A3` masks the read to a byte and hands it **straight to
+  `aContCHAnimation` `0x004054D0`** as its only argument — an animation call.
+  The same site skips the value `11` outright, so the byte is an id with
+  distinguished members rather than a flag.
+
+Nothing in the image passes it to a sound routine. The thirteen burst and
+muzzle creators read it as "is this shooter animating" before they take the
+joint branch ([`28` §8.1.1](28-effects-and-sound.md)), which is the same fact
+seen from the other side: a unit with a running clip has a handle here. The
+shipped `.lev` residue — 177 records carrying 1, 2, 4 or 5 — is stale
+handles, and `docs/10`'s row is corrected in place.
+`presentation_tables.py` pins all five readings (`idle.slot_writer`,
+`idle.slot_clearer`, `idle.starter_sets_unit_slot`,
+`idle.slot_feeds_cont_animation`, `idle.slot_is_continued_as_an_animation`).
+
 ### 6.3 The measurement
 
 `tools/presentation_gold.py` drives the engine inside a running

@@ -101,6 +101,28 @@ CASING_SPEED = 80.0
 TRAIL_STEP = -960.0
 TRAIL_UNIT = 0x3C0
 
+#: `aBlob_CreateTracerBullet`'s own step, `0x004B1280`, and the spacing its
+#: beam length is counted in.  The two are the **same number**: the tracer
+#: leaves along the line of fire by 2240 a frame and lives one frame per 2240
+#: units of the wider of the two horizontal spans.  The divisor is not an
+#: immediate -- `mov eax, 0xEA0EA0EB / imul ecx / add edx, ecx / sar edx, 11`
+#: -- and is recovered by replaying the multiply, like `BEAM_UNIT`'s.
+TRACER_STEP = -2240.0
+TRACER_UNIT = 2240
+#: `0x004B1288` and `0x004B1290`: the ejected casing leaves sideways at 128,
+#: which is **not** the machine gun's 80.  Its rise, `0x140 + aRandom2(0,
+#: 0xA0)`, is two immediates and stays written out at its own draw.
+TRACER_CASING_SPEED = 128.0
+#: The other two burst creators' pair of the same shape, each with its own
+#: spacing: `aBlob_CreateFlash` `0x00423D80` reads `0x004B1270` and divides by
+#: the multiply at `0x00424058`, `aBlob_CreateNeedles` `0x00424250` reads
+#: `0x004B1278` -- the cell `BEAM_STEP` names -- and divides at `0x00424540`.
+#: Step and spacing are one number in all three, as they are for the tracer.
+FLASH_STEP = -1600.0
+FLASH_UNIT = 1600
+NEEDLE_STEP = -2400.0
+NEEDLE_UNIT = 2400
+
 
 def _beam_length(inputs: "Inputs") -> int:
     span = max(abs(inputs.source[0] - inputs.target[0]),
@@ -158,6 +180,12 @@ class Inputs:
     #: the record's `aux` -- the field a seeking arm reads back as a unit-map
     #: slot (`docs/28` §7.7.1).
     target_unit: int = 0
+    #: Where the shooter's muzzle actually is: the world position of the part
+    #: named by the creator's own argument, which `0x0042C660` writes over the
+    #: three source coordinates when the shooter is animating.  `None` where
+    #: nobody measured it, which is the body-axis fallback the engine takes
+    #: for a unit whose `+0x56` is clear.
+    source_joint: Optional[Tuple[int, int, int]] = None
 
     def handle(self, name: str, class_id: int) -> int:
         if class_id in MODELLESS:
@@ -530,6 +558,181 @@ def _c00425810(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
             vz = draw(-0x140, 0x280)
             pool.spawn(SCRATCH, 2, at[0] + vx, at[1] + vy, at[2] + vz,
                        6, 0, 0, 0x2E, 8, vx, vy, vz, 5, ring >> 2)
+
+
+@program(0x004247C0, 7)
+def _c004247C0(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
+    """`aBlob_CreateTracerBullet`: `args[4]` rounds of tracer, casing and bob.
+
+    The default muzzle creator -- `MUZZLE_DEFAULT` -- and the one fourteen of
+    the shipped weapons select, so this is what an ordinary shot looks like.
+    Its call sites all pass the same seventh argument, the one-character
+    string ``"M"``, and that is the part of the shooter's Charisma model the
+    round leaves from: `0x004249AF` tests the shooter's `+0x56` (docs/42 §6's
+    "already animating" byte, which a fight animation sets), and when it is
+    set `0x0042C660` writes the world position of the named part -- the
+    part's own translation plus the object's, times the 16 of docs/40 §5.3 --
+    **over the three source coordinates**.  So the axis at eye height is the
+    *fallback*, for a body that is not animating; the shot itself comes out of
+    the muzzle.  `Inputs.source_joint` is that position where a caller has it.
+
+    Each round is three records and one nested creator:
+
+    * the tracer, `A_LINE5.3DI`, at the source plus a delta that is a draw
+      *minus* the direction scaled by `TRACER_STEP` -- the machine gun's shape
+      with its own constant -- and living `max(|dx|, |dy|) / 2240 - 1` frames;
+    * the casing, `A_CASE.3DI`, a **third of the delta behind** the source and
+      at the source's own height (the machine gun drops its own by `dz`; this
+      one does not), thrown sideways at 128 and up by `0x140 + draw(0, 0xA0)`;
+    * `0x00423720`, the zoom bob, a fifth of the delta along.
+
+    The last constructor field is a **stagger**: `(index * args[5]) & 0xFF`,
+    read at `0x00424B8C` off the loop counter -- the slot that held argument 4
+    before the prologue reused it -- times argument 6.  So the rounds leave
+    one after another rather than together.
+    """
+    inputs = pool.inputs
+    # The prologue all three seven-argument creators share, spacing apart.
+    (x, y, z), _aim, d, length = _burst_prologue(pool, TRACER_UNIT)
+    for index in range(args[4] & 0xFF):
+        dx = draw(-160, 320) - ftol(d[0] * TRACER_STEP)
+        dy = draw(-160, 320) - ftol(d[1] * TRACER_STEP)
+        dz = draw(-80, 160) - ftol(d[2] * TRACER_STEP)
+        pitch, yaw = inputs.tables.orient((x, y, z),
+                                          (x + dx, y + dy, z + dz))
+        stagger = (index * args[5]) & 0xFF
+        pool.spawn("A_LINE5.3DI", 0, x + dx, y + dy, z + dz, pitch, 0, yaw,
+                   0xF, length, dx, dy, dz, 0, stagger)
+        vz = draw(0, 0xA0) + 0x140
+        pool.spawn("A_CASE.3DI", 0, x - trunc_div(dx, 3), y - trunc_div(dy, 3),
+                   z, pitch, 0, yaw, 0xB, 0x14,
+                   ftol(d[1] * TRACER_CASING_SPEED),
+                   ftol(d[0] * -TRACER_CASING_SPEED), vz, 0, stagger)
+        # `0x00423720`, the zoom bob, with its life as a constant here where
+        # the machine gun passes the burst index.
+        pool.spawn(SCRATCH, 2, x + trunc_div(dx, 5), y + trunc_div(dy, 5),
+                   z + trunc_div(dz, 5), 0, 0, 0, 0x32, 8, 0, 0, 0, 10, 0)
+
+
+def _burst_prologue(pool: "Pool", unit: int
+                    ) -> Tuple[Tuple[int, int, int], Tuple[int, int, int],
+                               Sequence[float], int]:
+    """The opening all three seven-argument creators share.
+
+    `aBlob_CreateTracerBullet` `0x004247C0`, `aBlob_CreateNeedles`
+    `0x00424250` and `aBlob_CreateFlash` `0x00423D80` open with the same
+    instructions: the two symbol objects, the two unit heights, the joint
+    override of `docs/97` §14.5, `0x0046D400`'s direction and a length that
+    is the wider horizontal span over the creator's own spacing, **minus
+    one** (`lea edx, [edx + eax - 1]`).  Only the spacing differs, so it is
+    the argument.
+
+    Answers `(source, aim, direction, length)`.  A length of zero is the
+    point-blank answer, and each creator does something different with it.
+    """
+    inputs = pool.inputs
+    source = (inputs.source[0], inputs.source[1],
+              inputs.source[2] + inputs.source_height)
+    if inputs.source_joint is not None:
+        source = inputs.source_joint
+    aim = (inputs.target[0], inputs.target[1],
+           inputs.target[2] + inputs.target_height)
+    d = eng3d.direction_vector(source, aim, 1)
+    # **The span is measured from the source the joint may have replaced.**
+    # `0x00424A73` reads the same stack slots `0x0042C660` wrote over, so a
+    # shot from the barrel is measured from the barrel.
+    span = max(abs(source[0] - inputs.target[0]),
+               abs(source[1] - inputs.target[1]))
+    length = trunc_div(span, unit) - 1
+    if length > 0:
+        pool.clears_arrived = True
+    else:
+        length = 0
+    return source, aim, d, length
+
+
+@program(0x00423D80, 7)
+def _c00423D80(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
+    """`aBlob_CreateFlash`: `args[4]` muzzle flashes down the line of fire.
+
+    Weapon 29's creator, and the second of the three burst creators
+    (`docs/28` §8.1.1).  One class-2 record a round -- no casing, no model --
+    at the source plus a delta that is a draw *minus* the direction scaled by
+    `FLASH_STEP`, living the shared length and carrying that delta as its
+    velocity.  The scatter is **half the tracer's**: `aRandom2(-80, 160)` on
+    the ground plane and `aRandom2(-40, 80)` vertically.  The sprite's row is
+    the literal 6 and its column is drawn, `aRandom2(0, 7)`, which is the one
+    draw in this creator that is not a coordinate.
+
+    Point-blank -- a span inside one spacing -- takes a **different branch**,
+    which is what separates it from the tracer: `0x0042417B` runs `args[4]`
+    zoom bobs around the *target* instead, each jittered `aRandom2(-1600,
+    3200)` on all three axes, and then falls into the round loop with the
+    length written back to zero, so every sprite the loop builds is dropped
+    by the constructor while its four draws still happen.
+    """
+    source, aim, d, length = _burst_prologue(pool, FLASH_UNIT)
+    rounds = args[4] & 0xFF
+    if length == 0:
+        for _ in range(rounds):
+            aux = draw(5, 0xF)
+            bob_z = draw(-1600, 3200)
+            bob_y = draw(-1600, 3200)
+            bob_x = draw(-1600, 3200)
+            _c00423720(pool, draw, (aim[0] + bob_x, aim[1] + bob_y,
+                                    aim[2] + bob_z, 6, aux, 8), None)
+    for index in range(rounds):
+        dx = draw(-80, 160) - ftol(d[0] * FLASH_STEP)
+        dy = draw(-80, 160) - ftol(d[1] * FLASH_STEP)
+        dz = draw(-40, 80) - ftol(d[2] * FLASH_STEP)
+        stagger = (index * args[5]) & 0xFF
+        column = draw(0, 7)
+        pool.spawn(SCRATCH, 2, source[0] + dx, source[1] + dy, source[2] + dz,
+                   6, column, 0, 0x45, length, dx, dy, dz, 5, stagger)
+
+
+@program(0x00424250, 7)
+def _c00424250(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
+    """`aBlob_CreateNeedles`: `args[4]` bursts of **nine** sprites each.
+
+    Weapon 16's creator, the third burst creator and the one whose round is
+    not a single record: the round's delta is divided by eight and laid down
+    as an accumulator, so the nine records of one round sit at one eighth,
+    two eighths … nine eighths of it -- a needle *streak* rather than a
+    bullet.  They grow as they go: `aux` is `10 - k` for `k` counting 8 down
+    to 0, and the **last** one is kind 73 where the other eight are 74
+    (`xor eax, eax / test ebx, ebx / setne al / add eax, 0x49`).  All nine
+    carry the round's whole delta as their velocity and the round's own
+    stagger as their delay.
+
+    Its point-blank branch is one shot rather than a loop, and it is at the
+    *target*: a zoom bob at row 1 and then `0x00428F70`'s twenty plasma
+    sparks.  As in `aBlob_CreateFlash` the round loop still runs and still
+    draws; with the length at zero the constructor drops all nine records of
+    every round.
+    """
+    source, aim, d, length = _burst_prologue(pool, NEEDLE_UNIT)
+    for index in range(args[4] & 0xFF):
+        dx = draw(-80, 160) - ftol(d[0] * NEEDLE_STEP)
+        dy = draw(-80, 160) - ftol(d[1] * NEEDLE_STEP)
+        dz = draw(-40, 80) - ftol(d[2] * NEEDLE_STEP)
+        # `0x00403AA0` runs here in the original too and its answer is
+        # thrown away: the records are class 2, whose three rotation fields
+        # are the sprite's row, column and nothing.  It draws nothing, so
+        # leaving it out changes no record and no seed.
+        step = (trunc_div(dx, 8), trunc_div(dy, 8), trunc_div(dz, 8))
+        stagger = (index * args[5]) & 0xFF
+        at = list(source)
+        for k in range(8, -1, -1):
+            at = [at[0] + step[0], at[1] + step[1], at[2] + step[2]]
+            pool.spawn(SCRATCH, 2, at[0], at[1], at[2], 1, 0, 0,
+                       0x49 if k == 0 else 0x4A, length,
+                       dx, dy, dz, 10 - k, stagger)
+    if length == 0:
+        aux = draw(5, 0xF)
+        _c00423720(pool, draw, (aim[0], aim[1], aim[2], 1, aux, 8), None)
+        _c00428F70(pool, draw, (aim[0], aim[1], aim[2], 0x14, 0x1E),
+                   pool.inputs)
 
 
 @program(0x00424D20, 4)

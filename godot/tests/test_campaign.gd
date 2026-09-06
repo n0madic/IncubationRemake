@@ -62,6 +62,7 @@ func run(h: TestHarness) -> void:
 	_economy(h, cases)
 	_sort(h, cases)
 	_banks(h, cases)
+	_abandon(h, cases)
 	_survival(h, cases)
 	_score(h, cases)
 	_payouts(h, cases)
@@ -283,6 +284,58 @@ func _banks(h: TestHarness, cases: Dictionary) -> void:
 		h.equal("banks.%s.snapshot" % name,
 			roster.used_slots(Roster.ROW_SNAPSHOT),
 			DictRead.as_int(step["snapshot"]))
+
+
+## A mission left without finishing it gives the squad back -- from the
+## deployment screen and from the mission itself.
+##
+## The second half is what `B` over a running mission used to cost: the
+## briefing's *Back* raised the location map, `abandon_mission` restored
+## nothing because the screen was not the deployment one, and the marines
+## standing on the map -- taken out of the live row to get there -- were gone
+## for good.
+func _abandon(h: TestHarness, cases: Dictionary) -> void:
+	for screen: String in [CampaignHost.SCREEN_SELECT,
+			CampaignHost.SCREEN_MISSION]:
+		var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
+			CacheFixture.read_json(CacheFixture.cache_dir()
+				+ "/tables/balance.json"), null)
+		host.state = _state(cases, 1)
+		var roster: Roster = host.state.roster
+		var before: int = roster.used_slots(Roster.ROW_LIVE)
+		roster.snapshot()
+		for slot: int in [0, 1]:
+			roster.clear(slot)
+		host.screen = screen
+		host.abandon_mission()
+		h.equal("abandon.%s.squad_comes_back" % screen,
+			roster.used_slots(Roster.ROW_LIVE), before,
+			"everyone deployed is put back in the live row")
+		h.equal("abandon.%s.lands_on_the_map" % screen, host.screen,
+			CampaignHost.SCREEN_MAP)
+
+	# **The briefing's *Continue* over a deployment already made.** It rebuilds
+	# the mission, so `begin_mission` runs a second time -- and the snapshot it
+	# takes must not be the row deployment emptied. Without the restore in
+	# front of it the squad was lost for good: everyone on the map went with
+	# the rebuilt scene and the pre-mission row had been overwritten.
+	var again: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
+		CacheFixture.read_json(CacheFixture.cache_dir()
+			+ "/tables/balance.json"), null)
+	again.state = _state(cases, 1)
+	var pool: Roster = again.state.roster
+	var whole: int = pool.used_slots(Roster.ROW_LIVE)
+	again.begin_mission(null)
+	for slot: int in [0, 1]:
+		pool.clear(slot)
+	again.begin_mission(null)
+	h.equal("begin_mission.re_entry_keeps_the_squad",
+		pool.used_slots(Roster.ROW_LIVE), whole,
+		"a second entry puts the deployed soldiers back first")
+	again.screen = CampaignHost.SCREEN_SELECT
+	again.abandon_mission()
+	h.equal("begin_mission.re_entry_restores_whole",
+		pool.used_slots(Roster.ROW_LIVE), whole)
 
 
 ## docs/27 section 3.4 -- `+0x4D` and the full-pool refusal, both of which the

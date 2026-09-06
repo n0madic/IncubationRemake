@@ -444,7 +444,7 @@ Sixteen call sites ask, in four groups:
 | a unit selected | `0x00471A41` (the click, `fcn.004714B0`), `0x00471F44` (the ask, `fcn.00471E00`) | 0 when `+0x16 >= 3` **and** `+0x19 >= 3`, else 8 |
 | the cycle landed on a unit | `0x00471CF3` (`fcn.00471AD0`, only when `+0x15 != 0`) | 1 |
 | a shot, past `aAttackUnit` | `0x0046C15E` (`aTacTools.cpp`) | 2 |
-| an item used | thirteen arms of the equipment switch, `0x0046DD8C`..`0x0046E019` | 9 |
+| an item used | twelve arms of the equipment switch, `0x0046DD8C`..`0x0046E019` | 9 |
 
 **Two whole shipped categories are unreachable**, for two different reasons:
 no arm prints `06` at all — the arm that looks as though it should, argument 6,
@@ -1450,6 +1450,62 @@ The other two switches' defaults were read the same way and **make no blob**:
 the impact switch's (`0x0040DA07`) goes straight on to `aGetUnitMapElementPtr`
 and the unit sweep, so weapons 0…6 having no impact effect is the engine's own
 answer rather than a second gap.
+
+#### 8.1.1 A shot is a burst
+
+Three of the muzzle creators are `__cdecl` with **seven** arguments —
+`aBlob_CreateTracerBullet` `0x004247C0`, `aBlob_CreateNeedles` `0x00424250`
+and `aBlob_CreateFlash` `0x00423D80` — and all three have the same signature:
+the unit, the target's three coordinates, a **round count**, a **stagger
+step** and the name of the Charisma part the round leaves from (§8.1's
+`"M"`). Each one loops the count, and the constructor's last field is
+`(index * step) & 0xFF`, the blob's own `delay` — so the rounds leave one
+after another rather than together. The multiply is `imul byte [esp+0x58]` at
+`0x00424108` in `aBlob_CreateFlash` and `0x00424B8C` in the tracer.
+
+Neither the jump table nor the constructor table carries the count: it is
+pushed at the **call site**, so it is per site rather than per creator.
+
+| Site | Creator | Weapons | Rounds | Stagger |
+|---|---|---|---|---|
+| `0x0040CC88` | `Needles` | 16 | 3 | 2 |
+| `0x0040CE9E` | `Flash` | 29 | 10 | 1 |
+| `0x0040CEF4` | `TracerBullet` | 2, 3, 5, 6 | 10 | 1 |
+| `0x0040D20D` | `TracerBullet` | 12 (`"M"`) | 9 | 1 |
+| `0x0040D23D` | `TracerBullet` | 12 (`"MM"`) | 9 | 1 |
+| `0x0040D2A3` | `TracerBullet` | 41 | 9 | 1 |
+| `0x0040D44D` | `TracerBullet` | 0, 1, 18, 19, 24, 28, 33–35, 38, 39 | 5 | 1 |
+
+Four of the seven push the step as an immediate; the other three `push ebx`,
+and `ebx` is set to 1 at `0x0040CC41` — `mov ebx, 1`, before the switch — and
+written by no arm. `blob_tables.py` reads all fourteen immediates and that
+`mov` back out of the binary (`weapon.muzzle_burst`), and pins that the set of
+burst sites is exactly the set of muzzle sites whose caller cleans seven
+dwords.
+
+#### 8.1.2 Where a round leaves from: the seventh argument
+
+The seventh argument is a **part name**, and it is what makes a shot come out
+of the barrel rather than out of the shooter's chest. `0x004249AF` tests the
+shooter's `+0x56` — the running Charisma animation handle
+([`42` §6.2.1](42-mission-presentation.md)), which a fight animation sets —
+and where it is set `0x0042C660` writes the world position of the named part
+of the shooter's model **over all three source coordinates**: the part's own
+translation plus the object's, times the 16 of `docs/40` §5.3. Everything the
+creator does afterwards reads those slots, including the span its streak's
+length is counted in (`0x00424A73`), so a shot from the barrel is *measured*
+from the barrel too.
+
+Six of the seven sites push the one-character string `"M"` (`0x004C10D8`),
+which **89 of the 114** shipped `.cho` models carry a part for. The seventh,
+`0x0040D230` — weapon 12's second call — pushes `"MM"` (`0x004C0FAC`), and
+**exactly one** shipped model has a part by that name: `P0_020.cho`. So
+weapon 12 is the only weapon that fires two bursts from one shot, and it
+fires them from two different barrels; it is not dead code.
+
+A creator of any other arity pushes no name and leaves from the body's axis
+at eye height (`0x0047AD30`), which is also the seven's own fallback for a
+shooter that is not animating.
 
 ### 8.2 `CreateBGB`, the scripted emitter
 

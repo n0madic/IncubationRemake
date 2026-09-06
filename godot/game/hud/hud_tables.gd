@@ -176,6 +176,12 @@ const COLUMN_CAPTIONS: Dictionary = {1: 38, 2: 34, 3: 36, 4: 35, 5: 25,
 	15: 39, 16: 46}
 const CAPTION_MAGNIFIER_OFF: int = 33
 const CAPTION_AT: Vector2i = Vector2i(60, 22)
+
+## A hint with its key after it, or the hint alone when the button has none.
+static func with_key(caption: String, key: String) -> String:
+	if caption == "" or key == "":
+		return caption
+	return "%s  [%s]" % [caption, key]
 ## The sixteen events by name (docs/29 section 1.2 as corrected by docs/43).
 const EVENT_FREE_CAMERA: int = 1
 const EVENT_UNIT_VIEW: int = 2
@@ -196,6 +202,86 @@ const EVENT_UNDO_MISSION: int = 16
 ## The save slots the four position and undo events read and write
 ## (`0x0041DA20`'s commands 5..8): remind/recall, the turn's autosave and the
 ## mission's.
+## **The remake's own keys, and the one place they are written down.**
+##
+## docs/43 sections 5.1 and 5.2 print a "key (remake)" column beside each
+## button and say in as many words that no key here is claimed to be the
+## original's -- the original's keyboard translator was never read.
+##
+## They used to be written twice: once as label strings here and once as
+## `keycode ==` branches in [SliceMain]'s `_unhandled_input`, with a comment
+## saying "the two must be changed together" and nothing that made them. So a
+## re-bound key left the interface confidently telling the player to press the
+## old one. **This table is now the binding**: `_unhandled_input` dispatches
+## through [method event_for_key] and [method command_for_key], and the hint
+## is [method key_label] of the same number, so the key that acts and the key
+## that is shown cannot differ.
+##
+## The hints used to be a line of running text across the playing screen,
+## under the developer line, which is neither where the original puts a hint
+## nor somewhere a player looks. A button that has a key says so when the
+## pointer is on it; a button that has none says nothing.
+const EVENT_KEYS: Dictionary[int, int] = {
+	EVENT_FREE_CAMERA: KEY_4,
+	EVENT_UNIT_VIEW: KEY_1,
+	EVENT_MAP_VIEW: KEY_3,
+	EVENT_USER_VIEW: KEY_2,
+	EVENT_LOAD: KEY_F4,
+	EVENT_SAVE: KEY_F3,
+	EVENT_RECALL_POSITION: KEY_F2,
+	EVENT_REMIND_POSITION: KEY_F1,
+	EVENT_NEXT_PLAYER: KEY_SPACE,
+	EVENT_BRIEFING: KEY_B,
+	EVENT_NEXT_UNIT: KEY_TAB,
+	EVENT_VISIBLE_ENEMY: KEY_T,
+	EVENT_UNDO_TURN: KEY_BACKSPACE,
+}
+## The same for the pad. `WASD` is the camera pan, so *Defend*, *stimulant*
+## and *weapon mode* are `F`, `X` and `C` rather than the letters of their
+## English names.
+const COMMAND_KEYS: Dictionary[int, int] = {
+	COMMAND_DEFEND: KEY_F,
+	COMMAND_HEAL: KEY_H,
+	COMMAND_STIMULANT: KEY_X,
+	COMMAND_WEAPON_MODE: KEY_C,
+	COMMAND_REST: KEY_R,
+	COMMAND_USE: KEY_U,
+}
+
+
+## What a key is called on the plate. Godot's own name for the code, so
+## `KEY_BACKSPACE` reads `Backspace` and `KEY_SPACE` reads `Space`.
+static func key_label(keycode: int) -> String:
+	return "" if keycode == 0 else OS.get_keycode_string(keycode)
+
+
+## The key a column button carries, as text, or `""` for one with none.
+static func event_key(number: int) -> String:
+	return key_label(DictRead.as_int(EVENT_KEYS.get(number, 0)))
+
+
+## The same for a pad socket.
+static func command_key(number: int) -> String:
+	return key_label(DictRead.as_int(COMMAND_KEYS.get(number, 0)))
+
+
+## The column button a key presses, or `-1`. The reverse of [constant
+## EVENT_KEYS], walked rather than stored: thirteen entries, once a keystroke.
+static func event_for_key(keycode: int) -> int:
+	for number: int in EVENT_KEYS:
+		if EVENT_KEYS[number] == keycode:
+			return number
+	return -1
+
+
+## The same for the pad's six.
+static func command_for_key(keycode: int) -> int:
+	for number: int in COMMAND_KEYS:
+		if COMMAND_KEYS[number] == keycode:
+			return number
+	return -1
+
+
 const SLOT_REMIND: int = 32
 const SLOT_UNDO_TURN: int = 33
 const SLOT_UNDO_MISSION: int = 31

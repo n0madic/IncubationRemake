@@ -1341,6 +1341,25 @@ func survivors_of(player: int) -> Array[UnitState]:
 	return out
 
 
+## `lKillPlayerUnits` `0x0047BC60` -- *Give up!*: every unit of *player* is
+## **killed**, one by one, and the mission goes on without them.
+##
+## The engine's loop walks all 200 records, tests the owner and calls its
+## death creator and then the kill routine per unit, so the mission's own
+## counters move exactly as they do for a unit shot dead. Erasing the records
+## instead -- which this used to do -- left the scoreboard reporting no losses
+## at all for a squad that had just been wiped out. Answers how many died.
+func kill_units_of(player: int) -> int:
+	var killed: int = 0
+	for slot: int in unit_slots():
+		var unit: UnitState = _units[slot]
+		if unit.player != player or not unit.is_alive():
+			continue
+		var _hero: bool = UnitState.remove(state, turn, unit)
+		killed += 1
+	return killed
+
+
 ## Take a player's units off the map -- what the debriefing leaves behind.
 func clear_units_of(player: int) -> int:
 	var removed: int = 0

@@ -732,6 +732,145 @@ live process, read the pool back, and diff the records — which is the pattern
 `turn_gold.py` and `ai_gold.py` already use. That would validate the hooks and
 the creators in one pass, and it is the only thing that would.
 
+**2026-09-06: the thirteenth creator, and where a shot actually comes from.**
+`aBlob_CreateTracerBullet` `0x004247C0` — the muzzle switch's **default** arm
+and the creator fourteen weapons select, so the one an ordinary shot uses — is
+transcribed, `inclib/blob_creators.py` `_c004247C0`. Its three constants are
+read back out of the shipped executable by `blob_tables.py` (`TRACER_STEP` at
+`0x004B1280`, the casing's ±128 at `0x004B1288` and `0x004B1290`, and
+`TRACER_UNIT` recovered by replaying the reciprocal multiply at `0x00424A9A`,
+there being no `2240` in those bytes at all), and every site is inside the
+creator. What it corrected in this remake: the casing is thrown a **third of
+the round's delta behind** the muzzle at the muzzle's own height — the machine
+gun drops its own by `dz` and that formula had been carried across — and the
+streak lives `max(|dx|, |dy|) / 2240 - 1` frames while travelling its whole
+delta each of them, so a point-blank shot makes no streak at all, the
+constructor dropping a record with no life.
+
+The finding that reaches past the effect layer is **the origin**. `0x004249AF`
+tests the shooter's `+0x56` — docs/42 §6's "already animating" byte, which a
+fight animation sets — and where it is set `0x0042C660` writes the world
+position of a *named part of the shooter's Charisma model* over all three
+source coordinates: the part's own translation plus the object's, scaled by the
+16 of docs/40 §5.3. The name is the creator's seventh argument and all five
+call sites push the same one-character string, `"M"` (`0x004C10D8`), which 89
+of the 114 shipped `.cho` models carry a part for. (Corrected below: there are
+**seven** sites, not five, and one of them pushes `"MM"`; the earlier count of
+"32 of 39" was of a world set's `.3DI` prototypes, which are geometry and not
+the skeleton the part name lives in.) So a shot leaves the **barrel**, and
+the body's axis at eye height (`0x0047AD30`) is the fallback for a body that is
+not animating. The claim it replaces was **this remake's own**, written into
+`SliceMain._muzzle_of`'s comment — "the creator … never touches a weapon's
+position or a model's joint" — and told to the player as fact; §15.5 says only
+that the origin is the placed object's position rather than the tile or the
+floor, which stands. The remake reads the same part of the same model now.
+
+What stays open is the half that was open before: none of this is **measured**.
+The records are read out of the instructions, not back out of a live pool, and
+closing that still wants the `dbgcall` capture above.
+
+**2026-09-06, later: a shot is a burst.** Reported from play — the original's
+own sound is a burst and the remake drew one round. `_c004247C0`'s loop is
+`args[4]` rounds and its constructor's last field is `(index * args[5]) & 0xFF`,
+the record's `delay`, and neither number is in any table this slice extracted:
+both are pushed at the **call site**, so they belong to the weapon's arm rather
+than to the creator. Two other muzzle creators have the same seven-argument
+signature and the same loop, `aBlob_CreateNeedles` `0x00424250` and
+`aBlob_CreateFlash` `0x00423D80`, and the set of burst sites is exactly the set
+of muzzle sites whose caller cleans seven dwords.
+
+An ordinary rifle shot is therefore **ten** tracers and ten cases leaving one
+frame apart; the two starting guns' default arm pushes five; weapon 16 fires
+three two frames apart; weapon 12 fires two bursts of nine, its second call
+naming the part `"MM"` rather than `"M"`. All fourteen immediates and the
+`mov ebx, 1` at `0x0040CC41` that supplies the other three steps are read back
+from the binary by `blob_tables.py` (`weapon.muzzle_burst`, `MUZZLE_BURSTS`,
+546 checks), the blob document carries `[rounds, stagger]` beside each creator
+(`CONVERTER_VERSION` 0.20.0) and `BlobTriggers._fire` runs the loop. Only the
+tracer's per-round scatter is transcribed, so the other two creators repeat
+their records on the spot — the right count and the right timing over a spread
+that is still nobody's measurement. `_muzzle_of` still knows only `"M"`, so
+weapon 12's second barrel fires from the first.
+
+**2026-09-06, third pass: the other two burst creators, and the second
+barrel.** `aBlob_CreateNeedles` `0x00424250` and `aBlob_CreateFlash`
+`0x00423D80` are transcribed beside the tracer, so all three seven-argument
+creators are now programs (`inclib/blob_creators.py`, thirteen in all). They
+share a prologue — two symbol objects, two unit heights, the joint override,
+`0x0046D400`'s direction and a length that is the wider horizontal span over
+the creator's own spacing minus one — and `_burst_prologue` is that
+prologue once. What differs:
+
+* the **spacing and the step are one number** in each, as they are for the
+  tracer: 1600 for the flash (`0x004B1270`, divide at `0x00424058`), 2400 for
+  the needles (`0x004B1278`, the cell `BEAM_STEP` names, divide at
+  `0x00424540`). All four are read back out of the shipped executable;
+* the flash's round is **one class-2 record**, row 6, column `aRandom2(0, 7)`,
+  kind 69, carrying the round's delta as its velocity;
+* the needle's round is **nine**: the delta is divided by eight and laid down
+  as an accumulator, so the nine sit at one eighth, two eighths … nine
+  eighths of it, growing (`aux` is `10 - k`), and the **last** is kind 73
+  where the other eight are 74;
+* both take a **different branch point-blank**. A span inside one spacing
+  writes the length back to zero and sets the *arrived* flag rather than
+  clearing it, and then the flash runs `rounds` zoom bobs jittered
+  `aRandom2(-1600, 3200)` **around the target** while the needles run one zoom
+  bob and `0x00428F70`'s twenty plasma sparks there. Their round loops still
+  run and still draw; every record is dropped by the constructor for a zero
+  life.
+
+The remake mirrors all three (`game/fx/blob_triggers.gd`: `BURST_SHAPES` is
+the step, the spacing and the two scatter spans per creator, and `_needles`
+is the nine-record round). That fixed a defect nothing had noticed: the
+needles' single constructor call computes its kind, so the document carries
+`null` there and `_create` refused it — **weapon 16 made no muzzle effect at
+all** in the remake until its creator was transcribed. The two point-blank
+branches are mirrored too, and so is the tracer's per-round zoom bob: all
+three are **nested creators**, whose constructor calls belong to
+`0x00423720` and `0x00428F70` rather than to the muzzle creator, so the
+muzzle table cannot carry them. `BlobTriggers` hands them back as requests
+(`take_programs`) and the mission host runs them through the same
+`BlobPrograms` seam a set piece uses, on the one generator stream. Without
+that a point-blank shot from weapon 16 or 29 showed **nothing at all**: the
+round loop's records are dropped for a zero life, and the branch that
+replaces them was not there.
+
+The **joint** is the second finding of this pass and it corrects the
+2026-09-06 entry above, which said "all five call sites push the same
+one-character string". They do not: **one of the tracer's own five**,
+`0x0040D230` — weapon 12's second call — pushes `"MM"`. (Counting all three
+burst creators there are seven such sites; the other two push `"M"`.) Exactly one shipped
+model carries a part by that name (`P0_020.cho`) against 89 of 114 for `"M"`,
+so weapon 12 fires its two bursts from two barrels. `tables/blobs.json`
+carries the name per call (`weapon_muzzle_joint`, `CONVERTER_VERSION`
+0.21.0), `BlobTriggers` resolves it per creator, and `SliceMain._muzzle_of`
+now takes the **shooter's slot** rather than looking the cell up in the
+end-of-turn world, where a reinforcement may already have recycled it.
+
+**What is still not measured, and why.** The three burst creators were the
+one part of the pool a capture had never reached, and the reason was in
+`blob_gold.py` rather than in Wine: `argument_vector` fills every argument
+past the fourth with **zero**, and the fifth is the round count — so all
+three ran an empty loop, left no records and drew nothing, which is why they
+sit in `DRAW_SITES_NOT_TAKEN`. A `burst_*` phase that calls each with the
+numbers its own arm pushes is written and wired
+(`BURST_ARGS`, `BURST_READ_RECORDS` at 44 slots, `creator_plan`'s record
+window). It has not run: on 2026-09-06 this host reached the anchor **0 times
+out of 10** with `--probe-startup`, using the `state` plan that had landed
+before, so `Incubation.exe` exits before the breakpoint for reasons that are
+`docs/91` §1's and not the plan's. `NATIVE_FAULTS` and `BURST_UNCAPTURED`
+pin exactly that, and `native.creator_program_records` counts the three as a
+named gap rather than reporting a pass it has not earned. Seven of
+`blob_creators.py`'s constants moved into
+`CREATOR_CONSTANTS_UNDISCRIMINATED` for the same reason.
+
+**A process note.** The 2026-09-06 entry above reported "all checks green"
+without running `blob_gold.py --check`, which is outside the always-run block
+and which the tracer's transcription had already broken — it had been
+reporting the tracer as *not captured* since that pass. The rule the block
+exists for applies to the tools outside it too: a transcription added to
+`PROGRAMS` is a claim `blob_gold` is the judge of.
+
 ### 14.6 Which music family plays: `Arack`, read out of the import table
 
 §11.2 called this unfalsifiable on this corpus and recorded `Track` as a

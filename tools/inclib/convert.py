@@ -864,7 +864,8 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
     # own literals do not match, and one of those is a directory name.
     speech = document["speech"]["files"]
     for lower, shipped in sorted(speech.items()):
-        source = root / WAVES_DIR / soundmod.SPEECH_DIRECTORY / shipped
+        source = _find(root, WAVES_DIR, soundmod.SPEECH_DIRECTORY,
+                       *shipped.split("/"))
         staging.write_bytes(f"audio/waves/speech/{lower}",
                             reader.read_bytes(source))
 

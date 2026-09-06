@@ -115,7 +115,11 @@ func caption_for(number: int) -> String:
 		id = HudTables.CAPTION_MAGNIFIER_OFF
 	if id == 0:
 		return ""
-	return _strings.shipped(HudTables.BANK_INTERFACE, id)
+	# The remake's key after the shipped words, from the table that **is**
+	# the binding -- see [constant HudTables.EVENT_KEYS].
+	return HudTables.with_key(
+		_strings.shipped(HudTables.BANK_INTERFACE, id),
+		HudTables.event_key(number))
 
 
 func _on_pressed(slot: Vector2i) -> void:
