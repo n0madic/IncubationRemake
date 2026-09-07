@@ -149,8 +149,15 @@ static func cell_states(world: World, selected: int, query: MoveMapResult,
 		var view: Dictionary = world.unit_view(selected)
 		states[Vector2i(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))] \
 			= HudTables.STATE_OWN_CELL
+	# **A band on an empty cell is not drawn.** The bands are computed on the
+	# truth when the unit is selected and the mirror lags it by a command, so
+	# a victim the shot has killed is still under a band until its delta
+	# lands -- and lands it does, at the death stage, from which frame the
+	# cell has no body and the aim goes with it. The original's overlay is
+	# drawn from the unit array of the moment, which is the same test.
 	for cell: Vector2i in bands:
-		states[cell] = bands[cell]
+		if _unit_shown_at(world, cell):
+			states[cell] = bands[cell]
 	return states
 
 
@@ -181,7 +188,7 @@ func drawn_cells() -> Array[Vector2i]:
 	return out
 
 
-func _unit_shown_at(world: World, cell: Vector2i) -> bool:
+static func _unit_shown_at(world: World, cell: Vector2i) -> bool:
 	if not world.state.in_bounds(cell.x, cell.y):
 		return false
 	var slot: int = world.state.unit_at(world.state.index_of(cell.x, cell.y))

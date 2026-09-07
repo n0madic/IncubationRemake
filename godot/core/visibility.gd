@@ -206,19 +206,39 @@ static func build(state: MapState, units: Dictionary, utab: UnitTypeTable,
 ## player command where `aViewPlayer.cpp` runs it (docs/97 section 34).
 ##
 ## Returns slot -> `+0x4F`, and leaves every `+0x4F` exactly as it found it.
+## `at` answers the pass for units standing **where the picture draws them**
+## rather than where the state has them, slot to cell.
+##
+## The picture is a lagging mirror: a body crossing a field is between the
+## cell its walk started on and the one its delta will put it on, and asking
+## the fog about the stale cell is what made an alien that stepped into the
+## squad's sight stay a contact beam until the turn changed -- attacking as a
+## beam, because the fight clip had no body to play on (docs/100 section 4).
+## Only the **observed** position moves: an override never changes who is
+## looking, and it is put back before this returns, so this stays a query.
 static func states_for(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, player: int, human_players: int,
-		game_mode: int) -> Dictionary[int, int]:
+		game_mode: int,
+		at: Dictionary[int, Vector2i] = {}) -> Dictionary[int, int]:
 	var saved: Dictionary[int, int] = {}
+	var placed: Dictionary[int, Vector2i] = {}
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		saved[unit.slot] = unit.visibility
+		if at.has(unit.slot) and state.in_bounds(at[unit.slot].x,
+				at[unit.slot].y):
+			placed[unit.slot] = Vector2i(unit.x, unit.y)
+			unit.x = at[unit.slot].x
+			unit.y = at[unit.slot].y
 	_pass(state, units, utab, player, human_players, game_mode, Callable())
 	var seen: Dictionary[int, int] = {}
 	for slot: Variant in units:
 		var unit: UnitState = units[slot]
 		seen[unit.slot] = unit.visibility
 		unit.visibility = saved[unit.slot]
+		if placed.has(unit.slot):
+			unit.x = placed[unit.slot].x
+			unit.y = placed[unit.slot].y
 	return seen
 
 

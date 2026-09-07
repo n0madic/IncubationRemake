@@ -29,6 +29,25 @@ const BOOT_SHELL: String = "shell"
 const DEV_CACHE: String = "res://generated/cache"
 
 var world: World = null
+## **The picture's own world, one command behind the truth.**
+##
+## `core` resolves a whole command -- and the whole computer turn -- before it
+## returns, so [member world] always stands at the *end* of the last one. This
+## is a clone of it, advanced one event delta at a time at the moment each
+## animation reaches the change it is drawing ([EventJournal]). Every reader
+## of the picture -- the bodies, the fog, the terrain, the interface, the
+## radar, the click pick and the agent's snapshot -- reads this; [member world]
+## is read to submit a command and to ask whether one is allowed.
+##
+## The standing check is that the two hashes agree once the last delta has
+## landed; [method _check_mirror] says so at the drain and resynchronises
+## rather than drawing a world nobody can name.
+var _shown: World = null
+## What the picture may see, over [member _shown]. See [PictureFog].
+var _fog: PictureFog = PictureFog.new()
+## How many times the mirror had to be resynchronised because a delta did not
+## carry everything. Zero is the contract; the agent's snapshot reports it.
+var _desyncs: int = 0
 ## What the player chose, read once at start-up and written by the options
 ## screen. Never `null` after [method _ready]: a run with no file on disk uses
 ## the defaults rather than having no settings at all.
@@ -101,9 +120,6 @@ var _blink_odd: bool = false
 var _pointer: Vector2 = Vector2(-1.0, -1.0)
 ## The viewport's own pointer at the last poll, so the poll fires on a move.
 var _polled: Vector2 = Vector2(-1.0, -1.0)
-## A facing the ring chose that waits for the walk it followed to end
-## (`aChangeUnitViewDirection` runs after the blocking walk in the original).
-var _pending_turn: Dictionary = {}
 ## Whether the last overlay refresh was the far view, so a camera crossing
 ## the zoom gate redraws it.
 var _far_drawn: bool = false
@@ -158,24 +174,16 @@ var _status: Label = null
 ## [method _refresh_status] gave it. Kept so a **redraw** can put it back --
 ## a caller with something to say passes it, and one with nothing clears it.
 var _status_note: String = ""
+## What the command now being played back should say when it drains. The note
+## is decided where the command was given and shown when the picture has
+## caught up with it, which is where [method _after_command] now runs.
+var _command_note: String = ""
 ## Whether the report panel is being held down while the picture that ended
 ## the mission is still on screen ([method _check_mission_end]).
 var _result_held: bool = false
 ## Set when the squad ran out of movement points, cleared when the turn is
 ## handed over ([method _auto_end_turn_wanted]).
 var _auto_end_pending: bool = false
-## What each unit's `+0x4F` was before the computer's turn ran, for the
-## replay -- see [method _visibility_hold] and [member UnitsView._held_visibility].
-var _seen_before_turn: Dictionary[int, int] = {}
-## Every unit's record as it stood **before** the computer's turn ran, so a
-## casualty can still be drawn after the turn has taken its record away.
-##
-## `core` decides the whole turn in one call, and a mission script's
-## `InsertUnit` reuses a slot the turn has just emptied -- `_C_140`'s
-## reinforcement roll does exactly that. The victim's record is then not merely
-## dead but **somebody else's**, and nothing the replay does with the slot can
-## recover the marine that stood there. This is what it is drawn from.
-var _views_before_turn: Dictionary[int, Dictionary] = {}
 ## The eye's offset from the target, and the view mode, as the player had them
 ## when they ended the turn ([method _restore_camera_on]).
 var _camera_offset_before_turn: Vector3i = Vector3i.ZERO
@@ -193,7 +201,7 @@ var _geometry: Dictionary = {}
 var _textures: Dictionary = {}
 ## The computer's turn, played back one event at a time. `core` decided the
 ## whole thing before this exists; the playback only shows it.
-var _playback: AIPlayback = AIPlayback.new()
+var _playback: EventPlayback = EventPlayback.new()
 var _ai_note: String = ""
 
 ## The fifth slice's two presentation layers. Both are `game`'s alone: `core`
@@ -249,16 +257,16 @@ var _quitting: bool = false
 ## Slot -> the walk cue that slot's type set up, kept for as long as the walk
 ## lasts so every step of one walk sounds the same.
 var _footstep_cues: Dictionary[int, Dictionary] = {}
-## Return fire waiting to be shown, one batch per command that drew it:
-## `{"entries": Array, "x": int, "y": int}`, where the cell is the mover's.
-##
-## `core` resolves a whole move's reactions in one call at the end of the
-## move (`World.submit_move`) and the walk that follows is only the picture,
-## so the return fire is held until the picture has caught up. It is drained
-## from [method _process] on a **state** test -- nothing walking, no body
-## still shooting -- rather than on the edge of a walk ending, because a
-## refused or zero-step move drains reactions in `core` and never walks.
-var _pending_reactions: Array[Dictionary] = []
+## Whether a delta has landed on the mirror since the picture was last built
+## from it. The rebuild is deferred to [method _flush_picture] -- once per
+## frame, or at the moment a presenter needs the picture current -- because
+## the quiet events between two shown ones land several deltas in one frame
+## and a full rebuild per delta was most of the cost of a command.
+var _picture_stale: bool = false
+## Whether the playback on the go is the computer's turn, which is what
+## [method end_turn] started, as against a player's own command. The two
+## finish differently: only the turn hands the selection back.
+var _playing_turn: bool = false
 
 
 ## An exported build made with the `run_tests` custom feature runs the suites
@@ -315,11 +323,6 @@ const LEVER_USE_KIND: String = "lever"
 const PICKUP_USE_KINDS: Array[String] = ["full_munition", "equipment_points",
 	"weapon_skills", "condition", "technical", "equipment", "class",
 	"message_only"]
-## The computer's event names against the set pieces they queue.
-const AI_SETPIECE_KINDS: Dictionary[String, String] = {"door": "open_door"}
-## The queue stage that waits for a walk before its own epilogue -- see
-## [method _hold_for_walk].
-const STAGE_AFTER_WALK: String = "move.after_walk"
 ## The tag every spoken line takes, so the next one can end it: the original
 ## keeps speech in one buffer and kills it before the next name (docs/28 4.3).
 const SPEECH_TAG: String = "speech"
@@ -563,7 +566,8 @@ func _refresh_after_deploy() -> void:
 		return
 	# The terrain overlay is not rebuilt: deployment changes no cell. What it
 	# does change is visibility, and that is `UnitsView.build`'s to redraw.
-	_units.build(world, _geometry, _textures)
+	_resync_shown()
+	_units.build(shown(), _geometry, _textures, _picture_fog())
 	# One free cell fewer, so the dots are re-laid: a marker still standing on
 	# an occupied cell is a control that refuses its own click.
 	#
@@ -1883,7 +1887,6 @@ func _clear_mission() -> void:
 	_ground = null
 	_hover = Vector2i(-1, -1)
 	_bands.clear()
-	_pending_turn = {}
 	# A save deferred past a sequence belongs to the mission that queued it
 	# ([method _autosave]); the next mission's first idle frame would
 	# otherwise take it.
@@ -1891,8 +1894,8 @@ func _clear_mission() -> void:
 	# The last turn's hand-back state belongs to the mission that is going
 	# away: a second mission loaded after a turn was played would have taken
 	# the *previous* mission's camera offset as the player's arrangement.
-	_seen_before_turn.clear()
-	_views_before_turn.clear()
+	_fog.clear()
+	_shown = null
 	_camera_offset_before_turn = Vector3i.ZERO
 	_camera_mode_before_turn = CameraRig.View.UNIT
 	if _hud != null:
@@ -1917,7 +1920,13 @@ func _clear_mission() -> void:
 	_director = null
 	_walk_cameras.clear()
 	_footstep_cues.clear()
-	_pending_reactions.clear()
+	_picture_stale = false
+	_playing_turn = false
+	# A turn still being drawn when the mission goes -- `ESC`, *Main Menu*
+	# -- is dropped, not skipped: `skip()` would land deltas on a mirror
+	# that is about to go and finish into `_after_command` with no world.
+	_playback.cancel()
+	_ai_note = ""
 	_drawn_terrain = {}
 	_last_query = null
 	world = null
@@ -2028,6 +2037,11 @@ func _build(mission: String) -> void:
 	# applied by `core` before this point, so what is left for `game` is the
 	# sound and the picture.
 	_present_script(opening_script)
+	# **From here the picture reads the mirror.** The journal starts recording
+	# after `INIT MAP`, whose own set pieces are presented above, so the first
+	# clone is the mission as the player first sees it.
+	world.enable_journal()
+	_resync_shown()
 
 	_rig = CameraRig.new()
 	_rig.name = "CameraRig"
@@ -2367,78 +2381,6 @@ func camera_director() -> CameraDirector:
 ## [constant Visibility.FULL] rather than released, because releasing would
 ## hand the slot the **end** of the turn -- and a walker that shows itself and
 ## then leaves the room ends the turn hidden.
-## Which units this event marked visible **as it happened**, and so must be
-## drawn as bodies for the length of it rather than as whatever the fog said
-## before the turn.
-##
-## Three writes qualify, and `core` has already made all three:
-##
-## * `aExecuteMove`'s **mode 3** (`0x0046E4BB`), before the first step, when
-##   the mover could see somebody from the cell it set off from -- the walk's
-##   own [member MoveResult.seen_source];
-## * `aAttackUnit`'s **shooter reveal** (`0x0046B643`,
-##   docs/22 section 7.1), the moment the weapon is cleared to fire. A shot
-##   that jammed reveals nobody, which is why the test is the attack's own
-##   `fired` and not the presence of a shot event.
-## * the **same reveal for a reaction**: `Reaction.drain` fires through
-##   [method Combat.attack], so a unit in overwatch that pulls the trigger runs
-##   `0x0046B643` too. This is the one event whose actor is **not** its slot --
-##   `AIFire` and `AIPlan` emit `reactions` for the unit that *drew* the fire,
-##   and the shooters are in the payload -- so the answer is a list rather than
-##   a flag.
-##
-## Without the second, an alien that walks up under cover and then attacks was
-## drawn as a contact beam swinging its claws -- and, being a beam, with no
-## body for the fight clip to play on. Without the third, the same happened to
-## a hidden alien whose overwatch answered the squad's own mover.
-static func _event_reveals(kind: String, slot: int,
-		payload: Dictionary) -> PackedInt32Array:
-	var out: PackedInt32Array = PackedInt32Array()
-	if kind == "move":
-		if DictRead.as_bool(payload.get("seen_source", false)) and slot >= 0:
-			out.append(slot)
-		return out
-	if kind == "fire":
-		if DictRead.as_bool(payload.get("fired", false)) and slot >= 0:
-			out.append(slot)
-		return out
-	if kind == "reactions":
-		for item: Variant in DictRead.as_array(
-				payload.get("reactions", [])):
-			var entry: Dictionary = DictRead.as_dict(item)
-			var reactor: int = DictRead.as_int(entry.get("reactor", -1))
-			var attack: Dictionary = DictRead.as_dict(
-				entry.get("attack", {}))
-			if reactor >= 0 and DictRead.as_bool(attack.get("fired", false)) \
-					and not out.has(reactor):
-				out.append(reactor)
-	return out
-
-
-func _visibility_hold(current: int,
-		revealed: PackedInt32Array = PackedInt32Array()) -> Dictionary[int, int]:
-	return visibility_hold_in(_seen_before_turn, _playback.played_slots(),
-		current, revealed)
-
-
-## The same, as a function of its arguments, so a suite can ask it directly --
-## the pattern [method AIPlayback.starts_in] and its neighbours follow.
-static func visibility_hold_in(seen: Dictionary[int, int],
-		shown: PackedInt32Array, current: int,
-		revealed: PackedInt32Array = PackedInt32Array()) -> Dictionary[int, int]:
-	var out: Dictionary[int, int] = {}
-	for slot: int in seen:
-		if slot != current and shown.has(slot):
-			continue
-		out[slot] = seen[slot]
-	# The answer is forced to [constant Visibility.FULL] rather than released,
-	# because releasing would hand the slot the **end** of the turn -- and a
-	# walker that shows itself and then leaves the room ends the turn hidden.
-	for slot: int in revealed:
-		out[slot] = Visibility.FULL
-	return out
-
-
 ## The hand-back's camera: the player's own arrangement when it still stands,
 ## and the view mode's own placement when it does not.
 ##
@@ -2458,15 +2400,15 @@ static func visibility_hold_in(seen: Dictionary[int, int],
 func _restore_camera_on(slot: int) -> void:
 	if _rig == null or _director == null or world == null:
 		return
-	var inputs: Dictionary = CameraDirector.unit_inputs(world, slot)
+	var inputs: Dictionary = CameraDirector.unit_inputs(shown(), slot)
 	var offset: Vector3i = _camera_offset_before_turn
 	if inputs.is_empty() or offset == Vector3i.ZERO \
 			or _camera_mode_before_turn == CameraRig.View.EYES:
-		var _placed: float = _director.apply_view_mode(world, slot)
+		var _placed: float = _director.apply_view_mode(shown(), slot)
 		return
 	var obj: Vector3i = DictRead.as_vector3i(inputs["obj"])
 	if not _rig.eye_is_inside(obj + offset):
-		var _fallback: float = _director.apply_view_mode(world, slot)
+		var _fallback: float = _director.apply_view_mode(shown(), slot)
 		return
 	_rig.set_view_mode(_camera_mode_before_turn)
 	var _frames: int = _rig.fly(obj + offset, obj)
@@ -2598,9 +2540,9 @@ static func first_friendly_slot(mission_world: World) -> int:
 ## a different thing -- the remake's own camera return with *no* selection
 ## behind it -- and stays off by default.
 func _resume_selection() -> void:
-	if world == null or world.game_control.mission_ended():
+	if world == null or shown().game_control.mission_ended():
 		return
-	var slot: int = hand_back_slot(world, _selected, _selection_before_turn)
+	var slot: int = hand_back_slot(shown(), _selected, _selection_before_turn)
 	_selection_before_turn = -1
 	if slot < 0:
 		return
@@ -2608,8 +2550,8 @@ func _resume_selection() -> void:
 	# behind `unit[+0x15] >= fcn.00475160(unit)` inside `fcn.00471E00`, so a
 	# marine that spent part of its allowance last turn is picked in silence
 	# (docs/28 section 4.3). The click site has no such gate.
-	var moved: bool = DictRead.as_int(world.unit_view(slot)["mp"]) \
-		!= world.movement_allowance(slot, world.turn.ai_level)
+	var moved: bool = DictRead.as_int(shown().unit_view(slot)["mp"]) \
+		!= shown().movement_allowance(slot, shown().turn.ai_level)
 	var _map: MoveMapResult = select_unit(slot, false,
 		"" if moved else "select", true)
 
@@ -2617,11 +2559,10 @@ func _resume_selection() -> void:
 ## The whole hand-back rule, as one pure function: which unit to select now,
 ## or -1 for "leave it alone".
 ##
-## **A selection that already stands is left alone.** A quiet computer turn
-## hands back *twice* -- [method AIPlayback.play] finishes inside its own call
-## when no event survives its filter, so `_on_ai_step({})` runs before [method
-## end_turn] reaches its own no-replay path -- and re-running the select would
-## put the camera on a second unit and speak over the first line.
+## **A selection that already stands is left alone.** The hand-back runs from
+## the playback's finish callback whether the turn drew anything or not, and
+## re-running the select on a standing selection would put the camera on a
+## second unit and speak over the first line.
 static func hand_back_slot(mission_world: World, selected: int,
 		previous: int) -> int:
 	if selected >= 0:
@@ -2683,152 +2624,170 @@ static func focus_on_friendly(rig: CameraRig, mission_world: World) -> int:
 	return slot
 
 
-## Give the computer's event to the body it is about.
+## Present one journal event: the body it is about, the sequence it queues,
+## the sound it makes.
 ##
-## This is why the `move` event carries its route (`docs/96`): by the time the
-## playback reaches event *i* the world is already at the end of the turn, so
-## the path cannot be re-derived here -- it would be derived against the wrong
-## state. The event brought it.
+## **One arm per kind the journal marks** (docs/100 section 3). The event
+## brought everything the picture needs -- a `move` its route, a `fire` its
+## weapon as it was when the trigger was pulled, a `reaction` its reactor and
+## the mover that drew it, a `mine` its blast -- because by the time the
+## playback reaches event *i* the truth is at the end of the command and the
+## mirror has not yet landed the events before *i*. Nothing is re-derived.
 ##
-## It is called **after** `_on_ai_step`'s own rebuild, never before: that
-## rebuild frees every unit node and clears the bodies, the states and the
-## walks. The *next* event's rebuild ending this walk is the design; this
-## event's rebuild ending it was a bug that made the computer's units teleport
-## and never play `F`.
-##
-## **It owns the shot as well as the body.** The effects and the sounds of a
-## shot used to be a second, partial copy in [method _present_ai_event] that
-## dropped the pain screams, while the body was started here -- two owners
-## for one event, and only one of them could report a length.
-##
-## Returns how long the event needs on screen, which for a move is its walk.
+## Returns how long the event needs on screen: the walk's own length, the
+## shot's deterministic frames, the set piece's frames. Zero for an arm that
+## queued nothing -- the playback then goes straight on -- and zero for the
+## `use` and `heal` events, whose set pieces are queued by the command that
+## submitted them and hold the playback through the picture's own `busy`.
 func _play_event_body(event: Dictionary, kind: String) -> float:
 	var slot: int = DictRead.as_int(event["slot"])
-	if kind == "move":
-		if _units == null:
-			return 0.0
-		var payload: Dictionary = DictRead.as_dict(event["payload"])
-		if payload.has("path"):
+	var payload: Dictionary = DictRead.as_dict(event["payload"])
+	var at_x: int = DictRead.as_int(event["x"])
+	var at_y: int = DictRead.as_int(event["y"])
+	var to_x: int = DictRead.as_int(event["tx"])
+	var to_y: int = DictRead.as_int(event["ty"])
+	match kind:
+		"move":
+			if _units == null or not payload.has("path"):
+				return 0.0
 			# docs/42 section 3.2: the walk's mode is decided from what the
-			# mover would see -- `aBuildVisibleMapForUnit` `0x004794B0` from the
-			# destination and from the source -- and the camera follows from
-			# the mode. **The answers ride on the event.** They are the writing
-			# passes `core` ran at the moment of the move, when every unit of
-			# that moment was still standing; the post-turn world this playback
-			# runs on has lost the ones that died later in the turn.
-			var from_x: int = DictRead.as_int(event["x"])
-			var from_y: int = DictRead.as_int(event["y"])
-			# **The path's own end, not the event's `tx`/`ty`.** They are
-			# the same cell on every walk but one: a walk that ended on a
+			# mover would see -- `aBuildVisibleMapForUnit` `0x004794B0` from
+			# the destination and from the source -- and the camera follows
+			# from the mode. **The answers ride on the event.** They are the
+			# writing passes `core` ran at the moment of the move, when every
+			# unit of that moment was still standing. The player's own unit
+			# walks in mode 1 whatever it sees.
+			#
+			# **The path's own end, not the event's `tx`/`ty`.** They are the
+			# same cell on every walk but one: a walk that ended on a
 			# teleporter entry reports the **exit** it was relinked to
 			# (docs/97 section 41.2), and the camera has to fly to where the
 			# body is about to walk, not to where it will reappear.
 			var path: PackedInt32Array = DictRead.to_int32(payload["path"])
 			var last: int = path[path.size() - 1] if not path.is_empty() \
 				else -1
-			var to_x: int = last % world.resource.width if last >= 0 \
-				else DictRead.as_int(event["tx"])
-			var to_y: int = last / world.resource.width if last >= 0 \
-				else DictRead.as_int(event["ty"])
-			var mode: CameraDirector.WalkMode = CameraDirector.walk_mode(false,
+			var end_x: int = last % shown().resource.width if last >= 0 else to_x
+			var end_y: int = last / shown().resource.width if last >= 0 else to_y
+			var mode: CameraDirector.WalkMode = CameraDirector.walk_mode(
+				_is_own(slot),
 				DictRead.as_bool(payload.get("seen_source", false)),
 				DictRead.as_bool(payload.get("seen_destination", false)))
-			var delay: float = _camera_before_walk(slot, from_x, from_y, to_x,
-				to_y, mode)
-			var walk: float = delay + _walk_body(slot,
-				DictRead.to_int32(payload["path"]),
+			var delay: float = _camera_before_walk(slot, at_x, at_y, end_x,
+				end_y, mode)
+			return delay + _walk_body(slot, path,
 				DictRead.as_int(payload.get("steps", 0)), delay)
-			# The mine an alien walked onto: the walk's own events carry the
-			# blast, because the playback runs after the turn and the roster
-			# has already lost whatever it killed.
-			var moves: Array[Dictionary] = []
-			for entry: Variant in DictRead.as_array(
-					payload.get("events", [])):
-				moves.append(DictRead.as_dict(entry))
-			# The epilogue waits for the walk here too -- the computer's
-			# aliens are the fill's only movers into a mine cell and the
-			# teleporter entries are open to both sides.
-			var script: Dictionary = DictRead.as_dict(payload.get("script", {}))
-			if _walk_has_epilogue(moves) or _script_has_events(script):
-				var _held_queue: bool = _hold_for_walk(walk)
-			var blast: float = _present_mine(slot, moves)
-			# The same walk can end on a teleporter: `0x0046EE03` is inside
-			# `aExecuteMove`, so the stream plays as part of the move
-			# (docs/97 section 41.2).
-			_present_teleport(slot, moves)
-			# And it can end on a footbridge: `aRunLCL` `0x0046EEFD` closes
-			# `aExecuteMove` for the computer's walk as for the player's, and
-			# the outcome rides on the event ([method AIPlan._apply_move]).
-			# The riders were held with the rest of the turn's dead
-			# ([method AIPlayback.casualties_of]); this is the fall itself,
-			# and the event stays on screen for the length of it.
-			var _script_shown: int = _present_script(script)
-			return walk + blast + _script_seconds(script)
-	elif kind == "warp":
-		# docs/42 section 7.1: the computer's jump, with a scream for the
-		# trail. The event's cells are the routine's own arguments.
-		var frames: int = _present_jump(slot,
-			Vector2i(DictRead.as_int(event["x"]), DictRead.as_int(event["y"])),
-			Vector2i(DictRead.as_int(event["tx"]), DictRead.as_int(event["ty"])),
-			false)
-		# `AIPlan.execute_warp` puts the landing's blast in the payload; the
-		# player watching the replay should see the explosion the alien
-		# jumped onto.
-		var landed: Dictionary = DictRead.as_dict(event["payload"])
-		var blasted: float = _present_blast(slot,
-			DictRead.as_int(event["tx"]), DictRead.as_int(event["ty"]),
-			DictRead.as_dict(landed.get("blast", {})))
-		# `aRunLCL` `0x0046F1D6` closes `aExecuteWarp` too, behind the same
-		# alive gate as the walk's, and `AIPlan.execute_warp` puts its
-		# outcome beside the blast.
-		var script: Dictionary = DictRead.as_dict(landed.get("script", {}))
-		var _script_shown: int = _present_script(script)
-		return maxf(float(frames) / SequenceQueue.FRAMES_PER_SECOND, blasted) \
-			+ _script_seconds(script)
-	elif kind == "fire":
-		# **The weapon comes from the event, not from the world.** The
-		# playback runs after the turn, so an alien killed by reaction fire
-		# after its own shot has no view left and the shot was presented as
-		# nothing at all. `AIFire` writes the weapon into the note as it was
-		# when the trigger was pulled, which is both accurate and always
-		# there.
-		return _present_attack(slot, DictRead.as_int(event["x"]),
-			DictRead.as_int(event["y"]), DictRead.as_int(event["tx"]),
-			DictRead.as_int(event["ty"]),
-			DictRead.as_string(event["note"]).to_int(),
-			AttackResult.from_dict(DictRead.as_dict(event["payload"])))
-	elif kind == "parabomb":
-		# `aAI_SpecialPlayerControl` `0x0040B2D0` is the fuse and nothing
-		# else: it calls `aExecuteBomb` `0x004702C0` and `aRemoveUnitElement`
-		# `0x004779C0`, and no sound routine at all. So the computer's para
-		# bomb is **one blast on its own cell**, shown by the presenter the
-		# walk's mine and the jump's landing already use, with
-		# `Combat.BOMB_WEAPON`'s own cues. The payload *is* the blast --
-		# `AISpecialPlayer` writes `AttackResult.to_dict()` straight into it.
-		#
-		# **And this is what takes its dead off the screen.** The casualties
-		# are held from the start of the replay ([method
-		# AIPlayback.pending_casualties]); the death stage of a shot is the
-		# only thing that calls [method UnitsView.hide_now], so an event that
-		# showed nothing left them standing to the end of the turn.
-		return _present_blast(slot, DictRead.as_int(event["x"]),
-			DictRead.as_int(event["y"]), DictRead.as_dict(event["payload"]))
-	elif kind == "reactions":
-		# The event's own cell is the **mover's**: `AIFire` and `AIPlan` emit
-		# this for the unit that drew the fire, and the reactors are in the
-		# payload. There is nothing to wait for the mover to do, so it is
-		# shown at once and its longest clip is what the playback holds on.
-		var drained: Dictionary = DictRead.as_dict(event["payload"])
-		return _present_reactions(
-			DictRead.as_array(drained.get("reactions", [])), slot,
-			DictRead.as_int(event["x"]), DictRead.as_int(event["y"]))
+		"mine":
+			# The mine under the stop cell, or under the landing: `aExecuteBomb`
+			# runs inside `aExecuteMove` (`0x0046EDAF`) and `aExecuteWarp`
+			# (`0x0046F109`) after the last step has been drawn, and the walk
+			# before it is a separate event the picture has finished with.
+			return _present_blast(slot, at_x, at_y,
+				DictRead.as_dict(payload.get("blast", {})))
+		"teleport":
+			# `0x0046EE03` is inside `aExecuteMove`, so the stream plays as
+			# part of the move (docs/97 section 41.2); the walk's own events
+			# name the entry and the exit.
+			var events: Array[Dictionary] = []
+			for entry: Variant in DictRead.as_array(payload.get("events", [])):
+				events.append(DictRead.as_dict(entry))
+			return float(_present_teleport(slot, events)) \
+				/ SequenceQueue.FRAMES_PER_SECOND
+		"warp":
+			# docs/42 section 7.1: the jump, with the player's own trail and
+			# waves or one of three screams for the computer's. The event's
+			# cells are the routine's own arguments; the mine under the landing
+			# and the `MoveUnit` hook are the events behind this one.
+			var frames: int = _present_jump(slot, Vector2i(at_x, at_y),
+				Vector2i(to_x, to_y), _is_own(slot))
+			return float(frames) / SequenceQueue.FRAMES_PER_SECOND
+		"fire":
+			# **The weapon comes from the event, not from the mirror.** A
+			# bayonet swap or a jam changes the record before the picture gets
+			# to it, and an alien killed by reaction fire after its own shot
+			# has no view left by the end of the turn. `World.submit_attack`
+			# and `AIFire` both write the weapon into the note as it was when
+			# the trigger was pulled (docs/97 section 24).
+			return _present_attack(slot, at_x, at_y, to_x, to_y,
+				DictRead.as_string(event["note"]).to_int(),
+				AttackResult.from_dict(payload))
+		"reaction":
+			# One event per shot of the drain (docs/100 section 3): the
+			# event's own cell is the reactor's, its target the mover's, and
+			# the mover's slot rides in the payload for the camera. A shot
+			# that emptied the magazine or hit the heat cap plays the jam
+			# orbit after it (docs/42 section 7.4).
+			var seconds: float = _present_attack(slot, at_x, at_y, to_x, to_y,
+				DictRead.as_string(event["note"]).to_int(),
+				AttackResult.from_dict(DictRead.as_dict(payload.get("attack", {}))),
+				true, DictRead.as_int(payload.get("mover", MapState.NO_UNIT)))
+			if DictRead.as_bool(payload.get("jammed", false)):
+				_present_jam(slot)
+			return seconds
+		"parabomb":
+			# `aAI_SpecialPlayerControl` `0x0040B2D0` is the fuse and nothing
+			# else: it calls `aExecuteBomb` `0x004702C0` and
+			# `aRemoveUnitElement` `0x004779C0`, and no sound routine at all.
+			# So the computer's para bomb is **one blast on its own cell**,
+			# shown by the presenter the walk's mine and the jump's landing
+			# already use, with `Combat.BOMB_WEAPON`'s own cues. The payload
+			# *is* the blast -- `AISpecialPlayer` writes `AttackResult.to_dict()`
+			# straight into it -- and the blast's death stage is what takes
+			# its dead off the screen.
+			return _present_blast(slot, at_x, at_y, payload)
+		"door":
+			# The computer's opener passes real tiles too (docs/42 section 8):
+			# the flight from its head to the panel, when the picture can
+			# queue; the sound alone when it cannot.
+			var cues: Array[Dictionary] = _events.for_event_kind("open_door") \
+				if _events != null else ([] as Array[Dictionary])
+			if _sequences != null and world != null:
+				_queue_setpiece({"name": "open_door", "values": [to_x, to_y]},
+					SetpieceDriver.DOOR_FRAMES, cues, slot)
+				return float(SetpieceDriver.DOOR_FRAMES) \
+					/ SequenceQueue.FRAMES_PER_SECOND
+			if _audio != null and not cues.is_empty():
+				var _door: PackedInt32Array = _audio.play_cues(cues, "ai")
+			return 0.0
+		"fire_heat_blocked":
+			# The computer's weapon at its heat cap: the jam's wave and no
+			# picture (docs/23 section 6).
+			if _audio != null and _events != null:
+				var _jam: PackedInt32Array = _audio.play_cues(
+					_events.for_event_kind("reaction_jam"), "ai")
+			return 0.0
+		"script":
+			# Every LCL run is a boundary (docs/42 section 10): a `MoveUnit`
+			# hook that dropped a footbridge, the turn's own `NEXT TURN` and
+			# `NEXT PLAYER`, the tube a mission opens. The set pieces it fired
+			# go on the queue and the event stays on screen for their length.
+			var _shown_script: int = _present_script(payload)
+			return _script_seconds(payload)
+		"use":
+			# docs/42 section 8: the door's flight from the user's head, the
+			# lever's handle, the supply box's lid, the push's slide. The
+			# payload is the use's own result and the target is the event's.
+			return _present_use(slot, payload, Vector2i(to_x, to_y))
+		"heal":
+			# Presented by the command that submitted it: the heal orbit is
+			# already on the queue, and the picture's own `busy` holds the
+			# event until it has played.
+			return 0.0
 	return 0.0
+
+
+## Whether the unit is one of the player's own, as the mirror has it: the
+## camera modes and the jump's cues tell the two apart (docs/42 sections 3.2
+## and 7.1).
+func _is_own(slot: int) -> bool:
+	var view: Dictionary = shown().unit_view(slot)
+	return not view.is_empty() \
+		and DictRead.as_int(view["player"]) != UnitState.PLAYER_ALIEN
 
 
 ## Walk a body along the cells a move actually entered.
 ##
 ## The duration is [constant WALK_SECONDS_PER_STEP] a step, so a long walk
-## takes longer than a short one. It is presentation: the world has already
+## takes longer than a short one. It is presentation: the truth has already
 ## moved the unit, and a walk that were interrupted would leave nothing behind.
 ##
 ## Returns that duration, so the computer's playback can wait for it.
@@ -2841,7 +2800,7 @@ func _walk_body(slot: int, route: PackedInt32Array, steps: int,
 	# *period* is a global the call writes, so asking for it here -- once, at
 	# the start of the walk, in the order the walks happen -- is what makes the
 	# Squeether's missing period behave the way the original's does.
-	_units.start_walk(slot, route, world.resource.width, seconds,
+	_units.start_walk(slot, route, shown().resource.width, seconds,
 		_footstep_period(slot), delay)
 	return seconds
 
@@ -2853,10 +2812,10 @@ func _camera_before_walk(slot: int, from_x: int, from_y: int, to_x: int,
 		to_y: int, mode: CameraDirector.WalkMode) -> float:
 	if _director == null or _units == null:
 		return 0.0
-	var view: Dictionary = world.unit_view(slot)
+	var view: Dictionary = shown().unit_view(slot)
 	if view.is_empty():
 		return 0.0
-	var delay: float = _director.before_walk(world, view, from_x, from_y, to_x,
+	var delay: float = _director.before_walk(shown(), view, from_x, from_y, to_x,
 		to_y, mode)
 	if mode == CameraDirector.WalkMode.NONE:
 		return delay
@@ -2880,17 +2839,17 @@ func _follow_walks() -> void:
 			if _director.rides(mode):
 				_units.reveal(slot)
 			continue
-		var view: Dictionary = world.unit_view(slot)
+		var view: Dictionary = shown().unit_view(slot)
 		var height: int = 0
 		if not view.is_empty():
-			height = world.unit_types().body_height_world(
+			height = shown().unit_types().body_height_world(
 				DictRead.as_int(view["type_id"]))
 		var destination: int = _units.walk_destination(slot)
 		var there: Vector3i = Vector3i.ZERO
 		if destination >= 0:
-			there = CameraRig.cell_object(destination % world.resource.width,
-				destination / world.resource.width,
-				world.state.height_at(destination))
+			there = CameraRig.cell_object(destination % shown().resource.width,
+				destination / shown().resource.width,
+				shown().state.height_at(destination))
 		_director.track(_units.drawn_position(slot), height, mode, there)
 
 
@@ -2901,7 +2860,7 @@ func _follow_walks() -> void:
 func _footstep_period(slot: int) -> int:
 	if _events == null or world == null:
 		return 0
-	var view: Dictionary = world.unit_view(slot)
+	var view: Dictionary = shown().unit_view(slot)
 	if view.is_empty():
 		return 0
 	var cue: Dictionary = _events.footstep(DictRead.as_int(view["type_id"]))
@@ -2989,14 +2948,14 @@ func _refresh_status(extra: String = "") -> void:
 		# No mission, so there is no line to build -- but a message still has
 		# somewhere to go, which is what the shell needs when a slot refuses
 		# before any world exists.
-		if extra != "":
+		if extra != "" and _status != null:
 			_status.text = extra
 		return
 	var line: String = "%s (%d/%d)  %dx%d  %s/%s  %d units  scenery %d  hash %s" % [
 		world.resource.mission, _missions.find(_mission) + 1, _missions.size(),
 		world.resource.width, world.resource.height,
 		world.resource.world_set, world.resource.world_scene,
-		world.unit_slots().size(), _scenery.built_count(),
+		world.unit_slots().size(), scenery_count(),
 		world.canonical_hash_hex().substr(0, 12)]
 	# **The mission names are not listed.** A cache published with
 	# `--campaign-maps` carries 92 of them, and naming every one turned the
@@ -3009,21 +2968,23 @@ func _refresh_status(extra: String = "") -> void:
 	# pointer ([constant HudTables.EVENT_KEYS]).
 	if extra != "":
 		line += "\n" + extra
-	_status.text = line
+	if _status != null:
+		_status.text = line
 	if _hud != null:
 		var axes: Array[Vector2] = _radar_axes()
 		# The last argument is the same gate [method _check_mission_end]
 		# makes: while the replay or the picture is still running, what ended
 		# the mission has not been drawn yet, so the report panel waits.
-		_hud.refresh(world, _selected, Callable(self, "_event_available"),
+		_hud.refresh(shown(), _selected, Callable(self, "_event_available"),
 			Callable(self, "_command_available"), axes[0], axes[1], _bands,
-			false, _watching(world),
+			false, _watching(shown()),
 			_playback.is_running() or _picture_busy())
 		if _hud.progress_stepped():
 			_play_progress()
 		# **Inside the window, under the top band.** The developer line is a
 		# tool and not part of the plate, so it goes where the plate is not.
-		_status.position = Vector2(float(HudTables.WINDOW.position.x) + STATUS_GAP,
+		if _status != null:
+			_status.position = Vector2(float(HudTables.WINDOW.position.x) + STATUS_GAP,
 			_hud.bottom() + STATUS_GAP)
 
 
@@ -3055,15 +3016,15 @@ func _play_interface(action: String) -> void:
 func _speak(event: String, slot: int) -> void:
 	if _audio == null or _speech == null or world == null:
 		return
-	if slot < 0 or not world.has_unit(slot):
+	if slot < 0 or not shown().has_unit(slot):
 		return
 	# One voice at a time: `0x0047B6F2` kills the buffer **before** the next
 	# name is built, so a second marine cuts the first one off -- including
 	# when the name it then builds resolves to no shipped file at all, which
 	# is why this is in front of the line rather than behind it.
 	var _stopped: int = _audio.stop_tag(SPEECH_TAG)
-	var cue: Dictionary = _speech.line(event, world.unit_view(slot),
-		world.turn.current_player)
+	var cue: Dictionary = _speech.line(event, shown().unit_view(slot),
+		shown().turn.current_player)
 	if cue.is_empty():
 		return
 	var _slot: int = _audio.play_cue(cue, SPEECH_TAG)
@@ -3081,19 +3042,30 @@ func _play_progress() -> void:
 
 ## The watched side's turn, for the progress bar of docs/43 section 8: empty
 ## while the seat is the player's own, and `{"player", "acted", "live"}` while
-## the computer's turn is being replayed.
+## the computer's turn is being drawn.
 ##
-## The seat is the **replay's**, not the world's: the computer's turn runs
-## inside [method World.submit_end_turn] and hands over again by itself, so
-## `world.turn.current_player` is back on the marines before the first alien
-## is drawn moving.
-func _watching(world: World) -> Dictionary:
-	if world == null or _playback == null or not _playback.is_running():
+## The seat is the **mirror's**, not the truth's and not the playback's: the
+## computer's turn runs inside [method World.submit_end_turn] and hands over
+## again by itself, so `world.turn.current_player` is back on the marines
+## before the first alien is drawn moving -- and the player's own commands go
+## through the same playback, so "a playback is running" is not "the computer
+## holds the turn". The mirror holds 255 from the hand-over that opened the
+## turn until the one that closed it, which is exactly the watched span.
+func _watching(at: World) -> Dictionary:
+	if at == null or at.turn.current_player != TurnState.PLAYER_COMPUTER:
 		return {}
-	var player: int = _playback.player()
-	var counts: Vector2i = TurnProgress.tally(world, player,
-		_playback.played_slots(), _playback.pending_casualties())
+	var player: int = at.turn.previous_player
+	var counts: Vector2i = TurnProgress.tally(at, player)
 	return {"player": player, "acted": counts.x, "live": counts.y}
+
+
+## Whether the picture is drawing the computer's turn: the mirror's seat is
+## the computer's. The key that skips the turn, the note that says so and the
+## agent's `replay` all read this and not the playback, which a player's own
+## command runs through too.
+func _watching_the_computer() -> bool:
+	return world != null \
+		and shown().turn.current_player == TurnState.PLAYER_COMPUTER
 
 
 ## One key press of the pan, as the pixels of middle-button drag it stands
@@ -3157,11 +3129,14 @@ func _process(delta: float) -> void:
 	_tick_backdrop_swing()
 	if _playback.is_running():
 		var _going: bool = _playback.advance(delta, _picture_busy())
+	# Whatever landed on the mirror since the last frame is drawn once, before
+	# the bodies move: a delta a presenter landed mid-sequence has already
+	# been flushed by it, and this is for the ones the playback landed.
+	_flush_picture()
 	if _units != null:
-		_units.animate(delta, world, _rig != null
+		_units.animate(delta, shown(), _rig != null
 			and _rig.eye().z >= UnitsView.FREEZE_HEIGHT)
 		_play_footsteps()
-		var _waiting: int = _drain_pending_reactions()
 	# The camera after the bodies: tracking reads where a walker is drawn
 	# this frame, and the flight steps at the same 20 fps the bodies use.
 	_follow_walks()
@@ -3177,7 +3152,10 @@ func _process(delta: float) -> void:
 		# state before any of this was queued.
 		var still: bool = _sequences.advance(delta)
 		if not still:
-			_redraw_terrain_now()
+			# The event the queue was drawing is over: its delta lands if it
+			# has not already, and the picture held for its length -- the
+			# terrain, the bodies -- is redrawn from the mirror at once.
+			_land_current_delta()
 			# Whoever the queue was delivering has arrived.
 			if _units != null:
 				var _shown: int = _units.reveal_all()
@@ -3269,8 +3247,8 @@ func _auto_end_turn_wanted() -> bool:
 func _has_live_unit(player: int) -> bool:
 	if world == null:
 		return false
-	for slot: int in world.unit_slots():
-		var view: Dictionary = world.unit_view(slot)
+	for slot: int in shown().unit_slots():
+		var view: Dictionary = shown().unit_view(slot)
 		if view.is_empty() or DictRead.as_int(view["player"]) != player:
 			continue
 		if DictRead.as_int(view["hp"]) > 0:
@@ -3343,142 +3321,68 @@ func _draw_effects() -> void:
 		var _shown: int = _models.rebuild(_fx)
 
 
-## One event of the computer's turn: lead the camera to it and say what it was.
+## One event of a playback, the computer's turn or the player's own command:
+## bring the picture level, present it, and say what it was when the player
+## is watching rather than commanding.
 ##
 ## An empty dictionary means the playback is over. Nothing here touches the
-## world: it has held the post-turn state since [method World.submit_end_turn]
-## returned, which is what makes skipping free.
+## world: it has held the post-command state since `core` returned, which is
+## what makes skipping free.
 ##
 ## Returns how long this event should stay on screen; see
-## [method AIPlayback._step].
+## [method EventPlayback._step].
 func _on_ai_step(event: Dictionary) -> float:
 	if event.is_empty():
 		_ai_note = ""
-		# The turn is the player's again. **The engine moves no camera here**
-		# (docs/42 section 2.6), so neither does this unless the compatibility
-		# flag asks for the remake's own return -- see [method
-		# focus_on_friendly] for what that was for.
-		if world != null and world.compat_flags.has(COMPAT_CAMERA_RETURNS):
-			var _back: int = focus_on_friendly(_rig, world)
-		# The replay is over, so nobody is held at an old cell any more. It is
-		# cleared **before** the rebuild `_after_command` does, which is what
-		# puts everyone back; a skipped replay comes through here too.
-		if _units != null:
-			_units.hold_at({} as Dictionary[int, Vector2i])
-			_units.hold_visibility({} as Dictionary[int, int])
-		_seen_before_turn.clear()
-		_views_before_turn.clear()
-		_begin_command()
-		_after_command("")
-		# The turn is the player's again, so somebody of theirs is selected
-		# again -- `0x004721F0`'s own rule, and the reason the original never
-		# hands a turn back with an empty panel.
-		_resume_selection()
+		var was_turn: bool = _playing_turn
+		_playing_turn = false
+		# **The mirror must be the truth by now.** Every delta of the command
+		# has landed; if one did not carry something, this is where it is
+		# caught and put right rather than drawn wrong for the rest of the
+		# mission.
+		var _level: bool = _check_mirror()
+		_fog.viewer = _watching_seat()
+		if was_turn:
+			# The turn is the player's again. **The engine moves no camera
+			# here** (docs/42 section 2.6), so neither does this unless the
+			# compatibility flag asks for the remake's own return -- see
+			# [method focus_on_friendly] for what that was for.
+			if world != null and world.compat_flags.has(COMPAT_CAMERA_RETURNS):
+				var _back: int = focus_on_friendly(_rig, world)
+		_after_command(_command_note)
+		_command_note = ""
+		if was_turn:
+			# The turn is the player's again, so somebody of theirs is
+			# selected again -- `0x004721F0`'s own rule, and the reason the
+			# original never hands a turn back with an empty panel.
+			_resume_selection()
 		return 0.0
 	var kind: String = DictRead.as_string(event["kind"])
-	var to_x: int = DictRead.as_int(event["tx"])
-	var to_y: int = DictRead.as_int(event["ty"])
-	var at_x: int = DictRead.as_int(event["x"])
-	var at_y: int = DictRead.as_int(event["y"])
-	if kind == "move" or kind == "warp":
-		at_x = to_x
-		at_y = to_y
+	# **The picture first.** The mirror stands where this event begins --
+	# every delta before it has landed, this one has not -- and the bodies
+	# are rebuilt from it before the presenter reads it: the reveals of a
+	# walk's opening passes are drawn in the frame the walk starts, and the
+	# casualties this event is about to make are still standing.
+	_flush_picture()
 	# **No camera per event here.** The pivot used to be put on every
 	# event's cell, which flew the player to hidden aliens the fog was
-	# keeping from them; the camera now belongs to the presentation of each
-	# event (docs/42 sections 3.2 and 4.3), which knows what may be seen --
-	# the jump's included, since docs/97 section 31 ([JumpSequence]).
-	_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
-		_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
-		DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
-	# **Before the rebuild**, for the same reason the player's shot does it:
-	# this event's own casualties must still be on screen while the event is
-	# presented, and the rebuild below is what takes them away.
-	var payload: Dictionary = DictRead.as_dict(event["payload"])
-	# **Every shape at once**, through the one extractor the whole replay was
-	# marked with in [method end_turn]: this is the re-mark that survives a
-	# rebuild, and a payload kind it did not know about was a body that never
-	# came back. The `parabomb` was exactly that -- its payload *is* the
-	# blast, and the branch that used to stand here had no arm for it.
-	var _held: int = _mark_dying_payload(payload)
-	# Where every unit whose move is still to come is standing. The world has
-	# held the end of the turn since `submit_end_turn` returned, so without
-	# this a unit stood at its destination until its own event came round and
-	# only then walked there.
-	_units.hold_at(_playback.pending_starts())
-	# The event on screen keeps the pre-turn answer -- it is walking now, and
-	# what it walks into is not known until it arrives. Unless it revealed
-	# itself before it set off, which is `aExecuteMove`'s mode 3 and is
-	# exactly the case a player reads as a bug: an alien that steps out in
-	# plain sight and stays a contact beam until the turn is over.
-	_units.hold_visibility(_visibility_hold(DictRead.as_int(event["slot"]),
-		_event_reveals(kind, DictRead.as_int(event["slot"]), payload)))
-	_units.build(world, _geometry, _textures)
-	# **After** the rebuild, not before. `UnitsView.build` frees every unit
-	# node and clears the bodies, the states and the walks, so an event handed
-	# to the bodies first started a walk on nodes that were freed microseconds
-	# later: the computer's units teleported and `F` never played. The *next*
-	# event's rebuild ending this one is the design; this event's rebuild
-	# ending it is the bug.
-	# docs/42 section 10: the terrain a computer event changed is redrawn
-	# **in that event's frame**, not with the rest at the end of the replay.
-	# `core` applied it when the event happened and the cells ride on the
-	# event (docs/97 section 35); a door the computer walked through used to
-	# open only once the whole turn had been shown.
-	#
-	# **A set piece owns the cells it animates**, which is the guard
-	# [method _redraw_terrain] makes for the same reason: painting the door
-	# to its final height here and then queueing its ten frames would snap
-	# it open, snap it shut and animate it open again.
-	# The computer's event names the door `"door"`; the set piece it queues
-	# is `"open_door"`, so the test is on what [method _present_ai_event]
-	# will actually animate.
-	var as_setpiece: String = AI_SETPIECE_KINDS.get(kind, kind)
-	if not SetpieceDriver.is_animated(as_setpiece):
-		var _cells: int = _redraw_event_cells(payload)
+	# keeping from them; the camera belongs to the presentation of each
+	# event (docs/42 sections 3.2 and 4.3), which knows what may be seen.
 	var hold: float = _play_event_body(event, kind)
-	_present_ai_event(event, kind)
-	_refresh_status(_ai_note)
+	if _watching_the_computer():
+		# The watcher's line, and the key that ends the watching: only while
+		# the computer holds the turn. A player's own command says nothing
+		# until it is over, when [method _after_command] writes its note.
+		_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
+			_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
+			DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
+		_refresh_status(_ai_note)
+	else:
+		# The interface goes dark for the length of the command -- the
+		# original's `aPlayFightAnimation` takes the input with it -- and
+		# comes back with the note when the playback drains.
+		_refresh_status(_status_note)
 	return hold
-
-
-## The computer's door and para bomb, heard.
-##
-## **The shot is not here.** It was a partial copy of the player's own
-## presentation -- no pain scream, and the weapon read out of the post-turn
-## world -- and it returned nothing, so the playback could not wait for it.
-## [method _play_event_body] owns every attack now; what is left here is the
-## sound-only half of the replay.
-##
-## The player watching a replay should hear what they would have heard live;
-## an effect that only fired on the player's own turn would be worse than
-## none at all.
-func _present_ai_event(event: Dictionary, kind: String) -> void:
-	if _audio == null or _events == null:
-		return
-	match kind:
-		"door":
-			# The AI's opener passes real tiles too (docs/42 section 8): the
-			# flight from its head to the panel, when the picture can queue.
-			if _sequences != null and world != null:
-				_queue_setpiece({"name": "open_door",
-					"values": [DictRead.as_int(event["tx"]), DictRead.as_int(event["ty"])]},
-					SetpieceDriver.DOOR_FRAMES, _events.for_event_kind("open_door"),
-					DictRead.as_int(event["slot"]))
-			else:
-				var _door: PackedInt32Array = _audio.play_cues(
-					_events.for_event_kind("open_door"), "ai")
-		# **No `parabomb` arm.** It played the fly-past loop and one crump
-		# together, on the reading that the computer's fuse ran the script
-		# command's two routines ([constant AudioEvents.EVENT_PHASES]).
-		# It does not: `0x0040B2D0` calls `aExecuteBomb` and
-		# `aRemoveUnitElement` and nothing else, and the fly-past belongs to
-		# `ParaBombs` `0x00470790`, which only a script fires. The blast --
-		# sound, picture and death stage -- is [method _play_event_body]'s.
-		"fire_heat_blocked":
-			var _jam: PackedInt32Array = _audio.play_cues(
-				_events.for_event_kind("reaction_jam"), "ai")
-
 
 func _unhandled_input(event: InputEvent) -> void:
 	# `ESC` goes **before** the screen guard, and that ordering is the whole
@@ -3511,10 +3415,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	# is what takes the message down (`0x0043F130`).
 	if _hud != null and _hud.info_visible():
 		return
-	# The computer's turn holds the input while it is being shown. One key
-	# ends the showing; the world does not change either way.
+	# A playback holds the input while it is being shown -- the original's
+	# `aPlay*` routines block. During the computer's turn one key ends the
+	# showing; the world does not change either way. A player's own command
+	# is not skippable: the engine's blocking loops take no key, and a walk
+	# the player cut short would leave nothing behind but a snapped body.
 	if _playback.is_running():
-		if event is InputEventKey and event.is_pressed():
+		if event is InputEventKey and event.is_pressed() \
+				and _watching_the_computer():
 			if _sequences != null:
 				_sequences.skip()
 			if _texts != null:
@@ -3920,13 +3828,13 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 	# The **fresh** pass, the one [method UnitsView.build] draws from: the
 	# stored `+0x4F` is as the last hand-over left it, and a unit walked into
 	# view has to be clickable in the frame it appears in.
-	var seen: Dictionary[int, int] = world.display_visibility()
-	for slot: int in world.unit_slots():
-		var view: Dictionary = world.unit_view(slot)
+	var seen: Dictionary[int, int] = shown().display_visibility()
+	for slot: int in shown().unit_slots():
+		var view: Dictionary = shown().unit_view(slot)
 		if seen.has(slot):
 			view["visibility"] = seen[slot]
 		# **Only what is on screen may be clicked.** The engine picks over
-		# drawn *objects*, and it has fewer of them than the world has
+		# drawn *objects*, and it has fewer of them than the picture has
 		# records: `aKillUnit` `0x00472920` deletes the object of whatever it
 		# kills, and `aBuildVisibleMap` never gives a hidden unit one. Walking
 		# every record instead cost two different clicks:
@@ -3942,12 +3850,13 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 		# screen and stays pickable for as long as it is drawn.
 		if not Fog.is_drawn(view):
 			continue
-		if DictRead.as_int(view["hp"]) == 0 \
-				and (_units == null or not _units.is_dying(slot)):
+		# The mirror keeps a casualty until the delta that killed it lands, so
+		# a dead record here is one the picture has finished with.
+		if DictRead.as_int(view["hp"]) == 0:
 			continue
 		var x: int = DictRead.as_int(view["x"])
 		var y: int = DictRead.as_int(view["y"])
-		var cell: Dictionary = world.cell_view(x, y)
+		var cell: Dictionary = shown().cell_view(x, y)
 		var centre: Vector3 = WorldSpace.cell_centre(x, y,
 			DictRead.as_int(cell["height"]))
 		var t: float = (centre.y - origin.y) / direction.y
@@ -3959,7 +3868,7 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 			best_distance = distance
 			best_slot = slot
 	if best_slot >= 0:
-		var view: Dictionary = world.unit_view(best_slot)
+		var view: Dictionary = shown().unit_view(best_slot)
 		# **Only the current player's own units can be selected.**
 		# `0x00477DF0(player)` -- which `0x00453CF0`, the game's own "cycle
 		# the selected friendly unit", walks -- accepts a slot on exactly
@@ -3980,7 +3889,7 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 		# soldier's action points, and drain the reaction queue, shooting at
 		# the body of the soldier who died during the alien turn. So the attack
 		# branch asks the question it means: is this somebody else's live unit?
-		if not world.may_command(best_slot):
+		if not shown().may_command(best_slot):
 			if _selected >= 0 and is_a_target(view, turn_player()):
 				attack_cell(DictRead.as_int(view["x"]),
 					DictRead.as_int(view["y"]))
@@ -3995,7 +3904,7 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 			return
 		# **A unit with no movement points cannot be selected**
 		# (`0x00471CB6`): the click does nothing at all.
-		if not world.may_select(best_slot):
+		if not shown().may_select(best_slot):
 			_refresh_status(_strings.text("hud.no_points"))
 			return
 		var _result: MoveMapResult = select_unit(best_slot, pass_friendlies)
@@ -4056,30 +3965,22 @@ func _complete_ring(record: int) -> void:
 	_hud.ring.take_down()
 	if facing < 0 or slot < 0 or not world.has_unit(slot):
 		return
+	# **The facing goes with the command.** The move and the warp write it
+	# after their own routine and before the playback takes the events
+	# ([method _rotate_after]), so the body turns when the walk -- and the
+	# return fire behind it -- is over, as the object does after the
+	# original's blocking walk; a turn in place is a quiet command of its
+	# own. A rotation submitted *after* `move_selected` returned used to
+	# land on the journal behind a playback already running, which moved the
+	# truth under the picture and had the mirror resynchronised on every
+	# walk with a ring.
 	match mode:
 		HudTables.RING_MODE_MOVE:
-			var _moved: MoveResult = move_selected(cell.x, cell.y)
+			var _moved: MoveResult = move_selected(cell.x, cell.y, facing)
 		HudTables.RING_MODE_WARP:
-			var _jumped: WarpResult = warp_selected(cell.x, cell.y)
-	if not world.has_unit(slot):
-		return
-	var _turned: bool = world.submit_rotate(RotateCommand.create(slot, facing))
-	# The body turns when its walk is over, as the object does after the
-	# original's blocking walk; a turn in place turns it now.
-	if _units != null and _units.is_walking():
-		_pending_turn = {"slot": slot, "facing": facing}
-	elif _units != null:
-		var _faced: bool = _units.turn_to(slot, HudTables.FACING_ANGLES[facing])
-	# **No second `_after_command` here.** The move and the warp have run it
-	# already, from inside `move_selected` and `warp_selected`, and it
-	# rebuilds `UnitsView` -- which frees every body and clears the walk this
-	# ring has just started, and overwrites the reaction count with nothing.
-	# The turn that follows a move is free (`docs/43` section 4.3: no point
-	# charged and no visibility rebuilt) and no band reads the shooter's
-	# facing (`core/hit_chance.gd` never looks at one), so the only thing left
-	# to do is to let the interface re-read the world.
-	if mode == HudTables.RING_MODE_TURN and _selected == slot:
-		_refresh_status("")
+			var _jumped: WarpResult = warp_selected(cell.x, cell.y, facing)
+		_:
+			rotate_selected(facing)
 
 
 ## Whether a picked unit is something to shoot at rather than something to
@@ -4154,72 +4055,36 @@ static func cell_under(camera: Camera3D, at: World, screen: Vector2,
 
 ## Walks the selected unit. Public for the same reason [method select_unit] is:
 ## a demo run drives the path a click drives.
-func move_selected(x: int, y: int) -> MoveResult:
+func move_selected(x: int, y: int, facing: int = Combat.FACING_NONE) -> MoveResult:
 	var slot: int = _selected
 	_begin_command()
 	var moved: MoveResult = world.submit_move(
 		MoveCommand.create(slot, x, y))
+	# The ring's facing is the walk's own last write (`aChangeUnitViewDirection`
+	# after the blocking walk, docs/43 section 4.3): a quiet event behind the
+	# walk and its return fire, so the body turns when the mirror does --
+	# **before** the playback takes the events, or the rotation would move
+	# the truth under a running picture and the mirror would fall behind it
+	# on every walk.
+	_rotate_after(slot, facing)
 	# **The player's own walk marks nothing.** `aWalkMoveMap` `0x004305E0` is
 	# what writes state 100 along a path, and it is reached from one place:
 	# `0x00472D40`, an arm of the command dispatcher `0x0047DE90` that only
 	# `0x0047C2C0` -- the redraw callback `aAISystemControl` is handed
 	# (docs/23 section 2) -- calls. So the marks are how the *computer's*
 	# steps are shown, and the player walks unmarked (docs/43 section 3.1).
-	# A move that drew return fire can lose the mover to it; the same order
-	# applies, and the walk still plays because the body is still there.
-	var _held: int = _mark_dying_by(moved.reactions)
-	var _blasted: int = _mark_dying_by_mine(moved.events)
-	var _fallen: int = _mark_dying_by_script(moved.script_result)
-	_after_command(moved.reason if not moved.ok else "%d %s" % [
-		moved.reactions.size(), _strings.text("hud.reactions")])
-	# `MoveResult.route` is the walk's own -- source first, truncated where it
-	# actually stopped rather than where it was planned to. It is not in
-	# `to_dict()` and does not need to be: the player's move hands `game` the
-	# object itself.
-	# docs/42 section 3.2, mode 1: the target flies to the walker before the
-	# first step and follows it after; the walk waits for the flight.
-	var delay: float = 0.0
-	if moved.ok and moved.steps > 0 and moved.route.size() >= 2:
-		var width: int = world.resource.width
-		delay = _camera_before_walk(slot, moved.route[0] % width,
-			moved.route[0] / width, x, y, CameraDirector.WalkMode.OWN)
-	var walked_for: float = _walk_body(slot, moved.route, moved.steps, delay)
-	# The walk's epilogue waits for the walk, as the engine's blocking loop
-	# makes it: `_hold_for_walk` is the stage that serialises the two clocks.
-	if _walk_has_epilogue(moved.events) or _script_has_events(moved.script_result):
-		var _held_queue: bool = _hold_for_walk(delay + walked_for)
-	# **The blast goes on the queue before the reactions**, because the engine
-	# draws it before it has one: `aExecuteBomb` `0x004702C0` ends by calling
-	# `aPlayFightAnimation` `0x0040BD70` itself (`0x004705F5`), and the walk
-	# reaches `aExecuteBomb` from **inside** `aExecuteMove` (`0x0046EDAF`),
-	# while `aExecuteFight` -- which is what drains the reactions -- is the
-	# caller's and runs only after `aExecuteMove` has returned
-	# (docs/23 section 5.3). So the explosion is over before the first
-	# reaction shot is fired.
-	var _blast: float = _present_mine(slot, moved.events)
-	# `0x0046EE03` runs inside `aExecuteMove`, before the caller's
-	# `aExecuteFight`, so the teleport is over before the first reaction shot
-	# -- the same order the mine's blast keeps above.
-	_present_teleport(slot, moved.events)
-	# **The mission script's own half of the move** (docs/20 section 7):
-	# `aRunLCL` `0x0046EEFD` is the last thing `aExecuteMove` does, behind the
-	# mover's own alive gate, and a `MoveUnit` hook is where the corpus's
-	# two footbridge maps drop theirs -- `_C_106` six times and `_C_107`
-	# once, seven of the seven `FootBridge` calls shipped. `core` has run it and handed the
-	# outcome back on [member MoveResult.script_result] since the second
-	# slice; **`game` read that field nowhere until 2026-09-07**, so a bridge
-	# a walk brought down killed its riders, turned its nine cells into deep
-	# holes and drew none of it -- no fall, no tumble, no `aDeleteLand`, and
-	# a save taken afterwards carrying an empty `removed` row over cells that
-	# are already gone. It goes here, after the hold above, because the
-	# original's walk is a blocking loop and its set piece plays when the
-	# mover has arrived.
-	var _script_shown: int = _present_script(moved.script_result)
-	# **After** the walk starts and after `_after_command`, which clears the
-	# queue: `World.submit_move` resolves the whole move's reactions in one
-	# call at its end, so the end of the walk is where the picture reaches
-	# the state `core` already returned.
-	_queue_reactions(moved.reactions, slot, x, y)
+	#
+	# **The picture is the events, and the events are in order.** The routine
+	# marked a boundary where the original's blocking loop would have drawn a
+	# frame: the two opening visibility passes, the walk, the mine under the
+	# stop cell, the teleporter, the `MoveUnit` hook, then one event per
+	# reaction shot. The playback presents each in turn and lands its state on
+	# the mirror when the animation reaches it -- which is what puts the blast
+	# after the last step and the return fire after the blast, with no stage
+	# of the remake's own to serialise them (docs/100 section 3).
+	_command_note = moved.reason if not moved.ok else "%d %s" % [
+		moved.reactions.size(), _strings.text("hud.reactions")]
+	_play_command()
 	return moved
 
 
@@ -4235,7 +4100,11 @@ func move_selected(x: int, y: int) -> MoveResult:
 ## The killing teleporter `0x00416840` is the `teleporter_blocked` arm: the
 ## traveller is already off the map, so there is nothing to hide and nothing
 ## to move, and only the stream is drawn.
-func _present_teleport(slot: int, events: Array[Dictionary]) -> void:
+##
+## Answers the frames it queued, and zero for a walk that reached no
+## teleporter, so the `teleport` event holds for exactly the stream.
+func _present_teleport(slot: int, events: Array[Dictionary]) -> int:
+	var frames: int = 0
 	for entry: Dictionary in events:
 		var kind: String = DictRead.as_string(entry.get("kind", ""))
 		if kind != "teleported" and kind != "teleporter_blocked":
@@ -4257,6 +4126,8 @@ func _present_teleport(slot: int, events: Array[Dictionary]) -> void:
 			"values": [from.x, from.y, to.x, to.y]},
 			SetpieceDriver.TELEPORTER_FRAMES, cues,
 			slot if kind == "teleported" else MapState.NO_UNIT)
+		frames += SetpieceDriver.TELEPORTER_FRAMES
+	return frames
 
 
 ## The cell the walk stopped on, off the `teleporter` event the walk records.
@@ -4266,42 +4137,6 @@ static func _teleport_entry(events: Array[Dictionary]) -> Vector2i:
 			return Vector2i(DictRead.as_int(entry["x"]),
 				DictRead.as_int(entry["y"]))
 	return Vector2i(-1, -1)
-
-
-
-## The stage that puts the walk and the walk's own epilogue back in order.
-##
-## `aExecuteMove`'s step loop **blocks**: the mine's `aExecuteBomb`
-## (`0x0046EDAF`) and the teleporter's `aExecuteTeleporter` (`0x0046EE03`) run
-## after the last step has been drawn, not beside it. In the remake the body is
-## walked by [UnitsView] on its own clock and the set pieces by
-## [SequenceQueue], and the two clocks are independent by design (docs/92
-## section 2) -- so without this the stream and the blast start while the body
-## is still on its way to the cell they belong to.
-##
-## The bound is the walk's **own** length in frames and not a number of the
-## remake's; [method UnitsView.is_walking] is what actually ends the stage, and
-## it is true from [method UnitsView.start_walk] onwards, the camera flight's
-## delay included. Returns whether a stage was queued.
-func _hold_for_walk(seconds: float) -> bool:
-	if _sequences == null or _units == null or not _units.is_walking():
-		return false
-	var frames: int = ceili(seconds * SequenceQueue.FRAMES_PER_SECOND)
-	if frames <= 0:
-		return false
-	_sequences.enqueue_until(STAGE_AFTER_WALK, frames,
-		func() -> bool: return not _units.is_walking())
-	return true
-
-
-## Whether a walk's own events carry anything [method _present_mine] or
-## [method _present_teleport] will put on the queue -- the test that keeps a
-## plain walk from holding the queue for nothing.
-## Whether a `MoveUnit` hook left anything to show. The walk waits for it for
-## the reason the mine and the teleporter do: the original's loop is blocking,
-## so the script's set piece begins where the mover stops.
-static func _script_has_events(outcome: Dictionary) -> bool:
-	return not DictRead.as_array(outcome.get("events", [])).is_empty()
 
 
 ## How long a hook's animated set pieces keep the picture, at the queue's
@@ -4316,38 +4151,14 @@ static func _script_seconds(outcome: Dictionary) -> float:
 	return float(frames) / SequenceQueue.FRAMES_PER_SECOND
 
 
-static func _walk_has_epilogue(events: Array) -> bool:
-	for entry: Variant in events:
-		var kind: String = DictRead.as_string(
-			DictRead.as_dict(entry).get("kind", ""))
-		if kind == "mine_detonated" or kind == "teleported" \
-				or kind == "teleporter_blocked":
-			return true
-	return false
-
-## The blast a mine under a walker left, drawn as the shot it is.
-##
-## `aExecuteBomb` calls `aPlayFightAnimation(x, y, x, y, ...)` with source and
-## target on the bomb's own cell, and the routine's `sx == tx && sy == ty` arm
-## reads **no shooter** and takes weapon 36 or 37 (docs/42 section 4). This
-## passes the mover as the slot because the stages need a body to hold the
-## camera on -- the mover is the unit standing on that cell -- and everything
-## else is the engine's own arguments.
-func _present_mine(slot: int, events: Array[Dictionary]) -> float:
-	var longest: float = 0.0
-	for entry: Dictionary in events:
-		if DictRead.as_string(entry.get("kind", "")) != "mine_detonated":
-			continue
-		longest = maxf(longest, _present_blast(slot,
-			DictRead.as_int(entry["x"]), DictRead.as_int(entry["y"]),
-			DictRead.as_dict(entry.get("blast", {}))))
-	return longest
-
-
-## One `aExecuteBomb` blast on the cell it went off on. The walk reaches this
-## through an event; the jump reaches it through [member WarpResult.blast],
-## because `aExecuteWarp` detonates in line (`0x0046F109`) and leaves no
-## event behind.
+## One `aExecuteBomb` blast on the cell it went off on, drawn as the shot it
+## is: `aExecuteBomb` calls `aPlayFightAnimation(x, y, x, y, ...)` with source
+## and target on the bomb's own cell, and the routine's `sx == tx && sy == ty`
+## arm reads **no shooter** and takes weapon 36 or 37 (docs/42 section 4).
+## The slot is the unit standing on that cell -- the walker, the jumper, the
+## para bomb's own record -- because the stages need a body to hold the
+## camera on. The walk and the jump both reach it through a `mine` event
+## (`0x0046EDAF`, `0x0046F109`), the computer's fuse through `parabomb`.
 func _present_blast(slot: int, x: int, y: int, blast: Dictionary) -> float:
 	if blast.is_empty():
 		return 0.0
@@ -4362,127 +4173,43 @@ func attack_cell(x: int, y: int) -> AttackResult:
 		AttackCommand.create(slot, x, y))
 	# `0x0046C15E`, past `aAttackUnit`: the shooter says something about it.
 	_speak("attack", slot)
-	# **Before `_after_command`**, which rebuilds and would otherwise drop the
-	# body this shot is about to be drawn hitting: the casualties are marked,
-	# and the shot is queued so the rebuild sees a running sequence and keeps
-	# the marks. The stages themselves run on later frames, after the rebuild.
-	var _held: int = _mark_dying(shot.outcomes)
-	var _held_back: int = _mark_dying_by(shot.reactions)
 	# `0x0047181C`: after the shot the shooter turns towards its best target
 	# band -- `aGetDirectionTo(x, y, 0)`, then `aChangeUnitViewDirection`.
 	if shot.fired and world.has_unit(slot):
 		var facing: int = world.facing_to_target(slot)
 		if facing != Combat.FACING_NONE:
-			var _turned: bool = world.submit_rotate(RotateCommand.create(slot, facing))
-	var view: Dictionary = world.unit_view(slot)
-	if not view.is_empty():
-		var _hold: float = _present_attack(slot, DictRead.as_int(view["x"]),
-			DictRead.as_int(view["y"]), x, y,
-			DictRead.as_int(view["weapon"]), shot)
-	# The reaction count belongs on screen for the same reason
-	# [method move_selected] puts it there: a shot that drew return fire is
-	# the player's business, and `World.submit_attack` has been filling
-	# `reactions` with nobody reading it.
-	_after_command(shot.reason if not shot.fired
+			var _turned: bool = world.submit_rotate(
+				RotateCommand.create(slot, facing))
+	# The `fire` event first, then one per reaction shot: the drain is the
+	# caller's and runs after `aAttackUnit` has played its own animation, so
+	# the return fire is drawn after the shot rather than beside it.
+	_command_note = shot.reason if not shot.fired \
 		else "%d, %d %s" % [shot.outcomes.size(), shot.reactions.size(),
-			_strings.text("hud.reactions")])
-	# The shooter's own cell is where the return fire is aimed, and it is
-	# queued rather than shown: the shot's own clip runs first.
-	_queue_reactions(shot.reactions, slot, DictRead.as_int(view.get("x", x)),
-		DictRead.as_int(view.get("y", y)))
+			_strings.text("hud.reactions")]
+	_play_command()
 	return shot
 
 
-## Keep every unit this attack killed on screen until its shot's death stage
-## hides it (docs/42 section 4.8).
+## Present a command whose events are already on the journal.
 ##
-## Called **before** the rebuild, because the rebuild is what drops them and
-## for the computer's replay it runs ahead of the event's own presentation.
-## Returns how many were marked, for a caller and a suite.
-func _mark_dying(outcomes: Array) -> int:
-	return _mark_dying_payload({"outcomes": outcomes})
-
-
-## The same for a whole event payload, whatever shape it carries its dead in
-## ([method AIPlayback.casualties_of]).
-func _mark_dying_payload(payload: Dictionary) -> int:
-	return _mark_dying_slots(AIPlayback.casualties_of(payload, true))
-
-
-## Hold these slots on screen: the ones an outcome says the turn killed.
+## Every player command ends here: the world resolved it, the journal recorded
+## a boundary wherever the original's blocking loop would have drawn a frame,
+## and the picture now walks them in order. [method _after_command] runs when
+## the playback drains -- with the mirror on the truth -- from the playback's
+## own finish callback, whether that is inside this call or frames later
+## (docs/100 section 3).
 ##
-## **The filter is the outcome's, not the world's.** Every outcome carries a
-## marker and [method AIPlayback.casualties_of] narrows on it, so a unit that
-## survived the hit -- or that weapon 47 *converted*, which changes its owner
-## and leaves it alive -- is not in this list at all. Asking the world
-## instead used to be the filter and cannot be: by the time the replay opens
-## the turn is over, and the record at that slot may be somebody else's.
-func _mark_dying_slots(slots: PackedInt32Array) -> int:
-	if _units == null or world == null:
-		return 0
-	var held: int = 0
-	for slot: int in slots:
-		var view: Dictionary = world.unit_view(slot)
-		# **The slot may already belong to somebody else.** A mission script's
-		# `InsertUnit` takes the first free record, and the turn that killed
-		# this one freed it inside the same `submit_end_turn` -- so by the
-		# time the replay opens, `world.unit_view(slot)` can be a reinforcement
-		# standing somewhere else entirely, or a *live* record of the same
-		# type and owner. Either way the pre-turn record is the only thing the
-		# casualty can be drawn from, and without it the body was gone from
-		# the first frame: the alien walked up to an empty tile, swung, and
-		# the soldier died having never been on screen.
-		var recycled: bool = view.is_empty() \
-			or DictRead.as_int(view["hp"]) != 0
-		if recycled:
-			var before: Dictionary = DictRead.as_dict(
-				_views_before_turn.get(slot, {}))
-			if before.is_empty():
-				continue
-			_units.mark_dying(slot, before)
-			held += 1
-			continue
-		_units.mark_dying(slot)
-		held += 1
-	return held
+## **No gap and no floor.** The player's command runs at the picture's own
+## speed: the shot starts in this frame, the return fire follows it the frame
+## the shot is over, and a command that drew nothing is over before this
+## returns. The pacing is the computer's ([method end_turn]).
+func _play_command() -> void:
+	if world == null:
+		return
+	_playing_turn = false
+	_playback.play(world.take_events(), Callable(self, "_on_ai_step"),
+		Callable(self, "_apply_event"), 0.0, Callable(self, "_picture_busy"))
 
-
-## The same, for every reaction one command drained.
-func _mark_dying_by(entries: Array) -> int:
-	return _mark_dying_payload({"reactions": entries})
-
-
-## ...and for the riders a `MoveUnit` hook's set piece killed.
-##
-## **Before [method _after_command], and it has to be.**
-## [method UnitsView.build] frees every node and then refuses to rebuild any
-## record with `hp == 0` that is not already held -- and `core` kills a
-## footbridge's riders *inside* `submit_move`, with nothing but their slots on
-## the event. They die with no attack, no outcome and no marker, so the
-## outcome walkers of [method AIPlayback.casualties_of] cannot see them; that
-## routine reads them off the `script` payload through the same
-## [method AIPlayback.script_riders_of] this one uses, which is what keeps the
-## computer's replay and the player's command on one rule. Without this the bodies were gone the frame the
-## command returned, which took the walk with them -- the mover is standing on
-## the bridge, so it is a rider too, and it vanished at the cell it set off
-## from instead of walking to the one that killed it -- and left
-## [method _drop_riders] painting nodes that were not there. Measured on
-## `_C_107`: two marines walked onto (16,18) and (15,18) and the picture lost
-## both of them before the bridge had started to tilt.
-func _mark_dying_by_script(outcome: Dictionary) -> int:
-	if _units == null or outcome.is_empty():
-		return 0
-	return _mark_dying_slots(AIPlayback.script_riders_of(outcome))
-
-
-## The same, for the blast a mine under a walk or a landing left.
-##
-## The casualties of `aExecuteBomb` are in the event's own `blast`, not in the
-## command's outcomes, so nothing marked them: their nodes were freed by the
-## rebuild before [method _present_mine] ever queued the explosion, and the
-## body vanished a frame before the shot that killed it.
-func _mark_dying_by_mine(events: Array) -> int:
-	return _mark_dying_payload({"events": events})
 
 ## One shot, as `aPlayFightAnimation` shows it (docs/42 section 4), queued
 ## on the [SequenceQueue] through [ShotSequence].
@@ -4509,13 +4236,17 @@ func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
 		_sequences = SequenceQueue.create(_audio)
 	if _shot_host == null:
 		_shot_host = MainShotHost.new(self)
-	var view: Dictionary = world.unit_view(shooter)
+	var view: Dictionary = shown().unit_view(shooter)
 	var own: bool = not view.is_empty() \
 		and DictRead.as_int(view["player"]) != UnitState.PLAYER_ALIEN
-	# The two orbits `aAttackUnit` itself plays, **before** the fight
-	# animation its caller runs (docs/42 section 7.5): the overheat's from
-	# `aCheckWeaponDamage`, and the skill's from the experience award.
-	_present_shot_orbits(shooter, view, attack)
+	# **The overheat orbit leads and the skill orbit follows.** They are not
+	# a pair: `aCheckWeaponDamage`'s is step 1 of `aAttackUnit`
+	# (docs/22 section 7.1), before the fight animation the caller runs, while
+	# `0x00410190` plays **after** `aPlayFightAnimation` returns, if the
+	# shooter is alive and its pool's level rose over the value saved at entry
+	# (`0x0046B588`, docs/22 section 7.5). Queued together they showed the
+	# player a promotion before the shot that earned it.
+	_present_overheat_orbit(shooter, view, attack)
 	var targets: Array[Dictionary] = _shot_targets(attack)
 	var cues_shot: Array[Dictionary] = []
 	var cues_impact: Array[Dictionary] = []
@@ -4546,46 +4277,64 @@ func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
 		"cues_barrel": cues_barrel,
 	}
 	var frames: int = ShotSequence.enqueue(_sequences, _shot_host, shot)
+	# After the shot's own stages, which is where the engine plays it.
+	frames += _present_skill_orbit(shooter, view, attack)
 	return float(frames) / SequenceQueue.FRAMES_PER_SECOND
 
 
-## `0x0040F420` for an overheat outcome and `0x00410190` for a skill level
-## raised, on the queue ahead of the shot. The overheat's own wave is
-## already among the shot's cues ([method AudioEvents.overheat_cue]), so
-## the orbit here plays none of its own.
-func _present_shot_orbits(shooter: int, view: Dictionary,
+## `0x0040F420` -- the overheat orbit, on the queue **ahead** of the shot.
+##
+## `aCheckWeaponDamage` is step 1 of `aAttackUnit` (docs/22 section 7.1), so
+## this plays before the fight animation the caller runs. The orbit's own wave
+## is already among the shot's cues ([method AudioEvents.overheat_cue]), so it
+## plays none of its own.
+func _present_overheat_orbit(shooter: int, view: Dictionary,
 		attack: AttackResult) -> void:
-	if view.is_empty():
+	if view.is_empty() or not OVERHEAT_KINDS.has(attack.overheat):
 		return
-	if OVERHEAT_KINDS.has(attack.overheat):
-		var kind: int = DictRead.as_int(OVERHEAT_KINDS[attack.overheat])
-		# The reactor that blew took the shooter with it -- `check_weapon_damage`
-		# writes `hp = 0` for this outcome and the shooter is in nobody's
-		# outcome list, so without this the rebuild frees its node before the
-		# orbit that hides it ever runs and the camera flies to a fallback.
-		if kind == OrbitSequence.OVERHEAT_DESTROYED and _units != null:
-			_units.mark_dying(shooter)
-		var _heat: int = OrbitSequence.enqueue(_queue(), _host(), shooter,
-			OrbitSequence.KIND_OVERHEAT,
-			_strings.shipped(MODULE_FIGHT, DictRead.as_int(ID_OVERHEAT_BY_KIND[kind])),
-			[], kind)
-	# `0x00410190` opens with `call 0x0043B740 / cmp eax, 1 / jne`: the skill
-	# orbit plays in the **campaign** and in no other game mode.
-	if attack.skill_raised > 0 and world.turn.mode == TurnState.MODE_CAMPAIGN:
-		var cues: Array[Dictionary] = []
-		if _events != null:
-			cues = _events.for_event_kind("skill")
-		var _skill: int = OrbitSequence.enqueue(_queue(), _host(), shooter,
-			OrbitSequence.KIND_SKILL, "%s %d" % [
-				_strings.shipped(MODULE_FIGHT, ID_SKILL), attack.skill_raised],
-			cues)
+	var kind: int = DictRead.as_int(OVERHEAT_KINDS[attack.overheat])
+	# The reactor that blew took the shooter with it -- `check_weapon_damage`
+	# writes `hp = 0` for this outcome and the shooter is in nobody's
+	# outcome list. The mirror still has it standing, because this command's
+	# delta has not landed yet, so the orbit has a body to play on and the
+	# camera has a unit to fly to.
+	var _heat: int = OrbitSequence.enqueue(_queue(), _host(), shooter,
+		OrbitSequence.KIND_OVERHEAT,
+		_strings.shipped(MODULE_FIGHT, DictRead.as_int(ID_OVERHEAT_BY_KIND[kind])),
+		[], kind)
+
+
+## `0x00410190` -- the skill orbit, on the queue **after** the shot.
+##
+## docs/22 section 7.5: it plays once `aPlayFightAnimation` has returned, if
+## the shooter is still alive, its pool's level (`+0x18 / 12`) rose over the
+## value saved at entry (`0x0046B588`) and its species is 0. The routine opens
+## with `call 0x0043B740 / cmp eax, 1 / jne`, so it is the campaign's and no
+## other game mode's. Answers the frames it queued.
+func _present_skill_orbit(shooter: int, view: Dictionary,
+		attack: AttackResult) -> int:
+	if view.is_empty() or attack.skill_raised <= 0:
+		return 0
+	if shown().turn.mode != TurnState.MODE_CAMPAIGN:
+		return 0
+	# "If the shooter is alive": the reactor that blew took it with it, and a
+	# promotion is not shown to a body.
+	if attack.overheat == Combat.OVERHEAT_DESTROYED:
+		return 0
+	var cues: Array[Dictionary] = []
+	if _events != null:
+		cues = _events.for_event_kind("skill")
+	return OrbitSequence.enqueue(_queue(), _host(), shooter,
+		OrbitSequence.KIND_SKILL, "%s %d" % [
+			_strings.shipped(MODULE_FIGHT, ID_SKILL), attack.skill_raised],
+		cues)
 
 
 ## `0x004104A0` after a reaction shot that jammed its reactor (docs/42
 ## section 7.4): *Out of ammo!* when the magazine is empty, else *Weapon
 ## runs hot!*.
 func _present_jam(reactor: int) -> void:
-	var view: Dictionary = world.unit_view(reactor)
+	var view: Dictionary = shown().unit_view(reactor)
 	if view.is_empty():
 		return
 	var text_id: int = ID_JAM_AMMO if DictRead.as_int(view.get("ammo", 1)) == 0 \
@@ -4611,19 +4360,16 @@ func _fight_caption(view: Dictionary, attack: AttackResult, own: bool,
 ## The targets of one shot with the type columns the death switch reads.
 func _shot_targets(attack: AttackResult) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	var types: UnitTypeTable = world.unit_types()
+	var types: UnitTypeTable = shown().unit_types()
 	for entry: Variant in attack.outcomes:
 		var outcome: Dictionary = DictRead.as_dict(entry)
 		var slot: int = DictRead.as_int(outcome.get("slot", -1))
-		var unit: Dictionary = world.unit_view(slot)
-		# The world's record for the slot may already be a reinforcement the
-		# mission script inserted into it -- see [member _views_before_turn].
-		# The species and the type decide the death's creator and its scream,
-		# so the casualty's own record is what they have to come from.
-		if _units != null:
-			var held: Dictionary = _units.held_view(slot)
-			if not held.is_empty():
-				unit = held
+		# **The mirror's record, not the truth's.** A mission script's
+		# `InsertUnit` reuses the slot the same turn emptied, so the truth may
+		# already answer for a reinforcement; the picture's world has not been
+		# told about either, and the species and the type it still carries are
+		# what decide the death's creator and its scream.
+		var unit: Dictionary = shown().unit_view(slot)
 		var type_id: int = DictRead.as_int(unit.get("type_id", 0))
 		var x: int = DictRead.as_int(outcome["x"])
 		var y: int = DictRead.as_int(outcome["y"])
@@ -4635,7 +4381,7 @@ func _shot_targets(attack: AttackResult) -> Array[Dictionary]:
 			"player": DictRead.as_int(unit.get("player", 0)),
 			"species": types.species(type_id), "special": types.special(type_id),
 			"size": types.unit_size(type_id),
-			"cell": world.state.index_of(x, y) if world.state.in_bounds(x, y)
+			"cell": shown().state.index_of(x, y) if shown().state.in_bounds(x, y)
 				else 0})
 	return out
 
@@ -4698,75 +4444,15 @@ func _camera_for_shot(shooter: int, sx: int, sy: int, tx: int, ty: int,
 ## reached this event, still has its type, which is what the shot cameras
 ## need (its height and its size); the cell is the event's.
 func _inputs_of(slot: int, x: int, y: int) -> Dictionary:
-	if not world.state.in_bounds(x, y):
+	if not shown().state.in_bounds(x, y):
 		return {}
-	var view: Dictionary = world.unit_view(slot) if slot >= 0 else {}
+	var view: Dictionary = shown().unit_view(slot) if slot >= 0 else {}
 	if not view.is_empty():
-		return CameraDirector.inputs_at(world, view, x, y)
+		return CameraDirector.inputs_at(shown(), view, x, y)
 	return {"obj": CameraRig.cell_object(x, y,
-			world.state.height_at(world.state.index_of(x, y))),
+			shown().state.height_at(shown().state.index_of(x, y))),
 		"height": 0, "gradient": Vector3i(0, 1, 0), "large": false,
 		"x": x, "y": y}
-
-
-## Every reaction one command drained, shown at the cell that drew them.
-##
-## `Reaction.drain` returns `{"reactor": slot, "ticket": int, "attack": ...}`
-## and the target is always the mover, whose slot and cell the caller has --
-## the cell as it was when the fire was drawn, which during the computer's
-## replay is not where the world has the mover now. Returns the longest of
-## the shots, so a caller pacing a replay can wait for all of them.
-##
-## A reactor the fog does not draw has no body this rebuild and animates
-## nothing; its shot is still heard and its blobs still fly, which is what the
-## player would have had from an unseen shooter in the original.
-func _present_reactions(entries: Array, mover: int, tx: int,
-		ty: int) -> float:
-	if world == null or entries.is_empty():
-		return 0.0
-	var longest: float = 0.0
-	for item: Variant in entries:
-		var entry: Dictionary = DictRead.as_dict(item)
-		var reactor: int = DictRead.as_int(entry.get("reactor", -1))
-		var view: Dictionary = world.unit_view(reactor)
-		if view.is_empty():
-			continue
-		var attack: AttackResult = AttackResult.from_dict(
-			DictRead.as_dict(entry.get("attack", {})))
-		longest = maxf(longest, _present_attack(reactor,
-			DictRead.as_int(view["x"]), DictRead.as_int(view["y"]), tx, ty,
-			DictRead.as_int(view["weapon"]), attack, true, mover))
-		if DictRead.as_bool(entry.get("jammed", false)):
-			_present_jam(reactor)
-	return longest
-
-
-## Hold return fire until the picture has caught up with what `core` did.
-func _queue_reactions(entries: Array, mover: int, tx: int, ty: int) -> void:
-	if entries.is_empty():
-		return
-	_pending_reactions.append({"entries": entries.duplicate(true),
-		"mover": mover, "x": tx, "y": ty})
-
-
-## Show one waiting batch of return fire, when there is room for it.
-##
-## The condition is a **state** test and deliberately not an edge: a move that
-## was refused or that walked no steps still drained reactions in `core`, and
-## an edge on a walk ending would never fire for it. Returns how many batches
-## are still waiting, for a suite.
-func _drain_pending_reactions() -> int:
-	if _pending_reactions.is_empty() or _units == null:
-		return _pending_reactions.size()
-	if _units.is_walking() or _units.any_busy() \
-			or (_sequences != null and _sequences.is_running()):
-		return _pending_reactions.size()
-	var batch: Dictionary = _pending_reactions[0]
-	_pending_reactions.remove_at(0)
-	var _hold: float = _present_reactions(DictRead.as_array(batch["entries"]),
-		DictRead.as_int(batch["mover"]), DictRead.as_int(batch["x"]),
-		DictRead.as_int(batch["y"]))
-	return _pending_reactions.size()
 
 
 ## Fill a `CreateBGB` table from a script's outcome -- docs/28 section 8.2.
@@ -4858,9 +4544,9 @@ func _paint_barrier(event: Dictionary, off: bool) -> int:
 	if _scenery == null or world == null:
 		return 0
 	var cell: Vector2i = SetpieceDriver.cell_of(event)
-	if not world.state.in_bounds(cell.x, cell.y):
+	if not shown().state.in_bounds(cell.x, cell.y):
 		return 0
-	return _scenery.paint_joint(world.state.index_of(cell.x, cell.y),
+	return _scenery.paint_joint(shown().state.index_of(cell.x, cell.y),
 		SetpieceDriver.BARRIER_EMITTER_PART,
 		Vector3i(0, 0, SetpieceDriver.BARRIER_EMITTER_OFF if off else 0))
 
@@ -4874,16 +4560,25 @@ func _paint_barrier(event: Dictionary, off: bool) -> int:
 func _queue_setpiece(event: Dictionary, frames: int,
 		cues: Array[Dictionary], about_unit: int = MapState.NO_UNIT) -> void:
 	var cell: Vector2i = _block_cell(event)
-	if world == null or not world.state.in_bounds(cell.x, cell.y):
+	if world == null or not shown().state.in_bounds(cell.x, cell.y):
 		if not cues.is_empty() and _audio != null:
 			var _slots: PackedInt32Array = _audio.play_cues(cues, "script")
 		return
-	var index: int = world.state.index_of(cell.x, cell.y)
+	# **The state after the event, read now.** Everything below is about
+	# where the cell is going -- the height the block travels to, whether a
+	# door is opening or closing (`to < from`), the alien a roof unit has
+	# inserted, the riders a platform has already relocated -- so the delta
+	# of the event on screen lands here, before any of it is read. The
+	# picture does not follow yet: [method _flush_picture] waits for the
+	# queue, so the bodies and the terrain stand where the drawn snapshot
+	# has them until the sequence has carried them across.
+	var _landed: bool = _playback.apply_current()
+	var index: int = shown().state.index_of(cell.x, cell.y)
 	var was: PackedInt32Array = _drawn_terrain["height_map"] \
 		if _drawn_terrain.has("height_map") else PackedInt32Array()
 	var from: int = was[index] if index < was.size() \
-		else world.state.height_at(index)
-	var to: int = world.state.height_at(index)
+		else shown().state.height_at(index)
+	var to: int = shown().state.height_at(index)
 	var name: String = AudioEvents.name_of(event)
 	# A `RoofUnit` inserts its alien the instant the command runs, so the unit
 	# is on the map before its fall has started. The body is held out of the
@@ -4891,7 +4586,7 @@ func _queue_setpiece(event: Dictionary, frames: int,
 	# is that the unit **appears at the end of the drop, not at the beginning**,
 	# and `core` is never asked to delay anything.
 	if name == "roof_unit" and _units != null:
-		var arriving: int = world.state.unit_at(index)
+		var arriving: int = shown().state.unit_at(index)
 		if arriving != MapState.NO_UNIT:
 			_units.suppress(arriving)
 	# Anyone standing on the cell rides it. `core` has already moved them to
@@ -4902,7 +4597,7 @@ func _queue_setpiece(event: Dictionary, frames: int,
 	# -- it is the cargo, and it is suppressed above instead.
 	var rider: int = MapState.NO_UNIT
 	if name != "roof_unit" and _units != null:
-		rider = world.state.unit_at(index)
+		rider = shown().state.unit_at(index)
 	# The unit the routine is about: the door's user (the selected unit for
 	# the player's own door, none for the LCL wrapper's), the roof's cargo,
 	# the ground unit's victim at its own cell.
@@ -4910,12 +4605,12 @@ func _queue_setpiece(event: Dictionary, frames: int,
 	var extra: Dictionary = _setpiece_extra(name, cell, event)
 	var values: PackedInt32Array = SetpieceDriver._numbers(event)
 	if name == "roof_unit":
-		about = world.state.unit_at(index)
+		about = shown().state.unit_at(index)
 	elif name == "ground_unit" and values.size() >= 4 \
-			and world.state.in_bounds(values[2], values[3]):
+			and shown().state.in_bounds(values[2], values[3]):
 		var own: Vector2i = Vector2i(values[2], values[3])
 		extra["own"] = own
-		about = world.state.unit_at(world.state.index_of(own.x, own.y))
+		about = shown().state.unit_at(shown().state.index_of(own.x, own.y))
 	# A command that runs two routines gets its sounds as two stages: the
 	# first routine's with the set piece's opening stage, the second's with
 	# the stage that stands for the second routine
@@ -4942,13 +4637,12 @@ func _queue_setpiece(event: Dictionary, frames: int,
 			if _scenery != null:
 				var _gone: int = _scenery.remove_objects(index)
 	# The footbridge's riders: `core` has already taken them off the map
-	# dead, so their bodies are held past the rebuild the way a shot's
-	# casualties are, fall one map field a frame under the block, and leave
-	# the picture when the loop ends (docs/42 section 8.1).
+	# dead, and the delta that killed them landed above -- but the picture
+	# does not follow the landing while the queue runs ([method
+	# _flush_picture]), so their bodies stand, fall one map field a frame
+	# under the block, and leave the picture at the drain (docs/42 section
+	# 8.1), with nothing held on their behalf.
 	var riders: PackedInt32Array = SetpieceDriver.riders_of(event)
-	if _units != null:
-		for slot: int in riders:
-			_units.mark_dying(slot, world.unit_view(slot))
 	# The platform's ride: its block's objects and its riders travel
 	# `0x140` a frame (docs/20 section 7.4 step 2), and the camera target
 	# with them. Until 2026-09-07 nothing here moved: the sequence ran its
@@ -4985,14 +4679,14 @@ func _platform_ride(values: PackedInt32Array) -> Dictionary:
 	var riders: PackedInt32Array = PackedInt32Array()
 	var travel: Vector2i = SetpieceDriver.platform_travel(values)
 	for at: Vector2i in SetpieceDriver.platform_block(values):
-		if not world.state.in_bounds(at.x, at.y):
+		if not shown().state.in_bounds(at.x, at.y):
 			continue
-		block.append(world.state.index_of(at.x, at.y))
+		block.append(shown().state.index_of(at.x, at.y))
 		var landing: Vector2i = at + travel
-		if not world.state.in_bounds(landing.x, landing.y):
+		if not shown().state.in_bounds(landing.x, landing.y):
 			continue
-		var slot: int = world.state.unit_at(
-			world.state.index_of(landing.x, landing.y))
+		var slot: int = shown().state.unit_at(
+			shown().state.index_of(landing.x, landing.y))
 		if slot != MapState.NO_UNIT and not riders.has(slot):
 			riders.append(slot)
 	return {"block": block, "riders": riders, "travel": travel}
@@ -5023,7 +4717,7 @@ func _ride_platform(ride: Dictionary, values: PackedInt32Array, frame: int,
 			for slot: int in riders:
 				_units.shift(slot, offset - whole)
 		return
-	var _landed: int = _scenery.move_objects(world.terrain_snapshot(), block,
+	var _landed: int = _scenery.move_objects(shown().terrain_snapshot(), block,
 		travel.x, travel.y)
 	if _units != null:
 		var _down: int = _units.drop_shifts()
@@ -5055,7 +4749,7 @@ func _block_cell(event: Dictionary) -> Vector2i:
 ## `aRemoveUnitElement` takes it off the map -- here, out of the picture.
 ##
 ## The heading the tumble is measured from is the record's, which for a
-## rider `core` has already killed is the one [method UnitsView.mark_dying]
+## rider `core` has already killed is the one the mirror
 ## held. **The riders are turned in the order the event carries them**,
 ## because that is the loop's own index and its parity is the sign.
 func _drop_riders(riders: PackedInt32Array, frame: int, frames: int) -> void:
@@ -5204,7 +4898,7 @@ func _paint_setpiece(index: int, from: int, to: int, frame: int,
 		return
 	var progress: float = SetpieceDriver.progress(frame, frames)
 	var at: int = from + roundi(float(to - from) * progress)
-	var partial: Dictionary = world.terrain_snapshot()
+	var partial: Dictionary = shown().terrain_snapshot()
 	var heights: PackedInt32Array = partial["height_map"]
 	if index >= heights.size():
 		return
@@ -5214,7 +4908,7 @@ func _paint_setpiece(index: int, from: int, to: int, frame: int,
 	var name: String = DictRead.as_string(picture.get("name", ""))
 	var values: PackedInt32Array = DictRead.as_int32_array(
 		picture.get("values", []))
-	if Interact.DOOR_IDS.has(world.state.action_point_at(index)) \
+	if Interact.DOOR_IDS.has(shown().state.action_point_at(index)) \
 			and (name == "" or name == "open_door"):
 		# Opening drops the cell by one tile, closing raises it: the sign of
 		# the height change is the sign the routine chose for `ebx`.
@@ -5253,7 +4947,7 @@ func _redraw_event_cells(payload: Dictionary) -> int:
 		payload.get("cells", []))
 	if cells.is_empty():
 		return 0
-	var now: Dictionary = world.terrain_snapshot()
+	var now: Dictionary = shown().terrain_snapshot()
 	var _moved: int = _scenery.apply_state(now, cells)
 	_overlay.rebuild_cells(now, cells)
 	return cells.size()
@@ -5271,7 +4965,7 @@ func _redraw_terrain() -> int:
 func _redraw_terrain_now() -> int:
 	if world == null or _scenery == null or _overlay == null:
 		return 0
-	var now: Dictionary = world.terrain_snapshot()
+	var now: Dictionary = shown().terrain_snapshot()
 	# **The effect planes first, and before the early return.** A weapon-42
 	# mine, a shield, a `ParaBombs` drop and the round tick's decay change
 	# `+0x0E`..`+0x13` and nothing else, and [TerrainDiff] deliberately does
@@ -5324,38 +5018,35 @@ func _redraw_terrain_now() -> int:
 ## axis it overrides.
 ##
 ## `slot` is the unit this end belongs to, where the caller knows it. It is
-## not a nicety: this runs over the world at the **end** of the turn, where
+## not a nicety: this runs over the shown() at the **end** of the turn, where
 ## the shooter may already be dead and its slot refilled by a reinforcement,
 ## and the cell would then answer for whoever stands there now.
 func _muzzle_of(x: int, y: int, slot: int = MapState.NO_UNIT) -> Vector3i:
 	var height: int = 0
 	var lift: int = BlobTriggers.MUZZLE_HEIGHT
-	if world != null and world.state.in_bounds(x, y):
-		height = world.state.height_at(world.state.index_of(x, y))
+	if shown() != null and shown().state.in_bounds(x, y):
+		height = shown().state.height_at(shown().state.index_of(x, y))
 		var here: int = slot
 		if here == MapState.NO_UNIT:
-			here = world.state.unit_at(world.state.index_of(x, y))
+			here = shown().state.unit_at(shown().state.index_of(x, y))
 		var view: Dictionary = _unit_record(here)
 		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
-			lift = HitChance.eye_height(world.unit_types(),
+			lift = HitChance.eye_height(shown().unit_types(),
 				DictRead.as_int(view["type_id"]))
 	return BlobTriggers.muzzle_point(x, y, height, lift)
 
 
-## What the world knows about `slot`, or the record held over its death.
+## What the picture knows about `slot`, or the record held over its death.
 ##
-## A slot the turn killed is gone from the world before any of the turn is
+## A slot the turn killed is gone from the truth before any of the turn is
 ## drawn, and a slot a reinforcement recycled answers for the wrong unit --
-## which is what [method UnitsView.held_view] is for.
+## which the mirror answers for, being a world the recycling has not
+## reached yet.
 func _unit_record(slot: int) -> Dictionary:
 	if slot == MapState.NO_UNIT:
 		return {}
-	if _units != null:
-		var held: Dictionary = _units.held_view(slot)
-		if not held.is_empty():
-			return held
-	if world != null and world.has_unit(slot):
-		return world.unit_view(slot)
+	if shown() != null and shown().has_unit(slot):
+		return shown().unit_view(slot)
 	return {}
 
 
@@ -5365,27 +5056,27 @@ func _unit_record(slot: int) -> Dictionary:
 ## gore level and the output mode.
 func _death_inputs(args: PackedInt32Array) -> BlobPrograms.Inputs:
 	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
-	inputs.gore = world.gore_level
+	inputs.gore = shown().gore_level
 	inputs.display_mode = DISPLAY_MODE
-	var types: UnitTypeTable = world.unit_types()
+	var types: UnitTypeTable = shown().unit_types()
 	for i: int in range(0, args.size() - 1, 2):
 		var x: int = args[i]
 		var y: int = args[i + 1]
-		if not world.state.in_bounds(x, y):
+		if not shown().state.in_bounds(x, y):
 			continue
-		var index: int = world.state.index_of(x, y)
-		var height: int = world.state.height_at(index)
+		var index: int = shown().state.index_of(x, y)
+		var height: int = shown().state.height_at(index)
 		var unit: Dictionary = {}
-		var slot: int = world.state.unit_at(index)
-		var view: Dictionary = world.unit_view(slot) if slot >= 0 else {}
+		var slot: int = shown().state.unit_at(index)
+		var view: Dictionary = shown().unit_view(slot) if slot >= 0 else {}
 		if view.is_empty():
 			# The casualty has left the cell in `core` (`UnitState.remove`
 			# clears the link at once, where the engine's
 			# `aRemoveUnitElement` runs after the animation), but its record
 			# keeps its coordinates and its type -- which is what the
 			# creator reads through the unit map.
-			for candidate: int in world.unit_slots():
-				var dead: Dictionary = world.unit_view(candidate)
+			for candidate: int in shown().unit_slots():
+				var dead: Dictionary = shown().unit_view(candidate)
 				if DictRead.as_int(dead.get("hp", 1)) == 0 \
 						and DictRead.as_int(dead.get("x", -1)) == x \
 						and DictRead.as_int(dead.get("y", -1)) == y:
@@ -5411,7 +5102,7 @@ func _death_inputs(args: PackedInt32Array) -> BlobPrograms.Inputs:
 ## A position creator's inputs: no tile, the models and the tables alone.
 func _position_inputs() -> BlobPrograms.Inputs:
 	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
-	inputs.gore = world.gore_level
+	inputs.gore = shown().gore_level
 	inputs.display_mode = DISPLAY_MODE
 	if _fx != null:
 		for name: Variant in _fx.hooks().model_index:
@@ -5425,68 +5116,28 @@ func use_in_front() -> UseResult:
 	if _selected < 0:
 		return UseResult.refused("")
 	_begin_command()
-	# Who stands in front **before** the use: a push moves that record, and
-	# the picture of the push (docs/42 section 7.2) needs its slot and its
-	# first cell, which the result does not carry.
-	var pushed: int = MapState.NO_UNIT
+	# The cell in front **before** the use, for the sound of a use that
+	# stages nothing; the `use` event carries the same cell as its target.
 	var front: Vector2i = Vector2i(-1, -1)
 	var pusher: Dictionary = world.unit_view(_selected)
 	var facing: int = DictRead.as_int(pusher.get("facing", -1))
-	# The guard [method Interact.cell_in_front] and [method
-	# Interact.can_push] both make before the same index.
+	# The guard [method Interact.cell_in_front] makes before the same index.
 	if not pusher.is_empty() and facing >= 0 \
 			and facing < Interact.FACING_DX.size():
 		front = Vector2i(DictRead.as_int(pusher["x"]) + Interact.FACING_DX[facing],
 			DictRead.as_int(pusher["y"]) + Interact.FACING_DY[facing])
-		if world.state.in_bounds(front.x, front.y):
-			pushed = world.state.unit_at(world.state.index_of(front.x, front.y))
 	# **Whose voice**, captured before the command: `_after_command` below
 	# drops the selection when the use spends the unit's last movement point,
 	# and the twelve speaking arms would then be silent for exactly the uses
 	# that end a turn.
 	var user: int = _selected
 	var used: UseResult = world.submit_use(UseCommand.create(_selected))
-	if used.ok and used.kind == World.DOOR_USE_KIND and _sequences != null \
-			and world.state.in_bounds(front.x, front.y):
-		# docs/42 section 8: the player's Use passes real tiles, so the door
-		# gets its flight from the user's head and back; the LCL wrapper's
-		# `-1, -1` is the one that does not.
-		var door_cues: Array[Dictionary] = []
-		if _events != null:
-			door_cues = _events.for_use(used)
-		_queue_setpiece({"name": "open_door", "values": [front.x, front.y]},
-			SetpieceDriver.DOOR_FRAMES, door_cues, _selected)
-	var staged: bool = used.ok and _sequences != null \
-		and world.state.in_bounds(front.x, front.y) \
-		and (used.kind == World.DOOR_USE_KIND or used.kind == LEVER_USE_KIND
-			or PICKUP_USE_KINDS.has(used.kind))
-	var use_cues: Array[Dictionary] = []
-	if staged and _events != null:
-		use_cues = _events.for_use(used)
-	if staged and used.kind == LEVER_USE_KIND:
-		# docs/42 section 8.3: `aPlayUseLeverSequence(x, y, dir, unit)` with
-		# `dir` 0 for a lever that was up -- `used.action_point` is the
-		# point **before** the arm wrote the other one.
-		_queue_setpiece({"name": "lever", "values": [front.x, front.y,
-			1 if used.action_point == Interact.LEVER_DOWN else 0]},
-			SetpieceDriver.LEVER_FRAMES, use_cues, _selected)
-	elif staged and PICKUP_USE_KINDS.has(used.kind):
-		# The supply box `0x00410780`: the text first (below), then the
-		# flight, the lid and the hold under it.
-		_queue_setpiece({"name": "pickup", "values": [front.x, front.y]},
-			SetpieceDriver.PICKUP_LID_FRAMES + SetpieceDriver.PICKUP_HOLD_FRAMES,
-			use_cues, _selected)
-	if used.ok and PUSH_KINDS.has(used.kind) and pushed != MapState.NO_UNIT:
-		var hole: bool = used.kind == PUSH_INTO_HOLE
-		if hole and _units != null:
-			# The record is gone from the map; the body stays for the slide.
-			_units.mark_dying(pushed)
-		var cells: Array[Vector2i] = []
-		for step: PackedInt32Array in used.pushed:
-			cells.append(Vector2i(step[0], step[1]))
-		var _frames: int = PushSequence.enqueue(_queue(), _host(), _selected,
-			pushed, front, cells, hole)
-	_after_command(used.kind if used.ok else used.reason)
+	# The set pieces -- the door, the lever, the lid, the push -- are the
+	# `use` event's own presentation ([method _present_use]), queued by the
+	# playback against the state after the event; what stays here is the
+	# sound of a use that stages nothing, the message and the voice.
+	var staged: bool = _use_is_staged(used, front)
+	_command_note = used.kind if used.ok else used.reason
 	# The player's own door emits **no event** -- `Interact.toggle_door` writes
 	# the state change and returns, and only the LCL `OpenDoor` path records
 	# one. So the sound is driven from the result, not from the event stream,
@@ -5514,7 +5165,76 @@ func use_in_front() -> UseResult:
 	# the one pickup with no voice line.
 	if used.ok and _info != null and _info.speaks(used.action_point):
 		_speak("use", user)
+	_play_command()
 	return used
+
+
+## Whether a use is drawn as a set piece of its own -- the door, the lever,
+## the supply box (docs/42 section 8) -- rather than as a sound.
+func _use_is_staged(used: UseResult, front: Vector2i) -> bool:
+	return used.ok and _sequences != null and world != null \
+		and world.state.in_bounds(front.x, front.y) \
+		and (used.kind == World.DOOR_USE_KIND or used.kind == LEVER_USE_KIND
+			or PICKUP_USE_KINDS.has(used.kind))
+
+
+## The `use` event's picture: the door's flight from the user's head and its
+## leaves, the lever's handle, the supply box's lid and hold, the push's
+## slide (docs/42 sections 7.2 and 8). `outcome` is the use's own result as
+## the event carries it and `front` the event's target cell.
+##
+## Queued by the playback and not by the command, so [method _queue_setpiece]
+## can land the event's delta before it reads where the cell is going: a
+## door queued against the mirror's closed state turned its leaves the wrong
+## way and snapped open when the delta landed. The push is the one that
+## reads the mirror **before** the landing -- the pushed record has left the
+## truth and the slide needs its slot.
+##
+## Answers the frames it queued, at the queue's own rate.
+func _present_use(slot: int, outcome: Dictionary, front: Vector2i) -> float:
+	var used: UseResult = UseResult.from_dict(outcome)
+	if not used.ok or world == null or _sequences == null \
+			or not shown().state.in_bounds(front.x, front.y):
+		return 0.0
+	var frames: int = 0
+	if PUSH_KINDS.has(used.kind):
+		var pushed: int = shown().state.unit_at(
+			shown().state.index_of(front.x, front.y))
+		if pushed == MapState.NO_UNIT:
+			return 0.0
+		var cells: Array[Vector2i] = []
+		for step: PackedInt32Array in used.pushed:
+			cells.append(Vector2i(step[0], step[1]))
+		frames = PushSequence.enqueue(_queue(), _host(), slot, pushed, front,
+			cells, used.kind == PUSH_INTO_HOLE)
+		return float(frames) / SequenceQueue.FRAMES_PER_SECOND
+	if not _use_is_staged(used, front):
+		return 0.0
+	var cues: Array[Dictionary] = _events.for_use(used) if _events != null \
+		else ([] as Array[Dictionary])
+	if used.kind == World.DOOR_USE_KIND:
+		# The player's Use passes real tiles, so the door gets its flight
+		# from the user's head and back; the LCL wrapper's `-1, -1` is the
+		# one that does not.
+		frames = SetpieceDriver.DOOR_FRAMES
+		_queue_setpiece({"name": "open_door", "values": [front.x, front.y]},
+			frames, cues, slot)
+	elif used.kind == LEVER_USE_KIND:
+		# docs/42 section 8.3: `aPlayUseLeverSequence(x, y, dir, unit)` with
+		# `dir` 0 for a lever that was up -- `used.action_point` is the
+		# point **before** the arm wrote the other one.
+		frames = SetpieceDriver.LEVER_FRAMES
+		_queue_setpiece({"name": "lever", "values": [front.x, front.y,
+			1 if used.action_point == Interact.LEVER_DOWN else 0]},
+			frames, cues, slot)
+	else:
+		# The supply box `0x00410780`: the text first, then the flight, the
+		# lid and the hold under it.
+		frames = SetpieceDriver.PICKUP_LID_FRAMES \
+			+ SetpieceDriver.PICKUP_HOLD_FRAMES
+		_queue_setpiece({"name": "pickup", "values": [front.x, front.y]},
+			frames, cues, slot)
+	return float(frames) / SequenceQueue.FRAMES_PER_SECOND
 
 
 ## docs/29 section 1.1's button 2 -- the medic kit, and the heal orbit
@@ -5543,39 +5263,50 @@ func heal_selected() -> Dictionary:
 			cues = _events.for_event_kind("heal")
 		var _frames: int = OrbitSequence.enqueue(_queue(), _host(), target,
 			OrbitSequence.KIND_HEAL, caption, cues)
-	_after_command("heal" if DictRead.as_bool(healed["ok"])
-		else DictRead.as_string(healed["reason"]))
+	_command_note = "heal" if DictRead.as_bool(healed["ok"]) \
+		else DictRead.as_string(healed["reason"])
+	_play_command()
 	return healed
 
 
 ## The Jet Pack's jump (docs/23 section 7.5) and its picture (docs/42
 ## section 7.1). The reactions the landing drew are queued behind the jump
 ## the way a walk's are behind the walk.
-func warp_selected(x: int, y: int) -> WarpResult:
+func warp_selected(x: int, y: int, facing: int = Combat.FACING_NONE) -> WarpResult:
 	var slot: int = _selected
 	_begin_command()
 	var jumped: WarpResult = world.submit_warp(WarpCommand.create(slot, x, y))
-	var _held: int = _mark_dying_by(jumped.reactions)
-	# The mine under the landing kills before the rebuild sees it, exactly as
-	# the walk's does: `aExecuteWarp` detonates in line at `0x0046F109`.
-	var _blasted: int = _mark_dying(
-		DictRead.as_array(DictRead.as_dict(jumped.blast).get("outcomes", [])))
-	var _fallen: int = _mark_dying_by_script(jumped.script_result)
-	if jumped.ok:
-		_present_jump(slot, Vector2i(jumped.from_x, jumped.from_y),
-			Vector2i(jumped.x, jumped.y), true)
-	_after_command(jumped.reason if not jumped.ok else "%d %s" % [
-		jumped.reactions.size(), _strings.text("hud.reactions")])
-	# Behind the jump and **ahead of the reactions**, for the reason the walk's
-	# blast is: `aExecuteWarp` reaches `aExecuteBomb` at `0x0046F109` and the
-	# routine plays its own fight animation before returning, while the drain
-	# is the caller's.
-	var _blast: float = _present_blast(slot, jumped.x, jumped.y, jumped.blast)
-	# The jump's own `aRunLCL`, `0x0046F1D6` -- the same hook as the walk's,
-	# from `aExecuteWarp` and behind the same alive gate.
-	var _script_shown: int = _present_script(jumped.script_result)
-	_queue_reactions(jumped.reactions, slot, x, y)
+	_rotate_after(slot, facing)
+	# The jump, the mine under the landing, the `MoveUnit` hook and the
+	# reactions are four boundaries in that order -- `aExecuteWarp` relinks,
+	# detonates at `0x0046F109`, runs `aRunLCL` at `0x0046F1D6`, and the
+	# drain is the caller's.
+	_command_note = jumped.reason if not jumped.ok else "%d %s" % [
+		jumped.reactions.size(), _strings.text("hud.reactions")]
+	_play_command()
 	return jumped
+
+
+## The facing the ring chose, written after the command it closed and
+## before the playback: nothing for a ring with no facing, and nothing for a
+## unit the command killed.
+func _rotate_after(slot: int, facing: int) -> void:
+	if facing < 0 or world == null or not world.has_unit(slot):
+		return
+	var _turned: bool = world.submit_rotate(RotateCommand.create(slot, facing))
+
+
+## The ring's turn in place (docs/43 section 4.3): free, and an event like
+## any other, so the mirror -- and the body drawn from it -- turns with the
+## truth rather than a command later.
+func rotate_selected(facing: int) -> void:
+	var slot: int = _selected
+	if slot < 0 or facing < 0 or world == null or not world.has_unit(slot):
+		return
+	_begin_command()
+	_rotate_after(slot, facing)
+	_command_note = ""
+	_play_command()
 
 
 ## One jump on the queue, the player's (trail, `jump.wav`, `drop.wav`) or
@@ -5603,11 +5334,11 @@ func _present_jump(slot: int, from: Vector2i, to: Vector2i, own: bool) -> int:
 ## by the select routine and after every pad command (`0x00473920`) when
 ## the animation level allows; never per frame.
 func _raise_marker() -> void:
-	if _selected < 0 or world == null or _fx == null or not world.has_unit(_selected):
+	if _selected < 0 or world == null or _fx == null or not shown().has_unit(_selected):
 		return
 	if _units != null and not _units.scheduler.enabled:
 		return
-	var view: Dictionary = world.unit_view(_selected)
+	var view: Dictionary = shown().unit_view(_selected)
 	if view.is_empty():
 		return
 	_host().spawn_program(BlobPrograms.ARROWS, PackedInt32Array(
@@ -5631,7 +5362,8 @@ func hold_fire() -> int:
 		return 0
 	_begin_command()
 	var ticket: int = world.submit_defend(DefendCommand.create(_selected))
-	_after_command(_strings.text("hud.overwatch") if ticket > 0 else "")
+	_command_note = _strings.text("hud.overwatch") if ticket > 0 else ""
+	_play_command()
 	return ticket
 
 
@@ -5643,19 +5375,11 @@ func hold_fire() -> int:
 ## as often as the mission intends.
 func end_turn() -> TurnResult:
 	_begin_command()
-	# **Before the turn runs.** `submit_end_turn` returns with every computer
-	# unit already standing where it ends the turn, and
-	# [method World.display_visibility] is computed from where they stand -- so
-	# an alien that walks out of sight is a contact beam from the first frame
-	# of the replay, on the cell it has not left yet. See
-	# [method UnitsView.hold_visibility].
-	_seen_before_turn = world.display_visibility()
-	# The records themselves, for the same reason and one more: a slot the turn
-	# empties can be **refilled** by the mission script before the replay draws
-	# a frame -- see [member _views_before_turn].
-	_views_before_turn.clear()
-	for slot: int in world.unit_slots():
-		_views_before_turn[slot] = world.unit_view(slot)
+	# The seat the picture is drawn for, taken before the rotation moves on:
+	# the computer's turn runs **inside** `submit_end_turn`, so by the time
+	# the first event is drawn `turn.current_player` is 255 -- and a fog pass
+	# for 255 is the aliens' own view of the map.
+	_fog.viewer = world.turn.current_player
 	# The player's own arrangement of the camera, for the hand-back: the
 	# replay's shot placements are about to throw it away (see
 	# [method _restore_camera_on]).
@@ -5663,94 +5387,209 @@ func end_turn() -> TurnResult:
 		_camera_offset_before_turn = _rig.eye_goal() - _rig.target_goal()
 		_camera_mode_before_turn = _rig.view_mode()
 	var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
-	if result.ran_turn_script:
-		var _turn_sounds: int = _present_script(result.turn_script)
-	if result.ran_player_script:
-		var _player_sounds: int = _present_script(result.player_script)
-	# **Before the replay starts**, and the drop with it: [method
-	# AIPlayback.play] finishes *inside its own call* when no event survives
-	# `SHOWN_KINDS`, so `_on_ai_step({})` -- and the hand-back in it -- runs
-	# before anything below this line. Capturing after the call gave a quiet
-	# computer turn `_selection_before_turn == -1`, which is the fallback and
-	# not the carry-over: the seat came back on the lowest marine rather than
-	# on the one the player had.
+	# **Before the replay starts.** [method EventPlayback.play] finishes
+	# *inside its own call* when there is nothing to show, so `_on_ai_step({})`
+	# -- and the hand-back in it -- runs before anything below this line.
+	# Capturing after the call gave a quiet computer turn
+	# `_selection_before_turn == -1`, which is the fallback and not the
+	# carry-over.
 	#
 	# The drop is the remake's and the engine has no such thing:
 	# `[0x005162F0]` carries the selection straight through the computer's
 	# turn. See [method _resume_selection].
 	_selection_before_turn = _selected
 	_deselect()
-	if result.ai_result != null:
-		_playback.play(result.ai_result, Callable(self, "_on_ai_step"))
-	# **Before the rebuild `_after_command` does below.** [method
-	# AIPlayback.play] does not take its first step -- that waits for
-	# [constant AIPlayback.STEP_SECONDS] -- so without this every unit the
-	# computer is about to walk stands at its destination for the first half
-	# second of the replay, and then jumps back to walk there. That window is
-	# the half of the defect that placing the body on its first cell in
-	# [method UnitsView.start_walk] does not reach.
-	if _units != null:
-		var owed: Dictionary[int, Vector2i] = {}
-		if _playback.is_running():
-			owed = _playback.pending_starts()
-		_units.hold_at(owed)
-		# The same hold, for what may be seen of them -- everybody, until
-		# their own event has been shown.
-		#
-		# **A typed local, not a ternary.** A conditional expression over two
-		# dictionaries is an untyped `Dictionary` at run time whatever its
-		# arms are, and the typed parameter rejects it -- which is what the
-		# `owed` above is written out for as well.
-		var seen: Dictionary[int, int] = {}
-		if _playback.is_running():
-			seen = _visibility_hold(-1)
-		_units.hold_visibility(seen)
-	# **And the other half of the same defect.** The world has held the end of
-	# the turn since `submit_end_turn` returned, so the rebuild below drops
-	# every unit the computer is *going* to kill -- a marine shot on the
-	# fourth event vanished as the replay opened and reappeared when its own
-	# event marked it, a second before it died. The whole list is held from
-	# here instead; each event re-marks its own, and [method
-	# UnitsView.hide_now] takes them out one at a time in the death stage.
-	if _playback.is_running():
-		var _doomed: int = _mark_dying_slots(_playback.all_casualties())
-	# A turn with nothing to replay hands back here rather than through
-	# [method _on_ai_step], which is where the pre-turn snapshots are dropped
-	# -- so they are dropped here too. Left standing, they would be consulted
-	# by the *player's* next shot against records a turn had moved on from.
-	if not _playback.is_running():
-		_views_before_turn.clear()
-		_seen_before_turn.clear()
-	if not _playback.is_running() \
-			and world.compat_flags.has(COMPAT_CAMERA_RETURNS):
-		var _back: int = focus_on_friendly(_rig, world)
-	_after_command("")
-	if not _playback.is_running():
-		_resume_selection()
+	# **The whole turn, as events.** The two hand-overs, the mission script's
+	# runs, the ground tick and every one of the computer's actions arrive in
+	# the order they happened, each carrying what it changed; the playback
+	# lands them on the mirror as it draws them (docs/100 section 2). The
+	# turn's own script runs are presented by the `script` arm of
+	# [method _play_event_body] rather than here, because the set pieces they
+	# fire belong to the frame their event is drawn in.
+	#
+	# **The pacing is the computer's.** [constant EventPlayback.STEP_SECONDS]
+	# of free picture between two shown events is what lets a 39-alien turn
+	# be followed; a player's own command passes none ([method _play_command]).
+	# The finish callback hands the turn back -- the mirror check, the
+	# camera's compatibility return, the selection -- so nothing is repeated
+	# here whether the playback ended inside `play()` or frames later.
+	_command_note = ""
+	_playing_turn = true
+	_playback.play(world.take_events(), Callable(self, "_on_ai_step"),
+		Callable(self, "_apply_event"), EventPlayback.STEP_SECONDS,
+		Callable(self, "_picture_busy"))
 	# The turn's autosave, for *Undo last turn* (docs/43 section 5).
 	if _may_command_now():
 		_autosave(HudTables.SLOT_UNDO_TURN)
 	return result
 
 
-## Everything a command changes is redrawn from the world, never patched.
-## The start of every player command: whatever the last one left waiting
-## -- return fire not yet shown, casualties marked for a shot that was never
-## finished -- belongs to a command the player has moved on from. Called
-## **before** the command marks its own casualties, which is why it is not
-## part of [method _after_command].
+## The start of every player command.
+##
+## docs/97 section 34: the engine probes the fog before every player command
+## (`0x00481F00`, once per command from `aViewPlayer.cpp`'s dispatcher), and
+## the groups that probe wakes stay woken. The probe marks a `fog_probe`
+## event, which the command's own playback lands as its quiet prefix.
 func _begin_command() -> void:
-	# docs/97 section 34: the engine probes the fog before every player
-	# command, and the groups that probe wakes stay woken.
 	if world != null:
 		var _woken: int = world.probe_fog()
-	_pending_reactions.clear()
-	if _units != null and (_sequences == null or not _sequences.is_running()):
-		_units.clear_dying()
+
+
+## The world the **picture** reads: the mirror, or the truth before one exists.
+##
+## Every reader of what is on screen goes through this. [member world] is read
+## to submit a command, to ask whether one is allowed, and to say what the
+## rules currently are -- the mission's end, the pad's gates, the movement
+## query behind the selection. See [member _shown].
+func shown() -> World:
+	return _shown if _shown != null else world
+
+
+## Throw the mirror away and take a fresh one.
+##
+## Called where the truth moved without events anybody can replay: a save
+## loaded, a deployment placed, the campaign entering a mission, a debug key.
+## It also drops whatever the journal had recorded, because those deltas
+## describe a world that no longer exists.
+func _resync_shown() -> void:
+	if world == null:
+		_shown = null
+		return
+	var _dropped: Array[Dictionary] = world.take_events()
+	_shown = world.clone()
+	if _units != null:
+		_units.shown_ref = _shown
+	_fog.viewer = _watching_seat()
+
+
+## The seat the picture is drawn for, read off the truth: for the moment a
+## command is over, when the mirror has caught up with it.
+func _watching_seat() -> int:
+	return _seat_of(world)
+
+
+## The seat the picture is drawn for, read off `at`.
+##
+## The human player holding the turn, and while the computer holds it the one
+## that handed it over -- a fog pass for player 255 is the aliens' own view of
+## the map, which would show the squad as contacts and every alien as a body.
+## A `hand_over` delta asks with the **mirror**: the truth's rotation has
+## already run past the computer's turn to the next human seat, and with two
+## of them the whole replay would otherwise be drawn through the wrong fog.
+func _seat_of(at: World) -> int:
+	if at == null:
+		return -1
+	if at.turn.current_player != TurnState.PLAYER_COMPUTER:
+		return at.turn.current_player
+	if _fog.viewer >= 0:
+		return _fog.viewer
+	return at.turn.previous_player
+
+
+## Land one event's delta on the mirror and mark the picture stale.
+##
+## This is where the picture catches up with the rules, and the whole design
+## is in the timing of the call: the playback makes it when the animation it
+## is drawing reaches the change ([method EventPlayback.apply_current]), and
+## otherwise when the event's presentation is over.
+##
+## **Nothing is rebuilt here.** The quiet events between two shown ones land
+## several deltas in one frame, and the rebuild -- every body freed and made
+## again, a fog pass, the terrain diff, the overlay -- is
+## [method _flush_picture]'s, once, at the moment the picture is next read.
+func _apply_event(event: Dictionary) -> void:
+	if _shown == null or event.is_empty():
+		return
+	var kind: String = DictRead.as_string(event["kind"])
+	var payload: Dictionary = DictRead.as_dict(event.get("payload", {}))
+	_shown.apply_delta(DictRead.as_dict(event.get("delta", {})))
+	_fog.note_event(kind, DictRead.as_int(event.get("slot", -1)), payload)
+	if kind == "hand_over":
+		_fog.viewer = _seat_of(_shown)
+	_picture_stale = true
+
+
+## Draw the mirror as it now stands, if a delta has landed since it was last
+## drawn: one rebuild of the bodies over a fresh fog pass, the terrain and
+## the overlay. Called once a frame from [method _process], before a
+## presenter reads the picture ([method _on_ai_step]), and by a presenter
+## that landed a delta at a moment of its own ([method _land_current_delta]).
+##
+## **Deferred while a set piece runs.** A set piece is queued against the
+## state *after* its event -- [method _queue_setpiece] lands the delta first,
+## because a door's leaves turn towards the state the cell is going to have
+## and a lift travels to the height it is going to stand at -- and the bodies
+## and the terrain keep the state before it for as long as the queue draws
+## the change: the footbridge's riders fall dead in the mirror, the platform's
+## passengers ride from where they were. The queue's drain flushes
+## ([method _process]), and a presenter with a moment of its own inside a
+## sequence forces it ([method _land_current_delta]).
+func _flush_picture(force: bool = false) -> void:
+	if not _picture_stale:
+		return
+	if not force and _sequences != null and _sequences.is_running():
+		return
+	_picture_stale = false
+	if _units != null and shown() != null:
+		_units.build(shown(), _geometry, _textures, _picture_fog())
+	# **A set piece owns the cells it animates.** Painting a door to its final
+	# height while its ten frames are queued would snap it open, snap it shut
+	# and animate it open again; the drain repaints instead.
+	if _sequences == null or not _sequences.is_running():
+		var _cells: int = _redraw_terrain_now()
+	_refresh_overlay()
+
+
+## The moment of a presenter's own: the delta of the event on screen lands
+## and the picture is redrawn from it **now**, inside the sequence that
+## reached the change. The death stage of a shot calls it before it takes
+## the casualty's body away, so the mirror loses the record in the frame the
+## blood appears and the target band over the cell goes with it; the
+## teleporter calls it on the frame it moves its traveller and the roof unit
+## on the first frame of its fall.
+func _land_current_delta() -> void:
+	var _landed: bool = _playback.apply_current()
+	_flush_picture(true)
+
+
+## The fog answer the whole picture reads this frame.
+##
+## The walkers are answered at the cell their **body** is drawn on, which is
+## what makes an alien come out of the fog in the frame it comes out of the
+## fog rather than when the turn changes (docs/100 section 4).
+func _picture_fog() -> Dictionary[int, int]:
+	if _shown == null:
+		return {}
+	var at: Dictionary[int, Vector2i] = {}
+	if _units != null:
+		at = _units.walking_cells()
+	return _fog.states(_shown, at)
+
+
+## The mirror and the truth must agree once every delta has landed.
+##
+## A field no delta carried shows up here and nowhere else, which is what
+## replaces the per-mechanic holds this design removed. Resynchronising is the
+## safe answer -- a picture one field behind is worse than a picture that
+## jumped -- and the count is reported rather than swallowed.
+func _check_mirror() -> bool:
+	if world == null or _shown == null:
+		return true
+	_flush_picture()
+	if _shown.canonical_hash_hex() == world.canonical_hash_hex():
+		return true
+	_desyncs += 1
+	push_warning("the picture's mirror fell behind the world; resynchronised: "
+		+ "; ".join(world.mirror_diff(_shown)))
+	_resync_shown()
+	_picture_stale = true
+	_flush_picture()
+	return false
 
 
 func _after_command(note: String) -> void:
-	_units.build(world, _geometry, _textures)
+	_picture_stale = false
+	_units.build(shown(), _geometry, _textures, _picture_fog())
 	_redraw_terrain()
 	if _selected >= 0 and world.has_unit(_selected):
 		# `0x00472B10`: a unit left with no movement points is deselected
@@ -5787,7 +5626,7 @@ func _refresh_overlay() -> void:
 	if _ground == null or world == null:
 		return
 	_far_drawn = _far_view()
-	_ground.refresh(_art, world, _selected, _last_query, _hover, _bands,
+	_ground.refresh(_art, shown(), _selected, _last_query, _hover, _bands,
 		turn_player(), _far_drawn)
 
 
@@ -5811,11 +5650,6 @@ func _tick_interface(delta: float) -> void:
 	_hud.ring.update(_rig.camera(), _hud.window(), _blink_odd)
 	if _far_view() != _far_drawn:
 		_refresh_overlay()
-	if not _pending_turn.is_empty() and (_units == null or not _units.is_walking()):
-		if _units != null:
-			var _faced: bool = _units.turn_to(DictRead.as_int(_pending_turn["slot"]),
-				HudTables.FACING_ANGLES[DictRead.as_int(_pending_turn["facing"])])
-		_pending_turn = {}
 	_poll_hover()
 
 
@@ -5844,7 +5678,7 @@ func _update_hover(pointer: Vector2) -> void:
 	_pointer = pointer
 	var cell: Vector2i = Vector2i(-1, -1)
 	if _hud.window().has_point(pointer):
-		cell = cell_under(_rig.camera(), world, pointer, 1.0)
+		cell = cell_under(_rig.camera(), shown(), pointer, 1.0)
 	if _hud.ring.is_up():
 		var _changed: bool = _hud.ring.hover(_rig.camera(), pointer)
 	if cell != _hover:
@@ -6009,21 +5843,29 @@ func _on_pad_command(number: int) -> void:
 			var _ticket: int = hold_fire()
 		HudTables.COMMAND_HEAL:
 			var _healed: Dictionary = heal_selected()
+		# The three quiet commands go through the playback like every other:
+		# their events have no picture, so `play()` lands them and finishes
+		# inside its own call -- but a command that skipped it left the
+		# events on the journal and the pad reading a mirror one command
+		# behind (the stimulant's points did not show until the next walk).
 		HudTables.COMMAND_STIMULANT:
 			_begin_command()
 			var _spent: bool = world.submit_stimulant(
 				SpendStimulantCommand.create(_selected))
-			_after_command("")
+			_command_note = ""
+			_play_command()
 		HudTables.COMMAND_WEAPON_MODE:
 			_begin_command()
 			var _toggled: bool = world.submit_toggle_weapon(
 				ToggleWeaponCommand.create(_selected))
-			_after_command("")
+			_command_note = ""
+			_play_command()
 		HudTables.COMMAND_REST:
 			_begin_command()
 			var _rested: bool = world.submit_stand_down(
 				StandDownCommand.create(_selected))
-			_after_command("")
+			_command_note = ""
+			_play_command()
 		HudTables.COMMAND_USE:
 			var _used: UseResult = use_in_front()
 
@@ -6077,11 +5919,11 @@ func step_radar(direction: int) -> int:
 func _visible_enemy_after(after: int) -> int:
 	if world == null:
 		return -1
-	var slots: PackedInt32Array = world.unit_slots()
+	var slots: PackedInt32Array = shown().unit_slots()
 	var start: int = slots.find(after) + 1
 	for step: int in range(slots.size()):
 		var slot: int = slots[(start + step) % slots.size()]
-		var view: Dictionary = world.unit_view(slot)
+		var view: Dictionary = shown().unit_view(slot)
 		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
 			continue
 		if DictRead.as_int(view["player"]) == turn_player():
@@ -6261,7 +6103,12 @@ class MainShotHost extends ShotHost:
 			return Vector3i(blob.x, blob.y, blob.z)
 		return Vector3i.ZERO
 
+	## The casualty leaves the picture **and the mirror** in this frame: the
+	## event on screen is the one that killed it, and its delta lands here
+	## rather than when the playback moves on, so the band over the cell and
+	## the radar's blip go with the body.
 	func hide_unit(slot: int) -> void:
+		main._land_current_delta()
 		if main._units != null:
 			var _was: bool = main._units.hide_now(slot)
 
@@ -6269,7 +6116,11 @@ class MainShotHost extends ShotHost:
 		if main._units != null:
 			main._units.suppress(slot)
 
+	## A body coming back is coming back **where the event put it**: the
+	## teleporter's traveller on the exit cell, the roof unit's alien on its
+	## landing cell, so the delta lands before the reveal.
 	func show_unit(slot: int) -> void:
+		main._land_current_delta()
 		if main._units != null:
 			main._units.reveal(slot)
 

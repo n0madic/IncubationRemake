@@ -203,25 +203,7 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 ## and for the same reason: a hash over the parsed form would be stable and
 ## wrong.
 static func _turn_from(view: Dictionary) -> TurnState:
-	var turn: TurnState = TurnState.create()
-	turn.turn = DictRead.as_int(view["turn"])
-	turn.current_player = DictRead.as_int(view["current_player"])
-	turn.previous_player = DictRead.as_int(view["previous_player"])
-	turn.player_count = DictRead.as_int(view["player_count"])
-	turn.solo_flag = DictRead.as_bool(view["solo_flag"])
-	turn.ai_level = DictRead.as_int(view["ai_level"])
-	turn.mode = DictRead.as_int(view["mode"])
-	turn.player_kind = _int_array(DictRead.as_array(view["player_kind"]))
-	turn.end_state = _int_array(DictRead.as_array(view["end_state"]))
-	turn.reaction_counter = _int_array(
-		DictRead.as_array(view["reaction_counter"]))
-	turn.hero_killed = _int_array(DictRead.as_array(view["hero_killed"]))
-	turn.mission_kills = _int_array(DictRead.as_array(view["mission_kills"]))
-	turn.mission_lost = _int_array(DictRead.as_array(view["mission_lost"]))
-	turn.mission_lost_to_enemy = _int_array(
-		DictRead.as_array(view["mission_lost_to_enemy"]))
-	turn.turn_control = DictRead.as_int(view["turn_control"])
-	return turn
+	return TurnState.from_view(view)
 
 
 static func _int_array(values: Array) -> PackedInt32Array:

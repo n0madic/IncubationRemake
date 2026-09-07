@@ -121,7 +121,8 @@ static func candidates(state: MapState, units: Dictionary,
 static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, mover: UnitState, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> Array[Dictionary]:
+		rng: IncRandom,
+		journal: EventJournal = null) -> Array[Dictionary]:
 	var fired: Array[Dictionary] = []
 	if not mover.is_alive():
 		return fired
@@ -166,6 +167,17 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			shot["jammed"] = true
 			reactor.ticket = 0
 		fired.append(shot)
+		# **One boundary per shot.** The engine's drain calls `aAttackUnit`
+		# per reactor and each carries its own blocking fight animation, so
+		# the picture shows them one at a time rather than as a list -- and
+		# a reactor killed by an earlier shot in the same drain never fires.
+		if journal != null:
+			var _shot: Dictionary = journal.mark("reaction", reactor.slot,
+				reactor.x, reactor.y, mover.x, mover.y,
+				DictRead.as_int(shot["ticket"]), str(reactor.weapon),
+				{"reactor": reactor.slot, "ticket": shot["ticket"],
+					"attack": shot["attack"], "jammed": shot["jammed"],
+					"mover": mover.slot})
 		if not mover.is_alive():
 			break
 	return fired

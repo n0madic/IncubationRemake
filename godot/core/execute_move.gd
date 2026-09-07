@@ -189,6 +189,14 @@ static func run(state: MapState, ctab: CtrlMapTable, mover: UnitState,
 	return result
 
 
+## The walk's own cells as an untyped array, for an event payload.
+static func _route_of(moved: MoveResult) -> Array:
+	var route: Array = []
+	for index: int in moved.route:
+		route.append(index)
+	return route
+
+
 ## `aExecuteMove` with its writes: [method run] plus the three visibility
 ## passes the routine makes and the position the walk leaves.
 ##
@@ -316,7 +324,10 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		walked: Dictionary, tx: int, ty: int, arrival_points: int,
 		human_players: int, game_mode: int, ai_level: int, turn: TurnState,
 		rng: IncRandom, budget: int = -1,
-		enemy_move: bool = true) -> MoveResult:
+		enemy_move: bool = true,
+		journal: EventJournal = null) -> MoveResult:
+	var from_x: int = mover.x
+	var from_y: int = mover.y
 	var moved: MoveResult = run(state, ctab, mover, walked, budget)
 	if not moved.ok and not moved.movement_zeroed:
 		return moved
@@ -332,6 +343,20 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if moved.seen_source and enemy_move:
 			Visibility.set_state(mover, Visibility.FULL)
 
+	# **The first boundary: what the two opening passes wrote.**
+	#
+	# They run before the first step (`0x0046E330`, `0x0046E385`) and they
+	# *write* -- every unit the mover would see from either cell is revealed
+	# and a computer unit on orders 5, 6 or 8 has its group woken there and
+	# then (docs/42 section 3.2). The mode-3 self reveal above is the third.
+	# So an enemy the mover uncovers is uncovered before it has taken a step,
+	# and the picture is entitled to show that first.
+	if journal != null:
+		var opening: Dictionary = {"seen_source": moved.seen_source,
+			"seen_destination": moved.seen_destination,
+			"steps": moved.steps, "path": _route_of(moved)}
+		var _opened: Dictionary = journal.mark("move_begin", mover.slot,
+			from_x, from_y, tx, ty, moved.cost, "", opening)
 	if moved.steps > 0:
 		state.set_unit(state.index_of(mover.x, mover.y), MapState.NO_UNIT)
 		state.set_unit(state.index_of(moved.x, moved.y), mover.slot)
@@ -351,6 +376,18 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# comes from [method run] in that order.
 		state.set_action_point(write.x, write.y)
 
+	# **The walk itself.** The engine draws six frames per field inside the
+	# step loop (`0x0040EA30`, docs/40 section 4.8), so the whole walk is one
+	# visible change with the body crossing it; the payload carries what the
+	# picture needs to draw the crossing.
+	if journal != null:
+		var walk: Dictionary = {"steps": moved.steps, "facing": moved.facing,
+			"path": _route_of(moved), "cost": moved.cost,
+			"seen_source": moved.seen_source,
+			"seen_destination": moved.seen_destination}
+		var _walked: Dictionary = journal.mark("move", mover.slot, from_x,
+			from_y, moved.x, moved.y, moved.cost, "", walk)
+
 	# **The mine goes off here, not in the caller.** `0x0046EDAF` is inside
 	# `aExecuteMove`, between the relink and the closing pass, and the closing
 	# pass is behind the mover's `+0x16`: `0x0046EDDC` reads it and returns
@@ -361,11 +398,24 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if moved.stopped_on_mine:
 		_detonate(state, units, utab, wtab, mover, moved, ai_level,
 			human_players, game_mode, turn, rng)
+		# The blast is drawn after the last step, because the step loop
+		# blocked until then (docs/97 section 41.8).
+		if journal != null:
+			var _blown: Dictionary = journal.mark("mine", mover.slot,
+				moved.x, moved.y, moved.x, moved.y, 0, "",
+				{"blast": moved.blast,
+					"events": moved.events.duplicate(true)})
 	# `0x0046EDDC` gates the teleport on the mover's `+0x16` and `0x0046EE30`
 	# reads it again afterwards, so a traveller the blocked exit killed gets
 	# no closing pass either.
 	if mover.is_alive() and moved.teleporter:
+		var entry_x: int = moved.x
+		var entry_y: int = moved.y
 		_teleport(state, turn, mover, moved)
+		if journal != null:
+			var _sent: Dictionary = journal.mark("teleport", mover.slot,
+				entry_x, entry_y, moved.x, moved.y, 0, "",
+				{"events": moved.events.duplicate(true)})
 	# The bomb arm returns first when the mine killed the walker
 	# (`0x0046ECB5`, `0x0046EDE1`, `0x0046EE35`), so the third pass runs only
 	# while the mover lives.

@@ -854,7 +854,7 @@ step each frame (`0x004039A0`), then fly back:
 
 | Routine | Start offset from the unit | Step per frame | Caption |
 |---|---|---|---|
-| skill `0x00410190` (from `aAttackUnit`) | `(0, +0xC80, height + 0xC80)` | +100 | *increased skill level* `"%s %d"` |
+| skill `0x00410190` (from `aAttackUnit`, **after** `aPlayFightAnimation` returns -- `22` §7.5) | `(0, +0xC80, height + 0xC80)` | +100 | *increased skill level* `"%s %d"` |
 | heal `0x0040FBE0` | `(0, +0x1900, height + 0xC80)` | −40 | `"%s: %s %d"` with *increased hit points by* |
 | poison `0x0040F8F0` | `(0, +0x1900, height + 0xC80)` | −40 | *Fightingpower reduced!* |
 | overheat `0x0040F420` | `(0, +0xC80, height + 0xC80)`, as skill | +100 | by `kind` (`22` §8: 1 explosion, 2 jam, 3 damage): 1 → id 14 @63 and the unit hidden behind `FireExplosion` + `BloodFlood(x, y, x, y, 0)`; 2 → id 15, `jammed.wav` @64; 3 → id 16, `damage.wav` @65 — the `dec eax / je` ladder at `0x0040F5A4` |
@@ -1358,7 +1358,17 @@ camera behind the shooter or the victim (§4.3), a door flies the camera to
 itself (§8), and **every change to the map happens on screen in the frame it
 happens**, because the sequence that changes it is the one drawing. The
 redraw callback the AI is handed (`0x0047C2C0`, `23` §2) draws the turn banner
-and the HUD; it moves no camera. *(Read 2026-09-03,
+and the HUD; it moves no camera.
+
+*(2026-09-07, [`100`](100-slice-8-report.md): this is the sentence the remake
+finally transcribes rather than works around. `core` decides the turn in one
+call, so `game` keeps a **lagging clone** of the world and advances it one
+event at a time, with a boundary wherever this loop would have drawn a frame
+between two writes -- the walk's opening passes, the walk, the mine, the
+teleporter, the script hook, then one event per reaction shot. The eighteen
+mechanisms that used to hide one field of the finished world each are gone,
+and the standing check is that the clone's canonical hash equals the truth's
+once the last delta has landed.)* *(Read 2026-09-03,
 [`97` §35.1](97-slice-5-report.md): it is the **between-players screen** -- it
 blanks all 640x480 and draws four formatted lines centred at x 320 from
 `Txtmod` ids 12, 20, 22, 25, 26, 125, 127 and 132 -- so "banner" understates

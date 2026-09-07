@@ -63,6 +63,18 @@ var _effect: Array[PackedByteArray] = []
 var _objects: PackedByteArray = PackedByteArray()
 var _special_models: PackedStringArray = PackedStringArray()
 
+## Write tracking for `EventJournal`, off by default.
+##
+## The picture's mirror is advanced by deltas, and a delta's cell half is
+## whichever cells a command wrote.  Every write goes through a setter here --
+## there is no path into the arrays from outside this file -- so the set is
+## exact rather than a diff of the whole map.
+var _tracking: bool = false
+var _dirty: Dictionary[int, bool] = {}
+## A whole-map write ([method load_bytes]); cheaper to flag than to enumerate.
+var _dirty_all: bool = false
+var _objects_dirty: bool = false
+
 
 static func from_resource(res: MapResource) -> MapState:
 	var state: MapState = MapState.new()
@@ -97,6 +109,8 @@ func height_at(index: int) -> int:
 
 func set_height(index: int, value: int) -> void:
 	_height[index] = value
+	if _tracking:
+		_dirty[index] = true
 
 
 func field_type_at(index: int) -> int:
@@ -105,6 +119,8 @@ func field_type_at(index: int) -> int:
 
 func set_field_type(index: int, value: int) -> void:
 	_field_type[index] = value & 0xFF
+	if _tracking:
+		_dirty[index] = true
 
 
 func action_point_at(index: int) -> int:
@@ -113,6 +129,8 @@ func action_point_at(index: int) -> int:
 
 func set_action_point(index: int, value: int) -> void:
 	_action_point[index] = value & 0xFF
+	if _tracking:
+		_dirty[index] = true
 
 
 func unit_at(index: int) -> int:
@@ -121,6 +139,8 @@ func unit_at(index: int) -> int:
 
 func set_unit(index: int, slot: int) -> void:
 	_unit[index] = slot
+	if _tracking:
+		_dirty[index] = true
 
 
 func effect_at(slot: int, index: int) -> int:
@@ -129,6 +149,8 @@ func effect_at(slot: int, index: int) -> int:
 
 func set_effect(slot: int, index: int, value: int) -> void:
 	_effect[slot][index] = value & 0xFF
+	if _tracking:
+		_dirty[index] = true
 
 
 ## `cell[+0x10]` under its own name.  The same storage as effect slot 2.
@@ -154,6 +176,8 @@ func object_state(object_id: int) -> int:
 
 func set_object_state(object_id: int, value: int) -> void:
 	_objects[object_id] = value & 0xFF
+	if _tracking:
+		_objects_dirty = true
 
 
 ## The placer model names the mission's world set carries.  Empty means "no
@@ -167,10 +191,94 @@ func set_special_models(names: PackedStringArray) -> void:
 	_special_models = names.duplicate()
 
 
+## Start or stop recording which cells are written.  `EventJournal` owns this;
+## a world with no journal pays one boolean test per setter.
+func track_writes(on: bool) -> void:
+	_tracking = on
+	_dirty.clear()
+	_dirty_all = false
+	_objects_dirty = false
+
+
+## The cells written since the last call, and whether the object array moved.
+## Clears the record.  The indices are sorted so a delta is comparable.
+func take_dirty() -> Dictionary:
+	var cells: PackedInt32Array = PackedInt32Array()
+	if _dirty_all:
+		cells.resize(cell_count())
+		for i: int in range(cell_count()):
+			cells[i] = i
+	else:
+		for index: int in _dirty:
+			cells.append(index)
+		cells.sort()
+	var moved: bool = _objects_dirty
+	_dirty.clear()
+	_dirty_all = false
+	_objects_dirty = false
+	return {"cells": cells, "objects": moved}
+
+
+## Every documented byte of one cell, for a delta row.
+func cell_record(index: int) -> Dictionary:
+	var effects: PackedByteArray = PackedByteArray()
+	effects.resize(EFFECT_SLOTS)
+	for slot: int in range(EFFECT_SLOTS):
+		effects[slot] = _effect[slot][index]
+	return {
+		"height": _height[index],
+		"field_type": _field_type[index],
+		"action_point": _action_point[index],
+		"unit": _unit[index],
+		"effect": effects,
+	}
+
+
+## Write one cell back from a [method cell_record] row.
+func apply_cell_record(index: int, record: Dictionary) -> void:
+	set_height(index, DictRead.as_int(record["height"]))
+	set_field_type(index, DictRead.as_int(record["field_type"]))
+	set_action_point(index, DictRead.as_int(record["action_point"]))
+	set_unit(index, DictRead.as_int(record["unit"]))
+	var effects: PackedByteArray = DictRead.to_bytes(record["effect"])
+	for slot: int in range(EFFECT_SLOTS):
+		set_effect(slot, index, effects[slot])
+
+
+## Replace the derived object array wholesale, for a delta that carries it.
+func set_objects(values: PackedByteArray) -> void:
+	_objects = values.duplicate()
+	if _tracking:
+		_objects_dirty = true
+
+
+## An independent copy: every array duplicated, tracking off.
+##
+## The mirror the picture reads is one of these, so an aliased array here
+## would make the two worlds share storage and the lag disappear
+## (`tests/test_isolation.gd` is the standing check for that class of bug).
+func clone() -> MapState:
+	var out: MapState = MapState.new()
+	out.width = width
+	out.height = height
+	out._height = _height.duplicate()
+	out._field_type = _field_type.duplicate()
+	out._action_point = _action_point.duplicate()
+	out._unit = _unit.duplicate()
+	out._effect = []
+	for slot: PackedByteArray in _effect:
+		out._effect.append(slot.duplicate())
+	out._objects = _objects.duplicate()
+	out._special_models = _special_models.duplicate()
+	return out
+
+
 ## `aBuild3DSpecialObjects` `0x004079D0`, as occupancy only: every cell whose
 ## `+0x10` is 1, 2 or 3 owns the slot at `+0x0F`, and every cell whose `+0x13`
 ## is 4 owns the one at `+0x11`.
 func rebuild_objects() -> void:
+	if _tracking:
+		_objects_dirty = true
 	_objects = PackedByteArray()
 	_objects.resize(SPECIAL_OBJECT_SLOTS)
 	_objects.fill(NO_OBJECT)
@@ -248,5 +356,7 @@ func load_bytes(data: PackedByteArray) -> bool:
 	for _slot: int in range(EFFECT_SLOTS):
 		_effect.append(data.slice(at, at + n))
 		at += n
+	if _tracking:
+		_dirty_all = true
 	rebuild_objects()
 	return true

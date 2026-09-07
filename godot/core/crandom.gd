@@ -44,6 +44,16 @@ func state() -> Dictionary:
 	return {"seed": seed, "calls": calls}
 
 
+## See [method IncRandom.restore] -- the same contract.
+func restore(data: Dictionary) -> void:
+	seed = DictRead.as_int(data.get("seed", 1))
+	calls = DictRead.as_int(data.get("calls", 0))
+
+
+func clone() -> CRandom:
+	return from_state(state())
+
+
 static func from_state(data: Dictionary) -> CRandom:
 	var rng: CRandom = CRandom.new()
 	rng.seed = DictRead.as_int(data.get("seed", 1))

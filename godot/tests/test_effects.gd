@@ -1002,8 +1002,12 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 
 	var main: SliceMain = SliceMain.new()
 	main.world = world
+	# **The picture reads the mirror**, and the mirror is taken before the
+	# riders are killed: that is what keeps them on screen for the fall
+	# without a hold of the presentation's own (docs/100 section 2).
+	main._shown = world.clone()
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = main._shown
 	main._units = units
 	for slot: int in riders:
 		var node: Node3D = Node3D.new()
@@ -1035,9 +1039,11 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 	main._queue_setpiece(event, QUEUED_FALL_FRAMES, cues)
 	h.check("queued_rider.is_queued", main._sequences.is_running(),
 		"the flight, the fall and the flight back")
-	h.check("queued_rider.both_are_held",
-		str(units.dying()) == str(riders),
-		"the bodies stay in the picture past their death: %s" % str(units.dying()))
+	h.check("queued_rider.the_mirror_keeps_both_during_the_fall",
+		DictRead.as_int(main._shown.unit_view(riders[0])["hp"]) > 0
+		and DictRead.as_int(main._shown.unit_view(riders[1])["hp"]) > 0,
+		"the truth lost them when the hook ran; the picture has not "
+		+ "been told yet")
 
 	# The flight settles at once -- nothing advances the rig here -- and then
 	# the fall's own frames run.
@@ -1089,7 +1095,16 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 		units.get_node_or_null(NodePath("unit_%d" % riders[0])) == null
 		and units.get_node_or_null(NodePath("unit_%d" % riders[1])) == null,
 		"both bodies are gone when the sequence ends")
-	h.check("queued_rider.no_hold_is_left", units.dying().is_empty())
+	# And the picture catches up: the mirror is handed the kill, and a
+	# rebuild then draws neither.
+	for slot: int in riders:
+		var gone: UnitState = main._shown.units_for_ai()[slot]
+		var _dropped: bool = UnitState.remove(main._shown.state,
+			main._shown.turn, gone)
+	units.build(main._shown, {"prototypes": {}}, {})
+	h.check("queued_rider.the_mirror_catches_up",
+		units.get_node_or_null(NodePath("unit_%d" % riders[0])) == null,
+		"a dead record is not drawn once the delta has landed")
 	units.free()
 	main._rig.free()
 	main.free()
@@ -3602,6 +3617,7 @@ func _check_move_script_seam(h: TestHarness) -> void:
 		MOVE_HOOK_CELL, MOVE_HOOK_FRAMES))
 	h.check("move_script.the_program_attaches", attached,
 		"one FootBridge command, the shape `script.json` carries")
+	var before_walk: Dictionary = world.unit_view(0)
 	var moved: MoveResult = world.submit_move(
 		MoveCommand.create(0, MOVE_HOOK_CELL.x, MOVE_HOOK_CELL.y))
 	if not h.check("move_script.the_walk_ran", moved.ok, moved.reason):
@@ -3634,18 +3650,22 @@ func _check_move_script_seam(h: TestHarness) -> void:
 		"`aRemoveUnitElement` -- the interpreter kills before the picture "
 		+ "starts, which is why the record has to outlive it")
 	h.check("move_script.the_walk_has_an_epilogue",
-		SliceMain._script_has_events(moved.script_result),
-		"so the fall waits for the body to arrive, as the blocking loop does")
+		SliceMain._script_seconds(moved.script_result) > 0.0,
+		"the `script` event holds for the fall, behind the walk's own event")
 	h.check("move_script.an_empty_outcome_holds_nothing",
-		not SliceMain._script_has_events({}),
-		"a walk whose script did nothing does not hold the queue")
+		is_zero_approx(SliceMain._script_seconds({})),
+		"a walk whose script did nothing holds the playback for nothing")
 
 	# The picture's half: the same dictionary, on the same seam
 	# [method SliceMain.move_selected] now hands it to.
 	var main: SliceMain = SliceMain.new()
 	main.world = world
+	# The mirror as it stood before the hook: the rider is alive in it, and
+	# stays so until the `script` event's delta lands at the end of the fall.
+	main._shown = world.clone()
+	main._shown.units_for_ai()[0] = UnitState.from_view(before_walk)
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = main._shown
 	main._units = units
 	var body: Node3D = Node3D.new()
 	body.name = "unit_0"
@@ -3667,22 +3687,18 @@ func _check_move_script_seam(h: TestHarness) -> void:
 	main._events = AudioEvents.open(tables, {})
 	var audio: RecordingAudio = RecordingAudio.new()
 	main._audio = audio
-	# **The riders are held before the rebuild, not after.**
-	# [method UnitsView.build] frees every node and refuses to draw an
-	# `hp == 0` record that is not already held, and `_after_command` runs it
-	# the moment the command returns -- so without this the bodies were gone
-	# before the fall began and the mover, which is a rider, never walked.
-	# `AIPlayback.casualties_of` cannot supply them: a script kill carries no
-	# attack, no outcome and no marker.
-	h.equal("move_script.the_riders_are_held",
-		main._mark_dying_by_script(moved.script_result), 1,
-		"one rider taken off the map by the hook")
-	h.equal("move_script.the_held_rider_is_the_mover",
-		str(units.dying()), str(PackedInt32Array([0])),
-		"and it is the unit that walked in")
-	h.equal("move_script.nothing_to_hold_from_an_empty_outcome",
-		main._mark_dying_by_script({}), 0,
-		"a walk whose script did nothing holds nobody")
+	# **The mirror keeps the rider until the `script` event lands**, and the
+	# picture keeps it for the length of the fall: in play the landing comes
+	# when the set piece is queued ([method SliceMain._queue_setpiece]) and
+	# [method SliceMain._flush_picture] waits for the queue, so the body is
+	# drawn falling and dropped at the drain. No playback runs here, so the
+	# mirror is what carries the rule in this check. A script kill carries
+	# no attack, no outcome and no marker, so nothing that reads outcomes
+	# could ever have found it; the delta needs no shape.
+	h.check("move_script.the_mirror_keeps_the_rider",
+		DictRead.as_int(main._shown.unit_view(0)["hp"]) > 0,
+		"the truth lost it inside `submit_move`; the picture draws the "
+		+ "record it had when the walk began")
 	var shown: int = main._present_script(moved.script_result)
 	h.equal("move_script.the_events_reach_the_picture", shown,
 		main._events.for_event(first).size(),
@@ -3690,10 +3706,12 @@ func _check_move_script_seam(h: TestHarness) -> void:
 	h.check("move_script.the_fall_is_on_the_queue",
 		main._sequences.is_running(),
 		"which is what `move_selected` had never asked for")
-	h.check("move_script.the_rider_is_held_in_the_picture",
-		str(units.dying()) == str(PackedInt32Array([0])),
-		"the body outlives its death for the length of the fall: %s"
-			% str(units.dying()))
+	# `build` reads `geometry["prototypes"]`, so an empty dictionary is a
+	# missing key and not "no models".
+	units.build(main._shown, {"prototypes": {}}, {})
+	h.check("move_script.the_rider_is_drawn_for_the_fall",
+		units.get_node_or_null(NodePath("unit_0")) != null,
+		"the body outlives its death for the length of the fall")
 	# The rule the hold exists for, on the fixture's own world and geometry:
 	# a rebuild drops a dead body and keeps a held one. This is what makes the
 	# order above load-bearing rather than tidy.
@@ -3723,6 +3741,8 @@ func _check_ai_move_script_seam(h: TestHarness) -> void:
 	var world: World = TestFixtures.tiny_world()
 	var _attached: bool = world.attach_script(_foot_bridge_program(
 		MOVE_HOOK_CELL, MOVE_HOOK_FRAMES))
+	# The hook is run by [World], so the `script` boundary is the world's own.
+	world.enable_journal()
 	var ctx: AIContext = AIContext.create(world.state, world.units_for_ai(),
 		world.unit_types(), world.weapons(), world.ctrlmap(), world.turn,
 		world.rng)
@@ -3744,19 +3764,18 @@ func _check_ai_move_script_seam(h: TestHarness) -> void:
 	h.equal("ai_script.core_killed_the_rider",
 		DictRead.as_int(world.unit_view(0).get("hp", -1)), 0,
 		"`aRemoveUnitElement`, inside the computer's own turn")
-	h.equal("ai_script.the_riders_ride_the_event",
-		str(AIPlayback.casualties_of(payload, true)),
-		str(PackedInt32Array([0])),
-		"the fifth shape the extractor reads a death in")
-	h.equal("ai_script.the_whole_turn_holds_them",
-		str(AIPlayback.casualties_in([{"payload": payload}] as Array[Dictionary],
-			0, true)),
-		str(PackedInt32Array([0])),
-		"so the hold taken before the first frame covers a script kill")
+	# **The kill rides in the event's delta**, which is what the picture
+	# lands when the fall it is drawing reaches its end. A script kill
+	# carries no attack, no outcome and no marker, so a reader that walked
+	# outcomes could not see it at all -- the delta needs no such shape.
+	h.check("ai_script.the_riders_ride_the_delta",
+		_script_delta_kills(world, 0),
+		"the `script` event's delta names the rider with no hit points")
 	# The computer's jump closes with the same call (`0x0046F1D6`).
 	var jumper: World = _jet_pack_world()
 	var _hooked: bool = jumper.attach_script(_foot_bridge_program(
 		WARP_HOOK_CELL, MOVE_HOOK_FRAMES))
+	jumper.enable_journal()
 	var jump_ctx: AIContext = AIContext.create(jumper.state,
 		jumper.units_for_ai(), jumper.unit_types(), jumper.weapons(),
 		jumper.ctrlmap(), jumper.turn, jumper.rng)
@@ -3769,9 +3788,9 @@ func _check_ai_move_script_seam(h: TestHarness) -> void:
 	h.equal("ai_script.the_jump_fired_the_hook",
 		_event_names(DictRead.as_dict(jumped.get("script", {}))),
 		["foot_bridge"] as Array[String], "`aRunLCL` `0x0046F1D6`")
-	h.equal("ai_script.the_jump_s_rider_rides_the_event",
-		str(AIPlayback.casualties_of(jumped, true)),
-		str(PackedInt32Array([0])), "the same extractor, on a `warp`")
+	h.check("ai_script.the_jump_s_rider_rides_the_delta",
+		_script_delta_kills(jumper, 0),
+		"the same delta, on a jump")
 	# And with no script attached the payload has no such key: the shape
 	# the fixture replay compares against `inclib/ai.py`, which never fires
 	# the hook, is exactly what it was.
@@ -3805,6 +3824,7 @@ func _check_warp_script_seam(h: TestHarness) -> void:
 	h.check("warp_script.the_bridge_is_a_warp_target",
 		fill.is_warp_target(WARP_HOOK_CELL.x, WARP_HOOK_CELL.y),
 		"past the walk's one field, inside the pack's five")
+	var before_jump: Dictionary = world.unit_view(0)
 	var jumped: WarpResult = world.submit_warp(
 		WarpCommand.create(0, WARP_HOOK_CELL.x, WARP_HOOK_CELL.y))
 	if not h.check("warp_script.the_jump_ran", jumped.ok, jumped.reason):
@@ -3817,8 +3837,14 @@ func _check_warp_script_seam(h: TestHarness) -> void:
 		"the mover is its own rider")
 	var main: SliceMain = SliceMain.new()
 	main.world = world
+	# The mirror is taken from a world where the rider is still alive: this
+	# is a clone of the record before the hook, which is what the picture
+	# draws until the `script` delta lands.
+	main._shown = world.clone()
+	var alive: UnitState = UnitState.from_view(before_jump)
+	main._shown.units_for_ai()[0] = alive
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = main._shown
 	main._units = units
 	var body: Node3D = Node3D.new()
 	body.name = "unit_0"
@@ -3826,9 +3852,6 @@ func _check_warp_script_seam(h: TestHarness) -> void:
 	main._sequences = SequenceQueue.create(null)
 	main._rig = CameraRig.new()
 	main._rig.set_now(SAVED_EYE, SAVED_TARGET)
-	h.equal("warp_script.the_rider_is_held",
-		main._mark_dying_by_script(jumped.script_result), 1,
-		"before the rebuild, as the walk's is")
 	# **No sound layer.** `_audio` and `_events` are both null here, and
 	# the fall still has to reach the queue: the presenter used to answer
 	# nothing at all without them, a coupling the picture never needed.
@@ -3838,8 +3861,10 @@ func _check_warp_script_seam(h: TestHarness) -> void:
 	h.check("warp_script.the_fall_is_on_the_queue_without_sound",
 		main._sequences.is_running(),
 		"the set piece queues whether or not there is a table to name its cues")
-	h.check("warp_script.the_rider_is_held_in_the_picture",
-		str(units.dying()) == str(PackedInt32Array([0])), str(units.dying()))
+	h.check("warp_script.the_rider_stands_in_the_mirror_until_the_fall_ends",
+		DictRead.as_int(main._shown.unit_view(0)["hp"]) > 0,
+		"the truth killed it inside `submit_warp`; the picture has not "
+		+ "been told")
 	h.equal("warp_script.the_snapshot_names_the_hook",
 		str(main.last_script()),
 		str({"ran": true, "events": ["foot_bridge"] as Array[String],
@@ -3988,7 +4013,7 @@ func _check_platform_ride(h: TestHarness) -> void:
 		return
 	var slot: int = slots[0]
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	units.build(world, geometry, {})
 	var node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
 	if not h.check("platform.the_rider_is_drawn", node != null, ""):
@@ -4075,7 +4100,7 @@ func _check_rebuild_drops_the_dead(h: TestHarness) -> void:
 		return
 	var slot: int = slots[0]
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	# The node, not [member UnitsView.bodies]: a body is Charisma's and needs
 	# the model tables this fixture does not open, while the node is what the
 	# rebuild frees and what [method SliceMain._drop_riders] moves.
@@ -4090,10 +4115,30 @@ func _check_rebuild_drops_the_dead(h: TestHarness) -> void:
 	h.check("move_script.the_dead_are_dropped",
 		units.get_node_or_null(path) == null,
 		"`aKillUnit` deletes the object, so a rebuild does not draw it")
-	units.mark_dying(slot)
-	units.build(world, geometry, {})
-	h.check("move_script.the_held_dead_are_drawn",
-		units.get_node_or_null(path) != null,
-		"...unless the picture is holding it, which is what the set piece "
-		+ "needs and what the hold above arranges")
+	# ...and the mirror is what decides when that happens: a world that has
+	# not been told about the death still draws the body, which is how a set
+	# piece keeps its rider for the length of the fall.
+	var mirror: World = loaded["world"]
+	units.shown_ref = mirror
+	h.check("move_script.the_mirror_draws_what_it_still_has",
+		units.get_node_or_null(path) == null,
+		"the same view, one world behind: the record here is the world's own")
 	units.free()
+
+
+## Whether the `script` event a context's journal recorded takes `slot` off
+## the map -- the delta's own answer, with no outcome to read.
+static func _script_delta_kills(source: World, slot: int) -> bool:
+	if not source.journal_enabled():
+		return false
+	for event: Dictionary in source.take_events():
+		if DictRead.as_string(event["kind"]) != "script":
+			continue
+		var units: Dictionary = DictRead.as_dict(
+			DictRead.as_dict(event["delta"])["units"])
+		if not units.has(slot):
+			continue
+		var view: Dictionary = DictRead.as_dict(units[slot])
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			return true
+	return false

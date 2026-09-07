@@ -109,8 +109,23 @@ func unit_on_index(index: int) -> UnitState:
 	return unit if unit.hp > 0 else null
 
 
+## The picture's journal, or an invalid one.
+##
+## `null` by default, so [method AISystem.run] driven straight from a case
+## file ([code]tests/test_ai.gd[/code]) records nothing and the fixture
+## comparison is unchanged. [World] hands its own journal in when the mission
+## is being played.
+var journal: EventJournal = null
+
+
 func emit(event: AIEvent) -> void:
 	result.add(event)
+	# The turn's own document is the case file's and is unconditional; the
+	# journal is the picture's second reading, and it skips the three kinds
+	# whose routine marked its own boundary ([constant
+	# EventJournal.SELF_MARKED]).
+	if journal != null:
+		var _stamped: Dictionary = journal.stamp(event)
 
 
 func refuse(reason: String) -> void:

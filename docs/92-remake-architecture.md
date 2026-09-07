@@ -1976,6 +1976,44 @@ shapes are worth naming as decisions rather than as omissions:
   prove it, and `IDLE_MSEC` / `MAX_HEAD` / `MAX_BODY` / `MAX_CONNS` bound the
   four ways a peer could otherwise sit on the game's frame.
 
+### 7.17 The picture is a lagging mirror (2026-09-07)
+
+`core` resolves a whole command -- and the whole computer turn -- before it
+returns, so the world `game` reads always stands at the **end** of the last
+one. Three slices of presentation defects came from that, and each was fixed by
+a mechanism that hid one field of that world until the animation caught up:
+eighteen of them by the seventh slice, with `AIPlayback.casualties_of` walking
+**five** payload shapes to find out who a turn had killed and a sixth one set
+piece away. [`100`](100-slice-8-report.md) removes the cause.
+
+| | Decision |
+|---|---|
+| M1 | **The picture reads a lagging clone.** `SliceMain._shown` is advanced one event delta at a time; `SliceMain.world` is read to submit a command, to ask whether one is allowed, and for the flow gates that are about the rules. `World.clone()` is not `save()`/`load_save()`: that pair ends in a permanent fog rebuild and cannot carry `special_models` or `next_map`. |
+| M2 | **A boundary goes where the original drew a frame.** The engine's tick `0x0040B6F0` sits inside the mutating routines ([`28` §1.4](28-effects-and-sound.md)), so everything between two ticks is one visible change. The blocking loop does not transfer; that atomicity does. |
+| M3 | **The journal is opt-in.** `World.enable_journal`; a world without one pays one boolean test per [MapState] setter. `AIContext.journal` is null when `AISystem.run` is driven from a case file, so `cases_ai.json` is unchanged, and the three kinds a routine marks itself are not stamped twice. |
+| M4 | **The fog is computed for the watching seat**, over the mirror, per event, with each walker answered at the cell its body is drawn on. `turn.current_player` is 255 while the computer holds the turn, and a pass for 255 is the aliens' own view of the map. |
+| M5 | **One `reaction` event per shot.** The engine's drain calls `aAttackUnit` per reactor, each with its own blocking animation. The planner's own `reactions` event stays for the case file; it is a different document. |
+| M6 | **The invariant replaces the per-family checks.** After the last delta of a command the mirror's canonical hash equals the truth's. A field no delta carried fails there and nowhere else, whatever mechanic introduced it; the drain resynchronises rather than drawing a world nobody can name. |
+| M7 | **The picture-only mechanisms stay, and are re-documented.** `suppress`/`reveal` hide with no state behind them, `lift`/`shift` interpolate between the shown-before and the shown-after of a set piece, `hide_now` is the frame the object leaves. None of them compensates `core` any more. |
+| M8 | **The pacing is the computer's; a player's command runs at the picture's own speed** (2026-09-07, second pass). `EventPlayback.play` takes the gap between two shown events as an argument: `end_turn` passes 0.45 s of free picture, `_play_command` passes zero. The first shown event is presented inside `play()`, a presenter's hold runs under the animation and not after it, and a shown event whose presenter queued nothing is quiet and costs nothing. What is *watched* — the progress bar, the skip key, the agent's `replay` — is the mirror's seat being 255, never "a playback is running", because the player's own commands run through the same playback ([`100` §3.1](100-slice-8-report.md)). |
+
+**The alien that attacked as a green beam is fixed unconditionally.** Half of
+it was the engine's -- the fog the rules read is rebuilt at the hand-over and
+at nothing between ([`22` §9.4](22-combat-and-visibility.md)) -- but the
+probe that carries the picture ahead of the rules is per *command*, and the
+computer's turn is one command. Reproducing that faithfully leaves a contact
+beam swinging its claws for a whole turn, which reads as a bug rather than as a
+period detail, so §7.1's first half does not apply.
+`PictureFog.beams_until_hand_over` restores the original's timing for the
+checks; it is a **picture** flag and not a `World.compat_flags` entry, because
+a compatibility flag that moved the canonical hash would be a worse defect than
+the one it reproduces. The radar and the ground overlay now read the same
+answer as the bodies, which drops the engine's own stored-byte asymmetry
+([`99` §205](99-slice-7-report.md)) -- a deliberate deviation, so that an alien
+appears everywhere in one frame.
+
+---
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:

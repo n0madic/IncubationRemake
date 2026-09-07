@@ -89,12 +89,15 @@ static func fill_for(acted: int, live: int) -> int:
 ## read them -- `fcn.00477BF0` counts the side's live units and `fcn.00477FB0`
 ## the ones whose `+0x15` is no longer their own allowance.
 ##
-## *played* is the slots the replay has already shown and *doomed* the ones it
-## is still holding on their feet: a unit the computer is going to kill is dead
-## in the world from the first frame, and the divisor it belongs to is the one
-## the turn started with.
-static func tally(world: World, player: int, played: PackedInt32Array,
-		doomed: PackedInt32Array) -> Vector2i:
+## **The world it is given is the picture's**, and that is the whole of the
+## rule now: [member SliceMain._shown] is a command behind the truth, so the
+## units it shows as spent are exactly the ones the replay has already drawn
+## and the ones it shows as alive are the ones still standing on screen. The
+## two lists this used to take -- the slots the replay had played, and the
+## casualties it was holding on their feet -- were the compensation for
+## reading a world that had resolved the whole turn before the first frame
+## (docs/100 section 1).
+static func tally(world: World, player: int) -> Vector2i:
 	if world == null or player < 0:
 		return Vector2i.ZERO
 	var acted: int = 0
@@ -103,11 +106,9 @@ static func tally(world: World, player: int, played: PackedInt32Array,
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty() or DictRead.as_int(view["player"]) != player:
 			continue
-		if DictRead.as_int(view["hp"]) <= 0 and not doomed.has(slot):
+		if DictRead.as_int(view["hp"]) <= 0:
 			continue
 		live += 1
-		if not played.has(slot):
-			continue
 		if DictRead.as_int(view["mp"]) != world.movement_allowance(slot,
 				world.turn.ai_level):
 			acted += 1

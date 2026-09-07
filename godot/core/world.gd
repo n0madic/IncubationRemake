@@ -156,6 +156,16 @@ var next_map: String = ""
 ## only have come from a hand-over that has already run.
 var _hand_over_initialised: bool = false
 
+## The picture's record of what each command changed, or `null`.
+##
+## Off by default: a world with no journal costs one boolean test per
+## [MapState] setter, so the case suites that replay whole missions through
+## [method submit_end_turn] are unaffected. `game` turns it on when the
+## mission is built ([method enable_journal]) and reads it with
+## [method take_events]. [EventJournal] explains what a delta is and why the
+## boundaries sit where they do.
+var _journal: EventJournal = null
+
 
 ## `special_models` is the placer model names the mission's **world set**
 ## carries, out of the geometry cache: leaving it empty skips the gate, which
@@ -460,7 +470,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	var moved: MoveResult = ExecuteMove.execute(state, _units, _unit_types,
 		_ctrlmap, _weapons, unit, walked, command.x, command.y,
 		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng)
+		turn.ai_level, turn, rng, -1, true, _journal)
 	if moved.steps == 0:
 		return moved
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
@@ -505,7 +515,8 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# AI and three times from `aUI.cpp`. So the drain lives here, where the
 	# charge above already is, and not inside [TurnSequence] or [ExecuteMove].
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
+		_journal)
 	return moved
 
 
@@ -550,16 +561,32 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		var empty: AttackResult = AttackResult.new()
 		empty.reason = "no ammunition"
 		return empty
+	var weapon_fired: int = unit.weapon
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
 		turn.human_count(), turn.mode, turn, rng)
 	if unit.hp == 0:
+		# The shooter its own shot killed -- an explosive at contact range.
+		# The boundary is still here: the victims are already down.
+		_mark("fire", command.unit_slot, command.x, command.y,
+			command.x, command.y, weapon_fired, str(weapon_fired),
+			shot.to_dict())
 		return shot
 	var ap: int = _weapons.ap(unit.weapon)
 	unit.mp = unit.mp - ap if unit.mp > ap else 0
 	unit.acted = ACTED_MOVED
+	# **The boundary is after the charge**, so the movement points the pad
+	# draws move in the same delta as the damage; the engine draws its pad
+	# from the same frame the fight animation runs in.
+	#
+	# The weapon rides in the note because it is read at the moment the
+	# trigger was pulled: a bayonet swap or a jam changes the record before
+	# the picture gets to it (docs/97 section 24).
+	_mark("fire", command.unit_slot, unit.x, unit.y, command.x, command.y,
+		weapon_fired, str(weapon_fired), shot.to_dict())
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
-		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng)
+		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
+		_journal)
 	return shot
 
 
@@ -581,6 +608,9 @@ func submit_use(command: UseCommand) -> UseResult:
 	# at the map edge, facing outward, lose a point per press.
 	if not Interact.may_use(state, _units, _unit_types, unit):
 		return UseResult.refused("there is nothing to use in front of it")
+	var front: PackedInt32Array = Interact.cell_in_front(state, unit)
+	var front_x: int = front[0] if front.size() == 2 else unit.x
+	var front_y: int = front[1] if front.size() == 2 else unit.y
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
 		turn.mode, turn, rng)
@@ -602,6 +632,10 @@ func submit_use(command: UseCommand) -> UseResult:
 			turn.human_count(), turn.mode)
 	if unit.hp != 0 and unit.mp != 0:
 		unit.mp -= 1
+	# After the charge, as the fire boundary is: the pad's point and the door's
+	# cells belong to the same frame.
+	_mark("use", command.unit_slot, unit.x, unit.y, front_x, front_y,
+		result.action_point, result.kind, result.to_dict())
 	return result
 
 
@@ -616,7 +650,9 @@ func submit_defend(command: DefendCommand) -> int:
 	var unit: UnitState = _units[command.unit_slot]
 	if not Reaction.may_enter_defence(_weapons, unit):
 		return 0
-	return Reaction.enter_defence(turn, unit)
+	var ticket: int = Reaction.enter_defence(turn, unit)
+	_mark("defend", command.unit_slot, unit.x, unit.y, 0, 0, ticket)
+	return ticket
 
 
 ## Attach a mission program, from `missions/<name>/script.json`.
@@ -705,6 +741,12 @@ func _run_mission_script(call_type: int,
 	result["ran"] = true
 	result["call_type"] = call_type
 	result["env"] = environment.duplicate()
+	# **Every LCL run is a boundary.** A `MoveUnit` hook that drops a
+	# footbridge has killed its riders and dug its nine cells by the time it
+	# answers, and the commands the turn's own program runs place units and
+	# open tubes; all of it happens on screen where the sequence that changes
+	# it is the one drawing (docs/42 section 10).
+	_mark("script", -1, 0, 0, 0, 0, call_type, "", result)
 	return result
 
 
@@ -741,6 +783,7 @@ func submit_stand_down(command: StandDownCommand) -> bool:
 		return false
 	unit.action_state = Refresh.ACTION_STOOD_DOWN
 	unit.mp = 0
+	_mark("stand_down", command.unit_slot, unit.x, unit.y)
 	return true
 
 
@@ -760,6 +803,7 @@ func submit_stimulant(command: SpendStimulantCommand) -> bool:
 		return false
 	unit.mp += unit.stimulant
 	unit.stimulant = Refresh.STIMULANT_SPENT
+	_mark("stimulant", command.unit_slot, unit.x, unit.y, 0, 0, unit.mp)
 	return true
 
 
@@ -779,6 +823,7 @@ func submit_rotate(command: RotateCommand) -> bool:
 			and unit.type_id <= ROTATE_REFUSED_TYPE_HIGH:
 		return false
 	unit.facing = command.facing
+	_mark("rotate", command.unit_slot, unit.x, unit.y, 0, 0, command.facing)
 	return true
 
 
@@ -819,6 +864,8 @@ func submit_toggle_weapon(command: ToggleWeaponCommand) -> bool:
 		return false
 	var unit: UnitState = _units[command.unit_slot]
 	unit.weapon = _weapons.toggle(unit.weapon)
+	_mark("toggle_weapon", command.unit_slot, unit.x, unit.y, 0, 0,
+		unit.weapon)
 	return true
 
 
@@ -952,7 +999,11 @@ func submit_heal(command: HealCommand) -> Dictionary:
 	if not unit.is_alive():
 		return {"ok": false, "reason": "the unit is dead", "target": -1,
 			"delta": 0, "self_heal": false}
-	return Interact.heal_command(state, _units, _unit_types, unit)
+	var healed: Dictionary = Interact.heal_command(state, _units,
+		_unit_types, unit)
+	_mark("heal", command.unit_slot, unit.x, unit.y, 0, 0,
+		DictRead.as_int(healed["delta"]), "", healed)
+	return healed
 
 
 ## The Jet Pack's jump -- `aExecuteWarp` under the pad arm at `0x00472F10`
@@ -978,7 +1029,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 	var from_y: int = unit.y
 	var done: Dictionary = ExecuteWarp.execute(state, _units, _unit_types,
 		_weapons, unit, command.x, command.y, turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng)
+		turn.ai_level, turn, rng, _journal)
 	if not DictRead.as_bool(done["ok"]):
 		return WarpResult.failed(unit.x, unit.y,
 			DictRead.as_string(done["reason"]))
@@ -1006,7 +1057,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 		unit.acted = ACTED_WARPED
 		result.reactions = Reaction.drain(state, _units, _unit_types,
 			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
-			turn, rng)
+			turn, rng, _journal)
 	return result
 
 
@@ -1118,8 +1169,10 @@ func _ground_tick() -> Dictionary:
 			var _counted: bool = UnitState.remove(state, turn, victim)
 			killed.append(slot)
 	var changed: PackedInt32Array = CellObjects.round_tick(state)
-	return {"ignited": Array(ignited), "killed": Array(killed),
-		"changed": Array(changed)}
+	var outcome: Dictionary = {"ignited": Array(ignited),
+		"killed": Array(killed), "changed": Array(changed)}
+	_mark("ground", -1, 0, 0, 0, 0, killed.size(), "", outcome)
+	return outcome
 
 
 func banner_in_range(slot: int) -> bool:
@@ -1154,6 +1207,11 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 		Visibility.build(state, _units, _unit_types, turn.current_player,
 			turn.human_count(), turn.mode)
 		result.fog_rebuilt = true
+	# The rotation, the refresh and the fog are one visible change: the engine
+	# draws its between-players screen here (`0x0047C2C0`, docs/97 section
+	# 35.1) and nothing of the turn before it is on screen after.
+	_mark("hand_over", -1, turn.previous_player, 0, turn.current_player, 0,
+		turn.turn, str(result.code), result.to_dict())
 
 	# **The computer's turn is played here, and handed back through the same
 	# seam it arrived by.** docs/25 section 4 puts `aAISystemControl` at the end
@@ -1207,6 +1265,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			var ctx: AIContext = AIContext.create(state, _units, _unit_types,
 				_weapons, _ctrlmap, turn, rng)
 			ctx.may_fire = ai_may_fire
+			ctx.journal = _journal
 			# The mission script reaches the computer's walks and jumps the
 			# way it reaches the player's: `aRunLCL` closes `aExecuteMove`
 			# and `aExecuteWarp` themselves, with no test of who is moving.
@@ -1220,6 +1279,8 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			Visibility.build(state, _units, _unit_types, turn.current_player,
 				turn.human_count(), turn.mode)
 			result.fog_rebuilt = true
+		_mark("hand_over", -1, turn.previous_player, 0, turn.current_player,
+			0, turn.turn, str(result.code), result.to_dict())
 	result.ai_result = played
 	return result
 
@@ -1233,9 +1294,11 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 ## draw flag, so what is *drawn* follows the command and what is *decided*
 ## follows the last hand-over. [method Visibility.states_for] carries the
 ## addresses.
-func display_visibility() -> Dictionary[int, int]:
+func display_visibility(viewer: int = -1,
+		at: Dictionary[int, Vector2i] = {}) -> Dictionary[int, int]:
+	var seat: int = turn.current_player if viewer < 0 else viewer
 	return Visibility.states_for(state, _units, _unit_types,
-		turn.current_player, turn.human_count(), turn.mode)
+		seat, turn.human_count(), turn.mode, at)
 
 
 ## `0x00481F00` once, as `aViewPlayer.cpp`'s dispatcher runs it: **before a
@@ -1254,8 +1317,13 @@ func display_visibility() -> Dictionary[int, int]:
 func probe_fog() -> int:
 	if compat_flags.has(COMPAT_FOG_PROBE_QUIET):
 		return 0
-	return Visibility.probe(state, _units, _unit_types, turn.current_player,
-		turn.human_count(), turn.mode)
+	var woken: int = Visibility.probe(state, _units, _unit_types,
+		turn.current_player, turn.human_count(), turn.mode)
+	# The probe restores every `+0x4F` and **not** the orders it promoted, so
+	# it changes the rules; the mirror has to follow it or the two worlds
+	# drift by exactly that defect.
+	_mark("fog_probe", -1, 0, 0, 0, 0, woken, "", {})
+	return woken
 
 
 ## `aWalkMoveMap` (`0x004305E0`) over a move map this world produced.
@@ -1271,6 +1339,167 @@ func walk_path(result: MoveMapResult, slot: int, tx: int,
 	var unit: UnitState = _units[slot]
 	return WalkMap.path(state, _units, _ctrlmap, result, unit.x, unit.y,
 		tx, ty)
+
+
+## Start recording what every command changes, for the picture's mirror.
+##
+## Idempotent, and there is no way back: a journal that could be turned off
+## mid-mission would leave the mirror behind the truth with nothing to say so.
+## See [EventJournal].
+func enable_journal() -> void:
+	if _journal != null:
+		return
+	_journal = EventJournal.new()
+	_journal.bind(state, _units, turn, game_control, rng, crand)
+
+
+func journal_enabled() -> bool:
+	return _journal != null
+
+
+## The journal itself, for a caller that hands it to the computer's turn.
+func journal() -> EventJournal:
+	return _journal
+
+
+## The events since the last call, oldest first. Empty without a journal.
+func take_events() -> Array[Dictionary]:
+	if _journal == null:
+		return []
+	return _journal.take()
+
+
+## Close one boundary. A no-op without a journal, and it builds nothing then.
+func _mark(kind: String, slot: int = -1, x: int = 0, y: int = 0,
+		tx: int = 0, ty: int = 0, detail: int = 0, note: String = "",
+		payload: Dictionary = {}) -> void:
+	if _journal == null:
+		return
+	var _event: Dictionary = _journal.mark(kind, slot, x, y, tx, ty, detail,
+		note, payload)
+
+
+## An independent world at this one's state -- the picture's mirror.
+##
+## **Not [method save] and [method load_save].** That pair needs the same
+## [MapResource] and ends in a permanent `aBuildVisibleMap`
+## (`0x004490A9`), which would move the fog of the copy the picture reads; and
+## it cannot carry `special_models`, `next_map` or the selection. This copies
+## the simulation and **shares** the four read-only tables: the map resource,
+## the control map, the unit types and the weapons are authored data that no
+## rule writes.
+##
+## The mirror runs no mission program ([member script_program] stays `null`):
+## it is advanced by deltas and never resolves anything itself.
+func clone() -> World:
+	var copy: World = World.new()
+	copy.resource = resource
+	copy._ctrlmap = _ctrlmap
+	copy._unit_types = _unit_types
+	copy._weapons = _weapons
+	copy.state = state.clone()
+	for key: Variant in _units:
+		var unit: UnitState = _units[key]
+		copy._units[DictRead.as_int(key)] = UnitState.from_view(unit.view())
+	copy.turn = turn.clone()
+	copy.game_control = game_control.clone()
+	copy.rng = rng.clone()
+	copy.crand = crand.clone()
+	copy.compat_flags = compat_flags.duplicate()
+	copy.selected_slot = selected_slot
+	copy.gore_level = gore_level
+	copy.next_map = next_map
+	copy.ai_may_fire = ai_may_fire
+	copy._hand_over_initialised = _hand_over_initialised
+	copy._camera = _camera.duplicate(true)
+	copy._scenery = _scenery.duplicate(true)
+	return copy
+
+
+## Advance this world by one event's delta. The mirror's only mutator.
+##
+## Cells go through [MapState]'s setters, so a mirror that is itself
+## journalled would record them; units are rebuilt from their views, because
+## a slot the turn refilled is a different unit and not an edited one.
+func apply_delta(delta: Dictionary) -> void:
+	if delta.is_empty():
+		return
+	var cells: Dictionary = DictRead.as_dict(delta["cells"])
+	for key: Variant in cells:
+		state.apply_cell_record(DictRead.as_int(key),
+			DictRead.as_dict(cells[key]))
+	if delta.has("objects"):
+		state.set_objects(DictRead.to_bytes(delta["objects"]))
+	var units: Dictionary = DictRead.as_dict(delta["units"])
+	for key: Variant in units:
+		var slot: int = DictRead.as_int(key)
+		var view: Dictionary = DictRead.as_dict(units[key])
+		if view.is_empty():
+			var _gone: bool = _units.erase(slot)
+		else:
+			_units[slot] = UnitState.from_view(view)
+	turn.restore(DictRead.as_dict(delta["turn"]))
+	game_control.restore(DictRead.as_int32_array(delta["game_control"]))
+	rng.restore(DictRead.as_dict(delta["rng"]))
+	crand.restore(DictRead.as_dict(delta["crand"]))
+
+
+## Every event in order. The list [method take_events] answered.
+func apply_events(events: Array[Dictionary]) -> void:
+	for event: Dictionary in events:
+		apply_delta(DictRead.as_dict(event["delta"]))
+
+
+## Where two worlds differ, named: the turn, the game control, the two
+## generators, the compatibility flags, each unit whose view moved (with
+## the fields), the cells and the objects. Reads only. For the mirror's
+## resynchronisation warning and a driven session's snapshot -- a hash that
+## says "different" names nothing, and the field is what closes the defect.
+func mirror_diff(other: World) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	if other == null:
+		return out
+	if not EventJournal._same_view(turn.view(), other.turn.view()):
+		out.append("turn %s vs %s" % [str(turn.view()), str(other.turn.view())])
+	if game_control.values() != other.game_control.values():
+		out.append("game_control")
+	if not EventJournal._same_view(rng.state(), other.rng.state()):
+		out.append("rng %s vs %s" % [str(rng.state()), str(other.rng.state())])
+	if not EventJournal._same_view(crand.state(), other.crand.state()):
+		out.append("crand %s vs %s" % [str(crand.state()), str(other.crand.state())])
+	if compat_flags != other.compat_flags:
+		out.append("compat_flags")
+	for slot: int in unit_slots():
+		if not other.has_unit(slot):
+			out.append("unit %d missing" % slot)
+			continue
+		var mine: Dictionary = unit_view(slot)
+		var theirs: Dictionary = other.unit_view(slot)
+		if EventJournal._same_view(mine, theirs):
+			continue
+		var fields: PackedStringArray = PackedStringArray()
+		for key: Variant in mine:
+			if not theirs.has(key) or mine[key] != theirs[key]:
+				fields.append("%s %s/%s" % [str(key), str(mine[key]),
+					str(theirs.get(key))])
+		out.append("unit %d: %s" % [slot, ", ".join(fields)])
+	for slot: int in other.unit_slots():
+		if not has_unit(slot):
+			out.append("unit %d extra" % slot)
+	var cells: int = 0
+	var first: String = ""
+	for index: int in range(state.width * state.height):
+		if not EventJournal._same_view(state.cell_record(index),
+				other.state.cell_record(index)):
+			cells += 1
+			if first.is_empty():
+				first = "%d %s vs %s" % [index, str(state.cell_record(index)),
+					str(other.state.cell_record(index))]
+	if cells > 0:
+		out.append("%d cell(s), first %s" % [cells, first])
+	if state.objects() != other.state.objects():
+		out.append("objects")
+	return out
 
 
 func canonical_hash() -> PackedByteArray:
@@ -1325,6 +1554,11 @@ func load_save(data: PackedByteArray) -> int:
 	# section 9.4.
 	Visibility.build(state, _units, _unit_types, turn.current_player,
 		turn.human_count(), turn.mode)
+	# The load replaced every component the journal was watching, so it is
+	# re-bound onto the new ones; whatever it had recorded belonged to the
+	# world that is gone.
+	if _journal != null:
+		_journal.bind(state, _units, turn, game_control, rng, crand)
 	return code
 
 

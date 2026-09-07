@@ -117,7 +117,8 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 	if unit.hp > 0:
 		var reactions: Array[Dictionary] = Reaction.drain(ctx.map, ctx.units,
 			ctx.utab, ctx.wtab, unit, ctx.turn.ai_level,
-			ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng)
+			ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng,
+			ctx.journal)
 		if not reactions.is_empty():
 			ctx.emit(AIEvent.make("reactions", unit.slot, unit.x, unit.y,
 				0, 0, reactions.size(), "",

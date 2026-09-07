@@ -79,10 +79,12 @@ func build(frame: int) -> Dictionary:
 	# picture does not: a walk that never played looks exactly like a walk
 	# that finished if only the endpoint is read.
 	document["walking"] = _main._units != null and _main._units.is_walking()
-	# Whether the computer's turn is being replayed. The interface refuses
+	# Whether the computer's turn is being drawn. The interface refuses
 	# every press while it is (docs/43 section 5.2), which is invisible from
-	# the world alone.
-	document["replay"] = _main._playback.is_running()
+	# the world alone -- the truth is back on the marines before the first
+	# alien moves. It is the **mirror's** seat, not the playback: a player's
+	# own command runs through the same playback and is not a replay.
+	document["replay"] = _main._watching_the_computer()
 	# What the pool holds right now, by wave: the clicks and the voices of
 	# docs/28 sections 2.5 and 4.3 are single frames of sound, so a drive that
 	# only read the world could not tell a silent interface from a noisy one.
@@ -93,6 +95,24 @@ func build(frame: int) -> Dictionary:
 	document["reachable"] = query(false)
 	document["warp"] = query(true)
 	document["hash"] = world.canonical_hash_hex()
+	# **The picture's own world, and how far behind it is.** `hash` is the
+	# truth's; `shown_hash` is the mirror's and differs while a command or a
+	# computer turn is still being drawn, `pending` counts the events whose
+	# deltas have not landed, and `desyncs` is how often the mirror had to be
+	# resynchronised because a delta did not carry everything -- zero is the
+	# contract (docs/100 section 2).
+	var mirror: World = _main.shown()
+	document["shown_hash"] = mirror.canonical_hash_hex() if mirror != null \
+		else ""
+	document["pending"] = _main._playback.remaining() \
+		if _main._playback != null else 0
+	document["desyncs"] = _main._desyncs
+	# What differs, named, while the two hashes differ: empty otherwise, and
+	# computed only then, because a driver polling every frame must not pay
+	# a whole-world comparison for a level picture.
+	document["mirror_diff"] = Array(world.mirror_diff(mirror)) \
+		if mirror != null and mirror != world \
+		and document["shown_hash"] != document["hash"] else []
 	return document
 
 
@@ -163,9 +183,13 @@ func query(warp: bool) -> Array:
 	return out
 
 
+## Every unit as the **picture** has it, which during a replay is not where
+## the truth says it is: the mirror is a command behind (docs/100 section 2).
+## `hash` beside it is the truth's, and `shown_hash` this world's, so a driver
+## can tell the two apart.
 func units() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	var world: World = _main.world
+	var world: World = _main.shown()
 	if world == null:
 		return out
 	for slot: int in world.unit_slots():
@@ -201,7 +225,6 @@ func picture() -> Dictionary:
 		"walking": view != null and view.is_walking(),
 		"firing": view != null and view.any_busy(),
 		"playing": playing,
-		"dying": view.dying() if view != null else PackedInt32Array(),
 		"suppressed": view.suppressed() if view != null \
 			else PackedInt32Array(),
 		"idle_starts": view.scheduler.starts if view != null else 0,

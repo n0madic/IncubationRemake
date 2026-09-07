@@ -212,7 +212,7 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 				ctx.utab, ctx.ctab, ctx.wtab, unit, walked, tx, ty,
 				IncInt.u8(ctx.mp_left[best_cell]), ctx.turn.human_count(),
 				ctx.turn.mode, ctx.turn.ai_level, ctx.turn, ctx.rng,
-				unit.mp)
+				unit.mp, true, ctx.journal)
 			if not moved.ok and not moved.movement_zeroed:
 				return false
 			_apply_move(ctx, unit, moved, sx, sy)
@@ -223,7 +223,8 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 		if unit.hp > 0:
 			var reactions: Array[Dictionary] = Reaction.drain(ctx.map,
 				ctx.units, ctx.utab, ctx.wtab, unit, ctx.turn.ai_level,
-				ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng)
+				ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng,
+				ctx.journal)
 			if not reactions.is_empty():
 				ctx.emit(AIEvent.make("reactions", unit.slot, unit.x, unit.y,
 					0, 0, reactions.size(), "",
@@ -246,7 +247,7 @@ static func _apply_move(ctx: AIContext, unit: UnitState,
 	# turn, when the world they were asked on is gone.
 	#
 	# `path` is the one thing a playback cannot recover for itself. By the time
-	# [AIPlayback] reaches this event the world is already at the end of the
+	# the picture's playback reaches this event the world is already at the end of the
 	# turn, so re-deriving the route with [method WalkMap.path] would derive it
 	# against the wrong state -- the same reason every other event carries what
 	# it needs. It is the walk's own [member MoveResult.route]: source first,
@@ -311,6 +312,12 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 	var sy: int = unit.y
 	unit.x = tx
 	unit.y = ty
+	# The landing and the mine under it are two moments, as they are on the
+	# player's own jump ([ExecuteWarp]). The event this routine emits at the
+	# end is the fixture's document and a different one.
+	if ctx.journal != null:
+		var _landed: Dictionary = ctx.journal.mark("warp", unit.slot, sx, sy,
+			tx, ty, 0, "", {})
 	if ctx.map.obstacle_at(target) == MapState.OBSTACLE_MINE \
 			and CellObjects.delete_object(
 				ctx.map, ctx.map.effect_at(MapState.OBJECT_SLOT, target)):
@@ -320,6 +327,9 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		payload["blast"] = Interact.execute_bomb(ctx.map, ctx.units, ctx.utab,
 			ctx.wtab, tx, ty, ctx.turn.ai_level, ctx.turn.human_count(),
 			ctx.turn.mode, ctx.turn, ctx.rng).to_dict()
+		if ctx.journal != null:
+			var _blown: Dictionary = ctx.journal.mark("mine", unit.slot, tx,
+				ty, tx, ty, 0, "", {"blast": payload["blast"]})
 	# `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
 	# on every warp its mine arm did not kill it on (docs/22 section 9.4) --
 	# and `aRunLCL` `0x0046F1D6` follows it behind the same gate, so the

@@ -23,7 +23,7 @@ extends RefCounted
 ## they would have in the engine. It is a decision rather than a measurement,
 ## and it is written down as one.
 ##
-## `skip()` keeps the meaning it has in [AIPlayback]: **stop drawing**, never
+## `skip()` keeps the meaning it has in [EventPlayback]: **stop drawing**, never
 ## stop simulating. Every queued step is snapped to its last frame, which is
 ## the state the world has held all along, and every sound the queue started
 ## is killed -- because a sound's lifetime is its sequence's, and a looping one
@@ -140,7 +140,7 @@ func painted() -> int:
 	return _painted
 
 
-## How long everything queued will take, in seconds. What [AIPlayback]'s step
+## How long everything queued will take, in seconds. What [EventPlayback]'s step
 ## callback returns so a replay does not cut a set piece in half.
 func seconds_left() -> float:
 	var total: float = 0.0

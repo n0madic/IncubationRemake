@@ -147,6 +147,64 @@ func view() -> Dictionary:
 	}
 
 
+## The inverse of [method view].
+##
+## Both halves used to live in `SaveCodec`, which was the only reader; the
+## picture's mirror is the second, so the pair belongs together. The values
+## may arrive as typed arrays (a delta built in memory) or as the `Array` of
+## floats `JSON.parse_string` produces (a save), and [method _ints] narrows
+## either -- a hash over the parsed form would be stable and wrong.
+static func from_view(view: Dictionary) -> TurnState:
+	var turn: TurnState = TurnState.create()
+	turn.turn = DictRead.as_int(view["turn"])
+	turn.current_player = DictRead.as_int(view["current_player"])
+	turn.previous_player = DictRead.as_int(view["previous_player"])
+	turn.player_count = DictRead.as_int(view["player_count"])
+	turn.solo_flag = DictRead.as_bool(view["solo_flag"])
+	turn.ai_level = DictRead.as_int(view["ai_level"])
+	turn.mode = DictRead.as_int(view["mode"])
+	turn.player_kind = _ints(view["player_kind"])
+	turn.end_state = _ints(view["end_state"])
+	turn.reaction_counter = _ints(view["reaction_counter"])
+	turn.hero_killed = _ints(view["hero_killed"])
+	turn.mission_kills = _ints(view["mission_kills"])
+	turn.mission_lost = _ints(view["mission_lost"])
+	turn.mission_lost_to_enemy = _ints(view["mission_lost_to_enemy"])
+	turn.turn_control = DictRead.as_int(view["turn_control"])
+	return turn
+
+
+static func _ints(value: Variant) -> PackedInt32Array:
+	if value is PackedInt32Array:
+		var packed: PackedInt32Array = value
+		return packed.duplicate()
+	return DictRead.to_int32(value)
+
+
+## Write another turn's fields over this one, in place.
+##
+## [method clone] answers with a new object; the mirror keeps one [TurnState]
+## for the life of the mission because `World` hands the same reference to
+## every rule, so the delta writes through instead of replacing.
+func restore(view: Dictionary) -> void:
+	var other: TurnState = from_view(view)
+	turn = other.turn
+	current_player = other.current_player
+	previous_player = other.previous_player
+	player_count = other.player_count
+	player_kind = other.player_kind
+	end_state = other.end_state
+	solo_flag = other.solo_flag
+	ai_level = other.ai_level
+	mode = other.mode
+	reaction_counter = other.reaction_counter
+	hero_killed = other.hero_killed
+	mission_kills = other.mission_kills
+	mission_lost = other.mission_lost
+	mission_lost_to_enemy = other.mission_lost_to_enemy
+	turn_control = other.turn_control
+
+
 func clone() -> TurnState:
 	var copy: TurnState = TurnState.new()
 	copy.turn = turn

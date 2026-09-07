@@ -65,7 +65,7 @@ var script_result: Dictionary = {}
 ## `inclib.movemap.ExecuteResult.to_dict` and pinned by the native capture in
 ## `tests/fixtures/movemap/cases_native.json`, which the engine emitted and
 ## which cannot grow a field the engine never had. This is presentation data
-## for [AIPlayback], carried in the move event's payload instead.
+## for the picture's playback, carried in the move event's payload instead.
 var route: PackedInt32Array = PackedInt32Array()
 
 ## Every reaction shot the walk drew -- docs/25 section 6. Empty when nobody was

@@ -72,9 +72,15 @@ var _lifts: Dictionary[int, int] = {}
 ## Slot -> the engine-unit offset a platform ride is drawing it at
 ## ([method shift]), across rather than up.
 var _shifts: Dictionary[int, Vector3i] = {}
-## The world this view was last built from, so a lift can work out the height
-## it is an offset *from* without the caller passing it in each frame.
-var world_ref: World = null
+## The world this view was last built from -- the picture's **mirror**, one
+## command behind the truth ([member SliceMain._shown]) -- so a lift can work
+## out the height it is an offset *from* without the caller passing it in
+## each frame.
+var shown_ref: World = null
+## How many times [method build] has run, for a suite: the rebuild is the
+## expensive half of landing a delta, and the picture is meant to pay it
+## once per frame however many deltas landed.
+var builds: int = 0
 ## docs/42 section 6 -- the four idle slots.
 var scheduler: IdleScheduler = IdleScheduler.new()
 ## The `aRandom2` stream the scheduler and the idle selector draw from: the
@@ -89,7 +95,14 @@ const FREEZE_HEIGHT: int = 96000
 const MAX_IDLE_TICKS: int = 4
 
 
-func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
+## `seen` is what the picture may see, slot to `+0x4F`; an empty dictionary
+## asks the world for a fresh pass of its own, which is what a suite building
+## a view straight from a world wants. `main.gd` passes [PictureFog]'s answer,
+## which is the same pass over the mirror for the **watching** seat and with
+## every walker answered where its body is drawn.
+func build(world: World, geometry: Dictionary, textures: Dictionary,
+		seen: Dictionary[int, int] = {}) -> void:
+	builds += 1
 	# Freed synchronously, not queued: a rebuild has to leave the node list in
 	# its final state before anything reads it back, and `queue_free` defers to
 	# the end of the frame.
@@ -109,23 +122,17 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	_steps.clear()
 	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
 	var types: UnitTypeTable = world.unit_types()
-	world_ref = world
+	shown_ref = world
 	# **What is drawn is a fresh fog pass, not the stored one.** The rules read
 	# `+0x4F` as the last hand-over left it; the picture does not. `0x00481F00`
 	# rebuilds the fog before every player command and restores only the unit
 	# byte, so the 3D object's draw flag keeps the fresh answer -- which is why
 	# an alien walked into view appears the moment you walk, rather than when
-	# the turn changes. [method World.display_visibility] is that query.
-	var seen: Dictionary[int, int] = world.display_visibility()
+	# the turn changes. [PictureFog] is that query, over the mirror.
+	if seen.is_empty():
+		seen = world.display_visibility()
 	for slot: int in world.unit_slots():
 		var view: Dictionary = world.unit_view(slot)
-		# **A held record wins over the world's.** The slot may have been
-		# refilled by a mission script while the turn that killed its owner
-		# was being decided; until the death is shown, this is still the
-		# casualty's tile and the casualty's body.
-		var ghost: bool = _held_views.has(slot)
-		if ghost:
-			view = (_held_views[slot] as Dictionary).duplicate()
 		if view.is_empty():
 			continue
 		# **A dead unit is not drawn.** `aKillUnit` (`0x00472920`) is the death
@@ -135,20 +142,13 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 		# [method UnitState.remove] only clears the map cell. Without this the
 		# body stood there until some later rebuild happened to drop it, which
 		# for a unit killed on the player's turn was the next hand-over.
-		if DictRead.as_int(view["hp"]) == 0 and not _dying.has(slot):
+		# The mirror keeps a casualty until the delta that killed it lands,
+		# which is the death stage of the shot that is drawing it -- so a
+		# dead record here really is one the picture has finished with.
+		if DictRead.as_int(view["hp"]) == 0:
 			continue
-		# **Not for a held record.** `seen` is keyed by slot, and a slot whose
-		# record was refilled by a mission script answers for its *new* owner
-		# -- so a reinforcement the player cannot see would take the casualty
-		# being held on it out of the picture, which is the very defect the
-		# hold exists to fix.
-		if seen.has(slot) and not ghost:
+		if seen.has(slot):
 			view["visibility"] = seen[slot]
-		# **A unit held at its old cell keeps its old answer.** See
-		# [member _held_visibility]: the live pass reads the end of the turn,
-		# and this one has not walked yet.
-		if _held_visibility.has(slot) and not ghost:
-			view["visibility"] = _held_visibility[slot]
 		# docs/22 section 9: a hidden unit is not drawn and a contact is a blip.
 		# The rule is [Fog]'s, so a change to what visibility means is one edit
 		# and not a search through the renderer.
@@ -172,10 +172,6 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var type_id: int = DictRead.as_int(view["type_id"])
 	var x: int = DictRead.as_int(view["x"])
 	var y: int = DictRead.as_int(view["y"])
-	# The replay's override, if this unit has not played its move yet.
-	if _held_at.has(slot):
-		x = _held_at[slot].x
-		y = _held_at[slot].y
 	node.name = "unit_%d" % slot
 	var cell: Dictionary = world.cell_view(x, y)
 	var h: int = DictRead.as_int(cell.get("height", 0))
@@ -291,20 +287,18 @@ func fire(slot: int, tx: int, ty: int) -> float:
 	if not states.has(slot):
 		return 0.0
 	var node: Node3D = _node_of(slot)
-	if node != null and world_ref != null:
-		var view: Dictionary = world_ref.unit_view(slot)
-		if not view.is_empty() or _held_at.has(slot):
+	if node != null and shown_ref != null:
+		var view: Dictionary = shown_ref.unit_view(slot)
+		if not view.is_empty():
 			# `Combat.direction` is the engine's own octant rule (docs/22
 			# section 7.4), and a target is rarely a neighbouring cell -- which
 			# is the one case [method _facing_of]'s step table covers. Reading
 			# a `core` routine mutates nothing.
-			# From where the body **is drawn**, which during the computer's
-			# replay is not where the world says it is.
-			var from_x: int = _held_at[slot].x if _held_at.has(slot) \
-				else DictRead.as_int(view["x"])
-			var from_y: int = _held_at[slot].y if _held_at.has(slot) \
-				else DictRead.as_int(view["y"])
-			var facing: int = Combat.direction(from_x, from_y, tx, ty)
+			# From where the body **is drawn**. The mirror is what the picture
+			# reads, so during a replay this is the cell the unit stands on
+			# now and not the one it ends the turn on.
+			var facing: int = Combat.direction(DictRead.as_int(view["x"]),
+				DictRead.as_int(view["y"]), tx, ty)
 			_face(node, _body_of(slot), facing)
 	return states[slot].fire()
 
@@ -421,7 +415,7 @@ func any_busy() -> bool:
 ##
 ## The **clock is the caller's**: the walk is told how long it has and fits
 ## itself into that window. It never decides when the next thing happens, which
-## is what keeps [AIPlayback]'s `skip()` meaning "stop drawing" rather than
+## is what keeps [EventPlayback]'s `skip()` meaning "stop drawing" rather than
 ## "stop simulating".
 func start_walk(slot: int, cells: PackedInt32Array, width: int,
 		seconds: float, step_frames: int = 0, delay: float = 0.0) -> void:
@@ -439,8 +433,8 @@ func start_walk(slot: int, cells: PackedInt32Array, width: int,
 	# appeared at its destination, then jumped back and walked to it.
 	# `_advance_walk` only writes the position on the frame after this one.
 	var start: Node3D = _node_of(slot)
-	if start != null and world_ref != null:
-		start.position = _cell_position(cells[0], width, world_ref)
+	if start != null and shown_ref != null:
+		start.position = _cell_position(cells[0], width, shown_ref)
 		var heading: int = _facing_of(cells[0], cells[1], width)
 		if heading >= 0:
 			_face(start, _body_of(slot), heading)
@@ -494,7 +488,7 @@ func is_walking() -> bool:
 
 ## Put every unit where the world says it is and stop every walk.
 ##
-## `AIPlayback.skip()` must leave the map in exactly the state the last frame
+## `EventPlayback.skip()` must leave the map in exactly the state the last frame
 ## would have shown, and a walk half way between two cells is not that.
 func finish_walks(world: World) -> void:
 	for slot: int in _walks.keys():
@@ -561,7 +555,7 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 ## Calling `rest()` alone -- which is all this did at first -- leaves the node
 ## wherever the last interpolated frame put it, short of the destination. For
 ## the player's move that off-centre idle persists until the next command's
-## rebuild; for `AIPlayback.skip()` it leaves bodies stranded between cells,
+## rebuild; for `EventPlayback.skip()` it leaves bodies stranded between cells,
 ## which is precisely the state `skip()` promises cannot happen.
 func _snap_to_end(slot: int, world: World) -> void:
 	if states.has(slot):
@@ -593,15 +587,15 @@ func drawn_position(slot: int) -> Vector3i:
 	var node: Node3D = _node_of(slot)
 	if node != null:
 		return WorldSpace.from_godot(node.position)
-	if world_ref == null:
+	if shown_ref == null:
 		return Vector3i.ZERO
-	var view: Dictionary = world_ref.unit_view(slot)
+	var view: Dictionary = shown_ref.unit_view(slot)
 	if view.is_empty():
 		return Vector3i.ZERO
 	var x: int = DictRead.as_int(view["x"])
 	var y: int = DictRead.as_int(view["y"])
 	return WorldSpace.from_godot(_cell_position(
-		world_ref.state.index_of(x, y), world_ref.resource.width, world_ref))
+		shown_ref.state.index_of(x, y), shown_ref.resource.width, shown_ref))
 
 
 ## The map index a slot's walk ends on, or -1 when it is not walking.
@@ -810,14 +804,14 @@ func _apply_shifts() -> void:
 
 func _place_shift(slot: int, offset: Vector3i) -> void:
 	var node: Node3D = _node_of(slot)
-	if node == null or world_ref == null:
+	if node == null or shown_ref == null:
 		return
-	var view: Dictionary = world_ref.unit_view(slot)
+	var view: Dictionary = shown_ref.unit_view(slot)
 	if view.is_empty():
 		return
-	var index: int = world_ref.state.index_of(DictRead.as_int(view["x"]),
+	var index: int = shown_ref.state.index_of(DictRead.as_int(view["x"]),
 		DictRead.as_int(view["y"]))
-	var at: Vector3 = _cell_position(index, world_ref.resource.width, world_ref) \
+	var at: Vector3 = _cell_position(index, shown_ref.resource.width, shown_ref) \
 		+ WorldSpace.to_godot(offset.x, offset.y, 0)
 	node.position.x = at.x
 	node.position.z = at.z
@@ -833,91 +827,33 @@ func drop_lifts() -> int:
 	return count
 
 
-## Slot -> the cell the picture draws that unit on, whatever the world says.
+## Where each walking body is **drawn**, slot to cell.
 ##
-## The computer's replay is the only user: `core` resolves the whole turn
-## before any of it is shown, so a unit that has not played its move event yet
-## is already standing where it will end up. [method AIPlayback.pending_starts]
-## says where each of them still is, and this holds them there until their own
-## event comes round.
-##
-## It is the same contract [method lift] and [method suppress] have: the world
-## is never consulted about it and never told, and a rebuild re-applies rather
-## than resets.
-var _held_at: Dictionary[int, Vector2i] = {}
-
-
-## What a held unit's `+0x4F` was **before** the computer's turn ran.
-##
-## The other half of the same defect [member _held_at] fixes, and the same
-## argument: [method World.display_visibility] is computed from where the
-## units are *now*, and after `submit_end_turn` that is where they end the
-## turn. An alien that walks out of sight was therefore a contact beam --
-## docs/22 section 9.1's `+0x4F == 1` -- from the very first frame of the
-## replay, standing on the cell it had not left yet.
-##
-## The set is the **caller's**, not [member _held_at]'s. Two units are in one
-## and not the other and both were drawn wrong while the two were the same
-## test: the unit whose event is on screen *now* has left `_held_at` -- the
-## playback advances its index before it calls back -- so a walker heading out
-## of sight turned into a beam the instant its own walk began; and a marine
-## the computer kills mid-turn is an observer the world has already lost, so
-## the aliens only it could see were hidden from the first frame although the
-## marine is still standing on screen. [method SliceMain._visibility_hold]
-## decides which slots are in it and releases each one after its own event has
-## been shown.
-var _held_visibility: Dictionary[int, int] = {}
-
-
-## Draw these slots on these cells until told otherwise. An empty dictionary
-## puts everyone back where the world says they are.
-func hold_at(cells: Dictionary[int, Vector2i]) -> void:
-	_held_at = cells.duplicate()
-
-
-## The visibility a held slot is drawn with -- see [member _held_visibility].
-## Cleared with the same empty dictionary [method hold_at] takes.
-func hold_visibility(seen: Dictionary[int, int]) -> void:
-	_held_visibility = seen.duplicate()
-
-
-## Slot -> the cell it is held on, for a caller and a suite.
-func held_at() -> Dictionary[int, Vector2i]:
-	return _held_at.duplicate()
-
-
-## Slot -> the visibility it is held at, for a caller and a suite.
-func held_visibility() -> Dictionary[int, int]:
-	return _held_visibility.duplicate()
-
-## The casualties of the shot now on screen, kept drawn although the world
-## says they are dead, until the shot's own death stage hides them.
-##
-## The rebuild that drops a casualty runs *before* the event that killed it is
-## presented -- for the computer's replay always -- so without this a marine
-## vanished and the sound of what killed it arrived afterwards. The engine
-## hides the object **at once** in the death stage of `aPlayFightAnimation`
-## (`0x00405320(obj, 5)`, docs/42 section 4.8), which is the moment
-## [method hide_now] reproduces; there is no timer, and the 0.7 s linger this
-## replaced was the remake's number.
-var _dying: Dictionary[int, bool] = {}
-## The record a dying slot is drawn from, where the world's own is no longer
-## the unit that died -- see [method mark_dying] and
-## [member SliceMain._views_before_turn]. Empty for the ordinary case, where
-## the world still carries the casualty's own record with its hit points at
-## zero.
-var _held_views: Dictionary[int, Dictionary] = {}
-
-
-## Keep drawing `slot` although the world says it is dead, until [method
-## hide_now].
-## `view` is the record to draw it from, and is given only where the world's
-## own record for the slot has already been taken by somebody else: a mission
-## script's `InsertUnit` reuses a slot the same turn emptied.
-func mark_dying(slot: int, view: Dictionary = {}) -> void:
-	_dying[slot] = true
-	if not view.is_empty():
-		_held_views[slot] = view.duplicate()
+## The fog is asked about this rather than about the state's own cell: a body
+## crossing a field is between the cell its walk started on and the one its
+## delta will put it on, and asking about the stale cell is what kept an alien
+## that stepped into the squad's sight a contact beam. See [PictureFog].
+func walking_cells() -> Dictionary[int, Vector2i]:
+	var out: Dictionary[int, Vector2i] = {}
+	if shown_ref == null:
+		return out
+	for slot: int in _walks:
+		var walk: Dictionary = _walks[slot]
+		var cells: PackedInt32Array = DictRead.as_int32_array(walk["cells"])
+		var width: int = DictRead.as_int(walk["width"])
+		if cells.is_empty() or width <= 0:
+			continue
+		var elapsed: float = DictRead.as_float(walk["elapsed"]) \
+			- DictRead.as_float(walk.get("delay", 0.0))
+		var seconds: float = DictRead.as_float(walk["seconds"])
+		var at: int = cells[0]
+		if elapsed > 0.0 and seconds > 0.0:
+			var travelled: float = (elapsed / seconds) \
+				* float(cells.size() - 1)
+			var step: int = clampi(roundi(travelled), 0, cells.size() - 1)
+			at = cells[step]
+		out[slot] = Vector2i(at % width, at / width)
+	return out
 
 
 ## The part a Charisma model puts at the end of the weapon, and the name six
@@ -955,33 +891,9 @@ func muzzle_point(slot: int, part: String = MUZZLE_PART) -> Vector3i:
 	return WorldSpace.from_godot(body.part_position(part))
 
 
-## Whether this slot is being held on screen past its death.
-func is_dying(slot: int) -> bool:
-	return _dying.has(slot)
-
-
-## The record a dying slot is being drawn from, or an empty dictionary where
-## the world's own record is still the casualty's. See [member _held_views].
-func held_view(slot: int) -> Dictionary:
-	if not _held_views.has(slot):
-		return {}
-	return (_held_views[slot] as Dictionary).duplicate()
-
-
-## The slots still drawn past their death, for a caller and a suite.
-func dying() -> PackedInt32Array:
-	var out: PackedInt32Array = PackedInt32Array()
-	for slot: int in _dying:
-		out.append(slot)
-	out.sort()
-	return out
-
-
 ## `0x00405320(obj, 5)` -- the object leaves the picture in this frame.
 ## Answers whether a node was there to remove.
 func hide_now(slot: int) -> bool:
-	_dying.erase(slot)
-	_held_views.erase(slot)
 	bodies.erase(slot)
 	states.erase(slot)
 	_walks.erase(slot)
@@ -991,13 +903,6 @@ func hide_now(slot: int) -> bool:
 	remove_child(node)
 	node.free()
 	return true
-
-
-## Drop every death hold -- a new command's rebuild, which is where the
-## dead leave the picture whether or not their shot was shown to the end.
-func clear_dying() -> void:
-	_dying.clear()
-	_held_views.clear()
 
 
 ## Slot -> the offset currently in force, for a caller and a suite.
@@ -1047,25 +952,25 @@ func turn_to(slot: int, yaw: int) -> bool:
 ## The body back on the cell the world has it on, as a rebuild would put it.
 func settle(slot: int) -> bool:
 	var node: Node3D = _node_of(slot)
-	if node == null or world_ref == null:
+	if node == null or shown_ref == null:
 		return false
-	var view: Dictionary = world_ref.unit_view(slot)
+	var view: Dictionary = shown_ref.unit_view(slot)
 	if view.is_empty():
 		return false
-	var index: int = world_ref.state.index_of(DictRead.as_int(view["x"]),
+	var index: int = shown_ref.state.index_of(DictRead.as_int(view["x"]),
 		DictRead.as_int(view["y"]))
-	node.position = _cell_position(index, world_ref.resource.width, world_ref)
+	node.position = _cell_position(index, shown_ref.resource.width, shown_ref)
 	_place(slot, DictRead.as_int(_lifts.get(slot, 0)))
 	return true
 
 
 func _floor_y(slot: int) -> float:
-	if world_ref == null:
+	if shown_ref == null:
 		return 0.0
-	var view: Dictionary = world_ref.unit_view(slot)
+	var view: Dictionary = shown_ref.unit_view(slot)
 	if view.is_empty():
 		return 0.0
-	var cell: Dictionary = world_ref.cell_view(DictRead.as_int(view["x"]),
+	var cell: Dictionary = shown_ref.cell_view(DictRead.as_int(view["x"]),
 		DictRead.as_int(view["y"]))
 	return float(DictRead.as_int(cell.get("height", 0))) \
 		/ WorldSpace.WORLD_UNITS_PER_METRE

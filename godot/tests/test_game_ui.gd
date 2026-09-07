@@ -31,8 +31,99 @@ func run(h: TestHarness) -> void:
 	_hand_back_selection(h)
 	_unit_animations(h)
 	_walk_epilogue(h)
+	_playback_pacing(h)
+	_presenter_arms(h)
+	_watching_gate(h)
+	_band_filter(h)
+	_death_delta(h)
+	_quiet_landings(h)
+	_setpiece_state(h)
+	_ring_rotation(h)
 	_campaign_screens(h)
 	_pickup_message(h)
+
+
+## The ring's facing rides **inside** the walk's playback (docs/43 section
+## 4.3): [method SliceMain.move_selected] submits the rotation before the
+## playback takes the events. Submitting it after -- which is what the ring
+## once did -- moved the truth under a running picture, and the mirror fell
+## behind it on every walk.
+func _ring_rotation(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("ring.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = -1
+	var target: Vector2i = Vector2i(-1, -1)
+	var step_taken: Vector2i = Vector2i.ZERO
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if DictRead.as_int(view["player"]) != world.turn.current_player \
+				or DictRead.as_int(view["hp"]) == 0 \
+				or DictRead.as_int(view["mp"]) == 0:
+			continue
+		var start: Vector2i = Vector2i(DictRead.as_int(view["x"]),
+			DictRead.as_int(view["y"]))
+		var fill: MoveMapResult = world.submit_move_query(
+			MoveQueryCommand.create(candidate))
+		for step: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0),
+				Vector2i(0, 1), Vector2i(0, -1)]:
+			var at: Vector2i = start + step
+			if world.state.in_bounds(at.x, at.y) and fill.is_reachable(at.x, at.y) \
+					and world.state.unit_at(world.state.index_of(at.x, at.y)) \
+						== MapState.NO_UNIT:
+				target = at
+				step_taken = step
+				break
+		if target.x >= 0:
+			slot = candidate
+			break
+	h.check("ring.a_unit_can_walk_one_field", slot >= 0, "on _C_140")
+	if slot < 0:
+		return
+	world.enable_journal()
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._strings = Localization.new()
+	main._geometry = {"prototypes": {}}
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = main._shown
+	main._units = units
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+	main._sequences = SequenceQueue.create(null)
+	main._selected = slot
+	# A facing the walk itself would not leave the body in: the way back.
+	# (The unit's own facing plus four is not it -- a unit that happens to
+	# stand with its back to the target walks into exactly that facing.)
+	var facing: int = -1
+	for candidate: int in range(Interact.FACING_DX.size()):
+		if Interact.FACING_DX[candidate] == -step_taken.x \
+				and Interact.FACING_DY[candidate] == -step_taken.y:
+			facing = candidate
+	h.check("ring.the_way_back_is_a_facing", facing >= 0, str(step_taken))
+	if facing < 0:
+		units.free()
+		main.free()
+		return
+	var moved: MoveResult = main.move_selected(target.x, target.y, facing)
+	h.check("ring.the_walk_went", moved.ok, moved.reason)
+	h.check("ring.the_turn_is_inside_the_playback",
+		main._playback.is_running() and world.take_events().is_empty()
+			and DictRead.as_int(world.unit_view(slot)["facing"]) == facing,
+		"the rotation was submitted before the playback took the events, "
+		+ "so nothing is left over for the next command to carry")
+	main._playback.skip()
+	h.check("ring.the_mirror_turns_with_the_truth",
+		main._desyncs == 0
+			and DictRead.as_int(main._shown.unit_view(slot)["facing"]) == facing,
+		"a rotation submitted under a running playback is what the resync "
+		+ "warning used to report after every walk")
+	units.free()
+	main.free()
 
 
 ## The crate's message -- docs/26 section 3 and docs/24 section 7.2.
@@ -205,7 +296,7 @@ func _pickup_message(h: TestHarness) -> void:
 ## **Three defects this pins.** Reaction fire had no presentation whatever at
 ## any of the three sites that drain it, so the HUD counted shots nothing drew.
 ## The computer\'s `"fire"` event returned `0.0`, so [constant
-## AIPlayback.STEP_SECONDS] cut every combat clip off part way through. And the
+## EventPlayback.STEP_SECONDS] cut every combat clip off part way through. And the
 ## return fire a move drew was shown -- once it was shown at all -- only when
 ## the picture had caught up with the walk, which is where `core` resolved it.
 ##
@@ -260,15 +351,34 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	h.check("shot.reactions_drained", not entries.is_empty(),
 		"%d reaction(s) from slot %d" % [entries.size(), reactor])
 	# The shot the reaction took is undone: what is being checked below is the
-	# presentation, and a shooter the setup killed would refuse to fire.
+	# presentation, and a shooter the setup killed would refuse to fire. The
+	# reactor goes back on overwatch too, so the player's shot below draws
+	# the same return fire through `World.submit_attack`'s own drain.
 	var _restored: bool = world.apply_unit_record(shooter, {
 		"hp": DictRead.as_int(us["hp"]), "mp": DictRead.as_int(us["mp"]),
 		"ammo": DictRead.as_int(us["ammo"]), "acted": 0, "heat": 0,
 		"action_state": 0})
+	var _rearmed: bool = world.apply_unit_record(reactor, {
+		"action_state": Reaction.WAITING, "ticket": 1,
+		"mp": Reaction.MIN_MP, "malfunction": 0, "heat": 0, "hp": 200})
+	# The journal is what the picture reads (docs/100): the shot below is the
+	# `fire` event and one `reaction` per shot of the drain, in that order.
+	world.enable_journal()
 	var shot: AttackResult = world.submit_attack(
 		AttackCommand.create(shooter, ax, sy))
 	h.check("shot.fired", shot.fired,
 		shot.reason if not shot.fired else "%d outcome(s)" % shot.outcomes.size())
+	var shot_events: Array[Dictionary] = world.take_events()
+	var shot_kinds: Array[String] = []
+	for event: Dictionary in shot_events:
+		shot_kinds.append(DictRead.as_string(event["kind"]))
+	var expected_kinds: Array[String] = ["fire"]
+	for _entry: Dictionary in shot.reactions:
+		expected_kinds.append("reaction")
+	h.equal("commands.a_shot_is_fire_then_one_reaction_per_shot", shot_kinds,
+		expected_kinds, "the drain marks one boundary per shot, after the shot")
+	h.check("shot.drew_a_reaction", shot.reactions.size() >= 1,
+		"%d reaction(s): the overwatcher answered" % shot.reactions.size())
 
 	var fire_clip: CharismaClip = _clip_with_break()
 	if fire_clip == null:
@@ -277,7 +387,7 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	var main: SliceMain = SliceMain.new()
 	main.world = world
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	main._units = units
 	for slot: int in [shooter, reactor]:
 		var node: Node3D = Node3D.new()
@@ -313,12 +423,11 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	units.states[shooter].rest()
 
 	# --- the return fire it drew ------------------------------------------
-	main._queue_reactions(entries, shooter, sx, sy)
-	h.equal("shot.reactions_queued", main._pending_reactions.size(), 1,
-		"one batch waiting, aimed at the cell that drew it")
-	# The mover's camera inputs follow its **slot**, not whoever stands on the
-	# cell now: during the computer's replay the mover has walked on, and a
-	# bare cell would give the reaction camera no height and no size.
+	# **One `reaction` event per shot of the drain**, each with an arm of its
+	# own in [method SliceMain._play_event_body] (docs/100 section 3): the
+	# reactor shoots from the event's own cell at the mover's, and the mover's
+	# slot rides in the payload so the reaction camera has a height to work
+	# from even when the mover has walked on.
 	var empty_x: int = sx
 	var empty_y: int = sy
 	for y: int in range(world.resource.height):
@@ -331,21 +440,60 @@ func _shots_and_reactions(h: TestHarness) -> void:
 		DictRead.as_int(mover_inputs.get("height", 0)) > 0
 			and DictRead.as_int(mover_inputs.get("x", -1)) == empty_x,
 		"the mover's own height on the event's cell, %s" % str(mover_inputs))
-	units.states[shooter].fire()
-	h.equal("shot.waits_for_the_shot", main._drain_pending_reactions(), 1,
-		"the shooter\'s own clip runs before the answer to it")
+
+	# The presenter, recorded: which events reached the picture and in what
+	# order, and what each asked to be held for. The busy probe is the one the
+	# game hands the playback -- the queue, a body still shooting, a walk.
+	var presented: Array[String] = []
+	var holds: Array[float] = []
+	var present: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		var kind: String = DictRead.as_string(event["kind"])
+		presented.append(kind)
+		var asked: float = main._play_event_body(event, kind)
+		holds.append(asked)
+		return asked
+	var busy: Callable = func() -> bool:
+		return main._sequences.is_running() or units.any_busy() \
+			or units.is_walking()
+
+	# --- the player\'s own shot, through the playback ----------------------
+	# **The shot starts in the frame the button was pressed**: the first shown
+	# event is presented inside `play()`, and the return fire waits for it
+	# behind the picture\'s own `busy`, not behind a stage or a number.
 	units.states[shooter].rest()
-
-	var width: int = world.resource.width
-	var step: int = 1 if sx + 2 < width else -1
-	units.start_walk(shooter, PackedInt32Array([sy * width + sx,
-		sy * width + sx + step]), width, 1.0)
-	h.equal("shot.waits_for_the_walk", main._drain_pending_reactions(), 1,
-		"return fire lands where `core` resolved it: at the end of the move")
-	units.finish_walks(world)
-
-	h.equal("shot.drains_when_the_picture_is_free",
-		main._drain_pending_reactions(), 0, "nothing walking, nothing shooting")
+	units.states[reactor].rest()
+	main._sequences = SequenceQueue.create(null)
+	main._playback.play(shot_events, present, Callable(), 0.0, busy)
+	h.equal("commands.the_shot_starts_inside_play", presented,
+		["fire"] as Array[String], "presented before `play()` returned")
+	h.check("shot.event_fire_holds",
+		not holds.is_empty() and holds[0] >= float(
+			units.states[shooter].frames_to_break())
+			/ CharismaState.FRAMES_PER_SECOND,
+		"a `fire` event asks for %.3f s, its clip to the break"
+			% (holds[0] if not holds.is_empty() else -1.0))
+	# The hold is the engine\'s deterministic frames only: the open-ended
+	# waits are the picture\'s business (`EventPlayback.advance`\'s `busy`), and
+	# a hold that summed their bounds stalled every computer shot for half
+	# a minute.
+	h.check("shot.event_fire_hold_is_bounded",
+		not holds.is_empty() and holds[0] < 3.0,
+		"clip, spin, muzzle, impact and resume, no safety bounds")
+	var _went_fire: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+	h.equal("shot.event_fire_plays_the_body", units.states[shooter].mode,
+		CharismaState.Mode.FIRE, "and the body it names is the one playing")
+	var _held: bool = main._playback.advance(5.0, DictRead.as_bool(busy.call()))
+	h.equal("commands.the_reaction_waits_for_the_shot", presented,
+		["fire"] as Array[String],
+		"the shooter\'s own clip runs before the answer to it")
+	main._sequences.skip()
+	units.states[shooter].rest()
+	var _freed: bool = main._playback.advance(0.0, DictRead.as_bool(busy.call()))
+	h.equal("commands.the_reaction_follows_the_frame_the_shot_is_over",
+		presented, ["fire", "reaction"] as Array[String],
+		"no gap of the remake\'s own between a player\'s shot and its answer")
 	h.check("shot.the_reaction_is_queued", main._sequences.is_running(),
 		"the return fire is a shot sequence of its own")
 	var _fired: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
@@ -353,43 +501,86 @@ func _shots_and_reactions(h: TestHarness) -> void:
 		CharismaState.Mode.FIRE,
 		"the unit on overwatch animates its own shot, which nothing drew before")
 	main._sequences.skip()
-
-	# --- the computer\'s two events ---------------------------------------
 	units.states[shooter].rest()
 	units.states[reactor].rest()
-	var fire_event: Dictionary = AIEvent.make("fire", shooter, sx, sy, ax, sy,
-		0, str(DictRead.as_int(us["weapon"])), shot.to_dict()).to_dict()
-	var fire_hold: float = main._play_event_body(fire_event, "fire")
-	h.check("shot.event_fire_holds",
-		fire_hold >= float(units.states[shooter].frames_to_break())
-			/ CharismaState.FRAMES_PER_SECOND,
-		"a `fire` event asks for %.3f s, not the %.2f s floor"
-			% [fire_hold, AIPlayback.STEP_SECONDS])
-	# The hold is the engine's deterministic frames only: the open-ended
-	# waits are the picture's business (`AIPlayback.advance`'s `busy`), and
-	# a hold that summed their bounds stalled every computer shot for half
-	# a minute.
-	h.check("shot.event_fire_hold_is_bounded", fire_hold < 3.0,
-		"%.3f s: clip, spin, muzzle, impact and resume, no safety bounds"
-			% fire_hold)
-	var _shown: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
-	h.equal("shot.event_fire_plays_the_body", units.states[shooter].mode,
-		CharismaState.Mode.FIRE, "and the body it names is the one playing")
-	main._sequences.skip()
-	units.states[shooter].rest()
+	main._playback.skip()
 
-	var reaction_event: Dictionary = AIEvent.make("reactions", shooter, sx, sy,
-		0, 0, entries.size(), "",
-		{"reactions": entries.duplicate(true)}).to_dict()
-	var reaction_hold: float = main._play_event_body(reaction_event, "reactions")
-	h.check("shot.event_reactions_hold", reaction_hold > 0.0,
-		"a drawn reactor\'s clip is what the replay waits for, %.3f s"
-			% reaction_hold)
-	var _answered: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
-	h.equal("shot.event_reactions_play_the_body", units.states[reactor].mode,
-		CharismaState.Mode.FIRE,
-		"the computer\'s turn shows return fire too")
+	# --- return fire after a walk ------------------------------------------
+	# `core` resolves a move\'s reactions at the end of the move and the walk
+	# that follows is only the picture, so the `reaction` event waits for the
+	# body to arrive: the busy probe says a walk is on, and nothing else does.
+	var width: int = world.resource.width
+	var step: int = 1 if sx + 2 < width else -1
+	var route: PackedInt32Array = PackedInt32Array([sy * width + sx,
+		sy * width + sx + step])
+	var walk_event: Dictionary = AIEvent.make("move", shooter, sx, sy,
+		sx + step, sy, 1, "", {"path": route, "steps": 1, "facing": 0,
+			"cost": 1, "seen_source": false, "seen_destination": false}).to_dict()
+	var reaction_event: Dictionary = {}
+	for event: Dictionary in shot_events:
+		if DictRead.as_string(event["kind"]) == "reaction":
+			reaction_event = event
+			break
+	presented.clear()
+	main._playback.play([walk_event, reaction_event], present, Callable(),
+		0.0, busy)
+	h.check("commands.the_walk_starts_inside_play",
+		units.is_walking() and presented == (["move"] as Array[String]),
+		"the body is on its way, and the reaction has not been drawn")
+	var _walking: bool = main._playback.advance(5.0, DictRead.as_bool(busy.call()))
+	h.equal("commands.the_reaction_waits_for_the_walk", presented,
+		["move"] as Array[String],
+		"return fire lands where `core` resolved it: at the end of the move")
+	units.finish_walks(world)
+	var _arrived: bool = main._playback.advance(0.0, DictRead.as_bool(busy.call()))
+	h.equal("commands.the_reaction_follows_the_walk", presented,
+		["move", "reaction"] as Array[String], "nothing walking, so it fires")
 	main._sequences.skip()
+	units.states[reactor].rest()
+	main._playback.skip()
+
+	# --- the order, and the cell ------------------------------------------
+	# Two reactions present in the order the drain resolved them -- the
+	# journal\'s order is the list\'s -- and each reactor shoots from the cell
+	# **its event** names, not from wherever the mirror has it now: during a
+	# replay the reactor may have walked on by the time the event is drawn.
+	var second: Dictionary = reaction_event.duplicate(true)
+	second["detail"] = DictRead.as_int(reaction_event["detail"]) + 1
+	var tickets: Array[int] = []
+	var by_ticket: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		tickets.append(DictRead.as_int(event["detail"]))
+		return 1.0
+	main._playback.play([reaction_event, second], by_ticket, Callable(),
+		0.0, Callable())
+	var _next: bool = main._playback.advance(1.0, false)
+	h.equal("commands.reactions_present_in_ticket_order", tickets,
+		[DictRead.as_int(reaction_event["detail"]),
+			DictRead.as_int(reaction_event["detail"]) + 1] as Array[int],
+		"one at a time, as the drain fired them")
+	main._playback.skip()
+	var recorder: MuzzleRecorder = MuzzleRecorder.new(main)
+	main._shot_host = recorder
+	main._sequences = SequenceQueue.create(null)
+	# The reactor is moved in the mirror; the event still names (ax, sy).
+	var _moved_reactor: bool = world.apply_unit_record(reactor,
+		{"x": empty_x, "y": empty_y})
+	var _shown_hold: float = main._play_event_body(reaction_event, "reaction")
+	var muzzle_frames: int = 0
+	while main._sequences.is_running() and recorder.shots.is_empty() \
+			and muzzle_frames < 400:
+		var _stage: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		muzzle_frames += 1
+	h.equal("commands.the_reactor_shoots_from_the_events_cell",
+		recorder.shots[0] if not recorder.shots.is_empty() else Vector2i(-1, -1),
+		Vector2i(ax, sy), "the muzzle is at the event\'s cell after %d frame(s)"
+			% muzzle_frames)
+	main._sequences.skip()
+	units.states[reactor].rest()
+	var _back: bool = world.apply_unit_record(reactor, {"x": ax, "y": sy})
+	main._shot_host = null
 
 	# --- a kill, through the real pool ------------------------------------
 	# The death stage runs the creators of docs/42 section 4.8 into the live
@@ -510,7 +701,6 @@ func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
 		return
 	h.check("kill.awards_experience", killed.xp > 0,
 		"%d point(s) for the alien" % killed.xp)
-	var _marked: int = main._mark_dying(killed.outcomes)
 	if units.get_node_or_null(NodePath("unit_%d" % victim)) == null:
 		var node: Node3D = Node3D.new()
 		node.name = "unit_%d" % victim
@@ -545,7 +735,6 @@ func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
 	var bomb_body: Node3D = Node3D.new()
 	bomb_body.name = "unit_%d" % victim
 	units.add_child(bomb_body)
-	var _held_by_the_bomb: int = main._mark_dying(killed.outcomes)
 	main._sequences = SequenceQueue.create(null)
 	var bomb: Dictionary = AIEvent.make("parabomb", shooter, ax, ay, 0, 0, 0,
 		"", killed.to_dict()).to_dict()
@@ -640,27 +829,26 @@ func _rebuild(h: TestHarness) -> void:
 	h.check("rebuild.the_record_survives_the_death", world.has_unit(victim),
 		"`core` keeps it: the hero counter and the win conditions read it")
 
-	# **Held until the shot that killed it hides it.** The rebuild that drops
-	# a casualty runs *before* the event that killed it is presented -- for
-	# the computer's replay always -- so a marine vanished and the sound of
-	# what killed it arrived afterwards. The engine hides the object in the
-	# death stage of `aPlayFightAnimation` (docs/42 section 4.8), and that is
-	# the one moment it leaves the picture; there is no timer.
-	units.mark_dying(victim)
-	units.build(world, geometry, {})
-	h.check("rebuild.a_casualty_is_held",
+	# **The mirror is what keeps it.** The rebuild that drops a casualty used
+	# to run *before* the event that killed it was presented, so a marine
+	# vanished and the sound of what killed it arrived afterwards; now the
+	# picture reads a world that has not been told, and the delta lands in
+	# the death stage of the shot that is drawing it (docs/42 section 4.8).
+	var mirror: World = world.clone()
+	var _alive: bool = mirror.apply_unit_record(victim, {"hp": 10})
+	units.build(mirror, geometry, {})
+	h.check("rebuild.the_mirror_keeps_a_body_until_its_delta",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) != null,
 		"still drawn while its killer's shot is on screen")
-	units.animate(5.0, world)
+	units.animate(5.0, mirror)
 	h.check("rebuild.no_timer_drops_it",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) != null,
-		"five seconds later it is still there: only the shot hides it")
+		"five seconds later it is still there: only the delta hides it")
 	h.check("rebuild.hidden_by_the_death_stage", units.hide_now(victim),
 		"0x00405320(obj, 5) -- gone in this frame")
 	h.check("rebuild.and_then_it_goes",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
 		"without waiting for another rebuild")
-	h.equal("rebuild.the_hold_is_released", units.dying().size(), 0)
 	units.build(world, geometry, {})
 	h.check("rebuild.the_dead_are_not_drawn",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
@@ -778,7 +966,7 @@ func _unit_animations(h: TestHarness) -> void:
 	var main: SliceMain = SliceMain.new()
 	main.world = world
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	main._units = units
 	main._sequences = SequenceQueue.create(null)
 	main._strings = Localization.new()
@@ -786,15 +974,21 @@ func _unit_animations(h: TestHarness) -> void:
 	var sx: int = DictRead.as_int(us["x"])
 	var sy: int = DictRead.as_int(us["y"])
 
-	# A shot that raised a skill level: the orbit is queued **before** the
-	# nine stages, as `aAttackUnit` plays it before its caller's animation.
+	# A shot that raised a skill level: the orbit is queued **after** the nine
+	# stages. `0x00410190` plays once `aPlayFightAnimation` has returned and
+	# the shooter's pool level has risen over the value saved at entry
+	# (docs/22 section 7.5); queued ahead of the shot, as it was until
+	# 2026-09-07, it showed the player a promotion before the shot that
+	# earned it.
+	main.world.turn.mode = TurnState.MODE_CAMPAIGN
 	var attack: AttackResult = AttackResult.new()
 	attack.fired = true
 	attack.skill_raised = 1
 	var _hold: float = main._present_attack(shooter, sx, sy, sx + 1, sy,
 		DictRead.as_int(us["weapon"]), attack)
-	h.equal("anim.skill_orbit_first", main._sequences.current(),
-		OrbitSequence.STAGE_RAISE)
+	h.equal("anim.the_shot_comes_first", main._sequences.current(),
+		ShotSequence.STAGE_CLIP,
+		"the fight animation, and the promotion after it")
 	var seen: Array[String] = []
 	var frames: int = 0
 	while main._sequences.is_running() and frames < 400:
@@ -803,18 +997,43 @@ func _unit_animations(h: TestHarness) -> void:
 			seen.append(stage)
 		var _went: bool = main._sequences.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
 		frames += 1
-	h.check("anim.shot_follows_the_orbit",
-		seen.find(OrbitSequence.STAGE_BACK) >= 0
-			and seen.find(ShotSequence.STAGE_CLIP) > seen.find(OrbitSequence.STAGE_BACK),
+	h.check("anim.the_skill_orbit_follows_the_shot",
+		seen.find(OrbitSequence.STAGE_RAISE) >= 0
+			and seen.find(OrbitSequence.STAGE_RAISE)
+				> seen.find(ShotSequence.STAGE_CLIP),
 		str(seen))
 	# An overheat that destroyed the carrier: kind 1, no wave of its own.
 	main._sequences = SequenceQueue.create(null)
 	var hot: AttackResult = AttackResult.new()
 	hot.fired = true
 	hot.overheat = Combat.OVERHEAT_DESTROYED
-	main._present_shot_orbits(shooter, us, hot)
+	main._present_overheat_orbit(shooter, us, hot)
 	h.equal("anim.overheat_orbit_queued", main._sequences.current(),
 		OrbitSequence.STAGE_RAISE)
+	# **And the skill orbit is not queued with it.** `0x00410190` plays after
+	# `aPlayFightAnimation` returns (docs/22 section 7.5), so a promotion
+	# reached the player before the shot that earned it while the two were
+	# one call.
+	main._sequences = SequenceQueue.create(null)
+	var raised: AttackResult = AttackResult.new()
+	raised.fired = true
+	raised.skill_raised = 1
+	main._present_overheat_orbit(shooter, us, raised)
+	h.check("anim.the_skill_orbit_is_not_the_overheats",
+		not main._sequences.is_running(),
+		"a shot that raised a level and did not overheat queues nothing here")
+	# It is the campaign's alone, and never a body's.
+	main.world.turn.mode = TurnState.MODE_CAMPAIGN
+	var dead: AttackResult = AttackResult.new()
+	dead.fired = true
+	dead.skill_raised = 1
+	dead.overheat = Combat.OVERHEAT_DESTROYED
+	h.equal("anim.a_destroyed_shooter_earns_no_orbit",
+		main._present_skill_orbit(shooter, us, dead), 0,
+		"the reactor that blew took the shooter with it")
+	h.check("anim.the_skill_orbit_follows_the_shot",
+		main._present_skill_orbit(shooter, us, raised) > 0,
+		"queued after the shot's own stages")
 	h.equal("anim.overheat_kinds", [
 		DictRead.as_int(SliceMain.OVERHEAT_KINDS[Combat.OVERHEAT_DESTROYED]),
 		DictRead.as_int(SliceMain.OVERHEAT_KINDS[Combat.OVERHEAT_JAM]),
@@ -919,7 +1138,7 @@ func _hand_back_selection(h: TestHarness) -> void:
 	for other: int in mine:
 		world._units[other].mp = kept[other]
 
-	# **The quiet computer turn hands back twice.** `AIPlayback.play` finishes
+	# **The quiet computer turn hands back twice.** `EventPlayback.play` finishes
 	# inside its own call when no event survives its filter, so `_on_ai_step`
 	# runs the hand-back before `end_turn` reaches its own; the second must be
 	# a no-op or the camera moves to a second unit and a second voice cuts the
@@ -962,299 +1181,245 @@ func _replay_progress(h: TestHarness) -> void:
 			slots.append(slot)
 	h.check("progress.the_side_has_units", slots.size() > 0,
 		"_C_140 places aliens")
-	var none: PackedInt32Array = PackedInt32Array()
-	var opening: Vector2i = TurnProgress.tally(world, player, none, none)
+	# **The tally reads the world it is given, and that world is the
+	# picture's.** The mirror is a command behind the truth, so a unit it
+	# shows as spent is one whose action has already been drawn and a unit it
+	# shows as alive is one still standing on screen -- which is why the two
+	# compensating lists this used to take are gone (docs/100 section 1).
+	var opening: Vector2i = TurnProgress.tally(world, player)
 	h.equal("progress.the_turn_opens_at_zero", opening.x, 0,
-		"nothing has been played, so nothing is counted")
+		"nobody has spent a point yet")
 	h.equal("progress.live_is_the_whole_side", opening.y, slots.size())
 	h.equal("progress.one_capsule_at_the_opening",
 		TurnProgress.fill_for(opening.x, opening.y) + 1, 1)
-	# Spend one unit's movement, the way the turn does.
+	# Spend one unit's movement, the way an event's delta does.
 	var mover: int = slots[0]
 	var units: Dictionary = world.units_for_ai()
 	var unit: UnitState = units[mover]
 	unit.mp = maxi(world.movement_allowance(mover, world.turn.ai_level) - 1, 0)
-	h.equal("progress.a_spent_unit_is_not_counted_before_its_event",
-		TurnProgress.tally(world, player, none, none).x, 0,
-		"the world is the end of the turn from the first frame")
-	h.equal("progress.and_is_counted_once_it_is_played",
-		TurnProgress.tally(world, player, PackedInt32Array([mover]), none).x, 1)
-	h.equal("progress.a_played_unit_that_did_not_move_is_not",
-		TurnProgress.tally(world, player, PackedInt32Array([slots[1]]),
-			none).x, 0)
-	# A casualty the replay is still holding belongs to the divisor.
+	h.equal("progress.a_spent_unit_is_counted",
+		TurnProgress.tally(world, player).x, 1,
+		"the delta that spent it has landed, so the bar may show it")
+	h.equal("progress.the_others_are_not",
+		TurnProgress.tally(world, player).x, 1,
+		"only the one whose points moved")
+	# A casualty leaves the divisor when its own delta lands, and not before:
+	# until then the mirror still has it alive.
 	var doomed: int = slots[1]
 	units[doomed].hp = 0
 	h.equal("progress.the_dead_leave_the_divisor",
-		TurnProgress.tally(world, player, none, none).y, slots.size() - 1)
-	h.equal("progress.unless_the_replay_still_holds_them",
-		TurnProgress.tally(world, player, none,
-			PackedInt32Array([doomed])).y, slots.size())
+		TurnProgress.tally(world, player).y, slots.size() - 1)
 	# And the side is the replay's own. The computer's turn hands over again
 	# inside `submit_end_turn`, so the world's seat is the marines' before the
 	# first alien is drawn moving -- a bar read off `world.turn` would count
 	# the player's own squad.
-	var result: AITurnResult = AITurnResult.new()
-	result.player = player
-	result.add(AIEvent.make("move", mover, 1, 1, 2, 2))
-	var playback: AIPlayback = AIPlayback.new()
-	playback.play(result, Callable())
-	h.equal("progress.the_side_is_the_replays_own", playback.player(), player)
-	h.equal("progress.the_world_seat_is_not_it", world.turn.current_player == player,
-		false, "_C_140 opens on the marines")
+	# The seat is the **mirror's**: the computer's turn hands over again
+	# inside `submit_end_turn`, so a bar read off the truth's `turn` would
+	# count the player's own squad. The mirror still stands where the turn
+	# began, and its `previous_player` is who is being watched.
+	h.equal("progress.the_world_seat_is_not_it",
+		world.turn.current_player == player, false,
+		"_C_140 opens on the marines")
+	var events: Array[Dictionary] = [
+		AIEvent.make("move", mover, 1, 1, 2, 2).to_dict()]
+	for event: Dictionary in events:
+		event["delta"] = {}
+	var playback: EventPlayback = EventPlayback.new()
+	playback.play(events, func(_event: Dictionary) -> float: return 1.0)
+	h.check("progress.the_playback_runs", playback.is_running(),
+		"one shown event, held for the second its presenter asked")
 	playback.skip()
+	h.check("progress.and_stops", not playback.is_running(), "skipped")
 
 
 func _replay_positions(h: TestHarness) -> void:
-	# The events are the real shape: `AIPlan` emits a move with the **source**
-	# in `x`/`y` and the destination in `tx`/`ty`.
-	var events: Array[Dictionary] = [
-		AIEvent.make("fire", 4, 1, 1, 2, 2).to_dict(),
-		AIEvent.make("warp", 6, 3, 4, 8, 8).to_dict(),
-		AIEvent.make("end_unit_turn", 4).to_dict(),
-		AIEvent.make("move", 5, 2, 3, 9, 9).to_dict(),
-		AIEvent.make("fire", 5, 9, 9, 1, 1).to_dict(),
-		AIEvent.make("move", 5, 9, 9, 1, 1).to_dict(),
-	]
-	var all: Dictionary[int, Vector2i] = AIPlayback.starts_in(events, 0)
-	h.equal("replay.every_unmoved_unit_is_placed", all.size(), 2,
-		"slots 5 and 6 have a move or a warp still to come")
-	h.equal("replay.the_source_is_the_events_own", all.get(5, Vector2i.ZERO),
-		Vector2i(2, 3), "the move's `x`/`y`, not its `tx`/`ty`")
-	h.equal("replay.a_warp_counts_too", all.get(6, Vector2i.ZERO),
-		Vector2i(3, 4))
-	# A unit that moves twice is held at the start of its **next** move.
-	var later: Dictionary[int, Vector2i] = AIPlayback.starts_in(events, 4)
-	h.equal("replay.the_next_move_wins", later.get(5, Vector2i.ZERO),
-		Vector2i(9, 9), "its first move has already played")
-	h.equal("replay.a_played_warp_is_released", later.has(6), false)
-	h.equal("replay.nothing_is_held_at_the_end",
-		AIPlayback.starts_in(events, events.size()).size(), 0)
-
-	# The visibility hold's release rule: everybody is held when the replay
-	# opens, the slot whose event is on screen stays held for the length of
-	# it, a slot whose event has been shown is released, and a slot the replay
-	# never names keeps its pre-turn answer to the end.
-	var before: Dictionary[int, int] = {4: Fog.FULL, 5: Fog.FULL, 9: Fog.CONTACT}
-	h.equal("replay.everybody_is_held_when_the_replay_opens",
-		SliceMain.visibility_hold_in(before, PackedInt32Array(), -1).size(), 3)
-	var mid: Dictionary[int, int] = SliceMain.visibility_hold_in(before,
-		PackedInt32Array([4, 5]), 5)
-	h.check("replay.the_event_on_screen_stays_held", mid.has(5),
-		"a walker keeps the answer it set off with")
-	h.check("replay.a_shown_slot_is_released", not mid.has(4),
-		"its own event has been drawn, so the live pass answers for it")
-	h.check("replay.an_unnamed_slot_is_held_to_the_end",
-		mid.has(9) and SliceMain.visibility_hold_in(before,
-			PackedInt32Array([4, 5, 9]), -1).has(9) == false,
-		"nothing moved it, so nothing changed what may be seen of it")
-	# `aExecuteMove`'s mode 3 (`0x0046E4BB`): a computer mover that can see
-	# somebody from the cell it starts on is marked visible **before the first
-	# step**, and no pass takes that back until the hand-over -- so its own
-	# event shows it as a unit and not as the contact beam it was.
-	var revealed: Dictionary[int, int] = SliceMain.visibility_hold_in(before,
-		PackedInt32Array([9]), 9, PackedInt32Array([9]))
-	h.equal("replay.mode_3_walks_in_the_open", revealed.get(9, -1), Fog.FULL,
-		"a contact that reveals itself walks as a body")
-	h.equal("replay.mode_3_is_forced_and_not_released", revealed.has(9), true,
-		"released, it would take the end of the turn instead")
-	h.equal("replay.mode_3_leaves_the_others_alone", revealed.get(4, -1),
-		Fog.FULL, "the write is the mover's own")
-	# The three writes that qualify, and the one that does not: a move carries
-	# `seen_source` (`0x0046E4BB`), a shot that fired carries the shooter's
-	# own reveal (`0x0046B643`), a `reactions` event carries that same reveal
-	# for every reactor that pulled the trigger, and a shot that jammed
-	# reveals nobody.
-	h.equal("replay.a_move_reveals_on_seen_source",
-		SliceMain._event_reveals("move", 7, {"seen_source": true}),
+	# **The reveals the engine itself writes**, read off an event rather than
+	# off the byte, because the byte is rebuilt at the hand-over and not in
+	# between (docs/22 section 9.4). Three writes qualify: `aExecuteMove`'s
+	# mode 3 (`0x0046E4BB`) when the mover could be seen where it set off,
+	# `aAttackUnit`'s shooter reveal (`0x0046B643`) the moment the weapon is
+	# cleared to fire, and the same reveal for a reactor, which reaches it
+	# through `Reaction.drain`.
+	h.equal("fog.a_move_reveals_on_seen_source",
+		PictureFog.reveals_of("move", 7, {"seen_source": true}),
 		PackedInt32Array([7]), "aExecuteMove mode 3")
-	h.equal("replay.a_still_move_reveals_nobody",
-		SliceMain._event_reveals("move", 7, {"seen_source": false}),
+	h.equal("fog.a_still_move_reveals_nobody",
+		PictureFog.reveals_of("move", 7, {"seen_source": false}),
 		PackedInt32Array())
-	h.equal("replay.a_shot_reveals_its_shooter",
-		SliceMain._event_reveals("fire", 7, {"fired": true}),
+	h.equal("fog.the_opening_passes_reveal_too",
+		PictureFog.reveals_of("move_begin", 7, {"seen_source": true}),
+		PackedInt32Array([7]),
+		"the write is before the first step, so the picture may show it there")
+	h.equal("fog.a_shot_reveals_its_shooter",
+		PictureFog.reveals_of("fire", 7, {"fired": true}),
 		PackedInt32Array([7]),
 		"aAttackUnit marks the shooter visible before it turns to aim")
-	h.equal("replay.a_jammed_shot_reveals_nobody",
-		SliceMain._event_reveals("fire", 7, {"fired": false}),
+	h.equal("fog.a_jammed_shot_reveals_nobody",
+		PictureFog.reveals_of("fire", 7, {"fired": false}),
 		PackedInt32Array(), "the reveal is past the weapon-damage gate")
-	h.equal("replay.a_door_reveals_nobody",
-		SliceMain._event_reveals("door", 7, {"fired": true}),
+	h.equal("fog.a_door_reveals_nobody",
+		PictureFog.reveals_of("door", 7, {"fired": true}),
 		PackedInt32Array(), "only the writes core actually makes")
-	# **The one event whose actor is not its slot.** `AIFire` and `AIPlan`
-	# emit `reactions` for the unit that drew the fire; the overwatch shooters
-	# are in the payload, and each of them ran `0x0046B643` inside
-	# [method Reaction.drain].
-	var drained: Dictionary = {"reactions": [
-		{"reactor": 11, "attack": {"fired": true}},
-		{"reactor": 12, "attack": {"fired": false}},
-		{"reactor": 11, "attack": {"fired": true}}]}
-	h.equal("replay.a_reaction_reveals_its_reactors",
-		SliceMain._event_reveals("reactions", 7, drained),
-		PackedInt32Array([11]),
-		"the mover's own slot 7 is not one of them, and a reactor that "
-		+ "answered twice is named once")
-	h.equal("replay.a_jammed_reaction_reveals_nobody",
-		SliceMain._event_reveals("reactions", 7, {"reactions": [
-			{"reactor": 12, "attack": {"fired": false}}]}),
+	# One event per shot since the journal, so the reactor is the event's own
+	# slot rather than an entry in a list.
+	h.equal("fog.a_reaction_reveals_its_reactor",
+		PictureFog.reveals_of("reaction", 11, {"attack": {"fired": true}}),
+		PackedInt32Array([11]), "`0x0046B643`, reached through the drain")
+	h.equal("fog.a_jammed_reaction_reveals_nobody",
+		PictureFog.reveals_of("reaction", 11, {"attack": {"fired": false}}),
 		PackedInt32Array(), "a jam is not a shot")
-	var reacted: Dictionary[int, int] = SliceMain.visibility_hold_in(
-		{4: Fog.FULL, 9: Fog.CONTACT} as Dictionary[int, int],
-		PackedInt32Array(), 5, PackedInt32Array([9]))
-	h.equal("replay.a_reactor_is_drawn_as_a_body", reacted.get(9, -1),
-		Fog.FULL, "the hold no longer answers the pre-turn contact for it")
 
-	# The casualties, the other half of the same rule: the world has lost
-	# every one of them before the replay draws its first frame, so the whole
-	# list has to be held from the start or a marine vanishes as the computer's
-	# turn opens and comes back a second before it dies.
-	var killed: int = Combat.MARKER_KILLED
-	var deaths: Array[Dictionary] = [
-		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "",
-			{"outcomes": [{"slot": 11, "marker": killed}]}).to_dict(),
-		AIEvent.make("reactions", 5, 2, 3, 0, 0, 1, "",
-			{"reactions": [{"attack": {"outcomes":
-				[{"slot": 12, "marker": killed}]}}]}).to_dict(),
-		AIEvent.make("move", 5, 2, 3, 9, 9, 0, "",
-			{"path": [1, 2], "events": [{"kind": "mine_detonated",
-				"blast": {"outcomes":
-					[{"slot": 13, "marker": killed}]}}]}).to_dict(),
-		AIEvent.make("warp", 6, 3, 4, 8, 8, 0, "",
-			{"blast": {"outcomes":
-				[{"slot": 14, "marker": killed}]}}).to_dict(),
-		# The payload of a parabomb **is** the blast (`AISpecialPlayer`), and
-		# the four-branch block this replaced had no arm for it at all.
-		AIEvent.make("parabomb", 7, 5, 5, 0, 0, 0, "",
-			{"outcomes": [{"slot": 15, "marker": killed}]}).to_dict(),
-	]
-	h.equal("replay.every_shape_of_death_is_found",
-		Array(AIPlayback.casualties_in(deaths, 0)), [11, 12, 13, 14, 15],
-		"a shot, a reaction, a mine under a walk, a landing and a para bomb")
-	h.equal("replay.a_played_death_is_not_held",
-		Array(AIPlayback.casualties_in(deaths, 3)), [14, 15])
-	# `all_casualties` walks the **unfiltered** list: a kind the replay does
-	# not stop on still kills, and the hold taken before the first frame has
-	# to cover it.
-	var quiet: Array[Dictionary] = [
-		AIEvent.make("defence", 3, 1, 1, 1, 1, 0, "",
-			{"outcomes": [{"slot": 21}]}).to_dict(),
-		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "",
-			{"outcomes": [{"slot": 22}]}).to_dict(),
-	]
-	var shown_only: Array[Dictionary] = []
-	for event: Dictionary in quiet:
-		if AIPlayback.SHOWN_KINDS.has(DictRead.as_string(event["kind"])):
-			shown_only.append(event)
-	h.equal("replay.a_filtered_kind_still_kills",
-		Array(AIPlayback.casualties_in(quiet, 0)), [21, 22])
-	h.equal("replay.and_the_shown_list_alone_would_miss_it",
-		Array(AIPlayback.casualties_in(shown_only, 0)), [22])
-	h.equal("replay.one_event_answers_alone",
-		Array(AIPlayback.casualties_of(DictRead.as_dict(deaths[2]["payload"]))),
-		[13], "the same extractor takes a single payload")
-	# **A survivor is not a casualty**, and the marker is what says so. The
-	# hit points cannot: the replay runs over the world at the end of the
-	# turn, where a converted unit answers for its new owner and a killed
-	# slot may already hold a reinforcement.
-	var mixed: Array[Dictionary] = [
-		AIEvent.make("fire", 4, 1, 1, 2, 2, 0, "", {"outcomes": [
-			{"slot": 31, "marker": killed},
-			{"slot": 32, "marker": Combat.MARKER_HIT},
-			{"slot": 33, "marker": Combat.MARKER_MISS},
-			{"slot": 34, "marker": Combat.MARKER_HIT, "converted": true},
-		]}).to_dict(),
-	]
-	h.equal("replay.candidates_are_every_outcome",
-		Array(AIPlayback.casualties_in(mixed, 0)), [31, 32, 33, 34])
-	h.equal("replay.only_the_killed_are_held",
-		Array(AIPlayback.casualties_in(mixed, 0, true)), [31],
-		"a hit, a miss and a conversion are all survivors")
-	h.equal("replay.nothing_dies_in_a_bare_event",
-		AIPlayback.casualties_in(events, 0).size(), 0,
-		"the moves above carry no outcome")
-
-	# The turn's progress bar (docs/43 section 7) counts against the same
-	# split: what the replay has already shown is what it may count.
-	h.equal("replay.progress.nothing_played_yet",
-		AIPlayback.played_in(events, 0).size(), 0)
-	h.equal("replay.progress.the_actor_is_the_events_own",
-		Array(AIPlayback.played_in(events, 2)), [4, 6],
-		"the fire and the warp, in the order they were shown")
-	h.equal("replay.progress.each_actor_once",
-		AIPlayback.played_in(events, events.size()).size(), 3,
-		"slot 5 moves, fires and moves again")
-
-	# And the view really draws them there.
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	var geometry: Dictionary = CacheFixture.geometry("A00")
 	if loaded.is_empty() or geometry.is_empty():
-		h.check("replay.cache", false, "no _C_140 or no A00 geometry")
+		h.check("mirror.cache", false, "no _C_140 or no A00 geometry")
 		return
 	var world: World = loaded["world"]
-	var units: UnitsView = UnitsView.new()
-	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {}, "_C_140")
+	world.enable_journal()
+	var mirror: World = world.clone()
 	var slot: int = -1
 	for candidate: int in world.unit_slots():
 		var view: Dictionary = world.unit_view(candidate)
-		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
+		if DictRead.as_int(view["player"]) != UnitState.PLAYER_ALIEN \
+				and DictRead.as_int(view["hp"]) > 0 \
+				and DictRead.as_int(view["mp"]) > 0:
 			slot = candidate
 			break
 	if slot < 0:
-		h.check("replay.unit", false, "no live unit on _C_140")
-		units.free()
+		h.check("mirror.unit", false, "no live unit on _C_140")
 		return
-	var at: Dictionary = world.unit_view(slot)
-	var home: Vector3 = WorldSpace.cell_centre(DictRead.as_int(at["x"]),
-		DictRead.as_int(at["y"]), world.state.height_at(world.state.index_of(
-			DictRead.as_int(at["x"]), DictRead.as_int(at["y"]))))
-	var elsewhere: Vector2i = Vector2i(
-		(DictRead.as_int(at["x"]) + 3) % world.resource.width,
-		(DictRead.as_int(at["y"]) + 2) % world.resource.height)
-	var held: Dictionary[int, Vector2i] = {slot: elsewhere}
-	units.hold_at(held)
-	units.build(world, geometry, {})
-	var node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
-	h.check("replay.the_held_unit_is_drawn", node != null, "slot %d" % slot)
-	if node != null:
-		var there: Vector3 = WorldSpace.cell_centre(elsewhere.x, elsewhere.y,
-			world.state.height_at(world.state.index_of(elsewhere.x,
-				elsewhere.y)))
-		h.check("replay.it_is_drawn_where_it_is_held",
-			node.position.distance_to(there) < 0.001,
-			"%.3f m from the held cell" % node.position.distance_to(there))
-		h.check("replay.and_not_where_the_world_says",
-			node.position.distance_to(home) > 0.5,
-			"the world still says (%d,%d) and is never told otherwise"
-				% [DictRead.as_int(at["x"]), DictRead.as_int(at["y"])])
-	# Releasing the hold puts it back, which is what the end of a replay does.
-	units.hold_at({} as Dictionary[int, Vector2i])
-	units.build(world, geometry, {})
-	var back: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
-	h.check("replay.the_release_puts_it_back",
-		back != null and back.position.distance_to(home) < 0.001,
-		"the rebuild after the replay is what returns everyone")
-	h.equal("replay.the_hold_is_empty", units.held_at().size(), 0)
+	var view: Dictionary = world.unit_view(slot)
+	var start: Vector2i = Vector2i(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	var fill: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(slot))
+	var target: Vector2i = start
+	for radius: int in range(1, 4):
+		if target != start:
+			break
+		for dy: int in range(-radius, radius + 1):
+			for dx: int in range(-radius, radius + 1):
+				var at: Vector2i = start + Vector2i(dx, dy)
+				if at == start or not world.state.in_bounds(at.x, at.y):
+					continue
+				if not fill.is_reachable(at.x, at.y):
+					continue
+				if world.state.unit_at(
+						world.state.index_of(at.x, at.y)) != MapState.NO_UNIT:
+					continue
+				target = at
+				break
+			if target != start:
+				break
+	h.check("mirror.a_cell_is_reachable", target != start, str(target))
+	if target == start:
+		return
+	var _moved: MoveResult = world.submit_move(
+		MoveCommand.create(slot, target.x, target.y))
+	var events: Array[Dictionary] = world.take_events()
 
-	# The visibility hold, the third half of the same rule. The world's own
-	# pass reads where the units are **after** the turn, so an alien that
-	# walks out of sight is a contact beam from the first frame; the hold
-	# carries what it was before the turn until the replay reaches its event.
-	var seen: Dictionary[int, int] = {slot: Fog.FULL}
-	units.hold_visibility(seen)
-	h.equal("replay.the_visibility_hold_round_trips",
-		units.held_visibility(), seen)
-	# Full beats whatever the live pass says, and hidden beats it too: the
-	# unit is not built at all.
-	units.hold_visibility({slot: Fog.HIDDEN} as Dictionary[int, int])
-	units.build(world, geometry, {})
-	h.check("replay.a_held_hidden_unit_is_not_drawn",
-		units.get_node_or_null(NodePath("unit_%d" % slot)) == null,
-		"the pre-turn answer decides, not the post-turn one")
-	units.hold_visibility({} as Dictionary[int, int])
-	units.build(world, geometry, {})
-	h.check("replay.the_release_shows_it_again",
-		units.get_node_or_null(NodePath("unit_%d" % slot)) != null,
-		"an empty hold hands every slot back to the live pass")
+	var units: UnitsView = UnitsView.new()
+	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {}, "_C_140")
+	units.build(mirror, geometry, {})
+	var node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	h.check("mirror.the_unit_is_drawn", node != null, "slot %d" % slot)
+	if node != null:
+		var here: Vector3 = WorldSpace.cell_centre(start.x, start.y,
+			mirror.state.height_at(mirror.state.index_of(start.x, start.y)))
+		h.check("mirror.the_walker_stands_on_its_source_before_its_delta",
+			node.position.distance_to(here) < 0.001,
+			"the truth put it on its destination the instant the command ran")
+		var there: Vector3 = WorldSpace.cell_centre(target.x, target.y,
+			mirror.state.height_at(mirror.state.index_of(target.x, target.y)))
+		h.check("mirror.and_not_where_the_world_says",
+			node.position.distance_to(there) > 0.5,
+			"which is what every hold in the old picture was compensating")
+	mirror.apply_events(events)
+	units.build(mirror, geometry, {})
+	var moved_node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	if moved_node != null:
+		var there: Vector3 = WorldSpace.cell_centre(target.x, target.y,
+			mirror.state.height_at(mirror.state.index_of(target.x, target.y)))
+		h.check("mirror.and_on_the_destination_after",
+			moved_node.position.distance_to(there) < 0.001,
+			"the delta landed and the picture followed")
+	h.equal("mirror.the_deltas_put_it_on_the_truth",
+		mirror.canonical_hash_hex(), world.canonical_hash_hex(),
+		"the standing check that replaces the per-mechanic holds")
+
+	# The fog is answered for the **watching** seat and at the cell each body
+	# is drawn on. A pass for player 255 is the aliens' own view of the map.
+	var fog: PictureFog = PictureFog.new()
+	fog.viewer = 0
+	var seen: Dictionary[int, int] = fog.states(mirror)
+	h.check("fog.the_viewer_is_the_watching_seat", not seen.is_empty(),
+		"%d slot(s) answered" % seen.size())
+	var alien: int = -1
+	for candidate: int in mirror.unit_slots():
+		var record: Dictionary = mirror.unit_view(candidate)
+		if DictRead.as_int(record["player"]) == UnitState.PLAYER_ALIEN \
+				and DictRead.as_int(record["hp"]) > 0:
+			alien = candidate
+			break
+	if alien >= 0:
+		# **The seat decides the answer**, which is why it is taken before the
+		# rotation moves on: a pass for player 255 is the aliens' own view of
+		# the map, with every alien a body and every marine a contact.
+		var own: Dictionary[int, int] = mirror.display_visibility(0)
+		var theirs: Dictionary[int, int] = mirror.display_visibility(
+			UnitState.PLAYER_ALIEN)
+		var differs: int = 0
+		for at: int in own:
+			if theirs.has(at) and DictRead.as_int(own[at]) \
+					!= DictRead.as_int(theirs[at]):
+				differs += 1
+		h.check("fog.the_seat_decides_the_answer", differs > 0,
+			"%d slot(s) answered differently" % differs)
+		# And the picture never takes the alien seat, whatever it is handed:
+		# during the computer's turn `turn.current_player` is 255, and a fog
+		# pass for 255 would show the player the whole map.
+		fog.viewer = UnitState.PLAYER_ALIEN
+		var refused: Dictionary[int, int] = fog.states(mirror)
+		var same: bool = true
+		for at: int in own:
+			if DictRead.as_int(refused.get(at, -1)) != DictRead.as_int(own[at]):
+				same = false
+		h.check("fog.the_alien_seat_is_refused", same,
+			"it falls back to the seat the world says holds the turn")
+		fog.viewer = 0
+		fog.viewer = 0
+		# A shooter that fired is forced visible for the rest of the replay,
+		# because the engine's write is permanent until the hand-over.
+		fog.note_event("fire", alien, {"fired": true})
+		h.equal("fog.a_shooter_that_fired_is_full",
+			fog.states(mirror).get(alien, -1), Visibility.FULL,
+			"an alien that attacks is a body and not a beam")
+		fog.note_event("hand_over", -1, {})
+		h.check("fog.reveals_clear_on_the_hand_over",
+			not fog.revealed().has(alien),
+			"the hand-over rebuilds the fog outright")
+		# And the compatibility flag puts the original's timing back.
+		fog.beams_until_hand_over = true
+		var stored: Dictionary[int, int] = fog.states(mirror)
+		h.equal("fog.beams_until_hand_over_reads_the_stored_byte",
+			stored.get(alien, -1),
+			DictRead.as_int(mirror.unit_view(alien)["visibility"]),
+			"the byte the last hand-over left, which is the engine's own")
+
+	# **The fix the beam needed**, on a world built to need it: a wall between
+	# the squad and one alien, so the plain pass calls it a contact and the
+	# same pass asked at the cell its body is drawn on calls it a body. This
+	# is the situation a player reported -- an alien that steps into view and
+	# stays a green beam, attacking as a beam.
+	_fog_override(h)
+
+	var replayed: EventPlayback = EventPlayback.new()
+	var landed: Array[int] = [0]
+	replayed.play(events, func(_event: Dictionary) -> float: return 0.0,
+		func(_event: Dictionary) -> void: landed[0] += 1)
+	replayed.skip()
+	h.equal("mirror.skip_lands_every_delta", landed[0], events.size(),
+		"skipping stops the drawing, never the state")
 
 	# **The muzzle part is really there, and it is not the body's axis.**
 	# `aBlob_CreateTracerBullet` puts the round at the shooter's `"M"` part
@@ -1272,8 +1437,19 @@ func _replay_positions(h: TestHarness) -> void:
 			break
 	h.check("muzzle.part_is_found", shooter >= 0 and units.has_muzzle(shooter),
 		"slot %d's model carries the part the creator names" % shooter)
-	h.check("muzzle.scenery_has_none", not units.has_muzzle(slot),
-		"and slot %d, a Barrel, does not" % slot)
+	# The scenery's own record: player 252 owns the barrels and cases, and a
+	# barrel has no muzzle. Found here rather than assumed, because the slot
+	# the mirror checks above uses is a marine.
+	var scenery: int = -1
+	for candidate: int in world.unit_slots():
+		var record: Dictionary = world.unit_view(candidate)
+		var owner: int = DictRead.as_int(record["player"])
+		if owner != 0 and owner != UnitState.PLAYER_ALIEN:
+			scenery = candidate
+			break
+	h.check("muzzle.scenery_is_found", scenery >= 0, "slot %d" % scenery)
+	h.check("muzzle.scenery_has_none", not units.has_muzzle(scenery),
+		"and slot %d, a Barrel, does not" % scenery)
 	if shooter >= 0 and units.has_muzzle(shooter):
 		var stand: Dictionary = world.unit_view(shooter)
 		var barrel: Vector3i = units.muzzle_point(shooter)
@@ -1302,31 +1478,6 @@ func _replay_positions(h: TestHarness) -> void:
 		h.check("muzzle.no_part_is_no_muzzle", not units.has_muzzle(shooter, ""),
 			"a creator that names no part gets no joint")
 
-	# **A casualty whose slot the mission script has already refilled.** A
-	# reinforcement takes the first free record, and the turn that killed the
-	# marine freed one inside the same `submit_end_turn` -- so the world's
-	# record for the slot is somebody else standing somewhere else. The
-	# pre-turn record is handed to [method UnitsView.mark_dying] and is what
-	# the body is drawn from until the death is shown.
-	var ghost: Dictionary = world.unit_view(slot).duplicate()
-	ghost["x"] = (DictRead.as_int(ghost["x"]) + 2) % world.resource.width
-	units.mark_dying(slot, ghost)
-	h.equal("replay.the_held_record_round_trips",
-		DictRead.as_int(units.held_view(slot)["x"]),
-		DictRead.as_int(ghost["x"]))
-	units.build(world, geometry, {})
-	var held_node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
-	var held_at: Vector3 = WorldSpace.cell_centre(
-		DictRead.as_int(ghost["x"]), DictRead.as_int(ghost["y"]),
-		world.state.height_at(world.state.index_of(
-			DictRead.as_int(ghost["x"]), DictRead.as_int(ghost["y"]))))
-	h.check("replay.the_held_record_is_what_is_drawn",
-		held_node != null and held_node.position.distance_to(held_at) < 0.001,
-		"the casualty's own record, not the slot's new owner")
-	var _gone: bool = units.hide_now(slot)
-	h.equal("replay.hiding_drops_the_held_record",
-		units.held_view(slot).size(), 0,
-		"the slot is the new owner's again once the death has been shown")
 	units.free()
 
 
@@ -1696,23 +1847,12 @@ func _game_font(h: TestHarness) -> void:
 ##
 ## `aExecuteMove`'s step loop blocks, so the mine's blast (`0x0046EDAF`) and
 ## the teleporter's stream (`0x0046EE03`) are drawn after the last step. The
-## body walks on [UnitsView]'s clock and the set pieces on [SequenceQueue]'s,
-## and [method SliceMain._hold_for_walk] is the stage that joins them --
-## queued only when the walk has an epilogue at all, so a plain walk does not
-## hold the queue for nothing.
+## body walks on [UnitsView]'s clock and the set pieces on [SequenceQueue]'s;
+## since docs/100 the mine is an **event of its own** behind the `move`, and
+## the playback's `busy` gate -- the body still walking -- is what keeps it
+## there. No stage of the remake's own joins the two clocks any more, and a
+## plain walk queues nothing behind the body.
 func _walk_epilogue(h: TestHarness) -> void:
-	h.equal("walk.a_plain_walk_has_no_epilogue",
-		[SliceMain._walk_has_epilogue([]),
-		SliceMain._walk_has_epilogue([{"kind": "victory_point"}]),
-		SliceMain._walk_has_epilogue([{"kind": "teleporter"}])],
-		[false, false, false],
-		"the entry event alone is the walk's, not the epilogue's")
-	h.equal("walk.the_three_that_do",
-		[SliceMain._walk_has_epilogue([{"kind": "mine_detonated"}]),
-		SliceMain._walk_has_epilogue([{"kind": "teleported"}]),
-		SliceMain._walk_has_epilogue([{"kind": "teleporter_blocked"}])],
-		[true, true, true])
-
 	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
 	if loaded.is_empty():
 		h.check("walk.cache", false, "no _C_140 in the cache")
@@ -1729,52 +1869,76 @@ func _walk_epilogue(h: TestHarness) -> void:
 		return
 	var main: SliceMain = SliceMain.new()
 	main.world = world
+	main._strings = Localization.new()
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	main._units = units
 	main._sequences = SequenceQueue.create(null)
 	var node: Node3D = Node3D.new()
 	node.name = "unit_%d" % slot
 	units.add_child(node)
 
-	h.check("walk.no_hold_without_a_walk", not main._hold_for_walk(1.0),
-		"nothing to wait for, so nothing is queued")
-
 	var view: Dictionary = world.unit_view(slot)
 	var x: int = DictRead.as_int(view["x"])
 	var y: int = DictRead.as_int(view["y"])
 	var width: int = world.resource.width
+	var step: int = 1 if x + 1 < width else -1
 	var route: PackedInt32Array = PackedInt32Array([
-		world.state.index_of(x, y), world.state.index_of(x + 1, y)])
-	units.start_walk(slot, route, width, 1.0)
-	h.check("walk.the_hold_is_queued", main._hold_for_walk(1.0),
-		"the body is walking, so the epilogue waits")
-	h.equal("walk.the_hold_is_the_first_stage", main._sequences.current(),
-		SliceMain.STAGE_AFTER_WALK)
-	# Ten of the twenty frames go by with the body still walking: the stage
-	# is bounded by the walk's own length but ended by the walk itself.
-	for _i: int in range(10):
-		var _went: bool = main._sequences.advance(
-			1.0 / SequenceQueue.FRAMES_PER_SECOND)
-	h.equal("walk.the_hold_outlasts_the_bounds_first_half",
-		main._sequences.current(), SliceMain.STAGE_AFTER_WALK)
-	units.finish_walks(world)
-	var _ended: bool = main._sequences.advance(
-		1.0 / SequenceQueue.FRAMES_PER_SECOND)
-	h.check("walk.the_hold_ends_with_the_walk",
+		world.state.index_of(x, y), world.state.index_of(x + step, y)])
+	var walk_event: Dictionary = AIEvent.make("move", slot, x, y, x + step, y,
+		1, "", {"path": route, "steps": 1, "facing": 0, "cost": 1,
+			"seen_source": false, "seen_destination": false}).to_dict()
+	var blast: AttackResult = AttackResult.new()
+	blast.fired = true
+	var mine_event: Dictionary = AIEvent.make("mine", slot, x + step, y,
+		x + step, y, 0, "", {"blast": blast.to_dict(), "events": []}).to_dict()
+	var presented: Array[String] = []
+	var present: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		var kind: String = DictRead.as_string(event["kind"])
+		presented.append(kind)
+		return main._play_event_body(event, kind)
+	var busy: Callable = func() -> bool:
+		return main._sequences.is_running() or units.is_walking()
+
+	# A plain walk: the body, and nothing queued behind it.
+	main._playback.play([walk_event], present, Callable(), 0.0, busy)
+	h.check("walk.the_walk_is_the_first_event",
+		units.is_walking() and presented == (["move"] as Array[String]),
+		"the body is on its way from inside `play()`")
+	h.check("walk.a_plain_walk_holds_nothing_after_it",
 		not main._sequences.is_running(),
-		"`UnitsView.is_walking` is the predicate, not the frame count")
+		"no stage waits on the queue for a walk with no epilogue")
+	units.finish_walks(world)
+	var _over: bool = main._playback.advance(1.0, DictRead.as_bool(busy.call()))
+	h.check("walk.and_is_over_when_the_body_arrives",
+		not main._playback.is_running() and not main._sequences.is_running(),
+		"`UnitsView.is_walking` is the predicate, not a frame count")
+
+	# The walk onto a mine: the blast is its own event, and it waits.
+	presented.clear()
+	main._playback.play([walk_event, mine_event], present, Callable(), 0.0,
+		busy)
+	h.equal("walk.the_mine_waits_for_the_walk", presented,
+		["move"] as Array[String], "the body has not arrived")
+	var _still: bool = main._playback.advance(5.0, DictRead.as_bool(busy.call()))
+	h.check("walk.the_blast_is_not_queued_under_the_body",
+		presented == (["move"] as Array[String]) and not main._sequences.is_running(),
+		"five seconds of a walking body: the mine has not gone off")
+	units.finish_walks(world)
+	var _landed: bool = main._playback.advance(0.0, DictRead.as_bool(busy.call()))
+	h.equal("walk.the_mine_is_its_own_event_after_the_walk", presented,
+		["move", "mine"] as Array[String],
+		"`aExecuteBomb` runs after the last step has been drawn")
+	h.check("walk.the_blast_is_a_shot_sequence", main._sequences.is_running(),
+		"weapon 36/37 on the bomb\'s own cell, as `aPlayFightAnimation` draws it")
+	main._sequences.skip()
+	main._playback.skip()
 	units.free()
 	main.free()
 
 
-## The six campaign screens -- docs/27's flow with a picture on it.
-##
-## Oracle boundary: **specification**. What is checked is the half `game` owns:
-## that each screen builds, that not one caption is a literal (every one comes
-## back from the shipped banks rather than as `Localization`'s missing marker),
-## that the roster rows address a **record** and not a table position, and that
-## the purchase catalogue shows what is locked as well as what is not.
 func _campaign_screens(h: TestHarness) -> void:
 	var cache_dir: String = CacheFixture.cache_dir()
 	var manifest: Dictionary = CacheFixture.manifest()
@@ -1963,3 +2127,537 @@ func _labels_of(node: Node) -> PackedStringArray:
 			out.append(button.text)
 		out.append_array(_labels_of(child))
 	return out
+
+
+## The drawn-cell override, on a world where it decides the answer.
+##
+## A 7x7 map with a wall of tall cells down the middle, a marine on one side
+## and an alien on the other: the plain pass cannot see the alien, and the
+## same pass asked at a cell on the marine's own side can. Without a fixture
+## like this the check is vacuous -- on `_C_140`'s opening turn every alien is
+## already fully visible, so an override changes nothing and a broken
+## override passes.
+func _fog_override(h: TestHarness) -> void:
+	# 40 levels of `MissionScript.HEIGHT_LEVEL_UNITS`, well over any body.
+	var wall: int = 40 * MissionScript.HEIGHT_LEVEL_UNITS
+	var heights: Array = []
+	for i: int in range(49):
+		heights.append(wall if i % 7 == 3 else 0)
+	var units: Array = [
+		TestFixtures.unit(0, 1, 3, 0, 0),
+		TestFixtures.unit(1, 5, 3, 0, UnitState.PLAYER_ALIEN),
+	]
+	var world: World = World.create(
+		TestFixtures.map_document(7, 7, units, [], heights),
+		TestFixtures.balance(), 1.0)
+	var fog: PictureFog = PictureFog.new()
+	fog.viewer = 0
+	var plain: Dictionary[int, int] = fog.states(world)
+	h.check("fog.the_wall_hides_the_alien",
+		DictRead.as_int(plain.get(1, -1)) != Visibility.FULL,
+		"a wall of %d levels between them, answered %d"
+			% [40, DictRead.as_int(plain.get(1, -1))])
+	var at: Dictionary[int, Vector2i] = {1: Vector2i(2, 3)}
+	var drawn: Dictionary[int, int] = fog.states(world, at)
+	h.equal("fog.the_walkers_body_cell_is_what_is_asked",
+		DictRead.as_int(drawn.get(1, -1)), Visibility.FULL,
+		"the body is drawn on the marine's side of the wall, so it is a body")
+	h.equal("fog.the_override_is_put_back",
+		Vector2i(DictRead.as_int(world.unit_view(1)["x"]),
+			DictRead.as_int(world.unit_view(1)["y"])), Vector2i(5, 3),
+		"the pass is a query and moves nothing for good")
+
+
+## A shot host that records where each muzzle burst is placed: the cell the
+## sequence was given, before any trigger table looks at it.
+class MuzzleRecorder extends SliceMain.MainShotHost:
+	var shots: Array[Vector2i] = []
+
+	func muzzle(_weapon: int, sx: int, sy: int, _tx: int, _ty: int,
+			_shooter: int = MapState.NO_UNIT) -> void:
+		shots.append(Vector2i(sx, sy))
+
+
+## The playback's pacing -- docs/100 section 3, revised.
+##
+## Oracle boundary: **specification**. The original's `aPlay*` routines block
+## for as long as they draw and return; the remake's playback reproduces that
+## for a player's command and adds a gap of its own, [constant
+## EventPlayback.STEP_SECONDS], to the computer's turn only. Five facts: the
+## first event shows in the frame the command was given, a player's command
+## has no gap and no floor, the computer's turn keeps its gap, a shown event
+## whose presenter queued nothing costs nothing, and the hold a presenter
+## asks for runs *under* the animation rather than after it.
+func _playback_pacing(h: TestHarness) -> void:
+	var events: Array[Dictionary] = []
+	for slot: int in range(2):
+		var event: Dictionary = AIEvent.make("fire", slot, 0, 0, 1, 1).to_dict()
+		event["delta"] = {}
+		events.append(event)
+	var seen: Array[int] = [0]
+	var busy: Array[bool] = [true]
+	var probe: Callable = func() -> bool: return busy[0]
+	var count: Callable = func(event: Dictionary) -> float:
+		if not event.is_empty():
+			seen[0] += 1
+		return 0.0
+
+	var playback: EventPlayback = EventPlayback.new()
+	playback.play(events, count, Callable(), 0.0, probe)
+	h.equal("playback.the_first_event_shows_inside_play", seen[0], 1,
+		"no empty frame between the button and the shot")
+
+	# A second command over one still being drawn ends the first: its deltas
+	# land and its finish runs before the new list is taken.
+	var landed: Array[int] = [0]
+	var finished: Array[int] = [0]
+	var land: Callable = func(_event: Dictionary) -> void:
+		landed[0] += 1
+	var finish_count: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			finished[0] += 1
+		return 0.0
+	var second: EventPlayback = EventPlayback.new()
+	second.play(events, finish_count, land, 0.0, probe)
+	var before: int = finished[0]
+	second.play(events, finish_count, land, 0.0, probe)
+	h.check("playback.a_second_play_lands_the_first",
+		landed[0] >= events.size() and finished[0] == before + 1,
+		"landed %d of %d, finished %d time(s)"
+			% [landed[0], events.size(), finished[0] - before])
+	second.skip()
+	busy[0] = false
+	var _next: bool = playback.advance(0.01, false)
+	h.equal("playback.a_player_command_has_no_gap", seen[0], 2,
+		"the second follows in the frame the picture stands free")
+
+	seen[0] = 0
+	busy[0] = true
+	playback.play(events, count, Callable(), EventPlayback.STEP_SECONDS, probe)
+	busy[0] = false
+	var _soon: bool = playback.advance(0.01, false)
+	h.equal("playback.the_computers_turn_keeps_the_gap", seen[0], 1,
+		"%.2f s of free picture before the next alien moves"
+			% EventPlayback.STEP_SECONDS)
+	var _later: bool = playback.advance(EventPlayback.STEP_SECONDS, false)
+	h.equal("playback.and_steps_once_the_gap_has_passed", seen[0], 2)
+
+	seen[0] = 0
+	busy[0] = false
+	var quiet: Array[Dictionary] = []
+	for _i: int in range(2):
+		var script: Dictionary = AIEvent.make("script", -1, 0, 0, 0, 0, 0, "",
+			{"ran": true, "events": []}).to_dict()
+		script["delta"] = {}
+		quiet.append(script)
+	playback.play(quiet, count, Callable(), EventPlayback.STEP_SECONDS, probe)
+	h.check("playback.a_quiet_shown_event_holds_nothing",
+		seen[0] == 2 and not playback.is_running(),
+		"a presenter that asked for nothing and queued nothing waits no gap "
+		+ "and no floor: %d seen, running %s" % [seen[0], str(playback.is_running())])
+
+	seen[0] = 0
+	busy[0] = true
+	var ask: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		seen[0] += 1
+		return 1.0 if seen[0] == 1 else 0.0
+	playback.play(events, ask, Callable(), 0.0, probe)
+	var _held: bool = playback.advance(1.0, true)
+	h.equal("playback.the_picture_holds_the_event", seen[0], 1,
+		"busy: the event on screen does not end")
+	busy[0] = false
+	var _freed: bool = playback.advance(0.0, false)
+	h.equal("playback.the_hold_runs_while_the_picture_is_busy", seen[0], 2,
+		"the second it asked for ran under the animation and is not waited "
+		+ "out again after it")
+
+
+## Every kind the journal marks with a picture has an arm that draws it
+## (docs/100 section 3): the walk's mine, the teleporter, the return fire,
+## the script's set pieces and the computer's door all queue something or
+## answer a hold, and a hook that drew nothing answers zero so the playback
+## goes straight on.
+func _presenter_arms(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("presenters.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = -1
+	for candidate: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(candidate)
+		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
+			slot = candidate
+			break
+	if slot < 0:
+		h.check("presenters.units", false, "_C_140 has no live unit")
+		return
+	var view: Dictionary = world.unit_view(slot)
+	var x: int = DictRead.as_int(view["x"])
+	var y: int = DictRead.as_int(view["y"])
+	var x2: int = x + 1 if x + 1 < world.resource.width else x - 1
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._strings = Localization.new()
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = world
+	main._units = units
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+	var blast: AttackResult = AttackResult.new()
+	blast.fired = true
+	var arms: Dictionary[String, Dictionary] = {
+		"mine": AIEvent.make("mine", slot, x, y, x, y, 0, "",
+			{"blast": blast.to_dict(), "events": []}).to_dict(),
+		"teleport": AIEvent.make("teleport", slot, x, y, x2, y, 0, "",
+			{"events": [{"kind": "teleporter", "x": x, "y": y},
+				{"kind": "teleported", "x": x2, "y": y}]}).to_dict(),
+		"reaction": AIEvent.make("reaction", slot, x, y, x2, y, 1,
+			str(DictRead.as_int(view["weapon"])),
+			{"reactor": slot, "ticket": 1, "attack": blast.to_dict(),
+				"jammed": false, "mover": slot}).to_dict(),
+		"script": AIEvent.make("script", -1, 0, 0, 0, 0, 0, "",
+			{"ran": true, "events": [{"name": "open_door",
+				"values": [x2, y]}]}).to_dict(),
+		"door": AIEvent.make("door", slot, x, y, x2, y).to_dict(),
+		"warp": AIEvent.make("warp", slot, x, y, x2, y).to_dict(),
+	}
+	for kind: String in arms:
+		main._sequences = SequenceQueue.create(null)
+		var hold: float = main._play_event_body(arms[kind], kind)
+		h.check("presenters.%s_has_an_arm" % kind,
+			hold > 0.0 or main._sequences.is_running(),
+			"%.3f s asked, queue running %s" % [hold,
+				str(main._sequences.is_running())])
+		main._sequences.skip()
+	main._sequences = SequenceQueue.create(null)
+	var nothing: Dictionary = AIEvent.make("script", -1, 0, 0, 0, 0, 0, "",
+		{"ran": true, "events": []}).to_dict()
+	var none: float = main._play_event_body(nothing, "script")
+	h.check("presenters.a_hook_that_drew_nothing_holds_nothing",
+		is_zero_approx(none) and not main._sequences.is_running(),
+		"%.3f s: the playback goes straight on" % none)
+	units.free()
+	main.free()
+
+
+## Whose turn the picture is watching is the **mirror's** seat, not whether a
+## playback is running: a player's own command runs through the same
+## playback, and the progress bar, the *press key to skip* note and the
+## agent's `replay` must not take it for the computer's turn.
+func _watching_gate(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("hud.watching_cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var event: Dictionary = AIEvent.make("move", 0, 0, 0, 1, 1).to_dict()
+	event["delta"] = {}
+	main._playback.play([event], func(_event: Dictionary) -> float: return 1.0)
+	h.check("hud.the_players_playback_runs", main._playback.is_running(),
+		"a command is being drawn")
+	h.check("hud.a_players_own_command_is_not_watched",
+		main._watching(main.shown()).is_empty()
+			and not main._watching_the_computer(),
+		"the seat is the player's, so no bar and no skip")
+	var was: int = world.turn.current_player
+	world.turn.previous_player = was
+	world.turn.current_player = TurnState.PLAYER_COMPUTER
+	var watched: Dictionary = main._watching(main.shown())
+	h.check("hud.the_computers_seat_is_watched",
+		not watched.is_empty() and DictRead.as_int(watched.get("player", -1)) == was
+			and main._watching_the_computer(),
+		"the mirror holds 255 from one hand-over to the next: %s" % str(watched))
+	world.turn.current_player = was
+	main._playback.skip()
+	# **The hand-over reads the mirror's seat.** The truth's rotation has run
+	# past the computer's turn to the next human seat by the time the replay
+	# is drawn; with two humans the fog would otherwise be the wrong seat's.
+	main._shown = world.clone()
+	world.turn.current_player = 1
+	main._shown.turn.current_player = TurnState.PLAYER_COMPUTER
+	main._shown.turn.previous_player = 0
+	main._fog.viewer = -1
+	var hand_over: Dictionary = AIEvent.make("hand_over", -1, 0, 0, 0, 0).to_dict()
+	hand_over["delta"] = {"cells": {}, "units": {},
+		"turn": main._shown.turn.view(),
+		"game_control": main._shown.game_control.values(),
+		"rng": main._shown.rng.state(), "crand": main._shown.crand.state()}
+	main._apply_event(hand_over)
+	h.equal("fog.the_hand_over_reads_the_mirrors_seat", main._fog.viewer, 0,
+		"the seat that handed over, off the mirror; the truth already sits "
+		+ "at player 1")
+	world.turn.current_player = was
+	main.free()
+
+
+## A target band over an empty cell is not drawn: the bands are computed on
+## the truth at selection and the mirror lags it, so the aim over a victim
+## the shot has killed goes the moment its delta lands rather than when the
+## next command recomputes the bands.
+func _band_filter(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("overlay.band_cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var alien: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == UnitState.PLAYER_ALIEN \
+				and DictRead.as_int(view["hp"]) > 0:
+			alien = slot
+			break
+	if alien < 0:
+		h.check("overlay.band_units", false, "_C_140 places no alien")
+		return
+	var _seen: bool = world.apply_unit_record(alien,
+		{"visibility": Visibility.FULL})
+	var view: Dictionary = world.unit_view(alien)
+	var cell: Vector2i = Vector2i(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	var empty: Vector2i = Vector2i(-1, -1)
+	for y: int in range(world.resource.height):
+		for x: int in range(world.resource.width):
+			if empty.x < 0 and world.state.unit_at(world.state.index_of(x, y)) < 0:
+				empty = Vector2i(x, y)
+	var bands: Dictionary[Vector2i, int] = {cell: HudTables.STATE_BAND_FIRST,
+		empty: HudTables.STATE_BAND_FIRST + 1}
+	var drawn: Dictionary[Vector2i, int] = GroundSprites.cell_states(world, -1,
+		null, bands)
+	h.check("overlay.a_band_on_a_live_body_is_drawn", drawn.has(cell),
+		str(drawn.keys()))
+	h.check("overlay.a_band_on_an_empty_cell_is_not", not drawn.has(empty),
+		str(drawn.keys()))
+	var _killed: bool = world.apply_unit_record(alien, {"hp": 0})
+	drawn = GroundSprites.cell_states(world, -1, null, bands)
+	h.check("overlay.a_band_on_a_dead_body_is_not_drawn", not drawn.has(cell),
+		"the aim goes with the body: %s" % str(drawn.keys()))
+
+
+## The `fire` delta lands at the impact, from inside the shot's own death
+## stage, and not when the playback moves on: the mirror loses the victim in
+## the frame the blood appears, the band over its cell goes with it, and the
+## playback is still holding the event.
+func _death_delta(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("death.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	world.turn.current_player = 0
+	var shooter: int = -1
+	var victim: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
+			continue
+		if DictRead.as_int(view["player"]) == 0:
+			if shooter < 0:
+				shooter = slot
+		elif victim < 0 and world.unit_types().exp(
+				DictRead.as_int(view["type_id"])) > 0:
+			victim = slot
+	if shooter < 0 or victim < 0:
+		h.check("death.units", false, "_C_140 has no pair to shoot with")
+		return
+	var killer: Dictionary = world.unit_view(shooter)
+	var sx: int = DictRead.as_int(killer["x"])
+	var sy: int = DictRead.as_int(killer["y"])
+	var ax: int = sx + 1 if sx + 1 < world.resource.width else sx - 1
+	var standing: int = world.state.unit_at(world.state.index_of(ax, sy))
+	if standing >= 0 and standing != victim:
+		var free: Vector2i = Vector2i(-1, -1)
+		for y: int in range(world.resource.height):
+			for x: int in range(world.resource.width):
+				if free.x < 0 and world.state.unit_at(world.state.index_of(x, y)) < 0:
+					free = Vector2i(x, y)
+		var _aside: bool = world.apply_unit_record(standing, {"x": free.x,
+			"y": free.y})
+	var fire_clip: CharismaClip = _clip_with_break()
+	world.enable_journal()
+	var events: Array[Dictionary] = []
+	var last: String = ""
+	var mirror: World = null
+	for seed_value: int in range(1, 300):
+		var _alive: bool = world.apply_unit_record(victim, {"hp": 1, "x": ax,
+			"y": sy, "armour_front": 0, "armour_rear": 0, "absorber": 0,
+			"visibility": Visibility.FULL})
+		var _ready: bool = world.apply_unit_record(shooter,
+			{"hp": DictRead.as_int(killer["hp"]), "mp": 40, "acted": 0,
+			"ammo": 30, "heat": 0, "action_state": 0, "malfunction": 0})
+		world.rng.randomize_seed(float(seed_value))
+		var _residue: Array[Dictionary] = world.take_events()
+		# The mirror stands where the shot was ordered: the victim alive.
+		mirror = world.clone()
+		var attempt: AttackResult = world.submit_attack(
+			AttackCommand.create(shooter, ax, sy))
+		events = world.take_events()
+		if attempt.fired and DictRead.as_int(world.unit_view(victim)["hp"]) == 0:
+			break
+		events = []
+		last = "fired %s (%s), victim hp %d" % [str(attempt.fired),
+			attempt.reason, DictRead.as_int(world.unit_view(victim)["hp"])]
+	h.check("death.found_a_killing_seed", not events.is_empty(),
+		"no seed below 300 kills a one-point target; last: " + last)
+	if events.is_empty():
+		return
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = mirror
+	main._strings = Localization.new()
+	main._geometry = {"prototypes": {}}
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = mirror
+	main._units = units
+	for slot: int in [shooter, victim]:
+		var node: Node3D = Node3D.new()
+		node.name = "unit_%d" % slot
+		units.add_child(node)
+		if fire_clip != null:
+			units.states[slot] = CharismaState.create(null, fire_clip,
+				fire_clip, fire_clip)
+	main._sequences = SequenceQueue.create(null)
+	var present: Callable = func(event: Dictionary) -> float:
+		if event.is_empty():
+			return 0.0
+		var kind: String = DictRead.as_string(event["kind"])
+		return main._play_event_body(event, kind)
+	var busy: Callable = func() -> bool:
+		return main._sequences.is_running() or units.any_busy()
+	var cell: Vector2i = Vector2i(ax, sy)
+	var bands: Dictionary[Vector2i, int] = {cell: HudTables.STATE_BAND_FIRST}
+	main._playback.play(events, present, Callable(main, "_apply_event"), 0.0,
+		busy)
+	h.check("death.the_victim_stands_until_the_impact",
+		DictRead.as_int(mirror.unit_view(victim).get("hp", 0)) > 0
+			and GroundSprites.cell_states(mirror, shooter, null, bands).has(cell)
+			and main._sequences.is_running(),
+		"the shot is on the queue and the mirror still has the victim")
+	var frames: int = 0
+	while main._sequences.is_running() and frames < 400 \
+			and DictRead.as_int(mirror.unit_view(victim).get("hp", 0)) > 0:
+		var _going: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+	h.check("death.the_fire_delta_lands_at_the_impact",
+		DictRead.as_int(mirror.unit_view(victim).get("hp", -1)) == 0
+			and main._playback.is_running() and main._sequences.is_running(),
+		"after %d frame(s) on %s: the death stage landed the delta itself, "
+		% [frames, main._sequences.current()]
+		+ "with the playback still holding the event")
+	h.check("death.the_body_is_gone_with_the_record",
+		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
+		"the rebuild from the mirror dropped it")
+	h.check("death.the_band_goes_with_the_body",
+		not GroundSprites.cell_states(mirror, shooter, null, bands).has(cell),
+		"no aim over an empty cell")
+	main._sequences.skip()
+	main._playback.skip()
+	units.free()
+	main.free()
+
+
+## Several deltas landing in one frame cost one rebuild: [method
+## SliceMain._apply_event] marks the picture stale and [method
+## SliceMain._flush_picture] pays once.
+func _quiet_landings(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("picture.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._geometry = {"prototypes": {}}
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = main._shown
+	main._units = units
+	for _i: int in range(3):
+		var quiet: Dictionary = AIEvent.make("rotate", 0, 0, 0, 0, 0).to_dict()
+		quiet["delta"] = {}
+		main._apply_event(quiet)
+	h.equal("picture.a_landing_rebuilds_nothing", units.builds, 0,
+		"three deltas landed and the bodies were not touched")
+	main._flush_picture()
+	h.equal("picture.quiet_landings_rebuild_once", units.builds, 1,
+		"one rebuild for the frame, however many deltas")
+	main._flush_picture()
+	h.equal("picture.a_flush_with_nothing_landed_is_free", units.builds, 1)
+	units.free()
+	main.free()
+
+
+## A set piece is queued against the state **after** its event, and the
+## picture waits for the queue before it follows.
+##
+## The door is the case that found it: `_paint_setpiece` turns the leaves
+## by the sign of `to - from`, and a door queued against the mirror's closed
+## cell had `to == from`, turned its leaves the closing way and snapped open
+## when the delta landed at the end. So [method SliceMain._queue_setpiece]
+## lands the event's delta first, and [method SliceMain._flush_picture]
+## holds the bodies and the terrain where the drawn snapshot has them for
+## as long as the queue runs, so a footbridge's riders can still fall and a
+## platform's passengers still ride from where they were.
+func _setpiece_state(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var unit: UnitState = world.units_for_ai()[0]
+	unit.facing = 0
+	var front: PackedInt32Array = Interact.cell_in_front(world.state, unit)
+	var index: int = world.state.index_of(front[0], front[1])
+	# A closed door in front of unit 0: odd id, one tile up, a wall.
+	world.state.set_action_point(index, Interact.DOOR_JAMMED_CLOSED - 2)
+	world.state.set_field_type(index, Interact.FIELD_TYPE_WALL)
+	world.state.set_height(index, Interact.DOOR_HEIGHT_STEP)
+	if not world.may_use(0):
+		h.check("use.a_door_is_in_front", false,
+			"action point %d is not a door the fixture's unit can use"
+				% world.state.action_point_at(index))
+		return
+	world.enable_journal()
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._geometry = {"prototypes": {}}
+	main._drawn_terrain = main._shown.terrain_snapshot()
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = main._shown
+	main._units = units
+	main._sequences = SequenceQueue.create(null)
+	var used: UseResult = world.submit_use(UseCommand.create(0))
+	h.equal("use.the_door_toggles", used.kind, World.DOOR_USE_KIND, used.reason)
+	var events: Array[Dictionary] = world.take_events()
+	# The `use` event on screen with its delta not landed: the mirror still
+	# has the door closed.
+	main._playback.play(events, func(event: Dictionary) -> float:
+		return 0.0 if event.is_empty() else 1.0,
+		Callable(main, "_apply_event"), 0.0, Callable(main, "_picture_busy"))
+	h.check("use.the_mirror_is_behind_until_the_set_piece",
+		main._shown.state.action_point_at(index) % 2 == 1,
+		"the door is still closed in the mirror")
+	var drawn: PackedInt32Array = main._drawn_terrain["height_map"]
+	main._queue_setpiece({"name": "open_door", "values": [front[0], front[1]]},
+		SetpieceDriver.DOOR_FRAMES, [], 0)
+	h.check("use.a_set_piece_reads_the_state_after_its_event",
+		main._shown.state.action_point_at(index) % 2 == 0
+			and main._shown.state.height_at(index) < drawn[index],
+		"the delta landed before the target was read: `to < from`, so the "
+		+ "leaves turn the opening way")
+	h.check("use.the_queue_is_running", main._sequences.is_running(),
+		"the door's frames are on the queue")
+	main._flush_picture()
+	h.equal("picture.the_flush_waits_for_the_queue", units.builds, 0,
+		"the bodies stand where the drawn snapshot has them while the set "
+		+ "piece carries the change")
+	main._sequences.skip()
+	main._flush_picture()
+	h.equal("picture.and_follows_when_it_drains", units.builds, 1)
+	main._playback.skip()
+	units.free()
+	main.free()

@@ -24,7 +24,7 @@ extends RefCounted
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, unit: UnitState, tx: int, ty: int,
 		human_players: int, game_mode: int, ai_level: int, turn: TurnState,
-		rng: IncRandom) -> Dictionary:
+		rng: IncRandom, journal: EventJournal = null) -> Dictionary:
 	var source: int = state.index_of(unit.x, unit.y)
 	if state.unit_at(source) != unit.slot:
 		# "no unit on start path field" -- the routine's own refusal.
@@ -34,8 +34,16 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var target: int = state.index_of(tx, ty)
 	state.set_unit(source, MapState.NO_UNIT)
 	state.set_unit(target, unit.slot)
+	var from_x: int = unit.x
+	var from_y: int = unit.y
 	unit.x = tx
 	unit.y = ty
+	# **The landing is a boundary.** The engine's jump sequence puts the body
+	# down before the mine under it goes off (`0x0046F088` follows the
+	# relink), so the picture must be able to show the same two moments.
+	if journal != null:
+		var _landed: Dictionary = journal.mark("warp", unit.slot, from_x,
+			from_y, tx, ty, 0, "", {})
 	var blast: Dictionary = {}
 	if state.obstacle_at(target) == MapState.OBSTACLE_MINE \
 			and CellObjects.delete_object(
@@ -45,6 +53,9 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		state.set_effect(MapState.TIMER_SLOT, target, 0)
 		blast = Interact.execute_bomb(state, units, utab, wtab, tx, ty,
 			ai_level, human_players, game_mode, turn, rng).to_dict()
+		if journal != null:
+			var _blown: Dictionary = journal.mark("mine", unit.slot, tx, ty,
+				tx, ty, 0, "", {"blast": blast})
 	# The fog rebuild is behind the same `+0x16` gate the rest of the arm is:
 	# a mover the mine just killed rebuilds nothing.
 	if unit.hp > 0:

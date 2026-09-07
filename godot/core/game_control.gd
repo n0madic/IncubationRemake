@@ -123,5 +123,11 @@ func clone() -> GameControl:
 	return GameControl.from_array(_slots)
 
 
+## Write the twelve slots back in place; see [method IncRandom.restore].
+func restore(values: PackedInt32Array) -> void:
+	for i: int in range(SLOTS):
+		_slots[i] = values[i] if i < values.size() else 0
+
+
 func hash_into(ctx: HashingContext) -> void:
 	ctx.update(_slots.to_byte_array())

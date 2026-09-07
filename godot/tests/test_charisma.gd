@@ -211,17 +211,20 @@ func _pacing(h: TestHarness) -> void:
 
 	# And the replay holds for the walk it started. A four-field move outlasts
 	# `STEP_SECONDS`, and the next event's rebuild would cut it off half way.
-	var result: AITurnResult = AITurnResult.new()
-	result.add(AIEvent.make("move", 1, 0, 0, 1, 1, 0, ""))
-	result.add(AIEvent.make("move", 2, 0, 0, 2, 2, 0, ""))
+	var events: Array[Dictionary] = [
+		AIEvent.make("move", 1, 0, 0, 1, 1, 0, "").to_dict(),
+		AIEvent.make("move", 2, 0, 0, 2, 2, 0, "").to_dict(),
+	]
+	for event: Dictionary in events:
+		event["delta"] = {}
 	var seen: Array[int] = [0]
-	var playback: AIPlayback = AIPlayback.new()
-	playback.play(result, func(event: Dictionary) -> float:
+	var playback: EventPlayback = EventPlayback.new()
+	playback.play(events, func(event: Dictionary) -> float:
 		if event.is_empty():
 			return 0.0
 		seen[0] += 1
 		return 1.0 if seen[0] == 1 else 0.0)
-	playback.advance(AIPlayback.STEP_SECONDS)
+	playback.advance(EventPlayback.STEP_SECONDS)
 	h.equal("pacing.replay.first", seen[0], 1, "one event shown")
 	playback.advance(0.5)
 	h.equal("pacing.replay.waits", seen[0], 1,
@@ -616,7 +619,7 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 		return
 
 	var units: UnitsView = UnitsView.new()
-	units.world_ref = world
+	units.shown_ref = world
 	var node: Node3D = Node3D.new()
 	node.name = "unit_%d" % slot
 	units.add_child(node)
@@ -686,7 +689,7 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 ## `rest()` on the state and never touched the node, so a finished walk left
 ## the body wherever the previous interpolated frame put it -- short of its
 ## destination. For the player that off-centre idle sits there until the next
-## command; for `AIPlayback.skip()` it strands bodies between cells, which is
+## command; for `EventPlayback.skip()` it strands bodies between cells, which is
 ## exactly the state `skip()` promises cannot happen. Nothing else in the
 ## suite looks at a unit node's position.
 func _walking(h: TestHarness) -> void:
@@ -732,7 +735,7 @@ func _walking(h: TestHarness) -> void:
 	var first: Vector3 = WorldSpace.cell_centre(x, y,
 		world.state.height_at(cells[0]))
 	node.position = first
-	units.world_ref = world
+	units.shown_ref = world
 	node.position = Vector3(99.0, 99.0, 99.0)
 	units.start_walk(slot, cells, width, 1.0)
 	h.check("walk.started", units.is_walking(), "three cells over one second")

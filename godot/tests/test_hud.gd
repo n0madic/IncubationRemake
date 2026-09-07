@@ -531,7 +531,16 @@ func _cell_states(h: TestHarness) -> void:
 	var query: MoveMapResult = world.submit_move_query(MoveQueryCommand.create(slot))
 	var view: Dictionary = world.unit_view(slot)
 	var own: Vector2i = Vector2i(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
-	var bands: Dictionary[Vector2i, int] = {Vector2i(0, 0): 33}
+	# The band goes on a **body**: since docs/100 a band over a cell with no
+	# live, drawn unit on it is not stamped, because the bands are computed on
+	# the truth and the mirror lags it by a command (`test_game_ui`'s
+	# `overlay.*` checks pin the filter itself).
+	var alien: int = _first_of_player(world, UnitState.PLAYER_ALIEN)
+	var _seen: bool = world.apply_unit_record(alien, {"visibility": Visibility.FULL})
+	var alien_view: Dictionary = world.unit_view(alien)
+	var band_cell: Vector2i = Vector2i(DictRead.as_int(alien_view["x"]),
+		DictRead.as_int(alien_view["y"]))
+	var bands: Dictionary[Vector2i, int] = {band_cell: 33}
 	var states: Dictionary[Vector2i, int] = GroundSprites.cell_states(world, slot,
 		query, bands)
 	var reachable: int = 0
@@ -552,12 +561,12 @@ func _cell_states(h: TestHarness) -> void:
 			marked_walk = true
 	h.equal("states.own_cell_is_50", states.get(own, 0), HudTables.STATE_OWN_CELL)
 	var overwritten: int = 1
-	if query.is_reachable(0, 0):
+	if query.is_reachable(band_cell.x, band_cell.y):
 		overwritten += 1
 	h.equal("states.reachable_are_10", reachable, query.reachable_count() - overwritten,
 		"every reachable cell but the mover's own and the band's")
 	h.check("states.translated_from_the_fill", translated, "10 and 60 from the query")
-	h.equal("states.band_stamped", states.get(Vector2i(0, 0), 0), 33)
+	h.equal("states.band_stamped", states.get(band_cell, 0), 33)
 	h.check("states.no_walk_is_marked", not marked_walk,
 		"no cell is left in state 100, whoever walks")
 
@@ -1090,14 +1099,14 @@ func _progress_arithmetic(h: TestHarness) -> void:
 	for acted: int in [0, 1, 4, 8]:
 		lit.append(TurnProgress.fill_for(acted, 8) + 1)
 	h.equal("progress.lit_counts", lit, [1, 3, 11, 22])
-	# `played_in` is what the tally counts against: events `[0, index)`.
-	var events: Array[Dictionary] = [{"slot": 3}, {"slot": 5}, {"slot": 3}]
-	h.equal("progress.nothing_played_at_the_start",
-		AIPlayback.played_in(events, 0), PackedInt32Array())
-	h.equal("progress.one_played", AIPlayback.played_in(events, 1),
-		PackedInt32Array([3]))
-	h.equal("progress.each_slot_once", AIPlayback.played_in(events, 3),
-		PackedInt32Array([3, 5]))
+	# **The tally reads the mirror.** It used to be handed the slots the
+	# replay had already played and the casualties it was still holding,
+	# because the truth had spent every point and lost every body before the
+	# first frame. The picture's world has not, so the two lists are empty
+	# and the count is the ordinary one (docs/100 section 2).
+	var counted: Vector2i = TurnProgress.tally(TestFixtures.tiny_world(), 0)
+	h.check("progress.the_tally_reads_the_world_it_is_given",
+		counted.y > 0, "%d unit(s) in the divisor" % counted.y)
 	# docs/43 section 4.5 -- the selection the hand-over gives back. The rule
 	# read out of the binary; `test_game_ui.gd` runs the search itself.
 	var selection: Dictionary = DictRead.as_dict(_cases["selection"])

@@ -63,6 +63,20 @@ func state() -> Dictionary:
 	return {"seed": seed, "calls": calls, "sum": sum}
 
 
+## Write a [method state] back over this generator, in place.  The mirror
+## keeps one generator for the life of the mission, so a delta writes through
+## rather than replacing the object every rule holds a reference to.
+func restore(data: Dictionary) -> void:
+	seed = DictRead.as_float(data.get("seed", 0.0))
+	calls = DictRead.as_int(data.get("calls", 0))
+	sum = DictRead.as_int(data.get("sum", 0))
+
+
+## An independent generator at this one's state.
+func clone() -> IncRandom:
+	return from_state(state())
+
+
 static func from_state(data: Dictionary) -> IncRandom:
 	var rng: IncRandom = IncRandom.new()
 	rng.seed = DictRead.as_float(data.get("seed", 0.0))

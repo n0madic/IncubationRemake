@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 250 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 37 suites, 4353 checks
+bash   godot/run_tests.sh                                    # 38 suites, 4431 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -698,6 +698,17 @@ calls, and their arguments come from the un-validated hooks above -- so the
 reach is **measured and pinned** instead, and closing it wants a `dbgcall`
 capture of the live pool.
 
+`docs/100` reports the eighth -- the picture became a **lagging mirror** of the
+world. `core` resolves a whole command before it returns, so `game` now keeps a
+clone advanced one event delta at a time (`core/event_journal.gd`,
+`game/event_playback.gd`), with a boundary wherever the original's frame tick
+sat between two writes; the eighteen mechanisms that used to hide one field of
+the finished world are gone, and the standing check is that the two canonical
+hashes agree once the last delta has landed. It also fixed the alien that
+walked out of the fog and stayed a contact beam -- `game/picture_fog.gd`
+answers the whole picture at once, for the seat that is watching and at the
+cell each body is drawn on.
+
 `docs/98` reports the sixth -- the campaign: both chains, the location map,
 the two roster banks, deployment onto the `action_point == player + 1` cells,
 the mission end with its score and payouts, the economy and six screens on the
@@ -775,6 +786,22 @@ Nine things about it that are easy to trip over:
   includes the source and output inventories. Publish, pointer switch and
   collection share one inter-process lock; do not reintroduce an in-place
   replacement of the directory `active.json` names.
+* **The picture reads a *lagging mirror*, not the world.** `core` resolves a
+  whole command -- and the whole computer turn -- before it returns, so
+  `SliceMain.world` always stands at the *end* of the last one. `game` keeps
+  `SliceMain._shown`, a clone advanced one event delta at a time by
+  `EventPlayback` at the moment each animation reaches the change it is
+  drawing (`core/event_journal.gd`, docs/100). Every reader of what is on
+  screen goes through `SliceMain.shown()`; the truth is read to submit a
+  command and to ask whether one is allowed. The journal is **opt-in**
+  (`World.enable_journal`), so the case suites pay nothing, and the standing
+  check is that the two canonical hashes agree once the last delta has landed
+  -- a field no delta carried fails there and nowhere else. The pacing is the
+  **computer's**: `EventPlayback.play` takes the gap between shown events,
+  `end_turn` passes 0.45 s and a player's command passes zero, and what is
+  *watched* -- the progress bar, the skip key, the agent's `replay` -- is the
+  mirror's seat being 255, never `_playback.is_running()`, which is true
+  during the player's own commands too (docs/100 §3.1).
 * **A reference cycle between two `RefCounted`s fails the suites.** Godot
   counts references and never collects a cycle, so the leaked objects' scripts
   are still held at shutdown and Godot prints

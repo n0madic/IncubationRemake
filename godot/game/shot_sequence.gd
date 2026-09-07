@@ -34,7 +34,7 @@ const POOL_FRAMES: int = 20
 ## safety net and not a timing; it is named so nobody mistakes it for one.
 const SAFETY_FRAMES: int = 300
 ## What a shot lasts when its shooter has no fight clip to measure -- see
-## the `clip_frames` floor below. `AIPlayback.STEP_SECONDS` at the engine's
+## the `clip_frames` floor below. `EventPlayback.STEP_SECONDS` at the engine's
 ## own twenty frames a second.
 const NO_CLIP_FRAMES: int = 9
 ## docs/42 section 4.6 -- the muzzle arms that write 0 over the wait flag.
@@ -165,7 +165,7 @@ static func arrived_after_muzzle(waits: bool, creator_write: int, made: int,
 ## Answers the frames the engine's own counts add up to -- the clip, the
 ## spin, the muzzle, the impact, the resume -- **not** the bounds on the
 ## open-ended waits: the replay waits for the picture through
-## [method AIPlayback.advance]'s `busy`, and a hold that summed the bounds
+## [method EventPlayback.advance]'s `busy`, and a hold that summed the bounds
 ## stalled every computer shot for their whole length.
 static func enqueue(queue: SequenceQueue, host: ShotHost,
 		shot: Dictionary) -> int:
@@ -200,7 +200,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	# types get fewer than three clips and two get none at all.
 	#
 	# The floor is **the remake's own number** and is the same one
-	# [constant AIPlayback.STEP_SECONDS] uses for an event's minimum, so a
+	# [constant EventPlayback.STEP_SECONDS] uses for an event's minimum, so a
 	# clipless shot lasts as long as the replay's own step rather than as long
 	# as nothing.
 	var clip_frames: int = maxi(1, to_break + spin)
