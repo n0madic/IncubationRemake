@@ -173,10 +173,13 @@ func _state_of(kase: Dictionary, models: PackedStringArray) -> MapState:
 		var row: PackedInt32Array = DictRead.to_int32(entry)
 		for slot: int in range(MapState.EFFECT_SLOTS):
 			state.set_effect(slot, row[0], row[slot + 1])
-	# **Seeded from the capture, not rebuilt.** `rebuild_objects` only knows
-	# the cell-owned objects, and `_C_116` loads with slot 0 already holding a
-	# static one that no cell names; rebuilding would put the first object in
-	# a slot the engine had taken.
+	# **Rebuilt, then cross-checked against the capture.** `_C_116` loads
+	# with slot 0 holding a static object no effect byte names: the
+	# victory-point marker `0x00431E30` stands on its one cell with action
+	# point 81 (docs/42 section 9.3). `rebuild_objects` places it since
+	# 2026-09-07; the capture's `objects_before` writes the same 5 over it,
+	# so a rebuild that put the marker anywhere else would be caught by the
+	# phases' object diffs rather than hidden by the seeding.
 	state.rebuild_objects()
 	for entry: Variant in DictRead.as_array(kase.get("objects_before", [])):
 		var row: PackedInt32Array = DictRead.to_int32(entry)

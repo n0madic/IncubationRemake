@@ -193,7 +193,8 @@ For every live unit (`+0x16 != 0`) at its anchor cell, in the **near view**
 units only (`0x0043B2C0`), with no state-35 marker on the cell:
 
 * the element is the hit points as a digit, `mp[min(hp, 15)]`
-  (`0x004186D3`, `0x00418708`) — **only while `+0x15` is non-zero**
+  (`0x004186D3`, `0x00418708`) — **only while `+0x15` is non-zero** —
+  *the remake does not draw it; D12 below (2026-09-07)* —
   (`0x004186AF` jumps the whole digit block to `0x00418710` when the unit has
   no movement points left), so the numbers stand over the units that have not
   finished their turn and go out one by one; `+0x41 == 1` (on overwatch)
@@ -216,7 +217,11 @@ replaced by flags from `map.LIB`: a visible unit (`+0x4F == 0`) draws
 a unit whose cell is in the attack scratchpad 80..94 blinks `map[5]` on the
 per-draw counter `[0x004FE264]`. **Victory points** appear here too: a cell
 whose action point `+0x0B` is 80..89 blits `mp[+0x0B − 63]` = 17..26, the
-letters A and B in grey, red, white, blue and yellow (`0x00418358`).
+letters A and B in grey, red, white, blue and yellow (`0x00418358`). These
+are the far view's copy of a mark that is on the ground **in every view**:
+the same letters, as a static `A_MK_*` object the placer `0x00431E30`
+stands on the cell at load ([`42` §9.3](42-mission-presentation.md),
+2026-09-07) — which is the red *A* a campaign mission's target cells show.
 
 The remake's camera never gets there in play: `CameraRig.zoom_by` refuses an
 eye outside the map's box, whose ceiling is the mission's authored
@@ -974,12 +979,33 @@ the verbs kept their names.)
   copied and played by nothing: the closure is what the **game** can reach, and
   a remake with no network game is not a reason to leave a named wave out of
   the cache (§7.3).
+* **D12 — no hit-point digit over a unit (2026-09-07).** §3.2's digit
+  block is in the listing — `0x004186AF` reads `+0x15`, `0x004186D3` and
+  `0x00418708` clamp the hit points to 15 and the slot is blitted like any
+  other — and the remake drew it over every unit of the current player with
+  points left. Two frames of the original, on the player's own turn with a
+  selection and a fill on screen, show **nothing** over the squad members
+  that are not selected. The reading finds no gate past `+0x15`
+  (`0x004182D6`..`0x00418408` and `0x0041867A`..`0x00418710` re-read for
+  it), so either those units had spent their points or the block is gated
+  by something the listing does not show; the picture follows the original
+  and `GroundSprites._place_near` draws no digit. The overwatch, jam and
+  panic marks past the block stay. `overlay.no_hp_digit_over_any_unit`
+  pins it; `hud_tables.py` keeps pinning the listing's own reads. Reopened
+  as an open question below.
 
 ## Open questions
 
-**None.**
+1. **What keeps §3.2's hit-point digit off the original's screen** (opened
+   2026-09-07, D12). The listing draws `mp[min(hp, 15)]` over a current
+   player's unit while `+0x15` is non-zero, and two frames of real play show
+   none over unselected squad members on the player's turn. Either `+0x15`
+   was already zero for them or the block has a gate the reading does not
+   see. Settles with a `dbgcall` probe at the anchor: read `+0x15` of the
+   player's units and the three element slots `0x00417E70` leaves for their
+   cells, or watch the original at a hand-over with an untouched unit.
 
-Two questions were opened and closed on the same day. The first: whether a
+Two earlier questions were opened and closed on the same day. The first: whether a
 blocking animation reaches the ground overlay through the callback pointer
 `fcn.0047D600` stores. It does not, and the evidence is in §3.1 — the
 pointer's only reader is `aAISystemControl`, and `aExecuteMove` reaches no

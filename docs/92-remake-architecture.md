@@ -412,6 +412,14 @@ Under the second half, fixed unconditionally and with no setting:
   and dead, so an "alien voices" control in the remake's audio options would do
   nothing. That is the inert-control case, not a period detail.
 
+And one place where the **picture** beats the **listing** (2026-09-07): the
+ground overlay's hit-point digit over a unit ([`43` D12](43-battle-hud.md)).
+The bytes draw it over every current-player unit with points left; the
+original, watched, draws none over a fresh squad. Until the gate the reading
+misses is found, the remake draws none — the observed original is the
+original, and a mark nobody has ever seen in play is not a period detail to
+keep.
+
 One user-facing preset covers the whole first list — `Faithful`, on by default —
 not one setting per defect. Internally, however, every compatibility choice has
 a stable named flag, for example `technical_box_guard_original`,
@@ -1214,6 +1222,19 @@ engine's: the `- 0xA0` is the fire placer's z argument and reaches only its
 height window, the `6` is the fire's subtype, and the byte the placer writes is
 `1`. `SaveCodec.SCHEMA_VERSION` went to 8 with the two new effect columns and
 the mine detonation, and both `CONVERTER_VERSION`s to 0.15.0.
+
+**A fifth placer, and it is the mission's target (2026-09-07).** The
+victory-point marker placer `0x00431E30` ([`42` §9.3](42-mission-presentation.md))
+stands a static `A_MK_*` object on every cell whose action point is 80..89 —
+the red *A* on `_C_102`'s two `UnitOnField` cells — and the remake had none of
+it. The same split as above: `MapState.rebuild_markers` is the occupancy (the
+first free slot after the cells' own objects, at load and after a walk's
+claim; `+0x14` is derived and neither hashed nor saved), and `SpecialObjects`
+draws the marker **from the action-point plane alone**, keyed by the cell
+rather than by the slot, because the mirror the picture reads gets a claim as
+an action-point delta and nothing else. The converter asks every world set for
+all ten models, since a capture can turn any letter into any player's;
+`CONVERTER_VERSION` 0.25.0.
 
 ---
 
@@ -2231,9 +2252,15 @@ that a later stage would otherwise rediscover:
 
 * **Units are not drawn from `SetUnitInfo`'s model column.** Thirty of the
   thirty-six rows name `A_MK_0B.3DI`, which is four vertices and one face — a
-  box ±1600 on X and Y at Z = 80, a one-field ground marker. Six inanimate types
-  have a real model. The living bodies come through Charisma's hard-wired switch
-  ([`40` §7.2](40-charisma-model-animation.md)).
+  box ±1600 on X and Y at Z = 80, one cell of the victory-point marker atlas
+  ([`42` §9.3](42-mission-presentation.md)). Six inanimate types have a real
+  model. The living bodies come through Charisma's hard-wired switch
+  ([`40` §7.2](40-charisma-model-animation.md)). *(2026-09-07: the remake
+  had drawn the column's quad under every living unit as well — a grey `B`
+  and a white frame — on the belief that the engine draws it; the original
+  shows none under a marine, and `UnitsView` builds the column only for a type
+  the selector gives no body, which is what a barrel is. The capsule stands
+  in past both.)*
 * **There is no terrain surface in a `.lev`.** The ground lattice's prototype
   `S003_00X.3DI` is an octagon 320 world units across — a fifth of a metre, an
   editor marker for the cell centre, not a 3200-wide tile. The visible ground is

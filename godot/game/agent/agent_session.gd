@@ -1000,7 +1000,7 @@ func _blobs() -> void:
 		_log.append("blobs: no pool")
 		return
 	var queue: SequenceQueue = _main._sequences
-	_log.append("-- frame %d, %d live, stage %s" % [_frame, pool.live(),
+	_log.append("-- frame %d, %d live, stage %s" % [_frame, pool.in_use(),
 		queue.current() if queue != null else ""])
 	for blob: Blob in pool.blobs():
 		_log.append(("blob kind %d class %d model %d at (%d, %d, %d) "

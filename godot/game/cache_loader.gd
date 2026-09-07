@@ -5,10 +5,22 @@ extends RefCounted
 ##
 ## It reads `user://caches/active.json`, then the cache that names, and verifies
 ## the **whole** inventory -- every declared path present, the right size and
-## the right SHA-256 -- before anything is loaded from it.  That happens on
-## every load: a full pass over roughly two megabytes costs a few milliseconds,
-## and verifying only once would make "a partial cache is never accepted" a
+## the right SHA-256 -- before anything is loaded from it.  [method open_active]
+## does that on every call, so "a partial cache is never accepted" is not a
 ## statement about the happy path.
+##
+## **What one sweep costs, measured.**  A campaign publish is 100 MB over 2 689
+## files and a pass takes **342 ms** (`bench.gd`, `verify_us`); the slice's own
+## six-mission cache is 42 MB.  The docstring here used to say "roughly two
+## megabytes, a few milliseconds", which was true of the first slice's cache and
+## is out by a factor of fifty for a cache the campaign can be played through.
+## So a *caller* that opens the cache many times must open it once and keep the
+## answer -- `tests/cache_fixture.gd` does, and [SliceMain] no longer sweeps a
+## second time over what this already swept.  The publish is atomic,
+## content-addressed and under a lock (`inclib/cache.py`), so a half-written
+## cache is never what `active.json` names; what the sweep still catches is
+## damage **after** publication -- a truncated copy between machines, a deleted
+## file, a bad disk.
 ##
 ## Refusal is by name, never by loading something almost right:
 ## `active.json` absent means first run; a `cache_schema_version` or
@@ -22,7 +34,7 @@ extends RefCounted
 
 ## Must match `inclib/cache.py`.
 const CACHE_SCHEMA_VERSION: int = 1
-const CONVERTER_VERSION: String = "0.24.0"
+const CONVERTER_VERSION: String = "0.25.0"
 
 const CACHES_DIR: String = "user://caches"
 const ACTIVE_NAME: String = "active.json"

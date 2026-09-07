@@ -83,7 +83,14 @@ MARKER_PROTOTYPE = "CLS.3DI"
 #: ground marker rather than a body.  The bodies come through Charisma, which
 #: is outside the slice, so the converter emits the marker and the real models
 #: of the inanimate types that are actually placed.
-UNIT_MARKER_MODEL = "A_MK_0B.3DI"
+#: The ten victory-point markers ``0x00431E30`` stands on cells whose action
+#: point is 80..89 (docs/42 §9.3), by ``action point - 0x50``.  Every world set
+#: carries all ten, and every mission asks for all ten because a capture can
+#: turn any ``A`` into any player's ``A``.  ``A_MK_0B`` is also what 30 of the
+#: 36 ``SetUnitInfo`` rows name as their model, which the remake does not draw
+#: under a body (docs/92 §7.1, 2026-09-07).
+VICTORY_MARKER_MODELS = tuple(f"A_MK_{player}{band}.3DI"
+                              for band in "AB" for player in range(5))
 #: The contact blip -- ``docs/22`` §9.1's ``+0x4F == 1``, drawn where a unit is
 #: detected but not seen.  ``a3DObjects.cpp`` line 3838 resolves this name
 #: through ``aGetNumberOfPrototype`` (``0x00407056``), and the geometry says
@@ -693,12 +700,12 @@ def prototype_names(document: dict[str, Any], tables: BalanceTables,
     ``docs/92`` §10.1 item 2: only the mission and the assets needed to display
     it.  That is the scene's clones, the special objects, the ground lattice,
     and the real models of the inanimate unit types actually placed -- plus the
-    one-cell ground marker every living type points at and the contact blip.
+    ten victory-point markers and the contact blip.
     """
     names = {clone["prototype"] for clone in document["scene_clones"]}
     names |= {obj["prototype"] for obj in document["special_objects"]}
     names.add(lattice)
-    names.add(UNIT_MARKER_MODEL)
+    names.update(VICTORY_MARKER_MODELS)
     names.add(CONTACT_MARKER_MODEL)
     for unit in document["units"]:
         if not unit["placed"]:

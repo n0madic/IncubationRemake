@@ -34,13 +34,21 @@ const SHIELD_STEP_OTHER: int = 102
 ## `aRandom2(0, 4096)` -- the glow's heading and the fire's two, drawn fresh
 ## every frame rather than stepped.
 const HEADING_RANGE: int = 4096
+## Keys past the 80 slots, one per cell, for the victory-point markers.
+const MARKER_KEY_BASE: int = MapState.SPECIAL_OBJECT_SLOTS
 
 var _models: BlobModels = null
 var _rng: IncRandom = null
-## Object id -> `{cell, model, state, subtype, angle}`.
+## Object id -> `{cell, model, state, subtype, angle}`.  A victory-point
+## marker is keyed [constant MARKER_KEY_BASE] + its cell, not by the slot it
+## holds in `core`: the mirror the picture reads gets the claim as an
+## action-point delta and nothing else, so the key has to come from the cell.
 var _live: Dictionary[int, Dictionary] = {}
 ## The effect planes as they were when [method sync] last ran.
 var _drawn: Array[PackedByteArray] = []
+## The action-point plane as it was when [method sync] last ran -- the
+## victory-point markers are a function of it (docs/42 section 9.3).
+var _drawn_action: PackedByteArray = PackedByteArray()
 var _width: int = 0
 var _height: int = 0
 
@@ -57,6 +65,7 @@ func setup(prototypes: Dictionary, textures: Dictionary,
 	_rng = rng
 	_live.clear()
 	_drawn = []
+	_drawn_action = PackedByteArray()
 	_width = 0
 	_height = 0
 
@@ -74,9 +83,11 @@ func sync(snapshot: Dictionary) -> PackedInt32Array:
 	if snapshot.is_empty():
 		return PackedInt32Array()
 	var effects: Array = DictRead.as_array(snapshot["effect"])
+	var action: PackedByteArray = snapshot["action_point"]
 	var width: int = DictRead.as_int(snapshot["width"])
 	var height: int = DictRead.as_int(snapshot["height"])
-	var changed: PackedInt32Array = _changed_cells(effects, width, height)
+	var changed: PackedInt32Array = _changed_cells(effects, action, width,
+		height)
 	if changed.is_empty():
 		return changed
 	for index: int in changed:
@@ -85,6 +96,7 @@ func sync(snapshot: Dictionary) -> PackedInt32Array:
 	for plane: Variant in effects:
 		var bytes: PackedByteArray = plane
 		_drawn.append(bytes.duplicate())
+	_drawn_action = action.duplicate()
 	_width = width
 	_height = height
 	return changed
@@ -135,17 +147,17 @@ func _heading() -> int:
 	return _rng.draw(0, HEADING_RANGE)
 
 
-func _changed_cells(effects: Array, width: int,
+func _changed_cells(effects: Array, action: PackedByteArray, width: int,
 		height: int) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
 	var count: int = width * height
 	if _drawn.size() != effects.size() or _width != width \
-			or _height != height:
+			or _height != height or _drawn_action.size() != action.size():
 		out.resize(count)
 		for i: int in range(count):
 			out[i] = i
 		return out
-	var same: bool = true
+	var same: bool = action == _drawn_action
 	for slot: int in range(effects.size()):
 		var plane: PackedByteArray = effects[slot]
 		if plane != _drawn[slot]:
@@ -154,6 +166,9 @@ func _changed_cells(effects: Array, width: int,
 	if same:
 		return out
 	for i: int in range(count):
+		if action[i] != _drawn_action[i]:
+			out.append(i)
+			continue
 		for slot: int in range(effects.size()):
 			var plane: PackedByteArray = effects[slot]
 			if plane[i] != _drawn[slot][i]:
@@ -162,11 +177,21 @@ func _changed_cells(effects: Array, width: int,
 	return out
 
 
-## What one cell owns after a change: at most one obstacle object and one glow.
+## What one cell owns after a change: at most one obstacle object, one glow
+## and, on a victory-point cell, the marker `0x00431E30` stands there.
 func _rebuild_cell(effects: Array, snapshot: Dictionary, index: int) -> void:
 	for oid: int in _live.keys():
 		if DictRead.as_int(DictRead.as_dict(_live[oid])["cell"]) == index:
 			_live.erase(oid)
+	var action: PackedByteArray = snapshot["action_point"]
+	var marker: String = MapState.victory_marker_model(action[index])
+	if not marker.is_empty():
+		# Static, at the cell's own object -- `aGetSymbolObjectPtr` of the
+		# land link, `0x00431E6E` -- with no rotation (eleven zero arguments
+		# at `0x00431F47`..`0x00431F5D`).
+		_live[MARKER_KEY_BASE + index] = {"cell": index, "model": marker,
+			"state": MapState.OBJECT_STATIC, "subtype": 0, "angle": 0,
+			"at": origin_of(snapshot, index)}
 	var obstacle: PackedByteArray = effects[MapState.OBSTACLE_SLOT]
 	var timer: PackedByteArray = effects[MapState.TIMER_SLOT]
 	var object_slot: PackedByteArray = effects[MapState.OBJECT_SLOT]

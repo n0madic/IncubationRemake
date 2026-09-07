@@ -70,6 +70,7 @@ const LEAST_CHECKS: Dictionary = {
 
 var _suite: String = ""
 var _boundary: String = ""
+var _t0: int = 0
 var _checks: int = 0
 var _failures: PackedStringArray = PackedStringArray()
 var _total_checks: int = 0
@@ -84,6 +85,7 @@ func begin(suite: String, boundary: String) -> void:
 	_checks = 0
 	_failures = PackedStringArray()
 	_suites += 1
+	_t0 = Time.get_ticks_msec()
 
 
 func check(name: String, condition: bool, detail: String = "") -> bool:
@@ -164,7 +166,12 @@ func _flush() -> void:
 		_failures.append("    FAIL %s: %d checks, at least %d expected"
 			% [_suite, _checks, DictRead.as_int(LEAST_CHECKS[_suite])])
 	var status: String = "ok" if _failures.is_empty() else "FAILED"
-	print("  %-28s %3d checks  [%s]  %s" % [_suite, _checks, _boundary, status])
+	# The millisecond column is not decoration: a whole-run profile is the only
+	# thing that separates a suite doing work from a suite paying a tax, and it
+	# is what found `CacheFixture.cache_dir()` re-verifying the published cache
+	# once per document (charisma, 68.4 s of 72.0 s).
+	print("  %-28s %3d checks  [%s]  %s  %d ms"
+		% [_suite, _checks, _boundary, status, Time.get_ticks_msec() - _t0])
 	for line: String in _failures:
 		print(line)
 

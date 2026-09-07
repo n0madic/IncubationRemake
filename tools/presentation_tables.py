@@ -152,6 +152,30 @@ A_GROUND_TICK = 0x0042ED60
 A_GROUND_IGNITE = 0x00470AB0
 #: ``0x0047D600``, the hand-over (``docs/25`` §4).
 HAND_OVER = (0x0047D600, 0x0047DA00)
+#: The victory-point marker placer of ``aCtrlMap.cpp`` (``docs/42`` §9.3): a
+#: static ``A_MK_*`` object on every cell whose action point is 80..89, its
+#: slot written into the cell's ``+0x14``.
+VP_MARKER_PLACER = (0x00431E30, 0x00431FF8)
+A_VP_MARKER_PLACER = 0x00431E30
+VP_MARKER_JUMP = 0x00432000
+A_SYMBOL_OBJECT = 0x00404C40
+A_CREATE_SPECIAL = 0x004069C0
+#: ``aBuild3DSpecialObjects`` (load) and ``aExecuteMove`` (a capture) are its
+#: two callers.
+BUILD_SPECIAL_OBJECTS = (0x004079D0, 0x00407A9F)
+EXECUTE_MOVE = (0x0046E220, 0x0046EF00)
+VP_MARKER_CALL_SITES = (0x00407A86, 0x0046E9E7)
+VP_MARKER_MODELS = tuple(f"A_MK_{player}{band}.3DI"
+                         for band in "AB" for player in range(5))
+#: ``"A_MK_0A.3DI"`` at ``0x004C2E58``, then every 12 bytes down to
+#: ``"A_MK_4B.3DI"`` at ``0x004C2DEC``.
+VP_MARKER_STRINGS_LAST = 0x004C2E58
+#: What action point 87's arm loads instead of ``0x004C2E04``.
+VP_MARKER_BROKEN_POINTER = 0x00752E04
+#: ``aCheckInBlobObjects``'s live count ``0x004FE640`` (``docs/42`` §4.9):
+#: ``mov al, [esi+0x56] / test al, al / je / cmp al, 2 / jne / inc [count]``.
+SWEEP_LIVE_COUNT_TEST = 0x0041E41A
+SWEEP_LIVE_COUNT_BYTES = bytes.fromhex("8a465684c074043c027506ff0540e64f00")
 #: The impact arms of the three weapons that change the map, and the switch
 #: that selects them.
 IMPACT_PLACER_WEAPONS = {40: 0x0040D93D, 42: 0x0040D76A, 43: 0x0040D5F8}
@@ -1883,10 +1907,84 @@ def _check_arrived_ordering(ck: Checker, b: Binary) -> None:
             b"\xa1" + flag + b"\xc3")
 
 
+def _check_victory_markers(ck: Checker, b: Binary) -> None:
+    """docs/42 §9.3 -- the marker on a victory-point cell, and what a play-out
+    counts.
+
+    ``0x00431E30`` walks the control map (stride ``0x17``), and on a cell whose
+    action point is in 80..89 frees the object the cell's ``+0x14`` names,
+    places a static (state 5) object of the model ``action point - 0x50``
+    selects through the jump table at ``0x00432000``, and writes the slot back
+    into ``+0x14``; any other cell gets ``0xFF`` there.  It runs once per load
+    and once per capture.  The sweep's live count -- what every play-out spins
+    on -- takes only classes 0 and 2, which is why a warning light (class 1,
+    life 255) never holds a shot.
+    """
+    names = []
+    pointers = []
+    for n in range(len(VP_MARKER_MODELS)):
+        arm = b.u32(VP_MARKER_JUMP + 4 * n)
+        # `lea edx, [esp+0x14]` (4 bytes), then `mov edi, imm32`.
+        ok = b.pe.bytes_at(arm, 5) == b"\x8d\x54\x24\x14\xbf"
+        ptr = b.u32(arm + 5) if ok else 0
+        pointers.append(ptr)
+        try:
+            raw = b.pe.bytes_at(ptr, 12) if ok else b""
+        except PEError:
+            raw = b""
+        names.append(raw.split(b"\0", 1)[0].decode("ascii", "replace"))
+    # The ten strings sit 12 bytes apart in `.data`, 4B first ...
+    expect = [VP_MARKER_STRINGS_LAST - 12 * n for n in range(len(VP_MARKER_MODELS))]
+    held = tuple(b.pe.bytes_at(va, 12).split(b"\0", 1)[0].decode("ascii")
+                 for va in expect)
+    ck.check("vp_marker.ten_strings_in_data", held == VP_MARKER_MODELS, str(held))
+    # ... and nine of the arms point at their own.  **Action point 87's arm
+    # does not**: `mov edi, 0x00752E04` at `0x00431F06` where the pattern
+    # says `0x004C2E04` -- one byte off, into no section of the image.  No
+    # shipped cell carries 86..89 (`docs/26` §6.1), so nothing reaches it,
+    # but a *B* point claimed by player 1 in a multiplayer game would.
+    ck.check("vp_marker.nine_arms_name_their_model",
+             names[:7] == list(VP_MARKER_MODELS[:7])
+             and names[8:] == list(VP_MARKER_MODELS[8:]), str(names))
+    ck.check("vp_marker.arm_87_points_off_the_image",
+             pointers[7] == VP_MARKER_BROKEN_POINTER and names[7] == "",
+             f"{pointers[7]:#010x} -> {names[7]!r}")
+    _pin_at(ck, b, "vp_marker.band_low_0x50", 0x00431E59, b"\x3c\x50")
+    _pin_at(ck, b, "vp_marker.band_high_0x59", 0x00431E61, b"\x3c\x59")
+    _pin_at(ck, b, "vp_marker.index_is_ap_minus_0x50", 0x00431E9F,
+            b"\x8a\x45\x00\x83\xc0\xb0\x83\xf8\x09")
+    _pin_at(ck, b, "vp_marker.cell_stride_0x17", 0x00431F81, b"\x83\xc5\x17")
+    _pin_at(ck, b, "vp_marker.state_5_pushed", 0x00431F45, b"\x6a\x05")
+    _pin_at(ck, b, "vp_marker.slot_written_to_0x14", 0x00431F74,
+            b"\x88\x45\x09")
+    _pin_at(ck, b, "vp_marker.other_cells_get_0xFF", 0x00431F79,
+            b"\xc6\x45\x09\xff")
+    _pin_calls(ck, b, "vp_marker.symbol_object", VP_MARKER_PLACER,
+               A_SYMBOL_OBJECT, 1)
+    _pin_calls(ck, b, "vp_marker.frees_the_old_one", VP_MARKER_PLACER,
+               A_DELETE_SPECIAL, 1)
+    _pin_calls(ck, b, "vp_marker.places_through_aCreateSpecialObject",
+               VP_MARKER_PLACER, A_CREATE_SPECIAL, 1)
+    sites = tuple(b.calls(TEXT_SECTION, A_VP_MARKER_PLACER))
+    ck.check("vp_marker.two_callers", sites == VP_MARKER_CALL_SITES,
+             str([hex(v) for v in sites]))
+    _pin_calls(ck, b, "vp_marker.after_the_cell_objects", BUILD_SPECIAL_OBJECTS,
+               A_VP_MARKER_PLACER, 1)
+    _pin_calls(ck, b, "vp_marker.after_a_walk", EXECUTE_MOVE,
+               A_VP_MARKER_PLACER, 1)
+    # A free slot is `+0x40 == 0xFF`, scanned from 0 -- so the marker takes the
+    # first free one, and a freed marker takes its own slot back.
+    _pin_at(ck, b, "vp_marker.first_free_slot", 0x004069CB,
+            b"\xb0\xff\x38\x46\x40\x74\x10\x83\xc6\x42\x47\x83\xff\x50")
+    _pin_at(ck, b, "sweep.live_count_classes_0_and_2", SWEEP_LIVE_COUNT_TEST,
+            SWEEP_LIVE_COUNT_BYTES)
+
+
 def _check_corpus(ck: Checker, root: str) -> None:
-    """The two corpus facts docs/42 §1.2 and §6.1 lean on."""
+    """The two corpus facts docs/42 §1.2 and §6.1 lean on, and the placer's
+    residue in the shipped control maps (§9.3)."""
     import glob
-    from inclib import charisma, lev
+    from inclib import charisma, lev, prototyp
     # §1.2 -- the length is the first movement's last key time, and in every
     # shipped clip every movement ends at the same time, so it is the clip's.
     paths = sorted(glob.glob(os.path.join(root, "CHData", "Animations", "*.cha")))
@@ -1910,6 +2008,41 @@ def _check_corpus(ck: Checker, root: str) -> None:
     ck.check("corpus.C118_unit_0_is_type_61",
              bool(boss.units) and boss.units[0].type_id == 0x3D,
              str(boss.units[0].type_id if boss.units else None))
+    # §9.3 -- the shipped `+0x14` is the editor's own run of the placer into
+    # an empty array: in every file the cells that carry one, taken in cell
+    # order, are numbered 0, 1, 2, ... whatever their action point says today
+    # (`_C_133` carries 0..2 on three cells the designer later cleared), and
+    # a victory point set after that build carries 0xFF.
+    files = 0
+    ids = 0
+    uneven_ids: list[str] = []
+    stale_vp = 0
+    for path in sorted(glob.glob(os.path.join(root, "Missions", "*.lev"))):
+        mission = lev.load_lev(path)
+        run = [c.start_index for c in mission.cells if c.start_index != lev.NO_LINK]
+        if run:
+            files += 1
+            ids += len(run)
+            if run != list(range(len(run))):
+                uneven_ids.append(os.path.basename(path))
+        stale_vp += sum(1 for c in mission.cells
+                        if 0x50 <= c.action_point <= 0x59
+                        and c.start_index == lev.NO_LINK)
+    ck.check("corpus.vp_marker_ids_92_files_304", (files, ids) == (92, 304),
+             f"{files} files, {ids} ids")
+    ck.check("corpus.vp_marker_ids_are_one_placer_run", files > 0 and not uneven_ids,
+             str(uneven_ids[:5]))
+    ck.check("corpus.vp_cells_without_a_marker_id_19", stale_vp == 19, str(stale_vp))
+    # ...and every world set carries all ten models the placer can name.
+    sets = sorted(glob.glob(os.path.join(root, "WorldSet", "World_*", "Objects",
+                                         "prototyp.din")))
+    short: list[str] = []
+    for din in sets:
+        held = {name.upper() for name in prototyp.load_container(din).names}
+        if any(name.upper() not in held for name in VP_MARKER_MODELS):
+            short.append(din)
+    ck.check("corpus.vp_markers_in_all_9_world_sets", len(sets) == 9 and not short,
+             f"{len(sets)} sets, missing in {short}")
 
 
 def run_check(root: str) -> Checker:
@@ -1936,6 +2069,7 @@ def run_check(root: str) -> Checker:
     _check_para_bombs_phases(ck, b)
     _check_crush_wall(ck, b)
     _check_between_players(ck, b)
+    _check_victory_markers(ck, b)
     _check_corpus(ck, root)
     return ck
 

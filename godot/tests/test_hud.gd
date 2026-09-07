@@ -588,10 +588,11 @@ func _overlay_live(h: TestHarness) -> void:
 		var view: Dictionary = world.unit_view(other)
 		if DictRead.as_int(view["player"]) == 0 and DictRead.as_int(view["hp"]) > 0:
 			squad += 1
-	# Off a legal cell the digits are not drawn: the own cell's frame and one
-	# hit-point digit per squad member are all there is.
-	h.equal("overlay.without_hover", ground.get_child_count(), squad + 1,
-		"mp[51] on the mover's cell and a digit over each marine")
+	# Off a legal cell the digits are not drawn: the own cell's frame is all
+	# there is -- no hit-point digit over the squad (docs/43 D12).
+	h.check("overlay.squad_present", squad > 0, "%d marine(s)" % squad)
+	h.equal("overlay.without_hover", ground.get_child_count(), 1,
+		"mp[51] on the mover's cell and nothing over the marines")
 	var view: Dictionary = world.unit_view(slot)
 	var own: Vector2i = Vector2i(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
 	h.check("overlay.own_cell_frame", ground.drawn_at(own).has(["mp", HudTables.PATH_FRAME]),
@@ -604,19 +605,19 @@ func _overlay_live(h: TestHarness) -> void:
 				hover = Vector2i(x, y)
 	ground.refresh(art, world, slot, query, hover, {}, 0, false)
 	var digits: int = query.reachable_count() - 1 + query.warp_count()
-	h.equal("overlay.with_hover", ground.get_child_count(), squad + 1 + digits + 1,
+	h.equal("overlay.with_hover", ground.get_child_count(), 1 + digits + 1,
 		"the digits, the frame on the hovered cell")
 	h.check("overlay.hovered_cell_frame",
 		ground.drawn_at(hover).has(["mp", HudTables.HOVER_FRAME]), str(ground.drawn_at(hover)))
-	# **The digit over a unit is the squad's "has not finished" mark.**
-	# `0x0041867F` compares `+0x45` with the current player and `0x004186AF`
-	# reads `+0x15`: somebody else's unit never carries one, and one's own
-	# loses it the moment its points are gone. Resting is the cheapest way to
-	# spend them all (`0x00478570` writes `mp = 0`).
-	var enemy_digit: bool = false
+	# **No hit-point digit over any unit** (docs/43 D12): the listing's
+	# `0x004186AF` block put `mp[min(hp, 15)]` over a current player's unit
+	# with points left, and the original shows none over a fresh squad, so
+	# the remake draws none -- not over one's own, with or without points,
+	# and never over somebody else's.
+	var unit_digit: bool = false
 	for other: int in world.unit_slots():
 		var them: Dictionary = world.unit_view(other)
-		if DictRead.as_int(them["player"]) == 0 or DictRead.as_int(them["hp"]) == 0:
+		if DictRead.as_int(them["hp"]) == 0:
 			continue
 		var at: Vector2i = Vector2i(DictRead.as_int(them["x"]),
 			DictRead.as_int(them["y"]))
@@ -625,16 +626,13 @@ func _overlay_live(h: TestHarness) -> void:
 			if pair.size() == 2 \
 					and DictRead.as_string(pair[0]) == HudTables.LIB_MARKERS \
 					and DictRead.as_int(pair[1]) <= HudTables.HP_DIGIT_MAX:
-				enemy_digit = true
-	h.check("overlay.no_digit_over_another_player", not enemy_digit,
-		"the pass runs on the current player's units alone")
+				unit_digit = true
+	h.check("overlay.no_hp_digit_over_any_unit", not unit_digit,
+		"docs/43 D12: the original shows none over a fresh squad")
 	var hit_points: int = DictRead.as_int(view["hp"])
-	h.check("overlay.digit_over_a_unit_with_points",
-		ground.drawn_at(own).has(["mp", mini(hit_points, HudTables.HP_DIGIT_MAX)]),
-		str(ground.drawn_at(own)))
 	var rested: bool = world.submit_stand_down(StandDownCommand.create(slot))
 	ground.refresh(art, world, slot, query, hover, {}, 0, false)
-	h.check("overlay.no_digit_without_points", rested
+	h.check("overlay.no_digit_after_resting_either", rested
 		and not ground.drawn_at(own).has(["mp", mini(hit_points, HudTables.HP_DIGIT_MAX)]),
 		"rested: %s, %s" % [str(rested), str(ground.drawn_at(own))])
 	var all_overlay: bool = true

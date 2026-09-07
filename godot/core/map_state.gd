@@ -39,6 +39,21 @@ const DECAL_NONE: int = 255
 ## `aCreateSpecialObject` `0x004069C0` scans ids 0..79 for a free slot.
 const SPECIAL_OBJECT_SLOTS: int = 80
 const NO_OBJECT: int = 255
+## The object state byte `+0x40` of a **static** object -- drawn, never
+## animated (docs/42 section 9.1): what the victory-point marker placer
+## `0x00431E30` pushes (`push 5` at `0x00431F45`).
+const OBJECT_STATIC: int = 5
+## The VictoryPoints band of the action point, `cmp al, 0x50` / `cmp al, 0x59`
+## at `0x00431E59` / `0x00431E61` (docs/10 section 4.6, docs/26 section 6.1).
+const VICTORY_POINT_FIRST: int = 0x50
+const VICTORY_POINT_LAST: int = 0x59
+## The marker the placer stands on a victory-point cell, by `action point -
+## 0x50` through the jump table at `0x00432000`: `A_MK_0A`..`A_MK_4A` for
+## 80..84 and `A_MK_0B`..`A_MK_4B` for 85..89 -- the letter is the band and
+## the digit the claiming player, 0 for nobody (docs/42 section 9.3).
+const VICTORY_MARKER_MODELS: Array[String] = ["A_MK_0A.3DI", "A_MK_1A.3DI",
+	"A_MK_2A.3DI", "A_MK_3A.3DI", "A_MK_4A.3DI", "A_MK_0B.3DI", "A_MK_1B.3DI",
+	"A_MK_2B.3DI", "A_MK_3B.3DI", "A_MK_4B.3DI"]
 const NO_UNIT: int = -1
 const EFFECT_SLOTS: int = 6
 ## Which effect slot is which byte.  `+0x0E` is a countdown, `+0x0F` and
@@ -61,6 +76,12 @@ var _action_point: PackedByteArray = PackedByteArray()
 var _unit: PackedInt32Array = PackedInt32Array()
 var _effect: Array[PackedByteArray] = []
 var _objects: PackedByteArray = PackedByteArray()
+## `cell[+0x14]`: the slot of the victory-point marker standing on the cell,
+## `0xFF` on every other cell.  **Derived**, like [member _objects]: the placer
+## `0x00431E30` rewrites it on every load and after every capture, so the
+## shipped byte (docs/10 section 4.2) is the editor's own run of the same
+## routine and is neither read, hashed nor saved.
+var _marker_slot: PackedByteArray = PackedByteArray()
 var _special_models: PackedStringArray = PackedStringArray()
 
 ## Write tracking for `EventJournal`, off by default.
@@ -269,19 +290,25 @@ func clone() -> MapState:
 	for slot: PackedByteArray in _effect:
 		out._effect.append(slot.duplicate())
 	out._objects = _objects.duplicate()
+	out._marker_slot = _marker_slot.duplicate()
 	out._special_models = _special_models.duplicate()
 	return out
 
 
 ## `aBuild3DSpecialObjects` `0x004079D0`, as occupancy only: every cell whose
 ## `+0x10` is 1, 2 or 3 owns the slot at `+0x0F`, and every cell whose `+0x13`
-## is 4 owns the one at `+0x11`.
+## is 4 owns the one at `+0x11`.  Then, as the routine does at `0x00407A86`
+## once the cells are walked, the victory-point markers take the first free
+## slots ([method rebuild_markers]).
 func rebuild_objects() -> void:
 	if _tracking:
 		_objects_dirty = true
 	_objects = PackedByteArray()
 	_objects.resize(SPECIAL_OBJECT_SLOTS)
 	_objects.fill(NO_OBJECT)
+	_marker_slot = PackedByteArray()
+	_marker_slot.resize(cell_count())
+	_marker_slot.fill(NO_OBJECT)
 	for i: int in range(cell_count()):
 		var state: int = _effect[OBSTACLE_SLOT][i]
 		var oid: int = _effect[OBJECT_SLOT][i]
@@ -293,6 +320,65 @@ func rebuild_objects() -> void:
 			oid = _effect[DECAL_OBJECT_SLOT][i]
 			if oid >= 0 and oid < SPECIAL_OBJECT_SLOTS:
 				_objects[oid] = DECAL_GLOW
+	rebuild_markers()
+
+
+## The victory-point marker placer `0x00431E30` (`aCtrlMap.cpp`), called by
+## `aBuild3DSpecialObjects` after the cells' own objects and by `aExecuteMove`
+## `0x0046E9E7` after a walk that may have claimed one.
+##
+## Cell by cell, in map order: a cell whose action point is in 80..89 first
+## frees the object its `+0x14` names (`aDeleteSpecialObject`, `0x00431E8D`)
+## and then takes the **first free slot** for a static object of the model the
+## action point selects, writing the slot back into `+0x14` (`0x00431F74`);
+## every other cell gets `0xFF` there (`0x00431F79`).  Freeing before placing
+## is what keeps a claimed marker in the slot it had, and what lets a capture
+## change the letter's colour without moving anything else in the array.
+##
+## Where the object stands is not modelled here: `aGetSymbolObjectPtr` of the
+## cell's land link, the same point every other placer positions around
+## ([method CellObjects.object_position]'s origin).  The picture derives it
+## from the action-point plane alone, which is why the mirror needs nothing
+## of this.
+func rebuild_markers() -> void:
+	if _marker_slot.size() != cell_count():
+		_marker_slot = PackedByteArray()
+		_marker_slot.resize(cell_count())
+		_marker_slot.fill(NO_OBJECT)
+	for i: int in range(cell_count()):
+		if not is_victory_point(_action_point[i]):
+			_marker_slot[i] = NO_OBJECT
+			continue
+		var held: int = _marker_slot[i]
+		if held != NO_OBJECT:
+			_objects[held] = NO_OBJECT
+		_marker_slot[i] = NO_OBJECT
+		for slot: int in range(SPECIAL_OBJECT_SLOTS):
+			if _objects[slot] == NO_OBJECT:
+				_objects[slot] = OBJECT_STATIC
+				_marker_slot[i] = slot
+				break
+	if _tracking:
+		_objects_dirty = true
+
+
+## `cmp al, 0x50` / `cmp al, 0x59` -- whether an action point is in the
+## VictoryPoints band.
+static func is_victory_point(action_point: int) -> bool:
+	return action_point >= VICTORY_POINT_FIRST \
+		and action_point <= VICTORY_POINT_LAST
+
+
+## The marker model a victory-point cell carries, or `""` for any other cell.
+static func victory_marker_model(action_point: int) -> String:
+	if not is_victory_point(action_point):
+		return ""
+	return VICTORY_MARKER_MODELS[action_point - VICTORY_POINT_FIRST]
+
+
+## `cell[+0x14]` after the placer: the marker's slot, or [constant NO_OBJECT].
+func marker_slot_at(index: int) -> int:
+	return _marker_slot[index]
 
 
 ## A copy of every array, for rendering.  `game` gets its own storage: a

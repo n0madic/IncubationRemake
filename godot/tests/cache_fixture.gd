@@ -16,13 +16,42 @@ extends RefCounted
 const DEV_CACHE_DIR: String = "res://generated/cache"
 const SLICE_MISSION: String = "_C_115"
 
+## Where the answer of the first [method cache_dir] call is kept for the rest
+## of the process.
+##
+## [method CacheLoader.open_active] **verifies the whole cache**: it reads every
+## file the manifest declares and SHA-256s it.  A published campaign cache is
+## 100 MB over 2 689 files, so one call costs about a third of a second -- and
+## every accessor below used to make one, which is why a run spent two thirds
+## of its wall clock hashing the same bytes over and over (charisma alone:
+## 68.4 s of its 72.0 s, for 0.5 s of actual posing).  The cache does not change
+## while the suites run -- nothing under `tests/` publishes or writes one -- so
+## verifying it once is the whole of what repeated verification was buying.
+##
+## It is deliberately **not** a `static var`: a script that declares one is kept
+## for the life of the process together with every script it names, and this one
+## names [CacheLoader] and [World], which is most of `core/` and `game/`.  The
+## exported `run_tests` build gates on exactly that (`N resources still in use at
+## exit`) and `run_tests.sh` cannot see it.  A [String] on the [Engine]
+## singleton's metadata holds no script reference and so cannot leak one.
+const CACHE_DIR_META: StringName = &"incubation_test_cache_dir"
+
 
 ## The cache these fixtures read, production first.
+##
+## Verified in full on the first call and remembered after it; see
+## [constant CACHE_DIR_META].  `test_cache.gd` calls [method CacheLoader.verify]
+## directly and is unaffected -- the refusal cases it covers are still measured
+## against the real manifest.
 static func cache_dir() -> String:
+	if Engine.has_meta(CACHE_DIR_META):
+		return DictRead.as_string(Engine.get_meta(CACHE_DIR_META))
 	var opened: Dictionary = CacheLoader.open_active()
+	var dir: String = DEV_CACHE_DIR
 	if DictRead.as_bool(opened["ok"]):
-		return DictRead.as_string(opened["cache_dir"])
-	return DEV_CACHE_DIR
+		dir = DictRead.as_string(opened["cache_dir"])
+	Engine.set_meta(CACHE_DIR_META, dir)
+	return dir
 
 
 static func read_json(path: String) -> Dictionary:

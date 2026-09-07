@@ -23,6 +23,9 @@ extends RefCounted
 
 ## `cmp esi, 0x1C2` -- 450 records, plus one spare record's worth of slack.
 const SLOTS: int = 450
+## The class bytes the sweep counts into `0x004FE640`: `test al, al` and
+## `cmp al, 2` at `0x0041E41D`/`0x0041E421`, and nothing else.
+const COUNTED_CLASSES: Array[int] = [0, 2]
 
 var _blobs: Array[Blob] = []
 var _hooks: BlobHooks = null
@@ -67,7 +70,28 @@ func set_arrived(value: bool) -> void:
 	arrived = value
 
 
+## `0x004FE640` -- the live-record count the sweep maintains, which every
+## play-out spins on (docs/42 section 4.9).
+##
+## **It is not the number of records in use.** `aCheckInBlobObjects`
+## `0x0041E3D0` zeroes the counter and then increments it once per record
+## whose class byte `+0x56` is **0 or 2** (`0x0041E41A`..`0x0041E425`); a
+## class-1 object -- a warning light, a computer light, a `CreateBGB` fire,
+## all at `life` 255 -- and a class-3 sprite never count. Counting every
+## record instead made every shot on `_C_102` wait out the whole safety bound
+## (`ShotSequence.SAFETY_FRAMES`, fifteen seconds), because its two warning
+## lights never die. [method in_use] is the occupancy.
 func live() -> int:
+	var count: int = 0
+	for blob: Blob in _blobs:
+		if blob != null and blob.alive and COUNTED_CLASSES.has(blob.class_id):
+			count += 1
+	return count
+
+
+## Every record in use, whatever its class -- the occupancy the pool-full test
+## reads (`create_blob` answering -1), not the sweep's counter.
+func in_use() -> int:
 	var count: int = 0
 	for blob: Blob in _blobs:
 		if blob != null and blob.alive:

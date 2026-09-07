@@ -225,16 +225,16 @@ func _place_far(world: World, cell: Vector2i, view: Dictionary) -> void:
 ## the path itself is not: nothing in play ever leaves a cell in state 100
 ## while the overlay is blitted (docs/43 section 3.1).
 ##
-## **The digit needs movement points.** `0x004186AF` reads `+0x15` and jumps
-## the whole digit block when it is zero, so the numbers over the squad are
-## "these have not finished their turn" and go out one by one as the units
-## spend their points. The overwatch and jam marks are written *after* that
-## jump lands (`0x00418710`), so a unit with nothing left still shows them.
+## **No hit-point digit** (docs/43 D12, 2026-09-07). The listing's
+## `0x004186AF`..`0x00418708` puts `mp[min(hp, 15)]` on a current player's
+## unit while `+0x15` is non-zero, and the remake drew it; the original, on
+## the player's own turn with a fresh squad, shows nothing over a unit that
+## is not selected. Which gate the reading misses is open, and until it is
+## read the picture follows the original rather than the listing. The
+## overwatch, jam and panic marks are written past that block
+## (`0x00418710`, `0x0041872F`) and stay.
 func _place_near(world: World, cell: Vector2i, view: Dictionary) -> void:
-	var points: int = DictRead.as_int(view["mp"])
 	var element: int = NO_ELEMENT
-	if points != 0:
-		element = mini(DictRead.as_int(view["hp"]), HudTables.HP_DIGIT_MAX)
 	var action: int = DictRead.as_int(view["action_state"])
 	if action == HudTables.ACTION_DEFENDING:
 		element = HudTables.MARKER_DEFENDING

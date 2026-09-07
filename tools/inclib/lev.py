@@ -272,7 +272,8 @@ class Cell:
     decal_object: int    # +0x11 u8, runtime dynamic-object slot, 0xFF = none
     decal_flag: int      # +0x12 u8, runtime state
     decal_state: int     # +0x13 u8, runtime state, 0xFF = idle
-    start_index: int     # +0x14 u8, deployment-field ordinal, 0xFF = not one
+    start_index: int     # +0x14 u8, the victory-point marker's object slot the editor's
+                         # run of 0x00431E30 left (docs/10 §4.2), 0xFF = none; runtime residue
                          #   (set on cells whose action point is 80..85, the
                          #   band the game's own legend calls "Victorypoints
                          #   (only Multiplayer)" -- see docs/10 4.2 and 4.6)
@@ -526,7 +527,12 @@ class BattleMap:
 
     @property
     def start_fields(self) -> list[Cell]:
-        """Deployment fields, in the order the engine numbered them."""
+        """The cells carrying a marker slot at +0x14, in slot order.
+
+        Historically read as deployment fields; docs/10 §4.2 (2026-09-07) --
+        the byte is the victory-point marker placer's residue, numbered in the
+        order the editor's run allocated the slots.
+        """
         return sorted((c for c in self.cells if c.is_start_field),
                       key=lambda c: c.start_index)
 

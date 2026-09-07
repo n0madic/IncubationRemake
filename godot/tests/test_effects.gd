@@ -98,6 +98,7 @@ func run(h: TestHarness) -> void:
 	_check_open_ended_steps(h)
 	_check_arrived_flag(h)
 	_check_shot_stages(h)
+	_check_unit_stands(h)
 	_check_demo_missions(h)
 	_check_arrival(h)
 	_check_ride(h)
@@ -172,7 +173,7 @@ func _check_emitters(h: TestHarness) -> void:
 	# own scripts -- so what checks it is the executable's bytes.
 	var smoke: BgbEmitters = BgbEmitters.create()
 	var _reg: bool = smoke.register(0, BgbEmitters.TYPE_SMOKE, 0, 0, 0, 2, 0, 0)
-	var before: int = pool.live()
+	var before: int = pool.in_use()
 	h.equal("bgb.smoke_is_driven_too", smoke.tick(pool, hooks), 1)
 	var puff: Blob = pool.blobs()[before]
 	h.equal("bgb.smoke_record",
@@ -228,8 +229,14 @@ func _check_registration_creators(h: TestHarness, pool: BlobPool,
 	# `_C_102.lcl:118` -- the one shipped call that is not commented out.
 	var _two: bool = table.register(0, BgbEmitters.TYPE_WARNING_LIGHT,
 		2400, 2600, 260, 0, 0, 0, hooks)
-	h.equal("bgb.registration_lights_at_once", lit.live(), 1,
+	h.equal("bgb.registration_lights_at_once", lit.in_use(), 1,
 		"the object is the command's, not the sweep's")
+	# `0x0041E41A`..`0x0041E425`: the sweep counts classes 0 and 2 into
+	# `0x004FE640`, so a warning light -- class 1, life 255 -- keeps a slot
+	# for the whole mission and is never what a play-out waits for. Counting
+	# it was what held every shot on `_C_102` for the safety bound.
+	h.equal("bgb.warning_light_is_not_counted_live", lit.live(), 0,
+		"class 1 is outside the sweep's counter")
 	var light: Blob = lit.blobs()[0]
 	h.equal("bgb.warning_light_record",
 		[light.class_id, light.kind, light.life,
@@ -265,7 +272,7 @@ func _check_registration_creators(h: TestHarness, pool: BlobPool,
 		made.append(lit.blobs()[2 + index].kind)
 	h.equal("bgb.unused_types_still_register", made, kinds,
 		"types 4, 5 and 6: A_FIRE3, A_SPOTL, L049EE00")
-	h.equal("bgb.registration_made_all_five", lit.live(), 5)
+	h.equal("bgb.registration_made_all_five", lit.in_use(), 5)
 
 
 ## The campaign maps' own `InitMap`, end to end: the script the cache carries,
@@ -356,7 +363,7 @@ func _check_arm_spawns(h: TestHarness) -> void:
 	# 26. Six values in: a record comes out.
 	var full: bool = hooks.spawn(BlobKinds.CREATE_ZOOM_BOB,
 		[0, 0, 3200, 4, 0x0A, 8], source)
-	h.equal("arm_spawn.runs", [full, hooks.executed, hooks.made, pool.live()],
+	h.equal("arm_spawn.runs", [full, hooks.executed, hooks.made, pool.in_use()],
 		[true, 1, 1, 1], "one `0x00423720` request, one record in the pool")
 	# One value short: refused and counted, not indexed past the end. Since
 	# docs/97 section 48 no request in [BlobKinds] is short, so this is what
@@ -365,7 +372,7 @@ func _check_arm_spawns(h: TestHarness) -> void:
 		[0, 0, 3200, 1, 5], source)
 	h.equal("arm_spawn.short_call_refused",
 		[short, hooks.short_call.get(BlobKinds.CREATE_ZOOM_BOB, 0),
-		hooks.executed, pool.live()], [true, 1, 1, 1],
+		hooks.executed, pool.in_use()], [true, 1, 1, 1],
 		"the creator takes six; the request carried five")
 	# An address with no program: the whole layer's old answer, now counted.
 	# `0x00424250` is a **weapon** creator (docs/97 section 22 transcribes it
@@ -373,7 +380,7 @@ func _check_arm_spawns(h: TestHarness) -> void:
 	# this is the counter working rather than a case that runs.
 	var none: bool = hooks.spawn(0x00424250, [0, 0, 3200], source)
 	h.equal("arm_spawn.unhandled_counted",
-		[none, hooks.unhandled.get(0x00424250, 0), pool.live()], [true, 1, 1],
+		[none, hooks.unhandled.get(0x00424250, 0), pool.in_use()], [true, 1, 1],
 		"an address [BlobPrograms] does not carry makes nothing, and says so")
 	# And every address an arm **does** ask for has one, which is the half
 	# that had been missing: twelve of the thirteen were reached from nowhere
@@ -1683,7 +1690,7 @@ func _check_triggers(h: TestHarness) -> void:
 	# frames of `ShotSequence.WAIT_FRAMES` on every adjacent target.
 	h.equal("triggers.arrived_write_point_blank", triggers.arrived_write(), 1,
 		"nothing is in flight, even though the burst made %d record(s)"
-			% pool.live())
+			% pool.in_use())
 	h.check("triggers.point_blank_still_fills_the_pool",
 		not needle_asks.is_empty(),
 		"which is why `made == 0` could never be the test")
@@ -1736,8 +1743,8 @@ func _check_triggers(h: TestHarness) -> void:
 		"explosion2.wav")
 
 	# The blobs really are in the pool and really do tick.
-	h.check("triggers.pooled", pool.live() > 0,
-		"%d blob(s) live in the pool" % pool.live())
+	h.check("triggers.pooled", pool.in_use() > 0,
+		"%d blob(s) in the pool" % pool.in_use())
 	var digest: String = pool.trace_digest()
 	var _results: Array[BlobKinds.TickResult] = pool.tick_all()
 	h.check("triggers.ticking", pool.trace_digest() != digest,
@@ -2998,6 +3005,7 @@ func _check_models(h: TestHarness) -> void:
 	h.equal("models.cleared", models.rebuild(pool), 0)
 	models.free()
 	_check_special_objects(h, prototypes)
+	_check_victory_markers(h, prototypes)
 
 
 ## docs/42 section 9.1 -- the cell-owned objects and their per-frame turn.
@@ -3073,6 +3081,158 @@ func _check_special_objects(h: TestHarness,
 			world.state.height_at(probe)),
 		"x * 3200, not x * 3200 + 1600")
 	view.free()
+
+
+## docs/42 section 9.3 -- the marker `0x00431E30` stands on a victory-point
+## cell: in `core` a slot of the 80-entry array taken after the cells' own
+## objects, in the picture a static `A_MK_*` object at the cell's origin whose
+## letter changes colour when a walk claims the cell. Until 2026-09-07 the
+## remake drew none of them, and `_C_102`'s two target cells -- the red `A`
+## the mission asks the squad to reach -- were bare floor.
+func _check_victory_markers(h: TestHarness, prototypes: Dictionary) -> void:
+	# The jump table's ten arms, by `action point - 0x50`.
+	h.equal("vp.model_80_is_nobodys_A", MapState.victory_marker_model(80),
+		"A_MK_0A.3DI")
+	h.equal("vp.model_81_is_player_0s_A", MapState.victory_marker_model(81),
+		"A_MK_1A.3DI")
+	h.equal("vp.model_89_is_player_4s_B", MapState.victory_marker_model(89),
+		"A_MK_4B.3DI")
+	h.equal("vp.model_outside_the_band", MapState.victory_marker_model(70), "")
+	h.equal("vp.ten_models", MapState.VICTORY_MARKER_MODELS.size(), 10)
+
+	var world: World = TestFixtures.tiny_world()
+	var state: MapState = world.state
+	var a: int = state.index_of(1, 1)
+	var b: int = state.index_of(2, 3)
+	h.equal("vp.no_marker_without_a_victory_point",
+		[state.marker_slot_at(a), state.object_state(0)],
+		[MapState.NO_OBJECT, MapState.NO_OBJECT])
+	state.set_action_point(a, 81)
+	state.set_action_point(b, 85)
+	state.rebuild_objects()
+	h.equal("vp.markers_take_the_first_free_slots_in_cell_order",
+		[state.marker_slot_at(a), state.marker_slot_at(b),
+		state.object_state(0), state.object_state(1), state.object_state(2)],
+		[0, 1, MapState.OBJECT_STATIC, MapState.OBJECT_STATIC, MapState.NO_OBJECT],
+		"`push 5` at 0x00431F45, the slot written to +0x14 at 0x00431F74")
+	var mine: int = CellObjects.place_mine(state, 4, 4)
+	h.equal("vp.a_later_object_takes_the_slot_after_them", mine, 2)
+	# A capture: `aExecuteMove` rewrites the action point and runs the placer
+	# again, which frees the marker and takes the first free slot -- its own.
+	state.set_action_point(a, 0x51 + 2)
+	state.rebuild_markers()
+	h.equal("vp.a_capture_keeps_the_slot",
+		[state.marker_slot_at(a), state.marker_slot_at(b), state.object_state(2)],
+		[0, 1, MapState.OBSTACLE_MINE],
+		"aDeleteSpecialObject at 0x00431E8D, then the first free slot again")
+	# A cell that stops being a victory point gets 0xFF at +0x14
+	# (0x00431F79) and **nothing is freed** -- the engine's arm, not a choice.
+	state.set_action_point(b, 0)
+	state.rebuild_markers()
+	h.equal("vp.a_cleared_cell_forgets_its_marker_and_frees_nothing",
+		[state.marker_slot_at(b), state.object_state(1)],
+		[MapState.NO_OBJECT, MapState.OBJECT_STATIC])
+	# The clone the picture reads carries the slots too.
+	var copy: MapState = state.clone()
+	h.equal("vp.clone_carries_the_slots",
+		[copy.marker_slot_at(a), copy.marker_slot_at(b)], [0, MapState.NO_OBJECT])
+
+	# The picture: one static object per victory-point cell, at the cell's
+	# origin, keyed by the cell and not by the slot -- the mirror gets the
+	# claim as an action-point delta and nothing else.
+	var index: Dictionary[String, int] = {}
+	var next_id: int = 0
+	for name: Variant in prototypes:
+		index[DictRead.as_string(name)] = next_id
+		next_id += 1
+	var carried: int = 0
+	for name: String in MapState.VICTORY_MARKER_MODELS:
+		if prototypes.has(name):
+			carried += 1
+	h.equal("vp.fixture_carries_the_ten_models", carried, 10,
+		"the converter asks for all ten in every world set (0.25.0)")
+	var view: SpecialObjects = SpecialObjects.new()
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	view.setup(prototypes, {}, index, rng)
+	state.set_action_point(b, 85)
+	state.rebuild_markers()
+	var touched: PackedInt32Array = view.sync(world.terrain_snapshot())
+	h.check("vp.sync_sees_the_victory_points",
+		touched.has(a) and touched.has(b), str(touched))
+	h.equal("vp.two_markers_and_the_mine", view.live_count(), 3)
+	h.equal("vp.all_of_them_draw", view.advance(), 3)
+	var key: int = SpecialObjects.MARKER_KEY_BASE + a
+	h.equal("vp.the_marker_is_static_at_the_origin",
+		[DictRead.as_string(view._live[key]["model"]),
+		DictRead.as_int(view._live[key]["state"]),
+		DictRead.as_vector3i(view._live[key]["at"])],
+		["A_MK_3A.3DI", MapState.OBJECT_STATIC,
+		view.origin_of(world.terrain_snapshot(), a)])
+	h.equal("vp.idle_sync_is_free", view.sync(world.terrain_snapshot()).size(), 0)
+	# The claim repaints the one cell, through the action-point plane alone.
+	state.set_action_point(a, 0x51)
+	var repainted: PackedInt32Array = view.sync(world.terrain_snapshot())
+	h.equal("vp.a_claim_repaints_its_cell", repainted, PackedInt32Array([a]))
+	h.equal("vp.the_letter_changes_colour",
+		DictRead.as_string(view._live[key]["model"]), "A_MK_1A.3DI")
+	view.free()
+
+
+## What stands for a unit with no Charisma body (docs/40 section 7.2.1: the
+## selector writes nothing for player 0xFC): the type's own model column --
+## `_C_140`'s barrels -- and not the fallback capsule, which stood on every
+## barrel as a white dome until 2026-09-07. And nothing at all under a body:
+## the grey `B` of `A_MK_0B`, the living types' model column, is a
+## victory-point marker cell and the original draws none of it under a marine.
+func _check_unit_stands(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(DOOR_MISSION)
+	if loaded.is_empty():
+		h.check("stands.fixture", false, "no cache")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	var units: UnitsView = UnitsView.new()
+	units.library = CharismaLibrary.open(CacheFixture.cache_dir(), {},
+		DOOR_MISSION)
+	units.build(world, geometry, {})
+	var barrels: int = 0
+	var barrels_as_models: int = 0
+	var capsules: int = 0
+	var bodies: int = 0
+	var bodies_with_a_marker: int = 0
+	for slot: int in world.unit_slots():
+		var node: Node3D = _node_of(units, slot)
+		if node == null:
+			continue
+		var view: Dictionary = world.unit_view(slot)
+		var has_model: bool = node.get_node_or_null("model") != null
+		var has_capsule: bool = node.get_node_or_null("fallback_capsule") != null
+		var has_marker: bool = node.get_node_or_null("marker") != null
+		if DictRead.as_int(view["player"]) == Combat.PLAYER_NEUTRAL:
+			barrels += 1
+			if has_model:
+				barrels_as_models += 1
+			if has_capsule:
+				capsules += 1
+		elif units.bodies.has(slot):
+			bodies += 1
+			if has_marker or has_model:
+				bodies_with_a_marker += 1
+	h.check("stands.fixture_has_barrels_and_bodies", barrels > 0 and bodies > 0,
+		"%d neutral, %d with a body" % [barrels, bodies])
+	h.equal("stands.a_barrel_is_its_model_column", barrels_as_models, barrels,
+		"A_BARAL*.3DI, drawn as the engine draws it")
+	h.equal("stands.no_capsule_on_a_barrel", capsules, 0)
+	h.equal("stands.nothing_under_a_body", bodies_with_a_marker, 0,
+		"A_MK_0B is a marker atlas cell, not a footprint")
+	h.check("stands.a_marker_model_is_recognised",
+		UnitsView.is_marker_model("A_MK_0B.3DI")
+			and not UnitsView.is_marker_model("A_BARAL1.3DI"), "the prefix")
+	units.free()
 
 
 func _first_drawn_slot(units: UnitsView) -> int:

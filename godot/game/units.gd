@@ -5,16 +5,23 @@ extends Node3D
 ##
 ## `SetUnitInfo`'s model column is **not** a body for a living unit: 30 of the
 ## 36 shipped rows name `A_MK_0B.3DI`, which is four vertices and one face -- a
-## box +-1600 on X and Y at Z = 80, a one-field ground marker.  It is still
-## drawn, because the engine draws it.  The **body** comes through Charisma,
-## chosen by `0x0042D070` on the unit's type, weapon *and* player (docs/40
-## section 7.2 as amended by slice 4) and assembled by [CharismaBody].
+## box +-1600 on X and Y at Z = 80, one cell of the victory-point marker
+## atlas (the grey `B`, docs/42 section 9.3).  **It is not drawn under a
+## body**: the original shows no such mark under a marine (docs/92 section
+## 7.1, 2026-09-07), and drawing it put a grey `B` and a white frame under
+## every unit.  The **body** comes through Charisma, chosen by `0x0042D070`
+## on the unit's type, weapon *and* player (docs/40 section 7.2 as amended by
+## slice 4) and assembled by [CharismaBody].
 ##
-## **The capsule is now the fallback, and it is meant to be seen.**  It stands
-## in wherever the selector returns no body -- player `0xFC`, or a type the
-## converted cache does not close over -- so a missing body looks like a
-## missing body rather than like nothing at all.  Its height is
-## `unitinfo[+0x7c] * 160` world units (docs/21 section 5), tinted by player.
+## **A type with no body stands as its model column.**  The selector writes
+## nothing for player `0xFC`, and the six inanimate types -- the barrels, the
+## case, the block -- name a real model there, which is what the original
+## draws for them.  **The capsule is the fallback past both**, and it is meant
+## to be seen: it stands in for a living type the converted cache does not
+## close over, so a missing body looks like a missing body rather than like
+## nothing at all.  Its height is `unitinfo[+0x7c] * 160` world units
+## (docs/21 section 5), tinted by player.  Until 2026-09-07 it stood on the
+## barrels too, as a white dome.
 ##
 ## **Scene nodes are never authoritative.**  Every rebuild reads
 ## `World.unit_view(slot)`; nothing here is ever the source of a position, an
@@ -36,6 +43,9 @@ const FACING_ANGLES: Array[int] = [0, 0xC00, 0x800, 0x400,
 	0x600, 0xE00, 0x200, 0xA00]
 
 const CAPSULE_RADIUS: float = 0.35
+## The ten victory-point marker models `A_MK_0A`..`A_MK_4B` (docs/42 section
+## 9.2) share this prefix, and nothing else in any `prototyp.din` does.
+const VICTORY_MARKER_PREFIX: String = "A_MK_"
 
 
 ## Set once by [method build]; the bodies and the clips of this mission.
@@ -191,15 +201,6 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	if PLAYER_COLOURS.has(player):
 		colour = PLAYER_COLOURS[player]
 
-	# The marker the engine really places, from the type's own model column.
-	var model: String = types.model(type_id)
-	if prototypes.has(model):
-		var marker: MeshInstance3D = MeshInstance3D.new()
-		marker.name = "marker"
-		marker.mesh = MeshBuilder.build(DictRead.as_dict(prototypes[model]),
-			textures)
-		node.add_child(marker)
-
 	# The body.  `weapon` matters as much as the type: a marine has 16 of them,
 	# one per weapon, and the player byte picks the skin.
 	var body: CharismaBody = _body_for(view)
@@ -217,8 +218,25 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		_face(node, body, facing)
 		return node
 
-	# No body: the capsule, sized from the type's own height column.  This is
-	# a visible state, not a silent one -- see the class documentation.
+	# No body. The type's own model column is drawn where it names a real
+	# model -- the six inanimate types of docs/21 section 2, a barrel, a case,
+	# a block -- which is what the original shows for a player-`0xFC` unit:
+	# the selector writes nothing for that player (docs/40 section 7.2.1) and
+	# the object it stands as is the column's. A living type's column is an
+	# `A_MK_*` marker, and the original draws nothing of the kind under a
+	# marine (docs/92 section 7.1, 2026-09-07), so it is never built here.
+	var model: String = types.model(type_id)
+	if not is_marker_model(model) and prototypes.has(model):
+		var own: MeshInstance3D = MeshInstance3D.new()
+		own.name = "model"
+		own.mesh = MeshBuilder.build(DictRead.as_dict(prototypes[model]),
+			textures)
+		node.add_child(own)
+		return node
+
+	# Neither a body nor a model: the capsule, sized from the type's own height
+	# column.  This is a visible state, not a silent one -- see the class
+	# documentation.
 	var metres: float = float(types.body_height_world(type_id)) \
 		/ WorldSpace.WORLD_UNITS_PER_METRE
 	if metres > 0.0:
@@ -690,6 +708,12 @@ func _facing_of(from_index: int, to_index: int, width: int) -> int:
 ## Null is an ordinary answer here.  Player `0xFC` genuinely has no body in the
 ## engine either, and a cache converted for other missions may not carry the
 ## one this type wants; both come back as the capsule.
+## Whether a model column names one of the victory-point markers rather than
+## a body of its own.
+static func is_marker_model(model: String) -> bool:
+	return model.begins_with(VICTORY_MARKER_PREFIX)
+
+
 func _body_for(view: Dictionary) -> CharismaBody:
 	if library == null or not library.is_ready():
 		return null

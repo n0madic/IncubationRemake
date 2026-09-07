@@ -5,10 +5,17 @@ extends TestSuite
 ## The Python side owns the transactional publish and proves it on a temporary
 ## directory (`tools/remake_convert.py --check-cache`).  What has to be proved
 ## **here** is the other half of the same contract: the loader refuses a cache
-## whose inventory does not verify, and it does the verification on every load
-## rather than only on the first.  Verifying once would make "a partial cache is
-## never accepted" a claim about the happy path; a full pass over roughly two
-## megabytes costs a few milliseconds.
+## whose inventory does not verify, and [method CacheLoader.open_active] does
+## that verification on every call rather than only on the first.  Verifying
+## once would make "a partial cache is never accepted" a claim about the happy
+## path.
+##
+## **The six sweeps below are the expensive part of this suite** -- 342 ms each
+## over a 100 MB campaign publish, and [method CacheLoader.verify] does not
+## return early, so the two that are about a *version string* still hash every
+## file.  That is deliberate here: each case has to reach the real inventory to
+## show what it refuses.  A caller that is not testing the refusals opens the
+## cache once and keeps the answer ([CacheFixture]).
 
 func run(h: TestHarness) -> void:
 	h.begin("cache", TestHarness.ORACLE_SPEC)

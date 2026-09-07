@@ -722,9 +722,9 @@ func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
 	h.check("kill.victim_hidden_at_the_impact",
 		units.get_node_or_null(NodePath("unit_%d" % victim)) == null,
 		"0x00405320(obj, 5) in the death stage")
-	h.check("kill.death_creator_filled_the_pool", main._fx.live() > 0,
-		"%d live record(s) -- the dead record was found by its cell"
-			% main._fx.live())
+	h.check("kill.death_creator_filled_the_pool", main._fx.in_use() > 0,
+		"%d record(s) in use -- the dead record was found by its cell"
+			% main._fx.in_use())
 	main._sequences.skip()
 
 	# The computer's para bomb, through its event. The payload **is** the
@@ -1808,11 +1808,7 @@ func _mission_result(h: TestHarness) -> void:
 ## fully opaque. Metrics are checked too, because a font that measured zero
 ## would lay every glyph on top of the last.
 func _game_font(h: TestHarness) -> void:
-	var opened: Dictionary = CacheLoader.open_active()
-	if not DictRead.as_bool(opened["ok"]):
-		h.check("font.cache", false, DictRead.as_string(opened["reason"]))
-		return
-	var dir: String = DictRead.as_string(opened["cache_dir"])
+	var dir: String = CacheFixture.cache_dir()
 	var font: FontFile = GameFont.load_from(dir, "font_2")
 	if font == null:
 		h.check("font.built", false,

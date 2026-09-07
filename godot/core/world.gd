@@ -1590,9 +1590,10 @@ const DEPLOY_EMPTY_RECORD: String = "empty_roster_record"
 
 ## The cells *player* may deploy onto, in map order.
 ##
-## **Not `start_index`.** `+0x14` is the VictoryPoints band 80..85 that
-## docs/10 section 4.2 marks *only Multiplayer*; deployment is the action-point
-## byte `+0x0B`, and the corpus shows no cell is both.
+## **Not `start_index`.** `+0x14` is the slot of the victory-point marker the
+## placer `0x00431E30` last stood on the cell (docs/10 section 4.2), a runtime
+## residue; deployment is the action-point byte `+0x0B`, and the corpus shows
+## no cell is both.
 func deployment_cells(player: int) -> Array[Vector2i]:
 	var want: int = player + DEPLOYMENT_ACTION_POINT_BIAS
 	var out: Array[Vector2i] = []

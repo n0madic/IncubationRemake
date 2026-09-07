@@ -241,16 +241,20 @@ func picture() -> Dictionary:
 	}
 
 
+## `live` is every record in use, by kind; `counted` is the sweep's own count
+## `0x004FE640` -- classes 0 and 2 -- which is what a play-out waits on
+## ([method BlobPool.live]). On `_C_102` the two are 2 and 0 at rest: the
+## warning lights are in use and never counted.
 func pool() -> Dictionary:
 	var kinds: Dictionary[int, int] = {}
 	var live: int = 0
 	var blobs: BlobPool = _main._fx
 	if blobs == null:
-		return {"live": 0, "kinds": kinds}
+		return {"live": 0, "counted": 0, "kinds": kinds}
 	for blob: Blob in blobs.blobs():
 		live += 1
 		kinds[blob.kind] = kinds.get(blob.kind, 0) + 1
-	return {"live": live, "kinds": kinds}
+	return {"live": live, "counted": blobs.live(), "kinds": kinds}
 
 
 func overlay() -> Dictionary:

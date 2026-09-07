@@ -25,8 +25,8 @@ const STEP_TENTHS_ORTHOGONAL: int = 10
 const STEP_TENTHS_DIAGONAL: int = 15
 
 ## docs/26 section 6.1 -- the VictoryPoint band and its two bases.
-const VICTORY_FIRST: int = 0x50
-const VICTORY_LAST: int = 0x59
+const VICTORY_FIRST: int = MapState.VICTORY_POINT_FIRST
+const VICTORY_LAST: int = MapState.VICTORY_POINT_LAST
 const VICTORY_A_LAST: int = 0x54
 const VICTORY_A_BASE: int = 0x51
 const VICTORY_B_FIRST: int = 0x55
@@ -375,6 +375,10 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# `x` is the cell index and `y` the action point it becomes; the pair
 		# comes from [method run] in that order.
 		state.set_action_point(write.x, write.y)
+	if not moved.action_point_writes.is_empty():
+		# `0x0046E9E7`: the marker placer runs again, so the claimed cell's
+		# letter changes to the claiming player's colour (docs/42 section 9.3).
+		state.rebuild_markers()
 
 	# **The walk itself.** The engine draws six frames per field inside the
 	# step loop (`0x0040EA30`, docs/40 section 4.8), so the whole walk is one

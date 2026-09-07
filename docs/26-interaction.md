@@ -658,6 +658,10 @@ pseudo-player ([`23` §9](23-ai-system.md)), captures nothing.
 The A branch is now measured too: phase 10 writes action point `0x50` onto the
 destination of a walked path and player 0 arrives on it, and the cell holds
 **`0x51`** afterwards. The step itself still costs 3 — claiming is free.
+The claim is also what recolours the cell's marker: `0x0046E9E7` re-runs the
+victory-point marker placer `0x00431E30`, which frees the cell's `A_MK_*`
+object and stands the claiming player's letter in its slot
+([`42` §9.3](42-mission-presentation.md), 2026-09-07).
 
 ### 6.2 Why that mine did not fire — **[code] `0x00406960`**
 

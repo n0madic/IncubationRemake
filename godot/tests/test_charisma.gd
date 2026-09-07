@@ -574,10 +574,10 @@ func _clip(cache: Dictionary[String, CharismaClip],
 ## there is skipped, not a failure. What must not happen is the reverse: a
 ## cache entry the suite fails to load, which `pairs` and `joints` would catch.
 func _read(relative: String) -> Dictionary:
-	var opened: Dictionary = CacheLoader.open_active()
-	if not DictRead.as_bool(opened["ok"]):
-		return {}
-	var path: String = DictRead.as_string(opened["cache_dir"]) + "/" + relative
+	# Through [CacheFixture] rather than [method CacheLoader.open_active]: the
+	# cache is verified once for the whole run there, and this reads two
+	# hundred documents.
+	var path: String = CacheFixture.cache_dir() + "/" + relative
 	if not FileAccess.file_exists(path):
 		return {}
 	return CacheLoader.read_json(path)

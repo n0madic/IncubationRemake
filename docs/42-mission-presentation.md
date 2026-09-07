@@ -631,7 +631,16 @@ tick — *corrected 2026-09-03 from "at least 20"*); then
 **`aContCHAnimation` `0x004054D0` resumes the `F` clip past `BREAK`** and the
 routine spins until the clip has played out (`0x00405460` reports its
 remaining frames), the pool is empty and the caption has faded (the countdown
-`0x004FC0A0`); then `aStopCHAnimation` and the sound buffers are freed. Unit
+`0x004FC0A0`); then `aStopCHAnimation` and the sound buffers are freed.
+**"Empty" is the sweep's count, and the sweep counts classes 0 and 2 only**
+(2026-09-07): `aCheckInBlobObjects` zeroes `0x004FE640` at `0x0041E3FC` and
+increments it once per record whose class byte `+0x56` is 0 or 2
+(`0x0041E41A`..`0x0041E425`), so a class-1 object — a `CreateBGB` warning
+light or computer light at `life` 255, a scripted fire — and a class-3 sprite
+never hold a play-out. The remake counted every record and every shot on
+`_C_102`, whose `InitMap` places two warning lights, waited out the whole
+safety bound; `BlobPool.live()` is the sweep's predicate now
+(`presentation_tables.py`, `sweep.live_count_classes_0_and_2`). Unit
 type 0x37 and animation slot 0x0B skip the resume.
 
 So one shot is: aim in 3–6 frames, hold while the round flies (≤ 100 frames),
@@ -1302,7 +1311,7 @@ of §1.3 animates them every frame:
 | 2 | triple 0 turns by +51 (4.5°) | mines `0x0042FA70` (`A_MINE.3DI`), subtype from `cell + 0x0E` |
 | 3 | +25 / +51 / +102 by subtype 1 / 2 / other | the **shield** placer `0x0042FB90` (`A_SHILD.3DI`, [`23` §7.1](23-ai-system.md)); it writes subtype 2 into `cell + 0x0E` first, so a shield turns by 51 (4.5°) a frame |
 | 4 | triple 0 turns by `aRandom2(0, 4096)` | the glow placer `0x0042FCB0` (`GLOW1/2.3DI`, `SetGroundFire` phases 1–2) |
-| 5 | drawn, static | — |
+| 5 | drawn, static | the victory-point marker placer `0x00431E30` (§9.3) |
 | 0xFF | dead | `aDeleteSpecialObject` |
 
 So a mine turns slowly, a shield turns at the same pace, a glow flickers by
@@ -1347,6 +1356,63 @@ of `28` §14.
 
 `CreateBGB` (`28` §8.2) is the other source of ambient motion; nothing here
 changes what `28` says about it.
+
+### 9.3 The victory-point markers — **[code] `0x00431E30`** (2026-09-07)
+
+The red *A* a mission's target cells carry — `_C_102`'s (13, 3) and (14, 3),
+the two `UnitOnField` cells its `NextPlayer` block tests — is not the ground
+overlay's doing. `aCtrlMap.cpp`'s `0x00431E30` walks the control map at load
+(`aBuild3DSpecialObjects`, `0x00407A86`, **after** the cells' own objects) and
+after every walk that may have claimed a cell (`aExecuteMove`, `0x0046E9E7`,
+[`26` §6.1](26-interaction.md)):
+
+```c
+for (cell = ctrlmap; cells--; cell += 0x17) {
+    if (cell->actionPoint < 0x50 || cell->actionPoint > 0x59) { cell->marker = 0xFF; continue; }
+    land = aGetSymbolObjectPtr(cell->land);            /* +0x05, 0x00431E6E */
+    if (cell->marker != 0xFF) CHECK(aDeleteSpecialObject(cell->marker));   /* +0x14 */
+    name = A_MK_[cell->actionPoint - 0x50];             /* jump table 0x00432000 */
+    id = aCreateSpecialObject(name, land->x, land->y, land->z, 0,0,0, 0,0,0,0,0, 5, cell->subtype);
+    if (id == -1) ERROR("too many objects in list");
+    cell->marker = id;                                  /* 0x00431F74 */
+}
+```
+
+The ten models are one atlas: `A_MK_0A`..`A_MK_4A` for 80..84 and
+`A_MK_0B`..`A_MK_4B` for 85..89, each four vertices and one additive face
+(`texture_1c`, `ki010000`, u/128) — the letter is the band and the digit the
+claiming player, 0 for nobody: grey, red, white, blue and yellow `A` and `B`
+in a bracket frame. So a fresh `81` is player 0's red *A*, and a capture
+([`26` §6.1](26-interaction.md)) recolours the letter by re-running the placer:
+the marker is freed and takes the first free slot again, which is its own.
+Every world set carries all ten. `+0x14` is the slot the placer got
+([`10` §4.2](10-lev-mission-format.md)), which is also why `_C_116` loads with
+slot 0 already held by a state-5 object no cell's effect bytes name
+([`97` §37](97-slice-5-report.md)).
+
+**Action point 87's arm is broken in the shipped executable.** Nine arms load
+their string from the block at `0x004C2DEC`..`0x004C2E58`; the arm for 87
+(`A_MK_2B`, *B claimed by player 1*) loads `0x00752E04` at `0x00431F06` where
+the pattern says `0x004C2E04` — one byte off, into no section of the image.
+No shipped cell carries 86..89, so nothing reaches it in the campaign; a *B*
+point claimed by player 1 in a multiplayer game would. **UNVERIFIED at
+runtime** — read off the bytes, never run.
+
+`presentation_tables.py`'s `vp_marker.*` pins the table, the band, the stride,
+the state byte, the `+0x14` store, the two callers and the broken pointer;
+`corpus.vp_marker_*` the residue in the 155 maps and the ten models in the
+nine sets. The remake: `MapState.rebuild_markers` is the placer as occupancy,
+run at both loading boundaries and after a walk's writes; `SpecialObjects`
+draws the marker from the action-point plane alone, keyed by the cell, so the
+mirror's claim delta repaints it ([`92` §7.12](92-remake-architecture.md)).
+
+**What the model column is not.** Thirty of `SetUnitInfo`'s 36 rows name
+`A_MK_0B.3DI` as the type's model — the grey *B* of this atlas. The original
+draws nothing of the kind under a marine (the screenshot that opened this
+section shows the squad on bare floor), and the remake drew it under every
+living unit until 2026-09-07, with the fallback capsule on top of every barrel.
+The mechanism that keeps the column's quad off the screen once a Charisma body
+is bound is **UNVERIFIED** in code; what is pinned is the picture.
 
 ---
 

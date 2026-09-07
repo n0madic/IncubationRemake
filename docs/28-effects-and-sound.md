@@ -1524,7 +1524,11 @@ a blob:
 | 7 | *(out of range: nothing)* | `aBlob_CreateMainMapFire` |
 
 Types 2…6 create their object once, at registration; types 1 and 7 are emitters
-the per-frame sweep drives.
+the per-frame sweep drives. The objects types 2…6 make are **class 1** at
+`life` 255, and the sweep's live count `0x004FE640` takes classes 0 and 2 only
+(`0x0041E41A`..`0x0041E425`), so a warning light that burns for the whole
+mission never holds a shot's play-out ([`42` §4.9](42-mission-presentation.md),
+2026-09-07).
 
 **The cadence, exactly** (`0x0041E1A0`, read instruction by instruction because
 the summary above is not enough to port). `aCheckInBlobObjects` `0x0041E3D0`

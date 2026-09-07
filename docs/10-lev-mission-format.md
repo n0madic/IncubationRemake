@@ -208,7 +208,7 @@ named from `fcn.0042ed60` (the per-turn cell-effect tick), `fcn.0042f410` and
 | `+0x11` | `u8` | Decal object — slot in the same runtime array, `0xFF` = none. `0xFF` in all cells | high |
 | `+0x12` | `u8` | **The glow's phase**, `1` or `2` — `SetGroundFire`'s two-round fuse ([`42` §9.1](42-mission-presentation.md)). `0` on all but 44 cells of `_C_116.lev`, and `_C_116` is one of the two missions that use the command: with `+0x13` at `0xFF` on every shipped cell they are leftover runtime state, which is now named rather than uncorrelated *(2026-09-03, [`97` §37.8](97-slice-5-report.md))* | confirmed |
 | `+0x13` | `u8` | **The glow's state**, `4` while one stands on the cell, `0xFF` idle. `0xFF` in all cells | confirmed |
-| `+0x14` | `u8` | **Deployment-field ordinal**, `0xFF` = not a deployment field | high |
+| `+0x14` | `u8` | **Victory-point marker's object slot** — the id `0x00431E30` wrote into the cell when it last stood an `A_MK_*` marker there (§4.2), `0xFF` on every other cell. Runtime residue: the engine rewrites it on load | confirmed (2026-09-07) |
 | `+0x15`..`+0x16` | 2 bytes | Uninitialised padding (`0xCDCD` or `0x0000`) — **ignore** | confirmed |
 
 The old spec split `+0x01` into an `i16` height and an unexplained `i16` at
@@ -284,20 +284,38 @@ The LCL commands `SetCtrlMapType` / `GetCtrlMapType` read and write this byte:
 `SetCtrlMapType`'s handler (`Incubation.exe` `fcn.00442a80`) is literally
 `*(u8*)(GetCell(x,y) + 0xD) = type`.
 
-### 4.2 Deployment fields (`+0x14`)
+### 4.2 The victory-point marker's slot (`+0x14`) — corrected 2026-09-07
 
-Cells that carry an action-point id in the range 80–85 (`0x50`–`0x55`) are
-numbered consecutively in row-major order at `+0x14`; every other cell holds
-`0xFF`. The game's own legend calls that band **VictoryPoints** and marks it
-*"only Multiplayer"* (§4.6); the ordinal below is the observed use of the same
-cells. Corpus-wide this holds for all 307 marked cells, with no ordering
-violations, and only ids 80–85 (plus five cells with id 0) appear on them.
+`+0x14` is written by exactly one routine in `Incubation.exe`: the
+victory-point marker placer `0x00431E30` in `aCtrlMap.cpp`
+([`42` §9.3](42-mission-presentation.md)), which `aBuild3DSpecialObjects`
+runs after every load and `aExecuteMove` after every capture. Cell by cell it
+tests the action point against `0x50`..`0x59`; on a hit it frees the object
+`+0x14` names (`aDeleteSpecialObject`, `0x00431E8D`), creates a static
+`A_MK_*` object of the model `action point − 0x50` selects (`aCreateSpecialObject`
+`0x004069C0`, state 5) at the cell's own land marker, and stores the **slot it
+got** at `+0x14` (`0x00431F74`); every other cell gets `0xFF` (`0x00431F79`).
+The shipped byte is the editor's run of the same routine, and the engine
+overwrites it on load — so, like block 2's `+0x08`, it is runtime residue and
+must not be read.
 
-The multiplayer maps make the meaning plain: `_M_010` … `_M_036` carry exactly
-four marked cells (`_M_018`, `_M_019`: two), spread across the map — the player
-start fields. Campaign maps carry contiguous blocks of them (`_C_133`: a 3x3
-patch at the map edge; `_C_166`: 4x3 patches on both flanks) — the squad
-deployment zone.
+That is what the shipped values look like: `aCreateSpecialObject` takes the
+**first free** of the 80 slots, so the cells that carry an id, taken in cell
+order, are numbered 0, 1, 2 … in every one of the 92 files that carry any
+(304 ids; `presentation_tables.py`, `corpus.vp_marker_ids_*`). `_C_133`'s three
+cells with id 0 and action point 0 are cells that were victory points when the
+map was last built and were cleared afterwards, and the 19 victory-point cells
+that carry `0xFF` were given the action point after that build. The previous
+reading — *deployment-field ordinal*, numbered consecutively — described the
+same numbers without the routine behind them; deployment is the action-point
+band 1..4 (§4.6), and no cell is both.
+
+The band's *meaning* is unchanged: the game's legend calls 80–89
+**VictoryPoints** and marks it *"only Multiplayer"* (§4.6), `_M_010` …
+`_M_036` carry four of them spread across the map as the start fields, and a
+campaign map's block of them (`_C_133`'s 3x3 patch, `_C_166`'s 4x3 flanks) is
+where the mission's own `UnitOnField` win test looks — `_C_102`'s two `81`
+cells are the pair its script names.
 
 ### 4.3 How height and action points were confirmed
 
@@ -465,7 +483,8 @@ table out and is the authority on which ids the engine acts on.
 | 33, 32 | `0x0047A5CD`, `0x0047A5D8` | the two jammed-door exceptions in the same predicate |
 | 70 | `0x0047B463` | entry point — the demolition predicate ([`26` §2](26-interaction.md)) |
 | 71 | `0x004418F5`, `0x00441A03` | `InsertUnit` refuses to spawn here ([`21` §8](21-info-lcl-schema.md)) |
-| 80..89 | `0x00418340`, `0x00430F4D` | the editor; and the warp exclusion band (§4.5) |
+| 80..89 | `0x00418340`, `0x00430F4D` | the far-view letters ([`43` §3.3](43-battle-hud.md)); and the warp exclusion band (§4.5) |
+| 80..89 | `0x00431E59`, `0x00431E61` | **the marker placer** `0x00431E30` — a static `A_MK_*` object on the cell, its slot at `+0x14` (§4.2, [`42` §9.3](42-mission-presentation.md)) |
 | 80..89 | `0x0046E99F`, `0x0046E9D4` | **VictoryPoint capture** on the movement path ([`26` §6.1](26-interaction.md)) |
 | non-zero | `0x0041813F`, `0x0041D010`, `0x004313F4`, `0x00442440`, `0x00455695` | five "is anything here" tests, in five different modules |
 | 249, 254 | `0x0041CDD5`, `0x0041CEF2` | not values — the editor's `+= 5` and `+= 1` overflow guards |
