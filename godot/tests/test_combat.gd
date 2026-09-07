@@ -1432,6 +1432,98 @@ func _world_wiring(h: TestHarness) -> void:
 		DictRead.as_int(alien_turn.unit_view(1)["visibility"]),
 		Visibility.HIDDEN, "the guard is the engine's, not a convenience")
 
+	# --- the LCL `Use` event ----------------------------------------------
+	#
+	# docs/26 section 6: every action-point class ends in `RunMissionProgram`
+	# with `_A` 4, `_B`/`_C` the cell and `_D` its action point. The four
+	# consoles of `_C_105` are ids 34/35 -- the switch's default arm -- and
+	# their whole effect is the `Platform` command the `:Use` section runs.
+	# Until 2026-09-07 `submit_use` never ran the program, so a console was a
+	# click and nothing else.
+	var console: World = _wired_world()
+	console.state.set_action_point(console.state.index_of(3, 2), 34)
+	# The block centred on (4,7) -- cells 3..5 x 6..8, nobody standing there
+	# -- rides north by three onto 3..5 x 3..5, which is empty of units too.
+	for ox: int in [-1, 0, 1]:
+		for oy: int in [-1, 0, 1]:
+			console.state.set_height(console.state.index_of(4 + ox, 7 + oy),
+				Interact.DOOR_HEIGHT_STEP)
+	h.check("world.the_console_program_attached",
+		console.attach_script(_use_program([
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_A),
+				_num(LclEnv.CALL_USE)]),
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_B), _num(3)], "&"),
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_C), _num(2)], "&"),
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_D), _num(34)], "&"),
+			_instr("command", "Platform", [_num(4), _num(7), _num(0), _num(3)]),
+			_instr("command", "SetActPt", [_num(3), _num(2), _num(35)]),
+			_instr("close", "", []),
+		])), "the console program did not load")
+	var pressed: UseResult = console.submit_use(UseCommand.create(0))
+	h.equal("world.the_console_is_the_default_arm",
+		[pressed.kind, pressed.fires_script_event], ["script_only", true])
+	h.check("world.the_use_ran_the_mission_program",
+		DictRead.as_bool(pressed.script_result.get("ran", false)),
+		str(pressed.script_result))
+	h.equal("world.the_platform_rode_on_the_use",
+		[console.state.height_at(console.state.index_of(4, 4)),
+			console.state.field_type_at(console.state.index_of(4, 7))],
+		[Interact.DOOR_HEIGHT_STEP, Platform.CTRL_TYPE_DEEP_HOLE],
+		"the block's height reached the destination and the source is a "
+		+ "deep hole -- the `Platform` command ran")
+	h.equal("world.the_script_flipped_the_console",
+		console.state.action_point_at(console.state.index_of(3, 2)), 35,
+		"`SetActPt` beside the ride, the way `_C_105.lcl` pairs them")
+	h.equal("world.the_pad_still_charges_after_the_script",
+		DictRead.as_int(DictRead.as_dict(console.unit_view(0))["mp"]),
+		before_mp - 1)
+
+	# **`_D` is the cell as the switch left it.** `0x0046E152` loads the
+	# action point after the arm has rewritten it, so a lever that read 36
+	# hands the script 37 (docs/26 section 6, `_O_066.lcl`'s mirrored pair).
+	# A model handing over the value the arm saw would flip the flag cell
+	# on 36 and never on 37.
+	var lever: World = _wired_world()
+	lever.state.set_action_point(lever.state.index_of(3, 2), Interact.LEVER_UP)
+	h.check("world.the_lever_program_attached",
+		lever.attach_script(_use_program([
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_D),
+				_num(Interact.LEVER_DOWN)]),
+			_instr("command", "SetActPt", [_num(0), _num(0),
+				_num(Interact.LEVER_DOWN)]),
+			_instr("close", "", []),
+			_instr("cond", "EnvVarCmpNum", [_var(LclEnv.SLOT_D),
+				_num(Interact.LEVER_UP)]),
+			_instr("command", "SetActPt", [_num(0), _num(0),
+				_num(Interact.LEVER_UP)]),
+			_instr("close", "", []),
+		])), "the lever program did not load")
+	var pulled: UseResult = lever.submit_use(UseCommand.create(0))
+	h.equal("world.the_lever_toggled_before_the_script_read_it",
+		[pulled.kind, pulled.action_point,
+			lever.state.action_point_at(lever.state.index_of(0, 0))],
+		["lever", Interact.LEVER_UP, Interact.LEVER_DOWN],
+		"the result carries the value the arm saw; the script saw the one "
+		+ "it wrote")
+
+	# A push returns before the default arm and the program never runs
+	# (docs/26 section 3): the flag cell stays untouched.
+	var shove: World = World.create(TestFixtures.map_document(9, 9, [
+		TestFixtures.unit(0, 2, 2, 0, 0, 6, 0, [], 3, 15, 3, 200),
+		TestFixtures.unit(1, 3, 2, PUSHABLE_CRATE_TYPE, 0, 0, 0, [], 0, 0, 0,
+			200),
+	]), TestFixtures.balance([TestFixtures.unit_type(PUSHABLE_CRATE_TYPE)]),
+		1.0)
+	h.check("world.the_push_program_attached",
+		shove.attach_script(_use_program([
+			_instr("command", "SetActPt", [_num(0), _num(0), _num(99)]),
+		])), "the push program did not load")
+	var shoved: UseResult = shove.submit_use(UseCommand.create(0))
+	h.equal("world.a_push_never_runs_the_program",
+		[shoved.kind, shoved.script_result.is_empty(),
+			shove.state.action_point_at(shove.state.index_of(0, 0))],
+		["push", true, 0])
+
 	# --- the script's own rebuilds ----------------------------------------
 	#
 	# `InsertUnit` (`0x004419B6`) and the `BuildVisibleMap` command
@@ -1555,6 +1647,35 @@ static func _wall_column(world: World, x: int) -> void:
 ## wrong argument shape can still run and do nothing.
 static func _num(value: int) -> Dictionary:
 	return {"kind": "number", "raw": str(value), "value": value}
+
+
+## A variable argument -- `_A` is slot 0 (docs/20 section 4).
+static func _var(slot: int) -> Dictionary:
+	return {"kind": "var", "slot_index": slot}
+
+
+static func _instr(kind: String, name: String, args: Array,
+		op: String = ">") -> Dictionary:
+	return {"kind": kind, "name": name, "line": 1, "op": op, "args": args}
+
+
+## The interpreter's own top-level test: `PUSHABLE_TYPES`'s first id, given a
+## type row so [method World.create] accepts a unit of it.
+const PUSHABLE_CRATE_TYPE: int = 30
+
+
+## A program of `body` followed by `[END]` -- a `:Use` section with no label,
+## since the environment is what selects the arms and a `Goto` is not needed.
+static func _use_program(body: Array) -> Dictionary:
+	var instructions: Array = body.duplicate()
+	instructions.append(_instr("end", "", []))
+	return {
+		"schema": LclProgram.SCHEMA,
+		"source": {"mission": "synthetic"},
+		"header_line": 1,
+		"instructions": instructions,
+		"labels": {},
+	}
 
 
 ## A one-command `Elevator (x, y, 0, 1)` program.

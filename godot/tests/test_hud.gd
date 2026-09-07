@@ -597,6 +597,23 @@ func _overlay_live(h: TestHarness) -> void:
 	var own: Vector2i = Vector2i(DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
 	h.check("overlay.own_cell_frame", ground.drawn_at(own).has(["mp", HudTables.PATH_FRAME]),
 		str(ground.drawn_at(own)))
+	# A platform ride carries the marks on its block with the deck (docs/43
+	# section 3: a mark is blitted where the cell's ground object projects,
+	# and the ride moves that object). One field east, then back.
+	var frame_mark: Node3D = ground.get_child(0) as Node3D
+	var placed: Vector3 = frame_mark.position if frame_mark != null else Vector3.ZERO
+	var one_field: Vector3i = Vector3i(WorldSpace.WORLD_UNITS_PER_FIELD, 0, 0)
+	h.equal("overlay.a_ride_shifts_the_cells_marks",
+		ground.shift_cells([own] as Array[Vector2i], one_field), 1, "")
+	h.check("overlay.the_shifted_mark_moved_a_field", frame_mark != null
+		and frame_mark.position.is_equal_approx(
+			placed + Vector3(WorldSpace.FIELD_METRES, 0.0, 0.0)),
+		str(frame_mark.position if frame_mark != null else Vector3.ZERO))
+	h.equal("overlay.a_cell_without_marks_shifts_nothing",
+		ground.shift_cells([Vector2i(-1, -1)] as Array[Vector2i], one_field), 0, "")
+	var _back: int = ground.shift_cells([own] as Array[Vector2i], Vector3i.ZERO)
+	h.check("overlay.zero_puts_the_mark_back", frame_mark != null
+		and frame_mark.position.is_equal_approx(placed), "")
 	# Over a reachable cell every digit appears, the hovered one framed.
 	var hover: Vector2i = Vector2i(-1, -1)
 	for y: int in range(query.height):

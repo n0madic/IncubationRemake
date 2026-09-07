@@ -807,6 +807,21 @@ func shift(slot: int, offset: Vector3i) -> void:
 	_place_shift(slot, offset)
 
 
+## Put **these** carried units back on their cells and leave every other
+## carry alone. A script that runs two `Platform` commands queues two rides,
+## and the second's riders are shifted from the moment it is queued; the
+## first ride's landing used to call [method drop_shifts] and so put the
+## second's riders down on their destination cells for the length of its
+## camera flight -- the jump `_C_105`'s aliens made before their deck moved.
+func put_down(slots: PackedInt32Array) -> int:
+	var count: int = 0
+	for slot: int in slots:
+		if _shifts.erase(slot):
+			_place_shift(slot, Vector3i.ZERO)
+			count += 1
+	return count
+
+
 ## Put every carried unit back on its cell.
 func drop_shifts() -> int:
 	var count: int = _shifts.size()

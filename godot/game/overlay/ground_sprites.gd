@@ -40,6 +40,10 @@ static func pixel_size() -> float:
 var _drawn: Dictionary[Vector2i, Array] = {}
 ## The marks that blink: hidden on the odd tick.
 var _blink_off: Array[Sprite3D] = []
+## Every mark the last refresh placed, by cell, and where each was placed --
+## what a platform ride moves (see [method shift_cells]).
+var _marks: Dictionary[Vector2i, Array] = {}
+var _bases: Dictionary[Sprite3D, Vector3] = {}
 var _art: Art = null
 
 
@@ -62,6 +66,8 @@ func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 		child.queue_free()
 	_drawn.clear()
 	_blink_off.clear()
+	_marks.clear()
+	_bases.clear()
 	if art == null or world == null:
 		return
 	var width: int = world.resource.width
@@ -268,7 +274,37 @@ func _place(world: World, cell: Vector2i, library: String, element: int,
 	mark.position = WorldSpace.cell_centre(cell.x, cell.y, height) \
 		+ Vector3(0.0, LIFT, 0.0)
 	add_child(mark)
+	if not _marks.has(cell):
+		_marks[cell] = []
+	var on_cell: Array = _marks[cell]
+	on_cell.append(mark)
+	_bases[mark] = mark.position
 	return mark
+
+
+## Draw every mark on *cells* `offset` engine units from where it was placed.
+##
+## The engine blits each mark at the **projected point of the cell's ground
+## object** (docs/43 section 3), and a platform ride translates those objects
+## by `0x140` a frame (docs/20 section 7.4 step 2) -- so the bands and digits
+## on a riding block travel with the deck, and the bodies on it. The
+## picture's copy of that: [Scenery.shift_objects] moves the objects and this
+## moves the marks over them by the same offset. Zero puts them back. The
+## next [method refresh] places everything afresh from the world, which is
+## where the marks land once the ride's drain redraws. Answers how many moved.
+func shift_cells(cells: Array[Vector2i], offset: Vector3i) -> int:
+	var by: Vector3 = WorldSpace.to_godot(offset.x, offset.y, offset.z)
+	var moved: int = 0
+	for cell: Vector2i in cells:
+		if not _marks.has(cell):
+			continue
+		for entry: Variant in _marks[cell]:
+			var mark: Sprite3D = entry
+			if not is_instance_valid(mark) or not _bases.has(mark):
+				continue
+			mark.position = _bases[mark] + by
+			moved += 1
+	return moved
 
 
 ## A mark: billboard, `fixed_size`, `no_depth_test`, nearest filtering, and

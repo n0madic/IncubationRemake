@@ -16,6 +16,11 @@ var action_point: int = 0
 var fires_script_event: bool = false
 ## `[x, y]` of every cell a push moved an object through.
 var pushed: Array[PackedInt32Array] = []
+## What the mission program answered to the LCL `Use` event (docs/26 section
+## 6), `{}` when the event did not fire or no program is attached. Outside
+## [method to_dict], as [member MoveResult.script_result] is: the script's own
+## run marks its boundary and the `use` event's payload is the arm's alone.
+var script_result: Dictionary = {}
 
 
 static func refused(why: String) -> UseResult:

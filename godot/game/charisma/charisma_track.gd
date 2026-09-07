@@ -90,19 +90,24 @@ static func from_document(document: Dictionary) -> CharismaTrack:
 	track.key_class = DictRead.as_string(document["key_class"])
 	track.arity = DictRead.as_int(document["arity"])
 	track.count = DictRead.as_int(document["count"])
-	# The cache carries the file's own `f32` bit patterns, so this is the only
-	# place a number becomes a float and it does so without ever having been
-	# formatted (see `inclib/charisma_cache.py`).
-	var raw: PackedByteArray = Marshalls.base64_to_raw(
-		DictRead.as_string(document["keys"]))
-	var floats: PackedFloat64Array = PackedFloat64Array()
-	floats.resize(raw.size() / 4)
-	for i: int in range(floats.size()):
-		# `decode_float` reads the four bytes as `f32`; widening an `f32` to a
-		# double is exact, so this is the file's own value and not a rounding.
-		floats[i] = raw.decode_float(i * 4)
-	track._keys = floats
+	track._keys = floats_from_base64(DictRead.as_string(document["keys"]))
 	return track
+
+
+## A cached base64 payload of `f32` bit patterns, widened to double.
+##
+## The cache carries the file's own `f32` bits, so this is the only place a
+## number becomes a float and it does so without ever having been formatted
+## (see `inclib/charisma_cache.py`).  Widening an `f32` to a double is exact,
+## so what comes out is the file's own value and not a rounding.
+##
+## [method PackedByteArray.to_float32_array] converts the whole payload in one
+## native call.  This used to be a `decode_float` per element in GDScript,
+## which over the shipped animation set -- 470 598 floats across 1 564 tracks
+## -- is 8.2 ms against 3.0 ms for **bit-identical** output.
+static func floats_from_base64(encoded: String) -> PackedFloat64Array:
+	return PackedFloat64Array(Array(
+		Marshalls.base64_to_raw(encoded).to_float32_array()))
 
 
 ## The stride of one key record: its time plus its values.

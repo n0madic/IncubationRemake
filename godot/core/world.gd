@@ -630,12 +630,31 @@ func submit_use(command: UseCommand) -> UseResult:
 			and turn.current_player != UnitState.PLAYER_ALIEN:
 		Visibility.build(state, _units, _unit_types, turn.current_player,
 			turn.human_count(), turn.mode)
-	if unit.hp != 0 and unit.mp != 0:
-		unit.mp -= 1
-	# After the charge, as the fire boundary is: the pad's point and the door's
-	# cells belong to the same frame.
+	# The arm's own writes are one frame: the door's cells, the lever's byte,
+	# the box's clearing. The script's run marks a boundary of its own below,
+	# and the pad's charge after it folds into whichever event is last -- the
+	# original plays the lever's handle inside the arm and the script's
+	# elevator after it, and the mirror keeps that order.
 	_mark("use", command.unit_slot, unit.x, unit.y, front_x, front_y,
 		result.action_point, result.kind, result.to_dict())
+	# **The LCL `Use` event** -- docs/26 section 6, `0x0046E126`. Every
+	# action-point class ends in it, handled or not; only a push and a defuse
+	# return before it. `_D` is loaded at `0x0046E152`, **after** the switch
+	# has rewritten the cell, so a lever that read 36 hands the script 37 and
+	# a pickup hands it 0 -- which is why the cell is read back here rather
+	# than taken from the result. There is no alive gate on this path, unlike
+	# the walk's. Until 2026-09-07 nothing ran it, and every terminal a
+	# mission drives through its `:Use` section -- `_C_105`'s four platform
+	# consoles among them -- was a click and nothing else.
+	if result.fires_script_event:
+		var written: int = state.action_point_at(
+			state.index_of(front_x, front_y))
+		result.script_result = DictRead.as_dict(_script_callable().call(
+			MissionScript.CALL_USE,
+			MissionScript.env(MissionScript.CALL_USE, turn.turn, unit.player,
+				front_x, front_y, 0, written, unit.slot)))
+	if unit.hp != 0 and unit.mp != 0:
+		unit.mp -= 1
 	return result
 
 

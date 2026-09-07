@@ -40,13 +40,8 @@ static func from_document(document: Dictionary) -> CharismaModel:
 		var bone: String = DictRead.as_string(node["name"])
 		model.bones.append(bone)
 		model.parent_of[bone] = DictRead.as_string(node["parent"])
-		var raw: PackedByteArray = Marshalls.base64_to_raw(
+		model.bind_of[bone] = CharismaTrack.floats_from_base64(
 			DictRead.as_string(node["matrix"]))
-		var matrix: PackedFloat64Array = PackedFloat64Array()
-		matrix.resize(16)
-		for i: int in range(16):
-			matrix[i] = raw.decode_float(i * 4)
-		model.bind_of[bone] = matrix
 	return model
 
 

@@ -4196,6 +4196,33 @@ func _check_platform_ride(h: TestHarness) -> void:
 	h.check("platform.the_rider_is_put_down",
 		rebuilt != null and rebuilt.position.is_equal_approx(stood),
 		"back on its cell")
+	# Two rides on one queue: the first's landing puts down its own riders
+	# and leaves the second's carry alone. `_C_105`'s consoles each run two
+	# `Platform` commands, and the second's riders used to drop onto their
+	# destination cells the moment the first deck landed.
+	if slots.size() >= 2:
+		var other: int = slots[1]
+		var other_node: Node3D = units.get_node_or_null(
+			NodePath("unit_%d" % other))
+		var other_stood: Vector3 = other_node.position if other_node != null \
+			else Vector3.ZERO
+		var carry: Vector3i = Vector3i(0, -WorldSpace.WORLD_UNITS_PER_FIELD, 0)
+		units.shift(slot, carry)
+		units.shift(other, carry)
+		h.equal("platform.the_first_landing_puts_down_its_own_riders",
+			units.put_down(PackedInt32Array([slot])), 1, "")
+		var kept: Dictionary[int, Vector3i] = units.shifts()
+		h.equal("platform.the_second_rides_riders_keep_their_carry",
+			[kept.has(slot), kept.get(other, Vector3i.ZERO)], [false, carry],
+			"only the named slot was put down")
+		other_node = units.get_node_or_null(NodePath("unit_%d" % other))
+		h.check("platform.the_second_rides_rider_is_still_drawn_carried",
+			other_node != null and not other_node.position.is_equal_approx(
+				other_stood), "it stays where its deck is, not on its cell")
+		var _rest: int = units.drop_shifts()
+	else:
+		h.check("platform.fixture_has_two_units", false,
+			"the second-ride check wants a second unit")
 	units.free()
 	scenery.free()
 

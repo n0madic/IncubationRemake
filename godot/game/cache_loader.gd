@@ -88,6 +88,15 @@ static func verify(cache_dir: String, manifest: Dictionary) -> PackedStringArray
 			!= CONVERTER_VERSION:
 		problems.append("converter %s != %s"
 			% [manifest.get("converter_version", "-"), CONVERTER_VERSION])
+	# **A cache already refused by name is not swept.**  The two tests above
+	# refuse the whole cache, so the sweep below could only add per-file noise
+	# to a message that is already decided -- and a cache another converter
+	# built is *expected* to differ file by file.  It is not free: the sweep is
+	# 342 ms over a 100 MB campaign publish, paid on every start-up that finds
+	# a stale cache.  The absent-manifest branch above already returned early
+	# for the same reason; this is the rest of that rule.
+	if not problems.is_empty():
+		return problems
 	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
 	if inventory.is_empty():
 		problems.append("the manifest declares no files")

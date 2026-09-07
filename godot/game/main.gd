@@ -263,6 +263,9 @@ var _footstep_cues: Dictionary[int, Dictionary] = {}
 ## the quiet events between two shown ones land several deltas in one frame
 ## and a full rebuild per delta was most of the cost of a command.
 var _picture_stale: bool = false
+## An overlay refresh asked for while a set piece was drawing, owed to the
+## drain (see [method _refresh_overlay]).
+var _overlay_stale: bool = false
 ## Whether the playback on the go is the computer's turn, which is what
 ## [method end_turn] started, as against a player's own command. The two
 ## finish differently: only the turn hands the selection back.
@@ -3144,6 +3147,8 @@ func _process(delta: float) -> void:
 	# the bodies move: a delta a presenter landed mid-sequence has already
 	# been flushed by it, and this is for the ones the playback landed.
 	_flush_picture()
+	if _overlay_stale and (_sequences == null or not _sequences.is_running()):
+		_refresh_overlay()
 	if _units != null:
 		_units.animate(delta, shown(), _rig != null
 			and _rig.eye().z >= UnitsView.FREEZE_HEIGHT)
@@ -4721,17 +4726,31 @@ func _ride_platform(ride: Dictionary, values: PackedInt32Array, frame: int,
 	# the deck where `core` put them.
 	var whole: Vector3i = Vector3i(travel.x, travel.y, 0) \
 		* WorldSpace.WORLD_UNITS_PER_FIELD
+	# The marks on the block -- the bands over its riders, a digit on a
+	# reachable cell -- are blitted at the projected point of each cell's
+	# ground object (docs/43 section 3), and the ride moves those objects,
+	# so the marks travel with the deck. The overlay was drawn before the
+	# ride and is not redrawn until the drain ([method _refresh_overlay]).
+	var cells: Array[Vector2i] = SetpieceDriver.platform_block(values)
 	if frame < frames:
 		var offset: Vector3i = SetpieceDriver.platform_offset(values, frame)
 		var _objects: int = _scenery.shift_objects(block, offset)
+		if _ground != null:
+			var _marks: int = _ground.shift_cells(cells, offset)
 		if _units != null:
 			for slot: int in riders:
 				_units.shift(slot, offset - whole)
 		return
 	var _landed: int = _scenery.move_objects(shown().terrain_snapshot(), block,
 		travel.x, travel.y)
+	if _ground != null:
+		var _arrived: int = _ground.shift_cells(cells, whole)
+	# **This ride's riders only.** The next platform on the queue has already
+	# shifted its own riders back to where they ride from, and dropping every
+	# carry here stood them on their destination cells until its first
+	# painted frame (`_C_105`'s two consoles, each moving two platforms).
 	if _units != null:
-		var _down: int = _units.drop_shifts()
+		var _down: int = _units.put_down(riders)
 
 
 ## The cell a set piece's object stands on. Every command names its own,
@@ -5548,7 +5567,7 @@ func _flush_picture(force: bool = false) -> void:
 	# and animate it open again; the drain repaints instead.
 	if _sequences == null or not _sequences.is_running():
 		var _cells: int = _redraw_terrain_now()
-	_refresh_overlay()
+	_refresh_overlay(force)
 
 
 ## The moment of a presenter's own: the delta of the event on screen lands
@@ -5633,9 +5652,21 @@ func _after_command(note: String) -> void:
 # --- the battle interface (docs/43) ---------------------------------------
 
 ## Redraw the ground overlay from the world and the selection.
-func _refresh_overlay() -> void:
+## **Deferred while a set piece runs, like the bodies and the terrain**
+## ([method _flush_picture]). The overlay is drawn from the mirror, which
+## stands *after* the event a set piece is drawing -- a platform's riders are
+## already on their destination cells -- so a refresh mid-ride (the hover,
+## the far/near switch as the camera flies) would put the bands where the
+## deck is going while the bodies are still on the way. It is owed to the
+## drain instead; *force* is the presenter's own moment inside a sequence
+## (the death stage of a shot takes the band over the casualty with it).
+func _refresh_overlay(force: bool = false) -> void:
 	if _ground == null or world == null:
 		return
+	if not force and _sequences != null and _sequences.is_running():
+		_overlay_stale = true
+		return
+	_overlay_stale = false
 	_far_drawn = _far_view()
 	_ground.refresh(_art, shown(), _selected, _last_query, _hover, _bands,
 		turn_player(), _far_drawn)

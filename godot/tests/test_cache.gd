@@ -10,12 +10,14 @@ extends TestSuite
 ## once would make "a partial cache is never accepted" a claim about the happy
 ## path.
 ##
-## **The six sweeps below are the expensive part of this suite** -- 342 ms each
-## over a 100 MB campaign publish, and [method CacheLoader.verify] does not
-## return early, so the two that are about a *version string* still hash every
-## file.  That is deliberate here: each case has to reach the real inventory to
-## show what it refuses.  A caller that is not testing the refusals opens the
-## cache once and keeps the answer ([CacheFixture]).
+## **The sweeps below are the expensive part of this suite** -- 342 ms each over
+## a 100 MB campaign publish -- and four of the six reach the inventory, which
+## is what they are for.  The other two do not: a `cache_schema_version` or a
+## `converter_version` that is not this build's refuses the cache by name, and
+## [method CacheLoader.verify] returns on that without hashing anything.  Both
+## are asserted by the *reason* they come back with, so the early return is
+## covered rather than merely permitted.  A caller that is not testing the
+## refusals opens the cache once and keeps the answer ([CacheFixture]).
 
 func run(h: TestHarness) -> void:
 	h.begin("cache", TestHarness.ORACLE_SPEC)
@@ -46,6 +48,24 @@ func run(h: TestHarness) -> void:
 	h.check("verify.schema_refused",
 		_any_contains(future_problems, "cache schema"),
 		", ".join(future_problems))
+
+	# **And it refuses without sweeping.**  This manifest is refused by name
+	# *and* declares a file that is not there, so a sweep would report both;
+	# only the name comes back.  Without this the early return in
+	# [method CacheLoader.verify] would be permitted rather than checked --
+	# removing it leaves every other case in this suite green and costs 342 ms
+	# on every start-up that meets a stale cache.
+	var future_and_missing: Dictionary = manifest.duplicate(true)
+	future_and_missing["cache_schema_version"] = \
+		CacheLoader.CACHE_SCHEMA_VERSION + 1
+	DictRead.as_array(future_and_missing["inventory"]).append(
+		{"path": "missions/_C_999/map.json", "size": 1, "sha256": "00"})
+	h.equal("verify.schema_refused_without_sweeping",
+		", ".join(CacheLoader.verify(CacheFixture.cache_dir(),
+			future_and_missing)),
+		"cache schema %d != %d" % [CacheLoader.CACHE_SCHEMA_VERSION + 1,
+			CacheLoader.CACHE_SCHEMA_VERSION],
+		"a cache refused by name is not hashed file by file")
 
 	var other_converter: Dictionary = manifest.duplicate(true)
 	other_converter["converter_version"] = "0.0.0-not-this-one"
