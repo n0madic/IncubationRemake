@@ -135,7 +135,7 @@ tail is the shape all of them have:
 ```c
 aAnimationCreateSoundBuffer(&slot, "Waves\door.wav", 2, fxVolume, 67);
 aAnimationSoundPlay(slot, 1);                 /* 1 = DSBPLAY_LOOPING */
-for (n = 10; n; n--) { move the door; frameTick(); }
+for (n = 10; n; n--) { turn the leaves (docs/26 §3.4); frameTick(); }
 aDirectSoundKillBuffer(slot);
 ```
 

@@ -254,11 +254,38 @@ static func _apply_move(ctx: AIContext, unit: UnitState,
 	var route: Array = []
 	for index: int in moved.route:
 		route.append(index)
+	var payload: Dictionary = {"steps": moved.steps, "facing": moved.facing,
+		"path": route, "events": moved.events.duplicate(true),
+		"seen_source": moved.seen_source,
+		"seen_destination": moved.seen_destination}
+	# The `MoveUnit` hook, in the routine and not in its caller: `aRunLCL`
+	# `0x0046EEFD` closes `aExecuteMove` for every caller, behind the mover's
+	# alive gate `0x0046EDDC` and before the caller's charge and its
+	# `aExecuteFight`. The outcome rides on the event for the reason the path
+	# does -- the playback runs after the turn, and a bridge the hook dropped
+	# has already killed its riders and dug its nine cells by then.
+	var outcome: Dictionary = _run_move_hook(ctx, unit)
+	if not outcome.is_empty():
+		payload["script"] = outcome
 	ctx.emit(AIEvent.make("move", unit.slot, sx, sy, moved.x, moved.y,
-		moved.cost, "", {"steps": moved.steps, "facing": moved.facing,
-			"path": route, "events": moved.events.duplicate(true),
-			"seen_source": moved.seen_source,
-			"seen_destination": moved.seen_destination}))
+		moved.cost, "", payload))
+
+
+## `aExecuteMove`'s and `aExecuteWarp`'s closing `aRunLCL`, with the six
+## `aSetLCLVariable` writes in front of it (`0x0046EE87`..`0x0046EEEF`):
+## the call type, the cell, its height in levels, its action point and the
+## mover. The same environment [method World.submit_move] builds, through
+## the same [method MissionScript.env]. Empty when no script is attached or
+## the mover did not survive its own move.
+static func _run_move_hook(ctx: AIContext, unit: UnitState) -> Dictionary:
+	if not ctx.mission_script.is_valid() or not unit.is_alive():
+		return {}
+	var arrived: int = ctx.map.index_of(unit.x, unit.y)
+	return DictRead.as_dict(ctx.mission_script.call(MissionScript.CALL_MOVE_UNIT,
+		MissionScript.env(MissionScript.CALL_MOVE_UNIT, ctx.turn.turn,
+			unit.player, unit.x, unit.y,
+			ctx.map.height_at(arrived) / MissionScript.HEIGHT_LEVEL_UNITS,
+			ctx.map.action_point_at(arrived), unit.slot)))
 
 
 ## `aExecuteWarp(sx, sy, tx, ty, 1)` `0x0046EF50`, reduced to its state.
@@ -293,10 +320,17 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		payload["blast"] = Interact.execute_bomb(ctx.map, ctx.units, ctx.utab,
 			ctx.wtab, tx, ty, ctx.turn.ai_level, ctx.turn.human_count(),
 			ctx.turn.mode, ctx.turn, ctx.rng).to_dict()
-	ctx.emit(AIEvent.make("warp", unit.slot, sx, sy, tx, ty, 0, "", payload))
 	# `0x0046F144` -- the fog is rebuilt for the warping unit's **own** player
-	# on every warp its mine arm did not kill it on (docs/22 section 9.4).
+	# on every warp its mine arm did not kill it on (docs/22 section 9.4) --
+	# and `aRunLCL` `0x0046F1D6` follows it behind the same gate, so the
+	# `MoveUnit` hook sees the landing with the fog already rebuilt. The
+	# event is emitted after both: neither writes an event of its own, and
+	# the hook's outcome has to be on the payload before it goes out.
 	if unit.hp > 0:
 		Visibility.build(ctx.map, ctx.units, ctx.utab, unit.player,
 			ctx.turn.human_count(), ctx.turn.mode)
+		var outcome: Dictionary = _run_move_hook(ctx, unit)
+		if not outcome.is_empty():
+			payload["script"] = outcome
+	ctx.emit(AIEvent.make("warp", unit.slot, sx, sy, tx, ty, 0, "", payload))
 	return true

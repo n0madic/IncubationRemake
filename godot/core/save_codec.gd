@@ -21,7 +21,7 @@ extends RefCounted
 ##   8  32   sha256 of everything from byte 44 on
 ##  40   4   payload length
 ##  44  32   the authored map's hash
-##  76   ..  the JSON header (width, height, mission, rng, camera, flags)
+##  76   ..  the JSON header (width, height, mission, rng, camera, scenery, flags)
 ##      ..   the MapState bytes
 ##      ..   the unit records
 ## [/codeblock]
@@ -45,10 +45,16 @@ const MAGIC: String = "INCS"
 ## the full derived-stat recompute `0x004759E0` went in -- [CampaignState]
 ## gained `recruit_ammo`, and a squad deployed by an older build reached the
 ## map with an empty magazine, so a save from one is not a state this build
-## can resume into a playable mission. An older save is
+## can resume into a playable mission; and to **11** when the scenery's
+## poses joined the header (2026-09-06, docs/42 section 8.3) -- the joint
+## words the door's family writes and the cells whose objects a crush wall
+## or a footbridge freed, which the original keeps by embedding the
+## special-object records in its `.sav` and which a save without them showed
+## authored again on a load. Presentation, beside the camera and outside the
+## canonical hash like it. An older save is
 ## refused **by name** rather than misread, which is the whole point of the
 ## field.
-const SCHEMA_VERSION: int = 10
+const SCHEMA_VERSION: int = 11
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -74,7 +80,7 @@ static func result_name(code: int) -> String:
 static func encode(res: MapResource, state: MapState, units: Dictionary,
 		turn: TurnState, control: GameControl, rng: IncRandom,
 		crand: CRandom, compat_flags: PackedStringArray,
-		camera: Dictionary) -> PackedByteArray:
+		camera: Dictionary, scenery: Dictionary = {}) -> PackedByteArray:
 	var slots: Array[int] = []
 	for slot: Variant in units:
 		slots.append(DictRead.as_int(slot))
@@ -97,8 +103,11 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 		"turn": turn.view(),
 		"game_control": Array(control.values()),
 		"compat_flags": _sorted_strings(compat_flags),
-		# Presentation, stored beside the simulation and excluded from its hash.
+		# Presentation, stored beside the simulation and excluded from its hash:
+		# where the player was looking, and what the scenery's objects were
+		# turned to ([method Scenery.pose_record]).
 		"camera": camera,
+		"scenery": scenery,
 		"units": unit_records,
 	}
 	var header_bytes: PackedByteArray = JSON.stringify(header).to_utf8_buffer()
@@ -119,7 +128,8 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 
 ## Returns `{"result": Result, "state": MapState, "units": Dictionary,
 ## "turn": TurnState, "game_control": GameControl, "rng": IncRandom,
-## "camera": Dictionary, "compat_flags": PackedStringArray}`.
+## "camera": Dictionary, "scenery": Dictionary,
+## "compat_flags": PackedStringArray}`.
 ## Everything but `result` is absent unless the result is `OK`.
 static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 	if data.size() < HEADER_SIZE - 32:
@@ -181,6 +191,7 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		"game_control": GameControl.from_array(
 			_int_array(DictRead.as_array(header["game_control"]))),
 		"camera": DictRead.as_dict(header["camera"]),
+		"scenery": DictRead.as_dict(header["scenery"]),
 		"compat_flags": flags,
 	}
 

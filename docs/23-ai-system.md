@@ -982,6 +982,22 @@ for the mover's own player, as it does for the computer. `combat.warp_unit`,
 `ExecuteWarp` and `World.submit_warp` are the twins
 ([`97` §31.3](97-slice-5-report.md)).
 
+**The computer's walk and jump fire it too** *(added 2026-09-07)*: the
+`MoveUnit` call is the routine's, not the caller's. `0x0046EDDC` is the
+mover's alive gate, and between it and `aRunLCL` `0x0046EEFD` there are the
+teleporter, the closing `aBuildVisibleMapForUnit` and the six
+`aSetLCLVariable` writes (`0x0046EE87`..`0x0046EEEF`) and nothing that reads
+the player; `aExecuteWarp`'s tail (`0x0046F133`..`0x0046F1D6`) is the same
+shape. `0x0040A750`'s tail calls `aExecuteMove` and `aAISystem.cpp:2168`
+`aExecuteWarp`, so every computer move the routine completes runs the hook --
+on `_C_106` that is six `FootBridge` calls under alien traffic. The remake's
+`AISystem.run` bypassed `World.submit_move` and fired none of them until
+2026-09-07; `AIContext.mission_script` and `AIPlan._run_move_hook` are the
+twins now, and `inclib/ai.py` -- frozen, per [`92` §5.1](92-remake-architecture.md) --
+still does not, so the `cases_ai.json` replay carries no script and the seam
+is pinned in `test_effects.gd` (`ai_script.*`) and by play, not by the
+fixture.
+
 ### 7.6 `anyFriendlyBlocked` carries no information about friendlies
 
 The third argument is not a summary and it is not even the last *interesting*

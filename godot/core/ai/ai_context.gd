@@ -40,6 +40,18 @@ var result: AITurnResult = null
 ## A field rather than a constant so a test can watch the movement alone.
 var may_fire: bool = true
 
+## The mission script, as [method World.submit_move] reaches it: called with
+## a `MissionScript.CALL_*` type and an environment, answering the
+## interpreter's outcome dictionary. `aRunLCL` `0x0046EEFD` is the last thing
+## `aExecuteMove` does and `0x0046F1D6` the last thing `aExecuteWarp` does,
+## behind the mover's own alive gate and behind **no test of the player**, so
+## a computer walk fires `MoveUnit` exactly as a marine's does -- `_C_106`'s
+## six `FootBridge` calls sit under alien traffic. Invalid by default, which
+## is what the fixture replay of `cases_ai.json` runs with: `inclib/ai.py` is
+## frozen and never fires the hook, so the case files carry no script and the
+## live seam is pinned in Godot alone (`test_effects.gd`, `ai_script.*`).
+var mission_script: Callable = Callable()
+
 
 static func create(map_state: MapState, unit_dict: Dictionary,
 		types: UnitTypeTable, weapons: WeaponTable, ctrl: CtrlMapTable,

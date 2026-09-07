@@ -430,6 +430,12 @@ class Object3D:
     z: int               # +0x18 i32, world units
     rotation: tuple[int, int, int]   # +0x20/+0x22/+0x24 u16, 4096 = 360 deg
     raw: bytes
+    #: +0x26..+0x2A and +0x2C..+0x30, i16: the joint angles of the prototype's
+    #: parts 6 and 12 (docs/28 §7.2).  Authored: a door's two leaves stand at
+    #: (0, 0, -1000) / (0, 0, 1000) when it ships open, and `aDoorOpenSequence`
+    #: writes exactly those (docs/26 §3.4).  Zero in every land and scene
+    #: record, so only the special objects carry them into the cache.
+    joints: tuple[tuple[int, int, int], tuple[int, int, int]]
 
 
 @dataclass(frozen=True)
@@ -605,6 +611,15 @@ def _obj_common(raw: bytes) -> tuple[int, int, int, int, tuple[int, int, int]]:
     return prototype, x, y, z, rot
 
 
+OFF_JOINTS = 0x26
+
+
+def _obj_joints(raw: bytes) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """The two joint triples at +0x26 and +0x2C (docs/28 §7.2)."""
+    words = struct.unpack_from("<6h", raw, OFF_JOINTS)
+    return (words[0], words[1], words[2]), (words[3], words[4], words[5])
+
+
 def _parse_land(block: bytes, count: int) -> list[LandObject]:
     out: list[LandObject] = []
     for slot in range(min(count, LAND_OBJ_SLOTS)):
@@ -612,6 +627,7 @@ def _parse_land(block: bytes, count: int) -> list[LandObject]:
         prototype, x, y, z, rot = _obj_common(raw)
         out.append(LandObject(
             slot=slot, prototype=prototype, x=x, y=y, z=z, rotation=rot,
+            joints=_obj_joints(raw),
             active=struct.unpack_from("<I", raw, 0x40)[0],
             grid_x=raw[0x44], grid_y=raw[0x45],
             raw=raw,
@@ -627,7 +643,7 @@ def _parse_special(block: bytes, count: int) -> list[SpecialObject]:
         out.append(SpecialObject(
             slot=slot, prototype=prototype, x=x, y=y, z=z, rotation=rot,
             kind=raw[0x40], number=raw[0x41],
-            raw=raw,
+            raw=raw, joints=_obj_joints(raw),
         ))
     return out
 
@@ -639,7 +655,8 @@ def _parse_scene_objects(block: bytes) -> list[Object3D]:
         raw = block[start:start + B1_RECORD_SIZE]
         prototype, x, y, z, rot = _obj_common(raw)
         out.append(Object3D(slot=slot, prototype=prototype,
-                            x=x, y=y, z=z, rotation=rot, raw=raw))
+                            x=x, y=y, z=z, rotation=rot, raw=raw,
+                            joints=_obj_joints(raw)))
     return out
 
 
@@ -648,7 +665,8 @@ def _parse_marker(block: bytes) -> Object3D:
     raw = block[OFF_B1_MARKER:OFF_B1_MARKER + B1_RECORD_SIZE]
     prototype, x, y, z, rot = _obj_common(raw)
     return Object3D(slot=B1_RECORD_COUNT, prototype=prototype,
-                    x=x, y=y, z=z, rotation=rot, raw=raw)
+                    x=x, y=y, z=z, rotation=rot, raw=raw,
+                    joints=_obj_joints(raw))
 
 
 def parse_lev(data: bytes, path: str = "<memory>") -> BattleMap:

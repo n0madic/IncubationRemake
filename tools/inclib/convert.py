@@ -216,15 +216,18 @@ def world_paths(root: Path, world_set: str, scene: str) -> dict[str, Path]:
 # The mission
 # ---------------------------------------------------------------------------
 
-def _parse_3dw(reader: SourceReader, path: Path) -> list[dict[str, Any]]:
+def parse_3dw_clones(path: Path) -> list[dict[str, Any]]:
     """Clone blocks from a ``.3DW``.
 
     ``3dw_parse`` is a sibling CLI whose module name starts with a digit, so it
     cannot be imported by name.  Moving it into ``inclib`` is a separate task.
+
+    Separate from :func:`_parse_3dw` so that a reader who is not converting --
+    ``interaction_tables.py`` asks which cells the scene's own geometry stands
+    on -- does not have to invent a :class:`SourceReader` to get at it.
     """
     import importlib.util
 
-    reader.record(path)
     tools = Path(__file__).resolve().parent.parent
     spec = importlib.util.spec_from_file_location(
         "_dw_parse", tools / "3dw_parse.py")
@@ -233,6 +236,12 @@ def _parse_3dw(reader: SourceReader, path: Path) -> list[dict[str, Any]]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.parse_3dw(str(path)).clones
+
+
+def _parse_3dw(reader: SourceReader, path: Path) -> list[dict[str, Any]]:
+    """:func:`parse_3dw_clones`, with the file recorded in the manifest."""
+    reader.record(path)
+    return parse_3dw_clones(path)
 
 
 def scene_clones(clones: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -394,6 +403,10 @@ def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
                 "number": o.number,
                 "x": o.x, "y": o.y, "z": o.z,
                 "yaw": o.rotation[2],
+                # docs/28 §7.2 -- the joint triples of parts 6 and 12, which
+                # the `.lev` authors and a door's leaves are posed by
+                # (docs/26 §3.4).  Since 0.24.0.
+                "joints": [list(j) for j in o.joints],
             }
             for o in bm.special
         ],

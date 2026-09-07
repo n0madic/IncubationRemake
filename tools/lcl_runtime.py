@@ -219,6 +219,105 @@ def _ground_checks(c: Checker) -> None:
              "60 attempts over a 3x3 block, and a mined cell is skipped")
 
 
+def _flat_world(size: int, points: dict[tuple[int, int], int],
+                walls: set[tuple[int, int]],
+                units: dict[int, tuple[int, int]],
+                turn: int = 1) -> runtime.LclWorld:
+    """A ``size`` x ``size`` flat map with action points, walls and units.
+
+    The synthetic world the set-piece checks below share with their
+    ``test_lcl.gd`` twins, which build the same grid through
+    ``_run_synthetic``.
+    """
+    w = runtime.LclWorld(_FlatMap(size, size), _TABLES, turn=turn, seed=1.0)
+    for (x, y), value in points.items():
+        w.actpt[w.index(x, y)] = value
+    for x, y in walls:
+        w.ctrl_type[w.index(x, y)] = 2
+    for slot, (x, y) in units.items():
+        w.units[slot] = runtime.RuntimeUnit(slot=slot, player=0, type_id=0,
+                                            x=x, y=y, hit_points=10)
+        w.unit_at[w.index(x, y)] = slot
+    return w
+
+
+def _run_synthetic(w: runtime.LclWorld, *instructions: dict[str, Any]):
+    return runtime.run({"instructions": list(instructions)
+                        + [{"kind": "end", "line": 9}], "labels": {}}, w)
+
+
+def _alive(w: runtime.LclWorld, *slots: int) -> list[bool]:
+    return [w.units[s].alive for s in slots]
+
+
+def _foot_bridge_checks(c: Checker) -> None:
+    """``FootBridge`` / ``FootBridge2`` -- ``0x00414A70``, ``0x00415110``.
+
+    The twin of ``test_lcl.gd``'s ``foot_bridge.*`` block: the ``minUnits``
+    gate, the nine cells becoming deep holes, the riders taken off the map
+    **dead** and carried on the event; and for ``FootBridge2`` the exact-turn
+    gate, the group byte cleared, the matched cells on the event before the
+    riders (``docs/42`` §8.3).
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    def events(out, name: str) -> list[list[int]]:
+        return [list(values) for kind, values in out.events if kind == name]
+
+    def types(w: runtime.LclWorld, cells: list[tuple[int, int]]) -> list[int]:
+        return [w.ctrl_type[w.index(x, y)] for x, y in cells]
+
+    block = [(x, y) for y in (3, 4, 5) for x in (3, 4, 5)]
+    # One unit on the block and `minUnits` 1: the count is not **more than**
+    # the argument, and nothing happens.
+    w = _flat_world(9, {}, set(), {0: (4, 4)}, turn=3)
+    out = _run_synthetic(w, command("FootBridge", 4, 4, 30, 1))
+    c.expect("foot_bridge.needs_more_than_min_units",
+             (types(w, block), _alive(w, 0), events(out, "foot_bridge")),
+             ([0] * 9, [True], []),
+             "0x00442650 compares the count with `jle`")
+    # Two units: the nine cells become deep holes, both riders die and leave
+    # their cells, and the event names them after the count.
+    w = _flat_world(9, {}, set(), {0: (4, 4), 1: (5, 5), 2: (7, 7)}, turn=3)
+    out = _run_synthetic(w, command("FootBridge", 4, 4, 30, 1))
+    c.expect("foot_bridge.the_block_becomes_a_deep_hole", types(w, block),
+             [4] * 9, "mov byte [esi+0x0D], 4 on all nine")
+    c.expect("foot_bridge.the_riders_die", _alive(w, 0, 1, 2),
+             [False, False, True],
+             "0x00414F9C is aRemoveUnitElement, and removal kills")
+    c.expect("foot_bridge.the_riders_leave_the_map",
+             [w.unit_at[w.index(4, 4)], w.unit_at[w.index(5, 5)]], [-1, -1])
+    c.expect("foot_bridge.the_event_carries_the_riders",
+             events(out, "foot_bridge"), [[4, 4, 30, 2, 0, 1]],
+             "x, y, frames, standing, then the slots in block order")
+
+    # FootBridge2 on the wrong turn does nothing at all.
+    group = {(2, 2): 112, (6, 2): 112, (4, 6): 113}
+    w = _flat_world(9, group, set(), {0: (2, 2)}, turn=3)
+    out = _run_synthetic(w, command("FootBridge2", 112, 30, 4))
+    c.expect("foot_bridge2.needs_the_exact_turn",
+             (w.actpt[w.index(2, 2)], _alive(w, 0), events(out, "foot_bridge2")),
+             (112, [True], []), "0x004426D0 compares GetTurn's answer with `jne`")
+    # On its turn: both matched cells become deep holes with the byte
+    # cleared, the other group is untouched, the rider dies, and the event
+    # carries the cells before the rider.
+    w = _flat_world(9, group, set(), {0: (2, 2), 1: (4, 6)}, turn=3)
+    out = _run_synthetic(w, command("FootBridge2", 112, 30, 3))
+    c.expect("foot_bridge2.clears_the_group",
+             (types(w, [(2, 2), (6, 2), (4, 6)]),
+              [w.actpt[w.index(2, 2)], w.actpt[w.index(6, 2)],
+               w.actpt[w.index(4, 6)]]),
+             ([4, 4, 0], [0, 0, 113]),
+             "mov byte [esi+0x0B], 0 and [esi+0x0D], 4 on the matches only")
+    c.expect("foot_bridge2.the_riders_die", _alive(w, 0, 1), [False, True],
+             "0x00415663 is aRemoveUnitElement on every rider")
+    c.expect("foot_bridge2.the_event_carries_the_cells",
+             events(out, "foot_bridge2"), [[112, 30, 2, 2, 2, 6, 2, 0]],
+             "actpt, frames, hit, the cells row-major, then the riders")
+
+
 def _statue_checks(c: Checker) -> None:
     """``Statue`` / ``Statue2`` -- ``0x00413A40``, ``docs/97`` §41.1.
 
@@ -235,23 +334,10 @@ def _statue_checks(c: Checker) -> None:
     def world(points: dict[tuple[int, int], int],
               walls: set[tuple[int, int]],
               units: dict[int, tuple[int, int]]) -> runtime.LclWorld:
-        w = runtime.LclWorld(_FlatMap(9, 9), _TABLES, seed=1.0)
-        for (x, y), value in points.items():
-            w.actpt[w.index(x, y)] = value
-        for x, y in walls:
-            w.ctrl_type[w.index(x, y)] = 2
-        for slot, (x, y) in units.items():
-            w.units[slot] = runtime.RuntimeUnit(slot=slot, player=0, type_id=0,
-                                                x=x, y=y, hit_points=10)
-            w.unit_at[w.index(x, y)] = slot
-        return w
+        return _flat_world(9, points, walls, units)
 
-    def run(w: runtime.LclWorld, *instructions: dict[str, Any]):
-        return runtime.run({"instructions": list(instructions)
-                            + [{"kind": "end", "line": 9}], "labels": {}}, w)
-
-    def alive(w: runtime.LclWorld, *slots: int) -> list[bool]:
-        return [w.units[s].alive for s in slots]
+    run = _run_synthetic
+    alive = _alive
 
     # An even action point toggles **up**, so the axis is x.
     w = world({}, set(), {0: (6, 4), 1: (1, 4), 2: (4, 7)})
@@ -624,6 +710,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     _synthetic_checks(c)
     _ground_checks(c)
     _statue_checks(c)
+    _foot_bridge_checks(c)
     _crush_wall_checks(c)
 
     if show_stats:

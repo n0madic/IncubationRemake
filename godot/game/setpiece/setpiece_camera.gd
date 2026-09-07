@@ -12,14 +12,35 @@ extends RefCounted
 ## the cell and its rider, and this adds the camera and the creators around
 ## it. What each kind does is read out of its routine:
 ##
-## * `open_door` `0x00410A20`: a flight from the unit's head to the panel at
-##   the unit's height (`0x0047AD70` twice), ten frames, a flight back --
-##   only when a unit is named; the LCL wrapper passes none.
+## * `open_door` `0x00410A20`: a flight from above the unit's object to the
+##   **panel** -- the object `0x00406F20` finds beside the cell's marker --
+##   with both ends at the panel's z plus the unit's height (`0x0047AD70`
+##   twice, `0x00410C10`), ten frames, a flight back -- only when a unit is
+##   named; the LCL wrapper passes none. The target used to stand at the
+##   *cell's* height, 3200 on a closed door, which tipped the camera up at
+##   the lintel (2026-09-06); `extra["object"]` is the panel's position now,
+##   and the cell centre at its height is the fallback for a door with no
+##   object, which the shipped corpus has none of.
 ## * `open_tube` `0x00410F10`: nineteen frames turning the tube's object,
 ##   the puffs `0x00423770` at the tenth (`cmp esi, 0xA`); `OpenPlantTube`
-##   and `OpenFrontDoor` are the same frames with no puffs. **The turn of
-##   the tube's own object is not drawn** -- the remake's scenery has no
-##   per-object rotation yet; the cell's state flips as it did.
+##   and `OpenFrontDoor` are the same frames with no puffs. The turn of the
+##   hatch itself is the caller's `paint` ([method SliceMain._paint_setpiece]
+##   through [method Scenery.paint_joint], docs/42 section 8.3), as the
+##   door's leaves are.
+## * `lever` `0x00416AD0`: a flight from the user's object to the cell's
+##   marker with both ends `0xC80` above the marker (`add eax, 0xC80`,
+##   `0x00416BCB`), ten frames of the handle, the flight back.
+## * `pickup` `0x00410780`: the box's text goes up first (`aActivateInfo`
+##   at `0x004107AC`), then a flight from `0xFA0` above the user's marker
+##   to `0x320` above the box's (`0x004108DA`, `0x004108C5`), twenty frames
+##   of the lid, fifteen of nothing, and the flight back.
+## * `foot_bridge` `0x00414A70`: a flight to the block (the object within
+##   5 000 units), then every frame the eye `0x960` and the target `0xD20`
+##   lower while the block tilts and drops under the caller's `paint`; the
+##   block is freed at the end (docs/42 section 8.1).
+## * `crush_wall` `0x00415C70`: the debris, then the wall turns and sinks
+##   under `paint` until the pool is empty, and `extra["finish"]` -- the
+##   caller's `aDeleteLand` -- runs when that stage ends, early or not.
 ## * `elevator` `0x004125D0`, `platform` `0x00412A00`: the eye kept, a
 ##   flight of the target to the object, then the target set on it every
 ##   frame; the platform raises `0x004234C0` at the block every frame.
@@ -37,6 +58,16 @@ extends RefCounted
 const DOOR_FRAMES: int = SetpieceDriver.DOOR_FRAMES
 ## `cmp esi, 0xA` -- the tube's puffs come on this frame.
 const TUBE_PUFF_FRAME: int = 10
+## `add eax, 0xC80` -- the lever's flight, both ends above the marker.
+const LEVER_CAMERA_UP: int = 0xC80
+## `add ecx, 0xFA0` / `add edx, 0x320` -- the supply box's flight starts
+## above the user's marker and aims just above the box's.
+const PICKUP_EYE_UP: int = 0xFA0
+const PICKUP_TARGET_UP: int = 0x320
+## `sub edx, 0x960` / `sub ecx, 0xD20` -- the footbridge's camera follows
+## the block down, the eye slower than the target.
+const FOOTBRIDGE_EYE_DROP: int = 0x960
+const FOOTBRIDGE_TARGET_DROP: int = 0xD20
 ## `mov edi, 5` -- the frames between the debris and the drop.
 const ROOF_LEAD_FRAMES: int = 5
 const ROOF_DROP_STEP: int = SetpieceDriver.ROOF_DROP_STEP
@@ -137,6 +168,8 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 	match kind:
 		"open_door":
 			if unit >= 0:
+				var panel: Vector3i = DictRead.as_vector3i(extra["object"]) \
+					if extra.has("object") else centre
 				queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
 					func() -> bool: return not host.camera_flying(),
 					func(frame: int, _total: int) -> void:
@@ -145,8 +178,44 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						st["saved_eye"] = host.camera_eye()
 						st["saved_target"] = host.camera_target()
 						var h: int = host.unit_height(unit)
-						var _f: int = host.fly(host.object_of(unit) + Vector3i(0, 0, h),
-							centre + Vector3i(0, 0, h)))
+						var opener: Vector3i = host.object_of(unit)
+						var _f: int = host.fly(
+							Vector3i(opener.x, opener.y, panel.z + h),
+							panel + Vector3i(0, 0, h)))
+			queue.enqueue(kind, frames, paint, cues)
+			if unit >= 0:
+				queue.enqueue_until(STAGE_BACK, ShotSequence.SAFETY_FRAMES,
+					func() -> bool: return not host.camera_flying(),
+					func(frame: int, _total: int) -> void:
+						if frame == 1:
+							var saved_eye: Vector3i = st["saved_eye"]
+							var saved_target: Vector3i = st["saved_target"]
+							var _b: int = host.fly(saved_eye, saved_target))
+			return frames
+		"lever", "pickup":
+			# The door's shape, with each routine's own two heights: the
+			# lever flies from the user's object to the marker with both
+			# ends `0xC80` up; the box from `0xFA0` above the user to
+			# `0x320` above the box's marker, the marker being the cell's
+			# centre at its height. Neither routine has a wrapper that
+			# passes no unit, but the guard is kept for symmetry with the
+			# door: no unit, no flight.
+			if unit >= 0:
+				queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+					func() -> bool: return not host.camera_flying(),
+					func(frame: int, _total: int) -> void:
+						if frame != 1:
+							return
+						st["saved_eye"] = host.camera_eye()
+						st["saved_target"] = host.camera_target()
+						var user: Vector3i = host.object_of(unit)
+						var eye: Vector3i = Vector3i(user.x, user.y,
+							centre.z + LEVER_CAMERA_UP)
+						var at: Vector3i = centre + Vector3i(0, 0, LEVER_CAMERA_UP)
+						if kind == "pickup":
+							eye = user + Vector3i(0, 0, PICKUP_EYE_UP)
+							at = centre + Vector3i(0, 0, PICKUP_TARGET_UP)
+						var _f: int = host.fly(eye, at))
 			queue.enqueue(kind, frames, paint, cues)
 			if unit >= 0:
 				queue.enqueue_until(STAGE_BACK, ShotSequence.SAFETY_FRAMES,
@@ -166,6 +235,39 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 							PackedInt32Array([cell.x, cell.y])),
 				cues)
 			return frames
+		"foot_bridge", "foot_bridge2":
+			# docs/42 section 8.1: the flight to the block, then the camera
+			# lowered every frame -- the eye by `0x960`, the target by
+			# `0xD20` -- while the block tilts and drops under `paint`, and
+			# the flight back. The tilt itself is the caller's, drawn once
+			# from `aRandom2(-2, 4)` through the host's `draw2`.
+			var block: Vector3i = DictRead.as_vector3i(extra["object"]) \
+				if extra.has("object") else centre
+			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame == 1:
+						st["saved_eye"] = host.camera_eye()
+						st["saved_target"] = host.camera_target()
+						var _f: int = host.fly(host.camera_eye(), block))
+			queue.enqueue(kind, frames,
+				func(frame: int, total: int) -> void:
+					if frame == 1:
+						st["at"] = host.camera_eye()
+					var eye: Vector3i = st["at"]
+					host.set_camera(
+						eye - Vector3i(0, 0, FOOTBRIDGE_EYE_DROP * frame),
+						block - Vector3i(0, 0, FOOTBRIDGE_TARGET_DROP * frame))
+					paint.call(frame, total),
+				cues)
+			queue.enqueue_until(STAGE_BACK, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame == 1:
+						var saved_eye: Vector3i = st["saved_eye"]
+						var saved_target: Vector3i = st["saved_target"]
+						var _b: int = host.fly(saved_eye, saved_target))
+			return frames
 		"elevator", "platform":
 			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
 				func() -> bool: return not host.camera_flying(),
@@ -178,6 +280,13 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					var h: int = from_h + roundi(float(to_h - from_h)
 						* SetpieceDriver.progress(frame, total))
 					var at: Vector3i = Vector3i(centre.x, centre.y, h)
+					# The platform's loop adds its step to the camera
+					# target as to the block (docs/20 section 7.4 step 2),
+					# so the target -- and the dust -- travel with the deck.
+					if kind == "platform" and extra.has("travel"):
+						var travel: Vector3i = DictRead.as_vector3i(extra["travel"])
+						at += Vector3i(Vector3(travel)
+							* SetpieceDriver.progress(frame, total))
 					host.set_camera_target(at)
 					if kind == "platform":
 						host.spawn_at(BlobPrograms.PLATFORM_DUST, at),
@@ -369,7 +478,11 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1
 		"crush_wall":
-			# docs/42 section 8: `0x004238C0` on every cell, then the pool.
+			# docs/42 section 8: `0x004238C0` on every cell, then the pool --
+			# under which the wall turns and sinks (`paint`), and at whose
+			# end, early or not, the caller's `aDeleteLand` runs.
+			var finish: Callable = extra.get("finish", Callable())
+			var no_cues: Array[Dictionary] = []
 			queue.enqueue(kind, 1,
 				func(_frame: int, _total: int) -> void:
 					for entry: Variant in DictRead.as_array(extra.get("cells", [])):
@@ -379,7 +492,8 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 								PackedInt32Array([at[0], at[1]])),
 				cues)
 			queue.enqueue_until(STAGE_POOL, frames,
-				func() -> bool: return host.pool_live() == 0, paint)
+				func() -> bool: return host.pool_live() == 0, paint, no_cues,
+				finish)
 			return 1
 		"para_bombs":
 			# docs/42 section 8, and **two routines rather than one**:

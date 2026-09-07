@@ -257,6 +257,28 @@ and §3.4's own prose says *a door is a wall panel that rises out of the floor*.
 So every object standing on the cell takes the height delta, which the rule
 above gives for free with no special case.
 
+**Corrected 2026-09-06.** The panel does not move, and it was never drawn. The
+`landObject` of §3.4's decompile is the object the cell's `+0x05` names, and
+that word is the cell's **land-lattice slot** — the 320-unit marker whose z is
+the cell height in every shipped record; the toggle keeps that invariant and
+nothing else. The panel is the object `0x00406F20` finds beside the marker,
+and the ten frames the sequence runs add `mov ebx, ±100` to its joint words
+`+0x2A` and `+0x30` — the z angles of parts 6 and 12 — so its two leaves swing
+88° about the hinges at the frame's outer edges. The `.lev` says the same: all
+302 door objects in the corpus carry `(0, 0, ∓1000)` when their cell ships
+open and zeros when it ships closed. And the reason nobody saw a panel rise
+is that `Scenery` built each prototype's **root scope** alone, and
+`L100EX00.3DI` has no root geometry — all sixteen vertices belong to its two
+parts — so the mesh had no surfaces, the object was never registered, and the
+door test above passed on the lattice marker standing on the same cell. The
+scenery now assembles every object as body plus part pivots
+(`MeshBuilder.assemble`, shared with `BlobModels`), poses the parts by the
+record's authored joints (in the cache since `CONVERTER_VERSION` 0.24.0), and
+on a door cell turns the leaves by the cell's parity while the marker alone
+takes the height delta; the ten frames paint the swing. The flight aims at
+the **panel's** z rather than the cell's, which on a closed door is a tile
+higher and had the camera looking up at the lintel.
+
 ---
 
 ## 8. The set-piece driver

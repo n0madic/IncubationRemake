@@ -855,7 +855,13 @@ func _v_screen(parts: PackedStringArray, _line: String) -> void:
 			_log.append("recruit -> slot %d, purse %d"
 				% [slot, host.state.points(0)])
 		"save":
-			_log.append("save: %s" % str(host.save(_main.world)))
+			# Through the mission's own seam rather than [method
+			# CampaignHost.save] directly: that one takes the simulation
+			# alone, and a driven session must write what a played one
+			# does -- the scenery's poses and the camera with it, and the
+			# same refusal while a set piece is being drawn.
+			_log.append("save: %s" % str(_main._save_mission_to(
+				CampaignHost.QUICK_SLOT, _main.world)))
 		"load":
 			var decoded: Dictionary = host.load_save()
 			_log.append("load: %s, mission %s, roster %d"

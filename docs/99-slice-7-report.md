@@ -630,3 +630,374 @@ one is a gap.
   `fired`; a jam reveals nobody. `core` already made the write
   (`Reaction.drain` fires through `Combat.attack`, `0x0046B643`), so this was
   presentation only.
+
+## 10. The doors were never drawn (2026-09-06)
+
+Reported from play: every doorway an empty frame, the hand cursor still
+answering on it, the door "opening" with a cut-off hum and the camera tipped
+up. Three things, one root and one wrong model.
+
+* **The root.** `Scenery._place` built each prototype's **root scope** alone.
+  `L100EX00.3DI` — the door of 45 missions, and `L108EX00`/`L111EX00` with it —
+  has no root geometry: all sixteen vertices belong to its two parts, so the
+  mesh had no surfaces, the object was never registered, and
+  `test_effects`'s door check passed on the lattice marker standing on the
+  same cell. Six more part-carrying prototypes lost their parts the same way
+  (`L045EA00`, `L101EX00`, `L109EX00`, `L115EX00`, `L004ED00`, `L068EE00`, …).
+  `MeshBuilder.assemble` is the body-plus-pivots tree `BlobModels` already
+  built, now shared; `built_count` on `_C_140` equals clones + specials +
+  lattice, which `test_render` could not see on `_C_115`.
+* **The model.** [`26` §3.4](26-interaction.md) and [`97` §7](97-slice-5-report.md)
+  had the panel *rising out of the floor* by `0xC80`. The listing says the
+  `z` written is the object the cell's `+0x05` names — its land-lattice slot,
+  the marker whose z is the cell height — and the ten frames add ±100 to the
+  panel's `+0x2A` and `+0x30`, the z angles of joints 6 and 12. The leaves
+  swing 88° about the hinges at the frame's outer edges. The corpus agrees
+  302/302 (`interaction_tables.py`, five new `door.*`/`corpus.door_*`
+  checks), and the remake now poses the leaves from the cell's parity, paints
+  the swing over the ten frames, and moves only the marker with the height.
+* **The camera.** The flight's target stood at the *cell's* height — 3200 on
+  a closed door — where `0x00410C10` reads the **panel's** z (`[esi+0x18]`,
+  twice) for both ends. `extra["object"]` is the panel's authored position.
+* **The cache.** The special objects' joint words are authored data — 28
+  non-door records pose a part too — so `map.json` carries `joints` and
+  `CONVERTER_VERSION` is 0.24.0 in both places.
+
+Not settled: the hum. `door.wav` is 0.68 s, looped and killed on the tenth
+tick as the listing has it, so 0.5 s of it plays and stops — in both. One
+measurable difference remains: the engine starts the flight, then the wave,
+then ticks the ten frames, so the leaves turn *while* the camera is still on
+its way; the remake waits for the flight first, and its ten frames and hum
+come after. Named, not changed.
+
+### 10.1 The door was one of a family (2026-09-06)
+
+Asked whether anything else on the levels was drawn wrong the way the door
+was, the answer came from one sweep rather than from a list: every word
+write at `+0x20..+0x30` of a register in `Incubation.exe` — 149 sites —
+sorted by function. Nine more routines turn the object beside the cell's
+marker, all through the door's own `aGetSymbolObjectPtr` / `0x00406F20` pair,
+and the remake drew none of them: the supply box's lid, the lever's handle,
+the three tubes' hatches, the bridge's halves, the barrier's emitter, and
+the crush wall's and the footbridge's own fall before `aDeleteLand`. They are
+in [`42` §8.3](42-mission-presentation.md) with their sites, steps and frame
+counts, pinned by `interaction_tables.py` (`family.*`, 155 checks now) with
+three corpus rules beside the door's — the lever's 69 records, the barrier's
+13 seeded emitters, the three bridges. What was clean: no object carries a
+pitch or a roll, no placed prototype is empty, and the draw kinds on the
+levels are all handled.
+
+The remake's side is one generalisation of the door: `Scenery.paint_joint`
+and `paint_pose`, absolute and computed from the authored transform every
+frame, `remove_objects` for the two that are freed, the lever's pose
+derived from its action point as the door's is from its parity, and two new
+set pieces — `lever` and `pickup` — carrying the flights `docs/42`'s table
+always listed for them and never had. `test_effects` checks the lever, a box
+and a tube on `_C_140` and the crush wall on `_C_129`, and the three camera
+arms on the recording double.
+
+Four things that pass left open in the morning were closed the same
+evening, and three of the four turned on replaying `0x00406F20`'s search on
+the shipped maps instead of reading the routine. The rotating statue's
+find is `L014EH00` with one part, not the partless `L012EH00` — the survey
+had checked `FixedStatue`'s cells, whose routine writes no word, and the
+rotating one is reached only by `Statue2 (110,112)` on `_C_178`; the remake
+turns it now, thirteen frames of `+0x50` then the start plus `0x400`
+([`42` §8.3](42-mission-presentation.md)). `FootBridge2`'s block is the
+`L069EI00` on one of the group's two cells, so the interpreter — both twins
+— puts the matched cells on the event before it clears the byte, and the
+same replay found `FootBridge2 (139,30,12)` naming a tag no cell carries
+([`20` §8.5](20-lcl-language.md)). Both footbridges' riders are killed by
+`core`, as `aRemoveUnitElement` kills them, with their slots on the event
+and their fall in the picture (`test_lcl` and `lcl_runtime.py` carry the
+`foot_bridge.*` twins, 67 checks now). And the scenery's poses travel with
+the save: `Scenery.pose_record` beside the camera in the mission blob,
+schema 11, restored after the load's redraw — which also gave the two load
+paths the redraw they never had, so a resumed mission shows its raised and
+opened cells before the first command rather than after it.
+
+Five loose ends of that evening were closed the next day, and two of them
+were corrections rather than additions. The riders **tumble** now, `+0x24`
+by 25 a frame and `+0x22` by 12 with the sign from the rider's index, drawn
+through one generalisation of the body's own facing rule
+(`UnitsView.tumble`, `WorldSpace.charisma_offset`) — and reading that loop
+closely enough to draw it found the drop itself wrong: it re-reads the
+rider's object every frame and writes it back 160 above the `0xC80` it
+subtracted, so the fall is `0xBE0`, not the map field the site alone says
+([`42` §8.1](42-mission-presentation.md)). The **camera** now goes into the
+save and comes back out of it, a field that had been write-only since the
+first save. What a save cannot hold is a fall it is in the middle of, and
+the answer is not to serialise it: the original's sequences run inside the
+command and reach no input at all, so a save is refused while the queue is
+running and the turn's autosave waits for it. `_resume_loaded_mission` has
+a suite of its own at last (`test_effects.gd`, `resume.*`) — a real slot
+file written and read back with poses, camera and refusal in it. And the
+46 checks added since the last mutation battery have been through one:
+one mutation per check, all 46 detected ([`26` §9](26-interaction.md)).
+
+**Driving the real build found the one thing no suite had**
+(2026-09-07). `_C_129` was played to turn 1 through the control server and
+the load seam checked from outside: the camera comes back where the save
+holds it, and a save taken *after* a load carries the same two hatch rows
+as the one taken before it, which is `pose_record` reading the scene. The
+refusal was caught the same way -- `screen save` answers `true` with the
+queue idle and `false` with the tube's sequence on it. What the run
+exposed is a defect of its own: **only the autosave recorded what it
+wrote.** `_slot_holds_this_mission` reads a slot's header once and
+remembers it, and the interface asks every frame, so a slot cached before
+`F1` wrote it stayed cached as whatever was on disk -- *Recall position*
+was dark on a slot the player had just written, and *Undo mission* would
+have offered a mission they were not in. The bookkeeping moved into
+`_save_mission_to`, where every writer passes, and `resume.*` pins it --
+with the cache **poisoned first**, because a check that lets it miss reads
+the header the save is about to write and passes either way.
+
+A code review of the whole change found the one thing neither the suites nor
+the driven build had: **all of this is written per cell, and the engine
+writes per object.** A `.3DW` scene clone is in no table `0x00406F20` reads
+and the converter places the clones first, so `Scenery.objects_on` answered
+with the level's own geometry wherever the two share a field -- the door's
+flight aimed at a clone on `_C_142`, and on `_C_163` the second footbridge
+tilted, dropped and then **deleted** one, into the save's `removed` list
+where every load would delete it again. Clones are indexed and excluded
+now; `clones.*` pins it on the fixture's own shared field and fails without
+the exclusion; and the residue is measured rather than argued -- each of the
+400 cells the family reaches, by a call's coordinates or by its own action
+point, carries exactly one special object, so per cell is per object on the
+shipped maps
+([`26` §9](26-interaction.md), `corpus.setpiece_cells_carry_one_object`).
+The review's fourth finding was latent and is fixed with it: `build()` did
+not clear `_authored_joints` or `_removed_cells`, which is harmless only
+while every mission gets a fresh `Scenery`.
+
+The same run settled the deferral: the turn-1 autosave (*Undo last turn*)
+is written four seconds after the hand-over that queued the two `OpenTube`
+sequences, and the record inside it carries both hatches at 969 -- so the
+save was taken after the queue drained rather than in the middle of it, and
+the turn did not go unsaved for having a set piece at its start.
+
+### 10.2 What playing the footbridge found (2026-09-07)
+
+The five items left open after the review were closed by pinning three and
+playing two, and playing them found a defect neither the suites nor the
+earlier driven runs could reach.
+
+**The two witnesses are pinned in the corpus.** `_C_142` and `_C_163` are
+not in the six-mission development set and adding them would have been a
+fixture for one case; the scenes themselves answer instead.
+`interaction_tables.py` reads each mission's `.3DW` through
+`inclib.convert.parse_3dw_clones` -- split out of the converter's own
+reader so that a check does not have to invent a `SourceReader` -- and
+`corpus.family_cells_share_fields_with_clones` counts **eleven** family
+cells over **nine** missions where the level's geometry stands on the same
+field as the object `0x00406F20` finds, with
+`corpus.the_clone_is_not_where_the_object_is` pinning the two by prototype
+and height (`_C_142` (14,14) `LEVEL01D.004` at z 0; `_C_163` (19,16)
+`LEVEL09C.002` at z **-13 760**). Both are mutation-killed by a rewritten
+`POSITION` line in a copy of the scene -- one that moves a clone off its
+cell, one that changes only its height.
+
+**The fixture guard stopped being the test.**
+`clones.fixture_has_a_shared_cell` asked whether `instances_on` held more
+than `objects_on` plus the marker, which is the same question as the checks
+after it: reverting the exclusion made the *guard* fail first and took the
+rest out of the run with an early return, so the mutation that proves the
+mechanism reported a missing fixture. `Scenery.clones_on(cell)` now answers
+from the index `build()` fills and no later call touches, and the guard is
+"a clone here, and an instance of the wall's prototype here". Reverting the
+exclusion now fails seven checks by name and the guard passes.
+
+**The snapshot answers a number that moves.** `picture.scenery` is
+`built_count()` and is constant for a mission; `scenery_objects` and
+`scenery_removed` are new beside it ([`92` §7.16](92-remake-architecture.md)),
+and they are what made both live runs below readable from outside.
+
+**The `MoveUnit` hook was simulated and never presented.** `_C_107` is the
+one shipped map that can be reached in a minute with a footbridge under a
+squad: the hook is unconditional, the fourth `FootBridge` argument is a
+rider threshold of 1, and its five deployment cells are on the walkway the
+bridge is in. Entered through chain 1 with two marines deployed and walked
+onto (16,18) and (15,18), the bridge killed them, turned its nine cells into
+deep holes -- and drew nothing. `core` had handed the outcome back on
+`MoveResult.script_result` since the second slice and **`game` read that
+field nowhere**; `_C_129`'s own `MoveUnit` section is empty, so no fixture
+had asked. `move_selected` and `warp_selected` present it now, behind the
+hold the mine and the teleporter already used. The same play then reads 37
+objects / 0 removed before and **36 / 1** after, runs `move.after_walk`,
+`setpiece.flight`, `foot_bridge`, `setpiece.back` with both riders held past
+their death, and the save carries `removed: [736]`. This is a behaviour
+change beyond the five items, in the same class as the agent `save` verb
+last round, and is named here for that reason.
+
+**What is pinned by what.** `test_effects.gd`'s `move_script.*` builds a
+one-command program (`FootBridge (2, 3, 30, 0)`, threshold zero so the mover
+is its own rider), attaches it to `TestFixtures.tiny_world()`, walks unit 0
+in and checks both halves of the seam: `core` emits the event with the mover
+on it and kills it, and `_present_script` puts the fall on the queue and
+holds the body. **No suite calls `move_selected` or `warp_selected`**, so
+the one line that was missing is pinned by the live run alone, and
+`warp_selected`'s half has not been seen live at all.
+
+**The crush wall's removal, live.** `_C_129` entered through the campaign
+with two marines deployed and three turns ended: the three `CrushWall`
+calls fire on turn 3, each behind its own `script.camera` flight, and the
+snapshot steps 113 -> 112 -> 111 -> 110 objects against 0 -> 1 -> 2 -> 3
+removed. The save carries `"scenery": {"joints": [[642, 6, 969, 0, 0],
+[680, 6, 969, 0, 0]], "removed": [556, 616, 708]}` -- the two open hatches
+and the three crushed cells -- and a quick load rebuilds the scene to its
+full 1040 and replays the record back to 110 objects and 3 removed, with all
+three cells *Free Place*. The earlier attempt failed because the squad died
+before turn 3; walking it away from the tubes is all it took.
+
+**The riders were never drawn falling, and the first reading of that was
+wrong.** The bodies could not be caught mid-fall at any sampling rate, and
+this report first put that down to the drop -- `0xBE0` a set-piece frame is
+0.95 of a map field at 20 fps. A review pass said otherwise and a second live
+run settled it: a screenshot taken the instant the walk returned, with the
+bridge still level and the camera still where it was, shows **both marines
+already gone**. `_after_command` runs `UnitsView.build`, which frees every
+unit node and will not redraw an `hp == 0` record that nothing is holding;
+the riders die inside `submit_move` with only their slots on the event, and
+`AIPlayback.casualties_of` reads markers, so it holds nobody. The mover is a
+rider too, so its walk went with it -- it vanished at its start cell.
+`_mark_dying_by_script` now runs beside `_mark_dying_by_mine`, **before**
+`_after_command`, on both call sites. The false lead was the map's own
+aliens: two of them stand on the same walkway three cells further along, so
+every screenshot of the bridge has two armoured bodies on it whether the
+riders are there or not.
+
+With the hold in place the fall was then watched: a single batch that orders
+the walk and then shoots every drawn frame catches both marines tipped over
+on the dropping deck, leaning opposite ways -- the ±25/±12 by index, drawn.
+Polling `/state` for the stage and *then* posting the shots is too slow to
+see it; the walk and the shots have to be one batch.
+
+`move_script.the_riders_are_held` and `move_script.the_held_rider_is_the_mover`
+pin the hold, and `move_script.the_living_are_drawn` /
+`.the_dead_are_dropped` / `.the_held_dead_are_drawn` pin the rebuild rule the
+ordering depends on, on the fixture's own world and geometry. The ordering
+itself -- that the hold happens before `_after_command` -- is still only
+pinned by playing it.
+
+**Still open after this pass** -- and closed in §10.3 the same day. The
+computer's own `MoveUnit` hook: `AISystem.run` does not go through
+`World.submit_move`, so whether `core` runs `aRunLCL` for a computer move at
+all is unverified -- and `_C_106`'s aliens can walk onto its six bridges.
+`warp_selected`'s script presentation is wired and unplayed. And
+`_present_script` answers nothing at all without an audio system and an
+event table, which is a coupling the picture does not need; it is
+pre-existing, it was met while writing the suite, and it is left as an
+observation rather than changed under this pass.
+
+### 10.3 The computer's hook, the jump, the sound gate -- and a platform that never moved (2026-09-07)
+
+Three items from §10.2's closing paragraph, closed, and one defect the
+player saw while they were being closed.
+
+**The computer's `MoveUnit` was never fired.** The engine answer came first
+and is unambiguous: `aRunLCL` `0x0046EEFD` is inside `aExecuteMove`, after
+the alive gate `0x0046EDDC`, the teleporter, the closing visibility pass and
+the six environment writes, with no test of the player anywhere between;
+`aExecuteWarp`'s tail is the same shape ending at `0x0046F1D6`; and the
+planner's `0x0040A750` tail calls those routines. So in the original every
+computer walk and jump runs the mission's `MoveUnit`, and on `_C_106` that
+is six `FootBridge` calls under alien traffic. In the remake `AISystem.run`
+never went through `World.submit_move`, and `AIPlan` called
+`ExecuteMove.execute` with no script in reach -- so `core` fired the hook
+for the player and **never** for the computer. `AIContext` now carries the
+script (`mission_script`; `script` is `Object`'s own property, which the
+first draft found out from the parser), `World.submit_end_turn` hands it
+over, and `AIPlan._run_move_hook` fires it where the routine does -- after
+`ExecuteMove.execute`, behind `is_alive()`, before the event is emitted and
+before the caller's charge and `Reaction.drain` -- through the same
+`MissionScript.env` the player's path builds. The jump's arm runs it after
+the fog rebuild `0x0046F144`, as the engine does, and both put the outcome
+on the event under `script`. `inclib/ai.py` is frozen and does not fire it,
+so the `cases_ai.json` replay builds its context with no script and is
+byte-for-byte what it was (`ai_script.no_script_no_key` pins the payload
+shape); the seam is pinned by driving `AIPlan.commit` and
+`AIPlan.execute_warp` directly on the fixture world with the `FootBridge`
+program attached (`ai_script.*`, nine checks), because a whole `AISystem.run`
+may never choose the bridge cell.
+
+The replay's half: `AIPlayback.casualties_of` gained the fifth shape a death
+comes in -- the riders under `payload.script` -- so the hold taken once
+before the first frame covers a script kill the way it covers a shot's;
+`_mark_dying_by_script` on the player's path reads them through the same
+`script_riders_of`, so the two paths cannot disagree about who fell.
+`_play_event_body` presents the outcome after the walk (and after the jump),
+holds the walk for it as it does for a mine, and keeps the event on screen
+for the set piece's frames (`_script_seconds`). Watched on `_C_131` -- the
+one shipped map whose `MoveUnit` does anything under a warping unit --
+through a new snapshot field, `picture.script` (`ran`, the event names and a
+running `count` of outcomes presented): the player's jet-pack jump raised it
+by one with `events: []`, and the replay of the first alien turn raised it
+by one per computer walk shown, with the note naming each mover.
+
+**`warp_selected`.** The corpus has no stage for it: the jet pack is a
+tech-4 item in a campaign whose tech level is 1 throughout ([`27` §5.2](27-campaign.md)),
+the two footbridge maps place no warping unit, `_C_163`'s `FootBridge2` is
+turn-gated, and the one shipped pairing of a jet pack with a live `MoveUnit`
+is `_C_131`, whose hook reorders aliens and draws nothing. So the picture's
+half is pinned on a fixture instead, end to end -- a one-point marine with
+the pack jumping three fields onto the bridge cell, past its walk and inside
+the pack's five (`warp_script.*`, nine checks) -- and the hook's firing on a
+real jump is what `_C_131` showed above.
+
+**`_present_script` without a sound layer.** It now gates only on an empty
+outcome: the cues are `[]` when there is no event table and the one bare
+`play_cues` is guarded, so the set pieces queue whether or not anything can
+name their sounds. `warp_script.the_fall_is_on_the_queue_without_sound` is
+the run with `_audio` and `_events` both null, and `move_script.the_events_reach_the_picture`
+-- which was `shown >= 0` -- now compares the cue count with the table's own.
+
+**The platform never moved.** While `_C_106` was being played for its
+bridges the player saw a unit hanging in the air, and the screenshots agree:
+after the first turn's `Platform (19,2,2,11)` the three marines stand in
+mid-air over the destination's hole with the deck still docked at the ledge
+eleven fields north. `aPlayPlatformSequence`'s loop adds `0x140` a frame to
+every object it finds on the block (the marker through `aGetSymbolObjectPtr`
+`0x00412BA7`, the special object through `0x00406F20` `0x00412BF7`), to
+every rider and to the camera target ([`20` §7.4](20-lcl-language.md) step 2);
+the remake ran the flight, the dust and the sound and translated nothing,
+and `core` had relocated the riders the instant the command ran. Now
+`Scenery.shift_objects` draws the block's objects a frame's travel on and
+`Scenery.move_objects` re-keys them under the destination cells at the end
+-- with each object's authored transform set so the destination cell's own
+height delta lands it where the ride left it, which `platform.the_terrain_diff_leaves_it_there`
+pins -- `UnitsView.shift` carries the riders across (a horizontal `lift`,
+re-applied after a rebuild and dropped at the end), and `SetpieceCamera`'s
+target travels with the deck. The riders are held at the source from the
+moment the sequence is queued, not from its first painted frame, because the
+camera's flight runs first. Watched on `_C_106`: the marines ride the deck
+south and step off onto the hex platform where the state has them. Eighteen
+checks under `platform.*`, on `_C_129`'s geometry; `_C_106` is not in the
+dev fixtures.
+
+**What playing `_C_106` did not show.** In three runs of four turns each the
+aliens never put two units on one bridge block: the two Gore'Thers walk
+north along `x = 28` two fields a turn, and the squad on the platform is
+dead by turn 4. "Not observed", not "does not happen" -- the hook itself is
+proven on `_C_131` and on the fixture.
+
+**The save carries the ride** (closed the same day). A save taken after a
+platform ride reloaded the deck at its authored place: `Scenery.build`
+reads the map document, and `pose_record` carried joints and removals but
+not moves. The original's `.sav` embeds the special-object records with
+their positions ([`11`](11-save-game-format.md)); the remake's record now
+has a third list, `moves`, one `[home, dx, dy]` row per cell whose objects a
+ride carried away, in fields -- per cell and not per object, since a ride
+moves the deck and the cell's marker together. `restore_poses` replays the
+moves **first**, because the joint rows and the removed cells name where
+things stand now, and takes the terrain snapshot so the moved object's
+authored transform absorbs the destination's height delta; a second restore
+finds the home cell empty and carries nothing, so twice is once.
+`platform.the_record_carries_the_move` and its six neighbours pin it on
+`_C_129`'s geometry, `scenery.restored.moves` pins the codec's round trip.
+
+**Left open.** The control-map copy of `0x00413049`..`0x0041306C` moves `+0x0E`, `+0x0F`
+and `+0x10` -- the effect fields -- beside the type, which neither twin
+copies. Every shipped cell carries `0xFF` / `0` there, so on a shipped save
+the copy moves nothing; whether the measured `platform` phase ever had them
+set is not something the capture was asked.
+

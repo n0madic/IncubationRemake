@@ -1105,38 +1105,69 @@ def _c_fixed_statue(it: Interpreter, p: Params) -> str | None:
 
 
 def _c_foot_bridge(it: Interpreter, p: Params) -> str | None:
-    """``0x00442650`` -- collapses only when **more than** ``minUnits`` stand on it."""
+    """``0x00442650`` -- collapses only when **more than** ``minUnits`` stand on it.
+
+    The event is ``x, y, frames, standing`` and then the riders' slots, in
+    the block's row-major order.  ``aPlayFootBridgeSequence`` ``0x00414A70``
+    lists every unit on the nine cells before its loop and, after it, takes
+    each one off the map through ``aRemoveUnitElement`` (``0x00414F8C``,
+    ``0x0043B8D0`` then ``0x004779C0``) -- and removal kills (``docs/42``
+    §12, the closed item on ``0x00477ABD``).  The slots are carried because
+    the map no longer knows who stood there once they are gone.
+    """
     w = it.world
     x, y, frames, min_units = p.n(0), p.n(1), p.n(2), p.n(3)
-    standing = 0
+    riders: list[RuntimeUnit] = []
     block: list[int] = []
     for oy in (-1, 0, 1):
         for ox in (-1, 0, 1):
             if not w.in_bounds(x + ox, y + oy):
                 continue
             block.append(w.index(x + ox, y + oy))
-            if w.unit_on(x + ox, y + oy) is not None:
-                standing += 1
-    if standing <= min_units:
+            unit = w.unit_on(x + ox, y + oy)
+            if unit is not None:
+                riders.append(unit)
+    if len(riders) <= min_units:
         return None
     for cell in block:
         w.ctrl_type[cell] = CTRL_TYPE_DEEP_HOLE
-    it.event("foot_bridge", x, y, frames, standing)
+    it.event("foot_bridge", x, y, frames, len(riders),
+             *[unit.slot for unit in riders])
+    for unit in riders:
+        w.kill(unit)
     return None
 
 
 def _c_foot_bridge2(it: Interpreter, p: Params) -> str | None:
-    """``0x004426d0`` -- nothing happens unless the turn number matches exactly."""
+    """``0x004426d0`` -- nothing happens unless the turn number matches exactly.
+
+    The event is ``actpt, frames, hit``, then the ``hit`` matched cells as
+    ``x, y`` pairs in the engine's own row-major scan order, then the
+    riders' slots.  ``0x00415110`` clears the group byte on each cell as it
+    scans (``0x004151EB``), so the cells have to travel on the event for the
+    picture to find the block -- ``L069EI00`` stands on one of the two --
+    and it removes every rider the way ``FootBridge`` does (``0x00415653``,
+    ``0x00415663``).
+    """
     w = it.world
     actpt, frames, turn = p.n(0), p.n(1), p.n(2)
     if w.turn != turn:
         return None
-    hit = 0
-    for cell in w.cells_with_actpt(actpt, actpt):
+    cells = list(w.cells_with_actpt(actpt, actpt))
+    riders: list[RuntimeUnit] = []
+    for cell in cells:
         w.ctrl_type[cell] = CTRL_TYPE_DEEP_HOLE
         w.actpt[cell] = 0
-        hit += 1
-    it.event("foot_bridge2", actpt, frames, hit)
+        unit = w.unit_on(cell % w.width, cell // w.width)
+        if unit is not None:
+            riders.append(unit)
+    values: list[int] = [actpt, frames, len(cells)]
+    for cell in cells:
+        values.extend((cell % w.width, cell // w.width))
+    values.extend(unit.slot for unit in riders)
+    it.event("foot_bridge2", *values)
+    for unit in riders:
+        w.kill(unit)
     return None
 
 

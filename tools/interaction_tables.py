@@ -57,8 +57,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from inclib import lcl  # noqa: E402
+from inclib import lcl, prototyp  # noqa: E402
 from inclib.brieftext import BriefError, block  # noqa: E402
+from inclib.convert import (parse_3dw_clones, scene_clones,  # noqa: E402
+                            world_paths)
 from inclib.lev import LevError, load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 from inclib.lcl import decode, is_encoded  # noqa: E402
@@ -254,10 +256,289 @@ DOOR_OPEN_TYPE_SITE = 0x00410B7E         # mov byte [edi+0x0D], 1
 DOOR_CLOSE_TYPE_SITE = 0x00410BA0        # mov byte [edi+0x0D], 2
 DOOR_RISE_SITE = 0x00410B99              # the imm32 of `add edx, 0xC80`
 DOOR_RISE = 0xC80                        # one tile, docs/10 §4
+#: The land marker: `mov cx, [edi+0x05]` -> `aGetSymbolObjectPtr` -> `ebp`,
+#: whose `+0x18` the toggle writes (`landObject->z`, docs/26 §3.4).  The cell's
+#: `+0x05` is its land-lattice slot (docs/10 §4), not the special object.
+DOOR_MARKER_LOAD = 0x00410B41            # mov cx, word [edi+0x05]
+DOOR_MARKER_CALL = 0x00410B46            # call aGetSymbolObjectPtr
+DOOR_MARKER_Z_SITES = (0x00410B88, 0x00410BB3)   # mov [ebp+0x18], ...
+SYMBOL_OBJECT_PTR = 0x00404C40
+#: The leaves: `mov ebx, -100` opening, `mov ebx, 100` closing, and the ten
+#: frames adding `bx` to `[esi+0x2A]` and subtracting it from `[esi+0x30]` --
+#: the z angles of joints 6 and 12 in docs/28 §7.2's record layout.
+DOOR_LEAF_OPEN_SITE = 0x00410B8B         # mov ebx, 0xFFFFFF9C
+DOOR_LEAF_CLOSE_SITE = 0x00410BAE        # mov ebx, 0x64
+DOOR_LEAF_STEP = 100
+DOOR_FRAMES_SITE = 0x00410CFC            # mov ebp, 0x0A
+DOOR_FRAMES = 10
+DOOR_LEAF_FIRST_SITE = 0x00410D05        # add word [esi+0x2A], bx
+DOOR_LEAF_SECOND_SITE = 0x00410D09       # sub word [esi+0x30], bx
+DOOR_LEAF_FIRST, DOOR_LEAF_SECOND = 0x2A, 0x30
+DOOR_LEAF_SWING = DOOR_LEAF_STEP * DOOR_FRAMES
+#: What the `.lev` authors for every door's leaves: open doors at the swing,
+#: closed ones at rest.
+DOOR_JOINTS_OPEN = ((0, 0, -DOOR_LEAF_SWING), (0, 0, DOOR_LEAF_SWING))
+DOOR_JOINTS_CLOSED = ((0, 0, 0), (0, 0, 0))
+EXPECTED_DOOR_OBJECTS = 302
+EXPECTED_DOOR_PROTOTYPES = ("L100EX00.3DI", "L108EX00.3DI", "L111EX00.3DI")
+DOOR_IDS = (30, 31, 32, 33)
+FIELD_SIZE = 3200                        # world units per map field, docs/10
 FIELD_FREE_PLACE = 1
 EXPECTED_DOOR_CALLERS = (0x0040A6B5, 0x00442122, 0x0046D184)
 DOOR_LCL_HANDLER = 0x004420C0            # the OpenDoor command, docs/20 §7.3
 DOOR_USE_WRAPPER = 0x0046D170
+
+# --- the door's family: docs/42 §8.3 ----------------------------------------
+# Nine more routines write the joint words `+0x26..+0x30` or the rotation
+# words `+0x20..+0x24` of the object `0x00406F20` finds beside the cell's
+# marker, and the remake draws none of them until 2026-09-06.  Each is pinned
+# by its loop counter, its step and the `add word [obj+0x2X], reg` site,
+# plus the box search it shares with the door.
+NEAREST_OBJECT = 0x00406F20              # the 5 000-unit box search
+NEAREST_OBJECT_BOX = 0x1388
+DELETE_LAND = 0x00406C30                 # aDeleteLand, docs/42 §8.1/§8.2
+POOL_ARRIVED = 0x0042B4A0                # the *arrived* flag, docs/42 §4.6
+A_RANDOM2 = 0x004638E0                   # the effects' generator, docs/22 §3.2
+OBJ_POS_X, OBJ_POS_Y, OBJ_POS_Z = 0x10, 0x14, 0x18      # own position
+OBJ_ROT_X, OBJ_ROT_Y, OBJ_ROT_Z = 0x20, 0x22, 0x24      # own rotation
+OBJ_J6_X, OBJ_J6_Y, OBJ_J6_Z = 0x26, 0x28, 0x2A         # joint 6
+OBJ_J12_X, OBJ_J12_Y, OBJ_J12_Z = 0x2C, 0x2E, 0x30      # joint 12
+
+PICKUP_SEQUENCE = 0x00410780
+PICKUP_BOX_SITE = 0x004108F9             # push 0x1388 (x3) before the search
+PICKUP_SEARCH_CALL = 0x0041090B
+PICKUP_EYE_UP_SITE = 0x004108DA          # add ecx, 0xFA0 -- the user's marker
+PICKUP_EYE_UP = 0xFA0
+PICKUP_TARGET_UP_SITE = 0x004108C5       # add edx, 0x320 -- the box's marker
+PICKUP_TARGET_UP = 0x320
+PICKUP_LID_FRAMES_SITE = 0x00410990      # mov ebx, 0x14 -- frames *and* step
+PICKUP_LID_FRAMES = 0x14
+PICKUP_LID_SITE = 0x0041099A             # add word [esi+0x26], bx
+PICKUP_HOLD_SITE = 0x004109A6            # mov esi, 0xF
+PICKUP_HOLD_FRAMES = 0xF
+
+LEVER_SEQUENCE = 0x00416AD0
+LEVER_SEARCH_CALL = 0x00416BB0
+LEVER_CAMERA_UP_SITE = 0x00416BCB        # add eax, 0xC80
+LEVER_CAMERA_UP = 0xC80
+LEVER_FRAMES_SITE = 0x00416C5E           # mov dword [esp+0x34], 0xA
+LEVER_FRAMES = 10
+LEVER_STEP_UP_SITE = 0x00416C66          # mov ebp, 0x50 (direction 1)
+LEVER_STEP_DOWN_SITE = 0x00416C6B        # mov ebx, -0x50 (direction 0)
+LEVER_STEP = 0x50
+LEVER_DIR1_SITE = 0x00416C7A             # add word [esi+0x26], bp
+LEVER_DIR0_SITE = 0x00416C80             # add word [esi+0x26], bx
+LEVER_THROW = LEVER_STEP * LEVER_FRAMES
+LEVER_UP, LEVER_DOWN = 36, 37
+
+TUBE_SEQUENCE = 0x00410F10               # OpenTube
+TUBE_SEARCH_CALL = 0x00410FA0
+TUBE_STEP_SITE = 0x00411094              # mov ebx, 0x33
+TUBE_STEP = 0x33
+TUBE_HATCH_SITE = 0x00411099             # add word [edi+0x26], bx
+TUBE_PUFF_SITE = 0x004110A2              # cmp esi, 0xA
+TUBE_PUFF_FRAME = 10
+TUBE_FRAMES_SITE = 0x004110E0            # cmp esi, 0x13
+TUBE_FRAMES = 0x13
+PLANT_TUBE_SEQUENCE = 0x00411150         # OpenPlantTube
+PLANT_TUBE_FRAMES_SITE = 0x00411281      # mov edi, 0x13
+PLANT_TUBE_STEP_SITES = (0x00411286, 0x0041128B)   # mov ebp, 0x33 / ebx, -0x33
+PLANT_TUBE_HATCH_SITES = (0x00411290, 0x00411294)  # +0x26 += bp, +0x2C += bx
+FRONT_DOOR_SEQUENCE = 0x004112E0         # OpenFrontDoor
+FRONT_DOOR_FRAMES_SITE = 0x0041140F
+FRONT_DOOR_STEP_SITES = (0x00411414, 0x00411419)
+FRONT_DOOR_LEAF_SITES = (0x0041141E, 0x00411422)   # +0x2A += bp, +0x30 += bx
+
+BRIDGE_SEQUENCE = 0x00410DA0
+BRIDGE_READ_SITE = 0x00410EA2            # mov di, word [esi+0x26]
+BRIDGE_NEG_SITE = 0x00410EA8             # neg di
+BRIDGE_LEA_SITE = 0x00410EB6             # lea edi, [edi+2*edi]
+BRIDGE_SHL_SITE = 0x00410EBC             # shl edi, 2
+BRIDGE_FRAMES_SITE = 0x00410EBF          # mov ebx, 0x50
+BRIDGE_FRAMES = 80
+BRIDGE_STEP = 12
+BRIDGE_HALF_SITES = (0x00410EC4, 0x00410EC8)       # +0x26 += di, +0x2C -= di
+BRIDGE_SWING = BRIDGE_STEP * BRIDGE_FRAMES
+BRIDGE_JOINTS_RAISED = ((BRIDGE_SWING, 0, 0), (-BRIDGE_SWING, 0, 0))
+
+BARRIER_SEQUENCE = 0x00413560
+BARRIER_ZERO_SITE = 0x0041357B           # xor ebx, ebx
+BARRIER_OFF_SITE = 0x00413653            # mov word [edi+0x2A], 0x800
+BARRIER_EMITTER_OFF = 0x800
+BARRIER_ON_SITE = 0x00413670             # mov word [edi+0x2A], bx
+BARRIER_ON_ID, BARRIER_OFF_ID = 90, 91   # every shipped call's two arguments
+BARRIER_EMITTERS = ("L002EG00.3DI", "L023EG00.3DI", "L024EG00.3DI",
+                    "L025EG00.3DI")
+
+CRUSH_WALL_SEQUENCE = 0x00415C70
+CRUSH_TURN_SITE = 0x00415DDE             # mov ebx, 0x66
+CRUSH_TURN_STEP = 0x66
+CRUSH_DROP_SITE = 0x00415DE3             # mov edi, -0x1E0
+CRUSH_DROP_STEP = 0x1E0
+CRUSH_ROT_SITE = 0x00415DEB              # add word [esi+0x20], bx
+CRUSH_SPIN_CALL = 0x00415DF9             # call 0x0042B4A0
+CRUSH_DELETE_CALL = 0x00415E07           # call aDeleteLand
+
+FOOTBRIDGE_SEQUENCE = 0x00414A70
+FOOTBRIDGE_TILT_ARGS = (0x00414D03, 0x00414D05)    # push 4 / push -2
+FOOTBRIDGE_TILT_CALL = 0x00414D07        # call aRandom2
+FOOTBRIDGE_ROT_SITES = (0x00414D5B, 0x00414D5F)    # +0x24 += dx, +0x22 += di
+FOOTBRIDGE_DROP_SITE = 0x00414D63        # add ecx, -0xD20
+FOOTBRIDGE_DROP_STEP = 0xD20
+FOOTBRIDGE_DELETE_CALL = 0x00414F49
+FOOTBRIDGE2_ROT_SITES = (0x00415421, 0x00415435)   # +0x22 += ax, +0x24 += cx
+FOOTBRIDGE2_DELETE_CALL = 0x00415610
+# Both footbridges list the units on their cells before the loop and, after
+# it, take each one off the map: `addLoss` (docs/26 §5, the scoreboard's
+# losses pair) then aRemoveUnitElement, whose last instruction kills
+# (docs/42 §12). `FootBridge2` reads the group byte, writes it back zero as
+# it scans, and finds its block in a 500 x 500 x 12 800 box 160 beside and
+# 4 800 below the first matched cell's object, then the second's.
+ADD_LOSS = 0x0043B8D0
+REMOVE_UNIT_ELEMENT = 0x004779C0
+FOOTBRIDGE_LOSS_CALL = 0x00414F8C
+FOOTBRIDGE_REMOVE_CALL = 0x00414F9C
+FOOTBRIDGE2_GROUP_READ_SITE = 0x004151C5           # mov al, [esi+0x0B]
+FOOTBRIDGE2_GROUP_CLEAR_SITE = 0x004151EB          # mov byte [esi+0x0B], 0
+FOOTBRIDGE2_BOX_DOWN_SITE = 0x00415303             # sub ecx, 0x12C0
+FOOTBRIDGE2_BOX_PUSH_SITE = 0x0041530D             # push 0x3200 / 0x1F4 / 0x1F4
+FOOTBRIDGE2_BOX_SIDE_SITE = 0x0041531C             # add edx, 0xA0
+FOOTBRIDGE2_BOX = (0x3200, 0x1F4, 0x1F4)           # z, y, x half extents
+FOOTBRIDGE2_BOX_DOWN = 0x12C0
+FOOTBRIDGE2_BOX_SIDE = 0xA0
+FOOTBRIDGE2_SEARCH_CALL = 0x0041532A
+FOOTBRIDGE2_LOSS_CALL = 0x00415653
+FOOTBRIDGE2_REMOVE_CALL = 0x00415663
+# The riders while they fall, in both loops and instruction for instruction.
+# Each one's `+0x4B` names a standard object; the loop reads its position
+# (0x00405100), subtracts 0xC80 from the z, adds 0xA0 back and writes it
+# (0x004050A0) -- so a rider drops 0xBE0 a frame, not the map field the
+# stored copy suggests -- then reads its own rotation words (0x00405180),
+# adds 25 to the third and 12 to the second and writes them back
+# (0x004051E0). The sign of both is the rider's **index** parity: `test
+# bl, 1` on the loop counter, negative for an odd one.
+GET_OBJECT_POSITION = 0x00405100
+SET_OBJECT_POSITION = 0x004050A0
+GET_OBJECT_ROTATION = 0x00405180
+SET_OBJECT_ROTATION = 0x004051E0
+# What those four accessors touch, which is what makes the third argument
+# the z of one and joint-less `+0x24` of the other.
+POSITION_READ_SITES = (0x00405151, 0x0040515A, 0x00405163)   # +0x10/+0x14/+0x18
+POSITION_WRITE_SITES = (0x004050D5, 0x004050D8, 0x004050DB)  # the same three
+ROTATION_READ_SITES = (0x004051AC, 0x004051B7, 0x004051BE)   # +0x20/+0x22/+0x24
+ROTATION_WRITE_SITES = (0x00405218, 0x0040521C, 0x00405220)  # the same three
+# A unit is drawn by Charisma, so its object carries a node at `+0x45` and
+# both accessors take their **second** arm: the getter asks the node and
+# multiplies by 16, the setter divides by 16 and tells it. That pair is the
+# inverse of itself, which is what makes the loop's `-0xC80 +0xA0` a net
+# 0xBE0 for a rider and not a drop of a map field with a fixed offset.
+OBJECT_NODE_FIELD = 0x45
+POSITION_NODE_TEST_SITES = (0x00405128, 0x004050DE)   # mov r32, [eax+0x45]
+POSITION_NODE_GET_CALL = 0x0040513F
+POSITION_NODE_SET_CALL = 0x004050E9
+CHARISMA_POSITION_GET = 0x0042C820
+CHARISMA_POSITION_SET = 0x0042C890
+CHARISMA_SCALE_UP = 0x004B1330                        # 16.0f, coming back
+CHARISMA_SCALE_DOWN = 0x004B1334                      # 0.0625f, going in
+CHARISMA_SCALE_UP_BITS = 0x41800000
+CHARISMA_SCALE_DOWN_BITS = 0x3D800000
+RIDER_DROP_STEP = 0xC80
+RIDER_DROP_BACK = 0xA0
+RIDER_TURN_Z = 25
+RIDER_TURN_Y = 12
+# Per routine: the position getter and setter calls with the drop and the
+# raise between them; the parity test and its two pairs of immediates; the
+# rotation getter and setter calls; and the four stack displacements that
+# say **which** word each step is about -- the `lea` that gave the getter
+# its third out-pointer and the `mov` that adds 25 to what came back name
+# the same slot, and so do the second's and the 12.
+FOOTBRIDGE_RIDER_FALL = (0x00414DC1, 0x00414DD9, 0x00414DE7, 0x00414DF4)
+FOOTBRIDGE_RIDER_TURN = (0x00414DFC, 0x00414E01, 0x00414E06, 0x00414E0D,
+                         0x00414E12, 0x00414E2C, 0x00414E44, 0x00414E46,
+                         0x00414E5D)
+FOOTBRIDGE_RIDER_SLOTS = (0x00414E17, 0x00414E3C, 0x00414E1B, 0x00414E40)
+FOOTBRIDGE2_RIDER_FALL = (0x0041548C, 0x004154A4, 0x004154B2, 0x004154BF)
+FOOTBRIDGE2_RIDER_TURN = (0x004154C7, 0x004154CC, 0x004154D1, 0x004154D8,
+                          0x004154DD, 0x004154F7, 0x0041550F, 0x00415511,
+                          0x00415528)
+FOOTBRIDGE2_RIDER_SLOTS = (0x004154E2, 0x00415507, 0x004154E6, 0x0041550B)
+# aPlayRotateStatueSequence: the nearest object in a 10 000-unit box of the
+# cell's marker, its `+0x2A` -- joint 6's z word -- read once, turned by
+# 0x50 thirteen times, then written back as the start plus 0x400
+# (presentation_tables.py pins the counts; this pins the **word**).
+STATUE_SEQUENCE = 0x00413A40
+STATUE_BOX_SITE = 0x00413B55                       # push 0x2710 (x3)
+STATUE_BOX = 0x2710
+STATUE_SEARCH_CALL = 0x00413B67
+STATUE_READ_SITE = 0x00413BFB                      # movsx ecx, word [esi+0x2A]
+STATUE_TURN_SITE = 0x00413C10                      # add word [esi+0x2A], bp
+STATUE_SETTLE_SITE = 0x00413C26                    # mov word [esi+0x2A], dx
+
+# The corpus half: what the shipped records carry for each mechanism's
+# state, the way `door.corpus_joints` reads the door's.
+LEVER_PROTOTYPE = "L109EX00.3DI"
+EXPECTED_LEVER_OBJECTS = 69              # every special object on a lever cell
+EXPECTED_BARRIER_SEEDED = 13             # emitters on a cell already at 90/91
+BRIDGE_PROTOTYPE = "L026ED00.3DI"
+EXPECTED_BRIDGE_OBJECTS = 3              # two the scripts move and one they never do
+EXPECTED_BRIDGE_RAISED = 2
+# The rotating statue is reached by one shipped call, `Statue2 (110,112)` in
+# `_C_178.lcl`, and the three cells in that range carry `L014EH00` -- one
+# part, which is what the `+0x2A` write turns. `FixedStatue`'s 21 cells carry
+# the partless `L012EH00`, and `aPlayStatueSequence` writes no word at all.
+EXPECTED_STATUE2_CALLS = (("_C_178", 110, 112),)
+STATUE_PROTOTYPE = "L014EH00.3DI"
+FIXED_STATUE_PROTOTYPE = "L012EH00.3DI"
+EXPECTED_STATUE_OBJECTS = 3
+# `FootBridge2`'s 31 shipped calls, all in `_C_163.lcl`: thirty name a group
+# of two cells with exactly one block -- the one the box search finds -- on
+# one of them. The thirty-first, `FootBridge2 (139,30,12)` on turn 13, names
+# a tag no cell carries, and the map's group 130 at (16,12)/(16,13) is the
+# one no call names: a typo in the script, so that bridge never falls.
+FOOTBRIDGE2_BLOCK = "L069EI00.3DI"
+#: The two commands that name a cell and move **the object standing on it**:
+#: the remake turns and frees per cell rather than per object, which is only
+#: the engine's own behaviour while a named cell carries one.
+CELL_SETPIECES = ("CrushWall", "FootBridge")
+#: ...and the action points whose own cell the family reaches: the door and
+#: its jammed siblings, the lever either way, the barrier emitter either way.
+FAMILY_ACTION_POINTS = frozenset(DOOR_IDS) | {LEVER_UP, LEVER_DOWN,
+                                             BARRIER_ON_ID, BARRIER_OFF_ID}
+EXPECTED_FAMILY_CELLS = 400
+#: ...and the family cells the scene's own ``.3DW`` geometry stands on as
+#: well, which is the case ``docs/42`` §8.3 calls "which object on the cell".
+#: A clone is not in the special-object table ``0x00406F20`` searches and is
+#: placed **before** the special objects, so a remake that answers "the object
+#: on this cell" with the first thing it placed answers with the level's own
+#: geometry.  Eleven cells over nine missions are shipped that way, so it is
+#: not one map's accident.
+EXPECTED_CLONE_SHARED_CELLS = (
+    ("_C_142", 14, 14, 2),
+    ("_C_142", 24, 24, 1),
+    ("_C_147", 14, 14, 2),
+    ("_C_148", 13, 14, 1),
+    ("_C_163", 19, 16, 1),
+    ("_C_166", 14, 14, 1),
+    ("_M_019", 7, 12, 1),
+    ("_M_025", 7, 12, 1),
+    ("_M_025", 8, 6, 1),
+    ("_M_035", 7, 12, 1),
+    ("_O_060", 18, 17, 1),
+)
+#: The two the remake was measured wrong on, with what each cell carries:
+#: mission, cell, the **first** clone placed there and its z, and the special
+#: object the search would have found and its z.  On ``_C_142`` the flight
+#: aimed at a piece of the level's own hall instead of the panel; on
+#: ``_C_163`` it aimed 13 760 world units below the block, which is a
+#: footbridge dropping from under the floor.
+EXPECTED_CLONE_WITNESSES = (
+    ("_C_142", 14, 14, "LEVEL01D.004", 0, "L100EX00.3DI", 0),
+    ("_C_163", 19, 16, "LEVEL09C.002", -13760, "L069EI00.3DI", 0),
+)
+EXPECTED_FOOTBRIDGE2_CALLS = 31
+EXPECTED_FOOTBRIDGE2_GROUPS = 30
+EXPECTED_FOOTBRIDGE2_UNMATCHED = (("_C_163", 139),)
+EXPECTED_FOOTBRIDGE2_UNCALLED = (("_C_163", 130),)
 
 # --- what the computer does ------------------------------------------------
 AI_INTERACT = 0x0040A600
@@ -636,6 +917,46 @@ class Corpus:
         #: file -> {entry key: count}, {exit key: count}
         self.teleporters: dict[str, tuple[Counter, Counter]] = {}
         self.cells = 0
+        #: (prototype, action point, joints match the parity rule) -> count,
+        #: over every special object standing on a door cell.
+        self.door_objects: Counter[tuple[str, int, bool]] = Counter()
+        #: (prototype, action point, joints match the lever rule) -> count,
+        #: over every special object standing on a lever cell (docs/42 §8.3):
+        #: 36 is up and zero, 37 is down and `(-800, 0, 0)`.
+        self.lever_objects: Counter[tuple[str, int, bool]] = Counter()
+        #: (prototype, action point, joints match the barrier rule) -> count,
+        #: over the four emitter prototypes on a cell already seeded 90 or
+        #: 91: on is zero, off is `(0, 0, 0x800)`.
+        self.barrier_objects: Counter[tuple[str, int, bool]] = Counter()
+        #: (prototype, raised, raised or lowered) -> count, over every bridge:
+        #: the pair the loop ends on, or zero, and nothing in between.
+        self.bridge_objects: Counter[tuple[str, bool, bool]] = Counter()
+        #: (mission, action point) -> the special objects on cells carrying
+        #: it, and how many cells carry it -- what a range command's box
+        #: search lands on (the statue, the second footbridge).
+        self.objects_by_ap: dict[tuple[str, int], list[str]] = defaultdict(list)
+        #: mission -> the cells a `CrushWall`/`FootBridge` call names, and
+        #: mission -> cell -> the special objects standing on it.  The two
+        #: together say whether "the object on the cell" is one object.
+        self.setpiece_cells: dict[str, set[tuple[int, int]]] = defaultdict(set)
+        self.objects_by_cell: dict[tuple[str, int, int], list[str]] = \
+            defaultdict(list)
+        #: ...and each of those objects' authored z, for the comparison
+        #: against the clone standing on the same field.
+        self.object_z_by_cell: dict[tuple[str, int, int], list[int]] = \
+            defaultdict(list)
+        #: (world set, scene) -> cell -> the scene's own `.3DW` clones on it,
+        #: as (prototype, z) in placement order.  Filled on demand: it is one
+        #: parse per scene, and only the family's cells are ever asked about.
+        self._scene_clones: dict[tuple[str, str],
+                                 dict[tuple[int, int], list[tuple[str, int]]]] = {}
+        self.ap_by_cell: dict[tuple[str, int, int], int] = {}
+        self.cells_by_ap: Counter[tuple[str, int]] = Counter()
+        #: mission -> (world set, scene), for the prototype container.
+        self.scene_of: dict[str, tuple[str, str]] = {}
+        #: `Statue2 (lo, hi)` and `FootBridge2 (actpt, ...)` calls, by script.
+        self.statue2_calls: list[tuple[str, int, int]] = []
+        self.foot_bridge2_groups: dict[str, set[int]] = defaultdict(set)
         for path in self.missions:
             self._count(path)
 
@@ -650,6 +971,7 @@ class Corpus:
 
     def _count(self, path: Path) -> None:
         battle = load_lev(path)
+        self.scene_of[path.stem] = (battle.world_set, battle.world_scene)
         entries: Counter[int] = Counter()
         exits: Counter[int] = Counter()
         for cell in battle.cells:
@@ -657,6 +979,7 @@ class Corpus:
             self.action_points[cell.action_point] += 1
             if cell.action_point:
                 self.ap_files[cell.action_point].add(path.name)
+                self.cells_by_ap[(path.stem, cell.action_point)] += 1
             self.field_types[cell.field_type] += 1
             if cell.field_type == FIELD_TELEPORT_IN:
                 entries[cell.action_point] += 1
@@ -664,12 +987,47 @@ class Corpus:
                 exits[cell.action_point] += 1
         if entries or exits:
             self.teleporters[path.name] = (entries, exits)
+        for obj in battle.special:
+            cx, cy = obj.x // FIELD_SIZE, obj.y // FIELD_SIZE
+            if not (0 <= cx < battle.width and 0 <= cy < battle.height):
+                continue
+            cell = battle.cell_at(cx, cy)
+            name = obj.prototype_name(battle.world_set)
+            ap = cell.action_point
+            if ap:
+                self.objects_by_ap[(path.stem, ap)].append(name)
+            self.objects_by_cell[(path.stem, cx, cy)].append(name)
+            self.object_z_by_cell[(path.stem, cx, cy)].append(obj.z)
+            self.ap_by_cell[(path.stem, cx, cy)] = ap
+            if ap in DOOR_IDS:
+                want = DOOR_JOINTS_CLOSED if ap & 1 else DOOR_JOINTS_OPEN
+                self.door_objects[(name, ap, obj.joints == want)] += 1
+            elif ap in (LEVER_UP, LEVER_DOWN):
+                thrown = ((-LEVER_THROW, 0, 0), (0, 0, 0))
+                want = thrown if ap == LEVER_DOWN else DOOR_JOINTS_CLOSED
+                self.lever_objects[(name, ap, obj.joints == want)] += 1
+            if name in BARRIER_EMITTERS and ap in (BARRIER_ON_ID, BARRIER_OFF_ID):
+                off = ((0, 0, BARRIER_EMITTER_OFF), (0, 0, 0))
+                want = off if ap == BARRIER_OFF_ID else DOOR_JOINTS_CLOSED
+                self.barrier_objects[(name, ap, obj.joints == want)] += 1
+            if name == BRIDGE_PROTOTYPE:
+                raised = obj.joints == BRIDGE_JOINTS_RAISED
+                lowered = obj.joints == DOOR_JOINTS_CLOSED
+                self.bridge_objects[(name, raised, raised or lowered)] += 1
 
     def _count_script(self, path: Path) -> None:
         with open(path, "rb") as handle:
             program = lcl.parse_bytes(handle.read(), str(path))
         self.script_files.add(path.name)
         for routine in program.routines:
+            for stmt in _walk(routine.body):
+                numbers = [a.value for a in stmt.args if a.kind == "number"]
+                if stmt.name == "Statue2" and len(numbers) >= 2:
+                    self.statue2_calls.append((path.stem, numbers[0], numbers[1]))
+                elif stmt.name == "FootBridge2" and numbers:
+                    self.foot_bridge2_groups[path.stem].add(numbers[0])
+                elif stmt.name in CELL_SETPIECES and len(numbers) >= 2:
+                    self.setpiece_cells[path.stem].add((numbers[0], numbers[1]))
             if routine.name != "Use":
                 continue
             self.use_sections += 1
@@ -696,6 +1054,52 @@ class Corpus:
         return data.decode("latin-1")
 
     # -- derived ------------------------------------------------------------
+
+    def objects_in_range(self, mission: str, low: int, high: int) -> list[str]:
+        """The special objects on `mission`'s cells with an action point in
+        the inclusive range -- what `0x00413500`'s sweep hands the statue."""
+        out: list[str] = []
+        for ap in range(low, high + 1):
+            out.extend(self.objects_by_ap.get((mission, ap), []))
+        return out
+
+    def clones_on(self, mission: str, x: int, y: int) -> list[tuple[str, int]]:
+        """The scene's own ``.3DW`` clones standing on one of `mission`'s
+        cells, as (prototype, z) in placement order.
+
+        This is the *other* half of "what is on this cell".  The engine's
+        ``0x00406F20`` searches the special-object table alone, and a clone is
+        never in it -- but a clone is drawn on the field just the same, and is
+        placed first, so anything that answers by placement order answers with
+        the level's geometry (``docs/42`` §8.3).
+        """
+        if mission not in self.scene_of:
+            return []
+        key = self.scene_of[mission]
+        if key not in self._scene_clones:
+            by_cell: dict[tuple[int, int], list[tuple[str, int]]] = defaultdict(list)
+            try:
+                paths = world_paths(Path(self.root), key[0], key[1])
+                for clone in scene_clones(parse_3dw_clones(paths["dw"])):
+                    by_cell[(clone["x"] // FIELD_SIZE,
+                             clone["y"] // FIELD_SIZE)].append(
+                        (clone["prototype"], clone["z"]))
+            except (OSError, KeyError, ValueError):
+                by_cell = defaultdict(list)
+            self._scene_clones[key] = by_cell
+        return list(self._scene_clones[key].get((x, y), []))
+
+    def part_count(self, mission: str, name: str) -> int | None:
+        """How many parts `name` has in `mission`'s world set, or `None`."""
+        if mission not in self.scene_of:
+            return None
+        world_set, scene = self.scene_of[mission]
+        try:
+            paths = world_paths(Path(self.root), world_set, scene)
+            container = prototyp.load_container(str(paths["din"]), str(paths["bin"]))
+            return len(container.parse(container.find(name)).parts)
+        except (OSError, KeyError, ValueError):
+            return None
 
     def teleporter_pairs(self) -> tuple[int, int, list[tuple[str, int]]]:
         """(entries, exits, the entries with no matching exit key)."""
@@ -980,6 +1384,259 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not an algorithm
     c.check("door.jammed_shares_code",
             all(t.classes()[ap] == t.classes()[30] for ap in (31, 32, 33)),
             "30..33 all reach the same toggle")
+    c.check("door.marker_is_the_land_link",
+            (pe.bytes_at(DOOR_MARKER_LOAD, 4) == b"\x66\x8b\x4f\x05"
+             and t.call_target(DOOR_MARKER_CALL) == SYMBOL_OBJECT_PTR
+             and all(pe.bytes_at(va, 3) in (b"\x89\x5d\x18", b"\x89\x4d\x18")
+                     for va in DOOR_MARKER_Z_SITES)),
+            "`landObject` is cell[+0x05] through aGetSymbolObjectPtr, and "
+            "its +0x18 is what the toggle writes -- the marker, not the panel")
+    c.check("door.leaf_step",
+            (pe.u8(DOOR_LEAF_OPEN_SITE) == 0xBB
+             and pe.i32(DOOR_LEAF_OPEN_SITE + 1) == -DOOR_LEAF_STEP
+             and pe.u8(DOOR_LEAF_CLOSE_SITE) == 0xBB
+             and pe.i32(DOOR_LEAF_CLOSE_SITE + 1) == DOOR_LEAF_STEP),
+            f"ebx = -{DOOR_LEAF_STEP} opening, +{DOOR_LEAF_STEP} closing")
+    c.check("door.leaf_frames",
+            pe.u8(DOOR_FRAMES_SITE) == 0xBD
+            and pe.u32(DOOR_FRAMES_SITE + 1) == DOOR_FRAMES,
+            f"{DOOR_FRAMES} frames, so the leaves reach +-{DOOR_LEAF_SWING}")
+    c.check("door.leaf_joints",
+            (pe.bytes_at(DOOR_LEAF_FIRST_SITE, 4) == b"\x66\x01\x5e\x2a"
+             and pe.bytes_at(DOOR_LEAF_SECOND_SITE, 4) == b"\x66\x29\x5e\x30"),
+            f"add [obj+0x{DOOR_LEAF_FIRST:02X}], bx / sub [obj+0x"
+            f"{DOOR_LEAF_SECOND:02X}], bx -- the z angles of joints 6 and 12")
+
+    # -- the door's family, docs/42 §8.3 ------------------------------------
+    LOG.info("the door's family: nine more routines that turn the object")
+
+    def imm32(site: int, opcode: int) -> int | None:
+        return pe.i32(site + 1) if pe.u8(site) == opcode else None
+
+    def word_add(site: int, opcode: int, modrm: int, offset: int) -> bool:
+        return pe.bytes_at(site, 4) == bytes((0x66, opcode, modrm, offset))
+
+    c.check("family.search_is_the_door_search",
+            all(t.call_target(va) == NEAREST_OBJECT for va in
+                (PICKUP_SEARCH_CALL, LEVER_SEARCH_CALL, TUBE_SEARCH_CALL))
+            and all(pe.u8(PICKUP_BOX_SITE + 5 * i) == 0x68
+                    and pe.u32(PICKUP_BOX_SITE + 5 * i + 1) == NEAREST_OBJECT_BOX
+                    for i in range(3)),
+            f"the box, the lever and the tube find their object through "
+            f"0x{NEAREST_OBJECT:08X} in the door's {NEAREST_OBJECT_BOX}-unit box")
+    c.check("family.pickup.lid",
+            imm32(PICKUP_LID_FRAMES_SITE, 0xBB) == PICKUP_LID_FRAMES
+            and word_add(PICKUP_LID_SITE, 0x01, 0x5E, OBJ_J6_X)
+            and imm32(PICKUP_HOLD_SITE, 0xBE) == PICKUP_HOLD_FRAMES,
+            f"mov ebx, {PICKUP_LID_FRAMES} is the frame count *and* the step: "
+            f"add [esi+0x{OBJ_J6_X:02X}], bx opens the lid to "
+            f"{PICKUP_LID_FRAMES ** 2}, then {PICKUP_HOLD_FRAMES} frames of nothing")
+    c.check("family.pickup.camera",
+            (pe.bytes_at(PICKUP_EYE_UP_SITE, 2) == b"\x81\xc1"
+             and pe.u32(PICKUP_EYE_UP_SITE + 2) == PICKUP_EYE_UP
+             and pe.bytes_at(PICKUP_TARGET_UP_SITE, 2) == b"\x81\xc2"
+             and pe.u32(PICKUP_TARGET_UP_SITE + 2) == PICKUP_TARGET_UP),
+            f"the flight starts 0x{PICKUP_EYE_UP:X} above the user's marker and "
+            f"aims 0x{PICKUP_TARGET_UP:X} above the box's")
+    c.check("family.lever.handle",
+            (pe.bytes_at(LEVER_FRAMES_SITE, 4) == b"\xc7\x44\x24\x34"
+             and pe.u32(LEVER_FRAMES_SITE + 4) == LEVER_FRAMES
+             and imm32(LEVER_STEP_UP_SITE, 0xBD) == LEVER_STEP
+             and imm32(LEVER_STEP_DOWN_SITE, 0xBB) == -LEVER_STEP
+             and word_add(LEVER_DIR1_SITE, 0x01, 0x6E, OBJ_J6_X)
+             and word_add(LEVER_DIR0_SITE, 0x01, 0x5E, OBJ_J6_X)),
+            f"{LEVER_FRAMES} frames of +-{LEVER_STEP} on [esi+0x{OBJ_J6_X:02X}] "
+            f"-- the handle's x angle -- direction 0 taking the negative step")
+    c.check("family.lever.camera",
+            pe.u8(LEVER_CAMERA_UP_SITE) == 0x05
+            and pe.u32(LEVER_CAMERA_UP_SITE + 1) == LEVER_CAMERA_UP,
+            f"add eax, 0x{LEVER_CAMERA_UP:X}: both ends of the flight a tile "
+            "above the marker")
+    c.check("family.tube.hatch",
+            (imm32(TUBE_STEP_SITE, 0xBB) == TUBE_STEP
+             and word_add(TUBE_HATCH_SITE, 0x01, 0x5F, OBJ_J6_X)
+             and pe.bytes_at(TUBE_FRAMES_SITE, 3) == bytes((0x83, 0xFE, TUBE_FRAMES))
+             and pe.bytes_at(TUBE_PUFF_SITE, 3) == bytes((0x83, 0xFE, TUBE_PUFF_FRAME))),
+            f"OpenTube: {TUBE_FRAMES} frames of +{TUBE_STEP} on "
+            f"[edi+0x{OBJ_J6_X:02X}], the puffs at frame {TUBE_PUFF_FRAME}")
+    c.check("family.plant_tube.hatches",
+            (imm32(PLANT_TUBE_FRAMES_SITE, 0xBF) == TUBE_FRAMES
+             and imm32(PLANT_TUBE_STEP_SITES[0], 0xBD) == TUBE_STEP
+             and imm32(PLANT_TUBE_STEP_SITES[1], 0xBB) == -TUBE_STEP
+             and word_add(PLANT_TUBE_HATCH_SITES[0], 0x01, 0x6E, OBJ_J6_X)
+             and word_add(PLANT_TUBE_HATCH_SITES[1], 0x01, 0x5E, OBJ_J12_X)),
+            f"OpenPlantTube: {TUBE_FRAMES} frames of +{TUBE_STEP} on joint 6's x "
+            f"and -{TUBE_STEP} on joint 12's")
+    c.check("family.front_door.leaves",
+            (imm32(FRONT_DOOR_FRAMES_SITE, 0xBF) == TUBE_FRAMES
+             and imm32(FRONT_DOOR_STEP_SITES[0], 0xBD) == TUBE_STEP
+             and imm32(FRONT_DOOR_STEP_SITES[1], 0xBB) == -TUBE_STEP
+             and word_add(FRONT_DOOR_LEAF_SITES[0], 0x01, 0x6E, OBJ_J6_Z)
+             and word_add(FRONT_DOOR_LEAF_SITES[1], 0x01, 0x5E, OBJ_J12_Z)),
+            f"OpenFrontDoor: the same {TUBE_FRAMES} frames on the **z** angles "
+            "of joints 6 and 12 -- a door's leaves, not a hatch")
+    c.check("family.bridge.halves",
+            (imm32(BRIDGE_FRAMES_SITE, 0xBB) == BRIDGE_FRAMES
+             and pe.bytes_at(BRIDGE_LEA_SITE, 3) == b"\x8d\x3c\x7f"
+             and pe.bytes_at(BRIDGE_SHL_SITE, 3) == b"\xc1\xe7\x02"
+             and word_add(BRIDGE_HALF_SITES[0], 0x01, 0x7E, OBJ_J6_X)
+             and word_add(BRIDGE_HALF_SITES[1], 0x29, 0x7E, OBJ_J12_X)),
+            f"{BRIDGE_FRAMES} frames of (3 << 2) = {BRIDGE_STEP} on joint 6's x "
+            f"and its negative on joint 12's: +-{BRIDGE_SWING} in all")
+    c.check("family.bridge.toggles_on_the_pose",
+            pe.bytes_at(BRIDGE_READ_SITE, 4) == bytes((0x66, 0x8B, 0x7E, OBJ_J6_X))
+            and pe.bytes_at(BRIDGE_NEG_SITE, 3) == b"\x66\xf7\xdf",
+            "the sign comes from `mov di, [esi+0x26]` / `neg di` / `sbb`: a "
+            "raised bridge lowers and a lowered one rises")
+    c.check("family.barrier.emitter",
+            (pe.bytes_at(BARRIER_ZERO_SITE, 2) == b"\x33\xdb"
+             and pe.bytes_at(BARRIER_OFF_SITE, 4) == bytes((0x66, 0xC7, 0x47, OBJ_J6_Z))
+             and int.from_bytes(pe.bytes_at(BARRIER_OFF_SITE + 4, 2), 'little') == BARRIER_EMITTER_OFF
+             and pe.bytes_at(BARRIER_ON_SITE, 4) == bytes((0x66, 0x89, 0x5F, OBJ_J6_Z))),
+            f"[edi+0x{OBJ_J6_Z:02X}] = 0x{BARRIER_EMITTER_OFF:X} going off, bx "
+            "(zeroed in the prologue) coming on -- half a turn of the emitter")
+    c.check("family.crush_wall.falls",
+            (imm32(CRUSH_TURN_SITE, 0xBB) == CRUSH_TURN_STEP
+             and imm32(CRUSH_DROP_SITE, 0xBF) == -CRUSH_DROP_STEP
+             and word_add(CRUSH_ROT_SITE, 0x01, 0x5E, OBJ_ROT_X)
+             and t.call_target(CRUSH_SPIN_CALL) == POOL_ARRIVED
+             and t.call_target(CRUSH_DELETE_CALL) == DELETE_LAND),
+            f"+{CRUSH_TURN_STEP} on the wall's own x word and -{CRUSH_DROP_STEP} "
+            f"on its z every frame until 0x{POOL_ARRIVED:08X} clears, then "
+            f"aDeleteLand 0x{DELETE_LAND:08X}")
+    c.check("family.footbridge.falls",
+            (pe.bytes_at(FOOTBRIDGE_TILT_ARGS[0], 2) == b"\x6a\x04"
+             and pe.bytes_at(FOOTBRIDGE_TILT_ARGS[1], 2) == b"\x6a\xfe"
+             and t.call_target(FOOTBRIDGE_TILT_CALL) == A_RANDOM2
+             and word_add(FOOTBRIDGE_ROT_SITES[0], 0x01, 0x56, OBJ_ROT_Z)
+             and word_add(FOOTBRIDGE_ROT_SITES[1], 0x01, 0x7E, OBJ_ROT_Y)
+             and pe.bytes_at(FOOTBRIDGE_DROP_SITE, 2) == b"\x81\xc1"
+             and pe.i32(FOOTBRIDGE_DROP_SITE + 2) == -FOOTBRIDGE_DROP_STEP
+             and t.call_target(FOOTBRIDGE_DELETE_CALL) == DELETE_LAND),
+            f"a tilt drawn once from aRandom2(-2, 4) turns the block's own y "
+            f"and z words while its z drops {FOOTBRIDGE_DROP_STEP} a frame; "
+            "then aDeleteLand")
+    c.check("family.footbridge2.falls",
+            (word_add(FOOTBRIDGE2_ROT_SITES[0], 0x01, 0x46, OBJ_ROT_Y)
+             and word_add(FOOTBRIDGE2_ROT_SITES[1], 0x01, 0x4E, OBJ_ROT_Z)
+             and t.call_target(FOOTBRIDGE2_DELETE_CALL) == DELETE_LAND),
+            "FootBridge2 is the same fall on the block its box search finds")
+    c.check("family.footbridge2.finds_the_block_beside_the_cell",
+            (pe.bytes_at(FOOTBRIDGE2_GROUP_READ_SITE, 3) == b"\x8a\x46\x0b"
+             and pe.bytes_at(FOOTBRIDGE2_GROUP_CLEAR_SITE, 4) == b"\xc6\x46\x0b\x00"
+             and pe.bytes_at(FOOTBRIDGE2_BOX_DOWN_SITE, 2) == b"\x81\xe9"
+             and pe.u32(FOOTBRIDGE2_BOX_DOWN_SITE + 2) == FOOTBRIDGE2_BOX_DOWN
+             and all(pe.u8(FOOTBRIDGE2_BOX_PUSH_SITE + 5 * i) == 0x68
+                     and pe.u32(FOOTBRIDGE2_BOX_PUSH_SITE + 5 * i + 1) == extent
+                     for i, extent in enumerate(FOOTBRIDGE2_BOX))
+             and pe.bytes_at(FOOTBRIDGE2_BOX_SIDE_SITE, 2) == b"\x81\xc2"
+             and pe.u32(FOOTBRIDGE2_BOX_SIDE_SITE + 2) == FOOTBRIDGE2_BOX_SIDE
+             and t.call_target(FOOTBRIDGE2_SEARCH_CALL) == NEAREST_OBJECT),
+            f"the group byte is read and zeroed as the cells are scanned, and "
+            f"the block is 0x{NEAREST_OBJECT:08X}'s find in a "
+            f"{FOOTBRIDGE2_BOX[2]} x {FOOTBRIDGE2_BOX[1]} x {FOOTBRIDGE2_BOX[0]} "
+            f"box {FOOTBRIDGE2_BOX_SIDE} beside and {FOOTBRIDGE2_BOX_DOWN} below "
+            "the first cell's object")
+    c.check("family.footbridges.remove_the_riders",
+            (t.call_target(FOOTBRIDGE_LOSS_CALL) == ADD_LOSS
+             and t.call_target(FOOTBRIDGE_REMOVE_CALL) == REMOVE_UNIT_ELEMENT
+             and t.call_target(FOOTBRIDGE2_LOSS_CALL) == ADD_LOSS
+             and t.call_target(FOOTBRIDGE2_REMOVE_CALL) == REMOVE_UNIT_ELEMENT),
+            f"after the loop both routines call addLoss 0x{ADD_LOSS:08X} and "
+            f"aRemoveUnitElement 0x{REMOVE_UNIT_ELEMENT:08X} per rider -- "
+            "and removal kills")
+
+    def esp_slot(site: int, opcode: int) -> int | None:
+        """The `[esp + disp8]` a `lea`/`mov` at `site` names, or None."""
+        head = pe.bytes_at(site, 3)
+        if len(head) != 3 or head[0] != opcode or head[2] != 0x24:
+            return None
+        return pe.u8(site + 3)
+
+    def rider_falls(sites: tuple[int, ...]) -> bool:
+        get_call, drop, raise_, set_call = sites
+        return (t.call_target(get_call) == GET_OBJECT_POSITION
+                and pe.u8(drop) == 0x2D and pe.u32(drop + 1) == RIDER_DROP_STEP
+                and pe.u8(raise_) == 0x05
+                and pe.u32(raise_ + 1) == RIDER_DROP_BACK
+                and t.call_target(set_call) == SET_OBJECT_POSITION)
+
+    def rider_turns(sites: tuple[int, ...], slots: tuple[int, ...]) -> bool:
+        (parity, neg_z, neg_y, pos_z, pos_y, get_call, add_z, add_y,
+         set_call) = sites
+        lea_z, mov_z, lea_y, mov_y = slots
+        return (pe.bytes_at(parity, 3) == b"\xf6\xc3\x01"
+                and all(pe.u8(va) == 0xBD and pe.i32(va + 1) == sign * RIDER_TURN_Z
+                        for va, sign in ((pos_z, 1), (neg_z, -1)))
+                and all(pe.u8(va) == 0xBB and pe.i32(va + 1) == sign * RIDER_TURN_Y
+                        for va, sign in ((pos_y, 1), (neg_y, -1)))
+                and t.call_target(get_call) == GET_OBJECT_ROTATION
+                and pe.bytes_at(add_z, 2) == b"\x03\xc5"
+                and pe.bytes_at(add_y, 2) == b"\x03\xcb"
+                and t.call_target(set_call) == SET_OBJECT_ROTATION
+                and esp_slot(lea_z, 0x8D) is not None
+                and esp_slot(lea_z, 0x8D) == esp_slot(mov_z, 0x8B)
+                and esp_slot(lea_y, 0x8D) is not None
+                and esp_slot(lea_y, 0x8D) == esp_slot(mov_y, 0x8B))
+
+    c.check("family.footbridges.the_accessors_name_the_words",
+            (all(pe.u8(va + 2) == off
+                 for va, off in zip(POSITION_READ_SITES,
+                                    (OBJ_POS_X, OBJ_POS_Y, OBJ_POS_Z)))
+             and all(pe.u8(va + 3) == off
+                     for va, off in zip(ROTATION_READ_SITES,
+                                        (OBJ_ROT_X, OBJ_ROT_Y, OBJ_ROT_Z)))
+             and all(pe.u8(va + 3) == off
+                     for va, off in zip(ROTATION_WRITE_SITES,
+                                        (OBJ_ROT_X, OBJ_ROT_Y, OBJ_ROT_Z)))
+             and all(pe.u8(va + 2) == off
+                     for va, off in zip(POSITION_WRITE_SITES,
+                                        (OBJ_POS_X, OBJ_POS_Y, OBJ_POS_Z)))),
+            f"0x{GET_OBJECT_ROTATION:08X} and 0x{SET_OBJECT_ROTATION:08X} take "
+            f"+0x{OBJ_ROT_X:02X}/+0x{OBJ_ROT_Y:02X}/+0x{OBJ_ROT_Z:02X} in "
+            f"argument order, and 0x{SET_OBJECT_POSITION:08X} the three "
+            "coordinates -- so a rider's third argument is its z and its own "
+            "heading word")
+    c.check("family.footbridges.the_bodied_arm_is_symmetric",
+            (all(pe.bytes_at(va, 2) in (b"\x8b\x48", b"\x8b\x40")
+                 and pe.u8(va + 2) == OBJECT_NODE_FIELD
+                 for va in POSITION_NODE_TEST_SITES)
+             and t.call_target(POSITION_NODE_GET_CALL) == CHARISMA_POSITION_GET
+             and t.call_target(POSITION_NODE_SET_CALL) == CHARISMA_POSITION_SET
+             and pe.u32(CHARISMA_SCALE_UP) == CHARISMA_SCALE_UP_BITS
+             and pe.u32(CHARISMA_SCALE_DOWN) == CHARISMA_SCALE_DOWN_BITS),
+            f"a rider has a body, so `+0x{OBJECT_NODE_FIELD:02X}` sends both "
+            f"accessors to 0x{CHARISMA_POSITION_GET:08X} / "
+            f"0x{CHARISMA_POSITION_SET:08X}, which scale by 16 and by a "
+            "sixteenth -- one is the other's inverse, so the loop's read-back "
+            "loses nothing and the fall is the difference of its own two steps")
+    c.check("family.footbridges.drop_the_riders",
+            rider_falls(FOOTBRIDGE_RIDER_FALL)
+            and rider_falls(FOOTBRIDGE2_RIDER_FALL),
+            f"both loops read each rider's object, subtract "
+            f"{RIDER_DROP_STEP} from its z and put it back {RIDER_DROP_BACK} "
+            f"higher -- {RIDER_DROP_STEP - RIDER_DROP_BACK} a frame")
+    c.check("family.footbridges.turn_the_riders",
+            rider_turns(FOOTBRIDGE_RIDER_TURN, FOOTBRIDGE_RIDER_SLOTS)
+            and rider_turns(FOOTBRIDGE2_RIDER_TURN, FOOTBRIDGE2_RIDER_SLOTS),
+            f"and turn it {RIDER_TURN_Z} about z and {RIDER_TURN_Y} about y a "
+            "frame, negative for an odd rider index (`test bl, 1`)")
+    c.check("family.statue.turns_a_joint",
+            (all(pe.u8(STATUE_BOX_SITE + 5 * i) == 0x68
+                 and pe.u32(STATUE_BOX_SITE + 5 * i + 1) == STATUE_BOX
+                 for i in range(3))
+             and t.call_target(STATUE_SEARCH_CALL) == NEAREST_OBJECT
+             and pe.bytes_at(STATUE_READ_SITE, 4) == bytes((0x0F, 0xBF, 0x4E, OBJ_J6_Z))
+             and word_add(STATUE_TURN_SITE, 0x01, 0x6E, OBJ_J6_Z)
+             and pe.bytes_at(STATUE_SETTLE_SITE, 4) == bytes((0x66, 0x89, 0x56, OBJ_J6_Z))),
+            f"aPlayRotateStatueSequence reads, adds to and writes back "
+            f"[esi+0x{OBJ_J6_Z:02X}] -- joint 6's z word, not the object's own "
+            f"rotation -- on 0x{NEAREST_OBJECT:08X}'s find in a {STATUE_BOX}-unit box")
+    c.check("family.one_record_layout",
+            pe.bytes_at(DOOR_LEAF_FIRST_SITE, 4) == bytes((0x66, 0x01, 0x5E, OBJ_J6_Z))
+            and pe.bytes_at(DOOR_LEAF_SECOND_SITE, 4) == bytes((0x66, 0x29, 0x5E, OBJ_J12_Z)),
+            "the door's +0x2A / +0x30 are the joint-6 and joint-12 z words the "
+            "front door and the barrier write too -- one layout, docs/28 §7.2")
 
     LOG.info("aPushObject 0x%08X", PUSH_OBJECT)
     c.equal("push.limit", pe.u32(PUSH_LIMIT_SITE + 4), PUSH_LIMIT,
@@ -1218,6 +1875,143 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not an algorithm
     c.check("corpus.no_ladders",
             corpus.field_types.get(FIELD_LADDER, 0) == 0,
             f"field type {FIELD_LADDER} is unused in the shipped campaign")
+    door_total = sum(corpus.door_objects.values())
+    door_agree = sum(n for (_, _, ok), n in corpus.door_objects.items() if ok)
+    c.equal("corpus.door_objects", door_total, EXPECTED_DOOR_OBJECTS,
+            lambda v: f"{v} special objects stand on door cells")
+    c.check("corpus.door_joints", door_total > 0 and door_agree == door_total,
+            f"{door_agree}/{door_total} carry the leaves the toggle leaves -- "
+            f"{DOOR_JOINTS_OPEN} at an even action point, "
+            f"{DOOR_JOINTS_CLOSED} at an odd one")
+    c.equal("corpus.door_prototypes",
+            tuple(sorted({name for name, _, _ in corpus.door_objects})),
+            EXPECTED_DOOR_PROTOTYPES,
+            lambda v: f"{len(v)} door prototypes, all two-leaf")
+    lever_total = sum(corpus.lever_objects.values())
+    lever_agree = sum(n for (_, _, ok), n in corpus.lever_objects.items() if ok)
+    c.equal("corpus.lever_objects", lever_total, EXPECTED_LEVER_OBJECTS,
+            lambda v: f"{v} special objects stand on lever cells")
+    c.check("corpus.lever_joints",
+            lever_total > 0 and lever_agree == lever_total
+            and any(ap == LEVER_DOWN for _, ap, _ in corpus.lever_objects),
+            f"{lever_agree}/{lever_total} carry the handle the sequence leaves "
+            f"-- zero at {LEVER_UP}, (-{LEVER_THROW}, 0, 0) at {LEVER_DOWN} -- "
+            "and at least one ships thrown")
+    c.equal("corpus.lever_prototype",
+            tuple(sorted({name for name, _, _ in corpus.lever_objects
+                          if name.startswith("L1")})),
+            (LEVER_PROTOTYPE,),
+            lambda v: f"the cross-set lever prototype is {v}")
+    barrier_total = sum(corpus.barrier_objects.values())
+    barrier_agree = sum(n for (_, _, ok), n in corpus.barrier_objects.items()
+                        if ok)
+    c.equal("corpus.barrier_seeded", barrier_total, EXPECTED_BARRIER_SEEDED,
+            lambda v: f"{v} emitters stand on a cell already at 90 or 91")
+    c.check("corpus.barrier_joints",
+            barrier_total > 0 and barrier_agree == barrier_total
+            and {ap for _, ap, _ in corpus.barrier_objects}
+            == {BARRIER_ON_ID, BARRIER_OFF_ID},
+            f"{barrier_agree}/{barrier_total} carry the emitter the sequence "
+            f"leaves -- zero at {BARRIER_ON_ID}, (0, 0, 0x{BARRIER_EMITTER_OFF:X}) "
+            f"at {BARRIER_OFF_ID} -- with both states in the corpus")
+    bridge_total = sum(corpus.bridge_objects.values())
+    bridge_raised = sum(n for (_, up, _) , n in corpus.bridge_objects.items() if up)
+    bridge_agree = sum(n for (_, _, ok), n in corpus.bridge_objects.items() if ok)
+    c.equal("corpus.bridge_objects", (bridge_total, bridge_raised),
+            (EXPECTED_BRIDGE_OBJECTS, EXPECTED_BRIDGE_RAISED),
+            lambda v: f"{v[0]} bridges in the shipped missions, {v[1]} raised")
+    c.check("corpus.bridge_joints", bridge_total > 0 and bridge_agree == bridge_total,
+            f"{bridge_agree}/{bridge_total} stand at +-{BRIDGE_SWING} = "
+            f"{BRIDGE_FRAMES} frames of {BRIDGE_STEP} or at zero -- the two poses "
+            "the loop ends on, so a raised one lowers on its first call")
+    c.equal("corpus.statue2_calls", tuple(sorted(corpus.statue2_calls)),
+            EXPECTED_STATUE2_CALLS,
+            lambda v: f"the shipped Statue2 call(s): {v}")
+    statue_objects: list[str] = []
+    for mission, low, high in corpus.statue2_calls:
+        statue_objects.extend(corpus.objects_in_range(mission, low, high))
+    c.equal("corpus.statue_objects",
+            (len(statue_objects), tuple(sorted(set(statue_objects)))),
+            (EXPECTED_STATUE_OBJECTS, (STATUE_PROTOTYPE,)),
+            lambda v: f"{v[0]} special object(s) on the range's cells, all {v[1]}")
+    statue_mission = corpus.statue2_calls[0][0] if corpus.statue2_calls else ""
+    c.equal("corpus.statue_prototype_has_a_part",
+            (corpus.part_count(statue_mission, STATUE_PROTOTYPE),
+             corpus.part_count(statue_mission, FIXED_STATUE_PROTOTYPE)),
+            (1, 0),
+            lambda v: f"{STATUE_PROTOTYPE} has {v[0]} part for the +0x2A write to "
+                      f"turn; FixedStatue's {FIXED_STATUE_PROTOTYPE} has {v[1]}")
+    calls = [(mission, ap) for mission, aps in sorted(corpus.foot_bridge2_groups.items())
+             for ap in sorted(aps)]
+    matched = [key for key in calls if corpus.cells_by_ap[key] > 0]
+    two_cells = sum(1 for key in matched if corpus.cells_by_ap[key] == 2)
+    one_block = sum(1 for key in matched
+                    if corpus.objects_by_ap.get(key, []) == [FOOTBRIDGE2_BLOCK])
+    c.equal("corpus.footbridge2_groups",
+            (len(calls), len(matched), two_cells, one_block),
+            (EXPECTED_FOOTBRIDGE2_CALLS,) + (EXPECTED_FOOTBRIDGE2_GROUPS,) * 3,
+            lambda v: f"{v[0]} calls, {v[1]} name a group, {v[2]} of two cells, "
+                      f"{v[3]} with exactly one {FOOTBRIDGE2_BLOCK} on one of them")
+    unmatched = tuple(key for key in calls if corpus.cells_by_ap[key] == 0)
+    uncalled = tuple(sorted(
+        (mission, ap) for (mission, ap), names in corpus.objects_by_ap.items()
+        if mission in corpus.foot_bridge2_groups and names == [FOOTBRIDGE2_BLOCK]
+        and ap not in corpus.foot_bridge2_groups[mission]))
+    # Every cell the family reaches: the ones a `CrushWall`/`FootBridge`
+    # call names by coordinate, and the ones its own action point names --
+    # a door, a lever, a barrier emitter. The remake turns, poses and frees
+    # **per cell** where the engine does it per object, and this is what
+    # says the two are the same thing on the shipped maps.
+    family_cells = {(mission, x, y)
+                    for mission, cells in corpus.setpiece_cells.items()
+                    for x, y in cells}
+    family_cells |= {key for key, ap in corpus.ap_by_cell.items()
+                     if ap in FAMILY_ACTION_POINTS}
+    family_objects = sorted({len(corpus.objects_by_cell[key])
+                             for key in family_cells})
+    c.equal("corpus.setpiece_cells_carry_one_object",
+            (len(family_cells), family_objects),
+            (EXPECTED_FAMILY_CELLS, [1]),
+            lambda v: f"{v[0]} cell(s) a CrushWall/FootBridge call or a "
+                      f"door, lever or barrier action point names, each "
+                      f"carrying {v[1]} special object -- so turning, posing "
+                      "and freeing per cell is per object on the shipped maps")
+    # ...and the other half of "which object on the cell": the scene's own
+    # `.3DW` geometry stands on some of those fields too. It is in no table
+    # `0x00406F20` reads and it is placed **before** the special objects, so
+    # a remake that answers by placement order aims its flight, its joint, its
+    # pose and its `aDeleteLand` at the level instead of at the door panel or
+    # the bridge block. `FootBridge2`'s cells are counted with the rest here:
+    # its call names a group rather than a coordinate, so its cells are the
+    # ones whose action point a call carries.
+    fb2_cells = {key for key, ap in corpus.ap_by_cell.items()
+                 if key[0] in corpus.foot_bridge2_groups
+                 and ap in corpus.foot_bridge2_groups[key[0]]}
+    shared = tuple(sorted(
+        (mission, x, y, len(corpus.clones_on(mission, x, y)))
+        for mission, x, y in family_cells | fb2_cells
+        if corpus.clones_on(mission, x, y)))
+    c.equal("corpus.family_cells_share_fields_with_clones", shared,
+            EXPECTED_CLONE_SHARED_CELLS,
+            lambda v: f"{len(v)} family cell(s) over "
+                      f"{len({row[0] for row in v})} mission(s) carry the "
+                      "scene's own geometry beside the object the search "
+                      "finds")
+    witnesses = tuple(
+        (mission, x, y) + corpus.clones_on(mission, x, y)[0]
+        + (corpus.objects_by_cell[(mission, x, y)][0],
+           corpus.object_z_by_cell[(mission, x, y)][0])
+        for mission, x, y, *_ in EXPECTED_CLONE_WITNESSES)
+    c.equal("corpus.the_clone_is_not_where_the_object_is", witnesses,
+            EXPECTED_CLONE_WITNESSES,
+            lambda v: "; ".join(
+                f"{row[0]} ({row[1]},{row[2]}): {row[3]} at z {row[4]} "
+                f"before {row[5]} at z {row[6]}" for row in v))
+    c.equal("corpus.footbridge2_typo", (unmatched, uncalled),
+            (EXPECTED_FOOTBRIDGE2_UNMATCHED, EXPECTED_FOOTBRIDGE2_UNCALLED),
+            lambda v: f"the call {v[0]} names a tag no cell carries and the block "
+                      f"tagged {v[1]} is never called: 139 for 130, so that bridge "
+                      "never falls")
 
     # -- the scripts --------------------------------------------------------
     LOG.info("the mission scripts -- the Use hook")

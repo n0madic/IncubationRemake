@@ -478,14 +478,18 @@ func slot_path(slot: int = QUICK_SLOT) -> String:
 ## *when* and *when_text* are the stamp the slot row shows. They come from the
 ## caller because `core` may not call `Time` and the codec is `core`'s
 ## (`godot/tests/test_isolation.gd`); [method stamp_now] is the one place in
-## `game/` that reads the clock.
+## `game/` that reads the clock. *scenery* is [method Scenery.pose_record]
+## and *camera* [method CameraRig.state] -- the picture's own state the
+## mission blob carries beside the simulation, both outside the canonical
+## hash because `core` owns neither.
 func save(mission_world: World = null, slot: int = QUICK_SLOT,
-		when: int = 0, when_text: String = "") -> bool:
+		when: int = 0, when_text: String = "",
+		scenery: Dictionary = {}, camera: Dictionary = {}) -> bool:
 	if state == null:
 		return false
 	var blob: PackedByteArray = PackedByteArray()
 	if mission_world != null:
-		blob = mission_world.save({})
+		blob = mission_world.save(camera, scenery)
 	var made: Error = DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(save_dir))
 	if made != OK and made != ERR_ALREADY_EXISTS:

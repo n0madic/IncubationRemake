@@ -483,6 +483,25 @@ explicitly matters: under §7.1's faithful-by-default rule it would otherwise
 read as a defect this remake keeps. It is not reproduced because the remake's
 save is its own format and stores the two rows as two lists.
 
+**The header carries the picture's own state beside the simulation, outside
+the canonical hash.** The camera was the first such field; since 2026-09-06
+the scenery's pose record is the second ([`42` §8.3](42-mission-presentation.md)):
+the joint triples the door's family turned away from the `.lev`'s and the
+cells whose objects a crush wall or a footbridge freed, which the original
+keeps by embedding the special-object records in its `.sav` and which a
+remake save without them showed authored again on a load. `core` writes and
+reads it back as an opaque dictionary (`World.restored_scenery`), and `game`
+is what puts it on the scene.
+
+The camera was **first** and was for a long time the emptier of the two: the
+field was in the header and in the codec's own checks from the beginning, and
+every writer in `game` passed `{}` into it, so "the camera persists across a
+save" held of the format and not of the game. Both halves are wired since
+2026-09-06 -- `CameraRig.state()` into the blob, `apply_state` after the
+load's redraw -- and `test_effects.gd`'s `resume.*` writes a real slot file
+and reads the view back out of it. A field a format defines and nothing fills
+is worth checking for: it passes every test the codec has.
+
 **Reading** original saves is a one-way import that constrains nothing, so it is
 deferred rather than rejected: worth doing after 1.0, and worth remembering
 that it is also the cheapest route into what remains open in
@@ -1881,6 +1900,41 @@ writes its saves and its settings into the live `user://`, exactly as a played
 one does. That was already true of the file driver; it is now true of any launch
 carrying the flag, which is a wider blast radius and is said here rather than
 discovered.
+
+**And it writes what a played session writes.** `screen save` reached
+`CampaignHost.save(world)` directly until 2026-09-07 — the simulation and
+nothing else, unstamped, with no scenery poses, no camera and no regard for a
+set piece half drawn. It goes through `SliceMain._save_mission_to` now, which
+is the seam `F5`, the slot screen and the turn's autosave already shared, so
+a driven save is byte-comparable with a played one and is **refused** while
+the sequence queue is running ([`42` §8.3](42-mission-presentation.md)). A
+verb that writes a different file from the button it stands in for measures
+its own path and not the game's.
+
+**What driving it found the same day.** Played through the server, *Recall
+position* stayed dark on a slot `F1` had just written. `_slot_holds_this_mission`
+reads a slot's header **once** and remembers the answer -- the interface asks it
+every frame, so the cache is filled long before any save -- and only
+`_autosave` was recording what it wrote. Every writer records now
+(`SliceMain._save_mission_to`), and the suite pins it
+(`test_effects.gd`, `resume.the_slot_knows_its_mission`). A cache whose one
+invalidation path is the writer is only correct while every writer knows about
+it, which is an argument for having one writer rather than for adding a second
+line.
+
+**The snapshot answers a number that moves** (2026-09-07). `picture.scenery`
+is `Scenery.built_count()`, which counts the lattice's cell markers and the
+scene's `.3DW` clones as well as the special objects, and which is a constant
+for the life of a mission -- so a crush wall or a footbridge that took its
+object away moved nothing anything outside the game could read, and the one
+question a driven set-piece session asks had no answer. `picture` now carries
+`scenery_objects` (`Scenery.object_count()`, the search's own answer summed
+over the map) and `scenery_removed` (`removed_count()`, cells `aDeleteLand`
+has freed) beside it. On `_C_129` played to turn 3 the three `CrushWall`
+calls read 113 -> 112 -> 111 -> 110 objects and 0 -> 1 -> 2 -> 3 removed, one
+per call, and the save that follows carries `removed: [556, 616, 708]` --
+(16,18), (16,20) and (18,23), the three cells the script names. Reloaded, the
+scene is rebuilt to its full 1040 and the record replayed back to 110 / 3.
 
 **Screenshots still need a window.** `RenderingServer.force_draw(false)` is
 carried over from §7.15 and is in exactly one place, `AgentSession.capture_png`.

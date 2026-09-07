@@ -84,9 +84,90 @@ const BY_NAME: String = "by_name"
 const TEXTURE_NAME: String = "texture_name"
 
 
+## The node names of an assembled prototype: the root scope's mesh, a part's
+## pivot by index, and the mesh under a pivot.
+const BODY_NODE: String = "body"
+const PART_NODE: String = "part_%d"
+const PART_MESH_NODE: String = "mesh"
+
+
 static func build(prototype: Dictionary,
 		textures: Dictionary) -> ArrayMesh:
 	return build_scope(prototype, textures, ROOT_SCOPE)
+
+
+## One prototype as a node tree: a [constant BODY_NODE] [MeshInstance3D] for
+## the root scope and, per `part_push`, a [constant PART_NODE] pivot at the
+## part's translation holding a [constant PART_MESH_NODE] child.
+##
+## This is the shape [BlobModels] draws an articulated effect model in, and
+## since 2026-09-06 the shape [Scenery] draws **every** placed object in --
+## because a door *is* an articulated model. `L100EX00.3DI` has no root
+## geometry at all: all sixteen of its vertices belong to its two leaves,
+## parts 6 and 12, and `aDoorOpenSequence` turns their joints (docs/26
+## section 3.4). A scenery that built the root scope alone got an empty mesh
+## for it and drew nothing, which is what every empty doorway was.
+##
+## `meshes` caches one [ArrayMesh] per `"<name>/<scope>"` across calls.
+## Answers `null` when nothing draws, which a caller counts as "not built".
+static func assemble(name: String, prototype: Dictionary, textures: Dictionary,
+		meshes: Dictionary[String, ArrayMesh]) -> Node3D:
+	var root: Node3D = Node3D.new()
+	var body: ArrayMesh = cached_scope(name, ROOT_SCOPE, prototype, textures,
+		meshes)
+	if body != null and body.get_surface_count() > 0:
+		var instance: MeshInstance3D = MeshInstance3D.new()
+		instance.name = BODY_NODE
+		instance.mesh = body
+		root.add_child(instance)
+	var parts: Array = DictRead.as_array(prototype.get("parts", []))
+	for index: int in range(parts.size()):
+		var pivot: Node3D = Node3D.new()
+		pivot.name = PART_NODE % index
+		pivot.position = part_translation(DictRead.as_dict(parts[index]))
+		var mesh: ArrayMesh = cached_scope(name, index, prototype, textures,
+			meshes)
+		if mesh != null and mesh.get_surface_count() > 0:
+			var child: MeshInstance3D = MeshInstance3D.new()
+			child.name = PART_MESH_NODE
+			child.mesh = mesh
+			pivot.add_child(child)
+		root.add_child(pivot)
+	if root.get_child_count() == 0:
+		root.free()
+		return null
+	return root
+
+
+## [method build_scope] through a per-`(name, scope)` cache.
+static func cached_scope(name: String, scope: int, prototype: Dictionary,
+		textures: Dictionary, meshes: Dictionary[String, ArrayMesh]) -> ArrayMesh:
+	var key: String = "%s/%d" % [name, scope]
+	if meshes.has(key):
+		return meshes[key]
+	var mesh: ArrayMesh = build_scope(prototype, textures, scope)
+	meshes[key] = mesh
+	return mesh
+
+
+## A part's `part_push` translation, in Godot units -- where its pivot sits
+## under the object and what its own vertices were localised against.
+static func part_translation(part: Dictionary) -> Vector3:
+	var t: Array = DictRead.as_array(part.get("translation", []))
+	if t.size() < 3:
+		return Vector3.ZERO
+	return WorldSpace.to_godot(DictRead.as_int(t[0]), DictRead.as_int(t[1]),
+		DictRead.as_int(t[2]))
+
+
+## The `joint_place` offset each part is authored under, by part index --
+## `null` for a part the shipped data never rotates -- so a caller can find
+## the pivot a joint triple belongs to.
+static func part_anims(prototype: Dictionary) -> Array:
+	var out: Array = []
+	for entry: Variant in DictRead.as_array(prototype.get("parts", [])):
+		out.append(DictRead.as_dict(entry).get("anim", null))
+	return out
 
 
 ## The whole prototype (`scope == ROOT_SCOPE`), or one articulated sub-object.

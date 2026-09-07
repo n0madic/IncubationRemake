@@ -743,6 +743,7 @@ func _synthetic(h: TestHarness) -> void:
 		"UnitTypeTable.description answers 'type 99' and must not be used here")
 
 	_statues(h)
+	_foot_bridges(h)
 	_crush_wall(h)
 
 	# A program with no `[END]` falls off the end, which is an outcome and not
@@ -879,6 +880,136 @@ func _statues(h: TestHarness) -> void:
 	h.equal("statue2.runs_every_matched_cell",
 		[_alive(swept, 0), _alive(swept, 1)], [false, false],
 		"40 toggles to 41 and walks x; 41 toggles to 40 and walks y")
+
+
+## Every `name` event's values, in the order the run recorded them.
+static func _events_named(run: Dictionary, name: String) -> Array:
+	var outcome: LclOutcome = run["outcome"]
+	var out: Array = []
+	for entry: Variant in outcome.events:
+		var event: Dictionary = DictRead.as_dict(entry)
+		if DictRead.as_string(event["name"]) == name:
+			out.append(DictRead.as_array(event["values"]))
+	return out
+
+
+## The field types of `cells` on the run's map.
+static func _types_at(run: Dictionary, cells: Array) -> Array:
+	var state: MapState = run["state"]
+	var out: Array = []
+	for entry: Variant in cells:
+		var cell: Vector2i = entry
+		out.append(state.field_type_at(state.index_of(cell.x, cell.y)))
+	return out
+
+
+## `FootBridge` / `FootBridge2` -- `0x00414A70`, `0x00415110`.
+##
+## The twin of `lcl_runtime.py`'s `foot_bridge.*`: the `minUnits` gate, the
+## nine cells becoming deep holes, the riders taken off the map **dead** and
+## carried on the event; and for `FootBridge2` the exact-turn gate, the group
+## byte cleared, the matched cells on the event before the riders (docs/42
+## section 8.3).
+func _foot_bridges(h: TestHarness) -> void:
+	var wide: int = 9
+	var zeros: Array = []
+	for _i: int in range(wide * wide):
+		zeros.append(0)
+	var block: Array = []
+	for y: int in [3, 4, 5]:
+		for x: int in [3, 4, 5]:
+			block.append(Vector2i(x, y))
+	var nine_holes: Array = []
+	var nine_floors: Array = []
+	for _i: int in range(9):
+		nine_holes.append(LclInterpreter.CTRL_TYPE_DEEP_HOLE)
+		nine_floors.append(0)
+
+	# One unit on the block and `minUnits` 1: the count is not **more than**
+	# the argument, and nothing happens.
+	var held: Dictionary = _run_synthetic(_program([
+		_instr("command", "FootBridge", [_num(4), _num(4), _num(30), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 4, "y": 4}], wide, wide,
+		{"field_type": zeros})
+	h.equal("foot_bridge.needs_more_than_min_units",
+		[_types_at(held, block), _alive(held, 0),
+			_events_named(held, "foot_bridge")],
+		[nine_floors, true, []],
+		"`0x00442650` compares the count with `jle`")
+
+	# Two units: the nine cells become deep holes, both riders die and leave
+	# their cells, and the event names them after the count.
+	var fell: Dictionary = _run_synthetic(_program([
+		_instr("command", "FootBridge", [_num(4), _num(4), _num(30), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 4, "y": 4},
+		{"slot": 1, "player": 0, "x": 5, "y": 5},
+		{"slot": 2, "player": 0, "x": 7, "y": 7},
+	], wide, wide, {"field_type": zeros})
+	var fell_state: MapState = fell["state"]
+	h.equal("foot_bridge.the_block_becomes_a_deep_hole",
+		_types_at(fell, block), nine_holes,
+		"`mov byte [esi+0x0D], 4` on all nine")
+	h.equal("foot_bridge.the_riders_die",
+		[_alive(fell, 0), _alive(fell, 1), _alive(fell, 2)],
+		[false, false, true],
+		"`0x00414F9C` is `aRemoveUnitElement`, and removal kills")
+	h.equal("foot_bridge.the_riders_leave_the_map",
+		[fell_state.unit_at(fell_state.index_of(4, 4)),
+			fell_state.unit_at(fell_state.index_of(5, 5))],
+		[MapState.NO_UNIT, MapState.NO_UNIT])
+	h.equal("foot_bridge.the_event_carries_the_riders",
+		_events_named(fell, "foot_bridge"), [[4, 4, 30, 2, 0, 1]],
+		"x, y, frames, standing, then the slots in block order")
+
+	# `FootBridge2` on the wrong turn does nothing at all; the synthetic
+	# runner plays turn 3.
+	var group: Array = zeros.duplicate()
+	group[2 * wide + 2] = 112
+	group[2 * wide + 6] = 112
+	group[6 * wide + 4] = 113
+	var early: Dictionary = _run_synthetic(_program([
+		_instr("command", "FootBridge2", [_num(112), _num(30), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 2, "y": 2}], wide, wide,
+		{"field_type": zeros, "action_point": group})
+	var early_state: MapState = early["state"]
+	h.equal("foot_bridge2.needs_the_exact_turn",
+		[early_state.action_point_at(early_state.index_of(2, 2)),
+			_alive(early, 0), _events_named(early, "foot_bridge2")],
+		[112, true, []],
+		"`0x004426D0` compares `GetTurn`'s answer with `jne`")
+
+	# On its turn: both matched cells become deep holes with the byte
+	# cleared, the other group is untouched, the rider dies, and the event
+	# carries the cells before the rider.
+	var gone: Dictionary = _run_synthetic(_program([
+		_instr("command", "FootBridge2", [_num(112), _num(30), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 2, "y": 2},
+		{"slot": 1, "player": 0, "x": 4, "y": 6},
+	], wide, wide, {"field_type": zeros, "action_point": group})
+	var gone_state: MapState = gone["state"]
+	h.equal("foot_bridge2.clears_the_group",
+		[_types_at(gone, [Vector2i(2, 2), Vector2i(6, 2), Vector2i(4, 6)]),
+			[gone_state.action_point_at(gone_state.index_of(2, 2)),
+				gone_state.action_point_at(gone_state.index_of(6, 2)),
+				gone_state.action_point_at(gone_state.index_of(4, 6))]],
+		[[LclInterpreter.CTRL_TYPE_DEEP_HOLE,
+			LclInterpreter.CTRL_TYPE_DEEP_HOLE, 0], [0, 0, 113]],
+		"`mov byte [esi+0x0B], 0` and `[esi+0x0D], 4` on the matches only")
+	h.equal("foot_bridge2.the_riders_die", [_alive(gone, 0), _alive(gone, 1)],
+		[false, true], "`0x00415663` is `aRemoveUnitElement` on every rider")
+	h.equal("foot_bridge2.the_event_carries_the_cells",
+		_events_named(gone, "foot_bridge2"), [[112, 30, 2, 2, 2, 6, 2, 0]],
+		"actpt, frames, hit, the cells row-major, then the riders")
 
 
 ## `CrushWall` -- `0x00415C70` through `0x0042F410`, docs/42 section 8.2.

@@ -922,35 +922,69 @@ func _fixed_statue(instr: Dictionary) -> void:
 
 
 ## `0x00442650` -- collapses only when **more than** `minUnits` stand on it.
+##
+## The event is `x, y, frames, standing` and then the riders' slots in the
+## block's row-major order. `aPlayFootBridgeSequence` `0x00414A70` lists
+## every unit on the nine cells before its loop and, after it, takes each
+## one off the map through `aRemoveUnitElement` (`0x00414F8C`, `0x0043B8D0`
+## then `0x004779C0`) -- and removal kills (docs/42 section 12, the closed
+## item on `0x00477ABD`). The slots are carried because the map no longer
+## knows who stood there once they are gone.
 func _foot_bridge(instr: Dictionary) -> void:
 	var x: int = _n(instr, 0)
 	var y: int = _n(instr, 1)
-	var standing: int = 0
+	var riders: Array[UnitState] = []
 	var block: PackedInt32Array = PackedInt32Array()
 	for oy: int in [-1, 0, 1]:
 		for ox: int in [-1, 0, 1]:
 			if not _context.in_bounds(x + ox, y + oy):
 				continue
 			block.append(_context.index(x + ox, y + oy))
-			if _context.unit_on(x + ox, y + oy) != null:
-				standing += 1
-	if standing <= _n(instr, 3):
+			var rider: UnitState = _context.unit_on(x + ox, y + oy)
+			if rider != null:
+				riders.append(rider)
+	if riders.size() <= _n(instr, 3):
 		return
 	for cell: int in block:
 		_context.state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
-	_event("foot_bridge", [x, y, _n(instr, 2), standing])
+	var values: Array = [x, y, _n(instr, 2), riders.size()]
+	for rider: UnitState in riders:
+		values.append(rider.slot)
+	_event("foot_bridge", values)
+	for rider: UnitState in riders:
+		_context.kill(rider)
 
 
 ## `0x004426D0` -- nothing happens unless the turn number matches exactly.
+##
+## The event is `actpt, frames, hit`, then the `hit` matched cells as `x, y`
+## pairs in the engine's own row-major scan order, then the riders' slots.
+## `0x00415110` clears the group byte on each cell as it scans
+## (`0x004151EB`), so the cells travel on the event for the picture to find
+## the block -- `L069EI00` stands on one of the two -- and it removes every
+## rider the way `FootBridge` does (`0x00415653`, `0x00415663`).
 func _foot_bridge2(instr: Dictionary) -> void:
 	if _context.turn.turn != _n(instr, 2):
 		return
-	var hit: int = 0
-	for cell: int in _context.cells_with_actpt(_n(instr, 0), _n(instr, 0)):
+	var cells: PackedInt32Array = _context.cells_with_actpt(_n(instr, 0),
+		_n(instr, 0))
+	var riders: Array[UnitState] = []
+	var values: Array = [_n(instr, 0), _n(instr, 1), cells.size()]
+	for cell: int in cells:
 		_context.state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
 		_context.state.set_action_point(cell, 0)
-		hit += 1
-	_event("foot_bridge2", [_n(instr, 0), _n(instr, 1), hit])
+		var rider: UnitState = _context.unit_on(cell % _context.state.width,
+			cell / _context.state.width)
+		if rider != null:
+			riders.append(rider)
+	for cell: int in cells:
+		values.append(cell % _context.state.width)
+		values.append(cell / _context.state.width)
+	for rider: UnitState in riders:
+		values.append(rider.slot)
+	_event("foot_bridge2", values)
+	for rider: UnitState in riders:
+		_context.kill(rider)
 
 
 ## `0x00442010` -- grow into a random free neighbour of each tagged tile.

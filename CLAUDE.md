@@ -46,7 +46,7 @@ python3 tools/typ_parse.py        --check gog_incubation      # 18 checks
 python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 55 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
-python3 tools/interaction_tables.py --check gog_incubation    # 114 checks
+python3 tools/interaction_tables.py --check gog_incubation    # 158 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 306 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 546 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
@@ -59,7 +59,7 @@ python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
-python3 tools/lcl_runtime.py        --check gog_incubation   # 58 checks, 942 invocations
+python3 tools/lcl_runtime.py        --check gog_incubation   # 67 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 61 checks, 1863 units
 python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/hit/damage/reaction/experience/jam/warp/placers
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 250 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 37 suites, 4128 checks
+bash   godot/run_tests.sh                                    # 37 suites, 4353 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -663,7 +663,11 @@ and the isolation sweep.
 the 450-slot blob pool with all 74 update arms diffed tick by tick against
 `tools/blob_runtime.py`, the sprite atlas, the three weapon switches, the
 set-piece driver at 20 fps and the terrain diff that finally makes a door
-*move*. Its own finding is `RoofUnit`'s drop rate -- one whole map field per
+*change* -- its §7 read the change as the panel rising, and the 2026-09-06
+correction in place there is that the panel never moves: `aDoorOpenSequence`
+turns the two leaves' joints, the cell's `+0x05` names the land marker, and
+the panel had never been drawn because `Scenery` built the root scope alone
+and `L100EX00.3DI` is all parts. Its own finding is `RoofUnit`'s drop rate -- one whole map field per
 displayed frame, `0x00411E26` -- which neither `docs/20` nor `docs/28` carried;
 its correction is to `docs/92` §7.1's accounting of which volume ids the alien
 scream's defect left dead. **The suites still print `executable-Python`**, and
@@ -750,7 +754,7 @@ Nine things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.23.0 since `text/info/events.json` -- the pickup messages of docs/26 section 3 and the action-point-to-label map behind them -- joined the cache), in
+* **`CONVERTER_VERSION` is written down twice** (0.24.0 since the special objects' authored joint triples -- `+0x26..+0x30`, a door's leaves -- joined `map.json`; 0.23.0 was `text/info/events.json`), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump

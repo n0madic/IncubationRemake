@@ -1136,6 +1136,8 @@ clones) and `fcn.00404e30` (special) write them:
 | `+0x20` | `u16` | Rotation, first component (always 0 in shipped data) |
 | `+0x22` | `u16` | Rotation, second component (always 0 in shipped data) |
 | `+0x24` | `u16` | Rotation, third component; 4096 = 360°, **not** wrapped |
+| `+0x26`, `+0x28`, `+0x2A` | `3 x i16` | **Joint angles of part 6** ([`28` §7.2](28-effects-and-sound.md)). Zero in every land and scene record; authored in the special objects — a door's first leaf is `(0, 0, −1000)` when its cell ships open, 302/302 ([`26` §3.4](26-interaction.md)), and 28 more records on nine other part-carrying prototypes pose a part (`L024EG00` ×10 at 2048, `L068EE00`, `L026ED00`, …) |
+| `+0x2C`, `+0x2E`, `+0x30` | `3 x i16` | **Joint angles of part 12**; a door's second leaf, `(0, 0, +1000)` open |
 
 Blocks differ only in their tails: 64 bytes for the scene clones, 66 for the
 special objects (`+0x40`, `+0x41`), 70 for the land lattice
@@ -1239,7 +1241,7 @@ what a cell's `+0x0F` / `+0x11` fields index; those point into a separate
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|
-| `+0x08`..`+0x24` | | Common 3D-object prefix, §6 | confirmed |
+| `+0x08`..`+0x30` | | Common 3D-object prefix, §6 | confirmed |
 | `+0x40` | `u8` | **Prototype letter** — `69` = `'E'` in all 11410 records | confirmed |
 | `+0x41` | `u8` | **Prototype number**, 128 distinct values | confirmed |
 
@@ -1278,7 +1280,7 @@ Because the engine recomputes `+0x08`, the stored value is stale: it matches the
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|
-| `+0x08`..`+0x24` | | Common 3D-object prefix, §6 | confirmed |
+| `+0x08`..`+0x30` | | Common 3D-object prefix, §6 | confirmed |
 | `+0x40` | `u32` | Always `1`; `fcn.00404aa0` pre-sets it for all 2500 slots | confirmed |
 | `+0x44` | `u8` | **grid x** | confirmed |
 | `+0x45` | `u8` | **grid y** | confirmed |

@@ -875,25 +875,25 @@ here is the camera and the effects each one adds:
 
 | Routine | Camera | Effects | Notes |
 |---|---|---|---|
-| `aDoorOpenSequence` `0x00410A20` | flight to the door from a point above the unit, **suppressed only when the two extra tiles are −1** — the LCL wrapper; the player's Use and the AI's opener pass real tiles | none | `door.wav` looped; 10 frames; flight back |
-| tubes `0x00410F10` / `0x00411150` / `0x004112E0` | none | `0x00423770` smoke at frame 10 (`OpenTube` only) | 19 frames |
+| `aDoorOpenSequence` `0x00410A20` | flight from the unit's object to the **panel** — the object `0x00406F20` finds in a 5 000-unit box of the cell's marker — with both ends at the panel's z plus the unit's height (`0x0047AD70` twice, `0x00410C10`); **suppressed only when the two extra tiles are −1** — the LCL wrapper; the player's Use and the AI's opener pass real tiles | none | `door.wav` looped; 10 frames of ±100 on the panel's joints `+0x2A`/`+0x30` — the leaves swing, [`26` §3.4](26-interaction.md); flight back |
+| tubes `0x00410F10` / `0x00411150` / `0x004112E0` | none | `0x00423770` smoke at frame 10 (`OpenTube` only) | 19 frames of +51 on the hatch's joint word: `OpenTube` part 6 about x, `OpenPlantTube` parts 6 and 12 about x, `OpenFrontDoor` parts 6 and 12 about **z** — §8.3 |
 | `aPlayElevatorSequence` `0x004125D0` | flight to the lift; **`aSetCameraPosition` every frame** | none | rider and cell move per frame |
-| `aPlayPlatformSequence` `0x00412A00` | flight to the block; camera set every frame; `0x004234C0` dust per frame | | |
-| `Bridge` `0x00410DA0` | none | none | 80 frames of `+0x26` |
+| `aPlayPlatformSequence` `0x00412A00` | flight to the block; camera set every frame; `0x004234C0` dust per frame | none | **the block travels**: per cell the marker `aGetSymbolObjectPtr` `0x00412BA7` names and the special object `0x00406F20` `0x00412BF7` finds beside it, every rider and the camera target move `0x140` a frame for `dist·10` frames -- one field per ten ([`20` §7.4](20-lcl-language.md)). The remake ran the flight, the dust and the sound and moved **nothing** until 2026-09-07: the deck stayed authored and the riders, relocated by `core` at once, stood in mid-air over the destination -- `_C_106`'s squad, on its first turn, seen by the player |
+| `Bridge` `0x00410DA0` | none | none | 80 frames of ±12 on `+0x26` and `+0x2C` — both halves, the sign read off the pose it finds — §8.3 |
 | `FootBridge` `0x00414A70`, `FootBridge2` `0x00415110` | flight to the block; camera set every frame | none | **the block tilts and the units on it tumble** — §8.1: a tilt drawn once from `aRandom2(−2, 4)` turns the *block* every frame, and every rider turns by a fixed ±25/±12 a frame by its index |
-| `aPlayLaserBarrier` `0x00413560` | flight to the beam, then to the middle victim | the beam `0x00428990`; `0x0042AB40` and `0x0042A9D0` on every unit killed | 40 frames |
-| statues `0x00413A40` / `0x00414000` | flight to 32 000 (20 m) above | `FireDeath` on every unit in the path, `0x00428BF0` beam | the "knocked-down" state 3 of §1.3 |
+| `aPlayLaserBarrier` `0x00413560` | flight to the beam, then to the middle victim | the beam `0x00428990`; `0x0042AB40` and `0x0042A9D0` on every unit killed | 40 frames; the emitter's `+0x2A` is `0x800` going off and 0 coming on, instantly — §8.3 |
+| statues `0x00413A40` / `0x00414000` | flight to 32 000 (20 m) above | `FireDeath` on every unit in the path, `0x00428BF0` beam | the "knocked-down" state 3 of §1.3; the rotating one turns joint 6's z word of `L014EH00`, the one-part statue on all three `Statue2` cells — §8.3 |
 | `FireCircle` `0x004131C0` | flight to the cell (when asked) | `KillFire` on the eight neighbours, `0x00422F00` | |
 | `aPlayGroundFireAnimation` `0x004157B0` | free-position search, then `(9, 7, 1)` on the unit | units hidden, `BloodFlood`, `FlyingDebris`, `TubeSmoke` | |
-| `aPlayCrushWallAnimation` `0x00415C70` | none | `0x004238C0` on every cell of the **footprint** -- §8.2 | |
+| `aPlayCrushWallAnimation` `0x00415C70` | none | `0x004238C0` on every cell of the **footprint** -- §8.2 | the wall's own `+0x20 += 0x66` and `z -= 0x1E0` a frame until the pool empties, then `aDeleteLand` — §8.2, §8.3 |
 | `RoofUnit` `0x00411B00` | flight to the drop | `0x00422460`, landing dust | `28` §13's drop rate |
 | `GroundUnit` `0x00411FB0` | flight | `0x00422610`, a `L110EX00.3DI` object inserted, dust | 8 + 6 frames of rise |
 | teleporters `0x004164F0` / `0x00416840` | camera target follows the effect (`0x0042B4B0`) | `0x0042A120`; the unit hidden at frame 40, moved at frame 10 | |
 | bomber `0x00415E90`, para bomb `0x004160F0` | eye to `(-16000, 0, 320000)`; the target is the camera's **own**, read back at `0x00415F2C` and handed straight to `0x00415FB4` -- so the fly-past aims the camera nowhere | `0x0042A8E0(-320000, -320000, 320000, 48000, 48000, 320000)`, six literals; `0x0042B070` per bomb | ends on the *arrived* flag of §4.6 |
 | `MoveWorld` `0x0040F230` | set every frame | none | `0x00407E30` translates the world |
-| lever `0x00416AD0` | flight to +0xC80 | none | |
+| lever `0x00416AD0` | flight to +0xC80 | none | 10 frames of ±0x50 on the handle's `+0x26` — §8.3 |
 | mine `0x00416DE0`, entry point `0x00416CF0` | none | `SmallFireExplosion`, `FireExplosion` | |
-| supply box `0x00410780` | flight to +4000 | none | overlay type 5 (a text box) |
+| supply box `0x00410780` | flight from 0xFA0 above the user to 0x320 above the box | none | overlay type 5 (a text box), up **first**; then 20 frames of +0x14 on the lid's `+0x26` and 15 of hold — §8.3 |
 
 ### 8.1 Four of them, line by line
 
@@ -934,19 +934,27 @@ listed; the camera flies to the nearest special object within 5 000 units.
 A tilt is drawn **once**, `aRandom2(−2, 4)`, 0 becoming −1. Every frame for
 `frames` frames: the block's rotation words `+0x24 += 25 × tilt` and
 `+0x22 += 17 × tilt`, its `z −= 3 360`; the camera position `z −= 2 400` and
-its target `z −= 3 360`; every rider is placed 3 200 lower than the frame
-before but drawn 160 above that (`aGetStdObjectPosition` / `0x004050A0`), and
-its rotation words `+0x22` and `+0x24` gain **+12 / +25** for an even-indexed
-rider and **−12 / −25** for an odd one (`0x00405180` reads the triple,
-`0x004051E0` writes it) — the same rider keeps turning the same way,
-cumulatively. Afterwards the special object is freed (`0x00406C30`), every
+its target `z −= 3 360`; every rider is **read back off its own object**
+(`0x00405100`), dropped 3 200 and written back 160 higher (`0x004050A0`), so
+it falls **3 040** a frame and not the map field the stored copy suggests —
+320 less than the block above it. That holds on the arm a rider actually
+takes: both accessors branch on the object's `+0x45`, and a unit has a
+Charisma node there, so the read goes through `0x0042C820` (×16) and the
+write through `0x0042C890` (÷16) — inverses, so the read-back is exact and
+the fall is the difference of the loop's own two steps. Its rotation
+words `+0x22` and `+0x24` gain **+12 / +25** for an even-indexed rider and **−12 / −25** for an odd one
+(`0x00405180` reads the triple, `0x004051E0` writes it) — the same rider keeps
+turning the same way, cumulatively. Afterwards the special object is freed
+(`0x00406C30`), every
 rider is removed from the map and, if it was the selected unit, the
 selection cleared (`0x00471FA0`); the camera flies back and is set. **`FootBridge2`
 `0x00415110(group, frames)`** finds the two cells whose `+0x0B` group byte
 matches, clears the group byte and the effect on each, and looks for its
 camera object in a `500 × 500 × 12 800` box 160 to the side and 4 800
 below the first cell's object, then the second's; the frame loop is the
-same.
+same, and so is the end of it — every unit listed on the matched cells goes
+through `addLoss` and `aRemoveUnitElement` (`0x00415653`, `0x00415663`) the
+way `FootBridge`'s riders do (`0x00414F8C`, `0x00414F9C`).
 
 **`GroundUnit` `0x00411FB0(x, y, ux, uy)`** — the unit at `(ux, uy)` is moved
 to the ground cell's object and placed **3 200 below its top minus its
@@ -1040,6 +1048,244 @@ to the cell it *can* name, the command's own, and the deficit is one or two
 cells per call.
 
 ---
+
+### 8.3 The door's family — the object turns *(2026-09-06)*
+
+The door of [`26` §3.4](26-interaction.md) was one of a family, and the
+family was found the same way the door's leaves were: every `add`/`sub`/`mov`
+of a **word** at `+0x20..+0x30` of a register in `Incubation.exe` — 149 sites
+— sorted by function. Outside the object constructors (`0x00404AE0`,
+`aInsertLandObject`, `aInsertWorldObject`, `0x004051E0`, `0x00406500`,
+`0x004069C0`), `aBlob_Update`'s record fields and `aBuyEquipment`'s unit
+fields, what is left is `aDoorOpenSequence` and **nine** more routines, all of
+which find their object exactly as the door does — the cell's marker through
+`aGetSymbolObjectPtr` `0x00404C40`, then `0x00406F20`'s 5 000-unit box — and
+then write the same words of [`28` §7.2](28-effects-and-sound.md)'s record:
+`+0x26/+0x28/+0x2A` are joint 6's x, y, z angles, `+0x2C/+0x2E/+0x30` joint
+12's, and `+0x20/+0x22/+0x24` the object's own.
+
+| Routine | Objects in the corpus | What turns | Frames |
+|---|---|---|---|
+| supply box `0x00410780` | `L101EX00` (329 cells), `L115EX00` (146), `L116EX00` (10), one part | `mov ebx, 0x14` is the count **and** the step: `add [esi+0x26], bx` (`0x0041099A`) opens the lid to 400 about x; `mov esi, 0xF` holds it | 20 + 15 |
+| lever `0x00416AD0` | `L109EX00` (67), one part | `mov [esp+0x34], 0xA` frames of `mov ebp, 0x50` / `mov ebx, -0x50` on `+0x26` (`0x00416C7A`, `0x00416C80`); direction 0 — the lever was *up* — takes the negative step, so a thrown lever stands at −800 | 10 |
+| `OpenTube` `0x00410F10` | `L045EA00`, `L081EE00`/`EF00`, `L004ED00` (116 calls), one part; `L110EX00` (5), none | `mov ebx, 0x33` on `+0x26` (`0x00411099`), `cmp esi, 0x13`; the hatch ends at 969 | 19 |
+| `OpenPlantTube` `0x00411150` | `L015EH00` (71), two parts | `mov edi, 0x13`; `+0x26 += 0x33`, `+0x2C -= 0x33` (`0x00411290`, `0x00411294`) | 19 |
+| `OpenFrontDoor` `0x004112E0` | `L068EE00`/`EF00` (15), two parts | the same on `+0x2A` and `+0x30` (`0x0041141E`, `0x00411422`) — a door's leaves about z | 19 |
+| `Bridge` `0x00410DA0` | `L026ED00` (3 records, 2 called), two parts | `mov di, [esi+0x26]` / `neg di` / `sbb` / `and -2` / `inc`: +1 for a half at zero, −1 for one already turned; `lea ×3`, `shl 2` = 12; `mov ebx, 0x50`; `+0x26 += di`, `+0x2C -= di` (`0x00410EC4`, `0x00410EC8`) — a raised bridge lowers | 80 |
+| `Barrier` `0x00413560` | `L024EG00`, `L025EG00`, `L023EG00`, `L002EG00` (164 calls), one part | `mov word [edi+0x2A], 0x800` (`0x00413653`) going **off**, `mov word [edi+0x2A], bx` (`0x00413670`) with `bx` from the prologue's `xor ebx, ebx` coming on: the emitter's part faces about | 0 |
+| `CrushWall` `0x00415C70` | `L040EA00`, `L041EA00` (9), no parts | `mov ebx, 0x66` on the wall's own `+0x20` (`0x00415DEB`), `mov edi, -0x1E0` on its z, every frame until `0x0042B4A0` clears, then `aDeleteLand` `0x00406C30` (`0x00415E07`) — §8.2 | the pool |
+| `FootBridge` `0x00414A70` / `FootBridge2` `0x00415110` | `L025EB00` (7), no parts / `L069EI00` standing on one of the group's two cells (30 groups; the thirty-first call names tag `139`, which no cell carries, and the map's group `130` is the one no call names — a typo, so that bridge never falls) | `+0x24 += 25·tilt`, `+0x22 += 17·tilt` (`0x00414D5B`, `0x00414D5F`; `0x00415421`, `0x00415435`), `z -= 0xD20`, then `aDeleteLand` (`0x00414F49`, `0x00415610`) — §8.1 | the argument |
+
+The shipped records agree with the routines the way the door's do
+(`interaction_tables.py`, `corpus.lever_joints`, `corpus.barrier_joints`,
+`corpus.bridge_joints`): every object on a lever cell carries zero at action
+point 36 and `(−800, 0, 0)` at 37 — one lever ships thrown; every emitter on
+a cell already seeded 90 carries zero and every one on 91 carries
+`(0, 0, 0x800)`; and the three bridges stand at `(±960, 0, 0)` or at zero,
+which are the two poses the loop ends on. The pickup's text goes up **before**
+its flight — `aActivateInfo` at `0x004107AC` is the routine's first call —
+and the lever's and the box's flights were in the table above all along; the
+object motion in their rows was "none", and `0x0041099A` and `0x00416C7A` say
+otherwise.
+
+**Which object on the cell** (2026-09-07). All of this is written per
+**cell**, and the engine writes per **object** -- `0x00406F20` returns one
+record out of the special-object table at `[0x4FA80C]`. Two things follow,
+and a code review found the remake had both wrong. A `.3DW` **scene clone**
+is not in that table and can never be the find, and the converter places
+the clones **first**: `Scenery.objects_on` therefore answered with the
+level's own geometry wherever the two share a field -- on `_C_142` the
+door's flight aimed at `LEVEL01D.004` rather than at the panel, and on
+`_C_163` the second footbridge's camera aimed at a clone 13 760 units below
+its block, tilted it, dropped it and then **deleted** it, into the save's
+`removed` list where every load would delete it again. Clones are indexed
+and excluded now, and `test_effects.gd`'s `clones.*` pins it on `_C_129`
+(24, 11), where a crush wall's `L041EA00` shares a field with
+`LEVEL01D.016`. The second follows once they are gone: every one of the
+**400** cells this family reaches -- the 16 a `CrushWall` or `FootBridge`
+call names by coordinate, and the 302 door, 69 lever and 13 barrier cells
+named by their own action point -- carries exactly **one** special object
+(`interaction_tables.py`, `corpus.setpiece_cells_carry_one_object`), so
+turning, posing and freeing per cell **is** per object on the shipped maps --
+measured rather than assumed.
+
+The two witnesses above are pinned in the corpus as well, since neither is
+in the six-mission development set and the pin on `_C_129` is the mechanism
+rather than the case. Reading the scenes themselves,
+`corpus.family_cells_share_fields_with_clones` counts **eleven** family cells
+over **nine** missions (`_C_142`, `_C_147`, `_C_148`, `_C_163`, `_C_166`,
+`_M_019`, `_M_025`, `_M_035`, `_O_060`) where a `.3DW` clone stands on the
+same field as the object the search finds, and
+`corpus.the_clone_is_not_where_the_object_is` pins the two by name and
+height -- `_C_142` (14,14) `LEVEL01D.004` at z 0 in front of the panel
+`L100EX00.3DI` at z 0, `_C_163` (19,16) `LEVEL09C.002` at z **-13 760** in
+front of the block `L069EI00.3DI` at z 0. The shipped maps do this eleven
+times, so answering by placement order is not one map's accident.
+
+**What the remake does with it.** `Scenery.paint_joint(cell, part, triple)`
+and `Scenery.paint_pose(cell, turn, drop)` are the two writes, absolute in
+their argument and computed from the authored transform every frame, exactly
+as the door's leaves are; `Scenery.remove_objects(cell)` is `aDeleteLand`.
+The set-piece driver's picture is `start + step × frame` with `start` read
+off the object on the first frame, which is what makes the bridge's toggle
+and a tube's second opening come out right. Two things are **derived from
+the cell's state** on every apply, so a loaded save shows them: the door's
+leaves from the action point's parity and the lever's handle from 36/37.
+The rest — an opened hatch, a lowered bridge, an emitter facing away, an
+opened lid, a crushed wall's empty cell — live in the scenery alone and
+**travel with the remake's save** (2026-09-06, `SaveCodec` schema 11):
+`Scenery.pose_record` lists every joint triple that differs from the
+`.lev`'s and every cell whose objects were freed, the mission blob carries
+it beside the camera and outside the canonical hash, and
+`Scenery.restore_poses` puts it back after the load's redraw — which is
+what the original's `.sav` does by embedding the special-object records
+with their `+0x26..+0x30` words ([`11`](11-save-game-format.md)). The
+camera rides beside it and is applied last (2026-09-06): the header has
+carried a `camera` field since the first save and every writer passed it
+empty, so a loaded mission opened on the built view rather than the one it
+was left under.
+
+**A pose a fall is in the middle of is not in the record, and cannot be**
+(2026-09-06). Every routine in the table above runs its frames *inside*
+the command, calling the frame service `0x0040B6F0` itself, so the engine
+reaches no input and writes no save until the bridge is down; the remake
+spreads those frames over real ones and so opens a window the original does
+not have. A save taken in it would hold `core`'s finished world — the
+cells flipped, the riders dead — with the picture's half of the fall
+missing, and the block would come back standing over its own hole. So a
+save is **refused** while the sequence queue is running
+(`SliceMain._mid_sequence`), and the turn's own autosave is deferred to the
+frame the queue drains rather than dropped, because *Undo last turn* is a
+promise about every turn.
+
+The lever and the supply box are set pieces of their own
+now (`lever`, `pickup`), with the flights this table always had; the
+footbridge's camera follows its block down; the crush wall's deletion runs
+when its pool stage ends.
+
+Two of the rows were named open on the morning of 2026-09-06 and closed by
+the evening, both by replaying `0x00406F20`'s search on the shipped maps
+rather than reading the routine (§12). **`FootBridge2`'s block** is the
+`L069EI00` standing on one of the group's two cells — the search from the
+first cell's object, 160 beside and 4 800 below in a 500 × 500 × 12 800
+box, lands on it at a distance of exactly 5 120 whenever that cell is the
+one, and the search from the second cell's finds it otherwise; all thirty
+matched groups are one block on one of two cells. So the interpreter puts
+the matched cells on the event **before** it clears the byte
+(`actpt, frames, hit`, then `hit` pairs, then the riders), `Scenery`
+resolves the block as the first of the first two that carries an object,
+and the fall is the footbridge's own. **The rotating statue's** find is
+not `L012EH00`: the survey had checked the 21 `FixedStatue` cells, whose
+routine `0x00414000` writes no word at all, and the one shipped call of the
+rotating one is `Statue2 (110,112)` in `_C_178`, whose three cells carry
+`L014EH00` — one part, two of the three authored to `(0, 0, ∓1000)` — at
+distances 0, 0 and 3 200 from the marker. Its `+0x2A` is joint 6's z word,
+and the remake turns it: thirteen frames of `+0x50` from the start read
+off the object, then the start plus `0x400`, which is sixteen units *back*
+from the thirteenth frame. **Both footbridges' riders** are killed by
+`core` now, as `aRemoveUnitElement` kills them (`0x00414F9C`,
+`0x00415663`), with their slots on the event; the picture holds the
+bodies past the rebuild, drops them under the block and **tumbles them**,
+their own `+0x24` by 25 a frame and `+0x22` by 12 with the sign taken from
+the rider's index (`test bl, 1`), and takes them out when the loop ends.
+The drop is `0xBE0` and not the map field this document once read off
+`0x00414DD9` alone: the loop reads the rider's object back every frame and
+writes it 160 higher than the `0xC80` it subtracted (§8.1), which
+`family.footbridges.drop_the_riders` now pins beside the turn, the two
+accessors' own argument order and the bodied arm a rider takes through them
+(`family.footbridges.the_bodied_arm_is_symmetric`: ×16 out, ÷16 in, so the
+read-back is exact). The load's `_resume_loaded_mission` is
+exercised end to end by `test_effects.gd` (`resume.*`): the poses out
+through a real slot file and back, the camera with them, and the refusal
+above with the deferred autosave beside it. **And in a running build**
+(2026-09-07): `_C_129` played to turn 1 through the control server, the
+two `OpenTube` hatches open, *Remind position* written, the camera moved
+away and *Recall position* pressed — the camera comes back to the eye and
+target the save holds, and a second save taken after the load carries the
+same two joint rows (`[642, 6, 969, 0, 0]`, `[680, 6, 969, 0, 0]`, the
+hatches at 19 x 51), which is `Scenery.pose_record` reading the *scene*
+and so the proof that `restore_poses` put them there. The same session
+refused a save with the tube's flight stage on the queue -- the sequence
+the command queues in front of the hatch -- and took one the frame the
+queue was idle. `interaction_tables.py`
+pins the joint word, the search box, both removals and the corpus
+(`family.statue.*`, `family.footbridge2.*`, `family.footbridges.*`,
+`corpus.statue_*`, `corpus.footbridge2_*`), and the last of those found the
+typo above: `FootBridge2 (139,30,12)` names no cell.
+
+**The `MoveUnit` hook, and what playing one found** (2026-09-07). `aRunLCL`
+`0x0046EEFD` is the last thing `aExecuteMove` does, behind the mover's own
+alive gate, and it is where **every** shipped `FootBridge` call lives:
+`_C_106` fires six and `_C_107` one, all seven unconditionally, so on those
+two maps any walk at all asks whether a bridge should fall. The fourth
+argument is a **rider threshold** -- `FootBridge (x, y, frames, n)` returns
+unless *more than* `n` units stand on the nine cells, and all seven shipped
+calls pass 1, so two are needed. `FootBridge2` has no threshold and is
+gated on the turn number instead, which is why `_C_163` is not the test bed
+this document once said it was: it fires on turns 3 to 12, and it ships no
+squad of its own, so a squad has to be carried into it through the chain.
+`_C_107` is the one that can be reached in a minute -- one placed hero at
+(13,18), five deployment cells beside it, and the bridge at (16,18) on the
+only walkway out.
+
+Playing it through the control server found that `game` **read the hook's
+answer nowhere**. `core` has run it and handed the outcome back on
+`MoveResult.script_result` (and `WarpResult.script_result`) since the second
+slice; nothing consumed either field, so a bridge a walk brought down killed
+its riders and turned its nine cells into deep holes with **no picture at
+all** -- no flight, no fall, no tumble, no `aDeleteLand`, and a save taken
+afterwards carrying an empty `removed` row over cells that had already gone.
+No fixture had asked: `_C_129`'s own `MoveUnit` section is empty.
+`SliceMain.move_selected` and `.warp_selected` now present it, behind the
+same hold the mine and the teleporter use, because the original's walk is a
+blocking loop and its set piece plays where the mover stops. Measured on
+identical play -- two marines walked onto (16,18) and (15,18) of `_C_107` --
+the snapshot goes from 37 objects / 0 removed to **36 / 1**, the stages run
+`move.after_walk`, `setpiece.flight`, `foot_bridge`, `setpiece.back` with
+both riders held in the picture past their death, and the save carries
+`"scenery": {"joints": [], "removed": [736]}`, cell (16,18).
+
+**And the riders were not falling: they were gone.** A review of the change
+found, and a second live run confirmed, that the bodies leave the picture the
+frame the command returns and never reach the fall at all. `_after_command`
+runs `UnitsView.build`, which frees every unit node and refuses to rebuild a
+record whose `hp` is zero unless the picture is already holding it -- and
+`core` kills a footbridge's riders **inside** `submit_move`, with nothing but
+their slots on the event, so `AIPlayback.casualties_of` (an outcome's
+`marker`, a reaction's, a mine blast's) finds none of them. The mover is one
+of the riders, since it is standing on the bridge, so its walk went with the
+rest: it vanished at the cell it set off from instead of walking to the one
+that killed it, and `_drop_riders` then lifted and tumbled nothing.
+`_mark_dying_by_script` runs **before** `_after_command` now, beside the
+mine's own hold, and takes the slots off the `foot_bridge` / `foot_bridge2`
+event (`SetpieceDriver.riders_of`). What made this hard to see is that the
+map's own aliens stand on the same walkway a few cells further along: a
+screenshot of the fall shows two armoured bodies on the bridge either way,
+and they are not the riders.
+
+With the hold in place the fall is **watchable, and was watched**: shooting
+every drawn frame from inside the same batch that orders the walk catches
+both marines tipped over on the dropping deck a dozen frames in, deep in the
+shaft, leaning **opposite ways** -- which is the ±25/±12 by index, drawn,
+and the closest thing to a direct reading of this section that a picture can
+give.
+
+**The hook is the computer's too** (2026-09-07). `aRunLCL` `0x0046EEFD` sits
+inside `aExecuteMove` and `0x0046F1D6` inside `aExecuteWarp`, behind the
+mover's alive gate and behind **no test of who is moving**, and the planner's
+`0x0040A750` tail calls the same routines. `core`'s `AISystem.run` never went
+through `World.submit_move`, so no computer walk ran a `MoveUnit` at all and
+`_C_106`'s six bridges could not fall under its aliens. `AIContext` now
+carries the script and `AIPlan` fires it where the routine does -- after the
+walk's own passes, before the caller's charge and reactions -- with the
+outcome on the event under `script`; the replay presents it after the walk
+and `AIPlayback.casualties_of` reads the riders off it, which is the same
+extractor the whole replay is pre-marked with. Watched on `_C_131`: every
+computer walk the replay shows raises the snapshot's `picture.script.count`
+by one (that field exists for this -- `_C_131`'s hook only reorders the
+aliens, so nothing else moves), and a jet-pack jump of the player's does the
+same through `warp_selected`. [`23` §7.5](23-ai-system.md) carries the
+engine side.
 
 ## 9. The environment that moves by itself
 
@@ -1178,7 +1424,29 @@ the script camera, `CrushWall`, and the door with its flight down and back on
 
 ## 12. Open questions
 
-None. The two this section carried for a day, both opened on 2026-09-03 by
+None. The two §8.3 opened on 2026-09-06 were closed the same day, both by
+replaying the routines' own box search on the shipped maps
+([`99` §10.1](99-slice-7-report.md)):
+
+1. ~~*Does `aPlayRotateStatueSequence`'s turn ever show?*~~ **It does.** The
+   survey had checked the 21 `FixedStatue` cells, but `FixedStatue` calls
+   `0x00414000`, which writes no word; the rotating routine is reached only
+   through `Statue2 (110,112)` in `_C_178.lcl`, and `0x00406F20`'s 10 000-unit
+   search from those three cells' markers finds `L014EH00.3DI` — one part —
+   at distances 0, 0 and 3 200, two of them authored to `(0, 0, ∓1000)`. The
+   remake paints the turn (§8.3), and `interaction_tables.py` pins the joint
+   word (`family.statue.turns_a_joint`), the call, the three objects and the
+   part counts of both statues (`corpus.statue_*`).
+2. ~~*`FootBridge2`'s block is not drawn falling.*~~ **Drawn.** The interpreter
+   puts the matched cells on the event before it clears the byte, and the
+   block is the `L069EI00` on one of the first two — the routine's own
+   search from the first cell's object, then the second's, lands on it in
+   every one of the thirty matched groups (`corpus.footbridge2_groups`). The
+   same replay found that the thirty-first call, `FootBridge2 (139,30,12)`,
+   names a tag no cell carries and that group `130` is the one it meant
+   (`corpus.footbridge2_typo`, [`20` §8.5](20-lcl-language.md)).
+
+The two this section carried for a day, both opened on 2026-09-03 by
 §9.1's placers, were closed the same day
 ([`97` §38](97-slice-5-report.md)):
 

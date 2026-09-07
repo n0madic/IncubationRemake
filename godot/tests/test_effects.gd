@@ -13,11 +13,49 @@ extends TestSuite
 ## mission, so `Interact.toggle_door` writing a field-type flip and a height
 ## change of `0xC80` into `MapState` produced **no visible change at all** until
 ## the mission was rebuilt. The check below opens a real door on `_C_140` and
-## requires the panel standing on that cell to have moved by exactly that much.
+## requires the panel standing on that cell to **draw** and its two leaves to
+## **swing** -- by the ∓1000 `aDoorOpenSequence` writes into their joints
+## (docs/26 section 3.4) -- while the panel itself stays put. Until 2026-09-06
+## it required the panel to *rise* by `0xC80`, and passed: the "panel" it
+## measured was the lattice marker, because the real one had no root-scope
+## geometry and was never built.
 
 ## The mission with two closed doors, at action point 31.
 const DOOR_MISSION: String = "_C_140"
+## The one dev fixture with a `CrushWall`, and the wall it crushes.
+const WALL_MISSION: String = "_C_129"
+## The dev fixture whose levers are `L109EX00` -- `_C_140`'s one lever stands
+## on a partless `L042EA00`, which is the corpus's odd record out.
+const LEVER_MISSION: String = "_C_115"
+## `_C_140`'s two `OpenTube` objects, on cells with no action point at all.
+const TUBE_PROTOTYPE: String = "L045EA00"
+const WALL_PROTOTYPE: String = "L040EA00"
+## `_C_129`'s other crush wall, the one standing on a `.3DW` clone's field.
+const CLONE_SHARED_PROTOTYPE: String = "L041EA00"
 const CORNERS_PER_QUAD: int = 4
+## Where the save seam's own check writes. Its own corner, because the slot
+## screen shows what is on disk and a suite must not write where a player's
+## game is.
+const RESUME_SCRATCH: String = "user://tests/effects"
+## The numbered slot the check writes the mission into.
+const RESUME_SLOT: int = 0
+## A short fall, and the bound on the frames the queue is walked for.
+const QUEUED_FALL_FRAMES: int = 6
+## The frames the hand-built `MoveUnit` hook's bridge falls for.
+const MOVE_HOOK_FRAMES: int = 30
+## Where the mover walks to on [method Fixtures.tiny_world], and
+## the cell its bridge is centred on.
+const MOVE_HOOK_CELL: Vector2i = Vector2i(2, 3)
+## Where the jet-pack jump of [method _check_warp_script_seam] lands: three
+## fields from the mover with one movement point, which is past its walk
+## and inside the pack's range of five -- a cell the walk fill already
+## marked keeps its 10 and is not a warp target (`0x00430EE0`).
+const WARP_HOOK_CELL: Vector2i = Vector2i(2, 5)
+const QUEUED_GUARD: int = 60
+## Two positions a rig can be at, far enough apart that a restored one
+## cannot be mistaken for a freshly built mission's own opening view.
+const SAVED_EYE: Vector3i = Vector3i(11200, 22400, 9600)
+const SAVED_TARGET: Vector3i = Vector3i(12800, 12800, 0)
 
 
 ## One whole map field, `RoofUnit`'s own drop step -- the largest offset a
@@ -43,6 +81,17 @@ func run(h: TestHarness) -> void:
 	_check_diff(h)
 	_check_sprites(h)
 	_check_door(h)
+	_check_family(h)
+	_check_family_lever(h)
+	_check_clone_cells(h)
+	_check_pose_record(h)
+	_check_resume_after_load(h)
+	_check_rider_fall(h)
+	_check_rider_fall_in_place(h)
+	_check_move_script_seam(h)
+	_check_ai_move_script_seam(h)
+	_check_warp_script_seam(h)
+	_check_platform_ride(h)
 	_check_triggers(h)
 	_check_setpieces(h)
 	_check_queue(h)
@@ -435,6 +484,15 @@ func _check_door(h: TestHarness) -> void:
 	var before: Dictionary = world.terrain_snapshot()
 	var _placed: int = scenery.apply_all(before)
 
+	# Every clone, special object and lattice marker is built -- which the
+	# render suite checks on `_C_115`, a mission with no all-part prototype.
+	# `_C_140`'s two doors are all-part, and were the two this count missed.
+	var expected: int = DictRead.as_array(document["scene_clones"]).size() \
+		+ DictRead.as_array(document["special_objects"]).size() \
+		+ DictRead.as_array(DictRead.as_dict(document["land"])["x"]).size()
+	h.equal("door.mission_instances", scenery.built_count(), expected,
+		"the doors are built along with everything else")
+
 	# Find a door by its action point rather than by a hard-coded cell: the
 	# check should survive a re-conversion that moved one.
 	var door: int = _find_door(world)
@@ -446,51 +504,955 @@ func _check_door(h: TestHarness) -> void:
 		return
 	h.check("door.present", true, "cell %d carries the door action point"
 		% door)
-	var standing: Array = scenery.instances_on(door)
-	h.check("door.has_geometry", not standing.is_empty(),
-		"%d object(s) stand on the door's cell" % standing.size())
-	if standing.is_empty():
+	h.check("door.ships_closed",
+		(world.state.action_point_at(door) & 1) == 1,
+		"action point %d -- the closed one, so the first toggle opens it"
+			% world.state.action_point_at(door))
+	var objects: Array = scenery.objects_on(door)
+	h.check("door.has_object", not objects.is_empty(),
+		"%d object(s) beside the marker on the door's cell" % objects.size())
+	if objects.is_empty():
 		scenery.free()
 		return
-	var panel: Node3D = standing[0]
+	var panel: Node3D = objects[0]
+	h.check("door.is_the_panel", panel.name.begins_with("L100EX00"),
+		"the object is %s" % panel.name)
+	h.check("door.has_geometry", _surfaces_under(panel) > 0,
+		"%d surface(s) drawn under the panel" % _surfaces_under(panel))
+	var first: Node3D = scenery.pivot_of(panel, Scenery.LEAF_FIRST)
+	var second: Node3D = scenery.pivot_of(panel, Scenery.LEAF_SECOND)
+	h.check("door.two_leaves", first != null and second != null,
+		"parts 6 and 12 each have a pivot")
+	if first == null or second == null:
+		scenery.free()
+		return
+	h.check("door.leaves_hinged_at_the_frame",
+		is_equal_approx(absf(first.position.x), 1440.0
+			/ WorldSpace.WORLD_UNITS_PER_METRE)
+		and is_equal_approx(absf(second.position.x), 1440.0
+			/ WorldSpace.WORLD_UNITS_PER_METRE)
+		and first.position.x * second.position.x < 0.0,
+		"the pivots sit 1440 units either side of the panel's centre")
+	h.check("door.closed_leaves_shut",
+		first.basis.is_equal_approx(Basis.IDENTITY)
+		and second.basis.is_equal_approx(Basis.IDENTITY),
+		"a closed door's joints are 0")
+	var standing: Array = scenery.instances_on(door)
+	var marker: Node3D = null
+	for node: Variant in standing:
+		var instance: Node3D = node
+		if instance != panel and not objects.has(instance):
+			marker = instance
+	h.check("door.marker_present", marker != null,
+		"the lattice marker stands on the cell too")
 	var was: Vector3 = panel.transform.origin
+	var marker_was: Vector3 = Vector3.ZERO if marker == null \
+		else marker.transform.origin
 
-	# Toggle it the way the world does, then redraw only what changed.
-	var index: int = door
-	world.state.set_height(index, world.state.height_at(index)
-		+ Interact.DOOR_HEIGHT_STEP)
+	# Open it the way the world does -- the toggle, so the parity flips with
+	# the height -- then redraw only what changed.
+	Interact.toggle_door(world.state, door)
 	var after: Dictionary = world.terrain_snapshot()
 	var moved: PackedInt32Array = TerrainDiff.moved_cells(before, after)
 	h.equal("door.diff", moved, PackedInt32Array([door]),
 		"exactly the door's cell is reported as moved")
 	var count: int = scenery.apply_state(after, moved)
-	h.check("door.moved", count == standing.size(),
-		"%d instance(s) moved" % count)
-	var now: Vector3 = panel.transform.origin
-	var expected: float = float(Interact.DOOR_HEIGHT_STEP) \
-		/ WorldSpace.WORLD_UNITS_PER_METRE
-	h.check("door.height",
-		absf((now.y - was.y) - expected) < 0.001,
-		"the panel rose %f m, wanted %f m" % [now.y - was.y, expected])
-	h.check("door.horizontal",
-		absf(now.x - was.x) < 0.001 and absf(now.z - was.z) < 0.001,
-		"and did not slide sideways")
+	h.check("door.applied", count == standing.size(),
+		"%d of %d instance(s) took the state" % [count, standing.size()])
+	h.check("door.panel_stays", panel.transform.origin.is_equal_approx(was),
+		"the panel did not move: `[ebp+0x18]` is the land marker's z")
+	var open_first: Basis = WorldSpace.joint_basis(0, 0,
+		-Scenery.DOOR_LEAF_SWING)
+	var open_second: Basis = WorldSpace.joint_basis(0, 0,
+		Scenery.DOOR_LEAF_SWING)
+	h.check("door.leaves_swing",
+		first.basis.is_equal_approx(open_first)
+		and second.basis.is_equal_approx(open_second),
+		"part 6 at -%d, part 12 at +%d of 4096"
+			% [Scenery.DOOR_LEAF_SWING, Scenery.DOOR_LEAF_SWING])
+	h.check("door.leaves_turn_about_z",
+		is_equal_approx(first.basis.y.y, 1.0)
+		and is_equal_approx(second.basis.y.y, 1.0),
+		"the hinges are vertical")
+	if marker != null:
+		var drop: float = float(Interact.DOOR_HEIGHT_STEP) \
+			/ WorldSpace.WORLD_UNITS_PER_METRE
+		h.check("door.marker_tracks_height",
+			absf((marker_was.y - marker.transform.origin.y) - drop) < 0.001,
+			"the marker dropped %f m, wanted %f m"
+				% [marker_was.y - marker.transform.origin.y, drop])
 
-	# Applying the same state twice is applying it once: the offset is taken
-	# from the authored transform every time, never accumulated.
+	# Applying the same state twice is applying it once: the pose is taken
+	# from the state every time, never accumulated.
 	var _again: int = scenery.apply_state(after, moved)
 	h.check("door.idempotent",
-		panel.transform.origin.is_equal_approx(now),
-		"a second apply lands in the same place")
+		panel.transform.origin.is_equal_approx(was)
+		and first.basis.is_equal_approx(open_first)
+		and second.basis.is_equal_approx(open_second),
+		"a second apply lands in the same pose")
 
-	# And closing it puts the panel back exactly where it started, which is
+	# The ten frames: a swing of `frame * step`, and the last frame is the
+	# open pose exactly.
+	h.equal("door.step_times_frames",
+		Scenery.DOOR_LEAF_STEP * SetpieceDriver.DOOR_FRAMES,
+		Scenery.DOOR_LEAF_SWING,
+		"ten frames of +-100 reach +-1000")
+	var half: int = scenery.paint_door(door,
+		Scenery.DOOR_LEAF_STEP * (SetpieceDriver.DOOR_FRAMES / 2))
+	h.equal("door.paint_turns_two", half, 2, "both leaves turn")
+	h.check("door.paint_halfway",
+		first.basis.is_equal_approx(WorldSpace.joint_basis(0, 0,
+			-Scenery.DOOR_LEAF_STEP * (SetpieceDriver.DOOR_FRAMES / 2))),
+		"the fifth frame is half open")
+	var _full: int = scenery.apply_state(after, moved)
+
+	# And closing it puts everything back exactly where it started, which is
 	# what "the picture is a function of the state" has to mean.
-	world.state.set_height(index, world.state.height_at(index)
-		- Interact.DOOR_HEIGHT_STEP)
+	Interact.toggle_door(world.state, door)
 	var _closed: int = scenery.apply_state(world.terrain_snapshot(), moved)
-	h.check("door.reversible", panel.transform.origin.is_equal_approx(was),
-		"closing it returns the panel to its authored position")
+	h.check("door.reversible",
+		panel.transform.origin.is_equal_approx(was)
+		and first.basis.is_equal_approx(Basis.IDENTITY)
+		and second.basis.is_equal_approx(Basis.IDENTITY)
+		and (marker == null
+			or marker.transform.origin.is_equal_approx(marker_was)),
+		"closing it returns the leaves and the marker to their authored pose")
 	scenery.free()
+
+
+## docs/42 section 8.3 -- the door's family on the scenery: the lever's
+## handle, a supply box's lid and a tube's hatch through
+## [method Scenery.paint_joint] on `_C_140`, and a crush wall's own fall and
+## deletion through [method Scenery.paint_pose] and
+## [method Scenery.remove_objects] on `_C_129`, the one dev fixture with a
+## `CrushWall`.
+func _check_family(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(DOOR_MISSION)
+	if loaded.is_empty():
+		h.check("family.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("family.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(header["world_set"]))
+		return
+	var scenery: Scenery = Scenery.new()
+	scenery.build(document, geometry, {})
+	var _placed: int = scenery.apply_all(world.terrain_snapshot())
+
+	# `paint_pose` composes the authored yaw through `joint_basis`, and the
+	# placement used `yaw_basis`: the two helpers are written separately and
+	# have to agree on a plain yaw.
+	h.check("family.yaw_is_joint_z",
+		WorldSpace.yaw_basis(700).is_equal_approx(WorldSpace.joint_basis(0, 0, 700))
+		and WorldSpace.yaw_basis(-1234).is_equal_approx(
+			WorldSpace.joint_basis(0, 0, -1234)),
+		"a yaw is the z angle of the joint builder")
+
+	# `_C_140`'s one lever stands on `L042EA00`, which has no part: nothing
+	# turns, and nothing breaks. The handle itself is checked on `_C_115`.
+	var odd: int = _find_action_point(world, Interact.LEVER_UP)
+	h.check("family.lever.partless_present", odd >= 0,
+		"a cell with action point %d on %s" % [Interact.LEVER_UP, DOOR_MISSION])
+	if odd >= 0:
+		h.check("family.lever.partless_has_no_handle",
+			not scenery.has_joint(odd, Scenery.LEVER_PART),
+			"L042EA00 carries no part %d" % Scenery.LEVER_PART)
+		h.equal("family.lever.partless_paints_nothing",
+			scenery.paint_joint(odd, Scenery.LEVER_PART,
+				Vector3i(-Scenery.LEVER_THROW, 0, 0)), 0)
+		h.equal("family.no_such_part",
+			scenery.paint_joint(odd, 99, Vector3i.ZERO), 0,
+			"a part nothing on the cell carries turns nothing")
+
+	# A supply box: L101EX00 / L115EX00, one part, the lid.
+	var box: int = -1
+	for ap: int in [12, 13, 17, 18, 14, 15, 16, 38, 39, 40, 42]:
+		box = _find_action_point(world, ap)
+		if box >= 0:
+			break
+	h.check("family.box.present", box >= 0, "a pickup cell on %s" % DOOR_MISSION)
+	if box >= 0:
+		h.check("family.box.has_lid",
+			scenery.has_joint(box, SetpieceDriver.PART_FIRST),
+			"the box on the cell carries part %d" % SetpieceDriver.PART_FIRST)
+		var open: Vector3i = Vector3i(SetpieceDriver.PICKUP_LID_STEP
+			* SetpieceDriver.PICKUP_LID_FRAMES, 0, 0)
+		var lid: int = scenery.paint_joint(box, SetpieceDriver.PART_FIRST, open)
+		h.check("family.box.lid_opens",
+			lid >= 1 and scenery.joint_of(box, SetpieceDriver.PART_FIRST) == open,
+			"twenty frames of 20 stand the lid at 400 about x")
+
+	# A tube: an entry point whose object has a hatch, opened by the script
+	# and remembered here alone -- the cell's state says nothing about it.
+	var tubes: PackedInt32Array = scenery.cells_with_prototype(TUBE_PROTOTYPE)
+	var tube: int = -1
+	for index: int in tubes:
+		if scenery.has_joint(index, SetpieceDriver.PART_FIRST):
+			tube = index
+			break
+	h.check("family.tube.present", tube >= 0,
+		"%d %s tube(s) on %s, one with a hatch" % [tubes.size(), TUBE_PROTOTYPE,
+			DOOR_MISSION])
+	if tube >= 0:
+		var opened: Vector3i = Vector3i(SetpieceDriver.TUBE_STEP
+			* SetpieceDriver.TUBE_FRAMES, 0, 0)
+		var hatch: int = scenery.paint_joint(tube, SetpieceDriver.PART_FIRST, opened)
+		h.check("family.tube.hatch_opens",
+			hatch >= 1 and scenery.joint_of(tube, SetpieceDriver.PART_FIRST) == opened,
+			"nineteen frames of 51 stand the hatch at 969")
+		var _kept: int = scenery.apply_state(world.terrain_snapshot(),
+			PackedInt32Array([tube]))
+		h.equal("family.tube.pose_survives_state",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST), opened,
+			"applying the state repaints doors and levers, not hatches")
+		# The driver's own arm, frame by frame, from the authored pose.
+		var _shut: int = scenery.paint_joint(tube, SetpieceDriver.PART_FIRST,
+			Vector3i.ZERO)
+		var none: PackedInt32Array = PackedInt32Array()
+		var picture: Dictionary = {"starts": {}}
+		var host: RecordingHost = RecordingHost.new()
+		h.equal("family.tube.arm_paints_one", SetpieceDriver.paint_family(
+			scenery, tube, "open_tube", none, 10, 19, picture, host), 1)
+		h.equal("family.tube.arm_tenth_frame",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST),
+			Vector3i(SetpieceDriver.TUBE_STEP * 10, 0, 0))
+		var _last: int = SetpieceDriver.paint_family(scenery, tube, "open_tube",
+			none, 19, 19, picture, host)
+		h.equal("family.tube.arm_ends_open",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST), opened)
+		var again: Dictionary = {"starts": {}}
+		var _twice: int = SetpieceDriver.paint_family(scenery, tube, "open_tube",
+			none, 19, 19, again, host)
+		h.equal("family.tube.second_opening_starts_open",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST),
+			opened + opened, "the start is read off the object, not authored")
+		# The bridge's toggle, on the same part: turned lowers, zero rises.
+		var _zero: int = scenery.paint_joint(tube, SetpieceDriver.PART_FIRST,
+			Vector3i.ZERO)
+		var raise: Dictionary = {"starts": {}}
+		var _up: int = SetpieceDriver.paint_family(scenery, tube, "bridge", none,
+			SetpieceDriver.BRIDGE_FRAMES, SetpieceDriver.BRIDGE_FRAMES, raise, host)
+		h.equal("family.bridge.arm_raises_from_zero",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST),
+			Vector3i(SetpieceDriver.BRIDGE_STEP * SetpieceDriver.BRIDGE_FRAMES, 0, 0))
+		var lower: Dictionary = {"starts": {}}
+		var _down: int = SetpieceDriver.paint_family(scenery, tube, "bridge", none,
+			SetpieceDriver.BRIDGE_FRAMES, SetpieceDriver.BRIDGE_FRAMES, lower, host)
+		h.equal("family.bridge.arm_lowers_when_raised",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST), Vector3i.ZERO,
+			"`mov di, [esi+0x26]` / `neg` / `sbb`: the sign is the pose's")
+		h.equal("family.unknown_kind_paints_nothing", SetpieceDriver.paint_family(
+			scenery, tube, "nothing", none, 1, 1, {"starts": {}}, host), 0)
+		# The rotating statue's turn, on the same part 6: thirteen frames of
+		# +0x50 on the z word, then the start plus 0x400 -- which is sixteen
+		# units *back* from the thirteenth frame. `_C_178`'s three `Statue2`
+		# cells carry `L014EH00`, whose one part is exactly this (docs/42
+		# section 8.3), and two of them ship turned to -1000.
+		var _statue_start: int = scenery.paint_joint(tube, SetpieceDriver.PART_FIRST,
+			Vector3i(0, 0, -1000))
+		var statue_picture: Dictionary = {"starts": {}}
+		var statue_frames: int = SetpieceDriver.STATUE_TURN_FRAMES
+		h.equal("family.statue.arm_turns_the_joint", SetpieceDriver.paint_family(
+			scenery, tube, "statue", none, statue_frames - 1, statue_frames,
+			statue_picture, host), 1)
+		h.equal("family.statue.thirteenth_frame",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST),
+			Vector3i(0, 0, -1000 + SetpieceDriver.STATUE_TURN_STEP * (statue_frames - 1)),
+			"`add word [esi+0x2A], bp` thirteen times from the start read off the object")
+		var _settled: int = SetpieceDriver.paint_family(
+			scenery, tube, "statue", none, statue_frames, statue_frames,
+			statue_picture, host)
+		h.equal("family.statue.settles_on_the_quarter_turn",
+			scenery.joint_of(tube, SetpieceDriver.PART_FIRST),
+			Vector3i(0, 0, -1000 + SetpieceDriver.STATUE_SETTLE),
+			"`0x00413C26` writes the start plus 0x400, sixteen short of frame thirteen")
+	if box >= 0:
+		var lid_shut: int = scenery.paint_joint(box, SetpieceDriver.PART_FIRST,
+			Vector3i.ZERO)
+		var lid_picture: Dictionary = {"starts": {}}
+		var _hold: int = SetpieceDriver.paint_family(scenery, box, "pickup",
+			PackedInt32Array(), 35, 35, lid_picture, RecordingHost.new())
+		h.check("family.box.arm_holds_the_lid_open", lid_shut == 1
+			and scenery.joint_of(box, SetpieceDriver.PART_FIRST)
+				== Vector3i(SetpieceDriver.PICKUP_LID_STEP
+					* SetpieceDriver.PICKUP_LID_FRAMES, 0, 0),
+			"the hold frames past twenty do not lift it further")
+	scenery.free()
+
+	# The crush wall: its own rotation and its own drop, then its deletion.
+	var wall_loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if wall_loaded.is_empty():
+		h.check("family.wall.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var wall_world: World = wall_loaded["world"]
+	var wall_document: Dictionary = DictRead.as_dict(wall_loaded["document"])
+	var wall_header: Dictionary = DictRead.as_dict(wall_document["header"])
+	var wall_geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(wall_header["world_set"]))
+	if wall_geometry.is_empty():
+		h.check("family.wall.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(wall_header["world_set"]))
+		return
+	var walls: Scenery = Scenery.new()
+	walls.build(wall_document, wall_geometry, {})
+	var _all: int = walls.apply_all(wall_world.terrain_snapshot())
+	var built: int = walls.built_count()
+	var cells: PackedInt32Array = walls.cells_with_prototype(WALL_PROTOTYPE)
+	h.check("family.wall.present", not cells.is_empty(),
+		"%d %s wall(s) on %s" % [cells.size(), WALL_PROTOTYPE, WALL_MISSION])
+	if cells.is_empty():
+		walls.free()
+		return
+	var cell: int = cells[0]
+	var wall: Node3D = walls.objects_on(cell)[0]
+	var was: Transform3D = wall.transform
+	var turn: Vector3i = Vector3i(SetpieceDriver.CRUSH_TURN_STEP * 3, 0, 0)
+	var drop: int = SetpieceDriver.CRUSH_DROP_STEP * 3
+	h.equal("family.wall.paint_poses_one", walls.paint_pose(cell, turn, drop), 1)
+	h.check("family.wall.sinks_by_its_own_step",
+		is_equal_approx(was.origin.y - wall.transform.origin.y,
+			float(drop) / WorldSpace.WORLD_UNITS_PER_METRE),
+		"three frames of 480 down from the authored origin, not the cell's delta")
+	h.check("family.wall.turns_about_its_own_x",
+		wall.basis.is_equal_approx(was.basis * WorldSpace.joint_basis(turn.x, 0, 0)),
+		"three frames of 0x66 about x on top of the authored yaw")
+	var _again: int = walls.paint_pose(cell, turn, drop)
+	h.check("family.wall.idempotent",
+		wall.transform.is_equal_approx(Transform3D(
+			was.basis * WorldSpace.joint_basis(turn.x, 0, 0),
+			was.origin + WorldSpace.to_godot(0, 0, -drop))),
+		"the pose is absolute: painting a frame twice paints it once")
+	var wall_picture: Dictionary = {"starts": {}}
+	h.equal("family.wall.arm_poses_one", SetpieceDriver.paint_family(walls, cell,
+		"crush_wall", PackedInt32Array(), 3, 40, wall_picture, RecordingHost.new()), 1)
+	h.check("family.wall.arm_is_the_pose",
+		wall.transform.is_equal_approx(Transform3D(
+			was.basis * WorldSpace.joint_basis(turn.x, 0, 0),
+			was.origin + WorldSpace.to_godot(0, 0, -drop))),
+		"the third frame through the driver is the third frame painted by hand")
+	h.equal("family.wall.removed", walls.remove_objects(cell), 1,
+		"aDeleteLand frees the one object")
+	h.check("family.wall.gone_from_the_cell", walls.objects_on(cell).is_empty())
+	h.equal("family.wall.marker_stays", walls.instances_on(cell).size(), 1,
+		"the lattice marker is not the wall")
+	h.equal("family.wall.removed_count", walls.removed_count(), 1)
+	h.equal("family.wall.built_count_unchanged", walls.built_count(), built,
+		"what was built stays counted; what went is counted apart")
+	h.equal("family.wall.paint_after_removal",
+		walls.paint_pose(cell, Vector3i.ZERO, 0), 0)
+	var _safe: int = walls.apply_state(wall_world.terrain_snapshot(),
+		PackedInt32Array([cell]))
+	h.check("family.wall.state_after_removal", walls.objects_on(cell).is_empty(),
+		"applying the state to an emptied cell is harmless")
+	walls.free()
+
+
+## What the save carries for the picture (docs/42 section 8.3): a hatch
+## opened and a wall crushed on `_C_129` come back on a fresh scenery from
+## [method Scenery.pose_record] alone -- through the JSON narrowing the save
+## header puts them through -- and restoring twice is restoring once.
+func _check_pose_record(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("poses.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("poses.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(header["world_set"]))
+		return
+	var played: Scenery = Scenery.new()
+	played.build(document, geometry, {})
+	var _all: int = played.apply_all(world.terrain_snapshot())
+	h.equal("poses.authored_record_is_empty", played.pose_record(),
+		{"joints": [], "removed": [], "moves": []},
+		"nothing has moved, so there is nothing to carry")
+	var walls: PackedInt32Array = played.cells_with_prototype(WALL_PROTOTYPE)
+	var tubes: PackedInt32Array = played.cells_with_prototype(TUBE_PROTOTYPE)
+	h.check("poses.fixture_has_a_wall_and_a_tube",
+		not walls.is_empty() and not tubes.is_empty(),
+		"%d wall(s), %d tube(s) on %s" % [walls.size(), tubes.size(), WALL_MISSION])
+	if walls.is_empty() or tubes.is_empty():
+		played.free()
+		return
+	var wall: int = walls[0]
+	var tube: int = tubes[0]
+	var open: Vector3i = Vector3i(SetpieceDriver.TUBE_STEP * SetpieceDriver.TUBE_FRAMES, 0, 0)
+	var _hatch: int = played.paint_joint(tube, SetpieceDriver.PART_FIRST, open)
+	var _gone: int = played.remove_objects(wall)
+	var record: Dictionary = played.pose_record()
+	h.equal("poses.record_lists_the_moved_part", record["joints"],
+		[[tube, SetpieceDriver.PART_FIRST, open.x, 0, 0]],
+		"one row: the cell, the part and the triple that differs from the .lev")
+	h.equal("poses.record_lists_the_freed_cell", record["removed"], [wall])
+	# Through the save header's JSON, which turns every number into a float.
+	var parsed: Variant = JSON.parse_string(JSON.stringify(record))
+	var carried: Dictionary = parsed
+	var resumed: Scenery = Scenery.new()
+	resumed.build(document, geometry, {})
+	var _placed: int = resumed.apply_all(world.terrain_snapshot())
+	h.equal("poses.restore_counts", resumed.restore_poses(carried), 2,
+		"one part turned, one cell emptied")
+	h.equal("poses.hatch_is_open_again",
+		resumed.joint_of(tube, SetpieceDriver.PART_FIRST), open)
+	h.check("poses.wall_is_gone_again", resumed.objects_on(wall).is_empty()
+		and resumed.removed_count() == 1)
+	h.equal("poses.restored_record_matches", resumed.pose_record(), record,
+		"what was restored records back as what was saved")
+	h.equal("poses.restore_twice_is_once", resumed.restore_poses(carried), 1,
+		"the part is painted again (absolute), the cell has nothing left to free")
+	h.equal("poses.record_after_twice", resumed.pose_record(), record)
+	h.equal("poses.empty_record_restores_nothing", resumed.restore_poses({}), 0)
+	played.free()
+	resumed.free()
+
+
+## The riders a falling footbridge carries (docs/42 section 8.3): one map
+## field less `0xA0` down a frame, and a tumble of their **own** rotation
+## words -- `+0x24` by 25 and `+0x22` by 12, negative for an odd rider, so
+## two on one bridge turn opposite ways.
+##
+## `interaction_tables.py` (`family.footbridges.drop_the_riders`,
+## `.turn_the_riders`) pins both against the two loops; this is the port
+## reading the same numbers, and the body's half turn beside them: it is a
+## half turn about the **model's** vertical, which only a tilted object can
+## tell from a half turn about the world's.
+func _check_rider_fall(h: TestHarness) -> void:
+	h.equal("rider.drop_is_the_field_less_the_step_back",
+		SetpieceDriver.FOOTBRIDGE_RIDER_DROP, 0xC80 - 0xA0,
+		"`sub eax, 0xC80` and `add eax, 0xA0` on the way to the setter")
+	h.equal("rider.turn_grows_with_the_frame",
+		[SetpieceDriver.rider_turn(0, 1), SetpieceDriver.rider_turn(0, 3)],
+		[Vector3i(0, 12, 25), Vector3i(0, 36, 75)])
+	h.equal("rider.odd_rider_turns_the_other_way",
+		SetpieceDriver.rider_turn(1, 3), Vector3i(0, -36, -75),
+		"`test bl, 1` on the loop counter is the sign")
+	h.equal("rider.turn_is_zero_before_the_first_frame",
+		SetpieceDriver.rider_turn(1, 0), Vector3i.ZERO)
+
+	var facing: int = 3
+	var angle: int = UnitsView.FACING_ANGLES[facing]
+	h.check("rider.body_offset_is_the_charisma_half_turn",
+		(WorldSpace.yaw_basis(angle).inverse()
+			* WorldSpace.charisma_yaw_basis(angle)).is_equal_approx(
+			WorldSpace.charisma_offset()),
+		"the two agree on a level body, which is where they must")
+
+	var units: UnitsView = UnitsView.new()
+	var node: Node3D = Node3D.new()
+	node.name = "unit_0"
+	units.add_child(node)
+	h.check("rider.tumble_needs_a_node", not units.tumble(1, facing, Vector3i.ZERO))
+	h.check("rider.tumble_of_nothing_is_the_facing",
+		units.tumble(0, facing, Vector3i.ZERO)
+		and node.basis.is_equal_approx(WorldSpace.yaw_basis(angle)),
+		"a zero triple leaves the unit pointing where it stood")
+	var _first: bool = units.tumble(0, facing, SetpieceDriver.rider_turn(0, 8))
+	var even: Basis = node.basis
+	var _second: bool = units.tumble(0, facing, SetpieceDriver.rider_turn(1, 8))
+	var odd: Basis = node.basis
+	h.check("rider.tumble_tilts_it", even.y.angle_to(Vector3.UP) > 0.01,
+		"a rider on its way down is not standing up: %.3f rad"
+			% even.y.angle_to(Vector3.UP))
+	h.check("rider.tumble_turns_the_two_riders_apart",
+		not even.is_equal_approx(odd),
+		"the second rider of the same bridge turns the other way")
+	units.free()
+
+
+## The same fall through the seam that actually runs it: an event `core`
+## has already finished, queued with [method SliceMain._queue_setpiece] and
+## advanced frame by frame.
+##
+## What the isolated checks above cannot reach is the **record lookup**. By
+## the time a footbridge is drawn its riders are dead -- `core` killed them
+## resolving the command -- so the heading the tumble is measured from comes
+## out of a record for a unit that is off the map. `UnitState.remove` keeps
+## the record and clears the cell, which is why this works at all, and a
+## `hp == 0` record that answered nothing would leave the bodies falling
+## flat rather than crash.
+func _check_rider_fall_in_place(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("queued_rider.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var slots: PackedInt32Array = world.unit_slots()
+	if slots.size() < 2:
+		h.check("queued_rider.two_units", false,
+			"%s carries %d unit(s)" % [WALL_MISSION, slots.size()])
+		return
+	var riders: PackedInt32Array = PackedInt32Array([slots[0], slots[1]])
+	var facings: Array[int] = []
+	for slot: int in riders:
+		facings.append(DictRead.as_int(world.unit_view(slot)["facing"]))
+
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	for slot: int in riders:
+		var node: Node3D = Node3D.new()
+		node.name = "unit_%d" % slot
+		units.add_child(node)
+	main._sequences = SequenceQueue.create(null)
+	main._rig = CameraRig.new()
+	main._rig.set_now(SAVED_EYE, SAVED_TARGET)
+
+	# `core` first: the interpreter kills every rider before the event is
+	# ever played (docs/42 section 8.1), which is the order this must run in.
+	for slot: int in riders:
+		var doomed: UnitState = world.units_for_ai()[slot]
+		var _lost: bool = UnitState.remove(world.state, world.turn, doomed)
+	h.check("queued_rider.core_killed_them",
+		world.unit_view(riders[0]).is_empty()
+		or DictRead.as_int(world.unit_view(riders[0])["hp"]) == 0,
+		"the riders are dead before the picture starts")
+	h.equal("queued_rider.the_record_survives_the_kill",
+		DictRead.as_int(main._unit_record(riders[0])["facing"]), facings[0],
+		"`UnitState.remove` keeps the record, so the tumble has a heading "
+		+ "to measure from")
+
+	var cell: Vector2i = Vector2i(1, 1)
+	var event: Dictionary = {"name": "foot_bridge",
+		"values": [cell.x, cell.y, QUEUED_FALL_FRAMES, riders.size(),
+			riders[0], riders[1]]}
+	var cues: Array[Dictionary] = []
+	main._queue_setpiece(event, QUEUED_FALL_FRAMES, cues)
+	h.check("queued_rider.is_queued", main._sequences.is_running(),
+		"the flight, the fall and the flight back")
+	h.check("queued_rider.both_are_held",
+		str(units.dying()) == str(riders),
+		"the bodies stay in the picture past their death: %s" % str(units.dying()))
+
+	# The flight settles at once -- nothing advances the rig here -- and then
+	# the fall's own frames run.
+	var step: float = 1.0 / SequenceQueue.FRAMES_PER_SECOND
+	var guard: int = 0
+	while main._sequences.current() != "foot_bridge" and guard < QUEUED_GUARD:
+		var _went: bool = main._sequences.advance(step)
+		main._rig.settle()
+		guard += 1
+	h.check("queued_rider.reaches_the_fall",
+		main._sequences.current() == "foot_bridge",
+		"stage %s after %d frame(s)" % [main._sequences.current(), guard])
+	var _third: bool = main._sequences.advance(step)
+	var _fourth: bool = main._sequences.advance(step)
+	var lifts: Dictionary[int, int] = units.lifts()
+	var dropped: int = lifts[riders[0]] if lifts.has(riders[0]) else 0
+	h.equal("queued_rider.drops_by_the_step",
+		dropped, -SetpieceDriver.FOOTBRIDGE_RIDER_DROP * 2,
+		"two frames of the fall, each one step")
+	var first_node: Node3D = units.get_node_or_null(
+		NodePath("unit_%d" % riders[0]))
+	var second_node: Node3D = units.get_node_or_null(
+		NodePath("unit_%d" % riders[1]))
+	if first_node == null or second_node == null:
+		h.check("queued_rider.bodies_are_still_drawn", false,
+			"the fall takes them out only at the end")
+		units.free()
+		main._rig.free()
+		main.free()
+		return
+	var first: Basis = first_node.basis
+	var second: Basis = second_node.basis
+	h.check("queued_rider.tumbles_from_its_own_heading",
+		first.is_equal_approx(WorldSpace.joint_basis(0,
+			SetpieceDriver.rider_turn(0, 2).y,
+			UnitsView.FACING_ANGLES[facings[0] % UnitsView.FACING_ANGLES.size()]
+			+ SetpieceDriver.rider_turn(0, 2).z)),
+		"the dead rider's own facing plus two frames of turn")
+	h.check("queued_rider.the_two_turn_apart", not first.is_equal_approx(second)
+		or facings[0] != facings[1],
+		"opposite signs by the order the event lists them")
+
+	# The loop's end: `aRemoveUnitElement` takes them off the picture too.
+	while main._sequences.is_running() and guard < QUEUED_GUARD:
+		var _more: bool = main._sequences.advance(step)
+		main._rig.settle()
+		guard += 1
+	h.check("queued_rider.leave_at_the_end",
+		units.get_node_or_null(NodePath("unit_%d" % riders[0])) == null
+		and units.get_node_or_null(NodePath("unit_%d" % riders[1])) == null,
+		"both bodies are gone when the sequence ends")
+	h.check("queued_rider.no_hold_is_left", units.dying().is_empty())
+	units.free()
+	main._rig.free()
+	main.free()
+
+
+## A cell carrying both a `.3DW` clone and a special object: what the
+## engine's search can find there, and what it cannot.
+##
+## `0x00406F20` walks the special-object table alone, and the converter
+## places the level's clones **first** -- so "the first object on the cell"
+## was the clone wherever the two share a field. On `_C_142` that was the
+## door's flight aiming at `LEVEL01D.004`; on `_C_163` the second
+## footbridge's camera aimed 13 760 units below its block, the fall tilted
+## the level's own geometry, and `aDeleteLand` deleted it into the save's
+## `removed` list, where every load would delete it again. `_C_129` (24, 11)
+## is the fixture's own case: a crush wall's `L041EA00` sharing a field with
+## `LEVEL01D.016`.
+func _check_clone_cells(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("clones.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("clones.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(header["world_set"]))
+		return
+	var scenery: Scenery = Scenery.new()
+	scenery.build(document, geometry, {})
+	var _all: int = scenery.apply_all(world.terrain_snapshot())
+	# The cell is found by what stands on it: a special object sharing a
+	# field with a clone, which is what the shared-field case is.
+	#
+	# **The precondition is read off the scene and not off the search.**
+	# [method Scenery.clones_on] answers from the index [method Scenery.build]
+	# fills as it places them, and [method Scenery.instances_on] from the whole
+	# cell, so neither is the function these checks are about. It used to ask
+	# whether `instances_on` held more than `objects_on` plus the marker, which
+	# is the same question as the first check below: reverting the exclusion in
+	# `objects_on` made the *guard* fail first and took the five checks after
+	# it out of the run with an early return, so the mutation that proves the
+	# mechanism reported a missing fixture instead. Now a revert leaves this
+	# passing and fails the seven checks below it by name --
+	# `only_the_special_is_found`, `the_first_object_is_the_special`,
+	# `origins_name_the_special`, `the_live_count_is_the_search_s_answer`,
+	# `removal_takes_the_special_only`, `the_live_count_falls_with_the_removal`
+	# and `the_removed_count_rises_with_it`.
+	var shared: int = -1
+	for cell: int in range(world.state.width * world.state.height):
+		if scenery.clones_on(cell).is_empty():
+			continue
+		for node: Variant in scenery.instances_on(cell):
+			var instance: Node3D = node
+			if instance.name.begins_with(CLONE_SHARED_PROTOTYPE):
+				shared = cell
+				break
+		if shared >= 0:
+			break
+	h.check("clones.fixture_has_a_shared_cell", shared >= 0,
+		"a %s on the same field as a clone" % CLONE_SHARED_PROTOTYPE)
+	if shared < 0:
+		scenery.free()
+		return
+	var objects: Array = scenery.objects_on(shared)
+	h.equal("clones.only_the_special_is_found", objects.size(), 1,
+		"the search's table holds the wall and neither the marker nor the "
+		+ "clone")
+	var found: Node3D = objects[0]
+	h.check("clones.the_first_object_is_the_special",
+		found.name.begins_with(CLONE_SHARED_PROTOTYPE),
+		"a set piece flies to %s" % found.name)
+	var origins: Array[Vector3i] = scenery.object_origins(shared)
+	h.equal("clones.origins_name_the_special", origins.size(), 1,
+		"and the flight has one candidate, not the clone placed before it")
+	var drawn: int = scenery.instances_on(shared).size()
+	# The number a driven session reads (docs/92 section 7.16). It is the
+	# search's own answer summed over the map, which is what makes it move
+	# when a set piece frees a cell -- `built_count` counts the marker and the
+	# clone too and is a constant for the life of a mission.
+	var live: int = 0
+	for cell: int in range(world.state.width * world.state.height):
+		live += scenery.objects_on(cell).size()
+	h.equal("clones.the_live_count_is_the_search_s_answer",
+		scenery.object_count(), live,
+		"and it is fewer than the %d built" % scenery.built_count())
+	h.check("clones.the_live_count_is_under_the_built",
+		scenery.object_count() < scenery.built_count(),
+		"the lattice's markers and the scene's clones are built and are not "
+		+ "objects")
+	var _gone: int = scenery.remove_objects(shared)
+	h.equal("clones.removal_takes_the_special_only",
+		scenery.instances_on(shared).size(), drawn - 1,
+		"`aDeleteLand` frees the object the search found; the clone and the "
+		+ "marker are still drawn")
+	h.equal("clones.the_live_count_falls_with_the_removal",
+		scenery.object_count(), live - 1,
+		"which is the one number outside the game that says so")
+	h.equal("clones.the_removed_count_rises_with_it",
+		scenery.removed_count(), 1, "and the cell is counted freed once")
+	h.equal("clones.removal_is_the_whole_record",
+		scenery.pose_record()["removed"], [shared],
+		"and what the save carries is that cell, not the level's geometry")
+	scenery.free()
+
+
+## The load's own seam, end to end: what a mission save carries out of the
+## picture and what [method SliceMain._resume_loaded_mission] puts back.
+##
+## Three things that lived only in the picture until 2026-09-06 and had no
+## suite between them: the scenery's poses (an opened hatch, a freed cell),
+## the camera -- the header has carried a `camera` field since the first
+## save and every writer passed it empty, so nothing had ever come back
+## through it -- and the **refusal** that makes the record whole. A set
+## piece is frames of picture over a world `core` has already finished, so a
+## save taken while one is on the queue would hold the fall's start and none
+## of its end; the original cannot reach that state at all, its sequences
+## running inside the command. The turn's own autosave is deferred rather
+## than dropped, because *Undo last turn* is a promise about every turn.
+func _check_resume_after_load(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("resume.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("resume.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(header["world_set"]))
+		return
+	var played: Scenery = Scenery.new()
+	played.build(document, geometry, {})
+	var _all: int = played.apply_all(world.terrain_snapshot())
+	var walls: PackedInt32Array = played.cells_with_prototype(WALL_PROTOTYPE)
+	var tubes: PackedInt32Array = played.cells_with_prototype(TUBE_PROTOTYPE)
+	if walls.is_empty() or tubes.is_empty():
+		h.check("resume.fixture_has_a_wall_and_a_tube", false,
+			"%d wall(s), %d tube(s) on %s"
+				% [walls.size(), tubes.size(), WALL_MISSION])
+		played.free()
+		return
+	var wall: int = walls[0]
+	var tube: int = tubes[0]
+	var open: Vector3i = Vector3i(
+		SetpieceDriver.TUBE_STEP * SetpieceDriver.TUBE_FRAMES, 0, 0)
+	var _hatch: int = played.paint_joint(tube, SetpieceDriver.PART_FIRST, open)
+	var _gone: int = played.remove_objects(wall)
+
+	var rig: CameraRig = CameraRig.new()
+	rig.set_now(SAVED_EYE, SAVED_TARGET)
+	var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
+		CacheFixture.balance(), Localization.new())
+	host.save_dir = RESUME_SCRATCH
+	# **The corner is emptied first.** The refusal below is checked by the
+	# slot file *not* being there, and nothing wipes `user://` between runs
+	# -- so a second run would read the first run's file and call the
+	# deferral broken.
+	for slot: int in [RESUME_SLOT, HudTables.SLOT_UNDO_TURN]:
+		var stale: String = ProjectSettings.globalize_path(host.slot_path(slot))
+		if FileAccess.file_exists(stale):
+			var _removed: Error = DirAccess.remove_absolute(stale)
+	var _started: CampaignState = host.start_new(1, 1)
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main.campaign = host
+	main._scenery = played
+	main._rig = rig
+	main._sequences = SequenceQueue.create(null)
+
+	# --- what a save carries ---------------------------------------------
+	# **The writer records what it wrote.** The ownership cache is read once
+	# per slot and remembered, so a slot written without recording keeps
+	# whatever header was on disk when the interface first asked -- which
+	# left *Recall position* dark right after `F1` had written it, in a real
+	# build (docs/92 section 7.16). The cache is **poisoned first**, because
+	# a miss would read the header this save is about to write and pass
+	# either way.
+	main._slot_owner[RESUME_SLOT] = "_C_XXX"
+	h.check("resume.saved", main._save_mission_to(RESUME_SLOT, world),
+		"the mission blob, its poses and its camera into slot 0")
+	h.check("resume.the_slot_knows_its_mission",
+		main._slot_holds_this_mission(RESUME_SLOT),
+		"the interface offers the slot it has just written, without "
+		+ "re-reading the header it cached before the write")
+
+	# --- and what it refuses ---------------------------------------------
+	main._sequences.enqueue("crush_wall", 8, Callable())
+	h.check("resume.mid_sequence", main._mid_sequence(),
+		"a set piece on the queue")
+	h.check("resume.save_is_refused_mid_sequence",
+		not main._save_mission_to(RESUME_SLOT + 1, world),
+		"`core` has finished, the picture has not -- and the record would "
+		+ "hold the fall's start with none of its end")
+	main._autosave(HudTables.SLOT_UNDO_TURN)
+	h.check("resume.autosave_waits_rather_than_writing",
+		not host.has_save(HudTables.SLOT_UNDO_TURN),
+		"the turn's own save is deferred, not taken half way")
+	main._sequences.skip()
+	h.check("resume.queue_drains", not main._mid_sequence())
+	main._flush_autosaves()
+	h.check("resume.autosave_lands_when_the_queue_drains",
+		host.has_save(HudTables.SLOT_UNDO_TURN),
+		"*Undo last turn* is a promise about every turn")
+
+	# --- and what a load puts back ---------------------------------------
+	var decoded: Dictionary = host.load_save(RESUME_SLOT)
+	h.equal("resume.slot_reads_back",
+		CampaignCodec.result_name(DictRead.as_int(decoded["result"])), "OK")
+	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
+	var again: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	var fresh: World = again["world"]
+	h.equal("resume.mission_reads_back",
+		SaveCodec.result_name(fresh.load_save(blob)), "OK")
+	var resumed: Scenery = Scenery.new()
+	resumed.build(document, geometry, {})
+	var _placed: int = resumed.apply_all(fresh.terrain_snapshot())
+	var back_rig: CameraRig = CameraRig.new()
+	var loader: SliceMain = SliceMain.new()
+	loader.world = fresh
+	loader._scenery = resumed
+	loader._rig = back_rig
+	loader._resume_loaded_mission()
+	h.equal("resume.hatch_is_open_again",
+		resumed.joint_of(tube, SetpieceDriver.PART_FIRST), open,
+		"the poses come back through the save rather than being authored")
+	h.check("resume.wall_is_gone_again",
+		resumed.objects_on(wall).is_empty() and resumed.removed_count() == 1)
+	h.equal("resume.camera_is_where_it_was",
+		[back_rig.eye_goal(), back_rig.target_goal()],
+		[SAVED_EYE, SAVED_TARGET],
+		"the header's camera field, read at last")
+	# A save written before the field was filled -- and every save the
+	# campaign container holds without a mission -- leaves the built
+	# mission's own view rather than snapping to the origin.
+	var untouched: CameraRig = CameraRig.new()
+	untouched.set_now(SAVED_EYE, SAVED_TARGET)
+	untouched.apply_state({})
+	h.equal("resume.empty_camera_moves_nothing",
+		[untouched.eye_goal(), untouched.target_goal()],
+		[SAVED_EYE, SAVED_TARGET])
+
+	played.free()
+	resumed.free()
+	rig.free()
+	back_rig.free()
+	untouched.free()
+	main.free()
+	loader.free()
+
+
+## The lever's handle on `_C_115`: L109EX00's one part, up at zero, thrown
+## at -800 -- and the thrown pose is a function of the cell's action point,
+## as the door's leaves are of its parity.
+func _check_family_lever(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(LEVER_MISSION)
+	if loaded.is_empty():
+		h.check("family.lever.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("family.lever.geometry", false, "geometry/%s.json"
+			% DictRead.as_string(header["world_set"]))
+		return
+	var scenery: Scenery = Scenery.new()
+	scenery.build(document, geometry, {})
+	var _placed: int = scenery.apply_all(world.terrain_snapshot())
+	var lever: int = _find_action_point(world, Interact.LEVER_UP)
+	h.check("family.lever.present", lever >= 0,
+		"a cell with action point %d on %s" % [Interact.LEVER_UP, LEVER_MISSION])
+	if lever >= 0:
+		h.check("family.lever.has_handle",
+			scenery.has_joint(lever, Scenery.LEVER_PART),
+			"the object on the cell carries part %d" % Scenery.LEVER_PART)
+		h.equal("family.lever.ships_up",
+			scenery.joint_of(lever, Scenery.LEVER_PART), Vector3i.ZERO,
+			"action point 36 and a zero handle")
+		var half: Vector3i = Vector3i(-SetpieceDriver.LEVER_STEP
+			* (SetpieceDriver.LEVER_FRAMES / 2), 0, 0)
+		h.equal("family.lever.paint_turns_one",
+			scenery.paint_joint(lever, Scenery.LEVER_PART, half), 1)
+		var objects: Array = scenery.objects_on(lever)
+		var handle: Node3D = null
+		if not objects.is_empty():
+			var first_object: Node3D = objects[0]
+			handle = scenery.pivot_of(first_object, Scenery.LEVER_PART)
+		h.check("family.lever.halfway", handle != null
+			and handle.basis.is_equal_approx(
+				WorldSpace.joint_basis(half.x, 0, 0)),
+			"the fifth frame is -400 about x")
+		h.equal("family.lever.reads_back",
+			scenery.joint_of(lever, Scenery.LEVER_PART), half,
+			"what was painted is what `joint_of` answers")
+		var snapshot: Dictionary = world.terrain_snapshot()
+		var only: PackedInt32Array = PackedInt32Array([lever])
+		var points: PackedByteArray = snapshot["action_point"]
+		points[lever] = Interact.LEVER_DOWN
+		snapshot["action_point"] = points
+		var _thrown: int = scenery.apply_state(snapshot, only)
+		h.equal("family.lever.thrown_from_state",
+			scenery.joint_of(lever, Scenery.LEVER_PART),
+			Vector3i(-Scenery.LEVER_THROW, 0, 0),
+			"action point 37 is the thrown handle")
+		points[lever] = Interact.LEVER_UP
+		snapshot["action_point"] = points
+		var _up: int = scenery.apply_state(snapshot, only)
+		h.equal("family.lever.up_from_state",
+			scenery.joint_of(lever, Scenery.LEVER_PART), Vector3i.ZERO)
+		# The driver's arm from a thrown state: the state paints the end of
+		# the throw first, the arm still starts at the rest pose.
+		points[lever] = Interact.LEVER_DOWN
+		snapshot["action_point"] = points
+		var _end: int = scenery.apply_state(snapshot, only)
+		var throw: Dictionary = {"starts": {}}
+		var _first: int = SetpieceDriver.paint_family(scenery, lever, "lever",
+			PackedInt32Array([0, 0, 0]), 1, SetpieceDriver.LEVER_FRAMES, throw,
+			RecordingHost.new())
+		h.equal("family.lever.arm_starts_at_rest",
+			scenery.joint_of(lever, Scenery.LEVER_PART),
+			Vector3i(-SetpieceDriver.LEVER_STEP, 0, 0),
+			"frame 1 of an up-to-down throw is -80, not -880")
+		var _tenth: int = SetpieceDriver.paint_family(scenery, lever, "lever",
+			PackedInt32Array([0, 0, 0]), SetpieceDriver.LEVER_FRAMES,
+			SetpieceDriver.LEVER_FRAMES, throw, RecordingHost.new())
+		h.equal("family.lever.arm_ends_thrown",
+			scenery.joint_of(lever, Scenery.LEVER_PART),
+			Vector3i(-Scenery.LEVER_THROW, 0, 0))
+		h.equal("family.lever.throw_is_step_times_frames",
+			Scenery.LEVER_THROW,
+			SetpieceDriver.LEVER_STEP * SetpieceDriver.LEVER_FRAMES,
+			"ten frames of 80")
+
+	scenery.free()
+
+
+func _find_action_point(world: World, ap: int) -> int:
+	for index: int in range(world.state.cell_count()):
+		if world.state.action_point_at(index) == ap:
+			return index
+	return -1
+
+
+## How many mesh surfaces draw under a node -- its own and its parts'.
+func _surfaces_under(node: Node) -> int:
+	var total: int = 0
+	var instance: MeshInstance3D = node as MeshInstance3D
+	if instance != null and instance.mesh != null:
+		total += instance.mesh.get_surface_count()
+	for child: Node in node.get_children():
+		total += _surfaces_under(child)
+	return total
 
 
 ## The three weapon switches reach real effects with real kinds.
@@ -841,6 +1803,28 @@ func _check_setpieces(h: TestHarness) -> void:
 	h.equal("setpiece.foot_bridge2", SetpieceDriver.frames_for(
 		{"name": "foot_bridge2", "values": [112, 30, 3]}), 30,
 		"the frames argument, as _C_163 passes it")
+	# What the footbridge events carry past their arguments: the riders'
+	# slots, and for `FootBridge2` the group's cells first (docs/42 section
+	# 8.3). The block stands on one of those cells, never at `(112, 30)`.
+	var bridge2: Dictionary = {"name": "foot_bridge2",
+		"values": [112, 30, 2, 16, 10, 16, 11, 7]}
+	h.equal("setpiece.foot_bridge2_cell", SetpieceDriver.cell_of(bridge2),
+		Vector2i(16, 10), "the first group cell, not the group and the frames")
+	var want_group: Array[Vector2i] = [Vector2i(16, 10), Vector2i(16, 11)]
+	h.equal("setpiece.foot_bridge2_group", SetpieceDriver.group_cells(bridge2),
+		want_group)
+	h.equal("setpiece.foot_bridge2_riders", SetpieceDriver.riders_of(bridge2),
+		PackedInt32Array([7]))
+	h.equal("setpiece.foot_bridge2_bare_cell", SetpieceDriver.cell_of(
+		{"name": "foot_bridge2", "values": [112, 30, 0]}), Vector2i(-1, -1),
+		"a group nothing matched names no cell")
+	var bridge: Dictionary = {"name": "foot_bridge", "values": [4, 4, 30, 2, 0, 1]}
+	h.equal("setpiece.foot_bridge_cell", SetpieceDriver.cell_of(bridge),
+		Vector2i(4, 4))
+	h.equal("setpiece.foot_bridge_riders", SetpieceDriver.riders_of(bridge),
+		PackedInt32Array([0, 1]))
+	h.equal("setpiece.no_riders_elsewhere", SetpieceDriver.riders_of(
+		{"name": "open_tube", "values": [20, 22]}), PackedInt32Array())
 
 	# The one count neither document gave, read out of the drop loop at
 	# `0x00411E26` and pinned by `blob_tables.py`: a whole map field a frame.
@@ -861,6 +1845,26 @@ func _check_setpieces(h: TestHarness) -> void:
 	h.equal("setpiece.tube", SetpieceDriver.frames_for(
 		{"name": "open_tube", "values": [3, 3]}), SetpieceDriver.TUBE_FRAMES,
 		"`cmp esi, 0x13` in 0x00410F10")
+	# The player's own two (docs/42 section 8.3): the lever's ten frames and
+	# the supply box's twenty of lid plus fifteen of hold.
+	h.equal("setpiece.lever", SetpieceDriver.frames_for(
+		{"name": "lever", "values": [3, 3, 0]}), 10,
+		"`mov dword [esp+0x34], 0xA` in 0x00416AD0")
+	h.equal("setpiece.pickup", SetpieceDriver.frames_for(
+		{"name": "pickup", "values": [3, 3]}), 20 + 15,
+		"`mov ebx, 0x14` then `mov esi, 0xF` in 0x00410780")
+	# The handle's pose is a function of the direction and the frame, never
+	# of what the object shows: `core` has flipped the action point before
+	# the first frame, so a start read off the scenery is the end of the
+	# throw and the handle would run a whole throw past it.
+	h.equal("setpiece.lever_pose",
+		[SetpieceDriver.lever_pose(0, 0), SetpieceDriver.lever_pose(0, 5),
+			SetpieceDriver.lever_pose(0, 10), SetpieceDriver.lever_pose(1, 0),
+			SetpieceDriver.lever_pose(1, 10), SetpieceDriver.lever_pose(0, 99)],
+		[0, -400, -800, -800, 0, -800],
+		"up goes 0 to -800, down goes -800 back to 0, and the frame is clamped")
+	h.equal("setpiece.lever_throw", SetpieceDriver.LEVER_THROW,
+		Scenery.LEVER_THROW, "the driver and the scenery agree on the throw")
 	h.equal("setpiece.ground_unit", SetpieceDriver.frames_for(
 		{"name": "ground_unit", "values": [3, 3, 4, 4]}),
 		SetpieceDriver.GROUND_UNIT_FRAMES)
@@ -2095,6 +3099,24 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	h.equal("camera.door.target_at_the_panel", door.flights[0][1],
 		Vector3i(2 * WorldSpace.WORLD_UNITS_PER_FIELD,
 			1 * WorldSpace.WORLD_UNITS_PER_FIELD, 2880))
+	# A closed door's cell stands at 0xC80; the flight aims at the **panel**,
+	# whose object is on the floor, and both ends take the panel's z
+	# (`0x00410C1E`, `0x00410C35`: `[esi+0x18]` twice). Aiming at the cell's
+	# height is what tipped the camera up at the lintel.
+	var closed: RecordingHost = RecordingHost.new()
+	closed.objects[3] = Vector3i(3200, 3200, 160)
+	closed.heights[3] = 2880
+	var closed_queue: SequenceQueue = SequenceQueue.create(null)
+	var _closed: int = SetpieceCamera.enqueue(closed_queue, closed, "open_door",
+		SetpieceDriver.DOOR_FRAMES, Vector2i(2, 1), 0xC80, 0, 3,
+		{"object": Vector3i(6400, 3200, 0)}, paint, no_cues)
+	var _closed_ran: Dictionary = _run_queue(closed_queue)
+	h.equal("camera.door.eye_at_the_panel_z", closed.flights[0][0],
+		Vector3i(3200, 3200, 2880),
+		"the opener's x and y, the panel's z plus the unit's height")
+	h.equal("camera.door.target_is_the_object", closed.flights[0][1],
+		Vector3i(6400, 3200, 2880),
+		"not the cell at its height, which would be 0xC80 higher")
 	# The LCL wrapper names no unit: no flight at all.
 	var lcl: RecordingHost = RecordingHost.new()
 	var lcl_queue: SequenceQueue = SequenceQueue.create(null)
@@ -2104,6 +3126,86 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	var _lcl_ran: Dictionary = _run_queue(lcl_queue)
 	h.equal("camera.door.no_unit_no_flight", lcl.flights.size(), 0,
 		"the wrapper passes -1 and the routine skips its camera")
+
+	# The lever (docs/42 section 8.3): the door's shape with both ends of
+	# the flight `0xC80` above the cell's marker, ten frames, the flight back.
+	var lever: RecordingHost = RecordingHost.new()
+	lever.objects[3] = Vector3i(3200, 3200, 160)
+	var lever_queue: SequenceQueue = SequenceQueue.create(null)
+	var lever_frames: int = SetpieceCamera.enqueue(lever_queue, lever, "lever",
+		SetpieceDriver.LEVER_FRAMES, Vector2i(2, 1), 640, 640, 3, {}, paint,
+		no_cues)
+	h.equal("camera.lever.frames", lever_frames, SetpieceDriver.LEVER_FRAMES)
+	var lever_ran: Dictionary = _run_queue(lever_queue)
+	h.equal("camera.lever.stages", DictRead.as_array(lever_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, "lever", SetpieceCamera.STAGE_BACK])
+	h.equal("camera.lever.flies_there_and_back", lever.flights.size(), 2)
+	h.equal("camera.lever.eye_above_the_user", lever.flights[0][0],
+		Vector3i(3200, 3200, 640 + 0xC80),
+		"the user's x and y, the marker's z plus `add eax, 0xC80`")
+	h.equal("camera.lever.target_above_the_marker", lever.flights[0][1],
+		Vector3i(6400, 3200, 640 + 0xC80))
+	h.equal("camera.lever.back_where_it_was", lever.flights[1],
+		[Vector3i(100, 200, 300), Vector3i(10, 20, 30)])
+
+	# The supply box: from `0xFA0` above the user to `0x320` above the box's
+	# marker, thirty-five frames, back.
+	var box: RecordingHost = RecordingHost.new()
+	box.objects[3] = Vector3i(3200, 3200, 160)
+	var box_queue: SequenceQueue = SequenceQueue.create(null)
+	var box_frames: int = SetpieceCamera.enqueue(box_queue, box, "pickup",
+		SetpieceDriver.PICKUP_LID_FRAMES + SetpieceDriver.PICKUP_HOLD_FRAMES,
+		Vector2i(2, 1), 0, 0, 3, {}, paint, no_cues)
+	h.equal("camera.pickup.frames", box_frames, 35)
+	var box_ran: Dictionary = _run_queue(box_queue)
+	h.equal("camera.pickup.stages", DictRead.as_array(box_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, "pickup", SetpieceCamera.STAGE_BACK])
+	h.equal("camera.pickup.eye_above_the_user", box.flights[0][0],
+		Vector3i(3200, 3200, 160 + 0xFA0), "`add ecx, 0xFA0`")
+	h.equal("camera.pickup.target_above_the_box", box.flights[0][1],
+		Vector3i(6400, 3200, 0x320), "`add edx, 0x320`")
+
+	# The footbridge (docs/42 section 8.1): a flight to the block, the camera
+	# lowered every frame -- the eye by 0x960, the target by 0xD20 -- and
+	# the flight back.
+	var fall: RecordingHost = RecordingHost.new()
+	var fall_queue: SequenceQueue = SequenceQueue.create(null)
+	# The flight back restores the camera, so what each frame set is read
+	# through the paint, which the arm calls after its `set_camera`.
+	var fall_seen: Array[Array] = []
+	var fall_frames: int = SetpieceCamera.enqueue(fall_queue, fall, "foot_bridge",
+		5, Vector2i(2, 1), 0, 0, -1, {"object": Vector3i(6400, 3200, 0)},
+		func(_frame: int, _total: int) -> void:
+			fall_seen.append([fall.eye, fall.target]),
+		no_cues)
+	h.equal("camera.foot_bridge.frames", fall_frames, 5)
+	var fall_ran: Dictionary = _run_queue(fall_queue)
+	h.equal("camera.foot_bridge.stages", DictRead.as_array(fall_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, "foot_bridge", SetpieceCamera.STAGE_BACK])
+	h.equal("camera.foot_bridge.flies_to_the_block", fall.flights[0][1],
+		Vector3i(6400, 3200, 0))
+	h.equal("camera.foot_bridge.camera_per_frame", fall.camera_sets, 5)
+	h.equal("camera.foot_bridge.follows_the_block_down",
+		fall_seen[4][1] if fall_seen.size() == 5 else Vector3i.ZERO,
+		Vector3i(6400, 3200, -5 * 0xD20), "the target drops 0xD20 a frame")
+	h.equal("camera.foot_bridge.eye_drops_slower",
+		fall_seen[4][0] if fall_seen.size() == 5 else Vector3i.ZERO,
+		Vector3i(100, 200, 300 - 5 * 0x960), "the eye drops 0x960 a frame")
+	h.equal("camera.foot_bridge.back_where_it_was", fall.flights[1],
+		[Vector3i(100, 200, 300), Vector3i(10, 20, 30)])
+	# `FootBridge2` is the same fall on the block its search finds.
+	var fall2: RecordingHost = RecordingHost.new()
+	var fall2_queue: SequenceQueue = SequenceQueue.create(null)
+	var fall2_frames: int = SetpieceCamera.enqueue(fall2_queue, fall2,
+		"foot_bridge2", 30, Vector2i(16, 10), 0, 0, -1,
+		{"object": Vector3i(51200, 32000, 0)},
+		func(_frame: int, _total: int) -> void: pass, no_cues)
+	h.equal("camera.foot_bridge2.frames", fall2_frames, 30)
+	var fall2_ran: Dictionary = _run_queue(fall2_queue)
+	h.equal("camera.foot_bridge2.stages", DictRead.as_array(fall2_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, "foot_bridge2", SetpieceCamera.STAGE_BACK])
+	h.equal("camera.foot_bridge2.flies_to_the_block", fall2.flights[0][1],
+		Vector3i(51200, 32000, 0))
 
 	# The tube: the puffs on the tenth of nineteen frames, no flight.
 	var tube: RecordingHost = RecordingHost.new()
@@ -2474,3 +3576,524 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		[BlobPrograms.BOMBER, BlobPrograms.PARA_BOMB],
 		"and nothing else in the set-piece family touches the flag")
 
+
+## One `MoveUnit` hook, from `core`'s answer to the picture's queue.
+##
+## `aRunLCL` `0x0046EEFD` is the last thing `aExecuteMove` does, and the
+## two footbridge maps drop theirs out of it -- `_C_106` six times and
+## `_C_107` once, which is every `FootBridge` call the corpus ships, and both
+## unconditionally, so on those maps *any* walk asks the question.
+## `core` has run the hook and handed the outcome back on
+## [member MoveResult.script_result] since the second slice, and **`game` read
+## that field nowhere until 2026-09-07**: the interpreter killed the riders and
+## turned the nine cells into deep holes, and the picture showed none of it --
+## no fall, no tumble, no `aDeleteLand`, and a save afterwards carrying an
+## empty `removed` row over cells that had already gone. Found by playing
+## `_C_107` through the agent server, which is the only way it could have been:
+## `_C_129`'s own `MoveUnit` section is empty, so no fixture asked.
+##
+## The program is built here rather than read out of the cache because the
+## claim is about the **seam**, not about one mission's script: one command,
+## `FootBridge (x, y, frames, 0)`, whose zero threshold makes the mover its
+## own rider.
+func _check_move_script_seam(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var attached: bool = world.attach_script(_foot_bridge_program(
+		MOVE_HOOK_CELL, MOVE_HOOK_FRAMES))
+	h.check("move_script.the_program_attaches", attached,
+		"one FootBridge command, the shape `script.json` carries")
+	var moved: MoveResult = world.submit_move(
+		MoveCommand.create(0, MOVE_HOOK_CELL.x, MOVE_HOOK_CELL.y))
+	if not h.check("move_script.the_walk_ran", moved.ok, moved.reason):
+		return
+	h.check("move_script.core_ran_the_hook",
+		DictRead.as_bool(moved.script_result.get("ran", false)),
+		"`0x0046EDDC`'s alive gate let the mover reach `aRunLCL`")
+	# [method LclOutcome.to_dict] serialises an event as a `[name, values]`
+	# pair, which is the shape the cache document carries and the shape
+	# [method AudioEvents.as_event] exists to take apart -- so this reads it
+	# the way [method SliceMain._present_script] does and not by hand.
+	var events: Array = DictRead.as_array(moved.script_result.get("events", []))
+	var names: Array[String] = []
+	var first: Dictionary = {}
+	for entry: Variant in events:
+		var event: Dictionary = AudioEvents.as_event(entry)
+		names.append(AudioEvents.name_of(event))
+		if first.is_empty():
+			first = event
+	h.equal("move_script.the_hook_dropped_the_bridge", names, ["foot_bridge"]
+		as Array[String], "the walk's own script event, and only it")
+	if first.is_empty():
+		return
+	var values: PackedInt32Array = SetpieceDriver._numbers(first)
+	h.equal("move_script.the_mover_is_its_own_rider",
+		[values[3], values[4]], [1, 0],
+		"one rider, and it is the unit that walked in")
+	h.equal("move_script.core_killed_the_rider",
+		DictRead.as_int(world.unit_view(0).get("hp", -1)), 0,
+		"`aRemoveUnitElement` -- the interpreter kills before the picture "
+		+ "starts, which is why the record has to outlive it")
+	h.check("move_script.the_walk_has_an_epilogue",
+		SliceMain._script_has_events(moved.script_result),
+		"so the fall waits for the body to arrive, as the blocking loop does")
+	h.check("move_script.an_empty_outcome_holds_nothing",
+		not SliceMain._script_has_events({}),
+		"a walk whose script did nothing does not hold the queue")
+
+	# The picture's half: the same dictionary, on the same seam
+	# [method SliceMain.move_selected] now hands it to.
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	var body: Node3D = Node3D.new()
+	body.name = "unit_0"
+	units.add_child(body)
+	main._sequences = SequenceQueue.create(null)
+	main._rig = CameraRig.new()
+	main._rig.set_now(SAVED_EYE, SAVED_TARGET)
+	# The sound layer is wired here -- the recording one, which opens no
+	# stream -- so that the cue count the presenter answers can be checked
+	# against the table's own; [method _check_warp_script_seam] is the run
+	# with no sound layer at all, where the queue alone has to answer.
+	var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+	if not tables.is_loaded():
+		h.check("move_script.audio", false, "tables/sound.json")
+		units.free()
+		main._rig.free()
+		main.free()
+		return
+	main._events = AudioEvents.open(tables, {})
+	var audio: RecordingAudio = RecordingAudio.new()
+	main._audio = audio
+	# **The riders are held before the rebuild, not after.**
+	# [method UnitsView.build] frees every node and refuses to draw an
+	# `hp == 0` record that is not already held, and `_after_command` runs it
+	# the moment the command returns -- so without this the bodies were gone
+	# before the fall began and the mover, which is a rider, never walked.
+	# `AIPlayback.casualties_of` cannot supply them: a script kill carries no
+	# attack, no outcome and no marker.
+	h.equal("move_script.the_riders_are_held",
+		main._mark_dying_by_script(moved.script_result), 1,
+		"one rider taken off the map by the hook")
+	h.equal("move_script.the_held_rider_is_the_mover",
+		str(units.dying()), str(PackedInt32Array([0])),
+		"and it is the unit that walked in")
+	h.equal("move_script.nothing_to_hold_from_an_empty_outcome",
+		main._mark_dying_by_script({}), 0,
+		"a walk whose script did nothing holds nobody")
+	var shown: int = main._present_script(moved.script_result)
+	h.equal("move_script.the_events_reach_the_picture", shown,
+		main._events.for_event(first).size(),
+		"every cue the table names for the fall is counted, and no other")
+	h.check("move_script.the_fall_is_on_the_queue",
+		main._sequences.is_running(),
+		"which is what `move_selected` had never asked for")
+	h.check("move_script.the_rider_is_held_in_the_picture",
+		str(units.dying()) == str(PackedInt32Array([0])),
+		"the body outlives its death for the length of the fall: %s"
+			% str(units.dying()))
+	# The rule the hold exists for, on the fixture's own world and geometry:
+	# a rebuild drops a dead body and keeps a held one. This is what makes the
+	# order above load-bearing rather than tidy.
+	_check_rebuild_drops_the_dead(h)
+	# The rig is a [Node3D] and is nobody's child, so freeing `main` does not
+	# reach it -- and a script left held at shutdown is
+	# `N resources still in use at exit`, which `run_tests.sh` gates on.
+	units.free()
+	audio.free()
+	main._rig.free()
+	main.free()
+
+
+## One `FootBridge (x, y, frames, 0)`, as `LclProgram.from_document` reads it.
+## The computer's walk fires the same hook.
+##
+## `aRunLCL` `0x0046EEFD` closes `aExecuteMove` for every caller -- the
+## alive gate `0x0046EDDC` is the only test between the walk and the six
+## environment writes -- and `0x0040A750`'s tail calls that routine for the
+## computer's mover. `AISystem.run` never went through `World.submit_move`,
+## so until 2026-09-07 `core` ran no `MoveUnit` for a computer walk at all
+## and `_C_106`'s six bridges could not fall under its aliens. This drives
+## the plan's own commit step rather than a whole `AISystem.run`, because
+## the planner may never choose the bridge cell; the fixture replay of
+## `cases_ai.json` builds its context with no script and is unchanged.
+func _check_ai_move_script_seam(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var _attached: bool = world.attach_script(_foot_bridge_program(
+		MOVE_HOOK_CELL, MOVE_HOOK_FRAMES))
+	var ctx: AIContext = AIContext.create(world.state, world.units_for_ai(),
+		world.unit_types(), world.weapons(), world.ctrlmap(), world.turn,
+		world.rng)
+	ctx.mission_script = world._script_callable()
+	var unit: UnitState = world.units_for_ai()[0]
+	var _filled: bool = AIPlan.build_move_map(ctx, unit, 0)
+	var target: int = world.state.index_of(MOVE_HOOK_CELL.x, MOVE_HOOK_CELL.y)
+	h.check("ai_script.the_computer_walks_onto_the_bridge",
+		AIPlan.commit(ctx, unit, target) and unit.x == MOVE_HOOK_CELL.x
+			and unit.y == MOVE_HOOK_CELL.y,
+		"`0x0040A750`'s tail, to (%d, %d)" % [unit.x, unit.y])
+	var payload: Dictionary = _last_event_payload(ctx, "move")
+	var outcome: Dictionary = DictRead.as_dict(payload.get("script", {}))
+	h.check("ai_script.the_walk_fired_the_hook",
+		DictRead.as_bool(outcome.get("ran", false)),
+		"`aRunLCL` `0x0046EEFD`, behind no test of the player")
+	h.equal("ai_script.the_bridge_fell_under_it", _event_names(outcome),
+		["foot_bridge"] as Array[String], "the walk's own script event")
+	h.equal("ai_script.core_killed_the_rider",
+		DictRead.as_int(world.unit_view(0).get("hp", -1)), 0,
+		"`aRemoveUnitElement`, inside the computer's own turn")
+	h.equal("ai_script.the_riders_ride_the_event",
+		str(AIPlayback.casualties_of(payload, true)),
+		str(PackedInt32Array([0])),
+		"the fifth shape the extractor reads a death in")
+	h.equal("ai_script.the_whole_turn_holds_them",
+		str(AIPlayback.casualties_in([{"payload": payload}] as Array[Dictionary],
+			0, true)),
+		str(PackedInt32Array([0])),
+		"so the hold taken before the first frame covers a script kill")
+	# The computer's jump closes with the same call (`0x0046F1D6`).
+	var jumper: World = _jet_pack_world()
+	var _hooked: bool = jumper.attach_script(_foot_bridge_program(
+		WARP_HOOK_CELL, MOVE_HOOK_FRAMES))
+	var jump_ctx: AIContext = AIContext.create(jumper.state,
+		jumper.units_for_ai(), jumper.unit_types(), jumper.weapons(),
+		jumper.ctrlmap(), jumper.turn, jumper.rng)
+	jump_ctx.mission_script = jumper._script_callable()
+	var mover: UnitState = jumper.units_for_ai()[0]
+	h.check("ai_script.the_computer_jumps_onto_the_bridge",
+		AIPlan.execute_warp(jump_ctx, mover, WARP_HOOK_CELL.x, WARP_HOOK_CELL.y),
+		"`aExecuteWarp` for the computer")
+	var jumped: Dictionary = _last_event_payload(jump_ctx, "warp")
+	h.equal("ai_script.the_jump_fired_the_hook",
+		_event_names(DictRead.as_dict(jumped.get("script", {}))),
+		["foot_bridge"] as Array[String], "`aRunLCL` `0x0046F1D6`")
+	h.equal("ai_script.the_jump_s_rider_rides_the_event",
+		str(AIPlayback.casualties_of(jumped, true)),
+		str(PackedInt32Array([0])), "the same extractor, on a `warp`")
+	# And with no script attached the payload has no such key: the shape
+	# the fixture replay compares against `inclib/ai.py`, which never fires
+	# the hook, is exactly what it was.
+	var bare: World = TestFixtures.tiny_world()
+	var bare_ctx: AIContext = AIContext.create(bare.state, bare.units_for_ai(),
+		bare.unit_types(), bare.weapons(), bare.ctrlmap(), bare.turn, bare.rng)
+	var walker: UnitState = bare.units_for_ai()[0]
+	var _bare_fill: bool = AIPlan.build_move_map(bare_ctx, walker, 0)
+	var _walked: bool = AIPlan.commit(bare_ctx, walker, target)
+	h.check("ai_script.no_script_no_key",
+		not _last_event_payload(bare_ctx, "move").has("script"),
+		"the fixture replay's payload shape is unchanged")
+
+
+## The player's jump reaches the picture's half of the seam, and the picture
+## needs no sound layer to queue it.
+##
+## `warp_selected` holds the riders and presents the outcome the way
+## `move_selected` does, and nothing shipped can show it: the jet pack is a
+## tech-4 item in a campaign whose tech level is 1 from beginning to end
+## (docs/27 section 5.2), the two footbridge maps place no warping unit, and
+## the one shipped pairing of a jet pack with a live `MoveUnit` is `_C_131`,
+## whose hook only reorders the aliens. So the seam is pinned here, on a
+## fixture, end to end.
+func _check_warp_script_seam(h: TestHarness) -> void:
+	var world: World = _jet_pack_world()
+	var _attached: bool = world.attach_script(_foot_bridge_program(
+		WARP_HOOK_CELL, MOVE_HOOK_FRAMES))
+	var fill: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(0))
+	h.check("warp_script.the_bridge_is_a_warp_target",
+		fill.is_warp_target(WARP_HOOK_CELL.x, WARP_HOOK_CELL.y),
+		"past the walk's one field, inside the pack's five")
+	var jumped: WarpResult = world.submit_warp(
+		WarpCommand.create(0, WARP_HOOK_CELL.x, WARP_HOOK_CELL.y))
+	if not h.check("warp_script.the_jump_ran", jumped.ok, jumped.reason):
+		return
+	h.equal("warp_script.core_ran_the_hook",
+		_event_names(jumped.script_result), ["foot_bridge"] as Array[String],
+		"`0x0046F133`'s alive gate let the mover reach `aRunLCL`")
+	h.equal("warp_script.core_killed_the_rider",
+		DictRead.as_int(world.unit_view(0).get("hp", -1)), 0,
+		"the mover is its own rider")
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	main._units = units
+	var body: Node3D = Node3D.new()
+	body.name = "unit_0"
+	units.add_child(body)
+	main._sequences = SequenceQueue.create(null)
+	main._rig = CameraRig.new()
+	main._rig.set_now(SAVED_EYE, SAVED_TARGET)
+	h.equal("warp_script.the_rider_is_held",
+		main._mark_dying_by_script(jumped.script_result), 1,
+		"before the rebuild, as the walk's is")
+	# **No sound layer.** `_audio` and `_events` are both null here, and
+	# the fall still has to reach the queue: the presenter used to answer
+	# nothing at all without them, a coupling the picture never needed.
+	h.equal("warp_script.no_sound_layer_counts_no_cue",
+		main._present_script(jumped.script_result), 0,
+		"nothing to play, and nothing pretended")
+	h.check("warp_script.the_fall_is_on_the_queue_without_sound",
+		main._sequences.is_running(),
+		"the set piece queues whether or not there is a table to name its cues")
+	h.check("warp_script.the_rider_is_held_in_the_picture",
+		str(units.dying()) == str(PackedInt32Array([0])), str(units.dying()))
+	h.equal("warp_script.the_snapshot_names_the_hook",
+		str(main.last_script()),
+		str({"ran": true, "events": ["foot_bridge"] as Array[String],
+			"count": 1}),
+		"`picture.script`, the driven session's view of a hook")
+	units.free()
+	main._rig.free()
+	main.free()
+
+
+## The platform ride moves what it carries.
+##
+## `aPlayPlatformSequence` adds `0x140` a frame to every object it found on
+## the block, to every rider and to the camera target (docs/20 section 7.4
+## step 2). The remake ran the sequence -- frames, dust, sound, camera -- and
+## moved nothing: the deck stayed where the `.lev` authored it and the
+## riders, which `core` relocates the instant the command runs, stood in
+## mid-air over the destination. Found on `_C_106`'s first turn, 2026-09-07,
+## by the player watching. `_C_106` is not in the dev fixtures, so the
+## arithmetic is pinned on its own call and the object and body moves on
+## `_C_129`'s geometry.
+func _check_platform_ride(h: TestHarness) -> void:
+	# `_C_106`'s own `Platform (19,2,2,11)`: south, eleven fields.
+	var south: PackedInt32Array = PackedInt32Array([19, 2, 2, 11])
+	h.equal("platform.one_frame_is_the_step",
+		SetpieceDriver.platform_offset(south, 1),
+		Vector3i(0, SetpieceDriver.PLATFORM_STEP, 0), "`0x140` along +y")
+	h.equal("platform.the_frames_add_up_to_the_fields",
+		SetpieceDriver.platform_offset(south,
+			11 * SetpieceDriver.PLATFORM_FRAMES_PER_FIELD),
+		Vector3i(0, 11 * WorldSpace.WORLD_UNITS_PER_FIELD, 0),
+		"ten steps are one field, so `dist * 10` frames are `dist` fields")
+	h.equal("platform.the_travel_is_in_fields",
+		SetpieceDriver.platform_travel(south), Vector2i(0, 11), "")
+	h.equal("platform.west_is_minus_x",
+		SetpieceDriver.platform_offset(PackedInt32Array([5, 5, 1, 3]), 10),
+		Vector3i(-WorldSpace.WORLD_UNITS_PER_FIELD, 0, 0),
+		"docs/20 section 7.4: 0=N 1=W 2=S 3=E")
+	h.equal("platform.a_bad_direction_moves_nothing",
+		SetpieceDriver.platform_offset(PackedInt32Array([5, 5, 4, 3]), 10),
+		Vector3i.ZERO, "")
+	var block: Array[Vector2i] = SetpieceDriver.platform_block(south)
+	h.equal("platform.the_block_is_nine", block.size(), 9, "")
+	h.check("platform.the_block_is_x_outer",
+		block.size() >= 2 and block[0] == Vector2i(18, 1)
+			and block[1] == Vector2i(18, 2),
+		"`0x00412AAA`: `ebx` runs x, `edi` runs y inside it")
+
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("platform.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	if geometry.is_empty():
+		h.check("platform.fixture", false, "geometry")
+		return
+	var scenery: Scenery = Scenery.new()
+	scenery.build(document, geometry, {})
+	var width: int = world.state.width
+	var cell: int = -1
+	for i: int in range(world.state.cell_count()):
+		if not scenery.objects_on(i).is_empty() and i + width < world.state.cell_count() \
+				and scenery.objects_on(i + width).is_empty():
+			cell = i
+			break
+	if not h.check("platform.fixture_has_an_object_to_carry", cell >= 0,
+			"a cell with a special object and an empty cell south of it"):
+		scenery.free()
+		return
+	var carried: Node3D = scenery.objects_on(cell)[0]
+	var authored: Vector3 = carried.transform.origin
+	var origin: Vector3i = scenery.object_origins(cell)[0]
+	var _shifted: int = scenery.shift_objects(PackedInt32Array([cell]),
+		Vector3i(0, SetpieceDriver.PLATFORM_STEP, 0))
+	h.equal("platform.a_shift_draws_the_object_a_step_on",
+		carried.transform.origin,
+		authored + WorldSpace.to_godot(0, SetpieceDriver.PLATFORM_STEP, 0),
+		"one frame south, in Godot's -z")
+	h.check("platform.a_shift_keeps_the_key",
+		scenery.objects_on(cell).has(carried),
+		"the object still belongs to its source cell mid-ride")
+	var snapshot: Dictionary = world.terrain_snapshot()
+	var _landed: int = scenery.move_objects(snapshot, PackedInt32Array([cell]),
+		0, 1)
+	var target: int = cell + width
+	h.check("platform.the_move_rekeys_the_object",
+		not scenery.objects_on(cell).has(carried)
+			and scenery.objects_on(target).has(carried),
+		"the search finds it on the destination cell now, and not on the source")
+	var origins: Array[Vector3i] = scenery.object_origins(target)
+	h.equal("platform.the_origin_moves_a_field",
+		origins[origins.size() - 1] if not origins.is_empty() else Vector3i.ZERO,
+		origin + Vector3i(0, WorldSpace.WORLD_UNITS_PER_FIELD, 0),
+		"what a later set piece flies to")
+	var landed: Vector3 = authored + WorldSpace.to_godot(0,
+		WorldSpace.WORLD_UNITS_PER_FIELD, 0)
+	h.equal("platform.the_object_lands_a_field_on", carried.transform.origin,
+		landed, "")
+	var _applied: int = scenery.apply_state(snapshot, PackedInt32Array([target]))
+	h.equal("platform.the_terrain_diff_leaves_it_there",
+		carried.transform.origin, landed,
+		"the authored transform was set so the destination's own height "
+		+ "delta lands the object where the ride left it")
+	# The save carries the move: a fresh scenery built from the map document
+	# has the deck at its authored place, and the record puts it back where
+	# the ride left it -- through the header's JSON, and twice is once.
+	var record: Dictionary = scenery.pose_record()
+	h.equal("platform.the_record_carries_the_move", record["moves"],
+		[[cell, 0, 1]], "one row: the home cell and the ride in fields")
+	var parsed: Variant = JSON.parse_string(JSON.stringify(record))
+	var carried_record: Dictionary = parsed
+	var resumed: Scenery = Scenery.new()
+	resumed.build(document, geometry, {})
+	var _fresh: int = resumed.apply_all(snapshot)
+	h.check("platform.a_fresh_build_has_the_deck_at_home",
+		not resumed.objects_on(cell).is_empty()
+			and resumed.objects_on(target).is_empty(), "")
+	h.equal("platform.the_restore_moves_it", resumed.restore_poses(carried_record,
+		snapshot), 2, "the deck and the cell's marker, as the ride carries both")
+	h.check("platform.the_restored_deck_is_on_the_destination",
+		resumed.objects_on(cell).is_empty()
+			and not resumed.objects_on(target).is_empty(), "")
+	h.equal("platform.the_restored_record_matches", resumed.pose_record(),
+		record, "what was restored records back as what was saved")
+	h.equal("platform.restore_twice_is_once",
+		resumed.restore_poses(carried_record, snapshot), 0,
+		"the home cell has nothing left to carry")
+	var back: Node3D = resumed.objects_on(target)[0]
+	h.equal("platform.the_restored_deck_stands_where_the_ride_left_it",
+		back.transform.origin, landed, "")
+	var _again: int = resumed.apply_all(snapshot)
+	h.equal("platform.the_restored_deck_survives_the_terrain_diff",
+		back.transform.origin, landed, "")
+	resumed.free()
+
+	# The rider's carry, and that it outlives a rebuild the way a lift does.
+	var slots: PackedInt32Array = world.unit_slots()
+	if slots.is_empty():
+		h.check("platform.fixture", false, "one unit")
+		scenery.free()
+		return
+	var slot: int = slots[0]
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	units.build(world, geometry, {})
+	var node: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	if not h.check("platform.the_rider_is_drawn", node != null, ""):
+		units.free()
+		scenery.free()
+		return
+	var stood: Vector3 = node.position
+	units.shift(slot, Vector3i(WorldSpace.WORLD_UNITS_PER_FIELD, 0, 0))
+	h.equal("platform.the_rider_is_carried_a_field",
+		node.position - stood, Vector3(WorldSpace.FIELD_METRES, 0.0, 0.0),
+		"+x, and the height untouched")
+	units.build(world, geometry, {})
+	var rebuilt: Node3D = units.get_node_or_null(NodePath("unit_%d" % slot))
+	h.check("platform.the_carry_survives_a_rebuild",
+		rebuilt != null and is_equal_approx(rebuilt.position.x,
+			stood.x + WorldSpace.FIELD_METRES),
+		"a rebuild recreates every node, so the carry is re-applied like a lift")
+	var _down: int = units.drop_shifts()
+	rebuilt = units.get_node_or_null(NodePath("unit_%d" % slot))
+	h.check("platform.the_rider_is_put_down",
+		rebuilt != null and rebuilt.position.is_equal_approx(stood),
+		"back on its cell")
+	units.free()
+	scenery.free()
+
+
+## A 7x7 free map with one marine carrying the jet pack (`Info.lcl`'s
+## equipment 7, docs/23 section 7.5) and a single movement point, so the
+## warp overlay reaches cells its walk cannot.
+static func _jet_pack_world() -> World:
+	var units: Array = [TestFixtures.unit(0, 2, 2, 0, 0, 1, 0,
+		[UnitState.JET_PACK_EQUIP_ID])]
+	return World.create(TestFixtures.map_document(7, 7, units),
+		TestFixtures.balance(), 1.0)
+
+
+static func _last_event_payload(ctx: AIContext, kind: String) -> Dictionary:
+	for i: int in range(ctx.result.events.size() - 1, -1, -1):
+		var event: AIEvent = ctx.result.events[i]
+		if event.kind == kind:
+			return event.payload
+	return {}
+
+
+static func _event_names(outcome: Dictionary) -> Array[String]:
+	var names: Array[String] = []
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		names.append(AudioEvents.name_of(AudioEvents.as_event(entry)))
+	return names
+
+
+static func _foot_bridge_program(cell: Vector2i, frames: int) -> Dictionary:
+	var args: Array = []
+	for value: int in [cell.x, cell.y, frames, 0]:
+		args.append({"kind": "number", "value": value})
+	return {
+		"schema": LclProgram.SCHEMA,
+		"header_line": 1,
+		"instructions": [
+			{"kind": "command", "name": "FootBridge", "line": 1, "op": ">",
+				"args": args},
+			{"kind": "end", "name": "", "line": 2, "op": ">", "args": []},
+		],
+		"labels": {},
+	}
+
+
+## `UnitsView.build` on a world with a dead unit in it: dropped when nothing
+## holds it, drawn when something does.
+func _check_rebuild_drops_the_dead(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
+	if loaded.is_empty():
+		h.check("move_script.rebuild_fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	var slots: PackedInt32Array = world.unit_slots()
+	if geometry.is_empty() or slots.is_empty():
+		h.check("move_script.rebuild_fixture", false, "geometry and one unit")
+		return
+	var slot: int = slots[0]
+	var units: UnitsView = UnitsView.new()
+	units.world_ref = world
+	# The node, not [member UnitsView.bodies]: a body is Charisma's and needs
+	# the model tables this fixture does not open, while the node is what the
+	# rebuild frees and what [method SliceMain._drop_riders] moves.
+	var path: NodePath = NodePath("unit_%d" % slot)
+	units.build(world, geometry, {})
+	h.check("move_script.the_living_are_drawn",
+		units.get_node_or_null(path) != null,
+		"slot %d is in the picture before it dies" % slot)
+	var doomed: UnitState = world.units_for_ai()[slot]
+	var _lost: bool = UnitState.remove(world.state, world.turn, doomed)
+	units.build(world, geometry, {})
+	h.check("move_script.the_dead_are_dropped",
+		units.get_node_or_null(path) == null,
+		"`aKillUnit` deletes the object, so a rebuild does not draw it")
+	units.mark_dying(slot)
+	units.build(world, geometry, {})
+	h.check("move_script.the_held_dead_are_drawn",
+		units.get_node_or_null(path) != null,
+		"...unless the picture is holding it, which is what the set piece "
+		+ "needs and what the hold above arranges")
+	units.free()

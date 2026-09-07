@@ -69,6 +69,9 @@ var _steps: Array[int] = []
 ## Slot -> world units the unit's node is held away from where the world says
 ## it stands, while a set piece carries it. See [method lift].
 var _lifts: Dictionary[int, int] = {}
+## Slot -> the engine-unit offset a platform ride is drawing it at
+## ([method shift]), across rather than up.
+var _shifts: Dictionary[int, Vector3i] = {}
 ## The world this view was last built from, so a lift can work out the height
 ## it is an offset *from* without the caller passing it in each frame.
 var world_ref: World = null
@@ -158,6 +161,7 @@ func build(world: World, geometry: Dictionary, textures: Dictionary) -> void:
 	# and so does one a lift is carrying.
 	_apply_suppression()
 	_apply_lifts()
+	_apply_shifts()
 
 
 func _build_one(view: Dictionary, types: UnitTypeTable,
@@ -649,6 +653,28 @@ func _face(node: Node3D, body: CharismaBody, facing: int) -> void:
 		body.basis = node.basis.inverse() * WorldSpace.charisma_yaw_basis(angle)
 
 
+## A unit turned by its own rotation triple rather than by a facing: the
+## rider a falling footbridge carries, tumbling as it goes (docs/42 section
+## 8.3). `turn` is what the routine has added to the object's words so far,
+## and `facing` the heading it started from, so the third component is a
+## heading and not a joint.
+##
+## This is [method _face] generalised, and it reduces to it exactly when the
+## triple is zero: the body's half turn is about its own vertical either way
+## ([method WorldSpace.charisma_offset]), and only a tilted object can tell
+## the two apart. Answers whether there was a node to turn.
+func tumble(slot: int, facing: int, turn: Vector3i) -> bool:
+	var node: Node3D = _node_of(slot)
+	if node == null:
+		return false
+	var angle: int = FACING_ANGLES[facing % FACING_ANGLES.size()]
+	node.basis = WorldSpace.joint_basis(turn.x, turn.y, angle + turn.z)
+	var body: CharismaBody = _body_of(slot)
+	if body != null:
+		body.basis = WorldSpace.charisma_offset()
+	return true
+
+
 ## The facing index of one step, or -1 when the two cells are not neighbours.
 ##
 ## `ExecuteMove.FACING_OF_STEP` **is** the table, so it is read rather than
@@ -745,6 +771,57 @@ func lift(slot: int, world_units: int) -> void:
 		return
 	_lifts[slot] = world_units
 	_place(slot, world_units)
+
+
+## Draw a unit `offset` engine units across from the cell the world has it
+## on, while a platform carries it (docs/20 section 7.4 step 2: the ride adds
+## `0x140` a frame to every rider's object as it does to the block's). Like
+## [method lift] it is the difference between the picture and the state --
+## `core` relocated the rider the instant the command ran -- and it survives
+## a rebuild until [method drop_shifts] puts everyone back. Only `x` and `y`
+## are read; the height stays the cell's plus any lift.
+func shift(slot: int, offset: Vector3i) -> void:
+	if offset.x == 0 and offset.y == 0:
+		if _shifts.erase(slot):
+			_place_shift(slot, Vector3i.ZERO)
+		return
+	_shifts[slot] = offset
+	_place_shift(slot, offset)
+
+
+## Put every carried unit back on its cell.
+func drop_shifts() -> int:
+	var count: int = _shifts.size()
+	for slot: int in _shifts.keys():
+		_place_shift(slot, Vector3i.ZERO)
+	_shifts.clear()
+	return count
+
+
+## Slot -> the offset it is carried by, for a caller and a suite.
+func shifts() -> Dictionary[int, Vector3i]:
+	return _shifts.duplicate()
+
+
+func _apply_shifts() -> void:
+	for slot: int in _shifts:
+		_place_shift(slot, _shifts[slot])
+
+
+func _place_shift(slot: int, offset: Vector3i) -> void:
+	var node: Node3D = _node_of(slot)
+	if node == null or world_ref == null:
+		return
+	var view: Dictionary = world_ref.unit_view(slot)
+	if view.is_empty():
+		return
+	var index: int = world_ref.state.index_of(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	var at: Vector3 = _cell_position(index, world_ref.resource.width, world_ref) \
+		+ WorldSpace.to_godot(offset.x, offset.y, 0)
+	node.position.x = at.x
+	node.position.z = at.z
+	_place(slot, DictRead.as_int(_lifts.get(slot, 0)))
 
 
 ## Put every lifted unit back where the world says it is.

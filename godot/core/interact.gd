@@ -191,9 +191,13 @@ static func may_use(state: MapState, units: Dictionary, utab: UnitTypeTable,
 
 ## `0x00410A20` -- one toggle for all four door ids, on the low bit.
 ##
-## A door is a wall panel that rises out of the floor: closing it raises the
-## cell by exactly one tile and makes it a `Wall`, opening it drops the cell to
-## height 0 and makes it a `Free Place`.
+## What the **cell** does: closing it raises the cell by exactly one tile and
+## makes it a `Wall`, opening it drops the cell to height 0 and makes it a
+## `Free Place`. This once read "a door is a wall panel that rises out of the
+## floor", which is what the picture was drawn from and is wrong: the panel
+## never moves. `aDoorOpenSequence` turns the panel's two **leaves** about z
+## and writes the cell's height into the land marker alone (docs/26 section 3.4,
+## docs/97 section 7 as corrected on 2026-09-06).
 static func toggle_door(state: MapState, index: int) -> void:
 	var ap: int = state.action_point_at(index)
 	if ap % 2 == 0:                      # even: 30, 32 -- it is open

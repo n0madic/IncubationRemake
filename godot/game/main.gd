@@ -111,6 +111,9 @@ var _far_drawn: bool = false
 ## *Recall position* are not lit for another mission's autosave. See
 ## [method _slot_holds_this_mission].
 var _slot_owner: Dictionary[int, String] = {}
+## Autosave slots waiting for the sequence queue to drain -- see
+## [method _autosave].
+var _autosaves_pending: PackedInt32Array = PackedInt32Array()
 var _units: UnitsView = null
 var _rig: CameraRig = null
 ## The camera's choreography -- docs/42's decisions over the rig.
@@ -232,6 +235,14 @@ var _fx_carry: float = 0.0
 ## The terrain the picture currently shows. `game` keeps it and diffs two
 ## immutable snapshots; `core` has no dirty flag and neither did the original.
 var _drawn_terrain: Dictionary = {}
+## The last `MoveUnit` outcome the picture was handed, by whichever seam --
+## the player's walk or jump, or the computer's replay -- as `ran`, the
+## names of its events and a running `count` of outcomes presented. The
+## agent snapshot's `picture.script`: a driven session has no other way to
+## see that a hook fired for a move whose effect is invisible, which is
+## every `_C_131` jump, and the count is what tells a computer turn's
+## hooks apart from the player's own when both answer `ran` and nothing.
+var _last_script: Dictionary = {}
 ## True once the close request has been accepted, so a second one is ignored
 ## while the audio server is being given its frames.
 var _quitting: bool = false
@@ -297,6 +308,13 @@ const SCREAM_WAVES: Array[String] = ["s_ali_0.wav", "s_ali_1.wav", "s_ali_2.wav"
 ## The `Use` result kinds the push arm answers (docs/26 section 4).
 const PUSH_KINDS: Array[String] = ["push", "push_onto_mine", "push_into_hole"]
 const PUSH_INTO_HOLE: String = "push_into_hole"
+## The `Use` results that are staged as set pieces of their own (docs/42
+## section 8.3): the lever's handle and the supply box's lid. The thirteen
+## pickup arms all reach `0x00410780`, `message_only` included.
+const LEVER_USE_KIND: String = "lever"
+const PICKUP_USE_KINDS: Array[String] = ["full_munition", "equipment_points",
+	"weapon_skills", "condition", "technical", "equipment", "class",
+	"message_only"]
 ## The computer's event names against the set pieces they queue.
 const AI_SETPIECE_KINDS: Dictionary[String, String] = {"door": "open_door"}
 ## The queue stage that waits for a walk before its own epilogue -- see
@@ -575,11 +593,92 @@ func quick_save(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	if campaign == null or campaign.state == null:
 		_refresh_status("no campaign to save")
 		return false
-	var stamp: Dictionary = CampaignHost.stamp_now()
-	var written: bool = campaign.save(world, slot,
-		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]))
+	if _mid_sequence():
+		_refresh_status("wait for the sequence to finish")
+		return false
+	var written: bool = _save_mission_to(slot, world)
 	_refresh_status("saved" if written else "save failed")
 	return written
+
+
+## Whether a set piece is half drawn -- the sequence queue is running, or
+## the computer's replay that feeds it.
+##
+## **A save is refused while it is**, and the reason is the original's own
+## shape rather than caution: every routine of docs/42 section 8 runs its
+## frames inside the command, calling the frame service itself
+## (`0x0040B6F0`), so the engine reaches no input and writes no save until
+## the bridge has fallen. The remake spreads those frames over real ones,
+## which opens a window the original does not have -- and a save taken in it
+## would hold a state no `.sav` can: `core` has already dropped the riders
+## and flipped the cells, while [method Scenery.remove_objects] has not yet
+## run, so the block would come back standing over its own hole. The queue
+## is short and ends by itself; refusing is the whole fix, and it is why
+## [method Scenery.pose_record] carries no mid-fall pose.
+##
+## It is **not** [method _picture_busy], which is the wider "is anything
+## moving" that gates a command: a walking body and a flying camera change
+## nothing a save holds -- [method CameraRig.state] carries the flight's
+## goal, not where it has got to -- and the turn's own autosave runs while
+## the camera is on its way to the first unit.
+func _mid_sequence() -> bool:
+	if _playback != null and _playback.is_running():
+		return true
+	return _sequences != null and _sequences.is_running()
+
+
+## Write the campaign and `mission_world` into `slot`, stamped now, with the
+## scenery's pose record and the camera beside the simulation -- an opened
+## hatch, a lowered bridge, a crushed wall's empty cell, and the view the
+## player left them under -- so a load shows the mission as it was left
+## rather than as the `.lev` authored it (docs/42 section 8.3).
+##
+## The camera field has been in the header since the first save and was
+## written empty until 2026-09-06, so nothing had ever come back through it;
+## [method _resume_loaded_mission] is the other half.
+func _save_mission_to(slot: int, mission_world: World) -> bool:
+	if campaign == null or _mid_sequence():
+		return false
+	var stamp: Dictionary = CampaignHost.stamp_now()
+	var poses: Dictionary = {}
+	var camera: Dictionary = {}
+	if mission_world != null and _scenery != null:
+		poses = _scenery.pose_record()
+	if mission_world != null and _rig != null:
+		camera = _rig.state()
+	var written: bool = campaign.save(mission_world, slot,
+		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]),
+		poses, camera)
+	# **Every writer records what it wrote**, not only the autosave. The
+	# ownership cache is read once per slot and remembered ([method
+	# _slot_holds_this_mission]), so a slot this session wrote and did not
+	# record kept whatever header was on disk when the interface first asked
+	# -- which left *Recall position* dark right after `F1` had written it,
+	# and would have offered *Undo mission* for a mission the player is not
+	# in. Found by driving a real build (docs/92 section 7.16), where the
+	# button stayed dark after a save that had plainly happened.
+	if written and campaign.state != null:
+		_slot_owner[slot] = campaign.state.mission
+	return written
+
+
+## What a loaded mission blob leaves for the picture to do: the terrain the
+## save changed is redrawn against the authored one [method _build] drew,
+## which derives the door's leaves and the lever's handle from the state;
+## then the scenery's own poses come back from the save's record; then the
+## camera goes back where the save was taken from.
+##
+## The camera comes **last** and before [method _refresh_after_deploy],
+## which rebuilds the bodies and lays no view of its own -- so nothing moves
+## it afterwards. An empty record leaves the built mission's own opening
+## view, which is what a save written before the field was filled carries.
+func _resume_loaded_mission() -> void:
+	var _redrawn: int = _redraw_terrain_now()
+	if _scenery != null and world != null:
+		var _restored: int = _scenery.restore_poses(world.restored_scenery(),
+			world.terrain_snapshot())
+	if _rig != null and world != null:
+		_rig.apply_state(world.restored_camera())
 
 
 ## The interface's own autosaves (docs/43 section 5): the mission's start
@@ -597,11 +696,26 @@ func _autosave_mission_start() -> void:
 func _autosave(slot: int) -> void:
 	if campaign == null or campaign.state == null or world == null:
 		return
-	var stamp: Dictionary = CampaignHost.stamp_now()
-	var written: bool = campaign.save(world, slot,
-		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]))
-	if written:
-		_slot_owner[slot] = campaign.state.mission
+	# **Deferred, not dropped.** A script that fires a set piece at the top
+	# of a turn is holding the queue when this runs, and [method
+	# _save_mission_to] refuses mid-sequence -- but *Undo last turn* is a
+	# promise about every turn, so the slot waits for the queue instead of
+	# going unwritten.
+	if _mid_sequence():
+		if not _autosaves_pending.has(slot):
+			_autosaves_pending.append(slot)
+		return
+	var _written: bool = _save_mission_to(slot, world)
+
+
+## Take the deferred autosaves now the queue has drained.
+func _flush_autosaves() -> void:
+	if _autosaves_pending.is_empty() or _mid_sequence():
+		return
+	var waiting: PackedInt32Array = _autosaves_pending.duplicate()
+	_autosaves_pending.clear()
+	for slot: int in waiting:
+		_autosave(slot)
 
 
 ## Whether one of the interface's own save slots holds **this** mission.
@@ -667,6 +781,7 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 		return false
 	close_campaign_screen()
 	campaign.enter_mission()
+	_resume_loaded_mission()
 	_refresh_after_deploy()
 	_refresh_status("loaded")
 	return true
@@ -1043,10 +1158,7 @@ func _use_slot(slot: int) -> void:
 		if campaign.state == null:
 			_refresh_status("no campaign to save")
 			return
-		var stamp: Dictionary = CampaignHost.stamp_now()
-		var written: bool = campaign.save(world, slot,
-			DictRead.as_int(stamp["when"]),
-			DictRead.as_string(stamp["when_text"]))
+		var written: bool = _save_mission_to(slot, world)
 		_refresh_status("saved to slot %d" % (slot + 1) if written
 			else "slot %d refused the write" % (slot + 1))
 		var _again: CampaignScreen = _show_shell_screen()
@@ -1101,6 +1213,7 @@ func load_slot(slot: int) -> bool:
 	shell.close()
 	close_campaign_screen()
 	campaign.enter_mission()
+	_resume_loaded_mission()
 	_refresh_after_deploy()
 	_refresh_status("loaded slot %d" % (slot + 1))
 	return true
@@ -1377,12 +1490,9 @@ func _on_campaign_choice(action: String) -> void:
 				hq.selected = Roster.NO_SLOT
 				hq.refresh()
 		"save":
-			var stamp: Dictionary = CampaignHost.stamp_now()
-			var _written: bool = campaign.save(
+			var _written: bool = _save_mission_to(CampaignHost.QUICK_SLOT,
 				world if campaign.screen == CampaignHost.SCREEN_MISSION
-				else null, CampaignHost.QUICK_SLOT,
-				DictRead.as_int(stamp["when"]),
-				DictRead.as_string(stamp["when_text"]))
+				else null)
 		"weapons", "equipment":
 			var catalogue: UpgradeScreen = _screen as UpgradeScreen
 			if catalogue != null:
@@ -1774,6 +1884,10 @@ func _clear_mission() -> void:
 	_hover = Vector2i(-1, -1)
 	_bands.clear()
 	_pending_turn = {}
+	# A save deferred past a sequence belongs to the mission that queued it
+	# ([method _autosave]); the next mission's first idle frame would
+	# otherwise take it.
+	_autosaves_pending.clear()
 	# The last turn's hand-back state belongs to the mission that is going
 	# away: a second mission loaded after a turn was played would have taken
 	# the *previous* mission's camera offset as the player's arrangement.
@@ -2634,14 +2748,22 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			# The epilogue waits for the walk here too -- the computer's
 			# aliens are the fill's only movers into a mine cell and the
 			# teleporter entries are open to both sides.
-			if _walk_has_epilogue(moves):
+			var script: Dictionary = DictRead.as_dict(payload.get("script", {}))
+			if _walk_has_epilogue(moves) or _script_has_events(script):
 				var _held_queue: bool = _hold_for_walk(walk)
 			var blast: float = _present_mine(slot, moves)
 			# The same walk can end on a teleporter: `0x0046EE03` is inside
 			# `aExecuteMove`, so the stream plays as part of the move
 			# (docs/97 section 41.2).
 			_present_teleport(slot, moves)
-			return walk + blast
+			# And it can end on a footbridge: `aRunLCL` `0x0046EEFD` closes
+			# `aExecuteMove` for the computer's walk as for the player's, and
+			# the outcome rides on the event ([method AIPlan._apply_move]).
+			# The riders were held with the rest of the turn's dead
+			# ([method AIPlayback.casualties_of]); this is the fall itself,
+			# and the event stays on screen for the length of it.
+			var _script_shown: int = _present_script(script)
+			return walk + blast + _script_seconds(script)
 	elif kind == "warp":
 		# docs/42 section 7.1: the computer's jump, with a scream for the
 		# trail. The event's cells are the routine's own arguments.
@@ -2656,7 +2778,13 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 		var blasted: float = _present_blast(slot,
 			DictRead.as_int(event["tx"]), DictRead.as_int(event["ty"]),
 			DictRead.as_dict(landed.get("blast", {})))
-		return maxf(float(frames) / SequenceQueue.FRAMES_PER_SECOND, blasted)
+		# `aRunLCL` `0x0046F1D6` closes `aExecuteWarp` too, behind the same
+		# alive gate as the walk's, and `AIPlan.execute_warp` puts its
+		# outcome beside the blast.
+		var script: Dictionary = DictRead.as_dict(landed.get("script", {}))
+		var _script_shown: int = _present_script(script)
+		return maxf(float(frames) / SequenceQueue.FRAMES_PER_SECOND, blasted) \
+			+ _script_seconds(script)
 	elif kind == "fire":
 		# **The weapon comes from the event, not from the world.** The
 		# playback runs after the turn, so an alien killed by reaction fire
@@ -2823,6 +2951,33 @@ func screen_up() -> String:
 
 func scenery_count() -> int:
 	return 0 if _scenery == null else _scenery.built_count()
+
+
+## The special objects still standing ([method Scenery.object_count]) and the
+## cells a set piece has freed ([method Scenery.removed_count]).
+##
+## Both exist for the driven session: [method scenery_count] is what was
+## *built*, which is a constant for the life of a mission, so a crush wall or
+## a footbridge that took its object away moved no number anything outside the
+## game could read.
+func scenery_objects() -> int:
+	return 0 if _scenery == null else _scenery.object_count()
+
+
+func scenery_removed() -> int:
+	return 0 if _scenery == null else _scenery.removed_count()
+
+
+## [member _last_script], copied.
+func last_script() -> Dictionary:
+	return _last_script.duplicate(true)
+
+
+static func _event_names_of(outcome: Dictionary) -> Array[String]:
+	var names: Array[String] = []
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		names.append(AudioEvents.name_of(AudioEvents.as_event(entry)))
+	return names
 
 
 ## The developer line: the cache, the scene and the hash. **Not** user-facing
@@ -3035,6 +3190,8 @@ func _process(delta: float) -> void:
 		_auto_end_pending = false
 		if _auto_end_turn_wanted():
 			var _ended: TurnResult = end_turn()
+	# Whatever the queue held a save back from, once nothing is being drawn.
+	_flush_autosaves()
 	_check_mission_end()
 
 
@@ -4012,6 +4169,7 @@ func move_selected(x: int, y: int) -> MoveResult:
 	# applies, and the walk still plays because the body is still there.
 	var _held: int = _mark_dying_by(moved.reactions)
 	var _blasted: int = _mark_dying_by_mine(moved.events)
+	var _fallen: int = _mark_dying_by_script(moved.script_result)
 	_after_command(moved.reason if not moved.ok else "%d %s" % [
 		moved.reactions.size(), _strings.text("hud.reactions")])
 	# `MoveResult.route` is the walk's own -- source first, truncated where it
@@ -4028,7 +4186,7 @@ func move_selected(x: int, y: int) -> MoveResult:
 	var walked_for: float = _walk_body(slot, moved.route, moved.steps, delay)
 	# The walk's epilogue waits for the walk, as the engine's blocking loop
 	# makes it: `_hold_for_walk` is the stage that serialises the two clocks.
-	if _walk_has_epilogue(moved.events):
+	if _walk_has_epilogue(moved.events) or _script_has_events(moved.script_result):
 		var _held_queue: bool = _hold_for_walk(delay + walked_for)
 	# **The blast goes on the queue before the reactions**, because the engine
 	# draws it before it has one: `aExecuteBomb` `0x004702C0` ends by calling
@@ -4043,6 +4201,20 @@ func move_selected(x: int, y: int) -> MoveResult:
 	# `aExecuteFight`, so the teleport is over before the first reaction shot
 	# -- the same order the mine's blast keeps above.
 	_present_teleport(slot, moved.events)
+	# **The mission script's own half of the move** (docs/20 section 7):
+	# `aRunLCL` `0x0046EEFD` is the last thing `aExecuteMove` does, behind the
+	# mover's own alive gate, and a `MoveUnit` hook is where the corpus's
+	# two footbridge maps drop theirs -- `_C_106` six times and `_C_107`
+	# once, seven of the seven `FootBridge` calls shipped. `core` has run it and handed the
+	# outcome back on [member MoveResult.script_result] since the second
+	# slice; **`game` read that field nowhere until 2026-09-07**, so a bridge
+	# a walk brought down killed its riders, turned its nine cells into deep
+	# holes and drew none of it -- no fall, no tumble, no `aDeleteLand`, and
+	# a save taken afterwards carrying an empty `removed` row over cells that
+	# are already gone. It goes here, after the hold above, because the
+	# original's walk is a blocking loop and its set piece plays when the
+	# mover has arrived.
+	var _script_shown: int = _present_script(moved.script_result)
 	# **After** the walk starts and after `_after_command`, which clears the
 	# queue: `World.submit_move` resolves the whole move's reactions in one
 	# call at its end, so the end of the walk is where the picture reaches
@@ -4125,6 +4297,25 @@ func _hold_for_walk(seconds: float) -> bool:
 ## Whether a walk's own events carry anything [method _present_mine] or
 ## [method _present_teleport] will put on the queue -- the test that keeps a
 ## plain walk from holding the queue for nothing.
+## Whether a `MoveUnit` hook left anything to show. The walk waits for it for
+## the reason the mine and the teleporter do: the original's loop is blocking,
+## so the script's set piece begins where the mover stops.
+static func _script_has_events(outcome: Dictionary) -> bool:
+	return not DictRead.as_array(outcome.get("events", [])).is_empty()
+
+
+## How long a hook's animated set pieces keep the picture, at the queue's
+## own rate: the frames [method SetpieceDriver.frames_for] answers, summed,
+## because [method _present_script] queues them one after another. Zero for
+## a hook that drew nothing, so a plain computer walk holds no longer than
+## its own steps.
+static func _script_seconds(outcome: Dictionary) -> float:
+	var frames: int = 0
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		frames += SetpieceDriver.frames_for(AudioEvents.as_event(entry))
+	return float(frames) / SequenceQueue.FRAMES_PER_SECOND
+
+
 static func _walk_has_epilogue(events: Array) -> bool:
 	for entry: Variant in events:
 		var kind: String = DictRead.as_string(
@@ -4259,6 +4450,29 @@ func _mark_dying_slots(slots: PackedInt32Array) -> int:
 ## The same, for every reaction one command drained.
 func _mark_dying_by(entries: Array) -> int:
 	return _mark_dying_payload({"reactions": entries})
+
+
+## ...and for the riders a `MoveUnit` hook's set piece killed.
+##
+## **Before [method _after_command], and it has to be.**
+## [method UnitsView.build] frees every node and then refuses to rebuild any
+## record with `hp == 0` that is not already held -- and `core` kills a
+## footbridge's riders *inside* `submit_move`, with nothing but their slots on
+## the event. They die with no attack, no outcome and no marker, so the
+## outcome walkers of [method AIPlayback.casualties_of] cannot see them; that
+## routine reads them off the `script` payload through the same
+## [method AIPlayback.script_riders_of] this one uses, which is what keeps the
+## computer's replay and the player's command on one rule. Without this the bodies were gone the frame the
+## command returned, which took the walk with them -- the mover is standing on
+## the bridge, so it is a rider too, and it vanished at the cell it set off
+## from instead of walking to the one that killed it -- and left
+## [method _drop_riders] painting nodes that were not there. Measured on
+## `_C_107`: two marines walked onto (16,18) and (15,18) and the picture lost
+## both of them before the bridge had started to tilt.
+func _mark_dying_by_script(outcome: Dictionary) -> int:
+	if _units == null or outcome.is_empty():
+		return 0
+	return _mark_dying_slots(AIPlayback.script_riders_of(outcome))
 
 
 ## The same, for the blast a mine under a walk or a landing left.
@@ -4579,21 +4793,31 @@ func _register_emitters(table: BgbEmitters, outcome: Dictionary,
 	return made
 
 
-## The sounds one run of a mission script asks for.
+## The sounds and the pictures one run of a mission script asks for.
 ##
 ## `core` has already applied every state change these events record -- the
 ## door is open, the lift has moved -- so what reaches here is the half the
 ## simulation does not own: docs/28's `aPlay*Sequence` sounds, keyed by the
-## routine that owns them.
+## routine that owns them, and docs/42 section 8's set pieces on the queue.
+## The two halves are independent: without a sound layer the set pieces
+## still queue, and without a queue the cues still play.
 func _present_script(outcome: Dictionary) -> int:
-	if outcome.is_empty() or _audio == null or _events == null:
+	if outcome.is_empty():
 		return 0
+	_last_script = {"ran": DictRead.as_bool(outcome.get("ran", false)),
+		"events": _event_names_of(outcome),
+		"count": DictRead.as_int(_last_script.get("count", 0)) + 1}
 	var played: int = 0
 	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
 		var event: Dictionary = AudioEvents.as_event(entry)
 		if event.is_empty():
 			continue
-		var cues: Array[Dictionary] = _events.for_event(event)
+		# The picture does not need the sound layer: a set piece, a camera
+		# flight or a barrier's turn is queued whether or not there is an
+		# event table to name its cues, and a suite with no audio wired sees
+		# the same queue a played mission does.
+		var cues: Array[Dictionary] = _events.for_event(event) \
+			if _events != null else ([] as Array[Dictionary])
 		# docs/42 section 2.4 -- the script's own camera, before its set
 		# pieces: `MoveCamera` and its five siblings are flights on the same
 		# queue, so a script that moves the camera twice shows both moves.
@@ -4607,6 +4831,11 @@ func _present_script(outcome: Dictionary) -> int:
 			if not cues.is_empty() and _audio != null:
 				var _s: PackedInt32Array = _audio.play_cues(cues, "script")
 			continue
+		# `aPlayLaserBarrier` turns the emitter's part before anything else
+		# it does, on both arms -- half a turn about z going off, back to
+		# zero coming on -- and `barrier_off` is otherwise instant.
+		if script_kind == "barrier_on" or script_kind == "barrier_off":
+			var _emitter: int = _paint_barrier(event, script_kind == "barrier_off")
 		var frames: int = SetpieceDriver.frames_for(event)
 		if frames > 0 and _sequences != null:
 			# An animated set piece: the picture is interpolated over the
@@ -4615,11 +4844,25 @@ func _present_script(outcome: Dictionary) -> int:
 			_queue_setpiece(event, frames, cues)
 			played += cues.size()
 			continue
-		if cues.is_empty():
+		if cues.is_empty() or _audio == null:
 			continue
 		var slots: PackedInt32Array = _audio.play_cues(cues, "script")
 		played += slots.size()
 	return played
+
+
+## The barrier's emitter, turned the way `0x00413653` / `0x00413670` write
+## its `+0x2A`: `0x800` when the barrier goes off, zero when it comes on.
+## Answers how many parts turned.
+func _paint_barrier(event: Dictionary, off: bool) -> int:
+	if _scenery == null or world == null:
+		return 0
+	var cell: Vector2i = SetpieceDriver.cell_of(event)
+	if not world.state.in_bounds(cell.x, cell.y):
+		return 0
+	return _scenery.paint_joint(world.state.index_of(cell.x, cell.y),
+		SetpieceDriver.BARRIER_EMITTER_PART,
+		Vector3i(0, 0, SetpieceDriver.BARRIER_EMITTER_OFF if off else 0))
 
 
 ## Queue one set piece: hold the cell where it was drawn, and walk it to where
@@ -4630,7 +4873,7 @@ func _present_script(outcome: Dictionary) -> int:
 ## first one left it. `core` is never read for anything but the destination.
 func _queue_setpiece(event: Dictionary, frames: int,
 		cues: Array[Dictionary], about_unit: int = MapState.NO_UNIT) -> void:
-	var cell: Vector2i = SetpieceDriver.cell_of(event)
+	var cell: Vector2i = _block_cell(event)
 	if world == null or not world.state.in_bounds(cell.x, cell.y):
 		if not cues.is_empty() and _audio != null:
 			var _slots: PackedInt32Array = _audio.play_cues(cues, "script")
@@ -4685,12 +4928,151 @@ func _queue_setpiece(event: Dictionary, frames: int,
 	if _events != null and AudioEvents.phases_of(name).size() > 1:
 		lead = _events.for_event_phase(name, 0)
 		late = _events.for_event_phase(name, 1)
+	# What the picture of this one sequence remembers between its frames:
+	# the routine's name and arguments, and the joint words it found on its
+	# first frame (docs/42 section 8.3) -- a bridge turns the way its halves
+	# are *not* already turned, and a tube's hatch starts where the last
+	# `OpenTube` left it.
+	var picture: Dictionary = {"name": name, "values": values, "starts": {}}
+	# The crush wall's `aDeleteLand` runs when its pool stage ends, which is
+	# early when the debris is quick; the footbridge's when its fixed frames
+	# run out, inside the paint.
+	if name == "crush_wall":
+		extra["finish"] = func() -> void:
+			if _scenery != null:
+				var _gone: int = _scenery.remove_objects(index)
+	# The footbridge's riders: `core` has already taken them off the map
+	# dead, so their bodies are held past the rebuild the way a shot's
+	# casualties are, fall one map field a frame under the block, and leave
+	# the picture when the loop ends (docs/42 section 8.1).
+	var riders: PackedInt32Array = SetpieceDriver.riders_of(event)
+	if _units != null:
+		for slot: int in riders:
+			_units.mark_dying(slot, world.unit_view(slot))
+	# The platform's ride: its block's objects and its riders travel
+	# `0x140` a frame (docs/20 section 7.4 step 2), and the camera target
+	# with them. Until 2026-09-07 nothing here moved: the sequence ran its
+	# frames with the dust and the sound while the deck stayed where it was
+	# authored, and the riders -- relocated by `core` the instant the
+	# command ran -- stood in mid-air over the destination's hole, which is
+	# how `_C_106`'s squad spent its first turn.
+	var ride: Dictionary = {}
+	if name == "platform":
+		ride = _platform_ride(values)
+		extra["travel"] = SetpieceDriver.platform_offset(values, frames)
+		# From the moment the sequence is queued, not from its first painted
+		# frame: the camera's flight to the block runs first, and for its
+		# length the riders would otherwise stand where `core` has already
+		# put them.
+		_ride_platform(ride, values, 0, frames)
 	var _frames: int = SetpieceCamera.enqueue(_sequences, _host(), name, frames,
 		cell, from, to, about, extra,
 		func(frame: int, total: int) -> void:
-			_paint_setpiece(index, from, to, frame, total)
-			_carry_rider(rider, from, to, frame, total),
+			_paint_setpiece(index, from, to, frame, total, picture)
+			_carry_rider(rider, from, to, frame, total)
+			_drop_riders(riders, frame, total)
+			_ride_platform(ride, values, frame, total),
 		lead, late)
+
+
+## What a platform ride carries: the source block's cells -- `core` has
+## already copied their heights and types away (`0x00412FFB`), but the
+## picture still keys their objects there -- and the riders, read off the
+## **destination** cells because `Platform.ride` relocated them before the
+## command returned.
+func _platform_ride(values: PackedInt32Array) -> Dictionary:
+	var block: PackedInt32Array = PackedInt32Array()
+	var riders: PackedInt32Array = PackedInt32Array()
+	var travel: Vector2i = SetpieceDriver.platform_travel(values)
+	for at: Vector2i in SetpieceDriver.platform_block(values):
+		if not world.state.in_bounds(at.x, at.y):
+			continue
+		block.append(world.state.index_of(at.x, at.y))
+		var landing: Vector2i = at + travel
+		if not world.state.in_bounds(landing.x, landing.y):
+			continue
+		var slot: int = world.state.unit_at(
+			world.state.index_of(landing.x, landing.y))
+		if slot != MapState.NO_UNIT and not riders.has(slot):
+			riders.append(slot)
+	return {"block": block, "riders": riders, "travel": travel}
+
+
+## One frame of the ride: the block's objects `frame` steps from where they
+## were authored and the riders the same distance short of where `core` has
+## them; on the last frame the objects are re-keyed under the destination
+## cells and the riders put down. Painted **after** [method _paint_setpiece],
+## which resets the centre cell's objects to their authored place every
+## frame.
+func _ride_platform(ride: Dictionary, values: PackedInt32Array, frame: int,
+		frames: int) -> void:
+	if ride.is_empty() or _scenery == null or world == null:
+		return
+	var block: PackedInt32Array = ride["block"]
+	var riders: PackedInt32Array = ride["riders"]
+	var travel: Vector2i = ride["travel"]
+	# From the fields, not from the frame count: `frames` is clamped at
+	# [constant SetpieceDriver.MAX_FRAMES], and the riders must still meet
+	# the deck where `core` put them.
+	var whole: Vector3i = Vector3i(travel.x, travel.y, 0) \
+		* WorldSpace.WORLD_UNITS_PER_FIELD
+	if frame < frames:
+		var offset: Vector3i = SetpieceDriver.platform_offset(values, frame)
+		var _objects: int = _scenery.shift_objects(block, offset)
+		if _units != null:
+			for slot: int in riders:
+				_units.shift(slot, offset - whole)
+		return
+	var _landed: int = _scenery.move_objects(world.terrain_snapshot(), block,
+		travel.x, travel.y)
+	if _units != null:
+		var _down: int = _units.drop_shifts()
+
+
+## The cell a set piece's object stands on. Every command names its own,
+## except `FootBridge2`, whose event carries the group's cells and whose
+## block -- the `L069EI00` -- stands on one of the first two: `0x00415110`
+## searches beside the first cell's object, then beside the second's
+## (docs/42 section 8.1), and finds it on whichever of the two carries it.
+func _block_cell(event: Dictionary) -> Vector2i:
+	var cell: Vector2i = SetpieceDriver.cell_of(event)
+	if AudioEvents.name_of(event) != "foot_bridge2" or _scenery == null \
+			or world == null:
+		return cell
+	var group: Array[Vector2i] = SetpieceDriver.group_cells(event)
+	for i: int in range(mini(2, group.size())):
+		var at: Vector2i = group[i]
+		if world.state.in_bounds(at.x, at.y) \
+				and not _scenery.objects_on(world.state.index_of(at.x, at.y)).is_empty():
+			return at
+	return cell
+
+
+## One frame of the riders' fall: each one is placed
+## [constant SetpieceDriver.FOOTBRIDGE_RIDER_DROP] lower than the frame
+## before and turned by what the loop has added to its own rotation words
+## ([method SetpieceDriver.rider_turn]), and after the loop
+## `aRemoveUnitElement` takes it off the map -- here, out of the picture.
+##
+## The heading the tumble is measured from is the record's, which for a
+## rider `core` has already killed is the one [method UnitsView.mark_dying]
+## held. **The riders are turned in the order the event carries them**,
+## because that is the loop's own index and its parity is the sign.
+func _drop_riders(riders: PackedInt32Array, frame: int, frames: int) -> void:
+	if _units == null or riders.is_empty():
+		return
+	for order: int in range(riders.size()):
+		var slot: int = riders[order]
+		if frame >= frames:
+			var _was: bool = _units.hide_now(slot)
+			continue
+		_units.lift(slot, -SetpieceDriver.FOOTBRIDGE_RIDER_DROP * frame)
+		var record: Dictionary = _unit_record(slot)
+		if record.is_empty():
+			continue
+		var _turned: bool = _units.tumble(slot,
+			DictRead.as_int(record["facing"]),
+			SetpieceDriver.rider_turn(order, frame))
 
 
 ## What each of docs/42 section 8's sequences needs beyond its cell: the
@@ -4707,6 +5089,22 @@ func _setpiece_extra(name: String, cell: Vector2i,
 	var values: PackedInt32Array = SetpieceDriver._numbers(event)
 	var out: Dictionary = {}
 	match name:
+		"open_door", "foot_bridge", "foot_bridge2":
+			# The object the flight aims at: `0x00406F20`'s find beside the
+			# cell's marker, which is the first **special** object on the
+			# cell -- the door's panel, the footbridge's block (for
+			# `FootBridge2`, `cell` is already the group cell the block
+			# stands on). [method Scenery.object_origins] leaves the level's
+			# own `.3DW` clones out, and it has to: they are placed first
+			# and are in no table the search reads, so on `_C_142` this
+			# aimed at `LEVEL01D.004` and on `_C_163` at a clone 13 760
+			# units below the block.
+			if _scenery != null and world != null \
+					and world.state.in_bounds(cell.x, cell.y):
+				var origins: Array[Vector3i] = _scenery.object_origins(
+					world.state.index_of(cell.x, cell.y))
+				if not origins.is_empty():
+					out["object"] = origins[0]
 		"statue":
 			# **Carried, not re-derived** (docs/97 section 41.1). `core` walks
 			# both arms and puts fifteen numbers on the event: the cell, the
@@ -4792,13 +5190,20 @@ func _carry_rider(slot: int, from: int, to: int, frame: int,
 
 
 ## One frame of a set piece: the cell's objects at the height the original
-## would have had them at after `frame` of its own ticks.
+## would have had them at after `frame` of its own ticks -- and, on the
+## door's family, the object's joint or rotation words at the value that
+## frame reaches (docs/42 section 8.3). The cell's height still walks,
+## because the land marker's z is that height; the panel does not move, and
+## the joints are painted **after** the state so the finished pose the
+## snapshot already holds does not show first. Every pose is `start + step
+## * frame`, never accumulated: `picture["starts"]` is what the routine
+## read off the object on its first frame.
 func _paint_setpiece(index: int, from: int, to: int, frame: int,
-		frames: int) -> void:
+		frames: int, picture: Dictionary = {}) -> void:
 	if _scenery == null or world == null:
 		return
-	var at: int = from + roundi(float(to - from)
-		* SetpieceDriver.progress(frame, frames))
+	var progress: float = SetpieceDriver.progress(frame, frames)
+	var at: int = from + roundi(float(to - from) * progress)
 	var partial: Dictionary = world.terrain_snapshot()
 	var heights: PackedInt32Array = partial["height_map"]
 	if index >= heights.size():
@@ -4806,6 +5211,22 @@ func _paint_setpiece(index: int, from: int, to: int, frame: int,
 	heights[index] = at
 	partial["height_map"] = heights
 	var _moved: int = _scenery.apply_state(partial, PackedInt32Array([index]))
+	var name: String = DictRead.as_string(picture.get("name", ""))
+	var values: PackedInt32Array = DictRead.as_int32_array(
+		picture.get("values", []))
+	if Interact.DOOR_IDS.has(world.state.action_point_at(index)) \
+			and (name == "" or name == "open_door"):
+		# Opening drops the cell by one tile, closing raises it: the sign of
+		# the height change is the sign the routine chose for `ebx`.
+		var opening: bool = to < from
+		var swing: int = roundi(float(Scenery.DOOR_LEAF_SWING) * progress)
+		var _leaves: int = _scenery.paint_door(index,
+			swing if opening else Scenery.DOOR_LEAF_SWING - swing)
+		return
+	if name == "":
+		return
+	var _parts: int = SetpieceDriver.paint_family(_scenery, index, name, values,
+		frame, frames, picture, _host())
 
 
 ## Move and repaint whatever the last command changed about the terrain.
@@ -5035,6 +5456,26 @@ func use_in_front() -> UseResult:
 			door_cues = _events.for_use(used)
 		_queue_setpiece({"name": "open_door", "values": [front.x, front.y]},
 			SetpieceDriver.DOOR_FRAMES, door_cues, _selected)
+	var staged: bool = used.ok and _sequences != null \
+		and world.state.in_bounds(front.x, front.y) \
+		and (used.kind == World.DOOR_USE_KIND or used.kind == LEVER_USE_KIND
+			or PICKUP_USE_KINDS.has(used.kind))
+	var use_cues: Array[Dictionary] = []
+	if staged and _events != null:
+		use_cues = _events.for_use(used)
+	if staged and used.kind == LEVER_USE_KIND:
+		# docs/42 section 8.3: `aPlayUseLeverSequence(x, y, dir, unit)` with
+		# `dir` 0 for a lever that was up -- `used.action_point` is the
+		# point **before** the arm wrote the other one.
+		_queue_setpiece({"name": "lever", "values": [front.x, front.y,
+			1 if used.action_point == Interact.LEVER_DOWN else 0]},
+			SetpieceDriver.LEVER_FRAMES, use_cues, _selected)
+	elif staged and PICKUP_USE_KINDS.has(used.kind):
+		# The supply box `0x00410780`: the text first (below), then the
+		# flight, the lid and the hold under it.
+		_queue_setpiece({"name": "pickup", "values": [front.x, front.y]},
+			SetpieceDriver.PICKUP_LID_FRAMES + SetpieceDriver.PICKUP_HOLD_FRAMES,
+			use_cues, _selected)
 	if used.ok and PUSH_KINDS.has(used.kind) and pushed != MapState.NO_UNIT:
 		var hole: bool = used.kind == PUSH_INTO_HOLE
 		if hole and _units != null:
@@ -5049,9 +5490,9 @@ func use_in_front() -> UseResult:
 	# The player's own door emits **no event** -- `Interact.toggle_door` writes
 	# the state change and returns, and only the LCL `OpenDoor` path records
 	# one. So the sound is driven from the result, not from the event stream,
-	# and this is why [method AudioEvents.for_use] exists at all.
-	if _audio != null and _events != null and not (used.ok
-			and used.kind == World.DOOR_USE_KIND and _sequences != null):
+	# and this is why [method AudioEvents.for_use] exists at all. A staged
+	# use -- the door, the lever, the box -- has its cues on the queue.
+	if _audio != null and _events != null and not staged:
 		var _slots: PackedInt32Array = _audio.play_cues(
 			_events.for_use(used), "use")
 	# **The message the crate opens with** -- docs/26 section 3. Thirteen arms
@@ -5119,6 +5560,7 @@ func warp_selected(x: int, y: int) -> WarpResult:
 	# the walk's does: `aExecuteWarp` detonates in line at `0x0046F109`.
 	var _blasted: int = _mark_dying(
 		DictRead.as_array(DictRead.as_dict(jumped.blast).get("outcomes", [])))
+	var _fallen: int = _mark_dying_by_script(jumped.script_result)
 	if jumped.ok:
 		_present_jump(slot, Vector2i(jumped.from_x, jumped.from_y),
 			Vector2i(jumped.x, jumped.y), true)
@@ -5129,6 +5571,9 @@ func warp_selected(x: int, y: int) -> WarpResult:
 	# routine plays its own fight animation before returning, while the drain
 	# is the caller's.
 	var _blast: float = _present_blast(slot, jumped.x, jumped.y, jumped.blast)
+	# The jump's own `aRunLCL`, `0x0046F1D6` -- the same hook as the walk's,
+	# from `aExecuteWarp` and behind the same alive gate.
+	var _script_shown: int = _present_script(jumped.script_result)
 	_queue_reactions(jumped.reactions, slot, x, y)
 	return jumped
 

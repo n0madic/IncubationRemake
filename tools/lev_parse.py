@@ -249,7 +249,8 @@ def as_dict(bm: BattleMap) -> dict:
         "special_objects": [
             {"slot": o.slot, "prototype_name": o.prototype_name(bm.world_set),
              "kind": o.kind, "number": o.number,
-             "x": o.x, "y": o.y, "z": o.z, "rotation": list(o.rotation)}
+             "x": o.x, "y": o.y, "z": o.z, "rotation": list(o.rotation),
+             "joints": [list(j) for j in o.joints]}
             for o in bm.special
         ],
     }

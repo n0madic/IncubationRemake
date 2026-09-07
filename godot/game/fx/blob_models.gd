@@ -131,13 +131,13 @@ func place(key: int, name: String, position: Vector3i,
 		DictRead.as_dict(_prototypes[name]).get("parts", []))
 	for index: int in range(parts.size()):
 		var part: Node3D = node.get_node_or_null(
-			NodePath("part_%d" % index)) as Node3D
+			NodePath(MeshBuilder.PART_NODE % index)) as Node3D
 		if part == null:
 			continue
 		var entry: Dictionary = DictRead.as_dict(parts[index])
 		part.transform = Transform3D(
 			_triple_basis(triples, entry.get("anim", null)),
-			_translation_of(entry))
+			MeshBuilder.part_translation(entry))
 	return true
 
 
@@ -170,14 +170,6 @@ static func _triple_basis(triples: Array[Vector3i], anim: Variant) -> Basis:
 	return Basis.IDENTITY
 
 
-static func _translation_of(part: Dictionary) -> Vector3:
-	var t: Array = DictRead.as_array(part["translation"])
-	if t.size() < 3:
-		return Vector3.ZERO
-	return WorldSpace.to_godot(DictRead.as_int(t[0]), DictRead.as_int(t[1]),
-		DictRead.as_int(t[2]))
-
-
 ## The node for a pool slot, built on first use and rebuilt when the slot's
 ## model changes -- a slot is reused by whatever effect takes it next.
 func _node_for(slot: int, name: String) -> Node3D:
@@ -198,35 +190,5 @@ func _node_for(slot: int, name: String) -> Node3D:
 
 
 func _build(name: String) -> Node3D:
-	var prototype: Dictionary = DictRead.as_dict(_prototypes[name])
-	var root: Node3D = Node3D.new()
-	var body: ArrayMesh = _mesh_for(name, MeshBuilder.ROOT_SCOPE, prototype)
-	if body != null and body.get_surface_count() > 0:
-		var instance: MeshInstance3D = MeshInstance3D.new()
-		instance.name = "body"
-		instance.mesh = body
-		root.add_child(instance)
-	var parts: Array = DictRead.as_array(prototype.get("parts", []))
-	for index: int in range(parts.size()):
-		var pivot: Node3D = Node3D.new()
-		pivot.name = "part_%d" % index
-		var mesh: ArrayMesh = _mesh_for(name, index, prototype)
-		if mesh != null and mesh.get_surface_count() > 0:
-			var child: MeshInstance3D = MeshInstance3D.new()
-			child.name = "mesh"
-			child.mesh = mesh
-			pivot.add_child(child)
-		root.add_child(pivot)
-	if root.get_child_count() == 0:
-		root.free()
-		return null
-	return root
-
-
-func _mesh_for(name: String, scope: int, prototype: Dictionary) -> ArrayMesh:
-	var key: String = "%s/%d" % [name, scope]
-	if _meshes.has(key):
-		return _meshes[key]
-	var mesh: ArrayMesh = MeshBuilder.build_scope(prototype, _textures, scope)
-	_meshes[key] = mesh
-	return mesh
+	return MeshBuilder.assemble(name, DictRead.as_dict(_prototypes[name]),
+		_textures, _meshes)

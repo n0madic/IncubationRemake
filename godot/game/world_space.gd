@@ -175,6 +175,21 @@ static func charisma_yaw_basis(yaw: int) -> Basis:
 	return yaw_basis(yaw + ANGLE_FULL_TURN / 2)
 
 
+## The same half turn on its own, for a body whose object is not level.
+##
+## [method charisma_yaw_basis] is [method yaw_basis] with half a turn added
+## to the angle, and about one axis that is the same as multiplying by half
+## a turn afterwards -- so this is that factor, and `node.basis * this` is
+## the body's frame for **any** object rotation, not only a yaw. A falling
+## footbridge's rider is the one that needs it: its own `+0x22` is turned as
+## well as its `+0x24` (docs/42 section 8.3), so its object is tilted and a
+## half turn about the world's vertical would no longer be a half turn about
+## the model's. `test_effects.gd` pins the two against each other on a level
+## body, which is where they must agree.
+static func charisma_offset() -> Basis:
+	return Basis(Vector3.UP, -PI)
+
+
 ## A whole engine matrix -- 16 floats, row-major, applied as `M * v`
 ## (docs/40 section 5.1) -- as a Godot [Transform3D].
 ##

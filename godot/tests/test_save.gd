@@ -70,6 +70,37 @@ func run(h: TestHarness) -> void:
 	h.check("camera.differs", blob != blob_b,
 		"the two saves differ, so the camera really is stored")
 
+	# The scenery's pose record rides beside the camera on the same terms
+	# (docs/42 section 8.3): stored, narrowed on the way back, and outside
+	# the hash. `core` never reads it; `game` restores the picture from it.
+	h.equal("scenery.absent_by_default", camera_world.restored_scenery(), {},
+		"a save written without a record loads one back empty")
+	var poses: Dictionary = {"joints": [[3, 6, 969, 0, 0], [5, 12, 0, 0, -1000]],
+		"removed": [2], "moves": [[7, 0, 11]]}
+	var blob_c: PackedByteArray = world.save(camera, poses)
+	var scenery_world: World = TestFixtures.tiny_world()
+	h.equal("scenery.decode_ok",
+		SaveCodec.result_name(scenery_world.load_save(blob_c)), "OK")
+	var poses_back: Dictionary = scenery_world.restored_scenery()
+	var rows: Array = DictRead.as_array(poses_back.get("joints", []))
+	h.equal("scenery.restored.rows", rows.size(), 2)
+	h.equal("scenery.restored.first_row",
+		str(DictRead.to_int32(rows[0])) if rows.size() > 0 else "",
+		str(PackedInt32Array([3, 6, 969, 0, 0])),
+		"the record comes back through the JSON header as floats and narrows")
+	h.equal("scenery.restored.removed",
+		str(DictRead.to_int32(poses_back.get("removed", []))),
+		str(PackedInt32Array([2])))
+	var moves: Array = DictRead.as_array(poses_back.get("moves", []))
+	h.equal("scenery.restored.moves",
+		str(DictRead.to_int32(moves[0])) if moves.size() == 1 else "",
+		str(PackedInt32Array([7, 0, 11])),
+		"a platform ride's row comes back the same way")
+	h.equal("scenery.excluded_from_hash", scenery_world.canonical_hash_hex(),
+		before)
+	h.check("scenery.differs", blob_c != blob,
+		"the two saves differ, so the record really is stored")
+
 	# Negative cases.
 	var truncated: PackedByteArray = blob.slice(0, blob.size() / 2)
 	h.equal("negative.truncated",

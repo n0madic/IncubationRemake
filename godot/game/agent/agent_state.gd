@@ -182,6 +182,7 @@ func units() -> Array[Dictionary]:
 			"facing": DictRead.as_int(view["facing"]),
 			"visibility": DictRead.as_int(view["visibility"]),
 			"acted": DictRead.as_int(view["acted"]),
+			"order": DictRead.as_int(view["order"]),
 		})
 	return out
 
@@ -209,6 +210,9 @@ func picture() -> Dictionary:
 			if view != null else 0,
 		"playback": _main._playback.is_running(),
 		"scenery": _main.scenery_count(),
+		"scenery_objects": _main.scenery_objects(),
+		"scenery_removed": _main.scenery_removed(),
+		"script": _main.last_script(),
 		"special_objects": _main._special.live_count() \
 			if _main._special != null else 0,
 	}

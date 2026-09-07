@@ -1097,8 +1097,12 @@ gives way once a second man steps onto it, in the mission whose own comment is
 (`0x0043b280`, the same call `GetTurn` uses) against argument 3 and does
 nothing unless they are equal. The routine then collapses **every cell whose
 ActPt equals `actPt`**: control-map type 4, ActPt cleared, object destroyed,
-`frames` steps of falling animation. `_C_163.lcl` schedules 31 of these,
-`FootBridge2 (112,30,3);` … — tags 101..133, always 30 frames, turns 3..10.
+`frames` steps of falling animation, and every unit standing on a matched
+cell is taken off the map afterwards (`0x00415663`, `aRemoveUnitElement` —
+which kills, [`42` §12](42-mission-presentation.md)). `_C_163.lcl` schedules
+31 of these, `FootBridge2 (112,30,3);` … — always 30 frames, turns 3..12.
+Thirty name a tag two cells carry; the thirty-first, `(139,30,12)`, names
+none — §8.5.
 
 **`Barrier (x, y, dir, onActPt, offActPt, seedActPt)`** — **[code]
 `0x004423d0` → `0x00413560`**, *aPlayLaserBarrier*. A **toggle** keyed on the
@@ -1656,6 +1660,16 @@ the tile's ActPt is still 0, and the routine's test is `ActPt == onActPt`
 call switches the barrier on — which is what the six correctly-typed calls
 immediately above (`…,90,91,91`) do. The typo would only have mattered if the
 author had meant `90`.
+
+### 8.5 A fifteenth: `FootBridge2 (139,30,12)` in `_C_163.lcl`
+
+The last of the mission's 31 `FootBridge2` calls (line 131, turn 13) names
+tag 139. No cell of `_C_163.lev` carries it: the bridge tags on the map run
+101..133 with 117 and 126 unused, and **130** — the block at (16,12)/(16,13)
+— is the one tag no call names. `0x004426d0` finds no cell, sets nothing and
+plays nothing, so that bridge stands through the mission. The effect on play
+is nil beyond one bridge fewer; `interaction_tables.py` pins it
+(`corpus.footbridge2_typo`, 2026-09-06).
 
 ---
 

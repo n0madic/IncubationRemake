@@ -311,22 +311,50 @@ One toggle serves all four door ids, and it keys on the **low bit** of the
 action point:
 
 ```c
+marker = aGetSymbolObjectPtr(cell->land);   /* cell +0x05: the land-lattice slot, 0x00410B41 */
 if ((cell->actionPoint & 1) == 0) {         /* even: 30, 32 -> it is open */
     cell->height      += 0xC80;             /* one tile, docs/10 §4 */
     cell->actionPoint += 1;                 /* 30 -> 31, 32 -> 33 */
     cell->fieldType    = 2;                 /* Wall */
-    landObject->z     += cell->height;
+    marker->z         += cell->height;      /* the marker's z is the cell height */
+    step = +100;                            /* 0x00410BAE */
 } else {                                    /* odd: 31, 33 -> it is closed */
     cell->fieldType    = 1;                 /* Free Place */
     cell->actionPoint -= 1;                 /* 31 -> 30, 33 -> 32 */
     cell->height       = 0;
-    landObject->z      = 0;
+    marker->z          = 0;
+    step = -100;                            /* 0x00410B8B */
 }
+panel = 0x00406F20(marker->x, marker->y, marker->z, 5000, 5000, 5000);  /* the object beside it */
+if (unit) fly((unit->x, unit->y, panel->z + h), (panel->x, panel->y, panel->z + h));  /* h = 0x0047AD70(unit) */
+door.wav, looped;
+for (n = 10; n; n--) {                      /* 0x00410CFC */
+    panel->joint[6].z  += step;             /* +0x2A, 0x00410D05 */
+    panel->joint[12].z -= step;             /* +0x30, 0x00410D09 */
+    frameTick();
+}
+kill the wave; if (unit) fly back;
 ```
 
-A door is a wall panel that rises out of the floor: closing it raises the cell
-by exactly one tile and makes it a `Wall`; opening it drops the cell to height
-0 and makes it a `Free Place`. Nothing in the toggle distinguishes the jammed
+Closing a door raises its cell by exactly one tile and makes it a `Wall`;
+opening it drops the cell to height 0 and makes it a `Free Place`. **What
+moves is not the panel.** The `z` the toggle writes belongs to the object the
+cell's `+0x05` names, and that word is the cell's slot in the land lattice
+([`10` §4](10-lev-mission-format.md)) — the 320-unit editor marker whose z
+*is* the cell height in every shipped record. The door itself is the special
+object standing beside it (`L100EX00.3DI`, `L108EX00.3DI` or `L111EX00.3DI`
+by world set — 302 of them over the corpus, and no door cell carries anything
+else), found by `0x00406F20`'s box search, and its **two leaves swing**: ten
+frames of ±100 on the z angle of joints 6 and 12
+([`28` §7.2](28-effects-and-sound.md)'s `+0x2A` and `+0x30`), so an open
+door's leaves stand at −1000 and +1000 of 4096 — 88° about the hinges at the
+frame's outer edges (`part_push` ±1440) — and a closed door's at 0. The
+`.lev` authors exactly those words: all 302 door objects carry `(0, 0, ∓1000)`
+at an even action point and `(0, 0, 0)` at an odd one
+(`interaction_tables.py`, `corpus.door_joints`). Before 2026-09-06 this
+section read *a door is a wall panel that rises out of the floor*, and
+[`97` §7](97-slice-5-report.md) built the remake on it; the leaves are what
+the listing says. Nothing in the toggle distinguishes the jammed
 pair from the standard pair — the difference lives entirely in
 `0x0047A530` (§2). Opening also rebuilds the visible map
 ([`22` §9](22-combat-and-visibility.md)) — but only when the current player is
@@ -770,7 +798,7 @@ barriers and the `CrushWall` — is already specified in
 
 ## 9. Verification
 
-`tools/interaction_tables.py --check gog_incubation` runs **109 checks** and
+`tools/interaction_tables.py --check gog_incubation` runs **158 checks** and
 fails on an empty corpus, on a corpus with no mission scripts, and on one
 without `Events.txt`.
 
@@ -782,18 +810,33 @@ without `Events.txt`.
 | `gate.*` | the pad decoded by following its six leaves, the species and movement gates, the four target predicates, the one-point cost, the "has acted" store, and the two callers of the command executor with the modules they sit in |
 | `target.*` | the `10 … 49` band, the crowbar slot, id 32's refusal, the entry-point requirements, the mine test, the five pushable types and the diagonal rule |
 | `door.*`, `push.*`, `telep.*` | the parity rule, the one-tile rise, the field-type flip, the three callers; the four-cell limit, the hole types and the fall; the pairing key, the exit field type, the scan stride and the death on a blocked exit |
+| `family.*` | the door's nine siblings ([`42` §8.3](42-mission-presentation.md)): the shared box search, each routine's frame count, step and `add word [obj+0x2X]` site — the supply box's lid, the lever's handle and its camera, the three tubes, the bridge's halves and its toggle, the barrier's emitter, the crush wall's and the two footbridges' fall and `aDeleteLand`; the second footbridge's scan, box search and the riders both footbridges remove, drop and tumble — with the two accessors' own argument order beside them, which is what says the third is the heading word, and the bodied arm they take, which is what makes the read-back lossless; the rotating statue's joint word and its own box |
 | `move.*` | the VictoryPoint band and its two bases, the neutral player, the mine radius column, the mine's weapon, and the step cost as delay plus 1 or 2 |
 | `ai.*` | the AI's one action point, its eight directions, its two-point minimum, and the enumeration that nothing in `aAISystem.cpp` reaches `aExecuteUse` |
 | `ctrlinfo.*` | which `SetCtrlMapInfo` columns the engine reads — and that the fourth is dead, with the first two as the positive control |
 | `sweep.*` | all 44 instructions in `.text` that touch `cell[+0x0B]`, and their distribution over the nine modules the `__FILE__` map attributes them to (an upper bound — [`90`](90-binaries-and-source-layout.md); every one of these 44 sits near a real `CHECK` site of the module it is credited to) |
-| `corpus.*` | every handled action point counted over all 155 missions, the absences (id 32, ids 86–89, ladders), the random box's confinement to the template map, the crowbar/jammed-door mission, and the teleporter pairing with its one authored exception |
+| `corpus.*` | every handled action point counted over all 155 missions, the lever, barrier and bridge records against the poses their routines leave, the one `Statue2` call and the one-part `L014EH00` its three cells carry, the second footbridge's thirty groups of two cells and one `L069EI00` and the script's `139` for `130`, the absences (id 32, ids 86–89, ladders), the random box's confinement to the template map, the crowbar/jammed-door mission, the one special object on each of the 400 cells the door's family reaches and the eleven of those cells the level's own `.3DW` geometry stands on beside it (with `_C_142`'s and `_C_163`'s clones pinned by prototype and height), and the teleporter pairing with its one authored exception |
 | `lcl.*` (corpus) | 153 `:Use` sections, the four values `_D` is ever compared against, and the 226 `SetActPt` calls beside them |
 | `text.*` | all thirteen `Events.txt` labels resolve and name their pickup |
 
-**Every one of the 109 checks has been shown to fail.** 112 mutations — 96
-single-byte or single-dword pokes into a copy of `Incubation.exe`, 16 edits to
-a copy of the corpus — were each run against the full check set; all 112 were
-detected, and the union of the check names they tripped is all 109.
+**Every one of the 158 checks has been shown to fail**, in two batteries. The
+first covered the original 109: 112 mutations — 96 single-byte or single-dword
+pokes into a copy of `Incubation.exe`, 16 edits to a copy of the corpus — each
+run against the full check set; all 112 were detected and the union of the
+names they tripped is all 109. The second (2026-09-06, extended on
+2026-09-07, twice) covered the **49** added since — the four `door.*` leaf pins, the five `mine.*`, the twenty-two
+`family.*` of the door's siblings and the eighteen `corpus.*` they are read
+against: one mutation per check, 31 pokes into the executable at the site the
+check names and 18 edits to the corpus copy (a joint word turned, an action
+point cleared, a prototype number changed, a `prototyp.din` entry renamed,
+four script tokens rewritten through the `0xFF` codec — including "fixing" the
+`139` typo, which is what makes `corpus.footbridge2_typo` fail, and moving a
+`CrushWall` onto a cell carrying two objects — and two `POSITION` lines
+rewritten in a copy of a `.3DW`, one moving a clone off its family cell and
+one changing only its height). All 49 were
+detected, tripping 50 distinct checks between them. A mutation is allowed to trip more than the check it aims at and
+several do; what is required is that each check appears in its own mutation's
+failures.
 
 ### 9.1 The behaviour, as code
 

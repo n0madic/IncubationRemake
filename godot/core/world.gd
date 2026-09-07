@@ -39,6 +39,11 @@ var _ctrlmap: CtrlMapTable = null
 ## Camera state carried by the last loaded save.  Deliberately outside the
 ## canonical hash -- where the player was looking is not simulation state.
 var _camera: Dictionary = {}
+## The scenery's pose record carried by the last loaded save -- the joint
+## words and the freed cells of docs/42 section 8.3. Outside the canonical
+## hash for the camera's reason: `core` owns no picture, and `game` is what
+## puts it back ([method Scenery.restore_poses]).
+var _scenery: Dictionary = {}
 var _unit_types: UnitTypeTable = null
 var _weapons: WeaponTable = null
 ## docs/25 section 3 -- whose turn it is, and the counter. Outside [MapState]
@@ -1202,6 +1207,10 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			var ctx: AIContext = AIContext.create(state, _units, _unit_types,
 				_weapons, _ctrlmap, turn, rng)
 			ctx.may_fire = ai_may_fire
+			# The mission script reaches the computer's walks and jumps the
+			# way it reaches the player's: `aRunLCL` closes `aExecuteMove`
+			# and `aExecuteWarp` themselves, with no test of who is moving.
+			ctx.mission_script = _script_callable()
 			var one: AITurnResult = AISystem.run(ctx, turn.current_player)
 			played = one if played == null else played.followed_by(one)
 		result = TurnSequence.hand_over(turn, _units, game_control,
@@ -1273,10 +1282,10 @@ func canonical_hash_hex() -> String:
 	return CanonicalHash.to_hex(canonical_hash())
 
 
-func save(camera: Dictionary) -> PackedByteArray:
+func save(camera: Dictionary, scenery: Dictionary = {}) -> PackedByteArray:
 	return SaveCodec.encode(resource, state, _units, turn, game_control, rng,
 		crand,
-		compat_flags, camera)
+		compat_flags, camera, scenery)
 
 
 ## Returns the [enum SaveCodec.Result] code; the world is only changed on `OK`.
@@ -1305,6 +1314,7 @@ func load_save(data: PackedByteArray) -> int:
 	crand = decoded["crand"]
 	compat_flags = decoded["compat_flags"]
 	_camera = DictRead.as_dict(decoded["camera"])
+	_scenery = DictRead.as_dict(decoded["scenery"])
 	# See [member _hand_over_initialised]: the engine restores the latch from
 	# the save, and a non-zero turn counter is what a spent one implies.
 	_hand_over_initialised = turn.turn != 0
@@ -1322,6 +1332,12 @@ func load_save(data: PackedByteArray) -> int:
 ## dictionary when nothing has been loaded.
 func restored_camera() -> Dictionary:
 	return _camera.duplicate(true)
+
+
+## The scenery pose record the last successful [method load_save] read, or
+## an empty dictionary when nothing has been loaded.
+func restored_scenery() -> Dictionary:
+	return _scenery.duplicate(true)
 
 
 # --- deployment -- docs/29 section 1.2, docs/27 section 3.4 -------------------

@@ -164,11 +164,12 @@ func all_casualties() -> PackedInt32Array:
 ## The same, as a function of its arguments, so a suite can ask it directly
 ## and one event can be passed as a list of one.
 ##
-## The four shapes a payload carries a death in, and all four are here rather
+## The five shapes a payload carries a death in, and all five are here rather
 ## than in the caller: a shot's own `outcomes` (a `fire`, and a `parabomb`,
 ## whose payload **is** the blast), the drained `reactions` of a `reactions`
-## event, the `mine_detonated` entries of a walk's `events`, and the `blast` a
-## `warp` landed on.
+## event, the `mine_detonated` entries of a walk's `events`, the `blast` a
+## `warp` landed on, and the riders of a footbridge the mover's `MoveUnit`
+## hook dropped, under `script` on a `move` or a `warp`.
 static func casualties_in(events: Array[Dictionary],
 		from_index: int, killed_only: bool = false) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
@@ -226,6 +227,32 @@ static func casualties_of(payload: Dictionary,
 			entry.get("blast", {})).get("outcomes", [])), out, killed_only)
 	_slots_of(DictRead.as_array(DictRead.as_dict(
 		payload.get("blast", {})).get("outcomes", [])), out, killed_only)
+	# The fifth shape: the riders a `MoveUnit` hook's footbridge took off
+	# the map. They carry no outcome and no marker -- `aRemoveUnitElement`
+	# is the interpreter's own kill -- so the filter cannot narrow on them;
+	# every slot the event lists is dead by the time the routine returns.
+	for slot: int in script_riders_of(DictRead.as_dict(
+			payload.get("script", {}))):
+		if not out.has(slot):
+			out.append(slot)
+	return out
+
+
+## The slots a script outcome's footbridges dropped: the riders of every
+## `foot_bridge` / `foot_bridge2` event in it, as `FootBridge`'s own loop
+## listed them before `aRemoveUnitElement`. The one reader of a script kill
+## for both the player's command results and the computer's event payloads,
+## so the two paths cannot disagree about who fell.
+static func script_riders_of(outcome: Dictionary) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for entry: Variant in DictRead.as_array(outcome.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		var kind: String = AudioEvents.name_of(event)
+		if kind != "foot_bridge" and kind != "foot_bridge2":
+			continue
+		for slot: int in SetpieceDriver.riders_of(event):
+			if not out.has(slot):
+				out.append(slot)
 	return out
 
 
