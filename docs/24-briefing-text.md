@@ -372,7 +372,12 @@ dispatch of the same routine biases by `0x201` and bounds at 5, and its cases
 the only thing that closes it**; `0x0043F250` clears the same flag as part of
 the mission teardown at `0x0041A830`. The remake answers *any* mouse button,
 which takes nothing away: the left click the original swallows here does
-nothing at all.
+nothing at all. It also **takes the box down after five seconds** of its own
+accord (`MissionHud.INFO_AUTO_HIDE_SECONDS`, stepped by the host's frame),
+which the original does not: with the mission held behind it, a crate opened
+by mistake stops the game until the box is noticed and pressed. The dismissal
+stays exactly as it is; the timeout is the floor under it, and it does not run
+while a screen the player opened covers the mission.
 
 **Two of the four info files are unreachable in this build.** `Data` and
 `Events` are the only info file names that exist in `Incubation.exe` as

@@ -55,6 +55,12 @@ const INFO_PADDING: float = 6.0
 const INFO_READABLE_SIZE: int = 13
 ## How close to the bottom edge the box may run before its height is trimmed.
 const INFO_BOTTOM_MARGIN: float = 8.0
+## How long the message stands before it takes itself down. A deliberate
+## divergence, like [constant INFO_GROUND] beside it: the original holds the
+## whole mission until the right button is pressed (docs/24 section 7.2) and a
+## crate opened by mistake therefore stops the game until it is noticed. The
+## dismissal stays, and this is the floor under it.
+const INFO_AUTO_HIDE_SECONDS: float = 5.0
 ## The readable face's size for the band texts when the cache has no fonts,
 ## or when the player chose the readable interface font. The hint has one of
 ## its own: it is a caption for the button under the pointer, not a number
@@ -90,6 +96,10 @@ var _info_shield: Control = null
 ## The spans the box is showing, so [method view] can report it and
 ## [method use_font] can put it back after a face change.
 var _info_spans: Array = []
+## How long the message has been up, counted by [method tick_info]. It is
+## reset by [method show_info] and never runs while the box is down, so one
+## message cannot inherit the seconds another was read for.
+var _info_clock: float = 0.0
 var _cache_dir: String = ""
 var _strings: Localization = null
 var _art: Art = null
@@ -468,12 +478,16 @@ static func _grade_text_id(outcome: int) -> int:
 ## The original's box is also revealed a word at a time (`aActivateInfo`'s
 ## eighth argument is 0, docs/24 section 5) and this shows it whole -- the
 ## typewriter is a sound-driven effect this layer has no cue for.
+##
+## It also takes itself down after [constant INFO_AUTO_HIDE_SECONDS]
+## ([method tick_info]), which the original never does.
 func show_info(spans: Array) -> void:
 	if _info_shield == null or _info_text == null:
 		return
 	_info_spans = spans
 	_info_text.show_block(spans)
 	_info_shield.visible = not spans.is_empty()
+	_info_clock = 0.0
 	_layout_info()
 
 
@@ -482,6 +496,22 @@ func hide_info() -> void:
 		return
 	_info_spans = []
 	_info_shield.visible = false
+
+
+## The message's own clock, stepped by the host's frame
+## ([code]SliceMain._tick_interface[/code]) -- not a [Timer] and not
+## `_process`, because the suites build the interface with `MissionHud.new()`
+## and never add it to a tree, so neither would run under a check.
+##
+## Nothing accumulates while the box is down: a message dismissed after half a
+## second would otherwise hand the next one four and a half.
+func tick_info(delta: float) -> void:
+	if not info_visible():
+		_info_clock = 0.0
+		return
+	_info_clock += delta
+	if _info_clock >= INFO_AUTO_HIDE_SECONDS:
+		hide_info()
 
 
 func info_visible() -> bool:
@@ -494,7 +524,7 @@ func info_visible() -> bool:
 ## and `0x206` of `0x0041B6E0`'s mouse dispatch call `0x0043F130` -- and its
 ## left click, while a box is up, does nothing whatever. Answering that one as
 ## well therefore takes no behaviour away, and a trackpad's right button is a
-## chord.
+## chord. [method tick_info] answers the case where nothing is pressed at all.
 func _on_info_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.is_pressed():
 		hide_info()

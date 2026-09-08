@@ -5756,7 +5756,8 @@ func use_in_front() -> UseResult:
 	# and plays `box.wav`; the remake had the sound and not the box, so the
 	# only thing a crate did was click. It goes up after the arm's own work,
 	# as the original's does, and holds the mission until it is dismissed
-	# ([method _unhandled_input]).
+	# ([method _unhandled_input]) or until
+	# [constant MissionHud.INFO_AUTO_HIDE_SECONDS] have passed.
 	if used.ok and _hud != null and _info != null:
 		var said: Array = _info.spans_for(used.action_point)
 		if not said.is_empty():
@@ -6268,6 +6269,13 @@ func _tick_interface(delta: float) -> void:
 		if _ground != null:
 			_ground.tick(_blink_odd)
 	_hud.ring.update(_rig.camera(), _hud.window(), _blink_odd)
+	# The pickup message's own clock (docs/24 section 7.2, a divergence): it
+	# holds the mission the way the original's does, and takes itself down
+	# after five seconds rather than waiting for a button. Not under a screen
+	# the player opened over the mission -- that owns the input while it is
+	# up, so it owns the clock with it.
+	if _screen == null:
+		_hud.tick_info(delta)
 	if _far_view() != _far_drawn:
 		_refresh_overlay()
 	_poll_hover()

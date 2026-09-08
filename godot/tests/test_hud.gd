@@ -861,6 +861,28 @@ func _hud_live(h: TestHarness) -> void:
 	shield.gui_input.emit(release)
 	h.check("hud.a_release_leaves_it_up", hud.info_visible(),
 		"the press is the dismissal, as `is_pressed` says")
+	# The five-second dismissal, which the original has no equivalent of: a
+	# crate opened by mistake held the whole mission until it was noticed.
+	hud.tick_info(MissionHud.INFO_AUTO_HIDE_SECONDS - 0.1)
+	h.check("hud.the_message_waits_out_its_seconds", hud.info_visible(),
+		"under INFO_AUTO_HIDE_SECONDS, so nothing has expired")
+	hud.tick_info(0.2)
+	h.check("hud.the_message_takes_itself_down", not hud.info_visible(),
+		"past INFO_AUTO_HIDE_SECONDS")
+	# A box that is down must not bank the seconds: the next message would
+	# open with most of its time already spent.
+	hud.tick_info(60.0)
+	hud.show_info(said)
+	hud.tick_info(0.1)
+	h.check("hud.a_new_message_starts_its_own_clock", hud.info_visible(),
+		"tick_info banks nothing while the box is down")
+	# ...and a dismissal restarts it too, rather than resuming where the
+	# message before it stopped.
+	shield.gui_input.emit(press)
+	hud.show_info(said)
+	hud.tick_info(MissionHud.INFO_AUTO_HIDE_SECONDS - 0.1)
+	h.check("hud.the_clock_is_reset_by_a_re_show", hud.info_visible(),
+		"show_info clears the clock")
 	hud.hide_info()
 	h.check("hud.an_empty_message_never_shows", not hud.info_visible())
 	hud.show_info([])
