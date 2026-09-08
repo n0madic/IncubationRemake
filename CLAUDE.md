@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 251 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 39 suites, 4768 checks
+bash   godot/run_tests.sh                                    # 39 suites, 4820 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -544,8 +544,8 @@ reachable only from the outside driver, which the shipping preset excluded.
 `game/`
 now carries a shell — `shell_host.gd` and five screens under `game/screens/`:
 a main menu on the shipped `Title` plate, the chain chooser, *Instant Action*
-over the cache manifest, **eight save slots** beside a separate quick save on
-`F5`/`F9`, and an options screen carrying only the controls that are actually
+over the cache manifest, **24 nameable save slots** paged twelve at a time
+beside a separate quick save on `F5`/`F9`, and an options screen carrying only the controls that are actually
 connected. `ESC` opens it over a running mission. **All three ways past it
 stay open and are checked rather than tried**: `--mission=NAME` builds a
 mission immediately and never raises the shell, the new `--campaign=N` enters
@@ -899,8 +899,8 @@ One batch runs at a time and a second `POST /command` is **409**; reads never
 queue behind one. The verbs are `key NAME`, `click X Y`, `click_unit SLOT`,
 `click_screen X Y`, `hover X Y`, `walk_to X Y`, `cell X Y`, `chance A B`,
 `blobs`, `watch N`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT`,
-`buttons`, `press CAPTION`, `map_click X Y`, `menu [NAME]`, `slot N
-[load|save]`, `option NAME VALUE` and `quit`, plus the battle interface's
+`buttons`, `press CAPTION`, `wheel N [X Y]`, `map_click X Y`, `menu [NAME]`,
+`slot N [load|save [NAME...]]`, `option NAME VALUE` and `quit`, plus the battle interface's
 `markers` and `hud event|pad|ring|radar N` (`docs/43`) and the campaign's
 `campaign N`, `location N`, `deploy SLOT X Y`, `screen NAME`, `ui NAME`,
 `enter NAME` and `gamecontrol SLOT VALUE` — the last three are debugging

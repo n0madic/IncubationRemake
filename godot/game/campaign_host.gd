@@ -20,10 +20,25 @@ extends RefCounted
 ## live player's game, so the directory is injectable and the suites point it
 ## at a scratch one (docs/92 section 7.15).
 const DEFAULT_SAVE_DIR: String = "user://saves"
-## The eight numbered slots the shell shows.
-const SLOT_COUNT: int = 8
+## The numbered slots the shell shows.
+##
+## **Twenty-four, paged twelve at a time.** It was eight, which is what
+## `aLoad.cpp`'s own screen holds; the shipped screen is a picture of eight
+## rows and this one is a listbox, so the count is the remake's to choose and
+## a campaign is long enough to want more than one save per chapter. A row
+## costs a `slot-N.sav` that is only written when the player writes it, and
+## only the twelve rows on show decode a header ([method
+## SaveSlotsScreen.refresh]), so the count is not paid for until it is used.
+##
+## **The ceiling is the interface's three reserved slots**, not a round
+## number: `HudTables.SLOT_UNDO_MISSION`, `SLOT_REMIND` and `SLOT_UNDO_TURN`
+## are 31, 32 and 33, and they are files in this same directory written by
+## *Remember position* and by the turn's own autosave. A count that reached
+## them would put an autosave on the list as a row the player could load by
+## surprise and overwrite by accident. `test_shell.gd` pins the gap.
+const SLOT_COUNT: int = 24
 ## The quick save is **not** one of them: `F5` must not cost the player a slot
-## they meant to keep, so it has a file of its own beside the eight.
+## they meant to keep, so it has a file of its own beside the numbered ones.
 const QUICK_SLOT: int = -1
 const QUICK_NAME: String = "quick.sav"
 const SLOT_NAME: String = "slot-%d.sav"
@@ -616,8 +631,8 @@ func catalogue(kind: String) -> Dictionary:
 
 # -- the save file -------------------------------------------------------------
 
-## The file one slot lives in. [constant QUICK_SLOT] is the quick save; 0..7
-## are the numbered ones.
+## The file one slot lives in. [constant QUICK_SLOT] is the quick save;
+## `0..SLOT_COUNT - 1` are the numbered ones.
 func slot_path(slot: int = QUICK_SLOT) -> String:
 	if slot == QUICK_SLOT:
 		return "%s/%s" % [save_dir, QUICK_NAME]
@@ -637,9 +652,14 @@ func slot_path(slot: int = QUICK_SLOT) -> String:
 ## and *camera* [method CameraRig.state] -- the picture's own state the
 ## mission blob carries beside the simulation, both outside the canonical
 ## hash because `core` owns neither.
+## *name* is what the player typed on the slot screen, or `""` for a save that
+## was never named -- the quick save, and a numbered slot written with the
+## field left empty. It rides in the container's document and not in
+## [CampaignState], which is hashed.
 func save(mission_world: World = null, slot: int = QUICK_SLOT,
 		when: int = 0, when_text: String = "",
-		scenery: Dictionary = {}, camera: Dictionary = {}) -> bool:
+		scenery: Dictionary = {}, camera: Dictionary = {},
+		name: String = "") -> bool:
 	if state == null:
 		return false
 	var blob: PackedByteArray = PackedByteArray()
@@ -652,7 +672,7 @@ func save(mission_world: World = null, slot: int = QUICK_SLOT,
 	var file: FileAccess = FileAccess.open(slot_path(slot), FileAccess.WRITE)
 	if file == null:
 		return false
-	file.store_buffer(CampaignCodec.encode(state, blob, when, when_text))
+	file.store_buffer(CampaignCodec.encode(state, blob, when, when_text, name))
 	file.close()
 	return true
 
@@ -691,7 +711,7 @@ func has_save(slot: int = QUICK_SLOT) -> bool:
 
 ## What one slot's row says, without building the campaign behind it:
 ## `{"result": int, "used": bool, "campaign": int, "mission": String,
-## "score": int, "saved_at": int, "saved_at_text": String,
+## "score": int, "saved_at": int, "saved_at_text": String, "name": String,
 ## "has_mission": bool}`.
 ##
 ## A row for a file this build cannot read is **shown**, carrying its refusal
@@ -701,7 +721,8 @@ func slot_header(slot: int) -> Dictionary:
 	if not has_save(slot):
 		return {"result": CampaignCodec.Result.NO_FILE, "used": false,
 			"campaign": 0, "mission": "", "score": 0, "saved_at": 0,
-			"saved_at_text": "", "has_mission": false}
+			"saved_at_text": "", CampaignCodec.KEY_NAME: "",
+			"has_mission": false}
 	var header: Dictionary = CampaignCodec.decode_header(
 		FileAccess.get_file_as_bytes(slot_path(slot)))
 	header["used"] = true

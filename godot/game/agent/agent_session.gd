@@ -104,6 +104,8 @@ const VERBS: Dictionary[String, String] = {
 	"click": "click X Y -- a left click on the centre of map cell (X, Y)",
 	"hover": "hover X Y -- a mouse motion at raw viewport pixels",
 	"click_screen": "click_screen X Y -- a left click at raw viewport pixels",
+	"wheel": "wheel N [X Y] -- N wheel notches (negative up) at raw viewport "
+		+ "pixels; scrolls a list, zooms the camera over a map",
 	"click_unit": "click_unit SLOT -- a left click on the cell a unit stands on",
 	"buttons": "buttons -- every button on the screen, with its rectangle",
 	"press": "press CAPTION -- push the button whose caption contains CAPTION",
@@ -120,7 +122,7 @@ const VERBS: Dictionary[String, String] = {
 	"shot": "shot NAME -- writes NAME.png under --agent-dir=",
 	"note": "note TEXT -- one line in the reply's log",
 	"menu": "menu [NAME] -- raise the shell at one of its screens, or toggle it",
-	"slot": "slot N [load|save] -- read or write one of the eight numbered slots",
+	"slot": "slot N [load|save [NAME...]] -- read or write one numbered slot",
 	"option": "option NAME VALUE -- set one option and apply it",
 	"campaign": "campaign N -- begin chain N and load its first mission",
 	"location": "location N -- click a location on the campaign map",
@@ -180,6 +182,7 @@ func _init(main: SliceMain, root: Window,
 		"click": _v_click,
 		"hover": _v_hover,
 		"click_screen": _v_click_screen,
+		"wheel": _v_wheel,
 		"click_unit": _v_click_unit,
 		"buttons": _v_buttons,
 		"press": _v_press,
@@ -457,6 +460,38 @@ func _v_click_screen(parts: PackedStringArray, _line: String) -> void:
 	_log.append("click_screen (%s, %s)" % [parts[1], parts[2]])
 
 
+## `wheel N [X Y]` -- N notches of the wheel, negative for up.
+##
+## It goes in through `push_input` like every other synthetic hand, so what is
+## exercised is the real routing: whether the event reaches the screen at all
+## depends on what `Control` the position lands on, which is exactly the
+## question a list's scrolling turns on.
+func _v_wheel(parts: PackedStringArray, _line: String) -> void:
+	if _root == null:
+		_log.append("wheel: no window")
+		return
+	var notches: int = parts[1].to_int() if parts.size() > 1 else 1
+	var at: Vector2 = Vector2(parts[2].to_float(), parts[3].to_float()) \
+		if parts.size() > 3 else _root.get_mouse_position()
+	var button: int = MOUSE_BUTTON_WHEEL_DOWN if notches > 0 \
+		else MOUSE_BUTTON_WHEEL_UP
+	for _step: int in range(absi(notches)):
+		var press: InputEventMouseButton = InputEventMouseButton.new()
+		press.button_index = button as MouseButton
+		press.pressed = true
+		press.position = at
+		press.global_position = at
+		_root.push_input(press, true)
+		var release: InputEventMouseButton = InputEventMouseButton.new()
+		release.button_index = button as MouseButton
+		release.pressed = false
+		release.position = at
+		release.global_position = at
+		_root.push_input(release, true)
+	_log.append("wheel %d at (%d, %d)" % [notches, int(at.x), int(at.y)])
+	_wait = 1
+
+
 func _v_click_unit(parts: PackedStringArray, _line: String) -> void:
 	var slot: int = parts[1].to_int() if parts.size() > 1 else -1
 	if _main.world == null:
@@ -722,10 +757,14 @@ func _v_menu(parts: PackedStringArray, _line: String) -> void:
 	_log.append("menu %s: %s" % [name, _main.screen_up()])
 
 
-## `slot N [load|save]` -- write or read one of the eight numbered slots.
+## `slot N [load|save [NAME...]]` -- write or read one numbered slot.
+##
+## Everything past `save` is the name the slot row shows, so a scenario can
+## write the named saves the screen writes rather than only unnamed ones.
 func _v_slot(parts: PackedStringArray, _line: String) -> void:
 	var slot: int = parts[1].to_int() if parts.size() > 1 else 0
 	var mode: String = parts[2] if parts.size() > 2 else ShellHost.MODE_SAVE
+	var name: String = " ".join(parts.slice(3)) if parts.size() > 3 else ""
 	if _main.campaign == null:
 		_log.append("slot: the host is not ready")
 		return
@@ -738,10 +777,13 @@ func _v_slot(parts: PackedStringArray, _line: String) -> void:
 	if _main.campaign.state == null:
 		_log.append("slot %d save: no campaign" % slot)
 		return
-	var stamp: Dictionary = CampaignHost.stamp_now()
-	var written: bool = _main.campaign.save(_main.world, slot,
-		DictRead.as_int(stamp["when"]),
-		DictRead.as_string(stamp["when_text"]))
+	# **Through the game's own writer**, not through the host directly: that
+	# is where the mid-sequence refusal, the `in_mission` gate on the blob,
+	# the scenery pose record, the camera and the slot-ownership bookkeeping
+	# live. Reaching past it wrote a save the interface would then read
+	# differently from one the player had taken.
+	var written: bool = _main._save_mission_to(slot,
+		_main.world_to_save(), name)
 	var header: Dictionary = _main.campaign.slot_header(slot)
 	_log.append("slot %d save: %s, header %s" % [slot, str(written),
 		JSON.stringify(header)])

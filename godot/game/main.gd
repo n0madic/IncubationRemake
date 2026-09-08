@@ -738,7 +738,7 @@ func _refresh_after_deploy() -> void:
 
 ## `F5` -- write the campaign and, when a mission is up, the mission inside it.
 ##
-## The quick save has a file of its own beside the eight numbered slots
+## The quick save has a file of its own beside the numbered slots
 ## (docs/92 section 7.15 S1), so `F5` cannot cost the player a slot they meant
 ## to keep. The mission blob is [SaveCodec]'s and stays opaque to the
 ## container, because that codec refuses a blob whose map name is not the
@@ -791,7 +791,13 @@ func _mid_sequence() -> bool:
 ## The camera field has been in the header since the first save and was
 ## written empty until 2026-09-06, so nothing had ever come back through it;
 ## [method _resume_loaded_mission] is the other half.
-func _save_mission_to(slot: int, mission_world: World) -> bool:
+##
+## *mission_world* is the caller's to choose, and a save taken **from a
+## screen** must choose it through [method world_to_save]: `F5` and the turn's
+## own autosave are only reachable from inside a mission and hand this the
+## world plainly, while the slot screen can be standing over a finished one.
+func _save_mission_to(slot: int, mission_world: World,
+		name: String = "") -> bool:
 	if campaign == null or _mid_sequence():
 		return false
 	var stamp: Dictionary = CampaignHost.stamp_now()
@@ -803,7 +809,7 @@ func _save_mission_to(slot: int, mission_world: World) -> bool:
 		camera = _rig.state()
 	var written: bool = campaign.save(mission_world, slot,
 		DictRead.as_int(stamp["when"]), DictRead.as_string(stamp["when_text"]),
-		poses, camera)
+		poses, camera, name)
 	# **Every writer records what it wrote**, not only the autosave. The
 	# ownership cache is read once per slot and remembered ([method
 	# _slot_holds_this_mission]), so a slot this session wrote and did not
@@ -1227,6 +1233,29 @@ func in_mission() -> bool:
 	return campaign.screen == CampaignHost.SCREEN_MISSION
 
 
+## Carry the slot list's page over the rebuild a write causes.
+##
+## Both ways of turning it come through here -- the two arrows and the wheel --
+## because the wheel does not go through [method _on_shell_choice] at all, and
+## a page turned with it used to snap back to whatever the arrows last set.
+func _remember_slot_page() -> void:
+	var slots: SaveSlotsScreen = _screen as SaveSlotsScreen
+	if slots != null:
+		shell.slot_page = slots.first_row
+
+
+## The world a save taken **from a screen** should carry, which is the one
+## being played and nothing at all when the screen stands over a finished one.
+##
+## **Written once, and read by both writers that need it.** The campaign map is
+## drawn over the *last* mission's view and that world is still in memory, so
+## `world` alone put a finished mission's blob in a between-missions save and
+## a load came back into it. `world != null` is not the question;
+## [method in_mission] is.
+func world_to_save() -> World:
+	return world if in_mission() else null
+
+
 ## Whether there is anything behind the shell to go back to. A different
 ## question from [method in_mission]: the campaign map is behind it too.
 func _behind_the_shell() -> bool:
@@ -1281,6 +1310,7 @@ func _show_shell_screen() -> CampaignScreen:
 			slots.host = campaign
 			slots.mode = shell.slot_mode
 			slots.may_save = campaign != null and campaign.state != null
+			slots.first_row = shell.slot_page
 			screen = slots
 		ShellHost.SCREEN_OPTIONS:
 			var options: OptionsScreen = OptionsScreen.new()
@@ -1302,12 +1332,12 @@ func _show_shell_screen() -> CampaignScreen:
 	return screen
 
 
-## Whether any of the **eight** holds something, which is what decides whether
+## Whether any numbered slot holds something, which is what decides whether
 ## the menu offers *Load Game*.
 ##
-## The quick save is deliberately not counted. It is not one of the eight (S1),
+## The quick save is deliberately not counted. It is not one of them (S1),
 ## and counting it meant a player who had only ever pressed `F5` was offered a
-## list of eight rows every one of which refused the click -- the inert control
+## list every row of which refused the click -- the inert control
 ## section 7.1 forbids, reached by the very button that exists to avoid it.
 ## `F9` is how a quick save comes back.
 func _any_slot_used() -> bool:
@@ -1332,11 +1362,17 @@ func _on_shell_choice(action: String) -> void:
 		_start_instant_action(action.substr(8))
 		return
 	if action == "scroll_up" or action == "scroll_down":
-		# The catalogue is 92 long with the campaign in the cache, and a
-		# shipped listbox is paged by its two arrows rather than scrolled.
+		# The catalogue is 92 long with the campaign in the cache and the slot
+		# list is 24, and a shipped listbox is paged by its two arrows rather
+		# than scrolled.
+		var step: int = -1 if action == "scroll_up" else 1
 		var paged: MissionSelectScreen = _screen as MissionSelectScreen
 		if paged != null:
-			paged.scroll(-1 if action == "scroll_up" else 1)
+			paged.scroll(step)
+		var paged_slots: SaveSlotsScreen = _screen as SaveSlotsScreen
+		if paged_slots != null:
+			paged_slots.scroll(step)
+			_remember_slot_page()
 		return
 	if action.begins_with("option:"):
 		_step_option(action.substr(7))
@@ -1439,6 +1475,17 @@ func _start_instant_action(mission: String) -> void:
 		world.skip_deployment_turn()
 
 
+## The name the slot screen is holding, or `""` when what is up is not one.
+##
+## **Static and pure, so it can be checked.** It is the one link between the
+## field the player types in and the file that is written, and the rest of
+## that path only runs with a whole [SliceMain] on a tree -- a cast that
+## silently answered `""` would lose every name and no suite would see it.
+static func slot_name_of(screen: CampaignScreen) -> String:
+	var named: SaveSlotsScreen = screen as SaveSlotsScreen
+	return named.typed_name if named != null else ""
+
+
 ## Load or save the numbered slot the player clicked.
 func _use_slot(slot: int) -> void:
 	if campaign == null:
@@ -1447,7 +1494,8 @@ func _use_slot(slot: int) -> void:
 		if campaign.state == null:
 			_refresh_status("no campaign to save")
 			return
-		var written: bool = _save_mission_to(slot, world)
+		var written: bool = _save_mission_to(slot, world_to_save(),
+			slot_name_of(_screen))
 		_refresh_status("saved to slot %d" % (slot + 1) if written
 			else "slot %d refused the write" % (slot + 1))
 		var _again: CampaignScreen = _show_shell_screen()
@@ -1911,9 +1959,13 @@ func _on_campaign_choice(action: String) -> void:
 				"next_item", "info", "rename":
 			_upgrade_action(action)
 		"save":
-			var _written: bool = _save_mission_to(CampaignHost.QUICK_SLOT,
-				world if campaign.screen == CampaignHost.SCREEN_MISSION
-				else null)
+			# **Into the shell, over the map**, exactly as the *Options*
+			# button above goes. It used to write the quick save and say
+			# nothing at all -- the one file `F9` overwrites without asking --
+			# so the button the map offers for saving looked broken and cost
+			# the player the save they had taken with `F5`.
+			shell.go_slots(ShellHost.MODE_SAVE)
+			var _saving: CampaignScreen = open_shell(ShellHost.SCREEN_SLOTS)
 		"tips":
 			# One button for both directions, because the screen is one screen
 			# -- `Txtmod_b` carries *Tips* and *Briefing* for exactly this and
@@ -4004,6 +4056,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	# through it. A screen drawn **around a window** wants exactly that pick
 	# back, for the part of the picture its own frame does not cover.
 	if _screen != null:
+		# The wheel and the trackpad first: a screen with a list answers them
+		# and a screen drawn around a hole does not, so the map keeps the
+		# camera's zoom on exactly the same event.
+		if _screen.take_scroll(event):
+			_remember_slot_page()
+			return
 		_screen_input(event)
 		return
 	if world == null:

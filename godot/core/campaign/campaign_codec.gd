@@ -17,16 +17,25 @@ extends RefCounted
 
 const MAGIC: String = "INCC"
 ## Raised to **2** by the seventh slice: the document gained the stamp a slot
-## row shows, and with eight slots to list the campaign state moved under its
+## row shows, and with a list of slots to draw the campaign state moved under its
 ## own key so a header read never has to know what is beside it. An older
 ## container is refused **by name** (`BAD_SCHEMA`), which is the field's whole
 ## purpose.
 const SCHEMA_VERSION: int = 2
-## The document's two keys. The state is nested rather than spread at the top
+## The document's own keys. The state is nested rather than spread at the top
 ## level so that a future [CampaignState] field cannot collide with the stamp.
 const KEY_STATE: String = "state"
 const KEY_SAVED_AT: String = "saved_at"
 const KEY_SAVED_AT_TEXT: String = "saved_at_text"
+## What the player called this save, or `""` for one that was never named --
+## the quick save, and a numbered slot written with the name field left empty.
+##
+## **Additive, and [constant SCHEMA_VERSION] stays at 2 for it.** The version
+## exists to refuse a container this build cannot *read*, and a document
+## without this key is read perfectly well: it is a save with no name. Bumping
+## it would have thrown away every slot a player already has, to gain nothing.
+## Read it through `get`, never through `[]`.
+const KEY_NAME: String = "name"
 ## Magic, schema, campaign-document length, mission-blob length, digest.
 const HEADER_SIZE: int = 4 + 4 + 4 + 4 + 32
 const DIGEST_SIZE: int = 32
@@ -69,10 +78,12 @@ static func result_name(code: int) -> String:
 ## one into the other is not available on this side.
 static func encode(state: CampaignState,
 		mission_blob: PackedByteArray = PackedByteArray(),
-		saved_at: int = 0, saved_at_text: String = "") -> PackedByteArray:
+		saved_at: int = 0, saved_at_text: String = "",
+		name: String = "") -> PackedByteArray:
 	var document: PackedByteArray = JSON.stringify({
 		KEY_SAVED_AT: saved_at,
 		KEY_SAVED_AT_TEXT: saved_at_text,
+		KEY_NAME: name,
 		KEY_STATE: state.view(),
 	}, "", true, true).to_utf8_buffer()
 	var body: PackedByteArray = PackedByteArray()
@@ -111,23 +122,25 @@ static func decode(data: PackedByteArray) -> Dictionary:
 		12 + document_size, 12 + document_size + mission_size)
 	return {"result": Result.OK, "state": state, "mission": mission,
 		KEY_SAVED_AT: DictRead.as_int(document[KEY_SAVED_AT]),
-		KEY_SAVED_AT_TEXT: DictRead.as_string(document[KEY_SAVED_AT_TEXT])}
+		KEY_SAVED_AT_TEXT: DictRead.as_string(document[KEY_SAVED_AT_TEXT]),
+		KEY_NAME: DictRead.as_string(document.get(KEY_NAME, ""))}
 
 
 ## What a slot row needs, and nothing else.
 ##
 ## Returns `{"result": Result, "campaign": int, "mission": String,
-## "score": int, "saved_at": int, "saved_at_text": String,
+## "score": int, "saved_at": int, "saved_at_text": String, "name": String,
 ## "has_mission": bool}`. The scoreboard, the roster and the mission blob are
-## **not** unrolled: eight rows are eight of these, and building eight
-## campaigns to draw a list would be paying for the world to read its label.
+## **not** unrolled: a page of rows is a page of these, and building a campaign
+## per row to draw a list would be paying for the world to read its label.
 ##
 ## The digest is still checked. It is a SHA-256 over a file of tens of
 ## kilobytes, and a row that showed a damaged save as sound would be worse
 ## than the microsecond.
 static func decode_header(data: PackedByteArray) -> Dictionary:
 	var empty: Dictionary = {"campaign": 0, "mission": "", "score": 0,
-		KEY_SAVED_AT: 0, KEY_SAVED_AT_TEXT: "", "has_mission": false}
+		KEY_SAVED_AT: 0, KEY_SAVED_AT_TEXT: "", KEY_NAME: "",
+		"has_mission": false}
 	var parsed: Dictionary = _read_document(data)
 	var code: int = DictRead.as_int(parsed["result"])
 	if code != Result.OK:
@@ -147,6 +160,7 @@ static func decode_header(data: PackedByteArray) -> Dictionary:
 		"score": score,
 		KEY_SAVED_AT: DictRead.as_int(document[KEY_SAVED_AT]),
 		KEY_SAVED_AT_TEXT: DictRead.as_string(document[KEY_SAVED_AT_TEXT]),
+		KEY_NAME: DictRead.as_string(document.get(KEY_NAME, "")),
 		"has_mission": DictRead.as_int(parsed["mission_size"]) > 0}
 
 

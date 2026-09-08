@@ -171,3 +171,14 @@ func _has_block(key: String) -> bool:
 func scroll(lines: float) -> void:
 	if _text != null:
 		_text.scroll_by(lines)
+
+
+## **The one scrolling thing here that is not a list of rows**, and the reason
+## it is wired at all: `scroll` had no caller in the whole project, so the six
+## overlong `A0` blocks it exists for could not be read past the box.
+func scrolls() -> bool:
+	return _text != null
+
+
+func step_rows(rows: int) -> void:
+	scroll(float(rows))

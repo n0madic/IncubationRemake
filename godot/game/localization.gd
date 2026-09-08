@@ -102,6 +102,11 @@ const OWN: Dictionary = {
 	"shell.language": {"English": "Language"},
 	"shell.campaign": {"English": "Campaign %d"},
 	"shell.slot": {"English": "Slot %d"},
+	# The name field of the save screen. The original never says it because
+	# its rows are eight pictures and it has no field at all.
+	"shell.name_hint": {
+		"English": "pick a slot, type a name and press Enter"},
+	"shell.name_over": {"English": "overwriting  %s"},
 	"shell.on": {"English": "on"},
 	"shell.off": {"English": "off"},
 	"shell.no_mission": {"English": "between missions"},

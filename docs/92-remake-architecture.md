@@ -1338,24 +1338,82 @@ The six decisions, referred to by these labels from the code:
 
 | | Decision |
 | --- | --- |
-| **S1** | Saves are **eight numbered slots** with metadata, plus a separate quick save on `F5`/`F9`. |
+| **S1** | Saves are **24 numbered slots**, paged twelve at a time and each nameable, with metadata, plus a separate quick save on `F5`/`F9`. |
 | **S2** | Options carry **only what is actually connected**; §7.1 makes an inert control a defect of the remake's own. |
 | **S3** | The layout is the remake's own, built on `CampaignScreen` — the same plates, font, `buttons.LIB` faces and localisation seam. |
 | **S4** | The intro (`Video/Seq_1`, logical id 0) is a **named empty step**, `_play_intro()`, for the sequence player to fill. |
 | **S5** | Direct entry to a level is **kept and supported**, not a side effect: `--mission=`, the new `--campaign=`, and the outside driver (the agent server since §7.16). |
 | **S6** | The authority for difficulty is `CampaignState.difficulty`; `GameSettings` holds only the default for the next campaign. |
 
-**Eight numbered slots, and the quick save is not one of them.** `F5`/`F9` keep
-a file of their own beside the eight, so a reflex quick save cannot cost the
-player a slot they meant to keep. A row is built from
+**Twenty-four numbered slots, and the quick save is not one of them.** `F5`/`F9`
+keep a file of their own beside them, so a reflex quick save cannot cost the
+player a slot they meant to keep. It was eight — which is what `aLoad.cpp`'s
+own screen holds — and the shipped screen is a picture of eight rows where this
+one is a listbox, so the count is the remake's to choose; a campaign of 75
+missions is long enough to want more than one save per chapter, and an unwritten
+slot costs nothing at all. Twelve fit between the list's origin and the action
+row, and the rest are **paged** by the listbox's own two arrows, exactly as
+*Instant Action* pages its 92 missions — a shipped listbox has no scroll bar.
+The ceiling is not a round number: `HudTables.SLOT_UNDO_MISSION`, `SLOT_REMIND`
+and `SLOT_UNDO_TURN` are 31, 32 and 33 and write files in the same directory,
+so the numbered slots stop below them or an autosave becomes a row the player
+can load by surprise and overwrite by accident.
+A row is built from
 `CampaignCodec.decode_header`, which reads the campaign, the mission, the score
 and the stamp without unrolling the roster, the scoreboard or the mission blob:
-eight rows must not cost eight campaigns. A slot this build cannot read is
+a page of rows must not cost a page of campaigns, and only the twelve on show
+are read at all. A slot this build cannot read is
 **shown carrying its refusal**, never hidden — a save that vanished because the
 schema moved would look exactly like a slot the player never used, which is
 §7.4's rule applied to a list. Refusals are always named through the codec that
 issued them, because `CampaignCodec.Result` and `SaveCodec.Result` do not agree
 numerically: `TRUNCATED` is 3 in the first and 1 in the second.
+
+**Every list turns under the wheel and under a trackpad.** The shipped screens
+are paged by a listbox's own two arrows -- there is no scroll bar in the
+original anywhere -- and those arrows are kept, turning a whole page as they
+always did. Beside them `CampaignScreen.scroll_rows_for` answers the wheel and
+the pan gesture, one **row** a notch, because a wheel that jumped a page would
+be a different control wearing the same input. It is the sibling of
+`SliceMain.zoom_delta_for` and is pure and static for the same reason: a
+`WHEEL_UP`/`WHEEL_DOWN` mouse and a macOS trackpad send different event
+classes, and a list answering only the first looks unscrollable on exactly the
+hardware this is developed on. A pan too small to have moved a row is carried
+rather than dropped, so a slow drag still moves. Four screens answer:
+*Instant Action*'s catalogue, the save slots, the HQ roster and the briefing's
+text box -- whose `scroll` had **no caller in the project at all**, so the six
+overlong `A0` blocks it exists for could not be read past the box. A screen
+answers only when it has more than a page to show, and the default is **no**:
+the location map and the deployment screen are drawn around a hole and the
+wheel there is the camera's zoom, which a list stealing the event would have
+taken away. The map's no-picture fallback list is deliberately left out — it
+exists only for a cache published without `--campaign-maps`, it holds one row
+per open location, and it is on the screen whose wheel is the zoom.
+
+**A save is named before it is written**, which is the one thing on this screen
+the original's own does not do — its rows are eight pictures and it has no
+field. Clicking a row in save mode opens a `LineEdit` on that row rather than
+writing at once; `Enter` writes, an empty field writes the row the screen would
+have shown anyway (the campaign, the mission, the score and the stamp), and
+leaving the field **cancels**. Cancelling and not committing is the whole
+difference from the Upgrade Menu's rename box: a rename can be undone by typing
+again, and a save overwrites a file. The name rides in the container's
+document beside the stamp and **not** in `CampaignState`, which is digested —
+so naming a slot cannot move the campaign's own hash. `CampaignCodec`'s
+`SCHEMA_VERSION` deliberately stays at **2** for it: the version is there to
+refuse a container this build cannot *read*, a document without the key is a
+save with no name, and bumping it would have thrown away every slot a player
+already had to gain nothing.
+
+**The map's *Save game* opens this screen.** It used to write the quick save
+and say nothing at all — the one file `F9` overwrites without asking — so the
+button the campaign map offers for saving looked broken *and* cost the player
+whatever `F5` had put there. It goes into the shell over the map exactly as the
+map's *Options* button does, and `Back` from it returns to the map because
+`ShellHost.entry` is the screen the shell was opened at. The world it writes is
+gated on `SliceMain.in_mission()` and not on `world != null`: the map stands
+over the **last** mission's view and that world is still in memory, so a
+between-missions save used to carry a finished mission's blob.
 
 **Only connected options exist.** The original has eight option icons and
 `Txtmod_h` 50–58 are their hover hints. Four of them — the speaker position,

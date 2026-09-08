@@ -245,6 +245,18 @@ func pick(slot: int) -> void:
 
 
 ## The two arrows, `0x00478630`'s list stepped by one row.
+func scrolls() -> bool:
+	return host != null and host.state != null \
+		and host.state.roster.occupied_slots().size() > LIST_ROWS
+
+
+## The wheel. This list's arrows already step a row at a time -- `0x00478A20`
+## adds and subtracts one -- so the two controls agree here and the wheel is
+## simply another way to press them.
+func step_rows(rows: int) -> void:
+	scroll(rows)
+
+
 func scroll(by: int) -> void:
 	first_row += by
 	refresh()

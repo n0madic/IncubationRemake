@@ -44,6 +44,7 @@ func run(h: TestHarness) -> void:
 	_slot_files(h)
 	_slot_round_trip(h)
 	_screens(h)
+	_scrolling(h)
 	_deploy_screen(h)
 	_map_picture(h)
 	_projection(h)
@@ -174,9 +175,15 @@ func _host_transitions(h: TestHarness) -> void:
 	h.equal("host.unknown_screen_is_refused", shell.screen,
 		ShellHost.SCREEN_SLOTS, "a name this build has no screen for")
 
+	# The page the slot list stands on is the host's, because the screen is
+	# rebuilt after a write and would otherwise send the list back to the
+	# first page with the row it had just written off it.
+	shell.slot_page = SaveSlotsScreen.LIST_ROWS
 	shell.close()
 	h.check("host.close_clears_both",
 		not shell.is_up() and not shell.behind)
+	h.equal("host.closing_forgets_the_page", shell.slot_page, 0,
+		"a shell opened again opens at the top of the list")
 
 	# **The boot menu has nothing behind it**, so leaving it must not be a
 	# way to leave the game drawing nothing at all: `ESC` used to take the
@@ -329,7 +336,125 @@ func _settings_apply(h: TestHarness) -> void:
 		"level %d" % world.turn.ai_level)
 
 
-# --- the eight slots ---------------------------------------------------------
+# --- the wheel and the trackpad ----------------------------------------------
+
+## Every list in the shell turns under the wheel, and under a trackpad.
+##
+## [method CampaignScreen.scroll_rows_for] is pure and static for the same
+## reason [method SliceMain.zoom_delta_for] is: the wheel worked and the
+## trackpad did not, and the difference is which event class the platform
+## sends -- which cannot be checked by clicking on it.
+func _scrolling(h: TestHarness) -> void:
+	h.equal("scroll.wheel_up_is_one_row_back",
+		CampaignScreen.scroll_rows_for(_wheel(MOUSE_BUTTON_WHEEL_UP)), -1.0)
+	h.equal("scroll.wheel_down_is_one_row_on",
+		CampaignScreen.scroll_rows_for(_wheel(MOUSE_BUTTON_WHEEL_DOWN)), 1.0)
+	h.equal("scroll.a_release_is_not_a_notch",
+		CampaignScreen.scroll_rows_for(_wheel(MOUSE_BUTTON_WHEEL_DOWN,
+			false)), 0.0,
+		"a wheel sends a press and a release; two notches for one turn would "
+		+ "be twice the list")
+	h.equal("scroll.a_click_is_not_a_notch",
+		CampaignScreen.scroll_rows_for(_wheel(MOUSE_BUTTON_LEFT)), 0.0)
+	h.equal("scroll.a_key_is_not_a_notch",
+		CampaignScreen.scroll_rows_for(InputEventKey.new()), 0.0)
+	# The trackpad, which is the half that was missing everywhere.
+	h.equal("scroll.a_pan_is_metered",
+		CampaignScreen.scroll_rows_for(_pan(2.0)),
+		2.0 * CampaignScreen.PAN_ROWS,
+		"pan deltas arrive in lines and a flick sends many")
+	h.equal("scroll.a_pan_back_is_the_other_way",
+		CampaignScreen.scroll_rows_for(_pan(-2.0)),
+		-2.0 * CampaignScreen.PAN_ROWS)
+
+	# **A screen with no list must not take the event**, which is what keeps
+	# the camera's zoom on the two screens drawn around a hole.
+	var map: CampaignMapScreen = CampaignMapScreen.new()
+	h.check("scroll.the_map_keeps_the_zoom", not map.scrolls(),
+		"the wheel over the location map is `zoom_delta_for`'s, not a list's")
+	h.check("scroll.the_map_takes_no_notch",
+		not map.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_DOWN)))
+	map.free()
+
+	var deploy: SelectUnitsScreen = SelectUnitsScreen.new()
+	h.check("scroll.the_deployment_keeps_the_zoom", not deploy.scrolls())
+	deploy.free()
+
+	# A list shorter than a page has nothing to turn, and answering the wheel
+	# for it would be an inert control (section 7.1).
+	var short: MissionSelectScreen = MissionSelectScreen.new()
+	short.missions = PackedStringArray(["_C_140", "_C_141"])
+	short.setup(_art, _strings, _font)
+	h.check("scroll.a_list_that_fits_does_not_scroll", not short.scrolls())
+	short.free()
+
+	var long: MissionSelectScreen = MissionSelectScreen.new()
+	var names: PackedStringArray = PackedStringArray()
+	for index: int in range(MissionSelectScreen.LIST_ROWS * 3):
+		names.append("_C_%03d" % index)
+	long.missions = names
+	long.setup(_art, _strings, _font)
+	h.check("scroll.a_longer_list_scrolls", long.scrolls())
+	h.check("scroll.one_notch_is_one_row",
+		long.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_DOWN))
+		and long.first_row == 1,
+		"the arrows turn a page and the wheel turns a row -- two controls, "
+		+ "two steps; got %d" % long.first_row)
+	# **A pan too small to move a row is still taken and still remembered.**
+	# Dropping each one made a slow trackpad drag do nothing at all, and
+	# letting it through would have zoomed the camera behind the plate.
+	var moved: bool = false
+	for _step: int in range(3):
+		moved = long.take_scroll(_pan(0.8)) or moved
+	h.equal("scroll.a_slow_pan_accumulates", [moved, long.first_row],
+		[true, 2], "three tenths of a row short of two is still one row")
+	# Both ends hold: a list cannot be turned past itself.
+	for _back: int in range(20):
+		var _up: bool = long.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_UP))
+	h.equal("scroll.the_top_holds", long.first_row, 0)
+	for _on: int in range(60):
+		var _down: bool = long.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_DOWN))
+	h.equal("scroll.the_end_holds", long.first_row,
+		names.size() - MissionSelectScreen.LIST_ROWS)
+	long.free()
+
+	# The save screen turns the same way, and closes an open field when it
+	# does -- the field belongs to a row that is about to be somewhere else.
+	var slots: SaveSlotsScreen = SaveSlotsScreen.new()
+	slots.host = _host("scrolling")
+	var _campaign: CampaignState = slots.host.start_new(1, 1)
+	slots.mode = ShellHost.MODE_SAVE
+	slots.may_save = true
+	slots.setup(_art, _strings, _font)
+	slots.begin_naming(2)
+	var _turned: bool = slots.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_DOWN))
+	h.equal("scroll.a_turn_closes_the_name_field",
+		[slots.first_row, slots.naming], [1, -1])
+	slots.free()
+
+	# The briefing is the one scrolling thing here that is not rows, and its
+	# `scroll` had **no caller at all** before the wheel reached it: the six
+	# overlong `A0` blocks could not be read past the box.
+	var brief: BriefingScreen = BriefingScreen.new()
+	h.check("scroll.a_briefing_with_no_box_does_not_scroll", not brief.scrolls(),
+		"before `build`, there is no text to turn")
+	brief.free()
+
+
+static func _wheel(button: int, pressed: bool = true) -> InputEventMouseButton:
+	var event: InputEventMouseButton = InputEventMouseButton.new()
+	event.button_index = button as MouseButton
+	event.pressed = pressed
+	return event
+
+
+static func _pan(delta_y: float) -> InputEventPanGesture:
+	var event: InputEventPanGesture = InputEventPanGesture.new()
+	event.delta = Vector2(0.0, delta_y)
+	return event
+
+
+# --- the numbered slots ------------------------------------------------------
 
 ## A host writing into its own corner of the scratch directory.
 ##
@@ -349,9 +474,17 @@ func _slot_files(h: TestHarness) -> void:
 		host.slot_path(0).begins_with(SCRATCH_DIR),
 		"a suite must not write where a player's game is: %s"
 			% host.slot_path(0))
-	h.check("slots.quick_is_not_one_of_the_eight",
+	h.check("slots.quick_is_not_one_of_the_numbered",
 		host.slot_path(CampaignHost.QUICK_SLOT) != host.slot_path(0),
 		"F5 must not cost a slot the player meant to keep")
+	# **Nor is any of the interface's three.** *Remember position*, *Undo
+	# turn* and *Undo mission* write files in this same directory, and a slot
+	# count that reached them would put an autosave on the list as a row the
+	# player could load by surprise and overwrite by accident.
+	h.check("slots.reserved_autosaves_are_off_the_list",
+		CampaignHost.SLOT_COUNT <= mini(HudTables.SLOT_UNDO_MISSION,
+			mini(HudTables.SLOT_REMIND, HudTables.SLOT_UNDO_TURN)),
+		"the numbered slots stop below 31/32/33")
 
 	for slot: int in range(CampaignHost.SLOT_COUNT):
 		h.check("slots.%d_starts_empty" % slot, not host.has_save(slot), "")
@@ -392,6 +525,48 @@ func _slot_files(h: TestHarness) -> void:
 	h.equal("slots.header_carries_the_stamp",
 		DictRead.as_int(header[CampaignCodec.KEY_SAVED_AT]),
 		DictRead.as_int(stamp["when"]))
+	h.equal("slots.unnamed_save_has_an_empty_name",
+		DictRead.as_string(header[CampaignCodec.KEY_NAME]), "",
+		"a save nobody named is not a save called something")
+
+	# The name the player typed rides in the container's document, not in
+	# `CampaignState`: the campaign's own digest must not move because a slot
+	# was called something.
+	var before: String = host.state.digest_hex()
+	h.check("slots.named_written", host.save(null, 6,
+		DictRead.as_int(stamp["when"]),
+		DictRead.as_string(stamp["when_text"]), {}, {}, "Before the bridge"))
+	h.equal("slots.named_header_reads_it",
+		DictRead.as_string(host.slot_header(6)[CampaignCodec.KEY_NAME]),
+		"Before the bridge")
+	h.equal("slots.naming_moves_no_campaign_state",
+		host.state.digest_hex(), before,
+		"the name is the container's, so the campaign's digest cannot move")
+	h.equal("slots.decode_carries_the_name",
+		DictRead.as_string(host.load_save(6)[CampaignCodec.KEY_NAME]),
+		"Before the bridge")
+
+	# **Schema 2 stays schema 2.** A container written before the field
+	# existed carries no such key and is a save with no name, not a refusal:
+	# the version is there to refuse what this build cannot read, and bumping
+	# it for an additive field would have thrown away every slot a player
+	# already has.
+	var written_bytes: PackedByteArray = FileAccess.get_file_as_bytes(
+		host.slot_path(6))
+	var document: Dictionary = _document_of(written_bytes)
+	h.check("slots.document_is_readable_from_the_file",
+		document.has(CampaignCodec.KEY_NAME))
+	document.erase(CampaignCodec.KEY_NAME)
+	var out_older: FileAccess = FileAccess.open(host.slot_path(7),
+		FileAccess.WRITE)
+	out_older.store_buffer(_container(document))
+	out_older.close()
+	var nameless: Dictionary = host.slot_header(7)
+	h.equal("slots.document_without_the_key_is_read",
+		[DictRead.as_int(nameless["result"]),
+		DictRead.as_string(nameless[CampaignCodec.KEY_NAME])],
+		[CampaignCodec.Result.OK, ""],
+		"an additive field cannot cost a player the slots they already have")
 
 	# A slot this build cannot read is shown carrying its refusal, not hidden:
 	# a save that vanished because the schema moved would look exactly like a
@@ -626,14 +801,33 @@ func _screens(h: TestHarness) -> void:
 	slots.host = host
 	slots.mode = ShellHost.MODE_LOAD
 	slots.setup(_art, _strings, _font)
-	h.equal("screens.eight_slots", _actions_of(slots).size(),
-		CampaignHost.SLOT_COUNT + 1, "eight rows and the way out")
+	# One page of rows, the way out, and the listbox's own two arrows -- the
+	# count is 24 and a shipped listbox is paged rather than scrolled.
+	h.equal("screens.one_page_of_slots", _actions_of(slots).size(),
+		SaveSlotsScreen.LIST_ROWS + 3,
+		"twelve rows, the way out and the two arrows")
+	h.check("screens.slots_are_paged",
+		CampaignHost.SLOT_COUNT > SaveSlotsScreen.LIST_ROWS
+		and _sorted(_actions_of(slots)).has("scroll_down"),
+		"a list longer than a page carries the arrows that turn it")
 	var rows: PackedStringArray = _button_labels_of(slots)
 	h.check("screens.empty_slot_is_txtmod_f_1",
 		_any_ends_with(rows, _strings.shipped("Txtmod_f", 1)), str(rows))
 	h.check("screens.empty_row_refuses_a_load",
-		_disabled_count(slots) == CampaignHost.SLOT_COUNT,
+		_disabled_count(slots) == SaveSlotsScreen.LIST_ROWS,
 		"there is nothing behind an empty row, so it is refused at the row")
+	# The second page is the slots the first one does not reach, and its rows
+	# are still rows: a paged list that lost its actions would offer the
+	# player twelve of the twenty-four.
+	slots.scroll(1)
+	h.equal("screens.second_page_is_the_rest", _actions_of(slots).size(),
+		mini(CampaignHost.SLOT_COUNT - SaveSlotsScreen.LIST_ROWS,
+			SaveSlotsScreen.LIST_ROWS) + 3)
+	h.check("screens.second_page_names_a_later_slot",
+		_joined(slots).contains(_strings.text("shell.slot")
+			% (SaveSlotsScreen.LIST_ROWS + 1)),
+		"the arrows turn a page, they do not scroll a row")
+	slots.scroll(-1)
 	_no_missing(h, "slots_load", slots)
 	slots.free()
 
@@ -646,6 +840,34 @@ func _screens(h: TestHarness) -> void:
 	h.check("screens.save_mode_is_titled_save",
 		_labels_of(saving).has(_strings.shipped("Txtmod_f", 11)),
 		"`Txtmod_f` 11, not 10 -- one screen, two modes")
+	# **A row in save mode names the save before it writes it.** The click
+	# opens the field; nothing is emitted until the field is submitted, which
+	# is what stops a click meant for one row overwriting it unnamed.
+	var emitted: Array[String] = []
+	saving.chose.connect(func(action: String) -> void: emitted.append(action))
+	saving._on_pressed("slot:3")
+	h.equal("screens.save_click_opens_the_field", [saving.naming, emitted],
+		[3, []], "the write waits for the name")
+	saving.commit_name(3, "  Before the bridge  ")
+	h.equal("screens.submitted_name_is_trimmed_and_emitted",
+		[saving.typed_name, emitted, saving.naming],
+		["Before the bridge", ["slot:3"], -1])
+	saving.begin_naming(4)
+	saving.cancel_name()
+	h.equal("screens.leaving_the_field_cancels",
+		[saving.naming, saving.typed_name, emitted.size()], [-1, "", 1],
+		"a save is a write over a file, so an abandoned field writes nothing")
+	# The one link between the field and the file, which the rest of the path
+	# only exercises with a whole `SliceMain` on a tree.
+	saving.typed_name = "After the lift"
+	h.equal("screens.the_writer_reads_the_field",
+		SliceMain.slot_name_of(saving), "After the lift")
+	var other: CampaignScreen = MissionSelectScreen.new()
+	h.equal("screens.another_screen_names_nothing",
+		[SliceMain.slot_name_of(other), SliceMain.slot_name_of(null)],
+		["", ""],
+		"a cast that answered a name for any screen would name the wrong one")
+	other.free()
 	_no_missing(h, "slots_save", saving)
 	saving.free()
 
@@ -1192,9 +1414,13 @@ func _labels_of(node: Node) -> PackedStringArray:
 		var button: Button = child as Button
 		if button != null:
 			out.append(button.text)
-		# A `LineEdit` would have to be added here too -- the gate reads what
-		# it knows about, and a field it does not know about is a caption it
-		# never checks. Nothing in the shell has one, deliberately.
+		# **A `LineEdit` counts too.** The gate reads what it knows about, and
+		# a field it does not know about is a caption it never checks -- the
+		# save screen's name box carries the row it would have written as its
+		# placeholder, which is a string like any other.
+		var field: LineEdit = child as LineEdit
+		if field != null:
+			out.append(field.placeholder_text)
 		out.append_array(_labels_of(child))
 	return out
 
@@ -1268,3 +1494,38 @@ func _remove_tree(path: String) -> void:
 	for sub: String in dir.get_directories():
 		_remove_tree(path + "/" + sub)
 	var _dropped: Error = DirAccess.remove_absolute(path)
+
+
+## The JSON document out of a container [CampaignCodec] wrote.
+##
+## The framing is magic, schema, the two lengths, the document, the blob and
+## the digest -- so the document starts at 16 and runs for the length at 8.
+func _document_of(data: PackedByteArray) -> Dictionary:
+	var size: int = data.decode_s32(8)
+	var parsed: Variant = JSON.parse_string(
+		data.slice(16, 16 + size).get_string_from_utf8())
+	return parsed if parsed is Dictionary else {}
+
+
+## A container carrying *document* and no mission blob, framed and digested
+## the way [method CampaignCodec.encode] frames one.
+##
+## It exists to build a save this build did **not** write -- a schema-2
+## document without the name key, which is what every slot a player already
+## has looks like. Nothing else may use it: a test that encoded its own
+## containers would stop checking the codec.
+func _container(document: Dictionary) -> PackedByteArray:
+	var text: PackedByteArray = JSON.stringify(document, "", true,
+		true).to_utf8_buffer()
+	var body: PackedByteArray = PackedByteArray()
+	body.append_array(PackedInt32Array([CampaignCodec.SCHEMA_VERSION,
+		text.size(), 0]).to_byte_array())
+	body.append_array(text)
+	var out: PackedByteArray = CampaignCodec.MAGIC.to_utf8_buffer()
+	out.append_array(body)
+	var ctx: HashingContext = HashingContext.new()
+	var started: Error = ctx.start(HashingContext.HASH_SHA256)
+	assert(started == OK)
+	ctx.update(body)
+	out.append_array(ctx.finish())
+	return out

@@ -33,8 +33,8 @@ const SCREEN_OPTIONS: String = "options"
 const SCREENS: Array[String] = [SCREEN_MENU, SCREEN_CAMPAIGN_SELECT,
 	SCREEN_MISSION_SELECT, SCREEN_SLOTS, SCREEN_OPTIONS]
 
-## What the slot screen is for this time. The eight rows are the same eight
-## either way; what changes is what clicking one does, and a screen that could
+## What the slot screen is for this time. The rows are the same rows either
+## way; what changes is what clicking one does, and a screen that could
 ## do both from one row would sooner or later overwrite a save with a click
 ## meant to load it.
 const MODE_LOAD: String = "load"
@@ -50,6 +50,13 @@ var screen: String = SCREEN_NONE
 ## only on `ESC`.
 var entry: String = SCREEN_MENU
 var slot_mode: String = MODE_LOAD
+## The first row of the slot list on show.
+##
+## Here and not on the screen, because the screen is **rebuilt** after a write
+## -- so a save taken on the third page used to send the list back to the
+## first, where the row that had just been written was not, and the one piece
+## of feedback the screen gives about where a save landed was off the page.
+var slot_page: int = 0
 ## True while there is **something behind the shell** -- a running mission, or
 ## a campaign whose map the shell was raised over. It decides one thing only:
 ## what leaving the shell does, go back to what was there or stay on the menu
@@ -78,6 +85,7 @@ func close() -> void:
 	screen = SCREEN_NONE
 	entry = SCREEN_MENU
 	behind = false
+	slot_page = 0
 
 
 ## Move to another shell screen without leaving the shell.
@@ -111,4 +119,4 @@ func back_from(name: String) -> String:
 
 func view() -> Dictionary:
 	return {"screen": screen, "entry": entry, "slot_mode": slot_mode,
-		"behind": behind}
+		"slot_page": slot_page, "behind": behind}

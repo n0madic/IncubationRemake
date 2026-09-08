@@ -243,6 +243,93 @@ func build() -> void:
 	pass
 
 
+# --- the wheel and the trackpad -----------------------------------------------
+
+## How far one trackpad pan moves a list, in rows per unit of `delta.y`.
+##
+## Pan deltas arrive in "lines" and a flick sends many, so a notch of the wheel
+## is one row and a pan is metered: a slow drag of about a row's height comes
+## to about a row.
+const PAN_ROWS: float = 0.5
+
+## What is left of a pan too small to have moved a row yet. A trackpad sends
+## many small deltas and dropping each one made a slow drag do nothing at all.
+var _scroll_carry: float = 0.0
+
+
+## How many list rows one input turns -- positive **downwards**, towards the
+## end of the list -- or zero when it is not a scroll input.
+##
+## The sibling of [method SliceMain.zoom_delta_for], written the same way and
+## for the same reason: pure and static so it can be checked without a scene
+## tree, and covering the event classes the platform actually sends. A wheel
+## mouse sends `WHEEL_UP`/`WHEEL_DOWN`; a macOS trackpad and a Magic Mouse send
+## a pan gesture instead, and a list that answered only the first looked
+## unscrollable on exactly the hardware this is developed on.
+##
+## **The pan's sign is taken from the measurement already in the tree**, not
+## reasoned about again: [method SliceMain.zoom_delta_for] records that two
+## fingers pushed away from the body zoom *in*, and it computes that from
+## `-delta.y`, so a push away is a **positive** `delta.y` on this hardware.
+## Under macOS's natural scrolling a push away shows later rows, so `delta.y`
+## is taken as it comes. The same routine's comment records that the derived
+## sign was wrong the first time; this one is derived from its measurement
+## rather than from the platform's documentation, which is the nearest thing
+## to measuring it without a second pair of hands on the trackpad.
+static func scroll_rows_for(event: InputEvent) -> float:
+	if event is InputEventMouseButton:
+		var click: InputEventMouseButton = event
+		if not click.pressed:
+			return 0.0
+		if click.button_index == MOUSE_BUTTON_WHEEL_UP:
+			return -1.0
+		if click.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			return 1.0
+		return 0.0
+	if event is InputEventPanGesture:
+		var pan: InputEventPanGesture = event
+		return pan.delta.y * PAN_ROWS
+	return 0.0
+
+
+## Whether this screen carries a list the wheel turns.
+##
+## **The default is no, and that is what keeps the camera's zoom.** The map and
+## the deployment screen are drawn around a hole and the wheel there is
+## [method SliceMain.zoom_delta_for]'s; a screen that took the event because it
+## happened to have rows on it would have made the map unzoomable.
+func scrolls() -> bool:
+	return false
+
+
+## Turn one scroll input into whole rows and move the list by them.
+##
+## Answers whether the event was this screen's to take. A pan too small to have
+## moved a row yet is still taken -- letting it through would zoom the camera
+## behind the plate a fraction of a step at a time.
+func take_scroll(event: InputEvent) -> bool:
+	if not scrolls():
+		return false
+	var rows: float = scroll_rows_for(event)
+	if is_zero_approx(rows):
+		return false
+	_scroll_carry += rows
+	# Truncation toward zero, which is what a carry wants on both signs.
+	var whole: int = int(_scroll_carry)
+	_scroll_carry -= float(whole)
+	if whole != 0:
+		step_rows(whole)
+	return true
+
+
+## Move the list by *rows*, positive towards its end. Overridden by the screens
+## that have one; **one row at a time**, where the shipped listbox's two arrows
+## turn a whole page -- a wheel notch that jumped a page would be a different
+## control.
+func step_rows(_rows: int) -> void:
+	pass
+
+
 ## Whether a click inside [method plate_window] means something to this screen.
 ##
 ## The two screens drawn around a hole answer yes, and [SliceMain] then turns
@@ -479,7 +566,7 @@ func add_button(action: String, module: String, id: int,
 ## A button for the screen's **body** rather than for the action row at the
 ## bottom.
 ##
-## The shell's screens are lists -- a menu of five, eight save slots, a
+## The shell's screens are lists -- a menu of five, a page of save slots, a
 ## catalogue of missions -- and a list is not what [member _buttons] is: that
 ## one is a centred row of at most a handful. The caption is passed in already
 ## resolved, because a list row is usually a shipped string with a number or a
@@ -502,23 +589,37 @@ func make_button(action: String, text: String) -> Button:
 ## Put the shipped face on a button the moment something decides how wide it
 ## is -- a container, a list's own placement, or the action row.
 ##
-## **Once.** Dressing does not change the rectangle, so there is no loop, but a
-## screen that is rebuilt keeps its buttons and the meta stops a second pass
-## composing the same face again. A `flat` button opts out: the grids' click
-## targets are text rows in the original too, not gadgets.
+## **Not once -- once per width.** The meta holds the piece count the face was
+## composed at, and a resize that would compose a different one dresses again.
+##
+## A latch on the *first* call was a real defect, and only on a screen that
+## rebuilds itself: [method MainMenuScreen._show_actions] adds its buttons and
+## places them afterwards, which off the tree is one layout pass with the
+## anchors already set and **on** the tree is two -- the first at the caption's
+## own minimum width. *No* measures some 25 plate units, which is narrower than
+## the two caps, so the face composed for it was `27 + 18` with no fill at all;
+## the nine-slice then smeared that zero-width middle across the button's real
+## 190 units, and the confirmation dialogue's two answers were a pair of caps
+## with a stripe between them. Nothing re-dressed, because the latch had
+## already been set at the wrong size.
+##
+## Re-dressing cannot oscillate: [method _face_box]'s content margins are the
+## two caps whatever the piece count is, so a wider face does not make the
+## button's minimum wider. A `flat` button opts out: the grids' click targets
+## are text rows in the original too, not gadgets.
 const DRESSED: StringName = &"dressed"
 
 
 func _dress_when_sized(button: Button) -> void:
 	if button.flat or art == null or _root == null or _root.size.x <= 0.0:
 		return
-	if button.has_meta(DRESSED):
+	# The button's rectangle is in the canvas's units and the face is measured
+	# in the plate's, which is what the root spans.
+	var pieces: int = face_pieces(button.size.x * PLATE_SIZE.x / _root.size.x)
+	if pieces < 0 or DictRead.as_int(button.get_meta(DRESSED, -1)) == pieces:
 		return
-	button.set_meta(DRESSED, true)
-	# The button's rectangle is in the canvas's units and `dress_button` wants
-	# the plate's, which is what the root spans.
-	var _face: float = dress_button(button,
-		button.size.x * PLATE_SIZE.x / _root.size.x)
+	button.set_meta(DRESSED, pieces)
+	var _face: float = _face_onto(button, pieces)
 
 
 ## A translucent backing over *area*, so text drawn across the 3D window can
@@ -784,8 +885,21 @@ func gui_list_row(action: String, text: String, at: Vector2, width: int,
 ## stretched to the share.
 func dress_button(button: Button, span: float,
 		base: int = Art.BUTTON_BASE_ACTION) -> float:
-	if art == null:
+	var pieces: int = face_pieces(span, base)
+	if pieces < 0:
 		return span
+	return _face_onto(button, pieces, base)
+
+
+## How many pieces the widest face that fits *span* plate units is made of, or
+## -1 when the cache carries no such library.
+##
+## Its own function because [method _dress_when_sized] has to ask the question
+## without answering it: dressing again at the width it is already wearing
+## would compose the same picture on every layout pass.
+func face_pieces(span: float, base: int = Art.BUTTON_BASE_ACTION) -> int:
+	if art == null:
+		return -1
 	var left: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
 		base + Art.BUTTON_LEFT)
 	var right: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
@@ -793,10 +907,10 @@ func dress_button(button: Button, span: float,
 	var fill: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
 		base + Art.BUTTON_MIDDLE)
 	if left == null or right == null or fill == null or fill.get_width() <= 0:
-		return span
+		return -1
 	var caps: float = left.get_size().x + right.get_size().x
 	var fills: int = floori((span - caps) / float(fill.get_width()))
-	return _face_onto(button, maxi(fills, 0) + 2, base)
+	return maxi(fills, 0) + 2
 
 
 ## Dress *button* in the composed `buttons.LIB` face and answer how wide it is.

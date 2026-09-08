@@ -78,3 +78,14 @@ func refresh() -> void:
 func scroll(by: int) -> void:
 	first_row += by * LIST_ROWS
 	refresh()
+
+
+func scrolls() -> bool:
+	return missions.size() > LIST_ROWS
+
+
+## The wheel, one row at a time -- the arrows turn a page and the wheel does
+## not, which is the difference between the two controls.
+func step_rows(rows: int) -> void:
+	first_row += rows
+	refresh()
