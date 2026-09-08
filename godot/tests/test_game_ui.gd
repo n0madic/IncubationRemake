@@ -227,9 +227,9 @@ func _pickup_message(h: TestHarness) -> void:
 	var made_up: InfoText = InfoText.new()
 	made_up.read({"schema": InfoText.SCHEMA,
 		"blocks": {"ZZ": [{"text": "second", "font": 0, "colour": 0,
-			"break_before": false}],
+			"breaks": 0}],
 			"AA": [{"text": "first", "font": 1, "colour": 1,
-				"break_before": false}]},
+				"breaks": 0}]},
 		"pickups": [{"action_point": 42, "label": "ZZ", "speech": 9},
 			{"action_point": 11, "label": "AA", "speech": -1}]})
 	h.equal("info.the_reader_keeps_the_pairing",
@@ -2008,26 +2008,66 @@ func _campaign_screens(h: TestHarness) -> void:
 	_no_missing_strings(h, "map", map)
 	map.free()
 
-	var hq: HqScreen = HqScreen.new()
-	hq.host = host
-	hq.setup(art, strings, font)
-	h.check("screens.hq_rows", hq.body().get_child_count() >= 4,
+	# --- the Unit Menu, docs/27 section 3 -------------------------------------
+	var roster: UnitMenuScreen = UnitMenuScreen.new()
+	roster.host = host
+	roster.setup(art, strings, font)
+	h.check("screens.unit_menu_rows", roster.root().get_child_count() > 0,
 		"%d in the squad" % state.roster.used_slots())
-	_no_missing_strings(h, "hq", hq)
+	_no_missing_strings(h, "unit_menu", roster)
 	# A row addresses the record, not the position: after a sort the slot the
 	# screen remembers still names the same soldier (docs/29 section 1.4).
-	hq.selected = 2
+	roster.selected = 2
 	var before: String = state.roster.record(2).name
 	state.roster.sort_by_ep()
-	hq.refresh()
-	h.equal("screens.hq_addresses_a_record",
-		state.roster.record(hq.selected).name, before,
+	roster.refresh()
+	h.equal("screens.unit_menu_addresses_a_record",
+		state.roster.record(roster.selected).name, before,
 		"the seed's three are all rank 1, so the sort leaves them alone")
-	hq.free()
+	# `plate_3` with the frame's window left clear -- the plate Mission Control
+	# loads once and this window does not replace.
+	h.equal("screens.unit_menu_plate",
+		[roster.plate_name(), roster.plate_window()],
+		[CampaignScreen.PLATE_MISSION_CONTROL, CampaignScreen.PLATE_WINDOW])
+	roster.free()
 
+	# --- the Item List, docs/27 section 5.2 -----------------------------------
+	var items: ItemListScreen = ItemListScreen.new()
+	items.host = host
+	items.slot = 0
+	items.setup(art, strings, font)
+	h.equal("screens.item_list_starts_on_weapons", items.kind,
+		CampaignHost.KIND_WEAPONS)
+	items.toggle()
+	h.equal("screens.item_list_toggles", items.kind,
+		CampaignHost.KIND_EQUIPMENT, "`Toggle List` is the one button that "
+		+ "changes what the window is a list of")
+	items.toggle()
+	_no_missing_strings(h, "item_list", items)
+	items.free()
+
+	# --- the Recruit window, docs/27 section 3.2 ------------------------------
+	var hiring: RecruitScreen = RecruitScreen.new()
+	hiring.host = host
+	hiring.setup(art, strings, font)
+	# `Info.lcl` declares unit types 0..3, so *Light Units* offers the four
+	# `Human Soldier` variants and *Commanders* -- base 40 -- offers nothing.
+	h.equal("screens.recruit_light_units", hiring.types_in(0).size(), 4,
+		"types 0..3 are the four `Human Soldier` records")
+	h.equal("screens.recruit_commanders_are_empty",
+		hiring.types_in(4).size(), 0,
+		"base 40 names no record the shipped table has")
+	h.check("screens.recruit_is_not_the_campaign_path",
+		not host.recruits_through_a_screen(),
+		"`0x0045B7F8` hires on the spot in game mode 1")
+	_no_missing_strings(h, "recruit", hiring)
+	hiring.free()
+
+	# --- the Upgrade Menu, docs/27 section 5 ----------------------------------
 	var upgrade: UpgradeScreen = UpgradeScreen.new()
 	upgrade.host = host
 	upgrade.setup(art, strings, font)
+	upgrade.select(0)
 	var weapons: Dictionary = host.catalogue("weapons")
 	var equipment: Dictionary = host.catalogue("equipment")
 	# The measured split at tech 1, which is the tech level a campaign has from
@@ -2035,10 +2075,230 @@ func _campaign_screens(h: TestHarness) -> void:
 	# level look like a working one.
 	h.equal("screens.catalogue_weapons",
 		[DictRead.as_array(weapons["available"]).size(),
-		DictRead.as_array(weapons["locked"]).size()], [14, 28])
+		DictRead.as_array(weapons["locked"]).size()], [5, 13])
 	h.equal("screens.catalogue_equipment",
 		[DictRead.as_array(equipment["available"]).size(),
 		DictRead.as_array(equipment["locked"]).size()], [7, 12])
+	# **Neither half carries a nameless record.** Both builders compare the
+	# record's name against the empty string before they look at the range
+	# (`0x0047A1DD`, `0x0047A0BD`), and weapon 35 -- a `SetWeaponInfo2` line
+	# with no `SetWeaponInfo` beside it -- is the one row in the shipped table
+	# that trips it. It used to be listed as available, at cost 0 with every
+	# stat zero -- and it is inside the id bound, so the name compare is the
+	# only thing that keeps it out of the 18 the two halves above add up to.
+	var nameless: PackedStringArray = PackedStringArray()
+	for kind: String in [CampaignHost.KIND_WEAPONS,
+			CampaignHost.KIND_EQUIPMENT]:
+		var halves: Dictionary = host.catalogue(kind)
+		for half: String in ["available", "locked"]:
+			for entry: Variant in DictRead.as_array(halves[half]):
+				var row: Dictionary = entry
+				if DictRead.as_string(row.get("name", "")) == "":
+					nameless.append("%s/%s/%d"
+						% [kind, half, DictRead.as_int(row["id"])])
+	h.equal("screens.catalogue_skips_the_nameless", nameless,
+		PackedStringArray(), "the empty-string compare at `0x004FA524`")
+	# **Nothing past the id bound, in either half.** `0x0047A18B` is the test
+	# that keeps the ten alien weapons, the eight `B`-variant duplicates and
+	# the `"-"` placeholder out of the shop; without it they listed as
+	# available at cost 0, drawn with the Light Combat Gun's own picture
+	# because every one of them carries icon 0.
+	var past: PackedStringArray = PackedStringArray()
+	for kind: String in [CampaignHost.KIND_WEAPONS,
+			CampaignHost.KIND_EQUIPMENT]:
+		var bound: int = CampaignHost.CATALOGUE_ID_MAX[kind]
+		var halves: Dictionary = host.catalogue(kind)
+		for half: String in ["available", "locked"]:
+			for entry: Variant in DictRead.as_array(halves[half]):
+				var row: Dictionary = entry
+				if DictRead.as_int(row["id"]) >= bound:
+					past.append("%s/%d" % [kind, DictRead.as_int(row["id"])])
+	h.equal("screens.catalogue_stops_at_the_bound", past,
+		PackedStringArray(), "weapons below 20, equipment below 21")
+	# The composed faces, which is `aPrintGadget`'s own arithmetic
+	# (`0x0043a4ab` normal, `0x0043a2ab` lit) rather than a measurement off a
+	# screenshot: left, then `Width - 2` fills, then right, edge to edge.
+	var action_face: Texture2D = art.button_face(Art.BUTTON_BASE_ACTION,
+		CampaignScreen.GUI_BUTTON_WIDTH, false)
+	h.equal("screens.button_face_width",
+		int(action_face.get_size().x) if action_face != null else 0, 169,
+		"27 + 4*31 + 18, the width `0x0043a9d0` measures")
+	var field_face: Texture2D = art.button_face(Art.BUTTON_BASE_FIELD,
+		UpgradeScreen.NAME_FIELD_WIDTH, false)
+	h.equal("screens.name_field_width",
+		int(field_face.get_size().x) if field_face != null else 0, 160,
+		"32 + 3*32 + 32 -- the name box is gadget type 3 too")
+	var lit_face: Texture2D = art.button_face(Art.BUTTON_BASE_ACTION,
+		CampaignScreen.GUI_BUTTON_WIDTH, true)
+	h.check("screens.button_lit_is_a_different_face",
+		lit_face != null and action_face != null
+			and lit_face.get_image().get_data()
+				!= action_face.get_image().get_data(),
+		"`buttons.LIB` 3/5/4 are the pointer's, not a press")
+	# And the face actually reaches the widget: a `Button` takes its picture
+	# from a style box, and the pointer's box has to be a different one.
+	_button_probe(h, art, strings, font)
+	h.equal("screens.button_lit_same_width",
+		int(lit_face.get_size().x) if lit_face != null else 0,
+		int(action_face.get_size().x) if action_face != null else 0)
+
+	# `plate_6` is the one campaign window that loads a plate of its own
+	# (`0x0045BFBB`), and it is painted rather than framed -- no window.
+	h.equal("screens.upgrade_plate",
+		[upgrade.plate_name(), upgrade.plate_window()],
+		[CampaignScreen.PLATE_UPGRADE, Rect2()])
+	h.check("screens.upgrade_offers_buy_before_anything_changed",
+		not upgrade.undo_offered(),
+		"gadget 0 and gadget 18 share (405, 384); `0x0045C075` clears 18")
+	# *Undo* is the whole visit, not the last purchase: `0x0045B507` copies the
+	# record back and `0x0043BD40` the economy block.
+	var purse_before: int = state.points(0)
+	var weapon_before: int = state.roster.record(0).weapon
+	# `Standard Assault Rifle` wants LW 3 and the seeded squad's best has LW 1
+	# with no skill points at all, so the purchase is refused **on the skills**
+	# and the purse is untouched -- the check the engine makes at
+	# `rec[+0x18] < cost * 12`.
+	upgrade.show_item(CampaignHost.KIND_WEAPONS, 2)
+	upgrade.buy()
+	h.equal("screens.upgrade_refuses_without_skill_points",
+		[state.points(0), upgrade.is_dirty()], [purse_before, false],
+		"LW 3 against LW 1 is two skill points and the squad has none")
+	# `Advanced Combat Gun` wants LW 1, which Bratt already has, so it costs
+	# only the difference in points: 20 for the new one less 10 refunded.
+	upgrade.show_item(CampaignHost.KIND_WEAPONS, 1)
+	upgrade.buy()
+	h.equal("screens.upgrade_buy_costs_the_difference",
+		[state.points(0), state.roster.record(0).weapon],
+		[purse_before - 10, 1])
+	h.check("screens.upgrade_buy_changed_something", upgrade.is_dirty(),
+		"which is what *Undo* would put back")
+	# **The two share a position per catalogue row, not per visit.** The item
+	# window's refresh re-gates gadget 0 on the row that is up: the weapon
+	# just bought is carried now (`0x00458037`), so the position keeps the
+	# *Undo* the purchase armed at `0x0045A970` -- and stepping onto one the
+	# soldier can still afford disables gadget 18 again (`0x004580E3`).
+	h.check("screens.upgrade_undo_is_offered_on_the_bought_row",
+		upgrade.undo_offered() and not upgrade.buy_offered(),
+		"carried, so gadget 0 is greyed and 18 is still armed")
+	upgrade.show_item(CampaignHost.KIND_WEAPONS, 0)
+	h.check("screens.upgrade_buy_returns_on_another_row",
+		upgrade.buy_offered() and not upgrade.undo_offered(),
+		"`Light Combat Gun` is affordable and is not what he carries")
+	upgrade.show_item(CampaignHost.KIND_WEAPONS, 1)
+	upgrade.undo()
+	h.equal("screens.upgrade_undo_restores_the_visit",
+		[state.points(0), state.roster.record(0).weapon, upgrade.is_dirty()],
+		[purse_before, weapon_before, false])
+	# A fresh visit with the carried weapon up leaves **both** gadgets
+	# disabled, which the engine does too: the failing gate greys gadget 0
+	# and the build has already cleared 18.
+	upgrade.select(0)
+	upgrade.show_item(CampaignHost.KIND_WEAPONS,
+		state.roster.record(0).weapon)
+	h.check("screens.upgrade_carried_row_offers_neither",
+		not upgrade.buy_offered() and not upgrade.undo_offered(),
+		"`0x00458037` refuses the row the soldier already carries")
+
+	# Gadget 3 is a `GUI_SetTextButton` and not a caption: it renames the
+	# soldier, and `0x00458449` greys it for a hero (docs/10 section 5.11).
+	var hero_slot: int = Roster.NO_SLOT
+	var named_slot: int = Roster.NO_SLOT
+	for slot: int in state.roster.occupied_slots():
+		if Upgrade.may_rename(state.roster.record(slot)):
+			named_slot = slot
+		else:
+			hero_slot = slot
+	h.check("screens.upgrade_roster_has_a_hero", hero_slot != Roster.NO_SLOT,
+		"the campaign's one `pool_flag == 2` record")
+	h.check("screens.upgrade_roster_has_a_recruit",
+		named_slot != Roster.NO_SLOT, "and somebody who may be renamed")
+	upgrade.select(hero_slot)
+	upgrade.begin_rename()
+	h.check("screens.upgrade_hero_keeps_his_name", not upgrade.is_renaming(),
+		"the box does not open on a hero")
+	upgrade.select(named_slot)
+	var was_called: String = state.roster.record(named_slot).name
+	upgrade.begin_rename()
+	h.check("screens.upgrade_name_box_opens", upgrade.is_renaming())
+	upgrade.commit_rename("Rook")
+	h.equal("screens.upgrade_renamed",
+		[state.roster.record(named_slot).name, upgrade.is_renaming()],
+		["Rook", false])
+	h.check("screens.upgrade_rename_is_part_of_the_visit", upgrade.is_dirty(),
+		"a name is one of the fields *Undo* puts back")
+	upgrade.undo()
+	h.equal("screens.upgrade_rename_undone",
+		state.roster.record(named_slot).name, was_called)
+	# An empty name is refused rather than written -- `+0x00` is the record's
+	# only identity, and the original's field cannot be cleared either.
+	upgrade.begin_rename()
+	upgrade.commit_rename("   ")
+	h.equal("screens.upgrade_empty_name_refused",
+		state.roster.record(named_slot).name, was_called)
+	# **Leaving the box keeps what was typed**, which means the `focus_exited`
+	# connection has to read the field when it fires. A `Callable.bind` freezes
+	# its argument where the connection is made -- one line under
+	# `field.text = unit.name` -- so a bound `field.text` hands the commit the
+	# *old* name and everything typed is dropped.
+	upgrade.begin_rename()
+	var box: LineEdit = _first_field(upgrade)
+	h.check("screens.upgrade_name_box_is_a_field", box != null,
+		"gadget 3 opens a `LineEdit` over the composed panel")
+	if box != null:
+		box.text = "Vulture"
+		box.focus_exited.emit()
+	h.equal("screens.upgrade_focus_leaving_keeps_the_typed_name",
+		[state.roster.record(named_slot).name, upgrade.is_renaming()],
+		["Vulture", false])
+	upgrade.begin_rename()
+	upgrade.commit_rename(was_called)
+
+
+	# The eight region hints are hover text now, not captions laid over the
+	# plate: `Txtmod_b` 166..173 on the regions and 160..165 on the six skill
+	# boxes.
+	upgrade.select(named_slot)
+	var tips: PackedStringArray = _tooltips_of(upgrade)
+	for id: int in UpgradeScreen.HINT_IDS:
+		var line: String = strings.shipped(CampaignScreen.BANK_MISSION, id)
+		h.check("screens.upgrade_hint_%d" % id, tips.has(line),
+			"%s is on a region" % line)
+	for index: int in range(6):
+		var skill_line: String = strings.shipped(CampaignScreen.BANK_MISSION,
+			UpgradeScreen.ID_HINT_FITNESS + index)
+		h.check("screens.upgrade_skill_hint_%d" % index,
+			tips.has(skill_line), "%s is on its box" % skill_line)
+	h.check("screens.upgrade_name_hint",
+		tips.has(strings.shipped(CampaignScreen.BANK_MISSION,
+			UpgradeScreen.ID_HINT_UNIT)),
+		"and *Unit to upgrade* is on the name field itself")
+
+
+	# The *i*: `0x0045B4BC` toggles it, the picture goes (`0x00458BFE`) and the
+	# item's own `Data.txt` page takes its place -- the letter out of the
+	# record (`key`) plus the family's digit, so `Scan Module`'s `A` is `A1`.
+	upgrade.descriptions = InfoText.new()
+	upgrade.descriptions.read({
+		"schema": InfoText.SCHEMA,
+		"families": {"units": "0", "equipment": "1", "weapons": "2"},
+		"no_page": "#",
+		"blocks": {"A1": [{"text": "a scanner", "colour": 1, "font": 0,
+			"breaks": 0}]},
+	})
+	upgrade.show_item(CampaignHost.KIND_EQUIPMENT, 0)
+	upgrade.hints = false
+	upgrade.refresh()
+	h.check("screens.upgrade_no_description_while_the_i_is_up",
+		not _rich_text_of(upgrade).contains("a scanner"),
+		"with the *i* up the window is the picture")
+	upgrade.hints = true
+	upgrade.refresh()
+	h.check("screens.upgrade_i_shows_the_description",
+		_rich_text_of(upgrade).contains("a scanner"),
+		"`Data.txt`'s A1, which is what `key` \"A\" plus family 1 names")
+	upgrade.hints = false
+	upgrade.refresh()
+
 	_no_missing_strings(h, "upgrade", upgrade)
 	upgrade.free()
 
@@ -2063,6 +2323,41 @@ func _campaign_screens(h: TestHarness) -> void:
 		"structure, not a marked-up string")
 	_no_missing_strings(h, "briefing", briefing)
 	briefing.free()
+
+	# **The heading face is the game's too.** `{§1}` is written `[b]`
+	# ([method BriefingText.to_bbcode]) and a [RichTextLabel] with only
+	# `normal_font` overridden draws bold in the *theme's* face -- so a
+	# briefing asked for in the shipped font came out with `font_0` body text
+	# under headings in Godot's vector default, which is what the two faces
+	# looked like side by side.
+	var body_text: BriefingText = BriefingText.create(cache_dir, true)
+	var body_face: Font = body_text.get_theme_font("normal_font")
+	var head_face: Font = body_text.get_theme_font("bold_font")
+	var head_height: int = _fixed_size(head_face)
+	var body_height: int = _fixed_size(body_face)
+	h.check("screens.briefing_bold_is_the_shipped_face",
+		head_face != body_face and head_height > 0
+			and head_height == body_height,
+		"`font_1`, a %d-unit bitmap beside `font_0`'s %d, and not the theme's "
+		% [head_height, body_height] + "vector bold")
+	# **Four faces, not two.** The second ink level of a glyph is drawn in the
+	# ramp's second colour, and the three ramps do not agree on the fraction,
+	# so the pair carrying the body ramp's own goes in the italic slots.
+	var slanted: Font = body_text.get_theme_font("italics_font")
+	var slanted_heavy: Font = body_text.get_theme_font("bold_italics_font")
+	h.check("screens.briefing_has_the_body_ramp_faces",
+		_fixed_size(slanted) == body_height
+			and _fixed_size(slanted_heavy) == head_height
+			and slanted != body_face and slanted_heavy != head_face,
+		"`font_0` and `font_1` again, at the body ramp's shade")
+	# The blank line under a heading: `breaks` is a count and two `@` in the
+	# shipped source start two lines, not one.
+	var two: String = BriefingText.to_bbcode([{"text": "a", "font": 0,
+		"colour": 0, "breaks": 0}, {"text": "b", "font": 0, "colour": 0,
+		"breaks": 2}])
+	h.check("screens.briefing_breaks_are_counted", two.contains("\n\n"),
+		"a span with `breaks` 2 opens a blank line before it")
+	body_text.free()
 
 	# The debriefing names both silent refusals.
 	var report: Dictionary = {
@@ -2100,6 +2395,15 @@ func _campaign_screens(h: TestHarness) -> void:
 	host = null
 
 
+## A bitmap face's own height, or 0 for anything that is not one -- which is
+## what a theme fallback answers.
+static func _fixed_size(chosen: Font) -> int:
+	if not chosen is FontFile:
+		return 0
+	var file: FontFile = chosen
+	return file.fixed_size
+
+
 ## Not one caption may come back as `Localization`'s missing marker.
 func _no_missing_strings(h: TestHarness, name: String,
 		screen: CampaignScreen) -> void:
@@ -2110,6 +2414,71 @@ func _no_missing_strings(h: TestHarness, name: String,
 	h.equal("screens.%s.every_string_resolves" % name, missing,
 		PackedStringArray(),
 		"every caption comes from the shipped banks")
+
+
+## What a dressed button carries: the two faces, the two sounds, the slicing.
+##
+## The screen is kept alive for the length of it -- the sounds are bound to
+## **its** method, and freeing it first drops the very connections being
+## counted.
+func _button_probe(h: TestHarness, art: Art, strings: Localization,
+		font: FontFile) -> void:
+	var screen: CampaignScreen = CampaignScreen.new()
+	screen.setup(art, strings, font)
+	var probe: Button = screen.gui_text_button("probe", "probe", Vector2.ZERO)
+	h.check("screens.button_hover_box_differs",
+		probe.get_theme_stylebox("hover") != probe.get_theme_stylebox("normal"),
+		"the hover state is dressed in `buttons.LIB` 3/5/4")
+	h.check("screens.button_focus_box_is_empty",
+		probe.get_theme_stylebox("focus") is StyleBoxEmpty,
+		"focus draws over whatever is showing, so it must draw nothing")
+	h.check("screens.button_sounds_armed",
+		probe.mouse_entered.get_connections().size() > 0
+			and probe.button_down.get_connections().size() > 0,
+		"the pointer's sound and the press's, `0x0043C500` and `0x0043E5E0`")
+	var box: StyleBoxTexture = probe.get_theme_stylebox("normal") \
+		as StyleBoxTexture
+	h.check("screens.button_face_is_nine_sliced",
+		box != null and box.texture_margin_left > 0.0
+			and box.texture_margin_right > 0.0
+			and box.axis_stretch_horizontal
+				== StyleBoxTexture.AXIS_STRETCH_MODE_TILE,
+		"the caps keep their width and the fill tiles, whatever the rectangle")
+	screen.free()
+
+
+## Everything a screen's rich-text boxes are showing.
+func _rich_text_of(node: Node) -> String:
+	var out: PackedStringArray = PackedStringArray()
+	for child: Node in node.get_children():
+		var page: RichTextLabel = child as RichTextLabel
+		if page != null:
+			out.append(page.get_parsed_text())
+		out.append(_rich_text_of(child))
+	return " ".join(out)
+
+
+## Every hover hint on a screen, wherever it is hung.
+## The first text field on a screen, or null.
+func _first_field(node: Node) -> LineEdit:
+	for child: Node in node.get_children():
+		var field: LineEdit = child as LineEdit
+		if field != null:
+			return field
+		var deeper: LineEdit = _first_field(child)
+		if deeper != null:
+			return deeper
+	return null
+
+
+func _tooltips_of(node: Node) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for child: Node in node.get_children():
+		var control: Control = child as Control
+		if control != null and control.tooltip_text != "":
+			out.append(control.tooltip_text)
+		out.append_array(_tooltips_of(child))
+	return out
 
 
 func _labels_of(node: Node) -> PackedStringArray:

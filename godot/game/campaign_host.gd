@@ -39,6 +39,35 @@ const SCREEN_DEBRIEFING: String = "debriefing"
 const SCREEN_HQ: String = "hq"
 const SCREEN_RECRUIT: String = "recruit"
 const SCREEN_UPGRADE: String = "upgrade"
+## `Menu_b.lcl`'s `:ItemList;`, window 5 -- the catalogue the Upgrade screen's
+## *Select Weapon* and *Select Equipment* buttons open.
+const SCREEN_ITEMS: String = "items"
+
+## The two halves of the catalogue, as the Item List's *Toggle List* names them.
+const KIND_WEAPONS: String = "weapons"
+const KIND_EQUIPMENT: String = "equipment"
+
+## `mov byte [0x00510A34], 0` at `0x0045BF44` -- the low end of the range both
+## catalogue builders filter on; the high end is the tech level. See
+## [method catalogue].
+const CATALOGUE_LOW: int = 0
+## The first id **past** the catalogue, per half.
+##
+## **This is the exclusion that keeps the aliens out of the shop**, and it is
+## the forward stepper's alone: `0x0047A18B` compares the record pointer
+## against `0x0051B834` -- `0x0051B2F8 + 20 * 67`, so `id < 20` -- *after* the
+## name and the range, and its backward twin has no such test because the
+## caller starts it at 18 (`0x0045AF71`, `push 0x12`) and it only walks down.
+## The equipment pair is bounded by where the forward walk stops instead,
+## `0x0047A023` against `0x00517F43` = `0x00517BD1 + 21 * 42`.
+##
+## Weapons 20..29 are the aliens, 30..37 the bayonets and the bombs, 40..47 the
+## `B`-variant duplicates and 28 is `Info.lcl`'s `"-"` placeholder
+## (`* (x) No Weapon`); none of them is reachable. Ids 18 and 19 have no
+## `SetWeaponInfo` line at all, so the catalogue is 0..17 -- the sixteen human
+## weapons plus the Combot's gun and `Explosives`, both tech 99 and so refused
+## by any shipped level.
+const CATALOGUE_ID_MAX: Dictionary = {KIND_WEAPONS: 20, KIND_EQUIPMENT: 21}
 
 ## `aRandom(1, 6)` -- the recruit's voice. The engine draws it from the
 ## `GetTickCount`-seeded stream at `0x004638E0` (docs/28 section 3.2), which
@@ -51,6 +80,17 @@ var state: CampaignState = null
 var screen: String = SCREEN_MAP
 ## The location the player last clicked, or 0.
 var location: int = 0
+## What the Unit Menu, the Upgrade Menu and the Item List are looking at.
+##
+## They are three windows onto one choice -- the soldier being equipped and the
+## item being considered -- and the original keeps that choice in globals of
+## its own (`0x00510A48` the roster slot, `0x00510A44` the list half,
+## `0x00510A40` the item). Keeping it here rather than in the screens is what
+## lets *Select Weapon* leave the Upgrade Menu and come back to the same
+## soldier.
+var upgrade_slot: int = Roster.NO_SLOT
+var item_kind: String = KIND_WEAPONS
+var item_id: int = -1
 var tables: CampaignMap = null
 
 ## Filled by [method finish_mission]: what the debriefing has to say.
@@ -420,16 +460,39 @@ func replay() -> String:
 
 # -- the HQ --------------------------------------------------------------------
 
-func recruit() -> int:
+## The Unit Menu's *Recruit unit*. *unit_type* is the Recruit window's choice
+## and -1 the campaign's own, which is `aEnlargeUnitPool`'s `type = player`.
+func recruit(unit_type: int = -1) -> int:
 	if state == null:
 		return Roster.NO_SLOT
-	return state.recruit(0, _draw_speech())
+	var health: int = 0
+	if unit_type >= 0:
+		health = DictRead.as_int(row_for("units", unit_type).get("hp_max", 0))
+	return state.recruit(0, _draw_speech(), unit_type, health)
+
+
+## Whether the Unit Menu's *Recruit unit* opens the Recruit window or hires on
+## the spot -- `0x0045B7F8`'s game-mode gate. A campaign hires on the spot.
+func recruits_through_a_screen() -> bool:
+	return state != null and state.mode != TurnState.MODE_CAMPAIGN
 
 
 func dismiss(slot: int) -> int:
 	if state == null:
 		return 0
 	return state.dismiss(0, slot, weapon_costs())
+
+
+## The Upgrade screen's *Buy Item*, for either half of the catalogue.
+func buy(kind: String, slot: int, id: int) -> Dictionary:
+	if state == null:
+		return {"result": Upgrade.NO_UNIT, "cost": 0, "skill_points": 0}
+	var row: Dictionary = row_for(kind, id)
+	if row.is_empty():
+		return {"result": Upgrade.BAD_ID, "cost": 0, "skill_points": 0}
+	if kind == KIND_WEAPONS:
+		return state.buy_weapon(0, slot, id, weapon_costs(), row)
+	return state.buy_equipment(0, slot, id, row)
 
 
 ## `id -> cost`, from the balance tables. Built once per call rather than
@@ -442,17 +505,94 @@ func weapon_costs() -> Dictionary:
 	return out
 
 
+## The balance table one half of the catalogue comes from.
+func table(kind: String) -> Array:
+	return DictRead.as_array(_balance.get(kind, []))
+
+
+## One row of it, by id -- **by id and not by position**: `equipment` has no
+## id 2, so the two differ from there on (D12).
+func row_for(kind: String, id: int) -> Dictionary:
+	for entry: Variant in table(kind):
+		var row: Dictionary = entry
+		if DictRead.as_int(row["id"]) == id:
+			return row
+	return {}
+
+
+## The catalogue as the Item List draws it: every row the tech level allows,
+## each carrying what it would cost **this soldier** and whether they can have
+## it.
+##
+## `skills` is [method Upgrade.weapon_skill_cost] or its equipment twin -- the
+## shortfall against this record, which is the number the original prints in
+## the row and the number the purchase charges. With no soldier selected the
+## row still lists, with the shortfall measured against an untrained one, so
+## the screen is never empty for want of a selection.
+func catalogue_rows(kind: String, unit: UnitState) -> Array[Dictionary]:
+	var probe: UnitState = unit if unit != null else UnitState.new()
+	var purse: int = state.points(0) if state != null else 0
+	var out: Array[Dictionary] = []
+	for entry: Variant in DictRead.as_array(catalogue(kind)["available"]):
+		var row: Dictionary = entry
+		var id: int = DictRead.as_int(row["id"])
+		var cost: int = DictRead.as_int(row["cost"])
+		var skills: int = Upgrade.weapon_skill_cost(row, probe) \
+			if kind == KIND_WEAPONS \
+			else Upgrade.equipment_skill_cost(row, probe)
+		var carried: bool = probe.weapon == id if kind == KIND_WEAPONS \
+			else probe.has_equipment(id)
+		out.append({
+			"id": id,
+			"kind": kind,
+			"name": DictRead.as_string(row["name"]),
+			"cost": cost,
+			"icon": DictRead.as_int(row["icon"]),
+			"skills": skills,
+			"carried": carried,
+			# Red in the original: what the soldier cannot be given now.
+			"affordable": cost <= purse
+				and skills * Upgrade.TP_PER_SKILL_POINT <= probe.tp,
+		})
+	return out
+
+
 ## docs/27 section 5.2 -- the catalogue the tech level gates, and what is
 ## locked. Returns `{"available": Array, "locked": Array}` so a screen can show
 ## both: a filter that silently hid the rest would make a frozen tech level
 ## indistinguishable from a working one.
+##
+## **The range is a range.** `0x0045BF44` writes 0 into the low end and
+## `0x0045BF4B` the tech level into the high one, and `0x0045AF21` reads the
+## pair as a word for the two list builders -- `0x0047A090` (equipment) and
+## `0x0047A1B0` (weapons), the routines the Upgrade Menu's own arrows step
+## with. Each accepts a record whose requirement byte satisfies
+## `low <= b <= high`, so [constant CATALOGUE_LOW] is written down rather than
+## implied by an unsigned comparison.
+##
+## **And a record with no name is in neither half.** Before either builder
+## looks at the range it compares the record's name against the empty string
+## at `0x004FA524` and steps past a match (`0x0047A1DD` weapons,
+## `0x0047A0BD` equipment).
+##
+## **Nor is a record past [constant CATALOGUE_ID_MAX].** That third test is the
+## one this read wrongly twice: it is in the *forward* stepper only, three
+## instructions past the range, and the backward twin does without it because
+## its caller starts it at 18. Missing it put the ten alien weapons and the
+## `"-"` placeholder in the shop -- with `Item_w0.lib` for a picture, since
+## they all carry icon 0 -- which the original never shows.
 func catalogue(kind: String) -> Dictionary:
 	var available: Array[Dictionary] = []
 	var locked: Array[Dictionary] = []
 	for entry: Variant in DictRead.as_array(_balance.get(kind, [])):
 		var row: Dictionary = entry
+		if DictRead.as_string(row.get("name", "")) == "":
+			continue
+		if DictRead.as_int(row["id"]) >= DictRead.as_int(
+				CATALOGUE_ID_MAX.get(kind, 0)):
+			continue
 		var needs: int = DictRead.as_int(row.get("tech", 0))
-		if needs <= state.tech_level:
+		if needs >= CATALOGUE_LOW and needs <= state.tech_level:
 			available.append(row)
 		else:
 			locked.append(row)

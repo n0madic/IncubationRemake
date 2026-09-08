@@ -59,6 +59,34 @@ jumps to the matching label.
 | 10 | `Map` | |
 | 11 | `SlideShow` | |
 
+#### Which plate each window sits on — **[code] `0x00510A38`**
+
+*(Added 2026-09-08.)* Only two of the twelve load a plate of their own. Pairing
+each write of the window selector `0x00510A38` with the `aLoadGUIBackGround`
+call beside it:
+
+| window | plate |
+|---|---|
+| 2 `UpGrade` (`0x0045BFC8`) | **`plate_6`**, loaded at `0x0045BFBB` |
+| 6 `MainMap` (`0x004576B3`) | `plate_3`, loaded at `0x004576C2` |
+| 8 `Sequence` (`0x00457054`) | `plate_7` |
+| 0, 1, 4, 5, 9, 10, 11 | **none** — they inherit |
+
+What they inherit is `plate_3`: `aInitGUI` loads it once at `0x00454245` on the
+way into Mission Control, and every window above that loads none keeps it. That
+is the one shipped plate with a picture frame inset, which is why the HQ, the
+Unit Menu, the Item List, the briefing and the Recruit window all show the 3D
+scene behind their frame — the same rectangle §2.6 measures for the map,
+`(65, 57)` by 518x306.
+
+`plate_6` is the exception in kind as well as in count: it is not a frame but a
+set of painted panels, and their black interiors are the layout. Measured off
+the bitmap: the model window at `(63, 134)` 249x128, the item window at
+`(399, 136)` 186x127, and **six** boxes between them across `x` 316..398, split
+by bright separators at `y` 89/145/188/232/273/314/354. Six, not the five the
+shipped screenshot fills — one per skill of `+0x1A..+0x1F` plus the fitness
+`+0x19`, which is exactly what the hover hints `Txtmod_b` 160..165 name.
+
 ### 1.2 The text banks
 
 Nine `aInitTextSystem(bank, file)` calls fix which `.lcl` text table each id
@@ -668,17 +696,88 @@ UNVERIFIED and guessed at "skill limit and tech limit", and it is neither:
 ```
 
 `0x0045AF21` reads the two as **one word** — `al` the low and `ah` the high —
-and hands them to the list builders `0x0047A090` (equipment, 42-byte stride)
-and `0x0047A1B0` (weapons). Each walks its table backwards, skips a record
-whose name is empty, and accepts one whose requirement byte satisfies
-`low <= b <= high`. The item tables carry that byte: `SetEquipInfo`'s `+0x21`
-and `SetWeaponInfo`'s tech column ([`21` §3, §4](21-info-lcl-schema.md)).
+and hands them to the list builders. There are **four**, not two: a backward
+stepper and a forward one per half.
 
-Two consequences. At tech 1 the catalogue is **14 of 42 weapons and 7 of 19
-items**, and no shipped header sets either level above 12, which is what makes
-the three tech-99 items unbuyable ([`21` §3](21-info-lcl-schema.md)). And the
-ten alien weapons — requirement 0, non-empty name, cost 0 — pass the filter at
-every level; nothing else in the two builders excludes them.
+| | backward | forward | stride | record byte |
+|---|---|---|---|---|
+| equipment | `0x0047A090` | `0x0047A000` | 42 | `+0x20` |
+| weapons | `0x0047A1B0` | `0x0047A120` | 67 | `+0x38` |
+
+Each skips a record whose name is empty — compared against the `.bss` buffer
+`0x004FA524` — and accepts one whose requirement byte satisfies
+`low <= b <= high`. The item tables carry that byte: `SetEquipInfo`'s and
+`SetWeaponInfo`'s tech column ([`21` §3, §4](21-info-lcl-schema.md)).
+
+#### The third test is the one that shapes the shop
+
+*(Corrected 2026-09-08, twice over. This section first said the catalogue at
+tech 1 was **14 of 42** weapons, then **13**; both were wrong. What settled it
+was a screenshot of the original's Item List at a tech level high enough for
+fourteen weapons, holding nothing but human ones.)*
+
+The **forward** stepper has an exclusion its backward twin does not, three
+instructions past the range:
+
+```c
+/* 0x0047A18B */  if (record + 0x38 >= 0x0051B834) continue;  /* id < 20 */
+```
+
+`0x0051B834` is `0x0051B2F8 + 20 * 67`, so a weapon is in the catalogue only
+while `id < 20`; the equipment walk is bounded the same way by where its loop
+stops, `0x00517F43 = 0x00517BD1 + 21 * 42`. The backward twin needs no such
+test because its caller starts it at **18** (`0x0045AF71` and `0x0045B023`,
+`push 0x12`) and it only ever walks down.
+
+So the shop is weapons **0..17** and equipment **0..20**, and ids 18 and 19
+carry no `SetWeaponInfo` line at all. That is the sixteen human weapons plus
+the Combot's gun and `Explosives`, both tech 99 and refused by every shipped
+level — and it is why the ten alien weapons (20..29), the bayonets and bombs
+(30..37), the eight `B`-variant duplicates (40..47) and `Info.lcl`'s `"-"`
+placeholder (28, `* (x) No Weapon`) never appear. **At tech 1 the catalogue is
+5 of 42 weapons and 7 of 19 items.** `campaign_tables.py`'s
+`catalogue.*_id_bound` and `catalogue.*_wraps_from` read all four numbers back
+out of the executable.
+
+One shipped row is caught by the name compare rather than by either bound:
+weapon **35**, which `Info.lcl` gives a `SetWeaponInfo2` line — model
+`W_BAY0_0`, icon 0, key `*` — and no `SetWeaponInfo` line at all, so the
+`.bss` table's name field for it stays zero. And no shipped header sets either
+level above 12, which is what makes the three tech-99 items unbuyable
+([`21` §3](21-info-lcl-schema.md)).
+
+#### The limits are the **upgrade location's** in a campaign — **UNVERIFIED**
+
+The write quoted above is one of two arms. `0x0045BF2A` branches on
+`0x0043B740`, and only the arm a campaign does *not* take reads the tech level:
+
+```c
+/* 0x0045BF2A */  if (gameMode() == 1) {              /* the campaign arm */
+                      byte[0x510A34] = byte[0x510C5C];
+                      byte[0x510A35] = byte[0x510C5D];
+                  } else {
+                      byte[0x510A34] = 0;
+                      byte[0x510A35] = getTechLevel();
+                  }
+```
+
+`0x00510C5C`/`0x00510C5D` are written by **fifteen** sites inside
+`aMissionControl.cpp`'s upgrade-location routines (`0x0045C88F` …
+`0x0045CDD9`, the first of them in `aPlayLocationAnimation_Upgrade`), with
+high limits of 1, 1, 2, 2, 3, 3, 3, 4, 4, 5 and 9 written as immediates and a
+register in the rest — so **each upgrade base sells its own band of tech
+levels** rather than everything up to the campaign's one. Which site belongs
+to which location is not traced, and the remake still gates on the campaign
+tech level alone; that is a known divergence, not a reading.
+
+#### The *Item List* paints every row it is given — **[code] `0x00459D10`**
+
+Window 5 carries no scroll gadget and the engine paints its rows itself, in a
+loop that ends only when the forward stepper runs out: each row is laid at
+`x` 80, then 330, and the wrap test `x > 500` starts a new line with `y += 35`.
+So there is no page and no cap — a catalogue wide enough simply runs down the
+plate. Equipment is the widest half at ids 0..20, which is eleven lines of two.
+
 
 ### 5.3 Buying and selling
 
@@ -692,6 +791,99 @@ record ([`21`](21-info-lcl-schema.md)). The Upgrade screen:
   then spends the new one (`0x0045AAF0`), so a swap costs the difference;
 * after every weapon purchase it recomputes `+0x5A`, the cached resale value
   ([`10` §5.11](10-lev-mission-format.md)).
+
+#### The other half of the price is skill points — **[code] `aBuyWeapon` `0x00475680`, `aBuyEquipment` `0x004755D0`**
+
+*(Added 2026-09-08. Every claim in the three subsections below is read back out
+of the shipped executable by `campaign_tables.py`'s `buy.*` checks — the two
+record strides and skill fields, the four exclusive ranges with the widths of
+their clearing writes, the Jet Pack's grant, the toggle, and the `short * 12`
+epilogue.)*
+Equipment points are only half of what a purchase costs. Both routines end the
+same way:
+
+```c
+short = f(id, unit, /*apply=*/1);   /* 0x0047A600 weapons, 0x0047A6E0 equipment */
+unit[+0x18] -= short * 12;          /* eax*3 << 2 */
+*out        =  short * 12;
+recomputeUnitStats(unit);           /* 0x004759E0 */
+```
+
+`0x0047A600` and `0x0047A6E0` walk the item's skill requirements against **this
+soldier's own** `+0x1A..+0x1F`, sum `max(0, needs - has)` over them and, with
+the third argument set, raise each skill to the requirement. So the *Skills*
+number beside a catalogue row is **not a column of the table**: the same rifle
+reads 3 for a recruit and 0 for the veteran who already trained on it, and what
+it costs is that shortfall in skill points — twelve of `+0x18` each
+([`10` §5.11](10-lev-mission-format.md)). The Item List prints the soldier's
+own `+0x18 / 12` beside it (`0x0045A170`, text slot `0x9C`).
+
+The two routines read their requirements from different offsets and compare
+them in different orders, which is why they are two routines and not one:
+
+| | record | requirement bytes | compared in the order |
+|---|---|---|---|
+| weapon | `0x0051B2C0 + id*67` | `+0x33..+0x36` | LW, HW, TS, CON |
+| equipment | `0x00517BB0 + id*42` | `+0x23..+0x28` | LW, HW, TS, CON, LS, MS |
+
+#### `aBuyEquipment` is a **toggle**, and it clears whole groups
+
+Three things the screen does that "spend and set a flag" would miss:
+
+* an item **already carried** is switched **off** (`0x004755F2` writes 0 into
+  `unit[+0x21 + id]` and returns) — and the caller has already spent the cost
+  at `0x0045A9E9`, so a second click removes the item *and charges for it*;
+* buying one member of a group clears the others — `id <= 1` the two scanners
+  (`0x0047561D`), `3 <= id <= 4` the stimulants (`0x0047562D`),
+  `10 <= id <= 13` the four armours (`0x00475611`) and `15 <= id <= 16` the
+  medic kits (`0x0047563D`); so a soldier carries one of each at a time;
+* the **Jet Pack also grants Long Range Scan** — `id == 7` writes
+  `unit[+0x22] = 1` (`0x00475603`), which is `Info.lcl`'s own `* warp & scan*`
+  annotation made good. The other direction is the screen's rather than the
+  routine's: with the Jet Pack carried, a purchase of `Scan Module` is skipped
+  entirely at `0x0045A9B6`, **before** the purse is touched.
+
+The toggle-off path returns without the closing recompute, so an armour
+removed that way leaves `+0x36`/`+0x37` stale.
+
+#### *Undo* is the whole visit — **[code] `0x0045B507`**
+
+Gadget 18 restores 91 bytes from `0x00510E00` over the soldier's record and
+calls `0x0043BD40`, which copies 720 bytes from `0x00509A48` over the live
+economy block at `0x00509D18` — the equipment points, the decoration pool and
+the two levels. Both halves of that snapshot are taken where the window is
+**built**, `0x0045C054` with `0x0043BD20` beside it, so *Undo* reaches back to
+the moment this soldier was selected and not to the last purchase. That is
+also why *Buy Item* and *Undo* share a position: `Menu_b.lcl` writes gadget 0
+and gadget 18 both at `(405, 384)`.
+
+**Which of the two the position shows is decided per catalogue row, not per
+visit.** The item window's refresh -- `0x00457B00` for equipment and
+`0x00457DA0` for a weapon, each called from the two catalogue arrows, from the
+*Buy Item* arm, from *Undo* and from the window's build -- runs three tests
+over the row that is up and, when all three pass, **enables gadget 0 and
+disables gadget 18** (`0x00457CFD`/`0x00457D07`, `0x004580D9`/`0x004580E3`):
+
+| test | weapons | equipment |
+|---|---|---|
+| not already carried | `0x00458037`, the row against the record's `+0x3F` | `0x00457C51`, the flag at `+0x21 + row` |
+| price fits the purse | `0x00458061`, the record's `+0x3E` | `0x00457C85`, the record's `+0x20` |
+| skills within reach | `0x004580D5`, `0x0047A600`'s shortfall x 12 against `+0x18` | `0x00457CF9`, `0x0047A6E0`'s |
+
+A failing test disables gadget 0 and **leaves gadget 18 alone**, so the *Undo*
+half is a flag with writers of its own: *Buy Item* enables it as the first
+instruction of its arm, before the purchase is even attempted (`0x0045A970`),
+*Commend Unit* enables it past the decrement (`0x0045AEC3`), and the window's
+build disables it (`0x0045C075`). *Undo* itself writes neither. Two
+consequences a "show *Undo* once anything has changed" reading gets wrong:
+stepping off a purchase onto another row the soldier can still afford puts
+*Buy Item* back, and a row that fails while nothing has been bought leaves
+**both** gadgets disabled.
+
+The price test is the **full** price even for a weapon swap, which
+`0x0045A970` then charges only the difference of -- it refunds the carried
+weapon before it spends. The two are consistent only read together: the
+greying is what keeps the cheaper arithmetic out of reach.
 
 ### 5.4 The price of a soldier
 
@@ -1012,18 +1204,18 @@ one is `DATA/TXT/English/GUI/Campaign.lcl`, text bank 1.
 2. **The location map** as data: `location = missionId + 50`, the 79-arm unlock
    graph, and the location → mission-file table. `campaign_tables.py --json`
    emits all three; a converter can bake them out rather than re-deriving them.
-3. **The roster rules**: seed a new **campaign 1** with Bratt/West/Maxon
+4. **The roster rules**: seed a new **campaign 1** with Bratt/West/Maxon
    exactly as §3.1 gives them (campaign 2 seeds nothing and takes its squad
    off `_C_140`'s own map); hire for 60 points; sort by EP descending; carry over only
    units with `+0x4D != 0`, and drop when the 30 slots are full. That choice is
    **decided** in [`92` §7.4](92-remake-architecture.md): the rule stays, but
    the silence does not — the mission-end screen names the survivors that were
    lost, and deploying with a full roster warns first.
-4. **The two banks**: copy row 0 → row 1 on entry and row 1 → row 0 on exit, or
+5. **The two banks**: copy row 0 → row 1 on entry and row 1 → row 0 on exit, or
    model the same thing with an explicit snapshot.
-5. **Mission end**: the result-to-score table of §6.2, the difficulty
+6. **Mission end**: the result-to-score table of §6.2, the difficulty
    multiplier in campaign mode only, and the two payouts gated on result ≠ 5.
-6. **Chaining**: the header's next-map field, overridable by
+7. **Chaining**: the header's next-map field, overridable by
    `EnterNameOfNextMap`.
 
 What it does **not** need: the campaign map as a 3D `.lev` at all. `_C_XXX` and
@@ -1078,11 +1270,19 @@ What each group covers:
 1. ~~**What the dialogue numbers select.**~~ **Closed** — §2.3 and
    [`41` §2](41-sequence-player.md) give the complete logical-id → successive
    directory mapping, including the `_07 → _09` and `_15 → _16` transitions.
-2. **Why locations 3 and 6 load each other's upgrade map.** Pinned as observed
+2. **Which upgrade location writes which tech band.** §5.2: in a campaign the
+   catalogue's `low`/`high` come from `0x00510C5C`/`0x00510C5D` and **not**
+   from the tech level, and fifteen sites in `aMissionControl.cpp` write that
+   pair with bands as narrow as a single level. The sites are enumerated; the
+   location each belongs to is not, and neither is what a band as tight as
+   `[1, 1]` or `[3, 3]` does to what a base can sell. Until it is, the remake
+   gates the shop on the campaign tech level alone, which is the *other* arm of
+   the same branch.
+3. **Why locations 3 and 6 load each other's upgrade map.** Pinned as observed
    (§2.4). Whether it is an authoring slip or deliberate cannot be settled from
    the shipped data: both maps exist, both are reachable, and no text names
    which is which.
-3. ~~**The other 27 `setMissionResult` sites.**~~ **Closed** — §6.4. All
+4. ~~**The other 27 `setMissionResult` sites.**~~ **Closed** — §6.4. All
    thirty are enumerated and classified: thirteen a campaign reaches, one on
    the `pbm session` arm, twelve that bracket `aMultiPlayer.cpp`'s scorer and
    are each guarded by `humanCount() == 1` or the solo flag, and four behind a
@@ -1098,7 +1298,7 @@ What each group covers:
    winconditions"* block and then set the slots from their own predicates, so
    there is no engine rule to recover — only 153 individual answers, which
    [`20` §7](20-lcl-language.md) gives the vocabulary for.
-4. ~~**What turns the campaign map's camera, and by how much.**~~ **Closed** —
+5. ~~**What turns the campaign map's camera, and by how much.**~~ **Closed** —
    §2.6.1. The request is a pointer drag read with the cursor warped back to
    its anchor every frame (`0x00455560`, gated on screen id 6 and the button
    byte `0x00511B09`): the horizontal travel doubled into `0x00510C44`, the
@@ -1113,11 +1313,11 @@ What each group covers:
    delta was wrong — that routine returns the scanline stride, and it is the
    call's *second* argument.
 
-5. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
+6. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
    have cells. The remainder are dialogue ids 12–14, 16–20 and 24–27, and
    location 130, *Epilogue* — which is what `_C_180` would be if its mission id
    were 80 instead of 180. Nothing reads them.
-6. ~~**`0x00510DC0` and the dialogue screen's mission-id special cases.**~~
+7. ~~**`0x00510DC0` and the dialogue screen's mission-id special cases.**~~
    **Closed** — §2.3.  The ids select logical sequence 0, the intercepted
    static extro screen, and logical sequence 1; the flag selects full-screen
    versus framed presentation and the background callback.

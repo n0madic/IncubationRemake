@@ -1168,6 +1168,8 @@ def convert(root: Path, missions: list[str], staging: Staging,
     result.briefings = convert_briefings(root, reader, staging, language, result)
     result.info_labels = convert_info_events(root, reader, staging, language,
                                              result)
+    result.info_labels += convert_info_data(root, reader, staging, language,
+                                            result)
     art = convert_art(root, reader, staging, result)
     result.plates = art["plates"]
     result.briefing_pictures = art["briefing"]
@@ -1264,6 +1266,12 @@ INFO_DIR = "Info"
 #: anything a mission shows -- the pickup sequence ``0x00410780`` opens
 #: ``Events`` and nothing else does.
 INFO_EVENTS = "Events"
+#: The item, weapon and unit descriptions the Upgrade Menu's *i* opens.
+#: `0x00432B20/70/D0` name the file `Data` and pass a label of one letter plus
+#: a digit -- 0 for a unit, 1 for equipment, 2 for a weapon -- and the letter
+#: is the record's own `key` column (`SetEquipInfo`'s and `SetWeaponInfo2`'s
+#: last string), with `#` meaning the record has no page.
+INFO_DATA = "Data"
 #: The screen plates, and where the briefing pictures live.
 PLATE_DIR = ("Graphics", "GUI")
 BRIEFING_ART_DIR = ("Graphics", "Briefing")
@@ -1504,6 +1512,58 @@ def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
     # decoded out of the switch rather than listed here or in the consumer.
     document.update(interaction_tables_document(exe))
     staging.write_json(f"text/info/{INFO_EVENTS.lower()}.json", document)
+    return len(blocks)
+
+
+def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
+                      language: str, result: Conversion) -> int:
+    """``text/info/data.json`` -- what the Upgrade Menu's *i* shows.
+
+    The button toggles `0x00510A54`; at 1 the item window stops loading its
+    picture (`0x00458BFE`) and `aPrintInfo` `0x0043ECF0` draws an info page
+    instead. Which page is decided by `0x00432B70` for equipment and
+    `0x00432BD0` for a weapon: both read a **letter out of the record**
+    (`+0x29` of the 42-byte equipment record, `+0x40` of the 65-byte weapon
+    one -- `inclib.info` already parses it as `key`), refuse when it is `#`,
+    and open `Data` with that letter plus a digit naming the family: `0` a
+    unit, `1` equipment, `2` a weapon. So `Scan Module`'s `A` is block `A1`.
+
+    The blocks are written as markup structure, exactly as a briefing is, and
+    the digits are **not** listed on the game side: the document carries the
+    family map so the consumer composes a label rather than knowing one.
+    """
+    from . import brieftext as briefmod
+    from .lcl import decode
+
+    base = _find(root, "DATA", "TXT", language, INFO_DIR)
+    path = _find(base, f"{INFO_DATA}.txt")
+    recorded = reader.record(path)
+    try:
+        text = decode(recorded.read_bytes()).decode("latin-1")
+    except Exception as exc:                           # noqa: BLE001
+        result.warnings.append(f"{path.name}: unreadable info text ({exc})")
+        return 0
+    blocks: dict[str, Any] = {}
+    for label in briefmod.labels(text):
+        if label.key in blocks:
+            continue
+        blocks[label.key] = [span.to_dict()
+                             for span in briefmod.spans(text, label.value)]
+    if not blocks:
+        result.warnings.append(f"{path.name}: no {{:xy}} label at all")
+    document: dict[str, Any] = {
+        "schema": INFO_SCHEMA,
+        "name": INFO_DATA,
+        "source": {"txt": reader.rel(recorded),
+                   "sha256": reader.seen[reader.rel(recorded)]},
+        # `0x00432B20`, `0x00432B70`, `0x00432BD0` -- the digit each family
+        # appends to the record's own letter.
+        "families": {"units": "0", "equipment": "1", "weapons": "2"},
+        #: `0x00432B86` / `0x00432BE4`: this letter means "no page".
+        "no_page": "#",
+        "blocks": blocks,
+    }
+    staging.write_json(f"text/info/{INFO_DATA.lower()}.json", document)
     return len(blocks)
 
 

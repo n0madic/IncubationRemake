@@ -38,7 +38,13 @@ var mode: String = ShellHost.MODE_LOAD
 ## meaningful. A row that offered to save nothing would be inert.
 var may_save: bool = false
 
-var _list: VBoxContainer = null
+var _list: Control = null
+
+
+## The list's own origin and width -- `GUI_SetListbox`'s, as `Menu_a.lcl`
+## writes them for its ten level rows.
+const LIST_AT: Vector2 = Vector2(60.0, 100.0)
+const LIST_WIDTH: int = 12
 
 
 func build() -> void:
@@ -47,9 +53,7 @@ func build() -> void:
 	title.position = Vector2(8.0, 0.0)
 	body().add_child(title)
 
-	_list = VBoxContainer.new()
-	_list.position = Vector2(8.0, 32.0)
-	body().add_child(_list)
+	_list = gui_layer()
 	refresh()
 
 	add_button("back", BANK_SAVES, ID_EXIT, 0)
@@ -59,8 +63,11 @@ func refresh() -> void:
 	if _list == null:
 		return
 	clear_children(_list)
-	for slot: int in range(CampaignHost.SLOT_COUNT):
-		var row: Button = make_button("slot:%d" % slot, _caption(slot))
+	var count: int = CampaignHost.SLOT_COUNT
+	for slot: int in range(count):
+		var row: Button = gui_list_row("slot:%d" % slot, _caption(slot),
+			LIST_AT + Vector2(0.0, LIST_ROW_HEIGHT * float(slot)),
+			LIST_WIDTH, slot, count, _list)
 		# Loading an empty slot is the one click in this screen that can have
 		# nothing behind it, so it is refused at the row rather than reported
 		# afterwards.
@@ -68,7 +75,6 @@ func refresh() -> void:
 			row.disabled = host == null or not host.has_save(slot)
 		else:
 			row.disabled = not may_save
-		_list.add_child(row)
 
 
 ## `Slot N  <what is in it>`.

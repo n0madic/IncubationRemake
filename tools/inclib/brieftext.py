@@ -63,12 +63,26 @@ LABEL_TAG_LENGTH = 5
 FONT_IDS = (0, 1)
 """``aGetFont`` (``0x00439E20``) returns -1 for anything else."""
 
-COLOUR_RAMPS: Mapping[int, tuple[int, int, int, int] | None] = {
-    0: None,                              # restore the box's own four colours
+COLOUR_RAMPS: Mapping[int, tuple[int, int, int, int]] = {
+    0: (0xFFFF, 0x632C, 0x0000, 0x0000),  # RGB565, white
     1: (0x94B2, 0x528A, 0x0841, 0x0000),  # RGB565, green-grey
     2: (0xF800, 0x6000, 0x0800, 0x0000),  # RGB565, red
 }
-"""``aPrintGUITextBox`` (``0x0043E445``).  Any other digit is ignored."""
+"""``aPrintGUITextBox`` (``0x0043E445``).  Any other digit is ignored.
+
+Ramp 0 restores *the box's own* four colours, and until 2026-09-08 that was
+recorded here as unknowable from the file -- ``0x0050A45C`` is a per-box record
+filled at run time.  It is knowable: ``0x0043D891`` copies the four from the
+**descriptor** the caller hands ``aCreateGUITextBox`` ``0x0043D820`` at
+``+0x1C..+0x22``, the briefing's and the info page's descriptor is the one
+global ``0x0050B2B4``, and all four of its writers put the same immediates in
+it (``0x0043E787``, ``0x0043E89A``, ``0x0043E9CA``, ``0x0043EB02``).
+
+The second entry of a ramp is what a glyph's index-2 pixels are drawn in
+(:mod:`font_render`).  Two of the three are the same fraction of the first --
+``0x632C / 0xFFFF`` and ``0x6000 / 0xF800`` are both 12/31 -- and the body
+ramp's ``0x528A / 0x94B2`` is 10/18.
+"""
 
 # --- fonts -----------------------------------------------------------------
 
@@ -303,12 +317,13 @@ class Span:
     text: str
     font: int
     colour: int
-    #: True when a hard ``@`` break precedes this span.
-    break_before: bool = False
+    #: How many lines the hard ``@`` breaks in front of this span start.  It
+    #: is a **count** and not a flag: see :func:`spans`.
+    breaks: int = 0
 
     def to_dict(self) -> dict:
         return {"text": self.text, "font": self.font, "colour": self.colour,
-                "break_before": self.break_before}
+                "breaks": self.breaks}
 
 
 def spans(text: str, start: int = 0, font: int = 0,
@@ -319,16 +334,26 @@ def spans(text: str, start: int = 0, font: int = 0,
     of skipped: a ``{§n}`` changes the font of everything after it and a
     ``{#n}`` the colour ramp, both until the next one or the end of the block.
     An empty run is not emitted, so two commands in a row produce one span.
+
+    ``breaks`` counts the **lines** the ``@``s in front of a span start, and
+    the count is not the number of ``@``s.  :func:`layout` -- which is
+    ``aCreateGUITextBox``'s own measuring loop -- takes the character *after* a
+    break unconditionally, so a ``@`` that immediately follows one is an
+    ordinary character and starts no line; the printer then skips it
+    (``0x0043E300``).  A run of *n* ``@`` therefore starts ``ceil(n / 2)``
+    lines, and the shipped briefings rely on it: ``Mission Description:@`` with
+    a ``@`` after the ``{#1}`` on the next source line is **two** lines, which
+    is the blank line under every heading.
     """
     out: list[Span] = []
     buffer: list[str] = []
-    pending_break = False
+    pending_breaks = 0
 
     def flush() -> None:
-        nonlocal pending_break, buffer
+        nonlocal pending_breaks, buffer
         if buffer:
-            out.append(Span("".join(buffer), font, colour, pending_break))
-            pending_break = False
+            out.append(Span("".join(buffer), font, colour, pending_breaks))
+            pending_breaks = 0
             buffer = []
 
     i = start
@@ -358,8 +383,12 @@ def spans(text: str, start: int = 0, font: int = 0,
                 break
         if ch == BREAK:
             flush()
-            pending_break = True
+            pending_breaks += 1
             i += 1
+            # The measurer's own step past the break, which swallows a second
+            # ``@`` as a plain character rather than starting another line.
+            if i < n and text[i] == BREAK:
+                i += 1
             continue
         if ord(ch) >= 0x20:
             buffer.append(ch)

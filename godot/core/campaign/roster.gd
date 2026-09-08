@@ -132,9 +132,13 @@ func first_free(row: int = ROW_LIVE) -> int:
 ## the free-slot marker, so a recruit left at zero would be seeded into its own
 ## slot again by the next call. The rest of that recompute writes zeroes into a
 ## record that is already zeroed here.
+## *unit_type* is the record's `+0x4C`. It defaults to *player*, which is what
+## `aEnlargeUnitPool` writes and what a campaign always gets; the Recruit
+## window of docs/27 section 3.2 is the one caller that names a type of its
+## own, and it is reachable only outside campaign mode.
 func enlarge(player: int, mode: int, skill_level: int,
 		speech: int, hit_points: int, ammo: int,
-		row: int = ROW_LIVE) -> int:
+		row: int = ROW_LIVE, unit_type: int = -1) -> int:
 	var slot: int = first_free(row)
 	if slot == NO_SLOT:
 		return NO_SLOT
@@ -147,7 +151,7 @@ func enlarge(player: int, mode: int, skill_level: int,
 	# docs/27 section 3.2: `unitType = player` is deliberate. `Info.lcl` names
 	# types 0..3 `Human Soldier (1)` .. `(4)`, one per player slot, so a
 	# recruit gets the soldier model of the side that hired them.
-	unit.type_id = player
+	unit.type_id = unit_type if unit_type >= 0 else player
 	unit.player = player
 	unit.ep = rank * EP_PER_RANK
 	unit.tp = rank * EP_PER_RANK

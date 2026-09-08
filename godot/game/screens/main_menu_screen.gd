@@ -49,8 +49,19 @@ const FIRST_AT: Vector2 = Vector2(280.0, 80.0)
 const STEP: Vector2 = Vector2(30.0, 40.0)
 ## The last of the six sits lower than the step alone would put it.
 const LAST_AT: Vector2 = Vector2(425.0, 300.0)
+## How many rows `Menu_a.lcl` writes.
+##
+## **A shorter menu takes the bottom of the cascade, not the top.** This one
+## has five rows where the original has six, and starting at row 0 left the
+## first button across *Time is running out* on the title art and a two-row
+## hole above the last. Ending on the shipped `(425, 300)` and counting back
+## puts every button on one of the block's own six coordinates and clears the
+## logo, without inventing a position.
+const SLOT_COUNT: int = 6
 ## Six tiles wide, which is what the block's width field says.
 const BUTTON_SIZE: Vector2 = Vector2(190.0, 30.0)
+## What the last entry keeps clear of the one above it.
+const LAST_GAP: float = 4.0
 
 ## `Graphics/Title.bmp`, baked since converter 0.17.0. A cache from an older
 ## one has no such plate and [method CampaignScreen.plate_name]'s caller falls
@@ -134,16 +145,25 @@ func _show_actions() -> void:
 			entries.append([MAIN_MENU, label_for(BANK_MENU, ID_TITLE)])
 		entries.append(["quit", label_for(BANK_MENU, ID_EXIT)])
 
+	# Where in the shipped six this menu's rows start, so the last one lands
+	# on the block's own last coordinate. A menu longer than six begins at row
+	# 0 and runs past the bottom, which the guard below catches.
+	var lead: int = maxi(SLOT_COUNT - entries.size(), 0)
 	for index: int in range(entries.size()):
 		var row: Array = entries[index]
 		var button: Button = make_button(DictRead.as_string(row[0]),
 			DictRead.as_string(row[1]))
-		var at: Vector2 = FIRST_AT + STEP * float(index)
+		var at: Vector2 = FIRST_AT + STEP * float(lead + index)
 		if pending != "":
 			at = ANSWER_AT + ANSWER_STEP * float(index)
 		elif index == entries.size() - 1:
 			# The cascade's last entry sits lower than the step alone would
-			# put it -- that is `Menu_a.lcl`'s own table.
-			at = LAST_AT
+			# put it -- that is `Menu_a.lcl`'s own table. It is only *lower*,
+			# though: a seven-entry cascade reaches y 280 by itself and the
+			# fixed 300 would then overlap the row above it, which the shipped
+			# faces made plain.
+			var above: float = FIRST_AT.y + STEP.y * float(lead + index - 1)
+			at = Vector2(LAST_AT.x,
+				maxf(LAST_AT.y, above + BUTTON_SIZE.y + LAST_GAP))
 		_entries.add_child(button)
 		place_on_plate(button, at, BUTTON_SIZE)

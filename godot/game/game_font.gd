@@ -32,7 +32,8 @@ const TRACKING: int = 1
 
 
 ## Build one font from the cache, or null when the cache has no fonts.
-static func load_from(cache_dir: String, font_name: String) -> FontFile:
+static func load_from(cache_dir: String, font_name: String,
+		shade: float = SHADE_COVERAGE) -> FontFile:
 	var index: Dictionary = CacheLoader.read_json(
 		cache_dir + "/fonts/index.json")
 	if index.is_empty():
@@ -41,11 +42,12 @@ static func load_from(cache_dir: String, font_name: String) -> FontFile:
 		var document: Dictionary = DictRead.as_dict(entry)
 		if DictRead.as_string(document["name"]) != font_name:
 			continue
-		return _build(cache_dir, document)
+		return _build(cache_dir, document, shade)
 	return null
 
 
-static func _build(cache_dir: String, document: Dictionary) -> FontFile:
+static func _build(cache_dir: String, document: Dictionary,
+		shade: float = SHADE_COVERAGE) -> FontFile:
 	var path: String = "%s/fonts/%s" % [cache_dir,
 		DictRead.as_string(document["file"])]
 	if not FileAccess.file_exists(path):
@@ -57,7 +59,7 @@ static func _build(cache_dir: String, document: Dictionary) -> FontFile:
 	# production actually uses.
 	if image.load_png_from_buffer(FileAccess.get_file_as_bytes(path)) != OK:
 		return null
-	image = _as_alpha(image)
+	image = _as_alpha(image, shade)
 
 	var glyphs: Array = DictRead.as_array(document["glyphs"])
 	var height: int = DictRead.as_int(document["atlas_height"])
@@ -97,7 +99,43 @@ static func _build(cache_dir: String, document: Dictionary) -> FontFile:
 	return font
 
 
-## The atlas as white pixels: index 0 transparent, **any non-zero opaque**.
+## What the second ink index is worth beside the first, for a ramp that is not
+## the body one -- 12/31, out of `0x632C` over `0xFFFF` and `0x6000` over
+## `0xF800`. See [constant SHADE_COVERAGE].
+##
+## **Index 2 is the glyph's antialiasing, and it is half-covered, not solid.**
+## The four shipped faces use exactly the values 0, 1 and 2 -- `font_3` only 0
+## and 1 -- and the blitter `0x00447900` maps them straight onto the caller's
+## four colours: at `0x00447ADD` (the 16-bit path the game runs in) a 1 takes
+## `colour[0]` and **everything else** takes `colour[1]`, with 0, 3 and 4
+## skipped; the 8-bit path at `0x00447A2A` is the same ladder written out to
+## `colour[3]`. So a glyph is drawn in two tones, and the second is the one
+## `aPrintGUITextBox` sets beside the first: `0x0043E47A` writes the body ramp
+## `0x94B2` / `0x528A` and `0x0043E458` the alert ramp `0xF800` / `0x6000`.
+##
+## **All three ramps are known**, and two of them agree. `0x0043D891` copies a
+## box's four colours out of the descriptor handed to `aCreateGUITextBox`, and
+## the briefing's and the info page's is the one global `0x0050B2B4`, written
+## with the same immediates by all four of its writers: `0xFFFF, 0x632C, 0, 0`.
+## So the fractions are 12/31 for the default ramp, 10/18 for the body one and
+## 12/31 again for the alert one -- [constant SHADE_COVERAGE] and
+## [constant SHADE_BODY], and *shade* picks between them.
+##
+## The shade is written **opaque** rather than as an alpha. The original writes
+## `colour[1]` into the frame buffer; it never blends. Over a light patch of a
+## plate an alpha would take the background instead, which is a visible error
+## and the one this used to make.
+##
+## Painting index 2 solid ink instead -- which is what this did until
+## 2026-09-08 -- fattens every stem by a pixel, fills the counters of `a`, `o`
+## and `e`, and is why the remake's text read as a different, blobbier face
+## than the original's.
+const SHADE_COVERAGE: float = 12.0 / 31.0
+## `0x528A` over `0x94B2`, the body ramp `{#1}` selects.
+const SHADE_BODY: float = 10.0 / 18.0
+
+## The atlas as white pixels: index 0 transparent, index 1 solid, index 2 at
+## *shade* of the ink and **opaque**.
 ##
 ## The cache stores the raw palette index in all three channels, because that
 ## is what the file holds and the cache decides nothing. Turning it into
@@ -106,19 +144,20 @@ static func _build(cache_dir: String, document: Dictionary) -> FontFile:
 ## and 2, so `alpha = value / 255` renders the whole font at 1 % opacity --
 ## invisible, which is exactly how it first came out.
 ##
-## `tools/font_render.py` documents the same trap and makes the same choice:
-## "using the raw index as a grey level would render most glyphs near-black".
 ## Ink is white so that a [Label]'s own `font_color` tints it, which is the
 ## freedom the original had when it handed the font a palette.
-##
-## The two non-zero indices are kept in the cache, so a later slice that finds
-## out what index 2 means -- an outline, most likely -- can use it without a
-## reconversion.
-static func _as_alpha(source: Image) -> Image:
+static func _as_alpha(source: Image,
+		shade: float = SHADE_COVERAGE) -> Image:
 	var out: Image = Image.create_empty(source.get_width(),
 		source.get_height(), false, Image.FORMAT_RGBA8)
+	var dim: Color = Color(shade, shade, shade, 1.0)
 	for y: int in range(source.get_height()):
 		for x: int in range(source.get_width()):
-			var ink: bool = source.get_pixel(x, y).r > 0.0
-			out.set_pixel(x, y, Color(1.0, 1.0, 1.0, 1.0 if ink else 0.0))
+			var index: int = roundi(source.get_pixel(x, y).r * 255.0)
+			if index == 0:
+				out.set_pixel(x, y, Color(1.0, 1.0, 1.0, 0.0))
+			elif index == 1:
+				out.set_pixel(x, y, Color(1.0, 1.0, 1.0, 1.0))
+			else:
+				out.set_pixel(x, y, dim)
 	return out

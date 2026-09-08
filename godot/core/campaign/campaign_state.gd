@@ -218,7 +218,12 @@ func recruit_cost() -> int:
 
 ## The Recruit screen's hire button: price, purse, free slot, then
 ## `aEnlargeUnitPool`. Returns the slot or [constant Roster.NO_SLOT].
-func recruit(player: int, speech: int) -> int:
+## *unit_type* and *hit_points* are the Recruit window's: outside campaign mode
+## it names a type of its own and that type's `hp_max` is what the closing
+## recompute would leave. Both default to the campaign's, so the campaign's own
+## call is unchanged.
+func recruit(player: int, speech: int, unit_type: int = -1,
+		hit_points: int = 0) -> int:
 	var cost: int = recruit_cost()
 	if points(player) < cost:
 		return Roster.NO_SLOT
@@ -226,8 +231,9 @@ func recruit(player: int, speech: int) -> int:
 		return Roster.NO_SLOT
 	if not spend_points(player, cost):
 		return Roster.NO_SLOT
+	var health: int = hit_points if hit_points > 0 else recruit_hit_points
 	return roster.enlarge(player, mode, skill_level, speech,
-		recruit_hit_points, recruit_ammo)
+		health, recruit_ammo, Roster.ROW_LIVE, unit_type)
 
 
 ## The Recruit screen's other button. Returns the points refunded.
@@ -241,16 +247,36 @@ func dismiss(player: int, slot: int, weapon_costs: Dictionary) -> int:
 	return refund
 
 
-## docs/27 section 5.3 -- refund the old weapon, spend the new one.
+## docs/27 section 5.3 -- refund the old weapon, spend the new one, then pay
+## the skill points.
 ##
 ## The order is the engine's: the refund at `0x0045AAC7` happens **first**, so
 ## a swap costs the difference and an upgrade the player could not afford
-## outright still goes through.
+## outright still goes through. What `aBuyWeapon` `0x00475680` adds after the
+## purse is the other half of the price -- `0x0047A600` raises every skill the
+## weapon asks for and `+0x18` loses twelve for each point of the shortfall.
+##
+## *weapon_row* is the balance table's record for the weapon being bought; it
+## is optional because the skill half needs the `skills` object and the purse
+## half needs only the cost map, and a caller that has no table is charged the
+## points alone rather than being refused.
+##
+## Returns `{"result": String, "cost": int, "skill_points": int}`.
 func buy_weapon(player: int, slot: int, weapon: int,
-		weapon_costs: Dictionary) -> bool:
+		weapon_costs: Dictionary, weapon_row: Dictionary = {}) -> Dictionary:
 	var unit: UnitState = roster.record(slot)
 	if unit == null:
-		return false
+		return _purchase(Upgrade.NO_UNIT)
+	if weapon < 0 or weapon > Upgrade.WEAPON_ID_MAX:
+		return _purchase(Upgrade.BAD_ID)
+	var needs: PackedInt32Array = Upgrade.skills_of(weapon_row)
+	var short: int = Upgrade.skill_shortfall(needs, unit.skills,
+		Upgrade.WEAPON_SKILL_ORDER)
+	# **The skill check comes before the purse**, because the purse's own is
+	# destructive: `add` then `spend` has already moved money by the time a
+	# refusal could be raised.
+	if unit.tp < short * Upgrade.TP_PER_SKILL_POINT:
+		return _purchase(Upgrade.NO_SKILL)
 	var old_cost: int = DictRead.as_int(weapon_costs.get(unit.weapon, 0))
 	var new_cost: int = DictRead.as_int(weapon_costs.get(weapon, 0))
 	add_points(player, old_cost)
@@ -259,22 +285,129 @@ func buy_weapon(player: int, slot: int, weapon: int,
 		# weapon simply does not change. Putting the refund back is what keeps
 		# a failed purchase from being a way to print money.
 		spend_points(player, old_cost)
-		return false
+		return _purchase(Upgrade.NO_POINTS)
 	unit.weapon = weapon
+	unit.skills = Upgrade.raise_skills(needs, unit.skills,
+		Upgrade.WEAPON_SKILL_ORDER)
+	unit.tp -= short * Upgrade.TP_PER_SKILL_POINT
 	roster.put(slot, unit)
-	return true
+	return _purchase(Upgrade.OK, new_cost - old_cost, short)
 
 
-## `0x0045A9E9` -- guarded on the unit's carried-equipment bitmap.
-func buy_equipment(player: int, slot: int, item: int, cost: int) -> bool:
+## `0x0045A970`'s equipment arm and `aBuyEquipment` `0x004755D0`.
+##
+## Three things the engine does here that a plain "spend and set a flag" would
+## miss: buying one member of a group **clears the others** (one scanner, one
+## stimulant, one armour, one medic kit), the Jet Pack **also grants** Long
+## Range Scan, and a soldier already carrying the Jet Pack cannot buy the Scan
+## Module at all -- that last one is the screen's guard at `0x0045A9B6` and it
+## sits in front of the purse, so the refusal is free.
+##
+## An item already carried is **refused** rather than toggled off. The engine
+## toggles, but its caller has already spent the points by then, so a second
+## click removes the item and charges for it; the remake reaches removal
+## through *Undo*, which is the button the original puts in the same place.
+func buy_equipment(player: int, slot: int, item: int,
+		item_row: Dictionary) -> Dictionary:
 	var unit: UnitState = roster.record(slot)
-	if unit == null or unit.has_equipment(item):
-		return false
+	if unit == null:
+		return _purchase(Upgrade.NO_UNIT)
+	if item < 0 or item > Upgrade.EQUIPMENT_ID_MAX:
+		return _purchase(Upgrade.BAD_ID)
+	if unit.has_equipment(item):
+		return _purchase(Upgrade.ALREADY_CARRIED)
+	if item == Upgrade.SCAN_MODULE_ID \
+			and unit.has_equipment(Upgrade.JET_PACK_ID):
+		return _purchase(Upgrade.BLOCKED_BY_JET_PACK)
+	var needs: PackedInt32Array = Upgrade.skills_of(item_row)
+	var short: int = Upgrade.skill_shortfall(needs, unit.skills,
+		Upgrade.EQUIPMENT_SKILL_ORDER)
+	if unit.tp < short * Upgrade.TP_PER_SKILL_POINT:
+		return _purchase(Upgrade.NO_SKILL)
+	var cost: int = DictRead.as_int(item_row.get("cost", 0))
 	if not spend_points(player, cost):
+		return _purchase(Upgrade.NO_POINTS)
+	var carried: PackedInt32Array = PackedInt32Array()
+	var cleared: PackedInt32Array = Upgrade.cleared_by(item)
+	for held: int in unit.equipment:
+		if not cleared.has(held):
+			carried.append(held)
+	carried.append(item)
+	if item == Upgrade.JET_PACK_ID \
+			and not carried.has(Upgrade.JET_PACK_GRANTS):
+		carried.append(Upgrade.JET_PACK_GRANTS)
+	unit.equipment = carried
+	unit.skills = Upgrade.raise_skills(needs, unit.skills,
+		Upgrade.EQUIPMENT_SKILL_ORDER)
+	unit.tp -= short * Upgrade.TP_PER_SKILL_POINT
+	roster.put(slot, unit)
+	return _purchase(Upgrade.OK, cost, short)
+
+
+## The Upgrade screen's *Commend Unit* -- case 3 of `0x0045A770`.
+##
+## `+0x38` gains one, `+0x18` gains twelve and the player's decoration pool
+## loses one. The three gates are [method Upgrade.may_commend]'s.
+func commend(player: int, slot: int) -> bool:
+	var unit: UnitState = roster.record(slot)
+	if unit == null or player < 0 or player >= PLAYER_SLOTS:
 		return false
-	unit.equipment.append(item)
+	if not Upgrade.may_commend(unit, commendations[player]):
+		return false
+	unit.decorations += 1
+	unit.tp += Upgrade.TP_PER_SKILL_POINT
+	roster.put(slot, unit)
+	commendations[player] -= 1
+	return true
+
+
+## The Upgrade screen's name field -- gadget 3, which `0x00458449` greys out
+## for a hero.
+func rename_unit(slot: int, new_name: String) -> bool:
+	var unit: UnitState = roster.record(slot)
+	if unit == null or not Upgrade.may_rename(unit):
+		return false
+	var trimmed: String = new_name.strip_edges()
+	if trimmed == "":
+		return false
+	unit.name = trimmed
 	roster.put(slot, unit)
 	return true
+
+
+## Put back what the Upgrade screen saved when it selected this soldier --
+## `0x0045B507`, which restores the 91-byte record **and** the economy block.
+##
+## Both halves matter: the record alone would leave the purse short by
+## everything the visit spent.
+func restore_unit(player: int, slot: int, unit: UnitState, purse: int,
+		medals: int) -> void:
+	if unit == null or player < 0 or player >= PLAYER_SLOTS:
+		return
+	roster.put(slot, unit)
+	set_points(player, purse)
+	commendations[player] = medals
+
+
+## Put a whole roster row and the purse back, which is what the Unit Menu's
+## *Undo* does: `Txtmod_b` 134 is the same caption the Upgrade screen uses for
+## its own snapshot restore (`0x0045B507`), and a hire or a dismissal moves
+## every slot after it, so there is nothing narrower to undo.
+func restore_roster(player: int, records: Array[UnitState],
+		purse: int) -> void:
+	if player < 0 or player >= PLAYER_SLOTS:
+		return
+	for slot: int in range(Roster.ROW_SLOTS):
+		roster.clear(slot)
+	for unit: UnitState in records:
+		if unit != null and unit.is_placed():
+			roster.put(unit.slot, unit)
+	set_points(player, purse)
+
+
+static func _purchase(result: String, cost: int = 0,
+		paid: int = 0) -> Dictionary:
+	return {"result": result, "cost": cost, "skill_points": paid}
 
 
 # -- serialisation -------------------------------------------------------------

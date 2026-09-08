@@ -1023,8 +1023,17 @@ and the button-enable pass `fcn.00458270` greys it out when any of
 ```c
 fcn.00475550(rec) <= rec[+0x38]     /* decorations already at the EP tier */
 rec[+0x18] > 0x77                   /* 119 — i.e. TP already 10 points */
-rec[+0x4D] == 2                     /* heroes cannot be decorated */
+rec[+0x4D] == 2                     /* see the correction below */
 ```
+
+**The third of those is not a gate on the decoration button.** *(Corrected
+2026-09-08.)* The pass calls `0x0043AAF0(gadget)` to grey one gadget out, and
+the three calls do not name the same one: the allowance test at `0x004583EB`
+and the TP test at `0x0045841E` both pass **5**, and the `+0x4D == 2` test at
+`0x00458451` passes **3**. `Menu_b.lcl`'s `:UpGrade;` window writes gadget 5 as
+`GUI_SetButton (5, ..., 111_WinText, 60, 416)` -- *Commend Unit* -- and gadget
+3 as `GUI_SetTextButton (3, ..., 110_WinText, 6_Library, 145, 95)`, the name
+field. So a **hero may be decorated and may not be renamed**.
 
 `fcn.00475550` is the **decoration allowance**, derived from EP alone:
 

@@ -597,8 +597,11 @@ func _screens(h: TestHarness) -> void:
 	var chains: CampaignSelectScreen = CampaignSelectScreen.new()
 	chains.host = host
 	chains.setup(_art, _strings, _font)
-	h.equal("screens.both_chains_offered", _actions_of(chains),
-		PackedStringArray(["start:1", "start:2", "back"]))
+	# **Sorted.** What a screen offers is the contract; the order the buttons
+	# sit in the tree is not one, and the shipped listbox rows are a layer of
+	# their own over the plate rather than children of the body.
+	h.equal("screens.both_chains_offered", _sorted(_actions_of(chains)),
+		PackedStringArray(["back", "start:1", "start:2"]))
 	h.check("screens.chain_is_named_by_where_it_opens",
 		_labels_of(chains).has("%s  --  %s"
 			% [_strings.text("shell.campaign") % 2,
@@ -613,8 +616,8 @@ func _screens(h: TestHarness) -> void:
 	list.missions = PackedStringArray(["_C_140", "_C_141"])
 	list.setup(_art, _strings, _font)
 	h.equal("screens.instant_action_lists_the_manifest",
-		_actions_of(list),
-		PackedStringArray(["mission:_C_140", "mission:_C_141", "back"]),
+		_sorted(_actions_of(list)),
+		PackedStringArray(["back", "mission:_C_140", "mission:_C_141"]),
 		"the same set `--mission=` reaches, without a command line")
 	_no_missing(h, "mission_select", list)
 	list.free()
@@ -627,7 +630,7 @@ func _screens(h: TestHarness) -> void:
 		CampaignHost.SLOT_COUNT + 1, "eight rows and the way out")
 	var rows: PackedStringArray = _button_labels_of(slots)
 	h.check("screens.empty_slot_is_txtmod_f_1",
-		rows[0].ends_with(_strings.shipped("Txtmod_f", 1)), rows[0])
+		_any_ends_with(rows, _strings.shipped("Txtmod_f", 1)), str(rows))
 	h.check("screens.empty_row_refuses_a_load",
 		_disabled_count(slots) == CampaignHost.SLOT_COUNT,
 		"there is nothing behind an empty row, so it is refused at the row")
@@ -650,9 +653,9 @@ func _screens(h: TestHarness) -> void:
 	options.settings = settings
 	options.language = _strings.language
 	options.setup(_art, _strings, _font)
-	h.equal("screens.options_off_the_map", _actions_of(options),
-		PackedStringArray(["option:music", "option:fx", "option:difficulty",
-		"option:gore", "option:faithful", "option:font", "back"]),
+	h.equal("screens.options_off_the_map", _sorted(_actions_of(options)),
+		PackedStringArray(["back", "option:difficulty", "option:faithful",
+		"option:font", "option:fx", "option:gore", "option:music"]),
 		"the four the original has and this remake connects, plus the gore "
 		+ "level, the `Faithful` preset and the interface font; not one of "
 		+ "the four it has and this remake does not")
@@ -662,9 +665,32 @@ func _screens(h: TestHarness) -> void:
 	# file gives.
 	h.check("settings.readable_font_by_default", not settings.game_font,
 		"the one place fidelity is traded for comfort by default")
+	# **The restriction is a hint, not a caption.** `Txtmod_h` 58 -- *Set
+	# Difficulty Level (only in main map during campaign)* -- is a sentence,
+	# and the caption column ends where the value field begins, so as a
+	# caption it ran under the field and was cut mid-word. It is still said,
+	# on the row's own control.
 	h.check("screens.options_name_the_restriction",
-		_joined(options).contains(_strings.shipped("Txtmod_h", 58)),
-		"`Txtmod_h` 58 says it aloud: only in main map during campaign")
+		_hints_of(options).has(_strings.shipped("Txtmod_h", 58)),
+		"`Txtmod_h` 58 is the difficulty field's hover hint")
+	h.check("screens.options_caption_is_the_short_one",
+		_joined(options).contains(_strings.shipped("Txtmod_h", 53)),
+		"`Txtmod_h` 53, *Set Difficulty Level*, is what the row is called")
+	# **And the hint is drawn at the plate's scale.** Godot's tooltip is a
+	# popup embedded in this viewport, so the canvas stretch scales it and the
+	# theme's default 16 is 16 *plate units* -- half again the largest caption
+	# on the screen. `_make_custom_tooltip` is the only seam that reaches it.
+	var carrier: HintControl = _first_hint(options)
+	var built: Control = carrier._make_custom_tooltip("x") if carrier != null \
+		else null
+	var worded: Label = built.get_child(0) as Label if built != null else null
+	h.check("screens.hint_is_drawn_at_plate_scale",
+		worded != null and (worded.has_theme_font_override("font")
+			or worded.get_theme_font_size("font_size")
+				<= CampaignScreen.readable_size(CampaignScreen.FNT_LABEL)),
+		"the hint takes the screen's own face, not the theme's default size")
+	if built != null:
+		built.free()
 	_no_missing(h, "options", options)
 	options.free()
 
@@ -1134,6 +1160,29 @@ func _joined(screen: CampaignScreen) -> String:
 	return "\n".join(_labels_of(screen))
 
 
+## The first hint carrier on a screen, or null.
+func _first_hint(node: Node) -> HintControl:
+	for child: Node in node.get_children():
+		var hint: HintControl = child as HintControl
+		if hint != null:
+			return hint
+		var deeper: HintControl = _first_hint(child)
+		if deeper != null:
+			return deeper
+	return null
+
+
+## Every hover hint on a screen's controls.
+func _hints_of(node: Node) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for child: Node in node.get_children():
+		var control: Control = child as Control
+		if control != null and control.tooltip_text != "":
+			out.append(control.tooltip_text)
+		out.append_array(_hints_of(child))
+	return out
+
+
 func _labels_of(node: Node) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	for child: Node in node.get_children():
@@ -1151,6 +1200,20 @@ func _labels_of(node: Node) -> PackedStringArray:
 
 
 ## The actions a screen's buttons would emit, in the order they are built.
+## A copy in a fixed order, for a check that is about a *set*.
+static func _sorted(items: PackedStringArray) -> PackedStringArray:
+	var out: PackedStringArray = items.duplicate()
+	out.sort()
+	return out
+
+
+static func _any_ends_with(items: PackedStringArray, tail: String) -> bool:
+	for line: String in items:
+		if line.ends_with(tail):
+			return true
+	return false
+
+
 func _actions_of(screen: CampaignScreen) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	for button: Button in _buttons_of(screen):

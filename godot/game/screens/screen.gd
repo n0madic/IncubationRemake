@@ -78,6 +78,65 @@ const PLATE_NONE: String = ""
 ## painted; it has to be left.
 const PLATE_WINDOW: Rect2 = Rect2(65.0, 57.0, 518.0, 306.0)
 
+## The plate Mission Control loads **once**, at `aInitGUI` `0x00454245`, and
+## which every window after it inherits: `Menu_b.lcl`'s HQ, Unit Menu, Item
+## List, Briefing, Recruit and the campaign map all reach `aBuildGUI` with no
+## plate load of their own (the writes to the window selector `0x00510A38` at
+## `0x004578D0`, `0x0045A187`, `0x0045C13D`, `0x00456D03` and `0x0045664D`
+## carry none). It is the one shipped plate with a picture frame inset, which
+## is why those screens show the 3D behind them.
+const PLATE_MISSION_CONTROL: String = "plate_3"
+## The one window that loads a plate of its own -- `0x0045BFBB`, immediately
+## before `[0x510A38] = 2`. Its panels are painted: the portrait, the model
+## window, the column of five skill boxes and the item window.
+const PLATE_UPGRADE: String = "plate_6"
+
+## `GUI_SetButton`'s `Width` column. Every button in the three windows of
+## docs/27 section 5 is written `6_Width`.
+const GUI_BUTTON_WIDTH: int = 6
+## `GUI_SetButton`'s own height, which is `buttons.LIB` element 0's.
+const GUI_BUTTON_HEIGHT: float = 31.0
+## How far a listbox row's caption sits inside its left cap.
+const LIST_ROW_INSET: float = 8.0
+## `GUI_SetListbox`'s own row: `Menu_a.lcl` steps its ten by exactly this.
+const LIST_ROW_HEIGHT: float = 22.0
+
+## The `fntID` column of `Menu_b.lcl`, which is what decides how wide a line
+## comes out: `font_0` is 5.5 units to a capital, `font_1` 6.3 and `font_2`
+## 10.2. The campaign screens use three of the four.
+const FNT_LABEL: int = 0
+const FNT_VALUE: int = 1
+const FNT_TITLE: int = 2
+
+## `GUI_SetText`'s `cX` column: where *x* is on the line. Read off the shipped
+## pairs -- a caption is written `2_cX` at 220 and its value `0_cX` at 225, so
+## 2 ends at *x* and 0 starts there; the titles are `1_cX` at 320, the centre.
+const ALIGN_LEFT: int = 0
+const ALIGN_CENTRE: int = 1
+const ALIGN_RIGHT: int = 2
+## How wide a [Label] is given to align inside. Nothing on these screens is
+## anywhere near this long; it exists so right- and centre-alignment have a box
+## to work in.
+const TEXT_BOX_WIDTH: float = 320.0
+const TEXT_LINE_HEIGHT: float = 18.0
+
+## The ink these screens write in.
+##
+## `GUI_SetText`'s `cA`/`cB`/`cC` columns select the GUI's own font ramp and
+## are **not** palette indices -- entries 2, 3 and 8 of every shipped plate are
+## dark greys, and the captions are not. What the ramp resolves to is
+## **UNVERIFIED**; these are read off the shipped screens, and are named for
+## the role rather than for the column so that a later measurement replaces
+## them in one place.
+const INK_TITLE: Color = Color(0.86, 0.86, 0.82)
+const INK_LABEL: Color = Color(0.72, 0.72, 0.68)
+const INK_VALUE: Color = Color(1.0, 1.0, 1.0)
+## The roster's own colour, and the catalogue's.
+const INK_ROSTER: Color = Color(0.35, 0.95, 0.35)
+const INK_ITEM: Color = Color(0.85, 0.18, 0.18)
+## Anything the soldier cannot be given now, and the row that is already theirs.
+const INK_DISABLED: Color = Color(0.45, 0.45, 0.45)
+
 ## The cartouche across the top of `plate_1`, between the two gargoyles: the
 ## band the original writes every framed screen's own name in.
 const TITLE_TOP: float = 6.0
@@ -91,7 +150,6 @@ const BUTTON_ROW_HEIGHT: float = 30.0
 const BUTTON_ROW_GAP: float = 6.0
 ## The action row's caption size when the readable face is in use, in the
 ## plate's units. The widest shipped caption is *Enter Location*.
-const ACTION_FONT_SIZE: int = 13
 
 ## Emitted when a button is pressed; the host decides what it means.
 signal chose(action: String)
@@ -99,6 +157,18 @@ signal chose(action: String)
 var art: Art = null
 var strings: Localization = null
 var font: FontFile = null
+## The four shipped faces, indexed by `Menu_b.lcl`'s `fntID` column.
+##
+## **The layout depends on which one a line is drawn in.** `font_0` is 5.5
+## units to a capital and `font_2` is 10.2, and the campaign screens write
+## `0_fntID` for their captions and `2_fntID` only for the title -- so a screen
+## that drew everything in one face has captions nearly twice the width the
+## plate leaves them, and the Item List's two bottom lines walk off the frame.
+## Empty when the caller supplies none, and then everything falls back to
+## [member font].
+var faces: Array[FontFile] = []
+## What the plates click with. Null in the suites, where nothing sounds.
+var audio: AudioSystem = null
 ## The action a second press will let through, or `""`.
 ##
 ## Two buttons in this shell drop something that may never have been saved --
@@ -113,10 +183,14 @@ var _body: Control = null
 var _buttons: Control = null
 
 
-func setup(screen_art: Art, text: Localization, screen_font: FontFile) -> void:
+func setup(screen_art: Art, text: Localization, screen_font: FontFile,
+		screen_faces: Array[FontFile] = [],
+		screen_audio: AudioSystem = null) -> void:
 	art = screen_art
 	strings = text
 	font = screen_font
+	faces = screen_faces
+	audio = screen_audio
 	layer = SCREEN_LAYER
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -254,7 +328,7 @@ func _plate_piece(picture: Texture2D, piece: Rect2) -> TextureRect:
 ## Every framed screen in the original writes it there and nowhere else, which
 ## is why it is here rather than in each screen's [method build].
 func place_title(text: String) -> Label:
-	var title: Label = make_label(text)
+	var title: Label = make_label(text, 0, FNT_TITLE)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -294,15 +368,61 @@ func strings_own(key: String) -> String:
 	return strings.text(key)
 
 
-## A label in the game's own bitmap font.
-func make_label(text: String, size: int = 0) -> Label:
+## One of the four shipped faces by `fntID`, or [member font] when the caller
+## supplied none.
+func face(fnt: int) -> FontFile:
+	if fnt >= 0 and fnt < faces.size() and faces[fnt] != null:
+		return faces[fnt]
+	return font
+
+
+## The readable face's size, per `fntID`.
+##
+## **The shipped coordinates are the shipped font's.** `Menu_b.lcl` writes a
+## caption at `464` and its value at `469`, five units apart, with the next
+## column starting at `557` -- spacings that only work while a capital is the
+## six-odd units `font_0` draws one in. `project.godot` stretches a 640x480
+## canvas, so a font size *is* in those units, and Godot's default 16 measured
+## 9.2 units to `font_0`'s 6.4: every readout on the Upgrade Menu ran into the
+## one beside it and the Item List walked off its own plate.
+##
+## **The size is each face's own cap height, not one number.** A capital is 7
+## units in `font_0`, 8 in `font_1` and 14 in `font_2`, and the vector face
+## draws one at about 0.71 of its size -- so 10 and 11 are what stand the same
+## height as the shipped faces they replace. Eleven for everything, which is
+## what stood here, drew the body an eighth too large and read as visibly
+## bigger than the original beside it. Face 2 stays at 16 rather than the 20
+## its cap height asks for: a plate's heading strip is the height the shipped
+## art gives it, and only the window titles use that face.
+const READABLE_SIZE: Array[int] = [10, 11, 16, 10]
+
+
+## A label in the game's own bitmap font, or in the readable one at the size
+## the plate's own coordinates leave for it.
+## **`fntID` 0 by default.** Of `Menu_*.lcl`'s 121 `GUI_SetText` calls 68 name
+## font 0 and 28 name font 2, and those 28 are the window titles -- which go
+## through [method place_title] and ask for [constant FNT_TITLE] by name. A
+## screen that took the title face for everything drew its captions at roughly
+## twice the size the original gives them.
+func make_label(text: String, size: int = 0, fnt: int = FNT_LABEL) -> Label:
 	var out: Label = Label.new()
 	out.text = text
-	if font != null:
-		out.add_theme_font_override("font", font)
-	if size > 0:
-		out.add_theme_font_size_override("font_size", size)
+	var chosen: FontFile = face(fnt)
+	if chosen != null:
+		out.add_theme_font_override("font", chosen)
+		if size > 0:
+			out.add_theme_font_size_override("font_size", size)
+		return out
+	out.add_theme_font_size_override("font_size",
+		size if size > 0 else readable_size(fnt))
 	return out
+
+
+## One `fntID`'s readable size.
+static func readable_size(fnt: int) -> int:
+	if fnt >= 0 and fnt < READABLE_SIZE.size():
+		return READABLE_SIZE[fnt]
+	return READABLE_SIZE[FNT_LABEL]
 
 
 ## A button captioned from the shipped banks and drawn on a `buttons.LIB`
@@ -311,22 +431,31 @@ func add_button(action: String, module: String, id: int,
 		sprite_index: int = -1) -> Button:
 	var button: Button = Button.new()
 	button.text = label_for(module, id)
-	if font != null:
-		button.add_theme_font_override("font", font)
+	# **`fntID` 0, like every shipped button.** `Menu_a/b/c.lcl` carry 89
+	# `GUI_SetButton` calls and not one of them names font 2 -- 81 use 0 and 8
+	# use 1 -- so a caption drawn in the title face was roughly twice the size
+	# the original gives it, and filled the whole plate of a button.
+	var chosen: FontFile = face(FNT_LABEL)
+	if chosen != null:
+		button.add_theme_font_override("font", chosen)
 	else:
 		# The row divides the plate five ways at most, so a caption is drawn
 		# to fit its share rather than being cut: *Enter Location* at the
 		# default size came out as *Enter Locati*.
-		button.add_theme_font_size_override("font_size", ACTION_FONT_SIZE)
-	if art != null and sprite_index >= 0:
-		var face: Texture2D = art.sprite(BUTTON_LIBRARY, sprite_index)
-		if face != null:
-			button.icon = face
-			button.expand_icon = true
+		button.add_theme_font_size_override("font_size",
+			readable_size(FNT_LABEL))
+	button.add_theme_color_override("font_color", INK_TITLE)
+	# **No icon.** The row is dressed in the composed face by
+	# [method _lay_out_buttons], and an icon beside the caption is a widget the
+	# original does not have; the argument is kept because the call sites name
+	# a sprite and one day a screen may want a different `Library` column.
+	if sprite_index >= 0 and art == null:
+		pass
 	# A caption or an icon wider than the button's share is cut, rather than
 	# pushing its neighbours off the plate.
 	button.clip_text = true
 	button.pressed.connect(_on_pressed.bind(action))
+	arm_sounds(button)
 	_buttons.add_child(button)
 	return button
 
@@ -342,10 +471,38 @@ func add_button(action: String, module: String, id: int,
 func make_button(action: String, text: String) -> Button:
 	var button: Button = Button.new()
 	button.text = text
-	if font != null:
-		button.add_theme_font_override("font", font)
+	var chosen: FontFile = face(FNT_LABEL)
+	if chosen != null:
+		button.add_theme_font_override("font", chosen)
+	else:
+		button.add_theme_font_size_override("font_size",
+			readable_size(FNT_LABEL))
 	button.pressed.connect(_on_pressed.bind(action))
+	arm_sounds(button)
+	button.resized.connect(_dress_when_sized.bind(button))
 	return button
+
+
+## Put the shipped face on a button the moment something decides how wide it
+## is -- a container, a list's own placement, or the action row.
+##
+## **Once.** Dressing does not change the rectangle, so there is no loop, but a
+## screen that is rebuilt keeps its buttons and the meta stops a second pass
+## composing the same face again. A `flat` button opts out: the grids' click
+## targets are text rows in the original too, not gadgets.
+const DRESSED: StringName = &"dressed"
+
+
+func _dress_when_sized(button: Button) -> void:
+	if button.flat or art == null or _root == null or _root.size.x <= 0.0:
+		return
+	if button.has_meta(DRESSED):
+		return
+	button.set_meta(DRESSED, true)
+	# The button's rectangle is in the canvas's units and `dress_button` wants
+	# the plate's, which is what the root spans.
+	var _face: float = dress_button(button,
+		button.size.x * PLATE_SIZE.x / _root.size.x)
 
 
 ## A row button that is going into the action row rather than into a list, so
@@ -353,8 +510,6 @@ func make_button(action: String, text: String) -> Button:
 func make_action_button(action: String, text: String) -> Button:
 	var button: Button = make_button(action, text)
 	button.clip_text = true
-	if font == null:
-		button.add_theme_font_size_override("font_size", ACTION_FONT_SIZE)
 	return button
 
 
@@ -448,10 +603,338 @@ func _lay_out_buttons() -> void:
 	var width: float = (span - BUTTON_ROW_GAP * float(row.size() - 1)) \
 		/ float(row.size())
 	for index: int in range(row.size()):
-		var at: Vector2 = Vector2(
-			BUTTON_ROW_MARGIN + float(index) * (width + BUTTON_ROW_GAP),
+		var share: float = BUTTON_ROW_MARGIN \
+			+ float(index) * (width + BUTTON_ROW_GAP)
+		# The composed face is a whole number of pieces wide, so it is narrower
+		# than the share; it is centred in what the share leaves. And it never
+		# grows past the shipped `6_Width`: a row of one used to hand its only
+		# button the whole plate, and no `GUI_SetButton` in the shipped data is
+		# wider than six pieces.
+		var face: float = dress_button(row[index],
+			minf(width, float(shipped_face_width())))
+		var at: Vector2 = Vector2(share + (width - face) * 0.5,
 			BUTTON_ROW_TOP)
-		place_on_plate(row[index], at, Vector2(width, BUTTON_ROW_HEIGHT))
+		place_on_plate(row[index], at,
+			Vector2(face, float(face_height(Art.BUTTON_BASE_ACTION))))
+
+
+## A button where `GUI_SetButton` puts one: the plate's own coordinates, the
+## `buttons.LIB` face composed at the width the layout asks for, and the
+## caption from the shipped bank.
+##
+## Unlike [method add_button] this does **not** join the centred action row --
+## the three windows of docs/27 section 5 place every button by hand, at pairs
+## like `(410, 418)` and `(60, 384)`, and a row that spread them evenly would
+## be a different screen.
+func gui_button(action: String, module: String, id: int, at: Vector2,
+		width: int = GUI_BUTTON_WIDTH) -> Button:
+	return gui_text_button(action, label_for(module, id), at, width)
+
+
+
+## The same, captioned with a string the screen has already resolved.
+func gui_text_button(action: String, text: String, at: Vector2,
+		width: int = GUI_BUTTON_WIDTH, into: Control = null,
+		base: int = Art.BUTTON_BASE_ACTION) -> Button:
+	var button: Button = Button.new()
+	button.text = text
+	button.clip_text = true
+	var chosen: FontFile = face(FNT_LABEL)
+	if chosen != null:
+		button.add_theme_font_override("font", chosen)
+	else:
+		button.add_theme_font_size_override("font_size",
+			readable_size(FNT_LABEL))
+	button.add_theme_color_override("font_color", INK_TITLE)
+	var span: float = _face_onto(button, width, base)
+	button.pressed.connect(_on_pressed.bind(action))
+	arm_sounds(button)
+	place_on_plate(button, at, Vector2(span, float(face_height(base))))
+	# **`into` matters for a button a redraw replaces.** The Upgrade Menu's
+	# shared `(405, 384)` is rebuilt on every refresh, and parented to the root
+	# it piled a second *Buy Item* on top of the first every time -- with the
+	# stale one still taking the click.
+	var parent: Control = into if into != null else root()
+	parent.add_child(button)
+	return button
+
+
+## The two sounds `aInitGUI` `0x0043BF30` loads, and what plays them.
+##
+## `click_1.wav` is the **pointer's**: `0x0043C500` calls the hit-test, and when
+## the gadget under the cursor has *changed* it plays that buffer panned by the
+## cursor's x (`320 - pointer_x`). `click_2.wav` is what a gadget's own handler
+## asks for -- `aPlayGUIClickSound(1)` at `0x0043E5E0`, from four screens'
+## button arms. `aPlayGUIClickSound(0)` plays the first one again.
+const SOUND_HOVER: String = "click_1.wav"
+const SOUND_CLICK: String = "click_2.wav"
+
+
+## Give *button* the pointer's sound and the press's.
+##
+## Every button goes through here, the flat list rows included: the original's
+## hover sound is fired by the gadget system for **any** gadget the pointer
+## crosses, not only the ones with a face.
+func arm_sounds(button: Button) -> void:
+	button.mouse_entered.connect(_play_gui_sound.bind(SOUND_HOVER))
+	button.button_down.connect(_play_gui_sound.bind(SOUND_CLICK))
+
+
+func _play_gui_sound(wave: String) -> void:
+	if audio == null:
+		return
+	# `NO_SCALING` because the engine hands `aDirectSoundPlay` its own volume
+	# rather than a table id -- there is no `SetVolume` entry for these two.
+	var _slot: int = audio.play_cue({
+		"wave": wave, "volume_id": AudioTables.NO_SCALING})
+
+
+## One row of a listbox, where `GUI_SetListbox` puts one.
+##
+## `Menu_a.lcl`'s *Leveloptions* is ten of these at `(60, 120 + 22i)` with
+## `8_Width`, so a row is `32 + 6*32 + 32` = 256 by 22 and its caption is
+## **left-aligned inside it** -- a list is a list, not a row of buttons.
+func gui_list_row(action: String, text: String, at: Vector2, width: int,
+		index: int, count: int, into: Control = null) -> Button:
+	var base: int = Art.BUTTON_BASE_LIST_MIDDLE
+	if index == 0:
+		base = Art.BUTTON_BASE_LIST_FIRST
+	elif index == count - 1:
+		base = Art.BUTTON_BASE_LIST_LAST
+	var row: Button = gui_text_button(action, text, at, width, into, base)
+	row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	row.add_theme_color_override("font_color", INK_ROSTER)
+	row.add_theme_color_override("font_hover_color", INK_VALUE)
+	# The caption clears the row's own left cap rather than starting on it.
+	for state: String in ["normal", "hover", "pressed", "disabled"]:
+		var face: StyleBoxTexture = row.get_theme_stylebox(state) \
+			as StyleBoxTexture
+		if face != null:
+			face.content_margin_left = LIST_ROW_INSET
+	return row
+
+
+## Dress *button* in the widest composed face that fits *span* plate units, and
+## answer the face's own width so the caller can place it.
+##
+## `Width` counts pieces and not units, so a row that divides the plate into
+## five does not land on a whole number of them; the face that fits is the one
+## used, and the button is then placed at exactly that width rather than
+## stretched to the share.
+func dress_button(button: Button, span: float,
+		base: int = Art.BUTTON_BASE_ACTION) -> float:
+	if art == null:
+		return span
+	var left: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		base + Art.BUTTON_LEFT)
+	var right: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		base + Art.BUTTON_RIGHT)
+	var fill: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		base + Art.BUTTON_MIDDLE)
+	if left == null or right == null or fill == null or fill.get_width() <= 0:
+		return span
+	var caps: float = left.get_size().x + right.get_size().x
+	var fills: int = floori((span - caps) / float(fill.get_width()))
+	return _face_onto(button, maxi(fills, 0) + 2, base)
+
+
+## Dress *button* in the composed `buttons.LIB` face and answer how wide it is.
+##
+## A cache with no art leaves the default theme's box, which is legible and
+## says plainly that the pictures are missing.
+func _face_onto(button: Button, width: int,
+		base: int = Art.BUTTON_BASE_ACTION) -> float:
+	var span: float = float(27 + maxi(width - 2, 0) * 31 + 18)
+	if art == null:
+		return span
+	var normal: Texture2D = art.button_face(base, width, false)
+	var lit: Texture2D = art.button_face(base, width, true)
+	if normal == null:
+		return span
+	span = float(normal.get_width())
+	# **The lit trio is the pointer's, not the mouse button's** (`0x0043a8b0`),
+	# so it dresses `hover` and `focus`; `pressed` takes it too, because a click
+	# is a hover the engine never had to draw differently.
+	button.add_theme_stylebox_override("normal", _face_box(normal, base))
+	for state: String in ["hover", "pressed"]:
+		button.add_theme_stylebox_override(state,
+			_face_box(lit if lit != null else normal, base))
+	button.add_theme_stylebox_override("disabled", _face_box(normal, base))
+	# **`focus` is drawn on top of whichever of the others is showing**, so it
+	# has to be nothing at all: dressed in the lit face it left a button lit
+	# for as long as it kept the keyboard focus, which is not what the pointer
+	# said.
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	return span
+
+
+## How wide `GUI_SetButton`'s own `6_Width` comes out, in plate units.
+func shipped_face_width() -> int:
+	var face: Texture2D = art.button_face(Art.BUTTON_BASE_ACTION,
+		GUI_BUTTON_WIDTH, false) if art != null else null
+	return int(face.get_size().x) if face != null else 169
+
+
+## How tall a composed face of this library is, in plate units.
+func face_height(base: int) -> int:
+	if art == null:
+		return int(GUI_BUTTON_HEIGHT)
+	var piece: Texture2D = art.sprite(Art.BUTTON_LIBRARY, base)
+	return int(piece.get_size().y) if piece != null else int(GUI_BUTTON_HEIGHT)
+
+
+## The composed face as a **nine-slice**: the two caps are pinned to their own
+## widths and the fill between them is tiled, so a button whose rectangle is
+## not a whole number of pieces still has round caps and an unstretched fill.
+## That is what the engine does by construction -- it lays whole pieces -- and
+## it is the only way to get the same picture out of a rectangle a container
+## chose.
+func _face_box(texture: Texture2D, base: int = -1) -> StyleBoxTexture:
+	var box: StyleBoxTexture = StyleBoxTexture.new()
+	box.texture = texture
+	if base < 0 or art == null:
+		return box
+	var left: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		base + Art.BUTTON_LEFT)
+	var right: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		base + Art.BUTTON_RIGHT)
+	if left == null or right == null:
+		return box
+	box.texture_margin_left = left.get_size().x
+	box.texture_margin_right = right.get_size().x
+	box.axis_stretch_horizontal = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+	return box
+
+
+## One `buttons.LIB` element as a button -- the arrows, the *i* and the roster's
+## red cross.
+##
+## `GUI_SetIcon` is gadget type 4, and `aPrintGadget` `0x0043a223` draws
+## `base + 1` while the pointer is over it and `base` otherwise -- 44/45,
+## 48/49, 50/51, 52/53 are those pairs -- so one index names both.
+func gui_icon(action: String, index: int, at: Vector2,
+		into: Control = null) -> Button:
+	var button: Button = Button.new()
+	# **Not `flat`.** A flat `Button` draws no style box at all, so the lit
+	# twin would never appear -- the picture is the box here, because only a
+	# box can differ between the pointer being over it and not.
+	var size: Vector2 = icon_faces(button, index)
+	button.pressed.connect(_on_pressed.bind(action))
+	arm_sounds(button)
+	place_on_plate(button, at, size)
+	var parent: Control = into if into != null else root()
+	parent.add_child(button)
+	return button
+
+
+## Dress *button* in one `buttons.LIB` element and its lit twin, and answer how
+## big the element is. A style box rather than [member Button.icon] because
+## only the box can differ per state.
+func icon_faces(button: Button, index: int) -> Vector2:
+	var picture: Texture2D = art.sprite(Art.BUTTON_LIBRARY, index) \
+		if art != null else null
+	if picture == null:
+		return Vector2(16.0, 16.0)
+	var lit: Texture2D = art.sprite(Art.BUTTON_LIBRARY,
+		index + Art.ICON_LIT_OFFSET)
+	button.add_theme_stylebox_override("normal", _face_box(picture))
+	for state: String in ["hover", "pressed"]:
+		button.add_theme_stylebox_override(state,
+			_face_box(lit if lit != null else picture))
+	button.add_theme_stylebox_override("disabled", _face_box(picture))
+	button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	return picture.get_size()
+
+
+## An invisible rectangle whose only job is to carry a hover hint.
+##
+## The original's help mode prints its eight strings somewhere; where is
+## unknown, and a caption laid across a plate this dense is unreadable however
+## it is placed. A tooltip puts each string on the region it names, which is
+## what the strings are for.
+func hint_region(rect: Rect2, text: String, into: Control = null) -> Control:
+	var area: HintControl = HintControl.new()
+	area.tooltip_text = text
+	area.face = face(FNT_LABEL)
+	area.readable_size = readable_size(FNT_LABEL)
+	area.ink = INK_LABEL
+	# **`PASS`, not `STOP`.** The regions are laid over the plate and a couple
+	# of them cover a widget; passing the event on keeps the widget clickable.
+	area.mouse_filter = Control.MOUSE_FILTER_PASS
+	place_on_plate(area, rect.position, rect.size)
+	var parent: Control = into if into != null else root()
+	parent.add_child(area)
+	return area
+
+
+## The same hint, laid over a control that is already placed -- the caller has
+## no plate rectangle to give, only the widget.
+func hint_over(target: Control, text: String) -> HintControl:
+	return HintControl.over(target, text, face(FNT_LABEL),
+		readable_size(FNT_LABEL), INK_LABEL)
+
+
+## A line where `GUI_SetText` puts one, aligned the way its `cX` column says.
+func gui_text(text: String, at: Vector2, align: int = ALIGN_LEFT,
+		ink: Color = INK_LABEL, into: Control = null,
+		fnt: int = FNT_LABEL) -> Label:
+	var line: Label = make_label(text, 0, fnt)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	line.add_theme_color_override("font_color", ink)
+	line.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var left: float = at.x
+	match align:
+		ALIGN_CENTRE:
+			line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			left = at.x - TEXT_BOX_WIDTH * 0.5
+		ALIGN_RIGHT:
+			line.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			left = at.x - TEXT_BOX_WIDTH
+		_:
+			line.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	place_on_plate(line, Vector2(left, at.y),
+		Vector2(TEXT_BOX_WIDTH, TEXT_LINE_HEIGHT))
+	var parent: Control = into if into != null else root()
+	parent.add_child(line)
+	return line
+
+
+## One sprite out of any interface library, put where the plate wants it.
+##
+## *at* is the top-left in the plate's own units and the sprite keeps its own
+## size unless *size* says otherwise -- the item icons of the Item List are
+## drawn at their natural 35x17, and the rotating item at whatever the window
+## it sits in allows.
+func gui_sprite(library: String, index: int, at: Vector2,
+		size: Vector2 = Vector2.ZERO, into: Control = null) -> TextureRect:
+	var view: TextureRect = TextureRect.new()
+	view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	view.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	view.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	var picture: Texture2D = art.sprite(library, index) if art != null else null
+	view.texture = picture
+	var span: Vector2 = size
+	if span == Vector2.ZERO:
+		span = picture.get_size() if picture != null else Vector2(16.0, 16.0)
+	place_on_plate(view, at, span)
+	var parent: Control = into if into != null else root()
+	parent.add_child(view)
+	return view
+
+
+## A transparent [Control] a screen rebuilds the whole of: the rows of a list,
+## the panel of a selected item.
+##
+## Full-rect and click-through, so what it holds is placed by
+## [method place_on_plate] like everything else and nothing on it eats a click
+## meant for the window behind.
+func gui_layer(into: Control = null) -> Control:
+	var layer: Control = Control.new()
+	layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var parent: Control = into if into != null else root()
+	parent.add_child(layer)
+	return layer
 
 
 ## Empty a container that is about to be rebuilt.

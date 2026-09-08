@@ -32,8 +32,15 @@ const BOX_SIZE: Vector2 = Vector2(180.0, 400.0)
 
 ## What the decoder writes for an arm that calls no voice routine.
 const NO_SPEECH: int = -1
+## `text/info/data.json` -- the item, weapon and unit descriptions the Upgrade
+## Menu's *i* opens (`0x00432B20/70/D0`).
+const DATA_DOCUMENT: String = "text/info/data.json"
+## `0x00432B86` -- a record whose letter is this has no page.
+const NO_PAGE: String = "#"
 
 var _blocks: Dictionary = {}
+var _families: Dictionary = {}
+var _no_page: String = NO_PAGE
 ## action point -> `{"label": String, "speech": int}`, out of the document.
 var _pickups: Dictionary[int, Dictionary] = {}
 
@@ -41,9 +48,10 @@ var _pickups: Dictionary[int, Dictionary] = {}
 ## The document, or an empty reader when the cache has none -- a cache made
 ## before the converter grew this document still loads, and the box is then
 ## the one thing missing rather than the mission.
-static func load_from(cache_dir: String) -> InfoText:
+static func load_from(cache_dir: String,
+		document: String = DOCUMENT) -> InfoText:
 	var out: InfoText = InfoText.new()
-	out.read(CacheLoader.read_json("%s/%s" % [cache_dir, DOCUMENT]))
+	out.read(CacheLoader.read_json("%s/%s" % [cache_dir, document]))
 	return out
 
 
@@ -51,9 +59,13 @@ static func load_from(cache_dir: String) -> InfoText:
 func read(document: Dictionary) -> void:
 	_blocks = {}
 	_pickups = {}
+	_families = {}
+	_no_page = NO_PAGE
 	if DictRead.as_string(document.get("schema", "")) != SCHEMA:
 		return
 	_blocks = DictRead.as_dict(document.get("blocks", {}))
+	_families = DictRead.as_dict(document.get("families", {}))
+	_no_page = DictRead.as_string(document.get("no_page", NO_PAGE))
 	for entry: Variant in DictRead.as_array(document.get("pickups", [])):
 		var record: Dictionary = DictRead.as_dict(entry)
 		_pickups[DictRead.as_int(record.get("action_point", -1))] = {
@@ -109,6 +121,19 @@ func labels_out_of_order() -> PackedStringArray:
 			out.append("%d -> %s, wanted %s"
 				% [points[i], label_for(points[i]), want])
 	return out
+
+
+## The digit `Data.txt`'s labels append for one family -- `0` a unit, `1`
+## equipment, `2` a weapon (`0x00432B20`, `0x00432B70`, `0x00432BD0`). Read out
+## of the document rather than written here, so the game side carries no table
+## the converter could disagree with.
+func family_digit(family: String) -> String:
+	return DictRead.as_string(_families.get(family, ""))
+
+
+## The letter that means "this record has no page" (`0x00432B86`).
+func no_page() -> String:
+	return _no_page
 
 
 func has(label: String) -> bool:

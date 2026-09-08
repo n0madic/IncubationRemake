@@ -274,6 +274,78 @@ CATALOGUE_BUILDERS = {
 #: The buffer both compare a record's name against.  It is in ``.bss``, so the
 #: file carries no bytes for it and it is zero at load -- the empty string.
 CATALOGUE_EMPTY_STRING = 0x004FA524
+#: The **third** test, and the one that keeps the aliens out of the shop.  It
+#: is in the *forward* stepper only, three instructions past the range: ``cmp
+#: edi, imm32`` / ``jl accept``, with ``edi`` the record's ``+0x38`` (weapons)
+#: or ``+0x20`` (equipment).  The backward twin does without it because its
+#: caller starts it at 18 and it only walks down.  ``(the site, the u32 at +2,
+#: the base the iterator counts from, the stride, the resulting id bound)``.
+#: Equipment's is the walk's own stop rather than an accept test, so it is the
+#: ``cmp edi, imm32`` at the head of the loop.
+CATALOGUE_BOUNDS = {
+    "weapons": (0x0047A18B, 0x0051B2F8, 67, 20),
+    "equipment": (0x0047A023, 0x00517BD1, 42, 21),
+}
+#: ``push 0x12`` in front of each backward stepper's call -- the id the wrap
+#: to the top of the catalogue starts from.
+CATALOGUE_WRAP_SITES = {"weapons": 0x0045AF71, "equipment": 0x0045B023}
+CATALOGUE_WRAP_FROM = 0x12
+
+# -- the Upgrade Menu's shared action button, docs/27 section 5.3 -------------
+#: ``mov [addr], 0`` and ``mov [addr], 1`` over the gadget's own enable word.
+GADGET_DISABLE = 0x0043AAF0
+GADGET_ENABLE = 0x0043AB30
+BUY_GADGET = 0
+UNDO_GADGET = 18
+#: The item window's refresh, one per catalogue half. Both re-gate gadget 0 on
+#: the row that is up and disable gadget 18 when it passes.
+ITEM_WINDOW_REFRESH = {"equipment": 0x00457B00, "weapons": 0x00457DA0}
+#: Every call site of each, so a reading that thinks the swap is per visit
+#: rather than per row fails here: the two arrows, *Buy Item*, *Undo* and the
+#: window's build.
+ITEM_WINDOW_REFRESH_CALLERS = {
+    "equipment": (0x0045AA77, 0x0045AF49, 0x0045B04F, 0x0045B06A,
+                  0x0045B0C1, 0x0045B1AF, 0x0045B4E5, 0x0045C08F),
+    "weapons": (0x0045AB7F, 0x0045AF9C, 0x0045AFB7, 0x0045AFFB,
+                0x0045B116, 0x0045B15A, 0x0045B4F6, 0x0045C096),
+}
+#: ``push imm8`` + ``call``: the refresh's own pair, per half.
+ITEM_WINDOW_GATE_PASSES = {
+    "equipment": (0x00457CFD, 0x00457D07),
+    "weapons": (0x004580D9, 0x004580E3),
+}
+#: The three tests in front of that pair, as ``(site, absolute)`` for the
+#: displacement each reads. The unit record is 91 bytes from ``UNIT_RECORD_BASE``
+#: and both catalogue records are their own table's.
+UNIT_RECORD_BASE = 0x0051F2A0
+CATALOGUE_RECORD_BASE = {"weapons": 0x0051B2C0, "equipment": 0x00517BB0}
+ITEM_WINDOW_GATE_READS = {
+    ("equipment", "carried"): (0x00457C51, UNIT_RECORD_BASE, 0x21),
+    ("equipment", "cost"): (0x00457C85, CATALOGUE_RECORD_BASE["equipment"],
+                            0x20),
+    ("equipment", "skills"): (0x00457CF2, UNIT_RECORD_BASE, 0x18),
+    ("weapons", "carried"): (0x0045802B, UNIT_RECORD_BASE, 0x3F),
+    ("weapons", "cost"): (0x00458061, CATALOGUE_RECORD_BASE["weapons"], 0x3E),
+    ("weapons", "skills"): (0x004580CE, UNIT_RECORD_BASE, 0x18),
+}
+#: Gadget 18's own writers -- ``push 0x12`` + ``call``. *Buy Item* arms it as
+#: the arm's first instruction, *Commend Unit* past the decrement, and the
+#: window's build clears it. *Undo* (``0x0045B507``) writes neither gadget,
+#: which is why it is absent here.
+UNDO_GADGET_WRITERS = {
+    0x0045A970: GADGET_ENABLE,
+    0x0045AEC3: GADGET_ENABLE,
+    0x0045C075: GADGET_DISABLE,
+}
+#: The *Item List*'s painter has no row bound: it wraps at an x of 500 with a
+#: step of 250 from 80, and drops 35 down. ``add edi, imm32`` / ``cmp edi,
+#: imm32`` / ``add esi, imm8``.
+ITEM_LIST_COLUMN_STEP_SITE = 0x0045A13B
+ITEM_LIST_COLUMN_WRAP_SITE = 0x0045A141
+ITEM_LIST_ROW_STEP_SITE = 0x0045A149
+ITEM_LIST_COLUMN_STEP = 250
+ITEM_LIST_COLUMN_WRAP = 500
+ITEM_LIST_ROW_STEP = 35
 TECH_LEVEL_GET = 0x0043AFA0
 TECH_LEVEL_SET = 0x0043AF90
 ENLARGE_RANK_SCALE_SITE = 0x00478A6C     # `mov dl, 0x0C`, imm8 at +1
@@ -1003,6 +1075,278 @@ PROJECTION_MAP_PUSHES = (0x004559FA, 0x004559F8, 0x004559F0, 0x004559EB)
 
 
 
+# --- what a purchase costs besides points (docs/27 section 5.3) ------------
+#: `aBuyWeapon` and `aBuyEquipment`, the two the Upgrade Menu's buttons reach.
+BUY_WEAPON = 0x00475680
+BUY_EQUIPMENT = 0x004755D0
+#: The two shortfall routines they end with, `f(id, unit, apply)`.
+WEAPON_SHORTFALL = 0x0047A600
+EQUIPMENT_SHORTFALL = 0x0047A6E0
+#: The `call` site in each buyer, and the `add esp, 0xc` that follows it.
+WEAPON_SHORTFALL_CALL = 0x00475699
+EQUIPMENT_SHORTFALL_CALL = 0x0047564C
+#: The epilogue both share: `lea eax, [eax + eax*2]` / `shl eax, 2`, which is
+#: `short * 12`, subtracted from the unit's `+0x18` as a **byte**.
+WEAPON_EPILOGUE = (0x004756A5, 0x004756AB, 0x0047569E, 0x004756B1)
+EQUIPMENT_EPILOGUE = (0x00475658, 0x0047565E, 0x00475651, 0x00475664)
+#: The unit record's training points, and the flag strip the equipment ids
+#: index: `unit + 0x21 + id`.
+UNIT_TRAINING_POINTS = 0x18
+UNIT_EQUIPMENT_FLAGS = 0x21
+#: The catalogue limits each buyer refuses past.
+WEAPON_ID_MAX = 0x32
+EQUIPMENT_ID_MAX = 0x15
+#: `cmp eax, 7` then `mov byte [esi + 0x22], 1` -- the Jet Pack grants item 1.
+JET_PACK_TEST = 0x004755FE
+JET_PACK_GRANT = 0x00475603
+#: The four exclusive ranges, as (low test, high test or None, clearing write,
+#: width in bytes). A `mov word` clears two ids, a `mov dword` four.
+EXCLUSIVE_RANGES = (
+    (0x00475618, None, 0x0047561D, 2),
+    (0x00475623, 0x00475628, 0x0047562D, 2),
+    (0x00475607, 0x0047560C, 0x00475611, 4),
+    (0x00475633, 0x00475638, 0x0047563D, 2),
+)
+#: What those four come to, which is what `core/campaign/upgrade.gd` carries.
+EXCLUSIVE_GROUPS = ([0, 1], [3, 4], [10, 11, 12, 13], [15, 16])
+#: **What the Upgrade Menu's *i* shows.** `0x00432B70` (equipment) and
+#: `0x00432BD0` (a weapon) read a letter out of the record, refuse when it is
+#: `#`, and open `DATA/TXT/<language>/Info/Data.txt` at that letter plus a
+#: digit naming the family -- `0` a unit, `1` equipment, `2` a weapon. The
+#: letter is `Info.lcl`'s own last string column, which `inclib.info` parses
+#: as `key`.
+INFO_EQUIPMENT_WRAPPER = 0x00432B70
+INFO_WEAPON_WRAPPER = 0x00432BD0
+INFO_UNIT_WRAPPER = 0x00432B20
+#: `mov cl, byte [eax + 0x517BD9]` and `mov al, byte [ecx + 0x51B300]` -- the
+#: letter's absolute address at record 0, and what that is as a field offset.
+INFO_EQUIPMENT_LETTER = (0x00432B80, 0x00517BD9)
+INFO_WEAPON_LETTER = (0x00432BDE, 0x0051B300)
+INFO_EQUIPMENT_LETTER_FIELD = 0x29
+INFO_WEAPON_LETTER_FIELD = 0x40
+#: The `cmp al, '#'` each makes before opening anything.
+INFO_NO_PAGE_TESTS = (0x00432B86, 0x00432BE4)
+INFO_NO_PAGE = ord("#")
+#: The digit each family appends, and the file all three name.
+INFO_FAMILY_DIGITS = ((INFO_UNIT_WRAPPER, 0x00432B27, ord("0")),
+                      (INFO_EQUIPMENT_WRAPPER, 0x00432BA9, ord("1")),
+                      (INFO_WEAPON_WRAPPER, 0x00432C06, ord("2")))
+INFO_FILE_PUSH = 0x00432B51
+INFO_FILE = "Data"
+#: `0x00458B2D` and `0x004587A6` -- where the item panel opens it, and the
+#: rectangle it hands over: the item window's own interior.
+INFO_ITEM_CALLS = ((0x00458B2D, INFO_EQUIPMENT_WRAPPER),
+                   (0x004587A6, INFO_WEAPON_WRAPPER))
+INFO_ITEM_BOX_PUSHES = (0x00458B27, 0x00458B22, 0x00458B1D, 0x00458B1B)
+INFO_ITEM_BOX = (405, 140, 170, 110)
+
+#: The skill columns each shortfall reads, as (unit offset, table address).
+#: A weapon record is 65 bytes and its four skills are `+0x33..+0x36`; an
+#: equipment record is 42 and its six are `+0x23..+0x28`.
+WEAPON_SKILL_READS = ((0x1B, 0x51B2F3), (0x1C, 0x51B2F4), (0x1D, 0x51B2F5),
+                      (0x1A, 0x51B2F6))
+EQUIPMENT_SKILL_READS = ((0x1B, 0x517BD4), (0x1C, 0x517BD5), (0x1D, 0x517BD6),
+                         (0x1A, 0x517BD3), (0x1F, 0x517BD8), (0x1E, 0x517BD7))
+WEAPON_RECORD_STRIDE = 65
+EQUIPMENT_RECORD_STRIDE = 42
+WEAPON_SKILL_FIELD = 0x33
+EQUIPMENT_SKILL_FIELD = 0x23
+
+
+def _mov_cl_disp8(b: Binary, va: int) -> int | None:
+    """``mov cl, byte [edi + disp8]`` at *va*, as the displacement."""
+    if b.pe.bytes_at(va, 2) != b"\x8a\x4f":
+        return None
+    return b.u8(va + 2)
+
+
+def _mov_dl_absolute(b: Binary, va: int, window: int = 12) -> int | None:
+    """The first ``mov dl, byte [esi + disp32]`` at or after *va*.
+
+    The compiler interleaves the two loads with whatever else the block is
+    doing -- `shl esi, 1` and a `push` sit between them in the equipment
+    routine -- so the table read is found rather than counted to.
+    """
+    for step in range(window):
+        if b.pe.bytes_at(va + step, 2) == b"\x8a\x96":
+            return b.u32(va + step + 2)
+    return None
+
+
+def check_upgrade_purchase(ck: Checker, b: Binary) -> None:
+    """docs/27 section 5.3 -- the other half of a purchase's price.
+
+    Equipment points are what the Upgrade Menu counts down; the training
+    points at `+0x18` are the half nothing had pinned.  Both buyers end the
+    same way -- raise every skill the item wants to the item's own number,
+    add up what was raised, and subtract twelve of `+0x18` per point -- and
+    `aBuyEquipment` is a **toggle** with four exclusive ranges and one grant
+    in front of that.  Every claim below is read back out of the shipped
+    executable rather than asserted.
+    """
+    # The two buyers reach the two shortfall routines.
+    ck.equal("buy.weapon_shortfall", b.call_target(WEAPON_SHORTFALL_CALL),
+             WEAPON_SHORTFALL, hex)
+    ck.equal("buy.equipment_shortfall",
+             b.call_target(EQUIPMENT_SHORTFALL_CALL), EQUIPMENT_SHORTFALL, hex)
+
+    # The catalogue limits: `cmp eax, imm8` then a `jg`/`jle` out.
+    ck.check("buy.weapon_id_max",
+             b.pe.bytes_at(0x00475689, 3) == b"\x83\xf8" + bytes([WEAPON_ID_MAX]),
+             f"cmp eax, {WEAPON_ID_MAX}")
+    ck.check("buy.equipment_id_max",
+             b.pe.bytes_at(0x004755DD, 3)
+             == b"\x83\xf8" + bytes([EQUIPMENT_ID_MAX]),
+             f"cmp eax, {EQUIPMENT_ID_MAX}")
+
+    # `short * 12`, and the subtraction is a byte.
+    for name, (triple, dbl, load, store) in (
+            ("weapon", WEAPON_EPILOGUE), ("equipment", EQUIPMENT_EPILOGUE)):
+        ck.check(f"buy.{name}_times_three",
+                 b.pe.bytes_at(triple, 3) == b"\x8d\x04\x40",
+                 f"{triple:#x}: lea eax, [eax + eax*2]")
+        ck.check(f"buy.{name}_times_four",
+                 b.pe.bytes_at(dbl, 3) == b"\xc1\xe0\x02",
+                 f"{dbl:#x}: shl eax, 2")
+        ck.check(f"buy.{name}_reads_tp",
+                 b.pe.bytes_at(load, 3)
+                 == b"\x8a\x56" + bytes([UNIT_TRAINING_POINTS]),
+                 f"{load:#x}: mov dl, byte [esi + {UNIT_TRAINING_POINTS:#x}]")
+        ck.check(f"buy.{name}_writes_tp",
+                 b.pe.bytes_at(store, 3)
+                 == b"\x88\x56" + bytes([UNIT_TRAINING_POINTS]),
+                 f"{store:#x}: mov byte [esi + {UNIT_TRAINING_POINTS:#x}], dl")
+
+    # The toggle: an id already carried is cleared and the routine returns
+    # before it ever reaches the price.
+    ck.check("buy.equipment_is_a_toggle",
+             b.pe.bytes_at(0x004755EA, 4)
+             == b"\x8a\x4c\x30" + bytes([UNIT_EQUIPMENT_FLAGS])
+             and b.pe.bytes_at(0x004755F2, 5)
+             == b"\xc6\x44\x30" + bytes([UNIT_EQUIPMENT_FLAGS]) + b"\x00",
+             "mov cl, [eax+esi+0x21] / mov byte [eax+esi+0x21], 0")
+    ck.check("buy.equipment_toggle_is_before_the_price",
+             0x004755EA < EXCLUSIVE_RANGES[0][0] < EQUIPMENT_SHORTFALL_CALL,
+             "the clear returns without spending anything")
+
+    # The Jet Pack's grant.
+    ck.check("buy.jet_pack_test",
+             b.pe.bytes_at(JET_PACK_TEST, 3) == b"\x83\xf8\x07",
+             f"{JET_PACK_TEST:#x}: cmp eax, 7")
+    ck.check("buy.jet_pack_grant",
+             b.pe.bytes_at(JET_PACK_GRANT, 4)
+             == b"\xc6\x46" + bytes([UNIT_EQUIPMENT_FLAGS + 1]) + b"\x01",
+             f"{JET_PACK_GRANT:#x}: mov byte [esi + 0x22], 1 -- item 1")
+
+    # The four exclusive ranges, read off their own tests and writes.
+    groups: list[list[int]] = []
+    for low_site, high_site, write_site, width in EXCLUSIVE_RANGES:
+        ck.check(f"buy.range_low_{low_site:#x}",
+                 b.pe.bytes_at(low_site, 2) == b"\x83\xf8",
+                 f"{low_site:#x}: cmp eax, imm8")
+        low = b.u8(low_site + 2)
+        if high_site is None:
+            # `cmp eax, 1 / jg` -- the range is 0..1, the low test being the
+            # only one because ids below zero were refused at the top.
+            high = low
+            low = 0
+        else:
+            ck.check(f"buy.range_high_{high_site:#x}",
+                     b.pe.bytes_at(high_site, 2) == b"\x83\xf8",
+                     f"{high_site:#x}: cmp eax, imm8")
+            high = b.u8(high_site + 2)
+        opcode = b.pe.bytes_at(write_site, 1)
+        want = b"\x66\xc7\x46" if width == 2 else b"\xc7\x46"
+        ck.check(f"buy.range_clear_{write_site:#x}",
+                 b.pe.bytes_at(write_site, len(want)) == want,
+                 f"{write_site:#x}: mov {'word' if width == 2 else 'dword'}"
+                 f" [esi + disp8], 0")
+        disp = b.u8(write_site + len(want))
+        ck.equal(f"buy.range_base_{write_site:#x}",
+                 disp - UNIT_EQUIPMENT_FLAGS, low)
+        ck.equal(f"buy.range_width_{write_site:#x}", high - low + 1, width,
+                 lambda v: str(v))
+        groups.append(list(range(low, high + 1)))
+        assert opcode  # the read above is what the check used
+    ck.equal("buy.exclusive_groups", sorted(groups),
+             sorted(list(g) for g in EXCLUSIVE_GROUPS), str)
+
+    # The skill columns, and the record strides that reach them.
+    ck.check("buy.weapon_stride",
+             b.pe.bytes_at(0x0047A615, 3) == b"\xc1\xe2\x05"
+             and b.pe.bytes_at(0x0047A622, 3) == b"\x8d\x34\x51",
+             f"shl edx, 5 / lea esi, [ecx + edx*2] -- {WEAPON_RECORD_STRIDE}"
+             " bytes a weapon")
+    weapon_base = WEAPON_SKILL_READS[0][1] - WEAPON_SKILL_FIELD
+    for index, (unit_off, table) in enumerate(WEAPON_SKILL_READS):
+        site = (0x0047A625, 0x0047A648, 0x0047A66E, 0x0047A694)[index]
+        ck.equal(f"buy.weapon_skill{index}_unit", _mov_cl_disp8(b, site) or -1,
+                 unit_off, hex)
+        ck.equal(f"buy.weapon_skill{index}_table",
+                 _mov_dl_absolute(b, site) or -1, table, hex)
+        # The four columns are consecutive in the record, whatever order the
+        # compiler visits them in.
+        ck.equal(f"buy.weapon_skill{index}_field", table - weapon_base,
+                 WEAPON_SKILL_FIELD + index, hex)
+    item_base = EQUIPMENT_SKILL_READS[3][1] - EQUIPMENT_SKILL_FIELD
+    for index, (unit_off, table) in enumerate(EQUIPMENT_SKILL_READS):
+        site = (0x0047A704, 0x0047A72A, 0x0047A750, 0x0047A776, 0x0047A79C,
+                0x0047A7C2)[index]
+        ck.equal(f"buy.equipment_skill{index}_unit",
+                 _mov_cl_disp8(b, site) or -1, unit_off, hex)
+        ck.equal(f"buy.equipment_skill{index}_table",
+                 _mov_dl_absolute(b, site) or -1, table, hex)
+        ck.equal(f"buy.equipment_skill{index}_field", table - item_base,
+                 EQUIPMENT_SKILL_FIELD + unit_off - 0x1A, hex)
+    # --- what the *i* opens ------------------------------------------------
+    for site, target in INFO_ITEM_CALLS:
+        ck.equal(f"info.item_call_{site:#x}", b.call_target(site), target, hex)
+    ck.equal("info.item_box",
+             tuple(b.u32(va + 1) if b.u8(va) == 0x68 else b.u8(va + 1)
+                   for va in INFO_ITEM_BOX_PUSHES),
+             INFO_ITEM_BOX, str)
+    ck.check("info.file",
+             b.pe.bytes_at(INFO_FILE_PUSH, 1) == b"\x68"
+             and b.string(b.u32(INFO_FILE_PUSH + 1), 16) == INFO_FILE,
+             f"push \"{INFO_FILE}\"")
+    for entry, site, digit in INFO_FAMILY_DIGITS:
+        ck.check(f"info.family_{entry:#x}",
+                 b.pe.bytes_at(site, 2) == bytes([0x6A, digit]),
+                 f"{site:#x}: push '{chr(digit)}'")
+    for name, (site, table), field in (
+            ("equipment", INFO_EQUIPMENT_LETTER, INFO_EQUIPMENT_LETTER_FIELD),
+            ("weapon", INFO_WEAPON_LETTER, INFO_WEAPON_LETTER_FIELD)):
+        ck.check(f"info.{name}_letter_read",
+                 b.pe.bytes_at(site, 2) in (b"\x8a\x88", b"\x8a\x81")
+                 and b.u32(site + 2) == table,
+                 f"{site:#x}: the record's letter at {table:#x}")
+    ck.equal("info.equipment_letter_field",
+             INFO_EQUIPMENT_LETTER[1] - item_base, INFO_EQUIPMENT_LETTER_FIELD,
+             hex)
+    ck.equal("info.weapon_letter_field",
+             INFO_WEAPON_LETTER[1] - weapon_base, INFO_WEAPON_LETTER_FIELD,
+             hex)
+    for site in INFO_NO_PAGE_TESTS:
+        ck.check(f"info.no_page_{site:#x}",
+                 b.pe.bytes_at(site, 3) in (bytes([0x80, 0xF9, INFO_NO_PAGE]),
+                                            bytes([0x3C, INFO_NO_PAGE, 0x00])[:2]
+                                            + b.pe.bytes_at(site + 2, 1)),
+                 f"{site:#x}: cmp <letter>, '#'")
+
+    # The record's own layout: the skills sit at `+0x33..+0x36` of a weapon and
+    # `+0x23..+0x28` of an item, which is what docs/27 section 5.3 says.
+    ck.equal("buy.weapon_skill_field", WEAPON_SKILL_FIELD, 0x33, hex)
+    ck.equal("buy.equipment_skill_field", EQUIPMENT_SKILL_FIELD, 0x23, hex)
+    # Four columns for a weapon and six for an item, which is the whole of the
+    # difference between the two: `WEAPON_SKILL_ORDER` against
+    # `EQUIPMENT_SKILL_ORDER` in `core/campaign/upgrade.gd`.
+    ck.equal("buy.weapon_skill_count", len(WEAPON_SKILL_READS), 4)
+    ck.equal("buy.equipment_skill_count", len(EQUIPMENT_SKILL_READS), 6)
+    ck.equal("buy.skill_order_is_the_same_prefix",
+             [off for off, _ in WEAPON_SKILL_READS],
+             [off for off, _ in EQUIPMENT_SKILL_READS][:4], str)
+
+
 def check_screen_camera(ck: Checker, b: Binary) -> None:
     """docs/27 section 2.6 -- the campaign screen's camera is a constant.
 
@@ -1646,6 +1990,42 @@ def run_checks(root: str) -> Checker:
         # The `mov esi, imm32` immediately before it names that buffer.
         ck.equal(f"catalogue.{name}_empty_string",
                  b.u32(name_site - 4), CATALOGUE_EMPTY_STRING, hex)
+    for name, (site, base, stride, bound) in sorted(CATALOGUE_BOUNDS.items()):
+        ck.equal(f"catalogue.{name}_id_bound",
+                 (b.u32(site + 2) - base) // stride, bound, str)
+        ck.equal(f"catalogue.{name}_bound_is_aligned",
+                 (b.u32(site + 2) - base) % stride, 0, str)
+    for name, site in sorted(CATALOGUE_WRAP_SITES.items()):
+        ck.equal(f"catalogue.{name}_wraps_from", b.u8(site + 1),
+                 CATALOGUE_WRAP_FROM, str)
+
+    # The shared *Buy Item* / *Undo* position -- docs/27 section 5.3. The
+    # swap is per catalogue row, not per visit, and these are what say so.
+    for name, sites in sorted(ITEM_WINDOW_REFRESH_CALLERS.items()):
+        for site in sites:
+            ck.equal(f"action.{name}_refresh_call_{site:08x}",
+                     b.call_target(site), ITEM_WINDOW_REFRESH[name], hex)
+    for name, (buy, undo) in sorted(ITEM_WINDOW_GATE_PASSES.items()):
+        ck.equal(f"action.{name}_gate_enables_buy",
+                 (b.u8(buy + 1), b.call_target(buy + 2)),
+                 (BUY_GADGET, GADGET_ENABLE), str)
+        ck.equal(f"action.{name}_gate_disables_undo",
+                 (b.u8(undo + 1), b.call_target(undo + 2)),
+                 (UNDO_GADGET, GADGET_DISABLE), str)
+    for (name, test), (site, base, offset) in sorted(
+            ITEM_WINDOW_GATE_READS.items()):
+        ck.equal(f"action.{name}_gate_reads_{test}", b.u32(site + 3) - base,
+                 offset, hex)
+    for site, writer in sorted(UNDO_GADGET_WRITERS.items()):
+        ck.equal(f"action.undo_gadget_{site:08x}",
+                 (b.u8(site + 1), b.call_target(site + 2)),
+                 (UNDO_GADGET, writer), str)
+    ck.equal("action.item_list_column_step",
+             b.u32(ITEM_LIST_COLUMN_STEP_SITE + 2), ITEM_LIST_COLUMN_STEP, str)
+    ck.equal("action.item_list_column_wrap",
+             b.u32(ITEM_LIST_COLUMN_WRAP_SITE + 2), ITEM_LIST_COLUMN_WRAP, str)
+    ck.equal("action.item_list_row_step",
+             b.u8(ITEM_LIST_ROW_STEP_SITE + 2), ITEM_LIST_ROW_STEP, str)
 
     for number, site in sorted(GAME_CONTROL_FIRST_MISSION_SITES.items()):
         ck.equal(f"level.campaign_{number}_first_mission",
@@ -1885,6 +2265,7 @@ def run_checks(root: str) -> Checker:
                  for stem, h in c.headers.items() if h["name"]),
              "every header's own-name field matches its filename")
     check_screen_camera(ck, b)
+    check_upgrade_purchase(ck, b)
     check_screen_rotation(ck, b)
     check_projection(ck, b)
 

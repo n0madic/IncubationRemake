@@ -79,14 +79,31 @@ def check_font(lib: ShapeLibrary, name: str) -> list[str]:
     return problems
 
 
+#: What index 2 is worth beside index 1.  All three ramps
+#: ``aPrintGUITextBox`` can install are known (``docs/24`` §4.2) and two of
+#: them agree: ``0x632C / 0xFFFF`` for ``{#0}`` and ``0x6000 / 0xF800`` for
+#: ``{#2}`` are both 12/31, and the body ramp's ``0x528A / 0x94B2`` is 10/18.
+#: A sample is drawn in the first, the one every text box starts in.
+#: See :func:`ramp_palette`.
+SHADE_COVERAGE = 12 / 31
+
+
 def ramp_palette() -> list[tuple[int, int, int]]:
-    """Opaque white for every non-zero index; index 0 is written transparent.
+    """Index 0 transparent, index 1 solid white, index 2 the shade beside it.
 
     Font libraries ship without a companion .pal, so the caller supplies the
-    colour. A flat white keeps the sample legible on any background; using the
-    raw index as a grey level would render most glyphs near-black.
+    colour, and using the raw index as a grey level would render most glyphs
+    near-black.  But a flat white for *every* non-zero index is wrong too:
+    **index 2 is the glyph's antialiasing**.  The blitter ``0x00447900`` maps
+    the value straight onto the caller's colour array -- at ``0x00447ADD``, the
+    16-bit path, a 1 takes ``colour[0]`` and everything else ``colour[1]`` --
+    and every ramp ``aPrintGUITextBox`` can install makes ``colour[1]`` a
+    mid-tone of ``colour[0]``.  Painting it solid fattens every stem and fills
+    the counters of ``a``, ``o`` and ``e``.
     """
-    return [(0, 0, 0)] + [(255, 255, 255)] * 255
+    shade = int(round(255 * SHADE_COVERAGE))
+    return ([(0, 0, 0), (255, 255, 255), (shade, shade, shade)]
+            + [(255, 255, 255)] * 253)
 
 
 def render(lib: ShapeLibrary, text: str, tracking: int = 1,

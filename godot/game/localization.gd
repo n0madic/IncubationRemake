@@ -95,7 +95,9 @@ const OWN: Dictionary = {
 	"shell.gore.3": {"English": "Everyone"},
 	"shell.faithful": {"English": "Faithful to the original"},
 	"shell.font": {"English": "Interface font"},
-	"shell.font.game": {"English": "the game's own"},
+	# Short enough for the row's own field, which is `2_Width` widened to 4 --
+	# *the game's own* ran off the end of it.
+	"shell.font.game": {"English": "original"},
 	"shell.font.readable": {"English": "readable"},
 	"shell.language": {"English": "Language"},
 	"shell.campaign": {"English": "Campaign %d"},
@@ -115,6 +117,24 @@ const OWN: Dictionary = {
 	"deploy.cell_occupied": {"English": "somebody is standing there"},
 	"deploy.no_free_unit_slot": {"English": "the map is full"},
 	"deploy.empty_roster_record": {"English": "that roster slot is empty"},
+	# The three windows of docs/27 section 5. Every caption on them is
+	# shipped; these are only the refusals, which the original makes by
+	# greying a button and saying nothing (docs/92 section 7.4).
+	"roster.empty": {"English": "nobody in the squad -- recruit somebody"},
+	"catalogue.empty": {"English": "nothing at this tech level"},
+	"recruit.empty": {"English": "no unit type in this category"},
+	"upgrade.nobody": {"English": "nobody to equip"},
+	"upgrade.no_unit": {"English": "nobody selected"},
+	"upgrade.bad_id": {"English": "no such item"},
+	"upgrade.not_enough_equipment_points": {
+		"English": "not enough equipment points"},
+	"upgrade.not_enough_skill_points": {"English": "not enough skill points"},
+	"upgrade.already_carried": {"English": "already carried"},
+	"upgrade.jet_pack_already_scans": {
+		"English": "the Jet Pack already carries a scanner"},
+	"upgrade.rename": {"English": "a hero keeps the name he earned"},
+	"upgrade.commend": {
+		"English": "no commendation to award, or none left to earn"},
 }
 
 ## What a missing key renders as. Visible on purpose.

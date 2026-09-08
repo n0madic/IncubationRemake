@@ -15,6 +15,10 @@ extends CampaignScreen
 
 ## The remake's own: neither chain is named in any shipped bank.
 const OWN_CAMPAIGN: String = "shell.campaign"
+## `GUI_SetListbox (0..9, ..., 060_x, 120+22i_y, 8_Width)` -- the list's own
+## origin and width, from `Menu_a.lcl`'s *Leveloptions*.
+const LIST_AT: Vector2 = Vector2(60.0, 120.0)
+const LIST_WIDTH: int = 8
 
 var host: CampaignHost = null
 
@@ -25,11 +29,19 @@ func build() -> void:
 	title.position = Vector2(8.0, 0.0)
 	body().add_child(title)
 
-	var list: VBoxContainer = VBoxContainer.new()
-	list.position = Vector2(8.0, 40.0)
-	body().add_child(list)
-	for number: int in CampaignState.FIRST_MISSION:
-		list.add_child(make_button("start:%d" % number, _caption(number)))
+	# `GUI_SetListbox`'s own geometry -- `Menu_a.lcl`'s *Leveloptions* is ten
+	# rows of 22 at `(60, 120)`, `8_Width` -- rather than a container's, so the
+	# rows are the shipped height and their captions are left-aligned inside
+	# the row the way a list's are.
+	var rows: Control = gui_layer()
+	var numbers: Array = CampaignState.FIRST_MISSION.keys()
+	numbers.sort()
+	for index: int in range(numbers.size()):
+		var number: int = numbers[index]
+		var _row: Button = gui_list_row("start:%d" % number,
+			_caption(number), LIST_AT + Vector2(0.0,
+				LIST_ROW_HEIGHT * float(index)), LIST_WIDTH, index,
+			numbers.size(), rows)
 
 	add_button("back", BANK_MISSION, ID_BACK, 0)
 

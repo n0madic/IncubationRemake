@@ -41,6 +41,10 @@ const DEFAULT_SHOT_DIR: String = "user://agent"
 
 ## The keys [method SliceMain._unhandled_input] reads, by the name a command
 ## uses.
+## The one multi-character key name that still types a character.
+const KEY_NAME_SPACE: String = "SPACE"
+const SPACE_UNICODE: int = 0x20
+
 const KEYS: Dictionary[String, int] = {
 	"TAB": KEY_TAB,
 	"F5": KEY_F5,
@@ -78,6 +82,8 @@ const KEYS: Dictionary[String, int] = {
 	"NEXT_MISSION": KEY_BRACKETRIGHT,
 	"PREV_MISSION": KEY_BRACKETLEFT,
 	"ESCAPE": KEY_ESCAPE,
+	# The Upgrade Menu's name box submits on it; nothing else reads it.
+	"ENTER": KEY_ENTER,
 }
 
 ## Verb -> the one line `GET /help` prints for it.
@@ -756,6 +762,14 @@ func _v_option(parts: PackedStringArray, _line: String) -> void:
 				_main.world.gore_level = settings.gore_level
 		"faithful":
 			settings.faithful = value.to_lower() in ["1", "true", "on", "yes"]
+		"font":
+			# The one option a screenshot has to be able to set: the campaign
+			# screens are laid out in the shipped plates' own units and the
+			# readable face is a different size, so a picture taken under the
+			# wrong one is not a picture of the layout.
+			settings.game_font = value.to_lower() in ["1", "true", "on",
+				"yes", "game"]
+			_main._reapply_font()
 		_:
 			_log.append("option: no such setting %s" % name)
 			return
@@ -927,6 +941,16 @@ func _key(name: String) -> void:
 	press.keycode = KEYS[upper] as Key
 	press.physical_keycode = press.keycode
 	press.pressed = true
+	# **A `LineEdit` types from `unicode`, not from the keycode.** Without it a
+	# focused field takes the event and inserts nothing, which is what the
+	# Upgrade Menu's name box did the first time it was driven from here. The
+	# single-character names are exactly the printable ones, and the character
+	# comes from the name **as written** -- taking it from the upper-cased
+	# lookup key let the name box be typed in capitals and nothing else.
+	if name.length() == 1:
+		press.unicode = name.unicode_at(0)
+	elif upper == KEY_NAME_SPACE:
+		press.unicode = SPACE_UNICODE
 	_root.push_input(press, true)
 	var release: InputEventKey = InputEventKey.new()
 	release.keycode = press.keycode

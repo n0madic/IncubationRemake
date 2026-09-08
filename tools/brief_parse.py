@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from inclib.brieftext import (BriefError, COLOUR_RAMPS, FIELD_LIMIT,        # noqa: E402
                               FIELD_SEPARATOR, Font, TIP_BASE_ROW,
                               BRIEFING_BASE_ROW, block, field, labels,
-                              layout, program)
+                              layout, program, spans)
 from inclib.liblib import LibError, load_lib                                # noqa: E402
 from inclib.pe import PEError, PEFile                                       # noqa: E402
 from inclib.lcl import decode, encode, is_encoded                         # noqa: E402
@@ -94,6 +94,15 @@ EXPECTED_ENDS = 442
 EXPECTED_FONT_COMMANDS = {0: 901, 1: 799}
 EXPECTED_COLOUR_COMMANDS = {0: 302, 1: 325, 2: 0}
 EXPECTED_BREAKS = 2347
+#: How many **lines** those breaks start once every block is split into spans.
+#: It is not the same number, and that is the point: a ``@`` immediately after
+#: a ``@`` is an ordinary character to :func:`layout` and is skipped by the
+#: printer (``0x0043E300``), so a run of *n* starts ``ceil(n / 2)`` lines.
+#: Every shipped heading is written that way and the second line is the blank
+#: one under it.  See :func:`inclib.brieftext.spans`.
+EXPECTED_BREAK_LINES = 1811
+#: ``@`` runs against the lines they start, checked without a corpus.
+BREAK_RUNS = (("@", 1), ("@@", 1), ("@@@", 2), ("@@@@", 2), ("@@@@@", 3))
 EXPECTED_DUPLICATES = {("_C_180.txt", "13"): 2}
 EXPECTED_BARE_HASH = {"Errors.txt": 1}
 EXPECTED_WITH_C0 = 91
@@ -427,7 +436,7 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not a branchy alg
     texts = {p: raw[p].decode("latin-1") if not is_encoded(raw[p])
              else decode(raw[p]).decode("latin-1") for p in files}
 
-    label_total = ends = breaks = 0
+    label_total = ends = breaks = break_lines = 0
     fonts_used: dict[int, int] = {}
     colours_used: dict[int, int] = {}
     unknown: list[tuple[str, str]] = []
@@ -443,6 +452,14 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not a branchy alg
             if count > 1:
                 duplicates[(name, key)] = count
         breaks += text.count("@")
+        for lb in labels(text):
+            try:
+                body = block(text, lb.key)
+            except BriefError:
+                body = None
+            if body is None:
+                continue
+            break_lines += sum(sp.breaks for sp in spans(text, lb.value))
         for _offset, body in commands(text):
             if body == "*":
                 ends += 1
@@ -461,6 +478,12 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not a branchy alg
     c.equal("corpus.labels", label_total, EXPECTED_LABELS)
     c.equal("corpus.ends", ends, EXPECTED_ENDS)
     c.equal("corpus.breaks", breaks, EXPECTED_BREAKS)
+    c.equal("corpus.break_lines", break_lines, EXPECTED_BREAK_LINES,
+            lambda v: f"{v} lines from {breaks} `@`")
+    c.equal("corpus.break_runs",
+            tuple((run, sum(sp.breaks for sp in spans(run + "x")))
+                  for run, _lines in BREAK_RUNS),
+            BREAK_RUNS, str)
     c.equal("corpus.fonts", dict(sorted(fonts_used.items())),
             EXPECTED_FONT_COMMANDS)
     c.equal("corpus.colours",

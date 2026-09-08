@@ -79,6 +79,10 @@ var _scene_root: Node3D = null
 ## world] -- half of `game` reads that as "a mission is being played", and the
 ## conflation was already a defect once (see [method in_mission]).
 var _backdrop_root: Node3D = null
+## The bodies the Upgrade Menu turns, opened once per campaign map.
+var _campaign_bodies: CharismaLibrary = null
+## The four shipped faces, by `fntID`. Cleared when the font option changes.
+var _faces: Array[FontFile] = []
 var _backdrop_world: World = null
 var _backdrop_rig: CameraRig = null
 var _backdrop_mission: String = ""
@@ -570,6 +574,20 @@ func interface_font() -> FontFile:
 	return GameFont.load_from(_cache_dir, GAME_FONT)
 
 
+## The four shipped faces, indexed by `Menu_b.lcl`'s `fntID` column.
+##
+## Built once and kept: the campaign screens are rebuilt on every click and a
+## bitmap font is an atlas plus 224 glyph rectangles. Empty while the readable
+## face is chosen, so that option keeps behaving as one font for everything.
+func interface_faces() -> Array[FontFile]:
+	if not settings.game_font:
+		return []
+	if _faces.is_empty():
+		for index: int in range(GAME_FACES.size()):
+			_faces.append(GameFont.load_from(_cache_dir, GAME_FACES[index]))
+	return _faces
+
+
 ## Redraw after a deployment put a unit on the map.
 ##
 ## `UnitsView.build` frees every unit node and rebuilds from the world, which
@@ -856,13 +874,41 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			var select: SelectUnitsScreen = SelectUnitsScreen.new()
 			select.host = campaign
 			screen = select
-		CampaignHost.SCREEN_HQ, CampaignHost.SCREEN_RECRUIT:
-			var hq: HqScreen = HqScreen.new()
-			hq.host = campaign
-			screen = hq
+		CampaignHost.SCREEN_HQ:
+			# The Unit Menu, the Item List and the Recruit window are all
+			# `plate_3` with the frame's window left clear -- the plate
+			# `aInitGUI` loads once and none of those windows replaces. So the
+			# chain's own map goes up behind them, exactly as it does behind
+			# the location screen.
+			_raise_map_backdrop()
+			var roster: UnitMenuScreen = UnitMenuScreen.new()
+			roster.host = campaign
+			roster.selected = campaign.upgrade_slot
+			screen = roster
+		CampaignHost.SCREEN_RECRUIT:
+			_raise_map_backdrop()
+			var hire: RecruitScreen = RecruitScreen.new()
+			hire.host = campaign
+			screen = hire
+		CampaignHost.SCREEN_ITEMS:
+			_raise_map_backdrop()
+			var items: ItemListScreen = ItemListScreen.new()
+			items.host = campaign
+			items.kind = campaign.item_kind
+			items.slot = campaign.upgrade_slot
+			screen = items
 		CampaignHost.SCREEN_UPGRADE:
+			# `plate_6` is opaque and has no window, so this one needs no
+			# picture behind it -- but it does need the bodies, and those come
+			# from the same world set the chain's map is built from.
+			_raise_map_backdrop()
 			var upgrade: UpgradeScreen = UpgradeScreen.new()
 			upgrade.host = campaign
+			upgrade.library = _campaign_library()
+			upgrade.descriptions = _item_descriptions()
+			upgrade.cache_dir = _cache_dir
+			upgrade.item_kind = campaign.item_kind
+			upgrade.item_id = campaign.item_id
 			screen = upgrade
 		CampaignHost.SCREEN_DEBRIEFING:
 			var debriefing: DebriefingScreen = DebriefingScreen.new()
@@ -871,7 +917,8 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			screen = debriefing
 	if screen == null:
 		return null
-	screen.setup(_art, _strings, interface_font())
+	screen.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
 	screen.chose.connect(_on_campaign_choice)
 	add_child(screen)
 	_screen = screen
@@ -884,10 +931,83 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			_show_markers(CampaignMapScreen.marks_for(campaign,
 				_location_cells))
 			_frame_map()
+		CampaignHost.SCREEN_HQ, CampaignHost.SCREEN_ITEMS, \
+				CampaignHost.SCREEN_RECRUIT:
+			# The same window as the map's, and **no dots**: these three are
+			# lists over a picture, not a picture that is clicked.
+			_show_markers({})
+			_frame_map()
 		CampaignHost.SCREEN_SELECT:
 			_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
 			_frame_deployment()
+	# The Upgrade Menu opens on whoever the Unit Menu had picked, which is also
+	# where its *Undo* snapshot is taken.
+	var upgrade_screen: UpgradeScreen = screen as UpgradeScreen
+	if upgrade_screen != null:
+		upgrade_screen.select(_upgrade_target())
 	return screen
+
+
+## Whichever roster slot the campaign is equipping, defaulting to the first
+## occupied one so the screen is never opened on nobody by accident.
+func _upgrade_target() -> int:
+	if campaign == null or campaign.state == null:
+		return Roster.NO_SLOT
+	var slots: PackedInt32Array = campaign.state.roster.occupied_slots()
+	if slots.has(campaign.upgrade_slot):
+		return campaign.upgrade_slot
+	return slots[0] if not slots.is_empty() else Roster.NO_SLOT
+
+
+## The chain's own map behind the three windows that leave a hole in the plate.
+##
+## Split out of the location screen's arm because all four want the same two
+## calls, and because the mission has to come down first either way: two 3D
+## scenes under one root render into each other.
+func _raise_map_backdrop() -> void:
+	_clear_mission()
+	_build_backdrop(_backdrop_for_location())
+
+
+## What stands behind the four screens an upgrade location opens.
+##
+## **The location's own map, not the chain's.** docs/27 section 2.4 pairs each
+## upgrade location with a `Missions/upgrade_N.lev`, and `CampaignMap` has
+## carried the table since the sixth slice; what was behind these plates was
+## the chain map `_C_XXX` instead -- a bright city in daylight where the
+## original shows the base's own dim interior. The chain map is the fallback,
+## for a location that names no upgrade scene and for a cache published without
+## `--campaign-maps`.
+func _backdrop_for_location() -> String:
+	if campaign == null:
+		return ""
+	var own: String = campaign.tables.upgrade_map(campaign.location) \
+		if campaign.tables != null else ""
+	if own == "" or not FileAccess.file_exists(
+			"%s/missions/%s/map.json" % [_cache_dir, own]):
+		return campaign.map_mission()
+	return own
+
+
+## The bodies the Upgrade Menu turns, opened against the chain map's world set.
+##
+## Built on demand and kept, because a `.cho` parse and its meshes are the
+## same cost here as in a mission and this screen is opened and closed a great
+## deal more often.
+func _campaign_library() -> CharismaLibrary:
+	if _campaign_bodies != null:
+		return _campaign_bodies
+	if _backdrop_world == null:
+		return null
+	var map_document: Dictionary = CacheLoader.read_json(
+		"%s/missions/%s/map.json" % [_cache_dir, _backdrop_for_location()])
+	if map_document.is_empty():
+		return null
+	var header: Dictionary = DictRead.as_dict(map_document["header"])
+	var world_set: String = DictRead.as_string(header["world_set"])
+	_campaign_bodies = CharismaLibrary.open(_cache_dir,
+		_textures_for(world_set), campaign.map_mission())
+	return _campaign_bodies
 
 
 ## The deployment cells nobody is standing on yet.
@@ -1034,7 +1154,8 @@ func _show_shell_screen() -> CampaignScreen:
 			screen = options
 	if screen == null:
 		return null
-	screen.setup(_art, _strings, interface_font())
+	screen.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
 	screen.chose.connect(_on_shell_choice)
 	add_child(screen)
 	_screen = screen
@@ -1070,6 +1191,13 @@ func _on_shell_choice(action: String) -> void:
 		return
 	if action.begins_with("mission:"):
 		_start_instant_action(action.substr(8))
+		return
+	if action == "scroll_up" or action == "scroll_down":
+		# The catalogue is 92 long with the campaign in the cache, and a
+		# shipped listbox is paged by its two arrows rather than scrolled.
+		var paged: MissionSelectScreen = _screen as MissionSelectScreen
+		if paged != null:
+			paged.scroll(-1 if action == "scroll_up" else 1)
 		return
 	if action.begins_with("option:"):
 		_step_option(action.substr(7))
@@ -1296,7 +1424,12 @@ func _step_option(name: String) -> void:
 ## The screens take theirs at `setup` and the HUD at `_ready`, so a change made
 ## while one is up has to reach them. The plate that is up is rebuilt rather
 ## than patched: its labels were made with the old font and a screen is cheap.
+## `font_0` .. `font_3`, in `fntID` order.
+const GAME_FACES: Array[String] = ["font_0", "font_1", "font_2", "font_3"]
+
+
 func _reapply_font() -> void:
+	_faces = []
 	var font: FontFile = interface_font()
 	if _hud != null:
 		_hud.use_font(font)
@@ -1402,9 +1535,46 @@ func _on_campaign_choice(action: String) -> void:
 	if campaign == null:
 		return
 	if action.begins_with("pick:"):
+		var slot: int = action.substr(5).to_int()
 		var deploy: SelectUnitsScreen = _screen as SelectUnitsScreen
 		if deploy != null:
-			deploy.pick(action.substr(5).to_int())
+			deploy.pick(slot)
+		var roster: UnitMenuScreen = _screen as UnitMenuScreen
+		if roster != null:
+			roster.pick(slot)
+			campaign.upgrade_slot = slot
+		return
+	if action.begins_with("item:"):
+		# The Item List is a chooser: it names the item and the Upgrade Menu
+		# is where it is bought.
+		campaign.item_id = action.substr(5).to_int()
+		var listing: ItemListScreen = _screen as ItemListScreen
+		if listing != null:
+			campaign.item_kind = listing.kind
+		var _back_to_upgrade: CampaignScreen = show_campaign_screen(
+			CampaignHost.SCREEN_UPGRADE)
+		return
+	if action.begins_with("drop:"):
+		# `buttons.LIB` 52 is a red cross, one per roster row: it dismisses
+		# **that** soldier, and `Undo` beside the list puts the row back.
+		var dismissing: UnitMenuScreen = _screen as UnitMenuScreen
+		if dismissing != null:
+			dismissing.remember()
+			var _paid: int = campaign.dismiss(action.substr(5).to_int())
+			campaign.upgrade_slot = Roster.NO_SLOT
+			dismissing.selected = Roster.NO_SLOT
+			dismissing.refresh()
+		return
+	if action.begins_with("category:"):
+		var hiring: RecruitScreen = _screen as RecruitScreen
+		if hiring != null:
+			hiring.choose(action.substr(9).to_int())
+		return
+	if action.begins_with("hire:"):
+		var _hired: int = campaign.recruit(action.substr(5).to_int())
+		var window: RecruitScreen = _screen as RecruitScreen
+		if window != null:
+			window.refresh()
 		return
 	if action.begins_with("location:"):
 		var parts: PackedStringArray = action.split(":")
@@ -1497,25 +1667,62 @@ func _on_campaign_choice(action: String) -> void:
 			var _hq: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_HQ)
 		"recruit":
-			var _slot: int = campaign.recruit()
-			var hq_screen: HqScreen = _screen as HqScreen
-			if hq_screen != null:
-				hq_screen.refresh()
-		"dismiss":
-			var hq: HqScreen = _screen as HqScreen
-			if hq != null and hq.selected != Roster.NO_SLOT:
-				var _refund: int = campaign.dismiss(hq.selected)
-				hq.selected = Roster.NO_SLOT
-				hq.refresh()
+			# `0x0045B7F8`: in campaign mode the button hires on the spot and
+			# the Recruit window is never raised.
+			if campaign.recruits_through_a_screen():
+				var _window: CampaignScreen = show_campaign_screen(
+					CampaignHost.SCREEN_RECRUIT)
+			else:
+				var hired: UnitMenuScreen = _screen as UnitMenuScreen
+				if hired != null:
+					hired.remember()
+				var _slot: int = campaign.recruit()
+				if hired != null:
+					hired.refresh()
+		"roster_undo":
+			var roster_screen: UnitMenuScreen = _screen as UnitMenuScreen
+			if roster_screen != null:
+				roster_screen.undo()
+		"scroll_up", "scroll_down":
+			var scrolled: UnitMenuScreen = _screen as UnitMenuScreen
+			if scrolled != null:
+				scrolled.scroll(-1 if action == "scroll_up" else 1)
+		"upgrade", "select_unit":
+			# One button either way: the Unit Menu's *Build squad* opens the
+			# Upgrade Menu on the picked soldier, and the Upgrade Menu's
+			# *Select Unit* goes back to the list to pick another.
+			var target: String = CampaignHost.SCREEN_UPGRADE \
+				if action == "upgrade" else CampaignHost.SCREEN_HQ
+			var leaving: UpgradeScreen = _screen as UpgradeScreen
+			if leaving != null:
+				campaign.upgrade_slot = leaving.selected
+			var _moved: CampaignScreen = show_campaign_screen(target)
+		"select_weapon", "select_equipment":
+			var from: UpgradeScreen = _screen as UpgradeScreen
+			if from != null:
+				campaign.upgrade_slot = from.selected
+			campaign.item_kind = CampaignHost.KIND_WEAPONS \
+				if action == "select_weapon" else CampaignHost.KIND_EQUIPMENT
+			var _list: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_ITEMS)
+		"toggle":
+			var listing: ItemListScreen = _screen as ItemListScreen
+			if listing != null:
+				listing.toggle()
+				campaign.item_kind = listing.kind
+		"back":
+			# The Item List's and the Recruit window's own way out, which is
+			# back to whatever opened them.
+			var target_screen: String = CampaignHost.SCREEN_UPGRADE \
+				if _screen is ItemListScreen else CampaignHost.SCREEN_HQ
+			var _returned: CampaignScreen = show_campaign_screen(target_screen)
+		"buy", "undo", "commend", "prev_unit", "next_unit", "prev_item", \
+				"next_item", "info", "rename":
+			_upgrade_action(action)
 		"save":
 			var _written: bool = _save_mission_to(CampaignHost.QUICK_SLOT,
 				world if campaign.screen == CampaignHost.SCREEN_MISSION
 				else null)
-		"weapons", "equipment":
-			var catalogue: UpgradeScreen = _screen as UpgradeScreen
-			if catalogue != null:
-				catalogue.catalogue_kind = action
-				catalogue.refresh()
 		"tips":
 			# One button for both directions, because the screen is one screen
 			# -- `Txtmod_b` carries *Tips* and *Briefing* for exactly this and
@@ -1526,6 +1733,37 @@ func _on_campaign_choice(action: String) -> void:
 		"end_game":
 			# `Txtmod_b` 18, and the map screen has already asked.
 			_end_campaign()
+
+
+## The Upgrade Menu's own buttons -- `0x0045A770`'s cases, which all act on the
+## screen that is up rather than on the campaign's flow.
+func _upgrade_action(action: String) -> void:
+	var screen: UpgradeScreen = _screen as UpgradeScreen
+	if screen == null:
+		return
+	match action:
+		"buy":
+			screen.buy()
+		"undo":
+			screen.undo()
+		"commend":
+			screen.commend()
+		"prev_unit":
+			screen.step_unit(-1)
+		"next_unit":
+			screen.step_unit(1)
+		"prev_item":
+			screen.step_item(-1)
+		"next_item":
+			screen.step_item(1)
+		"info":
+			screen.hints = not screen.hints
+			screen.refresh()
+		"rename":
+			screen.begin_rename()
+	campaign.upgrade_slot = screen.selected
+	campaign.item_kind = screen.item_kind
+	campaign.item_id = screen.item_id
 
 
 ## The missions the manifest declares, in the order the converter emitted them.
@@ -1842,6 +2080,9 @@ func _clear_backdrop() -> void:
 		remove_child(_backdrop_root)
 		_backdrop_root.free()
 	_backdrop_root = null
+	# The Upgrade Menu's bodies are opened against the backdrop's world set, so
+	# a new chain has to open its own rather than draw the last one's meshes.
+	_campaign_bodies = null
 	_backdrop_rig = null
 	_backdrop_world = null
 	_backdrop_mission = ""
@@ -2098,6 +2339,35 @@ func _build(mission: String) -> void:
 ## nowhere. *quiet* says whether whatever is already sounding should be cut
 ## first: a mission cuts the map, and the map's own arrival does not cut the
 ## mission it is being shown over.
+## `Data.txt`'s blocks, built once and kept.
+##
+## The Upgrade Menu's *i* asks for them by the record's own letter; a cache
+## made before the converter grew the document answers nothing, which is the
+## *i* showing an empty box rather than the screen failing to open.
+var _item_texts: InfoText = null
+
+
+func _item_descriptions() -> InfoText:
+	if _item_texts == null and not _cache_dir.is_empty():
+		_item_texts = InfoText.load_from(_cache_dir, InfoText.DATA_DOCUMENT)
+	return _item_texts
+
+
+## What the plates click with, or null before a cache is open.
+##
+## **Not [method _open_audio].** That one stops everything that is sounding
+## when it is asked quietly, and a screen is rebuilt on every button press --
+## so raising a screen would have cut the music every time.
+func interface_audio() -> AudioSystem:
+	# **Opened here if nothing else has.** The sound layer used to be built
+	# only for a mission and for the map's music, so the shell's own menu --
+	# the first screen anybody sees -- had no buffers to click with.
+	if _audio == null and not _cache_dir.is_empty():
+		var opened: AudioSystem = _open_audio(false)
+		settings.apply_audio(opened, _events)
+	return _audio
+
+
 func _open_audio(quiet: bool) -> AudioSystem:
 	var tables: AudioTables = AudioTables.open(_cache_dir)
 	_blob_tables = CacheLoader.read_json(_cache_dir + "/tables/blobs.json")

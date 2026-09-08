@@ -105,6 +105,11 @@ var tp: int = 0
 ## the authored map does not carry it and [method from_document] starts it
 ## at zero rather than reading a column that does not exist.
 var kills: int = 0
+## `+0x38`, the decorations awarded. Written only by the Upgrade screen's
+## *Commend Unit* button and read only by the pass that greys it out
+## (docs/10 section 5.11), so it is campaign state and **zero on every shipped
+## record** -- which is why [method hash_into] appends it only when it is not.
+var decorations: int = 0
 ## `+0x4D`: 0 none, 1 unit-pool candidate, 2 hero.
 var pool_flag: int = 0
 ## `+0x55`, the voice sample set.
@@ -203,6 +208,10 @@ static func from_view(record: Dictionary) -> UnitState:
 	unit.group = DictRead.as_int(record["group"])
 	unit.tp = DictRead.as_int(record["tp"])
 	unit.kills = DictRead.as_int(record["kills"])
+	# **`get`, not `record[...]`.** A campaign saved before the Upgrade screen
+	# existed carries no such key, and a save that still loads is worth more
+	# than one that reports a missing decoration count as corruption.
+	unit.decorations = DictRead.as_int(record.get("decorations", 0))
 	unit.pool_flag = DictRead.as_int(record["pool_flag"])
 	unit.speech = DictRead.as_int(record["speech"])
 	unit.skills = DictRead.to_int32(record["skills"])
@@ -305,6 +314,7 @@ func view() -> Dictionary:
 		"group": group,
 		"tp": tp,
 		"kills": kills,
+		"decorations": decorations,
 		"pool_flag": pool_flag,
 		"speech": speech,
 		"skills": skills.duplicate(),
@@ -327,6 +337,15 @@ func hash_into(ctx: HashingContext) -> void:
 	ctx.update(scalars.to_byte_array())
 	# Fixed length, so no count is needed in front of it.
 	ctx.update(skills.to_byte_array())
+	# **Appended only when it is not zero.** `+0x38` is campaign state -- every
+	# shipped `.lev` record carries zero -- so a mission world never reaches
+	# this line and the canonical hashes `test_campaign` pins do not move (D7),
+	# while a decorated roster record still changes the campaign's own digest.
+	# The encoding stays injective because `equipment.size()` is already in the
+	# scalars above: the split between this and the payload below is fixed, and
+	# a record with no decoration is four bytes shorter than one with any.
+	if decorations != 0:
+		ctx.update(PackedInt32Array([decorations]).to_byte_array())
 	# HashingContext refuses an empty buffer, and a unit with no equipment is
 	# ordinary, so the count goes in above and the payload only when there is
 	# one.  Without the count two different rosters could collide.

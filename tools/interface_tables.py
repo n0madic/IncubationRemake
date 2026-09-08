@@ -89,6 +89,133 @@ HUD_SKILLS_RENDERER = 0x00475A60
 # aPI.cpp: a clicked unit must carry a deployment state marker in 70..73.  The
 # underlying CtrlMap action-point ids are 1..4; the selected pool index is
 # transferred only through these calls.
+# --- how a gadget is drawn (docs/29, the campaign windows of docs/27) -------
+#: `aPrintGadget`, `aGadgets.cpp`. Type 3 is a composed button, type 4 a
+#: single icon; the type byte lives at `gadget + 0x63` of the staging record
+#: and at `0x00508c23` of the live one.
+PRINT_GADGET = 0x0043A030
+#: The measurer `aSetGadget` uses, whose arithmetic the painter repeats.
+GADGET_WIDTH = 0x0043A9D0
+#: **Which piece is which.** The unlit arm draws `base + 0`, then `Width - 2`
+#: copies of `base + 2`, then `base + 1`; the lit arm draws `base + 3`,
+#: `base + 5` and `base + 4`. These are the `add cl, K` immediates that pick
+#: them, in drawing order, for the lit arm and then the unlit one.
+#: The lit arm adds its immediate with `add cl, K`; the unlit one draws the
+#: left cap with no add at all, adds 2 for the fill and reaches the right cap
+#: with an `inc dl`.
+GADGET_LIT_PIECES = ((0x0043A2EF, 3), (0x0043A347, 5), (0x0043A3A4, 4))
+GADGET_UNLIT_LEFT = 0x0043A4D2
+GADGET_UNLIT_FILL = 0x0043A535
+GADGET_UNLIT_RIGHT = 0x0043A593
+#: `mov dl, byte [esi + 0x508c28]` then `sub edx, 2` -- the fill count.
+GADGET_FILL_COUNT = (0x0043A31F, 0x0043A328)
+#: The icon arm: `base` normally, `inc dl` to `base + 1` when it is lit.
+GADGET_ICON_LIT = 0x0043A259
+#: The pointer's gadget. `0x0043a8b0` hit-tests the cursor, writes the answer
+#: here and repaints the one that was lit and the one that now is -- so the
+#: second trio is a **hover** face and no mouse button is involved.
+GADGET_HOVER_GLOBAL = 0x00509A30
+GADGET_HOVER_COMPARE = 0x0043A06D
+GADGET_HOVER_HITTEST_CALL = 0x0043A8E6
+GADGET_HOVER_HITTEST = 0x0043A650
+GADGET_HOVER_STORE = 0x0043A8F7
+#: The gadget builders and the type byte each writes.
+GADGET_BUILDERS = {
+    "GUI_SetButton": (0x0043CD10, 0x0043CDBA, 3),
+    "GUI_SetTextButton": (0x0043CFF0, 0x0043D095, 3),
+    "GUI_SetIcon": (0x0043D110, 0x0043D14E, 4),
+}
+#: **`Format`, not `cX`, is the alignment.** `GUI_SetText`'s eleventh argument
+#: reaches `0x00439777`, which subtracts half the measured width at 1 and the
+#: whole of it at 2; `cX` is the seventh and is a separate word the printer
+#: takes as its own argument.
+TEXT_ALIGN_CENTRE = 0x00439777
+TEXT_ALIGN_RIGHT = 0x0043978E
+#: The two GUI sounds `aInitGUI` loads, and the two arms of
+#: `aPlayGUIClickSound` `0x0043E5E0` that play them.
+GUI_SOUND_NAMES = ("click_1.wav", "click_2.wav")
+GUI_SOUND_LOADS = (0x0043BF3A, 0x0043BF7F)
+GUI_SOUND_BUFFERS = (0x0050B2A0, 0x0050B2A4)
+GUI_SOUND_ARMS = (0x0043E61A, 0x0043E5EC)
+#: `0x0043C500` plays the first one when the gadget under the pointer has
+#: **changed**, panned by the cursor's x.
+GUI_HOVER_SOUND_SITE = 0x0043C5C8
+GUI_HOVER_PAN = 0x0043C5B9
+
+# --- the bitmap font's two ink levels -- docs/60 5 ---------------------------
+#: The glyph blitter is `0x00447900`, and it maps a source pixel **straight
+#: onto the caller's colour array** rather than treating it as an intensity.
+#: The 16-bit path -- the one every shipped display mode but the first runs
+#: (docs/97 23.4) -- is a four-arm ladder: 0, 3 and 4 are skipped, **1** takes
+#: `colour[0]` and **everything else** takes `colour[1]`.  Since the four
+#: shipped faces use only 0, 1 and 2, that second arm is index 2, and index 2
+#: is a glyph's antialiasing.
+FONT_INK_SOLID_TEST = 0x00447ADD        # `cmp ah, 1`
+FONT_INK_SOLID_LOAD = 0x00447AF9        # `mov ax, word [ebp + 0x20]`
+FONT_INK_SHADE_ARM = 0x00447AEC         # the fall-through, `xor eax, eax`
+FONT_INK_SHADE_LOAD = 0x00447AEE        # `mov ax, word [ebp + 0x24]`
+#: The 8-bit path writes the ladder out in full: ``(the `cmp ah, imm8`, the
+#: value, the `mov ah, byte [ebp + disp]` its branch reaches, disp)``.
+FONT_INK_8BIT_ARMS = ((0x00447A2A, 1, 0x00447A4E, 0x20),
+                      (0x00447A2F, 2, 0x00447A47, 0x24),
+                      (0x00447A34, 3, 0x00447A40, 0x28))
+#: `aPrintGUITextBox`'s own ramps -- four `mov dword [esp + slot], imm32` in a
+#: row, one arm of the `{#n}` switch each.  `colour[1]` is 0.55 of `colour[0]`
+#: in the body ramp and 0.39 in the alert one, which is what says the second
+#: ink level is coverage and not an outline.
+FONT_RAMP_SLOTS = (0x14, 0x20, 0x24, 0x28)
+FONT_RAMPS = {"alert": (0x0043E458, (0xF800, 0x6000, 0x0800, 0x0000)),
+              "body": (0x0043E47A, (0x94B2, 0x528A, 0x0841, 0x0000))}
+#: Ramp 0 restores *the box's own* colours, which ``docs/24`` recorded as
+#: unknowable from the file because ``0x0050A45C`` is filled at run time.  It
+#: is knowable: ``0x0043D891`` copies the four out of the descriptor handed to
+#: ``aCreateGUITextBox``, at ``+0x1C..+0x22``; the briefing's and the info
+#: page's descriptor is the one global ``0x0050B2B4``; and all four of its
+#: writers put the same immediates in it.  Keys are the four colour globals,
+#: values ``(the four `mov word` sites' address fields, the immediate)``.
+FONT_RAMP_DEFAULT_SITES = {
+    0x0050B2D0: ((0x0043E78A, 0x0043E89D, 0x0043E9CD, 0x0043EB05), 0xFFFF),
+    0x0050B2D2: ((0x0043E794, 0x0043E8A7, 0x0043E9D7, 0x0043EB0F), 0x632C),
+    0x0050B2D4: ((0x0043E79D, 0x0043E8B0, 0x0043E9E0, 0x0043EB18), 0x0000),
+    0x0050B2D6: ((0x0043E7A6, 0x0043E8B7, 0x0043E9E7, 0x0043EB21), 0x0000),
+}
+#: Two of the four writers store a **register** for the two zero entries --
+#: ``mov word [addr], si`` -- so the immediate is not in the bytes there.  The
+#: register is zero: each of those two functions clears it before the block,
+#: and these are the ``xor esi, esi`` that do it.
+FONT_RAMP_DEFAULT_REG = b"\x66\x89\x35"
+FONT_RAMP_DEFAULT_IMM = b"\x66\xc7\x05"
+FONT_RAMP_ZEROING = (0x0043E856, 0x0043E986)
+#: ``0x0043D897`` / ``0x0043D8A2`` / ``0x0043D8AD`` -- ``mov dx, word
+#: [eax + disp]``, the descriptor offsets the box's ramp is copied from.  The
+#: first is a ``dword`` read a few bytes earlier and is not in this list.
+FONT_RAMP_DESCRIPTOR_READS = ((0x0043D897, 0x1E), (0x0043D8A2, 0x20),
+                              (0x0043D8AD, 0x22))
+#: ``push 0x0050B2B4`` in ``aActivateBriefingInfo`` -- the descriptor itself.
+FONT_RAMP_DESCRIPTOR_PUSH = 0x0043EB99
+FONT_RAMP_DESCRIPTOR = 0x0050B2B4
+#: ``cmp bl, 0x40`` / ``je`` in ``aPrintGUITextBox``: the printer draws no
+#: ``@`` at all.  Its measuring half steps *past* a break unconditionally, so
+#: a second ``@`` in a run is an ordinary character and starts no line --
+#: which is the blank line under every shipped heading.  That half is pinned
+#: by ``brief_parse.py`` against the whole corpus rather than here, because it
+#: is a transcription (``inclib.brieftext.layout``) and not one instruction.
+FONT_BREAK_SKIP = 0x0043E300
+
+#: The Upgrade Menu's *i*: a two-state toggle, and the item picture is loaded
+#: only while it reads 0 (`0x00458bfe`). At 1 `aPrintInfo` `0x0043ECF0` draws
+#: the info box the Upgrade window opens at `0x004577D5`.
+INFO_MODE_GLOBAL = 0x00510A54
+INFO_MODE_ARM = 0x0045B4BC
+INFO_MODE_LIMIT = 0x0045B4C2
+INFO_MODE_PICTURE_GATE = 0x00458BFE
+PRINT_INFO = 0x0043ECF0
+INFO_ACTIVATE_CALL = 0x004577DB
+INFO_ACTIVATE = 0x0043EAB0
+#: `aActivateBriefingInfo(text, 190, 107, 387, 199, 1, 65)` -- the box.
+INFO_BOX_PUSHES = (0x004577D0, 0x004577CE, 0x004577C9, 0x004577C4)
+INFO_BOX = (190, 107, 387, 199)
+
 PLACE_MARKER_LO = 0x00463437
 PLACE_MARKER_HI = 0x00463440
 PLACE_CANDIDATE = 0x00463485
@@ -345,6 +472,141 @@ def run_checks(root_name: str) -> Checker:
              and pe.bytes_at(RESET_STATE_STORE, 3) == b"\xc6\x06\x01"
              and pe.bytes_at(RESET_CELL_STRIDE, 3) == b"\x83\xC6\x17",
              "reset clears cell damage and restores state 1")
+
+    # --- the gadget painter -------------------------------------------------
+    for order, (va, piece) in enumerate(GADGET_LIT_PIECES):
+        # `add cl, imm8` for the caps and the fill, in drawing order.
+        ck.check(f"gadget.lit_piece{order}",
+                 pe.bytes_at(va, 3) == b"\x80\xc1" + bytes([piece]),
+                 f"{va:#x}: piece base + {piece}")
+    ck.check("gadget.unlit_left",
+             pe.bytes_at(GADGET_UNLIT_LEFT, 2) == b"\x8a\x96"
+             and pe.u32(GADGET_UNLIT_LEFT + 2) == 0x00508C24
+             and pe.bytes_at(GADGET_UNLIT_LEFT + 6, 2) != b"\x80\xc2",
+             f"{GADGET_UNLIT_LEFT:#x}: the base itself, with nothing added")
+    ck.check("gadget.unlit_fill",
+             pe.bytes_at(GADGET_UNLIT_FILL, 3) == b"\x80\xc2\x02",
+             f"{GADGET_UNLIT_FILL:#x}: add dl, 2")
+    ck.check("gadget.unlit_right",
+             pe.bytes_at(GADGET_UNLIT_RIGHT, 2) == b"\xfe\xc2",
+             f"{GADGET_UNLIT_RIGHT:#x}: inc dl -- base + 1")
+    ck.check("gadget.fill_count",
+             pe.bytes_at(GADGET_FILL_COUNT[0], 2) == b"\x8a\x96"
+             and pe.u32(GADGET_FILL_COUNT[0] + 2) == 0x00508C28
+             and pe.bytes_at(GADGET_FILL_COUNT[1], 3) == b"\x83\xea\x02",
+             "the fill is drawn Width - 2 times, edge to edge")
+    ck.check("gadget.icon_lit",
+             pe.bytes_at(GADGET_ICON_LIT, 2) == b"\xfe\xc2",
+             f"{GADGET_ICON_LIT:#x}: inc dl -- an icon lights with base + 1")
+    ck.check("gadget.hover_is_the_pointer",
+             pe.bytes_at(GADGET_HOVER_COMPARE, 6)
+             == b"\x8b\x15" + GADGET_HOVER_GLOBAL.to_bytes(4, "little")
+             and call_target(pe, GADGET_HOVER_HITTEST_CALL)
+             == GADGET_HOVER_HITTEST
+             and pe.bytes_at(GADGET_HOVER_STORE, 5)
+             == b"\xa3" + GADGET_HOVER_GLOBAL.to_bytes(4, "little"),
+             "the lit trio follows the cursor, not a button press")
+    for command, (entry, site, kind) in GADGET_BUILDERS.items():
+        ck.check(f"gadget.type_{command}",
+                 entry < site and pe.bytes_at(site, 3) == b"\xc6\x44\x24"
+                 and pe.u8(site + 4) == kind,
+                 f"{command} builds a type-{kind} gadget")
+    ck.check("gadget.text_align",
+             pe.bytes_at(TEXT_ALIGN_CENTRE, 3) == b"\x8b\x44\x24"
+             and pe.bytes_at(TEXT_ALIGN_CENTRE + 4, 3) == b"\x83\xf8\x01"
+             and pe.bytes_at(TEXT_ALIGN_CENTRE + 0xF, 2) == b"\xd1\xe9"
+             and pe.bytes_at(TEXT_ALIGN_RIGHT, 3) == b"\x83\xf8\x02",
+             "GUI_SetText's Format column: 1 centres, 2 right-aligns")
+    for index, name in enumerate(GUI_SOUND_NAMES):
+        site = GUI_SOUND_LOADS[index]
+        ck.check(f"gui.sound_{index}_name",
+                 pe.bytes_at(site, 1) == b"\x68"
+                 and pe.cstring(pe.u32(site + 1), 32) == name,
+                 f"{site:#x}: push \"{name}\"")
+        ck.check(f"gui.sound_{index}_arm",
+                 pe.bytes_at(GUI_SOUND_ARMS[index], 5)
+                 == b"\xa1" + GUI_SOUND_BUFFERS[index].to_bytes(4, "little")
+                 or pe.bytes_at(GUI_SOUND_ARMS[index], 6)
+                 == b"\x8b\x0d" + GUI_SOUND_BUFFERS[index].to_bytes(4, "little"),
+                 f"aPlayGUIClickSound({index}) plays {name}")
+    ck.check("gui.hover_sound",
+             pe.bytes_at(GUI_HOVER_SOUND_SITE, 6)
+             == b"\x8b\x0d" + GUI_SOUND_BUFFERS[0].to_bytes(4, "little")
+             and pe.bytes_at(GUI_HOVER_PAN, 5) == b"\xbe\x40\x01\x00\x00",
+             "the pointer crossing a gadget plays click_1.wav, panned by x")
+    ck.check("font.ink_solid_is_colour_0",
+             pe.bytes_at(FONT_INK_SOLID_TEST, 3) == b"\x80\xfc\x01"
+             and pe.bytes_at(FONT_INK_SOLID_LOAD, 4) == b"\x66\x8b\x45\x20",
+             "a glyph pixel of 1 takes the caller's first colour")
+    ck.check("font.ink_shade_is_colour_1",
+             pe.bytes_at(FONT_INK_SHADE_ARM, 2) == b"\x33\xc0"
+             and pe.bytes_at(FONT_INK_SHADE_LOAD, 4) == b"\x66\x8b\x45\x24",
+             "every other pixel -- index 2 in the shipped faces -- takes the "
+             "second, so the second level is antialiasing and not an outline")
+    for test, value, load, disp in FONT_INK_8BIT_ARMS:
+        ck.check(f"font.ink_8bit_{value}",
+                 pe.bytes_at(test, 3) == bytes((0x80, 0xFC, value))
+                 and pe.bytes_at(load, 3) == bytes((0x8A, 0x65, disp)),
+                 f"the 8-bit path sends {value} to colour[{(disp - 0x20) // 4}]")
+    def u16(va: int) -> int:
+        return int.from_bytes(pe.bytes_at(va, 2), "little")
+
+    zeroed = all(pe.bytes_at(va, 2) == b"\x33\xf6"
+                 for va in FONT_RAMP_ZEROING)
+    for global_va, (sites, want) in sorted(FONT_RAMP_DEFAULT_SITES.items()):
+        written = []
+        for site in sites:
+            head = pe.bytes_at(site - 3, 3)
+            if head == FONT_RAMP_DEFAULT_IMM:
+                written.append(u16(site + 4))
+            elif head == FONT_RAMP_DEFAULT_REG and want == 0 and zeroed:
+                written.append(0)
+            else:
+                written.append(-1)
+        ck.equal(f"font.ramp_default_{global_va:#x}", tuple(written),
+                 (want,) * len(sites),
+                 "every writer of the briefing text box's descriptor")
+    ck.check("font.ramp_is_the_descriptor's",
+             all(pe.bytes_at(site, 2) == b"\x66\x8b"
+                 and pe.u8(site + 3) == disp
+                 for site, disp in FONT_RAMP_DESCRIPTOR_READS)
+             and pe.u8(FONT_RAMP_DESCRIPTOR_PUSH) == 0x68
+             and pe.u32(FONT_RAMP_DESCRIPTOR_PUSH + 1) == FONT_RAMP_DESCRIPTOR,
+             "aCreateGUITextBox copies +0x1C..+0x22 of its argument")
+    ck.check("font.break_is_never_drawn",
+             pe.bytes_at(FONT_BREAK_SKIP, 5) == b"\x80\xfb\x40\x0f\x84",
+             "aPrintGUITextBox skips `@` instead of printing it")
+
+    for name, (site, colours) in sorted(FONT_RAMPS.items()):
+        written = []
+        for index in range(len(FONT_RAMP_SLOTS)):
+            at = site + 8 * index
+            written.append((pe.u8(at + 3), pe.u32(at + 4))
+                           if pe.bytes_at(at, 3) == b"\xc7\x44\x24" else (-1, -1))
+        ck.equal(f"font.ramp_{name}", tuple(written),
+                 tuple(zip(FONT_RAMP_SLOTS, colours)),
+                 "aPrintGUITextBox's four colours for this ramp")
+
+    def pushed(va: int) -> int:
+        """``push imm8`` or ``push imm32`` at *va*."""
+        head = pe.u8(va)
+        if head == 0x6A:
+            return pe.u8(va + 1)
+        if head == 0x68:
+            return pe.u32(va + 1)
+        return -1
+
+    ck.check("gadget.info_box",
+             call_target(pe, INFO_ACTIVATE_CALL) == INFO_ACTIVATE
+             and tuple(pushed(va) for va in INFO_BOX_PUSHES) == INFO_BOX,
+             f"aActivateBriefingInfo box {INFO_BOX}")
+    ck.check("gadget.info_mode",
+             pe.bytes_at(INFO_MODE_ARM, 5)
+             == b"\xa1" + INFO_MODE_GLOBAL.to_bytes(4, "little")
+             and pe.bytes_at(INFO_MODE_LIMIT, 3) == b"\x83\xf8\x02"
+             and pe.bytes_at(INFO_MODE_PICTURE_GATE, 5)
+             == b"\xa1" + INFO_MODE_GLOBAL.to_bytes(4, "little"),
+             "the Upgrade Menu's *i* is a 0/1 toggle that hides the picture")
 
     ck.check("map.event_switch",
              pe.bytes_at(MAP_EVENT_DISPATCH + 0x0F, 3) == b"\x0f\x87\x8b",

@@ -76,6 +76,7 @@ func run(h: TestHarness) -> void:
 	_tables(h, cases)
 	_deployment(h, cases)
 	_codec(h, cases)
+	_decorations_survive(h, cases)
 	_pinned_hashes(h)
 
 
@@ -244,11 +245,115 @@ func _economy(h: TestHarness, cases: Dictionary) -> void:
 	var swap: CampaignState = _state(cases, 2)
 	swap.recruit(0, 1)
 	var costs: Dictionary = {0: 10, 5: 30}
-	h.check("economy.buy_weapon", swap.buy_weapon(0, 0, 5, costs))
+	h.equal("economy.buy_weapon",
+		DictRead.as_string(swap.buy_weapon(0, 0, 5, costs)["result"]),
+		Upgrade.OK)
 	h.equal("economy.swap_costs_difference", swap.points(0), 100 - 60 + 10 - 30)
 	var upgraded: UnitState = swap.roster.record(0)
 	h.equal("economy.weapon_changed", upgraded.weapon, 5)
 	h.equal("economy.resale_after_swap", Roster.refund_for(30), 80)
+	_upgrade_rules(h)
+
+
+## docs/27 section 5.3 -- what `aBuyWeapon` and `aBuyEquipment` do beyond the
+## purse, hand-computed from `Info.lcl`'s own lines.
+func _upgrade_rules(h: TestHarness) -> void:
+	# `SetEquipInfo (14, "Servo System", 30, 2,0,0,2,1,0, 1, "N", 13)` -- CON 2,
+	# TS 2, MS 1 -- against a soldier who has MS 2 and nothing else, which is
+	# `West`'s seeded row. The shortfall is 2 + 2 + 0 = 4.
+	var servo: Dictionary = {"id": 14, "cost": 30,
+		"skills": {"CON": 2, "LW": 0, "HW": 0, "TS": 2, "MS": 1, "LS": 0}}
+	var west: UnitState = UnitState.new()
+	west.hp = 5
+	west.skills = PackedInt32Array([0, 0, 0, 0, 2, 0])
+	h.equal("upgrade.shortfall_is_per_soldier",
+		Upgrade.equipment_skill_cost(servo, west), 4,
+		"CON 2 and TS 2 are missing; MS 1 is already met by MS 2")
+	var raised: PackedInt32Array = Upgrade.raise_skills(
+		Upgrade.skills_of(servo), west.skills, Upgrade.EQUIPMENT_SKILL_ORDER)
+	h.equal("upgrade.purchase_raises_to_the_requirement",
+		[raised[UnitState.SKILL_CON], raised[UnitState.SKILL_TS],
+		raised[UnitState.SKILL_MS]], [2, 2, 2],
+		"and never lowers the one already above it")
+	h.equal("upgrade.raise_leaves_the_source_alone", west.skills,
+		PackedInt32Array([0, 0, 0, 0, 2, 0]),
+		"a rule module must not write through a record's own vector")
+	# `SetWeaponInfo (2, "Standard Assault Rifle", ..., 3,0,0,0, ...)` -- LW 3.
+	var rifle: Dictionary = {"id": 2, "cost": 30,
+		"skills": {"LW": 3, "HW": 0, "TS": 0, "CON": 0}}
+	h.equal("upgrade.weapon_shortfall",
+		Upgrade.weapon_skill_cost(rifle, west), 3)
+
+	# The mutual-exclusion groups of `aBuyEquipment`.
+	h.equal("upgrade.armour_group", Upgrade.cleared_by(12),
+		PackedInt32Array([10, 11, 13]), "one armour at a time")
+	h.equal("upgrade.medic_group", Upgrade.cleared_by(15),
+		PackedInt32Array([16]))
+	h.equal("upgrade.jet_pack_is_in_no_group",
+		Upgrade.cleared_by(Upgrade.JET_PACK_ID), PackedInt32Array())
+
+	# The decoration allowance and the three gates on *Commend Unit*.
+	h.equal("upgrade.decoration_allowance",
+		[Upgrade.decoration_allowance(39), Upgrade.decoration_allowance(40),
+		Upgrade.decoration_allowance(60), Upgrade.decoration_allowance(100)],
+		[0, 1, 2, 3], "`0x00475550`, derived from EP alone")
+	var veteran: UnitState = UnitState.new()
+	veteran.hp = 5
+	veteran.ep = 100
+	h.check("upgrade.commend_is_offered", Upgrade.may_commend(veteran, 1))
+	h.check("upgrade.commend_needs_a_medal",
+		not Upgrade.may_commend(veteran, 0))
+	veteran.decorations = 3
+	h.check("upgrade.commend_stops_at_the_allowance",
+		not Upgrade.may_commend(veteran, 1))
+	veteran.decorations = 0
+	veteran.tp = Upgrade.TP_CAP
+	h.check("upgrade.commend_stops_at_ten_skill_points",
+		not Upgrade.may_commend(veteran, 1),
+		"`0x00458416` greys the button at 120")
+	# `0x00458449` greys gadget **3**, the name field, for a hero -- not
+	# gadget 5, which is what docs/10 section 5.11 read it as.
+	var hero: UnitState = UnitState.new()
+	hero.hp = 5
+	hero.ep = 100
+	hero.pool_flag = UnitState.HERO_POOL_FLAG
+	h.check("upgrade.a_hero_may_still_be_commended",
+		Upgrade.may_commend(hero, 1))
+	h.check("upgrade.a_hero_may_not_be_renamed", not Upgrade.may_rename(hero))
+
+	# And the whole purchase, through the state: the Jet Pack grants Long
+	# Range Scan, and with it carried the Scan Module is refused before the
+	# purse is touched (`0x0045A9B6`).
+	var buyer: CampaignState = CampaignState.create()
+	buyer.player_kind[0] = 1
+	buyer.set_points(0, 500)
+	var slot: int = buyer.roster.enlarge(0, TurnState.MODE_CAMPAIGN, 0, 1, 5, 7)
+	var jetted: UnitState = buyer.roster.record(slot)
+	jetted.tp = 120
+	buyer.roster.put(slot, jetted)
+	var jet: Dictionary = {"id": Upgrade.JET_PACK_ID, "cost": 190,
+		"skills": {"CON": 4, "TS": 3}}
+	h.equal("upgrade.jet_pack_bought",
+		DictRead.as_string(buyer.buy_equipment(0, slot, Upgrade.JET_PACK_ID,
+			jet)["result"]), Upgrade.OK)
+	var carrier: UnitState = buyer.roster.record(slot)
+	h.check("upgrade.jet_pack_grants_long_range_scan",
+		carrier.has_equipment(Upgrade.JET_PACK_GRANTS),
+		"`Info.lcl` annotates the line itself `* warp & scan`")
+	h.equal("upgrade.jet_pack_costs_seven_skill_points",
+		carrier.tp, 120 - 7 * Upgrade.TP_PER_SKILL_POINT,
+		"CON 4 and TS 3 from nothing")
+	var purse: int = buyer.points(0)
+	h.equal("upgrade.scan_module_refused_under_a_jet_pack",
+		DictRead.as_string(buyer.buy_equipment(0, slot,
+			Upgrade.SCAN_MODULE_ID, {"id": 0, "cost": 50})["result"]),
+		Upgrade.BLOCKED_BY_JET_PACK)
+	h.equal("upgrade.refusal_is_free", buyer.points(0), purse,
+		"the guard sits in front of the purse")
+	h.equal("upgrade.already_carried_is_refused",
+		DictRead.as_string(buyer.buy_equipment(0, slot, Upgrade.JET_PACK_ID,
+			jet)["result"]), Upgrade.ALREADY_CARRIED,
+		"the engine toggles it off and charges for it; Undo is the way back")
 
 
 ## `0x00478630` -- and the case that makes it more than a `sort_custom`.
@@ -690,6 +795,81 @@ func _codec(h: TestHarness, cases: Dictionary) -> void:
 		DictRead.as_int(CampaignCodec.decode(bad_schema)["result"]),
 		CampaignCodec.Result.BAD_DIGEST,
 		"a schema byte is inside the digest, so corruption is reported first")
+
+
+## `+0x38` is a new field, and a new field is a field every copy can drop.
+##
+## It is appended to [method UnitState.hash_into] only when it is non-zero, so
+## a mission's pinned hash cannot move -- but the moment a commended soldier
+## stands on a map, the hash *does* carry it, and every path that copies a
+## record field by field instead of through [method UnitState.view] would make
+## the mirror disagree with the world and a save refuse its own digest.
+func _decorations_survive(h: TestHarness, cases: Dictionary) -> void:
+	var state: CampaignState = _state(cases, 1)
+	var slots: PackedInt32Array = state.roster.occupied_slots()
+	if slots.is_empty():
+		h.check("decor.roster", false, "the seed roster is empty")
+		return
+	state.commendations[0] = 1
+	var decorated: UnitState = state.roster.record(slots[0])
+	decorated.ep = Upgrade.DECORATION_TIERS[0]
+	decorated.tp = 0
+	decorated.pool_flag = 1
+	state.roster.put(slots[0], decorated)
+	h.check("decor.commend", state.commend(0, slots[0]), "the award is allowed")
+	h.equal("decor.awarded", state.roster.record(slots[0]).decorations, 1)
+
+	var digest: String = state.digest_hex()
+	var decoded: Dictionary = CampaignCodec.decode(CampaignCodec.encode(state))
+	h.equal("decor.codec_ok", DictRead.as_int(decoded["result"]),
+		CampaignCodec.Result.OK)
+	var back: CampaignState = decoded["state"]
+	h.equal("decor.codec_digest", back.digest_hex(), digest)
+	h.equal("decor.codec_field", back.roster.record(slots[0]).decorations, 1)
+
+	# And the same record on a map: the clone, the delta mirror and the save.
+	var document: Dictionary = CacheFixture.mission("_C_140")
+	if document.is_empty():
+		h.check("decor.mission", false, "_C_140 is not in the cache")
+		return
+	var world: World = World.create(document, CacheFixture.balance(), 0.0)
+	var live: Dictionary = world.units_for_ai()
+	var placed: int = -1
+	for slot: int in world.unit_slots():
+		var unit: UnitState = live[slot]
+		if unit.player == 0 and unit.is_alive():
+			placed = slot
+			break
+	if placed < 0:
+		h.check("decor.placed", false, "_C_140 places no live player-0 unit")
+		return
+	var plain: String = world.canonical_hash_hex()
+	var plain_blob: PackedByteArray = world.save({})
+	var marine: UnitState = live[placed]
+	marine.decorations = 2
+	var carried: String = world.canonical_hash_hex()
+	h.check("decor.hashed", carried != plain,
+		"a non-zero decoration count is inside the canonical hash")
+	h.equal("decor.clone", world.clone().canonical_hash_hex(), carried,
+		"World.clone copies through view(), so the mirror agrees")
+
+	# **Two reloads and not one measured value.** `load_save` ends with a
+	# visibility pass (`0x004490A9`), so a save reloaded into a world that has
+	# never had one does not come back at the saving world's own hash -- which
+	# is true of every mission and has nothing to do with this field. The A/B
+	# is what isolates it: the same route twice, once with the decoration.
+	var control: World = World.create(document, CacheFixture.balance(), 0.0)
+	h.equal("decor.save_control_ok",
+		SaveCodec.result_name(control.load_save(plain_blob)), "OK")
+	var reloaded: World = World.create(document, CacheFixture.balance(), 0.0)
+	h.equal("decor.save_ok",
+		SaveCodec.result_name(reloaded.load_save(world.save({}))), "OK")
+	h.equal("decor.save_field",
+		DictRead.as_int(reloaded.unit_view(placed)["decorations"]), 2,
+		"SaveCodec stores the whole view, so the field comes back")
+	h.check("decor.save_hash",
+		reloaded.canonical_hash_hex() != control.canonical_hash_hex(),
+		"and the reloaded world hashes as the decorated one")
 
 
 ## D7 -- the campaign layer must not move [World]'s canonical hash.

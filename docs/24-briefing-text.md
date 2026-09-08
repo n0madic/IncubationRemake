@@ -176,6 +176,19 @@ while (i < size) {
   consumes one character and starts a line, so a too-long word degenerates into
   one character per line rather than looping. No shipped block does this.
 * The total height reported back to the caller is `lineHeight * lines`.
+* **A run of `@` starts `ceil(n / 2)` lines, not `n`.** The hard-break arm
+  advances `i` and then falls straight into `c = buf[i]`, so the character
+  after a break is taken unconditionally — a second `@` is an ordinary
+  character, adds its own width to the pen and starts nothing. The printer
+  never draws it (`0x0043E300` compares `bl` against `0x40` and jumps to the
+  loop tail), so it is invisible either way. *(Drawn out 2026-09-08; the loop
+  above always said it.)* This is not a curiosity: **every shipped heading
+  relies on it.** `{§1}Mission Description:{§0}@` with the body's own `@` on
+  the next source line is two line starts, and the second is the blank line
+  under the heading that every briefing in the game has. A reader that treated
+  a break as a flag rather than a count printed the whole block as a slab.
+  `brief_parse.py`'s `corpus.break_lines` pins the total over all 120 files —
+  **1811 lines from 2347 `@`** — and `corpus.break_runs` the rule itself.
 
 ### 4.1 The fonts — **[code]** `0x00439E20` `aGetFont`, `0x00439D60`
 
@@ -215,6 +228,21 @@ set the box's font to `-1`.
 
 `{#2}` is implemented and no shipped file uses it. Any other digit is ignored
 and leaves the colours alone.
+
+The four are not four shades of one outline. **The blitter maps a glyph's
+pixel value straight onto this array** — `0x00447ADD`, the 16-bit path: a 1
+takes `colour[0]` and everything else `colour[1]`, with 0, 3 and 4 skipped
+([`60` §5.1](60-lib-sprites.md)) — and the shipped faces use only the values 1
+and 2. So `colour[0]` is the ink and `colour[1]` is what the glyph's
+**antialiasing** is drawn in. The fraction is 12/31 for `{#0}` and `{#2}` and
+10/18 for `{#1}`.
+
+Where the `{#0}` four come from is worth writing down, because they are not in
+the box: `0x0043D891` copies them out of the descriptor handed to
+`aCreateGUITextBox` at `+0x1C..+0x22`, and all four activators fill the one
+global descriptor `0x0050B2B4` with the same immediates. `interface_tables.py`
+reads all sixteen writes back — two of the activators store a zeroed register
+rather than an immediate for the two zero entries.
 
 ### 4.3 The indent
 

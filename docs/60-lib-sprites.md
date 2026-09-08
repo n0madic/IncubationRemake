@@ -298,8 +298,60 @@ with descenders and the underscore hanging below it.
 
 The fonts ship without a companion `.pal`, so glyph pixel values are indices
 into a caller-supplied palette. Rendering them against a greyscale ramp
-produces near-black text; `tools/font_render.py` writes a flat white with index
-0 transparent instead.
+produces near-black text.
+
+### 5.1 A glyph has **two** ink levels — **[code] `0x00447900`**
+
+*(Added 2026-09-08.)* The four faces use exactly the values 0, 1 and 2 —
+`font_3` only 0 and 1 — and the blitter maps the value **straight onto the
+caller's colour array** rather than treating it as an intensity. Its 16-bit
+path, the one every shipped display mode but the first runs
+([`97` §23.4](97-slice-5-report.md)), is a four-arm ladder:
+
+```c
+/* 0x00447AD6 */  for (each source pixel p) {
+                      if (p == 0 || p == 3 || p == 4) continue;   /* skipped */
+                      *dst = (p == 1) ? colour[0] : colour[1];
+                  }
+```
+
+The 8-bit path at `0x00447A23` writes the same ladder out in full, `1 ->
+colour[0]`, `2 -> colour[1]`, `3 -> colour[2]`, anything else `colour[3]`.
+
+So **index 1 is the glyph's body and index 2 is its antialiasing.** What
+settles that it is coverage rather than an outline is the ramps
+`aPrintGUITextBox` supplies (`0x0043E458` and `0x0043E47A`): the body ramp is
+`0x94B2, 0x528A, 0x0841, 0` and the alert one `0xF800, 0x6000, 0x0800, 0`, so
+`colour[1]` is **0.55** of `colour[0]` in the first and **0.39** in the second
+— a mid-tone in each, on the pixels that sit diagonally against a stem:
+
+```
+font_0 'o'          font_0 'M'          # index 1     o index 2
+o###o               ##...##
+#o.o#               ##o.o##
+#...#               #o#o#o#
+#o.o#               #.o#o.#
+o###o               #.....#
+```
+
+Painting every non-zero index solid — which both `tools/font_render.py` and
+the remake's `GameFont` did until this was read — fattens every stem by a
+pixel and fills the counters of `a`, `o` and `e`, which is why the remake's
+text read as a different, blobbier face than the original's.
+
+**All three ramps are now measured, and there are two fractions, not one.**
+`{#0}` is `0xFFFF, 0x632C, 0, 0` and `{#2}` is `0xF800, 0x6000, 0x0800, 0` —
+both 12/31 — while `{#1}` is `0x94B2, 0x528A, 0x0841, 0`, which is 10/18
+([`24` §4.2](24-briefing-text.md)). The remake bakes the fraction into the
+atlas, so it builds each face twice and the briefing renderer binds the pair
+carrying the body ramp's own shade to the theme's italic slots, `{#1}` spans
+being written `[i]`; the shade is written **opaque**, because the original
+stores `colour[1]` into the frame buffer and never blends. `interface_tables.py`'s
+`font.*` checks read the ladder, the eight colour writes, both markup ramps and
+all sixteen writes of the default one back out of the executable.
+
+`tools/font_render.py` writes index 0 transparent, index 1 white and index 2
+the default ramp's shade.
 
 ```bash
 python3 tools/font_render.py font_2 "Incubation" -o out.png

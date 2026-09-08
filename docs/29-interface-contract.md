@@ -248,6 +248,149 @@ in [`20` §5–6](20-lcl-language.md).
 
 ---
 
+## 2.1 How a gadget is drawn — **[code] `aPrintGadget` `0x0043A030`**
+
+*(Added 2026-09-08. Pinned by `interface_tables.py`'s `gadget.*` checks.)*
+
+`Menu_*.lcl`'s builders name a `Library` column and a `Width`, and neither is
+what it looks like. `Library` is a **sprite index into `buttons.LIB`**, not a
+library id, and `Width` is not a pixel count: it is the number of pieces
+*including* the two caps.
+
+`aPrintGadget` switches on the gadget's type byte (`gadget + 0x63` in the
+staging record, `0x00508C23` in the live one), and the two types the campaign
+windows use are:
+
+| Type | Built by | Drawn as |
+|---|---|---|
+| 3 | `GUI_SetButton` `0x0043CD10`, `GUI_SetTextButton` `0x0043CFF0` | `base + 0`, then `Width - 2` copies of `base + 2`, then `base + 1` |
+| 4 | `GUI_SetIcon` `0x0043D110` | `base`, alone |
+
+The pieces are laid **edge to edge with no overlap** — the painter's cursor is
+`edi += width_of(piece)` at `0x0043A360` and the measurer `0x0043A9D0` repeats
+the same sum, which is how the engine knows how wide a gadget is. So:
+
+* `GUI_SetButton (..., 0_Library, ..., 6_Width, ...)` is `27 + 4×31 + 18` =
+  **169** units, from `buttons.LIB` 0, 2 and 1;
+* `GUI_SetTextButton (..., 6_Library, ..., 5_Width)` — the Upgrade Menu's name
+  field — is `32 + 3×32 + 32` = **160** by 32, from `buttons.LIB` 6, 8 and 7.
+
+**`base + 1` is the right cap and `base + 2` is the fill**, which is the
+opposite of what the sprite order suggests; drawing `base + 1` repeatedly
+gives a row of round caps and not a button.
+
+### The second trio is the **pointer's**, not a press
+
+`0x0043A06D` compares the gadget's own id with `0x00509A30` and, when they
+match, draws `base + 3`, `base + 5` and `base + 4` instead — and an icon draws
+`base + 1` instead of `base` (`0x0043A259`, `inc dl`).
+
+`0x00509A30` is written by `0x0043A8B0`, which hit-tests the **cursor**
+(`0x0043A650`), stores the answer and repaints the gadget that was lit
+alongside the one that now is. No mouse button is read anywhere in it. So the
+lit faces are a **hover highlight**: `buttons.LIB` 0/1/2 against 3/4/5, and the
+icon pairs 44/45, 48/49, 50/51 and 52/53 — in each pair the second is the same
+picture with its lamp lit.
+
+### A list is a listbox, and a setting is a small field
+
+`Menu_a.lcl`'s *Leveloptions* is the shape every list in the game has:
+`GUI_SetListbox (0..9, fntID, WinText, Library, 060_x, 120 + 22i_y, 8_Width)`
+— ten rows of 22, composed exactly as a button is (`0x0043D610` builds the
+same type-3 gadget), from **three different bases**: 12 for the top row, 18
+for every row between and 24 for the last, each a trio of 32×22 pieces with
+its own lit twin three along. It is paged by `GUI_SetIcon (10, 30_Library,
+320, 120)` and `(11, 32_Library, 320, 155)`; a shipped listbox has no scroll
+bar.
+
+A **setting** in that window is two gadgets, not one: a right-aligned caption
+(`GUI_SetText ... 2_Format`) and, beside it, the changeable value on its own
+`GUI_SetButton`/`GUI_SetTextButton (..., 6_Library, ..., 2_Width)` — 64 units
+of the name field's pieces. Only the value is a gadget.
+
+### `Format`, not `cX`, is `GUI_SetText`'s alignment
+
+`GUI_SetText (txtID, fntID, WinText, x, y, Style, cX, cA, cB, cC, Format)`
+carries two columns that look like they could be the alignment, and it is the
+**eleventh**. `0x0043C7D0` stores it at `+0x20` of the text record and
+`0x0043C940` hands it to the printer, whose `0x00439777` reads:
+
+```c
+if (format == 1) x -= width / 2;   /* centred */
+if (format == 2) x -= width;       /* right   */
+```
+
+`cX` is the seventh column, a `word` at `+0x18`, and the printer takes it as a
+separate argument. The two agree in 72 of `Menu_*.lcl`'s 121 calls, which is
+why reading the wrong one is nearly invisible: the Upgrade Menu's item name
+(`0_cX` but `1_Format`, at x 500 — the item window's own centre) and the Item
+List's two counters (`1_cX` against `0_Format` and `2_Format`) are the places
+it shows.
+
+The `fntID` column matters as much. Of the 89 `GUI_SetButton` calls in the
+three menu programs, **81 name font 0 and 8 name font 1 — none names font 2**;
+of the 121 `GUI_SetText` calls, 68 name font 0 and the 28 that name font 2 are
+the window titles. A screen that draws everything in `font_2` is drawing at
+roughly twice the size the coordinates were written for.
+
+### The two sounds — **[code] `aInitGUI` `0x0043BF30`, `aPlayGUIClickSound` `0x0043E5E0`**
+
+`aInitGUI` loads exactly two waves into two buffers: `click_1.wav` into
+`0x0050B2A0` and `click_2.wav` into `0x0050B2A4`. `aPlayGUIClickSound(0)`
+plays the first and `(1)` the second, and the four screens that call it pass
+both.
+
+The first one is also the **pointer's**. `0x0043C500` calls the hit-test, and
+when the gadget under the cursor has *changed* it plays `click_1.wav` directly
+— panned by `320 - pointer_x`, so the click follows the cursor across the
+screen. Nothing reads a mouse button on that path.
+
+### The Upgrade Menu's *i* — `0x00510A54`
+
+Gadget 16 of the Upgrade window toggles one global between 0 and 1
+(`0x0045B4BC`) and redraws the item panel. While it reads 1, `0x00458BFE`
+**does not load the item's shape library**, so the item window has no picture;
+what takes its place is the item's own **description**.
+
+`0x00458B2D` (equipment) and `0x004587A6` (a weapon) call `0x00432B70` /
+`0x00432BD0` with the rectangle `(405, 140)` by `170 × 110` — the item
+window's interior. Both wrappers:
+
+1. read a **letter out of the record** — `+0x29` of the 42-byte equipment
+   record (`0x00517BD9` at id 0), `+0x40` of the 65-byte weapon one
+   (`0x0051B300`). `Info.lcl` writes it as the last string of `SetEquipInfo`
+   and `SetWeaponInfo2`, and `inclib.info` parses it as `key`;
+2. **refuse when it is `#`** (`0x00432B86`, `0x00432BE4`);
+3. open `DATA/TXT/<language>/Info/Data.txt` at that letter plus a digit naming
+   the family — `0` a unit (`0x00432B20`), `1` equipment, `2` a weapon — and
+   title the page with the record's own name.
+
+So `Scan Module`'s `key` of `A` is block `A1`, *Returns the number of units in
+close proximity.* The file holds 54 blocks: `A0..P0` for units, `A1..S1` for
+the nineteen items and `A2..P2` for the sixteen human weapons — plus `**`,
+`*1` and `*2`, which is where everything else lands.
+
+**`#` is the engine's refusal and no shipped record uses it.** *(Corrected
+2026-09-08. This section said the alien weapons "carry `#` and have no page",
+and they do not.)* Every record without a page of its own — the ten alien
+weapons, the eight `B`-variant duplicates, the Combot's gun, `Explosives`, and
+`Info.lcl`'s own placeholder row 28 `"-"` (`* (x) No Weapon`) — carries `*`,
+which is a letter like any other: the wrapper does not refuse it, the family
+digit is appended as usual and the bank answers block `*2` with *No
+information available.* So the `#` arm at `0x00432B86`/`0x00432BE4` is
+reachable only by data the game does not ship, and a remake that refuses on
+`#` alone still shows the right page for every shipped record — by asking for
+it, not by skipping it.
+
+What `Txtmod_b` 166..173 are for is therefore still **UNVERIFIED**. They name
+regions of this window (*Squad information*, *Item to purchase*, *Soldier
+profile*, *Soldier's weapon information*, *Inventory*, *Action points*, *Total
+skill points, skill points available and commendations*, *Unit to upgrade*),
+which is what a hover help would say, but nothing has been found that draws
+them.
+
+---
+
 ## 3. Required integration boundary
 
 ```
