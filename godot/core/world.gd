@@ -306,8 +306,17 @@ func _player_kind_of(player: int) -> int:
 ## stores land on `+0x00`, `+0x08`, `+0x10`, `+0x18` (zero), `+0x20` (1) and
 ## `+0x24` (a byte, zero). The last of those is the hero counter, so this
 ## clears [member TurnState.hero_killed]; the other five are fields this
-## remake does not carry. It also zeroes the turn counter and game-control
-## slots 10 and 11, which [method create] already leaves that way.
+## remake does not carry.
+##
+## **The turn counter is zeroed here too**, `mov byte [0x509E1D], bl` at
+## `0x0043B79C`. It used to be left out on the ground that [method create]
+## already produces a zero -- true until [method skip_deployment_turn]
+## existed, and the reason the two have the order they do: the engine's
+## controller reaches the view player's init before `aInitBattleGround`
+## precisely because this write would wipe a counter set ahead of it. Written
+## out rather than reasoned about, so the ordering trap is a failing check
+## rather than a comment. The two game-control slots it also clears
+## ([`20` §7](20-lcl-language.md)'s 10 and 11) are still [method create]'s.
 ##
 ## The rebuild is **not** the hand-over's own: that one runs later, for
 ## whoever the rotation picked and only when the refresh ran. This one is
@@ -318,6 +327,7 @@ func _first_hand_over() -> void:
 		return
 	_hand_over_initialised = true
 	turn.hero_killed = PackedInt32Array([0, 0, 0, 0])
+	turn.turn = 0
 	if turn.mode != TurnState.MODE_CAMPAIGN:
 		return
 	Visibility.build(state, _units, _unit_types, 0, turn.human_count(),
@@ -365,6 +375,15 @@ func open_mission() -> TurnResult:
 ## `Platform (19,2,2,11)` under an action-point flag the `.lev` arrives with,
 ## so through the deployment screen the squad rides the platform down before
 ## the player's first turn, and through `--mission=` it does not.
+##
+## **It runs after [method open_mission], not before it**, and the engine's
+## order is the same: `aNextPlayerHandling`'s one-shot calls
+## `resetGameControl` `0x0043B770`, which zeroes the turn counter
+## (`mov byte [0x509E1D], bl`), so a 1 written ahead of it would be wiped.
+## The controller reaches the view player's init before `aInitBattleGround`
+## for that reason. It is [SliceMain]'s to call rather than this file's
+## because the pool it turns on is the campaign's live roster, which is still
+## in its mission-entry snapshot while the world is being built.
 func skip_deployment_turn() -> void:
 	if turn.mode == TurnState.MODE_CAMPAIGN and turn.turn == 0:
 		turn.turn = TurnState.FIRST_TURN

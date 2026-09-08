@@ -115,6 +115,17 @@ func pool_live() -> int:
 	return 0
 
 
+## Whether any record the muzzle switch just made is still flying.
+##
+## The other half of the flight stage's condition -- the reasoning is at
+## [constant ShotSequence.WAIT_FRAMES]. The default is **true**, "there is
+## still something to watch", against the rest of this class: [method
+## pool_arrived] already defaults to "nothing to wait for" and answers first,
+## so a host that implements neither must not be handed a second way to stall.
+func muzzle_in_flight() -> bool:
+	return true
+
+
 ## `0x0042B490` -- put the *arrived* flag back down.
 ##
 ## The other half of [method pool_arrived]: a sequence that acts on a landing

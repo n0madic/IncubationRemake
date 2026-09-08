@@ -1705,6 +1705,73 @@ func _check_triggers(h: TestHarness) -> void:
 	h.equal("triggers.arrived_unwritten_without_a_burst",
 		triggers.arrived_write(), BlobTriggers.ARRIVED_UNWRITTEN,
 		"the mine thrower's grenade is not one of the three burst creators")
+
+	# **The Cy'Coo's spore round** -- `aBlob_CreateSporeCannon` `0x004268B0`,
+	# the fourth creator transcribed in [BlobTriggers] rather than replayed
+	# out of the constructor table. Its one call carries `life: null`, so the
+	# round used to take [constant BlobTriggers.DEFAULT_LIFE] and a velocity
+	# paced to it -- a flat line that then sagged under kind 22's own `0x50` a
+	# tick, where the original lobs it.
+	pool.clear()
+	h.equal("spore.weapon_25_creator", triggers.creators("weapon_muzzle", 25),
+		[BlobTriggers.SPORE_CREATOR],
+		"the muzzle switch names one creator for weapon 25")
+	var lobbed: int = triggers.muzzle(25, from, to)
+	h.equal("spore.one_round", lobbed, 1, "one record for the whole call")
+	var round_life: int = IncInt.div_trunc(to.x - from.x,
+		BlobTriggers.SPORE_UNIT) - BlobTriggers.SPORE_LIFE_BIAS
+	var spore: Blob = pool.blobs()[0]
+	h.equal("spore.kind", spore.kind, 0x16,
+		"kind 22, the one arm that spawns spore sparks as it flies")
+	h.equal("spore.life", spore.life, round_life,
+		"`max(|dx|, |dy|) / 800 - 2`, the reciprocal multiply at 0x00426A73")
+	h.equal("spore.one_step_a_tick", Vector2i(spore.vx, spore.vy),
+		Vector2i(BlobTriggers.SPORE_SPEED, 0),
+		"the direction service's ratios times the double at 0x004B12C8")
+	h.equal("spore.starts_one_step_along",
+		Vector3i(spore.x, spore.y, spore.z),
+		from + Vector3i(BlobTriggers.SPORE_SPEED, 0, 0),
+		"the record sits at the source plus the step, not at the source")
+	h.equal("spore.loft", spore.vz,
+		BlobTriggers.SPORE_LOFT * IncInt.div_trunc(round_life, 2),
+		"`0x50 * (life / 2)` up at launch against `0x50` a tick down")
+	h.equal("spore.arrived_write_in_flight", triggers.arrived_write(), 0,
+		"the creator's own write over 0x004FE63C at 0x00426A97")
+	h.check("spore.in_flight", triggers.in_flight(),
+		"and the round is what the shot's flight stage waits for")
+	# The arc itself, stepped: it rises for half its life and comes back.
+	var peak: int = spore.z
+	var flown: int = 0
+	while triggers.in_flight() and flown < 200:
+		var _stepped: Array[BlobKinds.TickResult] = pool.tick_all()
+		flown += 1
+		peak = maxi(peak, spore.z)
+	h.equal("spore.flies_its_whole_life", flown, round_life + 1,
+		"%d moves, and the tick after them finds `life` at zero" % round_life)
+	h.check("spore.arcs_over_the_line", peak > from.z + BlobTriggers.SPORE_UNIT,
+		"%d against the muzzle's %d: a lob, not a flat line" % [peak, from.z])
+	h.check("spore.and_comes_back_down", spore.z < peak,
+		"%d at the end of its life" % spore.z)
+	h.check("spore.gone_is_not_in_flight", not triggers.in_flight(),
+		"which is what ends the flight stage for a round nothing signals for")
+	# **And it is not the pool being empty.** Kind 22 spawns sparks every tick
+	# and they outlive the round, so `pool_live() == 0` could never be the
+	# test -- which is why the records are held by reference here.
+	var _later: int = pool.create_blob({"kind": 0x17, "class_id": 2,
+		"life": 16, "x": to.x, "y": to.y, "z": to.z})
+	h.check("spore.a_later_record_is_not_the_round",
+		not triggers.in_flight() and pool.live() > 0,
+		"%d record(s) in the pool, none of them the muzzle's" % pool.live())
+	# Point-blank is the **same tile** here and not an adjacent one: the spore
+	# step is a quarter of a map field, so even a neighbour is four steps off
+	# and the round is made. `close` is the muzzle's own cell.
+	pool.clear()
+	var _same_cell: int = triggers.muzzle(25, from, close)
+	h.equal("spore.point_blank_makes_nothing", pool.in_use(), 0,
+		"a life of -2 aborts the constructor before it allocates")
+	h.equal("spore.point_blank_arrived_write", triggers.arrived_write(), 1,
+		"`(life <= 0) ? 1 : 0`, so there is nothing to wait for")
+	h.check("spore.point_blank_is_not_in_flight", not triggers.in_flight())
 	# And the decision the muzzle stage makes out of it, which is the four
 	# lines that used to sit inside `SliceMain.ShotHost` where nothing could
 	# reach them.
@@ -2067,6 +2134,27 @@ class RecordingAudio extends AudioSystem:
 ## [method BlobKinds._kind_25] does, and the two acknowledgements the run owes
 ## -- `0x0042B490` per crump and `0x0041E370` once -- are counted.
 ##
+## A shot whose round raises nothing -- the Cy'Coo's spore cannon.
+##
+## `pool_arrived` never comes up, because kind 22 is not one of the fourteen
+## update arms that write `0x004FE63C`, and the pool is not empty either: the
+## round spawns sparks every tick that outlive it. What ends the flight is the
+## muzzle's own record being gone, and this counts the frames it takes.
+class SilentRoundHost extends RecordingHost:
+	## Frames the round is in the air for; any number the bound is well above.
+	const ROUND_FRAMES: int = 12
+	var left: int = ROUND_FRAMES
+
+	func pool_arrived() -> bool:
+		return false
+
+	func muzzle_in_flight() -> bool:
+		if left > 0:
+			left -= 1
+			return true
+		return false
+
+
 ## Its own class rather than fields on [RecordingHost]: the shot suites drive
 ## `pool_arrived` as a countdown and would answer a raised flag on every frame
 ## of the bomb run, which is one crump a frame.
@@ -2612,6 +2700,31 @@ func _check_shot_stages(h: TestHarness) -> void:
 	h.equal("stages.style_3_death", quick.programs,
 		["%s:5,0" % BlobPrograms.BLOOD_BURST],
 		"weapon 15's muzzle arm leaves style 3: the blood burst")
+
+	# **A round nothing signals for.** Fourteen update arms raise
+	# `0x004FE63C` and the spore cannon's kind 22 is not among them, so the
+	# flag alone left weapon 25's shot sitting out the whole of
+	# [constant ShotSequence.WAIT_FRAMES] -- five seconds of dead screen after
+	# a round that had already landed. The stage ends on the round being gone
+	# instead; the hundred stays as the bound it is.
+	var silent_round: SilentRoundHost = SilentRoundHost.new()
+	var lobbed: SequenceQueue = SequenceQueue.create(null)
+	shot["weapon"] = 25
+	var _lob_bound: int = ShotSequence.enqueue(lobbed, silent_round, shot)
+	var flight_frames: int = 0
+	frames = 0
+	while lobbed.is_running() and frames < 1000:
+		if lobbed.current() == ShotSequence.STAGE_FLIGHT:
+			flight_frames += 1
+		var _still: bool = lobbed.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+	h.equal("stages.flight_ends_when_the_round_is_gone", flight_frames,
+		SilentRoundHost.ROUND_FRAMES + 1,
+		"the round's own frames and the one that finds it gone, against the "
+		+ "%d the flag alone would have taken" % ShotSequence.WAIT_FRAMES)
+	h.check("stages.flight_is_still_bounded",
+		ShotSequence.WAIT_FRAMES == 100,
+		"`cmp ecx, 0x64` at 0x0040D4C1 is untouched")
 
 	# Type 0x37 skips the resume; a computer's shot has no caption.
 	var silent: RecordingHost = RecordingHost.new()

@@ -136,6 +136,50 @@ const NEEDLE_AUX_BASE: int = 10
 ## drawn sprite parameter among the three, and the only null column a burst
 ## creator's call carries.
 const FLASH_COLUMN_SPAN: int = 7
+## `aBlob_CreateSporeCannon` `0x004268B0` -- the Cy'Coo's spore round, and the
+## one muzzle creator that is neither a burst nor a record the constructor
+## table can place on its own.
+##
+## It is transcribed here because **every number in its record is computed**
+## and the document carries none of them -- the call at `0x00426B52` is the
+## only one in the image whose `life` is `null` outside a burst creator:
+##
+## * `life = max(|dx|, |dy|) / 800 - 2`. The divisor is not in the bytes: the
+##   compiler left the reciprocal multiply `0x51EB851F` with `sar edx, 8` at
+##   `0x00426A73`, which is a divide by 800, and the `lea ebp, [edx + eax - 2]`
+##   at `0x00426A8E` takes the two off. The two ends are the source and target
+##   **objects'** positions, so the span is measured in world units.
+## * `v = ftol(direction * 800.0)` per axis, the double at `0x004B12C8`. The
+##   direction service divides by `max(|dx|, |dy|)` (docs/28 section 7.4), so
+##   the wide axis moves a whole step a tick and the round arrives as its life
+##   runs out. The record itself sits at the source **plus one step**.
+## * `vz` carries a launch loft of `0x50 * (life / 2)` on top --
+##   `0x00426B0C`..`0x00426B29`, written as a negated `5 * (life/2) << 4` whose
+##   sign is then thrown away. Kind 22's arm takes `0x50` off `vz` every tick
+##   (`blob_kinds.gd`), so the boost is exactly half the fall and the round
+##   follows an arc that comes back down on the target. Without it the round
+##   flew a flat line that sagged, which is what the original visibly does not
+##   do.
+## * `[0x004FE63C] = (life <= 0) ? 1 : 0` at `0x00426A97`, the same write the
+##   three burst creators make and the reason a point-blank spore shot waits
+##   for nothing.
+##
+## What it does **not** do is use `0x00403AA0`: the orientation call at
+## `0x00426AF9` fills two locals nothing afterwards reads, so its answer is
+## dead and the record's rotation is the sprite table's row and column. It
+## draws from no generator either, so a spore shot leaves `aRandom2`'s seed
+## where it found it.
+const SPORE_CREATOR: String = "0x004268B0"
+## The spore step in world units -- a quarter of a map field -- as the
+## **divisor** the round's life is counted in.
+const SPORE_UNIT: int = 800
+## The same 800 again as the **speed**, and from a different place: the double
+## at `0x004B12C8` the three direction ratios are multiplied by.
+const SPORE_SPEED: int = 800
+## `lea ebp, [edx + eax - 2]` -- the round is two steps shorter than the span.
+const SPORE_LIFE_BIAS: int = 2
+## `0x50` a tick up at launch against kind 22's `0x50` a tick down in flight.
+const SPORE_LOFT: int = 0x50
 ## **Point-blank is a different branch, not an empty one.** A span inside one
 ## spacing writes the length back to zero -- so every record the round loop
 ## builds is dropped by the constructor for a zero life, which is the
@@ -186,6 +230,13 @@ var _programs: Array[Dictionary] = []
 var _arrived_write: int = ARRIVED_UNWRITTEN
 ## `creator address -> the constructor calls inside it`, built once.
 var _by_creator: Dictionary[String, Array] = {}
+## The records the last [method muzzle] put in the pool -- see
+## [method in_flight]. Held by **reference** and not by slot, because a slot
+## falls free the moment its record dies and the next spawn takes it.
+var _made: Array[Blob] = []
+## Whether [method _place] is filling [member _made]. Only a muzzle does; an
+## impact is not a thing anybody waits for.
+var _recording: bool = false
 
 
 static func open(pool: BlobPool, document: Dictionary) -> BlobTriggers:
@@ -232,7 +283,11 @@ func muzzle(weapon_id: int, from: Vector3i, to: Vector3i,
 		joints: Dictionary[String, Vector3i] = {}) -> int:
 	_programs.clear()
 	_arrived_write = ARRIVED_UNWRITTEN
-	return _fire("weapon_muzzle", weapon_id, from, to, joints)
+	_made.clear()
+	_recording = true
+	var made: int = _fire("weapon_muzzle", weapon_id, from, to, joints)
+	_recording = false
+	return made
 
 
 ## What the last [method muzzle] wrote over the *arrived* flag `0x004FE63C`.
@@ -264,7 +319,22 @@ func take_programs() -> Array[Dictionary]:
 
 ## The impact effects, at the target and going nowhere.
 func impact(weapon_id: int, at: Vector3i) -> int:
+	_recording = false
 	return _fire("weapon_impact", weapon_id, at, at)
+
+
+## Whether any record the last [method muzzle] made is still in the pool.
+##
+## **The other half of what ends the shot's flight stage**, beside the
+## *arrived* flag -- the whole reasoning is at
+## [constant ShotSequence.WAIT_FRAMES]. Fourteen update arms raise the flag
+## and the spore cannon's kind 22 is not one of them, so a weapon whose round
+## never signals would otherwise spend the bound in full.
+func in_flight() -> bool:
+	for blob: Blob in _made:
+		if blob != null and blob.alive:
+			return true
+	return false
 
 
 ## Which of the three impact waves this weapon selects, or `""` for the
@@ -353,6 +423,7 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		var key: String = DictRead.as_string(list[index])
 		var shape: Array = DictRead.as_array(BURST_SHAPES.get(key, []))
 		var burst_creator: bool = not shape.is_empty()
+		var spore: bool = key == SPORE_CREATOR
 		# **The creator's own source, joint and all.** Everything downstream
 		# reads it -- the direction, the span the streak's life is counted
 		# in, the casing's origin -- because `0x0042C660` writes over the
@@ -369,10 +440,15 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		if burst_creator:
 			life = maxi(_burst_life(from, towards,
 				DictRead.as_int(shape[SHAPE_UNIT])), 0)
+		elif spore:
+			# **Not clamped**, unlike the burst's: the spore cannon's own
+			# `test ebp, ebp / setle` reads the raw difference and the
+			# constructor is handed it whole (`0x00426A92`).
+			life = _spore_life(from, towards)
 		# The creator's own write over `0x004FE63C`, ahead of everything it
 		# makes: a flight begins at 0, and a span inside one spacing -- the
 		# point-blank branch -- says there is nothing to wait for.
-		if burst_creator:
+		if burst_creator or spore:
 			_arrived_write = 1 if life <= 0 else 0
 		if burst_creator and life <= 0 and key == FLASH_CREATOR:
 			_point_blank_flash(towards, burst.x)
@@ -387,6 +463,9 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 			var delay: int = (round_index * burst.y) & 0xFF
 			if key == NEEDLE_CREATOR:
 				made += _needles(from, delta, life, delay)
+				continue
+			if spore:
+				made += _spore_cannon(from, towards, life, delay)
 				continue
 			for call: Variant in _by_creator.get(key, []):
 				if _create(DictRead.as_dict(call), from, towards, delta,
@@ -456,9 +535,7 @@ func _needles(from: Vector3i, delta: Vector3i, life: int, delay: int) -> int:
 	if calls.is_empty() or life <= 0:
 		return 0
 	var call: Dictionary = DictRead.as_dict(calls[0])
-	var sprite: Dictionary = DictRead.as_dict(
-		DictRead.as_dict(_document.get("sprites", {}))
-			.get(DictRead.as_string(call["site"]), {}))
+	var sprite: Dictionary = _sprite_of(call)
 	var step: Vector3i = Vector3i(
 		IncInt.div_trunc(delta.x, NEEDLE_SPLIT),
 		IncInt.div_trunc(delta.y, NEEDLE_SPLIT),
@@ -478,7 +555,7 @@ func _needles(from: Vector3i, delta: Vector3i, life: int, delay: int) -> int:
 			"aux": NEEDLE_AUX_BASE - k,
 			"delay": delay,
 		}
-		if _pool.create_blob(fields) >= 0:
+		if _place(fields) >= 0:
 			made += 1
 	return made
 
@@ -519,6 +596,81 @@ func _burst_delta(from: Vector3i, to: Vector3i, shape: Array) -> Vector3i:
 		scatter.x - Eng3dGeometry.ftol(d[0] * float(step)),
 		scatter.y - Eng3dGeometry.ftol(d[1] * float(step)),
 		scatter.z - Eng3dGeometry.ftol(d[2] * float(step)))
+
+
+## `0x00426A4E`..`0x00426A8E` -- the spore round's life, in spore steps.
+##
+## Zero or less is the point-blank branch: the constructor drops a record with
+## no life (`test al, al / je` at `0x00420957`, and `al` is the `life`
+## argument), so a spore shot inside two steps makes nothing at all -- which
+## is why the creator writes the *arrived* flag up rather than down.
+func _spore_life(from: Vector3i, to: Vector3i) -> int:
+	var span: int = maxi(absi(from.x - to.x), absi(from.y - to.y))
+	return IncInt.div_trunc(span, SPORE_UNIT) - SPORE_LIFE_BIAS
+
+
+## `0x00426A7A`..`0x00426AC4` -- one spore step along the line of fire.
+##
+## `ftol` answers zero for the NaN and the infinities the direction service
+## returns over a zero span, so the degenerate cases need no arm of their own.
+func _spore_velocity(from: Vector3i, to: Vector3i) -> Vector3i:
+	if from == to:
+		return Vector3i.ZERO
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, to, 1)
+	return Vector3i(
+		Eng3dGeometry.ftol(d[0] * float(SPORE_SPEED)),
+		Eng3dGeometry.ftol(d[1] * float(SPORE_SPEED)),
+		Eng3dGeometry.ftol(d[2] * float(SPORE_SPEED)))
+
+
+## One spore round -- the creator's single constructor call at `0x00426B52`.
+##
+## The record's **position** carries the plain step (`0x00426ADB` adds the
+## `vz` the stack slot kept) and its **velocity** the lofted one
+## (`0x00426B29`), which is the whole of the arc. The engine's `abs` over the
+## loft is a no-op for every life that reaches the constructor, so it is left
+## out rather than written down as arithmetic nothing takes.
+func _spore_cannon(from: Vector3i, to: Vector3i, life: int, delay: int) -> int:
+	var calls: Array = DictRead.as_array(_by_creator.get(SPORE_CREATOR, []))
+	if calls.is_empty() or life <= 0:
+		return 0
+	var call: Dictionary = DictRead.as_dict(calls[0])
+	if call["kind"] == null:
+		return 0
+	var step: Vector3i = _spore_velocity(from, to)
+	var sprite: Dictionary = _sprite_of(call)
+	var fields: Dictionary = {
+		"kind": DictRead.as_int(call["kind"]),
+		"class_id": DictRead.as_int(call["class"]),
+		"life": life,
+		"x": from.x + step.x, "y": from.y + step.y, "z": from.z + step.z,
+		"vx": step.x, "vy": step.y,
+		"vz": step.z + SPORE_LOFT * IncInt.div_trunc(life, 2),
+		"rot_x": _sprite_field(sprite, "row", DEFAULT_ROW),
+		"rot_y": _sprite_field(sprite, "col", DEFAULT_COLUMN),
+		"aux": _sprite_field(sprite, "size", DEFAULT_SIZE),
+		"delay": delay,
+	}
+	return 1 if _place(fields) >= 0 else 0
+
+
+## The sprite parameters the extractor recorded for one constructor call.
+func _sprite_of(call: Dictionary) -> Dictionary:
+	return DictRead.as_dict(DictRead.as_dict(_document.get("sprites", {}))
+		.get(DictRead.as_string(call["site"]), {}))
+
+
+## Put one record in the pool and, for a muzzle, remember it.
+##
+## Everything this class builds goes through here rather than through
+## [method BlobPool.create_blob] directly, so [method in_flight] can answer
+## for the whole of a shot's muzzle -- a burst's rounds, the needles' nine
+## sprites, the casing and the spore round alike.
+func _place(fields: Dictionary) -> int:
+	var slot: int = _pool.create_blob(fields)
+	if slot >= 0 and _recording:
+		_made.append(_pool.at(slot))
+	return slot
 
 
 func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
@@ -575,9 +727,7 @@ func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
 		"delay": delay,
 	}
 	if class_id >= 2:
-		var sprite: Dictionary = DictRead.as_dict(
-			DictRead.as_dict(_document.get("sprites", {}))
-				.get(DictRead.as_string(call["site"]), {}))
+		var sprite: Dictionary = _sprite_of(call)
 		fields["rot_x"] = _sprite_field(sprite, "row", DEFAULT_ROW)
 		fields["rot_y"] = _sprite_field(sprite, "col", DEFAULT_COLUMN)
 		fields["aux"] = _sprite_field(sprite, "size", DEFAULT_SIZE)
@@ -591,7 +741,7 @@ func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
 		fields["rot_x"] = facing.x
 		fields["rot_y"] = facing.y
 		fields["rot_z"] = facing.z
-	return _pool.create_blob(fields)
+	return _place(fields)
 
 
 ## Which way a **model** blob points when it is made, as the engine's own

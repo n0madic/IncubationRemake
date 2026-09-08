@@ -923,7 +923,15 @@ func _mission_opening(h: TestHarness) -> void:
 	var silent: World = World.create(document, balance, 0.0)
 	h.equal("opening.loader_turn", silent.turn.turn, 0)
 
-	# The arm a mission with nobody to place takes: turn 1, no script.
+	# The arm a mission with nobody to place takes: turn 1, no script. The
+	# hand-over comes **first**, as [SliceMain] runs them and as the engine
+	# does -- its one-shot zeroes the counter, so a 1 written ahead of it
+	# would not survive.
+	var attached_silent: bool = silent.attach_script(
+		CacheFixture.script_document(OPENING_MISSION))
+	h.check("opening.script_attached", attached_silent,
+		"%s carries a program" % OPENING_MISSION)
+	var opened: TurnResult = silent.open_mission()
 	silent.skip_deployment_turn()
 	h.equal("opening.silent_turn", silent.turn.turn, TurnState.FIRST_TURN)
 	silent.skip_deployment_turn()
@@ -931,11 +939,16 @@ func _mission_opening(h: TestHarness) -> void:
 		TurnState.FIRST_TURN,
 		"the engine's guard is `turnCounter() == 0`, so the second entry to "
 		+ "aInitBattleGround does nothing")
-	var attached_silent: bool = silent.attach_script(
-		CacheFixture.script_document(OPENING_MISSION))
-	h.check("opening.script_attached", attached_silent,
-		"%s carries a program" % OPENING_MISSION)
-	var opened: TurnResult = silent.open_mission()
+	# **The hand-over does not undo the counter**, which is the whole reason
+	# the order is what it is: a world that took the two the other way round
+	# comes out on turn 0, because `_first_hand_over` mirrors
+	# `resetGameControl`.
+	var reversed: World = World.create(document, balance, 0.0)
+	reversed.skip_deployment_turn()
+	var _reversed_opened: TurnResult = reversed.open_mission()
+	h.equal("opening.reset_zeroes_the_counter", reversed.turn.turn, 0,
+		"0x0043B770's `mov byte [0x509E1D], bl`, which is why "
+		+ "aInitBattleGround's setTurn(1) runs after the view player's init")
 	h.equal("opening.silent_code", opened.code, TurnResult.OK)
 	h.equal("opening.silent_player", silent.turn.current_player, 0)
 	h.equal("opening.silent_turn_after", silent.turn.turn,

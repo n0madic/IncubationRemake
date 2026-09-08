@@ -508,6 +508,20 @@ frames (`cmp ecx, 0x64` at `0x0040D4C1`). Weapons 0x0F, 0x11, 0x14, 0x15,
 the wait flag `[esp+0x10]`, which the routine initialises to 1 at
 `0x0040CC4D`.
 
+**The hundred are rendered frames, and a round that raises nothing spends
+them all** *(added 2026-09-08)*. The loop body is two calls: `0x0040B6F0`,
+the `PeekMessageA` pump — which also animates and draws, and reaches
+`aCheckInBlobObjects` `0x0041E3D0` from three of its display-mode arms
+through `0x00417E10` → `0x00406FC0` — and `0x0042B480`, the one-line read
+of the flag. So the bound is a hundred of the machine's own frames rather
+than a fixed span of time, and it is spent in full whenever nothing raises
+the flag. That is not hypothetical: `aBlob_CreateSporeCannon` `0x004268B0`,
+weapon 25's muzzle, makes exactly one record of **kind 22**, kind 22 is not
+one of the fourteen arms above, and the kind-23 sparks it spawns every tick
+are not either — so the Cy'Coo's shot always runs the loop to `0x64` while
+its round has long since died. Weapon 25 is also not in the skip set, so the
+wait is entered.
+
 **Which creators write the zero is countable** *(added 2026-09-04)*. Exactly
 **six** sites in `.text` store an immediate 0 into `0x004FE63C`, and five of
 them are inside a creator: `aBlob_CreateGrenade` `0x00426070`,

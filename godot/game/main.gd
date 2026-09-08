@@ -532,6 +532,10 @@ func _boot() -> void:
 	match DictRead.as_string(choice["kind"]):
 		BOOT_MISSION:
 			_build(DictRead.as_string(choice["mission"]))
+			# Past the campaign, so there is no pool and nothing to place:
+			# `0x0041A073`'s silent arm (docs/98 section 12).
+			if world != null:
+				world.skip_deployment_turn()
 		BOOT_CAMPAIGN:
 			var _started: CampaignState = campaign.start_new(
 				DictRead.as_int(choice["campaign"]), settings.difficulty)
@@ -1420,6 +1424,10 @@ func _start_instant_action(mission: String) -> void:
 	shell.close()
 	close_campaign_screen()
 	_build(mission)
+	# The campaign state was cleared above, so there is no pool: the same
+	# silent arm `--mission=` takes.
+	if world != null:
+		world.skip_deployment_turn()
 
 
 ## Load or save the numbered slot the player clicked.
@@ -1737,6 +1745,15 @@ func _on_campaign_choice(action: String) -> void:
 			# then there really is nothing to start and the screen is what
 			# says so.
 			if campaign.nobody_to_deploy() and campaign.may_start():
+				# **After `begin_mission`**, which is what put the live
+				# roster back: the pool this arm asks about is the one the
+				# deployment screen would draw from, and reading it before
+				# the restore made a re-entered mission -- the briefing's own
+				# *Continue* over a deployment -- take the silent arm on an
+				# empty row and then show the screen anyway, so its *Continue*
+				# found turn 1 and never handed over at all.
+				if world != null:
+					world.skip_deployment_turn()
 				campaign.enter_mission()
 				close_campaign_screen()
 				_begin_mission_view()
@@ -2464,21 +2481,28 @@ func _build(mission: String) -> void:
 	var opening_script: Dictionary = {}
 	if attached:
 		opening_script = world.run_init_map()
-	# **The map has loaded; the mission has not started.** The engine's own
-	# order is `INIT MAP`, then `aInitBattleGround`'s counter arm, then the
-	# view player's first `aNextPlayerHandling` -- and both of the last two
-	# are here rather than at the deployment screen's button, because the fog
-	# they leave is what the deployment screen and everything built below
-	# this line are drawn from.
+	# **The map has loaded; the mission has not started.** This is the view
+	# player's first `aNextPlayerHandling`, and it is here rather than at any
+	# entry site because the fog it leaves is what the deployment screen and
+	# everything built below this line are drawn from.
 	#
-	# Which arm depends on whether there is anybody to deploy, exactly as
-	# `0x0041A073`'s `poolCount(currentPlayer) == 0` does: `--mission=`,
-	# *Instant Action* and a chain whose pool is empty open on turn 1 with no
-	# script, and a campaign mission the player deploys into stays on turn 0
-	# until the deployment screen's *Continue* hands over (the `"start"` arm
-	# of [method _on_campaign_choice]).
-	if campaign == null or campaign.nobody_to_deploy():
-		world.skip_deployment_turn()
+	# **The other half of the opening is the caller's**, because this one
+	# cannot know it: `0x0041A073`'s arm turns on whether there is anybody in
+	# the pool to place, and on the campaign's own path the live roster is
+	# still in its mission-entry snapshot at this point -- `begin_mission`
+	# restores it *after* this returns. So each entry calls
+	# [method World.skip_deployment_turn] for itself once it knows, and a
+	# mission the player deploys into stays on turn 0 until the deployment
+	# screen's *Continue* hands over (the `"start"` arm of
+	# [method _on_campaign_choice]).
+	#
+	# **And the order is forced, not a convenience.** The engine's own first
+	# `aNextPlayerHandling` calls `resetGameControl` `0x0043B770`, whose
+	# `mov byte [0x509E1D], bl` zeroes the turn counter -- so
+	# `aInitBattleGround`'s `setTurn(1)` cannot precede it and be seen. The
+	# controller reaches the view player before the battle ground for exactly
+	# that reason, and this pair is in the same order.
+	#
 	# **Fresh per mission**, because it describes the hand-over being drawn
 	# and not the game: a mission entered while the last one's opening had
 	# left it false would suppress the watched player's screen on the first
@@ -2761,6 +2785,11 @@ func show_mission(step: int) -> void:
 		return
 	var at: int = _missions.find(_mission)
 	_build(_missions[posmod(at + step, _missions.size())])
+	# A debugging step past every screen, so nothing deploys into it and
+	# nothing else will hand over: the silent arm, or the mission would sit
+	# on turn 0 for good with no computer turn and a `0` on the plate.
+	if world != null:
+		world.skip_deployment_turn()
 
 
 ## Submits the movement query for one slot and highlights the answer.
@@ -6628,12 +6657,17 @@ class MainShotHost extends ShotHost:
 		# Every creator clears `0x004FE63C` **before** it allocates -- the top
 		# of `0x0042A930` is the write, ahead of its first `aGetMemory` -- so
 		# a full pool leaves the flag down and the engine waits its hundred
-		# frames. That is reproduced: the wait is only cut short when nothing
-		# was made for a reason the engine could not have had, which is a
-		# computed kind the switch does not name or a model this world set
-		# does not carry. Both are refusals of the remake's own, and without
-		# this the sequence burns `WAIT_FRAMES` of dead screen per shot with
-		# the computer's replay held behind it.
+		# frames. The *flag* reproduces that; the **stage** no longer does,
+		# because it also ends when nothing the muzzle made is left in the
+		# pool ([method BlobTriggers.in_flight]), and a full pool made
+		# nothing. That is the divergence written down at
+		# [constant ShotSequence.WAIT_FRAMES] and it applies here for the same
+		# reason: the engine's hundred are rendered frames and the queue's are
+		# twenty a second. The other half of the write stays as it was -- the
+		# wait is cut short when nothing was made for a reason the engine could
+		# not have had, a computed kind the switch does not name or a model
+		# this world set does not carry, and without it the sequence burns
+		# `WAIT_FRAMES` of dead screen per shot with the replay held behind it.
 		var waits: bool = ShotSequence.waits_for_projectile(weapon)
 		main._fx.set_arrived(not waits)
 		# Every part the weapon's own call sites name, where this shooter's
@@ -6678,6 +6712,9 @@ class MainShotHost extends ShotHost:
 
 	func pool_live() -> int:
 		return 0 if main._fx == null else main._fx.live()
+
+	func muzzle_in_flight() -> bool:
+		return main._triggers != null and main._triggers.in_flight()
 
 	func clear_arrived() -> void:
 		if main._fx != null:

@@ -25,6 +25,27 @@ extends RefCounted
 ## arm 45.
 
 ## `cmp ecx, 0x64` at `0x0040D4C1` -- the round is waited for this long.
+##
+## **A bound, not a timing -- and the two clocks are not the same one.** The
+## engine's loop is `call 0x0040B6F0 / call 0x0042B480`: a message pump that
+## also animates and draws (`0x0040B6F0` reaches `0x00417E10`, which calls
+## `0x00406FC0`, which sweeps the blob pool through `aCheckInBlobObjects`
+## `0x0041E3D0`) and then a read of the *arrived* flag `0x004FE63C`. So its
+## hundred are a hundred **rendered** frames at whatever rate the machine
+## runs, where the queue's hundred are a hundred at docs/42 section 1.2's
+## twenty a second.
+##
+## That difference is invisible for every round that raises the flag, and it
+## is the whole of the wait for one that never does. Fourteen update arms
+## write the flag and the spore cannon's kind 22 is not among them, nor are
+## the kind-23 sparks it spawns -- so weapon 25, the Cy'Coo's, spent the bound
+## in full: five seconds of dead screen after a round that had already landed.
+##
+## The stage therefore ends on **either** the flag or the round being gone
+## ([method BlobTriggers.in_flight]), and the hundred stays as the bound it
+## is. The second half is the remake's own and is a deliberate divergence, in
+## the same class as `blob_kinds.gd`'s guard on kind 41: the original sits out
+## its hundred frames there too, only faster.
 const WAIT_FRAMES: int = 100
 ## `cmp eax, 0x14` at `0x0040E256` -- the pool is waited for this long.
 const POOL_FRAMES: int = 20
@@ -141,7 +162,10 @@ static func waits_for_projectile(weapon: int) -> bool:
 ## could not have had -- a computed kind the switch does not name, or a model
 ## this world set does not carry -- so waiting on it would be waiting for a
 ## refusal. A **full** pool is different: the engine leaves the flag down
-## there too, and so does this.
+## there too, and so does this. What the *stage* then does with a full pool is
+## not the engine's any more -- it made no record, so
+## [method BlobTriggers.in_flight] is false and the flight ends at once -- for
+## the reason set out at [constant WAIT_FRAMES].
 static func arrived_after_muzzle(waits: bool, creator_write: int, made: int,
 		pool_full: bool) -> bool:
 	if not waits:
@@ -232,7 +256,8 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	total += 1
 	if waits:
 		queue.enqueue_until(STAGE_FLIGHT, WAIT_FRAMES,
-			func() -> bool: return host.pool_arrived())
+			func() -> bool: return host.pool_arrived() \
+				or not host.muzzle_in_flight())
 
 	# 7 and 8. The impact, the deaths, the blood, the numbers.
 	var cues_impact: Array[Dictionary] = _cues(shot, "cues_impact")
