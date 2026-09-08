@@ -24,7 +24,19 @@ const RAMP_BODY_INDEX: int = 1
 ## The body's size when it is not drawn in the shipped faces, in the plate's
 ## own units: small enough that a long `A0` still fits the box, large enough
 ## to read beside a heading.
-const READABLE_SIZE: int = 12
+##
+## **Ten, not twelve, because the box is not the whole plate.** The briefing
+## programme puts its pictures at their own `x, y` inside the same 640x480
+## (docs/24 section 8), and on `_C_106`'s `C0` two of them start at `y` 240 --
+## inside a text box that runs from 77 to 353. The original can overlap them
+## because its body is the 8 px `font_0` and the block ends well above; at 12
+## the readable face ran a line and a half further down and the last tip was
+## drawn underneath a picture. Eleven clears that block by a couple of units,
+## which is not clearance at all -- a mission whose tips run one line longer
+## is back under the picture -- so this is [constant
+## CampaignScreen.READABLE_SIZE]'s own `font_0` entry instead, the cap-height
+## match for the face the body is actually written in.
+const READABLE_SIZE: int = 10
 
 ## `COLOUR_RAMPS` at `0x0043E445`, as RGB565 converted to sRGB: ramp 0 is the
 ## box's own colours, 1 the green-grey body text and 2 the red one. The first
