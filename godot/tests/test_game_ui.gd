@@ -2029,6 +2029,17 @@ func _campaign_screens(h: TestHarness) -> void:
 	h.equal("screens.unit_menu_plate",
 		[roster.plate_name(), roster.plate_window()],
 		[CampaignScreen.PLATE_MISSION_CONTROL, CampaignScreen.PLATE_WINDOW])
+	# **The remake's own reading aids** -- `CampaignScreen.SHADE_BACKING`
+	# and `ROW_HOVER`.
+	# The original writes these rows straight onto a base's 3D scene and gets
+	# away with it because that scene is a dark still; the remake draws the
+	# same one and cannot promise a row will never fall over a lit ramp.
+	h.check("screens.unit_menu_shades_the_window",
+		_shade_of(roster) != null,
+		"a backing under the roster and the three counters")
+	h.check("screens.unit_menu_rows_light_under_the_pointer",
+		_row_lights(roster),
+		"every roster row carries a `hover` box of its own")
 	roster.free()
 
 	# --- the Item List, docs/27 section 5.2 -----------------------------------
@@ -2043,6 +2054,21 @@ func _campaign_screens(h: TestHarness) -> void:
 		CampaignHost.KIND_EQUIPMENT, "`Toggle List` is the one button that "
 		+ "changes what the window is a list of")
 	items.toggle()
+	# **Across, then down.** `0x0045A13B` steps the painter's `x` by 250 per
+	# row and drops `y` only when it passes 500, so row 1 of the catalogue is
+	# the *right* column of line 0 -- not the second entry of a left-hand
+	# column. Filling by column ran a twelve-item catalogue eleven deep.
+	items.kind = CampaignHost.KIND_WEAPONS
+	items.refresh()
+	h.equal("screens.item_grid_fills_across",
+		[ItemListScreen.grid_cell(0), ItemListScreen.grid_cell(1),
+		ItemListScreen.grid_cell(2)],
+		[Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1)],
+		"the second row sits right of the first, not under it")
+	h.check("screens.item_list_shades_the_window",
+		_shade_of(items) != null)
+	h.check("screens.item_list_rows_light_under_the_pointer",
+		_row_lights(items))
 	_no_missing_strings(h, "item_list", items)
 	items.free()
 
@@ -2056,7 +2082,18 @@ func _campaign_screens(h: TestHarness) -> void:
 		"types 0..3 are the four `Human Soldier` records")
 	h.equal("screens.recruit_commanders_are_empty",
 		hiring.types_in(4).size(), 0,
-		"base 40 names no record the shipped table has")
+		"the engine lists 40..44 there and `Info.lcl` declares none of them")
+	# **The five categories are lists, not bases.** `0x004561C9`'s arms fill
+	# the five slots of `0x00510A14` one immediate at a time, and reading
+	# every write finds twenty-three, not twenty-five: two categories fill
+	# four slots and category 3's fifth is 35, not 34.
+	h.equal("screens.recruit_categories_are_written_out",
+		[RecruitScreen.category_types(0), RecruitScreen.category_types(2),
+		RecruitScreen.category_types(3)],
+		[PackedInt32Array([0, 1, 2, 3]), PackedInt32Array([20, 21, 22, 23]),
+		PackedInt32Array([30, 31, 32, 33, 35])])
+	h.equal("screens.recruit_heavy_units", hiring.types_in(2).size(), 4,
+		"20..23 -- type 24 is declared but the engine never lists it")
 	h.check("screens.recruit_is_not_the_campaign_path",
 		not host.recruits_through_a_screen(),
 		"`0x0045B7F8` hires on the spot in game mode 1")
@@ -2079,6 +2116,31 @@ func _campaign_screens(h: TestHarness) -> void:
 	h.equal("screens.catalogue_equipment",
 		[DictRead.as_array(equipment["available"]).size(),
 		DictRead.as_array(equipment["locked"]).size()], [7, 12])
+	# **In a campaign the band is the base's, not the tech level's.**
+	# `0x0045BF2A` has two arms and a campaign takes the one that copies
+	# `0x00510C5C`/`0x00510C5D`, which the entered location's own arm of
+	# `0x0045C7D0` wrote. Location 1 sells 0..3 and location 5 sells 9 alone,
+	# so the same roster sees a different shop at each base.
+	var stood_at: int = host.location
+	host.location = 1
+	h.equal("screens.catalogue_band_of_location_1",
+		[host.catalogue_band(),
+		DictRead.as_array(host.catalogue("weapons")["available"]).size()],
+		[Vector2i(0, 3), 12])
+	host.location = 5
+	h.equal("screens.catalogue_band_of_location_5",
+		[host.catalogue_band(),
+		DictRead.as_array(host.catalogue("weapons")["available"]).size()],
+		[Vector2i(9, 9), 1],
+		"`mov al, 9` writes both ends, so that base stocks the one tech-9 "
+			+ "weapon and nothing under it")
+	host.location = 214
+	h.equal("screens.catalogue_band_does_not_start_at_zero",
+		host.catalogue_band(), Vector2i(3, 3))
+	host.location = stood_at
+	h.equal("screens.catalogue_band_without_a_base",
+		host.catalogue_band(), Vector2i(0, host.state.tech_level),
+		"a location that names no upgrade arm falls back to the tech level")
 	# **Neither half carries a nameless record.** Both builders compare the
 	# record's name against the empty string before they look at the range
 	# (`0x0047A1DD`, `0x0047A0BD`), and weapon 35 -- a `SetWeaponInfo2` line
@@ -2459,6 +2521,40 @@ func _rich_text_of(node: Node) -> String:
 
 
 ## Every hover hint on a screen, wherever it is hung.
+## The backing [method Screen.shade] draws, or null.
+func _shade_of(node: Node) -> ColorRect:
+	for child: Node in node.get_children():
+		var rect: ColorRect = child as ColorRect
+		var wanted: float = CampaignScreen.SHADE_BACKING.a
+		if rect != null and is_equal_approx(rect.color.a, wanted):
+			return rect
+		var deeper: ColorRect = _shade_of(child)
+		if deeper != null:
+			return deeper
+	return null
+
+
+## Whether every flat row button on a screen drives a light of its own.
+func _row_lights(node: Node) -> bool:
+	var rows: int = 0
+	for button: Button in _flat_buttons(node):
+		rows += 1
+		if button.mouse_entered.get_connections().is_empty() \
+				or button.mouse_exited.get_connections().is_empty():
+			return false
+	return rows > 0
+
+
+func _flat_buttons(node: Node) -> Array[Button]:
+	var out: Array[Button] = []
+	for child: Node in node.get_children():
+		var button: Button = child as Button
+		if button != null and button.flat:
+			out.append(button)
+		out.append_array(_flat_buttons(child))
+	return out
+
+
 ## The first text field on a screen, or null.
 func _first_field(node: Node) -> LineEdit:
 	for child: Node in node.get_children():

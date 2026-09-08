@@ -172,6 +172,76 @@ UPGRADE_LOCATIONS = (1, 2, 3, 4, 5, 6, 7, 8,
 UPGRADE_MAPS = {1: 1, 2: 2, 3: 6, 4: 4, 5: 5, 6: 3, 7: 7, 8: 8,
                 210: 210, 211: 211, 212: 212, 213: 213, 214: 214,
                 215: 215, 216: 216}
+#: The catalogue limits an upgrade location's arm writes -- the low end and
+#: the high, in that order.  `0x0045BF2A`'s campaign arm copies the pair into
+#: `0x00510A34`/`0x00510A35`, so a base's shop is its own band of tech levels.
+UPGRADE_BAND_SITES = (0x00510C5C, 0x00510C5D)
+#: How far past an arm's entry the two writes sit.  The arms are ~0x70 bytes.
+UPGRADE_BAND_WINDOW = 0xC0
+#: `xor ebx, ebx` in `aPlayLocationAnimation`'s prologue, which is why
+#: `mov byte [addr], bl` writes a zero.
+UPGRADE_BAND_ZERO_SITE = 0x0045C7E0
+#: Decoded from the fifteen arms: location -> `(low, high)`.  Location 5 sells
+#: only tech 9 and location 4 only tech 1; 214 only tech 3.
+UPGRADE_TECH_BANDS = {
+    1: (0, 3), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
+    6: (0, 4), 7: (0, 2), 8: (0, 2),
+    210: (0, 0), 211: (0, 1), 212: (0, 2), 213: (0, 3),
+    214: (3, 3), 215: (0, 4), 216: (0, 9),
+}
+# -- the Recruit window's five categories, docs/27 section 3.2 ---------------
+#: `0x0045615F` clears these five to -1 before `0x004561C9`'s jump table fills
+#: the chosen category's, one `mov dword [slot], imm32` per row.
+RECRUIT_SLOTS = tuple(0x00510A14 + 4 * k for k in range(5))
+RECRUIT_RESET_SITE = 0x0045615F           # `xor ebx, ebx` / `or ebp, -1`
+RECRUIT_SWITCH_SITE = 0x004561C9          # `jmp dword [eax*4 + imm32]`
+RECRUIT_JUMP_TABLE = 0x00456624
+RECRUIT_ARM_END = 0x0045657B
+#: Read out of the arms.  **Not five bases of five**: categories 0 and 2 fill
+#: four slots and leave the fifth at -1, and category 3's fifth is 35.
+RECRUIT_CATEGORY_TYPES = {
+    0: (0, 1, 2, 3),
+    1: (10, 11, 12, 13, 14),
+    2: (20, 21, 22, 23),
+    3: (30, 31, 32, 33, 35),
+    4: (40, 41, 42, 43, 44),
+}
+
+# -- the base's own camera, docs/27 section 2.7 ------------------------------
+#: `aPlayLocationAnimation_Upgrade` `0x00417510` builds `upgrade_N` and hands
+#: it to this, which flies the eye down the script's own waypoints.
+LOCATION_ANIMATION = 0x00417000
+#: `aGetCameraPath` and its writer, `CreateCameraPath`'s handler.
+CAMERA_PATH_GET = 0x004173E0
+CAMERA_PATH_SET = 0x00416ED0
+#: The five 140-byte records: `count`, `cursor`, nine waypoints of 12 from
+#: `+0x08`, and the look-at target at `+0x80`.
+CAMERA_PATH_TABLE = 0x004FCBE8
+CAMERA_PATH_TABLE_SITE = 0x00416F21      # `mov ecx, [eax + imm32]`, u32 at +2
+CAMERA_PATH_CAP_SITE = 0x00416F27        # `cmp ecx, 9`, imm8 at +2
+CAMERA_PATH_CAP = 9
+CAMERA_PATH_SHIFT_SITE = 0x00416F52      # `shl edx, 4`, imm8 at +2
+CAMERA_PATH_SHIFT = 4
+#: The window the fly-in renders into, and the one it puts back on the way
+#: out.  The first is the location map's (docs/27 section 2.6); the second is
+#: a mission's.  `push h; push w; push y; push x`, so they read backwards.
+LOCATION_ANIMATION_WINDOW_SITES = (0x00417023, 0x00417021, 0x0041701C,
+                                   0x00417017)
+LOCATION_ANIMATION_WINDOW = (65, 57, 518, 306)
+LOCATION_ANIMATION_EXIT_SITES = (0x00417190, 0x0041718E, 0x00417189,
+                                 0x00417184)
+LOCATION_ANIMATION_EXIT_WINDOW = (60, 34, 520, 340)
+#: `aGetCameraPosition` into six globals, called by every upgrade arm right
+#: after the fly-in; `0x00455A40`'s zero arm pushes the same six back into
+#: `aSetCameraPosition` on every Mission Control frame, which is why the
+#: menus sit over the resting point of the flight.
+CAMERA_SAVE = 0x00403780
+CAMERA_SAVED = (0x00510D2C, 0x00510D30, 0x00510D34,
+                0x00510D38, 0x00510D3C, 0x00510D40)
+CAMERA_RESTORE_SITE = 0x00455A40
+CAMERA_RESTORE_READS = (0x00455A6C, 0x00455A71, 0x00455A77,
+                        0x00455A7E, 0x00455A84, 0x00455A8B)
+
 BATTLE_LOCATIONS = tuple(range(51, 89)) + tuple(range(90, 130))
 #: location -> the number `0x00456FC0` is called with.  What that number picks
 #: inside `Video/` belongs to package G -- see docs/27 §2.3.
@@ -754,6 +824,72 @@ class Binary:
             if value is None or self.call_target(cur) != UPGRADE_ANIMATION:
                 continue
             out[location] = value
+        return out
+
+    def recruit_categories(self) -> dict[int, tuple[int, ...]]:
+        """The five *Recruit* buttons' unit-type lists (``docs/27`` §3.2)."""
+        slots = {slot: k for k, slot in enumerate(RECRUIT_SLOTS)}
+        arms = [self.u32(RECRUIT_JUMP_TABLE + 4 * i) for i in range(5)]
+        edges = sorted(arms + [RECRUIT_ARM_END])
+        out: dict[int, tuple[int, ...]] = {}
+        for index, start in enumerate(arms):
+            end = min(e for e in edges if e > start)
+            found: dict[int, int] = {}
+            va = start
+            while va < end:
+                if self.u8(va) == 0xC7 and self.u8(va + 1) == 0x05:
+                    address = self.u32(va + 2)
+                    if address in slots:
+                        found.setdefault(slots[address], self.u32(va + 6))
+                elif self.u8(va) == 0x89 and self.u8(va + 1) == 0x1D:
+                    # `mov [slot], ebx`, and `ebx` is zeroed at the head.
+                    address = self.u32(va + 2)
+                    if address in slots:
+                        found.setdefault(slots[address], 0)
+                va += 1
+            out[index] = tuple(v for _, v in sorted(found.items()))
+        return out
+
+    def upgrade_tech_bands(self) -> dict[int, tuple[int, int]]:
+        """location -> the ``(low, high)`` tech band its arm writes.
+
+        ``0x0045BF2A``'s campaign arm copies this pair into the catalogue
+        limits ``0x00510A34``/``0x00510A35``, so **each base sells its own
+        band** rather than everything up to the campaign's tech level
+        (``docs/27`` §5.2).  Three encodings appear:
+
+        * ``mov byte [addr], imm8`` -- the literal;
+        * ``mov byte [addr], bl`` -- ``bl`` is zero for the whole dispatcher,
+          which :data:`UPGRADE_BAND_ZERO_SITE` pins;
+        * ``mov byte [addr], al`` after a ``mov al, imm8`` in the same arm.
+        """
+        out: dict[int, tuple[int, int]] = {}
+        for location, arm in self.location_arms().items():
+            if not self.text_lo <= arm < self.text_hi:
+                continue
+            found: dict[int, int] = {}
+            al: int | None = None
+            va = arm
+            while va < min(arm + UPGRADE_BAND_WINDOW, self.text_hi - 8):
+                op = self.u8(va)
+                if op == 0xB0:                      # mov al, imm8
+                    al = self.u8(va + 1)
+                elif op == 0xC6 and self.u8(va + 1) == 0x05:
+                    address = self.u32(va + 2)
+                    if address in UPGRADE_BAND_SITES:
+                        found.setdefault(address, self.u8(va + 6))
+                elif op == 0x88 and self.u8(va + 1) == 0x1D:
+                    address = self.u32(va + 2)
+                    if address in UPGRADE_BAND_SITES:
+                        found.setdefault(address, 0)
+                elif op == 0xA2:
+                    address = self.u32(va + 1)
+                    if address in UPGRADE_BAND_SITES and al is not None:
+                        found.setdefault(address, al)
+                va += 1
+            low, high = UPGRADE_BAND_SITES
+            if low in found and high in found:
+                out[location] = (found[low], found[high])
         return out
 
     def squad_fields(self) -> dict[tuple[int, int], int]:
@@ -1798,6 +1934,38 @@ def run_checks(root: str) -> Checker:
     upgrade_arms = b.upgrade_arms()
     ck.equal("upgrade.arms", tuple(sorted(upgrade_arms)), UPGRADE_LOCATIONS)
     ck.equal("upgrade.maps", upgrade_arms, UPGRADE_MAPS)
+    ck.equal("recruit.categories", b.recruit_categories(),
+             RECRUIT_CATEGORY_TYPES, str)
+    ck.equal("recruit.slots_are_cleared_first",
+             (b.u8(RECRUIT_RESET_SITE), b.u8(RECRUIT_RESET_SITE + 1),
+              b.u8(RECRUIT_RESET_SITE + 2)), (0x33, 0xDB, 0x83), str)
+    ck.equal("recruit.jump_table", b.u32(RECRUIT_SWITCH_SITE + 3),
+             RECRUIT_JUMP_TABLE, hex)
+    ck.equal("upgrade.animation_window",
+             tuple(b.u8(site + 1) if b.u8(site) == 0x6A else b.u32(site + 1)
+                   for site in LOCATION_ANIMATION_WINDOW_SITES),
+             LOCATION_ANIMATION_WINDOW, str)
+    ck.equal("upgrade.animation_exit_window",
+             tuple(b.u8(site + 1) if b.u8(site) == 0x6A else b.u32(site + 1)
+                   for site in LOCATION_ANIMATION_EXIT_SITES),
+             LOCATION_ANIMATION_EXIT_WINDOW, str)
+    ck.equal("upgrade.camera_path_table", b.u32(CAMERA_PATH_TABLE_SITE + 2),
+             CAMERA_PATH_TABLE, hex)
+    ck.equal("upgrade.camera_path_cap", b.u8(CAMERA_PATH_CAP_SITE + 2),
+             CAMERA_PATH_CAP)
+    ck.equal("upgrade.camera_path_shift", b.u8(CAMERA_PATH_SHIFT_SITE + 2),
+             CAMERA_PATH_SHIFT)
+    ck.equal("upgrade.camera_saved",
+             tuple(b.u32(site + (1 if b.u8(site) == 0xA1 else 2))
+                   for site in CAMERA_RESTORE_READS),
+             tuple(reversed(CAMERA_SAVED)), str)
+    ck.equal("upgrade.camera_restore_call", b.call_target(0x00455A94),
+             SET_CAMERA_POSITION, hex)
+    ck.equal("upgrade.tech_bands", b.upgrade_tech_bands(),
+             {k: tuple(v) for k, v in UPGRADE_TECH_BANDS.items()}, str)
+    ck.equal("upgrade.band_zero_is_a_cleared_register",
+             (b.u8(UPGRADE_BAND_ZERO_SITE), b.u8(UPGRADE_BAND_ZERO_SITE + 1)),
+             (0x33, 0xDB), str)
     files = {int(s.split("_")[1]) for s in c.headers if s.startswith("upgrade_")}
     ck.equal("upgrade.files", len(files), EXPECTED_UPGRADE_MAPS)
     ck.check("upgrade.files_match_locations",
@@ -2313,6 +2481,8 @@ def tables_document(root: str) -> dict:
         "unlock_graph": graph,
         "dialogue": {str(k): v for k, v in b.dialogue_numbers().items()},
         "upgrade": {str(k): v for k, v in b.upgrade_arms().items()},
+        "tech_bands": {str(k): list(v)
+                       for k, v in b.upgrade_tech_bands().items()},
         "squad_fields": {f"{r}:{o:#04x}": v
                          for (r, o), v in sorted(b.squad_fields().items())},
         "payout_scores": b.payout_scores(),

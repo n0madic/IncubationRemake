@@ -11,20 +11,21 @@ extends CampaignScreen
 ## *Recruit unit* hires on the spot in a campaign, exactly as it did before
 ## this screen existed, and this screen is what the other mode gets.
 ##
-## What the five buttons choose is a **base unit type**: `0x004561EB`,
-## `0x00456292`, `0x00456362` and `0x004564DD` write 0, 10, 20 and 40 into
-## `0x00510A14`, and the four slots after it take `base+1 .. base+4`, each
-## filled only when the purse can afford it (`0x00456500` onward). The fifth
-## category's base is written through a computed address rather than an
-## immediate and is **UNVERIFIED**; 30 is what the spacing implies and is what
-## is used, with the row simply empty when the table has nothing there.
+## What the five buttons choose is a **list of unit types**, and the list is
+## written out slot by slot: `0x0045615F` clears the five slots of
+## `0x00510A14` to -1 and disables the five row gadgets, and `0x004561C9`'s
+## jump table then fills the chosen category's, one
+## `mov dword [0x510A14 + 4k], imm32` per row and each behind its own
+## affordability test (an unaffordable type is left at -1 and its gadget
+## stays disabled). See [constant CATEGORY_TYPES].
 ##
 ## And the shipped table mostly has nothing there. `Info.lcl` declares unit
 ## types 0..3, 20..26, 30..35 and 50..68, so *Light Units* offers the four
-## `Human Soldier` variants, *Heavy Units* the five records at 20..24, and
-## *Commanders* nothing at all. That is what the data says; the screen shows
-## the empty categories rather than hiding them, for the same reason the
-## Upgrade screen shows what the tech level locks.
+## `Human Soldier` variants, *Heavy Units* the four records at 20..23, and
+## *Commanders* nothing at all -- the engine lists 40..44 there and `Info.lcl`
+## declares none of them. That is what the data says; the screen shows the
+## empty categories rather than hiding them, for the same reason the Upgrade
+## screen shows what the tech level locks.
 
 const ID_TITLE: int = 180
 const ID_FIRST_CATEGORY: int = 181
@@ -36,11 +37,32 @@ const ID_COST: int = 92
 ## `GUI_SetButton (20..24, ..., 181..185_WinText, 410_x, 070+40i_y)`.
 const CATEGORY_AT: Vector2 = Vector2(410.0, 70.0)
 const CATEGORY_STEP: float = 40.0
-## `0x004561EB`, `0x00456292`, `0x00456362`, the unverified fourth, and
-## `0x004564DD`.
-const CATEGORY_BASES: Array[int] = [0, 10, 20, 30, 40]
-## `0x00456500`..`0x00456571` fill four slots after the base.
-const CATEGORY_SPAN: int = 5
+## **Five explicit lists, not five bases.** `0x0045615F` clears all five slots
+## of `0x00510A14` to -1 and disables the five row gadgets, then
+## `0x004561C9`'s jump table fills the slots for the chosen category, one
+## `mov dword [0x510A14 + 4k], imm32` per row and each behind its own
+## affordability test. Reading them off gives twenty-three writes, not
+## twenty-five: **categories 0 and 2 fill four slots and leave the fifth at
+## -1**, and category 3's fifth is **35, not 34**. A `base + 0..4` reading --
+## which is what this was, with 30 guessed and marked UNVERIFIED -- offered
+## type 24 that the engine never lists and hid type 35 that it does.
+const CATEGORY_TYPES: Array[Array] = [
+	[0, 1, 2, 3],
+	[10, 11, 12, 13, 14],
+	[20, 21, 22, 23],
+	[30, 31, 32, 33, 35],
+	[40, 41, 42, 43, 44],
+]
+
+
+## One category's list, narrowed. A `PackedInt32Array` cannot be a constant
+## expression, so the table above is plain arrays and this is the boundary.
+static func category_types(which: int) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for value: Variant in CATEGORY_TYPES[clampi(which, 0,
+			CATEGORY_TYPES.size() - 1)]:
+		out.append(DictRead.as_int(value))
+	return out
 
 ## `GUI_SetIcon (00..04, 54_Library, 348_x, 080+60i_y)` -- the row markers.
 const ROW_MARK_AT: Vector2 = Vector2(348.0, 80.0)
@@ -77,9 +99,12 @@ func plate_window() -> Rect2:
 
 func build() -> void:
 	var _title: Label = place_title(label_for(BANK_MISSION, ID_TITLE))
+	# The same backing the other two lists take: this one is written across
+	# the base's 3D scene as well.
+	var _backing: ColorRect = shade(plate_window())
 	_rows = gui_layer()
 	_counters = gui_layer()
-	for index: int in range(CATEGORY_BASES.size()):
+	for index: int in range(CATEGORY_TYPES.size()):
 		var _pick: Button = gui_button("category:%d" % index, BANK_MISSION,
 			ID_FIRST_CATEGORY + index,
 			CATEGORY_AT + Vector2(0.0, float(index) * CATEGORY_STEP))
@@ -108,10 +133,8 @@ func types_in(which: int) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if host == null:
 		return out
-	var base: int = CATEGORY_BASES[clampi(which, 0,
-		CATEGORY_BASES.size() - 1)]
-	for offset: int in range(CATEGORY_SPAN):
-		var row: Dictionary = host.row_for("units", base + offset)
+	for type_id: int in category_types(which):
+		var row: Dictionary = host.row_for("units", type_id)
 		if row.is_empty():
 			continue
 		if DictRead.as_string(row["description"]) == "":
@@ -141,11 +164,9 @@ func _draw_counters() -> void:
 func _draw_row(index: int, row: Dictionary) -> void:
 	var top: float = ROW_MARK_AT.y + float(index) * ROW_STEP
 	var id: int = DictRead.as_int(row["id"])
-	var hit: Button = make_button("hire:%d" % id, "")
-	hit.flat = true
-	place_on_plate(hit, Vector2(ROW_TEXT_X, top - 8.0),
-		Vector2(ROW_MARK_AT.x - ROW_TEXT_X, ROW_STEP - 8.0))
-	_rows.add_child(hit)
+	var _hit: Button = row_hit("hire:%d" % id,
+		Rect2(Vector2(ROW_TEXT_X, top - 8.0),
+			Vector2(ROW_MARK_AT.x - ROW_TEXT_X, ROW_STEP - 8.0)), _rows)
 	var _name: Label = gui_text(DictRead.as_string(row["description"]),
 		Vector2(ROW_TEXT_X, top), ALIGN_LEFT, INK_ROSTER, _rows)
 	var _stats: Label = gui_text("HP %d   MP %d" % [
@@ -158,5 +179,5 @@ func _draw_row(index: int, row: Dictionary) -> void:
 
 ## One of the five buttons.
 func choose(which: int) -> void:
-	category = clampi(which, 0, CATEGORY_BASES.size() - 1)
+	category = clampi(which, 0, CATEGORY_TYPES.size() - 1)
 	refresh()

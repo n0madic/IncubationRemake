@@ -791,6 +791,10 @@ class LocationTables:
     dialogue: dict[int, int]
     #: location id -> the ``upgrade_N.lev`` it loads.
     upgrade: dict[int, int]
+    #: location id -> the ``(low, high)`` tech band that base's shop sells.
+    #: ``0x0045BF2A``'s campaign arm reads this pair rather than the campaign
+    #: tech level (``docs/27`` §5.2).
+    tech_bands: dict[int, tuple[int, int]]
 
     @classmethod
     def from_json(cls, document: dict[str, Any]) -> "LocationTables":
@@ -804,6 +808,8 @@ class LocationTables:
                           if v is not None},
             dialogue={int(k): int(v) for k, v in document["dialogue"].items()},
             upgrade={int(k): int(v) for k, v in document["upgrade"].items()},
+            tech_bands={int(k): (int(v[0]), int(v[1]))
+                        for k, v in document.get("tech_bands", {}).items()},
         )
 
     def location_of(self, mission_id: int) -> int:
@@ -819,6 +825,11 @@ class LocationTables:
         """``aCreateLocationMap`` ``0x00431420`` -- the map as it looks when
         *mission_id* is the one to play next."""
         return sorted(self.unlock_graph.get(mission_id, []))
+
+    def tech_band(self, location: int) -> tuple[int, int] | None:
+        """The band that base sells, or ``None`` where it is not an upgrade
+        location."""
+        return self.tech_bands.get(location)
 
     def kind(self, location: int) -> str:
         if location in self.upgrade:
@@ -839,7 +850,9 @@ class LocationTables:
                              for k, v in sorted(self.unlock_graph.items())],
             "dialogue": [{"location": k, "sequence": v}
                          for k, v in sorted(self.dialogue.items())],
-            "upgrade": [{"location": k, "map": v}
+            "upgrade": [{"location": k, "map": v,
+                         "tech_low": self.tech_bands.get(k, (0, 0))[0],
+                         "tech_high": self.tech_bands.get(k, (0, 0))[1]}
                         for k, v in sorted(self.upgrade.items())],
         }
 

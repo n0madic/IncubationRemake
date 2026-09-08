@@ -434,6 +434,48 @@ the hovered one ([`98` §6](98-slice-6-report.md)); changing
 `test_campaign` and is recorded as a decision of the seventh slice
 ([`43` §11 D6](43-battle-hud.md)), not done there.
 
+### 2.7 An upgrade base looks where its own script says — **[code] `0x00417510`, `0x00417000`** *(2026-09-08)*
+
+The four windows over an upgrade location — HQ, the Unit Menu, the Item List
+and the Upgrade Menu — sit over a **still frame of that base's own scene**,
+and the view is neither the map's fixed pair of §2.6 nor anything computed:
+it is where a scripted fly-in came to rest.
+
+`aPlayLocationAnimation_Upgrade` `0x00417510` destroys the battle map, writes
+`upgrade_%d` into the current-map name, builds it with `aCreateBattleMap(3)`,
+paints `GUI\plate_7.bmp` into both buffers and hands the scene to
+`0x00417000`. That routine renders into the **location map's** 3D window
+(`(65, 57)` by 518x306, the same rectangle §2.6 measures) and walks a camera
+path:
+
+```c
+aGetCameraPath(0, 0, &tx, &ty, &tz, &done);      /* the look-at target */
+for (;;) {
+    if (!aGetCameraPath(0, 1, &wx, &wy, &wz, &done)) break;   /* exhausted */
+    …step the eye toward (wx, wy, wz), 40 a frame, until within 3200…
+    aSetCameraPosition(ex, ey, ez, tx, ty, tz);
+}
+aSetCameraPosition(ex, ey, ez, tx, ty, tz);      /* one last, at the end */
+```
+
+The path is the script's. Every `Missions/upgrade_N.lcl`'s whole `INIT MAP` is
+three to five `CreateCameraPath` lines and nothing else: one `mode 0` giving
+the target and two to four `mode 1` waypoints, each stored **shifted left by
+four** ([`20` §10 item 2](20-lcl-language.md) has the record — five paths of
+140 bytes at `0x004FCBE8`, nine waypoints maximum). So the eye ends on the
+**last** waypoint, looking at the target. For location 1 that is
+`(7260, 3637, 1625) x 16` looking at `(4542, 6545, 125) x 16`.
+
+Two things then keep it there. The arm that called the animation reads the
+camera straight back out with `aGetCameraPosition` `0x00403780` into
+`0x00510D2C`..`0x00510D40`, and `0x00455A40`'s zero arm pushes those same six
+into `aSetCameraPosition` on **every** Mission Control frame. Nothing in the
+fifteen upgrade arms calls `0x004558F0`, so unlike the location map a base
+does not turn: the drag is the map's alone.
+
+On the way out `0x00417000` puts the 3D window back to a mission's
+`(60, 34)` by 520x340.
+
 ---
 
 ## 3. The unit pool
@@ -517,6 +559,30 @@ siblings (`0x004788C0` free-slot count, `0x00478960` used-slot count) use
 `dec eax` first, so `aEnlargeUnitPool` admits `player == playerSlots()` where
 they stop one short; no shipped path passes that value. And the seeding is the
 **only** game-side reader of the skill level (§5.2).
+
+#### The Recruit window's five categories are written-out lists — **[code] `0x004561C9`** *(2026-09-08)*
+
+The window `0x00456640` builds offers five category buttons and five candidate
+rows, and the rows are **not** a base plus four. `0x0045615F` clears the five
+slots at `0x00510A14` to −1 and disables the five row gadgets, and
+`0x004561C9`'s jump table (`0x00456624`) then fills the chosen category's, one
+`mov dword [0x510A14 + 4k], imm32` per row, each behind its own affordability
+test — an unaffordable type is left at −1 and its gadget stays off. Reading
+every write in the five arms gives **twenty-three**, not twenty-five:
+
+| button | `Txtmod_b` | unit types |
+|---|---|---|
+| 0 *Light Units* | 181 | 0, 1, 2, 3 |
+| 1 | 182 | 10, 11, 12, 13, 14 |
+| 2 *Heavy Units* | 183 | 20, 21, 22, 23 |
+| 3 | 184 | 30, 31, 32, 33, **35** |
+| 4 *Commanders* | 185 | 40, 41, 42, 43, 44 |
+
+Two of them fill four slots and leave the fifth at −1, and category 3's fifth
+is **35, not 34**. Against `Info.lcl`'s declared 0–3, 20–26, 30–35 and 50–68
+that means *Light Units* offers four, category 3 offers five, *Heavy Units*
+offers four — type 24 is declared and never listed — and categories 1 and 4
+offer nothing at all.
 
 ### 3.3 Dismissing — **[code] `aRemoveUnitFromUnitPool` `0x00478B70`**
 
@@ -746,7 +812,7 @@ weapon **35**, which `Info.lcl` gives a `SetWeaponInfo2` line — model
 level above 12, which is what makes the three tech-99 items unbuyable
 ([`21` §3](21-info-lcl-schema.md)).
 
-#### The limits are the **upgrade location's** in a campaign — **UNVERIFIED**
+#### The limits are the **upgrade location's** in a campaign — **[code] `0x0045BF2A`, `0x0045C7D0`**
 
 The write quoted above is one of two arms. `0x0045BF2A` branches on
 `0x0043B740`, and only the arm a campaign does *not* take reads the tech level:
@@ -762,13 +828,31 @@ The write quoted above is one of two arms. `0x0045BF2A` branches on
 ```
 
 `0x00510C5C`/`0x00510C5D` are written by **fifteen** sites inside
-`aMissionControl.cpp`'s upgrade-location routines (`0x0045C88F` …
-`0x0045CDD9`, the first of them in `aPlayLocationAnimation_Upgrade`), with
-high limits of 1, 1, 2, 2, 3, 3, 3, 4, 4, 5 and 9 written as immediates and a
-register in the rest — so **each upgrade base sells its own band of tech
-levels** rather than everything up to the campaign's one. Which site belongs
-to which location is not traced, and the remake still gates on the campaign
-tech level alone; that is a known divergence, not a reading.
+`aPlayLocationAnimation` `0x0045C7D0`, one per upgrade arm and each right
+after its fly-in returns — so **each upgrade base sells its own band of tech
+levels** rather than everything up to the campaign's one, and the campaign
+tech level gates nothing at all. The arm a location reaches is
+`0x0045CF8C`'s index into `0x0045CF2C`, which is the same switch §2.4 reads
+for the map, so the pairing is exact:
+
+| location | map | band | | location | map | band |
+|---|---|---|---|---|---|---|
+| 1 | `upgrade_1` | 0–3 | | 210 | `upgrade_210` | 0–0 |
+| 2 | `upgrade_2` | 0–3 | | 211 | `upgrade_211` | 0–1 |
+| 3 | `upgrade_6` | 0–5 | | 212 | `upgrade_212` | 0–2 |
+| 4 | `upgrade_4` | **1–1** | | 213 | `upgrade_213` | 0–3 |
+| 5 | `upgrade_5` | **9–9** | | 214 | `upgrade_214` | **3–3** |
+| 6 | `upgrade_3` | 0–4 | | 215 | `upgrade_215` | 0–4 |
+| 7 | `upgrade_7` | 0–2 | | 216 | `upgrade_216` | 0–9 |
+| 8 | `upgrade_8` | 0–2 | | | | |
+
+Three encodings appear: the literal (`mov byte [addr], imm8`), `bl` — which
+the dispatcher's own `xor ebx, ebx` at `0x0045C7E0` holds at zero for every
+arm — and an `al` a `mov al, imm8` in the same arm set, which is how location
+5 writes 9 into both ends at once. **Three bands do not start at zero**, and
+that is the part a "high limit only" reading loses: locations 4, 5 and 214
+sell one tech level each and nothing below it, so a base can stock nothing a
+recruit is able to use.
 
 #### The *Item List* paints every row it is given — **[code] `0x00459D10`**
 
@@ -1270,14 +1354,16 @@ What each group covers:
 1. ~~**What the dialogue numbers select.**~~ **Closed** — §2.3 and
    [`41` §2](41-sequence-player.md) give the complete logical-id → successive
    directory mapping, including the `_07 → _09` and `_15 → _16` transitions.
-2. **Which upgrade location writes which tech band.** §5.2: in a campaign the
-   catalogue's `low`/`high` come from `0x00510C5C`/`0x00510C5D` and **not**
-   from the tech level, and fifteen sites in `aMissionControl.cpp` write that
-   pair with bands as narrow as a single level. The sites are enumerated; the
-   location each belongs to is not, and neither is what a band as tight as
-   `[1, 1]` or `[3, 3]` does to what a base can sell. Until it is, the remake
-   gates the shop on the campaign tech level alone, which is the *other* arm of
-   the same branch.
+2. ~~**Which upgrade location writes which tech band.**~~ **Closed** — §5.2's
+   table. `aPlayLocationAnimation` `0x0045C7D0` switches on the location
+   through `0x0045CF8C`/`0x0045CF2C`, and each of the fifteen upgrade arms
+   writes its own pair right after the fly-in returns: a literal, a `bl` that
+   the dispatcher's own `xor ebx, ebx` at `0x0045C7E0` holds at zero, or an
+   `al` a `mov al, imm8` in the same arm set. The bands run from `[0, 0]` at
+   location 210 to `[0, 9]` at 216, and two of them are a single level that is
+   **not** zero — location 4 sells tech 1 alone and location 5 tech 9 alone,
+   so those two bases stock nothing a recruit could otherwise buy. The remake
+   now gates on the entered base's band.
 3. **Why locations 3 and 6 load each other's upgrade map.** Pinned as observed
    (§2.4). Whether it is an authoring slip or deliberate cannot be settled from
    the shipped data: both maps exist, both are reachable, and no text names

@@ -22,6 +22,8 @@ const KIND_BATTLE: String = "battle"
 const KIND_UPGRADE: String = "upgrade"
 const KIND_DIALOGUE: String = "dialogue"
 
+## location -> the `(low, high)` tech band that base's shop sells.
+var _tech_bands: Dictionary = {}
 ## location -> mission basename (`aMapName` `0x0045C200`).
 var _map_names: Dictionary = {}
 ## mission id -> the location ids `aCreateLocationMap` opens.
@@ -58,8 +60,11 @@ static func from_document(document: Dictionary) -> CampaignMap:
 			DictRead.as_int(entry["sequence"])
 	for row: Variant in DictRead.as_array(document["upgrade"]):
 		var entry: Dictionary = row
-		out._upgrade[DictRead.as_int(entry["location"])] = \
-			DictRead.as_int(entry["map"])
+		var where: int = DictRead.as_int(entry["location"])
+		out._upgrade[where] = DictRead.as_int(entry["map"])
+		out._tech_bands[where] = Vector2i(
+			DictRead.as_int(entry.get("tech_low", 0)),
+			DictRead.as_int(entry.get("tech_high", 0)))
 	for row: Variant in DictRead.as_array(document["missions"]):
 		var entry: Dictionary = row
 		var name: String = DictRead.as_string(entry["name"])
@@ -122,6 +127,22 @@ func upgrade_map(location: int) -> String:
 	if not _upgrade.has(location):
 		return ""
 	return "upgrade_%d" % DictRead.as_int(_upgrade[location])
+
+
+## docs/27 section 5.2 -- the band of tech levels **this base** sells, or
+## `(-1, -1)` where the location is not an upgrade one.
+##
+## **A campaign never reads the tech level here.** `0x0045BF2A` branches on the
+## game mode and only the arm a campaign does *not* take calls
+## `getTechLevel()`; the campaign arm copies `0x00510C5C`/`0x00510C5D` into the
+## catalogue limits, and those two are written by the location's own arm of
+## `aPlayLocationAnimation` `0x0045C7D0` -- fifteen of them, one per base. So
+## *Assembly Camp* sells 0..4 and *Fight Position* 0..5, while location 4 sells
+## tech 1 alone and location 5 tech 9 alone.
+func tech_band(location: int) -> Vector2i:
+	if not _tech_bands.has(location):
+		return Vector2i(-1, -1)
+	return _tech_bands[location]
 
 
 ## The dialogue number the arm passes. The sequence player is a later slice, so

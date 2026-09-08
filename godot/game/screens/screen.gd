@@ -137,6 +137,22 @@ const INK_ITEM: Color = Color(0.85, 0.18, 0.18)
 ## Anything the soldier cannot be given now, and the row that is already theirs.
 const INK_DISABLED: Color = Color(0.45, 0.45, 0.45)
 
+## **The remake's own reading aids, and marked as such.** The original paints
+## these lists straight onto the 3D and gets away with it because what stands
+## behind them is a still, dark general view of the base -- the resting point
+## of `upgrade_N.lcl`'s own camera path. The remake draws the same scene, but
+## a screenshot is not a guarantee: a bright building or a lit ramp behind a
+## row makes the row unreadable, and the original has no answer for that
+## because it never happens there. So a screen that writes across the window
+## backs its text with [method shade], and a row the pointer is over or the
+## screen has chosen lights under [method row_hit]. Neither is in the shipped
+## game; both are what docs/92 section 7.4 calls keeping the rule and dropping
+## the silence.
+const SHADE_BACKING: Color = Color(0.0, 0.0, 0.02, 0.55)
+const ROW_HOVER: Color = Color(0.85, 0.86, 0.80, 0.24)
+const ROW_CHOSEN: Color = Color(0.85, 0.86, 0.80, 0.14)
+const ROW_CLEAR: Color = Color(0.0, 0.0, 0.0, 0.0)
+
 ## The cartouche across the top of `plate_1`, between the two gargoyles: the
 ## band the original writes every framed screen's own name in.
 const TITLE_TOP: float = 6.0
@@ -503,6 +519,51 @@ func _dress_when_sized(button: Button) -> void:
 	# the plate's, which is what the root spans.
 	var _face: float = dress_button(button,
 		button.size.x * PLATE_SIZE.x / _root.size.x)
+
+
+## A translucent backing over *area*, so text drawn across the 3D window can
+## be read whatever stands behind it. See [constant SHADE_BACKING].
+func shade(area: Rect2, into: Control = null) -> ColorRect:
+	var backing: ColorRect = ColorRect.new()
+	backing.color = SHADE_BACKING
+	backing.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_on_plate(backing, area.position, area.size)
+	var parent: Control = into if into != null else root()
+	parent.add_child(backing)
+	return backing
+
+
+## One list row's click target: a flat button over a rectangle that lights
+## under the pointer and, when *chosen*, stays lit.
+##
+## The rows are text in the original too, not gadgets -- which is why the
+## button is `flat` and takes no composed face. What it gains here is the
+## feedback a painted row cannot have.
+##
+## **The light is a rectangle of its own, not the button's `normal` box.** A
+## `flat` button does not draw that box, which is exactly what `flat` means, so
+## a chosen row dressed through the theme showed nothing at all; and driving
+## the colour from the two pointer signals keeps the hover independent of what
+## `flat` does to the rest of the states.
+func row_hit(action: String, area: Rect2, into: Control,
+		chosen: bool = false) -> Button:
+	var resting: Color = ROW_CHOSEN if chosen else ROW_CLEAR
+	var lit: ColorRect = ColorRect.new()
+	lit.color = resting
+	lit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_on_plate(lit, area.position, area.size)
+	into.add_child(lit)
+	var button: Button = make_button(action, "")
+	button.flat = true
+	place_on_plate(button, area.position, area.size)
+	into.add_child(button)
+	button.mouse_entered.connect(func() -> void:
+		if is_instance_valid(lit):
+			lit.color = ROW_HOVER)
+	button.mouse_exited.connect(func() -> void:
+		if is_instance_valid(lit):
+			lit.color = resting)
+	return button
 
 
 ## A row button that is going into the action row rather than into a list, so

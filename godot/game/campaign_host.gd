@@ -562,13 +562,16 @@ func catalogue_rows(kind: String, unit: UnitState) -> Array[Dictionary]:
 ## both: a filter that silently hid the rest would make a frozen tech level
 ## indistinguishable from a working one.
 ##
-## **The range is a range.** `0x0045BF44` writes 0 into the low end and
-## `0x0045BF4B` the tech level into the high one, and `0x0045AF21` reads the
-## pair as a word for the two list builders -- `0x0047A090` (equipment) and
-## `0x0047A1B0` (weapons), the routines the Upgrade Menu's own arrows step
-## with. Each accepts a record whose requirement byte satisfies
-## `low <= b <= high`, so [constant CATALOGUE_LOW] is written down rather than
-## implied by an unsigned comparison.
+## **The range is a range, and in a campaign it is the base's own.**
+## `0x0045AF21` reads `0x00510A34`/`0x00510A35` as a word for the two list
+## builders -- `0x0047A090` (equipment) and `0x0047A1B0` (weapons), the
+## routines the Upgrade Menu's arrows step with -- and each accepts a record
+## whose requirement byte satisfies `low <= b <= high`. Where that word comes
+## from is `0x0045BF2A`, and it has **two arms**: outside a campaign it is
+## `0` and the tech level (`0x0045BF44`, `0x0045BF4B`), and inside one it is
+## `0x00510C5C`/`0x00510C5D`, which the entered location's own arm wrote --
+## see [method CampaignMap.tech_band]. So the shop is per base, and the
+## campaign tech level gates nothing at all.
 ##
 ## **And a record with no name is in neither half.** Before either builder
 ## looks at the range it compares the record's name against the empty string
@@ -581,9 +584,21 @@ func catalogue_rows(kind: String, unit: UnitState) -> Array[Dictionary]:
 ## its caller starts it at 18. Missing it put the ten alien weapons and the
 ## `"-"` placeholder in the shop -- with `Item_w0.lib` for a picture, since
 ## they all carry icon 0 -- which the original never shows.
+## The tech band the catalogue is gated on -- the entered base's, or the
+## campaign tech level where there is no base (an *Instant Action* squad, or a
+## location that names no arm).
+func catalogue_band() -> Vector2i:
+	if tables != null:
+		var band: Vector2i = tables.tech_band(location)
+		if band.x >= 0:
+			return band
+	return Vector2i(CATALOGUE_LOW, state.tech_level if state != null else 0)
+
+
 func catalogue(kind: String) -> Dictionary:
 	var available: Array[Dictionary] = []
 	var locked: Array[Dictionary] = []
+	var band: Vector2i = catalogue_band()
 	for entry: Variant in DictRead.as_array(_balance.get(kind, [])):
 		var row: Dictionary = entry
 		if DictRead.as_string(row.get("name", "")) == "":
@@ -592,7 +607,7 @@ func catalogue(kind: String) -> Dictionary:
 				CATALOGUE_ID_MAX.get(kind, 0)):
 			continue
 		var needs: int = DictRead.as_int(row.get("tech", 0))
-		if needs >= CATALOGUE_LOW and needs <= state.tech_level:
+		if needs >= band.x and needs <= band.y:
 			available.append(row)
 		else:
 			locked.append(row)

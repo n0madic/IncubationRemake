@@ -99,6 +99,8 @@ func plate_window() -> Rect2:
 
 func build() -> void:
 	var _title: Label = place_title(label_for(BANK_MISSION, ID_TITLE))
+	# Under the rows, so the scene stays visible and the text stays legible.
+	var _backing: ColorRect = shade(plate_window())
 	_grid = gui_layer()
 	_counters = gui_layer()
 	var _toggle: Button = gui_button("toggle", BANK_MISSION, ID_TOGGLE,
@@ -141,9 +143,20 @@ func _draw_counters(unit: UnitState) -> void:
 			FNT_VALUE)
 
 
+## Which cell of the grid a catalogue row lands in, as `(column, line)`.
+##
+## **Across, then down.** `0x0045A13B` steps the painter's `x` by 250 for every
+## row and only drops `y` when it passes 500, so item 0 goes left, item 1
+## right and item 2 onto the next line -- not a column at a time. Filling by
+## column ran a twelve-item catalogue eleven rows deep.
+static func grid_cell(index: int) -> Vector2i:
+	return Vector2i(index % GRID_COLUMNS, index / GRID_COLUMNS)
+
+
 func _draw_row(index: int, row: Dictionary) -> void:
-	var column: int = index / GRID_ROWS
-	var line: int = index % GRID_ROWS
+	var cell: Vector2i = grid_cell(index)
+	var column: int = cell.x
+	var line: int = cell.y
 	var at: Vector2 = GRID_AT + Vector2(float(column) * GRID_COLUMN_STEP,
 		float(line) * GRID_ROW_HEIGHT)
 	var id: int = DictRead.as_int(row["id"])
@@ -151,11 +164,10 @@ func _draw_row(index: int, row: Dictionary) -> void:
 	var affordable: bool = DictRead.as_bool(row["affordable"])
 
 	var span: float = GRID_WIDTH[column]
-	var hit: Button = make_button("item:%d" % id, "")
-	hit.flat = true
-	place_on_plate(hit, at + Vector2(ICON_OFFSET.x, 0.0),
-		Vector2(span - ICON_OFFSET.x, GRID_ROW_HEIGHT))
-	_grid.add_child(hit)
+	var _hit: Button = row_hit("item:%d" % id,
+		Rect2(at + Vector2(ICON_OFFSET.x, 0.0),
+			Vector2(span - ICON_OFFSET.x, GRID_ROW_HEIGHT)),
+		_grid, carried)
 
 	var library: String = WEAPON_ICONS if kind == CampaignHost.KIND_WEAPONS \
 		else EQUIPMENT_ICONS

@@ -116,6 +116,9 @@ func plate_window() -> Rect2:
 
 func build() -> void:
 	var _title: Label = place_title(label_for(BANK_MISSION, ID_TITLE))
+	# Under everything else: the roster and the three counters are both
+	# written across the base's 3D scene.
+	var _backing: ColorRect = shade(plate_window())
 	_rows = gui_layer()
 	_counters = gui_layer()
 	var _up: Button = gui_icon("scroll_up", UP_INDEX, UP_AT)
@@ -191,12 +194,12 @@ func _draw_row(index: int, slot: int) -> void:
 		return
 	var top: float = LIST_AT.y + float(index) * ROSTER_ROW_HEIGHT
 	# The whole row is the click target, drawn flat so the plate shows through
-	# and the row reads as text rather than as a widget.
-	var hit: Button = make_button("pick:%d" % slot, "")
-	hit.flat = true
-	place_on_plate(hit, Vector2(ICON_AT.x, top),
-		Vector2(LIST_WIDTH + LIST_AT.x - ICON_AT.x, ROSTER_ROW_HEIGHT))
-	_rows.add_child(hit)
+	# and the row reads as text rather than as a widget -- but it lights under
+	# the pointer, and the chosen one stays lit.
+	var _hit: Button = row_hit("pick:%d" % slot,
+		Rect2(Vector2(ICON_AT.x, top),
+			Vector2(LIST_WIDTH + LIST_AT.x - ICON_AT.x, ROSTER_ROW_HEIGHT)),
+		_rows, slot == selected)
 
 	var weapon: Dictionary = host.row_for(CampaignHost.KIND_WEAPONS,
 		unit.weapon)
@@ -204,9 +207,14 @@ func _draw_row(index: int, slot: int) -> void:
 		var _icon: TextureRect = gui_sprite(WEAPON_ICON_LIBRARY,
 			DictRead.as_int(weapon["icon"]),
 			Vector2(ICON_AT.x, top + ICON_AT.y), ICON_SIZE, _rows)
-	# The hero's own mark. `Sgt. Bratt` carries it on the shipped screen and he
-	# is the campaign's one `pool_flag == 2` record; that the star means *hero*
-	# rather than *selected* is **UNVERIFIED**.
+	# **The hero's mark, and it is the remake's own.** No format string in
+	# `Incubation.exe` appends a star to a unit's name: the only `"* %s *"` is
+	# `0x004CAAD0`, which `0x0045A476` and `0x0045A645` use for an item the
+	# soldier already **carries**, and that is the Item List's marker rather
+	# than a roster one. So this is not the original's star -- it is kept
+	# because `pool_flag == 2` is real (docs/27 section 3.1 seeds it on Bratt)
+	# and this window has nothing else that says so. Which row is *chosen* is
+	# the lit backing under it now, not the star.
 	var star: String = " *" if unit.pool_flag == UnitState.HERO_POOL_FLAG else ""
 	var _name: Label = gui_text(unit.name + star, Vector2(LIST_AT.x, top),
 		ALIGN_LEFT, INK_VALUE if slot == selected else INK_ROSTER, _rows)

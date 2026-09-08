@@ -86,6 +86,9 @@ var _faces: Array[FontFile] = []
 var _backdrop_world: World = null
 var _backdrop_rig: CameraRig = null
 var _backdrop_mission: String = ""
+## The backdrop's own camera as `[eye, target]`, or empty for the chain map.
+## See [method _read_camera_path].
+var _backdrop_view: Array[Vector3i] = []
 ## The campaign map's own effects. Its `InitMap` is four `CreateBGB` fires and
 ## a CD track, and a picture built with no script at all left the city not
 ## burning -- which is the one thing about it a player can see moving.
@@ -351,6 +354,14 @@ const TEST_RUNNER: String = "res://tests/runner.gd"
 const CREATE_BGB: String = "create_bgb"
 ## docs/20 section 7.3 -- the other command `INIT MAP` carries.
 const CD_TRACK_PROGRAM: String = "cd_track_program"
+## `CreateCameraPath`, which is the whole of an upgrade base's `INIT MAP`
+## (docs/27 section 2.7). Mode 0 is the look-at target and mode 1 appends a
+## waypoint; both are stored shifted left by four, the file-unit-to-world-unit
+## factor of docs/30 section 2.5.
+const CREATE_CAMERA_PATH: String = "create_camera_path"
+const CAMERA_PATH_SCALE: int = 16
+const CAMERA_PATH_TARGET_MODE: int = 0
+const CAMERA_PATH_WAYPOINT_MODE: int = 1
 ## What the test build's own window says while it is not the game.
 const TEST_CAPTION: String = \
 	"Incubation - Remake -- the test harness, not the game\n\n" \
@@ -1543,6 +1554,15 @@ func _on_campaign_choice(action: String) -> void:
 		if roster != null:
 			roster.pick(slot)
 			campaign.upgrade_slot = slot
+			# **And go there.** The Unit Menu's selection feeds one screen and
+			# one only -- the Upgrade Menu opens on whichever soldier it names
+			# -- so picking a row that then sat there doing nothing was the
+			# screen keeping a secret. The Item List's own rows have the same
+			# shape: choose, and the chooser closes behind you. The original
+			# settles nothing here, `Menu_b.lcl` defining no layout for window
+			# 4 at all, so this is the remake's call.
+			var _to_upgrade: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_UPGRADE)
 		return
 	if action.begins_with("item:"):
 		# The Item List is a chooser: it names the item and the Upgrade Menu
@@ -1961,7 +1981,52 @@ func _build_backdrop(mission: String) -> void:
 	environment.environment = env
 	_backdrop_root.add_child(environment)
 
+	_backdrop_view = _read_camera_path(opening)
 	_build_backdrop_fires(mission, geometry, textures, opening)
+
+
+## The camera an upgrade base's own script asks for -- `[eye, target]`, or
+## empty where the scene names none.
+##
+## **This is what an upgrade location looks at, and it is per base.** Every
+## `upgrade_N.lcl`'s whole `INIT MAP` is three or four `CreateCameraPath`
+## lines: one `mode 0` look-at target and two to four `mode 1` waypoints
+## (docs/20 section 10 item 2 has the record). `aPlayLocationAnimation_Upgrade`
+## `0x00417510` builds the scene and hands it to `0x00417000`, which flies the
+## eye down the waypoints with `aSetCameraPosition` `0x00403560` and makes one
+## last call when the path runs out -- so the fly-in **comes to rest on the
+## last waypoint**. Its caller then reads the camera back with `0x00403780`
+## into `0x00510D2C..0x00510D40`, and `0x00455A40(0)` pushes those same six
+## into `aSetCameraPosition` on every Mission Control frame. So the still view
+## the HQ, the Unit Menu, the Item List and the Upgrade Menu sit over is the
+## end of that flight.
+##
+## The chain map keeps [constant CameraRig.CAMPAIGN_EYE]: `_C_XXX.lcl` sets no
+## camera at all and `0x00457695` writes the fixed pair instead.
+func _read_camera_path(opening: Dictionary) -> Array[Vector3i]:
+	var target: Vector3i = Vector3i.ZERO
+	var eye: Vector3i = Vector3i.ZERO
+	var seen_target: bool = false
+	var seen_eye: bool = false
+	for entry: Variant in DictRead.as_array(opening.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		if AudioEvents.name_of(event) != CREATE_CAMERA_PATH:
+			continue
+		var values: PackedInt32Array = SetpieceDriver._numbers(event)
+		if values.size() < 5:
+			continue
+		var at: Vector3i = Vector3i(values[2], values[3], values[4]) \
+			* CAMERA_PATH_SCALE
+		if values[1] == CAMERA_PATH_TARGET_MODE:
+			target = at
+			seen_target = true
+		elif values[1] == CAMERA_PATH_WAYPOINT_MODE:
+			# The last one wins: that is where the flight stops.
+			eye = at
+			seen_eye = true
+	if not seen_target or not seen_eye:
+		return []
+	return [eye, target]
 
 
 
@@ -2070,6 +2135,12 @@ func _frame_map() -> void:
 	# does not survive the mission that was entered from it.
 	_backdrop_rig.reset_map_swing()
 	_swing_carry = Vector2.ZERO
+	# An upgrade base looks where its own `CreateCameraPath` left the flight,
+	# and `0x004558F0` -- the turn -- is the *map's* frame callback alone, so
+	# a base does not swing.
+	if _backdrop_view.size() == 2:
+		_backdrop_rig.set_now(_backdrop_view[0], _backdrop_view[1])
+		return
 	_backdrop_rig.set_now(CameraRig.CAMPAIGN_EYE, CameraRig.CAMPAIGN_TARGET)
 
 
@@ -2080,6 +2151,7 @@ func _clear_backdrop() -> void:
 		remove_child(_backdrop_root)
 		_backdrop_root.free()
 	_backdrop_root = null
+	_backdrop_view = []
 	# The Upgrade Menu's bodies are opened against the backdrop's world set, so
 	# a new chain has to open its own rather than draw the last one's meshes.
 	_campaign_bodies = null
@@ -3862,6 +3934,10 @@ func _toggle_shell() -> void:
 ## take the buttons away with it.
 func _swing_backdrop(travel: Vector2) -> void:
 	if _backdrop_rig == null:
+		return
+	# Only the chain map turns. An upgrade base's camera is the resting point
+	# of its own fly-in and nothing in `0x0045C7D0`'s arms calls `0x004558F0`.
+	if _backdrop_view.size() == 2:
 		return
 	# **Accumulated, not applied.** The routine runs once a frame in the
 	# original -- the cursor warp is what makes each frame's reading fresh --

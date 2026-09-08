@@ -856,6 +856,15 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     c.expect("campaign.unlock_graph", len(document["unlock_graph"]), 74,
              "79 arms less the five mission ids 35..39 have none")
     c.expect("campaign.upgrade_locations", len(document["upgrade"]), 15)
+    # docs/27 section 5.2 -- the band each base sells, which is what a campaign
+    # gates its shop on rather than the tech level.
+    c.expect("campaign.upgrade_tech_bands",
+             {row["location"]: (row["tech_low"], row["tech_high"])
+              for row in document["upgrade"]},
+             {1: (0, 3), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
+              6: (0, 4), 7: (0, 2), 8: (0, 2), 210: (0, 0), 211: (0, 1),
+              212: (0, 2), 213: (0, 3), 214: (3, 3), 215: (0, 4),
+              216: (0, 9)})
     c.expect("campaign.cut_locations",
              [row["mission"] for row in document["cut_locations"]],
              ["_C_134", "_C_135", "_C_136"])
