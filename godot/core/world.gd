@@ -139,6 +139,14 @@ var script_program: LclProgram = null
 ## second run shows what the live opponent does to a squad.
 var ai_may_fire: bool = true
 
+## The level tester's switches, never `null`. See [Cheats] for why they are
+## outside the canonical hash and outside the save, and for what a shield does
+## and does not cover. A world nobody set them on behaves exactly as it did
+## before they existed: every rule that reads them is behind
+## [method Cheats.controlled], and every one of the seams that carries them
+## takes `null` by default.
+var cheats: Cheats = Cheats.new()
+
 ## `EnterNameOfNextMap` writes it and the campaign layer reads it. It starts as
 ## the authored header's value ([member MapResource.next_map]) -- a mission that
 ## never calls the command still names a successor.
@@ -470,7 +478,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	var moved: MoveResult = ExecuteMove.execute(state, _units, _unit_types,
 		_ctrlmap, _weapons, unit, walked, command.x, command.y,
 		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng, -1, true, _journal)
+		turn.ai_level, turn, rng, -1, true, _journal, cheats)
 	if moved.steps == 0:
 		return moved
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
@@ -514,9 +522,10 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	# `aExecuteMove`, by the caller and never by the routine -- twice from the
 	# AI and three times from `aUI.cpp`. So the drain lives here, where the
 	# charge above already is, and not inside [TurnSequence] or [ExecuteMove].
+	_refund_mp(unit)
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal)
+		_journal, cheats)
 	return moved
 
 
@@ -555,7 +564,8 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	#
 	# The condition mirrors [method Combat.attack]'s **spend** exactly, so the
 	# count can no longer go past zero by this path whatever the magazine size.
-	if (_weapons.magazine(unit.weapon) != Combat.MUN_NONE
+	if (not Cheats.armed(cheats, unit, turn)
+			and _weapons.magazine(unit.weapon) != Combat.MUN_NONE
 			and unit.type_id != Combat.NO_AMMO_UNIT_TYPE
 			and unit.ammo < _weapons.mun_per_fight(unit.weapon)):
 		var empty: AttackResult = AttackResult.new()
@@ -564,7 +574,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	var weapon_fired: int = unit.weapon
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
-		turn.human_count(), turn.mode, turn, rng)
+		turn.human_count(), turn.mode, turn, rng, false, cheats)
 	if unit.hp == 0:
 		# The shooter its own shot killed -- an explosive at contact range.
 		# The boundary is still here: the victims are already down.
@@ -575,6 +585,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	var ap: int = _weapons.ap(unit.weapon)
 	unit.mp = unit.mp - ap if unit.mp > ap else 0
 	unit.acted = ACTED_MOVED
+	_refund_mp(unit)
 	# **The boundary is after the charge**, so the movement points the pad
 	# draws move in the same delta as the damage; the engine draws its pad
 	# from the same frame the fight animation runs in.
@@ -586,7 +597,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		weapon_fired, str(weapon_fired), shot.to_dict())
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal)
+		_journal, cheats)
 	return shot
 
 
@@ -655,6 +666,7 @@ func submit_use(command: UseCommand) -> UseResult:
 				front_x, front_y, 0, written, unit.slot)))
 	if unit.hp != 0 and unit.mp != 0:
 		unit.mp -= 1
+	_refund_mp(unit)
 	return result
 
 
@@ -1048,7 +1060,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 	var from_y: int = unit.y
 	var done: Dictionary = ExecuteWarp.execute(state, _units, _unit_types,
 		_weapons, unit, command.x, command.y, turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng, _journal)
+		turn.ai_level, turn, rng, _journal, cheats)
 	if not DictRead.as_bool(done["ok"]):
 		return WarpResult.failed(unit.x, unit.y,
 			DictRead.as_string(done["reason"]))
@@ -1076,7 +1088,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 		unit.acted = ACTED_WARPED
 		result.reactions = Reaction.drain(state, _units, _unit_types,
 			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
-			turn, rng, _journal)
+			turn, rng, _journal, cheats)
 	return result
 
 
@@ -1180,6 +1192,13 @@ func _ground_tick() -> Dictionary:
 			if slot < 0 or not _units.has(slot):
 				continue
 			var victim: UnitState = _units[slot]
+			# The flames are what weapon 40 lays (docs/42 section 9.1), so
+			# they are a weapon reaching a unit and [member Cheats.god]
+			# covers them. It cannot be a zeroed damage argument here: this
+			# path rolls nothing and removes outright, so the shield is the
+			# removal not happening.
+			if Cheats.shielded(cheats, victim, turn):
+				continue
 			# `aRemoveUnitElement` and **nothing else**: it bumps the hero
 			# counter, frees the 3D object, clears the cell link and -- with
 			# its last instruction, `0x00477ABD` -- zeroes the hit points.
@@ -1284,6 +1303,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 			var ctx: AIContext = AIContext.create(state, _units, _unit_types,
 				_weapons, _ctrlmap, turn, rng)
 			ctx.may_fire = ai_may_fire
+			ctx.cheats = cheats
 			ctx.journal = _journal
 			# The mission script reaches the computer's walks and jumps the
 			# way it reaches the player's: `aRunLCL` closes `aExecuteMove`
@@ -1389,6 +1409,54 @@ func take_events() -> Array[Dictionary]:
 
 
 ## Close one boundary. A no-op without a journal, and it builds nothing then.
+## Put a unit's movement points back, when [member Cheats.moves] says to.
+##
+## **The allowance, not the value before the charge.** [method
+## Allowance.for_unit] is what a hand-over would have given the unit
+## ([method Refresh.player]), so a unit that stood down, is out of fitness or
+## carries an action state that zeroes the allowance still gets nothing --
+## the switch makes an action free, it does not lift the rules that say the
+## unit may not act at all.
+##
+## It runs **before** the command's journal boundary, so the pad draws the
+## refunded points in the same delta as the rest of the command.
+func _refund_mp(unit: UnitState) -> void:
+	if not Cheats.tireless(cheats, unit, turn) or not unit.is_alive():
+		return
+	unit.mp = Allowance.for_unit(unit, _unit_types, _units, turn.ai_level)
+
+
+## [constant Cheats.ACTION_NUKE] -- kill every unit no human player controls.
+##
+## A one-off action and not a switch: it has no state to be in. The counters
+## move exactly as they do for a unit shot dead ([method
+## Combat.attack]'s kill arm), because a mission whose win condition counts
+## kills has to be able to end this way -- which is the whole point of having
+## it while a level is being walked.
+##
+## **The inanimate objects are left standing.** docs/21 section 5's species 2
+## is barrels, cases and the scenery that happens to be a unit record; a
+## mission whose crates all vanished would not be the mission being tested,
+## and [method load_sweep] already treats that species as the one owner test
+## to forgive.
+##
+## Answers how many died. The caller redraws: this writes the world and marks
+## nothing, so the picture's mirror is resynchronised rather than advanced.
+func cheat_kill_enemies() -> int:
+	var killed: int = 0
+	for slot: int in unit_slots():
+		var unit: UnitState = _units[slot]
+		if not unit.is_alive() or Cheats.controlled(unit, turn):
+			continue
+		if _unit_types.species(unit.type_id) == SPECIES_INANIMATE:
+			continue
+		turn.count_kill_and_loss(turn.current_player, unit.type_id,
+			unit.player)
+		var _hero: bool = UnitState.remove(state, turn, unit)
+		killed += 1
+	return killed
+
+
 func _mark(kind: String, slot: int = -1, x: int = 0, y: int = 0,
 		tx: int = 0, ty: int = 0, detail: int = 0, note: String = "",
 		payload: Dictionary = {}) -> void:
@@ -1429,6 +1497,7 @@ func clone() -> World:
 	copy.gore_level = gore_level
 	copy.next_map = next_map
 	copy.ai_may_fire = ai_may_fire
+	copy.cheats = cheats.duplicate()
 	copy._hand_over_initialised = _hand_over_initialised
 	copy._camera = _camera.duplicate(true)
 	copy._scenery = _scenery.duplicate(true)

@@ -2035,6 +2035,27 @@ appears everywhere in one frame.
 
 ---
 
+### 7.18 A cheat system, for walking a level rather than playing it (2026-09-08)
+
+Testing a mission end to end means reaching its later turns, and the shipped
+game gives no way past its own difficulty. The remake adds one. It is the
+remake's own -- the 1997 engine has nothing like it -- so this section is the
+whole of its specification and `godot/tests/test_cheats.gd` the whole of its
+verification.
+
+| | Decision |
+|---|---|
+| C1 | **`Cheats` is a rule modifier, not simulation state.** It follows `World.ai_may_fire` ([`23` §1](23-ai-system.md)'s engine debug global) literally: outside `CanonicalHash`, outside `SaveCodec`, and carried by `World.clone()` **as the same object** -- one `Cheats` exists per session, `SliceMain` hands it to every world it builds, and a snapshot in the clone would freeze at clone time and diverge from the truth on the next toggle. Two worlds differing only in which switches are on are the same state, so a save taken with one on restores to a world whose hash matches -- and a save can neither carry a switch into a session that did not ask for it nor clear one the session did. |
+| C2 | **Four switches and one action.** `god` (no damage from a weapon or an explosion, and no stun), `ammo` (no ammunition, no heat, no overheat roll, no jam), `kill` (the shot connects and kills), `moves` (the movement points come back after a move, a shot, a use **or** a warp -- `aExecuteWarp`'s call site zeroes them outright, so it is the fourth charge and not an exception), and `nuke` -- a one-off that kills every unit no human seat controls. `nuke` is deliberately not a switch: it has no state to be in. |
+| C3 | **"Mine" is `turn.player_kind[unit.player] == KIND_HUMAN`**, so the aliens' player 255 is outside the array and can never be protected, and the switches hold in a two-human session as well as in the campaign. `Cheats.controlled` is the single test; the four questions the rules ask (`shielded`, `armed`, `lethal`, `tireless`) are static and null-tolerant, which is what lets every seam default its argument to `null` and change no existing caller. |
+| C4 | **The shield borrows the Damage Absorber's own mechanism.** `applyDamage` is still called with the damage argument **zeroed** rather than skipped ([`22` §7.5](22-combat-and-visibility.md)), so the generator lands exactly where it would have and a cheated world's picture and truth stay in step. Both weapons and mines go through it; `Combat.apply_damage` itself is untouched. |
+| C5 | **The one-shot kill is written after the roll, not as damage 255.** `applyDamage` subtracts armour from any damage and refuses `IMMUNE_UNIT_TYPE 0x23` outright, so a large number is not a kill. The hit is forced with the `GUARANTEED_HIT_SPECIALS` idiom and the remaining health taken off after the call -- and never off a unit `god` protects, so the two switches held together do not make friendly fire lethal. |
+| C6 | **The refund is the allowance, not the value before the charge, and it runs before the command's journal boundary** so the pad draws it in the same delta as the rest of the command. `Allowance.for_unit` is what a hand-over would have given, so a unit that stood down, is out of fitness or carries an action state that zeroes the allowance still gets nothing: the switch makes an action free, it does not lift the rules that say the unit may not act. |
+| C7 | **Scripted deaths are not blocked, and that is the point.** `god` answers everything a weapon reaches a unit with -- the shot, the mine -- under a walk, under a warp landing **and** under a crate pushed onto one ([`26` §6.2](26-interaction.md), the arm whose own header warns it can kill the pusher) -- the ground fire weapon 40 lays ([`42` §9.1](42-mission-presentation.md), which removes rather than damages, so the shield there is the removal not happening) and the shooter's own gun destroying itself at the heat cap ([`22` §7.3](22-combat-and-visibility.md)'s roll of exactly 30, downgraded to the damaged-weapon arm it shares an instruction with). The mission script's own `KillUnit` and a walk into a hole are **not** intercepted: a level being tested has to let its own scripted deaths happen, or the thing under test is not the level. `nuke` leaves [`21` §5](21-info-lcl-schema.md)'s species 2 standing for the same reason -- barrels and cases are scenery, not enemies. |
+| C8 | **Three ways in, and the typed one is hidden.** A rolling key buffer cannot work: `W`/`A`/`S`/`D`/`Q`/`E`/`Y`/`G` pan and turn the camera and `HudTables.EVENT_KEYS` binds thirteen more, so typing a code would drive the camera and press buttons on the way. `` ` `` opens a silent line that owns the keyboard instead (`ESC` cancels it rather than raising the shell); nothing is drawn while a code is typed and nothing is drawn for a code that matches nothing. `--cheats=god,ammo` is the launch entry a level is actually walked with, and the control server's `cheat NAME [on|off]` is the scripted one. `GET /state` reports which switches are on -- above its `world == null` return, so a scenario that fails before a mission is built says so too. **Opening the line is behind every input guard** and `nuke` is refused under a playback: it is the one code that writes the world, and resynchronising the mirror mid-replay would leave `EventPlayback` landing the deltas of a turn that has been overwritten. |
+
+---
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:

@@ -91,6 +91,10 @@ func build(frame: int) -> Dictionary:
 	document["sounds"] = sounds()
 	document["gore_level"] = world.gore_level
 	document["ai_level"] = world.turn.ai_level
+	# Which of the level tester's switches are on, so a scenario that fails
+	# says whether it was played straight ([Cheats]). Empty is the normal
+	# answer and the one a run without them must show.
+	document["cheats"] = Array(_main.cheats.active())
 	document["units"] = units()
 	document["reachable"] = query(false)
 	document["warp"] = query(true)

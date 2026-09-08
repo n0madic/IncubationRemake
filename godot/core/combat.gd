@@ -904,7 +904,8 @@ static func close_combat_revert(wtab: WeaponTable,
 static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, x: int, y: int, tx: int, ty: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom, reaction: bool = false) -> AttackResult:
+		rng: IncRandom, reaction: bool = false,
+		cheats: Cheats = null) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
 	if attacker == null:
@@ -937,7 +938,28 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var cap: int = max_heat(wtab, attacker)
 		if cap != 0xFF:
 			attacker.heat = cap
-	result.overheat = check_weapon_damage(wtab, attacker, rng)
+	# **The armed cheat is read once, here**, and the same answer is used for
+	# the spend below: a bayonet swap changes the weapon between the two, never
+	# the shooter, so asking twice could not disagree -- but reading it once
+	# says so.
+	var free_shot: bool = Cheats.armed(cheats, attacker, turn)
+	if free_shot:
+		# `aCheckWeaponDamage` is what jams the gun, destroys it and, on a roll
+		# of exactly 30, kills the shooter. Infinite ammunition that still let
+		# the gun blow up in the tester's hand would be the wrong switch.
+		attacker.malfunction = 0
+	else:
+		var hp_before: int = attacker.hp
+		result.overheat = check_weapon_damage(wtab, attacker, rng)
+		# The roll of exactly 30 kills the shooter outright, and a shielded
+		# marine may not be killed by its own gun. The arm is **downgraded**
+		# to the damaged-weapon one it shares an instruction with rather than
+		# skipped, so the draw is where it would have been either way.
+		if Cheats.shielded(cheats, attacker, turn) and attacker.hp == 0 \
+				and hp_before > 0:
+			attacker.hp = hp_before
+			attacker.malfunction = MALFUNCTION_DAMAGED
+			result.overheat = OVERHEAT_DAMAGE
 	if attacker.malfunction != 0 or attacker.hp == 0:
 		result.fired = false
 		result.reason = ("the weapon jammed or was destroyed"
@@ -996,6 +1018,15 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			chance = 0
 			roll = 1
 			damage = GUARANTEED_HIT_DAMAGE
+		# The same override, for the same reason: the comparison is replaced
+		# and the generator is not, so the roll above has already been drawn.
+		# **A unit the other switch shields is never the one killed**, so the
+		# two switches held together do not make friendly fire lethal.
+		var one_shot: bool = Cheats.lethal(cheats, attacker, turn) \
+			and not Cheats.controlled(target, turn)
+		if one_shot:
+			chance = 0
+			roll = 1
 
 		if chance + HIT_BONUS < roll:
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
@@ -1006,8 +1037,15 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if marker == MARKER_STUN:
 			# No damage is rolled; unless a Damage Absorber charge is spent the
 			# target loses the rest of its turn.
-			var stunned: bool = absorber_charges(target) == 0
-			if not spend_absorber(target):
+			# A shielded target is not stunned either -- a marine that cannot
+			# be hurt but can still be frozen for a turn is not what the
+			# switch says -- and it does not pay a Damage Absorber charge for
+			# the immunity it already has, which is why the shield is tested
+			# first and `and` short-circuits the spend away.
+			var shielded: bool = Cheats.shielded(cheats, target, turn)
+			var stunned: bool = not shielded \
+				and absorber_charges(target) == 0
+			if not shielded and not spend_absorber(target):
 				target.action_state = STUNNED_ACTION_STATE
 				target.mp = 0
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
@@ -1023,8 +1061,26 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			# rolling its dice over a span of nothing. The seed says so
 			# (`turn_gold.py`, `absorber_flagged`: two draws, not one).
 			damage = 0
+		# **The shield is the absorber's own mechanism, borrowed.** Zeroing the
+		# argument rather than skipping the call keeps the draw order -- and
+		# therefore the generator -- exactly where it would have been, so a
+		# world played with the switch on is still a world whose picture and
+		# truth agree. `applyDamage` over a span of nothing deals nothing:
+		# every roll it makes is `draw(0, 0)` or `draw(0, 1)`, and
+		# [method IncRandom.draw] truncates both to zero.
+		if Cheats.shielded(cheats, target, turn):
+			damage = 0
 		var dealt: int = apply_damage(target, damage, attacker.facing, ai_level,
 			human_players, game_mode, rng)
+		# The other half of the pair: what the armour roll left standing is
+		# taken off after it, so `dealt` is the whole of the target's health
+		# and the picture's damage number is the truth. It is written here
+		# rather than as `damage = 255` because `applyDamage` subtracts armour
+		# from any damage at all and refuses [constant IMMUNE_UNIT_TYPE]
+		# outright -- neither of which a one-shot kill may be stopped by.
+		if one_shot and target.is_alive():
+			dealt += target.hp
+			target.hp = 0
 		# `0x0046BDAD` -- weapon 47 converts what it hits and does not kill.
 		# The charge test is asked **again** after the spend, so a target whose
 		# last charge just went is converted on the same shot.
@@ -1060,7 +1116,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	# After the shot: ammunition and heat.  docs/22 section 7.5 gates on
 	# **both** halves -- a weapon whose `mun` column is 255 spends nothing, and
 	# neither does unit type 0x42.  Dropping the second would disarm that type.
-	if wtab.has(attacker.weapon):
+	if wtab.has(attacker.weapon) and not free_shot:
 		if (wtab.magazine(attacker.weapon) != MUN_NONE
 				and attacker.type_id != NO_AMMO_UNIT_TYPE):
 			# `0x0046C308` is an 8-bit `sub` with no clamp, so the engine

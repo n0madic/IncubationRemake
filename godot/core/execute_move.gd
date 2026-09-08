@@ -241,7 +241,7 @@ static func _route_of(moved: MoveResult) -> Array:
 static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, mover: UnitState, moved: MoveResult, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> void:
+		rng: IncRandom, cheats: Cheats = null) -> void:
 	var cells: Array[Vector2i] = []
 	if utab.unit_size(mover.type_id) == LARGE_UNIT_SIZE:
 		for step: Vector2i in CellObjects.STEP_DELTA:
@@ -262,7 +262,8 @@ static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		moved.detonate.append(at.x)
 		moved.detonate.append(at.y)
 		moved.blast = Interact.execute_bomb(state, units, utab, wtab, at.x,
-			at.y, ai_level, human_players, game_mode, turn, rng).to_dict()
+			at.y, ai_level, human_players, game_mode, turn, rng,
+			cheats).to_dict()
 		moved.events.append({"kind": "mine_detonated", "x": at.x, "y": at.y,
 			"detail": 0, "blast": moved.blast})
 		# `0x0046ECB0` -- the ring stops the moment the mover is dead.
@@ -325,7 +326,8 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		human_players: int, game_mode: int, ai_level: int, turn: TurnState,
 		rng: IncRandom, budget: int = -1,
 		enemy_move: bool = true,
-		journal: EventJournal = null) -> MoveResult:
+		journal: EventJournal = null,
+		cheats: Cheats = null) -> MoveResult:
 	var from_x: int = mover.x
 	var from_y: int = mover.y
 	var moved: MoveResult = run(state, ctab, mover, walked, budget)
@@ -401,7 +403,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	# the order is the difference between two canonical hashes, not a detail.
 	if moved.stopped_on_mine:
 		_detonate(state, units, utab, wtab, mover, moved, ai_level,
-			human_players, game_mode, turn, rng)
+			human_players, game_mode, turn, rng, cheats)
 		# The blast is drawn after the last step, because the step loop
 		# blocked until then (docs/97 section 41.8).
 		if journal != null:

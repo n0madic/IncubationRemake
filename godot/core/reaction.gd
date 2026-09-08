@@ -122,7 +122,8 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, mover: UnitState, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom,
-		journal: EventJournal = null) -> Array[Dictionary]:
+		journal: EventJournal = null,
+		cheats: Cheats = null) -> Array[Dictionary]:
 	var fired: Array[Dictionary] = []
 	if not mover.is_alive():
 		return fired
@@ -152,7 +153,7 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# its bayonet, however close the mover walks.
 		var result: AttackResult = Combat.attack(state, units, utab, wtab,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
-			game_mode, turn, rng, true)
+			game_mode, turn, rng, true, cheats)
 		reactor.facing = facing
 		var shot: Dictionary = {"reactor": reactor.slot,
 			"ticket": reactor.ticket, "attack": result.to_dict(),

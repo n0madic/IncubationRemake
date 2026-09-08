@@ -212,7 +212,7 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 				ctx.utab, ctx.ctab, ctx.wtab, unit, walked, tx, ty,
 				IncInt.u8(ctx.mp_left[best_cell]), ctx.turn.human_count(),
 				ctx.turn.mode, ctx.turn.ai_level, ctx.turn, ctx.rng,
-				unit.mp, true, ctx.journal)
+				unit.mp, true, ctx.journal, ctx.cheats)
 			if not moved.ok and not moved.movement_zeroed:
 				return false
 			_apply_move(ctx, unit, moved, sx, sy)
@@ -224,7 +224,7 @@ static func commit(ctx: AIContext, unit: UnitState, best_cell: int) -> bool:
 			var reactions: Array[Dictionary] = Reaction.drain(ctx.map,
 				ctx.units, ctx.utab, ctx.wtab, unit, ctx.turn.ai_level,
 				ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng,
-				ctx.journal)
+				ctx.journal, ctx.cheats)
 			if not reactions.is_empty():
 				ctx.emit(AIEvent.make("reactions", unit.slot, unit.x, unit.y,
 					0, 0, reactions.size(), "",
@@ -326,7 +326,7 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		ctx.map.set_effect(MapState.TIMER_SLOT, target, 0)
 		payload["blast"] = Interact.execute_bomb(ctx.map, ctx.units, ctx.utab,
 			ctx.wtab, tx, ty, ctx.turn.ai_level, ctx.turn.human_count(),
-			ctx.turn.mode, ctx.turn, ctx.rng).to_dict()
+			ctx.turn.mode, ctx.turn, ctx.rng, ctx.cheats).to_dict()
 		if ctx.journal != null:
 			var _blown: Dictionary = ctx.journal.mark("mine", unit.slot, tx,
 				ty, tx, ty, 0, "", {"blast": payload["blast"]})

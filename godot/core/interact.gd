@@ -231,7 +231,7 @@ static func defuse_mine(state: MapState, index: int) -> UseResult:
 static func push_object(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, unit: UnitState,
 		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> UseResult:
+		rng: IncRandom, cheats: Cheats = null) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
 		return UseResult.refused("the cell in front is off the map")
@@ -263,8 +263,12 @@ static func push_object(state: MapState, units: Dictionary,
 				state.set_effect(MapState.OBJECT_SLOT, into, MapState.NO_OBJECT)
 				state.set_obstacle(into, EFFECT_NONE)
 				state.set_effect(MapState.TIMER_SLOT, into, 0)
+				# **The third way a mine reaches a unit**, and the one the
+				# header above warns can kill the pusher -- so the shield
+				# rides with it, exactly as it does on the walk's arm and the
+				# warp's.
 				execute_bomb(state, units, utab, wtab, at[0], at[1], ai_level,
-					human_players, game_mode, turn, rng)
+					human_players, game_mode, turn, rng, cheats)
 				out.kind = "push_onto_mine"
 				break
 		var ft: int = state.field_type_at(into)
@@ -285,7 +289,7 @@ static func push_object(state: MapState, units: Dictionary,
 static func execute_bomb(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, x: int, y: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> AttackResult:
+		rng: IncRandom, cheats: Cheats = null) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	result.fired = true
 	var unsupported: Array[String] = []
@@ -317,6 +321,11 @@ static func execute_bomb(state: MapState, units: Dictionary,
 				"marker": Combat.MARKER_MISS, "dealt": 0, "chance": chance,
 				"roll": roll})
 			continue
+		# The shield, by the absorber's mechanism -- the same zeroed argument
+		# [method Combat.attack] uses, so the generator lands where it would
+		# have. This is the second and last way a weapon reaches a unit.
+		if Cheats.shielded(cheats, target, turn):
+			damage = 0
 		# No absorber here: `aExecuteBomb` never calls `0x00475590` or
 		# `0x004755B0` -- `applyDamage` is reached straight from the roll
 		# (`0x004704C9`), with the heading `0xFF` no arc holds. The model once
@@ -342,14 +351,14 @@ static func execute_bomb(state: MapState, units: Dictionary,
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, control: GameControl, unit: UnitState,
 		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom) -> UseResult:
+		rng: IncRandom, cheats: Cheats = null) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
 		return UseResult.refused("the cell in front is off the map")
 	var index: int = state.index_of(at[0], at[1])
 	if state.unit_at(index) >= 0:
 		return push_object(state, units, utab, wtab, unit, ai_level,
-			human_players, game_mode, turn, rng)
+			human_players, game_mode, turn, rng, cheats)
 	if state.obstacle_at(index) == EFFECT_MINE:
 		return defuse_mine(state, index)
 

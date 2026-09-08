@@ -55,6 +55,7 @@ const LEAST_CHECKS: Dictionary = {
 	"presentation_native": 150,
 	"ctrl_map": 30,
 	"effects": 253,
+	"cheats": 60,
 	"mission": 17,
 	"campaign": 290,
 	"game_ui": 270,

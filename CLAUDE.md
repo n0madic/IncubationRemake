@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 251 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 38 suites, 4578 checks
+bash   godot/run_tests.sh                                    # 39 suites, 4685 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -830,6 +830,13 @@ python3 tools/remake_convert.py gog_incubation --campaign-maps \
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
+godot --path godot -- --mission=_C_141 --cheats=god,ammo,kill,moves
+#   ^ the level tester's switches (docs/92 section 7.18). In a running game the
+#     same switches are reached by typing a code on the hidden line the
+#     backquote key opens -- god, ammo, kill, moves, nuke, cheats -- or, from
+#     the control server, with `cheat NAME [on|off]`. They are outside the
+#     canonical hash and outside the save, so a cheated session's hashes still
+#     agree and a save carries none of it.
 godot --path godot --resolution 1280x800 -- \
     --mission=_C_140 --agent-port=8787         # ...and drive it from outside
 python3 tools/agent_client.py wait-up
@@ -880,12 +887,13 @@ queue behind one. The verbs are `key NAME`, `click X Y`, `click_unit SLOT`,
 `markers` and `hud event|pad|ring|radar N` (`docs/43`) and the campaign's
 `campaign N`, `location N`, `deploy SLOT X Y`, `screen NAME`, `ui NAME`,
 `enter NAME` and `gamecontrol SLOT VALUE` — the last three are debugging
-entries past the location map, the way `--mission=` is one past the campaign.
+entries past the location map, the way `--mission=` is one past the campaign —
+and the level tester's `cheat NAME [on|off]` (`docs/92` §7.18).
 Every reply carries the turn, every unit, the selection's fill and warp cells,
 the sequence on the queue, the blob pool **by kind**, the overlay, the camera,
-the interface, whether a body is still walking and whether the computer's turn
-is being replayed, so a screenshot and the numbers behind it come from the same
-frame. **A click on a reachable cell raises the direction ring** since the
+the interface, which cheats are on, whether a body is still walking and whether
+the computer's turn is being replayed, so a screenshot and the numbers behind
+it come from the same frame. **A click on a reachable cell raises the direction ring** since the
 seventh slice, so `walk_to` answers it with the direction of travel and
 `hud ring N` is what chooses a facing. Keys and clicks go in through
 `Viewport.push_input`, so the game's own `_unhandled_input` and `_pick` run --

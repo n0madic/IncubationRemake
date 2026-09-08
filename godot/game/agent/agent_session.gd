@@ -84,6 +84,18 @@ const KEYS: Dictionary[String, int] = {
 	"ESCAPE": KEY_ESCAPE,
 	# The Upgrade Menu's name box submits on it; nothing else reads it.
 	"ENTER": KEY_ENTER,
+	# The hidden code line and the letters its codes need ([CheatEntry]).
+	# Nothing else in the mission view binds any of them: while the line is
+	# open it owns the keyboard, so what is driven here is the real entry and
+	# not a back door beside it.
+	"BACKQUOTE": KEY_QUOTELEFT,
+	"I": KEY_I,
+	"K": KEY_K,
+	"L": KEY_L,
+	"M": KEY_M,
+	"N": KEY_N,
+	"O": KEY_O,
+	"V": KEY_V,
 }
 
 ## Verb -> the one line `GET /help` prints for it.
@@ -117,6 +129,7 @@ const VERBS: Dictionary[String, String] = {
 	"ui": "ui [NAME] -- put one campaign screen up, or close the one that is",
 	"enter": "enter NAME -- load a mission past the location map",
 	"gamecontrol": "gamecontrol SLOT VALUE -- SetGameControl (docs/20 section 7)",
+	"cheat": "cheat NAME [on|off] -- a level tester's switch, or `nuke`",
 	"quit": "quit -- leaves the game",
 }
 
@@ -192,6 +205,7 @@ func _init(main: SliceMain, root: Window,
 		"ui": _v_ui,
 		"enter": _v_enter,
 		"gamecontrol": _v_gamecontrol,
+		"cheat": _v_cheat,
 		"quit": _v_quit,
 	}
 
@@ -925,6 +939,39 @@ func _v_gamecontrol(parts: PackedStringArray, _line: String) -> void:
 		return
 	_main.world.game_control.set_slot(parts[1].to_int(), parts[2].to_int())
 	_log.append("gamecontrol %s = %s" % [parts[1], parts[2]])
+
+
+## `cheat NAME [on|off]` -- [Cheats] from the outside.
+##
+## With no second word a switch is **toggled**, which is what the typed code
+## line does; `on` and `off` set it, so a scenario can put a switch into a
+## known state without having read what it was. `cheat` alone reports.
+func _v_cheat(parts: PackedStringArray, _line: String) -> void:
+	if parts.size() <= 1:
+		var live: PackedStringArray = _main.cheats.active()
+		_log.append("cheat: %s"
+			% ("none" if live.is_empty() else ", ".join(live)))
+		return
+	var name: String = parts[1].strip_edges().to_lower()
+	if name == Cheats.ACTION_NUKE:
+		_log.append("cheat nuke" if _main.apply_cheat_code(name)
+			else "cheat nuke: no mission is up")
+		return
+	if not Cheats.known(name):
+		_log.append("cheat: no such switch %s; known: %s"
+			% [name, ", ".join(Cheats.NAMES)])
+		return
+	var on: bool = false
+	if parts.size() > 2:
+		var word: String = parts[2].strip_edges().to_lower()
+		if word != "on" and word != "off":
+			_log.append("cheat: wants on or off, not %s" % word)
+			return
+		on = word == "on"
+		var _set: bool = _main.cheats.set_enabled(name, on)
+	else:
+		on = _main.cheats.toggle(name)
+	_log.append("cheat %s %s" % [name, "on" if on else "off"])
 
 
 # --- the shared helpers ------------------------------------------------------

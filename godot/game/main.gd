@@ -21,6 +21,10 @@ const MISSION_ARG: String = "--mission="
 ## The campaign's own equivalent of `--mission=`, and a supported way in
 ## rather than a side effect (docs/92 section 7.15 S5).
 const CAMPAIGN_ARG: String = "--campaign="
+## `--cheats=god,ammo` -- turn switches on before the first mission is built.
+## The way a level is actually walked: the hidden code line ([CheatEntry]) is
+## for a session already in progress.
+const CHEATS_ARG: String = "--cheats="
 ## What [method boot_choice] answers.
 const BOOT_MISSION: String = "mission"
 const BOOT_CAMPAIGN: String = "campaign"
@@ -52,6 +56,14 @@ var _desyncs: int = 0
 ## screen. Never `null` after [method _ready]: a run with no file on disk uses
 ## the defaults rather than having no settings at all.
 var settings: GameSettings = GameSettings.new()
+## The level tester's switches, held **here** rather than on a world so they
+## survive a mission change, a load and a return to the shell. Every world
+## [method _build] makes is handed this same object; the picture's mirror
+## takes a copy of it ([method World.clone]). See [Cheats].
+var cheats: Cheats = Cheats.new()
+## The hidden code line, and the reason it is a member: it owns the keyboard
+## between the key that opens it and the one that submits.
+var _cheat_entry: CheatEntry = CheatEntry.new()
 ## The campaign, or `null` until [method _ready] has read the cache. It is
 ## **not** part of [World]: a campaign outlives a mission, and folding it into
 ## the world's canonical hash would move every hash the first five slices
@@ -505,6 +517,10 @@ func _start_agent() -> void:
 func _boot() -> void:
 	var args: PackedStringArray = OS.get_cmdline_args()
 	args.append_array(OS.get_cmdline_user_args())
+	# **Before the mission is built**, so a world never exists with the
+	# switches off that the command line asked to have on.
+	for line: String in apply_cheat_args(args, cheats):
+		push_warning(line)
 	var choice: Dictionary = boot_choice(args, _missions, DEFAULT_MISSION)
 	for line: String in DictRead.to_strings(choice["warnings"]):
 		push_warning(line)
@@ -555,6 +571,74 @@ static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
 				"warnings": warnings}
 	return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
 		"warnings": warnings}
+
+
+## `--cheats=god,ammo` -- turn the named switches on in *into*, and answer the
+## warnings a caller should print.
+##
+## **Static, like [method boot_choice], and for the same reason**: a launch
+## flag that quietly stopped working is exactly the kind of thing that is
+## verified once by hand and then broken. The last `--cheats=` on the line
+## wins, so a wrapper script can append one over another; a name outside
+## [constant Cheats.NAMES] warns and is skipped rather than refusing the
+## whole flag.
+static func apply_cheat_args(args: PackedStringArray,
+		into: Cheats) -> PackedStringArray:
+	var warnings: PackedStringArray = PackedStringArray()
+	if into == null:
+		return warnings
+	var text: String = ""
+	var given: bool = false
+	for arg: String in args:
+		if arg.begins_with(CHEATS_ARG):
+			text = arg.substr(CHEATS_ARG.length())
+			given = true
+	if not given:
+		return warnings
+	var parsed: Dictionary = Cheats.parse_list(text)
+	for name: String in DictRead.to_strings(parsed["unknown"]):
+		warnings.append("no cheat %s; known: %s"
+			% [name, ", ".join(Cheats.NAMES)])
+	for name: String in DictRead.to_strings(parsed["names"]):
+		var _on: bool = into.set_enabled(name, true)
+	return warnings
+
+
+## One key press while the hidden code line has the keyboard ([CheatEntry]).
+func _on_cheat_key(key: InputEventKey) -> void:
+	if _cheat_entry.feed(key.keycode, key.unicode) == CheatEntry.SUBMITTED:
+		var _did: bool = apply_cheat_code(_cheat_entry.code())
+
+
+## Run one typed code. Answers whether it did anything.
+##
+## **A code that matches nothing says nothing.** The whole point of the entry
+## being hidden is that a player who has not been told it exists cannot
+## discover it by pressing keys, so only a code that did something reports.
+func apply_cheat_code(code: String) -> bool:
+	var found: Dictionary = CheatEntry.resolve(code)
+	match DictRead.as_string(found["kind"]):
+		CheatEntry.KIND_SWITCH:
+			var name: String = DictRead.as_string(found["name"])
+			var on: bool = cheats.toggle(name)
+			_refresh_status("cheat %s %s" % [name, "on" if on else "off"])
+			return true
+		CheatEntry.KIND_REPORT:
+			var live: PackedStringArray = cheats.active()
+			_refresh_status("cheats: %s"
+				% ("none" if live.is_empty() else ", ".join(live)))
+			return true
+		CheatEntry.KIND_NUKE:
+			if world == null:
+				return false
+			var killed: int = world.cheat_kill_enemies()
+			# The world was written and nothing was marked, so the mirror is
+			# resynchronised rather than advanced -- and the bodies, the fog
+			# and the radar are all rebuilt from it.
+			_refresh_after_deploy()
+			_refresh_status("cheat nuke: %d killed" % killed)
+			return true
+	return false
 
 
 ## The difficulty the next world is built at -- docs/92 section 7.15's S6.
@@ -2294,6 +2378,10 @@ func _build(mission: String) -> void:
 		DictRead.as_dict(map_document["header"])["world_set"])
 	world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(_geometry_for(set_name).get("special_models", [])))
+	# The **same object**, not a copy: a switch flipped mid-mission has to
+	# reach the world that is being played, and one turned on before the
+	# first build has to reach every world after it.
+	world.cheats = cheats
 	# `0x00417D18` -- what `aLoadBattleMap`'s caller does with the map it has
 	# just loaded, before anything else touches it: the units of players who
 	# are not in the session come off, and every record left is handed to the
@@ -3743,6 +3831,19 @@ func _on_ai_step(event: Dictionary) -> float:
 	return hold
 
 func _unhandled_input(event: InputEvent) -> void:
+	# **The hidden code line goes before `ESC`**, because while it is open it
+	# owns the keyboard: `ESC` has to cancel the entry rather than raise the
+	# shell over a half-typed code. It can only be *opened* over a running
+	# mission with no plate up ([CheatEntry]).
+	if event is InputEventKey and event.is_pressed():
+		var typed: InputEventKey = event
+		if _cheat_entry.is_open():
+			_on_cheat_key(typed)
+			return
+		if typed.keycode == CheatEntry.OPEN_KEY and world != null \
+				and _screen == null:
+			_on_cheat_key(typed)
+			return
 	# `ESC` goes **before** the screen guard, and that ordering is the whole
 	# of the fix: the guard below returns before anything else runs, so with a
 	# plate up no key reached the game at all and the shell would have been a

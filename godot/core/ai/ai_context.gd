@@ -40,6 +40,12 @@ var result: AITurnResult = null
 ## A field rather than a constant so a test can watch the movement alone.
 var may_fire: bool = true
 
+## The level tester's switches, or `null`. Carried here for the same reason
+## [member may_fire] is: the planner's shots, walks and para bombs all reach a
+## resolver that has to know, and the planner is the one caller that does not
+## come from [World] directly. See [Cheats].
+var cheats: Cheats = null
+
 ## The mission script, as [method World.submit_move] reaches it: called with
 ## a `MissionScript.CALL_*` type and an environment, answering the
 ## interpreter's outcome dictionary. `aRunLCL` `0x0046EEFD` is the last thing
