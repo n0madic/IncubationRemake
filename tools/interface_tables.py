@@ -216,6 +216,59 @@ INFO_ACTIVATE = 0x0043EAB0
 INFO_BOX_PUSHES = (0x004577D0, 0x004577CE, 0x004577C9, 0x004577C4)
 INFO_BOX = (190, 107, 387, 199)
 
+#: The magnifying glass -- interface event 13 (``docs/43`` section 5.2).  The
+#: mode is one dword, and the arm that toggles it is already pinned as
+#: ``MAP_EVENT_TARGETS[12]``; what is pinned here is what the mode *does*.
+MAGNIFIER_FLAG = 0x005106CC
+#: ``0x00453925``/``0x00453943`` push the cursor the mode asks for, and both
+#: arms hand it to ``0x0045F030`` (``MAP_EVENT_COMPLEX_CALLS["event13.cursor"]``
+#: pins the first call; the second is here).
+MAGNIFIER_OFF_STORE = 0x00453927
+MAGNIFIER_ON_STORE = 0x00453945
+MAGNIFIER_CURSOR_PUSHES = ((0x00453925, 0), (0x00453943, 10))
+MAGNIFIER_CURSOR_CALL = 0x0045394F
+MAGNIFIER_CURSOR = 0x0045F030
+#: The click: ``aUI.cpp``'s selection routine asks ``0x00451230`` for the mode
+#: and, while it is on, hands the picked cell to ``0x00432AB0`` and returns.
+MAGNIFIER_READ = 0x00451230
+MAGNIFIER_CLICK_GATE_CALL = 0x0047156D
+MAGNIFIER_CLICK_CALL = 0x00471583
+MAGNIFIER_CLICK = 0x00432AB0
+#: ``0x00432AB0``'s three tests: the cell's occupant at ``+0x07`` (``0xFFFF``
+#: is none), the owner at ``+0x45`` being the computer's 255, and the visible
+#: state at ``+0x4F`` being 0.
+MAGNIFIER_CELL_UNIT = 0x00432AC7
+MAGNIFIER_OWNER_TEST = 0x00432AFA
+MAGNIFIER_VISIBLE_TEST = 0x00432B00
+MAGNIFIER_PAGE_CALL = 0x00432B08
+MAGNIFIER_PAGE = 0x00432B20
+#: ``0x00432B20``: the letter out of the 126-byte unit-type table at
+#: ``0x0051C09D``, the family digit ``'0'``, and the box.
+MAGNIFIER_LETTER_TABLE = 0x0051C09D
+MAGNIFIER_LETTER_READ = 0x00432B35
+MAGNIFIER_LETTER_STRIDE = 0x00432B30
+MAGNIFIER_PAGE_PUSHES = (0x00432B51, 0x00432B4C, 0x00432B47, 0x00432B42,
+                         0x00432B3D, 0x00432B27)
+#: ``"Data"``, 230, 200, 180, 300, ``'0'``.
+MAGNIFIER_PAGE_BOX = (0x004C2F14, 230, 200, 180, 300, 0x30)
+MAGNIFIER_ACTIVATE_CALL = 0x00432B56
+MAGNIFIER_ACTIVATE = 0x0043E850
+#: ``0x0043E910`` -- the label ``0x0043E850`` retries with, two literal stars,
+#: whatever family the caller asked for.
+MAGNIFIER_FALLBACK = 0x0043E910
+#: The heading.  ``0x0043E850``'s eighth argument is a **string**: it is copied
+#: out of ``[esp + 0x28]`` into ``0x0050B4D4``, and the box painter's mode-2 arm
+#: draws a name above the text unless it equals the blank buffer at
+#: ``0x004FA524`` -- which is what ``0x00432B93`` passes when the caller asks
+#: for no heading.  The unit path passes the **record**, whose ``+0x00`` is its
+#: ``char[20]`` name (``docs/10`` §5.2), so a unit's page always has one.
+MAGNIFIER_TITLE_ARGUMENT = 0x0043E92F
+MAGNIFIER_TITLE_BUFFER = 0x0050B4D4
+MAGNIFIER_TITLE_STORE = 0x0043E95F
+MAGNIFIER_TITLE_TEST = 0x0043ED47
+MAGNIFIER_NO_TITLE = 0x004FA524
+MAGNIFIER_NO_TITLE_PUSH = 0x00432B93
+
 PLACE_MARKER_LO = 0x00463437
 PLACE_MARKER_HI = 0x00463440
 PLACE_CANDIDATE = 0x00463485
@@ -607,6 +660,53 @@ def run_checks(root_name: str) -> Checker:
              and pe.bytes_at(INFO_MODE_PICTURE_GATE, 5)
              == b"\xa1" + INFO_MODE_GLOBAL.to_bytes(4, "little"),
              "the Upgrade Menu's *i* is a 0/1 toggle that hides the picture")
+
+    flag = MAGNIFIER_FLAG.to_bytes(4, "little")
+    ck.check("magnifier.mode",
+             pe.bytes_at(MAGNIFIER_OFF_STORE, 10)
+             == b"\xc7\x05" + flag + (0).to_bytes(4, "little")
+             and pe.bytes_at(MAGNIFIER_ON_STORE, 10)
+             == b"\xc7\x05" + flag + (1).to_bytes(4, "little")
+             and pe.bytes_at(MAGNIFIER_READ, 5) == b"\xa1" + flag,
+             f"event 13 toggles [{MAGNIFIER_FLAG:#010x}]")
+    ck.equal("magnifier.cursor",
+             tuple(pushed(va) for va, _shape in MAGNIFIER_CURSOR_PUSHES)
+             + (call_target(pe, MAGNIFIER_CURSOR_CALL),),
+             tuple(shape for _va, shape in MAGNIFIER_CURSOR_PUSHES)
+             + (MAGNIFIER_CURSOR,),
+             "cursor 10 while the mode is on, 0 when it goes off")
+    ck.check("magnifier.click",
+             call_target(pe, MAGNIFIER_CLICK_GATE_CALL) == MAGNIFIER_READ
+             and call_target(pe, MAGNIFIER_CLICK_CALL) == MAGNIFIER_CLICK,
+             "the selection routine asks for the mode and hands over the cell")
+    ck.check("magnifier.tests",
+             pe.bytes_at(MAGNIFIER_CELL_UNIT, 4) == b"\x66\x8b\x40\x07"
+             and pe.bytes_at(MAGNIFIER_OWNER_TEST, 4) == b"\x80\x78\x45\xff"
+             and pe.bytes_at(MAGNIFIER_VISIBLE_TEST, 3) == b"\x8a\x48\x4f"
+             and call_target(pe, MAGNIFIER_PAGE_CALL) == MAGNIFIER_PAGE,
+             "the cell's unit, owner 255, +0x4F zero")
+    ck.equal("magnifier.page",
+             tuple(pushed(va) for va in MAGNIFIER_PAGE_PUSHES)
+             + (call_target(pe, MAGNIFIER_ACTIVATE_CALL),),
+             MAGNIFIER_PAGE_BOX + (MAGNIFIER_ACTIVATE,),
+             f"Data{MAGNIFIER_PAGE_BOX[1:5]}, family digit '0'")
+    ck.check("magnifier.letter",
+             pe.bytes_at(MAGNIFIER_LETTER_STRIDE, 5) == b"\xc1\xe2\x06\x2b\xd0"
+             and pe.bytes_at(MAGNIFIER_LETTER_READ, 7)
+             == b"\x8a\x04\x55" + MAGNIFIER_LETTER_TABLE.to_bytes(4, "little"),
+             f"type * 126 + {MAGNIFIER_LETTER_TABLE:#010x}")
+    ck.check("magnifier.heading",
+             pe.bytes_at(MAGNIFIER_TITLE_ARGUMENT, 4) == b"\x8b\x7c\x24\x28"
+             and pe.bytes_at(MAGNIFIER_TITLE_STORE, 5)
+             == b"\xbf" + MAGNIFIER_TITLE_BUFFER.to_bytes(4, "little")
+             and pe.bytes_at(MAGNIFIER_TITLE_TEST, 10)
+             == b"\xbd" + MAGNIFIER_NO_TITLE.to_bytes(4, "little")
+             + b"\xb8" + MAGNIFIER_TITLE_BUFFER.to_bytes(4, "little")
+             and pushed(MAGNIFIER_NO_TITLE_PUSH) == MAGNIFIER_NO_TITLE,
+             "the eighth argument is the name drawn over the box")
+    ck.check("magnifier.fallback",
+             pe.bytes_at(MAGNIFIER_FALLBACK, 4) == b"\x6a\x2a\x6a\x2a",
+             "0x0043E850 retries with {:**} and no family digit")
 
     ck.check("map.event_switch",
              pe.bytes_at(MAP_EVENT_DISPATCH + 0x0F, 3) == b"\x0f\x87\x8b",

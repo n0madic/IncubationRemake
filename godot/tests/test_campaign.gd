@@ -497,6 +497,18 @@ func _survival(h: TestHarness, cases: Dictionary) -> void:
 				DictRead.as_string(reason))
 		index += 1
 
+	# **Both refusals have words, and only one of them is an alarm.** The
+	# screen writes the reason's own identifier for anything it has not been
+	# given a sentence for, which is what a new refusal would look like.
+	h.equal("survival.the_guest_has_words",
+		DebriefingScreen.reason_key(MissionEnd.DROP_NOT_CANDIDATE),
+		DebriefingScreen.KEY_GUEST)
+	h.equal("survival.a_full_squad_has_words",
+		DebriefingScreen.reason_key(MissionEnd.DROP_POOL_FULL),
+		DebriefingScreen.KEY_SQUAD_FULL)
+	h.equal("survival.an_unknown_refusal_keeps_its_id",
+		DebriefingScreen.reason_key("something_new"), "")
+
 	# A unit of another player is not this player's to recover.
 	var other: CampaignState = _state(cases, 2)
 	var theirs: UnitState = UnitState.new()

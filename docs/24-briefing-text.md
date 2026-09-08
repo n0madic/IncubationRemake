@@ -352,7 +352,15 @@ call sites at `0x00432B56`, `0x00432BBD` and `0x00432C1A` pass `'0'`, `'1'` and
 `'2'` for units, weapons and equipment, with the letter taken from a per-record
 table at `0x0051C09D`. Hence `{:A0}` = *Ray'Ther*, `{:B0}` = *Gore'Ther*, and so
 on, and `{:**}`, `{:*1}`, `{:*2}` are the three *"No information available."*
-fallbacks.
+fallbacks — of which only `{:**}` is ever asked for, the retry at `0x0043E910`
+pushing two literal stars whatever the family digit was.
+
+The `'0'` site is the **battle interface's magnifying glass**, not a screen:
+`0x00432B20` is reached from the click handler while event 13's mode is on, and
+its box is `230, 200, 180, 300` ([`43` §5.2.1](43-battle-hud.md)). The two item
+sites refuse a record whose letter is `#` before they open the file
+(`0x00432B86`, `0x00432BE4`); **the unit site makes no such test**, so a `#` and
+a letter with no block both come back as the `{:**}` retry.
 
 `Events.txt` uses `E0`…`EC` and is opened by the literal `"Events"`
 (`0x004C1304`) at `0x004107AC`. The pickup sequence's call is fully literal
@@ -377,7 +385,11 @@ accord (`MissionHud.INFO_AUTO_HIDE_SECONDS`, stepped by the host's frame),
 which the original does not: with the mission held behind it, a crate opened
 by mistake stops the game until the box is noticed and pressed. The dismissal
 stays exactly as it is; the timeout is the floor under it, and it does not run
-while a screen the player opened covers the mission.
+while a screen the player opened covers the mission. **It applies to a box
+that arrived by itself and not to one that was asked for**: the magnifier's
+page ([`43` §5.2.1](43-battle-hud.md)) is opened by a click on a chosen alien
+and is prose to read, so it stands until it is dismissed, exactly as the
+original's does.
 
 **Two of the four info files are unreachable in this build.** `Data` and
 `Events` are the only info file names that exist in `Incubation.exe` as

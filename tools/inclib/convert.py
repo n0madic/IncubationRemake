@@ -1260,11 +1260,12 @@ BRIEFING_DIR = "Briefing"
 INFO_SCHEMA = "incubation.info/1"
 #: ``DATA/TXT/<lang>/Info`` -- the info files ``aActivateInfo`` opens by name.
 INFO_DIR = "Info"
-#: Only ``Events`` is baked.  ``docs/24`` §7.2 enumerates the four info files
-#: and finds that ``Errors`` and ``Campaign`` are unreachable in this build,
-#: and ``Data`` is the unit/weapon/equipment encyclopaedia rather than
-#: anything a mission shows -- the pickup sequence ``0x00410780`` opens
-#: ``Events`` and nothing else does.
+#: ``docs/24`` §7.2 enumerates the four info files and finds that ``Errors``
+#: and ``Campaign`` are unreachable in this build.  ``Events`` is the pickup
+#: sequence's (``0x00410780``); ``Data`` is baked too, by
+#: :func:`convert_info_data`, and a mission does show it -- the battle
+#: interface's magnifying glass opens a unit's page out of it
+#: (``docs/43`` §5.2.1).
 INFO_EVENTS = "Events"
 #: The item, weapon and unit descriptions the Upgrade Menu's *i* opens.
 #: `0x00432B20/70/D0` name the file `Data` and pass a label of one letter plus
@@ -1517,7 +1518,8 @@ def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
 
 def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
                       language: str, result: Conversion) -> int:
-    """``text/info/data.json`` -- what the Upgrade Menu's *i* shows.
+    """``text/info/data.json`` -- what the Upgrade Menu's *i* shows, and the
+    magnifying glass with it.
 
     The button toggles `0x00510A54`; at 1 the item window stops loading its
     picture (`0x00458BFE`) and `aPrintInfo` `0x0043ECF0` draws an info page
@@ -1531,6 +1533,11 @@ def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
     The blocks are written as markup structure, exactly as a briefing is, and
     the digits are **not** listed on the game side: the document carries the
     family map so the consumer composes a label rather than knowing one.
+
+    The `units` family is the fourth call site, `0x00432B20`, which is the
+    battle interface's magnifying glass rather than a screen (`docs/43`
+    §5.2.1). It reads the same column out of `SetUnitInfo` and, unlike the
+    two item paths, makes no test for `#` at all.
     """
     from . import brieftext as briefmod
     from .lcl import decode

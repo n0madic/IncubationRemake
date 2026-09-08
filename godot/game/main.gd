@@ -80,6 +80,11 @@ var _art: Art = null
 ## `Events.txt` -- what a pickup says, and which action point says it
 ## (docs/26 section 3). Empty when the cache predates the document.
 var _info: InfoText = null
+## The magnifying glass: `[0x005106CC]`, the mode event 13 toggles
+## (docs/43 section 5.2). While it is on, a click on a visible alien opens
+## that type's page out of `Data.txt` and does nothing else at all.
+## `0x00450C2D` clears it when a mission is built, and so does [method _clear].
+var _magnifier: bool = false
 
 var _missions: PackedStringArray = PackedStringArray()
 var _mission: String = ""
@@ -164,6 +169,10 @@ const STATUS_FALLBACK_Y: float = 120.0
 const STATUS_GAP: float = 4.0
 ## The developer line's size in the plate's units. Smaller than the HUD's.
 const STATUS_FONT_SIZE: int = 9
+## How far from a cell's centre a click's ray may land and still count as a
+## click on the body standing there, in Godot units -- a cell is two of them
+## across. The remake's own tolerance: the engine picks over drawn objects.
+const PICK_RADIUS: float = 1.2
 ## How many rendered frames the engine spends crossing one map field.
 ##
 ## **Measured, and it was a guess before.** `aExecuteMove`'s two walk helpers,
@@ -1623,6 +1632,7 @@ func _sync_hud() -> void:
 		_hud.visible = _screen == null and world != null
 	if _status != null:
 		_status.visible = _screen == null
+	_apply_cursor()
 	_frame_mission_camera()
 
 
@@ -2420,6 +2430,11 @@ func _clear_mission() -> void:
 	world = null
 	_selected = -1
 	_selection_before_turn = -1
+	# `0x00450C2D` clears the magnifier where the interface is built, so it
+	# never carries from one mission into the next -- and the pointer goes
+	# back with it, the shell's screens having no use for a crosshair.
+	_magnifier = false
+	_apply_cursor()
 	# `SaveCamera` puts six numbers here and `LoadCamera` takes them out
 	# (docs/42 section 2.4). A mission whose script saves without loading
 	# would otherwise hand its coordinates to the next mission's first
@@ -2606,9 +2621,11 @@ func _build(mission: String) -> void:
 ## mission it is being shown over.
 ## `Data.txt`'s blocks, built once and kept.
 ##
-## The Upgrade Menu's *i* asks for them by the record's own letter; a cache
-## made before the converter grew the document answers nothing, which is the
-## *i* showing an empty box rather than the screen failing to open.
+## The Upgrade Menu's *i* asks for them by the record's own letter, and so does
+## the battle interface's magnifying glass ([method magnifier_page]) -- the
+## same file, the unit family's digit instead of an item's. A cache made before
+## the converter grew the document answers nothing, which is the *i* showing an
+## empty box rather than the screen failing to open.
 var _item_texts: InfoText = null
 
 
@@ -3531,7 +3548,7 @@ func _refresh_status(extra: String = "") -> void:
 		# the mission has not been drawn yet, so the report panel waits.
 		_hud.refresh(shown(), _selected, Callable(self, "_event_available"),
 			Callable(self, "_command_available"), axes[0], axes[1], _bands,
-			false, _watching(shown()),
+			_magnifier, _watching(shown()),
 			_playback.is_running() or _picture_busy())
 		if _hud.progress_stepped():
 			_play_progress()
@@ -4392,28 +4409,30 @@ func _may_command_now() -> bool:
 	return world.turn.current_player != TurnState.PLAYER_COMPUTER
 
 
-## Turns a screen position into a map field, then asks the world about it.
-## The scene tree is used to find *which* cell was clicked and for nothing else.
-func _pick(screen: Vector2, pass_friendlies: bool) -> void:
-	var camera: Camera3D = _rig.camera()
-	# The ring takes every click while it is up (`0x00471AD0`): the nearest
-	# of its nine records, the X cancelling.
-	if _hud != null and _hud.ring.is_up():
-		var record: int = _hud.ring.hit(camera, screen)
-		if record == DirectionRing.CANCEL_RECORD or record < 0:
-			_hud.ring.take_down()
-			_refresh_status("")
-		else:
-			_complete_ring(record)
-		return
+## The ray a click casts into the world, or nothing at all: no camera, or a
+## direction so flat that no cell's plane meets it.
+##
+## Both readers of it -- [method _pick] and the magnifier -- ask the same
+## question of the same ray, so a click cannot pick one unit and magnify
+## another.
+func _ray_at(screen: Vector2) -> PackedVector3Array:
+	var camera: Camera3D = _rig.camera() if _rig != null else null
+	if camera == null:
+		return PackedVector3Array()
 	var ray: PackedVector3Array = CameraRig.ray_through(camera, screen,
 		get_viewport().get_visible_rect().size)
-	if ray.size() != 2:
-		return
+	if ray.size() != 2 or absf(ray[1].y) < 0.0001:
+		return PackedVector3Array()
+	return ray
+
+
+## The unit a ray lands on, or -1: the nearest drawn body whose cell centre the
+## ray passes within [constant PICK_RADIUS] of.
+func _unit_under(ray: PackedVector3Array) -> int:
+	if ray.size() != 2 or shown() == null:
+		return -1
 	var origin: Vector3 = ray[0]
 	var direction: Vector3 = ray[1]
-	if absf(direction.y) < 0.0001:
-		return
 	var best_slot: int = -1
 	var best_distance: float = INF
 	# The **fresh** pass, the one [method UnitsView.build] draws from: the
@@ -4455,9 +4474,136 @@ func _pick(screen: Vector2, pass_friendlies: bool) -> void:
 			continue
 		var hit: Vector3 = origin + direction * t
 		var distance: float = hit.distance_to(centre)
-		if distance < 1.2 and distance < best_distance:
+		if distance < PICK_RADIUS and distance < best_distance:
 			best_distance = distance
 			best_slot = slot
+	return best_slot
+
+
+## Whether the magnifying glass is on -- `[0x005106CC]`, for the driver.
+func magnifier_on() -> bool:
+	return _magnifier
+
+
+## The pointer the mode asks for.
+##
+## `0x0045391C` calls `0x0045F030(10)` when the mode goes on and `(0)` when it
+## goes off. That routine has two paths: on the windowed one it is a Windows
+## cursor -- `IDC_CROSS` `0x7F03` against `IDC_ARROW` `0x7F00`
+## (`0x0045F040`/`0x0045F05A`) -- and on the other it is frame 10 of the
+## engine's own cursor library. This remake draws no cursor of its own, so the
+## windowed answer is the one it can give.
+func _apply_cursor() -> void:
+	var shape: Input.CursorShape = Input.CURSOR_ARROW
+	# **Only over the mission view.** The shape is process-global, so a shell
+	# screen raised over a running mission -- `ESC`, the save slots, the
+	# options -- would otherwise be pointed at with a crosshair until the
+	# mission was actually left. [method _sync_hud] is the seam both ways.
+	if _magnifier and _screen == null:
+		shape = Input.CURSOR_CROSS
+	Input.set_default_cursor_shape(shape)
+
+
+## The unit the magnifier answers for under this click, or -1.
+##
+## The engine reads the **cell's** own occupant (`0x00432AB0`: `0x0042F730`
+## for the control-map element, then the unit id at its `+0x07`). This asks
+## the body first and the cell second, because the remake's ordinary click
+## picks bodies ([method _unit_under]) and two picks that disagreed would
+## magnify one alien while the click before it selected another.
+func magnifier_slot(ray: PackedVector3Array, screen: Vector2) -> int:
+	var slot: int = _unit_under(ray)
+	if slot < 0 and shown() != null:
+		# **The mirror's cells, not the truth's.** [method _cell_under] casts
+		# against [member world], whose heights run ahead of the picture while
+		# a lift or a falling roof is still being drawn -- and the occupancy
+		# read below is the mirror's. Asking one world both questions is the
+		# whole point of this path.
+		var cell: Vector2i = cell_under(_rig.camera(), shown(), screen)
+		if cell.x >= 0:
+			slot = shown().state.unit_at(
+				shown().state.index_of(cell.x, cell.y))
+	if not magnifier_answers(slot):
+		return -1
+	return slot
+
+
+## `0x00432AB0`'s two tests on the unit it found: `+0x45` is 255 -- the
+## computer's seat, which is what "a visible alien" means here -- and `+0x4F`
+## is 0, fully visible. A contact beam is not an alien the player can look at,
+## and neither is a marine.
+func magnifier_answers(slot: int) -> bool:
+	if slot < 0 or shown() == null or not shown().has_unit(slot):
+		return false
+	var view: Dictionary = shown().unit_view(slot)
+	if DictRead.as_int(view["player"]) != TurnState.PLAYER_COMPUTER:
+		return false
+	# The same fresh pass [method _unit_under] picks with, **for the seat that
+	# is watching** ([method _seat_of]): a pass for player 255 is the aliens'
+	# own view of the map, in which every alien is a body.
+	var seen: Dictionary[int, int] = shown().display_visibility(
+		_seat_of(shown()))
+	var state: int = DictRead.as_int(view["visibility"])
+	if seen.has(slot):
+		state = seen[slot]
+	return state == Fog.FULL
+
+
+## The page `Data.txt` holds for a unit's type, `[]` where there is none.
+func magnifier_page(slot: int) -> Array:
+	var texts: InfoText = _item_descriptions()
+	if texts == null or shown() == null or not shown().has_unit(slot):
+		return []
+	var type_id: int = DictRead.as_int(shown().unit_view(slot)["type_id"])
+	return texts.unit_page(shown().unit_types().info_key(type_id))
+
+
+## Open that page, in the box `0x00432B20` asks for.
+##
+## It does **not** take itself down after five seconds the way a pickup's
+## message does ([method MissionHud.show_info]): that timeout is there so a
+## crate opened by mistake cannot hold the mission, and this box was asked
+## for. A click anywhere still dismisses it.
+func _show_magnifier_page(slot: int) -> void:
+	if slot < 0 or _hud == null:
+		return
+	var page: Array = magnifier_page(slot)
+	if page.is_empty():
+		return
+	# The heading is the **unit's own name**, which is what `0x00432B20`
+	# hands `0x0043E850` as its eighth argument: the unit record, whose
+	# `+0x00` is a `char[20]` defaulting to the type's description
+	# (docs/10 section 5.2). So a named alien is named and the rest carry
+	# their species.
+	_hud.show_info(page, InfoText.DATA_BOX_SIZE.y, false,
+		DictRead.as_string(shown().unit_view(slot)["name"]))
+
+
+## Turns a screen position into a map field, then asks the world about it.
+## The scene tree is used to find *which* cell was clicked and for nothing else.
+func _pick(screen: Vector2, pass_friendlies: bool) -> void:
+	var camera: Camera3D = _rig.camera()
+	# The ring takes every click while it is up (`0x00471AD0`): the nearest
+	# of its nine records, the X cancelling.
+	if _hud != null and _hud.ring.is_up():
+		var record: int = _hud.ring.hit(camera, screen)
+		if record == DirectionRing.CANCEL_RECORD or record < 0:
+			_hud.ring.take_down()
+			_refresh_status("")
+		else:
+			_complete_ring(record)
+		return
+	var ray: PackedVector3Array = _ray_at(screen)
+	if ray.is_empty():
+		return
+	# **The magnifier takes the whole click** (`0x0047156D`): with the mode on
+	# the engine calls `0x00432AB0` and returns, so nothing is selected,
+	# nothing is attacked and nothing is deselected -- and a click that finds
+	# no alien is silent (docs/43 section 5.2).
+	if _magnifier:
+		_show_magnifier_page(magnifier_slot(ray, screen))
+		return
+	var best_slot: int = _unit_under(ray)
 	if best_slot >= 0:
 		var view: Dictionary = shown().unit_view(best_slot)
 		# **Only the current player's own units can be selected.**
@@ -6349,9 +6495,10 @@ func _radar_axes() -> Array[Vector2]:
 
 ## Whether a column button's event can run now (docs/43 section 5): the two
 ## undo buttons and *Recall position* need their slot written, the four save
-## paths and the briefing need a campaign, *Jump to visible enemy* needs one,
-## and the magnifier -- an info page out of `Data` the cache does not carry
-## -- is never offered.
+## paths and the briefing need a campaign, and *Jump to visible enemy* needs
+## one. The original's magnifier has no test in front of it; this one has the
+## cache's, because a page it cannot open is a lit button that answers nothing
+## ([method InfoText.has_unit_pages]).
 func _event_available(number: int) -> bool:
 	if world == null or _mission_over() or _playback.is_running():
 		return false
@@ -6369,7 +6516,8 @@ func _event_available(number: int) -> bool:
 		HudTables.EVENT_UNDO_MISSION:
 			return _slot_holds_this_mission(HudTables.SLOT_UNDO_MISSION)
 		HudTables.EVENT_MAGNIFIER:
-			return false
+			var pages: InfoText = _item_descriptions()
+			return pages != null and pages.has_unit_pages()
 		HudTables.EVENT_NEXT_UNIT:
 			return _may_command_now() and next_friendly_slot(world, _selected) >= 0
 		HudTables.EVENT_VISIBLE_ENEMY:
@@ -6459,6 +6607,21 @@ func _on_hud_event(number: int) -> void:
 			var _undone: bool = quick_load(HudTables.SLOT_UNDO_TURN)
 		HudTables.EVENT_UNDO_MISSION:
 			var _restarted: bool = quick_load(HudTables.SLOT_UNDO_MISSION)
+		HudTables.EVENT_MAGNIFIER:
+			# `0x0045391C`: the mode toggles and the pointer changes with it
+			# -- `0x0045F030(10)` while it is on and `(0)` when it goes off.
+			# The engine's own cursor is a sprite in fullscreen and
+			# `IDC_CROSS` on the windowed path (`0x0045F040`); this remake
+			# draws no cursor of its own, so the windowed answer is the one
+			# it can give.
+			_magnifier = not _magnifier
+			_apply_cursor()
+			# The columns learn the mode from [method _refresh_status] and
+			# from nothing else -- that is the one caller of
+			# [method MissionHud.refresh] -- and the caption under the
+			# pointer is *Deactivate* while it is on (`0x00451815`). With
+			# the note the last command left, so a redraw says nothing new.
+			_refresh_status(_status_note)
 
 
 ## A pad socket, or its key: one of the six commands (docs/29 section 1.1).

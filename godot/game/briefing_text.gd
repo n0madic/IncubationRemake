@@ -21,6 +21,8 @@ const FONT_SLOTS: Array[String] = ["normal_font", "bold_font",
 	"italics_font", "bold_italics_font"]
 ## The ramp whose second entry is not the other two's -- the one `[i]` marks.
 const RAMP_BODY_INDEX: int = 1
+## The box's own colours, which `{§0}` selects and a heading is drawn in.
+const RAMP_DEFAULT_INDEX: int = 0
 ## The body's size when it is not drawn in the shipped faces, in the plate's
 ## own units: small enough that a long `A0` still fits the box, large enough
 ## to read beside a heading.

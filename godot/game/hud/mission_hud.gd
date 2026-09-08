@@ -50,11 +50,26 @@ const INFO_GROUND: Color = Color(0.04, 0.05, 0.04, 0.88)
 const INFO_BORDER: Color = Color(0.36, 0.44, 0.36, 1.0)
 const INFO_BORDER_WIDTH: int = 1
 const INFO_PADDING: float = 6.0
-## The readable face's report size for the info box when the shipped faces are
-## not in use -- the same decision [method use_font] makes for the report.
-const INFO_READABLE_SIZE: int = 13
+## The readable face's size for the info box when the shipped faces are not in
+## use -- the same decision [method use_font] makes for the report.
+##
+## **Between the briefing's and the report's.** The box is 180 plate units
+## wide (docs/24 section 7.2) and stands over the mission, so a size that
+## suits the shell's full-width paragraphs leaves four words on a line here;
+## the original's own face is an 8 px bitmap. [constant
+## BriefingText.READABLE_SIZE] is 10 and the report's is 16.
+const INFO_READABLE_SIZE: int = 11
 ## How close to the bottom edge the box may run before its height is trimmed.
 const INFO_BOTTOM_MARGIN: float = 8.0
+## What a heading does to the box, read off the mode-2 arm at `0x0043ED87`:
+## the frame is drawn at `(x - 6, y - 24)`, `w + 6` wide and the measured text
+## height plus 20 (`[0x0050B4B8] + 0x14`) tall, and the name goes at
+## `(x, y - 8)` -- so it is **one** box with room made above the text rather
+## than a bar of its own. `0x0043ED4C` compares the stored title with the empty
+## string at `0x004FA524` and draws none of it when they match, which is every
+## box but the magnifier's.
+const INFO_TITLE_OFFSET: Vector2 = Vector2(-6.0, -24.0)
+const INFO_TITLE_EXTRA_WIDTH: float = 6.0
 ## How long the message stands before it takes itself down. A deliberate
 ## divergence, like [constant INFO_GROUND] beside it: the original holds the
 ## whole mission until the right button is pressed (docs/24 section 7.2) and a
@@ -89,6 +104,10 @@ var _report: Label = null
 ## The pickup message of docs/24 section 7.2 -- see [method show_info].
 var _info: PanelContainer = null
 var _info_text: BriefingText = null
+## The heading over the box: the subject's own name, which only the magnifier's
+## page has ([method show_info]). It stands inside the same frame, above the
+## text, which is where `0x0043ED87` makes room for it.
+var _info_title_text: BriefingText = null
 ## What holds the mission while the message is up: a full-rect [Control] with
 ## [constant Control.MOUSE_FILTER_STOP], added last so it picks in front of
 ## every widget on the plate. See [method show_info].
@@ -96,10 +115,18 @@ var _info_shield: Control = null
 ## The spans the box is showing, so [method view] can report it and
 ## [method use_font] can put it back after a face change.
 var _info_spans: Array = []
+## The heading's, the same way.
+var _info_title_spans: Array = []
 ## How long the message has been up, counted by [method tick_info]. It is
 ## reset by [method show_info] and never runs while the box is down, so one
 ## message cannot inherit the seconds another was read for.
 var _info_clock: float = 0.0
+## The height bound the open box was raised with: the pickup's 400 or the
+## magnifier's 300 (`0x00432B3D`), both of which the canvas may cut short.
+var _info_height: float = InfoText.BOX_SIZE.y
+## Whether the open box takes itself down on its own. A page the player asked
+## for does not -- see [method show_info].
+var _info_auto_hide: bool = true
 var _cache_dir: String = ""
 var _strings: Localization = null
 var _art: Art = null
@@ -217,7 +244,17 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	_info_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_text.scroll_active = false
 	_info_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_info.add_child(_info_text)
+	_info_title_text = BriefingText.create(cache_dir, font != null)
+	_info_title_text.fit_content = true
+	_info_title_text.scroll_active = false
+	_info_title_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_info_title_text.visible = false
+	var stack: VBoxContainer = VBoxContainer.new()
+	stack.name = "InfoStack"
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(_info_title_text)
+	stack.add_child(_info_text)
+	_info.add_child(stack)
 	_info_shield.add_child(_info)
 	_root.add_child(_info_shield)
 	use_font(font)
@@ -251,6 +288,9 @@ func use_font(font: FontFile) -> void:
 		# readable interface with an 8 px bitmap message in the middle of it
 		# is the mismatch docs/24's own note about the briefing describes.
 		_info_text.use_game_font(_cache_dir, font != null, INFO_READABLE_SIZE)
+	if _info_title_text != null:
+		_info_title_text.use_game_font(_cache_dir, font != null,
+			INFO_READABLE_SIZE)
 	if panel != null:
 		panel.use_font(_band_font(), _panel_font())
 	_layout()
@@ -480,12 +520,37 @@ static func _grade_text_id(outcome: int) -> int:
 ## typewriter is a sound-driven effect this layer has no cue for.
 ##
 ## It also takes itself down after [constant INFO_AUTO_HIDE_SECONDS]
-## ([method tick_info]), which the original never does.
-func show_info(spans: Array) -> void:
+## ([method tick_info]), which the original never does -- but only where the
+## box arrived by itself. *auto_hide* is false for the magnifier's page
+## (docs/43 section 5.2), which the player opened on purpose and is reading:
+## the timeout exists so that a crate opened by mistake cannot hold the
+## mission, and a page asked for is neither.
+##
+## *height* is the box's own height bound: `0x004107A2`'s 400 for a pickup and
+## `0x00432B3D`'s 300 for the magnifier ([constant InfoText.DATA_BOX_SIZE]).
+## *title* is the heading `0x0043E850`'s eighth argument carries. Only the
+## magnifier passes one: `0x00432B20` hands over the **unit record**, whose
+## `+0x00` is its `char[20]` name (docs/10 section 5.2), and the painter draws
+## it in a frame of its own above the box whenever it is not the empty string.
+func show_info(spans: Array, height: float = InfoText.BOX_SIZE.y,
+		auto_hide: bool = true, title: String = "") -> void:
 	if _info_shield == null or _info_text == null:
 		return
 	_info_spans = spans
+	_info_height = height
+	_info_auto_hide = auto_hide
+	_info_title_spans = [] if title == "" else [{
+		"text": title,
+		# The heavier of the two shipped faces, which is what a heading is
+		# written in ([method BriefingText.to_bbcode]).
+		"font": 1,
+		"colour": BriefingText.RAMP_DEFAULT_INDEX,
+		"breaks": 0,
+	}]
 	_info_text.show_block(spans)
+	if _info_title_text != null:
+		_info_title_text.show_block(_info_title_spans)
+		_info_title_text.visible = not _info_title_spans.is_empty()
 	_info_shield.visible = not spans.is_empty()
 	_info_clock = 0.0
 	_layout_info()
@@ -495,7 +560,10 @@ func hide_info() -> void:
 	if _info_shield == null:
 		return
 	_info_spans = []
+	_info_title_spans = []
 	_info_shield.visible = false
+	if _info_title_text != null:
+		_info_title_text.visible = false
 
 
 ## The message's own clock, stepped by the host's frame
@@ -508,6 +576,8 @@ func hide_info() -> void:
 func tick_info(delta: float) -> void:
 	if not info_visible():
 		_info_clock = 0.0
+		return
+	if not _info_auto_hide:
 		return
 	_info_clock += delta
 	if _info_clock >= INFO_AUTO_HIDE_SECONDS:
@@ -544,6 +614,14 @@ func info_text() -> String:
 	return _info_text.get_parsed_text()
 
 
+## The heading over it, "" where there is none.
+func info_title() -> String:
+	if _info_title_text == null or not _info_title_text.visible \
+			or not info_visible():
+		return ""
+	return _info_title_text.get_parsed_text()
+
+
 ## Where the box stands on this canvas.
 ##
 ## The plate is 640x480 and every pixel of a larger canvas goes to the 3D
@@ -552,7 +630,8 @@ func info_text() -> String:
 ## origin. At 640x480 the two are the same thing, and the shipped box happens
 ## to be centred on the window's own column: `230 + 180/2` is 320, and so is
 ## `60 + 520/2`.
-static func info_box_rect(canvas: Vector2) -> Rect2:
+static func info_box_rect(canvas: Vector2,
+		bound: float = InfoText.BOX_SIZE.y) -> Rect2:
 	var win: Rect2 = HudTables.window_for(canvas)
 	var plate: Rect2 = Rect2(Vector2(HudTables.WINDOW.position),
 		Vector2(HudTables.WINDOW.size))
@@ -560,7 +639,7 @@ static func info_box_rect(canvas: Vector2) -> Rect2:
 	# The height is a layout bound and not a drawn rectangle -- docs/24
 	# section 7.1's `B0` box is 500 tall on a 480 screen -- so what is left
 	# under the box's top edge is the bound that matters here.
-	var height: float = maxf(0.0, minf(InfoText.BOX_SIZE.y,
+	var height: float = maxf(0.0, minf(bound,
 		canvas.y - at.y - INFO_BOTTOM_MARGIN))
 	return Rect2(at, Vector2(InfoText.BOX_SIZE.x, height))
 
@@ -568,16 +647,32 @@ static func info_box_rect(canvas: Vector2) -> Rect2:
 func _layout_info() -> void:
 	if _info == null or _info_text == null:
 		return
-	var box: Rect2 = info_box_rect(canvas_size())
-	_info_text.custom_minimum_size = Vector2(
-		maxf(0.0, box.size.x - 2.0 * INFO_PADDING), 0.0)
+	var box: Rect2 = info_box_rect(canvas_size(), _info_height)
+	# A heading moves the frame up and out by what `0x0043ED87` subtracts and
+	# adds, so the **text** still starts where the box was asked for.
+	var titled: bool = _info_title_text != null and _info_title_text.visible
+	var at: Vector2 = box.position
+	var width: float = box.size.x
+	if titled:
+		at += INFO_TITLE_OFFSET
+		width += INFO_TITLE_EXTRA_WIDTH
+	var inner: float = maxf(0.0, width - 2.0 * INFO_PADDING)
+	_info_text.custom_minimum_size = Vector2(inner, 0.0)
+	if _info_title_text != null:
+		_info_title_text.custom_minimum_size = Vector2(inner, 0.0)
 	# The box's own position is inside the shield, which is the whole canvas,
 	# so the two coordinate spaces are the same one.
-	_info.position = box.position
-	_info.size = Vector2(box.size.x, 0.0)
-	# `fit_content` grows the label and the container with it; the box's own
-	# height is the cap the original lays out inside.
-	_info.custom_minimum_size = Vector2(box.size.x, 0.0)
+	_info.position = at
+	_info.size = Vector2(width, 0.0)
+	# `fit_content` grows the label and the container with it, so the box is as
+	# tall as what is in it and [member _info_height] bounds **nothing here**.
+	# That is the original's own arrangement rather than an oversight: docs/24
+	# section 7.1's `B0` box is 500 tall on a 480 screen, the height is a
+	# layout bound and not a drawn rectangle, and no shipped block comes near
+	# either bound -- the longest `Data.txt` unit page is 245 characters. The
+	# number is kept because [method info_box_rect] is the rectangle the specs
+	# quote and the agent and the suites read it.
+	_info.custom_minimum_size = Vector2(width, 0.0)
 
 
 static func _info_style() -> StyleBoxFlat:
@@ -609,6 +704,11 @@ func view() -> Dictionary:
 		"hint": hint_text(),
 		"report": report_text(),
 		"info": info_text(),
+		"info_title": info_title(),
+		# Whether the magnifier is lit (docs/43 section 5.2): a drive that
+		# reads the box alone cannot tell a page that was opened from a
+		# button that was pressed and answered nothing.
+		"magnifier": columns.magnifier(),
 		"radar_fields": radar.fields,
 		# Zero while another player moves: the marks are still built, and
 		# the radar they are on is not on screen (docs/43 section 7).

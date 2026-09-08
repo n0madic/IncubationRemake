@@ -50,6 +50,10 @@ static func from_rows(rows: Array) -> UnitTypeTable:
 			"armour_rear": DictRead.as_int(record.get("armour_rear", 0)),
 			"model": DictRead.as_string(record["model"]),
 			"description": DictRead.as_string(record["description"]),
+			# `SetUnitInfo`'s third string, the record's own letter into
+			# `Data.txt` (docs/24 section 7.2). Absent from the hand-built
+			# fixtures, like the armour columns.
+			"key": DictRead.as_string(record.get("key", "")),
 		}
 	return table
 
@@ -153,6 +157,18 @@ func model(type_id: int) -> String:
 		return ""
 	var record: Dictionary = _rows[type_id]
 	return DictRead.as_string(record["model"])
+
+
+## The letter `Data.txt`'s label is built from -- `0x00432B20` reads it out of
+## the per-type table at `0x0051C09D`, which is this column. `#` is the
+## record's own "no page" marker (`0x00432B86`) and comes back as it is: the
+## unit path makes no test for it, so what it names is a missing block and the
+## `{:**}` retry answers for it ([method InfoText.unit_page]).
+func info_key(type_id: int) -> String:
+	if not _rows.has(type_id):
+		return ""
+	var record: Dictionary = _rows[type_id]
+	return DictRead.as_string(record.get("key", ""))
 
 
 func description(type_id: int) -> String:

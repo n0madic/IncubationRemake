@@ -37,6 +37,13 @@ const NO_SPEECH: int = -1
 const DATA_DOCUMENT: String = "text/info/data.json"
 ## `0x00432B86` -- a record whose letter is this has no page.
 const NO_PAGE: String = "#"
+## The label `0x0043E850` retries with when the composed one has no block
+## (`0x0043E910`: two literal `'*'`s, whatever the family was). `Data.txt`
+## carries it, and it reads *No information available.*
+const FALLBACK_LABEL: String = "**"
+## The box the magnifier's page is drawn in: `0x00432B3D`..`0x00432B4C` push
+## `230, 200, 180, 300` -- the pickup's rectangle with a shorter height bound.
+const DATA_BOX_SIZE: Vector2 = Vector2(180.0, 300.0)
 
 var _blocks: Dictionary = {}
 var _families: Dictionary = {}
@@ -134,6 +141,37 @@ func family_digit(family: String) -> String:
 ## The letter that means "this record has no page" (`0x00432B86`).
 func no_page() -> String:
 	return _no_page
+
+
+## Whether this document can answer a unit page at all.
+##
+## `convert_info_data` writes the families and an **empty** block map when
+## `Data.txt` decodes but carries no `{:xy}` label -- a warning, not a failure
+## -- and a cache made before the converter grew the document answers nothing.
+## Either way there is no page to open, and the caller's business is to keep
+## the button dark rather than to light one that does nothing when it is
+## pressed ([code]SliceMain._event_available[/code]).
+func has_unit_pages() -> bool:
+	return family_digit("units") != "" and not _blocks.is_empty()
+
+
+## What the magnifier shows for a unit type, by the type's own letter.
+##
+## docs/43 section 5.2: `0x00432B20` composes the label out of the letter at
+## `0x0051C09D` and the family digit `0`, and hands it to `0x0043E850`, which
+## retries with [constant FALLBACK_LABEL] when there is no such block. **The
+## unit path tests nothing else** -- unlike `0x00432B86` and `0x00432BE4`,
+## which refuse an item whose letter is [constant NO_PAGE] before they open
+## the file at all -- so a `#` and a letter with no page both come back as the
+## fallback's *No information available.* rather than as nothing.
+func unit_page(key: String) -> Array:
+	var digit: String = family_digit("units")
+	if digit == "":
+		return []
+	var page: Array = spans(key + digit)
+	if page.is_empty():
+		page = spans(FALLBACK_LABEL)
+	return page
 
 
 func has(label: String) -> bool:

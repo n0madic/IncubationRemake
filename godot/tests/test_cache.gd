@@ -129,7 +129,9 @@ func run(h: TestHarness) -> void:
 ## Columns [UnitTypeTable] reads, and the [AIFire] recompute among them.
 const UNIT_COLUMNS: Array[String] = ["id", "mp_max", "fp_max", "hp_max",
 	"special", "size", "species", "exp", "height", "model", "description",
-	"armour_front", "armour_rear"]
+	"armour_front", "armour_rear",
+	# The magnifier's letter into `Data.txt` (docs/43 section 5.2).
+	"key"]
 ## Columns [WeaponTable] reads, `ap` and `param` included -- both are what the
 ## computer's fire routine and its jam fallback need.
 const WEAPON_COLUMNS: Array[String] = ["id", "heat", "toggle", "mun", "hit",

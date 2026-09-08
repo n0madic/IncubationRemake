@@ -1001,3 +1001,86 @@ copies. Every shipped cell carries `0xFF` / `0` there, so on a shipped save
 the copy moves nothing; whether the measured `platform` phase ever had them
 set is not something the capture was asked.
 
+---
+
+## 11. The magnifying glass (2026-09-08)
+
+Asked for as a feature -- *there was a button with a magnifying glass in the
+original that gave information about things in the game* -- and it turned out
+to be decision **D4** of [`43` §11](43-battle-hud.md) with its stated blocker
+already gone. D4 said the button stays dark because its page is a block of
+`Data.txt` and the cache carried no `Data` bank; the sixth slice's Upgrade
+Menu put one there (`text/info/data.json`), and nothing since had gone back
+to the button.
+
+What was missing was therefore the **reading**, and [`43` §5.2.1](43-battle-hud.md)
+is it: the mode `[0x005106CC]` and the cursor `0x0045F030(10 | 0)`, the gate
+inside `aUI.cpp`'s click at `0x0047156D` that takes the whole click and
+returns, `0x00432AB0`'s three tests -- the cell's occupant at `+0x07`, the
+owner `+0x45 == 0xFF` and the visible byte `+0x4F == 0` -- and `0x00432B20`'s
+label out of the 126-byte type table at `0x0051C09D` with the family digit
+`'0'`, in the box `230, 200, 180, 300`. Seven checks in
+`tools/interface_tables.py` (79 now, from 72) pin every one of those against
+the shipped bytes.
+
+Three things the reading settled that a plausible implementation would have
+got wrong:
+
+* **The unit path makes no `#` test.** The two item paths refuse a record
+  whose letter is `#` before they open the file (`0x00432B86`, `0x00432BE4`);
+  this one does not, so the ComBot's `X` -- which has no `X0` block -- and a
+  `#`-keyed unit both reach `0x0043E850` and come back as the `{:**}` retry's
+  *No information available.* Refusing them instead would have shown nothing
+  at all and read as a broken button.
+* **A contact is not an alien.** `+0x4F` must be **0**, so the beam of
+  [`22` §9.3](22-combat-and-visibility.md) cannot be looked at -- which is
+  the whole point of the second pass that makes it a beam.
+* **The click is swallowed.** With the mode on, nothing is selected, nothing
+  is attacked and nothing is deselected, and a click that finds no alien is
+  silent. There is no caption for a miss anywhere in `Txtmod_h`.
+
+**The page has a heading, and it took a second reading to find it.** The first
+pass drew the paragraph alone; a screenshot of the original showed a name over
+it. `0x0043E850`'s eighth argument is a string copied into `0x0050B4D4`, the
+mode-2 painter draws it unless it is the blank buffer at `0x004FA524`, and the
+unit path passes the **unit record** — whose `+0x00` is its `char[20]` name.
+It is one frame with room made above the text (`0x0043ED87`: `x - 6`,
+`y - 24`, `w + 6`, the measured height plus 20), not a bar of its own, which is
+how the remake draws it. The same reading says the *item* pages can carry a
+heading too — `0x00432B93` chooses between the record's name and the blank
+buffer on a flag — which the Upgrade Menu's *i* does not use yet.
+
+**What the shipped `Data.txt` does and does not hold.** The reference
+screenshot also carried a stats block (*-hit points: 7*, *-armor: 100/100*,
+…) and a longer description than this copy's. Neither is composed by the
+engine: `0x0043E850` sets its four extra values to −1 and the painter draws
+the title and the block and nothing else. They are **text**, in that
+edition's own `Data.txt`; the GOG English file has one paragraph per block and
+no numbers, and the remake shows what the player's copy carries.
+
+Three deliberate differences, all in D4: the remake draws no cursor of its own,
+so the pointer takes Godot's crosshair -- `0x0045F030`'s **windowed** arm
+(`IDC_CROSS`), not the cursor library's frame 10; the box does not take
+itself down after five seconds the way a pickup's message does
+([`24` §7.2](24-briefing-text.md)), that timeout being there so a crate opened
+by mistake cannot hold the mission, and a page the player asked for is not
+that; and the button **stays lit while the mode is on**. The third was asked
+for after the first drive -- with only the cursor and the hover caption saying
+so, the mode is invisible to a player who is not hovering the button -- and
+the reading says plainly that the original does not do it: besides the toggle
+and the click, only `0x00451230` and the caption chooser `0x00451815` read
+`[0x005106CC]`, and the sprite chooser `0x00451A70` takes the event alone. So
+the lit face is the shipped **hover** one (`element + 1`, what `0x00451D50`
+blits under the pointer) rather than a tint of the remake's own
+(`ButtonColumns.lit_element`, four checks in `game_ui`).
+
+One thing the remake asks differently and on purpose: the engine reads the
+**cell's** occupant, and `SliceMain.magnifier_slot` asks the body first
+(`_unit_under`, the ordinary click's own pick) and the cell second. Two picks
+that disagreed would magnify one alien while the click before it had selected
+another.
+
+`game_ui` gained twenty checks for it -- the label, the two fallbacks, the
+box's own height bound, the button's availability, the toggle, and the pair of
+byte tests over every record `_C_140` has.
+

@@ -41,6 +41,7 @@ func run(h: TestHarness) -> void:
 	_ring_rotation(h)
 	_campaign_screens(h)
 	_pickup_message(h)
+	_magnifier(h)
 
 
 ## The ring's facing rides **inside** the walk's playback (docs/43 section
@@ -3121,4 +3122,170 @@ func _setpiece_state(h: TestHarness) -> void:
 	h.equal("picture.and_follows_when_it_drains", units.builds, 1)
 	main._playback.skip()
 	units.free()
+	main.free()
+
+
+## The magnifying glass -- docs/43 section 5.2, decision D4 closed.
+##
+## Oracle boundary: **specification**. The letter comes out of the cache's own
+## `SetUnitInfo` column and the page out of `text/info/data.json`; what is
+## checked here is the pair of byte tests `0x00432AB0` makes, the label
+## `0x00432B20` composes, and `0x0043E850`'s retry with `{:**}`.
+func _magnifier(h: TestHarness) -> void:
+	var texts: InfoText = InfoText.load_from(CacheFixture.cache_dir(),
+		InfoText.DATA_DOCUMENT)
+	h.equal("magnifier.family_digit", texts.family_digit("units"), "0",
+		"0x00432B27 pushes '0' for a unit")
+	h.check("magnifier.a_letter_has_a_page",
+		BriefingText.to_bbcode(texts.unit_page("A")).strip_edges() != "",
+		"{:A0} is Ray'Ther's page")
+	var fallback: String = BriefingText.to_bbcode(
+		texts.spans(InfoText.FALLBACK_LABEL))
+	h.check("magnifier.the_fallback_exists", fallback.strip_edges() != "",
+		"Data.txt carries {:**}")
+	# **The unit path makes no `#` test**, unlike the two item paths at
+	# `0x00432B86` and `0x00432BE4`: a letter with no block and the no-page
+	# marker itself both come back as the retry's own text.
+	h.equal("magnifier.a_letter_with_no_block_falls_back",
+		BriefingText.to_bbcode(texts.unit_page("X")), fallback,
+		"the ComBot's X has no {:X0}")
+	h.equal("magnifier.the_no_page_marker_falls_back_too",
+		BriefingText.to_bbcode(texts.unit_page(InfoText.NO_PAGE)), fallback)
+	var absent: InfoText = InfoText.new()
+	absent.read({})
+	h.equal("magnifier.no_document_is_no_page", absent.unit_page("A").size(), 0,
+		"a cache made before the converter grew Data.txt")
+
+	# The box: the pickup's rectangle with a shorter height bound
+	# (`0x00432B3D` pushes 300 where `0x0041079D` pushes 400). At 640x480 the
+	# screen cuts both to the same thing; a taller canvas is where they part.
+	# The rectangle, which is what the specs quote and the agent reads -- the
+	# drawn box is as tall as its content either way ([code]_layout_info[/code]).
+	var tall: Vector2 = Vector2(640.0, 900.0)
+	h.equal("magnifier.box_rect_height_is_its_own",
+		MissionHud.info_box_rect(tall, InfoText.DATA_BOX_SIZE.y).size.y,
+		InfoText.DATA_BOX_SIZE.y)
+	h.equal("magnifier.the_pickup_rect_keeps_its_own",
+		MissionHud.info_box_rect(tall).size.y, InfoText.BOX_SIZE.y)
+	h.equal("magnifier.box_shares_the_pickup_rectangle",
+		MissionHud.info_box_rect(tall, InfoText.DATA_BOX_SIZE.y).position,
+		MissionHud.info_box_rect(tall).position,
+		"0x00432B47/0x00432B4C push the same 230, 200, 180")
+
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("magnifier.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	h.equal("magnifier.the_letter_is_the_units_own",
+		world.unit_types().info_key(50), "A",
+		"SetUnitInfo 50 is Ray'Ther; 0x0051C09D is this column")
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._cache_dir = CacheFixture.cache_dir()
+	h.check("magnifier.the_button_is_offered",
+		main._event_available(HudTables.EVENT_MAGNIFIER),
+		"D4 had it dark because the cache carried no Data bank")
+	# And it goes dark again where there is nothing to open: a cache made
+	# before the converter grew the document, or one whose `Data.txt` decoded
+	# with no label in it, would otherwise light a button that answers
+	# nothing when it is pressed.
+	var pageless: SliceMain = SliceMain.new()
+	pageless.world = world
+	pageless._shown = main._shown
+	h.check("magnifier.no_pages_no_button",
+		not pageless._event_available(HudTables.EVENT_MAGNIFIER),
+		"no cache directory, so no Data bank")
+	var empty_bank: InfoText = InfoText.new()
+	empty_bank.read({"schema": InfoText.SCHEMA,
+		"families": {"units": "0"}, "blocks": {}})
+	h.check("magnifier.an_empty_bank_is_no_bank",
+		not empty_bank.has_unit_pages()
+			and texts.has_unit_pages(),
+		"convert_info_data warns and writes an empty block map")
+	pageless.free()
+	# The face: the remake lights the button while the mode is on, which the
+	# original does not -- its sprite chooser `0x00451A70` never reads the
+	# mode. The lit face is the shipped **hover** one, `element + 1`.
+	var mi: int = DictRead.as_int(
+		HudTables.COLUMN_SPRITES[HudTables.EVENT_MAGNIFIER])
+	h.equal("magnifier.dark_face_is_its_own",
+		ButtonColumns.lit_element(HudTables.EVENT_MAGNIFIER, mi, true, false),
+		mi)
+	h.equal("magnifier.lit_face_is_the_hover_one",
+		ButtonColumns.lit_element(HudTables.EVENT_MAGNIFIER, mi, true, true),
+		mi + 1)
+	h.equal("magnifier.an_unavailable_button_is_never_lit",
+		ButtonColumns.lit_element(HudTables.EVENT_MAGNIFIER,
+			HudTables.COLUMN_EMPTY, false, true), HudTables.COLUMN_EMPTY)
+	var other: int = DictRead.as_int(
+		HudTables.COLUMN_SPRITES[HudTables.EVENT_NEXT_PLAYER])
+	h.equal("magnifier.no_other_button_moves",
+		ButtonColumns.lit_element(HudTables.EVENT_NEXT_PLAYER, other, true,
+			true), other)
+	h.check("magnifier.starts_off", not main.magnifier_on())
+	main._on_hud_event(HudTables.EVENT_MAGNIFIER)
+	h.check("magnifier.the_button_toggles_it", main.magnifier_on())
+	main._on_hud_event(HudTables.EVENT_MAGNIFIER)
+	h.check("magnifier.and_toggles_it_back", not main.magnifier_on())
+
+	# The two byte tests, over every record the mission has: `+0x45` is the
+	# computer's seat and `+0x4F` is 0. The fog answer is the picture's own,
+	# so what is asserted is the equivalence and not a fog state.
+	var seen: Dictionary[int, int] = main.shown().display_visibility()
+	var wrong_owner: PackedInt32Array = PackedInt32Array()
+	var wrong_state: PackedInt32Array = PackedInt32Array()
+	var aliens: PackedInt32Array = PackedInt32Array()
+	for slot: int in main.shown().unit_slots():
+		var view: Dictionary = main.shown().unit_view(slot)
+		var alien: bool = DictRead.as_int(view["player"]) 			== TurnState.PLAYER_COMPUTER
+		if alien:
+			aliens.append(slot)
+		var state: int = DictRead.as_int(view["visibility"])
+		if seen.has(slot):
+			state = seen[slot]
+		var wanted: bool = alien and state == Fog.FULL
+		if main.magnifier_answers(slot) != wanted:
+			if alien:
+				wrong_state.append(slot)
+			else:
+				wrong_owner.append(slot)
+	h.equal("magnifier.a_marine_is_never_magnified", wrong_owner,
+		PackedInt32Array(), "0x00432AFA: `cmp byte [eax + 0x45], 0xff`")
+	h.equal("magnifier.an_alien_answers_when_it_is_drawn", wrong_state,
+		PackedInt32Array(), "0x00432B00: `+0x4F` must be 0")
+	h.check("magnifier.there_are_aliens_to_look_at", aliens.size() > 0,
+		"_C_140")
+	# The heading is the unit's own name, `0x0043E850`'s eighth argument.
+	var hud: MissionHud = MissionHud.new()
+	hud.setup(null, null, null, null, null, CacheFixture.cache_dir())
+	var named: String = DictRead.as_string(
+		main.shown().unit_view(aliens[0])["name"])
+	h.check("magnifier.a_unit_is_named", named != "",
+		"+0x00 is a char[20] defaulting to the type's description")
+	hud.show_info([{"text": "body", "font": 0, "colour": 0, "breaks": 0}],
+		InfoText.DATA_BOX_SIZE.y, false, named)
+	h.equal("magnifier.the_box_carries_the_heading", hud.info_title(), named)
+	hud.show_info([{"text": "body", "font": 0, "colour": 0, "breaks": 0}])
+	h.equal("magnifier.a_pickup_has_no_heading", hud.info_title(), "",
+		"0x0043ED4C: the title is compared with the empty string")
+	hud.free()
+	h.check("magnifier.no_such_slot_is_refused",
+		not main.magnifier_answers(-1) and not main.magnifier_answers(9999))
+
+	# **A beacon reaches the visible arm**, and by a rule rather than by a
+	# contrivance: docs/22 section 9.2's three types come out of the pass as
+	# `FULL` whatever the seat is (`Visibility._pass`), so one alien given
+	# that type is one the magnifier must answer for. The seat itself stays
+	# the watching human's -- writing 255 into the mirror's turn would test a
+	# fog pass the picture never asks for.
+	var beacon: int = aliens[0]
+	main._shown._units[beacon].type_id = Visibility.ALWAYS_VISIBLE_TYPES[0]
+	h.check("magnifier.a_beacon_is_answered", main.magnifier_answers(beacon),
+		"+0x45 is 255 and the pass leaves +0x4F at 0")
+	h.check("magnifier.the_page_is_prose",
+		BriefingText.to_bbcode(
+			main.magnifier_page(beacon)).strip_edges() != "",
+		"Data.txt, or the {:**} retry")
 	main.free()

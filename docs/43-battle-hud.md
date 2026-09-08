@@ -537,7 +537,7 @@ Two click columns, `x 11..49` and `594..632`, `y 66..345`, row
 | right 3 | 2 | 28 | 34 *Set unit view* | view mode 1, the eyes (`0x00452E90`) | 2 |
 | right 4 | 12 | 10 | 30 *Jump to the next unit* | `0x00471E00(1)`: the next own unit **with points** (`0x00477D40`) | Tab |
 | right 5 | 14 | 22 | 37 *Jump to visible enemy* | `0x00453CF0`: the camera to the next unit of another player with `+0x4F == 0` (`0x00477DF0`) | T |
-| right 6 | 13 | 18 | 32 / 33 *(De)activate magnifying glass* | toggles `[0x005106CC]`; with it on, a click on a visible alien opens its **info page** (`0x00432AB0` → `0x00432B20` → `0x0043E850("Data", …, key)`, the mode-2 info activator of [`24` §7.2](24-briefing-text.md)) | — (`H` is the pad's heal; the button is dark, D4) |
+| right 6 | 13 | 18 | 32 / 33 *(De)activate magnifying glass* | toggles `[0x005106CC]` and sets the pointer with it (§5.2.1); with it on, a click on a visible alien opens its **info page** (`0x00432AB0` → `0x00432B20` → `0x0043E850("Data", …, key)`, the mode-2 info activator of [`24` §7.2](24-briefing-text.md)) | — (`H` is the pad's heal; no key) |
 | right 7 | — | 31 | — | empty | — |
 | right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | Space |
 
@@ -563,6 +563,79 @@ credited its tests to `0x00477DF0`. `0x00477D40`'s three are `+0x16` alive,
 read) — the first two are `may_command`'s, the third `may_select`'s, and
 the hidden test `may_command` also makes is the remake's own.
 Event 10 is *Next player*, the end of the turn.
+
+#### 5.2.1 The magnifying glass — **[code]** `0x0045391C`, `0x004714B0`, `0x00432AB0`
+
+Event 13 is a **mode**, not an action. Its arm reads `[0x005106CC]`, writes the
+other value back (`0x00453927` / `0x00453945`) and hands the pointer a shape:
+`0x0045F030(10)` on, `(0)` off. Besides the toggle and the click, exactly two
+things in the image read the mode: the gate `0x00451230` and the caption
+chooser `0x00451815`. **The sprite chooser `0x00451A70` takes the event
+alone**, so the original's button looks the same lit or dark — the mode is
+told by the caption under the pointer and by the cursor, and by nothing else.
+The remake rests that button on its **hover** face instead (`element + 1`,
+what `0x00451D50` blits under the pointer): a divergence, and the shipped art
+rather than a tint of its own (`ButtonColumns.lit_element`). That routine has two paths — with
+`[0x00511F1C]` set it is a Windows cursor, `IDC_CROSS` `0x7F03` against
+`IDC_ARROW` `0x7F00` (`0x0045F040` / `0x0045F05A`), and without it, frame
+`[0x00511B10]` of the engine's own cursor library. Nothing else in the
+interface reads the mode except the caption chooser at `0x00451815`, which is
+what makes the button say *Deactivate* (`Txtmod_h` 33) while it is on.
+
+The click is `aUI.cpp`'s own selection routine. At `0x0047156D` — after the
+window bounds test and after the picked cell is stored at
+`[0x005162E0]`/`[0x005162E4]`, and **before** the control-map element is
+fetched — it asks `0x00451230` for the mode, and while it is on it calls
+`0x00432AB0(cell x, cell y)` and **returns**: nothing is selected, nothing is
+attacked, nothing is deselected, and a click that finds no alien does and says
+nothing at all.
+
+`0x00432AB0` makes three tests and no others:
+
+| Test | Instruction | Refusal |
+|---|---|---|
+| the cell has an occupant | `mov ax, word [cell + 0x07]`, `0xFFFF` is none | returns 1 |
+| its owner is the computer | `cmp byte [unit + 0x45], 0xFF` (`0x00432AFA`) | returns 1 |
+| it is fully visible | `mov cl, byte [unit + 0x4F]`, non-zero refuses (`0x00432B00`) | returns 1 |
+
+So a marine is never magnified, and neither is a **contact** — the beam of
+[`22` §9.3](22-combat-and-visibility.md) is not an alien the player may look
+at. The unit id is turned into a record by `0x00477AE0`
+(`aGetUnitMapElementPtr`).
+
+`0x00432B20` then composes the label and opens the box:
+
+```c
+letter = *(char *)(0x0051C09D + 126 * unit[+0x4c]);   /* the type's own key */
+0x0043E850("Data", 230, 200, 180, 300, letter, '0', unit);
+```
+
+126 is the unit-type record's stride (`shl edx, 6` / `sub edx, eax`, then the
+`[edx*2 + …]` scale), and the column is `SetUnitInfo`'s third string —
+[`21` §5](21-info-lcl-schema.md)'s `key`, which `inclib.info` already parses.
+The box is the pickup's rectangle with a shorter height bound: 230, 200, 180
+against `Events`' 230, 200, 180, **400** ([`24` §7.2](24-briefing-text.md)).
+
+**The page carries a heading, and it is the unit's own name.**
+`0x0043E850`'s eighth argument is a **string**: it is copied out of
+`[esp + 0x28]` into `0x0050B4D4` (`0x0043E92F`..`0x0043E95F`), and the box
+painter's mode-2 arm (`0x0043ED47`) draws a name above the text unless the
+stored title equals the blank buffer at `0x004FA524` — which is exactly what
+`0x00432B93` passes when its caller asks for no heading. The unit path passes
+the **record**, whose `+0x00` is a `char[20]` name defaulting to the type's
+description ([`10` §5.2](10-lev-mission-format.md)), so a unit's page always
+has one: *Gore'Ther* over the paragraph. It is **one frame**, not a bar of its
+own — `0x0043ED87` draws it at `(x − 6, y − 24)`, `w + 6` wide and the
+measured text height plus 20 tall, with the name written at `(x, y − 8)` by
+`0x00439610`.
+
+**The unit path tests nothing for `#`.** The two item paths refuse a record
+whose letter is `#` before they open the file at all (`0x00432B86`,
+`0x00432BE4`); this one does not, so a `#` and a letter with no block both
+reach `0x0043E850`, whose retry with `{:**}` (`0x0043E910` pushes two literal
+stars, whatever the family digit was) answers *No information available.* Of
+the shipped types the computer owns, the aliens carry `A`..`P` and the ComBot
+carries `X`, for which `Data.txt` has no `X0`.
 
 ### 5.3 The unit panel — `aUnitInfos.cpp`
 
@@ -957,11 +1030,26 @@ the verbs kept their names.)
   too (`0x00477D40`).
 * **D3 — the plate adapts, the original's does not.** Pieces, bands and
   fillers (§8); the window takes the surplus; the focal length stays 400.
-* **D4 — the magnifier button is present and never lit.** Its effect is an
-  info page out of `Data.txt` for the clicked alien's type (§5.2, through
-  the activator [`24` §7.2](24-briefing-text.md) already documents), which
-  the cache does not carry and this slice does not change the converter to
-  carry; the caption still names it, and no key is bound to it.
+* **D4 — the magnifier is implemented (closed 2026-09-08).** It was
+  "present and never lit" because the page it opens is an info block out of
+  `Data.txt` and the cache carried no `Data` bank. The sixth slice's Upgrade
+  Menu put one there (`text/info/data.json`,
+  `inclib.convert.convert_info_data`), so the only thing missing was the
+  reading: §5.2.1 has it, and the remake's `SliceMain.magnifier_slot` /
+  `magnifier_answers` / `magnifier_page` are that reading. Two deliberate
+  differences, both named there: the pointer becomes Godot's crosshair,
+  which is the windowed arm of `0x0045F030` rather than the cursor library's
+  frame 10; the lit button face of §5.2.1, which the original's sprite chooser
+  does not have; and the box does **not** take itself down after five seconds the
+  way a pickup's message does ([`24` §7.2](24-briefing-text.md)) — that
+  timeout is there so a crate opened by mistake cannot hold the mission, and
+  a page the player asked for is not that. Still no key is bound to it, the
+  original having none. One gate is the remake's too: the original's button
+  has no test in front of it, and this one is dark unless the cache carries
+  a `Data` bank with blocks in it (`InfoText.has_unit_pages`) — a lit button
+  that answers nothing when it is pressed is worse than a dark one, and an
+  old cache or a `Data.txt` with no `{:xy}` label in it both produce exactly
+  that.
 * **D5 — the options bar is the options screen.** Its nine controls are the
   shell's; the bar's slide-in is not drawn.
 * **D6 — the campaign map keeps its dots by kind.** `fcn.00418F40`'s
@@ -1038,8 +1126,8 @@ about this document: the second bitmap `[0x00522A00]`, which
 screen's own and nothing about the interface's layout depends on it.
 
 Everything else this document could not settle by reading is a decision
-above, with the reading that would settle it named beside it:
-the magnifier's page (D4) wants the `Data` info bank in the cache, the
-campaign map's rings (D6) want a pass over `CampaignMapScreen`, and the
-plate fonts (D7) would be settled by the two handles `0x00473960` passes
-into `0x004756D0`.
+above, with the reading that would settle it named beside it: the campaign
+map's rings (D6) want a pass over `CampaignMapScreen`, and the plate fonts
+(D7) would be settled by the two handles `0x00473960` passes into
+`0x004756D0`. The magnifier's page (D4) was one of them and is closed: the
+`Data` bank the cache lacked is in it, and §5.2.1 is the reading.

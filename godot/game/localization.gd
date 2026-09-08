@@ -135,6 +135,17 @@ const OWN: Dictionary = {
 	"upgrade.rename": {"English": "a hero keeps the name he earned"},
 	"upgrade.commend": {
 		"English": "no commendation to award, or none left to earn"},
+	# The end-of-mission transfer (docs/27 section 6). Both of
+	# `aTransferAllUnitsFromMapToPool`'s refusals are silent in the engine --
+	# it returns TRUE and the unit is simply gone -- and docs/92 section 7.4
+	# keeps the rule while dropping the silence. **A guest is not a loss**:
+	# every one of the 26 records a shipped campaign mission places for
+	# player 0 with `pool_flag == 0` is a named story character -- Chainsaw
+	# Steele, Simon, Harvey, Cpt. Rutherford, the ComBot, Dr. Reich -- so the
+	# line says so in words and in the ordinary ink. A full squad is a real
+	# loss and keeps the alert ramp.
+	"debriefing.guest": {"English": "guest, does not join the squad"},
+	"debriefing.squad_full": {"English": "the squad is full, left behind"},
 }
 
 ## What a missing key renders as. Visible on purpose.

@@ -330,7 +330,7 @@ missions were asked for.
 | # | What the original does | What this does | Why |
 |---|---|---|---|
 | 1 | draws a recruit's voice from `0x004638E0`, seeded from `GetTickCount` ([`28` §3.2](28-effects-and-sound.md)) | draws from a deterministic stream of the campaign's own | a save has to reproduce (D8) |
-| 2 | drops a survivor that is not a pool candidate, and one the full roster cannot hold, in silence | names both on the debriefing screen | [`92` §7.4](92-remake-architecture.md), extended to deployment's four refusals as well |
+| 2 | drops a survivor that is not a pool candidate, and one the full roster cannot hold, in silence | names both on the debriefing screen — in words, and only the second in the alert ramp (§13) | [`92` §7.4](92-remake-architecture.md), extended to deployment's four refusals as well |
 | 3 | `0x0043B810` writes past the scoreboard array for an alien killer | bounds the write | an out-of-bounds write is not a rule (§5) |
 | 4 | wraps briefing text with `aCreateGUITextBox`'s measuring loop for a 1997 box | wraps with Godot's, for this box | `inclib/brieftext.layout` reproduces the original exactly and is checked against the corpus; copying its wrap positions into a different box width would be wrong rather than faithful |
 | 5 | loses the pool's 30th slot of row 1 to the save's flat 5460-byte write ([`11` §5.7](11-save-game-format.md)) | does not | the remake's save is its own format ([`92` §7.3](92-remake-architecture.md)); stated explicitly so it is not read as a defect kept under §7.1 |
@@ -521,3 +521,28 @@ tiles south and the interface up; `--mission=_C_106` opens on turn 1 with the
 platform where the `.lev` left it, which is the engine's empty-pool arm; and
 `_C_140`, whose pool is empty by design, still opens on turn 1 with no script
 run at all.
+
+---
+
+## 13. Addendum, 2026-09-08 — the two refusals are told apart
+
+Divergence 2 above printed the refusal's own **identifier** in the alert ramp:
+*Dr.Reich -- not_a_pool_candidate*, in red, beside the four survivors. Reported
+from a played campaign as a strange caption, and it was: the line is right, and
+it read as a fault.
+
+The two refusals are not the same news. `pool_flag == 0` is the ordinary end of
+an **escort** — of the 26 records a shipped campaign mission places for player 0
+with that byte clear, every single one is a named story character (Chainsaw
+Steele ×9, Simon ×7, Harvey ×4, Cpt. Rutherford ×3, the ComBot ×2, Dr. Reich,
+across 25 missions), and none is a soldier the player recruited. A survivor the
+**full roster** cannot hold is a soldier lost.
+
+So the guest is written in the ordinary ink and only the full squad keeps the
+alert ramp, and neither prints an identifier: `debriefing.guest` and
+`debriefing.squad_full` are two more of the remake's own strings
+(`Localization.OWN`, covered by `game_ui`'s "every own key resolves"), chosen by
+`DebriefingScreen.reason_key`. **A refusal with no sentence still prints its
+id** — that is what a new one has to look like — and `test_campaign` pins all
+three arms. The rule itself is untouched: the engine's gate is still the gate,
+and the silence is still dropped.

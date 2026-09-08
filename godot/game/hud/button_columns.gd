@@ -63,8 +63,14 @@ func layout() -> void:
 		button.size = Vector2(HudTables.COLUMN_WIDTH, HudTables.COLUMN_ROW_HEIGHT)
 
 
+## Whether event 13's mode is on, as the last [method refresh] was told.
+func magnifier() -> bool:
+	return _magnifier
+
+
 ## Redraw the faces. *available* answers `(event) -> bool`; *magnifier* is
-## whether event 13's mode is on, which chooses its hint.
+## whether event 13's mode is on, which chooses its hint -- and, in this
+## remake, its face ([method lit_element]).
 func refresh(available: Callable, magnifier: bool) -> void:
 	_magnifier = magnifier
 	for slot: Vector2i in _buttons:
@@ -75,10 +81,30 @@ func refresh(available: Callable, magnifier: bool) -> void:
 		if enabled:
 			element = DictRead.as_int(HudTables.COLUMN_SPRITES[number])
 		button.disabled = not enabled
-		button.texture_normal = _face(element)
+		button.texture_normal = _face(
+			lit_element(number, element, enabled, _magnifier))
 		button.texture_hover = _face(element + 1) if enabled else _face(element)
 		button.texture_pressed = button.texture_hover
 		button.texture_disabled = _face(HudTables.COLUMN_EMPTY)
+
+
+## Which `mi` element a slot rests at: its own, or the **pointer's** face
+## while the magnifier's mode is on.
+##
+## **This is the remake's, and the original does not do it.** Only two things
+## in the image read `[0x005106CC]` besides the toggle and the click: the gate
+## `0x00451230` and the caption chooser `0x00451815`. The sprite chooser
+## `0x00451A70` takes the event alone, so the original's button looks exactly
+## the same lit or dark and the mode is told by the caption under the pointer
+## (`Txtmod_h` 33) and by the cursor. Both are still there; this adds the one
+## thing a player can see without hovering, and it uses the shipped hover
+## face -- `element + 1`, what `0x00451D50` blits under the pointer -- rather
+## than a tint of the remake's own invention.
+static func lit_element(number: int, element: int, enabled: bool,
+		magnifier: bool) -> int:
+	if number != HudTables.EVENT_MAGNIFIER or not enabled or not magnifier:
+		return element
+	return element + 1
 
 
 func _face(element: int) -> Texture2D:

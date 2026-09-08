@@ -51,7 +51,7 @@ python3 tools/campaign_tables.py    --check gog_incubation    # 441 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 546 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
-python3 tools/interface_tables.py   --check gog_incubation    # 72 checks
+python3 tools/interface_tables.py   --check gog_incubation    # 80 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 42 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 727 checks, docs/42
 python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 251 checks, 6 missions + the 2 campaign maps
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 39 suites, 4736 checks
+bash   godot/run_tests.sh                                    # 39 suites, 4768 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
