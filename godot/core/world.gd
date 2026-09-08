@@ -324,6 +324,52 @@ func _first_hand_over() -> void:
 		turn.mode)
 
 
+## The hand-over a map load makes before anything is played -- the first call
+## of `aNextPlayerHandling`, which takes the `handOver(1)` arm because the
+## re-entry latch is still clear (docs/25 section 4.1).
+##
+## It raises **no** script: it searches the rotation from slot 0, refreshes
+## whoever it finds, and through [method _first_hand_over] clears the hero
+## counters and rebuilds the fog for player 0. Nothing in the remake called it
+## until the turn-0 opening was found -- [member _hand_over_initialised] was
+## reached lazily by the player's first *end turn* instead, so a mission
+## opened on the `+0x4F` bytes the `.lev` authored.
+##
+## It leaves the counter where it was, which is what makes the *deployment*
+## the thing that starts a mission: see [method skip_deployment_turn] for the
+## other opening and [method submit_end_turn] for what leaving the deployment
+## screen then does.
+func open_mission() -> TurnResult:
+	return submit_end_turn(EndTurnCommand.create(true))
+
+
+## `aInitBattleGround` `0x0041A073` -- a campaign mission with nobody in the
+## pool to place opens on turn **1** outright, with no hand-over and no script
+## run at all:
+##
+## [codeblock]
+## if (poolCount(currentPlayer) == 0 && turnCounter() == 0 && gameMode() == 1)
+##     setTurn(1);                                /* 0x0043B290 */
+## [/codeblock]
+##
+## That is the whole of the asymmetry between the two openings, and it is
+## forced by the call graph rather than assumed: `setTurn` has exactly two
+## callers in the image -- this one and the `local session` arm of
+## `0x0041C010` -- and `advanceTurn` `0x0043B2A0` exactly two -- the hand-over
+## and mode 2's own frame handler. So a campaign mission the player deploys
+## into can only leave turn 0 through the hand-over, which raises `NEXT TURN`;
+## and one that ships its own squad (`_C_140`, and the `--mission=` entry past
+## the campaign) leaves it silently, here.
+##
+## `_C_106` is where the difference shows: its `NEXT TURN` is
+## `Platform (19,2,2,11)` under an action-point flag the `.lev` arrives with,
+## so through the deployment screen the squad rides the platform down before
+## the player's first turn, and through `--mission=` it does not.
+func skip_deployment_turn() -> void:
+	if turn.mode == TurnState.MODE_CAMPAIGN and turn.turn == 0:
+		turn.turn = TurnState.FIRST_TURN
+
+
 func ctrlmap() -> CtrlMapTable:
 	return _ctrlmap
 

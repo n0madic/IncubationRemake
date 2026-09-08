@@ -440,3 +440,84 @@ difference. Driven end to end: `_C_140` won for 200, `_C_141` for 100 (total
    the ten alien weapons — tech 0, non-empty name, cost 0 — do appear on the
    original's Upgrade screen. `campaign_tables.py` pins both iterators' stride,
    name offset and empty-string buffer, and the two limit writes.
+
+---
+
+## 12. Addendum, 2026-09-08 — a mission is played from turn 1, and leaving the deployment screen is a hand-over
+
+Reported as *"`_C_106` starts with the platform the soldiers are standing on
+moving, and the remake has nothing like it"*. The ride was there — it just came
+one *end turn* too late, and behind it was a defect in this slice's mission
+entry: **the remake opened every mission on turn 0 and played it as an ordinary
+turn.**
+
+**What the engine does.** Turn 0 is the deployment phase.
+`aInitBattleGround` `0x00419D90` shows the placement interface while the
+counter is 0 and the battle interface once it is not, and it is the routine
+that leaves turn 0 in the one case where there is nothing to place:
+
+```c
+if (poolCount(currentPlayer) == 0 && turnCounter() == 0 && gameMode() == 1)
+    setTurn(1);                                       /* 0x0041A073 */
+```
+
+Every other campaign mission leaves it through the **hand-over**, and that is
+forced by the call graph rather than assumed: `setTurn` `0x0043B290` has
+exactly two callers in the image — the line above and the `local session` arm
+of `0x0041C010` — and `advanceTurn` `0x0043B2A0` exactly two, `handOver`
+`0x0047D600` and mode 2's own frame handler `fcn.004543A0`. So a mission the
+player deploys into can only reach turn 1 through `handOver`, which raises
+`NEXT TURN` on the way ([`25` §4](25-turn-and-round.md)).
+
+Two more readings agree. `0x0045FF00`, called in that same branch under
+`if (g_turn == 0)`, is `aMultiPlayer.cpp`'s **starting-strength** snapshot —
+`livingUnits(p)` for each player into `0x00512598[]` — which is only
+meaningful at the moment a mission begins; docs/25 had it labelled *mission
+objectives*, and that label is now corrected. And `aInitBattleGround`'s camera
+arm at `0x0041A74D` tests the counter for **exactly 1**, which
+[`43` §4.5](43-battle-hud.md) could not previously explain and now can; its
+**UNVERIFIED** paragraph is closed there.
+
+**The retail game's own saves settle the numbering.** `_31_.sav`, the autosave
+written as a mission loads, carries turn **0** with the new map already in it
+([`11` §5.8](11-save-game-format.md)); `_33_.sav` and all four saves a player
+made inside a mission carry **1** or more. Nobody ever plays turn 0.
+
+**What it cost the remake.** Beyond the ride's timing, opening on turn 0 meant:
+
+* the computer **skipped its first turn** — `0x0047D600` runs
+  `aAISystemControl` only `if (g_turn != 0)`, and the remake's mirror of that
+  gate was therefore true for a whole round;
+* the first `NEXT PLAYER` never fired, because the same routine gates it the
+  same way — a mission whose script reinforces or scores in `NextPlayer` lost
+  one evaluation;
+* the interface drew a turn counter of `0`, and the watched player's progress
+  bar is gated on the counter not being 0 ([`43` §7.1](43-battle-hud.md));
+* `World._first_hand_over` — the one-shot that clears the hero counters and
+  rebuilds the fog for player 0 — was reached lazily by the player's first
+  *end turn*, so a mission opened on the `+0x4F` bytes the `.lev` authored.
+
+**What changed.** `World.open_mission` is the `handOver(1)` a map load makes
+(the first `aNextPlayerHandling`, whose re-entry latch is still clear) and
+`World.skip_deployment_turn` is `0x0041A073`'s arm; `SliceMain._build` runs
+both, choosing the arm on `CampaignHost.nobody_to_deploy` exactly as the engine
+chooses it on `poolCount(currentPlayer) == 0`. The deployment screen's
+*Continue* then ends turn 0 through the same seam the space bar uses, so the
+script's events are played back the way a turn's are.
+
+One thing had to be corrected with it. The rotation passes through the
+computer's seat to reach turn 1, and the picture reads that seat to decide it
+is drawing the computer's turn — so the opening was drawn under the watched
+player's bare plate, captioned *the aliens are moving*, with one key able to
+skip it. `SliceMain._watching_the_computer` now carries the engine's own second
+half of that condition: the computer is handed its slot whether or not it may
+play, and only `g_turn != 0` makes it a turn.
+
+**Verified**: the 39 suites (4691 checks) unchanged — the three mission hashes
+this slice pinned are measured from `World.create` alone and do not move — and
+in the built game through the agent server: `_C_106` deployed onto the
+platform's five cells opens on turn 1 with the squad already carried eleven
+tiles south and the interface up; `--mission=_C_106` opens on turn 1 with the
+platform where the `.lev` left it, which is the engine's empty-pool arm; and
+`_C_140`, whose pool is empty by design, still opens on turn 1 with no script
+run at all.

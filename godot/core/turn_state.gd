@@ -14,6 +14,14 @@ extends RefCounted
 
 ## docs/25 section 3 -- the counter wraps at 200 (`0x0043B2A0`).
 const TURN_WRAP: int = 200
+## The turn a mission is **played** from. Zero is the deployment phase and not
+## a turn anybody takes: `aInitBattleGround` `0x0041A723` shows the placement
+## interface while the counter is 0 and the battle interface once it is not,
+## and the retail game's own saves say the same -- `_31_.sav`, the autosave
+## written as a mission loads, carries 0, while every save a player made
+## inside a mission carries 1 or more (docs/11 section 5.8). See
+## [method World.open_mission].
+const FIRST_TURN: int = 1
 ## docs/10 section 5.7 -- the alien side, a full member of the rotation.
 const PLAYER_COMPUTER: int = 255
 ## docs/25 section 7 -- the neutral-prop owner. **Never** stored in the

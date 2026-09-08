@@ -210,7 +210,7 @@ int handOver(int arg)                              /* 0x0047D600 */
     int result = 1;
     if (arg == 0) {
         if (!anyPlayerLeftThisTurn()) {            /* 0x0043B490, below */
-            if (g_turn == 0) 0x0045FF00(humanCount);   /* mission objectives */
+            if (g_turn == 0) 0x0045FF00(humanCount);   /* starting strength   */
             advanceTurn();                         /* 0x0043B2A0 -- turn++   */
             0x00470AB0();  0x0042ED60();
             aRunLCL(_A, 5);  aRunLCL(_B, g_turn);  /* NEXT TURN, docs/20 §5  */
@@ -247,8 +247,24 @@ int handOver(int arg)                              /* 0x0047D600 */
 }
 ```
 
-Reading the order of that body settles two things a remake would otherwise
+Reading the order of that body settles three things a remake would otherwise
 guess at:
+
+**Turn 0 is the deployment phase, and a mission is played from turn 1.**
+*(Added 2026-09-08.)* `0x0045FF00` is not the objectives screen this document
+first read it as — it is in `aMultiPlayer.cpp` and stores `livingUnits(p)` for
+each player into `0x00512598[]`, the side's **starting strength**, which is
+only meaningful at the moment a mission begins. And that is when this branch
+runs: `aInitBattleGround` shows the placement interface while the counter is 0
+and the battle interface once it is not ([`43` §4.5](43-battle-hud.md)), and
+leaving the placement interface hands over. So the first `NEXT TURN` of a
+campaign mission fires **before the player's first command**, not after it —
+which is what `_C_106` opens with, `Platform (19,2,2,11)` riding the deployed
+squad down eleven tiles. The exception is a mission with nobody to deploy:
+`0x0041A073` sets the counter to 1 outright and no script runs at all. The
+retail game's own saves pin the numbering — `_31_.sav`, written as a mission
+loads, carries turn 0 and every save made inside a mission carries 1 or more
+([`11` §5.8](11-save-game-format.md)).
 
 **A turn advances when nobody is left to move, not at a fixed point.**
 `0x0043B490` applies the same skip rule as §3.1 to the slots *after* the current

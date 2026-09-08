@@ -425,16 +425,31 @@ selected. The counter-0 arm beside it is the other entry: view mode 2 with no
 placement (`fcn.00452940`) and the camera on the landing zone
 (`fcn.00452420`, the first control-map cell in `'F'..'I'`).
 
-> **UNVERIFIED — which of the two arms a fresh mission takes.** The controller
-> enters `aInitBattleGround` as one request (`fcn.0042E690` case 7) and it
-> leaves the game in state 3, whose per-frame case is `fcn.004543A0` — and
-> that is what increments the counter, so a first entry would find it at 0 and
-> take the landing-zone arm, with the counter-1 arm reached only on a re-entry
-> such as a load. **The shipped game nevertheless opens a mission with a unit
-> selected and the camera on it**, which is a report from play rather than
-> something read here, and it is the counter-1 arm that describes it. The
-> remake does that; if the ordering turns out otherwise, this is the paragraph
-> to correct.
+**Which of the two arms a fresh mission takes** *(settled 2026-09-08; this
+paragraph was **UNVERIFIED**, on the reading that `fcn.004543A0` — mode 2's own
+frame handler, [`25` §4](25-turn-and-round.md) — was what advanced the counter,
+so a first entry would find it at 0)*. It is the **counter-1** arm, and both of
+its two entries are named:
+
+* `aInitBattleGround`'s own first lines set the counter to 1 when there is
+  nobody to place — `if (poolCount(currentPlayer) == 0 && turnCounter() == 0
+  && gameMode() == 1) setTurn(1);` at `0x0041A073`. That is the arm a mission
+  which ships its own squad takes (`_C_140`, where
+  `aCreateUnitPoolForCampaign(2)` is a bare return, [`27` §3.1](27-campaign.md)).
+* Otherwise the counter is 0, the placement interface goes up
+  (`aInitPlaceInterface`, `0x0041A66F`), and leaving it hands over — which is
+  the only other way out of turn 0 that exists: `setTurn` `0x0043B290` has
+  exactly two callers in the image, the line above and the `local session`
+  arm of `0x0041C010`, and `advanceTurn` `0x0043B2A0` exactly two, `handOver`
+  and mode 2's frame handler. So a campaign mission the player deploys into
+  reaches turn 1 through `handOver`, and `NEXT TURN` runs before the player's
+  first command.
+
+**The retail game's own saves say the same.** `_31_.sav`, the autosave written
+as a mission loads ([`11` §5.8](11-save-game-format.md)), carries turn **0**
+with the map already swapped; `_33_.sav` and every save a player made inside a
+mission carry **1** or more. Turn 0 is the deployment phase and not a turn
+anybody takes.
 
 **In the remake** the selection *is* dropped, for the length of the replay
 only: the watched screen has no panel, no pad and no overlay to show it on

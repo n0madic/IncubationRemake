@@ -52,12 +52,14 @@ func run(h: TestHarness) -> void:
 		h.check("cases.present", false,
 			"%s is absent -- run campaign_runtime.py --emit-cases" % path)
 		_pinned_hashes(h)
+		_mission_opening(h)
 		return
 	var parsed: Variant = JSON.parse_string(
 		FileAccess.get_file_as_string(path))
 	if typeof(parsed) != TYPE_DICTIONARY:
 		h.check("cases.parse", false, path)
 		_pinned_hashes(h)
+		_mission_opening(h)
 		return
 	var cases: Dictionary = parsed
 	h.equal("cases.schema", DictRead.as_string(cases["schema"]), SCHEMA)
@@ -78,6 +80,7 @@ func run(h: TestHarness) -> void:
 	_codec(h, cases)
 	_decorations_survive(h, cases)
 	_pinned_hashes(h)
+	_mission_opening(h)
 
 
 ## The fixture must have been emitted from **this** corpus and **this** model.
@@ -884,3 +887,113 @@ func _pinned_hashes(h: TestHarness) -> void:
 		h.equal("hash.%s" % name, world.canonical_hash_hex(),
 			DictRead.as_string(PINNED_HASHES[name]),
 			"measured before this slice; D7 says it does not move")
+
+
+## The two openings of a mission -- docs/98 section 12.
+##
+## Neither is reachable from `core` alone in the game: `SliceMain._build`
+## chooses the arm and the deployment screen's *Continue* takes the other. But
+## both are `World`'s own methods, and what they decide -- the turn a mission
+## is played from, and whether `NEXT TURN` runs before the player's first
+## command -- is exactly the kind of claim that would otherwise be verified by
+## hand once and quietly broken. `_C_106` is the mission that shows it: its
+## `NEXT TURN` is `Platform (19,2,2,11)`, gated on an action point the `.lev`
+## arrives with, so the whole difference between the two arms is visible in
+## three cells.
+const OPENING_MISSION: String = "_C_106"
+## The platform's centre before the ride and after it -- `Platform (19,2,2,11)`
+## is direction 2 (south) by eleven tiles.
+const PLATFORM_FROM: Vector2i = Vector2i(19, 2)
+const PLATFORM_TO: Vector2i = Vector2i(19, 13)
+## docs/10 section 4.2 -- what the ride leaves behind, and what it lands on.
+const CTRL_FREE_PLACE: int = 1
+const CTRL_DEEP_HOLE: int = 4
+
+
+func _mission_opening(h: TestHarness) -> void:
+	var balance: Dictionary = CacheFixture.balance()
+	var document: Dictionary = CacheFixture.mission(OPENING_MISSION)
+	if document.is_empty() or balance.is_empty():
+		h.check("opening.present", false,
+			"%s is not in the cache" % OPENING_MISSION)
+		return
+
+	# **The loader leaves turn 0**, which is the deployment phase and not a
+	# turn anybody takes.
+	var silent: World = World.create(document, balance, 0.0)
+	h.equal("opening.loader_turn", silent.turn.turn, 0)
+
+	# The arm a mission with nobody to place takes: turn 1, no script.
+	silent.skip_deployment_turn()
+	h.equal("opening.silent_turn", silent.turn.turn, TurnState.FIRST_TURN)
+	silent.skip_deployment_turn()
+	h.equal("opening.silent_is_idempotent", silent.turn.turn,
+		TurnState.FIRST_TURN,
+		"the engine's guard is `turnCounter() == 0`, so the second entry to "
+		+ "aInitBattleGround does nothing")
+	var attached_silent: bool = silent.attach_script(
+		CacheFixture.script_document(OPENING_MISSION))
+	h.check("opening.script_attached", attached_silent,
+		"%s carries a program" % OPENING_MISSION)
+	var opened: TurnResult = silent.open_mission()
+	h.equal("opening.silent_code", opened.code, TurnResult.OK)
+	h.equal("opening.silent_player", silent.turn.current_player, 0)
+	h.equal("opening.silent_turn_after", silent.turn.turn,
+		TurnState.FIRST_TURN)
+	h.check("opening.silent_ran_no_script",
+		not opened.ran_turn_script and not opened.ran_player_script,
+		"handOver(1) raises neither event")
+	h.equal("opening.silent_platform_stayed",
+		silent.state.field_type_at(
+			silent.state.index_of(PLATFORM_FROM.x, PLATFORM_FROM.y)),
+		CTRL_FREE_PLACE,
+		"no NEXT TURN, so the platform is where the .lev left it")
+
+	# The other arm: a squad deployed, then the hand-over that leaving the
+	# deployment screen makes.
+	var played: World = World.create(document, balance, 0.0)
+	var _swept: int = played.load_sweep()
+	var attached: bool = played.attach_script(
+		CacheFixture.script_document(OPENING_MISSION))
+	h.check("opening.deployed_script_attached", attached)
+	var cells: Array[Vector2i] = played.deployment_cells(0)
+	h.check("opening.deployment_cells", cells.size() == 5,
+		"%s has five landing cells, all on the platform" % OPENING_MISSION)
+	if cells.is_empty():
+		return
+	var record: UnitState = UnitState.new()
+	record.hp = 9
+	record.name = "Deployed"
+	record.pool_flag = Roster.POOL_CANDIDATE
+	record.type_id = 0
+	var placed: Dictionary = played.deploy_from_pool(0, record,
+		cells[0].x, cells[0].y)
+	h.equal("opening.deployed", DictRead.as_string(placed["result"]),
+		World.DEPLOY_OK)
+	var rider: int = DictRead.as_int(placed["slot"])
+	var _first: TurnResult = played.open_mission()
+	h.equal("opening.deployed_stays_at_zero", played.turn.turn, 0,
+		"handOver(1) does not advance the counter")
+
+	var handed: TurnResult = played.submit_end_turn(EndTurnCommand.create())
+	h.equal("opening.handed_code", handed.code, TurnResult.OK)
+	h.equal("opening.handed_turn", played.turn.turn, TurnState.FIRST_TURN,
+		"the rotation passes through the computer's seat and comes back")
+	h.equal("opening.handed_player", played.turn.current_player, 0)
+	h.check("opening.handed_ran_turn_script", handed.ran_turn_script,
+		"which is the NEXT TURN the platform rides on")
+	h.check("opening.handed_no_ai", handed.ai_result == null,
+		"0x0047D600 runs aAISystemControl only when the counter is not 0")
+	h.equal("opening.platform_left",
+		played.state.field_type_at(
+			played.state.index_of(PLATFORM_FROM.x, PLATFORM_FROM.y)),
+		CTRL_DEEP_HOLE, "the vacated cells are deep holes")
+	h.equal("opening.platform_arrived",
+		played.state.field_type_at(
+			played.state.index_of(PLATFORM_TO.x, PLATFORM_TO.y)),
+		CTRL_FREE_PLACE)
+	var carried: Dictionary = played.unit_view(rider)
+	h.equal("opening.rider_carried",
+		[DictRead.as_int(carried["x"]), DictRead.as_int(carried["y"])],
+		[cells[0].x, cells[0].y + (PLATFORM_TO.y - PLATFORM_FROM.y)],
+		"the ride relocates its riders before it copies the cells")

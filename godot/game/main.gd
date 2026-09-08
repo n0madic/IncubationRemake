@@ -289,6 +289,11 @@ var _overlay_stale: bool = false
 ## [method end_turn] started, as against a player's own command. The two
 ## finish differently: only the turn hands the selection back.
 var _playing_turn: bool = false
+## Whether the hand-over being drawn actually gave the computer a turn to
+## take -- [member TurnResult.ai_result], which is null when the rotation
+## reached the computer's seat with the planner gated off. See
+## [method _watching_the_computer], the one thing that reads it.
+var _computer_played: bool = true
 
 
 ## An exported build made with the `run_tests` custom feature runs the suites
@@ -818,6 +823,25 @@ func _resume_loaded_mission() -> void:
 		_rig.apply_state(world.restored_camera())
 
 
+## **A save taken at turn 0 still owes its opening hand-over.** That is what
+## *Undo mission* restores: `_31_.sav` carries the squad placed and the counter
+## at 0 (docs/11 section 5.8), and the engine reads the same thing off it --
+## [method World.load_save] restores the re-entry latch as `turn != 0`, so a
+## loaded turn-0 world is by definition one where `aNextPlayerHandling` has not
+## run. Without this, undoing a mission put the player back into the turn-0
+## opening docs/98 section 12 exists to remove: no `NEXT TURN`, no computer
+## turn and a `0` on the plate.
+##
+## Separate from [method _resume_loaded_mission], and after
+## [method _refresh_after_deploy], for two reasons: that one is the picture's
+## own work and is called with a half-built host by `test_effects.gd`, and the
+## replay this starts must not be resynchronised out from under itself.
+func _open_after_load() -> void:
+	if world == null or world.turn.turn != 0:
+		return
+	var _handed: TurnResult = end_turn()
+
+
 ## The interface's own autosaves (docs/43 section 5): the mission's start
 ## (slot 31, *Undo mission*) and each turn's start (slot 33, *Undo last
 ## turn*), written the way `0x0041DA20`'s commands write them. Silent: an
@@ -920,6 +944,7 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	campaign.enter_mission()
 	_resume_loaded_mission()
 	_refresh_after_deploy()
+	_open_after_load()
 	_refresh_status("loaded")
 	return true
 
@@ -1462,6 +1487,7 @@ func load_slot(slot: int) -> bool:
 	campaign.enter_mission()
 	_resume_loaded_mission()
 	_refresh_after_deploy()
+	_open_after_load()
 	_refresh_status("loaded slot %d" % (slot + 1))
 	return true
 
@@ -1725,7 +1751,35 @@ func _on_campaign_choice(action: String) -> void:
 				campaign.enter_mission()
 				close_campaign_screen()
 				_begin_mission_view()
+				# **Before the hand-over**, which is where the engine writes
+				# it too: `_31_.sav`, the autosave a mission entry leaves,
+				# carries turn 0 and the squad already placed (docs/11
+				# section 5.8). *Undo mission* therefore returns to the
+				# moment the deployment was accepted, not to the turn after
+				# it.
 				_autosave_mission_start()
+				# **Leaving the deployment screen is a hand-over.** It is the
+				# only way a deployed campaign mission reaches turn 1
+				# ([method World.skip_deployment_turn] has the call graph
+				# that forces it), and it is why the ride, the reinforcement
+				# and every other `NEXT TURN` of turn 1 happens before the
+				# player's first command rather than after it -- `_C_106`
+				# opens with the platform carrying the squad down.
+				#
+				# Through [method end_turn] rather than the world directly,
+				# so the events the script leaves are played back the way
+				# the same key plays them.
+				#
+				# **Only out of turn 0**, which is the engine's own state and
+				# not a flag of this screen's: a mission with nobody to
+				# deploy is already on turn 1 by
+				# [method World.skip_deployment_turn], and handing over from
+				# there would spend the player's first turn before they saw
+				# it. The game's own flow never shows this screen for such a
+				# mission -- the `"enter"` arm above skips it -- but the
+				# agent's debugging entry does.
+				if world != null and world.turn.turn == 0:
+					var _handed: TurnResult = end_turn()
 			else:
 				# **Named, not silent.** An empty map refused the button and
 				# said nothing, which is what stopped a campaign being
@@ -2410,6 +2464,27 @@ func _build(mission: String) -> void:
 	var opening_script: Dictionary = {}
 	if attached:
 		opening_script = world.run_init_map()
+	# **The map has loaded; the mission has not started.** The engine's own
+	# order is `INIT MAP`, then `aInitBattleGround`'s counter arm, then the
+	# view player's first `aNextPlayerHandling` -- and both of the last two
+	# are here rather than at the deployment screen's button, because the fog
+	# they leave is what the deployment screen and everything built below
+	# this line are drawn from.
+	#
+	# Which arm depends on whether there is anybody to deploy, exactly as
+	# `0x0041A073`'s `poolCount(currentPlayer) == 0` does: `--mission=`,
+	# *Instant Action* and a chain whose pool is empty open on turn 1 with no
+	# script, and a campaign mission the player deploys into stays on turn 0
+	# until the deployment screen's *Continue* hands over (the `"start"` arm
+	# of [method _on_campaign_choice]).
+	if campaign == null or campaign.nobody_to_deploy():
+		world.skip_deployment_turn()
+	# **Fresh per mission**, because it describes the hand-over being drawn
+	# and not the game: a mission entered while the last one's opening had
+	# left it false would suppress the watched player's screen on the first
+	# computer turn after it.
+	_computer_played = true
+	var _opened: TurnResult = world.open_mission()
 	var header: Dictionary = DictRead.as_dict(map_document["header"])
 	var world_set: String = DictRead.as_string(header["world_set"])
 	var geometry: Dictionary = _geometry_for(world_set)
@@ -3502,7 +3577,8 @@ func _play_progress() -> void:
 ## holds the turn". The mirror holds 255 from the hand-over that opened the
 ## turn until the one that closed it, which is exactly the watched span.
 func _watching(at: World) -> Dictionary:
-	if at == null or at.turn.current_player != TurnState.PLAYER_COMPUTER:
+	if at == null or not _computer_played \
+			or at.turn.current_player != TurnState.PLAYER_COMPUTER:
 		return {}
 	var player: int = at.turn.previous_player
 	var counts: Vector2i = TurnProgress.tally(at, player)
@@ -3510,11 +3586,20 @@ func _watching(at: World) -> Dictionary:
 
 
 ## Whether the picture is drawing the computer's turn: the mirror's seat is
-## the computer's. The key that skips the turn, the note that says so and the
-## agent's `replay` all read this and not the playback, which a player's own
-## command runs through too.
+## the computer's **and** the computer was given a turn to take. The key that
+## skips the turn, the note that says so and the agent's `replay` all read
+## this and not the playback, which a player's own command runs through too.
+##
+## The second half is `0x0047D600`'s own gate: the rotation hands the computer
+## its slot whether or not it may play, and `aAISystemControl` is called only
+## `if (g_turn != 0)`. The mission's opening hand-over is exactly that case --
+## it passes through the computer's seat at turn 0 to reach turn 1 (see the
+## `"start"` arm of [method _on_campaign_choice]) -- and without this the
+## first thing a deployed mission drew was `_C_106`'s platform ride under a
+## bare plate captioned *the aliens are moving*, with nothing of the interface
+## up and one key able to skip it.
 func _watching_the_computer() -> bool:
-	return world != null \
+	return world != null and _computer_played \
 		and shown().turn.current_player == TurnState.PLAYER_COMPUTER
 
 
@@ -5878,6 +5963,9 @@ func end_turn() -> TurnResult:
 		_camera_offset_before_turn = _rig.eye_goal() - _rig.target_goal()
 		_camera_mode_before_turn = _rig.view_mode()
 	var result: TurnResult = world.submit_end_turn(EndTurnCommand.create())
+	# **Before the replay starts**, for the same reason the selection below is
+	# taken here: the playback can finish inside its own call.
+	_computer_played = result.ai_result != null
 	# **Before the replay starts.** [method EventPlayback.play] finishes
 	# *inside its own call* when there is nothing to show, so `_on_ai_step({})`
 	# -- and the hand-back in it -- runs before anything below this line.

@@ -727,6 +727,23 @@ headings name aloud. It also closed `docs/27` §5.2's **UNVERIFIED** limit pair:
 is the tech level, so at tech 1 the catalogue is 14 of 42 weapons and 7 of 19
 items.
 
+**A mission is played from turn 1** (`docs/98` §12, 2026-09-08). Turn 0 is the
+deployment phase, and the remake used to open every mission on it and play it
+as an ordinary turn -- so the computer skipped its first turn, the first
+`NEXT PLAYER` never fired and the counter on the plate read `0`. Leaving the
+deployment screen is a **hand-over**, which is the only way out of turn 0 that
+exists for a mission with a squad to place: `setTurn` `0x0043B290` has two
+callers and `advanceTurn` `0x0043B2A0` two, and neither pair reaches a
+deployed campaign mission except through `handOver`. So the turn's `NEXT TURN`
+runs **before the player's first command** -- `_C_106` opens with the platform
+carrying the squad down, which is what it looks like in the original. A mission
+with nobody to place is the other arm, `0x0041A073`'s `setTurn(1)`, silent and
+with no script: that is `_C_140`, *Instant Action* and `--mission=`. The retail
+saves pin it (`_31_.sav` turn 0 on entry, every played save 1 or more), and it
+closed `docs/43` §4.5's **UNVERIFIED** paragraph and corrected `docs/25` §4.1's
+label on `0x0045FF00`, which is the starting-strength snapshot rather than the
+objectives screen.
+
 `docs/96` reports the fourth -- the bodies: Charisma models, skeletons and the
 three gameplay animation families, `_C_140` played with bodies that walk and
 shoot. Its two corrections to a delivered spec are that the model selector is
