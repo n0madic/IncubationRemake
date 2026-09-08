@@ -66,6 +66,10 @@ func build(frame: int) -> Dictionary:
 		"shell": shell(),
 		"campaign": _main.campaign.view() if _main.campaign != null else {},
 		"settings": _main.settings.view(),
+		# **Above the `world == null` return.** A scenario that fails at the
+		# shell, on the location map or on a deployment screen has to be able
+		# to say whether it was played straight too ([Cheats]).
+		"cheats": Array(_main.cheats.active()),
 	}
 	if world == null:
 		return document
@@ -91,10 +95,6 @@ func build(frame: int) -> Dictionary:
 	document["sounds"] = sounds()
 	document["gore_level"] = world.gore_level
 	document["ai_level"] = world.turn.ai_level
-	# Which of the level tester's switches are on, so a scenario that fails
-	# says whether it was played straight ([Cheats]). Empty is the normal
-	# answer and the one a run without them must show.
-	document["cheats"] = Array(_main.cheats.active())
 	document["units"] = units()
 	document["reachable"] = query(false)
 	document["warp"] = query(true)

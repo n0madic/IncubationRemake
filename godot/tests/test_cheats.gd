@@ -287,8 +287,27 @@ func _shield(h: TestHarness) -> void:
 		mined2.units, mined2.types, mined2.weapons, 3, 3, 0, 1,
 		TurnState.MODE_CAMPAIGN, mined2.turn, mined2.rng, on)
 	h.equal("shield.mine_untouched", walker.hp, TOUGH_HP)
+	_pushed_mine(h)
 	_ground_fire(h)
 	_own_gun(h)
+
+
+## docs/26 section 6.2 -- the **third** way a mine reaches a unit: a crate
+## pushed onto one detonates where it stops, and the blast is the aim cell
+## plus its eight neighbours. The pusher is two cells away and outside it; a
+## marine standing beside the crate's landing is not.
+func _pushed_mine(h: TestHarness) -> void:
+	var plain: Scene = _pushed_mine_scene(null)
+	var hurt: UnitState = plain.units[2]
+	h.check("shield.control_pushed_mine_hurts", hurt.hp < TOUGH_HP,
+		"hp %d" % hurt.hp)
+	var safe: Scene = _pushed_mine_scene(_with("god"))
+	var spared: UnitState = safe.units[2]
+	h.equal("shield.pushed_mine_untouched", spared.hp, TOUGH_HP,
+		"the push path reaches execute_bomb through push_object")
+	var crate: UnitState = safe.units[1]
+	h.equal("shield.the_crate_still_slid", crate.x, 4,
+		"the shield is the damage, not the push")
 
 
 ## docs/42 section 9.1 -- the flames weapon 40 lays **remove** what they
@@ -345,6 +364,39 @@ func _own_gun(h: TestHarness) -> void:
 	h.check("shield.own_gun_does_not_kill", protected)
 	h.check("shield.own_gun_is_downgraded", jammed,
 		"the arm becomes the damaged-weapon one it shares an instruction with")
+
+
+## The first cell the Jet Pack fill marked as a warp target, or `(-1, -1)`.
+## The walk's own reachable cells are **not** warp targets -- the warp pass
+## skips every cell the fill already took ([method MoveMap._warp_pass]) -- so
+## the pad cannot be guessed from the distance.
+static func _first_warp_cell(world: World) -> Vector2i:
+	var fill: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(0))
+	for y: int in range(SCENE_SIZE):
+		for x: int in range(SCENE_SIZE):
+			if fill.is_warp_target(x, y):
+				return Vector2i(x, y)
+	return Vector2i(-1, -1)
+
+
+## A scene where using the crate in front pushes it onto a mine, with a second
+## marine standing where the blast reaches. Built as a [Scene] and driven
+## through [method Interact.execute] rather than through [World], because a
+## world's own `submit_use` cannot place a crate on an authored map.
+static func _pushed_mine_scene(with_cheats: Cheats) -> Scene:
+	var scene: Scene = _scene()
+	var pusher: UnitState = _place(scene, 0, 0, 2, 2)
+	# Facing 3 is `+x` ([constant Interact.FACING_DX]), so the cell in front
+	# is the crate's and the slide runs along the row.
+	pusher.facing = 3
+	var _crate: UnitState = _place(scene, 1, 0, 3, 2, CRATE)
+	var _bystander: UnitState = _place(scene, 2, 0, 5, 2)
+	var _laid: int = CellObjects.place_mine(scene.state, 4, 2)
+	var _used: UseResult = Interact.execute(scene.state, scene.units,
+		scene.types, scene.weapons, GameControl.create(), pusher, 0, 1,
+		TurnState.MODE_CAMPAIGN, scene.turn, scene.rng, with_cheats)
+	return scene
 
 
 ## A world whose marine stands on a glow, played until the flames sweep it.
@@ -480,6 +532,26 @@ func _movement(h: TestHarness) -> void:
 	# charged: the refund is the human seats' and nobody else's.
 	var walked_enemy: MoveResult = free.submit_move(MoveCommand.create(1, 6, 3))
 	h.check("moves.the_enemy_walked", walked_enemy.ok, walked_enemy.reason)
+	# The warp is the fourth charge, and `aExecuteWarp`'s call site zeroes the
+	# points outright rather than subtracting them.
+	var jumping: World = _armed_world(false, 0, true)
+	var pad: Vector2i = _first_warp_cell(jumping)
+	h.check("moves.a_warp_cell_exists", pad.x >= 0,
+		"the Jet Pack fill marked nothing, so the warp was never exercised")
+	var landed: WarpResult = jumping.submit_warp(
+		WarpCommand.create(0, pad.x, pad.y))
+	h.check("moves.control_warp_zeroes", landed.ok
+		and DictRead.as_int(jumping.unit_view(0)["mp"]) == 0,
+		landed.reason if not landed.ok
+			else "mp %d" % DictRead.as_int(jumping.unit_view(0)["mp"]))
+	var free_jump: World = _armed_world(false, 0, true)
+	free_jump.cheats = _with("moves")
+	var jumped: WarpResult = free_jump.submit_warp(
+		WarpCommand.create(0, pad.x, pad.y))
+	h.check("moves.warp_refunded", jumped.ok
+		and DictRead.as_int(free_jump.unit_view(0)["mp"]) == REFUNDED_MP,
+		jumped.reason if not jumped.ok
+			else "mp %d" % DictRead.as_int(free_jump.unit_view(0)["mp"]))
 	h.check("moves.enemy_is_charged",
 		DictRead.as_int(free.unit_view(1)["mp"]) < 4,
 		"mp %d" % DictRead.as_int(free.unit_view(1)["mp"]))
@@ -509,11 +581,11 @@ func _world_carries_them(h: TestHarness) -> void:
 	h.equal("world.outside_the_hash", world.canonical_hash_hex(), before,
 		"two worlds differing only in a switch are the same state")
 	var mirror: World = world.clone()
-	h.equal("world.clone_copies_them", mirror.cheats.to_dict(),
+	h.equal("world.clone_carries_them", mirror.cheats.to_dict(),
 		world.cheats.to_dict())
 	var _off: bool = world.cheats.set_enabled("god", false)
-	h.check("world.clone_is_independent", mirror.cheats.god,
-		"the mirror must not alias the truth's switches")
+	h.check("world.clone_shares_them", not mirror.cheats.god,
+		"a snapshot would freeze at clone time and diverge on the next toggle")
 	var blob: PackedByteArray = world.save({})
 	var restored: World = _armed_world()
 	restored.cheats = _with("kill")
@@ -583,11 +655,11 @@ static func _scene(rng_seed: float = 1.0) -> Scene:
 
 
 static func _place(scene: Scene, slot: int, player: int, x: int,
-		y: int) -> UnitState:
+		y: int, type_id: int = SOLDIER) -> UnitState:
 	var unit: UnitState = UnitState.new()
 	unit.slot = slot
 	unit.player = player
-	unit.type_id = SOLDIER
+	unit.type_id = type_id
 	unit.x = x
 	unit.y = y
 	unit.hp = TOUGH_HP
@@ -606,9 +678,10 @@ static func _place(scene: Scene, slot: int, player: int, x: int,
 ## The marine's magazine is **empty by default**, which is what the ammunition
 ## gate needs to refuse; a check that wants the shot to happen asks for rounds.
 static func _armed_world(with_crate: bool = false,
-		marine_ammo: int = 0) -> World:
+		marine_ammo: int = 0, jet_pack: bool = false) -> World:
+	var kit: Array = [UnitState.JET_PACK_EQUIP_ID] if jet_pack else []
 	var records: Array = [
-		TestFixtures.unit(0, 2, 2, 0, 0, 4, 0, [], 3, marine_ammo),
+		TestFixtures.unit(0, 2, 2, 0, 0, 4, 0, kit, 3, marine_ammo),
 		TestFixtures.unit(1, 5, 2, 0, UnitState.PLAYER_ALIEN, 4, 0, [], 3, 5),
 	]
 	if with_crate:

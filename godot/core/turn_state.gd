@@ -39,10 +39,10 @@ var current_player: int = 0
 var previous_player: int = 0
 ## `0x0043B310` -- the rotation's upper bound; 1 in the campaign.
 var player_count: int = 1
-## `0x0043B6E0` -- 0 means the slot is not in the game, 1 means a human.
-## Written down as a constant because two readers now ask the same question:
-## [method human_count] and [method Cheats.controlled].
+## One value of [member player_kind], written down because two readers now ask
+## the same question: [method human_count] and [method Cheats.controlled].
 const KIND_HUMAN: int = 1
+## `0x0043B6E0` -- 0 means the slot is not in the game, 1 means a human.
 var player_kind: PackedInt32Array = PackedInt32Array([1, 0, 0, 0])
 ## `0x0043B930`.
 var end_state: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])

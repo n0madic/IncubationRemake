@@ -629,7 +629,13 @@ func apply_cheat_code(code: String) -> bool:
 				% ("none" if live.is_empty() else ", ".join(live)))
 			return true
 		CheatEntry.KIND_NUKE:
-			if world == null:
+			# The one code that writes the world, so it is the one with a
+			# gate: under a playback the mirror is mid-replay, and
+			# resynchronising it from here would leave `EventPlayback`
+			# landing the deltas of a turn that has been overwritten -- the
+			# units it just killed would come back. Every other code writes
+			# nothing but a switch and is safe at any moment.
+			if world == null or _playback.is_running():
 				return false
 			var killed: int = world.cheat_kill_enemies()
 			# The world was written and nothing was marked, so the mirror is
@@ -3833,15 +3839,23 @@ func _on_ai_step(event: Dictionary) -> float:
 func _unhandled_input(event: InputEvent) -> void:
 	# **The hidden code line goes before `ESC`**, because while it is open it
 	# owns the keyboard: `ESC` has to cancel the entry rather than raise the
-	# shell over a half-typed code. It can only be *opened* over a running
-	# mission with no plate up ([CheatEntry]).
+	# shell over a half-typed code.
+	#
+	# **Opening it is behind every guard below**, and that is not tidiness:
+	# a line opened while the computer's turn is being drawn would swallow the
+	# skip key, and a `nuke` typed into it would write the truth under a
+	# playback still landing pre-nuke deltas on the mirror. So the *open* key
+	# is only read when a command would be read, and [method apply_cheat_code]
+	# refuses the one code that writes anything for the same reason -- the
+	# control server reaches it without passing here at all.
 	if event is InputEventKey and event.is_pressed():
 		var typed: InputEventKey = event
 		if _cheat_entry.is_open():
 			_on_cheat_key(typed)
 			return
-		if typed.keycode == CheatEntry.OPEN_KEY and world != null \
-				and _screen == null:
+		if typed.keycode == CheatEntry.OPEN_KEY and _screen == null \
+				and _may_command_now() and not _playback.is_running() \
+				and (_hud == null or not _hud.info_visible()):
 			_on_cheat_key(typed)
 			return
 	# `ESC` goes **before** the screen guard, and that ordering is the whole

@@ -624,7 +624,7 @@ func submit_use(command: UseCommand) -> UseResult:
 	var front_y: int = front[1] if front.size() == 2 else unit.y
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
-		turn.mode, turn, rng)
+		turn.mode, turn, rng, cheats)
 	# **A door that opens changes what the rules see, and the rebuild is not
 	# `aExecuteUse`'s.** It belongs to `aDoorOpenSequence` (`0x00410A20`), the
 	# animation the use path drives, which calls `aBuildVisibleMap` twice --
@@ -1086,6 +1086,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 				state.action_point_at(arrived), unit.slot)))
 		unit.mp = 0
 		unit.acted = ACTED_WARPED
+		_refund_mp(unit)
 		result.reactions = Reaction.drain(state, _units, _unit_types,
 			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
 			turn, rng, _journal, cheats)
@@ -1497,7 +1498,12 @@ func clone() -> World:
 	copy.gore_level = gore_level
 	copy.next_map = next_map
 	copy.ai_may_fire = ai_may_fire
-	copy.cheats = cheats.duplicate()
+	# **Shared, not copied.** The switches are one session-level object
+	# ([member SliceMain.cheats]) that [method SliceMain._build] hands to every
+	# world it makes; a snapshot taken here would freeze at clone time and
+	# diverge from the truth on the next toggle. The mirror resolves nothing,
+	# so nothing ever writes through it, and [Cheats] holds no reference back.
+	copy.cheats = cheats
 	copy._hand_over_initialised = _hand_over_initialised
 	copy._camera = _camera.duplicate(true)
 	copy._scenery = _scenery.duplicate(true)
