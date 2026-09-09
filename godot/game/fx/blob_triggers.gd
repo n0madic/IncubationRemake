@@ -169,6 +169,27 @@ const FLASH_COLUMN_SPAN: int = 7
 ## dead and the record's rotation is the sprite table's row and column. It
 ## draws from no generator either, so a spore shot leaves `aRandom2`'s seed
 ## where it found it.
+## **The one weapon creator this class does not build from the constructor
+## table.** `aBlob_CreateShockWave` `0x00422B80` places sixty records in a
+## ring where its single pinned constructor call describes one, so a shot
+## from weapon 17 and a hit from weapon 36 showed one static blob where the
+## original throws an explosion outward (docs/28 section 7.2). It is a
+## transcribed creator instead -- [method BlobPrograms.shock_wave], the twin
+## of `inclib/blob_creators.py` -- and it is asked for by tile, because the
+## engine reads the tile's **placed object** rather than the muzzle point.
+##
+## Neither weapon waits on the flight ([constant
+## ShotSequence.WAIT_SKIPPED_WEAPONS] holds 0x11 and 0x24), so the records
+## going into the pool through [BlobPrograms] rather than through
+## [method _place] costs [method in_flight] nothing.
+const SHOCK_WAVE_CREATOR: String = "0x00422B80"
+## The type both call sites push (`0x0040CD3C` and `0x0040D7AC`,
+## `blob_tables.SHOCKWAVE_TYPE_SITES`): of the creator's three arms only this
+## one is ever taken.
+const SHOCK_WAVE_TYPE: int = 2
+## A [method muzzle] or [method impact] whose caller has no tile to give.
+const NO_TILE: Vector2i = Vector2i(-1, -1)
+
 const SPORE_CREATOR: String = "0x004268B0"
 ## The spore step in world units -- a quarter of a map field -- as the
 ## **divisor** the round's life is counted in.
@@ -280,12 +301,13 @@ static func _keys_of(from: Dictionary[String, Array]) -> Array[String]:
 ## the three source coordinates (docs/28 section 8.1.1). An empty map is the
 ## body-axis fallback the engine takes for a shooter that is not animating.
 func muzzle(weapon_id: int, from: Vector3i, to: Vector3i,
-		joints: Dictionary[String, Vector3i] = {}) -> int:
+		joints: Dictionary[String, Vector3i] = {},
+		tile: Vector2i = NO_TILE) -> int:
 	_programs.clear()
 	_arrived_write = ARRIVED_UNWRITTEN
 	_made.clear()
 	_recording = true
-	var made: int = _fire("weapon_muzzle", weapon_id, from, to, joints)
+	var made: int = _fire("weapon_muzzle", weapon_id, from, to, joints, tile)
 	_recording = false
 	return made
 
@@ -309,8 +331,11 @@ func arrived_write() -> int:
 
 ## The nested creators the last [method muzzle] asked for, and clears them.
 ##
-## `{creator, at, extra}` per request, ready for [BlobPrograms]. Only a
-## point-blank burst makes any; see [constant POINT_BLANK_BOB_LIFE].
+## `{creator, at, extra}` per request, ready for [BlobPrograms] -- or
+## `{creator, tile, extra}` where the creator reads a cell rather than a
+## point ([constant SHOCK_WAVE_CREATOR]). A point-blank burst makes the
+## first kind (see [constant POINT_BLANK_BOB_LIFE]); [method impact] can make
+## the second.
 func take_programs() -> Array[Dictionary]:
 	var out: Array[Dictionary] = _programs
 	_programs = []
@@ -318,9 +343,15 @@ func take_programs() -> Array[Dictionary]:
 
 
 ## The impact effects, at the target and going nowhere.
-func impact(weapon_id: int, at: Vector3i) -> int:
+##
+## `tile` is the target's, for [constant SHOCK_WAVE_CREATOR] -- the impact
+## switch's arms run on the target cell (`0x0040D7AC` pushes the same pair
+## `aGetCtrlMapElementPtr` was given). It clears the request list for the
+## same reason [method muzzle] does: whatever it asks for is its own.
+func impact(weapon_id: int, at: Vector3i, tile: Vector2i = NO_TILE) -> int:
 	_recording = false
-	return _fire("weapon_impact", weapon_id, at, at)
+	_programs.clear()
+	return _fire("weapon_impact", weapon_id, at, at, {}, tile)
 
 
 ## Whether any record the last [method muzzle] made is still in the pool.
@@ -412,7 +443,8 @@ static func burst_at(list: Array, index: int) -> Vector2i:
 
 func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		towards: Vector3i,
-		joint_points: Dictionary[String, Vector3i] = {}) -> int:
+		joint_points: Dictionary[String, Vector3i] = {},
+		tile: Vector2i = NO_TILE) -> int:
 	if _pool == null:
 		return 0
 	var made: int = 0
@@ -467,6 +499,16 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 			if spore:
 				made += _spore_cannon(from, towards, life, delay)
 				continue
+			# **The transcribed creator, by tile.** Counted by the caller
+			# that runs it, as the point-blank requests are: what goes into
+			# the pool is sixty records and not the one this loop would make.
+			# With no tile the effect is skipped rather than approximated --
+			# a wrong ring at a guessed cell is worse than none.
+			if key == SHOCK_WAVE_CREATOR:
+				if tile != NO_TILE:
+					_ask_tile(key, tile,
+						PackedInt32Array([SHOCK_WAVE_TYPE]))
+				continue
 			for call: Variant in _by_creator.get(key, []):
 				if _create(DictRead.as_dict(call), from, towards, delta,
 						burst_creator, delay, life) >= 0:
@@ -516,6 +558,14 @@ func _point_blank_needles(at: Vector3i) -> void:
 
 func _ask(creator: String, at: Vector3i, extra: PackedInt32Array) -> void:
 	_programs.append({"creator": creator, "at": at, "extra": extra})
+
+
+## A request a **tile** creator answers: `x, y` and the literals its call site
+## pushes, which is what [method BlobPrograms.run] wants and what
+## `SliceMain.spawn_program` builds its inputs from.
+func _ask_tile(creator: String, tile: Vector2i,
+		extra: PackedInt32Array) -> void:
+	_programs.append({"creator": creator, "tile": tile, "extra": extra})
 
 
 ## `aBlob_CreateNeedles`' round: **nine** sprites down the round's own delta.

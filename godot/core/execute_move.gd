@@ -241,7 +241,8 @@ static func _route_of(moved: MoveResult) -> Array:
 static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, mover: UnitState, moved: MoveResult, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom, cheats: Cheats = null) -> void:
+		rng: IncRandom, cheats: Cheats = null,
+		journal: EventJournal = null) -> void:
 	var cells: Array[Vector2i] = []
 	if utab.unit_size(mover.type_id) == LARGE_UNIT_SIZE:
 		for step: Vector2i in CellObjects.STEP_DELTA:
@@ -259,6 +260,17 @@ static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		state.set_effect(MapState.OBJECT_SLOT, index, MapState.NO_OBJECT)
 		state.set_obstacle(index, MapState.OBSTACLE_NONE)
 		state.set_effect(MapState.TIMER_SLOT, index, 0)
+		# **A boundary between the delete and the bomb.** The guard runs
+		# `aDeleteSpecialObject` and clears the cell *before* `aExecuteBomb`
+		# `0x004702C0`, and the bomb's own `aPlayFightAnimation` then draws
+		# frames -- so the mine is off the map before the first of them, and
+		# by docs/100's rule that is where an event boundary goes. It carries
+		# no picture of its own; what it is for is that the model and the
+		# tint are gone when the blast is queued rather than when its queue
+		# drains, which is what a single boundary made them.
+		if journal != null:
+			var _gone: Dictionary = journal.mark("mine_cleared", mover.slot,
+				at.x, at.y, at.x, at.y, 0, "", {})
 		moved.detonate.append(at.x)
 		moved.detonate.append(at.y)
 		moved.blast = Interact.execute_bomb(state, units, utab, wtab, at.x,
@@ -403,7 +415,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	# the order is the difference between two canonical hashes, not a detail.
 	if moved.stopped_on_mine:
 		_detonate(state, units, utab, wtab, mover, moved, ai_level,
-			human_players, game_mode, turn, rng, cheats)
+			human_players, game_mode, turn, rng, cheats, journal)
 		# The blast is drawn after the last step, because the step loop
 		# blocked until then (docs/97 section 41.8).
 		if journal != null:

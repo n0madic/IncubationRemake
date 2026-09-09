@@ -7732,6 +7732,14 @@ class MainShotHost extends ShotHost:
 		if main._audio != null and not cues.is_empty():
 			var _slots: PackedInt32Array = main._audio.play_cues(cues, "shot")
 
+	func play_cues_slots(cues: Array[Dictionary]) -> PackedInt32Array:
+		if main._audio == null or cues.is_empty():
+			return PackedInt32Array()
+		return main._audio.play_cues(cues, "shot")
+
+	func sound_playing(slot: int) -> bool:
+		return main._audio != null and main._audio.slot_playing(slot)
+
 	func muzzle(weapon: int, sx: int, sy: int, tx: int, ty: int,
 			shooter: int = MapState.NO_UNIT) -> void:
 		if main._triggers == null or main._fx == null:
@@ -7764,17 +7772,17 @@ class MainShotHost extends ShotHost:
 				if not part.is_empty() and not joints.has(part) \
 						and main._units.has_muzzle(shooter, part):
 					joints[part] = main._units.muzzle_point(shooter, part)
+		# The **shooter's** tile beside the muzzle point: the muzzle switch's
+		# arms run on the source cell, and one of them reads that cell's
+		# placed object rather than the point (BlobTriggers.SHOCK_WAVE_CREATOR).
 		var made: int = main._triggers.muzzle(weapon,
-			main._muzzle_of(sx, sy, shooter), main._muzzle_of(tx, ty), joints)
+			main._muzzle_of(sx, sy, shooter), main._muzzle_of(tx, ty), joints,
+			Vector2i(sx, sy))
 		# A point-blank burst asks for nested creators the constructor table
 		# cannot build -- the zoom bobs and the plasma sparks its own branch
 		# runs at the target (docs/28 section 8.1.1). They go in through the
 		# same seam a set piece uses, so they draw from the one stream.
-		for request: Dictionary in main._triggers.take_programs():
-			spawn_at(DictRead.as_string(request["creator"]),
-				DictRead.as_vector3i(request["at"]),
-				DictRead.as_int32_array(request["extra"]))
-			made += 1
+		made += _drain_programs()
 		# **The creator's own write, which is not the same test as "it made
 		# nothing"** -- the whole rule, and why, is
 		# [method ShotSequence.arrived_after_muzzle]. Waiting on `made == 0`
@@ -7787,8 +7795,34 @@ class MainShotHost extends ShotHost:
 			main._fx.in_use() >= BlobPool.SLOTS))
 
 	func impact(weapon: int, tx: int, ty: int) -> void:
-		if main._triggers != null:
-			var _made: int = main._triggers.impact(weapon, main._muzzle_of(tx, ty))
+		if main._triggers == null:
+			return
+		var _made: int = main._triggers.impact(weapon,
+			main._muzzle_of(tx, ty), Vector2i(tx, ty))
+		# **The impact end asks for creators too**, and used to drop them on
+		# the floor: weapon 36's shock wave is a transcribed creator and the
+		# only way it reaches the pool is this drain.
+		var _ran: int = _drain_programs()
+
+	## The nested creators the last muzzle or impact asked for, run. A request
+	## carrying a `tile` is a creator that reads a cell -- the control map, the
+	## cell's placed object -- and takes the tile inputs; one carrying an `at`
+	## is a position creator and takes the models and the tables alone.
+	func _drain_programs() -> int:
+		var ran: int = 0
+		for request: Dictionary in main._triggers.take_programs():
+			var creator: String = DictRead.as_string(request["creator"])
+			var extra: PackedInt32Array = DictRead.as_int32_array(
+				request["extra"])
+			if request.has("tile"):
+				var tile: Vector2i = DictRead.as_vector2i(request["tile"])
+				var args: PackedInt32Array = PackedInt32Array([tile.x, tile.y])
+				args.append_array(extra)
+				spawn_program(creator, args)
+			else:
+				spawn_at(creator, DictRead.as_vector3i(request["at"]), extra)
+			ran += 1
+		return ran
 
 	func pool_arrived() -> bool:
 		return main._fx == null or main._fx.arrived

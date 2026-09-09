@@ -4981,12 +4981,67 @@ Both halves turned out to be readable and neither is a tile:
   `0x00415F2C` reads all six of the camera's numbers back through
   `0x00403780` before the flight-path switch picks the eye, and `0x00415FB4`
   sets position `(-16000, 0, 320000)` with **the target it just read**.
-  `0x00416014` puts all six back afterwards.
 
 So the bomber aims the camera nowhere: it slides the eye onto the flight path
 and keeps looking at whatever the scene was already looking at. The remake was
 spawning the creator at the camera's entry point and aiming it at the box's
 cell; it now passes the literals and calls `set_camera(eye, camera_target())`.
+
+**Correction, 2026-09-09: `0x00415FB4`'s target is the loop's *starting*
+value, not the fly-past's.** The sentence above stopped at the set before the
+loop and read `0x00416014` as putting the six numbers back; it is the same
+`0x00403560` again, **inside** the loop, and the loop runs it every frame.
+`0x00415FE6` calls `0x0042B4B0(&x, &y, &z, &slot)` — the pool's first live
+record, the helper the teleporter's camera uses — and `0x00416014` then sets
+position `(-16000, 0, 320000)` with **that** as the target. So the fly-past
+*tracks the plane*, and the eye's z is the bomber's own (`0x4E200` on both
+`0x00415F9D` and the creator's literals), which is what makes it a fly-past
+seen level with the aircraft. `0x00415FB4` is never drawn — no `0x0040B6F0`
+stands between it and the loop — so its only effect is the target the loop
+starts from. Nor does the routine restore anything: `0x00470790` reads the
+camera at its top and never writes it back, and neither routine flies home.
+
+**And the bomb run has a camera of its own, at ground level.**
+`0x004160F0`'s first loop `0x004162D6`..`0x00416322` is the same shape with
+two differences that are the whole look of the strike: the eye is
+`push 0xC80 / push 0 / push 0` = `(0, 0, 3200)` — the world's own corner, one
+field up — and the target's z is clamped, `cmp eax, 0x1F40 / jge` taking 8000
+when the bomb is higher, so the camera watches the bombs come **down** rather
+than craning at the sky they fall out of. That loop ends at the first landing
+(`0x00416336`, `while (!arrived)`); `0x00416364`'s loop, which plays the
+remaining crumps and runs `while (live)`, sets no camera at all, so the view
+holds where the first bomb came down. The remake had neither: it set the
+fly-past's eye once with a ground target and left it there for both routines,
+which showed the whole strike from 320 000 up — reported as *a falling
+container that multiplies, seen from above*. `SetpieceCamera`'s `para_bombs`
+arm now tracks in both stages and `test_effects` pins all three views.
+
+**And two sound defects went with it** *(2026-09-09)*, both reported from the
+same minefield.
+
+* **A looping cue did not loop.** `AudioStreamWAV` repeats only when its own
+  `loop_mode` says so and the shipped waves carry no loop points, so every one
+  of the nine `DSBPLAY_LOOPING` sites of [`28` §1.4](28-effects-and-sound.md)
+  was heard **once** and then went quiet under a sequence that ran on. The
+  bomber is where it shows -- `bomber.wav` against a fly-past of
+  `0x0042A8E0`'s 150 ticks -- but the door, the lift, the platform and the
+  drawbridge were all as short. `AudioSystem` now keeps a looping copy of a
+  wave beside the one-shot (the same wave may be asked for both ways) with
+  `loop_end` **counted** from the sample's own bytes: a zero one is a loop of
+  no length rather than all of it. `test_sound` pins the arithmetic for both
+  widths, both channel counts and the compressed format it refuses.
+* **The bomb run has three buffers and the remake gave every bomb its own.**
+  `0x00416271` is `mov edi, 3` and the loop at `0x00416276` creates
+  `crush.wav` three times; `0x004163A1` advances the index on every raised
+  *arrived*, free buffer or not. `aDirectSoundPlayBuffer` `0x00436EF0` is
+  `IDirectSoundBuffer::Play(0, 0, flags)` and nothing else -- no `Stop`, no
+  `SetCurrentPosition` -- so a play into a buffer that is still sounding does
+  nothing at all and that crump is **dropped**. Sixty mines landing three
+  ticks apart were sixty voices layered on each other; they are now the first
+  three and whatever the sample's own length lets through after them.
+  `SetpieceCamera.crump` is the ring, `ShotHost` gained `play_cues_slots` and
+  `sound_playing` for it, and `test_effects` runs six landings against three
+  buffers and then frees one.
 
 ### 41.4 `CrushWall`'s footprint — read, and why it is not in `core`
 

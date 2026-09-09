@@ -59,6 +59,12 @@ var _music_family: String = AudioTables.FAMILY_ARACK
 var _fx_volume: int = DEFAULT_FX_VOLUME
 var _music_volume: int = DEFAULT_MUSIC_VOLUME
 var _streams: Dictionary[String, AudioStream] = {}
+## The looping copy of a wave, made once and kept beside the one-shot.
+##
+## A wave may be asked for both ways -- `crush.wav` is a one-shot in the bomb
+## run and a loop in nothing, `door.wav` the other way about -- so the loop
+## flag cannot be written onto the shared stream.
+var _loop_streams: Dictionary[String, AudioStream] = {}
 var _players: Array[AudioStreamPlayer] = []
 var _music_player: AudioStreamPlayer = null
 ## Names that failed to open, reported once each rather than per play.
@@ -121,6 +127,7 @@ func release() -> void:
 	for player: AudioStreamPlayer in _players:
 		player.stream = null
 	_streams.clear()
+	_loop_streams.clear()
 
 
 ## The belt to [method shutdown]'s braces. A build that exits without awaiting
@@ -166,13 +173,21 @@ func play_cue(cue: Dictionary, tag: String = "") -> int:
 	var volume: int = _tables.scaled_volume(_fx_volume, volume_id)
 	if volume == AudioTables.REFUSED:
 		return -1
-	var stream: AudioStream = _stream_for(wave)
+	var loop: bool = DictRead.as_bool(cue.get("loop", false))
+	# **A `DSBPLAY_LOOPING` cue needs a stream that loops.** `AudioStreamWAV`
+	# repeats only when its own `loop_mode` says so, and the shipped waves
+	# carry none: every one of the nine looping sites was heard exactly once
+	# and then stopped, while its sequence ran on. The bomber's engine is the
+	# one that shows it -- `bomber.wav` is a couple of seconds against a
+	# fly-past of `0x0042A8E0`'s 150 ticks -- but the door, the lift, the
+	# platform and the drawbridge were all as short.
+	var stream: AudioStream = _loop_stream_for(wave) if loop \
+		else _stream_for(wave)
 	if stream == null:
 		return -1
 	var slot: int = _pool.load_wave(wave, volume, volume_id, tag)
 	if slot < 0:
 		return -1
-	var loop: bool = DictRead.as_bool(cue.get("loop", false))
 	_pool.play(slot, loop)
 	var player: AudioStreamPlayer = _players[slot]
 	player.stream = stream
@@ -212,6 +227,18 @@ func play_cues(cues: Array[Dictionary], tag: String = "") -> PackedInt32Array:
 	for cue: Dictionary in cues:
 		out.append(play_cue(cue, tag))
 	return out
+
+
+## Whether a slot handed out earlier is still sounding.
+##
+## What `IDirectSoundBuffer::Play` answers by doing nothing: a routine that
+## owns a fixed set of buffers ([method SetpieceCamera.enqueue]'s bomb run)
+## asks this before it plays into one again.
+func slot_playing(slot: int) -> bool:
+	if _pool == null:
+		return false
+	var record: Dictionary = _pool.slot(slot)
+	return not record.is_empty() and DictRead.as_bool(record["playing"])
 
 
 func stop_slot(slot: int) -> void:
@@ -370,6 +397,65 @@ func music_view() -> Dictionary:
 
 func _stream_for(wave: String) -> AudioStream:
 	return _stream_at(_tables.wave_path(wave), wave)
+
+
+## The same wave with its loop points set, made once and kept.
+##
+## `null` when the wave will not open or is not a sample this can loop --
+## the caller then falls back to nothing rather than to a one-shot, which is
+## the same answer a wave the cache does not carry already gets.
+func _loop_stream_for(wave: String) -> AudioStream:
+	if _loop_streams.has(wave):
+		return _loop_streams[wave]
+	var base: AudioStream = _stream_for(wave)
+	if base == null:
+		return null
+	if not is_instance_of(base, AudioStreamWAV):
+		return base
+	var sample: AudioStreamWAV = base
+	var looped: AudioStreamWAV = looping_copy(sample)
+	if looped == null:
+		return base
+	_loop_streams[wave] = looped
+	return looped
+
+
+## A copy of `sample` that repeats from its first frame to its last.
+##
+## The end point is **counted**, not left at zero: `loop_end` is a frame
+## number and a zero one is a loop of no length rather than "all of it".
+## Static so the suite can check the arithmetic without a cache to load from.
+static func looping_copy(sample: AudioStreamWAV) -> AudioStreamWAV:
+	if sample == null:
+		return null
+	var copy: AudioStreamWAV = sample.duplicate()
+	var frames: int = frame_count(copy)
+	if frames <= 0:
+		return null
+	copy.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	copy.loop_begin = 0
+	copy.loop_end = frames
+	return copy
+
+
+## How many frames a PCM sample holds: its bytes over the width of one frame.
+##
+## Answers 0 for a compressed format, whose byte count is not a frame count --
+## nothing the cache carries is one, and a wrong loop point would be worse
+## than no loop.
+static func frame_count(sample: AudioStreamWAV) -> int:
+	if sample == null:
+		return 0
+	var width: int = 0
+	if sample.format == AudioStreamWAV.FORMAT_8_BITS:
+		width = 1
+	elif sample.format == AudioStreamWAV.FORMAT_16_BITS:
+		width = 2
+	if width == 0:
+		return 0
+	if sample.stereo:
+		width *= 2
+	return sample.data.size() / width
 
 
 ## One wave at *path*, cached under *key*.

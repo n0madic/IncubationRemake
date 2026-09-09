@@ -94,6 +94,28 @@ func play_cues(_cues: Array[Dictionary]) -> void:
 	pass
 
 
+## `play_cues`, with the buffers it took handed back.
+##
+## For the one routine that owns a fixed set of them: `0x00416271` creates
+## **three** `crush.wav` buffers before the bomb run's loop and
+## `0x00416364`..`0x004163A9` plays them in turn, so a routine has to be able
+## to name a buffer again.
+func play_cues_slots(_cues: Array[Dictionary]) -> PackedInt32Array:
+	return PackedInt32Array()
+
+
+## Whether a buffer this host handed out is still sounding.
+##
+## `aDirectSoundPlayBuffer` `0x00436EF0` is `IDirectSoundBuffer::Play(0, 0,
+## flags)` with no `Stop` and no `SetCurrentPosition` in front of it, and Play
+## on a buffer that is already running does nothing at all -- so a crump whose
+## turn comes round while its own buffer still sounds is **silently dropped**,
+## which is why the original's minefield is a handful of thuds and not a wall
+## of them.
+func sound_playing(_slot: int) -> bool:
+	return false
+
+
 ## The muzzle switch and the projectile flag it writes.
 func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int,
 		_shooter: int = -1) -> void:

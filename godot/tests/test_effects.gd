@@ -1478,6 +1478,11 @@ func _surfaces_under(node: Node) -> int:
 
 
 ## The three weapon switches reach real effects with real kinds.
+## The weapon whose impact reaches `aBlob_CreateShockWave`, and a tile for it.
+const SHOCK_WAVE_WEAPON: int = 36
+const SHOCK_WAVE_TILE: Vector2i = Vector2i(6, 2)
+
+
 func _check_triggers(h: TestHarness) -> void:
 	var document: Dictionary = CacheFixture.read_json(
 		CacheFixture.cache_dir() + "/tables/blobs.json")
@@ -1850,6 +1855,52 @@ func _check_triggers(h: TestHarness) -> void:
 	h.equal("triggers.call_classes_read", unread, 0,
 		"all %d constructor calls carry a class the document could read"
 			% calls.size())
+	# **Weapon 36's impact is a request, not a record.** Its creator
+	# `0x00422B80` places sixty blobs in a ring where its one pinned
+	# constructor call describes a single static one, so it is a transcribed
+	# creator asked for **by tile** (docs/28 section 7.2). Both halves are
+	# checked: the request carries the tile and the type its call sites push,
+	# and the constructor-table path made nothing beside it -- a record here
+	# would be a sixty-first blob the engine never places.
+	pool.clear()
+	var before: int = pool.in_use()
+	var shock_made: int = triggers.impact(SHOCK_WAVE_WEAPON, to,
+		SHOCK_WAVE_TILE)
+	var wave_asked: Array[Dictionary] = triggers.take_programs()
+	var wave_requests: Array[Dictionary] = []
+	for request: Dictionary in wave_asked:
+		if DictRead.as_string(request["creator"]) \
+				== BlobTriggers.SHOCK_WAVE_CREATOR:
+			wave_requests.append(request)
+	h.equal("triggers.shock_wave_is_asked_for", wave_requests.size(), 1)
+	h.equal("triggers.shock_wave_asks_by_tile",
+		DictRead.as_vector2i(wave_requests[0]["tile"]), SHOCK_WAVE_TILE)
+	h.equal("triggers.shock_wave_type",
+		DictRead.as_int32_array(wave_requests[0]["extra"]),
+		PackedInt32Array([BlobTriggers.SHOCK_WAVE_TYPE]),
+		"`0x0040CD3C` and `0x0040D7AC` both push it")
+	# The switch's **other** creator still fires from the constructor table --
+	# weapon 36's impact is the shock wave plus `aBlob_CreateFireExplosion` --
+	# and what must not be there is a record of the shock wave's own kind: its
+	# one pinned call is skipped, not made beside the ring.
+	h.check("triggers.shock_wave_leaves_the_switch_alone",
+		shock_made > 0 and pool.in_use() > before,
+		"%d record(s) from the rest of weapon %d's impact"
+			% [shock_made, SHOCK_WAVE_WEAPON])
+	var wave_records: int = 0
+	for blob: Blob in pool.blobs():
+		if blob != null and blob.alive \
+				and blob.kind == BlobPrograms.SHOCKWAVE_KIND:
+			wave_records += 1
+	h.equal("triggers.shock_wave_makes_no_record", wave_records, 0,
+		"the ring goes in through the program seam, not beside it")
+	# With no tile there is nothing to place the ring on, and the effect is
+	# skipped rather than guessed at.
+	pool.clear()
+	var _tileless: int = triggers.impact(SHOCK_WAVE_WEAPON, to)
+	h.equal("triggers.shock_wave_needs_a_tile",
+		triggers.take_programs().size(), 0)
+
 	var swept: int = 0
 	for weapon_key: Variant in DictRead.as_dict(
 			document.get("weapon_muzzle", {})):
@@ -2196,6 +2247,10 @@ class SilentRoundHost extends RecordingHost:
 class BombRunHost extends RecordingHost:
 	var flag: bool = false
 	var records: int = 0
+	## Where the pool's first live record stands. High enough that the bomb
+	## run's own ceiling (`cmp eax, 0x1F40`) is a clamp and not a no-op, and
+	## movable so a frozen camera can be told from a tracking one.
+	var first: Vector3i = Vector3i(1600, 3200, 48000)
 	var cleared_pool: int = 0
 	var cleared_arrived: int = 0
 	var played: Array[String] = []
@@ -2226,6 +2281,24 @@ class BombRunHost extends RecordingHost:
 			extra: PackedInt32Array = PackedInt32Array()) -> void:
 		super(creator, at, extra)
 		records += 1
+
+	func pool_first() -> Vector3i:
+		return first
+
+	## The buffers `play_cues_slots` has handed out, and which still sound.
+	## A test clears an entry to let the run play into that buffer again.
+	var busy: Dictionary[int, bool] = {}
+	var _next_slot: int = 0
+
+	func play_cues_slots(cues: Array[Dictionary]) -> PackedInt32Array:
+		play_cues(cues)
+		var slot: int = _next_slot
+		_next_slot += 1
+		busy[slot] = true
+		return PackedInt32Array([slot])
+
+	func sound_playing(slot: int) -> bool:
+		return busy.get(slot, false)
 
 	## One bomb reaching the ground.
 	func land() -> void:
@@ -3740,6 +3813,12 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	var lead_frames: int = 0
 	var run_frames: int = 0
 	var spun: int = 0
+	# The camera as each half of the strike leaves it: the fly-past's last
+	# frame, one run frame before the first bomb lands, and one well after
+	# it with the pool's first record moved out from under the view.
+	var lead_view: Array[Vector3i] = []
+	var run_view: Array[Vector3i] = []
+	var held_view: Array[Vector3i] = []
 	while bombs_queue.is_running() and spun < 2000:
 		var stage: String = bombs_queue.current()
 		if stage == SetpieceCamera.STAGE_LEAD:
@@ -3751,8 +3830,16 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 			# pool: `_kind_25` deletes the record and raises the flag.
 			if run_frames == 3 or run_frames == 8:
 				bombs.land()
+			if run_frames == 5:
+				bombs.first = Vector3i(99000, 99000, 99000)
 		var _still: bool = bombs_queue.advance(
 			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		if stage == SetpieceCamera.STAGE_LEAD:
+			lead_view = [bombs.eye, bombs.target]
+		elif stage == "para_bombs" and run_frames == 2:
+			run_view = [bombs.eye, bombs.target]
+		elif stage == "para_bombs" and run_frames == 7:
+			held_view = [bombs.eye, bombs.target]
 		spun += 1
 	h.equal("camera.para_bombs.two_stages",
 		[during_lead, lead_frames],
@@ -3771,12 +3858,30 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 			SetpieceCamera.BOMBER_FROM.x, SetpieceCamera.BOMBER_FROM.y,
 			SetpieceCamera.BOMBER_FROM.z]],
 		"aBlob_CreateBomber(-320000, -320000, 320000, 48000, 48000, 320000)")
-	# `0x00415FB4` -- the eye on the flight path, the target left alone.
-	h.equal("camera.para_bombs.the_camera_keeps_its_target",
-		[bombs.eye, bombs.target],
+	# **The fly-past follows the plane.** `0x00415FE6`..`0x00416014` runs
+	# `0x0042B4B0` and then `0x00403560` **every frame**: the eye holds the
+	# flight path and the target is the pool's first live record. The eye's z
+	# is the bomber's own -- `0x4E200` on both -- so the plane is watched
+	# level rather than from above. `0x00415FB4`'s one set with the camera's
+	# own target, which this check used to pin as the whole of it, is never
+	# drawn: no frame tick stands between it and the loop.
+	h.equal("camera.para_bombs.the_fly_past_follows_the_plane", lead_view,
 		[Vector3i(SetpieceCamera.BOMBER_START_X, 0,
-			SetpieceCamera.BOMBER_START_Z), Vector3i(10, 20, 30)],
-		"`0x00415F2C` reads the target back and hands it straight on")
+			SetpieceCamera.BOMBER_START_Z), Vector3i(1600, 3200, 48000)],
+		"a target left on the ground was a view straight down at the map")
+	# **And the run is watched from the ground.** `0x00416319` pushes
+	# `(0, 0, 0xC80)` for the eye and `0x004162F6` clamps the target's z to
+	# `0x1F40`, so the camera stands at the world's corner one field up and
+	# looks at where the bomb is going rather than at the sky it came from.
+	h.equal("camera.para_bombs.the_run_watches_from_the_ground", run_view,
+		[SetpieceCamera.BOMB_RUN_EYE,
+		Vector3i(1600, 3200, SetpieceCamera.BOMB_RUN_CEILING)],
+		"the strike used to be shown from the fly-past's 320 000 up")
+	# The camera lives in `0x004162D6`'s loop, which ends at the **first**
+	# landing; `0x00416364`'s, which plays the rest of the crumps, sets none.
+	h.equal("camera.para_bombs.the_view_holds_after_the_first_crump",
+		held_view, run_view,
+		"the pool's first record moved to (99000, 99000, 99000) on frame 5")
 	# The whole point of the two stages: each starts the sound of the routine
 	# it stands for. `crush.wav` @89 is `0x004160F0`'s and nothing else's, and
 	# it was never played while the event resolved to `0x00415E90` alone.
@@ -3800,6 +3905,34 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		run_frames < bomb_frames and bombs.pool_live() == 0,
 		"%d of %d frames; `while (live)`" % [run_frames, bomb_frames])
 	audio.free()
+
+	# **Three buffers, and a busy one swallows the crump whole.**
+	# `0x00416271` creates three `crush.wav` buffers before the bomb run's
+	# loop and `0x004163A1` advances the index on every landing whether or
+	# not the buffer it lands on is free; `aDirectSoundPlayBuffer`
+	# `0x00436EF0` is `IDirectSoundBuffer::Play` with no `Stop` in front of
+	# it, so a play into a buffer that is still sounding does nothing at all.
+	# One fresh voice per bomb is what made a stick of sixty a wall of noise.
+	var ring: BombRunHost = BombRunHost.new()
+	var ring_st: Dictionary = {"crump": 0,
+		"buffers": PackedInt32Array([-1, -1, -1])}
+	for _landing: int in range(6):
+		SetpieceCamera.crump(ring, bomb_cue, ring_st)
+	h.equal("camera.para_bombs.three_buffers_cap_the_crumps",
+		[ring.played.size(), DictRead.as_int(ring_st["crump"])],
+		[SetpieceCamera.BOMB_BUFFERS, 0],
+		"six landings, three buffers, and the index home again")
+	# The fourth buffer-load is the first one back: a crump sounds again as
+	# soon as the buffer its turn lands on has finished.
+	ring.busy[0] = false
+	SetpieceCamera.crump(ring, bomb_cue, ring_st)
+	h.equal("camera.para_bombs.a_finished_buffer_sounds_again",
+		ring.played.size(), SetpieceCamera.BOMB_BUFFERS + 1,
+		"buffer 0 was free when its turn came round")
+	SetpieceCamera.crump(ring, bomb_cue, ring_st)
+	h.equal("camera.para_bombs.and_the_others_are_still_busy",
+		ring.played.size(), SetpieceCamera.BOMB_BUFFERS + 1,
+		"buffer 1 has not finished, so its crump is dropped")
 
 	# `0x004160B4` is the fly-past **routine's** last act and not its last
 	# frame. `0x00415E90`'s loop leaves on the *arrived* flag as readily as on
@@ -3860,7 +3993,7 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
 	inputs.geometry = geometry
 	inputs.models = {"A_DEBRIS.3DI": 1, "A_SPLAT1.3DI": 2, "A_LASERG.3DI": 3,
-		"L069EE00.3DI": 4, "A_PARAB1.3DI": 5}
+		"L069EE00.3DI": 4, "A_PARAB1.3DI": 5, "A_EXPL05.3DI": 6}
 	inputs.tiles[Vector2i(2, 2)] = {"object": Vector3i(6400, 6400, 0), "unit": {}}
 	inputs.tiles[Vector2i(4, 2)] = {"object": Vector3i(12800, 6400, 0), "unit": {}}
 	var shapes: Array = [
@@ -3875,7 +4008,55 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		[BlobPrograms.TELEPORT_STREAM, PackedInt32Array([2, 2, 4, 2]), 200, 800],
 		[BlobPrograms.BOMBER, PackedInt32Array([0, 0, 0, 3200, 0, 0]), 1, 0],
 		[BlobPrograms.PARA_BOMB, PackedInt32Array([2, 2, 3]), 1, 1],
+		# `aBlob_CreateShockWave` on the type its two call sites push.
+		[BlobPrograms.SHOCK_WAVE, PackedInt32Array([2, 2,
+			BlobTriggers.SHOCK_WAVE_TYPE]), 60, 0],
 	]
+	# **The shock wave, field by field.** Its arm is chosen by a *type*, and
+	# the transcription's arithmetic waits on a native capture -- Wine does
+	# not reach the anchor on this host (`blob_gold.PROGRAM_ARGS_STALE`) -- so
+	# what is pinned here is the shape the disassembly gives: sixty records at
+	# the object itself, the ring in the **velocity** rather than the
+	# placement, and a type outside the three arms making nothing at all.
+	var wave: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var wave_draws: BlobPrograms.Draws = BlobPrograms.Draws.create(1.0)
+	var wave_ran: bool = BlobPrograms.run(BlobPrograms.SHOCK_WAVE, wave,
+		wave_draws, PackedInt32Array([2, 2, BlobTriggers.SHOCK_WAVE_TYPE]),
+		inputs)
+	h.check("shockwave.runs", wave_ran)
+	var wave_object: Vector3i = inputs.object(2, 2)
+	var wave_wrong: Array[String] = []
+	var wave_still: int = 0
+	for record: Dictionary in wave.records:
+		if DictRead.as_int(record["kind"]) != BlobPrograms.SHOCKWAVE_KIND \
+				or DictRead.as_int(record["life"]) != 20 \
+				or DictRead.as_int(record["class_id"]) != 0 \
+				or DictRead.as_int(record["rot_y"]) != 0 \
+				or DictRead.as_int(record["vz"]) != 0 \
+				or DictRead.as_int(record["x"]) != wave_object.x \
+				or DictRead.as_int(record["y"]) != wave_object.y \
+				or DictRead.as_int(record["z"]) != wave_object.z:
+			wave_wrong.append(str(record))
+		if DictRead.as_int(record["vx"]) == 0 \
+				and DictRead.as_int(record["vy"]) == 0:
+			wave_still += 1
+	h.equal("shockwave.records_agree", wave_wrong, [] as Array[String],
+		"sixty kind-13 records of life 20 at the object, `rot_y` 0, `vz` 0")
+	h.equal("shockwave.every_record_moves", wave_still, 0,
+		"the ring is the velocity, so no record stands still")
+	h.check("shockwave.orientation_turns",
+		DictRead.as_int(wave.records[0]["rot_z"])
+			!= DictRead.as_int(wave.records[1]["rot_z"]),
+		"each record is aimed along its own point on the circle")
+	# The fall-through arm: `ecx` stays zero and the loop is skipped entire.
+	var quiet: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var quiet_draws: BlobPrograms.Draws = BlobPrograms.Draws.create(1.0)
+	var _quiet_ran: bool = BlobPrograms.run(BlobPrograms.SHOCK_WAVE, quiet,
+		quiet_draws, PackedInt32Array([2, 2, 18]), inputs)
+	h.equal("shockwave.a_type_with_no_arm_makes_nothing",
+		[quiet.records.size(), quiet.refused, quiet_draws.count], [0, 0, 0],
+		"a faithful zero -- which is what the capture in hand recorded")
+
 	var clearing: Array[String] = []
 	for shape: Array in shapes:
 		var creator: String = shape[0]

@@ -120,6 +120,20 @@ READ_RECORDS = 12
 #: what came out.
 FILL_ARGUMENT = 0
 
+#: **Trailing arguments the weapon switch pushes as literals**, per creator.
+#: `argument_vector` fills everything past the four tile coordinates with
+#: :data:`FILL_ARGUMENT`, which is right for a creator whose tail is unread
+#: and wrong for one whose tail selects what it makes.
+#:
+#: `aBlob_CreateShockWave` `0x00422B80` is the second: its third argument is a
+#: **type** with arms 0, 1 and 2 and no default, and both shipped call sites
+#: push 2 (`blob_tables.SHOCKWAVE_TYPE_SITES`).  The first capture handed it
+#: the target's x, 18, so the engine took the fall-through, wrote no record
+#: and left a phase that looks exactly like "the creator refused the tile".
+#: See :data:`BURST_ARGS`, which is the same correction for the three
+#: seven-argument burst creators and predates this one.
+SWITCH_ARGS: dict[int, tuple[int, ...]] = {0x00422B80: (2,)}
+
 #: How many creators go into one plan.  **One**, and the reasoning is worth
 #: keeping because the first version of it was wrong.
 #:
@@ -1743,12 +1757,27 @@ def raised_plan(handle: int, creator: int, args: list[int],
 
 
 def argument_vector(arity: int, source: tuple[int, int],
-                    target: tuple[int, int]) -> list[int]:
-    """`(x, y, x2, y2, 0 …)`, cut to the creator's arity."""
+                    target: tuple[int, int],
+                    creator: int | None = None) -> list[int]:
+    """`(x, y, x2, y2, 0 …)`, cut to the creator's arity.
+
+    With the creator named, the trailing literals of :data:`SWITCH_ARGS`
+    replace the tail of the vector.  A creator whose last argument is a
+    **type** rather than a coordinate gets a tile number otherwise, and the
+    engine then takes a fall-through arm and makes nothing -- which is a
+    faithful zero that verifies nothing at all.  Passing no creator leaves
+    the vector exactly as it was, which is what the plan-digest fixtures and
+    the poke families want.
+    """
     full = [source[0], source[1], target[0], target[1]]
     while len(full) < arity:
         full.append(FILL_ARGUMENT)
-    return full[:arity]
+    out = full[:arity]
+    tail = SWITCH_ARGS.get(creator, ()) if creator is not None else ()
+    for index, value in enumerate(tail, start=arity - len(tail)):
+        if 0 <= index < arity:
+            out[index] = value
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -1894,7 +1923,7 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
         if not (phases.get(name) or {}).get("records"):
             continue
         records = phases[name]["records"]
-        args = argument_vector(arities[creator], source, target)
+        args = argument_vector(arities[creator], source, target, creator)
         # **The family is chosen from the records, not by retrying.**  A
         # creator whose blobs are class 0 faults the sweep before it ticks
         # anything, every time; picking the family up front spends the
@@ -2053,13 +2082,20 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     # A phase written before the seed reads existed is re-taken: it holds the
     # records but cannot answer the velocity question, and merging is the
     # whole point of writing phases as they land.
+    # A phase whose stored arguments are **not the ones the vector produces
+    # now** is re-taken too, for the reason the `heights` predicate above
+    # gives: the phase holds records, and they are the records of a call
+    # nobody would make again.  `SWITCH_ARGS` moved the shock wave's third
+    # argument from a tile number to the type its callers push.
     wanted = [c for c in reachable_creators(root)
-              if "seed2_after" not in phases.get(f"0x{c:08X}", {})]
+              if "seed2_after" not in phases.get(f"0x{c:08X}", {})
+              or (phases.get(f"0x{c:08X}", {}).get("args")
+                  != argument_vector(arities[c], source, target, c))]
     failures: dict[str, str] = document.setdefault("failures", {})
     LOG.info("%d creator(s) still to capture", len(wanted))
     for start in range(0, len(wanted), GROUP_SIZE):
         group = [{"creator": c,
-                  "args": argument_vector(arities[c], source, target)}
+                  "args": argument_vector(arities[c], source, target, c)}
                  for c in wanted[start:start + GROUP_SIZE]]
         name = "blob_%02d" % (start // GROUP_SIZE)
         try:
@@ -2785,8 +2821,14 @@ NATIVE_COVERAGE = 30
 #: record is an environment result and not a plan that faults (`docs/91`
 #: §1).  They are pinned rather than tolerated: a run on a host where Wine
 #: works has to empty this list, and `BURST_UNCAPTURED` with it.
-NATIVE_FAULTS: list[str] = ["burst_0x00423D80", "burst_0x00424250",
-                            "burst_0x004247C0"]
+#: `0x00422B80` joined them on 2026-09-09, for the same reason and with the
+#: same evidence: its stored phase's arguments were corrected by
+#: `SWITCH_ARGS`, so `capture` asked for it again, and Wine reached the anchor
+#: 0 times in 10 -- as it did for the three below and for `--probe-startup 3`
+#: taken the same hour.  Its transcription is therefore executed by nothing
+#: here; see `PROGRAM_ARGS_STALE`.
+NATIVE_FAULTS: list[str] = ["0x00422B80", "burst_0x00423D80",
+                            "burst_0x00424250", "burst_0x004247C0"]
 #: How many of the thirty produced records on the captured tile, and how many
 #: records in all.  The rest refused the tile, which is a measurement of which
 #: tile a creator will act on rather than a hole.
@@ -3981,12 +4023,20 @@ def _unit_object_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
 #: The ten creators `docs/28` §7.6.1 left with "a residue of fields with no
 #: named mechanism", now transcribed instruction by instruction in
 #: `tools/inclib/blob_creators.py` -- `docs/97` §22.
-CREATOR_PROGRAMS_EXPECTED = 13
+CREATOR_PROGRAMS_EXPECTED = 14
 #: The burst creators whose `burst_*` phase this capture does not hold.
 #: Empty is the goal; each name here is a transcription **nothing in this
 #: repository executes** -- `_creator_program_checks` skips past it -- so the
 #: report has to say so rather than let the green count imply otherwise.
 BURST_UNCAPTURED = ("0x00423D80", "0x00424250", "0x004247C0")
+
+#: Creators whose phase in hand was taken with arguments :data:`SWITCH_ARGS`
+#: has since corrected, so the records it holds are a **fall-through arm's**
+#: -- none -- and verify nothing.  `capture` re-takes exactly these on the
+#: next run with Wine; until one happens the transcription is unexecuted and
+#: this list is what says so, the same way `BURST_UNCAPTURED` does.  Empty is
+#: the goal.
+PROGRAM_ARGS_STALE = ("0x00422B80",)
 
 #: How many draws each takes from the second generator, and how many records
 #: the constructor refuses for a zero `life`.  Both are pinned because both
@@ -4079,6 +4129,11 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
     # see `BURST_UNCAPTURED`.
     "FLASH_STEP", "FLASH_UNIT", "NEEDLE_STEP", "NEEDLE_UNIT",
     "TRACER_STEP", "TRACER_UNIT", "TRACER_CASING_SPEED",
+    # The shock wave's radius and turn: the phase in hand was taken with a
+    # third argument the creator has no arm for, so it ran nothing at all --
+    # see `PROGRAM_ARGS_STALE`, and `blob_tables.SHOCKWAVE_ARM_SITES` for
+    # what stands behind the arm's own three numbers meanwhile.
+    "SHOCKWAVE_RADIUS", "SHOCKWAVE_TURN",
     # The unit animations' and the set pieces' constants (`docs/97` §31,
     # §32): no weapon switch reaches those creators either, and it is
     # `presentation_gold.py`'s own `death_*` phases that run them.
@@ -4195,9 +4250,10 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
             # this host has not been able to take one -- `--probe-startup`
             # answers 0 of 10 (`docs/91` §1).  Anything else missing is still
             # a failure.
-            (uncaptured if address in BURST_ARGS
-             else wrong).append(name if address in BURST_ARGS
-                                else (name, "not captured"))
+            if address in BURST_ARGS or name in PROGRAM_ARGS_STALE:
+                uncaptured.append(name)
+            else:
+                wrong.append((name, "not captured"))
             continue
         ck.equal(f"native.creator_arity_{name}", arities.get(address), arity,
                  lambda v, n=name: f"{n} takes {v} dword argument(s), as its "
@@ -4222,9 +4278,10 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
                     wrong.append((name, index, field, record[field],
                                   built[field]))
     ck.equal("native.creator_burst_uncaptured", sorted(uncaptured),
-             sorted(BURST_UNCAPTURED),
-             lambda v: f"{len(v)} burst creator(s) still without a "
-                       "`burst_*` phase")
+             sorted(BURST_UNCAPTURED + PROGRAM_ARGS_STALE),
+             lambda v: f"{len(v)} creator(s) with no phase this capture can "
+                       "verify: a burst creator with no `burst_*` phase, or "
+                       "one whose stored arguments SWITCH_ARGS has corrected")
     ck.equal("native.creator_program_records", wrong, [],
              lambda v: f"{compared} record(s) across "
                        f"{len(blob_creators.PROGRAMS)} creator(s) reproduced "

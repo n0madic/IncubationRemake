@@ -111,6 +111,22 @@ const BOMBER_START_Z_PATH_1: int = 80000
 ## The delay between bombs -- [constant SetpieceDriver.BOMB_SPACING], which is
 ## where the compression of `0x00416231`'s `aRandom2(0, 200)` is written down.
 const BOMB_SPACING: int = SetpieceDriver.BOMB_SPACING
+## `push 0xC80 / push 0 / push 0` at `0x00416319` -- the bomb run is watched
+## from the **ground**: the eye stands at the world's own corner, one field
+## up, and does not move for the length of the strike.
+const BOMB_RUN_EYE: Vector3i = Vector3i(0, 0, 3200)
+## `cmp eax, 0x1F40` at `0x004162F6` -- and the target is the falling bomb
+## with its z clamped to this, so the camera looks at where the bomb is going
+## rather than craning up at the sky it fell out of.
+const BOMB_RUN_CEILING: int = 8000
+## `mov edi, 3` at `0x00416271` -- the bomb run creates **three** `crush.wav`
+## buffers before its loop and plays them in turn (`0x004163A1`'s
+## `inc esi / cmp esi, 3`), the index advancing on every raised *arrived*
+## whether or not the buffer it lands on was free. A buffer that is still
+## sounding swallows the play whole, `aDirectSoundPlayBuffer` `0x00436EF0`
+## being `IDirectSoundBuffer::Play` with no `Stop` in front of it -- so a
+## stick of sixty mines is a few thuds, not sixty laid over each other.
+const BOMB_BUFFERS: int = 3
 ## How long the fly-past holds the picture, at most.
 ##
 ## `0x00415E90` has no count of its own: it spins on the *arrived* flag of
@@ -157,12 +173,34 @@ const STAGE_POOL: String = "setpiece.pool"
 ## routine's sounds are heard is that routine's own business -- the bomb run
 ## plays them once per bomb, not once per stage -- so `cues_late` is handed to
 ## the arm rather than to the queue. Every other kind ignores it.
+## One landing's crump, into the bomb run's own three buffers.
+##
+## The index advances every time, as `0x004163A1` does; the play happens only
+## when the buffer it lands on has finished, which is what
+## `IDirectSoundBuffer::Play` decides for the engine. So the first three
+## crumps of a strike sound and the rest thin out to the sample's own length
+## -- against one fresh voice per bomb, which on a stick of sixty was a wall
+## with a tail of reverberation on it. Public for the suite.
+static func crump(host: ShotHost, cues: Array[Dictionary],
+		st: Dictionary) -> void:
+	if cues.is_empty():
+		return
+	var at: int = DictRead.as_int(st["crump"])
+	var buffers: PackedInt32Array = DictRead.as_int32_array(st["buffers"])
+	if at < buffers.size() and not host.sound_playing(buffers[at]):
+		var took: PackedInt32Array = host.play_cues_slots(cues)
+		buffers[at] = took[0] if took.size() > 0 else -1
+		st["buffers"] = buffers
+	st["crump"] = (at + 1) % BOMB_BUFFERS
+
+
 static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 		frames: int, cell: Vector2i, from_h: int, to_h: int, unit: int,
 		extra: Dictionary, paint: Callable, cues: Array[Dictionary],
 		cues_late: Array[Dictionary] = []) -> int:
 	var st: Dictionary = {"saved_eye": Vector3i.ZERO, "saved_target": Vector3i.ZERO,
-		"at": Vector3i.ZERO}
+		"at": Vector3i.ZERO, "landed": false, "crump": 0,
+		"buffers": PackedInt32Array([-1, -1, -1])}
 	var centre: Vector3i = Vector3i(cell.x * WorldSpace.WORLD_UNITS_PER_FIELD,
 		cell.y * WorldSpace.WORLD_UNITS_PER_FIELD, from_h)
 	match kind:
@@ -513,21 +551,35 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 				# a hundred and fifty frames of empty sky.
 				func() -> bool: return host.pool_arrived() or host.pool_live() == 0,
 				func(frame: int, _total: int) -> void:
-					if frame != 1:
-						return
-					# `0x00415EE1`..`0x00415EFF` -- six **literals**, not
-					# tiles: the fly-past is a fixed diagonal across the
-					# scene and reads no cell at all.
-					host.spawn_at(BlobPrograms.BOMBER, BOMBER_FROM,
-						PackedInt32Array([BOMBER_TO.x, BOMBER_TO.y,
-							BOMBER_TO.z]))
-					# `0x00415F2C` reads all six camera numbers back and
-					# `0x00415FB4` sets the eye on the flight path with the
-					# **target it just read** -- so the two locals docs/97
-					# section 32 left UNVERIFIED are the camera's own target,
-					# and the bomber aims the camera nowhere.
+					if frame == 1:
+						# `0x00415EE1`..`0x00415EFF` -- six **literals**, not
+						# tiles: the fly-past is a fixed diagonal across the
+						# scene and reads no cell at all.
+						host.spawn_at(BlobPrograms.BOMBER, BOMBER_FROM,
+							PackedInt32Array([BOMBER_TO.x, BOMBER_TO.y,
+								BOMBER_TO.z]))
+						# `0x00415F2C` reads all six camera numbers back and
+						# `0x00415FB4` sets the eye on the flight path with
+						# the target it just read. That set is never drawn --
+						# no frame tick stands between it and the loop -- so
+						# what it is really for is the target the loop starts
+						# from, before `0x0042B4B0` has answered once.
+						st["at"] = host.camera_target()
+					# **The camera follows the plane, every frame.**
+					# `0x00415FE6`..`0x00416014` is the whole of the loop's
+					# picture: `0x0042B4B0` writes the pool's first live
+					# record into the three target locals and `0x00403560`
+					# then sets the eye on the flight path with **that** as
+					# its target. The eye's z is the bomber's own -- both are
+					# `0x4E200` -- so the fly-past is watched level with the
+					# plane and not from above it, and a target left on the
+					# ground is what made it a view straight down at the map.
+					# `0x0042B4B0` writes nothing when the pool is empty, so
+					# the last answer stands.
+					if host.pool_live() > 0:
+						st["at"] = host.pool_first()
 					host.set_camera(Vector3i(BOMBER_START_X, 0,
-						BOMBER_START_Z), host.camera_target()),
+						BOMBER_START_Z), DictRead.as_vector3i(st["at"])),
 				cues,
 				# `0x004160B4` -- the fly-past's last act, so the bomb run
 				# starts with an empty pool. It is the routine's tail and not
@@ -577,8 +629,24 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					# the engine's own loop ticks before it asks
 					# (`0x00416364` then `0x00416369`).
 					elif host.pool_arrived():
-						host.play_cues(cues_late)
+						crump(host, cues_late, st)
 						host.clear_arrived()
+						st["landed"] = true
+					# **And the run is watched from the ground.** The camera
+					# lives in `0x004162D6`'s loop and nowhere else: eye at
+					# [constant BOMB_RUN_EYE], target on the pool's first
+					# live record with its z clamped to
+					# [constant BOMB_RUN_CEILING]. That loop ends at the
+					# first landing -- `0x00416364`'s, which plays the rest
+					# of the crumps, sets no camera at all -- so the view
+					# holds where the first bomb came down while the stick
+					# finishes falling around it.
+					if not DictRead.as_bool(st.get("landed", false)):
+						if host.pool_live() > 0:
+							st["at"] = host.pool_first()
+						var at: Vector3i = DictRead.as_vector3i(st["at"])
+						host.set_camera(BOMB_RUN_EYE, Vector3i(at.x, at.y,
+							mini(at.z, BOMB_RUN_CEILING)))
 					paint.call(frame, total))
 			return BOMBER_FRAMES
 		"teleporter":

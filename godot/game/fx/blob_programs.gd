@@ -67,6 +67,7 @@ const FIRE_DEATH: String = "0x0042B1D0"
 const FLYING_UNIT: String = "0x00429700"
 const FIRE_EXPLOSION: String = "0x00429A80"
 ## docs/42 section 7 -- the unit animations' creators (docs/97 section 31).
+const SHOCK_WAVE: String = "0x00422B80"
 const ARROWS: String = "0x00422D40"
 const LANDING_DUST: String = "0x004227C0"
 const HEAL_FLASH: String = "0x00423030"
@@ -122,6 +123,23 @@ const FLASH_RADIUS_LARGE: int = 0x1900
 const DUST_RADIUS: int = 0xC80
 const DUST_TURN: int = 0xCC
 ## The quarter turn between arrows and skulls, the twelfth between crosses.
+## `0x00422B80`'s three arms, keyed by the low byte of its third argument:
+## `[records, life, speed]`. A value outside the three makes nothing at all --
+## `ecx` stays zero through the cascade at `0x00422BF4` and the `jle` at
+## `0x00422C55` skips the loop entire. Both shipped call sites push **2**
+## (`blob_tables.SHOCKWAVE_TYPE_SITES`), so what the game ever makes is the
+## last row.
+const SHOCKWAVE_ARMS: Dictionary[int, Array] = {
+	0: [30, 5, 10], 1: [50, 60, 10], 2: [60, 20, 6],
+}
+## `mov edi, 0xA0` at `0x00422C50`, and `mov eax, 0x1000 / cdq / idiv ecx` at
+## `0x00422C5B`: the ring's radius and a full turn divided by the record
+## count, both taken once before the loop.
+const SHOCKWAVE_RADIUS: int = 0xA0
+const SHOCKWAVE_TURN: int = 0x1000
+const SHOCKWAVE_MODEL: String = "A_EXPL05.3DI"
+const SHOCKWAVE_KIND: int = 0x0D
+
 const QUARTER_TURN: int = 0x400
 const CROSS_TURN: int = 0x155
 const ARROW_MODEL: String = "A_ARROW.3DI"
@@ -320,6 +338,7 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	BLOOD_BURST: 2, BLOOD_FLOOD: 5, BLOOD_SPRAY_LARGE: 5, FLYING_DEBRIS: 2,
 	SPECIES_BURST: 2, ROOF_DEBRIS: 3, GROUND_DEBRIS: 3, LANDING_DUST: 2,
 	ARROWS: 2, FIRE_CIRCLE: 2, HEAL_FLASH: 2, POISON_FLASH: 2,
+	SHOCK_WAVE: 3,
 	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, WALL_DEBRIS: 2,
 	KILL_FIRE: 3, LASER_BARRIER: 4, STATUE_BEAM: 5, FLYING_UNIT: 3, PUFF: 2,
 	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
@@ -375,6 +394,8 @@ static func run(creator: String, pool: Pool, draws: Draws,
 			fire_explosion(pool, draws, args[0], args[1], inputs)
 		ARROWS:
 			arrows(pool, args[0], args[1], inputs)
+		SHOCK_WAVE:
+			shock_wave(pool, args[0], args[1], args[2], inputs)
 		LANDING_DUST:
 			landing_dust(pool, args[0], args[1], inputs)
 		HEAL_FLASH:
@@ -860,6 +881,32 @@ static func arrows(pool: Pool, x: int, y: int, inputs: Inputs) -> void:
 		var aim: Vector2i = inputs.geometry.orient(at, there)
 		pool.spawn(ARROW_MODEL, 0, there.x, there.y, at.z, aim.x, 0, aim.y,
 			0xE, 0xF, at.x, at.y, 0, 0, 0)
+
+
+## `0x00422B80` -- `aBlob_CreateShockWave` (`0x0040CD56`): a ring of
+## `A_EXPL05.3DI` model blobs thrown outward from the tile's placed object.
+##
+## Weapon 17's muzzle and weapon 36's impact are its two callers and both push
+## type 2, so what the game ever makes is **sixty** records of kind 13 with a
+## life of 20. Every one sits at the object's own position -- the ring goes
+## into the *velocity*, not the placement -- oriented along the line from the
+## object to its own point on the circle, exactly as the selection marker
+## `0x00422D40` is. No draw: the whole effect is table arithmetic.
+static func shock_wave(pool: Pool, x: int, y: int, type_id: int,
+		inputs: Inputs) -> void:
+	var arm: Array = DictRead.as_array(SHOCKWAVE_ARMS.get(type_id & 0xFF, []))
+	if arm.size() < 3:
+		return
+	var count: int = DictRead.as_int(arm[0])
+	var life: int = DictRead.as_int(arm[1])
+	var speed: int = DictRead.as_int(arm[2])
+	var at: Vector3i = inputs.object(x, y)
+	var turn: int = IncInt.div_trunc(SHOCKWAVE_TURN, count) & 0xFFFF
+	for offset: Vector3i in _ring(inputs, SHOCKWAVE_RADIUS, turn, count):
+		var there: Vector3i = Vector3i(at.x + offset.x, at.y + offset.y, at.z)
+		var aim: Vector2i = inputs.geometry.orient(at, there)
+		pool.spawn(SHOCKWAVE_MODEL, 0, at.x, at.y, at.z, aim.x, 0, aim.y,
+			SHOCKWAVE_KIND, life, offset.x * speed, offset.y * speed, 0, 0, 0)
 
 
 ## `0x004227C0` -- the landing dust (docs/42 section 7.1): twenty class-2

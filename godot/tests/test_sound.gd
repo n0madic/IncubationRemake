@@ -69,6 +69,7 @@ func run(h: TestHarness) -> void:
 	_check_compat(h, tables, document)
 	_check_wave_padding(h)
 	_check_slot_end_arming(h)
+	_check_looping_stream(h)
 
 
 ## The slot's "sample ended" connection, and the error it used to raise.
@@ -105,6 +106,55 @@ func _check_slot_end_arming(h: TestHarness) -> void:
 ## The callable the arming test binds; it is never called.
 func _slot_ended(_slot: int) -> void:
 	pass
+
+
+## A `DSBPLAY_LOOPING` cue needs a stream that loops, and the shipped waves
+## carry no loop points at all.
+##
+## `AudioStreamWAV` repeats only when its own `loop_mode` says so, so every
+## one of docs/28's nine looping sites was heard exactly once and then went
+## quiet under a sequence that ran on -- `bomber.wav` against a fly-past of
+## `0x0042A8E0`'s 150 ticks, and the door, the lift, the platform and the
+## drawbridge the same way. The end point is **counted**: `loop_end` is a
+## frame number, and a zero one is a loop of no length rather than all of it.
+func _check_looping_stream(h: TestHarness) -> void:
+	var sample: AudioStreamWAV = AudioStreamWAV.new()
+	sample.format = AudioStreamWAV.FORMAT_16_BITS
+	sample.stereo = false
+	var bytes: PackedByteArray = PackedByteArray()
+	bytes.resize(400)
+	sample.data = bytes
+	h.equal("loop.frames_16_bit_mono", AudioSystem.frame_count(sample), 200,
+		"two bytes a frame")
+	sample.stereo = true
+	h.equal("loop.frames_16_bit_stereo", AudioSystem.frame_count(sample), 100,
+		"two channels of two bytes")
+	sample.format = AudioStreamWAV.FORMAT_8_BITS
+	h.equal("loop.frames_8_bit_stereo", AudioSystem.frame_count(sample), 200,
+		"one byte a channel")
+	sample.format = AudioStreamWAV.FORMAT_IMA_ADPCM
+	h.equal("loop.frames_compressed_refused",
+		AudioSystem.frame_count(sample), 0,
+		"a byte count is not a frame count, and a wrong loop point would be "
+		+ "worse than no loop")
+	sample.format = AudioStreamWAV.FORMAT_16_BITS
+	sample.stereo = false
+	var looped: AudioStreamWAV = AudioSystem.looping_copy(sample)
+	h.check("loop.copy_is_made", looped != null, "a PCM sample loops")
+	if looped == null:
+		return
+	h.equal("loop.copy_repeats", int(looped.loop_mode),
+		int(AudioStreamWAV.LOOP_FORWARD))
+	h.equal("loop.copy_spans_the_sample",
+		[looped.loop_begin, looped.loop_end], [0, 200],
+		"the whole of it, counted rather than left at zero")
+	h.equal("loop.source_left_alone", int(sample.loop_mode),
+		int(AudioStreamWAV.LOOP_DISABLED),
+		"a wave asked for both ways keeps its one-shot")
+	var empty: AudioStreamWAV = AudioStreamWAV.new()
+	h.check("loop.empty_sample_refused",
+		AudioSystem.looping_copy(empty) == null and AudioSystem.looping_copy(null) == null,
+		"nothing to loop is answered as nothing")
 
 
 ## The RIFF pad byte, and the one place the remake corrects a shipped header.

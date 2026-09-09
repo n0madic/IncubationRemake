@@ -1842,6 +1842,20 @@ class Binary:
             return self.i32(va + 2)
         return None
 
+    def mov_stack_imm32(self, va: int) -> int | None:
+        """``mov dword [esp + disp8], imm32`` -- ``C7 44 24 disp8 imm32``.
+
+        The form :meth:`mov_imm32` does **not** decode: it takes ``0xC7 05``,
+        the absolute one.  A creator that keeps its arm's numbers in its own
+        frame writes them this way, and the immediate is four bytes past the
+        opcode rather than one.
+        """
+        if not self.mapped(va, 8):
+            return None
+        if (self.u8(va), self.u8(va + 1), self.u8(va + 2)) != (0xC7, 0x44, 0x24):
+            return None
+        return self.u32(va + 4)
+
     def mov_imm32(self, va: int) -> int | None:
         """``mov r32, imm32`` (0xB8+r) or ``mov [disp32], imm32`` (0xC7 05)."""
         if not self.mapped(va, 10):
@@ -3898,6 +3912,25 @@ CREATOR_NESTING_IS_FLAT = True
 #: holds it; the check requires its magnitude to equal the Python constant's,
 #: so a creator that reads the negative cell and one that reads the positive
 #: are both pinned without giving the module two names for one number.
+#: `aBlob_CreateShockWave` `0x00422B80`'s three arms, read out of the
+#: cascade at `0x00422BF4`: type -> (the `mov ecx, imm32` that sets the
+#: record count, the `mov dword [esp+disp8], imm32` that sets the life, the
+#: one that sets the velocity scale).  Arms 0 and 1 share the scale -- arm 1
+#: jumps into arm 0's last store -- which is why the third address repeats.
+#: Checked against `blob_creators.SHOCKWAVE_ARMS`, whose nine numbers are in
+#: a dict and so are not covered by `constant_sites_cover_module`.
+SHOCKWAVE_ARM_SITES: dict[int, tuple[int, int, int]] = {
+    0: (0x00422C37, 0x00422C3C, 0x00422C44),
+    1: (0x00422C28, 0x00422C2D, 0x00422C44),
+    2: (0x00422C11, 0x00422C16, 0x00422C1E),
+}
+#: The type **both** shipped call sites push -- `0x0040CD3C` inside weapon
+#: 17's muzzle arm and `0x0040D7AC` inside weapon 36's impact arm -- so of the
+#: three arms above only the last is ever taken and the effect the game makes
+#: is always sixty records.  A type outside the three makes nothing at all.
+SHOCKWAVE_TYPE_SITES: tuple[int, ...] = (0x0040CD3C, 0x0040D7AC)
+SHOCKWAVE_TYPE = 2
+
 CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = {
     "SPARK_SPEED":   (("f64", 0x0042A9D0, 0x004B12B8, 1600.0),),
     "SHARD_SPEED":   (("f64", 0x004264A0, 0x004B12D0, 1920.0),),
@@ -3953,6 +3986,8 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     # docs/42 §7 -- the unit animations' creators (docs/97 §31): the radii
     # are `mov r32, imm32` and the turns `mov word [esp+d], imm16`, read
     # at their own instructions.
+    "SHOCKWAVE_RADIUS":     (("mov", 0x00422B80, 0x00422C50, 0xA0),),
+    "SHOCKWAVE_TURN":       (("mov", 0x00422B80, 0x00422C5B, 0x1000),),
     "RING_RADIUS":          (("mov", 0x00422D40, 0x00422E13, 0x12C0),),
     "RING_RADIUS_LARGE":    (("mov", 0x00422D40, 0x00422E0C, 0x2580),),
     "FLASH_RADIUS":         (("mov", 0x00423030, 0x00423117, 0x640),
@@ -5456,6 +5491,23 @@ def _creator_constant_checks(ck: "Checker", b: Binary) -> None:
              lambda v: "every site is inside the creator the transcription "
                        "attributes it to, bounded by the next creator's entry"
                        if not v else f"{len(v)} site(s) are elsewhere: {v}")
+
+    # **The shock wave's three arms**, whose numbers live in a dict and so
+    # are outside `constant_sites_cover_module`'s inventory.  The transcription
+    # is the only thing that reads them, and a mission never reaches two of
+    # the three -- so without this the count, the life and the speed of the
+    # one arm the game does take would be pinned by nothing.
+    ck.equal("creators.shockwave_arms",
+             {t: (b.mov_imm32(count), b.mov_stack_imm32(life),
+                  b.mov_stack_imm32(speed))
+              for t, (count, life, speed) in sorted(SHOCKWAVE_ARM_SITES.items())},
+             blob_creators.SHOCKWAVE_ARMS,
+             lambda v: f"{len(v)} arm(s) as (records, life, speed)")
+    ck.equal("creators.shockwave_type",
+             [b.push_imm(site) for site in SHOCKWAVE_TYPE_SITES],
+             [SHOCKWAVE_TYPE] * len(SHOCKWAVE_TYPE_SITES),
+             lambda v: f"{len(v)} weapon arm(s) push type {SHOCKWAVE_TYPE}, "
+                       "so the effect is always the third arm")
 
 
 def _tracer_axis_checks(ck: "Checker", b: Binary) -> None:

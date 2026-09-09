@@ -52,6 +52,13 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		state.set_effect(MapState.OBJECT_SLOT, target, MapState.NO_OBJECT)
 		state.set_obstacle(target, MapState.OBSTACLE_NONE)
 		state.set_effect(MapState.TIMER_SLOT, target, 0)
+		# The walk's boundary, for the same reason: the guard clears the cell
+		# before `aExecuteBomb` and the bomb then draws frames, so the mine
+		# leaves the picture before the blast rather than with it
+		# ([method ExecuteMove._detonate]).
+		if journal != null:
+			var _gone: Dictionary = journal.mark("mine_cleared", unit.slot,
+				tx, ty, tx, ty, 0, "", {})
 		blast = Interact.execute_bomb(state, units, utab, wtab, tx, ty,
 			ai_level, human_players, game_mode, turn, rng, cheats).to_dict()
 		if journal != null:

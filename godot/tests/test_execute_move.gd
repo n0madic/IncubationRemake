@@ -274,6 +274,68 @@ func _the_large_unit_ring(h: TestHarness) -> void:
 		+ "stopped on")
 	h.equal("execute_move.ring_cleared_the_neighbour",
 		world.state.obstacle_at(neighbour), MapState.OBSTACLE_NONE)
+	_the_mine_leaves_before_the_blast(h)
+
+
+## docs/26 section 6.2 read as an **order**, which is what the picture needs.
+##
+## Every cell-based detonation is `aDeleteSpecialObject(cell[+0x0F])` and the
+## cell bytes cleared, and only then `aExecuteBomb` `0x004702C0` -- whose own
+## `aPlayFightAnimation` draws frames. So the mine is off the map before the
+## first frame of the blast, and by docs/100's rule an event boundary belongs
+## between the two: `mine_cleared` carries the cell, `mine` the casualties.
+## With one boundary for both, the picture drew the blast over a mine that
+## was still standing and dropped it when the queue drained -- reported from
+## `_C_110`'s minefield as *the bomb goes off and then, separately, the
+## object disappears*.
+func _the_mine_leaves_before_the_blast(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var found: Dictionary = _mixed_path(world, 0)
+	if not h.check("execute_move.blast_path_exists", not found.is_empty()):
+		return
+	var route: PackedInt32Array = DictRead.as_int32_array(found["route"])
+	var stop: int = route[1]
+	var sx: int = stop % world.state.width
+	var sy: int = stop / world.state.width
+	if not h.check("execute_move.blast_stop_mine",
+			CellObjects.place_mine(world.state, sx, sy) >= 0):
+		return
+	world.enable_journal()
+	var _residue: Array[Dictionary] = world.take_events()
+	# The mirror stands where the walk begins, as the picture's does.
+	var mirror: World = world.clone()
+	var unit: UnitState = world.units_for_ai()[0]
+	unit.x = 2
+	unit.y = 2
+	var _moved: MoveResult = ExecuteMove.execute(world.state,
+		world.units_for_ai(), world.unit_types(), world.ctrlmap(),
+		world.weapons(), unit, DictRead.as_dict(found["walk"]), sx, sy, 0, 1,
+		1, world.turn.ai_level, world.turn, world.rng, -1, true,
+		world.journal())
+	var kinds: Array[String] = []
+	var events: Array[Dictionary] = world.take_events()
+	var cleared_at: int = -1
+	for i: int in range(events.size()):
+		var kind: String = DictRead.as_string(events[i]["kind"])
+		kinds.append(kind)
+		if kind == "mine_cleared" and cleared_at < 0:
+			cleared_at = i
+	h.check("execute_move.the_clear_is_its_own_event",
+		cleared_at >= 0 and kinds.find("mine") > cleared_at,
+		"kinds: %s" % [kinds])
+	if cleared_at < 0:
+		return
+	# Replay up to and including the clear: the cell must already be empty
+	# while the blast's own event is still ahead of the mirror.
+	for i: int in range(cleared_at + 1):
+		mirror.apply_delta(DictRead.as_dict(events[i].get("delta", {})))
+	h.equal("execute_move.the_cell_is_clear_before_the_blast",
+		mirror.state.obstacle_at(stop), MapState.OBSTACLE_NONE,
+		"`aDeleteSpecialObject` runs in front of `aExecuteBomb`")
+	h.equal("execute_move.and_its_object_slot_with_it",
+		mirror.state.effect_at(MapState.OBJECT_SLOT, stop),
+		MapState.NO_OBJECT,
+		"the model is drawn from the slot, so both bytes have to land here")
 
 
 ## The seam docs/23 section 5.3 draws and docs/93 section 11 measured: the

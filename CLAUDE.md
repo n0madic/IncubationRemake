@@ -48,7 +48,7 @@ python3 tools/brief_parse.py      --check gog_incubation      # 57 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 158 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 468 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 547 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 549 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 80 checks
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 40 suites, 5013 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5029 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -343,7 +343,19 @@ closure calls it. They come from a second entry point at `0x004638E0` --
 meant to repeat run to run (`docs/22` §3.2). With **that** seed read either
 side the draw count is exact, and most creators draw nothing.
 `python3 tools/blob_gold.py --check gog_incubation` re-runs the models against
-the capture (**269 checks**); taking one needs `--game-copy` and Wine. It also carries the
+the capture (**269 checks**); taking one needs `--game-copy` and Wine.
+**A phase with no records is not always a refusal.** `argument_vector` fills a
+creator's tail past the four tile coordinates with a coordinate, and a creator
+whose tail is a *type* or a *round count* then takes an arm that makes nothing
+-- a faithful zero that verifies nothing at all, and looks exactly like "the
+creator refused the tile". `BURST_ARGS` and `SWITCH_ARGS` carry the literals
+the weapon switch's own arms push (the three burst creators' `(rounds,
+stagger, joint)`, and `aBlob_CreateShockWave` `0x00422B80`'s type 2);
+`capture` re-takes a phase whose stored arguments they have since corrected,
+and `BURST_UNCAPTURED` / `PROGRAM_ARGS_STALE` / `NATIVE_FAULTS` name what a
+capture still does not reach. All four are unreached on this host: Wine
+answered `--probe-startup` 0 of 3 and every plan 0 of 10 on 2026-09-09.
+It also carries the
 **`hooks` phase**, which is what closed `docs/28` §12 item 1: all five service
 routines an update arm reaches outside its own record, called in the live
 process and swept — twenty deltas through the orientation helper, forty through

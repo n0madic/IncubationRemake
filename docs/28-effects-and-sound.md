@@ -1122,6 +1122,40 @@ reproduces **every field of every record the engine left**, with the draw
 count checked against `aRandom2`'s seed either side of the call — which covers
 the records past the twelve the capture reads back, too.
 
+**A fourteenth joined them, and its residue was an argument.** *(2026-09-09.)*
+`aBlob_CreateShockWave` `0x00422B80` had no recipe either, for a reason none of
+the ten had: the capture called it with the *target's x* as its third argument
+(`blob_gold.argument_vector` fills a three-argument creator's tail with a tile
+coordinate), and that argument is a **type**. The cascade at `0x00422BF4` has
+arms 0, 1 and 2 and no default, so the engine took the fall-through, left `ecx`
+zero and the `jle` at `0x00422C55` skipped the loop entire. The phase held no
+record — which looks exactly like "the creator refused the tile", and is why
+nothing was ever fitted to it. `blob_gold.SWITCH_ARGS` is the correction, the
+same one `BURST_ARGS` is for the three burst creators.
+
+Read out of its own instructions the creator is a **ring**, and one arm of
+three:
+
+| type | records | `life` | velocity scale |
+|---|---|---|---|
+| 0 | 30 | 5 | 10 |
+| 1 | 50 | 60 | 10 |
+| 2 | **60** | **20** | **6** |
+| anything else | *nothing at all* | | |
+
+Both shipped call sites push **2** — `0x0040CD3C` in weapon 17's muzzle arm and
+`0x0040D7AC` in weapon 36's impact arm — so what the game ever makes is sixty
+records. The ring starts at `mov edi, 0xA0` and turns `0x1000 / count` a record
+through `0x004039A0`, accumulating, exactly as the selection marker
+`0x00422D40` does; and the offset goes into the **velocity**, not the
+placement: every record sits at the tile's placed object and is oriented along
+the line from that object to its own point on the circle. Kind 13,
+`A_EXPL05.3DI`, no draw at all. `blob_tables.SHOCKWAVE_ARM_SITES` reads the
+three arms' nine numbers back out of the switch and `SHOCKWAVE_TYPE_SITES` the
+two pushes, so the arm the game takes is pinned whether or not a capture ever
+runs; `blob_gold.PROGRAM_ARGS_STALE` is what says the capture in hand still
+verifies none of it.
+
 Four shapes came out of it that no recipe could have expressed, and each is
 worth carrying here:
 
@@ -1503,6 +1537,13 @@ The other two switches' defaults were read the same way and **make no blob**:
 the impact switch's (`0x0040DA07`) goes straight on to `aGetUnitMapElementPtr`
 and the unit sweep, so weapons 0…6 having no impact effect is the engine's own
 answer rather than a second gap.
+
+**One creator in the tables is not one blob.** `ShockWave` `0x00422B80` —
+weapon 17's fourth muzzle creator and weapon 36's first impact one — places
+**sixty** records in a ring, not the single one its lone constructor call
+describes; both arms push its type 2 and §7.6 has the arm table. A remake that
+reads the constructor table alone gets one static blob where the original
+throws an explosion outward, which is what the remake did until 2026-09-09.
 
 #### 8.1.1 A shot is a burst
 

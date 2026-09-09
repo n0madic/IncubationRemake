@@ -18,6 +18,16 @@ twelve are the first twelve here.
 against the records the engine actually left, field for field, from the
 **measured** seed.  Nothing here is fitted: a wrong constant fails.
 
+Four more have joined the ten since: the three burst creators of ``docs/28``
+§8.1.1 and ``aBlob_CreateShockWave`` ``0x00422B80``.  All four were missing for
+the same reason and it was never the fitter -- the capture called them with
+**arguments no caller would pass**, a round count of zero for the three and a
+tile coordinate where the shock wave wants a type, so the engine ran a loop
+zero times or took a fall-through arm and left nothing to fit.
+``blob_gold.BURST_ARGS`` and ``blob_gold.SWITCH_ARGS`` are the corrections, and
+``blob_gold.BURST_UNCAPTURED`` / ``PROGRAM_ARGS_STALE`` name the ones a capture
+has yet to reach.
+
 The three services every one of them reaches are the ones ``docs/28`` §7.4.2
 measured -- ``0x0046D400`` (the direction, *not* normalised), ``0x00403AA0``
 (the orientation) and ``0x0044AE10`` (the truncated 2D distance) -- so this is
@@ -808,6 +818,50 @@ def _c00424D20(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
                    0, 0, 0, 10, 0)
 
 
+#: `0x00422B80` -- the shock wave's three arms, keyed by the low byte of its
+#: third argument: `(records, life, speed)`.  A value outside the three makes
+#: **nothing at all** -- `ecx` stays zero through the cascade at `0x00422BF4`
+#: and the `jle` at `0x00422C55` skips the loop entire -- which is a real
+#: answer and not a refusal, and is what the capture in hand recorded.
+#: Both shipped call sites push **2** (`0x0040CD3C` and `0x0040D7AC`).
+SHOCKWAVE_ARMS = {0: (30, 5, 10), 1: (50, 60, 10), 2: (60, 20, 6)}
+#: `mov edi, 0xA0` at `0x00422C50` -- the ring's radius, set once before the
+#: loop and then carried by the rotation itself.
+SHOCKWAVE_RADIUS = 0xA0
+#: `mov eax, 0x1000 / cdq / idiv ecx` at `0x00422C5B` -- a full turn divided
+#: by the record count, taken **once** before the loop and kept as a word.
+SHOCKWAVE_TURN = 0x1000
+
+
+@program(0x00422B80, 3)
+def _c00422B80(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
+    """`aBlob_CreateShockWave` (`0x0040CD56`): a ring of `A_EXPL05.3DI` model
+    blobs thrown outward from the tile's placed object.
+
+    Weapon 17's muzzle and weapon 36's impact are its two callers and both
+    push type 2, so what the game ever makes is **sixty** records of kind 13
+    with a life of 20.  Every one sits at the object's own position -- the
+    ring goes into the *velocity*, not the placement -- oriented along the
+    line from the object to its own point on the circle, exactly as the
+    selection marker `0x00422D40` is.  No draw: the whole effect is table
+    arithmetic, which is why `CREATOR_DRAWS` has it at zero.
+
+    The turn accumulates through `0x004039A0` rather than being recomputed
+    per record, so this is [`_ring`] and not a clean division of the circle.
+    """
+    inputs = pool.inputs
+    arm = SHOCKWAVE_ARMS.get(args[2] & 0xFF)
+    if arm is None:
+        return
+    count, life, speed = arm
+    x, y, z = inputs.source
+    turn = trunc_div(SHOCKWAVE_TURN, count) & 0xFFFF
+    for dx, dy, _dz in _ring(inputs, SHOCKWAVE_RADIUS, turn, count):
+        pitch, yaw = inputs.tables.orient((x, y, z), (x + dx, y + dy, z))
+        pool.spawn("A_EXPL05.3DI", 0, x, y, z, pitch, 0, yaw,
+                   0x0D, life, dx * speed, dy * speed, 0, 0, 0)
+
+
 # --------------------------------------------------------------------------
 # The death and damage creators -- `docs/42` §4.8
 # --------------------------------------------------------------------------
@@ -1265,13 +1319,18 @@ DUST_TURN = 0xCC
 CROSS_MODELS = ("A_CROSS3.3DI", "A_CROSS2.3DI", "A_CROSS1.3DI", "A_CROSS.3DI")
 
 
-def _ring(inputs: DeathInputs, radius: int, turn: int, count: int
-          ) -> List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]]:
+def _ring(inputs: Any, radius: int, turn: int, count: int
+          ) -> List[Tuple[int, int, int]]:
     """`count` offsets, each the previous one turned by `turn` through
     `0x004039A0` -- the rotation accumulates, so the ring is the engine's
     table arithmetic and not a clean division of the circle -- paired with
     the orientation `0x00403AA0` gives the line from the object to that
-    point."""
+    point.
+
+    `inputs` is whichever of :class:`Inputs` and :class:`DeathInputs` the
+    caller carries: the helper reads `tables` and nothing else, and the ring
+    creators live in both registries.
+    """
     tables = inputs.tables
     offset = (radius, 0, 0)
     out = []
