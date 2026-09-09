@@ -380,7 +380,7 @@ if (a->weapon == 30 || a->weapon == 31 || a->weapon == 32)
     a->weapon = weapon[a->weapon].param;
 ```
 
-Three consequences, and the first is the one a player notices:
+Four consequences, and the first is the one a player notices:
 
 * **the round is not spent.** The revert runs at `0x0046C325`, *after* the
   ammunition subtraction of [`22` §7.5](22-combat-and-visibility.md) — and the
@@ -390,6 +390,19 @@ Three consequences, and the first is the one a player notices:
   `range max` 1 (a flat chance), damage 3/3/5, `type` 4, heat cap 255. The
   chance the interface *displayed* before the shot is still the gun's —
   `0x0046A270` is not on this path;
+* **the stab is drawn as a stab.** `aAttackUnit` calls `aPlayFightAnimation`
+  `0x0040BD70` at `0x0046C186` — *inside* the window, before the subtraction
+  and before the revert — so every switch the presentation dispatches on
+  `unit[+0x3F]` takes the bayonet's arm: the `F` selector `0x0042E220` answers
+  `P0_F1_001` (`PR_F1_001` for the `PR` class) where the gun's key answers an
+  `F0`, and `SetWeaponInfo + 0x25` names `W_BAYO_0`, a wave no other weapon
+  uses. `charisma_tables.py` enumerates the selector over the whole domain
+  and pins both halves — `a stab plays its own clip` names the `F1` family and
+  `stabs that change the clip` counts the 108 `(type, player, gun)` triples the
+  swap moves;
+  `combat_tables.py`'s `close.animation_precedes_the_revert` pins the call's
+  position. *(Added 2026-09-09. The remake had read the order the other way
+  round and fired a burst at contact range.)*;
 * **a reaction never reaches either arm.** `0x0046B592` and `0x0046C319` read
   `aAttackUnit`'s fifth argument, the flag [`25` §6](25-turn-and-round.md)'s
   drain passes as 1, and jump past the call. A unit on overwatch shoots

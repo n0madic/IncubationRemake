@@ -414,7 +414,21 @@ as both source and target and `xp = -1`. The stages, in order:
 `0x004055E0(slot, attacker, selector)`: slot 3 for a normal shot, **slot 6 for
 a reaction**; selector 3 when the target is adjacent (`0x0044AE10`, the
 Euclidean distance in cells, `== 1`) and 1 otherwise — both resolve through the
-same `F` selector, so the distinction has no visible effect. Speed 6.0, stop at
+same `F` selector, so the *selector argument* makes no difference.
+
+**The clip at contact range is a different clip all the same**, and it comes
+from the other argument. This routine is called at `0x0046C186`, *inside*
+`aAttackUnit` and inside the close-combat swap's window ([`21` §6](21-info-lcl-schema.md)),
+so `0x0042E220` reads a bayonet id for a stab and answers `P0_F1_001` where
+the gun's key answers an `F0`. The same byte reaches §4.5's wave —
+`W_BAYO_0`, which nothing else uses — and §4.6's muzzle switch, whose arms for
+30, 31 and 32 are three of the ten that **write 0 over the wait flag**: a stab
+has no round in flight and the shot does not wait for one. §4.8's death switch
+reads it too, and the same three ids select style 3. So three of this
+document's own tables already carried the bayonets' rows; what was missing was
+the byte that reaches them. *(Added
+2026-09-09; the sentence above once read "so the distinction has no visible
+effect", which was true of the selector and wrong about the shot.)* Speed 6.0, stop at
 `BREAK`. Then `int(length / 6) / 3` frames are spun (`0x0040BEC9`).
 
 ### 4.2 The caption

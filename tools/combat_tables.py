@@ -176,6 +176,13 @@ WEAPON_SPECIAL_REACTION_GATES = {
 #: The ammunition subtraction, and the phase-1 call that follows it: the two
 #: are 0x23 bytes apart and in that order.
 AMMO_SUBTRACT = 0x0046C302
+#: ``aPlayFightAnimation`` and ``aAttackUnit``'s call to it.  The call is
+#: **inside** the routine, between the close-combat swap and the revert, so
+#: everything the animation dispatches on a weapon id takes the *bayonet's*
+#: arm during a stab -- the `F` clip `P0_F1_001`, the wave ``W_BAYO_0`` and
+#: the muzzle switch (docs/21 6, docs/42 4).
+FIGHT_ANIMATION = 0x0040BD70
+FIGHT_ANIMATION_CALL = 0x0046C186
 #: ``cmp cl, 0x1E`` / ``0x1F`` / ``0x20`` at ``0x0046F8E8`` -- the three ids
 #: the revert arm accepts, read out of its own comparisons.
 CLOSE_COMBAT_REVERT_TEST = 0x0046F8E8
@@ -1143,6 +1150,24 @@ def _check_close_combat(tables: "CombatTables", stats: "Stats") -> None:
                 and pe.bytes_at(CLOSE_COMBAT_HEIGHT_SHIFT_AT, 3)
                 == bytes((0xC1, 0xFA, CLOSE_COMBAT_HEIGHT_SHIFT)),
                 "the reciprocal multiply is not 0x66666667 >> 6, i.e. not /160")
+    # **The fight animation runs between the two phases**, which is what makes
+    # the swap visible: `aPlayFightAnimation` selects the clip, the wave and
+    # the muzzle from `unit[+0x3F]`, and at `0x0046C186` that byte is still
+    # the bayonet.  Pinned as the call itself plus its position, because the
+    # position is the whole claim.
+    rel = struct.unpack("<i", pe.bytes_at(FIGHT_ANIMATION_CALL + 1, 4))[0]
+    stats.check("close.animation_call",
+                pe.u8(FIGHT_ANIMATION_CALL) == 0xE8
+                and FIGHT_ANIMATION_CALL + 5 + rel == FIGHT_ANIMATION,
+                f"{FIGHT_ANIMATION_CALL:#010x} does not call "
+                f"{FIGHT_ANIMATION:#010x}")
+    swap = min(site for site, phase in WEAPON_SPECIAL_CALLS.items()
+               if phase == 0)
+    stats.check("close.animation_precedes_the_revert",
+                swap < FIGHT_ANIMATION_CALL < AMMO_SUBTRACT < 0x0046C325,
+                "the animation call does not sit between the swap and the "
+                "subtraction, so a stab would be drawn with its gun")
+
     # The two weapon columns the arm reads, by their own displacements.
     stats.check("close.reads_special",
                 pe.u32(SPECIAL_COLUMN_READ) == WEAPON_TABLE_BASE + 0x3B,

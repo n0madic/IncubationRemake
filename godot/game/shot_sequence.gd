@@ -204,7 +204,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	var total: int = 0
 
 	# 1. The clip to its note, then `int(len / 6) / 3` frames.
-	var frames: Dictionary = host.body_frames(shooter)
+	var frames: Dictionary = host.body_frames(shooter, weapon)
 	var to_break: int = DictRead.as_int(frames.get("to_break", 0))
 	var spin: int = DictRead.as_int(frames.get("spin", 0))
 	var after_break: int = DictRead.as_int(frames.get("after_break", 0))
@@ -233,7 +233,8 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	queue.enqueue(STAGE_CLIP, clip_frames,
 		func(frame: int, _total: int) -> void:
 			if frame == 1:
-				var _started: Dictionary = host.fire_body(shooter, tx, ty))
+				var _started: Dictionary = host.fire_body(shooter, tx, ty,
+					weapon))
 	total += clip_frames
 
 	# 2 and 3. The caption, then the camera -- after the clip, as the engine

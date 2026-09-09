@@ -301,9 +301,10 @@ func animate(delta: float, world: World, frozen: bool = false) -> void:
 ## reaction.gd`), so the world never reports a reactor as looking at what it
 ## shot at; the body is turned for the clip and the next rebuild puts it
 ## back where the world says it looks.
-func fire(slot: int, tx: int, ty: int) -> float:
+func fire(slot: int, tx: int, ty: int, weapon: int = -1) -> float:
 	if not states.has(slot):
 		return 0.0
+	_arm_shot_clip(slot, weapon)
 	var node: Node3D = _node_of(slot)
 	if node != null and shown_ref != null:
 		var view: Dictionary = shown_ref.unit_view(slot)
@@ -386,20 +387,51 @@ func _free_idle(unit: int) -> void:
 ## The combat clip's frame counts at speed 6.0 for `slot` (docs/42 section
 ## 1.2), for [ShotSequence]: to the note, the spin after it, and from the
 ## note to the end. Zeros for a slot with no state or no `F` clip.
-func body_frames(slot: int) -> Dictionary:
+func body_frames(slot: int, weapon: int = -1) -> Dictionary:
 	if not states.has(slot):
 		return {"to_break": 0, "spin": 0, "after_break": 0}
+	_arm_shot_clip(slot, weapon)
 	var state: CharismaState = states[slot]
+	var clip: CharismaClip = state.fire_clip()
 	var to_break: int = state.frames_to_break()
 	var after: int = 0
-	if to_break > 0 and state._fire != null:
-		var stop: float = state._fire.break_time()
+	if to_break > 0 and clip != null:
+		var stop: float = clip.break_time()
 		if stop < 0.0:
-			stop = state._fire.duration
-		after = maxi(ceili((state._fire.duration - stop)
+			stop = clip.duration
+		after = maxi(ceili((clip.duration - stop)
 			/ CharismaState.SPEED_FIGHT), 0)
 	return {"to_break": to_break, "spin": state.spin_frames(),
 		"after_break": after}
+
+
+## Point the slot's `F` clip at the weapon the shot is **presented** with.
+##
+## `aAttackUnit` plays the animation at `0x0046C186`, between the close-combat
+## swap and its revert, so a stab selects the bayonet's clip -- `P0_F1_001`
+## for ids 30, 31 and 32 -- while the record it is drawn from already holds
+## the gun again (docs/21 section 6, docs/42 section 4.1).  The shot carries
+## the byte in its own note for that reason, and this is where the picture
+## reads it.
+##
+## `weapon` below zero, or equal to what the body was built for, clears the
+## override: the ordinary shot is the ordinary clip.  A weapon the selector
+## names nothing for is an override to **no clip**, which is what nine of the
+## unit types get for their own weapon too (docs/40 section 7.2.1).
+func _arm_shot_clip(slot: int, weapon: int) -> void:
+	if not states.has(slot):
+		return
+	var state: CharismaState = states[slot]
+	if weapon < 0 or library == null or shown_ref == null:
+		state.clear_shot_clip()
+		return
+	var view: Dictionary = shown_ref.unit_view(slot)
+	if view.is_empty() or DictRead.as_int(view["weapon"]) == weapon:
+		state.clear_shot_clip()
+		return
+	state.use_shot_clip(library.clip(library.name_for(
+		CharismaLibrary.SELECTOR_FIRE, DictRead.as_int(view["type_id"]),
+		weapon, DictRead.as_int(view["player"]))))
 
 
 ## `aContCHAnimation` on one body; the frames left to its end.

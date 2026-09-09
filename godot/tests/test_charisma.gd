@@ -452,6 +452,27 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	h.check("rest_releases", not state.is_busy(), "the shot is over")
 	h.equal("rests_after_fire", state.mode, CharismaState.Mode.IDLE)
 
+	# **One shot may play a clip the unit's weapon did not name.** The
+	# close-combat swap is live while `aPlayFightAnimation` runs
+	# (`0x0046C186`, docs/21 section 6), so a stab plays the bayonet's `F1`
+	# and the body is back on the gun's clip the moment the shot rests.
+	state.use_shot_clip(without)
+	h.equal("shot_clip_overrides", state.fire_clip(), without)
+	h.equal("shot_clip_measures_the_override", state.spin_frames(),
+		int(without.duration / CharismaState.SPEED_FIGHT) / 3,
+		"the stage is sized from the clip that will play")
+	var _override_length: float = state.fire()
+	h.equal("shot_clip_is_the_one_playing", state._clip, without)
+	state.rest()
+	h.equal("shot_clip_is_dropped_at_rest", state.fire_clip(), with_break,
+		"the swap lasts one shot in the engine and one shot here")
+	# A **set** override of nothing is an answer, not a fallback: the selector
+	# names no clip for that weapon, and the shot then has none.
+	state.use_shot_clip(null)
+	h.equal("shot_clip_may_be_nothing", state.fire_clip(), null)
+	h.equal("shot_clip_nothing_measures_zero", state.frames_to_break(), 0)
+	state.rest()
+
 	# **A fire clip with no `BREAK` note.** Four of the 33 shipped `F` clips
 	# have none, so running out is a real end and not a safety net -- and it is
 	# the only case that tests "F plays once": with a note, the note stops it

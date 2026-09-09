@@ -74,6 +74,16 @@ var mode: int = Mode.IDLE
 var _idle: CharismaClip = null
 var _move: CharismaClip = null
 var _fire: CharismaClip = null
+## The `F` clip **one shot** plays, when it is not the one the unit's own
+## weapon named.  `aAttackUnit` calls `aPlayFightAnimation` at `0x0046C186`,
+## inside the close-combat swap's window, so the selector `0x0042E220` reads
+## the **bayonet** for a stab and the body plays `P0_F1_001` rather than the
+## gun's `F0` (docs/21 section 6).  The swap lasts one shot in the engine and
+## it lasts one shot here: [method rest] drops it, and every stage of a shot
+## that measures or starts the clip sets it first, so it can neither leak into
+## the next shot nor survive the body's return to its idle.
+var _shot_fire: CharismaClip = null
+var _shot_fire_set: bool = false
 var _clip: CharismaClip = null
 var _time: float = 0.0
 var _speed: float = SPEED_IDLE
@@ -182,33 +192,57 @@ func walk() -> void:
 ## seven of the shipped types (docs/40 section 7.2.1): there is nothing to
 ## wait for, and [method is_busy] says so from the first frame.
 func fire() -> float:
-	var stop: float = -1.0 if _fire == null else _fire.break_time()
-	_enter(Mode.FIRE, _fire, false, stop, SPEED_FIGHT)
-	_held = _fire != null
-	if _fire == null:
+	var clip: CharismaClip = fire_clip()
+	var stop: float = -1.0 if clip == null else clip.break_time()
+	_enter(Mode.FIRE, clip, false, stop, SPEED_FIGHT)
+	_held = clip != null
+	if clip == null:
 		return 0.0
 	return float(frames_to_break()) / FRAMES_PER_SECOND
+
+
+## The `F` clip the next shot plays: the override when one is set, the unit's
+## own otherwise.  A **set** override of `null` is an answer -- the selector
+## names nothing for that weapon -- and not a request to fall back.
+func fire_clip() -> CharismaClip:
+	return _shot_fire if _shot_fire_set else _fire
+
+
+## Play the next shot with `clip` instead of the weapon's own; see
+## [member _shot_fire].  Setting it twice for one shot is what the stages do
+## and is harmless -- the value is the same both times.
+func use_shot_clip(clip: CharismaClip) -> void:
+	_shot_fire = clip
+	_shot_fire_set = true
+
+
+## Back to the unit's own `F` clip.
+func clear_shot_clip() -> void:
+	_shot_fire = null
+	_shot_fire_set = false
 
 
 ## How many rendered frames the combat clip takes to reach its `BREAK` note
 ## at speed 6.0 -- the clock passes the note on the tick that reaches it.
 ## Zero with no clip.
 func frames_to_break() -> int:
-	if _fire == null:
+	var clip: CharismaClip = fire_clip()
+	if clip == null:
 		return 0
-	var stop: float = _fire.break_time()
+	var stop: float = clip.break_time()
 	if stop < 0.0:
-		stop = _fire.duration
+		stop = clip.duration
 	return ceili(stop / SPEED_FIGHT)
 
 
 ## `int(length / 6) / 3` -- the frames the fight routine spins after the note
 ## (`0x0040BEC9`): the clip's length in frames at speed 6, a third of it.
 func spin_frames() -> int:
-	if _fire == null:
+	var clip: CharismaClip = fire_clip()
+	if clip == null:
 		return 0
 	@warning_ignore("integer_division")
-	return int(_fire.duration / SPEED_FIGHT) / 3
+	return int(clip.duration / SPEED_FIGHT) / 3
 
 
 ## `aContCHAnimation` `0x004054D0` -- run the combat clip on past its note.
@@ -236,6 +270,7 @@ func remaining_frames() -> int:
 ## pose until a scheduler slot picks it again. Releases the shot's hold.
 func rest() -> void:
 	_held = false
+	clear_shot_clip()
 	if mode == Mode.IDLE and _clip == null:
 		return
 	_enter(Mode.IDLE, null, false, -1.0, SPEED_IDLE)

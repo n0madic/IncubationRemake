@@ -2666,9 +2666,21 @@ Two things about its arguments are decisions rather than mechanics.
 the world**. The computer's playback runs after its turn is decided, so the
 shooter may have moved or died since; the event carries the cell it fired from
 and that is what the muzzle blob uses. For the same reason the weapon comes
-from the event's `note`, which `AIFire` writes as `str(unit.weapon)` at the
-moment the trigger is pulled. That is the fifth defect above, closed by
+from the event's `note`. That is the fifth defect above, closed by
 construction rather than by a guard.
+
+*(Corrected 2026-09-09.)* The note used to be written as `str(unit.weapon)`
+"at the moment the trigger is pulled", which reads the **gun** for a
+close-combat stab and was wrong twice over: the swap is already reverted by
+the time `Combat.attack` returns, so that expression names the gun whether it
+is evaluated before the call or after it, and the byte the engine's animation
+dispatches on is the **bayonet's** — `aPlayFightAnimation` runs at
+`0x0046C186`, inside the swap's window ([`21` §6](21-info-lcl-schema.md)).
+Both `World.submit_attack` and `AIFire` now write `AttackResult.
+presented_weapon`, the byte the record held while the animation ran, and the
+picture selects the `F` clip, the wave and the muzzle from it — so a marine at
+contact range plays `P0_F1_001` with `W_BAYO_0` instead of a burst of a rifle
+whose round it never spent.
 
 `AttackResult.from_dict` is new in `core/`, and it deliberately does **not**
 read `reactions`: the document shape is pinned to

@@ -2326,11 +2326,17 @@ class RecordingHost extends ShotHost:
 	var texts: Array[String] = []
 	var captions: Array[String] = []
 
-	func body_frames(_slot: int) -> Dictionary:
+	## The presented weapon of every shot the double was asked to play, so a
+	## suite can check that a stab is drawn as a stab (docs/21 section 6).
+	var fired_weapons: Array[int] = []
+
+	func body_frames(_slot: int, _weapon: int = -1) -> Dictionary:
 		return frames
 
-	func fire_body(_slot: int, _tx: int, _ty: int) -> Dictionary:
+	func fire_body(_slot: int, _tx: int, _ty: int,
+			weapon: int = -1) -> Dictionary:
 		calls.append("fire")
+		fired_weapons.append(weapon)
 		playing = frames["to_break"]
 		return frames
 
@@ -2769,6 +2775,11 @@ func _check_shot_stages(h: TestHarness) -> void:
 		["%s:5,0" % BlobPrograms.SPECIES_BURST],
 		"weapon 2's muzzle arm leaves style 0: the species burst")
 	h.equal("stages.hidden", host.hidden, PackedInt32Array([9]))
+	# The shot's own weapon reaches the body, not only the muzzle: the clip
+	# stage sizes itself from it and starts it with it, which is how a stab
+	# is drawn as a stab (docs/21 section 6).
+	h.equal("stages.the_body_is_fired_with_the_shots_weapon",
+		host.fired_weapons, [2])
 	h.check("stages.waited_for_the_round", frames > 6 + 3 + 2 + 1,
 		"%d frame(s): the flight stage waited for the flag" % frames)
 

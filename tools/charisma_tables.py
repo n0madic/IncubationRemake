@@ -904,6 +904,62 @@ def emit_pose_cases(root: str, path: str) -> int:
     return 0 if cases else 1
 
 
+#: ``docs/21`` 6: the ids the revert arm ``0x0046F8E8`` accepts, and the
+#: ``special`` column value the swap is keyed on.  Both are pinned against the
+#: binary by ``combat_tables``' ``close.revert_ids`` and ``close.reads_special``;
+#: they are stated here so this file can say which weapons it means without a
+#: second reading of the dispatcher.
+CLOSE_COMBAT_BAYONETS: tuple[int, ...] = (30, 31, 32)
+CLOSE_COMBAT_SPECIAL = 1
+
+
+def _check_close_combat_clip(ck: Checker, tables: SelectorTables,
+                             root: str) -> None:
+    """The bayonet has a fight clip of its own, and a stab reaches it.
+
+    ``aAttackUnit`` calls ``aPlayFightAnimation`` at ``0x0046C186``, which is
+    *between* the close-combat swap ``0x0046B5C7`` and the revert
+    ``0x0046C325`` (``combat_tables``' ``close.animation_precedes_the_revert``
+    pins the position).  So the `F` selector reads the **bayonet's** id for a
+    stab, and this is what it answers with: the `F1` family, which no gun
+    reaches.  Together the two checks are the whole of "the original stabs
+    rather than fires a burst" -- ``docs/21`` 6, ``docs/42`` 4.1.
+    """
+    info = load_info(root)
+    # ``param`` names the partner in both directions, so the pairs are taken
+    # from the **bayonets'** side: the three ids the revert arm at
+    # ``0x0046F8E8`` compares against, which ``combat_tables``' ``close.
+    # revert_ids`` reads out of its own instructions.
+    swaps = {info.weapons[b].param: b for b in CLOSE_COMBAT_BAYONETS
+             if b in info.weapons}
+    ck.expect("close-combat pairs", swaps, {1: 31, 2: 30, 16: 32},
+              "docs/21 6's three shipped pairs, read out of Info.lcl")
+    ck.expect("a bayonet is `special` 1 too",
+              sorted({info.weapons[b].special for b in CLOSE_COMBAT_BAYONETS}),
+              [CLOSE_COMBAT_SPECIAL],
+              "which is why the revert arm has to name the three ids")
+
+    changed: list[tuple[int, int, int]] = []
+    families: set[str] = set()
+    for type_id in range(TYPE_LIMIT - 1):
+        for player in PLAYERS:
+            for gun, bayonet in sorted(swaps.items()):
+                key = SelectorKey(type_id, gun, player)
+                stab = SelectorKey(type_id, bayonet, player)
+                held = tuple(o.name for o in tables.lookup("fire", key))
+                thrust = tuple(o.name for o in tables.lookup("fire", stab))
+                if held == thrust:
+                    continue
+                changed.append((type_id, player, gun))
+                families |= {n for n in thrust if n}
+    ck.expect("a stab plays its own clip", sorted(families),
+              ["P0_F1_001", "PR_F1_001"],
+              "the `F1` family, which no gun's key returns")
+    ck.expect("stabs that change the clip", len(changed), 108,
+              "(type, player, gun) triples out of "
+              f"{(TYPE_LIMIT - 1) * len(PLAYERS) * len(swaps)}")
+
+
 def run_check(root: str) -> int:
     ck = Checker()
     pe = PEFile(os.path.join(root, GAME_EXE))
@@ -918,6 +974,7 @@ def run_check(root: str) -> int:
     _check_reachability(ck, tables, root)
     _check_pose(ck, tables, models, animations)
     _check_stride(ck, tables, models, animations)
+    _check_close_combat_clip(ck, tables, root)
     return ck.report()
 
 

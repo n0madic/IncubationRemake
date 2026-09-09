@@ -14,13 +14,20 @@ extends RefCounted
 ## The frame counts of a slot's combat clip at speed 6.0 (docs/42 section
 ## 1.2): to its note, the spin after it, and from the note to the end. All
 ## zero for a body with no clip or no node.
-func body_frames(_slot: int) -> Dictionary:
+##
+## `weapon` is the byte the shot is presented with, which is the bayonet's for
+## a stab and not the record's (docs/21 section 6); below zero asks for the
+## unit's own clip.  It is passed here as well as to [method fire_body]
+## because this is what sizes the clip's stage, and a stage sized from the
+## gun's clip would cut the stab short or leave it standing.
+func body_frames(_slot: int, _weapon: int = -1) -> Dictionary:
 	return {"to_break": 0, "spin": 0, "after_break": 0}
 
 
 ## Turn the shooter's body and start its combat clip. Answers
 ## [method body_frames]' dictionary.
-func fire_body(_slot: int, _tx: int, _ty: int) -> Dictionary:
+func fire_body(_slot: int, _tx: int, _ty: int,
+		_weapon: int = -1) -> Dictionary:
 	return {"to_break": 0, "spin": 0, "after_break": 0}
 
 

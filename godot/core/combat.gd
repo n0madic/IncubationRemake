@@ -1113,6 +1113,15 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			outcome["converted"] = true
 		result.outcomes.append(outcome)
 
+	# `0x0046C186` -- **the fight animation runs here, inside `aAttackUnit`**,
+	# between the swap and the revert below, so the byte it selects the clip,
+	# the wave and the muzzle from is the one the unit holds *now*: the
+	# bayonet after a swap, the gun otherwise.  Recorded rather than played:
+	# `core` decides and `game` draws (docs/92 section 5.1), and the picture
+	# reads this off the result.  It is taken here and not next to the swap
+	# because this is where the engine takes it.
+	result.presented_weapon = attacker.weapon
+
 	# After the shot: ammunition and heat.  docs/22 section 7.5 gates on
 	# **both** halves -- a weapon whose `mun` column is 255 spends nothing, and
 	# neither does unit type 0x42.  Dropping the second would disarm that type.
@@ -1132,12 +1141,16 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			attacker.heat += 1
 
 	# `0x0046C325` -- the dispatcher's **phase 1**, and the other half of the
-	# bayonet: the gun comes back the moment the shot is paid for.  Everything
-	# below this line -- the impact placer, the hatch sweep and the whole of
-	# `aPlayFightAnimation`, which runs after this routine returns -- therefore
-	# sees the **gun**, so every switch the presentation dispatches on a weapon
-	# id takes the gun's arm.  What still differs is the camera, which docs/42
-	# section 4.1 places by the *distance* to the target and not by the weapon.
+	# bayonet: the gun comes back the moment the shot is paid for.  What is
+	# below this line -- the impact placer and the hatch sweep -- therefore
+	# sees the **gun** on the record, which is why the placer above is handed
+	# [member AttackResult.presented_weapon] and not `attacker.weapon`.
+	# `aPlayFightAnimation` is **not** below it: it ran at `0x0046C186`, three
+	# instructions' worth of stages earlier, and every switch it dispatches on
+	# a weapon id took the **bayonet's** arm.  *(Corrected 2026-09-09: this
+	# said the animation runs after the routine returns.  It does not -- the
+	# call is inside, and `W_BAYO_0` and `P0_F1_001` are what the original
+	# plays for a stab.)*
 	if not reaction:
 		var _gun: bool = close_combat_revert(wtab, attacker)
 
@@ -1152,12 +1165,23 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	# The cells it changed are not on the result: `AttackResult.to_dict()`'s
 	# shape is pinned to the Python twin's, and the picture reads the terrain
 	# diff for this (docs/42 section 9.1) rather than a second channel.
+	#
+	# **The weapon is the presented one.**  This stage and the hatch sweep
+	# below are the animation's, and the animation ran at `0x0046C186` with
+	# the record still holding the bayonet -- so they read the byte from
+	# there, not off the reverted record.  They are left standing after the
+	# revert because nothing between the two positions changes what they read:
+	# neither reads ammunition or heat, and no shipped weapon makes the two
+	# readings disagree -- 40, 42 and 43 are the placer's ids and none of them
+	# is a `special` 1 gun, and the hatch gate takes weapon `type` 1 and 4
+	# alike, which is the gun's and the bayonet's.
 	var _placed: PackedInt32Array = CellObjects.place_impact(
-		state, attacker.weapon, tx, ty)
+		state, result.presented_weapon, tx, ty)
 	result.skill_raised = skill_levels_raised(utab, attacker, tp_before)
 
-	# **`aPlayFightAnimation` runs after `aAttackUnit`, and it is not only an
-	# animation.**  `0x0040BD70` sweeps the whole cell array and calls the
+	# **`aPlayFightAnimation` is not only an animation.**  `0x0040BD70` -- which
+	# `aAttackUnit` calls at `0x0046C186`, before the subtraction above and not
+	# after the routine returns -- sweeps the whole cell array and calls the
 	# effect dispatcher `0x0046F210` with phase 4 for every cell whose marker
 	# byte is `0x5C` -- hit, and not `0x5D`, killed.  Only `special` 9 has a
 	# `case 4`, so that sweep is [method hatch] and nothing else; the sweep
@@ -1176,7 +1200,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			# replacement -- `special` 0 -- and does nothing.
 			continue
 		var made: int = hatch(state, units, utab, wtab, carrier, attacker,
-			human_players, game_mode, turn)
+			human_players, game_mode, turn, result.presented_weapon)
 		if made >= 0:
 			outcome["hatched"] = made
 	return result
@@ -1301,14 +1325,21 @@ static func skill_levels_raised(utab: UnitTypeTable, attacker: UnitState,
 ## `aRemoveUnitElement` keeps at `+0x24` moves here too -- a `Squee'Coo` marked
 ## as a hero would be counted, which is what the engine does and not a rule
 ## invented for this arm.
+## `weapon` is the byte the animation dispatches on, which after a close-combat
+## swap is the bayonet and not what the record holds by the time this runs
+## ([member AttackResult.presented_weapon]).  Left optional because the
+## attacker's own weapon is the answer for every caller that has not swapped.
 static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, target: UnitState, attacker: UnitState,
-		human_players: int, game_mode: int, turn: TurnState) -> int:
+		human_players: int, game_mode: int, turn: TurnState,
+		weapon: int = -1) -> int:
+	if weapon < 0:
+		weapon = attacker.weapon
 	if utab.special(target.type_id) != SPECIAL_HATCH:
 		return -1
 	if target.hp > HATCH_HP_LIMIT:
 		return -1
-	if not HATCH_WEAPON_TYPES.has(wtab.type_of(attacker.weapon)):
+	if not HATCH_WEAPON_TYPES.has(wtab.type_of(weapon)):
 		return -1
 	var x: int = target.x
 	var y: int = target.y

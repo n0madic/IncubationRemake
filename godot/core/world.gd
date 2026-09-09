@@ -639,10 +639,17 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		var empty: AttackResult = AttackResult.new()
 		empty.reason = "no ammunition"
 		return empty
-	var weapon_fired: int = unit.weapon
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
 		turn.human_count(), turn.mode, turn, rng, false, cheats)
+	# **The weapon the animation was played with**, which after a close-combat
+	# swap is the bayonet and not what the record holds on either side of the
+	# shot: the engine plays the animation at `0x0046C186`, inside the swap's
+	# window ([member AttackResult.presented_weapon]).  A shot that never
+	# fired leaves it unset, and the record's own weapon is then the answer.
+	var weapon_fired: int = shot.presented_weapon
+	if weapon_fired < 0:
+		weapon_fired = unit.weapon
 	if unit.hp == 0:
 		# The shooter its own shot killed -- an explosive at contact range.
 		# The boundary is still here: the victims are already down.
@@ -658,9 +665,11 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	# draws move in the same delta as the damage; the engine draws its pad
 	# from the same frame the fight animation runs in.
 	#
-	# The weapon rides in the note because it is read at the moment the
-	# trigger was pulled: a bayonet swap or a jam changes the record before
-	# the picture gets to it (docs/97 section 24).
+	# The weapon rides in the note because the record no longer holds it by the
+	# time the picture gets to it: a jam clears it, and a close-combat swap has
+	# already been reverted -- and the swap is the reason the note carries the
+	# **bayonet** rather than the gun that was aimed (docs/97 section 24 as
+	# corrected 2026-09-09).
 	_mark("fire", command.unit_slot, unit.x, unit.y, command.x, command.y,
 		weapon_fired, str(weapon_fired), shot.to_dict())
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,

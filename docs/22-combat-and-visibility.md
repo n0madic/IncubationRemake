@@ -574,7 +574,13 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
    the bayonet*. Everything below this line therefore reads the **swapped**
    weapon, and phase 1 at `0x0046C325` puts the gun back after §7.5's
    subtraction has already been skipped. `0x0046B592` jumps past this call for
-   a **reaction**.
+   a **reaction**. **`aPlayFightAnimation` is inside that window too** — the
+   call is at `0x0046C186`, before the subtraction and before the revert — so
+   the clip, the wave and the muzzle switch are the bayonet's as well, which
+   is what a stab looks like on screen. *(Corrected 2026-09-09: this document
+   and `combat.gd` both had the animation running after `aAttackUnit` returns.
+   `combat_tables.py`'s `close.animation_call` and
+   `close.animation_precedes_the_revert` pin the position.)*
 1. `aCheckWeaponDamage` (§8) may jam or destroy the weapon. If it leaves
    `unit[+0x40] != 0`, or the attacker's HP is 0, the function returns without
    firing.

@@ -104,8 +104,15 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 				ctx.turn, ctx.rng, false, ctx.cheats)
 			if not attack.reason.is_empty() and not attack.fired:
 				ctx.refuse(attack.reason)
+			# The note is the weapon the animation was played with, not the
+			# record's: a close-combat swap has been reverted by the time
+			# `Combat.attack` returns ([member
+			# AttackResult.presented_weapon]).
+			var shown: int = attack.presented_weapon
+			if shown < 0:
+				shown = unit.weapon
 			ctx.emit(AIEvent.make("fire", unit.slot, unit.x, unit.y, bx, by,
-				DictRead.as_int(chosen["marker"]), str(unit.weapon),
+				DictRead.as_int(chosen["marker"]), str(shown),
 				attack.to_dict()))
 			unit.acted = ACTED
 		else:

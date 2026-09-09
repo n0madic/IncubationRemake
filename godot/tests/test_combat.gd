@@ -63,10 +63,16 @@ func run(h: TestHarness) -> void:
 # --- the tables --------------------------------------------------------------
 
 static func _weapons() -> WeaponTable:
-	# Two rows, written out rather than loaded: the shipped table is what
+	return WeaponTable.from_rows(_weapon_rows())
+
+
+## The rows themselves, for a check that needs a whole [World] and therefore a
+## balance document rather than a built table.
+static func _weapon_rows() -> Array[Dictionary]:
+	# Written out rather than loaded: the shipped table is what
 	# `test_combat_native.gd` uses, and a spec check that reached for it would
 	# assert the data instead of the rule.
-	return WeaponTable.from_rows([
+	return [
 		{"id": REACTION_WEAPON, "heat": 4, "toggle": REACTION_WEAPON,
 			"mun": 15, "hit": 20, "damage": 4, "range_min": 1,
 			"range_max": 30, "type": 1, "special": 0, "def_mode": 1,
@@ -102,7 +108,7 @@ static func _weapons() -> WeaponTable:
 			"damage": 3, "range_min": 1, "range_max": 1, "type": 4,
 			"special": Combat.SPECIAL_CLOSE_COMBAT, "param": CLOSE_COMBAT_GUN,
 			"def_mode": 0, "mun_per_fight": 1},
-	])
+	]
 
 
 static func _types() -> UnitTypeTable:
@@ -733,8 +739,14 @@ func _close_combat(h: TestHarness) -> void:
 	h.equal("close.no_round_is_spent", shooter.ammo, before,
 		"the bayonet's magazine is 255, so the subtraction is skipped")
 	h.equal("close.the_gun_is_back_after_the_shot", shooter.weapon,
-		CLOSE_COMBAT_GUN,
-		"phase 1 runs before the routine returns, so the animation sees a gun")
+		CLOSE_COMBAT_GUN, "phase 1 runs before the routine returns")
+	# **And the picture is the bayonet's.** `aPlayFightAnimation` is called at
+	# `0x0046C186`, inside the swap's window, so the clip, the wave and the
+	# muzzle are selected from the bayonet -- `P0_F1_001` and `W_BAYO_0`,
+	# neither of which any gun reaches. This is the field the note carries.
+	h.equal("close.the_animation_is_the_bayonets", stab.presented_weapon,
+		CLOSE_COMBAT_BAYONET,
+		"the animation runs between the swap and the revert")
 	# The control: the same gun at range spends its round.
 	var distant: UnitState = _place(scene, 3, 1, 2, 7, 0)
 	var spent_before: int = shooter.ammo
@@ -742,6 +754,8 @@ func _close_combat(h: TestHarness) -> void:
 		scene.types, scene.weapons, shooter.x, shooter.y, distant.x,
 		distant.y, 0, 1, 1, _turn(), rng)
 	h.check("close.the_distant_shot_fired", shot.fired, shot.reason)
+	h.equal("close.a_distant_shot_is_drawn_with_its_gun",
+		shot.presented_weapon, CLOSE_COMBAT_GUN)
 	h.equal("close.a_round_is_spent_at_range", shooter.ammo, spent_before - 1,
 		"nothing swapped, so the gun's own magazine is read")
 	# A reaction reaches neither arm: `0x0046B592` and `0x0046C319` jump past
@@ -755,6 +769,44 @@ func _close_combat(h: TestHarness) -> void:
 		reaction_before - 1,
 		"a unit on overwatch shoots, whatever walks into the next cell")
 	h.equal("close.and_keeps_its_gun", shooter.weapon, CLOSE_COMBAT_GUN)
+	h.equal("close.a_reaction_is_drawn_with_its_gun",
+		reacted.presented_weapon, CLOSE_COMBAT_GUN,
+		"neither arm is reached, so there is nothing else it could be")
+
+	# --- and the whole chain, out of a [World] ----------------------------
+	# The picture never sees the record: it reads the weapon out of the
+	# event's note, because by the time an event is drawn the swap has been
+	# reverted and a jam may have cleared the byte altogether. So the note is
+	# where a stab either survives to the screen or does not.
+	var squad: Array = [
+		TestFixtures.unit(0, 2, 2, 0, 0, 6, 0, [], CLOSE_COMBAT_GUN, 10, 3, 20),
+		TestFixtures.unit(1, 3, 2, 0, UnitState.PLAYER_ALIEN, 6, 0, [], 0, 0, 3,
+			20),
+		TestFixtures.unit(2, 7, 2, 0, UnitState.PLAYER_ALIEN, 6, 0, [], 0, 0, 3,
+			20),
+	]
+	var balance: Dictionary = TestFixtures.balance()
+	balance["weapons"] = _weapon_rows()
+	var field: World = World.create(
+		TestFixtures.map_document(9, 9, squad), balance, 1.0)
+	field.enable_journal()
+	var _adjacent: AttackResult = field.submit_attack(
+		AttackCommand.create(0, 3, 2))
+	h.equal("close.the_note_carries_the_bayonet",
+		_first_note(field.take_events(), "fire"), str(CLOSE_COMBAT_BAYONET),
+		"the picture selects the clip, the wave and the muzzle from this")
+	var _far: AttackResult = field.submit_attack(AttackCommand.create(0, 7, 2))
+	h.equal("close.the_note_carries_the_gun_at_range",
+		_first_note(field.take_events(), "fire"), str(CLOSE_COMBAT_GUN),
+		"five fields out, so nothing swapped")
+
+
+## The `note` of the first event of `kind`, or `""`.
+static func _first_note(events: Array[Dictionary], kind: String) -> String:
+	for event: Dictionary in events:
+		if DictRead.as_string(event["kind"]) == kind:
+			return DictRead.as_string(event["note"])
+	return ""
 
 
 func _reaction_queue(h: TestHarness) -> void:
@@ -1717,11 +1769,12 @@ static func _wired_world() -> World:
 ## docs/21 section 5's `special` 9 -- `0x0046F210` `case 4`, the one arm of the
 ## effect dispatcher that rewrites the roster.
 ##
-## The oracle is the listing, not a capture: `aPlayFightAnimation` runs after
-## `aAttackUnit` returns, so a `dbgcall` capture of `aAttackUnit` alone can
-## never contain this and the native suite is not where it belongs. No shipped
-## slice mission carries the one type that has it (`Squee'Coo`, 57), which is
-## why the scene is synthetic.
+## The oracle is the listing, not a capture, and the reason is the data rather
+## than the call graph: no shipped slice mission carries the one type that has
+## it (`Squee'Coo`, 57), which is also why the scene is synthetic. *(This once
+## said a capture of `aAttackUnit` could never contain the sweep because
+## `aPlayFightAnimation` runs after the routine returns. It does not -- the
+## call is at `0x0046C186`, inside.)*
 func _the_hatch(h: TestHarness) -> void:
 	var carrier_type: int = 57
 	var types: UnitTypeTable = UnitTypeTable.from_rows([

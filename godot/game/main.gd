@@ -4179,12 +4179,14 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 				Vector2i(to_x, to_y), _is_own(slot))
 			return float(frames) / SequenceQueue.FRAMES_PER_SECOND
 		"fire":
-			# **The weapon comes from the event, not from the mirror.** A
-			# bayonet swap or a jam changes the record before the picture gets
-			# to it, and an alien killed by reaction fire after its own shot
-			# has no view left by the end of the turn. `World.submit_attack`
-			# and `AIFire` both write the weapon into the note as it was when
-			# the trigger was pulled (docs/97 section 24).
+			# **The weapon comes from the event, not from the mirror.** The
+			# record no longer holds it: a jam clears it, a close-combat swap
+			# has been reverted, and an alien killed by reaction fire after
+			# its own shot has no view left by the end of the turn.
+			# `World.submit_attack` and `AIFire` both write the weapon the
+			# animation was **played with** into the note, which for a stab is
+			# the bayonet and not the gun that was aimed (docs/97 section 24
+			# as corrected 2026-09-09).
 			return _present_attack(slot, at_x, at_y, to_x, to_y,
 				DictRead.as_string(event["note"]).to_int(),
 				AttackResult.from_dict(payload))
@@ -7688,16 +7690,17 @@ class MainShotHost extends ShotHost:
 	func _init(owner: SliceMain) -> void:
 		main = owner
 
-	func body_frames(slot: int) -> Dictionary:
+	func body_frames(slot: int, weapon: int = -1) -> Dictionary:
 		if main._units == null:
 			return {"to_break": 0, "spin": 0, "after_break": 0}
-		return main._units.body_frames(slot)
+		return main._units.body_frames(slot, weapon)
 
-	func fire_body(slot: int, tx: int, ty: int) -> Dictionary:
+	func fire_body(slot: int, tx: int, ty: int,
+			weapon: int = -1) -> Dictionary:
 		if main._units == null:
 			return {"to_break": 0, "spin": 0, "after_break": 0}
-		var _seconds: float = main._units.fire(slot, tx, ty)
-		return main._units.body_frames(slot)
+		var _seconds: float = main._units.fire(slot, tx, ty, weapon)
+		return main._units.body_frames(slot, weapon)
 
 	func body_playing(slot: int) -> bool:
 		return main._units != null and main._units.is_playing(slot)
