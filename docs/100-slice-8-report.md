@@ -213,6 +213,22 @@ drain flushes. The player's `use` is therefore presented by the `use` arm
 and not by `use_in_front` any more, because the landing needs a playback to
 land into; the push reads the pushed record off the mirror **before** it.
 
+**Correction, 2026-09-09: the queue's drain flushed only what nobody had
+already paid for.** A presenter that lands its delta at a moment of its own
+(`_land_current_delta`, the death stage) forces a flush from **inside** its
+sequence: the bodies are rebuilt, the terrain is not -- the set piece owns
+its cells -- and `_picture_stale` is cleared on the way out, so the drain's
+`_flush_picture` returned at its first line and the deferred repaint was
+simply lost. It came back only when some later, unrelated delta asked for
+another one. Reported on `_C_110`, whose `ParaBombs` mines are the one thing
+that changes a cell **and** kills the unit standing on it in the same event:
+`core` cleared the cell, the mirror agreed, and `A_MINE.3DI` went on standing
+there after the blast. The terrain repaint is owed on a flag of its own now
+(`_terrain_stale`, the shape `_overlay_stale` already had) and
+`_drain_deferred_repaints` pays both the frame the queue empties;
+`test_game_ui`'s `death.the_repaint_is_owed` and `death.the_drain_pays_it`
+are on the same forced flush the death stage makes.
+
 **One rebuild per frame.** `_apply_event` used to free and rebuild every body,
 run a fog pass, diff the terrain and redraw the overlay per delta, and the
 quiet events between two shown ones land several in one frame. It marks the

@@ -48,7 +48,7 @@ python3 tools/brief_parse.py      --check gog_incubation      # 57 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 158 checks
 python3 tools/campaign_tables.py    --check gog_incubation    # 468 checks
-python3 tools/blob_tables.py        --check gog_incubation    # 546 checks
+python3 tools/blob_tables.py        --check gog_incubation    # 547 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 80 checks
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 40 suites, 5009 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5013 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -809,7 +809,7 @@ Nine things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.31.0 since `P0_M2_000` joined every cache -- `docs/40` section 7.2's kind-4 literal, which no selector's closure names and which an upgrade base's own marines march on, docs/27 section 2.7.1; 0.30.0 was `tables/frontend.json` recording the map's `B0` key and gate rather than a briefing switch that does not exist, docs/24 section 7.1; 0.29.0 was the cutscenes, `tables/sequences.json`, `tables/frontend.json`, the voice-overs and the `Track` tracks joining every cache, docs/92 section 7.19), in
+* **`CONVERTER_VERSION` is written down twice** (0.32.0 since the two constructor calls whose class argument is a register carry the zero the register holds rather than `null` -- docs/28 section 7.2, which is also the crash a weapon-36 impact used to be; 0.31.0 was `P0_M2_000` joining every cache -- `docs/40` section 7.2's kind-4 literal, which no selector's closure names and which an upgrade base's own marines march on, docs/27 section 2.7.1; 0.30.0 was `tables/frontend.json` recording the map's `B0` key and gate rather than a briefing switch that does not exist, docs/24 section 7.1; 0.29.0 was the cutscenes, `tables/sequences.json`, `tables/frontend.json`, the voice-overs and the `Track` tracks joining every cache, docs/92 section 7.19), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump

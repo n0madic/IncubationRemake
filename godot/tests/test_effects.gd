@@ -1833,6 +1833,41 @@ func _check_triggers(h: TestHarness) -> void:
 	h.equal("triggers.impact_default", triggers.impact(0, to), 0,
 		"weapons below the impact table's first id have no impact effect")
 
+	# **Every weapon in both switches, fired.** Weapon 36's impact and weapon
+	# 17's muzzle reach `aBlob_CreateShockWave` `0x00422B80`, whose class
+	# argument is a `push ebp` the function has just zeroed rather than an
+	# immediate (docs/28 section 7.2). The document carried `null` there, and
+	# narrowing it raised `Trying to return a value of type "Nil" from a
+	# function whose return type is "int"` on every shot from those two --
+	# a *runtime* error, which fails no check on its own. Both ends are swept
+	# so a call the constructor table cannot read is caught by the run
+	# (`run_tests.sh` makes the error text a failure) rather than by a player.
+	var calls: Dictionary = DictRead.as_dict(document.get("calls", {}))
+	var unread: int = 0
+	for call: Variant in calls.values():
+		if DictRead.as_dict(call)["class"] == null:
+			unread += 1
+	h.equal("triggers.call_classes_read", unread, 0,
+		"all %d constructor calls carry a class the document could read"
+			% calls.size())
+	var swept: int = 0
+	for weapon_key: Variant in DictRead.as_dict(
+			document.get("weapon_muzzle", {})):
+		pool.clear()
+		var _muzzled: int = triggers.muzzle(
+			DictRead.as_string(weapon_key).to_int(), from, to)
+		var _asked: Array[Dictionary] = triggers.take_programs()
+		swept += 1
+	for weapon_key: Variant in DictRead.as_dict(
+			document.get("weapon_impact", {})):
+		pool.clear()
+		var _hit: int = triggers.impact(
+			DictRead.as_string(weapon_key).to_int(), to)
+		swept += 1
+	h.check("triggers.every_weapon_fires", swept > 0,
+		"%d weapon arms fired, none of them a runtime error" % swept)
+	pool.clear()
+
 	# An effect whose model this world set does not carry is **cancelled**,
 	# not drawn as a hole and not a crash. `A_PARAB1.3DI` lives in E00 and
 	# F00 only, so on A00 the para bomb simply does not appear -- which is

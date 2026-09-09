@@ -783,6 +783,39 @@ BLOB_CALLS = {
     0x0042b45c: ((0x42b457, BLOB_NAME_SCRATCH), (0x42b455, 2), (0x42b44a, 68), (0x42b448, 40)),
 }
 
+#: The two constructor calls whose class argument is a **register** and not
+#: an immediate, so :meth:`Binary.push_imm` cannot read one and
+#: :data:`BLOB_CALLS` carries ``None`` there.  Both push `ebp`, and both
+#: functions zero `ebp` a few instructions in front of the push with nothing
+#: writing it in between -- `0x00422CE7` -> `0x00422D08` in the shock wave
+#: `0x00422B80` (weapon 36's impact and weapon 17's muzzle) and
+#: `0x00422E95` -> `0x00422EB5` in the selection marker `0x00422D40`.  So the
+#: class is **zero at both, measured**, which is also what
+#: `inclib/blob_creators.py`'s transcription of the marker already spawns.
+#:
+#: site -> (class, the `push ebp` at the call, the `xor ebp, ebp` before it)
+BLOB_CALL_CLASS_REGISTER = {
+    0x00422d0e: (0, 0x00422d08, 0x00422ce7),
+    0x00422ebb: (0, 0x00422eb5, 0x00422e95),
+}
+
+#: `push ebp` and `xor ebp, ebp`, the two instructions
+#: :data:`BLOB_CALL_CLASS_REGISTER` stands on.
+PUSH_EBP = 0x55
+XOR_EBP_EBP = (0x33, 0xED)
+
+
+def pinned_class(site: int, cls) -> int | None:
+    """The class :data:`BLOB_CALLS` pins for one call site.
+
+    The site's own immediate where it pushes one, and the zeroed register's
+    value at the two sites of :data:`BLOB_CALL_CLASS_REGISTER`.
+    """
+    if cls:
+        return cls[1]
+    entry = BLOB_CALL_CLASS_REGISTER.get(site)
+    return entry[0] if entry else None
+
 DIRECT_SITES = {
     0x004176d9: (None, None),   # aAnimations.cpp
     0x00417a1e: ((0x417a09, 'click_3.wav'), (0x4179ff, -1)),   # aBattleMap.cpp
@@ -1964,10 +1997,30 @@ class Binary:
                 if name is None:
                     name = value
             out[site] = (name,
-                         self.push_imm(cls[0]) if cls else None,
+                         self.blob_call_class(site, cls),
                          self.push_imm(kind[0]) if kind else None,
                          self.push_imm(life[0]) if life else None)
         return out
+
+    def blob_call_class(self, site: int, cls) -> int | None:
+        """The class argument of one constructor call.
+
+        Its own immediate where the site pushes one; otherwise the register
+        of :data:`BLOB_CALL_CLASS_REGISTER`, read as its value only while the
+        two instructions the reading stands on are still there -- so a
+        changed byte comes back as ``None`` and fails ``blob.classes``
+        rather than passing as a constant nobody measured.
+        """
+        if cls:
+            return self.push_imm(cls[0])
+        entry = BLOB_CALL_CLASS_REGISTER.get(site)
+        if entry is None:
+            return None
+        value, push, zero = entry
+        if self.u8(push) == PUSH_EBP and \
+                (self.u8(zero), self.u8(zero + 1)) == XOR_EBP_EBP:
+            return value
+        return None
 
     def walk_arms(self) -> dict[int, tuple]:
         """``aStartWalkAnimationSound``: arm -> (types, wave, volume, period)."""
@@ -2877,7 +2930,13 @@ def run_checks(root: str) -> Checker:
     ck.equal("blob.models", {s: m for s, (m, _c, _k, _l) in calls.items()},
              {s: (m[1] if m else None) for s, (m, _c, _k, _l) in BLOB_CALLS.items()}, Checker.brief)
     ck.equal("blob.classes", {s: v for s, (_m, v, _k, _l) in calls.items()},
-             {s: (v[1] if v else None) for s, (_m, v, _k, _l) in BLOB_CALLS.items()}, Checker.brief)
+             {s: pinned_class(s, v) for s, (_m, v, _k, _l) in BLOB_CALLS.items()}, Checker.brief)
+    ck.check("blob.class_register",
+             all(b.u8(push) == PUSH_EBP and
+                 (b.u8(zero), b.u8(zero + 1)) == XOR_EBP_EBP
+                 for _v, push, zero in BLOB_CALL_CLASS_REGISTER.values()),
+             f"{len(BLOB_CALL_CLASS_REGISTER)} class arguments are a `push "
+             "ebp` the function has just zeroed")
     ck.equal("blob.kinds", {s: v for s, (_m, _c, v, _l) in calls.items()},
              {s: (v[1] if v else None) for s, (_m, _c, v, _l) in BLOB_CALLS.items()}, Checker.brief)
     ck.equal("blob.lives", {s: v for s, (_m, _c, _k, v) in calls.items()},

@@ -3024,7 +3024,19 @@ func _death_delta(h: TestHarness) -> void:
 	h.check("death.the_band_goes_with_the_body",
 		not GroundSprites.cell_states(mirror, shooter, null, bands).has(cell),
 		"no aim over an empty cell")
+	# **The terrain half of that forced flush is owed, not lost.** The
+	# presenter cleared `_picture_stale` from inside its own sequence, so the
+	# once-a-frame flush will not come back for the cells: only the flag of
+	# its own does. What this regressed to was the mine a walker stepped on
+	# -- `core` cleared the cell, the mirror agreed, and the model stayed on
+	# screen with its tint until an unrelated delta asked for a repaint.
+	h.check("death.the_repaint_is_owed",
+		main._terrain_stale and not main._picture_stale,
+		"the flush inside the sequence deferred the terrain and remembered")
 	main._sequences.skip()
+	main._drain_deferred_repaints()
+	h.check("death.the_drain_pays_it", not main._terrain_stale,
+		"the frame the queue empties repaints the cells the event changed")
 	main._playback.skip()
 	units.free()
 	main.free()

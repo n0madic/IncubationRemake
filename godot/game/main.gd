@@ -381,6 +381,15 @@ var _picture_stale: bool = false
 ## An overlay refresh asked for while a set piece was drawing, owed to the
 ## drain (see [method _refresh_overlay]).
 var _overlay_stale: bool = false
+## A terrain repaint asked for while a set piece was drawing, owed to the
+## drain the same way (see [method _redraw_terrain]). It is a flag of its own
+## and not [member _picture_stale] because a presenter that lands its delta
+## at a moment inside its own sequence ([method _land_current_delta]) clears
+## that one while the terrain half is still deferred: without this the owed
+## repaint was simply lost, and a mine that went off under a walker kept its
+## model and its tint on the cell until some later delta happened to ask for
+## another repaint.
+var _terrain_stale: bool = false
 ## Whether the playback on the go is the computer's turn, which is what
 ## [method end_turn] started, as against a player's own command. The two
 ## finish differently: only the turn hands the selection back.
@@ -3284,6 +3293,7 @@ func _clear_mission() -> void:
 	_walk_cameras.clear()
 	_footstep_cues.clear()
 	_picture_stale = false
+	_terrain_stale = false
 	_playing_turn = false
 	# A turn still being drawn when the mission goes -- `ESC`, *Main Menu*
 	# -- is dropped, not skipped: `skip()` would land deltas on a mirror
@@ -4587,8 +4597,7 @@ func _process(delta: float) -> void:
 	# the bodies move: a delta a presenter landed mid-sequence has already
 	# been flushed by it, and this is for the ones the playback landed.
 	_flush_picture()
-	if _overlay_stale and (_sequences == null or not _sequences.is_running()):
-		_refresh_overlay()
+	_drain_deferred_repaints()
 	if _units != null:
 		_units.animate(delta, shown(), _rig != null
 			and _rig.eye().z >= UnitsView.FREEZE_HEIGHT)
@@ -6586,13 +6595,15 @@ func _redraw_event_cells(payload: Dictionary) -> int:
 func _redraw_terrain() -> int:
 	# A queued set piece owns the cells it is animating: snapping them to the
 	# finished state now would show the end of the lift before the lift.
-	# `_process` calls `_redraw_terrain_now` when the queue drains.
+	# `_process` drains [member _terrain_stale] when the queue empties.
 	if _sequences != null and _sequences.is_running():
+		_terrain_stale = true
 		return 0
 	return _redraw_terrain_now()
 
 
 func _redraw_terrain_now() -> int:
+	_terrain_stale = false
 	if world == null or _scenery == null or _overlay == null:
 		return 0
 	var now: Dictionary = shown().terrain_snapshot()
@@ -7168,10 +7179,32 @@ func _flush_picture(force: bool = false) -> void:
 		_units.build(shown(), _geometry, _textures, _picture_fog())
 	# **A set piece owns the cells it animates.** Painting a door to its final
 	# height while its ten frames are queued would snap it open, snap it shut
-	# and animate it open again; the drain repaints instead.
-	if _sequences == null or not _sequences.is_running():
-		var _cells: int = _redraw_terrain_now()
+	# and animate it open again; the drain repaints instead. Deferring is
+	# [method _redraw_terrain]'s, and so is remembering that it did -- a
+	# forced flush inside a sequence has already cleared [member _picture_stale]
+	# and would never come back here.
+	var _cells: int = _redraw_terrain()
 	_refresh_overlay(force)
+
+
+## What a set piece deferred, paid the frame its queue empties.
+##
+## A presenter that lands its delta at a moment of its own
+## ([method _land_current_delta]) forces a flush from **inside** its own
+## sequence: the bodies are rebuilt from the mirror, the terrain is not --
+## a set piece owns the cells it animates -- and [member _picture_stale] is
+## cleared on the way out. So the terrain half has to be owed on a flag of
+## its own, or nobody comes back for it. What that lost was the mine a walker
+## stepped on: `core` cleared the cell and the mirror agreed, and the model
+## and its tint went on standing there until an unrelated delta happened to
+## ask for another repaint.
+func _drain_deferred_repaints() -> void:
+	if _sequences != null and _sequences.is_running():
+		return
+	if _terrain_stale:
+		var _repainted: int = _redraw_terrain()
+	if _overlay_stale:
+		_refresh_overlay()
 
 
 ## The moment of a presenter's own: the delta of the event on screen lands

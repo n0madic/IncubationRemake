@@ -663,9 +663,22 @@ culls against the **prototype's** own radius, not this cached copy.
 
 Classes 2 and 3 pass a model argument that is never read; all 54 of those calls
 pass the same scratch buffer `0x004FA524`, which is a leftover, not data. Of the
-116 calls, 55 pass class 0, 5 class 1, 52 class 2 and 2 class 3; two build the
-class at run time. Only classes 0 and 1 look the model up, and a lookup that
-fails aborts the call (§7.5).
+116 calls, **57 pass class 0**, 5 class 1, 52 class 2 and 2 class 3. Only
+classes 0 and 1 look the model up, and a lookup that fails aborts the call
+(§7.5).
+
+**Two of the 57 push a register rather than an immediate**, and were carried as
+"the class is built at run time" until the register was read: both push `ebp`,
+and both functions zero `ebp` a few instructions in front of the push with
+nothing writing it in between — `0x00422CE7` → `0x00422D08` in the shock wave
+`0x00422B80` (weapon 36's impact and weapon 17's muzzle) and `0x00422E95` →
+`0x00422EB5` in the selection marker `0x00422D40` ([`42` §7.3](42-mission-presentation.md)).
+So the class is **zero at both**, which is what the marker's transcription in
+[`tools/inclib/blob_creators.py`](../tools/inclib/blob_creators.py) already
+spawns. `blob_tables.py`'s `BLOB_CALL_CLASS_REGISTER` pins the four addresses
+and `blob.class_register` gates on the two instructions still being there, so a
+changed byte comes back as "unread" and fails `blob.classes` rather than
+passing as a constant nobody measured.
 
 ### 7.3 The zoom bob — one texture, sixty-four sprites
 
