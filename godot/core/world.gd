@@ -266,14 +266,16 @@ func load_sweep() -> int:
 		var alien: bool = unit.player == UnitState.PLAYER_ALIEN
 		if not in_session and not alien \
 				and _unit_types.species(unit.type_id) != SPECIES_INANIMATE:
-			var _hero: bool = UnitState.take_off_map(state, turn, unit)
+			var _hero: bool = UnitState.take_off_map(state, _unit_types, turn,
+				unit)
 			removed += 1
 			continue
 		# `0x0043B1F0` is the network gate, and this remake has no network
 		# session (docs/92 section 7.9), so the alien arm turns on the human
 		# count alone.
 		if alien and humans > 1:
-			var _hero: bool = UnitState.take_off_map(state, turn, unit)
+			var _hero: bool = UnitState.take_off_map(state, _unit_types, turn,
+				unit)
 			removed += 1
 			continue
 		Refresh.recompute_full(unit, _unit_types, _weapons, _units,
@@ -438,12 +440,13 @@ func apply_unit_record(slot: int, record: Dictionary) -> bool:
 	if not _units.has(slot):
 		return false
 	var unit: UnitState = _units[slot]
-	var was: int = state.index_of(unit.x, unit.y)
+	var was_x: int = unit.x
+	var was_y: int = unit.y
 	unit.apply_record(record)
-	if state.unit_at(was) == slot and was != state.index_of(unit.x, unit.y):
-		state.set_unit(was, MapState.NO_UNIT)
+	if was_x != unit.x or was_y != unit.y:
+		UnitState.vacate(state, _unit_types, unit, was_x, was_y)
 	if unit.hp > 0:
-		state.set_unit(state.index_of(unit.x, unit.y), slot)
+		UnitState.occupy(state, _unit_types, unit, unit.x, unit.y)
 	return true
 
 
@@ -1270,7 +1273,8 @@ func _ground_tick() -> Dictionary:
 			# its last instruction, `0x00477ABD` -- zeroes the hit points.
 			# So the flames kill; no damage roll runs, but the victim is dead
 			# and not merely unlinked (docs/97 section 40 corrects section 38).
-			var _counted: bool = UnitState.remove(state, turn, victim)
+			var _counted: bool = UnitState.remove(state, _unit_types, turn,
+				victim)
 			killed.append(slot)
 	var changed: PackedInt32Array = CellObjects.round_tick(state)
 	var outcome: Dictionary = {"ignited": Array(ignited),
@@ -1518,7 +1522,7 @@ func cheat_kill_enemies() -> int:
 			continue
 		turn.count_kill_and_loss(turn.current_player, unit.type_id,
 			unit.player)
-		var _hero: bool = UnitState.remove(state, turn, unit)
+		var _hero: bool = UnitState.remove(state, _unit_types, turn, unit)
 		killed += 1
 	return killed
 
@@ -1804,7 +1808,7 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 	unit.turn_start_x = x
 	unit.turn_start_y = y
 	_units[slot] = unit
-	state.set_unit(state.index_of(x, y), slot)
+	UnitState.occupy(state, _unit_types, unit, x, y)
 	# `0x00478DD1`, between `aUI_SetUnit` and the pool removal: the **full**
 	# recompute, not the hand-over's short one. A roster record carries no
 	# ammunition byte of its own -- `aEnlargeUnitPool` never writes one -- so
@@ -1856,7 +1860,7 @@ func kill_units_of(player: int) -> int:
 		var unit: UnitState = _units[slot]
 		if unit.player != player or not unit.is_alive():
 			continue
-		var _hero: bool = UnitState.remove(state, turn, unit)
+		var _hero: bool = UnitState.remove(state, _unit_types, turn, unit)
 		killed += 1
 	return killed
 
@@ -1868,7 +1872,7 @@ func clear_units_of(player: int) -> int:
 		var unit: UnitState = _units[slot]
 		if unit.player != player:
 			continue
-		state.set_unit(state.index_of(unit.x, unit.y), MapState.NO_UNIT)
+		UnitState.vacate(state, _unit_types, unit, unit.x, unit.y)
 		_units.erase(slot)
 		removed += 1
 	return removed

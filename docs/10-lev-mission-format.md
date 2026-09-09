@@ -347,6 +347,34 @@ not a parse error. A remake must model unit footprints accordingly; the type
 table byte at `Info.lcl` column 14 (`1` for `Tr'Yn`, `Al'Coo`, `ComBot`) is what
 the engine tests for it.
 
+**Which cells, and who writes them — `aWriteUnitIdIntoCtrlMap` `0x0047A240`.**
+The routine is the single writer of `+0x07`, and it has exactly two arms,
+selected by `unitinfo[type].size`:
+
+| `size` | cells written | site |
+|---|---|---|
+| 0 | the unit's own cell alone | `0x0047A3FB` |
+| 1 | the **nine** cells of the 3x3 block centred on it | `0x0047A319`..`0x0047A3EC` |
+
+Anything else raises the routine's own `"unknown unitsize"`
+(`aUnitMap.cpp:4343`). Each of the nine is addressed through
+`aGetCtrlMapElementPtr` `0x0042F730` and **skipped where that answers NULL**,
+so a footprint against the map's edge writes only the cells that exist. The
+value written is a `u16` and `0xFFFF` is the clear, so the same routine both
+places and removes; its first argument may be `0`, in which case it reads the
+unit's own `+0x42`/`+0x43` rather than taking coordinates.
+
+Ten call sites reach it, and they are every place a unit is placed, moved or
+taken off the map — `aExecuteMove` `0x0046E220`, the push `0x0046D530`, the
+warp `0x0046EF50` and the relocation `0x0047AD90` each call it **twice, clear
+then write**, and `aRemoveUnitElement` `0x004779C0` once. A remake that writes
+the centre alone leaves the other eight cells of a large unit's authored block
+naming a unit that has walked away: cells nothing can enter and no move fill
+can cross for the rest of the mission. `godot/core/unit_state.gd`'s
+`footprint`/`occupy`/`vacate` and `inclib.combat.unit_footprint` are the
+transcription; `test_execute_move.gd`'s `footprint.*` checks pin both arms,
+the edge clipping and the clear.
+
 ### 4.5 Movement overlays — cell state `10`, `0x3C` and `0x64`
 
 When a unit is selected, `fcn.00430a40` (the range builder, used by the UI and

@@ -39,6 +39,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import combat as combatmod
 from . import ctrlmap as ctrlmapmod
 from . import lev as levmod
 from .info import BalanceTables
@@ -315,6 +316,20 @@ class LclWorld:
         unit = self.units.get(slot)
         return False if unit is None else self.remove(unit)
 
+    def footprint(self, unit: RuntimeUnit, x: int, y: int) -> list[int]:
+        """``aWriteUnitIdIntoCtrlMap`` (``0x0047A240``) -- the cells a unit
+        covers: its own for size 0, the **nine** of the 3x3 block for size 1,
+        clipped to the map as ``aGetCtrlMapElementPtr`` ``0x0042F730``'s NULL
+        answer clips them.  ``docs/10`` §4.4 -- the authored map already ships
+        all nine of every large unit.
+        """
+        row = self.tables.units.get(unit.type_id)
+        if row is None or row.size != combatmod.SIZE_LARGE:
+            return [self.index(x, y)] if self.in_bounds(x, y) else []
+        return [self.index(x + dx, y + dy)
+                for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                if self.in_bounds(x + dx, y + dy)]
+
     def remove(self, unit: RuntimeUnit) -> bool:
         """``aRemoveUnitElement`` (``0x004779C0``) -- and its hero counter.
 
@@ -338,8 +353,9 @@ class LclWorld:
             self.hero_killed[unit.player] = (
                 (self.hero_killed[unit.player] + 1) % self.HERO_COUNT_WRAP)
             counted = True
-        if self.in_bounds(unit.x, unit.y):
-            at = self.index(unit.x, unit.y)
+        # Every cell the unit covers, and only the ones that still name it
+        # (:meth:`footprint`).
+        for at in self.footprint(unit, unit.x, unit.y):
             if self.unit_at[at] == unit.slot:
                 self.unit_at[at] = -1
         # ``0x00477ABD`` -- the routine's own last write.
@@ -390,7 +406,8 @@ class LclWorld:
             # the native capture to settle, not this model to guess.
             unit.hit_points = 1
         self.units[slot] = unit
-        self.unit_at[self.index(*target)] = slot
+        for at in self.footprint(unit, *target):
+            self.unit_at[at] = slot
         return unit
 
     def free_slot(self) -> int:

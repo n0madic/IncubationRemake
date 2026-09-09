@@ -303,8 +303,8 @@ static func _detonate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 ##
 ## Otherwise the cell link moves, `+0x42`/`+0x43` follow it, and the epilogue's
 ## closing visibility pass and `MoveUnit` event both see the **exit** cell.
-static func _teleport(state: MapState, turn: TurnState, mover: UnitState,
-		moved: MoveResult) -> void:
+static func _teleport(state: MapState, utab: UnitTypeTable,
+		turn: TurnState, mover: UnitState, moved: MoveResult) -> void:
 	var entry: int = state.index_of(moved.x, moved.y)
 	var key: int = state.action_point_at(entry)
 	var exit_at: int = -1
@@ -316,14 +316,14 @@ static func _teleport(state: MapState, turn: TurnState, mover: UnitState,
 	if exit_at < 0:
 		return
 	if state.unit_at(exit_at) != MapState.NO_UNIT:
-		UnitState.remove(state, turn, mover)
+		UnitState.remove(state, utab, turn, mover)
 		moved.events.append({"kind": "teleporter_blocked", "x": moved.x,
 			"y": moved.y, "detail": key})
 		return
 	var ex: int = exit_at % state.width
 	var ey: int = exit_at / state.width
-	state.set_unit(entry, MapState.NO_UNIT)
-	state.set_unit(exit_at, mover.slot)
+	UnitState.vacate(state, utab, mover, moved.x, moved.y)
+	UnitState.occupy(state, utab, mover, ex, ey)
 	mover.x = ex
 	mover.y = ey
 	moved.x = ex
@@ -372,8 +372,8 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var _opened: Dictionary = journal.mark("move_begin", mover.slot,
 			from_x, from_y, tx, ty, moved.cost, "", opening)
 	if moved.steps > 0:
-		state.set_unit(state.index_of(mover.x, mover.y), MapState.NO_UNIT)
-		state.set_unit(state.index_of(moved.x, moved.y), mover.slot)
+		UnitState.vacate(state, utab, mover, mover.x, mover.y)
+		UnitState.occupy(state, utab, mover, moved.x, moved.y)
 		mover.x = moved.x
 		mover.y = moved.y
 		# The facing is written per step (`aChangeUnitViewDirection` inside
@@ -429,7 +429,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if mover.is_alive() and moved.teleporter:
 		var entry_x: int = moved.x
 		var entry_y: int = moved.y
-		_teleport(state, turn, mover, moved)
+		_teleport(state, utab, turn, mover, moved)
 		if journal != null:
 			var _sent: Dictionary = journal.mark("teleport", mover.slot,
 				entry_x, entry_y, moved.x, moved.y, 0, "",

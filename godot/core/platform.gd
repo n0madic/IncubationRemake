@@ -41,8 +41,8 @@ static func relocate(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var target: int = state.index_of(tx, ty)
 	if state.unit_at(target) != MapState.NO_UNIT:
 		return false
-	state.set_unit(state.index_of(unit.x, unit.y), MapState.NO_UNIT)
-	state.set_unit(target, unit.slot)
+	UnitState.vacate(state, utab, unit, unit.x, unit.y)
+	UnitState.occupy(state, utab, unit, tx, ty)
 	unit.x = tx
 	unit.y = ty
 	return Visibility.look_from(state, units, utab, unit, tx, ty,

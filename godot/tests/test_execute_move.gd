@@ -17,6 +17,8 @@ const FREE_PLACE: int = 1
 const VICTORY_UNCLAIMED: int = 0x50
 ## How many seeds [method _the_dead_mover_fires_nothing] tries before it gives
 ## up. The remake's, and only a bound on the search.
+## `tests/fixtures.gd`'s one large type -- `size` 1, docs/21 section 5.
+const LARGE_TYPE: int = 99
 const SEED_SEARCH: int = 40
 
 
@@ -30,6 +32,7 @@ func run(h: TestHarness) -> void:
 	_the_move_unit_event(h)
 	_the_passes(h)
 	_teleporters(h)
+	_the_footprint(h)
 
 
 ## A world whose mover has room to take a two-step path with one orthogonal
@@ -777,3 +780,72 @@ func _teleporters(h: TestHarness) -> void:
 	h.equal("teleporter.the_dead_traveller_leaves_the_entry",
 		blocked.state.unit_at(blocked.state.index_of(2, 1)),
 		MapState.NO_UNIT)
+
+
+## `aWriteUnitIdIntoCtrlMap` (`0x0047A240`) -- every cell a large unit's link
+## covers, and the four things that write it.
+##
+## docs/10 section 4.4: the authored `.lev` already names all nine cells of
+## every large unit, which is why the 128 cells whose link disagrees with the
+## unit's own coordinates are not a parse error. The remake used to clear and
+## write the **centre** alone, so a `ComBot` that took one step left eight
+## cells naming a unit that had walked away: eight cells no unit could enter
+## and no fill could cross for the rest of the mission. Reported from
+## `_C_113`, where the authored ring at (17..19, 12..14) still blocked a
+## marine on turn 6.
+func _the_footprint(h: TestHarness) -> void:
+	var units: Array = [TestFixtures.unit(0, 4, 4, LARGE_TYPE),
+		TestFixtures.unit(1, 2, 2)]
+	var world: World = World.create(
+		TestFixtures.map_document(9, 9, units), TestFixtures.balance(), 1.0)
+	var big: UnitState = world.units_for_ai()[0]
+	var types: UnitTypeTable = world.unit_types()
+	h.equal("footprint.the_type_is_large",
+		types.unit_size(big.type_id), UnitTypeTable.SIZE_LARGE)
+	h.equal("footprint.nine_cells",
+		UnitState.footprint(world.state, types, big, 4, 4).size(), 9,
+		"0x0047A319's eight writes plus the centre at 0x0047A3EC")
+	var small_unit: UnitState = world.units_for_ai()[1]
+	h.equal("footprint.one_cell_for_a_small_unit",
+		UnitState.footprint(world.state, types, small_unit, 2, 2).size(), 1,
+		"0x0047A3FB -- the other arm")
+	h.equal("footprint.the_map_edge_clips_it",
+		UnitState.footprint(world.state, types, big, 0, 0).size(), 4,
+		"aGetCtrlMapElementPtr 0x0042F730 answers NULL off the map and the "
+		+ "write is skipped")
+
+	# The authored map names the centre only; the engine's own loader stamps
+	# the block, so stamp it here the way a `.lev` carries it.
+	UnitState.occupy(world.state, types, big, 4, 4)
+	h.equal("footprint.the_block_is_named", _named(world, 0), 9)
+	var _fill: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(0))
+	var moved: MoveResult = world.submit_move(MoveCommand.create(0, 5, 4))
+	if not h.check("footprint.the_large_unit_walked", moved.ok, moved.reason):
+		return
+	h.equal("footprint.the_walk_moved_the_whole_block",
+		[_named(world, 0), world.state.unit_at(world.state.index_of(3, 3)),
+			world.state.unit_at(world.state.index_of(6, 5))],
+		[9, MapState.NO_UNIT, 0],
+		"clear then write, and the overlapping cells survive the pair")
+
+	# The symptom: the cells the block left are cells a marine can walk into.
+	var small: MoveMapResult = world.submit_move_query(
+		MoveQueryCommand.create(1))
+	h.check("footprint.the_vacated_cells_are_reachable",
+		small.is_reachable(3, 3) and small.is_reachable(3, 4)
+		and small.is_reachable(3, 5),
+		"the column the block left is a column to walk into")
+
+	var _hero: bool = UnitState.remove(world.state, types, world.turn, big)
+	h.equal("footprint.death_clears_the_block", _named(world, 0), 0,
+		"aRemoveUnitElement 0x004779C0 calls the same routine with 0xFFFF")
+
+
+## How many cells name *slot*.
+func _named(world: World, slot: int) -> int:
+	var n: int = 0
+	for i: int in range(world.state.cell_count()):
+		if world.state.unit_at(i) == slot:
+			n += 1
+	return n

@@ -1977,6 +1977,61 @@ HATCH_WEAPON_TYPES = frozenset({1, 2, 4})
 UNIT_SLOTS = 200
 
 
+#: ``unitinfo[type].size`` -- the 3x3 arm of ``aWriteUnitIdIntoCtrlMap``.
+SIZE_LARGE = 1
+
+
+def unit_footprint(world: CombatWorld, unit: CombatUnit, x: int,
+                   y: int) -> list[int]:
+    """``aWriteUnitIdIntoCtrlMap`` (``0x0047A240``) -- the cells a unit covers.
+
+    Size 0 is the unit's own cell (``0x0047A3FB``); size 1 is the **nine**
+    cells of the 3x3 block around it (``0x0047A319``..``0x0047A3EC``), each
+    addressed through ``aGetCtrlMapElementPtr`` ``0x0042F730`` and skipped
+    where that answers NULL -- so a footprint at the map's edge writes only
+    the cells that exist.  Any other value is the routine's own
+    ``"unknown unitsize"`` assertion, which nothing shipped reaches.
+
+    The authored ``.lev`` already ships the nine cells of every large unit
+    (``docs/10`` §4.4).  A model that cleared the centre alone left the other
+    eight naming a unit that had walked away.
+    """
+    if world.size(unit) != SIZE_LARGE:
+        return [world.index(x, y)] if world.in_bounds(x, y) else []
+    cells = []
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if world.in_bounds(x + dx, y + dy):
+                cells.append(world.index(x + dx, y + dy))
+    return cells
+
+
+def occupy_cells(world: CombatWorld, unit: CombatUnit, x: int,
+                 y: int) -> None:
+    """Write *unit*'s slot into every cell of its footprint at (*x*, *y*).
+
+    Unconditional, as the engine's write is.  Pair it with
+    :func:`vacate_cells` on the old cell **first**: a large unit stepping one
+    field has overlapping footprints, and clearing after writing blanks part
+    of the block it has just claimed.
+    """
+    for at in unit_footprint(world, unit, x, y):
+        world.unit_at[at] = unit.slot
+
+
+def vacate_cells(world: CombatWorld, unit: CombatUnit, x: int,
+                 y: int) -> None:
+    """Clear *unit*'s slot from every cell of its footprint at (*x*, *y*).
+
+    Only cells that still name this unit: a push that has already moved the
+    record, or a second removal, must not blank a cell somebody else is
+    standing on.
+    """
+    for at in unit_footprint(world, unit, x, y):
+        if world.unit_at[at] == unit.slot:
+            world.unit_at[at] = -1
+
+
 def free_slot(world: CombatWorld) -> int:
     """The lowest slot in 0..199 holding no live unit.
 
@@ -2027,10 +2082,8 @@ def remove_unit_element(world: CombatWorld, unit: CombatUnit) -> bool:
         world.hero_killed[unit.player] = (
             (world.hero_killed[unit.player] + 1) % HERO_COUNT_WRAP)
         counted = True
-    if world.in_bounds(unit.x, unit.y):
-        at = world.index(unit.x, unit.y)
-        if world.unit_at[at] == unit.slot:
-            world.unit_at[at] = -1
+    # Every cell the unit covers, and only the ones that still name it.
+    vacate_cells(world, unit, unit.x, unit.y)
     # ``0x00477ABD`` -- the routine's own last write.
     unit.hp = 0
     return counted
@@ -2069,7 +2122,7 @@ def hatch(world: CombatWorld, target: CombatUnit,
                       hp=1 if row is None or not row.hp_max else row.hp_max,
                       group=group)
     world.units[made.slot] = made
-    world.unit_at[world.index(x, y)] = made.slot
+    occupy_cells(world, made, x, y)
     build_visible_map(world, world.current_player)
     return made.slot
 
@@ -2368,8 +2421,8 @@ def warp_unit(world: CombatWorld, unit: CombatUnit, tx: int, ty: int) -> WarpRes
     if not world.in_bounds(tx, ty):
         return WarpResult(False, "the target is off the map")
     target = world.index(tx, ty)
-    world.unit_at[source] = -1
-    world.unit_at[target] = unit.slot
+    vacate_cells(world, unit, unit.x, unit.y)
+    occupy_cells(world, unit, tx, ty)
     unit.x, unit.y = tx, ty
     result = WarpResult(True, x=tx, y=ty)
     if world.effect_state[target] == ctrlmapmod.OBSTACLE_MINE:

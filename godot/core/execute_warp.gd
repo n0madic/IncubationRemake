@@ -33,8 +33,8 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	if not state.in_bounds(tx, ty):
 		return {"ok": false, "reason": "the target is off the map"}
 	var target: int = state.index_of(tx, ty)
-	state.set_unit(source, MapState.NO_UNIT)
-	state.set_unit(target, unit.slot)
+	UnitState.vacate(state, utab, unit, unit.x, unit.y)
+	UnitState.occupy(state, utab, unit, tx, ty)
 	var from_x: int = unit.x
 	var from_y: int = unit.y
 	unit.x = tx

@@ -657,6 +657,12 @@ The `state == 60` test at `0x0040ABC7` is the one [`21` §8](21-info-lcl-schema.
 already notes as "walk vs jump". `aExecuteMove` and `aExecuteWarp` are the same
 two routines the human player's UI drives.
 
+Both relink the mover through `aWriteUnitIdIntoCtrlMap` `0x0047A240` **twice,
+clear then write** — the whole footprint for a large unit, not the centre
+([`10` §4.4](10-lev-mission-format.md)). The order is not free: a large unit
+stepping one field has overlapping blocks, and writing before clearing blanks
+part of the block it has just claimed.
+
 `blocked != 0` — some cell on the path is occupied by another unit — **zeroes
 the step count and moves nothing**, so a path that runs through somebody is
 abandoned rather than walked. Otherwise the same tail charges for what

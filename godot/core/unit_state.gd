@@ -455,7 +455,7 @@ static func generate(state: MapState, units: Dictionary,
 	unit.turn_start_x = tx
 	unit.turn_start_y = ty
 	units[unit.slot] = unit
-	state.set_unit(state.index_of(tx, ty), unit.slot)
+	occupy(state, types, unit, tx, ty)
 	return unit
 
 
@@ -490,14 +490,15 @@ static func generate(state: MapState, units: Dictionary,
 ## (`0x00477BF0`) stops counting the unit for that reason alone.
 ##
 ## Returns whether the counter moved, so a caller can report it.
-static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
+static func remove(state: MapState, utab: UnitTypeTable, turn: TurnState,
+		unit: UnitState) -> bool:
 	# `0x0043B8D0`, from `aAttackUnit`'s `0x0046BF6E` and ten other death
 	# paths -- the set-piece killers, the bomb and the teleporter among them.
 	# Every one of them ends here, so counting here counts all eleven. It is
 	# **not** inside `aUI_KillUnit`: the loss counter belongs to the call
 	# sites, which is why [method take_off_map] below is a routine of its own.
 	turn.count_unit_lost(unit.type_id, unit.player)
-	return take_off_map(state, turn, unit)
+	return take_off_map(state, utab, turn, unit)
 
 
 ## `aUI_KillUnit` `0x004779C0` alone -- the hero counter, the cell and the
@@ -509,21 +510,77 @@ static func remove(state: MapState, turn: TurnState, unit: UnitState) -> bool:
 ## directly. Nothing has died there and no loss is counted -- and the hero
 ## counter cannot fire either, its gate being the turn counter, which at load
 ## is still zero.
-static func take_off_map(state: MapState, turn: TurnState,
-		unit: UnitState) -> bool:
+static func take_off_map(state: MapState, utab: UnitTypeTable,
+		turn: TurnState, unit: UnitState) -> bool:
 	var counted: bool = false
 	if unit.pool_flag >= HERO_POOL_FLAG and turn.turn != 0 \
 			and unit.player >= 0 and unit.player < turn.hero_killed.size():
 		turn.hero_killed[unit.player] = \
 			(turn.hero_killed[unit.player] + 1) % HERO_COUNT_WRAP
 		counted = true
-	# The cell is cleared only when it still names this unit: a push that has
-	# already moved the record, or a second removal, must not blank a cell
-	# somebody else is standing on.
-	if state.in_bounds(unit.x, unit.y):
-		var at: int = state.index_of(unit.x, unit.y)
-		if state.unit_at(at) == unit.slot:
-			state.set_unit(at, MapState.NO_UNIT)
+	# Every cell the unit covers, and only the ones that still name it --
+	# see [method vacate].
+	vacate(state, utab, unit, unit.x, unit.y)
 	# `0x00477ABD` -- the routine's own last write.
 	unit.hp = 0
 	return counted
+
+
+## `aWriteUnitIdIntoCtrlMap` (`0x0047A240`) -- the cells one unit's link covers.
+##
+## The routine reads the unit type's `size` byte (`Info.lcl` column 14,
+## docs/21 section 5) and takes one of two arms: size 0 writes the unit's own
+## cell alone (`0x0047A3FB`), size 1 writes the **nine** cells of the 3x3
+## block around it (`0x0047A319`..`0x0047A3EC`), each addressed through
+## `aGetCtrlMapElementPtr` `0x0042F730` and skipped where that answers NULL --
+## so a footprint at the map's edge writes only the cells that exist. Any
+## other value is the routine's own `"unknown unitsize"` assertion, which
+## nothing shipped reaches.
+##
+## Ten call sites reach it in the engine, and they are the same ten places
+## this remake moves, places or removes a unit: `aExecuteMove` `0x0046E220`
+## calls it twice, clear then write, and so do the push `0x0046D530`, the warp
+## `0x0046EF50` and the relocation `0x0047AD90`.
+##
+## **The authored `.lev` already ships the nine cells** of every large unit
+## (docs/10 section 4.4 -- the 128 cells whose link disagrees with the unit's
+## own coordinates are exactly these). A remake that cleared the centre alone
+## left the other eight naming a unit that had walked away: eight cells no
+## unit could enter, and no fill could cross, for the rest of the mission.
+static func footprint(state: MapState, utab: UnitTypeTable, unit: UnitState,
+		x: int, y: int) -> PackedInt32Array:
+	var cells: PackedInt32Array = PackedInt32Array()
+	if utab.unit_size(unit.type_id) != UnitTypeTable.SIZE_LARGE:
+		if state.in_bounds(x, y):
+			cells.append(state.index_of(x, y))
+		return cells
+	for dy: int in [-1, 0, 1]:
+		for dx: int in [-1, 0, 1]:
+			if state.in_bounds(x + dx, y + dy):
+				cells.append(state.index_of(x + dx, y + dy))
+	return cells
+
+
+## Write *unit*'s slot into every cell of its footprint at (*x*, *y*).
+##
+## Unconditional, as the engine's write is: the caller has already decided the
+## unit stands there. Pair it with [method vacate] on the old cell **first** --
+## a large unit stepping one field has overlapping footprints, and clearing
+## after writing blanks part of the block it has just claimed.
+static func occupy(state: MapState, utab: UnitTypeTable, unit: UnitState,
+		x: int, y: int) -> void:
+	for at: int in footprint(state, utab, unit, x, y):
+		state.set_unit(at, unit.slot)
+
+
+## Clear *unit*'s slot from every cell of its footprint at (*x*, *y*).
+##
+## Only cells that still name this unit are cleared -- the guard [method
+## take_off_map] has always carried, and it matters more with a footprint than
+## without one: a push that has already moved the record, or a second removal,
+## must not blank a cell somebody else is standing on.
+static func vacate(state: MapState, utab: UnitTypeTable, unit: UnitState,
+		x: int, y: int) -> void:
+	for at: int in footprint(state, utab, unit, x, y):
+		if state.unit_at(at) == unit.slot:
+			state.set_unit(at, MapState.NO_UNIT)

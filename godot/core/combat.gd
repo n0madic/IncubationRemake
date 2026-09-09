@@ -1099,7 +1099,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 				target.player)
 			# `aKillUnit` (`0x00472920`) is two calls: the death sequence and
 			# `aRemoveUnitElement`, which is where the hero counter lives.
-			UnitState.remove(state, turn, target)
+			UnitState.remove(state, utab, turn, target)
 			# `0x0046BF47` -- `test ebp, ebp / jle`: the award is gated on the
 			# damage **argument** (what `applyDamage` was handed, zero after
 			# an absorber charge), not on what was dealt.
@@ -1314,7 +1314,7 @@ static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var y: int = target.y
 	var group: int = target.group
 	# `remove` is what zeroes the hit points -- `0x00477ABD`.
-	UnitState.remove(state, turn, target)
+	UnitState.remove(state, utab, turn, target)
 	var made: UnitState = UnitState.generate(state, units, utab, HATCH_PLAYER,
 		HATCH_TYPE, "", 0, 0, x, y, true)
 	if made == null:

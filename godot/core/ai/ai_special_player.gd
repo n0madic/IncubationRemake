@@ -39,5 +39,5 @@ static func run(ctx: AIContext) -> bool:
 			# `aRemoveUnitElement(x, y)` -- the bomb survived its own blast,
 			# which docs/22 section 7's guaranteed-hit rule makes impossible
 			# for the shipped `Parabomb`.
-			UnitState.remove(ctx.map, ctx.turn, unit)
+			UnitState.remove(ctx.map, ctx.utab, ctx.turn, unit)
 	return true

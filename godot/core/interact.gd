@@ -249,8 +249,8 @@ static func push_object(state: MapState, units: Dictionary,
 		var obj: UnitState = units[slot]
 		at = PackedInt32Array([at[0] + dx, at[1] + dy])
 		var into: int = state.index_of(at[0], at[1])
-		state.set_unit(source, MapState.NO_UNIT)
-		state.set_unit(into, slot)
+		UnitState.vacate(state, utab, obj, obj.x, obj.y)
+		UnitState.occupy(state, utab, obj, at[0], at[1])
 		obj.x = at[0]
 		obj.y = at[1]
 		out.pushed.append(at.duplicate())
@@ -273,7 +273,7 @@ static func push_object(state: MapState, units: Dictionary,
 				break
 		var ft: int = state.field_type_at(into)
 		if ft == FIELD_TYPE_HOLE or ft == FIELD_TYPE_DEEP_HOLE:
-			UnitState.remove(state, turn, obj)
+			UnitState.remove(state, utab, turn, obj)
 			out.kind = "push_into_hole"
 			break
 	return out
@@ -335,7 +335,7 @@ static func execute_bomb(state: MapState, units: Dictionary,
 			ai_level, human_players, game_mode, rng)
 		var killed: bool = not target.is_alive()
 		if killed:
-			UnitState.remove(state, turn, target)
+			UnitState.remove(state, utab, turn, target)
 		result.outcomes.append({"slot": slot, "x": cell[0], "y": cell[1],
 			"marker": Combat.MARKER_KILLED if killed else Combat.MARKER_HIT,
 			"dealt": dealt, "chance": chance, "roll": roll})

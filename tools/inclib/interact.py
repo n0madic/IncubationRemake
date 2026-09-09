@@ -444,8 +444,8 @@ def push_object(world: CombatWorld, unit: CombatUnit) -> UseResult:
         obj = world.units[slot]
         at = (at[0] + step[0], at[1] + step[1])
         into = world.index(*at)
-        world.unit_at[source] = -1
-        world.unit_at[into] = slot
+        combatmod.vacate_cells(world, obj, obj.x, obj.y)
+        combatmod.occupy_cells(world, obj, at[0], at[1])
         obj.x, obj.y = at
         result.pushed.append(at)
         if world.effect_state[into] == EFFECT_MINE:
@@ -461,7 +461,7 @@ def push_object(world: CombatWorld, unit: CombatUnit) -> UseResult:
                 result.kind = "push_onto_mine"
                 break
         if world.field_type[into] in (FIELD_TYPE_HOLE, FIELD_TYPE_DEEP_HOLE):
-            world.unit_at[into] = -1
+            combatmod.vacate_cells(world, obj, obj.x, obj.y)
             obj.hp = 0
             result.kind = "push_into_hole"
             break
@@ -602,8 +602,8 @@ def relocate_unit(world: CombatWorld, unit: CombatUnit, tx: int, ty: int) -> boo
     """
     if not world.in_bounds(tx, ty) or world.unit_on(tx, ty) is not None:
         return False
-    world.unit_at[world.index(unit.x, unit.y)] = -1
-    world.unit_at[world.index(tx, ty)] = unit.slot
+    combat.vacate_cells(world, unit, unit.x, unit.y)
+    combat.occupy_cells(world, unit, tx, ty)
     unit.x, unit.y = tx, ty
     return combat.build_visible_map_for_unit(world, unit, tx, ty)
 

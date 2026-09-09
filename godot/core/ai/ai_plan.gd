@@ -304,8 +304,8 @@ static func execute_warp(ctx: AIContext, unit: UnitState, tx: int,
 		ctx.refuse("warp from a cell that does not hold the mover")
 		return false
 	var target: int = ctx.map.index_of(tx, ty)
-	ctx.map.set_unit(source, MapState.NO_UNIT)
-	ctx.map.set_unit(target, unit.slot)
+	UnitState.vacate(ctx.map, ctx.utab, unit, unit.x, unit.y)
+	UnitState.occupy(ctx.map, ctx.utab, unit, tx, ty)
 	ctx.state[source] = AIOverlay.STATE_RESET
 	var payload: Dictionary = {}
 	var sx: int = unit.x

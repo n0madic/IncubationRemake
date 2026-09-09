@@ -1985,7 +1985,8 @@ func _the_hero_counter(h: TestHarness) -> void:
 	var doomed: UnitState = _place(last, 0, 0, 2, 2, 0)
 	doomed.pool_flag = UnitState.HERO_POOL_FLAG
 	h.equal("hero.the_counter_is_a_byte",
-		[UnitState.remove(last.state, wrap, doomed), wrap.hero_killed[0]],
+		[UnitState.remove(last.state, last.types, wrap, doomed),
+			wrap.hero_killed[0]],
 		[true, 0],
 		"`mov cl, [eax+0x24]; inc cl; mov [eax], cl` is byte-wide")
 
@@ -1998,7 +1999,8 @@ func _the_hero_counter(h: TestHarness) -> void:
 	burnt_scene.types = types
 	var burnt: UnitState = _place(burnt_scene, 0, 0, 3, 3, 0)
 	var before_hp: int = burnt.hp
-	var _c: bool = UnitState.remove(burnt_scene.state, alive_turn, burnt)
+	var _c: bool = UnitState.remove(burnt_scene.state, burnt_scene.types,
+		alive_turn, burnt)
 	h.equal("hero.removal_zeroes_the_hit_points",
 		[before_hp > 0, burnt.hp, burnt.is_alive(),
 			burnt_scene.state.unit_at(burnt_scene.state.index_of(3, 3))],

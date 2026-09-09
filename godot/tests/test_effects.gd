@@ -1028,7 +1028,8 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 	# ever played (docs/42 section 8.1), which is the order this must run in.
 	for slot: int in riders:
 		var doomed: UnitState = world.units_for_ai()[slot]
-		var _lost: bool = UnitState.remove(world.state, world.turn, doomed)
+		var _lost: bool = UnitState.remove(world.state, world.unit_types(),
+			world.turn, doomed)
 	h.check("queued_rider.core_killed_them",
 		world.unit_view(riders[0]).is_empty()
 		or DictRead.as_int(world.unit_view(riders[0])["hp"]) == 0,
@@ -1107,7 +1108,7 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 	for slot: int in riders:
 		var gone: UnitState = main._shown.units_for_ai()[slot]
 		var _dropped: bool = UnitState.remove(main._shown.state,
-			main._shown.turn, gone)
+			main._shown.unit_types(), main._shown.turn, gone)
 	units.build(main._shown, {"prototypes": {}}, {})
 	h.check("queued_rider.the_mirror_catches_up",
 		units.get_node_or_null(NodePath("unit_%d" % riders[0])) == null,
@@ -4626,7 +4627,8 @@ func _check_rebuild_drops_the_dead(h: TestHarness) -> void:
 		units.get_node_or_null(path) != null,
 		"slot %d is in the picture before it dies" % slot)
 	var doomed: UnitState = world.units_for_ai()[slot]
-	var _lost: bool = UnitState.remove(world.state, world.turn, doomed)
+	var _lost: bool = UnitState.remove(world.state, world.unit_types(),
+		world.turn, doomed)
 	units.build(world, geometry, {})
 	h.check("move_script.the_dead_are_dropped",
 		units.get_node_or_null(path) == null,

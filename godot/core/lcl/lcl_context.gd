@@ -72,7 +72,7 @@ func free_cell(x: int, y: int) -> bool:
 
 
 func kill(unit: UnitState) -> void:
-	UnitState.remove(state, turn, unit)
+	UnitState.remove(state, types, turn, unit)
 
 
 ## The lowest slot holding no **live** unit -- [method UnitState.free_slot],

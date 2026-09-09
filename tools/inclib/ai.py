@@ -1327,8 +1327,8 @@ def _teleport(ctx: AIContext, unit: CombatUnit,
                                               moved.x, moved.y, key))
         return
     ex, ey = exit_at % ctx.grid.width, exit_at // ctx.grid.width
-    world.unit_at[entry] = movemap.NO_UNIT
-    world.unit_at[exit_at] = unit.slot
+    combatmod.vacate_cells(world, unit, moved.x, moved.y)
+    combatmod.occupy_cells(world, unit, ex, ey)
     unit.x, unit.y = ex, ey
     moved.x, moved.y = ex, ey
     moved.events.append(movemap.MoveEvent("teleported", ex, ey, key))
@@ -1351,8 +1351,8 @@ def _apply_move(ctx: AIContext, unit: CombatUnit,
         world, unit, tx, ty,
         ctx.mp_left[ctx.index(tx, ty)] & 0xFF if ctx.in_bounds(tx, ty) else 0)
     source_x, source_y = unit.x, unit.y
-    world.unit_at[ctx.index(unit.x, unit.y)] = movemap.NO_UNIT
-    world.unit_at[ctx.index(moved.x, moved.y)] = unit.slot
+    combatmod.vacate_cells(world, unit, unit.x, unit.y)
+    combatmod.occupy_cells(world, unit, moved.x, moved.y)
     unit.x, unit.y = moved.x, moved.y
     # The mine the walk stopped on, if it named a live object.  **After the
     # relink**, because `aExecuteBomb` marks cells and reads whoever is
@@ -1409,8 +1409,8 @@ def execute_warp(ctx: AIContext, unit: CombatUnit, tx: int, ty: int) -> bool:
         ctx.result.refuse("warp from a cell that does not hold the mover")
         return False
     target = ctx.index(tx, ty)
-    world.unit_at[source] = movemap.NO_UNIT
-    world.unit_at[target] = unit.slot
+    combatmod.vacate_cells(world, unit, unit.x, unit.y)
+    combatmod.occupy_cells(world, unit, tx, ty)
     ctx.state[source] = movemap.STATE_RESET
     source_x, source_y = unit.x, unit.y
     unit.x, unit.y = tx, ty
@@ -1621,9 +1621,7 @@ def special_player_control(ctx: AIContext) -> bool:
                 # blast, which the guaranteed-hit rule of docs/22 §7 makes
                 # impossible for the shipped `Parabomb`.
                 unit.hp = 0
-                index = ctx.index(x, y)
-                if ctx.world.unit_at[index] == slot:
-                    ctx.world.unit_at[index] = movemap.NO_UNIT
+                combatmod.vacate_cells(ctx.world, unit, x, y)
         else:
             unit.hp -= 1
     return True
