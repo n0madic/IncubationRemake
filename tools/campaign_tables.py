@@ -1242,6 +1242,44 @@ ROTATE_SCREEN_ID = 6
 SCREEN_ID_GLOBAL = 0x00510A38
 ROTATE_BUTTON_GETTER = 0x0045F000
 ROTATE_BUTTON_BYTE = 0x00511B09
+#: docs/27 §2.6.1 -- **which button that byte is.**  The message pump
+#: `0x0040B6F0` dispatches `WM_LBUTTONUP` .. `WM_RBUTTONDBLCLK`
+#: (`0x0202`..`0x0206`) through the five-entry table below, and the two
+#: setters it calls are one instruction each: `0x0045EFC0` writes
+#: `0x00511B08` and `0x0045EFD0` writes `0x00511B09`.  The right button's
+#: three arms are the ones that reach the second, so the byte the map's drag
+#: gates on is the **right** button's.  The prologue's `xor ebx, ebx` and
+#: `mov ebp, 1` are what make the pushed register the pressed state.
+MESSAGE_PUMP = 0x0040B6F0
+MESSAGE_TABLE = 0x0040BD58
+#: The dispatch itself: `add eax, -0x202` biases the message onto the table,
+#: `cmp eax, 4` bounds it at five entries and the `jmp dword [eax*4 + table]`
+#: carries the table's address -- so the first message and the table are read
+#: out of the instructions rather than asserted.
+MESSAGE_BIAS_SITE = 0x0040B778
+MESSAGE_BOUND_SITE = 0x0040B77D
+MESSAGE_JUMP_SITE = 0x0040B782
+MESSAGE_TABLE_FIRST = 0x0202
+#: `cmp eax, 0x201 / je` -- `WM_LBUTTONDOWN`, which shares the double-click's
+#: arm and so is the left button's own press.
+MESSAGE_LBUTTONDOWN_CMP = 0x0040B75B
+MESSAGE_LBUTTONDOWN_JE = 0x0040B762
+MESSAGE_LBUTTONDOWN_ARM = 0x0040B7A2
+#: `(message, arm, setter, pushed register)`, the register being `ebp` for a
+#: press and `ebx` for a release.
+MESSAGE_BUTTON_ARMS = (
+    (0x0202, 0x0040B7BB, 0x0045EFC0, "ebx"),   # WM_LBUTTONUP
+    (0x0203, 0x0040B7A2, 0x0045EFC0, "ebp"),   # WM_LBUTTONDBLCLK
+    (0x0204, 0x0040B789, 0x0045EFD0, "ebp"),   # WM_RBUTTONDOWN
+    (0x0205, 0x0040B7B3, 0x0045EFD0, "ebx"),   # WM_RBUTTONUP
+    (0x0206, 0x0040B789, 0x0045EFD0, "ebp"),   # WM_RBUTTONDBLCLK
+)
+LEFT_BUTTON_SETTER = 0x0045EFC0
+LEFT_BUTTON_BYTE = 0x00511B08
+#: `push ebp` and `push ebx`, and the prologue that gives them their values.
+PUSH_OPCODES = {"ebp": 0x55, "ebx": 0x53}
+MESSAGE_PUMP_ZERO = 0x0040B6FA
+MESSAGE_PUMP_ONE = 0x0040B70E
 #: `call 0x0045EF30 / shl eax, 1` -- the horizontal travel doubled, in Eng3d's
 #: 4096ths, into `0x00510C44`.
 ROTATE_DX_CALL = 0x00455587
@@ -1685,6 +1723,37 @@ def check_screen_rotation(ck: Checker, b: Binary) -> None:
              b.pe.bytes_at(ROTATE_BUTTON_GETTER, 2) == b"\x33\xc0"
              and b.u32(ROTATE_BUTTON_GETTER + 3) == ROTATE_BUTTON_BYTE,
              "0x0045F000 answers with one byte of state")
+    # **Which button.**  The message pump's own table, and the setter each of
+    # its five button arms calls: the right button's three write the byte the
+    # drag reads, the left button's two write the byte beside it.
+    ck.equal("rotate.message_table",
+             [hex(b.u32(MESSAGE_TABLE + 4 * index))
+              for index, _ in enumerate(MESSAGE_BUTTON_ARMS)],
+             [hex(arm) for _, arm, _, _ in MESSAGE_BUTTON_ARMS])
+    ck.equal("rotate.message_dispatch",
+             (-b.i32(MESSAGE_BIAS_SITE + 1), b.u8(MESSAGE_BOUND_SITE + 2) + 1,
+              hex(b.u32(MESSAGE_JUMP_SITE + 3))),
+             (MESSAGE_TABLE_FIRST, len(MESSAGE_BUTTON_ARMS),
+              hex(MESSAGE_TABLE)))
+    ck.equal("rotate.left_button_press_arm",
+             (hex(b.u32(MESSAGE_LBUTTONDOWN_CMP + 1)),
+              hex(MESSAGE_LBUTTONDOWN_JE + 2
+                  + b.i8(MESSAGE_LBUTTONDOWN_JE + 1))),
+             (hex(0x0201), hex(MESSAGE_LBUTTONDOWN_ARM)))
+    ck.equal("rotate.button_setters",
+             [(hex(message), hex(_arm_setter(b, arm)), _arm_push(b, arm))
+              for message, arm, _, _ in MESSAGE_BUTTON_ARMS],
+             [(hex(message), hex(setter), push)
+              for message, _, setter, push in MESSAGE_BUTTON_ARMS])
+    ck.check("rotate.left_button_is_the_other_byte",
+             b.pe.bytes_at(LEFT_BUTTON_SETTER, 4) == b"\x8a\x44\x24\x04"
+             and b.u32(LEFT_BUTTON_SETTER + 5) == LEFT_BUTTON_BYTE,
+             "0x0045EFC0 writes 0x00511B08, the left button's own byte")
+    ck.check("rotate.pushed_registers_are_the_state",
+             b.pe.bytes_at(MESSAGE_PUMP_ZERO, 2) == b"\x33\xdb"
+             and b.pe.bytes_at(MESSAGE_PUMP_ONE, 5)
+             == b"\xbd\x01\x00\x00\x00",
+             "`xor ebx, ebx` and `mov ebp, 1` -- released and pressed")
     # The two deltas.  The horizontal is a shift; the vertical is five
     # instructions that come to a multiply by -50.
     ck.equal("rotate.dx_source", b.call_target(ROTATE_DX_CALL),
@@ -1801,6 +1870,30 @@ def _cmp_imm(b: Binary, va: int) -> int | None:
 
 def _push_value(b: Binary, va: int) -> int | None:
     return b._push_imm(va)[0]
+
+
+def _arm_setter(b: Binary, arm: int) -> int:
+    """The setter a button arm calls, found past its single `push`."""
+    return b.call_target(arm + _push_offset(b, arm))
+
+
+def _arm_push(b: Binary, arm: int) -> str:
+    """The register a button arm pushes -- `ebp` pressed, `ebx` released."""
+    opcode = b.u8(arm + _push_offset(b, arm) - 1)
+    for name, code in PUSH_OPCODES.items():
+        if code == opcode:
+            return name
+    return hex(opcode)
+
+
+def _push_offset(b: Binary, arm: int) -> int:
+    """Where the arm's `call` stands: right after its `push`, but the
+    right button's arms compare a global first (`cmp dword [..], ebx` and a
+    `jne`, eight bytes) before they push."""
+    for offset in (1, 9):
+        if b.u8(arm + offset) == 0xE8:
+            return offset
+    return 1
 
 
 def _rise_factor(b: Binary) -> int:

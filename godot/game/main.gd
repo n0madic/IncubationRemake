@@ -5250,17 +5250,23 @@ func _screen_input(event: InputEvent) -> void:
 		clicked = true
 	elif event is InputEventMouseMotion:
 		var motion: InputEventMouseMotion = event
+		# **The map's own drag is the right button**, not the middle one:
+		# `0x00455560` gates on `0x00511B09`, which the message pump's own
+		# table `0x0040BD58` writes 1 on `WM_RBUTTONDOWN` and
+		# `WM_RBUTTONDBLCLK` and 0 on `WM_RBUTTONUP` -- docs/27 section 2.6.1.
+		# `0x0045558C` then reads the pointer's travel since the last frame,
+		# doubles it for the turn and multiplies it by -50 for the height, and
+		# warps the cursor back to where the drag began so the next frame's
+		# reading is fresh again. The middle button is kept beside it because
+		# docs/42 section 2.5 makes it the remake's drag everywhere else and
+		# nothing on this screen answers it.
+		if on_backdrop and (motion.button_mask
+				& (MOUSE_BUTTON_MASK_RIGHT | MOUSE_BUTTON_MASK_MIDDLE)) != 0:
+			_swing_backdrop(motion.relative)
+			return
 		# docs/42 section 2.5: the middle button held drags the view, here as
 		# in a mission.
 		if motion.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
-			# On the map that same drag is the original's own: `0x0045558C`
-			# reads the pointer's travel since the last frame, doubles it for
-			# the turn and multiplies it by -50 for the height, and warps the
-			# cursor back to where the drag started so the next frame's
-			# reading is fresh again.
-			if on_backdrop:
-				_swing_backdrop(motion.relative)
-				return
 			rig.pan(motion.relative, get_viewport().get_visible_rect().size.x)
 			return
 		at = motion.position

@@ -47,7 +47,7 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 57 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 158 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 468 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 474 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 550 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings

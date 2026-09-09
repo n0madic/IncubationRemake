@@ -329,16 +329,38 @@ Two things that are **not** where a remake would look for them:
 map's own loop: `0x00454E6C` with the pair of deltas below, and `0x00454EEF`
 with **two zeros**. The second is what makes the first work.
 
-**The request is a pointer drag.** `0x00455560` runs only while the screen id
-`0x00510A38` is 6 and the button byte `0x00511B09` (set through `0x0045EFD0`,
-read through `0x0045F000`) is 1, and it writes the two globals the call site
-above spends:
+**The request is a pointer drag with the *right* button held.** `0x00455560`
+runs only while the screen id `0x00510A38` is 6 and the button byte
+`0x00511B09` (set through `0x0045EFD0`, read through `0x0045F000`) is 1, and it
+writes the two globals the call site above spends:
 
 ```c
 0x00510C44 = 2   * (cursor.x - anchor.x);   /* 0x0045558C: shl eax, 1     */
 0x00510C48 = -50 * (cursor.y - anchor.y);   /* 0x0045559A: neg/shl/sub/lea/shl */
 0x0045EEF0();    /* SetCursorPos back to the anchor */
 ```
+
+**Which button that byte is** *(2026-09-10)*. The message pump `0x0040B6F0`
+peeks its own messages and dispatches `0x0202`..`0x0206` through the five-entry
+table at `0x0040BD58`; the two setters it calls are one instruction each —
+`0x0045EFC0` writes `0x00511B08` and `0x0045EFD0` writes `0x00511B09` — and the
+prologue's `xor ebx, ebx` (`0x0040B6FA`) and `mov ebp, 1` (`0x0040B70E`) are
+what make the register each arm pushes the pressed state:
+
+| message | arm | setter → byte | pushes |
+|---|---|---|---|
+| `WM_LBUTTONUP` `0x0202` | `0x0040B7BB` | `0x0045EFC0` → `0x00511B08` | `ebx` = 0 |
+| `WM_LBUTTONDBLCLK` `0x0203` | `0x0040B7A2` | `0x0045EFC0` → `0x00511B08` | `ebp` = 1 |
+| `WM_RBUTTONDOWN` `0x0204` | `0x0040B789` | `0x0045EFD0` → `0x00511B09` | `ebp` = 1 |
+| `WM_RBUTTONUP` `0x0205` | `0x0040B7B3` | `0x0045EFD0` → `0x00511B09` | `ebx` = 0 |
+| `WM_RBUTTONDBLCLK` `0x0206` | `0x0040B789` | `0x0045EFD0` → `0x00511B09` | `ebp` = 1 |
+
+So the byte the map's drag gates on is the **right** button's, and the left
+button's own state lives one byte below it, read through `0x0045EFE0` by five
+sites of which none is the location click `0x0045C7D0`. A remake that puts the
+turn on any other button leaves the one gesture that changes this screen
+unreachable; the remake's `main.gd` had it on the middle button alone until
+2026-09-10, and the map looked frozen.
 
 `0x0045EF30` and `0x0045EF40` are `cursor − anchor`, and `0x0045EEF0` warps
 the cursor back onto the anchor with `SetCursorPos`, so what the routine reads
