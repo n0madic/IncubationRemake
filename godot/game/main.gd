@@ -978,7 +978,18 @@ func _save_mission_to(slot: int, mission_world: World,
 ## which rebuilds the bodies and lays no view of its own -- so nothing moves
 ## it afterwards. An empty record leaves the built mission's own opening
 ## view, which is what a save written before the field was filled carries.
+##
+## **The mirror is thrown away first, and that is not housekeeping.** The
+## picture reads [method shown] and not [member world] (docs/100), and the
+## clone [method _build] took describes the mission as the `.lev` authored
+## it -- `world.load_save` then moved the truth with no delta anybody can
+## replay. Redrawing against that stale mirror compares the authored terrain
+## with itself, finds nothing changed and moves nothing: a save taken with a
+## lift 44 steps up came back with the deck at the bottom and its rider
+## standing on air (`_C_115`, slot 17). [method _refresh_after_deploy]
+## resyncs too, but it runs after this and only the bodies are its to redraw.
 func _resume_loaded_mission() -> void:
+	_resync_shown()
 	var _redrawn: int = _redraw_terrain_now()
 	if _scenery != null and world != null:
 		var _restored: int = _scenery.restore_poses(world.restored_scenery(),

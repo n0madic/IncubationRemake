@@ -39,6 +39,10 @@ const CORNERS_PER_QUAD: int = 4
 const RESUME_SCRATCH: String = "user://tests/effects"
 ## The numbered slot the check writes the mission into.
 const RESUME_SLOT: int = 0
+## `_C_115`'s lift, as its `Use` section rides it: 44 `Elevator` steps of
+## 800 world units (docs/20 section 7.4). Staged on a loaded save's cell
+## rather than ridden, to make the height the authored map has not got.
+const LIFT_RISE: int = 44 * 800
 ## A short fall, and the bound on the frames the queue is walked for.
 const QUEUED_FALL_FRAMES: int = 6
 ## The frames the hand-built `MoveUnit` hook's bridge falls for.
@@ -1342,7 +1346,38 @@ func _check_resume_after_load(h: TestHarness) -> void:
 	loader.world = fresh
 	loader._scenery = resumed
 	loader._rig = back_rig
+
+	# **The mirror `_build` took is thrown away before the terrain is
+	# redrawn.** The picture reads [method SliceMain.shown] and not the
+	# truth (docs/100), and the clone `_build` takes describes the mission
+	# as the `.lev` authored it -- [method World.load_save] then moves the
+	# truth with no delta anybody can replay. Redrawing against that clone
+	# compares the authored terrain with itself, finds nothing changed and
+	# moves nothing: `_C_115` came back from a slot with its lift 44 steps
+	# up in the state, the deck drawn at the bottom and its rider standing
+	# on air. The lift is **staged** here rather than ridden -- what the
+	# defect needs is a save whose height the authored map does not have.
+	var deck: Node3D = null
+	for node: Variant in resumed.objects_on(tube):
+		deck = node
+		break
+	var was_at: Vector3 = deck.transform.origin if deck != null else Vector3.ZERO
+	var overlay: TerrainOverlay = TerrainOverlay.new()
+	loader._overlay = overlay
+	loader._shown = fresh.clone()
+	loader._drawn_terrain = loader._shown.terrain_snapshot()
+	overlay.build(loader._drawn_terrain)
+	fresh.state.set_height(tube, fresh.state.height_at(tube) + LIFT_RISE)
+
 	loader._resume_loaded_mission()
+	h.check("resume.mirror_is_not_the_one_the_build_took",
+		loader.shown().canonical_hash_hex() == fresh.canonical_hash_hex(),
+		"the picture reads the loaded world and not `_build`'s clone")
+	h.check("resume.a_lifted_cell_carries_its_objects_up",
+		deck != null and (deck.transform.origin - was_at).is_equal_approx(
+			WorldSpace.to_godot(0, 0, LIFT_RISE)),
+		"the deck under the save's rider, moved by the height the save "
+		+ "carries rather than left where the `.lev` authored it")
 	h.equal("resume.hatch_is_open_again",
 		resumed.joint_of(tube, SetpieceDriver.PART_FIRST), open,
 		"the poses come back through the save rather than being authored")
@@ -1364,6 +1399,7 @@ func _check_resume_after_load(h: TestHarness) -> void:
 
 	played.free()
 	resumed.free()
+	overlay.free()
 	rig.free()
 	back_rig.free()
 	untouched.free()
