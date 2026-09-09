@@ -27,7 +27,6 @@ const OWN_REFUSAL: String = "deploy.%s"
 
 const ID_TITLE: int = 13
 const ID_IN_SQUAD: int = 89
-const ID_MAIN_MAP: int = 140
 
 ## **The mission's own 3D window**, `(60, 34)` by 520 x 340, which
 ## `0x00419D90` sets with `0x0040B670` and keeps in `0x004FE330…0x004FE33C`.

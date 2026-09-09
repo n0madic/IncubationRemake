@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 40 suites, 5062 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5074 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -593,9 +593,13 @@ track. The pointed-at location takes the shipped 17x17 ring (`map.LIB` 7) and
 is named at the top of the window. Deployment opens in `docs/42` §2.4's map
 view, in the **mission's** 3D window `(60, 34)` by 520x340, and the mission's
 own camera keys work under it (`2`/`3`, `Q`/`E`, wheel, middle-drag). `ESC`
-over a mission offers *Main Menu* beside *Exit Program*; it and the map's *End
-game* both ask `Txtmod_d` 60 through one seam in `CampaignScreen`
-(`pending` / `needs_confirming()` / `_show_actions()`).
+over a mission offers *Main Menu* beside *Exit Program*, and *Main Map* beside
+both where the mission is a campaign's -- the one way out that keeps the
+chain, since *Main Menu* drops it and the reserved autosave slots are off the
+slot list. All three ask first through one seam in `CampaignScreen`
+(`pending` / `needs_confirming()` / `_show_actions()`): the map's *End game*
+and *Main Menu* with `Txtmod_d` 60, *Main Map* with the remake's own question,
+that being the shipped data's only one and naming the main menu.
 
 **`_C_XXX` and `_C_YYY` are in every cache** since 2026-09-04: they are not
 missions but the screen the missions are chosen from, and a cache published

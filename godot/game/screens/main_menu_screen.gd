@@ -14,8 +14,9 @@ extends CampaignScreen
 ## `Load PBM Game` are multiplayer, which docs/92 section 7.9 puts outside the
 ## programme, and section 7.1 classes a control that does nothing as a defect
 ## in the remake's own interface -- so a locked button would be worse than no
-## button. One is added: the options, which the original reached through
-## hover-hinted icons inside a mission and never from here.
+## button. Two are added: the options, which the original reached through
+## hover-hinted icons inside a mission and never from here, and *Main Map*
+## ([constant MAIN_MAP]).
 
 ## `Txtmod_a`, the menu bank (`aMenuSystem.cpp`).
 const ID_TITLE: int = 100
@@ -33,6 +34,29 @@ const ID_EXIT: int = 105
 ## the shipped one: `Txtmod_d` 60, *Back to the Main Menu without saving?*
 const MAIN_MENU: String = "main_menu"
 
+## The action that leaves a running mission for the **location map**, with the
+## campaign standing.
+##
+## The original's pause menu has no such entry either, and for the same reason
+## it has no *Main Menu*: its own `Exit` leaves the program. But the two are
+## not the same exit, and having only the wider one cost a campaign -- a
+## mission left through *Main Menu* drops the campaign with it, and the three
+## reserved autosave slots that still hold it are deliberately off the slot
+## list ([constant CampaignHost.SLOT_COUNT]), so there is nothing to load it
+## back from. This is the deployment screen's own *Main Map* button
+## ([constant CampaignScreen.ID_MAIN_MAP]) offered from one screen further on:
+## the sortie is abandoned, the squad comes back into the pool and the chain
+## goes on from the map.
+##
+## It asks first, because the mission itself is dropped unsaved -- and with
+## the remake's own question, `Txtmod_d` 60 being the shipped data's only one
+## and naming the wrong destination.
+const MAIN_MAP: String = "main_map"
+
+## The question [constant MAIN_MAP] asks. See [constant CampaignScreen.OWN_OPTIONS]
+## for why a key rather than a literal.
+const OWN_ABANDON: String = "shell.abandon_mission"
+
 ## Where the question and its two answers go. Not in the cascade: that is
 ## `Menu_a.lcl`'s table for a *menu*, and it runs a question's answers
 ## diagonally away from each other and the question itself into the screen's
@@ -47,7 +71,9 @@ const ANSWER_STEP: Vector2 = Vector2(0.0, 40.0)
 const TITLE_AT: Vector2 = Vector2(500.0, 50.0)
 const FIRST_AT: Vector2 = Vector2(280.0, 80.0)
 const STEP: Vector2 = Vector2(30.0, 40.0)
-## The last of the six sits lower than the step alone would put it.
+## The last of the six sits lower than the step alone would put it -- which is
+## the block's own version of [constant GROUP_GAP], and what that constant
+## reproduces. Kept as the coordinate the arithmetic is checked against.
 const LAST_AT: Vector2 = Vector2(425.0, 300.0)
 ## How many rows `Menu_a.lcl` writes.
 ##
@@ -60,8 +86,29 @@ const LAST_AT: Vector2 = Vector2(425.0, 300.0)
 const SLOT_COUNT: int = 6
 ## Six tiles wide, which is what the block's width field says.
 const BUTTON_SIZE: Vector2 = Vector2(190.0, 30.0)
-## What the last entry keeps clear of the one above it.
-const LAST_GAP: float = 4.0
+
+## What the whole cascade is moved left by -- **a quarter of a button**, and
+## the remake's own.
+##
+## `Menu_a.lcl`'s table was written for the original's own menu window; this
+## shell draws it on the framed plate, where the block's own last row reaches
+## 615 of the plate's 640 and the frame's inner bevel is at 621. The right-hand
+## end of the cascade therefore sat against the frame -- visible on the boot
+## menu and worse on the pause menu, which is longer. Moving the whole cascade
+## keeps the block's shape, which is what the table actually says: the start,
+## the step, the descent and the lead are all still its own.
+const LEFT_SHIFT: float = BUTTON_SIZE.x / 4.0
+
+## What sets the trailing exits apart from the rows above them -- half the
+## block's own step.
+##
+## *Main Menu* and *Exit Program* leave what every row above them does
+## something inside, and a cascade of seven equal rows made the two of them
+## easy to hit by mistake. The block itself makes the same distinction and
+## makes it in the same direction: its own last row sits lower than the step
+## alone would put it, and for a menu that fits the block's six rows this gap
+## lands the last row on exactly that coordinate, [constant LAST_AT].
+const GROUP_GAP: float = STEP.y / 2.0
 
 ## `Graphics/Title.bmp`, baked since converter 0.17.0. A cache from an older
 ## one has no such plate and [method CampaignScreen.plate_name]'s caller falls
@@ -69,9 +116,15 @@ const LAST_GAP: float = 4.0
 const TITLE_PLATE: String = "title"
 
 ## Whether a mission is running behind the shell. Then this is the pause menu
-## and offers the two things only a running mission can mean -- go back to it,
-## and save it.
+## and offers the things only a running mission can mean -- go back to it, and
+## save it.
 var paused: bool = false
+## Whether that mission is a **campaign's**, which is what [constant MAIN_MAP]
+## needs and [member paused] does not answer: a mission entered past the
+## campaign -- *Instant Action*, `--mission=` -- has no campaign state, so
+## [method CampaignHost.abandon_mission] would return at once and the button
+## would be the inert control section 7.1 forbids.
+var may_abandon: bool = false
 ## Whether there is anything behind the plate to go back to, which is a wider
 ## question than [member paused]: the campaign map is behind it too.
 var behind: bool = false
@@ -103,9 +156,18 @@ func build() -> void:
 	_show_actions()
 
 
-## Leaving a mission for the boot menu drops it, and the campaign with it.
+## Both ways out of a running mission drop it unsaved -- one takes the campaign
+## with it and the other leaves the campaign standing on its map.
 func needs_confirming(action: String) -> bool:
-	return action == MAIN_MENU
+	return action == MAIN_MENU or action == MAIN_MAP
+
+
+## What [member pending] asks before it is let through. The shipped question
+## names the main menu, so it is the one *Main Map* cannot borrow.
+func _question() -> String:
+	if pending == MAIN_MAP:
+		return strings_own(OWN_ABANDON)
+	return label_for(BANK_REPORT, ID_CONFIRM)
 
 
 func _show_actions() -> void:
@@ -113,14 +175,14 @@ func _show_actions() -> void:
 		return
 	clear_children(_entries)
 	var entries: Array[Array] = []
-	if pending == MAIN_MENU:
-		var question: Label = make_label(label_for(BANK_REPORT, ID_CONFIRM))
+	if pending != "":
+		var question: Label = make_label(_question())
 		question.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		question.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_entries.add_child(question)
 		place_on_plate(question, QUESTION_AT, QUESTION_SIZE)
 		entries.append([CANCEL, label_for(BANK_REPORT, ID_NO)])
-		entries.append([MAIN_MENU, label_for(BANK_REPORT, ID_YES)])
+		entries.append([pending, label_for(BANK_REPORT, ID_YES)])
 	else:
 		# The way back comes first whenever there is anything to go back to --
 		# a running mission **or** a campaign whose map is behind the plate.
@@ -130,6 +192,12 @@ func _show_actions() -> void:
 			entries.append(["resume", label_for(BANK_MISSION, ID_CONTINUE)])
 		if paused:
 			entries.append(["save", label_for(BANK_SQUAD, ID_SAVE_GAME)])
+			# Between the mission's own two and the shell's: it leaves the
+			# mission and stays in the game, which is where it sits in the
+			# cascade as well.
+			if may_abandon:
+				entries.append([MAIN_MAP,
+					label_for(BANK_MISSION, ID_MAIN_MAP)])
 		else:
 			entries.append(["campaign",
 				label_for(BANK_MENU, ID_START_CAMPAIGN)])
@@ -145,25 +213,50 @@ func _show_actions() -> void:
 			entries.append([MAIN_MENU, label_for(BANK_MENU, ID_TITLE)])
 		entries.append(["quit", label_for(BANK_MENU, ID_EXIT)])
 
-	# Where in the shipped six this menu's rows start, so the last one lands
-	# on the block's own last coordinate. A menu longer than six begins at row
-	# 0 and runs past the bottom, which the guard below catches.
+	# Where in the shipped six this menu's rows start, so a short menu takes
+	# the bottom of the cascade.
 	var lead: int = maxi(SLOT_COUNT - entries.size(), 0)
+	var apart: int = _exits_begin(entries) if pending == "" else -1
 	for index: int in range(entries.size()):
 		var row: Array = entries[index]
 		var button: Button = make_button(DictRead.as_string(row[0]),
 			DictRead.as_string(row[1]))
-		var at: Vector2 = FIRST_AT + STEP * float(lead + index)
-		if pending != "":
-			at = ANSWER_AT + ANSWER_STEP * float(index)
-		elif index == entries.size() - 1:
-			# The cascade's last entry sits lower than the step alone would
-			# put it -- that is `Menu_a.lcl`'s own table. It is only *lower*,
-			# though: a seven-entry cascade reaches y 280 by itself and the
-			# fixed 300 would then overlap the row above it, which the shipped
-			# faces made plain.
-			var above: float = FIRST_AT.y + STEP.y * float(lead + index - 1)
-			at = Vector2(LAST_AT.x,
-				maxf(LAST_AT.y, above + BUTTON_SIZE.y + LAST_GAP))
+		var at: Vector2 = ANSWER_AT + ANSWER_STEP * float(index) \
+			if pending != "" else _cascade_at(lead, index, apart)
 		_entries.add_child(button)
 		place_on_plate(button, at, BUTTON_SIZE)
+
+
+## Where one row of the cascade goes: `Menu_a.lcl`'s own start, step and lead,
+## moved left by [constant LEFT_SHIFT], with the rows from *apart* on pushed
+## down by [constant GROUP_GAP]. *apart* is -1 for a cascade with no exits in
+## it.
+##
+## The block's own lower last row is **not** a separate rule here: for every
+## menu that fits the block's six the lead puts the last row at 280 and the
+## gap lands it on [constant LAST_AT]'s 300. A seventh row goes to 340, which
+## is what the block has no coordinate for -- and 40 below the row above it
+## rather than the 4 the old last-row rule left, which is what put two buttons
+## against each other and against the frame.
+func _cascade_at(lead: int, index: int, apart: int) -> Vector2:
+	var at: Vector2 = FIRST_AT + STEP * float(lead + index) \
+		- Vector2(LEFT_SHIFT, 0.0)
+	if apart >= 0 and index >= apart:
+		at.y += GROUP_GAP
+	return at
+
+
+## Where the trailing run of exits begins, or -1 when the cascade ends in
+## something else.
+##
+## Read off the entries rather than counted: which of the two are there
+## depends on where the menu was raised from -- the boot menu has only *Exit
+## Program*, a paused mission has both, and a confirmation has neither.
+func _exits_begin(entries: Array[Array]) -> int:
+	var first: int = entries.size()
+	while first > 0:
+		var action: String = DictRead.as_string(entries[first - 1][0])
+		if action != MAIN_MENU and action != "quit":
+			break
+		first -= 1
+	return first if first < entries.size() else -1

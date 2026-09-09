@@ -760,7 +760,89 @@ func _screens(h: TestHarness) -> void:
 		_actions_of(paused).has("resume"),
 		"*No* puts the ordinary cascade back")
 	_no_missing(h, "pause_menu", paused)
+	# **A menu that fits the block still ends where the block ends.** The
+	# lead puts its last un-gapped row at 280 and [constant
+	# MainMenuScreen.GROUP_GAP] lands it on `Menu_a.lcl`'s own 300, so what
+	# the old last-row rule did by hand now falls out of the arithmetic.
+	var six: Array[Rect2] = _rows_of(paused)
+	h.check("screens.pause_menu_last_row_is_the_block's_own",
+		is_equal_approx(six[six.size() - 1].position.y,
+			MainMenuScreen.LAST_AT.y),
+		"%f" % six[six.size() - 1].position.y)
+	h.check("screens.pause_menu_outside_a_campaign_has_no_map",
+		not _actions_of(paused).has(MainMenuScreen.MAIN_MAP),
+		"*Instant Action* and `--mission=` have no map to go back to, and "
+		+ "`abandon_mission` would return at once")
 	paused.free()
+
+	# **The way out that is not dropping the campaign.** A mission left
+	# through *Main Menu* takes the campaign with it, and the three reserved
+	# autosave slots that still hold it are off the slot list -- so an
+	# accidental press cost a chain with nothing to load it back from.
+	var abandoning: MainMenuScreen = MainMenuScreen.new()
+	abandoning.paused = true
+	abandoning.may_abandon = true
+	abandoning.setup(_art, _strings, _font)
+	h.equal("screens.pause_menu_in_a_campaign_offers_the_map",
+		_actions_of(abandoning),
+		PackedStringArray(["resume", "save", MainMenuScreen.MAIN_MAP,
+			"options", MainMenuScreen.MAIN_MENU, "quit"]),
+		"between the mission's own two and the shell's")
+	h.check("screens.pause_menu_map_caption_is_shipped",
+		_labels_of(abandoning).has(_strings.shipped("Txtmod_b", 140)),
+		"*Main Map*, the deployment screen's own button one screen on")
+	abandoning._on_pressed(MainMenuScreen.MAIN_MAP)
+	var map_asked: PackedStringArray = _labels_of(abandoning)
+	h.check("screens.pause_menu_map_asks_first",
+		map_asked.has(_strings.text(MainMenuScreen.OWN_ABANDON))
+		and map_asked.has(_strings.shipped("Txtmod_d", 61))
+		and map_asked.has(_strings.shipped("Txtmod_d", 62)),
+		"the remake's own question: `Txtmod_d` 60 is the only shipped one "
+		+ "and it names the main menu")
+	h.check("screens.pause_menu_map_yes_is_the_map_and_not_the_menu",
+		_actions_of(abandoning).has(MainMenuScreen.MAIN_MAP)
+		and not _actions_of(abandoning).has(MainMenuScreen.MAIN_MENU),
+		"the confirmation lets *this* action through, not the one the "
+		+ "question used to be written for")
+	abandoning._on_pressed(CampaignScreen.CANCEL)
+	h.check("screens.pause_menu_map_can_be_refused",
+		_actions_of(abandoning).has("resume"))
+	_no_missing(h, "pause_menu_campaign", abandoning)
+	# **Seven rows clear the frame, and the two exits stand apart.**
+	# `Menu_a.lcl` steps 30 right and 40 down from (280, 80), which on the
+	# framed plate reaches the bevel at 621 -- so the whole cascade is moved
+	# left by a quarter of a button, and *Main Menu* and *Exit Program* are
+	# pushed down half a step away from the rows that do things inside the
+	# game.
+	var boxes: Array[Rect2] = _rows_of(abandoning)
+	var widest: float = 0.0
+	var closest: float = 480.0
+	for index: int in range(boxes.size()):
+		widest = maxf(widest, boxes[index].position.x + boxes[index].size.x)
+		if index > 0:
+			closest = minf(closest, boxes[index].position.y
+				- (boxes[index - 1].position.y + boxes[index - 1].size.y))
+	h.check("screens.pause_menu_cascade_clears_the_frame", widest <= 615.0,
+		"the plate's own bevel is at 621; %f" % widest)
+	h.check("screens.pause_menu_cascade_rows_do_not_touch", closest >= 4.0,
+		"a 40-unit step under a 30-tall button; %f" % closest)
+	# The break is read off the entries, so it is *Main Menu* and everything
+	# under it -- both exits here, and only *Exit Program* at the boot menu.
+	var exits: int = Array(_actions_of(abandoning)).find(
+		MainMenuScreen.MAIN_MENU)
+	var exits_gap: float = boxes[exits].position.y \
+		- (boxes[exits - 1].position.y + boxes[exits - 1].size.y)
+	var above_gap: float = boxes[exits - 1].position.y \
+		- (boxes[exits - 2].position.y + boxes[exits - 2].size.y)
+	h.check("screens.pause_menu_exits_stand_apart",
+		is_equal_approx(exits_gap, above_gap + MainMenuScreen.GROUP_GAP),
+		"*Main Menu* is half a step further down than the step alone; "
+		+ "%f against %f" % [exits_gap, above_gap])
+	h.check("screens.pause_menu_cascade_is_shifted_left",
+		is_equal_approx(boxes[0].position.x,
+			MainMenuScreen.FIRST_AT.x - MainMenuScreen.LEFT_SHIFT),
+		"the block's own first coordinate less a quarter of a button")
+	abandoning.free()
 
 	# At the boot menu there is nothing to go back **to**, so the entry is
 	# absent rather than inert: this screen *is* the main menu.
@@ -1526,6 +1608,23 @@ static func _any_ends_with(items: PackedStringArray, tail: String) -> bool:
 		if line.ends_with(tail):
 			return true
 	return false
+
+
+## Every button's rectangle in the plate's own 640x480 units, in the order the
+## screen built them. [method CampaignScreen.place_on_plate] writes anchors
+## rather than offsets, so the fractions are the layout and reading them back
+## needs no tree and no renderer.
+func _rows_of(screen: CampaignScreen) -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	for button: Button in _buttons_of(screen):
+		out.append(Rect2(
+			button.anchor_left * CampaignScreen.PLATE_SIZE.x,
+			button.anchor_top * CampaignScreen.PLATE_SIZE.y,
+			(button.anchor_right - button.anchor_left)
+				* CampaignScreen.PLATE_SIZE.x,
+			(button.anchor_bottom - button.anchor_top)
+				* CampaignScreen.PLATE_SIZE.y))
+	return out
 
 
 func _actions_of(screen: CampaignScreen) -> PackedStringArray:

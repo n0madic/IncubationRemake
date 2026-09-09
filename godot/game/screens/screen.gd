@@ -28,6 +28,10 @@ const ID_CANCEL: int = 1
 ## `Txtmod_h` 24/25 -- *Save game* and *Load game*, the in-mission pair.
 const ID_SAVE_GAME: int = 24
 const ID_LOAD_GAME: int = 25
+## `Txtmod_b` 140 -- *Main Map*, the way back to the location map. Read by the
+## deployment screen, which backs out of a sortie that has not started, and by
+## the pause menu, which leaves one that has.
+const ID_MAIN_MAP: int = 140
 
 ## `Txtmod_d` 60/61/62 -- *Back to the Main Menu without saving?* and its two
 ## answers, which the original asks before it drops a campaign.

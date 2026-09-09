@@ -1830,6 +1830,45 @@ go through one seam in [CampaignScreen]: `pending`, `needs_confirming()` and
 `_show_actions()`, because the second of them was written by copying the
 first. It is absent at the boot menu, where this screen **is** the main menu.
 
+**And a way out that is not dropping the campaign** (2026-09-09). *Main Menu*
+was the only one, and it takes the campaign with it: a mission left by
+accident cost the chain, and the three reserved autosave slots that still held
+it -- 31, 32 and 33 -- are deliberately off the slot list, so there was
+nothing to load it back from. The pause menu of a **campaign** mission now
+carries *Main Map* (`Txtmod_b` 140) directly after *Save game*: the
+sortie is abandoned, the squad comes back into the pool and the chain goes on
+from its location map. It is the deployment screen's own button one screen
+further on, and it is written once -- `SliceMain._leave_mission_for_map()`,
+called by both. It asks first, and with the **remake's own** question
+(`shell.abandon_mission`): `Txtmod_d` 60 is the shipped data's only question
+and it names the main menu. It is absent for a mission entered past the
+campaign -- *Instant Action*, `--mission=` -- which has no campaign state and
+no map to go back to, and where `abandon_mission()` would return at once;
+that is a field of the screen's rather than `paused`, because `paused` cannot
+tell the two apart.
+
+**The cascade moved left, and the exits stand apart.** `Menu_a.lcl`'s table
+steps 30 right and 40 down from `(280, 80)` and ends lower, at `(425, 300)`;
+it was written for the original's own menu window, and this shell draws it on
+the framed plate, where a 190-wide button on the block's last coordinate
+reaches 615 against a bevel at 621. A seventh row stepped once more put two
+buttons 4 units apart and 620 out, over the frame. Two changes, both the
+remake's own and both applied to every menu drawn from this block:
+
+* the whole cascade is moved left by **a quarter of a button** (47.5), which
+  keeps the block's shape -- its start, step, descent and the lead a short
+  menu takes -- and takes the right-hand end off the frame;
+* the trailing exits -- *Main Menu* and *Exit Program*, or *Exit Program*
+  alone at the boot menu -- are pushed down by **half the block's step**,
+  because every row above them does something inside the game and they leave
+  it. The block makes the same distinction in the same direction: its own last
+  row sits lower than the step alone would put it, and for any menu that fits
+  the block's six rows this gap lands the last row on exactly that `y` of 300.
+  A seventh goes to 340, 40 below the row above it.
+
+The break is read off the entries rather than counted, so a confirmation --
+which has neither exit in it -- lays out flat.
+
 **The shipping build is built again.** Godot 4.7.2's export templates are
 installed (they were 4.7.1 against a 4.7.2 engine, which is why this was on
 the open list), and both presets export: the shipping one and `macOS Tests`,

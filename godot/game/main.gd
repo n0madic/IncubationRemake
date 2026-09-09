@@ -1501,6 +1501,11 @@ func _show_shell_screen() -> CampaignScreen:
 		ShellHost.SCREEN_MENU:
 			var menu: MainMenuScreen = MainMenuScreen.new()
 			menu.paused = in_mission()
+			# **A campaign's mission, not any mission**: *Instant Action* and
+			# `--mission=` clear the campaign state, and there is no map to
+			# go back to.
+			menu.may_abandon = in_mission() and campaign != null \
+				and campaign.state != null
 			menu.behind = shell.behind
 			menu.has_any_save = _any_slot_used()
 			screen = menu
@@ -1606,6 +1611,16 @@ func _on_shell_choice(action: String) -> void:
 			# goes and so does the campaign, exactly as *End game* does from
 			# the map.
 			_end_campaign()
+		MainMenuScreen.MAIN_MAP:
+			# The narrower way out: the mission goes and the campaign stays.
+			# **The guard is not the button's**: the button is offered only
+			# with a campaign behind it ([method _show_shell_screen]), but
+			# the control server's `menu` and `press` verbs reach this table
+			# without one, and [method CampaignHost.abandon_mission] would
+			# then leave the shell down over a mission it had not dropped.
+			if campaign != null and campaign.state != null:
+				shell.close()
+				_leave_mission_for_map()
 		"resume":
 			close_shell()
 		"back":
@@ -1621,6 +1636,27 @@ func _on_shell_choice(action: String) -> void:
 			# the same frame leaks it -- which `run_tests.sh` would report as
 			# a runtime error and a red run (docs/92 section 7.15).
 			_quit()
+
+
+## Leave a mission without finishing it and put the location map back, with the
+## campaign standing.
+##
+## Two buttons mean this and are written once: the deployment screen's *Main
+## Map*, which backs out of a sortie that has not started, and the pause
+## menu's ([constant MainMenuScreen.MAIN_MAP]), which abandons one that has.
+##
+## The squad comes back off the map first: the location screen frees the
+## mission's whole scene, and anyone already deployed had been taken out of
+## the pool to stand on it. [method CampaignHost.abandon_mission] does that
+## and sets the screen, and [method show_campaign_screen] tears the mission
+## down -- including a turn still being replayed, which
+## [method _clear_mission] cancels rather than skips.
+func _leave_mission_for_map() -> void:
+	if campaign == null or campaign.state == null:
+		return
+	campaign.abandon_mission()
+	var _to_map: CampaignScreen = show_campaign_screen(
+		CampaignHost.SCREEN_MAP)
 
 
 ## Drop the campaign and whatever is on the screen, and come back at the boot
@@ -2464,12 +2500,7 @@ func _on_campaign_choice(action: String) -> void:
 			else:
 				close_campaign_screen()
 		"map":
-			# The squad comes back off the map first: the location screen
-			# frees the mission's whole scene, and anyone already deployed
-			# had been taken out of the pool to stand on it.
-			campaign.abandon_mission()
-			var _to_map: CampaignScreen = show_campaign_screen(
-				CampaignHost.SCREEN_MAP)
+			_leave_mission_for_map()
 		"options":
 			# Into the shell, over the map. Leaving it puts the map back --
 			# see [method close_shell] -- and the difficulty row is the

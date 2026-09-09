@@ -86,6 +86,11 @@ const OWN: Dictionary = {
 	# no screen to title, no slot metadata to head and no chain to choose
 	# between by name.
 	"shell.options": {"English": "Options"},
+	# The pause menu's *Main Map* question. `Txtmod_d` 60 is the shipped
+	# data's only question and it names the main menu, which is the other
+	# way out of a mission and the one that drops the campaign too.
+	"shell.abandon_mission":
+		{"English": "Back to the Main Map without saving?"},
 	"shell.difficulty.0": {"English": "Easy"},
 	"shell.difficulty.1": {"English": "Normal"},
 	"shell.difficulty.2": {"English": "Hard"},
