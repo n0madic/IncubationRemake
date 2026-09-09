@@ -2308,6 +2308,14 @@ class BombRunHost extends RecordingHost:
 		flag = true
 
 
+## docs/21 section 6 -- the three `special` 1 guns, the bayonet one of them
+## swaps to, and the clip its key names. Written out rather than read off the
+## cache: what is being checked is that the seam reaches the selector at all.
+const BAYONET_GUNS: Array[int] = [1, 2, 16]
+const BAYONET_WEAPON: int = 30
+const BAYONET_CLIP: String = "P0_F1_001"
+
+
 class RecordingHost extends ShotHost:
 	var calls: Array[String] = []
 	var arrived: bool = false
@@ -2696,6 +2704,39 @@ func _check_unit_animations(h: TestHarness) -> void:
 	var _arrows: bool = BlobPrograms.run(BlobPrograms.ARROWS, pool, draws,
 		PackedInt32Array([2, 2]), inputs)
 	h.equal("marker.four_arrows", pool.records.size(), 4)
+	# **A bayonet kill's death effect.** `docs/42` section 4.8: weapons 30, 31
+	# and 32 leave death style 3, so a small non-machine victim gets
+	# `death_blood_burst` and not the species burst a rifle leaves. It is a
+	# quieter effect on purpose -- thirty `A_BLUT4` pieces and no body parts --
+	# but it is not nothing, which is what this pins.
+	var gore: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var gore_draws: BlobPrograms.Draws = BlobPrograms.Draws.create(1.0)
+	inputs.models["A_BLUT4.3DI"] = 4
+	# The victim is the **computer's**, which is what the level-2 gore rule
+	# turns on: at that level a unit of the player's own is substituted by the
+	# puff and only the computer's bleed (docs/42 section 4.8).
+	inputs.tiles[Vector2i(2, 2)] = {"object": Vector3i(6400, 6400, 0),
+		"unit": {"type": 0, "player": BlobPrograms.PLAYER_COMPUTER,
+			"height": 2880}}
+	var _burst: bool = BlobPrograms.run(BlobPrograms.BLOOD_BURST, gore,
+		gore_draws, PackedInt32Array([2, 2]), inputs)
+	h.equal("stab.the_death_leaves_thirty_records", gore.records.size(), 30,
+		"fifteen pairs of A_BLUT4, docs/42 section 4.8.1")
+	var gore_kinds: Dictionary[int, int] = {}
+	for record: Dictionary in gore.records:
+		var k: int = DictRead.as_int(record["kind"])
+		gore_kinds[k] = DictRead.as_int(gore_kinds.get(k, 0)) + 1
+	h.equal("stab.the_death_is_kinds_17_and_43", gore_kinds, {17: 15, 43: 15})
+	# And the level-2 substitution, which is the one way this arm answers with
+	# nothing much: the player's own casualty gets the single-record puff.
+	inputs.tiles[Vector2i(2, 2)] = {"object": Vector3i(6400, 6400, 0),
+		"unit": {"type": 0, "player": 0, "height": 2880}}
+	var own_death: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var _puff: bool = BlobPrograms.run(BlobPrograms.BLOOD_BURST, own_death,
+		BlobPrograms.Draws.create(1.0), PackedInt32Array([2, 2]), inputs)
+	h.equal("stab.the_players_own_casualty_is_a_puff",
+		own_death.records.size(), 1,
+		"gore level 2 substitutes it, and 2 is the shipped default")
 	h.equal("marker.no_draw", draws.count, 0)
 	var radii: Array[int] = []
 	var kinds: Array[int] = []
@@ -2994,6 +3035,34 @@ func _check_arrival(h: TestHarness) -> void:
 	if drawn == 0:
 		units.free()
 		return
+
+	# **The stab's clip, through the library.** `docs/21` section 6: the swap is
+	# live while `aPlayFightAnimation` runs, so the shot's own weapon selects
+	# the `F` clip and the record's does not. This is the seam between the note
+	# and the body -- the selector's three arguments in their own order -- and
+	# nothing else in the suites walks it.
+	units.shown_ref = world
+	var armed: int = -1
+	for candidate: int in units.states:
+		var record: Dictionary = world.unit_view(candidate)
+		if not record.is_empty() and BAYONET_GUNS.has(
+				DictRead.as_int(record["weapon"])):
+			armed = candidate
+			break
+	h.check("stab.a_special_1_gun_is_on_the_map", armed >= 0,
+		"one of %s" % str(BAYONET_GUNS))
+	if armed >= 0:
+		var own: CharismaClip = units.states[armed].fire_clip()
+		var _sized: Dictionary = units.body_frames(armed, BAYONET_WEAPON)
+		var stab: CharismaClip = units.states[armed].fire_clip()
+		h.check("stab.the_clip_is_the_bayonets",
+			stab != null and stab != own and stab.name == BAYONET_CLIP,
+			"%s, not %s" % ["null" if stab == null else stab.name,
+				"null" if own == null else own.name])
+		var _back: Dictionary = units.body_frames(armed,
+			DictRead.as_int(world.unit_view(armed)["weapon"]))
+		h.equal("stab.the_gun_comes_back", units.states[armed].fire_clip(), own,
+			"the unit's own weapon is not an override")
 
 	var slot: int = _first_drawn_slot(units)
 	units.suppress(slot)
