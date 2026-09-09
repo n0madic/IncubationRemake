@@ -76,3 +76,72 @@ func bind_matrix(bone: String) -> PackedFloat64Array:
 	if not bind_of.has(bone):
 		return CharismaTrack.identity()
 	return bind_of[bone].duplicate()
+
+
+## The bone chain from the model's top-level bone down to `bone`, inclusive.
+##
+## Root-first, which is the order [method CharismaBody.aim_pivot_of] compares
+## two chains in. A bone this model does not carry answers empty.
+func ancestors(bone: String) -> PackedStringArray:
+	if not parent_of.has(bone):
+		return PackedStringArray()
+	var chain: PackedStringArray = PackedStringArray()
+	var at: String = bone
+	while parent_of.has(at):
+		chain.append(at)
+		at = parent_of[at]
+	chain.reverse()
+	return chain
+
+
+## Whether `bone` is `ancestor` or sits under it.
+func is_under(bone: String, ancestor: String) -> bool:
+	var at: String = bone
+	while parent_of.has(at):
+		if at == ancestor:
+			return true
+		at = parent_of[at]
+	return false
+
+
+## The joint an aiming twist turns about, and the bones that turn with it.
+##
+## Resolved once per model by [CharismaBody] -- which is the class that can
+## pose a bind skeleton -- and kept here because a model outlives the bodies
+## built from it and the answer is the same for every one of them. Empty
+## means "this model does not aim": see [method CharismaBody.aim].
+var _aim_pivot: String = ""
+var _aim_subtree: Dictionary[String, bool] = {}
+var _aim_resolved: bool = false
+
+
+## Whether [method resolve_aim] has already been asked of this model.
+func aim_resolved() -> bool:
+	return _aim_resolved
+
+
+## The twist joint, or `""` for a model that does not aim.
+func aim_pivot() -> String:
+	return _aim_pivot
+
+
+## Whether `bone` turns with the twist.
+func turns_with_aim(bone: String) -> bool:
+	return _aim_subtree.has(bone)
+
+
+## How many bones the twist moves, for a measurement to report.
+func aim_part_count() -> int:
+	return _aim_subtree.size()
+
+
+## Record the twist joint and expand its subtree. Idempotent.
+func resolve_aim(pivot: String) -> void:
+	_aim_resolved = true
+	_aim_pivot = pivot
+	_aim_subtree.clear()
+	if pivot.is_empty():
+		return
+	for bone: String in bones:
+		if is_under(bone, pivot):
+			_aim_subtree[bone] = true

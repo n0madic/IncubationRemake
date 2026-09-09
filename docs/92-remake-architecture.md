@@ -2197,6 +2197,33 @@ median of exactly zero over 2547 poses ([`41` §7](41-sequence-player.md)), and
 the pacing was in `0x00417000` all along, behind a frame limiter the first
 reading did not follow ([`27` §2.7](27-campaign.md)).
 
+### 7.20 A shooter aims, and the octant stays the facing (2026-09-09)
+
+The engine turns a shooter with `aChangeUnitViewDirection` into **one of
+eight** headings — step 3 of `aAttackUnit` ([`22` §7.1](22-combat-and-visibility.md)),
+`fcn.0046A6E0`'s table `0, 0xC00, 0x800, 0x400, 0x600, 0xE00, 0x200, 0xA00`,
+the octant chosen by `direction()`'s `|dy/dx|` thresholds of 0.5 and 1.5. The
+shot itself is laid along the **exact** line to the target, so the barrel and
+the round disagree, and in the original they disagree by as much as **33.69
+degrees**.
+
+That number is measured rather than read, and it corrects a comment this
+project had delivered in both twins (`tools/inclib/combat.py` and
+`godot/core/combat.gd`), which said "the four axis-aligned sectors span 53
+degrees and the diagonals 37". The two thresholds are not each other's
+reciprocals, so the sectors come in **three** sizes, not two — swept a full
+turn: facings 0 and 2, the two along y, **67.38°** each; facings 1 and 3,
+along x, **53.13°**; the four diagonals **29.75°**. They sum to 360 as
+convincingly as the wrong pair did, which is why it survived being looked at.
+
+| | Decision |
+|---|---|
+| A1 | **The octant is untouched everywhere the rules read it.** `unit.facing` stays exactly what `Combat.direction` answers — the rear-shot arc of [`22` §7.4](22-combat-and-visibility.md), the ground marker, the direction ring, `CanonicalHash` and the save. The aim is the **picture's** and nothing else asks it a question, so a session that aims and one that does not hash the same. |
+| A2 | **What turns is the waist, for the length of the `F` clip.** `UnitsView.aim_twist` is the remainder the octant left, in engine angle units and wrapped the short way round; `CharismaBody` turns every part in one subtree about that joint's own position and leaves the rest of the pose alone. Hips and legs stand still; torso, arms, head and the weapon part `M` turn. It is a deliberate divergence from the original, which turns nothing. |
+| A3 | **The joint is found geometrically, not by name.** The shipped skeletons are not one rig — a marine hangs both arms off the **neck** (`Bip01 R Arm` ← `Bip01 Hals`), which no naming convention would have told anyone. Walk the chain from the top-level bone down to `M` and the chain down to the **lowest meshed joint of the bind pose** (a foot), and take the first bone at which the two part company: for `P0_000` that is `Bip01 Wirbelsäule`, the joint directly above where the legs branch off. Resolved once per `CharismaModel`, which outlives the bodies built from it. |
+| A4 | **A model with no `M` does not aim.** 89 of the 114 shipped models carry the muzzle part ([`42` §4.6](42-mission-presentation.md)); the rest keep the engine's own octant and nothing is invented for them. |
+| A5 | **The aim is held against a rebuild**, which is the half that was a defect rather than a divergence. A shot whose target dies rebuilds the bodies from the mirror *in the middle of the clip* (`SliceMain._land_current_delta`), and a **reaction's** mirror never carries the octant at all — `Reaction.drain` puts the reactor's facing back before the event is marked, faithfully ([`25` §6](25-turn-and-round.md)). So an overwatcher snapped round to where it had been looking while its own shot was still playing. `UnitsView` keeps the aim per slot, the rebuild prefers it to the world's facing, and it is dropped when the clip is — by `rest`, by the auto-rest of a type with no `F`, and by a rebuild that finds nothing to carry. |
+
 ---
 
 ## 8. Standing constraints

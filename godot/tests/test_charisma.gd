@@ -70,6 +70,7 @@ func run(h: TestHarness) -> void:
 	# **Before the fixture gate**, because this one needs no oracle: a model
 	# either builds or it does not.
 	_unnamed_part(h)
+	_aim(h)
 	if not FileAccess.file_exists(CASES):
 		h.check("fixture", false,
 			"run python3 tools/charisma_tables.py gog_incubation "
@@ -700,6 +701,23 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 	h.equal("shot.null_clip_returns_to_the_idle", units.states[slot].mode,
 		CharismaState.Mode.IDLE,
 		"the body a missing clip left in FIRE for ever comes back")
+	# **The aim record's lifetime.** The twist lives on the body and
+	# [method CharismaBody.apply] reads it every pose, so an aim that outlived
+	# its clip would leave the unit idling with a turned waist. Off-axis, or
+	# there would be no twist to lose.
+	units.states[slot] = CharismaState.create(null, without, without, with_break)
+	var _held: float = units.fire(slot, x + step, y + 1)
+	h.check("shot.aim_is_raised", units.aim_twist_of(slot) != 0,
+		"twist %d engine units at (%d, %d) -> (%d, %d)"
+			% [units.aim_twist_of(slot), x, y, x + step, y + 1])
+	units.rest(slot)
+	h.equal("shot.rest_drops_the_aim", units.aim_count(), 0,
+		"the shot's end takes the twist with it")
+	units.states[slot] = CharismaState.create(null, without, without, null)
+	var _none: float = units.fire(slot, x + step, y + 1)
+	units.animate(tick, world)
+	h.equal("shot.the_null_clip_drops_it_too", units.aim_count(), 0,
+		"a type with no combat clip rests itself, and clears with it")
 	units.free()
 
 
@@ -824,3 +842,124 @@ func _unnamed_part(h: TestHarness) -> void:
 		body.get_child_count() >= empty,
 		"%d node(s) built" % body.get_child_count())
 	body.free()
+
+
+## The aiming twist of docs/92 section 7.20: the remainder the engine's eight
+## octants leave, and what the body does with it.
+##
+## The angle half is pure arithmetic and needs no cache. The body half does,
+## and answers "no model" rather than failing when the cache carries none --
+## the same shape as [method _unnamed_part].
+func _aim(h: TestHarness) -> void:
+	# Straight down an octant leaves nothing to twist. Facing 3 is `dx > 0`.
+	h.equal("aim.on_the_octant_is_zero",
+		UnitsView.aim_twist(0, 0, 4, 0, 3), 0, "dx = 4, dy = 0")
+	h.equal("aim.the_diagonal_is_zero",
+		UnitsView.aim_twist(0, 0, 4, 4, 6), 0, "45 degrees is facing 6")
+	# `direction`'s own sector edge: |dy/dx| just under 0.5 stays on the axis,
+	# and the twist is the whole of what the octant lost. A quarter turn is
+	# 1024 units, so 14 degrees is about 159.
+	var shallow: int = UnitsView.aim_twist(0, 0, 4, 1, Combat.direction(0, 0, 4, 1))
+	h.equal("aim.the_shallow_shot_twists", shallow, -160,
+		"dx = 4, dy = 1 -- 14.0 degrees back off the +x octant")
+	h.equal("aim.the_octant_is_the_axis", Combat.direction(0, 0, 4, 1), 3,
+		"|dy/dx| = 0.25 is under the 0.5 threshold")
+	# The worst the engine's unequal sectors can produce is half of the widest
+	# one -- the 67.38 degrees along y -- which is 33.69 degrees, 383 units.
+	# Not half of the 53.13-degree x sector: the two thresholds are not each
+	# other's reciprocals, and this loop is what caught the delivered comment
+	# that said they were.
+	var worst: int = 0
+	for dx: int in range(-40, 41):
+		for dy: int in range(-40, 41):
+			var twist: int = UnitsView.aim_twist(0, 0, dx, dy,
+				Combat.direction(0, 0, dx, dy))
+			worst = maxi(worst, absi(twist))
+	h.check("aim.no_shot_twists_past_the_sector",
+		worst > 370 and worst <= 384,
+		"worst %d units (%.1f degrees) over 81 x 81 offsets"
+			% [worst, float(worst) / 4096.0 * 360.0])
+	# The sign: a target left of the octant twists one way and right the other.
+	h.check("aim.the_sign_follows_the_target",
+		UnitsView.aim_twist(0, 0, 4, 1, 3) == -UnitsView.aim_twist(0, 0, 4, -1, 3),
+		"symmetric about the axis")
+
+	# The body half: the pivot is the waist, and the twist moves the weapon.
+	var cache_dir: String = CacheFixture.cache_dir()
+	var document: Dictionary = CacheFixture.read_json(
+		"%s/models/P0_000.json" % cache_dir)
+	if document.is_empty():
+		h.check("aim.model_present", false, "the cache carries no P0_000")
+		return
+	var model: CharismaModel = CharismaModel.from_document(document)
+	var library: CharismaLibrary = CharismaLibrary.open(cache_dir,
+		CacheFixture.texture_index("A00"), "_C_140")
+	var body: CharismaBody = CharismaBody.create(model, library)
+	if body == null:
+		h.check("aim.body_builds", false, "no mesh for P0_000 in this cache")
+		return
+	h.equal("aim.the_pivot_is_the_waist", model.aim_pivot(),
+		"Bip01 Wirbelsäule",
+		"the joint above where the legs branch off the weapon's chain")
+	h.check("aim.the_legs_stand_still",
+		not model.turns_with_aim("Fuss_R")
+			and not model.turns_with_aim("Bip01 Becken"),
+		"hips and feet are outside the twist")
+	h.check("aim.the_weapon_turns",
+		model.turns_with_aim(CharismaBody.AIM_WEAPON_PART)
+			and model.turns_with_aim("Kopf"),
+		"%d bone(s) turn with the aim" % model.aim_part_count())
+	body.pose(null, 0.0)
+	var rested: Vector3 = body.part_position(CharismaBody.AIM_WEAPON_PART)
+	body.aim_twist = 302
+	body.pose(null, 0.0)
+	var aimed: Vector3 = body.part_position(CharismaBody.AIM_WEAPON_PART)
+	h.check("aim.the_muzzle_moves_with_it",
+		rested.distance_to(aimed) > 0.01,
+		"the muzzle travelled %.3f m at 26.5 degrees"
+			% rested.distance_to(aimed))
+	var foot: Vector3 = body.part_position("Fuss_R")
+	body.aim_twist = 0
+	body.pose(null, 0.0)
+	h.check("aim.the_foot_does_not",
+		foot.distance_to(body.part_position("Fuss_R")) < 1e-6,
+		"a twist leaves the stance alone")
+	h.check("aim.zero_is_the_pose_untouched",
+		rested.distance_to(body.part_position(CharismaBody.AIM_WEAPON_PART))
+			< 1e-6,
+		"no twist is bit-for-bit the clip")
+	# **The sign, end to end.** A twist that turned the waist the wrong way
+	# would double the error instead of cancelling it, and every check above
+	# passes either way -- they only ask that something moved. So stand the
+	# body up the way [method UnitsView.face] does, measure the muzzle's own
+	# bearing about the pivot before and after, and require the change to be
+	# the twist itself in the engine's own clockwise-from-+Y convention.
+	var stand: Node3D = Node3D.new()
+	stand.add_child(body)
+	UnitsView.face(stand, body, 3)
+	body.aim_twist = 0
+	body.pose(null, 0.0)
+	var before: int = _bearing(body, model)
+	body.aim_twist = -160
+	body.pose(null, 0.0)
+	var after: int = _bearing(body, model)
+	var turned: int = posmod(after - before + 2048, 4096) - 2048
+	h.check("aim.the_waist_turns_the_way_it_was_asked",
+		absi(turned - (-160)) <= 2,
+		"asked -160 engine units, the muzzle moved %d" % turned)
+	stand.remove_child(body)
+	stand.free()
+
+	body.free()
+
+
+## The muzzle's bearing about the twist joint, in engine angle units --
+## clockwise from engine +Y, which is what [constant UnitsView.FACING_ANGLES]
+## is measured in.
+func _bearing(body: CharismaBody, model: CharismaModel) -> int:
+	var muzzle: Vector3i = WorldSpace.from_godot(
+		body.part_position(CharismaBody.AIM_WEAPON_PART))
+	var pivot: Vector3i = WorldSpace.from_godot(
+		body.part_position(model.aim_pivot()))
+	return roundi(atan2(float(muzzle.x - pivot.x), float(muzzle.y - pivot.y))
+		/ TAU * float(WorldSpace.ANGLE_FULL_TURN))

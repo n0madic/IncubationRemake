@@ -58,6 +58,11 @@ var states: Dictionary[int, CharismaState] = {}
 ## Slot -> an in-progress walk, `{"cells": PackedInt32Array, "width": int,
 ## "elapsed": float, "seconds": float}`. Empty between walks.
 var _walks: Dictionary[int, Dictionary] = {}
+## Slot -> the aim a shot on screen is holding, `{"facing": int,
+## "twist": int}`. Present only while the body is playing its combat clip,
+## and the reason the picture survives a rebuild in the middle of one: see
+## [method fire].
+var _aim: Dictionary[int, Dictionary] = {}
 ## Slots whose node is built but **not shown**, because a set piece is still
 ## delivering them.
 ##
@@ -126,6 +131,11 @@ func build(world: World, geometry: Dictionary, textures: Dictionary,
 	var carried: Dictionary[int, Dictionary] = {}
 	for slot: int in states:
 		carried[slot] = states[slot].playback()
+	# An aim outlives only the body that is holding it: a slot with nothing to
+	# carry has finished its shot, or the mission has changed under us.
+	for slot: int in _aim.keys():
+		if not carried.has(slot):
+			_aim.erase(slot)
 	bodies.clear()
 	states.clear()
 	_walks.clear()
@@ -186,7 +196,11 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var cell: Dictionary = world.cell_view(x, y)
 	var h: int = DictRead.as_int(cell.get("height", 0))
 	node.position = WorldSpace.cell_centre(x, y, h)
+	# The aim a shot is holding wins over the world's facing: see
+	# [method fire] for why the two can disagree.
 	var facing: int = DictRead.as_int(view["facing"])
+	if _aim.has(slot):
+		facing = DictRead.as_int(_aim[slot]["facing"])
 	face(node, null, facing)
 
 	if Fog.is_contact(view):
@@ -216,6 +230,8 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 			var _resumed: bool = states[slot].resume(carried[slot])
 		node.add_child(body)
 		face(node, body, facing)
+		if _aim.has(slot):
+			body.aim_twist = DictRead.as_int(_aim[slot]["twist"])
 		return node
 
 	# No body. The type's own model column is drawn where it names a real
@@ -285,6 +301,14 @@ func animate(delta: float, world: World, frozen: bool = false) -> void:
 			# the mission.
 			if state.mode == CharismaState.Mode.FIRE and not state.is_busy():
 				state.rest()
+				# The twist goes with the clip. The field lives on the body
+				# and [method CharismaBody.apply] reads it every pose, so
+				# dropping the record alone would leave the unit idling with
+				# a turned waist until some later rebuild happened to clear
+				# it -- which is a rebuild that usually comes, and never on a
+				# promise.
+				_aim.erase(slot)
+				_apply_aim(slot)
 	for slot: int in _walks.keys():
 		_advance_walk(slot, delta, world)
 
@@ -318,7 +342,19 @@ func fire(slot: int, tx: int, ty: int, weapon: int = -1) -> float:
 			# now and not the one it ends the turn on.
 			var facing: int = Combat.direction(DictRead.as_int(view["x"]),
 				DictRead.as_int(view["y"]), tx, ty)
+			var twist: int = aim_twist(DictRead.as_int(view["x"]),
+				DictRead.as_int(view["y"]), tx, ty, facing)
+			# **Held against the rebuild, not only applied.** A shot whose
+			# target dies rebuilds the bodies from the mirror in the middle of
+			# the clip ([method SliceMain._land_current_delta]), and a
+			# reaction's mirror never carries the octant at all -- `drain`
+			# puts the reactor's facing back before the event is marked
+			# (`core/reaction.gd`). Without this the overwatcher snapped round
+			# to where it had been looking while its own shot was still
+			# playing.
+			_aim[slot] = {"facing": facing, "twist": twist}
 			face(node, _body_of(slot), facing)
+			_apply_aim(slot)
 	return states[slot].fire()
 
 
@@ -443,8 +479,12 @@ func resume_past_break(slot: int) -> int:
 
 ## `aStopCHAnimation` on one body: back to its idle.
 func rest(slot: int) -> void:
+	_aim.erase(slot)
 	if states.has(slot):
 		states[slot].rest()
+		var body: CharismaBody = _body_of(slot)
+		if body != null:
+			body.aim_twist = 0
 
 
 func is_playing(slot: int) -> bool:
@@ -969,6 +1009,7 @@ func muzzle_point(slot: int, part: String = MUZZLE_PART) -> Vector3i:
 ## `0x00405320(obj, 5)` -- the object leaves the picture in this frame.
 ## Answers whether a node was there to remove.
 func hide_now(slot: int) -> bool:
+	_aim.erase(slot)
 	bodies.erase(slot)
 	states.erase(slot)
 	_walks.erase(slot)
@@ -1049,3 +1090,61 @@ func _floor_y(slot: int) -> float:
 		DictRead.as_int(view["y"]))
 	return float(DictRead.as_int(cell.get("height", 0))) \
 		/ WorldSpace.WORLD_UNITS_PER_METRE
+
+
+## How far the aim misses the octant the body stands in, in engine angle units.
+##
+## The engine turns a shooter with `aChangeUnitViewDirection` into one of
+## **eight** headings (`fcn.0046A6E0`, [constant FACING_ANGLES]) chosen by
+## `direction()`'s `|dy/dx|` thresholds of 0.5 and 1.5 -- so the sectors come
+## in three sizes (67.38 degrees along y, 53.13 along x, 29.75 on the
+## diagonals: `Combat.direction`) and the body can stand up to **33.69
+## degrees** off the line its shot travels (docs/22 section 7.1). The shot
+## itself is laid along the exact line to the target, which is what makes the
+## difference visible.
+##
+## This is the remainder, and [method CharismaBody.aim] is what does something
+## with it: the octant is the original's and stays the unit's facing
+## everywhere -- the rules, the save, the rear-shot arc, the ground marker --
+## while the picture turns the shooter's **waist** by the remainder so the
+## barrel points where the round goes. It is a deliberate divergence from the
+## original, which turns nothing (docs/92 section 7.20).
+##
+## The engine's yaw runs clockwise from engine +Y: 0 at `dy > 0`, a quarter
+## turn at `dx > 0`, which is [constant FACING_ANGLES] read against
+## `Combat.direction`'s own octants. The answer is wrapped into
+## `(-half turn, +half turn]` so a twist is always the short way round.
+static func aim_twist(x: int, y: int, tx: int, ty: int, facing: int) -> int:
+	var dx: int = tx - x
+	var dy: int = ty - y
+	if dx == 0 and dy == 0:
+		return 0
+	var exact: int = roundi(atan2(float(dx), float(dy))
+		/ TAU * float(WorldSpace.ANGLE_FULL_TURN))
+	var octant: int = FACING_ANGLES[facing % FACING_ANGLES.size()]
+	var half: int = WorldSpace.ANGLE_FULL_TURN / 2
+	return posmod(exact - octant + half, WorldSpace.ANGLE_FULL_TURN) - half
+
+
+## The twist a shot on screen is holding for `slot`, or zero when it holds
+## none. For a caller measuring what the picture is doing.
+func aim_twist_of(slot: int) -> int:
+	if not _aim.has(slot):
+		return 0
+	return DictRead.as_int(_aim[slot]["twist"])
+
+
+## How many slots are holding an aim, for a suite to check the bookkeeping.
+func aim_count() -> int:
+	return _aim.size()
+
+
+## Put the held aim on the body, if there is one and it has a body.
+func _apply_aim(slot: int) -> void:
+	var body: CharismaBody = _body_of(slot)
+	if body == null:
+		return
+	if not _aim.has(slot):
+		body.aim_twist = 0
+		return
+	body.aim_twist = DictRead.as_int(_aim[slot]["twist"])

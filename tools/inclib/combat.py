@@ -318,8 +318,16 @@ def direction(x0: int, y0: int, x1: int, y1: int) -> int:
     """``0x0046A760`` -- the octant from the shooter to the target.
 
     The thresholds are ``|dy/dx|`` at 0.5 and 1.5 (``0x004B15E0`` and
-    ``0x004B15D8``), which is what makes the eight sectors unequal: the four
-    axis-aligned ones span 53 degrees and the diagonals 37.
+    ``0x004B15D8``), which is what makes the eight sectors unequal -- and
+    unequal in **three** sizes, because the two thresholds are not each
+    other's reciprocals.  Measured by sweeping a full turn: facings 0 and 2,
+    the two along y, span 67.38 degrees each; facings 1 and 3, along x, span
+    53.13; the four diagonals span 29.75.  (They sum to 360.)  So a unit can
+    stand up to **33.69 degrees** off the line to what it is looking at, on
+    the y axis.  This paragraph read "the four axis-aligned ones span 53
+    degrees and the diagonals 37" until 2026-09-09, which is the split the
+    symmetric thresholds 0.5 and 2.0 would give and sums to 360 as
+    convincingly.
     """
     dx, dy = x1 - x0, y1 - y0
     if dx == 0 and dy == 0:

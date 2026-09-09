@@ -76,6 +76,10 @@ var _model: CharismaModel = null
 ## twice on the frame it begins and once on every frame after it.
 var _origin_clip: CharismaClip = null
 var _origin: CharismaSkeleton = null
+## The aiming twist this body is holding, in engine angle units, about the
+## joint [method aim_pivot_of] found. Zero for every body that is not in the
+## middle of a shot, which is every body the suites pose.
+var aim_twist: int = 0
 
 
 ## Build the body of `model`, unposed. Returns null when the model names no
@@ -111,6 +115,11 @@ static func create(model: CharismaModel,
 		instance.name = node_name
 		body.add_child(instance)
 		body._nodes[bone] = instance
+	# Once per model, not once per body: [CharismaModel] outlives every body
+	# built from it and the answer is a property of the skeleton.
+	if not model.aim_resolved():
+		model.resolve_aim(aim_pivot_of(model,
+			CharismaSkeleton.pose(model, null, 0.0)))
 	if body._nodes.is_empty():
 		# Freed rather than dropped: this is a `Node3D` and it was never
 		# parented, so nothing else would ever free it -- and the caller takes
@@ -166,6 +175,7 @@ func part_position(bone: String) -> Vector3:
 ## `travel` is the clip's own stride, in the pose's own units, and it is
 ## **subtracted**: see [method pose].
 func apply(pose: CharismaSkeleton, travel: Vector2 = Vector2.ZERO) -> void:
+	var twist: Transform3D = _twist_of(pose, travel)
 	for bone: String in _nodes:
 		var instance: MeshInstance3D = _nodes[bone]
 		var world: PackedFloat64Array = pose.world_matrix(bone)
@@ -185,6 +195,11 @@ func apply(pose: CharismaSkeleton, travel: Vector2 = Vector2.ZERO) -> void:
 		world[7] *= SKELETON_TO_WORLD
 		world[11] *= SKELETON_TO_WORLD
 		instance.transform = WorldSpace.engine_matrix(world)
+		# The aim, on top of the pose and never inside it: the clip stays what
+		# the file says and the twist is the picture's, so a body posed by a
+		# suite is bit-identical to one posed by the game.
+		if _model.turns_with_aim(bone):
+			instance.transform = twist * instance.transform
 		# docs/40 section 6: a Visibility track that has gone to zero switches
 		# the part off. No gameplay clip has one -- the 272 tracks that dip to
 		# zero are all in `Video/` -- so this is always true on the bodies this
@@ -246,3 +261,70 @@ static func top_level_bone(model: CharismaModel) -> String:
 		if model.is_top_level(bone):
 			return bone
 	return ""
+
+
+## The part a model puts at the end of its weapon, and the one an aiming
+## twist has to carry: [constant UnitsView.MUZZLE_PART] by the same name.
+## 89 of the 114 shipped models have it; the rest do not aim.
+const AIM_WEAPON_PART: String = "M"
+
+
+## The twist as a transform about its joint, or the identity when there is
+## none to apply.
+##
+## The rotation is [method WorldSpace.yaw_basis] of the twist alone: the body
+## already stands at its octant, and turning it by `d` on top of `A` is
+## `yaw_basis(A + d) * yaw_basis(A)^-1`, which is `yaw_basis(d)` -- two yaws
+## about the same axis commute, so the same factor works in the body's own
+## frame as in the world's.
+func _twist_of(pose: CharismaSkeleton, travel: Vector2) -> Transform3D:
+	if aim_twist == 0 or _model == null or _model.aim_pivot().is_empty():
+		return Transform3D.IDENTITY
+	var at: Vector3 = pose.joint(_model.aim_pivot())
+	# The stride comes off the pivot exactly as it comes off every part, or a
+	# twist would drag a walking body's upper half off its own hips.
+	at.x -= travel.x
+	at.y -= travel.y
+	var pivot: Vector3 = WorldSpace.to_godot_v(at * SKELETON_TO_WORLD)
+	var turn: Basis = WorldSpace.yaw_basis(aim_twist)
+	return Transform3D(turn, pivot - turn * pivot)
+
+
+## The joint an aiming twist turns about: **the waist**.
+##
+## The rule is geometric rather than a list of bone names, because the shipped
+## skeletons are not one rig -- a marine hangs both arms off the neck
+## (`Bip01 R Arm` <- `Bip01 Hals`), which no naming convention would have told
+## anyone. Walk the chain from the top-level bone down to the weapon part and
+## the chain down to the **lowest meshed joint of the bind pose** -- a foot --
+## and take the first bone at which they part company. For `P0_000` that is
+## `Bip01 Wirbelsäule`, the joint directly above where the legs branch off, so
+## the twist is a turn at the waist: hips and legs stand still, torso, arms,
+## head and weapon turn with the aim.
+##
+## `""` for a model with no weapon part and for one whose two chains share
+## nothing, and those bodies simply do not aim.
+static func aim_pivot_of(model: CharismaModel,
+		bind: CharismaSkeleton) -> String:
+	var chain: PackedStringArray = model.ancestors(AIM_WEAPON_PART)
+	if chain.is_empty():
+		return ""
+	var lowest: String = ""
+	var lowest_z: float = 0.0
+	for bone: String in model.bones:
+		if model.mesh_of(bone).is_empty():
+			continue
+		var z: float = bind.joint(bone).z
+		if lowest.is_empty() or z < lowest_z:
+			lowest = bone
+			lowest_z = z
+	var feet: PackedStringArray = model.ancestors(lowest)
+	var shared: int = 0
+	while shared < chain.size() and shared < feet.size() \
+			and chain[shared] == feet[shared]:
+		shared += 1
+	# `shared == 0` is two chains with no common root, which a `.cho` cannot
+	# produce; `shared == chain.size()` is a foot under the weapon.
+	if shared <= 0 or shared >= chain.size():
+		return ""
+	return chain[shared]
