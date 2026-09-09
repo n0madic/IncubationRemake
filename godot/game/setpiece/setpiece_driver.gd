@@ -36,7 +36,8 @@ extends RefCounted
 const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 	"roof_unit", "bridge", "foot_bridge", "foot_bridge2", "open_tube",
 	"open_plant_tube", "open_front_door", "ground_unit", "statue",
-	"barrier_on", "fire_circle", "crush_wall", "teleporter", "para_bombs",
+	"barrier_on", "fire_circle", "ground_fire", "crush_wall", "teleporter",
+	"para_bombs",
 	"lever", "pickup"]
 
 ## The events that get their sound and their state change with no motion.
@@ -221,7 +222,10 @@ static func frames_for(event: Dictionary) -> int:
 			return BARRIER_FRAMES
 		"fire_circle":
 			return FIRE_CIRCLE_FRAMES
-		"crush_wall":
+		"crush_wall", "ground_fire":
+			# `aPlayGroundFireAnimation` has no frame count either: it holds
+			# on `0x0042B4A0` until the pool it filled has drained
+			# (docs/42 section 9.1).
 			return POOL_ONLY_FRAMES
 		"para_bombs":
 			# The strike's own length rather than a flat bound: the last

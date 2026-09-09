@@ -32,9 +32,14 @@ const STEP_SECONDS: float = 0.45
 ## the refusals, the fog probe, the rotation of a ring, the hand-over, the two
 ## opening passes of a walk -- have no picture, so their deltas land as the
 ## playback passes them, in the same frame as the next shown event.
+## `ground` is the round's own sweep rather than anybody's command, and it is
+## still a picture: `aPlayGroundFireAnimation` is a blocking routine like every
+## other `aPlay*` (docs/42 section 9.1). Leaving it out is what kept `_C_116`'s
+## red patches silent -- the event was in the list, carried its delta, and was
+## landed as bookkeeping.
 const SHOWN_KINDS: Array[String] = ["move", "mine", "teleport", "warp", "fire",
 	"reaction", "fire_heat_blocked", "door", "use", "heal", "parabomb",
-	"promote_order", "script"]
+	"promote_order", "script", "ground"]
 
 ## Every event, in order -- the ones with a hold and the ones without.
 ##

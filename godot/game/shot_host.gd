@@ -228,6 +228,13 @@ func camera_target() -> Vector3i:
 	return Vector3i.ZERO
 
 
+## `0x00453510` -- the eye turned about the look point until the line to it is
+## clear. A host with no rig answers the eye it was given, which is also what
+## the engine does for a search that never clears.
+func free_position(eye: Vector3i, _look: Vector3i) -> Vector3i:
+	return eye
+
+
 ## `0x0040EEE0` -- a flight; answers its frames.
 func fly(_eye: Vector3i, _target: Vector3i) -> int:
 	return 0

@@ -148,6 +148,9 @@ const CROSS_MODELS: Array[String] = ["A_CROSS3.3DI", "A_CROSS2.3DI",
 	"A_CROSS1.3DI", "A_CROSS.3DI"]
 ## docs/42 section 8 -- the set pieces' creators (docs/97 section 32).
 const TUBE_PUFFS: String = "0x00423770"
+## `aBlob_CreateTubeSmoke`, the one thing an ignited ground fire makes on a
+## cell with nobody on it (docs/42 section 9.1).
+const TUBE_SMOKE: String = "0x00423C20"
 const PLATFORM_DUST: String = "0x004234C0"
 const GROUND_DEBRIS: String = "0x00422610"
 const ROOF_DEBRIS: String = "0x00422460"
@@ -185,6 +188,13 @@ const LASER_STEP: float = -3200.0
 const BOMBER_SPEED: float = 3200.0
 const SPARK_SPEED: float = 1600.0
 const TUBE_PAIRS: int = 15
+## `cmp ebx, 0x32` -- `aBlob_CreateTubeSmoke`'s own count, and the divisor its
+## `delay` comes out of (`imul 0x2AAAAAAB` with no shift is a signed divide by
+## six, so the fifty records go out in nine waves).
+const TUBE_SMOKE_COUNT: int = 50
+const TUBE_SMOKE_DELAY_DIVISOR: int = 6
+## The two sprites it alternates on the low bit of the index.
+const TUBE_SMOKE_MODELS: Array[String] = ["A_EXPL03.3DI", "A_EXPL04.3DI"]
 const PLATFORM_DUST_SPREAD: int = 0x12C0
 const PLATFORM_DUST_UP: int = 0x640
 const FIRE_CIRCLE_FLAMES: int = 150
@@ -339,7 +349,8 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	SPECIES_BURST: 2, ROOF_DEBRIS: 3, GROUND_DEBRIS: 3, LANDING_DUST: 2,
 	ARROWS: 2, FIRE_CIRCLE: 2, HEAL_FLASH: 2, POISON_FLASH: 2,
 	SHOCK_WAVE: 3,
-	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, WALL_DEBRIS: 2,
+	PLATFORM_DUST: 3, TRAIL: 3, ZOOMBOB: 6, TUBE_PUFFS: 2, TUBE_SMOKE: 2,
+	WALL_DEBRIS: 2,
 	KILL_FIRE: 3, LASER_BARRIER: 4, STATUE_BEAM: 5, FLYING_UNIT: 3, PUFF: 2,
 	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
 	MAIN_MAP_FIRE: 3, BGB_WARNING_LIGHT: 3, BGB_FIRE3: 3, BGB_LAMP: 3,
@@ -427,6 +438,8 @@ static func run(creator: String, pool: Pool, draws: Draws,
 				args[3])
 		TUBE_PUFFS:
 			tube_puffs(pool, draws, args[0], args[1], inputs)
+		TUBE_SMOKE:
+			tube_smoke(pool, draws, args[0], args[1], inputs)
 		PLATFORM_DUST:
 			platform_dust(pool, draws, Vector3i(args[0], args[1], args[2]))
 		GROUND_DEBRIS:
@@ -1115,6 +1128,29 @@ static func tube_puffs(pool: Pool, draws: Draws, x: int, y: int,
 			var vz: int = draws.draw(0x140, 0xA0)
 			pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 4, 0, 0, 0xA, 0x14, vx, vy,
 				vz, 10, index)
+
+
+## `0x00423C20(x, y)` -- `aBlob_CreateTubeSmoke`: fifty class-0 explosion
+## sprites at the cell's land marker, kind 31, life 5, drifting 48 either way
+## and rising 320..1920, alternating `A_EXPL03` and `A_EXPL04` on the low bit
+## of the index and delayed by the index over six -- three draws a record, in
+## the order x, y, z.
+##
+## This is what `aPlayGroundFireAnimation` `0x004157B0` makes on the burning
+## cell itself, **outside** its victim loop, so a glow that ignites with
+## nobody standing on it still flashes (docs/42 section 9.1). It has no twin
+## in `inclib`: docs/92 section 5.1 -- a new presentation subject goes
+## straight into GDScript, and the existing Python models are frozen.
+static func tube_smoke(pool: Pool, draws: Draws, x: int, y: int,
+		inputs: Inputs) -> void:
+	var at: Vector3i = inputs.object(x, y)
+	for index: int in range(TUBE_SMOKE_COUNT):
+		var vx: int = draws.draw(-0x30, 0x60)
+		var vy: int = draws.draw(-0x30, 0x60)
+		var vz: int = draws.draw(0x140, 0x640)
+		pool.spawn(TUBE_SMOKE_MODELS[index & 1], 0, at.x, at.y, at.z,
+			0, 0, 0, 0x1F, 5, vx, vy, vz, 0,
+			index / TUBE_SMOKE_DELAY_DIVISOR)
 
 
 ## `0x004234C0(x, y, z)` -- the platform's dust, once a frame: four sprites

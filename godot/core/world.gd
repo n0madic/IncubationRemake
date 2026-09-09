@@ -77,6 +77,9 @@ const COMPAT_FOG_PROBE_QUIET: String = "fog_probe_does_not_wake_groups"
 const DOOR_USE_KIND: String = "door"
 ## The event [LclInterpreter] emits where the engine calls `aBuildVisibleMap`.
 const SCRIPT_FOG_EVENT: String = "build_visible_map"
+## The LCL `OpenDoor` command's event. `aDoorOpenSequence` toggles the cell
+## and rebuilds the fog for the current player -- see [method _run_mission_script].
+const DOOR_SCRIPT_EVENT: String = "open_door"
 ## The `Elevator` command's event. `aPlayElevatorSequence` ends with a
 ## permanent rebuild for the **rider's** own player -- see [method run_script].
 const ELEVATOR_EVENT: String = "elevator"
@@ -835,6 +838,16 @@ func _run_mission_script(call_type: int,
 				continue
 			Visibility.build(state, _units, _unit_types, values[0],
 				turn.human_count(), turn.mode)
+		elif name == DOOR_SCRIPT_EVENT:
+			# `aDoorOpenSequence` `0x00410A20` ends in a permanent
+			# `aBuildVisibleMap` for the current player, guarded by
+			# `aGetCurrentPlayer() != 0xFF` -- the same rule the player's own
+			# Use arm follows above. A door that opens changes what everyone
+			# can see (docs/22 section 9), and the script's `OpenDoor` is one
+			# of the routine's three callers (docs/26 section 3.4).
+			if turn.current_player != UnitState.PLAYER_ALIEN:
+				Visibility.build(state, _units, _unit_types,
+					turn.current_player, turn.human_count(), turn.mode)
 		elif name == GORE_EVENT:
 			if not values.is_empty():
 				gore_level = values[0]
@@ -1274,7 +1287,13 @@ func hit_chance(shooter_slot: int, target_slot: int) -> int:
 func _ground_tick() -> Dictionary:
 	var ignited: PackedInt32Array = CellObjects.glows_to_ignite(state)
 	var killed: PackedInt32Array = PackedInt32Array()
+	# The victims **by cell, per ignited glow**, taken before the removal:
+	# `aPlayGroundFireAnimation` drops its blood and its debris on each one's
+	# own tile, and by the time the picture reads this the unit has left the
+	# map. One entry per ignited cell, in the order the sweep found them.
+	var burnt: Array[Dictionary] = []
 	for at: int in ignited:
+		var victims: Array[Dictionary] = []
 		var cells: PackedInt32Array = CellObjects.ground_fire_cells(
 			state, at % state.width, at / state.width)
 		for cell: int in cells:
@@ -1294,12 +1313,16 @@ func _ground_tick() -> Dictionary:
 			# its last instruction, `0x00477ABD` -- zeroes the hit points.
 			# So the flames kill; no damage roll runs, but the victim is dead
 			# and not merely unlinked (docs/97 section 40 corrects section 38).
+			victims.append({"slot": slot, "x": victim.x, "y": victim.y})
 			var _counted: bool = UnitState.remove(state, _unit_types, turn,
 				victim)
 			killed.append(slot)
+		burnt.append({"cell": at, "x": at % state.width,
+			"y": at / state.width, "victims": victims})
 	var changed: PackedInt32Array = CellObjects.round_tick(state)
 	var outcome: Dictionary = {"ignited": Array(ignited),
-		"killed": Array(killed), "changed": Array(changed)}
+		"killed": Array(killed), "changed": Array(changed),
+		"burnt": burnt}
 	_mark("ground", -1, 0, 0, 0, 0, killed.size(), "", outcome)
 	return outcome
 

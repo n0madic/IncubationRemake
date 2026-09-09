@@ -397,13 +397,19 @@ BLOB_CREATORS = 81
 BLOB_CTOR_CALLS = 116
 BLOB_FOREIGN_CALLERS = {0x00473942: "aUI.cpp", 0x0046D85F: "aTacTools.cpp"}
 BLOB_MODEL_WORLDS = 9
-BLOB_MODELS_EVERYWHERE = 33
+BLOB_MODELS_EVERYWHERE = 34
 #: The heal flash's four crosses (`aBlob_CreateFlashCircle` `0x00423030`,
 #: docs/42 §7.3) reach the constructor through `mov edi, str` rather than a
 #: `push`, one per quarter of its loop, so :data:`BLOB_CALLS`'s push reader
-#: never sees them.  Read at their own sites, and in all nine world sets.
+#: never sees them.  ``aBlob_CreateTubeSmoke`` ``0x00423C20`` -- the flash an
+#: ignited ground fire leaves on its own cell (``docs/42`` §9.1) -- picks one
+#: of two the same way, on the low bit of its index, and copies it into a
+#: stack buffer, so its one call site ``0x00423D4F`` carries **no** model at
+#: all and neither sprite is attributed to it.  Read at their own sites, and
+#: all six are in all nine world sets.
 BLOB_MODEL_MOV_SITES = {0x004231A9: "A_CROSS3.3DI", 0x004231B4: "A_CROSS2.3DI",
-                        0x004231BF: "A_CROSS1.3DI", 0x004231CA: "A_CROSS.3DI"}
+                        0x004231BF: "A_CROSS1.3DI", 0x004231CA: "A_CROSS.3DI",
+                        0x00423CE9: "A_EXPL03.3DI", 0x00423CF0: "A_EXPL04.3DI"}
 #: The three models an **update arm** swaps in mid-flight, through the model
 #: setter rather than through a constructor: kind 17's blood ages to
 #: ``A_BLUT5`` at ``life == 5`` and ``A_BLUT6`` at 3, and kind 16's hit mark to
@@ -605,7 +611,7 @@ CASE_MISMATCHED = ('alarm.wav', 'bridge2.wav', 'explosion2.wav', 'firecircle.wav
 VOLUME_IDS_USED = [50, 59, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
                    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
                    89, 94, 95, 96, 97, 98, 99, 100, 101, 102]
-BLOB_MODEL_COUNT = 37
+BLOB_MODEL_COUNT = 38
 
 # -- the pinned tables, generated from the binary -------------------------
 

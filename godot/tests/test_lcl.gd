@@ -745,6 +745,7 @@ func _synthetic(h: TestHarness) -> void:
 	_statues(h)
 	_foot_bridges(h)
 	_crush_wall(h)
+	_open_door(h)
 
 	# A program with no `[END]` falls off the end, which is an outcome and not
 	# an error (docs/20 section 2).
@@ -1044,6 +1045,81 @@ func _crush_wall(h: TestHarness) -> void:
 			carried = DictRead.as_array(event["values"])
 	h.equal("crush_wall.the_event_carries_the_cells", carried, [3, 4, 3, 4],
 		"the command's cell, then every cell it changed")
+
+
+## `OpenDoor` -- `0x004420C0` through `aDoorOpenSequence` `0x00410A20`.
+##
+## The twin of `lcl_runtime.py`'s `_c_open_door`: the command is a **toggle**
+## on the low bit of the action point (docs/26 section 3.4), so a closed door
+## at 31 opens -- `Free Place`, height 0, action point 30 -- and a second call
+## shuts it again. A unit standing on the tile makes it do nothing at all.
+##
+## It recorded the animation event and wrote **no state** until 2026-09-09,
+## which is what made `_C_116`'s three lever-worked doors impossible to open:
+## the leaves swung and [method Scenery.apply_state], which paints them from
+## the cell's parity, put them straight back.
+func _open_door(h: TestHarness) -> void:
+	var points: Array = []
+	var heights: Array = []
+	var types: Array = []
+	for _i: int in range(8 * 8):
+		points.append(0)
+		heights.append(0)
+		types.append(1)
+	var at_index: int = 4 * 8 + 3
+	points[at_index] = 31
+	heights[at_index] = 3193
+	types[at_index] = 2
+	var cells: Dictionary = {"action_point": points, "height": heights,
+		"field_type": types}
+	var run: Dictionary = _run_synthetic(_program([
+		_instr("command", "OpenDoor", [_num(3), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [], 8, 8, cells)
+	var state: MapState = run["state"]
+	var at: int = state.index_of(3, 4)
+	h.equal("open_door.opens_a_closed_door",
+		[state.action_point_at(at), state.field_type_at(at),
+		state.height_at(at)], [30, 1, 0],
+		"31 is closed: the toggle drops the cell to a `Free Place` at ground")
+	var fired: bool = false
+	var outcome: LclOutcome = run["outcome"]
+	for entry: Variant in outcome.events:
+		if DictRead.as_string(DictRead.as_dict(entry)["name"]) == "open_door":
+			fired = true
+	h.check("open_door.records_the_animation", fired,
+		"the picture still gets its event")
+	# The same command again, on the world it left: the door shuts.
+	points[at_index] = 30
+	heights[at_index] = 0
+	types[at_index] = 1
+	var again: Dictionary = _run_synthetic(_program([
+		_instr("command", "OpenDoor", [_num(3), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [], 8, 8, {"action_point": points, "height": heights,
+		"field_type": types})
+	var shut: MapState = again["state"]
+	h.equal("open_door.closes_an_open_one",
+		[shut.action_point_at(at), shut.field_type_at(at),
+		shut.height_at(at)], [31, 2, Interact.DOOR_HEIGHT_STEP],
+		"30 is open: it rises one tile and becomes a `Wall`")
+	# And a unit on the tile refuses the whole thing.
+	points[at_index] = 31
+	heights[at_index] = 3193
+	types[at_index] = 2
+	var blocked: Dictionary = _run_synthetic(_program([
+		_instr("command", "OpenDoor", [_num(3), _num(4)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 3, "y": 4}], 8, 8,
+		{"action_point": points, "height": heights, "field_type": types})
+	var held: MapState = blocked["state"]
+	h.equal("open_door.a_unit_on_the_tile_refuses",
+		[held.action_point_at(at), held.field_type_at(at),
+		held.height_at(at)], [31, 2, 3193],
+		"`0x004420C0` returns before the sequence")
 
 
 ## A program with no `[END]`, run on the smallest world there is.

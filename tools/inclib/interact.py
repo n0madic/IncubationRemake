@@ -563,9 +563,11 @@ def execute_use(world: CombatWorld, unit: CombatUnit) -> UseResult:
 def toggle_door(world: CombatWorld, index: int) -> None:
     """``0x00410A20`` -- one toggle for all four door ids, on the low bit.
 
-    A door is a wall panel that rises out of the floor: closing it raises the
-    cell by exactly one tile and makes it a ``Wall``, opening it drops the cell
-    to height 0 and makes it a ``Free Place``.
+    Closing it raises the cell by exactly one tile and makes it a ``Wall``,
+    opening it drops the cell to height 0 and makes it a ``Free Place``.  The
+    panel itself never moves: ``aDoorOpenSequence`` turns its two **leaves**
+    and writes the cell height into the land marker alone (``docs/26`` §3.4,
+    ``docs/97`` §7 as corrected on 2026-09-06).
     """
     ap = world.action_point[index]
     if ap % 2 == 0:                      # even: 30, 32 -- it is open

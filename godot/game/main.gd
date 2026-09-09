@@ -4239,6 +4239,18 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			if _audio != null and not cues.is_empty():
 				var _door: PackedInt32Array = _audio.play_cues(cues, "ai")
 			return 0.0
+		"ground":
+			# The round's ground sweep (docs/42 section 9.1): every glow that
+			# reached phase 1 burns, and `aPlayGroundFireAnimation`
+			# `0x004157B0` is played **on each ignited cell in turn**. `core`
+			# carries each one's victims with their tiles, taken before the
+			# removal, because the picture reads a map they have already
+			# left.
+			#
+			# Nothing was drawn here at all until 2026-09-09: `_C_116` lays a
+			# glow a round and the red patches simply vanished two rounds
+			# later, in silence.
+			return _present_ground_fire(payload)
 		"fire_heat_blocked":
 			# The computer's weapon at its heat cap: the jam's wave and no
 			# picture (docs/23 section 6).
@@ -4264,6 +4276,48 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 			# event until it has played.
 			return 0.0
 	return 0.0
+
+
+## The round's ignited glows, one `aPlayGroundFireAnimation` each.
+##
+## Returns the seconds the whole sweep needs on screen -- the set pieces are
+## queued in order and the queue plays them one after another, which is what
+## the engine's own blocking calls do.
+##
+## **One cue, not two.** `EVENT_SITES["ground_fire"]` has two
+## `aAnimationCreateSoundBuffer` sites because the routine makes two buffers;
+## it plays exactly one of them. `test al, 1` at `0x00415AC3` reads the
+## counter the 0..8 collection loop incremented **nine** times, so the branch
+## is never in doubt and the second buffer is only ever killed. Playing both
+## would say `gfire.wav` twice.
+func _present_ground_fire(payload: Dictionary) -> float:
+	var burnt: Array = DictRead.as_array(payload.get("burnt", []))
+	if burnt.is_empty() or world == null:
+		return 0.0
+	var cues: Array[Dictionary] = _events.for_event_kind("ground_fire") \
+		if _events != null else ([] as Array[Dictionary])
+	if cues.size() > 1:
+		cues = cues.slice(0, 1)
+	var seconds: float = 0.0
+	for entry: Variant in burnt:
+		var lit: Dictionary = DictRead.as_dict(entry)
+		var values: Array[int] = [DictRead.as_int(lit["x"]),
+			DictRead.as_int(lit["y"])]
+		var victims: Array = DictRead.as_array(lit.get("victims", []))
+		values.append(victims.size())
+		for who: Variant in victims:
+			var victim: Dictionary = DictRead.as_dict(who)
+			values.append_array([DictRead.as_int(victim["slot"]),
+				DictRead.as_int(victim["x"]), DictRead.as_int(victim["y"])])
+		if _sequences == null:
+			if _audio != null and not cues.is_empty():
+				var _fire: PackedInt32Array = _audio.play_cues(cues, "script")
+			continue
+		_queue_setpiece({"name": "ground_fire", "values": values},
+			SetpieceDriver.POOL_ONLY_FRAMES, cues)
+		seconds += float(SetpieceDriver.POOL_ONLY_FRAMES) \
+			/ SequenceQueue.FRAMES_PER_SECOND
+	return seconds
 
 
 ## Whether the unit is one of the player's own, as the mirror has it: the
@@ -6505,6 +6559,18 @@ func _setpiece_extra(name: String, cell: Vector2i,
 						"y": _at_or(values, 11 + arm * 3, cell.y)})
 			out["beams"] = beams
 			out["killed"] = killed
+		"ground_fire":
+			# `[x, y, n, (slot, x, y) * n]` -- the tiles `core` took before
+			# `UnitState.remove` cleared the cells.
+			var burnt: Array = []
+			var count: int = _at_or(values, 2, 0)
+			for i: int in range(count):
+				var at: int = 3 + i * 3
+				if at + 2 >= values.size():
+					break
+				burnt.append({"slot": values[at], "x": values[at + 1],
+					"y": values[at + 2]})
+			out["killed"] = burnt
 		"teleporter":
 			# `[entry x, entry y, exit x, exit y]`, the four numbers
 			# `_present_teleport` puts on its synthetic event.
@@ -7969,6 +8035,9 @@ class MainShotHost extends ShotHost:
 
 	func camera_target() -> Vector3i:
 		return Vector3i.ZERO if main._rig == null else main._rig.target()
+
+	func free_position(eye: Vector3i, look: Vector3i) -> Vector3i:
+		return eye if main._rig == null else main._rig.free_position(eye, look)
 
 	func fly(eye: Vector3i, target: Vector3i) -> int:
 		return 0 if main._rig == null else main._rig.fly(eye, target)

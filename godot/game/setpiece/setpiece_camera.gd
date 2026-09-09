@@ -41,6 +41,12 @@ extends RefCounted
 ##   5 000 units), then every frame the eye `0x960` and the target `0xD20`
 ##   lower while the block tilts and drops under the caller's `paint`; the
 ##   block is freed at the end (docs/42 section 8.1).
+## * `ground_fire` `0x004157B0`: the flight the **round sweep** asks for --
+##   the camera's own eye lifted to at least `0x3200`, turned free of the
+##   burning cell's land marker -- then every victim hidden with a
+##   `BloodFlood` and a `FlyingDebris` on its own tile, one
+##   `aBlob_CreateTubeSmoke` on the cell whether or not there were any, and
+##   the pool (docs/42 section 9.1).
 ## * `crush_wall` `0x00415C70`: the debris, then the wall turns and sinks
 ##   under `paint` until the pool is empty, and `extra["finish"]` -- the
 ##   caller's `aDeleteLand` -- runs when that stage ends, early or not.
@@ -90,6 +96,9 @@ const POOL_WAIT_FRAMES: int = 100
 
 ## `push 0x7D00` -- the statue's camera flies to twenty metres up.
 const STATUE_HEIGHT: int = 32000
+## `mov eax, 0x3200 / cmp ecx, eax / jge` at `0x004158FC` -- the ground fire's
+## flight will not start below twelve and a half metres.
+const GROUND_FIRE_EYE_FLOOR: int = 0x3200
 ## `push 0x14` -- `FireCircle` passes 20 as `KillFire`'s delay.
 const FIRE_CIRCLE_DELAY: int = 20
 ## The eight cells `FireCircle` sets alight (`cmp ebx, 7`).
@@ -530,6 +539,51 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1
+		"ground_fire":
+			# `aPlayGroundFireAnimation` `0x004157B0` (docs/42 section 9.1),
+			# on the branch the **round sweep** takes: `0x00470AB0` passes 1
+			# for the third argument, so the flight is the computed one and
+			# not the `(9, 7, 1)` unit camera of the other branch.
+			#
+			# The eye is the camera's own, lifted to at least `0x3200`
+			# (`cmp ecx, 0x3200` at `0x004158FC`), the target is the cell's
+			# land marker, and `0x00453510` turns the eye until the line to
+			# it is clear before `0x0040EEE0` flies it.
+			#
+			# Then, in the routine's own order: every victim's object hidden
+			# with a `BloodFlood` and a `FlyingDebris` on its **own** tile,
+			# and -- **outside** that loop, so it happens whether or not
+			# anything was standing there -- one `aBlob_CreateTubeSmoke` on
+			# the burning cell. That last one is the flash on a red patch
+			# with nobody on it, and the remake used to draw none of this.
+			var lit: Vector3i = host.cell_object(cell.x, cell.y)
+			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame == 1:
+						var eye: Vector3i = host.camera_eye()
+						eye.z = maxi(eye.z, GROUND_FIRE_EYE_FLOOR)
+						var _f: int = host.fly(
+							host.free_position(eye, lit), lit))
+			queue.enqueue(STAGE_LEAD, 1,
+				func(_frame: int, _total: int) -> void:
+					for entry: Variant in DictRead.as_array(extra.get("killed", [])):
+						var victim: Dictionary = DictRead.as_dict(entry)
+						var vx: int = DictRead.as_int(victim["x"])
+						var vy: int = DictRead.as_int(victim["y"])
+						var slot: int = DictRead.as_int(victim.get("slot", -1))
+						if slot >= 0:
+							host.hide_unit(slot)
+						host.spawn_program(BlobPrograms.BLOOD_FLOOD,
+							PackedInt32Array([vx, vy, vx, vy, 1]))
+						host.spawn_program(BlobPrograms.FLYING_DEBRIS,
+							PackedInt32Array([vx, vy]))
+					host.spawn_program(BlobPrograms.TUBE_SMOKE,
+						PackedInt32Array([cell.x, cell.y])),
+				cues)
+			queue.enqueue_until(STAGE_POOL, frames,
+				func() -> bool: return host.pool_live() == 0)
+			return 1
 		"crush_wall":
 			# docs/42 section 8: `0x004238C0` on every cell, then the pool --
 			# under which the wall turns and sinks (`paint`), and at whose

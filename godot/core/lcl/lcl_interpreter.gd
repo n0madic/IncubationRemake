@@ -587,9 +587,7 @@ func _set_piece(instr: Dictionary, name: String) -> String:
 		"ParaBombs":
 			_para_bombs(instr)
 		"OpenDoor":
-			# `0x004420C0` -- **does nothing** when a unit stands on the tile.
-			if _context.unit_on(_n(instr, 0), _n(instr, 1)) == null:
-				_event("open_door", [_n(instr, 0), _n(instr, 1)])
+			_open_door(_n(instr, 0), _n(instr, 1))
 		"OpenTube":
 			_event("open_tube", [_n(instr, 0), _n(instr, 1)])
 		"OpenPlantTube":
@@ -890,6 +888,30 @@ func _statue2(low: int, high: int) -> void:
 ## **can** name, which today is the command's own, and the deficit is one or
 ## two cells per call rather than the whole thing. The event carries what was
 ## changed so the picture throws its debris on exactly those cells.
+## `0x004420C0` -- **does nothing** when a unit stands on the tile, and
+## otherwise runs `aDoorOpenSequence` `0x00410A20`, which is a **toggle**
+## (docs/26 section 3.4): an odd action point is a closed door and the call
+## opens it -- field type `Free Place`, height 0, action point one lower --
+## and an even one closes it again.
+##
+## The state write used to be missing here: only the animation event was
+## recorded, so a lever wired to `OpenDoor` swung the panel's leaves and
+## [method Scenery.apply_state] painted them shut again on the next frame,
+## because the pose is a function of the cell's parity. `_C_116`'s three
+## doors could not be opened at all.
+##
+## The rebuild of the visible map the routine ends with is **not** here:
+## [LclInterpreter] owns no fog, so the event is acted on by
+## [method World._run_mission_script], the way `InsertUnit`'s and
+## `Elevator`'s are.
+func _open_door(x: int, y: int) -> void:
+	if _context.unit_on(x, y) != null:
+		return
+	if _context.in_bounds(x, y):
+		Interact.toggle_door(_context.state, _context.index(x, y))
+	_event("open_door", [x, y])
+
+
 func _crush_wall(x: int, y: int) -> void:
 	var values: Array[int] = [x, y]
 	if _context.in_bounds(x, y):

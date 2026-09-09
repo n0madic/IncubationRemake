@@ -41,6 +41,7 @@ from typing import Any, Callable
 
 from . import combat as combatmod
 from . import ctrlmap as ctrlmapmod
+from . import interact as interactmod
 from . import lev as levmod
 from .info import BalanceTables
 from .rng import ARandom, CRandom
@@ -1416,9 +1417,10 @@ def _c_crush_wall(it: Interpreter, p: Params) -> str | None:
 def _c_tile_effect(name: str) -> Callable[[Interpreter, Params], str | None]:
     """The set pieces whose only modelled effect is that they happened.
 
-    ``OpenTube``, ``OpenDoor`` and their relatives play an animation on one
-    tile; what they change is the scene object, which lives outside this model.
-    Recording the call keeps them diffable instead of silently absent.
+    ``OpenTube`` and its relatives play an animation on one tile; what they
+    change is the scene object, which lives outside this model.  Recording the
+    call keeps them diffable instead of silently absent.  ``OpenDoor`` is
+    **not** one of them -- it toggles the cell, and has its own handler.
     """
 
     def handler(it: Interpreter, p: Params) -> str | None:
@@ -1429,10 +1431,31 @@ def _c_tile_effect(name: str) -> Callable[[Interpreter, Params], str | None]:
 
 
 def _c_open_door(it: Interpreter, p: Params) -> str | None:
-    """``0x004420c0`` -- **does nothing** when a unit stands on the tile."""
-    if it.world.unit_on(p.n(0), p.n(1)) is not None:
+    """``0x004420c0`` -- **does nothing** when a unit stands on the tile.
+
+    Otherwise it runs ``aDoorOpenSequence`` ``0x00410A20``, which is a
+    **toggle** on the low bit of the action point (``docs/26`` §3.4): an odd
+    id is a closed door and the call opens it -- ``Free Place``, height 0,
+    action point one lower -- and an even one closes it again.  The fog
+    rebuild the routine ends with lives outside this model, the way
+    ``InsertUnit``'s does.
+    """
+    x, y = p.n(0), p.n(1)
+    w = it.world
+    if w.unit_on(x, y) is not None:
         return None
-    it.event("open_door", p.n(0), p.n(1))
+    if w.in_bounds(x, y):
+        cell = w.index(x, y)
+        ap = w.actpt[cell]
+        if ap % 2 == 0:                  # even: 30, 32 -- it is open
+            w.cell_height[cell] += interactmod.DOOR_HEIGHT_STEP
+            w.actpt[cell] = ap + 1
+            w.ctrl_type[cell] = interactmod.FIELD_TYPE_WALL
+        else:                            # odd: 31, 33 -- it is closed
+            w.ctrl_type[cell] = interactmod.FIELD_TYPE_FREE
+            w.actpt[cell] = ap - 1
+            w.cell_height[cell] = 0
+    it.event("open_door", x, y)
     return None
 
 

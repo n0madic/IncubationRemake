@@ -111,6 +111,7 @@ func run(h: TestHarness) -> void:
 	_check_unit_animations(h)
 	_check_setpiece_camera(h)
 	_check_arm_spawns(h)
+	_check_ground_fire(h)
 	_check_emitters(h)
 
 
@@ -352,6 +353,53 @@ const ARM_CREATORS: Array[int] = [
 	BlobKinds.CREATE_SPORES, BlobKinds.CREATE_LASER_HIT,
 	BlobKinds.CREATE_EMITTER,
 ]
+
+
+## The ignited glow's own effect -- docs/42 section 9.1.
+##
+## `aPlayGroundFireAnimation` `0x004157B0` hides each victim and drops a
+## `BloodFlood` and a `FlyingDebris` on it, and then -- **outside** that loop
+## -- one `aBlob_CreateTubeSmoke` `0x00423C20` on the burning cell. So a glow
+## that catches with nobody standing on it still flashes, which is the half
+## `_C_116`'s red patches needed and the whole of what the remake drew there
+## until 2026-09-09: nothing, because `ground` was not a shown kind.
+func _check_ground_fire(h: TestHarness) -> void:
+	h.check("ground_fire.the_round_sweep_is_shown",
+		EventPlayback.SHOWN_KINDS.has("ground"),
+		"the hand-over's `ground` event reaches a presenter")
+	h.check("ground_fire.the_driver_animates_it",
+		SetpieceDriver.is_animated("ground_fire")
+		and SetpieceDriver.frames_for({"name": "ground_fire", "values": []})
+			== SetpieceDriver.POOL_ONLY_FRAMES,
+		"it holds until the pool drains, as `0x0042B4A0` does")
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	inputs.tiles[Vector2i(3, 4)] = {"object": Vector3i(1000, 2000, 300),
+		"unit": {}}
+	inputs.models["A_EXPL03.3DI"] = 3
+	inputs.models["A_EXPL04.3DI"] = 4
+	var pool: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var draws: BlobPrograms.Draws = BlobPrograms.Draws.create(1.0)
+	var ran: bool = BlobPrograms.run(BlobPrograms.TUBE_SMOKE, pool, draws,
+		PackedInt32Array([3, 4]), inputs)
+	h.equal("ground_fire.smoke_count",
+		[ran, pool.records.size(), draws.count],
+		[true, BlobPrograms.TUBE_SMOKE_COUNT,
+		BlobPrograms.TUBE_SMOKE_COUNT * 3],
+		"`cmp ebx, 0x32` -- fifty records, three draws each")
+	var wrong: Array[String] = []
+	for index: int in range(pool.records.size()):
+		var record: Dictionary = pool.records[index]
+		var want: String = BlobPrograms.TUBE_SMOKE_MODELS[index & 1]
+		if DictRead.as_string(record["model_name"]) != want \
+				or DictRead.as_int(record["kind"]) != 0x1F \
+				or DictRead.as_int(record["life"]) != 5 \
+				or DictRead.as_int(record["delay"]) \
+					!= index / BlobPrograms.TUBE_SMOKE_DELAY_DIVISOR \
+				or DictRead.as_int(record["z"]) != 300:
+			wrong.append("%d: %s" % [index, str(record)])
+	h.equal("ground_fire.smoke_records", wrong.size(), 0,
+		"kind 31, life 5, the two sprites alternating, delay = index / 6, "
+		+ "all at the cell's marker")
 
 
 func _check_arm_spawns(h: TestHarness) -> void:
