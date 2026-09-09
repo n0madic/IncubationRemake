@@ -6466,12 +6466,13 @@ func _setpiece_extra(name: String, cell: Vector2i,
 	var values: PackedInt32Array = SetpieceDriver._numbers(event)
 	var out: Dictionary = {}
 	match name:
-		"open_door", "foot_bridge", "foot_bridge2":
+		"open_door", "foot_bridge", "foot_bridge2", "lever", "pickup":
 			# The object the flight aims at: `0x00406F20`'s find beside the
 			# cell's marker, which is the first **special** object on the
 			# cell -- the door's panel, the footbridge's block (for
 			# `FootBridge2`, `cell` is already the group cell the block
-			# stands on). [method Scenery.object_origins] leaves the level's
+			# stands on), the lever's `L109EX00` and the supply box.
+			# [method Scenery.object_origins] leaves the level's
 			# own `.3DW` clones out, and it has to: they are placed first
 			# and are in no table the search reads, so on `_C_142` this
 			# aimed at `LEVEL01D.004` and on `_C_163` at a clone 13 760

@@ -3641,34 +3641,53 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		"the wrapper passes -1 and the routine skips its camera")
 
 	# The lever (docs/42 section 8.3): the door's shape with both ends of
-	# the flight `0xC80` above the cell's marker, ten frames, the flight back.
+	# the flight `0xC80` above the **object's** own z, ten frames, the
+	# flight back. `0x00416BC2` reads `[esi+0x10/0x14/0x18]` -- the object
+	# `0x00406F20` found beside the marker -- and `0x00416BCB` adds the
+	# constant to that z for the eye and the target alike. The cell's own
+	# height is not in the flight at all: on `_C_115` the lever's
+	# `L109EX00` stands at 12 800 with its cell at 15 999, and taking the
+	# cell put the camera a field above the handle, looking over it.
 	var lever: RecordingHost = RecordingHost.new()
 	lever.objects[3] = Vector3i(3200, 3200, 160)
 	var lever_queue: SequenceQueue = SequenceQueue.create(null)
 	var lever_frames: int = SetpieceCamera.enqueue(lever_queue, lever, "lever",
-		SetpieceDriver.LEVER_FRAMES, Vector2i(2, 1), 640, 640, 3, {}, paint,
-		no_cues)
+		SetpieceDriver.LEVER_FRAMES, Vector2i(2, 1), 640, 640, 3,
+		{"object": Vector3i(6400, 3200, 96)}, paint, no_cues)
 	h.equal("camera.lever.frames", lever_frames, SetpieceDriver.LEVER_FRAMES)
 	var lever_ran: Dictionary = _run_queue(lever_queue)
 	h.equal("camera.lever.stages", DictRead.as_array(lever_ran["order"]),
 		[SetpieceCamera.STAGE_FLIGHT, "lever", SetpieceCamera.STAGE_BACK])
 	h.equal("camera.lever.flies_there_and_back", lever.flights.size(), 2)
 	h.equal("camera.lever.eye_above_the_user", lever.flights[0][0],
-		Vector3i(3200, 3200, 640 + 0xC80),
-		"the user's x and y, the marker's z plus `add eax, 0xC80`")
-	h.equal("camera.lever.target_above_the_marker", lever.flights[0][1],
-		Vector3i(6400, 3200, 640 + 0xC80))
+		Vector3i(3200, 3200, 96 + 0xC80),
+		"the user's x and y, the handle's own z plus `add eax, 0xC80` -- "
+		+ "not the cell's 640, which would be a field too high")
+	h.equal("camera.lever.target_above_the_object", lever.flights[0][1],
+		Vector3i(6400, 3200, 96 + 0xC80))
 	h.equal("camera.lever.back_where_it_was", lever.flights[1],
 		[Vector3i(100, 200, 300), Vector3i(10, 20, 30)])
+	# A cell whose object the search misses keeps the marker as its aim.
+	var bare: RecordingHost = RecordingHost.new()
+	bare.objects[3] = Vector3i(3200, 3200, 160)
+	var bare_queue: SequenceQueue = SequenceQueue.create(null)
+	var _bare: int = SetpieceCamera.enqueue(bare_queue, bare, "lever",
+		SetpieceDriver.LEVER_FRAMES, Vector2i(2, 1), 640, 640, 3, {}, paint,
+		no_cues)
+	var _bare_ran: Dictionary = _run_queue(bare_queue)
+	h.equal("camera.lever.no_object_falls_back_to_the_cell", bare.flights[0][1],
+		Vector3i(6400, 3200, 640 + 0xC80),
+		"the cell centre at its height, for a lever with no special object")
 
-	# The supply box: from `0xFA0` above the user to `0x320` above the box's
-	# marker, thirty-five frames, back.
+	# The supply box: from `0xFA0` above the user to `0x320` above the box
+	# **object**, thirty-five frames, back.
 	var box: RecordingHost = RecordingHost.new()
 	box.objects[3] = Vector3i(3200, 3200, 160)
 	var box_queue: SequenceQueue = SequenceQueue.create(null)
 	var box_frames: int = SetpieceCamera.enqueue(box_queue, box, "pickup",
 		SetpieceDriver.PICKUP_LID_FRAMES + SetpieceDriver.PICKUP_HOLD_FRAMES,
-		Vector2i(2, 1), 0, 0, 3, {}, paint, no_cues)
+		Vector2i(2, 1), 640, 640, 3, {"object": Vector3i(6400, 3200, 96)},
+		paint, no_cues)
 	h.equal("camera.pickup.frames", box_frames, 35)
 	var box_ran: Dictionary = _run_queue(box_queue)
 	h.equal("camera.pickup.stages", DictRead.as_array(box_ran["order"]),
@@ -3676,7 +3695,8 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	h.equal("camera.pickup.eye_above_the_user", box.flights[0][0],
 		Vector3i(3200, 3200, 160 + 0xFA0), "`add ecx, 0xFA0`")
 	h.equal("camera.pickup.target_above_the_box", box.flights[0][1],
-		Vector3i(6400, 3200, 0x320), "`add edx, 0x320`")
+		Vector3i(6400, 3200, 96 + 0x320),
+		"`add edx, 0x320` over `[esi+0x18]`, the box's own z")
 
 	# The footbridge (docs/42 section 8.1): a flight to the block, the camera
 	# lowered every frame -- the eye by 0x960, the target by 0xD20 -- and

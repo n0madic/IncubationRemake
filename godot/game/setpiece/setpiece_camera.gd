@@ -27,13 +27,16 @@ extends RefCounted
 ##   hatch itself is the caller's `paint` ([method SliceMain._paint_setpiece]
 ##   through [method Scenery.paint_joint], docs/42 section 8.3), as the
 ##   door's leaves are.
-## * `lever` `0x00416AD0`: a flight from the user's object to the cell's
-##   marker with both ends `0xC80` above the marker (`add eax, 0xC80`,
-##   `0x00416BCB`), ten frames of the handle, the flight back.
+## * `lever` `0x00416AD0`: a flight from the user's object to the lever's
+##   **object** -- `0x00406F20`'s find beside the marker, `extra["object"]`
+##   -- with both ends `0xC80` above that object's own z (`add eax, 0xC80`,
+##   `0x00416BCB`, over `[esi+0x18]`), ten frames of the handle, the flight
+##   back.
 ## * `pickup` `0x00410780`: the box's text goes up first (`aActivateInfo`
 ##   at `0x004107AC`), then a flight from `0xFA0` above the user's marker
-##   to `0x320` above the box's (`0x004108DA`, `0x004108C5`), twenty frames
-##   of the lid, fifteen of nothing, and the flight back.
+##   to `0x320` above the **box object's** own z (`0x004108DA`,
+##   `0x004108C5`), twenty frames of the lid, fifteen of nothing, and the
+##   flight back.
 ## * `foot_bridge` `0x00414A70`: a flight to the block (the object within
 ##   5 000 units), then every frame the eye `0x960` and the target `0xD20`
 ##   lower while the block tilts and drops under the caller's `paint`; the
@@ -238,7 +241,19 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			# centre at its height. Neither routine has a wrapper that
 			# passes no unit, but the guard is kept for symmetry with the
 			# door: no unit, no flight.
+			# **Both aim at the object, not at the cell.** `0x00416BC2`
+			# reads `[esi+0x10/0x14/0x18]` of the object `0x00406F20` found
+			# beside the marker and adds `0xC80` to *that* z for both ends
+			# of the flight; the box's `0x004108BF` does the same with
+			# `0x320`. On `_C_115` the lever's `L109EX00` stands at 12 800
+			# where its cell is 15 999, so taking the cell's height put the
+			# camera a whole field above the handle and looked over it at
+			# the wall behind -- the door's own defect of 2026-09-06, in
+			# the two routines beside it. The cell centre at its height is
+			# the fallback, for a cell whose object the search misses.
 			if unit >= 0:
+				var object: Vector3i = DictRead.as_vector3i(extra["object"]) \
+					if extra.has("object") else centre
 				queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
 					func() -> bool: return not host.camera_flying(),
 					func(frame: int, _total: int) -> void:
@@ -248,11 +263,11 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						st["saved_target"] = host.camera_target()
 						var user: Vector3i = host.object_of(unit)
 						var eye: Vector3i = Vector3i(user.x, user.y,
-							centre.z + LEVER_CAMERA_UP)
-						var at: Vector3i = centre + Vector3i(0, 0, LEVER_CAMERA_UP)
+							object.z + LEVER_CAMERA_UP)
+						var at: Vector3i = object + Vector3i(0, 0, LEVER_CAMERA_UP)
 						if kind == "pickup":
 							eye = user + Vector3i(0, 0, PICKUP_EYE_UP)
-							at = centre + Vector3i(0, 0, PICKUP_TARGET_UP)
+							at = object + Vector3i(0, 0, PICKUP_TARGET_UP)
 						var _f: int = host.fly(eye, at))
 			queue.enqueue(kind, frames, paint, cues)
 			if unit >= 0:
