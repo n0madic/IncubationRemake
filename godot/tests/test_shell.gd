@@ -1483,6 +1483,13 @@ func _frontend_screens(h: TestHarness) -> void:
 	h.equal("frontend.credits_buttons", _actions_of(credits),
 		PackedStringArray([CreditsScreen.QUIT, CreditsScreen.BACK]),
 		"Exit Game at (450, 410) and Back at (250, 410)")
+	# The one verb that must not be the windows' shared `back`: the host's
+	# campaign dispatcher matches this arm first, and spelled `back` it ran
+	# `_end_campaign()` for the Item List's and the Recruit window's own
+	# button -- the campaign dropped from a catalogue.
+	h.check("frontend.credits_back_is_namespaced",
+		CreditsScreen.BACK != "back",
+		"the shared window verb would be shadowed by the credits' arm")
 	h.check("frontend.credits_captions",
 		_button_labels_of(credits).has(_strings.shipped("Txtmod_a", 7))
 		and _button_labels_of(credits).has(_strings.shipped("Txtmod_a", 8)))

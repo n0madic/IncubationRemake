@@ -15,7 +15,15 @@ const EXIT_AT: Vector2 = Vector2(450.0, 410.0)
 const BACK_AT: Vector2 = Vector2(250.0, 410.0)
 ## What the host hears.
 const QUIT: String = "quit"
-const BACK: String = "back"
+## **Namespaced, and it has to be.** The host routes every screen through one
+## `match` on the action string, and this arm stands ahead of the `"back"` the
+## Item List, the Recruit window and the Unit Menu share. Spelled `back` it
+## shadowed all three: leaving the catalogue ran the credits' own arm, which
+## is `_end_campaign()` -- the campaign dropped and the boot menu up, with the
+## progress since the last save gone. The sibling screens' own verbs
+## (`splash_done`, `sequence_done`, `fly_in_done`) are prefixed for the same
+## reason; do not "simplify" this one back.
+const BACK: String = "credits_back"
 
 
 func plate_name() -> String:
