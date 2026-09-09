@@ -397,13 +397,23 @@ BLOB_CREATORS = 81
 BLOB_CTOR_CALLS = 116
 BLOB_FOREIGN_CALLERS = {0x00473942: "aUI.cpp", 0x0046D85F: "aTacTools.cpp"}
 BLOB_MODEL_WORLDS = 9
-BLOB_MODELS_EVERYWHERE = 30
+BLOB_MODELS_EVERYWHERE = 33
 #: The heal flash's four crosses (`aBlob_CreateFlashCircle` `0x00423030`,
 #: docs/42 §7.3) reach the constructor through `mov edi, str` rather than a
 #: `push`, one per quarter of its loop, so :data:`BLOB_CALLS`'s push reader
 #: never sees them.  Read at their own sites, and in all nine world sets.
 BLOB_MODEL_MOV_SITES = {0x004231A9: "A_CROSS3.3DI", 0x004231B4: "A_CROSS2.3DI",
                         0x004231BF: "A_CROSS1.3DI", 0x004231CA: "A_CROSS.3DI"}
+#: The three models an **update arm** swaps in mid-flight, through the model
+#: setter rather than through a constructor: kind 17's blood ages to
+#: ``A_BLUT5`` at ``life == 5`` and ``A_BLUT6`` at 3, and kind 16's hit mark to
+#: ``A_HIT2`` at 2 (``blob_runtime.py``'s ``_kind_16`` / ``_kind_17``).  They
+#: reach no ``aCreateBlobObject`` call, so :func:`blob_calls` cannot see them
+#: and a cache built from that set alone leaves every blood cloud wearing its
+#: first sprite for its whole life.  Read at their own ``push`` sites, and
+#: present in all nine world sets.
+BLOB_MODEL_ARM_SITES = {0x004201F2: "A_BLUT5.3DI", 0x00420209: "A_BLUT6.3DI",
+                        0x004202A2: "A_HIT2.3DI"}
 BLOB_MODELS_RARE = {"A_PARAB1.3DI": ("World_E00", "World_F00"),
                     "A_SPOTL.3DI": ("World_E00",),
                     "L049EE00.3DI": ("World_E00",),
@@ -595,7 +605,7 @@ CASE_MISMATCHED = ('alarm.wav', 'bridge2.wav', 'explosion2.wav', 'firecircle.wav
 VOLUME_IDS_USED = [50, 59, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
                    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
                    89, 94, 95, 96, 97, 98, 99, 100, 101, 102]
-BLOB_MODEL_COUNT = 34
+BLOB_MODEL_COUNT = 37
 
 # -- the pinned tables, generated from the binary -------------------------
 
@@ -2971,6 +2981,9 @@ def run_checks(root: str) -> Checker:
              {s: (b.string(b.mov_imm32(s) or 0, 40) if b.mov_imm32(s) else None)
               for s in BLOB_MODEL_MOV_SITES},
              BLOB_MODEL_MOV_SITES, Checker.brief)
+    ck.equal("blob.model_arm_sites",
+             {s: b.push_str(s) for s in BLOB_MODEL_ARM_SITES},
+             BLOB_MODEL_ARM_SITES, Checker.brief)
     ck.equal("blob.model_count", len(models), BLOB_MODEL_COUNT)
     everywhere = [m for m in models
                   if len(c.worlds_with(m)) == BLOB_MODEL_WORLDS]
@@ -6932,13 +6945,22 @@ def sound_document(root: str) -> dict:
 
 
 def blob_models(b: Binary) -> list:
-    """Every ``.3DI`` name the 116 constructor calls pass, plus the four the
-    heal flash loads by ``mov`` (:data:`BLOB_MODEL_MOV_SITES`), sorted."""
+    """Every ``.3DI`` name a blob record can wear, sorted.
+
+    Three sources, and the last two are the reason this is not simply the
+    constructor calls' models: the 116 constructor calls, the four the heal
+    flash loads by ``mov`` (:data:`BLOB_MODEL_MOV_SITES`), and the three an
+    update arm swaps in later (:data:`BLOB_MODEL_ARM_SITES`).
+    """
     names = {model for model, _cl, _k, _l in b.blob_calls().values()
              if isinstance(model, str)}
     for site in BLOB_MODEL_MOV_SITES:
         value = b.mov_imm32(site)
         name = b.string(value, 40) if value else None
+        if name:
+            names.add(name)
+    for site in BLOB_MODEL_ARM_SITES:
+        name = b.push_str(site)
         if name:
             names.add(name)
     return sorted(names)

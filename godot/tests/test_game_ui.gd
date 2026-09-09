@@ -733,6 +733,31 @@ func _check_kill_spawns(h: TestHarness, main: SliceMain, units: UnitsView,
 			% main._fx.in_use())
 	main._sequences.skip()
 
+	# **The same kill, drawn as a stab.** A bayonet leaves death style 3
+	# (docs/42 section 4.8), a different creator from the gun's, and the whole
+	# path from the shot's weapon to the pool has to reach it: an empty pool
+	# here is the "the enemy just disappears" a player reports.
+	if units.get_node_or_null(NodePath("unit_%d" % victim)) == null:
+		var again: Node3D = Node3D.new()
+		again.name = "unit_%d" % victim
+		units.add_child(again)
+	main._fx = BlobPool.create(1.0)
+	main._fx.hooks().model_index = index
+	main._sequences = SequenceQueue.create(null)
+	var _stab_hold: float = main._present_attack(shooter, sx, sy, ax, ay,
+		Combat.CLOSE_COMBAT_WEAPONS[0], killed)
+	var stab_frames: int = 0
+	while main._sequences.is_running() and stab_frames < 400:
+		var _step: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		stab_frames += 1
+		if main._fx.in_use() > 0:
+			break
+	h.check("kill.a_stab_fills_the_pool_too", main._fx.in_use() > 0,
+		"%d record(s) after %d frame(s) with weapon %d"
+			% [main._fx.in_use(), stab_frames, Combat.CLOSE_COMBAT_WEAPONS[0]])
+	main._sequences.skip()
+
 	# The computer's para bomb, through its event. The payload **is** the
 	# blast (`AISpecialPlayer` writes `AttackResult.to_dict()` into it), and
 	# until [method SliceMain._play_event_body] staged it the arm was sound

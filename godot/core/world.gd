@@ -632,10 +632,22 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	#
 	# The condition mirrors [method Combat.attack]'s **spend** exactly, so the
 	# count can no longer go past zero by this path whatever the magazine size.
+	#
+	# **Which means the weapon it asks about is the swapped one.** A `special`
+	# 1 gun standing next to what it aims at becomes its bayonet before
+	# anything is spent (docs/21 section 6), and the bayonet's `mun` is 255, so
+	# the shot costs nothing and an empty rifle can still stab. Reading the
+	# held weapon's magazine here refused exactly that shot -- and the engine's
+	# own selector `0x0042FF30` says the same thing from the other side: an
+	# empty or jammed `special` 1 weapon **falls back to its `param`**
+	# ([method AIOverlay.effective_weapon]), which is how the computer has
+	# always fought with an empty gun.
+	var aiming: int = Combat.presented_weapon_for(state, _units, _unit_types,
+		_weapons, unit, command.x, command.y)
 	if (not Cheats.armed(cheats, unit, turn)
-			and _weapons.magazine(unit.weapon) != Combat.MUN_NONE
+			and _weapons.magazine(aiming) != Combat.MUN_NONE
 			and unit.type_id != Combat.NO_AMMO_UNIT_TYPE
-			and unit.ammo < _weapons.mun_per_fight(unit.weapon)):
+			and unit.ammo < _weapons.mun_per_fight(aiming)):
 		var empty: AttackResult = AttackResult.new()
 		empty.reason = "no ammunition"
 		return empty

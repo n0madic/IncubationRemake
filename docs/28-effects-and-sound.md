@@ -907,6 +907,24 @@ inherits the bug silently, which is why it is pinned.
 
 ### 7.5 Models
 
+**A blob does not only wear the model its constructor was given.** Three names
+reach a record through the *update* switch instead, and they are invisible to
+any reading of the constructor calls — which is what a cache built from that
+set alone was missing until 2026-09-09, leaving every blood cloud in its first
+sprite for the whole of its life:
+
+| Site | Model | Written by |
+|---|---|---|
+| `0x004201F2` | `A_BLUT5.3DI` | kind 17 at `life == 5` |
+| `0x00420209` | `A_BLUT6.3DI` | kind 17 at `life == 3` |
+| `0x004202A2` | `A_HIT2.3DI` | kind 16 at `life == 2` |
+
+All three are in **all nine** world sets. `blob_tables.py` reads them at their
+own `push` sites (`BLOB_MODEL_ARM_SITES`, checked by `blob.model_arm_sites`)
+and `blob_models()` is the union of the three sources — the constructor calls,
+the heal flash's four `mov`-loaded crosses, and these — so the count below is
+**37**, not the thirty the calls alone name.
+
 Thirty `.3DI` prototype names appear in the constructor calls. They are not
 blob-specific assets — they are ordinary entries in the world object index, so
 they resolve through the same `prototyp.dir` chain as scenery

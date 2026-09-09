@@ -800,6 +800,44 @@ func _close_combat(h: TestHarness) -> void:
 		_first_note(field.take_events(), "fire"), str(CLOSE_COMBAT_GUN),
 		"five fields out, so nothing swapped")
 
+	# **An empty rifle still stabs.** The gate mirrors the spend, and the
+	# spend is the *swapped* weapon's -- whose `mun` is 255. The engine's own
+	# selector `0x0042FF30` says it from the other side: an empty `special` 1
+	# weapon falls back to its `param` ([method AIOverlay.effective_weapon]).
+	var dry: Array = [
+		TestFixtures.unit(0, 2, 2, 0, 0, 6, 0, [], CLOSE_COMBAT_GUN, 0, 3, 20),
+		TestFixtures.unit(1, 3, 2, 0, UnitState.PLAYER_ALIEN, 6, 0, [], 0, 0,
+			3, 20),
+		TestFixtures.unit(2, 7, 2, 0, UnitState.PLAYER_ALIEN, 6, 0, [], 0, 0,
+			3, 20),
+	]
+	var empty_world: World = World.create(
+		TestFixtures.map_document(9, 9, dry), balance, 1.0)
+	var stabbed: AttackResult = empty_world.submit_attack(
+		AttackCommand.create(0, 3, 2))
+	h.check("close.an_empty_gun_still_stabs", stabbed.fired, stabbed.reason)
+	h.equal("close.the_empty_stab_is_the_bayonets", stabbed.presented_weapon,
+		CLOSE_COMBAT_BAYONET)
+	var refused: AttackResult = empty_world.submit_attack(
+		AttackCommand.create(0, 7, 2))
+	h.check("close.and_an_empty_gun_at_range_does_not_fire", not refused.fired,
+		"the control: five fields out the gate reads the gun's own magazine")
+	h.equal("close.the_range_refusal_names_the_reason", refused.reason,
+		"no ammunition")
+	# The predicate the gate asks, on its own: it moves nothing.
+	var probe: UnitState = _place(scene, 4, 0, 6, 6, 0)
+	probe.weapon = CLOSE_COMBAT_GUN
+	var beside: UnitState = _place(scene, 5, 1, 7, 6, 0)
+	h.equal("close.the_predicate_answers_the_bayonet",
+		Combat.presented_weapon_for(scene.state, scene.units, scene.types,
+			scene.weapons, probe, beside.x, beside.y), CLOSE_COMBAT_BAYONET)
+	h.equal("close.the_predicate_moves_nothing", probe.weapon,
+		CLOSE_COMBAT_GUN)
+	h.equal("close.the_predicate_keeps_the_gun_for_a_reaction",
+		Combat.presented_weapon_for(scene.state, scene.units, scene.types,
+			scene.weapons, probe, beside.x, beside.y, true),
+		CLOSE_COMBAT_GUN)
+
 
 ## The `note` of the first event of `kind`, or `""`.
 static func _first_note(events: Array[Dictionary], kind: String) -> String:

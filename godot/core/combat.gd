@@ -855,6 +855,17 @@ static func marker_damage(wtab: WeaponTable, marker: int,
 ## [constant CLOSE_COMBAT_HEIGHT_LEVELS] of each other.
 static func close_combat_swap(state: MapState, utab: UnitTypeTable,
 		wtab: WeaponTable, attacker: UnitState, target: UnitState) -> bool:
+	if not close_combat_applies(state, utab, wtab, attacker, target):
+		return false
+	attacker.weapon = wtab.param(attacker.weapon)
+	return true
+
+
+## The swap's four conditions, without the write -- so a caller that only
+## wants to know **which weapon a shot would be resolved with** can ask
+## without moving anything ([method presented_weapon_for]).
+static func close_combat_applies(state: MapState, utab: UnitTypeTable,
+		wtab: WeaponTable, attacker: UnitState, target: UnitState) -> bool:
 	if target == null:
 		return false
 	if wtab.special(attacker.weapon) != SPECIAL_CLOSE_COMBAT:
@@ -872,11 +883,28 @@ static func close_combat_swap(state: MapState, utab: UnitTypeTable,
 		return false
 	var drop: int = absi(state.height_at(state.index_of(attacker.x, attacker.y))
 		- state.height_at(state.index_of(target.x, target.y)))
-	if IncInt.div_trunc(drop, UnitTypeTable.HEIGHT_UNIT) \
-			>= CLOSE_COMBAT_HEIGHT_LEVELS:
-		return false
-	attacker.weapon = wtab.param(attacker.weapon)
-	return true
+	return IncInt.div_trunc(drop, UnitTypeTable.HEIGHT_UNIT) \
+		< CLOSE_COMBAT_HEIGHT_LEVELS
+
+
+## The weapon `attacker` would resolve a shot at `(tx, ty)` with -- the bayonet
+## when the swap of [method close_combat_swap] would fire, the held weapon
+## otherwise -- **without changing anything**.
+##
+## It exists because the spend is the swapped weapon's: a rifle with an empty
+## magazine still stabs, and its `param`'s `mun` of 255 means the subtraction
+## never runs. A caller that gates a shot on ammunition has to ask about this
+## weapon and not about the one on the record, or it refuses the one shot the
+## unit could still make ([method World.submit_attack]).
+static func presented_weapon_for(state: MapState, units: Dictionary,
+		utab: UnitTypeTable, wtab: WeaponTable, attacker: UnitState,
+		tx: int, ty: int, reaction: bool = false) -> int:
+	if reaction:
+		return attacker.weapon
+	var standing: UnitState = _unit_on(state, units, tx, ty)
+	if not close_combat_applies(state, utab, wtab, attacker, standing):
+		return attacker.weapon
+	return wtab.param(attacker.weapon)
 
 
 ## `0x0046F7E0` phase 1's `special` 1 arm -- back to the gun.
