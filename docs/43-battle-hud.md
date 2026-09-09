@@ -679,6 +679,17 @@ doubled by Double Munition; `0x00475550` tier: `xp < 40 → 0, < 60 → 1,
   equipment flag `+0x21 + id`: ids 0, 1, 5, 6, 14, 17, 3, 4, 15, 16, 7, 9
   → elements 0..11, each blitted less its anchor.
 
+**The remake names the picture under the pointer**, on the same hint line
+§5.2's sockets use. The original names only the weapon and leaves the twelve
+pictures to be read as icons; the name shown is `Info.lcl`'s own equipment
+row ([`21` §3](21-info-lcl-schema.md)), out of `tables/balance.json`, so
+nothing here is a caption of the remake's own. The pictures are **hit-tested
+against their rectangles** rather than given `mouse_entered`: the panel is
+rebuilt on every refresh, so a freed picture's exit and its replacement's
+entry do not pair up and the hint would blink out and stay out. The line has
+two writers and the button wins — a pointer leaving a picture for a socket
+must not blank the caption that socket has just put up.
+
 ### 5.4 The save slots the interface owns
 
 `0x0041DA20`'s commands 5..8 save and load slots **32** (*Remind/Recall

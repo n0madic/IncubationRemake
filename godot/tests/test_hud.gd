@@ -817,7 +817,7 @@ func _hud_live(h: TestHarness) -> void:
 	var hud: MissionHud = MissionHud.new()
 	hud.setup(art, strings, GameFont.load_from(cache, "font_2"),
 		GameFont.load_from(cache, MissionHud.TEXT_FONT),
-		GameFont.load_from(cache, MissionHud.SMALL_FONT))
+		GameFont.load_from(cache, MissionHud.SMALL_FONT), cache)
 	var all_on: Callable = func(_number: int) -> bool: return true
 	var none_on: Callable = func(_number: int) -> bool: return false
 	var north: Vector2 = Vector2(0.0, -1.0)
@@ -906,6 +906,36 @@ func _hud_live(h: TestHarness) -> void:
 			no_missing = false
 	h.check("hud.every_caption_is_shipped", no_missing,
 		"sixteen events and six commands out of Txtmod_h")
+	# The inventory hint -- the remake's own line on the plate's own hint
+	# row (docs/43 section 5.3). The names are `Info.lcl`'s equipment rows,
+	# so none of them is a caption written here, and the pictures are
+	# hit-tested rather than hovered: the panel is rebuilt on every refresh
+	# and `mouse_entered` would not survive it.
+	var carrier: int = _first_of_player(world, 0)
+	hud.refresh(world, carrier, all_on, none_on, north, east, {}, false)
+	var rects: Array[Rect2] = hud.panel.item_rects()
+	var ids: PackedInt32Array = hud.panel.item_ids()
+	h.check("hud.the_inventory_offers_a_hint_target", not rects.is_empty(),
+		"%d picture(s) for slot %d" % [rects.size(), carrier])
+	if not rects.is_empty():
+		var centre: Vector2 = rects[0].get_center()
+		h.equal("hud.the_picture_names_its_own_item",
+			hud.panel.item_at(centre), ids[0])
+		var named: String = hud.panel.hover_at(centre)
+		h.check("hud.the_item_hint_is_the_game_s_own_name",
+			named != "" and not named.contains(Localization.MISSING_PREFIX),
+			"equipment %d is `%s`" % [ids[0], named])
+		h.equal("hud.the_item_hint_reaches_the_hint_line",
+			hud.hint_text(), named)
+		# A button under the pointer wins the line -- the two writers are
+		# kept apart so that leaving a picture cannot blank a caption.
+		hud.set_hint("Overview map")
+		h.equal("hud.a_button_caption_outranks_an_item", hud.hint_text(),
+			"Overview map")
+		hud.set_hint("")
+		h.equal("hud.the_item_hint_comes_back", hud.hint_text(), named)
+		var _left: String = hud.panel.hover_at(centre + Vector2(0.0, 1000.0))
+		h.equal("hud.the_hint_line_clears_off_the_picture", hud.hint_text(), "")
 	# docs/43 sections 5.1 and 5.2's "key (remake)" column, on the hint line
 	# rather than as a legend across the playing screen.
 	h.equal("hud.a_button_with_no_key_keeps_its_hint",

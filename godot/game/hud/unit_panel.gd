@@ -15,6 +15,11 @@ extends Control
 ## Two fonts: the panel's numbers are 10 px (`font_3`), the only shipped face
 ## that fits its rows, and the name line the interface font of the rest.
 
+## The name of the inventory picture under the pointer, or `""` when the
+## pointer left it. [MissionHud] puts it on the same hint line the command
+## pad and the button columns use.
+signal hint(text: String)
+
 ## RGB565 colours the panel writes with.
 const COLOUR_TEXT: int = 0xFFFF
 const COLOUR_SHADOW: int = 0x632C
@@ -42,6 +47,8 @@ const WEAPON_ALTERNATE_FIRST: int = 40
 ## byte at `+0x21 + id` selects the element).
 const INVENTORY_ELEMENTS: Dictionary = {0: 0, 1: 1, 5: 2, 6: 3, 14: 4, 17: 5,
 	3: 6, 4: 7, 15: 8, 16: 9, 7: 10, 9: 11}
+## No inventory picture under the pointer.
+const NO_ITEM: int = -1
 const INVENTORY_COLUMNS: int = 4
 const INVENTORY_STEP: Vector2i = Vector2i(18, 19)
 ## docs/21 section 5's species column.
@@ -73,6 +80,18 @@ var _small: FontFile = null
 var _items: Array[Control] = []
 var _origin: Vector2 = Vector2.ZERO
 var _hp_max: int = 0
+## The inventory's hover targets, rebuilt by every [method _inventory]: one
+## rectangle and one equipment id per drawn picture, in the panel's own
+## coordinates. **Rectangles and not `mouse_entered`**: the panel is rebuilt
+## on every refresh, so a freed picture's `mouse_exited` and the new one's
+## `mouse_entered` do not pair up and the hint would blink out and stay out.
+var _hover_rects: Array[Rect2] = []
+var _hover_ids: PackedInt32Array = PackedInt32Array()
+var _hover_id: int = NO_ITEM
+## `Info.lcl`'s equipment names, keyed by id -- the same rows the Item List
+## screen reads. Empty where no cache was handed over, and an empty name is
+## no hint rather than a caption of the remake's own.
+var _equipment_names: Dictionary = {}
 
 
 func setup(art: Art, strings: Localization, font: FontFile, small: FontFile) -> void:
@@ -95,6 +114,8 @@ func refresh(world: World, slot: int) -> void:
 		remove_child(item)
 		item.queue_free()
 	_items.clear()
+	_hover_rects.clear()
+	_hover_ids.clear()
 	if world == null or slot < 0 or not world.has_unit(slot):
 		return
 	var view: Dictionary = world.unit_view(slot)
@@ -317,7 +338,15 @@ func _inventory(view: Dictionary) -> void:
 		var at: Vector2 = base + Vector2(
 			float((element % INVENTORY_COLUMNS) * INVENTORY_STEP.x),
 			float((element / INVENTORY_COLUMNS) * INVENTORY_STEP.y))
-		_icon(HudTables.LIB_INVENTORY, element, at, true)
+		var drawn: int = _items.size()
+		var _face: Texture2D = _icon(HudTables.LIB_INVENTORY, element, at, true)
+		if _items.size() == drawn:
+			continue
+		var picture: TextureRect = _items[drawn] as TextureRect
+		if picture == null:
+			continue
+		_hover_rects.append(Rect2(picture.position, picture.size))
+		_hover_ids.append(id)
 
 
 ## One sprite at *at*, less its own anchor when the original subtracted it.
@@ -434,3 +463,66 @@ func icon_count() -> int:
 		if item is TextureRect:
 			n += 1
 	return n
+
+
+## The equipment catalogue's own names, from `tables/balance.json`'s
+## `equipment` rows -- the same list the Item List screen reads. Rows with no
+## name are skipped, so an id the cache does not carry simply has no hint.
+func use_equipment_names(rows: Array) -> void:
+	_equipment_names.clear()
+	for entry: Variant in rows:
+		var row: Dictionary = entry
+		var text: String = DictRead.as_string(row.get("name", ""))
+		if text == "":
+			continue
+		_equipment_names[DictRead.as_int(row["id"])] = text
+
+
+## The name the hint line shows for *id*, or `""`.
+func equipment_name(id: int) -> String:
+	if not _equipment_names.has(id):
+		return ""
+	return DictRead.as_string(_equipment_names[id])
+
+
+## The inventory pictures the last refresh drew, in the panel's own
+## coordinates -- a copy, for a suite or a driver.
+func item_rects() -> Array[Rect2]:
+	return _hover_rects.duplicate()
+
+
+## The equipment ids behind [method item_rects], in the same order.
+func item_ids() -> PackedInt32Array:
+	return _hover_ids.duplicate()
+
+
+## The equipment id whose picture covers *at*, in the panel's own
+## coordinates, or [constant NO_ITEM].
+func item_at(at: Vector2) -> int:
+	for index: int in range(_hover_rects.size()):
+		if _hover_rects[index].has_point(at):
+			return _hover_ids[index]
+	return NO_ITEM
+
+
+## Point the pointer at *at* and answer the hint that stands after it. The
+## signal is emitted only when the answer changes, so a pointer resting on a
+## picture across a rebuild does not re-announce it every frame.
+func hover_at(at: Vector2) -> String:
+	var found: int = item_at(at)
+	if found != _hover_id:
+		_hover_id = found
+		hint.emit(equipment_name(found))
+	return equipment_name(_hover_id)
+
+
+## The inventory hint as it stands -- what the pointer last landed on.
+func hover_hint() -> String:
+	return equipment_name(_hover_id)
+
+
+func _process(_delta: float) -> void:
+	if not is_visible_in_tree():
+		var _left: String = hover_at(Vector2(-1.0, -1.0))
+		return
+	var _standing: String = hover_at(get_local_mouse_position())
