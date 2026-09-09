@@ -59,7 +59,7 @@ python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
-python3 tools/lcl_runtime.py        --check gog_incubation   # 67 checks, 942 invocations
+python3 tools/lcl_runtime.py        --check gog_incubation   # 71 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 61 checks, 1863 units
 python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/hit/damage/reaction/experience/jam/warp/placers
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire

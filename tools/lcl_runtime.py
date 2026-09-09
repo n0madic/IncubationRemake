@@ -35,6 +35,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inclib import ctrlmap                                          # noqa: E402
+from inclib import interact as interactmod                          # noqa: E402
 from inclib import lcl                                              # noqa: E402
 from inclib import lcl_runtime as runtime                           # noqa: E402
 from inclib.check import Checker                                    # noqa: E402
@@ -430,6 +431,54 @@ def _crush_wall_checks(c: Checker) -> None:
              [[99, 99]])
 
 
+def _open_door_checks(c: Checker) -> None:
+    """``OpenDoor`` -- ``0x004420c0`` through ``aDoorOpenSequence`` ``0x00410A20``.
+
+    A **toggle** on the low bit of the action point (``docs/26`` §3.4), and a
+    unit on the tile makes it do nothing at all.  It wrote no cell field until
+    2026-09-09, which is what made ``_C_116``'s three lever-worked doors
+    impossible to open in the remake -- the panel's leaves are painted from the
+    cell's parity, so the animation was undone the frame after it played.
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    def run_once(actpt: int, ctrl_type: int, height: int,
+                 occupied: bool = False) -> tuple[runtime.LclWorld, Any]:
+        w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+        at = w.index(3, 4)
+        w.actpt[at] = actpt
+        w.ctrl_type[at] = ctrl_type
+        w.cell_height[at] = height
+        if occupied:
+            w.units[0] = runtime.RuntimeUnit(slot=0, player=0, type_id=0,
+                                             x=3, y=4, hit_points=10)
+            w.unit_at[at] = 0
+        return w, runtime.run({"instructions": [command("OpenDoor", 3, 4),
+                                               {"kind": "end", "line": 9}],
+                               "labels": {}}, w)
+
+    w, out = run_once(31, interactmod.FIELD_TYPE_WALL, 3193)
+    at = w.index(3, 4)
+    c.expect("open_door.opens_a_closed_door",
+             [w.actpt[at], w.ctrl_type[at], w.cell_height[at]], [30, 1, 0],
+             "31 is closed: the toggle drops the cell to a Free Place at ground")
+    c.expect("open_door.records_the_animation",
+             [values for name, values in out.events if name == "open_door"],
+             [[3, 4]], "the picture still gets its event")
+    w, _out = run_once(30, interactmod.FIELD_TYPE_FREE, 0)
+    c.expect("open_door.closes_an_open_one",
+             [w.actpt[at], w.ctrl_type[at], w.cell_height[at]],
+             [31, 2, interactmod.DOOR_HEIGHT_STEP],
+             "30 is open: it rises one tile and becomes a Wall")
+    w, out = run_once(31, interactmod.FIELD_TYPE_WALL, 3193, occupied=True)
+    c.expect("open_door.a_unit_on_the_tile_refuses",
+             [w.actpt[at], w.ctrl_type[at], w.cell_height[at],
+              [values for name, values in out.events if name == "open_door"]],
+             [31, 2, 3193, []], "0x004420C0 returns before the sequence")
+
+
 def _synthetic_checks(c: Checker) -> None:
     """The mechanics of ``docs/20`` §2 that the corpus does not exercise.
 
@@ -712,6 +761,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     _statue_checks(c)
     _foot_bridge_checks(c)
     _crush_wall_checks(c)
+    _open_door_checks(c)
 
     if show_stats:
         print("\ncommand usage (corpus / implemented):")

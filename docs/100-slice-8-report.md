@@ -153,7 +153,8 @@ each arm queues something or answers a hold.
 
 | Kind | Presenter | Hold |
 |---|---|---|
-| `move_begin`, `hand_over`, `fog_probe`, `ground`, `sync`, the refusals and the ring's rotation | none — the delta lands in the same frame as the next shown event | — |
+| `move_begin`, `hand_over`, `fog_probe`, `sync`, the refusals and the ring's rotation | none — the delta lands in the same frame as the next shown event | — |
+| `ground` | **added 2026-09-09.** It was listed here as a kind with no picture, and it has one: `aPlayGroundFireAnimation` `0x004157B0` per ignited glow ([`42` §9.1](42-mission-presentation.md)). Left as bookkeeping, `_C_116`'s red patches went out in silence | the set piece's pool |
 | `move` | camera mode from the event's `seen_source` / `seen_destination` (mode 1 for the player's own), then the walk along the event's `path` | flight + steps × 0.3 s |
 | `mine` | `_present_blast` on the event's cell with the payload's blast — weapon 36/37, no shooter | the shot's frames |
 | `teleport` | the stream on the entry with the exit as target, the traveller hidden at 40 and shown at 10 | 70 frames |
