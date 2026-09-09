@@ -187,7 +187,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 	var h: int = DictRead.as_int(cell.get("height", 0))
 	node.position = WorldSpace.cell_centre(x, y, h)
 	var facing: int = DictRead.as_int(view["facing"])
-	_face(node, null, facing)
+	face(node, null, facing)
 
 	if Fog.is_contact(view):
 		# A detection, not a sighting: the cell, and nothing about what is on
@@ -215,7 +215,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 		if carried.has(slot):
 			var _resumed: bool = states[slot].resume(carried[slot])
 		node.add_child(body)
-		_face(node, body, facing)
+		face(node, body, facing)
 		return node
 
 	# No body. The type's own model column is drawn where it names a real
@@ -317,7 +317,7 @@ func fire(slot: int, tx: int, ty: int) -> float:
 			# now and not the one it ends the turn on.
 			var facing: int = Combat.direction(DictRead.as_int(view["x"]),
 				DictRead.as_int(view["y"]), tx, ty)
-			_face(node, _body_of(slot), facing)
+			face(node, _body_of(slot), facing)
 	return states[slot].fire()
 
 
@@ -455,7 +455,7 @@ func start_walk(slot: int, cells: PackedInt32Array, width: int,
 		start.position = _cell_position(cells[0], width, shown_ref)
 		var heading: int = _facing_of(cells[0], cells[1], width)
 		if heading >= 0:
-			_face(start, _body_of(slot), heading)
+			face(start, _body_of(slot), heading)
 	# **Not while the camera is still flying.** `aExecuteMove` runs its camera
 	# arm first -- `aPlaySelectUnitAnimation3` `0x0040EDB0` at `0x0046E514`
 	# and `0x0046E56F`, or one of the other three -- and every arm joins at
@@ -565,7 +565,7 @@ func _advance_walk(slot: int, delta: float, world: World) -> void:
 	node.position = from.lerp(to, into)
 	var facing: int = _facing_of(cells[step], cells[step + 1], width)
 	if facing >= 0:
-		_face(node, _body_of(slot), facing)
+		face(node, _body_of(slot), facing)
 
 
 ## Put a walking body on its **last cell** and stop the walk cycle.
@@ -590,7 +590,7 @@ func _snap_to_end(slot: int, world: World) -> void:
 	var facing: int = _facing_of(cells[cells.size() - 2],
 		cells[cells.size() - 1], width)
 	if facing >= 0:
-		_face(node, _body_of(slot), facing)
+		face(node, _body_of(slot), facing)
 
 
 func _node_of(slot: int) -> Node3D:
@@ -658,7 +658,11 @@ func _body_of(slot: int) -> CharismaBody:
 ##
 ## Without this a walking body faced away from wherever it was going, which is
 ## how it was found: it walked backwards.
-func _face(node: Node3D, body: CharismaBody, facing: int) -> void:
+##
+## Static because it reads nothing of the mission: [BackdropBodies] stands an
+## upgrade base's marines up with the same two lines and there is no second
+## copy of the rule.
+static func face(node: Node3D, body: CharismaBody, facing: int) -> void:
 	var angle: int = FACING_ANGLES[facing % FACING_ANGLES.size()]
 	node.basis = WorldSpace.yaw_basis(angle)
 	if body != null:

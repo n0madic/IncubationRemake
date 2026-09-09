@@ -42,6 +42,11 @@ func run(h: TestHarness) -> void:
 	_campaign_screens(h)
 	_pickup_message(h)
 	_magnifier(h)
+	_briefing_around_a_mission(h)
+	_upgrade_marines(h)
+	_blip_volume(h)
+	_no_campaign_state(h)
+	_screens_leave_nothing_behind(h)
 
 
 ## The ring's facing rides **inside** the walk's playback (docs/43 section
@@ -3289,3 +3294,432 @@ func _magnifier(h: TestHarness) -> void:
 			main.magnifier_page(beacon)).strip_edges() != "",
 		"Data.txt, or the {:**} retry")
 	main.free()
+
+
+## docs/24 sections 5 and 7.1 in the remake (docs/92 section 7.19): the
+## typewriter reveals a glyph a frame and blips on a word's end, the deployment
+## screen types `B0`, the mission-start `A0` box is whole and sits where
+## `0x0041B629` puts it, and an upgrade base's waypoints are read in order.
+func _briefing_around_a_mission(h: TestHarness) -> void:
+	var cache_dir: String = CacheFixture.cache_dir()
+	var label: BriefingText = BriefingText.create(cache_dir, false)
+	var blips: Array[int] = []
+	label.blip.connect(func() -> void: blips.append(1))
+	label.start_typewriter()
+	label.show_block([{"text": "ab cd", "font": 0, "colour": 0, "breaks": 0}])
+	h.check("typewriter.starts_hidden", label.typing()
+		and label.visible_characters == 0)
+	var owed: int = label.tick_typewriter(1.0 / BriefingText.TYPEWRITER_FPS)
+	h.equal("typewriter.one_glyph_a_frame",
+		[label.visible_characters, owed], [1, 0],
+		"fcn.0043ECF0 adds one to each limit per printed frame")
+	var _half: int = label.tick_typewriter(0.5 / BriefingText.TYPEWRITER_FPS)
+	h.equal("typewriter.half_a_frame_shows_nothing_more",
+		label.visible_characters, 1)
+	var _two: int = label.tick_typewriter(1.5 / BriefingText.TYPEWRITER_FPS)
+	h.equal("typewriter.carry_lands_the_space",
+		[label.visible_characters, blips.size()], [3, 1],
+		"the space after `ab` is a word's end: one textbeep")
+	var _rest: int = label.tick_typewriter(10.0 / BriefingText.TYPEWRITER_FPS)
+	h.check("typewriter.finishes_and_stops",
+		not label.typing() and label.visible_characters == -1
+		and blips.size() == 1)
+	h.equal("typewriter.blip_wave", BriefingText.BLIP_WAVE, "textbeep.wav",
+		"0x0043E3C1 -> 0x00436EF0, the third buffer aInitGUI loads")
+	label.free()
+
+	var manifest: Dictionary = CacheFixture.manifest()
+	var strings: Localization = Localization.from_cache(cache_dir, manifest)
+	var art: Art = Art.open(cache_dir)
+	var host: CampaignHost = CampaignHost.create(cache_dir,
+		CacheFixture.balance(), strings)
+	var _state: CampaignState = host.start_new(1)
+	var document: Dictionary = CacheLoader.read_json(
+		"%s/text/briefing/%s.json" % [cache_dir, host.state.mission])
+	h.check("deploy.briefing_present", not document.is_empty())
+	# **The deployment screen carries no briefing box, and the absence is
+	# read rather than assumed.** `0x0044EEDA` was attributed to this screen
+	# by one row of docs/24 section 7.1's table; it is `aMenuSystem`'s
+	# dispatcher arm for `Menu_a` window 10, `:Leveloptions;`, gadget 22 --
+	# the multiplayer *Infos* button. `SelectUnits` is a `Menu_b` window and
+	# no `aActivateBriefingInfo` site is in its arm. The check is structural
+	# because there is nothing left to tick: the screen builds a briefing
+	# label at all only if something puts one there.
+	var deploy: SelectUnitsScreen = SelectUnitsScreen.new()
+	deploy.host = host
+	deploy.cache_dir = cache_dir
+	deploy.document = document
+	deploy.setup(art, strings, null)
+	var boxes: int = 0
+	for child: Node in deploy.root().get_children():
+		if child is BriefingText:
+			boxes += 1
+	h.equal("deploy.no_briefing_box_over_the_map", boxes, 0,
+		"0x0044EEDA is Menu_a window 10 gadget 22, the multiplayer Infos "
+		+ "button -- not this screen")
+	deploy.free()
+
+	var page: BriefingScreen = BriefingScreen.new()
+	page.mission = host.state.mission
+	page.cache_dir = cache_dir
+	page.document = document
+	page.setup(art, strings, null)
+	h.check("briefing.screen_types", page.typing(),
+		"0x00456DCB passes animate = 0")
+	page.free()
+	var recall: BriefingScreen = BriefingScreen.new()
+	recall.mission = host.state.mission
+	recall.cache_dir = cache_dir
+	recall.document = document
+	recall.over_mission = true
+	recall.setup(art, strings, null)
+	h.check("briefing.recall_does_not_type", not recall.typing(),
+		"the page raised by B over a mission shows what was already read")
+	recall.free()
+
+	# docs/92 section 7.19 I21: a click or a key finishes the reveal. The check
+	# calls the seam rather than pushing an event, because a screen built off
+	# the tree is routed no input at all -- which is also why the input
+	# handler is two lines over this method and not the method itself.
+	var skipped: BriefingScreen = BriefingScreen.new()
+	skipped.mission = host.state.mission
+	skipped.cache_dir = cache_dir
+	skipped.document = document
+	skipped.setup(art, strings, null)
+	skipped.tick(2.0 / BriefingText.TYPEWRITER_FPS)
+	h.check("briefing.skip_needs_something_to_skip", skipped.typing(),
+		"two glyphs in, the reveal is still running")
+	h.check("briefing.a_click_finishes_the_reveal", skipped.skip_typing()
+		and not skipped.typing(), "docs/92 section 7.19 I21")
+	h.check("briefing.skipping_twice_is_not_a_second_skip",
+		not skipped.skip_typing(),
+		"nothing to finish, so the click is not the screen's to take")
+	# docs/92 section 7.19 I20: the tips are a reference page and never type,
+	# and coming back to the briefing after them does not start it again.
+	skipped.free()
+	var tips: BriefingScreen = BriefingScreen.new()
+	tips.mission = host.state.mission
+	tips.cache_dir = cache_dir
+	tips.document = document
+	tips.setup(art, strings, null)
+	var has_tips: bool = not DictRead.as_array(DictRead.as_dict(
+		document.get("blocks", {})).get("C0", [])).is_empty()
+	h.check("briefing.the_fixture_mission_carries_tips", has_tips,
+		"%s: 25 of the 116 briefings carry no C0" % host.state.mission)
+	tips.show_block("C0")
+	h.check("briefing.tips_are_shown_whole", not tips.typing(),
+		"docs/92 section 7.19 I20")
+	tips.show_block("A0")
+	h.check("briefing.the_briefing_does_not_retype_after_the_tips",
+		not tips.typing(), "one visit to C0 settles the page")
+	tips.free()
+
+	# **No box opens over a campaign mission.** `0x0041B629`'s `A0` popup is
+	# the arm `0x0041a980` takes when `0x0043b1f0()` is non-zero, and that
+	# predicate is `[0x00509f08] and (gameMode() in {2, 4} or (3 with more
+	# than one human))` -- false in every campaign, whose mode is 1. The whole
+	# block is behind `0x005106d4` besides, whose only setter is the arm the
+	# map's `B` takes when *its* gate fails. So a campaign mission opens on
+	# its interface and nothing else, and the briefing is the screen the
+	# player came through.
+	var opener: MissionHud = MissionHud.new()
+	opener.setup(art, strings, null, null, null, cache_dir)
+	h.check("start_briefing.a_campaign_mission_opens_on_no_box",
+		not opener.info_visible(),
+		"0x0041B629 is the multiplayer arm; docs/24 section 7.1")
+	opener.free()
+
+	# The location map's own `B0` -- mission control's action `0xb`, reached
+	# by the key `0x00451240` maps to it. Its gate is one human player and not
+	# the network predicate `0x0043b1f0`, both of which hold here, so the box
+	# is drawn rather than being behind a switch the remake lacks.
+	var frontend: Dictionary = CacheLoader.read_json(
+		cache_dir + "/tables/frontend.json")
+	var briefing_table: Dictionary = DictRead.as_dict(
+		frontend.get("briefing", {}))
+	h.equal("map_short.key_is_the_measured_one",
+		DictRead.as_string(briefing_table.get("map_short_key", "")),
+		char(CampaignMapScreen.SHORT_KEY),
+		"0x00451240 maps it to mission control's 0xb")
+	h.check("map_short.gate_holds_in_a_campaign",
+		DictRead.as_bool(briefing_table.get(
+			"map_short_always_in_single_player", false)),
+		"0x0043b700() == 1 and not 0x0043b1f0()")
+	var box: Dictionary = DictRead.as_dict(DictRead.as_dict(
+		briefing_table.get("boxes", {})).get("map_short", {}))
+	h.equal("map_short.box_is_docs_24_s",
+		[DictRead.as_string(box.get("label", "")),
+		DictRead.to_int32(box.get("box", []))],
+		["B0", PackedInt32Array([int(CampaignMapScreen.SHORT_AT.x),
+			int(CampaignMapScreen.SHORT_AT.y),
+			int(CampaignMapScreen.SHORT_SIZE.x),
+			int(CampaignMapScreen.SHORT_SIZE.y)])])
+	var chart: CampaignMapScreen = CampaignMapScreen.new()
+	chart.host = host
+	chart.cache_dir = cache_dir
+	chart.document = document
+	chart.setup(art, strings, null)
+	h.check("map_short.starts_down", not chart.typing(),
+		"the box is what the key asks for, not what the screen opens with")
+	chart.toggle_short_briefing()
+	h.check("map_short.types_on_the_key", chart.typing(),
+		"animate = 0 on the arm")
+	chart.tick(100.0)
+	h.check("map_short.finishes", not chart.typing())
+	chart.toggle_short_briefing()
+	h.check("map_short.the_key_takes_it_down_again", not chart.typing())
+	chart.free()
+
+	var main: SliceMain = SliceMain.new()
+	var opening: Dictionary = {"events": [
+		{"name": SliceMain.CREATE_CAMERA_PATH, "values": [0, 0, 10, 20, 30]},
+		{"name": SliceMain.CREATE_CAMERA_PATH, "values": [1, 1, 1, 2, 3]},
+		{"name": SliceMain.CREATE_CAMERA_PATH, "values": [2, 1, 4, 5, 6]},
+	]}
+	var waypoints: Array[Vector3i] = main._read_camera_waypoints(opening)
+	h.equal("fly_in.waypoints_in_script_order", waypoints,
+		[Vector3i(1, 2, 3) * SliceMain.CAMERA_PATH_SCALE,
+		Vector3i(4, 5, 6) * SliceMain.CAMERA_PATH_SCALE],
+		"the mode 1 entries, the mode 0 target left out")
+	h.equal("fly_in.the_last_waypoint_is_the_fallback_rest",
+		main._read_camera_path(opening)[0],
+		Vector3i(4, 5, 6) * SliceMain.CAMERA_PATH_SCALE,
+		"where a base has no flight to run; a flown one rests where it "
+		+ "stopped, which 0x00403780 is what reads back")
+	h.equal("fly_in.constants", [SliceMain.FLY_SPEED,
+		SliceMain.FLY_SMOOTH_START, SliceMain.FLY_SMOOTH_FLOOR,
+		SliceMain.FLY_ARRIVAL, SliceMain.FLY_LANDED_SHARE,
+		int(SliceMain.FLY_FPS)],
+		[800, 40, 5, 3200, 80, 20],
+		"0x004171DE, 0x004171C9, 0x00417316, 0x004171FF, 0x0041729E, "
+		+ "0x0040B82D")
+	main.free()
+
+
+## An upgrade base is not an empty landing pad (docs/27 section 2.7.1).
+##
+## `0x00417510` walks player 0's living units and starts `P0_M2_000` on each,
+## and every `upgrade_N.lev` places two or three of them -- so the marines are
+## what the fly-in crosses. The remake used to build the backdrop without any
+## bodies at all, on a comment that was true of the two chain maps and of
+## nothing else.
+func _upgrade_marines(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world("upgrade_1")
+	if loaded.is_empty():
+		# A cache published without `--campaign-maps` carries no upgrade
+		# scene. That is a thinner cache and not a failure -- but say which,
+		# so a run that quietly checked nothing cannot read as a pass.
+		h.check("marines.cache", false,
+			"no upgrade_1 in the cache; publish with --campaign-maps")
+		return
+	var world: World = loaded["world"]
+	# The corpus half, which needs no library: three living player-0 records.
+	var live: int = 0
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == BackdropBodies.PLAYER \
+				and DictRead.as_int(view["hp"]) > 0:
+			live += 1
+	h.equal("marines.upgrade_1_places_three", live, 3)
+	# The constants, at the addresses `campaign_tables.py` reads them from.
+	h.equal("marines.playback",
+		[BackdropBodies.CLIP, BackdropBodies.SPEED, BackdropBodies.LOOPS,
+		BackdropBodies.START_MAX, BackdropBodies.FPS],
+		["P0_M2_000", 1.0, 100000, 10.0, 20.0])
+	var library: CharismaLibrary = CharismaLibrary.open(
+		CacheFixture.cache_dir(), {}, "upgrade_1")
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = 1
+	var marines: BackdropBodies = BackdropBodies.new()
+	var built: int = marines.build(world, library, rng)
+	h.equal("marines.bodies", built, live)
+	# The clip is in the cache from 0.31.0 on: no selector's closure names it,
+	# so a cache built before the bump stands the bodies up in their bind pose
+	# and nothing walks.
+	h.check("marines.clip_is_in_the_cache",
+		library.clip(BackdropBodies.CLIP) != null,
+		"P0_M2_000 -- docs/40 section 7.2's kind-4 literal")
+	# The starting times are drawn, not shared: the original's `aRandom2(0,10)`
+	# is what keeps three marines out of step.
+	var spread: bool = false
+	for i: int in range(1, marines.times.size()):
+		if not is_equal_approx(marines.times[i], marines.times[0]):
+			spread = true
+	h.check("marines.start_times_differ", spread or built < 2,
+		"%s" % [marines.times])
+	var in_range: bool = marines.times.size() == built
+	for t: float in marines.times:
+		if t < 0.0 or t >= BackdropBodies.START_MAX:
+			in_range = false
+	h.check("marines.start_times_in_range", in_range, "%s" % [marines.times])
+	# The clock is the front end's 20 a second and the step is one clip unit
+	# a frame, so a second of drawn time is twenty of them.
+	var before: PackedFloat32Array = marines.times.duplicate()
+	marines.tick(1.0)
+	var moved: bool = marines.times.size() == before.size()
+	for i: int in range(marines.times.size()):
+		if not is_equal_approx(marines.times[i] - before[i],
+				BackdropBodies.SPEED * BackdropBodies.FPS):
+			moved = false
+	h.check("marines.tick_is_twenty_a_second", moved,
+		"%s -> %s" % [before, marines.times])
+	# **The march is the clip's own.** Nothing moves these records -- no
+	# `upgrade_N.lcl` carries a movement command -- so if the body did not
+	# travel under its own root track, the marines would walk on the spot.
+	# One second of drawn time is twenty frames of a clip that carries
+	# `Bip000` 3017.7 skeleton units over 452: 133.5 of them, times the 16 of
+	# docs/40 section 5.3 and over [constant WorldSpace.WORLD_UNITS_PER_METRE]
+	# is **1.33 m**, two thirds of a map field and an ordinary walking pace.
+	#
+	# The part measured is a *drawn* one: `Bip000` carries the travel and has
+	# no mesh of its own, and [method CharismaBody.part_position] answers for
+	# the parts a body actually builds.
+	var model: CharismaModel = library.model(library.name_for(
+		CharismaLibrary.SELECTOR_MODEL, 0, 0, BackdropBodies.PLAYER))
+	var bone: String = ""
+	if model != null and built > 0:
+		for candidate: String in model.bones:
+			if marines.bodies[0].has_part(candidate):
+				bone = candidate
+				break
+	var walked: float = -1.0
+	var lately: Vector3 = Vector3.ZERO
+	if built > 0 and bone != "" and library.clip(BackdropBodies.CLIP) != null:
+		var was: Vector3 = marines.bodies[0].part_position(bone)
+		marines.tick(1.0)
+		var now: Vector3 = marines.bodies[0].part_position(bone)
+		walked = Vector2(now.x - was.x, now.z - was.z).length()
+		lately = was
+	h.check("marines.the_clip_walks_them",
+		walked > 1.0 and walked < 1.7,
+		"%.2f m in a second of drawn time, against the clip's own 1.33" % walked)
+	# **And forwards.** The magnitude alone would pass with the sign the wrong
+	# way round, and a squad marching backwards off the pad is exactly the
+	# defect a screenshot cannot see -- a metre at forty thousand units of
+	# depth is a pixel.
+	#
+	# The heading is **both** bases: [method UnitsView.face] puts the engine's
+	# yaw on the node and the difference between that and the Charisma one on
+	# the body, and `node.basis * body.basis` is the composition
+	# `test_charisma.gd` compares a walk's own step against. Taking the node's
+	# alone gives exactly -1 here, because a Charisma body is authored facing
+	# engine -Y.
+	var ahead: float = -2.0
+	if built > 0 and bone != "":
+		var node: Node3D = marines.bodies[0].get_parent() as Node3D
+		if node != null:
+			var heading: Vector3 = node.basis * marines.bodies[0].basis \
+				* CharismaBody.AUTHORED_FORWARD
+			var step: Vector3 = marines.bodies[0].part_position(bone) - lately
+			ahead = Vector2(step.x, step.z).normalized().dot(
+				Vector2(heading.x, heading.z).normalized())
+	h.check("marines.they_walk_the_way_they_face", ahead > 0.9,
+		"cosine %.2f between the step and the facing" % ahead)
+	# The clip is 452 frames and loops: half a minute of drawn time wraps it.
+	marines.tick(30.0)
+	h.check("marines.clip_loops", marines.loops() >= built,
+		"%d wrap(s) after 31 s of a 452-frame clip" % marines.loops())
+	marines.free()
+
+
+## The word blip is the GUI's own volume, and there is one of it.
+##
+## The briefing page, the deployment screen and the map's `B0` play the same
+## `textbeep.wav`. The volume was written out three times and one of them was
+## `0` -- a real table id -- so the map's blip alone would fall silent on a
+## cache whose table has no entry 0. There is one seam now, and this is the
+## check on it; that the three screens use it is the reason there is nothing
+## left to get wrong.
+func _blip_volume(h: TestHarness) -> void:
+	var plain: Dictionary = BriefingText.blip_cue()
+	var sited: Dictionary = BriefingText.blip_cue(CampaignMapScreen.SHORT_BLOCK)
+	h.equal("blip.volume_is_the_gui_s_own",
+		[DictRead.as_int(plain["volume_id"]),
+		DictRead.as_int(sited["volume_id"])],
+		[AudioTables.NO_SCALING, AudioTables.NO_SCALING])
+	h.equal("blip.wave", DictRead.as_string(plain["wave"]), "textbeep.wav")
+	h.check("blip.the_site_is_the_block_it_typed",
+		not plain.has("site")
+		and DictRead.as_string(sited["site"]) == CampaignMapScreen.SHORT_BLOCK,
+		"%s" % [sited])
+	# The table the cue is measured against: `NO_SCALING` is refused by
+	# nothing, which is the property the literal `0` did not have.
+	var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+	h.check("blip.no_scaling_is_never_refused",
+		tables.scaled_volume(0, AudioTables.NO_SCALING) != AudioTables.REFUSED,
+		"the GUI volume passes the scaler at every setting")
+
+
+## A campaign screen raised with no campaign running does not crash.
+##
+## The agent's `ui NAME` is a debugging entry past the location map and raises
+## a screen from the shell (docs/92 section 7.16). Three of those screens read
+## the mission's own briefing document, and reading `campaign.state.mission`
+## at the call site made that a null dereference -- the gate above them is
+## guarded and simply does not run, so the arm below it was reached with no
+## state at all. [method CampaignHost.current_mission] is the guarded read.
+func _no_campaign_state(h: TestHarness) -> void:
+	var main: SliceMain = SliceMain.new()
+	main.campaign = CampaignHost.create(CacheFixture.cache_dir(),
+		CacheFixture.balance())
+	h.check("no_state.host_has_none", main.campaign.state == null)
+	h.equal("no_state.mission_reads_empty", main.campaign.current_mission(), "")
+	# Each of these would have thrown on `campaign.state.mission`. Reaching the
+	# next line at all is the check.
+	for name: String in [CampaignHost.SCREEN_MAP, CampaignHost.SCREEN_BRIEFING,
+			CampaignHost.SCREEN_SELECT]:
+		var _raised: CampaignScreen = main.show_campaign_screen(name)
+	h.check("no_state.every_screen_survives_it", true,
+		"map, briefing and deployment raised with no campaign state")
+	main.free()
+
+
+## Raising a screen and freeing it leaves **nothing** alive.
+##
+## Godot reports what it still holds only at process exit, as a warning, and a
+## warning fails no check -- so a node that is built and never parented sits
+## outside every suite's reach and the run stays green. `run_tests.sh` gates on
+## that text now, but the gate names the process and not the screen; this one
+## names the screen, and it runs inside the exported build as well.
+##
+## The one it was written for: [method CampaignScreen._draw_plate] built its
+## missing-art backing *before* asking whether the screen wants a window, and
+## parented it only in the other arm, so every windowed screen on a cache with
+## no plate -- the deployment screen is one -- left a `ColorRect` and its
+## theme owner behind.
+##
+## [constant Performance.OBJECT_ORPHAN_NODE_COUNT] is the count of live nodes
+## outside a [SceneTree], which is every node these suites make; the screens
+## are freed with [method Object.free], which is immediate, so the count is
+## back where it started unless something is genuinely unowned.
+##
+## **That immediacy is the check's contract.** A suite runs inside
+## `_initialize` with no frames, so a deferred deletion never happens: the day
+## [method SliceMain.show_campaign_screen] closes a previous screen with
+## `queue_free` instead, or a screen queues one of its own children, this will
+## fail on a node that is owned perfectly well. The answer then is to make the
+## teardown immediate, not to widen the tolerance -- a tolerance here reads as
+## "some leaking is allowed".
+func _screens_leave_nothing_behind(h: TestHarness) -> void:
+	var names: Array[String] = [
+		CampaignHost.SCREEN_MAP, CampaignHost.SCREEN_BRIEFING,
+		CampaignHost.SCREEN_SELECT, CampaignHost.SCREEN_DEBRIEFING,
+		CampaignHost.SCREEN_HQ, CampaignHost.SCREEN_RECRUIT,
+		CampaignHost.SCREEN_UPGRADE, CampaignHost.SCREEN_ITEMS,
+	]
+	var left: PackedStringArray = PackedStringArray()
+	for name: String in names:
+		var before: int = int(Performance.get_monitor(
+			Performance.OBJECT_ORPHAN_NODE_COUNT))
+		var main: SliceMain = SliceMain.new()
+		main.campaign = CampaignHost.create(CacheFixture.cache_dir(),
+			CacheFixture.balance())
+		var _raised: CampaignScreen = main.show_campaign_screen(name)
+		main.free()
+		var after: int = int(Performance.get_monitor(
+			Performance.OBJECT_ORPHAN_NODE_COUNT))
+		if after != before:
+			left.append("%s left %d" % [name, after - before])
+	h.check("no_state.a_screen_owns_everything_it_builds", left.is_empty(),
+		", ".join(left) if not left.is_empty()
+		else "%d screens built and freed, no node left over" % names.size())

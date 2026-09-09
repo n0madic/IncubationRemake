@@ -382,13 +382,18 @@ func _draw_plate() -> void:
 		# A cache with no art still shows a legible screen: the frame is what
 		# is missing, not the campaign. A screen that asked for a window keeps
 		# it, because painting the hole over would hide the very thing the
-		# window exists to show.
+		# window exists to show -- so the backing is **built inside that
+		# test**. Building it first and parenting it only in one arm left an
+		# unowned `ColorRect` behind on every windowed screen, which Godot
+		# reports at exit as a leaked `CanvasItem` RID and two leaked objects
+		# (the node and its theme owner).
+		if plate_window().size != Vector2.ZERO:
+			return
 		var solid: ColorRect = ColorRect.new()
 		solid.color = Color(0.05, 0.05, 0.06)
 		solid.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		if plate_window().size == Vector2.ZERO:
-			solid.set_anchors_preset(Control.PRESET_FULL_RECT)
-			_root.add_child(solid)
+		solid.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_root.add_child(solid)
 		return
 	var window: Rect2 = plate_window()
 	if window.size == Vector2.ZERO:

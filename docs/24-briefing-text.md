@@ -279,6 +279,14 @@ picks between the two states: non-zero installs `-1` in all four limits (the
 whole block appears at once), zero installs `1` in two of them (the block is
 revealed progressively).
 
+**The rate** *(2026-09-08)*: `fcn.0043ECF0`, the box's per-frame print, adds
+**one** to each limit that is not `-1` after every print (`0x0043F0AB`,
+`0x0043F0C3`, `0x0043F0DA`, `0x0043F0F1`; caps 5000 for three of them and
+50000 for the glyph count), so one more glyph and one more word are allowed
+per printed frame — the front end's frame, 20 a second — and the blip is
+`textbeep.wav`, the third buffer `aInitGUI` loads beside the two clicks
+(`0x0043BFC4`). Which call sites animate is in §7.1's table.
+
 ---
 
 ## 6. Reading a single field — **[code]** `0x0043DE90` `aGetGUITextBoxString`
@@ -321,15 +329,80 @@ If `TXT\<lang>\Briefing\<mission>.txt` does not exist it silently falls back to
 All eight call sites pass literals, so the set of labels the game will ever ask
 a briefing file for is **enumerable, and it is exactly three**:
 
-| Call site | Label | Box `x, y, w, h` | Screen |
-|---|---|---|---|
-| `0x0041B629` | `A0` | 100, 100, 387, 199 | mission start |
-| `0x004577DB`, `0x0045783F` | `A0` | 190, 107, 387, 199 | in-mission recall |
-| `0x0047CEE8` | `A0` | 100, 100, 387, 199 | in-mission recall |
-| `0x00456DE0` | `A0` | 84, 77, 280, 276 | the briefing screen |
-| `0x0044EEDA` | `B0` | 220, 120, 200, 500 | unit selection |
-| `0x00453990` | `B0` | 220, 100, 200, 300 | the map screen |
-| `0x00456D96` | `C0` | 84, 77, 230, 276 | the tips screen |
+| Call site | Label | Box `x, y, w, h` | `animate` | Screen |
+|---|---|---|---|---|
+| `0x0041B629` | `A0` | 100, 100, 387, 199 | 1 (whole) | mission start — **multiplayer only**, see below |
+| `0x004577DB`, `0x0045783F` | `A0` | 190, 107, 387, 199 | — | in-mission recall |
+| `0x0047CEE8` | `A0` | 100, 100, 387, 199 | — | in-mission recall |
+| `0x00456DE0` | `A0` | 84, 77, 280, 276 | 0 (types) | the briefing screen |
+| `0x0044EEDA` | `B0` | 220, 120, 200, 500 | 0 (types) | `Menu_a` window 10 `:Leveloptions;`, gadget 22 — the multiplayer *Infos* button, **corrected 2026-09-09**; see below |
+| `0x00453990` | `B0` | 220, 100, 200, 300 | 0 (types) | the map screen, on the key `B` — the campaign's arm |
+| `0x00456D96` | `C0` | 84, 77, 230, 276 | 0 (types) | the tips screen |
+
+**`0x0043B1F0` is a multiplayer predicate, and this paragraph used to have it
+backwards** *(corrected 2026-09-09)*. It answers `[0x00509F08] && (gameMode()
+== 2 || gameMode() == 4 || (gameMode() == 3 && humans > 1))`, and a campaign is
+`gameMode() == 1` (§6.2 of [`27`](27-campaign.md) and the twelve sites it
+enumerates), so **the predicate is false in every campaign**. The two call
+sites above are its two arms and they are exact complements:
+
+* the map's `B0` (mission control's action `0xb`) needs `humans == 1 &&
+  !predicate` — the campaign's case, so a campaign **does** draw it;
+* the mission-start `A0` popup is the arm `0x0041a980` takes when the
+  predicate is non-zero — so a campaign **never** does.
+
+The popup is behind a second gate besides, and reading it whole is what settles
+the strength panel too *(2026-09-09)*. The flag is `0x005106D4`: `0x004538E0`
+reads it, `0x004538F0` clears it, and **its only writer in the whole image** is
+`0x004539C1` — the arm the map's `B` takes when its own gate fails. So the two
+routines are one feature with three outcomes:
+
+```c
+/* 0x00453961, the map's `B` */                 /* 0x0041B5FE, the mission's first frame */
+if (humans() == 1 && !predicate())              if (!flag)            /* nothing at all */
+     draw B0 at (220,100,200,300);              else if (predicate()) draw A0 at (100,100,387,199);
+else flag = 1;                                  else                  aDrawStrength(0x0045FA00);
+```
+
+`humans()` is `0x0043B700`, and it is a **count and not a flag**: it walks the
+player-kind slots at `0x00509E20`, bounded by `0x0043B310`'s player count at
+`0x00509E30`, and returns how many hold `1`. That distinction is the whole of
+it. One human on a machine with no network never arms the flag, so a campaign
+draws neither the popup nor the panel; a network session arms it and gets the
+full briefing; and **the panel is the hot-seat shape** — two or more humans on
+one machine, where the flag is armed and the network predicate is still false.
+
+The key is `B` itself: `0x00451240` maps the character to action `0xb` through
+the jump table at `0x004513E4`, whose fifteenth arm is `mov esi, 0xb`.
+
+The remake follows the one-human arm — `B` on the location map draws the `B0`
+box — and has no way to be more than one human, so it draws no mission-start
+popup and no strength panel, and there is nothing to arm the flag with. That is
+faithful absence rather than a gap ([`92` §7.19](92-remake-architecture.md)).
+`seq_parse.py --check` pins all of it: both halves of the `B` gate, the flag's
+single writer with its reader and its clear, and `0x0041A980`'s branch into
+`0x0045FA00`.
+
+**`0x0044EEDA` is not the deployment screen** *(corrected 2026-09-09)*. The row
+above said "unit selection" and it was a guess: the site is inside
+`aMenuSystem`'s gadget dispatcher `0x0044DCD0`, whose outer switch is on
+`[0x50FDF8]` — and that global is **`Menu_a`'s** `_A_WindowSelector`, not
+`Menu_b`'s. What says so is a writer rather than the arm count: `0x0044D2F4`
+pushes `GUI\Menu_a.LCL`, loads it, and `0x0044D37C` sets the global to **7**,
+which is `Menu_a`'s `07_MainMenu`. Window **10** is therefore
+`:Leveloptions;`, its arm is `0x0044EB52`, and the gadget that reaches the
+`B0` activation is **22** — `GUI_SetButton (22_gdtID, …135_WinText…)`, which
+`Menu_a.lcl` comments `* infos`. So the short briefing appears there on the
+*Infos* button of the **multiplayer level-options screen**, on the DirectPlay
+path.
+
+`SelectUnits` is a `Menu_b` window and **no `aActivateBriefingInfo` site lies
+in its arm at all**: of the eight call sites in the image, exactly one is
+inside the dispatcher and it is this one. `seq_parse.py --check` pins the
+whole chain — the writer that names `Menu_a`, the dispatcher's switch, window
+10's own gadget switch, the index table's entry for 22, and the list of eight
+sites — because this is the second thing in this document to have been
+attributed to a screen by name instead of by arm.
 
 The files' own comments name them: `A0` is the *full briefing*, `B0` the *short
 briefing (only the victory and defeat conditions)*, `C0` the *tips*. Every one

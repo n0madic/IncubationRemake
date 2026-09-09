@@ -47,14 +47,14 @@ python3 tools/ai_tables.py        --check gog_incubation      # 77 checks
 python3 tools/brief_parse.py      --check gog_incubation      # 57 checks
 python3 tools/turn_tables.py      --check gog_incubation      # 85 checks
 python3 tools/interaction_tables.py --check gog_incubation    # 158 checks
-python3 tools/campaign_tables.py    --check gog_incubation    # 441 checks
+python3 tools/campaign_tables.py    --check gog_incubation    # 468 checks
 python3 tools/blob_tables.py        --check gog_incubation    # 546 checks
 python3 tools/blob_runtime.py       --selftest               # 78 kinds, 74 arms
 python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 80 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 42 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 727 checks, docs/42
-python3 tools/seq_parse.py          --check gog_incubation    # 75 checks, 130/130
+python3 tools/seq_parse.py          --check gog_incubation    # 160 checks, 130/130 (--manifest prints the two cache documents)
 python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -66,9 +66,9 @@ python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecu
 python3 tools/movemap_runtime.py    --check gog_incubation   # 31 checks, 3726 fills, 4587 paths, 4587 walks
 python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 missions
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
-python3 tools/remake_convert.py     gog_incubation --check   # 251 checks, 6 missions + the 2 campaign maps
+python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 39 suites, 4820 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5009 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -709,6 +709,33 @@ walked out of the fog and stayed a contact beam -- `game/picture_fog.gd`
 answers the whole picture at once, for the seat that is watching and at the
 cell each body is drawn on.
 
+`docs/101` reports the ninth -- the screens between the screens (2026-09-08):
+the boot splash, the four-part intro, the six framed dialogue cutscenes, both
+endings, the credits, the briefing's typewriter and voice-over, the loading
+screen and the base's fly-in. **The game ships no video**: a cutscene is a
+Charisma scene in `Video/<dir>/`, converted per directory into
+`sequences/<dir>/` with its own `textures/video_<dir>/` set, and played by
+`game/sequence/sequence_player.gd` at 30 fps from `tables/sequences.json` --
+the manifest `seq_parse.py` reads out of `aSetSeqPlayerVideoPart`, copied
+verbatim. Four things it corrected in delivered specs: the "camera/rate
+string" of `docs/41` is a **CD track program** (`"9,30"` loops track 9 and
+the `30` is an out-of-range terminator; the separators are `" .,|;:*+/"`,
+not the dot alone), the cameras are parts named `Cam<n>` chosen by the
+`Switch` note with `Focus` a seven-preset table scaled by the viewport height
+(and the focal before any note is `_ftol(width * 10/13)`, not 765), a part's
+pairs are **shots played one after another**, and `_C_YYY` as a mission is
+chain 1's **ending** (id 255, the animated extro), not a hand-over to
+campaign 2. **Cutscene music is the `Track` family** (`audio/music/track/`,
+behind `--no-music`); missions and the front end keep the measured `Arack`,
+which stops at 14 and leaves five cutscenes silent in the shipped build.
+The camera bone's forward axis is **measured**, not read -- engine +Y, 514 of
+520 poses -- and its roll is the one item `docs/41` holds open; the fly-in's
+pacing is `docs/27`'s. `--sequence=N` is the fourth way in and the agent's
+`sequence N [framed]` plays one from wherever the shell is; `GET /state`
+carries `sequence` and `holding`. A cache from before 0.29.0 plays nothing
+and shows no splash, and every reader falls back to "no such step" rather
+than failing.
+
 `docs/98` reports the sixth -- the campaign: both chains, the location map,
 the two roster banks, deployment onto the `action_point == player + 1` cells,
 the mission end with its score and payouts, the economy and six screens on the
@@ -782,7 +809,7 @@ Nine things about it that are easy to trip over:
   removes only directories carrying one of its own manifests — it used to
   delete every subdirectory it found under `-o`, which turns a mistyped path
   into data loss.
-* **`CONVERTER_VERSION` is written down twice** (0.28.0 since `tables/campaign.json`'s `upgrade` rows carry each base's own tech band, docs/27 section 5.2; 0.27.0 was a briefing span's hard break becoming a **count** rather than a flag), in
+* **`CONVERTER_VERSION` is written down twice** (0.31.0 since `P0_M2_000` joined every cache -- `docs/40` section 7.2's kind-4 literal, which no selector's closure names and which an upgrade base's own marines march on, docs/27 section 2.7.1; 0.30.0 was `tables/frontend.json` recording the map's `B0` key and gate rather than a briefing switch that does not exist, docs/24 section 7.1; 0.29.0 was the cutscenes, `tables/sequences.json`, `tables/frontend.json`, the voice-overs and the `Track` tracks joining every cache, docs/92 section 7.19), in
   `tools/inclib/cache.py` and
   in `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the
   cache — which is what it is for. Change the emitted document and you must bump
@@ -819,13 +846,24 @@ Nine things about it that are easy to trip over:
   *watched* -- the progress bar, the skip key, the agent's `replay` -- is the
   mirror's seat being 255, never `_playback.is_running()`, which is true
   during the player's own commands too (docs/100 §3.1).
+* **Nothing may be left alive at exit, and `run_tests.sh` gates on all of
+  it.** What the engine still holds is reported *after* the last check, some
+  of it as a warning, so none of it fails a check on its own: `ERROR: N
+  resources still in use at exit`, `WARNING: N ObjectDB instances were leaked
+  at exit`, `WARNING: N RID(s) of type "X" ... leaked`. The script fails the
+  run on every one of those lines — the `ObjectDB` line used to be let pass,
+  and one unparented `ColorRect` sat behind it from 2026-09-04, when the
+  windowed screens got their frame, to 2026-09-09. Re-run with
+  `--verbose` to have the instances named. `test_game_ui`'s
+  `no_state.a_screen_owns_everything_it_builds` is the same gate from inside,
+  per screen and in the exported build as well: it builds each campaign
+  screen, frees it, and requires
+  `Performance.OBJECT_ORPHAN_NODE_COUNT` back at its baseline.
 * **A reference cycle between two `RefCounted`s fails the suites.** Godot
   counts references and never collects a cycle, so the leaked objects' scripts
   are still held at shutdown and Godot prints
-  `ERROR: N resources still in use at exit` — which `run_tests.sh` gates on,
-  because it gates on runtime errors and not only on the sentinel — beside a
-  `WARNING: N ObjectDB instances were leaked at exit` that it lets pass. The
-  run then exits non-zero with every check green. `GameBlobHooks` holds its
+  `ERROR: N resources still in use at exit`. The run then exits non-zero with
+  every check green. `GameBlobHooks` holds its
   pool through `weakref` for that reason: the pool owns the hooks, so the
   pointer back has to be weak. Read the object back with an **assignment**
   (`var held: BlobPool = ref.get_ref()`), which is checked at run time;
@@ -900,7 +938,7 @@ queue behind one. The verbs are `key NAME`, `click X Y`, `click_unit SLOT`,
 `click_screen X Y`, `hover X Y`, `walk_to X Y`, `cell X Y`, `chance A B`,
 `blobs`, `watch N`, `wait N`, `idle [MAX]`, `shot NAME`, `note TEXT`,
 `buttons`, `press CAPTION`, `wheel N [X Y]`, `map_click X Y`, `menu [NAME]`,
-`slot N [load|save [NAME...]]`, `option NAME VALUE` and `quit`, plus the battle interface's
+`slot N [load|save [NAME...]]`, `option NAME VALUE`, `sequence N [framed]` and `quit`, plus the battle interface's
 `markers` and `hud event|pad|ring|radar N` (`docs/43`) and the campaign's
 `campaign N`, `location N`, `deploy SLOT X Y`, `screen NAME`, `ui NAME`,
 `enter NAME` and `gamecontrol SLOT VALUE` — the last three are debugging
@@ -927,12 +965,18 @@ rows, the campaign economy and the scoreboard's four pairs. It is outside the
 block because those files are gitignored and it exits non-zero when there is
 nothing to read.
 
-`python3 tools/remake_convert.py gog_incubation --check-campaign` (**44
-checks**) is the other one outside it: it bakes **all 92** campaign maps once
--- 75 missions, `_C_XXX`/`_C_YYY` and the 15 upgrade screens, 31 scenes and 9
-world sets -- and checks the result. It is separate from `--check` because
-`--check` runs **three** full conversions and this set is fifteen times the
-slice: 26 s and 86 MiB against 4 s and 42 MiB (`docs/92` §7.13 D9).
+`python3 tools/remake_convert.py gog_incubation --check-campaign` (**88
+checks** since the cutscenes joined it) is the other one outside it: it bakes
+**all 92** campaign maps once -- 75 missions, `_C_XXX`/`_C_YYY` and the 15
+upgrade screens, 31 scenes and 9 world sets -- and checks the result. It is
+separate from `--check` because `--check` runs **three** full conversions and
+this set is fifteen times the slice's maps: 30 s and 200 MiB against a cold
+23 s and 153 MiB (26 s and 86 MiB against 4 s and 42 MiB before the
+cutscenes, `docs/92` §7.13 D9). Both halved on 2026-09-09: a VISN record
+decodes to exactly one PNG, so `convert_textures` memoises the decode per
+process -- the whole `--check` is **40 s** where it was three times 34, one
+cold conversion 23 s where it was 34, and the campaign bake 30 s where it
+was 57 (`docs/92` §7.19 I12).
 **`--campaign-maps`** is the same set as a mission argument rather than as a
 check: it replaces `--missions` (giving both is refused, as is giving it
 without a root) and is what a cache the campaign can actually be *played*

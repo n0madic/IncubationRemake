@@ -666,12 +666,23 @@ func _layout_info() -> void:
 	_info.size = Vector2(width, 0.0)
 	# `fit_content` grows the label and the container with it, so the box is as
 	# tall as what is in it and [member _info_height] bounds **nothing here**.
-	# That is the original's own arrangement rather than an oversight: docs/24
-	# section 7.1's `B0` box is 500 tall on a 480 screen, the height is a
-	# layout bound and not a drawn rectangle, and no shipped block comes near
-	# either bound -- the longest `Data.txt` unit page is 245 characters. The
-	# number is kept because [method info_box_rect] is the rectangle the specs
-	# quote and the agent and the suites read it.
+	#
+	# **Measured, not assumed** (docs/24 section 7.1). The height
+	# `aActivateBriefingInfo` stores at `0x0050b2c8` has exactly one reader in
+	# the whole image, `0x0043f032`, which pushes it into the frame draw
+	# `0x0043f430` -- so in the original it is the height of the drawn
+	# *rectangle* and nothing clips the text to it. A block longer than its
+	# box therefore runs past the frame's bottom edge in the original, which
+	# is why `B0` can be given a box 500 tall on a 480 screen at all. Here the
+	# frame grows to hold its text instead: the same words, inside a border
+	# rather than through it. It is the one place this box diverges, and
+	# nothing shipped reaches it: the two boxes drawn here are the pickup's
+	# 400-tall one and the magnifier's 300, and no shipped block overflows
+	# either. The mission-start `A0` popup, whose 199 was the one height a
+	# briefing did overflow, is not drawn at all -- `0x0043B1F0` gates it
+	# on multiplayer (docs/92 section 7.19 I10).
+	# The numbers are kept because [method info_box_rect] is the rectangle the
+	# specs quote and the agent and the suites read it.
 	_info.custom_minimum_size = Vector2(width, 0.0)
 
 

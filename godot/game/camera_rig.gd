@@ -351,8 +351,16 @@ static func frame_projection(camera: Camera3D, window: Rect2,
 		render: Vector2, zoom_divisor: int = 0, focal_width: float = 0.0) -> void:
 	if camera == null or render.x <= 0.0 or render.y <= 0.0:
 		return
-	var focal: float = focal_length(
-		focal_width if focal_width > 0.0 else window.size.x, zoom_divisor)
+	frame_projection_focal(camera, window, render, focal_length(
+		focal_width if focal_width > 0.0 else window.size.x, zoom_divisor))
+
+
+## The same frustum for an explicit focal length in the window's pixels --
+## what the sequence player's `Focus` notes hand it (docs/41 section 4).
+static func frame_projection_focal(camera: Camera3D, window: Rect2,
+		render: Vector2, focal: float) -> void:
+	if camera == null or render.x <= 0.0 or render.y <= 0.0:
+		return
 	if focal <= 0.0:
 		return
 	# The frustum is stated at the near plane, so every length here is a

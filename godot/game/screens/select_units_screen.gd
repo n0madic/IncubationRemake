@@ -52,6 +52,12 @@ const SQUAD_GAP: float = 4.0
 const SQUAD_FONT_SIZE: int = 11
 
 var host: CampaignHost = null
+## The mission's briefing document and where the fonts are, for the short
+## briefing `B0` the unit-selection screen types out at (220, 120) --
+## `0x0044EEDA`, `animate = 0` (docs/24 section 7.1). Empty for a mission the
+## cache has no briefing for, and then no box is drawn.
+var document: Dictionary = {}
+var cache_dir: String = ""
 ## The roster slot the player picked, or [constant Roster.NO_SLOT].
 var selected: int = Roster.NO_SLOT
 
@@ -85,6 +91,17 @@ func build() -> void:
 	_squad.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_squad.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root().add_child(_squad)
+
+	# **No briefing box here.** The slice put `B0` over this view on the
+	# strength of one row of docs/24 section 7.1's table, which named the
+	# screen without reading the arm. `0x0044EEDA` is inside `aMenuSystem`'s
+	# dispatcher `0x0044DCD0`, whose outer switch is on `Menu_a`'s window
+	# selector `[0x50FDF8]` -- window **10** is `:Leveloptions;` and the
+	# action that reaches it is gadget **22**, the button `Menu_a.lcl`
+	# comments `* infos`. That is the multiplayer level-options screen, which
+	# this remake does not have; `SelectUnits` is a `Menu_b` window and no
+	# `aActivateBriefingInfo` site lies in its arm at all. The conditions are
+	# on the briefing page, one screen back.
 
 	add_button("start", BANK_MISSION, ID_CONTINUE, 0)
 	add_button("map", BANK_MISSION, ID_MAIN_MAP, 1)

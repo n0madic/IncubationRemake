@@ -61,6 +61,7 @@ const LEAST_CHECKS: Dictionary = {
 	"game_ui": 270,
 	"hud": 327,
 	"shell": 95,
+	"sequence": 60,
 	"game_loads": 12,
 	"save": 26,
 	"journal": 40,

@@ -52,6 +52,13 @@ gdscript/warnings/directory_rules={
 
 [rendering]
 
+; **Black, not Godot's grey.** A frame with no current camera paints this
+; colour: the boot frame before the splash, and the 1000/4000 ms holds after a
+; cutscene, where the player has been destroyed and the map's backdrop is not
+; built yet (docs/101 section 6). Godot's default is a light slate, which read
+; as a screen flashing grey between the intro and the location map.
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+
 ; Required for a universal / arm64 macOS export.
 textures/vram_compression/import_etc2_astc=true
 renderer/rendering_method="gl_compatibility"

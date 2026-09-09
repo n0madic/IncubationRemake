@@ -65,11 +65,27 @@ func build(frame: int) -> Dictionary:
 		"camera": camera(),
 		"shell": shell(),
 		"campaign": _main.campaign.view() if _main.campaign != null else {},
+		# The cutscene being played -- id, part, shot, frame, camera, focal --
+		# and whether one of the front end's holds is counting down
+		# (docs/92 section 7.19). Empty and false between them.
+		"sequence": _main.sequence_view(),
+		"holding": _main.holding(),
 		"settings": _main.settings.view(),
 		# **Above the `world == null` return.** A scenario that fails at the
 		# shell, on the location map or on a deployment screen has to be able
 		# to say whether it was played straight too ([Cheats]).
 		"cheats": Array(_main.cheats.active()),
+		# What the pool holds right now, by wave: the clicks and the voices
+		# of docs/28 sections 2.5 and 4.3 are single frames of sound, so a
+		# drive that only read the world could not tell a silent interface
+		# from a noisy one. Above the return too, since slice 9: the
+		# briefing page's voice-over plays with no world behind it.
+		"sounds": sounds(),
+		# The music player: which programme, which family, which track and
+		# whether a stream is running. A cutscene's soundtrack **is** its CD
+		# track (docs/101 section 6), so a silent cutscene is invisible in a
+		# snapshot that only lists the wave pool.
+		"music": _main._audio.music_view() if _main._audio != null else {},
 	}
 	if world == null:
 		return document
@@ -89,10 +105,6 @@ func build(frame: int) -> Dictionary:
 	# alien moves. It is the **mirror's** seat, not the playback: a player's
 	# own command runs through the same playback and is not a replay.
 	document["replay"] = _main._watching_the_computer()
-	# What the pool holds right now, by wave: the clicks and the voices of
-	# docs/28 sections 2.5 and 4.3 are single frames of sound, so a drive that
-	# only read the world could not tell a silent interface from a noisy one.
-	document["sounds"] = sounds()
 	document["gore_level"] = world.gore_level
 	document["ai_level"] = world.turn.ai_level
 	document["units"] = units()

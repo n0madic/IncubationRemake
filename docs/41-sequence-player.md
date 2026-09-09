@@ -10,6 +10,13 @@ Artifact: GOG `Incubation.exe`, PE32/i386, preferred base `0x00400000`, SHA-256
 All addresses below are virtual addresses in that image.  The result is
 **verified-static**; the original executable was not run.
 
+**Corrected 2026-09-08** (the ninth slice, [`101`](101-slice-9-report.md)):
+the "camera/rate string" of §2 and §4 is a **CD track program**, the cameras
+are parts named `Cam<n>` chosen by the `Switch` note, `Focus` is a preset table
+scaled by the viewport height, and a part's pairs play **one after another**.
+The corrections are in place below; the earlier reading is quoted where it
+was wrong so the change is visible.
+
 ## 1. There is no sequence-description file
 
 `Video/<part>/` contains four resource groups:
@@ -21,15 +28,23 @@ All addresses below are virtual addresses in that image.  The result is
 
 The missing fifth file is deliberate: **the scene manifest is compiled into
 `aSetSeqPlayerVideoPart` (`0x00465CC0`)**.  It constructs four strings for each
-actor — model path/name and animation path/name — stores them in a 40-byte
+pair — model path/name and animation path/name — stores them in a 40-byte
 `PlayerSequence` list node, copies the list into the 3D player, and supplies a
-camera/rate string such as `"13,30"`.  Thus a replacement should externalise
-the table in §2; it must not search the directory and guess pairings.
+**CD track program** such as `"13,30"` (§4).  Thus a replacement should
+externalise the table in §2; it must not search the directory and guess
+pairings.
 
-The list order is actor order.  All actors in a part start together.  Their
-ordinary Charisma notes (`Switch N`, `Focus N`, including the authored spelling
-and whitespace variants) remain part of each `.cha` and are handled by the
-shared animation engine, not by a second sequence timeline.
+The list order is **playing order**: a part's pairs are *shots*, played one
+after another, not actors that start together.  The 3D player (`0x0047F6A0`)
+answers return code 6 when the current pair's clip has ended and the update
+installs the next pair (`0x0047FD00`) in the same call; the clock is a
+per-frame delta whose epoch is rewritten on every update (`0x00465ACF`), so
+every shot starts at frame 0.  Each pair is one scene -- one model whose parts
+are the actors *and* the cameras -- and its ordinary Charisma notes (`Switch
+N`, `Focus N`, including the authored spelling and whitespace variants) are
+read by the player's own note dispatcher (§4), not by a second timeline.
+`BREAK` is not read here at all: `0x0042C5D0`, the note-stop callback, has one
+caller, the combat routine ([`40` §9](40-charisma-model-animation.md)).
 
 ## 2. Complete logical-id and video-part table
 
@@ -38,7 +53,7 @@ The number passed to `aCreateSeqPlayer` is a **logical sequence id**.  Only
 `0x0046588C` and `0x00467FC4` reject every other value.  A video part is one row
 within that logical id.  Completion automatically increments the part index.
 
-| logical id | part | directory | loaded actor stems | camera/rate |
+| logical id | part | directory | pair stems (played in order) | CD program |
 |---:|---:|---|---|---|
 | 0 | 0 | `Seq_1` | `1_1..1_15` | `9,30` |
 | 0 | 1 | `Seq_3` | `3_1..3_34` | `10,30` |
@@ -58,10 +73,10 @@ For an ordinary stem `X`, the pair is `Model_X.cho` plus `Animation_X.cha`.
 
 Two arms are laid out in the reverse of their part order — the `Dialog_09` arm
 precedes the `Dialog_07` one, and the `Dialog_16` arm precedes the `Dialog_15`
-one — so a camera string cannot be attributed by address adjacency alone.  Each
-arm ends with `mov edi, <camera>` followed by `jmp 0x00467DD5`, the shared tail
-that copies the actor list and installs the camera, so the string belongs to the
-arm it *terminates*: `0x0046755D` closes `Dialog_09` with `15,30`, and
+one — so a program string cannot be attributed by address adjacency alone.  Each
+arm ends with `mov edi, <program>` followed by `jmp 0x00467DD5`, the shared tail
+that copies the pair list and starts the CD program, so the string belongs to
+the arm it *terminates*: `0x0046755D` closes `Dialog_09` with `15,30`, and
 `0x00467689` closes `Dialog_07` with `14,30`.  `0x0046755D` is unreachable from
 the `Dialog_07` arm, whose entry is `0x00467567`, past that jump.
 
@@ -69,8 +84,8 @@ The hard-coded table also explains eleven files that directory enumeration
 would get wrong: `Dialog_16/Model_D16_01..09.cho` are ignored in favour of the
 unpadded `D16_1..9` models, and the misspelled
 `Seq_3/Animaton_3_6.cha` / `Animmation_3_18.cha` are never loaded.  The selected
-manifest contains **130 actor entries and 130 animations** across **12/12**
-directories.
+manifest contains **130 pairs -- 113 distinct models and 130 animations** --
+across **12/12** directories.
 
 ## 3. Lifecycle and state machine
 
@@ -90,23 +105,31 @@ Create refuses a second active player, sets `active=1`, `running=0`,
 initialises the pure 3D engine with that part's `Objects`, `Textures`, and `Img`
 roots, and stores `logicalId`.  The mission-control caller at `0x0045711F`
 passes `(x,y,w,h,id)`; the full-screen path is `0,0,640,480`, and the framed
-path is `65,57,518,306`.
+path is `65,57,518,306`.  It also constructs the player's camera object
+(`V100Camera` "Main camera"/"Film", `0x0047F3C0`, through `0x004652C0`) with a
+**focal length of `_ftol(width * 10/13)`** -- `fmul qword [0x004B1570]` in both
+branches, the same rule as `_E3D_init_3d_screen`'s -- so a sequence opens at
+492 pixels full screen and 398 framed until a `Focus` note says otherwise.
 
 Start refuses an inactive or already-running player, sets `running=1`, resets
 `part=0`, and loads part zero.  Loading a part clears the previous actor list;
 parts that change directories first shut down and reinitialise the pure 3D
 engine.  It then creates the actors, resets the list iterator, installs the
-first actor's model and animation in the renderer, increments `part`, and sets
-`newPart=1` when a non-empty camera string is installed.  "Non-empty" is
+first pair's model and animation in the renderer, increments `part`, and sets
+`newPart=1` when a non-empty CD program is installed.  "Non-empty" is
 literal: the tail compares the installed string against the zero-initialised
 global `0x004FA524`, and the `Seq_5` arm is the one that loads exactly that
-global, so `Seq_5` is the only part that does not raise `newPart`.
+global, so `Seq_5` is the only part that does not raise `newPart` -- and the
+only one that starts no CD program, which leaves `Seq_4`'s track playing.
+Installing a pair (`0x0047FD00`) resets the camera index to 1
+(`mov dword [esi+4], 1` at `0x0048023B`) and does **not** touch the focal
+length, which therefore carries across a part's shots.
 
 The update at `0x004658B0` does nothing until both active and running are true.
 On `newPart`, it resets the wall-clock epoch.  Every update computes
 `dt = (GetTickCount() - epoch) * 0.03`, i.e. animation frames at **30 fps**, and
 passes that delta plus the target surface to the 3D player (`0x0047F6A0`).
-Return code `6` means the current actor/list item ended: advance to the next
+Return code `6` means the current pair's clip ended: advance to the next
 node, install its four strings and update again.  Past the list end, call
 `aSetSeqPlayerVideoPart`; if no next part exists, update returns false and the
 GUI exits the sequence screen.  Other renderer return codes keep the current
@@ -117,13 +140,65 @@ Destroy stops the renderer, restores the render bounds, clears `running` and
 Calling it inactive is an error.  Mission control calls it on leaving the
 screen (`0x004571AE`) and then returns to the campaign/map flow.
 
-## 4. Camera, sound, subtitles, and input boundaries
+## 4. The CD program, the cameras, the Focus table, sound and input
 
-The second element of every non-empty camera string is `30`, matching the
-independent `0.03 frames/ms` playback proof.  The first element selects the
-authored sequence-camera path (`9..19`).  These paths belong to the 3D scene;
-they are not `aGetCameraPath(0..4)` from `aAnimations.cpp`, which is a separate
-gameplay-camera helper.
+### 4.1 `"13,30"` is a CD track program, not a camera path
+
+*(Corrected 2026-09-08.  This section used to read the string as "the authored
+sequence-camera path `9..19`" with `30` "matching the 30 fps proof".  Neither
+half survives the tail.)*
+
+The shared arm tail `0x00467DD5` copies the string to `0x00514288`
+(`mov edi, 0x514288` at `0x00467F15`), calls `0x0042BE50` (`MCI_STOP`) and
+`0x0042BD80` (`MCI_OPEN cdaudio`), then `0x0042C120`, then
+**`0x0042C040(0x514288)`** at `0x00467F33` -- the `CDTrackProgram` parser of
+[`20` §7.3](20-lcl-language.md), whose `strtok` separators are the nine bytes
+at `0x004C2768`, `" .,|;:*+/"` -- and finally `0x0042BC10`, which plays the
+list's current entry.  A token above the disc's track count (`[0x004FE688]`)
+parses to `-1`, and `0x0042BC10` **wraps the cursor to entry 0 on a negative
+entry**, so `"9,30"` loops CD track 9 for ever and the `30` is a deliberately
+out-of-range terminator.  The 30 fps clock is proven by `0.03` at
+`0x004B157C` alone.
+
+Every non-empty program is one track and the terminator, tracks 9..19, one
+per part, and `Seq_5`'s empty string keeps `Seq_4`'s track 11 playing.  The GOG
+release's `Arack` family stops at 14 ([`28` §6.1](28-effects-and-sound.md)), so
+the shipped build is **silent** through `Dialog_09` (15), `Dialog_14` (16),
+`Dialog_15` (17), `Dialog_16` (18) and `Extro` (19); the `Track` family runs to
+20 and covers all eleven, which is what the remake plays for the cutscenes
+([`92` §7.19](92-remake-architecture.md)).
+
+### 4.2 The cameras are parts named `Cam<n>`
+
+The note dispatcher of `0x0047F6A0` pushes the literal `"Cam"` (`0x004CD388`,
+at `0x0047F7BB`), appends the current camera index with `itoa` and
+`String::AppendSubstring` (`0x0047F7C0..0x0047F7EA`) and looks the part up by
+that name; `Switch n` writes the index.  The player's own `V100Camera` "Main
+camera" is the object that gets attached to it.  Corpus: **all 113 models carry
+`Cam1`**, `Model_D09` carries `Cam1..Cam8`, and **all 55 `Switch` notes** name
+a `Cam<n>` node of their own model (`seq_parse.py --check`, `notes.*`).
+
+### 4.3 `Focus f` is a focal length in pixels for a 480-row screen
+
+At `0x004804BB` the dispatcher reads `f` with `atof`, computes `_ftol(f) - 24`
+and, when that is in `0..176` (an *unsigned* compare at `0x004804E8`, so
+anything under 24 takes the default too), indexes the byte table at
+`0x00480670` and jumps through the eight-entry table at `0x00480650`:
+
+| `f` | 24 | 28 | 35 | 50 | 85 | 135 | 200 | anything else |
+|---|---|---|---|---|---|---|---|---|
+| focal at 480 rows | 400 | 500 | 613 | 877 | 1477 | 2350 | 3500 | **765** |
+
+The result is then multiplied by the viewport's height over 480 --
+`[ebp+0x40]` compared against 480 and 240, the **f32** reciprocals `1/240` at
+`0x004B1690` and `1/480` at `0x004B1694` -- and stored at `[ebp+0x58]`; the
+`[ebp+0xC]` arm halves the preset first and uses `1/240`, and the sequence
+player never takes it (its constructor receives `push 0` for that argument).
+The shipped clips ask for 24, 28, 35, 43 and 50 and nothing else (138 notes;
+the most common, 43, is the default 765).  `Fade n` (`0x0048059C`, 0..100)
+exists in the dispatcher and no shipped clip uses it.
+
+### 4.4 Sound and input
 
 There is **no speech or subtitle scheduler in `aSeqPlayer.cpp`**.  None of the
 12 video directories contains a wave or text file, and the manifest nodes carry
@@ -137,9 +212,16 @@ audio timing from the `Video/Extro` animations.
 
 The GUI owns presentation and input.  Its screen-8 arm calls the update each
 frame, scales/blits either the full-screen or framed viewport, and treats a
-renderer/update failure as completion.  Mouse/keyboard dismissal and the
-subsequent one-second transition delay live in mission control, outside the
-sequence player.  Package G does not require reproducing those widgets.
+renderer/update failure as completion.  The framed presentation installs a
+background callback (`0x00456F30`, at `0x00457047`) that paints `plate_7` and
+text 0 of the loaded bank -- *Please Wait...* -- at (320, 210).  **One key or
+click ends the whole sequence**, not a part: the GUI loop's `WM_LBUTTONDOWN`
+arm (`0x004555E6`, `cmp di, 0x201`) and its key arm both call `0x00457180`
+while window 8 is up, and that routine destroys the player.  Its two exits are
+mission id 255 -- `Sleep(4000)` and the credits flag `0x0044BC60(1)`, with no
+destroy of its own -- and everything else: `aDestroyPlayer`, `Sleep(1000)`,
+back to mission control's map (`0x00457590`).  Those holds and the front end
+around them are [`92` §7.19](92-remake-architecture.md)'s.
 
 ## 5. Trigger side
 
@@ -163,8 +245,19 @@ python3 tools/seq_parse.py --json gog_incubation
 The checker is fail-closed over the executable dispatch/lifecycle/timing
 anchors, the exact 12-directory corpus, every selected model/animation pair,
 all expected ignored lookalikes, and full parsing of all 130 selected `.cha`
-files through the existing Charisma parser.  Current result: **75/75 checks,
-12/12 directories, 130/130 animations**.
+files through the existing Charisma parser.  Since 2026-09-08 it also pins
+§4: the tail's four calls and the copy to `0x00514288`, the separator set, the
+wrap in `0x0042BC10`, every program parsing to one track in 9..19 plus the
+terminator with its `Track%02d.ogg` present; the `"Cam"` literal, the
+per-pair index reset and the `10/13` construction focal; the Focus table read
+out of the byte and jump tables with its seven presets, default, bounds and
+reciprocals; every `Switch` resolving to a `Cam` node and every model carrying
+`Cam1`; and the front end around the sequences (`FRONTEND`: the five CD
+programs, the three holds, the splash, the credits flag, the static extro, the
+message screen, the gate and the intro flag, the exit's two arms, the two
+viewports and the briefing's typewriter).  `--manifest` prints the two
+documents the converter copies into the cache.  Current result: **144/144
+checks, 12/12 directories, 130/130 animations**.
 
 Four checks per arm carry §2, because file existence alone would be satisfied
 by any table recovered by listing `Video/`:
@@ -184,18 +277,55 @@ timing remain outside the verified-static claim.
 
 ## 7. Open questions
 
-Nothing is open at the replacement-contract boundary: the manifest, the
-lifecycle, the timing and the trigger are all pinned to the image, and the
-speech/subtitle question is closed negatively in §4.
+1. ~~**The camera bone's roll.**~~ **Closed** (2026-09-09) — measured against
+   the scenes themselves.  Which of a `Cam<n>` part's local axes the authoring
+   tool looked along is not in the data ([`40`
+   §10.1](40-charisma-model-animation.md)), so both halves of the convention
+   are measurements.
 
-Two things are **decided rather than unknown**, and are recorded here so the
-absence of an entry is not mistaken for an oversight:
+   The **forward** axis: over all 130 shots at four frames each (520 poses)
+   the mean joint of the drawn parts lies along the bone's engine +Y in 514,
+   with a mean cosine of 0.90, and every other axis is near 0.5.
 
-1. **What the camera ids `9..19` select** is a property of the 3D scene, not of
-   `aSeqPlayer.cpp`.  The player passes the string through; the path itself
-   lives in the Eng3d side and belongs to [`30`](30-eng3d-ascii-formats.md) /
-   [`31`](31-prototyp-geometry.md) if it is ever wanted.  A remake that supplies
-   its own camera never needs it.
-2. **Presentation and input** — the scaling blit, the dismissal key and the
-   one-second transition delay — live in the GUI and mission control, outside
-   this module, and are deliberately out of package G's scope (§4).
+   The **roll** about it: every shipped cutscene is a built world with a sky
+   above it, so a bone frame carrying a quarter or a half turn would hold that
+   world on its side or upside down, and a joint centroid would never notice.
+   The lens' own up is therefore compared with the scene's: over 260 poses
+   (130 shots at two frames) the camera's +Y after
+   `WorldSpace.engine_matrix` lies within 46° of the world's up in **240**, a
+   share of 0.92.  A quarter turn puts that share at zero and a half turn puts
+   it below it, so the bone's frame carries neither, and the remake takes the
+   bone's engine +Z as up unchanged.  `test_sequence.gd` re-measures both
+   (`camera.joints_in_front_of_the_lens`, `camera.up_is_the_world_s_up`).
+
+   **The small roll is measured too** *(2026-09-09)*, and the crude 46° test
+   above was only ever a check that the frame carries no quarter or half turn.
+   The roll of one pose is a number, not a share: take the world up with the
+   forward component removed — what an unrolled camera's own up would be —
+   and the signed angle from it to the bone's own engine +Z.  Over all 130
+   shots at **nine** frames each, 2547 poses (the near-vertical ones, where
+   every roll is the same picture, drop out):
+
+   | | |
+   |---|---|
+   | median roll | **0.000°** |
+   | within 0.5° | 1884 / 2547 (74 %) |
+   | within 2° | 2174 / 2547 (85 %) |
+   | within 10° | 2461 / 2547 (97 %) |
+   | extremes | −90.6° … +24.6° |
+
+   So the bone is authored **upright**, exactly, in the median pose, and the
+   tail is a real and small set of deliberately banked shots rather than a
+   convention this project has failed to find.  Nothing in the remake decides
+   it either way: `SequencePlayer` takes the bone's whole basis
+   (`CAMERA_BASIS_FIX` is the identity), so whatever roll is authored is what
+   is drawn, and the only thing that had to be right is the forward axis
+   above.  `seq_parse.py --check` pins the three numbers
+   (`camera.roll_median_is_zero`, `camera.roll_is_mostly_none`,
+   `camera.roll_tail_is_small`), so this needs no Wine capture and never did.
+
+Two things are **closed** that this section used to call decisions:
+~~"what the camera ids `9..19` select"~~ -- they are CD tracks (§4.1), not
+camera ids; and ~~"presentation and input live outside this module"~~ -- they
+do, and they are now specified in §4.4 and [`92`
+§7.19](92-remake-architecture.md) rather than left to the GUI.

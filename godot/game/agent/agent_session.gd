@@ -132,6 +132,8 @@ const VERBS: Dictionary[String, String] = {
 	"enter": "enter NAME -- load a mission past the location map",
 	"gamecontrol": "gamecontrol SLOT VALUE -- SetGameControl (docs/20 section 7)",
 	"cheat": "cheat NAME [on|off] -- a level tester's switch, or `nuke`",
+	"sequence": "sequence N [framed] -- play logical sequence N full screen "
+		+ "(or framed) from wherever the shell is",
 	"quit": "quit -- leaves the game",
 }
 
@@ -209,6 +211,7 @@ func _init(main: SliceMain, root: Window,
 		"enter": _v_enter,
 		"gamecontrol": _v_gamecontrol,
 		"cheat": _v_cheat,
+		"sequence": _v_sequence,
 		"quit": _v_quit,
 	}
 
@@ -731,6 +734,22 @@ func _v_note(_parts: PackedStringArray, line: String) -> void:
 	_log.append(line.substr(5))
 
 
+## `sequence N [framed]` -- one of the seven logical ids, from wherever the
+## shell is (docs/92 section 7.19). The screen exits to what was there.
+func _v_sequence(parts: PackedStringArray, _line: String) -> void:
+	if parts.size() <= 1:
+		_log.append("sequence: wants a logical id (%s)"
+			% str(SliceMain.SEQUENCE_IDS))
+		return
+	var id: int = parts[1].to_int()
+	var framed: bool = parts.size() > 2 and parts[2] == "framed"
+	var shown: CampaignScreen = _main.play_sequence(id, not framed,
+		SliceMain.SEQUENCE_DEBUG)
+	_log.append("sequence %d: %s" % [id,
+		"playing %s" % str(_main.sequence_view()) if shown != null
+		else "not in the cache, or no such id"])
+
+
 func _v_quit(_parts: PackedStringArray, _line: String) -> void:
 	_log.append("quit")
 	_leaving = true
@@ -868,6 +887,13 @@ func _v_location(parts: PackedStringArray, _line: String) -> void:
 	_log.append("location %d: %s %s" % [id, kind, target])
 	if kind == CampaignMap.KIND_BATTLE and target != "":
 		_enter(target)
+		return
+	if kind == CampaignMap.KIND_UPGRADE or kind == CampaignMap.KIND_DIALOGUE:
+		# **Through the screen's own action**, not past it: a base opens with
+		# its arrival flight and a dialogue with its cutscene, and a verb that
+		# only moved the host's state would report a location as entered with
+		# nothing on the screen (docs/27 section 2.7).
+		_main._on_campaign_choice("location:%d:%s" % [id, kind])
 
 
 ## `deploy SLOT X Y` -- put one roster record on a deployment cell.

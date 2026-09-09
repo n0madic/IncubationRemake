@@ -54,6 +54,8 @@ var _music: MusicPlayer = null
 ## own copy goes stale the moment the shell silences the mixer, and the map
 ## then declines to restart the track it thinks is already playing.
 var _music_source: String = ""
+## Which family [member _music]'s numbers index.
+var _music_family: String = AudioTables.FAMILY_ARACK
 var _fx_volume: int = DEFAULT_FX_VOLUME
 var _music_volume: int = DEFAULT_MUSIC_VOLUME
 var _streams: Dictionary[String, AudioStream] = {}
@@ -262,6 +264,7 @@ func start_music(mission: String) -> int:
 	if _tables == null:
 		return -1
 	_music = MusicPlayer.for_mission(_tables, mission)
+	_music_family = AudioTables.FAMILY_ARACK
 	_music_source = mission
 	return _play_track(_music.first_playable())
 
@@ -273,12 +276,46 @@ func start_music(mission: String) -> int:
 ## `CreateBGB` lines anyway, and taking the programme out of the same run is
 ## what makes the two halves of that block one thing. It also works for a map
 ## the converter has no playlist row for.
-func start_program(program: String) -> int:
+## *family* names which of the two shipped families the numbers index:
+## [constant AudioTables.FAMILY_ARACK] for a mission and the front end,
+## [constant AudioTables.FAMILY_TRACK] for a cutscene (docs/92 section 7.19).
+func start_program(program: String,
+		family: String = AudioTables.FAMILY_ARACK) -> int:
 	if _tables == null or program.is_empty():
 		return -1
-	_music = MusicPlayer.from_program(program, _tables.tracks())
-	_music_source = MUSIC_PROGRAM + program
+	_music = MusicPlayer.from_program(program, _tables.tracks_of(family))
+	_music_family = family
+	_music_source = program_source(program, family)
 	return _play_track(_music.first_playable())
+
+
+## What [method music_source] answers while *program* of *family* plays --
+## so a caller asking "is this already playing" builds the same string.
+static func program_source(program: String,
+		family: String = AudioTables.FAMILY_ARACK) -> String:
+	return MUSIC_PROGRAM + family + ":" + program
+
+
+## Play one wave the cache carries under `audio/`, by its cache-relative path
+## -- a briefing voice-over or the static extro's soundtrack, which no table
+## names -- on a pool slot under *tag*. Answers the slot or -1.
+func play_file(relative: String, tag: String = "") -> int:
+	if _pool == null or _tables == null:
+		return -1
+	var stream: AudioStream = _stream_at(_tables.audio_path(relative), relative)
+	if stream == null:
+		return -1
+	var volume: int = _fx_volume
+	var slot: int = _pool.load_wave(relative, volume, 0, tag)
+	if slot < 0:
+		return -1
+	_pool.play(slot, false)
+	var player: AudioStreamPlayer = _players[slot]
+	player.stream = stream
+	player.volume_db = AudioTables.volume_db(volume)
+	arm_slot_end(player, _on_slot_finished.bind(slot), false)
+	player.play()
+	return slot
 
 
 func _on_music_finished() -> void:
@@ -289,7 +326,7 @@ func _on_music_finished() -> void:
 func _play_track(track: int) -> int:
 	if track < 0 or _music_player == null:
 		return -1
-	var path: String = _tables.music_path(track)
+	var path: String = _tables.music_path(track, _music_family)
 	var stream: AudioStream = _music_stream(path)
 	if stream == null:
 		return -1
@@ -315,14 +352,33 @@ func music_source() -> String:
 	return _music_source
 
 
+## What is on the music player right now -- the source string, the track the
+## playlist stands on, the family it comes from and whether a stream is
+## actually running. A driver that only read [method music_source] could not
+## tell a programme that was asked for from one that reached a file.
+func music_view() -> Dictionary:
+	return {
+		"source": _music_source,
+		"family": _music_family,
+		"track": _music.current() if _music != null else -1,
+		"playing": _music_player != null and _music_player.playing,
+		"volume": _music_volume,
+	}
+
+
 # --- streams ----------------------------------------------------------------
 
 func _stream_for(wave: String) -> AudioStream:
+	return _stream_at(_tables.wave_path(wave), wave)
+
+
+## One wave at *path*, cached under *key*.
+func _stream_at(path: String, key: String) -> AudioStream:
+	var wave: String = key
 	if _streams.has(wave):
 		return _streams[wave]
 	if _unopenable.has(wave):
 		return null
-	var path: String = _tables.wave_path(wave)
 	if not FileAccess.file_exists(path):
 		_unopenable[wave] = true
 		push_warning("audio: %s is not in the cache" % wave)

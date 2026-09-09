@@ -51,6 +51,25 @@ var block: String = "A0"
 ## It decides which buttons the screen has; see [method build].
 var over_mission: bool = false
 
+## Whether the block is revealed one glyph a frame (docs/24 section 5).
+##
+## In the original the campaign's briefing screen (`0x00456DCB`) and the tips
+## (`0x00456D81`) both pass `animate = 0` and both type. **Here only the
+## briefing does** -- docs/92 section 7.19's I20. The tips are a reference
+## page the player opens to look something up and closes again, and typing
+## them out is a wait for text that was already read once; the briefing is the
+## one the reveal is *for*. The briefing's own reveal is interruptible with
+## [method skip_typing], which is I21.
+##
+## The same page raised over a mission by `B` is `0x004577DB`'s recall, and
+## its argument is not read here -- the recall shows what the player has
+## already seen, so it does not type.
+var animate: bool = true
+## The cache-relative path of the mission's voice-over, `audio/briefing/
+## <mission>.wav`, or `""` for a mission without one. The host plays and
+## stops it; the screen only names it.
+var voice: String = ""
+
 var _text: BriefingText = null
 var _pictures: Control = null
 var _toggle: Button = null
@@ -65,6 +84,9 @@ func build() -> void:
 	_text = BriefingText.create(cache_dir, font != null)
 	place_on_plate(_text, BOX_AT, BOX_SIZE_BRIEFING)
 	root().add_child(_text)
+	_text.blip.connect(_on_blip)
+	if animate and not over_mission:
+		_text.start_typewriter()
 
 	_pictures = Control.new()
 	_pictures.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -101,6 +123,12 @@ func show_block(key: String) -> void:
 		return
 	var blocks: Dictionary = DictRead.as_dict(document.get("blocks", {}))
 	_text.show_block(DictRead.as_array(blocks.get(key, [])))
+	# The tips are shown whole, and coming back to the briefing after them
+	# does not start the reveal again: [method BriefingText.show_block] only
+	# restarts a typewriter that is already running, so one visit to `C0`
+	# settles the page for as long as it is up.
+	if key == "C0":
+		_text.finish_typewriter()
 	place_on_plate(_text, BOX_AT,
 		BOX_SIZE_TIPS if key == "C0" else BOX_SIZE_BRIEFING)
 	if _toggle != null:
@@ -171,6 +199,67 @@ func _has_block(key: String) -> bool:
 func scroll(lines: float) -> void:
 	if _text != null:
 		_text.scroll_by(lines)
+
+
+## The typewriter's clock -- `_process` rather than the host's tick, because
+## this screen is a [CanvasLayer] on the tree and the pickup box's reason for
+## a hosted clock (a suite building it off-tree) applies to the checks here
+## only through [method tick].
+func _process(delta: float) -> void:
+	tick(delta)
+
+
+func tick(delta: float) -> void:
+	if _text != null:
+		var _blips: int = _text.tick_typewriter(delta)
+
+
+func typing() -> bool:
+	return _text != null and _text.typing()
+
+
+## Put the rest of the block up at once -- the reveal, not the page.
+##
+## The briefing is up to `A0`'s full length at
+## [constant BriefingText.TYPEWRITER_PER_FRAME] glyphs a frame, which is long
+## enough that a player who has read it once is waiting rather than reading.
+## A click or a key finishes it, and **the voice-over is untouched**: the host
+## owns it under [constant SliceMain.VOICE_TAG] and stops it when the page is
+## left, so the reading goes on over the finished text exactly as it would
+## have over the typing one.
+##
+## Public rather than done inside [method _unhandled_input] because a suite
+## builds this screen off the tree, where the engine routes no input at all.
+func skip_typing() -> bool:
+	if _text == null or not _text.typing():
+		return false
+	_text.finish_typewriter()
+	return true
+
+
+## A click or a key anywhere the buttons did not take.
+##
+## The buttons are `Control`s with `MOUSE_FILTER_STOP`, so a click on
+## *Continue* while the text is still typing is that button's and reaches
+## nothing here -- which is what should happen.
+func _unhandled_input(event: InputEvent) -> void:
+	var pressed: bool = false
+	if event is InputEventKey:
+		var key: InputEventKey = event
+		pressed = key.is_pressed() and not key.is_echo()
+	elif event is InputEventMouseButton:
+		var button: InputEventMouseButton = event
+		pressed = button.is_pressed()
+	if pressed and skip_typing():
+		get_viewport().set_input_as_handled()
+
+
+## `0x0043E3C1 -> 0x00436EF0`: one `textbeep.wav` per word, at the GUI's own
+## volume like the two clicks.
+func _on_blip() -> void:
+	if audio == null:
+		return
+	var _slot: int = audio.play_cue(BriefingText.blip_cue())
 
 
 ## **The one scrolling thing here that is not a list of rows**, and the reason

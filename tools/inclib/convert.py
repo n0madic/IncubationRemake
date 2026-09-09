@@ -33,6 +33,7 @@ data".
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,10 +49,11 @@ from . import prototyp as protomod
 from . import sound as soundmod
 from . import visn as visnmod
 from .cache import SourceReader, Staging
+from .pe import PEFile
 from .info import BalanceTables, load_info_file
 from .script import (GUI_TEXT_DIR, load_script, script_document,
                      text_catalogue)
-from .png import write_indexed_png, write_rgb_png
+from .png import rgb_png_bytes, write_indexed_png, write_rgb_png
 
 MAP_SCHEMA = "incubation.map/1"
 GEOMETRY_SCHEMA = "incubation.geometry/1"
@@ -159,6 +161,10 @@ class Conversion:
     briefing_pictures: int = 0
     ui_libraries: int = 0
     ui_sprites: int = 0
+    #: The cutscenes and the front end -- docs/41, docs/92 section 7.19.
+    sequence_pairs: int = 0
+    sequence_tracks: int = 0
+    voice_overs: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -576,6 +582,31 @@ def geometry_document(world_set: str, names: list[str],
 # Textures
 # ---------------------------------------------------------------------------
 
+#: One process, one decode per distinct VISN record.
+#:
+#: A record decodes to exactly one PNG: :func:`visn.decode_record` and the
+#: writer are both pure functions of the record's bytes.  ``--check`` runs
+#: **three** whole conversions in one process and a published cache shares
+#: texture sets between world sets and cutscene directories, so the same
+#: records were being decoded and re-compressed several times over -- twenty
+#: of the thirty-four seconds one conversion takes (``docs/92`` §7.13 D9).
+#: Keyed by the record's own bytes, so two sets that ship the same texture
+#: share the entry and a set that does not is unaffected.
+_TEXTURE_PNGS: dict[bytes, tuple[int, int, bytes]] = {}
+
+
+def _texture_png(record: bytes) -> tuple[int, int, bytes]:
+    """The decoded PNG for one VISN record, decoding it at most once."""
+    key = hashlib.sha256(record).digest()
+    made = _TEXTURE_PNGS.get(key)
+    if made is None:
+        image = visnmod.decode_record(record)
+        made = (image.width, image.height,
+                rgb_png_bytes(image.width, image.height, image.to_rgb888()))
+        _TEXTURE_PNGS[key] = made
+    return made
+
+
 def convert_textures(reader: SourceReader, staging: Staging, world_set: str,
                      lib_path: Path, din_path: Path,
                      wanted: set[int]) -> dict[str, Any]:
@@ -589,17 +620,17 @@ def convert_textures(reader: SourceReader, staging: Staging, world_set: str,
         if entry.index not in wanted:
             continue
         record = data[entry.offset:entry.offset + entry.size]
-        image = visnmod.decode_record(record)
+        width, height, png = _texture_png(record)
         rel = f"textures/{world_set}/{entry.index}.png"
         path = staging.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_rgb_png(str(path), image.width, image.height, image.to_rgb888())
+        path.write_bytes(png)
         staging.files[rel] = "written"
         index.append({
             "id": entry.index,
             "name": entry.name,
-            "width": image.width,
-            "height": image.height,
+            "width": width,
+            "height": height,
             "file": f"{entry.index}.png",
         })
     return {
@@ -770,6 +801,15 @@ def convert_bodies(root: Path, reader: SourceReader, staging: Staging,
         names = tables.names(selector)
         (model_names if selector == "model" else animation_names).update(names)
 
+    # ``docs/40`` §7.2's fourth row: ``fcn.004055e0``'s ``kind == 4`` reaches a
+    # fixed literal instead of a selector, so no selector's closure names it and
+    # the cache used to be without it.  It is the clip the upgrade bases' own
+    # marines march on (``docs/27`` §2.7.1), and a cache that lacks it draws the
+    # landing pad empty.
+    kind4 = chatables.PEFile(str(exe)).cstring(chatables.KIND4_LITERAL_VA)
+    if kind4:
+        animation_names.add(kind4)
+
     # Bodies.
     mesh_names: set[str] = set()
     model_index: list[dict[str, Any]] = []
@@ -907,6 +947,14 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
             for arg in instr.args:
                 if arg.kind == "string":
                     playlists[name] = soundmod.playlist(arg.value)
+    # The front end's own programs -- the menu, the credits, mission control
+    # and the debriefing (``seq_parse.FRONTEND``) -- name ``Arack`` tracks
+    # 2..8, which a six-mission slice's scripts may not, so they join the
+    # wanted set under their own keys.  Same family as the missions': it is
+    # the shipped shim that plays them (``docs/28`` 6.1).
+    frontend = _tool_module("seq_parse").FRONTEND["cd_programs"]
+    for name, (program, _va, _call) in sorted(frontend.items()):
+        playlists[f"frontend/{name}"] = soundmod.playlist(program)
     document["playlists"] = playlists
 
     tracks = sorted({track for entry in playlists.values() for track in entry})
@@ -1019,6 +1067,169 @@ def _check_cross_set_meshes(root: Path,
                     f"{name} differs between {UNIT_GEOMETRY_SOURCE_SET} and "
                     f"{world_set} by more than its texture ids")
     return complaints
+
+
+
+# ---------------------------------------------------------------------------
+# The sequences and the front end -- docs/41, docs/92 section 7.19
+# ---------------------------------------------------------------------------
+
+SEQUENCE_DIR_SCHEMA = "incubation.sequence-directory/1"
+#: ``Video/<dir>/`` -- twelve directories, 130 model/animation pairs.
+VIDEO_DIR = "Video"
+#: Where the briefing voice-overs and the static extro's wave live.
+BRIEFING_WAVE_DIR = "Briefing"
+#: ``%smb%daif.wav`` (``0x004CA8D8``) with ``%d`` the ``_C_1xx`` id, in the
+#: case the shipped tree happens to use for each file.
+VOICE_OVER_PREFIX = "mb"
+VOICE_OVER_SUFFIX = "aif.wav"
+EXTRO_WAVE = "extro.wav"
+
+
+def convert_sequences(root: Path, reader: SourceReader, staging: Staging,
+                      result: Conversion) -> dict[str, Any]:
+    """The cutscenes: per directory the models, the clips, the geometry and the
+    textures, plus ``tables/sequences.json`` -- the manifest ``seq_parse.py``
+    reads out of ``aSetSeqPlayerVideoPart``.
+
+    **Only the 130 selected files, never a directory listing** (``docs/41``
+    section 2): ``Dialog_16`` ships nine zero-padded models the engine never
+    names and ``Seq_3`` two misspelled clips.  Each directory carries its own
+    ``Objects/Prototyp.*`` and ``Textures/Texture.*``, so the geometry and the
+    textures are per directory too, under a ``video_<dir>`` texture set.
+    """
+    seq = _tool_module("seq_parse")
+    exe = reader.record(_find(root, GAME_EXE))
+    pe = PEFile(exe)
+    manifest = seq.manifest_document(pe)
+    video = _find(root, VIDEO_DIR)
+
+    by_directory: dict[str, list[Any]] = {}
+    for part in seq.parts():
+        by_directory.setdefault(part.directory, []).append(part)
+
+    directories: list[dict[str, Any]] = []
+    for directory in sorted(by_directory):
+        base = _find(video, directory)
+        model_names: dict[str, Path] = {}
+        animation_names: dict[str, Path] = {}
+        for part in by_directory[directory]:
+            for stem in part.stems:
+                model_names[part.model(stem)[:-4]] = _find(base, part.model(stem))
+                animation_names[part.animation(stem)[:-4]] = _find(
+                    base, part.animation(stem))
+
+        mesh_names: set[str] = set()
+        for name, path in sorted(model_names.items()):
+            model = chamod.parse_model_file(str(reader.record(path)))
+            document = chacache.model_document(name, model)
+            staging.write_json(f"sequences/{directory}/models/{name}.json",
+                               document)
+            mesh_names.update(p["mesh"] for p in document["parts"] if p["mesh"])
+        for name, path in sorted(animation_names.items()):
+            animation = chamod.parse_animation_file(str(reader.record(path)))
+            staging.write_json(
+                f"sequences/{directory}/animations/{name}.json",
+                chacache.animation_document(name, animation))
+
+        din = reader.record(_find(base, "Objects", "Prototyp.din"))
+        bin_path = reader.record(_find(base, "Objects", "Prototyp.bin"))
+        container = protomod.load_container(str(din), str(bin_path))
+        texture_set = f"video_{directory}"
+        geometry, textures = geometry_document(texture_set, sorted(mesh_names),
+                                               container, {
+            "din": reader.rel(din), "bin": reader.rel(bin_path),
+            "sha256": reader.seen[reader.rel(bin_path)],
+        })
+        if geometry["missing"]:
+            result.warnings.append(
+                f"{VIDEO_DIR}/{directory}: meshes named by a model but absent "
+                f"from Prototyp.din: " + ", ".join(geometry["missing"]))
+        staging.write_json(f"sequences/{directory}/geometry.json", geometry)
+        index = convert_textures(reader, staging, texture_set,
+                                 _find(base, "Textures", "Texture.lib"),
+                                 _find(base, "Textures", "Texture.din"),
+                                 textures)
+        staging.write_json(f"textures/{texture_set}/index.json", index)
+        result.textures += len(index["textures"])
+        staging.write_json(f"sequences/{directory}/index.json", {
+            "schema": SEQUENCE_DIR_SCHEMA,
+            "directory": directory,
+            "texture_set": texture_set,
+            "models": sorted(model_names),
+            "animations": sorted(animation_names),
+            "meshes": sorted(mesh_names),
+        })
+        directories.append({
+            "directory": directory, "texture_set": texture_set,
+            "models": len(model_names), "animations": len(animation_names),
+            "meshes": len(geometry["prototypes"]),
+            "textures": len(index["textures"]),
+        })
+        result.sequence_pairs += len(animation_names)
+
+    manifest["directories"] = directories
+    manifest["source"] = {"exe": reader.rel(exe),
+                          "sha256": reader.seen[reader.rel(exe)]}
+    staging.write_json("tables/sequences.json", manifest)
+    return manifest
+
+
+def convert_frontend(root: Path, reader: SourceReader, staging: Staging,
+                     result: Conversion, *, music: bool) -> dict[str, Any]:
+    """``tables/frontend.json``, the briefing voice-overs, the extro wave and
+    the ``Track`` family's tracks 9..19 the cutscenes name.
+
+    The voice-overs are speech and go in unconditionally; the cutscene music
+    is behind the same ``--no-music`` flag as the missions' (``docs/28``).  It
+    is a **separate namespace**, ``audio/music/track/<n>.ogg``: the shipped
+    build plays the ``Arack`` family for the missions and that family stops at
+    14, so the cutscenes' 9..19 can only come from ``Track`` -- a decision
+    recorded in ``docs/92`` section 7.19, not a reading of the engine.
+    """
+    seq = _tool_module("seq_parse")
+    exe = reader.record(_find(root, GAME_EXE))
+    document = seq.frontend_document(PEFile(exe))
+
+    voices: dict[str, str] = {}
+    wave_dir = _find(root, BRIEFING_WAVE_DIR)
+    for path in sorted(wave_dir.iterdir()):
+        lower = path.name.lower()
+        if not (lower.startswith(VOICE_OVER_PREFIX)
+                and lower.endswith(VOICE_OVER_SUFFIX)):
+            continue
+        digits = lower[len(VOICE_OVER_PREFIX):-len(VOICE_OVER_SUFFIX)]
+        if not digits.isdigit():
+            continue
+        mission = f"_c_{int(digits)}"
+        staging.write_bytes(f"audio/briefing/{mission}.wav",
+                            reader.read_bytes(path))
+        voices[mission] = reader.rel(path)
+    extro = _find(wave_dir, EXTRO_WAVE)
+    staging.write_bytes(f"audio/briefing/{EXTRO_WAVE}", reader.read_bytes(extro))
+    document["voice_overs"] = sorted(voices)
+    result.voice_overs = len(voices)
+
+    copied: list[int] = []
+    tracks = sorted({seq.cd_track_of(part.cd_program) for part in seq.parts()
+                     if part.cd_program})
+    if music:
+        for track in tracks:
+            source = root / seq.MUSIC_DIR / (seq.CD_FILE_FORMAT % track)
+            if not source.is_file():
+                result.warnings.append(
+                    f"{seq.MUSIC_DIR}: no {source.name} for a sequence that "
+                    "names it")
+                continue
+            staging.write_bytes(f"audio/music/track/{track}.ogg",
+                                reader.read_bytes(source))
+            copied.append(track)
+    document["cd_family"] = seq.CD_FAMILY
+    document["track_family_tracks"] = copied
+    document["music_converted"] = music
+    staging.write_json("tables/frontend.json", document)
+    result.sequence_tracks = len(copied)
+    return document
 
 
 def convert(root: Path, missions: list[str], staging: Staging,
@@ -1171,6 +1382,9 @@ def convert(root: Path, missions: list[str], staging: Staging,
     result.info_labels += convert_info_data(root, reader, staging, language,
                                             result)
     art = convert_art(root, reader, staging, result)
+    # The cutscenes and the screens between them: not per-mission either.
+    convert_sequences(root, reader, staging, result)
+    convert_frontend(root, reader, staging, result, music=music)
     result.plates = art["plates"]
     result.briefing_pictures = art["briefing"]
     result.ui_libraries = art["libraries"]
@@ -1221,7 +1435,16 @@ def _tool_module(name: str):
         name, Path(__file__).resolve().parent.parent / f"{name}.py")
     if spec is None or spec.loader is None:
         raise ConvertError(f"cannot locate tools/{name}.py")
+    import sys
+
+    if name in sys.modules:
+        return sys.modules[name]
     module = importlib.util.module_from_spec(spec)
+    # Registered **before** it runs: a module that declares a `dataclass`
+    # under `from __future__ import annotations` resolves its field types
+    # through `sys.modules[cls.__module__]`, and an unregistered module fails
+    # there with an `AttributeError` on `None`.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -1389,7 +1612,13 @@ def convert_campaign(root: Path, reader: SourceReader, staging: Staging,
     exe = reader.record(_find(root, GAME_EXE))
     missions: dict[str, Any] = {}
     for path in sorted((root / "Missions").glob("_C_*.lev")):
-        if path.stem.upper() in {"_C_XXX", "_C_YYY"}:
+        # ``_C_XXX`` is campaign 1's map and nothing else.  ``_C_YYY`` is
+        # campaign 2's map **and** the mission ``_C_133`` hands over to: its
+        # header carries mission id 255, which ``0x00456FC0`` reads as the
+        # animated extro, so it is a row here the way ``_C_180`` (id 180, the
+        # static extro) already is (``docs/27`` section 6.6, corrected
+        # 2026-09-08).
+        if path.stem.upper() == "_C_XXX":
             continue
         missions[path.stem] = levmod.load_lev(str(reader.record(path)))
     document = campaign_document(root, tables, missions, {

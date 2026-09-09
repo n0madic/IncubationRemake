@@ -231,6 +231,114 @@ LOCATION_ANIMATION_WINDOW = (65, 57, 518, 306)
 LOCATION_ANIMATION_EXIT_SITES = (0x00417190, 0x0041718E, 0x00417189,
                                  0x00417184)
 LOCATION_ANIMATION_EXIT_WINDOW = (60, 34, 520, 340)
+#: The flight's own step law, `0x00417000` read whole (docs/27 section 2.7).
+#: It is an exponential approach and not a constant step: the eye's velocity
+#: closes on `_ftol(direction * 800)` by `(want - velocity) / n`, with `n`
+#: reset to 40 on every leg and falling by one a frame to a floor of 5.  A leg
+#: ends when the eye is within 3200 of its waypoint on every axis; the **last**
+#: leg counts `800 * remaining / leg` down and lands under 80.
+FLY_SPEED = 800
+FLY_SPEED_SITE = 0x004171DE               # `mov [esp+0x20], 0x320`, u32 at +4
+FLY_SMOOTH_START = 40
+FLY_SMOOTH_START_SITE = 0x004171C9        # `mov ebp, 0x28`, u32 at +1
+FLY_SMOOTH_FLOOR = 5
+FLY_SMOOTH_FLOOR_SITE = 0x00417316        # `cmp <n>, 5`
+FLY_ARRIVAL = 3200
+FLY_ARRIVAL_SITES = (0x004171FF, 0x00417212, 0x00417224)  # `cmp eax, 0xc80`
+FLY_LANDED_SHARE = 80
+FLY_LANDED_SITE = 0x0041729E              # `cmp [esp+0x20], 0x50`, imm8 at +4
+#: The direction helper `0x0046d400`: the two horizontal components are
+#: divided by the larger of them, and the vertical is the height difference
+#: over the horizontal distance `0x0044ae10` -- with **all six** coordinates
+#: shifted right by three first, not the two heights alone.  The helper has
+#: two arms and the shift is the one the flight asks for: its last argument is
+#: the `push 1` at `0x004172b1`, and the zero arm passes the coordinates
+#: whole.  Shifting only the rise divides by eight times the distance, which
+#: leaves the eye a few hundred units off the ground for a whole flight
+#: (docs/27 section 2.7).
+FLY_DIRECTION = 0x0046D400
+FLY_DIRECTION_SHIFT = 3
+#: `push 1` -- the first push of the ten-argument call, so the last argument.
+FLY_DIRECTION_ARM_SITE = 0x004172B1
+FLY_DIRECTION_ARM = 1
+#: The six `sar reg, 3` of that arm, in the order the listing has them:
+#: `goal.z`, `eye.z`, `goal.y`, `goal.x`, `eye.y`, `eye.x`.  Each coordinate
+#: is shifted on its own -- `sar` floors, so this is not the difference
+#: shifted: the two readings part wherever the operands' remainders cross.
+FLY_DIRECTION_SHIFT_SITES = (0x0046D4EC, 0x0046D4EF, 0x0046D4F2,
+                             0x0046D4F5, 0x0046D4FB, 0x0046D504)
+FLY_FLAT_DISTANCE = 0x0044AE10
+FLY_FLAT_DISTANCE_SITE = 0x0046D508
+#: The front end's frame, and the limiter it ends on -- `min, max` frames a
+#: second, so the whole flight is stepped at 20.
+FRONT_END_FRAME = 0x0040B6F0
+FRAME_LIMITER = 0x0047F2E0
+FRAME_LIMITER_SITE = 0x0040B82D           # `push 0x14; push 0x0a`
+FRAME_LIMIT = (10, 20)
+#: `0x004fcbdc`, which `0x0040b6f0` sets on a key or a click and the flight
+#: reads to land early.
+FRONT_END_INPUT_FLAG = 0x004FCBDC
+
+# -- the base's own marines, docs/27 section 2.7.1 ---------------------------
+#: Between `aCreateBattleMap(3)` and the flight, `0x00417510` walks **player
+#: 0's living units** and starts one animation on each.  `upgrade_N.lev` places
+#: two or three of them, so the landing pad the fly-in crosses is not empty:
+#: the marines march down it.
+#:
+#: The loop is `aUnitMap.cpp`'s own pair.  `0x00477C20(player)` scans the 200
+#: slots of 91 bytes for the first with `+0x16` (hit points) non-zero and
+#: `+0x45` (owning player) equal, and `0x00477C60(player, id)` continues from
+#: `id + 1`; both answer `0xFFFF` when there is none.  `0x00477AE0(id)` is the
+#: record pointer and refuses a dead slot, which is the same test again.
+UPGRADE_UNIT_FIRST = 0x00477C20
+UPGRADE_UNIT_NEXT = 0x00477C60
+UPGRADE_UNIT_POINTER = 0x00477AE0
+UPGRADE_UNIT_FIRST_SITE = 0x00417609      # `push 0` then the call
+UPGRADE_UNIT_NEXT_SITE = 0x00417641
+UPGRADE_UNIT_POINTER_SITE = 0x00417623
+#: The player the loop asks for -- `push 0` at `0x00417607` and `push 0` again
+#: at `0x0041763F`, the argument both halves of the pair take.
+UPGRADE_UNIT_PLAYER = 0
+UPGRADE_UNIT_PLAYER_SITES = (0x00417607, 0x0041763F)
+#: The unit record, from docs/10 section 5: 91 bytes, hit points at `+0x16`
+#: (zero means the slot holds nobody) and the owning player at `+0x45`.
+UNIT_RECORD_STRIDE = 91
+UNIT_RECORD_HP = 0x16
+UNIT_RECORD_PLAYER = 0x45
+#: `fcn.004055e0(slot, unit, kind)`, docs/40 section 7.2's start-animation
+#: entry point.  The upgrade arm passes `kind = 4` and `slot = id + 7`.
+START_ANIMATION = 0x004055E0
+START_ANIMATION_SITE = 0x00417636
+UPGRADE_ANIM_KIND = 4
+UPGRADE_ANIM_KIND_SITE = 0x0041762F       # `push 4`, imm8 at +1
+UPGRADE_ANIM_SLOT_BIAS = 7
+UPGRADE_ANIM_SLOT_SITE = 0x00417631       # `lea ecx, [esi + 7]`, imm8 at +2
+#: `kind == 4`'s own playback arm, `0x00405B88`, reached through the second of
+#: `fcn.004055e0`'s two jump tables (`0x00405C94`).  It is the one arm that
+#: names its clip as a literal instead of asking a selector, and the one that
+#: starts the clip at a **random** time: `aRandom2(0, 10)` returns a float and
+#: goes straight into the animation's own time setter, so three marines
+#: started in the same frame are not in step.  `aRandom2` `0x004638E0` is the
+#: GetTickCount-seeded generator of docs/22 section 3.2, which is what says
+#: this is cosmetic and outside every hash.
+UPGRADE_ANIM_ARM = 0x00405B88
+UPGRADE_ANIM_TABLE = 0x00405C94
+UPGRADE_ANIM_LOOPS = 100000
+UPGRADE_ANIM_LOOPS_SITE = 0x00405BDE      # `push 0x186a0`, u32 at +1
+UPGRADE_ANIM_SPEED = 1.0
+UPGRADE_ANIM_SPEED_SITE = 0x00405BE8      # `push 0x3f800000`, u32 at +1
+UPGRADE_ANIM_START_MAX = 10
+UPGRADE_ANIM_START_SITE = 0x00405BF2      # `push 10; push 0`, imm8 at +1
+UPGRADE_ANIM_RANDOM = 0x004638E0
+UPGRADE_ANIM_RANDOM_SITE = 0x00405BF6
+#: The clip itself, `docs/40` section 7.2's fourth row: a fixed literal no
+#: selector returns.  452 frames long, and its top-level bone travels 3017.7
+#: skeleton units down its own -Y, so the walk is the clip's and no command
+#: moves the unit.
+UPGRADE_ANIM_CLIP_SITE = 0x004056D2        # `mov edi, 0x4c030c`, u32 at +1
+UPGRADE_ANIM_CLIP_VA = 0x004C030C
+UPGRADE_ANIM_CLIP = "P0_M2_000"
+
 #: `aGetCameraPosition` into six globals, called by every upgrade arm right
 #: after the fly-in; `0x00455A40`'s zero arm pushes the same six back into
 #: `aSetCameraPosition` on every Mission Control frame, which is why the
@@ -942,6 +1050,9 @@ class Corpus:
 
         self.headers: dict[str, dict] = {}
         self.campaign_cells: dict[str, set[int]] = {}
+        #: `upgrade_N` -> the units `0x00417510`'s loop would reach, in slot
+        #: order: `(type, weapon, facing)` per living player-0 record.
+        self.upgrade_marines: dict[int, list[tuple[int, int, int]]] = {}
         for path in self.missions:
             self._read(path)
 
@@ -979,6 +1090,10 @@ class Corpus:
         if stem.upper() in CAMPAIGN_MAPS.values():
             self.campaign_cells[stem.upper()] = {
                 c.action_point for c in battle.cells if c.action_point}
+        if stem.startswith("upgrade_"):
+            self.upgrade_marines[int(stem.split("_")[1])] = [
+                (u.type_id, u.weapon, u.facing) for u in battle.units
+                if u.hit_points != 0 and u.player == UPGRADE_UNIT_PLAYER]
 
     def _read_script(self, path: Path) -> None:
         with open(path, "rb") as handle:
@@ -1949,6 +2064,41 @@ def run_checks(root: str) -> Checker:
              tuple(b.u8(site + 1) if b.u8(site) == 0x6A else b.u32(site + 1)
                    for site in LOCATION_ANIMATION_EXIT_SITES),
              LOCATION_ANIMATION_EXIT_WINDOW, str)
+    ck.equal("upgrade.fly_speed", b.u32(FLY_SPEED_SITE + 4), FLY_SPEED)
+    ck.equal("upgrade.fly_smooth_start", b.u32(FLY_SMOOTH_START_SITE + 1),
+             FLY_SMOOTH_START)
+    # `cmp eax, imm32` is `3d imm32`; `cmp ecx, imm32` is `81 f9 imm32`.
+    ck.equal("upgrade.fly_arrival",
+             tuple(b.u32(site + (1 if b.u8(site) == 0x3D else 2))
+                   for site in FLY_ARRIVAL_SITES),
+             (FLY_ARRIVAL,) * len(FLY_ARRIVAL_SITES), str)
+    ck.equal("upgrade.fly_landed_share", b.u8(FLY_LANDED_SITE + 4),
+             FLY_LANDED_SHARE)
+    ck.equal("upgrade.fly_direction_call", b.call_target(0x004172D0),
+             FLY_DIRECTION, hex)
+    ck.equal("upgrade.fly_flat_distance_is_a_hypotenuse",
+             (b.u8(FLY_FLAT_DISTANCE + 0x24), b.u8(FLY_FLAT_DISTANCE + 0x25),
+              b.u8(FLY_FLAT_DISTANCE + 0x28), b.u8(FLY_FLAT_DISTANCE + 0x29)),
+             (0xDB, 0x44, 0xD9, 0xFA), str)
+    # `6a 01` -- which of `0x0046d400`'s two arms the flight takes.  Without
+    # this the six shifts below would be pinned on an arm nothing reaches.
+    ck.equal("upgrade.fly_direction_arm",
+             (b.u8(FLY_DIRECTION_ARM_SITE), b.u8(FLY_DIRECTION_ARM_SITE + 1)),
+             (0x6A, FLY_DIRECTION_ARM), str)
+    # `c1 /7 ib` is `sar reg, imm8`: the opcode, the reg field of the modrm
+    # byte and the count, for each of the six coordinates.
+    ck.equal("upgrade.fly_direction_shifts_all_six",
+             tuple((b.u8(site), (b.u8(site + 1) >> 3) & 7, b.u8(site + 2))
+                   for site in FLY_DIRECTION_SHIFT_SITES),
+             ((0xC1, 7, FLY_DIRECTION_SHIFT),) * len(FLY_DIRECTION_SHIFT_SITES),
+             str)
+    ck.equal("upgrade.fly_flat_distance_call",
+             b.call_target(FLY_FLAT_DISTANCE_SITE), FLY_FLAT_DISTANCE, hex)
+    ck.equal("upgrade.fly_frame_limit",
+             (b.u8(FRAME_LIMITER_SITE + 3), b.u8(FRAME_LIMITER_SITE + 1)),
+             FRAME_LIMIT, str)
+    ck.equal("upgrade.fly_frame_limiter_call",
+             b.call_target(FRAME_LIMITER_SITE + 4), FRAME_LIMITER, hex)
     ck.equal("upgrade.camera_path_table", b.u32(CAMERA_PATH_TABLE_SITE + 2),
              CAMERA_PATH_TABLE, hex)
     ck.equal("upgrade.camera_path_cap", b.u8(CAMERA_PATH_CAP_SITE + 2),
@@ -1961,6 +2111,64 @@ def run_checks(root: str) -> Checker:
              tuple(reversed(CAMERA_SAVED)), str)
     ck.equal("upgrade.camera_restore_call", b.call_target(0x00455A94),
              SET_CAMERA_POSITION, hex)
+    # The base's own marines (section 2.7.1).  Both halves of the loop, the
+    # player they ask for, the record fields they test, and the kind-4 arm's
+    # three playback constants -- all read at their own instructions.
+    ck.equal("upgrade.marine_loop_calls",
+             (b.call_target(UPGRADE_UNIT_FIRST_SITE),
+              b.call_target(UPGRADE_UNIT_NEXT_SITE),
+              b.call_target(UPGRADE_UNIT_POINTER_SITE)),
+             (UPGRADE_UNIT_FIRST, UPGRADE_UNIT_NEXT, UPGRADE_UNIT_POINTER),
+             lambda t: tuple(hex(v) for v in t))
+    ck.equal("upgrade.marine_loop_player",
+             tuple(b.u8(site + 1) for site in UPGRADE_UNIT_PLAYER_SITES),
+             (UPGRADE_UNIT_PLAYER,) * len(UPGRADE_UNIT_PLAYER_SITES), str)
+    # `add ecx, 0x45` then `mov dl, [ecx - 0x2f]` -- the player byte and, 0x2f
+    # before it, the hit points -- and `add ecx, 0x5b`, the record stride.
+    # All three immediates are read at their own instruction.
+    ck.equal("upgrade.marine_record_fields",
+             (b.u8(UPGRADE_UNIT_FIRST + 0x10), b.u8(UPGRADE_UNIT_FIRST + 0x13),
+              b.u8(UPGRADE_UNIT_FIRST + 0x22)),
+             (UNIT_RECORD_PLAYER, 0x100 - (UNIT_RECORD_PLAYER
+                                           - UNIT_RECORD_HP),
+              UNIT_RECORD_STRIDE), str)
+    ck.equal("upgrade.marine_start_call", b.call_target(START_ANIMATION_SITE),
+             START_ANIMATION, hex)
+    ck.equal("upgrade.marine_start_kind", b.u8(UPGRADE_ANIM_KIND_SITE + 1),
+             UPGRADE_ANIM_KIND)
+    ck.equal("upgrade.marine_start_slot", b.u8(UPGRADE_ANIM_SLOT_SITE + 2),
+             UPGRADE_ANIM_SLOT_BIAS)
+    ck.equal("upgrade.marine_arm", b.u32(UPGRADE_ANIM_TABLE
+                                         + 4 * UPGRADE_ANIM_KIND),
+             UPGRADE_ANIM_ARM, hex)
+    ck.equal("upgrade.marine_loops", b.u32(UPGRADE_ANIM_LOOPS_SITE + 1),
+             UPGRADE_ANIM_LOOPS)
+    ck.equal("upgrade.marine_speed",
+             struct.unpack("<f", struct.pack(
+                 "<I", b.u32(UPGRADE_ANIM_SPEED_SITE + 1)))[0],
+             UPGRADE_ANIM_SPEED)
+    ck.equal("upgrade.marine_start_time_max",
+             b.u8(UPGRADE_ANIM_START_SITE + 1), UPGRADE_ANIM_START_MAX)
+    ck.equal("upgrade.marine_start_time_random",
+             b.call_target(UPGRADE_ANIM_RANDOM_SITE), UPGRADE_ANIM_RANDOM, hex)
+    ck.equal("upgrade.marine_clip",
+             b.string(b.u32(UPGRADE_ANIM_CLIP_SITE + 1), 20),
+             UPGRADE_ANIM_CLIP)
+    ck.equal("upgrade.marine_clip_address", b.u32(UPGRADE_ANIM_CLIP_SITE + 1),
+             UPGRADE_ANIM_CLIP_VA, hex)
+    # Corpus: every upgrade map places marines for that loop to find, and they
+    # are all the plain type-0 unarmed marine.  Two maps carry two and the rest
+    # three; `upgrade_4` also carries six *dead* alien records, which is what
+    # the hit-point test in both iterators is for.
+    ck.equal("upgrade.marine_maps", sorted(c.upgrade_marines),
+             sorted(set(UPGRADE_MAPS.values())), str)
+    ck.check("upgrade.marine_counts",
+             all(2 <= len(v) <= 3 for v in c.upgrade_marines.values()),
+             str({k: len(v) for k, v in sorted(c.upgrade_marines.items())}))
+    ck.equal("upgrade.marine_kinds",
+             sorted({(t, w) for v in c.upgrade_marines.values()
+                     for t, w, _ in v}), [(0, 0)], str)
+
     ck.equal("upgrade.tech_bands", b.upgrade_tech_bands(),
              {k: tuple(v) for k, v in UPGRADE_TECH_BANDS.items()}, str)
     ck.equal("upgrade.band_zero_is_a_cleared_register",

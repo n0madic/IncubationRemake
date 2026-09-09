@@ -78,6 +78,16 @@ var weapon_zero_cost: int = 10
 ## the closing `recomputeUnitStats` fills the magazine from it, so a roster
 ## record does carry ammunition -- the pool row of every save fixture shows it.
 var recruit_ammo: int = 0
+## Whether the intro (`Video/Seq_1`, logical id 0) is still owed.
+##
+## `[0x00510D48]` -- set to 1 by the new-campaign start `0x00450950` on its
+## campaign-1 arm, cleared at menu init and after any sequence plays
+## (`0x004570B6`), read by the gate `0x00456FC0` when mission id 1 comes up. So
+## the intro plays once, on a new campaign 1, at the first entry to mission
+## control, and loading a save never re-arms it. It is campaign state -- a
+## save taken before the first map cannot exist, but the field is state and
+## the codec carries it (docs/92 section 7.19).
+var intro_pending: bool = false
 
 
 static func create() -> CampaignState:
@@ -431,6 +441,7 @@ func view() -> Dictionary:
 		"recruit_hit_points": recruit_hit_points,
 		"recruit_ammo": recruit_ammo,
 		"weapon_zero_cost": weapon_zero_cost,
+		"intro_pending": intro_pending,
 		"scoreboard": boards,
 		"roster": roster.view(),
 	}
@@ -452,6 +463,9 @@ static func from_view(record: Dictionary) -> CampaignState:
 	state.recruit_hit_points = DictRead.as_int(record["recruit_hit_points"])
 	state.recruit_ammo = DictRead.as_int(record["recruit_ammo"])
 	state.weapon_zero_cost = DictRead.as_int(record["weapon_zero_cost"])
+	# Absent from a save written before the ninth slice, and then false: a
+	# loaded game never re-arms the intro, which is the engine's rule too.
+	state.intro_pending = DictRead.as_bool(record.get("intro_pending", false))
 	var boards: Array[ScoreRecord] = []
 	for entry: Variant in DictRead.as_array(record["scoreboard"]):
 		boards.append(ScoreRecord.from_view(entry))
@@ -468,7 +482,7 @@ func digest_hex() -> String:
 	ctx.update(mission.to_utf8_buffer())
 	ctx.update(PackedInt32Array([campaign, difficulty, tech_level, skill_level,
 		player_count, mode, recruit_hit_points, recruit_ammo,
-		weapon_zero_cost]).to_byte_array())
+		weapon_zero_cost, 1 if intro_pending else 0]).to_byte_array())
 	ctx.update(equipment_points.to_byte_array())
 	ctx.update(commendations.to_byte_array())
 	ctx.update(player_kind.to_byte_array())

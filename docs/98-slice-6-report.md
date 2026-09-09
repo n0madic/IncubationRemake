@@ -401,7 +401,8 @@ difference. Driven end to end: `_C_140` won for 200, `_C_141` for 100 (total
 
 * **The sequence player** ([`41`](41-sequence-player.md)). Dialogue locations
   open, are named from `Campaign.lcl`, and play nothing (D5). Six of them have
-  cells in `_C_XXX`.
+  cells in `_C_XXX`. *Done in the ninth slice, [`101`](101-slice-9-report.md)
+  (2026-09-08): they play framed, the intro plays once, both endings play.*
 * **`campaign_gold.py`.** §1 says why: the layer is pinned statically and
   confirmed by six real saves, and a native capture is the next step rather
   than this one's.

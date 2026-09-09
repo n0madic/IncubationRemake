@@ -145,8 +145,8 @@ func tech_band(location: int) -> Vector2i:
 	return _tech_bands[location]
 
 
-## The dialogue number the arm passes. The sequence player is a later slice, so
-## a dialogue location opens and is named and plays nothing (D5).
+## The dialogue number the arm passes -- the logical sequence id
+## `0x00456FC0` receives (docs/41 section 5).
 func dialogue_number(location: int) -> int:
 	return DictRead.as_int(_dialogue.get(location, 0))
 

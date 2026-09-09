@@ -191,6 +191,23 @@ if [ -n "$ERRORS" ]; then
     exit 1
 fi
 
+# What the engine still holds at exit is reported as a *warning*, so the error
+# gate above never saw it -- and all of it is a defect in the code under test
+# that fails no check: a node built and never parented (its `CanvasItem` RID
+# and its theme owner go with it), a `RefCounted` cycle, a `static var`
+# keeping a script and its whole dependency tree alive.  Nothing may leak, so
+# the warning text is a failure in its own right.  `resources still in use` is
+# an error rather than a warning and the gate above already catches it; this
+# is the other three lines.
+LEAKS="$(printf '%s\n' "$OUT" \
+    | grep -E '^(WARNING|ERROR): .*(leaked|still in use)' || true)"
+if [ -n "$LEAKS" ]; then
+    echo "run_tests.sh: the run left something behind:" >&2
+    printf '%s\n' "$LEAKS" >&2
+    echo "run_tests.sh: re-run with --verbose for the instance list" >&2
+    exit 1
+fi
+
 if echo "$OUT" | grep -q '^HARNESS-RESULT: OK$'; then
     exit 0
 fi

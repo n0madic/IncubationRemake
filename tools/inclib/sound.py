@@ -1060,18 +1060,32 @@ MUSIC_SHIM_STRINGS = {
 MUSIC_ALTERNATE_FORMAT = "Track%02d.ogg"
 
 
+#: ``strtok``'s separator set in the ``CDTrackProgram`` parser ``0x0042C040``
+#: (``0x004C2768``).  The mission scripts use the dot alone and the front end
+#: and the sequence player use the comma (``"2,3,4,5,6,7"``, ``"9,30"``).
+PLAYLIST_SEPARATORS = " .,|;:*+/"
+
+
 def playlist(program: str) -> list[int]:
-    """``CDTrackProgram``'s argument is a dot-separated list of track numbers.
+    """``CDTrackProgram``'s argument is a list of track numbers.
 
     ``"3.5.7.3.4.5"`` is six entries played in order, and the mission loops it.
-    A malformed entry is dropped rather than raised: the string comes from
-    shipped script data, and one unparsable number should cost one track.
+    The engine splits on :data:`PLAYLIST_SEPARATORS` -- ``docs/20`` 7.3 read the
+    dot alone -- and ``atoi``s each token, so a token that is not a number is
+    track 0; here a malformed entry is dropped instead, since track 0 is no
+    file and the string comes from shipped data.  What the engine does with an
+    entry past the disc (``-1``, and a wrap to the first entry) is the
+    runtime's business: ``seq_parse.parse_cd_program`` is that reading.
     """
     tracks: list[int] = []
-    for part in program.split("."):
-        part = part.strip()
-        if part.isdigit():
-            tracks.append(int(part))
+    token = ""
+    for ch in program + PLAYLIST_SEPARATORS[0]:
+        if ch in PLAYLIST_SEPARATORS:
+            if token.isdigit():
+                tracks.append(int(token))
+            token = ""
+        else:
+            token += ch
     return tracks
 
 

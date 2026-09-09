@@ -60,7 +60,29 @@ const NAME_HEIGHT: float = 22.0
 ## the same place instead of one being fitted to the other.
 const PLATE_MAP: String = "plate_3"
 
+## The mission's short briefing, on the key that asks for it.
+##
+## `0x00451240` maps the character **`B`** to mission control's action `0xb`,
+## and `0x00453900`'s arm for that action is
+## `aActivateBriefingInfo(mission, 220, 100, 200, 300, 0, 'B', '0')` -- the
+## `B0` block of the mission the map stands on, in its own box, typed
+## (`animate` is 0). Its gate is `0x0043b700() == 1 && !0x0043b1f0()`: exactly
+## one **human** player, and not the network predicate at `0x0043b1f0`, which
+## reads the mode byte `0x00509ee8` and the flag `0x00509f08`. Both hold in
+## every single-player campaign, so the box is not behind a switch the remake
+## lacks -- it was simply never drawn here (docs/92 section 7.19 I10, which
+## said the opposite and is corrected).
+const SHORT_BLOCK: String = "B0"
+const SHORT_AT: Vector2 = Vector2(220.0, 100.0)
+const SHORT_SIZE: Vector2 = Vector2(200.0, 300.0)
+const SHORT_KEY: Key = KEY_B
+
 var host: CampaignHost = null
+## Where the briefing documents live, and the one this map's mission has.
+## Empty leaves the key doing nothing, which is what a cache with no briefing
+## text gets.
+var cache_dir: String = ""
+var document: Dictionary = {}
 
 ## Whether [SliceMain] has a picture to put behind the frame. False when the
 ## cache carries no campaign map, and then the plate is drawn whole and the
@@ -74,6 +96,8 @@ var location_cells: Dictionary[int, Vector2i] = {}
 
 var _caption: Label = null
 var _name: Label = null
+var _short: BriefingText = null
+var _short_shade: ColorRect = null
 ## The location the pointer is over, or -1. The host reads it to put the ring
 ## on the map.
 var hovered: int = -1
@@ -115,6 +139,65 @@ func build() -> void:
 
 	_show_actions()
 	refresh()
+
+
+## Show or hide the mission's `B0` box -- mission control's action `0xb`.
+##
+## The original raises it on every press and has no second key that takes it
+## down; here the same key does both, because a box that covered a third of
+## the map until the screen changed would be worse than the one thing the
+## original's own behaviour does not settle.
+func toggle_short_briefing() -> void:
+	if _short != null:
+		_short.queue_free()
+		_short = null
+		if _short_shade != null:
+			_short_shade.queue_free()
+			_short_shade = null
+		return
+	var blocks: Dictionary = DictRead.as_dict(document.get("blocks", {}))
+	var short: Array = DictRead.as_array(blocks.get(SHORT_BLOCK, []))
+	if short.is_empty():
+		return
+	var box: Rect2 = Rect2(SHORT_AT, SHORT_SIZE)
+	_short_shade = shade(box)
+	_short = BriefingText.create(cache_dir, font != null)
+	place_on_plate(_short, box.position, box.size)
+	root().add_child(_short)
+	_short.start_typewriter()
+	_short.show_block(short)
+	_short.blip.connect(_on_blip)
+
+
+func _process(delta: float) -> void:
+	tick(delta)
+
+
+func tick(delta: float) -> void:
+	if _short != null:
+		var _blips: int = _short.tick_typewriter(delta)
+
+
+func typing() -> bool:
+	return _short != null and _short.typing()
+
+
+func _on_blip() -> void:
+	if audio == null:
+		return
+	var _slot: int = audio.play_cue(BriefingText.blip_cue(SHORT_BLOCK))
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var key: InputEventKey = event
+	if not key.is_pressed() or key.is_echo() or key.keycode != SHORT_KEY:
+		return
+	var viewport: Viewport = get_viewport()
+	if viewport != null:
+		viewport.set_input_as_handled()
+	toggle_short_briefing()
 
 
 ## The way in when there is no map to click.

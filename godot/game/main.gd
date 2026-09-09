@@ -21,14 +21,63 @@ const MISSION_ARG: String = "--mission="
 ## The campaign's own equivalent of `--mission=`, and a supported way in
 ## rather than a side effect (docs/92 section 7.15 S5).
 const CAMPAIGN_ARG: String = "--campaign="
+## `--sequence=N` -- play logical sequence N full screen from a bare launch,
+## with no campaign behind it: how a cutscene is photographed and compared
+## (docs/92 section 7.19). The screen exits to the shell's menu.
+const SEQUENCE_ARG: String = "--sequence="
 ## `--cheats=god,ammo` -- turn switches on before the first mission is built.
 ## The way a level is actually walked: the hidden code line ([CheatEntry]) is
 ## for a session already in progress.
 const CHEATS_ARG: String = "--cheats="
+## What [method shell_entry] answers.
+const SHELL_SPLASH: String = "splash"
+const SHELL_MENU: String = "menu"
 ## What [method boot_choice] answers.
 const BOOT_MISSION: String = "mission"
 const BOOT_CAMPAIGN: String = "campaign"
 const BOOT_SHELL: String = "shell"
+const BOOT_SEQUENCE: String = "sequence"
+## The seven logical ids `aCreateSeqPlayer`'s compressed switch accepts
+## (docs/41 section 2). Here as a constant so the command line is checked
+## without a cache: the manifest carries the same seven.
+const SEQUENCE_IDS: Array[int] = [0, 1, 2, 3, 7, 14, 15]
+## The logo hold when the cache has no front-end document: `aGameIntro`'s
+## own 1500 ms (`0x0044BCF1`).
+const SplashScreen_LOGO_MS: int = 1500
+## The pool tag the briefing's voice-over plays under, so leaving the page
+## stops it and nothing else.
+const VOICE_TAG: String = "briefing_voice"
+## The upgrade base's arrival flight, `0x00417000` read whole (docs/27
+## section 2.7). It was once a constant 20 units a frame; 20 is only what the
+## **first** frame steps, and the law is an exponential approach:
+##
+## * the flight is limited to **20 frames a second** -- the front end's own
+##   frame function `0x0040b6f0` ends on `0x0047f2e0(10, 20)`, which busy-waits
+##   until `1000 / 20` ms have passed;
+## * the target velocity is `_ftol(direction * 800)` where the direction is
+##   normalised so that the **larger** of its two horizontal components is one
+##   (`0x0046d400`), and its vertical is `((goal.z >> 3) - (eye.z >> 3))`
+##   over the horizontal distance **taken in eighths as well**, so the two
+##   cancel and the vertical is the plain gradient;
+## * the velocity approaches that target by `(target - velocity) / n` with `n`
+##   starting at **40** on every leg and falling by one a frame to a floor of
+##   **5**, so the eye accelerates from 20 units a frame toward 800 and the
+##   whole flight lasts three to thirteen seconds;
+## * a leg ends when the eye is within **3200** of its waypoint on every axis;
+## * on the **last** leg only, `800 * remaining / leg` is a countdown and the
+##   flight lands when it falls under **80** -- a tenth of the leg -- which is
+##   why the eye comes to rest *near* the last waypoint rather than on it;
+## * `0x004fcbdc`, set by any key or click, lands it early.
+const FLY_FPS: float = 20.0
+const FLY_SPEED: int = 800
+const FLY_SMOOTH_START: int = 40
+const FLY_SMOOTH_FLOOR: int = 5
+const FLY_ARRIVAL: int = 3200
+const FLY_LANDED_SHARE: int = 80
+const FLY_DIRECTION_SHIFT: int = 3
+## Why a sequence is playing, which decides what follows it.
+const SEQUENCE_DEBUG: String = "debug"
+const SEQUENCE_DIALOGUE: String = "dialogue"
 ## Where a development run finds the same bytes production reads from `user://`.
 const DEV_CACHE: String = "res://generated/cache"
 
@@ -103,6 +152,13 @@ var _faces: Array[FontFile] = []
 var _backdrop_world: World = null
 var _backdrop_rig: CameraRig = null
 var _backdrop_mission: String = ""
+## An upgrade base's own marines, docs/27 section 2.7.1. Null behind the two
+## chain maps, which place nobody.
+var _backdrop_bodies: BackdropBodies = null
+## The draw for each marine's starting clip time. The original's is
+## `aRandom2`, seeded from `GetTickCount` -- cosmetic, outside every hash, and
+## deliberately different every run ([constant BackdropBodies.START_MAX]).
+var _backdrop_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 ## The backdrop's own camera as `[eye, target]`, or empty for the chain map.
 ## See [method _read_camera_path].
 var _backdrop_view: Array[Vector3i] = []
@@ -118,6 +174,37 @@ var _backdrop_carry: float = 0.0
 ## run its emitters come from. What is sounding now is [AudioSystem]'s to
 ## remember, so that every way music stops clears it.
 var _backdrop_music: String = ""
+## The upgrade base's fly-in (docs/27 section 2.7, `0x00417000`): every
+## `mode 1` waypoint in script order, and which one the eye is heading for.
+## Empty for the chain map, whose eye is the fixed pair. Zero when the flight
+## has come to rest on the last waypoint.
+var _backdrop_waypoints: Array[Vector3i] = []
+var _fly_next: int = 0
+## The flight's own state: the eye's velocity, the smoothing divisor `n`, the
+## eye the current leg started from, whether the next step is the flight's
+## first, whether the landing countdown has run out, the 20 fps accumulator
+## and what to raise once the eye has come to rest.
+var _fly_velocity: Vector3i = Vector3i.ZERO
+var _fly_smooth: int = FLY_SMOOTH_START
+var _fly_leg_from: Vector3i = Vector3i.ZERO
+var _fly_first: bool = true
+var _fly_landed: bool = false
+var _fly_clock: float = 0.0
+var _fly_then: Callable = Callable()
+## `tables/frontend.json` and `tables/sequences.json` -- the holds, the CD
+## programs and the cutscene manifest (docs/92 section 7.19). Empty on a cache
+## published before 0.29.0, and every reader falls back to "no such step".
+var _frontend: Dictionary = {}
+var _sequence_manifest: Dictionary = {}
+## The cutscene being played, and why -- one of [CampaignHost]'s `OPENING_*`
+## kinds, [constant SEQUENCE_DIALOGUE] or [constant SEQUENCE_DEBUG].
+var _sequence: SequencePlayer = null
+var _sequence_kind: String = ""
+## The three `Sleep` holds of the original's front end, as a countdown in
+## [method _process] rather than a timer, so the agent's `wait` sees them and
+## a suite can step them. `_hold_then` runs when the countdown reaches zero.
+var _hold_left: float = 0.0
+var _hold_then: Callable = Callable()
 ## The pointer travel one frame of the map's turn should answer to, in the
 ## plate's own pixels. Held rather than applied at once so the decay and the
 ## drag are the same call.
@@ -486,6 +573,9 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_on_canvas_resized)
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
+	_frontend = CacheLoader.read_json(_cache_dir + "/tables/frontend.json")
+	_sequence_manifest = CacheLoader.read_json(
+		_cache_dir + "/tables/sequences.json")
 	_boot()
 	_start_agent()
 
@@ -550,8 +640,45 @@ func _boot() -> void:
 				DictRead.as_int(choice["campaign"]), settings.difficulty)
 			var _map: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
+		BOOT_SEQUENCE:
+			# The fallback is the `--campaign=` arm's: a cache with no
+			# cutscenes in it answers `null` here, and without this the game
+			# came up with no screen at all -- a black window with no way out.
+			# `boot_choice` cannot catch it, because whether a logical id
+			# *plays* is the cache's answer and not the command line's.
+			if play_sequence(DictRead.as_int(choice["sequence"]), true,
+					SEQUENCE_DEBUG) == null:
+				var _fallback: CampaignScreen = open_shell(
+					ShellHost.SCREEN_MENU)
+				_play_frontend_program("menu")
 		_:
-			var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+			# `aGameIntro` `0x0044BCA0`: the logo, the hold, the title plate
+			# until a key, then the menu (docs/92 section 7.19) -- on the
+			# first launch. See [method shell_entry].
+			if shell_entry(settings.seen_splash) == SHELL_MENU:
+				var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+				_play_frontend_program("menu")
+			else:
+				_show_splash(SplashScreen.STAGE_LOGO)
+				hold(hold_ms("logo", SplashScreen_LOGO_MS),
+					_show_splash.bind(SplashScreen.STAGE_TITLE))
+
+
+## Where a run with no argument opens: the splash, or the menu.
+##
+## **The original always plays `aGameIntro`** -- `0x0044BCA0` shows the logo,
+## holds 1500 ms, puts the title plate up and waits for a key or a click on
+## *Start Game*, every launch. The wait is the part that costs something: the
+## two plates are a second and a half, the click is unbounded and the player
+## pays it every time they start the game. So the remake shows the sequence
+## once and remembers ([member GameSettings.seen_splash]) -- docs/92
+## section 7.19's I19.
+##
+## **Static and pure for the same reason [method boot_choice] is**: which
+## entry a build takes is a decision a suite can pin, and this one is
+## otherwise only reachable by deleting a file and launching a window.
+static func shell_entry(seen_splash: bool) -> String:
+	return SHELL_MENU if seen_splash else SHELL_SPLASH
 
 
 ## Which of the three entries the command line names.
@@ -562,9 +689,10 @@ func _boot() -> void:
 ## be verified once and then quietly broken (docs/92 section 7.15 S5).
 ##
 ## Returns `{"kind": String, "mission": String, "campaign": int,
-## "warnings": PackedStringArray}`. An unknown mission name still falls back
-## to *fallback* and still warns -- the cache is the authority on what exists
-## -- and an unknown chain opens the shell rather than starting nothing.
+## "sequence": int, "warnings": PackedStringArray}`. An unknown mission name
+## still falls back to *fallback* and still warns -- the cache is the authority
+## on what exists -- and an unknown chain or an unknown logical sequence id
+## opens the shell rather than starting nothing.
 static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
 		fallback: String) -> Dictionary:
 	var warnings: PackedStringArray = PackedStringArray()
@@ -578,16 +706,24 @@ static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
 					% [name, landing])
 				name = landing
 			return {"kind": BOOT_MISSION, "mission": name, "campaign": 0,
-				"warnings": warnings}
+				"sequence": -1, "warnings": warnings}
 		if arg.begins_with(CAMPAIGN_ARG):
 			var chain: int = arg.substr(CAMPAIGN_ARG.length()).to_int()
 			if not CampaignState.FIRST_MISSION.has(chain):
 				warnings.append("no campaign %d; opening the menu" % chain)
 				return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
-					"warnings": warnings}
+					"sequence": -1, "warnings": warnings}
 			return {"kind": BOOT_CAMPAIGN, "mission": "", "campaign": chain,
-				"warnings": warnings}
-	return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
+				"sequence": -1, "warnings": warnings}
+		if arg.begins_with(SEQUENCE_ARG):
+			var id: int = arg.substr(SEQUENCE_ARG.length()).to_int()
+			if not SEQUENCE_IDS.has(id):
+				warnings.append("no sequence %d; opening the menu" % id)
+				return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
+					"sequence": -1, "warnings": warnings}
+			return {"kind": BOOT_SEQUENCE, "mission": "", "campaign": 0,
+				"sequence": id, "warnings": warnings}
+	return {"kind": BOOT_SHELL, "mission": "", "campaign": 0, "sequence": -1,
 		"warnings": warnings}
 
 
@@ -977,8 +1113,46 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 ## a soldier out of.
 func show_campaign_screen(name: String) -> CampaignScreen:
 	close_campaign_screen()
+	# **A pending hold does not raise a screen over this one.** The three
+	# `Sleep`s are drawn time and whatever raises a screen while one is
+	# counting has overtaken it, so its callback is stale: the original's
+	# `Sleep` blocks and nothing else can run at all, and the nearest thing to
+	# that here is to drop the countdown rather than let it fire late. Found
+	# through the control server, whose `wait` counts frames while a hold
+	# counts seconds -- one screen was replaced a moment after it went up.
+	# [method _tick_hold] clears the callback before it calls it, so a hold
+	# that raises a screen itself is not cancelling itself here.
+	_hold_left = 0.0
+	_hold_then = Callable()
 	if campaign == null:
 		return null
+	# **Mission control's entry runs the gate first** (`0x00456FC0(-1)`,
+	# docs/41 section 5): the intro once on a new campaign 1, and the two
+	# endings instead of a map that is never drawn for them.
+	if name == CampaignHost.SCREEN_MAP and campaign.state != null:
+		var opening: Dictionary = campaign.opening_sequence()
+		var kind: String = DictRead.as_string(opening["kind"])
+		if kind == CampaignHost.OPENING_STATIC_EXTRO:
+			return _show_static_extro()
+		if kind != CampaignHost.OPENING_NONE:
+			# **The mission comes down first**, exactly as it does for the
+			# static extro two lines up. Mission control's entry is reached
+			# from a *finished* mission, and [method _drop_sequence] gives
+			# `_scene_root` its visibility and its camera back -- so without
+			# this the four-second hold after the animated extro showed the
+			# battlefield the player had just left instead of the black the
+			# original holds. It is a no-op for the intro, which has no
+			# mission behind it.
+			_clear_mission()
+			var played: CampaignScreen = play_sequence(
+				DictRead.as_int(opening["sequence"]),
+				DictRead.as_bool(opening["full_screen"]), kind)
+			if played != null:
+				return played
+			# A cache without the cutscenes plays nothing and goes on: the
+			# intro is skipped, an ending goes straight to its credits.
+			if kind == CampaignHost.OPENING_EXTRO:
+				return _show_credits()
 	var screen: CampaignScreen = null
 	match name:
 		CampaignHost.SCREEN_MAP:
@@ -990,6 +1164,12 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			var map: CampaignMapScreen = CampaignMapScreen.new()
 			map.host = campaign
 			map.location_cells = _location_cells
+			# `B` on the map is the mission's own `B0` block
+			# ([method CampaignMapScreen.toggle_short_briefing]).
+			map.cache_dir = _cache_dir
+			map.document = CacheLoader.read_json(
+				"%s/text/briefing/%s.json" % [_cache_dir,
+				campaign.current_mission()])
 			# A cache the chain's map is not in leaves the plate whole and
 			# the screen a list; the frame is drawn around a hole only when
 			# there is something behind it.
@@ -1001,11 +1181,11 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			screen = map
 		CampaignHost.SCREEN_BRIEFING:
 			var briefing: BriefingScreen = BriefingScreen.new()
-			briefing.mission = campaign.state.mission
+			briefing.mission = campaign.current_mission()
 			briefing.cache_dir = _cache_dir
 			briefing.document = CacheLoader.read_json(
 				"%s/text/briefing/%s.json" % [_cache_dir,
-				campaign.state.mission])
+				campaign.current_mission()])
 			# Raised over a running mission by `B`, it is a page to read and
 			# close, not a step of the campaign -- see [member
 			# BriefingScreen.over_mission]. **A deployment already begun
@@ -1014,10 +1194,19 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			briefing.over_mission = in_mission() \
 				or (world != null
 					and campaign.screen == CampaignHost.SCREEN_SELECT)
+			# `%smb%daif.wav` (`0x004CA8D8`): the mission's voice-over,
+			# played with the page and stopped with it.
+			briefing.voice = _briefing_voice(campaign.current_mission())
+			if not briefing.over_mission:
+				_play_voice(briefing.voice)
 			screen = briefing
 		CampaignHost.SCREEN_SELECT:
 			var select: SelectUnitsScreen = SelectUnitsScreen.new()
 			select.host = campaign
+			select.cache_dir = _cache_dir
+			select.document = CacheLoader.read_json(
+				"%s/text/briefing/%s.json" % [_cache_dir,
+				campaign.current_mission()])
 			screen = select
 		CampaignHost.SCREEN_HQ:
 			# The Unit Menu, the Item List and the Recruit window are all
@@ -1058,7 +1247,9 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 		CampaignHost.SCREEN_DEBRIEFING:
 			var debriefing: DebriefingScreen = DebriefingScreen.new()
 			debriefing.report = campaign.last_report
-			debriefing.board = campaign.state.scoreboard[0]
+			debriefing.board = campaign.mission_board()
+			# `0x0045D671`: the debriefing has a CD program of its own.
+			_play_frontend_program("debriefing")
 			screen = debriefing
 	if screen == null:
 		return null
@@ -1142,7 +1333,10 @@ func _backdrop_for_location() -> String:
 func _campaign_library() -> CharismaLibrary:
 	if _campaign_bodies != null:
 		return _campaign_bodies
-	if _backdrop_world == null:
+	# `campaign` was implied by the one caller this had -- the Upgrade Menu --
+	# and is not by [method _build_backdrop], which stands an upgrade base's
+	# marines up with it.
+	if _backdrop_world == null or campaign == null:
 		return null
 	var map_document: Dictionary = CacheLoader.read_json(
 		"%s/missions/%s/map.json" % [_cache_dir, _backdrop_for_location()])
@@ -1212,6 +1406,10 @@ func _deployment_centre() -> Vector2i:
 ## one unreachable behind it. That is why `ESC` only opens the shell from a
 ## mission view (see [method _unhandled_input]).
 func open_shell(name: String = ShellHost.SCREEN_MENU) -> CampaignScreen:
+	# The same rule as [method show_campaign_screen]: a hold that has been
+	# overtaken does not get to raise anything.
+	_hold_left = 0.0
+	_hold_then = Callable()
 	shell.open(name, _behind_the_shell())
 	return _show_shell_screen()
 
@@ -1424,34 +1622,356 @@ func _on_shell_choice(action: String) -> void:
 ## of them was added by copying the first. Both ask `Txtmod_d` 60 first; this
 ## is only what happens after the answer.
 func _end_campaign() -> void:
+	_drop_sequence()
+	_hold_left = 0.0
 	if campaign != null:
 		campaign.state = null
 		campaign.screen = CampaignHost.SCREEN_MAP
 	_clear_backdrop()
 	_clear_mission()
+	if _audio != null:
+		var _stopped: int = _audio.stop_tag(ExtroScreen.CONTINUE)
 	var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+	_play_frontend_program("menu")
 
 
-## docs/92 section 7.15 S4 -- the intro, `Video/Seq_1` (logical id 0).
+# --- the briefing around a mission -- docs/24 section 7.1 -------------------
+
+## `audio/briefing/<mission>.wav`, lower-cased as the converter writes it, or
+## `""` when the cache has no voice for the mission.
+func _briefing_voice(mission: String) -> String:
+	if _cache_dir.is_empty() or mission.is_empty():
+		return ""
+	var relative: String = "audio/briefing/%s.wav" % mission.to_lower()
+	if not FileAccess.file_exists("%s/%s" % [_cache_dir, relative]):
+		return ""
+	return relative
+
+
+func _play_voice(relative: String) -> void:
+	if relative.is_empty():
+		return
+	var audio: AudioSystem = interface_audio()
+	if audio == null:
+		return
+	var _stopped: int = audio.stop_tag(VOICE_TAG)
+	var _slot: int = audio.play_file(relative, VOICE_TAG)
+
+
+# --- the front end between the screens -- docs/92 section 7.19 -------------
+
+## One of the three `Sleep` holds, in milliseconds, from the cache's front-end
+## document, or *fallback* when the cache predates it.
+func hold_ms(name: String, fallback: int) -> int:
+	var holds: Dictionary = DictRead.as_dict(_frontend.get("holds_ms", {}))
+	return DictRead.as_int(holds.get(name, fallback))
+
+
+## Wait *ms* of drawn time, then run *then*. One hold at a time: a second one
+## replaces the first, as the original's `Sleep`s never overlap.
+func hold(ms: int, then: Callable) -> void:
+	if ms <= 0:
+		_hold_left = 0.0
+		_hold_then = Callable()
+		if then.is_valid():
+			then.call()
+		return
+	_hold_left = float(ms) / 1000.0
+	_hold_then = then
+
+
+## Whether a hold is counting down -- the agent's snapshot and the suite.
+func holding() -> bool:
+	return _hold_left > 0.0
+
+
+func _tick_hold(delta: float) -> void:
+	if _hold_left <= 0.0:
+		return
+	_hold_left -= delta
+	if _hold_left > 0.0:
+		return
+	_hold_left = 0.0
+	var then: Callable = _hold_then
+	_hold_then = Callable()
+	if then.is_valid():
+		then.call()
+
+
+## One of the front end's CD programs -- `menu`, `credits`, `debriefing` --
+## started unless it is already the one playing, so a screen rebuilt behind a
+## click does not restart the track.
+func _play_frontend_program(name: String) -> void:
+	var programs: Dictionary = DictRead.as_dict(_frontend.get("cd_programs", {}))
+	var program: String = DictRead.as_string(programs.get(name, ""))
+	if program.is_empty() or _cache_dir.is_empty():
+		return
+	var audio: AudioSystem = interface_audio()
+	if audio == null or audio.music_source() == AudioSystem.program_source(
+			program):
+		return
+	var _track: int = audio.start_program(program)
+
+
+## `aGameIntro`'s two plates.
 ##
-## A **named empty step**, not a forgotten one. The sequence player is a slice
-## of its own (docs/41 is the spec; nothing plays one yet), and the campaign
-## must be reachable before it exists. When the player lands, this is the one
-## place it is called from.
+## The flag is written when the **title** plate goes up, not at boot: a run
+## killed on the logo is a run that never showed the player anything to skip.
+func _show_splash(stage: int) -> void:
+	if stage == SplashScreen.STAGE_TITLE and not settings.seen_splash:
+		settings.seen_splash = true
+		var _written: bool = settings.save_to_disk()
+	close_campaign_screen()
+	var splash: SplashScreen = SplashScreen.new()
+	splash.stage = stage
+	splash.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	splash.chose.connect(_on_campaign_choice)
+	add_child(splash)
+	_screen = splash
+	_sync_hud()
+
+
+## `aPrintMessageScreen`: *Please Wait...* for at least one drawn frame, then
+## *then* -- which puts up whatever comes next and so takes this down.
+func _show_message_then(then: Callable) -> void:
+	close_campaign_screen()
+	var message: MessageScreen = MessageScreen.new()
+	message.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	add_child(message)
+	_screen = message
+	_sync_hud()
+	# Two frames, as [method _run_tests_and_quit] does: the first draws the
+	# plate, the second makes sure it is on the screen before the main thread
+	# stops answering for the build's length.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_inside_tree():
+		return
+	then.call()
+	# Whatever *then* raised replaced this; if it raised nothing -- a mission
+	# view -- the plate has to come down by hand.
+	if _screen == message:
+		close_campaign_screen()
+
+
+## Play logical sequence *id* -- full screen or framed over `plate_7` -- for
+## *kind*, and answer the screen, or `null` when the cache has no cutscenes.
 ##
-## TODO: play `Video/Seq_1` (logical id 0) here once the sequence player of
-## docs/41 exists.
-func _play_intro() -> void:
-	pass
+## The player is a [Node3D] under this node with a camera of its own, drawn
+## through the plate's hole like the campaign map is; the map's own root is
+## hidden meanwhile so the two scenes do not render into each other.
+func play_sequence(id: int, full: bool, kind: String) -> CampaignScreen:
+	_drop_sequence()
+	_hold_left = 0.0
+	if _sequence_manifest.is_empty():
+		return null
+	var window: Rect2 = Rect2(Vector2.ZERO, CampaignScreen.PLATE_SIZE) \
+		if full else CampaignScreen.PLATE_WINDOW
+	var player: SequencePlayer = SequencePlayer.new()
+	player.name = "Sequence"
+	if not player.create(_cache_dir, _sequence_manifest, id, window,
+			CampaignScreen.PLATE_SIZE):
+		player.free()
+		return null
+	player.cd_program.connect(_on_sequence_program)
+	add_child(player)
+	if not player.start():
+		remove_child(player)
+		player.free()
+		return null
+	_sequence = player
+	_sequence_kind = kind
+	if _backdrop_root != null:
+		_backdrop_root.visible = false
+	if _scene_root != null:
+		_scene_root.visible = false
+	player.camera().current = true
+	close_campaign_screen()
+	var screen: SequenceScreen = SequenceScreen.new()
+	screen.full = full
+	screen.player = player
+	screen.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	screen.chose.connect(_on_campaign_choice)
+	add_child(screen)
+	_screen = screen
+	_sync_hud()
+	for line: String in player.missing():
+		push_warning("sequence %d: %s" % [id, line])
+	return screen
 
 
+## A part's CD program -- the `Track` family, the one that covers 9..19
+## (docs/92 section 7.19).
+func _on_sequence_program(program: String) -> void:
+	if _cache_dir.is_empty():
+		return
+	var audio: AudioSystem = interface_audio()
+	if audio != null:
+		var _track: int = audio.start_program(program, AudioTables.FAMILY_TRACK)
+
+
+func _tick_sequence(delta: float) -> void:
+	if _sequence == null or not _sequence.running:
+		return
+	var still: bool = _sequence.update(delta)
+	var screen: SequenceScreen = _screen as SequenceScreen
+	if screen != null:
+		screen.hide_caption()
+	if not still:
+		_finish_sequence()
+
+
+## The player's view for the agent's snapshot: empty when nothing plays.
+func sequence_view() -> Dictionary:
+	if _sequence == null:
+		return {}
+	var out: Dictionary = _sequence.view()
+	out["kind"] = _sequence_kind
+	return out
+
+
+## Take the player down and put the picture back, with no follow-up.
+func _drop_sequence() -> void:
+	if _sequence == null:
+		return
+	_sequence.destroy()
+	remove_child(_sequence)
+	_sequence.free()
+	_sequence = null
+	_sequence_kind = ""
+	if _backdrop_root != null:
+		_backdrop_root.visible = true
+		if _backdrop_rig != null and _backdrop_rig.camera() != null:
+			_backdrop_rig.camera().current = true
+	if _scene_root != null:
+		_scene_root.visible = true
+		if _rig != null and _rig.camera() != null:
+			_rig.camera().current = true
+	if _audio != null and _audio.music_source().begins_with(
+			AudioSystem.program_source("", AudioTables.FAMILY_TRACK)):
+		_audio.stop_music()
+
+
+## Enter an upgrade base: its own scene, the arrival flight, then the menu.
+##
+## `aLocationHandling`'s upgrade arm calls `aPlayLocationAnimation_Upgrade`
+## `0x00417510` **before** mission control raises any window, and that routine
+## blocks in the flight (docs/27 section 2.7). So the base opens with the
+## camera coming down over it behind `plate_7`, and the Upgrade Menu is what
+## the flight hands over to. A base with no path of its own -- or a cache with
+## no `upgrade_N` in it -- goes straight to the menu.
+func _enter_upgrade_location() -> void:
+	_raise_map_backdrop()
+	if not _start_fly_in(func() -> void:
+			var _menu: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_UPGRADE)):
+		var _up: CampaignScreen = show_campaign_screen(
+			CampaignHost.SCREEN_UPGRADE)
+		return
+	close_campaign_screen()
+	var screen: FlyInScreen = FlyInScreen.new()
+	screen.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	screen.chose.connect(_on_campaign_choice)
+	add_child(screen)
+	_screen = screen
+	_sync_hud()
+
+
+## `0x00457180`: the sequence is over -- its last part ended, or a key or a
+## click -- and what follows depends on why it played.
+func _finish_sequence() -> void:
+	# **Nothing is playing, so there is nothing to finish.** The screen stays
+	# up over the hold that follows -- black, as the original's `Sleep` leaves
+	# it -- and its `_unhandled_input` is still live, so a second key emits
+	# `DONE` again. Without this guard that ran the arm below with an empty
+	# `kind`, which for the animated extro re-entered `show_campaign_screen`
+	# and replayed the whole thing: mission 255 arms `opening_sequence()`
+	# every time, unlike the intro's once-only flag, so the credits could not
+	# be reached while the player kept pressing keys. The original cannot be
+	# re-entered because its `Sleep` blocks.
+	if _sequence == null:
+		return
+	var kind: String = _sequence_kind
+	_drop_sequence()
+	match kind:
+		CampaignHost.OPENING_EXTRO:
+			# Mission id 255: `Sleep(4000)`, then the credits flag; the
+			# plate stays up, black, for the hold.
+			hold(hold_ms("after_extro", 4000), func() -> void:
+				var _credits: CampaignScreen = _show_credits())
+		CampaignHost.OPENING_INTRO, SEQUENCE_DIALOGUE:
+			# `Sleep(1000)`, then mission control's map.
+			hold(hold_ms("after_sequence", 1000), func() -> void:
+				var _map: CampaignScreen = show_campaign_screen(
+					CampaignHost.SCREEN_MAP))
+		_:
+			# `--sequence=` and the agent's `sequence N`: back to whatever
+			# was there -- the map when a campaign is running, else the menu.
+			close_campaign_screen()
+			if campaign != null and campaign.state != null:
+				var _map: CampaignScreen = show_campaign_screen(campaign.screen)
+			elif not in_mission():
+				var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+				_play_frontend_program("menu")
+
+
+## The static extro of mission id 180 (`0x00457430`): `Ship.bmp`,
+## `extro.wav`, *Continue*.
+func _show_static_extro() -> CampaignScreen:
+	_drop_sequence()
+	close_campaign_screen()
+	_clear_mission()
+	if _backdrop_root != null:
+		_backdrop_root.visible = false
+	var extro: ExtroScreen = ExtroScreen.new()
+	extro.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	extro.chose.connect(_on_campaign_choice)
+	add_child(extro)
+	_screen = extro
+	_sync_hud()
+	var audio: AudioSystem = interface_audio()
+	if audio != null:
+		audio.stop_music()
+		var _slot: int = audio.play_file(ExtroScreen.WAVE, ExtroScreen.CONTINUE)
+	return extro
+
+
+## The credits, after either ending: `Credits.bmp`, CD program `"8"`.
+func _show_credits() -> CampaignScreen:
+	close_campaign_screen()
+	if _backdrop_root != null:
+		_backdrop_root.visible = false
+	var credits: CreditsScreen = CreditsScreen.new()
+	credits.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	credits.chose.connect(_on_campaign_choice)
+	add_child(credits)
+	_screen = credits
+	_sync_hud()
+	_play_frontend_program("credits")
+	return credits
+
+
+## docs/92 section 7.15 S4, closed by section 7.19: the intro is not a step
+## of its own. `start_new` arms [member CampaignState.intro_pending] for
+## campaign 1, and the gate at the top of [method show_campaign_screen] plays
+## `Video/Seq_1` (logical id 0) once, at the first entry to mission control --
+## exactly where `0x00456FC0(-1)` reads `[0x00510D48]`.
 func _start_campaign(chain: int) -> void:
 	if campaign == null or not CampaignState.FIRST_MISSION.has(chain):
 		return
 	var _state: CampaignState = campaign.start_new(chain, settings.difficulty)
-	_play_intro()
 	shell.close()
-	var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+	# `aInitMissionControl` prints *Please Wait...* (`0x00454007`) on the way
+	# in, and the first map takes a moment to build.
+	_show_message_then(func() -> void:
+		var _map: CampaignScreen = show_campaign_screen(
+			CampaignHost.SCREEN_MAP))
 
 
 ## One mission, past the campaign -- what `--mission=` reaches, from a list.
@@ -1633,10 +2153,18 @@ func _reapply_font() -> void:
 		var _back: CampaignScreen = show_campaign_screen(campaign.screen)
 
 
+## One click of a volume row: **down** a step, and from the floor back to full.
+##
+## It stepped up and wrapped max to floor, which meant one click on a row that
+## was already at full volume dropped it to [constant GameSettings.VOLUME_MIN]
+## -- -40 dB, inaudible -- and sixteen more were needed to get back. That is
+## how a session ends up reporting a cutscene as having no sound at all when
+## the track is playing (docs/101 section 6). Downward, the same cycle makes
+## the curious click cost 2.5 dB and the click at the floor restore full.
 func _step_volume(hundredths: int) -> int:
-	var next: int = hundredths + GameSettings.VOLUME_STEP
-	if next > GameSettings.VOLUME_MAX:
-		next = GameSettings.VOLUME_MIN
+	var next: int = hundredths - GameSettings.VOLUME_STEP
+	if next < GameSettings.VOLUME_MIN:
+		next = GameSettings.VOLUME_MAX
 	return next
 
 
@@ -1653,6 +2181,8 @@ func close_campaign_screen() -> void:
 	# the input path this frame, and gone by the end of it.
 	_screen.queue_free()
 	_screen = null
+	if _audio != null:
+		var _voice_stopped: int = _audio.stop_tag(VOICE_TAG)
 	# **The deployment's dots go down with the screen that raised them.** They
 	# hang off the *mission's* scene, which the start of the mission does not
 	# rebuild, so leaving them up put a landing marker on every free cell of
@@ -1784,14 +2314,46 @@ func _on_campaign_choice(action: String) -> void:
 			var _shown: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_BRIEFING)
 		elif parts.size() >= 3 and parts[2] == CampaignMap.KIND_UPGRADE:
-			var _up: CampaignScreen = show_campaign_screen(
-				CampaignHost.SCREEN_UPGRADE)
+			_enter_upgrade_location()
+		elif parts.size() >= 3 and parts[2] == CampaignMap.KIND_DIALOGUE:
+			# The dialogue arm of `aLocationHandling`: the framed sequence
+			# screen on the logical id the location passes (docs/41
+			# section 5); D5 is closed.
+			var id: int = campaign.tables.dialogue_number(parts[1].to_int())
+			var _dialogue: CampaignScreen = play_sequence(id, false,
+				SEQUENCE_DIALOGUE)
 		return
 	match action:
+		FlyInScreen.DONE:
+			# `0x004fcbdc`: a key or a click lands the flight where it is,
+			# and the Upgrade Menu follows exactly as it does when the eye
+			# arrives by itself.
+			_land_fly_in()
+		SequenceScreen.DONE:
+			_finish_sequence()
+		SplashScreen.DONE:
+			# The title dismissed: the menu, and its music.
+			_hold_left = 0.0
+			close_campaign_screen()
+			var _menu: CampaignScreen = open_shell(ShellHost.SCREEN_MENU)
+			_play_frontend_program("menu")
+		CreditsScreen.BACK:
+			_end_campaign()
+		CreditsScreen.QUIT:
+			_quit()
+		ExtroScreen.CONTINUE:
+			# `0x0045BD7F`: the wave stops with the screen and the credits
+			# follow.
+			if _audio != null:
+				var _stopped: int = _audio.stop_tag(ExtroScreen.CONTINUE)
+			var _credits: CampaignScreen = _show_credits()
 		"enter":
 			# `_build` takes the campaign map down: the mission's own view is
-			# what the deploy screen's window shows.
-			_build(campaign.state.mission)
+			# what the deploy screen's window shows. The mission is read
+			# through [method CampaignHost.current_mission] because this arm
+			# is one of the agent's debugging entries and can be reached from
+			# the shell, where there is no campaign state to read.
+			_build(campaign.current_mission())
 			if world != null:
 				campaign.begin_mission(world)
 			# **A deployment with nobody to deploy is not a screen.** A chain
@@ -1872,8 +2434,11 @@ func _on_campaign_choice(action: String) -> void:
 		"advance":
 			var target: String = campaign.advance()
 			if target != "":
-				var _map: CampaignScreen = show_campaign_screen(
-					CampaignHost.SCREEN_MAP)
+				# `0x0045D436`: the debriefing's exit prints *Please Wait...*
+				# while the map comes up.
+				_show_message_then(func() -> void:
+					var _map: CampaignScreen = show_campaign_screen(
+						CampaignHost.SCREEN_MAP))
 		"replay":
 			var _again: String = campaign.replay()
 			var _back: CampaignScreen = show_campaign_screen(
@@ -2154,9 +2719,11 @@ func _build_backdrop(mission: String) -> void:
 	var world_set: String = DictRead.as_string(header["world_set"])
 	var geometry: Dictionary = _geometry_for(world_set)
 	var textures: Dictionary = _textures_for(world_set)
-	# No [method World.load_sweep] here: the campaign maps place no units at
-	# all -- `_C_XXX` and `_C_YYY` are 200 free slots each -- so the sweep
-	# would walk an empty array. This is a backdrop, not a battle map.
+	# No [method World.load_sweep] here: this is a backdrop, not a battle map,
+	# and the sweep reads *session* state -- who is playing -- which nothing
+	# behind a plate has. The units themselves are another matter: `_C_XXX` and
+	# `_C_YYY` really are 200 free slots each, but every `upgrade_N` places two
+	# or three marines and the original walks them ([BackdropBodies]).
 	_backdrop_world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(geometry.get("special_models", [])))
 	_backdrop_mission = mission
@@ -2183,6 +2750,14 @@ func _build_backdrop(mission: String) -> void:
 	scenery.build(map_document, geometry, textures)
 	var _placed: int = scenery.apply_all(_backdrop_world.terrain_snapshot())
 
+	# The base's own marines, docs/27 section 2.7.1. `_C_XXX`/`_C_YYY` place
+	# nobody, so this is one code path and not a branch on the kind of map.
+	_backdrop_bodies = BackdropBodies.new()
+	_backdrop_bodies.name = "Marines"
+	_backdrop_root.add_child(_backdrop_bodies)
+	var _marines: int = _backdrop_bodies.build(_backdrop_world,
+		_campaign_library(), _backdrop_rng)
+
 	_backdrop_rig = CameraRig.new()
 	_backdrop_rig.name = "CameraRig"
 	_backdrop_rig.eng3d = _eng3d
@@ -2205,6 +2780,7 @@ func _build_backdrop(mission: String) -> void:
 	_backdrop_root.add_child(environment)
 
 	_backdrop_view = _read_camera_path(opening)
+	_backdrop_waypoints = _read_camera_waypoints(opening)
 	_build_backdrop_fires(mission, geometry, textures, opening)
 
 
@@ -2250,6 +2826,233 @@ func _read_camera_path(opening: Dictionary) -> Array[Vector3i]:
 	if not seen_target or not seen_eye:
 		return []
 	return [eye, target]
+
+
+## Every `mode 1` waypoint of an upgrade base's `INIT MAP`, in script order --
+## the path `0x00417000` flies down before it rests on the last one.
+func _read_camera_waypoints(opening: Dictionary) -> Array[Vector3i]:
+	var out: Array[Vector3i] = []
+	for entry: Variant in DictRead.as_array(opening.get("events", [])):
+		var event: Dictionary = AudioEvents.as_event(entry)
+		if AudioEvents.name_of(event) != CREATE_CAMERA_PATH:
+			continue
+		var values: PackedInt32Array = SetpieceDriver._numbers(event)
+		if values.size() < 5 or values[1] != CAMERA_PATH_WAYPOINT_MODE:
+			continue
+		out.append(Vector3i(values[2], values[3], values[4]) * CAMERA_PATH_SCALE)
+	return out
+
+
+## Begin an upgrade base's arrival flight, and answer whether there is one.
+##
+## The eye opens on the **first** waypoint looking at the target, exactly as
+## `0x00417000` does after its two opening `aGetCameraPath` calls, and steps
+## down the rest. A base whose script names fewer than two waypoints has
+## nothing to fly and goes straight to its resting view.
+func _start_fly_in(then: Callable) -> bool:
+	if _backdrop_rig == null or _backdrop_waypoints.size() < 2 \
+			or _backdrop_view.size() != 2:
+		return false
+	_backdrop_rig.set_now(_backdrop_waypoints[0], _backdrop_view[1])
+	_fly_next = 1
+	_fly_leg_from = _backdrop_waypoints[0]
+	_fly_velocity = Vector3i.ZERO
+	_fly_smooth = FLY_SMOOTH_START
+	_fly_first = true
+	_fly_landed = false
+	_fly_clock = 0.0
+	_fly_then = then
+	return true
+
+
+## The flight's clock. `0x00417000` steps once per drawn frame and the front
+## end draws at 20, so the step is counted rather than scaled by delta -- the
+## arithmetic below is the engine's integer arithmetic and does not survive
+## being run at 165 frames a second.
+func _tick_fly_in(delta: float) -> void:
+	if _fly_next <= 0:
+		return
+	_fly_clock += delta * FLY_FPS
+	while _fly_clock >= 1.0 and _fly_next > 0:
+		_fly_clock -= 1.0
+		_fly_step()
+
+
+## One drawn frame of the flight -- the body of `0x00417000`'s inner loop.
+##
+## The arithmetic is [method fly_advance]'s; what is left here is the path's
+## own bookkeeping, which is the half that needs a rig and a screen.
+func _fly_step() -> void:
+	if _backdrop_rig == null or _fly_next >= _backdrop_waypoints.size():
+		# The path ran out: `0x00417167`'s last `aSetCameraPosition` sets the
+		# eye it already has, so the rest is wherever the flight stopped.
+		_land_fly_in()
+		return
+	var step: Dictionary = fly_advance({
+		"eye": _backdrop_rig.eye(),
+		"velocity": _fly_velocity,
+		"smooth": _fly_smooth,
+		"leg_from": _fly_leg_from,
+		"first": _fly_first,
+		"landed": _fly_landed,
+	}, _backdrop_waypoints[_fly_next],
+		_fly_next == _backdrop_waypoints.size() - 1)
+	_fly_velocity = DictRead.as_vector3i(step["velocity"])
+	_fly_smooth = DictRead.as_int(step["smooth"])
+	_fly_leg_from = DictRead.as_vector3i(step["leg_from"])
+	_fly_first = DictRead.as_bool(step["first"])
+	_fly_landed = DictRead.as_bool(step["landed"])
+	if DictRead.as_bool(step["arrived"]):
+		_fly_next += 1
+		if _fly_next >= _backdrop_waypoints.size():
+			_land_fly_in()
+		return
+	if DictRead.as_bool(step["stop"]):
+		_land_fly_in()
+		return
+	_backdrop_rig.set_now(DictRead.as_vector3i(step["eye"]), _backdrop_view[1])
+
+
+## One frame of the flight as arithmetic alone: the state in, the state out.
+##
+## **Static and pure so the suite runs this copy** and not a second
+## transcription of the same law. `state` carries the eye, the velocity, the
+## smoothing divisor, the leg's starting eye and the two flags; the answer
+## carries those again, plus `arrived` -- the leg was reached on this frame,
+## and the caller moves to the next waypoint -- and `stop`, the last leg's
+## countdown having run out. `eye` in the answer is where the camera goes, and
+## is the eye that came in on either of those two frames.
+##
+## `last_leg` is `local_50`, the flag `aGetCameraPath` sets on the final
+## waypoint: only that leg counts itself down.
+static func fly_advance(state: Dictionary, goal: Vector3i,
+		last_leg: bool) -> Dictionary:
+	var eye: Vector3i = DictRead.as_vector3i(state["eye"])
+	var out: Dictionary = {
+		"eye": eye,
+		"velocity": state["velocity"],
+		"smooth": state["smooth"],
+		"leg_from": state["leg_from"],
+		"first": state["first"],
+		"landed": state["landed"],
+		"arrived": false,
+		"stop": false,
+	}
+	var away: Vector3i = goal - eye
+	# The arrival test comes **before** the landing flag, as in the original:
+	# a leg that is reached on the same frame the countdown ran out still
+	# hands over to the next one.
+	if absi(away.x) <= FLY_ARRIVAL and absi(away.y) <= FLY_ARRIVAL \
+			and absi(away.z) <= FLY_ARRIVAL:
+		out["leg_from"] = eye
+		out["smooth"] = FLY_SMOOTH_START
+		out["arrived"] = true
+		return out
+	if DictRead.as_bool(state["landed"]):
+		out["stop"] = true
+		return out
+	var speed: int = FLY_SPEED
+	if last_leg:
+		var leg: int = _manhattan(DictRead.as_vector3i(state["leg_from"]), goal)
+		speed = _manhattan(eye, goal) * FLY_SPEED / leg if leg > 0 else 0
+		if speed < FLY_LANDED_SHARE:
+			out["landed"] = true
+	var direction: Vector3 = fly_direction(eye, goal)
+	var want: Vector3i = Vector3i(int(direction.x * float(speed)),
+		int(direction.y * float(speed)), int(direction.z * float(speed)))
+	var velocity: Vector3i = DictRead.as_vector3i(state["velocity"])
+	var smooth: int = DictRead.as_int(state["smooth"])
+	if DictRead.as_bool(state["first"]):
+		velocity = want / smooth
+		out["first"] = false
+	else:
+		velocity += (want - velocity) / smooth
+	if smooth > FLY_SMOOTH_FLOOR:
+		smooth -= 1
+	out["velocity"] = velocity
+	out["smooth"] = smooth
+	out["eye"] = eye + velocity
+	return out
+
+
+## The direction `0x0046d400` hands the flight, which is **not** a unit
+## vector: the two horizontal components are divided by the larger of them, so
+## the dominant axis is exactly one and the eye's speed is read off that axis
+## alone. The vertical is the height difference over the horizontal distance
+## with **all six coordinates in eighths** -- the arm the flight takes (its
+## last argument is `push 1` at `0x004172b1`) runs `sar 3` over both z, both x
+## and both y before it asks `0x0044ae10` for the hypotenuse, so the run is in
+## eighths as well as the rise and the two eighths cancel. Shifting only the
+## rise, as this did until 2026-09-09, divides by eight times the distance and
+## leaves the eye crawling along the ground for the whole flight.
+##
+## Each coordinate is shifted **on its own**, as the original does: `sar` is an
+## arithmetic shift and floors, so `(a >> 3) - (b >> 3)` is not `(a - b) >> 3`
+## wherever the two remainders cross. GDScript's `>>` floors the same way, and
+## the suite pins that on a negative coordinate -- nine of the fifteen bases
+## carry one in their first waypoint.
+static func fly_direction(eye: Vector3i, goal: Vector3i) -> Vector3:
+	var dx: int = goal.x - eye.x
+	var dy: int = goal.y - eye.y
+	var across: float = 0.0
+	if dx > 0:
+		across = 1.0
+	elif dx < 0:
+		across = -1.0
+	# `dVar2` is left at 1.0 when the two x are equal, so a purely vertical
+	# leg takes the slope's own sign and the x component falls out as zero.
+	var slope: float = 1.0 if dx == 0 else absf(float(dy) / float(dx))
+	var along: float = 0.0
+	if dy > 0:
+		along = slope
+	elif dy < 0:
+		along = -slope
+	var out: Vector3 = Vector3.ZERO
+	var scale: float = maxf(absf(across), absf(along))
+	if scale > 0.0:
+		out.x = across / scale
+		out.y = along / scale
+	# `0x0044ae10(eye.x >> 3, eye.y >> 3, goal.x >> 3, goal.y >> 3)`. The
+	# equal-height test in front of it is on the **unshifted** z, as at
+	# `0x0046d4bc`.
+	var run_x: int = (eye.x >> FLY_DIRECTION_SHIFT) \
+		- (goal.x >> FLY_DIRECTION_SHIFT)
+	var run_y: int = (eye.y >> FLY_DIRECTION_SHIFT) \
+		- (goal.y >> FLY_DIRECTION_SHIFT)
+	var flat: int = int(sqrt(float(run_x * run_x + run_y * run_y)))
+	# The original divides here whatever the distance is; a leg short enough
+	# for this to be zero is one the arrival test has already ended, so the
+	# guard is the port's and nothing reaches it.
+	if goal.z != eye.z and flat != 0:
+		out.z = float((goal.z >> FLY_DIRECTION_SHIFT)
+			- (eye.z >> FLY_DIRECTION_SHIFT)) / float(flat)
+	return out
+
+
+static func _manhattan(from: Vector3i, to: Vector3i) -> int:
+	return absi(to.x - from.x) + absi(to.y - from.y) + absi(to.z - from.z)
+
+
+## The flight is over. Where it stopped **is** the base's still view: its
+## caller reads the camera back with `0x00403780` into `0x00510D2C..0x510D40`
+## and mission control pushes those six back on every frame, so the Unit Menu,
+## the Item List and the Upgrade Menu all sit over the last frame of the
+## flight rather than over the last waypoint.
+func _land_fly_in() -> void:
+	_fly_next = 0
+	_fly_clock = 0.0
+	_fly_landed = false
+	if _backdrop_rig != null and _backdrop_view.size() == 2:
+		_backdrop_view[0] = _backdrop_rig.eye()
+	var then: Callable = _fly_then
+	_fly_then = Callable()
+	if then.is_valid():
+		then.call()
+
+
+## Whether the base's camera is still on its way down the path.
+func flying_in() -> bool:
+	return _fly_next > 0
 
 
 
@@ -2362,7 +3165,13 @@ func _frame_map() -> void:
 	# and `0x004558F0` -- the turn -- is the *map's* frame callback alone, so
 	# a base does not swing.
 	if _backdrop_view.size() == 2:
-		_backdrop_rig.set_now(_backdrop_view[0], _backdrop_view[1])
+		# A base's still view is where its arrival flight came to rest
+		# ([method _land_fly_in]), and `0x00455A40(0)` pushes exactly that
+		# back on every mission-control frame. The flight itself runs once,
+		# when the location is entered, and not again when the player steps
+		# between the base's screens.
+		if _fly_next <= 0:
+			_backdrop_rig.set_now(_backdrop_view[0], _backdrop_view[1])
 		return
 	_backdrop_rig.set_now(CameraRig.CAMPAIGN_EYE, CameraRig.CAMPAIGN_TARGET)
 
@@ -2375,6 +3184,9 @@ func _clear_backdrop() -> void:
 		_backdrop_root.free()
 	_backdrop_root = null
 	_backdrop_view = []
+	_backdrop_waypoints = []
+	_fly_next = 0
+	_fly_then = Callable()
 	# The Upgrade Menu's bodies are opened against the backdrop's world set, so
 	# a new chain has to open its own rather than draw the last one's meshes.
 	_campaign_bodies = null
@@ -2383,6 +3195,7 @@ func _clear_backdrop() -> void:
 	_backdrop_mission = ""
 	# The pool and the sprites were children of the root that has just been
 	# freed; the handles go with them, or the next frame ticks a freed node.
+	_backdrop_bodies = null
 	_backdrop_fx = null
 	_backdrop_hooks = null
 	_backdrop_bgb = null
@@ -2502,6 +3315,7 @@ func _clear_mission() -> void:
 
 
 func _build(mission: String) -> void:
+	_drop_sequence()
 	_clear_backdrop()
 	_clear_mission()
 	_mission = mission
@@ -2734,7 +3548,7 @@ func _play_map_music() -> void:
 	if _backdrop_music.is_empty() or _cache_dir.is_empty():
 		return
 	if _audio != null and _audio.music_source() \
-			== AudioSystem.MUSIC_PROGRAM + _backdrop_music:
+			== AudioSystem.program_source(_backdrop_music):
 		return
 	var audio: AudioSystem = _open_audio(true)
 	settings.apply_audio(audio, _events)
@@ -3756,8 +4570,15 @@ static func zoom_delta_for(event: InputEvent) -> float:
 
 
 func _process(delta: float) -> void:
+	# The front end's own clocks: a hold between two screens, and a cutscene's
+	# 30 fps frame counter. Neither has a world behind it.
+	_tick_hold(delta)
+	_tick_sequence(delta)
+	_tick_fly_in(delta)
 	# The location map is a picture with a clock of its own: no simulation
 	# behind it, and nothing below this line applies to it.
+	if _backdrop_bodies != null:
+		_backdrop_bodies.tick(delta)
 	_tick_backdrop_fires(delta)
 	_tick_backdrop_swing()
 	if _playback.is_running():

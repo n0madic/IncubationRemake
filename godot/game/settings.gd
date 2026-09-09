@@ -82,6 +82,14 @@ var faithful: bool = true
 ## the remake trades fidelity for comfort by default -- this one does, because
 ## the alternative is text the player cannot read.
 var game_font: bool = false
+## Whether `aGameIntro`'s title plate has already been sat through once.
+##
+## The original waits for a key or a click on *Start Game* on **every** launch
+## (`0x0044BCA0`). This remake shows the two shipped plates the first time and
+## goes straight to the menu afterwards -- docs/92 section 7.19's I19, and the
+## same trade [member game_font] makes: a period detail that costs the player
+## a click every single run. Deleting the settings file brings it back.
+var seen_splash: bool = false
 
 
 ## Read the file, or keep the defaults when there is none.
@@ -123,6 +131,7 @@ func load_from_disk() -> bool:
 		GORE_MIN, GORE_MAX)
 	faithful = DictRead.as_bool(document.get("faithful", faithful))
 	game_font = DictRead.as_bool(document.get("game_font", game_font))
+	seen_splash = DictRead.as_bool(document.get("seen_splash", seen_splash))
 	return true
 
 
@@ -149,6 +158,7 @@ func view() -> Dictionary:
 		"gore_level": gore_level,
 		"faithful": faithful,
 		"game_font": game_font,
+		"seen_splash": seen_splash,
 	}
 
 

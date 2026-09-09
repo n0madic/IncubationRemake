@@ -60,6 +60,45 @@ const RAMP_ALERT: Color = Color(1.0, 0.0, 0.0)
 ## Six of the 116 shipped `A0` blocks do not fit the box, so the label scrolls.
 const SCROLL_STEP: float = 24.0
 
+## The typewriter -- docs/24 section 5. `aActivateBriefingInfo`'s sixth
+## argument at 0 installs `1` in the four print limits and `fcn.0043ECF0`
+## adds one to each on every printed frame (`0x0043F0AB`, caps 5000 and
+## 50000), so one more glyph shows per frame; a space drawn while the word
+## count is under its limit plays `textbeep.wav` (`0x0043E3C1`). The frame is
+## the front end's, `0x0044BDB0`'s 20 a second (docs/92 section 7.19).
+const TYPEWRITER_FPS: float = 20.0
+const TYPEWRITER_PER_FRAME: int = 1
+## The blip's wave, as `aInitGUI` loads it beside the two clicks.
+const BLIP_WAVE: String = "textbeep.wav"
+
+
+## The cue every typing screen plays on a finished word.
+##
+## **One seam, because there are three screens.** The briefing page, the
+## deployment screen and the location map's `B0` all blip, and the volume was
+## written out three times: two passed [constant AudioTables.NO_SCALING] --
+## the GUI's own volume, as `0x0043E3C1` plays it beside the two clicks -- and
+## the third passed `0`, a real table id. The shipped table's entry 0 is 100,
+## so it sounded the same and nothing said otherwise; a cache without that id
+## would have answered `REFUSED` and silenced that one screen.
+##
+## `site` is the block the text came from, for the agent's pool view; the two
+## screens that have only one block leave it empty.
+static func blip_cue(site: String = "") -> Dictionary:
+	var cue: Dictionary = {"wave": BLIP_WAVE,
+		"volume_id": AudioTables.NO_SCALING, "loop": false}
+	if site != "":
+		cue["site"] = site
+	return cue
+
+## One word finished under the typewriter: the caller plays the blip.
+signal blip
+
+var _typing: bool = false
+var _carry: float = 0.0
+var _shown: int = 0
+var _plain: String = ""
+
 var _fonts: Array[FontFile] = []
 ## Whether all four shaded faces are up, which is what makes `[i]` mean the
 ## body ramp's shade rather than an italic.
@@ -203,6 +242,49 @@ static func to_bbcode(spans: Array, shaded: bool = false) -> String:
 func show_block(spans: Array) -> void:
 	text = ""
 	append_text(to_bbcode(spans, _shaded))
+	if _typing:
+		start_typewriter()
+
+
+## Reveal the block one glyph per frame from the start. Idempotent on an
+## empty block.
+func start_typewriter() -> void:
+	_typing = true
+	_carry = 0.0
+	_shown = 0
+	_plain = get_parsed_text()
+	visible_characters = 0
+
+
+## Everything at once -- `animate != 0`, or a block already fully shown.
+func finish_typewriter() -> void:
+	_typing = false
+	visible_characters = -1
+
+
+func typing() -> bool:
+	return _typing
+
+
+## One frame of the host's clock. Answers how many blips the words that
+## finished this frame owe -- a space is a word's end.
+func tick_typewriter(delta: float) -> int:
+	if not _typing:
+		return 0
+	var blips: int = 0
+	_carry += delta * TYPEWRITER_FPS
+	while _carry >= 1.0 and _typing:
+		_carry -= 1.0
+		for _glyph: int in range(TYPEWRITER_PER_FRAME):
+			if _shown >= _plain.length():
+				finish_typewriter()
+				break
+			if _plain[_shown] == " ":
+				blips += 1
+				blip.emit()
+			_shown += 1
+			visible_characters = _shown
+	return blips
 
 
 ## What the six overlong `A0` blocks need.

@@ -263,7 +263,7 @@ func _facing(h: TestHarness) -> void:
 		var want: Vector3 = Vector3(float(step.x), 0.0,
 			-float(step.y)).normalized()
 		var angle: int = UnitsView.FACING_ANGLES[facing]
-		units._face(node, body, facing)
+		UnitsView.face(node, body, facing)
 		var faces: Vector3 = (node.basis * body.basis
 			* CharismaBody.AUTHORED_FORWARD).normalized()
 		if faces.distance_to(want) > 0.0001:

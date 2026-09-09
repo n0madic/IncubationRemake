@@ -53,6 +53,7 @@ func run(h: TestHarness) -> void:
 			"%s is absent -- run campaign_runtime.py --emit-cases" % path)
 		_pinned_hashes(h)
 		_mission_opening(h)
+		_endings(h)
 		return
 	var parsed: Variant = JSON.parse_string(
 		FileAccess.get_file_as_string(path))
@@ -60,6 +61,7 @@ func run(h: TestHarness) -> void:
 		h.check("cases.parse", false, path)
 		_pinned_hashes(h)
 		_mission_opening(h)
+		_endings(h)
 		return
 	var cases: Dictionary = parsed
 	h.equal("cases.schema", DictRead.as_string(cases["schema"]), SCHEMA)
@@ -81,6 +83,7 @@ func run(h: TestHarness) -> void:
 	_decorations_survive(h, cases)
 	_pinned_hashes(h)
 	_mission_opening(h)
+	_endings(h)
 
 
 ## The fixture must have been emitted from **this** corpus and **this** model.
@@ -1022,3 +1025,34 @@ func _mission_opening(h: TestHarness) -> void:
 		[DictRead.as_int(carried["x"]), DictRead.as_int(carried["y"])],
 		[cells[0].x, cells[0].y + (PLATFORM_TO.y - PLATFORM_FROM.y)],
 		"the ride relocates its riders before it copies the cells")
+
+
+## docs/27 section 6.6, corrected 2026-09-08: `_C_133` hands over to `_C_YYY`,
+## whose header carries mission id **255** -- the animated extro, not campaign
+## 2 -- and `_C_179` to `_C_180`, id 180, the static one. Both are mission
+## rows, so [method CampaignHost.advance] lands on them and the gate at the
+## map's entry plays the ending instead of a map (docs/92 section 7.19).
+func _endings(h: TestHarness) -> void:
+	var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
+		CacheFixture.balance())
+	var state: CampaignState = host.start_new(1)
+	state.mission = "_C_133"
+	host.last_report = {}
+	var target: String = host.advance()
+	h.equal("endings.chain_1_ends_at_yyy", [target, state.mission,
+		host.tables.mission_id(target), host.at_an_ending()],
+		["_C_YYY", "_C_YYY", 255, true])
+	h.equal("endings.yyy_opens_the_animated_extro",
+		DictRead.as_string(host.opening_sequence()["kind"]),
+		CampaignHost.OPENING_EXTRO)
+	var second: CampaignState = host.start_new(2)
+	second.mission = "_C_179"
+	host.last_report = {}
+	var last: String = host.advance()
+	h.equal("endings.chain_2_ends_at_180", [last, host.tables.mission_id(last),
+		host.at_an_ending()], ["_C_180", 180, true])
+	h.equal("endings.180_opens_the_static_extro",
+		DictRead.as_string(host.opening_sequence()["kind"]),
+		CampaignHost.OPENING_STATIC_EXTRO)
+	h.check("endings.no_next_map_past_an_ending",
+		host.tables.next_map("_C_YYY") == "" and host.tables.next_map("_C_180") == "")

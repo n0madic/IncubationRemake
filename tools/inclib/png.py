@@ -49,8 +49,8 @@ def write_indexed_png(path: str, width: int, height: int, pixels: bytes,
         fh.write(PNG_SIGNATURE + b"".join(body))
 
 
-def write_rgb_png(path: str, width: int, height: int, rgb: bytes) -> None:
-    """Write a 24-bit truecolour PNG from packed RGB triples."""
+def rgb_png_bytes(width: int, height: int, rgb: bytes) -> bytes:
+    """A 24-bit truecolour PNG from packed RGB triples, as bytes."""
     if len(rgb) != width * height * 3:
         raise ValueError(f"expected {width * height * 3} bytes, got {len(rgb)}")
     raw = bytearray()
@@ -60,5 +60,10 @@ def write_rgb_png(path: str, width: int, height: int, rgb: bytes) -> None:
     body = (_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
             + _chunk(b"IEND", b""))
+    return PNG_SIGNATURE + body
+
+
+def write_rgb_png(path: str, width: int, height: int, rgb: bytes) -> None:
+    """Write a 24-bit truecolour PNG from packed RGB triples."""
     with open(path, "wb") as fh:
-        fh.write(PNG_SIGNATURE + body)
+        fh.write(rgb_png_bytes(width, height, rgb))

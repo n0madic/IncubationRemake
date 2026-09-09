@@ -68,8 +68,12 @@ SELECTORS: dict[str, int] = {
 }
 
 #: ``docs/40`` §7.2 -- the one name reached only through ``kind == 4``, a fixed
-#: literal at ``0x004C030C`` rather than anything a selector returns.
+#: literal at ``0x004C030C`` rather than anything a selector returns.  It is the
+#: clip an upgrade base's own marines march on (``docs/27`` §2.7.1), so it is in
+#: every cache even though no selector's closure names it.
 KIND4_LITERAL_VA = 0x004C030C
+#: What the literal reads, kept only so a check can compare the two.
+KIND4_LITERAL_NAME = "P0_M2_000"
 
 #: ``aRandom``'s float entry (``docs/22`` §8; ``tools/campaign_tables.py`` names
 #: it too).  ``push hi; push lo; call`` returns a double in ST(0).

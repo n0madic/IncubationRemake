@@ -144,8 +144,18 @@ func _add_row(action: String, caption: String, value: String,
 	_row_index += 1
 
 
+## How loud the row is, as a share of the range rather than as attenuation.
+##
+## It read `-40.0 dB`, which is the floor and inaudible, and nothing on the
+## screen said so; a player who clicked once from full volume saw a number
+## change and heard the game go quiet with no way to read why.
 func _volume_text(hundredths: int) -> String:
-	return "%.1f dB" % AudioTables.volume_db(hundredths)
+	var span: int = GameSettings.VOLUME_MAX - GameSettings.VOLUME_MIN
+	var share: int = roundi(float(
+		hundredths - GameSettings.VOLUME_MIN) * 100.0 / float(span))
+	if share <= 0:
+		return strings_own(OWN_OFF)
+	return "%d%%" % share
 
 
 ## The name of one enumerated value. **No numeric fallback**: every value that

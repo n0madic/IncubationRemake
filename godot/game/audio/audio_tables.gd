@@ -37,6 +37,9 @@ const REFUSED: int = -10000
 
 var _document: Dictionary = {}
 var _cache_dir: String = ""
+## The `Track` family's tracks the cache carries -- `audio/music/track/`, the
+## cutscenes' 9..19 (docs/92 section 7.19). Empty after `--no-music`.
+var _track_family: PackedInt32Array = PackedInt32Array()
 var _volumes: Dictionary[int, int] = {}
 var _footstep_by_type: Dictionary[int, Dictionary] = {}
 var _base_floor: int = -2000
@@ -51,8 +54,14 @@ var _play_slots: int = 20
 
 ## Open the sound document a published cache carries.
 static func open(cache_dir: String) -> AudioTables:
-	return from_document(
+	var tables: AudioTables = from_document(
 		CacheLoader.read_json(cache_dir + "/tables/sound.json"), cache_dir)
+	# The cutscene tracks are the front end's document's, not the missions'.
+	var frontend: Dictionary = CacheLoader.read_json(
+		cache_dir + "/tables/frontend.json")
+	tables._track_family = DictRead.to_int32(
+		frontend.get("track_family_tracks", []))
+	return tables
 
 
 ## The same, from a document already in memory -- what the suite replays.
@@ -288,8 +297,29 @@ func wave_path(wave: String) -> String:
 	return "%s/audio/waves/%s" % [_cache_dir, wave]
 
 
-func music_path(track: int) -> String:
+## The `Arack` family the shipped build plays for the missions and the front
+## end (docs/28 section 6.1), and the `Track` family the cutscenes name.
+const FAMILY_ARACK: String = "arack"
+const FAMILY_TRACK: String = "track"
+
+
+func music_path(track: int, family: String = FAMILY_ARACK) -> String:
+	if family == FAMILY_TRACK:
+		return "%s/audio/music/track/%d.ogg" % [_cache_dir, track]
 	return "%s/audio/music/%d.ogg" % [_cache_dir, track]
+
+
+## The tracks one family carries.
+func tracks_of(family: String) -> PackedInt32Array:
+	if family == FAMILY_TRACK:
+		return _track_family.duplicate()
+	return tracks()
+
+
+## A file the cache carries under `audio/`, by its cache-relative path -- the
+## briefing voice-overs and the static extro's wave, which no table names.
+func audio_path(relative: String) -> String:
+	return "%s/%s" % [_cache_dir, relative]
 
 
 ## The playlist a mission's `CDTrackProgram` names, as track numbers in order.
@@ -310,11 +340,33 @@ func music_converted() -> bool:
 	return DictRead.as_bool(_document.get("music_converted", false))
 
 
-## `CDTrackProgram`'s argument is a dot-separated list of track numbers, and a
-## malformed entry costs one track rather than the playlist.
+## The separators `CDTrackProgram`'s parser (`0x0042C040`) hands `strtok`,
+## read at `0x004C2768`: the missions write dots, the front end and the
+## sequence player commas (docs/20 section 7.3, corrected 2026-09-08).
+const PLAYLIST_SEPARATORS: String = " .,|;:*+/"
+
+
+## `CDTrackProgram`'s argument is a list of track numbers, and a malformed
+## entry costs one track rather than the playlist.
+##
+## A token past the disc -- the `30` every cutscene program ends with -- is
+## kept as its number: [MusicPlayer] skips a track the cache does not carry,
+## which is what the engine's wrap to the first entry amounts to.
 static func parse_playlist(program: String) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
-	for part: String in program.split(".", false):
+	var parts: PackedStringArray = PackedStringArray()
+	var token: String = ""
+	for index: int in range(program.length()):
+		var ch: String = program[index]
+		if PLAYLIST_SEPARATORS.contains(ch):
+			if not token.is_empty():
+				parts.append(token)
+			token = ""
+		else:
+			token += ch
+	if not token.is_empty():
+		parts.append(token)
+	for part: String in parts:
 		var text: String = part.strip_edges()
 		# Digits only, not `is_valid_int()`: that accepts a sign, and the
 		# Python twin's `str.isdigit()` does not. A track number is never

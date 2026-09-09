@@ -124,6 +124,7 @@ func run(h: TestHarness) -> void:
 	# silent default -- which is how `armour_front` reached [AIFire] as a
 	# runtime error in four suites rather than as one failing check.
 	_check_columns(h, CacheFixture.cache_dir())
+	_check_frontend_documents(h, CacheFixture.cache_dir())
 
 
 ## Columns [UnitTypeTable] reads, and the [AIFire] recompute among them.
@@ -137,6 +138,35 @@ const UNIT_COLUMNS: Array[String] = ["id", "mp_max", "fp_max", "hp_max",
 const WEAPON_COLUMNS: Array[String] = ["id", "heat", "toggle", "mun", "hit",
 	"damage", "range_min", "range_max", "type", "special", "def_mode",
 	"mun_per_fight", "ap", "param"]
+
+
+## The ninth slice's two documents (docs/92 section 7.19), read by name
+## rather than assumed: a cache that lacks them plays no cutscene and shows
+## no splash, and the loader would say nothing.
+static func _check_frontend_documents(h: TestHarness, cache_dir: String) -> void:
+	var sequences: Dictionary = CacheLoader.read_json(
+		cache_dir + "/tables/sequences.json")
+	h.equal("documents.sequences_schema",
+		DictRead.as_string(sequences.get("schema", "")),
+		"incubation.sequences/1")
+	var frontend: Dictionary = CacheLoader.read_json(
+		cache_dir + "/tables/frontend.json")
+	h.equal("documents.frontend_schema",
+		DictRead.as_string(frontend.get("schema", "")), "incubation.frontend/1")
+	var holds: Array = DictRead.as_dict(frontend.get("holds_ms", {})).keys()
+	holds.sort()
+	h.equal("documents.frontend_holds", holds,
+		["after_extro", "after_sequence", "logo"])
+	var programs: Array = DictRead.as_dict(frontend.get("cd_programs", {})).keys()
+	programs.sort()
+	h.equal("documents.frontend_programs", programs,
+		["credits", "debriefing", "load", "menu", "mission_control"],
+		"seq_parse.FRONTEND's five")
+	h.check("documents.voice_overs",
+		DictRead.as_array(frontend.get("voice_overs", [])).size() == 74,
+		"MB100..133 and MB140..179")
+	h.check("documents.extro_wave",
+		FileAccess.file_exists(cache_dir + "/audio/briefing/extro.wav"))
 
 
 static func _check_columns(h: TestHarness, cache_dir: String) -> void:

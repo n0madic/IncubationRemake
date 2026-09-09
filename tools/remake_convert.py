@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import interaction_tables  # noqa: E402
 import lev_parse  # noqa: E402
+import seq_parse  # noqa: E402
 from inclib import cache as cachemod  # noqa: E402
 from inclib.check import Checker  # noqa: E402
 from inclib import charisma as chamod  # noqa: E402
@@ -473,9 +474,19 @@ def check_bodies(c: Checker, root: Path, cache_dir: Path,
     c.expect("bodies.models_match_table", emitted_models,
              from_table.get("model", set()),
              f"{len(emitted_models)} bodies")
+    # `docs/40` §7.2's fourth row is not a selector's: `fcn.004055e0`'s
+    # `kind == 4` names one clip as a literal, and an upgrade base's marines
+    # are the only thing that plays it (`docs/27` §2.7.1).  It is read back out
+    # of the shipped executable rather than restated, so the cache and the
+    # binary are two readings and not one.
+    kind4 = seq_parse.PEFile(root / "Incubation.exe").cstring(
+        chatables.KIND4_LITERAL_VA)
+    c.expect("bodies.kind4_literal", kind4, chatables.KIND4_LITERAL_NAME,
+             f"{chatables.KIND4_LITERAL_VA:#x}")
     c.expect("bodies.animations_match_table", emitted_anims,
-             set().union(*(from_table[s] for s in ("move", "idle", "fire"))),
-             f"{len(emitted_anims)} clips")
+             set().union(*(from_table[s] for s in ("move", "idle", "fire")))
+             | {kind4},
+             f"{len(emitted_anims)} clips, the kind-4 literal among them")
 
     # Every unit of every converted mission finds its key in the table.
     missing_keys: list[str] = []
@@ -661,8 +672,17 @@ def check_fonts(c: Checker, cache_dir: Path) -> None:
 # Raised from 44/18 MiB on 2026-09-05, when the 233 speech files of docs/28
 # 4.3 joined the closure: 5.4 MiB of wave, and the mission interface is
 # silent without them.
-CACHE_CEILING_KIB_MUSIC = 50 * 1024
-CACHE_CEILING_KIB_SILENT = 24 * 1024
+#
+#: The ninth slice (2026-09-08) is the first step since the campaign's that is
+#: not a slope, and it is a large one: the twelve cutscene directories are 38
+#: MiB of model, clip and geometry documents and 11 MiB of their own textures,
+#: the 74 briefing voice-overs are 34 MiB of wave (speech, so unconditional),
+#: and the eleven ``Track09..19.ogg`` the cutscenes loop are 20 MiB behind the
+#: music flag.  Measured at 152.7 and 113.5 MiB against 42.6 and 16.5.  The
+#: "music is the growth" check below became "the flag changes exactly the
+#: music" at the same time, because music is no longer most of the difference.
+CACHE_CEILING_KIB_MUSIC = 160 * 1024
+CACHE_CEILING_KIB_SILENT = 120 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).
 SPRITE_COMPUTED_CALLS = 18
@@ -721,9 +741,20 @@ def check_audio(c: Checker, root: Path, cache_dir: Path,
             "the correction names a file the cache carries")
 
     # Playlists and music.
-    c.expect("audio.playlists", sorted(document["playlists"]),
+    mission_lists = sorted(k for k in document["playlists"]
+                           if not k.startswith("frontend/"))
+    c.expect("audio.playlists", mission_lists,
              sorted(missions_in_cache(cache_dir)),
-             f"{len(document['playlists'])} missions name a playlist")
+             f"{len(mission_lists)} missions name a playlist")
+    # The front end's own programs (seq_parse.FRONTEND), so the menu, the
+    # credits, mission control and the debriefing have their tracks in a
+    # six-mission cache whose scripts never name 6, 7 or 8.
+    c.expect("audio.frontend_playlists",
+             {k: v for k, v in document["playlists"].items()
+              if k.startswith("frontend/")},
+             {f"frontend/{name}": soundmod.playlist(program)
+              for name, (program, _va, _call)
+              in seq_parse.FRONTEND["cd_programs"].items()})
     tracks = sorted({t for entry in document["playlists"].values()
                      for t in entry})
     c.check("audio.playlist_tracks", bool(tracks), str(tracks))
@@ -768,6 +799,10 @@ def check_audio(c: Checker, root: Path, cache_dir: Path,
 
     atlases = {}
     for world_set in sorted(p.name for p in (cache_dir / "textures").iterdir()):
+        # The cutscene directories' own texture sets carry no sprite atlas:
+        # nothing draws a blob in a `Video/` scene (`check_sequences`).
+        if world_set.startswith("video_"):
+            continue
         index = json.loads((cache_dir / "textures" / world_set
                             / "index.json").read_text())
         entry = [t for t in index["textures"]
@@ -850,8 +885,14 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     document = json.loads((cache_dir / "tables" / "campaign.json").read_text())
     c.expect("campaign.schema", document["schema"],
              convertmod.CAMPAIGN_SCHEMA)
-    c.expect("campaign.missions", len(document["missions"]), 75,
-             "every shipped campaign mission, not only the converted ones")
+    c.expect("campaign.missions", len(document["missions"]), 76,
+             "the 75 shipped campaign missions plus _C_YYY, the mission id 255 "
+             "_C_133 hands over to (docs/27 6.6, 2026-09-08)")
+    c.expect("campaign.endings",
+             {row["name"]: row["mission_id"] for row in document["missions"]
+              if row["name"] in ("_C_YYY", "_C_180")},
+             {"_C_YYY": 255, "_C_180": 180},
+             "0x00456FC0's two ending arms both name a row")
     c.expect("campaign.map_names", len(document["map_names"]), 77)
     c.expect("campaign.unlock_graph", len(document["unlock_graph"]), 74,
              "79 arms less the five mission ids 35..39 have none")
@@ -898,7 +939,8 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
 
     with_cells = [row for row in document["missions"] if row["deployment_cells"]]
     c.expect("campaign.deployment_cells", len(with_cells), 73,
-             "of 75; _C_131 ships its own squad and _C_180 is the epilogue")
+             "of 76; _C_131 ships its own squad, _C_180 is the epilogue and "
+             "_C_YYY is campaign 2's map")
     over = [row["name"] for row in document["missions"]
             if len(row["deployment_cells"]) > 10]
     c.expect("campaign.deployment_ring", over, [],
@@ -999,6 +1041,127 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
             f"{len(art['briefing'])} pictures")
 
 
+
+def check_sequences(c: Checker, root: Path, cache_dir: Path,
+                    music: bool = True) -> None:
+    """The cutscenes and the front end -- docs/41 and docs/92 section 7.19.
+
+    The manifest in the cache is `seq_parse`'s own document, so the two cannot
+    disagree by a swapped arm; what is checked here is that the files it names
+    are all there and resolve -- every model, every clip, every mesh a model
+    names in its directory's geometry, every texture id a face names, every
+    ``Cam<n>`` a ``Switch`` asks for -- plus the eleven tracks and the 75
+    waves.
+    """
+    manifest = json.loads((cache_dir / "tables" / "sequences.json").read_text())
+    pe = seq_parse.PEFile(root / "Incubation.exe")
+    expected = seq_parse.manifest_document(pe)
+    expected["directories"] = manifest.get("directories")
+    expected["source"] = manifest.get("source")
+    c.expect("sequences.manifest", manifest, expected,
+             "the cache carries seq_parse's manifest verbatim")
+    c.expect("sequences.directories", len(manifest["directories"]), 12)
+    c.expect("sequences.pairs",
+             sum(d["animations"] for d in manifest["directories"]), 130)
+    c.expect("sequences.no_floats", _float_paths(manifest), [])
+    # **A part's two lists are pairs, and the player indexes both.**  They are
+    # built from one stem list so they cannot differ here, which is exactly why
+    # the invariant is worth stating: `SequencePlayer._install_shot` bounds
+    # itself on the shorter of the two, and a manifest that broke this would
+    # otherwise reach that bound instead of this check.
+    ragged = [f"{entry['id']}:{part['directory']}"
+              for entry in manifest["sequences"]
+              for part in entry["parts"]
+              if len(part["models"]) != len(part["animations"])]
+    c.expect("sequences.parts_are_pairs", ragged, [],
+             f"{sum(len(e['parts']) for e in manifest['sequences'])} parts")
+
+    models = clips = 0
+    unresolved_meshes: list[str] = []
+    unresolved_textures: list[str] = []
+    unresolved_cameras: list[str] = []
+    no_cam1: list[str] = []
+    for entry in manifest["directories"]:
+        directory = entry["directory"]
+        base = cache_dir / "sequences" / directory
+        index = json.loads((base / "index.json").read_text())
+        c.expect(f"sequences.{directory}.schema", index["schema"],
+                 convertmod.SEQUENCE_DIR_SCHEMA)
+        geometry = json.loads((base / "geometry.json").read_text())
+        textures = json.loads((cache_dir / "textures" / entry["texture_set"]
+                               / "index.json").read_text())
+        written = {t["id"] for t in textures["textures"]}
+        for name in index["models"]:
+            document = json.loads((base / "models" / f"{name}.json").read_text())
+            models += 1
+            nodes = {n["name"] for n in document["skeleton"]["nodes"]}
+            if "Cam1" not in nodes:
+                no_cam1.append(f"{directory}/{name}")
+            for part in document["parts"]:
+                if part["mesh"] and part["mesh"] not in geometry["prototypes"]:
+                    unresolved_meshes.append(f"{directory}/{part['mesh']}")
+        for name in index["animations"]:
+            document = json.loads(
+                (base / "animations" / f"{name}.json").read_text())
+            clips += 1
+            model_name = "Model_D09" if directory == "Dialog_09" \
+                else "Model_" + name[len("Animation_"):]
+            model = json.loads((base / "models" / f"{model_name}.json").read_text())
+            nodes = {n["name"] for n in model["skeleton"]["nodes"]}
+            for note in document["notes"]:
+                for verb, value in seq_parse.parse_note_lines(note["text"]):
+                    if verb == "Switch" and f"Cam{value}" not in nodes:
+                        unresolved_cameras.append(f"{directory}/{name}: Cam{value}")
+        for prototype in geometry["prototypes"].values():
+            for face in prototype["faces"]:
+                if face["texture"] >= 0 and face["texture"] not in written:
+                    unresolved_textures.append(
+                        f"{directory}: texture {face['texture']}")
+        for texture in textures["textures"]:
+            c.check(f"sequences.{directory}.texture_files",
+                    (cache_dir / "textures" / entry["texture_set"]
+                     / texture["file"]).is_file(), texture["file"])
+            break
+    # 113 and not 130: `Dialog_09`'s eighteen clips all drive `Model_D09`.
+    c.expect("sequences.models", models, 113,
+             "130 pairs less the seventeen that share Model_D09")
+    c.expect("sequences.clips", clips, 130)
+    c.expect("sequences.meshes_resolve", unresolved_meshes[:5], [])
+    c.expect("sequences.textures_resolve", sorted(set(unresolved_textures))[:5],
+             [])
+    c.expect("sequences.switch_resolves", unresolved_cameras[:5], [])
+    c.expect("sequences.cam1_everywhere", no_cam1[:5], [])
+
+    frontend = json.loads((cache_dir / "tables" / "frontend.json").read_text())
+    expected_frontend = seq_parse.frontend_document(pe)
+    for key in ("voice_overs", "cd_family", "track_family_tracks",
+                "music_converted"):
+        expected_frontend[key] = frontend.get(key)
+    c.expect("frontend.document", frontend, expected_frontend)
+    c.expect("frontend.no_floats", _float_paths(frontend), [])
+    c.expect("frontend.voice_overs", len(frontend["voice_overs"]), 74,
+             "MB100..133 and MB140..179")
+    missing_voices = [m for m in frontend["voice_overs"]
+                      if not (cache_dir / "audio" / "briefing"
+                              / f"{m}.wav").is_file()]
+    c.expect("frontend.voice_files", missing_voices, [])
+    c.check("frontend.extro_wave",
+            (cache_dir / "audio" / "briefing" / "extro.wav").is_file(),
+            "Briefing/extro.wav, the static extro's soundtrack")
+    if music:
+        c.expect("frontend.track_family", frontend["track_family_tracks"],
+                 list(range(9, 20)), "Track09..19 for the eleven programs")
+        missing_tracks = [t for t in frontend["track_family_tracks"]
+                          if not (cache_dir / "audio" / "music" / "track"
+                                  / f"{t}.ogg").is_file()]
+        c.expect("frontend.track_files", missing_tracks, [])
+    else:
+        c.expect("frontend.no_track_music", frontend["track_family_tracks"], [],
+                 "--no-music leaves the cutscene tracks out too")
+    c.expect("frontend.holds", frontend["holds_ms"],
+             {"logo": 1500, "after_sequence": 1000, "after_extro": 4000})
+
+
 def check_mission_selection(c: Checker, root: Path) -> None:
     """What each form of the mission argument resolves to -- no conversion."""
     c.expect("select.default", missions_from_args(root, False, None),
@@ -1066,6 +1229,7 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         check_fonts(c, first.root)
         check_audio(c, root, first.root, True)
         check_campaign(c, root, first.root)
+        check_sequences(c, root, first.root)
         c.expect("bodies.cross_set_identical",
                  [w for w in result.warnings if "differs between" in w], [],
                  "unit meshes are the same geometry in every world set")
@@ -1090,14 +1254,33 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         silent, silent_manifest, _ = run_conversion(root, missions, caches_root,
                                                     language, music=False)
         check_audio(c, root, silent.root, False)
+        check_sequences(c, root, silent.root, music=False)
         silent_size = sum(p.stat().st_size for p in silent.root.rglob("*")
                           if p.is_file())
         c.check("cache.size_without_music",
                 silent_size / 1024 <= CACHE_CEILING_KIB_SILENT,
                 f"{silent_size / 1024:.0f} KiB <= {CACHE_CEILING_KIB_SILENT} KiB")
-        c.check("cache.music_is_the_growth", silent_size * 2 < size,
-                f"{size / 1024:.0f} KiB with music, "
-                f"{silent_size / 1024:.0f} KiB without")
+        # The flag changes the music files and nothing else: every path in
+        # one cache and not the other is under `audio/music/`, and the two
+        # tables that record the flag are the only shared files that differ.
+        def _files(base: Path) -> dict[str, int]:
+            return {p.relative_to(base).as_posix(): p.stat().st_size
+                    for p in base.rglob("*") if p.is_file()
+                    and p.name not in (cachemod.MANIFEST_NAME,
+                                       cachemod.STAGING_MARKER)}
+        with_music = _files(published)
+        without = _files(silent.root)
+        only_one = sorted(set(with_music) ^ set(without))
+        c.expect("cache.music_is_the_difference",
+                 [p for p in only_one if not p.startswith("audio/music/")], [],
+                 f"{len(only_one)} files differ between the two caches, all "
+                 f"music; {size / 1024:.0f} KiB with, "
+                 f"{silent_size / 1024:.0f} KiB without")
+        c.expect("cache.flag_touches_two_tables",
+                 sorted(p for p in set(with_music) & set(without)
+                        if with_music[p] != without[p]),
+                 ["tables/frontend.json", "tables/sound.json"],
+                 "the two documents that record which cache this is")
         c.expect("cache.music_recorded",
                  (manifest_a["music"], silent_manifest["music"]), (True, False),
                  "the manifest says which of the two caches it is")
@@ -1114,9 +1297,12 @@ CAMPAIGN_MAP_GLOBS = ("_C_*.lev", "upgrade_*.lev")
 #: scenes across 92 maps.
 CAMPAIGN_WORLD_SETS = 9
 CAMPAIGN_MAPS = 92
-#: The full bake's own ceiling.  Measured at 85.9 MiB; this is that plus the
-#: same headroom the slice ceilings carry.
-CAMPAIGN_CEILING_KIB = 95 * 1024
+#: The full bake's own ceiling.  Measured at 85.9 MiB before 2026-09-08 and
+#: at 199.5 MiB (204263 KiB, 30 s -- 57 s before the decode memo of 2026-09-09)
+#: after the cutscenes, the voice-overs and
+#: the eleven cutscene tracks joined every selection; this is that plus the
+#: same headroom the slice ceilings carry (see :data:`CACHE_CEILING_KIB_MUSIC`).
+CAMPAIGN_CEILING_KIB = 210 * 1024
 
 
 def campaign_map_set(root: Path) -> list[str]:
@@ -1185,6 +1371,7 @@ def run_campaign_checks(root: Path, language: str) -> int:
         missing = [w for w in result.warnings if "absent from prototyp.din" in w]
         c.expect("campaign_bake.no_missing_prototypes", missing, [])
         check_campaign(c, root, staged.root)
+        check_sequences(c, root, staged.root)
 
         size = sum(p.stat().st_size for p in staged.root.rglob("*")
                    if p.is_file())

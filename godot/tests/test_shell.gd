@@ -50,6 +50,7 @@ func run(h: TestHarness) -> void:
 	_projection(h)
 	_map_turn(h)
 	_root_plates(h)
+	_frontend_screens(h)
 	_clean_scratch()
 
 
@@ -257,6 +258,22 @@ func _settings_file(h: TestHarness) -> void:
 	h.equal("settings.survive_a_restart",
 		[read.music_volume, read.fx_volume, read.difficulty, read.gore_level,
 		read.faithful], [-1250, -500, 2, 1, false])
+
+	# docs/92 section 7.19 I19. The flag is the one setting the player never
+	# sets: a launch writes it, and it is what decides whether the next launch
+	# shows `aGameIntro`'s two plates or opens the menu.
+	h.check("settings.the_splash_is_unseen_by_default",
+		not GameSettings.new().seen_splash, "a fresh install shows it")
+	h.equal("splash.a_first_launch_shows_it",
+		SliceMain.shell_entry(false), SliceMain.SHELL_SPLASH)
+	h.equal("splash.a_later_launch_opens_the_menu",
+		SliceMain.shell_entry(true), SliceMain.SHELL_MENU)
+	written.seen_splash = true
+	h.check("settings.rewritten_with_the_splash_flag", written.save_to_disk())
+	var again: GameSettings = GameSettings.new()
+	again.path = written.path
+	h.check("settings.splash_flag_read_back", again.load_from_disk()
+		and again.seen_splash, "it survives a restart, or the splash returns")
 
 	# A hand-edited file is the normal way this one is written, and an
 	# out-of-range difficulty would reach `Allowance.for_unit`, which answers
@@ -1357,6 +1374,77 @@ func _root_plates(h: TestHarness) -> void:
 		DictRead.as_array(index.get("plates", [])).size(), 12,
 		"the seven framed ones of `Graphics/GUI` plus the five top-level "
 		+ "screens")
+
+
+## The screens between the screens -- docs/92 section 7.19: the splash, the
+## credits, the static extro, the message screen and the framed sequence
+## screen, every caption out of the catalogue.
+func _frontend_screens(h: TestHarness) -> void:
+	var title: SplashScreen = SplashScreen.new()
+	title.stage = SplashScreen.STAGE_TITLE
+	title.setup(_art, _strings, _font)
+	h.check("frontend.title_says_start_game",
+		_labels_of(title).has(_strings.shipped("Txtmod_a", 5)),
+		"Menu_a's 13_GameIntro: 05_WinText at (290, 420)")
+	h.equal("frontend.title_plate", title.plate_name(), "title")
+	_no_missing(h, "title", title)
+	title.free()
+	var logo: SplashScreen = SplashScreen.new()
+	logo.setup(_art, _strings, _font)
+	h.check("frontend.logo_has_no_text", _labels_of(logo).is_empty(),
+		"BlueByte.bmp and a 1500 ms hold, nothing else")
+	h.equal("frontend.logo_plate", logo.plate_name(), "bluebyte")
+	logo.free()
+
+	var credits: CreditsScreen = CreditsScreen.new()
+	credits.setup(_art, _strings, _font)
+	h.equal("frontend.credits_buttons", _actions_of(credits),
+		PackedStringArray([CreditsScreen.QUIT, CreditsScreen.BACK]),
+		"Exit Game at (450, 410) and Back at (250, 410)")
+	h.check("frontend.credits_captions",
+		_button_labels_of(credits).has(_strings.shipped("Txtmod_a", 7))
+		and _button_labels_of(credits).has(_strings.shipped("Txtmod_a", 8)))
+	h.equal("frontend.credits_plate", credits.plate_name(), "credits")
+	_no_missing(h, "credits", credits)
+	credits.free()
+
+	var extro: ExtroScreen = ExtroScreen.new()
+	extro.setup(_art, _strings, _font)
+	h.equal("frontend.extro_button", _actions_of(extro),
+		PackedStringArray([ExtroScreen.CONTINUE]),
+		"Menu_b's 11_SlideShow keeps one live button, 004_WinText")
+	h.check("frontend.extro_caption",
+		_button_labels_of(extro).has(_strings.shipped("Txtmod_b", 4)))
+	h.equal("frontend.extro_plate", extro.plate_name(), "ship")
+	h.check("frontend.extro_plate_is_baked", _art.plate("ship") != null)
+	_no_missing(h, "extro", extro)
+	extro.free()
+
+	var message: MessageScreen = MessageScreen.new()
+	message.setup(_art, _strings, _font)
+	h.check("frontend.message_says_please_wait",
+		_labels_of(message).has(_strings.shipped("Txtmod_b", 0)),
+		"aPrintMessageScreen's callers both pass text id 0")
+	h.equal("frontend.message_plate", message.plate_name(), "msgscr")
+	h.check("frontend.message_plate_is_baked", _art.plate("msgscr") != null)
+	_no_missing(h, "message", message)
+	message.free()
+
+	var framed: SequenceScreen = SequenceScreen.new()
+	framed.setup(_art, _strings, _font)
+	h.check("frontend.framed_sequence_caption",
+		_labels_of(framed).has(_strings.shipped("Txtmod_b", 0)),
+		"0x00456F30 draws text 0 at (320, 210) behind the window")
+	h.check("frontend.framed_sequence_takes_no_world_clicks",
+		not framed.takes_world_clicks())
+	_no_missing(h, "sequence_framed", framed)
+	framed.free()
+	var full: SequenceScreen = SequenceScreen.new()
+	full.full = true
+	full.setup(_art, _strings, _font)
+	h.check("frontend.full_sequence_has_no_caption",
+		_labels_of(full).is_empty(), "the full-screen arm installs no callback")
+	full.free()
 
 
 # --- reading a built screen --------------------------------------------------

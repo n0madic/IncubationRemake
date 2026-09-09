@@ -1316,7 +1316,7 @@ uniform value in `0 … n-1`.
 | `GetPlayer (_X)` | `0x004429d0` | current player id |
 | `BuildVisibleMap (player)` | `0x00441f40` | recompute fog of war; `-1` means the current player |
 | `EnterNameOfNextMap ("name")` | `0x00441020` | copies the string into the "next map" buffer. Always a mission basename (`"_C_101"`, …) |
-| `CDTrackProgram ("a.b.c")` | `0x004408a0` | a dot-separated CD-audio playlist — `"3.5.4"`, `"9.12.7.5.6"`. Called once per mission, in `InitMap` |
+| `CDTrackProgram ("a.b.c")` | `0x004408a0` | a CD-audio playlist — `"3.5.4"`, `"9.12.7.5.6"`. Called once per mission, in `InitMap`. The parser `0x0042C040` splits with `strtok` on the nine separators at `0x004C2768`, `" .,|;:*+/"` — the missions write dots, the front end and the sequence player commas (`"2,3,4,5,6,7"`, `"9,30"`) — and a token above the disc's track count becomes `-1`, which the player `0x0042BC10` answers by **wrapping to the first entry**; so `"9,30"` loops track 9 ([`41` §4.1](41-sequence-player.md), 2026-09-08) |
 | `SetTurnControl (n)` | `0x004418b0` | one argument into `0x0043be00`; **role UNVERIFIED**, observed values {8, 11, 12, 15, 20, 28, 35}, one call per mission in ten missions |
 | `SetVolumeCtrl (index, volume)` | `0x00441050` | `int32[121]` at `0x00504638`, index 0..120. The index space is settled — see `docs/21-info-lcl-schema.md` §6 |
 | `LinkChrWithGroup (group, chr)` | `0x00440cc0` | writes `chr` into `unit[+0x55]` for every live unit whose group id (`unit[+0x4e]`) is `group`. `unit[+0x55]` selects the unit's **speech set** — see the speech-set table below |

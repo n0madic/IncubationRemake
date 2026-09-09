@@ -553,7 +553,47 @@ names it**.
 | Imported by | `Incubation.exe` (and the three trace builds) | nothing |
 
 So the shipped release plays **`Arack`**, and the `Track` family — which alone
-runs on to 20 — is the one nothing reaches. `blob_tables.py` pins all of it:
+runs on to 20 — is the one nothing reaches.
+
+**The cutscenes name 9..19** *(2026-09-08, [`41` §4.1](41-sequence-player.md))*:
+every video part's `"N,30"` is a `CDTrackProgram` looping track `N`, one per
+part, and the shim's `Arack` stops at 14 — so the shipped build plays
+`Dialog_09` (15), `Dialog_14` (16), `Dialog_15` (17), `Dialog_16` (18) and the
+animated `Extro` (19) in **silence**, and only `Seq_1/3/4` (9, 10, 11),
+`Dialog_02` (12), `Dialog_03` (13) and `Dialog_07` (14) with music. The remake
+plays the cutscenes from the `Track` family, which covers all eleven, and keeps
+`Arack` for the missions and the front end.
+
+**And `Track` 09–19 are the cutscenes' own soundtracks** *(measured
+2026-09-09)*. That choice was made as a decision — the `Track` family is the
+only one covering 9..19 — and it turns out to be the reading too, because the
+two families do not hold the same kind of thing from 09 on. Every `Track` file
+from 09 up is cut to the **picture** of the part that asks for it; every
+`Arack` file is an ordinary loop two to four times as long:
+
+| part | picture | `Track` | `Arack` |
+|---|---|---|---|
+| `Seq_1` (9) | 107.4 s | 110.4 s | 147.3 s |
+| `Seq_3` (10) | 54.9 s | 58.1 s | 193.4 s |
+| `Seq_4` + `Seq_5` (11) | 99.6 s | 110.5 s | 138.0 s |
+| `Dialog_02` (12) | 17.3 s | 19.8 s | 152.6 s |
+| `Dialog_03` (13) | 50.9 s | 54.3 s | 164.1 s |
+| `Dialog_07` (14) | 47.0 s | 50.7 s | 167.9 s |
+| `Dialog_09` (15) | 81.1 s | 87.6 s | *(absent)* |
+| `Dialog_14` (16) | 31.5 s | 34.2 s | *(absent)* |
+| `Dialog_15` (17) | 92.6 s | 97.0 s | *(absent)* |
+| `Dialog_16` (18) | 105.5 s | 108.2 s | *(absent)* |
+| `Extro` (19) | 57.7 s | 64.0 s | *(absent)* |
+
+The picture column is the sum of the part's clips' durations over 30
+([`41` §3](41-sequence-player.md)); the audio columns are the last Ogg page's
+granule position over the identification header's rate. Every `Track` file
+sits two to seven seconds past its picture and no `Arack` file is within a
+minute of one. So a cutscene's **speech and effects are in its CD track** —
+`Video/` ships no wave at all, and there is nowhere else they could be — and
+the shipped build is not merely quieter for the five it cannot reach, it is
+missing their dialogue. That is what the remake's `Track` choice restores;
+`Arack` stays where the engine's own shim puts it. `blob_tables.py` pins all of it:
 the import descriptor and its nine entry points, the absence of a `winmm`
 descriptor, the sweep that finds no other importer of `sound.dll`, each DLL's
 own format string, the twelve tracks the shipped playlists name, and the

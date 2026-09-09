@@ -11,28 +11,338 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cha_parse  # noqa: E402
+from inclib import charisma as chamod  # noqa: E402
+from inclib import pose as posemod  # noqa: E402
 from inclib.pe import PEFile  # noqa: E402
 
-# Every arm of aSetSeqPlayerVideoPart ends by loading its camera/rate string
-# into edi and jumping here; the tail copies the actor list, installs the
-# camera and increments the part counter.  The last arm falls through instead.
+MANIFEST_SCHEMA = "incubation.sequences/1"
+
+# Every arm of aSetSeqPlayerVideoPart ends by loading its CD-program string
+# into edi and jumping here; the tail copies the actor list, starts the CD
+# program and increments the part counter.  The last arm falls through instead.
 TAIL = 0x00467DD5
 
-# The zero-initialised global the Seq_5 arm loads as its camera.  It sits past
-# .data's raw bytes, so it is an empty string at load time -- and it is the very
-# sentinel the tail compares the installed camera against, which is why Seq_5 is
-# the one part that does not raise newPart.
+# The zero-initialised global the Seq_5 arm loads as its CD program.  It sits
+# past .data's raw bytes, so it is an empty string at load time -- and it is the
+# very sentinel the tail compares the installed string against, which is why
+# Seq_5 is the one part that does not raise newPart and keeps Seq_4's track.
 EMPTY_STRING = 0x004FA524
 EMPTY_STRING_COMPARE = 0x00467E94
+
+# --- the CD program (docs/41 section 4, corrected 2026-09-08) ----------------
+# The tail copies the arm's string to this global and hands it to the
+# ``CDTrackProgram`` parser ``0x0042C040`` (after ``MCI_STOP`` ``0x0042BE50``
+# and ``MCI_OPEN cdaudio`` ``0x0042BD80``), then starts the list with
+# ``0x0042BC10``.  Nothing about it reaches the camera.
+CD_PROGRAM = {
+    "copy_target": 0x00514288,
+    "copy_mov": 0x00467F15,          # mov edi, 0x514288
+    "stop_call": 0x00467EE8,         # call 0x0042BE50   (MCI_STOP)
+    "stop": 0x0042BE50,
+    "open_call": 0x00467EF7,         # call 0x0042BD80   (MCI_OPEN cdaudio)
+    "open": 0x0042BD80,
+    "parse_call": 0x00467F33,        # call 0x0042C040   (CDTrackProgram)
+    "parse": 0x0042C040,
+    "start_call": 0x00467F3B,        # call 0x0042BC10   (play list entry)
+    "start": 0x0042BC10,
+    "separators_va": 0x004C2768,
+    # ``0x0042BC10``: a list entry below zero wraps the cursor to 0 and plays
+    # the first entry again, so ``"9,30"`` loops track 9 for ever and ``30`` is
+    # a deliberately out-of-range terminator (the parser turns a token above the
+    # CD's track count into -1).
+    "wrap_bytes": bytes.fromhex(
+        "a120e84f00" "8b0c858ce64f00" "85c9" "7d0b" "85c0" "7422" "33c0"
+        "a320e84f00"),
+}
+#: ``strtok``'s separator set at ``0x004C2768``.  ``docs/20`` section 7.3 read
+#: the dot alone; the engine accepts all nine.
+CD_SEPARATORS = " .,|;:*+/"
+#: What every non-empty program in the manifest is: one track and the 30 that
+#: falls off the end of the CD.  The tracks a sequence names, 9..19, are
+#: covered by the ``Track`` family alone (``music/Track09..19.ogg``); the
+#: ``Arack`` family the shipped build plays stops at 14 (``docs/28`` 6.1).
+CD_TERMINATOR = 30
+CD_TRACK_RANGE = (9, 19)
+CD_FAMILY = "Track"
+CD_FILE_FORMAT = "Track%02d.ogg"
+MUSIC_DIR = "music"
+
+# --- the camera: parts named Cam<n>, a preset table for Focus ----------------
+# ``0x0047F6A0``'s note dispatcher builds the literal ``"Cam"`` + itoa(index)
+# and looks the part up by name; ``Switch n`` writes the index.  The index is
+# reset to 1 when a pair is installed (``0x0048023B``), and the focal length is
+# **not**: it carries across the shots of a part.
+CAMERA = {
+    "literal_push": 0x0047F7BB,     # push 0x4CD388 ("Cam")
+    "literal_va": 0x004CD388,
+    "index_reset": 0x0048023B,      # mov dword [esi+4], 1  in the pair installer
+    "index_reset_bytes": bytes.fromhex("c746040100" "0000"),
+    "default_index": 1,
+    # The focal before any note: the player is constructed with
+    # ``_ftol(width * 10/13)`` -- ``fmul qword [0x4B1570]`` in both branches
+    # of ``aCreateSeqPlayer`` -- which is the same rule as the mission's
+    # ``_E3D_init_3d_screen``: 492 pixels for the 640-wide full screen, 398 for
+    # the 518-wide framed window.
+    "focal_ratio_va": 0x004B1570,
+    "focal_ratio_muls": (0x004654C2, 0x0046552D),
+    "focal_ratio": 10.0 / 13.0,
+}
+# ``Focus f`` at ``0x004804BB``: ``_ftol(atof(arg)) - 24`` indexes the byte
+# table below when it is in 0..176 (an unsigned compare, so anything below 24
+# takes the default too); the byte selects one of eight arms through the jump
+# table, seven of which load a preset and the eighth the default.  The result is
+# then scaled by the viewport height over 480 -- ``[ebp+0x40]`` is compared
+# against 480 and 240 and multiplied by the **f32** reciprocals at
+# ``0x004B1690`` (1/240) and ``0x004B1694`` (1/480); the ``[ebp+0xC]`` arm
+# halves the preset first and uses 1/240, and the sequence player never takes
+# it (its constructor gets ``push 0`` for that argument in both branches).
+FOCUS = {
+    "note_push": 0x004804BB,        # push "Focus"
+    "bias": 24,
+    "table_size": 177,
+    "byte_table": 0x00480670,
+    "jump_table": 0x00480650,
+    "compare": 0x004804E8,          # cmp eax, 0xB0 ; ja default
+    "arms": (0x004804FE, 0x00480505, 0x0048050C, 0x00480513, 0x0048051A,
+             0x00480521, 0x00480528),
+    "default_arm": 0x0048052F,
+    "default": 765,
+    "presets": (400, 500, 613, 877, 1477, 2350, 3500),
+    "reference_height": 480,
+    "half_height": 240,
+    "recip_240": 0x004B1690,
+    "recip_480": 0x004B1694,
+    "half_scale": 0x004B1688,       # 0.5, the [ebp+0xC] arm
+    "store": 0x00480597,            # mov [ebp+0x58], eax
+    "fade_push": 0x0048059C,        # push "Fade" -- present, used by no clip
+}
+#: The presets the shipped clips ask for, ``f -> focal at 480``.  Measured over
+#: the 130 selected clips (2026-09-08): 24, 28, 35, 43 and 50 and nothing else.
+FOCUS_CORPUS = {24: 400, 28: 500, 35: 613, 43: 765, 50: 877}
+FRAME_RATE = 30
+
+# --- the front end around the sequences (docs/92 section 7.19) ---------------
+# What mission control and the menu system do *between* the screens: the CD
+# programs they start, the three ``Sleep`` holds, the boot splash, the gate
+# that picks a sequence from the mission id and the flag that plays the intro
+# once.  Every string here is copied to the stack as immediates by the
+# compiler -- ``"2,3,4,5,6,7"`` is three dwords -- so the pins are the string
+# addresses and the call sites, not a ``push <string>``.
+FRONTEND = {
+    "cd_programs": {
+        # ``aMenuSystem.cpp``: the main menu and the load screen share one
+        # program; the credits play track 8; mission control's entry plays
+        # ``"5,4,2,5"`` (one program -- the ``"2,5"`` at 0x4CA7B4 is its
+        # second dword) and the debriefing ``"7,3,2"``.
+        "menu": ("2,3,4,5,6,7", 0x004CA1E0, 0x0044B398),
+        "load": ("2,3,4,5,6,7", 0x004CA1E0, 0x0044F5C6),
+        "credits": ("8", 0x004BFA98, 0x0044C083),
+        "mission_control": ("5,4,2,5", 0x004CA7B0, 0x0045406E),
+        "debriefing": ("7,3,2", 0x004CAE2C, 0x0045D671),
+    },
+    # ``push imm32`` immediately before ``call [Sleep]``.
+    "holds_ms": {
+        "logo": (1500, 0x0044BCF1),           # aGameIntro, after BlueByte.bmp
+        "after_sequence": (1000, 0x004571D1),  # 0x00457180, the ordinary exit
+        "after_extro": (4000, 0x0045718C),     # 0x00457180, mission id 255
+    },
+    "splash": {
+        "logo_bmp": ("BlueByte.bmp", 0x004CA33C),
+        "title_bmp": ("title.bmp", 0x004CA330),
+        "menu_a": ("GUI\\Menu_a.LCL", 0x004CA320),
+        "window": 13,                  # Menu_a's 13_GameIntro
+        "text": ("Txtmod_a", 5),      # GUI_SetTextOnly2 05_WinText
+        "at": (290, 420), "size": (60, 30), "font": 1,
+    },
+    "credits": {
+        "window": 15,                  # Menu_a's Credits block, 0x0044C0B8
+        "plate": "credits",
+        "exit": ("Txtmod_a", 7, (450, 410)),
+        "back": ("Txtmod_a", 8, (250, 410)),
+        # ``0x0044BC60`` writes this flag and the main loop reads it; the
+        # animated extro (after its 4000 ms hold) and the static extro's
+        # *Continue* both call it with 1.
+        "flag": 0x0050FE00,
+        "flag_store": 0x0044BC64,
+    },
+    "static_extro": {
+        "window": 11,                  # Menu_b's 11_SlideShow
+        "plate": "ship",
+        "wave": "extro.wav",
+        "continue": ("Txtmod_b", 4, (450, 430)),
+        "continue_call": 0x0045BD8E,   # call 0x0044BC60 with 1
+        "entry": 0x00457430,
+    },
+    "message_screen": {
+        # ``aPrintMessageScreen`` 0x0045F290: MsgScr.bmp whole, Font_2, text
+        # id 0 (*Please Wait...*) centred at (320, 65).  Both callers --
+        # mission control's entry 0x00454007 and the debriefing's exit
+        # 0x0045D436 -- pass id 0.
+        "plate": "msgscr",
+        "bmp": ("MsgScr.bmp", 0x004CAFD8),
+        "font": ("Font_2.lib", 0x004CAF90),
+        "text": ("Txtmod_b", 0),
+        "at": (320, 65), "align": 1,
+        "colours": (0xF79E, 0x632C),
+        "callers": (0x00454007, 0x0045D436),
+    },
+    "sequence_caption": {
+        # The framed presentation's background callback 0x00456F30 draws the
+        # same id 0 at (320, 210) -- a loading caption, not the location's name.
+        "text": ("Txtmod_b", 0), "at": (320, 210),
+        "colours": (0xFFFF, 0x632C),
+        "callback": 0x00456F30, "install": 0x00457047,
+    },
+    "gate": {
+        # ``0x00456FC0(-1)``: mission id 1 with the intro flag -> logical id 0
+        # full-screen; 180 -> the static extro (value 16); 255 -> logical id 1
+        # full-screen; anything else -> no sequence, back to the map.
+        "entry": 0x00456FC0,
+        "mission_id_global": 0x00510C58,
+        "full_screen_global": 0x00510DC0,
+        "bytes_at": 0x00456FD2,
+        "bytes": bytes.fromhex(
+            "8b0d580c5100" "0bf6" "49" "7427" "81e9b3000000" "7413"
+            "83e94b" "753a" "b801000000" "8bf0" "a3c00d5100" "eb2c" "b801"),
+        "ids": {"intro": 1, "static_extro": 180, "animated_extro": 255},
+        "logical": {"intro": 0, "animated_extro": 1},
+    },
+    "intro_flag": {
+        # ``[0x00510D48]`` has one setter, 0x0045D3E0.  It is called with 1
+        # from the new-campaign start 0x00450950 (and with 0 on its other
+        # arm), with 0 at menu init 0x0044B329 (esi is zero there) and with 0
+        # after any sequence at 0x004570B8.  Loading a save never re-arms it.
+        "global": 0x00510D48,
+        "setter": 0x0045D3E0,
+        "set_one": 0x00450997,         # push 1 ; call setter
+        "set_zero": (0x00450A11, 0x004570B6),
+        "menu_init_call": 0x0044B329,
+        "read": 0x00457004,
+    },
+    "exit": {
+        # ``0x00457180``: mission id 255 -> Sleep(4000), credits flag, return
+        # 0 (no destroy, no second hold); otherwise destroy, Sleep(1000),
+        # back to mission control's map.  Reached from WM_LBUTTONDOWN (0x201)
+        # and the key path of the GUI loop while window 8 is up.
+        "entry": 0x00457180,
+        "extro_compare": 0x00457180,   # cmp [0x510C58], 0xFF
+        "click_site": 0x00455600, "key_site": 0x004557A0,
+        "click_message": 0x201, "window": 8,
+    },
+    "windows": {"full": (0, 0, 640, 480), "framed": (65, 57, 518, 306)},
+    "briefing": {
+        # docs/24 section 7.1; ``animate`` is the sixth argument and 0 means
+        # the typewriter.
+        "mission_start": ("A0", (100, 100, 387, 199), 0x0041B629),
+        # The location map's, on mission control's action ``0xb`` --
+        # ``0x00451240`` maps the character ``B`` to it and ``0x00453900``'s
+        # arm calls ``aActivateBriefingInfo`` with ``animate = 0``.  Its gate
+        # is ``0x0043b700() == 1 and not 0x0043b1f0()``: exactly one human
+        # player, and not the network predicate, which reads the mode byte
+        # ``0x00509ee8`` and the flag ``0x00509f08``.  Both hold in every
+        # single-player campaign, so this box is not behind a switch.
+        "map_short": ("B0", (220, 100, 200, 300), 0x00453990),
+        "map_short_key": "B",
+        "map_short_action": 0x0B,
+        # ``0x0045130b``'s ``jmp dword [edx*4 + 0x4513e4]`` and the arm that
+        # slot fifteen points at, ``mov esi, 0xb``.
+        "map_short_dispatch": (0x0045130E, 0x004513E4),
+        "map_short_arm": 0x004513A4,
+        # ``0x0043b1f0`` -> ``0x0043b1e0`` -> ``[0x00509f08]``.
+        "map_short_gate": (0x0043B1F0, 0x0043B1E0, 0x00509F08),
+        # The gate's *other* half, and the one that decides what a campaign
+        # sees: ``0x0043b700`` counts the player slots at ``0x00509e20`` that
+        # hold 1 -- the human players -- over ``[0x00509e30]`` of them.  It is
+        # a **count**, not a flag, which is what makes "exactly one human" the
+        # condition rather than "single player".
+        "map_short_humans": (0x0043B700, 0x00509E20, 0x00509E30),
+        # The arm the same key takes when that gate fails: ``0x004539c1`` sets
+        # ``0x005106d4`` to 1 and draws nothing.  It is the flag's **only**
+        # writer in the image (``0x004538e0`` reads it, ``0x004538f0`` clears
+        # it), and the mission's first frame ``0x0041a980`` then draws one of
+        # two things -- the full ``A0`` briefing when the network predicate
+        # holds, and otherwise ``0x0045fa00``'s per-player strength panel.
+        # So the panel is the **hot-seat** shape: two or more humans on one
+        # machine with no network.  One human never arms the flag, which is
+        # why a campaign draws neither.
+        "start_flag": 0x005106D4,
+        "start_flag_setter": 0x004539C1,
+        "start_flag_reader": 0x004538E0,
+        "start_flag_clear": 0x004538F0,
+        "strength_panel": 0x0045FA00,
+        "strength_panel_site": 0x0041B66F,
+        # **Not the deployment screen.**  The ninth slice drew this box over
+        # the unit-selection view because docs/24 section 7.1's table named
+        # that screen without reading the arm.  ``0x0044eeda`` is inside
+        # ``aMenuSystem``'s gadget dispatcher ``0x0044dcd0``, whose outer
+        # switch is on ``Menu_a``'s window selector ``[0x50fdf8]``: window
+        # **10** is ``:Leveloptions;`` and the gadget that reaches this arm
+        # is **22**, the button ``Menu_a.lcl`` comments ``* infos``.  That is
+        # the multiplayer level-options screen -- the DirectPlay path -- and
+        # ``SelectUnits`` is a ``Menu_b`` window whose arm calls
+        # ``aActivateBriefingInfo`` nowhere at all.
+        "level_options_short": ("B0", (220, 120, 200, 500), 0x0044EEDA),
+        # The chain that says so, read rather than counted.
+        "menu_dispatch": 0x0044DCD0,
+        "menu_window": 0x0050FDF8,
+        "menu_window_bound_site": 0x0044DCDB,   # ``cmp eax, 0x10``
+        "menu_window_count": 17,                # ``Menu_a``'s 00.._16
+        "menu_window_table": 0x0044FB7C,
+        # ``[0x50fdf8] = 7`` right after the loader pushes ``GUI\Menu_a.LCL``:
+        # what pins the selector to ``Menu_a`` by a **writer** rather than by
+        # the arm count.  7 is ``Menu_a``'s ``07_MainMenu``.
+        "menu_a_name": "GUI\\Menu_a.LCL",
+        "menu_a_name_site": 0x0044D2F4,
+        "menu_a_main_menu_site": 0x0044D37C,
+        "menu_a_main_menu": 7,
+        # Window 10's arm and its own switch: 23 gadget ids through a byte
+        # index table into a jump table.
+        "level_options_window": 10,
+        "level_options_arm": 0x0044EB52,
+        "level_options_gadget_bound_site": 0x0044EB59,   # ``cmp edi, 0x16``
+        "level_options_gadget_max": 22,
+        "level_options_index_table": 0x0044FC74,
+        "level_options_jump_table": 0x0044FC3C,
+        "level_options_infos_gadget": 22,
+        "level_options_infos_arm": 0x0044EEBD,
+        # Every ``aActivateBriefingInfo`` call site in the image, so a future
+        # reader cannot attribute one to a screen from memory.  Only one of
+        # them is inside the dispatcher at all.
+        "activate": 0x0043EAB0,
+        "activate_sites": (0x0041B629, 0x0044EEDA, 0x00453990, 0x00456D96,
+                           0x00456DE0, 0x004577DB, 0x0045783F, 0x0047CEE8),
+        # These two **are** `Menu_b`'s, and by the same kind of evidence the
+        # `Infos` box above is not: the routine that carries them pushes
+        # ``GUI\Menu_b.LCL`` at ``0x00456d17`` and loads it, and both calls
+        # follow inside it.  Read rather than named, after `0x0044eeda` was
+        # attributed to a screen by name and turned out to be somewhere else.
+        "screen": ("A0", (84, 77, 280, 276), 0x00456DE0),
+        "tips": ("C0", (84, 77, 230, 276), 0x00456D96),
+        "menu_b_name": "GUI\\Menu_b.LCL",
+        "menu_b_name_site": 0x00456D17,
+        # ``fcn.0043ECF0``: every printed frame adds one to each of the four
+        # limits (-1 is unlimited; the caps are 5000 and 50000), so a glyph
+        # and a word appear per frame; a space below the word limit plays
+        # ``textbeep.wav`` (0x0043E3C1 -> 0x00436EF0).
+        "per_frame": 1,
+        "advance": 0x0043F0AB,
+        "caps": (5000, 50000),
+        "blip": ("textbeep.wav", 0x004C4404),
+        "voice_format": "%smb%daif.wav",
+        "voice_format_va": 0x004CA8D8,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -41,18 +351,21 @@ class Arm:
 
     ``model_pushes`` and ``animation_pushes`` are ``(push va, string va, text)``:
     one entry for an arm that formats ``%d`` in a loop, one per stem for an arm
-    the compiler unrolled.  ``camera_mov`` is the ``mov edi, <string>`` that
-    closes the arm.  The camera therefore belongs to the arm *preceding* it,
-    which is what the ``contiguous`` check proves: no other arm's jump to
-    ``TAIL`` lies between the arm's first push and its camera load.
+    the compiler unrolled.  ``cd_mov`` is the ``mov edi, <string>`` that
+    closes the arm and loads its **CD track program** -- ``"9,30"`` is not a
+    camera path but the argument the shared tail hands to the ``CDTrackProgram``
+    parser (see ``CD_PROGRAM``).  The program therefore belongs to the arm
+    *preceding* the tail jump, which is what the ``contiguous`` check proves:
+    no other arm's jump to ``TAIL`` lies between the arm's first push and its
+    string load.
     ``count_cmp`` is the ``cmp reg, imm8`` that closes a looping arm; unrolled
     arms have none and are pinned by their per-stem pushes instead.
     """
 
     model_pushes: tuple[tuple[int, int, str], ...]
     animation_pushes: tuple[tuple[int, int, str], ...]
-    camera_mov: int
-    camera_string: int
+    cd_mov: int
+    cd_string: int
     count_cmp: int | None = None
 
 
@@ -60,7 +373,7 @@ class Arm:
 class Part:
     directory: str
     stems: tuple[str, ...]
-    camera: str
+    cd_program: str
     arm: Arm
 
     def model(self, stem: str) -> str:
@@ -221,20 +534,20 @@ def check_arms(pe: PEFile, ck: Checks) -> None:
                   and len(arm.model_pushes) in (1, len(part.stems))),
                  f"{len(arm.model_pushes)} pushes for {len(part.stems)} stems")
 
-        camera = ("" if arm.camera_string == EMPTY_STRING
-                  else pe.cstring(arm.camera_string))
-        ck.check(f"arm.{tag}.camera",
-                 (pe.bytes_at(arm.camera_mov, 5)
-                  == b"\xbf" + struct.pack("<I", arm.camera_string)
-                  and camera == part.camera),
-                 f"camera at 0x{arm.camera_mov:08X} is {camera!r}, "
-                 f"not {part.camera!r}")
+        program = ("" if arm.cd_string == EMPTY_STRING
+                   else pe.cstring(arm.cd_string))
+        ck.check(f"arm.{tag}.cd_program",
+                 (pe.bytes_at(arm.cd_mov, 5)
+                  == b"\xbf" + struct.pack("<I", arm.cd_string)
+                  and program == part.cd_program),
+                 f"CD program at 0x{arm.cd_mov:08X} is {program!r}, "
+                 f"not {part.cd_program!r}")
 
         first_push = min(va for va, _, _ in pushes)
         ck.check(f"arm.{tag}.contiguous",
-                 (first_push < arm.camera_mov
-                  and not jumps_to_tail(pe, first_push, arm.camera_mov)),
-                 "another arm ends between this arm's pushes and its camera")
+                 (first_push < arm.cd_mov
+                  and not jumps_to_tail(pe, first_push, arm.cd_mov)),
+                 "another arm ends between this arm's pushes and its program")
 
         if arm.count_cmp is None:
             continue
@@ -244,6 +557,743 @@ def check_arms(pe: PEFile, ck: Checks) -> None:
                  cmp_bytes[0] == 0x83 and cmp_bytes[2] == last,
                  f"loop bound at 0x{arm.count_cmp:08X} is {cmp_bytes.hex()}, "
                  f"not cmp reg, {last}")
+
+
+
+# ---------------------------------------------------------------------------
+# The CD program, the camera and the Focus table
+# ---------------------------------------------------------------------------
+
+def activate_sites(pe: PEFile, target: int) -> list[int]:
+    """Every ``call rel32`` in ``.text`` that reaches *target*.
+
+    A screen's briefing box is attributed by the **arm** that calls it, and
+    the ninth slice got one wrong by trusting a table row instead; the list is
+    pinned so a new site cannot appear unnoticed.
+    """
+    lo, size, rawptr, rawsize = pe.section(".text")
+    blob = pe.data[rawptr:rawptr + rawsize]
+    out: list[int] = []
+    for off in range(len(blob) - 5):
+        if blob[off] != 0xE8:
+            continue
+        rel = struct.unpack_from("<i", blob, off + 1)[0]
+        if lo + off + 5 + rel == target:
+            out.append(lo + off)
+    return out
+
+
+def call_target(pe: PEFile, va: int) -> int | None:
+    """The absolute target of the ``call rel32`` at ``va``, or None."""
+    code = pe.bytes_at(va, 5)
+    if code[0] != 0xE8:
+        return None
+    return va + 5 + struct.unpack("<i", code[1:])[0]
+
+
+def parse_cd_program(text: str, track_count: int = 99) -> list[int]:
+    """``0x0042C040``: ``strtok`` over :data:`CD_SEPARATORS`, ``atoi`` per token,
+    and a token above the CD's track count becomes ``-1``.
+
+    ``track_count`` defaults past every real disc so the manifest's ``30``
+    survives as a number; the game's own value is ``[0x4FE688]`` at run time,
+    which is why ``"9,30"`` on a 20-track disc is ``[9, -1]`` and the wrap in
+    ``0x0042BC10`` makes it a loop of track 9.
+    """
+    tokens: list[str] = []
+    current = ""
+    for ch in text:
+        if ch in CD_SEPARATORS:
+            if current:
+                tokens.append(current)
+            current = ""
+        else:
+            current += ch
+    if current:
+        tokens.append(current)
+    out: list[int] = []
+    for token in tokens:
+        digits = ""
+        for ch in token:
+            if not ch.isdigit():
+                break
+            digits += ch
+        value = int(digits) if digits else 0
+        out.append(value if value <= track_count else -1)
+    return out
+
+
+def cd_track_of(program: str) -> int:
+    """The one track a manifest program loops, or -1 for the empty string."""
+    tracks = parse_cd_program(program)
+    return tracks[0] if tracks else -1
+
+
+def check_cd_program(pe: PEFile, root: Path, ck: Checks) -> None:
+    """The tail plays the string as a CD program; every program is one track."""
+    cd = CD_PROGRAM
+    ck.check("cd.copy",
+             pe.bytes_at(cd["copy_mov"], 5)
+             == b"\xbf" + struct.pack("<I", cd["copy_target"]),
+             "the tail no longer copies the string to 0x514288")
+    for name in ("stop", "open", "parse", "start"):
+        ck.check(f"cd.{name}_call",
+                 call_target(pe, cd[f"{name}_call"]) == cd[name],
+                 f"0x{cd[name + '_call']:08X} does not call 0x{cd[name]:08X}")
+    ck.check("cd.separators", pe.cstring(cd["separators_va"]) == CD_SEPARATORS,
+             f"separators are {pe.cstring(cd['separators_va'])!r}")
+    ck.check("cd.wrap",
+             pe.bytes_at(cd["start"], len(cd["wrap_bytes"])) == cd["wrap_bytes"],
+             "0x0042BC10 no longer wraps a negative entry to index 0")
+    programs = {part.cd_program for part in parts() if part.cd_program}
+    parsed = {program: parse_cd_program(program) for program in programs}
+    ck.check("cd.one_track_each",
+             all(len(v) == 2 and v[1] == CD_TERMINATOR
+                 and CD_TRACK_RANGE[0] <= v[0] <= CD_TRACK_RANGE[1]
+                 for v in parsed.values()),
+             f"programs parse to {parsed}")
+    ck.check("cd.tracks_distinct",
+             len({v[0] for v in parsed.values()}) == len(parsed),
+             "two parts loop the same track")
+    ck.check("cd.seq_5_silent",
+             [p.cd_program for p in parts() if p.directory == "Seq_5"] == [""],
+             "Seq_5 no longer keeps Seq_4's track")
+    missing = [CD_FILE_FORMAT % v[0] for v in parsed.values()
+               if not (root / MUSIC_DIR / (CD_FILE_FORMAT % v[0])).is_file()]
+    ck.check("cd.track_files", not missing,
+             f"missing {MUSIC_DIR}/{missing}")
+    ck.check("cd.terminator_out_of_range",
+             parse_cd_program("9,30", track_count=20) == [9, -1],
+             "a token above the track count must become -1")
+
+
+def check_camera(pe: PEFile, ck: Checks) -> None:
+    """``Cam<n>`` by name, index 1 per pair, focal ``width * 10/13`` at start."""
+    cam = CAMERA
+    ck.check("camera.literal",
+             pe.bytes_at(cam["literal_push"], 5)
+             == b"\x68" + struct.pack("<I", cam["literal_va"])
+             and pe.cstring(cam["literal_va"]) == "Cam",
+             "the note dispatcher no longer builds the name from \"Cam\"")
+    ck.check("camera.index_reset",
+             pe.bytes_at(cam["index_reset"], 7) == cam["index_reset_bytes"],
+             "installing a pair no longer resets the camera index to 1")
+    ratio = pe.f64(cam["focal_ratio_va"])
+    ck.check("camera.focal_ratio", abs(ratio - cam["focal_ratio"]) < 1e-12,
+             f"0x{cam['focal_ratio_va']:08X} holds {ratio}")
+    ck.check("camera.focal_ratio_used",
+             all(pe.bytes_at(va, 6)
+                 == b"\xdc\x0d" + struct.pack("<I", cam["focal_ratio_va"])
+                 for va in cam["focal_ratio_muls"]),
+             "aCreateSeqPlayer no longer multiplies the width by 10/13")
+
+
+def default_focal(width: int) -> int:
+    """The focal length a player starts with: ``_ftol(width * 10/13)``."""
+    return int(width * CAMERA["focal_ratio"])
+
+
+def focus_table(pe: PEFile) -> dict[int, int]:
+    """``f -> focal at 480 rows`` for every ``f`` the byte table covers."""
+    arms = {va: preset for va, preset in zip(FOCUS["arms"], FOCUS["presets"])}
+    arms[FOCUS["default_arm"]] = FOCUS["default"]
+    jump = [pe.u32(FOCUS["jump_table"] + 4 * i) for i in range(8)]
+    table = pe.bytes_at(FOCUS["byte_table"], FOCUS["table_size"])
+    return {FOCUS["bias"] + i: arms[jump[table[i]]] for i in range(len(table))}
+
+
+def scaled_focal(preset: int, height: int) -> int:
+    """``_ftol(preset * height / 480)``; exactly the preset at 480 rows."""
+    if height == FOCUS["reference_height"]:
+        return preset
+    return int(preset * (height * (1.0 / FOCUS["reference_height"])))
+
+
+def check_focus_table(pe: PEFile, ck: Checks) -> None:
+    ck.check("focus.note_push",
+             pe.bytes_at(FOCUS["note_push"], 1) == b"\x68"
+             and pe.cstring(pe.u32(FOCUS["note_push"] + 1)) == "Focus",
+             "the dispatcher no longer matches \"Focus\"")
+    ck.check("focus.fade_present",
+             pe.bytes_at(FOCUS["fade_push"], 1) == b"\x68"
+             and pe.cstring(pe.u32(FOCUS["fade_push"] + 1)) == "Fade",
+             "the Fade note is gone")
+    ck.check("focus.compare",
+             pe.bytes_at(FOCUS["compare"], 7)
+             == b"\x3d" + struct.pack("<I", FOCUS["table_size"] - 1) + b"\x77\x40",
+             "the byte table is no longer bounded at 176")
+    arms_ok = all(pe.bytes_at(va, 5) == b"\xb8" + struct.pack("<I", preset)
+                  for va, preset in zip(FOCUS["arms"], FOCUS["presets"]))
+    ck.check("focus.arms", arms_ok
+             and pe.bytes_at(FOCUS["default_arm"], 5)
+             == b"\xb8" + struct.pack("<I", FOCUS["default"]),
+             "one of the eight preset arms changed")
+    jump = [pe.u32(FOCUS["jump_table"] + 4 * i) for i in range(8)]
+    ck.check("focus.jump_table",
+             set(jump) == set(FOCUS["arms"]) | {FOCUS["default_arm"]},
+             f"jump table is {[hex(v) for v in jump]}")
+    table = focus_table(pe)
+    ck.check("focus.corpus_values",
+             all(table[f] == preset for f, preset in FOCUS_CORPUS.items()),
+             f"{ {f: table[f] for f in FOCUS_CORPUS} }")
+    ck.check("focus.seven_plus_default",
+             sorted(set(table.values())) == sorted(set(FOCUS["presets"])
+                                                   | {FOCUS["default"]}),
+             f"table reaches {sorted(set(table.values()))}")
+    named = {f for f, v in table.items() if v != FOCUS["default"]}
+    ck.check("focus.named_entries", named == {24, 28, 35, 50, 85, 135, 200},
+             f"non-default entries at {sorted(named)}")
+    recip_240 = struct.unpack("<f", pe.bytes_at(FOCUS["recip_240"], 4))[0]
+    recip_480 = struct.unpack("<f", pe.bytes_at(FOCUS["recip_480"], 4))[0]
+    ck.check("focus.reciprocals",
+             abs(recip_240 * 240 - 1.0) < 1e-6 and abs(recip_480 * 480 - 1.0) < 1e-6,
+             f"1/240 reads {recip_240}, 1/480 reads {recip_480}")
+    ck.check("focus.store",
+             pe.bytes_at(FOCUS["store"], 3) == b"\x89\x45\x58",
+             "the focal is no longer stored at [ebp+0x58]")
+    ck.check("focus.scaling", scaled_focal(765, 480) == 765
+             and scaled_focal(765, 240) == 382 and scaled_focal(400, 960) == 800,
+             "the height scaling changed")
+
+
+# ---------------------------------------------------------------------------
+# The notes: Switch n names Cam<n>, every model has Cam1
+# ---------------------------------------------------------------------------
+
+def parse_note_lines(text: str) -> list[tuple[str, Any]]:
+    """``docs/40`` section 9's rule: split on CR/LF, trim, ignore blanks, match
+    ``BREAK`` / ``Focus <float>`` / ``Switch <int>`` / ``Fade <int>``, ignore
+    the rest.  The value is read as ``atof``/``atoi`` do -- the longest numeric
+    prefix -- so ``Focus 43..0`` is 43."""
+    out: list[tuple[str, Any]] = []
+    for raw in text.replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        verb, _, arg = line.partition(" ")
+        arg = arg.strip()
+        if verb == "BREAK" and not arg:
+            out.append(("BREAK", None))
+        elif verb == "Focus":
+            out.append(("Focus", _atof(arg)))
+        elif verb == "Switch":
+            out.append(("Switch", _atoi(arg)))
+        elif verb == "Fade":
+            out.append(("Fade", _atoi(arg)))
+        else:
+            out.append(("ignored", line))
+    return out
+
+
+def _atoi(text: str) -> int:
+    digits = ""
+    for ch in text:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return int(digits) if digits else 0
+
+
+def _atof(text: str) -> float:
+    head = ""
+    seen_dot = False
+    for ch in text:
+        if ch.isdigit():
+            head += ch
+        elif ch == "." and not seen_dot:
+            head += ch
+            seen_dot = True
+        else:
+            break
+    return float(head) if head.strip(".") else 0.0
+
+
+def check_camera_roll(video: Path, ck: Checks) -> None:
+    """How far a ``Cam<n>`` bone is rolled about its own forward axis.
+
+    ``docs/41`` §7 measured the *forward* axis (engine +Y, 514 of 520 poses)
+    and left the roll open, on the grounds that a mean-of-the-parts argument
+    cannot see a rotation about the axis it measures.  It can be measured
+    directly instead: take the world up with the forward component removed --
+    what an unrolled camera's own up would be -- and the signed angle from it
+    to the bone's own engine +Z.
+
+    Over all 130 shots at nine times each, the **median is exactly zero** and
+    three quarters of the poses are within half a degree, so the bone is
+    authored upright and the roll is not a hidden convention.  The tail is
+    real and small: a few dozen poses carry a deliberate bank, and a handful
+    look near enough to straight up or down that the projection is
+    ill-conditioned.  The remake needs no decision either way -- it takes the
+    bone's whole basis (``CAMERA_BASIS_FIX`` is the identity), so whatever
+    roll is authored is what it draws.
+    """
+    rolls: list[float] = []
+    for part in parts():
+        base = video / part.directory
+        for stem in part.stems:
+            model = chamod.parse_model_file(str(base / part.model(stem)))
+            anim = chamod.parse_animation_file(str(base / part.animation(stem)))
+            if model.skeleton is None:
+                continue
+            cams = [n.name for n in model.skeleton.nodes
+                    if n.name.startswith("Cam")]
+            span = anim.duration or 1.0
+            for k in range(9):
+                posed = posemod.pose_model(model, anim, span * k / 8.0)
+                for cam in cams:
+                    m = posed.world.get(cam)
+                    if m is None:
+                        continue
+                    roll = _roll_degrees(m)
+                    if roll is not None:
+                        rolls.append(roll)
+    rolls.sort(key=abs)
+    n = len(rolls)
+    if not n:
+        ck.check("camera.roll", False, "no camera poses")
+        return
+    median = sorted(rolls)[n // 2]
+    within = sum(1 for r in rolls if abs(r) <= 0.5)
+    tail = sum(1 for r in rolls if abs(r) <= 10.0)
+    ck.check("camera.roll_median_is_zero", abs(median) < 1e-6,
+             f"median roll {median:.3f} deg over {n} poses")
+    ck.check("camera.roll_is_mostly_none", within * 100 >= n * 70,
+             f"{within}/{n} poses within half a degree")
+    ck.check("camera.roll_tail_is_small", tail * 100 >= n * 95,
+             f"{tail}/{n} poses within ten degrees")
+
+
+def _roll_degrees(m) -> float | None:
+    """The signed roll of one posed bone, or None where it cannot be defined.
+
+    The matrix is row-major, so the bone's own axes are its columns: engine +Y
+    is the forward the corpus measured, engine +Z the bone's own up.
+    """
+    fwd = _unit((m[1], m[5], m[9]))
+    own = _unit((m[2], m[6], m[10]))
+    up = (0.0, 0.0, 1.0)
+    along = sum(a * b for a, b in zip(up, fwd))
+    flat = tuple(up[i] - along * fwd[i] for i in range(3))
+    if math.sqrt(sum(c * c for c in flat)) < 1e-6:
+        # Looking straight up or down: every roll is the same picture.
+        return None
+    flat = _unit(flat)
+    cosine = max(-1.0, min(1.0, sum(a * b for a, b in zip(own, flat))))
+    turn = (flat[1] * own[2] - flat[2] * own[1],
+            flat[2] * own[0] - flat[0] * own[2],
+            flat[0] * own[1] - flat[1] * own[0])
+    sign = 1.0 if sum(a * b for a, b in zip(turn, fwd)) >= 0.0 else -1.0
+    return sign * math.degrees(math.acos(cosine))
+
+
+def _unit(v) -> tuple[float, float, float]:
+    length = math.sqrt(sum(c * c for c in v)) or 1.0
+    return (v[0] / length, v[1] / length, v[2] / length)
+
+
+def check_notes(video: Path, ck: Checks) -> None:
+    switches = focuses = ignored = breaks = 0
+    unresolved: list[str] = []
+    no_cam1: list[str] = []
+    values: set[int] = set()
+    for part in parts():
+        base = video / part.directory
+        for stem in part.stems:
+            model = chamod.parse_model_file(str(base / part.model(stem)))
+            anim = chamod.parse_animation_file(str(base / part.animation(stem)))
+            names = ({n.name for n in model.skeleton.nodes}
+                     if model.skeleton else set())
+            if "Cam1" not in names:
+                no_cam1.append(f"{part.directory}/{stem}")
+            for note in anim.notes:
+                for verb, value in parse_note_lines(note.text):
+                    if verb == "Switch":
+                        switches += 1
+                        if f"Cam{value}" not in names:
+                            unresolved.append(f"{part.directory}/{stem}: Cam{value}")
+                    elif verb == "Focus":
+                        focuses += 1
+                        values.add(int(value))
+                    elif verb == "BREAK":
+                        breaks += 1
+                    else:
+                        ignored += 1
+    ck.check("notes.switch_count", switches == 55, f"{switches} Switch notes")
+    ck.check("notes.switch_resolves", not unresolved,
+             f"Switch notes naming no Cam node: {unresolved[:5]}")
+    ck.check("notes.cam1_everywhere", not no_cam1,
+             f"models without Cam1: {no_cam1[:5]}")
+    ck.check("notes.focus_values", values == set(FOCUS_CORPUS),
+             f"Focus values {sorted(values)}")
+    ck.check("notes.focus_count", focuses == 138, f"{focuses} Focus notes")
+    ck.check("notes.other", (breaks, ignored) == (2, 2),
+             f"{breaks} BREAK and {ignored} ignored lines (two German comments)")
+    ck.check("notes.grammar",
+             parse_note_lines("Focus 43..0\r\nSwitch 2\r\n")
+             == [("Focus", 43.0), ("Switch", 2)]
+             and parse_note_lines("Keys f\u00fcr Bewegung")
+             == [("ignored", "Keys f\u00fcr Bewegung")],
+             "the note grammar changed")
+
+
+
+def check_frontend(pe: PEFile, ck: Checks) -> None:
+    """The strings, holds, gate and flag of the front end around the sequences."""
+    fe = FRONTEND
+    for name, (text, va, call_va) in fe["cd_programs"].items():
+        ck.check(f"frontend.cd.{name}",
+                 pe.cstring(va) == text
+                 and call_target(pe, call_va) == CD_PROGRAM["parse"],
+                 f"{name}: {pe.cstring(va)!r} at 0x{va:08X}, call at "
+                 f"0x{call_va:08X}")
+    for name, (ms, va) in fe["holds_ms"].items():
+        ck.check(f"frontend.hold.{name}",
+                 pe.bytes_at(va, 5) == b"\x68" + struct.pack("<I", ms)
+                 and pe.bytes_at(va + 5, 2) == b"\xff\x15",
+                 f"{name}: no push {ms} before a Sleep at 0x{va:08X}")
+    splash = fe["splash"]
+    ck.check("frontend.splash.strings",
+             pe.cstring(splash["logo_bmp"][1]) == splash["logo_bmp"][0]
+             and pe.cstring(splash["title_bmp"][1]) == splash["title_bmp"][0]
+             and pe.cstring(splash["menu_a"][1]) == splash["menu_a"][0],
+             "aGameIntro's bitmap or script names changed")
+    ck.check("frontend.credits.flag",
+             pe.bytes_at(fe["credits"]["flag_store"], 5)
+             == b"\xa3" + struct.pack("<I", fe["credits"]["flag"]),
+             "0x0044BC60 no longer writes the credits flag")
+    ck.check("frontend.static_extro.continue",
+             call_target(pe, fe["static_extro"]["continue_call"]) == 0x0044BC60
+             and pe.bytes_at(0x0045BD86, 2) == b"\x6a\x01",
+             "the slide show's Continue no longer raises the credits")
+    ck.check("frontend.static_extro.wave",
+             pe.cstring(0x004CA91C) == "%s" + fe["static_extro"]["wave"],
+             "the extro wave path changed")
+    msg = fe["message_screen"]
+    ck.check("frontend.message.strings",
+             pe.cstring(msg["bmp"][1]) == msg["bmp"][0]
+             and pe.cstring(msg["font"][1]) == msg["font"][0],
+             "aPrintMessageScreen's plate or font changed")
+    ck.check("frontend.message.callers",
+             all(call_target(pe, va) == 0x0045F290 for va in msg["callers"])
+             and all(pe.bytes_at(va - 1, 1) == b"\x50" for va in msg["callers"]),
+             "the two message-screen call sites moved")
+    ck.check("frontend.message.text_zero",
+             pe.bytes_at(0x0045D42B, 2) == b"\x6a\x00"
+             and pe.bytes_at(0x00453F86, 2) == b"\x33\xdb",
+             "the message screen's text id is no longer 0 at both callers")
+    ck.check("frontend.message.layout",
+             pe.bytes_at(0x0045F35C, 5) == b"\x68" + struct.pack("<I", 320)
+             and pe.bytes_at(0x0045F35A, 2) == b"\x6a\x41"
+             and pe.bytes_at(0x0045F353, 5) == b"\x68" + struct.pack("<I", 0xF79E),
+             "the message screen's caption moved")
+    cap = fe["sequence_caption"]
+    ck.check("frontend.caption.install",
+             pe.bytes_at(cap["install"], 5)
+             == b"\x68" + struct.pack("<I", cap["callback"]),
+             "the framed background callback is no longer installed")
+    ck.check("frontend.caption.layout",
+             pe.bytes_at(0x00456F8F, 5) == b"\x68" + struct.pack("<I", 320)
+             and pe.bytes_at(0x00456F8A, 5) == b"\x68" + struct.pack("<I", 210)
+             and pe.bytes_at(0x00456F94, 2) == b"\x6a\x00",
+             "the framed caption's position or text id changed")
+    gate = fe["gate"]
+    ck.check("frontend.gate.bytes",
+             pe.bytes_at(gate["bytes_at"], len(gate["bytes"])) == gate["bytes"],
+             "0x00456FC0's mission-id arms changed")
+    flag = fe["intro_flag"]
+    ck.check("frontend.intro_flag.setter",
+             pe.bytes_at(flag["setter"], 10)
+             == b"\x8b\x44\x24\x04\xa3" + struct.pack("<I", flag["global"])
+             + b"\xc3",
+             "0x0045D3E0 is no longer the flag's setter")
+    ck.check("frontend.intro_flag.set_once",
+             pe.bytes_at(flag["set_one"], 2) == b"\x6a\x01"
+             and call_target(pe, flag["set_one"] + 2) == flag["setter"]
+             and all(pe.bytes_at(va, 2) == b"\x6a\x00"
+                     and call_target(pe, va + 2) == flag["setter"]
+                     for va in flag["set_zero"])
+             and call_target(pe, flag["menu_init_call"]) == flag["setter"]
+             and pe.bytes_at(flag["menu_init_call"] - 1, 1) == b"\x56",
+             "the intro flag's writers moved")
+    ck.check("frontend.intro_flag.read",
+             pe.bytes_at(flag["read"], 5)
+             == b"\xa1" + struct.pack("<I", flag["global"]),
+             "the gate no longer reads the intro flag")
+    ex = fe["exit"]
+    ck.check("frontend.exit.extro",
+             pe.bytes_at(ex["extro_compare"], 10)
+             == b"\x81\x3d" + struct.pack("<I", gate["mission_id_global"])
+             + struct.pack("<I", 0xFF),
+             "the exit no longer tests mission id 255")
+    ck.check("frontend.exit.sites",
+             all(call_target(pe, va) == ex["entry"]
+                 for va in (ex["click_site"], ex["key_site"])),
+             "the GUI loop's two exit call sites moved")
+    ck.check("frontend.exit.click",
+             pe.bytes_at(0x004555E6, 5) == b"\x66\x81\xff\x01\x02",
+             "the click arm no longer tests WM_LBUTTONDOWN")
+    ck.check("frontend.windows",
+             pe.bytes_at(0x004570EF, 5) == b"\xb8\x41\x00\x00\x00"
+             and pe.bytes_at(0x004570F4, 5) == b"\xb9\x39\x00\x00\x00"
+             and pe.bytes_at(0x004570F9, 5) == b"\xba\x06\x02\x00\x00"
+             and pe.bytes_at(0x0045710F, 5) == b"\xbf\x32\x01\x00\x00"
+             and pe.bytes_at(0x004570D2, 5) == b"\xba\x80\x02\x00\x00"
+             and pe.bytes_at(0x004570E8, 5) == b"\xbf\xe0\x01\x00\x00",
+             "the two viewports changed")
+    br = fe["briefing"]
+    ck.check("frontend.briefing.advance",
+             pe.bytes_at(br["advance"], 6)
+             == b"\x40\xa3" + struct.pack("<I", 0x0050B4D0)
+             and pe.bytes_at(0x0043F0A4, 5)
+             == b"\x3d" + struct.pack("<I", br["caps"][0])
+             and pe.bytes_at(0x0043F0BB, 5)
+             == b"\x3d" + struct.pack("<I", br["caps"][1]),
+             "the typewriter's per-frame increment changed")
+    # The map's B0 arm, the key it is reached by and the gate in front of it.
+    dispatch, table = br["map_short_dispatch"]
+    ck.check("frontend.briefing.map_short_action",
+             pe.u32(dispatch) == table
+             and pe.bytes_at(br["map_short_arm"], 5)
+             == b"\xbe" + struct.pack("<I", br["map_short_action"]),
+             "0x00451240's key table no longer carries mission control's 0xb")
+    predicate, reader, flag = br["map_short_gate"]
+    ck.check("frontend.briefing.map_short_gate",
+             pe.bytes_at(predicate, 5)
+             == b"\xe8" + struct.pack("<i", reader - predicate - 5)
+             and pe.bytes_at(reader, 6) == b"\xa1" + struct.pack("<I", flag)
+             + b"\xc3",
+             "0x0043b1f0 is no longer the network predicate over 0x00509f08")
+    # `0x0043b700` is a loop, not a getter: `cmp dword [edi], 1` over the slot
+    # table, `inc ebx` on a match, bounded by `0x0043b310`'s player count.
+    humans, slots, count = br["map_short_humans"]
+    ck.check("frontend.briefing.map_short_humans",
+             pe.bytes_at(humans + 0x10, 5)
+             == b"\xbf" + struct.pack("<I", slots)
+             and pe.bytes_at(humans + 0x15, 3) == b"\x83\x3f\x01"
+             and pe.bytes_at(0x0043B310, 5)
+             == b"\xa1" + struct.pack("<I", count),
+             "0x0043b700 no longer counts the human players")
+    ck.check("frontend.briefing.map_short_gate_is_one_human",
+             pe.bytes_at(0x00453966, 3) == b"\x83\xf8\x01"
+             and call_target(pe, 0x00453961) == humans,
+             "the B0 gate no longer compares the human count with 1")
+    # The other arm, and the two things the flag it sets can draw.  This is
+    # what says the strength panel is unreachable with one human: the only
+    # writer of the flag is the arm one human never takes.
+    ck.check("frontend.briefing.start_flag_single_writer",
+             pe.bytes_at(br["start_flag_setter"], 10)
+             == b"\xc7\x05" + struct.pack("<I", br["start_flag"])
+             + struct.pack("<I", 1)
+             and pe.bytes_at(br["start_flag_reader"], 6)
+             == b"\xa1" + struct.pack("<I", br["start_flag"]) + b"\xc3"
+             and pe.bytes_at(br["start_flag_clear"], 10)
+             == b"\xc7\x05" + struct.pack("<I", br["start_flag"])
+             + struct.pack("<I", 0),
+             "0x005106d4's writer, reader or clear moved")
+    ck.check("frontend.briefing.strength_panel_is_the_other_arm",
+             call_target(pe, br["strength_panel_site"]) == br["strength_panel"]
+             and call_target(pe, 0x0041B606) == 0x0043B1F0
+             and pe.bytes_at(0x0041B60B, 4) == b"\x85\xc0\x74\x55",
+             "0x0041a980's flag arm no longer branches on the network "
+             "predicate into 0x0045fa00")
+    ck.check("frontend.briefing.blip",
+             pe.cstring(br["blip"][1]) == br["blip"][0]
+             and pe.bytes_at(0x0043BFC4, 5)
+             == b"\x68" + struct.pack("<I", br["blip"][1]),
+             "the word blip is no longer textbeep.wav")
+    ck.check("frontend.briefing.voice",
+             pe.cstring(br["voice_format_va"]) == br["voice_format"],
+             f"voice-over format is {pe.cstring(br['voice_format_va'])!r}")
+    # Where `0x0044eeda` actually lives: `Menu_a` window 10, gadget 22.
+    ck.check("frontend.briefing.menu_selector_is_menu_a",
+             pe.cstring(pe.u32(br["menu_a_name_site"] + 1))
+             == br["menu_a_name"]
+             and pe.bytes_at(br["menu_a_main_menu_site"], 10)
+             == b"\xc7\x05" + struct.pack("<I", br["menu_window"])
+             + struct.pack("<I", br["menu_a_main_menu"]),
+             "0x50fdf8's writer no longer follows the Menu_a load, so the "
+             "window numbering below is not pinned to Menu_a")
+    ck.check("frontend.briefing.menu_dispatch_switches_on_the_window",
+             pe.bytes_at(br["menu_dispatch"], 5)
+             == b"\xa1" + struct.pack("<I", br["menu_window"])
+             and pe.bytes_at(br["menu_window_bound_site"], 3)
+             == b"\x83\xf8" + bytes([br["menu_window_count"] - 1])
+             and pe.bytes_at(br["menu_dispatch"] + 0x18, 3) == b"\xff\x24\x85"
+             and pe.u32(br["menu_dispatch"] + 0x1B)
+             == br["menu_window_table"],
+             "aMenuSystem's dispatcher no longer switches on Menu_a's window")
+    ck.check("frontend.briefing.level_options_is_window_ten",
+             pe.u32(br["menu_window_table"]
+                    + 4 * br["level_options_window"])
+             == br["level_options_arm"]
+             and pe.bytes_at(br["level_options_gadget_bound_site"], 3)
+             == b"\x83\xff" + bytes([br["level_options_gadget_max"]])
+             and pe.bytes_at(br["level_options_arm"] + 0x18, 3)
+             == b"\xff\x24\x85"
+             and pe.u32(br["level_options_arm"] + 0x1B)
+             == br["level_options_jump_table"],
+             "window 10's arm or its gadget switch moved")
+    ck.check("frontend.briefing.the_infos_gadget_draws_b0",
+             pe.u32(br["level_options_jump_table"] + 4 * pe.u8(
+                 br["level_options_index_table"]
+                 + br["level_options_infos_gadget"]))
+             == br["level_options_infos_arm"]
+             and call_target(pe, br["level_options_short"][2])
+             == br["activate"],
+             "gadget 22 no longer reaches 0x0044eebd's B0 activation")
+    ck.check("frontend.briefing.the_briefing_screen_is_menu_b",
+             pe.cstring(pe.u32(br["menu_b_name_site"] + 1))
+             == br["menu_b_name"]
+             and br["menu_b_name_site"] < br["tips"][2] < br["screen"][2],
+             "the routine that draws A0 and C0 no longer loads Menu_b.LCL "
+             "ahead of them")
+    sites = tuple(sorted(activate_sites(pe, br["activate"])))
+    ck.check("frontend.briefing.activate_sites",
+             sites == tuple(sorted(br["activate_sites"])),
+             f"aActivateBriefingInfo is called from {len(sites)} sites: "
+             + ", ".join(f"0x{va:08X}" for va in sites))
+    inside = tuple(va for va in sites
+                   if br["menu_dispatch"] <= va < br["menu_window_table"])
+    ck.check("frontend.briefing.only_one_site_is_in_the_menu_system",
+             inside == (br["level_options_short"][2],),
+             "the deployment screen is a Menu_b window and the dispatcher "
+             "reaches aActivateBriefingInfo from the Infos gadget alone; "
+             f"sites inside it: {[hex(v) for v in inside]}")
+    ck.check("frontend.briefing.map_b0",
+             pe.bytes_at(0x00453974, 4) == b"\x6a\x30\x6a\x42"
+             and pe.bytes_at(0x00453978, 1) == b"\x50"
+             and pe.bytes_at(0x00453970, 4) == b"\x85\xc0\x75\x4d"
+             and call_target(pe, br["map_short"][2]) == 0x0043EAB0,
+             "the map's B0 call changed (animate is eax, which is zero there)")
+    for name, (_label, box, va) in ((k, v) for k, v in br.items()
+                                    if isinstance(v, tuple) and len(v) == 3
+                                    and isinstance(v[1], tuple)):
+        ck.check(f"frontend.briefing.{name}",
+                 call_target(pe, va) == 0x0043EAB0,
+                 f"0x{va:08X} no longer calls aActivateBriefingInfo")
+
+
+def frontend_document(pe: PEFile | None = None) -> dict[str, Any]:
+    """``tables/frontend.json`` -- what the remake's shell needs of FRONTEND."""
+    fe = FRONTEND
+    windows = fe["windows"]
+    return {
+        "schema": "incubation.frontend/1",
+        "holds_ms": {k: v[0] for k, v in fe["holds_ms"].items()},
+        "cd_programs": {k: v[0] for k, v in fe["cd_programs"].items()},
+        "cd_separators": CD_SEPARATORS,
+        "splash": {
+            "logo_plate": "bluebyte", "title_plate": "title",
+            "text": list(fe["splash"]["text"]),
+            "at": list(fe["splash"]["at"]), "size": list(fe["splash"]["size"]),
+            "font": fe["splash"]["font"],
+        },
+        "credits": {
+            "plate": fe["credits"]["plate"],
+            "exit": {"text": list(fe["credits"]["exit"][:2]),
+                     "at": list(fe["credits"]["exit"][2])},
+            "back": {"text": list(fe["credits"]["back"][:2]),
+                     "at": list(fe["credits"]["back"][2])},
+        },
+        "static_extro": {
+            "plate": fe["static_extro"]["plate"],
+            "wave": "audio/briefing/" + fe["static_extro"]["wave"],
+            "continue": {"text": list(fe["static_extro"]["continue"][:2]),
+                         "at": list(fe["static_extro"]["continue"][2])},
+        },
+        "message_screen": {
+            "plate": fe["message_screen"]["plate"],
+            "font": "font_2",
+            "text": list(fe["message_screen"]["text"]),
+            "at": list(fe["message_screen"]["at"]),
+            "colours": list(fe["message_screen"]["colours"]),
+        },
+        "sequence_caption": {
+            "text": list(fe["sequence_caption"]["text"]),
+            "at": list(fe["sequence_caption"]["at"]),
+            "colours": list(fe["sequence_caption"]["colours"]),
+        },
+        "gate": {
+            "intro": {"mission_id": fe["gate"]["ids"]["intro"],
+                      "logical_id": fe["gate"]["logical"]["intro"],
+                      "full_screen": True, "once": True},
+            "static_extro": {"mission_id": fe["gate"]["ids"]["static_extro"]},
+            "animated_extro": {
+                "mission_id": fe["gate"]["ids"]["animated_extro"],
+                "logical_id": fe["gate"]["logical"]["animated_extro"],
+                "full_screen": True},
+        },
+        "windows": {"full": list(windows["full"]),
+                    "framed": list(windows["framed"])},
+        "briefing": {
+            "boxes": {name: {"label": v[0], "box": list(v[1])}
+                      for name, v in fe["briefing"].items()
+                      if isinstance(v, tuple) and len(v) == 3
+                      and isinstance(v[1], tuple)},
+            "typewriter": {"per_frame": fe["briefing"]["per_frame"],
+                           "caps": list(fe["briefing"]["caps"]),
+                           "blip": fe["briefing"]["blip"][0]},
+            # The key mission control's B0 arm is reached by, and the fact
+            # that its gate is satisfied by every single-player campaign.
+            "map_short_key": fe["briefing"]["map_short_key"],
+            "map_short_always_in_single_player": True,
+            "voice_dir": "audio/briefing",
+        },
+    }
+
+# ---------------------------------------------------------------------------
+# The manifest the converter writes
+# ---------------------------------------------------------------------------
+
+def manifest_document(pe: PEFile) -> dict[str, Any]:
+    """``tables/sequences.json`` -- logical id -> parts, plus the camera rules.
+
+    The Focus table is **always** read out of the image.  There used to be a
+    fallback to :data:`FOCUS_CORPUS` for a ``None`` image, with a docstring
+    saying the two agreed and that ``--check`` said so; neither was true --
+    the corpus constant is the five values the shipped clips ask for, not the
+    seven presets and the default -- and no caller passed ``None``.  A
+    documented claim with no check behind it is the shape this project keeps
+    finding, so the branch is gone rather than checked.
+    """
+    table = focus_table(pe)
+    sequences = []
+    for logical_id, chain in SEQUENCES.items():
+        sequences.append({
+            "id": logical_id,
+            "parts": [{
+                "directory": part.directory,
+                "stems": list(part.stems),
+                "models": [part.model(stem)[:-4] for stem in part.stems],
+                "animations": [part.animation(stem)[:-4] for stem in part.stems],
+                "cd_program": part.cd_program,
+                "cd_track": cd_track_of(part.cd_program),
+            } for part in chain],
+        })
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "frame_rate": FRAME_RATE,
+        "cd_family": CD_FAMILY,
+        "cd_separators": CD_SEPARATORS,
+        "cd_terminator": CD_TERMINATOR,
+        "camera": {
+            "default_index": CAMERA["default_index"],
+            # A ratio of two integers: the cache carries no float (docs/92).
+            "focal_ratio": [10, 13],
+            "focal_default_full": default_focal(640),
+            "focal_default_framed": default_focal(518),
+        },
+        "focus": {
+            "bias": FOCUS["bias"],
+            "default": FOCUS["default"],
+            "reference_height": FOCUS["reference_height"],
+            # Records rather than a string-keyed object (docs/92 D12).
+            "presets": [{"focus": f, "focal": table[f]}
+                        for f in sorted(table) if table[f] != FOCUS["default"]],
+        },
+        "notes": ["BREAK", "Focus", "Switch", "Fade"],
+        "sequences": sequences,
+    }
 
 
 def selected_files(video: Path) -> tuple[list[Path], list[Path]]:
@@ -280,14 +1330,18 @@ def run_check(root: Path) -> int:
     ck.check("manifest.pe_strings",
              all(pe.cstring(va) == value for va, value in RESOURCE_STRINGS.items()),
              "one or more hard-coded resource roots changed")
-    ck.check("camera.empty",
+    ck.check("cd.empty",
              pe.bytes_at(EMPTY_STRING_COMPARE, 5)
              == b"\xbe" + struct.pack("<I", EMPTY_STRING),
-             "the tail no longer compares the camera against the global Seq_5 loads")
-    ck.check("camera.distinct",
-             len({part.arm.camera_string for part in parts()}) == len(parts()),
-             "two parts share one camera string address")
+             "the tail no longer compares the program against the global Seq_5 loads")
+    ck.check("cd.distinct",
+             len({part.arm.cd_string for part in parts()}) == len(parts()),
+             "two parts share one CD-program string address")
     check_arms(pe, ck)
+    check_cd_program(pe, root, ck)
+    check_camera(pe, ck)
+    check_focus_table(pe, ck)
+    check_frontend(pe, ck)
     ck.check("lifecycle.create", pe.bytes_at(0x0046546E, 20).startswith(
              b"\xc7\x05\x70\x42\x51\x00\x01\x00\x00\x00"),
              "active flag is not set at creation")
@@ -328,6 +1382,9 @@ def run_check(root: Path) -> int:
     ck.check("manifest.parse", parsed == len(animations),
              f"parsed {parsed}/{len(animations)}; {parse_errors[:3]}")
 
+    check_notes(video, ck)
+    check_camera_roll(video, ck)
+
     selected = {p.resolve() for p in models + animations}
     all_scene = {p.resolve() for p in video.glob("*/*")
                  if p.suffix.lower() in {".cho", ".cha"}}
@@ -367,7 +1424,8 @@ def report(root: Path, as_json: bool) -> int:
             "id": logical_id,
             "parts": [{
                 "directory": part.directory,
-                "camera": part.camera,
+                "cd_program": part.cd_program,
+                "cd_track": cd_track_of(part.cd_program),
                 "actors": list(part.stems),
             } for part in chain],
         })
@@ -377,7 +1435,8 @@ def report(root: Path, as_json: bool) -> int:
         for seq in out:
             print(f"id {seq['id']}")
             for index, part in enumerate(seq["parts"]):
-                print(f"  part {index}: {part['directory']:<10} camera={part['camera'] or '-':<5} "
+                print(f"  part {index}: {part['directory']:<10} "
+                      f"cd={part['cd_program'] or '-':<5} "
                       f"actors={len(part['actors'])}")
     return 0 if video.is_dir() else 1
 
@@ -387,7 +1446,15 @@ def main() -> int:
     ap.add_argument("root", type=Path)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--manifest", action="store_true",
+                    help="print tables/sequences.json and tables/frontend.json "
+                         "as the converter writes them")
     args = ap.parse_args()
+    if args.manifest:
+        pe = PEFile(args.root / "Incubation.exe")
+        print(json.dumps({"sequences": manifest_document(pe),
+                          "frontend": frontend_document(pe)}, indent=2))
+        return 0
     return run_check(args.root) if args.check else report(args.root, args.json)
 
 

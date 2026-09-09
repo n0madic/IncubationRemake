@@ -91,6 +91,22 @@ const CATALOGUE_ID_MAX: Dictionary = {KIND_WEAPONS: 20, KIND_EQUIPMENT: 21}
 const SPEECH_BASE: int = 1
 const SPEECH_SPAN: int = 6
 
+## The gate `0x00456FC0(-1)` reads the mission id and picks a sequence
+## (docs/27 section 2.3, docs/41 section 5): id 1 with the intro flag plays
+## logical id 0 full screen, id 180 the static extro, id 255 logical id 1
+## full screen, anything else nothing.
+const INTRO_CAMPAIGN: int = 1
+const INTRO_MISSION_ID: int = 1
+const INTRO_SEQUENCE: int = 0
+const STATIC_EXTRO_MISSION_ID: int = 180
+const ANIMATED_EXTRO_MISSION_ID: int = 255
+const ANIMATED_EXTRO_SEQUENCE: int = 1
+## What [method opening_sequence] answers in `kind`.
+const OPENING_NONE: String = ""
+const OPENING_INTRO: String = "intro"
+const OPENING_EXTRO: String = "extro"
+const OPENING_STATIC_EXTRO: String = "extro_static"
+
 var state: CampaignState = null
 var screen: String = SCREEN_MAP
 ## The location the player last clicked, or 0.
@@ -160,6 +176,10 @@ func start_new(number: int,
 		_recruit_hit_points(), _recruit_ammo(), names, speech)
 	state.difficulty = clampi(difficulty, GameSettings.DIFFICULTY_MIN,
 		GameSettings.DIFFICULTY_MAX)
+	# `0x00450997`: the new-campaign start arms the intro on its campaign-1
+	# arm and clears it on the other (`0x00450A11`). The gate then plays
+	# logical id 0 once, when mission id 1 first reaches mission control.
+	state.intro_pending = number == INTRO_CAMPAIGN
 	screen = SCREEN_MAP
 	location = tables.location_of(tables.mission_id(state.mission))
 	last_report = {}
@@ -220,6 +240,27 @@ func map_mission() -> String:
 	return state.map_name() if state != null else ""
 
 
+## The mission the chain stands on, or `""` when no campaign is running.
+##
+## Guarded for the same reason [method map_mission] is: the agent's `ui NAME`
+## raises a campaign screen from the shell without one ([`92` §7.16]), and
+## three of those screens want the mission's own briefing document. Reading
+## `state.mission` at the call site is what made that a crash.
+func current_mission() -> String:
+	return state.mission if state != null else ""
+
+
+## Player 0's scoreboard row, or an empty one where no campaign is running.
+##
+## The same guard as [method current_mission], for the same reason and found
+## the same way: the debriefing is one of the screens the agent's `ui NAME`
+## raises from the shell, and `state.scoreboard[0]` at the call site made that
+## a crash. A fresh [ScoreRecord] reads as a mission that scored nothing,
+## which is what an unplayed debriefing should show.
+func mission_board() -> ScoreRecord:
+	return state.scoreboard[0] if state != null else ScoreRecord.new()
+
+
 ## `aCreateLocationMap` -- the locations open with the current mission next.
 func open_locations() -> PackedInt32Array:
 	if state == null:
@@ -230,8 +271,9 @@ func open_locations() -> PackedInt32Array:
 ## What clicking a location does -- `aLocationHandling` `0x0045C7D0`'s three
 ## kinds of arm. Returns `{"kind": String, "target": String, "sequence": int}`.
 ##
-## A dialogue location opens, is named and **plays nothing**: the sequence
-## player is a later slice (D5).
+## A dialogue location answers the logical sequence id its arm passes; the
+## caller raises the framed sequence screen on it (docs/41 section 5; D5 is
+## closed since the ninth slice).
 func click_location(id: int) -> Dictionary:
 	if state == null:
 		return {"kind": CampaignMap.KIND_NONE, "target": "", "sequence": 0}
@@ -252,6 +294,43 @@ func click_location(id: int) -> Dictionary:
 			return {"kind": kind, "target": "",
 				"sequence": tables.dialogue_number(id)}
 	return {"kind": CampaignMap.KIND_NONE, "target": "", "sequence": 0}
+
+
+## What mission control shows on the way in, before the map -- the gate at
+## `0x00456FC0` run with -1 (docs/41 section 5, docs/92 section 7.19).
+##
+## Returns `{"kind": String, "sequence": int, "full_screen": bool}`. The intro
+## arm **consumes** the flag, as `0x004570B6` clears it after the sequence, so
+## asking twice plays it once; the two endings are decided by the mission id
+## alone and are asked as often as the map is raised, which is once.
+func opening_sequence() -> Dictionary:
+	var none: Dictionary = {"kind": OPENING_NONE, "sequence": -1,
+		"full_screen": false}
+	if state == null or tables == null:
+		return none
+	var id: int = tables.mission_id(state.mission)
+	if id == INTRO_MISSION_ID:
+		if not state.intro_pending:
+			return none
+		state.intro_pending = false
+		return {"kind": OPENING_INTRO, "sequence": INTRO_SEQUENCE,
+			"full_screen": true}
+	if id == STATIC_EXTRO_MISSION_ID:
+		return {"kind": OPENING_STATIC_EXTRO, "sequence": -1,
+			"full_screen": true}
+	if id == ANIMATED_EXTRO_MISSION_ID:
+		return {"kind": OPENING_EXTRO, "sequence": ANIMATED_EXTRO_SEQUENCE,
+			"full_screen": true}
+	return none
+
+
+## Whether the mission the campaign stands on is one of the two endings --
+## the map is never drawn for those; the credits follow.
+func at_an_ending() -> bool:
+	if state == null or tables == null:
+		return false
+	var id: int = tables.mission_id(state.mission)
+	return id == STATIC_EXTRO_MISSION_ID or id == ANIMATED_EXTRO_MISSION_ID
 
 
 # -- entering a mission --------------------------------------------------------

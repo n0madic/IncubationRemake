@@ -209,7 +209,8 @@ The dialogue arms pass these numbers:
 [`41` §2](41-sequence-player.md) closes what the number selects.  Logical ids
 2 and 3 are `Dialog_02` and `_03`; id 7 chains `Dialog_07` then `_09`; id 14 is
 `Dialog_14`; id 15 chains `_15` then `_16`; id 1 selects animated
-`Video/Extro`.  The mission-id special cases are also exact:
+`Video/Extro`.  The remake plays them framed over `plate_7` since the ninth
+slice ([`92` §7.19](92-remake-architecture.md)).  The mission-id special cases are also exact:
 mission 1 selects logical id 0 when its availability flag is set, mission 180
 selects value 16 (intercepted by the static extro screen before the sequence
 player), and mission 255 selects id 1.  `0x00510DC0` is the
@@ -452,19 +453,97 @@ path:
 aGetCameraPath(0, 0, &tx, &ty, &tz, &done);      /* the look-at target */
 for (;;) {
     if (!aGetCameraPath(0, 1, &wx, &wy, &wz, &done)) break;   /* exhausted */
-    …step the eye toward (wx, wy, wz), 40 a frame, until within 3200…
+    …step the eye toward (wx, wy, wz) until within 3200 on every axis…
     aSetCameraPosition(ex, ey, ez, tx, ty, tz);
 }
 aSetCameraPosition(ex, ey, ez, tx, ty, tz);      /* one last, at the end */
 ```
 
+The step *(read whole 2026-09-09; the 2026-09-08 reading below it had only its
+first frame)* is an **exponential approach**, not a constant:
+
+```c
+n = 40;  from = eye;                       /* per leg, 0x004171C9 */
+for (;;) {
+    if (|eye - wp| <= 3200 on all three axes) break;        /* next leg */
+    speed = 800;                                            /* 0x004171DE */
+    if (this is the last waypoint)                          /* aGetCameraPath's
+                                                               own out-flag */
+        speed = manhattan(eye, wp) * 800 / manhattan(from, wp);
+        if (speed < 80) landed = 1;                         /* 0x0041729E */
+    d = direction(eye, wp);                                 /* 0x0046D400 */
+    want = _ftol(d * speed);
+    v   += (want - v) / n;                  /* first frame: v = want / n */
+    if (n > 5) n--;                                         /* 0x00417316 */
+    eye += v;
+    aSetCameraPosition(eye, target);  frame();              /* 0x0040B6F0 */
+    if (*(char *)0x004FCBDC) landed = 1;    /* any key or click */
+}
+```
+
+Four things in that are easy to get wrong, and the earlier reading got two:
+
+* **`n` is a smoothing divisor, not the step.** It starts at 40 on every leg
+  and falls by one a frame to a floor of five, so the eye accelerates from
+  `800/40` = 20 units a frame toward 800. "20 units a frame" was the first
+  frame only.
+* **`0x0046D400` does not answer a unit vector.** The two horizontal
+  components are divided by the **larger** of them, so the dominant axis is
+  exactly one; the vertical is `(wp.z >> 3) - (eye.z >> 3)` over the
+  horizontal distance `0x0044AE10` returns — and *(corrected 2026-09-09)* that
+  distance is taken on **shifted coordinates too**. The helper has two arms
+  and the flight asks for the shifted one (`push 1` at `0x004172B1`, the last
+  of its ten arguments); that arm runs `sar 3` over all six numbers —
+  `0x0046D4EC`, `D4EF`, `D4F2`, `D4F5`, `D4FB`, `D504` — before
+  `0x0044AE10(eye.x >> 3, eye.y >> 3, wp.x >> 3, wp.y >> 3)`. The two eighths
+  cancel, so the vertical is the plain gradient: a leg that rises as far as it
+  runs rises at one. Shifting only the rise divides by eight times the
+  distance and the eye barely climbs at all — on `upgrade_8`, whose first
+  waypoint is 12000 units **under** the ground, the whole eleven-second
+  flight then happens at street level instead of lifting the eye to a −37°
+  overhead sweep.
+* **Each coordinate is shifted on its own.** `sar` floors, so
+  `(a >> 3) - (b >> 3)` is not `(a - b) >> 3` wherever the two operands'
+  remainders cross. Nine of the fifteen bases open on a waypoint with a
+  negative coordinate in it — 1, 2, 4, 6, 8, 211, 212, 215 and 216 — so a
+  port whose shift does not floor the way `sar` does is wrong on most of
+  them.
+* **Only the last leg ends the flight.** The others end on the 3200 arrival
+  test on all three axes (`0x004171FF`, `0x00417212`, `0x00417224`); the last
+  one counts `800 × remaining / leg` down and lands under 80 — a tenth of the
+  leg — so the eye comes to rest **near** the last waypoint rather than on it.
+* **The loop's frame is the front end's.** `0x0040B6F0` ends on
+  `0x0047F2E0(10, 20)` at `0x0040B82D`, a limiter that busy-waits on
+  `GetTickCount` until `1000/20` ms have passed. So the flight runs at
+  **20 frames a second** — the same clock [`24` §5](24-briefing-text.md)'s
+  typewriter does — and the eight shipped bases' flights last **2.9 to 12.8
+  seconds**. §10 item 8 is closed.
+
+`0x0040B6F0` also sets `0x004FCBDC` on `WM_KEYDOWN`, `WM_CHAR` and
+`WM_LBUTTONDOWN`, and the loop reads it: **any key or click lands the flight
+early**, exactly as one dismisses a cutscene.
+
+The first `aSetCameraPosition` (`0x00417167`) puts the eye **on the first
+waypoint**, so the flight starts there and not where `aCreateBattleMap(3)`
+left the camera.
+
 The path is the script's. Every `Missions/upgrade_N.lcl`'s whole `INIT MAP` is
 three to five `CreateCameraPath` lines and nothing else: one `mode 0` giving
 the target and two to four `mode 1` waypoints, each stored **shifted left by
 four** ([`20` §10 item 2](20-lcl-language.md) has the record — five paths of
-140 bytes at `0x004FCBE8`, nine waypoints maximum). So the eye ends on the
-**last** waypoint, looking at the target. For location 1 that is
-`(7260, 3637, 1625) x 16` looking at `(4542, 6545, 125) x 16`.
+140 bytes at `0x004FCBE8`, nine waypoints maximum). So the eye ends near the
+**last** waypoint, looking at the target. For location 1 the last waypoint is
+`(7260, 3637, 1625) x 16` and the target `(4542, 6545, 125) x 16`; replaying
+the law above puts the rest about 1600 units short of it in the horizontal and
+5300 short in the height, because the landing countdown stops the flight at a
+tenth of the leg.
+
+**The flight is what the player watches, not something behind a menu.**
+`0x00417510` paints `plate_7` and then *blocks* in `0x00417000`; mission
+control raises the Upgrade Menu only when it returns. So entering an upgrade
+location plays a framed arrival sequence in the same window and on the same
+plate a dialogue cutscene uses ([`41` §3](41-sequence-player.md)), and the
+menu follows it.
 
 Two things then keep it there. The arm that called the animation reads the
 camera straight back out with `aGetCameraPosition` `0x00403780` into
@@ -475,6 +554,72 @@ does not turn: the drag is the map's alone.
 
 On the way out `0x00417000` puts the 3D window back to a mission's
 `(60, 34)` by 520x340.
+
+### 2.7.1 The base's own marines — **[code] `0x00417510`, `0x004055E0`** *(2026-09-09)*
+
+**A landing pad the flight crosses is not empty.** Between
+`aCreateBattleMap(3)` and the blocking call into `0x00417000`, `0x00417510`
+walks the unit array and starts one animation on every unit it finds:
+
+```c
+for (id = aGetFirstUnitOfPlayer(0);            /* 0x00477C20 */
+     id != 0xFFFF;
+     id = aGetNextUnitOfPlayer(0, id)) {       /* 0x00477C60 */
+    rec = aGetUnitPtr(id);                     /* 0x00477AE0, refuses a dead slot */
+    if (rec) aStartAnimation(id + 7, rec, 4);  /* 0x004055E0 */
+}
+```
+
+Both iterators are `aUnitMap.cpp`'s own and both test the same two bytes of
+the 91-byte record: `+0x16` (hit points, [`10` §5](10-lev-mission-format.md) —
+zero means the slot holds nobody) non-zero, and `+0x45` (the owning player)
+equal to the argument, which is `0` at both call sites. The animation **slot**
+is the unit id plus seven.
+
+`kind == 4` is the one arm of `aStartAnimation` that names its clip as a fixed
+literal instead of asking a selector
+([`40` §7.2](40-charisma-model-animation.md), fourth row): `P0_M2_000` at
+`0x004C030C`. Its playback arm `0x00405B88` — the fifth entry of the second of
+that routine's two jump tables, `0x00405C94` — is three calls and a start:
+
+| site | call | what |
+|---|---|---|
+| `0x00405BDE` | `vtable+0x44(100000)` | the loop count |
+| `0x00405BE8` | `vtable+0x2C(1.0f)` | the speed, against a mission walk's 2.0 ([`42` §1.2](42-mission-presentation.md)) |
+| `0x00405BF2` | `vtable+0x34(aRandom2(0, 10))` | the clip's **starting time**, drawn |
+| `0x00405C0E` | `vtable+0x08()` | start |
+
+The draw is `aRandom2` `0x004638E0`, the `GetTickCount`-seeded generator of
+[`22` §3.2](22-combat-and-visibility.md) — so three marines started in the same
+frame are deliberately out of step, and the effect was never meant to repeat
+run to run. It is outside every hash and outside the save.
+
+**Nothing moves the units.** No `upgrade_N.lcl` contains a movement command at
+all — their whole `INIT MAP` is the three to five `CreateCameraPath` lines
+above — and the march is the clip's own: `P0_M2_000` is 452 frames long and
+carries its top-level bone `Bip000` from `(0, 0, 0)` to
+`(3.4, -3017.7, 0.96)`, i.e. 3017.7 skeleton units down engine -Y, which is
+the direction every movement clip strides in
+([`40` §7.2](40-charisma-model-animation.md)). At the front end's 20 frames a
+second and one clip unit a frame the clip runs 22.6 seconds and then loops, and
+a flight lasts about half of that, so what the player sees is a squad walking
+away down the pad while the camera comes down behind them.
+
+Corpus, all fifteen maps:
+
+| upgrade | marines | | upgrade | marines |
+|---|---|---|---|---|
+| 1, 2, 4, 8 | 3 | | 210, 211, 212, 215, 216 | 3 |
+| 3, 5, 6, 7 | 2 | | 213, 214 | 2 |
+
+Every one of the 39 is type 0, weapon 0, player 0 — the plain unarmed marine —
+with facings spread over 0, 1, 2, 3, 4, 6 and 7. `upgrade_6` carries a fourth
+player-0 record with **zero hit points** and `upgrade_4` six player-255 records
+with the same, and neither iterator reaches any of them: that is what the
+hit-point test is for, and it is why "two or three" rather than "three".
+`campaign_tables.py` reads all of it — both iterators, the player argument, the
+three record fields, the kind, the slot bias, the arm's own three constants,
+the literal and its address — and checks the corpus against them.
 
 ---
 
@@ -1224,8 +1369,13 @@ per mission file, and the LCL command `EnterNameOfNextMap`
 mission wants to branch. Both are checked against the corpus: every non-empty
 header field and all 74 `EnterNameOfNextMap` arguments name a shipped mission.
 
-`_C_133`'s next map is `_C_YYY` — the campaign-2 map — which is how one
-campaign hands over to the other.
+`_C_133`'s next map is `_C_YYY`, and that is **not** a hand-over to campaign 2
+*(corrected 2026-09-08)*: `_C_YYY.lev`'s header carries mission id **255**, the
+value `0x00456FC0`'s gate reads as the animated `Video/Extro` (§2.3), after
+which `0x00457180` sleeps 4000 ms and raises the credits — so `_C_YYY` *as a
+mission* is chain 1's ending, the way `_C_180` (id 180, the static extro) is
+chain 2's. The same file is campaign 2's location map when it is loaded as a
+map. The converter therefore keeps `_C_YYY` as a mission row beside `_C_180`.
 
 **There are two clean starts, and the campaign number picks between them.**
 *(Sharpened 2026-09-04; see [`98` §2](98-slice-6-report.md).)* The two chains
@@ -1399,6 +1549,20 @@ What each group covers:
    delta was wrong — that routine returns the scanline stride, and it is the
    call's *second* argument.
 
+8. ~~**The fly-in's frame.**~~ **Closed** (2026-09-09) — §2.7, and it took the
+   step law with it.  `0x00417000` ends its frame on `0x0040b6f0`, the front
+   end's own frame function, and that ends on `0x0047f2e0(10, 20)` at
+   `0x0040b82d` — a limiter that busy-waits on `GetTickCount` until
+   `1000 / 20` ms have passed.  So the flight runs at **20 frames a second**,
+   the same clock the briefing's typewriter does.
+
+   Reading the loop for the limiter also showed that "20 units a frame" was
+   only its first frame.  The velocity approaches `_ftol(direction × 800)` by
+   `(want − velocity) / n`, with `n` reset to 40 on every leg and falling by
+   one a frame to a floor of 5 — so the eye accelerates from 800/40 = 20 units
+   a frame toward 800, and the flights over the eight shipped bases last
+   **2.9 to 12.8 seconds**.  `campaign_tables.py` pins all six constants and
+   the limiter; `test_sequence.gd` flies a path and requires it to land.
 6. **The unused location bands.** `Campaign.lcl` names 110 locations; only 96
    have cells. The remainder are dialogue ids 12–14, 16–20 and 24–27, and
    location 130, *Epilogue* — which is what `_C_180` would be if its mission id

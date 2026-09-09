@@ -1402,7 +1402,7 @@ entry point, and `kind` picks both the selector and the playback settings:
 |--------|-------------|------------|-----------------|
 | 0 | `0x0042da40` → **`M`** | `aTacTools.cpp` `fcn.0046e220` at `0x0046e581` — the unit-movement routine | `+0x44(100000)` loops, `+0x2c(2.0)` starts at speed 2.0 — decoded in [`42` §1.2](42-mission-presentation.md), 2026-09-02; the first argument of `fcn.004055e0` is the animation **slot** (3 for the walk and the shot, 6 for a reaction shot), the third the selector |
 | 1, 2, 3 | `0x0042e220` → **`F`** | `aAnimations.cpp` `fcn.0040bd70` at `0x0040be88` — the combat routine, whose four leading arguments are the attacker's and the target's map coordinates | `+0x2c(6.0)` starts at speed **6.0** ([`42` §1.2](42-mission-presentation.md)), then registers a `StopAnimationAtNoteEventCallback` on the note text `"BREAK"` (`0x0042c5d0`), i.e. the animation halts at its `BREAK` marker — which it reaches in 3 to 6 frames; the combat routine later resumes it past the note (`42` §4.9) |
-| 4 | fixed literal `"P0_M2_000"` (`0x004c030c`) | `aAnimations.cpp` `fcn.00417510` at `0x00417636` | `+0x44(100000)` loops, `+0x2c(1.0)` starts, `+0x34(rand(0, 10))` sets a random start time — decoded in [`42` §1.2](42-mission-presentation.md) |
+| 4 | fixed literal `"P0_M2_000"` (`0x004c030c`) | `aAnimations.cpp` `fcn.00417510` at `0x00417636` — an upgrade base's own marines, [`27` §2.7.1](27-campaign.md) | `+0x44(100000)` loops, `+0x2c(1.0)` starts, `+0x34(aRandom2(0, 10))` sets a random start time — decoded in [`42` §1.2](42-mission-presentation.md); the arm is `0x00405b88`, the draw is the clock-seeded generator, and the clip's 452 frames carry `Bip000` 3017.7 units down engine -Y, so the marine walks without any command moving it |
 | — | `0x0042ddf0` → **`S`** | `a3DObjects.cpp` `fcn.004060b0`, called from the 3D-view refresh `fcn.00406fc0` for slots 1, 2, 4, 5 | a **scheduler**, not a loop: each of the four slots plays one random unit's idle once at speed 1.5 and holds the slot for the clip's declared length — [`42` §6](42-mission-presentation.md) |
 
 So the letters are settled by their call sites, not by guesswork:
@@ -1414,7 +1414,11 @@ So the letters are settled by their call sites, not by guesswork:
 * **`M`** — the *movement* animation, started from the tactical move routine.
 * **`F`** — the *combat* animation, started from the fire routine and stopped at
   its `BREAK` note.
-* **`M2`** — one special-case name reached only through `kind == 4`.
+* **`M2`** — one special-case name reached only through `kind == 4`. **No
+  selector's closure names it**, so a converted cache built from the selectors
+  alone is without it; the remake's pipeline adds it explicitly from `kind`
+  4's own literal, and did not before 2026-09-09 (`CONVERTER_VERSION` 0.31.0),
+  which is why an upgrade base's landing pad was empty.
 * **`J`** — **no code path references any `_J<n>_` name**; the substring does not
   occur in either executable. The three shipped files `P0_J0_000.cha`,
   `P0_J0_005.cha` and `P0_J0_006.cha` are unreferenced leftovers. What the letter
@@ -1456,7 +1460,8 @@ on newlines gives **21 distinct command lines** built from three verbs:
 |-----------------|-------------|---------------------------|--------------------------------------------|
 | `BREAK`         | 35          | 33 in `CHData/`, 2 `Video/` | gameplay animation break/interrupt point   |
 | `Focus <n>`     | 140         | `Video/` only             | camera focal length (24, 28, 35, 43, 50)   |
-| `Switch <n>`    | 55          | `Video/` only             | cut to camera *n* (1…8)                    |
+| `Switch <n>`    | 55          | `Video/` only             | cut to camera *n* (1…8) -- the part named `Cam<n>` ([`41` §4.2](41-sequence-player.md)) |
+| `Fade <n>`      | 0           | none                      | in the dispatcher (`0x0048059C`, 0..100), used by no shipped clip |
 | `Keys für Bewegung` | 2       | `Video/Dialog_09`         | German author's comment, not a command     |
 
 Full list of command lines, most frequent first:
