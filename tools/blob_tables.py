@@ -2327,8 +2327,9 @@ def count_pattern(path: str, pattern: bytes) -> int:
 class Corpus:
     """The shipped data every corpus check reads."""
 
-    def __init__(self, root: str) -> None:
+    def __init__(self, root: str, record=None) -> None:
         self.root = root
+        self._record = record if record is not None else (lambda path: path)
         waves = Path(root) / WAVES_DIR
         self.waves = sorted(p.name for p in waves.glob("*")
                             if p.is_file() and p.suffix.lower() == ".wav")
@@ -2354,12 +2355,13 @@ class Corpus:
         self._textures: dict[str, dict[str, tuple[int, int]]] = {}
         for lib in sorted((Path(root) / "WorldSet").glob("World_*/TEXTURES/texture.lib")):
             world = lib.parent.parent.name
-            for name, size in _visn_sizes(lib):
+            for name, size in _visn_sizes(lib, self._record):
                 self._textures.setdefault(name.lower(), {})[world] = size
 
         self.prototypes: dict[str, set[str]] = {}
         for index in sorted((Path(root) / "WorldSet").glob("World_*/Objects/prototyp.dir")):
             world = index.parent.parent.name
+            index = self._record(index)
             with open(index, "r", errors="replace") as handle:
                 self.prototypes[world] = {line.split()[0].upper()
                                           for line in handle if line.split()}
@@ -2383,7 +2385,14 @@ class Corpus:
         self.model_joints: dict[str, tuple[int, ...]] = {}
         for index in sorted((Path(self.root) / "WorldSet")
                             .glob("World_*/Objects/prototyp.din")):
-            container = prototyp.load_container(str(index))
+            bin_path = next((path for path in index.parent.iterdir()
+                             if path.stem.lower() == index.stem.lower()
+                             and path.suffix.lower() == ".bin"), None)
+            if bin_path is None:
+                raise FileNotFoundError(f"no prototyp.bin beside {index}")
+            din = self._record(index)
+            binary = self._record(bin_path)
+            container = prototyp.load_container(str(din), str(binary))
             for slot in range(len(container)):
                 cmds = prototyp.read_commands(container.record_bytes(slot))
                 ops = {cmd.op for cmd in cmds}
@@ -2423,6 +2432,7 @@ class Corpus:
         self.cho_meshes: set[str] = set()
         for path in sorted((Path(self.root) / CHO_DIR).rglob("*.cho")):
             self.cho_models += 1
+            path = self._record(path)
             for part in cho_parse.parse(str(path)).parts:
                 if part.mesh:
                     self.cho_meshes.add(part.mesh.upper())
@@ -2432,6 +2442,7 @@ class Corpus:
         self.lev_specials: set[str] = set()
         self.lev_placements: dict[str, int] = {}
         for path in sorted((Path(self.root) / "Missions").glob("*.lev")):
+            path = self._record(path)
             battle = levlib.load_lev(str(path))
             for obj in battle.special:
                 name = obj.prototype_name(battle.world_set).upper()
@@ -2439,9 +2450,10 @@ class Corpus:
                 self.lev_placements[name] = self.lev_placements.get(name, 0) + 1
 
     def _read_info(self) -> None:
-        path = os.path.join(self.root, INFO_LCL)
-        if not os.path.isfile(path):
+        path = Path(self.root) / INFO_LCL
+        if not path.is_file():
             return
+        path = self._record(path)
         with open(path, "rb") as handle:
             program = lcl.parse_bytes(handle.read(), path)
         for routine in program.routines:
@@ -2468,7 +2480,7 @@ class Corpus:
                       if model.upper() in names)
 
 
-def _visn_sizes(lib: Path):
+def _visn_sizes(lib: Path, record=None):
     """``(name, (width, height))`` for every record a ``texture.dir`` names."""
     index = lib.with_name("texture.dir")
     if not index.is_file():
@@ -2477,6 +2489,9 @@ def _visn_sizes(lib: Path):
             break
     if not index.is_file():
         return
+    if record is not None:
+        lib = record(lib)
+        index = record(index)
     data = lib.read_bytes()
     with open(index, "r", errors="replace") as handle:
         for line in handle:
@@ -6823,6 +6838,9 @@ def _speech_document(root: str) -> dict:
         # failing first.
         if not entry.is_file() or entry.suffix.lower() != ".wav":
             continue
+        category = entry.stem[-4:-2]
+        if category.isdigit() and int(category) in sound.SPEECH_DEAD_CATEGORIES:
+            continue
         key = ("%s/%s" % (entry.parent.name, entry.name)).lower()
         files[key] = "%s/%s" % (entry.parent.name, entry.name)
     return {
@@ -6847,7 +6865,7 @@ def _speech_document(root: str) -> dict:
     }
 
 
-def sound_document(root: str) -> dict:
+def sound_document(root: str, record=None) -> dict:
     """The sound layer as portable data, waves named by their cache file.
 
     Case is resolved **here, once**: the document names every wave in lower
@@ -6856,7 +6874,7 @@ def sound_document(root: str) -> dict:
     cannot recur on a case-sensitive filesystem.
     """
     b = Binary(root)
-    c = Corpus(root)
+    c = Corpus(root, record)
     sites = b.sound_sites()
     index = sound.wave_index(c.waves)
     table = sound.catalogue(sites)
@@ -6931,9 +6949,15 @@ def sound_document(root: str) -> dict:
             name: {"wave": sound.INTERFACE_BUFFERS[cue.buffer].lower(),
                    "volume_id": sound.INTERFACE_VOLUME_ID}
             for name, cue in sorted(sound.INTERFACE_CUES.items())},
-        # docs/28 4.3: unit speech.  `files` is the whole shipped tree keyed
-        # as the cache names it, because the original builds a name and asks
-        # the filesystem -- a name that resolves to nothing is silence.
+        # ``aLoad.cpp`` uses its own unscaled pair for slot selection and
+        # activation. Keeping the event names here prevents them becoming
+        # unexplained files that later closure pruning can discard again.
+        "load_interface": {
+            name: {"wave": wave.lower(), "volume_id": sound.NO_SCALING}
+            for name, wave in sorted(sound.LOAD_INTERFACE_CUES.items())},
+        # docs/28 4.3: reachable unit speech. The original builds a name and
+        # asks the filesystem, but categories 06 and 07 have no reachable
+        # caller; ``dead_categories`` records why their 61 files stay out.
         "speech": _speech_document(root),
         # docs/43 section 7: the watched player's own two buffers.  Neither is
         # scaled by the volume table, and only `progress` is reachable outside

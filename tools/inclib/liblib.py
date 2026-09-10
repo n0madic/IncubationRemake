@@ -38,6 +38,7 @@ import os
 import logging
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 
 LOG = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ PLATE_PALETTES: dict[str, str] = {
 UNREFERENCED_LIBRARIES: frozenset[str] = frozenset({"uicons2"})
 
 
-def find_palette(lib_path: str, game_root: str | None
+def find_palette(lib_path: str, game_root: str | None, record=None
                  ) -> tuple[list[tuple[int, int, int]], str | None]:
     """Locate the colour table a library is drawn with.
 
@@ -213,7 +214,8 @@ def find_palette(lib_path: str, game_root: str | None
         for root in roots:
             found = _existing(os.path.join(root, "Graphics", *plate.split("/")))
             if found is not None:
-                return bmpmod.load(found).palette, found
+                source = record(Path(found)) if record is not None else Path(found)
+                return bmpmod.load(str(source)).palette, str(source)
 
     stems = [stem]
     mapped = NAMED_PALETTES.get(stem.lower())
@@ -226,7 +228,8 @@ def find_palette(lib_path: str, game_root: str | None
     for candidate in candidates:
         found = _existing(candidate)
         if found is not None:
-            return load_palette(found), found
+            source = record(Path(found)) if record is not None else Path(found)
+            return load_palette(str(source)), str(source)
     return grayscale_palette(), None
 
 

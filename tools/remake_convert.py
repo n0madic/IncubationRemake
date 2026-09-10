@@ -32,6 +32,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import builtins
+from contextlib import contextmanager
+import io
 import json
 import logging
 import multiprocessing
@@ -131,6 +134,64 @@ def run_conversion(root: Path, missions: list[str], caches_root: Path,
          # otherwise be the only place that difference showed.
          "music": music})
     return staging, manifest, result
+
+
+@contextmanager
+def source_read_audit(root: Path):
+    """Observe successful source-file opens during one conversion.
+
+    This is the negative control for ``manifest.sources``: parsers that bypass
+    :class:`SourceReader` still appear here, so the check fails until their
+    reads are routed through ``record``.
+    """
+    original_open = builtins.open
+    original_io_open = io.open
+    root = root.resolve()
+    spelling = cachemod.SourceReader(root)
+    observed: set[str] = set()
+
+    def note(file, mode) -> None:
+        if isinstance(file, int) or ("r" not in mode and "+" not in mode):
+            return
+        try:
+            path = Path(file).resolve()
+            path.relative_to(root)
+        except (TypeError, ValueError):
+            return
+        if path.is_file():
+            observed.add(spelling.rel(path))
+
+    def audited_open(file, mode="r", *args, **kwargs):
+        handle = original_open(file, mode, *args, **kwargs)
+        note(file, mode)
+        return handle
+
+    def audited_io_open(file, mode="r", *args, **kwargs):
+        handle = original_io_open(file, mode, *args, **kwargs)
+        note(file, mode)
+        return handle
+
+    builtins.open = audited_open
+    io.open = audited_io_open
+    try:
+        yield observed
+    finally:
+        builtins.open = original_open
+        io.open = original_io_open
+
+
+def check_source_spelling(c: Checker) -> None:
+    """A wrong-case caller still records and opens the on-disk spelling."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "GameRoot"
+        actual = root / "MixedCase" / "Source.DAT"
+        actual.parent.mkdir(parents=True)
+        actual.write_bytes(b"source-case-probe")
+        reader = cachemod.SourceReader(root)
+        data = reader.read_bytes(root / "mixedcase" / "source.dat")
+        c.expect("source_spelling.reads_actual", data, b"source-case-probe")
+        c.expect("source_spelling.records_actual",
+                 sorted(reader.fingerprint()), ["MixedCase/Source.DAT"])
 
 
 def refuse_unsafe_output(root: Path, out: Path) -> None:
@@ -722,6 +783,21 @@ def check_audio(c: Checker, root: Path, cache_dir: Path,
     c.expect("audio.waves_present", missing, [], f"{len(named)} named waves")
     c.check("audio.waves_lowercase", all(n == n.lower() for n in named),
             "every name the document uses is already resolved")
+    c.expect("audio.load_interface", document["load_interface"],
+             {name: {"wave": wave.lower(),
+                     "volume_id": soundmod.NO_SCALING}
+              for name, wave in sorted(soundmod.LOAD_INTERFACE_CUES.items())},
+             "aLoad.cpp slot selection and activation")
+
+    speech_files = document["speech"]["files"]
+    c.expect("audio.speech_reachable", len(speech_files), 172,
+             "61 category-06/07 files excluded from the 233 shipped")
+    copied_dead_speech = sorted(
+        name for name in speech_files
+        if Path(name).name[-8:-6].isdigit()
+        and int(Path(name).name[-8:-6]) in soundmod.SPEECH_DEAD_CATEGORIES)
+    c.expect("audio.no_dead_speech", copied_dead_speech, [],
+             "no caller reaches categories 06 or 07")
 
     shipped = sorted(p.name for p in (cache_dir / "audio" / "waves").iterdir())
     c.expect("audio.no_dead_waves",
@@ -1023,20 +1099,20 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     c.expect("art.plates", len(art["plates"]), 12,
              "the seven framed plates of GUI/ plus the five top-level screens")
     c.expect("art.briefing_pictures", len(art["briefing"]), 96)
-    c.expect("art.libraries", len(art["libraries"]), 54,
-             "21 interface libraries plus the 33 item ones")
+    c.expect("art.libraries", len(art["libraries"]), 53,
+             "20 reachable interface libraries plus the 33 item ones")
     sprites = sum(1 for lib in art["libraries"] for s in lib["sprites"]
                   if s["file"])
-    c.expect("art.sprites", sprites, 1400,
-             "410 in the 21 interface libraries and 990 in the 33 item ones")
+    c.expect("art.sprites", sprites, 1374,
+             "384 in the 20 reachable interface libraries and 990 item ones")
     missing = [lib["name"] for lib in art["libraries"]
                if lib["palette"] is None and not lib["unreferenced"]]
     c.expect("art.every_library_has_a_palette", missing, [],
              "addons and addons2 take the screen plate's, measured at "
              "0x0044B290/0x0044B2C4 and 0x0045D492/0x0045D4C9")
     unreferenced = [lib["name"] for lib in art["libraries"] if lib["unreferenced"]]
-    c.expect("art.unreferenced", unreferenced, ["uicons2"],
-             "named in no string of any shipped binary and in no .lcl")
+    c.expect("art.unreferenced", unreferenced, [],
+             "uicons2 is named by no shipped binary, .lcl, or remake path")
     for entry in art["plates"] + art["briefing"]:
         path = cache_dir / ("art/plates" if entry in art["plates"]
                             else "art/briefing") / entry["file"]
@@ -1194,13 +1270,15 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         c.check("root", False, f"no Missions/ under {root}")
         return c.report()
     check_png_stability(c)
+    check_source_spelling(c)
     check_mission_selection(c, root)
 
     with tempfile.TemporaryDirectory() as tmp:
         caches_root = Path(tmp) / "caches"
         started = time.perf_counter()
-        first, manifest_a, result = run_conversion(root, missions, caches_root,
-                                                   language)
+        with source_read_audit(root) as observed_sources:
+            first, manifest_a, result = run_conversion(
+                root, missions, caches_root, language)
         elapsed = time.perf_counter() - started
         second, manifest_b, _ = run_conversion(root, missions, caches_root,
                                                language)
@@ -1228,6 +1306,12 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         declared = set(manifest_a["sources"])
         c.check("sources.closed", all((root / rel).is_file() for rel in declared),
                 f"{len(declared)} declared source files all exist")
+        c.expect("sources.exact", observed_sources, declared,
+                 f"{len(observed_sources)} opened source files are declared")
+        c.expect("sources.actual_case",
+                 sorted(rel for rel in declared
+                        if cachemod.SourceReader(root).rel(root / rel) != rel),
+                 [], "every component uses the installation's spelling")
 
         check_against_as_dict(c, root, first.root, missions)
         check_bodies(c, root, first.root, missions)
@@ -1354,14 +1438,23 @@ def run_campaign_checks(root: Path, language: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         caches_root = Path(tmp) / "caches"
         started = time.perf_counter()
-        staged, manifest, result = run_conversion(root, missions, caches_root,
-                                                  language)
+        with source_read_audit(root) as observed_sources:
+            staged, manifest, result = run_conversion(
+                root, missions, caches_root, language)
         elapsed = time.perf_counter() - started
         c.check("campaign_bake.converts",
                 sorted(result.missions) == missions,
                 f"{len(result.missions)} maps in {elapsed:.1f}s")
         c.expect("campaign_bake.world_sets", len(result.world_sets),
                  CAMPAIGN_WORLD_SETS)
+        declared_sources = set(manifest["sources"])
+        c.expect("campaign_bake.sources_exact", observed_sources,
+                 declared_sources,
+                 f"{len(observed_sources)} opened source files are declared")
+        c.expect("campaign_bake.sources_actual_case",
+                 sorted(rel for rel in declared_sources
+                        if cachemod.SourceReader(root).rel(root / rel) != rel),
+                 [], "every component uses the installation's spelling")
         scenes = set()
         for name in missions:
             document = json.loads(

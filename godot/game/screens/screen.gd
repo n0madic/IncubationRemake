@@ -806,7 +806,9 @@ func gui_button(action: String, module: String, id: int, at: Vector2,
 ## The same, captioned with a string the screen has already resolved.
 func gui_text_button(action: String, text: String, at: Vector2,
 		width: int = GUI_BUTTON_WIDTH, into: Control = null,
-		base: int = Art.BUTTON_BASE_ACTION) -> Button:
+		base: int = Art.BUTTON_BASE_ACTION,
+		hover_wave: String = SOUND_HOVER,
+		click_wave: String = SOUND_CLICK) -> Button:
 	var button: Button = Button.new()
 	button.text = text
 	button.clip_text = true
@@ -819,7 +821,7 @@ func gui_text_button(action: String, text: String, at: Vector2,
 	button.add_theme_color_override("font_color", INK_TITLE)
 	var span: float = _face_onto(button, width, base)
 	button.pressed.connect(_on_pressed.bind(action))
-	arm_sounds(button)
+	arm_sounds(button, hover_wave, click_wave)
 	place_on_plate(button, at, Vector2(span, float(face_height(base))))
 	# **`into` matters for a button a redraw replaces.** The Upgrade Menu's
 	# shared `(405, 384)` is rebuilt on every refresh, and parented to the root
@@ -846,9 +848,10 @@ const SOUND_CLICK: String = "click_2.wav"
 ## Every button goes through here, the flat list rows included: the original's
 ## hover sound is fired by the gadget system for **any** gadget the pointer
 ## crosses, not only the ones with a face.
-func arm_sounds(button: Button) -> void:
-	button.mouse_entered.connect(_play_gui_sound.bind(SOUND_HOVER))
-	button.button_down.connect(_play_gui_sound.bind(SOUND_CLICK))
+func arm_sounds(button: Button, hover_wave: String = SOUND_HOVER,
+		click_wave: String = SOUND_CLICK) -> void:
+	button.mouse_entered.connect(_play_gui_sound.bind(hover_wave))
+	button.button_down.connect(_play_gui_sound.bind(click_wave))
 
 
 func _play_gui_sound(wave: String) -> void:
@@ -866,13 +869,16 @@ func _play_gui_sound(wave: String) -> void:
 ## `8_Width`, so a row is `32 + 6*32 + 32` = 256 by 22 and its caption is
 ## **left-aligned inside it** -- a list is a list, not a row of buttons.
 func gui_list_row(action: String, text: String, at: Vector2, width: int,
-		index: int, count: int, into: Control = null) -> Button:
+		index: int, count: int, into: Control = null,
+		hover_wave: String = SOUND_HOVER,
+		click_wave: String = SOUND_CLICK) -> Button:
 	var base: int = Art.BUTTON_BASE_LIST_MIDDLE
 	if index == 0:
 		base = Art.BUTTON_BASE_LIST_FIRST
 	elif index == count - 1:
 		base = Art.BUTTON_BASE_LIST_LAST
-	var row: Button = gui_text_button(action, text, at, width, into, base)
+	var row: Button = gui_text_button(action, text, at, width, into, base,
+		hover_wave, click_wave)
 	row.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	row.add_theme_color_override("font_color", INK_ROSTER)
 	row.add_theme_color_override("font_hover_color", INK_VALUE)

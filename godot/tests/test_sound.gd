@@ -55,6 +55,7 @@ func run(h: TestHarness) -> void:
 
 	_check_view_player(h, tables, document)
 	_check_mission_interface(h, tables, document)
+	_check_load_interface(h, document)
 	_check_speech(h, tables, document)
 	_check_attenuation(h, tables, document)
 	_check_scaled(h, tables, document)
@@ -70,6 +71,29 @@ func run(h: TestHarness) -> void:
 	_check_wave_padding(h)
 	_check_slot_end_arming(h)
 	_check_looping_stream(h)
+
+
+## ``aLoad.cpp``'s two events, joined all the way from the converted closure
+## to the screen that consumes them.
+func _check_load_interface(h: TestHarness, document: Dictionary) -> void:
+	var sound: Dictionary = DictRead.as_dict(document["document"])
+	var cues: Dictionary = DictRead.as_dict(sound["load_interface"])
+	var selection: Dictionary = DictRead.as_dict(cues["selection_changed"])
+	var activation: Dictionary = DictRead.as_dict(cues["activate"])
+	h.equal("load_interface.selection_wave",
+		DictRead.as_string(selection["wave"]),
+		SaveSlotsScreen.SOUND_SELECTION_CHANGED)
+	h.equal("load_interface.activation_wave",
+		DictRead.as_string(activation["wave"]), SaveSlotsScreen.SOUND_ACTIVATE)
+	h.equal("load_interface.selection_volume",
+		DictRead.as_int(selection["volume_id"]), AudioTables.NO_SCALING)
+	h.equal("load_interface.activation_volume",
+		DictRead.as_int(activation["volume_id"]), AudioTables.NO_SCALING)
+	var copied: Dictionary = DictRead.as_dict(sound["waves"])
+	h.check("load_interface.selection_copied",
+		copied.has(SaveSlotsScreen.SOUND_SELECTION_CHANGED), "click_3.wav")
+	h.check("load_interface.activation_copied",
+		copied.has(SaveSlotsScreen.SOUND_ACTIVATE), "click_4.wav")
 
 
 ## The slot's "sample ended" connection, and the error it used to raise.
@@ -615,8 +639,16 @@ func _check_speech(h: TestHarness, tables: AudioTables,
 	h.equal("speech_volume_id", tables.speech_volume_id(),
 		AudioTables.NO_SCALING)
 	h.equal("speech_sets", DictRead.as_dict(speech["sets"]).keys().size(), 10)
-	h.equal("speech_files", DictRead.as_dict(speech["files"]).keys().size(),
-		233)
+	var speech_files: Dictionary = DictRead.as_dict(speech["files"])
+	h.equal("speech_files", speech_files.keys().size(), 172)
+	var carries_dead_category: bool = false
+	for path: String in speech_files:
+		var filename: String = path.get_file()
+		var category: String = filename.substr(filename.length() - 8, 2)
+		if category == "06" or category == "07":
+			carries_dead_category = true
+	h.check("speech_excludes_unreachable_categories",
+		not carries_dead_category, "categories 06 and 07 have no caller")
 	# The switch's own default, and the id an ordinary spawn leaves behind.
 	h.equal("speech_unset_id_is_silent", tables.speech_wave(0, 1, 1), "")
 	h.equal("speech_name", tables.speech_wave(11, 3, 2), "speech/5/rrd0302.wav")

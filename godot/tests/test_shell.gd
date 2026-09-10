@@ -947,6 +947,25 @@ func _screens(h: TestHarness) -> void:
 	h.check("screens.empty_row_refuses_a_load",
 		_disabled_count(slots) == SaveSlotsScreen.LIST_ROWS,
 		"there is nothing behind an empty row, so it is refused at the row")
+	var first_slot: Button = null
+	for candidate: Button in _buttons_of(slots):
+		for connection: Dictionary in candidate.pressed.get_connections():
+			var callback: Callable = connection["callable"]
+			if callback.get_bound_arguments() == ["slot:0"]:
+				first_slot = candidate
+	if first_slot == null:
+		h.check("screens.slot_sound_row_exists", false, "slot:0")
+	else:
+		var hover_callback: Callable = \
+			first_slot.mouse_entered.get_connections()[0]["callable"]
+		var activate_callback: Callable = \
+			first_slot.button_down.get_connections()[0]["callable"]
+		h.equal("screens.slot_selection_sound",
+			hover_callback.get_bound_arguments(),
+			[SaveSlotsScreen.SOUND_SELECTION_CHANGED])
+		h.equal("screens.slot_activation_sound",
+			activate_callback.get_bound_arguments(),
+			[SaveSlotsScreen.SOUND_ACTIVATE])
 	# The second page is the slots the first one does not reach, and its rows
 	# are still rows: a paged list that lost its actions would offer the
 	# player twelve of the twenty-four.

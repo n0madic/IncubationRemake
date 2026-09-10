@@ -427,11 +427,13 @@ static func fan(count: int) -> PackedInt32Array:
 
 ## docs/31 section 4.4, transcribed into Godot's material.
 ##
-## One deliberate deviation: the original flushes its deferred polygons in
-## **reverse submission order** and Godot sorts transparent surfaces by depth.
-## Reproducing the submission order would mean reproducing the BSP walk that
-## produced it, which the cache deliberately flattened away, and depth sorting
-## is right more often than a fixed order is.  Recorded, not tuned by eye.
+## One deliberate deviation: Godot depth-sorts transparent surfaces. The
+## original software path first made a camera-dependent BSP walk and then
+## flushed one global deferred queue backwards; its Glide path grouped the
+## whole frame by material class. The cache has flattened the BSPs, so simply
+## reversing each mesh would reproduce neither renderer and would also lose
+## ordering between objects. Exact overlap parity needs per-frame global
+## ordering (or a custom renderer), not a fixed import-time face order.
 static func material_for(kind: int, texture: int,
 		textures: Dictionary) -> StandardMaterial3D:
 	var material: StandardMaterial3D = StandardMaterial3D.new()

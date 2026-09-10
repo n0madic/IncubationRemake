@@ -782,11 +782,18 @@ INTERFACE_CUES: dict[str, InterfaceCue] = {
     "view_unit": InterfaceCue(0x0050FE7C, 0x00451102, 0x004510F9),
 }
 
-#: ``click_3.wav`` and ``click_4.wav`` carry volume id ``-1`` and belong to
-#: ``aBattleMap.cpp``, ``aLoad.cpp`` and ``aMultiPlayer.cpp`` -- the map screen,
-#: the loader and the network lobby, none of which is the mission interface.
-#: Named here so the partition of the seven click waves is complete.
-INTERFACE_OUTSIDE_THE_MISSION = ("click_3.wav", "click_4.wav")
+#: The load/save slot screen's own pair. In ``aLoad.cpp``, ``click_3`` plays
+#: when pointer motion changes the selected slot (``0x00448865``), and
+#: ``click_4`` starts slot activation (``0x0044910F``). Both carry the bare
+#: DirectSound volume ``-1`` rather than id 96.
+LOAD_INTERFACE_CUES = {
+    "selection_changed": "click_3.wav",
+    "activate": "click_4.wav",
+}
+
+#: The two interface waves outside the mission's id-96 set. Retained as the
+#: binary-check partition as well as derived from the semantic table above.
+INTERFACE_OUTSIDE_THE_MISSION = tuple(LOAD_INTERFACE_CUES.values())
 
 
 # --------------------------------------------------------------------------
@@ -1017,6 +1024,8 @@ def wanted_waves(sites: Mapping[int, tuple[Optional[str], Optional[int]]],
         want(cue.wave)
     if interface:
         for name in INTERFACE_WAVES:
+            want(name)
+        for name in LOAD_INTERFACE_CUES.values():
             want(name)
     return sorted(wanted), sorted(set(missing))
 

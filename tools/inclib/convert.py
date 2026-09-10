@@ -176,14 +176,14 @@ def _find(root: Path, *parts: str) -> Path:
     """Case-insensitive lookup: the shipped tree mixes cases freely."""
     current = root
     for part in parts:
-        if (current / part).exists():
-            current = current / part
-            continue
         lower = part.lower()
-        for entry in sorted(current.iterdir()):
-            if entry.name.lower() == lower:
-                current = entry
-                break
+        entries = sorted(current.iterdir(), key=lambda entry: entry.name)
+        exact = next((entry for entry in entries if entry.name == part), None)
+        matches = [entry for entry in entries if entry.name.lower() == lower]
+        if exact is not None:
+            current = exact
+        elif len(matches) == 1:
+            current = matches[0]
         else:
             raise ConvertError(f"{current / part} not found")
     return current
@@ -911,7 +911,7 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
     case-insensitive search on a case-sensitive filesystem (``docs/28`` §2.2).
     """
     tables = _sound_tables()
-    document = tables.sound_document(str(root))
+    document = tables.sound_document(str(root), reader.record)
 
     for lower, shipped in sorted(document["waves"].items()):
         source = _find(root, WAVES_DIR, shipped)
@@ -986,7 +986,7 @@ def convert_audio(root: Path, reader: SourceReader, staging: Staging,
     # can only show the formula agrees to within one unit, and one unit of a
     # 4096-unit circle is one unit of every angle built on it.  `docs/28`
     # 12.1's orientation hook is exact against the engine only with these.
-    shipped = eng3d.load(str(root))
+    shipped = eng3d.load(str(root), reader.record)
     staging.write_json("tables/trig.json",
                        {"trig": shipped.trig, "atn": shipped.atn,
                         "angle_units": eng3d.ANGLE_UNITS,
@@ -1813,7 +1813,7 @@ def _write_sprites(reader: SourceReader, staging: Staging, root: Path,
     except liblib.LibError as exc:
         result.warnings.append(f"{lib_path.name}: {exc}")
         return None
-    palette, source = liblib.find_palette(str(recorded), str(root))
+    palette, source = liblib.find_palette(str(recorded), str(root), reader.record)
     # Index 0 is the key colour only where the library actually uses it; a
     # library with none is written opaque, as `lib_extract` does.
     keyed = (liblib.TRANSPARENT_INDEX
@@ -1908,7 +1908,8 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
     lib_dir = _find(root, UI_LIB_DIR)
     candidates = [p for p in sorted(lib_dir.iterdir())
                   if p.suffix.lower() == ".lib"
-                  and not p.stem.lower().startswith("font_")]
+                  and not p.stem.lower().startswith("font_")
+                  and p.stem.lower() not in liblib.UNREFERENCED_LIBRARIES]
     item_dir = lib_dir / UI_ITEM_DIR
     if item_dir.is_dir():
         candidates += [p for p in sorted(item_dir.iterdir())

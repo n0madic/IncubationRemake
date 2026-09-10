@@ -54,7 +54,7 @@ CACHE_SCHEMA_VERSION = 1
 #: Bumped by hand when the converter's output changes for unchanged input.
 #: Never a timestamp and never a git hash: it has to be reproducible from the
 #: source tree alone.
-CONVERTER_VERSION = "0.35.0"
+CONVERTER_VERSION = "0.36.0"
 
 #: The only language the GOG release ships.  It is part of the cache id from
 #: the first day so that the localisation seam of docs/92 §7.6 exists rather
@@ -133,19 +133,43 @@ class SourceReader:
     def path(self, *parts: str) -> Path:
         return self.root.joinpath(*parts)
 
+    def _actual_path(self, path: Path) -> Path:
+        """Resolve *path* using the spelling stored by each parent directory.
+
+        The original data mixes path case and macOS commonly accepts the wrong
+        spelling.  Recording the caller's spelling therefore made one install
+        produce a manifest that a case-sensitive install could not validate.
+        """
+        root = self.root.resolve()
+        requested = path.resolve().relative_to(root)
+        current = root
+        for part in requested.parts:
+            entries = sorted(current.iterdir(), key=lambda entry: entry.name)
+            exact = next((entry for entry in entries if entry.name == part), None)
+            if exact is not None:
+                current = exact
+                continue
+            folded = [entry for entry in entries
+                      if entry.name.casefold() == part.casefold()]
+            if len(folded) != 1:
+                raise CacheError(
+                    f"cannot resolve stable source spelling for {current / part}")
+            current = folded[0]
+        return current
+
     def rel(self, path: Path) -> str:
-        return path.resolve().relative_to(self.root.resolve()).as_posix()
+        return self._actual_path(path).relative_to(self.root.resolve()).as_posix()
 
     def record(self, path: Path) -> Path:
         """Note that `path` was read, hashing it once."""
-        key = self.rel(path)
+        actual = self._actual_path(path)
+        key = actual.relative_to(self.root.resolve()).as_posix()
         if key not in self.seen:
-            self.seen[key] = sha256_file(path)
-        return path
+            self.seen[key] = sha256_file(actual)
+        return actual
 
     def read_bytes(self, path: Path) -> bytes:
-        self.record(path)
-        return path.read_bytes()
+        return self.record(path).read_bytes()
 
     def fingerprint(self) -> dict[str, str]:
         return dict(sorted(self.seen.items()))

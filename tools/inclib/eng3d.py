@@ -76,6 +76,7 @@ import glob
 import math
 import os
 import struct
+from pathlib import Path
 from typing import Sequence
 
 __all__ = [
@@ -379,7 +380,7 @@ def _read_table(path: str, entries: int, signed: bool) -> list[int]:
     return list(struct.unpack(f"<{entries}{'h' if signed else 'H'}", raw))
 
 
-def load(root: str) -> Tables:
+def load(root: str, record=None) -> Tables:
     """The tables out of a game root, with a hard failure if they are missing.
 
     Any world set will do -- all 21 ship the same two files byte for byte, and
@@ -391,8 +392,13 @@ def load(root: str) -> Tables:
     atn = sorted(glob.glob(os.path.join(root, "**", "ATN.IMG"), recursive=True))
     if not trig or not atn:
         raise Eng3dError(f"{root}: no TRIG.IMG/ATN.IMG -- is this the game root?")
-    return Tables(_read_table(trig[0], TRIG_ENTRIES, True),
-                  _read_table(atn[0], ATAN_ENTRIES, False))
+    trig_path = Path(trig[0])
+    atn_path = Path(atn[0])
+    if record is not None:
+        trig_path = record(trig_path)
+        atn_path = record(atn_path)
+    return Tables(_read_table(str(trig_path), TRIG_ENTRIES, True),
+                  _read_table(str(atn_path), ATAN_ENTRIES, False))
 
 
 def angle(tables: Tables, a: int, b: int) -> int:

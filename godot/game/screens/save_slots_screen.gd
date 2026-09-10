@@ -36,6 +36,11 @@ const ID_EMPTY: int = 1
 const ID_LOAD: int = 10
 const ID_SAVE: int = 11
 
+## ``aLoad.cpp``'s own pair: changing the selected slot on pointer motion
+## plays click 3 (0x00448865), while activating it plays click 4 (0x0044910F).
+const SOUND_SELECTION_CHANGED: String = "click_3.wav"
+const SOUND_ACTIVATE: String = "click_4.wav"
+
 ## The remake's own: the original numbered its slots in the picture, not in a
 ## string, and none of the shipped banks carries a row heading.
 const OWN_SLOT: String = "shell.slot"
@@ -137,7 +142,8 @@ func refresh() -> void:
 		var slot: int = first_row + index
 		var row: Button = gui_list_row("slot:%d" % slot, _caption(slot),
 			LIST_AT + Vector2(0.0, LIST_ROW_HEIGHT * float(index)),
-			LIST_WIDTH, index, shown, _list)
+			LIST_WIDTH, index, shown, _list, SOUND_SELECTION_CHANGED,
+			SOUND_ACTIVATE)
 		# Loading an empty slot is the one click in this screen that can have
 		# nothing behind it, so it is refused at the row rather than reported
 		# afterwards.
