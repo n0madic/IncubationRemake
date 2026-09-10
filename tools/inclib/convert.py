@@ -1507,6 +1507,11 @@ BRIEFING_ART_DIR = ("Graphics", "Briefing")
 #: loop is one loop, and have no consumer yet.
 ROOT_PLATE_DIR = ("Graphics",)
 ROOT_PLATES = ("Title", "Credits", "Ship", "MsgScr", "Bluebyte")
+#: The expansion's installer carries its own title picture outside
+#: ``Graphics``.  It is not a screen plate -- the remake uses it as the second
+#: campaign card -- but it is the same indexed BMP format and belongs beside
+#: the base game's ``Graphics/Title.bmp`` in the converted art cache.
+WILDERNESS_TITLE = ("Install", "Title.bmp")
 #: The interface libraries.  The four fonts are excluded: `convert_fonts`
 #: already writes them as atlases with their metrics.
 UI_LIB_DIR = "Libs"
@@ -1858,7 +1863,8 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
 
     counts = {"plates": 0, "briefing": 0, "libraries": 0, "sprites": 0}
 
-    def write_bmp(path: Path, rel: str) -> dict[str, Any] | None:
+    def write_bmp(path: Path, rel: str,
+                  name: str | None = None) -> dict[str, Any] | None:
         recorded = reader.record(path)
         try:
             image = bmpmod.parse(recorded.read_bytes())
@@ -1870,7 +1876,7 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
         # A plate is opaque: unlike a sprite, index 0 is an ordinary colour.
         image.write_png(str(target), None)
         staging.files[rel] = "written"
-        return {"name": path.stem.lower(), "file": Path(rel).name,
+        return {"name": name or path.stem.lower(), "file": Path(rel).name,
                 "width": image.width, "height": image.height}
 
     plates = []
@@ -1893,6 +1899,17 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
         if entry is not None:
             plates.append(entry)
             counts["plates"] += 1
+
+    # The expansion title has the same basename as the base game's title, so
+    # its cache name is explicit.  Reading it through ``SourceReader`` also
+    # makes it part of the source fingerprint: an installation without the
+    # expansion cannot silently publish a campaign card with no picture.
+    wilderness = _find(root, *WILDERNESS_TITLE)
+    entry = write_bmp(wilderness, "art/plates/wilderness_title.png",
+                      "wilderness_title")
+    if entry is not None:
+        plates.append(entry)
+        counts["plates"] += 1
 
     pictures = []
     picture_dir = _find(root, *BRIEFING_ART_DIR)

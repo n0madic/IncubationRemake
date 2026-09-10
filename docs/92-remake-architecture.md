@@ -1344,7 +1344,7 @@ The six decisions, referred to by these labels from the code:
 | --- | --- |
 | **S1** | Saves are **24 numbered slots**, paged twelve at a time and each nameable, with metadata, plus a separate quick save on `F5`/`F9`. |
 | **S2** | Options carry **only what is actually connected**; §7.1 makes an inert control a defect of the remake's own. |
-| **S3** | The layout is the remake's own, built on `CampaignScreen` — the same plates, font, `buttons.LIB` faces and localisation seam. |
+| **S3** | The layout is the remake's own, built on `CampaignScreen` — the same plates, font, `buttons.LIB` faces and localisation seam. The campaign chooser is two cards: `Graphics/Title.bmp` for *Incubation: Time Is Running Out* and `Install/Title.bmp` for *Incubation: The Wilderness Missions*, converted by the same BMP-to-PNG cache path; these product identities come from the distribution because the original never showed both products in one selector. |
 | **S4** | ~~The intro (`Video/Seq_1`, logical id 0) is a **named empty step**, `_play_intro()`, for the sequence player to fill.~~ **Closed 2026-09-08** (§7.19 I3): the gate at mission control's entry plays it once, off `CampaignState.intro_pending`; `_play_intro()` no longer exists. |
 | **S5** | Direct entry to a level is **kept and supported**, not a side effect: `--mission=`, the new `--campaign=`, and the outside driver (the agent server since §7.16). |
 | **S6** | The authority for difficulty is `CampaignState.difficulty`; `GameSettings` holds only the default for the next campaign. |

@@ -1096,8 +1096,16 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     # The art.
     art = json.loads((cache_dir / "art" / "index.json").read_text())
     c.expect("art.schema", art["schema"], convertmod.ART_SCHEMA)
-    c.expect("art.plates", len(art["plates"]), 12,
-             "the seven framed plates of GUI/ plus the five top-level screens")
+    c.expect("art.plates", len(art["plates"]), 13,
+             "seven framed plates, five top-level screens and the expansion "
+             "title card")
+    plates_by_name = {entry["name"]: entry for entry in art["plates"]}
+    wilderness = plates_by_name.get("wilderness_title", {})
+    c.expect("art.wilderness_title",
+             [wilderness.get("file"), wilderness.get("width"),
+              wilderness.get("height")],
+             ["wilderness_title.png", 632, 455],
+             "Install/Title.bmp, the Wilderness Missions campaign card")
     c.expect("art.briefing_pictures", len(art["briefing"]), 96)
     c.expect("art.libraries", len(art["libraries"]), 53,
              "20 reachable interface libraries plus the 33 item ones")

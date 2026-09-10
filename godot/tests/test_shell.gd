@@ -904,17 +904,59 @@ func _screens(h: TestHarness) -> void:
 	chains.host = host
 	chains.setup(_art, _strings, _font)
 	# **Sorted.** What a screen offers is the contract; the order the buttons
-	# sit in the tree is not one, and the shipped listbox rows are a layer of
-	# their own over the plate rather than children of the body.
+	# sit in the tree is not one.
 	h.equal("screens.both_chains_offered", _sorted(_actions_of(chains)),
 		PackedStringArray(["back", "start:1", "start:2"]))
-	h.check("screens.chain_is_named_by_where_it_opens",
-		_labels_of(chains).has("%s  --  %s"
-			% [_strings.text("shell.campaign") % 2,
-			_strings.shipped("Campaign", host.tables.location_of(
-				host.tables.mission_id("_C_140")))]),
-		"neither chain has a shipped name, so the row carries its first "
-		+ "mission's location out of `Campaign.lcl`")
+	h.check("screens.base_campaign_has_product_name",
+		_labels_of(chains).has(_strings.text("shell.campaign.base")))
+	h.check("screens.expansion_has_product_name",
+		_labels_of(chains).has(_strings.text("shell.campaign.wilderness")))
+	var base_cover: TextureRect = chains.find_child(
+		"CampaignCover1", true, false) as TextureRect
+	var wilderness_cover: TextureRect = chains.find_child(
+		"CampaignCover2", true, false) as TextureRect
+	h.check("screens.base_campaign_has_title_card",
+		base_cover != null and base_cover.texture != null,
+		"Graphics/Title.bmp converted to art/plates/title.png")
+	h.check("screens.expansion_has_title_card",
+		wilderness_cover != null and wilderness_cover.texture != null,
+		"Install/Title.bmp converted to art/plates/wilderness_title.png")
+	h.check("screens.campaign_covers_share_four_by_three_frame",
+		base_cover != null and wilderness_cover != null
+		and base_cover.stretch_mode == TextureRect.STRETCH_SCALE
+		and wilderness_cover.stretch_mode == TextureRect.STRETCH_SCALE
+		and is_equal_approx(
+			(CampaignSelectScreen.CARD_SIZE.x
+				- CampaignSelectScreen.CARD_INSET * 2.0)
+			/ (base_cover.offset_bottom - base_cover.offset_top),
+			CampaignSelectScreen.COVER_ASPECT)
+		and base_cover.offset_top == wilderness_cover.offset_top
+		and base_cover.offset_bottom == wilderness_cover.offset_bottom,
+		"Wilderness is stretched slightly into the base game's 4:3 frame")
+	var first_card: Button = chains.find_child(
+		"CampaignCard1", true, false) as Button
+	var second_card: Button = chains.find_child(
+		"CampaignCard2", true, false) as Button
+	var base_card_slot: AspectRatioContainer = chains.find_child(
+		"CampaignCardSlot1", true, false) as AspectRatioContainer
+	var expansion_card_slot: AspectRatioContainer = chains.find_child(
+		"CampaignCardSlot2", true, false) as AspectRatioContainer
+	h.check("screens.campaign_cards_are_keyboard_linked",
+		first_card != null and second_card != null
+		and first_card.focus_neighbor_right != NodePath()
+		and second_card.focus_neighbor_left != NodePath(),
+		"left and right both move between the two choices")
+	h.check("screens.campaign_cards_keep_their_aspect",
+		base_card_slot != null and expansion_card_slot != null
+		and base_card_slot.stretch_mode == AspectRatioContainer.STRETCH_FIT
+		and expansion_card_slot.stretch_mode
+			== AspectRatioContainer.STRETCH_FIT
+		and is_equal_approx(base_card_slot.ratio,
+			CampaignSelectScreen.CARD_SIZE.x
+			/ CampaignSelectScreen.CARD_SIZE.y)
+		and is_equal_approx(expansion_card_slot.ratio,
+			base_card_slot.ratio),
+		"the cover, caption and border resize as one card")
 	_no_missing(h, "campaign_select", chains)
 	chains.free()
 
@@ -1496,17 +1538,19 @@ func _map_picture(h: TestHarness) -> void:
 	world = null
 
 
-## The plates the converter learned to bake this slice (0.17.0).
+## The plates and campaign art the converter bakes.
 func _root_plates(h: TestHarness) -> void:
 	h.check("art.title_plate_is_baked", _art.plate("title") != null,
 		"`Graphics/Title.bmp` -- the shell's own backdrop")
+	h.check("art.wilderness_title_is_baked",
+		_art.plate("wilderness_title") != null,
+		"`Install/Title.bmp` -- the expansion's campaign card")
 	h.check("art.credits_plate_is_baked", _art.plate("credits") != null)
 	var index: Dictionary = CacheFixture.read_json(
 		_cache_dir + "/art/index.json")
-	h.equal("art.twelve_plates",
-		DictRead.as_array(index.get("plates", [])).size(), 12,
-		"the seven framed ones of `Graphics/GUI` plus the five top-level "
-		+ "screens")
+	h.equal("art.thirteen_plates",
+		DictRead.as_array(index.get("plates", [])).size(), 13,
+		"seven framed ones, five top-level screens and the expansion card")
 
 
 ## The screens between the screens -- docs/92 section 7.19: the splash, the

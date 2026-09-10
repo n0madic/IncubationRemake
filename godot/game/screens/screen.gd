@@ -52,8 +52,9 @@ const OWN_OPTIONS: String = "shell.options"
 ## view rather than sharing it.
 const SCREEN_LAYER: int = 8
 
-## The plates' own size. Every one of the twelve is 640x480, and the shipped
-## layout tables in `DATA/GUI/*.lcl` are written in that space.
+## The shell plates' own size. The campaign-card copy of the expansion's
+## installer title is 632x455, but it supplies no layout; the shipped layout
+## tables in `DATA/GUI/*.lcl` and all framed screens are written in 640x480.
 const PLATE_SIZE: Vector2 = Vector2(640.0, 480.0)
 
 ## What [method plate_name] answers for a screen that wants **no** plate at

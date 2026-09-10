@@ -106,6 +106,13 @@ const OWN: Dictionary = {
 	"shell.font.readable": {"English": "readable"},
 	"shell.language": {"English": "Language"},
 	"shell.campaign": {"English": "Campaign %d"},
+	# Product identities from the two title pictures the GOG distribution
+	# ships. They are remake-owned strings because neither LCL catalogue names
+	# a selector that the original front end never had.
+	"shell.campaign.base": {
+		"English": "Incubation: Time Is Running Out"},
+	"shell.campaign.wilderness": {
+		"English": "Incubation: The Wilderness Missions"},
 	"shell.slot": {"English": "Slot %d"},
 	# The name field of the save screen. The original never says it because
 	# its rows are eight pictures and it has no field at all.
