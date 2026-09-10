@@ -589,6 +589,8 @@ func _ready() -> void:
 		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT), _cache_dir)
 	_hud.event.connect(_on_hud_event)
 	_hud.command.connect(_on_pad_command)
+	_hud.ring.record_pressed.connect(func(record: int) -> void:
+		var _chosen: bool = choose_ring_record(record))
 	_hud.radar_rescaled.connect(func(_fields: int) -> void: _refresh_status())
 	add_child(_hud)
 	get_viewport().size_changed.connect(_on_canvas_resized)

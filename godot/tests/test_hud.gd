@@ -689,6 +689,36 @@ func _ring_geometry(h: TestHarness) -> void:
 	h.equal("ring.mode", ring.mode, HudTables.RING_MODE_TURN)
 	h.equal("ring.facing_of_records", [DirectionRing.facing_of(0), DirectionRing.facing_of(7),
 		DirectionRing.facing_of(DirectionRing.CANCEL_RECORD)], [0, 7, -1])
+	var chosen: Array[int] = []
+	ring.record_pressed.connect(func(record: int) -> void: chosen.append(record))
+	var north: TextureRect = ring.get_child(0) as TextureRect
+	h.equal("ring.visible_letters_take_clicks_over_the_frame", north.mouse_filter,
+		Control.MOUSE_FILTER_PASS,
+		"the click is accepted, while motion continues to the shared hover path")
+	var press: InputEventMouseButton = InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	north.gui_input.emit(press)
+	h.equal("ring.visible_letter_emits_its_record", chosen, [0],
+		"the visible N chooses N, independent of its unclamped 3D point")
+	var release: InputEventMouseButton = InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	north.gui_input.emit(release)
+	h.equal("ring.release_does_not_choose_twice", chosen, [0])
+	# The draw clamp changes the letter's Control position but not its world
+	# record. Hover and the fallback click must follow that visible position.
+	for child: Node in ring.get_children():
+		(child as TextureRect).visible = false
+	north.position = Vector2(180.0, 525.0)
+	north.visible = true
+	var camera: Camera3D = Camera3D.new()
+	var visible_anchor: Vector2 = north.position + Vector2(
+		art.sprite_offset(HudTables.LIB_RING, HudTables.RING_LETTERS[0]))
+	h.equal("ring.hit_follows_the_clamped_letter",
+		ring.hit(camera, visible_anchor), 0,
+		"the visible N, not its off-frame 3D projection")
+	camera.free()
 	ring.take_down()
 	h.check("ring.down", not ring.is_up() and ring.get_child_count() == 0, "")
 	ring.free()

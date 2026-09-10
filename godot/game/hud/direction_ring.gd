@@ -19,6 +19,11 @@ extends Control
 ## conversion happens here -- `test_hud.gd` pins the projection and the agent
 ## reports the visible rectangle so a driver can see that it stays true.
 
+## A visible letter was pressed. The host owns what the record does; the ring
+## owns its screen-space hit target because the drawn letter may be clamped
+## onto the plate, away from the record's unclamped 3D projection.
+signal record_pressed(record: int)
+
 ## The nine records: eight facings and the cancel.
 const RECORDS: int = 9
 const CANCEL_RECORD: int = 8
@@ -68,9 +73,16 @@ func place(art: Art, world: World, at: Vector2i, ring_mode: int) -> void:
 			else HudTables.RING_LETTERS[d]
 		_elements.append(element)
 		var letter: TextureRect = TextureRect.new()
-		letter.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# The plate strips below the ring stop mouse input. A letter clamped onto
+		# one of them must therefore be the hit target itself; routing the click
+		# through the unclamped world point made the visible edge letter inert.
+		# PASS lets mouse motion keep reaching the ring's shared hover path; the
+		# pressed-button handler accepts the click before it reaches the plate.
+		letter.mouse_filter = Control.MOUSE_FILTER_PASS
 		letter.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		letter.stretch_mode = TextureRect.STRETCH_KEEP
+		letter.gui_input.connect(_on_letter_input.bind(d))
+		letter.visible = false
 		add_child(letter)
 		_letters.append(letter)
 		_anchors.append(art.sprite_offset(HudTables.LIB_RING, element))
@@ -108,6 +120,15 @@ func take_down() -> void:
 
 func is_up() -> bool:
 	return visible and not _letters.is_empty()
+
+
+func _on_letter_input(event: InputEvent, record: int) -> void:
+	var click: InputEventMouseButton = event as InputEventMouseButton
+	if click == null or not click.pressed \
+			or click.button_index != MOUSE_BUTTON_LEFT:
+		return
+	accept_event()
+	record_pressed.emit(record)
 
 
 ## Re-project every letter and choose its tier. *window* is the 3D window in
@@ -163,9 +184,13 @@ func hit(camera: Camera3D, at: Vector2) -> int:
 	var best: int = -1
 	var best_distance: float = HudTables.RING_HIT_RADIUS
 	for d: int in range(RECORDS):
-		if camera.is_position_behind(_points[d]):
+		var letter: TextureRect = _letters[d]
+		if not letter.visible:
 			continue
-		var distance: float = camera.unproject_position(_points[d]).distance_to(at)
+		# update() may have clamped this letter away from its projected point.
+		# Input follows the mark the player can see, at the same sprite anchor
+		# the unclamped projection represented.
+		var distance: float = _letter_point(d).distance_to(at)
 		if distance < best_distance:
 			best_distance = distance
 			best = d
@@ -180,8 +205,12 @@ func hover(camera: Camera3D, at: Vector2) -> bool:
 	_hovered = hit(camera, at)
 	_hover_distance = INF
 	if _hovered >= 0:
-		_hover_distance = camera.unproject_position(_points[_hovered]).distance_to(at)
+		_hover_distance = _letter_point(_hovered).distance_to(at)
 	return _hovered != before
+
+
+func _letter_point(record: int) -> Vector2:
+	return _letters[record].position + Vector2(_anchors[record])
 
 
 ## The facing a record stands for, or -1 for the cancel.
