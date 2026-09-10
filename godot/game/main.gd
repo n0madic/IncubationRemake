@@ -11,7 +11,7 @@ extends Node3D
 
 ## The mission shown when nothing else is asked for.  Every mission the cache
 ## contains can be shown; `--mission=NAME` on the command line picks one, and
-## `[` / `]` step through them at run time.
+## `[` / `]` step through them at run time in a debug build.
 ## `_C_140` is the mission this stage plays: the first one whose squad, aliens
 ## and win conditions are all in the `.lev`, so it can be won without the
 ## campaign layer (docs/94).
@@ -297,6 +297,14 @@ const FRAMES_PER_FIELD: int = 6
 const WALK_SECONDS_PER_STEP: float = \
 	float(FRAMES_PER_FIELD) / CharismaState.FRAMES_PER_SECOND
 var _status: Label = null
+## A release-visible startup failure. This is deliberately separate from the
+## developer status line: hiding diagnostics must never turn a refused cache
+## into an unexplained black window.
+var _fatal_status: Label = null
+## Godot's build kind, captured once so every on-screen and keyboard debugging
+## surface has the same boundary. Tests replace it to exercise both sides;
+## production code never promotes a release build at run time.
+var _debug_build: bool = OS.is_debug_build()
 ## The second line of the developer status: whatever the last caller of
 ## [method _refresh_status] gave it. Kept so a **redraw** can put it back --
 ## a caller with something to say passes it, and one with nothing clears it.
@@ -516,18 +524,7 @@ func _ready() -> void:
 	# server needs a few more frames to let go of a playing Ogg stream, and a
 	# quit in the same frame leaks it. See [method AudioSystem.shutdown].
 	get_tree().auto_accept_quit = false
-	_status = Label.new()
-	# Below the HUD, which owns the top of the screen.
-	_status.position = Vector2(12.0, STATUS_FALLBACK_Y)
-	# The developer line wraps too; [method _refresh_status] then puts it
-	# under whatever height the HUD's own wrapped hints came to. It is
-	# smaller than the HUD: it is a diagnostic, not something to play by.
-	_status.size = Vector2(CampaignScreen.PLATE_SIZE.x - 24.0, 0.0)
-	_status.add_theme_font_size_override("font_size", STATUS_FONT_SIZE)
-	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var layer: CanvasLayer = CanvasLayer.new()
-	layer.add_child(_status)
-	add_child(layer)
+	_install_debug_status()
 
 	# **The published cache is verified exactly once, inside
 	# [method CacheLoader.open_active].**  That call reads and SHA-256s every
@@ -605,6 +602,47 @@ func _ready() -> void:
 		_cache_dir + "/tables/sequences.json")
 	_boot()
 	_start_agent()
+
+
+## Installs the developer status overlay only when this is a debug build.
+## Keeping the gate at creation means a release has no hidden label for later
+## refreshes, failures or cheat reports to accidentally reveal.
+func _install_debug_status() -> void:
+	if not _debug_build:
+		return
+	_status = Label.new()
+	_status.name = "DebugStatus"
+	# Below the HUD, which owns the top of the screen.
+	_status.position = Vector2(12.0, STATUS_FALLBACK_Y)
+	# The developer line wraps too; [method _refresh_status] then puts it
+	# under whatever height the HUD's own wrapped hints came to. It is
+	# smaller than the HUD: it is a diagnostic, not something to play by.
+	_status.size = Vector2(CampaignScreen.PLATE_SIZE.x - 24.0, 0.0)
+	_status.add_theme_font_size_override("font_size", STATUS_FONT_SIZE)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "DebugOverlay"
+	layer.add_child(_status)
+	add_child(layer)
+
+
+## Shows the one error state that can exist before the shell and localization
+## have loaded. Unlike [member _status], this is player-facing in every build.
+func _show_fatal_error(reason: String) -> void:
+	if _fatal_status == null:
+		_fatal_status = Label.new()
+		_fatal_status.name = "FatalError"
+		_fatal_status.position = Vector2(40.0, 140.0)
+		_fatal_status.size = Vector2(560.0, 200.0)
+		_fatal_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_fatal_status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_fatal_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_fatal_status.add_theme_font_size_override("font_size", 18)
+		var layer: CanvasLayer = CanvasLayer.new()
+		layer.name = "FatalErrorOverlay"
+		layer.add_child(_fatal_status)
+		add_child(layer)
+	_fatal_status.text = "Incubation could not start.\n\n" + reason
 
 
 ## The control server, when the command line asks for one (docs/92 section
@@ -2810,7 +2848,10 @@ func _run_tests_and_quit(script: GDScript) -> void:
 
 
 func _fail(reason: String) -> void:
-	_status.text = reason
+	if _status != null:
+		_status.text = reason
+	else:
+		_show_fatal_error(reason)
 	push_error(reason)
 
 
@@ -4729,6 +4770,53 @@ func _watching_the_computer() -> bool:
 ## for ([method CameraRig.pan] scales them the way the original does).
 const PAN_KEY_PIXELS: float = 24.0
 
+enum DebugKeyAction {
+	NONE,
+	QUICK_SAVE,
+	QUICK_LOAD,
+	FIELD_TYPES,
+	LATTICE,
+	NEXT_MISSION,
+	PREVIOUS_MISSION,
+}
+
+
+## The hidden keyboard tools available to a debug build. Pure so a suite can
+## prove that every one maps to [constant DebugKeyAction.NONE] in release.
+static func debug_key_action(keycode: int, debug_build: bool) -> int:
+	if not debug_build:
+		return DebugKeyAction.NONE
+	match keycode:
+		KEY_F5:
+			return DebugKeyAction.QUICK_SAVE
+		KEY_F9:
+			return DebugKeyAction.QUICK_LOAD
+		KEY_Y:
+			return DebugKeyAction.FIELD_TYPES
+		KEY_G:
+			return DebugKeyAction.LATTICE
+		KEY_BRACKETRIGHT:
+			return DebugKeyAction.NEXT_MISSION
+		KEY_BRACKETLEFT:
+			return DebugKeyAction.PREVIOUS_MISSION
+	return DebugKeyAction.NONE
+
+
+func _run_debug_key(action: int) -> void:
+	match action:
+		DebugKeyAction.QUICK_SAVE:
+			quick_save()
+		DebugKeyAction.QUICK_LOAD:
+			quick_load()
+		DebugKeyAction.FIELD_TYPES:
+			_overlay.toggle()
+		DebugKeyAction.LATTICE:
+			_scenery.toggle_lattice()
+		DebugKeyAction.NEXT_MISSION:
+			show_mission(1)
+		DebugKeyAction.PREVIOUS_MISSION:
+			show_mission(-1)
+
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
 ## and a flick sends many, so this is deliberately small.
@@ -5106,7 +5194,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# is only read when a command would be read, and [method apply_cheat_code]
 	# refuses the one code that writes anything for the same reason -- the
 	# control server reaches it without passing here at all.
-	if event is InputEventKey and event.is_pressed():
+	if _debug_build and event is InputEventKey and event.is_pressed():
 		var typed: InputEventKey = event
 		if _cheat_entry.is_open():
 			_on_cheat_key(typed)
@@ -5203,22 +5291,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		# and the movement keys are not free to choose.
 		var hud_event: int = HudTables.event_for_key(key.keycode)
 		var pad_command: int = HudTables.command_for_key(key.keycode)
+		var debug_action: int = debug_key_action(key.keycode, _debug_build)
 		if hud_event >= 0:
 			_on_hud_event(hud_event)
 		elif pad_command >= 0:
 			_on_pad_command(pad_command)
-		elif key.keycode == KEY_F5:
-			quick_save()
-		elif key.keycode == KEY_F9:
-			quick_load()
+		elif debug_action != DebugKeyAction.NONE:
+			_run_debug_key(debug_action)
 		elif key.keycode == KEY_Q:
 			_rig.rotate_step(-1)
 		elif key.keycode == KEY_E:
 			_rig.rotate_step(1)
-		elif key.keycode == KEY_Y:
-			_overlay.toggle()
-		elif key.keycode == KEY_G:
-			_scenery.toggle_lattice()
 		# docs/42 section 2.5's pan, on the keyboard as well as on the middle
 		# button. The original's own pan is a middle-button drag and this
 		# remake has had it all along, but a middle button is something a
@@ -5246,10 +5329,6 @@ func _unhandled_input(event: InputEvent) -> void:
 				_pan_by(Vector2(PAN_KEY_PIXELS, 0.0))
 			else:
 				_rig.rotate_step(1)
-		elif key.keycode == KEY_BRACKETRIGHT:
-			show_mission(1)
-		elif key.keycode == KEY_BRACKETLEFT:
-			show_mission(-1)
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
 		if click.button_index == MOUSE_BUTTON_LEFT and not click.alt_pressed and _may_command_now():

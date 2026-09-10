@@ -18,6 +18,7 @@ const REPORT_LIMIT: int = 6
 
 func run(h: TestHarness) -> void:
 	h.begin("game_ui", TestHarness.ORACLE_SPEC)
+	_debug_build_boundary(h)
 	_localization(h)
 	_fog(h)
 	_hud(h)
@@ -48,6 +49,81 @@ func run(h: TestHarness) -> void:
 	_blip_volume(h)
 	_no_campaign_state(h)
 	_screens_leave_nothing_behind(h)
+
+
+## Developer overlays and hidden keys are useful in an editor run, but none of
+## them may become an undocumented control or caption in a release export.
+func _debug_build_boundary(h: TestHarness) -> void:
+	var detected: SliceMain = SliceMain.new()
+	detected._install_debug_status()
+	h.equal("debug_build.engine_kind_controls_status_overlay",
+		detected._status != null, OS.is_debug_build(),
+		"the live Godot build kind, not a project setting or launch flag")
+	detected.world = TestFixtures.tiny_world()
+	detected._unhandled_input(_pressed_key(CheatEntry.OPEN_KEY, 0x60))
+	h.equal("debug_build.engine_kind_controls_cheat_entry",
+		detected._cheat_entry.is_open(), OS.is_debug_build())
+	detected.free()
+
+	var actions: Dictionary[int, int] = {
+		KEY_F5: SliceMain.DebugKeyAction.QUICK_SAVE,
+		KEY_F9: SliceMain.DebugKeyAction.QUICK_LOAD,
+		KEY_Y: SliceMain.DebugKeyAction.FIELD_TYPES,
+		KEY_G: SliceMain.DebugKeyAction.LATTICE,
+		KEY_BRACKETRIGHT: SliceMain.DebugKeyAction.NEXT_MISSION,
+		KEY_BRACKETLEFT: SliceMain.DebugKeyAction.PREVIOUS_MISSION,
+	}
+	var wrong: PackedStringArray = PackedStringArray()
+	for keycode: int in actions:
+		if SliceMain.debug_key_action(keycode, true) != actions[keycode]:
+			wrong.append("debug %s" % OS.get_keycode_string(keycode))
+		if SliceMain.debug_key_action(keycode, false) \
+				!= SliceMain.DebugKeyAction.NONE:
+			wrong.append("release %s" % OS.get_keycode_string(keycode))
+	h.equal("debug_build.hidden_keys_are_build_gated", Array(wrong), [],
+		"F5/F9, Y/G and both mission-step brackets")
+	h.equal("debug_build.a_player_key_is_never_a_debug_key",
+		[SliceMain.debug_key_action(KEY_Q, true),
+			SliceMain.debug_key_action(KEY_Q, false)],
+		[SliceMain.DebugKeyAction.NONE, SliceMain.DebugKeyAction.NONE])
+
+	var release: SliceMain = SliceMain.new()
+	release._debug_build = false
+	release._install_debug_status()
+	h.check("debug_build.release_has_no_status_overlay",
+		release._status == null
+			and release.get_node_or_null("DebugOverlay/DebugStatus") == null)
+	release._show_fatal_error("cache is out of date")
+	h.check("debug_build.release_still_shows_fatal_startup_error",
+		release._fatal_status != null
+			and release.get_node_or_null("FatalErrorOverlay/FatalError")
+				== release._fatal_status
+			and release._fatal_status.text.contains("cache is out of date"))
+	release.world = TestFixtures.tiny_world()
+	release._unhandled_input(_pressed_key(CheatEntry.OPEN_KEY, 0x60))
+	h.check("debug_build.release_cannot_open_cheat_entry",
+		not release._cheat_entry.is_open())
+	release.free()
+
+	var debug: SliceMain = SliceMain.new()
+	debug._debug_build = true
+	debug._install_debug_status()
+	h.check("debug_build.debug_has_status_overlay",
+		debug._status != null
+			and debug.get_node_or_null("DebugOverlay/DebugStatus") == debug._status)
+	debug.world = TestFixtures.tiny_world()
+	debug._unhandled_input(_pressed_key(CheatEntry.OPEN_KEY, 0x60))
+	h.check("debug_build.debug_keeps_cheat_entry",
+		debug._cheat_entry.is_open())
+	debug.free()
+
+
+static func _pressed_key(keycode: int, unicode: int = 0) -> InputEventKey:
+	var event: InputEventKey = InputEventKey.new()
+	event.keycode = keycode as Key
+	event.unicode = unicode
+	event.pressed = true
+	return event
 
 
 func _turn_presentation_regressions(h: TestHarness) -> void:
