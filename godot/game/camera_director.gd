@@ -112,28 +112,21 @@ func _object_of(world: World, x: int, y: int) -> Vector3i:
 
 # --- the player's view -------------------------------------------------------
 
-## A selection: the target flies to the unit, the eye's offset kept. The
-## remake's, as [method CameraRig.focus_on] says. Returns seconds.
+## A successful selection re-applies the current view, as fcn.004533D0 does.
+## Keeping the old offset would preserve the distance accumulated while
+## tracking a long walk instead of placing the camera near the new selection.
 func select(world: World, slot: int) -> float:
 	var inputs: Dictionary = unit_inputs(world, slot)
 	if inputs.is_empty() or rig == null:
 		return 0.0
-	var obj: Vector3i = DictRead.as_vector3i(inputs["obj"])
-	return _seconds(rig.focus_on(DictRead.as_int(inputs["x"]),
-		DictRead.as_int(inputs["y"]), obj.z))
+	return apply_view_mode(world, slot)
 
 
 ## `fcn.004533D0` -- re-apply the **current view mode** on a unit's cell.
 ##
-## docs/43 section 4.5's table, which is what the engine runs after every
-## successful select. [method select] is the remake's softer version of it --
-## a pivot that keeps the player's own arrangement -- and that is right for a
-## click, because the arrangement is worth keeping. It is **wrong on the way
-## back from the computer's turn**: the replay's own camera (section 4.3's
-## shot and reaction placements) leaves the eye a metre and a half behind
-## whichever alien fired last, and a pivot that keeps *that* offset hands the
-## turn back with the camera in a marine's boots or, for a shot taken across
-## the map, somewhere off the edge of it. Returns seconds.
+## docs/43 section 4.5's table, used by selection and as the hand-back's
+## fallback when the player's saved camera offset no longer fits the map.
+## Returns seconds.
 func apply_view_mode(world: World, slot: int) -> float:
 	if rig == null or world == null:
 		return 0.0

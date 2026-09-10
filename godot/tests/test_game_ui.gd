@@ -29,6 +29,7 @@ func run(h: TestHarness) -> void:
 	_replay_positions(h)
 	_replay_progress(h)
 	_hand_back_selection(h)
+	_turn_presentation_regressions(h)
 	_unit_animations(h)
 	_walk_epilogue(h)
 	_playback_pacing(h)
@@ -47,6 +48,88 @@ func run(h: TestHarness) -> void:
 	_blip_volume(h)
 	_no_campaign_state(h)
 	_screens_leave_nothing_behind(h)
+
+
+func _turn_presentation_regressions(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("turn_picture.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	var heights: PackedInt32Array = PackedInt32Array()
+	heights.resize(world.resource.width * world.resource.height)
+	heights.fill(0)
+	var rig: CameraRig = CameraRig.new()
+	rig.setup(world.resource.width, world.resource.height, heights, 32000)
+	main._rig = rig
+	main._director = CameraDirector.create(rig)
+	var units: UnitsView = UnitsView.new()
+	main._units = units
+	var slot: int = SliceMain.first_friendly_slot(world)
+	var _frames: int = rig.view_overview()
+	rig.settle()
+	var overview: Dictionary = rig.state()
+	main._camera_offset_before_turn = rig.eye_goal() - rig.target_goal()
+	main._camera_mode_before_turn = rig.view_mode()
+	main._restore_camera_on(slot)
+	h.equal("turn_picture.overview_stays_centred", rig.state(), overview)
+	_frames = rig.view_map(Vector3i(3200, 3200, 0))
+	main._restore_camera_on(slot)
+	h.equal("turn_picture.overview_survives_replay_camera", rig.state(), overview)
+	var alien: int = -1
+	for candidate: int in world.unit_slots():
+		if DictRead.as_int(world.unit_view(candidate)["player"]) == 255:
+			alien = candidate
+			break
+	h.check("turn_picture.alien", alien >= 0)
+	if alien >= 0:
+		var view: Dictionary = world.unit_view(alien)
+		var x: int = DictRead.as_int(view["x"])
+		var y: int = DictRead.as_int(view["y"])
+		var index: int = world.state.index_of(x, y)
+		var event: Dictionary = {"kind": "move", "slot": alien,
+			"x": x, "y": y, "tx": x + 2, "ty": y,
+			"payload": {"path": PackedInt32Array([index, index + 1, index + 2]),
+				"steps": 2, "seen_source": false, "seen_destination": false}}
+		rig.settle()
+		var hold: float = main._play_event_body(event, "move")
+		h.equal("turn_picture.hidden_walk_no_hold", hold, 0.0)
+		h.check("turn_picture.hidden_walk_not_started", not units.is_walking())
+		h.equal("turn_picture.hidden_walk_no_camera", rig.state(), overview)
+		# The same route must still animate when it is seen.
+		var payload: Dictionary = event["payload"]
+		payload["seen_source"] = true
+		h.check("turn_picture.seen_walk_holds", main._play_event_body(event, "move") > 0.0)
+		h.check("turn_picture.seen_walk_started", units.is_walking())
+		var attack: AttackResult = AttackResult.new()
+		var shooter: UnitState = world.units_for_ai()[alien]
+		var old_facing: int = shooter.facing
+		var old_height: int = world.state.height_at(index)
+		# Only the future changes: replay inputs and the presentation RNG
+		# stay identical, including for the reaction camera's floor query.
+		for reaction: bool in [false, true]:
+			for distance: int in [1, 5]:
+				rig.apply_state(overview)
+				main._director.rng.seed = 1.0
+				var _flight: float = main._camera_for_shot(alien, x, y,
+					x + distance, y, attack, reaction, slot)
+				var expected: Dictionary = rig.state()
+				world.state.set_height(index, old_height + 16000)
+				shooter.facing = 1 if old_facing != 1 else 2
+				rig.apply_state(overview)
+				main._director.rng.seed = 1.0
+				_flight = main._camera_for_shot(alien, x, y,
+					x + distance, y, attack, reaction, slot)
+				h.equal("turn_picture.shot_ignores_future_%s_%d" % [str(reaction), distance],
+					rig.state(), expected)
+				world.state.set_height(index, old_height)
+				shooter.facing = old_facing
+	units.free()
+	rig.free()
+	main.free()
 
 
 ## The ring's facing rides **inside** the walk's playback (docs/43 section

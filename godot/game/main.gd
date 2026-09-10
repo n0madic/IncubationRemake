@@ -3769,14 +3769,9 @@ func select_unit(slot: int, pass_friendlies: bool,
 	# arrows once (`0x00473920`), and they live their fifteen ticks.
 	_raise_marker()
 	var view: Dictionary = world.unit_view(slot)
-	# **Selecting a unit puts the camera on it**, and that is the engine's,
-	# not the remake's: `fcn.004533D0` runs after every successful select and
-	# re-applies the *current view mode* on the new selection's cell -- mode 4
-	# `fcn.00453150`, mode 2 the `(8, 7, 0)` of docs/42 section 2.3, mode 1 the
-	# map view, mode 0 the map's centre (docs/43 section 4.5). Which of those
-	# the remake uses here is still its own: [method CameraRig.focus_on] flies
-	# the target to the unit and keeps the eye's offset, so a selection
-	# re-centres the view without throwing away how the player had arranged it.
+	# fcn.004533D0 re-applies the current view on a successful selection:
+	# the unit placement, eyes or map view, or the map's centre for overview.
+	# It resets the distance accumulated while following a long walk.
 	#
 	# *replace_view* asks for [method _restore_camera_on] instead, and the
 	# hand-back from the computer's turn is the one caller that does: what the
@@ -3817,19 +3812,13 @@ func _deselect() -> void:
 
 ## Select the next unit the current player owns, and look at it.
 ##
-## docs/29 section 3's command 14. It is the only way to reach a unit that is
-## off screen: the view has no pan, so a squad member the camera is not
-## pointing at cannot be clicked. Returns the slot, or -1 when there is none.
+## Selection re-applies the current camera mode, just as a click does.
+## Returns the slot, or -1 when there is none.
 func cycle_friendly() -> int:
 	var slot: int = next_friendly_slot(world, _selected)
 	if slot < 0:
 		return -1
 	var _map: MoveMapResult = select_unit(slot, false, "cycle")
-	# docs/42 section 2.3's cycle row: `0x00453D42` places the camera on the
-	# unit with `(8, 7, 0)`, which is the engine's own answer to a squad
-	# member the camera is not pointing at.
-	if _director != null:
-		var _flight: float = _director.cycle(world, slot)
 	return slot
 
 
@@ -3898,8 +3887,8 @@ func camera_director() -> CameraDirector:
 ## The replay leaves the eye wherever docs/42 section 4.3's shot and reaction
 ## placements put it -- a metre and a half behind the alien that fired last,
 ## or across the map from it -- so a hand-back that kept the eye's offset from
-## the target, which is what [method CameraDirector.select] does and what a
-## click should do, handed the turn back inside a marine's boots or off the
+## the target, as selection used to do, handed the turn back inside a
+## marine's boots or off the
 ## edge of the level. The offset the player had is remembered instead
 ## ([method end_turn]) and put back, which changes nothing about a turn where
 ## the camera never moved.
@@ -3910,6 +3899,11 @@ func camera_director() -> CameraDirector:
 ## not an arrangement worth restoring.
 func _restore_camera_on(slot: int) -> void:
 	if _rig == null or _director == null or world == null:
+		return
+	# Overview is anchored to the map's centre, never to the selected unit.
+	# Re-apply it even if the replay temporarily chose another view mode.
+	if _camera_mode_before_turn == CameraRig.View.SCRIPT:
+		var _overview: float = _director.view_overview()
 		return
 	var inputs: Dictionary = CameraDirector.unit_inputs(shown(), slot)
 	var offset: Vector3i = _camera_offset_before_turn
@@ -4183,6 +4177,10 @@ func _play_event_body(event: Dictionary, kind: String) -> float:
 				_is_own(slot),
 				DictRead.as_bool(payload.get("seen_source", false)),
 				DictRead.as_bool(payload.get("seen_destination", false)))
+			# Mode 0 draws no frames in aExecuteMove. The playback still
+			# lands the delta, but must not start a walk, sound or hold.
+			if mode == CameraDirector.WalkMode.NONE:
+				return 0.0
 			var delay: float = _camera_before_walk(slot, at_x, at_y, end_x,
 				end_y, mode)
 			return delay + _walk_body(slot, path,
@@ -4657,11 +4655,23 @@ const PAN_ZOOM: float = 0.25
 const MAGNIFY_ZOOM: float = 6.0
 
 
+## Option/Alt provides trackpad access without a secondary-button drag.
+## Gesture deltas are scroll units; their scale is the remake's binding.
+static func look_delta_for(event: InputEvent) -> Vector2:
+	if event is InputEventMouseMotion:
+		var motion: InputEventMouseMotion = event
+		if motion.button_mask & MOUSE_BUTTON_MASK_RIGHT \
+				or (motion.alt_pressed and motion.button_mask & MOUSE_BUTTON_MASK_LEFT):
+			return motion.relative
+	if event is InputEventPanGesture:
+		var gesture: InputEventPanGesture = event
+		if gesture.alt_pressed:
+			return gesture.delta * 8.0
+	return Vector2.ZERO
+
+
 ## How much one input moves the zoom, or zero when it is not a zoom input.
-##
-## Pure and static so it can be tested without a scene tree, which is the whole
-## reason it is separate: the wheel worked and the trackpad did not, and the
-## difference is which event class the platform sends.
+## Pure so both mouse and platform-specific trackpad events can be tested.
 static func zoom_delta_for(event: InputEvent) -> float:
 	if event is InputEventMouseButton:
 		var click: InputEventMouseButton = event
@@ -5054,6 +5064,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_walk_cameras.clear()
 			_playback.skip()
 		return
+	var look: Vector2 = look_delta_for(event)
+	if not look.is_zero_approx():
+		_rig.look_by(look)
+		return
 	var zoom: float = zoom_delta_for(event)
 	if not is_zero_approx(zoom):
 		_rig.zoom_by(zoom)
@@ -5123,15 +5137,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			show_mission(-1)
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
-		if click.button_index == MOUSE_BUTTON_LEFT and _may_command_now():
+		if click.button_index == MOUSE_BUTTON_LEFT and not click.alt_pressed and _may_command_now():
 			_pick(click.position, click.shift_pressed)
-	elif event is InputEventMouseButton:
-		# The right button, released: the camera turns a step, left of the
-		# window's middle one way and right of it the other (`0x0041BA30`).
-		var release: InputEventMouseButton = event
-		if release.button_index == MOUSE_BUTTON_RIGHT and _rig != null:
-			var middle: float = get_viewport().get_visible_rect().size.x * 0.5
-			_rig.rotate_step(-1 if release.position.x < middle else 1)
 	elif event is InputEventMouseMotion:
 		# docs/42 section 2.5: the middle button held drags the view.
 		var motion: InputEventMouseMotion = event
@@ -6173,18 +6180,21 @@ func _camera_for_shot(shooter: int, sx: int, sy: int, tx: int, ty: int,
 		attack: AttackResult, reaction: bool, mover: int) -> float:
 	if _director == null or _rig == null:
 		return 0.0
-	var view: Dictionary = world.unit_view(shooter)
+	# Facing, terrain and floor clearance belong to this replay event;
+	# the truth already includes every later action of the turn.
+	var picture: World = shown()
+	var view: Dictionary = picture.unit_view(shooter)
 	if view.is_empty():
 		return 0.0
-	var from: Dictionary = CameraDirector.inputs_at(world, view, sx, sy)
+	var from: Dictionary = CameraDirector.inputs_at(picture, view, sx, sy)
 	if reaction:
-		return _director.reaction_shot(world, from, _inputs_of(mover, tx, ty),
+		return _director.reaction_shot(picture, from, _inputs_of(mover, tx, ty),
 			_director.toss())
 	if DictRead.as_int(view["player"]) != UnitState.PLAYER_ALIEN:
 		return 0.0
 	# The target cell's object with the **shooter's** height, as the engine
 	# reads it; whether a victim stands there is what the shot resolved on.
-	var to: Dictionary = CameraDirector.inputs_at(world, view, tx, ty)
+	var to: Dictionary = CameraDirector.inputs_at(picture, view, tx, ty)
 	return _director.computer_shot(from, to, not attack.outcomes.is_empty())
 
 

@@ -14,10 +14,8 @@ extends Node3D
 ## The orientation is the engine's own view quadrant `0x00510700` -- one of the
 ## four corners of the `(dist + 6) x dist` rectangle `0x004529D0` places the
 ## eye on -- so a quarter turn on Q or E is a step round that rectangle, not a
-## free rotation, and the only rotations the eye ever makes are the ones the
-## engine makes: the quadrant table, a unit's facing (mode 1, behind the
-## unit), and the free-position search's own +-51 units a try. The right-drag
-## free rotation of section 2.5 is the one thing left out, by decision.
+## free rotation. Right-drag separately turns the view at the fixed eye,
+## as section 2.5 does, without changing the placement quadrant.
 ##
 ## Two views are **not** tactical and take the unit's facing directly: the
 ## eyes view of section 2.4 and the ride of section 3.2. The rule about
@@ -132,6 +130,8 @@ const MAP_VIEW_AHEAD: int = 0xC80
 ## one pixel is 400 units at the original's 640-pixel width.
 const PAN_UNITS_PER_PIXEL: int = 400
 const PAN_REFERENCE_WIDTH: float = 640.0
+## 0x00451000: both pointer deltas are multiplied by eight.
+const LOOK_RADIANS_PER_PIXEL: float = TAU * 8.0 / 4096.0
 
 ## Section 2.4 -- view mode 0, the overview map: `fcn.004532A0` puts the eye
 ## at `0x23A50` over the **box's** own centre, looking straight down at it
@@ -179,6 +179,10 @@ var _fast: bool = false
 var _carry: float = 0.0
 var _quadrant: int = 0
 var _view: View = View.UNIT
+## Yaw must survive the pitch poles, where an integer eye/target pair
+## cannot encode it. Normal placements and tracking replace these angles.
+var _free_looking: bool = false
+var _look_angles: Vector2 = Vector2.ZERO
 var _width: int = 0
 var _height: int = 0
 var _heights: PackedInt32Array = PackedInt32Array()
@@ -489,6 +493,8 @@ func set_view_mode(mode: View) -> void:
 
 ## `0x00403560` -- set the eye and the target at once, no flight.
 func set_now(eye_at: Vector3i, target_at: Vector3i) -> void:
+	if target_at - eye_at != _target - _eye:
+		_free_looking = false
 	_eye = eye_at
 	_target = target_at
 	_eye_goal = eye_at
@@ -501,6 +507,7 @@ func set_now(eye_at: Vector3i, target_at: Vector3i) -> void:
 ## is kept, every frame, with no flight. A flight in progress keeps flying its
 ## eye; its target half is overridden.
 func set_target_now(target_at: Vector3i) -> void:
+	_free_looking = false
 	_target = target_at
 	_target_goal = target_at
 	if _flying and _deltas_stopped():
@@ -514,6 +521,7 @@ func set_target_now(target_at: Vector3i) -> void:
 ## camera -- every animation driver in the original does, because the flight
 ## blocks -- can hold for exactly that long.
 func fly(eye_at: Vector3i, target_at: Vector3i) -> int:
+	_free_looking = false
 	if absi(eye_at.z - _eye.z) > FLIGHT_SNAP_HEIGHT:
 		set_now(eye_at, target_at)
 		return 0
@@ -617,11 +625,9 @@ func settle() -> void:
 
 ## Move the target onto a map field, keeping the eye's offset from it.
 ##
-## The remake's selection and hand-back: the engine's select path is not
-## traced and its hand-over calls no camera routine (docs/42 section 2.6), so
-## this is a pivot move with nothing else changed -- the player's arrangement
-## survives -- done as a flight rather than the snap it used to be. Returns
-## the flight's frames.
+## Used by the optional compatibility hand-back (docs/42 section 2.6).
+## Normal selection re-applies its view through CameraDirector instead.
+## Returns the flight's frames.
 func focus_on(x: int, y: int, h: int) -> int:
 	var to: Vector3i = cell_object(x, y, h)
 	return fly(to + (_eye_goal - _target_goal), to)
@@ -647,6 +653,29 @@ func may_rotate_to(wanted: int) -> bool:
 	var offset: Vector3i = _eye_goal - _target_goal
 	return eye_is_inside(_target_goal + _offset_in_quadrant(wanted, offset)) \
 		or not _any_quadrant_fits(offset)
+
+
+## 0x00403600 turns at the fixed eye and clamps pitch to +/-90 degrees.
+## Reconstruct a target for the remake's eye/target consumers; the original
+## stores its camera angles independently.
+func look_by(pixels: Vector2) -> void:
+	if pixels.is_zero_approx():
+		return
+	var direction: Vector3 = Vector3(_target - _eye)
+	var distance: float = maxf(direction.length(), 1.0)
+	if not _free_looking:
+		_look_angles = Vector2(atan2(direction.x, direction.y),
+			atan2(direction.z, Vector2(direction.x, direction.y).length()))
+	_look_angles.x = wrapf(_look_angles.x + pixels.x * LOOK_RADIANS_PER_PIXEL, -PI, PI)
+	_look_angles.y = clampf(_look_angles.y - pixels.y * LOOK_RADIANS_PER_PIXEL, -PI / 2.0, PI / 2.0)
+	var angles: Vector2 = _look_angles
+	var horizontal: float = cos(angles.y)
+	direction = Vector3(sin(angles.x) * horizontal,
+		cos(angles.x) * horizontal, sin(angles.y))
+	set_now(_eye, _eye + Vector3i((direction * distance).round()))
+	_look_angles = angles
+	_free_looking = true
+	_apply()
 
 
 func _any_quadrant_fits(offset: Vector3i) -> bool:
@@ -927,14 +956,18 @@ func screen_point(point: Vector3i) -> Dictionary:
 # --- persistence -------------------------------------------------------------
 
 func state() -> Dictionary:
-	return {"eye": [_eye_goal.x, _eye_goal.y, _eye_goal.z],
+	var out: Dictionary = {"eye": [_eye_goal.x, _eye_goal.y, _eye_goal.z],
 		"target": [_target_goal.x, _target_goal.y, _target_goal.z],
 		"quadrant": _quadrant, "view": int(_view)}
+	if _free_looking:
+		out["look_angles"] = [_look_angles.x, _look_angles.y]
+	return out
 
 
 func apply_state(data: Dictionary) -> void:
 	if data.is_empty():
 		return
+	_free_looking = false
 	_quadrant = posmod(DictRead.as_int(data.get("quadrant", 0)),
 		QUADRANT_SIGNS.size())
 	match DictRead.as_int(data.get("view", int(View.UNIT))):
@@ -949,6 +982,11 @@ func apply_state(data: Dictionary) -> void:
 	if data.has("eye") and data.has("target"):
 		set_now(_triple(data["eye"], _eye_goal),
 			_triple(data["target"], _target_goal))
+	var angles: Array = DictRead.as_array(data.get("look_angles", []))
+	if angles.size() == 2:
+		_look_angles = Vector2(DictRead.as_float(angles[0]), DictRead.as_float(angles[1]))
+		_free_looking = true
+		_apply()
 
 
 static func _triple(value: Variant, fallback: Vector3i) -> Vector3i:
@@ -972,6 +1010,11 @@ func _apply() -> void:
 		local = Vector3(0.0, 0.0, 0.001)
 	var forward: Vector3 = -local.normalized()
 	var up: Vector3 = Vector3.UP
-	if absf(forward.dot(up)) > 0.9999:
+	if _free_looking:
+		var yaw: float = _look_angles.x
+		var pitch: float = _look_angles.y
+		forward = Vector3(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+		up = Vector3(-sin(yaw) * sin(pitch), cos(pitch), cos(yaw) * sin(pitch))
+	elif absf(forward.dot(up)) > 0.9999:
 		up = Vector3.BACK
 	_camera.transform = Transform3D(Basis.looking_at(forward, up), local)

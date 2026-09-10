@@ -24,6 +24,8 @@ func run(h: TestHarness) -> void:
 	_check_placement(h)
 	_check_search(h)
 	_check_views(h)
+	_check_selection_views(h)
+	_check_free_look(h)
 	_check_pan_and_zoom(h)
 	_check_zoom_inputs(h)
 	_check_walk_modes(h)
@@ -45,6 +47,139 @@ static func _flat_rig(w: int, hgt: int, ceiling: int = CEILING) -> CameraRig:
 
 static func _v(x: int, y: int, z: int) -> Vector3i:
 	return Vector3i(x, y, z)
+
+
+func _check_free_look(h: TestHarness) -> void:
+	var rig: CameraRig = _flat_rig(20, 20)
+	var eye: Vector3i = _v(32000, 32000, 3200)
+	rig.set_view_mode(CameraRig.View.EYES)
+	rig.set_now(eye, eye + _v(0, 3200, 0))
+	rig.look_by(Vector2(64, 0))
+	h.equal("look.eye_stays", rig.eye(), eye)
+	h.equal("look.eighth_turn", rig.target(), eye + _v(2263, 2263, 0))
+	h.equal("look.mode_stays", rig.view_mode(), CameraRig.View.EYES)
+	h.check("look.immediate", not rig.is_flying())
+	rig.look_by(Vector2(0, -1000))
+	h.equal("look.pitch_clamped_up", rig.target(), eye + _v(0, 0, 3200))
+	h.check("look.pole_basis_finite", rig.camera().basis.is_finite())
+	var saved: Dictionary = rig.state()
+	var twin: CameraRig = _flat_rig(20, 20)
+	twin.apply_state(saved)
+	rig.look_by(Vector2(32, 1))
+	twin.look_by(Vector2(32, 1))
+	h.equal("look.pole_save_continuation", rig.state(), twin.state())
+	# One pixel changes the angle even when integer rounding keeps z equal.
+	h.check("look.leaves_pole", rig.target().x != eye.x or rig.target().y != eye.y)
+	rig.look_by(Vector2(0, 1000))
+	h.equal("look.pitch_clamped_down", rig.target().z, eye.z - 3200)
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if not loaded.is_empty():
+		var main: SliceMain = SliceMain.new()
+		main.world = loaded["world"]
+		main._rig = rig
+		var hash_before: String = main.world.canonical_hash_hex()
+		rig.set_now(eye, eye + _v(0, 3200, 0))
+		var motion: InputEventMouseMotion = InputEventMouseMotion.new()
+		motion.button_mask = MOUSE_BUTTON_MASK_RIGHT
+		motion.relative = Vector2(64, 0)
+		main._unhandled_input(motion)
+		var mouse_view: Dictionary = rig.state()
+		h.equal("look.input_right_drag", rig.target(), eye + _v(2263, 2263, 0))
+		var release: InputEventMouseButton = InputEventMouseButton.new()
+		release.button_index = MOUSE_BUTTON_RIGHT
+		main._unhandled_input(release)
+		h.equal("look.release_no_extra_turn", rig.state(), mouse_view)
+		rig.set_now(eye, eye + _v(0, 3200, 0))
+		motion.button_mask = MOUSE_BUTTON_MASK_LEFT
+		motion.alt_pressed = true
+		main._unhandled_input(motion)
+		h.equal("look.trackpad_primary_drag", rig.state(), mouse_view)
+		rig.set_now(eye, eye + _v(0, 3200, 0))
+		var gesture: InputEventPanGesture = InputEventPanGesture.new()
+		gesture.alt_pressed = true
+		gesture.delta = Vector2(8, 0)
+		main._unhandled_input(gesture)
+		h.equal("look.trackpad_gesture", rig.state(), mouse_view)
+		gesture.delta = Vector2(0, 2)
+		main._unhandled_input(gesture)
+		h.equal("look.trackpad_vertical_does_not_zoom", rig.eye(), eye)
+		mouse_view = rig.state()
+		var press: InputEventMouseButton = InputEventMouseButton.new()
+		press.button_index = MOUSE_BUTTON_LEFT
+		press.pressed = true
+		press.alt_pressed = true
+		main._unhandled_input(press)
+		h.equal("look.trackpad_press_does_not_select", main.selected_slot(), -1)
+		gesture.alt_pressed = false
+		h.equal("look.unmodified_scroll_not_rotation", SliceMain.look_delta_for(gesture), Vector2.ZERO)
+		var events: Array[Dictionary] = [{"kind": "move"}]
+		main._playback.play(events, func(_event: Dictionary) -> float: return 1.0)
+		main._unhandled_input(motion)
+		h.equal("look.blocked_during_playback", rig.state(), mouse_view)
+		main._playback.cancel()
+		h.equal("look.simulation_unchanged", main.world.canonical_hash_hex(), hash_before)
+		main.free()
+	else:
+		h.check("look.cache", false, "no _C_140 in cache")
+	twin.free()
+	rig.free()
+
+
+func _check_selection_views(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("select.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	var slot: int = SliceMain.first_friendly_slot(world)
+	var view: Dictionary = world.unit_view(slot)
+	var rig: CameraRig = _flat_rig(world.resource.width, world.resource.height)
+	var expected: CameraRig = _flat_rig(world.resource.width, world.resource.height)
+	var director: CameraDirector = CameraDirector.create(rig)
+	var reference: CameraDirector = CameraDirector.create(expected)
+	var before: String = world.canonical_hash_hex()
+	for mode: CameraRig.View in [CameraRig.View.UNIT, CameraRig.View.EYES,
+			CameraRig.View.MAP, CameraRig.View.SCRIPT]:
+		# A long walk leaves the eye far from the target. Selection must
+		# use the view's own placement, independent of that old distance.
+		rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		rig.set_view_mode(mode)
+		var _placed: float = 0.0
+		match mode:
+			CameraRig.View.UNIT:
+				_placed = reference.view_unit(world, slot)
+			CameraRig.View.EYES:
+				_placed = reference.view_eyes(world, slot)
+			CameraRig.View.MAP:
+				_placed = reference.view_map(world,
+					DictRead.as_int(view["x"]), DictRead.as_int(view["y"]))
+			CameraRig.View.SCRIPT:
+				_placed = reference.view_overview()
+		_placed = director.select(world, slot)
+		h.equal("select.view_%d" % int(mode), rig.state(), expected.state())
+	h.equal("select.leaves_simulation_unchanged", world.canonical_hash_hex(), before)
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._rig = rig
+	main._director = director
+	main._strings = Localization.new()
+	var hud: MissionHud = MissionHud.new()
+	hud.setup(null, main._strings, null, null, null)
+	main._hud = hud
+	for mode: CameraRig.View in [CameraRig.View.UNIT, CameraRig.View.EYES,
+			CameraRig.View.MAP, CameraRig.View.SCRIPT]:
+		rig.set_view_mode(mode)
+		expected.set_view_mode(mode)
+		var _placed: float = reference.apply_view_mode(world, slot)
+		var _query: MoveMapResult = main.select_unit(slot, false)
+		h.equal("select.click_view_%d" % int(mode), rig.state(), expected.state())
+		main._selected = -1
+		h.equal("select.cycle_slot_%d" % int(mode), main.cycle_friendly(), slot)
+		h.equal("select.cycle_view_%d" % int(mode), rig.state(), expected.state())
+	hud.free()
+	main.free()
+	rig.free()
+	expected.free()
 
 
 # --- docs/42 section 2.2 -----------------------------------------------------

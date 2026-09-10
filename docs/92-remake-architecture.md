@@ -633,9 +633,13 @@ by mirroring the offset. Pitch is no longer fixed: it is whatever the
 engine's placement gives, and the placements differ (§2.3's table). The
 statistic above still holds and still matters — the scenery is authored for
 quarter turns and the engine's own player looked at it from 30° off axis —
-so the model keeps the quantised azimuth and drops the free right-drag
-rotation only. Every move of the view is the engine's flight
-(`0x0040EEE0`), transcribed on the engine's own six integers.
+so the quadrant placements remain available on Q/E. As of 2026-09-10,
+right-drag also turns the view freely at a fixed eye, with eight angle units
+per pixel and pitch limited to +/-90 degrees. Option/Alt plus primary drag
+or a two-finger pan gesture provides trackpad access. Free look applies
+immediately; scripted placements retain the engine's flight (`0x0040EEE0`).
+The remake reconstructs a look target and saves optional `look_angles` to
+preserve yaw at the vertical poles; the original stores angles independently.
 
 ### 7.5.1 The view opens on the squad, not on the middle of the map
 
