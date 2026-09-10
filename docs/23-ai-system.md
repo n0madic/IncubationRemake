@@ -114,9 +114,10 @@ One near-miss is worth foreclosing. **`aiLevel()` is not this level.**
 `0x00460450` — `Game.opt +0x18`, the difficulty setting
 ([`22` §12](22-combat-and-visibility.md)) — has eleven call sites in
 `Incubation.exe` and **not one of them is inside `aAISystem.cpp` or the move
-map**. The difficulty changes how many units `InsertUnit` spawns and how damage
-rolls ([`20`](20-lcl-language.md), [`22` §7.4](22-combat-and-visibility.md));
-it does not change a single thing the computer does with its turn.
+map**. What it does change is tabulated in
+[`20` §7.6](20-lcl-language.md) — all eleven call sites in six functions, none
+of them here; it does not change a single thing the computer does with its
+turn.
 
 ---
 

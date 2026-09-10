@@ -830,7 +830,25 @@ lines it is almost certainly a dropped argument rather than intent.
 So `maxCount` is an exclusive upper bound on easy and normal and an inclusive
 one on hard: `InsertUnit (…, 1)` spawns **nothing** except on hard, while
 `InsertUnit (…, 0)` always spawns exactly one. The corpus uses counts 0–9,
-most often 3 (125 sites), 2 (83), 4 (62), 0 (60) and 5 (46).
+most often 3 (125 sites), 2 (83), 4 (62), 0 (60) and 5 (46). §7.6 sums what
+that is worth per difficulty over the 75 campaign missions.
+
+**The `rand()` call is unconditional whenever `maxCount` is not zero** — read
+off the branch at `0x0044194E`, where all three level arms (`0x00441942`,
+`0x0044195C` and the easy arm's own `call` before its `dec esi`) reach
+`call [0x5255FC]` with no guard in front of any of them. So the arms whose only
+possible answer is 0 — `maxCount == 1`, and the short forms' `-1` — still
+consume one draw. This matters because the stream is shared: `_C_116` fires its
+six short call sites on turn 8 and another `InsertUnit` on every turn after, so
+a model that short-circuited those arms would desynchronise from turn 9
+onward. `inclib/lcl_runtime.py` and `godot/core/lcl/lcl_interpreter.gd` did
+exactly that until 2026-09-10; `lcl_runtime.py --check`'s
+`insert.draws_even_when_barren` now pins it, and `insert.bounds_hold` /
+`insert.bounds_reached` hold the draw against a second reading of the same
+instructions (`insert_count_bounds`).
+
+The easy arm's `maxCount >= 3` is `cmp esi, 2 / jle` at `0x0044194E`, which
+jumps into the normal arm below 3 rather than testing separately.
 
 `0x00479cf0(player, type, name, rank, arg5, x, y, exact=0, &outIndex)`:
 
@@ -1553,12 +1571,73 @@ which is why searching the binaries for level names finds nothing:
 
 **Difficulty** (+0x18) is therefore a three-position control whose settings have
 **no names anywhere in the shipped product** — one, two or three pips on a
-skull. `0x00460450` returns it, forcing `1` in any multi-player or network game.
-It has eleven call sites in six functions; the one that is fully decoded is the
-damage roll, which widens by one point per step (see
-[`22` §7.4](22-combat-and-visibility.md)). The cycler `0x00460780` is blocked,
-and sprite 26 drawn instead, whenever the game state is 3 — which is what text
-58 means by *"only in main map during campaign"*.
+skull. `0x00460450` returns it, forcing `1` in any multi-player or network game,
+so **the difficulty setting only exists in single player**. The cycler
+`0x00460780` is blocked, and sprite 26 drawn instead, whenever the game state is
+3 — which is what text 58 means by *"only in main map during campaign"*.
+
+#### What the difficulty reaches — all eleven call sites
+
+`0x00460450` has eleven call sites in six functions, and every one of them is
+now decoded. An earlier revision of this section said the damage roll was "the
+one that is fully decoded"; that has not been true for some time.
+
+| Function | Sites | What the level changes | Spec |
+| --- | --- | --- | --- |
+| `0x0046C960` `applyDamage` | 1 | **widens the damage roll upward** — the floor `(D+1)/2` is identical at every level and only the span grows, by one point per step | [`22` §7.4](22-combat-and-visibility.md) |
+| `0x004418C0` `InsertUnit` | 1 | **how many units one spawn command produces** — `maxCount` is an exclusive bound on easy and normal and an inclusive one on hard | §7.4 above |
+| `0x00475160` `aGetMovePoints` | 1 | **one point of movement, for one unit type** — only `0x32`, `Ray'Ther`, and only on easy | [`10` §5.5](10-lev-mission-format.md) |
+| `0x0047AFD0` (the kill award) | 1 | the experience multiplier 4/3/1 — but **only outside the campaign**: `gameMode() == 1` returns the victim's `exp` byte before the level is read | [`22` §7.5](22-combat-and-visibility.md) |
+| `0x0043BA10` (the mission score) | 1 | the fragging multiplier `{1, 2, 3}` in `kills * mul − 2 * losses + base(result)` | [`27` §6.2](27-campaign.md) |
+| `0x00451A70` (the options screen) | 6 | draws the skull row and steps it | this section |
+
+Two things the level does **not** reach are worth stating as plainly as the
+six that it does, because both are easy to assume:
+
+* **The computer's turn.** `0x00460450` has no call site inside `aAISystem.cpp`
+  or the move map. The AI plans, targets, approaches and fires identically at
+  every level — [`23` §1](23-ai-system.md) enumerates the negative evidence.
+* **What a unit *is*.** `applyDamage` takes the roll into `unit[+0x16]` and
+  nothing else; ranks, skills, armour, weapons and equipment come from the
+  `.lev` record and from `SetUnitInfo`, neither of which the level is an input
+  to. `InsertUnit`'s rank is argument 4, and it is a **number literal at all
+  314 campaign call sites** (`census.rank_is_a_literal`) — there is no variable
+  through which the setting could reach one.
+
+#### What it is worth, counted — **[check] `lcl_runtime.py --check`**
+
+The two censuses below run over **the same 75 missions** (the shipped `.lev`
+files whose header type is 1), because the claim they support is that a
+mission's opposition comes from two places and the difficulty reaches exactly
+one of them.
+
+**Placed by the `.lev` itself** — fixed, and no input to it is the difficulty:
+
+| Player | Placed units | |
+| --- | --- | --- |
+| 255 | **872** | the aliens, ~11.6 per mission; three missions place none |
+| 252 | 144 | neutral props |
+| 0 | 37 | the missions that ship their own squad |
+
+**Spawned by `InsertUnit`** — 314 call sites, whose `maxCount` distribution is
+6 × `-1` (the short forms), 50 × `0`, 14 × `1`, 78 × `2`, 85 × `3`, 45 × `4`,
+25 × `5`, 6 × `6`, 3 × `7`, and one each of `8` and `9`. Summing each site's
+possible range **once per site**:
+
+| | easy (0) | normal (1) | hard (2) |
+| --- | --- | --- | --- |
+| fewest | 50 | 50 | **314** |
+| most | 430 | 596 | 860 |
+| mean of a uniform draw | 240 | 323 | **587** |
+
+**These are per-site sums, not a played game.** A call site sits inside a
+turn-gated region (`>EnvVarGreaterNum (_B,2);`) that may fire on many turns or
+on none, so the table says what the difficulty is worth *per spawn command*,
+not how many aliens a campaign produces. Read that way the shape is clear
+enough: hard is worth 1.8x normal and 2.4x easy across the same scripts, and
+the floor is most of the difference — hard's `+1` means every one of the 314
+sites spawns at least one unit, where easy and normal guarantee only the 50
+that pass `maxCount == 0`.
 
 ---
 

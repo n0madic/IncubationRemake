@@ -848,6 +848,10 @@ Points that only the code gives:
 
 - **The difficulty level widens the damage roll upward; it does not scale it.**
   The floor `(D+1)/2` is identical at every level, only the span grows by one.
+  **It is symmetric**: `applyDamage` takes the defender and the level and has no
+  test on either side's player, so the marine's shots widen exactly as the
+  alien's do. The setting is not a handicap applied to one side — the roll it
+  widens is every roll in the mission.
   `aiLevel()` reads `Game.opt` `+0x18`, the options screen's eighth row,
   labelled *"Set Difficulty Level"* — see [`20` §7.6](20-lcl-language.md). It is
   forced to 1 in any multi-player or network game, so **the difficulty setting

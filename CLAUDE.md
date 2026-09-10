@@ -59,7 +59,7 @@ python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
 python3 tools/info_parse.py         --check gog_incubation   # 21 checks
-python3 tools/lcl_runtime.py        --check gog_incubation   # 71 checks, 942 invocations
+python3 tools/lcl_runtime.py        --check gog_incubation   # 93 checks, 942 invocations
 python3 tools/turn_runtime.py       --check gog_incubation   # 61 checks, 1863 units
 python3 tools/combat_runtime.py     --check gog_incubation   # 148 checks, LOS/hit/damage/reaction/experience/jam/warp/placers
 python3 tools/interact_runtime.py   --check gog_incubation   # 79 checks, aExecuteUse, the heal, the entry point's fire
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 40 suites, 5128 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5132 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
