@@ -33,6 +33,7 @@ func run(h: TestHarness) -> void:
 	_boot_gate(h)
 	_loopback(h)
 	_loopback_body(h)
+	_slow_reader(h)
 
 
 # --- the request grammar -----------------------------------------------------
@@ -386,7 +387,7 @@ func _loopback(h: TestHarness) -> void:
 	server.respond(id, 200, "application/json", body)
 	h.equal("loopback.answered", server.pending().size(), 0)
 
-	var answer: String = _read(client).get_string_from_utf8()
+	var answer: String = _read(server, client).get_string_from_utf8()
 	h.check("loopback.status_line", answer.begins_with("HTTP/1.1 200 OK"),
 		"got %s" % answer.substr(0, 40))
 	h.check("loopback.length_header",
@@ -462,6 +463,49 @@ func _loopback_body(h: TestHarness) -> void:
 	_shut(server, client)
 
 
+## A screenshot-sized response to a client that stops reading must return to
+## the caller immediately, and another request must still reach the server.
+## The old `put_data` implementation blocked here once the kernel send buffer
+## filled, freezing both the game and every other connection.
+func _slow_reader(h: TestHarness) -> void:
+	var server: AgentHttpServer = AgentHttpServer.new()
+	if server.listen(0) != OK:
+		h.check("slow_reader.listen", false, "cannot bind a loopback port")
+		return
+	var slow: StreamPeerTCP = StreamPeerTCP.new()
+	var _dialled: Error = slow.connect_to_host("127.0.0.1", server.port())
+	var request: Dictionary = _exchange(server, slow,
+		_bytes("GET /shot HTTP/1.1\r\n\r\n"))
+	h.check("slow_reader.arrived", not request.is_empty())
+	if request.is_empty():
+		_shut(server, slow)
+		return
+	var large: PackedByteArray = PackedByteArray()
+	large.resize(4 * 1024 * 1024)
+	var started: int = Time.get_ticks_msec()
+	server.respond(DictRead.as_int(request["id"]), 200,
+		"application/octet-stream", large)
+	var elapsed: int = Time.get_ticks_msec() - started
+	h.check("slow_reader.respond_does_not_block", elapsed < 100,
+		"queuing the response took %d ms" % elapsed)
+
+	var other: StreamPeerTCP = StreamPeerTCP.new()
+	var _other_dialled: Error = other.connect_to_host(
+		"127.0.0.1", server.port())
+	var health: Dictionary = _exchange(server, other,
+		_bytes("GET /health HTTP/1.1\r\n\r\n"))
+	h.check("slow_reader.other_request_arrives", not health.is_empty(),
+		"the unread response held the server")
+	if not health.is_empty():
+		server.respond(DictRead.as_int(health["id"]), 200, "text/plain",
+			_bytes("ok"))
+		var answer: String = _read(server, other).get_string_from_utf8()
+		h.check("slow_reader.other_request_is_answered", answer.ends_with("ok"))
+	server.stop()
+	slow.disconnect_from_host()
+	other.disconnect_from_host()
+
+
 # --- socket plumbing for the two above ---------------------------------------
 
 ## Sends `payload` and polls both ends until a request completes or the
@@ -489,10 +533,11 @@ func _exchange(server: AgentHttpServer, client: StreamPeerTCP,
 ## other end has already shut, which Godot answers with `-1` **and an error
 ## line** -- and `run_tests.sh` fails a run on an error line whether or not a
 ## check noticed.
-func _read(client: StreamPeerTCP) -> PackedByteArray:
+func _read(server: AgentHttpServer, client: StreamPeerTCP) -> PackedByteArray:
 	var out: PackedByteArray = PackedByteArray()
 	var deadline: int = Time.get_ticks_msec() + DEADLINE_MSEC
 	while Time.get_ticks_msec() < deadline:
+		var _requests: Array[Dictionary] = server.poll()
 		client.poll()
 		if client.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 			break

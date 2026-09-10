@@ -37,6 +37,15 @@ const MAX_CONNS: int = 8
 ## A connection that has not completed a request in this long is dropped.
 const IDLE_MSEC: int = 120 * 1000
 
+## An answer that makes no forward progress for this long is dropped, freeing
+## its connection slot for a client that reads. Progress resets the deadline.
+const WRITE_IDLE_MSEC: int = 10 * 1000
+
+## At most this many response bytes are offered to one socket in one poll.
+## `put_partial_data` may take fewer; either way a slow reader cannot hold the
+## game thread inside a blocking write.
+const WRITE_CHUNK: int = 64 * 1024
+
 const CRLF: String = "\r\n"
 
 ## `Content-Type` of the server's own error bodies.
@@ -53,6 +62,10 @@ class Conn extends RefCounted:
 	var opened_msec: int = 0
 	var delivered: bool = false
 	var continued: bool = false
+	var answer: PackedByteArray = PackedByteArray()
+	var answer_at: int = 0
+	var answering: bool = false
+	var answer_progress_msec: int = 0
 
 
 var _server: TCPServer = null
@@ -114,7 +127,8 @@ func poll() -> Array[Dictionary]:
 	return out
 
 
-## Writes one answer and closes the connection it belongs to.
+## Queues one answer. [method poll] sends it in bounded non-blocking pieces and
+## closes the connection when the final byte has left.
 ##
 ## An id that is not held is ignored, which is what makes answering a peer that
 ## went away while a batch ran a no-op rather than an error.
@@ -124,16 +138,14 @@ func respond(id: int, status: int, content_type: String,
 	if index < 0:
 		return
 	var conn: Conn = _conns[index]
-	_write(conn, status, content_type, body, extra)
-	_close(conn)
-	_conns.remove_at(index)
+	_queue(conn, status, content_type, body, extra)
 
 
 ## The ids accepted and not yet answered, oldest first.
 func pending() -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
 	for conn: Conn in _conns:
-		if conn.delivered:
+		if conn.delivered and not conn.answering:
 			out.append(conn.id)
 	return out
 
@@ -273,7 +285,7 @@ func _accept() -> void:
 		conn.peer = peer
 		conn.opened_msec = Time.get_ticks_msec()
 		if _conns.size() >= MAX_CONNS:
-			_write(conn, 503, TYPE_JSON,
+			_write_small(conn, 503, TYPE_JSON,
 				_error_body("too many connections"), {})
 			_close(conn)
 			continue
@@ -290,6 +302,8 @@ func _service(conn: Conn, out: Array[Dictionary]) -> bool:
 		# A peer that went away while its batch ran takes its id with it; the
 		# answer for it then lands nowhere, which `respond` allows.
 		return status == StreamPeerTCP.STATUS_CONNECTING
+	if conn.answering:
+		return _flush(conn)
 	if conn.delivered:
 		return true
 	var available: int = conn.peer.get_available_bytes()
@@ -305,9 +319,9 @@ func _service(conn: Conn, out: Array[Dictionary]) -> bool:
 	var request: Dictionary = parse_request(conn.buffer)
 	var error: String = DictRead.as_string(request["error"])
 	if error != "":
-		_write(conn, DictRead.as_int(request["status"]), TYPE_JSON,
+		_queue(conn, DictRead.as_int(request["status"]), TYPE_JSON,
 			_error_body(error), {})
-		return false
+		return true
 	if not DictRead.as_bool(request["complete"]):
 		if DictRead.as_bool(request["head_complete"]) and not conn.continued:
 			# `curl` waits a full second for this before sending a body over
@@ -333,10 +347,9 @@ func _service(conn: Conn, out: Array[Dictionary]) -> bool:
 	return true
 
 
-func _write(conn: Conn, status: int, content_type: String,
+func _queue(conn: Conn, status: int, content_type: String,
 		body: PackedByteArray, extra: Dictionary) -> void:
-	if conn.peer == null or conn.peer.get_status() \
-			!= StreamPeerTCP.STATUS_CONNECTED:
+	if conn.peer == null or conn.answering:
 		return
 	var head: String = "HTTP/1.1 %d %s%s" % [status, status_text(status), CRLF]
 	head += "Content-Type: %s%s" % [content_type, CRLF]
@@ -349,14 +362,41 @@ func _write(conn: Conn, status: int, content_type: String,
 	head += CRLF
 	var bytes: PackedByteArray = head.to_utf8_buffer()
 	bytes.append_array(body)
-	# `put_data` blocks until the whole buffer is taken, and this runs inside
-	# `_process`: a peer that stops reading a multi-megabyte `/shot` can park
-	# the frame. It has not been reproduced on loopback, but a **short or
-	# failed** write must not be silent -- the client was promised a
-	# `Content-Length` it would then never receive.
-	var sent: Error = conn.peer.put_data(bytes)
-	if sent != OK:
-		push_warning("agent: answer to %d not delivered (%d)" % [conn.id, sent])
+	conn.answer = bytes
+	conn.answer_at = 0
+	conn.answering = true
+	conn.answer_progress_msec = Time.get_ticks_msec()
+
+
+## Offer one bounded piece to the socket. Returns true while the connection
+## remains live; false closes and removes it in [method poll].
+func _flush(conn: Conn) -> bool:
+	if conn.answer_at >= conn.answer.size():
+		return false
+	if Time.get_ticks_msec() - conn.answer_progress_msec >= WRITE_IDLE_MSEC:
+		return false
+	var stop: int = mini(conn.answer_at + WRITE_CHUNK, conn.answer.size())
+	var sent: Array = conn.peer.put_partial_data(
+		conn.answer.slice(conn.answer_at, stop))
+	var code: Error = sent[0]
+	if code != OK:
+		push_warning("agent: answer to %d not delivered (%d)" % [conn.id, code])
+		return false
+	var count: int = DictRead.as_int(sent[1])
+	conn.answer_at += count
+	if count > 0:
+		conn.answer_progress_msec = Time.get_ticks_msec()
+	return conn.answer_at < conn.answer.size()
+
+
+## The overload refusal is a tiny answer for a connection that deliberately
+## never enters `_conns`. One non-blocking attempt is sufficient before it is
+## dropped; tracked responses use [method _queue] and [method _flush].
+func _write_small(conn: Conn, status: int, content_type: String,
+		body: PackedByteArray, extra: Dictionary) -> void:
+	_queue(conn, status, content_type, body, extra)
+	if conn.answering and conn.peer != null:
+		var _sent: Array = conn.peer.put_partial_data(conn.answer)
 
 
 func _close(conn: Conn) -> void:

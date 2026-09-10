@@ -541,6 +541,26 @@ func _slot_files(h: TestHarness) -> void:
 	h.check("slots.has_save_is_the_gate", host.has_save(5))
 	h.check("slots.only_the_one_written", not host.has_save(4))
 
+	# A failed temporary write never opens the live slot. A directory at the
+	# temporary name is the deterministic failure seam: FileAccess cannot
+	# truncate it, while the old slot remains a real file to compare byte for
+	# byte after the refusal.
+	var before_failed_write: PackedByteArray = FileAccess.get_file_as_bytes(
+		host.slot_path(5))
+	var blocked_temp: String = ProjectSettings.globalize_path(
+		host.slot_path(5) + CampaignHost.SAVE_TEMP_SUFFIX)
+	var made_blocker: Error = DirAccess.make_dir_absolute(blocked_temp)
+	h.check("slots.failure_seam_exists", made_blocker == OK,
+		"cannot create the temporary-name directory")
+	h.check("slots.failed_write_is_reported",
+		not host.save(null, 5, 1, "replacement"),
+		"the old implementation returned true after any opened write")
+	h.equal("slots.failed_write_preserves_the_previous_save",
+		FileAccess.get_file_as_bytes(host.slot_path(5)), before_failed_write,
+		"the live slot was opened before the replacement was complete")
+	var removed_blocker: Error = DirAccess.remove_absolute(blocked_temp)
+	h.check("slots.failure_seam_removed", removed_blocker == OK)
+
 	var header: Dictionary = host.slot_header(5)
 	h.equal("slots.header_reads_the_row",
 		[DictRead.as_int(header["result"]),

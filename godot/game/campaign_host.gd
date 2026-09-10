@@ -718,6 +718,12 @@ func slot_path(slot: int = QUICK_SLOT) -> String:
 	return "%s/%s" % [save_dir, SLOT_NAME % slot]
 
 
+## A save is assembled beside its slot and moved over it only after the bytes
+## read back exactly.  A full disk or a short write must leave the previous
+## slot untouched, rather than truncate it and still report success.
+const SAVE_TEMP_SUFFIX: String = ".writing"
+
+
 ## Write the campaign, and optionally the mission in progress.
 ##
 ## The mission blob is [SaveCodec]'s and stays opaque here: that codec refuses
@@ -748,11 +754,32 @@ func save(mission_world: World = null, slot: int = QUICK_SLOT,
 		ProjectSettings.globalize_path(save_dir))
 	if made != OK and made != ERR_ALREADY_EXISTS:
 		return false
-	var file: FileAccess = FileAccess.open(slot_path(slot), FileAccess.WRITE)
+	var target: String = slot_path(slot)
+	var temporary: String = target + SAVE_TEMP_SUFFIX
+	var bytes: PackedByteArray = CampaignCodec.encode(
+		state, blob, when, when_text, name)
+	if FileAccess.file_exists(temporary):
+		var removed: Error = DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(temporary))
+		if removed != OK:
+			return false
+	var file: FileAccess = FileAccess.open(temporary, FileAccess.WRITE)
 	if file == null:
 		return false
-	file.store_buffer(CampaignCodec.encode(state, blob, when, when_text, name))
+	file.store_buffer(bytes)
+	var write_error: Error = file.get_error()
 	file.close()
+	if write_error != OK or FileAccess.get_file_as_bytes(temporary) != bytes:
+		var _discarded: Error = DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(temporary))
+		return false
+	var moved: Error = DirAccess.rename_absolute(
+		ProjectSettings.globalize_path(temporary),
+		ProjectSettings.globalize_path(target))
+	if moved != OK:
+		var _discarded: Error = DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(temporary))
+		return false
 	return true
 
 

@@ -34,6 +34,7 @@ import argparse
 import base64
 import json
 import logging
+import multiprocessing
 import shutil
 import struct
 import sys
@@ -41,6 +42,7 @@ import tempfile
 import time
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -164,16 +166,19 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
     refuse_unsafe_output(root, out)
     caches_root = out
     started = time.perf_counter()
-    staging, manifest, result = run_conversion(root, missions, caches_root,
-                                               language, music)
-    try:
-        with cachemod.publish_lock(caches_root):
+    # Collection removes abandoned staging directories, so the same lock must
+    # cover their whole lifetime.  Taking it only for publish let converter B
+    # collect converter A's still-active staging tree while A was converting.
+    with cachemod.publish_lock(caches_root):
+        staging, manifest, result = run_conversion(
+            root, missions, caches_root, language, music)
+        try:
             target, created = cachemod.publish(staging, caches_root, manifest)
             cachemod.set_active(caches_root, manifest["cache_id"])
             removed = cachemod.collect(caches_root, manifest["cache_id"])
-    except cachemod.CacheError:
-        staging.discard()
-        raise
+        except cachemod.CacheError:
+            staging.discard()
+            raise
     elapsed = time.perf_counter() - started
     size = sum(p.stat().st_size for p in target.rglob("*") if p.is_file())
     LOG.info("%s %s (%d files, %.1f KiB) in %.2fs",
@@ -1383,6 +1388,40 @@ def run_campaign_checks(root: Path, language: str) -> int:
     return c.report()
 
 
+def _cache_race_worker(out: str, entered: Any, release: Any,
+                       staging_path: Any, finished: Any, hold: bool) -> None:
+    """Drive the production publish path with a tiny conversion in a process.
+
+    A process is required: advisory file locks are process-scoped, so threads
+    cannot reproduce two converter CLIs contending for the same destination.
+    """
+    global run_conversion
+
+    def tiny_conversion(root: Path, _missions: list[str], caches_root: Path,
+                        language: str, _music: bool = True) \
+            -> tuple[cachemod.Staging, dict[str, Any], Any]:
+        staging = cachemod.Staging.create(caches_root)
+        staging.write_json("tables/race.json", {"complete": True})
+        entered.set()
+        if hold:
+            staging_path.put(str(staging.root))
+            release.wait(5.0)
+        reader = cachemod.SourceReader(root=root)
+        manifest = cachemod.build_manifest(
+            reader, cachemod.build_inventory(staging), language, [])
+        result = SimpleNamespace(missions=[], prototypes=0, textures=0,
+                                 waves=0, tracks=0, warnings=[])
+        return staging, manifest, result
+
+    run_conversion = tiny_conversion
+    try:
+        code = convert_and_publish(Path(out) / "game", [], Path(out) / "caches",
+                                   "English")
+        finished.put(("ok", code))
+    except Exception as exc:  # pragma: no cover - reported by the parent check
+        finished.put(("error", str(exc)))
+
+
 def run_cache_checks() -> int:
     """The two cache properties of docs/92 §10.4, on a temporary directory."""
     c = Checker()
@@ -1524,6 +1563,52 @@ def run_cache_checks() -> int:
         c.expect("cache.collect_removed_old_cache", removed,
                  [manifest["cache_id"]],
                  "only the old published cache is collected")
+
+        # Two production conversions to one destination are serialized before
+        # either creates staging. With the old lock boundary the second one
+        # entered conversion, published, and collected the first one's live
+        # tree while it was still being written.
+        race_root = Path(tmp) / "race"
+        (race_root / "game").mkdir(parents=True)
+        context = multiprocessing.get_context("spawn")
+        first_entered = context.Event()
+        release_first = context.Event()
+        first_path = context.Queue()
+        finished = context.Queue()
+        first = context.Process(target=_cache_race_worker,
+                                args=(str(race_root), first_entered,
+                                      release_first, first_path, finished, True))
+        first.start()
+        first_ready = first_entered.wait(3.0)
+        live_staging = Path(first_path.get(timeout=3.0)) if first_ready else None
+        second_entered = context.Event()
+        unused_release = context.Event()
+        unused_path = context.Queue()
+        second = context.Process(target=_cache_race_worker,
+                                 args=(str(race_root), second_entered,
+                                       unused_release, unused_path, finished,
+                                       False))
+        second.start()
+        second_waited = not second_entered.wait(0.25)
+        c.check("cache.concurrent_conversion_waits_before_staging",
+                first_ready and second_waited,
+                "the second converter entered before the first released")
+        c.check("cache.concurrent_conversion_keeps_live_staging",
+                live_staging is not None and live_staging.is_dir(),
+                "another converter collected the active staging directory")
+        release_first.set()
+        first.join(5.0)
+        second.join(5.0)
+        outcomes = [finished.get(timeout=3.0), finished.get(timeout=3.0)] \
+            if not first.is_alive() and not second.is_alive() else []
+        c.expect("cache.concurrent_conversions_finish",
+                 sorted(outcomes), [("ok", 0), ("ok", 0)])
+        if first.is_alive():
+            first.terminate()
+        if second.is_alive():
+            second.terminate()
+        first.join()
+        second.join()
 
         # And two destinations are refused outright rather than collected from.
         for destination, why in ((Path("gog_incubation"), "the game root"),
