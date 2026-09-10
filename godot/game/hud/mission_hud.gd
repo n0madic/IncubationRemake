@@ -128,9 +128,8 @@ var _info_height: float = InfoText.BOX_SIZE.y
 ## for does not -- see [method show_info].
 var _info_auto_hide: bool = true
 var _cache_dir: String = ""
-## The two halves of the hint line -- see [method set_hint].
+## The caption shown for the button under the pointer.
 var _hint_button: String = ""
-var _hint_item: String = ""
 var _strings: Localization = null
 var _art: Art = null
 var _font: FontFile = null
@@ -188,15 +187,13 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	panel.name = "Panel"
 	_root.add_child(panel)
 	panel.setup(art, strings, _band_font(), _panel_font())
-	# The remake's own hint (docs/43 section 5.3): the shipped panel names the
-	# weapon and leaves the inventory as twelve pictures, so what a soldier is
-	# carrying could only be read off the icons.
+	# The remake names the shipped inventory pictures with local tooltips; the
+	# catalogue supplies the original game's own equipment names.
 	var catalogue: Array = []
 	if _cache_dir != "":
 		catalogue = DictRead.as_array(CacheLoader.read_json(
 			_cache_dir + "/tables/balance.json").get("equipment", []))
 	panel.use_equipment_names(catalogue)
-	panel.hint.connect(_on_item_hint)
 
 	radar = Radar.new()
 	radar.name = "Radar"
@@ -415,27 +412,14 @@ func refresh(world: World, selected: int, event_available: Callable,
 
 ## The hint line at (60, 22): a button's caption while the pointer is on it.
 ##
-## Two writers share the line and the button wins: the columns and the pad
-## announce and withdraw their captions with the pointer, and the panel's
-## inventory answers a rectangle test every frame ([method
-## UnitPanel.hover_at]). Kept apart because the two arrive in no fixed order
-## -- a pointer leaving a picture for a button would otherwise blank the
-## caption the button had just put up.
 func set_hint(text: String) -> void:
 	_hint_button = text
 	_show_hint()
 
 
-## The inventory's half of the line.
-func _on_item_hint(text: String) -> void:
-	_hint_item = text
-	_show_hint()
-
-
 func _show_hint() -> void:
-	var text: String = _hint_button if _hint_button != "" else _hint_item
-	_hint.text = text
-	_hint.visible = text != ""
+	_hint.text = _hint_button
+	_hint.visible = _hint_button != ""
 
 
 func hint_text() -> String:

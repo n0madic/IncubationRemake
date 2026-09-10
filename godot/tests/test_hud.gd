@@ -936,11 +936,10 @@ func _hud_live(h: TestHarness) -> void:
 			no_missing = false
 	h.check("hud.every_caption_is_shipped", no_missing,
 		"sixteen events and six commands out of Txtmod_h")
-	# The inventory hint -- the remake's own line on the plate's own hint
-	# row (docs/43 section 5.3). The names are `Info.lcl`'s equipment rows,
-	# so none of them is a caption written here, and the pictures are
-	# hit-tested rather than hovered: the panel is rebuilt on every refresh
-	# and `mouse_entered` would not survive it.
+	# Inventory names are local tooltips like the Upgrade Menu's. Their text is
+	# `Info.lcl`'s equipment rows, so none is a caption written here, and the
+	# carrier survives the panel's frequent redraws so Godot's hover timer can
+	# actually expire.
 	var carrier: int = _first_of_player(world, 0)
 	hud.refresh(world, carrier, all_on, none_on, north, east, {}, false)
 	var rects: Array[Rect2] = hud.panel.item_rects()
@@ -951,21 +950,33 @@ func _hud_live(h: TestHarness) -> void:
 		var centre: Vector2 = rects[0].get_center()
 		h.equal("hud.the_picture_names_its_own_item",
 			hud.panel.item_at(centre), ids[0])
-		var named: String = hud.panel.hover_at(centre)
+		var named: String = hud.panel.equipment_name(ids[0])
 		h.check("hud.the_item_hint_is_the_game_s_own_name",
 			named != "" and not named.contains(Localization.MISSING_PREFIX),
 			"equipment %d is `%s`" % [ids[0], named])
-		h.equal("hud.the_item_hint_reaches_the_hint_line",
-			hud.hint_text(), named)
-		# A button under the pointer wins the line -- the two writers are
-		# kept apart so that leaving a picture cannot blank a caption.
+		var item_hint: HintControl = hud.panel.item_hint_at(centre)
+		h.check("hud.the_item_has_a_local_tooltip", item_hint != null
+			and item_hint.tooltip_text == named,
+			"the picture itself carries `%s`" % named)
+		var made: Control = item_hint._make_custom_tooltip("x") \
+			if item_hint != null else null
+		h.check("hud.the_item_uses_the_upgrade_menu_tooltip",
+			made is PanelContainer,
+			"HintControl supplies the plate-scale backed tooltip")
+		if made != null:
+			made.free()
+		h.equal("hud.the_item_leaves_the_top_hint_line_clear",
+			hud.hint_text(), "")
+		hud.refresh(world, carrier, all_on, none_on, north, east, {}, false)
+		h.check("hud.the_item_tooltip_survives_a_redraw",
+			hud.panel.item_hint_at(centre) == item_hint,
+			"the hover timer is not reset with the picture")
+		# The top line remains the command pad and column buttons' caption.
 		hud.set_hint("Overview map")
-		h.equal("hud.a_button_caption_outranks_an_item", hud.hint_text(),
+		h.equal("hud.a_button_caption_uses_the_top_line", hud.hint_text(),
 			"Overview map")
 		hud.set_hint("")
-		h.equal("hud.the_item_hint_comes_back", hud.hint_text(), named)
-		var _left: String = hud.panel.hover_at(centre + Vector2(0.0, 1000.0))
-		h.equal("hud.the_hint_line_clears_off_the_picture", hud.hint_text(), "")
+		h.equal("hud.the_button_hint_line_clears", hud.hint_text(), "")
 	# docs/43 sections 5.1 and 5.2's "key (remake)" column, on the hint line
 	# rather than as a legend across the playing screen.
 	h.equal("hud.a_button_with_no_key_keeps_its_hint",

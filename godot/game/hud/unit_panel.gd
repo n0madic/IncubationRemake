@@ -15,11 +15,6 @@ extends Control
 ## Two fonts: the panel's numbers are 10 px (`font_3`), the only shipped face
 ## that fits its rows, and the name line the interface font of the rest.
 
-## The name of the inventory picture under the pointer, or `""` when the
-## pointer left it. [MissionHud] puts it on the same hint line the command
-## pad and the button columns use.
-signal hint(text: String)
-
 ## RGB565 colours the panel writes with.
 const COLOUR_TEXT: int = 0xFFFF
 const COLOUR_SHADOW: int = 0x632C
@@ -80,14 +75,14 @@ var _small: FontFile = null
 var _items: Array[Control] = []
 var _origin: Vector2 = Vector2.ZERO
 var _hp_max: int = 0
-## The inventory's hover targets, rebuilt by every [method _inventory]: one
-## rectangle and one equipment id per drawn picture, in the panel's own
-## coordinates. **Rectangles and not `mouse_entered`**: the panel is rebuilt
-## on every refresh, so a freed picture's `mouse_exited` and the new one's
-## `mouse_entered` do not pair up and the hint would blink out and stay out.
+## The inventory's tooltip targets: one rectangle and one equipment id per
+## drawn picture, in the panel's own coordinates.
 var _hover_rects: Array[Rect2] = []
 var _hover_ids: PackedInt32Array = PackedInt32Array()
-var _hover_id: int = NO_ITEM
+## One persistent carrier per fixed inventory position. The pictures are
+## rebuilt on every refresh, but these are not: replacing a hovered [Control]
+## would restart Godot's tooltip timer on every redraw and it would never open.
+var _item_hints: Array[HintControl] = []
 ## `Info.lcl`'s equipment names, keyed by id -- the same rows the Item List
 ## screen reads. Empty where no cache was handed over, and an empty name is
 ## no hint rather than a caption of the remake's own.
@@ -101,11 +96,14 @@ func setup(art: Art, strings: Localization, font: FontFile, small: FontFile) -> 
 	_small = small
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	_ensure_inventory_hints()
 
 
 func use_font(font: FontFile, small: FontFile) -> void:
 	_font = font
 	_small = small
+	for area: HintControl in _item_hints:
+		area.face = _font
 
 
 ## Redraw for *slot*, or clear for a slot the world does not have.
@@ -117,9 +115,11 @@ func refresh(world: World, slot: int) -> void:
 	_hover_rects.clear()
 	_hover_ids.clear()
 	if world == null or slot < 0 or not world.has_unit(slot):
+		_sync_inventory_hints({})
 		return
 	var view: Dictionary = world.unit_view(slot)
 	if view.is_empty():
+		_sync_inventory_hints({})
 		return
 	var utab: UnitTypeTable = world.unit_types()
 	var wtab: WeaponTable = world.weapons()
@@ -331,6 +331,7 @@ func _movement_block(view: Dictionary) -> void:
 ## equipment the unit carries, on an 18 by 19 grid.
 func _inventory(view: Dictionary) -> void:
 	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_SKILLS)
+	var hints: Dictionary = {}
 	for id: int in DictRead.to_int32(view["equipment"]):
 		if not INVENTORY_ELEMENTS.has(id):
 			continue
@@ -345,8 +346,51 @@ func _inventory(view: Dictionary) -> void:
 		var picture: TextureRect = _items[drawn] as TextureRect
 		if picture == null:
 			continue
-		_hover_rects.append(Rect2(picture.position, picture.size))
+		var rect: Rect2 = Rect2(picture.position, picture.size)
+		_hover_rects.append(rect)
 		_hover_ids.append(id)
+		hints[element] = {"rect": rect, "text": equipment_name(id)}
+	_sync_inventory_hints(hints)
+
+
+func _ensure_inventory_hints() -> void:
+	if not _item_hints.is_empty():
+		return
+	for element: int in range(INVENTORY_ELEMENTS.size()):
+		var area: HintControl = HintControl.new()
+		area.name = "ItemHint%d" % element
+		area.face = _font
+		area.readable_size = CampaignScreen.readable_size(
+			CampaignScreen.FNT_LABEL)
+		area.ink = CampaignScreen.INK_LABEL
+		area.mouse_filter = Control.MOUSE_FILTER_PASS
+		area.z_index = 1
+		area.visible = false
+		add_child(area)
+		_item_hints.append(area)
+
+
+func _sync_inventory_hints(wanted: Dictionary) -> void:
+	_ensure_inventory_hints()
+	for element: int in range(_item_hints.size()):
+		var area: HintControl = _item_hints[element]
+		if not wanted.has(element):
+			if area.visible:
+				area.visible = false
+			area.tooltip_text = ""
+			continue
+		var entry: Dictionary = DictRead.as_dict(wanted[element])
+		var rect: Rect2 = entry["rect"]
+		var text: String = DictRead.as_string(entry["text"])
+		if area.position != rect.position:
+			area.position = rect.position
+		if area.size != rect.size:
+			area.size = rect.size
+		if area.tooltip_text != text:
+			area.tooltip_text = text
+		var shown: bool = text != ""
+		if area.visible != shown:
+			area.visible = shown
 
 
 ## One sprite at *at*, less its own anchor when the original subtracted it.
@@ -505,24 +549,9 @@ func item_at(at: Vector2) -> int:
 	return NO_ITEM
 
 
-## Point the pointer at *at* and answer the hint that stands after it. The
-## signal is emitted only when the answer changes, so a pointer resting on a
-## picture across a rebuild does not re-announce it every frame.
-func hover_at(at: Vector2) -> String:
-	var found: int = item_at(at)
-	if found != _hover_id:
-		_hover_id = found
-		hint.emit(equipment_name(found))
-	return equipment_name(_hover_id)
-
-
-## The inventory hint as it stands -- what the pointer last landed on.
-func hover_hint() -> String:
-	return equipment_name(_hover_id)
-
-
-func _process(_delta: float) -> void:
-	if not is_visible_in_tree():
-		var _left: String = hover_at(Vector2(-1.0, -1.0))
-		return
-	var _standing: String = hover_at(get_local_mouse_position())
+## The tooltip carrier whose picture covers *at*, for a suite or driver.
+func item_hint_at(at: Vector2) -> HintControl:
+	for area: HintControl in _item_hints:
+		if area.visible and Rect2(area.position, area.size).has_point(at):
+			return area
+	return null
