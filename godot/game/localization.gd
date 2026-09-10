@@ -156,6 +156,13 @@ const OWN: Dictionary = {
 	# loss and keeps the alert ramp.
 	"debriefing.guest": {"English": "guest, does not join the squad"},
 	"debriefing.squad_full": {"English": "the squad is full, left behind"},
+	# The one thing the roll of docs/101 section 14 says that Blue Byte did
+	# not write. It is appended after the shipped bank's last line, in the
+	# roll's own grammar -- a heading and a name -- and is deliberately the
+	# **only** invented text on that screen: everything above it is
+	# `Txtmod_a` 161..338 verbatim.
+	"credits.remake": {"English": "Remake:"},
+	"credits.remake_by": {"English": "n0madic"},
 }
 
 ## What a missing key renders as. Visible on purpose.

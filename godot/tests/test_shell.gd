@@ -114,6 +114,18 @@ func _boot_paths(h: TestHarness) -> void:
 	h.equal("boot.mission_wins_over_campaign",
 		DictRead.as_string(both["kind"]), SliceMain.BOOT_MISSION)
 
+	# `--credits` is a bare flag, not a `key=value` one, and it needs neither
+	# a cache nor a campaign: the roll is reached in the game only by
+	# finishing a chain.
+	var roll: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--credits"]), cache, "_C_140")
+	h.equal("boot.credits_argument_opens_the_roll",
+		DictRead.as_string(roll["kind"]), SliceMain.BOOT_CREDITS)
+	var roll_bare: Dictionary = SliceMain.boot_choice(
+		PackedStringArray(["--credits"]), PackedStringArray(), "")
+	h.equal("boot.credits_needs_no_cache",
+		DictRead.as_string(roll_bare["kind"]), SliceMain.BOOT_CREDITS)
+
 	# An empty cache still answers, rather than indexing element 0 of nothing.
 	var empty: Dictionary = SliceMain.boot_choice(
 		PackedStringArray(["--mission=_C_140"]), PackedStringArray(), "_C_140")
@@ -1494,6 +1506,7 @@ func _frontend_screens(h: TestHarness) -> void:
 		_button_labels_of(credits).has(_strings.shipped("Txtmod_a", 7))
 		and _button_labels_of(credits).has(_strings.shipped("Txtmod_a", 8)))
 	h.equal("frontend.credits_plate", credits.plate_name(), "credits")
+	_credits_roll(h, credits)
 	_no_missing(h, "credits", credits)
 	credits.free()
 
@@ -1537,6 +1550,115 @@ func _frontend_screens(h: TestHarness) -> void:
 
 
 # --- reading a built screen --------------------------------------------------
+
+## The roll `fcn.0044BD90` walks -- `Txtmod_a` from 161 until *END*, the code
+## every line carries, the two advances and the start the original writes.
+##
+## The layout is pinned through [method CreditsScreen.roll_layout], which is
+## pure, so what is checked is the arithmetic the screen draws with rather
+## than a scrape of the labels it built.
+func _credits_roll(h: TestHarness, credits: CreditsScreen) -> void:
+	var lines: PackedStringArray = credits.shipped_lines()
+	h.equal("frontend.credits_roll_lines", lines.size(), 178,
+		"`Txtmod_a` 161..338; 339 is the terminator")
+	h.equal("frontend.credits_roll_terminator",
+		_strings.shipped(CampaignScreen.BANK_MENU, 339),
+		CreditsScreen.END_MARK,
+		"the walk stops on the bank's own END and not on a count")
+	h.equal("frontend.credits_roll_first", lines[0], "0Credits",
+		"the title arm, code 0")
+	var coded: int = 0
+	for line: String in lines:
+		var code: int = -1
+		if line.length() > 0:
+			code = line.unicode_at(0) - "0".unicode_at(0)
+		if code >= CreditsScreen.CODE_TITLE and code <= CreditsScreen.CODE_NAME:
+			coded += 1
+	h.equal("frontend.credits_roll_every_line_coded", coded, lines.size(),
+		"every shipped line opens with one of the jump table's five digits")
+	var layout: Array[Dictionary] = CreditsScreen.roll_layout(lines)
+	h.equal("frontend.credits_roll_drawn", layout.size(), lines.size(),
+		"no shipped line takes the silent arm")
+	var first: Dictionary = layout[0]
+	var first_code: int = first["code"]
+	var first_text: String = first["text"]
+	var first_y: float = first["y"]
+	var first_rules: int = first["rules"]
+	h.equal("frontend.credits_roll_title_code", first_code,
+		CreditsScreen.CODE_TITLE)
+	h.equal("frontend.credits_roll_title_text", first_text, "Credits",
+		"the code is stripped and the rest is printed")
+	h.equal("frontend.credits_roll_title_y", first_y, 0.0)
+	h.equal("frontend.credits_roll_title_rules", first_rules, 2,
+		"y+1 and y+3, `0x94B2`")
+	# The bank's 162 is a bare `2` -- an empty group end, which is what opens
+	# the 30-unit gap in front of the first heading.
+	var third: Dictionary = layout[2]
+	var third_y: float = third["y"]
+	var third_code: int = third["code"]
+	var third_rules: int = third["rules"]
+	h.equal("frontend.credits_roll_group_gap", third_y,
+		CreditsScreen.ADVANCE_LINE + CreditsScreen.ADVANCE_GROUP,
+		"15 for the title and 30 for the spacer")
+	h.equal("frontend.credits_roll_heading_code", third_code,
+		CreditsScreen.CODE_HEADING, "163 is `1Produced by:`")
+	h.equal("frontend.credits_roll_heading_rules", third_rules, 1,
+		"one rule at y+1, `0x632C`")
+	h.equal("frontend.credits_roll_height",
+		CreditsScreen.roll_height(lines), 3750.0,
+		"178 lines, 30 for each group end and 15 for the rest")
+	h.equal("frontend.credits_roll_start", credits.roll_top(),
+		CreditsScreen.ROLL_START,
+		"`[0x0050FE1C] = 410` before the first frame")
+	h.equal("frontend.credits_roll_speed", CreditsScreen.ROLL_SPEED, 20.0,
+		"one unit a frame at `fcn.0047F2E0(20, 20)`'s rate")
+	# The ramp the underlines are drawn through fades either side of the
+	# engine's own row, and the engine leaves exactly one unit of air between
+	# that row and the cap height of the name below it. A fade that ate the
+	# whole unit read as the rule touching the first name of the group.
+	h.check("frontend.credits_roll_rule_fade_fits",
+		CreditsScreen.RULE_FADE > 0.0 and CreditsScreen.RULE_FADE < 0.5,
+		"the soft edge stays inside the air the original leaves")
+	# The remake's own group -- the only invented text on the screen. It is
+	# spliced in after the title rather than put instead of anything: the
+	# shipped bank comes out of the whole roll unchanged and in order.
+	var whole: PackedStringArray = credits.roll_lines()
+	var own: PackedStringArray = credits.own_lines()
+	h.equal("frontend.credits_roll_tail_length", whole.size(),
+		lines.size() + own.size(), "a heading and a name")
+	var without: PackedStringArray = PackedStringArray()
+	for line: String in whole:
+		if not own.has(line):
+			without.append(line)
+	h.equal("frontend.credits_roll_shipped_first", without, lines,
+		"the group is spliced in; not one shipped line changes or moves")
+	h.equal("frontend.credits_roll_own_group_is_second",
+		whole.slice(0, 2), lines.slice(0, 2),
+		"`Txtmod_a` 161's title and its spacer stay first")
+	h.equal("frontend.credits_roll_own_group_at_front", whole.slice(2, 4), own,
+		"and the remake's group is the first one after them")
+	var tail: Array[Dictionary] = CreditsScreen.roll_layout(own)
+	h.equal("frontend.credits_roll_tail_drawn", tail.size(), 2,
+		"a heading and a name")
+	var heading: Dictionary = tail[0]
+	var heading_text: String = heading["text"]
+	var heading_code: int = heading["code"]
+	var name_line: Dictionary = tail[1]
+	var name_text: String = name_line["text"]
+	var name_code: int = name_line["code"]
+	h.equal("frontend.credits_roll_tail_heading", heading_text,
+		_strings.text(CreditsScreen.OWN_REMAKE))
+	h.equal("frontend.credits_roll_tail_heading_code", heading_code,
+		CreditsScreen.CODE_HEADING, "underlined, like every other heading")
+	h.equal("frontend.credits_roll_tail_name", name_text,
+		_strings.text(CreditsScreen.OWN_REMAKE_BY))
+	h.equal("frontend.credits_roll_tail_name_code", name_code,
+		CreditsScreen.CODE_GROUP_END)
+	h.check("frontend.credits_roll_tail_is_own",
+		not name_text.begins_with(Localization.MISSING_PREFIX)
+		and not lines.has("%d%s" % [CreditsScreen.CODE_GROUP_END, name_text]),
+		"the group comes from the remake's own catalogue, not the bank")
+
 
 func _no_missing(h: TestHarness, name: String, screen: CampaignScreen) -> void:
 	var missing: PackedStringArray = PackedStringArray()

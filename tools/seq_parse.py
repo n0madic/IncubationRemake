@@ -175,6 +175,82 @@ FRONTEND = {
         # *Continue* both call it with 1.
         "flag": 0x0050FE00,
         "flag_store": 0x0044BC64,
+        # **The roll.**  ``Menu_a.lcl``'s Credits block carries the two
+        # buttons and nothing else, but the menu's draw loop 0x0044B5E0 calls
+        # 0x0044BD90 on every frame the window selector is 15, and that walks
+        # ``Txtmod_a`` from 161 until a line reads *END*.  Every constant here
+        # is read at the instruction that writes or pushes it.
+        "roll": {
+            "walk": 0x0044BD90,
+            # ``cmp dword [0x0050FDF8], 0xF`` then the call two instructions
+            # on: the roll is drawn only while the credits window is up.
+            "window_gate": 0x0044B691,
+            "gate_bytes": bytes.fromhex("833df8fd50000f" "750f"),
+            "call_site": 0x0044B6A1,
+            # ``mov dword [0x0050FE1C], 0x19A`` -- the first line's y.
+            "position": 0x0050FE1C,
+            "start": 410,
+            "start_store": 0x0044C092,
+            # ``dec dword [0x0050FE1C]`` at the end of a frame, gated on the
+            # delay counter 0x0050FE20, which nothing ever sets above zero.
+            "step_site": 0x0044C026,
+            "delay": 0x0050FE20,
+            # ``fcn.0047F2E0(20, 20)`` -- aLIB's frame-rate controller, which
+            # busy-waits on GetTickCount until 1000/20 ms have passed.  One
+            # step a frame at 20 frames a second is 20 units a second.
+            "fps": 20,
+            "fps_pushes": 0x0044BD9C,
+            "fps_call": 0x0044BDB0,
+            "rate_limiter": 0x0047F2E0,
+            # ``fcn.00447B20(0, 0, 640, 400)`` -- the clip, which is why the
+            # roll passes behind the buttons' row at 410 rather than over it.
+            "clip": (0, 0, 640, 400),
+            "clip_pushes": 0x0044BDB8,
+            "clip_call": 0x0044BDC4,
+            # ``mov dword [var_20h], 0xA1`` -- the first string id.
+            "first_id": 161,
+            "first_id_store": 0x0044BDA4,
+            "terminator": ("END", 0x004C4868),
+            "terminator_load": 0x0044BE38,
+            # The five-arm switch on ``byte - '0'``.
+            "switch_table": 0x0044C03C,
+            "arms": (0x0044BE91, 0x0044BF42, 0x0044BFB8, 0x0044BFE8,
+                     0x0044BFB8),
+            # ``cmp al, 0x32`` -- a group end steps 30 and everything else 15.
+            "advance_test": 0x0044BFF1,
+            "advance_bytes": bytes.fromhex("750583c01eeb"),
+            "advance_group": 30,
+            "advance_line": 15,
+            # The three printing arms, each ten pushes into aPrintLibText:
+            # (format 2, 0, 0, cA, cX, 0, y, x=600, text, font).
+            "print": 0x00439610,
+            "text_x": 600,
+            "prints": {
+                "title": (0x0044BF1E, bytes.fromhex(
+                    "6a026a006a00682c63000068ffff00006a00578d4c2445"
+                    "6858020000516a01")),
+                "heading": (0x0044BF97, bytes.fromhex(
+                    "6a026a006a00688631000068b29400006a00578d442445"
+                    "6858020000506a01")),
+                "name": (0x0044BFB8, bytes.fromhex(
+                    "6a026a006a00682c63000068ffff00006a00578d4c2445"
+                    "6858020000516a00")),
+            },
+            "colours": {"title": (0xFFFF, 0x632C),
+                        "heading": (0x94B2, 0x3186),
+                        "name": (0xFFFF, 0x632C)},
+            "fonts": {"title": 1, "heading": 1, "name": 0},
+            # ``fcn.00463D80`` case 0 -- a row of pixels running *left* from
+            # x 599 for the width aGetLibTextLength measured.  The title
+            # underlines twice, at y+1 and y+3; a heading once, at y+1.
+            "rule": 0x00463D80,
+            "rule_x": 599,
+            "rule_calls": (0x0044BEDE, 0x0044BF16, 0x0044BF8F),
+            "rule_colours": {"title": 0x94B2, "heading": 0x632C},
+            "measure": 0x00439C60,
+            "print_tail": 0x0044BFD7,
+            "print_call": 0x0044BFE0,
+        },
     },
     "static_extro": {
         "window": 11,                  # Menu_b's 11_SlideShow
@@ -937,6 +1013,86 @@ def check_notes(video: Path, ck: Checks) -> None:
 
 
 
+def check_credits_roll(pe: PEFile, roll: dict[str, Any], ck: Checks) -> None:
+    """The credits' scrolling roll -- ``fcn.0044BD90``, read instruction by
+    instruction.
+
+    The roll is the half of the credits screen ``Menu_a.lcl`` does not carry:
+    the block writes two buttons and the walk that puts 178 lines up the
+    plate's dark side is in the executable alone.
+    """
+    ck.check("frontend.credits.roll.gate",
+             pe.bytes_at(roll["window_gate"], len(roll["gate_bytes"]))
+             == roll["gate_bytes"]
+             and call_target(pe, roll["call_site"]) == roll["walk"],
+             "the menu loop no longer runs the roll while window 15 is up")
+    ck.check("frontend.credits.roll.start",
+             pe.bytes_at(roll["start_store"], 10)
+             == b"\xc7\x05" + struct.pack("<I", roll["position"])
+             + struct.pack("<I", roll["start"]),
+             f"the roll no longer starts at {roll['start']}")
+    ck.check("frontend.credits.roll.step",
+             pe.bytes_at(roll["step_site"], 6)
+             == b"\xff\x0d" + struct.pack("<I", roll["position"]),
+             "the roll no longer steps one unit a frame")
+    ck.check("frontend.credits.roll.rate",
+             pe.bytes_at(roll["fps_pushes"], 4)
+             == bytes([0x6A, roll["fps"], 0x6A, roll["fps"]])
+             and call_target(pe, roll["fps_call"]) == roll["rate_limiter"],
+             f"the roll no longer asks for {roll['fps']} frames a second")
+    clip = roll["clip"]
+    ck.check("frontend.credits.roll.clip",
+             pe.bytes_at(roll["clip_pushes"], 12)
+             == b"\x68" + struct.pack("<I", clip[3])
+             + b"\x68" + struct.pack("<I", clip[2]) + b"\x57\x57"
+             and call_target(pe, roll["clip_call"]) == 0x00447B20,
+             f"the roll's clip is no longer {clip}")
+    ck.check("frontend.credits.roll.first_id",
+             pe.bytes_at(roll["first_id_store"], 8)
+             == b"\xc7\x44\x24\x20" + struct.pack("<I", roll["first_id"]),
+             f"the walk no longer opens at string {roll['first_id']}")
+    mark, mark_va = roll["terminator"]
+    ck.check("frontend.credits.roll.terminator",
+             pe.cstring(mark_va) == mark
+             and pe.bytes_at(roll["terminator_load"], 5)
+             == b"\xbe" + struct.pack("<I", mark_va),
+             f"the walk no longer stops on {mark!r}")
+    arms = tuple(pe.u32(roll["switch_table"] + 4 * i) for i in range(5))
+    ck.check("frontend.credits.roll.switch", arms == roll["arms"],
+             f"the five arms of the code digit changed: {arms}")
+    ck.check("frontend.credits.roll.advance",
+             pe.bytes_at(roll["advance_test"], 2) == b"\x3c\x32"
+             and pe.bytes_at(roll["advance_test"] + 10,
+                             len(roll["advance_bytes"]))
+             == roll["advance_bytes"]
+             and pe.bytes_at(roll["advance_test"] + 17, 3)
+             == bytes([0x83, 0xC0, roll["advance_line"]]),
+             f"a group end no longer steps {roll['advance_group']} and a line "
+             f"{roll['advance_line']}")
+    for name, (va, block) in roll["prints"].items():
+        cx, ca = roll["colours"][name]
+        ck.check(f"frontend.credits.roll.print.{name}",
+                 pe.bytes_at(va, len(block)) == block
+                 and struct.pack("<I", ca) in block
+                 and struct.pack("<I", cx) in block
+                 and struct.pack("<I", roll["text_x"]) in block
+                 and block[-1] == roll["fonts"][name],
+                 f"the {name} arm's font, colours or x changed")
+    # The three arms share one tail: the font handle by index, then the print
+    # itself.  Only the name arm falls into it; the other two jump.
+    ck.check("frontend.credits.roll.print.tail",
+             call_target(pe, roll["print_tail"]) == 0x00439E20
+             and call_target(pe, roll["print_call"]) == roll["print"],
+             "the roll no longer prints through aPrintLibText")
+    ck.check("frontend.credits.roll.rules",
+             all(call_target(pe, va) == roll["rule"]
+                 for va in roll["rule_calls"])
+             and pe.bytes_at(roll["rule_calls"][0] - 6, 5)
+             == b"\x68" + struct.pack("<I", roll["rule_x"]),
+             "the underlines no longer run left from x "
+             f"{roll['rule_x']}")
+
+
 def check_frontend(pe: PEFile, ck: Checks) -> None:
     """The strings, holds, gate and flag of the front end around the sequences."""
     fe = FRONTEND
@@ -961,6 +1117,7 @@ def check_frontend(pe: PEFile, ck: Checks) -> None:
              pe.bytes_at(fe["credits"]["flag_store"], 5)
              == b"\xa3" + struct.pack("<I", fe["credits"]["flag"]),
              "0x0044BC60 no longer writes the credits flag")
+    check_credits_roll(pe, fe["credits"]["roll"], ck)
     ck.check("frontend.static_extro.continue",
              call_target(pe, fe["static_extro"]["continue_call"]) == 0x0044BC60
              and pe.bytes_at(0x0045BD86, 2) == b"\x6a\x01",

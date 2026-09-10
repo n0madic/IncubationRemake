@@ -54,7 +54,7 @@ python3 tools/pe_exports.py         --check gog_incubation   # 6 engine listings
 python3 tools/interface_tables.py   --check gog_incubation    # 80 checks
 python3 tools/charisma_tables.py    --check gog_incubation    # 46 checks
 python3 tools/presentation_tables.py --check gog_incubation   # 727 checks, docs/42
-python3 tools/seq_parse.py          --check gog_incubation    # 160 checks, 130/130 (--manifest prints the two cache documents)
+python3 tools/seq_parse.py          --check gog_incubation    # 174 checks, 130/130 (--manifest prints the two cache documents)
 python3 tools/hud_tables.py         --check gog_incubation    # 194 checks, docs/43
 python3 tools/charisma_selftest.py                            # no corpus; synthetic
 python3 tools/dbgcall_patches.py    gog_incubation --selftest # 15 checks
@@ -68,7 +68,7 @@ python3 tools/ai_runtime.py         --check gog_incubation   # 84 checks, 108 mi
 python3 tools/campaign_runtime.py   --check gog_incubation   # 483 checks, docs/27
 python3 tools/remake_convert.py     gog_incubation --check   # 341 checks, 6 missions + the 2 campaign maps; 40 s
 python3 tools/remake_convert.py     --check-cache            # 29 checks
-bash   godot/run_tests.sh                                    # 40 suites, 5132 checks
+bash   godot/run_tests.sh                                    # 40 suites, 5161 checks
 ```
 
 The last six belong to the remake (`docs/93` and its addendum). `run_tests.sh` needs Godot 4.7
@@ -901,6 +901,7 @@ python3 tools/remake_convert.py gog_incubation --campaign-maps \
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
+godot --path godot -- --credits               # straight to the credits roll (docs/101 section 14)
 godot --path godot -- --mission=_C_141 --cheats=god,ammo,kill,moves
 #   ^ the level tester's switches (docs/92 section 7.18). In a running game the
 #     same switches are reached by typing a code on the hidden line the

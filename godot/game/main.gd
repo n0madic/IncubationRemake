@@ -29,6 +29,13 @@ const SEQUENCE_ARG: String = "--sequence="
 ## The way a level is actually walked: the hidden code line ([CheatEntry]) is
 ## for a session already in progress.
 const CHEATS_ARG: String = "--cheats="
+## `--credits` -- open the credits roll straight from a bare launch, with no
+## campaign behind it and nothing to win first (docs/101 section 14). The
+## roll is three minutes of moving text and the only way into it in the game
+## is to finish a chain, so photographing it or watching it move needed four
+## debugging commands and a twenty-five second wait. *Back* leaves for the
+## menu, exactly as it does after an ending.
+const CREDITS_ARG: String = "--credits"
 ## What [method shell_entry] answers.
 const SHELL_SPLASH: String = "splash"
 const SHELL_MENU: String = "menu"
@@ -37,6 +44,11 @@ const BOOT_MISSION: String = "mission"
 const BOOT_CAMPAIGN: String = "campaign"
 const BOOT_SHELL: String = "shell"
 const BOOT_SEQUENCE: String = "sequence"
+const BOOT_CREDITS: String = "credits"
+## What [method show_campaign_screen] answers `credits` with: the roll, raised
+## without a campaign. A debugging entry past the two endings, the way
+## `--mission=` is one past the campaign.
+const SCREEN_CREDITS: String = "credits"
 ## The seven logical ids `aCreateSeqPlayer`'s compressed switch accepts
 ## (docs/41 section 2). Here as a constant so the command line is checked
 ## without a cache: the manifest carries the same seven.
@@ -649,6 +661,8 @@ func _boot() -> void:
 				DictRead.as_int(choice["campaign"]), settings.difficulty)
 			var _map: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
+		BOOT_CREDITS:
+			var _roll: CampaignScreen = _show_credits()
 		BOOT_SEQUENCE:
 			# The fallback is the `--campaign=` arm's: a cache with no
 			# cutscenes in it answers `null` here, and without this the game
@@ -723,6 +737,9 @@ static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
 				return {"kind": BOOT_SHELL, "mission": "", "campaign": 0,
 					"sequence": -1, "warnings": warnings}
 			return {"kind": BOOT_CAMPAIGN, "mission": "", "campaign": chain,
+				"sequence": -1, "warnings": warnings}
+		if arg == CREDITS_ARG:
+			return {"kind": BOOT_CREDITS, "mission": "", "campaign": 0,
 				"sequence": -1, "warnings": warnings}
 		if arg.begins_with(SEQUENCE_ARG):
 			var id: int = arg.substr(SEQUENCE_ARG.length()).to_int()
@@ -1144,6 +1161,11 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 	# that raises a screen itself is not cancelling itself here.
 	_hold_left = 0.0
 	_hold_then = Callable()
+	# **Before the campaign guard, and deliberately.** The roll needs no
+	# campaign state and is reached in the game only by finishing a chain, so
+	# `ui credits` is the way a driver gets at it without playing one.
+	if name == SCREEN_CREDITS:
+		return _show_credits()
 	if campaign == null:
 		return null
 	# **Mission control's entry runs the gate first** (`0x00456FC0(-1)`,

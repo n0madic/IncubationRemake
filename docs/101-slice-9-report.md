@@ -727,3 +727,153 @@ picture of the map with the squad standing on it.
   screenshot could not have shown: a metre of travel at forty thousand units
   of depth is a pixel, and the first version of that check had the composition
   wrong and read exactly -1.
+
+
+## 14. The credits screen has a roll — **[code] `fcn.0044BD90`** *(2026-09-10)*
+
+§6 and [`92` §7.15 I8](92-remake-architecture.md) read the credits as *two
+buttons on a plate*, because that is all `Menu_a.lcl`'s `:Credits;` block
+carries (two `GUI_SetButton` calls, `Txtmod_a` 7 and 8). The remake drew
+exactly that, and the screen came out as `Credits.bmp` with a black right-hand
+half and nothing in it — which is what a player reported.
+
+**The roll is in the executable, not in the script.** `0x0044C050`, the
+routine that loads the plate and builds window 15, also writes
+`[0x0050FE1C] = 410` (`0x0044C092`) and clears the delay counter
+`[0x0050FE20]`; the menu's draw loop `fcn.0044B5E0` then calls `fcn.0044BD90`
+on every frame the window selector `[0x0050FDF8]` is 15 (`0x0044B691`, the
+call at `0x0044B6A1`). That function is the roll:
+
+* it clips to `fcn.00447B20(0, 0, 640, 400)` — which is why the lines pass
+  **behind** the buttons' row at 410 rather than over it;
+* it walks `Txtmod_a` from string **161** (`mov dword [var_20h], 0xA1`) through
+  `0x00470FE0`, one `wsprintf("%s")` per line, and stops on a line equal to
+  `"END"` (`0x004C4868`). The shipped bank has the terminator at **339**, so
+  the roll is 178 lines;
+* each line's **first character is a code**, read as a five-arm `switch` on
+  `byte - '0'` whose jump table is at `0x0044C03C`; the rest of the line is
+  what is printed, right-aligned (`Format` 2) at *x* **600**;
+* at the end of the frame it decrements `[0x0050FE1C]` by one
+  (`0x0044C026`), gated on the delay counter, which nothing in the image ever
+  sets above zero. Nothing resets the position: the original's credits scroll
+  away and do not come back.
+
+| Code | Arm | Font | `cX`/`cA` | Rules | Advance |
+|---|---|---|---|---|---|
+| `0` title | `0x0044BE91` | 1 | `0xFFFF`/`0x632C` | two, *y*+1 and *y*+3, `0x94B2` | 15 |
+| `1` heading | `0x0044BF42` | 1 | `0x94B2`/`0x3186` | one, *y*+1, `0x632C` | 15 |
+| `2` name, last of its group | `0x0044BFB8` | 0 | `0xFFFF`/`0x632C` | none | 30 |
+| `3` | `0x0044BFE8` | — | — | none | 15 |
+| `4` name | `0x0044BFB8` | 0 | `0xFFFF`/`0x632C` | none | 15 |
+
+The advance is the **printed line's** own code (`cmp al, 0x32` at
+`0x0044BFF1`), so a `2` is what opens the gap in front of the next heading —
+`%:162,"2"` is a bare code with no text, an empty group end. A rule is
+`fcn.00463D80` case 0: a row of pixels running **left** from *x* 599 for
+exactly the width `aGetLibTextLength` measured, i.e. an underline under the
+line above it. The shipped bank's 178 lines use codes 0, 1, 2 and 4 only; the
+silent arm is unreached.
+
+**The speed is measured, not chosen.** The function's own first call is
+`fcn.0047F2E0(20, 20)` — aLIB's frame-rate controller, whose assert names it
+*skip controller* (`C:\aProject\aLIB\aWinTools.cpp`) and which busy-waits on
+`GetTickCount` at `0x0047F359` until `1000/20` ms have passed. One unit a
+frame at 20 frames a second is **20 plate units a second**, and the whole roll
+is 3750 units — a little over three minutes.
+
+**These calls pass literal RGB565.** `0xFFFF`, `0x632C`, `0x94B2` and `0x3186`
+are the values `0x0043E680` resolves the `GUI_SetText` ramp *indices* to
+([`20` §7.4](20-lcl-language.md) — entries 3 and 8 are the two greys); here
+they reach `aPrintLibText` already resolved. It is the one call site in the
+front end that does, and it does not retro-fit the UNVERIFIED note on the
+other screens' `cX`/`cA` columns, which really are indices.
+
+**Two divergences, both stated.** The first is a **group the original does not
+have**: a heading and a name saying who made the remake, spliced in after
+`Txtmod_a` 161's *Credits* and the empty group end that follows it. It is
+written in the roll's own grammar (`"1"` and `"2"` codes, so it is underlined
+and spaced like every other group) and comes from `Localization.OWN` rather
+than from a literal -- the same seam as every other string `game/` writes that
+the original never had to say ([`92` §7.6](92-remake-architecture.md)). It is
+the **only** invented text on the screen. It was at the end, which is the
+polite place for it; the roll is three minutes long and nobody waits, so it is
+the first group instead, with the screen's own heading still above it.
+
+The second: only `cX` is drawn. The engine's font bitmaps
+store pixel values 0..4 and `aPrintLibText` writes `cX` for value 1 and `cA`
+for value 2 ([`20` §7.4](20-lcl-language.md)); the converted faces are one
+colour a glyph, so `font_color` carries `cX` and the second entry of each
+line's ramp is read and not rendered.
+
+**Making it move without shimmering took four passes, and the last one is
+the only one that holds.** What the port has that the original does not is a
+window of arbitrary size: a plate unit is not a screen pixel, and a text
+server places glyphs on a grid of its own while a rectangle is drawn wherever
+it is asked. The four, in order, with what each was and why it went:
+
+1. **A hard rectangle, moved continuously.** One plate unit at 1280x800 is
+   five thirds of a pixel, so each rule covered two pixel rows at one offset
+   and one at the next: the underlines blinked their way up the screen.
+2. **A four-row alpha ramp (`0, 1, 1, 0`) under `TEXTURE_FILTER_LINEAR`**,
+   fading a quarter of a unit either side of the engine's own row. Coverage
+   then changes *continuously* with position, and the blinking went. This
+   stayed. The fade started at half a unit and had to come down: the engine
+   leaves a whole unit of air between a rule and the cap height of the name
+   below it, and half of that is visibly too little.
+3. **Rounding the travel to a whole window pixel**, which is the obvious port
+   of `dec dword [0x0050FE1C]` and was wrong twice over. A window pixel is
+   half a *rendered* pixel on a display with a backing store, and a step of
+   about thirty a second is a visible shudder under every name where the
+   ramp hides it on the rules.
+4. **A whole canvas pixel, with the face's sub-pixel positioning turned off.**
+   These are one answer and not two: with positioning off a glyph lands on a
+   whole canvas pixel, which is exactly where the step puts the roll, so the
+   server's own rounding is a no-op and text and rule move as one picture
+   rather than as a picture and a rule. At a viewport 480 units tall that
+   step is one plate unit twenty times a second -- the original's own
+   cadence. Hinting is off with it, because a hinted face re-rasterises its
+   stems at every offset and a moving line appears to boil.
+
+5. **The roll is positioned, not anchored.** An anchor is a fraction of the
+   parent, so the roll's *y* went through a divide and a multiply in 32-bit
+   float on its way to a pixel, and the error of that round trip changes with
+   the value. Every line inherits it, so a line whose position happened to sit
+   near the half-pixel rounded up on one step and down on the next while its
+   neighbours did not -- **some** names twitched and the rest were still,
+   which is the shape of the report that found it. Written straight, the
+   roll's *y* is exact, each line's offset inside it is constant, and every
+   line rounds the same way on every frame.
+
+Two things the port has to get right that the engine does not, both found by
+measuring a frame rather than by reading: `aPrintLibText` prints from the
+glyphs' **bottom**, so a [Label] bottom-aligned in its own box hangs its
+descent below the anchor and every rule hung off that box lands a descent too
+low -- measured as 3.8 units of air above the rule and 0.6 below, where the
+engine leaves 1 and 3. The box is dropped by the face's declared descent.
+Taking the block's height less its ascent instead -- which looks more
+principled -- is wrong, because a [Label]'s block carries the theme's line
+spacing: it came out five units too large and put the rule through the
+heading.
+
+**What changed.** `godot/game/screens/credits_screen.gd` carries the walk, the
+code table and the roll; the layout is a pure `roll_layout()` so `test_shell`
+pins it without a clock (27 checks: the 178 lines, the terminator, every
+line's code, the title's two rules, the 15/30 advances, the 3750-unit height,
+the 410 start, the 20-unit speed, and the tail -- that it is appended without
+moving a shipped line, that its heading is underlined like the bank's own and
+that both of its strings come from the remake's catalogue, and the underline's fade staying inside the air the original leaves). `seq_parse.py --check` pins the fourteen
+constants above out of the executable and is **174** checks where it was 160.
+Nothing in the cache changed: `text/<language>.json` has carried the whole
+`Txtmod_a` bank since the shell slice, so no `CONVERTER_VERSION` bump and no
+republish. **Two debugging entries lead to it.** `--credits` on a bare launch opens the
+roll with no campaign behind it, and the agent's `ui credits` raises it over
+whatever is up -- both because the only way there in the game is to finish a
+chain, and three minutes of moving text cannot be judged by winning one first.
+*Back* leaves for the menu either way, exactly as it does after an ending.
+
+Driven through the control server's **debugging entries** rather
+than by winning a chain: `campaign 1` starts the state, `enter _C_YYY` writes
+the mission and `ui map` runs mission control's entry gate — then a key ends
+the animated extro and the 4000 ms hold raises the screen. The roll comes up
+the dark half of the plate with its headings underlined and passes behind
+*Back* and *Exit Game*.

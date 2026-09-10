@@ -234,6 +234,48 @@ sequence-player id: `0x00456FC0` intercepts it and enters the separate static
 extro screen described in §4.  The directory mapping and the otherwise
 unexplained `Dialog_09`/`Dialog_16` transitions are now closed by §2.
 
+### 5.1 The credits screen is a roll, and it is in the executable
+
+Both endings hand over to window 15, `Menu_a.lcl`'s `:Credits;` block, which
+carries two `GUI_SetButton` calls and nothing else.  The credits themselves
+are drawn by `fcn.0044BD90`, which the menu's draw loop `fcn.0044B5E0` calls
+on every frame the window selector `[0x0050FDF8]` is 15 (`0x0044B691`).
+
+`0x0044C050` writes the scroll position `[0x0050FE1C] = 410` before the loop
+starts; the walk clips to `(0, 0, 640, 400)`, reads `Txtmod_a` from string
+**161** until one equals `"END"` (339 in the shipped bank, so 178 lines),
+prints each right-aligned at *x* 600, and decrements the position by one at
+the end of the frame (`0x0044C026`).  Its first call is `fcn.0047F2E0(20, 20)`
+-- aLIB's frame-rate controller, which busy-waits on `GetTickCount` until
+`1000/20` ms have passed -- so the roll moves **20 units a second**.
+
+Every line's first character is a code, a five-arm `switch` on `byte - '0'`
+with its jump table at `0x0044C03C`; the rest of the line is printed.
+
+| Code | Font | `cX`/`cA` | Rules | Advance |
+|---|---|---|---|---|
+| `0` title | 1 | `0xFFFF`/`0x632C` | two, *y*+1 and *y*+3, `0x94B2` | 15 |
+| `1` heading | 1 | `0x94B2`/`0x3186` | one, *y*+1, `0x632C` | 15 |
+| `2` name, last of its group | 0 | `0xFFFF`/`0x632C` | none | 30 |
+| `3` | — | — | none | 15 |
+| `4` name | 0 | `0xFFFF`/`0x632C` | none | 15 |
+
+The advance is the printed line's own code (`cmp al, 0x32`, `0x0044BFF1`), so
+a `2` opens the gap in front of the next heading; `%:162,"2"` is an empty
+group end that exists for exactly that.  A rule is `fcn.00463D80` case 0 -- a
+row of pixels running **left** from *x* 599 for the width `aGetLibTextLength`
+measured, an underline under the line above it.  Nothing resets the position:
+the roll scrolls away and does not come back.
+
+The remake appends a heading and a name of its own after the bank's last
+line, in the same grammar; that is a deliberate divergence and is recorded in
+[`101` §14](101-slice-9-report.md), not here -- the shipped roll is 178 lines
+and ends at `Txtmod_a` 338.
+
+These calls pass **literal RGB565** rather than the ramp indices
+[`20` §7.4](20-lcl-language.md) documents for `GUI_SetText`; `0x632C` and
+`0x3186` are what `0x0043E680` resolves indices 3 and 8 to.
+
 ## 6. Mechanical verification
 
 ```sh
@@ -255,8 +297,12 @@ reciprocals; every `Switch` resolving to a `Cam` node and every model carrying
 `Cam1`; and the front end around the sequences (`FRONTEND`: the five CD
 programs, the three holds, the splash, the credits flag, the static extro, the
 message screen, the gate and the intro flag, the exit's two arms, the two
-viewports and the briefing's typewriter).  `--manifest` prints the two
-documents the converter copies into the cache.  Current result: **144/144
+viewports and the briefing's typewriter), and since 2026-09-10 the credits
+roll of §5.1 -- the window gate and the per-frame call, the 410 start and the
+one-unit step, the 20 fps limiter, the clip, the first string id and the
+terminator, the five-arm jump table, the two advances, the three printing
+arms with their fonts and colours, and the underlines' own call.  `--manifest` prints the two
+documents the converter copies into the cache.  Current result: **174/174
 checks, 12/12 directories, 130/130 animations**.
 
 Four checks per arm carry §2, because file existence alone would be satisfied
