@@ -3482,6 +3482,29 @@ func _check_models(h: TestHarness) -> void:
 	h.check("models.sprite_made", sprite >= 0, "slot %d" % sprite)
 	h.equal("models.sprite_not_drawn", models.rebuild(pool), 1,
 		"a class-2 blob is the sprite path's, not this one's")
+
+	# The blood pieces are single flat faces with a fixed authored direction.
+	# A bayonet death emits thirty A_BLUT4 cards; if they keep the ordinary
+	# model cull mode, all thirty disappear together from the back two camera
+	# quadrants even though the pool and renderer counts are non-zero.
+	var blood_placed: bool = models.place(2, "A_BLUT4.3DI",
+		Vector3i.ZERO, [Vector3i.ZERO, Vector3i.ZERO, Vector3i.ZERO])
+	var blood_node: Node3D = models._nodes[2] if models._nodes.has(2) else null
+	var blood_body: MeshInstance3D = null
+	if blood_node != null:
+		blood_body = blood_node.get_node_or_null(MeshBuilder.BODY_NODE) \
+			as MeshInstance3D
+	var blood_material: StandardMaterial3D = null
+	if blood_body != null and blood_body.mesh != null \
+			and blood_body.mesh.get_surface_count() > 0:
+		blood_material = blood_body.mesh.surface_get_material(0) \
+			as StandardMaterial3D
+	h.check("models.blood_card_is_built", blood_placed
+		and blood_material != null, "A_BLUT4 must reach an actual mesh surface")
+	h.equal("models.blood_card_visible_from_both_camera_sides",
+		blood_material.cull_mode if blood_material != null else -1,
+		BaseMaterial3D.CULL_DISABLED,
+		"the thirty-record stab effect must not render as an empty death")
 	pool.clear()
 	h.equal("models.cleared", models.rebuild(pool), 0)
 	models.free()

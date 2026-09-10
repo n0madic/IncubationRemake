@@ -35,6 +35,13 @@ const TRIPLE_ROOT: int = 0
 const TRIPLE_FIRST: int = 6
 const TRIPLE_SECOND: int = 12
 
+## These are flat particle cards, not solid scenery. Their shipped faces point
+## along one fixed world axis, so a blood burst is entirely back-facing in two
+## of the four camera quadrants and the casualty appears to simply vanish.
+## The remake keeps Eng3d's one-sided rule for every ordinary model; only the
+## blood cards are visible from both sides.
+const BLOOD_PREFIX: String = "A_BLUT"
+
 var _prototypes: Dictionary = {}
 var _textures: Dictionary = {}
 ## Model index -> its name, the reverse of [member BlobHooks.model_index].
@@ -190,5 +197,18 @@ func _node_for(slot: int, name: String) -> Node3D:
 
 
 func _build(name: String) -> Node3D:
-	return MeshBuilder.assemble(name, DictRead.as_dict(_prototypes[name]),
-		_textures, _meshes)
+	var node: Node3D = MeshBuilder.assemble(name,
+		DictRead.as_dict(_prototypes[name]), _textures, _meshes)
+	# All seven shipped A_BLUT models are one-face root meshes; there are no
+	# articulated children to visit. The mesh cache belongs to this renderer,
+	# so this cannot change the same prototype when scenery draws it.
+	if node != null and name.begins_with(BLOOD_PREFIX):
+		var body: MeshInstance3D = node.get_node_or_null(
+			MeshBuilder.BODY_NODE) as MeshInstance3D
+		if body != null and body.mesh != null:
+			for surface: int in range(body.mesh.get_surface_count()):
+				var material: StandardMaterial3D = \
+					body.mesh.surface_get_material(surface) as StandardMaterial3D
+				if material != null:
+					material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return node
