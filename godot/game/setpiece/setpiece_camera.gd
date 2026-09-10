@@ -379,7 +379,10 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					host.set_camera_target(at)
 					if unit >= 0:
 						host.place_body(unit, at + Vector3i(0, 0, ROOF_DRAWN_UP)),
-				cues)
+				# `RoofUnit` `0x00411B00` keeps its buffers through the landing
+				# and the pool it then drains: the drop is a stage of the
+				# routine, not the routine (docs/28 section 1.4).
+				cues, true)
 			queue.enqueue(STAGE_LAND, 1,
 				func(_frame: int, _total: int) -> void:
 					host.spawn_program(BlobPrograms.LANDING_DUST,
@@ -417,7 +420,10 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					host.set_camera_target(at + Vector3i(0, 0, GROUND_DRAWN_UP))
 					if unit >= 0:
 						host.place_body(unit, at + Vector3i(0, 0, GROUND_DRAWN_UP)),
-				cues)
+				# `GroundUnit` `0x00411FB0` carries the body after the rise and
+				# drains its pool after that, all inside one routine, so the
+				# rise holds its sound rather than ending it.
+				cues, true)
 			queue.enqueue(STAGE_LEAD, GROUND_CARRY_FRAMES,
 				func(frame: int, _total: int) -> void:
 					var at: Vector3i = st["at"]
@@ -461,7 +467,10 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						var eye: Vector3i = host.camera_eye()
 						var _f: int = host.fly(
 							Vector3i(eye.x, eye.y, STATUE_HEIGHT), centre))
-			queue.enqueue(kind, frames, paint, cues)
+			# The beam and the pool below are the same routine's, so the
+			# motion stage holds its sound rather than ending it
+			# (docs/28 section 1.4).
+			queue.enqueue(kind, frames, paint, cues, true)
 			queue.enqueue(STAGE_BEAM, 1,
 				func(_frame: int, _total: int) -> void:
 					for entry: Variant in DictRead.as_array(extra.get("killed", [])):
@@ -497,7 +506,10 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 				func(frame: int, _total: int) -> void:
 					if frame == 1:
 						var _f: int = host.fly(host.camera_eye(), centre))
-			queue.enqueue(kind, frames, paint, cues)
+			# The beam and the pool below are the same routine's, so the
+			# motion stage holds its sound rather than ending it
+			# (docs/28 section 1.4).
+			queue.enqueue(kind, frames, paint, cues, true)
 			queue.enqueue(STAGE_BEAM, 1,
 				func(_frame: int, _total: int) -> void:
 					for entry: Variant in DictRead.as_array(extra.get("killed", [])):
@@ -535,7 +547,9 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						host.spawn_program(BlobPrograms.FIRE_CIRCLE,
 							PackedInt32Array([cell.x, cell.y]))
 					paint.call(frame, total),
-				cues)
+				# The ring's sound is `aPlayRotateStatueSequence`'s and lives
+				# until it returns -- past these ten frames and the pool.
+				cues, true)
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1
@@ -580,7 +594,10 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 							PackedInt32Array([vx, vy]))
 					host.spawn_program(BlobPrograms.TUBE_SMOKE,
 						PackedInt32Array([cell.x, cell.y])),
-				cues)
+				# One frame, and `gfire.wav` @84 belongs to the whole routine:
+				# the stage hands its sound to the pool below (docs/28
+				# section 1.4), as the crush wall's does.
+				cues, true)
 			queue.enqueue_until(STAGE_POOL, frames,
 				func() -> bool: return host.pool_live() == 0)
 			return 1
@@ -588,6 +605,12 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			# docs/42 section 8: `0x004238C0` on every cell, then the pool --
 			# under which the wall turns and sinks (`paint`), and at whose
 			# end, early or not, the caller's `aDeleteLand` runs.
+			#
+			# The debris stage lasts **one frame** and the routine does not:
+			# `crushwall.wav` @86 is `aPlayCrushWallAnimation`'s own and dies
+			# when the routine returns (docs/28 section 1.4), so the stage
+			# holds its sound for the pool rather than stopping it on the
+			# frame it started it -- which is what made the wall silent.
 			var finish: Callable = extra.get("finish", Callable())
 			var no_cues: Array[Dictionary] = []
 			queue.enqueue(kind, 1,
@@ -597,7 +620,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						if at.size() >= 2:
 							host.spawn_program(BlobPrograms.WALL_DEBRIS,
 								PackedInt32Array([at[0], at[1]])),
-				cues)
+				cues, true)
 			queue.enqueue_until(STAGE_POOL, frames,
 				func() -> bool: return host.pool_live() == 0, paint, no_cues,
 				finish)
@@ -748,7 +771,9 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 							DictRead.as_int(extra.get("ty", cell.y))))
 						host.show_unit(unit)
 					paint.call(frame, total),
-				cues)
+				# `aPlayTeleporterSequence` `0x004164F0` drains its pool after
+				# the seventy frames; its sound belongs to the whole routine.
+				cues, true)
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames

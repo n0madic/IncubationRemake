@@ -423,7 +423,7 @@ static func _program(body: Array, labels: Dictionary = {}) -> LclProgram:
 ## Runs one hand-built program on a `w x h` world with the given units.
 static func _run_synthetic(program: LclProgram, units: Array,
 		width: int = 4, height: int = 4,
-		cells: Dictionary = {}) -> Dictionary:
+		cells: Dictionary = {}, ai_level: int = -1) -> Dictionary:
 	var zeros: Array = []
 	var links: Array = []
 	# The idle value of the three object slots and the obstacle byte.
@@ -475,6 +475,8 @@ static func _run_synthetic(program: LclProgram, units: Array,
 	])
 	var turn: TurnState = TurnState.create()
 	turn.turn = 3
+	if ai_level >= 0:
+		turn.ai_level = ai_level
 	var control: GameControl = GameControl.create()
 	var context: LclContext = LclContext.create(state, roster, types, turn,
 		control, IncRandom.new(), CRandom.create(), 0, "")
@@ -741,6 +743,41 @@ func _synthetic(h: TestHarness) -> void:
 			found = one.name
 	h.equal("synthetic.an_unknown_type_spawns_nameless", found, "",
 		"UnitTypeTable.description answers 'type 99' and must not be used here")
+
+	# docs/20 section 7.4 -- **the `rand()` call is unconditional whenever
+	# `maxCount` is not zero.** All three difficulty arms at `0x0044194E`
+	# reach `call [0x5255FC]` with no guard, so the arms whose only possible
+	# answer is 0 -- `maxCount == 1`, and the short form's -1 -- still consume
+	# one draw. The corpus cannot show this: `_C_116` holds all six short
+	# sites and is not in the replayed fixture, and the desync it causes is
+	# visible only from turn 9. So it is checked here, the same shape as
+	# `lcl_runtime.py --check`'s `insert.draws_even_when_barren`.
+	var barren: Array[String] = []
+	for level: int in [0, 1, 2]:
+		# Six numbers: the short form, whose missing `maxCount` reads as -1.
+		var short_form: Dictionary = _run_synthetic(_program([
+			_instr("command", "InsertUnit", [_num(255), _num(0), _num(0),
+				_num(0), _num(2), _num(2)]),
+		]), [], 4, 4, {}, level)
+		var one_max: Dictionary = _run_synthetic(_program([
+			_instr("command", "InsertUnit", [_num(255), _num(0), _num(0),
+				_num(0), _num(2), _num(2), _num(1)]),
+		]), [], 4, 4, {}, level)
+		for probe: Dictionary in [short_form, one_max]:
+			var ctx: LclContext = probe["context"]
+			if ctx.crand.calls != 1:
+				barren.append("level %d: %d draws" % [level, ctx.crand.calls])
+	h.equal("synthetic.insert_draws_even_when_barren",
+		", ".join(barren), "",
+		"maxCount 1 and the short form's -1 each consume one rand()")
+	var no_draw: Dictionary = _run_synthetic(_program([
+		_instr("command", "InsertUnit", [_num(255), _num(0), _num(0),
+			_num(0), _num(2), _num(2), _num(0)]),
+	]), [], 4, 4, {}, 1)
+	var no_draw_ctx: LclContext = no_draw["context"]
+	h.equal("synthetic.insert_zero_max_count_draws_nothing",
+		no_draw_ctx.crand.calls, 0,
+		"maxCount 0 returns 1 before the divide is reached")
 
 	_statues(h)
 	_foot_bridges(h)

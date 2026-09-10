@@ -1,44 +1,22 @@
-; Incubation remake.
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
 ;
-; Warnings are errors project-wide, not only under core/: the 4.7 setting
-; `directory_rules` only excludes directories, it cannot give one a stricter
-; level.  Everything written here is statically typed, so the stricter reading
-; costs nothing and satisfies the section 10.4 gate for core/ a fortiori.
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
 [application]
 
 config/name="Incubation - Remake"
-config/features=PackedStringArray("4.7", "GL Compatibility")
 run/main_scene="res://game/main.tscn"
-
-[display]
-
-; The shipped art is 640x480 and so are the layout tables in `DATA/GUI/*.lcl`,
-; so that is the coordinate space every screen is written in.  Without this the
-; window's pixels *were* those units: on a 2560x1600 backing the game's own
-; 17 px bitmap font came out about two millimetres tall and nothing changed
-; when the window did.
-;
-; `canvas_items` rather than `viewport`: the 2D layer is scaled by a transform
-; and the 3D view still renders at the window's real resolution, so the mission
-; keeps its detail while the interface grows.  `expand` rather than `keep`
-; because a 16:9 window should show more of the world rather than black bars --
-; the plates are drawn stretched to the whole rect and were already written
-; that way.
-window/size/viewport_width=640
-window/size/viewport_height=480
-window/size/window_width_override=1280
-window/size/window_height_override=960
-window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
+config/features=PackedStringArray("4.7", "GL Compatibility")
 
 [debug]
 
-gdscript/warnings/enable=true
 gdscript/warnings/untyped_declaration=2
-gdscript/warnings/inference_on_variant=2
 gdscript/warnings/unsafe_property_access=2
 gdscript/warnings/unsafe_method_access=2
 gdscript/warnings/unsafe_cast=2
@@ -46,20 +24,19 @@ gdscript/warnings/unsafe_call_argument=2
 gdscript/warnings/unsafe_void_return=2
 gdscript/warnings/return_value_discarded=1
 gdscript/warnings/integer_division=0
-gdscript/warnings/directory_rules={
-"res://addons": 0
-}
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=480
+window/size/window_width_override=1280
+window/size/window_height_override=960
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 
 [rendering]
 
-; **Black, not Godot's grey.** A frame with no current camera paints this
-; colour: the boot frame before the splash, and the 1000/4000 ms holds after a
-; cutscene, where the player has been destroyed and the map's backdrop is not
-; built yet (docs/101 section 6). Godot's default is a light slate, which read
-; as a screen flashing grey between the intro and the location map.
-environment/defaults/default_clear_color=Color(0, 0, 0, 1)
-
-; Required for a universal / arm64 macOS export.
-textures/vram_compression/import_etc2_astc=true
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)

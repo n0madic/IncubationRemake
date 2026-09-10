@@ -629,7 +629,20 @@ def _synthetic_checks(c: Checker) -> None:
 _TABLES: Any
 
 
-def _corpus_shape_checks(c: Checker, root: Path) -> None:
+#: `docs/10` §3 -- a shipped `.lev` whose header type is 1 is a campaign
+#: mission.  The other four types are the two campaign maps, the upgrade
+#: screens and the session maps, none of which a campaign plays as a mission.
+MAP_TYPE_CAMPAIGN = 1
+
+
+def _mission_maps(root: Path) -> list[tuple[str, Any]]:
+    """Every shipped `.lev`, parsed once and shared by the checks below."""
+    return [(path.stem, load_lev(str(path)))
+            for path in sorted((root / "Missions").glob("*.lev"))]
+
+
+def _corpus_shape_checks(c: Checker, root: Path,
+                         maps: list[tuple[str, Any]]) -> None:
     """Assumptions the model makes about the shipped data, asserted.
 
     Each of these is a shortcut the model is allowed to take only for as long
@@ -667,15 +680,144 @@ def _corpus_shape_checks(c: Checker, root: Path) -> None:
     # `GetHeight` divides, and the sign of the dividend decides whether the
     # division has to truncate toward zero rather than floor.
     negative = 0
-    for lev in sorted((root / "Missions").glob("*.lev")):
-        negative += sum(1 for cell in load_lev(str(lev)).cells
-                        if cell.height < 0)
+    for _stem, battle in maps:
+        negative += sum(1 for cell in battle.cells if cell.height < 0)
     c.check("corpus.negative_cell_heights_exist", negative > 0,
             f"{negative} cells; GetHeight must truncate toward zero, not floor")
     c.expect("getheight.truncates_toward_zero",
              [runtime.div_trunc(-161, 160), runtime.div_trunc(-160, 160),
               runtime.div_trunc(-1, 160), runtime.div_trunc(321, 160)],
              [-1, -1, 0, 2])
+
+
+#: `docs/20` §7.6 -- the three positions of the difficulty control.  The
+#: census below reports every one of them because the whole point of the
+#: statistic is the distance between them.
+CENSUS_LEVELS = (runtime.AI_LEVEL_EASY, runtime.AI_LEVEL_NORMAL,
+                 runtime.AI_LEVEL_HARD)
+#: How many draws one `(max_count, level)` pairing is swept for.  Large enough
+#: that a uniform draw over a span of at most nine reaches both ends.
+CENSUS_SWEEP_DRAWS = 400
+
+
+def _difficulty_census_checks(c: Checker, root: Path,
+                              maps: list[tuple[str, Any]]) -> None:
+    """`docs/20` §7.6 -- what the difficulty is worth, counted over the corpus.
+
+    Two censuses over **the same 75 missions**, because the claim they support
+    is that a mission's enemies come from two places and the difficulty reaches
+    exactly one of them: the units a `.lev` places, and the units `InsertUnit`
+    spawns.  Neither number is a measurement of a played game -- a call site
+    sits inside a turn-gated region that may fire many times or never -- so what
+    is pinned is the per-site arithmetic summed once per site, and the doc says
+    so in the same words.
+    """
+    # -- the bounds are a second reading of the draw, held against it --------
+    def _probe(level: int) -> runtime.Interpreter:
+        world = _flat_world(1, {}, set(), {})
+        world.ai_level = level
+        return runtime.Interpreter({"instructions": []}, world)
+
+    for level in CENSUS_LEVELS:
+        outside: list[str] = []
+        unreached: list[str] = []
+        for max_count in (-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            lo, hi = runtime.insert_count_bounds(max_count, level)
+            it = _probe(level)
+            seen = {runtime._insert_count(it, max_count)
+                    for _ in range(CENSUS_SWEEP_DRAWS)}
+            if min(seen) < lo or max(seen) > hi:
+                outside.append(f"max={max_count} {sorted(seen)} vs [{lo},{hi}]")
+            if min(seen) != lo or max(seen) != hi:
+                unreached.append(
+                    f"max={max_count} {sorted(seen)} vs [{lo},{hi}]")
+        c.expect(f"insert.bounds_hold.l{level}", outside, [])
+        c.expect(f"insert.bounds_reached.l{level}", unreached, [])
+
+    # -- the draw is unconditional, which is what keeps the stream in step ---
+    # `0x00441942` / `0x0044195C` / `0x0044194E` all reach `call [0x5255FC]`
+    # with no guard, so an arm whose only possible answer is 0 still consumes
+    # one `rand()`.  A model that short-circuited those desynchronised
+    # `_C_116` from turn 9 on -- it fires its six short sites on turn 8 and
+    # another `InsertUnit` on every turn after.
+    for level in CENSUS_LEVELS:
+        for max_count in (-1, 1):
+            it = _probe(level)
+            runtime._insert_count(it, max_count)
+            c.expect(f"insert.draws_even_when_barren.l{level}.m{max_count}",
+                     it.world.crand.calls, 1)
+    it = _probe(runtime.AI_LEVEL_NORMAL)
+    c.expect("insert.zero_max_count_is_one",
+             runtime._insert_count(it, 0), 1)
+    c.expect("insert.zero_max_count_draws_nothing", it.world.crand.calls, 0)
+
+    # -- the census ---------------------------------------------------------
+    stems = [stem for stem, battle in maps
+             if battle.map_type == MAP_TYPE_CAMPAIGN]
+    c.expect("census.campaign_missions", len(stems), 75)
+
+    placed: collections.Counter = collections.Counter()
+    for stem, battle in maps:
+        if battle.map_type != MAP_TYPE_CAMPAIGN:
+            continue
+        placed.update(u.player for u in battle.placed_units)
+    c.expect("census.placed_by_player", dict(sorted(placed.items())),
+             {0: 37, 252: 144, 255: 872},
+             "the units the 75 campaign .lev files place themselves")
+
+    scripted = 0
+    histogram: collections.Counter = collections.Counter()
+    ranks: collections.Counter = collections.Counter()
+    non_literal = 0
+    totals = {level: [0, 0] for level in CENSUS_LEVELS}
+    missing_script: list[str] = []
+    for stem in stems:
+        path = root / "Missions" / f"{stem}.lcl"
+        if not path.is_file():
+            missing_script.append(stem)
+            continue
+        for statement in lcl.parse_file(str(path)).statements():
+            if statement.name != "InsertUnit":
+                continue
+            scripted += 1
+            args = statement.args
+            # A missing argument reads as -1 (`docs/20` §7.4's short forms);
+            # a non-number would mean the difficulty could be reached through
+            # a variable, which is the thing being ruled out.
+            if len(args) >= 8 and args[7].kind == "number":
+                max_count = args[7].value
+            elif len(args) >= 8:
+                non_literal += 1
+                continue
+            else:
+                max_count = -1
+            histogram[max_count] += 1
+            if len(args) >= 4 and args[3].kind == "number":
+                ranks[args[3].value] += 1
+            else:
+                non_literal += 1
+            for level in CENSUS_LEVELS:
+                lo, hi = runtime.insert_count_bounds(max_count, level)
+                totals[level][0] += lo
+                totals[level][1] += hi
+
+    c.expect("census.every_mission_has_a_script", missing_script, [])
+    c.expect("census.insert_unit_sites", scripted, 314)
+    c.expect("census.max_count_histogram", dict(sorted(histogram.items())),
+             {-1: 6, 0: 50, 1: 14, 2: 78, 3: 85, 4: 45, 5: 25, 6: 6, 7: 3,
+              8: 1, 9: 1})
+    # `docs/20` §7.6: the rank is a literal at every site, so no difficulty
+    # path can reach it -- which is what makes "the difficulty changes how many
+    # enemies there are, never what they are" a statement about the data rather
+    # than a hope.
+    c.expect("census.rank_is_a_literal", non_literal, 0)
+    c.expect("census.rank_values", dict(sorted(ranks.items())),
+             {0: 284, 1: 12, 2: 16, 255: 2},
+             "no site names a variable, so no difficulty path reaches a rank")
+    c.expect("census.site_sum_bounds",
+             {level: tuple(totals[level]) for level in CENSUS_LEVELS},
+             {0: (50, 430), 1: (50, 596), 2: (314, 860)},
+             "one spawn per site, summed; not a played game")
 
 
 def _require_corpus(root: Path) -> str | None:
@@ -755,7 +897,9 @@ def run_check(root: Path, show_stats: bool = False) -> int:
             f"{branching}/{len(routed)} scripts end at more than one line "
             f"across the six call types")
 
-    _corpus_shape_checks(c, root)
+    maps = _mission_maps(root)
+    _corpus_shape_checks(c, root, maps)
+    _difficulty_census_checks(c, root, maps)
     _synthetic_checks(c)
     _ground_checks(c)
     _statue_checks(c)

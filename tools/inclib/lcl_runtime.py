@@ -888,6 +888,49 @@ def _c_get_units_in_group(it: Interpreter, p: Params) -> str | None:
 
 # --- units ----------------------------------------------------------------
 
+def insert_count_divisor(max_count: int, level: int) -> int:
+    """The divisor ``0x004418c0``'s ``idiv esi`` runs with, per difficulty.
+
+    Read off the branch at ``0x0044194e``: easy takes the normal arm outright
+    when ``maxCount <= 2`` (``cmp esi, 2 / jle``) and otherwise takes one off
+    with ``dec esi``, while normal and hard divide by ``maxCount`` as it stands.
+    ``max_count == 0`` never reaches the divide -- the caller returns 1 -- and
+    is not a legal argument here.
+    """
+    if max_count == 0:
+        raise RuntimeError_("max_count 0 never reaches the divide")
+    if level == AI_LEVEL_EASY and max_count > 2:
+        return max_count - 1
+    return max_count
+
+
+def insert_count_bounds(max_count: int, level: int) -> tuple[int, int]:
+    """The inclusive range one ``InsertUnit`` can spawn -- a second reading.
+
+    ``_insert_count`` performs the draw; this states what the draw can produce.
+    It deliberately shares **no code** with it -- the divisor rule is read off
+    ``0x0044194E`` a second time here rather than borrowed -- so
+    ``lcl_runtime.py --check`` can hold the two against each other instead of
+    trusting either alone.  The draw is uniform over the range, so its mean is
+    ``(lo + hi) / 2``.
+    """
+    if max_count == 0:
+        return (1, 1)
+    if level not in (AI_LEVEL_EASY, AI_LEVEL_NORMAL, AI_LEVEL_HARD):
+        return (0, 0)
+    # `cmp esi, 2 / jle` at `0x0044194E`: below 3 the easy arm falls into the
+    # normal one, and above it `dec esi` takes one off.
+    divisor = max_count - 1 if level == AI_LEVEL_EASY and max_count > 2 \
+        else max_count
+    # `idiv` leaves a remainder strictly smaller in magnitude than the divisor
+    # and signed like the dividend, and the dividend -- `rand()` -- is never
+    # negative.  So a divisor of -1 yields 0 and nothing else, which is what
+    # makes the six short call sites spawn nothing outside hard.
+    top = abs(divisor) - 1
+    add = 1 if level == AI_LEVEL_HARD else 0
+    return (add, top + add)
+
+
 def _insert_count(it: Interpreter, max_count: int) -> int:
     """``0x004418c0`` step 2 -- how many units one ``InsertUnit`` spawns.
 
@@ -896,19 +939,29 @@ def _insert_count(it: Interpreter, max_count: int) -> int:
     inclusive on hard -- so ``InsertUnit (..., 1)`` spawns nothing except on
     hard, and the six short call sites, whose ``maxCount`` reads as -1, spawn
     nothing except on hard.
+
+    **The draw is unconditional whenever ``max_count`` is not zero**, including
+    the arms whose result can only be 0.  All three of ``0x00441942``,
+    ``0x0044195c`` and ``0x0044194e`` reach ``call [0x5255fc]`` before the
+    ``idiv``, with no guard in front of any of them -- so ``maxCount`` 1 and
+    the short sites' -1 still consume one ``rand()``.  An earlier revision
+    short-circuited those, which desynchronised the stream against the engine
+    from that point on: ``_C_116`` fires its six short sites on turn 8 and
+    another ``InsertUnit`` on every turn after, so the divergence was
+    observable rather than theoretical.
     """
     if max_count == 0:
         return 1
     level = it.world.ai_level
-    if level == AI_LEVEL_EASY:
-        span = max_count - 1 if max_count >= 3 else max_count
-        return 0 if span <= 0 else it.world.crand() % span
-    if level == AI_LEVEL_NORMAL:
-        return 0 if max_count <= 0 else it.world.crand() % max_count
-    if level == AI_LEVEL_HARD:
-        return (0 if max_count <= 0 else it.world.crand() % max_count) + 1
-    # `incorrect ai level!` -- the engine's own path, which spawns nothing.
-    return 0
+    if level not in (AI_LEVEL_EASY, AI_LEVEL_NORMAL, AI_LEVEL_HARD):
+        # `incorrect ai level!` -- the engine's own path, which spawns nothing
+        # and, having branched before the call, draws nothing either.
+        return 0
+    divisor = insert_count_divisor(max_count, level)
+    # The dividend is non-negative, so C's truncated remainder is the plain
+    # modulus against the divisor's magnitude.
+    count = it.world.crand() % abs(divisor)
+    return count + 1 if level == AI_LEVEL_HARD else count
 
 
 def _c_insert_unit(it: Interpreter, p: Params) -> str | None:

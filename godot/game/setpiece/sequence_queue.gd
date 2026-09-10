@@ -53,6 +53,14 @@ class Step extends RefCounted:
 	## has left, whatever left it -- so painting it at the last frame would
 	## be right only for the one ending that reaches that frame.
 	var on_end: Callable = Callable()
+	## Whether the sounds this step started belong to a **routine** that is
+	## still running when the step ends. docs/28 section 1.4 ties a sound's
+	## lifetime to its routine's, and a set piece is staged over more steps
+	## than the routine has: the crush wall's one debris frame and then the
+	## pool it spins on, the statue's turn and then its beam, the ground
+	## unit's rise and then its carry. A step that holds its sound hands it
+	## to whatever step ends next, which is the routine's last.
+	var holds_sound: bool = false
 
 	func seconds() -> float:
 		return float(frames) / FRAMES_PER_SECOND
@@ -74,6 +82,9 @@ var _running: bool = false
 ## Frames actually painted, for a suite that has to tell "played" from
 ## "skipped without drawing".
 var _painted: int = 0
+## Whether a step that ended handed its sounds on rather than stopping them
+## ([member Step.holds_sound]), so the next step to end is what kills them.
+var _sound_held: bool = false
 
 
 static func create(audio: AudioSystem) -> SequenceQueue:
@@ -85,7 +96,7 @@ static func create(audio: AudioSystem) -> SequenceQueue:
 ## Add a sequence. `paint` is called with `(frame, frames)` once per frame,
 ## `frame` running 1..frames, so the last call is always the end state.
 func enqueue(name: String, frames: int, paint: Callable,
-		cues: Array[Dictionary] = []) -> void:
+		cues: Array[Dictionary] = [], holds_sound: bool = false) -> void:
 	if frames <= 0:
 		return
 	var step: Step = Step.new()
@@ -93,6 +104,7 @@ func enqueue(name: String, frames: int, paint: Callable,
 	step.frames = frames
 	step.paint = paint
 	step.cues = cues.duplicate()
+	step.holds_sound = holds_sound
 	_steps.append(step)
 	_running = true
 
@@ -107,7 +119,7 @@ func enqueue(name: String, frames: int, paint: Callable,
 ## step that only waits passes an invalid callable.
 func enqueue_until(name: String, frames: int, until: Callable,
 		paint: Callable = Callable(), cues: Array[Dictionary] = [],
-		on_end: Callable = Callable()) -> void:
+		on_end: Callable = Callable(), holds_sound: bool = false) -> void:
 	if frames <= 0:
 		return
 	var step: Step = Step.new()
@@ -117,6 +129,7 @@ func enqueue_until(name: String, frames: int, until: Callable,
 	step.until = until
 	step.cues = cues.duplicate()
 	step.on_end = on_end
+	step.holds_sound = holds_sound
 	_steps.append(step)
 	_running = true
 
@@ -194,11 +207,27 @@ func _step_once() -> bool:
 ## outlasts its sample -- the door, the lift, the platform, the drawbridge --
 ## so a queue that let the sample decide would either cut the door's hum short
 ## or leave it running for ever.
+##
+## **The boundary is the routine's, not the step's.** A one-shot is killed by
+## the same rule -- the original frees its buffer when the routine returns --
+## but a set piece staged over more than one step returns only at the last of
+## them, so eight arms of [SetpieceCamera] were cutting their own sound where
+## the picture changed stage. The two that made it audible are the crush wall
+## and the ground fire, whose cue stage is **one frame**: `crushwall.wav` got
+## 0.05 s of its 1.79 and the wall came down in silence.
+## [member Step.holds_sound] is what carries a sound to the end of the stage
+## the routine actually returns from.
 func _end_step(step: Step) -> void:
 	if step.on_end.is_valid():
 		step.on_end.call()
-	if _audio == null or step.cues.is_empty():
+	if _audio == null:
 		return
+	if not step.cues.is_empty() and step.holds_sound:
+		_sound_held = true
+		return
+	if step.cues.is_empty() and not _sound_held:
+		return
+	_sound_held = false
 	var _killed: int = _audio.stop_tag(TAG)
 
 
@@ -224,6 +253,7 @@ func skip() -> void:
 
 func _finish() -> void:
 	_running = false
+	_sound_held = false
 	_steps.clear()
 	_index = 0
 	_carry = 0.0

@@ -513,22 +513,30 @@ func _spawn_refused(x: int, y: int) -> bool:
 ## inclusive on hard -- so `InsertUnit (..., 1)` spawns nothing except on hard,
 ## and the six short call sites, whose `maxCount` reads as -1, spawn nothing
 ## except on hard.
+##
+## **The draw is unconditional whenever `max_count` is not zero**, including the
+## arms whose result can only be 0: all three of `0x00441942`, `0x0044195C` and
+## `0x0044194E` reach `call [0x5255FC]` before the `idiv` with no guard in
+## front of it. Short-circuiting them desynchronises the stream against the
+## engine -- `_C_116` fires its six short sites on turn 8 and another
+## `InsertUnit` on every turn after.
 func _insert_count(max_count: int) -> int:
 	if max_count == 0:
 		return 1
-	match _context.turn.ai_level:
-		0:
-			var span: int = max_count - 1 if max_count >= 3 else max_count
-			return 0 if span <= 0 else _context.crand.draw() % span
-		1:
-			return 0 if max_count <= 0 else _context.crand.draw() % max_count
-		2:
-			return (0 if max_count <= 0
-				else _context.crand.draw() % max_count) + 1
-		_:
-			# `incorrect ai level!` -- the engine's own path, which spawns
-			# nothing.
-			return 0
+	var level: int = _context.turn.ai_level
+	if level < 0 or level > 2:
+		# `incorrect ai level!` -- the engine's own path, which spawns nothing
+		# and, having branched before the call, draws nothing either.
+		return 0
+	# `cmp esi, 2 / jle` at `0x0044194e`: easy takes the normal arm outright
+	# below 3 and otherwise divides by one less.
+	var divisor: int = max_count - 1 if level == 0 and max_count > 2 else max_count
+	# The dividend is `rand()` and never negative, so the remainder is the
+	# plain modulus against the divisor's magnitude -- a divisor of -1, which
+	# is what the six short call sites' missing argument reads as, can only
+	# yield 0.
+	var count: int = _context.crand.draw() % absi(divisor)
+	return count + 1 if level == 2 else count
 
 
 ## `0x00442150` -- burst out at `(x2,y2)`, leaving a hole at `(x1,y1)`.

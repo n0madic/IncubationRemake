@@ -112,6 +112,7 @@ func run(h: TestHarness) -> void:
 	_check_setpiece_camera(h)
 	_check_arm_spawns(h)
 	_check_ground_fire(h)
+	_check_routine_sounds(h)
 	_check_emitters(h)
 
 
@@ -401,6 +402,100 @@ func _check_ground_fire(h: TestHarness) -> void:
 		"kind 31, life 5, the two sprites alternating, delay = index / 6, "
 		+ "all at the cell's marker")
 
+
+
+## **A set piece's sound lives as long as its routine, not as long as the
+## stage that started it** -- docs/28 section 1.4.
+##
+## Every `aPlay*` routine creates its buffer in straight-line code and kills it
+## when it returns, and the remake stages one routine over several steps: the
+## crush wall's one debris frame and then the pool it spins on, the statue's
+## turn and then its beam, the ground unit's rise and then its carry. A queue
+## that stopped its tag at every step boundary cut each of those where the
+## picture changed stage -- and for the two whose cue stage is a **single
+## frame**, the crush wall and the ground fire, that was the sound being
+## stopped on the frame it started: silence, and the defect this table was
+## written for. `crushwall.wav` is 1.79 s and it was getting 0.05.
+##
+## Each row is driven to the end and asked two questions: nothing had stopped
+## the queue's tag while the routine was still running, and something had by
+## the time it had left -- the second so a held sound cannot leak instead.
+func _check_routine_sounds(h: TestHarness) -> void:
+	## A silent step standing for whatever the queue holds next.
+	const NEXT_ROUTINE: String = "next_routine"
+	var paint: Callable = func(_frame: int, _total: int) -> void: pass
+	# `kind`, the frames the driver gives it, and the arm's own `extra`.
+	var rows: Array[Dictionary] = [
+		{"kind": "crush_wall", "frames": SetpieceDriver.POOL_ONLY_FRAMES,
+			"extra": {"cells": [[7, 2]]}, "wave": "crushwall.wav"},
+		{"kind": "ground_fire", "frames": SetpieceDriver.POOL_ONLY_FRAMES,
+			"extra": {"killed": []}, "wave": "gfire.wav"},
+		{"kind": "statue", "frames": SetpieceDriver.STATUE_TURN_FRAMES,
+			"extra": {"killed": [], "beams": []}, "wave": "stone.wav"},
+		{"kind": "barrier_on", "frames": SetpieceDriver.BARRIER_FRAMES,
+			"extra": {"direction": 0, "cells": 3, "killed": []},
+			"wave": "lbarrier.wav"},
+		{"kind": "fire_circle", "frames": SetpieceDriver.FIRE_CIRCLE_FRAMES,
+			"extra": {}, "wave": "firecircle.wav"},
+		{"kind": "teleporter", "frames": SetpieceDriver.TELEPORTER_FRAMES,
+			"extra": {"tx": 5, "ty": 6}, "wave": "teleport.wav"},
+		{"kind": "roof_unit", "frames": 8, "extra": {},
+			"wave": "crush.wav"},
+		{"kind": "ground_unit", "frames": SetpieceDriver.GROUND_UNIT_FRAMES,
+			"extra": {"own": Vector2i(4, 4)}, "wave": "alien_scream.wav"},
+	]
+	var cut: Array[String] = []
+	var leaked: Array[String] = []
+	for row: Dictionary in rows:
+		var kind: String = DictRead.as_string(row["kind"])
+		var audio: RecordingAudio = RecordingAudio.new()
+		var host: RecordingHost = RecordingHost.new()
+		# The pool never drains, so its stage runs its whole bound and the
+		# routine is still going when the question is asked.
+		host.live = 2
+		var queue: SequenceQueue = SequenceQueue.create(audio)
+		var cues: Array[Dictionary] = [{"wave": DictRead.as_string(row["wave"]),
+			"volume_id": 84, "loop": false}]
+		var _staged: int = SetpieceCamera.enqueue(queue, host, kind,
+			DictRead.as_int(row["frames"]), Vector2i(3, 4), 0, 0, -1,
+			DictRead.as_dict(row["extra"]), paint, cues)
+		# A second routine behind it, silent: `_present_ground_fire` queues
+		# one sequence per burnt cell back to back, so "the sound was handed
+		# on" and "the sound bleeds into the next routine" are the same
+		# picture until something asks where it stopped.
+		queue.enqueue(NEXT_ROUTINE, 2, paint)
+		# The stops counted on the frame after the cue was played: the
+		# routine has changed stage by then in every row, and none of them
+		# has finished.
+		var during: int = -1
+		var at_next: int = -1
+		var spun: int = 0
+		while queue.is_running() and spun < 400:
+			var _still: bool = queue.advance(
+				1.0 / SequenceQueue.FRAMES_PER_SECOND)
+			spun += 1
+			var stage: String = queue.current()
+			if during < 0 and not audio.plays.is_empty() \
+					and stage != kind and stage != NEXT_ROUTINE:
+				during = audio.stops
+			if at_next < 0 and stage == NEXT_ROUTINE:
+				at_next = audio.stops
+		if audio.plays.size() != 1 or during != 0:
+			cut.append("%s: %s after %d stops" % [kind, str(audio.plays),
+				during])
+		# Exactly one: none is the sound running on into the next routine,
+		# two is a stage boundary killing it again after the routine already
+		# had.
+		if at_next != 1:
+			leaked.append("%s: %d stops when the next routine began"
+				% [kind, at_next])
+		audio.free()
+	h.equal("routine_sound.plays_to_the_end_of_its_routine", cut, [],
+		"a stage boundary used to stop the tag, which on a one-frame stage "
+		+ "is silence")
+	h.equal("routine_sound.and_dies_when_the_routine_returns", leaked, [],
+		"docs/28 section 1.4 -- the buffer is killed when the routine ends, "
+		+ "which is before the next routine's first frame")
 
 func _check_arm_spawns(h: TestHarness) -> void:
 	var pool: BlobPool = BlobPool.create(1.0)
@@ -3963,6 +4058,7 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	h.equal("camera.crush_wall.one_per_cell", wall.programs,
 		["%s:7,2" % BlobPrograms.WALL_DEBRIS,
 		"%s:8,2" % BlobPrograms.WALL_DEBRIS])
+
 
 	# The para bombs: the bomber in from -16000, one bomb a tile -- and the
 	# two are **two stages**, because `0x00470790` runs the fly-past
