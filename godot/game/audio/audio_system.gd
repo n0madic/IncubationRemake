@@ -150,12 +150,14 @@ func events() -> AudioEvents:
 
 func set_fx_volume(hundredths: int) -> void:
 	_fx_volume = hundredths
+	if _music_player != null and _music_family == AudioTables.FAMILY_TRACK:
+		_music_player.volume_db = AudioTables.volume_db(_playback_volume())
 
 
 func set_music_volume(hundredths: int) -> void:
 	_music_volume = hundredths
-	if _music_player != null:
-		_music_player.volume_db = AudioTables.volume_db(hundredths)
+	if _music_player != null and _music_family != AudioTables.FAMILY_TRACK:
+		_music_player.volume_db = AudioTables.volume_db(_playback_volume())
 
 
 # --- playing ----------------------------------------------------------------
@@ -358,9 +360,17 @@ func _play_track(track: int) -> int:
 	if stream == null:
 		return -1
 	_music_player.stream = stream
-	_music_player.volume_db = AudioTables.volume_db(_music_volume)
+	_music_player.volume_db = AudioTables.volume_db(_playback_volume())
 	_music_player.play()
 	return track
+
+
+## A `Track` file is a cutscene's complete soundtrack -- speech and effects
+## included -- rather than background music (docs/92 section 7.19 I13). It
+## therefore follows FX; mission and front-end `Arack` music follows Music.
+func _playback_volume() -> int:
+	return _fx_volume if _music_family == AudioTables.FAMILY_TRACK \
+		else _music_volume
 
 
 func stop_music() -> void:
@@ -389,7 +399,7 @@ func music_view() -> Dictionary:
 		"family": _music_family,
 		"track": _music.current() if _music != null else -1,
 		"playing": _music_player != null and _music_player.playing,
-		"volume": _music_volume,
+		"volume": _playback_volume(),
 	}
 
 

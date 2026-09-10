@@ -14,8 +14,8 @@ extends RefCounted
 ##
 ## | Setting | Where it lands |
 ## |---|---|
-## | music volume | [method AudioSystem.set_music_volume] |
-## | FX volume | [method AudioSystem.set_fx_volume] |
+## | music volume | mission, map and front-end `Arack` music |
+## | FX volume | cues, voices and cutscene `Track` soundtracks |
 ## | difficulty | [member CampaignState.difficulty], then [member TurnState.ai_level] |
 ## | gore level | [member World.gore_level] |
 ## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] |

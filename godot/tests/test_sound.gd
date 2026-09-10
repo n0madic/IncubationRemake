@@ -68,9 +68,39 @@ func run(h: TestHarness) -> void:
 	_check_case_map(h, tables, document)
 	_check_playlists(h, document)
 	_check_compat(h, tables, document)
+	_check_cutscene_volume(h, tables)
 	_check_wave_padding(h)
 	_check_slot_end_arming(h)
 	_check_looping_stream(h)
+
+
+## Cutscene `Track` files contain dialogue and effects as one mixed soundtrack,
+## so silencing background music must not silence them too.
+func _check_cutscene_volume(h: TestHarness, tables: AudioTables) -> void:
+	var audio: AudioSystem = AudioSystem.new()
+	audio.setup(tables, null)
+	audio.set_music_volume(-4000)
+	audio.set_fx_volume(-900)
+	# An absent id exercises the route without opening an audio stream. The
+	# family is selected before the playlist answers that it has no file.
+	var _cutscene: int = audio.start_program("999", AudioTables.FAMILY_TRACK)
+	h.equal("volume.cutscene_uses_fx",
+		DictRead.as_int(audio.music_view()["volume"]), -900,
+		"Music at its floor does not mute the cutscene soundtrack")
+	audio.set_music_volume(-200)
+	h.equal("volume.music_change_does_not_touch_cutscene",
+		DictRead.as_int(audio.music_view()["volume"]), -900)
+	audio.set_fx_volume(-700)
+	h.equal("volume.fx_change_reaches_cutscene",
+		DictRead.as_int(audio.music_view()["volume"]), -700)
+
+	var _menu: int = audio.start_program("999", AudioTables.FAMILY_ARACK)
+	h.equal("volume.frontend_music_uses_music",
+		DictRead.as_int(audio.music_view()["volume"]), -200)
+	audio.set_fx_volume(-500)
+	h.equal("volume.fx_change_does_not_touch_music",
+		DictRead.as_int(audio.music_view()["volume"]), -200)
+	audio.free()
 
 
 ## ``aLoad.cpp``'s two events, joined all the way from the converted closure
