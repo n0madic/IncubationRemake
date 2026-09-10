@@ -186,6 +186,58 @@ func start_new(number: int,
 	return state
 
 
+## A local *Instant Action* session is a battle setup, not a campaign with a
+## made-up location graph. The retail path reaches `ArenaMode`, then
+## `Leveloptions`, before it ever loads a `.lev`. This remake has exactly one
+## local player, so it bypasses the otherwise inert ArenaMode page but still
+## creates the same small session here. The existing deployment screen can then
+## use the campaign transfer rule without making a finished skirmish advance a
+## campaign map.
+##
+## The four fresh soldiers are deliberately ordinary pool records.  Static
+## analysis proves the front end enters the local game mode and opens the unit
+## pool before deployment, but has not yet recovered the original's selectable
+## load-out defaults.  A useful, deployable squad is preferable to the former
+## false success of loading an empty map; the remaining load-out parity is
+## explicitly isolated at this constructor.
+func start_instant_action(mission: String, header: Dictionary,
+		difficulty: int = GameSettings.DIFFICULTY_DEFAULT) -> CampaignState:
+	state = CampaignState.create()
+	state.campaign = 0
+	state.mission = mission
+	state.mode = TurnState.MODE_LOCAL
+	state.player_count = 1
+	state.player_kind[0] = TurnState.KIND_HUMAN
+	state.difficulty = clampi(difficulty, GameSettings.DIFFICULTY_MIN,
+		GameSettings.DIFFICULTY_MAX)
+	# These are the single-mission front end's authored inputs. In particular,
+	# `Roster.enlarge` turns the skill level into every fresh soldier's rank;
+	# borrowing the campaign defaults here made all ten shipped battles start
+	# with rank-zero troops despite their headers asking for rank 10 or 12.
+	state.tech_level = DictRead.as_int(header.get("tech_level",
+		CampaignState.START_TECH_LEVEL))
+	state.skill_level = DictRead.as_int(header.get("skill_level",
+		CampaignState.START_SKILL_LEVEL))
+	var purses: PackedInt32Array = DictRead.to_int32(
+		header.get("equip_points", PackedInt32Array()))
+	state.equipment_points[0] = purses[0] if not purses.is_empty() \
+		else CampaignState.START_EQUIPMENT_POINTS
+	for speech: int in range(1, 5):
+		state.roster.enlarge(0, state.mode, state.skill_level, speech,
+			_recruit_hit_points(0), _recruit_ammo())
+	screen = SCREEN_SELECT
+	location = 0
+	last_report = {}
+	return state
+
+
+## A mode check rather than `campaign == 0`: only the session mode governs
+## gameplay; the numeric campaign field is otherwise an implementation detail
+## of the save-shaped state object.
+func is_instant_action() -> bool:
+	return state != null and state.mode == TurnState.MODE_LOCAL
+
+
 ## `Txtmod_h.lcl` 60..62 -- the three names really live in the text bank, and
 ## `campaign_tables` names 0x3C..0x3E as the ids.
 func _seed_names() -> PackedStringArray:

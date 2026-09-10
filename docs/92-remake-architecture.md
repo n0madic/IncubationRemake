@@ -1356,8 +1356,24 @@ own screen holds — and the shipped screen is a picture of eight rows where thi
 one is a listbox, so the count is the remake's to choose; a campaign of 75
 missions is long enough to want more than one save per chapter, and an unwritten
 slot costs nothing at all. Twelve fit between the list's origin and the action
-row, and the rest are **paged** by the listbox's own two arrows, exactly as
-*Instant Action* pages its 92 missions — a shipped listbox has no scroll bar.
+row, and the rest are **paged** by the listbox's own two arrows, exactly as the
+shipped *Instant Action* `Leveloptions` list — a shipped listbox has no scroll
+bar.
+Its captions are not the `_S_XXX` stems: `aBuildMissionTxtSys` at
+`0x00419BA0` parses characters 3..5 as an id in `Mission.lcl`, prefixes the
+resolved item with `#_S_XXX`, and the row painter at `0x0044D690` skips that
+seven-byte prefix.  The remake follows the same lookup while retaining the
+stem as the launch key and as the visible fallback for a custom map whose id
+the shipped bank does not define.
+Starting one retains a local-mode `CampaignState`, populated from the selected
+map's `tech_level`, `skill_level` and player equipment points.  That is not a
+campaign: Back from deployment and the result return to the level catalogue,
+and no campaign score or location is advanced.  Retaining the state is what
+makes ordinary Save, Save As, quick-save and the two undo slots work without a
+new codec: `CampaignCodec` already persists the mode, mission and roster, while
+the nested `SaveCodec` blob persists the battle.  Loading restores the
+Instant Action result route from the saved mode only after the nested battle
+has passed its own validation.
 The ceiling is not a round number: `HudTables.SLOT_UNDO_MISSION`, `SLOT_REMIND`
 and `SLOT_UNDO_TURN` are 31, 32 and 33 and write files in the same directory,
 so the numbered slots stop below them or an autosave becomes a row the player
@@ -1384,7 +1400,8 @@ be a different control wearing the same input. It is the sibling of
 classes, and a list answering only the first looks unscrollable on exactly the
 hardware this is developed on. A pan too small to have moved a row is carried
 rather than dropped, so a slow drag still moves. Four screens answer:
-*Instant Action*'s catalogue, the save slots, the HQ roster and the briefing's
+*Instant Action*'s type-2 single-player catalogue, the save slots, the HQ
+roster and the briefing's
 text box -- whose `scroll` had **no caller in the project at all**, so the six
 overlong `A0` blocks it exists for could not be read past the box. A screen
 answers only when it has more than a page to show, and the default is **no**:
@@ -1509,7 +1526,7 @@ followed through: an `HBoxContainer` sizes children from their minimum, and a
 640 units, so a row of five ran 116 units off the right edge of its own frame
 -- the action row now divides the width it has and gives each button an
 explicit rectangle. And the HUD's hint line and the developer line wrap instead
-of being cut; the developer line stopped naming all 92 missions, which on a
+of being cut; the developer line stopped naming every cached map, which on a
 640-unit screen was a wall of text across the playing field.
 
 **One font decides for the whole interface, and the readable one is the
@@ -1850,8 +1867,9 @@ further on, and it is written once -- `SliceMain._leave_mission_for_map()`,
 called by both. It asks first, and with the **remake's own** question
 (`shell.abandon_mission`): `Txtmod_d` 60 is the shipped data's only question
 and it names the main menu. It is absent for a mission entered past the
-campaign -- *Instant Action*, `--mission=` -- which has no campaign state and
-no map to go back to, and where `abandon_mission()` would return at once;
+campaign. *Instant Action* retains its local state so the ordinary container
+can save it, but has no campaign map to go back to; bare `--mission=` has
+neither state nor a map;
 that is a field of the screen's rather than `paused`, because `paused` cannot
 tell the two apart.
 

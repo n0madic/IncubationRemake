@@ -121,9 +121,8 @@ const TITLE_PLATE: String = "title"
 var paused: bool = false
 ## Whether that mission is a **campaign's**, which is what [constant MAIN_MAP]
 ## needs and [member paused] does not answer: a mission entered past the
-## campaign -- *Instant Action*, `--mission=` -- has no campaign state, so
-## [method CampaignHost.abandon_mission] would return at once and the button
-## would be the inert control section 7.1 forbids.
+## campaign. Instant Action retains state for saving but has no location map,
+## so offering this action there would still open an invalid destination.
 var may_abandon: bool = false
 ## Whether there is anything behind the plate to go back to, which is a wider
 ## question than [member paused]: the campaign map is behind it too.

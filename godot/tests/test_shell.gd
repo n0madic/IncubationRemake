@@ -978,15 +978,110 @@ func _screens(h: TestHarness) -> void:
 		"there is no control that can present a lost mission as completed")
 	defeat.free()
 
+	var instant_defeat: DebriefingScreen = DebriefingScreen.new()
+	instant_defeat.instant_action = true
+	instant_defeat.report = {"result": ScoreRecord.RESULT_DEFEAT}
+	instant_defeat.board = ScoreRecord.new()
+	instant_defeat.setup(_art, _strings, _font)
+	h.equal("screens.instant_action_result_has_two_ways_out",
+		_actions_of(instant_defeat),
+		PackedStringArray(["instant_levels", "instant_replay"]),
+		"Give Up cannot leave a read-only result panel over the map")
+	instant_defeat.free()
+
+	var ended: Dictionary = CacheFixture.load_world(CacheFixture.SLICE_MISSION)
+	if not ended.is_empty():
+		var instant_main: SliceMain = SliceMain.new()
+		instant_main._art = _art
+		instant_main._strings = _strings
+		instant_main.world = ended["world"]
+		instant_main.world.game_control.set_slot(4, 1)
+		instant_main._instant_action_mission = "_S_004"
+		instant_main._check_mission_end()
+		var routed: DebriefingScreen = instant_main.screen_shown() \
+			as DebriefingScreen
+		h.check("screens.instant_action_end_routes_to_actionable_result",
+			routed != null and routed.instant_action
+			and _actions_of(routed) == PackedStringArray(
+				["instant_levels", "instant_replay"]),
+			"the result route itself, not only the screen in isolation")
+		instant_main.free()
+
 	var list: MissionSelectScreen = MissionSelectScreen.new()
-	list.missions = PackedStringArray(["_C_140", "_C_141"])
+	list.missions = PackedStringArray(["_S_004", "_S_074"])
 	list.setup(_art, _strings, _font)
-	h.equal("screens.instant_action_lists_the_manifest",
+	h.equal("screens.instant_action_selects_before_launching",
 		_sorted(_actions_of(list)),
-		PackedStringArray(["back", "mission:_C_140", "mission:_C_141"]),
-		"the same set `--mission=` reaches, without a command line")
+		PackedStringArray(["back", "instant_start", "select_mission:_S_004",
+			"select_mission:_S_074"]),
+		"Level Options validates a selected map before it builds a battle")
+	var instant_labels: PackedStringArray = _button_labels_of(list)
+	h.check("screens.instant_action_uses_the_shipped_map_titles",
+		instant_labels.has("Spaceport")
+		and instant_labels.has("Escort Natalya")
+		and not instant_labels.has("_S_004")
+		and not instant_labels.has("_S_074"),
+		"Mission.lcl ids 4 and 74, while the actions retain both stems")
+	h.check("screens.instant_action_remembers_selected_map",
+		list.selected == "_S_004" and list.select_mission("_S_074")
+		and list.selected == "_S_074" and not list.select_mission("_S_999"),
+		"paging and a bad request cannot silently choose a different map")
+	h.equal("screens.instant_action_unknown_title_keeps_the_stem",
+		list.mission_label("_S_999"), "_S_999",
+		"a custom map without a Mission.lcl id stays identifiable")
 	_no_missing(h, "mission_select", list)
 	list.free()
+	var no_maps: MissionSelectScreen = MissionSelectScreen.new()
+	no_maps.setup(_art, _strings, _font)
+	h.equal("screens.instant_action_empty_cache_has_no_inert_continue",
+		_actions_of(no_maps), PackedStringArray(["back"]),
+		"a cache without _S maps cannot launch a map")
+	no_maps.free()
+
+	var instant_host: CampaignHost = CampaignHost.create(_cache_dir,
+		CacheFixture.balance(), _strings)
+	var instant_header: Dictionary = {
+		"tech_level": 10,
+		"skill_level": 12,
+		"equip_points": [1500, 0, 0, 0],
+	}
+	var instant_state: CampaignState = instant_host.start_instant_action(
+		"_S_004", instant_header)
+	var instant_recruit: UnitState = instant_state.roster.record(0)
+	h.check("instant_action.local_pool_is_deployable",
+		instant_host.is_instant_action()
+		and instant_state.mode == TurnState.MODE_LOCAL
+		and instant_state.player_count == 1
+		and instant_state.player_kind[0] == TurnState.KIND_HUMAN
+		and instant_state.roster.used_slots() == 4
+		and instant_state.tech_level == 10
+		and instant_state.skill_level == 12
+		and instant_state.points(0) == 1500
+		and instant_recruit != null
+		and instant_recruit.ep == 12 * Roster.EP_PER_RANK,
+		"the local squad uses the selected map's authored setup")
+	var instant_deploy: SelectUnitsScreen = SelectUnitsScreen.new()
+	instant_deploy.host = instant_host
+	instant_deploy.back_to_levels = true
+	instant_deploy.setup(_art, _strings, _font)
+	var instant_deploy_actions: PackedStringArray = _actions_of(instant_deploy)
+	h.check("instant_action.deployment_returns_to_levels",
+		instant_deploy_actions.has("instant_levels")
+		and not instant_deploy_actions.has("map"),
+		"a local session has no campaign map for Back to open")
+	instant_deploy.free()
+	var loaded_local: SliceMain = SliceMain.new()
+	loaded_local.campaign = instant_host
+	loaded_local._remember_loaded_session()
+	h.equal("instant_action.load_restores_result_route",
+		loaded_local._instant_action_mission, "_S_004",
+		"a saved local battle must not end through campaign progression")
+	instant_state.mode = TurnState.MODE_CAMPAIGN
+	loaded_local._remember_loaded_session()
+	h.equal("instant_action.campaign_load_clears_result_route",
+		loaded_local._instant_action_mission, "",
+		"a later campaign load cannot retain an Instant Action latch")
+	loaded_local.free()
 
 	var slots: SaveSlotsScreen = SaveSlotsScreen.new()
 	slots.host = host

@@ -11,6 +11,7 @@ Usage::
     python3 tools/remake_convert.py gog_incubation --check
     python3 tools/remake_convert.py --check-cache
     python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
+    python3 tools/remake_convert.py gog_incubation --instant-action-maps -o CACHES
 
 ``--check`` runs the whole pipeline twice into two staging directories and
 requires the inventories to be **byte-identical**, then diffs the emitted map
@@ -21,6 +22,11 @@ the lattice prototype by name, the marker, the four effect bytes).
 ``--check-cache`` exercises the failure modes on a temporary directory: a
 partial cache is refused, and a valid cache survives an update that dies
 halfway.
+
+``--instant-action-maps`` adds the ten shipped type-2 ``_S_*.lev`` maps for
+the local *Instant Action* flow. It may be combined with ``--campaign-maps``;
+the main menu filters the cache by the header type, so campaign frames and
+multiplayer maps never become skirmish launch choices.
 
 Neither writes anything into the game installation, and the installation is the
 only thing read (``docs/92`` §8).  In the first slice the converter is a CLI
@@ -1253,23 +1259,27 @@ def check_sequences(c: Checker, root: Path, cache_dir: Path,
 
 def check_mission_selection(c: Checker, root: Path) -> None:
     """What each form of the mission argument resolves to -- no conversion."""
-    c.expect("select.default", missions_from_args(root, False, None),
+    c.expect("select.default", missions_from_args(root, False, False, None),
              SLICE_MISSIONS + CAMPAIGN_FRAME_MAPS,
              "no argument is the slices' six, plus the campaign frame")
     c.expect("select.explicit",
-             missions_from_args(root, False, "_C_140, _C_115 ,,"),
+             missions_from_args(root, False, False, "_C_140, _C_115 ,,"),
              ["_C_140", "_C_115"] + CAMPAIGN_FRAME_MAPS,
              "spaces trimmed, empty entries dropped, the frame added")
     c.expect("select.frame_is_not_doubled",
-             missions_from_args(root, False, "_C_XXX,_C_140"),
+             missions_from_args(root, False, False, "_C_XXX,_C_140"),
              ["_C_XXX", "_C_140", "_C_YYY"],
              "a frame map named outright keeps its place in the list")
-    c.expect("select.campaign_maps", missions_from_args(root, True, None),
+    c.expect("select.campaign_maps", missions_from_args(root, True, False, None),
              campaign_map_set(root),
              f"{CAMPAIGN_MAPS} maps, the set --check-campaign bakes")
     c.check("select.frame_is_in_the_full_set",
             all(n in campaign_map_set(root) for n in CAMPAIGN_FRAME_MAPS),
             "--campaign-maps already carries them")
+    c.expect("select.instant_action_maps",
+             missions_from_args(root, False, True, None)[-10:],
+             instant_action_map_set(root),
+             "the local menu needs the ten `_S_*` maps in its cache")
 
 
 def run_checks(root: Path, missions: list[str], language: str) -> int:
@@ -1390,6 +1400,10 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
 #: because `--check` runs **three** full conversions and this set is fifteen
 #: times the slice -- 26 s and 86 MiB against 4 s and 42 MiB (docs/98).
 CAMPAIGN_MAP_GLOBS = ("_C_*.lev", "upgrade_*.lev")
+#: The one-seat local maps offered by `Menu_a.lcl`'s Instant Action route.
+#: They are deliberately separate from the campaign set: a type-4 upgrade or
+#: backdrop map is not a valid local battle merely because it is a `.lev`.
+INSTANT_ACTION_MAP_GLOB = "_S_*.lev"
 #: What a full bake must reach, measured: nine world sets and 31 distinct
 #: scenes across 92 maps.
 CAMPAIGN_WORLD_SETS = 9
@@ -1410,22 +1424,34 @@ def campaign_map_set(root: Path) -> list[str]:
     return sorted(names)
 
 
+def instant_action_map_set(root: Path) -> list[str]:
+    """Every shipped single-player map that the local ArenaMode can offer."""
+    return sorted(p.stem for p in (root / "Missions").glob(
+        INSTANT_ACTION_MAP_GLOB))
+
+
 def missions_from_args(root: Path | None, campaign_maps: bool,
+                       instant_action_maps: bool,
                        missions: str | None) -> list[str]:
     """The mission list a command line asks for.
 
     ``--campaign-maps`` is the whole campaign -- the same set
     :func:`campaign_map_set` gives ``--check-campaign`` -- and replaces
-    ``--missions`` rather than adding to it; without either, the six the
-    slices need.  It is a separate function so ``--check`` can pin all three
-    answers without a conversion behind them.
+    ``--missions`` rather than adding to it.  ``--instant-action-maps`` adds
+    precisely the ten type-2 `_S_*` maps to either selection.  It is separate
+    so ``--check`` can pin the selection without a conversion behind it.
     """
     if campaign_maps:
         assert root is not None, "--campaign-maps is refused without a root"
-        return campaign_map_set(root)
-    text = ",".join(SLICE_MISSIONS) if missions is None else missions
-    chosen = [name.strip() for name in text.split(",") if name.strip()]
-    return chosen + [n for n in CAMPAIGN_FRAME_MAPS if n not in chosen]
+        chosen = campaign_map_set(root)
+    else:
+        text = ",".join(SLICE_MISSIONS) if missions is None else missions
+        chosen = [name.strip() for name in text.split(",") if name.strip()]
+        chosen += [n for n in CAMPAIGN_FRAME_MAPS if n not in chosen]
+    if instant_action_maps:
+        assert root is not None, "--instant-action-maps is refused without a root"
+        chosen += [n for n in instant_action_map_set(root) if n not in chosen]
+    return chosen
 
 
 def run_campaign_checks(root: Path, language: str) -> int:
@@ -1797,6 +1823,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="every map the campaign can load -- 75 missions, two "
                          "campaign maps and 15 upgrade screens -- instead of "
                          "--missions")
+    ap.add_argument("--instant-action-maps", action="store_true",
+                    help="also convert the ten local single-player `_S_*` maps")
     ap.add_argument("--language", default=cachemod.DEFAULT_LANGUAGE,
                     help="source language; part of the cache id (docs/92 §7.6)")
     ap.add_argument("--dev-fixtures", type=Path,
@@ -1819,7 +1847,10 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--campaign-maps replaces --missions; give one of them")
     if args.campaign_maps and args.root is None:
         ap.error("--campaign-maps needs the game root, to list its Missions/")
-    missions = missions_from_args(args.root, args.campaign_maps, args.missions)
+    if args.instant_action_maps and args.root is None:
+        ap.error("--instant-action-maps needs the game root, to list its Missions/")
+    missions = missions_from_args(args.root, args.campaign_maps,
+                                  args.instant_action_maps, args.missions)
 
     try:
         if args.check_cache:

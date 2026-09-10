@@ -165,6 +165,21 @@ func _campaign_container(h: TestHarness) -> void:
 		back.roster.used_slots(Roster.ROW_SNAPSHOT)], [2, 3],
 		"the live row lost a slot; the entry snapshot did not")
 
+	# Instant Action uses the same container without a format exception. Its
+	# local mode is what lets the shell restore the non-campaign result route.
+	state.campaign = 0
+	state.mode = TurnState.MODE_LOCAL
+	var local_decoded: Dictionary = CampaignCodec.decode(
+		CampaignCodec.encode(state, blob))
+	var local_back: CampaignState = local_decoded["state"]
+	h.check("campaign_save.instant_action_round_trip",
+		DictRead.as_int(local_decoded["result"]) == CampaignCodec.Result.OK
+		and local_back.mode == TurnState.MODE_LOCAL
+		and local_back.campaign == 0
+		and local_back.mission == state.mission
+		and DictRead.to_bytes(local_decoded["mission"]) == blob,
+		"local sessions need no engine or save-schema change")
+
 	# The nested blob still goes through `SaveCodec`, which is what checks the
 	# map: a campaign that changed mission carries a blob for the old one.
 	var reloaded: World = TestFixtures.tiny_world()

@@ -308,6 +308,10 @@ var _command_note: String = ""
 ## Whether the report panel is being held down while the picture that ended
 ## the mission is still on screen ([method _check_mission_end]).
 var _result_held: bool = false
+## The local battle currently running, or empty outside Instant Action. The
+## CampaignState remains alive so the existing save container can persist the
+## session; this latch keeps its result out of the campaign map/debriefing flow.
+var _instant_action_mission: String = ""
 ## Set when the squad ran out of movement points, cleared when the turn is
 ## handed over ([method _auto_end_turn_wanted]).
 var _auto_end_pending: bool = false
@@ -831,11 +835,10 @@ func apply_cheat_code(code: String) -> bool:
 
 ## The difficulty the next world is built at -- docs/92 section 7.15's S6.
 ##
-## **The campaign is the authority when there is one.** [member
-## CampaignState.difficulty] is campaign state, already inside that object's
-## own digest, and it is what the map screen's option writes. Outside a
-## campaign -- *Instant Action*, or `--mission=` -- there is no campaign state
-## to ask, so the settings' default is the whole answer.
+## **The saved session is the authority when there is one.** [member
+## CampaignState.difficulty] is already inside that object's own digest, for a
+## campaign and Instant Action alike. A bare `--mission=` has no state to ask,
+## so the settings' default is the whole answer.
 func difficulty_now() -> int:
 	if campaign != null and campaign.state != null:
 		return campaign.state.difficulty
@@ -1038,9 +1041,9 @@ func _open_after_load() -> void:
 
 ## The interface's own autosaves (docs/43 section 5): the mission's start
 ## (slot 31, *Undo mission*) and each turn's start (slot 33, *Undo last
-## turn*), written the way `0x0041DA20`'s commands write them. Silent: an
-## *Instant Action* game has no campaign to write and the two buttons stay
-## dark for it.
+## turn*), written the way `0x0041DA20`'s commands write them. They are silent.
+## Instant Action uses the same container now that its local CampaignState is
+## retained; its mode keeps loading and mission-end routing out of the campaign.
 ## The mission's start, saved twice: *Undo mission* returns here, and so does
 ## *Undo last turn* until a turn has been played.
 func _autosave_mission_start() -> void:
@@ -1120,6 +1123,9 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	if code != CampaignCodec.Result.OK:
 		_refresh_status("load refused: " + CampaignCodec.result_name(code))
 		return false
+	# The loaded session does not own result routing until its nested world has
+	# passed SaveCodec's map/schema checks below.
+	_instant_action_mission = ""
 	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
 	if blob.is_empty():
 		close_campaign_screen()
@@ -1134,6 +1140,7 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	if restored != SaveCodec.Result.OK:
 		_refresh_status("mission refused: " + SaveCodec.result_name(restored))
 		return false
+	_remember_loaded_session()
 	close_campaign_screen()
 	campaign.enter_mission()
 	_resume_loaded_mission()
@@ -1247,6 +1254,7 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 		CampaignHost.SCREEN_SELECT:
 			var select: SelectUnitsScreen = SelectUnitsScreen.new()
 			select.host = campaign
+			select.back_to_levels = campaign.is_instant_action()
 			select.cache_dir = _cache_dir
 			select.document = CacheLoader.read_json(
 				"%s/text/briefing/%s.json" % [_cache_dir,
@@ -1540,7 +1548,7 @@ func _show_shell_screen() -> CampaignScreen:
 			# `--mission=` clear the campaign state, and there is no map to
 			# go back to.
 			menu.may_abandon = in_mission() and campaign != null \
-				and campaign.state != null
+				and campaign.state != null and not campaign.is_instant_action()
 			menu.behind = shell.behind
 			menu.has_any_save = _any_slot_used()
 			screen = menu
@@ -1550,7 +1558,7 @@ func _show_shell_screen() -> CampaignScreen:
 			screen = chains
 		ShellHost.SCREEN_MISSION_SELECT:
 			var list: MissionSelectScreen = MissionSelectScreen.new()
-			list.missions = _missions
+			list.missions = _instant_action_missions()
 			screen = list
 		ShellHost.SCREEN_SLOTS:
 			var slots: SaveSlotsScreen = SaveSlotsScreen.new()
@@ -1596,6 +1604,22 @@ func _any_slot_used() -> bool:
 	return false
 
 
+## The retail map header's type is the boundary, not a filename convention.
+## Type 2 is `Single`; type 1 is campaign, 3/5 need the multiplayer/coop
+## protocol the remake does not implement, and type 4 includes the campaign
+## backdrops and upgrade screens.  Showing any of those under a local one-seat
+## ArenaMode was the source of the former "loaded but unplayable" maps.
+func _instant_action_missions() -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	for mission: String in _missions:
+		var document: Dictionary = CacheLoader.read_json(
+			"%s/missions/%s/map.json" % [_cache_dir, mission])
+		var header: Dictionary = DictRead.as_dict(document.get("header", {}))
+		if DictRead.as_int(header.get("map_type", -1)) == 2:
+			out.append(mission)
+	return out
+
+
 ## What a shell button means. The host owns the transitions; this turns one
 ## into a call, exactly as [method _on_campaign_choice] does for the campaign.
 func _on_shell_choice(action: String) -> void:
@@ -1605,8 +1629,10 @@ func _on_shell_choice(action: String) -> void:
 	if action.begins_with("start:"):
 		_start_campaign(action.substr(6).to_int())
 		return
-	if action.begins_with("mission:"):
-		_start_instant_action(action.substr(8))
+	if action.begins_with("select_mission:"):
+		var list: MissionSelectScreen = _screen as MissionSelectScreen
+		if list != null:
+			list.select_mission(action.substr(15))
 		return
 	if action == "scroll_up" or action == "scroll_down":
 		# The catalogue is 92 long with the campaign in the cache and the slot
@@ -1631,6 +1657,10 @@ func _on_shell_choice(action: String) -> void:
 		"instant":
 			shell.go(ShellHost.SCREEN_MISSION_SELECT)
 			var _list: CampaignScreen = _show_shell_screen()
+		"instant_start":
+			var selected: MissionSelectScreen = _screen as MissionSelectScreen
+			if selected != null and selected.selected != "":
+				_start_instant_action(selected.selected)
 		"load":
 			shell.go_slots(ShellHost.MODE_LOAD)
 			var _slots: CampaignScreen = _show_shell_screen()
@@ -1702,6 +1732,7 @@ func _leave_mission_for_map() -> void:
 ## of them was added by copying the first. Both ask `Txtmod_d` 60 first; this
 ## is only what happens after the answer.
 func _end_campaign() -> void:
+	_instant_action_mission = ""
 	_drop_sequence()
 	_hold_left = 0.0
 	if campaign != null:
@@ -2045,6 +2076,7 @@ func _show_credits() -> CampaignScreen:
 func _start_campaign(chain: int) -> void:
 	if campaign == null or not CampaignState.FIRST_MISSION.has(chain):
 		return
+	_instant_action_mission = ""
 	var _state: CampaignState = campaign.start_new(chain, settings.difficulty)
 	shell.close()
 	# `aInitMissionControl` prints *Please Wait...* (`0x00454007`) on the way
@@ -2060,19 +2092,24 @@ func _start_campaign(chain: int) -> void:
 ## has no roster, no scoreboard and no next mission, and a stale campaign
 ## behind it would send its debriefing somewhere the player never was.
 func _start_instant_action(mission: String) -> void:
-	if not _missions.has(mission):
-		_refresh_status("the cache has no " + mission)
+	if not _instant_action_missions().has(mission):
+		_refresh_status("Instant Action has no playable " + mission)
 		return
-	if campaign != null:
-		campaign.state = null
-		campaign.screen = CampaignHost.SCREEN_MAP
+	if campaign == null:
+		_refresh_status("Instant Action needs the campaign tables")
+		return
+	var document: Dictionary = CacheLoader.read_json(
+		"%s/missions/%s/map.json" % [_cache_dir, mission])
+	var header: Dictionary = DictRead.as_dict(document.get("header", {}))
+	campaign.start_instant_action(mission, header, settings.difficulty)
 	shell.close()
 	close_campaign_screen()
 	_build(mission)
-	# The campaign state was cleared above, so there is no pool: the same
-	# silent arm `--mission=` takes.
 	if world != null:
-		world.skip_deployment_turn()
+		_instant_action_mission = mission
+		campaign.begin_mission(world)
+		var _select: CampaignScreen = show_campaign_screen(
+			CampaignHost.SCREEN_SELECT)
 
 
 ## The name the slot screen is holding, or `""` when what is up is not one.
@@ -2120,6 +2157,9 @@ func load_slot(slot: int) -> bool:
 		_refresh_status("slot %d refused: %s"
 			% [slot + 1, CampaignCodec.result_name(code)])
 		return false
+	# As in quick-load, do not arm local result routing for a nested mission
+	# blob that may still be refused.
+	_instant_action_mission = ""
 	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
 	if blob.is_empty():
 		shell.close()
@@ -2135,6 +2175,7 @@ func load_slot(slot: int) -> bool:
 	if restored != SaveCodec.Result.OK:
 		_refresh_status("mission refused: " + SaveCodec.result_name(restored))
 		return false
+	_remember_loaded_session()
 	# **Only now.** Taking the shell down before the world was confirmed left
 	# the slot screen on the tree with `shell.is_up()` already false, so the
 	# refusal was shown on a plate the shell no longer believed it owned and
@@ -2155,6 +2196,17 @@ func load_slot(slot: int) -> bool:
 	_open_after_load()
 	_refresh_status("loaded slot %d" % (slot + 1))
 	return true
+
+
+## Restore the one piece of shell routing that is deliberately not part of a
+## save's deterministic state. `CampaignState.mode` is persisted, so it is the
+## authority after both quick-load and numbered-slot load; without rebuilding
+## the latch, a loaded local battle ended through the campaign debriefing path.
+func _remember_loaded_session() -> void:
+	if campaign != null and campaign.is_instant_action():
+		_instant_action_mission = campaign.current_mission()
+	else:
+		_instant_action_mission = ""
 
 
 ## Step one option to its next value, apply it, and write the file.
@@ -2468,6 +2520,11 @@ func _on_campaign_choice(action: String) -> void:
 				campaign.enter_mission()
 				close_campaign_screen()
 				_begin_mission_view()
+				# Keep the local session state: CampaignCodec already carries its
+				# mode, mission and roster, so the ordinary save path can persist an
+				# Instant Action battle without changing the core or the format. The
+				# mission-name latch, rather than destroying state, separates its
+				# result from campaign progression.
 				# **Before the hand-over**, which is where the engine writes
 				# it too: `_31_.sav`, the autosave a mission entry leaves,
 				# carries turn 0 and the squad already placed (docs/11
@@ -2511,6 +2568,19 @@ func _on_campaign_choice(action: String) -> void:
 			var _report: Dictionary = campaign.finish_mission(world)
 			var _screen_up: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_DEBRIEFING)
+		"instant_levels":
+			_instant_action_mission = ""
+			if campaign != null:
+				campaign.abandon_mission()
+				campaign.state = null
+				campaign.screen = CampaignHost.SCREEN_MAP
+			_clear_mission()
+			shell.open(ShellHost.SCREEN_MISSION_SELECT, false)
+			var _levels: CampaignScreen = _show_shell_screen()
+		"instant_replay":
+			var instant_mission: String = _instant_action_mission
+			if instant_mission != "":
+				_start_instant_action(instant_mission)
 		"advance":
 			var target: String = campaign.advance()
 			if target != "":
@@ -3414,6 +3484,14 @@ func _build(mission: String) -> void:
 		DictRead.as_dict(map_document["header"])["world_set"])
 	world = World.create(map_document, balance, 1.0,
 		DictRead.to_strings(_geometry_for(set_name).get("special_models", [])))
+	# `ArenaMode` accepted a local session before `Leveloptions` loads its map.
+	# The post-load sweep reads this session state, so it must be installed
+	# before the sweep removes out-of-session records and recomputes survivors.
+	# A direct `--mission=` keeps the historic no-campaign defaults instead.
+	if campaign != null and campaign.is_instant_action():
+		world.turn.mode = TurnState.MODE_LOCAL
+		world.turn.player_count = campaign.state.player_count
+		world.turn.player_kind = campaign.state.player_kind.duplicate()
 	# The **same object**, not a copy: a switch flipped mid-mission has to
 	# reach the world that is being played, and one turned on before the
 	# first build has to reach every world after it.
@@ -4779,11 +4857,10 @@ func _process(delta: float) -> void:
 ## up during a mission and the agent server, so a mission won in the game simply
 ## stopped on a dead map.
 ##
-## `screen == SCREEN_MISSION` is the once-guard -- [method
-## CampaignHost.finish_mission] moves it on -- and it is also what keeps
-## *Instant Action* out: a mission entered past the campaign has no state, no
-## scoreboard to write and no next mission to go to, so it correctly gets
-## nothing.
+## `screen == SCREEN_MISSION` is the campaign once-guard -- [method
+## CampaignHost.finish_mission] moves it on. Instant Action retains a saveable
+## local state, so its mission-name latch takes precedence as a separate
+## once-guard and raises a report whose exits lead only to replay or levels.
 func _check_mission_end() -> void:
 	if world == null or not _mission_over():
 		_result_held = false
@@ -4804,11 +4881,45 @@ func _check_mission_end() -> void:
 		# order was refused) was wiped at exactly that moment. Nothing here
 		# is saying anything new; it is a redraw.
 		_refresh_status(_status_note)
+	if _instant_action_mission != "" and _screen == null:
+		_show_instant_action_result()
+		return
 	if campaign == null or campaign.state == null or _screen != null:
 		return
 	if campaign.screen != CampaignHost.SCREEN_MISSION:
 		return
 	_on_campaign_choice("debriefing")
+
+
+## Raise the ordinary report with Instant Action's own exits. The campaign
+## scorer cannot run here: a local battle must not update campaign totals or
+## recover its throw-away squad into a persistent roster.
+func _show_instant_action_result() -> void:
+	if world == null:
+		return
+	var outcome: int = world.game_control.mission_result(0)
+	var board: ScoreRecord = ScoreRecord.new()
+	board.result = outcome
+	board.kills = world.turn.mission_kills[0]
+	board.losses = world.turn.mission_lost[0]
+	board.lost_to_enemy = world.turn.mission_lost_to_enemy[0]
+	var result: DebriefingScreen = DebriefingScreen.new()
+	result.instant_action = true
+	result.report = {
+		"result": outcome,
+		"equipment_points": 0,
+		"commendations": 0,
+		"recovered": [],
+		"lost": [],
+	}
+	result.board = board
+	_play_frontend_program("debriefing")
+	result.setup(_art, _strings, interface_font(), interface_faces(),
+		interface_audio())
+	result.chose.connect(_on_campaign_choice)
+	add_child(result)
+	_screen = result
+	_sync_hud()
 
 
 ## Whether the turn should end by itself: the player holds it, the mission is

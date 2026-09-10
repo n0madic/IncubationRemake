@@ -59,6 +59,9 @@ var document: Dictionary = {}
 var cache_dir: String = ""
 ## The roster slot the player picked, or [constant Roster.NO_SLOT].
 var selected: int = Roster.NO_SLOT
+## Instant Action has no location map. Its second action returns to the level
+## catalogue; a campaign deployment keeps the shipped Main Map action.
+var back_to_levels: bool = false
 
 ## The squad row and the line under it.
 var _squad: Control = null
@@ -103,7 +106,8 @@ func build() -> void:
 	# on the briefing page, one screen back.
 
 	add_button("start", BANK_MISSION, ID_CONTINUE, 0)
-	add_button("map", BANK_MISSION, ID_MAIN_MAP, 1)
+	add_button("instant_levels" if back_to_levels else "map", BANK_MISSION,
+		ID_BACK if back_to_levels else ID_MAIN_MAP, 1)
 	_lay_out_buttons()
 	refresh()
 

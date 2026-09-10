@@ -31,6 +31,9 @@ const KEY_SQUAD_FULL: String = "debriefing.squad_full"
 
 var report: Dictionary = {}
 var board: ScoreRecord = null
+## Instant Action has no campaign map or next mission. Its report returns to
+## the level catalogue while keeping the ordinary retry.
+var instant_action: bool = false
 
 
 func build() -> void:
@@ -97,6 +100,11 @@ func build() -> void:
 		squad.add_child(line)
 
 	var button_index: int = 0
+	if instant_action:
+		add_button("instant_levels", BANK_MISSION, ID_BACK, button_index)
+		button_index += 1
+		add_button("instant_replay", BANK_REPORT, ID_TRY_AGAIN, button_index)
+		return
 	if outcome >= ScoreRecord.RESULT_WON \
 			and outcome <= ScoreRecord.RESULT_WON_GLORIOUS:
 		add_button("advance", BANK_REPORT, ID_CONTINUE_BUTTON, button_index)

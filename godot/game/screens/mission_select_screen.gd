@@ -1,24 +1,27 @@
 class_name MissionSelectScreen
 extends CampaignScreen
 
-## *Instant Action* -- one mission, past the campaign.
+## *Instant Action*'s `Leveloptions` page.
 ##
-## The list is the cache manifest's own `missions`, in the order the converter
-## emitted them, which is exactly what `--mission=` can already reach. The
-## point of the screen is that it is the same set without a command line: a
-## cache published with `--campaign-maps` offers all 92, one published with the
-## default six offers six, and the screen says which it is rather than pretending
-## the rest exist.
+## A row selects a map; it does not launch it.  In the retail flow `ArenaMode`
+## accepts the player setup first, then switches Menu_a's window selector to
+## `:Leveloptions;`; gadget 21 validates the selected row before a battle is
+## built.  The old remake made every manifest entry a launch button, including
+## campaign backdrops and upgrade maps which cannot be played as a skirmish.
 ##
-## A mission entered here has **no campaign state**: no roster to deploy, no
-## scoreboard to write, and no next mission -- which is why [method
-## SliceMain._check_mission_end] correctly does nothing when one ends.
+## The owner gives this page only maps supported by the local single-player
+## session.  A missing converted `_S_*` map is therefore an empty catalogue,
+## not a button that starts an empty or nonsensical battle.
 
-## `Txtmod_a` 111 -- *Found Maps:*, the caption the original's own map list
-## carries.
-const ID_FOUND: int = 111
-## How many rows fit before the list is worth scrolling. The catalogue is 92
-## long when the cache carries the campaign.
+## `Txtmod_a` 110 -- the title of the original's window 10.
+const ID_LEVEL_OPTIONS: int = 110
+## `Mission.lcl` -- the original turns `_S_004` into text id 4 before it
+## paints the row.  The mission stem remains the selection key; this bank is
+## presentation only.
+const BANK_LEVEL_NAMES: String = "Mission"
+## The shipped list reserves ten rows. The supported single-player catalogue
+## currently has exactly ten `_S_*` maps, but keep the paging rule at its
+## source shape if a later corpus supplies more.
 
 var missions: PackedStringArray = PackedStringArray()
 
@@ -39,12 +42,13 @@ const DOWN_INDEX: int = 32
 
 ## The first row on show.
 var first_row: int = 0
+## The selected map survives paging.  It is a name rather than a row number:
+## paging changes indices but must not silently select another map.
+var selected: String = ""
 
 
 func build() -> void:
-	var title: Label = make_label("%s  %s" % [
-		label_for(BANK_MENU, MainMenuScreen.ID_INSTANT_ACTION),
-		label_for(BANK_MENU, ID_FOUND)])
+	var title: Label = make_label(label_for(BANK_MENU, ID_LEVEL_OPTIONS))
 	title.position = Vector2(8.0, 0.0)
 	body().add_child(title)
 
@@ -53,9 +57,14 @@ func build() -> void:
 		var _up: Button = gui_icon("scroll_up", UP_INDEX, UP_AT, body())
 		var _down: Button = gui_icon("scroll_down", DOWN_INDEX, DOWN_AT,
 			body())
-	refresh()
-
 	add_button("back", BANK_MISSION, ID_BACK, 0)
+	# Do not offer an inert Continue button when the cache was produced without
+	# `--instant-action-maps`.
+	if not missions.is_empty():
+		add_button("instant_start", BANK_MISSION, ID_CONTINUE, 1)
+	if selected == "" and not missions.is_empty():
+		selected = missions[0]
+	refresh()
 
 
 ## Ten rows a page, which is what `Menu_a.lcl`'s *Leveloptions* reserves; a
@@ -69,9 +78,36 @@ func refresh() -> void:
 	var shown: int = mini(missions.size() - first_row, LIST_ROWS)
 	for index: int in range(shown):
 		var name: String = missions[first_row + index]
-		var _row: Button = gui_list_row("mission:" + name, name,
+		var _row: Button = gui_list_row("select_mission:" + name,
+			mission_label(name),
 			LIST_AT + Vector2(0.0, LIST_ROW_HEIGHT * float(index)),
 			LIST_WIDTH, index, shown, _rows)
+		_row.toggle_mode = true
+		_row.button_pressed = name == selected
+
+
+## `aBuildMissionTxtSys` (`Incubation.exe` `0x00419BA0`) reads characters
+## 3..5 of an underscore-prefixed stem as the id in `Mission.lcl`.  Missing
+## ids keep the stem, which is the original's fallback and also keeps custom
+## maps identifiable.
+func mission_label(name: String) -> String:
+	if not name.begins_with("_") or name.length() < 6:
+		return name
+	var digits: String = name.substr(3, 3)
+	if not digits.is_valid_int():
+		return name
+	var title: String = label_for(BANK_LEVEL_NAMES, digits.to_int())
+	if title.begins_with(Localization.MISSING_PREFIX):
+		return name
+	return title
+
+
+func select_mission(name: String) -> bool:
+	if not missions.has(name):
+		return false
+	selected = name
+	refresh()
+	return true
 
 
 ## One arrow, a page at a time.
