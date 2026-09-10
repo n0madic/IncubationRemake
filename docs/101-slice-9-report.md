@@ -805,44 +805,52 @@ for value 2 ([`20` §7.4](20-lcl-language.md)); the converted faces are one
 colour a glyph, so `font_color` carries `cX` and the second entry of each
 line's ramp is read and not rendered.
 
-**Making it move without shimmering took four passes, and the last one is
-the only one that holds.** What the port has that the original does not is a
-window of arbitrary size: a plate unit is not a screen pixel, and a text
-server places glyphs on a grid of its own while a rectangle is drawn wherever
-it is asked. The four, in order, with what each was and why it went:
+**Making it move without shimmering took six passes, and only the last one is
+a fix rather than a trade.** What the port has that the original does not is a
+window of arbitrary size: the plate is stretched over it, so a plate unit is a
+*fraction* of a pixel, and every glyph, rule and box lands on its own
+sub-pixel offset -- which then changes as the roll moves. The five attempts
+that stayed inside that coordinate system each traded one tremble for
+another:
 
 1. **A hard rectangle, moved continuously.** One plate unit at 1280x800 is
    five thirds of a pixel, so each rule covered two pixel rows at one offset
    and one at the next: the underlines blinked their way up the screen.
 2. **A four-row alpha ramp (`0, 1, 1, 0`) under `TEXTURE_FILTER_LINEAR`**,
-   fading a quarter of a unit either side of the engine's own row. Coverage
-   then changes *continuously* with position, and the blinking went. This
-   stayed. The fade started at half a unit and had to come down: the engine
-   leaves a whole unit of air between a rule and the cap height of the name
-   below it, and half of that is visibly too little.
-3. **Rounding the travel to a whole window pixel**, which is the obvious port
-   of `dec dword [0x0050FE1C]` and was wrong twice over. A window pixel is
-   half a *rendered* pixel on a display with a backing store, and a step of
-   about thirty a second is a visible shudder under every name where the
-   ramp hides it on the rules.
-4. **A whole canvas pixel, with the face's sub-pixel positioning turned off.**
-   These are one answer and not two: with positioning off a glyph lands on a
-   whole canvas pixel, which is exactly where the step puts the roll, so the
-   server's own rounding is a no-op and text and rule move as one picture
-   rather than as a picture and a rule. At a viewport 480 units tall that
-   step is one plate unit twenty times a second -- the original's own
-   cadence. Hinting is off with it, because a hinted face re-rasterises its
-   stems at every offset and a moving line appears to boil.
+   fading a quarter of a unit either side of the engine's own row, so that
+   coverage changes continuously with position. The blinking went and this
+   stayed -- it is still how a rule is drawn. The fade started at half a unit
+   and had to come down: the engine leaves a whole unit of air between a rule
+   and the cap height of the name below it.
+3. **Rounding the travel to a whole window pixel**, the obvious port of `dec
+   dword [0x0050FE1C]`, and wrong twice over: a window pixel is half a
+   *rendered* pixel on a display with a backing store, and a step thirty
+   times a second is a visible shudder under every name where the ramp hides
+   it on the rules.
+4. **A whole canvas pixel with the face's sub-pixel positioning off**, so
+   that the text server's own rounding becomes a no-op. Better, and still not
+   still.
+5. **Positioning the roll instead of anchoring it.** An anchor is a fraction
+   of the parent, so the roll's *y* went through a divide and a multiply in
+   32-bit float, and the error of that round trip changes with the value:
+   a line whose position happened to sit near the half-pixel rounded up on
+   one step and down on the next while its neighbours did not, so **some**
+   names twitched and the rest were still. That is a real defect and the fix
+   stands; what was left afterwards was a smaller tremble on all of them.
+6. **A [SubViewport] the size of the clip in real pixels.** The roll is laid
+   out on *its* pixels, steps a whole one of them, and reaches the screen as
+   a picture drawn in the same place every frame with different contents.
+   Nothing can shimmer against anything else because there is only one thing.
+   The viewport is 2134x1112 for a 768x400 clip on this display, and the
+   picture is drawn back at 1:1 in rendered pixels, so it is a copy rather
+   than a resampling.
 
-5. **The roll is positioned, not anchored.** An anchor is a fraction of the
-   parent, so the roll's *y* went through a divide and a multiply in 32-bit
-   float on its way to a pixel, and the error of that round trip changes with
-   the value. Every line inherits it, so a line whose position happened to sit
-   near the half-pixel rounded up on one step and down on the next while its
-   neighbours did not -- **some** names twitched and the rest were still,
-   which is the shape of the report that found it. Written straight, the
-   roll's *y* is exact, each line's offset inside it is constant, and every
-   line rounds the same way on every frame.
+One trap on the way in, worth naming because the screen came up **empty** and
+the roll was working perfectly: a [TextureRect] keeps its texture's own size
+by default, so `stretch_mode` alone does nothing. The viewport's picture was
+drawn at 2134x1112 in the corner of a 768x400 clip and every right-aligned
+line sat off the edge of it. `expand_mode = EXPAND_IGNORE_SIZE` is the other
+half of the stretch.
 
 Two things the port has to get right that the engine does not, both found by
 measuring a frame rather than by reading: `aPrintLibText` prints from the

@@ -144,7 +144,16 @@ const RULE_HEADING: int = 0x632C
 var _travelled: float = 0.0
 
 var _clip: Control = null
+var _view: SubViewport = null
+var _screen: TextureRect = null
 var _roll: Control = null
+## The lines the roll was built from, kept so a resize can lay them out again.
+var _lines: PackedStringArray = PackedStringArray()
+## The clip size the current layout was made for.
+var _laid_out: Vector2 = Vector2.ZERO
+## A plate unit in the viewport's own pixels, across and down.
+var _across: float = 1.0
+var _down: float = 1.0
 var _ramp: ImageTexture = null
 var _faces_smooth: Dictionary[int, FontFile] = {}
 var _roll_height: float = 0.0
@@ -275,39 +284,110 @@ static func _roll_entry(code: int, text: String, y: float) -> Dictionary:
 
 
 func _build_roll() -> void:
-	if _roll != null:
-		_roll.get_parent().queue_free()
+	if _clip != null:
+		_clip.queue_free()
+		_clip = null
+		_view = null
 		_roll = null
-	var lines: PackedStringArray = roll_lines()
-	_roll_height = roll_height(lines)
+		_screen = null
+	_lines = roll_lines()
+	_roll_height = roll_height(_lines)
 	set_process(false)
 	if _roll_height <= 0.0:
 		return
 	# The clip is the original's own `fcn.00447B20` rectangle, so the roll
 	# passes **behind** the buttons' row at 410 rather than over it.
-	var clip: Control = Control.new()
-	_clip = clip
-	clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	clip.clip_contents = true
-	place_on_plate(clip, ROLL_CLIP.position, ROLL_CLIP.size)
-	root().add_child(clip)
+	_clip = Control.new()
+	_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_clip.clip_contents = true
+	place_on_plate(_clip, ROLL_CLIP.position, ROLL_CLIP.size)
+	root().add_child(_clip)
+	# **The roll is drawn into a viewport of its own and shown as a picture.**
+	# Four passes of moving [Control]s about the canvas each traded one kind
+	# of tremble for another, and the reason none of them could win is that
+	# the canvas is not a pixel grid: the plate is stretched over whatever
+	# window the player opened, so a plate unit is a fraction of a pixel and
+	# every glyph, rule and box lands on its own sub-pixel offset, which then
+	# *changes* as the roll moves. Rendered into a [SubViewport] the size of
+	# the clip **in real pixels**, the roll has a grid: the lines are laid out
+	# on whole pixels of it, the roll steps a whole pixel of it, and what
+	# reaches the screen is one picture drawn in the same place every frame
+	# with different contents. Nothing can shimmer against anything else,
+	# because there is only one thing (docs/101 section 14).
+	_view = SubViewport.new()
+	_view.transparent_bg = true
+	_view.disable_3d = true
+	_view.gui_disable_input = true
+	_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_view.size = Vector2i(1, 1)
+	_clip.add_child(_view)
 	_roll = Control.new()
 	_roll.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# **The roll is positioned, not anchored.** An anchor is a fraction of the
-	# parent, so the roll's own *y* went through a divide and a multiply in
-	# 32-bit float on the way to a pixel -- and the rounding error of that
-	# round trip changes with the value. Every line inherits it, so a line
-	# whose position happened to sit near the half-pixel rounded up on one
-	# step and down on the next while its neighbours did not: **some** names
-	# twitched and the rest were still. Written straight, the roll's *y* is
-	# exact, each line's offset inside it is constant, and every line rounds
-	# the same way on every frame.
 	_roll.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	clip.add_child(_roll)
-	for entry: Dictionary in roll_layout(lines):
-		_draw_line(entry)
-	_place_roll()
+	_view.add_child(_roll)
+
+	_screen = TextureRect.new()
+	_screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_screen.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_screen.stretch_mode = TextureRect.STRETCH_SCALE
+	# **Without this the stretch does nothing.** A [TextureRect] keeps the
+	# texture's own size by default and takes it as its minimum, so the
+	# viewport's picture was drawn at 2134x1112 in the top-left corner of a
+	# 768x400 clip: the roll was rendering perfectly and every right-aligned
+	# line sat off the edge of it.
+	_screen.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	# The picture is drawn at the size it was rendered, so this is a copy
+	# rather than a resampling; linear rather than nearest because a viewport
+	# whose size did not divide evenly would alias hard under nearest and only
+	# softens under this.
+	_screen.texture_filter = Control.TEXTURE_FILTER_LINEAR
+	_clip.add_child(_screen)
 	set_process(true)
+
+
+## How many real pixels one canvas pixel is drawn as.
+##
+## The window's own pixel is not it: a display with a backing store renders a
+## 768x480 viewport into a 2134x1334 target, and the roll's grid has to be the
+## target's. One when there is nothing to measure.
+func _render_scale() -> float:
+	var view: Viewport = get_viewport()
+	if view == null:
+		return 1.0
+	var units: float = view.get_visible_rect().size.y
+	var target: ViewportTexture = view.get_texture()
+	if target == null or units <= 0.0:
+		return 1.0
+	var pixels: float = float(target.get_size().y)
+	if pixels <= 0.0:
+		return 1.0
+	return pixels / units
+
+
+## Size the viewport to the clip and lay every line out on its pixels.
+##
+## Run again whenever the clip's size changes -- a window resize moves the
+## grid, and a layout kept from the old one would be soft.
+func _relayout() -> void:
+	if _clip == null or _view == null or _roll == null:
+		return
+	var box: Vector2 = _clip.size
+	if box.x <= 0.0 or box.y <= 0.0:
+		return
+	var render: float = _render_scale()
+	_view.size = Vector2i(int(roundf(box.x * render)),
+		int(roundf(box.y * render)))
+	# A plate unit in the viewport's own pixels, across and down. The plate is
+	# stretched horizontally and not vertically, so the two differ.
+	_across = float(_view.size.x) / PLATE_SIZE.x
+	_down = float(_view.size.y) / ROLL_CLIP.size.y
+	_roll.size = Vector2(float(_view.size.x), _roll_height * _down)
+	clear_children(_roll)
+	for entry: Dictionary in roll_layout(_lines):
+		_draw_line(entry)
+	_screen.texture = _view.get_texture()
+	_laid_out = box
+	_place_roll()
 
 
 ## One printed line, right-aligned on [constant TEXT_RIGHT] with its rules
@@ -324,31 +404,27 @@ func _draw_line(entry: Dictionary) -> void:
 	var y: float = entry["y"]
 	var rules: int = entry["rules"]
 	var rule_565: int = entry["rule_ink"]
-	var line: Label = make_label(text, 0, fnt)
+	var line: Label = Label.new()
+	line.text = text
 	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	# `aPrintLibText`'s *y* is the glyphs' bottom (docs/43 section 5.3), which
 	# is what puts a rule at *y*+1 **under** the line rather than through it.
 	line.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	line.add_theme_color_override("font_color", UnitPanel.rgb565(ink_565))
-	_smooth(line, fnt)
+	_dress(line, fnt)
 	# **The box is dropped by the face's descent.** Bottom alignment puts the
 	# text *block*'s bottom on the box's, and a block is ascent **plus
 	# descent** -- so a box ending at *y* leaves the ink ending a descent
 	# above it, and every rule hung off the box lands that much too low. It
 	# measured 3.8 units of air above the rule and 0.6 below, where the engine
-	# leaves 1 and 3: the readable face's descent is nearly three units and it
-	# was pushing each rule down onto the first name of the group. A shipped
-	# bitmap face is all ascent and drops by nothing, which is why this never
-	# showed up in the faces the rest of the plate uses.
-	#
-	# The drop is the face's **declared descent**. Taking the block's own
-	# height less its ascent instead looks more principled and is wrong: a
-	# [Label]'s block is padded by the theme's line spacing, so that reading
-	# came out five units too large and put the rule through the heading.
+	# leaves 1 and 3. Taking the block's own height less its ascent instead
+	# looks more principled and is wrong: a [Label]'s block is padded by the
+	# theme's line spacing, so that reading came out five units too large and
+	# put the rule through the heading.
 	var drop: float = _descent(fnt)
-	_anchor(line, Vector2(0.0, y - ADVANCE_LINE + drop),
-		Vector2(TEXT_RIGHT, ADVANCE_LINE), Vector2(PLATE_SIZE.x, _roll_height))
+	line.position = Vector2(0.0, roundf((y - ADVANCE_LINE + drop) * _down))
+	line.size = Vector2(TEXT_RIGHT * _across, roundf(ADVANCE_LINE * _down))
 	_roll.add_child(line)
 	if rules <= 0:
 		return
@@ -361,20 +437,38 @@ func _draw_line(entry: Dictionary) -> void:
 		_rule(line, width, ink, RULE_SECOND - drop)
 
 
+## Give *line* the face it prints in, at the size the viewport's grid asks for.
+##
+## The shipped bitmap faces and the readable one are both scaled by the render
+## factor, because the viewport is that much bigger than the plate: a face
+## left at its own size would come out a third of the height it should be.
+## Hinting is off on the readable one -- a hinted face snaps its stems to the
+## pixel grid and re-rasterises into a slightly different shape at every size
+## and offset, which reads as boiling on text that moves.
+func _dress(line: Label, fnt: int) -> void:
+	var chosen: FontFile = face(fnt)
+	var base: float = float(readable_size(fnt))
+	if chosen != null:
+		base = float(chosen.fixed_size)
+		line.add_theme_font_override("font", chosen)
+	else:
+		var smooth: FontFile = _smooth_face(fnt)
+		if smooth != null:
+			line.add_theme_font_override("font", smooth)
+	line.add_theme_font_size_override("font_size",
+		maxi(int(roundf(base * _down)), 1))
+
+
 ## One row of pixels running left from [constant RULE_RIGHT], *below* by
 ## `below` -- `fcn.00463D80`'s case 0, whose loop steps *x* down from its
 ## argument for the measured length.
 ##
 ## **Drawn through a filtered ramp rather than as a hard rectangle.** The
-## original's bar is one pixel of a 640x480 frame buffer; here a plate unit is
-## not a whole pixel -- at 1280x800 it is five thirds of one -- so a hard
-## rectangle covers two pixel rows at one sub-pixel offset and one at the
-## next, and the two rules under every heading blink their way up the screen
-## as the roll moves. A four-row alpha ramp under [constant
-## Control.TEXTURE_FILTER_LINEAR] has **continuous** coverage instead: the
-## solid middle half is the engine's own one-unit bar and the half unit either
-## side of it fades, so a fraction of a pixel of movement changes the picture
-## by a fraction of its brightness rather than by a whole row.
+## original's bar is one pixel of a 640x480 frame buffer; in the roll's own
+## viewport it is the render factor's worth of them, which is not a whole
+## number. A four-row alpha ramp under [constant
+## Control.TEXTURE_FILTER_LINEAR] has continuous coverage, so the bar's edge
+## fades instead of gaining and losing a row.
 func _rule(line: Label, width: float, ink: Color, below: float) -> void:
 	var rule: TextureRect = TextureRect.new()
 	rule.texture = _rule_ramp()
@@ -383,11 +477,11 @@ func _rule(line: Label, width: float, ink: Color, below: float) -> void:
 	rule.modulate = ink
 	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	rule.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	rule.offset_right = RULE_RIGHT - TEXT_RIGHT
+	rule.offset_right = (RULE_RIGHT - TEXT_RIGHT) * _across
 	rule.offset_left = rule.offset_right - width
 	# Centred on the row the engine fills, which is `below`..`below + 1`.
-	rule.offset_top = below - RULE_FADE
-	rule.offset_bottom = below + RULE_HEIGHT + RULE_FADE
+	rule.offset_top = (below - RULE_FADE) * _down
+	rule.offset_bottom = (below + RULE_HEIGHT + RULE_FADE) * _down
 	line.add_child(rule)
 
 
@@ -406,25 +500,6 @@ func _descent(fnt: int) -> float:
 	return fallback.get_descent(readable_size(fnt))
 
 
-## Draw *line* in a face that does not change shape as it moves.
-##
-## **Hinting is what makes scrolling text shimmer.** A hinted face snaps its
-## stems to the pixel grid, so a glyph is re-rasterised into a slightly
-## different shape at every sub-pixel offset and a moving line appears to
-## boil. The readable face is Godot's own fallback, whose hinting cannot be
-## turned off in place, so the roll takes a copy of it with hinting off and
-## quarter-pixel positioning on. The shipped bitmap faces are images and have
-## neither, so they are left alone.
-func _smooth(line: Label, fnt: int) -> void:
-	if face(fnt) != null:
-		return
-	var smooth: FontFile = _smooth_face(fnt)
-	if smooth == null:
-		return
-	line.add_theme_font_override("font", smooth)
-	line.add_theme_font_size_override("font_size", readable_size(fnt))
-
-
 func _smooth_face(fnt: int) -> FontFile:
 	if _faces_smooth.has(fnt):
 		return _faces_smooth[fnt]
@@ -434,13 +509,6 @@ func _smooth_face(fnt: int) -> FontFile:
 		var source: FontFile = fallback
 		made = source.duplicate()
 		made.hinting = TextServer.HINTING_NONE
-		# **Sub-pixel positioning is off, and that is the point.** With it on
-		# a glyph is placed on a quarter-pixel grid while the rule beside it
-		# is drawn wherever it is asked, so the two move by different amounts
-		# and the names tremble against the line above them. Off, a glyph
-		# lands on a whole canvas pixel -- which is exactly where
-		# [method roll_top] puts the roll, so the placement is a no-op and
-		# text and rule move as one picture.
 		made.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
 	_faces_smooth[fnt] = made
 	return made
@@ -462,83 +530,28 @@ func _rule_ramp() -> ImageTexture:
 	return _ramp
 
 
-## Anchors in the plate's own units, against a box of *space* units -- the
-## sibling of [method place_on_plate], which measures against the plate
-## itself. The roll is neither 640x480 nor a fixed pixel count: it is as tall
-## as its own lines and it moves, so its children carry fractions of it.
-static func _anchor(control: Control, at: Vector2, size: Vector2,
-		space: Vector2) -> void:
-	control.anchor_left = at.x / space.x
-	control.anchor_top = at.y / space.y
-	control.anchor_right = (at.x + size.x) / space.x
-	control.anchor_bottom = (at.y + size.y) / space.y
-	control.offset_left = 0.0
-	control.offset_top = 0.0
-	control.offset_right = 0.0
-	control.offset_bottom = 0.0
-
-
-## Where the roll stands now, in the clip's own units.
+## Where the roll stands now, on the viewport's own pixel grid.
 func _place_roll() -> void:
 	if _roll == null:
 		return
-	# The clip is the plate's own rectangle, so its height *is* the roll's
-	# unit; before the first layout pass there is none and the plate's own
-	# figures stand in.
-	var across: float = PLATE_SIZE.x
-	var down: float = 1.0
-	if _clip != null and _clip.size.y > 0.0:
-		across = _clip.size.x
-		down = _clip.size.y / ROLL_CLIP.size.y
-	_roll.size = Vector2(across, _roll_height * down)
-	_roll.position = Vector2(0.0, roll_top() * down)
+	_roll.position = Vector2(0.0, roundf(roll_top() * _down))
 
 
 ## The plate-space *y* of the roll's first line, for a suite or the agent.
 ##
-## **Stepped by one canvas pixel**, which is the original's own step
-## (`dec dword [0x0050FE1C]` into a 640x480 frame buffer) and, at a viewport
-## 480 units tall, one plate unit -- so the roll advances twenty times a
-## second exactly as it does there.
-##
-## Left continuous, the roll shimmers, and not evenly: a glyph is placed on
-## the grid its face allows while the rule under a heading is a rectangle
-## drawn wherever it is asked, so the two move by different amounts and the
-## first name of every group trembles against the line above it. The step and
-## [method _smooth_face]'s disabled sub-pixel positioning are one answer, not
-## two: on this grid the text server's own rounding is a no-op, so what moves
-## is one picture rather than a picture and a rule.
+## Continuous here and rounded where it is used: what has to land on a whole
+## pixel is the roll's position **in its own viewport**, and that is the one
+## rounding in the screen. Four earlier passes rounded this instead -- to a
+## window pixel, to a canvas pixel, to the quarter a text server places glyphs
+## on -- and each of them traded the underlines' flicker for a shudder under
+## the names, because the canvas has no grid to round to.
 func roll_top() -> float:
-	var step: float = _pixel_step()
-	if step <= 0.0:
-		return ROLL_START - _travelled
-	return ROLL_START - floorf(_travelled / step) * step
-
-
-## One **canvas** pixel, in plate units -- the grid a face with no sub-pixel
-## positioning lands its glyphs on.
-##
-## Measured rather than assumed to be 1: the plate is stretched over the whole
-## viewport, and a viewport is 480 units tall only while the window is at
-## least four units wide to three. Zero when there is no viewport to measure,
-## which is the case in a suite: the layout is then exact and unquantised,
-## which is what a suite compares against.
-##
-## **Not the rendered pixel.** The render target is larger again on a display
-## with a backing store -- 2134x1334 for this 768x480 viewport -- and stepping
-## by one of *those* moves the roll a fraction of the grid the glyphs are on,
-## which is the shimmer this is here to remove. Both were tried.
-func _pixel_step() -> float:
-	var view: Viewport = get_viewport()
-	if view == null:
-		return 0.0
-	var units: float = view.get_visible_rect().size.y
-	if units <= 0.0:
-		return 0.0
-	return PLATE_SIZE.y / units
+	return ROLL_START - _travelled
 
 
 func _process(delta: float) -> void:
+	if _clip != null and _clip.size != _laid_out:
+		_relayout()
 	_travelled += ROLL_SPEED * delta
 	# Nothing brings it back: the original decrements forever and the last
 	# line leaves the top of the clip for good.
