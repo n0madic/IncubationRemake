@@ -46,6 +46,13 @@ const INVENTORY_ELEMENTS: Dictionary = {0: 0, 1: 1, 5: 2, 6: 3, 14: 4, 17: 5,
 const NO_ITEM: int = -1
 const INVENTORY_COLUMNS: int = 4
 const INVENTORY_STEP: Vector2i = Vector2i(18, 19)
+## The weapon, movement disc and inventory move together into the unused gap
+## after experience. At the original offsets the last inventory picture sits
+## on the bottom plate's bevel at the 640-wide layout; eight units clear it
+## while leaving the weapon mode lamp clear of the experience block.
+## Deliberately the remake's presentation correction: [HudTables] keeps the
+## executable's measured coordinates unchanged.
+const TRAILING_BLOCK_SHIFT: Vector2 = Vector2(-8.0, 0.0)
 ## docs/21 section 5's species column.
 const SPECIES_HUMAN: int = 0
 const SPECIES_ALIEN: int = 1
@@ -264,7 +271,8 @@ func _weapon_block(view: Dictionary, wtab: WeaponTable) -> void:
 	var weapon: int = DictRead.as_int(view["weapon"])
 	if weapon >= WEAPON_ALIEN_LOW and weapon <= WEAPON_ALIEN_HIGH:
 		return
-	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_WEAPON)
+	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_WEAPON) \
+		+ TRAILING_BLOCK_SHIFT
 	var frame: Texture2D = _icon(HudTables.LIB_ICONS, HudTables.ICON_WEAPON_FRAME, base)
 	var frame_width: float = frame.get_width() if frame != null else 0.0
 	_text(wtab.name_of(weapon), base + Vector2(frame_width, -3), _small,
@@ -280,7 +288,8 @@ func _weapon_block(view: Dictionary, wtab: WeaponTable) -> void:
 	_text(ammo_text, base + Vector2(frame_width - 7, 36), _small,
 		COLOUR_RED if ammo == 0 else COLOUR_TEXT, COLOUR_SHADOW, false,
 		FALLBACK_TEXT_SIZE,
-		_origin.x + float(HudTables.PANEL_BLOCK_MOVEMENT.x) - AMMO_DISC_GAP)
+		_origin.x + float(HudTables.PANEL_BLOCK_MOVEMENT.x) \
+			+ TRAILING_BLOCK_SHIFT.x - AMMO_DISC_GAP)
 	var heat: int = DictRead.as_int(view["heat"])
 	var limit: int = _heat_limit(view, wtab)
 	if limit != Refresh.HEAT_NONE:
@@ -321,7 +330,8 @@ func _wedge(heat: int, limit: int, foot: Vector2, cooled: bool) -> void:
 
 ## `0x00474AF0(x + 235, y + 15, mp)`: the disc and the number centred on it.
 func _movement_block(view: Dictionary) -> void:
-	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_MOVEMENT)
+	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_MOVEMENT) \
+		+ TRAILING_BLOCK_SHIFT
 	_icon(HudTables.LIB_ICONS, HudTables.ICON_MOVEMENT_DISC, base)
 	var _points: Label = _text(str(DictRead.as_int(view["mp"])),
 		base + Vector2(11, 14), _small, COLOUR_TEXT, COLOUR_DISC_SHADOW, true)
@@ -330,7 +340,8 @@ func _movement_block(view: Dictionary) -> void:
 ## `0x00475A60(x + 275, y - 10)`: one `inv.LIB` element per piece of
 ## equipment the unit carries, on an 18 by 19 grid.
 func _inventory(view: Dictionary) -> void:
-	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_SKILLS)
+	var base: Vector2 = _origin + Vector2(HudTables.PANEL_BLOCK_SKILLS) \
+		+ TRAILING_BLOCK_SHIFT
 	var hints: Dictionary = {}
 	for id: int in DictRead.to_int32(view["equipment"]):
 		if not INVENTORY_ELEMENTS.has(id):

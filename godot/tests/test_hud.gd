@@ -967,6 +967,24 @@ func _hud_live(h: TestHarness) -> void:
 			made.free()
 		h.equal("hud.the_item_leaves_the_top_hint_line_clear",
 			hud.hint_text(), "")
+		var inventory_right: float = 0.0
+		for element: int in range(UnitPanel.INVENTORY_ELEMENTS.size()):
+			var picture: Texture2D = art.sprite(HudTables.LIB_INVENTORY, element)
+			if picture == null:
+				continue
+			var offset: Vector2i = art.sprite_offset(
+				HudTables.LIB_INVENTORY, element)
+			var icon_left: float = float(HudTables.PANEL_ORIGIN.x
+				+ HudTables.PANEL_BLOCK_SKILLS.x) \
+				+ UnitPanel.TRAILING_BLOCK_SHIFT.x \
+				+ float((element % UnitPanel.INVENTORY_COLUMNS)
+					* UnitPanel.INVENTORY_STEP.x - offset.x)
+			inventory_right = maxf(inventory_right,
+				icon_left + picture.get_width())
+		h.check("hud.the_inventory_clears_the_command_panel_frame",
+			inventory_right <= float(HudTables.PAD_ORIGIN.x - 12),
+			"rightmost pixel %.0f, frame at %d" % [
+				inventory_right, HudTables.PAD_ORIGIN.x])
 		hud.refresh(world, carrier, all_on, none_on, north, east, {}, false)
 		h.check("hud.the_item_tooltip_survives_a_redraw",
 			hud.panel.item_hint_at(centre) == item_hint,

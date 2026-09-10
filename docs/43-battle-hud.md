@@ -689,6 +689,14 @@ on every refresh: replacing the hovered control would restart Godot's tooltip
 timer on every redraw, so the popup would never open. The hint line remains
 the command pad and button columns' caption alone.
 
+**The remake shifts the three trailing blocks eight plate units left**: the
+weapon, movement disc and inventory keep their measured spacing, while the
+small unused gap after experience is narrowed. At the executable's original
+offset the rightmost inventory sprite lies on the bottom plate's bevel in the
+640-wide layout; the shift leaves it inside the unit panel instead. The
+measured constants above remain unchanged in `HudTables`; this is an explicit
+presentation correction in `UnitPanel`.
+
 ### 5.4 The save slots the interface owns
 
 `0x0041DA20`'s commands 5..8 save and load slots **32** (*Remind/Recall
