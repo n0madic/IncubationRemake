@@ -76,26 +76,41 @@ const BOX_MARGIN: int = 800
 ## anything else happens on that screen -- `0x00510BB8/BC/C0` the eye and
 ## `0x00510BC4/C8/CC` the target, as three `mov dword` immediates and one
 ## `mov eax, 0xDDE0` used twice -- and `0x00457695` hands all six to
-## `aSetCameraPosition` `0x00403560` when the map is raised. Both chains take
-## the same numbers: it is one fixed view of the city, not a fit to anything
-## on the map.
+## `aSetCameraPosition` `0x00403560` when the map is raised. Both chains share
+## the target, while the current mission's location selects the authored eye;
+## it is not a fit to whichever locations happen to be open.
 ##
-## The target is field `(17.75, 17.75)` of a 40x40 map at height 0, and the eye
-## stands off the map's west edge and above it. **Neither is clamped**: the
-## engine writes the camera straight through `aSetCameraPosition`, past
-## `0x00453420`'s box, so the negative x stands.
+## Those six writes are only the starting values. Immediately afterwards
+## `0x004541D9` calls `0x0045D130(current location, &eye.x, &eye.y, &eye.z)`:
+## the current location selects one of thirteen authored eyes, or the default
+## arm. That missing second half left late campaign-2 locations below the
+## frame until the player rotated the remake's map by hand.
 ##
-## The remake computed a view over the open locations before this was found --
-## a distance from their bounding box and a height from the map's own span --
-## which put the eye four times higher than the header's camera height and
-## nowhere the original ever puts it.
-const CAMPAIGN_EYE: Vector3i = Vector3i(-19088, 98112, 9088)
+## The target is field `(17.75, 17.75)` of a 40x40 map at height 0. The eyes
+## are not clamped; several deliberately stand outside the map.
+const CAMPAIGN_EYE_INITIAL: Vector3i = Vector3i(-19088, 98112, 9088)
+const CAMPAIGN_EYE_DEFAULT: Vector3i = Vector3i(-19072, 98096, 9088)
+const CAMPAIGN_EYE_PRESETS: Array[Vector3i] = [
+	Vector3i(-19072, 98096, 19088),
+	Vector3i(79968, 140032, 19088),
+	Vector3i(15248, -18944, 18848),
+	Vector3i(101984, -16800, 19184),
+	Vector3i(-15072, 104672, 19200),
+	Vector3i(14320, 132016, 18592),
+	Vector3i(56912, 143168, 3984),
+	Vector3i(73664, -27904, 19200),
+	Vector3i(-21072, -21840, 19136),
+	Vector3i(143104, 53360, 19200),
+	Vector3i(121856, 0, 19200),
+	Vector3i(74176, -27792, 19200),
+	Vector3i(-3776, -4736, 14336),
+]
 const CAMPAIGN_TARGET: Vector3i = Vector3i(56800, 56800, 0)
 ## `0x004558F0` is what moves it: it turns the eye about the target by an
 ## angle it accumulates, and clamps the eye's height into this pair. The map's
 ## own frame callback calls it with zero deltas every frame, so the step
-## decays and the view above is where it rests -- [method swing_map] is the
-## whole routine.
+## decays and the selected preset is where it rests -- [method swing_map] is
+## the whole routine.
 const CAMPAIGN_HEIGHT_LOW: int = -0x2580
 const CAMPAIGN_HEIGHT_HIGH: int = 0x4B00
 
@@ -169,7 +184,8 @@ var _camera: Camera3D = null
 ## the one coordinate the turn carries forward.
 var _map_angle: int = 0
 var _map_step: int = 0
-var _map_height: int = CAMPAIGN_EYE.z
+var _map_eye: Vector3i = CAMPAIGN_EYE_DEFAULT
+var _map_height: int = CAMPAIGN_EYE_DEFAULT.z
 var _eye: Vector3i = Vector3i.ZERO
 var _target: Vector3i = Vector3i.ZERO
 var _eye_goal: Vector3i = Vector3i.ZERO
@@ -230,12 +246,11 @@ func camera() -> Camera3D:
 ## docs/27 section 2.6. Three things about it are worth stating, because two
 ## of them read backwards:
 ##
-## **The eye it turns is the fixed one.** `SetCameraPosition` `0x00403560`
-## hands its arguments to Eng3d and writes none of the globals back, and the
-## only writer of `0x00510BB8` is the screen's own initialiser -- so the
-## routine rotates [constant CAMPAIGN_EYE] by the **accumulated** angle every
-## frame rather than nudging where the eye already is. Reading it the other
-## way makes the map spin away.
+## **The eye it turns is the selected base eye.** `SetCameraPosition`
+## `0x00403560` hands its arguments to Eng3d and writes none of the globals
+## back, so the routine rotates the eye selected by [method campaign_eye] by the
+## **accumulated** angle every frame rather than nudging where the eye already
+## is. Reading it the other way makes the map spin away.
 ##
 ## **The step has inertia.** A request whose magnitude exceeds the current
 ## step replaces it; anything smaller **halves** the step instead, truncating
@@ -257,8 +272,8 @@ func swing_map(turn: int, rise: int) -> Vector3i:
 	_map_angle = IncInt.i32(_map_angle + _map_step)
 	_map_height = clampi(_map_height + rise, CAMPAIGN_HEIGHT_LOW,
 		CAMPAIGN_HEIGHT_HIGH)
-	var arm: Vector3i = Vector3i(CAMPAIGN_EYE.x - CAMPAIGN_TARGET.x,
-		CAMPAIGN_EYE.y - CAMPAIGN_TARGET.y, 0)
+	var arm: Vector3i = Vector3i(_map_eye.x - CAMPAIGN_TARGET.x,
+		_map_eye.y - CAMPAIGN_TARGET.y, 0)
 	var turned: Vector3i = arm
 	if eng3d != null:
 		# The angles are `(0, 0, accumulator)` -- the low **word** of it, so
@@ -268,13 +283,47 @@ func swing_map(turn: int, rise: int) -> Vector3i:
 		CAMPAIGN_TARGET.y + turned.y, _map_height)
 
 
-## Put the map's turn back where the screen's initialiser leaves it --
-## `0x004541F7` and `0x004554C9` both zero the accumulator, and `0x00454203`
-## the step.
-func reset_map_swing() -> void:
+## Put the map's turn on the eye `0x0045D130` chooses for *location*.
+## The helper and the screen entry zero the accumulator, and `0x00454203`
+## zeroes the step.
+func reset_map_swing(location: int) -> void:
+	_map_eye = campaign_eye(location)
 	_map_angle = 0
 	_map_step = 0
-	_map_height = CAMPAIGN_EYE.z
+	_map_height = _map_eye.z
+
+
+## `0x0045D130`'s 71-byte selector table, expressed as its contiguous ranges.
+## Locations outside 59..129, including campaign 1's opening locations and
+## the unused 85..89 gap, take the function's default arm.
+static func campaign_eye(location: int) -> Vector3i:
+	if location >= 59 and location <= 65:
+		return CAMPAIGN_EYE_PRESETS[0]
+	if location >= 66 and location <= 69:
+		return CAMPAIGN_EYE_PRESETS[1]
+	if location == 70:
+		return CAMPAIGN_EYE_PRESETS[2]
+	if location >= 71 and location <= 76:
+		return CAMPAIGN_EYE_PRESETS[3]
+	if location >= 77 and location <= 80:
+		return CAMPAIGN_EYE_PRESETS[4]
+	if location >= 81 and location <= 83:
+		return CAMPAIGN_EYE_PRESETS[5]
+	if location == 84:
+		return CAMPAIGN_EYE_PRESETS[6]
+	if location >= 90 and location <= 96:
+		return CAMPAIGN_EYE_PRESETS[7]
+	if location >= 97 and location <= 100:
+		return CAMPAIGN_EYE_PRESETS[8]
+	if location >= 101 and location <= 104:
+		return CAMPAIGN_EYE_PRESETS[9]
+	if location >= 105 and location <= 115:
+		return CAMPAIGN_EYE_PRESETS[10]
+	if location >= 116 and location <= 119:
+		return CAMPAIGN_EYE_PRESETS[11]
+	if location >= 120 and location <= 129:
+		return CAMPAIGN_EYE_PRESETS[12]
+	return CAMPAIGN_EYE_DEFAULT
 
 
 func map_angle() -> int:

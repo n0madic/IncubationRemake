@@ -1,7 +1,7 @@
 # The campaign layer — pool, locations, chaining, mission end
 
 **Status: the rules are decoded and checked. `tools/campaign_tables.py --check`
-runs 237 checks against the binary and the shipped data; every one has been
+runs 485 checks against the binary and the shipped data; every one has been
 shown to fail under a mutation of the byte, token or file it covers.**
 
 This is the delivered package B in [`00`'s game-logic matrix](00-overview.md). It is **behaviour,
@@ -289,16 +289,46 @@ them.
 |---|---|---|
 | the plate | `aInitGUI` `0x00454245`, again `0x004576C2` | `GUI\plate_3.bmp` |
 | the 3D window | `0x0040B670` at `0x00454102`, centre `0x0040B6B0` at `0x00454118` | `(65, 57)`, 518 × 306 |
-| the camera's eye | `0x00510BB8/BC/C0`, three `mov dword` immediates at `0x004541B2/BC/C6` | `(−19088, 98112, 9088)` |
+| the camera's initial eye | `0x00510BB8/BC/C0`, three `mov dword` immediates at `0x004541B2/BC/C6` | `(−19088, 98112, 9088)`; replaced by the current-location preset below |
 | the camera's target | `0x00510BC4/C8/CC`, `mov eax, 0xDDE0` at `0x0045414B` spent twice, then the prologue's zeroed `ebx` | `(56800, 56800, 0)` |
 
-`0x00457695` loads all six and hands them to `aSetCameraPosition`
-`0x00403560` when the map is raised. **Neither triple is clamped**: the box of
-[`42` §2.1](42-mission-presentation.md) belongs to the unit-camera placement
-and is not on this path, which is why the eye's x may be off the west edge of
-the map. The target is field (17.75, 17.75) of a 40×40 map at height 0 and the
-eye stands north-west of it and above — one fixed view of the city, the same
-for both chains and for every mission in them.
+The initial eye is not the eye the player normally sees. Immediately after
+writing it, the screen computes `location = missionId + 50` and calls
+`0x0045D130(location, &eye.x, &eye.y, &eye.z)` at `0x004541D9`. The helper
+clears the map-angle accumulator and selects one of thirteen authored eyes
+through a 71-byte table for locations 59..129; locations outside the table and
+the unused 85..89 gap take its default arm:
+
+| Current location | Eye `(x, y, z)` |
+|---|---|
+| default; 50..58; 85..89 | `(−19072, 98096, 9088)` |
+| 59..65 | `(−19072, 98096, 19088)` |
+| 66..69 | `(79968, 140032, 19088)` |
+| 70 | `(15248, −18944, 18848)` |
+| 71..76 | `(101984, −16800, 19184)` |
+| 77..80 | `(−15072, 104672, 19200)` |
+| 81..83 | `(14320, 132016, 18592)` |
+| 84 | `(56912, 143168, 3984)` |
+| 90..96 | `(73664, −27904, 19200)` |
+| 97..100 | `(−21072, −21840, 19136)` |
+| 101..104 | `(143104, 53360, 19200)` |
+| 105..115 | `(121856, 0, 19200)` |
+| 116..119 | `(74176, −27792, 19200)` |
+| 120..129 | `(−3776, −4736, 14336)` |
+
+`0x00457695` later loads the selected eye and the shared target and hands all
+six coordinates to `aSetCameraPosition` `0x00403560` when the map is raised.
+They are not clamped by the unit-camera box of
+[`42` §2.1](42-mission-presentation.md); several authored eyes deliberately stand outside
+the map. The target stays at field (17.75, 17.75), height 0, for both chains.
+
+This table is not merely cosmetic. Replaying the exact projection over both
+campaign maps puts all **156** `(current mission, open location)` pairs emitted
+by `aCreateLocationMap` inside the untouched `(65,57)..(583,363)` frame, with
+the marker's ten-pixel picking radius still inside it. For `_C_143`'s successor
+`_C_145`, current location 95 selects `(73664, −27904, 19200)` and shows both
+95 (*Next Antenna*) and 211 (*The old Fort*) immediately. A fixed initial eye
+puts 95 below the frame and incorrectly makes manual rotation necessary.
 
 The 518 × 306 viewport at (65, 57) is the one §2.3 reads as the sequence
 screen's. It is the **campaign screens'** generally: `0x00454102` sets it on
@@ -389,14 +419,13 @@ why the frame callback's own zero call matters: it is what brings a released
 drag to rest, in about ten frames, and a port that only ran the routine while
 the pointer moved would stop the map dead instead.
 
-**The eye it turns is the fixed one.** `aSetCameraPosition` `0x00403560`
-hands its six arguments to Eng3d and writes none of the globals back — the
-only writer of `0x00510BB8` is `0x004541B2`, the screen's own initialiser — so
-each frame rotates the **constant** eye of the table above by the accumulated
+**The eye it turns is the selected base eye.** `aSetCameraPosition`
+`0x00403560` hands its six arguments to Eng3d and writes none of the globals
+back, so each frame rotates the eye selected by `0x0045D130` by the accumulated
 angle:
 
 ```c
-eye.xy = target.xy + Rz(angle) * (EYE.xy - TARGET.xy);
+eye.xy = target.xy + Rz(angle) * (selectedEye.xy - TARGET.xy);
 eye.z  = clamp(eye.z + rise, -9600, 19200);
 ```
 
@@ -461,7 +490,7 @@ the hovered one ([`98` §6](98-slice-6-report.md)); changing
 
 The four windows over an upgrade location — HQ, the Unit Menu, the Item List
 and the Upgrade Menu — sit over a **still frame of that base's own scene**,
-and the view is neither the map's fixed pair of §2.6 nor anything computed:
+and the view is neither the map's location preset of §2.6 nor anything computed:
 it is where a scripted fly-in came to rest.
 
 `aPlayLocationAnimation_Upgrade` `0x00417510` destroys the battle map, writes

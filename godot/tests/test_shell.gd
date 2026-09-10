@@ -47,6 +47,7 @@ func run(h: TestHarness) -> void:
 	_scrolling(h)
 	_deploy_screen(h)
 	_map_picture(h)
+	_map_camera_presets(h)
 	_projection(h)
 	_map_turn(h)
 	_root_plates(h)
@@ -1349,24 +1350,26 @@ func _map_turn(h: TestHarness) -> void:
 		"`shl eax, 1` and the five instructions that come to -50")
 	var rig: CameraRig = CameraRig.new()
 	rig.eng3d = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
-	rig.reset_map_swing()
+	var location: int = 95
+	var base_eye: Vector3i = CameraRig.campaign_eye(location)
+	rig.reset_map_swing(location)
 	# **Not exactly the constants**, and the original is not either: a zero
 	# angle still goes through Eng3d's Q14 matrix, whose products are shifted
 	# down and truncated, so the arm comes back a few units short. It is a
 	# fixed offset rather than a drift, because the arm is recomputed from the
 	# constants every frame instead of being carried forward -- which is one
-	# more reason the engine rotates the fixed eye and not the moving one.
+	# more reason the engine rotates the selected base eye and not the moving one.
 	var resting: Vector3i = rig.swing_map(0, 0)
 	h.check("turn.rests_where_the_constants_say",
 		Vector2(resting.x, resting.y).distance_to(Vector2(
-			CameraRig.CAMPAIGN_EYE.x, CameraRig.CAMPAIGN_EYE.y)) < 16.0
-		and resting.z == CameraRig.CAMPAIGN_EYE.z,
+			base_eye.x, base_eye.y)) < 16.0
+		and resting.z == base_eye.z,
 		"a frame that asks for nothing rests at %s, a Q14 truncation off "
-		% resting + str(CameraRig.CAMPAIGN_EYE))
+		% resting + str(base_eye))
 
 	# A drag, then the pointer stops. The step is replaced while the request
 	# grows and halved once it does not, so the map coasts and settles.
-	rig.reset_map_swing()
+	rig.reset_map_swing(location)
 	var _first: Vector3i = rig.swing_map(40, 0)
 	h.equal("turn.request_becomes_the_step", rig.map_step(), 40)
 	var _smaller: Vector3i = rig.swing_map(3, 0)
@@ -1383,7 +1386,7 @@ func _map_turn(h: TestHarness) -> void:
 	# full circle in **one** call comes back to where it started. Checking the
 	# call after it would not -- the step halves and accumulates again, which
 	# is the whole point of the decay.
-	rig.reset_map_swing()
+	rig.reset_map_swing(location)
 	var full: Vector3i = rig.swing_map(Eng3dGeometry.ANGLE_UNITS, 0)
 	h.check("turn.a_full_circle_is_a_no_op",
 		Vector2(full.x, full.y).distance_to(Vector2(resting.x, resting.y))
@@ -1393,23 +1396,23 @@ func _map_turn(h: TestHarness) -> void:
 	# And it is a turn about **z**. A full circle is a no-op about any axis,
 	# so what says the angle is the third of the three is that a quarter turn
 	# keeps the arm's length and puts it square to where it was.
-	rig.reset_map_swing()
+	rig.reset_map_swing(location)
 	var quarter: Vector3i = rig.swing_map(Eng3dGeometry.ANGLE_UNITS / 4, 0)
-	var arm: Vector2 = Vector2(CameraRig.CAMPAIGN_EYE.x
+	var arm: Vector2 = Vector2(base_eye.x
 		- CameraRig.CAMPAIGN_TARGET.x,
-		CameraRig.CAMPAIGN_EYE.y - CameraRig.CAMPAIGN_TARGET.y)
+		base_eye.y - CameraRig.CAMPAIGN_TARGET.y)
 	var swung: Vector2 = Vector2(quarter.x - CameraRig.CAMPAIGN_TARGET.x,
 		quarter.y - CameraRig.CAMPAIGN_TARGET.y)
 	h.check("turn.is_about_z",
 		absf(swung.length() - arm.length()) < 16.0
 		and absf(arm.normalized().dot(swung.normalized())) < 0.001
-		and quarter.z == CameraRig.CAMPAIGN_EYE.z,
+		and quarter.z == base_eye.z,
 		"the arm keeps its length %.0f -> %.0f and turns square to itself"
 		% [arm.length(), swung.length()])
 
 	# And the height is the one coordinate that carries forward, into the
 	# band `0x00455991` and `0x004559A7` clamp it to.
-	rig.reset_map_swing()
+	rig.reset_map_swing(location)
 	var high: Vector3i = rig.swing_map(0, 100000)
 	var low: Vector3i = rig.swing_map(0, -1000000)
 	h.equal("turn.height_band", [high.z, low.z],
@@ -1513,23 +1516,23 @@ func _map_picture(h: TestHarness) -> void:
 	h.equal("map.no_cell_for_an_unused_id",
 		cells.has(0), false, "0 is 'no action point', never a location")
 
-	# `0x00453F80` writes these six and `0x00457695` hands them to
-	# `aSetCameraPosition`. `tools/campaign_tables.py` pins them against the
-	# shipped executable; this pins the port against the same numbers.
-	h.equal("map.camera_eye", CameraRig.CAMPAIGN_EYE,
+	# `0x00453F80` writes these six before `0x0045D130` replaces the eye from
+	# the current location. `tools/campaign_tables.py` pins both stages against
+	# the shipped executable.
+	h.equal("map.camera_eye_initial", CameraRig.CAMPAIGN_EYE_INITIAL,
 		Vector3i(-19088, 98112, 9088), "0x00510BB8/BC/C0")
 	h.equal("map.camera_target", CameraRig.CAMPAIGN_TARGET,
 		Vector3i(56800, 56800, 0), "0x00510BC4/C8/CC, 0xDDE0 twice")
 	h.check("map.camera_looks_down_at_the_city",
-		CameraRig.CAMPAIGN_EYE.z > CameraRig.CAMPAIGN_TARGET.z
-			and CameraRig.CAMPAIGN_EYE.y > CameraRig.CAMPAIGN_TARGET.y,
+		CameraRig.CAMPAIGN_EYE_INITIAL.z > CameraRig.CAMPAIGN_TARGET.z
+			and CameraRig.CAMPAIGN_EYE_INITIAL.y > CameraRig.CAMPAIGN_TARGET.y,
 		"the eye stands above and north of the target")
 	h.check("map.camera_is_not_boxed",
-		CameraRig.CAMPAIGN_EYE.x < CameraRig.BOX_MARGIN,
+		CameraRig.CAMPAIGN_EYE_INITIAL.x < CameraRig.BOX_MARGIN,
 		"the engine writes it past 0x00453420's box, so x stays negative")
 	h.check("map.camera_height_band",
-		CameraRig.CAMPAIGN_HEIGHT_LOW < CameraRig.CAMPAIGN_EYE.z
-			and CameraRig.CAMPAIGN_EYE.z < CameraRig.CAMPAIGN_HEIGHT_HIGH,
+		CameraRig.CAMPAIGN_HEIGHT_LOW < CameraRig.CAMPAIGN_EYE_INITIAL.z
+			and CameraRig.CAMPAIGN_EYE_INITIAL.z < CameraRig.CAMPAIGN_HEIGHT_HIGH,
 		"0x004558F0 clamps the eye's height into [-9600, 19200]")
 
 	# The window the frame leaves clear is the engine's own viewport, and the
@@ -1553,6 +1556,77 @@ func _map_picture(h: TestHarness) -> void:
 		CampaignScreen.PLATE_WINDOW)
 	frame.free()
 	world = null
+
+
+## `0x0045D130` selects an authored eye from the current mission's location.
+## This is the regression for `_C_143` -> `_C_145`: location 95 and the Old
+## Fort at 211 must both be inside the untouched map frame. The exhaustive
+## half checks the same property over every open-location set in both chains.
+func _map_camera_presets(h: TestHarness) -> void:
+	h.equal("map.preset_default", CameraRig.campaign_eye(50),
+		Vector3i(-19072, 98096, 9088), "0x0045D32D's default arm")
+	h.equal("map.preset_after_c143", CameraRig.campaign_eye(95),
+		Vector3i(73664, -27904, 19200), "selector 7 at 0x0045D255")
+	h.equal("map.preset_ranges", [
+		CameraRig.campaign_eye(59), CameraRig.campaign_eye(66),
+		CameraRig.campaign_eye(70), CameraRig.campaign_eye(71),
+		CameraRig.campaign_eye(77), CameraRig.campaign_eye(81),
+		CameraRig.campaign_eye(84), CameraRig.campaign_eye(90),
+		CameraRig.campaign_eye(97), CameraRig.campaign_eye(101),
+		CameraRig.campaign_eye(105), CameraRig.campaign_eye(116),
+		CameraRig.campaign_eye(120), CameraRig.campaign_eye(85)],
+		CameraRig.CAMPAIGN_EYE_PRESETS + [CameraRig.CAMPAIGN_EYE_DEFAULT],
+		"the thirteen selector arms and the 85..89 default gap")
+
+	var document: Dictionary = CacheFixture.read_json(
+		_cache_dir + "/tables/campaign.json")
+	var tables: CampaignMap = CampaignMap.from_document(document)
+	var locations: Dictionary[int, Vector3i] = {}
+	for map_name: String in ["_C_XXX", "_C_YYY"]:
+		var map: Dictionary = CacheFixture.read_json(
+			"%s/missions/%s/map.json" % [_cache_dir, map_name])
+		var cells: Dictionary = DictRead.as_dict(map["cells"])
+		var land: Dictionary = DictRead.as_dict(map["land"])
+		var action: Array = DictRead.as_array(cells["action_point"])
+		var xs: Array = DictRead.as_array(land["x"])
+		var ys: Array = DictRead.as_array(land["y"])
+		var zs: Array = DictRead.as_array(land["z"])
+		for i: int in range(action.size()):
+			var id: int = DictRead.as_int(action[i])
+			if id > 0:
+				locations[id] = Vector3i(DictRead.as_int(xs[i]),
+					DictRead.as_int(ys[i]), DictRead.as_int(zs[i]))
+
+	var rig: CameraRig = CameraRig.new()
+	rig.setup(40, 40, PackedInt32Array(), CameraRig.CAMPAIGN_HEIGHT_HIGH)
+	var camera: Camera3D = rig.camera()
+	var window: Rect2 = CampaignScreen.PLATE_WINDOW
+	var safe_window: Rect2 = window.grow(-MapMarkers.PICK_RADIUS)
+	var outside: PackedStringArray = PackedStringArray()
+	var checked: int = 0
+	for row_value: Variant in DictRead.as_array(document["unlock_graph"]):
+		var row: Dictionary = DictRead.as_dict(row_value)
+		var mission_id: int = DictRead.as_int(row["mission"])
+		var current: int = tables.location_of(mission_id)
+		rig.set_now(CameraRig.campaign_eye(current), CameraRig.CAMPAIGN_TARGET)
+		for id: int in tables.open_locations(mission_id):
+			if not locations.has(id):
+				continue
+			var point: Vector3 = WorldSpace.to_godot_v(Vector3(locations[id])) \
+				- WorldSpace.to_godot_v(Vector3(CameraRig.CAMPAIGN_TARGET))
+			var local: Vector3 = camera.transform.affine_inverse() * point
+			var pixel: Vector2 = CameraRig.project(
+				Vector3(local.x, local.y, -local.z), window)
+			checked += 1
+			if not safe_window.has_point(pixel):
+				outside.append("mission %d location %d at %s" % [
+					mission_id, id, pixel])
+	h.equal("map.all_open_locations_checked", checked, 156,
+		"both campaign maps, every set emitted by aCreateLocationMap")
+	h.equal("map.all_open_locations_visible_without_turn", outside,
+		PackedStringArray(),
+		"each marker centre and its 10-pixel pick radius stay inside the frame")
+	rig.free()
 
 
 ## The plates and campaign art the converter bakes.

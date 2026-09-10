@@ -1690,17 +1690,21 @@ window is not.
 first pass delivered was the shape; four things it did not deliver were the
 reasons a player could read it.
 
-**The map's camera is the original's, and it is a constant.** This was a
-computed view for one pass -- a distance from the box of open locations and a
-height from the map's own span -- on the belief that the original's was set up
-by a front-end script this remake does not run. It is not: `_C_XXX.lcl` and
-`_C_YYY.lcl` set no camera at all (four `CreateBGB` fires and a
-`CDTrackProgram`, and nothing else), and the view is six immediates in
-`aMissionControl.cpp` handed to `aSetCameraPosition` when the map is raised --
-eye `(-19088, 98112, 9088)`, target `(56800, 56800, 0)`, one fixed view of the
-city for both chains and every mission in them (docs/27 §2.6, pinned by
-`campaign_tables.py --check`). The computed view put the eye four times higher
-than the header's own camera height and nowhere the original ever puts it.
+**The map's camera is the original's location preset (corrected
+2026-09-10).** This was a computed view for one pass -- a distance from the
+box of open locations and a height from the map's own span -- on the belief
+that the original's was set up by a front-end script this remake does not run.
+It is not: `_C_XXX.lcl` and `_C_YYY.lcl` set no camera at all (four
+`CreateBGB` fires and a `CDTrackProgram`, and nothing else). The first static
+reading then stopped one call too early and called the six initial immediates
+the final camera. `aMissionControl.cpp` immediately calls `0x0045D130` with
+`missionId + 50`; its 71-byte selector chooses one of thirteen authored eyes
+for locations 59..129, or a default, while the target stays
+`(56800, 56800, 0)` (docs/27 §2.6, pinned by `campaign_tables.py --check`).
+The computed view still put the eye nowhere the original does, but the fixed
+initial eye was wrong too: after `_C_143` it hid location 95 below the frame.
+The full preset table keeps all 156 open-location instances in both campaigns
+inside the frame without requiring the player to rotate it.
 Two things came with it: the window the plate leaves clear is the engine's own
 3D viewport, `(65, 57)` by 518 x 306, and the plate is `plate_3` -- the one
 shipped plate with a picture frame inset in it, whose dark interior is exactly
@@ -1785,9 +1789,9 @@ what makes the two halves of that block one thing.
 
 **And the dots are picked on the screen, not on the ground.** `cell_under`
 crosses the pointer's ray with each cell's own height, which is the right
-answer under a mission's camera and a fragile one under this: 2.8 fields above
-a city 27 fields away, the ray meets a height plane at about six degrees, so
-one pixel of pointer movement is half a field of ground and a dot two pixels
+answer under a mission's camera and a fragile one under this: the authored
+presets include shallow views across the campaign maps' steep height changes,
+so one pixel of pointer movement can cover much of a field and a dot two pixels
 across became unclickable the moment the camera became faithful. The markers
 are overlay sprites -- `no_depth_test`, `fixed_size`, drawn after the world --
 so what the player aims at is the sprite: `MapMarkers.cell_at` answers with
@@ -1818,12 +1822,12 @@ own *on the unit* placement is made over the landing cell instead; after one
 is placed it frames the soldier. The camera half of `_screen_input` is a short
 **named** list rather than a fall-through: a screen is up, and everything it
 does not name still belongs to the screen. Turning is the mission's and not
-the map's — the map's eye is the fixed pair above while the rig's quadrant is
-still 0, so a turn there would jump rather than pivot. The original *does*
-turn that view: `0x004558F0` swings the eye about the target by an angle it
-accumulates and decays, clamping the height into `[-9600, 19200]`. What feeds
-it a non-zero delta is left UNVERIFIED in docs/27 §2.6 and nothing here
-transcribes the turn.
+the map's — the map's eye is the selected location preset above while the
+rig's quadrant is still 0, so a mission turn there would jump rather than
+pivot. The original *does* turn that view separately: `0x004558F0` swings the
+selected base eye about the target by an angle it accumulates and decays,
+clamping the height into `[-9600, 19200]`; docs/27 §2.6 records the right-button
+drag that feeds it.
 
 **`ESC` over a mission has a way out that is not quitting the program.** The
 pause menu offered *Continue*, *Save game*, *Options* and *Exit Program*, so

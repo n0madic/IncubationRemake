@@ -1261,6 +1261,48 @@ CAMERA_HANDOVER = 0x0045769E
 #: What they come to.
 CAMPAIGN_EYE = (-19088, 98112, 9088)
 CAMPAIGN_TARGET = (56800, 56800, 0)
+#: The initial eye is immediately replaced through these three pointers by
+#: `0x0045D130(current location, &x, &y, &z)`. The 71 selector bytes cover
+#: locations 59..129; every value outside that span takes the default arm.
+CAMERA_PRESET_CALL = 0x004541D9
+CAMERA_PRESET = 0x0045D130
+CAMERA_PRESET_POINTER_PUSHES = (0x0045413F, 0x00454153, 0x0045415F)
+CAMERA_PRESET_POINTERS = (CAMERA_EYE_GLOBAL + 8, CAMERA_EYE_GLOBAL + 4,
+                          CAMERA_EYE_GLOBAL)
+CAMERA_PRESET_BIAS_SITE = 0x0045D13E
+CAMERA_PRESET_FIRST = 59
+CAMERA_PRESET_LIMIT_SITE = 0x0045D141
+CAMERA_PRESET_LAST = 129
+CAMERA_PRESET_ARM_TABLE = 0x0045D354
+CAMERA_PRESET_SELECTOR_TABLE = 0x0045D38C
+CAMERA_PRESET_ARMS = (
+    0x0045D159, 0x0045D17D, 0x0045D1A1, 0x0045D1C5,
+    0x0045D1E9, 0x0045D20D, 0x0045D231, 0x0045D255,
+    0x0045D279, 0x0045D29D, 0x0045D2C1, 0x0045D2E5,
+    0x0045D309,
+)
+CAMERA_PRESET_DEFAULT = 0x0045D32D
+CAMERA_PRESET_EYES = (
+    (-19072, 98096, 19088),
+    (79968, 140032, 19088),
+    (15248, -18944, 18848),
+    (101984, -16800, 19184),
+    (-15072, 104672, 19200),
+    (14320, 132016, 18592),
+    (56912, 143168, 3984),
+    (73664, -27904, 19200),
+    (-21072, -21840, 19136),
+    (143104, 53360, 19200),
+    (121856, 0, 19200),
+    (74176, -27792, 19200),
+    (-3776, -4736, 14336),
+)
+CAMERA_PRESET_DEFAULT_EYE = (-19072, 98096, 9088)
+CAMERA_PRESET_SELECTORS = (
+    [0] * 7 + [1] * 4 + [2] + [3] * 6 + [4] * 4 + [5] * 3 + [6]
+    + [13] * 5 + [7] * 7 + [8] * 4 + [9] * 4 + [10] * 11
+    + [11] * 4 + [12] * 10
+)
 #: `0x0040B670(x, y, w, h)` on the way into the campaign screens.
 VIEWPORT_SITE = 0x00454102
 CAMPAIGN_VIEWPORT = (65, 57, 518, 306)
@@ -1368,8 +1410,8 @@ ROTATE_MATRIX_CALL = 0x0045597E
 ROTATE_MATRIX = 0x004039A0
 #: `SetCameraPosition` `0x00403560` writes **none** of the globals back, and
 #: the eye's own x is written only by the screen's initialiser -- so the turn
-#: rotates the fixed eye by the accumulated angle rather than nudging the eye
-#: it has.  Reading it the other way makes the map run away.
+#: rotates the location-selected base eye by the accumulated angle rather than
+#: nudging the eye it has. Reading it the other way makes the map run away.
 CAMERA_EYE_X_GLOBAL = 0x00510BB8
 CAMERA_EYE_Z_GLOBAL = 0x00510BC0
 ROTATE_CAMERA_CALL = 0x004559DC
@@ -1677,13 +1719,13 @@ def check_upgrade_purchase(ck: Checker, b: Binary) -> None:
 
 
 def check_screen_camera(ck: Checker, b: Binary) -> None:
-    """docs/27 section 2.6 -- the campaign screen's camera is a constant.
+    """docs/27 section 2.6 -- the campaign screen's camera setup.
 
     The remake computed a view over the open locations because nothing said
-    where the original stands.  `aMissionControl.cpp` says: six globals
-    written as immediates on the way into the screen and handed to
-    `aSetCameraPosition` unchanged when the map is raised.  Neither is
-    clamped -- the eye's x is off the west edge of the map.
+    where the original stands. `aMissionControl.cpp` writes six initial
+    globals, then selects the eye from the current location in
+    :func:`check_camera_presets`; the resulting six values are handed to
+    `aSetCameraPosition` when the map is raised.
     """
     for i, (site, want) in enumerate(zip(CAMERA_EYE_WRITES, CAMPAIGN_EYE)):
         head = b.pe.bytes_at(site, 6)
@@ -1742,6 +1784,57 @@ def check_screen_camera(ck: Checker, b: Binary) -> None:
     ck.check("screen.eye_inside_the_band",
              CAMPAIGN_HEIGHT_BAND[0] < CAMPAIGN_EYE[2] < CAMPAIGN_HEIGHT_BAND[1],
              f"eye z {CAMPAIGN_EYE[2]}")
+
+
+def check_camera_presets(ck: Checker, b: Binary) -> None:
+    """The authored campaign-map eye selected by current location.
+
+    `0x004541D9` passes `missionId + 50` and pointers to the three eye
+    globals. `0x0045D130` maps locations 59..129 through a byte selector onto
+    thirteen arms; everything else takes the default. This is what keeps each
+    campaign's current open locations in the initial frame without a manual
+    turn.
+    """
+    ck.equal("camera_preset.call", b.call_target(CAMERA_PRESET_CALL),
+             CAMERA_PRESET, hex)
+    ck.equal("camera_preset.eye_pointers",
+             tuple(b.u32(site + 1) for site in CAMERA_PRESET_POINTER_PUSHES),
+             CAMERA_PRESET_POINTERS,
+             lambda values: str([hex(v) for v in values]))
+    ck.check("camera_preset.location_bias",
+             b.pe.bytes_at(CAMERA_PRESET_BIAS_SITE, 3)
+             == bytes([0x83, 0xC0, (-CAMERA_PRESET_FIRST) & 0xFF]),
+             f"location - {CAMERA_PRESET_FIRST}")
+    ck.check("camera_preset.location_limit",
+             b.pe.bytes_at(CAMERA_PRESET_LIMIT_SITE, 3)
+             == bytes([0x83, 0xF8,
+                       CAMERA_PRESET_LAST - CAMERA_PRESET_FIRST]),
+             f"locations {CAMERA_PRESET_FIRST}..{CAMERA_PRESET_LAST}")
+
+    arms = tuple(b.u32(CAMERA_PRESET_ARM_TABLE + 4 * i)
+                 for i in range(len(CAMERA_PRESET_ARMS) + 1))
+    ck.equal("camera_preset.arms", arms,
+             CAMERA_PRESET_ARMS + (CAMERA_PRESET_DEFAULT,),
+             lambda values: str([hex(v) for v in values]))
+    selectors = tuple(b.pe.bytes_at(
+        CAMERA_PRESET_SELECTOR_TABLE,
+        CAMERA_PRESET_LAST - CAMERA_PRESET_FIRST + 1))
+    ck.equal("camera_preset.selectors", selectors,
+             tuple(CAMERA_PRESET_SELECTORS))
+
+    eyes = tuple((b.i32(arm + 14), b.i32(arm + 20), b.i32(arm + 26))
+                 for arm in CAMERA_PRESET_ARMS)
+    ck.equal("camera_preset.eyes", eyes, CAMERA_PRESET_EYES)
+    default_eye = (b.i32(CAMERA_PRESET_DEFAULT + 14),
+                   b.i32(CAMERA_PRESET_DEFAULT + 20),
+                   b.i32(CAMERA_PRESET_DEFAULT + 26))
+    ck.equal("camera_preset.default", default_eye,
+             CAMERA_PRESET_DEFAULT_EYE)
+    ck.check("camera_preset.heights_are_clamped",
+             all(CAMPAIGN_HEIGHT_BAND[0] <= eye[2]
+                 <= CAMPAIGN_HEIGHT_BAND[1]
+                 for eye in CAMERA_PRESET_EYES + (CAMERA_PRESET_DEFAULT_EYE,)),
+             "all thirteen authored eyes and the default fit the turn's band")
 
 
 def check_screen_rotation(ck: Checker, b: Binary) -> None:
@@ -2778,6 +2871,7 @@ def run_checks(root: str) -> Checker:
                  for stem, h in c.headers.items() if h["name"]),
              "every header's own-name field matches its filename")
     check_screen_camera(ck, b)
+    check_camera_presets(ck, b)
     check_upgrade_purchase(ck, b)
     check_screen_rotation(ck, b)
     check_projection(ck, b)

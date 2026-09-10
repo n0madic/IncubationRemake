@@ -188,8 +188,8 @@ var _backdrop_carry: float = 0.0
 var _backdrop_music: String = ""
 ## The upgrade base's fly-in (docs/27 section 2.7, `0x00417000`): every
 ## `mode 1` waypoint in script order, and which one the eye is heading for.
-## Empty for the chain map, whose eye is the fixed pair. Zero when the flight
-## has come to rest on the last waypoint.
+## Empty for the chain map, whose eye comes from its location preset. Zero
+## when the flight has come to rest on the last waypoint.
 var _backdrop_waypoints: Array[Vector3i] = []
 var _fly_next: int = 0
 ## The flight's own state: the eye's velocity, the smoothing divisor `n`, the
@@ -2875,8 +2875,8 @@ func _build_backdrop(mission: String) -> void:
 ## the HQ, the Unit Menu, the Item List and the Upgrade Menu sit over is the
 ## end of that flight.
 ##
-## The chain map keeps [constant CameraRig.CAMPAIGN_EYE]: `_C_XXX.lcl` sets no
-## camera at all and `0x00457695` writes the fixed pair instead.
+## The chain map keeps the eye `0x0045D130` selects for the current mission's
+## location: `_C_XXX.lcl` and `_C_YYY.lcl` set no camera themselves.
 func _read_camera_path(opening: Dictionary) -> Array[Vector3i]:
 	var target: Vector3i = Vector3i.ZERO
 	var eye: Vector3i = Vector3i.ZERO
@@ -3222,10 +3222,9 @@ func _tick_backdrop_fires(delta: float) -> void:
 
 ## Put the map's camera where `aMissionControl.cpp` puts it.
 ##
-## [constant CameraRig.CAMPAIGN_EYE] and [constant CameraRig.CAMPAIGN_TARGET]
-## are the engine's own six numbers, so this is a set and not a fit: the
-## original's campaign map is one fixed view of the city for both chains and
-## for every mission in them.
+## `0x0045D130` maps the current mission's location to an authored eye, and
+## [constant CameraRig.CAMPAIGN_TARGET] is shared by all of them. This is a
+## table lookup and not a fit over whichever locations happen to be open.
 ##
 ## Still called every time the map is raised rather than once when the picture
 ## is built, because the mission's own rig takes the camera in between.
@@ -3234,7 +3233,9 @@ func _frame_map() -> void:
 		return
 	# `0x004554C9` zeroes the accumulator when the map is raised, so a turn
 	# does not survive the mission that was entered from it.
-	_backdrop_rig.reset_map_swing()
+	var location: int = campaign.tables.location_of(
+		campaign.tables.mission_id(campaign.current_mission()))
+	_backdrop_rig.reset_map_swing(location)
 	_swing_carry = Vector2.ZERO
 	# An upgrade base looks where its own `CreateCameraPath` left the flight,
 	# and `0x004558F0` -- the turn -- is the *map's* frame callback alone, so
@@ -3248,7 +3249,8 @@ func _frame_map() -> void:
 		if _fly_next <= 0:
 			_backdrop_rig.set_now(_backdrop_view[0], _backdrop_view[1])
 		return
-	_backdrop_rig.set_now(CameraRig.CAMPAIGN_EYE, CameraRig.CAMPAIGN_TARGET)
+	_backdrop_rig.set_now(CameraRig.campaign_eye(location),
+		CameraRig.CAMPAIGN_TARGET)
 
 
 func _clear_backdrop() -> void:
@@ -5244,10 +5246,10 @@ func _screen_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
 		# **The map turns a different way from a mission.** A mission's `Q`
-		# and `E` step the rig's quadrant; the map's eye is the fixed pair of
-		# [constant CameraRig.CAMPAIGN_EYE] and `0x004558F0` swings it about
-		# the target by an accumulated angle instead, which is a drag rather
-		# than a step -- see [method _swing_backdrop].
+		# and `E` step the rig's quadrant; the map's fixed base eye comes from
+		# `0x0045D130`, and `0x004558F0` swings it about the target by an
+		# accumulated angle instead, which is a drag rather than a step -- see
+		# [method _swing_backdrop].
 		if on_backdrop and (key.keycode == KEY_Q or key.keycode == KEY_E):
 			_swing_backdrop(Vector2(
 				CameraRig.MAP_KEY_TURN if key.keycode == KEY_E

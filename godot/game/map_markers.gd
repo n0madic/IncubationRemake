@@ -137,10 +137,10 @@ const PICK_RADIUS: float = 10.0
 ## [method SliceMain.cell_under] answers the other question -- which cell of
 ## the map is under the pointer -- by crossing the ray with each cell's own
 ## height. That is the right answer for a mission, whose camera looks down at
-## the floor, and a fragile one for the campaign map: its camera stands 2.8
-## fields above a city 27 fields away (docs/27 section 2.6), so the ray meets
-## a height plane at about six degrees and one pixel of pointer movement is
-## half a field of ground. A dot two pixels across became unclickable.
+## the floor, and a fragile one for the campaign map: its authored eyes include
+## shallow views across steep height changes (docs/27 section 2.6), where one
+## pixel of pointer movement can cover much of a field. A dot two pixels across
+## became unclickable.
 ##
 ## These are **overlay sprites**: `no_depth_test`, `fixed_size`, drawn after
 ## the world. What the player aims at is the sprite, so the pick is the
