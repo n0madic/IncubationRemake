@@ -960,6 +960,23 @@ func _screens(h: TestHarness) -> void:
 	_no_missing(h, "campaign_select", chains)
 	chains.free()
 
+	var victory: DebriefingScreen = DebriefingScreen.new()
+	victory.report = {"result": ScoreRecord.RESULT_WON}
+	victory.board = ScoreRecord.new()
+	victory.setup(_art, _strings, _font)
+	h.equal("screens.victory_can_advance_or_replay", _actions_of(victory),
+		PackedStringArray(["advance", "replay"]))
+	victory.free()
+
+	var defeat: DebriefingScreen = DebriefingScreen.new()
+	defeat.report = {"result": ScoreRecord.RESULT_DEFEAT}
+	defeat.board = ScoreRecord.new()
+	defeat.setup(_art, _strings, _font)
+	h.equal("screens.defeat_only_offers_a_retry", _actions_of(defeat),
+		PackedStringArray(["replay"]),
+		"there is no control that can present a lost mission as completed")
+	defeat.free()
+
 	var list: MissionSelectScreen = MissionSelectScreen.new()
 	list.missions = PackedStringArray(["_C_140", "_C_141"])
 	list.setup(_art, _strings, _font)

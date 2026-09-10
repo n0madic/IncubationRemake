@@ -1035,9 +1035,38 @@ func _mission_opening(h: TestHarness) -> void:
 func _endings(h: TestHarness) -> void:
 	var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
 		CacheFixture.balance())
+	var defeated: CampaignState = host.start_new(2)
+	var defeated_world: World = World.create(
+		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
+	defeated_world.game_control.set_slot(4, 1)
+	host.begin_mission(defeated_world)
+	host.enter_mission()
+	var defeat_report: Dictionary = host.finish_mission(defeated_world)
+	h.equal("endings.defeat_reaches_the_report",
+		DictRead.as_int(defeat_report["result"]), ScoreRecord.RESULT_DEFEAT)
+	var refused: String = host.advance()
+	h.equal("endings.defeat_does_not_advance",
+		[refused, defeated.mission, host.screen],
+		["", "_C_140", CampaignHost.SCREEN_DEBRIEFING],
+		"a loss may be retried, but it cannot unlock the next mission")
+
+	var won: CampaignState = host.start_new(2)
+	var won_world: World = World.create(
+		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
+	won_world.game_control.set_slot(0, 1)
+	host.begin_mission(won_world)
+	host.enter_mission()
+	var win_report: Dictionary = host.finish_mission(won_world)
+	h.equal("endings.victory_reaches_the_report",
+		DictRead.as_int(win_report["result"]), ScoreRecord.RESULT_WON)
+	var advanced: String = host.advance()
+	h.equal("endings.victory_still_advances",
+		[advanced, won.mission, host.screen],
+		["_C_141", "_C_141", CampaignHost.SCREEN_MAP])
+
 	var state: CampaignState = host.start_new(1)
 	state.mission = "_C_133"
-	host.last_report = {}
+	host.last_report = {"result": ScoreRecord.RESULT_WON}
 	var target: String = host.advance()
 	h.equal("endings.chain_1_ends_at_yyy", [target, state.mission,
 		host.tables.mission_id(target), host.at_an_ending()],
@@ -1047,7 +1076,7 @@ func _endings(h: TestHarness) -> void:
 		CampaignHost.OPENING_EXTRO)
 	var second: CampaignState = host.start_new(2)
 	second.mission = "_C_179"
-	host.last_report = {}
+	host.last_report = {"result": ScoreRecord.RESULT_WON}
 	var last: String = host.advance()
 	h.equal("endings.chain_2_ends_at_180", [last, host.tables.mission_id(last),
 		host.at_an_ending()], ["_C_180", 180, true])

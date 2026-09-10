@@ -96,8 +96,12 @@ func build() -> void:
 			line.add_theme_color_override("font_color", BriefingText.RAMP_ALERT)
 		squad.add_child(line)
 
-	add_button("advance", BANK_REPORT, ID_CONTINUE_BUTTON, 0)
-	add_button("replay", BANK_REPORT, ID_TRY_AGAIN, 1)
+	var button_index: int = 0
+	if outcome >= ScoreRecord.RESULT_WON \
+			and outcome <= ScoreRecord.RESULT_WON_GLORIOUS:
+		add_button("advance", BANK_REPORT, ID_CONTINUE_BUTTON, button_index)
+		button_index += 1
+	add_button("replay", BANK_REPORT, ID_TRY_AGAIN, button_index)
 
 
 ## The words a refusal is written in, or "" for one that has none yet.

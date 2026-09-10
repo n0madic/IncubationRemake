@@ -505,8 +505,17 @@ func _next_map(mission_world: World) -> String:
 
 
 ## The debriefing's *go on* button, `0x0045E986`.
+##
+## Only a win may move the campaign's current mission. The next-map name is
+## present on a defeated world's header too, so checking that it exists would
+## turn a loss into progress and open the next location.
 func advance() -> String:
 	if state == null:
+		return ""
+	var result: int = DictRead.as_int(last_report.get("result",
+		ScoreRecord.RESULT_NOTHING))
+	if result < ScoreRecord.RESULT_WON \
+			or result > ScoreRecord.RESULT_WON_GLORIOUS:
 		return ""
 	var target: String = DictRead.as_string(last_report.get("next_map", ""))
 	if target == "":
