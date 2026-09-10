@@ -184,11 +184,16 @@ UPGRADE_BAND_ZERO_SITE = 0x0045C7E0
 #: Decoded from the fifteen arms: location -> `(low, high)`.  Location 5 sells
 #: only tech 9 and location 4 only tech 1; 214 only tech 3.
 UPGRADE_TECH_BANDS = {
-    1: (0, 3), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
-    6: (0, 4), 7: (0, 2), 8: (0, 2),
+    1: (0, 0), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
+    6: (0, 4), 7: (0, 9), 8: (0, 2),
     210: (0, 0), 211: (0, 1), 212: (0, 2), 213: (0, 3),
     214: (3, 3), 215: (0, 4), 216: (0, 9),
 }
+#: The two pairs of locations whose bodies the compiler **tail-merged**, so
+#: both members sell the same band.  Reading these arms linearly walked into
+#: the next location's body and gave 1 the band of 2 and 7 the band of 8 --
+#: which is what made base 7 sell seven weapons instead of sixteen.
+UPGRADE_SHARED_BODIES = ((1, 210), (7, 216))
 # -- the Recruit window's five categories, docs/27 section 3.2 ---------------
 #: `0x0045615F` clears these five to -1 before `0x004561C9`'s jump table fills
 #: the chosen category's, one `mov dword [slot], imm32` per row.
@@ -958,6 +963,31 @@ class Binary:
             out[index] = tuple(v for _, v in sorted(found.items()))
         return out
 
+    def _arm_body(self, arm: int) -> int:
+        """Where an upgrade arm's body starts, which is **not** always the arm.
+
+        Every arm opens with the `CHECK` macro --
+        ``push id; call aPlayLocationAnimation_Upgrade; add esp, 4;
+        test eax, eax; jne body`` -- and the report block sits *inline* on the
+        failure path, so for most arms the body is simply what follows it.
+        For two pairs it is not: the compiler **tail-merged** the identical
+        bodies of locations 1 and 210 (``0x0045CB26``) and of 7 and 216
+        (``0x0045CDAB``), and those arms reach them with a ``0F 85`` far jump.
+        Scanning forward from the arm instead walks straight into the *next*
+        location's body, which is how locations 1 and 7 once carried the bands
+        of 2 and 8.
+        """
+        va = arm
+        while va < min(arm + 0x40, self.text_hi - 8):
+            if self.u8(va) == 0x85 and self.u8(va + 1) == 0xC0:
+                if self.u8(va + 2) == 0x75:
+                    return va + 4 + self.i8(va + 3)
+                if self.u8(va + 2) == 0x0F and self.u8(va + 3) == 0x85:
+                    return va + 8 + self.i32(va + 4)
+                return arm
+            va += 1
+        return arm
+
     def upgrade_tech_bands(self) -> dict[int, tuple[int, int]]:
         """location -> the ``(low, high)`` tech band its arm writes.
 
@@ -970,15 +1000,25 @@ class Binary:
         * ``mov byte [addr], bl`` -- ``bl`` is zero for the whole dispatcher,
           which :data:`UPGRADE_BAND_ZERO_SITE` pins;
         * ``mov byte [addr], al`` after a ``mov al, imm8`` in the same arm.
+
+        The sweep starts at :meth:`_arm_body` and stops at the next body above
+        it, so an arm that writes no band of its own yields **no entry**
+        rather than its neighbour's pair.
         """
+        bodies = {location: self._arm_body(arm)
+                  for location, arm in self.location_arms().items()
+                  if self.text_lo <= arm < self.text_hi}
+        edges = sorted(set(bodies.values()))
         out: dict[int, tuple[int, int]] = {}
-        for location, arm in self.location_arms().items():
-            if not self.text_lo <= arm < self.text_hi:
-                continue
+        for location, body in bodies.items():
+            after = [e for e in edges if e > body]
+            stop = min(body + UPGRADE_BAND_WINDOW,
+                       after[0] if after else self.text_hi,
+                       self.text_hi - 8)
             found: dict[int, int] = {}
             al: int | None = None
-            va = arm
-            while va < min(arm + UPGRADE_BAND_WINDOW, self.text_hi - 8):
+            va = body
+            while va < stop:
                 op = self.u8(va)
                 if op == 0xB0:                      # mov al, imm8
                     al = self.u8(va + 1)
@@ -2264,6 +2304,10 @@ def run_checks(root: str) -> Checker:
 
     ck.equal("upgrade.tech_bands", b.upgrade_tech_bands(),
              {k: tuple(v) for k, v in UPGRADE_TECH_BANDS.items()}, str)
+    arms = b.location_arms()
+    for first, second in UPGRADE_SHARED_BODIES:
+        ck.equal(f"upgrade.shared_body_{first}_{second}",
+                 b._arm_body(arms[first]), b._arm_body(arms[second]), hex)
     ck.equal("upgrade.band_zero_is_a_cleared_register",
              (b.u8(UPGRADE_BAND_ZERO_SITE), b.u8(UPGRADE_BAND_ZERO_SITE + 1)),
              (0x33, 0xDB), str)

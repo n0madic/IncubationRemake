@@ -1004,14 +1004,24 @@ for the map, so the pairing is exact:
 
 | location | map | band | | location | map | band |
 |---|---|---|---|---|---|---|
-| 1 | `upgrade_1` | 0–3 | | 210 | `upgrade_210` | 0–0 |
+| 1 | `upgrade_1` | **0–0** | | 210 | `upgrade_210` | 0–0 |
 | 2 | `upgrade_2` | 0–3 | | 211 | `upgrade_211` | 0–1 |
 | 3 | `upgrade_6` | 0–5 | | 212 | `upgrade_212` | 0–2 |
 | 4 | `upgrade_4` | **1–1** | | 213 | `upgrade_213` | 0–3 |
 | 5 | `upgrade_5` | **9–9** | | 214 | `upgrade_214` | **3–3** |
 | 6 | `upgrade_3` | 0–4 | | 215 | `upgrade_215` | 0–4 |
-| 7 | `upgrade_7` | 0–2 | | 216 | `upgrade_216` | 0–9 |
+| 7 | `upgrade_7` | **0–9** | | 216 | `upgrade_216` | 0–9 |
 | 8 | `upgrade_8` | 0–2 | | | | |
+
+**Two pairs of arms share one body.** Locations 1 and 210 both enter
+`0x0045CB26` and 7 and 216 both enter `0x0045CDAB`: the compiler tail-merged
+the identical bodies, and the two arms that lost their own reach it with a
+far `0F 85` jump rather than falling through. Reading an arm's bytes forward
+from its entry therefore walks into the **next** location's body, which is
+how this table first gave location 1 the band of 2 and location 7 the band of
+8 — the second of those made base 7 sell seven weapons where the engine sells
+sixteen. `Binary._arm_body` resolves the `CHECK` macro's own `jne` instead,
+and `upgrade.shared_body_*` pins the two merges.
 
 Three encodings appear: the literal (`mov byte [addr], imm8`), `bl` — which
 the dispatcher's own `xor ebx, ebx` at `0x0045C7E0` holds at zero for every

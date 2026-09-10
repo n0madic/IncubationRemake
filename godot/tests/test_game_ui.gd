@@ -2150,14 +2150,26 @@ func _campaign_screens(h: TestHarness) -> void:
 	# **In a campaign the band is the base's, not the tech level's.**
 	# `0x0045BF2A` has two arms and a campaign takes the one that copies
 	# `0x00510C5C`/`0x00510C5D`, which the entered location's own arm of
-	# `0x0045C7D0` wrote. Location 1 sells 0..3 and location 5 sells 9 alone,
-	# so the same roster sees a different shop at each base.
+	# `0x0045C7D0` wrote. Location 1 sells tech 0 alone and location 5 sells 9
+	# alone, so the same roster sees a different shop at each base.
+	#
+	# **Location 1's arm has no body of its own.** It and 210 both enter
+	# `0x0045CB26`, which the compiler tail-merged, so both sell 0..0; the
+	# same holds for 7 and 216 at `0x0045CDAB`, which sell 0..9. Reading an
+	# arm's bytes forward from its entry walked into the next location's body
+	# and gave this row (0, 3) -- base 7's copy of that error is what made it
+	# sell seven weapons instead of sixteen.
 	var stood_at: int = host.location
 	host.location = 1
 	h.equal("screens.catalogue_band_of_location_1",
 		[host.catalogue_band(),
 		DictRead.as_array(host.catalogue("weapons")["available"]).size()],
-		[Vector2i(0, 3), 12])
+		[Vector2i(0, 0), 3])
+	host.location = 7
+	h.equal("screens.catalogue_band_of_location_7",
+		[host.catalogue_band(),
+		DictRead.as_array(host.catalogue("weapons")["available"]).size()],
+		[Vector2i(0, 9), 16])
 	host.location = 5
 	h.equal("screens.catalogue_band_of_location_5",
 		[host.catalogue_band(),

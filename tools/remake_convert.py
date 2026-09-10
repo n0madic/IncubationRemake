@@ -902,8 +902,8 @@ def check_campaign(c: Checker, root: Path, cache_dir: Path) -> None:
     c.expect("campaign.upgrade_tech_bands",
              {row["location"]: (row["tech_low"], row["tech_high"])
               for row in document["upgrade"]},
-             {1: (0, 3), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
-              6: (0, 4), 7: (0, 2), 8: (0, 2), 210: (0, 0), 211: (0, 1),
+             {1: (0, 0), 2: (0, 3), 3: (0, 5), 4: (1, 1), 5: (9, 9),
+              6: (0, 4), 7: (0, 9), 8: (0, 2), 210: (0, 0), 211: (0, 1),
               212: (0, 2), 213: (0, 3), 214: (3, 3), 215: (0, 4),
               216: (0, 9)})
     c.expect("campaign.cut_locations",
