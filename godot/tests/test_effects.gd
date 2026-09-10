@@ -24,6 +24,8 @@ extends TestSuite
 const DOOR_MISSION: String = "_C_140"
 ## The one dev fixture with a `CrushWall`, and the wall it crushes.
 const WALL_MISSION: String = "_C_129"
+## The dev fixture whose turn-two script calls `GroundUnit` four times.
+const GROUND_MISSION: String = "_C_143"
 ## The dev fixture whose levers are `L109EX00` -- `_C_140`'s one lever stands
 ## on a partless `L042EA00`, which is the corpus's odd record out.
 const LEVER_MISSION: String = "_C_115"
@@ -89,6 +91,7 @@ func run(h: TestHarness) -> void:
 	_check_family_lever(h)
 	_check_clone_cells(h)
 	_check_pose_record(h)
+	_check_ground_hole(h)
 	_check_resume_after_load(h)
 	_check_rider_fall(h)
 	_check_rider_fall_in_place(h)
@@ -1069,6 +1072,49 @@ func _check_pose_record(h: TestHarness) -> void:
 		"the part is painted again (absolute), the cell has nothing left to free")
 	h.equal("poses.record_after_twice", resumed.pose_record(), record)
 	h.equal("poses.empty_record_restores_nothing", resumed.restore_poses({}), 0)
+	played.free()
+	resumed.free()
+
+
+## `GroundUnit` leaves the flat level object the original inserts at
+## `0x00411FB0`, and that runtime-only object survives a picture save.
+func _check_ground_hole(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(GROUND_MISSION)
+	if loaded.is_empty():
+		h.check("ground_hole.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var header: Dictionary = DictRead.as_dict(document["header"])
+	var geometry: Dictionary = CacheFixture.geometry(
+		DictRead.as_string(header["world_set"]))
+	var prototype: String = SetpieceCamera.GROUND_HOLE_MODEL
+	if not DictRead.as_dict(geometry.get("prototypes", {})).has(prototype):
+		h.check("ground_hole.prototype", false, prototype)
+		return
+	var cell_xy: Vector2i = Vector2i(19, 16)
+	var cell: int = world.state.index_of(cell_xy.x, cell_xy.y)
+	var at: Vector3i = CameraRig.cell_object(cell_xy.x, cell_xy.y,
+		world.state.height_at(cell))
+	var played: Scenery = Scenery.new()
+	played.build(document, geometry, {})
+	var before: int = played.objects_on(cell).size()
+	h.check("ground_hole.inserted", played.insert_object(prototype, at))
+	h.equal("ground_hole.object_is_drawn", played.objects_on(cell).size(),
+		before + 1)
+	var record: Dictionary = played.pose_record()
+	h.equal("ground_hole.saved", record.get("inserted", []),
+		[[cell, prototype, at.x, at.y, at.z, 0]])
+	var carried: Dictionary = JSON.parse_string(JSON.stringify(record))
+	var resumed: Scenery = Scenery.new()
+	resumed.build(document, geometry, {})
+	var resumed_before: int = resumed.objects_on(cell).size()
+	h.equal("ground_hole.restore_counts", resumed.restore_poses(carried), 1)
+	h.equal("ground_hole.restored", resumed.objects_on(cell).size(),
+		resumed_before + 1)
+	h.equal("ground_hole.restore_is_idempotent",
+		resumed.restore_poses(carried), 0)
 	played.free()
 	resumed.free()
 
@@ -2510,6 +2556,7 @@ class RecordingHost extends ShotHost:
 	var suppressed: PackedInt32Array = PackedInt32Array()
 	var shown: PackedInt32Array = PackedInt32Array()
 	var programs: Array[String] = []
+	var inserted: Array[String] = []
 	var texts: Array[String] = []
 	var captions: Array[String] = []
 
@@ -2611,6 +2658,10 @@ class RecordingHost extends ShotHost:
 	func show_unit(slot: int) -> void:
 		calls.append("show")
 		shown.append(slot)
+
+	func insert_object(model: String, at: Vector3i, yaw: int = 0) -> bool:
+		inserted.append("%s:%d,%d,%d,%d" % [model, at.x, at.y, at.z, yaw])
+		return true
 
 	func pool_first() -> Vector3i:
 		return Vector3i(1, 2, 3)
@@ -3974,10 +4025,22 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		8, {"own": Vector2i(5, 3)}, paint, no_cues)
 	h.equal("camera.ground_unit.frames", ground_frames,
 		SetpieceCamera.GROUND_RISE_FRAMES + SetpieceCamera.GROUND_CARRY_FRAMES + 1)
+	h.equal("camera.ground_unit.hidden_while_queued", ground.suppressed,
+		PackedInt32Array([8]),
+		"the world insertion precedes the sequence, so the destination body must "
+		+ "stay hidden until its own rise begins")
+	h.equal("camera.ground_unit.not_shown_before_playback", ground.shown,
+		PackedInt32Array())
 	var _ground_ran: Dictionary = _run_queue(ground_queue)
+	h.equal("camera.ground_unit.shows_the_body_before_the_rise", ground.shown,
+		PackedInt32Array([8]),
+		"the script inserted the unit before aPlayGroundUnitSequence; the first "
+		+ "frame must materialise it before moving it out of the floor")
 	h.equal("camera.ground_unit.debris_then_dust", ground.programs,
 		["%s:3,3,%d" % [BlobPrograms.GROUND_DEBRIS, SetpieceCamera.GROUND_DEBRIS_UP],
 		"%s:5,3" % BlobPrograms.LANDING_DUST])
+	h.equal("camera.ground_unit.inserts_the_hole", ground.inserted,
+		["%s:9600,9600,0,0" % SetpieceCamera.GROUND_HOLE_MODEL])
 	h.equal("camera.ground_unit.starts_below",
 		ground.placed[0].z, -SetpieceCamera.GROUND_START_DOWN - 2880
 			+ SetpieceCamera.GROUND_LAND_UP,

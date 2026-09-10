@@ -196,6 +196,12 @@ func show_unit(_slot: int) -> void:
 	pass
 
 
+## Insert one level object at an engine-space position.  `GroundUnit` uses
+## this for the flat `L110EX00.3DI` hole it leaves at the emergence cell.
+func insert_object(_model: String, _at: Vector3i, _yaw: int = 0) -> bool:
+	return false
+
+
 ## Run a death or damage creator (docs/42 section 4.8) with tile arguments.
 func spawn_program(_creator: String, _args: PackedInt32Array) -> void:
 	pass

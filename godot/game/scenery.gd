@@ -122,6 +122,12 @@ var _authored_height: Dictionary[int, int] = {}
 ## [method pose_record] carries as a move, so a loaded save can put a
 ## platform's deck back where the ride left it.
 var _home: Dictionary[Node3D, int] = {}
+## Objects inserted after the `.lev` was built, mapped to their prototype.
+## They are part of the original's mutable special-object table, so unlike
+## authored objects they must be named explicitly in the picture save record.
+var _inserted: Dictionary[Node3D, String] = {}
+var _prototypes: Dictionary = {}
+var _textures: Dictionary = {}
 var _width: int = 0
 var _moved: int = 0
 var _turned: int = 0
@@ -130,6 +136,8 @@ var _turned: int = 0
 func build(map_document: Dictionary, geometry: Dictionary,
 		textures: Dictionary) -> void:
 	_width = DictRead.as_int(map_document["width"])
+	_prototypes = DictRead.as_dict(geometry["prototypes"])
+	_textures = textures
 	# Freed synchronously, not queued: a rebuild has to leave the node list in
 	# its final state before anything reads it back, and `queue_free` defers to
 	# the end of the frame.
@@ -153,13 +161,14 @@ func build(map_document: Dictionary, geometry: Dictionary,
 	_yaw.clear()
 	_authored_height.clear()
 	_home.clear()
+	_inserted.clear()
 	_lattice = Node3D.new()
 	_lattice.name = "Lattice"
 	# The editor's cell markers are an inspection aid, not scenery: off until
 	# asked for.
 	_lattice.visible = false
 	add_child(_lattice)
-	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
+	var prototypes: Dictionary = _prototypes
 
 	var clones: Array = DictRead.as_array(map_document["scene_clones"])
 	for entry: Variant in clones:
@@ -240,17 +249,17 @@ func missing_prototypes() -> PackedStringArray:
 ## does not carry.
 func _place(prototypes: Dictionary, textures: Dictionary, name: String,
 		x: int, y: int, z: int, yaw: int, joints: Array,
-		parent: Node3D = null, clone: bool = false) -> void:
+		parent: Node3D = null, clone: bool = false) -> Node3D:
 	if z <= MARKER_PARK_Z:
-		return
+		return null
 	if not prototypes.has(name):
 		if not _missing.has(name):
 			_missing.append(name)
-		return
+		return null
 	var prototype: Dictionary = DictRead.as_dict(prototypes[name])
 	var node: Node3D = MeshBuilder.assemble(name, prototype, textures, _meshes)
 	if node == null:
-		return
+		return null
 	node.name = "%s@%d_%d" % [name.get_basename(), x, y]
 	node.transform = Transform3D(WorldSpace.yaw_basis(yaw),
 		WorldSpace.to_godot(x, y, z))
@@ -291,6 +300,26 @@ func _place(prototypes: Dictionary, textures: Dictionary, name: String,
 	_yaw[node] = yaw
 	_home[node] = cell
 	_built += 1
+	return node
+
+
+## Add a special object the running engine inserted rather than the `.lev`
+## authored.  The exact model and position are retained by [method pose_record]
+## so a save/reload does not heal a GroundUnit hole back into bare floor.
+## Repeating the same insertion is idempotent for restore retries.
+func insert_object(name: String, at: Vector3i, yaw: int = 0) -> bool:
+	for key: Variant in _inserted:
+		var existing: Node3D = key
+		if is_instance_valid(existing) and _inserted[existing] == name \
+				and _origin.get(existing, Vector3i.ZERO) == at \
+				and _yaw.get(existing, 0) == yaw:
+			return false
+	var node: Node3D = _place(_prototypes, _textures, name,
+		at.x, at.y, at.z, yaw, [])
+	if node == null:
+		return false
+	_inserted[node] = name
+	return true
 
 
 ## The authored joint triple a `joint_place` offset names: `joints[0]` for
@@ -555,6 +584,7 @@ func remove_objects(cell: int) -> int:
 		_authored_joints.erase(instance)
 		_yaw.erase(instance)
 		_home.erase(instance)
+		_inserted.erase(instance)
 		instance.get_parent().remove_child(instance)
 		instance.free()
 		gone += 1
@@ -621,7 +651,21 @@ func pose_record() -> Dictionary:
 				cell / _width - home / _width]
 			if not moves.has(row):
 				moves.append(row)
-	return {"joints": joints, "removed": removed, "moves": moves}
+	var record: Dictionary = {"joints": joints, "removed": removed,
+		"moves": moves}
+	var inserted: Array = []
+	for key: Variant in cells:
+		var cell: int = key
+		for node: Variant in instances_on(cell):
+			var instance: Node3D = node
+			if not is_instance_valid(instance) or not _inserted.has(instance):
+				continue
+			var at: Vector3i = _origin.get(instance, Vector3i.ZERO)
+			inserted.append([cell, _inserted[instance], at.x, at.y, at.z,
+				_yaw.get(instance, 0)])
+	if not inserted.is_empty():
+		record["inserted"] = inserted
+	return record
 
 
 ## Put a [method pose_record] back: [method move_objects] per move row
@@ -636,6 +680,16 @@ func pose_record() -> Dictionary:
 ## cells emptied.
 func restore_poses(record: Dictionary, snapshot: Dictionary = {}) -> int:
 	var done: int = 0
+	# Insert first: a later move/removal row may address an object which did
+	# not exist in the authored map.
+	for entry: Variant in DictRead.as_array(record.get("inserted", [])):
+		var row: Array = DictRead.as_array(entry)
+		if row.size() < 6:
+			continue
+		if insert_object(DictRead.as_string(row[1]), Vector3i(
+				DictRead.as_int(row[2]), DictRead.as_int(row[3]),
+				DictRead.as_int(row[4])), DictRead.as_int(row[5])):
+			done += 1
 	for entry: Variant in DictRead.as_array(record.get("moves", [])):
 		var row: Array = DictRead.as_array(entry)
 		if row.size() < 3:

@@ -8021,6 +8021,9 @@ class MainShotHost extends ShotHost:
 		if main._units != null:
 			main._units.reveal(slot)
 
+	func insert_object(model: String, at: Vector3i, yaw: int = 0) -> bool:
+		return main._scenery != null and main._scenery.insert_object(model, at, yaw)
+
 	func spawn_program(creator: String, args: PackedInt32Array) -> void:
 		if main._fx == null or main.world == null:
 			return

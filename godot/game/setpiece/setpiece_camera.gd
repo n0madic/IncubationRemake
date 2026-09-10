@@ -61,8 +61,8 @@ extends RefCounted
 ## * `ground_unit` `0x00411FB0`: the body at the ground cell 3200 below its
 ##   top less its height, `0x00422610` 1600 above the object, eight frames
 ##   of 1120 up drawn 1280 higher, six frames of a fifth of the way to its
-##   own cell, the dust, the pool. The `L110EX00.3DI` object the routine
-##   inserts is not in the cache (named).
+##   own cell, the dust, the pool, with the inserted `L110EX00.3DI` hole
+##   left at the emergence cell.
 
 const DOOR_FRAMES: int = SetpieceDriver.DOOR_FRAMES
 ## `cmp esi, 0xA` -- the tube's puffs come on this frame.
@@ -88,6 +88,7 @@ const GROUND_CARRY_FRAMES: int = 6
 const GROUND_RISE: int = 0x460
 const GROUND_DRAWN_UP: int = 0x500
 const GROUND_START_DOWN: int = 0xC80
+const GROUND_HOLE_MODEL: String = "L110EX00.3DI"
 const GROUND_DEBRIS_UP: int = 0x640
 const GROUND_LAND_UP: int = 0xA0
 const GROUND_FIFTH: int = 5
@@ -395,20 +396,37 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 		"ground_unit":
 			var own: Vector2i = extra.get("own", cell)
 			var goal: Vector3i = host.cell_object(own.x, own.y)
+			# GroundUnit mutates the world before its presentation routine runs.  Hide
+			# every queued arrival now, while all of the script's set pieces are being
+			# assembled, so a picture rebuild for an earlier camera move cannot reveal
+			# the alien standing at its destination.  The flight stage below reveals
+			# just this unit after placing it below the floor.
+			if unit >= 0:
+				host.suppress_unit(unit)
 			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
 				func() -> bool: return not host.camera_flying(),
 				func(frame: int, _total: int) -> void:
-					if frame != 1:
+					# The script has already inserted the alien, but the picture's
+					# mirror lands that insertion only when this set piece begins.
+					# Materialise its suppressed body before trying to place it below
+					# the floor; otherwise every placement is a no-op and only the
+					# debris is seen until the ordinary rebuild creates the unit.
+					# A dedicated flag rather than `frame == 1` also covers a skipped sequence,
+					# whose first paint is its last frame.
+					if st.has("ground_started"):
 						return
+					st["ground_started"] = true
 					var h: int = host.unit_height(unit) if unit >= 0 else 0
 					var ground: Vector3i = host.cell_object(cell.x, cell.y)
 					var at: Vector3i = Vector3i(ground.x, ground.y,
 						ground.z - GROUND_START_DOWN - h)
 					st["at"] = at
 					if unit >= 0:
+						host.show_unit(unit)
 						host.place_body(unit, at + Vector3i(0, 0, GROUND_LAND_UP))
 					var _f: int = host.fly(host.camera_eye(),
 						at + Vector3i(0, 0, GROUND_LAND_UP))
+					var _hole: bool = host.insert_object(GROUND_HOLE_MODEL, ground)
 					host.spawn_program(BlobPrograms.GROUND_DEBRIS,
 						PackedInt32Array([cell.x, cell.y, ground.z + GROUND_DEBRIS_UP])))
 			queue.enqueue(kind, GROUND_RISE_FRAMES,
