@@ -348,6 +348,22 @@ func _settings_apply(h: TestHarness) -> void:
 		tables.scaled_volume(settings.fx_volume, AudioTables.NO_SCALING), -750)
 	audio.free()
 
+	# The production handler, not only the screen seam: each slider movement
+	# lands in settings and on disk without waiting for Back or clean shutdown.
+	var main: SliceMain = SliceMain.new()
+	main.settings.path = SCRATCH_DIR + "/slider-settings.json"
+	main._set_option_volume("music", -1200)
+	main._set_option_volume("fx", -800)
+	var persisted: GameSettings = GameSettings.new()
+	persisted.path = main.settings.path
+	h.check("apply.volume_sliders_are_written_immediately",
+		persisted.load_from_disk())
+	h.equal("apply.volume_sliders_survive_a_restart",
+		[main.settings.music_volume, main.settings.fx_volume,
+		persisted.music_volume, persisted.fx_volume],
+		[-1200, -800, -1200, -800])
+	main.free()
+
 	var world: World = TestFixtures.tiny_world()
 	var before: String = world.canonical_hash_hex()
 	settings.apply_world(world, 2)
@@ -1182,10 +1198,63 @@ func _screens(h: TestHarness) -> void:
 	options.setup(_art, _strings, _font)
 	h.equal("screens.options_off_the_map", _sorted(_actions_of(options)),
 		PackedStringArray(["back", "option:difficulty", "option:faithful",
-		"option:font", "option:fx", "option:gore", "option:music"]),
+		"option:font", "option:gore"]),
 		"the four the original has and this remake connects, plus the gore "
 		+ "level, the `Faithful` preset and the interface font; not one of "
 		+ "the four it has and this remake does not")
+	var sliders: Array[HSlider] = _sliders_of(options)
+	h.equal("screens.options_volume_sliders", sliders.size(), 2,
+		"music and FX are direct controls rather than click-to-cycle fields")
+	var slider_shape: Array[Variant] = []
+	for slider: HSlider in sliders:
+		slider_shape.append([slider.name, slider.min_value, slider.max_value,
+			slider.step, slider.value])
+	h.equal("screens.options_volume_ranges", slider_shape, [
+		[&"music_volume", float(GameSettings.VOLUME_MIN),
+			float(GameSettings.VOLUME_MAX), float(GameSettings.VOLUME_STEP),
+			float(settings.music_volume)],
+		[&"fx_volume", float(GameSettings.VOLUME_MIN),
+			float(GameSettings.VOLUME_MAX), float(GameSettings.VOLUME_STEP),
+			float(settings.fx_volume)]],
+		"the saved attenuation is the thumb position, including the -6 dB default")
+	var styled_sliders: int = 0
+	for slider: HSlider in sliders:
+		var track: StyleBoxTexture = slider.get_theme_stylebox("slider") \
+			as StyleBoxTexture
+		var grabber: Texture2D = slider.get_theme_icon("grabber")
+		if slider.has_theme_stylebox_override("slider") \
+				and slider.has_theme_stylebox_override("grabber_area") \
+				and slider.has_theme_stylebox_override("grabber_area_highlight") \
+				and slider.has_theme_icon_override("grabber") \
+				and slider.has_theme_icon_override("grabber_highlight") \
+				and track != null \
+				and track.get_minimum_size().y >= 32.0 \
+				and grabber.get_height() == OptionsScreen.VOLUME_GRABBER_HEIGHT \
+				and track.get_expand_margin(SIDE_LEFT) \
+					== OptionsScreen.VOLUME_FRAME_INSET \
+				and track.get_expand_margin(SIDE_RIGHT) \
+					== OptionsScreen.VOLUME_FRAME_INSET:
+			styled_sliders += 1
+	h.equal("screens.options_volume_sliders_use_the_game_face",
+		styled_sliders, 2,
+		"the shipped field and arrow replace Godot's default blue control")
+	var changed: Array[Variant] = []
+	options.volume_changed.connect(func(channel: String, hundredths: int) -> void:
+		changed.append([channel, hundredths]))
+	var fx_slider: HSlider = null
+	for slider: HSlider in sliders:
+		if slider.name == &"fx_volume":
+			fx_slider = slider
+			break
+	if fx_slider != null:
+		# These screens are deliberately built off-tree; a Range only emits
+		# automatically while it is live, so drive the same signal the thumb
+		# emits rather than pretending an off-tree property assignment is UI.
+		fx_slider.value_changed.emit(-2000.0)
+	h.equal("screens.options_volume_change_is_visible_and_emitted",
+		[changed, _joined(options).contains("50%")],
+		[[["fx", -2000]], true],
+		"the host can apply/save the new level and the row answers beside it")
 	# The shipped bitmap font is a bitmap: it cannot be antialiased and cannot
 	# be scaled, so past the 640x480 base it is drawn at hard-edged multiples.
 	# Both answers are real, and the readable one is what a fresh settings
@@ -2062,6 +2131,16 @@ func _buttons_of(node: Node) -> Array[Button]:
 		if button != null:
 			out.append(button)
 		out.append_array(_buttons_of(child))
+	return out
+
+
+func _sliders_of(node: Node) -> Array[HSlider]:
+	var out: Array[HSlider] = []
+	for child: Node in node.get_children():
+		var slider: HSlider = child as HSlider
+		if slider != null:
+			out.append(slider)
+		out.append_array(_sliders_of(child))
 	return out
 
 

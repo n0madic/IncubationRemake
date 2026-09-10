@@ -1,6 +1,8 @@
 class_name OptionsScreen
 extends CampaignScreen
 
+signal volume_changed(channel: String, hundredths: int)
+
 ## The options -- the five that are connected, and not one that is not.
 ##
 ## The original has eight, and `Txtmod_h` 50..58 are their hover hints:
@@ -63,16 +65,27 @@ var language: String = Localization.FALLBACK_LANGUAGE
 ## changeable value on its **own** small field -- `GUI_SetButton`/
 ## `GUI_SetTextButton (..., 6_Library, ..., 2_Width)`, which is `32 + 32` = 64
 ## units of the name field's pieces. Only the value is a gadget; the caption is
-## text. This screen keeps that shape and widens the field to `4_Width`,
-## because its values are `-40.0 dB` where the original's are `on`.
+## text. Enumerated settings keep that shape; the two volumes use sliders so
+## the whole range is visible and any level can be reached directly.
 const ROW_AT: Vector2 = Vector2(60.0, 96.0)
 const ROW_STEP: float = 34.0
 const VALUE_X: float = 300.0
 const VALUE_WIDTH: int = 4
+## Six of the field face's 32-unit pieces, exactly as a wide settings field.
+const VOLUME_SLIDER_WIDTH: float = 192.0
+const VOLUME_SLIDER_PIECES: int = 6
+## `buttons.LIB` 48/49: the small green arrow and its lit twin.
+const VOLUME_GRABBER: int = 48
+## The field is 32 px including its metal frame; 22 px is its green interior.
+const VOLUME_GRABBER_HEIGHT: int = 22
+const VOLUME_FRAME_INSET: float = 4.0
+const VOLUME_VALUE_X: float = 504.0
 const CAPTION_DROP: float = 8.0
 
 var _rows: Control = null
 var _row_index: int = 0
+var _volume_grabber_normal: Texture2D = null
+var _volume_grabber_lit: Texture2D = null
 
 
 func build() -> void:
@@ -92,10 +105,9 @@ func refresh() -> void:
 	clear_children(_rows)
 	_row_index = 0
 
-	_add_row("music", label_for(BANK_SQUAD, ID_MUSIC),
-		_volume_text(settings.music_volume))
-	_add_row("fx", label_for(BANK_SQUAD, ID_FX),
-		_volume_text(settings.fx_volume))
+	_add_volume_row("music", label_for(BANK_SQUAD, ID_MUSIC),
+		settings.music_volume)
+	_add_volume_row("fx", label_for(BANK_SQUAD, ID_FX), settings.fx_volume)
 	if not in_mission:
 		var on_map: bool = campaign_difficulty != NO_CAMPAIGN
 		var level: int = campaign_difficulty if on_map else settings.difficulty
@@ -128,10 +140,8 @@ func refresh() -> void:
 
 ## One setting: the caption as text, the value on its own field.
 ##
-## Clicking the field cycles the value -- the original's own icons are
-## click-to-step too, and a slider would need a mouse-drag path the rest of
-## these screens do not have. *hint* is what the field says on hover, for a
-## row whose caption cannot say all of it.
+## Clicking the field cycles an enumerated value. *hint* is what the field
+## says on hover, for a row whose caption cannot say all of it.
 func _add_row(action: String, caption: String, value: String,
 		hint: String = "") -> void:
 	var top: float = ROW_AT.y + ROW_STEP * float(_row_index)
@@ -142,6 +152,102 @@ func _add_row(action: String, caption: String, value: String,
 	if hint != "":
 		var _hint: HintControl = hint_over(field, hint)
 	_row_index += 1
+
+
+## One audio setting: a direct manipulation control and its live percentage.
+##
+## The host applies and persists every stepped value. The label changes here,
+## beside the thumb the player is looking at, so a silent channel still gives
+## an immediate and unambiguous answer.
+func _add_volume_row(channel: String, caption: String,
+		hundredths: int) -> void:
+	var top: float = ROW_AT.y + ROW_STEP * float(_row_index)
+	var _caption: Label = gui_text(caption,
+		Vector2(ROW_AT.x, top + CAPTION_DROP), ALIGN_LEFT, INK_LABEL, _rows)
+	var slider: HSlider = HSlider.new()
+	slider.name = "%s_volume" % channel
+	slider.min_value = GameSettings.VOLUME_MIN
+	slider.max_value = GameSettings.VOLUME_MAX
+	slider.step = GameSettings.VOLUME_STEP
+	slider.value = clampi(hundredths, GameSettings.VOLUME_MIN,
+		GameSettings.VOLUME_MAX)
+	slider.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	var inset: float = _dress_volume_slider(slider)
+	place_on_plate(slider, Vector2(VALUE_X + inset, top),
+		Vector2(VOLUME_SLIDER_WIDTH - 2.0 * inset, GUI_BUTTON_HEIGHT))
+	_rows.add_child(slider)
+	var value: Label = gui_text(_volume_text(roundi(slider.value)),
+		Vector2(VOLUME_VALUE_X, top + CAPTION_DROP), ALIGN_LEFT, INK_VALUE,
+		_rows)
+	slider.value_changed.connect(
+		_on_volume_changed.bind(channel, value))
+	_row_index += 1
+
+
+func _on_volume_changed(raw: float, channel: String, value: Label) -> void:
+	var hundredths: int = roundi(raw)
+	value.text = _volume_text(hundredths)
+	volume_changed.emit(channel, hundredths)
+
+
+## Replace Godot's bright theme with the same shipped pieces every other
+## setting on this screen uses. The empty progress styles are intentional:
+## the arrow says where the value is, while a modern coloured fill would sit
+## on top of the period field and bring the visual mismatch back.
+func _dress_volume_slider(slider: HSlider) -> float:
+	if art == null:
+		return 0.0
+	var track: Texture2D = art.button_face(Art.BUTTON_BASE_FIELD,
+		VOLUME_SLIDER_PIECES, false)
+	var grabber: Texture2D = _volume_grabber(false)
+	if track == null or grabber == null:
+		return 0.0
+	var inset: float = VOLUME_FRAME_INSET
+	var track_box: StyleBoxTexture = _face_box(track, Art.BUTTON_BASE_FIELD)
+	# HSlider asks its track style for a minimum height. A button stretches the
+	# same box over its own rectangle, but without these margins the slider
+	# collapses the 32-pixel face into a hairline.
+	track_box.content_margin_top = track.get_height() * 0.5
+	track_box.content_margin_bottom = track.get_height() * 0.5
+	# HSlider already keeps the whole arrow inside its own range. Inset that
+	# range by the metal edge and expand the background back out, so the
+	# endpoint leaves the field's frame visible.
+	track_box.expand_margin_left = inset
+	track_box.expand_margin_right = inset
+	slider.add_theme_stylebox_override("slider", track_box)
+	slider.add_theme_stylebox_override("grabber_area", StyleBoxEmpty.new())
+	slider.add_theme_stylebox_override("grabber_area_highlight",
+		StyleBoxEmpty.new())
+	slider.add_theme_icon_override("grabber", grabber)
+	slider.add_theme_icon_override("grabber_disabled", grabber)
+	var lit: Texture2D = _volume_grabber(true)
+	slider.add_theme_icon_override("grabber_highlight",
+		lit if lit != null else grabber)
+	return inset
+
+
+## Scale the shipped arrow with nearest-neighbour sampling: it fills the
+## field inside its metal frame without blurring the indexed pixel art. Kept
+## per screen so rebuilding a row does not rebuild the same texture.
+func _volume_grabber(lit: bool) -> Texture2D:
+	if lit and _volume_grabber_lit != null:
+		return _volume_grabber_lit
+	if not lit and _volume_grabber_normal != null:
+		return _volume_grabber_normal
+	var index: int = VOLUME_GRABBER + (Art.ICON_LIT_OFFSET if lit else 0)
+	var source: Texture2D = art.sprite(Art.BUTTON_LIBRARY, index)
+	if source == null or source.get_height() <= 0:
+		return null
+	var image: Image = source.get_image()
+	var width: int = roundi(float(image.get_width())
+		* float(VOLUME_GRABBER_HEIGHT) / float(image.get_height()))
+	image.resize(width, VOLUME_GRABBER_HEIGHT, Image.INTERPOLATE_NEAREST)
+	var scaled: Texture2D = ImageTexture.create_from_image(image)
+	if lit:
+		_volume_grabber_lit = scaled
+	else:
+		_volume_grabber_normal = scaled
+	return scaled
 
 
 ## How loud the row is, as a share of the range rather than as attenuation.

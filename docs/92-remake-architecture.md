@@ -1459,7 +1459,14 @@ and not as a surprise. What is
 connected: both volumes, the difficulty, the gore level of `Game.opt`'s dword
 10 — no mission of the 92 writes `unit_draw_path`, so it is a live control and
 not a default something overrides — and the `Faithful` preset over
-`AudioEvents.COMPAT_FLAGS`.
+`AudioEvents.COMPAT_FLAGS`. Music and FX are sliders over the settings file's
+-40..0 dB range in 1 dB steps: their percentage changes beside the thumb, and
+each step is applied and persisted immediately. The enumerated settings keep
+the original's click-to-step fields. Their track is the same composed
+`buttons.LIB` field as those values, and the grabber is its small green arrow,
+scaled nearest-neighbour to the field's green interior and inset four pixels
+from its end caps, so the direct control does not import Godot's default theme
+into the plate or cover the frame at 0/100%.
 
 **The authority for difficulty is `CampaignState.difficulty`.** This is the
 decision the §7.13 slice left implicit and it has a hard reason: `ai_level` is

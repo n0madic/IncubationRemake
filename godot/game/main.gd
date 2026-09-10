@@ -1613,6 +1613,7 @@ func _show_shell_screen() -> CampaignScreen:
 				options.campaign_difficulty = campaign.state.difficulty
 			options.language = _strings.language if _strings != null \
 				else Localization.FALLBACK_LANGUAGE
+			options.volume_changed.connect(_set_option_volume)
 			screen = options
 	if screen == null:
 		return null
@@ -2255,10 +2256,6 @@ func _remember_loaded_session() -> void:
 ## anyone who closed the window.
 func _step_option(name: String) -> void:
 	match name:
-		"music":
-			settings.music_volume = _step_volume(settings.music_volume)
-		"fx":
-			settings.fx_volume = _step_volume(settings.fx_volume)
 		"difficulty":
 			if _campaign_difficulty_writable():
 				# On the map the campaign is the authority, and the settings
@@ -2301,6 +2298,23 @@ func _step_option(name: String) -> void:
 	options.refresh()
 
 
+## Apply a slider movement while the thumb is still under the pointer, and
+## write it immediately for the same reason the enumerated options are: a
+## window closed without visiting `Back` must not lose the choice.
+func _set_option_volume(channel: String, hundredths: int) -> void:
+	var value: int = clampi(hundredths, GameSettings.VOLUME_MIN,
+		GameSettings.VOLUME_MAX)
+	match channel:
+		"music":
+			settings.music_volume = value
+		"fx":
+			settings.fx_volume = value
+		_:
+			return
+	settings.apply_audio(_audio, _events)
+	var _written: bool = settings.save_to_disk()
+
+
 ## Put the chosen font on everything that is already on screen.
 ##
 ## The screens take theirs at `setup` and the HUD at `_ready`, so a change made
@@ -2321,21 +2335,6 @@ func _reapply_font() -> void:
 		var _again: CampaignScreen = _show_shell_screen()
 	elif _screen != null and campaign != null:
 		var _back: CampaignScreen = show_campaign_screen(campaign.screen)
-
-
-## One click of a volume row: **down** a step, and from the floor back to full.
-##
-## It stepped up and wrapped max to floor, which meant one click on a row that
-## was already at full volume dropped it to [constant GameSettings.VOLUME_MIN]
-## -- -40 dB, inaudible -- and sixteen more were needed to get back. That is
-## how a session ends up reporting a cutscene as having no sound at all when
-## the track is playing (docs/101 section 6). Downward, the same cycle makes
-## the curious click cost 2.5 dB and the click at the floor restore full.
-func _step_volume(hundredths: int) -> int:
-	var next: int = hundredths - GameSettings.VOLUME_STEP
-	if next < GameSettings.VOLUME_MIN:
-		next = GameSettings.VOLUME_MAX
-	return next
 
 
 func close_campaign_screen() -> void:

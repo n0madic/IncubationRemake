@@ -58,8 +58,9 @@ const GORE_MAX: int = 3
 ## deliberately quiet setting to still be audible on a loud cue).
 const VOLUME_MIN: int = -4000
 const VOLUME_MAX: int = 0
-## One notch of a volume control: 2.5 dB, so the range is sixteen steps.
-const VOLUME_STEP: int = 250
+## One slider/key step. One decibel keeps the shipped -6 dB music default on
+## the scale instead of moving it merely because the options screen opened.
+const VOLUME_STEP: int = 100
 
 var path: String = DEFAULT_PATH
 var fx_volume: int = AudioSystem.DEFAULT_FX_VOLUME
