@@ -537,6 +537,12 @@ Two click columns, `x 11..49` and `594..632`, `y 66..345`, row
 | right 7 | — | 31 | — | empty | — |
 | right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | Enter / Numpad Enter |
 
+The *Give up!* action deliberately differs in the remake as well as its key:
+the button sets the computer end-state slot, which makes the current mission a
+defeat, but does **not** run `lKillPlayerUnits`. The debriefing therefore
+recovers the surviving squad and records no surrender casualties. This is a
+product rule, not a claim about the original binary.
+
 The remake therefore leaves camera movement on the arrows and mouse rather
 than sharing `WASD` with the command pad. Also from the normalized-key table
 and the mission caller at `0x0041BAB0`: `Left`/`Right` turn the camera one

@@ -1038,12 +1038,25 @@ func _endings(h: TestHarness) -> void:
 	var defeated: CampaignState = host.start_new(2)
 	var defeated_world: World = World.create(
 		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
+	var squad_before_defeat: int = 0
+	for slot: int in defeated_world.unit_slots():
+		var view: Dictionary = defeated_world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == 0 \
+				and DictRead.as_int(view["hp"]) > 0:
+			squad_before_defeat += 1
 	defeated_world.game_control.set_slot(4, 1)
 	host.begin_mission(defeated_world)
 	host.enter_mission()
 	var defeat_report: Dictionary = host.finish_mission(defeated_world)
 	h.equal("endings.defeat_reaches_the_report",
 		DictRead.as_int(defeat_report["result"]), ScoreRecord.RESULT_DEFEAT)
+	h.equal("endings.forfeit_keeps_the_squad",
+		[DictRead.as_int(defeat_report["losses"]),
+			DictRead.as_array(defeat_report["recovered"]).size(),
+			DictRead.as_array(defeat_report["lost"]).size(),
+			defeated.roster.used_slots()],
+		[0, squad_before_defeat, 0, squad_before_defeat],
+		"the ordinary defeat lifecycle recovers every surviving unit")
 	var refused: String = host.advance()
 	h.equal("endings.defeat_does_not_advance",
 		[refused, defeated.mission, host.screen],

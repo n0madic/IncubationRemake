@@ -5047,9 +5047,8 @@ func _auto_end_turn_wanted() -> bool:
 		return false
 	if _screen != null or shell.is_up():
 		return false
-	# **Somebody has to be left to have spent anything.** A squad that is gone
-	# -- wiped out, or killed by *Give up!* on a mission whose script does not
-	# end on it -- answers "no unit with a movement point" for ever, and the
+	# **Somebody has to be left to have spent anything.** A squad that is wiped
+	# out answers "no unit with a movement point" for ever, and the
 	# turn would then end itself again the moment each replay finished: the
 	# rounds would run past the player as fast as the computer can play them.
 	if not _has_live_unit(turn_player()):
@@ -7847,13 +7846,13 @@ func _on_hud_event(number: int) -> void:
 		HudTables.EVENT_REMIND_POSITION:
 			var _reminded: bool = quick_save(HudTables.SLOT_REMIND)
 		HudTables.EVENT_GIVE_UP:
-			# `lKillPlayerUnits` `0x0047BC60(player)`: every unit of the
-			# player is **killed** -- the squad is lost, and *Try Again* at
-			# the debriefing is what undoes it -- and the turn goes on
-			# without them.
-			var _gone: int = world.kill_units_of(turn_player())
-			_deselect()
-			var _turn: TurnResult = end_turn()
+			# A deliberate departure from `lKillPlayerUnits` `0x0047BC60`:
+			# forfeiting stamps the computer end-state slot instead of killing
+			# the squad. With the player's own slot still zero, mission_result()
+			# classifies that as defeat and the normal debriefing recovers every
+			# survivor. No turn is handed over and no loss is recorded.
+			world.game_control.set_slot(GameControl.END_STATE_SLOTS - 1, 1)
+			_check_mission_end()
 		HudTables.EVENT_NEXT_PLAYER:
 			var _ended: TurnResult = end_turn()
 		HudTables.EVENT_BRIEFING:

@@ -23,6 +23,7 @@ func run(h: TestHarness) -> void:
 	_fog(h)
 	_hud(h)
 	_mission_result(h)
+	_give_up(h)
 	_command_gate(h)
 	_game_font(h)
 	_shots_and_reactions(h)
@@ -1983,6 +1984,31 @@ func _mission_result(h: TestHarness) -> void:
 	control.set_slot(0, 9)
 	h.equal("result.an_unaccounted_value_leaves_the_five_standing",
 		control.mission_result(0), GameControl.RESULT_DEFEAT)
+
+
+## The remake's Give Up is a forfeit, not a second way to kill the squad.
+## Drive the same dispatcher the column button uses and require its only
+## simulation change to be the game-control defeat stamp.
+func _give_up(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_140")
+	if loaded.is_empty():
+		h.check("give_up.cache", false, "no _C_140 in the cache")
+		return
+	var world: World = loaded["world"]
+	world.turn.current_player = 0
+	var before: World = world.clone()
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = before.clone()
+
+	main._on_hud_event(HudTables.EVENT_GIVE_UP)
+
+	h.equal("give_up.marks_the_mission_defeated",
+		world.game_control.mission_result(0), GameControl.RESULT_DEFEAT)
+	h.equal("give_up.only_changes_the_mission_result",
+		world.mirror_diff(before), PackedStringArray(["game_control"]),
+		"the squad, loss counters, turn, map and random streams stay untouched")
+	main.free()
 
 
 ## The game's own bitmap font, built from the cache (docs/60 section 5).

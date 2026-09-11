@@ -202,14 +202,17 @@ reviewed only: `_C_140`'s first computer turn replays nothing, and the
 answer was to drive a mission whose does. The remaining two are pinned by the
 suites (the mission-result block and the state-size diagnostic).
 
-The two candidates the review raised and withdrew are worth recording: the
+The first candidate the review raised and withdrew is worth recording: the
 radar and the overlay reading the stored `+0x4F` while the bodies read the
 fog pass is the engine's own asymmetry (`aSetVisibleStateForUnit` saves and
-restores one of the two), and *Give up!* leaving the interface up is
-unreachable in the shipped set, every one of the 110 mission scripts carrying
-a no-units defeat rule — the remake implements neither of `0x0041DA20`'s own
-result-5 writes, so a **user-authored** map without that rule would leave the
-interface running after a surrender.
+restores one of the two).
+
+*Give up!* changed by product decision on 2026-09-11. The original kills every
+unit of the player and relies on the shipped missions' no-units conditions;
+the remake now stamps the current mission as a defeat directly and preserves
+the squad. The HUD-dispatch regression requires `game_control` to be the only
+simulation difference: no unit, loss counter, turn, map or random stream may
+move.
 
 ## 6. What playing it found (2026-09-05)
 
