@@ -1409,7 +1409,10 @@ be a different control wearing the same input. It is the sibling of
 classes, and a list answering only the first looks unscrollable on exactly the
 hardware this is developed on. A pan too small to have moved a row is carried
 rather than dropped, so a slow drag still moves. Four screens answer:
-*Instant Action*'s type-2 single-player catalogue, the save slots, the HQ
+*Instant Action*'s type-2 single-player catalogue -- present only in a cache
+published with `--instant-action-maps`, and the main menu **drops the entry**
+where the cache carries none, the way it drops *Load game* with nothing to
+load (§7.1) -- the save slots, the HQ
 roster and the briefing's
 text box -- whose `scroll` had **no caller in the project at all**, so the six
 overlong `A0` blocks it exists for could not be read past the box. A screen
@@ -2287,14 +2290,14 @@ back. Explicit Mouse disables touch gestures/help but still accepts short taps.
 
 | Touch | Binding |
 |---|---|
-| one-finger drag | mission/deployment pan; campaign map's existing swing |
+| one-finger drag | mission/deployment pan, **direct manipulation**; free look in the eyes view; campaign map's existing swing |
 | pinch | zoom through the existing rig |
-| two-finger twist | one quadrant per gesture in battle/deployment; continuous map swing |
+| two-finger twist | **one quadrant per 25 degrees** of continued turn in battle/deployment; continuous map swing |
 | parallel two-finger drag | free look in battle/deployment; map swing on the campaign map |
 | hold for 0.45 s | existing hover information; persistent local equipment/menu tooltip |
 | drag a list/volume slider | scroll rows/change volume without activating a row |
 | tap during enemy playback | existing skip operation, without changing the resolved world |
-| Menu / Android Back | existing Escape menu route; Back's automatic quit is disabled |
+| Menu / Android Back | existing Escape menu route; inside the shell it is the shell's own *Back*, and it leaves the application only from the boot menu, where there is nothing behind and nowhere back |
 
 `TouchInputController` owns raw touch events before GUI dispatch. Automatic
 mouse-from-touch emulation is disabled; the adapter sends a completed tap through
@@ -2303,8 +2306,58 @@ authoritative. Movement beyond 8 viewport units, a second finger, or a hold
 cancels the prospective click. Pair motion is classified once per frame because
 platforms deliver the two fingers separately; otherwise parallel motion can
 momentarily look like a pinch. The first gesture type locks until all fingers
-lift. Twist recognition starts at 15 degrees and one battle quadrant is requested
-at 25 degrees; pinch recognition starts at 8 percent distance change.
+lift. Twist recognition starts at 8 degrees and pinch recognition at 15 percent
+distance change, in that order: two fingers turning about their centre cannot
+hold their separation to better than a few per cent, and at the first pass's
+15 degrees against 8 per cent almost every turn was classified as a pinch
+before it had turned far enough to say otherwise. A pair already reading as a
+pinch or a parallel drag becomes a twist after all once it has turned 20
+degrees: the first reading used to be final, so a turn that opened with a few
+per cent of separation change -- which is most of them -- stayed a pinch until
+both fingers lifted. A battle quadrant is
+requested at 18 degrees, measured from the separation at the **last** quadrant
+rather than from the one the pair began with, so a finger that keeps turning
+keeps stepping; the first pass latched after one, which -- with
+`CameraRig.may_rotate_to` free to refuse that one -- read as a turn that only
+worked one way round.
+
+Three touch bindings are deliberate **divergences** from the original's own
+behaviour, each because the original is a *pointer's* rule and a finger is not
+a pointer:
+
+* **The one-finger pan is direct manipulation.** The original's pan is
+  `pixels * 400` engine units along the view's forward and right
+  ([`42` §2.5](42-mission-presentation.md)) and moves the *camera* with the
+  pointer, so the picture slides the other way; at 3200 units to a field, eight
+  pixels of travel move the world a whole field. Under touch the shift is
+  measured instead — `CameraRig.ground_point` meets the ray with the horizontal
+  plane the finger came down on (the cell's own floor, held for the whole drag,
+  because the target's height is a soldier's head and not the ground), and
+  `CameraRig.pan_units` carries the difference back. The field the finger lands
+  on is under it when it stops, to within 2 px. At the map's edge the box
+  refuses the pair as one displacement, so the controller offers the two
+  components separately rather than letting a diagonal drag along the border
+  stick.
+* **A drag in the eyes view looks rather than pans.** The pan moves eye and
+  target together, so in docs/42 §2.4's first-person view a finger drag walked
+  the camera off the soldier it belongs to -- and one direction parked it
+  behind him, looking at the back of his head, six thousand units from where it
+  started. The original allows exactly the same thing through `0x004037D0`, but
+  a mouse reaches it only through a middle drag nobody makes in first person,
+  while a finger drag is *the* gesture. Under touch it calls
+  `CameraRig.look_by`, which rewrites the target alone and leaves the eye where
+  the view put it -- the same call the two-finger parallel drag already makes.
+* **The ground overlay's hover gate is off.** `GroundSprites.refresh` draws the
+  movement dots and the target bands only while the pointer stands on a legal
+  cell ([`43` §3](43-battle-interface.md)); a finger stands nowhere, so
+  selecting a soldier showed no reachable set at all and a destination had to be
+  guessed at. Under touch the gate is lifted and the set is the selection's own.
+* **The synthetic pointer leaves the screen when the finger does.** A `Button`
+  wears its hover face until a motion moves off it, and the faces composed out
+  of `buttons.LIB` draw `hover` and `pressed` with the *same* lit picture — so
+  the list row a finger last touched went on looking exactly as selected as the
+  row that was, and running a finger down a list read as several selections at
+  once.
 
 Screen/world/playback/modal changes, resize, focus loss and suspension cancel
 pending input. Resume discards old finger IDs without treating old releases as
@@ -2319,11 +2372,16 @@ Validation is split deliberately:
 * `tests/touch_integration.gd` drives **actual viewport events** in a loaded game:
   GUI, held hints, sliders, list rebuilds, real unit/target picking, direction ring,
   campaign selection/map/briefing/deployment, movement, end turn and disk-backed
-  save/load. It uses isolated `/private/tmp/inc-touch-integration-*` settings/saves.
+  save/load, plus the three divergences above: the pan's 2-pixel drift, the
+  reachable set drawn with no pointer anywhere, no row left lit after a swipe,
+  and the eyes view keeping its eye through three drags with the soldier never
+  entering his own picture. It uses isolated `user://inc-touch-integration-*` settings/saves --
+  absolute macOS temp paths made the screenshot check fail on Linux for an
+  environment reason rather than a real one.
   Run `godot --headless --fixed-fps 60 --path godot --script
   res://tests/touch_integration.gd -- --mission=_C_140` and require
   `TOUCH-INTEGRATION: ... 0 failures`, with no runtime errors. Without `--headless`
-  it also captures the 4:3 and 16:10 HUD to `/private/tmp/inc-touch-*.png`.
+  it also captures the 4:3 and 16:10 HUD to `user://inc-touch-*.png`.
 * **Physical Android/iPad input, software keyboard presentation and gesture feel
   are UNVERIFIED.** Viewport injection on macOS is not a mobile-device run.
   HUD redesign and new background-save behavior are outside this change.
@@ -2339,10 +2397,18 @@ environment settings). `make build-ios` deliberately refuses to
 start until a real Apple Team ID is configured locally and full Xcode is
 installed; neither a fabricated signing identity nor a provisioning profile is
 kept in this repository. Every build goes to ignored `godot/export/`.
-`make build-android` first regenerates all campaign and Instant Action data into
-ignored `godot/android_payload/cache`, then requires every cache manifest
-entry's size and SHA-256 to agree with the individual file embedded in the
-resulting APK.
+`make build-android` first brings all campaign and Instant Action data in
+ignored `godot/android_payload/cache` up to date, then requires every cache
+manifest entry's size and SHA-256 to agree with the individual file embedded in
+the resulting APK. The payload is a build **product**, not a step: it is
+converted again only when the converter's own sources change, when the
+`Makefile` changes, or when the arguments it was built with differ from the
+ones recorded beside it -- a minute and 200 MiB that used to be paid on every
+export. `make android-cache-force` rebuilds it regardless. The stamp is a file
+of its own rather than the cache's manifest, because the converter refuses to
+replace a `cache/` directory that does not look like one of its own, so
+deleting the manifest to force a rebuild leaves a payload nothing will
+overwrite.
 
 ## 8. Standing constraints
 

@@ -57,9 +57,14 @@ var _art: Art = null
 ## **Nothing marks a walk.** State 100 -- `aWalkMoveMap`'s reconstructed path
 ## -- is written by every move in the game, the player's and the computer's
 ## alike, and is drawn by none of them: docs/43 section 3.1.
+## *hover_gated* is the original's rule: the movement dots and the target bands
+## draw only while the pointer is over a legal cell. A touch screen has no
+## pointer to stand there -- the finger is either pressing or gone -- so the
+## caller turns the gate off in that mode and the selection's own cells are
+## shown for as long as it is selected (docs/43 section 3, a divergence).
 func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 		hover: Vector2i, bands: Dictionary[Vector2i, int],
-		current_player: int, far: bool) -> void:
+		current_player: int, far: bool, hover_gated: bool = true) -> void:
 	_art = art
 	for child: Node in get_children():
 		remove_child(child)
@@ -74,7 +79,8 @@ func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 	var states: Dictionary[Vector2i, int] = cell_states(world, selected, query,
 		bands)
 	var hover_state: int = DictRead.as_int(states.get(hover, HudTables.STATE_PLAIN))
-	var hover_legal: bool = HudTables.HOVER_GATED_STATES.has(hover_state)
+	var hover_legal: bool = not hover_gated \
+		or HudTables.HOVER_GATED_STATES.has(hover_state)
 	# The cells. The gated states draw only while the pointer is over a
 	# legal one (`var_34h`); the hovered cell's own digit blinks and takes
 	# the frame.

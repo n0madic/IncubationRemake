@@ -767,6 +767,18 @@ func _screens(h: TestHarness) -> void:
 	_no_missing(h, "menu", menu)
 	menu.free()
 
+	# ...and `Instant Action` goes the same way as `Load Game` when the cache
+	# carries no single map, which is every cache published without
+	# `--instant-action-maps`. The entry used to lead to an empty list.
+	var no_single: MainMenuScreen = MainMenuScreen.new()
+	no_single.has_any_save = false
+	no_single.has_instant_action = false
+	no_single.setup(_art, _strings, _font)
+	h.equal("screens.menu_drops_instant_action_with_no_single_maps",
+		_actions_of(no_single),
+		PackedStringArray(["campaign", "options", "quit"]))
+	no_single.free()
+
 	# The menu offers the way back whenever there is anything behind it, not
 	# only during a mission: over the campaign map it used to offer nothing
 	# but starting a new campaign over the one being played.

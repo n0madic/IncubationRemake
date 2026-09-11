@@ -895,7 +895,7 @@ Nine things about it that are easy to trip over:
 ```bash
 python3 tools/remake_convert.py gog_incubation -o "$(...)/caches"   # publish
 python3 tools/remake_convert.py gog_incubation --campaign-maps \
-    -o "$(...)/caches"                             # the whole campaign, 92 maps
+    --instant-action-maps -o "$(...)/caches"       # 92 campaign maps + 10 single
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 bash tools/verify_untouched.sh gog_incubation snap.txt [--check]
 godot --path godot -- --mission=_C_141        # run one of the converted maps
@@ -999,6 +999,12 @@ through is published with -- the default six are the slices' own set, not a
 chain's, and a mission the cache does not carry stops the campaign where it
 stands. `--check` pins all three forms of the argument in
 `check_mission_selection`.
+**`--instant-action-maps` is not implied by it**, and the two belong together
+in a published cache: without it the ten type-2 `_S_*` maps are absent,
+`_instant_action_missions()` answers nothing and *Instant Action* is a menu
+entry onto an empty list. `MainMenuScreen` now drops the entry in that case
+(`docs/92` §7.1's rule about inert controls), so a cache published without the
+flag is legible rather than broken -- but the cache to publish carries both.
 
 `tools/presentation_gold.py` is the fifth gold tool and, like `blob_gold.py`,
 is **outside the always-run block**: its `--check` reads a capture that is

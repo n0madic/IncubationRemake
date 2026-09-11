@@ -20,6 +20,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help check-godot check-formats check-cache fixtures android-cache \
+	android-cache-force _android-cache-key \
 	test-godot test-touch test build build-macos build-windows build-linux \
 	build-android build-ios
 
@@ -36,7 +37,8 @@ help:
 		'  make build-macos    Export a macOS .app.' \
 		'  make build-windows  Export a Windows x86_64 .exe.' \
 		'  make build-linux    Export a Linux x86_64 executable.' \
-		'  make android-cache  Build the full campaign and Instant Action cache for Android.' \
+		'  make android-cache  Build the Android payload cache if it is out of date.' \
+		'  make android-cache-force  Rebuild it even when it looks current.' \
 		'  make build-android  Build a self-contained Android APK (ARMv7 + ARM64).' \
 		'  make build-ios      Export an iOS Xcode project; configure a real Apple Team ID first.' \
 		'' \
@@ -116,12 +118,53 @@ fixtures:
 # Android builds are standalone: the cache is regenerated from the supplied
 # retail installation and then checked inside the APK file by file. It
 # stays in ignored godot/android_payload/ and is never a repository asset.
+#
+# It is a build **product**, not a step: converting the whole campaign takes
+# about a minute and 200 MiB, and `build-android` used to pay it on every
+# export. It is rebuilt when the converter changes, when this file changes, or
+# when the arguments it was built with change; `make android-cache-force`
+# rebuilds it unconditionally.
+#
+# The stamp is a file of its own and **not** the cache's own manifest: the
+# converter refuses to replace a `cache/` directory that does not look like one
+# of its own, so removing the manifest to force a rebuild leaves a payload
+# nothing will overwrite. The manifest is still what says a cache is there at
+# all, which is why the key check reads it.
+ANDROID_PAYLOAD := $(GODOT_DIR)/android_payload
+ANDROID_CACHE_MANIFEST := $(ANDROID_PAYLOAD)/cache/manifest.json
+ANDROID_CACHE_STAMP := $(ANDROID_PAYLOAD)/.cache-stamp
+ANDROID_CACHE_KEY := $(ANDROID_PAYLOAD)/.cache-build-key
+ANDROID_CACHE_ARGS := $(GAME_ROOT) --campaign-maps --instant-action-maps
+CONVERTER_SOURCES := $(wildcard tools/*.py tools/inclib/*.py)
+
 android-cache:
-	$(PYTHON) tools/remake_convert.py $(GAME_ROOT) --campaign-maps --instant-action-maps --dev-fixtures $(GODOT_DIR)/android_payload
+	@$(MAKE) --no-print-directory _android-cache-key
+	@$(MAKE) --no-print-directory $(ANDROID_CACHE_STAMP)
+
+android-cache-force:
+	rm -f $(ANDROID_CACHE_STAMP)
+	@$(MAKE) --no-print-directory android-cache
+
+# Three things make prerequisites cannot see: a payload converted from another
+# retail installation, one converted without `--instant-action-maps`, and one
+# whose cache has been removed under a stamp that stayed behind. All three are
+# stale however new the stamp is.
+_android-cache-key:
+	@if [ ! -f "$(ANDROID_CACHE_MANIFEST)" ] \
+			|| [ ! -f "$(ANDROID_CACHE_KEY)" ] \
+			|| [ "$$(cat "$(ANDROID_CACHE_KEY)")" != "$(ANDROID_CACHE_ARGS)" ]; then \
+		rm -f "$(ANDROID_CACHE_STAMP)"; \
+	fi
+
+$(ANDROID_CACHE_STAMP): $(CONVERTER_SOURCES) $(MAKEFILE_LIST)
+	$(PYTHON) tools/remake_convert.py $(ANDROID_CACHE_ARGS) --dev-fixtures $(ANDROID_PAYLOAD)
 	# Cache files are verified as original bytes at run time, so keep Godot's
 	# importer out of this build-only subtree. The Android export plugin writes
-	# each manifest file as raw data into the package.
-	touch $(GODOT_DIR)/android_payload/cache/.gdignore
+	# each manifest file as raw data into the package. The conversion renames a
+	# whole staging directory into place, so this is written after every one.
+	touch $(ANDROID_PAYLOAD)/cache/.gdignore
+	@printf '%s' '$(ANDROID_CACHE_ARGS)' > "$(ANDROID_CACHE_KEY)"
+	@touch "$(ANDROID_CACHE_STAMP)"
 
 test-godot: check-godot
 	bash $(GODOT_DIR)/run_tests.sh $(GODOT)

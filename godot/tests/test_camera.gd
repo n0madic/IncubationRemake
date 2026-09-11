@@ -50,6 +50,42 @@ static func _v(x: int, y: int, z: int) -> Vector3i:
 	return Vector3i(x, y, z)
 
 
+## The plane a finger holds: a point projected onto the screen, asked back on
+## the plane it stands on, is the point it came from.
+##
+## The plane is the **caller's** height and not the target's: the unit view
+## looks at a soldier's head, and measuring the drag on that plane moved the
+## picture by about seven tenths of the finger's travel.
+func _check_ground_point(h: TestHarness, rig: CameraRig) -> void:
+	var canvas: Vector2 = Vector2(640.0, 480.0)
+	var camera: Camera3D = rig.camera()
+	CameraRig.frame_projection(camera, Rect2(Vector2(60.0, 34.0),
+		Vector2(520.0, 340.0)), canvas, 0, 520.0)
+	var matrix: Projection = CameraRig.projection_of(camera, canvas)
+	var worst: float = 0.0
+	var answered: int = 0
+	for cell: Vector2i in [Vector2i(10, 10), Vector2i(9, 11), Vector2i(11, 9)]:
+		var at: Vector3i = CameraRig.cell_object(cell.x, cell.y, 0)
+		var point: Vector3 = WorldSpace.to_godot(at.x, at.y, at.z)
+		var local: Vector3 = camera.transform.affine_inverse() * point
+		var clip: Vector4 = matrix * Vector4(local.x, local.y, local.z, 1.0)
+		if clip.w <= 0.0:
+			continue
+		var pixel: Vector2 = Vector2((clip.x / clip.w + 1.0) * 0.5 * canvas.x,
+			(1.0 - clip.y / clip.w) * 0.5 * canvas.y)
+		var ground: PackedVector2Array = rig.ground_point(pixel, canvas, 0.0)
+		if ground.is_empty():
+			continue
+		answered += 1
+		worst = maxf(worst, ground[0].distance_to(Vector2(float(at.x),
+			float(at.y))))
+	h.equal("ground_point.answers_every_cell", answered, 3)
+	h.check("ground_point.round_trips", worst < 2.0,
+		"worst miss %.2f engine units" % worst)
+	h.check("ground_point.refuses_behind_the_eye",
+		rig.ground_point(Vector2(320.0, 0.0), canvas, 1000000.0).is_empty())
+
+
 func _check_free_look(h: TestHarness) -> void:
 	var rig: CameraRig = _flat_rig(20, 20)
 	var eye: Vector3i = _v(32000, 32000, 3200)
@@ -564,6 +600,15 @@ func _check_pan_and_zoom(h: TestHarness) -> void:
 	rig.pan(Vector2(0.0, 25.0), 640.0)
 	h.equal("pan.refused_off_map", rig.target(), before,
 		"10 000 units back would put the target under the map's edge")
+	h.check("pan_units.says_it_refused", not rig.pan_units(Vector2i(0, -10000)))
+	# The world-displacement form, which is what a finger asks for: it holds
+	# the ground rather than following a pointer, so it states the shift in
+	# engine units and has to answer whether it was taken.
+	rig.set_now(obj + _v(0, -8000, 6000), obj)
+	h.check("pan_units.says_it_moved", rig.pan_units(Vector2i(4000, 0)))
+	h.equal("pan_units.moves_eye_and_target", rig.target(), obj + _v(4000, 0, 0))
+	h.check("pan_units.zero_is_not_a_move", not rig.pan_units(Vector2i.ZERO))
+	_check_ground_point(h, rig)
 
 	# Zoom scales the offset; in is always allowed down to 6400.
 	rig.set_now(obj + _v(0, -8000, 6000), obj)

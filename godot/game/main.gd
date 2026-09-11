@@ -1613,6 +1613,7 @@ func _show_shell_screen() -> CampaignScreen:
 				and campaign.state != null and not campaign.is_instant_action()
 			menu.behind = shell.behind
 			menu.has_any_save = _any_slot_used()
+			menu.has_instant_action = not _instant_action_missions().is_empty()
 			screen = menu
 		ShellHost.SCREEN_CAMPAIGN_SELECT:
 			var chains: CampaignSelectScreen = CampaignSelectScreen.new()
@@ -1667,12 +1668,20 @@ func _any_slot_used() -> bool:
 	return false
 
 
+## The single maps the cache carries, read once (see
+## [method _instant_action_missions]).
+var _instant_missions: PackedStringArray = PackedStringArray()
+var _instant_missions_read: bool = false
+
+
 ## The retail map header's type is the boundary, not a filename convention.
 ## Type 2 is `Single`; type 1 is campaign, 3/5 need the multiplayer/coop
 ## protocol the remake does not implement, and type 4 includes the campaign
 ## backdrops and upgrade screens.  Showing any of those under a local one-seat
 ## ArenaMode was the source of the former "loaded but unplayable" maps.
 func _instant_action_missions() -> PackedStringArray:
+	if _instant_missions_read:
+		return _instant_missions.duplicate()
 	var out: PackedStringArray = PackedStringArray()
 	for mission: String in _missions:
 		var document: Dictionary = CacheLoader.read_json(
@@ -1680,7 +1689,12 @@ func _instant_action_missions() -> PackedStringArray:
 		var header: Dictionary = DictRead.as_dict(document.get("header", {}))
 		if DictRead.as_int(header.get("map_type", -1)) == 2:
 			out.append(mission)
-	return out
+	# **Read once.** The answer opens a document per mission -- 92 of them in a
+	# campaign cache -- and the main menu asks for it every time it is built.
+	# The cache cannot change under a running process.
+	_instant_missions = out
+	_instant_missions_read = true
+	return out.duplicate()
 
 
 ## What a shell button means. The host owns the transitions; this turns one
@@ -7711,7 +7725,19 @@ func _refresh_overlay(force: bool = false) -> void:
 	_overlay_stale = false
 	_far_drawn = _far_view()
 	_ground.refresh(_art, shown(), _selected, _last_query, _hover, _bands,
-		turn_player(), _far_drawn)
+		turn_player(), _far_drawn, _hover_gates_overlay())
+
+
+## Whether the ground overlay still waits for the pointer before it draws the
+## selection's reachable cells and target bands.
+##
+## The original's rule, and the right one for a mouse: the dots follow the
+## cursor over the legal set. Under touch there is no cursor -- a hover exists
+## only while a finger is down, and on the cell the finger happens to be on --
+## so selecting a soldier showed no reachable set at all and a destination had
+## to be guessed at. Off the gate, the set is the selection's own.
+func _hover_gates_overlay() -> bool:
+	return _touch == null or not _touch.enabled()
 
 
 ## Whether the camera is above the zoom gate, where the overlay switches to

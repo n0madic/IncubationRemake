@@ -131,6 +131,8 @@ var behind: bool = false
 ## something to load and left out when there is not: eight empty rows behind a
 ## button that promises a game is the inert control section 7.1 forbids.
 var has_any_save: bool = false
+## Whether the cache carries any `_S_*` single map for *Instant Action*.
+var has_instant_action: bool = true
 
 ## The cascade, so a confirmation can rebuild it without taking the plate's
 ## own frame and title down with it.
@@ -200,8 +202,14 @@ func _show_actions() -> void:
 		else:
 			entries.append(["campaign",
 				label_for(BANK_MENU, ID_START_CAMPAIGN)])
-			entries.append(["instant",
-				label_for(BANK_MENU, ID_INSTANT_ACTION)])
+			# **Only where the cache carries a single map.** A cache published
+			# without `--instant-action-maps` carries none, and the entry then
+			# led to a list with nothing in it -- the inert control section
+			# 7.1 forbids, and the one this screen already avoids for *Load
+			# game* and *Main map*.
+			if has_instant_action:
+				entries.append(["instant",
+					label_for(BANK_MENU, ID_INSTANT_ACTION)])
 		if has_any_save:
 			entries.append(["load", label_for(BANK_MENU, ID_MENU_LOAD_GAME)])
 		entries.append(["options", strings_own(OWN_OPTIONS)])

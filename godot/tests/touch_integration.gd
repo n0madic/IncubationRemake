@@ -190,6 +190,7 @@ func _run() -> void:
 			var screenshot: Image = root.get_texture().get_image()
 			var saved: Error = screenshot.save_png("user://inc-touch-%dx%d.png" % [canvas.x, canvas.y])
 			_check("screenshot written", saved == OK)
+	await _list_swipe()
 	await _campaign_flow()
 	print("TOUCH-INTEGRATION: %d checks, %d failures" % [checks, failures])
 	var _shutdown_frames: int = await game._audio.shutdown()
@@ -280,6 +281,57 @@ func _campaign_flow() -> void:
 	_check("touch load restores mission", game.in_mission() and not game.shell.is_up())
 
 
+## A finger run down a list leaves no row wearing the lit face.
+##
+## `hover` and `pressed` are the **same** composed picture, and a touch pointer
+## parks wherever the finger lifted -- so the last row touched went on looking
+## exactly as selected as the row that was, and a swipe read as several
+## selections at once.
+func _list_swipe() -> void:
+	game._toggle_shell()
+	await _frames()
+	game._on_shell_choice("load")
+	await _frames()
+	var rows: Array[Button] = _list_rows(game._screen)
+	_check("slot list has rows", rows.size() > 2)
+	if rows.size() <= 2:
+		game.close_shell()
+		await _frames()
+		return
+	var start: Vector2 = rows[0].get_global_rect().get_center()
+	_down(0, start)
+	await _frames()
+	_check("a touched row is lit", _lit_rows(game._screen) > 0)
+	for step: int in range(6):
+		_drag(0, start + Vector2(0, 14 * (step + 1)))
+		await process_frame
+	_up(0, start + Vector2(0, 84))
+	await _frames()
+	_check("no row stays lit after the finger lifts",
+		_lit_rows(game._screen) == 0)
+	game.close_shell()
+	await _frames()
+
+
+func _list_rows(node: Node) -> Array[Button]:
+	var out: Array[Button] = []
+	if node == null:
+		return out
+	if node is Button:
+		out.append(node as Button)
+	for child: Node in node.get_children():
+		out.append_array(_list_rows(child))
+	return out
+
+
+func _lit_rows(node: Node) -> int:
+	var lit: int = 0
+	for row: Button in _list_rows(node):
+		if row.is_hovered() or row.button_pressed:
+			lit += 1
+	return lit
+
+
 func _move_and_end_turn() -> void:
 	await _hud_press(HudTables.EVENT_MAP_VIEW)
 	game._rig.settle()
@@ -288,6 +340,15 @@ func _move_and_end_turn() -> void:
 	_check("campaign selects a deployed marine", selected >= 0)
 	if selected < 0 or game._last_query == null:
 		return
+	# **The reachable set is drawn on selection, with no pointer anywhere.**
+	# The original gates the dots on the cursor standing on a legal cell
+	# (docs/43 section 3); a finger cannot stand anywhere, so under touch the
+	# gate is off and the set is the selection's own.
+	_check("no pointer rests on the map", game._hover == Vector2i(-1, -1))
+	_check("selection draws its reachable cells",
+		game._ground.get_child_count() > 0 and _overlay_marks() > 0)
+	await _pan_holds_the_ground()
+	await _eyes_view_holds_the_soldier()
 	var before: Dictionary = game.world.unit_view(selected)
 	var destination: Vector2i = Vector2i(-1, -1)
 	var best: int = 1000000
@@ -330,6 +391,90 @@ func _move_and_end_turn() -> void:
 			and game.world.canonical_hash_hex() == committed)
 	await _idle()
 	_check("end turn advances game", game.world.turn.turn > turn)
+
+
+## How many overlay marks stand on cells the selection can reach.
+func _overlay_marks() -> int:
+	var marks: int = 0
+	for y: int in range(game._last_query.height):
+		for x: int in range(game._last_query.width):
+			if game._last_query.is_reachable(x, y) \
+					and game._ground._marks.has(Vector2i(x, y)):
+				marks += 1
+	return marks
+
+
+## One finger holds the ground: the field it came down on is under it when it
+## stops, at the finger's own rate and in the finger's own direction.
+##
+## The original's pan is `pixels * 400` engine units and follows the *pointer*,
+## so on a touchscreen it ran about six times the finger and the other way
+## round (docs/42 section 2.5, a divergence). The `(0, 60)` drag is left out on
+## purpose: the deployed squad stands at the map's edge, where
+## [method CameraRig.pan_units] refuses what would take the target off the box.
+func _pan_holds_the_ground() -> void:
+	await _hud_press(HudTables.EVENT_MAP_VIEW)
+	var slot: int = game._selected
+	var view: Dictionary = game.world.unit_view(slot)
+	var cell: Vector2i = Vector2i(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	for delta: Vector2 in [Vector2(60, 0), Vector2(-40, -30)]:
+		game._rig.settle()
+		await _frames()
+		var before: Vector2 = _cell(cell.x, cell.y)
+		_down(0, before)
+		await process_frame
+		for step: int in range(6):
+			_drag(0, before + delta * float(step + 1) / 6.0)
+			await process_frame
+		_up(0, before + delta)
+		game._rig.settle()
+		await _frames()
+		var drift: float = (_cell(cell.x, cell.y) - (before + delta)).length()
+		_check("pan %s holds the ground within 2 px (%.1f)"
+			% [str(delta), drift], drift <= 2.0)
+	game._deselect()
+	var _again: MoveMapResult = game.select_unit(slot, false)
+	await _frames()
+
+
+## A finger drag in the eyes view turns the head; it does not walk the camera
+## off the soldier.
+##
+## The pan moves eye and target together, so three drags used to put the eye
+## six thousand units away and, in one direction, **behind** the soldier
+## looking at the back of his head. A mouse reaches that only through a middle
+## drag; a finger drag is the gesture.
+func _eyes_view_holds_the_soldier() -> void:
+	await _hud_press(HudTables.EVENT_UNIT_VIEW)
+	game._rig.settle()
+	await _frames()
+	_check("eyes view entered", game._rig.view_mode() == CameraRig.View.EYES)
+	var slot: int = game._selected
+	var view: Dictionary = game.world.unit_view(slot)
+	var cell: Dictionary = game.world.cell_view(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))
+	var head: Vector3 = WorldSpace.cell_centre(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]), DictRead.as_int(cell["height"]) + 2800)
+	var eye: Vector3i = game._rig.eye()
+	var centre: Vector2 = game._hud.window().get_center()
+	for _pass: int in range(3):
+		_down(0, centre)
+		await process_frame
+		for step: int in range(6):
+			_drag(0, centre + Vector2(0.0, -20.0 * float(step + 1)))
+			await process_frame
+		_up(0, centre + Vector2(0.0, -120.0))
+		await _frames()
+	game._rig.settle()
+	await _frames()
+	_check("eyes view keeps the eye on the soldier", game._rig.eye() == eye)
+	_check("the soldier never comes into his own view",
+		not game._hud.window().has_point(
+			game._rig.camera().unproject_position(head)))
+	await _hud_press(HudTables.EVENT_MAP_VIEW)
+	game._rig.settle()
+	await _frames()
 
 
 func _hud_press(event: int) -> void:

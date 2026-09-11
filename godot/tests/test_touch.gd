@@ -54,17 +54,72 @@ func run(h: TestHarness) -> void:
 	events.clear()
 	g.touch(0, Vector2.ZERO, true)
 	g.touch(1, Vector2(100, 0), true)
-	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(20)))
+	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(12)))
 	g.tick(0)
 	h.check("twist.deadzone_before_quadrant", not events.has("turn"))
 	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(30)))
 	g.tick(0)
 	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(70)))
 	g.tick(0)
-	h.equal("twist.one_quadrant_per_gesture", events.count("turn"), 1)
+	# **A quadrant per step of the turn, not one per gesture.** The step is
+	# measured from the separation at the last one, so a finger that keeps
+	# turning keeps asking; it used to latch after the first, which left the
+	# camera reachable only as far as one quarter a gesture.
+	h.equal("twist.quadrant_per_step", events.count("turn"), 2)
 	h.check("twist.does_not_zoom", not events.has("zoom"))
+	# `values` is not cleared beside `events`, so the quadrants are collected
+	# on their own rather than read out of it by index.
+	var turns: Array[float] = []
+	g.action.connect(func(kind: String, value: Vector2) -> void:
+		if kind == "turn":
+			turns.append(value.x))
+	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(110)))
+	g.tick(0)
+	h.equal("twist.turns_with_the_fingers", turns.size(), 1)
+	# ...and back the other way, in the same gesture: both signs reach the rig.
+	g.drag(1, Vector2(100, 0).rotated(deg_to_rad(60)))
+	g.tick(0)
+	h.equal("twist.reverses", turns, [turns[0], -turns[0]] as Array[float],
+		"a turn back is the other quadrant, not a second one the same way")
 	g.touch(0, Vector2.ZERO, false)
-	g.touch(1, Vector2(34, 94), false)
+	g.touch(1, Vector2(100, 0).rotated(deg_to_rad(20)), false)
+	events.clear()
+	# **The twist is read before the pinch and at a lower bar.** Two fingers
+	# turning about their centre cannot hold their separation to better than a
+	# few per cent, so the old 15 degrees against 8 per cent classified almost
+	# every turn as a zoom before it had turned far enough to say otherwise.
+	g.touch(0, Vector2.ZERO, true)
+	g.touch(1, Vector2(100, 0), true)
+	g.drag(1, Vector2(105, 0).rotated(deg_to_rad(12)))
+	g.tick(0)
+	h.check("twist.survives_a_small_pinch",
+		events.has("twist") and not events.has("zoom"))
+	g.touch(0, Vector2.ZERO, false)
+	g.touch(1, Vector2(105, 0).rotated(deg_to_rad(12)), false)
+	events.clear()
+	g.touch(0, Vector2.ZERO, true)
+	g.touch(1, Vector2(100, 0), true)
+	g.drag(1, Vector2(118, 0).rotated(deg_to_rad(4)))
+	g.tick(0)
+	h.check("pinch.survives_a_small_twist",
+		events.has("zoom") and not events.has("twist"))
+	g.touch(0, Vector2.ZERO, false)
+	g.touch(1, Vector2(118, 0).rotated(deg_to_rad(4)), false)
+	events.clear()
+	turns.clear()
+	# **A pinch that turns far enough becomes a turn.** The first reading used
+	# to be final, so a turn opening with a few per cent of separation change
+	# -- which is most of them -- stayed a pinch until both fingers lifted.
+	g.touch(0, Vector2.ZERO, true)
+	g.touch(1, Vector2(100, 0), true)
+	g.drag(1, Vector2(118, 0))
+	g.tick(0)
+	h.check("escalate.begins_as_a_pinch", events.has("zoom"))
+	g.drag(1, Vector2(118, 0).rotated(deg_to_rad(25)))
+	g.tick(0)
+	h.equal("escalate.a_turned_pinch_is_a_twist", turns.size(), 1)
+	g.touch(0, Vector2.ZERO, false)
+	g.touch(1, Vector2(118, 0).rotated(deg_to_rad(25)), false)
 	events.clear()
 	g.touch(0, Vector2.ZERO, true)
 	g.touch(1, Vector2(200, 0), true)

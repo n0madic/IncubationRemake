@@ -810,15 +810,55 @@ func pan(pixels: Vector2, viewport_width: float) -> void:
 	var right: Vector2 = Vector2(forward.y, -forward.x)
 	var move: Vector2 = (right * pixels.x - forward * pixels.y) \
 		* float(PAN_UNITS_PER_PIXEL) * scale
-	var shift: Vector3i = Vector3i(roundi(move.x), roundi(move.y), 0)
+	var _applied: bool = pan_units(Vector2i(roundi(move.x), roundi(move.y)))
+
+
+## The same pan stated as a **world displacement** rather than a pixel count.
+##
+## [method pan] is the pointer's rate, which is the original's; a finger holds
+## the ground instead and needs to ask for the displacement it is carrying
+## (see [method ground_point]).
+## Answers whether the shift was taken, so a caller that can offer a smaller
+## one -- a finger at the map's edge -- knows to.
+func pan_units(shift_units: Vector2i) -> bool:
+	var shift: Vector3i = Vector3i(shift_units.x, shift_units.y, 0)
+	if shift == Vector3i.ZERO:
+		return false
 	var target_at: Vector3i = _target_goal + shift
 	# The engine's pan is not clamped at all; refusing a target off the map is
 	# the remake's, on the same terms as a turn. Only the map's extent counts:
 	# a target on the floor of a cell is under the box's 800-unit z floor.
 	var boxed: Vector3i = clamp_box(target_at)
 	if boxed.x != target_at.x or boxed.y != target_at.y:
-		return
+		return false
 	set_now(_eye_goal + shift, target_at)
+	return true
+
+
+## Where the ray through *screen* meets the horizontal plane at engine height
+## *plane_units*, in **engine** x/y units -- empty when there is no camera,
+## when the ray is edge-on to that plane, or when the meeting is behind the
+## eye.
+##
+## The plane is the caller's because the target's own height is not the ground:
+## the unit view looks at a soldier's head, some 2876 units above the floor
+## they stand on, and a pan measured on that plane moved the picture by about
+## seven tenths of the finger's travel.
+func ground_point(screen: Vector2, render: Vector2,
+		plane_units: float) -> PackedVector2Array:
+	var out: PackedVector2Array = PackedVector2Array()
+	var ray: PackedVector3Array = ray_through(camera(), screen, render)
+	if ray.size() != 2:
+		return out
+	var plane: float = plane_units / WorldSpace.WORLD_UNITS_PER_METRE
+	if absf(ray[1].y) < 0.0001:
+		return out
+	var t: float = (plane - ray[0].y) / ray[1].y
+	if t <= 0.0:
+		return out
+	var engine: Vector3i = WorldSpace.from_godot(ray[0] + ray[1] * t)
+	out.append(Vector2(float(engine.x), float(engine.y)))
+	return out
 
 
 # --- the engine's placements -------------------------------------------------

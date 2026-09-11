@@ -17,6 +17,11 @@ var _layer: CanvasLayer = null
 var _menu: Button = null
 var _tooltip: Control = null
 var _font_choice: int = -1
+## The engine height a one-finger pan holds, fixed when the finger lands.
+##
+## One plane for the whole drag: a cell's own height changes from field to
+## field, and re-reading it under a moving finger would make the ground swim.
+var _pan_plane: float = 0.0
 
 
 func _ready() -> void:
@@ -178,9 +183,31 @@ func _begin(at: Vector2) -> void:
 		if host._playback.is_running() and _control != _menu:
 			_region = "replay" if host._watching_the_computer() else "blocked"
 	gestures.allow_camera = enabled() and _region == "world"
+	if gestures.allow_camera:
+		_pan_plane = _plane_under(at)
+
+
+## The engine height a pan holds: the floor of the cell the finger came down
+## on, and the camera target's own height where it came down on no cell.
+func _plane_under(at: Vector2) -> float:
+	var rig: CameraRig = host._backdrop_rig if host._screen != null else host._rig
+	if rig == null:
+		return 0.0
+	var world: World = host._backdrop_world if host._screen != null else host.world
+	if world != null:
+		var cell: Vector2i = SliceMain.cell_under(rig.camera(), world, at, 1.0)
+		if cell.x >= 0:
+			return float(DictRead.as_int(world.cell_view(cell.x, cell.y)["height"]))
+	return float(rig.target().z)
 
 
 func _action(kind: String, value: Vector2) -> void:
+	if kind == "end":
+		if _slider_down:
+			_mouse_button(value, false)
+			_slider_down = false
+		_release_pointer()
+		return
 	if _region in ["dismiss", "blocked"]:
 		return
 	if kind == "tap":
@@ -214,12 +241,22 @@ func _action(kind: String, value: Vector2) -> void:
 				host._remember_slot_page()
 		elif gestures.allow_camera:
 			_camera("pan", value)
-	elif kind == "end":
-		if _slider_down:
-			_mouse_button(value, false)
-			_slider_down = false
 	elif gestures.allow_camera:
 		_camera(kind, value)
+
+
+## Take the synthetic pointer off the screen when the finger leaves it.
+##
+## A [Button] wears its hover face until a motion moves off it, and the faces
+## composed out of `buttons.LIB` draw `hover` and `pressed` with the **same**
+## lit picture ([method CampaignScreen._face_onto]) -- so the row a finger last
+## touched went on looking exactly as selected as the row that actually was,
+## and running a finger down a list left a picture reading as several
+## selections at once. Nothing rests anywhere on a touch screen; this says so.
+func _release_pointer() -> void:
+	if not enabled():
+		return
+	_motion(Vector2(-1000.0, -1000.0))
 
 
 func _camera(kind: String, value: Vector2) -> void:
@@ -241,13 +278,55 @@ func _camera(kind: String, value: Vector2) -> void:
 		"pan":
 			if backdrop:
 				host._swing_backdrop(value)
+			elif rig.view_mode() == CameraRig.View.EYES:
+				# **First person is an anchor, not a viewpoint that slides.**
+				# The pan moves eye and target together, so in the eyes view a
+				# finger drag walked the camera off the soldier it belongs to
+				# -- and one direction parked it behind him, looking at the
+				# back of his head. A mouse reaches that only through a middle
+				# drag nobody makes in first person; a finger drag is the
+				# gesture. Here it turns the head instead, which is what the
+				# two-finger look already does and what the view is for.
+				rig.look_by(value)
 			else:
-				rig.pan(value, get_viewport().get_visible_rect().size.x)
+				_drag_ground(rig, value)
 		"look":
 			if backdrop:
 				host._swing_backdrop(value)
 			else:
 				rig.look_by(value)
+
+
+## One finger on the ground is **direct manipulation**: the field the finger
+## came down on stays under it.
+##
+## [method CameraRig.pan] is the original's rate -- 400 engine units a pixel,
+## docs/42 section 2.5 -- and it is the *pointer's*: the camera follows the
+## mouse, so the picture slides the other way, and at 3200 units to a field
+## eight pixels of travel move the world a whole field. Both of those are
+## right for a pointer and wrong for a finger, which is holding the ground and
+## not the camera. So the shift is measured instead: where the two ends of this
+## frame's travel meet the plane the target stands on, carried back.
+func _drag_ground(rig: CameraRig, delta: Vector2) -> void:
+	var render: Vector2 = get_viewport().get_visible_rect().size
+	var to: Vector2 = gestures.position
+	var here: PackedVector2Array = rig.ground_point(to, render, _pan_plane)
+	var was: PackedVector2Array = rig.ground_point(to - delta, render, _pan_plane)
+	if here.is_empty() or was.is_empty():
+		# Edge-on, or the plane is behind the eye: there is no ground under the
+		# finger to hold. Keep the pointer's rate, negated, so the direction is
+		# still the finger's.
+		rig.pan(-delta, render.x)
+		return
+	var shift: Vector2i = Vector2i(roundi(was[0].x - here[0].x),
+		roundi(was[0].y - here[0].y))
+	if rig.pan_units(shift):
+		return
+	# At the map's edge the box refuses the pair as one thing, and a diagonal
+	# drag along the border then moved nothing at all. Offer the components
+	# separately: the one that is still inside is still the finger's.
+	var _x: bool = rig.pan_units(Vector2i(shift.x, 0))
+	var _y: bool = rig.pan_units(Vector2i(0, shift.y))
 
 
 func _motion(at: Vector2, mask: int = 0) -> void:
@@ -307,6 +386,34 @@ class Gesture extends RefCounted:
 	signal action(kind: String, value: Vector2)
 	const SLOP: float = 8.0
 	const HOLD: float = 0.45
+	## A pair is a twist rather than a pinch past this much rotation, and a
+	## pinch rather than a twist past this much change of separation.
+	##
+	## The twist is tested **first and at a lower bar**: two fingers turning
+	## about their centre cannot hold their separation to better than a few per
+	## cent, so at the old 15 degrees against 8 per cent almost every turn was
+	## classified as a zoom before it had turned far enough to say otherwise --
+	## which is what made the camera step "almost never work".
+	const TWIST_RADIANS: float = deg_to_rad(8.0)
+	const PINCH_FRACTION: float = 0.15
+	## How far a pair already reading as a pinch or a parallel drag has to turn
+	## before it is read as a twist after all.
+	##
+	## The first classification used to be final, so a turn that opened with a
+	## few per cent of separation change -- which is most of them -- was a
+	## pinch for the rest of the gesture and the camera could not be turned
+	## without lifting both fingers and trying again. The bar is well above
+	## [constant TWIST_RADIANS] because this one overrides a reading that has
+	## already been made.
+	const ESCALATE_RADIANS: float = deg_to_rad(20.0)
+	## How far a twist turns before it asks the camera for another quarter.
+	##
+	## Measured from the span at the **last** step rather than from the one the
+	## pair began with, so a continued turn keeps stepping. It used to latch
+	## after one, which left a gesture good for a single quarter and -- with
+	## [method CameraRig.may_rotate_to] free to refuse that one -- looked like a
+	## turn that only worked one way round.
+	const TURN_RADIANS: float = deg_to_rad(18.0)
 	var fingers: Dictionary[int, Vector2] = {}
 	var origin: Vector2 = Vector2.ZERO
 	var position: Vector2 = Vector2.ZERO
@@ -318,14 +425,15 @@ class Gesture extends RefCounted:
 	var _span: Vector2 = Vector2.ZERO
 	var _last_centre: Vector2 = Vector2.ZERO
 	var _last_span: Vector2 = Vector2.ZERO
-	var _turned: bool = false
+	## The separation at the last quarter-turn this twist asked for.
+	var _turn_anchor: Vector2 = Vector2.ZERO
 	var _pair_dirty: bool = false
 
 	func reset() -> void:
 		fingers.clear()
 		state = "idle"
 		_age = 0.0
-		_turned = false
+		_turn_anchor = Vector2.ZERO
 		_pair_dirty = false
 
 	func cancel() -> void:
@@ -404,12 +512,17 @@ class Gesture extends RefCounted:
 		var centre: Vector2 = (points[0] + points[1]) * 0.5
 		var angle: float = _span.angle_to(span)
 		if state == "two":
-			if absf(angle) >= deg_to_rad(15):
+			if absf(angle) >= TWIST_RADIANS:
 				state = "twist"
-			elif _span.length() > 1 and absf(span.length() / _span.length() - 1) >= 0.08:
+				_turn_anchor = _span
+			elif _span.length() > 1 \
+					and absf(span.length() / _span.length() - 1) >= PINCH_FRACTION:
 				state = "zoom"
 			elif centre.distance_to(_centre) > SLOP:
 				state = "look"
+		elif state in ["zoom", "look"] and absf(angle) >= ESCALATE_RADIANS:
+			state = "twist"
+			_turn_anchor = _span
 		match state:
 			"zoom":
 				if span.length() > 1 and _last_span.length() > 1:
@@ -418,9 +531,10 @@ class Gesture extends RefCounted:
 				action.emit("look", centre - _last_centre)
 			"twist":
 				action.emit("twist", Vector2(_last_span.angle_to(span), 0))
-				if not _turned and absf(angle) >= deg_to_rad(25):
-					_turned = true
-					action.emit("turn", Vector2(signf(angle), 0))
+				var since: float = _turn_anchor.angle_to(span)
+				if absf(since) >= TURN_RADIANS:
+					_turn_anchor = span
+					action.emit("turn", Vector2(signf(since), 0))
 		if state != "two":
 			_last_centre = centre
 			_last_span = span
