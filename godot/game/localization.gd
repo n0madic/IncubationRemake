@@ -64,6 +64,13 @@ const ID_REPORT_COMMENDATIONS: int = 46
 ## installation was sold with -- so it is also the fallback.
 const FALLBACK_LANGUAGE: String = "English"
 const OWN: Dictionary = {
+	"touch.menu": {"English": "Menu"},
+	"touch.controls": {"English": "Controls"},
+	"touch.mode.0": {"English": "Auto"},
+	"touch.mode.1": {"English": "Touch"},
+	"touch.mode.2": {"English": "Mouse"},
+	"touch.help": {"English": "Drag: move view. Pinch: zoom. Twist: turn.\nTwo-finger drag: look. Hold: inspect."},
+	"touch.skip": {"English": "tap to skip the replay"},
 	"hud.no_selection": {"English": "nothing selected"},
 	"hud.overwatch": {"English": "on overwatch"},
 	"hud.reactions": {"English": "reaction shots"},

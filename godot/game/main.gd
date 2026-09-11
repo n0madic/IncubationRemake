@@ -90,6 +90,11 @@ const FLY_DIRECTION_SHIFT: int = 3
 ## Why a sequence is playing, which decides what follows it.
 const SEQUENCE_DEBUG: String = "debug"
 const SEQUENCE_DIALOGUE: String = "dialogue"
+## The self-contained Android package has no first-run conversion step: its
+## verified cache is read directly from the installed PCK. Keeping this apart
+## from `generated/` prevents a desktop export made after an Android build from
+## silently shipping test fixtures.
+const ANDROID_CACHE: String = "res://android_payload/cache"
 ## Where a development run finds the same bytes production reads from `user://`.
 const DEV_CACHE: String = "res://generated/cache"
 
@@ -117,6 +122,7 @@ var _desyncs: int = 0
 ## screen. Never `null` after [method _ready]: a run with no file on disk uses
 ## the defaults rather than having no settings at all.
 var settings: GameSettings = GameSettings.new()
+var _touch: TouchInputController = null
 ## The level tester's switches, held **here** rather than on a world so they
 ## survive a mission change, a load and a return to the shell. Every world
 ## [method _build] makes is handed this same object; the picture's mirror
@@ -514,6 +520,20 @@ const TEST_CAPTION: String = \
 	+ "%d / %d suites -- running %s\n\nabout two minutes, then it quits"
 
 
+func _bundled_cache_dir() -> String:
+	# Prefer the package payload so a local Android export exercises precisely
+	# the bytes an installed app reads. Editor fixtures remain the fallback for
+	# desktop development and tests.
+	# **The manifest, not the directory.** An interrupted `make android-cache`
+	# leaves the payload directory standing with nothing in it, and choosing it
+	# on that alone made a plain desktop run die in [method CacheLoader.verify]
+	# with the intact fixtures sitting beside it.
+	for candidate: String in [ANDROID_CACHE, DEV_CACHE]:
+		if FileAccess.file_exists(candidate + "/manifest.json"):
+			return candidate
+	return ""
+
+
 func _ready() -> void:
 	if OS.has_feature(TEST_FEATURE):
 		var runner: GDScript = _test_runner()
@@ -524,6 +544,8 @@ func _ready() -> void:
 	# server needs a few more frames to let go of a playing Ogg stream, and a
 	# quit in the same frame leaks it. See [method AudioSystem.shutdown].
 	get_tree().auto_accept_quit = false
+	# Android's Back has its own automatic-quit gate, separate from window close.
+	get_tree().quit_on_go_back = false
 	_install_debug_status()
 
 	# **The published cache is verified exactly once, inside
@@ -536,12 +558,15 @@ func _ready() -> void:
 	var manifest: Dictionary = DictRead.as_dict(opened["manifest"])
 	if DictRead.as_bool(opened["ok"]):
 		_cache_dir = DictRead.as_string(opened["cache_dir"])
-	elif DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(DEV_CACHE)) \
-			or FileAccess.file_exists(DEV_CACHE + "/manifest.json"):
-		# The development tree is not published and `active.json` does not name
-		# it, so `open_active` never looked at it: this is the one branch that
-		# still has to verify, and the manifest it carries is the wrong one.
-		_cache_dir = DEV_CACHE
+	else:
+		var fallback_cache: String = _bundled_cache_dir()
+		if fallback_cache.is_empty():
+			_fail(DictRead.as_string(opened["reason"]))
+			return
+		# Neither a packaged cache nor the development tree has `active.json`, so
+		# `open_active` cannot reach them. This branch always validates the
+		# manifest before any loader reads a file from either location.
+		_cache_dir = fallback_cache
 		manifest = CacheLoader.read_json(
 			_cache_dir + "/" + CacheLoader.MANIFEST_NAME)
 		var problems: PackedStringArray = CacheLoader.verify(_cache_dir,
@@ -549,10 +574,6 @@ func _ready() -> void:
 		if not problems.is_empty():
 			_fail("cache refused: " + ", ".join(problems))
 			return
-	else:
-		_fail(DictRead.as_string(opened["reason"]))
-		return
-
 	_missions = _missions_in(manifest)
 	if _missions.is_empty():
 		_fail("the cache at %s contains no missions" % _cache_dir)
@@ -594,6 +615,9 @@ func _ready() -> void:
 		var _chosen: bool = choose_ring_record(record))
 	_hud.radar_rescaled.connect(func(_fields: int) -> void: _refresh_status())
 	add_child(_hud)
+	_touch = TouchInputController.new()
+	_touch.host = self
+	add_child(_touch)
 	get_viewport().size_changed.connect(_on_canvas_resized)
 	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
 		_cache_dir + "/tables/balance.json"), _strings)
@@ -2256,6 +2280,10 @@ func _remember_loaded_session() -> void:
 ## anyone who closed the window.
 func _step_option(name: String) -> void:
 	match name:
+		"controls":
+			settings.control_mode = ((int(settings.control_mode) + 1) % 3) as GameSettings.ControlMode
+			if _touch != null:
+				_touch.cancel()
 		"difficulty":
 			if _campaign_difficulty_writable():
 				# On the map the campaign is the authority, and the settings
@@ -2776,9 +2804,38 @@ func _missions_in(manifest: Dictionary) -> PackedStringArray:
 ## delivers the notification again, and two overlapping shutdowns would call
 ## `quit` twice.
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST \
-			or what == NOTIFICATION_WM_GO_BACK_REQUEST:
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		_go_back()
+	elif what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_quit()
+
+
+## Android's *Back*, which must always mean something.
+##
+## `ESC` is [method _toggle_shell] and can afford to do nothing -- a desktop
+## window has its own close button. `Back` is the only one the platform gives,
+## and `quit_on_go_back` is off, so a `Back` that refused left no way out of the
+## application at all: [method _toggle_shell] returns at once whenever the shell
+## is up with nothing behind it, which is the boot menu **and** everything the
+## boot menu leads to.
+##
+## So inside the shell this is the shell's own *Back* button, asked through
+## [method ShellHost.back_from]; where that answers "stay put" -- the boot menu,
+## with nothing behind and nowhere to go -- it leaves, which is what the
+## notification did unconditionally before the shell existed.
+func _go_back() -> void:
+	if _touch != null:
+		_touch.cancel()
+	if shell.is_up():
+		if not shell.behind and shell.back_from(shell.screen) == shell.screen:
+			_quit()
+		else:
+			_on_shell_choice("back")
+		return
+	# With a campaign screen up and no shell this still does nothing, exactly
+	# as `ESC` does: the screens carry their own way out and none of them is
+	# named here.
+	_toggle_shell()
 
 
 func _quit() -> void:
@@ -5188,7 +5245,8 @@ func _on_ai_step(event: Dictionary) -> float:
 		# until it is over, when [method _after_command] writes its note.
 		_ai_note = "%s -- %s %d  (%s)" % [_strings.text("hud.ai_turn"),
 			_strings.text("ai." + kind) if _strings.has("ai." + kind) else kind,
-			DictRead.as_int(event["slot"]), _strings.text("hud.ai_skip")]
+			DictRead.as_int(event["slot"]), _strings.text("touch.skip"
+				if _touch != null and _touch.enabled() else "hud.ai_skip")]
 		_refresh_status(_ai_note)
 	else:
 		# The interface goes dark for the length of the command -- the

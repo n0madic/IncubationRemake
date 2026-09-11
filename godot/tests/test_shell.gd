@@ -1197,7 +1197,7 @@ func _screens(h: TestHarness) -> void:
 	options.language = _strings.language
 	options.setup(_art, _strings, _font)
 	h.equal("screens.options_off_the_map", _sorted(_actions_of(options)),
-		PackedStringArray(["back", "option:difficulty", "option:faithful",
+		PackedStringArray(["back", "option:controls", "option:difficulty", "option:faithful",
 		"option:font", "option:gore"]),
 		"the four the original has and this remake connects, plus the gore "
 		+ "level, the `Faithful` preset and the interface font; not one of "

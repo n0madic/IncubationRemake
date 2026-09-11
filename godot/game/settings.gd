@@ -91,6 +91,8 @@ var game_font: bool = false
 ## same trade [member game_font] makes: a period detail that costs the player
 ## a click every single run. Deleting the settings file brings it back.
 var seen_splash: bool = false
+enum ControlMode { AUTO, TOUCH, MOUSE }
+var control_mode: ControlMode = ControlMode.AUTO
 
 
 ## Read the file, or keep the defaults when there is none.
@@ -133,6 +135,9 @@ func load_from_disk() -> bool:
 	faithful = DictRead.as_bool(document.get("faithful", faithful))
 	game_font = DictRead.as_bool(document.get("game_font", game_font))
 	seen_splash = DictRead.as_bool(document.get("seen_splash", seen_splash))
+	var mode: int = DictRead.as_int(document.get("control_mode", ControlMode.AUTO))
+	control_mode = mode as ControlMode if mode >= ControlMode.AUTO \
+		and mode <= ControlMode.MOUSE else ControlMode.AUTO
 	return true
 
 
@@ -160,6 +165,7 @@ func view() -> Dictionary:
 		"faithful": faithful,
 		"game_font": game_font,
 		"seen_splash": seen_splash,
+		"control_mode": int(control_mode),
 	}
 
 

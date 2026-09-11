@@ -126,7 +126,7 @@ const VERBS: Dictionary[String, String] = {
 	"note": "note TEXT -- one line in the reply's log",
 	"menu": "menu [NAME] -- raise the shell at one of its screens, or toggle it",
 	"slot": "slot N [load|save [NAME...]] -- read or write one numbered slot",
-	"option": "option NAME VALUE -- set one option and apply it",
+	"option": "option NAME VALUE -- music|fx|difficulty|gore|faithful|font|controls",
 	"campaign": "campaign N -- begin chain N and load its first mission",
 	"location": "location N -- click a location on the campaign map",
 	"deploy": "deploy SLOT X Y -- put one roster record on a deployment cell",
@@ -840,6 +840,17 @@ func _v_option(parts: PackedStringArray, _line: String) -> void:
 				_main.world.gore_level = settings.gore_level
 		"faithful":
 			settings.faithful = value.to_lower() in ["1", "true", "on", "yes"]
+		"controls":
+			# The one option a driven session cannot do without: the touch
+			# input path is reached from nowhere else, and the screen's own row
+			# cycles rather than sets.
+			var mode: int = value.to_int()
+			settings.control_mode = mode as GameSettings.ControlMode \
+				if mode >= GameSettings.ControlMode.AUTO \
+				and mode <= GameSettings.ControlMode.MOUSE \
+				else GameSettings.ControlMode.AUTO
+			if _main._touch != null:
+				_main._touch.cancel()
 		"font":
 			# The one option a screenshot has to be able to set: the campaign
 			# screens are laid out in the shipped plates' own units and the

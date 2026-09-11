@@ -7,6 +7,9 @@ tools/out
 # Godot editor cache, dev fixtures and export output (docs/92 section 3.2, section 10.1).
 godot/.godot/
 godot/generated/
+# Android's self-contained export staging area. Like generated/, it is
+# reconstructed from the read-only retail data for each package build.
+godot/android_payload/
 godot/export/
 
 # Native captures: derived from Blue Byte data, like tools/out/.

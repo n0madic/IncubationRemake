@@ -224,13 +224,22 @@ manifest carrying at least the source edition/language fingerprint, converter
 version and cache-schema version, so incompatible or partial output is rejected
 instead of being loaded optimistically.
 
-The production cache lives under `user://`; it is player-owned generated data
-and is not expected to appear in the editor's `res://` filesystem or Inspector.
-During development the same conversion model can materialise a gitignored
-`res://generated/` fixture set as Godot resources, glTF and PNG. Those fixtures
-are visible in the Inspector and external tools and exist for inspection and
-tests, but are never shipped or committed. Production and development outputs
-must describe the same decoded data even when their containers differ.
+The production cache normally lives under `user://`; it is player-owned generated
+data and is not expected to appear in the editor's `res://` filesystem or
+Inspector. During development the same conversion model can materialise a
+gitignored `res://generated/` fixture set as Godot resources, glTF and PNG.
+Those fixtures remain uncommitted. **Android is the explicit distribution
+exception:** its export includes only `res://android_payload/cache`, rebuilt
+from the supplied retail installation by `make android-cache`; the existing
+startup fallback verifies that manifest before using it. Thus an installed APK
+carries the full campaign and Instant Action data without first-run conversion
+or a download, while inspection/test-only generated files remain out
+of the package. The staging cache carries a build-only `.gdignore` marker, and
+the Android export plugin writes every manifest entry as a raw file: PNG/WAV
+cache entries therefore remain the exact manifest bytes rather than becoming
+Godot imported resources.
+Production and development outputs must describe the same decoded data even when
+their containers differ.
 
 ---
 
@@ -2260,6 +2269,80 @@ convincingly as the wrong pair did, which is why it survived being looked at.
 | A5 | **The aim is held against a rebuild**, which is the half that was a defect rather than a divergence. A shot whose target dies rebuilds the bodies from the mirror *in the middle of the clip* (`SliceMain._land_current_delta`), and a **reaction's** mirror never carries the octant at all — `Reaction.drain` puts the reactor's facing back before the event is marked, faithfully ([`25` §6](25-turn-and-round.md)). So an overwatcher snapped round to where it had been looking while its own shot was still playing. `UnitsView` keeps the aim per slot, the rebuild prefers it to the world's facing, and it is dropped when the clip is — by `rest`, by the auto-rest of a type with no `F`, and by a rebuild that finds nothing to carry. |
 
 ---
+
+### 7.21 Touch input (2026-09-11)
+
+This is a **remake input binding**, not a claim about the retail executable.
+The Android/iPad input path preserves the plate, command pad, direction letters,
+camera arithmetic and command rules. A short tap replaces one mouse click, on
+release: shooting still has no additional confirmation, while walking still
+requires the original direction ring. `Menu` is the only persistent new battle
+control, in the top-left corner before the hint line, using the shipped field art.
+
+`Options / Controls` cycles `Auto`, `Touch`, `Mouse`, persisted in the existing
+settings document; a missing or invalid mode defaults to Auto. Auto starts from
+`DisplayServer.is_touchscreen_available()` and latches on a real touch. Physical
+mouse and trackpad input keep their existing bindings and do not switch the UI
+back. Explicit Mouse disables touch gestures/help but still accepts short taps.
+
+| Touch | Binding |
+|---|---|
+| one-finger drag | mission/deployment pan; campaign map's existing swing |
+| pinch | zoom through the existing rig |
+| two-finger twist | one quadrant per gesture in battle/deployment; continuous map swing |
+| parallel two-finger drag | free look in battle/deployment; map swing on the campaign map |
+| hold for 0.45 s | existing hover information; persistent local equipment/menu tooltip |
+| drag a list/volume slider | scroll rows/change volume without activating a row |
+| tap during enemy playback | existing skip operation, without changing the resolved world |
+| Menu / Android Back | existing Escape menu route; Back's automatic quit is disabled |
+
+`TouchInputController` owns raw touch events before GUI dispatch. Automatic
+mouse-from-touch emulation is disabled; the adapter sends a completed tap through
+`Viewport.push_input`, so GUI priority and the existing command handlers remain
+authoritative. Movement beyond 8 viewport units, a second finger, or a hold
+cancels the prospective click. Pair motion is classified once per frame because
+platforms deliver the two fingers separately; otherwise parallel motion can
+momentarily look like a pinch. The first gesture type locks until all fingers
+lift. Twist recognition starts at 15 degrees and one battle quadrant is requested
+at 25 degrees; pinch recognition starts at 8 percent distance change.
+
+Screen/world/playback/modal changes, resize, focus loss and suspension cancel
+pending input. Resume discards old finger IDs without treating old releases as
+new clicks. A tooltip survives release; the next tap only dismisses it. The
+adapter does not add save data, simulation state or original-table constants.
+
+Validation is split deliberately:
+
+* `tests/test_touch.gd` is in the ordinary `run_tests.sh` harness: gesture
+  classification, cancellation, one-turn limit, settings compatibility and mode
+  precedence. Existing camera, HUD and shell suites remain required.
+* `tests/touch_integration.gd` drives **actual viewport events** in a loaded game:
+  GUI, held hints, sliders, list rebuilds, real unit/target picking, direction ring,
+  campaign selection/map/briefing/deployment, movement, end turn and disk-backed
+  save/load. It uses isolated `/private/tmp/inc-touch-integration-*` settings/saves.
+  Run `godot --headless --fixed-fps 60 --path godot --script
+  res://tests/touch_integration.gd -- --mission=_C_140` and require
+  `TOUCH-INTEGRATION: ... 0 failures`, with no runtime errors. Without `--headless`
+  it also captures the 4:3 and 16:10 HUD to `/private/tmp/inc-touch-*.png`.
+* **Physical Android/iPad input, software keyboard presentation and gesture feel
+  are UNVERIFIED.** Viewport injection on macOS is not a mobile-device run.
+  HUD redesign and new background-save behavior are outside this change.
+
+The root [`Makefile`](../Makefile) is the command-line entry point for the
+retail corpus, fixture generation, cache/Godot tests and exports. `make
+test-touch` runs the viewport-level touch integration test; `make
+build-macos`, `build-windows`, `build-linux` and `build-android` use Godot debug
+templates by default; `EXPORT_MODE=release` selects the release template. The
+Android preset carries ARMv7 and ARM64; release keystore credentials remain
+local (Godot's export credentials or the `GODOT_ANDROID_KEYSTORE_RELEASE_*`
+environment settings). `make build-ios` deliberately refuses to
+start until a real Apple Team ID is configured locally and full Xcode is
+installed; neither a fabricated signing identity nor a provisioning profile is
+kept in this repository. Every build goes to ignored `godot/export/`.
+`make build-android` first regenerates all campaign and Instant Action data into
+ignored `godot/android_payload/cache`, then requires every cache manifest
+entry's size and SHA-256 to agree with the individual file embedded in the
+resulting APK.
 
 ## 8. Standing constraints
 

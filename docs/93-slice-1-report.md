@@ -48,14 +48,14 @@ then launch.
 # 1. Convert the read-only installation into the production cache.
 #    The output root is Godot's user directory for this project.
 python3 tools/remake_convert.py gog_incubation \
-    -o "$HOME/Library/Application Support/Godot/app_userdata/Incubation (slice 1)/caches"
+    -o "$HOME/Library/Application Support/Godot/app_userdata/Incubation/caches"
 
 # 2a. From the editor's binary, no export needed:
 godot --path godot                              # the default mission
 godot --path godot -- --mission=_C_141          # any mission in the cache
 
 # 2b. Or from the exported build:
-"godot/export/incubation-slice.app/Contents/MacOS/Incubation (slice 1)" -- --mission=_C_100
+"godot/export/incubation-remake.app/Contents/MacOS/Incubation" -- --mission=_C_100
 ```
 
 Without step 1 the game prints the command it needs rather than failing
@@ -91,8 +91,8 @@ Two things to run when changing anything under `godot/`:
 
 ```bash
 bash godot/run_tests.sh                                    # 13 suites, 402 checks
-godot --headless --path godot --export-debug macOS export/incubation-slice.app
-"godot/export/incubation-slice.app/Contents/MacOS/Incubation (slice 1)" --quit-after 20
+godot --headless --path godot --export-debug macOS export/incubation-remake.app
+"godot/export/incubation-remake.app/Contents/MacOS/Incubation" --quit-after 20
 ```
 
 The second is not ceremony. The shipping preset excludes `tests/`, so a

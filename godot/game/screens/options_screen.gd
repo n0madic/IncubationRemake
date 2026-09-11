@@ -131,6 +131,8 @@ func refresh() -> void:
 	_add_row("font", strings_own(OWN_FONT),
 		strings_own(OWN_FONT_GAME if settings.game_font
 			else OWN_FONT_READABLE))
+	_add_row("controls", strings_own("touch.controls"),
+		strings_own("touch.mode.%d" % settings.control_mode), strings_own("touch.help"))
 	# The language is a line and not a row: there is exactly one catalogue in
 	# the cache, and a selector with one entry is an inert control.
 	var _language: Label = gui_text("%s: %s" % [strings_own(OWN_LANGUAGE),
