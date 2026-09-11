@@ -202,11 +202,12 @@ const EVENT_UNDO_MISSION: int = 16
 ## The save slots the four position and undo events read and write
 ## (`0x0041DA20`'s commands 5..8): remind/recall, the turn's autosave and the
 ## mission's.
-## **The remake's own keys, and the one place they are written down.**
+## **The original's keys, and the one place the remake binds them.**
 ##
-## docs/43 sections 5.1 and 5.2 print a "key (remake)" column beside each
-## button and say in as many words that no key here is claimed to be the
-## original's -- the original's keyboard translator was never read.
+## `tools/hud_tables.py` reads the two keyboard translators and their switch
+## tables out of `Incubation.exe`; docs/43 sections 5.1 and 5.2 print the same
+## bindings. Give Up is the sole deliberate exception: the original binds it
+## to Escape, while the remake keeps Escape as the menu key.
 ##
 ## They used to be written twice: once as label strings here and once as
 ## `keycode ==` branches in [SliceMain]'s `_unhandled_input`, with a comment
@@ -222,28 +223,29 @@ const EVENT_UNDO_MISSION: int = 16
 ## nor somewhere a player looks. A button that has a key says so when the
 ## pointer is on it; a button that has none says nothing.
 const EVENT_KEYS: Dictionary[int, int] = {
-	EVENT_FREE_CAMERA: KEY_4,
-	EVENT_UNIT_VIEW: KEY_1,
+	EVENT_FREE_CAMERA: KEY_1,
+	EVENT_UNIT_VIEW: KEY_2,
 	EVENT_MAP_VIEW: KEY_3,
-	EVENT_USER_VIEW: KEY_2,
+	EVENT_USER_VIEW: KEY_4,
 	EVENT_LOAD: KEY_F4,
 	EVENT_SAVE: KEY_F3,
 	EVENT_RECALL_POSITION: KEY_F2,
 	EVENT_REMIND_POSITION: KEY_F1,
-	EVENT_NEXT_PLAYER: KEY_SPACE,
+	EVENT_NEXT_PLAYER: KEY_ENTER,
 	EVENT_BRIEFING: KEY_B,
 	EVENT_NEXT_UNIT: KEY_TAB,
+	EVENT_MAGNIFIER: KEY_G,
 	EVENT_VISIBLE_ENEMY: KEY_T,
 	EVENT_UNDO_TURN: KEY_BACKSPACE,
+	EVENT_UNDO_MISSION: KEY_DELETE,
 }
-## The same for the pad. `WASD` is the camera pan, so *Defend*, *stimulant*
-## and *weapon mode* are `F`, `X` and `C` rather than the letters of their
-## English names.
+## The original command-pad letters. Camera movement stays on the arrows and
+## mouse, so D/S/W are not shared with a second action.
 const COMMAND_KEYS: Dictionary[int, int] = {
-	COMMAND_DEFEND: KEY_F,
+	COMMAND_DEFEND: KEY_D,
 	COMMAND_HEAL: KEY_H,
-	COMMAND_STIMULANT: KEY_X,
-	COMMAND_WEAPON_MODE: KEY_C,
+	COMMAND_STIMULANT: KEY_S,
+	COMMAND_WEAPON_MODE: KEY_W,
 	COMMAND_REST: KEY_R,
 	COMMAND_USE: KEY_U,
 }
@@ -266,8 +268,12 @@ static func command_key(number: int) -> String:
 
 
 ## The column button a key presses, or `-1`. The reverse of [constant
-## EVENT_KEYS], walked rather than stored: thirteen entries, once a keystroke.
+## EVENT_KEYS], walked rather than stored: fifteen entries, once a keystroke.
 static func event_for_key(keycode: int) -> int:
+	# Both Return keys become WM_CHAR 13 in the original. Godot keeps the
+	# keypad key distinct, so fold it back to the key printed on the HUD.
+	if keycode == KEY_KP_ENTER:
+		keycode = KEY_ENTER
 	for number: int in EVENT_KEYS:
 		if EVENT_KEYS[number] == keycode:
 			return number

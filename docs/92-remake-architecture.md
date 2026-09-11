@@ -628,12 +628,12 @@ engine's four orientations are its **view quadrant** `0x00510700`, and
 to a corner of a `(dist + 6) × dist` rectangle about the unit — 14 × 8 m for
 the "on the unit" view, about 30° off the x axis — at `(height + 3)` metres
 over its head. The four corners are the discrete orientations this decision
-keeps; they are **not** quarter turns, and Q and E step round the rectangle
+keeps; they are **not** quarter turns, and Left and Right step round the rectangle
 by mirroring the offset. Pitch is no longer fixed: it is whatever the
 engine's placement gives, and the placements differ (§2.3's table). The
 statistic above still holds and still matters — the scenery is authored for
 quarter turns and the engine's own player looked at it from 30° off axis —
-so the quadrant placements remain available on Q/E. As of 2026-09-10,
+so the quadrant placements remain available on Left/Right. As of 2026-09-10,
 right-drag also turns the view freely at a fixed eye, with eight angle units
 per pixel and pitch limited to +/-90 degrees. Option/Alt plus primary drag
 or a two-finger pan gesture provides trackpad access. Free look applies
@@ -837,7 +837,7 @@ Two things close it, and both are the engine's own:
 
 * **the hand-back.** When the computer's turn ends the pivot goes to the first
   unit the current player may command. The zoom and the yaw are not touched —
-  those are the player's, on Q, E and the wheel — so this moves the pivot and
+  those are the player's, on Left, Right and the wheel — so this moves the pivot and
   nothing else. It is the remake's decision, consistent with the focus path
   [`29` §3](29-interface-contract.md)'s command 2 provides; that the engine
   runs that command on hand-over is **UNVERIFIED**;
@@ -1839,8 +1839,9 @@ window, over the sky.
 
 **Deployment is from above.** `aSelectUnits` deploys top-down and so does this:
 the screen opens in docs/42 §2.4's map view over the deployment area, and the
-mission's own view keys work under it — `2` for the ordinary angled view, `3`
-for the map, `Q`/`E` to turn, the wheel to zoom and the middle button to drag.
+mission's own view keys work under it — `2` for the eyes, `3` for the map,
+`4` for the ordinary angled view, Left/Right to turn, the wheel to zoom and
+the middle button to drag.
 Before the first soldier is placed there is no unit to frame, so the engine's
 own *on the unit* placement is made over the landing cell instead; after one
 is placed it frames the soldier. The camera half of `_screen_input` is a short
@@ -2182,7 +2183,7 @@ verification.
 | C5 | **The one-shot kill is written after the roll, not as damage 255.** `applyDamage` subtracts armour from any damage and refuses `IMMUNE_UNIT_TYPE 0x23` outright, so a large number is not a kill. The hit is forced with the `GUARANTEED_HIT_SPECIALS` idiom and the remaining health taken off after the call -- and never off a unit `god` protects, so the two switches held together do not make friendly fire lethal. |
 | C6 | **The refund is the allowance, not the value before the charge, and it runs before the command's journal boundary** so the pad draws it in the same delta as the rest of the command. `Allowance.for_unit` is what a hand-over would have given, so a unit that stood down, is out of fitness or carries an action state that zeroes the allowance still gets nothing: the switch makes an action free, it does not lift the rules that say the unit may not act. |
 | C7 | **Scripted deaths are not blocked, and that is the point.** `god` answers everything a weapon reaches a unit with -- the shot, the mine -- under a walk, under a warp landing **and** under a crate pushed onto one ([`26` §6.2](26-interaction.md), the arm whose own header warns it can kill the pusher) -- the ground fire weapon 40 lays ([`42` §9.1](42-mission-presentation.md), which removes rather than damages, so the shield there is the removal not happening) and the shooter's own gun destroying itself at the heat cap ([`22` §7.3](22-combat-and-visibility.md)'s roll of exactly 30, downgraded to the damaged-weapon arm it shares an instruction with). The mission script's own `KillUnit` and a walk into a hole are **not** intercepted: a level being tested has to let its own scripted deaths happen, or the thing under test is not the level. `nuke` leaves [`21` §5](21-info-lcl-schema.md)'s species 2 standing for the same reason -- barrels and cases are scenery, not enemies. |
-| C8 | **Three ways in, and the typed one is hidden.** A rolling key buffer cannot work: `W`/`A`/`S`/`D`/`Q`/`E`/`Y`/`G` pan and turn the camera and `HudTables.EVENT_KEYS` binds thirteen more, so typing a code would drive the camera and press buttons on the way. `` ` `` opens a silent line that owns the keyboard instead (`ESC` cancels it rather than raising the shell); nothing is drawn while a code is typed and nothing is drawn for a code that matches nothing. `--cheats=god,ammo` is the launch entry a level is actually walked with, and the control server's `cheat NAME [on|off]` is the scripted one. `GET /state` reports which switches are on -- above its `world == null` return, so a scenario that fails before a mission is built says so too. **Opening the line is behind every input guard** and `nuke` is refused under a playback: it is the one code that writes the world, and resynchronising the mirror mid-replay would leave `EventPlayback` landing the deltas of a turn that has been overwritten. |
+| C8 | **Three ways in, and the typed one is hidden.** A rolling key buffer cannot work: the classic letter keys issue command-pad and interface actions while arrows move the camera, so typing a code would act on the mission on the way. `` ` `` opens a silent line that owns the keyboard instead (`ESC` cancels it rather than raising the shell); nothing is drawn while a code is typed and nothing is drawn for a code that matches nothing. `--cheats=god,ammo` is the launch entry a level is actually walked with, and the control server's `cheat NAME [on|off]` is the scripted one. `GET /state` reports which switches are on -- above its `world == null` return, so a scenario that fails before a mission is built says so too. **Opening the line is behind every input guard** and `nuke` is refused under a playback: it is the one code that writes the world, and resynchronising the mirror mid-replay would leave `EventPlayback` landing the deltas of a turn that has been overwritten. |
 
 ### 7.19 The screens between the screens -- intros, cutscenes, briefings and the holds (2026-09-08)
 

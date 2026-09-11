@@ -11,7 +11,8 @@ share no code with the remake:
 * the **tables** `Incubation.exe` dispatches on, read out of the bytes -- the
   100-byte state map and the 16 arms of the ground overlay, the letter table
   of the direction ring, the row-to-event, event-to-sprite and event-to-caption
-  switches of the button columns, the command pad's availability gate;
+  switches of the button columns, the command pad's availability gate, and
+  both keyboard switches after the Windows message translators;
 * the **constants** the routines carry as immediates -- window and panel
   origins, click rectangles, the radar's clip and scale, the zoom gate, the
   blink counter's period -- each at the instruction the document quotes;
@@ -272,14 +273,17 @@ PAD_DRAW_BLIT = (0x004723AA, 0x004475D0)
 #: (column, row) -> command, docs/29 §1.1 (pinned by interface_tables too).
 PAD_COMMANDS = {(0, 0): 1, (0, 1): 3, (1, 0): 2, (1, 1): 7, (2, 0): 5,
                 (2, 1): 8}
-#: **The keyboard is the remake's and is not written down here.**  There used
-#: to be a `PAD_KEYS` and a `COLUMN_KEYS` in this file, emitted into the
-#: fixture and read by nothing -- a third copy of a binding this tool has no
-#: way to check, and one that had already drifted (`D`/`S`/`W` where the game
-#: binds `F`/`X`/`C`, `WASD` being the pan).  The original's keyboard
-#: translator was never read, so `docs/43` §5.1's key column is the remake's;
-#: `HudTables.EVENT_KEYS` and `COMMAND_KEYS` are that column and the binding
-#: both.
+#: The command pad's ASCII switch, `D` through `W`.  The index table selects
+#: one of six command arms or the zero arm.
+PAD_KEY_INDEX = 0x004737F0
+PAD_KEY_ARMS = 0x004737D4
+PAD_KEY_LOW = ord("D")
+PAD_KEY_HIGH = ord("W")
+PAD_KEY_TARGETS = {0x0047375A: 1, 0x00473761: 2, 0x0047376F: 7,
+                   0x0047377D: 3, 0x00473776: 8, 0x00473768: 5,
+                   0x00473784: 0}
+ORIGINAL_COMMAND_KEYS = {"D": 1, "H": 2, "S": 3, "W": 5, "R": 7,
+                         "U": 8}
 
 PANEL_CALLER = 0x00473960
 PANEL_RESTORE = (0x004739C3, 0x004758F0)
@@ -357,6 +361,49 @@ COLUMN_RIGHT_SHIFT = 0x247                     # 583 = 594 - 11
 COLUMN_HOVER = 0x004518E0
 COLUMN_HOVER_Y = 0x00451927                    # add edx, 66
 COLUMN_HOVER_X = 0x0045192A                    # add eax, 11
+#: The keyboard translator consumes the normalized byte written by the two
+#: Windows message translators below.  Its table covers 0..`T`; Left and
+#: Right take camera arms directly, while the other named entries produce an
+#: interface event.
+COLUMN_KEY_INDEX = 0x00451430
+COLUMN_KEY_ARMS = 0x004513E4
+COLUMN_KEY_HIGH = ord("T")
+COLUMN_KEY_TARGETS = {
+    0x00451357: 12, 0x00451373: 15, 0x00451350: 10,
+    0x0045135E: 9, 0x00451312: "left", 0x00451328: "right",
+    0x00451349: 16, 0x0045133B: 8, 0x00451342: 7,
+    0x0045139D: 6, 0x00451396: 5, 0x0045137A: 1,
+    0x00451381: 2, 0x00451388: 3, 0x0045138F: 4,
+    0x004513A4: 11, 0x00451365: 13, 0x0045136C: 14,
+    0x004513AB: 0,
+}
+ORIGINAL_EVENT_KEYS = {1: "1", 2: "2", 3: "3", 4: "4", 5: "F4",
+                       6: "F3", 7: "F2", 8: "F1", 9: "ESCAPE",
+                       10: "ENTER", 11: "B", 12: "TAB", 13: "G",
+                       14: "T", 15: "BACKSPACE", 16: "DELETE"}
+ORIGINAL_NORMALIZED_ACTIONS = {
+    0: 12, 1: 15, 2: 10, 5: 9, 8: "left", 10: "right", 12: 16,
+    15: 8, 16: 7, 17: 6, 18: 5, ord("1"): 1, ord("2"): 2,
+    ord("3"): 3, ord("4"): 4, ord("B"): 11, ord("G"): 13,
+    ord("T"): 14,
+}
+#: `WM_KEYDOWN` maps virtual keys to the normalized byte above; `WM_CHAR`
+#: maps the control characters and passes printable ASCII through.
+KEYDOWN_INDEX = 0x0047EF78
+KEYDOWN_ARMS = 0x0047EF48
+KEYDOWN_TARGETS = {0x0047EEFF: 8, 0x0047EEEB: 10, 0x0047EF13: 12}
+KEYDOWN_F_RANGE = 0x0047EF31
+CHAR_INDEX = 0x0047F020
+CHAR_ARMS = 0x0047F008
+CHAR_TARGETS = {0x0047EFBB: 1, 0x0047EFE2: 0, 0x0047EFEF: 2,
+                0x0047EFD5: 5}
+CHAR_PASSTHROUGH = 0x0047EFFC
+#: Space is handled by the mission loop after neither interface translator
+#: answers.  It alternates the selected unit between views 1 and 2.
+SPACE_TEST = 0x0041BAB0
+SPACE_MODE_CALL = (0x0041BABB, 0x004536D0)
+SPACE_EYES_CALL = (0x0041BAC5, 0x00451150)
+SPACE_UNIT_CALL = (0x0041BADA, 0x004510A0)
 RADAR = 0x00451E50
 RADAR_CLIP_PUSH = 0x00451E72                   # push 66; push 90; push 389; push 501
 RADAR_CLIP = (501, 389, 90, 66)
@@ -1771,6 +1818,81 @@ def check_pad(ck: Checker, pe: PEFile) -> None:
              "sockets drawn from (404, 382)")
 
 
+def check_keyboard(ck: Checker, pe: PEFile) -> None:
+    pad_keys = {}
+    unknown_pad_targets = []
+    for code in range(PAD_KEY_LOW, PAD_KEY_HIGH + 1):
+        arm = pe.u8(PAD_KEY_INDEX + code - PAD_KEY_LOW)
+        target = pe.u32(PAD_KEY_ARMS + arm * 4)
+        if target not in PAD_KEY_TARGETS:
+            unknown_pad_targets.append((chr(code), f"0x{target:08X}"))
+            continue
+        command = PAD_KEY_TARGETS[target]
+        if command:
+            pad_keys[chr(code)] = command
+    ck.equal("keyboard.pad_targets_known", unknown_pad_targets, [],
+             "every indexed arm is the default or one of the six commands")
+    ck.equal("keyboard.pad_commands", pad_keys, ORIGINAL_COMMAND_KEYS,
+             "D/H/S/W/R/U -> defend/heal/stimulant/weapon/rest/use")
+
+    normalized = {}
+    unknown_column_targets = []
+    for code in range(COLUMN_KEY_HIGH + 1):
+        arm = pe.u8(COLUMN_KEY_INDEX + code)
+        target = pe.u32(COLUMN_KEY_ARMS + arm * 4)
+        if target not in COLUMN_KEY_TARGETS:
+            unknown_column_targets.append((code, f"0x{target:08X}"))
+            continue
+        action = COLUMN_KEY_TARGETS[target]
+        if action:
+            normalized[code] = action
+    ck.equal("keyboard.column_targets_known", unknown_column_targets, [],
+             "every indexed arm is the default, an event, or a camera turn")
+    ck.equal("keyboard.column_events", normalized,
+             ORIGINAL_NORMALIZED_ACTIONS,
+             "1..4 keep event numbers; F1..F4, B/G/T and control keys")
+
+    translated = {}
+    unknown_message_targets = []
+    for name, raw in (("BACKSPACE", 8), ("TAB", 9), ("ENTER", 13),
+                      ("ESCAPE", 27)):
+        arm = pe.u8(CHAR_INDEX + raw - 8)
+        target = pe.u32(CHAR_ARMS + arm * 4)
+        if target not in CHAR_TARGETS:
+            unknown_message_targets.append((name, f"0x{target:08X}"))
+            continue
+        translated[name] = CHAR_TARGETS[target]
+    for name, virtual_key in (("LEFT", 0x25), ("RIGHT", 0x27),
+                              ("DELETE", 0x2E)):
+        arm = pe.u8(KEYDOWN_INDEX + virtual_key - 0x10)
+        target = pe.u32(KEYDOWN_ARMS + arm * 4)
+        if target not in KEYDOWN_TARGETS:
+            unknown_message_targets.append((name, f"0x{target:08X}"))
+            continue
+        translated[name] = KEYDOWN_TARGETS[target]
+    translated.update({"F1": 15, "F2": 16, "F3": 17, "F4": 18})
+    ck.equal("keyboard.message_targets_known", unknown_message_targets, [],
+             "every sampled WM_CHAR/WM_KEYDOWN arm has a known target")
+    ck.equal("keyboard.message_tokens", translated,
+             {"BACKSPACE": 1, "TAB": 0, "ENTER": 2, "ESCAPE": 5,
+              "LEFT": 8, "RIGHT": 10, "DELETE": 12,
+              "F1": 15, "F2": 16, "F3": 17, "F4": 18},
+             "WM_CHAR controls and WM_KEYDOWN arrows/Delete/F1..F4")
+    ck.check("keyboard.message_passthrough",
+             pe.bytes_at(KEYDOWN_F_RANGE, 15)
+             == b"\x83\xF9\x70\x72\x0A\x83\xF9\x7B\x77\x05\x80\xE9\x61\x88\x08"
+             and pe.bytes_at(CHAR_PASSTHROUGH, 12)
+             == b"\x8B\x54\x24\x0C\xB8\x01\x00\x00\x00\x88\x0A\xC3",
+             "F1..F12 subtract 0x61; printable WM_CHAR keeps its byte")
+    ck.check("keyboard.space_recentre",
+             pe.bytes_at(SPACE_TEST, 5) == b"\x80\x7C\x24\x10\x20"
+             and call_target(pe, SPACE_MODE_CALL[0]) == SPACE_MODE_CALL[1]
+             and pe.bytes_at(SPACE_MODE_CALL[0] + 5, 3) == b"\x83\xF8\x01"
+             and call_target(pe, SPACE_EYES_CALL[0]) == SPACE_EYES_CALL[1]
+             and call_target(pe, SPACE_UNIT_CALL[0]) == SPACE_UNIT_CALL[1],
+             "Space centres the selection, toggling eyes <-> on-unit")
+
+
 def check_panel(ck: Checker, pe: PEFile) -> None:
     ck.check("panel.origin",
              push_imm(pe, PANEL_ORIGIN_PUSH) == 415
@@ -2058,6 +2180,7 @@ def run_checks(root_name: str) -> Checker:
     check_ring(ck, pe)
     check_clicks(ck, pe)
     check_pad(ck, pe)
+    check_keyboard(ck, pe)
     check_panel(ck, pe)
     check_columns(ck, pe)
     check_radar(ck, pe)
@@ -2119,6 +2242,12 @@ def emit_cases(root_name: str, out_path: str) -> int:
             "rect": PAD_RECT,
             "commands": [[c, r, cmd] for (c, r), cmd in sorted(PAD_COMMANDS.items())],
             "sprites": {str(k): v for k, v in PAD_SPRITES.items()},
+        },
+        "input": {
+            "events": {str(k): v for k, v in ORIGINAL_EVENT_KEYS.items()},
+            "commands": {str(v): k for k, v in ORIGINAL_COMMAND_KEYS.items()},
+            "camera": {"centre": "SPACE", "turn_left": "LEFT",
+                       "turn_right": "RIGHT"},
         },
         "panel": {
             "origin": list(PANEL_ORIGIN),

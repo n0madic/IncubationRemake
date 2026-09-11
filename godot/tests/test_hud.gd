@@ -37,6 +37,7 @@ func run(h: TestHarness) -> void:
 	_ring_tables(h)
 	_pad_tables(h)
 	_column_tables(h)
+	_keyboard_bindings(h)
 	_radar_tables(h)
 	_frame_tables(h)
 	_progress_tables(h)
@@ -225,6 +226,74 @@ func _column_tables(h: TestHarness) -> void:
 	var at: Array = DictRead.as_array(columns["caption_pos"])
 	h.equal("columns.caption_at", HudTables.CAPTION_AT,
 		Vector2i(DictRead.as_int(at[0]), DictRead.as_int(at[1])))
+
+
+func _keyboard_bindings(h: TestHarness) -> void:
+	var bindings: Dictionary = DictRead.as_dict(_cases.get("input", {}))
+	h.check("input.fixture_present", not bindings.is_empty(),
+		"regenerate cases_hud.json with tools/hud_tables.py")
+	if bindings.is_empty():
+		return
+	var events: Dictionary = DictRead.as_dict(bindings["events"])
+	for key: String in events:
+		var event: int = key.to_int()
+		var keycode: int = _fixture_keycode(DictRead.as_string(events[key]))
+		if event == HudTables.EVENT_GIVE_UP:
+			h.equal("input.give_up_keeps_escape_for_menu",
+				[HudTables.event_for_key(keycode), HudTables.event_key(event)],
+				[-1, ""], "the one deliberate departure from the original")
+		else:
+			h.equal("input.event_%d" % event,
+				[HudTables.event_for_key(keycode),
+				HudTables.EVENT_KEYS.get(event, 0)], [event, keycode])
+	var commands: Dictionary = DictRead.as_dict(bindings["commands"])
+	for key: String in commands:
+		var command: int = key.to_int()
+		var keycode: int = _fixture_keycode(DictRead.as_string(commands[key]))
+		h.equal("input.command_%d" % command,
+			[HudTables.command_for_key(keycode),
+			HudTables.COMMAND_KEYS.get(command, 0)], [command, keycode])
+	var camera: Dictionary = DictRead.as_dict(bindings["camera"])
+	var space: int = _fixture_keycode(DictRead.as_string(camera["centre"]))
+	h.equal("input.space_belongs_to_the_camera",
+		[HudTables.event_for_key(space), HudTables.command_for_key(space)],
+		[-1, -1], "it no longer ends the turn")
+	h.equal("input.camera_turn_keys",
+		[_fixture_keycode(DictRead.as_string(camera["turn_left"])),
+		_fixture_keycode(DictRead.as_string(camera["turn_right"]))],
+		[KEY_LEFT, KEY_RIGHT])
+	h.equal("input.keypad_enter_is_return",
+		HudTables.event_for_key(KEY_KP_ENTER), HudTables.EVENT_NEXT_PLAYER,
+		"the original receives both Return keys as WM_CHAR 13")
+
+
+static func _fixture_keycode(name: String) -> int:
+	match name:
+		"BACKSPACE":
+			return KEY_BACKSPACE
+		"DELETE":
+			return KEY_DELETE
+		"ENTER":
+			return KEY_ENTER
+		"ESCAPE":
+			return KEY_ESCAPE
+		"F1":
+			return KEY_F1
+		"F2":
+			return KEY_F2
+		"F3":
+			return KEY_F3
+		"F4":
+			return KEY_F4
+		"LEFT":
+			return KEY_LEFT
+		"RIGHT":
+			return KEY_RIGHT
+		"SPACE":
+			return KEY_SPACE
+		"TAB":
+			return KEY_TAB
+	return name.unicode_at(0) if name.length() == 1 else 0
 
 
 func _radar_tables(h: TestHarness) -> void:
@@ -995,12 +1064,12 @@ func _hud_live(h: TestHarness) -> void:
 			"Overview map")
 		hud.set_hint("")
 		h.equal("hud.the_button_hint_line_clears", hud.hint_text(), "")
-	# docs/43 sections 5.1 and 5.2's "key (remake)" column, on the hint line
+	# docs/43 sections 5.1 and 5.2's original/remake key column, on the hint line
 	# rather than as a legend across the playing screen.
 	h.equal("hud.a_button_with_no_key_keeps_its_hint",
 		HudTables.with_key("Overview map", ""), "Overview map")
 	h.equal("hud.a_button_with_a_key_says_so",
-		HudTables.with_key("Overview map", "4"), "Overview map  [4]")
+		HudTables.with_key("Overview map", "1"), "Overview map  [1]")
 	h.check("hud.every_key_names_a_button",
 		_keys_name_buttons(), "EVENT_KEYS and COMMAND_KEYS only name real buttons")
 	# **One table, and it is the binding.** The hint and the dispatch read the
@@ -1026,9 +1095,10 @@ func _hud_live(h: TestHarness) -> void:
 	h.check("hud.every_key_presses_its_own_button", round_trip,
 		"%d distinct keycodes, each answering for one button and labelled by"
 			% codes.size() + " Godot's own name for it")
-	h.equal("hud.an_unbound_key_presses_nothing",
-		[HudTables.event_for_key(KEY_W), HudTables.command_for_key(KEY_W)],
-		[-1, -1], "the pan keys belong to no button")
+	h.equal("hud.unbound_modern_camera_keys_press_nothing",
+		[HudTables.event_for_key(KEY_A), HudTables.command_for_key(KEY_A),
+		HudTables.event_for_key(KEY_Q), HudTables.command_for_key(KEY_Q)],
+		[-1, -1, -1, -1], "A and Q are not retained as a second camera layout")
 	# **And the mission host really dispatches through it.** The round trip
 	# above pins the table against itself; this pins the *only* other place a
 	# key could be decided. Re-adding an `elif key.keycode == KEY_T:` above
@@ -1053,11 +1123,12 @@ func _hud_live(h: TestHarness) -> void:
 	h.equal("hud.no_key_is_branched_on_twice", rebranched, [],
 		"no button's key is also tested by hand in _unhandled_input")
 	h.check("hud.the_column_hint_carries_the_key",
-		hud.columns.caption_for(HudTables.EVENT_FREE_CAMERA).ends_with("[4]")
+		hud.columns.caption_for(HudTables.EVENT_FREE_CAMERA).ends_with("[1]")
 		and hud.pad.caption_for(HudTables.COMMAND_USE).ends_with("[U]"),
 		hud.columns.caption_for(HudTables.EVENT_FREE_CAMERA))
 	h.equal("hud.event_13_hint_follows_the_magnifier",
-		[hud.columns.caption_for(13) == strings.shipped("Txtmod_h", 32)], [true])
+		[hud.columns.caption_for(13) == HudTables.with_key(
+			strings.shipped("Txtmod_h", 32), "G")], [true])
 	h.check("hud.slots_carry_their_events",
 		hud.columns.event_at(0, 0) == 8 and hud.columns.event_at(1, 8) == 10
 		and hud.columns.event_at(0, 7) == 0, "left top is Remind, right bottom Next player")

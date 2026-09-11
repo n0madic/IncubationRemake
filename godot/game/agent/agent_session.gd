@@ -48,6 +48,7 @@ const SPACE_UNICODE: int = 0x20
 const KEYS: Dictionary[String, int] = {
 	"TAB": KEY_TAB,
 	"F5": KEY_F5,
+	"F8": KEY_F8,
 	"F9": KEY_F9,
 	"SPACE": KEY_SPACE,
 	"Q": KEY_Q,
@@ -69,6 +70,7 @@ const KEYS: Dictionary[String, int] = {
 	"DOWN": KEY_DOWN,
 	"B": KEY_B,
 	"BACKSPACE": KEY_BACKSPACE,
+	"DELETE": KEY_DELETE,
 	"F1": KEY_F1,
 	"F2": KEY_F2,
 	"F3": KEY_F3,
@@ -82,8 +84,9 @@ const KEYS: Dictionary[String, int] = {
 	"NEXT_MISSION": KEY_BRACKETRIGHT,
 	"PREV_MISSION": KEY_BRACKETLEFT,
 	"ESCAPE": KEY_ESCAPE,
-	# The Upgrade Menu's name box submits on it; nothing else reads it.
+	# The Upgrade Menu's name box submits on it; the mission ends the turn.
 	"ENTER": KEY_ENTER,
+	"KP_ENTER": KEY_KP_ENTER,
 	# The hidden code line and the letters its codes need ([CheatEntry]).
 	# Nothing else in the mission view binds any of them: while the line is
 	# open it owns the keyboard, so what is driven here is the real entry and

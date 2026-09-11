@@ -5,7 +5,7 @@
 the mission's own screen and the rules behind every mark on it, read out of
 `Incubation.exe` (`aBattleMap.cpp`, `aUI.cpp`, `aMI.cpp`, `aUnitInfos.cpp`)
 and out of `Graphics/GUI/plate_5.bmp` and the interface `.LIB`s. Every table
-below is pinned by `tools/hud_tables.py --check gog_incubation` (**122
+below is pinned by `tools/hud_tables.py --check gog_incubation` (**202
 checks**), and `--emit-cases` hands the same tables to `godot/tests/test_hud.gd`,
 which holds the remake's `game/hud/hud_tables.gd` to them. The remake's side
 is the seventh slice, [`99`](99-slice-7-report.md).
@@ -479,36 +479,32 @@ the command, and `0x00472570(col, row)` the sprite — or −1, drawn as `ui[0]`
 the empty socket. `ui.LIB` is seven pairs, dim then bright (hover is
 element + 1):
 
-| (col, row) | command | `ui` | gate `0x00472570` | executor `0x00473250` | key (remake) |
+| (col, row) | command | `ui` | gate `0x00472570` | executor `0x00473250` | key (original/remake) |
 |---|---:|---:|---|---|---|
-| (0, 0) | 1 **Def** | 2 | `0x004753E0`: `mp ≥ 2`, `+0x40 == 0`, `+0x3D != 0`, `+0x41 != 1`, `weapon[+0x32] & 1` | `0x00478500` — `+0x41 = 1`, ticket; mp zeroed if already waiting | F |
+| (0, 0) | 1 **Def** | 2 | `0x004753E0`: `mp ≥ 2`, `+0x40 == 0`, `+0x3D != 0`, `+0x41 != 1`, `weapon[+0x32] & 1` | `0x00478500` — `+0x41 = 1`, ticket; mp zeroed if already waiting | D |
 | (1, 0) | 2 **heal** | 4 | `0x0047B4C0` and `+0x15 ≥ 1` | `0x00470890` — `mp − 1`, `+0x39 = 3` | H |
-| (0, 1) | 3 **stimulant** | 8 | `+0x58` not 0 and not 255, and a point | `0x004785B0` | X |
-| (2, 0) | 5 **weapon mode** | 6 | `0x00475430`: `toggle != id`, `+0x3D ≥ toggle[+0x41]`, `+0x15 ≥ toggle[+0x3C]` | `0x0047A8C0` — `+0x3F = weapon[+0x3D]` | C |
+| (0, 1) | 3 **stimulant** | 8 | `+0x58` not 0 and not 255, and a point | `0x004785B0` | S |
+| (2, 0) | 5 **weapon mode** | 6 | `0x00475430`: `toggle != id`, `+0x3D ≥ toggle[+0x41]`, `+0x15 ≥ toggle[+0x3C]` | `0x0047A8C0` — `+0x3F = weapon[+0x3D]` | W |
 | (1, 1) | 7 **rest** | 10 | `+0x39 == 0` and species ≠ 3 | `0x00478570` — `+0x41 = 7`, `mp = 0` | R |
 | (2, 1) | 8 **use** | 12 | species ≠ 3, a point, and a target (`0x0047A530`: AP 10..49 but 32/33, or `0x0047B250`/`0x0047B410`/`0x0047B480`) | `aExecuteUse` — `mp − 1`, `+0x39 = 3` | U |
 
 Sockets are blitted at `(404 + 30·col, 382 + 48·row)` top-left
 (`0x00472330`). The hint for the socket under the pointer is `Txtmod_h`
 **40, 43, 41, 42, 44, 45** for commands 1, 2, 3, 5, 7, 8 (`0x004720F8`), at
-(60, 22). The key column here and in §5.2 is the **remake's** binding; the
-original's keyboard translator was not read in this pass, and nothing in this
-document claims a key of the original's. The remake **shows** these keys on
-the hint line, after the shipped caption and in brackets, and shows them from
-the table it dispatches on: `HudTables.EVENT_KEYS` and `COMMAND_KEYS` map a
-button to a Godot keycode, `_unhandled_input` looks the pressed key up there
-instead of testing it branch by branch, and the hint is Godot's own name for
-the same code. So the key that acts and the key that is printed cannot
-differ. They were two hand-kept lists until 2026-09-06 — the labels here and
-`keycode ==` branches in `main.gd`, with a comment saying the two had to be
-changed together and nothing that made them — and a third, already drifted,
-in `hud_tables.py`, which emitted it into the fixture where nothing read it.
-The keys used to be a line of running text across the playing screen, which
-is neither where the original puts a hint nor somewhere a player looks.
+(60, 22). The key column here and in §5.2 is read from the original's two
+switch tables: the pad's `D..W` index at `0x004737F0`, and the columns'
+normalized-byte index at `0x00451430`, with `0x0047EEA0` / `0x0047EFA0`
+supplying virtual-key and character translations. `hud_tables.py --check`
+interprets all three rather than matching isolated bytes. The remake
+**shows** the resulting keys on the hint line, after the shipped caption and
+in brackets, from the same `HudTables.EVENT_KEYS` and `COMMAND_KEYS` tables
+`_unhandled_input` dispatches through. The one deliberate difference is
+Escape: the original maps it to *Give up*, while the remake keeps it for the
+menu.
 
 Pressing a button's key is now **pressing the button**: it runs the same
-availability gate and plays the same `click_2` the socket does, where three
-of them (the view keys `1`, `2`, `3`) used to bypass both.
+availability gate and plays the same `click_2` the socket does, where the
+view keys used to bypass both.
 
 ### 5.2 The button columns — `aMI.cpp`
 
@@ -520,7 +516,7 @@ Two click columns, `x 11..49` and `594..632`, `y 66..345`, row
 ([`29` §1.2](29-interface-contract.md)); `0x00451A70(event)` the sprite;
 `0x00451770(event)` the caption written at (60, 22):
 
-| column, row | event | `mi` | caption (`Txtmod_h`) | what it does | key (remake) |
+| column, row | event | `mi` | caption (`Txtmod_h`) | what it does | key (original/remake) |
 |---|---:|---:|---|---|---|
 | left 0 | 8 | 6 | 26 *Remind position* | save slot 32 (`0x0041DA20` cmd 5) | F1 |
 | left 1 | 7 | 8 | 27 *Recall position* | load slot 32 (cmd 6) | F2 |
@@ -528,29 +524,27 @@ Two click columns, `x 11..49` and `594..632`, `y 66..345`, row
 | left 3 | 5 | 4 | 25 *Load game* | the load dialog `0x00448770(0)` | F4 |
 | left 4 | 11 | 14 | 31 *Briefing for current mission* | `0x0043B150`, `0x0043EAB0` | B |
 | left 5 | 15 | 33 | 39 *Undo last turn* | load slot 33 (cmd 7), offered while `0x00449400(33)` | Backspace |
-| left 6 | 16 | 35 | 46 *Undo mission* | load slot 31 (cmd 8), offered while the slot exists | — |
+| left 6 | 16 | 35 | 46 *Undo mission* | load slot 31 (cmd 8), offered while the slot exists | Delete |
 | left 7 | — | 31 | — | empty | — |
-| left 8 | 9 | 16 | 29 *Give up!* | `0x0047BC60(player)` removes every unit of the player | — |
+| left 8 | 9 | 16 | 29 *Give up!* | `0x0047BC60(player)` removes every unit of the player | Esc / — (menu) |
 | right 0 | 1 | 20 | 38 *Overview map* | camera mode 0, free (`0x00453410`) | 1 |
 | right 1 | 3 | 24 | 36 *Set free view* | view mode 4, the map (`0x00450F60`) | 3 |
 | right 2 | 4 | 26 | 35 *Set user view* | view mode 2, `0x004529D0(8, 7, 0)` | 4 |
 | right 3 | 2 | 28 | 34 *Set unit view* | view mode 1, the eyes (`0x00452E90`) | 2 |
 | right 4 | 12 | 10 | 30 *Jump to the next unit* | `0x00471E00(1)`: the next own unit **with points** (`0x00477D40`) | Tab |
 | right 5 | 14 | 22 | 37 *Jump to visible enemy* | `0x00453CF0`: the camera to the next unit of another player with `+0x4F == 0` (`0x00477DF0`) | T |
-| right 6 | 13 | 18 | 32 / 33 *(De)activate magnifying glass* | toggles `[0x005106CC]` and sets the pointer with it (§5.2.1); with it on, a click on a visible alien opens its **info page** (`0x00432AB0` → `0x00432B20` → `0x0043E850("Data", …, key)`, the mode-2 info activator of [`24` §7.2](24-briefing-text.md)) | — (`H` is the pad's heal; no key) |
+| right 6 | 13 | 18 | 32 / 33 *(De)activate magnifying glass* | toggles `[0x005106CC]` and sets the pointer with it (§5.2.1); with it on, a click on a visible alien opens its **info page** (`0x00432AB0` → `0x00432B20` → `0x0043E850("Data", …, key)`, the mode-2 info activator of [`24` §7.2](24-briefing-text.md)) | G |
 | right 7 | — | 31 | — | empty | — |
-| right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | Space |
+| right 8 | 10 | 12 | 28 *Next player* | `0x0041DA20` cmd 2 — **end turn** | Enter / Numpad Enter |
 
-`D`, `S` and `W` were the first three of these and are now `F`, `X` and `C`:
-the remake pans the camera with `WASD` (§ 2.5 of [`42`](42-mission-presentation.md)
-is a middle-button drag, and a trackpad has no middle button), and a key
-cannot be both.
-
-Also from `0x00450D62/0x00450E75`: `Left`/`Right` turn the camera one step,
-`Space` runs the camera path, and a **right-button release** turns the
-camera a step — left of x 320 one way, right of it the other. The captions'
-own text (*Set viewing direction* … *Center camera on unit*, ids 20..23) is
-the four hints the camera keys never show on a button.
+The remake therefore leaves camera movement on the arrows and mouse rather
+than sharing `WASD` with the command pad. Also from the normalized-key table
+and the mission caller at `0x0041BAB0`: `Left`/`Right` turn the camera one
+step, while `Space` centres on the selection. Its exact path is a two-state
+toggle: from view mode 1 it calls `0x004510A0` (on-unit, mode 2); from every
+other mode it calls `0x00451150` (eyes, mode 1). The captions' own text (*Set
+viewing direction* … *Center camera on unit*, ids 20..23) is the four hints
+the direct camera keys never show on a button.
 
 **Corrections to [`29` §1.2](29-interface-contract.md).** Event 14 is
 *Jump to visible enemy* — a camera move, walked with `0x00477DF0`, the
@@ -946,7 +940,7 @@ face). The four fonts' rows are the same 13/13/20/10 the cache's
 ## 9. Verification
 
 ```bash
-python3 tools/hud_tables.py --check gog_incubation          # 194 checks
+python3 tools/hud_tables.py --check gog_incubation          # 202 checks
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
 bash godot/run_tests.sh                                       # test_hud.gd
 ```

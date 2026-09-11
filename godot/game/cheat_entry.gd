@@ -4,12 +4,11 @@ extends RefCounted
 ## The hidden way in to [Cheats] -- a silent code line, opened with `` ` ``.
 ##
 ## **Why not a rolling key buffer.** The classic shape -- watch the last few
-## letters typed and match a word against them -- cannot work here: `W`, `A`,
-## `S`, `D`, `Q`, `E`, `Y` and `G` pan and turn the camera and
-## [constant HudTables.EVENT_KEYS] binds thirteen more to the interface's own
-## columns, so typing a code would drive the camera across the map and press
-## buttons on the way. So the entry takes the keyboard instead: while it is
-## open every key reaches this and nothing else.
+## letters typed and match a word against them -- cannot work here: the
+## classic letter keys issue command-pad and interface actions, while arrows
+## move the camera. Typing a code would therefore act on the mission on the
+## way. So the entry takes the keyboard instead: while it is open every key
+## reaches this and nothing else.
 ##
 ## **Silent** means silent. Nothing is drawn while a code is being typed and
 ## nothing is drawn for a code that does not match -- a caller reports only a

@@ -3979,7 +3979,7 @@ func camera_director() -> CameraDirector:
 ##
 ## The maximum is untouched: the player can still pull out to what the mission
 ## authored. This is where the view *starts*. The yaw is left alone too -- it
-## is the player's, on Q and E.
+## is the player's, on Left and Right.
 ##
 ## Nothing here is authoritative and nothing here is simulation: a camera that
 ## opened somewhere else would change no hash and no result.
@@ -4233,8 +4233,8 @@ static func resumed_slot(mission_world: World, previous: int) -> int:
 ## Static, and taking the rig, so the suite can check it against a real world
 ## without standing a scene up.
 ##
-## The zoom and the yaw are **not** touched. They are the player's, on Q, E and
-## the wheel; only [method _frame_units] sets them, and only at load.
+## The zoom and the yaw are **not** touched. They are the player's, on Left,
+## Right and the wheel; only [method _frame_units] sets them, and only at load.
 static func focus_on_friendly(rig: CameraRig, mission_world: World) -> int:
 	if rig == null:
 		return -1
@@ -4792,7 +4792,7 @@ static func debug_key_action(keycode: int, debug_build: bool) -> int:
 			return DebugKeyAction.QUICK_LOAD
 		KEY_Y:
 			return DebugKeyAction.FIELD_TYPES
-		KEY_G:
+		KEY_F8:
 			return DebugKeyAction.LATTICE
 		KEY_BRACKETRIGHT:
 			return DebugKeyAction.NEXT_MISSION
@@ -4876,6 +4876,23 @@ static func zoom_delta_for(event: InputEvent) -> float:
 				or key.keycode == KEY_KP_ADD:
 			return -1.0
 	return 0.0
+
+
+## The classic keyboard pan: arrows only. Plain Left/Right turn a quadrant in
+## `_unhandled_input`; Shift makes those two arrows pan sideways.
+static func pan_delta_for_key(keycode: int, shift_pressed: bool) -> Vector2:
+	match keycode:
+		KEY_UP:
+			return Vector2(0.0, -PAN_KEY_PIXELS)
+		KEY_DOWN:
+			return Vector2(0.0, PAN_KEY_PIXELS)
+		KEY_LEFT:
+			if shift_pressed:
+				return Vector2(-PAN_KEY_PIXELS, 0.0)
+		KEY_RIGHT:
+			if shift_pressed:
+				return Vector2(PAN_KEY_PIXELS, 0.0)
+	return Vector2.ZERO
 
 
 func _process(delta: float) -> void:
@@ -5277,57 +5294,32 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
 		# **The interface's own keys come from the interface's own table**
-		# (docs/43 section 5): the columns' thirteen and the pad's six, and
+		# (docs/43 section 5): the columns' fifteen and the pad's six, and
 		# the same table the hint under the pointer is drawn from. They are
 		# looked up first, so a button's key reaches the button whatever else
 		# this chain grows -- and pressing it is pressing the button, gate,
 		# click and all, which a hand-written branch beside it was not.
 		#
-		# **`X` and `C`, not `S` and `W`.** `WASD` is the pan below, and a
-		# key cannot be both; the two pad commands that had those letters
-		# moved rather than the movement keys, because the pad's own keys are
-		# the remake's invention either way ([constant HudTables.EVENT_KEYS])
-		# and the movement keys are not free to choose.
+		# The classic binding owns D/S/W for the command pad. Camera movement
+		# therefore stays on arrows and mouse, with no WASD fall-through.
 		var hud_event: int = HudTables.event_for_key(key.keycode)
 		var pad_command: int = HudTables.command_for_key(key.keycode)
 		var debug_action: int = debug_key_action(key.keycode, _debug_build)
+		var pan_delta: Vector2 = pan_delta_for_key(key.keycode, key.shift_pressed)
 		if hud_event >= 0:
 			_on_hud_event(hud_event)
 		elif pad_command >= 0:
 			_on_pad_command(pad_command)
 		elif debug_action != DebugKeyAction.NONE:
 			_run_debug_key(debug_action)
-		elif key.keycode == KEY_Q:
-			_rig.rotate_step(-1)
-		elif key.keycode == KEY_E:
-			_rig.rotate_step(1)
-		# docs/42 section 2.5's pan, on the keyboard as well as on the middle
-		# button. The original's own pan is a middle-button drag and this
-		# remake has had it all along, but a middle button is something a
-		# trackpad does not have -- so the map could be turned and not
-		# scrolled on the hardware it is played on. `W`/`A`/`S`/`D` and
-		# `Up`/`Down` move in the view's own plane, `Shift` with `Left`/
-		# `Right` sideways; plain `Left`/`Right` still turn the camera a
-		# quadrant (docs/43 section 5.2), which is what the original binds
-		# them to, and so do `Q`/`E`.
-		elif key.keycode == KEY_UP or key.keycode == KEY_W:
-			_pan_by(Vector2(0.0, -PAN_KEY_PIXELS))
-		elif key.keycode == KEY_DOWN or key.keycode == KEY_S:
-			_pan_by(Vector2(0.0, PAN_KEY_PIXELS))
-		elif key.keycode == KEY_A:
-			_pan_by(Vector2(-PAN_KEY_PIXELS, 0.0))
-		elif key.keycode == KEY_D:
-			_pan_by(Vector2(PAN_KEY_PIXELS, 0.0))
+		elif key.keycode == KEY_SPACE:
+			_centre_camera_on_unit()
+		elif not pan_delta.is_zero_approx():
+			_pan_by(pan_delta)
 		elif key.keycode == KEY_LEFT:
-			if key.shift_pressed:
-				_pan_by(Vector2(-PAN_KEY_PIXELS, 0.0))
-			else:
-				_rig.rotate_step(-1)
+			_rig.rotate_step(-1)
 		elif key.keycode == KEY_RIGHT:
-			if key.shift_pressed:
-				_pan_by(Vector2(PAN_KEY_PIXELS, 0.0))
-			else:
-				_rig.rotate_step(1)
+			_rig.rotate_step(1)
 	elif event is InputEventMouseButton and event.is_pressed():
 		var click: InputEventMouseButton = event
 		if click.button_index == MOUSE_BUTTON_LEFT and not click.alt_pressed and _may_command_now():
@@ -5434,18 +5426,18 @@ func _screen_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key: InputEventKey = event
-		# **The map turns a different way from a mission.** A mission's `Q`
-		# and `E` step the rig's quadrant; the map's fixed base eye comes from
+		# **The map turns a different way from a mission.** A mission's Left
+		# and Right step the rig's quadrant; the map's fixed base eye comes from
 		# `0x0045D130`, and `0x004558F0` swings it about the target by an
 		# accumulated angle instead, which is a drag rather than a step -- see
 		# [method _swing_backdrop].
-		if on_backdrop and (key.keycode == KEY_Q or key.keycode == KEY_E):
+		if on_backdrop and (key.keycode == KEY_LEFT or key.keycode == KEY_RIGHT):
 			_swing_backdrop(Vector2(
-				CameraRig.MAP_KEY_TURN if key.keycode == KEY_E
+				CameraRig.MAP_KEY_TURN if key.keycode == KEY_RIGHT
 				else -CameraRig.MAP_KEY_TURN, 0.0))
-		elif not on_backdrop and key.keycode == KEY_Q:
+		elif not on_backdrop and key.keycode == KEY_LEFT:
 			rig.rotate_step(-1)
-		elif not on_backdrop and key.keycode == KEY_E:
+		elif not on_backdrop and key.keycode == KEY_RIGHT:
 			rig.rotate_step(1)
 		# **The deployment screen's view keys are the interface's own**, read
 		# from [constant HudTables.EVENT_KEYS] rather than written out again:
@@ -5542,18 +5534,22 @@ func _set_deploy_view(mode: CameraRig.View) -> void:
 		var _flight: float = _director.view_map(world, at.x, at.y)
 		_rig.settle()
 		return
-	# A soldier already on the map is the better subject, and the engine's own
-	# "on the unit" placement takes one. Before the first is placed there is
-	# nothing to frame but the landing area, so the same placement is made
-	# over the cell instead of over a body.
+	# A soldier already on the map is the better subject. Before the first is
+	# placed there is nothing to frame but the landing area, so each view's
+	# own placement is made over its centre instead of over a body.
 	var slot: int = next_friendly_slot(world, -1)
 	if slot >= 0:
-		var _flown: float = _director.view_unit(world, slot)
+		var _flown: float = _director.view_eyes(world, slot) \
+			if mode == CameraRig.View.EYES else _director.view_unit(world, slot)
 		_rig.settle()
 		return
 	var view: Dictionary = world.cell_view(at.x, at.y)
 	var centre: Vector3i = CameraRig.cell_object(at.x, at.y,
 		DictRead.as_int(view["height"]))
+	if mode == CameraRig.View.EYES:
+		var _eyes: int = _rig.view_eyes(centre, 0, Vector2i(0, 1))
+		_rig.settle()
+		return
 	var goal: Dictionary = _rig.place_on_unit(centre, 0, Vector2i(0, 1),
 		8, 7, 0)
 	_rig.set_view_mode(mode)
@@ -5562,8 +5558,8 @@ func _set_deploy_view(mode: CameraRig.View) -> void:
 	_rig.settle()
 
 
-## docs/42 section 2.4's three views, on keys 1, 2 and 3 -- the remake's
-## binding; docs/29 records the GUI events and no key. The eyes and unit
+## docs/42 section 2.4's three selected-unit views, on the original's keys 2,
+## 3 and 4. Key 1 is the separate whole-map overview. The eyes and unit
 ## views need a unit and take the selection, or the first own unit; the map
 ## view is over the same cell. The HUD stays: the engine's `0x0041A980(1)`
 ## then `(0)` around the eyes flight is a hide-and-redraw pulse, not a state.
@@ -5587,6 +5583,16 @@ func _set_view(mode: CameraRig.View) -> void:
 		_:
 			_flight = _director.view_unit(world, slot)
 	_sync_hud()
+
+
+## Space in the original: bring the camera back to the selected unit, using
+## the other of its two close views. From eyes it goes to the on-unit view;
+## from every other mode it goes to the unit's eyes (`0x0041BAB0`).
+func _centre_camera_on_unit() -> void:
+	if _rig == null:
+		return
+	_set_view(CameraRig.View.UNIT
+		if _rig.view_mode() == CameraRig.View.EYES else CameraRig.View.EYES)
 
 
 ## Whether the mission has ended -- in which case no command is taken any more.

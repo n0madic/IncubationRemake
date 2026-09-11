@@ -25,6 +25,7 @@ func run(h: TestHarness) -> void:
 	_check_search(h)
 	_check_views(h)
 	_check_selection_views(h)
+	_check_deployment_view_keys(h)
 	_check_free_look(h)
 	_check_pan_and_zoom(h)
 	_check_zoom_inputs(h)
@@ -176,7 +177,129 @@ func _check_selection_views(h: TestHarness) -> void:
 		main._selected = -1
 		h.equal("select.cycle_slot_%d" % int(mode), main.cycle_friendly(), slot)
 		h.equal("select.cycle_view_%d" % int(mode), rig.state(), expected.state())
+	# The original key numbers are event numbers, and the event reaches the
+	# corresponding measured placement rather than merely changing a label.
+	var keyed_views: Array[Array] = [
+		[KEY_1, HudTables.EVENT_FREE_CAMERA, CameraRig.View.SCRIPT],
+		[KEY_2, HudTables.EVENT_UNIT_VIEW, CameraRig.View.EYES],
+		[KEY_3, HudTables.EVENT_MAP_VIEW, CameraRig.View.MAP],
+		[KEY_4, HudTables.EVENT_USER_VIEW, CameraRig.View.UNIT],
+	]
+	for row: Array in keyed_views:
+		var keycode: int = DictRead.as_int(row[0])
+		var event: int = DictRead.as_int(row[1])
+		var mode: int = DictRead.as_int(row[2])
+		rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		var _placed: float = 0.0
+		match mode:
+			CameraRig.View.SCRIPT:
+				_placed = reference.view_overview()
+			CameraRig.View.EYES:
+				_placed = reference.view_eyes(world, slot)
+			CameraRig.View.MAP:
+				_placed = reference.view_map(world, DictRead.as_int(view["x"]),
+					DictRead.as_int(view["y"]))
+			CameraRig.View.UNIT:
+				_placed = reference.view_unit(world, slot)
+		h.equal("select.key_%s_event" % OS.get_keycode_string(keycode),
+			HudTables.event_for_key(keycode), event)
+		main._on_hud_event(event)
+		h.equal("select.key_%s_view" % OS.get_keycode_string(keycode),
+			rig.state(), expected.state())
+	# Space is not End Turn: outside eyes it centres through the eyes view;
+	# from eyes it centres through the on-unit view, exactly as 0x0041BAB0.
+	rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+	expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+	rig.set_view_mode(CameraRig.View.MAP)
+	expected.set_view_mode(CameraRig.View.MAP)
+	var _eyes: float = reference.view_eyes(world, slot)
+	main._unhandled_input(_key(KEY_SPACE, true))
+	h.equal("select.space_centres_in_eyes", rig.state(), expected.state())
+	rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+	expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+	var _unit: float = reference.view_unit(world, slot)
+	main._unhandled_input(_key(KEY_SPACE, true))
+	h.equal("select.space_centres_on_unit", rig.state(), expected.state())
+	h.equal("select.classic_keys_leave_simulation_unchanged",
+		world.canonical_hash_hex(), before)
 	hud.free()
+	main.free()
+	rig.free()
+	expected.free()
+
+
+## The deployment plate owns input through `_screen_input`, not the mission's
+## ordinary `_unhandled_input` path. Keep keys 2 and 4 distinct both before
+## the first soldier lands and after there is a unit for the directors to use.
+func _check_deployment_view_keys(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_141")
+	if loaded.is_empty():
+		h.check("deploy_view.cache", false, "no _C_141 in the cache")
+		return
+	var world: World = loaded["world"]
+	var _cleared: int = world.clear_units_of(0)
+	var rig: CameraRig = _flat_rig(world.resource.width, world.resource.height)
+	var expected: CameraRig = _flat_rig(world.resource.width, world.resource.height)
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._rig = rig
+	main._director = CameraDirector.create(rig)
+	main.campaign = CampaignHost.new()
+	main.campaign._mission_world = world
+	var screen: SelectUnitsScreen = SelectUnitsScreen.new()
+	main._screen = screen
+	var at: Vector2i = main._deployment_centre()
+	h.check("deploy_view.has_centre", at.x >= 0, str(at))
+	if at.x >= 0:
+		var cell: Dictionary = world.cell_view(at.x, at.y)
+		var centre: Vector3i = CameraRig.cell_object(at.x, at.y,
+			DictRead.as_int(cell["height"]))
+		rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		var _eyes: int = expected.view_eyes(centre, 0, Vector2i(0, 1))
+		expected.settle()
+		main._screen_input(_key(KEY_2, true))
+		h.equal("deploy_view.empty_key_2_is_eyes", rig.state(), expected.state())
+
+		rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+		var goal: Dictionary = expected.place_on_unit(
+			centre, 0, Vector2i(0, 1), 8, 7, 0)
+		expected.set_view_mode(CameraRig.View.UNIT)
+		expected.set_now(DictRead.as_vector3i(goal["eye"]),
+			DictRead.as_vector3i(goal["target"]))
+		main._screen_input(_key(KEY_4, true))
+		h.equal("deploy_view.empty_key_4_is_unit", rig.state(), expected.state())
+
+		var marine: UnitState = UnitState.new()
+		marine.name = "Camera probe"
+		marine.pool_flag = Roster.POOL_CANDIDATE
+		marine.type_id = 0
+		marine.hp = 9
+		var placed: Dictionary = world.deploy_from_pool(0, marine, at.x, at.y)
+		var slot: int = DictRead.as_int(placed["slot"])
+		h.equal("deploy_view.probe_deployed",
+			DictRead.as_string(placed["result"]), World.DEPLOY_OK)
+		if slot >= 0:
+			var reference: CameraDirector = CameraDirector.create(expected)
+			rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+			expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+			var _unit_eyes: float = reference.view_eyes(world, slot)
+			expected.settle()
+			main._screen_input(_key(KEY_2, true))
+			h.equal("deploy_view.placed_key_2_is_eyes",
+				rig.state(), expected.state())
+
+			rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+			expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
+			var _unit_view: float = reference.view_unit(world, slot)
+			expected.settle()
+			main._screen_input(_key(KEY_4, true))
+			h.equal("deploy_view.placed_key_4_is_unit",
+				rig.state(), expected.state())
+	main._screen = null
+	screen.free()
 	main.free()
 	rig.free()
 	expected.free()
@@ -504,7 +627,22 @@ func _check_zoom_inputs(h: TestHarness) -> void:
 		SliceMain.zoom_delta_for(_key(KEY_MINUS, true)) > 0.0)
 	h.equal("input.key_q_not_zoom",
 		SliceMain.zoom_delta_for(_key(KEY_Q, true)), 0.0,
-		"the rotation keys must fall through to their own handling")
+		"an ordinary letter is not a zoom input")
+	h.equal("input.arrow_pan",
+		[SliceMain.pan_delta_for_key(KEY_UP, false),
+		SliceMain.pan_delta_for_key(KEY_DOWN, false),
+		SliceMain.pan_delta_for_key(KEY_LEFT, true),
+		SliceMain.pan_delta_for_key(KEY_RIGHT, true)],
+		[Vector2(0.0, -SliceMain.PAN_KEY_PIXELS),
+		Vector2(0.0, SliceMain.PAN_KEY_PIXELS),
+		Vector2(-SliceMain.PAN_KEY_PIXELS, 0.0),
+		Vector2(SliceMain.PAN_KEY_PIXELS, 0.0)])
+	var wasd_moves: bool = false
+	for keycode: int in [KEY_W, KEY_A, KEY_S, KEY_D]:
+		wasd_moves = wasd_moves \
+			or not SliceMain.pan_delta_for_key(keycode, false).is_zero_approx()
+	h.check("input.wasd_is_not_camera_pan", not wasd_moves,
+		"D/S/W belong to the command pad and A is unbound")
 
 
 func _wheel(index: int, pressed: bool) -> InputEventMouseButton:

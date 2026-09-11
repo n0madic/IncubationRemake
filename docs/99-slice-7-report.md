@@ -447,9 +447,11 @@ Known and not done, so that it is not forgotten:
 more than one human seat (`human_count`), but nothing in the remake creates a
 second one, so the test is sufficient today; a multi-seat session would let
 one seat end another's turn. It predates this slice.
-* **The key column of [`43` §5](43-battle-hud.md) is the remake's**, not
-  the original's: the keyboard translator was not read. `H` is the pad's
-  heal; the magnifier (dark, D4) has no key.
+* **Classic keyboard bindings — closed 2026-09-11.** `hud_tables.py` now
+  interprets both keyboard switches and the Windows message translators. The
+  remake uses the resulting original keys, including `G` for the magnifier;
+  only original `Esc` → *Give up* remains a declared divergence because
+  `Esc` opens the menu.
 * **The two panel fonts (D7) and the block offsets were checked by reading,
   not by eye** — the Wine screenshot could not be taken (§3).
 * **The magnifier's page (D4) and the campaign map's band rings (D6)** are
@@ -1083,4 +1085,3 @@ another.
 `game_ui` gained twenty checks for it -- the label, the two fallbacks, the
 box's own height bound, the button's availability, the toggle, and the pair of
 byte tests over every record `_C_140` has.
-

@@ -1485,7 +1485,7 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | camera moves | flight §2.2 everywhere | ~~a snap of the pivot; one 0.18 s yaw tween~~ the flight, on the engine's six integers (`97` §28) |
 | unit camera | behind / by quadrant, clear-line search | ~~pivot on the cell~~ §2.3 transcribed, the quadrant kept discrete; the search over the map's heights |
 | walk | target tracks the unit; enemy ride | ~~no camera during a walk~~ §3.2's modes, the ride included |
-| views | eyes / unit / map; right-drag rotate; middle-drag pan | eyes / unit / map on 1, 2, 3; right-drag free look; Option/Alt + primary drag or two-finger gesture on a trackpad; middle-drag pan |
+| views | overview / eyes / map / unit on 1 / 2 / 3 / 4; Left/Right turn; Space centres on the selection; right-drag rotate; middle-drag pan | the same numbered views and direct keys; right-drag free look; Option/Alt + primary drag or two-finger gesture on a trackpad; middle-drag, Up/Down and Shift+Left/Right pan |
 | fight camera | behind shooter / victim; reaction coin toss | ~~none~~ ~~§4.3, both arms, the flight beside the clip rather than after it~~ §4.3, after the clip (`97` §29) |
 | clip speeds | 2.0 / 6.0 / 1.5 / 1.0 | ~~1.0 everywhere~~ 2.0 / 6.0 / 1.5; `M2` not implemented (`97` §29) |
 | shot | 9 stages, clip resumed past `BREAK` | ~~clip to `BREAK` + 0.35 s hold~~ the nine stages on the queue, the clip resumed (`97` §29) |
