@@ -159,6 +159,9 @@ is a bytecode program the engine executes in place, including a BSP tree.
   used only by `InsertUnit`)
 - `pe` — PE sections, resources and typed reads **by virtual address**, so the
   addresses the docs quote can be used directly
+- `footprint` — `0x0042F410`'s four-probe sweep: which control-map cells a
+  placed special object stands on, which is `CrushWall`'s footprint
+  ([`42` §8.2](docs/42-mission-presentation.md))
 - `script`, `lcl_runtime`, `turn`, `combat`, `interact`, `ai`, `blob_*` — the
   executable models of the interpreter, the turn, combat, interaction and effects
 
@@ -267,6 +270,13 @@ Three operational rules that have each cost a re-run:
   staleness lives in emitted fixtures: `cases_blob.json` had not been
   re-emitted after two arms moved, so the Godot suite asserted the old counts
   for a day and passed.
+- **A `--buf` declared once is one buffer for the whole plan.** Every call
+  after the first reads what the last one left in it, so a replay that zeroes
+  its own copy between calls -- or after an answer the engine writes back
+  into the buffer -- manufactures a disagreement the engine never had.
+  `ai_gold`'s "8 of 10" large-mover ring was exactly that for a fortnight
+  (`docs/95` §9 item 2). Carry the model's accumulator the way the plan does,
+  or re-declare the buffer in the plan where a reset is wanted.
 - **A failure entry that is never cleared reads as a missing phase.** Five
   additive phases in `blob_gold.capture` recorded a `CaptureError` and did not
   pop it on the next success, so `NATIVE_FAULTS` named a plan as unlanded with

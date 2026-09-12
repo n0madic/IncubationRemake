@@ -5894,13 +5894,18 @@ Nothing else in the 23-byte record moves, on any of the twenty marked cells.
 The footprints are in [`42` §8.2](42-mission-presentation.md). Every one is a
 **straight run of two or three cells** with the command's own cell in it, and
 the runs **tile** the wall: `_C_129`'s column at x 16 is five identical cells
-that split 2 + 3, `_O_061`'s row at y 19 is seven that split 2 + 2 + 3. That
+that split 2 + 3, `_O_061`'s row at y 19 is seven that split 2 + 2 + 3. ~~That
 split is the finding. It is not in the `.lev`: `0x00406F20` walks the
 **standard object** array at `[0x004FA80C]` with stride 66 and count
 `[0x004FA7B4]`, which is neither the map's 900-entry land lattice (one object
 per cell, prototype and all) nor `LEVEL01D.3DW`'s 27 `[CLO]` blocks — the wall
 pieces are objects the engine builds when it expands the scene's prototypes,
-and no reader of the shipped files can separate them.
+and no reader of the shipped files can separate them.~~ **Wrong, and corrected
+in §50 on 2026-09-12.** The standard-object array *is* the `.lev`'s
+special-object table — [`99` §10.1](99-slice-7-report.md) had already read
+`0x00406F20` that way — and each of the nine calls has its wall piece standing
+on its own cell as a `.lev` record. The split is the prototype: `L040EA00`
+spans two fields and `L041EA00` three.
 
 So the honest division, and what is built:
 
@@ -5914,12 +5919,18 @@ So the honest division, and what is built:
   guessed, and `presentation_gold --check` pins all nine footprints cell by
   cell (603 → **712** checks) so a remake that ever grows a footprint source
   has an oracle waiting for it.
-* **The source, if it is ever wanted, is the converter** projecting the
+* ~~**The source, if it is ever wanted, is the converter** projecting the
   scene's standard objects onto the control map — the same thing `0x0042F410`
-  does, and now transcribed. It is a slice of its own and it is not started.
+  does, and now transcribed. It is a slice of its own and it is not started.~~
+  **Built 2026-09-12, §50.** It is not a slice: the probe is vertical, so the
+  sweep is a crossing-number test against the special object's faces, and
+  `inclib/footprint.py` reproduces all nine footprints cell for cell. `core`
+  crushes the whole run.
 
-None of the three missions is among the five the converter ships, so nothing
-in the remake reaches `CrushWall` today; the rule is there for when one does.
+~~None of the three missions is among the five the converter ships, so nothing
+in the remake reaches `CrushWall` today; the rule is there for when one does.~~
+**Superseded by §44**, which added `_C_129` to the converter's set for its
+crush wall.
 
 **One consequence worth naming.** The cell now has a real 3280 → 0 height drop,
 and `_paint_setpiece` interpolates a set piece's cell over its frames -- so the
@@ -5961,9 +5972,10 @@ always waited on the same `is_walking`.
 
 Slices A through F are in, and every item §36 listed is closed except one:
 **slice G**, the by-hand pass in an exported build, has still not been run.
-`CrushWall`'s footprint is measured and pinned (§41.7) with its remaining
+~~`CrushWall`'s footprint is measured and pinned (§41.7) with its remaining
 half — a converter that projects scene objects onto the control map — named
-and deliberately not started.
+and deliberately not started.~~ **The remaining half landed 2026-09-12, §50.**
+Slice G is still the one thing §36 listed that has not been run.
 
 Green after this pass, with the counters that moved: `lcl_runtime` at **58**
 checks (twelve `statue.*` and three `crush_wall.*`, the twins of
@@ -6904,3 +6916,127 @@ compared against the engine rather than against Python. `blob_tables.py` pins
 the scratch name to the two `push` sites that hand it to the constructor, and
 `test_effects.gd` requires every address `BlobKinds` can ask for to have a
 program.
+
+---
+
+## 50. 2026-09-12 — `CrushWall`'s footprint, projected
+
+§41.7 measured all nine shipped footprints inside the running engine and then
+called the *source* of the split underivable: the object `0x00406F20` answers
+with is a **standard object**, the array at `[0x004FA80C]`, and that array was
+read as something the engine builds when it expands the scene's prototypes.
+The remaining half — a converter that projects the scene's standard objects
+onto the control map — was named as a slice of its own and deliberately not
+started.
+
+It is not a slice. It is one read of an array this project had already
+identified.
+
+### 50.1 What the standard-object array actually is
+
+[`99` §10.1](99-slice-7-report.md) says it in as many words: *"the engine's
+object search `0x00406F20` walks the special-object table at `[0x4FA80C]` and
+nothing else, so a clone is not a thing any set piece can find, turn or free"*.
+`Scenery` has excluded `.3DW` clones from `objects_on` since 2026-09-07 for
+exactly that reason. §41.7's own wording — "neither the map's 900-entry land
+lattice nor `LEVEL01D.3DW`'s 27 `[CLO]` blocks" — rules out the two things it
+is not and never asks what is left, which is the `.lev`'s **special objects**.
+
+They are there, and they are the wall:
+
+| Mission | `CrushWall` | The special object standing on that cell | yaw |
+|---|---|---|---|
+| `_C_129` | (16, 18) | `L040EA00` | 1024 |
+| `_C_129` | (16, 20) | `L041EA00` | 1024 |
+| `_C_129` | (18, 23) | `L040EA00` | 0 |
+| `_C_142` | (22, 11) | `L040EA00` | 1024 |
+| `_O_061` | (16, 23) | `L040EA00` | 0 |
+| `_O_061` | (11, 23) | `L040EA00` | 0 |
+| `_O_061` | (11, 19) | `L040EA00` | 0 |
+| `_O_061` | (13, 19) | `L040EA00` | 0 |
+| `_O_061` | (14, 19) | `L041EA00` | 2048 |
+
+Nine calls, nine records, on the command's own cell every time. And the two
+prototypes are the two footprint lengths §41.7 measured: `L040EA00`'s vertices
+run from local `x` −4 817 to 1 583, which is **6 400 units = two fields**, and
+`L041EA00`'s from −8 017 to 1 583, **9 600 = three**. Both are 1 500 deep in
+`y` and stand 80..3 280 high, which is the 3 280 the marked cells drop from.
+
+### 50.2 The sweep is arithmetic
+
+`0x0042F410` casts four probes per cell from the cell's own symbol object at
+`z = 100000` **straight down**. A vertical ray meets a mesh exactly when the
+probe's `(x, y)` lies inside the `xy` projection of one of its faces — so the
+BSP tree, the plane arithmetic and `0x0042F300` itself are not needed to
+answer the question the sweep asks. `inclib/footprint.py` is that: each vertex
+through the engine's own three-angle matrix (`eng3d.rotate`, `0x004039A0`),
+translate by the record's position, drop `z`, crossing-number against the four
+probes.
+
+It reproduces **all twenty cells of the nine footprints**, cell for cell,
+against `docs/42` §8.2's table — which is the engine's own answer, captured
+under `dbgcall` on 2026-09-03 and not this module's. `interaction_tables.py`'s
+`corpus.crush_wall_footprints` holds that comparison and is mutation-killed by
+replacing `eng3d.rotate` with the identity (one cell moves, the check fails).
+
+Two smaller findings came with it:
+
+* the probe geometry the listing leaves ambiguous — `81 c2 c8 00 00 00` twice
+  and `81 e9 c8 00 00 00` twice, which reads as an axis cross but is equally
+  consistent with the four corners — **cannot be discriminated here**: both
+  give the same nine footprints, because every wall piece is 1 500 units deep
+  against a 400-unit probe span. The cross is taken and the alternative is
+  named in `PROBE_OFFSETS` rather than assumed away;
+* two special objects **do** cover one cell on the shipped maps — railings and
+  pillars sharing a field, ten cells on `_C_129` and nine on `_O_061` — but
+  never on a wall piece and never on a cell any `CrushWall` names, so
+  `footprint_index`'s "first placed wins" decides nothing in play
+  (`corpus.crush_wall_cells_carry_one_object`).
+
+### 50.3 Where it runs, and what it changed
+
+The projection runs **once, in the converter**, and neither runtime holds a
+mesh: `mission_document` emits `cells` beside every special object (a
+`CONVERTER_VERSION` bump, 0.39.0 → **0.40.0**, in `cache.py` and
+`cache_loader.gd` both, and a republished cache). `MapResource` builds a
+`cell -> run` index at load — outside `authored_hash`, which digests the grid a
+save has to agree with and not what stands on it — and `World` hands it to
+`LclContext`. `LclInterpreter._crush_wall` and `inclib.lcl_runtime._c_crush_wall`
+then write height 0 and field type 1 on **every cell of the run** and put them
+all on the event.
+
+`game` needed nothing: `SetpieceCamera` has thrown one `0x004238C0` per cell of
+the event since the set pieces landed (`camera.crush_wall.one_per_cell`), and
+`aDeleteLand`'s single free is still `remove_objects` on the command's cell,
+which is where the one object stands.
+
+**One residual, named rather than closed.** `core` now finds the run by *any*
+covered cell, the way `0x00406F20`'s box search would; `game` still finds the
+wall's node by the **command's** cell (`remove_objects`, `paint_pose`). On all
+nine shipped calls the record stands on the command's cell, so the two agree
+— but a script naming the *far* cell of a run would crush the cells and leave
+the node standing. `Scenery` would need the same `cell -> run` lookup to close
+it, and nothing shipped reaches it.
+
+A map document with no `special_objects` — every synthetic map the suites build
+— leaves the index empty and every reader falls back to the cell it was given,
+which is exactly what the model did before. That is why
+`crush_wall.off_the_map_changes_nothing` and the synthetic case either side of
+it did not move.
+
+### 50.4 Verification
+
+`interaction_tables.py --check` at **161** checks (`corpus.crush_wall_calls`,
+`corpus.crush_wall_footprints`, `corpus.crush_wall_cells_carry_one_object`),
+`lcl_runtime.py --check` with two new `crush_wall.*` cases, `make
+check-formats` green, and `bash godot/run_tests.sh` at 41 suites and **5 459**
+checks with the cache republished at 0.40.0 — `family.wall.footprints` reads
+the three `_C_129` runs back out of the cache through `MapResource` and
+`crush_wall.the_whole_footprint_becomes_floor` drives them through the
+interpreter.
+
+**What this closes.** [`102` §1.1](102-remake-backlog.md), and §41.9's "named
+and deliberately not started". What it does *not* close is the general
+statement §41.7 reached for: this projects **special objects**, which is what
+`0x00406F20` searches. Nothing here reads a `.3DW` clone or an expanded
+prototype, because the engine's own search does not either.

@@ -888,14 +888,18 @@ func _statue2(low: int, high: int) -> void:
 ## (`0x00415DA4`), so what lasts is **the height and the field type**: a
 ## crushed wall becomes walkable floor at ground level.
 ##
-## **The footprint is a query against the scene, and `core` holds no meshes.**
-## Measured on all nine shipped call sites (docs/97 section 41.7): every one is
-## a straight run of two or three cells, and the command's own cell is always
-## in it -- but which two or three is decided by the wall piece's geometry and
-## nothing in the `.lev` records it. So the rule is applied to the cells this
-## **can** name, which today is the command's own, and the deficit is one or
-## two cells per call rather than the whole thing. The event carries what was
-## changed so the picture throws its debris on exactly those cells.
+## **The footprint is a query against the scene, and the converter runs it**
+## (`inclib.footprint`, docs/97 section 50). The probe is vertical, so "the ray
+## meets the object" is "the probe lies inside the `xy` projection of one of its
+## faces", and the wall piece is a `.lev` special object naming a prototype
+## whose mesh is in `prototyp.bin` -- so the sweep is arithmetic and it is done
+## once, at conversion, rather than by either runtime. All nine shipped call
+## sites come out cell for cell (docs/42 section 8.2).
+##
+## `core` reads the answer through [method LclContext.cells_of_object_at] and
+## falls back to the command's own cell where nothing stands there -- which is
+## what a hand-built context and an off-map command both give. The event carries
+## what was changed so the picture throws its debris on exactly those cells.
 ## `0x004420C0` -- **does nothing** when a unit stands on the tile, and
 ## otherwise runs `aDoorOpenSequence` `0x00410A20`, which is a **toggle**
 ## (docs/26 section 3.4): an odd action point is a closed door and the call
@@ -923,10 +927,11 @@ func _open_door(x: int, y: int) -> void:
 func _crush_wall(x: int, y: int) -> void:
 	var values: Array[int] = [x, y]
 	if _context.in_bounds(x, y):
-		var at: int = _context.index(x, y)
-		_context.state.set_height(at, 0)
-		_context.state.set_field_type(at, CTRL_TYPE_FREE_PLACE)
-		values.append_array([x, y])
+		for at: int in _context.cells_of_object_at(_context.index(x, y)):
+			_context.state.set_height(at, 0)
+			_context.state.set_field_type(at, CTRL_TYPE_FREE_PLACE)
+			values.append_array([at % _context.state.width,
+				at / _context.state.width])
 	_event("crush_wall", values)
 
 ## `0x00442370` -- up to ten cells along `dir`; the first unit dies.

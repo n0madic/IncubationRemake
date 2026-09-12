@@ -54,7 +54,7 @@ CACHE_SCHEMA_VERSION = 1
 #: Bumped by hand when the converter's output changes for unchanged input.
 #: Never a timestamp and never a git hash: it has to be reproducible from the
 #: source tree alone.
-CONVERTER_VERSION = "0.39.0"
+CONVERTER_VERSION = "0.40.0"
 
 #: The only language the GOG release ships.  It is part of the cache id from
 #: the first day so that the localisation seam of docs/92 §7.6 exists rather

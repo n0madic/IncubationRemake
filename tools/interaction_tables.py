@@ -57,7 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from inclib import lcl, prototyp  # noqa: E402
+from inclib import eng3d, footprint, lcl, prototyp  # noqa: E402
 from inclib.brieftext import BriefError, block  # noqa: E402
 from inclib.convert import (parse_3dw_clones, scene_clones,  # noqa: E402
                             world_paths)
@@ -939,6 +939,10 @@ class Corpus:
         #: mission -> cell -> the special objects standing on it.  The two
         #: together say whether "the object on the cell" is one object.
         self.setpiece_cells: dict[str, set[tuple[int, int]]] = defaultdict(set)
+        #: `(mission, x, y)` for every shipped `CrushWall` call -- the nine
+        #: `docs/42` §8.2 measured, on their own rather than mixed with
+        #: `FootBridge`'s cells.
+        self.crush_wall_calls: set[tuple[str, int, int]] = set()
         self.objects_by_cell: dict[tuple[str, int, int], list[str]] = \
             defaultdict(list)
         #: ...and each of those objects' authored z, for the comparison
@@ -1028,6 +1032,9 @@ class Corpus:
                     self.foot_bridge2_groups[path.stem].add(numbers[0])
                 elif stmt.name in CELL_SETPIECES and len(numbers) >= 2:
                     self.setpiece_cells[path.stem].add((numbers[0], numbers[1]))
+                    if stmt.name == "CrushWall":
+                        self.crush_wall_calls.add(
+                            (path.stem, numbers[0], numbers[1]))
             if routine.name != "Use":
                 continue
             self.use_sections += 1
@@ -1101,6 +1108,65 @@ class Corpus:
         except (OSError, KeyError, ValueError):
             return None
 
+    def object_footprints(self, mission: str) -> list[list[int]] | None:
+        """``0x0042F410``'s sweep for every special object of *mission*.
+
+        One cell list per record of ``bm.special``, in placement order --
+        :mod:`inclib.footprint`, which is the same call the converter makes.
+        ``None`` where the world set's meshes cannot be read.
+        """
+        if mission not in self.scene_of:
+            return None
+        world_set, scene = self.scene_of[mission]
+        try:
+            paths = world_paths(Path(self.root), world_set, scene)
+            container = prototyp.load_container(str(paths["din"]),
+                                                str(paths["bin"]))
+            battle = load_lev(Path(self.root) / "Missions" / f"{mission}.lev")
+            return footprint.special_object_cells(
+                battle, container, eng3d.load(self.root))
+        except (OSError, KeyError, ValueError, LevError):
+            return None
+
+    def crush_wall_footprints(self) -> dict[tuple[str, int, int],
+                                            tuple[tuple[int, int], ...]]:
+        """The cells each shipped ``CrushWall`` crushes, by call.
+
+        The call names one cell and ``0x00406F20`` finds the object standing
+        near it, so the run is looked up by the cell the call names.  On all
+        nine shipped calls that is the record's own placement cell, so the
+        lookup and a search by position cannot be told apart here.
+        """
+        out: dict[tuple[str, int, int], tuple[tuple[int, int], ...]] = {}
+        widths: dict[str, int] = {}
+        index_of: dict[str, dict[int, list[int]]] = {}
+        for mission, x, y in sorted(self.crush_wall_calls):
+            if mission not in index_of:
+                lists = self.object_footprints(mission)
+                if lists is None:
+                    continue
+                battle = load_lev(
+                    Path(self.root) / "Missions" / f"{mission}.lev")
+                widths[mission] = battle.width
+                index_of[mission] = footprint.footprint_index(lists)
+            width = widths[mission]
+            run = index_of[mission].get(y * width + x, [])
+            out[(mission, x, y)] = tuple(
+                sorted((cell % width, cell // width) for cell in run))
+        return out
+
+    def cells_under_two_objects(self, mission: str) -> list[tuple[int, int]]:
+        """The cells of *mission* that more than one special object covers."""
+        lists = self.object_footprints(mission)
+        if lists is None:
+            return []
+        battle = load_lev(Path(self.root) / "Missions" / f"{mission}.lev")
+        seen: Counter[int] = Counter()
+        for cells in lists:
+            seen.update(cells)
+        return sorted((cell % battle.width, cell // battle.width)
+                      for cell, count in seen.items() if count > 1)
+
     def teleporter_pairs(self) -> tuple[int, int, list[tuple[str, int]]]:
         """(entries, exits, the entries with no matching exit key)."""
         entries = exits = 0
@@ -1112,6 +1178,59 @@ class Corpus:
                 if key not in exi:
                     unpaired.extend([(name, key)] * count)
         return entries, exits, unpaired
+
+
+#: ``docs/42`` §8.2 -- the footprint of every shipped ``CrushWall``, measured
+#: cell by cell inside the running engine on 2026-09-03 (``docs/97`` §41.7,
+#: ``presentation_gold --check``).  The table is repeated here as a literal so
+#: that :mod:`inclib.footprint`'s projection is checked against the engine's own
+#: answer rather than against itself.
+EXPECTED_CRUSH_WALL_FOOTPRINTS = {
+    ("_C_129", 16, 18): ((16, 18), (16, 19)),
+    ("_C_129", 16, 20): ((16, 20), (16, 21), (16, 22)),
+    ("_C_129", 18, 23): ((17, 23), (18, 23)),
+    ("_C_142", 22, 11): ((22, 11), (22, 12)),
+    ("_O_061", 11, 19): ((10, 19), (11, 19)),
+    ("_O_061", 11, 23): ((10, 23), (11, 23)),
+    ("_O_061", 13, 19): ((12, 19), (13, 19)),
+    ("_O_061", 14, 19): ((14, 19), (15, 19), (16, 19)),
+    ("_O_061", 16, 23): ((15, 23), (16, 23)),
+}
+
+
+def _check_crush_wall_footprints(c: "Checker", corpus: "Corpus") -> None:
+    """``0x0042F410``'s sweep, replayed on the shipped ``.lev`` files.
+
+    ``docs/97`` §41.7 and ``docs/42`` §8.2 as first written called the
+    footprint underivable from the shipped files: the object ``0x00406F20``
+    answers with is a **standard object**, and that array was read as something
+    the engine builds when it expands the scene.  It is not.  ``docs/99`` §10.1
+    already says the search walks the special-object table and nothing else,
+    and a ``.lev``'s special objects are exactly what is in it -- so the wall
+    piece is a record naming a prototype whose mesh is in ``prototyp.bin``, the
+    probe is vertical, and the sweep is arithmetic.
+
+    Three claims, and the first is the one that matters: the projection
+    reproduces the engine's nine measured footprints cell for cell.
+    """
+    measured = corpus.crush_wall_footprints()
+    c.equal("corpus.crush_wall_calls", tuple(sorted(corpus.crush_wall_calls)),
+            tuple(sorted(EXPECTED_CRUSH_WALL_FOOTPRINTS)),
+            lambda v: f"{len(v)} shipped CrushWall call(s)")
+    c.equal("corpus.crush_wall_footprints", measured,
+            EXPECTED_CRUSH_WALL_FOOTPRINTS,
+            lambda v: f"{sum(len(cells) for cells in v.values())} cell(s) over "
+                      f"{len(v)} call(s), against what the engine marked")
+    # The tie-break in `footprint_index` decides nothing in play: two objects
+    # do share a field on the shipped maps -- railings and pillars -- but never
+    # on a cell a `CrushWall` names.
+    ambiguous = tuple(sorted(
+        (mission, x, y)
+        for mission in sorted({m for m, _, _ in corpus.crush_wall_calls})
+        for x, y in corpus.cells_under_two_objects(mission)
+        if (mission, x, y) in corpus.crush_wall_calls))
+    c.equal("corpus.crush_wall_cells_carry_one_object", ambiguous, (),
+            lambda v: f"{len(v)} CrushWall cell(s) under more than one object")
 
 
 def _walk(nodes):
@@ -1976,6 +2095,7 @@ def run_check(root: str) -> int:  # noqa: C901 -- a checklist, not an algorithm
                       f"door, lever or barrier action point names, each "
                       f"carrying {v[1]} special object -- so turning, posing "
                       "and freeing per cell is per object on the shipped maps")
+    _check_crush_wall_footprints(c, corpus)
     # ...and the other half of "which object on the cell": the scene's own
     # `.3DW` geometry stands on some of those fields too. It is in no table
     # `0x00406F20` reads and it is placed **before** the special objects, so

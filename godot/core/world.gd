@@ -807,6 +807,9 @@ func _run_mission_script(call_type: int,
 		environment: Dictionary) -> Dictionary:
 	var context: LclContext = LclContext.create(state, _units, _unit_types,
 		turn, game_control, rng, crand, turn.current_player, next_map)
+	# `CrushWall`'s footprint -- authored geometry the converter projected, so
+	# it rides in from the resource rather than being recomputed (docs/42 §8.2).
+	context.object_cells = resource.object_cells()
 	var outcome: LclOutcome = LclInterpreter.run(script_program, context,
 		MissionScript.to_slots(environment))
 	next_map = context.next_map

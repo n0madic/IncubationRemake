@@ -158,16 +158,13 @@ func duplicate() -> Cheats:
 # `Cheats` was passed, which is what keeps a default argument of `null` from
 # changing a single existing caller.
 
-## The unit belongs to a player a human is holding -- [constant
-## TurnState.KIND_HUMAN]. The aliens' player 255 is outside the array and is
-## therefore never protected.
+## The unit belongs to a player a human is holding -- [method
+## TurnState.is_human], which is where the bound and the kind test live. The
+## aliens' player 255 is outside the slots and is therefore never protected.
 static func controlled(unit: UnitState, turn: TurnState) -> bool:
 	if unit == null or turn == null:
 		return false
-	var player: int = unit.player
-	if player < 0 or player >= turn.player_kind.size():
-		return false
-	return turn.player_kind[player] == TurnState.KIND_HUMAN
+	return turn.is_human(unit.player)
 
 
 ## *unit* takes no damage and cannot be stunned.

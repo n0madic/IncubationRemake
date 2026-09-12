@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import movemap_gold as gold                                        # noqa: E402
 from inclib import combat as combatmod                             # noqa: E402
+from inclib import footprint as footprintmod                       # noqa: E402
 from inclib import interact as interactmod                         # noqa: E402
 from inclib import turn as turnmod                                 # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
@@ -3162,6 +3163,7 @@ def run_check(capture_path: Path, root: Path) -> int:
                               player=lcl.get("player", 0),
                               ai_level=payload["ai_level"],
                               seed=seed_before)
+    world.object_cells = footprintmod.index_for_mission(root, bm)
     # **The shipped .lev is not the world the engine ran on.** _C_141 ships
     # with ten crates and nothing else -- the squad and the aliens exist only
     # in the save. Left as loaded, GetUnits(player 0) answers 0 here and 1

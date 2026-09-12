@@ -1078,13 +1078,32 @@ command's own cell is always among them:
 The runs **tile** the wall and the control map cannot tell them apart:
 `_C_129`'s column at x 16 is five identical cells that split 2 + 3, and
 `_O_061`'s row at y 19 is seven that split 2 + 2 + 3, which is exactly why
-that mission authors three calls on one row. The object `0x00406F20` answers
+that mission authors three calls on one row. ~~The object `0x00406F20` answers
 with is a **standard object** — the array at `[0x004FA80C]`, stride 66,
 counted by `[0x004FA7B4]`, which is neither the `.lev`'s 900-entry land
 lattice nor the scene's 27 `[CLO]` blocks — so the split is the wall piece's
 own geometry and nothing a `.lev` reader can recover. `core` applies the rule
 to the cell it *can* name, the command's own, and the deficit is one or two
-cells per call.
+cells per call.~~
+
+**Corrected 2026-09-12 — the split *is* recoverable, and it is arithmetic.**
+The standard-object array is not something the engine builds when it expands
+the scene: [`99` §10.1](99-slice-7-report.md) already reads `0x00406F20` as
+walking the **special-object table** and nothing else, and a `.lev`'s special
+objects are exactly what is in it. So the wall piece is a `.lev` record naming
+a prototype whose mesh is in `prototyp.bin` — `L040EA00` spans 6 400 units
+(two fields) and `L041EA00` 9 600 (three), both from local `x` 1 583 back
+toward −4 817 / −8 017, so the run leaves the record's own cell in the
+direction the record's yaw turns local −x to.
+
+And the probe is **vertical**, so "the ray meets the object" is "the probe's
+`(x, y)` lies inside the `xy` projection of one of its faces" — no BSP walk and
+no plane arithmetic. `inclib.footprint` does exactly that and reproduces all
+twenty cells of the nine footprints above, cell for cell
+(`corpus.crush_wall_footprints`, mutation-killed by dropping the rotation).
+The remake's converter runs the sweep once per special object and emits the
+cells beside the record, so neither runtime holds a mesh; `core` crushes the
+whole run and the event carries it. See [`97` §50](97-slice-5-report.md).
 
 ---
 
@@ -1509,7 +1528,7 @@ Measured against `godot/game` at the time of writing (slice 5 + `97` §24–§27
 | skill orbit | campaign only (`0x0043B740 == 1`) | ~~ungated~~ gated on `TurnState.mode` (`97` §41.3) |
 | bomber fly-past | six literals; the camera keeps its own target | ~~aimed at the box's cell~~ the literals, and the camera's target kept (`97` §41.3) |
 | between-players screen | skipped outright with one human player | nothing drawn -- which is what the engine does here (`97` §41.5) |
-| `CrushWall`'s cells | a four-probe 3D query against the wall object; the run becomes floor at height 0 | ~~nothing at all~~ the command's own cell becomes floor at height 0 and the debris lands on it; the other one or two cells of the run are measured (§8.2) and not derivable from a `.lev` (`97` §41.7) |
+| `CrushWall`'s cells | a four-probe 3D query against the wall object; the run becomes floor at height 0 | ~~nothing at all~~ ~~the command's own cell becomes floor at height 0 and the debris lands on it; the other one or two cells of the run are measured (§8.2) and not derivable from a `.lev` (`97` §41.7)~~ the whole run: the converter projects the special object onto the control map and `core` crushes every cell of it (§8.2 as corrected 2026-09-12, `97` §50) |
 
 The plan that follows from this table is the remake's business and is recorded
 in `docs/97`'s next addendum, not here. *(The camera rows were closed on

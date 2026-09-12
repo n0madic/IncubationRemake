@@ -135,9 +135,16 @@ MAX_PAIRS = 200
 MAX_COVER_CELLS = 60
 MAX_APPROACH = 12
 #: How many of the large-mover approach probes the model gets wrong.  Recorded
-#: rather than tolerated: the second ring is a known open item (``docs/95``
-#: §8), and a census fails both when it gets worse and when it is fixed.
-APPROACH_LARGE_DISAGREEMENTS = 8
+#: rather than tolerated: a census fails both when it gets worse and when it is
+#: fixed, and on 2026-09-12 it was fixed -- **by correcting the check, not the
+#: model**.  ``approach_plan`` declares ``--buf best:4`` once for the whole
+#: plan, so the engine's ``best`` is one accumulator across both rings and
+#: across every own-cell answer; the replay reset it at the start of each ring
+#: and again after every 10000, which the engine never does.  Carrying the one
+#: buffer the way the plan does takes all twenty probes to agreement, so
+#: ``0x0040ADC0``'s second ring and :func:`inclib.ai.approach_cell` never
+#: disagreed at all (``docs/95`` §9 item 2, closed).
+APPROACH_LARGE_DISAGREEMENTS = 0
 #: The band sweep: the four boundaries, how far either side of each one it
 #: tries to land, and how many distinct percentages a pair must be able to
 #: reach before it is worth sweeping.
@@ -1267,6 +1274,13 @@ def check_approach(c: Checker, payload: dict[str, Any],
     bad: list[str] = []
     large_bad: list[str] = []
     own_cell = 0
+    # **One accumulator for the whole plan**, because that is what the plan
+    # has: `approach_plan` writes `--buf best:4` once and every
+    # `aApproachCell(..., &best, ...)` after it reads what the previous call
+    # left.  Resetting it per ring, or after the 10000 an own-cell answer
+    # writes, is what made eight of the ten large-mover probes look like a
+    # disagreement for a fortnight.
+    best = 0
     for ring, large in enumerate((0, 1)):
         fill = bytes.fromhex(data["fills"][ring])
         ctx = _context_from(fill, bytes.fromhex(state["units"]), tables,
@@ -1277,7 +1291,6 @@ def check_approach(c: Checker, payload: dict[str, Any],
             # fill; the model is told the same thing the same way.
             ctx.world.tables.units[data["type"]] = type(row)(
                 **{**row.__dict__, "size": large})
-        best = 0
         for i, (x, y) in enumerate(targets):
             index = ctx.index(x, y)
             found, best = ai.approach_cell(ctx, index, best, data["unit"])
@@ -1294,28 +1307,28 @@ def check_approach(c: Checker, payload: dict[str, Any],
                               f"model {best}")
             if native_best == ai.APPROACH_OWN_CELL_SCORE:
                 own_cell += 1
-                best = 0
         if row is not None:
             ctx.world.tables.units[data["type"]] = row
     c.expect("approach.small_ring", bad, [],
              f"0x0040ADC0 over {len(targets)} targets, small mover")
-    # **Open, and named rather than hidden.**  The large-mover arm -- the
-    # second ring, reached only by writing `unitInfo[type] + 0x7B` (docs/93
-    # §11) -- comes back with the engine accepting a candidate the model
-    # refuses.  It is 8 of the 10 probes; the figure stood at "5 of 10" in the
-    # comment and in docs/95 for as long as the check could not fail, which is
-    # what an always-true check costs.  Both read `jle` against the model's `>`, so the disagreement is
-    # not the tie-break the listing shows; it is something the second ring
-    # sees that this transcription does not.  No shipped unit on `_C_140` is
-    # large -- `size` is 1 on exactly `ComBot`, `Tr'Yn` and `Al'Coo` -- so
-    # nothing in the corpus or in the demonstration reaches it, and docs/95
-    # carries it as an open question rather than as a check quietly relaxed.
-    # **Open, and now pinned as open.** This was `c.check(..., True, ...)`:
-    # the disagreement was computed and then printed, so nothing could turn
-    # red -- not a regression that made it worse, and not the day somebody
-    # fixes it. The count is a census instead, and it fails in either
-    # direction. Bringing it to zero is the fix, and the check is what will
-    # say so.
+    # **Closed 2026-09-12, and the history is worth keeping.**  The large-mover
+    # arm -- the second ring, reached only by writing `unitInfo[type] + 0x7B`
+    # (docs/93 §11) -- looked like the engine accepting candidates the model
+    # refuses: 8 of the 10 probes, after standing at "5 of 10" in this comment
+    # and in docs/95 for as long as the check was `c.check(..., True, ...)` and
+    # could not fail at all.  Making it a census that fails in both directions
+    # is what eventually got it read, and what it says is that **the model was
+    # never wrong**: every one of the eight is `best` carried differently by
+    # the replay than by the plan.  The engine's `best` is one buffer for the
+    # whole capture; the replay zeroed it twice.  Both listings read `jle`
+    # against the model's `>` and that was never the disagreement, because
+    # there was none.
+    #
+    # What these ten probes do and do not prove, measured by mutation: dropping
+    # the second ring fails four of them, so the **extent** is checked; turning
+    # the large arm's `>` into `>=` fails none, so the **tie-break** is not.
+    # That is a narrower claim than "the ring is verified" and it is the one to
+    # make -- the two rings' asymmetry still rests on the two listings alone.
     c.expect("approach.large_ring_disagreements", len(large_bad),
              APPROACH_LARGE_DISAGREEMENTS,
              f"of {len(targets)} large-mover calls: {large_bad[:2]}")

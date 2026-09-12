@@ -5685,8 +5685,8 @@ func _mission_over() -> bool:
 	return world != null and world.game_control.mission_ended()
 
 
-## Whether a command may be given at all: the mission is running **and the
-## turn is not the computer's**.
+## Whether a command may be given at all: the mission is running **and a human
+## holds the turn**.
 ##
 ## The second half is this remake's stand-in for a thing the engine has and it
 ## does not. `0x0047D600` sets **view state 2** the moment the rotation reaches
@@ -5702,10 +5702,16 @@ func _mission_over() -> bool:
 ## not a cosmetic slip: [method World.may_command] compares against whoever
 ## holds the turn, so the player could select the aliens and spend their turn
 ## for them.
+##
+## The question is [method TurnState.is_human] and not "is the holder 255":
+## `aNextPlayerHandling` leaves view state 0 up for a **human**, and a session
+## with two human seats -- which [member TurnState.player_kind] can describe and
+## nothing in the remake yet builds -- would otherwise let either seat spend the
+## other's turn. Player 255 still fails it, so a campaign is unchanged.
 func _may_command_now() -> bool:
 	if world == null or _mission_over():
 		return false
-	return world.turn.current_player != TurnState.PLAYER_COMPUTER
+	return world.turn.is_human(world.turn.current_player)
 
 
 ## The ray a click casts into the world, or nothing at all: no camera, or a
@@ -6952,8 +6958,9 @@ func _setpiece_extra(name: String, cell: Vector2i,
 			out["cells"] = maxi(1, cells)
 			out["killed"] = []
 		"crush_wall":
-			# `core` carries the cells it changed -- the command's own today,
-			# and whatever a footprint gives it later (docs/97 section 41.7).
+			# `core` carries the cells it changed -- the whole footprint the
+			# converter projected (docs/42 section 8.2), or the command's own
+			# cell where a map document carries no objects.
 			var wall: Array = []
 			for i: int in range(2, values.size() - 1, 2):
 				wall.append([values[i], values[i + 1]])

@@ -241,6 +241,14 @@ class LclWorld:
         self.decal_phase = [c.raw[0x12] for c in cells]
         self.decal_state = [c.raw[0x13] for c in cells]
         self.special_objects: list[int] = []
+        #: ``0x00406F20`` plus ``0x0042F410``: cell -> every cell of the object
+        #: standing on it, which is what ``CrushWall`` crushes (``docs/42``
+        #: §8.2).  Filled by :func:`inclib.footprint.footprint_index` from the
+        #: mission's own ``.lev`` and ``prototyp.bin``; empty here, because a
+        #: ``LclWorld`` is built from the ``.lev`` alone and the meshes live a
+        #: directory away.  Empty means every reader falls back to the cell it
+        #: was given, which is what the synthetic maps want.
+        self.object_cells: dict[int, list[int]] = {}
         #: The placer models the mission's world set carries; ``None`` skips
         #: the gate (``inclib.ctrlmap``).
         self.special_models: frozenset[str] | None = None
@@ -1448,21 +1456,24 @@ def _c_crush_wall(it: Interpreter, p: Params) -> str | None:
     state byte 2.  The state byte goes back to 1 in the debris sweep
     (``0x00415da4``), so what lasts is **the height and the field type**.
 
-    **The footprint is a query against the scene, and this model holds no
-    meshes.**  Measured on all nine shipped call sites (``docs/97`` §41.7):
-    every one is a straight run of two or three cells and the command's own
-    cell is always in it, but which two or three is the wall piece's geometry
-    and nothing in the ``.lev`` records it.  So the rule is applied to the
-    cell this can name, and the deficit is one or two cells per call.
+    **The footprint is a query against the scene, and it is arithmetic.**  The
+    probe is vertical, so "the ray meets the object" is "the probe lies inside
+    the ``xy`` projection of one of its faces"; the wall piece is a ``.lev``
+    special object naming a prototype whose mesh is in ``prototyp.bin``; and
+    :mod:`inclib.footprint` runs the sweep once and reproduces all nine
+    measured footprints cell for cell (``docs/42`` §8.2, ``docs/97`` §50).
+    :attr:`LclWorld.object_cells` carries the answer where a caller has the
+    meshes to hand, and where it does not the command's own cell is used --
+    which is always part of the run when there is one.
     """
     w = it.world
     x, y = p.n(0), p.n(1)
     values = [x, y]
     if w.in_bounds(x, y):
-        cell = w.index(x, y)
-        w.cell_height[cell] = 0
-        w.ctrl_type[cell] = CTRL_TYPE_FREE_PLACE
-        values += [x, y]
+        for cell in w.object_cells.get(w.index(x, y), [w.index(x, y)]):
+            w.cell_height[cell] = 0
+            w.ctrl_type[cell] = CTRL_TYPE_FREE_PLACE
+            values += [cell % w.width, cell // w.width]
     it.event("crush_wall", *values)
     return None
 

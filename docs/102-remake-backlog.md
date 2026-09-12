@@ -7,9 +7,18 @@ after the closed items were struck where they stood.*
 
 This file is a **plan, not a spec**. Every entry names the document that owns
 the finding; that document stays the place the evidence lives, and closing an
-entry means writing the close **there** and striking the line here. Nothing is
-recorded here that is not already recorded somewhere else — a second copy of a
-finding is how the two drift apart.
+entry means writing the close **there** and deleting the entry here — never
+striking it, because a backlog with a strikethrough in it has started being a
+second history. Nothing is recorded here that is not already recorded somewhere
+else — a second copy of a finding is how the two drift apart.
+
+**Closed since this file was written (2026-09-12), and Stage 1 with it.**
+`CrushWall`'s footprint, built in [`97` §50](97-slice-5-report.md) and
+corrected in [`42` §8.2](42-mission-presentation.md); `_may_command_now`'s seat
+test, in [`99` §7](99-slice-7-report.md); and the large-mover second ring, in
+[`95` §9 item 2](95-slice-3-report.md) — which turned out to be a defect in the
+*replay* rather than in the model, so nothing about `0x0040ADC0` changed. The
+stages below keep their numbers; **nothing the player can feel is open.**
 
 **What is deliberately absent.** Items that are closed, items the remake has
 decided not to implement (legacy multiplayer and `pbm session`,
@@ -22,59 +31,6 @@ under `dbgcall`, [`97` §41.6](97-slice-5-report.md); the five cutscenes whose
 speech and effects live in a CD track the GOG release does not ship,
 [`101` §12.1](101-slice-9-report.md) and [`28` §6.1](28-effects-and-sound.md)).
 Those classes are not a backlog.
-
----
-
-## Stage 1 — rules the player can feel
-
-Everything here changes what `core` decides, so it lands before anything that
-only draws.
-
-### 1.1 `CrushWall`'s footprint is one or two cells short
-
-**Owner:** [`97` §41.7](97-slice-5-report.md), [`42` §8.2](42-mission-presentation.md).
-`LclInterpreter._crush_wall` and `inclib.lcl_runtime._c_crush_wall` write
-height 0 and field type 1 on the command's own cell; the engine's
-`0x0042F410` marks a straight run of **two or three** cells and the runs tile
-the wall. The footprints are measured and pinned cell by cell for all nine
-shipped call sites (`presentation_gold --check`), so the oracle is already
-waiting.
-
-**What closes it:** the converter projecting the scene's **standard objects**
-(`[0x004FA80C]`, stride 66, count `[0x004FA7B4]`) onto the control map — the
-same thing `0x0042F410` does, transcribed in §41.7. The projection feeds
-**`core`**, not `game`: the interpreter writes height 0 and field type 1 on the
-cells and puts them on the event, and the picture throws `0x004238C0` on
-exactly those. It is a slice of its own — a `CONVERTER_VERSION` bump, a
-republished cache and both `cache.py` / `cache_loader.gd` constants.
-
-**Why it is first:** §41.7 was written when no shipped mission reached the
-command; [`97` §44](97-slice-5-report.md) then added `_C_129` to the converter's
-set **for its crush wall**, so the deficit is reachable in play today.
-
-### 1.2 `_may_command_now` asks the wrong question
-
-**Owner:** [`99` §7](99-slice-7-report.md). It tests the current player against
-the one computer id (255) instead of asking whether the seat is human.
-`TurnState` can describe more than one human seat (`human_count`) and nothing
-in the remake creates a second one, so the test is sufficient **today** — a
-multi-seat session would let one seat end another's turn.
-
-**What closes it:** one predicate change plus a suite case that builds a
-`TurnState` with two human seats. Cheap, and it removes a latent rule bug
-rather than a visible one.
-
-### 1.3 The large-mover second ring disagrees with the engine
-
-**Owner:** [`95` §9 item 2](95-slice-3-report.md). `0x0040ADC0`'s second ring
-disagrees on **8 of 10** native probes; both listings read `jle` against the
-model's `>`, so it is not the tie-break. No shipped unit on `_C_140` is large,
-and `approach.large_ring_disagreements` is a census that fails in both
-directions, so the number cannot drift again.
-
-**What closes it:** re-reading the ring against a capture that writes the
-`size` byte in `SetUnitInfo`'s static table — the technique
-[`93` §11](93-slice-1-report.md) established for reaching the 3×3 clearance.
 
 ---
 

@@ -339,6 +339,35 @@ func _skip_rule(h: TestHarness) -> void:
 	h.check("turn.local_with_one_human_does_not_skip",
 		not local.skips_empty_players(), "humanCount() is 1")
 
+	_seat_is_human(h)
+
+
+## `0x0043B6E0` read as a seat question rather than as "not 255".
+##
+## [method SliceMain._may_command_now] used to compare the holder against
+## [constant TurnState.PLAYER_COMPUTER], which answers the right way only while
+## exactly one seat is human -- the campaign. A two-human local session is
+## something [member TurnState.player_kind] can already describe, and under the
+## old test either seat could spend the other's turn.
+func _seat_is_human(h: TestHarness) -> void:
+	var two: TurnState = _campaign_state()
+	two.mode = TurnState.MODE_LOCAL
+	two.player_count = 3
+	two.player_kind = PackedInt32Array([1, 0, 1, 0])
+	h.check("turn.is_human.the_first_seat", two.is_human(0), "kind 1")
+	h.check("turn.is_human.a_computer_seat_in_the_middle",
+		not two.is_human(1), "kind 0 inside the rotation")
+	h.check("turn.is_human.the_second_human_seat", two.is_human(2), "kind 1")
+	h.check("turn.is_human.past_the_player_count",
+		not two.is_human(3), "slot 3 is not in the game")
+	h.check("turn.is_human.the_aliens",
+		not two.is_human(TurnState.PLAYER_COMPUTER), "255 is outside the four")
+	h.check("turn.is_human.the_prop_owner",
+		not two.is_human(TurnState.PLAYER_PROPS), "252 is outside the four")
+	h.check("turn.is_human.a_negative_slot", not two.is_human(-1), "no slot")
+	h.check("turn.is_human.counts_the_same_seats",
+		two.human_count() == 2, "human_count() %d" % two.human_count())
+
 
 func _refresh(h: TestHarness) -> void:
 	var world: World = TestFixtures.tiny_world()

@@ -448,11 +448,17 @@ Known and not done, so that it is not forgotten:
   ever plays it: `World.open_mission` is the `handOver(1)` a map load makes and
   `World.skip_deployment_turn` is `0x0041A073`'s empty-pool arm, so a mission
   opens on turn **1** and the groove never reads `0` in play.
-* **`_may_command_now` tests the current player against the one computer id**
-(255) rather than asking whether the seat is human. `TurnState` can describe
-more than one human seat (`human_count`), but nothing in the remake creates a
-second one, so the test is sufficient today; a multi-seat session would let
-one seat end another's turn. It predates this slice.
+* ~~**`_may_command_now` tests the current player against the one computer id**
+  (255) rather than asking whether the seat is human. `TurnState` can describe
+  more than one human seat (`human_count`), but nothing in the remake creates a
+  second one, so the test is sufficient today; a multi-seat session would let
+  one seat end another's turn. It predates this slice.~~ **Closed 2026-09-12.**
+  The question is `TurnState.is_human(player)` now -- the bound and the kind
+  test in one place, which `Cheats.controlled` had written out a second time and
+  now calls. Player 255 and the props' 252 both fall out through the bound
+  rather than through a comparison of their own, so a campaign is unchanged;
+  `turn.is_human.*` builds a local session with two human seats and a computer
+  seat between them, which is the state the old test answered wrongly.
 * ~~**Classic keyboard bindings.**~~ **Closed 2026-09-11.** `hud_tables.py` now
   interprets both keyboard switches and the Windows message translators. The
   remake uses the resulting original keys, including `G` for the magnifier;

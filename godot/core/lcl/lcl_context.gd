@@ -29,6 +29,11 @@ var crand: CRandom
 var player: int = 0
 ## `EnterNameOfNextMap` writes it; the campaign layer reads it.
 var next_map: String = ""
+## `0x00406F20` plus `0x0042F410`: the cells the object standing on a cell
+## covers, which is what `CrushWall` crushes (docs/42 section 8.2). Authored,
+## so it comes straight off [MapResource]; empty for a hand-built context, and
+## then every reader falls back to the cell it was given.
+var object_cells: Dictionary[int, PackedInt32Array] = {}
 
 
 static func create(map_state: MapState, unit_map: Dictionary,
@@ -46,6 +51,14 @@ static func create(map_state: MapState, unit_map: Dictionary,
 	context.player = host_player
 	context.next_map = map_name
 	return context
+
+
+## Every cell of the object standing on `index`, or just `index` itself --
+## [method MapResource.object_cells_at`], reachable from a handler.
+func cells_of_object_at(index: int) -> PackedInt32Array:
+	if object_cells.has(index):
+		return object_cells[index].duplicate()
+	return PackedInt32Array([index])
 
 
 func in_bounds(x: int, y: int) -> bool:

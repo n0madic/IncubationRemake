@@ -33,6 +33,11 @@ var _unit: PackedInt32Array = PackedInt32Array()
 var _land: PackedInt32Array = PackedInt32Array()
 var _start_index: PackedInt32Array = PackedInt32Array()
 var _effect: Array[PackedByteArray] = []
+## `0x0042F410`'s sweep, run by the converter: cell -> every cell of the
+## placed object standing on it (docs/42 section 8.2). Authored geometry, so it
+## lives here and not in [MapState]; **outside** [method authored_hash], which
+## digests the grid the save has to agree with and not what stands on it.
+var _object_cells: Dictionary[int, PackedInt32Array] = {}
 
 
 static func from_document(document: Dictionary) -> MapResource:
@@ -56,7 +61,36 @@ static func from_document(document: Dictionary) -> MapResource:
 	res._effect = []
 	for slot: int in range(MapState.EFFECT_SLOTS):
 		res._effect.append(_bytes(cells["effect%d" % slot]))
+	res._read_object_cells(document)
 	return res
+
+
+## The footprint index, from the converter's `cells` on each special object.
+##
+## `CrushWall` names one cell and the engine's `0x00406F20` finds the object
+## standing near it, so every cell of a run points at the whole run. Where two
+## objects cover one cell the **first** placed wins -- this index's own
+## tie-break, not the engine's box search, and the two are shown equal only on
+## the nine shipped calls; no cell any `CrushWall` names is under two objects
+## (`inclib.footprint`, `corpus.crush_wall_cells_carry_one_object`).
+##
+## A document with no `special_objects` -- the hand-built ones the suites pass
+## -- leaves the index empty, and every reader falls back to the cell it was
+## given.
+func _read_object_cells(document: Dictionary) -> void:
+	if document.has("special_objects"):
+		for entry: Variant in DictRead.as_array(document["special_objects"]):
+			var record: Dictionary = DictRead.as_dict(entry)
+			if not record.has("cells"):
+				continue
+			var run: PackedInt32Array = _ints(record["cells"])
+			for cell: int in run:
+				if not _object_cells.has(cell):
+					_object_cells[cell] = run
+	# [method object_cells] shares this dictionary rather than copying it, and
+	# this is what makes "never written" a property rather than a promise --
+	# on an empty index as much as on a filled one.
+	_object_cells.make_read_only()
 
 
 ## Every number `JSON.parse_string` produces is a `float`.  All of them are far
@@ -128,6 +162,32 @@ func units() -> PackedInt32Array:
 
 func effects(slot: int) -> PackedByteArray:
 	return _effect[slot].duplicate()
+
+
+## Every cell of the placed object standing on `index`, or just `index` itself
+## where nothing stands there.
+##
+## The fallback is what the remake did everywhere before the footprints were
+## emitted (docs/97 section 41.7): the command's own cell, which is always part
+## of the run when there is one.
+func object_cells_at(index: int) -> PackedInt32Array:
+	if _object_cells.has(index):
+		return _object_cells[index].duplicate()
+	return PackedInt32Array([index])
+
+
+## Whether anything stands on `index` at all.
+func has_object_cells(index: int) -> bool:
+	return _object_cells.has(index)
+
+
+## The whole index, for a reader that keeps it for the life of a mission.
+##
+## The runs inside it are never written -- [method object_cells_at] hands out a
+## `duplicate()` -- and the dictionary itself is rebuilt per mission, so this
+## one is shared rather than copied.
+func object_cells() -> Dictionary[int, PackedInt32Array]:
+	return _object_cells
 
 
 ## A digest of the authored grid alone, so a save can be refused when it is

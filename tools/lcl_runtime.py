@@ -35,6 +35,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inclib import ctrlmap                                          # noqa: E402
+from inclib import footprint                                        # noqa: E402
 from inclib import interact as interactmod                          # noqa: E402
 from inclib import lcl                                              # noqa: E402
 from inclib import lcl_runtime as runtime                           # noqa: E402
@@ -69,7 +70,13 @@ def _mission_world(root: Path, name: str, tables: Any, turn: int = 1,
                    player: int = 0,
                    seed: float = 0.0) -> runtime.LclWorld:
     bm = load_lev(str(root / "Missions" / f"{name}.lev"))
-    return runtime.LclWorld(bm, tables, turn=turn, player=player, seed=seed)
+    world = runtime.LclWorld(bm, tables, turn=turn, player=player, seed=seed)
+    # `CrushWall`'s footprint, the same projection the converter emits into the
+    # cache (`docs/42` §8.2).  Without it this model would crush one cell where
+    # `core`, which reads the cache, crushes the run -- and a mission with a
+    # `CrushWall` is exactly what a case fixture may be emitted from next.
+    world.object_cells = footprint.index_for_mission(root, bm)
+    return world
 
 
 def _script_paths(root: Path) -> list[Path]:
@@ -400,8 +407,15 @@ def _crush_wall_checks(c: Checker) -> None:
 
     The lasting writes are the height and the field type; the state byte the
     mark leaves at 2 is put back to 1 by the debris sweep, so it is not
-    modelled.  The footprint is the wall piece's own geometry and this model
-    reaches only the command's cell (``docs/97`` §41.7).
+    modelled.
+
+    The footprint is the wall piece's own geometry, and it is arithmetic:
+    :mod:`inclib.footprint` projects the object onto the control map and
+    reproduces all nine shipped call sites cell for cell (``docs/42`` §8.2,
+    ``docs/97`` §50).  A ``LclWorld`` is built from a ``.lev`` alone, so it
+    carries the answer in :attr:`LclWorld.object_cells` rather than computing
+    it -- empty here except in the third case, and then the command's own cell
+    is what is crushed, which is always part of the run when there is one.
     """
     def command(name: str, *values: int) -> dict[str, Any]:
         return {"kind": "command", "line": 1, "name": name,
@@ -429,6 +443,28 @@ def _crush_wall_checks(c: Checker) -> None:
     c.expect("crush_wall.off_the_map_changes_nothing",
              [values for name, values in out.events if name == "crush_wall"],
              [[99, 99]])
+    # With a footprint: the three-cell run `L041EA00` gives on the shipped
+    # maps, named by its middle cell -- the run is found by the cell and not
+    # by the record's own position, because `0x00406F20` searches a box
+    # around the cell the command names.
+    w = runtime.LclWorld(_FlatMap(8, 8), _TABLES, seed=1.0)
+    run = [w.index(x, 3) for x in (2, 3, 4)]
+    for at in run:
+        w.ctrl_type[at] = 2
+        w.cell_height[at] = 3280
+    w.object_cells = {at: run for at in run}
+    out = runtime.run({"instructions": [command("CrushWall", 3, 3),
+                                        {"kind": "end", "line": 9}],
+                       "labels": {}}, w)
+    c.expect("crush_wall.the_whole_footprint_becomes_floor",
+             [[w.ctrl_type[w.index(x, 3)], w.cell_height[w.index(x, 3)]]
+              for x in range(1, 6)],
+             [[0, 0], [1, 0], [1, 0], [1, 0], [0, 0]],
+             "the three cells of the run, and neither neighbour")
+    c.expect("crush_wall.the_event_carries_the_footprint",
+             [values for name, values in out.events if name == "crush_wall"],
+             [[3, 3, 2, 3, 3, 3, 4, 3]],
+             "the command's cell, then the three the picture throws debris on")
 
 
 def _open_door_checks(c: Checker) -> None:
@@ -1086,7 +1122,9 @@ def run_one(path: Path, root: Path, call: int, as_json: bool) -> int:
     lev = root / "Missions" / f"{path.stem}.lev"
     if not lev.is_file():
         raise SystemExit(f"{lev} not found; --root must be the game root")
-    world = runtime.LclWorld(load_lev(str(lev)), tables)
+    bm = load_lev(str(lev))
+    world = runtime.LclWorld(bm, tables)
+    world.object_cells = footprint.index_for_mission(root, bm)
     outcome = runtime.run(document, world, runtime.mission_env(call))
     if as_json:
         json.dump(outcome.to_dict(), sys.stdout, indent=2)

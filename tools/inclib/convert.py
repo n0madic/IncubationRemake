@@ -43,6 +43,7 @@ from . import charisma as chamod
 from . import charisma_cache as chacache
 from . import charisma_tables as chatables
 from . import eng3d
+from . import footprint as footprintmod
 from . import lev as levmod
 from . import liblib
 from . import prototyp as protomod
@@ -282,7 +283,9 @@ def scene_clones(clones: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
-                     source: dict[str, Any]) -> dict[str, Any]:
+                     source: dict[str, Any],
+                     footprints: list[list[int]] | None = None
+                     ) -> dict[str, Any]:
     """The portable form of one ``.lev``.
 
     Cells are a **structure of arrays**, row-major, split by lifetime the way
@@ -420,8 +423,15 @@ def mission_document(bm: levmod.BattleMap, clones: list[dict[str, Any]],
                 # the `.lev` authors and a door's leaves are posed by
                 # (docs/26 §3.4).  Since 0.24.0.
                 "joints": [list(j) for j in o.joints],
+                # `0x0042F410`'s four-probe sweep, run here once so that
+                # neither runtime has to hold a mesh (`inclib.footprint`).
+                # This is `CrushWall`'s footprint -- docs/42 §8.2.  Since
+                # 0.40.0.
+                "cells": list(cells),
             }
-            for o in bm.special
+            for o, cells in zip(bm.special, footprints
+                                if footprints is not None
+                                else [[]] * len(bm.special))
         ],
         "scene_clones": clones,
         "marker": None if bm.marker_object is None else {
@@ -1250,11 +1260,22 @@ def convert(root: Path, missions: list[str], staging: Staging,
     effects = effect_models(root)
     rare = rare_effect_models(root)
 
+    # `0x0042F410`'s sweep needs the world set's meshes, and the world-set
+    # pass below runs after every mission is read -- so the containers are
+    # opened here, once each, and that pass reuses them.
+    containers: dict[str, protomod.Container] = {}
+    angles = eng3d.load(str(root), reader.record)
+
     for name in missions:
         path = reader.record(mission_path(root, name))
         bm = levmod.load_lev(str(path))
         paths = world_paths(root, bm.world_set, bm.world_scene)
         clones = scene_clones(_parse_3dw(reader, paths["dw"]))
+        if bm.world_set not in containers:
+            containers[bm.world_set] = protomod.load_container(
+                str(paths["din"]), str(paths["bin"]))
+        footprints = footprintmod.special_object_cells(
+            bm, containers[bm.world_set], angles)
         # docs/25 section 4: handing the turn over *runs* the mission script,
         # so the script is not an extra the map happens to have -- it is half
         # of what a mission is, and the cache carries it beside the map.
@@ -1271,7 +1292,7 @@ def convert(root: Path, missions: list[str], staging: Staging,
             "dw_sha256": reader.seen[reader.rel(paths["dw"])],
             "lcl": script_source["lcl"],
             "lcl_sha256": script_source["sha256"],
-        })
+        }, footprints)
         staging.write_json(f"missions/{name}/map.json", document)
         staging.write_json(f"missions/{name}/script.json",
                            script_document(program, script_source))
@@ -1297,8 +1318,8 @@ def convert(root: Path, missions: list[str], staging: Staging,
         paths = world_paths(root, world_set, sorted(scenes_by_set[world_set])[0])
         reader.record(paths["din"])
         reader.record(paths["bin"])
-        container = protomod.load_container(str(paths["din"]),
-                                            str(paths["bin"]))
+        container = containers.get(world_set) or protomod.load_container(
+            str(paths["din"]), str(paths["bin"]))
         document, textures = geometry_document(world_set, sorted(names),
                                                container, {
             "din": reader.rel(paths["din"]),

@@ -36,6 +36,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inclib import ctrlmap                                          # noqa: E402
+from inclib import footprint                                        # noqa: E402
 from inclib import lcl                                              # noqa: E402
 from inclib import lcl_runtime as lclrt                             # noqa: E402
 from inclib import turn as turnmod                                  # noqa: E402
@@ -342,6 +343,7 @@ def check_hand_over(c: Checker, root: Path, tables: BalanceTables) -> None:
     state = _campaign_state()
     world = lclrt.LclWorld(bm, tables, turn=state.turn, player=0,
                            ai_level=state.ai_level)
+    world.object_cells = footprint.index_for_mission(root, bm)
     calls: list[int] = []
     player_env_c: list[int] = []
 
@@ -658,6 +660,7 @@ def emit_handover_cases(root: Path, out: Path) -> int:
     state = _campaign_state()
     world = lclrt.LclWorld(bm, tables, turn=state.turn, player=0,
                            ai_level=state.ai_level)
+    world.object_cells = footprint.index_for_mission(root, bm)
 
     # Seed the squad, so the refresh has work to do.  A `.lev` as authored has
     # every one of these at zero, and a trace taken from it would compare a

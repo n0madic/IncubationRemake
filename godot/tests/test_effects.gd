@@ -975,6 +975,34 @@ func _check_family(h: TestHarness) -> void:
 	if cells.is_empty():
 		walls.free()
 		return
+	# The footprint the converter projected, on the mission the shipped
+	# `CrushWall` calls are on. `0x0042F410` sweeps the control map with four
+	# probes a cell against the wall object; the converter runs that once
+	# (`inclib.footprint`) and `core` reads the answer. These three runs are
+	# what the engine marked, measured cell by cell on 2026-09-03 (docs/42
+	# section 8.2) -- the picture of the same claim `interaction_tables`'
+	# `corpus.crush_wall_footprints` pins on the Python side.
+	var wall_map: MapResource = wall_world.resource
+	var footprints: Array = []
+	for site: Vector2i in [Vector2i(16, 18), Vector2i(16, 20),
+			Vector2i(18, 23)]:
+		var run: PackedInt32Array = wall_map.object_cells_at(
+			wall_map.index_of(site.x, site.y))
+		var named: Array = []
+		for at: int in run:
+			named.append([at % wall_map.width, at / wall_map.width])
+		named.sort()
+		footprints.append(named)
+	h.equal("family.wall.footprints", footprints,
+		[[[16, 18], [16, 19]], [[16, 20], [16, 21], [16, 22]],
+		[[17, 23], [18, 23]]],
+		"the three shipped CrushWall calls on %s, against what the engine marked"
+			% WALL_MISSION)
+	h.check("family.wall.footprint_falls_back",
+		wall_map.object_cells_at(wall_map.index_of(0, 0))
+			== PackedInt32Array([wall_map.index_of(0, 0)]),
+		"a cell nothing stands on answers with itself")
+
 	var cell: int = cells[0]
 	var wall: Node3D = walls.objects_on(cell)[0]
 	var was: Transform3D = wall.transform

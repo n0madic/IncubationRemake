@@ -414,15 +414,33 @@ layer down: a check that cannot reach a branch is a check that cannot see it.
    it — and defeat against the live opponent is reproducible. The suite asserts
    each of the three outcomes for what it is rather than relaxing until one
    passes. What is missing is a squad tactic, not a rule.
-2. **The large-mover second ring of `0x0040ADC0` disagrees with the engine** on
+2. ~~**The large-mover second ring of `0x0040ADC0` disagrees with the engine** on
    **8 of 10** probes. Both listings read `jle` against the model's `>`, so it
    is not the tie-break; the second ring sees something this transcription does
    not. No shipped unit on `_C_140` is large, so nothing in the demonstration
-   reaches it. The count stood at "5 of 10" here until a review pass turned
+   reaches it.~~ The count stood at "5 of 10" here until a review pass turned
    `approach.large_ring_is_open` -- a `check(..., True, ...)` that computed the
    number and only printed it -- into `approach.large_ring_disagreements`, a
    census that fails in **both** directions. The old figure had drifted, and
    nothing could say so.
+
+   **Closed 2026-09-12, and there was never a disagreement.** The census is at
+   **0 of 10**, and what changed is the *replay*, not
+   `inclib.ai.approach_cell`. `ai_gold.approach_plan` declares `--buf best:4`
+   **once** for the whole plan, so the engine's `best` is one accumulator that
+   every `aApproachCell` after the first reads what the last one left --
+   across both rings, and across the 10000 an own-cell answer writes into it.
+   `check_approach` zeroed the model's copy at the start of each ring and again
+   after every 10000. Every one of the eight was that, and carrying the single
+   buffer the plan actually has takes all twenty probes to agreement. The
+   census is the thing that got it read: an always-true check hid it for a
+   fortnight and a failing one could not.
+
+   **What the ten probes prove, measured by mutation.** Dropping the second
+   ring fails four of them, so its **extent** is checked against the engine.
+   Turning the large arm's `>` into `>=` fails none, so the **tie-break** is
+   not -- the two rings' asymmetry still rests on the two listings alone, and
+   that is the narrower claim to make.
 3. ~~**The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).~~ **Closed** by the fourth,
    fifth and sixth slices — [`96`](96-slice-4-report.md) the bodies,

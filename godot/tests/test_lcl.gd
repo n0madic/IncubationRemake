@@ -423,7 +423,8 @@ static func _program(body: Array, labels: Dictionary = {}) -> LclProgram:
 ## Runs one hand-built program on a `w x h` world with the given units.
 static func _run_synthetic(program: LclProgram, units: Array,
 		width: int = 4, height: int = 4,
-		cells: Dictionary = {}, ai_level: int = -1) -> Dictionary:
+		cells: Dictionary = {}, ai_level: int = -1,
+		objects: Array = []) -> Dictionary:
 	var zeros: Array = []
 	var links: Array = []
 	# The idle value of the three object slots and the obstacle byte.
@@ -448,6 +449,7 @@ static func _run_synthetic(program: LclProgram, units: Array,
 			"camera_height": 0, "equip_points": [0, 0, 0, 0],
 			"skill_level": 0, "tech_level": 0},
 		"cells": grid,
+		"special_objects": objects,
 	})
 	var state: MapState = MapState.from_resource(res)
 	var roster: Dictionary = {}
@@ -480,6 +482,9 @@ static func _run_synthetic(program: LclProgram, units: Array,
 	var control: GameControl = GameControl.create()
 	var context: LclContext = LclContext.create(state, roster, types, turn,
 		control, IncRandom.new(), CRandom.create(), 0, "")
+	# The one thing `World` hands a context that `create` does not take:
+	# the converter's footprints (docs/42 section 8.2).
+	context.object_cells = res.object_cells()
 	var outcome: LclOutcome = LclInterpreter.run(program, context,
 		LclEnv.of(LclEnv.CALL_NEXT_TURN, turn.turn), 500)
 	return {"outcome": outcome, "control": control, "state": state,
@@ -1053,9 +1058,11 @@ func _foot_bridges(h: TestHarness) -> void:
 ## `CrushWall` -- `0x00415C70` through `0x0042F410`, docs/42 section 8.2.
 ##
 ## The twin of `lcl_runtime.py`'s `crush_wall.*`: a wall cell becomes floor at
-## ground level, and the event carries the cells that changed. What it does
-## **not** carry is the other one or two cells of the wall piece -- the
-## footprint is the piece's own geometry (docs/97 section 41.7).
+## ground level, and the event carries the cells that changed -- **all** of
+## them, since the converter projects the wall piece's own geometry onto the
+## control map (docs/42 section 8.2, docs/97 section 50). A map document with no
+## special objects, which is every synthetic one, falls back to the command's
+## own cell; the second half of this case gives it one and gets the run.
 func _crush_wall(h: TestHarness) -> void:
 	var walls: Array = []
 	var heights: Array = []
@@ -1082,6 +1089,45 @@ func _crush_wall(h: TestHarness) -> void:
 			carried = DictRead.as_array(event["values"])
 	h.equal("crush_wall.the_event_carries_the_cells", carried, [3, 4, 3, 4],
 		"the command's cell, then every cell it changed")
+
+	# The same command with an object standing on it: a three-cell run, the
+	# shape `L041EA00` gives on the shipped maps. The command names the middle
+	# cell to show that the run is found by the cell rather than by the
+	# record's own position -- `0x00406F20` searches a box around the cell.
+	var footprint: Array = [{"prototype": "L041EA00.3DI",
+		"cells": [3 * 8 + 2, 3 * 8 + 3, 3 * 8 + 4]}]
+	var wide_walls: Array = []
+	var wide_heights: Array = []
+	for _i: int in range(8 * 8):
+		wide_walls.append(0)
+		wide_heights.append(0)
+	for x: int in [2, 3, 4]:
+		wide_walls[3 * 8 + x] = 2
+		wide_heights[3 * 8 + x] = 3280
+	var wide: Dictionary = _run_synthetic(_program([
+		_instr("command", "CrushWall", [_num(3), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [], 8, 8, {"field_type": wide_walls, "height": wide_heights}, -1,
+		footprint)
+	var wide_state: MapState = wide["state"]
+	var crushed: Array = []
+	for x: int in [1, 2, 3, 4, 5]:
+		var cell: int = wide_state.index_of(x, 3)
+		crushed.append([wide_state.field_type_at(cell),
+			wide_state.height_at(cell)])
+	h.equal("crush_wall.the_whole_footprint_becomes_floor", crushed,
+		[[0, 0], [1, 0], [1, 0], [1, 0], [0, 0]],
+		"the three cells of the run, and neither neighbour")
+	var wide_outcome: LclOutcome = wide["outcome"]
+	var wide_carried: Array = []
+	for entry: Variant in wide_outcome.events:
+		var event: Dictionary = DictRead.as_dict(entry)
+		if DictRead.as_string(event["name"]) == "crush_wall":
+			wide_carried = DictRead.as_array(event["values"])
+	h.equal("crush_wall.the_event_carries_the_footprint", wide_carried,
+		[3, 3, 2, 3, 3, 3, 4, 3],
+		"the command's cell, then the three the picture throws debris on")
 
 
 ## `OpenDoor` -- `0x004420C0` through `aDoorOpenSequence` `0x00410A20`.

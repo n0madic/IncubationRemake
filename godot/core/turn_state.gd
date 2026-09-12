@@ -114,6 +114,20 @@ func human_count() -> int:
 	return n
 
 
+## Is *player* a seat a human holds?
+##
+## `0x0043B6E0` is the kind array and this is the only question anybody asks of
+## it: [method human_count] counts the slots that answer true, [method
+## Cheats.controlled] asks it of a unit's owner, and the picture asks it of
+## whoever is holding the turn. The aliens' [constant PLAYER_COMPUTER] and the
+## props' [constant PLAYER_PROPS] are both outside the four slots and fall out
+## through the bound rather than through a comparison of their own.
+func is_human(player: int) -> bool:
+	if player < 0 or player >= mini(player_count, PLAYER_SLOTS):
+		return false
+	return player_kind[player] == KIND_HUMAN
+
+
 ## `0x0043B1F0` -- the gate in front of the "no units left" skip.
 ##
 ## True **only** in a net or pbm session, or a local session with more than one
