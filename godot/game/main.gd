@@ -6832,12 +6832,25 @@ func _ride_platform(ride: Dictionary, values: PackedInt32Array, frame: int,
 ## (docs/42 section 8.1), and finds it on whichever of the two carries it.
 func _block_cell(event: Dictionary) -> Vector2i:
 	var cell: Vector2i = SetpieceDriver.cell_of(event)
-	if AudioEvents.name_of(event) != "foot_bridge2" or _scenery == null \
-			or world == null:
+	if _scenery == null or world == null:
 		return cell
-	var group: Array[Vector2i] = SetpieceDriver.group_cells(event)
-	for i: int in range(mini(2, group.size())):
-		var at: Vector2i = group[i]
+	# Where the routine's object stands, which is not always the cell the
+	# event leads with: `FootBridge2`'s block is on one of its group's first
+	# two cells, and a `CrushWall` names any cell of the wall piece's run --
+	# `core` finds the run by the cell, the way `0x00406F20`'s box search
+	# would, so the node has to be found the same way or a call naming the far
+	# cell would crush the cells and leave the wall standing (docs/97 section
+	# 50.3).
+	var candidates: Array[Vector2i] = []
+	match AudioEvents.name_of(event):
+		"foot_bridge2":
+			var group: Array[Vector2i] = SetpieceDriver.group_cells(event)
+			candidates = group.slice(0, mini(2, group.size()))
+		"crush_wall":
+			candidates = SetpieceDriver.footprint_cells(event)
+		_:
+			return cell
+	for at: Vector2i in candidates:
 		if world.state.in_bounds(at.x, at.y) \
 				and not _scenery.objects_on(world.state.index_of(at.x, at.y)).is_empty():
 			return at

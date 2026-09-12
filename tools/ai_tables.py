@@ -134,6 +134,13 @@ EXPECTED_CORNER_PARTS = {4: (2, 3), 5: (0, 1), 6: (0, 3), 7: (2, 1)}
 
 #: aBuildMoveMap, 0x00430A40.
 BUILD_MOVE_MAP = 0x00430A40
+#: ``0x0040ADC0`` -- the approach cell's two candidate tests (docs/23 §5.2):
+#: the large arm's ``cmp ecx, eax; jle`` at ``0x0040AF03`` keeps the incumbent
+#: on a tie, the small arm's ``cmp ecx, eax; jl`` at ``0x0040AF8D`` lets a later
+#: tied cell win.  ``ai_gold``'s ``approach.tie.*`` measures both; this pins
+#: the bytes the reading rests on.
+APPROACH_LARGE_TEST = (0x0040AF03, b"\x3b\xc8\x7e")
+APPROACH_SMALL_TEST = (0x0040AF8D, b"\x3b\xc8\x7c")
 #: `mov eax, 0x3EE0` -- the __chkstk argument, i.e. the stack frame.
 MOVE_MAP_FRAME = 0x3EE0
 #: `mov ebp, 0x7D3` -- the stride between the two ping-ponged queues.
@@ -739,6 +746,13 @@ def run_check(root: str) -> int:
     c.check("cost.offset",
             COST_TABLE_READ - CTRL_MAP_INFO_BASE == 1,
             "SetCtrlMapInfo +0x01 is `delay`")
+
+    LOG.info("the approach cell's tie-break")
+    for name, (at, want) in (("large_keeps_the_incumbent", APPROACH_LARGE_TEST),
+                             ("small_takes_a_later_tie", APPROACH_SMALL_TEST)):
+        got = pe.bytes_at(at, len(want))
+        c.check(f"approach.{name}", got == want,
+                f"{got.hex()} at 0x{at:08X}, want {want.hex()}")
 
     LOG.info("the climb limit")
     magic = _find_imm32(pe, BUILD_MOVE_MAP, BUILD_MOVE_MAP + 0x400,

@@ -37,17 +37,17 @@ PROBE_OFFSET = 200
 #: ``0x0042F410`` -- ``c7 44 24 24 a0 86 01 00``, the z the ray starts from.
 PROBE_HEIGHT = 100000
 
-#: The four probes, as offsets from the cell's own symbol object.
-#:
-#: **UNVERIFIED**: the listing adds 200 twice and subtracts it twice, one pair
-#: per axis, which reads as this cross but is equally consistent with the four
-#: corners.  Both were run over the corpus and the nine measured footprints
-#: come out identical either way -- every wall piece is 1500 units deep against
-#: a 400-unit probe span -- so the cross is taken and the alternative is named
-#: rather than assumed away.
+#: The four probes, as offsets from the cell's own symbol object -- the
+#: **cross**, read off the listing on 2026-09-12: each probe loads one
+#: coordinate of the symbol object (``+0x10`` x, ``+0x14`` y) and offsets it
+#: while the other is loaded plain, in the order x-200, x+200, y-200, y+200
+#: (``presentation_tables`` ``special.probe.{1..4}_*``).  The corners would
+#: have given the same nine footprints -- every wall piece is 1500 units deep
+#: against a 400-unit probe span -- which is why the order of the four
+#: mattered to nothing measured and had to be read instead.
 PROBE_OFFSETS: tuple[tuple[int, int], ...] = (
-    (PROBE_OFFSET, 0), (-PROBE_OFFSET, 0),
-    (0, PROBE_OFFSET), (0, -PROBE_OFFSET),
+    (-PROBE_OFFSET, 0), (PROBE_OFFSET, 0),
+    (0, -PROBE_OFFSET), (0, PROBE_OFFSET),
 )
 
 

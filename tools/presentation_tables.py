@@ -1582,6 +1582,25 @@ def _check_crush_wall(ck: Checker, b: Binary) -> None:
                b"\x81\xe9\xc8\x00\x00\x00", 2)
     _pin_bytes(ck, b, "special.probe.from_100000", MARK_UNDER_OBJECT,
                b"\xc7\x44\x24\x24\xa0\x86\x01\x00", 4)
+    # Which axis each probe moves -- read 2026-09-12, and it is the **cross**,
+    # not the corners: every probe loads one coordinate of the symbol object
+    # (`+0x10` x, `+0x14` y) and offsets it while the other is loaded plain.
+    # (x - 200, y): `mov ecx, [esi+0x10]` ... `sub ecx, 200`; `mov edx, [esi+0x14]`.
+    _pin_at(ck, b, "special.probe.1_is_x_minus_200", 0x0042F46E,
+            b"\x8b\x4e\x10\x83\xc4\x04\x81\xe9\xc8\x00\x00\x00")
+    _pin_at(ck, b, "special.probe.1_y_untouched", 0x0042F482, b"\x8b\x56\x14")
+    # (x + 200, y): `mov edx, [esi+0x10]` ... `add edx, 200`; `mov eax, [esi+0x14]`.
+    _pin_at(ck, b, "special.probe.2_is_x_plus_200", 0x0042F4C8,
+            b"\x8b\x56\x10\x8d\x4c\x24\x1c\x81\xc2\xc8\x00\x00\x00")
+    _pin_at(ck, b, "special.probe.2_y_untouched", 0x0042F4DA, b"\x8b\x46\x14")
+    # (x, y - 200): `mov eax, [esi+0x10]`; `mov ecx, [esi+0x14]` ... `sub ecx, 200`.
+    _pin_at(ck, b, "special.probe.3_x_untouched", 0x0042F51F, b"\x8b\x46\x10")
+    _pin_at(ck, b, "special.probe.3_is_y_minus_200", 0x0042F52A,
+            b"\x8b\x4e\x14\x55\x8d\x44\x24\x14\x81\xe9\xc8\x00\x00\x00")
+    # (x, y + 200): `mov ecx, [esi+0x10]`; `mov edx, [esi+0x14]` ... `add edx, 200`.
+    _pin_at(ck, b, "special.probe.4_x_untouched", 0x0042F572, b"\x8b\x4e\x10")
+    _pin_at(ck, b, "special.probe.4_is_y_plus_200", 0x0042F57D,
+            b"\x8b\x56\x14\x55\x8d\x4c\x24\x14\x81\xc2\xc8\x00\x00\x00")
     # `0x0042F609` / `0x0042F612` -- the field type and the height it writes.
     _pin_at(ck, b, "special.probe.writes_field_type_and_height", 0x0042F602,
             b"\x8a\x44\x24\x50\x8b\x56\x18\x88\x43\x0d")

@@ -19,6 +19,8 @@ The phases, in the order they are written to disk:
 ``cover``        ``0x0040B0D0``, and the two bytes it reads past the array
 ``overlay``      ``0x0042FF30`` then ``0x0042FE90``, read back as cells
 ``approach``     ``0x0040ADC0`` after a fill, small mover and large
+``approach_tie`` ``0x0040ADC0`` once more, one target twice per arm, so the
+                 second call is a tie: ``jl`` takes it, ``jle`` refuses it
 ``helpers``      ``0x0040B380``, ``0x0040A6E0``, ``0x0040B210``,
                  ``0x0040B250``, ``0x0047A810``
 ``fire``         ``0x0040A440``; destructive, state read after every call
@@ -44,6 +46,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import logging
@@ -408,6 +411,37 @@ def approach_plan(slot: int, unit_slot: int, unit_type: int,
             lines.append(
                 f"aApproachCell({_cell(x, y)}, &best, {unit_slot}) "
                 f"--dump best")
+    lines.append(_writeb(size_addr, 0))
+    return "\n".join(lines) + "\n"
+
+
+def approach_tie_plan(slot: int, unit_slot: int, unit_type: int,
+                      small: tuple[int, int], large: tuple[int, int]) -> str:
+    """``0x0040ADC0``'s tie-break, one arm at a time.
+
+    Each arm gets **its own** ``best`` buffer and the same target twice: the
+    first call accepts a candidate and writes its points into the buffer, the
+    second sees a candidate with exactly those points.  ``jl`` (small) takes
+    it again; ``jle`` (large) refuses it and returns 0.  Two buffers because
+    one carried across the arms is the trap ``docs/95`` §9 item 2 records:
+    the large arm's first call would start from the small arm's answer and
+    refuse before it had accepted anything.
+    """
+    size_addr = (f"0x{UNIT_INFO_BASE + unit_type * UNIT_INFO_STRIDE + UNIT_INFO_SIZE:x}")
+    lines = _prologue(slot, bytes_needed=(0, 1))
+    lines += ["--buf best_small:4", "--buf best_large:4", "--buf blocked:4"]
+    for size, target, buf in ((0, small, "best_small"),
+                              (1, large, "best_large")):
+        lines.append(_writeb(size_addr, size))
+        lines += [
+            "aResetOverlay()",
+            f"aBuildMoveMap({_unit(unit_slot)}, 0, &blocked, 0)",
+            f"aGetCtrlMapElementPtr(0,0) --read $c0:{CELLS}",
+        ]
+        for _twice in range(2):
+            lines.append(
+                f"aApproachCell({_cell(*target)}, &{buf}, {unit_slot}) "
+                f"--dump {buf}")
     lines.append(_writeb(size_addr, 0))
     return "\n".join(lines) + "\n"
 
@@ -788,6 +822,39 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int) -> int:
                                _reads(rows, "aGetCtrlMapElementPtr", "$c0")],
                  })
     _write(payload, out)
+
+    # --- phase 5b: the tie-break of both arms --------------------------
+    # The target is found from phase 5's own fills by the model: a cell whose
+    # ring answers with some points on a first call and holds a candidate with
+    # exactly those points -- so a second call on the same target is a tie.
+    ties = _tie_targets(payload, load_info_file(game_copy / "DATA" / "Info.lcl"))
+    if ties is None:
+        LOG.warning("phase 5 has no fill a tie can be designed from; the "
+                    "tie-break phase is skipped")
+    else:
+        small_target, large_target = ties
+        _capture_one(payload, "approach_tie", game_copy, dbgcall,
+                     approach_tie_plan(SLOT_TURN_1, mover, mover_type,
+                                       small_target, large_target),
+                     "ai_approach_tie", attempts,
+                     lambda rows: {
+                         "unit": mover,
+                         "type": mover_type,
+                         "small": list(small_target),
+                         "large": list(large_target),
+                         "c0": _results(rows, "aGetCtrlMapElementPtr"),
+                         "returns": _results(rows, "aApproachCell"),
+                         "best_small": [b.hex() for b in
+                                        _reads(rows, "aApproachCell",
+                                               "best_small")],
+                         "best_large": [b.hex() for b in
+                                        _reads(rows, "aApproachCell",
+                                               "best_large")],
+                         "fills": [b.hex() for b in
+                                   _reads(rows, "aGetCtrlMapElementPtr",
+                                          "$c0")],
+                     })
+        _write(payload, out)
 
     # --- phase 6: the cheap per-unit helpers ---------------------------
     helper_unit = aliens[0] if aliens else live[0]
@@ -1263,6 +1330,163 @@ def check_bands(c: Checker, payload: dict[str, Any]) -> None:
              f"engine")
 
 
+def _approach_context(fill: bytes, state: dict[str, Any],
+                      tables: BalanceTables, unit_type: int,
+                      large: int) -> ai.AIContext:
+    """The world a ring probe ran in, with the mover's `size` set as the
+    plan wrote it (docs/93 §11)."""
+    ctx = _context_from(fill, bytes.fromhex(state["units"]), tables,
+                        state["ai_level"])
+    row = ctx.world.tables.units.get(unit_type)
+    if row is not None:
+        # On a **copy** of the tables: `check_approach` wrote the shared
+        # object and put the row back by hand, and a caller that forgot the
+        # second half left every later phase with a large mover.
+        own = copy.copy(ctx.world.tables)
+        own.units = dict(ctx.world.tables.units)
+        own.units[unit_type] = type(row)(**{**row.__dict__, "size": large})
+        ctx.world.tables = own
+    return ctx
+
+
+def _tie_candidate(ctx: ai.AIContext, target: int, best: int,
+                   unit: int) -> int | None:
+    """The first ring cell whose points **equal** *best* and would otherwise
+    qualify -- the cell a `>=` arm accepts and a `>` arm refuses.  `None`
+    when the target's rings hold no such cell, or hold a better one."""
+    row = ctx.world.tables.units.get(ctx.world.units[unit].type_id)
+    large = row is not None and row.size == movemap.SIZE_LARGE
+    tx, ty = ctx.cell_x(target), ctx.cell_y(target)
+    height = ctx.grid.heights[target]
+    tied: int | None = None
+    for dx, dy in movemap.WALK_DIR_DELTA:
+        nx, ny = tx + dx, ty + dy
+        if not ctx.in_bounds(nx, ny):
+            continue
+        cells = [(nx, ny)] if not large else [
+            (nx + dx2, ny + dy2) for dx2, dy2 in movemap.WALK_DIR_DELTA
+            if ctx.in_bounds(nx + dx2, ny + dy2)]
+        for x, y in cells:
+            index = ctx.index(x, y)
+            if ctx.world.unit_at[index] >= 0:
+                continue
+            if movemap.climb_quotient(ctx.grid.heights[index] - height) \
+                    > ai.APPROACH_CLIMB_MAX:
+                continue
+            if ctx.state[index] not in (movemap.STATE_REACHABLE,
+                                        movemap.STATE_WARP):
+                continue
+            left = ctx.mp_left[index]
+            if left > best:
+                return None
+            if left == best:
+                tied = index
+    return tied
+
+
+def _tie_targets(payload: dict[str, Any],
+                 tables: BalanceTables) -> tuple[tuple[int, int],
+                                                tuple[int, int]] | None:
+    """One target per arm whose **second** call is a tie, from phase 5's fills.
+
+    A first call from `best = 0` accepts some cell and leaves its points in
+    the buffer; a second call on the same target then meets that very cell
+    again with `left == best`.  The candidate has to be the ring's best, so
+    a target whose ring also holds a higher cell is not a tie and is skipped.
+    """
+    data = payload.get("approach")
+    state = payload.get(f"state_{SLOT_TURN_1}")
+    if not data or not state or len(data.get("fills", [])) < 2:
+        return None
+    unit = data["unit"]
+    out: list[tuple[int, int]] = []
+    for large in (0, 1):
+        ctx = _approach_context(bytes.fromhex(data["fills"][large]), state,
+                                tables, data["type"], large)
+        found: tuple[int, int] | None = None
+        for target in range(ctx.world.width * ctx.world.height):
+            cell, best = ai.approach_cell(ctx, target, 0, unit)
+            if cell is None or best in (0, ai.APPROACH_OWN_CELL_SCORE):
+                continue
+            if _tie_candidate(ctx, target, best, unit) is not None:
+                found = (ctx.cell_x(target), ctx.cell_y(target))
+                break
+        if found is None:
+            return None
+        out.append(found)
+    return out[0], out[1]
+
+
+def check_approach_tie(c: Checker, payload: dict[str, Any],
+                       tables: BalanceTables) -> None:
+    """The one thing the ten-target sweep cannot see: `jle` against `jl`.
+
+    Mutation showed the ten probes of :func:`check_approach` discriminate the
+    second ring's **extent** and not its tie-break -- turning the large arm's
+    `>` into `>=` failed nothing.  This phase calls one target twice per arm
+    with a buffer of its own, so the second call is a tie by construction,
+    and the guard below refuses a fill in which it is not.
+    """
+    data = payload.get("approach_tie")
+    state = payload.get(f"state_{SLOT_TURN_1}")
+    if not data or not state:
+        c.check("approach.tie.captured", False, "phase did not run")
+        return
+    unit = data["unit"]
+    returns = data["returns"]
+    c.expect("approach.tie.four_calls", len(returns), 4,
+             "two per arm, the same target twice")
+    if len(returns) != 4 or len(data["fills"]) != 2:
+        return
+    bests = {
+        0: [int.from_bytes(bytes.fromhex(b), "little")
+            for b in data["best_small"]],
+        1: [int.from_bytes(bytes.fromhex(b), "little")
+            for b in data["best_large"]],
+    }
+    for large, arm, target in ((0, "small", tuple(data["small"])),
+                               (1, "large", tuple(data["large"]))):
+        ctx = _approach_context(bytes.fromhex(data["fills"][large]), state,
+                                tables, data["type"], large)
+        index = ctx.index(*target)
+        first, best = ai.approach_cell(ctx, index, 0, unit)
+        tied = _tie_candidate(ctx, index, best, unit)
+        # The guard: on **this** fill the second call is a tie, or the phase
+        # verifies nothing and says so.
+        c.check(f"approach.tie.{arm}_is_a_tie",
+                first is not None and tied is not None,
+                f"first call accepts {first} at {best} point(s); a tied "
+                f"candidate is {tied}")
+        native_first, native_second = returns[2 * large], returns[2 * large + 1]
+        c.check(f"approach.tie.{arm}_first_accepts",
+                bool(native_first) and bests[large][0] == best,
+                f"returned {native_first:#x}, best {bests[large][0]} "
+                f"(model {best})")
+        second, after = ai.approach_cell(ctx, index, best, unit)
+        if large:
+            # `jle` at 0x0040AF05: the incumbent keeps a tie.
+            c.check("approach.tie.large_second_refuses",
+                    native_second == 0 and bests[1][1] == best
+                    and second is None and after == best,
+                    f"returned {native_second:#x}, best {bests[1][1]}; "
+                    f"model {second} at {after}")
+        else:
+            # `jl` at 0x0040AF8D: a later tied cell wins -- and which one is
+            # `WALK_DIR_DELTA`'s order, read back through the cell pointer.
+            c.check("approach.tie.small_second_accepts",
+                    bool(native_second) and bests[0][1] == best
+                    and second is not None and after == best,
+                    f"returned {native_second:#x}, best {bests[0][1]}; "
+                    f"model {second} at {after}")
+            base = data["c0"][0] if data.get("c0") else 0
+            native_cell = (native_second - base) // gold.CELL_STRIDE \
+                if native_second and base else -1
+            c.expect("approach.tie.small_second_cell", native_cell, second,
+                     f"cell {native_cell} ({native_cell % WIDTH},"
+                     f"{native_cell // WIDTH}) -- the last tied cell in "
+                     f"WALK_DIR_DELTA order")
+
+
 def check_approach(c: Checker, payload: dict[str, Any],
                    tables: BalanceTables) -> None:
     data = payload.get("approach")
@@ -1282,15 +1506,10 @@ def check_approach(c: Checker, payload: dict[str, Any],
     # disagreement for a fortnight.
     best = 0
     for ring, large in enumerate((0, 1)):
-        fill = bytes.fromhex(data["fills"][ring])
-        ctx = _context_from(fill, bytes.fromhex(state["units"]), tables,
-                            state["ai_level"])
-        row = ctx.world.tables.units.get(data["type"])
-        if row is not None:
-            # The capture wrote the `size` column for the duration of the
-            # fill; the model is told the same thing the same way.
-            ctx.world.tables.units[data["type"]] = type(row)(
-                **{**row.__dict__, "size": large})
+        # The capture wrote the `size` column for the duration of the fill;
+        # the model is told the same thing the same way.
+        ctx = _approach_context(bytes.fromhex(data["fills"][ring]), state,
+                                tables, data["type"], large)
         for i, (x, y) in enumerate(targets):
             index = ctx.index(x, y)
             found, best = ai.approach_cell(ctx, index, best, data["unit"])
@@ -1307,8 +1526,6 @@ def check_approach(c: Checker, payload: dict[str, Any],
                               f"model {best}")
             if native_best == ai.APPROACH_OWN_CELL_SCORE:
                 own_cell += 1
-        if row is not None:
-            ctx.world.tables.units[data["type"]] = row
     c.expect("approach.small_ring", bad, [],
              f"0x0040ADC0 over {len(targets)} targets, small mover")
     # **Closed 2026-09-12, and the history is worth keeping.**  The large-mover
@@ -1543,6 +1760,7 @@ def run_check(capture_path: Path, root: Path) -> int:
     check_overlay(c, payload, tables)
     check_bands(c, payload)
     check_approach(c, payload, tables)
+    check_approach_tie(c, payload, tables)
     check_helpers(c, payload, tables)
     check_fire(c, payload, tables)
     check_plan(c, payload, tables)

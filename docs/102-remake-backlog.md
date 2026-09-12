@@ -17,7 +17,8 @@ else — a second copy of a finding is how the two drift apart.
 corrected in [`42` §8.2](42-mission-presentation.md); `_may_command_now`'s seat
 test, in [`99` §7](99-slice-7-report.md); and the large-mover second ring, in
 [`95` §9 item 2](95-slice-3-report.md) — which turned out to be a defect in the
-*replay* rather than in the model, so nothing about `0x0040ADC0` changed. The
+*replay* rather than in the model, so nothing about `0x0040ADC0` changed, and
+whose tie-break is measured natively by `approach_tie` the same day. The
 stages below keep their numbers; **nothing the player can feel is open.**
 
 **What is deliberately absent.** Items that are closed, items the remake has

@@ -317,6 +317,19 @@ static func platform_block(values: PackedInt32Array) -> Array[Vector2i]:
 
 ## The cells a `foot_bridge2` event carries, in the engine's own scan order:
 ## `hit` pairs from [constant FOOTBRIDGE2_CELLS_AT].
+## The cells a `crush_wall` event says `core` changed -- the wall piece's
+## footprint (docs/42 section 8.2), after the command's own pair. Empty for
+## any other event.
+static func footprint_cells(event: Dictionary) -> Array[Vector2i]:
+	var values: PackedInt32Array = _numbers(event)
+	var out: Array[Vector2i] = []
+	if AudioEvents.name_of(event) != "crush_wall":
+		return out
+	for i: int in range(2, values.size() - 1, 2):
+		out.append(Vector2i(values[i], values[i + 1]))
+	return out
+
+
 static func group_cells(event: Dictionary) -> Array[Vector2i]:
 	var values: PackedInt32Array = _numbers(event)
 	var out: Array[Vector2i] = []

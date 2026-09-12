@@ -1002,6 +1002,24 @@ func _check_family(h: TestHarness) -> void:
 		wall_map.object_cells_at(wall_map.index_of(0, 0))
 			== PackedInt32Array([wall_map.index_of(0, 0)]),
 		"a cell nothing stands on answers with itself")
+	# The picture finds the wall's node the way `core` finds the run: by any
+	# cell of the footprint. A `CrushWall (16,19)` -- the far cell of the
+	# `L040EA00` at (16,18) -- has to turn, drop and free that node, not look
+	# for one on (16,19) and find nothing.
+	var by_far_cell: SliceMain = SliceMain.new()
+	by_far_cell.world = wall_world
+	by_far_cell._scenery = walls
+	h.equal("family.wall.node_found_by_any_footprint_cell",
+		by_far_cell._block_cell({"name": "crush_wall",
+			"values": [16, 19, 16, 18, 16, 19]}), Vector2i(16, 18),
+		"the event names (16,19); the record stands on (16,18)")
+	h.equal("family.wall.node_found_by_its_own_cell",
+		by_far_cell._block_cell({"name": "crush_wall",
+			"values": [16, 18, 16, 18, 16, 19]}), Vector2i(16, 18))
+	h.equal("family.wall.no_footprint_keeps_the_cell",
+		by_far_cell._block_cell({"name": "crush_wall", "values": [0, 0]}),
+		Vector2i(0, 0), "a synthetic event with no run names its own cell")
+	by_far_cell.free()
 
 	var cell: int = cells[0]
 	var wall: Node3D = walls.objects_on(cell)[0]

@@ -438,9 +438,29 @@ layer down: a check that cannot reach a branch is a check that cannot see it.
 
    **What the ten probes prove, measured by mutation.** Dropping the second
    ring fails four of them, so its **extent** is checked against the engine.
-   Turning the large arm's `>` into `>=` fails none, so the **tie-break** is
-   not -- the two rings' asymmetry still rests on the two listings alone, and
-   that is the narrower claim to make.
+   Turning the large arm's `>` into `>=` fails none, so the **tie-break** was
+   not -- until the same day's second phase. ~~The two rings' asymmetry still
+   rests on the two listings alone.~~
+
+   **The tie-break, measured (2026-09-12, `approach_tie`).** A tie has to be
+   built: the model finds, from phase 5's own fills, a target whose first
+   call accepts a cell at some points and whose ring holds a cell with
+   exactly those points, so calling the **same target twice** makes the
+   second call a tie by construction -- and each arm gets a `best` buffer of
+   its own, because one carried across the arms is the very defect above.
+   Under Wine, on attempt 1: the small arm's second call on (10, 6) returns
+   (11, 7) again with `best` still 1 -- `jl` at `0x0040AF8D` takes a later
+   tied cell; the large arm's second call on (9, 5) returns **0** with `best`
+   still 1 -- `jle` at `0x0040AF03` keeps the incumbent. `approach.tie.*` is
+   eight checks with a guard (`*_is_a_tie`) that fails on a fill in which the
+   second call is not a tie, so a drifted capture cannot pass on a faithful
+   zero. Mutation now kills both directions: `>` → `>=` on the large arm
+   fails `large_second_refuses`, `>=` → `>` on the small arm fails
+   `small_second_accepts` and, through the real computer turn, `turn.10`.
+   `ai_tables` pins the two compare-and-jump byte triples beside it. One
+   thing the tie does *not* discriminate: with a single tied candidate the
+   small arm's "last visited wins" cannot be told from "first visited", so
+   `WALK_DIR_DELTA`'s order is still by reading.
 3. ~~**The campaign layer, bodies, animation and sound** are still untouched, as
    they were after [`94`](94-slice-2-report.md).~~ **Closed** by the fourth,
    fifth and sixth slices — [`96`](96-slice-4-report.md) the bodies,

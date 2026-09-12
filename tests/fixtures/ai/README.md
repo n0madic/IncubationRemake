@@ -38,6 +38,7 @@ records.
 | `overlay` | `0x0042FF30`, `0x0042FE90` | the target overlay and its prune, read back as cells |
 | `bands` | `0x0042FF30` + `0x0046A270` | **the five hit-chance bands**, one point either side of each of [`docs/23`](../../../docs/23-ai-system.md) §6's four boundaries |
 | `approach` | `0x0040ADC0` | the approach cell over 10 targets, small mover and large |
+| `approach_tie` | `0x0040ADC0` | one target **twice** per arm, a `best` buffer each, so the second call is a tie: `jl` (small) takes it, `jle` (large) refuses it -- taken 2026-09-12 |
 | `helpers` | `0x0040B380`, `0x0040A6E0`, `0x0040B210`, `0x0040B250`, `0x0047A810` | the five order helpers, by record dumps either side |
 | `fire` | `0x0040A440` | six shots; destructive, so the save is reloaded between probes |
 | `plan` | `0x0040A750` | twelve probes, one per reachable kind and level |

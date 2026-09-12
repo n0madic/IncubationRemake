@@ -6981,12 +6981,15 @@ replacing `eng3d.rotate` with the identity (one cell moves, the check fails).
 
 Two smaller findings came with it:
 
-* the probe geometry the listing leaves ambiguous — `81 c2 c8 00 00 00` twice
-  and `81 e9 c8 00 00 00` twice, which reads as an axis cross but is equally
-  consistent with the four corners — **cannot be discriminated here**: both
-  give the same nine footprints, because every wall piece is 1 500 units deep
-  against a 400-unit probe span. The cross is taken and the alternative is
-  named in `PROBE_OFFSETS` rather than assumed away;
+* the probe geometry — `81 c2 c8 00 00 00` twice and `81 e9 c8 00 00 00`
+  twice, which the byte pins alone could not tell from the four corners —
+  **cannot be discriminated by measurement**: both give the same nine
+  footprints, because every wall piece is 1 500 units deep against a 400-unit
+  probe span. So it was read: each probe loads one coordinate of the symbol
+  object (`+0x10` x, `+0x14` y) and offsets it while the other is loaded
+  plain — `(x−200, y)`, `(x+200, y)`, `(x, y−200)`, `(x, y+200)`, the
+  **cross**, pinned at the four load sites as `special.probe.{1..4}_*`
+  (verified-static, 2026-09-12);
 * two special objects **do** cover one cell on the shipped maps — railings and
   pillars sharing a field, ten cells on `_C_129` and nine on `_O_061` — but
   never on a wall piece and never on a cell any `CrushWall` names, so
@@ -7010,13 +7013,16 @@ the event since the set pieces landed (`camera.crush_wall.one_per_cell`), and
 `aDeleteLand`'s single free is still `remove_objects` on the command's cell,
 which is where the one object stands.
 
-**One residual, named rather than closed.** `core` now finds the run by *any*
+~~**One residual, named rather than closed.** `core` now finds the run by *any*
 covered cell, the way `0x00406F20`'s box search would; `game` still finds the
 wall's node by the **command's** cell (`remove_objects`, `paint_pose`). On all
 nine shipped calls the record stands on the command's cell, so the two agree
 — but a script naming the *far* cell of a run would crush the cells and leave
-the node standing. `Scenery` would need the same `cell -> run` lookup to close
-it, and nothing shipped reaches it.
+the node standing.~~ **Closed the same day.** `SliceMain._block_cell` already
+walked `FootBridge2`'s group for the cell that carries the block; it now walks
+a `crush_wall` event's footprint the same way (`SetpieceDriver.footprint_cells`),
+so the node is found by any cell of the run — `family.wall.node_found_by_any_footprint_cell`
+names (16, 19) and gets the record on (16, 18).
 
 A map document with no `special_objects` — every synthetic map the suites build
 — leaves the index empty and every reader falls back to the cell it was given,
