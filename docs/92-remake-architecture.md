@@ -2529,13 +2529,19 @@ contains.
 The numbered specs also retain their own research questions:
 
 * the numbered specs' own **Open questions** sections. Of the items still open
-  there, the ones a remake would actually notice are the sprite libraries'
-  transparent index and out-of-sprite anchors ([`60`](60-lib-sprites.md)),
-  whether the engine applies the root `SkeletonNode`'s own matrix
-  ([`40`](40-charisma-model-animation.md)), what the dialogue numbers select
-  ([`27`](27-campaign.md)), and the fourth `SetCtrlMapInfo` column
-  ([`26`](26-interaction.md)). The rest are names for behaviour that is already
-  fully specified, or fields a converter carries through unchanged.
+  there, the one a remake would actually notice is whether the engine applies
+  the root `SkeletonNode`'s own matrix ([`40` §11 item 5](40-charisma-model-animation.md)),
+  bounded rather than answered by [`96` §11](96-slice-4-report.md). The rest are
+  names for behaviour that is already fully specified, or fields a converter
+  carries through unchanged.
+
+  *(2026-09-12: three items this bullet named have been closed where they
+  stand and are struck here rather than quietly dropped — the sprite libraries'
+  transparent index and out-of-sprite anchors, closed by
+  [`60` §6](60-lib-sprites.md) on 2026-09-05; what the dialogue numbers select,
+  closed by [`27` §10 item 1](27-campaign.md); and the fourth `SetCtrlMapInfo`
+  column, closed by [`26` §10 item 1](26-interaction.md) as dead data nothing
+  in `.text` reads.)*
 
 The exact Python packaging technology is deferred. The architectural part is
 not: the converter must have a diagnosable first-run flow, never write into the

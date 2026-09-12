@@ -128,6 +128,11 @@ the other way round in [`29` §1.2](29-interface-contract.md); and
 its mode-0 test and its ratchet ([`23` §3.6](23-ai-system.md)) — a mislabelled
 line both executable models had inherited.
 
+What is **left** in the remake — every item still open across `92`–`101` and
+the behaviour specs behind them (`25`–`29`, `40`, `43`), staged in the order it
+is worth doing, with the closed and the not-planned deliberately absent:
+[`102-remake-backlog.md`](102-remake-backlog.md).
+
 ---
 
 ## 2. Format inventory

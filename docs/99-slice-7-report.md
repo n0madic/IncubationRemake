@@ -438,19 +438,22 @@ Known and not done, so that it is not forgotten:
   above camera height `0x17700`; the remake's zoom is clamped to the
   mission's authored `camera_height` (19 200..64 000 in the cache), so only
   `test_hud.gd` reaches them ([`43` §3.3](43-battle-hud.md)).
-* **The turn reads `0` during the first player turn.** The remake's counter
+* ~~**The turn reads `0` during the first player turn.** The remake's counter
   is the engine's `g_turn`, zeroed at start and stepped by the hand-over
   ([`25` §4](25-turn-and-round.md)); the plate prints the same byte
   (`0x0043B280` cached at `[0x004FE388]` by the redraw, [`43`
   §2](43-battle-hud.md)), so the original's groove reads `0` too until the
-  first hand-over. It is now visible where the text line did not draw
-  attention to it.
+  first hand-over.~~ **Superseded on 2026-09-08** —
+  [`98` §12](98-slice-6-report.md). Turn 0 is the deployment phase and nobody
+  ever plays it: `World.open_mission` is the `handOver(1)` a map load makes and
+  `World.skip_deployment_turn` is `0x0041A073`'s empty-pool arm, so a mission
+  opens on turn **1** and the groove never reads `0` in play.
 * **`_may_command_now` tests the current player against the one computer id**
 (255) rather than asking whether the seat is human. `TurnState` can describe
 more than one human seat (`human_count`), but nothing in the remake creates a
 second one, so the test is sufficient today; a multi-seat session would let
 one seat end another's turn. It predates this slice.
-* **Classic keyboard bindings — closed 2026-09-11.** `hud_tables.py` now
+* ~~**Classic keyboard bindings.**~~ **Closed 2026-09-11.** `hud_tables.py` now
   interprets both keyboard switches and the Windows message translators. The
   remake uses the resulting original keys, including `G` for the magnifier;
   only original `Esc` → *Give up* remains a declared divergence because

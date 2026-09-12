@@ -395,8 +395,13 @@ names them. §14.1 took them back and re-measured.
 
 ## 11. What was not done, and what is still open
 
-* **Unit speech** ([`20` §7.4](20-lcl-language.md)) — 233 files, out of scope
-  by the plan.
+* ~~**Unit speech** ([`20` §7.4](20-lcl-language.md)) — 233 files, out of scope
+  by the plan.~~ **Closed on 2026-09-05** — [`99` §8](99-slice-7-report.md).
+  The 233 files are in the cache's closure, `game/audio/speech_player.gd` plays
+  them and the set is the unit record's own `+0x55`. Speech rides the FX volume,
+  as the original scales it by the options record's speech field; the options
+  screen still has no speech row, which [`92` §7.1](92-remake-architecture.md)
+  permits.
 * **Ambience** — [`28` §6](28-effects-and-sound.md) proves the subsystem never
   plays anything. The ten `amb_*.wav` and four other unreferenced waves are
   excluded from the cache, and a check asserts none of them is in it.
@@ -434,10 +439,27 @@ names them. §14.1 took them back and re-measured.
   the event a footstep needs does not exist, and the phase that would supply it
   is `CharismaState`'s. Wiring it is a change to the body's walk, not to the
   audio layer, which is why it was left where the plan left it.
-* **The creators' argument arithmetic** — still open, and **§14.5 measures
-  exactly how open**: 30 of the 81 creators and 43 of the 116 constructor calls
-  are reachable by firing a weapon, and 27 of those 43 carry a literal
-  lifetime, which is what now paces a tracer. The rest of the paragraph stands.
+* **The creators' argument arithmetic** — **almost closed between 2026-09-11
+  and 2026-09-12, and the figure this bullet used to carry is stale.** §14.5
+  measured the gap (30 of the 81 creators and 43 of the 116 constructor calls
+  reachable by firing a weapon, 27 of those 43 carrying a literal lifetime);
+  §14.5.1–§14.5.5 then transcribed and captured it. Counted against
+  `blob_tables.creators.reachable`'s own thirty on 2026-09-12: **25 of the
+  thirty are replayed against `blob_gold.py`'s capture** in
+  `test_blob_native` — 22 rows of `BlobTriggers.WEAPON_PROGRAMS` plus the three
+  typed seams `SPORE_EXPLOSION`, `GRENADE_ARC` and `FLAME_STREAM`, and
+  `weapon_programs.routed_are_measured` is what keeps that list and the routing
+  table equal.
+  **The other five are driven by arms of their own and are replayed nowhere**:
+  the shock wave `0x00422B80` and the spore cannon `0x004268B0`, which build
+  their own records and are checked structurally in `test_effects`, and the
+  tracer `0x004247C0`, the needles `0x00424250` and the flash `0x00423D80`,
+  which still go down the constructor-table arm one record per `call`. All five
+  have a `blob_gold` phase behind them, and for the last three the burst delta,
+  the lifetimes and both point-blank branches are measured — what is not is the
+  spread of the records inside one call. Beside them, the arc of weapon 11 — a
+  property of `_6_.sav` rather than of the arm
+  ([`28` §12 item 2](28-effects-and-sound.md)).
 * **(as reported)** The three weapon switches are
   transcribed and pinned, so a shot fires the **right effects, of the right
   kinds, for the right lifetimes, from the right atlas tiles**. But the 81
@@ -6483,11 +6505,12 @@ that sentence asked for.
 | `test_effects` | 276 → **278**: every model blob of a muzzle carries the shot's own triple and no sprite does, and a bearing sends a model's +Y forward onto itself |
 | in the build | the streak lies along the line from the shooter to the target, checked against both cells' own projections rather than by eye |
 
-**Still open, and now visible in play**: the thirty creators a weapon selects
+~~**Still open, and now visible in play**: the thirty creators a weapon selects
 are transcribed nowhere, so their spread, their per-blob speeds and their exact
 pitch are the remake's stand-ins. Closing that is a `blob_gold.py` capture of
-those thirty, which is the same item `docs/97` §14.5 named and the reason this
-section could be written from a capture at all.
+those thirty~~ — **taken, 2026-09-11/12.** §14.5.1–§14.5.5 are that capture;
+twenty-five of the thirty are replayed against it and five are driven by arms
+of their own. §11's bullet has the split.
 
 ## 47. 2026-09-04 — the same sign, in the half that places the world
 

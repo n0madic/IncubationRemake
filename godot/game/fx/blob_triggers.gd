@@ -1253,10 +1253,13 @@ func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
 ## Which way a **model** blob points when it is made, as the engine's own
 ## orientation service answers it.
 ##
-## The class comment's caveat applies here and is the reason this exists: all
-## but one of the thirty creators a weapon selects are *not* transcribed
-## (docs/97 section 14.5; the exceptions are [constant WEAPON_PROGRAMS],
-## which never reach here because they build their records themselves),
+## The class comment's caveat applies here and is the reason this exists: three
+## of the thirty creators a weapon selects still land here -- the tracer, the
+## needles and the flash -- laying one record per constructor call (docs/97
+## section 11; twenty-five of the thirty build their own records and are
+## replayed against `blob_gold.py`'s capture, as rows of
+## [constant WEAPON_PROGRAMS] or as one of the three typed seams, and the shock
+## wave and the spore cannon build theirs without being replayed there),
 ## so the record this class builds carries the call site's real kind, class,
 ## life and model and a trajectory of the remake's own. The rotation triple was
 ## left at **zero**, and for a class-0 blob that is not a neutral value: the

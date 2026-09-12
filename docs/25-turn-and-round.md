@@ -833,7 +833,10 @@ it covers.
    session setup, two of them passing a register; it has eleven readers. It is a
    multiplayer session option, and the campaign reaches neither arm of the
    hand-out, so what it is called and what the player sets it to belong to
-   packages F and H. **UNVERIFIED.**
+   packages F and H. **UNVERIFIED.** *(2026-09-12: like item 1, this is
+   **not work the remake plans** — legacy multiplayer is out of scope
+   ([`92` §7.9](92-remake-architecture.md)) and a campaign reaches neither arm.
+   It stays a recorded fact about the binary.)*
 
 3. ~~**`unit[+0x50]`.**~~ **Closed** — §5.1. It is the distance walked this
    turn in tenths of a field, written by `aExecuteMove` and read by unit

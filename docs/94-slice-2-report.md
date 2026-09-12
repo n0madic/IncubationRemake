@@ -194,6 +194,10 @@ what the walk probe hit was that guard, because its synthetic mine had the
 effect byte and no object. The correction that *does* follow is on the other
 side: the walk arm's "nothing fires" is an artefact of the probe, not the
 engine's rule, and `core/execute_move.gd` carries a `TODO:` for it.
+*(2026-09-12: that `TODO:` is gone. The guard was read rather than probed in
+[`26` §10 item 6](26-interaction.md), and the writer `core` lacked — the four
+cell placers and the round tick — arrived with
+[`97` §37](97-slice-5-report.md), so the mine fires on the walked path.)*
 
 ---
 
@@ -302,22 +306,30 @@ offered.
 
 ## 9. Open questions this stage leaves
 
-1. **The AI planner.** Not started, deliberately. Player 255 takes its turn and
-   returns it, so `_C_140`'s reinforcements stand where they spawn. This is the
-   next stage and [`23`](23-ai-system.md) specifies it.
-2. **The campaign layer.** `EnterNameOfNextMap` writes a name that nothing reads;
+1. ~~**The AI planner.** Not started, deliberately. Player 255 takes its turn and
+   returns it, so `_C_140`'s reinforcements stand where they spawn.~~ **Closed**
+   by the third slice — [`95`](95-slice-3-report.md) builds
+   [`23`](23-ai-system.md)'s planner in full and `_C_140` is played against an
+   opponent that closes and shoots.
+2. ~~**The campaign layer.** `EnterNameOfNextMap` writes a name that nothing reads;
    the roster, the deployment screen, the economy and the score are
    [`27`](27-campaign.md)'s and are untouched, which is why
-   `_C_115` — whose squad arrives from the campaign — cannot be played.
+   `_C_115` — whose squad arrives from the campaign — cannot be played.~~
+   **Closed** by the sixth slice — [`98`](98-slice-6-report.md); `_C_115` and
+   `_C_141` are played from a roster.
 3. **What seeds the C runtime's generator.** No `srand` has been traced, so both
    implementations start from the standard's 1 and say so. `InsertUnit`'s counts
    depend on it, and `_C_140` draws it from turn 5.
 4. ~~**`aExecuteBomb` on the push path**~~ — [`26` §10](26-interaction.md)
    item 7, **closed**: the same guard, read rather than probed. See §5.
-5. **The eight unsimulated target patterns**, listed in §5.
+5. ~~**The eight unsimulated target patterns**, listed in §5.~~ **Closed** —
+   [`95` §5](95-slice-3-report.md): all sixteen are implemented, the five no
+   shipped unit carries included.
 6. **The 200-slot spawn rule** is the natural reading of a fixed array and is
    not measured; a capture that inserts a unit and reads back which slot it took
    would close it.
-7. **Bodies, animation and sound.** [`40`](40-charisma-model-animation.md),
+7. ~~**Bodies, animation and sound.** [`40`](40-charisma-model-animation.md),
    [`41`](41-sequence-player.md) and [`28`](28-effects-and-sound.md) are all
-   untouched: a unit is still a capsule and a ground marker.
+   untouched: a unit is still a capsule and a ground marker.~~ **Closed** by the
+   fourth and fifth slices — [`96`](96-slice-4-report.md) is the bodies and
+   [`97`](97-slice-5-report.md) the effects and the sound.

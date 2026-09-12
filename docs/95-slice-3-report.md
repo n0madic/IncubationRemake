@@ -423,5 +423,8 @@ layer down: a check that cannot reach a branch is a check that cannot see it.
    number and only printed it -- into `approach.large_ring_disagreements`, a
    census that fails in **both** directions. The old figure had drifted, and
    nothing could say so.
-3. **The campaign layer, bodies, animation and sound** are still untouched, as
-   they were after [`94`](94-slice-2-report.md).
+3. ~~**The campaign layer, bodies, animation and sound** are still untouched, as
+   they were after [`94`](94-slice-2-report.md).~~ **Closed** by the fourth,
+   fifth and sixth slices — [`96`](96-slice-4-report.md) the bodies,
+   [`97`](97-slice-5-report.md) the effects and the sound,
+   [`98`](98-slice-6-report.md) the campaign.
