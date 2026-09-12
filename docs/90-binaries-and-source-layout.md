@@ -275,5 +275,40 @@ r2 -e bin.relocs.apply=true gog_incubation/iDesigner.exe
 ```
 
 The binaries are MSVC-built with assert strings intact, so nearly every function
-pushes its own name and source line on the error path. That makes
-`izz~<name>` + `axt` a reliable way to find any named routine.
+pushes its own name and source line on the error path, which makes named
+routines easy to reach — but **mind the direction**.
+
+### 5.1 `izz` + `axt` lands on the *caller*
+
+The macro is `CHECK(Foo(...))` and the string `"Foo"` is pushed **at the call
+site**, so the function that contains the string is the one that *calls* `Foo`,
+not `Foo` itself. Measured in `Incubation.exe`:
+
+```
+axt 0x004cc694   "aCheckLineOfSight"    → 7 pushes, all inside fcn.0046c460
+axt 0x0046c720    the function itself   → 7 calls,  all inside fcn.0046c460
+axt 0x004cc588   "aCheckLineOfSightEx"  → 3 pushes, in fcn.0046a270 / 0046a4e0 / 004794b0
+```
+
+Each `push` sits about `0x16` bytes after the `call` it names. So
+`aCheckLineOfSight` is `0x0046C720`, the seven strings live in `0x0046C460`, and
+`0x0046C460` is itself `aCheckLineOfSightEx` — named by *its* three callers. The
+formally decisive case is `0x0040104B`, which pushes `LoadLibrary`: a Win32
+import cannot be the enclosing function. Use the raw workflow above to read one routine;
+use [`tools/trace_names.py`](../tools/trace_names.py) to build a symbol table,
+because it pairs every push block with the `call` it guards rather than with its
+container. The names are hand-written, so a few are wrong — the tool votes
+across call sites and `--all` shows the losers — and a programmer occasionally
+pastes their *own* function's name, which is itself usable evidence.
+
+### 5.2 Two tool caveats that have produced wrong results here
+
+* **`strings` thresholds truncate silently.** `strings -n 5` once dropped
+  `Goto`, `OBJ` and `?_` from an extracted command table and nothing downstream
+  noticed. Use `-n 2` when extracting a table, and see §2.7 of
+  [`30`](30-eng3d-ascii-formats.md) for the UTF-16LE half of the same problem.
+* **Ghidra folds symbols.** `analyzeHeadless` (`/opt/homebrew/Cellar/ghidra/*/libexec/support/`)
+  gives C pseudocode; use **one project directory per binary** or concurrent runs
+  deadlock on the project lock. Its symbol resolution can fold a `base + offset`
+  access into a separate symbol and make live data look dead, so cross-check
+  against the raw disassembly whenever the conclusion matters.

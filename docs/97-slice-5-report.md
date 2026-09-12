@@ -893,6 +893,216 @@ reporting the tracer as *not captured* since that pass. The rule the block
 exists for applies to the tools outside it too: a transcription added to
 `PROGRAMS` is a claim `blob_gold` is the judge of.
 
+**2026-09-11/12: the weapon creators, inside the remake and measured.**
+Everything above is about the **Python** transcriptions. In `godot/` the
+thirty were still built from their constructor table -- one record per `call`,
+with a trajectory of [`BlobTriggers._velocity`](../godot/game/fx/blob_triggers.gd)'s
+own over the record's own lifetime -- so a creator whose loop lays sixty
+records came out as **one sprite**. The Pyr'Coo's weapon 26 is the worst case
+of it and is what was reported from play: its muzzle `aBlob_CreateSmokeTrail`
+`0x00425810` holds a single constructor call at `0x00425C5D`, so the whole
+shot was one class-2 kind-46 sprite with an eight-tick line from the shooter's
+eye height down to the target's floor -- a weak puff diving into the ground,
+which is exactly what a player sees. Its impact
+`aBlob_CreateSporeExplosion` `0x00429F40` was the same defect again, one
+sprite where the engine makes twenty-seven.
+
+**Thirteen of the thirty were transcribed in GDScript on 2026-09-11** and
+every one of them is diffed against the engine's own pool; four more followed
+on the 12th, and the dated block below says which of those four a capture
+judges. They live in
+`godot/game/fx/blob_programs.gd` beside the death and set-piece programs, and
+`BlobTriggers.WEAPON_PROGRAMS` is both the routing table and the list of what
+is measured -- an entry is added only once `test_blob_native.gd`'s
+`weapon_programs` phase replays it against `blob_gold.py`'s capture. The seam
+is deliberately **not** the nested-creator one (`_ask_tile` →
+`spawn_program`): a muzzle's records are what `BlobTriggers.in_flight` waits
+on, so a program is run synchronously with the pool's own generator handed
+over and handed back, and its records go through `_place` like every other
+record the class makes. Three of the thirteen (`0x004227C0`, `0x00429A80`,
+`0x0042A9D0`) were already in `BlobPrograms` and had simply never been reached
+from a weapon switch; eight were ported from `inclib/blob_creators.py`; and
+two are new transcriptions, `0x00429F40` and `0x00420A50`.
+
+What the switch tables say the thirteen cover: **weapons 4, 8, 9, 10, 13, 14,
+17, 22, 23, 25, 26, 36, 37, 42, 43, 45, 46** in one end or the other, beside
+the four burst/spore creators `BlobTriggers` already transcribed for weapons
+2, 3, 5, 6, 12, 16, 18, 19, 24, 25, 28, 29, 33, 34, 35, 38, 39, 41 and the two
+starting guns. **Twelve creators were still on the constructor-table arm** --
+`0x004228F0`, `0x00425400`, `0x00425CA0`, `0x00426070`, `0x00426B70`,
+`0x00427C80`, `0x00428200`, `0x00428570`, `0x004294E0`, `0x004295D0`,
+`0x00429C30` and `0x0042ACF0`.
+
+**2026-09-12: four more, and the reason two of them looked like refusals was
+wrong.** Every arm of both weapon switches was disassembled and its pushes
+read right to left -- a static reading that needed no Wine. Two registers the
+**dispatcher** sets carry into every muzzle arm and are the source of most of
+it: `0x0040CC3C` is `xor edi, edi` and `0x0040CC41` is `mov ebx, 1`, four
+instructions ahead of the jump at `0x0040CC5F`. So an arm that pushes a bare
+`ebx` past the four coordinates is pushing **1** and one that pushes `edi` is
+pushing 0 -- neither is a tile number, which is what `argument_vector` had
+been filling those slots with. `blob_gold.SWITCH_ARGS` now carries the real
+tail for **eight** creators: `0x004228F0` and `0x00429C30` take a literal 0,
+`0x00425CA0`, `0x00428200` and `0x00428570` the dispatcher's 1, `0x00425400`
+both registers, `0x00427C80` a literal 4 at weapon 7's arm and 10 at weapon 40's, and `0x00426070`
+the pair `(0xA, 0xFF)` weapon 44's arm pushes. `0x00425400` and `0x00427C80`
+had been called "creators that refused the captured tile"; they were handed a
+zero where the arm pushes a round count and a type, and the zero is the
+faithful nothing `CLAUDE.md` warns about.
+
+Four of the twelve are transcribed and routed now. Three are diffed field for
+field against the capture on the first run -- `aBlob_SparkingPlug`
+`0x0042ACF0` (30 records, 90 draws), `aBlob_CreatePlasmaBallImpact`
+`0x004294E0` (40, 120) and `aBlob_CreateExplosion2` `0x004295D0` (15, 90) --
+each with the arguments its own arm pushes, which the capture already held.
+The fourth, `aBlob_CreateSpidyMines` `0x00426B70`, is transcribed but
+**replayed by nothing**: `0x00420950` refuses a class-0 record whose model
+name the `models` phase cannot resolve, and that phase predates
+`A_MINE1/2.3DI` joining `CREATOR_MODELS`.
+`blob_gold.PROGRAM_MODELS_UNCAPTURED`, `MODEL_NAMES_UNCAPTURED` and
+`test_blob_native.WEAPON_PROGRAMS_UNCAPTURED` are what say so.
+
+It found one thing no other creator had shown: **the two projectile creators
+read two different object tables**. The shooter is the *standard* object the
+unit owns (`aGetStdObjectPtr`, z 160 on this capture) plus the unit's height,
+and the target is the cell's *symbol* object (`aGetSymbolObjectPtr`, z 0) plus
+its own. Reading both from `symbols` puts the round 160 units low and takes
+the lob's `vz` down with it -- 120 where the engine leaves 103 -- which is how
+the difference was found and why `Inputs.source_std` and `throw_point()`
+exist. The remake's converted map carries one placed object per cell rather
+than both, so `BlobTriggers` leaves the field unset and the fallback applies:
+a known 160-unit approximation, named at the seam.
+
+**Eight creators are still on the constructor-table arm**: `0x004228F0`,
+`0x00425400`, `0x00425CA0`, `0x00426070`, `0x00427C80`, `0x00428200`,
+`0x00428570` and `0x00429C30`. All eight have the right arguments in
+`SWITCH_ARGS` now and all eight were asked for again the same day; **Wine
+reached the anchor 0 times in 80 attempts**, the rate `docs/91` §1 records at
+its bad end, and the `models` phase lost its ten as well. They are pinned in
+`NATIVE_FAULTS` and `PROGRAM_ARGS_STALE` so a green run cannot imply the
+phases in hand verify anything -- the records they hold are the fall-through
+arms'.
+
+**Three corrections to this document's own §15.5/§16 material fell out of
+it.**
+
+* `aBlob_CreateSmokeTrail` lays a **ring of six every `0x3C0` along the line
+  of fire**, `trunc((max(|dx|, |dy|) - 0xC80) / 0x3C0) + 1` rings plus the one
+  at the muzzle, each record at its ring's point *plus* its own three
+  `aRandom2(-0x140, 0x280)` draws -- so the same numbers are both a
+  displacement and a velocity -- with `delay` the ring index over four. It
+  writes **1** over the *arrived* flag at `0x00425AD6`, unconditionally and
+  ahead of the loop, so a smoke trail is not something the shot stage waits
+  on; the remake had been waiting out the lone sprite's eight ticks.
+* `aBlob_CreateSporeExplosion`'s type is the **fourth** argument, not the
+  third: the prologue's `sub esp, 0x18` plus four pushes puts the return
+  address at `[esp+0x28]` and the read is at `[esp+0x38]`. Weapon 26's arm
+  `0x0040D55E` pushes 0, which is nine rings of three; weapons 23 and 25 push
+  1, which is three. `rot_y` is a flag rather than a draw, off below the fifth
+  ring and 4 from it up; `aux` is a draw with twice the ring index added
+  **inside** the conversion; `delay` is the ring index.
+* **Ten creators resolve the muzzle part themselves.** `0x0042C660` writes the
+  world position of a named part of the shooter's Charisma model over the
+  three source coordinates, and §14.5 above had it that the name is the
+  creator's *seventh argument* -- which is true of the three burst creators
+  and of nothing else. All thirteen `call 0x0042C660` sites in `.text` were
+  swept: `0x00424D20`, `0x00425400`, `0x00425810`, `0x00425CA0`, `0x004264A0`,
+  `0x00426B70`, `0x00426F90`, `0x00427C80`, `0x00428200` and `0x00428570`
+  push `"M"` (`0x004C10D8`) inside their own bodies, so the document's
+  `weapon_muzzle_joint` is empty for them and every one of those effects had
+  been leaving the body axis at eye height instead of the barrel.
+  `BlobTriggers.CREATOR_JOINTS` is that sweep, and `PC_006` -- the Pyr'Coo's
+  model, and the three-level selector's answer for type 56 at every weapon and
+  player -- does carry a part named `M`, so this is a real move for the unit
+  the defect was reported on.
+
+**Wine reached the anchor on this host again, and the capture is richer for
+it.** `docs/91` §1 had recorded 0 of 10; `--probe-startup 3` answered 1 of 3
+on 2026-09-11, and every plan landed. Five phases that had never been taken
+now hold records: the shock wave's re-take with the type its callers push
+(`SWITCH_ARGS`, which had been handing `0x00422B80` a tile number), all three
+`burst_*` phases, and the spore explosion's nine rings. `blob_gold.py`'s
+`NATIVE_FAULTS`, `BURST_UNCAPTURED` and `PROGRAM_ARGS_STALE` are **all empty**
+for the first time, and the pins moved with them: 25 of 30 creators produce
+222 records, 15 advance the second generator, `SHOCKWAVE_RADIUS` and the
+stinger ring's four constants joined `CREATOR_CONSTANTS_DISCRIMINATED`, and
+**arm 13 moved out of the poked fifty into the native twenty-five** -- it had
+been poked only because nothing a weapon selects appeared to fill kind 13,
+which was the corrected argument's doing and not the engine's. One thing the
+re-take exposed at once: `A_EXPL05.3DI` was missing from `CREATOR_MODELS`, so
+the sixty records the engine makes were all refused on the Python side, a
+class-0 spawn whose name the `models` phase does not carry being
+unconstructable (docs/28 §7.5).
+
+**Three more model sets reach the cache the same way, and one of them is named
+by no call site at all.** A creator's model is normally the string its one
+constructor call pushes, and that is what `CREATOR_MODELS` reads. Two families
+break it, so both were added to every world set's geometry by hand:
+
+* the three models an **update arm** swaps in later, which no creator's call
+  site names because the swap happens a tick or more after construction
+  (`CONVERTER_VERSION` 0.33.0);
+* `A_EXPL03.3DI` and `A_EXPL04.3DI`, because `aBlob_CreateTubeSmoke`
+  `0x00423C20` picks one of the two **by index** and copies the chosen name
+  into a stack buffer — its single constructor call site therefore carries no
+  model at all, and the flash an ignited ground fire leaves ([`42` §9.1](42-mission-presentation.md))
+  would have been half-refused (`CONVERTER_VERSION` 0.34.0).
+
+The general rule the two share: **a model reached through an index or through a
+later swap is invisible to a reading of constructor arguments.** A creator whose
+model the cache does not carry is refused by `0x00420950` and compared by
+nothing, which is what `PROGRAM_MODELS_UNCAPTURED` and `MODEL_NAMES_UNCAPTURED`
+pin in `blob_gold.py`.
+
+**What the seam had to learn to be worth the transcriptions.** A creator's
+two ends are not one point each, and the first cut of the runner passed one.
+
+* **The object and the standing unit's height stay apart.** The engine reads
+  the placed object through `aGetSymbolObjectPtr` and the height through
+  `0x0047AD30`, and the creators read the two differently: the span a beam's
+  length is counted in is over the two *objects* (`0x00425A8A` takes
+  `[edi+0x10]`/`[ecx+0x10]`), `aBlob_CreateLineFire`, the spore explosion and
+  the stinger ring open at the object's own z with no height at all, and only
+  the ones that go through `Inputs.source_point()` want the sum.
+  `SliceMain._muzzle_of` had been handing over the sum alone, so those three
+  started at eye height rather than on the floor and the blizzard shot aimed
+  some 2400 units high. `_object_of` is the other half and `_fire` resolves
+  both.
+* **The joint replaces the source, for every creator that asks for one.**
+  `0x00425810` loads the object's three coordinates plus the height into
+  `[esp+0x1C]`/`[esp+0x18]`/`[esp+0x14]` at `0x00425996`, then hands those
+  three addresses to `0x0042C660` at `0x00425A2E`; everything it reads as its
+  source afterwards is the part. Four of the ten `CREATOR_JOINTS` creators are
+  `WEAPON_PROGRAMS` entries -- `0x00424D20`, `0x00425810`, `0x004264A0`,
+  `0x00426F90` -- so `Inputs.source_point()` answers `source_joint` where one
+  was resolved. The **span** is the exception and stays on the raw objects:
+  `0x00425A8A` reads `[edi+0x10]` and `[ecx+0x10]`, which are two fresh
+  `aGetSymbolObjectPtr` results (`0x0042587C` and `0x00425A56`) rather than
+  the overwritten slots. Nothing diffs the joint against the engine -- every
+  capture was taken with nothing animating, which is `0x0042C660`'s own
+  fallback -- so it is asserted in `test_effects.gd` and confirmed in play.
+* **A tile-shaped creator reads the cell, not the arguments.**
+  `aBlob_CreateLandingDust` `0x004227C0` and `aBlob_CreateFireExplosion`
+  `0x00429A80` open with `Inputs.object(x, y)`, which answers `Vector3i.ZERO`
+  for a tile the map does not carry -- so weapons 42 and 46's impact and
+  weapons 8, 17, 36 and 37's fire explosion laid their whole effect at the
+  **world origin** while every suite stayed green. Nothing could see it: the
+  replay check builds its own `tiles`, and `test_effects` counts records
+  without looking at where they are. `test_blob_native.gd`'s
+  `impact_creators.*` is the check that bites -- weapon 42's whole impact
+  driven through `BlobTriggers.impact` against the `0x004227C0` phase -- and
+  it was written by breaking the fill first: `0.x: 0 is not 60800`.
+
+**Confirmed in the running game**, which is what the report was about.
+*Instant Action* → *Spaceport* (`_S_004`, ten Pyr'Coo), a marine deployed at
+(14, 18) two cells from one of them, and the computer's turn read one frame at
+a time: **72 kind-46 records in a frame** where the pool used to hold one per
+shot, their ring points marching along the line of fire from the shooter to
+the marine and descending with the terrain, and **27 kind-50 records** at the
+impact. Reading the pool during the computer's turn needs a *single* batch --
+`hud event 10` followed by `wait`/`blobs` pairs -- because `blobs` is a POST
+and one batch runs at a time.
+
 ### 14.6 Which music family plays: `Arack`, read out of the import table
 
 §11.2 called this unfalsifiable on this corpus and recorded `Track` as a

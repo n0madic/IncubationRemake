@@ -1127,7 +1127,12 @@ that feeds these four floats to a stock quaternion-to-matrix routine will rotate
 every bone the wrong way. Use the formula as written; it is implemented as
 `inclib.charisma.quat_to_matrix`.
 
-**Independent data check.** `python3 tools/cha_parse.py --verify-convention
+**Independent data check — and it must not be removed.** A structure-only check
+passes unchanged when the four components are permuted, so nothing else in the
+corpus set would notice this hypothesis being wrong; the same is true of
+`charisma_selftest.py` (§10.2), which asserts decoded key values and times
+rather than shapes. These two guard *meaning*.
+`python3 tools/cha_parse.py --verify-convention
 gog_incubation` converts the first key of every rotation track under four
 hypotheses and compares the 3×3 against that bone's bind-pose rotation in the
 animation's own embedded skeleton (Frobenius norm < 1e-3):
