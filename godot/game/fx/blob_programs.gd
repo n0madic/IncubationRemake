@@ -316,11 +316,26 @@ const FLAME_SWEEP_LIMIT: int = 0x1E
 ## to zero. (Not NaN: `_ftol` answers `0x80000000` for a NaN, so the NaN half
 ## of the old argument here was wrong.)
 ##
-## **What that does not settle** is the frame. A plan calls the creator from
-## `dbgcall`'s anchor, and a shot calls it from `aPlayFightAnimation`; the
-## slots are whatever each caller left. Measuring the shipped path needs a
-## break at `0x0040D014` or `0x0040D047` during a real shot, which no harness
-## here does. `blob_creators.FLAME_RING0_DIVERGENCE` is the same note.
+## **The frame was settled later the same day.** The agreement above is with
+## `dbgcall`'s anchor stack, because a plan calls the creator itself; a shot
+## calls it from `aPlayFightAnimation`, whose own earlier sound-buffer chain
+## writes at exactly that depth. `blob_gold`'s `fight_` phase fires a real
+## shot through `aAttackUnit` -- which builds the target pattern, resolves it
+## and calls the animation at `0x0046C186` -- so the creator runs from
+## `0x0040D014` with the animation's frame underneath. Its `shot_` phases go
+## further: the weapon is written into the attacker's own `unit[+0x3F]`, so the
+## whole attack is that weapon's, and the read covers **all twenty** records
+## rather than the first twelve. Every one reproduces field for field, ring 0's
+## five included, so the three slots hold zero on the shipped path.
+##
+## The branch that skips the sound buffer was forced as well (`0x0040CBE2`,
+## one byte, changing neither the unit nor the weapon) and reproduces the same
+## twenty records, so the slots are zero on both.
+##
+## What stays open is narrower: the value is measured, its provenance is not.
+## Either both routines leave zeros at that depth, or neither reaches it and
+## what is read is older still — `aAttackUnit`'s own frame, the same on both
+## branches. `blob_creators.FLAME_RING0_DIVERGENCE` is the same note.
 const FLAME_RING0_DIVERGENCE: String = FLAME_STREAM
 
 ## `aBlob_CreateTracerBullet` at `0x00425400` -- the spore cannon's spray.

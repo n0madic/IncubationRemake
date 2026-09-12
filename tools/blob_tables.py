@@ -307,6 +307,94 @@ CTRL_MAP_STRIDE = 0x17
 MULTI_ARM_WINDOW = 0x90
 
 
+#: **Who animates a shot, and who resolved it first.**  `docs/28` §8.1.3: the
+#: five walking arms act on the control map's state byte, so a caller that
+#: never ran the resolver would walk whatever the band happened to hold.  No
+#: such caller exists.  `aPlayFightAnimation` has two call sites and both sit
+#: in a routine that called `aBuildTargetPattern` earlier; the band is reset
+#: only by `0x00431070`, from `aBuildTargetPattern`'s own first instruction,
+#: so the wipe happens at the start of the next build rather than at the end
+#: of an animation.
+FIGHT_CALLS = (0x0046C186, 0x004705F5)
+TARGET_PATTERN = 0x0046AA10
+TARGET_PATTERN_CALLS = (0x0046B6AC, 0x00470318)
+TARGET_PATTERN_CLEAR = 0x00431070
+TARGET_PATTERN_CLEAR_CALL = 0x0046AA17
+#: What the clear writes over a marker: `mov byte [esi], 1`.
+TARGET_PATTERN_IDLE = 1
+#: The band both the clear and the walks test, `cmp al, 0x50` / `cmp al, 0x5E`.
+MULTI_BAND_LOW = 0x50
+MULTI_BAND_HIGH = 0x5E
+
+
+#: `aGetSymbolObjectPtr` `0x00404C40`, the service every creator's aim point
+#: comes through, and the array behind it.  `blob_gold` reads that array whole
+#: so a cell nobody knew about until after a shot still has a *measured*
+#: object; this is the check that the base, the stride and the bound it reads
+#: them at are the service's own.  Decoded from the bytes:
+#:
+#: ```
+#: 8b 4c 24 04     mov ecx, [esp+4]
+#: a1 b0a74f00     mov eax, [0x004FA7B0]      ; the count
+#: 81 e1 ffff0000  and ecx, 0xFFFF
+#: 3b c8 / 7e 03   cmp ecx, eax / jle
+#: 33 c0 / c3      xor eax, eax / ret         ; refused above the count
+#: 8d 04 cd ...    lea eax, [ecx*8]
+#: 2b c1           sub eax, ecx               ; 7 * id
+#: 8b 0d 20a84f00  mov ecx, [0x004FA820]      ; the base
+#: 8d 04 80        lea eax, [eax+eax*4]       ; 35 * id
+#: 8d 04 41        lea eax, [ecx+eax*2]       ; base + 70 * id
+#: ```
+SYMBOL_SERVICE = 0x00404C40
+SYMBOL_COUNT_CELL = 0x004FA7B0
+SYMBOL_TABLE_CELL = 0x004FA820
+SYMBOL_STRIDE = 70
+SYMBOL_SERVICE_SHAPE = bytes.fromhex(
+    "8b4c2404" "a1" "b0a74f00" "81e1ffff0000" "3bc8" "7e03" "33c0" "c3"
+    "8d04cd00000000" "2bc1" "8b0d" "20a84f00" "8d0480" "8d0441" "c3")
+
+
+def _symbol_service(b: "Binary") -> bool:
+    """The whole of `0x00404C40`, byte for byte, base and stride included."""
+    va = SYMBOL_SERVICE
+    if not b.mapped(va, len(SYMBOL_SERVICE_SHAPE)):
+        return False
+    got = bytes(b.u8(va + i) for i in range(len(SYMBOL_SERVICE_SHAPE)))
+    if got != SYMBOL_SERVICE_SHAPE:
+        return False
+    # And the two cells and the stride the shape encodes, read back out of it
+    # rather than trusted: `a1 imm32` is the count, `8b 0d imm32` the base,
+    # and `8*id - id` then `*5` then `*2` is 70.
+    return (b.u32(va + 5) == SYMBOL_COUNT_CELL
+            and b.u32(va + 0x21) == SYMBOL_TABLE_CELL
+            and (8 - 1) * 5 * 2 == SYMBOL_STRIDE)
+
+
+def _function_boundary(b: "Binary", lo: int, hi: int) -> bool:
+    """Is there a padded `ret` between *lo* and *hi*?
+
+    MSVC pads between functions, so a `C3` followed by `90` or `CC` is a
+    function's end.  Two call sites with none between them are in one routine
+    -- which is the whole of the claim that a pattern build precedes an
+    animation rather than merely sitting at a lower address.
+    """
+    return any(b.u8(va) == 0xC3 and b.u8(va + 1) in (0x90, 0xCC)
+               for va in range(lo, hi))
+
+
+def _clears_the_band(b: "Binary") -> bool:
+    """`cmp al, 0x50 / jb / cmp al, 0x5E / ja / mov byte [esi], 1`."""
+    va = TARGET_PATTERN_CLEAR
+    if not b.mapped(va, 0x30):
+        return False
+    window = bytes(b.u8(va + i) for i in range(0x30))
+    low = bytes((0x3C, MULTI_BAND_LOW))
+    high = bytes((0x3C, MULTI_BAND_HIGH))
+    store = bytes((0xC6, 0x06, TARGET_PATTERN_IDLE))
+    return (window.find(low) >= 0 and window.find(high) > window.find(low)
+            and window.find(store) > window.find(high))
+
+
 def _abs32_reader(b: "Binary", entry: int, cell: int) -> bool:
     """`mov eax, [cell] / ret` -- the shape both map accessors have."""
     return (b.mapped(entry, 6) and b.u8(entry) == 0xA1
@@ -3401,6 +3489,41 @@ def run_checks(root: str) -> Checker:
                  for key, entry in MULTI_TARGET_ARMS.items()),
              "every multi-target arm is the one its weapon's switch entry "
              "names")
+    # **Nothing animates a shot it has not resolved.**  The walking arms read
+    # the control map's state byte, so what they act on is whatever was left
+    # there -- and the question a remake has to answer is what an *unresolved*
+    # caller sees.  The binary answers it: both call sites of
+    # `aPlayFightAnimation` sit in a routine that has already called
+    # `aBuildTargetPattern`, and the band is cleared by `0x00431070`, whose
+    # only caller is `aBuildTargetPattern`'s own first instruction.  So the
+    # markers are wiped at the *start* of the next build and never after an
+    # animation -- there is no engine path that dispatches a muzzle switch
+    # over an empty band, and none that dispatches it over a stale one.
+    ck.check("weapon.symbol_object_service", _symbol_service(b),
+             f"0x{SYMBOL_SERVICE:08X} answers from "
+             f"[0x{SYMBOL_TABLE_CELL:08X}] + id * {SYMBOL_STRIDE}, bounded by "
+             f"[0x{SYMBOL_COUNT_CELL:08X}] -- the array blob_gold reads whole")
+    ck.equal("weapon.fight_animation_callers",
+             sorted(b.calls_to(FIGHT)), sorted(FIGHT_CALLS),
+             lambda xs: _hexlist(xs))
+    ck.equal("weapon.target_pattern_callers",
+             sorted(b.calls_to(TARGET_PATTERN)), sorted(TARGET_PATTERN_CALLS),
+             lambda xs: _hexlist(xs))
+    ck.check("weapon.pattern_precedes_every_animation",
+             all(any(build < site and not _function_boundary(b, build, site)
+                     for build in TARGET_PATTERN_CALLS)
+                 for site in FIGHT_CALLS),
+             "every call to aPlayFightAnimation is preceded, in its own "
+             "routine, by a call to aBuildTargetPattern")
+    ck.equal("weapon.target_pattern_clear_callers",
+             sorted(b.calls_to(TARGET_PATTERN_CLEAR)),
+             [TARGET_PATTERN_CLEAR_CALL],
+             lambda xs: _hexlist(xs))
+    ck.check("weapon.target_pattern_clears_the_band",
+             _clears_the_band(b),
+             f"0x{TARGET_PATTERN_CLEAR:08X} walks the control map and writes "
+             f"{TARGET_PATTERN_IDLE} over every state byte in the "
+             f"0x{MULTI_BAND_LOW:02X}-0x{MULTI_BAND_HIGH:02X} band")
     ck.equal("weapon.impact", b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT),
              WEAPON_IMPACT, Checker.brief)
     ck.equal("weapon.impact_sound", b.weapon_sounds(), WEAPON_IMPACT_SOUND,

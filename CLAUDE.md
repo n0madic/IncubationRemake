@@ -257,6 +257,16 @@ Three operational rules that have each cost a re-run:
   requiring the converse. It is a second reading of the same binary and it
   catches a fifteen-push argument list reversed one slot out, which is the
   slip that shape of transcription actually makes.
+- **A phase's stored arguments are its identity, not its name.** Six tick
+  phases in `blob_gold.py` still answered for a call the tools had stopped
+  making: the `SWITCH_ARGS` tail postdated them and nothing re-took a *tick*
+  phase when its creator's arguments were corrected, so one of them stepped a
+  grenade arm the shipped game no longer reaches. The predicate is the one
+  `state` and `models` already used — compare what the phase stored against
+  what this run would pass, and re-take what differs. The same class of
+  staleness lives in emitted fixtures: `cases_blob.json` had not been
+  re-emitted after two arms moved, so the Godot suite asserted the old counts
+  for a day and passed.
 - **A failure entry that is never cleared reads as a missing phase.** Five
   additive phases in `blob_gold.capture` recorded a `CaptureError` and did not
   pop it on the next success, so `NATIVE_FAULTS` named a plan as unlanded with

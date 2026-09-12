@@ -1311,7 +1311,277 @@ recomputes a pattern.
 here has been seen in the running game this pass. And an empty pattern makes
 nothing, which is the engine's answer and also what every caller with no attack
 result behind it now gets -- a set piece that fires weapon 11 would show no
-grenade at all.
+grenade at all. *Both are taken up in §14.5.3: three of the five arms were
+fired as shots inside the engine, and the empty-pattern case turns out to have
+no engine counterpart at all.*
+
+### 14.5.3 The shipped call site, and six stale tick phases (2026-09-12, evening)
+
+§14.5.2 closed every creator the two weapon switches route to, and left four
+things named. Three of them are closed here and the fourth is narrower.
+
+**Six tick phases were answering a call the tools no longer make.** The
+`SWITCH_ARGS` tail — the literals a muzzle arm pushes where `argument_vector`
+had been putting a tile number — postdates the first capture, and nothing
+re-took a *tick* phase when its creator's arguments were corrected. Comparing
+each stored `args` against the vector this run would pass finds six:
+`ticks_0x004228F0`, `arms_0x00425CA0`, `arms_0x00426070`, `arms_0x00428200`,
+`ticks_0x00428570` and `ticks_0x00429C30`. `capture` now re-takes exactly
+those, the same predicate `state` and `models` already used, and only a
+success assigns — a re-take that does not land leaves the phase in hand.
+
+Two of the six came back **identical** — `arms_0x00425CA0` and
+`ticks_0x00428570` — which is the result `PROGRAM_ARGS_STALE` produced for the
+creators and for the same reason: a corrected tail that the body never loads is
+not a lost phase. Four changed, and one of them is the one that mattered. `aBlob_CreateGrenade` `0x00426070`
+was re-taken with weapon 44's `0xFF`, so its pool holds **kind 27** — the
+proximity round — while its `arms_` phase still held the kind-26 records the
+old tile number made. That is why arm 26 was reachable and unstepped while arm
+25 was stepped and no longer reachable. With the tick phase re-taken, arm 26
+steps from a creator's own records, `TICK_ARMS_SEEN` and the reachable set are
+**the same twenty-seven**, and arm 25 moves to `POKED_ARMS`, where the probe
+family reaches it. `tests/fixtures/blob/cases_blob.json` had never been
+re-emitted after arms 31 and 47 moved either, so the Godot suite was still
+asserting 25 and 49; it now carries 27 and 47.
+
+**The flame stream's first ring was measured in the frame that matters.**
+`0x00427C80` opens each ring by reading three doubles at `[esp+0x4C]`,
+`[esp+0x54]` and `[esp+0x5C]`; on ring 0 the inner loop has not run and those
+are the frame's own uninitialised locals. §14.5.2 reported the engine agreeing
+with a stand-in of zero — but a plan calls the creator from `dbgcall`'s anchor,
+and the shipped path calls it from `aPlayFightAnimation`. Arithmetic on the
+prologue puts the three slots at the caller's `esp - 0x48`, `- 0x40` and
+`- 0x38`, which is `S - 0x5C` to `S - 0x44` in the animation's own frame — and
+the last thing to write there on the weapon-7 path is the sound-buffer chain
+under `0x00436B60`, entered from `0x004176C0` at `0x0040CC15`. Residue, not a
+constant of the creator.
+
+`blob_gold.py` has a `fight_` phase now, and it fires a **real shot**:
+
+```
+--poke 0x40cc38:8b442444=>6a075890     ; the muzzle switch's weapon read
+--poke 0x41e3d0:5657=>c390             ; aBlobsTick, stubbed to ret
+aSetSaveMode(0) / aLoadGame(6) / aResetBlobs()
+aAttackUnit(19, 6, 18, 4, 0)
+aGetUnitMapElementPtr(0) --read [pool]:1056
+```
+
+`aAttackUnit` builds the target pattern, resolves the shot and calls
+`aPlayFightAnimation` at `0x0046C186`, which dispatches the muzzle switch and
+reaches `0x0040D014`. Neither poke is in the creator's way. The first rewrites
+`mov eax, [esp+0x44]` — the switch's own read of the weapon id — to
+`push imm8 / pop eax / nop`, four bytes for four, so everything before the
+switch runs unchanged and the attacker keeps its own weapon everywhere else.
+The second matters more than it looks: the animation pumps frames and a flame
+record lives two ticks, so **without** it the pool is empty when `aAttackUnit`
+returns. That was measured before it was fixed — zero records with `aRandom2`
+advanced by 160 draws, far more than the creator's forty, which is what said
+the empty pool was a sweep and not a refusal. The 160 counts nothing in
+particular: the stubbed run drew 177, *more* rather than fewer, and the impact
+arms draw from the same generator. The records are what prove the creator ran.
+
+All twelve records the read window covers reproduce the program field for
+field, ring 0's five included. Mutating the stand-in to `(0.01, 0, 0)` fails
+`fight.records` on twenty-three fields, so the check is the claim and not a
+restatement of it. **The three doubles are zero on the shipped path.** What
+stays open is narrower and stays written down: the residue is a history, so the
+zero is this attacker's, this weapon's and this branch of the sound code's
+answer — the `0x0040CBE2` branch that skips the sound buffer leaves a different
+routine's locals at that depth.
+
+Two more weapons went through the same phase, which is the first time any of
+§8.1.3's walking arms has been run *as a shot* rather than decoded:
+
+| Phase | Arm | Creator | Records | Draws | What it adds |
+|---|---|---|---|---|---|
+| `fight_07` | `0x0040D014` | `0x00427C80` | 12 | 40 | ring 0 in `aPlayFightAnimation`'s frame |
+| `fight_11` | `0x0040D077` | `0x00426070` | 6 | 0 | the walk's first cell, arc 0 |
+| `fight_41` | `0x0040D269` | `0x004247C0` | 12 | 36 | **nine** rounds, the count the arm pushes |
+
+`fight_41` is the useful correction: `BURST_ARGS` had taken the tracer bullet
+at ten rounds, which is the *default* arm's literal at `0x0040D43A`; weapon
+41's own arm pushes `9, 1, 0x4C10D8`, and the burst had never been diffed at
+that count. It is now.
+
+What the save cannot show is a band with two cells in it. Each walk ran
+**once** — six grenade records is one call of `0x00426070`, thirty-six draws is
+one call of `0x004247C0` at nine rounds — so the arc argument was zero
+throughout. *Why* the band held one cell is not measured: the poke redirects
+the muzzle switch and nothing ahead of it, so `aBuildTargetPattern` and the
+resolver ran for the attacker's own weapon and the band these arms walked is
+that weapon's pattern. And the shot is point-blank besides, which zeroes the
+arc's offset and makes all seven arcs identical. `docs/28` §12 item 2 carries
+what would discriminate.
+
+**And a trigger handed no cell list should make nothing.** The remake's
+`BlobTriggers._fire` returns zero when the pattern is empty, and until now the
+justification was that the engine's walk over an empty band makes nothing
+either — true but beside the point, because it says nothing about whether such
+a caller exists. It does not. `aPlayFightAnimation` has exactly two call sites,
+`0x0046C186` and `0x004705F5`, and both sit in a routine that has already
+called `aBuildTargetPattern` (`0x0046B6AC`, `0x00470318`). The band is cleared
+by `aClearTargetPattern` `0x00431070` — walk the map, write `1` over every
+state byte in `0x50`–`0x5E` — whose **only** caller is `aBuildTargetPattern`'s
+own first instruction at `0x0046AA17`. So the wipe is at the start of the next
+build, never after an animation: no shipped path dispatches a walking arm over
+an empty band, and none over a stale one. Three new checks in `blob_tables.py`
+pin it, and all three were mutation-tested.
+
+### 14.5.4 The weapon in the unit record (2026-09-12, night)
+
+§14.5.3's phase poked the muzzle switch's own read of the weapon id, which
+reaches a muzzle arm without disturbing anything ahead of it and is exactly
+the wrong instrument for the four questions it left. Everything before the
+switch — `aBuildTargetPattern`, the resolver, the sound, and the *impact*
+switch — still ran for the attacker's own weapon, so a walking arm read a band
+some other weapon had marked.
+
+`unit[+0x3F]` is the current weapon id ([`21` §11](21-info-lcl-schema.md)). A
+one-byte `memcpy` into the attacker's own record before the shot makes the
+whole attack that weapon's, and that is what the `shot_` phases do:
+
+```
+--poke 0x41e3d0:5657=>c390          ; aBlobsTick -> ret
+u = aGetUnitMapElementPtr(0)
+memcpy($u+0x3f, &wp, 1) --read $u+0x3f:1
+end = aResetBlobs()     --read <aRandom2 seed>
+hit = aAttackUnit(19, 6, tx, ty, 0)
+aGetUnitMapElementPtr(0) --read [pool]:3872 --read <aRandom2 seed>
+c0 = aGetCtrlMapElementPtr(0,0) --read $c0:9200
+```
+
+Three things changed with it. The read covers **forty-four** records rather
+than twelve, so a muzzle creator's whole output is compared instead of a
+window onto it. The byte is read back through the same pointer it was written
+to, because a `memcpy` that missed would measure the wrong shot while looking
+exactly like the right one. And the control map is read *after* the shot, so
+the cells a walking arm was handed are measured rather than guessed.
+
+| Phase | Weapon | Cells in the band | Calls | Records compared |
+|---|---|---|---|---|
+| `shot_07` | 7, flame stream | 1 | 1 | **20** — every record it lays |
+| `shot_07_nosound` | 7, the other branch | 1 | 1 | 20 |
+| `shot_09` | 9, blizzard shot | **2** | **2** | 4 |
+| `shot_11` | 11, grenade | 0 | 0 | 0 |
+| `shot_41` | 41, tracer burst | 1 | 1 | 27 |
+| `shot_44` | 44, proximity round | 5 | **5 rounds** | 30 |
+
+**Ring 0 is settled on both branches.** `0x0040CBE2` decides whether
+`aAnimationCreateSoundBuffer` runs, and it is the sound-buffer chain under
+`0x00436B60` that last writes at the depth the flame stream's first ring reads
+three doubles out of. Forcing `je 0x0040CC38` to `jmp` — one byte, and it
+changes neither the unit nor the weapon — takes the other branch; the poke is
+in `shot_07_nosound`'s log and the phase records that it was forced, so the two
+phases cannot drift into being the same run under two names. Both reproduce all
+twenty records field for field, so the three slots hold zero either way.
+Mutating the stand-in to `(0.01, 0, 0)` fails the check on both.
+
+The **value** is measured; its **provenance** is not. Two readings fit: two
+routines that both leave zeros at that depth, or a depth neither reaches, in
+which case what is read is older still — `aAttackUnit`'s own frame, which is
+the same on both branches. Nothing here distinguishes them, and that is what
+the pin now says.
+
+**The walk is measured.** `shot_09`'s band holds two cells, (18, 9) and
+(18, 10), and its arm left four records — two calls of a creator that lays
+two — each pair carrying the other cell's coordinates. Both reproduce. And
+each record's `aux` is the occupant the arm read: 4 and 17, the units standing
+on those two tiles **before** the shot, while the post-shot map shows `+0x07`
+cleared on both. That settles the order in the direction §8.1.3 already
+argued: `aAttackUnit` never calls `aKillUnit`, its only `aRemoveUnitElement`
+call is at `0x0046C1F9` after the animation, and the arm therefore fires at
+cells whose occupant the sweep is about to remove. `inclib/blob_creators.py`
+said the opposite in a docstring; it was wrong and is corrected.
+
+**Weapon 44 is not a walk, and now that is measured too.** Five marked cells
+and five creator calls look alike until the records are read: all thirty carry
+the same `aux`, one aim point, five rounds each with its own scatter draw.
+The five cells are only what `every_unit` left for the resolver; the arm has
+no band test at all.
+
+**Weapon 41 needed a second measurement to pass, and the failure was the
+useful part.** Its burst came out low on `z`, `rot_x` and `vz` because
+`aBlob_CreateTracerBullet` lifts its aim by the height of *the cell's own*
+occupant, and the `origins` phase had only ever asked `0x0047AD30` about the
+two units the fixed argument vector uses. It asks about every live unit now —
+unit 4 stands 1600 high where unit 1 stands 2400 — and the burst reproduces.
+
+**Weapon 11 cannot be exercised from this save, and that is measurable rather
+than arguable.** Its pattern handler `0x0046B0D8` does not look for units: it
+marks a cell whose `+0x0B` action point is in 30..34, the multiplayer victory
+points of [`10` §4.6](10-lev-format.md). The same map read that gives the band
+gives the histogram — 389 cells at 0, six at 1, two at 12, two at 17, one at
+39 — and **none** in the band. So weapon 11 marks nothing whatever it is aimed
+at, its walk never runs, and the arc argument stays at zero. The phase is kept
+with a row of zeroes and a `hit` of 1, and the check accepts an empty band only
+for the weapon whose histogram explains it.
+
+**The draw-count check is gone.** It measured the whole attack's Lehmer steps,
+which move with the roll, so it could only ever say the seed after was
+reachable from the seed before. What reaches past the read window now is the
+read window: forty-four records instead of twelve.
+
+### 14.5.5 The aim point, measured (2026-09-12, night)
+
+§14.5.4 replayed each walked cell with an aim point built from a **rule** —
+tile times 3200 at height zero. It matched the two objects the `symbols` phase
+had resolved and it matched every record, but it was a rule: this map is flat,
+this is one save, and a raised cell would have needed the call the plan could
+not make, because a plan is static and the walked cells are only known after
+the shot.
+
+The way out is to stop asking about cells and read the array instead.
+`aGetSymbolObjectPtr` `0x00404C40` is eleven instructions and its arithmetic is
+in them:
+
+```
+8b 4c 24 04     mov ecx, [esp+4]
+a1 b0a74f00     mov eax, [0x004FA7B0]      ; the count
+81 e1 ffff0000  and ecx, 0xFFFF
+3b c8 / 7e 03   cmp ecx, eax / jle         ; refused above the count
+8d 04 cd ...    lea eax, [ecx*8]
+2b c1           sub eax, ecx               ; 7 * id
+8b 0d 20a84f00  mov ecx, [0x004FA820]      ; the base
+8d 04 80        lea eax, [eax+eax*4]       ; 35 * id
+8d 04 41        lea eax, [ecx+eax*2]       ; base + 70 * id
+```
+
+Not `OBJECT_TABLE`'s 77-byte records — those belong to `aGetStdObjectPosition`
+`0x00405100`, which answers a different z for the same tile, and reading one
+and calling it the other is the mistake §7.4 already names. The `symbols`
+phase now reads `[0x004FA820]` for 400 records in one go, so **every cell on
+the map has a measured object**, and `_cell_inputs` aims each walked cell at
+its own `+0x05` instead of at a formula. All the records still reproduce —
+which is the point: the rule was right here, and is no longer load-bearing.
+
+Four checks hold the reading, and they bite in two different places:
+
+| Check | Bites at | What it catches |
+|---|---|---|
+| `weapon.symbol_object_service` (`blob_tables`) | check time | the service's own bytes, and the base, stride and bound decoded back out of them |
+| `symbols.table_matches_the_disassembly` | check time | the capture's copy of those three against that decode |
+| `symbols.table_is_the_service's` | parse time | the two ids the service *was* called for, against the array's entries for the same ids |
+| `symbols.read_covers_the_array` | parse time | the read width against `[0x004FA7B0]`, the highest id the service accepts |
+
+The last two cannot fail on stored numbers — they are *about* how the bytes
+were divided — so they were exercised by re-parsing the capture's own stored
+rows with the constants mutated: at stride 77 the array's entry for id 139
+comes back `(-855638016, -2133996083, -2147483486)` against the service's
+`(60800, 19200, 0)`, and a read width of 380 does not come to the bound. That
+matters, because an earlier version of `parse_symbols` did `out.update(called)`
+and folded the service's answers **into** the array, which made
+`table_is_the_service's` compare a value with a copy of itself: a check that
+would have passed at any stride. The service's answers are stored beside the
+array now. The two check-time checks were mutation-tested in the ordinary way:
+stride 71, the base moved to `OBJECT_TABLE`, the count cell moved four bytes;
+and the aim point itself with its z lifted by 160.
+
+One precision worth keeping: `cmp ecx, eax / jle` accepts `id == count`, so
+`[0x004FA7B0]` is the last id the service answers for and not a number of
+records. The read covers ids 0 to 399, which is one per cell of this 20×20
+map and every id a cell can name; `SYMBOL_IDS` is derived from the captured
+map's own dimensions, and a larger map fails `read_covers_the_array` rather
+than reading short in silence.
 
 ### 14.6 Which music family plays: `Arack`, read out of the import table
 

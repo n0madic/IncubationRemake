@@ -1634,6 +1634,22 @@ one it judged — `0x5A` miss, `0x5B` resolved, `0x5C` hit, `0x5D` killed
 `aPlayFightAnimation` at `0x0046C186`, after both, and nothing between the two
 resets `cell[+0x00]`. So these arms read back what the shot did.
 
+**And no caller reaches them without having built a band first.**
+`aPlayFightAnimation` has exactly two call sites — `0x0046C186` inside
+`aAttackUnit` and `0x004705F5` — and both sit in a routine that has already
+called `aBuildTargetPattern` (`0x0046B6AC` and `0x00470318`). The band is
+cleared by `aClearTargetPattern` `0x00431070`, which walks the map and writes
+`1` over every state byte in `0x50`–`0x5E`; its **only** caller is
+`aBuildTargetPattern`'s own first instruction at `0x0046AA17`. So the wipe
+happens at the start of the next build, never at the end of an animation, and
+there is no shipped path that dispatches a walking arm over an empty band or a
+stale one. `blob_tables.py`'s `weapon.pattern_precedes_every_animation`,
+`weapon.target_pattern_clear_callers` and
+`weapon.target_pattern_clears_the_band` pin all three facts. That is why a
+remake trigger handed no cell list makes **nothing** rather than falling back
+to one round at the aim point: the fallback would be an arm the engine has not
+got.
+
 | Weapon | Arm | Creator | Band | Unit on the cell? | Per iteration |
 |---|---|---|---|---|---|
 | 9 muzzle | `0x0040CF65` | `aBlob_EnergyCannon` `0x004264A0` | `0x50`–`0x5E` | required | `k / 3` as the 5th argument, which the body never reads |
@@ -1653,9 +1669,21 @@ seventh target is thrown at rather than dropped.
 The unit test is `cmp word [edi+7], 0xFFFF` and it is not decoration, but a
 `0x5D` cell still passes it. `aPlayFightAnimation` runs at `0x0046C186`; only
 after it returns does the removal sweep start at `0x0046C1CF`, reaching
-`aRemoveUnitElement` at `0x0046C1F9`. Weapons 9 and 11 therefore fire at every
-matched cell that held a unit, including killed targets; weapon 41 takes every
-matched marker without the unit test.
+`aRemoveUnitElement` at `0x0046C1F9` — which is `aAttackUnit`'s **only** call
+to it, and `aAttackUnit` never calls `aKillUnit` at all. Weapons 9 and 11
+therefore fire at every matched cell that held a unit, including killed
+targets; weapon 41 takes every matched marker without the unit test.
+
+**Measured, 2026-09-12.** `blob_gold.py`'s `shot_09` phase fires weapon 9 with
+the weapon written into the attacker's own record, so the pattern is that
+weapon's. The band comes back holding two cells, (18, 9) and (18, 10), both
+marked `0x5D` and both with `+0x07` already cleared by the sweep — and the
+muzzle arm left **four** records, which is two calls of a creator that lays
+two. Each record's `aux` is the occupant the arm read: 4 and 17, which are
+exactly the units standing on those two tiles *before* the shot. Both calls
+reproduce the transcription field for field. So the walk is per cell, the
+order is the control map's, and the arm sees the victim the sweep has not
+removed yet.
 
 `combat_tables.py`'s `resolver.attack_animation_before_removal` pins the two
 calls and their order; this is not inferred from the surviving cell state.
@@ -2048,15 +2076,37 @@ store lands on.
    shipped data reaches build `RzRxRy`" but "the other builder is never
    called by anything".
 
-2. **What the five repeating arms look like in play.** §8.1.3 decodes them out
-   of the instructions and the remake walks the same cell list, but nothing has
-   watched a *Multi-target Destroyer* throw six grenades on six arcs in the
-   running original or in the remake. The pool can be read frame by frame
-   through the agent (§14.5's closing paragraph in
-   [`97`](97-slice-5-report.md) has the recipe), and the shot to watch is
-   weapon 11 against a cluster, or weapon 41, whose arm takes the resolver's
-   band without a unit test and so should fire at a cell whose occupant it just
-   killed.
+2. **What the five repeating arms look like in play, with more than one cell
+   in the band.** §8.1.3 decodes them out of the instructions, and on
+   2026-09-12 three of the five were additionally fired *as shots* inside the
+   running original — `blob_gold.py`'s `fight_` phase, §14.5.3 in
+   [`97`](97-slice-5-report.md): `aAttackUnit` builds the pattern, resolves it
+   and calls `aPlayFightAnimation`, so the arm dispatches over the shot's own
+   band. Weapons 7, 11 and 41 all reproduce their creator's records field for
+   field from the shipped call site, and weapon 41's arm ran at the **nine**
+   rounds it pushes rather than the ten the `burst_` phase was taken with.
+
+   **All five were then fired properly**, with the weapon written into the
+   attacker's own record (`unit[+0x3F]`) so that the pattern family, the range
+   test, both switches and the sound are all the fired weapon's — §14.5.4–5 in
+   [`97`](97-slice-5-report.md), the second of which replaces the aim point's
+   stand-in rule with the object array `aGetSymbolObjectPtr` indexes, read
+   whole so that every walked cell has a measured object. Weapon 9's band held **two** cells and its
+   arm made two calls, one per cell, each with the other cell's coordinates:
+   the walk, in the engine. Weapon 44's five rounds all carry the same `aux`,
+   so it is five rounds at one aim point and not a walk. Weapon 41's burst
+   reproduces at nine rounds once the aim is lifted by the cell's *own*
+   occupant's height.
+
+   What is left open is the **arc**, and it is a property of this save rather
+   than of the arm. Weapon 11's handler `0x0046B0D8` marks a cell whose
+   `+0x0B` action point is in 30..34, and `_6_.sav`'s map carries none — 389
+   cells at 0, six at 1, two at 12, two at 17, one at 39 — so weapon 11 marks
+   nothing whatever it is aimed at and its walk never runs. A save with cells
+   in that band, two of them at least six tiles from the shooter so the
+   point-blank gate does not zero the offset, is what would show arc 1.
+   The pool can be read frame by frame through the agent (§14.5's closing
+   paragraph in [`97`](97-slice-5-report.md) has the recipe).
 
 3. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects

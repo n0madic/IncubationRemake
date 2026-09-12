@@ -45,8 +45,8 @@ const ROTATE_CASES: int = 8
 ## a type, so the creator took its fall-through arm. With the argument
 ## corrected the creator lays sixty records and the arm is stepped with a
 ## creator's own, which is the stronger claim of the two.
-const NATIVE_ARMS: int = 25
-const POKED_ARMS: int = 49
+const NATIVE_ARMS: int = 27
+const POKED_ARMS: int = 47
 const UNRESOLVED_ARMS: int = 0
 ## Transcribed arm lines the native comparison actually executed, and how many
 ## there are. The eight that are missing are named in `blob_gold.py`'s

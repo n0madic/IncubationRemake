@@ -1622,6 +1622,14 @@ def _case_arg(value: Any) -> Any:
 #: the suite -- and the fixture carries the list so the suite can say which.
 #: `blob_gold.py` pins that this list is the one its capture produced.
 #:
+#: **Arm 26 replaced arm 25 on 2026-09-12.**  Both are `aBlob_CreateGrenade`.
+#: The creator phase had been re-taken with the `0xFF` weapon 44's arm pushes,
+#: so the pool holds kind 27 -- the proximity round -- while the `arms_` phase
+#: was still the older one taken with a tile number, which makes kind 26.
+#: Re-taking the tick phase under the arguments the creator now uses steps arm
+#: 26 from a creator's own records; arm 25 is reached by the probe family and
+#: sits on :data:`POKED_ARMS`, which is the weaker of the two claims.
+#:
 #: **Arms 31 and 47 joined on 2026-09-12** and left :data:`POKED_ARMS`, for the
 #: same reason arm 13 did: the spore cannon's spray and the flame stream had
 #: been captured with a tile number where their arms push a round count and a
@@ -1629,7 +1637,7 @@ def _case_arg(value: Any) -> Any:
 #: creator.  Re-taken with the literals the arms push, both creators fill their
 #: pool and both arms step from a creator's own records.
 NATIVE_ARMS: Tuple[int, ...] = (
-    5, 6, 8, 9, 11, 12, 13, 15, 20, 21, 22, 25, 31, 33, 42, 44, 45, 47, 48,
+    5, 6, 8, 9, 11, 12, 13, 15, 20, 21, 22, 26, 31, 33, 42, 44, 45, 47, 48,
     49, 58, 60, 61, 63, 68, 71, 73,
 )
 #: **The other forty-seven**, stepped the only way they can be.  No creator a
@@ -1652,7 +1660,7 @@ NATIVE_ARMS: Tuple[int, ...] = (
 #: nothing a weapon selects appeared to fill kind 13.  With the argument
 #: corrected the creator lays its sixty records and the arm is stepped with a
 #: creator's own, which is the stronger of the two claims.
-POKED_ARMS: Tuple[int, ...] = (0, 1, 2, 3, 4, 7, 10, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72)
+POKED_ARMS: Tuple[int, ...] = (0, 1, 2, 3, 4, 7, 10, 14, 16, 17, 18, 19, 23, 24, 25, 27, 28, 29, 30, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72)
 #: Stepped and **not** reproduced: none, of all seventy-four.  The two seekers
 #: were here until the reading in :func:`_seek` replaced the invented
 #: normalisation with `0x0046D400`'s own answer.
@@ -1721,8 +1729,8 @@ def emit_cases(out: str, root: Optional[str] = None) -> int:
                   "section 12 item 1 are measured and reproduced "
                   "(tools/blob_gold.py's hooks phase), and **all 74 arms** "
                   "have additionally been stepped inside a running "
-                  "Incubation.exe and agree field for field: 24 with records "
-                  "a creator built (native_arms) and the other 50 with a "
+                  "Incubation.exe and agree field for field: 27 with records "
+                  "a creator built (native_arms) and the other 47 with a "
                   "donor record whose kind byte was rewritten (poked_arms), "
                   "which measures the arm and not the arguments a creator "
                   "would have passed it.  unresolved_arms is empty.  How "

@@ -290,8 +290,56 @@ and no more.
 doubles held zero in the anchor's frame, so the stand-in matched — which is a
 measurement of `dbgcall`'s stack and not of the shipped path's, because a shot
 calls the creator from `aPlayFightAnimation` and the slots hold whatever that
-caller left. `blob_creators.FLAME_RING0_DIVERGENCE` says so, and a break at
-`0x0040D014` during a real shot is what would settle it.
+caller left.
+
+**The `fight_` phases settle that, and they are new here.** Each one fires a
+real shot: `aAttackUnit(19, 6, 18, 4, 0)` builds the target pattern, resolves
+it and calls `aPlayFightAnimation`, so the creator runs from its shipped call
+site with the animation's own frame underneath. Two pokes make the run
+readable — the muzzle switch's weapon read at `0x0040CC38` rewritten to `push
+imm8 / pop eax / nop`, and `aBlobsTick` `0x0041E3D0` stubbed to `ret`, without
+which the pool is empty by the time the call returns. Weapon 7's twelve
+records reproduce field for field, **ring 0's five included**, so the three
+doubles are zero on the shipped path too; weapon 11 and weapon 41 go through
+§8.1.3's walking arms, and weapon 41 at the **nine** rounds its own arm pushes
+rather than the ten `burst_0x004247C0` was taken with. These
+phases poke the muzzle switch only, so the band their walking arms read was
+marked for the attacker's *own* weapon.
+
+**The `shot_` phases are the ones that fire properly.** They write the weapon
+into `unit[+0x3F]` instead, so the pattern family, the range test, both
+switches and the sound are all the fired weapon's; they read forty-four
+records rather than twelve, so a muzzle creator's whole output is compared;
+and they read the control map afterwards, so the cells a walking arm was
+handed are measured. Weapon 9's band holds **two** cells and its arm makes two
+calls, one per cell — the walk, in the engine — and each record's `aux` is the
+occupant the arm read, which the post-shot map has already cleared. Weapon
+44's thirty records all carry the same `aux`: five rounds at one aim point,
+not a walk. Weapon 7 reproduces all twenty records on **both** branches of
+`0x0040CBE2`, so ring 0's three doubles are zero whether or not the
+sound-buffer chain has run underneath. Weapon 11 marks nothing on this map —
+its handler wants an action point in 30..34 and the map carries none — so its
+arc stays unexercised, and the histogram that says why is in the phase.
+
+**`symbols` answers for the whole map now, not for two tiles.** A walking arm
+aims at a cell the argument tiles never named, and a plan cannot ask
+`aGetSymbolObjectPtr` about a cell nobody knows until after the shot — so the
+phase reads the array that service indexes, `[0x004FA820] + id * 70`, bounded
+by `[0x004FA7B0]`, all four hundred records in one go. Every cell therefore
+has a *measured* object instead of the tile-times-3200 rule that stood in for
+it. The two ids the service is still called for are kept beside the array
+rather than folded into it — folding them in is what made an earlier version
+of that comparison check a value against a copy of itself — so
+`symbols.table_is_the_service's` can compare them; the read width must come to
+`[0x004FA7B0]`, the highest id the service accepts; and the base, the stride
+and the bound are decoded from the service's own instructions by
+`blob_tables`' `weapon.symbol_object_service`.
+
+Six tick phases were also re-taken: their stored arguments predated
+`SWITCH_ARGS`, so they answered a call the tools no longer make. Two came
+back identical and four changed — most consequentially `arms_0x00426070`,
+which had been stepping the grenade's kind-26 arm while its creator phase held
+kind 27.
 
 A third pin moved without a phase: `NATIVE_FAULTS` had been reporting `models`
 as unlanded while that plan's answer sat in the same document. Five additive

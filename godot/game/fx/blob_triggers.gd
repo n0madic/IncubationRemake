@@ -669,8 +669,17 @@ static func burst_at(list: Array, index: int) -> Vector2i:
 ## and this filters it by the arm's own band and unit test, in control-map
 ## order, because that order is what picks weapon 11's arc.
 ##
-## An empty `pattern` is the single call this class used to make, which is what
-## every caller without an attack result behind it still gets.
+## An empty `pattern` makes nothing, and that is a faithful limit rather than
+## a fallback. The engine has no caller that animates a shot it has not
+## resolved: `aPlayFightAnimation` is called from exactly two sites
+## (`0x0046C186` and `0x004705F5`) and both sit in a routine that has already
+## called `aBuildTargetPattern`, whose own first instruction clears the
+## `0x50`-`0x5E` band (`0x00431070`, its only caller). So the markers are
+## wiped at the start of the next build and never after an animation -- a
+## walking arm is never dispatched over an empty band, and never over a stale
+## one either. `blob_tables`' `weapon.pattern_precedes_every_animation` pins
+## it. Firing once at the aim point instead would be the remake inventing a
+## round the engine has no arm for.
 func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		towards: Vector3i,
 		joint_points: Dictionary[String, Vector3i] = {},
@@ -694,10 +703,10 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		return made
 	var cells: Array[Dictionary] = _multi_cells(arm, pattern)
 	if cells.is_empty():
-		# **Not a skip.** A shot whose caller carries no cell list, and a shot
-		# that caught nothing, both leave the walk with nothing to do -- and
-		# the engine's loop makes nothing either. Firing once at the aim point
-		# instead would be the remake inventing a round.
+		# **Not a skip**, and not a fallback either: see this method's own
+		# note. The engine's walk over a band with no cell in it makes
+		# nothing, and no engine caller reaches the walk without having built
+		# the band first.
 		return 0
 	var total: int = 0
 	for index: int in range(cells.size()):

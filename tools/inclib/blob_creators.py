@@ -322,13 +322,44 @@ class Pool:
 #:   `0x80000000` for a NaN on this binary, so the "denormal or NaN, both give
 #:   0" half of the earlier argument here was simply wrong and is withdrawn.
 #:
-#: **What the capture does not settle is the frame.**  A plan calls the creator
-#: from `dbgcall`'s anchor and a shot calls it from `aPlayFightAnimation`; the
-#: slots hold whatever each caller left at that depth, so the agreement is a
-#: measurement of the anchor's stack and not of the shipped path's.  Measuring
-#: that one needs a break at the call site -- `0x0040D014` for weapon 7,
-#: `0x0040D047` for weapon 40 -- during a real shot, which no harness here
-#: does.  Named rather than buried, so a green run cannot imply otherwise.
+#: **2026-09-12, later the same day: the frame was settled too.**  The
+#: agreement above is a measurement of `dbgcall`'s anchor stack, because a
+#: plan calls the creator itself; a shot calls it from `aPlayFightAnimation`,
+#: whose own earlier calls -- the sound-buffer chain under `0x00436B60`,
+#: entered through `0x004176C0` at `0x0040CC15` -- write at exactly the depth
+#: those three doubles occupy.  `blob_gold`'s `fight_` phase closes that gap:
+#: it fires a real shot through `aAttackUnit`, which builds the target
+#: pattern, resolves it and calls `aPlayFightAnimation` at `0x0046C186`, so
+#: the creator runs from `0x0040D014` with the animation's frame underneath.
+#: All twelve records the read window covers -- ring 0's five included --
+#: reproduce this program field for field.  The three slots hold zero on the
+#: shipped path.
+#:
+#: Two pokes make that run readable and neither is in the creator's way: the
+#: muzzle switch's own weapon read at `0x0040CC38` is rewritten to `push
+#: imm8 / pop eax / nop`, four bytes for four, so the switch dispatches the
+#: weapon the phase names; and `aBlobsTick` `0x0041E3D0` is stubbed to `ret`,
+#: because the animation pumps frames and a flame record lives two ticks --
+#: without the stub the pool is empty when `aAttackUnit` returns, which was
+#: measured -- with `aRandom2` advanced by 160 draws, far more than the
+#: creator's forty, so the empty pool was a sweep and not a refusal.  (That
+#: number counts nothing in particular: the stubbed run drew 177, and the
+#: impact arms draw too.  The records are what prove the creator ran.)
+#:
+#: **Both branches of the sound code give zero.**  `0x0040CBE2` decides
+#: whether `aAnimationCreateSoundBuffer` runs, and it is that call's subtree
+#: under `0x00436B60` that last writes at this depth on the path the target's
+#: unit type takes here.  Forcing `je 0x0040CC38` to `jmp` -- one byte, and it
+#: changes neither the unit nor the weapon -- takes the other branch, and the
+#: `shot_07_nosound` phase reproduces all twenty records as well.
+#:
+#: What stays open is narrower than it was, and is written down here rather
+#: than buried.  The value is measured; its **provenance** is not.  Two
+#: readings fit equally: two routines that both leave zeros at that depth, or
+#: a depth neither of them reaches, in which case what is read is older still
+#: -- `aAttackUnit`'s own frame, which is the same on both branches.  Nothing
+#: here distinguishes them, and the zero is in any case this attacker's, this
+#: weapon's and this save's answer rather than a constant of the routine.
 FLAME_RING0_DIVERGENCE = "0x00427C80"
 
 #: `creator -> (arity, program)`.  The arity is the one `blob_tables`'
@@ -915,9 +946,14 @@ def _c00426070(pool: Pool, draw: Draws, args: Sequence[int]) -> None:
     That count is what picks the arc, out of `GRENADE_AIM`'s six, so the
     multi-target destroyer's simultaneous shots do not fly the same line; a
     seventh target and the 0xFF type both fall through to a drawn scatter.
-    A cell the resolver marked killed is **not** among them: `aKillUnit` runs
-    before the animation and `aWriteUnitIdInfoCtrlMap(slot, 0xFFFF, 0)` clears
-    every cell the victim stood on (`blob_tables.MULTI_TARGET_ARMS`,
+    A cell the resolver marked **killed is among them**, which is the
+    opposite of what this note used to say.  `aAttackUnit` never calls
+    `aKillUnit` at all, and its only `aRemoveUnitElement` call is at
+    `0x0046C1F9` -- *after* `aPlayFightAnimation` at `0x0046C186` -- so the
+    cell still carries its occupant when the walk tests `cmp word [edi+7],
+    0xFFFF`.  Measured, not only read: `blob_gold`'s `shot_09` phase fires
+    weapon 9 at two cells the resolver marked `0x5D`, and its arm makes four
+    records, which is two calls (`blob_tables.MULTI_TARGET_ARMS`,
     `docs/28` §8.1.3).
 
     What the type reaches, in order: the offset added to the target object
