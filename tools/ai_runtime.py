@@ -136,7 +136,7 @@ PATTERN_SCENE_CENSUS = {
     "aim_cell_full_null_object": 1, "aim_cell_stun": 1, "every_unit": 7,
     "explosives_recentred": 1, "line_of_sight_from_aim": 13,
     "neighbours_then_aim_70": 9, "radius_by_range": 3, "scatter_18": 19,
-    "special_objects": 2, "spores_filtered": 1,
+    "special_objects": 1, "spores_filtered": 1,
 }
 PATTERN_SCENE_CELLS = {
     "aim_and_neighbours":
@@ -162,7 +162,11 @@ PATTERN_SCENE_CELLS = {
         "18,17,80;20,18,80;18,18,80;19,20,80;17,18,80;18,17,80;19,19,80;"
         "18,18,80;19,19,80;20,20,80;18,17,80;19,17,80;19,18,80;18,17,80;"
         "18,20,80;17,18,80;18,19,80;18,18,80;18,18,81",
-    "special_objects": "6,10,80;7,11,80",
+    # One cell: the enemy the shooter's own overlay stamped within reach of
+    # the aim. Two cells, (6, 10) and (7, 11), until 2026-09-12 -- from a
+    # mission whose *action points* fell in 30..34, which is the byte the
+    # handler does not read (`combat.SPECIAL_OBJECT_BAND`).
+    "special_objects": "18,16,80",
     "spores_filtered": "25,14,80",
 }
 #: ``0x0046B1C7``'s radius for every range 0..40 -- the whole span a shipped
@@ -633,7 +637,8 @@ def check_patterns(c: Checker, root: Path, tables: BalanceTables,
             try:
                 cells = combatmod.mark_cells(ctx.world, unit.weapon, aim[0],
                                              aim[1], shooter=unit,
-                                             rng=ctx.world.rng)
+                                             rng=ctx.world.rng,
+                                             states=ctx.state)
             except combatmod.CombatError as exc:
                 refused.append(f"{path.name} slot {unit.slot}: {exc}")
                 continue
@@ -666,8 +671,8 @@ def check_patterns(c: Checker, root: Path, tables: BalanceTables,
         stage = scene
         found = _scene_shot(stage, family, weapon)
         if found is None:
-            # `_C_132` carries no cell in the action-point band, so the one
-            # family that hunts for one gets a mission that does.
+            # A family whose situation `_C_132` cannot arrange gets the first
+            # mission that can.
             for path in mission_paths(root):
                 stage = context_for(path, tables, delays)
                 found = _scene_shot(stage, family, weapon)
@@ -682,7 +687,8 @@ def check_patterns(c: Checker, root: Path, tables: BalanceTables,
                                              aim[1])
         stage.world.rng = rngmod.ARandom(SCENE_SEED)
         cells = combatmod.mark_cells(stage.world, weapon, aim[0], aim[1],
-                                     shooter=shooter, rng=stage.world.rng)
+                                     shooter=shooter, rng=stage.world.rng,
+                                     states=stage.state)
         scene_census[family] = len(cells)
         # **The order and the cells, not only how many.** A census of counts
         # is blind to the two unrolled rings writing their neighbours in
@@ -692,6 +698,26 @@ def check_patterns(c: Checker, root: Path, tables: BalanceTables,
         scene_cells[family] = ";".join(f"{x},{y},{m}" for x, y, m in cells)
     c.expect("pattern.scene_census", scene_census, PATTERN_SCENE_CENSUS,
              "one shot of every family from a unit arranged to fire it")
+    # **And weapon 11 through `attack_unit` with no overlay handed in.**  The
+    # computer's `fire` passes its context's; a human shot has none to pass,
+    # and `attack_unit` builds the shooter's the way the select does.  The
+    # same scene, resolved as a shot, marks the same cell -- so the branch
+    # nothing else reaches is reached here, and a wiring that refused every
+    # Multi-target Destroyer shot for want of an overlay would fail.
+    special = sorted(combatmod.PATTERN_FAMILIES["special_objects"])[0]
+    scene = context_for(root / "Missions" / "_C_132.lev", tables, delays)
+    found = _scene_shot(scene, "special_objects", special)
+    fired: list[tuple[int, int]] = []
+    if found is not None:
+        shooter, aim = found
+        shooter.weapon = special
+        result = combatmod.attack_unit(scene.world, shooter.x, shooter.y,
+                                       aim[0], aim[1])
+        fired = [(x, y) for x, y, _m in result.marked] if result.fired else []
+    c.expect("pattern.special_objects_shot_builds_its_overlay", fired,
+             [(18, 16)],
+             "attack_unit with no `states` builds the shooter's overlay and "
+             "marks the banded cell")
     c.expect("pattern.scene_cells", scene_cells, PATTERN_SCENE_CELLS,
              "the same shots, cell by cell and in the order they are written")
 
@@ -782,22 +808,28 @@ def _scene_shot(ctx: ai.AIContext, family: str,
     """A shooter and an aim point that let one family actually stamp a cell.
 
     Two of the six need arranging rather than picking: ``special_objects``
-    hunts for a cell in the action-point band 30..34 and will find nothing
-    aimed anywhere else, and ``radius_by_range`` refuses a target whose hit
-    probability does not resolve. The rest fire from anywhere.
+    hunts for a cell the shooter's own target overlay stamped -- the state
+    byte in 30..34, ``combat.SPECIAL_OBJECT_BAND`` -- and will find nothing
+    until that overlay is built, and ``radius_by_range`` refuses a target
+    whose hit probability does not resolve. The rest fire from anywhere.
     """
     aliens = aliens_of(ctx)
     world = ctx.world
     if family == "special_objects":
         low, high = combatmod.SPECIAL_OBJECT_BAND
-        for index, point in enumerate(world.action_point):
-            if not low <= point <= high:
-                continue
-            cx, cy = index % world.width, index // world.width
-            for unit in aliens:
-                if movemap.distance(unit.x, unit.y, cx, cy) \
-                        <= combatmod.ARC_SWEEP_MAX_DISTANCE:
-                    return unit, (cx, cy)
+        for unit in aliens:
+            # The overlay the select or `fire` would have built for this
+            # unit holding this weapon, into the context the pattern reads.
+            saved = unit.weapon
+            unit.weapon = weapon
+            try:
+                ctx.state = [movemap.STATE_RESET] * (world.width * world.height)
+                ai.build_target_overlay(ctx, unit)
+            finally:
+                unit.weapon = saved
+            for index, state in enumerate(ctx.state):
+                if low <= state <= high:
+                    return unit, (index % world.width, index // world.width)
         return None
     if family == "radius_by_range":
         for unit in aliens:

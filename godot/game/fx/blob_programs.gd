@@ -192,6 +192,16 @@ const GRENADE_ARC: String = "0x00426070"
 const BEAM_DOTS: String = "0x00428200"
 const LASER_DOTS: String = "0x00428570"
 const FLAME_STREAM: String = "0x00427C80"
+## The three seven-argument **burst** creators of docs/28 section 8.1.1 and
+## the Cy'Coo's spore round, added 2026-09-12. Until then the three bursts
+## were the last weapon creators built one record per constructor call and
+## the spore round was built by hand in `BlobTriggers`; all four are now
+## programs of this file and diffed against the capture like the rest
+## (docs/97 section 51).
+const TRACER_BULLET: String = "0x004247C0"
+const FLASH: String = "0x00423D80"
+const NEEDLES: String = "0x00424250"
+const SPORE_CANNON: String = "0x004268B0"
 
 ## `0x004B1278` / `0x004B12C0` / `0x004B1280` and the two the compiler left as
 ## reciprocal multiplies -- `blob_creators.py` carries the same numbers with
@@ -384,6 +394,87 @@ const LASER_DOT_STEP: float = 480.0
 const LASER_DOT_UNIT: int = 3200
 const LASER_DOT_LIFT: int = 0x320
 
+## `0x004B1280`, `0x004B1270` and `0x004B1278`: the double each burst
+## creator scales the direction by, **negative and subtracted** like the
+## family's other steps, and the same number again as the spacing its
+## flight length is counted in, recovered from the reciprocal multiplies at
+## `0x00424A9A`, `0x00424058` and `0x00424540`.
+const TRACER_STEP: float = -2240.0
+const TRACER_UNIT: int = 2240
+const FLASH_STEP: float = -1600.0
+const FLASH_UNIT: int = 1600
+const NEEDLE_STEP: float = -2400.0
+const NEEDLE_UNIT: int = 2400
+## docs/28 section 7.2's kind 11 -- the ejected cartridge case, the one
+## record in a burst that does not fly at what was shot at.
+const CASING_KIND: int = 0xB
+const TRACER_KIND: int = 0xF
+## `0x004B1288` / `0x004B1290`: the tracer's case leaves **perpendicular** to
+## the line of fire, `x` taking the line's `y` ratio and `y` its negated `x`.
+const TRACER_CASING_SPEED: float = 128.0
+## `push 0xA0 / push 0` then `add eax, 0x140` at `0x00424BDD`: the case's
+## rise, `aRandom2(0, 160) + 320`, the one drawn component it has.
+const CASING_RISE_SPAN: int = 0xA0
+const CASING_RISE_BASE: int = 0x140
+## The tracer's scatter, `aRandom2(-160, 320)` on the ground plane and
+## `aRandom2(-80, 160)` up; the flash's and the needles' are half of it.
+const TRACER_SCATTER_BASE: int = -160
+const TRACER_SCATTER_SPAN: int = 320
+const TRACER_RISE_BASE: int = -80
+const TRACER_RISE_SPAN: int = 160
+const BURST_SCATTER_BASE: int = -80
+const BURST_SCATTER_SPAN: int = 160
+const BURST_RISE_BASE: int = -40
+const BURST_RISE_SPAN: int = 80
+## The tracer's own zoom bob, `0x00424CB0`: a fifth of the delta along, row
+## 0, size 10, life 8.
+const TRACER_BOB_SPLIT: int = 5
+const TRACER_BOB_ROW: int = 0
+const TRACER_BOB_AUX: int = 10
+const TRACER_BOB_LIFE: int = 8
+## `aBlob_CreateFlash`'s sprite: row 6, a drawn column `aRandom2(0, 7)`
+## (`push 7 / push 0` at `0x0042411D`), kind 0x45, size 5.
+const FLASH_ROW: int = 6
+const FLASH_COLUMN_SPAN: int = 7
+const FLASH_KIND: int = 0x45
+const FLASH_AUX: int = 5
+## The needles: nine sprites down eighths of the round's delta, the **last**
+## of them kind 73 where the other eight are 74 (`xor eax, eax / test ebx,
+## ebx / setne al / add eax, 0x49`), sizes `10 - k` for `k` 8 down to 0.
+const NEEDLE_SPLIT: int = 8
+const NEEDLE_KIND: int = 0x4A
+const NEEDLE_KIND_LAST: int = 0x49
+const NEEDLE_AUX_BASE: int = 10
+const NEEDLE_ROW: int = 1
+## The point-blank branches: a zoom bob of life 8 whose size is
+## `aRandom2(5, 15)`, at row 6 for the flash -- jittered `aRandom2(-1600,
+## 3200)` on all three axes -- and row 1 for the needles, followed there by
+## `0x00428F70`'s twenty plasma sparks.
+const POINT_BLANK_BOB_LIFE: int = 8
+const POINT_BLANK_AUX_BASE: int = 5
+const POINT_BLANK_AUX_SPAN: int = 0xF
+const FLASH_BOB_JITTER_BASE: int = -1600
+const FLASH_BOB_JITTER_SPAN: int = 3200
+const NEEDLE_SPARKS: int = 0x14
+## `aBlob_CreateSporeCannon` `0x004268B0`: the spore step in world units --
+## a quarter of a map field -- as the **divisor** the round's life is counted
+## in (the reciprocal multiply `0x51EB851F` with `sar edx, 8` at
+## `0x00426A73`), and the same 800 again as the **speed**, the double at
+## `0x004B12C8` the three direction ratios are multiplied by.
+const SPORE_UNIT: int = 800
+const SPORE_SPEED: float = 800.0
+## `lea ebp, [edx + eax - 2]` at `0x00426A8E` -- two steps shorter than the
+## span.
+const SPORE_LIFE_BIAS: int = 2
+## `0x00426B0C`..`0x00426B29`: `0x50 * (life / 2)`, written as a negated
+## `5 * (life / 2) << 4` whose sign is then thrown away, on top of `vz`.
+## Kind 22's arm takes `0x50` off `vz` every tick, so the loft is half the
+## fall and the round arcs back down on the target.
+const SPORE_LOFT: int = 0x50
+const SPORE_ROW: int = 3
+const SPORE_KIND: int = 0x16
+const SPORE_AUX: int = 0xF
+
 const PROJECTILE_LOB_SPREAD: int = 4
 const PROJECTILE_LOB_SCALE: int = 8
 ## `0x00425D9A` and `0x00426C6A` -- the `add eax, 0xA0` each of the two
@@ -575,8 +666,12 @@ class Pool extends RefCounted:
 	## Whether the creator wrote **0** over the *arrived* flag of docs/42
 	## section 4.6 -- "there is something in flight to wait for".
 	##
-	## Exactly six sites in `.text` write a zero to `0x004FE63C`, and five of
-	## them are inside a creator: `aBlob_CreateGrenade` `0x00426070`,
+	## Exactly six sites in `.text` write a **literal** zero to `0x004FE63C`
+	## (`presentation_tables.ARRIVED_CREATOR_WRITES["clear"]`; the twelve
+	## `setle` sites that write it *computed* from a flight length are the
+	## other class, and the three bursts and the spore cannon are among
+	## them), and five of them are inside a creator: `aBlob_CreateGrenade`
+	## `0x00426070`,
 	## `aBlob_EnergyCannon` `0x004264A0` and `aBlob_CreateLaser` `0x00428570`
 	## -- the three weapon projectiles, which the shot path models at the
 	## muzzle instead ([method ShotSequence.waits_for_projectile]) -- and the
@@ -660,6 +755,10 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	# leaves as it found them.
 	FIRE_WHEEL: 3, MINE_PLUME: 3, SPRAY: 6, GRENADE_ROUND: 5, GRENADE_ARC: 6,
 	BEAM_DOTS: 5, LASER_DOTS: 5, FLAME_STREAM: 5,
+	# The three bursts read their round count and stagger from the fifth and
+	# sixth slots; the seventh is the joint's name, a string pointer the
+	# caller resolves into [member Inputs.source_joint] before the call.
+	TRACER_BULLET: 7, FLASH: 7, NEEDLES: 7, SPORE_CANNON: 4,
 }
 
 
@@ -772,6 +871,217 @@ static func machine_gun(pool: Pool, draws: Draws, inputs: Inputs) -> void:
 			from.y + IncInt.div_trunc(dy, 5),
 			from.z + IncInt.div_trunc(dz, 5), 0, 0, 0, 0x32, burst,
 			0, 0, 0, 10, 0)
+
+
+## What the three burst creators open with -- `blob_creators._burst_prologue`.
+class BurstOpening extends RefCounted:
+	var source: Vector3i = Vector3i.ZERO
+	var aim: Vector3i = Vector3i.ZERO
+	var d: PackedFloat64Array = PackedFloat64Array()
+	var length: int = 0
+
+
+## The opening all three seven-argument creators share.
+##
+## `aBlob_CreateTracerBullet` `0x004247C0`, `aBlob_CreateNeedles`
+## `0x00424250` and `aBlob_CreateFlash` `0x00423D80` open with the same
+## instructions: the two symbol objects, the two unit heights, the joint
+## override of docs/97 section 14.5, `0x0046D400`'s direction and a length
+## that is the wider horizontal span over the creator's own spacing, **minus
+## one** (`lea edx, [edx + eax - 1]`). Only the spacing differs, so it is
+## the argument.
+##
+## **The span is measured from the source the joint may have replaced.**
+## `0x00424A73` reads the same stack slots `0x0042C660` wrote over, so a shot
+## from the barrel is measured from the barrel -- and against the target
+## **object**, not the point the height moved. A length of zero is the
+## point-blank answer, and each creator does something different with it;
+## only a flight writes 0 over the *arrived* flag.
+static func _burst_prologue(pool: Pool, inputs: Inputs, unit: int
+		) -> BurstOpening:
+	var opening: BurstOpening = BurstOpening.new()
+	opening.source = inputs.source_point()
+	opening.aim = inputs.target_point()
+	opening.d = Eng3dGeometry.direction(opening.source, opening.aim, 1)
+	var span: int = maxi(absi(opening.source.x - inputs.target.x),
+		absi(opening.source.y - inputs.target.y))
+	opening.length = IncInt.div_trunc(span, unit) - 1
+	if opening.length > 0:
+		pool.clears_arrived = true
+	else:
+		opening.length = 0
+	return opening
+
+
+## `aBlob_CreateTracerBullet` `0x004247C0` -- `rounds` of tracer, casing and
+## zoom bob: the default muzzle creator, the one fourteen of the shipped
+## weapons select, so this is what an ordinary shot looks like.
+##
+## Each round is three records and one nested creator: the tracer,
+## `A_LINE5.3DI`, at the source plus a delta that is a draw *minus* the
+## direction scaled by [constant TRACER_STEP], living `max(|dx|, |dy|) / 2240
+## - 1` frames; the casing, `A_CASE.3DI`, a **third of the delta behind** the
+## source at the source's own height, thrown sideways at 128 and up by
+## `0x140 + draw(0, 0xA0)`; and `0x00423720`, the zoom bob, a fifth of the
+## delta along. The last constructor field is the **stagger**, `(index *
+## stagger) & 0xFF`, so the rounds leave one after another. A point-blank
+## shot has no branch of its own: the streak is dropped for its zero life and
+## the case, carrying a literal 0x14, appears anyway.
+static func tracer_bullet(pool: Pool, draws: Draws, inputs: Inputs,
+		rounds: int, stagger: int) -> void:
+	var opening: BurstOpening = _burst_prologue(pool, inputs, TRACER_UNIT)
+	if inputs.geometry == null:
+		return
+	var source: Vector3i = opening.source
+	var d: PackedFloat64Array = opening.d
+	for index: int in range(rounds & 0xFF):
+		var dx: int = draws.draw(TRACER_SCATTER_BASE, TRACER_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[0] * TRACER_STEP)
+		var dy: int = draws.draw(TRACER_SCATTER_BASE, TRACER_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[1] * TRACER_STEP)
+		var dz: int = draws.draw(TRACER_RISE_BASE, TRACER_RISE_SPAN) \
+			- Eng3dGeometry.ftol(d[2] * TRACER_STEP)
+		var turn: Vector2i = inputs.geometry.orient(source,
+			source + Vector3i(dx, dy, dz))
+		var delay: int = (index * stagger) & 0xFF
+		pool.spawn("A_LINE5.3DI", 0, source.x + dx, source.y + dy,
+			source.z + dz, turn.x, 0, turn.y, TRACER_KIND, opening.length,
+			dx, dy, dz, 0, delay)
+		var vz: int = draws.draw(0, CASING_RISE_SPAN) + CASING_RISE_BASE
+		pool.spawn("A_CASE.3DI", 0, source.x - IncInt.div_trunc(dx, 3),
+			source.y - IncInt.div_trunc(dy, 3), source.z, turn.x, 0, turn.y,
+			CASING_KIND, 0x14, Eng3dGeometry.ftol(d[1] * TRACER_CASING_SPEED),
+			Eng3dGeometry.ftol(d[0] * -TRACER_CASING_SPEED), vz, 0, delay)
+		zoombob(pool, source + Vector3i(
+				IncInt.div_trunc(dx, TRACER_BOB_SPLIT),
+				IncInt.div_trunc(dy, TRACER_BOB_SPLIT),
+				IncInt.div_trunc(dz, TRACER_BOB_SPLIT)),
+			TRACER_BOB_ROW, TRACER_BOB_AUX, TRACER_BOB_LIFE)
+
+
+## `aBlob_CreateFlash` `0x00423D80` -- `rounds` muzzle flashes down the line
+## of fire, weapon 29's creator.
+##
+## One class-2 record a round -- no casing, no model -- at the source plus a
+## delta that is a draw *minus* the direction scaled by [constant
+## FLASH_STEP], living the shared length and carrying that delta as its
+## velocity. The scatter is **half the tracer's**, and the sprite's column is
+## the one draw that is not a coordinate.
+##
+## Point-blank takes a **different branch**: `0x0042417B` runs `rounds` zoom
+## bobs around the *target* first, each jittered on all three axes, and then
+## falls into the round loop with the length written back to zero, so every
+## sprite the loop builds is dropped by the constructor while its four draws
+## still happen.
+static func flash(pool: Pool, draws: Draws, inputs: Inputs, rounds: int,
+		stagger: int) -> void:
+	var opening: BurstOpening = _burst_prologue(pool, inputs, FLASH_UNIT)
+	var source: Vector3i = opening.source
+	var d: PackedFloat64Array = opening.d
+	var count: int = rounds & 0xFF
+	if opening.length == 0:
+		for _round: int in range(count):
+			var aux: int = draws.draw(POINT_BLANK_AUX_BASE, POINT_BLANK_AUX_SPAN)
+			var jz: int = draws.draw(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
+			var jy: int = draws.draw(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
+			var jx: int = draws.draw(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
+			zoombob(pool, opening.aim + Vector3i(jx, jy, jz), FLASH_ROW, aux,
+				POINT_BLANK_BOB_LIFE)
+	for index: int in range(count):
+		var dx: int = draws.draw(BURST_SCATTER_BASE, BURST_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[0] * FLASH_STEP)
+		var dy: int = draws.draw(BURST_SCATTER_BASE, BURST_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[1] * FLASH_STEP)
+		var dz: int = draws.draw(BURST_RISE_BASE, BURST_RISE_SPAN) \
+			- Eng3dGeometry.ftol(d[2] * FLASH_STEP)
+		var delay: int = (index * stagger) & 0xFF
+		var column: int = draws.draw(0, FLASH_COLUMN_SPAN)
+		pool.spawn(SCRATCH, 2, source.x + dx, source.y + dy, source.z + dz,
+			FLASH_ROW, column, 0, FLASH_KIND, opening.length, dx, dy, dz,
+			FLASH_AUX, delay)
+
+
+## `aBlob_CreateNeedles` `0x00424250` -- `rounds` bursts of **nine** sprites
+## each, weapon 16's creator.
+##
+## The round's delta is divided by eight and laid down as an accumulator, so
+## the nine records of one round sit at one eighth, two eighths ... nine
+## eighths of it -- a needle *streak* rather than a bullet -- and grow as
+## they go. All nine carry the round's whole delta as their velocity and the
+## round's own stagger as their delay. `0x00403AA0` runs here in the
+## original too and its answer is thrown away: the records are class 2, whose
+## three rotation fields are the sprite's row, column and nothing; it draws
+## nothing, so leaving it out changes no record and no seed.
+##
+## Its point-blank branch is one shot rather than a loop, and it is at the
+## *target*, **after** the round loop: a zoom bob at row 1 and then
+## `0x00428F70`'s twenty plasma sparks. The loop still runs and still draws;
+## with the length at zero the constructor drops all nine of every round.
+static func needles(pool: Pool, draws: Draws, inputs: Inputs, rounds: int,
+		stagger: int) -> void:
+	var opening: BurstOpening = _burst_prologue(pool, inputs, NEEDLE_UNIT)
+	var d: PackedFloat64Array = opening.d
+	for index: int in range(rounds & 0xFF):
+		var dx: int = draws.draw(BURST_SCATTER_BASE, BURST_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[0] * NEEDLE_STEP)
+		var dy: int = draws.draw(BURST_SCATTER_BASE, BURST_SCATTER_SPAN) \
+			- Eng3dGeometry.ftol(d[1] * NEEDLE_STEP)
+		var dz: int = draws.draw(BURST_RISE_BASE, BURST_RISE_SPAN) \
+			- Eng3dGeometry.ftol(d[2] * NEEDLE_STEP)
+		var step: Vector3i = Vector3i(IncInt.div_trunc(dx, NEEDLE_SPLIT),
+			IncInt.div_trunc(dy, NEEDLE_SPLIT), IncInt.div_trunc(dz, NEEDLE_SPLIT))
+		var delay: int = (index * stagger) & 0xFF
+		var at: Vector3i = opening.source
+		for k: int in range(NEEDLE_SPLIT, -1, -1):
+			at += step
+			pool.spawn(SCRATCH, 2, at.x, at.y, at.z, NEEDLE_ROW, 0, 0,
+				NEEDLE_KIND_LAST if k == 0 else NEEDLE_KIND, opening.length,
+				dx, dy, dz, NEEDLE_AUX_BASE - k, delay)
+	if opening.length == 0:
+		var aux: int = draws.draw(POINT_BLANK_AUX_BASE, POINT_BLANK_AUX_SPAN)
+		zoombob(pool, opening.aim, NEEDLE_ROW, aux, POINT_BLANK_BOB_LIFE)
+		plasma_sparks_burst(pool, draws, opening.aim, NEEDLE_SPARKS, inputs)
+
+
+## `aBlob_CreateSporeCannon` `0x004268B0` -- the Cy'Coo's spore round, one
+## class-2 record and no draw.
+##
+## * `life = max(|dx|, |dy|) / 800 - 2` over the two symbol **objects**
+##   (`0x00426A4E`..`0x00426A6D` read `[esi+0x10]`/`[edi+0x10]` and
+##   `+0x14`), and `[0x004FE63C] = (life <= 0)` at `0x00426A97` -- the same
+##   write the three burst creators make and the reason a point-blank spore
+##   shot waits for nothing.
+## * the direction is over the two **points** -- object plus unit height at
+##   each end, `add ebp, [esi+0x18]` and `add ecx, ebx` ahead of the
+##   `0x0046D400` call -- and `v = ftol(direction * 800.0)` per axis, so the
+##   wide axis moves a whole step a tick and the round arrives as its life
+##   runs out. The record sits at the source point **plus one step**.
+## * `vz` carries the loft of [constant SPORE_LOFT] on top.
+##
+## **The life goes to the constructor unguarded.** `lea ebp, [edx + eax -
+## 2]` at `0x00426A8E` and `push ebp` at `0x00426B33` have no test between
+## them but the flag's own `setle`, so a span inside two steps hands the
+## constructor a negative life, and `0x00420950` reads its life argument as
+## a **byte**: -1 is 0xFF and -2 is 0xFE. That is transcribed, not
+## corrected; the capture is a far shot and settles nothing about it, which
+## is why it is written down here.
+##
+## What it does **not** do is use `0x00403AA0`: the orientation call at
+## `0x00426AF9` fills two locals nothing afterwards reads, so its answer is
+## dead and the rotation is the sprite's row.
+static func spore_cannon(pool: Pool, inputs: Inputs) -> void:
+	var from: Vector3i = inputs.source_point()
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from,
+		inputs.target_point(), 1)
+	var life: int = IncInt.div_trunc(_span(inputs), SPORE_UNIT) - SPORE_LIFE_BIAS
+	pool.clears_arrived = life > 0
+	var step: Vector3i = Vector3i(Eng3dGeometry.ftol(d[0] * SPORE_SPEED),
+		Eng3dGeometry.ftol(d[1] * SPORE_SPEED),
+		Eng3dGeometry.ftol(d[2] * SPORE_SPEED))
+	var loft: int = absi(SPORE_LOFT * IncInt.div_trunc(life, 2))
+	pool.spawn(SCRATCH, 2, from.x + step.x, from.y + step.y, from.z + step.z,
+		SPORE_ROW, 0, 0, SPORE_KIND, life, step.x, step.y, step.z + loft,
+		SPORE_AUX, 0)
 
 
 ## `aBlob_CreateBlizzardShot` `0x004264A0` -- two seeking shards, one behind
@@ -1436,6 +1746,14 @@ static func run(creator: String, pool: Pool, draws: Draws,
 			smoke_trail(pool, draws, inputs)
 		MACHINE_GUN:
 			machine_gun(pool, draws, inputs)
+		TRACER_BULLET:
+			tracer_bullet(pool, draws, inputs, args[4], args[5])
+		FLASH:
+			flash(pool, draws, inputs, args[4], args[5])
+		NEEDLES:
+			needles(pool, draws, inputs, args[4], args[5])
+		SPORE_CANNON:
+			spore_cannon(pool, inputs)
 		BLIZZARD_SHOT:
 			blizzard_shot(pool, draws, inputs, Vector2i(args[0], args[1]),
 				Vector2i(args[2], args[3]))

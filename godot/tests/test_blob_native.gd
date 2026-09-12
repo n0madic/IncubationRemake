@@ -303,7 +303,21 @@ const WEAPON_PROGRAMS: Array[String] = ["0x00420A50", "0x00424D20",
 	# it**: `0x00427C80`'s sprite half-size is biased by a *per-record byte
 	# counter* that opens at two, not by the ring index over three. Eleven of
 	# the engine's twelve records disagreed, every one of them on `aux` alone.
-	"0x00425400", "0x00425CA0", "0x00426070", "0x00426B70", "0x00427C80"]
+	"0x00425400", "0x00425CA0", "0x00426070", "0x00426B70", "0x00427C80",
+	# 2026-09-12, the evening: **the last five of the thirty**, and no new
+	# capture for any of them -- every phase was already in hand. The three
+	# bursts are replayed against their `burst_*` phase, the one taken with
+	# the round count and stagger the muzzle switch's own arm pushes
+	# (`blob_gold.BURST_ARGS`); the bare phase of each holds an empty loop.
+	# The shock wave's phase holds the capture's twelve-record window onto
+	# its sixty, so the prefix is what is compared. The spore cannon's
+	# holds its one round. Until this day the bursts went down a
+	# constructor-table arm in `BlobTriggers` and the other two were built
+	# by hand and checked structurally in `test_effects` -- a weaker claim
+	# than this one, and one nothing stated as such (docs/102 item 2.1).
+	"0x004247C0", "0x00424250", "0x00423D80", "0x00422B80", "0x004268B0"]
+## The burst creators' own phase carries this prefix (`blob_gold.BURST_PREFIX`).
+const BURST_PREFIX: String = "burst_"
 ## **Empty, and that is the measurement.** These three lists held five
 ## creators between them on the morning of 2026-09-12 -- one whose phase no
 ## capture had ever verified, three blocked on a model handle, one transcribed
@@ -351,7 +365,13 @@ const CAPTURE_WIDTH: int = 20
 ## Those last two are the shape of the capture, not of the creator: both lay a
 ## round the constructor accepts and a second record on a branch this tile does
 ## not take, so a single phase is the whole of what either makes here.
-const CAPTURED_RECORDS: int = 12 * 16 + 2 + 4 + 3 + 3 + 8 + 2 + 6 + 1 + 2
+##
+## Then the last five: **thirty** for the tracer's ten rounds of three,
+## **twenty-seven** for the needles' three rounds of nine, **ten** for the
+## flash's ten rounds of one, **twelve** for the shock wave -- the capture's
+## window onto sixty, so a prefix -- and **one** for the spore cannon.
+const CAPTURED_RECORDS: int = 12 * 16 + 2 + 4 + 3 + 3 + 8 + 2 + 6 + 1 + 2 \
+	+ 30 + 27 + 10 + 12 + 1
 
 
 func _check_weapon_creators(h: TestHarness, phases: Dictionary) -> void:
@@ -366,7 +386,10 @@ func _check_weapon_creators(h: TestHarness, phases: Dictionary) -> void:
 	var compared: int = 0
 	var ran: int = 0
 	for creator: String in WEAPON_PROGRAMS:
-		var phase: Dictionary = DictRead.as_dict(phases.get(creator, {}))
+		# A burst creator's own phase where it has one: the bare phase was
+		# taken with a round count of zero and holds an empty loop.
+		var phase: Dictionary = DictRead.as_dict(phases.get(
+			BURST_PREFIX + creator, phases.get(creator, {})))
 		var records: Array = DictRead.as_array(phase.get("records", []))
 		if records.is_empty() or not phase.has("seed2_before"):
 			# A creator the capture called with arguments that make nothing
@@ -413,6 +436,7 @@ func _check_weapon_creators(h: TestHarness, phases: Dictionary) -> void:
 	h.equal("weapon_programs.draws", seeds, none)
 	_check_weapon_seam(h, phases)
 	_check_impact_seam(h, phases)
+	_check_arc_shots(h, phases)
 
 
 ## **Every creator the switch routes is either replayed above or named as
@@ -429,6 +453,10 @@ func _check_routed_are_measured(h: TestHarness) -> void:
 	routed.append(BlobTriggers.SPORE_EXPLOSION_TYPED)
 	routed.append(BlobTriggers.GRENADE_ARC_TYPED)
 	routed.append(BlobTriggers.FLAME_STREAM_TYPED)
+	routed.append_array(BlobTriggers.BURST_TYPED)
+	# Asked for by tile rather than run from the switch, and routed all the
+	# same.
+	routed.append(BlobTriggers.SHOCK_WAVE_CREATOR)
 	routed.sort()
 	var judged: Array[String] = WEAPON_PROGRAMS.duplicate()
 	judged.append_array(WEAPON_PROGRAMS_UNCAPTURED)
@@ -611,6 +639,133 @@ func _weapon_inputs(phases: Dictionary) -> BlobPrograms.Inputs:
 		DictRead.as_int(DictRead.as_dict(units[1])["y"]))] = {
 			"object": target, "unit": {}}
 	return inputs
+
+
+## **The walking arm at arc 1**, against the engine. The two weapon-11 shots
+## of docs/97 section 51.2 -- `shot_11_band`, whose two cells this tool
+## stamped by hand, and `shot_11_overlay`, whose two `aBuildTargetOverlay`
+## stamped itself -- each walked two cells and called `aBlob_CreateGrenade`
+## once per cell with the running count as its sixth argument. The Python
+## twin is judged on them by `blob_gold`; this is the same replay for
+## [method BlobPrograms.grenade_arc], cell by cell, with each cell's own
+## placed object, occupant height and occupant slot out of the `origins` and
+## `symbols` phases -- the substitutions `blob_gold._cell_inputs` makes. The
+## bare `0x00426070` phase reaches arc 0xFF alone, so without this the arc-1
+## arm of the GDScript twin was judged by nothing.
+const ARC_SHOTS: Array[String] = ["shot_11_band", "shot_11_overlay"]
+## Two cells of six records, twice.
+const ARC_SHOT_RECORDS: int = 2 * 2 * 6
+## Weapon 11's arm pushes 0xA as the fifth argument, which the body never
+## reads (`BlobTriggers.GRENADE_ARC_TYPED`'s row).
+const ARC_TAIL_UNREAD: int = 0xA
+
+
+func _check_arc_shots(h: TestHarness, phases: Dictionary) -> void:
+	var base: BlobPrograms.Inputs = _weapon_inputs(phases)
+	if base == null:
+		return
+	var bad: PackedStringArray = PackedStringArray()
+	var compared: int = 0
+	var walked: int = 0
+	for name: String in ARC_SHOTS:
+		var phase: Dictionary = DictRead.as_dict(phases.get(name, {}))
+		var records: Array = DictRead.as_array(phase.get("records", []))
+		var marked: Array = DictRead.as_array(phase.get("marked", []))
+		if records.is_empty() or marked.is_empty() \
+				or not phase.has("seed2_before"):
+			bad.append("%s: not captured" % name)
+			continue
+		var attacker: Array = DictRead.as_array(phase["attacker"])
+		var here: Vector2i = Vector2i(DictRead.as_int(attacker[0]),
+			DictRead.as_int(attacker[1]))
+		var draws: BlobPrograms.Draws = BlobPrograms.Draws.create(
+			DictRead.as_float(phase["seed2_before"]))
+		var built: Array[Dictionary] = []
+		for index: int in range(marked.size()):
+			var cell: Dictionary = DictRead.as_dict(marked[index])
+			var there: Vector2i = Vector2i(DictRead.as_int(cell["x"]),
+				DictRead.as_int(cell["y"]))
+			var inputs: BlobPrograms.Inputs = _cell_inputs(base, phases, here,
+				there)
+			if inputs == null:
+				bad.append("%s: (%d, %d) has no measured object"
+					% [name, there.x, there.y])
+				continue
+			walked += 1
+			var pool: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+			var ran: bool = BlobPrograms.run(BlobPrograms.GRENADE_ARC, pool,
+				draws, PackedInt32Array([here.x, here.y, there.x, there.y,
+					ARC_TAIL_UNREAD, index]), inputs)
+			if not ran:
+				bad.append("%s: the grenade program refused" % name)
+			built.append_array(pool.records)
+		for index: int in range(mini(built.size(), records.size())):
+			compared += 1
+			var want: Dictionary = DictRead.as_dict(records[index])
+			var got: Dictionary = built[index]
+			for field: String in REPLAY_FIELDS:
+				if DictRead.as_int(got[field]) != DictRead.as_int(want[field]):
+					bad.append("%s.%d.%s: %d is not %d" % [name, index, field,
+						DictRead.as_int(got[field]),
+						DictRead.as_int(want[field])])
+	h.equal("arc_shots.walked", walked, 2 * ARC_SHOTS.size(),
+		"two cells in the band of each shot, each replayed with its own arc")
+	h.equal("arc_shots.compared", compared, ARC_SHOT_RECORDS)
+	h.check("arc_shots.records", bad.is_empty(),
+		"%d record(s) over %d walked cell(s) field for field, the second "
+		% [compared, walked] + "cell of each shot at arc 1"
+		+ ("" if bad.is_empty() else "; first: " + bad[0]))
+
+
+## [BlobPrograms.Inputs] aimed at one walked cell from the attacker's own,
+## the way `blob_gold._shot_source` and `_cell_inputs` build it: the placed
+## object of each cell out of `origins.cells[].object` resolved through
+## `symbols`, the occupant's height out of `origins.heights` by slot, and
+## the occupant itself for the seeker's `aux`. `null` for a cell the capture
+## never measured, which is a gap to name and not a rule to fall back on.
+static func _cell_inputs(base: BlobPrograms.Inputs, phases: Dictionary,
+		here: Vector2i, there: Vector2i) -> BlobPrograms.Inputs:
+	var origins: Dictionary = DictRead.as_dict(phases.get("origins", {}))
+	var cells: Array = DictRead.as_array(origins.get("cells", []))
+	var heights: Array = DictRead.as_array(origins.get("heights", []))
+	var slots: Array = DictRead.as_array(origins.get("height_slots", []))
+	var symbols: Dictionary = DictRead.as_dict(phases.get("symbols", {}))
+	var source_at: int = here.y * CAPTURE_WIDTH + here.x
+	var target_at: int = there.y * CAPTURE_WIDTH + there.x
+	if source_at >= cells.size() or target_at >= cells.size():
+		return null
+	var source_cell: Dictionary = DictRead.as_dict(cells[source_at])
+	var target_cell: Dictionary = DictRead.as_dict(cells[target_at])
+	var source: Vector3i = _symbol(symbols,
+		DictRead.as_int(source_cell["object"]))
+	var target: Vector3i = _symbol(symbols,
+		DictRead.as_int(target_cell["object"]))
+	if source == NO_SYMBOL or target == NO_SYMBOL:
+		return null
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	inputs.geometry = base.geometry
+	inputs.models = base.models
+	inputs.source = source
+	inputs.source_height = _height_of(heights, slots,
+		DictRead.as_int(source_cell["unit"]), base.source_height)
+	inputs.target = target
+	var occupant: int = DictRead.as_int(target_cell["unit"])
+	inputs.target_height = _height_of(heights, slots, occupant,
+		base.target_height)
+	inputs.target_unit = occupant & 0xFF
+	inputs.tiles[here] = {"object": source, "unit": {}}
+	inputs.tiles[there] = {"object": target, "unit": {}}
+	return inputs
+
+
+## The height `0x0047AD30` answered for a slot in the `origins` phase, or the
+## fallback for a cell nobody stands on.
+static func _height_of(heights: Array, slots: Array, slot: int,
+		fallback: int) -> int:
+	for index: int in range(mini(heights.size(), slots.size())):
+		if DictRead.as_int(slots[index]) == slot:
+			return DictRead.as_int(heights[index])
+	return fallback
 
 
 ## One entry of the `symbols` phase, or [constant NO_SYMBOL].

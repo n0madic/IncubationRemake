@@ -596,7 +596,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	_refund_mp(unit)
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal, cheats)
+		_journal, cheats, _overlay_for)
 	return moved
 
 
@@ -656,7 +656,8 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		return empty
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
-		turn.human_count(), turn.mode, turn, rng, false, cheats)
+		turn.human_count(), turn.mode, turn, rng, false, cheats,
+		_overlay_for(unit))
 	# **The weapon the animation was played with**, which after a close-combat
 	# swap is the bayonet and not what the record holds on either side of the
 	# shot: the engine plays the animation at `0x0046C186`, inside the swap's
@@ -689,7 +690,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		weapon_fired, str(weapon_fired), shot.to_dict())
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal, cheats)
+		_journal, cheats, _overlay_for)
 	return shot
 
 
@@ -1041,6 +1042,17 @@ func may_use(slot: int) -> bool:
 	return Interact.may_use(state, _units, _unit_types, unit)
 
 
+## The overlay a shot's pattern reads, built only for the one weapon that
+## reads it ([constant Combat.SPECIAL_OBJECTS]): the shooter's own, the way
+## the select (`0x00472990`) and the computer's fire both leave it on the
+## map before `aAttackUnit`. Every other weapon gets an empty array, which
+## [method Combat.mark_cells] never looks at.
+func _overlay_for(shooter: UnitState) -> PackedByteArray:
+	if not Combat.SPECIAL_OBJECTS.has(shooter.weapon):
+		return PackedByteArray()
+	return target_overlay(shooter.slot)
+
+
 ## `aBuildTargetOverlay` (`0x0042FF30`) for the **player's** selection: the
 ## cells docs/23 section 6's bands are stamped on, keyed by cell. What the
 ## ground overlay draws as `mp[43..47]` (docs/43 section 3) and what [method
@@ -1194,7 +1206,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 		_refund_mp(unit)
 		result.reactions = Reaction.drain(state, _units, _unit_types,
 			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
-			turn, rng, _journal, cheats)
+			turn, rng, _journal, cheats, _overlay_for)
 	return result
 
 

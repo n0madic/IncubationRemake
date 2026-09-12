@@ -8363,23 +8363,20 @@ class MainShotHost extends ShotHost:
 		# only way it reaches the pool is this drain.
 		var _ran: int = _drain_programs()
 
-	## The nested creators the last muzzle or impact asked for, run. A request
-	## carrying a `tile` is a creator that reads a cell -- the control map, the
-	## cell's placed object -- and takes the tile inputs; one carrying an `at`
-	## is a position creator and takes the models and the tables alone.
+	## The tile creators the last muzzle or impact asked for, run: a creator
+	## that reads a cell -- the control map, the cell's placed object -- and
+	## takes the tile inputs (the shock wave, [constant
+	## BlobTriggers.SHOCK_WAVE_CREATOR]).
 	func _drain_programs() -> int:
 		var ran: int = 0
 		for request: Dictionary in main._triggers.take_programs():
 			var creator: String = DictRead.as_string(request["creator"])
 			var extra: PackedInt32Array = DictRead.as_int32_array(
 				request["extra"])
-			if request.has("tile"):
-				var tile: Vector2i = DictRead.as_vector2i(request["tile"])
-				var args: PackedInt32Array = PackedInt32Array([tile.x, tile.y])
-				args.append_array(extra)
-				spawn_program(creator, args)
-			else:
-				spawn_at(creator, DictRead.as_vector3i(request["at"]), extra)
+			var tile: Vector2i = DictRead.as_vector2i(request["tile"])
+			var args: PackedInt32Array = PackedInt32Array([tile.x, tile.y])
+			args.append_array(extra)
+			spawn_program(creator, args)
 			ran += 1
 		return ran
 

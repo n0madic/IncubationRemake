@@ -533,12 +533,13 @@ func _check_arm_spawns(h: TestHarness) -> void:
 		hooks.executed, pool.in_use()], [true, 1, 1, 1],
 		"the creator takes six; the request carried five")
 	# An address with no program: the whole layer's old answer, now counted.
-	# `0x00424250` is a **weapon** creator (docs/97 section 22 transcribes it
-	# in Python, for the oracle), so nothing in [BlobKinds] asks for it and
-	# this is the counter working rather than a case that runs.
-	var none: bool = hooks.spawn(0x00424250, [0, 0, 3200], source)
+	# `0x0042C660` is the joint service the creators call, not a creator, so
+	# nothing in [BlobKinds] asks for it and this is the counter working
+	# rather than a case that runs. (It used to be `0x00424250`, the needles,
+	# which is a program since 2026-09-12.)
+	var none: bool = hooks.spawn(0x0042C660, [0, 0, 3200], source)
 	h.equal("arm_spawn.unhandled_counted",
-		[none, hooks.unhandled.get(0x00424250, 0), pool.in_use()], [true, 1, 1],
+		[none, hooks.unhandled.get(0x0042C660, 0), pool.in_use()], [true, 1, 1],
 		"an address [BlobPrograms] does not carry makes nothing, and says so")
 	# And every address an arm **does** ask for has one, which is the half
 	# that had been missing: twelve of the thirteen were reached from nowhere
@@ -1789,6 +1790,12 @@ func _check_triggers(h: TestHarness) -> void:
 	pool.hooks().model_index = index
 	h.check("triggers.models", index.size() > 0,
 		"%d prototypes in the world set" % index.size())
+	# And the engine's own trig tables: the programs ask `0x00403AA0` for a
+	# model's orientation and make nothing without them, which is the
+	# original's own refusal rather than a fallback.
+	pool.hooks().geometry = Eng3dGeometry.from_cache(CacheFixture.cache_dir())
+	h.check("triggers.geometry", pool.hooks().geometry.is_loaded(),
+		"the shipped TRIG.IMG and ATN.IMG, out of the cache")
 	var triggers: BlobTriggers = BlobTriggers.open(pool, document)
 
 	# Weapon 2, the Standard Assault Rifle: a tracer at the muzzle, no impact
@@ -1798,40 +1805,57 @@ func _check_triggers(h: TestHarness) -> void:
 	var made: int = triggers.muzzle(2, from, to)
 	h.check("triggers.muzzle", made > 0,
 		"weapon 2 makes %d muzzle effect(s)" % made)
-	# **A model blob points along the shot.** The engine's own capture stamps
-	# one orientation triple -- the burst's direction through `0x00403AA0` --
-	# on every record of a creator's call, and the remake had left it at zero,
-	# which flew a shaped model like `A_LINE5.3DI` sideways (docs/97 section 46).
+	# **A model blob points along its own round.** `aBlob_CreateTracerBullet`
+	# asks `0x00403AA0` once a round, from the muzzle to the muzzle plus the
+	# round's delta -- scatter and all -- and stamps that triple on the
+	# streak and on the case beside it (the capture's yaws are 2344 and 2379
+	# against the line's own 2350; the remake had left the triple at zero,
+	# which flew a shaped model like `A_LINE5.3DI` sideways, docs/97 section
+	# 46). The streak's velocity *is* its delta, so the triple is recomputed
+	# here from the record alone.
 	var pointed: int = 0
 	var flat: int = 0
-	var want: Vector3i = pool.hooks().orient(from, to)
+	var by_delay: Dictionary[int, Vector3i] = {}
 	for blob: Blob in pool.blobs():
-		if blob.class_id >= 2:
+		if blob.kind != BlobPrograms.TRACER_KIND:
 			continue
-		if blob.rot_z == want.z and blob.rot_y == 0 and blob.rot_x == want.x:
+		var want: Vector2i = pool.hooks().geometry.orient(from,
+			from + Vector3i(blob.vx, blob.vy, blob.vz))
+		by_delay[blob.delay] = Vector3i(blob.rot_x, blob.rot_y, blob.rot_z)
+		if blob.rot_x == want.x & IncInt.U16_MASK and blob.rot_y == 0 \
+				and blob.rot_z == want.y & IncInt.U16_MASK:
+			pointed += 1
+		else:
+			flat += 1
+	for blob: Blob in pool.blobs():
+		if blob.kind != BlobPrograms.CASING_KIND:
+			continue
+		if by_delay.get(blob.delay, Vector3i(-1, -1, -1)) \
+				== Vector3i(blob.rot_x, blob.rot_y, blob.rot_z):
 			pointed += 1
 		else:
 			flat += 1
 	h.check("triggers.model_points_along_the_shot", pointed > 0 and flat == 0,
-		"%d model blob(s) carry the shot's own triple, %d do not"
+		"%d model blob(s) carry their round's own triple, %d do not"
 			% [pointed, flat])
 	# **The transcribed creator's own two shapes** (`inclib/blob_creators.py`
-	# `_c004247C0`): the streak lives one frame per 2240 units of the wider
-	# horizontal span, and the casing is thrown a **third of the round's delta
-	# behind** the muzzle at the muzzle's own height -- backwards out of the
-	# breech, where it used to start at the muzzle point itself.
+	# `_c004247C0`, [method BlobPrograms.tracer_bullet]): the streak lives one
+	# frame per 2240 units of the wider horizontal span, and the casing is
+	# thrown a **third of the round's delta behind** the muzzle at the
+	# muzzle's own height -- backwards out of the breech, where it used to
+	# start at the muzzle point itself.
 	var streak: Blob = null
 	var case: Blob = null
 	for blob: Blob in pool.blobs():
-		if blob.kind == 15:
+		if blob.kind == BlobPrograms.TRACER_KIND:
 			streak = blob
-		elif blob.kind == BlobTriggers.CASING_KIND:
+		elif blob.kind == BlobPrograms.CASING_KIND:
 			case = blob
 	h.check("triggers.tracer_and_casing", streak != null and case != null,
 		"weapon 2's round is a streak and a case")
 	if streak != null and case != null:
 		h.equal("triggers.tracer_life", streak.life,
-			(to.x - from.x) / BlobTriggers.TRACER_UNIT - 1,
+			(to.x - from.x) / BlobPrograms.TRACER_UNIT - 1,
 			"max(|dx|, |dy|) / 2240 - 1, the reciprocal multiply's own answer")
 		h.equal("triggers.tracer_carries_the_delta",
 			Vector3i(streak.vx, streak.vy, streak.vz),
@@ -1843,9 +1867,9 @@ func _check_triggers(h: TestHarness) -> void:
 				from.y - IncInt.div_trunc(streak.vy, 3), from.z),
 			"a third of the delta behind, and at the muzzle's own height")
 		h.check("triggers.casing_rises",
-			case.vz >= BlobTriggers.CASING_RISE_BASE
-				and case.vz <= BlobTriggers.CASING_RISE_BASE
-					+ BlobTriggers.CASING_RISE_SPAN,
+			case.vz >= BlobPrograms.CASING_RISE_BASE
+				and case.vz <= BlobPrograms.CASING_RISE_BASE
+					+ BlobPrograms.CASING_RISE_SPAN,
 			"vz %d is 0x140 + aRandom2(0, 0xA0)" % case.vz)
 	# **A shot is a burst.** `aBlob_CreateTracerBullet` takes a round count
 	# and a stagger step as its fifth and sixth arguments and loops them, so
@@ -1859,9 +1883,9 @@ func _check_triggers(h: TestHarness) -> void:
 	var streaks: Array[int] = []
 	var cases: Array[int] = []
 	for blob: Blob in pool.blobs():
-		if blob.kind == 15:
+		if blob.kind == BlobPrograms.TRACER_KIND:
 			streaks.append(blob.delay)
-		elif blob.kind == BlobTriggers.CASING_KIND:
+		elif blob.kind == BlobPrograms.CASING_KIND:
 			cases.append(blob.delay)
 	streaks.sort()
 	cases.sort()
@@ -1900,7 +1924,7 @@ func _check_triggers(h: TestHarness) -> void:
 	var first: int = 0
 	var second: int = 0
 	for blob: Blob in pool.blobs():
-		if blob.kind != BlobTriggers.CASING_KIND:
+		if blob.kind != BlobPrograms.CASING_KIND:
 			continue
 		if absi(blob.x - barrel_one.x) <= absi(blob.x - barrel_two.x):
 			first += 1
@@ -1921,9 +1945,9 @@ func _check_triggers(h: TestHarness) -> void:
 	var body: int = 0
 	var seen: Dictionary[Vector3i, bool] = {}
 	for blob: Blob in pool.blobs():
-		if blob.kind == BlobTriggers.NEEDLE_KIND_LAST:
+		if blob.kind == BlobPrograms.NEEDLE_KIND_LAST:
 			last += 1
-		elif blob.kind == BlobTriggers.NEEDLE_KIND:
+		elif blob.kind == BlobPrograms.NEEDLE_KIND:
 			body += 1
 		seen[Vector3i(blob.x, blob.y, blob.z)] = true
 	h.equal("triggers.needles", [last, body], [3, 24],
@@ -1940,39 +1964,56 @@ func _check_triggers(h: TestHarness) -> void:
 		"weapon 29's ten rounds are ten sprites")
 	pool.clear()
 	var _restore: int = triggers.muzzle(2, from, to)
-	# **The nested creators a burst asks for.** The tracer makes a zoom bob a
-	# fifth of every round's delta along, and point-blank the other two make
-	# theirs at the *target* instead of the records the round loop builds --
-	# which the constructor table cannot carry either way, so they come back
-	# as requests for [BlobPrograms].
+	# **The nested creators a burst runs itself.** The tracer makes a zoom bob
+	# a fifth of every round's delta along, and point-blank the other two
+	# make theirs at the *target* instead of the records the round loop
+	# builds. Until 2026-09-12 these came back as requests for
+	# `SliceMain.spawn_program`; the programs now spawn them into the same
+	# pool, in the engine's own order, so the request list stays empty and
+	# the pool holds the bobs.
 	pool.clear()
 	var _ten: int = triggers.muzzle(2, from, to)
-	var asked: Array[Dictionary] = triggers.take_programs()
-	h.equal("triggers.tracer_asks_for_a_bob", asked.size(), 10,
-		"one zoom bob a round, and only through the program seam")
-	h.equal("triggers.and_the_list_is_taken_once",
-		triggers.take_programs().size(), 0)
+	var bobs: int = 0
+	for blob: Blob in pool.blobs():
+		if blob.kind == 0x32:
+			bobs += 1
+	h.equal("triggers.tracer_makes_a_bob", bobs, 10,
+		"one zoom bob a round, in the pool with the round")
+	h.equal("triggers.and_nothing_is_asked_for",
+		triggers.take_programs().size(), 0,
+		"the request seam carries the shock wave alone")
 	pool.clear()
 	var close: Vector3i = BlobTriggers.muzzle_point(2, 2, 0)
 	var _point_blank: int = triggers.muzzle(29, from, close)
-	var flash_asks: Array[Dictionary] = triggers.take_programs()
-	h.equal("triggers.flash_point_blank", flash_asks.size(), 10,
-		"ten rounds inside one spacing are ten bobs at the target")
+	var close_bobs: int = 0
 	var close_flashes: int = 0
 	for blob: Blob in pool.blobs():
-		if blob.kind == 69:
+		if blob.kind == 0x32 and blob.rot_x == BlobPrograms.FLASH_ROW:
+			close_bobs += 1
+		elif blob.kind == BlobPrograms.FLASH_KIND:
 			close_flashes += 1
+	h.equal("triggers.flash_point_blank", close_bobs, 10,
+		"ten rounds inside one spacing are ten bobs at the target")
 	h.equal("triggers.flash_point_blank_drops_its_sprites", close_flashes, 0,
 		"and every sprite the round loop built is dropped for a zero life")
 	pool.clear()
 	var _needles_close: int = triggers.muzzle(16, from, close)
-	var needle_asks: Array[Dictionary] = triggers.take_programs()
-	var wanted: Array[String] = []
-	for request: Dictionary in needle_asks:
-		wanted.append(DictRead.as_string(request["creator"]))
-	h.equal("triggers.needles_point_blank", wanted,
-		[BlobPrograms.ZOOMBOB, BlobPrograms.PLASMA_SPARKS_BURST],
-		"a bob and the plasma burst, once for the whole call")
+	var needle_bobs: int = 0
+	var sparks: int = 0
+	var needle_sprites: int = 0
+	for blob: Blob in pool.blobs():
+		if blob.kind == 0x32 and blob.rot_x == BlobPrograms.NEEDLE_ROW:
+			needle_bobs += 1
+		elif blob.kind == 0x48:
+			sparks += 1
+		elif blob.kind == BlobPrograms.NEEDLE_KIND \
+				or blob.kind == BlobPrograms.NEEDLE_KIND_LAST:
+			needle_sprites += 1
+	h.equal("triggers.needles_point_blank",
+		[needle_bobs, sparks, needle_sprites],
+		[1, BlobPrograms.NEEDLE_SPARKS, 0],
+		"a bob and the plasma burst's twenty sparks, once for the whole "
+		+ "call, and none of the twenty-seven sprites")
 	# **The flag a burst creator writes, which is not "did it make anything".**
 	# `cmp steps, 0 / jle` opens all three burst creators: a flight writes 0
 	# and the point-blank arm writes **1** before it fills the pool at the
@@ -1982,17 +2023,14 @@ func _check_triggers(h: TestHarness) -> void:
 	h.equal("triggers.arrived_write_point_blank", triggers.arrived_write(), 1,
 		"nothing is in flight, even though the burst made %d record(s)"
 			% pool.in_use())
-	h.check("triggers.point_blank_still_fills_the_pool",
-		not needle_asks.is_empty(),
+	h.check("triggers.point_blank_still_fills_the_pool", pool.in_use() > 0,
 		"which is why `made == 0` could never be the test")
 	pool.clear()
 	var _far: int = triggers.muzzle(16, from, to)
-	var _far_drain: Array[Dictionary] = triggers.take_programs()
 	h.equal("triggers.arrived_write_in_flight", triggers.arrived_write(), 0,
 		"a round that has to cross four fields is waited for")
 	pool.clear()
 	var _no_burst: int = triggers.muzzle(8, from, to)
-	var _no_burst_drain: Array[Dictionary] = triggers.take_programs()
 	# **The grenade writes the flag too**, and out of its own flight length
 	# rather than as a literal: `0x00425F94` is `setle cl` over the length,
 	# so a round still crossing ground says there is something to wait for.
@@ -2179,11 +2217,11 @@ func _check_triggers(h: TestHarness) -> void:
 		"ten for the enhanced one, and it sweeps")
 
 	# **The Cy'Coo's spore round** -- `aBlob_CreateSporeCannon` `0x004268B0`,
-	# the fourth creator transcribed in [BlobTriggers] rather than replayed
-	# out of the constructor table. Its one call carries `life: null`, so the
-	# round used to take [constant BlobTriggers.DEFAULT_LIFE] and a velocity
-	# paced to it -- a flat line that then sagged under kind 22's own `0x50` a
-	# tick, where the original lobs it.
+	# [method BlobPrograms.spore_cannon], replayed against the capture's one
+	# record in `test_blob_native`. Its one constructor call carries `life:
+	# null`, so the round used to take a default life and a velocity paced to
+	# it -- a flat line that then sagged under kind 22's own `0x50` a tick,
+	# where the original lobs it.
 	pool.clear()
 	h.equal("spore.weapon_25_creator", triggers.creators("weapon_muzzle", 25),
 		[BlobTriggers.SPORE_CREATOR],
@@ -2191,21 +2229,21 @@ func _check_triggers(h: TestHarness) -> void:
 	var lobbed: int = triggers.muzzle(25, from, to)
 	h.equal("spore.one_round", lobbed, 1, "one record for the whole call")
 	var round_life: int = IncInt.div_trunc(to.x - from.x,
-		BlobTriggers.SPORE_UNIT) - BlobTriggers.SPORE_LIFE_BIAS
+		BlobPrograms.SPORE_UNIT) - BlobPrograms.SPORE_LIFE_BIAS
 	var spore: Blob = pool.blobs()[0]
 	h.equal("spore.kind", spore.kind, 0x16,
 		"kind 22, the one arm that spawns spore sparks as it flies")
 	h.equal("spore.life", spore.life, round_life,
 		"`max(|dx|, |dy|) / 800 - 2`, the reciprocal multiply at 0x00426A73")
 	h.equal("spore.one_step_a_tick", Vector2i(spore.vx, spore.vy),
-		Vector2i(BlobTriggers.SPORE_SPEED, 0),
+		Vector2i(BlobPrograms.SPORE_UNIT, 0),
 		"the direction service's ratios times the double at 0x004B12C8")
 	h.equal("spore.starts_one_step_along",
 		Vector3i(spore.x, spore.y, spore.z),
-		from + Vector3i(BlobTriggers.SPORE_SPEED, 0, 0),
+		from + Vector3i(BlobPrograms.SPORE_UNIT, 0, 0),
 		"the record sits at the source plus the step, not at the source")
 	h.equal("spore.loft", spore.vz,
-		BlobTriggers.SPORE_LOFT * IncInt.div_trunc(round_life, 2),
+		BlobPrograms.SPORE_LOFT * IncInt.div_trunc(round_life, 2),
 		"`0x50 * (life / 2)` up at launch against `0x50` a tick down")
 	h.equal("spore.arrived_write_in_flight", triggers.arrived_write(), 0,
 		"the creator's own write over 0x004FE63C at 0x00426A97")
@@ -2220,7 +2258,7 @@ func _check_triggers(h: TestHarness) -> void:
 		peak = maxi(peak, spore.z)
 	h.equal("spore.flies_its_whole_life", flown, round_life + 1,
 		"%d moves, and the tick after them finds `life` at zero" % round_life)
-	h.check("spore.arcs_over_the_line", peak > from.z + BlobTriggers.SPORE_UNIT,
+	h.check("spore.arcs_over_the_line", peak > from.z + BlobPrograms.SPORE_UNIT,
 		"%d against the muzzle's %d: a lob, not a flat line" % [peak, from.z])
 	h.check("spore.and_comes_back_down", spore.z < peak,
 		"%d at the end of its life" % spore.z)
@@ -2236,14 +2274,20 @@ func _check_triggers(h: TestHarness) -> void:
 		"%d record(s) in the pool, none of them the muzzle's" % pool.live())
 	# Point-blank is the **same tile** here and not an adjacent one: the spore
 	# step is a quarter of a map field, so even a neighbour is four steps off
-	# and the round is made. `close` is the muzzle's own cell.
+	# and the round is made. `close` is the muzzle's own cell, which no shot
+	# reaches -- and what the creator does there is transcribed rather than
+	# guessed: the life goes to the constructor unguarded (`lea ebp, [edx +
+	# eax - 2]` at `0x00426A8E`, `push ebp` at `0x00426B33`), the constructor
+	# reads it as a byte, and -2 is 0xFE. The flag still says there is
+	# nothing to wait for, so the shot does not wait on it.
 	pool.clear()
 	var _same_cell: int = triggers.muzzle(25, from, close)
-	h.equal("spore.point_blank_makes_nothing", pool.in_use(), 0,
-		"a life of -2 aborts the constructor before it allocates")
+	h.equal("spore.point_blank_life_is_the_byte",
+		[pool.in_use(), 0 if pool.in_use() == 0 else pool.blobs()[0].life],
+		[1, 0xFE],
+		"a life of -2 reaches the constructor and is read as 0xFE")
 	h.equal("spore.point_blank_arrived_write", triggers.arrived_write(), 1,
 		"`(life <= 0) ? 1 : 0`, so there is nothing to wait for")
-	h.check("spore.point_blank_is_not_in_flight", not triggers.in_flight())
 	# And the decision the muzzle stage makes out of it, which is the four
 	# lines that used to sit inside `SliceMain.ShotHost` where nothing could
 	# reach them.
@@ -2295,10 +2339,11 @@ func _check_triggers(h: TestHarness) -> void:
 	# rather than the engine: the table starts at id 2, so weapons 0 and 1 --
 	# the two guns the campaign starts with -- reached the default and fired
 	# invisibly in the remake. `blob_tables.py` pins the arm now.
-	# Two records a round, and the default arm's site pushes five rounds.
-	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 10,
+	# Three records a round -- the streak, the case and the zoom bob -- and
+	# the default arm's site pushes five rounds.
+	h.equal("triggers.out_of_range", triggers.muzzle(60, from, to), 15,
 		"the switch's default arm, the same creator weapon 2 uses")
-	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 10,
+	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 15,
 		"the Light Combat Gun is not a gun with no muzzle flash")
 	# **The shot leaves the barrel, not the body axis.** `0x0042C660` writes
 	# the named Charisma part's world position over the three source stack

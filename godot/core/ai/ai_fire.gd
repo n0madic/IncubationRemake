@@ -98,10 +98,12 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 		var blocked: bool = cap != HEAT_DISABLED and unit.heat >= cap \
 			and cap == 0
 		if not blocked:
+			# The overlay this pass built is what the pattern reads
+			# ([constant Combat.SPECIAL_OBJECTS]).
 			var attack: AttackResult = Combat.attack(ctx.map, ctx.units,
 				ctx.utab, ctx.wtab, unit.x, unit.y, bx, by,
 				ctx.turn.ai_level, ctx.turn.human_count(), ctx.turn.mode,
-				ctx.turn, ctx.rng, false, ctx.cheats)
+				ctx.turn, ctx.rng, false, ctx.cheats, ctx.state)
 			if not attack.reason.is_empty() and not attack.fired:
 				ctx.refuse(attack.reason)
 			# The note is the weapon the animation was played with, not the

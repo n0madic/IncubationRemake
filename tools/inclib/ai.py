@@ -940,7 +940,10 @@ def fire(ctx: AIContext, unit: CombatUnit, mode: int = FIRE_ANY,
         blocked = cap != HEAT_DISABLED and unit.heat >= cap and cap == 0
         if not blocked:
             try:
-                attack = combatmod.attack_unit(world, unit.x, unit.y, bx, by)
+                # The overlay this pass built is what the pattern reads
+                # (`combat.SPECIAL_OBJECT_BAND`).
+                attack = combatmod.attack_unit(world, unit.x, unit.y, bx, by,
+                                               states=ctx.state)
                 ctx.emit(AIEvent("fire", unit.slot, unit.x, unit.y, bx, by,
                                  detail=best_score, note=str(unit.weapon),
                                  payload=attack.to_dict()))

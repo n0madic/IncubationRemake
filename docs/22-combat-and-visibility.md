@@ -649,7 +649,7 @@ The sixteen distinct patterns, with `Info.lcl` names
 | `0x46ACCD` | 22 `Spores` | **the shooter's own cell** `0x50`, then its eight neighbours `0x51` — only those holding a unit whose owner is not `0xFC` |
 | `0x46B1C7` | 5, 41 | every unit within a radius of the aim point whose octant **from the shooter** is exactly the shooter's facing and whose `aGetHitProbability` resolves in 1…253, `0x50`. The radius widens with the shot: 1 at range ≤ 2, 2 at 3–25, 3 beyond |
 | `0x46AF38` | 9 `Plasma Gun` | every unit the **shooter** has line of sight to, within the **three-octant arc** around its facing and `aGetDistance ≤ 4` of the aim point, `0x50` |
-| `0x46B0D8` | 11 `Multi-target Destroyer` | every cell whose action point is 30–34, under the same arc and the same `≤ 4`, `0x50` |
+| `0x46B0D8` | 11 `Multi-target Destroyer` | every cell whose **state byte** `+0x00` is 30–34 — the target overlay's hit band, [`23` §6](23-ai-system.md), stamped by the shooter's own selection or `fire` — under the same arc and the same `≤ 4`, `0x50`. (Read as the `+0x0B` action point until 2026-09-12; `mov al, [edi] / cmp al, 0x1E / jb / cmp al, 0x22 / ja` at `0x0046B0F4` tests `+0x00`, and [`97` §51.2](97-slice-5-report.md) measured it both ways) |
 | `0x46AED2` | 44 `Multi-target Destroyer B` | every unit within `aGetDistance < 4` of the aim point, `0x50`, each stamped with **its own** cell's object id |
 | `0x46AD9F` | 13 `Mine Thrower Enhanced` | 18 cells at `aRandom(-2, 5)` offsets around the aim point, `0x50` — and then **falls through** into `0x46ADE5`, so the aim cell is stamped `0x51` as well |
 | `0x46AB0A` | 7 `Flame Thrower` | the aim cell, `0x51` |

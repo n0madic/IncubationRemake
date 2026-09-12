@@ -254,8 +254,16 @@ RADIUS_BEYOND = 3
 EVERY_UNIT_MAX_DISTANCE = 4
 ARC_SWEEP_MAX_DISTANCE = 4
 
-#: ``0x0046B0D8`` -- the action-point band weapon 11 hunts for; the same
-#: multiplayer victory points ``docs/10`` §4.6 names.
+#: ``0x0046B0D8`` -- the **state-byte** band weapon 11 hunts for: ``mov al,
+#: [edi] / cmp al, 0x1E / jb / cmp al, 0x22 / ja`` at ``0x0046B0F4``, with
+#: ``edi`` stepping the control map by 0x17.  That is ``cell[+0x00]``, and
+#: 30..34 there is the target overlay's hit-probability band of ``docs/23``
+#: §6 -- what ``aBuildTargetOverlay`` stamps on every enemy the unit could
+#: engage, for the player's selection and the computer's ``fire`` alike.
+#: Until 2026-09-12 this said the ``+0x0B`` action point, the same mislabel
+#: ``docs/23`` §3.6's pseudocode had put on ``aGetDirectionTo``
+#: (:data:`FACING_STATE_BAND`); ``blob_gold.SHOT_BAND_POKES`` has the two
+#: captures that found it.
 SPECIAL_OBJECT_BAND = (30, 34)
 
 #: ``0x0046AD9F`` -- the scatter: 18 cells, each offset drawn as
@@ -1319,8 +1327,17 @@ class AttackResult:
 
 def mark_cells(world: CombatWorld, weapon_id: int, tx: int, ty: int,
                shooter: "CombatUnit | None" = None,
-               rng: ARandom | None = None) -> list[tuple[int, int, int]]:
+               rng: ARandom | None = None,
+               states: "Sequence[int] | None" = None
+               ) -> list[tuple[int, int, int]]:
     """``0x0046AA10(weapon, aimX, aimY, shooterX, shooterY, shooterFacing)``.
+
+    ``states`` is ``cell[+0x00]`` per cell as the last builder left it --
+    the target overlay of ``docs/23`` §6 -- which weapon 11's handler reads
+    (:data:`SPECIAL_OBJECT_BAND`) and no other family does.  A caller with
+    weapon 11 and no overlay is refused rather than given the reset value,
+    because the engine has no such caller: the player's select and the
+    computer's ``fire`` both build the overlay before ``aAttackUnit``.
 
     All sixteen handlers, in the order they write their markers.  The first
     write survives an overlap; resolution later walks CtrlMap in row-major
@@ -1385,7 +1402,13 @@ def mark_cells(world: CombatWorld, weapon_id: int, tx: int, ty: int,
     if family == "line_of_sight_from_aim":
         return _arc_sweep(world, tx, ty, _shooter(family, shooter), True)
     # special_objects
-    return _arc_sweep(world, tx, ty, _shooter(family, shooter), False)
+    if states is None:
+        raise CombatError(
+            "target pattern 'special_objects' reads the control map's state "
+            "bytes -- the target overlay of docs/23 section 6 -- and this "
+            "call was made without one")
+    return _arc_sweep(world, tx, ty, _shooter(family, shooter), False,
+                      states)
 
 
 def _shooter(family: str, shooter: "CombatUnit | None") -> "CombatUnit":
@@ -1556,16 +1579,25 @@ def _radius_by_range(world: CombatWorld, tx: int, ty: int,
 
 
 def _arc_sweep(world: CombatWorld, tx: int, ty: int, shooter: "CombatUnit",
-               by_line_of_sight: bool) -> list[tuple[int, int, int]]:
+               by_line_of_sight: bool,
+               states: "Sequence[int] | None" = None
+               ) -> list[tuple[int, int, int]]:
     """``0x0046AF38`` (weapon 9) and ``0x0046B0D8`` (weapon 11).
 
     The two share a shape and differ in what they look for: weapon 9 wants a
-    unit the shooter can **see**, weapon 11 wants a cell whose action point is
-    in the multiplayer band 30..34 and does not care what stands on it.  Both
-    then require the octant from the shooter to the cell to lie in the
-    **three-octant arc** around the shooter's facing -- ``0x0046A9A0`` and
-    ``0x0046A930`` are the two neighbours -- and the cell to be within four
-    fields of the aim point.
+    unit the shooter can **see**, weapon 11 wants a cell whose **state
+    byte** is in the target overlay's band 30..34 -- an enemy the shooter's
+    own overlay stamped, by hit chance -- and does not care what stands on
+    it.  Both then require the octant from the shooter to the cell to lie in
+    the **three-octant arc** around the shooter's facing -- ``0x0046A9A0``
+    and ``0x0046A930`` are the two neighbours -- and the cell to be within
+    four fields of the aim point.
+
+    Measured, both ways: ``blob_gold``'s ``shot_11`` fires straight after a
+    load, with no overlay, and marks nothing; ``shot_11_band`` writes 32 into
+    the state byte of two cells and the walk fires at exactly those two;
+    ``shot_11_overlay`` lets ``aBuildTargetOverlay`` stamp the two aliens
+    itself and the walk fires at those.
     """
     low, high = SPECIAL_OBJECT_BAND
     out: list[tuple[int, int, int]] = []
@@ -1587,11 +1619,8 @@ def _arc_sweep(world: CombatWorld, tx: int, ty: int, shooter: "CombatUnit",
             if blocked >= LOS_TERRAIN:
                 continue
         else:
-            if not world.action_point:
-                raise CombatError(
-                    "target pattern 'special_objects' reads the control "
-                    "map's action points; this world was built without them")
-            if not low <= world.action_point[index] <= high:
+            assert states is not None
+            if not low <= states[index] <= high:
                 continue
         octant = direction(shooter.x, shooter.y, cx, cy)
         if shooter.facing not in REAR_ARC[octant]:
@@ -1651,8 +1680,15 @@ def place_impact_objects(world: CombatWorld, weapon_id: int,
 
 
 def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
-                ty: int) -> AttackResult:
+                ty: int, states: "Sequence[int] | None" = None
+                ) -> AttackResult:
     """``aAttackUnit`` ``0x0046B450`` -- ``docs/22`` §7, in the order it runs.
+
+    ``states`` is the control map's state bytes as the caller's own overlay
+    left them (:func:`mark_cells`).  The computer's ``fire`` passes its
+    context's; a caller without one -- the human's shot, whose select built
+    the overlay the engine reads -- gets it built here for the shooter, the
+    way ``0x00472990`` builds it at selection.  Only weapon 11 reads it.
 
     Three things the code gives that the data files cannot:
 
@@ -1699,8 +1735,20 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
 
     attacker.facing = direction(x, y, tx, ty)
     result.facing = attacker.facing
+    if states is None and pattern_family(attacker.weapon) == "special_objects":
+        # The select's overlay, built where the engine would have read it.
+        # A local import: `ai` imports this module.
+        from . import ai as aimod
+        try:
+            ctx = aimod.context_from_world(world, {})
+        except aimod.AIError as exc:
+            raise CombatError(
+                "weapon 11's pattern reads the target overlay, and this "
+                f"world cannot build one: {exc}") from exc
+        aimod.build_target_overlay(ctx, attacker)
+        states = ctx.state
     result.marked = mark_cells(world, attacker.weapon, tx, ty,
-                               shooter=attacker, rng=world.rng)
+                               shooter=attacker, rng=world.rng, states=states)
 
     weapon = world.tables.weapons.get(attacker.weapon)
     banner = banner_nearby(world, attacker)

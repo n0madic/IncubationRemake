@@ -123,7 +123,8 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom,
 		journal: EventJournal = null,
-		cheats: Cheats = null) -> Array[Dictionary]:
+		cheats: Cheats = null,
+		overlay_for: Callable = Callable()) -> Array[Dictionary]:
 	var fired: Array[Dictionary] = []
 	if not mover.is_alive():
 		return fired
@@ -151,9 +152,21 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# behind it: `0x0046B592` and `0x0046C319` both jump past the
 		# dispatcher when it is set, so a unit on overwatch never reaches for
 		# its bayonet, however close the mover walks.
+		# An overlay for the one weapon whose pattern reads one ([constant
+		# Combat.SPECIAL_OBJECTS]); `overlay_for` is [method World._overlay_for]
+		# and answers an empty array otherwise. **UNVERIFIED which overlay a
+		# reaction reads in the engine**: `cell[+0x00]` is one shared byte,
+		# and at reaction time it holds what the mover's side last wrote,
+		# not the reactor's own. No capture fires a weapon-11 reaction and no
+		# shipped alien carries the weapon, so this builds the reactor's; a
+		# human on overwatch with the Multi-target Destroyer is where the two
+		# would differ.
+		var states: PackedByteArray = PackedByteArray()
+		if overlay_for.is_valid():
+			states = overlay_for.call(reactor)
 		var result: AttackResult = Combat.attack(state, units, utab, wtab,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
-			game_mode, turn, rng, true, cheats)
+			game_mode, turn, rng, true, cheats, states)
 		reactor.facing = facing
 		var shot: Dictionary = {"reactor": reactor.slot,
 			"ticket": reactor.ticket, "attack": result.to_dict(),

@@ -195,8 +195,14 @@ const RADIUS_MID_LIMIT: int = 25
 const RADIUS_BEYOND: int = 3
 ## `0x0046AF38` -- weapon 9 `Plasma Gun`; every unit the shooter can see.
 const LINE_OF_SIGHT_FROM_AIM: Array[int] = [9]
-## `0x0046B0D8` -- weapon 11 `Multi-target Destroyer`; cells in the action-point
-## band, which docs/10 section 4.6 calls the multiplayer victory points.
+## `0x0046B0D8` -- weapon 11 `Multi-target Destroyer`; cells whose **state
+## byte** is in the target overlay's band 30..34 (`mov al, [edi] / cmp al,
+## 0x1E / jb / cmp al, 0x22 / ja` at `0x0046B0F4`, `edi` stepping the control
+## map by 0x17) -- the enemies the shooter's own overlay stamped by hit
+## chance, docs/23 section 6. Until 2026-09-12 this said the action point,
+## the same mislabel docs/23 section 3.6's pseudocode had put on
+## `aGetDirectionTo`; `blob_gold.SHOT_BAND_POKES` has the captures that found
+## the byte.
 const SPECIAL_OBJECTS: Array[int] = [11]
 const SPECIAL_OBJECT_LOW: int = 30
 const SPECIAL_OBJECT_HIGH: int = 34
@@ -668,6 +674,18 @@ static func mark_cells(state: MapState, units: Dictionary, weapon_id: int,
 			or SPECIAL_OBJECTS.has(weapon_id):
 		if not _has_shooter(context, weapon_id, unsupported):
 			return out
+		if SPECIAL_OBJECTS.has(weapon_id) \
+				and context.states.size() != state.cell_count():
+			# The engine has no caller that reaches this handler without an
+			# overlay on the map: the player's select and the computer's
+			# fire both build one first. A caller here without one is
+			# refused rather than handed the reset value, which would mark
+			# nothing in silence.
+			unsupported.append(
+				"weapon %d reads the control map's state bytes -- the "
+				% weapon_id + "target overlay of docs/23 section 6 -- and "
+				+ "this shot was made without one")
+			return out
 		return _arc_sweep(state, units, tx, ty, context,
 			LINE_OF_SIGHT_FROM_AIM.has(weapon_id))
 	unsupported.append(
@@ -852,11 +870,16 @@ static func _radius_by_range(state: MapState, units: Dictionary,
 ## `0x0046AF38` (weapon 9) and `0x0046B0D8` (weapon 11).
 ##
 ## The two share a shape and differ in what they look for: weapon 9 wants a
-## unit the shooter can **see**, weapon 11 a cell whose action point is in the
-## multiplayer band 30..34 and does not care what stands on it. Both then
-## require the octant from the shooter to the cell to lie in the three-octant
-## arc around the shooter's facing, and the cell to be within four fields of
-## the aim point.
+## unit the shooter can **see**, weapon 11 a cell whose **state byte** is in
+## the target overlay's band 30..34 ([member PatternContext.states]) and does
+## not care what stands on it. Both then require the octant from the shooter
+## to the cell to lie in the three-octant arc around the shooter's facing,
+## and the cell to be within four fields of the aim point.
+##
+## Measured both ways in `blob_gold`: `shot_11` fires straight after a load
+## and marks nothing, `shot_11_band` finds exactly the two cells whose state
+## byte was written to 32, and `shot_11_overlay` finds exactly the two aliens
+## `aBuildTargetOverlay` stamped itself.
 static func _arc_sweep(state: MapState, units: Dictionary, tx: int, ty: int,
 		context: PatternContext,
 		by_line_of_sight: bool) -> Array[PackedInt32Array]:
@@ -880,8 +903,8 @@ static func _arc_sweep(state: MapState, units: Dictionary, tx: int, ty: int,
 				context.game_mode)
 			if blocked >= LineOfSight.TERRAIN:
 				continue
-		elif state.action_point_at(index) < SPECIAL_OBJECT_LOW \
-				or state.action_point_at(index) > SPECIAL_OBJECT_HIGH:
+		elif context.states[index] < SPECIAL_OBJECT_LOW \
+				or context.states[index] > SPECIAL_OBJECT_HIGH:
 			continue
 		if not in_arc(direction(shooter.x, shooter.y, cx, cy),
 				shooter.facing):
@@ -1007,7 +1030,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, x: int, y: int, tx: int, ty: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom, reaction: bool = false,
-		cheats: Cheats = null) -> AttackResult:
+		cheats: Cheats = null,
+		states: PackedByteArray = PackedByteArray()) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
 	if attacker == null:
@@ -1074,9 +1098,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	attacker.facing = direction(x, y, tx, ty)
 	result.facing = attacker.facing
 	var unsupported: Array[String] = []
+	# `states` is the control map's state bytes as the caller's own overlay
+	# left them -- what weapon 11's handler reads ([constant
+	# SPECIAL_OBJECTS]); every other family ignores it.
 	result.marked = mark_cells(state, units, attacker.weapon, tx, ty,
 		unsupported, PatternContext.create(attacker, utab, wtab, rng,
-			human_players, game_mode))
+			human_players, game_mode, states))
 	if not unsupported.is_empty():
 		result.fired = false
 		result.reason = unsupported[0]

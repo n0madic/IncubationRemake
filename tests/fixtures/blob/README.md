@@ -317,9 +317,17 @@ occupant the arm read, which the post-shot map has already cleared. Weapon
 44's thirty records all carry the same `aux`: five rounds at one aim point,
 not a walk. Weapon 7 reproduces all twenty records on **both** branches of
 `0x0040CBE2`, so ring 0's three doubles are zero whether or not the
-sound-buffer chain has run underneath. Weapon 11 marks nothing on this map —
-its handler wants an action point in 30..34 and the map carries none — so its
-arc stays unexercised, and the histogram that says why is in the phase.
+sound-buffer chain has run underneath. Weapon 11 marks nothing on a bare load
+— its handler wants a **state byte** in 30..34, the target overlay's band,
+and nothing has built one — so `shot_11` is an honest zero, and the map read
+*before* the shot (`states_before`, `band_before`) is what says why. Two more
+phases run its walk: `shot_11_band` writes 32 into the state byte of (8, 15)
+and (9, 18) through the same `memcpy` the weapon byte goes in by and reads it
+back (`band`, `band_bytes`), and `shot_11_overlay` gives unit 0 the MP the
+overlay's gate wants, makes the two aliens visible (`seen`, `seen_bytes`) and
+runs `aBuildTargetOverlay` itself, reading the map before and after it
+(`band_loaded`, `band_before`, `overlay_result`). Both mark two cells and lay
+twelve records, the second six at arc 1 (`docs/97` §51.2).
 
 **`symbols` answers for the whole map now, not for two tiles.** A walking arm
 aims at a cell the argument tiles never named, and a plan cannot ask

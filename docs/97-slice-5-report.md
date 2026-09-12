@@ -450,7 +450,7 @@ names them. §14.1 took them back and re-measured.
   typed seams `SPORE_EXPLOSION`, `GRENADE_ARC` and `FLAME_STREAM`, and
   `weapon_programs.routed_are_measured` is what keeps that list and the routing
   table equal.
-  **The other five are driven by arms of their own and are replayed nowhere**:
+  ~~**The other five are driven by arms of their own and are replayed nowhere**:
   the shock wave `0x00422B80` and the spore cannon `0x004268B0`, which build
   their own records and are checked structurally in `test_effects`, and the
   tracer `0x004247C0`, the needles `0x00424250` and the flash `0x00423D80`,
@@ -459,7 +459,12 @@ names them. §14.1 took them back and re-measured.
   the lifetimes and both point-blank branches are measured — what is not is the
   spread of the records inside one call. Beside them, the arc of weapon 11 — a
   property of `_6_.sav` rather than of the arm
-  ([`28` §12 item 2](28-effects-and-sound.md)).
+  ([`28` §12 item 2](28-effects-and-sound.md)).~~ **Closed 2026-09-12,
+  evening — §51.** All thirty are programs of `BlobPrograms` and all thirty
+  are replayed (303 records); the constructor-table arm is gone. And the arc
+  was not a property of the save: weapon 11's handler marks on the **state
+  byte**, the target overlay's band, and it runs on two captured shots
+  (§51.2).
 * **(as reported)** The three weapon switches are
   transcribed and pinned, so a shot fires the **right effects, of the right
   kinds, for the right lifetimes, from the right atlas tiles**. But the 81
@@ -1485,7 +1490,9 @@ the cells a walking arm was handed are measured rather than guessed.
 | `shot_07` | 7, flame stream | 1 | 1 | **20** — every record it lays |
 | `shot_07_nosound` | 7, the other branch | 1 | 1 | 20 |
 | `shot_09` | 9, blizzard shot | **2** | **2** | 4 |
-| `shot_11` | 11, grenade | 0 | 0 | 0 |
+| `shot_11` | 11, grenade | 0 | 0 | 0 — see §51.2: the handler reads the state byte, and a bare load has no overlay |
+| `shot_11_band` | 11, two cells stamped by hand (§51.2) | **2** | **2** | 12, the second at **arc 1** |
+| `shot_11_overlay` | 11, two cells stamped by `aBuildTargetOverlay` (§51.2) | **2** | **2** | 12, the second at arc 1 |
 | `shot_41` | 41, tracer burst | 1 | 1 | 27 |
 | `shot_44` | 44, proximity round | 5 | **5 rounds** | 30 |
 
@@ -1883,12 +1890,14 @@ level showing up would be a finding rather than a failure. The lesson is the
 same one §12 recorded: a check that looks like it has caught the engine
 disagreeing with the disassembly is far more likely to have caught the check.
 
-**What is still ours** is the per-blob velocity. It is drawn from `aRandom`
+~~**What is still ours** is the per-blob velocity. It is drawn from `aRandom`
 *inside* the creator, so replaying one exactly needs the engine's generator
 state at the moment of the shot — which is a different capture, of a whole
 shot rather than of a creator call. `BlobTriggers` paces a blob by its own
 recorded lifetime instead, which is extracted data rather than a chosen
-constant.
+constant.~~ **Nothing is, since §51.1.** The draws are `0x004638E0`'s, the
+seed is read either side of every creator, and the last creator paced by a
+chosen constant was transcribed on 2026-09-12.
 
 **The capture as it stands holds 15 of the 30 creators**, 13 of which produced
 records and two of which refused the tile they were given — 104 records in all.
@@ -6521,8 +6530,8 @@ that sentence asked for.
 are transcribed nowhere, so their spread, their per-blob speeds and their exact
 pitch are the remake's stand-ins. Closing that is a `blob_gold.py` capture of
 those thirty~~ — **taken, 2026-09-11/12.** §14.5.1–§14.5.5 are that capture;
-twenty-five of the thirty are replayed against it and five are driven by arms
-of their own. §11's bullet has the split.
+twenty-five of the thirty were replayed against it that night and the last
+five joined them in §51.1, which also explains the two yaws quoted above.
 
 ## 47. 2026-09-04 — the same sign, in the half that places the world
 
@@ -7046,3 +7055,161 @@ and deliberately not started". What it does *not* close is the general
 statement §41.7 reached for: this projects **special objects**, which is what
 `0x00406F20` searches. Nothing here reads a `.3DW` clone or an expanded
 prototype, because the engine's own search does not either.
+
+## 51. 2026-09-12 — the last five creators, and the byte weapon 11 reads
+
+[`102` Stage 2](102-remake-backlog.md) held two items about the picture: five
+of the thirty weapon creators were not replayed against the capture, and
+weapon 11's arc had never run. Both are closed here, and the second turned out
+to be a reading error in the pattern layer rather than a property of a save.
+
+### 51.1 Thirty of thirty
+
+§11's bullet counted 25 of `blob_tables.creators.reachable`'s thirty replayed
+in `test_blob_native` and named the other five: the tracer `0x004247C0`, the
+needles `0x00424250` and the flash `0x00423D80`, still on `BlobTriggers`'
+constructor-table arm — one record per `call`, the spread inside a call the
+remake's own — and the shock wave `0x00422B80` and the spore cannon
+`0x004268B0`, built as records of their own and checked structurally in
+`test_effects`. Every one of the five already had a phase in the capture, so
+what was missing was the program on the Godot side and the row that replays
+it.
+
+`BlobPrograms` now carries `tracer_bullet`, `flash` and `needles` — twins of
+`inclib/blob_creators.py`'s `_c004247C0`, `_c00423D80` and `_c00424250`,
+sharing `_burst_prologue` the way the Python does — and `spore_cannon`, which
+has no Python twin because the landing dust `0x004227C0` set that precedent
+(`test_blob_native.IMPACT_CREATOR`: a program the suite replays directly
+against the engine needs no second reading between them; `blob_gold`'s
+`CREATOR_PROGRAMS_EXPECTED` stays at 28). The three bursts are routed as
+`BlobTriggers.BURST_TYPED`,
+because their tail differs per weapon the way the three typed seams' does:
+the fifth and sixth arguments are the round count and the stagger the muzzle
+switch's own arm pushes, which `bursts()` already read out of the document.
+The spore cannon is a plain row. The shock wave stays on the tile seam
+(`_ask_tile` → `SliceMain.spawn_program`), because `_run_weapon_program`
+stands the *summed* point in for the object when a caller passes `NO_POINT`,
+and the ring is placed on the object; it is replayed all the same, and
+`_check_routed_are_measured` counts it beside the typed seams.
+
+What that removed from `BlobTriggers` is the whole constructor-table arm:
+`_create`, `_by_creator`, `_facing`, `_casing_velocity`, `_velocity`,
+`_needles`, `_burst_*`, `_spore_*`, both `_point_blank_*` branches, the
+`_ask` seam the point-blank bobs went out through, and thirty-odd constants.
+The nested creators a burst runs — the tracer's zoom bob every round, the
+flash's ten bobs and the needles' bob plus twenty sparks at point blank — are
+spawned by the program into the same pool, in the engine's own draw order,
+which is where the capture shows them; they used to come back as requests and
+were counted separately.
+
+`test_blob_native.weapon_programs.*` replays all thirty: 303 records
+(`CAPTURED_RECORDS` gained 30 + 27 + 10 + 12 + 1 — the shock wave's phase is
+the capture's twelve-record window onto sixty, so the prefix is what is
+compared, and the comment says so), every seed advance, and the routing table
+against the judged list. All five reproduced field for field on the first
+run, and each was then mutation-killed on the same check: `TRACER_STEP` off by
+one fails on `0x004247C0.0.y`, the needles' last kind swapped fails on
+`0x00424250.8.kind`, `SPORE_LIFE_BIAS` off by one on `0x004268B0.0.life`,
+`FLASH_AUX` on `0x00423D80.0.aux`, `SHOCKWAVE_RADIUS` on `0x00422B80.0.vx`.
+
+Two readings the replay corrected on the way. `triggers.model_points_along_the_shot`
+used to require every model blob of a burst to carry the *line's* triple; the
+creator asks `0x00403AA0` once a round from the muzzle to the muzzle plus the
+round's own scattered delta, and the streak and its case carry that — which is
+why the capture's yaws are 2344 and 2379 against the line's 2350 (§46 noted the
+numbers without the reason). And the spore cannon's point-blank branch was
+guarded with `life <= 0 → nothing`; `lea ebp, [edx + eax - 2]` at `0x00426A8E`
+and `push ebp` at `0x00426B33` have no test between them but the flag's own
+`setle`, and `0x00420950` reads the life argument as a byte, so a life of −2 is
+0xFE. It is transcribed that way and named as such in
+`spore.point_blank_life_is_the_byte`; the capture is a far shot and settles
+nothing about it, and no shot reaches the case — the span is over the two
+objects and any two tiles are 3200 apart, so life is at least two.
+
+### 51.2 Weapon 11 marks on the state byte, not the action point
+
+[`28` §12 item 2](28-effects-and-sound.md) said the arc had never run because
+`0x0046B0D8` marks a cell whose `+0x0B` action point is in 30..34 and
+`_6_.sav` has none. The plan was a `--wrap`ped save with such cells. The
+cheaper measurement was to write two action points into the live map through
+the imported `memcpy` — the way the weapon byte already goes in — and fire.
+The handler marked nothing.
+
+The listing says why. `0x0046B0D8` steps the control map by `0x17` in `edi`
+and tests `mov al, [edi] / cmp al, 0x1E / jb / cmp al, 0x22 / ja` — the
+**state byte** `cell[+0x00]`, not `+0x0B`. That band on that byte is the
+target overlay's hit-probability band of [`23` §6](23-ai-system.md): what
+`aBuildTargetOverlay` `0x0042FF30` stamps on every enemy the unit could
+engage, for the player's selection (`0x00472990`) and the computer's `fire`
+alike. So the *Multi-target Destroyer* throws one grenade at every enemy the
+shooter's own overlay banded within four fields of the aim, along its facing —
+which is what the name says — and a shot straight after `aLoadGame`, with no
+selection and no overlay, marks nothing whatever it is aimed at. The mislabel
+is the one [`23` §3.6](23-ai-system.md)'s pseudocode had put on
+`aGetDirectionTo` and that was corrected there on 2026-09-05
+(`combat.FACING_STATE_BAND`); it had survived in the pattern handler's row of
+[`22` §7.2](22-combat-and-visibility.md), in `inclib/combat.py`, in
+`core/combat.gd` and in every `blob_gold` comment about weapon 11.
+
+Three phases now stand behind it, all in `blob_gold`:
+
+| Phase | What it does | Band before the shot | Marked | Records |
+|---|---|---|---|---|
+| `shot_11` | fires after the load, nothing else | (11, 9) at 32 — an own-side unit's cell, nine tiles from the aim; which pass stamped it before the save is **UNVERIFIED** | none | 0 |
+| `shot_11_band` | writes 32 into `cell[+0x00]` of (8, 15) and (9, 18), reads each back | those two, plus (11, 9) | (8, 15), (9, 18) | 12 compared |
+| `shot_11_overlay` | writes MP 10 and visibility 0 on the two aliens, runs `aBuildTargetOverlay` on the attacker, reads the map before and after it | (8, 18) and (7, 19) at **34** — over 90 %, stamped by the engine | (8, 18), (7, 19) | 12 compared |
+
+Every shot plan now reads the whole control map **before** the attack as well
+as after it, so `shot.band_*` reasons from the state bytes the handler had
+to mark on rather than from what it left — and after the shot the marked cells
+have been rewritten to the attack band, so the census could not be taken then.
+`shot.band_written_*` checks the memcpy's read-back against the pre-shot map,
+and `shot.overlay_*` requires the overlay to have stamped cells the load did
+not carry, which the first overlay phase failed: `aBuildTargetOverlay` answered
+0 because unit 0 has no MP left in this save and the routine refuses under the
+weapon's AP cost, and the second answered 1 and stamped nothing because the
+two aliens are hidden. Both gates are `inclib/ai.py`'s own, and the plan writes
+the three bytes that pass them.
+
+The arc is measured, on both sides: the second cell of each walk is replayed
+at arc 1 and all twelve records reproduce — in `blob_gold` for the Python
+twin, and in `test_blob_native.arc_shots.*` for `BlobPrograms.grenade_arc`,
+whose arc-1 arm the bare `0x00426070` phase (arc 0xFF, the proximity round)
+had never reached. Replaying both cells at arc 0 fails `shot.records` with 72
+disagreements and `arc_shots.records` on `shot_11_band.6.x`. `SHOT_RESULTS`
+carries the two rows as `[2, 2, 12, 1, 0]`.
+
+**What changed in the models.** `inclib/combat.py`'s `_arc_sweep` reads
+`states` — the overlay — instead of `world.action_point`; `mark_cells` and
+`attack_unit` take it, the AI's `fire` passes its context's, and a human shot
+without one has it built for the shooter the way the select does.
+`core/combat.gd` does the same through `PatternContext.states`,
+`World._overlay_for` builds it only for the one weapon that reads it, and
+`Reaction.drain` takes a callable for the reactor's. A caller with weapon 11
+and no overlay is refused rather than read as the reset value, because the
+engine has no such caller — and both production paths are driven:
+`test_combat.multi_target.*` puts weapon 11 through `World.submit_attack` on
+a synthetic map with three aliens and gets the two near the aim marked, and
+`ai_runtime.pattern.special_objects_shot_builds_its_overlay` puts it through
+`attack_unit` with no `states` and gets the banded cell.
+`ai_runtime.pattern.scene_*` now arranges the
+family through the overlay — `_C_132`'s own alien 0 at (25, 14) bands (18, 16)
+and the pattern marks it — where it used to hunt the corpus for a mission with
+an action point in the band and found two cells nothing ever fired at.
+`test_ai.pattern.special_objects_*` refuses without the overlay and marks the
+stamped cell ahead of the shooter and not the one behind it.
+
+### 51.3 Verification
+
+`blob_gold --check` 327/327 (the three weapon-11 rows, `shot.records` over
+every walked cell), `ai_runtime --check` 86/86, `make check-formats` green;
+`test_blob_native` 30/30 with `weapon_programs.compared` at 303 and
+`arc_shots.compared` at 24, `test_effects` 689, `test_ai` 75 with the two new
+pattern checks, `test_combat` 272 with `multi_target.*`, and
+`bash godot/run_tests.sh` at 41 suites and **5 471** checks, no leaks. Wine
+took four captures to land the seven shot phases —
+`shot_11_band` refused ten attempts in one run and landed on the second in the
+next, and two shots that had landed faulted inside a sprite blit at
+`0x00447AF2` once and landed cleanly on the retry — which is
+[`91` §1](91-wine-runtime-probes.md)'s start-up again and not a property of
+the plans.

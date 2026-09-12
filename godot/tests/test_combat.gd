@@ -54,6 +54,7 @@ func run(h: TestHarness) -> void:
 	_damage(h)
 	_barrel_blast(h)
 	_beacoo_blast(h)
+	_multi_target(h)
 	_overheat(h)
 	_visibility(h)
 	_reveals(h)
@@ -66,6 +67,59 @@ func run(h: TestHarness) -> void:
 	_the_hatch(h)
 	_the_hero_counter(h)
 	_fog_probe(h)
+
+
+## **The Multi-target Destroyer, through the production path.** Weapon 11's
+## pattern marks every cell whose state byte the shooter's own target overlay
+## banded (docs/23 section 6) within four fields of the aim, along its facing
+## -- measured in `blob_gold`'s `shot_11_band` and `shot_11_overlay` (docs/97
+## section 51.2). [method World.submit_attack] has to build that overlay for
+## the shooter, the way the select `0x00472990` does, and hand it to the
+## pattern; a wiring that did not would refuse every shot from the weapon,
+## because a caller with weapon 11 and no overlay is refused rather than read
+## as the reset value. Two aliens near the aim, one behind the shooter: the
+## overlay bands the two it can hit and the shot marks exactly those.
+func _multi_target(h: TestHarness) -> void:
+	var weapon: int = Combat.SPECIAL_OBJECTS[0]
+	var records: Array = [
+		TestFixtures.unit(0, 1, 2, 0, 0, 6, 0, [], weapon, 4, 3, 100),
+		TestFixtures.unit(1, 5, 2, 0, UnitState.PLAYER_ALIEN, 0, 0, [], 0, 0,
+			0, 50),
+		TestFixtures.unit(2, 7, 4, 0, UnitState.PLAYER_ALIEN, 0, 0, [], 0, 0,
+			0, 50),
+		# Behind the shooter and outside the arc, and outside four fields of
+		# the aim besides.
+		TestFixtures.unit(3, 0, 0, 0, UnitState.PLAYER_ALIEN, 0, 0, [], 0, 0,
+			0, 50),
+	]
+	var balance: Dictionary = TestFixtures.balance([])
+	balance["weapons"] = _weapon_rows()
+	var world: World = World.create(TestFixtures.map_document(9, 6, records),
+		balance, 1.0)
+	world.turn.current_player = 0
+	var overlay: PackedByteArray = world.target_overlay(0)
+	var banded: Array[String] = []
+	for index: int in range(overlay.size()):
+		if overlay[index] >= Combat.SPECIAL_OBJECT_LOW \
+				and overlay[index] <= Combat.SPECIAL_OBJECT_HIGH:
+			banded.append("%d,%d" % [index % world.state.width,
+				index / world.state.width])
+	h.equal("multi_target.overlay_covers_the_map", overlay.size(),
+		world.state.cell_count(),
+		"one state byte per cell, as `0x0042FF30` leaves them")
+	h.equal("multi_target.overlay_bands_the_enemies", banded,
+		["0,0", "5,2", "7,4"] as Array[String],
+		"every alien the shooter could hit, by hit chance, in map order")
+	var shot: AttackResult = world.submit_attack(AttackCommand.create(0, 5, 2))
+	var marked: Array[String] = []
+	for cell: PackedInt32Array in shot.marked:
+		marked.append("%d,%d" % [cell[0], cell[1]])
+	h.check("multi_target.fires_through_the_overlay", shot.fired,
+		"reason: %s" % shot.reason)
+	h.equal("multi_target.marks_the_banded_cells_near_the_aim", marked,
+		["5,2", "7,4"] as Array[String],
+		"the two within four fields of the aim and along the facing; the one "
+		+ "behind the shooter is banded and not marked")
 
 
 # --- the tables --------------------------------------------------------------
@@ -120,6 +174,13 @@ static func _weapon_rows() -> Array[Dictionary]:
 			"damage": 3, "range_min": 1, "range_max": 1, "type": 4,
 			"special": Combat.SPECIAL_CLOSE_COMBAT, "param": CLOSE_COMBAT_GUN,
 			"def_mode": 0, "mun_per_fight": 1},
+		# Weapon 11, the `Multi-target Destroyer`: the shipped row's hit, range
+		# and AP cost, because its pattern reads the overlay the shooter's
+		# selection builds and the overlay's own gate reads the AP cost.
+		{"id": Combat.SPECIAL_OBJECTS[0], "heat": 255,
+			"toggle": Combat.SPECIAL_OBJECTS[0], "mun": 4, "hit": 90,
+			"damage": 15, "range_min": 2, "range_max": 45, "type": 2,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1, "ap": 3},
 	]
 
 

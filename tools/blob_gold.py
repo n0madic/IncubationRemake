@@ -1746,6 +1746,62 @@ SHOT_READ_RECORDS = BURST_READ_RECORDS
 #: Weapons fired a second time down the branch that skips the sound
 #: buffer, to put a different routine's locals under the first ring.
 SHOT_NO_SOUND: tuple[int, ...] = (7,)
+#: **Weapon 11's band, put on the map by hand.**  Its pattern handler
+#: `0x0046B0D8` marks a cell whose **state byte** `cell[+0x00]` lies in
+#: :data:`SPECIAL_OBJECT_BAND` -- `mov al, [edi] / cmp al, 0x1E / jb / cmp
+#: al, 0x22 / ja` at `0x0046B0F4`, with `edi` stepping the control map by
+#: 0x17 -- which is the target overlay's hit-probability band of `docs/23`
+#: §6, the one `aBuildTargetOverlay` `0x0042FF30` stamps on every enemy the
+#: unit could engage.  Until 2026-09-12 every reader of this handler said
+#: the `+0x0B` action point instead, the same mislabel `docs/23` §3.6's
+#: pseudocode had put on `aGetDirectionTo` and that was corrected there on
+#: 2026-09-05.  A shot straight after `aLoadGame` has no overlay -- nothing
+#: has selected the unit -- so `shot_11` marks nothing whatever it is aimed
+#: at, and the first `_band` capture, which wrote the action point, marked
+#: nothing either: that zero is what found the byte.
+#:
+#: Two phases show the walk.  `shot_11_band` writes :data:`SHOT_BAND_MARKER`
+#: into the state byte of these cells after the load and before the attack,
+#: through the same imported `memcpy` the weapon byte goes in by, and reads
+#: each byte back so a poke that missed cannot pass for a handler that marked
+#: nothing.  The cells are chosen against three tests at once: within
+#: `ARC_SWEEP_MAX_DISTANCE` of the aim (8, 18), holding a unit -- weapon 11's
+#: arm tests `+0x07` (`blob_tables.MULTI_TARGET_ARMS`) -- and at least
+#: `GRENADE_RANGE` = 6 tiles from the shooter at (19, 6) on `0x0044AE10`'s
+#: Euclidean test, so the point-blank gate does not zero the offset.  (8, 15)
+#: holds slot 5 and (9, 18) slot 9; in array order they are 308 and 369, so
+#: the walk hands the first arc 0 and the second arc 1.
+#:
+#: `shot_11_overlay` is the **shipped** path: `aBuildTargetOverlay` on the
+#: attacker once its weapon byte is written, which is what the player's
+#: select `0x00472990` and the computer's `fire` both run before
+#: `aAttackUnit`, and then the shot.  Which cells it stamps is the engine's
+#: own answer and is read back before the shot.
+SHOT_BAND_SUFFIX = "_band"
+SHOT_OVERLAY_SUFFIX = "_overlay"
+SHOT_BAND_POKES: dict[int, tuple[tuple[int, int], ...]] = {
+    11: ((8, 15), (9, 18)),
+}
+SHOT_OVERLAY_WEAPONS: tuple[int, ...] = (11,)
+#: The middle of the band; any of 30..34 would do.
+SHOT_BAND_MARKER = 32
+#: `aBuildTargetOverlay`, the declaration `ai_gold` uses.
+OVERLAY_BUILD = 0x0042FF30
+#: The overlay refuses a unit whose MP is under the weapon's AP cost
+#: (`inclib.ai.effective_weapon`; weapon 11 costs 3), and unit 0 has none
+#: left in this save -- so the overlay shot writes this into `unit[+0x15]`
+#: first, which is the gate a unit that can act passes anyway.
+UNIT_MP_FIELD = 0x15
+OVERLAY_MP = 10
+#: And it stamps only an enemy the unit can **see** (`other[+0x4F] == 0`,
+#: `inclib.ai.build_target_overlay`).  The two aliens around the aim, slots
+#: 10 at (7, 19) and 11 at (8, 18), are hidden in this save, so the first
+#: overlay shot answered TRUE and stamped nothing -- the routine ran and
+#: found nobody.  Their visibility byte is written to 0 first, which is the
+#: state a squad that has seen them is in.
+UNIT_VISIBILITY_FIELD = 0x4F
+VISIBILITY_VISIBLE = 0
+SHOT_OVERLAY_SEEN: dict[int, tuple[int, ...]] = {11: (10, 11)}
 
 
 def _shot_attacker(state: dict[str, Any], slot: int) -> tuple[int, int]:
@@ -1767,27 +1823,80 @@ def _shot_attacker(state: dict[str, Any], slot: int) -> tuple[int, int]:
 
 def shot_plan(handle: int, weapon: int, attacker_slot: int,
               attacker: tuple[int, int], target: tuple[int, int],
-              skip_sound_buffer: bool = False) -> str:
-    """One real shot by a unit holding *weapon*, and the pool it left."""
+              skip_sound_buffer: bool = False,
+              band: Sequence[tuple[int, int]] = (),
+              overlay: bool = False) -> str:
+    """One real shot by a unit holding *weapon*, and the pool it left.
+
+    *band* is the cells whose state byte is written to
+    :data:`SHOT_BAND_MARKER` before the shot, and *overlay* runs
+    `aBuildTargetOverlay` on the attacker before it -- see
+    :data:`SHOT_BAND_POKES`.  Each write is read back through the same
+    pointer it went in by, and the whole control map is read **before** the
+    shot as well as after, so what the pattern handler had to work with is
+    measured rather than inferred from what it left.
+    """
     entry = _entry_address(handle)
+    cells = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
     pokes = [f"--poke 0x{FIGHT_TICK_SITE:x}:{FIGHT_TICK_BYTES.hex()}=>c390"]
     if skip_sound_buffer:
         pokes.append(f"--poke 0x{FIGHT_BRANCH_SITE:x}:"
                      f"{FIGHT_BRANCH_BYTES.hex()}=>{FIGHT_BRANCH_FORCED.hex()}")
+    band_lines: list[str] = []
+    if band:
+        band_lines.append("# **The band, put on the map.**  Weapon 11's handler "
+                          "marks a cell on")
+        band_lines.append("# its state byte, and nothing has stamped one here.")
+        for x, y in band:
+            offset = ((y * gold.CAPTURE_WIDTH + x) * gold.CELL_STRIDE
+                      + gold.CELL_STATE)
+            band_lines.append(f"memcpy($cm+0x{offset:x}, &mk, 1)"
+                              f" --read $cm+0x{offset:x}:1")
+    overlay_lines: list[str] = []
+    if overlay:
+        for slot in SHOT_OVERLAY_SEEN.get(weapon, ()):
+            overlay_lines.append(f"s{slot} = aGetUnitMapElementPtr({slot})")
+            overlay_lines.append(
+                f"memcpy($s{slot}+0x{UNIT_VISIBILITY_FIELD:x}, &vis, 1)"
+                f" --read $s{slot}+0x{UNIT_VISIBILITY_FIELD:x}:1")
+        overlay_lines.append("# **The shipped path**: the overlay the select "
+                             "and the computer's fire")
+        overlay_lines.append("# both build before a shot, on the weapon just "
+                             "written -- and on a unit")
+        overlay_lines.append("# with the MP its gate wants.  The map is read "
+                             "first, so what the overlay")
+        overlay_lines.append("# stamped is the difference of two reads and "
+                             "not the save's own leftovers.")
+        overlay_lines.append(f"memcpy($u+0x{UNIT_MP_FIELD:x}, &mp, 1)"
+                             f" --read $u+0x{UNIT_MP_FIELD:x}:1")
+        overlay_lines.append(f"aGetUnitMapElementPtr({attacker_slot})"
+                             f" --read $cm:{cells}")
+        overlay_lines.append("stamped = aBuildTargetOverlay($u)")
     return "\n".join(pokes + [
         DECLARATIONS,
         f"__cdecl i32 aAttackUnit(i32,i32,i32,i32,i32)"
         f" = Incubation.exe+0x{FIGHT_ATTACK - 0x400000:x}",
+        f"__cdecl i32 aBuildTargetOverlay(ptr)"
+        f" = Incubation.exe+0x{OVERLAY_BUILD - 0x400000:x}",
         MEMCPY_DECL,
         f"--blob wp:{weapon & 0xFF:02x}",
+        f"--blob mk:{SHOT_BAND_MARKER:02x}",
+        f"--blob mp:{OVERLAY_MP:02x}",
+        f"--blob vis:{VISIBILITY_VISIBLE:02x}",
         "",
         "aSetSaveMode(0)",
         f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+        "cm = aGetCtrlMapElementPtr(0,0)",
+    ] + band_lines + [
         "# The attacker's own record, and the one byte that makes the whole",
         "# attack this weapon's: pattern family, range, both switches, sound.",
         f"u = aGetUnitMapElementPtr({attacker_slot})",
         f"memcpy($u+0x{UNIT_WEAPON_FIELD:x}, &wp, 1)"
         f" --read $u+0x{UNIT_WEAPON_FIELD:x}:1",
+    ] + overlay_lines + [
+        "# **The map before the shot**, so what the handler had to mark on is",
+        "# measured and not inferred from what it left.",
+        f"aGetUnitMapElementPtr({attacker_slot}) --read $cm:{cells}",
         f"end = aResetBlobs() --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}",
         f"hit = aAttackUnit({attacker[0]}, {attacker[1]},"
         f" {target[0]}, {target[1]}, 0)",
@@ -1809,8 +1918,7 @@ def shot_plan(handle: int, weapon: int, attacker_slot: int,
         "# cell whose unit the shot killed reads back with 0xFFFF in +0x07",
         "# while the marker 0x5D stays -- docs/28 section 8.1.3's own rule,",
         "# visible here rather than assumed.",
-        f"c0 = aGetCtrlMapElementPtr(0,0)"
-        f" --read $c0:{gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE}",
+        f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
     ]) + "\n"
 
 
@@ -1866,15 +1974,35 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
     # and the whole phase would then be measuring the wrong shot while looking
     # exactly like the right one.
     written: int | None = None
+    band_written: list[int] = []
+    seen_written: list[int] = []
     cells: list[dict[str, int]] = []
     points: dict[str, int] = {}
+    maps: list[bytes] = []
+    stamped: int | None = None
     for row in rows:
+        if row.get("call") == "aBuildTargetOverlay":
+            stamped = int(row.get("result") or 0)
         for key, value in (row.get("reads") or {}).items():
             if key.startswith("[") or "<" in value:
                 continue
             raw = _hex_bytes(value)
             if row.get("call") == "memcpy" and len(raw) == 1:
-                written = raw[0]
+                # **Keyed by what was written, not by order.**  The weapon
+                # byte goes through the unit pointer and a band poke through
+                # the control-map pointer; taking "the last one-byte memcpy"
+                # would let a band shot read a cell's state as its weapon.
+                if key == f"$u+0x{UNIT_WEAPON_FIELD:x}":
+                    written = raw[0]
+                elif key.startswith("$cm+"):
+                    band_written.append(raw[0])
+                elif key.startswith("$s"):
+                    seen_written.append(raw[0])
+            elif key == "$cm":
+                # The map **before** the shot -- the state bytes the handler
+                # had to mark on -- and, on an overlay shot, once more before
+                # the overlay ran.
+                maps.append(raw)
             elif row.get("call") == "aGetCtrlMapElementPtr":
                 cells = marked_cells(raw)
                 points = action_points(raw)
@@ -1883,6 +2011,18 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
         "args": list(args),
         "hit": int(hit) if hit is not None else None,
         "weapon_byte": written,
+        # Only a band shot writes any; the key stays absent otherwise.
+        **({"band_bytes": band_written} if band_written else {}),
+        # Only an overlay shot calls it; the key stays absent otherwise.
+        **({"overlay_result": stamped} if stamped is not None else {}),
+        **({"seen_bytes": seen_written} if seen_written else {}),
+        # A phase taken before the pre-shot read has no such key.  The
+        # census is the whole map's; the cells are the band's own, so the
+        # check can ask which of them the aim reaches.
+        **({"states_before": cell_states(maps[-1]),
+            "band_before": band_cells(maps[-1])} if maps else {}),
+        # Only an overlay shot reads the map twice.
+        **({"band_loaded": band_cells(maps[0])} if len(maps) > 1 else {}),
         "marked": cells,
         "action_points": points,
         "records": parse_records(blob),
@@ -1897,19 +2037,45 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
 def action_points(cells: bytes) -> dict[str, int]:
     """`action point value -> how many cells carry it`, over the whole map.
 
-    Read for one reason.  Weapon 11's pattern handler `0x0046B0D8` does not
-    look for units at all: it marks a cell whose `+0x0B` -- the LCL action
-    point, `docs/10` §4.6's multiplayer victory points -- lies in
-    `SPECIAL_OBJECT_BAND`.  `_6_.sav`'s map carries none in that band, which
-    is why weapon 11 marks nothing here whatever it is aimed at, and that is a
-    property of the save rather than of the arm.  Measuring it is what turns
-    "the shot came back empty" into a statement with a reason attached.
+    Kept beside `cell_states` as the record of a wrong turn: until
+    2026-09-12 weapon 11's handler was read as marking on this byte, and the
+    census -- 389 cells at 0, six at 1, two at 12, two at 17, one at 39 --
+    was the stated reason `shot_11` marked nothing.  The handler tests
+    `cell[+0x00]` (`SHOT_BAND_POKES`); the reason stands, on the other byte.
     """
     counts: dict[str, int] = {}
     for index in range(len(cells) // gold.CELL_STRIDE):
         value = cells[index * gold.CELL_STRIDE + gold.CELL_ACTION_POINT]
         counts[str(value)] = counts.get(str(value), 0) + 1
     return counts
+
+
+def cell_states(cells: bytes) -> dict[str, int]:
+    """`state byte -> how many cells carry it`, over the whole map.
+
+    The byte weapon 11's handler tests (`SHOT_BAND_POKES`), read before the
+    shot -- after it, every cell the handler marked has been rewritten to
+    the attack band and the census would miss exactly the cells that
+    mattered.
+    """
+    counts: dict[str, int] = {}
+    for index in range(len(cells) // gold.CELL_STRIDE):
+        value = cells[index * gold.CELL_STRIDE + gold.CELL_STATE]
+        counts[str(value)] = counts.get(str(value), 0) + 1
+    return counts
+
+
+def band_cells(cells: bytes) -> list[dict[str, int]]:
+    """Every cell whose state byte is in `SPECIAL_OBJECT_BAND`, in map order."""
+    low, high = SPECIAL_OBJECT_BAND
+    out: list[dict[str, int]] = []
+    for index in range(len(cells) // gold.CELL_STRIDE):
+        state = cells[index * gold.CELL_STRIDE + gold.CELL_STATE]
+        if low <= state <= high:
+            out.append({"index": index, "state": state,
+                        "x": index % gold.CAPTURE_WIDTH,
+                        "y": index // gold.CAPTURE_WIDTH})
+    return out
 
 
 def marked_cells(cells: bytes) -> list[dict[str, int]]:
@@ -2544,12 +2710,19 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     # One shot per weapon, plus one repeat of weapon 7 down the branch that
     # skips the sound buffer -- the only way to put a different routine's
     # locals under the flame stream's first ring.
-    shots: list[tuple[str, int, bool]] = [
-        (f"{SHOT_PREFIX}{weapon:02d}", weapon, False)
+    shots: list[tuple[str, int, bool, tuple[tuple[int, int], ...], bool]] = [
+        (f"{SHOT_PREFIX}{weapon:02d}", weapon, False, (), False)
         for weapon in sorted(SHOT_WEAPONS)]
-    shots += [(f"{SHOT_PREFIX}{weapon:02d}_nosound", weapon, True)
+    shots += [(f"{SHOT_PREFIX}{weapon:02d}_nosound", weapon, True, (), False)
               for weapon in SHOT_NO_SOUND]
-    for name, weapon, skip in shots:
+    # The band and overlay shots are phases of their own rather than
+    # re-takes of `shot_11`: the zero that phase holds is a measurement with
+    # its reason attached (`SHOT_RESULTS`), and it stays.
+    shots += [(f"{SHOT_PREFIX}{weapon:02d}{SHOT_BAND_SUFFIX}", weapon, False,
+               cells, False) for weapon, cells in sorted(SHOT_BAND_POKES.items())]
+    shots += [(f"{SHOT_PREFIX}{weapon:02d}{SHOT_OVERLAY_SUFFIX}", weapon,
+               False, (), True) for weapon in SHOT_OVERLAY_WEAPONS]
+    for name, weapon, skip, band, overlay in shots:
         slot, tile, _creator, tail, _own, _rep = SHOT_WEAPONS[weapon]
         here = _shot_attacker(state, slot)
         args = [here[0], here[1], tile[0], tile[1]] + list(tail)
@@ -2570,17 +2743,27 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
                 and list(held.get("attacker") or []) == [here[0], here[1]]
                 and list(held.get("target") or []) == list(tile)
                 and bool(held.get("skip_sound_buffer")) == skip
+                and [tuple(c) for c in held.get("band") or []] == list(band)
+                and bool(held.get("overlay")) == overlay
+                and (not overlay or list(held.get("seen") or [])
+                     == list(SHOT_OVERLAY_SEEN.get(weapon, ())))
+                and held.get("band_before") is not None
                 and held.get("branch_bytes")):
             continue
         try:
             rows = gold.run_plan(game_copy, dbgcall,
                                  shot_plan(state["handle"], weapon, slot,
-                                           here, tile, skip),
+                                           here, tile, skip, band, overlay),
                                  name, attempts=attempts)
             phases[name] = parse_fight(rows, weapon, args)
             phases[name]["attacker"] = list(here)
             phases[name]["target"] = list(tile)
             phases[name]["skip_sound_buffer"] = skip
+            if band:
+                phases[name]["band"] = [list(c) for c in band]
+            if overlay:
+                phases[name]["overlay"] = True
+                phases[name]["seen"] = list(SHOT_OVERLAY_SEEN.get(weapon, ()))
             document.get("failures", {}).pop(name, None)
             _save(out, document)
         except gold.CaptureError as err:
@@ -5213,18 +5396,28 @@ SHOT_BRANCH_UNMEASURED: list[str] = []
 #: resolver.  Reading the pair as "five cells, so five cells walked" is the
 #: mistake this pin exists to make visible.
 #:
-#: Weapon 11's row is zeroes with `hit` at 1, and that is a measurement too.
-#: Its handler `0x0046B0D8` marks a cell whose `+0x0B` action point is in
-#: `SPECIAL_OBJECT_BAND` and looks for no unit at all; `_6_.sav`'s map carries
-#: 389 cells at 0, six at 1, two at 12, two at 17 and one at 39, and none in
-#: 30..34.  So weapon 11 marks nothing here whatever it is aimed at, its walk
-#: cannot be exercised from this save, and the arc argument stays at zero --
-#: for a reason that is in the fixture rather than in a sentence.
+#: Weapon 11's bare row is zeroes with `hit` at 1, and that is a measurement
+#: too.  Its handler `0x0046B0D8` marks a cell whose **state byte** is in
+#: `SPECIAL_OBJECT_BAND` -- the target overlay's band -- and a shot straight
+#: after `aLoadGame` has had no overlay built: the pre-shot map read shows
+#: one such cell on the whole map, (11, 9) at 32 -- an own-side unit's cell,
+#: so not a human selection's stamp; which pass left it is not measured --
+#: and it is nine tiles from the aim.  So weapon
+#: 11 marks nothing here whatever it is aimed at -- for a reason that is in
+#: the fixture rather than in a sentence -- and the two rows below it are
+#: where its walk and its arc are exercised.
 SHOT_RESULTS: dict[str, list[int]] = {
     "shot_07": [1, 1, 20, 1, 0],
     "shot_07_nosound": [1, 1, 20, 1, 1],
     "shot_09": [2, 2, 4, 1, 0],
     "shot_11": [0, 0, 0, 1, 0],
+    # **The walk, and the arc.**  Two cells in the band, two calls, six
+    # records each, the second at arc 1 -- once on cells this tool stamped
+    # and once on cells `aBuildTargetOverlay` stamped itself (34, over 90 %,
+    # on both aliens).  `SHOT_BAND_POKES` has the reading that found the
+    # byte.
+    "shot_11_band": [2, 2, 12, 1, 0],
+    "shot_11_overlay": [2, 2, 12, 1, 0],
     "shot_41": [1, 1, 27, 1, 0],
     "shot_44": [5, 5, 30, 1, 0],
 }
@@ -5232,9 +5425,10 @@ SHOT_RESULTS: dict[str, list[int]] = {
 #: and which argument that is -- `docs/28` §8.1.3's table.
 SHOT_ARC_WEAPON = 11
 SHOT_ARC_ARGUMENT = 5
-#: `0x0046B0D8`'s action-point band -- what weapon 11's pattern handler
-#: marks a cell **on**, rather than the unit the arm then tests for.
-#: `docs/22` §7.2, `inclib.combat.SPECIAL_OBJECT_BAND`.
+#: `0x0046B0D8`'s state-byte band -- what weapon 11's pattern handler marks
+#: a cell **on**, rather than the unit the arm then tests for.  `docs/22`
+#: §7.2, `inclib.combat.SPECIAL_OBJECT_BAND`; `SHOT_BAND_POKES` has the
+#: reading.
 SPECIAL_OBJECT_BAND = (30, 34)
 
 
@@ -5406,13 +5600,18 @@ def _shot_checks(ck: "tables.Checker", root: str,
     for weapon 11 -- the running count as the arc, so a second cell is a
     second arc and not a repeat of the first.
     """
-    from inclib import blob_creators
+    from inclib import blob_creators, movemap
+    from inclib import combat as combatmod
 
     inputs = _creator_inputs(root, phases)
     if inputs is None:
         return
     names = [f"{SHOT_PREFIX}{w:02d}" for w in sorted(SHOT_WEAPONS)]
     names += [f"{SHOT_PREFIX}{w:02d}_nosound" for w in SHOT_NO_SOUND]
+    names += [f"{SHOT_PREFIX}{w:02d}{SHOT_BAND_SUFFIX}"
+              for w in sorted(SHOT_BAND_POKES)]
+    names += [f"{SHOT_PREFIX}{w:02d}{SHOT_OVERLAY_SUFFIX}"
+              for w in SHOT_OVERLAY_WEAPONS]
     # **Landed, not non-empty.**  Weapon 11's shot lands and makes nothing,
     # because this map carries no cell its handler marks on; a phase that is
     # simply absent is the thing this pin is for.
@@ -5437,21 +5636,67 @@ def _shot_checks(ck: "tables.Checker", root: str,
         # **A band is allowed to be empty, but only with a reason.**  A phase
         # whose pattern came out empty replays zero calls and compares zero
         # records, which would pass every other check here in silence.
-        # Weapon 11 is the one that legitimately marks nothing on this save:
-        # `0x0046B0D8` does not look for units at all, it marks a cell whose
-        # `+0x0B` action point is in `SPECIAL_OBJECT_BAND`, and this map
-        # carries none in that band.  That is measured, from the same read.
+        # Weapon 11 is the one that legitimately marks nothing on a bare
+        # load: `0x0046B0D8` marks a cell whose **state byte** is in
+        # `SPECIAL_OBJECT_BAND` -- the target overlay's hit bands -- and a
+        # shot straight after `aLoadGame` has had no overlay built.  That is
+        # measured from the pre-shot map read, not assumed.
         band = SPECIAL_OBJECT_BAND if weapon == SHOT_ARC_WEAPON else None
-        eligible = sum(n for v, n in (phase.get("action_points") or {}).items()
-                       if band and band[0] <= int(v) <= band[1])
+        # **Within reach of the aim.**  The handler also wants the cell
+        # within `ARC_SWEEP_MAX_DISTANCE` of the aim point on the Euclidean
+        # test, so a stamp the save carries elsewhere on the map -- and
+        # `_6_.sav` carries one, (11, 9) at 32, an own-side unit's cell nine
+        # tiles from the aim; which pass left it there is not measured -- is
+        # not a cell the shot could have marked.  The arc test is not
+        # applied here: every cell this tool stamps or the overlay stamps
+        # near the far cluster lies along the line the shooter faces.
+        reach = [cell for cell in phase.get("band_before") or []
+                 if movemap.distance(cell["x"], cell["y"], phase["target"][0],
+                                     phase["target"][1])
+                 <= combatmod.ARC_SWEEP_MAX_DISTANCE]
+        measured = phase.get("states_before") is not None
         ck.check(f"shot.band_{name}",
-                 bool(phase.get("marked")) or (band is not None
-                                               and eligible == 0),
+                 bool(phase.get("marked"))
+                 or (band is not None and measured and not reach),
                  f"{name} left {len(phase.get('marked') or [])} cell(s) in "
                  "the 0x50-0x5E band"
                  + ("" if phase.get("marked") else
-                    f", and {eligible} cell(s) on this map carry an action "
-                    f"point in {band}, which is what its handler marks on"))
+                    f", and {len(reach)} cell(s) within reach of the aim "
+                    f"carried a state byte in {band} before the shot, which "
+                    "is what its handler marks on"))
+        if phase.get("band"):
+            # **The pokes landed, and the pre-shot map carries them.**  Two
+            # reads of the same bytes: the memcpy's own read-back, and the
+            # whole-map read the cells come from.  Without this a band shot
+            # whose write missed would fail `shot.band_*` above with the
+            # same message as a handler that marked nothing.
+            poked = [(c["x"], c["y"]) for c in reach
+                     if [c["x"], c["y"]] in phase["band"]]
+            ck.check(f"shot.band_written_{name}",
+                     list(phase.get("band_bytes") or [])
+                     == [SHOT_BAND_MARKER] * len(phase["band"])
+                     and len(poked) == len(phase["band"]),
+                     f"{name} wrote {SHOT_BAND_MARKER} into +0x00 of "
+                     f"{len(phase['band'])} cell(s) and read it back through "
+                     f"the same pointer; the pre-shot map carries all "
+                     f"{len(poked)} within reach of the aim")
+        if phase.get("overlay"):
+            # **The engine stamped the band itself.**  `aBuildTargetOverlay`
+            # answered TRUE and the map read after it holds markers the map
+            # read before it did not, so the cells the walk then fired at are
+            # the overlay's own and not this tool's choice.
+            loaded = {(c["x"], c["y"]) for c in phase.get("band_loaded") or []}
+            stamped = [c for c in phase.get("band_before") or []
+                       if (c["x"], c["y"]) not in loaded]
+            seen = SHOT_OVERLAY_SEEN.get(weapon, ())
+            ck.check(f"shot.overlay_{name}",
+                     phase.get("overlay_result") == 1 and bool(stamped)
+                     and list(phase.get("seen_bytes") or [])
+                     == [VISIBILITY_VISIBLE] * len(seen),
+                     f"{name}: aBuildTargetOverlay returned "
+                     f"{phase.get('overlay_result')} and stamped "
+                     f"{len(stamped)} cell(s) in {band} the load had not: "
+                     f"{[(c['x'], c['y'], c['state']) for c in stamped]}")
         # **The arguments are rebuilt here, not read out of the phase.**  The
         # engine was never handed them -- the arm pushes them itself -- so
         # `args` in the document is this tool's reconstruction, and a stored

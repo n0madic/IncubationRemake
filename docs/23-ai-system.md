@@ -728,6 +728,14 @@ highest hit chance**, with no weighting for the target's health, threat or
 value. And because order 9 re-runs the same pass from the *enemies'* side, the
 same five values double as its danger map.
 
+**One weapon's target pattern reads these bands too.** Weapon 11's handler
+`0x0046B0D8` marks every cell whose state byte is 30..34 within four fields of
+the aim, along the shooter's facing — so the *Multi-target Destroyer* throws
+one grenade at each enemy the shooter's own overlay banded near the aim, for
+the player (whose select `0x00472990` runs this routine) as for the computer.
+[`22` §7.2](22-combat-and-visibility.md) has the row and
+[`97` §51.2](97-slice-5-report.md) the two captured shots.
+
 ---
 
 ## 7. Reachability — **[code] `aBuildMoveMap` `0x00430A40`**

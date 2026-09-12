@@ -21,11 +21,18 @@ var wtab: WeaponTable = null
 var rng: IncRandom = null
 var human_players: int = 1
 var game_mode: int = 1
+## The control map's state bytes, `cell[+0x00]` per cell, as the shooter's
+## own target overlay left them (docs/23 section 6; [method
+## World.target_overlay]). One family reads them -- weapon 11's, [constant
+## Combat.SPECIAL_OBJECTS] -- and an empty array there is refused rather than
+## read as the reset value.
+var states: PackedByteArray = PackedByteArray()
 
 
 static func create(unit: UnitState, types: UnitTypeTable,
 		weapons: WeaponTable, generator: IncRandom = null,
-		humans: int = 1, mode: int = 1) -> PatternContext:
+		humans: int = 1, mode: int = 1,
+		overlay: PackedByteArray = PackedByteArray()) -> PatternContext:
 	var out: PatternContext = PatternContext.new()
 	out.shooter = unit
 	out.utab = types
@@ -33,4 +40,5 @@ static func create(unit: UnitState, types: UnitTypeTable,
 	out.rng = generator
 	out.human_players = humans
 	out.game_mode = mode
+	out.states = overlay
 	return out

@@ -491,6 +491,40 @@ func _patterns(h: TestHarness, world: World, units: Dictionary,
 	h.equal("pattern.nothing_else_refused", unsupported, [] as Array[String],
 		"every family with a context resolves")
 
+	# **Weapon 11 reads the state byte, not the action point.** Its handler
+	# `0x0046B0D8` tests `cell[+0x00]` for the target overlay's band 30..34
+	# -- measured by `blob_gold`'s `shot_11_band` and `shot_11_overlay` --
+	# so a context with no overlay is refused, and one whose overlay stamps
+	# a cell within four fields of the aim, along the shooter's facing,
+	# marks that cell and nothing else. The action point of that cell is
+	# left at zero, which is what the old reading would have refused on.
+	var refused: Array[String] = []
+	var without: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SPECIAL_OBJECTS[0], shooter.x, shooter.y, refused, context)
+	h.check("pattern.special_objects_needs_the_overlay",
+		without.is_empty() and not refused.is_empty(),
+		"" if refused.is_empty() else refused[0])
+	var overlay: PackedByteArray = PackedByteArray()
+	overlay.resize(state.cell_count())
+	overlay.fill(AIOverlay.STATE_RESET)
+	var ahead: Vector2i = Vector2i(shooter.x + 2, shooter.y)
+	var aside: Vector2i = Vector2i(shooter.x - 2, shooter.y)
+	overlay[state.index_of(ahead.x, ahead.y)] = Combat.SPECIAL_OBJECT_HIGH
+	overlay[state.index_of(aside.x, aside.y)] = Combat.SPECIAL_OBJECT_LOW
+	shooter.facing = Combat.direction(shooter.x, shooter.y, ahead.x, ahead.y)
+	var with_overlay: PatternContext = PatternContext.create(shooter,
+		world.unit_types(), world.weapons(), null, 1, 1, overlay)
+	var stamped: Array[PackedInt32Array] = Combat.mark_cells(state, units,
+		Combat.SPECIAL_OBJECTS[0], ahead.x, ahead.y, refused, with_overlay)
+	var found: Array[String] = []
+	for cell: PackedInt32Array in stamped:
+		found.append("%d,%d" % [cell[0], cell[1]])
+	h.equal("pattern.special_objects_reads_the_overlay", found,
+		["%d,%d" % [ahead.x, ahead.y]] as Array[String],
+		"the stamped cell ahead is marked; the one behind the shooter, "
+		+ "outside the arc, is not; the aim cell's action point is %d"
+		% state.action_point_at(state.index_of(ahead.x, ahead.y)))
+
 
 ## Write the case's roster over the world's, and answer how many it matched.
 static func _apply(world: World, records: Array) -> int:

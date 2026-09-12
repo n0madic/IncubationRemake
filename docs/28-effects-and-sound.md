@@ -2102,15 +2102,24 @@ store lands on.
    reproduces at nine rounds once the aim is lifted by the cell's *own*
    occupant's height.
 
-   What is left open is the **arc**, and it is a property of this save rather
+   ~~What is left open is the **arc**, and it is a property of this save rather
    than of the arm. Weapon 11's handler `0x0046B0D8` marks a cell whose
    `+0x0B` action point is in 30..34, and `_6_.sav`'s map carries none — 389
    cells at 0, six at 1, two at 12, two at 17, one at 39 — so weapon 11 marks
    nothing whatever it is aimed at and its walk never runs. A save with cells
    in that band, two of them at least six tiles from the shooter so the
-   point-blank gate does not zero the offset, is what would show arc 1.
-   The pool can be read frame by frame through the agent (§14.5's closing
-   paragraph in [`97`](97-slice-5-report.md) has the recipe).
+   point-blank gate does not zero the offset, is what would show arc 1.~~
+   **Closed 2026-09-12, and the reason was wrong.** Two action points written
+   into the live map marked nothing; the handler tests `cell[+0x00]` — `mov
+   al, [edi] / cmp al, 0x1E / jb / cmp al, 0x22 / ja` at `0x0046B0F4` — the
+   **state byte**, and 30..34 there is the target overlay's hit band of
+   [`23` §6](23-ai-system.md), which the player's select and the computer's
+   `fire` both stamp before a shot. `shot_11_band` writes 32 into two state
+   bytes and the walk fires at exactly those two cells; `shot_11_overlay`
+   lets `aBuildTargetOverlay` stamp the two aliens itself and the walk fires
+   at those. Twelve records each, the second six at **arc 1**, all reproduced
+   — [`97` §51.2](97-slice-5-report.md). [`22` §7.2](22-combat-and-visibility.md)'s
+   row is corrected in place; §8.1.3's describes the arm's own band and stands.
 
 3. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects

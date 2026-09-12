@@ -10,179 +10,36 @@ extends RefCounted
 ## `tools/blob_tables.py` and copied into `tables/blobs.json`, so this class
 ## looks the answer up rather than inventing one.
 ##
-## **What is transcribed here, what is measured, and what is still ours.** The
-## tables give, for every constructor call the arms reach: its class, its update
-## kind, its literal lifetime, its model and -- for a sprite -- its atlas row,
-## column and size. Those are verified-static, pinned by 116 checks.
-##
-## The creators' own argument arithmetic is transcribed nowhere, and used to be
-## invented here outright. It is now **measured**: `tools/blob_gold.py` calls
-## each creator inside a running `Incubation.exe` and reads the pool back, and
-## `tests/test_blob_native.gd` replays that. Three things it settles:
-##
-## * the origin is the shooter's tile in world units, which is exactly what
-##   [method muzzle_point] answers -- an assumption before, a measurement now;
-## * every blob a creator makes lies **on the line from the shooter's tile to
-##   the target's**, at the tile itself or a fraction of the way along it. One
-##   creator lays eight of them evenly down that line, which is a tracer;
-## * the elevation is a constant the creator carries, not the ground: over
-##   tiles at height zero the captured `z` runs 0 to 3 679, and
-##   [constant MUZZLE_HEIGHT] sits inside that.
-##
-## What is **still ours** is the per-blob speed: the velocities are drawn from
-## `aRandom` inside the creator, so replaying one exactly would need the
-## engine's generator state at the moment of the shot. [method _velocity] paces
-## a blob by its own recorded lifetime instead, which is extracted data rather
-## than a chosen constant, and that is said where it is done.
-##
-## Twenty-five of the 116 calls compute their lifetime and eighteen compute a
-## sprite parameter; a `null` in the document is honoured as "the arm supplies
-## it" and given the fallback below rather than being read as zero -- a zero
-## lifetime aborts the constructor, so misreading it would silently drop the
-## effect.
+## **What is transcribed here and what is measured.** The tables give, for
+## every constructor call the arms reach: its class, its update kind, its
+## literal lifetime, its model and -- for a sprite -- its atlas row, column
+## and size. Those are verified-static, pinned by 116 checks. The creators'
+## own arithmetic -- where each record sits, what it carries, what it draws
+## -- is **not** built from that table any more: every one of the thirty
+## creators the two switches reach is a program of [BlobPrograms],
+## transcribed out of its own instructions, and this class only builds the
+## argument vector the arm pushes and hands the pool's generator over.
+## `tools/blob_gold.py` calls each creator inside a running `Incubation.exe`
+## and reads the pool back, and `tests/test_blob_native.gd` replays every
+## one of the thirty against that capture (docs/97 section 51). Until
+## 2026-09-12 the three burst creators still went down a constructor-table
+## arm here, one record per call with a trajectory of the remake's own, and
+## the spore cannon was built by hand; those were the last of it.
 
-## Where a computed lifetime lands when the creator would have supplied it.
-## Chosen inside the shipped literal range (4 to 255) and near its middle.
-const DEFAULT_LIFE: int = 16
-## The same, for a computed sprite half-size; the ten shipped values are 3..40.
-const DEFAULT_SIZE: int = 10
-const DEFAULT_ROW: int = 0
-const DEFAULT_COLUMN: int = 0
-## World units a muzzle effect travels per tick, for the blobs that have no
-## lifetime to pace them. One map field is 3200 units and a tracer should cross
-## a field in about four ticks.
-const MUZZLE_SPEED: int = 800
-## docs/28 section 7.2's kind 11 -- the ejected cartridge case. It is the one
-## blob in a muzzle call that does **not** fly at what was shot at, and
-## [method _casing_velocity] is why it has an arm of its own here.
-const CASING_KIND: int = 11
-## `0x004B1288` and `0x004B1290`, the two doubles `aBlob_CreateTracerBullet`
-## `0x004247C0` multiplies the direction service's answer by: the case leaves
-## **perpendicular** to the line of fire at 128 units a tick, `x` taking the
-## line's `y` ratio and `y` its negated `x`.
-const CASING_SPEED: int = 128
-## `push 0xA0 / push 0` then `add eax, 0x140` at `0x00424BDD`: the case's rise
-## is `aRandom2(0, 160) + 320` and is the only drawn component it has.
-const CASING_RISE_SPAN: int = 0xA0
-const CASING_RISE_BASE: int = 0x140
-## `aBlob_CreateTracerBullet` `0x004247C0`, the default muzzle creator and the
-## one fourteen weapons select. Its own arithmetic is transcribed --
-## `inclib/blob_creators.py` `_c004247C0` -- and the two shapes the table
-## alone cannot carry are the burst delta and where the casing is thrown from.
-const TRACER_CREATOR: String = "0x004247C0"
-## `0x004B1280`: the delta is a draw **minus** the direction scaled by this,
-## so a round leaves along the line of fire with a little scatter. The draws
-## are `aRandom2(-160, 320)` on the ground plane and `aRandom2(-80, 160)`
-## vertically.
-const TRACER_STEP: int = -2240
-## The same 2240 again, as the spacing the tracer's life is counted in:
-## `max(|dx|, |dy|) / 2240 - 1`, recovered from the reciprocal multiply at
-## `0x00424A9A`. A shot inside one spacing gets a life of zero, and the
-## constructor drops a record with no life -- so a point-blank shot makes no
-## streak at all, which is the original's own answer.
-const TRACER_UNIT: int = 2240
-const TRACER_SCATTER_BASE: int = -160
-const TRACER_SCATTER_SPAN: int = 320
-const TRACER_RISE_BASE: int = -80
-const TRACER_RISE_SPAN: int = 160
-## `aBlob_CreateNeedles` `0x00424250` and `aBlob_CreateFlash` `0x00423D80`,
-## the other two seven-argument creators (docs/28 section 8.1.1). Both are
-## transcribed -- `inclib/blob_creators.py` -- and both have the tracer's
-## shape with their own numbers: the step their delta leans by is the same
-## number as the spacing their length is counted in (2400 at `0x004B1278` and
-## the divide at `0x00424540`; 1600 at `0x004B1270` and `0x00424058`), and
-## their scatter is half the tracer's.
-const NEEDLE_CREATOR: String = "0x00424250"
-const FLASH_CREATOR: String = "0x00423D80"
-const NEEDLE_STEP: int = -2400
-const NEEDLE_UNIT: int = 2400
-const FLASH_STEP: int = -1600
-const FLASH_UNIT: int = 1600
-## Both draw half the tracer's spread: `aRandom2(-80, 160)` on the ground
-## plane and `aRandom2(-40, 80)` vertically, against the tracer's own
-## `-160/320` and `-80/160`.
-const BURST_SCATTER_BASE: int = -80
-const BURST_SCATTER_SPAN: int = 160
-const BURST_RISE_BASE: int = -40
-const BURST_RISE_SPAN: int = 80
-## `[step, unit, scatter base, scatter span, rise base, rise span]` per burst
-## creator. A creator not named here is not a burst creator and makes its
-## records once, where the table puts them.
-const SHAPE_STEP: int = 0
-const SHAPE_UNIT: int = 1
-const SHAPE_SCATTER_BASE: int = 2
-const SHAPE_SCATTER_SPAN: int = 3
-const SHAPE_RISE_BASE: int = 4
-const SHAPE_RISE_SPAN: int = 5
-const BURST_SHAPES: Dictionary[String, Array] = {
-	TRACER_CREATOR: [TRACER_STEP, TRACER_UNIT,
-		TRACER_SCATTER_BASE, TRACER_SCATTER_SPAN,
-		TRACER_RISE_BASE, TRACER_RISE_SPAN],
-	NEEDLE_CREATOR: [NEEDLE_STEP, NEEDLE_UNIT,
-		BURST_SCATTER_BASE, BURST_SCATTER_SPAN,
-		BURST_RISE_BASE, BURST_RISE_SPAN],
-	FLASH_CREATOR: [FLASH_STEP, FLASH_UNIT,
-		BURST_SCATTER_BASE, BURST_SCATTER_SPAN,
-		BURST_RISE_BASE, BURST_RISE_SPAN],
-}
-## The needles: one round is nine sprites laid down eighths of its delta, the
-## **last** of them kind 73 where the other eight are 74, and their size runs
-## `NEEDLE_AUX_BASE - k` for `k` counting 8 down to 0.
-const NEEDLE_SPLIT: int = 8
-const NEEDLE_KIND: int = 0x4A
-const NEEDLE_KIND_LAST: int = 0x49
-const NEEDLE_AUX_BASE: int = 10
-## `push 7 / push 0` at `0x0042411D`: the flash's atlas column is the one
-## drawn sprite parameter among the three, and the only null column a burst
-## creator's call carries.
-const FLASH_COLUMN_SPAN: int = 7
-## `aBlob_CreateSporeCannon` `0x004268B0` -- the Cy'Coo's spore round, and the
-## one muzzle creator that is neither a burst nor a record the constructor
-## table can place on its own.
-##
-## It is transcribed here because **every number in its record is computed**
-## and the document carries none of them -- the call at `0x00426B52` is the
-## only one in the image whose `life` is `null` outside a burst creator:
-##
-## * `life = max(|dx|, |dy|) / 800 - 2`. The divisor is not in the bytes: the
-##   compiler left the reciprocal multiply `0x51EB851F` with `sar edx, 8` at
-##   `0x00426A73`, which is a divide by 800, and the `lea ebp, [edx + eax - 2]`
-##   at `0x00426A8E` takes the two off. The two ends are the source and target
-##   **objects'** positions, so the span is measured in world units.
-## * `v = ftol(direction * 800.0)` per axis, the double at `0x004B12C8`. The
-##   direction service divides by `max(|dx|, |dy|)` (docs/28 section 7.4), so
-##   the wide axis moves a whole step a tick and the round arrives as its life
-##   runs out. The record itself sits at the source **plus one step**.
-## * `vz` carries a launch loft of `0x50 * (life / 2)` on top --
-##   `0x00426B0C`..`0x00426B29`, written as a negated `5 * (life/2) << 4` whose
-##   sign is then thrown away. Kind 22's arm takes `0x50` off `vz` every tick
-##   (`blob_kinds.gd`), so the boost is exactly half the fall and the round
-##   follows an arc that comes back down on the target. Without it the round
-##   flew a flat line that sagged, which is what the original visibly does not
-##   do.
-## * `[0x004FE63C] = (life <= 0) ? 1 : 0` at `0x00426A97`, the same write the
-##   three burst creators make and the reason a point-blank spore shot waits
-##   for nothing.
-##
-## What it does **not** do is use `0x00403AA0`: the orientation call at
-## `0x00426AF9` fills two locals nothing afterwards reads, so its answer is
-## dead and the record's rotation is the sprite table's row and column. It
-## draws from no generator either, so a spore shot leaves `aRandom2`'s seed
-## where it found it.
-## **The one weapon creator this class does not build from the constructor
-## table.** `aBlob_CreateShockWave` `0x00422B80` places sixty records in a
-## ring where its single pinned constructor call describes one, so a shot
-## from weapon 17 and a hit from weapon 36 showed one static blob where the
-## original throws an explosion outward (docs/28 section 7.2). It is a
-## transcribed creator instead -- [method BlobPrograms.shock_wave], the twin
-## of `inclib/blob_creators.py` -- and it is asked for by tile, because the
-## engine reads the tile's **placed object** rather than the muzzle point.
+## **The one weapon creator that does not run here.** `aBlob_CreateShockWave`
+## `0x00422B80` reads the tile's **placed object** and nothing of the shot's
+## two points (`aGetCtrlMapElementPtr` then `aGetSymbolObjectPtr`, and the
+## ring goes into the velocity), so it is asked for by tile and
+## `SliceMain.spawn_program` runs [method BlobPrograms.shock_wave] with the
+## tile's own inputs -- a caller with only the summed point would otherwise
+## lift the ring by the unit's height. It is replayed against the capture
+## like the other twenty-nine (`test_blob_native.gd`).
 ##
 ## Neither weapon waits on the flight ([constant
 ## ShotSequence.WAIT_SKIPPED_WEAPONS] holds 0x11 and 0x24), so the records
-## going into the pool through [BlobPrograms] rather than through
+## going into the pool through that seam rather than through
 ## [method _place] costs [method in_flight] nothing.
-const SHOCK_WAVE_CREATOR: String = "0x00422B80"
+const SHOCK_WAVE_CREATOR: String = BlobPrograms.SHOCK_WAVE
 ## The type both call sites push (`0x0040CD3C` and `0x0040D7AC`,
 ## `blob_tables.SHOCKWAVE_TYPE_SITES`): of the creator's three arms only this
 ## one is ever taken.
@@ -190,10 +47,9 @@ const SHOCK_WAVE_TYPE: int = 2
 ## A [method muzzle] or [method impact] whose caller has no tile to give.
 const NO_TILE: Vector2i = Vector2i(-1, -1)
 ## A caller that does not separate the **placed object's** own position from
-## the standing unit's height. The two are one argument for every creator
-## built off the constructor table and two for a transcribed one, which reads
-## them differently (docs/97 section 14.5), so a caller that has only the sum
-## passes this and the sum stands in for both.
+## the standing unit's height. The programs read the two apart (docs/97
+## section 14.5), so a caller that has only the sum passes this and the sum
+## stands in for both.
 const NO_POINT: Vector3i = Vector3i(-0x40000000, -0x40000000, -0x40000000)
 
 ## **The part a creator resolves for itself**, where the switch's own call
@@ -218,13 +74,14 @@ const CREATOR_JOINTS: Dictionary[String, String] = {
 	"0x00428200": CREATOR_JOINT_M, "0x00428570": CREATOR_JOINT_M,
 }
 
-## **The weapon switches' creators that are transcribed**, and how this class
-## builds each one's argument vector (docs/97 section 14.5).
+## **The weapon switches' creators**, and how this class builds each one's
+## argument vector (docs/97 section 14.5).
 ##
-## Everything not named here still goes down the constructor-table arm below
-## -- one record per `call`, with a trajectory of the remake's own -- which is
-## what the whole of this switch used to do. An entry is added only once its
-## program is checked against `blob_gold.py`'s capture by
+## Every creator either switch reaches is a row here, one of the typed seams
+## below or [constant SHOCK_WAVE_CREATOR]; the table used to be shorter, with
+## everything else going down a constructor-table arm that laid one record
+## per `call` with a trajectory of the remake's own. An entry is added only
+## once its program is checked against `blob_gold.py`'s capture by
 ## `test_blob_native.gd`, so the table is also the list of what is measured.
 ##
 ## `[shape, arrived, tail...]`: *shape* says where the argument tiles come
@@ -323,7 +180,23 @@ const WEAPON_PROGRAMS: Dictionary[String, Array] = {
 	BlobPrograms.GRENADE_ROUND: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
 	BlobPrograms.BEAM_DOTS: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
 	BlobPrograms.LASER_DOTS: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
+	# -- 2026-09-12, the evening: the spore cannon, the Cy'Coo's round -----
+	#
+	# Four arguments, all tiles, and a `setle` over its own flight length
+	# written to the flag at `0x00426A97` ahead of the one record it makes.
+	# Replayed against the capture's single record (docs/97 section 51).
+	BlobPrograms.SPORE_CANNON: [ARG_LINE, ARRIVED_FROM_FLIGHT],
 }
+## **The three burst creators**, whose tail differs per weapon the way the
+## three typed seams' does: the fifth and sixth arguments are the round count
+## and the stagger the muzzle switch's own arm pushes (`weapon_muzzle_burst`
+## in the document, [method bursts]), and the seventh is the joint's name,
+## resolved by the caller into [member BlobPrograms.Inputs.source_joint]
+## before the call. All three write the *arrived* flag from their own flight
+## length (`0x00424AB9`/`0x00424AC3` and the two pairs beside them), which is
+## [constant ARRIVED_FROM_FLIGHT].
+const BURST_TYPED: Array[String] = [BlobPrograms.TRACER_BULLET,
+	BlobPrograms.FLASH, BlobPrograms.NEEDLES]
 ## The second entry whose tail **differs per weapon**, and the more consequential
 ## of the two: `0x00426070`'s sixth argument picks the arc.
 ##
@@ -359,49 +232,9 @@ const PROGRAM_SHAPE: int = 0
 const PROGRAM_ARRIVED: int = 1
 const PROGRAM_TAIL: int = 2
 
-const SPORE_CREATOR: String = "0x004268B0"
-## The spore step in world units -- a quarter of a map field -- as the
-## **divisor** the round's life is counted in.
-const SPORE_UNIT: int = 800
-## The same 800 again as the **speed**, and from a different place: the double
-## at `0x004B12C8` the three direction ratios are multiplied by.
-const SPORE_SPEED: int = 800
-## `lea ebp, [edx + eax - 2]` -- the round is two steps shorter than the span.
-const SPORE_LIFE_BIAS: int = 2
-## `0x50` a tick up at launch against kind 22's `0x50` a tick down in flight.
-const SPORE_LOFT: int = 0x50
-## **Point-blank is a different branch, not an empty one.** A span inside one
-## spacing writes the length back to zero -- so every record the round loop
-## builds is dropped by the constructor for a zero life, which is the
-## original -- and the two creators below then make something else *at the
-## target* instead: `0x0042418B` runs one zoom bob per round for the flash,
-## jittered on all three axes, and `0x00424739` runs one bob plus
-## `0x00428F70`'s twenty plasma sparks for the needles. The tracer has no such
-## branch: its casing carries a literal life and appears anyway.
-##
-## Both are nested creators the pool cannot build from the constructor table,
-## so they are handed back as requests -- see [method take_programs].
-const POINT_BLANK_BOB_LIFE: int = 8
-const POINT_BLANK_AUX_BASE: int = 5
-const POINT_BLANK_AUX_SPAN: int = 0xF
-const FLASH_BOB_ROW: int = 6
-const FLASH_BOB_JITTER_BASE: int = -1600
-const FLASH_BOB_JITTER_SPAN: int = 3200
-const NEEDLE_BOB_ROW: int = 1
-const NEEDLE_SPARKS: int = 0x14
-## `0x00428F70`'s fifth argument, which it is handed and does not read.
-const NEEDLE_SPARKS_UNREAD: int = 0x1E
-## The tracer's own nested creator, and the one it makes on **every** round
-## rather than only point-blank: `0x00424CB0` calls `0x00423720` a fifth of
-## the round's delta along, row 0, size 10, life 8. Its constructor call
-## belongs to the zoom bob's own address, so the muzzle table cannot carry it
-## and it is asked for the same way the point-blank branches are.
-const TRACER_BOB_SPLIT: int = 5
-const TRACER_BOB_ROW: int = 0
-const TRACER_BOB_AUX: int = 10
-const TRACER_BOB_LIFE: int = 8
-## `life = 0xFF` never expires (docs/28 section 7.2).
-const IMMORTAL_LIFE: int = 0xFF
+## The spore cannon's address, for callers that name the creator rather
+## than the program.
+const SPORE_CREATOR: String = BlobPrograms.SPORE_CANNON
 ## How far above the cell floor an effect starts where **nothing is standing
 ## there** -- an impact on bare ground. Where a unit is, its own type height
 ## is used instead, which is what every creator reads (see
@@ -428,8 +261,6 @@ var _programs: Array[Dictionary] = []
 ## What the last burst creator wrote over the *arrived* flag, or
 ## [constant ARRIVED_UNWRITTEN] when none ran -- see [method arrived_write].
 var _arrived_write: int = ARRIVED_UNWRITTEN
-## `creator address -> the constructor calls inside it`, built once.
-var _by_creator: Dictionary[String, Array] = {}
 ## The records the last [method muzzle] put in the pool -- see
 ## [method in_flight]. Held by **reference** and not by slot, because a slot
 ## falls free the moment its record dies and the next spawn takes it.
@@ -443,32 +274,7 @@ static func open(pool: BlobPool, document: Dictionary) -> BlobTriggers:
 	var triggers: BlobTriggers = BlobTriggers.new()
 	triggers._pool = pool
 	triggers._document = document
-	var calls: Dictionary = DictRead.as_dict(document.get("calls", {}))
-	for site: Variant in calls:
-		var call: Dictionary = DictRead.as_dict(calls[site])
-		var creator: Variant = call.get("creator")
-		if creator == null:
-			continue
-		var key: String = DictRead.as_string(creator)
-		if not triggers._by_creator.has(key):
-			triggers._by_creator[key] = []
-		var record: Dictionary = call.duplicate()
-		record["site"] = DictRead.as_string(site)
-		triggers._by_creator[key].append(record)
-	# Sorted by site so a creator's calls are made in the order the original
-	# makes them, which is the order they draw in.
-	for key: String in _keys_of(triggers._by_creator):
-		var list: Array = triggers._by_creator[key]
-		list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return DictRead.as_string(a["site"]) < DictRead.as_string(b["site"]))
 	return triggers
-
-
-static func _keys_of(from: Dictionary[String, Array]) -> Array[String]:
-	var out: Array[String] = []
-	for key: String in from:
-		out.append(key)
-	return out
 
 
 ## The muzzle effects weapon `weapon_id` makes, at `from`, aimed at `to`.
@@ -507,18 +313,18 @@ func muzzle(weapon_id: int, from: Vector3i, to: Vector3i,
 ## and `0x00424AB9`). Twelve creators carry that shape (docs/42 section 4.6,
 ## `presentation_tables.py`'s `arrived.creator_writes` counts them), which is
 ## what makes an adjacent target arrive at once even though the burst still
-## fills the pool.
+## fills the pool. The program reports it as [member
+## BlobPrograms.Pool.clears_arrived] and [method _run_weapon_program] turns
+## that into the byte.
 func arrived_write() -> int:
 	return _arrived_write
 
 
-## The nested creators the last [method muzzle] asked for, and clears them.
-##
-## `{creator, at, extra}` per request, ready for [BlobPrograms] -- or
-## `{creator, tile, extra}` where the creator reads a cell rather than a
-## point ([constant SHOCK_WAVE_CREATOR]). A point-blank burst makes the
-## first kind (see [constant POINT_BLANK_BOB_LIFE]); [method impact] can make
-## the second.
+## The tile creators the last [method muzzle] or [method impact] asked for,
+## and clears them: `{creator, tile, extra}` per request, ready for
+## [BlobPrograms] with the tile's own inputs. Only [constant
+## SHOCK_WAVE_CREATOR] is asked for this way; the nested creators a burst's
+## point-blank branch runs are spawned by the program itself.
 func take_programs() -> Array[Dictionary]:
 	var out: Array[Dictionary] = _programs
 	_programs = []
@@ -765,9 +571,6 @@ func _fire_once(switch_name: String, weapon_id: int, at: Vector3i,
 	var joint_list: Array = joints(switch_name, weapon_id)
 	for index: int in range(list.size()):
 		var key: String = DictRead.as_string(list[index])
-		var shape: Array = DictRead.as_array(BURST_SHAPES.get(key, []))
-		var burst_creator: bool = not shape.is_empty()
-		var spore: bool = key == SPORE_CREATOR
 		# **The creator's own source, joint and all.** Everything downstream
 		# reads it -- the direction, the span the streak's life is counted
 		# in, the casing's origin -- because `0x0042C660` writes over the
@@ -780,122 +583,48 @@ func _fire_once(switch_name: String, weapon_id: int, at: Vector3i,
 		if not joint.is_empty() and joint_points.has(joint):
 			from = joint_points[joint]
 			jointed = true
-		# **The creator's own round loop** -- see [method bursts]. Every record
-		# a pass makes carries that pass's delay, so the burst leaves one round
-		# at a time.
+		# **The transcribed creator, by tile.** Counted by the caller that
+		# runs it, as a request: what goes into the pool is sixty records
+		# and not one. With no tile the effect is skipped rather than
+		# approximated -- a wrong ring at a guessed cell is worse than none.
+		if key == SHOCK_WAVE_CREATOR:
+			if tile != NO_TILE:
+				_ask_tile(key, tile, PackedInt32Array([SHOCK_WAVE_TYPE]))
+			continue
+		if not _is_program(key):
+			# A creator neither switch reaches has no row; the tables pin
+			# that every creator the two switches name is one of the thirty
+			# (`blob_tables.creators.reachable`), so this is unreachable
+			# rather than a fallback.
+			continue
+		# **The creator's own round loop** -- see [method bursts]: the three
+		# burst creators take the pair as their fifth and sixth arguments
+		# and loop it themselves; every other creator's pair is `[1, 0]`.
 		var burst: Vector2i = burst_at(burst_list, index)
-		var life: int = -1
-		if burst_creator:
-			life = maxi(_burst_life(from, towards,
-				DictRead.as_int(shape[SHAPE_UNIT])), 0)
-		elif spore:
-			# **Not clamped**, unlike the burst's: the spore cannon's own
-			# `test ebp, ebp / setle` reads the raw difference and the
-			# constructor is handed it whole (`0x00426A92`).
-			life = _spore_life(from, towards)
-		# The creator's own write over `0x004FE63C`, ahead of everything it
-		# makes: a flight begins at 0, and a span inside one spacing -- the
-		# point-blank branch -- says there is nothing to wait for.
-		if burst_creator or spore:
-			_arrived_write = 1 if life <= 0 else 0
-		elif WEAPON_PROGRAMS.has(key) or key == GRENADE_ARC_TYPED \
-				or key == FLAME_STREAM_TYPED:
-			# The transcribed creator's own store, ahead of everything it
-			# makes and behind no branch -- so a creator that then lays
-			# nothing still says what it said.
-			var written: int = DictRead.as_int(
-				_program_row(key, weapon_id, arc)[PROGRAM_ARRIVED])
-			if written != ARRIVED_UNWRITTEN \
-					and written != ARRIVED_FROM_FLIGHT:
-				_arrived_write = written
-		if burst_creator and life <= 0 and key == FLASH_CREATOR:
-			_point_blank_flash(towards, burst.x)
-		for round_index: int in range(burst.x):
-			# **One delta per round, shared by the round's records.** The
-			# transcribed creator draws it once and then places its records at
-			# the source *plus* it -- and the tracer's casing a third of it
-			# *behind*, so the case flies backwards out of the breech while
-			# the round goes forward.
-			var delta: Vector3i = _burst_delta(from, towards, shape) \
-				if burst_creator else Vector3i.ZERO
-			var delay: int = (round_index * burst.y) & 0xFF
-			if key == NEEDLE_CREATOR:
-				made += _needles(from, delta, life, delay)
-				continue
-			if spore:
-				made += _spore_cannon(from, towards, life, delay)
-				continue
-			# **The transcribed creator, run whole.** Its records go through
-			# [method _place] like everything else here, so [method in_flight]
-			# still answers for them -- which is why this is not the
-			# [method _ask_tile] seam a nested creator uses.
-			if WEAPON_PROGRAMS.has(key) \
-					or key == SPORE_EXPLOSION_TYPED \
-					or key == GRENADE_ARC_TYPED \
-					or key == FLAME_STREAM_TYPED:
-				made += _run_weapon_program(key, weapon_id, source_object,
-					target_object, at, towards, from if jointed else NO_POINT,
-					tile, target_tile, target_unit, arc)
-				continue
-			# **The transcribed creator, by tile.** Counted by the caller
-			# that runs it, as the point-blank requests are: what goes into
-			# the pool is sixty records and not the one this loop would make.
-			# With no tile the effect is skipped rather than approximated --
-			# a wrong ring at a guessed cell is worse than none.
-			if key == SHOCK_WAVE_CREATOR:
-				if tile != NO_TILE:
-					_ask_tile(key, tile,
-						PackedInt32Array([SHOCK_WAVE_TYPE]))
-				continue
-			for call: Variant in _by_creator.get(key, []):
-				if _create(DictRead.as_dict(call), from, towards, delta,
-						burst_creator, delay, life) >= 0:
-					made += 1
-			if key == TRACER_CREATOR:
-				_ask(BlobPrograms.ZOOMBOB, from + Vector3i(
-						IncInt.div_trunc(delta.x, TRACER_BOB_SPLIT),
-						IncInt.div_trunc(delta.y, TRACER_BOB_SPLIT),
-						IncInt.div_trunc(delta.z, TRACER_BOB_SPLIT)),
-					PackedInt32Array([TRACER_BOB_ROW, TRACER_BOB_AUX,
-						TRACER_BOB_LIFE]))
-		if burst_creator and life <= 0 and key == NEEDLE_CREATOR:
-			_point_blank_needles(towards)
+		var row: Array = _program_row(key, weapon_id, arc, burst)
+		# The transcribed creator's own store over `0x004FE63C`, ahead of
+		# everything it makes and behind no branch -- so a creator that then
+		# lays nothing still says what it said. A creator that writes it
+		# from its flight length says so after it runs.
+		var written: int = DictRead.as_int(row[PROGRAM_ARRIVED])
+		if written != ARRIVED_UNWRITTEN and written != ARRIVED_FROM_FLIGHT:
+			_arrived_write = written
+		# **The transcribed creator, run whole.** Its records go through
+		# [method _place] like everything else here, so [method in_flight]
+		# still answers for them.
+		made += _run_weapon_program(key, row, source_object, target_object,
+			at, towards, from if jointed else NO_POINT, tile, target_tile,
+			target_unit, arc)
 	return made
 
 
-## `0x0042418B` -- the flash's point-blank branch: one zoom bob per round,
-## jittered on all three axes, around the **target**. Its draws are the
-## flash's own and are taken here so they land in the pool's one stream in
-## the order the engine takes them: the size first, then z, y and x.
-func _point_blank_flash(at: Vector3i, rounds: int) -> void:
-	var hooks: BlobHooks = _pool.hooks() if _pool != null else null
-	if hooks == null:
-		return
-	for _round: int in range(rounds):
-		var aux: int = hooks.random(POINT_BLANK_AUX_BASE, POINT_BLANK_AUX_SPAN)
-		var jz: int = hooks.random(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
-		var jy: int = hooks.random(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
-		var jx: int = hooks.random(FLASH_BOB_JITTER_BASE, FLASH_BOB_JITTER_SPAN)
-		_ask(BlobPrograms.ZOOMBOB, at + Vector3i(jx, jy, jz),
-			PackedInt32Array([FLASH_BOB_ROW, aux, POINT_BLANK_BOB_LIFE]))
-
-
-## `0x00424739` -- the needles' point-blank branch: one zoom bob at the
-## target and `0x00428F70`'s twenty plasma sparks there, once for the whole
-## call rather than once per round.
-func _point_blank_needles(at: Vector3i) -> void:
-	var hooks: BlobHooks = _pool.hooks() if _pool != null else null
-	if hooks == null:
-		return
-	var aux: int = hooks.random(POINT_BLANK_AUX_BASE, POINT_BLANK_AUX_SPAN)
-	_ask(BlobPrograms.ZOOMBOB, at,
-		PackedInt32Array([NEEDLE_BOB_ROW, aux, POINT_BLANK_BOB_LIFE]))
-	_ask(BlobPrograms.PLASMA_SPARKS_BURST, at,
-		PackedInt32Array([NEEDLE_SPARKS, NEEDLE_SPARKS_UNREAD]))
-
-
-func _ask(creator: String, at: Vector3i, extra: PackedInt32Array) -> void:
-	_programs.append({"creator": creator, "at": at, "extra": extra})
+## Whether `key` is one of the thirty creators this class runs as a program:
+## a row of [constant WEAPON_PROGRAMS], one of the typed seams or one of the
+## three bursts.
+static func _is_program(key: String) -> bool:
+	return WEAPON_PROGRAMS.has(key) or key == SPORE_EXPLOSION_TYPED \
+		or key == GRENADE_ARC_TYPED or key == FLAME_STREAM_TYPED \
+		or BURST_TYPED.has(key)
 
 
 ## A request a **tile** creator answers: `x, y` and the literals its call site
@@ -904,142 +633,6 @@ func _ask(creator: String, at: Vector3i, extra: PackedInt32Array) -> void:
 func _ask_tile(creator: String, tile: Vector2i,
 		extra: PackedInt32Array) -> void:
 	_programs.append({"creator": creator, "tile": tile, "extra": extra})
-
-
-## `aBlob_CreateNeedles`' round: **nine** sprites down the round's own delta.
-##
-## The one burst creator whose round is not a single record, and the one whose
-## record the constructor table cannot carry: its call at `0x004246F9`
-## computes the kind (`xor eax, eax / test ebx, ebx / setne al / add eax,
-## 0x49`), so the document holds `null` there and [method _create] refuses it
-## -- which is why weapon 16 made no muzzle effect at all before this.
-##
-## The delta is divided by eight and accumulated, so the nine sit at one
-## eighth, two eighths ... nine eighths of it and grow as they go
-## ([constant NEEDLE_AUX_BASE] minus the counter). All nine carry the round's
-## whole delta as their velocity and its stagger as their delay.
-func _needles(from: Vector3i, delta: Vector3i, life: int, delay: int) -> int:
-	var calls: Array = DictRead.as_array(_by_creator.get(NEEDLE_CREATOR, []))
-	if calls.is_empty() or life <= 0:
-		return 0
-	var call: Dictionary = DictRead.as_dict(calls[0])
-	var sprite: Dictionary = _sprite_of(call)
-	var step: Vector3i = Vector3i(
-		IncInt.div_trunc(delta.x, NEEDLE_SPLIT),
-		IncInt.div_trunc(delta.y, NEEDLE_SPLIT),
-		IncInt.div_trunc(delta.z, NEEDLE_SPLIT))
-	var made: int = 0
-	var walk: Vector3i = from
-	for k: int in range(NEEDLE_SPLIT, -1, -1):
-		walk += step
-		var fields: Dictionary = {
-			"kind": NEEDLE_KIND_LAST if k == 0 else NEEDLE_KIND,
-			"class_id": DictRead.as_int(call["class"]),
-			"life": life,
-			"x": walk.x, "y": walk.y, "z": walk.z,
-			"vx": delta.x, "vy": delta.y, "vz": delta.z,
-			"rot_x": _sprite_field(sprite, "row", DEFAULT_ROW),
-			"rot_y": _sprite_field(sprite, "col", DEFAULT_COLUMN),
-			"aux": NEEDLE_AUX_BASE - k,
-			"delay": delay,
-		}
-		if _place(fields) >= 0:
-			made += 1
-	return made
-
-
-## `max(|dx|, |dy|) / unit - 1` over the two ends -- `0x00424A73`..
-## `0x00424AB1` for the tracer, and the same three instructions with their own
-## divisor in the other two. The span is measured from the **jointed** source:
-## the divide reads the very stack slots `0x0042C660` wrote over.
-func _burst_life(from: Vector3i, to: Vector3i, unit: int) -> int:
-	var span: int = maxi(absi(from.x - to.x), absi(from.y - to.y))
-	return IncInt.div_trunc(span, unit) - 1
-
-
-## `0x00424AE4`..`0x00424B5D` -- the round's own offset from the muzzle.
-##
-## `aRandom2(-160, 320) - ftol(d * -2240)` per horizontal axis and
-## `aRandom2(-80, 160)` vertically, over the direction service's answer. It is
-## the tracer's velocity as well as its offset, which is why one number does
-## both jobs here.
-func _burst_delta(from: Vector3i, to: Vector3i, shape: Array) -> Vector3i:
-	var hooks: BlobHooks = _pool.hooks() if _pool != null else null
-	var ground_base: int = DictRead.as_int(shape[SHAPE_SCATTER_BASE])
-	var ground_span: int = DictRead.as_int(shape[SHAPE_SCATTER_SPAN])
-	var step: int = DictRead.as_int(shape[SHAPE_STEP])
-	var scatter: Vector3i = Vector3i.ZERO
-	if hooks != null:
-		scatter = Vector3i(
-			hooks.random(ground_base, ground_span),
-			hooks.random(ground_base, ground_span),
-			hooks.random(DictRead.as_int(shape[SHAPE_RISE_BASE]),
-				DictRead.as_int(shape[SHAPE_RISE_SPAN])))
-	if from == to:
-		return scatter
-	var d: PackedFloat64Array = Eng3dGeometry.direction(from, to, 1)
-	if is_nan(d[0]) or is_nan(d[1]) or is_nan(d[2]):
-		return scatter
-	return Vector3i(
-		scatter.x - Eng3dGeometry.ftol(d[0] * float(step)),
-		scatter.y - Eng3dGeometry.ftol(d[1] * float(step)),
-		scatter.z - Eng3dGeometry.ftol(d[2] * float(step)))
-
-
-## `0x00426A4E`..`0x00426A8E` -- the spore round's life, in spore steps.
-##
-## Zero or less is the point-blank branch: the constructor drops a record with
-## no life (`test al, al / je` at `0x00420957`, and `al` is the `life`
-## argument), so a spore shot inside two steps makes nothing at all -- which
-## is why the creator writes the *arrived* flag up rather than down.
-func _spore_life(from: Vector3i, to: Vector3i) -> int:
-	var span: int = maxi(absi(from.x - to.x), absi(from.y - to.y))
-	return IncInt.div_trunc(span, SPORE_UNIT) - SPORE_LIFE_BIAS
-
-
-## `0x00426A7A`..`0x00426AC4` -- one spore step along the line of fire.
-##
-## `ftol` answers zero for the NaN and the infinities the direction service
-## returns over a zero span, so the degenerate cases need no arm of their own.
-func _spore_velocity(from: Vector3i, to: Vector3i) -> Vector3i:
-	if from == to:
-		return Vector3i.ZERO
-	var d: PackedFloat64Array = Eng3dGeometry.direction(from, to, 1)
-	return Vector3i(
-		Eng3dGeometry.ftol(d[0] * float(SPORE_SPEED)),
-		Eng3dGeometry.ftol(d[1] * float(SPORE_SPEED)),
-		Eng3dGeometry.ftol(d[2] * float(SPORE_SPEED)))
-
-
-## One spore round -- the creator's single constructor call at `0x00426B52`.
-##
-## The record's **position** carries the plain step (`0x00426ADB` adds the
-## `vz` the stack slot kept) and its **velocity** the lofted one
-## (`0x00426B29`), which is the whole of the arc. The engine's `abs` over the
-## loft is a no-op for every life that reaches the constructor, so it is left
-## out rather than written down as arithmetic nothing takes.
-func _spore_cannon(from: Vector3i, to: Vector3i, life: int, delay: int) -> int:
-	var calls: Array = DictRead.as_array(_by_creator.get(SPORE_CREATOR, []))
-	if calls.is_empty() or life <= 0:
-		return 0
-	var call: Dictionary = DictRead.as_dict(calls[0])
-	if call["kind"] == null:
-		return 0
-	var step: Vector3i = _spore_velocity(from, to)
-	var sprite: Dictionary = _sprite_of(call)
-	var fields: Dictionary = {
-		"kind": DictRead.as_int(call["kind"]),
-		"class_id": DictRead.as_int(call["class"]),
-		"life": life,
-		"x": from.x + step.x, "y": from.y + step.y, "z": from.z + step.z,
-		"vx": step.x, "vy": step.y,
-		"vz": step.z + SPORE_LOFT * IncInt.div_trunc(life, 2),
-		"rot_x": _sprite_field(sprite, "row", DEFAULT_ROW),
-		"rot_y": _sprite_field(sprite, "col", DEFAULT_COLUMN),
-		"aux": _sprite_field(sprite, "size", DEFAULT_SIZE),
-		"delay": delay,
-	}
-	return 1 if _place(fields) >= 0 else 0
 
 
 ## One transcribed weapon creator, run against the live pool.
@@ -1053,14 +646,13 @@ func _spore_cannon(from: Vector3i, to: Vector3i, life: int, delay: int) -> int:
 ## The generator is the pool's own -- `aRandom2`, the uncounted twin -- handed
 ## over and handed back, so a creator's draws land in the one stream the arms
 ## keep drawing from.
-func _run_weapon_program(key: String, weapon_id: int, source_object: Vector3i,
+func _run_weapon_program(key: String, row: Array, source_object: Vector3i,
 		target_object: Vector3i, source_point: Vector3i,
 		target_point: Vector3i, joint: Vector3i, tile: Vector2i,
 		target_tile: Vector2i, target_unit: int = 0, arc: int = 0) -> int:
 	var hooks: BlobHooks = _pool.hooks()
 	if hooks == null:
 		return 0
-	var row: Array = _program_row(key, weapon_id, arc)
 	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
 	inputs.geometry = hooks.geometry
 	for name: Variant in hooks.model_index:
@@ -1112,9 +704,16 @@ func _run_weapon_program(key: String, weapon_id: int, source_object: Vector3i,
 	return made
 
 
-## One creator's row, with the spore explosion's per-weapon type filled in --
-## the one literal in the table that is not the same at every call site.
-func _program_row(key: String, weapon_id: int, arc: int = 0) -> Array:
+## One creator's row, with the per-weapon literals filled in: the spore
+## explosion's type, the flame stream's ring count, the grenade's arc and the
+## three bursts' round count and stagger -- the literals in the table that
+## are not the same at every call site.
+func _program_row(key: String, weapon_id: int, arc: int = 0,
+		burst: Vector2i = Vector2i(1, 0)) -> Array:
+	if BURST_TYPED.has(key):
+		# Rounds, stagger, and the joint's name -- a pointer the program
+		# never reads as a number.
+		return [ARG_LINE, ARRIVED_FROM_FLIGHT, burst.x, burst.y, 0]
 	if key == SPORE_EXPLOSION_TYPED:
 		return [ARG_TILE, ARRIVED_UNWRITTEN, 0,
 			DictRead.as_int(SPORE_EXPLOSION_TYPES.get(weapon_id, 0))]
@@ -1160,12 +759,6 @@ func _program_args(key: String, row: Array, from: Vector3i, tile: Vector2i,
 	return args
 
 
-## The sprite parameters the extractor recorded for one constructor call.
-func _sprite_of(call: Dictionary) -> Dictionary:
-	return DictRead.as_dict(DictRead.as_dict(_document.get("sprites", {}))
-		.get(DictRead.as_string(call["site"]), {}))
-
-
 ## Put one record in the pool and, for a muzzle, remember it.
 ##
 ## Everything this class builds goes through here rather than through
@@ -1177,182 +770,6 @@ func _place(fields: Dictionary) -> int:
 	if slot >= 0 and _recording:
 		_made.append(_pool.at(slot))
 	return slot
-
-
-func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
-		delta: Vector3i = Vector3i.ZERO, burst: bool = false,
-		delay: int = 0, burst_life: int = -1) -> int:
-	# A computed kind is the two-way choice of docs/28 section 7.7; without the
-	# creator we cannot know which side it took, so the effect is not made at
-	# all rather than made as kind 0.
-	#
-	# **First**, and not after the record is built: the column is nullable and
-	# two of the shipped calls carry it as null, both under creators a weapon
-	# reaches -- so narrowing it to an `int` before this test is a runtime
-	# error on every shot from those weapons.
-	if call["kind"] == null:
-		return -1
-	var kind: int = DictRead.as_int(call["kind"])
-	var class_id: int = DictRead.as_int(call["class"])
-	var life: int = DictRead.as_int(call["life"]) if call["life"] != null \
-		else DEFAULT_LIFE
-	var velocity: Vector3i = _casing_velocity(at, towards) \
-		if kind == CASING_KIND else _velocity(at, towards, life)
-	# The transcribed creator's own two numbers where they exist: the streak
-	# lives one frame per [constant TRACER_UNIT] of the wider horizontal span
-	# and travels the round's whole delta each of them, so it arrives instead
-	# of being paced to arrive. Every other call keeps the lifetime its own
-	# site passes and the speed that crosses in it.
-	if burst and kind != CASING_KIND:
-		# **The round's own life, and only where the site computes one.** The
-		# tracer's casing carries the literal 0x14 at its call and keeps it,
-		# so a point-blank shot ejects a case with no streak -- which is the
-		# original's own answer.
-		if call["life"] == null:
-			life = burst_life
-			if life <= 0:
-				return -1
-		velocity = delta
-	# Where the round's own records sit relative to the muzzle, and both are
-	# the transcribed creator's (`0x00424C2B` and `0x00424C45` for the third,
-	# `0x00424B7B` for the tracer's whole delta). A creator with no delta --
-	# every other one, and the impact end -- keeps the point it was given.
-	var origin: Vector3i = at + delta
-	if kind == CASING_KIND:
-		origin = Vector3i(at.x - IncInt.div_trunc(delta.x, 3),
-			at.y - IncInt.div_trunc(delta.y, 3), at.z)
-	var fields: Dictionary = {
-		"kind": kind,
-		"class_id": class_id,
-		"life": life,
-		"x": origin.x, "y": origin.y, "z": origin.z,
-		"vx": velocity.x, "vy": velocity.y, "vz": velocity.z,
-		# The constructor's last field, and the burst's whole timing: a record
-		# with a delay is not drawn and does not step until it has counted
-		# down (`blob_kinds.gd`).
-		"delay": delay,
-	}
-	if class_id >= 2:
-		var sprite: Dictionary = _sprite_of(call)
-		fields["rot_x"] = _sprite_field(sprite, "row", DEFAULT_ROW)
-		fields["rot_y"] = _sprite_field(sprite, "col", DEFAULT_COLUMN)
-		fields["aux"] = _sprite_field(sprite, "size", DEFAULT_SIZE)
-		# The flash's column is the one sprite parameter a burst creator draws
-		# rather than pushes (`0x0042411F`, after the round's three offsets).
-		if burst and sprite.get("col") == null and _pool.hooks() != null:
-			fields["rot_y"] = _pool.hooks().random(0, FLASH_COLUMN_SPAN)
-	elif call["model"] != null:
-		fields["model_name"] = DictRead.as_string(call["model"])
-		var facing: Vector3i = _facing(at, towards)
-		fields["rot_x"] = facing.x
-		fields["rot_y"] = facing.y
-		fields["rot_z"] = facing.z
-	return _place(fields)
-
-
-## Which way a **model** blob points when it is made, as the engine's own
-## orientation service answers it.
-##
-## The class comment's caveat applies here and is the reason this exists: three
-## of the thirty creators a weapon selects still land here -- the tracer, the
-## needles and the flash -- laying one record per constructor call (docs/97
-## section 11; twenty-five of the thirty build their own records and are
-## replayed against `blob_gold.py`'s capture, as rows of
-## [constant WEAPON_PROGRAMS] or as one of the three typed seams, and the shock
-## wave and the spore cannon build theirs without being replayed there),
-## so the record this class builds carries the call site's real kind, class,
-## life and model and a trajectory of the remake's own. The rotation triple was
-## left at **zero**, and for a class-0 blob that is not a neutral value: the
-## tracer's `A_LINE5.3DI`, the laser's `A_LASERG.3DI` and the plasma bolt are
-## *shaped* models, so a round crossing the map on any bearing but the one they
-## are authored along flew visibly sideways (docs/97 section 46).
-##
-## The rule is **read out of the capture, not chosen**. `blob_gold.py`'s
-## records for `0x00424D20` -- a burst of two tracers and two casings -- carry
-## `(65528, 0, 2344)` on *every* record of the call, and 2344 is exactly what
-## `0x00403AA0` answers for that burst's own direction: one triple per call,
-## along the line, the middle word zero. The casings keep it although their own
-## velocities point elsewhere, which is why this is stamped per call here
-## rather than derived per blob.
-##
-## So the direction comes from [method BlobHooks.orient], `0x00403AA0`'s
-## **measured** arithmetic -- a 4096-unit yaw in the third word, the pitch in
-## the first. What stays the remake's is the small spread the creators put on
-## that line before they orient (the capture's yaws are 2344 and 2379 against
-## the line's own 2350, and their pitches differ with it); this uses the line
-## itself. The creator's own arithmetic replaces it the day those thirty are
-## transcribed.
-func _facing(from: Vector3i, to: Vector3i) -> Vector3i:
-	if _pool == null or from == to:
-		return Vector3i.ZERO
-	return _pool.hooks().orient(from, to)
-
-
-func _sprite_field(sprite: Dictionary, name: String, fallback: int) -> int:
-	if sprite.is_empty() or sprite.get(name) == null:
-		return fallback
-	return DictRead.as_int(sprite[name])
-
-
-## The ejected case's velocity -- **not** a line to what was shot at.
-##
-## Read out of `aBlob_CreateTracerBullet` `0x004247C0`, the creator fourteen
-## of the shipped weapons' muzzle switch selects (weapon 2, the Standard
-## Assault Rifle, among them) and the default arm for the two ids the table
-## does not reach. Its loop makes a tracer, a case and a zoom bob per round,
-## and the case is the one record whose velocity has nothing to do with the
-## aim: `x` takes `0x0046D400`'s `y` ratio times `0x004B1290` (+128), `y` its
-## `x` ratio times `0x004B1288` (-128), and `z` is `aRandom2(0, 0xA0) +
-## 0x140` -- so it leaves sideways and upwards and falls, which is what a
-## cartridge case does and what the original visibly shows.
-##
-## **Read from the listing, not measured.** The rest of that creator -- its
-## per-round scatter, the tracer's own placement, the zoom bob -- is still not
-## transcribed (docs/97 section 14.5 stays open), so this is one record's
-## arithmetic lifted out of a function nothing has run. The machine gun's
-## `0x00424D20` is transcribed and captured (`tools/inclib/blob_creators.py`)
-## and its casing arm is the same shape at a different speed, which is the
-## corroboration there is for it.
-func _casing_velocity(from: Vector3i, to: Vector3i) -> Vector3i:
-	var rise: int = CASING_RISE_BASE
-	if _pool != null and _pool.hooks() != null:
-		rise += _pool.hooks().random(0, CASING_RISE_SPAN)
-	if from == to:
-		return Vector3i(0, 0, rise)
-	var d: PackedFloat64Array = Eng3dGeometry.direction(from, to, 1)
-	if is_nan(d[0]) or is_nan(d[1]):
-		return Vector3i(0, 0, rise)
-	return Vector3i(Eng3dGeometry.ftol(d[1] * float(CASING_SPEED)),
-		Eng3dGeometry.ftol(d[0] * float(-CASING_SPEED)), rise)
-
-
-## A straight line from `from` to `to`, crossed in the blob's **own lifetime**.
-##
-## The trajectory is still ours -- see the class comment -- but its timing is
-## not invented any more: `life` is the literal the creator passes at that call
-## site, extracted with the kind and the class, so a tracer with `life = 8`
-## takes eight ticks to reach what was shot at and dies as it arrives. A fixed
-## speed made short shots overshoot and long ones expire in mid-air.
-##
-## Two cases keep [constant MUZZLE_SPEED]: an immortal blob (`life = 0xFF`,
-## which the original uses for effects nothing is meant to time) has no
-## lifetime to divide by, and a call whose lifetime the arm computes falls back
-## to [constant DEFAULT_LIFE] and so to the same reasoning. Integer throughout,
-## because a blob's velocity words hold exactly what the arms will read.
-static func _velocity(from: Vector3i, to: Vector3i, life: int) -> Vector3i:
-	var dx: int = to.x - from.x
-	var dy: int = to.y - from.y
-	var dz: int = to.z - from.z
-	if dx == 0 and dy == 0 and dz == 0:
-		return Vector3i.ZERO
-	if life > 0 and life < IMMORTAL_LIFE:
-		return Vector3i(dx / life, dy / life, dz / life)
-	var length: float = sqrt(float(dx * dx + dy * dy + dz * dz))
-	if length < 1.0:
-		return Vector3i.ZERO
-	var scale: float = float(MUZZLE_SPEED) / length
-	return Vector3i(int(float(dx) * scale), int(float(dy) * scale),
-		int(float(dz) * scale))
 
 
 ## The world position an effect starts from, for a unit standing on `(x, y)`

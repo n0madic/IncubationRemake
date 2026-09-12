@@ -12,14 +12,21 @@ striking it, because a backlog with a strikethrough in it has started being a
 second history. Nothing is recorded here that is not already recorded somewhere
 else — a second copy of a finding is how the two drift apart.
 
-**Closed since this file was written (2026-09-12), and Stage 1 with it.**
-`CrushWall`'s footprint, built in [`97` §50](97-slice-5-report.md) and
-corrected in [`42` §8.2](42-mission-presentation.md); `_may_command_now`'s seat
-test, in [`99` §7](99-slice-7-report.md); and the large-mover second ring, in
-[`95` §9 item 2](95-slice-3-report.md) — which turned out to be a defect in the
-*replay* rather than in the model, so nothing about `0x0040ADC0` changed, and
-whose tie-break is measured natively by `approach_tie` the same day. The
-stages below keep their numbers; **nothing the player can feel is open.**
+**Closed since this file was written (2026-09-12), and Stages 1 and 2 with
+it.** Stage 1: `CrushWall`'s footprint, built in [`97` §50](97-slice-5-report.md)
+and corrected in [`42` §8.2](42-mission-presentation.md); `_may_command_now`'s
+seat test, in [`99` §7](99-slice-7-report.md); and the large-mover second ring,
+in [`95` §9 item 2](95-slice-3-report.md) — which turned out to be a defect in
+the *replay* rather than in the model, so nothing about `0x0040ADC0` changed,
+and whose tie-break is measured natively by `approach_tie` the same day.
+Stage 2, the same evening, in [`97` §51](97-slice-5-report.md): the last five
+weapon creators are programs replayed against the capture, so all thirty are
+(§51.1); and weapon 11's arc has run — twice, in `shot_11_band` and
+`shot_11_overlay` — because its handler reads the **state byte**, the target
+overlay's band, and not the action point it had been read as; the pattern
+models on both sides are corrected ([`28` §12 item 2](28-effects-and-sound.md),
+[`22` §7.2](22-combat-and-visibility.md)). The stages below keep their
+numbers; **nothing the player can feel is open.**
 
 **What is deliberately absent.** Items that are closed, items the remake has
 decided not to implement (legacy multiplayer and `pbm session`,
@@ -34,43 +41,6 @@ speech and effects live in a CD track the GOG release does not ship,
 Those classes are not a backlog.
 
 ---
-
-## Stage 2 — the picture, where it is measurably wrong
-
-### 2.1 Five weapon creators are not replayed against the capture
-
-**Owner:** [`97` §11 and §14.5.1–§14.5.5](97-slice-5-report.md).
-Counted against `blob_tables.creators.reachable`'s own thirty on 2026-09-12,
-**25 are replayed against `blob_gold.py`'s capture** in `test_blob_native` —
-22 rows of `BlobTriggers.WEAPON_PROGRAMS` plus the three typed seams. The other
-five are not, and they divide:
-
-* the tracer `0x004247C0`, the needles `0x00424250` and the flash `0x00423D80`
-  still go down the **constructor-table arm**, one record per `call`, so the
-  spread inside a call is the remake's own. Their burst delta, their lifetimes
-  and both point-blank branches are measured;
-* the shock wave `0x00422B80` and the spore cannon `0x004268B0` build their own
-  records and are checked **structurally** in `test_effects` — a weaker claim
-  than a field-for-field replay, and one nothing currently states as such.
-
-All five already have a `blob_gold` phase behind them, so the capture is not
-the missing half.
-
-**What closes it:** a row in `WEAPON_PROGRAMS` — or, for the two builders, a
-`test_blob_native` phase of their own — so that
-`weapon_programs.routed_are_measured` covers all thirty. Keep the rule that a
-row joins the table only once the suite replays it.
-
-### 2.2 Weapon 11's arc has never run
-
-**Owner:** [`28` §12 item 2](28-effects-and-sound.md). Its handler
-`0x0046B0D8` marks a cell whose `+0x0B` action point is in 30..34, and
-`_6_.sav`'s map carries none — so the arm marks nothing whatever it is aimed
-at and the walk never runs. This is a property of the save, not of the arm.
-
-**What closes it:** a save with cells in that band, two of them at least six
-tiles from the shooter so the point-blank gate does not zero the offset.
-`sav_parse.py --wrap` builds one from any `.lev`.
 
 ## Stage 3 — interface
 
