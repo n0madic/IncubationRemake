@@ -1471,11 +1471,23 @@ the cells a walking arm was handed are measured rather than guessed.
 `aAnimationCreateSoundBuffer` runs, and it is the sound-buffer chain under
 `0x00436B60` that last writes at the depth the flame stream's first ring reads
 three doubles out of. Forcing `je 0x0040CC38` to `jmp` — one byte, and it
-changes neither the unit nor the weapon — takes the other branch; the poke is
-in `shot_07_nosound`'s log and the phase records that it was forced, so the two
-phases cannot drift into being the same run under two names. Both reproduce all
-twenty records field for field, so the three slots hold zero either way.
-Mutating the stand-in to `(0.01, 0, 0)` fails the check on both.
+changes neither the unit nor the weapon — takes the other branch. Both
+reproduce all twenty records field for field, so the three slots hold zero
+either way. Mutating the stand-in to `(0.01, 0, 0)` fails the check on both.
+
+**And the branch each phase took is read, not asserted.** The phase used to
+record only that the capture had *asked* for the other branch — its own `skip`
+argument written down, which is no evidence at all that the byte landed. Every
+shot plan now reads `0x0040CBF2` back out of the running image after
+`aAttackUnit` returns, and `shot.branch_is_measured` compares the two bytes
+against what that phase asked for: `74 44` on the shipped path, `eb 44` where
+the gate was forced. The two phases therefore cannot drift into being the same
+run under two names, and the guarantee no longer rests on `dbgcall`'s
+`--poke ADDR:EXPECTED=>NEW` refusing to write over unexpected bytes — that
+stays as the second guard. The six phases in hand predate the read-back and
+are pinned by name in `SHOT_BRANCH_UNMEASURED`; the capture loop re-takes a
+shot that carries no `branch_bytes`, and the run that lands them empties the
+list.
 
 The **value** is measured; its **provenance** is not. Two readings fit: two
 routines that both leave zeros at that depth, or a depth neither reaches, in

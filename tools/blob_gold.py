@@ -1791,9 +1791,17 @@ def shot_plan(handle: int, weapon: int, attacker_slot: int,
         f"end = aResetBlobs() --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}",
         f"hit = aAttackUnit({attacker[0]}, {attacker[1]},"
         f" {target[0]}, {target[1]}, 0)",
+        "# **Which branch the shot actually took**, read out of the running",
+        "# image after it ran rather than from this plan's own argument.",
+        "# `--poke` already refuses to write over bytes that are not the ones",
+        "# the disassembly named, so a poke that never applied cannot reach",
+        "# here -- but that is a statement about the poke, and the phase's",
+        "# field was until now the argument `capture` passed in.  Two bytes:",
+        "# `74 44` on the shipped path, `eb 44` when the gate was forced.",
         f"aGetUnitMapElementPtr(0) --read [0x{entry:x}]:"
         f"{SHOT_READ_RECORDS * RECORD_BYTES}"
-        f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}",
+        f" --read 0x{ARANDOM2_SEED:x}:{ARANDOM_SEED_BYTES}"
+        f" --read 0x{FIGHT_BRANCH_SITE:x}:{len(FIGHT_BRANCH_BYTES)}",
         "# **The band, after the shot.**  A walking arm's calls are one per",
         "# marked cell, and the cell is an argument -- so without this the",
         "# replay would have to guess which tiles the arm was handed.  Read",
@@ -1834,8 +1842,10 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
                 args: list[int]) -> dict[str, Any]:
     """The records one shot left, with `aRandom2` either side of the shot."""
     seed_key = f"0x{ARANDOM2_SEED:x}"
+    branch_key = f"0x{FIGHT_BRANCH_SITE:x}"
     seeds: list[float] = []
     blob = b""
+    branch: str | None = None
     for row in rows:
         if row.get("status") != "ok":
             continue
@@ -1843,6 +1853,9 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
         text = reads.get(seed_key)
         if text and "<" not in text:
             seeds.append(struct.unpack_from("<d", _hex_bytes(text), 0)[0])
+        text = reads.get(branch_key)
+        if text and "<" not in text:
+            branch = _hex_bytes(text).hex()
         for key, value in reads.items():
             if key.startswith("[") and "<" not in value:
                 blob = _hex_bytes(value)
@@ -1875,6 +1888,9 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
         "records": parse_records(blob),
         "seed2_before": seeds[0] if seeds else None,
         "seed2_after": seeds[-1] if len(seeds) > 1 else None,
+        # Only the shot plans read it; a `fight_` phase has no such row and
+        # the key stays absent rather than answering `None` for "unforced".
+        **({"branch_bytes": branch} if branch is not None else {}),
     }
 
 
@@ -2546,11 +2562,15 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
         # vector, so a corrected tail is picked up without a capture and
         # comparing it here would spend a Wine attempt on a phase that is
         # already the engine's answer to the right call.
+        # A phase with no `branch_bytes` predates the read-back and answers
+        # for a branch nothing measured, so it is re-taken like any other
+        # phase whose plan has moved on.
         held = phases.get(name)
         if (held is not None
                 and list(held.get("attacker") or []) == [here[0], here[1]]
                 and list(held.get("target") or []) == list(tile)
-                and bool(held.get("skip_sound_buffer")) == skip):
+                and bool(held.get("skip_sound_buffer")) == skip
+                and held.get("branch_bytes")):
             continue
         try:
             rows = gold.run_plan(game_copy, dbgcall,
@@ -5160,25 +5180,31 @@ def _fight_checks(ck: "tables.Checker", root: str,
 #: Weapons whose `shot_` phase this host has not landed.  Empty on
 #: 2026-09-12.
 SHOT_UNCAPTURED: list[str] = []
+#: Shots whose phase predates the branch read-back and therefore answers for a
+#: branch nothing measured.  Pinned rather than tolerated, the way
+#: `BURST_UNCAPTURED` is: the phases in hand were taken before `shot_plan`
+#: read `FIGHT_BRANCH_SITE` back, the capture loop now re-takes a shot that
+#: carries no `branch_bytes`, and the run that lands them has to empty this
+#: list.  Until then `shot.branch_is_measured` checks the phases that do carry
+#: the read and names these as the ones it cannot speak for.
+SHOT_BRANCH_UNMEASURED: list[str] = [
+    "shot_07", "shot_09", "shot_11", "shot_41", "shot_44", "shot_07_nosound",
+]
 #: What each shot answered, as `phase -> (cells in the band, creator calls the
 #: records account for, records compared, aAttackUnit's BOOL, whether the
-#: sound-buffer branch was forced)`.  The first four fields are measured; the
-#: last is the capture's own `skip` argument written down, so it records which
-#: phase *asked* for the other branch and is not itself evidence that the
-#: branch was taken.
+#: sound-buffer branch was forced)`.  The last field is the capture's own
+#: `skip` argument written down -- which phase *asked* for the other branch.
+#: What the shot actually took is `branch_bytes`, read back out of the running
+#: image after `aAttackUnit` returned and compared by
+#: `shot.branch_is_measured`; the two together are what stop `shot_07_nosound`
+#: from being `shot_07` under another name.  `dbgcall`'s
+#: `--poke ADDR:EXPECTED=>NEW` is the second guard and not the only one:
+#: `ApplyPoke` reads the site first and dies unless it still holds
+#: `FIGHT_BRANCH_BYTES`, so a poke that never applied fails the plan rather
+#: than producing a phase with identical records.
 #:
-#: What rules out `shot_07_nosound` being `shot_07` under another name is
-#: `dbgcall`'s own `--poke ADDR:EXPECTED=>NEW`: `ApplyPoke` reads the site
-#: first and dies unless it still holds `FIGHT_BRANCH_BYTES`, so a poke that
-#: never applied fails the plan rather than producing a phase with identical
-#: records.  The two phases' records are also compared against the same
-#: program, which is why the pin below is still worth having: a capture whose
-#: band came out narrower fails rather than quietly comparing fewer cells.
-#:
-#: TODO: read the branch site back after the shot, the way the weapon byte is
-#: read back through the pointer it was written to, so the field is a
-#: measurement rather than the argument.  It needs a fresh capture: the phases
-#: in hand carry no such read.
+#: Measured, then pinned: a capture whose band came out narrower fails rather
+#: than quietly comparing fewer cells.
 #:
 #: The two numbers to read together are the first and the second.  Weapon 9's
 #: two cells and two calls are the walk, in the engine, over a band its own
@@ -5486,6 +5512,34 @@ def _shot_checks(ck: "tables.Checker", root: str,
         results[name] = [len(cells), len(built) // own if own else 0,
                          compared, int(phase.get("hit") or 0),
                          int(bool(phase.get("skip_sound_buffer")))]
+    # **Which branch each shot took, from the image rather than the argument.**
+    # `shot_07` and `shot_07_nosound` differ in exactly one byte of code, and
+    # this is the read that says so: `74 44` is the shipped gate, `eb 44` the
+    # forced one.  A phase with no such read is named instead of assumed.
+    branches: dict[str, str] = {}
+    unmeasured_branch: list[str] = []
+    for name in names:
+        phase = phases.get(name) or {}
+        if not phase:
+            continue
+        seen = phase.get("branch_bytes")
+        if not seen:
+            unmeasured_branch.append(name)
+            continue
+        want = (FIGHT_BRANCH_FORCED if phase.get("skip_sound_buffer")
+                else FIGHT_BRANCH_BYTES).hex()
+        if seen != want:
+            branches[name] = f"{seen} != {want}"
+    ck.equal("shot.branch_is_measured", branches, {},
+             lambda v: "every shot read its own gate back out of the running "
+                       f"image: 0x{FIGHT_BRANCH_SITE:08X} holds "
+                       f"{FIGHT_BRANCH_BYTES.hex()} on the shipped path and "
+                       f"{FIGHT_BRANCH_FORCED.hex()} where it was forced"
+                       if not v else f"{len(v)} disagreement(s): {v}")
+    ck.equal("shot.branch_unmeasured", unmeasured_branch,
+             SHOT_BRANCH_UNMEASURED,
+             lambda v: f"{len(v)} shot(s) taken before the branch read-back, "
+                       "which the capture loop re-takes")
     ck.equal("shot.cells_are_measured", unmeasured, [],
              lambda v: "every cell a walking arm was handed has a measured "
                        "aim point, so no replay falls back to the capture's "
