@@ -4836,6 +4836,37 @@ def check_mission_sound(ck: Checker, b: Binary) -> None:
              sorted({sound.INTERFACE_BUFFERS[cue.buffer]
                      for cue in sound.INTERFACE_CUES.values()}),
              sorted(sound.INTERFACE_LOADS), Checker.brief)
+    # ---- 2.5  the four clicks pan by the pointer -------------------------
+    # `mov esi, 0x140 ; sub esi, eax ; call <speaker> ; imul esi, eax` and
+    # then `lea ecx, [esi + esi*4] ; shl ecx, 1` -- (320 - x) * speaker * 10.
+    # The `imul` is the pinned site; the `mov` is 12 bytes in front of it
+    # (5 `mov`, 2 `sub`, 5 `call`) and the `lea`/`shl` pair follows a
+    # six-byte `mov r32, [handle]`.
+    ck.equal("mission_sound.interface_pan_centre",
+             {name: b.mov_imm32(site - 12)
+              for name, site in sorted(sound.INTERFACE_PAN_SITES.items())},
+             {name: sound.INTERFACE_PAN_CENTRE_X
+              for name in sound.INTERFACE_PAN_SITES}, Checker.brief)
+    ck.equal("mission_sound.interface_pan_speaker",
+             {name: b.u32(b.call_target(site - 5) + 1)
+              if b.call_target(site - 5) is not None
+              and b.u8(b.call_target(site - 5)) == 0xA1 else None
+              for name, site in sorted(sound.INTERFACE_PAN_SITES.items())},
+             {name: sound.INTERFACE_PAN_SPEAKER_GLOBAL
+              for name in sound.INTERFACE_PAN_SITES}, _hexlist)
+    ck.equal("mission_sound.interface_pan_scale",
+             {name: _scaled(b, [site + 3 + 6, site + 3 + 6 + 3])
+              for name, site in sorted(sound.INTERFACE_PAN_SITES.items())},
+             {name: sound.INTERFACE_PAN_SCALE
+              for name in sound.INTERFACE_PAN_SITES}, Checker.brief)
+    # The four are the widget clicks and nothing else: the cell hover
+    # (`hover_cell`) plays the same `click_1` with no `aDirectSoundSet` in
+    # front of it, and the three window clicks and the two placers are not
+    # panned by the pointer either.
+    ck.equal("mission_sound.interface_pan_sites_are_cues",
+             sorted(sound.INTERFACE_PAN_SITES),
+             ["column_hover", "column_press", "pad_hover", "pad_press"],
+             Checker.brief)
 
     # ---- 4.3  the speech routine's two switches --------------------------
     ck.equal("speech.category_bound", b.cmp_imm(sound.SPEECH_CATEGORY_BOUND_SITE),

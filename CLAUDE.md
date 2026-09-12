@@ -215,7 +215,7 @@ harnesses answer different questions:
   [`tools/dbgcall/README.md`](tools/dbgcall/README.md) first; after changing it
   run `bash tools/dbgcall/selftest.sh`.
 
-Five "gold" tools drive `dbgcall` to capture oracles. All are **outside**
+Six "gold" tools drive `dbgcall` to capture oracles. All are **outside**
 `make test`: each needs Wine plus a **copy** of the game (they refuse a game
 directory inside this repository), and each `--check` fails without a capture.
 
@@ -226,6 +226,7 @@ directory inside this repository), and each `--check` fails without a capture.
 | `ai_gold.py` | a whole computer turn on `_C_140` | **must not use `--code`** (see below) |
 | `blob_gold.py` | the effect pool's creators and all 74 update arms | one creator per plan; `--probe-startup N` reports reachability |
 | `presentation_gold.py` | the death, idle, unit-animation and set-piece creators | one process per phase |
+| `hud_probe.py` | the ground overlay `fcn.00417E70`, blitted into a private surface | the camera must be placed first, or every projection clips out |
 
 Three operational rules that have each cost a re-run:
 

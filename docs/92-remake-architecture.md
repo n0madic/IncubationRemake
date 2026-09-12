@@ -2419,6 +2419,53 @@ replace a `cache/` directory that does not look like one of its own, so
 deleting the manifest to force a rebuild leaves a payload nothing will
 overwrite.
 
+### 7.22 The battle interface — four decisions the backlog's Stage 3 asked for (2026-09-12)
+
+The third stage of [`102`](102-remake-backlog.md) named three things as
+decisions for the project owner. Read against the binary, two of them were
+not decisions at all, and the third is settled here so the backlog can drop
+it. [`43`](43-battle-hud.md) and [`28` §2.5](28-effects-and-sound.md) carry
+the evidence; this is the record of what the remake does.
+
+1. **There is no clickable map to grow, because there never was one.**
+   `aMI.cpp` is the mission's *map interface* module — the two button columns,
+   the radar and the view placers — and its three "unplayed" cues were the
+   columns' press and hover tick and the map-view placer's `select.wav`,
+   mislabelled as a map click, a compass and a view nobody reaches. All ten
+   interface cues are played now, each from the widget the routine belongs to:
+   `click_2` on a column button and on a pad socket, `click_1` when the pointer
+   lands on a lit slot of either, `select.wav` from whichever placer the view
+   mode reaches (the unit and map placers; the eyes and the overview are
+   silent). The radar stays a radar: a click on its screen steps the scale, as
+   the original's does, and nothing else on it is clickable in either.
+2. **The four widget clicks are not panned.** The original pans them by the
+   pointer's x through the *speaker position* option; the remake has no such
+   control (§7.1) and which speaker the shipped `+1` puts a left-column click
+   in is unverified. A pan played on a guess would be worse than none.
+3. **The far view is reached through the *Overview map* button, not by
+   zooming.** Mode 0 stands at `0x23A50`, above the `0x17700` gate, in the
+   original and in the remake alike, and the flags are drawn there. The zoom
+   stays clamped to the mission's authored ceiling. Whether the original's
+   own height keys (`0x004037D0`, ±2000 a press) can climb past that box is
+   not read; the button is the route the original itself provides, and the
+   remake offers no second one.
+4. **The plate that says the aliens are moving is a declared divergence.**
+   The original's between-players screen `0x0047C2C0` reaches only two of its
+   seven arms in a single-human campaign: state 0, which dismisses itself by
+   posting its own click and shows for one frame, and state 2, whose arm
+   prints no caption at all ([`43` §7.3](43-battle-hud.md)). Every caption the
+   routine carries is a multi-player caption. The remake's plate with the
+   progress bar and the words is therefore the remake's own — kept because a
+   silent screen for the length of a computer turn reads as a hang — and not
+   a screen the original has that the remake lacks.
+
+Two closures of the same day that are not decisions, only recorded here so
+§7 stays the one place: the plate is set in **one font**, `font_0`, the
+handles traced ([`43` D7](43-battle-hud.md)); and the campaign map draws
+`fcn.00418F40`'s own picture — the white ring on every open location and the
+band badge over the pointed-at one — instead of dots coloured by kind
+([`43` D6](43-battle-hud.md), [`27` §2.6.3](27-campaign.md)).
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:

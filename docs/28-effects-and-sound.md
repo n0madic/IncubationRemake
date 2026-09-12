@@ -50,12 +50,20 @@ Record layout, from the loader's own stores:
 | `+0x04` | the wave's full path, copied in |
 | `+0x68` | `LPDIRECTSOUNDBUFFER` |
 | `+0x6C` | `DSBUFFERDESC`: `dwSize = 0x14`, `dwFlags = 0xE2` |
-| `+0x88` | frequency, as last set |
+| `+0x88` | written by the loader from one of its own arguments (`0x00436E2E`), read back by nothing traced |
 | `+0x8C` | volume, as last set |
 | `+0x90` | pan, as last set |
+| `+0x94` | frequency, as last set |
 
-`aDirectSoundSet(what, slot, value)` writes one of the three: `what` 0 is
-frequency (vtable `+0x3C`), 1 volume (`+0x40`), 2 pan (`+0x44`).
+`aDirectSoundSet(what, slot, value)` writes one of the three: `what` **0 is
+volume** (`IDirectSoundBuffer::SetVolume`, vtable `+0x3C`, stored at `+0x8C`),
+**1 pan** (`SetPan`, `+0x40`, stored at `+0x90`), **2 frequency**
+(`SetFrequency`, `+0x44`, stored at `+0x94`). *Corrected 2026-09-12*: this
+line read "0 frequency, 1 volume, 2 pan" and the table put the frequency at
+`+0x88`. Two readings agree on the correction — the loader sets the
+attenuation of §1.3 with `what` 0 (`0x00436E48`), and [`20`
+§8](20-lcl-language.md)'s speaker toggle sets `pan = position × 1000` with
+`what` 1 — and the vtable order is the interface's own.
 
 ### 1.2 The idiom, and the three wrappers
 
@@ -258,13 +266,47 @@ in `0x0050FE74`, `0x0050FE78` and `0x0050FE7C`. So the wave a widget makes is
 | a click on a warp cell (state `0x3C`) | `0x00471622` | `0x0051630C` | `click_5` |
 | a click on a reachable cell (state `0x0A`) | `0x00471675` | `0x0051630C` | `click_5` |
 | the selected unit clicked again | `0x00471892` | `0x0051630C` | `click_5` |
-| a column button, past its availability gate | `0x004713E7` | `0x00516308` | `click_2` |
+| a **command-pad** socket, once its executor `fcn.00473250` has run (`fcn.00471310`) | `0x004713E7` | `0x00516308` | `click_2` |
 | the hovered cell changed, a command armed | `0x00471DC4` | `0x00516304` | `click_1` |
-| the hovered column button changed | `0x00472544` | `0x00516304` | `click_1` |
-| a click on the map interface | `0x00450E51` | `0x0050FE78` | `click_2` |
-| the compass | `0x00451A40` | `0x0050FE74` | `click_1` |
+| the hovered **pad socket** changed to a lit one (`fcn.004723E0`) | `0x00472544` | `0x00516304` | `click_1` |
+| a **column button** with an event behind it (`fcn.00450D70`) | `0x00450E51` | `0x0050FE78` | `click_2` |
+| the hovered **column slot** changed to one with a sprite (`fcn.004518E0`) | `0x00451A40` | `0x0050FE74` | `click_1` |
 | the map-view placer `fcn.00450F60` | `0x00450FB0` | `0x0050FE7C` | `select` |
 | the unit-view placer `fcn.004510A0` | `0x00451102` | `0x0050FE7C` | `select` |
+
+*Corrected 2026-09-12.* The four widget rows were labelled the other way
+round — the `aUI.cpp` pair as the columns' and the `aMI.cpp` pair as "a click
+on the map interface" and "the compass" — on the module names alone, and
+"MI" was then read as a map that is clicked. It is the mission's **map
+interface** module: the two button columns, the radar and the view placers
+([`43` §5.2, §6](43-battle-hud.md)). The routines say which widget is which:
+`fcn.00471310` calls the pad's executor `fcn.00473250` and `fcn.004723E0`
+blits at `(404 + 30·col, 382 + 48·row)`, the pad's sockets; `fcn.00450D70`
+hit-tests with the columns' `fcn.00451240` and dispatches `fcn.00453900`, and
+`fcn.004518E0` blits at `(11 | 594, 66 + 31·row)`, the columns' slots. Both
+hover ticks fire only when the newly hovered slot has a sprite — the pad's
+`[0x0051674C]` and the columns' `[0x0050FE90]` are `-1` over an empty or
+unavailable slot and the tick is skipped (`0x0047247F`, `0x0045197D`). The
+`sound.INTERFACE_CUES` names are `pad_press`, `pad_hover`, `column_press`,
+`column_hover`, `view_map`, `view_unit`; the remake plays all ten
+([`99` §8](99-slice-7-report.md)).
+
+**The four widget clicks are panned by the pointer**, and nothing else is:
+each calls `aDirectSoundSet(1, handle, (320 − mouse_x) × speaker × 10)`
+before the play (`0x004713AA`, `0x00472507`, `0x00450E13`, `0x00451A03`),
+`speaker` being the options record's *speaker position* field, `+1` or `−1`
+([`20` §8](20-lcl-language.md)) and `what` 1 the `SetPan` of §1.1. The
+window's three clicks and the cell hover play with whatever pan the buffer
+last had, and the two view placers set it to 0 (`0x00450F84`,
+`0x004510D6`). In DirectSound's units a positive value attenuates the left
+channel, so with the shipped `+1` a click on the *left* column (x ≈ 30,
++2900) would come out of the right speaker — which side it is heard from is
+**UNVERIFIED** (not heard under Wine) and may be what the *Toggle Speaker
+Position* control exists for. `blob_tables.py`'s `mission_sound.interface_pan_*`
+pin the `0x140`, the speaker global and the `× 10` at the four sites. The
+remake plays the four unpanned: it has no speaker-position control
+([`92` §7.1](92-remake-architecture.md)), and a pan whose side is not known
+would be a guess dressed as fidelity.
 
 **`select.wav` is the camera's, not the click's.** It is played from inside the
 two view placers, and `fcn.004533D0` runs one of them after every successful

@@ -621,9 +621,9 @@ func _check_mission_interface(h: TestHarness, tables: AudioTables,
 	var seen: Dictionary[String, bool] = {}
 	for action: String in [AudioTables.INTERFACE_ORDER_MOVE,
 			AudioTables.INTERFACE_ORDER_WARP, AudioTables.INTERFACE_RESELECT,
-			AudioTables.INTERFACE_BUTTON, AudioTables.INTERFACE_HOVER_CELL,
-			AudioTables.INTERFACE_HOVER_BUTTON, AudioTables.INTERFACE_MAP_CLICK,
-			AudioTables.INTERFACE_COMPASS, AudioTables.INTERFACE_VIEW_MAP,
+			AudioTables.INTERFACE_PAD_PRESS, AudioTables.INTERFACE_HOVER_CELL,
+			AudioTables.INTERFACE_PAD_HOVER, AudioTables.INTERFACE_COLUMN_PRESS,
+			AudioTables.INTERFACE_COLUMN_HOVER, AudioTables.INTERFACE_VIEW_MAP,
 			AudioTables.INTERFACE_VIEW_UNIT]:
 		var cue: Dictionary = tables.interface_cue(action)
 		h.check("interface_%s" % action, not cue.is_empty(),
@@ -651,6 +651,25 @@ func _check_mission_interface(h: TestHarness, tables: AudioTables,
 	h.equal("interface_selection_is_select_wav",
 		DictRead.as_string(tables.interface_cue(
 			AudioTables.INTERFACE_VIEW_UNIT)["wave"]), "select.wav")
+	h.equal("interface_map_view_is_select_wav",
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_VIEW_MAP)["wave"]), "select.wav")
+	# The two widgets' presses are `click_2` and their hover ticks `click_1`,
+	# pad and columns alike (docs/28 section 2.5, corrected 2026-09-12).
+	h.equal("interface_widget_presses",
+		[DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_PAD_PRESS)["wave"]),
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_COLUMN_PRESS)["wave"])],
+		["click_2.wav", "click_2.wav"])
+	h.equal("interface_widget_hovers",
+		[DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_PAD_HOVER)["wave"]),
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_COLUMN_HOVER)["wave"]),
+		DictRead.as_string(tables.interface_cue(
+			AudioTables.INTERFACE_HOVER_CELL)["wave"])],
+		["click_1.wav", "click_1.wav", "click_1.wav"])
 	# Four waves reached, and `textbeep` -- the shell's -- reached by none.
 	h.equal("interface_waves_reached", seen.keys().size(), 4)
 	h.check("interface_textbeep_is_the_shells",

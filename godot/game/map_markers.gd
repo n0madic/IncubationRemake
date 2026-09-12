@@ -25,13 +25,22 @@ extends Node3D
 
 ## `Libs/map.LIB` -- the campaign map's own sprite library (docs/60).
 const LIBRARY: String = "map"
-## The four coloured dots. 0 red, 1 white, 2 blue, 3 yellow; 6 is a green ring
-## and 7 the 17x17 white ring the original rings the pointed-at location with.
+## The four coloured 10x10 dots: 0 red, 1 white, 2 blue, 3 yellow. The
+## mission's far view draws them as ownership flags (docs/43 section 3.3);
+## the deployment screen's free cells wear the red one.
 const DOT_BATTLE: int = 0
 const DOT_VISITED: int = 1
 const DOT_UPGRADE: int = 2
 const DOT_DIALOGUE: int = 3
-const RING_SELECTED: int = 7
+## The 17x17 white ring **every open location wears** -- `fcn.00418F40`
+## blits `map[7]` on every state-3 cell of the campaign map (docs/27 section
+## 2.6.3). The deployment screen rings the hovered free cell with it.
+const RING_OPEN: int = 7
+## The badge the same routine puts over the pointed-at location: a 50x43
+## picture with a leader line ending in a ring, anchored at `(38, 34)` so the
+## ring stands on the cell. Which of the three is the location's own id
+## band, see [method CampaignMapScreen.badge_for].
+const BADGE_NONE: int = -1
 
 ## Clear of the floor, in Godot units, so a marker on a cell with something
 ## standing on it is still the topmost thing drawn there.
@@ -54,9 +63,13 @@ static func pixel_size() -> float:
 ## cell -> the marker standing on it, so a hover can ring one without
 ## rebuilding the set.
 var _marks: Dictionary[Vector2i, Sprite3D] = {}
-## The 17x17 ring the original draws round the location the pointer is over.
-## One sprite, moved, rather than one per cell.
+## The ring the deployment screen draws round the free cell the pointer is
+## over. One sprite, moved, rather than one per cell.
 var _ring: Sprite3D = null
+## The badge over the campaign location the pointer is over, and which
+## element it shows -- rebuilt when the band changes, moved otherwise.
+var _badge: Sprite3D = null
+var _badge_element: int = BADGE_NONE
 
 
 ## Replace every marker. *marks* is `cell -> sprite index in `map.LIB``, and
@@ -68,6 +81,8 @@ func show_marks(art: Art, marks: Dictionary[Vector2i, int],
 		child.queue_free()
 	_marks.clear()
 	_ring = null
+	_badge = null
+	_badge_element = BADGE_NONE
 	if art == null:
 		return
 	for cell: Vector2i in marks:
@@ -95,7 +110,7 @@ func ring(art: Art, cell: Vector2i) -> void:
 		clear_ring()
 		return
 	if _ring == null:
-		var texture: Texture2D = art.sprite(LIBRARY, RING_SELECTED) \
+		var texture: Texture2D = art.sprite(LIBRARY, RING_OPEN) \
 			if art != null else null
 		if texture == null:
 			return
@@ -105,13 +120,49 @@ func ring(art: Art, cell: Vector2i) -> void:
 	_ring.position = _marks[cell].position
 
 
+## The campaign map's own hover: `fcn.00418F40` blits the location's band
+## badge at the pointed-at cell less the element's anchor, so the ring at the
+## badge's foot stands where the open-location ring already is and the
+## picture rises up and to the left of it. *element* is
+## [method CampaignMapScreen.badge_for]'s answer; [constant BADGE_NONE] or a
+## cell with no marker takes the badge down.
+func badge(art: Art, cell: Vector2i, element: int) -> void:
+	if not _marks.has(cell) or element < 0 or art == null:
+		clear_ring()
+		return
+	if _badge == null or _badge_element != element:
+		var texture: Texture2D = art.sprite(LIBRARY, element)
+		if texture == null:
+			clear_ring()
+			return
+		if _badge != null:
+			remove_child(_badge)
+			_badge.queue_free()
+		_badge = _sprite(texture)
+		_badge.centered = false
+		_badge.offset = GroundSprites.anchor_offset(
+			art.sprite_offset(LIBRARY, element), texture.get_height())
+		_badge_element = element
+		add_child(_badge)
+	_badge.visible = true
+	_badge.position = _marks[cell].position
+
+
+## Take the hover down -- the ring and the badge both.
 func clear_ring() -> void:
 	if _ring != null:
 		_ring.visible = false
+	if _badge != null:
+		_badge.visible = false
 
 
 func has_ring() -> bool:
-	return _ring != null and _ring.visible
+	return (_ring != null and _ring.visible) or (_badge != null and _badge.visible)
+
+
+## The element the hover badge shows, or [constant BADGE_NONE].
+func badge_element() -> int:
+	return _badge_element if _badge != null and _badge.visible else BADGE_NONE
 
 
 ## Which cells carry a marker, so a click can be checked against them.

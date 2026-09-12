@@ -761,26 +761,58 @@ class InterfaceCue:
 #: Remake action -> the site that makes its noise.  The names are the remake's;
 #: the addresses are the original's, and ``blob_tables.py`` reads the handle
 #: each one loads straight out of the bytes rather than trusting the name.
+#:
+#: Which widget each ``aUI.cpp`` / ``aMI.cpp`` site belongs to is read off the
+#: routine around it, not off the module name (2026-09-12, docs/28 2.5):
+#: ``fcn.00471310`` runs the **command pad**'s executor ``fcn.00473250`` and
+#: ``fcn.004723E0`` blits at ``(404 + 30 col, 382 + 48 row)`` -- the pad's
+#: sockets; ``fcn.00450D70`` hit-tests the **button columns** through
+#: ``fcn.00451240`` and dispatches ``fcn.00453900``, and ``fcn.004518E0``
+#: blits at ``(11 | 594, 66 + 31 row)`` -- the columns' slots.  "MI" is the
+#: mission's *map interface* module -- the columns, the radar and the view
+#: placers -- and not a map that is clicked.
 INTERFACE_CUES: dict[str, InterfaceCue] = {
     # aUI.cpp -- fcn.004714B0, the click on the 3D window
     "order_warp": InterfaceCue(0x0051630C, 0x00471622, 0x0047161A),
     "order_move": InterfaceCue(0x0051630C, 0x00471675, 0x0047166D),
     "reselect": InterfaceCue(0x0051630C, 0x00471892, 0x0047188A),
-    # aUI.cpp -- fcn.00471310, the button a column press dispatches to
-    "button": InterfaceCue(0x00516308, 0x004713E7, 0x004713DF),
+    # aUI.cpp -- fcn.00471310, a command-pad socket past its executor
+    "pad_press": InterfaceCue(0x00516308, 0x004713E7, 0x004713DF),
     # aUI.cpp -- the two hover ticks: fcn.00471D10 over the world while a
-    # command is armed, fcn.004723E0 over the button columns
+    # command is armed, fcn.004723E0 over the command pad's sockets
     "hover_cell": InterfaceCue(0x00516304, 0x00471DC4, 0x00471DBB),
-    "hover_button": InterfaceCue(0x00516304, 0x00472544, 0x0047253C),
-    # aMI.cpp -- fcn.00450D70's map click, fcn.004518E0's compass
-    "map_click": InterfaceCue(0x0050FE78, 0x00450E51, 0x00450E48),
-    "compass": InterfaceCue(0x0050FE74, 0x00451A40, 0x00451A38),
+    "pad_hover": InterfaceCue(0x00516304, 0x00472544, 0x0047253C),
+    # aMI.cpp -- fcn.00450D70, a column button with an event behind it;
+    # fcn.004518E0, the hovered column slot changed to one with a sprite
+    "column_press": InterfaceCue(0x0050FE78, 0x00450E51, 0x00450E48),
+    "column_hover": InterfaceCue(0x0050FE74, 0x00451A40, 0x00451A38),
     # aMI.cpp -- the two view placers of docs/42 2.4.  **This is the sound a
     # selection makes**: the camera is re-applied to the new selection's cell
     # by fcn.004533D0, and both placers play `select.wav` from inside it.
+    # `view_map` is fcn.00450F60 -- view mode 4, the *Set free view* button,
+    # the mode-3+ re-apply and every placer's fallback with no selection;
+    # `view_unit` is fcn.004510A0 -- view mode 2.  The eyes (fcn.00451150)
+    # and the overview (fcn.00453410) play nothing.
     "view_map": InterfaceCue(0x0050FE7C, 0x00450FB0, 0x00450FA7),
     "view_unit": InterfaceCue(0x0050FE7C, 0x00451102, 0x004510F9),
 }
+
+#: The four click sites pan their wave by the pointer before playing it:
+#: ``aDirectSoundSet(1, handle, (320 - mouse_x) * speaker * 10)``, where
+#: ``speaker`` is the options record's *speaker position* (+1 / -1, docs/20 8)
+#: and ``what`` 1 is ``IDirectSoundBuffer::SetPan``.  The two view placers set
+#: the pan to 0.  Each entry is the site of the ``imul`` that multiplies by
+#: the speaker field; ``blob_tables.py`` pins the ``0x140`` and the ``* 10``
+#: around it.
+INTERFACE_PAN_SITES: dict[str, int] = {
+    "pad_press": 0x004713AA,
+    "pad_hover": 0x00472507,
+    "column_press": 0x00450E13,
+    "column_hover": 0x00451A03,
+}
+INTERFACE_PAN_CENTRE_X = 0x140
+INTERFACE_PAN_SCALE = 10
+INTERFACE_PAN_SPEAKER_GLOBAL = 0x005129D8
 
 #: The load/save slot screen's own pair. In ``aLoad.cpp``, ``click_3`` plays
 #: when pointer motion changes the selected slot (``0x00448865``), and

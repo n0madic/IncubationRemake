@@ -19,6 +19,10 @@ extends Control
 signal event(number: int)
 ## The hint to show for the slot under the pointer, or "" when none.
 signal hint(text: String)
+## The pointer moved onto a lit slot -- `fcn.004518E0`'s tick, raised when
+## the hovered slot changes to one with a sprite behind it (docs/28 section
+## 2.5); an empty or unavailable slot wears `mi[31]` and raises none.
+signal hovered
 
 var _art: Art = null
 var _strings: Localization = null
@@ -156,6 +160,8 @@ func _on_pressed(slot: Vector2i) -> void:
 
 func _on_entered(slot: Vector2i) -> void:
 	hint.emit(caption_for(_events[slot]))
+	if not _buttons[slot].disabled:
+		hovered.emit()
 
 
 func _on_exited() -> void:

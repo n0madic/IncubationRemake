@@ -1208,6 +1208,33 @@ func _hud_live(h: TestHarness) -> void:
 	hud.event.connect(func(number: int) -> void: events.append(number))
 	h.check("hud.column_press_raises_the_event", hud.columns.press_event(10) and events == [10],
 		str(events))
+	# docs/28 section 2.5 -- the two hover ticks: a lit slot or socket raises
+	# one when the pointer lands on it, a dark one raises none.
+	var ticks: Array[String] = []
+	hud.column_hovered.connect(func() -> void: ticks.append("column"))
+	hud.pad_hovered.connect(func() -> void: ticks.append("pad"))
+	hud.columns._on_entered(Vector2i(1, 8))
+	hud.columns._on_entered(Vector2i(0, 7))
+	h.equal("hud.column_hover_ticks_on_a_lit_slot_only", ticks, ["column"],
+		"row 8 is Next player, row 7 an empty slot")
+	hud.pad._on_entered(1)
+	h.equal("hud.pad_hover_silent_when_dark", ticks, ["column"],
+		"the pad is dark under `none_on`")
+	hud.refresh(world, slot, all_on, all_on, north, east, {}, false)
+	hud.pad._on_entered(1)
+	h.equal("hud.pad_hover_ticks_on_a_lit_socket", ticks, ["column", "pad"])
+	# The placer's own wave, by view mode (docs/43 section 4.5's table).
+	h.equal("hud.view_cue_by_mode", [SliceMain.view_cue_for(CameraRig.View.UNIT),
+		SliceMain.view_cue_for(CameraRig.View.MAP),
+		SliceMain.view_cue_for(CameraRig.View.EYES),
+		SliceMain.view_cue_for(CameraRig.View.SCRIPT)],
+		[AudioTables.INTERFACE_VIEW_UNIT, AudioTables.INTERFACE_VIEW_MAP, "", ""],
+		"select.wav from the unit and map placers, nothing from the eyes and the overview")
+	# docs/43 section 3.3 -- the far view is reached: the overview's constant
+	# height stands above the zoom gate the overlay switches at.
+	h.check("hud.overview_reaches_the_far_view",
+		CameraRig.OVERVIEW_HEIGHT >= HudTables.ZOOM_GATE,
+		"0x%X >= 0x%X" % [CameraRig.OVERVIEW_HEIGHT, HudTables.ZOOM_GATE])
 	# The window and the report.
 	h.equal("hud.window_for_the_plate", HudTables.window_for(Vector2(640, 480)),
 		Rect2(60, 34, 520, 340))

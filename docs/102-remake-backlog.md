@@ -13,7 +13,7 @@ second history. Nothing is recorded here that is not already recorded somewhere
 else — a second copy of a finding is how the two drift apart.
 
 **Closed since this file was written (2026-09-12), and Stages 1 and 2 with
-it.** Stage 1: `CrushWall`'s footprint, built in [`97` §50](97-slice-5-report.md)
+it — and most of Stage 3 the same evening, see its own heading.** Stage 1: `CrushWall`'s footprint, built in [`97` §50](97-slice-5-report.md)
 and corrected in [`42` §8.2](42-mission-presentation.md); `_may_command_now`'s
 seat test, in [`99` §7](99-slice-7-report.md); and the large-mover second ring,
 in [`95` §9 item 2](95-slice-3-report.md) — which turned out to be a defect in
@@ -44,51 +44,42 @@ Those classes are not a backlog.
 
 ## Stage 3 — interface
 
-### 3.1 The map interface is a radar, not a clickable map
+*Three of its four entries closed on 2026-09-12, and Stage 3 is what is left
+of the fourth.* 3.1 turned out not to be a decision: `aMI.cpp` is the
+mission's *map interface* module and its three "unplayed" cues were the
+columns' press, the columns' hover tick and the map-view placer, mislabelled
+([`28` §2.5](28-effects-and-sound.md), [`92` §7.22](92-remake-architecture.md));
+all ten interface cues are played. 3.3 was played all along through the
+*Overview map* button ([`43` §3.3](43-battle-hud.md)). Of 3.4, D4 had closed
+on 2026-09-08, D6 is implemented and D7 is closed by tracing the handles
+([`43` D6, D7](43-battle-hud.md)). 3.2's probe ran and moved the question
+([`43` Open questions item 1](43-battle-hud.md)).
 
-**Owner:** [`99` §8](99-slice-7-report.md). `map_click`, `compass` and
-`view_map` are pinned and **not played**, because the seventh slice draws
-`aMI.cpp`'s map interface as a radar. Three sound ids with no consumer are the
-symptom; the decision behind them is whether the remake ever grows the
-clickable map. That is a [`92` §7](92-remake-architecture.md) decision first
-and interface work second.
+### 3.2 The hit-point digit — a frame, in two output modes
 
-*(**Not here, and why: the between-players screen `0x0047C2C0`.**
-[`97` §35.1](97-slice-5-report.md) left it "read, not built", which reads like
-missing interface work. It is not: [`43` §7.3](43-battle-hud.md) reads its seven
-arms, and a single-human campaign reaches only state 0 — which dismisses itself
-by posting its own `WM_LBUTTONDOWN` and so shows for one frame — and state 2,
-whose 185-byte arm contains no `aPrintLibText` call at all. Every caption the
-routine carries is a multi-player caption. The remake's own *the aliens are
-moving* plate is therefore a **declared divergence** to record in
-[`92` §7](92-remake-architecture.md), not a screen that is missing.)*
+**Owner:** [`43` Open questions item 1](43-battle-hud.md). The overlay
+routine is no longer suspect: `tools/hud_probe.py` steps `fcn.00417E70`
+inside the live game and it blits `mp[hp]` over an unselected unit with
+points on both tick phases, nothing over a spent one, `mp[49]` over
+overwatch, and the selection's `mp[51]`/`mp[52]` blink with the digit on the
+odd tick (`tests/fixtures/hud/hud_probe.json`, 23/23). What the two frames
+showed — no digit on a unit's cell, digits on the empty cells of the fill —
+is therefore compositing, and the one candidate the frames support is a body
+drawn after the overlay, or an overlay drawn with depth in the accelerated
+output mode.
 
-### 3.2 The hit-point digit's gate
+**What closes it:** a frame of the original at a hand-over with an untouched
+unit, in the software and in the accelerated output mode. `screencapture`
+still has no screen-recording permission from the shell that runs Wine, so
+it is a frame taken by hand. Until then D12 keeps the remake's picture on the
+frames.
 
-**Owner:** [`43` Open questions item 1](43-battle-hud.md). The listing draws
-`mp[min(hp, 15)]` over a current player's unit while `+0x15` is non-zero, and
-two frames of real play show none over unselected squad members.
+### 3.4 The panel's block offsets were never checked against a picture
 
-**What closes it:** a `dbgcall` probe at the anchor reading `+0x15` of the
-player's units and the three element slots `0x00417E70` leaves for their
-cells — or a frame of the original at a hand-over with an untouched unit.
-
-### 3.3 The far view is pinned, not played
-
-**Owner:** [`99` §7](99-slice-7-report.md). The `map.LIB` flags switch in above
-camera height `0x17700`; the remake's zoom is clamped to the mission's authored
-`camera_height` (19 200..64 000 in the cache), so only `test_hud.gd` reaches
-them. Decide whether the remake lets the player out to that height at all —
-that is a [`92` §7](92-remake-architecture.md) decision, not a defect.
-
-### 3.4 Two readings that were never checked against a picture
-
-**Owner:** [`99` §7](99-slice-7-report.md), [`43`](43-battle-hud.md). The two
-panel fonts (D7) and the block offsets were checked by **reading**, because
-the Wine screenshot could not be taken; the magnifier's page (D4) and the
-campaign map's band rings (D6) are decisions with the reading named rather
-than implementations. Group them: one Wine session with screen-recording
-permission answers all four.
+**Owner:** [`43` §5.3](43-battle-hud.md), [`99` §7](99-slice-7-report.md).
+The five blocks' offsets are read off the listing and drawn at those numbers
+(with the eight-unit shift of the trailing blocks the remake's own); the same
+frame 3.2 wants would confirm them.
 
 ---
 
@@ -157,8 +148,6 @@ Not work until they are answered, and they are cheap to answer.
 * **`beams_until_hand_over`** — offered to the player, or an internal flag for
   the checks? It is internal today.
   [`100` Open questions item 2](100-slice-8-report.md).
-* **The far view** — see 3.3; the same shape of question.
-* **The map interface** — see 3.1: a radar, or the original's clickable map?
 * **A speech row in the options screen.** The original scales speech by the
   options record's own field; the remake rides the FX volume and has no row.
   [`92` §7.1](92-remake-architecture.md) permits it — that rule is about

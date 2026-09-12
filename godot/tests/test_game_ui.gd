@@ -44,6 +44,7 @@ func run(h: TestHarness) -> void:
 	_quiet_landings(h)
 	_setpiece_state(h)
 	_ring_rotation(h)
+	_silent_opening_mirror(h)
 	_campaign_screens(h)
 	_pickup_message(h)
 	_magnifier(h)
@@ -315,6 +316,33 @@ func _ring_rotation(h: TestHarness) -> void:
 		"a rotation submitted under a running playback is what the resync "
 		+ "warning used to report after every walk")
 	units.free()
+	main.free()
+
+
+## The silent arm of the opening moves the mirror with the truth.
+##
+## Oracle boundary: **the remake's own** (docs/100). A bare `--mission=`, the
+## campaign's entry into a mission with nobody to place and the debugging
+## step between missions all skip the deployment turn after [method
+## SliceMain._build] has taken the picture's mirror, and the skip leaves no
+## delta -- so the plate read `0` while the truth stood on 1 and the first
+## command counted a desync. The host's own arm resyncs.
+func _silent_opening_mirror(h: TestHarness) -> void:
+	var main: SliceMain = SliceMain.new()
+	main.world = TestFixtures.tiny_world()
+	main._shown = main.world.clone()
+	h.check("opening.starts_on_the_deployment_turn",
+		main.world.turn.turn == 0 and main._shown.turn.turn == 0)
+	main._skip_deployment_turn()
+	h.check("opening.silent_arm_moves_the_truth",
+		main.world.turn.turn == TurnState.FIRST_TURN)
+	h.check("opening.silent_arm_moves_the_mirror",
+		main._shown.turn.turn == TurnState.FIRST_TURN
+			and main._shown.canonical_hash_hex()
+				== main.world.canonical_hash_hex()
+			and main._check_mirror() and main._desyncs == 0,
+		"the skip is a write to the truth with no replayable delta, so "
+		+ "the picture has to be told by a fresh mirror")
 	main.free()
 
 
@@ -2250,7 +2278,36 @@ func _campaign_screens(h: TestHarness) -> void:
 	var marks: Dictionary[Vector2i, int] = CampaignMapScreen.marks_for(host,
 		cells)
 	h.equal("screens.map_marks_every_open_location", marks.size(), open.size(),
-		"one dot per open location")
+		"one ring per open location")
+	# docs/27 section 2.6.3: every open location wears the same 17x17 white
+	# ring; the kind is told by the badge the hover raises, chosen by the id
+	# band `fcn.00418F40` tests -- which is the kind table's own partition.
+	var all_rings: bool = true
+	for cell: Vector2i in marks:
+		if marks[cell] != MapMarkers.RING_OPEN:
+			all_rings = false
+	h.check("screens.map_marks_are_the_open_ring", all_rings, str(marks))
+	h.equal("screens.map_badge_bands",
+		[CampaignMapScreen.badge_for(1, false), CampaignMapScreen.badge_for(210, false),
+		CampaignMapScreen.badge_for(10, false), CampaignMapScreen.badge_for(51, false),
+		CampaignMapScreen.badge_for(9, false), CampaignMapScreen.badge_for(25, false),
+		CampaignMapScreen.badge_for(1, true), CampaignMapScreen.badge_for(10, true),
+		CampaignMapScreen.badge_for(51, true)],
+		[15, 15, 12, 9, MapMarkers.BADGE_NONE, MapMarkers.BADGE_NONE, 14, 11, 8])
+	var band_is_kind: bool = true
+	for id: int in host.open_locations():
+		var want: int = -1
+		match host.tables.kind_of(id):
+			CampaignMap.KIND_UPGRADE:
+				want = CampaignMapScreen.BADGE_BAND_BASE
+			CampaignMap.KIND_DIALOGUE:
+				want = CampaignMapScreen.BADGE_BAND_DIALOGUE
+			CampaignMap.KIND_BATTLE:
+				want = CampaignMapScreen.BADGE_BAND_BATTLE
+		if CampaignMapScreen.badge_band(id) != want:
+			band_is_kind = false
+	h.check("screens.map_badge_band_is_the_kind", band_is_kind,
+		"the three id bands are the three kinds of location")
 	h.equal("screens.map_click_names_the_location",
 		map.location_at(Vector2i(0, 1)), open[0],
 		"a click on a cell is `aLocationHandling` on the location standing there")

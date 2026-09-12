@@ -20,6 +20,10 @@ extends CanvasLayer
 signal event(number: int)
 ## A pad socket raised one of the six commands.
 signal command(number: int)
+## The pointer moved onto a lit column slot / pad socket (the two hover
+## ticks of docs/28 section 2.5).
+signal column_hovered
+signal pad_hovered
 ## The radar's scale changed.
 signal radar_rescaled(fields: int)
 
@@ -34,10 +38,18 @@ const PLAYER_HUMAN: int = 0
 const DIM_COLOUR: Color = Color(0.0, 0.0, 0.0, 0.72)
 ## The readable face's report size, in the plate's units.
 const READABLE_REPORT_SIZE: int = 16
-## The two faces the interface is written in: the 13 px `font_0` for the
-## turn and the hints, the 10 px `font_3` for the panel's numbers.
+## The face the interface is written in. **One, and it is `font_0`** (docs/43
+## D7, closed 2026-09-12): the turn text and the hint caption are written
+## with `aGetFont(0)` (`0x0041B212`, `0x0041B5A4`), and the unit panel's
+## numbers with the handle `aInitUI` is passed -- `aGetFont(ebx)` with `ebx`
+## zero throughout `aInitBattleGround`, stored at `[0x00516328]` and pushed
+## twice into `0x004756D0`. The panel used to be set in `font_3`, "the only
+## shipped face that fits its rows", on a reading that had not traced the
+## handle; the rows were laid out for `font_0`'s 10 px digits and fit them.
+## Two names stay because the readable fallback sizes differ (see
+## [UnitPanel]).
 const TEXT_FONT: String = "font_0"
-const SMALL_FONT: String = "font_3"
+const SMALL_FONT: String = "font_0"
 ## The turn counter's colours (`0x0041B1D1`).
 const COLOUR_TURN: int = 0xFFFF
 const COLOUR_TURN_LATE: int = 0xF800
@@ -175,6 +187,7 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	columns.setup(art, strings)
 	columns.event.connect(func(number: int) -> void: event.emit(number))
 	columns.hint.connect(set_hint)
+	columns.hovered.connect(func() -> void: column_hovered.emit())
 
 	pad = CommandPad.new()
 	pad.name = "Pad"
@@ -182,6 +195,7 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	pad.setup(art, strings)
 	pad.command.connect(func(number: int) -> void: command.emit(number))
 	pad.hint.connect(set_hint)
+	pad.hovered.connect(func() -> void: pad_hovered.emit())
 
 	panel = UnitPanel.new()
 	panel.name = "Panel"
@@ -278,7 +292,7 @@ func setup(art: Art, strings: Localization, font: FontFile,
 ## shell and the report and that the interface's rows are the size the shipped
 ## faces are. The consequence was that the one screen the game is played on
 ## was the one screen the setting did not reach: the hint line, the turn and
-## the whole unit panel stayed in `font_0`/`font_3` while every plate around
+## the whole unit panel stayed in `font_0` while every plate around
 ## them was antialiased. The setting is the interface's, so it is the
 ## interface's here as well; a null *font* means the readable face and
 ## [method _band_font] and [method _panel_font] answer null with it, which is

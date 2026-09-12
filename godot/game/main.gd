@@ -603,7 +603,7 @@ func _ready() -> void:
 	_info = InfoText.load_from(_cache_dir)
 	# The battle interface (docs/43): the plate, the columns, the pad, the
 	# panel and the radar, drawn on the shipped art and captioned from
-	# `Txtmod_h`. Its two plate faces are the 13 px and 10 px bitmap fonts.
+	# `Txtmod_h`. Its one plate face is the `font_0` bitmap font (docs/43 D7).
 	_hud = MissionHud.new()
 	_hud.name = "MissionHud"
 	_hud.setup(_art, _strings, font,
@@ -611,6 +611,14 @@ func _ready() -> void:
 		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT), _cache_dir)
 	_hud.event.connect(_on_hud_event)
 	_hud.command.connect(_on_pad_command)
+	# The two hover ticks (docs/28 section 2.5): `click_1` when the pointer
+	# lands on a lit column slot (`fcn.004518E0`) or pad socket
+	# (`fcn.004723E0`). The third tick, over a legal cell while a command is
+	# armed, is [method _update_hover]'s.
+	_hud.column_hovered.connect(func() -> void:
+		_play_interface(AudioTables.INTERFACE_COLUMN_HOVER))
+	_hud.pad_hovered.connect(func() -> void:
+		_play_interface(AudioTables.INTERFACE_PAD_HOVER))
 	_hud.ring.record_pressed.connect(func(record: int) -> void:
 		var _chosen: bool = choose_ring_record(record))
 	_hud.radar_rescaled.connect(func(_fields: int) -> void: _refresh_status())
@@ -722,8 +730,7 @@ func _boot() -> void:
 			_build(DictRead.as_string(choice["mission"]))
 			# Past the campaign, so there is no pool and nothing to place:
 			# `0x0041A073`'s silent arm (docs/98 section 12).
-			if world != null:
-				world.skip_deployment_turn()
+			_skip_deployment_turn()
 		BOOT_CAMPAIGN:
 			var _started: CampaignState = campaign.start_new(
 				DictRead.as_int(choice["campaign"]), settings.difficulty)
@@ -2591,8 +2598,7 @@ func _on_campaign_choice(action: String) -> void:
 				# *Continue* over a deployment -- take the silent arm on an
 				# empty row and then show the screen anyway, so its *Continue*
 				# found turn 1 and never handed over at all.
-				if world != null:
-					world.skip_deployment_turn()
+				_skip_deployment_turn()
 				campaign.enter_mission()
 				close_campaign_screen()
 				_begin_mission_view()
@@ -3946,8 +3952,7 @@ func show_mission(step: int) -> void:
 	# A debugging step past every screen, so nothing deploys into it and
 	# nothing else will hand over: the silent arm, or the mission would sit
 	# on turn 0 for good with no computer turn and a `0` on the plate.
-	if world != null:
-		world.skip_deployment_turn()
+	_skip_deployment_turn()
 
 
 ## Submits the movement query for one slot and highlights the answer.
@@ -3984,8 +3989,10 @@ func select_unit(slot: int, pass_friendlies: bool,
 		var _flight: float = _director.select(world, slot)
 	# **`select.wav` is the camera's, not the click's** (docs/28 section 2.5):
 	# `fcn.004533D0` re-applies the view mode on the new selection's cell and
-	# the unit-view placer `fcn.004510A0` plays it from inside that.
-	_play_interface(AudioTables.INTERFACE_VIEW_UNIT)
+	# the placer it picks plays it from inside that -- the unit view's
+	# `fcn.004510A0` or the map view's `fcn.00450F60`; the eyes and the
+	# overview are silent.
+	_play_view_cue()
 	# And the marine answers: argument 0 or 8 for a click, 1 for the cycle.
 	_speak(event, slot)
 	_refresh_status("slot %d %s: %d reachable, %d warp, mp %d, pf %s" % [
@@ -4772,6 +4779,28 @@ func _play_interface(action: String) -> void:
 	if cue.is_empty():
 		return
 	var _slot: int = _audio.play_cue(cue)
+
+
+## The wave the view placer the current mode reaches plays from inside
+## itself (docs/43 section 4.5's table): `select.wav` for the unit view
+## (`fcn.004510A0`) and the map view (`fcn.00450F60`, also every mode's
+## fallback with no selection), nothing for the eyes (`fcn.00451150`) and the
+## overview (`fcn.00453410`).
+static func view_cue_for(mode: CameraRig.View) -> String:
+	match mode:
+		CameraRig.View.UNIT:
+			return AudioTables.INTERFACE_VIEW_UNIT
+		CameraRig.View.MAP:
+			return AudioTables.INTERFACE_VIEW_MAP
+	return ""
+
+
+func _play_view_cue() -> void:
+	if _rig == null:
+		return
+	var action: String = view_cue_for(_rig.view_mode())
+	if not action.is_empty():
+		_play_interface(action)
 
 
 ## What *slot* says about *event*, if anything (docs/28 section 4.3).
@@ -5594,7 +5623,14 @@ func _screen_input(event: InputEvent) -> void:
 		_screen.world_click(cell)
 	elif _markers != null:
 		_screen.world_hover(cell)
-		_markers.ring(_art, cell)
+		# The campaign map raises the location's band badge over the cell
+		# (docs/27 section 2.6.3); the deployment screen rings the free cell.
+		var map: CampaignMapScreen = _screen as CampaignMapScreen
+		if map != null:
+			_markers.badge(_art, cell,
+				CampaignMapScreen.badge_for(map.location_at(cell), false))
+		else:
+			_markers.ring(_art, cell)
 
 
 ## docs/42 section 2.4's three views on the deployment screen.
@@ -5661,6 +5697,11 @@ func _set_view(mode: CameraRig.View) -> void:
 				DictRead.as_int(view["y"]))
 		_:
 			_flight = _director.view_unit(world, slot)
+	# The placer's own wave: `select.wav` from the unit and map placers, none
+	# from the eyes (docs/28 section 2.5).
+	var action: String = view_cue_for(mode)
+	if not action.is_empty():
+		_play_interface(action)
 	_sync_hud()
 
 
@@ -7636,6 +7677,28 @@ func _resync_shown() -> void:
 	_fog.viewer = _watching_seat()
 
 
+## The silent arm of the opening, and the mirror moved with it.
+##
+## `0x0041A073`: a mission with nobody to place skips the deployment turn and
+## stands on turn 1 before the player sees it ([method
+## World.skip_deployment_turn]). The three entries that take that arm -- a
+## bare `--mission=`, the campaign's own entry into a mission with an empty
+## pool, and the debugging step between missions -- all reach it **after**
+## [method _build] has taken the picture's mirror, and the skip is a write to
+## the truth that leaves no delta anybody can replay. Left there, the plate
+## read `0` off the mirror while the truth stood on 1, and the first command
+## found the two hashes apart and resynchronised with a warning: a desync
+## counted against a picture that had simply never been told. So the skip is
+## followed by a fresh mirror here, the way a loaded save's is ([method
+## _resume_loaded_mission]), and by the status line that reads the turn.
+func _skip_deployment_turn() -> void:
+	if world == null:
+		return
+	world.skip_deployment_turn()
+	_resync_shown()
+	_refresh_status()
+
+
 ## The seat the picture is drawn for, read off the truth: for the moment a
 ## command is over, when the mirror has caught up with it.
 func _watching_seat() -> int:
@@ -8006,10 +8069,10 @@ func _command_available(number: int) -> bool:
 func _on_hud_event(number: int) -> void:
 	if not _event_available(number):
 		return
-	# `fcn.00471310` plays `click_2` on the button the column press dispatches
-	# to, past the availability gate and not in front of it -- an unavailable
+	# `fcn.00450D70` plays `click_2` on a column slot with an event behind it,
+	# past the availability gate and not in front of it -- an unavailable
 	# button is silent as well as inert (docs/28 section 2.5).
-	_play_interface(AudioTables.INTERFACE_BUTTON)
+	_play_interface(AudioTables.INTERFACE_COLUMN_PRESS)
 	match number:
 		HudTables.EVENT_FREE_CAMERA:
 			# docs/43 section 2's mode 0: `fcn.00453410` sets the view mode
@@ -8082,6 +8145,9 @@ func _on_hud_event(number: int) -> void:
 func _on_pad_command(number: int) -> void:
 	if not _command_available(number):
 		return
+	# `fcn.00471310` plays `click_2` once the socket's executor has run
+	# (docs/28 section 2.5) -- past the gate, so a dark socket is silent.
+	_play_interface(AudioTables.INTERFACE_PAD_PRESS)
 	match number:
 		HudTables.COMMAND_DEFEND:
 			var _ticket: int = hold_fire()

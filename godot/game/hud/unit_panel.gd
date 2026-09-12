@@ -12,8 +12,10 @@ extends Control
 ## the two balance tables on every refresh, so nothing here is a copy of a
 ## rule that lives in `core`.
 ##
-## Two fonts: the panel's numbers are 10 px (`font_3`), the only shipped face
-## that fits its rows, and the name line the interface font of the rest.
+## Two font slots, one shipped face: the numbers and the name line are both
+## `font_0` -- the handle `aInitUI` is passed is `aGetFont(0)` and
+## `0x00473960` pushes it twice into the panel (docs/43 D7). The slots stay
+## apart because the readable fallback sizes below differ.
 
 ## RGB565 colours the panel writes with.
 const COLOUR_TEXT: int = 0xFFFF
@@ -60,8 +62,9 @@ const SPECIES_MACHINE: int = 3
 ## The readable face's sizes, used both when the cache has no bitmap fonts and
 ## when the player chose the readable interface font ([method
 ## MissionHud._panel_font] answers null for it). **Two of them**: the panel's
-## numbers are `font_3`'s rows and the name line is the 13 px `font_0`'s, and
-## one size for both drew the unit's name at the size of the digits under it.
+## numbers sit in rows cut for `font_0`'s 10 px digits and the name line is
+## its 13 px line, and one size for both drew the unit's name at the size of
+## the digits under it.
 ##
 ## The digits are **8 and not the bitmap's 10**: the rows are the original's
 ## measured coordinates -- the ammunition at `uicons[7].width - 7` and the

@@ -283,17 +283,42 @@ static func marks_for(campaign: CampaignHost,
 		# than drawn at the origin.
 		if not cells.has(id):
 			continue
-		out[cells[id]] = _dot_for(campaign.tables.kind_of(id))
+		# docs/27 section 2.6.3: every state-3 cell gets the 17x17 white ring
+		# `map[7]`, whatever kind of location stands there. The kind is told
+		# by the badge the hover raises ([method badge_for]).
+		out[cells[id]] = MapMarkers.RING_OPEN
 	return out
 
 
-static func _dot_for(kind: String) -> int:
-	match kind:
-		CampaignMap.KIND_UPGRADE:
-			return MapMarkers.DOT_UPGRADE
-		CampaignMap.KIND_DIALOGUE:
-			return MapMarkers.DOT_DIALOGUE
-	return MapMarkers.DOT_BATTLE
+## The three id bands `fcn.00418F40` tests a location's action point against
+## (`0x004190BF`..`0x004190F2`), each with its own 50x43 badge: 1..8 and
+## 210..217 (the upgrade bases) `map[15]`, 10..24 (the dialogues) `map[12]`,
+## 50..129 (the battles) `map[9]`; the *selected* location -- the one whose
+## screen is up, `[0x00510C3C]` -- wears the filled-ring twin `map[14]`,
+## `map[11]` or `map[8]`. An id outside every band raises none
+## (`or esi, -1` in front of the ladder).
+const BADGE_BAND_BASE: int = 0
+const BADGE_BAND_DIALOGUE: int = 1
+const BADGE_BAND_BATTLE: int = 2
+const BADGE_HOVER: Array[int] = [15, 12, 9]
+const BADGE_SELECTED: Array[int] = [14, 11, 8]
+
+
+static func badge_band(location: int) -> int:
+	if (location >= 1 and location <= 8) or (location >= 210 and location <= 217):
+		return BADGE_BAND_BASE
+	if location >= 10 and location <= 24:
+		return BADGE_BAND_DIALOGUE
+	if location >= 50 and location <= 129:
+		return BADGE_BAND_BATTLE
+	return -1
+
+
+static func badge_for(location: int, selected: bool) -> int:
+	var band: int = badge_band(location)
+	if band < 0:
+		return MapMarkers.BADGE_NONE
+	return BADGE_SELECTED[band] if selected else BADGE_HOVER[band]
 
 
 func takes_world_clicks() -> bool:

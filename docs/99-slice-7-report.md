@@ -434,10 +434,14 @@ by hand; `replay True` with `selected -1` while the computer moved; and
 
 Known and not done, so that it is not forgotten:
 
-* **The far view is pinned, not played.** The `map.LIB` flags switch in
+* ~~**The far view is pinned, not played.** The `map.LIB` flags switch in
   above camera height `0x17700`; the remake's zoom is clamped to the
   mission's authored `camera_height` (19 200..64 000 in the cache), so only
-  `test_hud.gd` reaches them ([`43` §3.3](43-battle-hud.md)).
+  `test_hud.gd` reaches them ([`43` §3.3](43-battle-hud.md)).~~ **Closed
+  2026-09-12** — it was played all along: the *Overview map* button's
+  placement stands at `0x23A50`, above the gate, in both games, and the
+  remake's overlay redraws on the crossing ([`43` §3.3](43-battle-hud.md),
+  [`92` §7.22](92-remake-architecture.md)).
 * ~~**The turn reads `0` during the first player turn.** The remake's counter
   is the engine's `g_turn`, zeroed at start and stepped by the hand-over
   ([`25` §4](25-turn-and-round.md)); the plate prints the same byte
@@ -464,10 +468,16 @@ Known and not done, so that it is not forgotten:
   remake uses the resulting original keys, including `G` for the magnifier;
   only original `Esc` → *Give up* remains a declared divergence because
   `Esc` opens the menu.
-* **The two panel fonts (D7) and the block offsets were checked by reading,
-  not by eye** — the Wine screenshot could not be taken (§3).
-* **The magnifier's page (D4) and the campaign map's band rings (D6)** are
-  decisions with the reading named, not implementations.
+* ~~**The two panel fonts (D7) and the block offsets were checked by reading,
+  not by eye** — the Wine screenshot could not be taken (§3).~~ **D7 closed
+  2026-09-12** by tracing the handles: one font, `font_0`, for the panel, the
+  turn and the caption ([`43` §5.3, D7](43-battle-hud.md)). The block
+  offsets are still unchecked against a picture ([`43` Open
+  questions](43-battle-hud.md)).
+* ~~**The magnifier's page (D4) and the campaign map's band rings (D6)** are
+  decisions with the reading named, not implementations.~~ **Both
+  implemented** — D4 on 2026-09-08, D6 on 2026-09-12
+  ([`43` D4, D6](43-battle-hud.md), [`27` §2.6.3](27-campaign.md)).
 * Nothing from §6 is left; the para bomb's own residue was closed the same
   day (§6's last bullet).
 
@@ -511,14 +521,25 @@ ceilings in `remake_convert.py` were raised with the reason recorded.
 
 Not done, and deliberate:
 
-* **`hover_button` is pinned and not played.** The button columns have no
+* ~~**`hover_button` is pinned and not played.** The button columns have no
   hover state in the remake, so the second of the two `click_1` ticks has
-  nowhere to come from. `hover_cell` is played, gated the way the original
-  gates it — only while a command is armed, which is exactly the window the
-  ring is up in.
-* **`map_click`, `compass` and `view_map` are pinned and not played.** They
-  belong to `aMI.cpp`'s map interface, which the seventh slice draws as a
-  radar and not as a clickable map.
+  nowhere to come from.~~ ~~**`map_click`, `compass` and `view_map` are pinned
+  and not played.** They belong to `aMI.cpp`'s map interface, which the
+  seventh slice draws as a radar and not as a clickable map.~~ **Both closed
+  2026-09-12, and both entries were misreadings** ([`28`
+  §2.5](28-effects-and-sound.md), corrected). `aMI.cpp` is the *map
+  interface* module — the columns, the radar, the placers — and the four
+  widget sites had their labels crossed: `fcn.00471310`/`fcn.004723E0` are
+  the **command pad's** press and hover, `fcn.00450D70`/`fcn.004518E0` the
+  **columns'**. Renamed `pad_press`, `pad_hover`, `column_press`,
+  `column_hover` (`CONVERTER_VERSION` 0.40.0 → 0.41.0, the cache
+  republished); all ten cues are played now — the two hover ticks from the
+  widgets' `mouse_entered` on a lit slot, `select.wav` from whichever placer
+  the view mode reaches (`SliceMain.view_cue_for`) and from the *Set free
+  view* / *Set user view* buttons directly. `hover_cell` is unchanged: played
+  only while a command is armed, which is exactly the window the ring is up
+  in. What is *not* played is the pointer pan the four widget clicks carry
+  ([`92` §7.22](92-remake-architecture.md) item 2).
 * **Speech rides the FX volume.** The original scales it by the options
   record's own speech field ([`20` §8](20-lcl-language.md)) and by nothing
   else. The options screen still has no speech row, which [`92`

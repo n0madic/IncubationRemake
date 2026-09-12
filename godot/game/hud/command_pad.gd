@@ -18,6 +18,10 @@ extends Control
 signal command(number: int)
 ## The hint to show, or "" when the pointer left.
 signal hint(text: String)
+## The pointer moved onto a lit socket -- `fcn.004723E0`'s tick, raised when
+## the hovered socket changes to one the gate lit (docs/28 section 2.5); a
+## dark socket wears `ui[0]` and raises none.
+signal hovered
 
 var _art: Art = null
 var _strings: Localization = null
@@ -119,6 +123,8 @@ func _on_pressed(number: int) -> void:
 
 func _on_entered(number: int) -> void:
 	hint.emit(caption_for(number))
+	if not _buttons[number].disabled:
+		hovered.emit()
 
 
 func _on_exited() -> void:

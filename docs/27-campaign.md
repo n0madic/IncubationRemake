@@ -480,11 +480,26 @@ state-3 cell** — an open location — gets `map[7]`, the 17x17 ring; the cell
 under the pointer gets `map[15]`, `map[12]` or `map[9]` and the selected one
 `map[14]`, `map[11]` or `map[8]`, the three chosen by the location's
 action-point band (1..8 or 210..217; 10..24; 50..129), with the location's
-name written beside it. The remake's dots are coloured **by kind** and ring
+name written beside it. ~~The remake's dots are coloured **by kind** and ring
 the hovered one ([`98` §6](98-slice-6-report.md)); changing
 `CampaignMapScreen.marks_for` to the band table touches `test_shell` and
 `test_campaign` and is recorded as a decision of the seventh slice
-([`43` §11 D6](43-battle-hud.md)), not done there.
+([`43` §11 D6](43-battle-hud.md)), not done there.~~ **Done 2026-09-12**
+([`43` D6](43-battle-hud.md)). The ladder at `0x004190BF`..`0x004190F2`
+(pointer) and `0x004191FB`..`0x0041922E` (selected) reads, in order: 1..8 →
+15 / 14, 210..217 → 15 / 14, 10..24 → 12 / 11, 50..129 → 9 / 8, and an id
+outside every band raises nothing (`or esi, -1` in front of each ladder). The
+three 50x43 elements are **badges** — a picture in a coloured frame with a
+leader line ending in a ring, anchored at `(38, 34)` so the ring stands on
+the cell: the blue-framed base for the upgrade band, the green-framed pair
+for the dialogue band, the red-framed marine for the battle band, the twin
+with the filled ring for the location whose screen is up (`[0x00510C3C]`,
+the id `aMapName` is asked for). The bands are exactly the kind table's
+partition (`campaign.json`: upgrades 1..8 and 210..216, dialogues 10..23,
+battles 51..129). The remake now draws `map[7]` on every open location and
+the band's pointer badge over the hovered one; the selected twin is not shown
+because a click enters the location at once. `map[0..3]`, the coloured dots,
+belong to the mission's far view and the deployment screen, not to this map.
 
 ### 2.7 An upgrade base looks where its own script says — **[code] `0x00417510`, `0x00417000`** *(2026-09-08)*
 

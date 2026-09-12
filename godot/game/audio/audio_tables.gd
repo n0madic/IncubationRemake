@@ -393,15 +393,26 @@ static func _is_digits(text: String) -> bool:
 const INTERFACE_ORDER_MOVE: String = "order_move"
 const INTERFACE_ORDER_WARP: String = "order_warp"
 const INTERFACE_RESELECT: String = "reselect"
-const INTERFACE_BUTTON: String = "button"
+## The command pad's socket (`fcn.00471310`, past its executor) and the tick
+## when the hovered socket changes (`fcn.004723E0`).
+const INTERFACE_PAD_PRESS: String = "pad_press"
+const INTERFACE_PAD_HOVER: String = "pad_hover"
 const INTERFACE_HOVER_CELL: String = "hover_cell"
-const INTERFACE_HOVER_BUTTON: String = "hover_button"
-const INTERFACE_MAP_CLICK: String = "map_click"
-const INTERFACE_COMPASS: String = "compass"
-const INTERFACE_VIEW_MAP: String = "view_map"
+## The button columns' slot (`fcn.00450D70`, one with an event behind it) and
+## the tick when the hovered slot changes to one with a sprite
+## (`fcn.004518E0`). `aMI.cpp` is the mission's *map interface* module -- the
+## columns, the radar and the view placers -- not a map that is clicked.
+const INTERFACE_COLUMN_PRESS: String = "column_press"
+const INTERFACE_COLUMN_HOVER: String = "column_hover"
 ## **The sound a selection makes.** `fcn.004533D0` re-applies the view on the
-## new selection's cell and the unit-view placer plays `select.wav` from inside
-## it, so the click a player hears when they pick a marine is the camera's.
+## new selection's cell and the placer plays `select.wav` from inside it, so
+## the click a player hears when they pick a marine is the camera's. Which
+## placer is the view mode's: `view_unit` is `fcn.004510A0` (mode 2, the
+## *Set user view* button), `view_map` is `fcn.00450F60` (mode 4, the *Set
+## free view* button, the mode-3+ re-apply and every placer's fallback with
+## no selection). The eyes (`fcn.00451150`) and the overview
+## (`fcn.00453410`) play nothing.
+const INTERFACE_VIEW_MAP: String = "view_map"
 const INTERFACE_VIEW_UNIT: String = "view_unit"
 
 ## The cue one interface action makes, or an empty dictionary when the cache

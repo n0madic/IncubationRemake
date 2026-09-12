@@ -202,10 +202,21 @@ units only (`0x0043B2C0`), with no state-35 marker on the cell:
   weapon) with `mp[50]` (`0x00418727`) — and those two are written past that
   jump, so a spent unit still shows them;
 * `+0x41 == 5` (panic) adds `mp[54]` as the frame layer (`0x0041872F`);
-* a unit with points left standing on a state-100 cell alternates the two
+* ~~a unit with points left standing on a state-100 cell alternates the two
   path frames `mp[51]`/`mp[52]` on the tick (`0x004186BA`, `0x004186EC`,
   `0x004186C3`) — the same arm as §3.1's marks, unreachable in play for the
-  same reason, and not reproduced.
+  same reason, and not reproduced.~~ **Corrected 2026-09-12, measured
+  natively.** The arm is keyed on the cell's `mp` slot already holding 51,
+  and the **selection's own state-50 cell** puts 51 there (§3.1) — so it is
+  the selected unit that blinks: on the odd tick the corner frame `mp[51]`
+  with the digit over it, on the even tick the 16x16 cross `mp[52]` alone
+  and no digit. `tools/hud_probe.py` stepped `fcn.00417E70` into a private
+  surface with the marine selected on both tick phases and decoded exactly
+  that (`tests/fixtures/hud/hud_probe.json`, `selected/0` → `[52]`,
+  `selected/1` → `[51, 11]`). The remake draws the selection's frame steady
+  and does not alternate it — a divergence recorded here rather than played,
+  because what the frames of the original show over a unit is itself the open
+  question below.
 
 ### 3.3 The far view
 
@@ -223,11 +234,25 @@ the same letters, as a static `A_MK_*` object the placer `0x00431E30`
 stands on the cell at load ([`42` §9.3](42-mission-presentation.md),
 2026-09-07) — which is the red *A* a campaign mission's target cells show.
 
-The remake's camera never gets there in play: `CameraRig.zoom_by` refuses an
+~~The remake's camera never gets there in play: `CameraRig.zoom_by` refuses an
 eye outside the map's box, whose ceiling is the mission's authored
 `camera_height` — 19 200 to 64 000 over the cache's eight maps, all below
 `0x17700` = 96 000. The flags are implemented and pinned by `test_hud.gd`
-(`GroundSprites.refresh(..., far = true)`), not played.
+(`GroundSprites.refresh(..., far = true)`), not played.~~ **Played, and it
+always was (2026-09-12).** The zoom is clamped, but the *Overview map* button
+is not: mode 0's placer `fcn.004532A0` puts the eye at `0x23A50` = 146 000
+over the box's centre (§4.5's table), above the gate, and the remake's
+`CameraRig.view_overview` flies to the same constant unclamped. So every
+press of event 1 crosses `0x17700`, `SliceMain._tick_interface` sees the
+crossing and the overlay is redrawn with the flags — the agent's `markers`
+block after `hud event 1` on `_C_140` reads `map[0]` on the four marines,
+`map[4]` on the two visible aliens, `map[6]` on the four detected ones and
+`mp[18]` on the victory cell. `test_hud.gd`'s
+`hud.overview_reaches_the_far_view` pins the join between the two constants.
+What stays deliberately absent is a *free* zoom above the authored ceiling
+([`92` §7.22](92-remake-architecture.md)); whether the original's height
+keys can climb past the box is not read, and the button is the route the
+original itself provides.
 
 ### 3.4 The blitter and the anchors — closes [`60` §6](60-lib-sprites.md)
 
@@ -640,7 +665,13 @@ carries `X`, for which `Data.txt` has no `X0`.
 ### 5.3 The unit panel — `aUnitInfos.cpp`
 
 `0x00473960` restores the plate under it (`0x004758F0`) and calls
-`0x004756D0(unit, dst, pitch, 60, 415, 0, font, font)`, which computes and
+`0x004756D0(unit, dst, pitch, 60, 415, 0, font, font)` — **both `font`
+arguments are `[0x00516328]`, and that is `aGetFont(0)`, `font_0.LIB`**
+(2026-09-12, closing D7): `aInitUI` stores its own argument there
+(`0x00471208`), and `aInitBattleGround` passes `aGetFont(ebx)` with `ebx`
+zero from `0x00419D9F` to the call at `0x0041A54C`. The turn text
+(`0x0041B212`) and the caption under the pointer (`0x0041B5A4`) ask
+`aGetFont(0)` as well, so the whole plate is set in one face — which computes and
 draws (helpers: `0x00475240` hit-point cap = type base + `xp/12`, capped at
 15; `0x00475340` heat cap, doubled by a Cooler; `0x004752A0` magazine,
 doubled by Double Munition; `0x00475550` tier: `xp < 40 → 0, < 60 → 1,
@@ -1070,13 +1101,33 @@ the verbs kept their names.)
   that.
 * **D5 — the options bar is the options screen.** Its nine controls are the
   shell's; the bar's slide-in is not drawn.
-* **D6 — the campaign map keeps its dots by kind.** `fcn.00418F40`'s
+* ~~**D6 — the campaign map keeps its dots by kind.** `fcn.00418F40`'s
   band-coloured rings are recorded in §10 for a later pass; changing
   `CampaignMapScreen.marks_for` touches `test_shell` and `test_campaign`
-  and is outside this slice.
-* **D7 — two plate fonts.** `font_0` for the band texts and `font_3` for the
+  and is outside this slice.~~ **Closed 2026-09-12 — implemented.** The
+  routine's own picture, read whole ([`27` §2.6.3](27-campaign.md)): every
+  open location wears the 17x17 white ring `map[7]`, and the pointed-at one
+  raises a 50x43 **badge** — a picture with a leader line ending in a ring,
+  anchored `(38, 34)` so the ring stands on the cell — chosen by the
+  location's id band at `0x004190BF`..`0x004190F2`: 1..8 and 210..217 (the
+  upgrade bases) `map[15]`, 10..24 (the dialogues) `map[12]`, 50..129 (the
+  battles) `map[9]`; the location whose screen is up (`[0x00510C3C]`) wears
+  the filled-ring twin `map[14]`/`[11]`/`[8]`. The bands *are* the kind
+  table's partition, which is what the coloured dots had been standing in
+  for. `CampaignMapScreen.marks_for` answers `RING_OPEN` for every open
+  location, `badge_for` the band, `MapMarkers.badge` places it; the
+  "selected" twin is not shown because a click enters the location at once.
+  `screens.map_badge_*` in `test_game_ui.gd` pin the bands against the kind
+  table.
+* ~~**D7 — two plate fonts.** `font_0` for the band texts and `font_3` for the
   panel's numbers, chosen by the rows they have to fit; the handles the
-  panel is passed are not traced to a library name and do not need to be.
+  panel is passed are not traced to a library name and do not need to be.~~
+  **Closed 2026-09-12 — one font, `font_0`.** The handles are traced in
+  §5.3: the panel is passed `aGetFont(0)` twice, and the turn and the caption
+  ask for the same. `MissionHud.SMALL_FONT` is `font_0` now; the rows were
+  cut for its 10 px digits and take them (checked on `_C_140`'s panel through
+  the agent with the game font on: `8/8`, the rank, the ammunition clear of
+  the movement disc).
 * **D8 — the campaign screens stay on `place_on_plate`.** `PlateLayout`
   gives them a path to fixed pieces later; they are outside this slice.
 * **D9 — the far view's `map[6]` at `map[4]`'s anchors** is reproduced as
@@ -1118,13 +1169,35 @@ the verbs kept their names.)
 ## Open questions
 
 1. **What keeps §3.2's hit-point digit off the original's screen** (opened
-   2026-09-07, D12). The listing draws `mp[min(hp, 15)]` over a current
-   player's unit while `+0x15` is non-zero, and two frames of real play show
-   none over unselected squad members on the player's turn. Either `+0x15`
-   was already zero for them or the block has a gate the reading does not
-   see. Settles with a `dbgcall` probe at the anchor: read `+0x15` of the
-   player's units and the three element slots `0x00417E70` leaves for their
-   cells, or watch the original at a hand-over with an untouched unit.
+   2026-09-07, D12; **narrowed 2026-09-12**). The listing draws
+   `mp[min(hp, 15)]` over a current player's unit while `+0x15` is non-zero,
+   and two frames of real play show none over unselected squad members on
+   the player's turn. ~~Either `+0x15` was already zero for them or the block
+   has a gate the reading does not see. Settles with a `dbgcall` probe at the
+   anchor: read `+0x15` of the player's units and the three element slots
+   `0x00417E70` leaves for their cells, or watch the original at a hand-over
+   with an untouched unit.~~ **The probe ran, and the overlay is not where
+   the answer is.** `tools/hud_probe.py` calls `fcn.00417E70` inside the live
+   game with a private 640x480x2 surface as its destination (the routine
+   takes the surface and stride as arguments, so no window is needed; the
+   camera has to be placed with `0x00403560` first, or every projection lands
+   outside the clip and the probe reads a faithful zero). On `_6_.sav`'s one
+   marine — unselected, on a reset overlay, 3 points, 11 hit points — the
+   routine blits **`mp[11]`** on both tick phases; with the points written to
+   0 it blits nothing, and with overwatch set `mp[49]` alone; selected, it
+   blits `mp[52]` on the even tick and `mp[51]` with the digit on the odd
+   (§3.2). Six phases, 23/23 checks, `tests/fixtures/hud/hud_probe.json`.
+   So there is no gate past `+0x15`: the routine draws the digit exactly as
+   read. What the two frames show is therefore a **compositing** question,
+   and it has one candidate the frames themselves support: the fill's digits
+   on *empty* cells were visible in them while the digit on a *unit's* cell
+   was not, which is what a body drawn after the overlay — or an overlay
+   drawn with depth, which the accelerated output mode of
+   [`97` §23.3](97-slice-5-report.md) may do — would produce, and what a
+   plain 2D blit over the finished scene could not. Settles with a frame of
+   the original at a hand-over with an untouched unit, in the software and
+   the accelerated output modes; D12 keeps the picture on the frames until
+   then.
 
 Two earlier questions were opened and closed on the same day. The first: whether a
 blocking animation reaches the ground overlay through the callback pointer
@@ -1143,9 +1216,13 @@ about this document: the second bitmap `[0x00522A00]`, which
 `aInitViewPlayer` fills and three routines read — it is a render target of the
 screen's own and nothing about the interface's layout depends on it.
 
-Everything else this document could not settle by reading is a decision
-above, with the reading that would settle it named beside it: the campaign
-map's rings (D6) want a pass over `CampaignMapScreen`, and the plate fonts
-(D7) would be settled by the two handles `0x00473960` passes into
-`0x004756D0`. The magnifier's page (D4) was one of them and is closed: the
-`Data` bank the cache lacked is in it, and §5.2.1 is the reading.
+Everything else this document could not settle by reading was a decision
+above with the reading that would settle it named beside it, and all three
+are closed: the campaign map's rings (D6) are implemented, the plate font
+(D7) is `font_0` by the handles `0x00473960` passes into `0x004756D0`, and
+the magnifier's page (D4) has its `Data` bank and §5.2.1 is the reading.
+What has still never been checked against a picture of the original is the
+**panel's block offsets** (§5.3) — read off the listing and drawn at those
+numbers, with the eight-unit shift of the trailing blocks the remake's own;
+a frame of the original's panel is what would confirm them, and the same
+Wine session that answers question 1 would take it.

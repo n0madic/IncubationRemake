@@ -40,3 +40,20 @@ What it holds, and where each table comes from (`docs/43`):
 `--emit-cases` refuses to write when any of the 122 checks fails, so a fixture
 on disk is one the binary agreed with.  The suite fails when the file is
 missing: `run_tests.sh` copies it into `godot/generated/hud/hud.json`.
+
+## `hud_probe.json`
+
+Written by
+
+```bash
+python3 tools/hud_probe.py --game-copy /path/to/copy \
+    --dbgcall /path/to/copy/dbgcall.exe -o tests/fixtures/hud/hud_probe.json
+python3 tools/hud_probe.py --check tests/fixtures/hud/hud_probe.json --root gog_incubation
+```
+
+and read by no suite: it is the native answer to `docs/43` open question 1,
+the ground overlay `fcn.00417E70` stepped inside the live game into a private
+surface, with the lit pixels of each phase kept so `--check` can decode them
+against `mp.LIB` again.  Six phases: the marine unselected on both tick
+phases, selected on both, and spent with and without overwatch.  Captured
+2026-09-12 on `_6_.sav`.

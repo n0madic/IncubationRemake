@@ -215,6 +215,14 @@ const SKILL_ICONS: String = "uicons"
 ## constant rather than a scattering of magic numbers.
 const ITEM_SPIN_FPS: float = 15.0
 const MODEL_SPIN_DEGREES: float = 45.0
+## The turntable's camera: a narrow field from far back, so the body's own
+## proportions survive the turn (see [method _build_model_window]).
+const MODEL_CAMERA_FOV: float = 30.0
+const MODEL_CAMERA_DISTANCE: float = 6.0
+const MODEL_CAMERA_PITCH: float = -8.0
+## The old 2.1 m camera's 0.95 m eye, carried back along its own pitch so the
+## framing is unchanged: `0.95 + (6.0 - 2.1) * tan(8 deg)`.
+const MODEL_CAMERA_HEIGHT: float = 1.5
 
 ## The remake's own lines: what the original says with a greyed button.
 const OWN_REFUSED: String = "upgrade.%s"
@@ -326,8 +334,17 @@ func _build_model_window() -> void:
 	# of the plate's units -- so it is nearly twice as wide as it is tall and
 	# the figure is framed on its height. The engine's own camera is not
 	# reproduced -- see [constant MODEL_SPIN_DEGREES].
-	camera.position = Vector3(0.0, 0.95, 2.1)
-	camera.rotation_degrees = Vector3(-8.0, 0.0, 0.0)
+	#
+	# **A long lens, from far back.** The first camera stood 2.1 m from the
+	# figure at Godot's default 75-degree field, and a rifle swinging towards
+	# the viewer as the body turned was drawn as a blade twice its length --
+	# the near end of a 0.6 m barrel was a third closer than the far end. At
+	# 30 degrees from 6 m the same frame holds the same height
+	# (`tan(15) * 6.0 == tan(37.5) * 2.1`) and the weapon keeps its shape at
+	# every yaw (2026-09-12, checked against P0_001 at eight yaws).
+	camera.fov = MODEL_CAMERA_FOV
+	camera.position = Vector3(0.0, MODEL_CAMERA_HEIGHT, MODEL_CAMERA_DISTANCE)
+	camera.rotation_degrees = Vector3(MODEL_CAMERA_PITCH, 0.0, 0.0)
 	_viewport.add_child(camera)
 	var view: TextureRect = TextureRect.new()
 	view.texture = _viewport.get_texture()

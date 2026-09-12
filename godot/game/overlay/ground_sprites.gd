@@ -231,20 +231,25 @@ func _place_far(world: World, cell: Vector2i, view: Dictionary) -> void:
 ## points as a digit, or 49 on overwatch, or 50 with a jammed weapon; a
 ## panicking unit takes 54 as its frame.
 ##
-## The engine has a fourth arm here -- a unit with points left standing on a
-## state-100 cell alternates `mp[51]`/`mp[52]` on the tick
-## (`0x004186BA`..`0x00418735`) -- and it is not reproduced, for the reason
-## the path itself is not: nothing in play ever leaves a cell in state 100
-## while the overlay is blitted (docs/43 section 3.1).
+## The engine has a fourth arm here -- a cell whose `mp` slot already holds
+## 51 alternates `mp[51]`/`mp[52]` on the tick (`0x004186BA`..`0x00418735`),
+## and **that is the selection's own state-50 cell** (docs/43 section 3.2,
+## measured natively on 2026-09-12 by `tools/hud_probe.py`): the corner frame
+## with the digit on the odd tick, the 16x16 cross alone on the even one. The
+## remake draws the frame steady and does not alternate it -- a divergence
+## recorded there, not played, because what the original's frames show over
+## a unit is itself the open question below.
 ##
-## **No hit-point digit** (docs/43 D12, 2026-09-07). The listing's
-## `0x004186AF`..`0x00418708` puts `mp[min(hp, 15)]` on a current player's
-## unit while `+0x15` is non-zero, and the remake drew it; the original, on
-## the player's own turn with a fresh squad, shows nothing over a unit that
-## is not selected. Which gate the reading misses is open, and until it is
-## read the picture follows the original rather than the listing. The
-## overwatch, jam and panic marks are written past that block
-## (`0x00418710`, `0x0041872F`) and stay.
+## **No hit-point digit** (docs/43 D12, 2026-09-07; narrowed 2026-09-12).
+## The listing's `0x004186AF`..`0x00418708` puts `mp[min(hp, 15)]` on a
+## current player's unit while `+0x15` is non-zero, and the remake drew it;
+## the original, on the player's own turn with a fresh squad, shows nothing
+## over a unit that is not selected. The overlay routine itself, stepped
+## inside the live game, **does** blit the digit over such a unit, so the
+## gate is not in it -- what the frames show is a compositing question
+## (docs/43 open question 1), and until a frame settles it the picture
+## follows the frames rather than the routine. The overwatch, jam and panic
+## marks are written past that block (`0x00418710`, `0x0041872F`) and stay.
 func _place_near(world: World, cell: Vector2i, view: Dictionary) -> void:
 	var element: int = NO_ELEMENT
 	var action: int = DictRead.as_int(view["action_state"])
