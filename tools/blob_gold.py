@@ -5181,15 +5181,13 @@ def _fight_checks(ck: "tables.Checker", root: str,
 #: 2026-09-12.
 SHOT_UNCAPTURED: list[str] = []
 #: Shots whose phase predates the branch read-back and therefore answers for a
-#: branch nothing measured.  Pinned rather than tolerated, the way
-#: `BURST_UNCAPTURED` is: the phases in hand were taken before `shot_plan`
-#: read `FIGHT_BRANCH_SITE` back, the capture loop now re-takes a shot that
-#: carries no `branch_bytes`, and the run that lands them has to empty this
-#: list.  Until then `shot.branch_is_measured` checks the phases that do carry
-#: the read and names these as the ones it cannot speak for.
-SHOT_BRANCH_UNMEASURED: list[str] = [
-    "shot_07", "shot_09", "shot_11", "shot_41", "shot_44", "shot_07_nosound",
-]
+#: branch nothing measured.  **Empty on 2026-09-12**: every shot was re-taken
+#: with the read in place, five of them reading `74 44` at `0x0040CBF2` and
+#: `shot_07_nosound` reading `eb 44`, so `shot.branch_is_measured` speaks for
+#: all six.  Kept rather than deleted for the same reason `SHOT_UNCAPTURED`
+#: is: a host that lands a shot without the read has to say so here instead of
+#: passing a check that examined nothing.
+SHOT_BRANCH_UNMEASURED: list[str] = []
 #: What each shot answered, as `phase -> (cells in the band, creator calls the
 #: records account for, records compared, aAttackUnit's BOOL, whether the
 #: sound-buffer branch was forced)`.  The last field is the capture's own

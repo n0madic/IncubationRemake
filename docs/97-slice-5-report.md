@@ -1484,10 +1484,17 @@ against what that phase asked for: `74 44` on the shipped path, `eb 44` where
 the gate was forced. The two phases therefore cannot drift into being the same
 run under two names, and the guarantee no longer rests on `dbgcall`'s
 `--poke ADDR:EXPECTED=>NEW` refusing to write over unexpected bytes — that
-stays as the second guard. The six phases in hand predate the read-back and
-are pinned by name in `SHOT_BRANCH_UNMEASURED`; the capture loop re-takes a
-shot that carries no `branch_bytes`, and the run that lands them empties the
-list.
+stays as the second guard.
+
+All six were re-taken with the read in place on 2026-09-12, so
+`SHOT_BRANCH_UNMEASURED` is empty and the check speaks for every shot rather
+than for none: `shot_07`, `shot_09`, `shot_11`, `shot_41` and `shot_44` each
+read `74 44` back out of `0x0040CBF2`, and `shot_07_nosound` read `eb 44`.
+The gate the flame stream's second phase ran down is therefore measured and no
+longer inferred from the fact that a poke was requested. Wine needed three
+attempts for `shot_07` and nine for `shot_07_nosound`, which is [`91`
+§1](91-wine-runtime-probes.md)'s start-up again and not a property of the
+plans.
 
 The **value** is measured; its **provenance** is not. Two readings fit: two
 routines that both leave zeros at that depth, or a depth neither reaches, in
@@ -1567,7 +1574,7 @@ the map has a measured object**, and `_cell_inputs` aims each walked cell at
 its own `+0x05` instead of at a formula. All the records still reproduce —
 which is the point: the rule was right here, and is no longer load-bearing.
 
-Four checks hold the reading, and they bite in two different places:
+Five checks hold the reading, and they bite in two different places:
 
 | Check | Bites at | What it catches |
 |---|---|---|
@@ -1575,9 +1582,10 @@ Four checks hold the reading, and they bite in two different places:
 | `symbols.table_matches_the_disassembly` | check time | the capture's copy of those three against that decode |
 | `symbols.table_is_the_service's` | parse time | the two ids the service *was* called for, against the array's entries for the same ids |
 | `symbols.read_covers_the_array` | parse time | the read width against `[0x004FA7B0]`, the highest id the service accepts |
+| `symbols.covers_the_map` | parse time | every object id a cell *names*, against the ids the capture measured |
 
-The last two cannot fail on stored numbers — they are *about* how the bytes
-were divided — so they were exercised by re-parsing the capture's own stored
+The parse-time checks cannot fail on stored numbers — they are *about* how the
+bytes were divided — so they were exercised by re-parsing the capture's own stored
 rows with the constants mutated: at stride 77 the array's entry for id 139
 comes back `(-855638016, -2133996083, -2147483486)` against the service's
 `(60800, 19200, 0)`, and a read width of 380 does not come to the bound. That
@@ -1588,6 +1596,19 @@ would have passed at any stride. The service's answers are stored beside the
 array now. The two check-time checks were mutation-tested in the ordinary way:
 stride 71, the base moved to `OBJECT_TABLE`, the count cell moved four bytes;
 and the aim point itself with its z lifted by 160.
+
+**The bound is compared with `jle`, so the id equal to it is accepted**, and
+the read was one entry short of it: `[0x004FA7B0]` is 400 and the plan read
+ids 0–399. Nothing on `_6_.sav` names id 400, so no replay ever reached the
+gap — but the one that did would have fallen back to the capture's fixed
+target and been compared against a program aimed elsewhere. The read is
+`SYMBOL_READ_IDS = SYMBOL_IDS + 1` now, the phase's re-take predicate follows
+the plan's width rather than the map's cell count (or the wider read would
+never have landed), and the 2026-09-12 capture holds **401** entries with id
+400 measured. `symbols.covers_the_map` states the property a replay actually
+needs — every id a cell names has a measured position — instead of counting
+entries, and `_cell_inputs` raises rather than substituting when one is
+missing, which `shot.cells_are_measured` pins.
 
 One precision worth keeping: `cmp ecx, eax / jle` accepts `id == count`, so
 `[0x004FA7B0]` is the last id the service answers for and not a number of
