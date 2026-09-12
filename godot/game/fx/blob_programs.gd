@@ -328,7 +328,7 @@ const FLAME_SWEEP_LIMIT: int = 0x1E
 ## rather than the first twelve. Every one reproduces field for field, ring 0's
 ## five included, so the three slots hold zero on the shipped path.
 ##
-## The branch that skips the sound buffer was forced as well (`0x0040CBE2`,
+## The branch that skips the sound buffer was forced as well (`0x0040CBF2`,
 ## one byte, changing neither the unit nor the weapon) and reproduces the same
 ## twenty records, so the slots are zero on both.
 ##

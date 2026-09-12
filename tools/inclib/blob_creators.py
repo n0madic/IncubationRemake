@@ -346,7 +346,7 @@ class Pool:
 #: number counts nothing in particular: the stubbed run drew 177, and the
 #: impact arms draw too.  The records are what prove the creator ran.)
 #:
-#: **Both branches of the sound code give zero.**  `0x0040CBE2` decides
+#: **Both branches of the sound code give zero.**  `0x0040CBF2` decides
 #: whether `aAnimationCreateSoundBuffer` runs, and it is that call's subtree
 #: under `0x00436B60` that last writes at this depth on the path the target's
 #: unit type takes here.  Forcing `je 0x0040CC38` to `jmp` -- one byte, and it

@@ -1311,9 +1311,10 @@ recomputes a pattern.
 here has been seen in the running game this pass. And an empty pattern makes
 nothing, which is the engine's answer and also what every caller with no attack
 result behind it now gets -- a set piece that fires weapon 11 would show no
-grenade at all. *Both are taken up in §14.5.3: three of the five arms were
-fired as shots inside the engine, and the empty-pattern case turns out to have
-no engine counterpart at all.*
+grenade at all. *Both are taken up in §14.5.3: two of the five arms — weapon
+11's and weapon 41's — were fired as shots inside the engine, alongside weapon
+7, whose arm is not one of the five, and the empty-pattern case turns out to
+have no engine counterpart at all.*
 
 ### 14.5.3 The shipped call site, and six stale tick phases (2026-09-12, evening)
 
@@ -1386,7 +1387,7 @@ field, ring 0's five included. Mutating the stand-in to `(0.01, 0, 0)` fails
 restatement of it. **The three doubles are zero on the shipped path.** What
 stays open is narrower and stays written down: the residue is a history, so the
 zero is this attacker's, this weapon's and this branch of the sound code's
-answer — the `0x0040CBE2` branch that skips the sound buffer leaves a different
+answer — the `0x0040CBF2` branch that skips the sound buffer leaves a different
 routine's locals at that depth.
 
 Two more weapons went through the same phase, which is the first time any of
@@ -1466,7 +1467,7 @@ the cells a walking arm was handed are measured rather than guessed.
 | `shot_41` | 41, tracer burst | 1 | 1 | 27 |
 | `shot_44` | 44, proximity round | 5 | **5 rounds** | 30 |
 
-**Ring 0 is settled on both branches.** `0x0040CBE2` decides whether
+**Ring 0 is settled on both branches.** `0x0040CBF2` decides whether
 `aAnimationCreateSoundBuffer` runs, and it is the sound-buffer chain under
 `0x00436B60` that last writes at the depth the flame stream's first ring reads
 three doubles out of. Forcing `je 0x0040CC38` to `jmp` — one byte, and it
@@ -1484,7 +1485,7 @@ the pin now says.
 
 **The walk is measured.** `shot_09`'s band holds two cells, (18, 9) and
 (18, 10), and its arm left four records — two calls of a creator that lays
-two — each pair carrying the other cell's coordinates. Both reproduce. And
+two — each pair carrying its own cell's coordinates. Both reproduce. And
 each record's `aux` is the occupant the arm read: 4 and 17, the units standing
 on those two tiles **before** the shot, while the post-shot map shows `+0x07`
 cleared on both. That settles the order in the direction §8.1.3 already

@@ -1199,6 +1199,13 @@ SYMBOL_STRIDE = 70
 #: `symbols.read_covers_the_array` is what says the two agree -- a larger map
 #: would fail it rather than quietly reading short.
 SYMBOL_IDS = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT
+#: How many entries the plan actually reads.  The bound is compared with
+#: `jle`, so the id **equal** to it is accepted and covering every id the
+#: service answers for takes one entry more than the bound.  Reading exactly
+#: `SYMBOL_IDS` of them left the last accepted id without a measured position,
+#: and a cell naming it would have fallen back to the capture's fixed target
+#: -- a rule where the whole point of the array read is a measurement.
+SYMBOL_READ_IDS = SYMBOL_IDS + 1
 #: Where the phase keeps the service's own answers, beside the array.
 #: Not a symbol id, so a lookup by id cannot collide with it.
 SYMBOL_SERVICE_KEY = "service"
@@ -1232,7 +1239,7 @@ def symbols_plan(ids: Sequence[int]) -> str:
     # uses (`symbols.table_is_the_service's`).
     lines.append(f"aGetSymbolObjectPtr(0) --read 0x{SYMBOL_COUNT:x}:4"
                  f" --read [0x{SYMBOL_TABLE:x}]:"
-                 f"{SYMBOL_IDS * SYMBOL_STRIDE}")
+                 f"{SYMBOL_READ_IDS * SYMBOL_STRIDE}")
     return "\n".join(lines) + "\n"
 
 
@@ -1741,6 +1748,23 @@ SHOT_READ_RECORDS = BURST_READ_RECORDS
 SHOT_NO_SOUND: tuple[int, ...] = (7,)
 
 
+def _shot_attacker(state: dict[str, Any], slot: int) -> tuple[int, int]:
+    """The tile of the unit in *slot*, looked up by slot and not by position.
+
+    `SHOT_WEAPONS`' first field is a **slot** -- `shot_plan` hands it straight
+    to `aGetUnitMapElementPtr`, and the table's own comment aims from "unit 0".
+    `state["units"]` is the list of the *live* units, each carrying its own
+    `slot`, so indexing it by slot number is only right while every earlier
+    slot is alive: with slot 0 dead the plan would write the weapon into one
+    unit's record and aim from another's tile, and every check would still
+    pass because each reads back what the plan did.
+    """
+    for unit in state.get("units") or []:
+        if unit["slot"] == slot:
+            return (unit["x"], unit["y"])
+    raise SystemExit(f"the save holds no live unit in slot {slot}")
+
+
 def shot_plan(handle: int, weapon: int, attacker_slot: int,
               attacker: tuple[int, int], target: tuple[int, int],
               skip_sound_buffer: bool = False) -> str:
@@ -1820,7 +1844,7 @@ def parse_fight(rows: list[dict[str, Any]], weapon: int,
         if text and "<" not in text:
             seeds.append(struct.unpack_from("<d", _hex_bytes(text), 0)[0])
         for key, value in reads.items():
-            if key.startswith("["):
+            if key.startswith("[") and "<" not in value:
                 blob = _hex_bytes(value)
     hit = next((row.get("result") for row in rows
                 if row.get("call") == "aAttackUnit"), None)
@@ -1951,7 +1975,16 @@ def creator_plan(handle: int, group: list[dict[str, Any]],
 # --------------------------------------------------------------------------
 
 def _hex_bytes(text: str) -> bytes:
-    return bytes.fromhex(text.replace(" ", ""))
+    # `dbgcall` reports a read it could not perform as `<unreadable at 0x...>`
+    # inside an otherwise `"ok"` row, so a parser that forgot the `"<"` guard
+    # would abort the whole capture on a `ValueError` from a single bad read.
+    # Raising the capture's own error keeps that to one `failures` entry.
+    if "<" in text:
+        raise gold.CaptureError(f"unreadable read: {text}")
+    try:
+        return bytes.fromhex(text.replace(" ", ""))
+    except ValueError as exc:
+        raise gold.CaptureError(f"malformed read {text!r}: {exc}") from exc
 
 
 def parse_records(blob: bytes) -> list[dict[str, Any]]:
@@ -2354,14 +2387,20 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
 
     # **The symbol objects** the two argument tiles name, plus the whole array
     # behind them -- built from the cells the `origins` phase read, so it
-    # comes after it.  Re-taken when it answers for fewer objects than the map
-    # has cells, the same predicate `state`, `models` and `origins` use: a
+    # comes after it.  Re-taken when it answers for fewer objects than the
+    # plan reads, the same predicate `state`, `models` and `origins` use: a
     # walking arm aims at a cell the argument tiles never named, and a phase
     # holding two entries would leave that aim point a rule instead of a
     # measurement.
+    #
+    # **The threshold is the plan's own width and not the map's cell count.**
+    # Those two were equal until `SYMBOL_READ_IDS` went one past the service's
+    # `jle` bound, at which point comparing against the cell count would have
+    # kept a phase taken with the narrower read forever -- the widened read
+    # would never land, and the id the bound itself names would stay
+    # unmeasured while every check still passed.
     if (len({k for k in (phases.get("symbols") or {}) if k.isdigit()})
-            < len(phases.get("origins", {}).get("cells") or [])
-            and phases.get("origins")):
+            < SYMBOL_READ_IDS and phases.get("origins")):
         cells = phases["origins"]["cells"]
         ids = []
         for tile in (source, target):
@@ -2403,7 +2442,15 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
         # three ticks in. There is no static answer to "does this arm spawn a
         # model", so the rule is: try the sweep once per sprite creator, and
         # fall back to the direct wrapper for anything that has not landed.
+        # **A sweep that has already killed this creator is remembered
+        # outside `failures`.**  The fall-back rule above reads `failures`,
+        # and a landed `arms_` phase pops its sibling's entry -- deliberately,
+        # because an entry naming the family a creator did not land through
+        # reads as a missing phase.  That pop also erased the only record that
+        # the sweep faulted, so the next re-take chose the sweep again and
+        # spent an attempt on a known fault.  `sweep_faults` outlives the pop.
         sprite = ({r["class_id"] for r in records} <= {2, 3}
+                  and name not in set(document.get("sweep_faults") or [])
                   and "ticks_" + name not in document.get("failures", {})
                   and "arms_" + name not in document.get("failures", {}))
         # **A phase taken under a different argument vector is stale.**  The
@@ -2439,6 +2486,11 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})[tick_name] = str(err)
+            if sprite:
+                faults = document.setdefault("sweep_faults", [])
+                if name not in faults:
+                    faults.append(name)
+                    faults.sort()
             LOG.warning("%s: %s", tick_name, err)
             _save(out, document)
 
@@ -2448,17 +2500,23 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     # because it is the only plan here that patches running code.
     for weapon in sorted(FIGHT_WEAPONS):
         name = f"{FIGHT_PREFIX}{weapon:02d}"
-        if name in phases:
+        args = ([source[0], source[1], target[0], target[1]]
+                + list(FIGHT_WEAPONS[weapon][1]))
+        # **A phase taken under a different argument vector is stale**, the
+        # rule the tick phases above already follow.  `_fight_checks` replays
+        # the phase's own stored `args`, so a corrected tail in
+        # `FIGHT_WEAPONS` would otherwise be compared against a call this run
+        # no longer makes -- and silently, because the comparison is
+        # self-consistent.
+        held = phases.get(name)
+        if held is not None and list(held.get("args") or []) == args:
             continue
         try:
             rows = gold.run_plan(game_copy, dbgcall,
                                  fight_plan(state["handle"], weapon,
                                             source, target),
                                  name, attempts=attempts)
-            phases[name] = parse_fight(
-                rows, weapon,
-                [source[0], source[1], target[0], target[1]]
-                + list(FIGHT_WEAPONS[weapon][1]))
+            phases[name] = parse_fight(rows, weapon, args)
             document.get("failures", {}).pop(name, None)
             _save(out, document)
         except gold.CaptureError as err:
@@ -2476,18 +2534,30 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
     shots += [(f"{SHOT_PREFIX}{weapon:02d}_nosound", weapon, True)
               for weapon in SHOT_NO_SOUND]
     for name, weapon, skip in shots:
-        if name in phases:
-            continue
         slot, tile, _creator, tail, _own, _rep = SHOT_WEAPONS[weapon]
-        here = (state["units"][slot]["x"], state["units"][slot]["y"])
+        here = _shot_attacker(state, slot)
+        args = [here[0], here[1], tile[0], tile[1]] + list(tail)
+        # **Stale by the same rule, but against what the *plan* consumes.**
+        # `shot_plan` is shaped by the weapon, the attacker's slot and tile,
+        # the target cell and the branch -- so a change to any of those must
+        # re-take the shot.  The tail is deliberately **not** part of it:
+        # unlike `fight_`, `_shot_checks` rebuilds `base_args` from
+        # `SHOT_WEAPONS` at check time rather than replaying the stored
+        # vector, so a corrected tail is picked up without a capture and
+        # comparing it here would spend a Wine attempt on a phase that is
+        # already the engine's answer to the right call.
+        held = phases.get(name)
+        if (held is not None
+                and list(held.get("attacker") or []) == [here[0], here[1]]
+                and list(held.get("target") or []) == list(tile)
+                and bool(held.get("skip_sound_buffer")) == skip):
+            continue
         try:
             rows = gold.run_plan(game_copy, dbgcall,
                                  shot_plan(state["handle"], weapon, slot,
                                            here, tile, skip),
                                  name, attempts=attempts)
-            phases[name] = parse_fight(rows, weapon,
-                                       [here[0], here[1], tile[0], tile[1]]
-                                       + list(tail))
+            phases[name] = parse_fight(rows, weapon, args)
             phases[name]["attacker"] = list(here)
             phases[name]["target"] = list(tile)
             phases[name]["skip_sound_buffer"] = skip
@@ -3358,7 +3428,7 @@ PLAN_DIGESTS = {
     "state": "49f0ca979d1e710b03ede4a1cde1d43eee35aef6a0c90e7bdd69a7d6b281e4f7",
     "units": "ada0bfa1db2064771681de1906a4b6fb8d0e858ce389345a4ba262a3f16edd18",
     "origins": "542287db6853fa5e957096eac718b7713c529adb576578b6d94e4c452b3b874c",
-    "symbols": "5a24893f0c003678415d1cef29105e6117df5ce20e478d7c2adf64d13dc965a5",
+    "symbols": "b1fb665440d5b567f3bf39d4551eee267bcba627053bfe10a126f65e9ea7891c",
     "creator": "3a8cb6db096c56e18262f17f3573ef633061238fb448fdbe15f457852fd9589a",
     "raised": "781238ff3d31d20af3b7adbfff55e5fabe39594df0308ca49dc8ac2a73cf88df",
     "scatter": "595bcc6cb036941d3ed8b181d76529b665d6a830402966fa680da892293cea36",
@@ -5092,11 +5162,23 @@ def _fight_checks(ck: "tables.Checker", root: str,
 SHOT_UNCAPTURED: list[str] = []
 #: What each shot answered, as `phase -> (cells in the band, creator calls the
 #: records account for, records compared, aAttackUnit's BOOL, whether the
-#: sound-buffer branch was forced)`.  The last field is what stops
-#: `shot_07_nosound` from being `shot_07` under another name: two phases with
-#: identical records are exactly what a poke that never applied would give.  Measured,
-#: then pinned: a capture whose band came out narrower fails rather than
-#: quietly comparing fewer cells.
+#: sound-buffer branch was forced)`.  The first four fields are measured; the
+#: last is the capture's own `skip` argument written down, so it records which
+#: phase *asked* for the other branch and is not itself evidence that the
+#: branch was taken.
+#:
+#: What rules out `shot_07_nosound` being `shot_07` under another name is
+#: `dbgcall`'s own `--poke ADDR:EXPECTED=>NEW`: `ApplyPoke` reads the site
+#: first and dies unless it still holds `FIGHT_BRANCH_BYTES`, so a poke that
+#: never applied fails the plan rather than producing a phase with identical
+#: records.  The two phases' records are also compared against the same
+#: program, which is why the pin below is still worth having: a capture whose
+#: band came out narrower fails rather than quietly comparing fewer cells.
+#:
+#: TODO: read the branch site back after the shot, the way the weapon byte is
+#: read back through the pointer it was written to, so the field is a
+#: measurement rather than the argument.  It needs a fresh capture: the phases
+#: in hand carry no such read.
 #:
 #: The two numbers to read together are the first and the second.  Weapon 9's
 #: two cells and two calls are the walk, in the engine, over a band its own
@@ -5149,8 +5231,86 @@ def _shot_cells(phase: dict[str, Any], weapon: int) -> list[dict[str, int]]:
     account for; a cell the arm skipped -- one killed by `aKillUnit` before
     the animation, which clears the cell through `0x00477A89` -- would show up
     as more cells than calls and fail the pin.
+
+    **The band is the arm's own, not the read's.**  `marked_cells` collects
+    the whole `0x50`-`0x5E` window because that is what one read can see, but
+    a walk steps the band its own instructions test: weapon 41's is `0x5A`-
+    `0x5D` (`blob_tables.MULTI_TARGET_ARMS`, decoded from the arm), narrower
+    than weapons 9's and 11's.  A cell the resolver left at `0x50` would
+    otherwise be replayed as a call weapon 41's arm never made.  Only a walk
+    is filtered -- weapon 44 stores `0, 0` because it is five rounds at one
+    aim point rather than a walk, and its cell list is reported, not stepped.
     """
-    return list(phase.get("marked") or [])
+    cells = list(phase.get("marked") or [])
+    arm = tables.MULTI_TARGET_ARMS.get(f"weapon_muzzle/{weapon}")
+    if arm is None or arm[5] != tables.MULTI_PER_CELL:
+        return cells
+    low, high = arm[2], arm[3]
+    return [cell for cell in cells if low <= cell["state"] <= high]
+
+
+def _tile_measurement(phases: dict[str, Any], x: int,
+                      y: int) -> tuple[Any, int | None, int | None]:
+    """One tile's placed object, the height of its occupant and that slot.
+
+    The three measurements a replay needs about a tile, in one place because
+    the aim end and the attacker end need exactly the same ones.  Each is
+    read out of the phase that measured it and none is derived from a rule:
+    the object from the `symbols` array, the height from `origins`' per-slot
+    answers, the occupant from the `state` phase's unit array rather than from
+    the band read, which is taken after `aAttackUnit`'s removal sweep.
+
+    A `None` object means no measurement, not a default -- what to do about
+    that belongs to the caller, which knows which end of the shot it is.
+    """
+    origins = phases.get("origins") or {}
+    cells = origins.get("cells") or []
+    symbols = phases.get("symbols") or {}
+    index = y * gold.CAPTURE_WIDTH + x
+    where = symbols.get(str(cells[index]["object"])) if index < len(cells) \
+        else None
+    slot: int | None = None
+    for unit in (phases.get("state") or {}).get("units") or []:
+        if (unit["x"], unit["y"]) == (x, y):
+            slot = unit["slot"]
+            break
+    height: int | None = None
+    slots = list(origins.get("height_slots") or [])
+    heights = list(origins.get("heights") or [])
+    if slot is not None and slot in slots and slots.index(slot) < len(heights):
+        height = heights[slots.index(slot)]
+    return where, height, slot
+
+
+def _shot_source(base: Any, phases: dict[str, Any],
+                 attacker: Sequence[int]) -> Any:
+    """:class:`Inputs` whose **source** is the shot's own attacker.
+
+    `_creator_inputs` builds the source from `units[0]`, the first *live* unit,
+    because that is what the creator phases' argument vector is built from
+    too.  A shot's attacker is a **slot** -- `SHOT_WEAPONS`' first field, which
+    `shot_plan` hands to `aGetUnitMapElementPtr` -- and the two coincide only
+    while every earlier slot is alive.  Resolving the source from the phase's
+    own attacker tile, the way `_cell_inputs` resolves the aim, keeps the
+    replay's 3D source the unit that actually fired.
+    """
+    import dataclasses
+
+    where, measured, _slot = _tile_measurement(phases, attacker[0],
+                                               attacker[1])
+    if where is None:
+        raise _UnmeasuredCell(attacker[0], attacker[1])
+    return dataclasses.replace(
+        base, source=(where["x"], where["y"], where["z"]),
+        source_height=base.source_height if measured is None else measured)
+
+
+class _UnmeasuredCell(Exception):
+    """A walked cell whose placed object the `symbols` phase never measured."""
+
+    def __init__(self, x: int, y: int) -> None:
+        super().__init__(f"({x}, {y})")
+        self.x, self.y = x, y
 
 
 def _cell_inputs(base: Any, phases: dict[str, Any],
@@ -5188,24 +5348,20 @@ def _cell_inputs(base: Any, phases: dict[str, Any],
     """
     import dataclasses
 
-    units = {(u["x"], u["y"]): u["slot"]
-             for u in (phases.get("state") or {}).get("units") or []}
-    origins = phases.get("origins") or {}
-    slots = list(origins.get("height_slots") or [])
-    heights = list(origins.get("heights") or [])
-    slot = units.get((cell["x"], cell["y"]))
-    height = base.target_height
-    if slot is not None and slot in slots and slots.index(slot) < len(heights):
-        height = heights[slots.index(slot)]
-    cells = origins.get("cells") or []
-    index = cell["y"] * gold.CAPTURE_WIDTH + cell["x"]
-    symbols = phases.get("symbols") or {}
-    where = symbols.get(str(cells[index]["object"])) if index < len(cells) \
-        else None
-    target = base.target if where is None else (where["x"], where["y"],
-                                                where["z"])
+    where, measured, slot = _tile_measurement(phases, cell["x"], cell["y"])
+    height = base.target_height if measured is None else measured
+    # **A cell with no measured object is not replayed against a rule.**  The
+    # fallback used to be the capture's own fixed target, which is a plausible
+    # position for the wrong cell: the replay would then compare the engine's
+    # records for this cell against a program aimed somewhere else, and the
+    # mismatch would read as a transcription error rather than as a gap in the
+    # capture.  `symbols.covers_the_map` is the pin that says this cannot
+    # happen; raising here is what keeps the two from disagreeing silently.
+    if where is None:
+        raise _UnmeasuredCell(cell["x"], cell["y"])
     return dataclasses.replace(
-        base, target=target, target_height=height,
+        base, target=(where["x"], where["y"], where["z"]),
+        target_height=height,
         target_unit=0xFF if slot is None else slot & 0xFF)
 
 
@@ -5241,6 +5397,7 @@ def _shot_checks(ck: "tables.Checker", root: str,
              lambda v: f"{len(v)} shot(s) this host did not land")
     wrong: list[Any] = []
     results: dict[str, list[int]] = {}
+    unmeasured: list[Any] = []
     for name in names:
         phase = phases.get(name) or {}
         records = phase.get("records") or []
@@ -5282,28 +5439,44 @@ def _shot_checks(ck: "tables.Checker", root: str,
         built: list[dict[str, Any]] = []
         draws = blob_creators.Draws(phase["seed2_before"])
         _arity, program = blob_creators.PROGRAMS[creator]
-        if repeats == MULTI_PER_CELL:
-            # One call per cell, in the map's own order, each with the cell's
-            # own coordinates, its own aim point and its own occupant -- and,
-            # for weapon 11, the running count as the arc.
-            for index, cell in enumerate(cells):
-                args = list(base_args)
-                args[2], args[3] = cell["x"], cell["y"]
-                if weapon == SHOT_ARC_WEAPON:
-                    args[SHOT_ARC_ARGUMENT] = index
-                pool = blob_creators.Pool(_cell_inputs(inputs, phases, cell))
-                program(pool, draws, args)
-                built.extend(pool.records)
-        else:
-            # Weapon 44: `repeats` rounds at the one aim point, each drawing
-            # its own scatter, which is why five grenades do not fly as one.
-            # The aim is the phase's own target tile and not the capture's
-            # fixed one, so the same substitution the walk uses applies here.
-            aim = {"x": base_args[2], "y": base_args[3]}
-            for _round in range(repeats):
-                pool = blob_creators.Pool(_cell_inputs(inputs, phases, aim))
-                program(pool, draws, list(base_args))
-                built.extend(pool.records)
+        try:
+            # **The source is the attacker's, not the capture's first live
+            # unit.**  See `_shot_source`: the two are the same unit only
+            # while every slot before the attacker's is alive.
+            aimed = _shot_source(inputs, phases, phase["attacker"])
+            if repeats == MULTI_PER_CELL:
+                # One call per cell, in the map's own order, each with the
+                # cell's own coordinates, its own aim point and its own
+                # occupant -- and, for weapon 11, the running count as the arc.
+                for index, cell in enumerate(cells):
+                    args = list(base_args)
+                    args[2], args[3] = cell["x"], cell["y"]
+                    if weapon == SHOT_ARC_WEAPON:
+                        args[SHOT_ARC_ARGUMENT] = index
+                    pool = blob_creators.Pool(
+                        _cell_inputs(aimed, phases, cell))
+                    program(pool, draws, args)
+                    built.extend(pool.records)
+            else:
+                # Weapon 44: `repeats` rounds at the one aim point, each
+                # drawing its own scatter, which is why five grenades do not
+                # fly as one.  The aim is the phase's own target tile and not
+                # the capture's fixed one, so the same substitution the walk
+                # uses applies here.
+                aim = {"x": base_args[2], "y": base_args[3]}
+                for _round in range(repeats):
+                    pool = blob_creators.Pool(
+                        _cell_inputs(aimed, phases, aim))
+                    program(pool, draws, list(base_args))
+                    built.extend(pool.records)
+        except _UnmeasuredCell as gap:
+            # A cell the `symbols` phase never measured is a gap in the
+            # capture, and it is named as one.  Replaying it against the
+            # capture's fixed target instead would compare this cell's records
+            # against a program aimed elsewhere and report a transcription
+            # error that is not one.
+            unmeasured.append([name, gap.x, gap.y])
+            continue
         compared = min(len(built), len(records))
         for index in range(compared):
             for field in blob_creators.FIELDS:
@@ -5313,6 +5486,11 @@ def _shot_checks(ck: "tables.Checker", root: str,
         results[name] = [len(cells), len(built) // own if own else 0,
                          compared, int(phase.get("hit") or 0),
                          int(bool(phase.get("skip_sound_buffer")))]
+    ck.equal("shot.cells_are_measured", unmeasured, [],
+             lambda v: "every cell a walking arm was handed has a measured "
+                       "aim point, so no replay falls back to the capture's "
+                       "fixed target"
+                       if not v else f"{len(v)} unmeasured cell(s): {v[:3]}")
     ck.equal("shot.records", wrong, [],
              lambda v: "every record each shot's muzzle arm left reproduces "
                        "field for field, over every record it lays and every "
@@ -5356,20 +5534,28 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
              lambda v: f"{len(v)} symbol(s) the service was called for sit at "
                        f"base + id * {SYMBOL_STRIDE} of [0x{SYMBOL_TABLE:08X}], "
                        "where every walked cell's aim point is read from")
-    ck.equal("symbols.covers_the_map",
-             len([k for k in symbols if k.isdigit()]),
-             len((phases.get("origins") or {}).get("cells") or []),
-             lambda n: f"{n} object(s) measured -- one per cell, so a cell the "
-                       "argument tiles never named still has an aim point")
+    # **Every id a cell names has a measured position.**  This is the property
+    # `_cell_inputs` needs, stated directly rather than as a count: a short
+    # read, a wrong stride or an id past the read window all show up here as
+    # the ids that would have had to fall back to a rule.
+    cells = (phases.get("origins") or {}).get("cells") or []
+    unmeasured = sorted({c["object"] for c in cells
+                         if str(c["object"]) not in symbols})
+    ck.equal("symbols.covers_the_map", unmeasured, [],
+             lambda v: f"{len(v)} object id(s) a cell names with no measured "
+                       "position, so a cell the argument tiles never named "
+                       "still has an aim point")
     # **The read covers the array.**  `[0x004FA7B0]` is what the service
     # compares an id against with `jle`, so it is the last id *accepted* and
-    # not a count of records; reading `SYMBOL_IDS` of them covers every id a
-    # cell of this 20x20 map can name.  A larger map would need the number
-    # raised, and this is where the shortfall would show.
-    ck.equal("symbols.read_covers_the_array",
-             SYMBOL_IDS, symbols.get(SYMBOL_COUNT_KEY),
-             lambda n: f"{n} object(s) read, which is [0x{SYMBOL_COUNT:08X}], "
-                       "the highest id the service accepts")
+    # not a count of records -- which is why `SYMBOL_READ_IDS` is one more
+    # than the bound rather than equal to it.  A larger map would need the
+    # number raised, and this is where the shortfall would show.
+    count = symbols.get(SYMBOL_COUNT_KEY)
+    ck.check("symbols.read_covers_the_array",
+             count is not None and SYMBOL_READ_IDS > int(count),
+             f"the plan reads {SYMBOL_READ_IDS} object(s), which reaches "
+             f"[0x{SYMBOL_COUNT:08X}] = {count}, the highest id the service "
+             "accepts -- the bound is a `jle`, so that id is accepted too")
     ck.equal("symbols.table_matches_the_disassembly",
              (SYMBOL_TABLE, SYMBOL_COUNT, SYMBOL_STRIDE),
              (tables.SYMBOL_TABLE_CELL, tables.SYMBOL_COUNT_CELL,

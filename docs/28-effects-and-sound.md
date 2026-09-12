@@ -2078,22 +2078,26 @@ store lands on.
 
 2. **What the five repeating arms look like in play, with more than one cell
    in the band.** §8.1.3 decodes them out of the instructions, and on
-   2026-09-12 three of the five were additionally fired *as shots* inside the
-   running original — `blob_gold.py`'s `fight_` phase, §14.5.3 in
-   [`97`](97-slice-5-report.md): `aAttackUnit` builds the pattern, resolves it
-   and calls `aPlayFightAnimation`, so the arm dispatches over the shot's own
-   band. Weapons 7, 11 and 41 all reproduce their creator's records field for
-   field from the shipped call site, and weapon 41's arm ran at the **nine**
-   rounds it pushes rather than the ten the `burst_` phase was taken with.
+   2026-09-12 two of them — weapon 11's and weapon 41's muzzle arms — were
+   additionally fired *as shots* inside the running original, alongside
+   weapon 7, whose arm is not one of the five: `blob_gold.py`'s `fight_`
+   phase, §14.5.3 in [`97`](97-slice-5-report.md). `aAttackUnit` builds the
+   pattern, resolves it and calls `aPlayFightAnimation`, so the arm dispatches
+   over the shot's own band. Weapons 7, 11 and 41 all reproduce their
+   creator's records field for field from the shipped call site, and weapon
+   41's arm ran at the **nine** rounds it pushes rather than the ten the
+   `burst_` phase was taken with.
 
-   **All five were then fired properly**, with the weapon written into the
-   attacker's own record (`unit[+0x3F]`) so that the pattern family, the range
-   test, both switches and the sound are all the fired weapon's — §14.5.4–5 in
-   [`97`](97-slice-5-report.md), the second of which replaces the aim point's
-   stand-in rule with the object array `aGetSymbolObjectPtr` indexes, read
-   whole so that every walked cell has a measured object. Weapon 9's band held **two** cells and its
-   arm made two calls, one per cell, each with the other cell's coordinates:
-   the walk, in the engine. Weapon 44's five rounds all carry the same `aux`,
+   **All four muzzle arms were then fired properly**, with the weapon written
+   into the attacker's own record (`unit[+0x3F]`) so that the pattern family,
+   the range test, both switches and the sound are all the fired weapon's —
+   §14.5.4–5 in [`97`](97-slice-5-report.md), the second of which replaces the
+   aim point's stand-in rule with the object array `aGetSymbolObjectPtr`
+   indexes, read whole so that every walked cell has a measured object. The
+   fifth, weapon 9's **impact** arm, is not fired as a shot: it is stepped
+   through its creator phase `arms_0x0042AF10` and no further. Weapon 9's band
+   held **two** cells and its arm made two calls, one per cell, each with that
+   cell's own coordinates: the walk, in the engine. Weapon 44's five rounds all carry the same `aux`,
    so it is five rounds at one aim point and not a walk. Weapon 41's burst
    reproduces at nine rounds once the aim is lifted by the cell's *own*
    occupant's height.
