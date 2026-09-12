@@ -2319,6 +2319,14 @@ func _step_option(name: String) -> void:
 				world.gore_level = settings.gore_level
 		"faithful":
 			settings.faithful = not settings.faithful
+			# Audio changes are immediate already; the simulation half must be
+			# equally real or this row becomes a partly inert control. The named
+			# flags are saved with the world and included in its canonical hash.
+			# The picture is a lagging clone, not an event consumer for settings,
+			# so update both halves or the next completed command reports a false
+			# mirror desync.
+			settings.apply_gameplay_compat(world)
+			settings.apply_gameplay_compat(_shown)
 		"font":
 			settings.game_font = not settings.game_font
 			# Every plate and the HUD are rebuilt from one place, so the
@@ -6299,6 +6307,7 @@ func _present_attack(shooter: int, sx: int, sy: int, tx: int, ty: int,
 		"attack": attack, "xp": attack.xp,
 		"caption": _fight_caption(view, attack, own, reaction),
 		"targets": targets,
+		"pattern": _shot_pattern(attack),
 		"strings": {"missed": _strings.shipped(MODULE_FIGHT, ID_MISSED),
 			"paralyzed": _strings.shipped(MODULE_FIGHT, ID_PARALYZED)},
 		"cues_shot": cues_shot, "cues_impact": cues_impact,
@@ -6386,6 +6395,47 @@ func _fight_caption(view: Dictionary, attack: AttackResult, own: bool,
 
 
 ## The targets of one shot with the type columns the death switch reads.
+## **The shot's own outcome per cell**, as `aPlayFightAnimation`'s four
+## walking arms read it back out of the control map
+## ([method BlobTriggers.multi_target]).
+##
+## The engine does not hand the animation a list: it walks the map and reads
+## `cell[+0x00]`, which `aBuildTargetPattern` marked and the resolver has since
+## rewritten. `core` resolves the same shot and answers with the same per-cell
+## markers, so this is that answer put back into cell order -- ascending
+## `y * width + x`, which is `0x0042F730`'s index and the order the arc a
+## grenade flies is assigned in.
+##
+## A cell whose unit was **killed** keeps both its `0x5D` and its occupant for
+## this call. The removal sweep starts only after `aPlayFightAnimation`
+## returns, so the two arms that test for a unit still fire at it.
+func _shot_pattern(attack: AttackResult) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if attack == null:
+		return out
+	var state: MapState = shown().state
+	var order: Array[Dictionary] = []
+	for entry: Variant in attack.outcomes:
+		var outcome: Dictionary = DictRead.as_dict(entry)
+		var x: int = DictRead.as_int(outcome.get("x", 0))
+		var y: int = DictRead.as_int(outcome.get("y", 0))
+		if not state.in_bounds(x, y):
+			continue
+		var marker: int = DictRead.as_int(outcome.get("marker", 0))
+		# `shown()` lags the fully resolved truth by design (docs/100), and here
+		# that is the required pre-removal snapshot: the original has resolved
+		# the marker but has not yet run its removal sweep.
+		var cell: Dictionary = BlobTriggers.pattern_cell(Vector2i(x, y),
+			_muzzle_of(x, y), _object_of(x, y), marker, _unit_byte_of(x, y))
+		cell["index"] = state.index_of(x, y)
+		order.append(cell)
+	order.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return DictRead.as_int(a["index"]) < DictRead.as_int(b["index"]))
+	for cell: Dictionary in order:
+		out.append(cell)
+	return out
+
+
 func _shot_targets(attack: AttackResult) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	var types: UnitTypeTable = shown().unit_types()
@@ -6411,6 +6461,11 @@ func _shot_targets(attack: AttackResult) -> Array[Dictionary]:
 			"size": types.unit_size(type_id),
 			"cell": shown().state.index_of(x, y) if shown().state.in_bounds(x, y)
 				else 0})
+	# `aPlayFightAnimation` first scans the finished CtrlMap with a 0x17-byte
+	# stride and collects every 0x5A..0x5D cell. A repeat pass may append an
+	# earlier cell to `outcomes` late, so append order is not this final order.
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return DictRead.as_int(a["cell"]) < DictRead.as_int(b["cell"]))
 	return out
 
 
@@ -6421,13 +6476,9 @@ func _shot_voice(targets: Array[Dictionary]) -> Dictionary:
 	if worst < ShotSequence.SEVERITY_DAMAGE or targets.is_empty():
 		return {}
 	# The species the engine reads is the last unit the sweep looked at, and
-	# `targets` is already in that order: the loop at `0x0040DA83` walks the
-	# **marked** arrays (`0x004FBFF8`, `0x004FBE54`, `0x004FBE72`) in the
-	# order `aMarkTargetCells` filled them, and `Combat.attack` appends an
-	# outcome per marked cell in the same order. Sorting by cell index --
-	# which [method ShotSequence._deaths] used to do for the same local --
-	# differed for every weapon whose pattern does not mark in ascending
-	# order, which is most of them.
+	# `targets` is already in that order. `aPlayFightAnimation` builds the
+	# arrays at `0x004FBE54/72` by scanning the completed CtrlMap row-major at
+	# `0x0040C549..0x0040C79C`; the later loop at `0x0040DA83` consumes them.
 	var last: Dictionary = targets[targets.size() - 1]
 	var species: int = DictRead.as_int(last.get("species", 0))
 	# The type as well: `0x0040CBDF` reads `+0x4C` and silences 22, 25 and 26,
@@ -7082,18 +7133,52 @@ func _redraw_terrain_now() -> int:
 ## the shooter may already be dead and its slot refilled by a reinforcement,
 ## and the cell would then answer for whoever stands there now.
 func _muzzle_of(x: int, y: int, slot: int = MapState.NO_UNIT) -> Vector3i:
-	var height: int = 0
-	var lift: int = BlobTriggers.MUZZLE_HEIGHT
-	if shown() != null and shown().state.in_bounds(x, y):
-		height = shown().state.height_at(shown().state.index_of(x, y))
-		var here: int = slot
-		if here == MapState.NO_UNIT:
-			here = shown().state.unit_at(shown().state.index_of(x, y))
-		var view: Dictionary = _unit_record(here)
-		if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
-			lift = HitChance.eye_height(shown().unit_types(),
-				DictRead.as_int(view["type_id"]))
-	return BlobTriggers.muzzle_point(x, y, height, lift)
+	return BlobTriggers.muzzle_point(x, y, _floor_of(x, y),
+		_muzzle_lift(x, y, slot))
+
+
+## The **placed object's** own position, without the standing unit's height.
+##
+## A transcribed weapon creator wants the two apart: the engine reads the
+## symbol object through `aGetSymbolObjectPtr` and the unit's height through
+## `0x0047AD30`, and its arms use them differently -- the span it counts its
+## beam in is over the *objects* while the line it walks leaves the muzzle
+## (docs/97 section 14.5). Everything else here wants only the sum.
+func _object_of(x: int, y: int) -> Vector3i:
+	return BlobTriggers.muzzle_point(x, y, _floor_of(x, y), 0)
+
+
+func _floor_of(x: int, y: int) -> int:
+	if shown() == null or not shown().state.in_bounds(x, y):
+		return 0
+	return shown().state.height_at(shown().state.index_of(x, y))
+
+
+## How far above the cell floor an effect starts -- the standing unit's own
+## eye height, or [constant BlobTriggers.MUZZLE_HEIGHT] for bare ground.
+## The unit standing on a cell, as the **creator's** `aux` wants it: the low
+## byte of the cell's unit id, which `aBlob_EnergyCannon` `0x004264A0` and
+## `aBlob_CreateGrenade` `0x00426070` store in the record for a seeking arm to
+## read back as a unit-map slot (docs/28 section 7.7.1). A cell with nobody on
+## it answers zero, which is what the engine's own `byte [edx+7]` gives for an
+## empty cell's `0xFFFF` truncated.
+func _unit_byte_of(x: int, y: int) -> int:
+	if shown() == null or not shown().state.in_bounds(x, y):
+		return 0
+	return shown().state.unit_at(shown().state.index_of(x, y)) & 0xFF
+
+
+func _muzzle_lift(x: int, y: int, slot: int = MapState.NO_UNIT) -> int:
+	if shown() == null or not shown().state.in_bounds(x, y):
+		return BlobTriggers.MUZZLE_HEIGHT
+	var here: int = slot
+	if here == MapState.NO_UNIT:
+		here = shown().state.unit_at(shown().state.index_of(x, y))
+	var view: Dictionary = _unit_record(here)
+	if view.is_empty() or DictRead.as_int(view["hp"]) <= 0:
+		return BlobTriggers.MUZZLE_HEIGHT
+	return HitChance.eye_height(shown().unit_types(),
+		DictRead.as_int(view["type_id"]))
 
 
 ## What the picture knows about `slot`, or the record held over its death.
@@ -7268,7 +7353,12 @@ func _present_use(slot: int, outcome: Dictionary, front: Vector2i) -> float:
 			cells.append(Vector2i(step[0], step[1]))
 		frames = PushSequence.enqueue(_queue(), _host(), slot, pushed, front,
 			cells, used.kind == PUSH_INTO_HOLE)
-		return float(frames) / SequenceQueue.FRAMES_PER_SECOND
+		var seconds: float = float(frames) / SequenceQueue.FRAMES_PER_SECOND
+		if used.kind == "push_onto_mine" and not used.blast.is_empty() \
+				and not cells.is_empty():
+			var at: Vector2i = cells[cells.size() - 1]
+			seconds += _present_blast(pushed, at.x, at.y, used.blast)
+		return seconds
 	if not _use_is_staged(used, front):
 		return 0.0
 	var cues: Array[Dictionary] = _events.for_use(used) if _events != null \
@@ -8173,7 +8263,8 @@ class MainShotHost extends ShotHost:
 		return main._audio != null and main._audio.slot_playing(slot)
 
 	func muzzle(weapon: int, sx: int, sy: int, tx: int, ty: int,
-			shooter: int = MapState.NO_UNIT) -> void:
+			shooter: int = MapState.NO_UNIT,
+			pattern: Array[Dictionary] = []) -> void:
 		if main._triggers == null or main._fx == null:
 			return
 		# The creator's own write over the flag: a round begins its flight.
@@ -8198,8 +8289,20 @@ class MainShotHost extends ShotHost:
 		# each (docs/28 section 8.1.1).
 		var joints: Dictionary[String, Vector3i] = {}
 		if main._units != null and shooter != MapState.NO_UNIT:
-			for name: Variant in main._triggers.joints("weapon_muzzle",
+			var parts: Array = main._triggers.joints("weapon_muzzle", weapon)
+			# **And the part a creator resolves for itself.** Ten of the
+			# thirteen push `"M"` inside their own body rather than taking it
+			# as an argument, so the document's joint column is empty for them
+			# and the shot used to leave the body axis
+			# ([constant BlobTriggers.CREATOR_JOINTS]).
+			for key: Variant in main._triggers.creators("weapon_muzzle",
 					weapon):
+				var own: String = DictRead.as_string(
+					BlobTriggers.CREATOR_JOINTS.get(
+						DictRead.as_string(key), ""))
+				if not own.is_empty():
+					parts.append(own)
+			for name: Variant in parts:
 				var part: String = DictRead.as_string(name)
 				if not part.is_empty() and not joints.has(part) \
 						and main._units.has_muzzle(shooter, part):
@@ -8209,7 +8312,9 @@ class MainShotHost extends ShotHost:
 		# placed object rather than the point (BlobTriggers.SHOCK_WAVE_CREATOR).
 		var made: int = main._triggers.muzzle(weapon,
 			main._muzzle_of(sx, sy, shooter), main._muzzle_of(tx, ty), joints,
-			Vector2i(sx, sy))
+			Vector2i(sx, sy), Vector2i(tx, ty),
+			main._object_of(sx, sy), main._object_of(tx, ty),
+			main._unit_byte_of(tx, ty), pattern)
 		# A point-blank burst asks for nested creators the constructor table
 		# cannot build -- the zoom bobs and the plasma sparks its own branch
 		# runs at the target (docs/28 section 8.1.1). They go in through the
@@ -8226,11 +8331,13 @@ class MainShotHost extends ShotHost:
 			main._triggers.arrived_write(), made,
 			main._fx.in_use() >= BlobPool.SLOTS))
 
-	func impact(weapon: int, tx: int, ty: int) -> void:
+	func impact(weapon: int, tx: int, ty: int,
+			pattern: Array[Dictionary] = []) -> void:
 		if main._triggers == null:
 			return
 		var _made: int = main._triggers.impact(weapon,
-			main._muzzle_of(tx, ty), Vector2i(tx, ty))
+			main._muzzle_of(tx, ty), Vector2i(tx, ty),
+			main._object_of(tx, ty), main._unit_byte_of(tx, ty), pattern)
 		# **The impact end asks for creators too**, and used to drop them on
 		# the floor: weapon 36's shock wave is a transcribed creator and the
 		# only way it reaches the pool is this drain.

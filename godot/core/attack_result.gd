@@ -15,7 +15,9 @@ var overheat: String = "none"
 var facing: int = 0
 ## `[x, y, marker]` for every cell the weapon covers.
 var marked: Array[PackedInt32Array] = []
-## One entry per marked cell that held a unit.
+## One entry per distinct input-marker cell that held a unit. A secondary
+## explosion requests another row-major sweep, but first-write-wins and the
+## resolver's output marker prevent the same coordinate resolving twice.
 var outcomes: Array[Dictionary] = []
 ## `aAttackUnit`'s own return value: the experience the shot earned, summed
 ## over its kills (`0x0046BFB8`), which `aPlayFightAnimation` takes as its

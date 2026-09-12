@@ -918,7 +918,8 @@ FIELD_TELEPORT_IN = 9
 #: The other half of the pair -- ``0x004701B2``, ``cmp byte [esi+0x0D], 0x0A``.
 FIELD_TELEPORT_OUT = 10
 
-#: ``docs/21`` §4 -- the weapon a mine resolves as, 100 damage at 100 hit.
+#: ``docs/22`` §7.3 -- the pattern id a mine passes to ``aSetAimFields``.
+#: ``aExecuteBomb`` then uses its own no-hit-roll, 30-point damage resolver.
 MINE_WEAPON = 36
 
 #: Which cell of a step the delay column is charged for -- **measured**.

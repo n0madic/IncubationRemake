@@ -132,7 +132,54 @@ FILL_ARGUMENT = 0
 #: and left a phase that looks exactly like "the creator refused the tile".
 #: See :data:`BURST_ARGS`, which is the same correction for the three
 #: seven-argument burst creators and predates this one.
-SWITCH_ARGS: dict[int, tuple[int, ...]] = {0x00422B80: (2,)}
+SWITCH_ARGS: dict[int, tuple[int, ...]] = {
+    0x00422B80: (2,),
+    # `aBlob_CreateSporeExplosion`'s tail is `(0, type)`, and the type is the
+    # **fourth** argument.  Weapon 26's arm `0x0040D55E` pushes 0 -- nine
+    # rings of three -- where weapons 23 and 25 push 1, which is three rings;
+    # anything else is the cascade's fall-through and makes nothing, which is
+    # what `argument_vector`'s tile coordinate produced.  Nine rings is the
+    # wider arm and the one the reported defect was about.
+    0x00429F40: (0, 0),
+    # -- 2026-09-12: the other nine, read the same way -------------------
+    #
+    # Every arm of both weapon switches was disassembled and its pushes read
+    # right to left.  Two registers the **dispatcher** sets carry into every
+    # muzzle arm and are the source of most of what follows: `0x0040CC3C` is
+    # `xor edi, edi` and `0x0040CC41` is `mov ebx, 1`, four instructions
+    # ahead of the jump at `0x0040CC5F`.  So an arm that pushes a bare `ebx`
+    # past the four coordinates is pushing **1**, and one that pushes `edi`
+    # is pushing 0 -- neither is a tile number, which is what
+    # `argument_vector` had been filling those slots with.
+    #
+    # `aBlob_CreateFireWheel`, weapon 44's impact `0x0040D87D`:
+    # `push 0 / push ebx / push ebp`.
+    0x004228F0: (0,),
+    # `aBlob_CreateTracerBullet`, weapon 23's muzzle `0x0040CDEE`: the two
+    # dispatcher registers, `push edi / push ebx` ahead of the coordinates.
+    0x00425400: (1, 0),
+    # `aBlob_CreateGrenade`, weapons 8 and 42 `0x0040D160`: `push ebx`.
+    0x00425CA0: (1,),
+    # `aBlob_CreateGrenade` again at `0x0040D0FD`, weapon 44's muzzle, which
+    # is the arm with **literals**: `push 0xff / push 0xa`.  Weapon 11's arm
+    # `0x0040D077` pushes `[edi+0xA]` and `bl` instead -- a per-weapon pair
+    # out of a record this capture cannot reach -- so the literal arm is the
+    # one a plan can reproduce and the one taken here.
+    0x00426070: (0xA, 0xFF),
+    # `aBlob_CreateFlameStream` (`0x0040D05D`'s trace name), weapons 7 and
+    # 40.  Its two arms push **different** literals -- `push 4` at
+    # `0x0040D00E` and `push 0xA` at `0x0040D041` -- so this is per-weapon
+    # the way `0x00429F40`'s type and `0x00426070`'s pair are, and the
+    # capture can only exercise one of them.  Weapon 7's is taken.
+    0x00427C80: (4,),
+    # `aBlob_CreateLaser` `0x0040D31E` (weapon 47) and `0x0040D2D8`
+    # (weapon 14): `push ebx`.
+    0x00428200: (1,),
+    0x00428570: (1,),
+    # `aBlob_CreateLineFire`'s neighbour at `0x0040D63A`, weapon 13's
+    # impact: `push 0`.
+    0x00429C30: (0,),
+}
 
 #: How many creators go into one plan.  **One**, and the reasoning is worth
 #: keeping because the first version of it was wrong.
@@ -559,6 +606,31 @@ CREATOR_MODELS = (
     "A_BLASER.3DI", "A_BLIZ01.3DI", "A_BLIZ02.3DI", "A_BLIZ03.3DI",
     "A_CASE.3DI", "A_LASERG.3DI", "A_LINE5.3DI", "A_LINE6.3DI",
     "A_PLSMA1.3DI", "A_SPARK.3DI",
+    # `aBlob_CreateShockWave`'s ring. It was absent while the shock wave's
+    # own phase held the fall-through arm's zero records, and the moment
+    # `SWITCH_ARGS` fixed that argument the sixty records the engine makes
+    # were all refused on this side -- a class-0 spawn whose name the
+    # `models` phase does not carry cannot be built (docs/28 section 7.5).
+    "A_EXPL05.3DI",
+    # The two projectile creators' rounds, 2026-09-12: `aBlob_CreateGrenade`
+    # `0x00425CA0` pushes the first at `0x00426043` and
+    # `aBlob_CreateSpidyMines` `0x00426B70` the second at `0x00426F13`.
+    # Both were refused on this side for the same reason the shock wave's
+    # ring was -- the `models` phase did not carry the name -- which is what
+    # `native.creator_program_records` says when a record goes missing.
+    "A_MINE1.3DI", "A_MINE2.3DI",
+    # `aBlob_CreateFireWheel`'s own, 2026-09-12.  Its wheel alternates three
+    # `A_EXPL03.3DI` with one `A_EXPL04.3DI` (`0x004229AA` and `0x0042297A`),
+    # and the capture carries only the second -- so twenty-three of the thirty
+    # are refused on this side, which `CREATOR_PROGRAM_DRAWS` records as the
+    # refusal count rather than hiding.  The twelve slots the capture reads
+    # back are all the creator's *first* loop, which makes no model at all, so
+    # the record diff is unaffected.
+    "A_EXPL03.3DI",
+    # `aBlob_CreateGrenade` `0x00426070`'s round, 2026-09-12: like the fire
+    # wheel's two and the tube smoke's, the name is copied into a stack buffer
+    # before the constructor is called, so no call site carries it.
+    "A_LASER.3DI",
 )
 
 #: The same, for the twelve creators an update **arm** calls (`docs/97` §49).
@@ -1841,6 +1913,7 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             phases["hooks"]["rotations"] = [[list(v), list(a)]
                                             for v, a in HOOK_ROTATIONS]
             phases["hooks"]["object_ids"] = hook_object_ids()
+            document.get("failures", {}).pop("hooks", None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["hooks"] = str(err)
@@ -1860,6 +1933,14 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
                                  models_plan(_model_names()),
                                  "blob_models", attempts=attempts)
             phases["models"] = parse_models(rows, _model_names())
+            # **The pop the other phases do and these five did not.**  A
+            # phase that lands after a run that lost it left its name in
+            # `failures`, so `NATIVE_FAULTS` reported a plan as unlanded
+            # with the plan's own answer sitting beside it in the same
+            # document -- which is exactly the direction of error that
+            # list exists to prevent.  Found on 2026-09-12, when the
+            # model re-take landed and `models` stayed on the list.
+            document.get("failures", {}).pop("models", None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["models"] = str(err)
@@ -1873,6 +1954,7 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             rows = gold.run_plan(game_copy, dbgcall, units_plan(),
                                  "blob_units", attempts=attempts)
             phases["units"] = parse_units(rows)
+            document.get("failures", {}).pop("units", None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["units"] = str(err)
@@ -1886,6 +1968,7 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             rows = gold.run_plan(game_copy, dbgcall, origins_plan(),
                                  "blob_origins", attempts=attempts)
             phases["origins"] = parse_origins(rows)
+            document.get("failures", {}).pop("origins", None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["origins"] = str(err)
@@ -1905,6 +1988,7 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
             rows = gold.run_plan(game_copy, dbgcall, symbols_plan(ids),
                                  "blob_symbols", attempts=attempts)
             phases["symbols"] = parse_symbols(rows, ids)
+            document.get("failures", {}).pop("symbols", None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})["symbols"] = str(err)
@@ -1938,7 +2022,16 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
         sprite = ({r["class_id"] for r in records} <= {2, 3}
                   and "ticks_" + name not in document.get("failures", {})
                   and "arms_" + name not in document.get("failures", {}))
-        if "ticks_" + name in phases or "arms_" + name in phases:
+        # **A phase taken under a different argument vector is stale.**  The
+        # `SWITCH_ARGS` tail postdates the first capture, so six tick phases
+        # held the answer to a call the tools no longer make -- most visibly
+        # `arms_0x00426070`, whose grenade was kind 26 because the fifth
+        # argument was still a tile number.  The predicate is the same one
+        # `state` and `models` use: re-take the phase whose stored arguments
+        # are not the ones this run would pass.  A re-take that does not land
+        # leaves the phase in hand, because only a success assigns.
+        held = phases.get("ticks_" + name) or phases.get("arms_" + name)
+        if held is not None and list(held.get("args") or []) == list(args):
             continue
         tick_name = ("ticks_" if sprite else "arms_") + name
         slots = sorted({r["slot"] for r in records})[:READ_RECORDS]
@@ -1949,6 +2042,12 @@ def capture(root: str, game_copy: Path, dbgcall: Path, out: Path,
                                  attempts=attempts)
             phases[tick_name] = parse_ticks(rows, entry)
             phases[tick_name]["args"] = list(args)
+            # A re-take may land through the other family than the phase it
+            # replaces, so the stale name goes with it rather than staying
+            # behind as a second answer for the same creator.
+            other = ("arms_" if sprite else "ticks_") + name
+            phases.pop(other, None)
+            document.get("failures", {}).pop(tick_name, None)
             _save(out, document)
         except gold.CaptureError as err:
             document.setdefault("failures", {})[tick_name] = str(err)
@@ -2779,6 +2878,15 @@ CREATOR_EXTENT = tables.CREATOR_EXTENT
 PLACEMENT_LAW: dict[str, str] = {
     "0x00424D20": "scatter", "0x00425810": "scatter",
     "0x00427410": "scatter", "0x0042A9D0": "scatter",
+    # 2026-09-11, with the type its callers push rather than a tile number:
+    # `aBlob_CreateSporeExplosion` lays rings of three **around the source**
+    # and climbs, so it is a burst and not a line.
+    "0x00429F40": "scatter",
+    # 2026-09-12, the same correction for `aBlob_CreateGrenade`: weapon 44's
+    # arm pushes 0xFF, the **proximity** round, whose three draws scatter the
+    # aim point off the line before the direction is taken.  A fixed arc 0-5
+    # would have stayed on it.
+    "0x00426070": "scatter",
 }
 
 #: **The plans, hashed.**  Nine constants in this file shape the text sent to
@@ -2827,37 +2935,66 @@ NATIVE_COVERAGE = 30
 #: 0 times in 10 -- as it did for the three below and for `--probe-startup 3`
 #: taken the same hour.  Its transcription is therefore executed by nothing
 #: here; see `PROGRAM_ARGS_STALE`.
-NATIVE_FAULTS: list[str] = ["0x00422B80", "burst_0x00423D80",
-                            "burst_0x00424250", "burst_0x004247C0"]
+#: **2026-09-11: empty, and that is the measurement.**  Wine reached the
+#: anchor for every plan on this host that day -- `--probe-startup` answered
+#: 1 of 3 where `docs/91` §1 had recorded 0 of 10 -- so the shock wave's
+#: re-take, all three `burst_*` phases and the spore explosion's corrected
+#: arguments all landed.  The list stays as the pin it is: a plan that fails
+#: again belongs in it, with the date.
+NATIVE_FAULTS: list[str] = [
+    # **2026-09-12, second pass: empty again.**  The eight phases `SWITCH_ARGS`
+    # corrected that morning were asked for again and Wine reached the anchor 0
+    # times in 80 attempts, and the `models` re-take lost its ten too; that
+    # afternoon, on the same host with nothing changed but the hour, every one
+    # of the nine landed -- `blob_models` on attempt 1, the eight creators in
+    # one to six tries each, with `--probe-startup 3` answering 0 of 3 in
+    # between.  It is `docs/91` §1's intermittency measured twice in a day and
+    # in both directions, and the list is the pin either way: a plan that
+    # fails again belongs in it, with the date.
+    #
+    # A stale entry is its own hazard, and one was found here.  `models`,
+    # `hooks`, `units`, `origins` and `symbols` recorded a failure and never
+    # cleared it on the next success, so the morning's `models` fault outlived
+    # the afternoon's landing and this list reported a plan as unlanded with
+    # that plan's own answer in the same document.  Every one of the five now
+    # pops its name (`capture`).
+]
 #: How many of the thirty produced records on the captured tile, and how many
 #: records in all.  The rest refused the tile, which is a measurement of which
 #: tile a creator will act on rather than a hole.
-NATIVE_PRODUCERS = 23
-NATIVE_RECORDS = 198
+NATIVE_PRODUCERS = 27
+NATIVE_RECORDS = 236
 
 #: creator -> how many times it advances the uncounted stream, measured.
 #: Beside `blob_tables.CREATOR_DRAW_SITES`, which is the static reach.
 CREATOR_DRAWS: dict[str, int] = {
     "0x00420A50": 0, "0x004227C0": 0, "0x004228F0": 90, "0x00422B80": 0,
     "0x00423D80": 0, "0x00424250": 0, "0x004247C0": 0, "0x00424D20": 25,
-    "0x00425400": 0, "0x00425810": 90, "0x00425CA0": 0, "0x00426070": 0,
+    "0x00425400": 0, "0x00425810": 90, "0x00425CA0": 0, "0x00426070": 3,
     "0x004264A0": 3, "0x004268B0": 0, "0x00426B70": 0, "0x00426F90": 200,
-    "0x00427410": 203, "0x00427810": 7, "0x00427C80": 0, "0x00428200": 0,
+    "0x00427410": 203, "0x00427810": 7, "0x00427C80": 40, "0x00428200": 0,
     "0x00428570": 0, "0x00429180": 144, "0x004294E0": 120, "0x004295D0": 90,
-    "0x00429A80": 108, "0x00429C30": 0, "0x00429F40": 0, "0x0042A9D0": 200,
+    "0x00429A80": 108, "0x00429C30": 0, "0x00429F40": 108, "0x0042A9D0": 200,
     "0x0042ACF0": 90, "0x0042AF10": 6,
 }
-#: How many creators advance the second stream at all.
-CREATORS_THAT_DRAW = 14
+#: How many creators advance the second stream at all.  **17 on 2026-09-12**:
+#: the eight phases `SWITCH_ARGS` corrected landed that day, and two of them
+#: -- `aBlob_CreateGrenade` `0x00426070` and `aBlob_CreateFlameStream`
+#: `0x00427C80` -- reach a generator only on the arm their real tail selects.
+CREATORS_THAT_DRAW = 17
 #: Creators that carry a call to the generator but do not reach it here.
 #: The three seven-argument burst creators are among them for a reason that
 #: is not the tile: `argument_vector` gave them a **round count of zero**, so
 #: their loops -- and every draw inside those loops -- never ran.  See
 #: `BURST_ARGS`.
+#: **2026-09-12**: two came off it, `0x00426070` and `0x00427C80`, for the
+#: same reason the three burst creators came off `BURST_ARGS` -- their arm's
+#: real tail selects the branch the draws are on.  `0x00426070`'s 0xFF is the
+#: proximity round and draws three; `0x00427C80`'s ring count of four draws
+#: forty.
 DRAW_SITES_NOT_TAKEN: list[str] = [
     "0x00420A50", "0x004227C0", "0x00422B80", "0x00423D80", "0x00424250",
-    "0x004247C0", "0x00426070", "0x00426B70", "0x00427C80", "0x00428570",
-    "0x00429C30", "0x00429F40",
+    "0x004247C0", "0x00426B70", "0x00428570", "0x00429C30",
 ]
 #: Creators whose velocities solve to `aRandom(base, span)` in their draws.
 #: **None of the fourteen**, which is consistent with them drawing an angle
@@ -2884,7 +3021,7 @@ FIT_SCALES = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 #: Pinned rather than tolerated: a refusal is a measurement of which tile a
 #: creator will act on, and a census fails both when it grows and when it
 #: shrinks.
-SILENT_REFUSALS = 7
+SILENT_REFUSALS = 3
 
 #: What the scatter phase found.  Pinned so a re-capture that answers
 #: differently fails rather than quietly rewriting the finding.  The same
@@ -3545,16 +3682,19 @@ TICK_FIELDS = ("x", "y", "z", "vx", "vy", "vz", "rot_x", "rot_y", "rot_z",
 #: every other coverage number here follows.  An arm is on this list only if
 #: every occupied slot of its creator's pool agreed with the transcription in
 #: every field for every tick.
+#: **2026-09-12: 27.**  Arms 31 and 47 joined it when `ticks_0x00425400` and
+#: `ticks_0x00427C80` landed -- kind 32, the spore cannon's spray round, and
+#: kind 49, the flame stream's -- and neither needed a change to the arm.
 TICK_ARMS_NATIVE: list[int] = [
-    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
-    61, 63, 68, 71, 73,
+    5, 6, 8, 9, 11, 12, 13, 15, 20, 21, 22, 25, 31, 33, 42, 44, 45, 47, 48, 49, 58,
+    60, 61, 63, 68, 71, 73,
 ]
 #: The arms the capture actually stepped, and the phases that stepped them.
 #: Pinned by name so a thinner capture **fails** rather than quietly reporting
 #: a smaller number -- the rule every other coverage figure here follows.
 TICK_ARMS_SEEN: list[int] = [
-    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
-    61, 63, 68, 71, 73,
+    5, 6, 8, 9, 11, 12, 13, 15, 20, 21, 22, 25, 31, 33, 42, 44, 45, 47, 48, 49, 58,
+    60, 61, 63, 68, 71, 73,
 ]
 #: Stepped and **not** agreeing: none any more.  Arms 25 and 58 -- the two
 #: seekers of kinds 26 and 61 -- sat here until `_seek` stopped inventing a
@@ -3666,14 +3806,18 @@ SEEK_POKED_SLOT = 0
 #: no position to fit and is the `target_missing` branch instead.
 POKED_SEEKER_SLOTS: list[tuple[int, int]] = [(0, 0), (1, 1), (10, 10)]
 TICK_PHASES: list[str] = [
-    "arms_0x00424D20", "arms_0x00425CA0", "arms_0x00426070",
+    "arms_0x00422B80", "arms_0x00424D20", "arms_0x00425CA0",
+    "arms_0x00426070",
     "arms_0x004264A0", "arms_0x00426B70", "arms_0x00426F90",
     "arms_0x00427410", "arms_0x00427810", "arms_0x00428200",
     "arms_0x00429180", "arms_0x004294E0", "arms_0x004295D0",
     "arms_0x0042A9D0", "arms_0x0042ACF0", "arms_0x0042AF10",
     "ticks_0x00420A50", "ticks_0x004227C0", "ticks_0x004228F0",
-    "ticks_0x00425810", "ticks_0x004268B0", "ticks_0x00428570",
-    "ticks_0x00429A80", "ticks_0x00429C30",
+    # The two added on 2026-09-12, both off `PROGRAM_ARGS_STALE`: the spore
+    # cannon's spray and the flame stream.
+    "ticks_0x00425400", "ticks_0x00425810", "ticks_0x004268B0",
+    "ticks_0x00427C80", "ticks_0x00428570",
+    "ticks_0x00429A80", "ticks_0x00429C30", "ticks_0x00429F40",
 ]
 #: The poked batches, by name, and what stepping them found.  Filled in from
 #: a capture and pinned, so a thinner one fails rather than reporting less.
@@ -3739,7 +3883,15 @@ PROBE_VECTORS_PER_ARM: list[tuple[int, int]] = [(25, 2), (42, 1), (45, 1),
 
 #: How many of the 74 arms a shot can reach at all.  The rest cannot be
 #: populated by firing a weapon, so no capture of this shape can reach them.
-TICK_ARMS_REACHABLE = 24
+#: **27 on 2026-09-12.**  The count and `TICK_ARMS_SEEN` are the same size and
+#: **not the same set**: arm 26 is reachable and unstepped, and arm 25 is
+#: stepped and no longer reachable.  Both are `aBlob_CreateGrenade`, whose
+#: creator phase was re-taken with weapon 44's 0xFF -- kind 27, the proximity
+#: round -- while its `arms_` phase still holds the kind-26 records the old
+#: tile-number argument made.  The arm the older phase stepped is a
+#: measurement and stays one; the newer kind's arm is a gap, and this is where
+#: it is written down.
+TICK_ARMS_REACHABLE = 27
 
 
 def _seek_positions(phases: dict[str, Any]) -> dict[int, tuple[int, int, int]]:
@@ -4023,12 +4175,12 @@ def _unit_object_checks(ck: "tables.Checker", phases: dict[str, Any]) -> None:
 #: The ten creators `docs/28` §7.6.1 left with "a residue of fields with no
 #: named mechanism", now transcribed instruction by instruction in
 #: `tools/inclib/blob_creators.py` -- `docs/97` §22.
-CREATOR_PROGRAMS_EXPECTED = 14
+CREATOR_PROGRAMS_EXPECTED = 28
 #: The burst creators whose `burst_*` phase this capture does not hold.
 #: Empty is the goal; each name here is a transcription **nothing in this
 #: repository executes** -- `_creator_program_checks` skips past it -- so the
 #: report has to say so rather than let the green count imply otherwise.
-BURST_UNCAPTURED = ("0x00423D80", "0x00424250", "0x004247C0")
+BURST_UNCAPTURED: tuple[str, ...] = ()
 
 #: Creators whose phase in hand was taken with arguments :data:`SWITCH_ARGS`
 #: has since corrected, so the records it holds are a **fall-through arm's**
@@ -4036,7 +4188,56 @@ BURST_UNCAPTURED = ("0x00423D80", "0x00424250", "0x004247C0")
 #: next run with Wine; until one happens the transcription is unexecuted and
 #: this list is what says so, the same way `BURST_UNCAPTURED` does.  Empty is
 #: the goal.
-PROGRAM_ARGS_STALE = ("0x00422B80",)
+PROGRAM_ARGS_STALE: tuple[str, ...] = (
+    # **2026-09-12: two of an original eight**, and they are the two the
+    # reading could not rescue.  Every arm of both weapon switches was
+    # disassembled and its pushes read; eight creators were being called with
+    # `argument_vector`'s tile number where the arm pushes something else, and
+    # `SWITCH_ARGS` now carries the real tail for each.  Wine answered 0 of 80
+    # that day, so no phase was re-taken -- but six of the eight did not need
+    # one: the corrected tail turned out to be a slot their body never loads,
+    # so the phase already in hand is the engine's answer to the call their arm
+    # makes.  `0x004228F0` and `0x00429C30` load `[esp+4]` and `[esp+8]` alone;
+    # `0x00425CA0`, `0x00426070`, `0x00428200` and `0x00428570` each read their
+    # tail slot nowhere (`0x00426070`'s **sixth** argument is its type and the
+    # fifth is the dead one).
+    #
+    # These two are different.  `0x00425400`'s tail is a **round count**, so a
+    # tile number ran its loop a wrong number of times, and `0x00427C80`'s is
+    # a type that chooses between two shapes.  Both phases hold a call nobody
+    # would make and verify nothing.
+)
+
+#: Creators whose transcription is complete and whose phase has the right
+#: arguments, but whose **model name** the capture's `models` phase predates:
+#: `0x00420950` refuses a class-0 record whose name does not resolve, so the
+#: replay is a record short and the diff is about the capture rather than
+#: about the program.  Adding a name to :data:`CREATOR_MODELS` re-takes that
+#: phase on the next run with Wine; empty is the goal, exactly as above.
+PROGRAM_MODELS_UNCAPTURED: tuple[str, ...] = ()
+
+#: Creators whose transcription is **deliberately not the creator**, with the
+#: divergence named where it is made.  One entry, and it is not a shortcut:
+#: `aBlob_CreateFlameStream` `0x00427C80` reads three uninitialised stack
+#: doubles on its first ring, so there is nothing in the routine to transcribe
+#: there -- `blob_creators.FLAME_RING0_DIVERGENCE` carries the whole argument
+#: for the zero that stands in, and a capture is what would measure it.
+#: **Empty since 2026-09-12**, and the reason is the capture rather than a
+#: change of mind: `0x00427C80` was here because its first ring reads three
+#: uninitialised stack doubles and zero stood in for them with only a reading
+#: behind it.  The creator was then called inside the live process and every
+#: one of its twelve records agreed field for field, ring 0's five included, so
+#: the transcription is no longer *deliberately* not the creator.  What remains
+#: is which frame the slots belong to, and that is
+#: `blob_creators.FLAME_RING0_DIVERGENCE`, not a divergence in what this module
+#: compares.  The tuple stays as the pin it is.
+PROGRAM_DIVERGENT: tuple[str, ...] = ()
+
+#: The model names `CREATOR_MODELS` asks for that the capture's `models`
+#: phase does not yet answer, because it predates them and Wine has not
+#: landed the re-take.  Empty is the goal; a name here is what makes the
+#: census above legible instead of quietly smaller.
+MODEL_NAMES_UNCAPTURED: tuple[str, ...] = ()
 
 #: How many draws each takes from the second generator, and how many records
 #: the constructor refuses for a zero `life`.  Both are pinned because both
@@ -4044,6 +4245,49 @@ PROGRAM_ARGS_STALE = ("0x00422B80",)
 #: record comparison can only see the pool's first twelve, and the draw count
 #: sees the whole call.
 CREATOR_PROGRAM_DRAWS: dict[str, tuple[int, int]] = {
+    # The two added on 2026-09-12 by *reading* the prologue: both take a third
+    # argument nothing in the body loads, so the phase already in hand is the
+    # engine's answer to the call their arm really makes.  The fire wheel's 23
+    # refusals are its `A_EXPL03.3DI` records, a name the capture's `models`
+    # phase predates (`MODEL_NAMES_UNCAPTURED`), and every one of them is past
+    # the twelve slots compared.
+    "0x004228F0": (90, 0),
+    # -- 2026-09-12, the two that came off `PROGRAM_ARGS_STALE` by capture
+    # rather than by reading.  Wine landed every phase this day, so both were
+    # re-taken with the literals their arms push and both now diff field for
+    # field.  `0x00425400`'s round count of one lays two records and draws
+    # nothing; `0x00427C80`'s ring count of four lays twenty and draws forty --
+    # a size and a column per record.
+    "0x00425400": (0, 0),
+    "0x00427C80": (40, 0),
+    # -- and the three the `models` re-take unblocked the same day.  All
+    # three were transcribed and correct all along; what stood between them
+    # and a diff was `0x00420950` refusing a class-0 record whose name the
+    # capture's model phase could not resolve.  `0x00426070` draws three --
+    # weapon 44's 0xFF is the proximity round -- and the other two draw
+    # nothing.
+    "0x00425CA0": (0, 0),
+    "0x00426070": (3, 0),
+    "0x00426B70": (0, 0),
+    "0x00429C30": (0, 0),
+    # The two lasers, off `PROGRAM_ARGS_STALE` the same way: their fifth
+    # argument is a slot neither body loads.  Both make class-2 sprites only,
+    # so nothing is refused and both reproduced the engine field for field --
+    # after the seven-dot one was corrected to take its direction again at
+    # every dot, which is what the diff caught.
+    "0x00428200": (0, 0),
+    "0x00428570": (0, 0),
+    # The three added on 2026-09-12, each with the arguments its own weapon
+    # arm pushes and each reproduced field for field on the first run.
+    "0x004294E0": (120, 0),
+    "0x004295D0": (90, 0),
+    "0x0042ACF0": (90, 0),
+    # The five that landed on 2026-09-11, when Wine reached the anchor for
+    # every plan: the shock wave's re-take with the type its callers push,
+    # all three `burst_*` phases and the spore explosion's nine rings.
+    "0x00420A50": (0, 0),
+    "0x00422B80": (0, 0), "0x00423D80": (40, 0), "0x00424250": (9, 0),
+    "0x004247C0": (40, 0), "0x00429F40": (108, 0),
     "0x00424D20": (25, 1), "0x00425810": (90, 0), "0x004264A0": (3, 0),
     "0x00426F90": (200, 0), "0x00427410": (203, 0), "0x00427810": (7, 3),
     "0x00429180": (144, 0), "0x00429A80": (108, 0), "0x0042A9D0": (200, 0),
@@ -4115,8 +4359,49 @@ def _creator_inputs(root: str, phases: dict[str, Any]) -> Any:
 #: statement of *the capture's* reach; it is no longer the only thing
 #: standing behind the six.
 CREATOR_CONSTANTS_UNDISCRIMINATED = (
+    # **Nine left this list on 2026-09-12**, and none of them by a perturbation
+    # test: the six `PROJECTILE_*` and the three `SPIDY_BOB_*` were here
+    # because `0x00425CA0` and `0x00426B70` were skipped whole for a model
+    # handle -- `A_MINE1.3DI` and `A_MINE2.3DI` -- that the capture's `models`
+    # phase predated.  The re-take landed, the constructor stopped refusing,
+    # and both creators now diff field for field.  The lesson is the one this
+    # comment block already makes from the other end: what a constant needs is
+    # not always a cleverer instrument, sometimes only the phase it was
+    # waiting on.
+    # The fire wheel's **second** loop -- the wheel itself.  All thirty of its
+    # records sit past the twelve slots the capture reads back, so the spoke,
+    # its turn, its speed, the lift and the name cycle are read out of the
+    # instructions and compared against nothing.  Twenty-three of the thirty
+    # are refused here anyway for want of `A_EXPL03.3DI`
+    # (`MODEL_NAMES_UNCAPTURED`), but that is a second reason and not the
+    # first: a capture carrying the name would still not read slot 12 onwards.
+    "FIRE_WHEEL_EXPL04_EVERY", "FIRE_WHEEL_LIFT", "FIRE_WHEEL_RADIUS",
+    "FIRE_WHEEL_SPEED", "FIRE_WHEEL_TURN",
+    # The five creators transcribed on 2026-09-12 whose phase is still the
+    # fall-through arm's (`PROGRAM_ARGS_STALE`): the spore cannon's spray, the
+    # mine thrower's round, the multi-target destroyer's arcs and the two
+    # lasers.  Every one of these twenty-two is read out of the instructions
+    # and pinned in the binary by `blob_tables.CREATOR_CONSTANT_SITES`, and
+    # measured against the engine by nothing until Wine lands the re-take.
+    "SPRAY_PAIR",
+    # `aBlob_CreateFlameStream`'s own eleven: its phase is a fall-through
+    # arm's -- the tail it was handed is a ring count where the arm pushes a
+    # type -- so not one of its records is in the capture at all.
+    "FLAME_LIFT",
+    "FLAME_SWEEP_LIMIT",
+    "FLAME_SWEEP_STEP", "FLAME_SWEEP_TYPE",
+    "GRENADE_COUNT", "GRENADE_PROXIMITY_BASE",
+    "GRENADE_PROXIMITY_RISE", "GRENADE_PROXIMITY_SPAN", "GRENADE_RANGE",
+    "GRENADE_SCATTER_BASE", "GRENADE_SCATTER_RISE", "GRENADE_SCATTER_SPAN",
+    # The two lasers' lifts and divisors: the capture's tiles are a fixed
+    # distance apart, and a lift or a divisor that moves the flight's length by
+    # nothing leaves every record where it was.
+    "BEAM_DOT_LIFT", "BEAM_DOT_UNIT", "LASER_DOT_LIFT", "LASER_DOT_UNIT",
     "BEAM_BASE", "BEAM_UNIT", "DOT_SPEED", "HEAD_SPEED", "HEAD_STEP",
     "TRAIL_UNIT",
+    # Thirty records walk the circle three times, so the capture's twelve
+    # cannot tell a count of 30 from one of 31.
+    "STINGER_COUNT",
     # The death creators' doubles: no weapon switch reaches those creators,
     # so this capture never runs them.  `presentation_gold.py`'s `deaths`
     # phases do, and its `deaths.constants_discriminated` is where each of
@@ -4133,7 +4418,7 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
     # third argument the creator has no arm for, so it ran nothing at all --
     # see `PROGRAM_ARGS_STALE`, and `blob_tables.SHOCKWAVE_ARM_SITES` for
     # what stands behind the arm's own three numbers meanwhile.
-    "SHOCKWAVE_RADIUS", "SHOCKWAVE_TURN",
+    "SHOCKWAVE_TURN",
     # The unit animations' and the set pieces' constants (`docs/97` §31,
     # §32): no weapon switch reaches those creators either, and it is
     # `presentation_gold.py`'s own `death_*` phases that run them.
@@ -4153,8 +4438,64 @@ CREATOR_CONSTANTS_UNDISCRIMINATED = (
 #: The ones it does pin, so the check is a measurement in both directions
 #: rather than a list of excuses.
 CREATOR_CONSTANTS_DISCRIMINATED = (
-    "BEAM_STEP", "CASING_SPEED", "SHARD_SPEED", "SPARK_SPEED",
+    # 2026-09-12: the three creators added that day, all three of whose
+    # phases the capture already held with the arguments their arms push.
+    "EXPLOSION2_COUNT", "EXPLOSION2_RISE_BASE", "EXPLOSION2_RISE_SPAN",
+    # `aBlob_CreateFireWheel`'s first loop, all thirty records of which the
+    # capture reads the first twelve back: the count, both draws and the
+    # stagger are all in them.
+    "FIRE_WHEEL_COUNT", "FIRE_WHEEL_DRIFT_BASE", "FIRE_WHEEL_DRIFT_SPAN",
+    "FIRE_WHEEL_RISE_BASE", "FIRE_WHEEL_RISE_SPAN",
+    # `0x00429C30`'s three puffs, which are the whole of what it makes.
+    "MINE_PLUME_LIFT",
+    # The two lasers', measured on 2026-09-12: the dot speed and the stagger
+    # reach every one of `0x00428200`'s records, and the seven-dot one's count,
+    # speed and step all move its chain.
+    "BEAM_DOT_SPEED", "BEAM_DOT_STAGGER",
+    "LASER_DOT_COUNT", "LASER_DOT_SPEED", "LASER_DOT_STEP",
+    "PLASMA_IMPACT_COUNT", "PLASMA_IMPACT_DRIFT_BASE",
+    "PLASMA_IMPACT_DRIFT_SPAN", "PLASMA_IMPACT_RISE_BASE",
+    "PLASMA_IMPACT_RISE_SPAN", "SPARKING_PLUG_COUNT", "SPARKING_PLUG_DRIFT",
+    "SPARKING_PLUG_LIFT", "SPARKING_PLUG_RISE",
+    "BEAM_STEP", "CASING_SPEED", "SHARD_SPEED",
+    # Joined on 2026-09-11, when the shock wave's phase was re-taken with the
+    # type its callers push: with sixty records to move, a radius one unit
+    # wider is a different capture.
+    "SHOCKWAVE_RADIUS",
+    "SPARK_SPEED",
+    # `0x00420A50`'s ring, joined on 2026-09-11: its twelve captured records
+    # move if the radius, the turn, the lift or the speed moves by one.
+    "STINGER_LIFT", "STINGER_RADIUS", "STINGER_SPEED", "STINGER_TURN",
     "TRACER_LEAN", "TRACER_SPREAD", "TRAIL_STEP",
+    # -- 2026-09-12, the afternoon's capture -------------------------
+    #
+    # Twenty-one at once, and not one of them by a better instrument.
+    # Nine were waiting on the `models` re-take that let `0x00425CA0`
+    # and `0x00426B70` stop being refused a model handle; eleven are
+    # the flame stream's and the grenade's, whose phases had been taken
+    # with a tile number where their arms push a ring count and an arc.
+    # `SPRAY_UNIT` is the spore cannon's, unblocked the same way.
+    "FLAME_COLUMN_SPAN",
+    "FLAME_PER_RING",
+    "FLAME_RING_OFFSET",
+    "FLAME_SIZE_BASE",
+    "FLAME_SIZE_DIVISOR",
+    "FLAME_SIZE_SPAN",
+    "FLAME_STEP",
+    "FLAME_UNIT",
+    "GRENADE_BACK",
+    "GRENADE_KIND",
+    "GRENADE_SPEED",
+    "PROJECTILE_LIFE_BIAS",
+    "PROJECTILE_LIFT",
+    "PROJECTILE_LOB_SCALE",
+    "PROJECTILE_LOB_SPREAD",
+    "PROJECTILE_SPEED",
+    "PROJECTILE_UNIT",
+    "SPIDY_BOB_AUX",
+    "SPIDY_BOB_LIFE",
+    "SPIDY_BOB_ROW",
+    "SPRAY_UNIT",
 )
 
 
@@ -4163,6 +4504,13 @@ def _creator_discrimination(root: str, phases: dict[str, Any]) -> list[str]:
 
     Perturbs each by one and replays; a constant whose perturbation changes
     no captured record and no draw count is not discriminated *here*.
+
+    **Only the creators `_creator_program_checks` actually compares count.**
+    A creator on `PROGRAM_ARGS_STALE` or `PROGRAM_MODELS_UNCAPTURED` is
+    skipped there, so a constant that moves only its replay is moved against
+    nothing -- and calling that "pinned by this capture" is the overstatement
+    this skip exists to prevent.  It cost `SPIDY_BOB_*` and
+    `PROJECTILE_LIFT` a wrong listing before the two were reconciled.
     """
     from inclib import blob_creators
 
@@ -4174,14 +4522,22 @@ def _creator_discrimination(root: str, phases: dict[str, Any]) -> list[str]:
         out: list[Any] = []
         for address, (_arity, program) in sorted(
                 blob_creators.PROGRAMS.items()):
-            phase = phases.get(f"0x{address:08X}") or {}
+            name = f"0x{address:08X}"
+            if name in PROGRAM_ARGS_STALE or name in PROGRAM_MODELS_UNCAPTURED:
+                continue
+            phase = phases.get(name) or {}
             if not phase.get("records"):
                 continue
             pool = blob_creators.Pool(inputs)
             draws = blob_creators.Draws(phase["seed2_before"])
             program(pool, draws, phase["args"])
             keep = len(phase["records"])
-            out.append((draws.count, pool.refused, pool.records[:keep]))
+            # **The draw count and the read window only.**  `pool.refused` is
+            # compared against a hand-pinned literal and never against the
+            # engine, so a constant that moves nothing but a refusal is moved
+            # against nothing -- which is how a *missing model name* was about
+            # to be mistaken for a measurement of the fire wheel's name cycle.
+            out.append((draws.count, pool.records[:keep]))
         return out
 
     base = replays()
@@ -4255,6 +4611,14 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
             else:
                 wrong.append((name, "not captured"))
             continue
+        if name in PROGRAM_ARGS_STALE or name in PROGRAM_MODELS_UNCAPTURED:
+            # The phase holds records, but of a call nobody would make now
+            # (`PROGRAM_ARGS_STALE`) or with a model this capture cannot
+            # resolve (`PROGRAM_MODELS_UNCAPTURED`).  Either way the
+            # comparison would be about the capture; both lists are pinned
+            # so a green run cannot imply the transcription was executed.
+            uncaptured.append(name)
+            continue
         ck.equal(f"native.creator_arity_{name}", arities.get(address), arity,
                  lambda v, n=name: f"{n} takes {v} dword argument(s), as its "
                                    "callers' own stack cleanup says")
@@ -4277,8 +4641,15 @@ def _creator_program_checks(ck: "tables.Checker", root: str,
                 if record[field] != built[field]:
                     wrong.append((name, index, field, record[field],
                                   built[field]))
-    ck.equal("native.creator_burst_uncaptured", sorted(uncaptured),
-             sorted(BURST_UNCAPTURED + PROGRAM_ARGS_STALE),
+    # Only a creator this module actually carries a program for can be
+    # skipped, so the expectation is the three lists **intersected with the
+    # transcriptions** -- naming a stale creator nobody has transcribed yet
+    # is a note about the capture, not a skipped comparison.
+    skippable = sorted(
+        name for name in set(BURST_UNCAPTURED) | set(PROGRAM_ARGS_STALE)
+        | set(PROGRAM_MODELS_UNCAPTURED)
+        if int(name, 16) in blob_creators.PROGRAMS)
+    ck.equal("native.creator_burst_uncaptured", sorted(uncaptured), skippable,
              lambda v: f"{len(v)} creator(s) with no phase this capture can "
                        "verify: a burst creator with no `burst_*` phase, or "
                        "one whose stored arguments SWITCH_ARGS has corrected")
@@ -4897,7 +5268,12 @@ def _poked_checks(ck: "tables.Checker", phases: dict[str, Any], base: int,
              lambda n: f"{n} arm(s) are stepped at more than one point of "
                        "their input space, so the agreement is not a "
                        "property of one record")
-    ck.equal("poked.model_handles", sorted(handles), sorted(_model_names()),
+    # **The names pending a capture are named, not subtracted in silence.**
+    # A name added to `CREATOR_MODELS` is only resolved once the `models`
+    # phase is re-taken, and until then this census is short by exactly the
+    # names `MODEL_NAMES_UNCAPTURED` lists.
+    ck.equal("poked.model_handles", sorted(handles),
+             sorted(set(_model_names()) - set(MODEL_NAMES_UNCAPTURED)),
              lambda v: f"{len(v)} model name(s) resolved by the engine's own "
                        "lookup, so the two swap arms are compared against a "
                        "measured handle rather than an adapter's index")

@@ -127,6 +127,14 @@ func run(h: TestHarness) -> void:
 ## is the registration's own shift, the tick's cadence and the fire's record;
 ## `tools/blob_tables.py`'s `bgb.*` pins all of it against the executable, and
 ## this is the port reading the same numbers.
+
+## One cell of a shot's pattern, through the same builder `main.gd` uses -- so
+## the kill rule is exercised here rather than only asserted by hand.
+static func _pattern_cell(tile: Vector2i, point: Vector3i, marker: int,
+		unit: int) -> Dictionary:
+	return BlobTriggers.pattern_cell(tile, point, point, marker, unit)
+
+
 func _check_emitters(h: TestHarness) -> void:
 	var table: BgbEmitters = BgbEmitters.create()
 	h.equal("bgb.id_bound", [table.register(BgbEmitters.SLOTS, 7, 0, 0, 0, 1, 0, 0),
@@ -1715,7 +1723,13 @@ func _check_triggers(h: TestHarness) -> void:
 	if document.is_empty():
 		h.check("triggers.fixture", false, "tables/blobs.json")
 		return
-	var pool: BlobPool = BlobPool.create(1.0, 64)
+	# **The engine's own pool size, not a token one.** Sixty-four slots were
+	# enough while every creator here made one record per constructor call;
+	# the transcribed ones make a creator's whole loop
+	# ([constant BlobTriggers.WEAPON_PROGRAMS]), and a weapon's impact alone
+	# can lay twenty-seven, so a short pool filled up and the checks below
+	# started measuring the pool rather than the switch.
+	var pool: BlobPool = BlobPool.create(1.0, BlobPool.SLOTS)
 	# The pool needs the world set's real prototypes: weapon 2's muzzle is two
 	# **model** blobs, `A_LINE5.3DI` and `A_CASE.3DI`, and a pool that could
 	# not resolve them made no effect at all and said "0" -- which is a
@@ -1933,9 +1947,190 @@ func _check_triggers(h: TestHarness) -> void:
 	pool.clear()
 	var _no_burst: int = triggers.muzzle(8, from, to)
 	var _no_burst_drain: Array[Dictionary] = triggers.take_programs()
-	h.equal("triggers.arrived_unwritten_without_a_burst",
-		triggers.arrived_write(), BlobTriggers.ARRIVED_UNWRITTEN,
-		"the mine thrower's grenade is not one of the three burst creators")
+	# **The grenade writes the flag too**, and out of its own flight length
+	# rather than as a literal: `0x00425F94` is `setle cl` over the length,
+	# so a round still crossing ground says there is something to wait for.
+	# This check asserted `ARRIVED_UNWRITTEN` while the creator was still a
+	# row of the constructor table and wrote nothing at all.
+	h.equal("triggers.arrived_write_from_the_grenade_flight",
+		triggers.arrived_write(), 0,
+		"the mine thrower's round has ground to cross")
+
+	# **The seeking arm's slot reaches the record.** Weapon 11's grenade
+	# `0x00426070` stores the target cell's unit id as its `aux`, and kind 26
+	# is arm 25 -- the seeker of docs/28 section 7.7.1, which reads `aux` back
+	# as a unit-map index and steers at whoever is in that slot. The caller
+	# has to hand it over: while `muzzle()` had no argument for it every shot
+	# from that weapon homed on slot 0.
+	pool.clear()
+	var slot: int = 7
+	# **Weapon 11 is a walking arm** (`0x0040D077`): it fires once per cell of
+	# its own target pattern that still holds a unit, not once at the aim
+	# point. With no pattern behind it the walk has nothing to walk and the
+	# engine's loop makes nothing either -- which is what this asserts, so a
+	# regression that goes back to one blind round fails here.
+	var _blind: int = triggers.muzzle(11, from, to, {}, Vector2i(2, 2),
+		Vector2i(6, 2), BlobTriggers.NO_POINT, BlobTriggers.NO_POINT, slot)
+	h.equal("triggers.grenade_arc_records", pool.blobs().size(), 0,
+		"a multi-target arm with no cells walks nothing")
+	pool.clear()
+	# **Past `GRENADE_RANGE`.** Under six fields the creator zeroes the whole
+	# offset and every arc flies the same straight line (`0x0042633B`), so a
+	# test of the arcs has to stand back.
+	var far: Vector3i = to + Vector3i(10 * 3200, 0, 0)
+	# The two survivors stand at the **same point** on purpose: then the only
+	# thing that can make their rounds fly differently is the arc, so
+	# `grenade_arcs_differ` below is a test of the index and not of the
+	# geometry. (With two different aim points it passed even with the arc
+	# nailed to zero, which a mutation run caught.)
+	var pattern: Array[Dictionary] = [
+		_pattern_cell(Vector2i(16, 2), far, 0x5C, slot),
+		_pattern_cell(Vector2i(16, 3), far, 0x5C, slot + 1),
+		# Killed, but still present while aPlayFightAnimation walks the map;
+		# the removal sweep starts only after that routine returns.
+		_pattern_cell(Vector2i(16, 4), far, 0x5D, slot + 2),
+	]
+	var _arcs: int = triggers.muzzle(11, from, far, {}, Vector2i(2, 2),
+		Vector2i(16, 2), BlobTriggers.NO_POINT, BlobTriggers.NO_POINT, slot,
+		pattern)
+	var arc_ring: Array[Blob] = pool.blobs()
+	h.equal("triggers.grenade_arc_per_cell", arc_ring.size(),
+		3 * BlobPrograms.GRENADE_COUNT,
+		"all three occupied cells, including the one marked killed")
+	if arc_ring.size() >= 3 * BlobPrograms.GRENADE_COUNT:
+		h.equal("triggers.grenade_arc_aux_is_the_target_slot",
+			arc_ring[0].aux, slot,
+			"the seeking arm reads this back as a unit-map index")
+		h.equal("triggers.grenade_arc_second_cell_aux",
+			arc_ring[BlobPrograms.GRENADE_COUNT].aux, slot + 1,
+			"the second round seeks the second cell's occupant")
+		h.equal("triggers.grenade_arc_killed_cell_aux",
+			arc_ring[2 * BlobPrograms.GRENADE_COUNT].aux, slot + 2,
+			"the victim remains addressable until after fight animation")
+		h.equal("triggers.grenade_arc_kind", arc_ring[0].kind,
+			BlobPrograms.GRENADE_KIND,
+			"weapon 11 takes an arc; only weapon 44's 0xFF adds one")
+		# **The arc is the running count**, so the two rounds do not fly the
+		# same line -- which is the whole reason the arm passes an index.
+		h.check("triggers.grenade_arcs_differ",
+			Vector3i(arc_ring[0].vx, arc_ring[0].vy, arc_ring[0].vz)
+				!= Vector3i(
+					arc_ring[BlobPrograms.GRENADE_COUNT].vx,
+					arc_ring[BlobPrograms.GRENADE_COUNT].vy,
+					arc_ring[BlobPrograms.GRENADE_COUNT].vz),
+			"arc 0 and arc 1 are different vectors out of GRENADE_AIM")
+	# **Weapon 44 is the other shape**: five rounds at the one aim point, the
+	# count a literal in its arm rather than a walk.
+	pool.clear()
+	var _five: int = triggers.muzzle(44, from, to, {}, Vector2i(2, 2),
+		Vector2i(6, 2))
+	h.equal("triggers.grenade_round_count", pool.blobs().size(),
+		5 * BlobPrograms.GRENADE_COUNT,
+		"`mov [esp+0x14], 5` and a `dec`/`jne` round the call")
+
+	# **All five arms, out of the cache rather than out of this file.**
+	# `blob_tables.MULTI_TARGET_ARMS` decodes them from the shipped
+	# executable -- the marker band, the unit test and the repeat count -- and
+	# this is the reader on the other side of the document.
+	h.equal("triggers.multi_target_weapon_9",
+		triggers.multi_target(BlobTriggers.MUZZLE_SWITCH, 9),
+		[0x50, 0x5E, true, BlobTriggers.MULTI_PER_CELL],
+		"the energy cannon walks every marked cell that still holds a unit")
+	h.equal("triggers.multi_target_weapon_9_impact",
+		triggers.multi_target(BlobTriggers.IMPACT_SWITCH, 9),
+		[0x50, 0x5E, true, BlobTriggers.MULTI_PER_CELL],
+		"and its impact walks the same set")
+	h.equal("triggers.multi_target_weapon_41",
+		triggers.multi_target(BlobTriggers.MUZZLE_SWITCH, 41),
+		[0x5A, 0x5D, false, BlobTriggers.MULTI_PER_CELL],
+		"weapon 41 takes the resolver's band and asks for no unit")
+	h.equal("triggers.multi_target_weapon_44",
+		triggers.multi_target(BlobTriggers.MUZZLE_SWITCH, 44),
+		[0, 0, false, 5], "five rounds, no walk")
+	var repeating: int = 0
+	for weapon: int in range(48):
+		if not triggers.multi_target(BlobTriggers.MUZZLE_SWITCH,
+				weapon).is_empty():
+			repeating += 1
+		if not triggers.multi_target(BlobTriggers.IMPACT_SWITCH,
+				weapon).is_empty():
+			repeating += 1
+	h.equal("triggers.multi_target_is_five_arms", repeating, 5,
+		"four muzzle arms and one impact arm, and no other weapon repeats")
+	h.equal("triggers.multi_target_none_for_a_single_shot",
+		triggers.multi_target(BlobTriggers.MUZZLE_SWITCH, 26), [],
+		"the other forty-three weapons reach their creator once")
+
+	# **The kill rule, on its own.** `main.gd` builds this from the lagging
+	# mirror, which is exactly the pre-removal CtrlMap aPlayFightAnimation sees.
+	h.equal("triggers.pattern_cell_keeps_a_survivor",
+		DictRead.as_int(BlobTriggers.pattern_cell(Vector2i(1, 2),
+			Vector3i.ZERO, Vector3i.ZERO, 0x5C, 9)[
+				BlobTriggers.PATTERN_UNIT]), 9,
+		"a hit cell still holds whoever it hit")
+	h.equal("triggers.pattern_cell_keeps_a_kill_until_the_animation",
+		DictRead.as_int(BlobTriggers.pattern_cell(Vector2i(1, 2),
+			Vector3i.ZERO, Vector3i.ZERO, 0x5D, 9)[
+				BlobTriggers.PATTERN_UNIT]),
+		9, "the removal sweep starts after aPlayFightAnimation returns")
+
+	# **Weapon 9's walk, both ends.** Its muzzle lays two seeking shards per
+	# cell and its impact three plasma blobs, so a two-target shot is four and
+	# six rather than two and three.
+	pool.clear()
+	var nine: Array[Dictionary] = [
+		_pattern_cell(Vector2i(16, 2), far, 0x5C, slot),
+		_pattern_cell(Vector2i(16, 3), far, 0x5A, slot + 1),
+		_pattern_cell(Vector2i(16, 4), far, 0x5D, slot + 2),
+	]
+	var _cannon: int = triggers.muzzle(9, from, far, {}, Vector2i(2, 2),
+		Vector2i(16, 2), BlobTriggers.NO_POINT, BlobTriggers.NO_POINT, slot,
+		nine)
+	h.equal("triggers.energy_cannon_per_cell", pool.blobs().size(), 3 * 2,
+		"two shards at every occupied cell, including the killed target")
+	pool.clear()
+	var apart: Array[Dictionary] = [
+		_pattern_cell(Vector2i(16, 2), far, 0x5C, slot),
+		_pattern_cell(Vector2i(17, 2), far + Vector3i(3200, 0, 0), 0x5A,
+			slot + 1),
+		_pattern_cell(Vector2i(18, 2), far + Vector3i(6400, 0, 0), 0x5D,
+			slot + 2),
+	]
+	var _cannon_hit: int = triggers.impact(9, far, Vector2i(16, 2),
+		BlobTriggers.NO_POINT, slot, apart)
+	var hits: Array[Blob] = pool.blobs()
+	h.equal("triggers.blizzard_hit_per_cell", hits.size(), 3 * 3,
+		"and the impact answers for all three occupied cells")
+	if hits.size() >= 9:
+		# **Each pass stands on its own cell.** The impact arms run *on* the
+		# cell they walked to, so leaving the source at the aim point would
+		# pile both explosions on the first one -- which counting records
+		# cannot see.
+		h.equal("triggers.blizzard_hit_first_cell",
+			Vector3i(hits[0].x, hits[0].y, hits[0].z), far,
+			"the first three sit at the first walked cell")
+		h.equal("triggers.blizzard_hit_second_cell",
+			Vector3i(hits[3].x, hits[3].y, hits[3].z),
+			far + Vector3i(3200, 0, 0),
+			"and the next three a field along, not on top of them")
+
+	# **The flame stream's ring count is its weapon's literal.** Weapon 7's arm
+	# pushes four rings and weapon 40's ten, five records each, so the two
+	# weapons differ by more than a sprite -- and the second sweeps where the
+	# first goes straight. Before this creator was transcribed both laid one
+	# blob (`0x00428168`, kind 49) and looked identical.
+	pool.clear()
+	var _flame: int = triggers.muzzle(7, from, to, {}, Vector2i(2, 2),
+		Vector2i(6, 2))
+	h.equal("triggers.flame_stream_weapon_7", pool.blobs().size(),
+		4 * BlobPrograms.FLAME_PER_RING,
+		"four rings of five for the flame thrower")
+	pool.clear()
+	var _flame_big: int = triggers.muzzle(40, from, to, {}, Vector2i(2, 2),
+		Vector2i(6, 2))
+	h.equal("triggers.flame_stream_weapon_40", pool.blobs().size(),
+		0xA * BlobPrograms.FLAME_PER_RING,
+		"ten for the enhanced one, and it sweeps")
 
 	# **The Cy'Coo's spore round** -- `aBlob_CreateSporeCannon` `0x004268B0`,
 	# the fourth creator transcribed in [BlobTriggers] rather than replayed
@@ -2059,6 +2254,35 @@ func _check_triggers(h: TestHarness) -> void:
 		"the switch's default arm, the same creator weapon 2 uses")
 	h.equal("triggers.starting_guns", triggers.muzzle(0, from, to), 10,
 		"the Light Combat Gun is not a gun with no muzzle flash")
+	# **The shot leaves the barrel, not the body axis.** `0x0042C660` writes
+	# the named Charisma part's world position over the three source stack
+	# slots (`0x00425810` loads them at `0x00425996` and hands their addresses
+	# over at `0x00425A2E`), and ten creators push the name `"M"` inside their
+	# own bodies rather than taking it as an argument
+	# ([constant BlobTriggers.CREATOR_JOINTS]). Weapon 26 is one of them and
+	# is the defect that was reported from play. **Nothing measures this** --
+	# every capture was taken with nobody animating, which is the engine's own
+	# fallback -- so it is asserted here: the smoke trail's first ring sits at
+	# the source exactly, and its own three draws are both its displacement
+	# and its velocity, so subtracting the velocity recovers the point.
+	var barrel: Vector3i = from + Vector3i(500, -300, 700)
+	var joints: Dictionary[String, Vector3i] = {BlobTriggers.CREATOR_JOINT_M:
+		barrel}
+	var jointed: BlobPool = BlobPool.create(1.0, BlobPool.SLOTS)
+	jointed.hooks().geometry = pool.hooks().geometry
+	jointed.hooks().model_index = index
+	var at_barrel: BlobTriggers = BlobTriggers.open(jointed, document)
+	var _fired: int = at_barrel.muzzle(26, from, to, joints,
+		Vector2i(2, 2), Vector2i(6, 2))
+	var ring: Array[Blob] = jointed.blobs()
+	h.check("triggers.joint_made", not ring.is_empty(),
+		"weapon 26's muzzle makes %d record(s)" % ring.size())
+	if not ring.is_empty():
+		h.equal("triggers.joint_is_the_barrel",
+			Vector3i(ring[0].x - ring[0].vx, ring[0].y - ring[0].vy,
+				ring[0].z - ring[0].vz), barrel,
+			"the first ring stands where the part does, not on the body axis")
+
 	# The impact switch's default makes no blob, and that **is** the engine:
 	# `0x0040DA07` goes straight on to the unit sweep.
 	h.equal("triggers.impact_default", triggers.impact(0, to), 0,
@@ -2632,10 +2856,11 @@ class RecordingHost extends ShotHost:
 		calls.append("cues:%d" % cues.size())
 
 	func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int,
-			_shooter: int = -1) -> void:
+			_shooter: int = -1, _pattern: Array[Dictionary] = []) -> void:
 		calls.append("muzzle")
 
-	func impact(_weapon: int, _tx: int, _ty: int) -> void:
+	func impact(_weapon: int, _tx: int, _ty: int,
+			_pattern: Array[Dictionary] = []) -> void:
 		calls.append("impact")
 
 	func pool_arrived() -> bool:

@@ -161,6 +161,13 @@ Two bytes gain meaning here:
   **damage this cell's unit took** from the attack just resolved
   (`cell[0x0C] = dealt`, or `0` when the damage was 255).
 
+The writer's third argument is a reference height. Unless it is `-1`,
+`0x0042F806..0x0042F821` refuses the write when the absolute difference from
+the destination cell is **at least `0x640` (1600)**. Secondary-explosion rings
+supply their centre cell's height, so they neither climb nor drop across that
+boundary. The ordinary eight-neighbour weapon-pattern handlers pass `-1` and
+remain geometric. The comparison is strict: 1599 passes and 1600 does not.
+
 Heights in `+0x01` are world units: **1 map field = 3200 = 2 m**.
 
 ---
@@ -679,7 +686,9 @@ handlers**, each cross-checked between the raw listing and Ghidra:
   different orders**, and neither is `dy`-then-`dx`. `0x0046AE0B` writes
   (−1,0) (−1,−1) (−1,+1) (0,−1) (+1,−1) (+1,+1) (+1,0) (0,+1); `0x0046AA66`
   writes (−1,0) (−1,−1) (−1,+1) (+1,0) (+1,−1) (+1,+1) (0,+1) (0,−1). The
-  order is the order the damage rolls come out in, so it is not a set;
+  order decides which marker survives when writes overlap — the **first**
+  write wins because `0x0042F7D0` protects `0x50..0x5E`; damage resolution
+  later sweeps the cell-indexed CtrlMap in row-major order;
 * **weapon 13 draws its `y` offset before its `x` offset.** The two `aRandom`
   calls carry source lines 978 and 977 in that order, so the compiler
   evaluated the arguments right to left; and the draws happen for all eighteen
@@ -698,7 +707,9 @@ can be defined and can never be fired**. `Info.lcl` defines none of them.
 ### 7.3 Per-cell resolution
 
 The resolver sweeps the whole cell array, and repeats the sweep when a
-secondary explosion added `0x53` markers. For every cell whose marker is in
+secondary explosion added `0x53` markers. A ring cannot replace any existing
+attack marker or resolved outcome in `0x50..0x5E`, and its cells must be within
+the writer's strict 1600-unit height window above. For every cell whose marker is in
 `0x50..0x59` and which holds a unit — **which is revealed first**,
 `aSetVisibleStateForUnit(target, 0)` at `0x0046BA22` (`cpp:1988`), before the
 roll and so on a miss as well as a hit; `aExecuteBomb` does the same at
@@ -793,13 +804,32 @@ Two more reach combat indirectly: `1` (`Cy'Coo`) throws its own cached armour
 away when it attacks, and `9` (`Squee'Coo`) turns into a different unit type
 when a hit takes it below 6 HP.
 
-and two more: a target of unit type `0x42` hit by a type-2 weapon takes a flat
+`aExecuteBomb` is a separate resolver and deliberately differs here. It makes
+no hit roll and ignores weapon 36's damage column: `0x004703CF` starts every
+marked target at damage 30. A `special` 12 target instead receives literal
+1000 (`0x00470419`), narrowed by `applyDamage`'s `u8` argument to 232, writes
+the same eight `0x53` neighbours and repeats the sweep. It does not test
+`special` 16, so a mine-killed `Bea'Coo` gets its `KillFire` death presentation
+but no secondary gameplay ring. The remake keeps that omission when `Faithful`
+is on. Turning the preset off adds the stable `beacoo_mine_death_blast`
+correction flag, and a mine death then runs the same special-16 ring as any
+other death. The flag is part of the world's canonical state; its absence
+preserves both the original rule and saves made before the correction existed.
+`combat_tables.py` pins both immediates, the eight writes and the absence of an
+`aRandom` call; `combat_runtime.py` exercises the original barrel chain and the
+`Bea'Coo` negative control, while the Godot suite also exercises the deliberate
+correction.
+
+Two further target-side rules apply: a unit of type `0x42` hit by a type-2
+weapon takes a flat
 1000 — which is passed to the damage routine as a `u8` and therefore arrives as
 **232** — and a cell whose effect state (`+0x10`) is 3 takes nothing.
 
-After the roll the marker is rewritten: `0x5A` miss, `0x5B` resolved,
-`0x5C` hit and survived, `0x5D` hit and killed. A `0x5D` cell has its unit
-removed at the end of the sweep.
+After resolution the marker is rewritten: an ordinary shot can use `0x5A` for
+a miss; `0x5B` means resolved, `0x5C` hit and survived, and `0x5D` hit and
+killed. The no-hit-roll bomb path cannot produce `0x5A`. A `0x5D` cell keeps
+its unit through `aPlayFightAnimation`; the following removal sweep starts at
+`0x0046C1CF` for an attack and `0x00470618` for a bomb.
 
 The `0x55` (stun) path is separate: no damage is rolled, but unless the target
 spends a `Damage Absorber` charge, `0x0046CC80` sets its action state
@@ -894,7 +924,7 @@ unit vectors, independently confirmed by `aGetGradientsOfUnitView`:
 |---|---|
 | ammo | `if (weapon[+0x39] != 255 && attacker type != 0x42) unit[+0x3D] -= weapon[+0x41]` |
 | heat | `if (maxHeat != 255 && unit[+0x3E] < maxHeat) unit[+0x3E]++` |
-| damage absorber | equipment 18 fills `unit[+0x3A]`; a hit that would land spends one charge (`0x004755B0`) and **nullifies the damage** — by zeroing the argument, so `applyDamage` still rolls — and only while `+0x33` (equipment slot 18) is set: `0x00475590` returns 0 without it (§7.3). **`aExecuteBomb` never asks**: no call to either routine in `0x004702C0`, `applyDamage` is reached straight from the roll (`0x004704C9`) with the heading `0xFF` no octant's arc holds, so a mine meets the front armour |
+| damage absorber | equipment 18 fills `unit[+0x3A]`; a hit that would land spends one charge (`0x004755B0`) and **nullifies the damage** — by zeroing the argument, so `applyDamage` still rolls — and only while `+0x33` (equipment slot 18) is set: `0x00475590` returns 0 without it (§7.3). **`aExecuteBomb` never asks**: no call to either routine in `0x004702C0`; its per-cell resolver calls `applyDamage` directly at `0x004704C9`, with the heading `0xFF` no octant's arc holds, so a mine meets the front armour |
 | experience | on a kill — gated on the damage **argument** (`test ebp, ebp` at `0x0046BF47`, zero after an absorber charge), skipped for species 2 and for a victim of the shooter's own player — the victim type's `exp` byte (`+0x7A`) goes to `0x0047AFD0` / `0x0047B090` / `0x0047B100` and the kill counter `+0x53` to `0x0047AF90`; see below |
 | dead marker | a unit reduced to 0 HP has `+0x16` set to `0xFF` before removal |
 | script | `aRunLCL` is entered with LCL variables `0x41 = 3`, `0x42 = tx`, `0x43 = ty` |
@@ -1480,6 +1510,10 @@ aBuildVisibleMap(player)             15 permanent sites; probed per command (§9
 | `const.bias` 3/3 | the three inline doubles really are 0.4, 0.5 and 0.6 |
 | `magic.div` | the emulated magic multiply equals `n / 2400 + 1` over the corpus height range |
 | `marker.written` | over the whole `.text`, only `0x50`, `0x51`, `0x53`, `0x54`, `0x55` are ever written into a cell |
+| `marker.write_guard` 2/2 | `aSetCellState` rejects an absolute height delta of 1600 or more unless given `-1`, and refuses to overwrite an existing `0x50..0x5E` marker |
+| `resolver.sweep` 6/6 | both damage paths read the `0x50..0x59` band from the cell array, advance by its 23-byte stride and carry the branch that repeats a complete sweep |
+| `resolver.*_animation_before_removal` 2/2 | both the ordinary attack and bomb paths call `aPlayFightAnimation` before their sole following `aRemoveUnitElement` call |
+| `presentation.result_sweep` 4/4 | `aPlayFightAnimation` rebuilds its target arrays from final `0x5A..0x5D` cells in row-major CtrlMap order |
 | `rng.*` 3 | the RNG constants form a Lehmer generator with scale `1/(2³¹−1)` |
 | `hit.monotonic`, `hit.bounded` 40/40 | the hit curve is non-increasing and never exceeds 100 for every shipped weapon at every in-range distance |
 | `info.wave_overrun` | exactly eight weapons have a 9-character wave name, matching [`21`](21-info-lcl-schema.md) |

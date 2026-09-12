@@ -70,6 +70,11 @@ const EQUIP_DAMAGE_ABSORBER: int = Combat.EQUIP_DAMAGE_ABSORBER
 const EQUIP_COOLER: int = 19
 const ABSORBER_CHARGES: int = 4
 
+## docs/92 section 7.1 -- the stable correction behind the user-facing
+## `Faithful` preset. Absence preserves the original omission, which also
+## keeps saves made before this flag existed faithful.
+const COMPAT_BEACOO_MINE_DEATH_BLAST: String = "beacoo_mine_death_blast"
+
 ## docs/20 section 5.3 -- the mission's equipment-point bonus.
 ## The same slot [constant GameControl.SLOT_EQUIPMENT_POINTS] names; written
 ## out here because docs/20 section 5.3 is where the number comes from.
@@ -231,7 +236,8 @@ static func defuse_mine(state: MapState, index: int) -> UseResult:
 static func push_object(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, unit: UnitState,
 		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom, cheats: Cheats = null) -> UseResult:
+		rng: IncRandom, cheats: Cheats = null,
+		compat_flags: PackedStringArray = PackedStringArray()) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
 		return UseResult.refused("the cell in front is off the map")
@@ -267,8 +273,9 @@ static func push_object(state: MapState, units: Dictionary,
 				# header above warns can kill the pusher -- so the shield
 				# rides with it, exactly as it does on the walk's arm and the
 				# warp's.
-				execute_bomb(state, units, utab, wtab, at[0], at[1], ai_level,
-					human_players, game_mode, turn, rng, cheats)
+				out.blast = execute_bomb(state, units, utab, wtab, at[0], at[1],
+					ai_level, human_players, game_mode, turn, rng, cheats,
+					compat_flags).to_dict()
 				out.kind = "push_onto_mine"
 				break
 		var ft: int = state.field_type_at(into)
@@ -289,7 +296,8 @@ static func push_object(state: MapState, units: Dictionary,
 static func execute_bomb(state: MapState, units: Dictionary,
 		utab: UnitTypeTable, wtab: WeaponTable, x: int, y: int, ai_level: int,
 		human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom, cheats: Cheats = null) -> AttackResult:
+		rng: IncRandom, cheats: Cheats = null,
+		compat_flags: PackedStringArray = PackedStringArray()) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	result.fired = true
 	var unsupported: Array[String] = []
@@ -299,8 +307,23 @@ static func execute_bomb(state: MapState, units: Dictionary,
 		result.fired = false
 		result.reason = unsupported[0]
 		return result
-	for cell: PackedInt32Array in result.marked:
-		var index: int = state.index_of(cell[0], cell[1])
+	# This is a separate resolver from `Combat.attack`. `0x004703CF` starts
+	# every reached unit with a 30-point damage argument, and there is no hit
+	# roll. A `special` 12 target writes its ring and makes the sweep repeat.
+	var markers: PackedByteArray = Combat._marker_map(state, result.marked)
+	var repeat_sweep: bool = false
+	var marker_index: int = 0
+	while marker_index < markers.size() or repeat_sweep:
+		if marker_index >= markers.size():
+			marker_index = 0
+			repeat_sweep = false
+		var index: int = marker_index
+		marker_index += 1
+		var marker: int = markers[index]
+		if marker < Combat.MARKER_FULL or marker > Combat.MARKER_INPUT_LAST:
+			continue
+		var x_at: int = index % state.width
+		var y_at: int = index / state.width
 		var slot: int = state.unit_at(index)
 		if slot < 0 or not units.has(slot):
 			continue
@@ -308,37 +331,43 @@ static func execute_bomb(state: MapState, units: Dictionary,
 		if not target.is_alive():
 			continue
 		# `0x004703A9` -- the reveal `aAttackUnit` makes: a unit on a marked
-		# cell is visible before its roll.
+		# cell is visible before its damage resolution.
 		Visibility.set_state(target, Visibility.FULL)
-		if state.obstacle_at(index) == Combat.EFFECT_SHIELDED:
-			continue
-		var chance: int = wtab.hit(Combat.BOMB_WEAPON)
-		var damage: int = Combat.marker_damage(wtab, cell[2],
-			Combat.BOMB_WEAPON)
-		var roll: int = rng.draw(0, Combat.HIT_SPAN)
-		if chance + Combat.HIT_BONUS < roll:
-			result.outcomes.append({"slot": slot, "x": cell[0], "y": cell[1],
-				"marker": Combat.MARKER_MISS, "dealt": 0, "chance": chance,
-				"roll": roll})
-			continue
+		var damage: int = 0 if state.obstacle_at(index) \
+			== Combat.EFFECT_SHIELDED else Combat.BOMB_DAMAGE
+		if utab.special(target.type_id) == Combat.SPECIAL_EXPLODES_ON_HIT:
+			Combat._write_markers(state, markers, Combat._blast_ring(state, x_at, y_at,
+				Combat.AIM_NEIGHBOUR_ORDER, Combat.MARKER_FLAT_100))
+			repeat_sweep = true
+			damage = Combat.BOMB_EXPLOSIVE_DAMAGE
 		# The shield, by the absorber's mechanism -- the same zeroed argument
 		# [method Combat.attack] uses, so the generator lands where it would
 		# have. This is the second and last way a weapon reaches a unit.
 		if Cheats.shielded(cheats, target, turn):
 			damage = 0
 		# No absorber here: `aExecuteBomb` never calls `0x00475590` or
-		# `0x004755B0` -- `applyDamage` is reached straight from the roll
-		# (`0x004704C9`), with the heading `0xFF` no arc holds. The model once
+		# `0x004755B0` -- the per-cell resolver calls `applyDamage` directly at
+		# `0x004704C9`, with the heading `0xFF` no arc holds. The model once
 		# spent a charge the engine does not and derived a heading from the
 		# centre.
 		var dealt: int = Combat.apply_damage(target, damage, Combat.BOMB_FACING,
 			ai_level, human_players, game_mode, rng)
 		var killed: bool = not target.is_alive()
+		if killed \
+				and utab.special(target.type_id) \
+					== Combat.SPECIAL_EXPLODES_ON_DEATH \
+				and compat_flags.has(COMPAT_BEACOO_MINE_DEATH_BLAST):
+			# Corrected mode makes special 16 source-independent. The named flag
+			# is absent from Faithful sessions and old saves.
+			Combat._write_markers(state, markers, Combat._blast_ring(state, x_at, y_at,
+				Combat.AIM_NEIGHBOUR_ORDER, Combat.MARKER_FLAT_100))
+			repeat_sweep = true
 		if killed:
 			UnitState.remove(state, utab, turn, target)
-		result.outcomes.append({"slot": slot, "x": cell[0], "y": cell[1],
+		markers[index] = Combat.MARKER_KILLED if killed else Combat.MARKER_HIT
+		result.outcomes.append({"slot": slot, "x": x_at, "y": y_at,
 			"marker": Combat.MARKER_KILLED if killed else Combat.MARKER_HIT,
-			"dealt": dealt, "chance": chance, "roll": roll})
+			"dealt": dealt, "chance": 100, "roll": 0})
 	return result
 
 
@@ -351,14 +380,15 @@ static func execute_bomb(state: MapState, units: Dictionary,
 static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, control: GameControl, unit: UnitState,
 		ai_level: int, human_players: int, game_mode: int, turn: TurnState,
-		rng: IncRandom, cheats: Cheats = null) -> UseResult:
+		rng: IncRandom, cheats: Cheats = null,
+		compat_flags: PackedStringArray = PackedStringArray()) -> UseResult:
 	var at: PackedInt32Array = cell_in_front(state, unit)
 	if at.is_empty():
 		return UseResult.refused("the cell in front is off the map")
 	var index: int = state.index_of(at[0], at[1])
 	if state.unit_at(index) >= 0:
 		return push_object(state, units, utab, wtab, unit, ai_level,
-			human_players, game_mode, turn, rng, cheats)
+			human_players, game_mode, turn, rng, cheats, compat_flags)
 	if state.obstacle_at(index) == EFFECT_MINE:
 		return defuse_mine(state, index)
 

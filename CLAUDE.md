@@ -231,6 +231,9 @@ Three operational rules that have each cost a re-run:
   does is an environment result, not a failure. **Do not lower `--attempts`** to
   bound a run — bound the whole invocation with `timeout` instead. Phases are
   written as they land and merged on re-run.
+  **A probe is not a verdict on the run**: `--probe-startup 3` answered 0 of 3
+  on 2026-09-12 and the capture started minutes later landed every one of its
+  nine plans. Start the capture anyway and let its own retry loop decide.
 - **`--code` makes `Incubation.exe` fault before the anchor on this host.** Where
   a capture needs to write a byte, use the game's own imported `memcpy`
   (`movemap_gold.MEMCPY_DECL`, shared by all the gold tools) with a plain
@@ -238,8 +241,27 @@ Three operational rules that have each cost a re-run:
 - **A phase with no records is not always a refusal.** An argument the capture
   filled wrongly produces a faithful zero that verifies nothing. The tools pin
   what a capture does not reach (`NATIVE_FAULTS`, `PROGRAM_ARGS_STALE`,
-  `BURST_UNCAPTURED`, `COVERAGE_UNCOVERED`, `*_UNCAPTURED`) so a thinner capture
-  fails rather than reporting less.
+  `BURST_UNCAPTURED`, `COVERAGE_UNCOVERED`, `PROGRAM_DIVERGENT`,
+  `*_UNCAPTURED`) so a thinner capture fails rather than reporting less.
+- **And a stored argument the tools have since corrected is not always a lost
+  phase.** Six of the eight creators `PROGRAM_ARGS_STALE` held on 2026-09-12
+  came off it without a capture: their corrected tail is a stack slot the body
+  never loads, so the phase in hand was the engine's answer to the right call
+  all along (`docs/97` §14.5.1). Read the callee's frame before writing a
+  phase off.
+- **A transcription with no capture still has an oracle**, and it needs no
+  Wine: `blob_tables.creators.shape_matches_call_sites` runs every program in
+  `inclib/blob_creators.py` on synthetic inputs and requires each record to
+  match a constructor call site of its own creator -- class, kind, literal
+  lifetime, model, sprite row/column/size -- with `shape_reaches_call_sites`
+  requiring the converse. It is a second reading of the same binary and it
+  catches a fifteen-push argument list reversed one slot out, which is the
+  slip that shape of transcription actually makes.
+- **A failure entry that is never cleared reads as a missing phase.** Five
+  additive phases in `blob_gold.capture` recorded a `CaptureError` and did not
+  pop it on the next success, so `NATIVE_FAULTS` named a plan as unlanded with
+  that plan's own answer beside it in the same document. If a pin says a phase
+  is missing, check the phase before believing it.
 
 Fixtures live in `tests/fixtures/`, are **all gitignored**, and each directory's
 committed `README.md` records what it holds. `tests/fixtures/saves/` holds six

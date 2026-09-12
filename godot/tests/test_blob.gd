@@ -37,8 +37,16 @@ const REPORTED: int = 6
 ## The vectors the native sweep put through `0x004039A0`.
 const ROTATE_CASES: int = 8
 ## Arms stepped inside a running `Incubation.exe`, and those that disagreed.
-const NATIVE_ARMS: int = 24
-const POKED_ARMS: int = 50
+##
+## **Arm 13 moved from the second count to the first on 2026-09-11.** It had
+## been poked -- a donor record with its kind byte rewritten -- because the
+## shock wave's capture phase held nothing: `blob_gold.argument_vector` had
+## handed `aBlob_CreateShockWave` a tile number where its two call sites push
+## a type, so the creator took its fall-through arm. With the argument
+## corrected the creator lays sixty records and the arm is stepped with a
+## creator's own, which is the stronger claim of the two.
+const NATIVE_ARMS: int = 25
+const POKED_ARMS: int = 49
 const UNRESOLVED_ARMS: int = 0
 ## Transcribed arm lines the native comparison actually executed, and how many
 ## there are. The eight that are missing are named in `blob_gold.py`'s

@@ -156,11 +156,11 @@ HIT_BONUS = 10
 #: natively for 13 (``tools/turn_gold.py`` phase 8); 12 carries the same rule
 #: in the specification but no shipped unit of that kind stands on ``_C_141``,
 #: so it rides on the documentation rather than on a capture.
-#:
-#: TODO: ``special`` 12 also marks the eight neighbours ``0x53`` (it explodes
-#: when hit) and ``special`` 16 (``Bea'Coo``) does the same on death.  Neither
-#: is modelled here, and neither can be reached on the captured save.
-GUARANTEED_HIT_SPECIALS = frozenset({12, 13})
+#: A 12 also stamps its eight neighbours for the secondary pass inside
+#: :func:`attack_unit`; a 16 (``Bea'Coo``) stamps the same ring only on death.
+SPECIAL_EXPLODES_ON_HIT = 12
+SPECIAL_EXPLODES_ON_DEATH = 16
+GUARANTEED_HIT_SPECIALS = frozenset({SPECIAL_EXPLODES_ON_HIT, 13})
 GUARANTEED_HIT_DAMAGE = 255
 
 
@@ -175,8 +175,12 @@ DAMAGE_SENTINEL = 0xFE
 SENTINEL_DAMAGE_DEALT = 2
 IMMUNE_UNIT_TYPE = 0x23
 #: ``docs/22`` §7.3 and §7.5 -- the one unit type that is exempt from spending
-#: ammunition, and that takes a flat 1000 from a type-2 weapon.
-NO_AMMO_UNIT_TYPE = 0x42
+#: ammunition.  A type-2 weapon writes literal 1000 into ``applyDamage``'s u8
+#: argument, so the damage that arrives is 232.
+BEACOO_TYPE = 0x42
+BEACOO_WEAPON_TYPE = 2
+BEACOO_DAMAGE = 1000 & 0xFF
+NO_AMMO_UNIT_TYPE = BEACOO_TYPE
 
 #: ``docs/22`` §7.2 -- what each cell marker is worth.
 MARKER_FULL = 0x50
@@ -185,11 +189,16 @@ MARKER_50 = 0x52
 MARKER_FLAT_100 = 0x53
 MARKER_FORCED_HIT = 0x54
 MARKER_STUN = 0x55
+# The resolver accepts the whole input band even though the pattern handlers
+# above only write the six named values.
+MARKER_INPUT_LAST = 0x59
 #: ``docs/22`` §7.3 -- the markers the resolver writes back.
 MARKER_MISS = 0x5A
 MARKER_RESOLVED = 0x5B
 MARKER_HIT = 0x5C
 MARKER_KILLED = 0x5D
+MARKER_SCRATCH_LAST = 0x5E
+MARKER_HEIGHT_WINDOW = 0x640
 
 #: ``docs/22`` §7.2 -- the weapon ids whose dispatch entry reports an error.
 #: 28 is the ``"-"`` placeholder and 37 is ``Mine``; the other seven are ids
@@ -1283,7 +1292,11 @@ class AttackResult:
     marked: list[tuple[int, int, int]] = field(default_factory=list)
     """``(x, y, marker)`` for every cell the weapon covers."""
     outcomes: list[dict[str, Any]] = field(default_factory=list)
-    """One entry per marked cell that held a unit."""
+    """One entry per distinct input-marker cell that held a unit.
+
+    A secondary explosion requests another row-major sweep, but first-write
+    wins and the resolver's output marker prevent duplicate resolution.
+    """
     xp: int = 0
     """``aAttackUnit``'s own return value -- the experience the shot earned,
     summed over its kills (``0x0046BFB8``), which ``aPlayFightAnimation``
@@ -1309,8 +1322,9 @@ def mark_cells(world: CombatWorld, weapon_id: int, tx: int, ty: int,
                rng: ARandom | None = None) -> list[tuple[int, int, int]]:
     """``0x0046AA10(weapon, aimX, aimY, shooterX, shooterY, shooterFacing)``.
 
-    All sixteen handlers, in the order they write their markers -- which is
-    the order the damage rolls come out in, so it is not a set.
+    All sixteen handlers, in the order they write their markers.  The first
+    write survives an overlap; resolution later walks CtrlMap in row-major
+    order.
 
     The dispatcher takes **six** arguments and not three.  Its two call sites
     settle what they are: the shot resolver at ``0x0046B6AC`` pushes the
@@ -1385,9 +1399,41 @@ def _shooter(family: str, shooter: "CombatUnit | None") -> "CombatUnit":
 def _ring(world: CombatWorld, x: int, y: int,
           order: tuple[tuple[int, int], ...],
           marker: int) -> list[tuple[int, int, int]]:
-    """The eight neighbours of a cell, in a handler's own write order."""
+    """The geometric neighbours, in a handler's own write order."""
     return [(x + dx, y + dy, marker) for dx, dy in order
             if world.in_bounds(x + dx, y + dy)]
+
+
+def _blast_ring(world: CombatWorld, x: int, y: int,
+                order: tuple[tuple[int, int], ...],
+                marker: int) -> list[tuple[int, int, int]]:
+    """Secondary-blast neighbours accepted by ``aSetCellState``'s height guard."""
+    if not world.in_bounds(x, y):
+        return []
+    source_height = world.cell_height[world.index(x, y)]
+    return [(cx, cy, cell_marker)
+            for cx, cy, cell_marker in _ring(world, x, y, order, marker)
+            if abs(world.cell_height[world.index(cx, cy)] - source_height)
+            < MARKER_HEIGHT_WINDOW]
+
+
+def _write_markers(world: CombatWorld, markers: list[int],
+                   cells: list[tuple[int, int, int]]) -> None:
+    """Apply ``aSetCellState``'s first-write-wins marker rule."""
+    for x, y, marker in cells:
+        if world.in_bounds(x, y):
+            index = world.index(x, y)
+            if MARKER_FULL <= markers[index] <= MARKER_SCRATCH_LAST:
+                continue
+            markers[index] = marker
+
+
+def _marker_map(world: CombatWorld,
+                cells: list[tuple[int, int, int]]) -> list[int]:
+    """The CtrlMap marker byte after all target-pattern writes."""
+    markers = [0] * (world.width * world.height)
+    _write_markers(world, markers, cells)
+    return markers
 
 
 def _scatter(world: CombatWorld, tx: int, ty: int,
@@ -1658,7 +1704,23 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
 
     weapon = world.tables.weapons.get(attacker.weapon)
     banner = banner_nearby(world, attacker)
-    for cx, cy, marker in result.marked:
+    # ``result.marked`` remains the weapon's raw target array for inspection.
+    # Resolution is over CtrlMap: first writes win, the sweep is row-major,
+    # and a secondary explosion requests another complete pass. Presentation
+    # reconstructs the final CtrlMap order from ``outcomes``.
+    markers = _marker_map(world, result.marked)
+    repeat_sweep = False
+    marker_index = 0
+    while marker_index < len(markers) or repeat_sweep:
+        if marker_index >= len(markers):
+            marker_index = 0
+            repeat_sweep = False
+        index = marker_index
+        marker_index += 1
+        marker = markers[index]
+        if marker < MARKER_FULL or marker > MARKER_INPUT_LAST:
+            continue
+        cx, cy = index % world.width, index // world.width
         target = world.unit_on(cx, cy)
         if target is None:
             continue
@@ -1667,6 +1729,7 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         set_visible_state(target, VISIBLE_FULL)
         if world.effect_state[world.index(cx, cy)] == 3:
             # docs/22 section 7.3: a cell whose effect state is 3 takes nothing.
+            markers[index] = MARKER_RESOLVED
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
                                     "marker": MARKER_RESOLVED, "dealt": 0,
                                     "chance": 0, "roll": 0})
@@ -1679,12 +1742,16 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         if banner:
             chance *= 2
         damage = marker_damage(world, marker, attacker.weapon)
+        if (target.type_id == BEACOO_TYPE and weapon is not None
+                and weapon.type == BEACOO_WEAPON_TYPE):
+            damage = BEACOO_DAMAGE
         roll = world.rng(0, 100)
         if marker == MARKER_FORCED_HIT:
             chance, roll = 0, 1
         elif marker == MARKER_STUN:
             chance, roll = 1, 0
-        if _target_special(world, target) in GUARANTEED_HIT_SPECIALS:
+        target_special = _target_special(world, target)
+        if damage > 0 and target_special in GUARANTEED_HIT_SPECIALS:
             # docs/22 section 7: `special` 12 (Barrel, Parabomb) and 13 (Case)
             # force the hit and the damage.  The roll is still **drawn** -- the
             # native capture shows two draws against a Case whether or not the
@@ -1692,8 +1759,19 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             # target -- so this overrides the comparison, not the generator.
             chance, roll = 0, 1
             damage = GUARANTEED_HIT_DAMAGE
+            if target_special == SPECIAL_EXPLODES_ON_HIT:
+                # ``0x0046BC59``..``0x0046BCF6``: the same unrolled order as
+                # ``aim_and_neighbours``, but marker ``0x53`` -- flat damage
+                # 100. The writes request a full repeat pass and overlapping
+                # rings remain one marker byte in each cell.
+                _write_markers(
+                    world, markers,
+                    _blast_ring(world, cx, cy, AIM_NEIGHBOUR_ORDER,
+                          MARKER_FLAT_100))
+                repeat_sweep = True
 
         if chance + HIT_BONUS < roll:
+            markers[index] = MARKER_MISS
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
                                     "marker": MARKER_MISS, "dealt": 0,
                                     "chance": chance, "roll": roll})
@@ -1712,6 +1790,7 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             if not spend_absorber(target):
                 target.action_state = 5
                 target.mp = 0
+            markers[index] = MARKER_RESOLVED
             result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
                                     "marker": MARKER_RESOLVED, "dealt": 0,
                                     "chance": chance, "roll": roll,
@@ -1736,6 +1815,14 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
         if converted:
             convert_unit(world, target, attacker.player)
         killed = not target.alive
+        if killed and target_special == SPECIAL_EXPLODES_ON_DEATH:
+            # ``0x0046BE4F``..``0x0046BF2F``: unlike a barrel this ring is
+            # written only after ``applyDamage`` left the carrier at zero HP.
+            _write_markers(
+                world, markers,
+                _blast_ring(world, cx, cy, AIM_NEIGHBOUR_ORDER,
+                            MARKER_FLAT_100))
+            repeat_sweep = True
         if killed:
             # ``aKillUnit`` (``0x00472920``) is the death sequence plus
             # ``aRemoveUnitElement``, which is where the hero counter lives.
@@ -1749,6 +1836,7 @@ def attack_unit(world: CombatWorld, x: int, y: int, tx: int,
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
             "dealt": dealt, "chance": chance, "roll": roll}
+        markers[index] = outcome["marker"]
         if converted:
             outcome["converted"] = True
         result.outcomes.append(outcome)
@@ -1961,6 +2049,11 @@ def skill_levels_raised(world: CombatWorld, attacker: CombatUnit,
 
 #: ``docs/21`` §4 -- ``ParaBomb``.  A mine resolves as a shot from this weapon.
 BOMB_WEAPON = 36
+#: ``aExecuteBomb`` ignores weapon 36's damage column: ordinary targets start
+#: at 30, while a ``special`` 12 target gets literal 1000 narrowed through
+#: ``applyDamage``'s u8 argument.
+BOMB_DAMAGE = 30
+BOMB_EXPLOSIVE_DAMAGE = 1000 & 0xFF
 #: The heading ``aExecuteBomb`` hands ``applyDamage`` -- ``push 0xFF`` at
 #: ``0x004704BF``.  No octant's arc holds it, so a mine always meets the
 #: **front** armour.  The model used to derive a heading from the centre.
@@ -2140,58 +2233,66 @@ def execute_bomb(world: CombatWorld, x: int, y: int) -> AttackResult:
 
     ``docs/26`` §4 quotes the push's own call site: an object pushed onto a
     mine frees the effect object and detonates it here.  The marking pass is
-    ``0x0046AA10`` exactly as an attack uses it, so the footprint is the
-    ``aim_and_neighbours`` family -- full damage on the centre and 70 % around
-    it.
+    ``0x0046AA10`` exactly as an attack uses it, but the separate resolver
+    ignores weapon 36's hit and damage columns: every marked target receives a
+    30-point damage argument without a hit roll.
 
-    **UNVERIFIED in one respect, and it is the same one ``docs/26`` §10 item 6
-    records.**  The sibling path -- a mine *stepped* on during a walk -- was
-    probed natively and did **not** detonate: the seed, the mover's hit points
-    and the cell's ``+0x10`` were all unchanged.  The push path has never been
-    probed.  What is modelled here is the documented arm; if a later capture
-    shows the push behaves like the step, this is the function to delete.
+    The cell-based callers first delete the mine's special object; the earlier
+    native walk probe that saw no detonation had injected the effect byte
+    without that required object, so it reached the guard's refusal rather
+    than this resolver (``docs/26`` §6.2).
 
-    The rear-arc test needs a facing and a bomb has no shooter, so the heading
-    from the centre to each target is used.  Nothing in the disassembly names
-    the value the engine passes; a target standing *on* the centre gets
-    heading 0 either way, which is the only case the shipped data reaches.
+    The bomb has no shooter, and ``0x004704BF`` passes heading ``0xFF`` to
+    ``applyDamage``.  No octant's rear arc contains it, so every target uses
+    front armour.
     """
     result = AttackResult(True, "bomb")
     # aExecuteBomb (0x00470318) passes one value for all three of the
     # shooter arguments because weapon 36 reads none of them.
     result.marked = mark_cells(world, BOMB_WEAPON, x, y)
-    weapon = world.tables.weapons.get(BOMB_WEAPON)
-    for cx, cy, marker in result.marked:
+    markers = _marker_map(world, result.marked)
+    repeat_sweep = False
+    marker_index = 0
+    while marker_index < len(markers) or repeat_sweep:
+        if marker_index >= len(markers):
+            marker_index = 0
+            repeat_sweep = False
+        index = marker_index
+        marker_index += 1
+        marker = markers[index]
+        if marker < MARKER_FULL or marker > MARKER_INPUT_LAST:
+            continue
+        cx, cy = index % world.width, index // world.width
         target = world.unit_on(cx, cy)
         if target is None:
             continue
         # ``0x004703A9`` -- the same reveal ``aAttackUnit`` makes: a unit on a
-        # marked cell is visible before its roll.
+        # marked cell is visible before its damage resolution.
         set_visible_state(target, VISIBLE_FULL)
-        if world.effect_state[world.index(cx, cy)] == 3:
-            continue
-        chance = 0 if weapon is None else weapon.hit
-        damage = marker_damage(world, marker, BOMB_WEAPON)
-        roll = world.rng(0, 100)
-        if chance + HIT_BONUS < roll:
-            result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
-                                    "marker": MARKER_MISS, "dealt": 0,
-                                    "chance": chance, "roll": roll})
-            continue
+        damage = (0 if world.effect_state[world.index(cx, cy)] == 3
+                  else BOMB_DAMAGE)
+        if _target_special(world, target) == SPECIAL_EXPLODES_ON_HIT:
+            _write_markers(
+                world, markers,
+                _blast_ring(world, cx, cy, AIM_NEIGHBOUR_ORDER,
+                            MARKER_FLAT_100))
+            repeat_sweep = True
+            damage = BOMB_EXPLOSIVE_DAMAGE
         # No absorber here: ``aExecuteBomb`` never calls ``0x00475590`` or
-        # ``0x004755B0`` -- ``applyDamage`` is reached straight from the roll
-        # (``0x004704C9``).  The model once spent a charge that the engine
-        # does not.
+        # ``0x004755B0`` -- the per-cell resolver calls ``applyDamage``
+        # directly at ``0x004704C9``.  The model once spent a charge that the
+        # engine does not.
         dealt = apply_damage(world, target, damage, BOMB_FACING)
         killed = not target.alive
         if killed:
             # ``aKillUnit`` (``0x00472920``) is the death sequence plus
             # ``aRemoveUnitElement``, which is where the hero counter lives.
             remove_unit_element(world, target)
+        markers[index] = MARKER_KILLED if killed else MARKER_HIT
         result.outcomes.append({
             "slot": target.slot, "x": cx, "y": cy,
             "marker": MARKER_KILLED if killed else MARKER_HIT,
-            "dealt": dealt, "chance": chance, "roll": roll})
+            "dealt": dealt, "chance": 100, "roll": 0})
     return result
 
 

@@ -1131,8 +1131,11 @@ def check_mine(c: Checker, root: Path, tables: BalanceTables,
         hit = [o for o in blast.get("outcomes", [])
                if o.get("slot") == unit.slot]
         c.check("mine.the_walker_is_in_the_pattern", bool(hit),
-                f"{len(blast.get('outcomes', []))} outcome(s); the roll may "
-                f"still miss, so the damage itself is not asserted")
+                f"{len(blast.get('outcomes', []))} outcome(s)")
+        c.check("mine.the_blast_has_no_hit_roll",
+                bool(hit) and all(o.get("chance") == 100
+                                  and o.get("roll") == 0 for o in hit),
+                f"outcomes {hit}; aExecuteBomb resolves every marked target")
     c.check("mine.hit_points_did_not_rise", unit.hp <= hp_before,
             f"{hp_before} -> {unit.hp} hit points")
 

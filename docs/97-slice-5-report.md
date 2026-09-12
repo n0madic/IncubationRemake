@@ -962,26 +962,109 @@ name the `models` phase cannot resolve, and that phase predates
 `blob_gold.PROGRAM_MODELS_UNCAPTURED`, `MODEL_NAMES_UNCAPTURED` and
 `test_blob_native.WEAPON_PROGRAMS_UNCAPTURED` are what say so.
 
-It found one thing no other creator had shown: **the two projectile creators
-read two different object tables**. The shooter is the *standard* object the
-unit owns (`aGetStdObjectPtr`, z 160 on this capture) plus the unit's height,
-and the target is the cell's *symbol* object (`aGetSymbolObjectPtr`, z 0) plus
-its own. Reading both from `symbols` puts the round 160 units low and takes
-the lob's `vz` down with it -- 120 where the engine leaves 103 -- which is how
-the difference was found and why `Inputs.source_std` and `throw_point()`
-exist. The remake's converted map carries one placed object per cell rather
-than both, so `BlobTriggers` leaves the field unset and the fallback applies:
-a known 160-unit approximation, named at the seam.
+It found one thing no other creator had shown, and the first reading of it
+was **wrong**. What the capture shows is that the round leaves 160 units
+higher than the symbol object plus the unit's height, and the standard object
+standing on that tile happens to be exactly 160 higher than the symbol one
+(§22.2), so "the shooter comes from the standard table" fitted every record.
+It is not a table at all: both creators do
 
-**Eight creators are still on the constructor-table arm**: `0x004228F0`,
+```
+call 0x0047AD30          ; the unit's height
+add  eax, 0xA0           ; 0x00425D9A, 0x00426C6A
+add  ecx, eax            ; over the *symbol* object's own z
+```
+
+and the standard object each of them reads at `0x00404BD0` is only for the
+joint's part list at `+0x45`. A sum of 160 cannot tell 0 + 160 from 160 + 0;
+the bytes can, and **exactly two `call 0x0047AD30` sites in the whole of
+`.text` are followed by `add eax, 0xA0`** -- these two.
+`blob_tables.creators.lift_sites` is that count as a check, and
+`PROJECTILE_LIFT` is the constant, read back out of the shipped executable at
+both sites.
+
+So the remake is not approximating anything here: `Inputs.source_std`,
+`has_source_std`, `throw_point()`'s fallback and `blob_gold._std_object` are
+**gone**, and `throw_point()` is the placed object plus the height plus 160.
+The 160-unit divergence this report claimed as known and accepted did not
+exist as described and does not exist now.
+
+**Eight creators were still on the constructor-table arm**: `0x004228F0`,
 `0x00425400`, `0x00425CA0`, `0x00426070`, `0x00427C80`, `0x00428200`,
 `0x00428570` and `0x00429C30`. All eight have the right arguments in
 `SWITCH_ARGS` now and all eight were asked for again the same day; **Wine
 reached the anchor 0 times in 80 attempts**, the rate `docs/91` §1 records at
-its bad end, and the `models` phase lost its ten as well. They are pinned in
-`NATIVE_FAULTS` and `PROGRAM_ARGS_STALE` so a green run cannot imply the
-phases in hand verify anything -- the records they hold are the fall-through
-arms'.
+its bad end, and the `models` phase lost its ten as well.
+
+### 14.5.1 The eight, transcribed without a capture (2026-09-12)
+
+All eight are now transcribed, and **six of them are diffed against the engine
+anyway** -- which is the finding, because the phases in hand were written off
+as worthless the same day. `PROGRAM_ARGS_STALE` said "the records these hold
+are a fall-through arm's". For six of the eight that was a guess about the
+tail rather than a reading of the body:
+
+| Creator | Arity | What the corrected tail turned out to be |
+|---|---|---|
+| `0x004228F0` `aBlob_CreateFireWheel` | 3 | dead -- the frame loads `[esp+4]` and `[esp+8]` and no third slot |
+| `0x00429C30` (no trace name) | 3 | dead, the same way |
+| `0x00425CA0` `aBlob_CreateGrenade` | 5 | dead -- `[esp+0x5C]` is read nowhere |
+| `0x00426070` `aBlob_CreateGrenade` | 6 | arg5 dead; the **sixth** is the type |
+| `0x00428200` `aBlob_CreateLaser` | 5 | dead, and its slot reused as scratch for the flight length |
+| `0x00428570` `aBlob_CreateLaser` | 5 | dead |
+| `0x00425400` `aBlob_CreateTracerBullet` | 6 | **live**: a round count and a stagger |
+| `0x00427C80` `aBlob_CreateFlameStream` | 5 | **live**: a ring count and a shape switch |
+
+A creator whose tail is dead was called correctly all along, so its phase is
+the engine's answer to the call its arm makes. Four of those six replay field
+for field -- `0x004228F0`, `0x00429C30`, `0x00428200` and `0x00428570` -- and
+two are held back only by a model name the `models` phase predates
+(`A_MINE1.3DI`, `A_LASER.3DI`). `PROGRAM_ARGS_STALE` is down to the two whose
+tail is live, which is exactly the pair that had no records in the capture at
+all.
+
+The seven-dot laser's diff earned its keep on the first run:
+`0x0046D400` sits **inside** `0x00428570`'s loop at `0x00428883`, where
+`0x00428200`'s single call sits in front of its own, so its dots do not share
+one velocity. Read as one they put the third dot's `vz` four units out and the
+fifth's `z` two. Nothing static would have caught that.
+
+**What stands behind a transcription with no capture** is new and needs no
+Wine: `blob_tables.creators.shape_matches_call_sites` runs every program on
+synthetic inputs and requires each record it builds to match a constructor
+call site -- class, kind, literal lifetime, model and the three sprite
+parameters -- with `shape_reaches_call_sites` requiring the converse, that
+every call site inside a transcribed creator is reached. 889 records over 41
+sites. A fifteen-push argument list reversed one slot out lands a kind where a
+lifetime belongs, and that is where it shows; a mutation of one lifetime
+immediate fails both halves.
+
+It also found a **cache hole**. `0x00426070` copies `A_LASER.3DI` into a stack
+buffer before it calls the constructor, exactly as `aBlob_CreateTubeSmoke`
+does with `A_EXPL03/04`, so its one call site carries no model and no cache
+built from the call sites alone carried the name -- while all nine world sets
+ship it. Every one of the six records a weapon-11 or weapon-44 shot makes
+would have been refused. `BLOB_MODEL_MOV_SITES` carries it now and
+`CONVERTER_VERSION` is 0.38.0.
+
+And it found a **defect in the routing**, not in a creator: `0x00426070`
+stores the target cell's unit id as its record's `aux`, kind 26 is arm 25 --
+the seeker of `docs/28` §7.7.1 -- and `_run_weapon_program` had never filled
+`Inputs.target_unit`, so every shot from the multi-target destroyer would have
+homed on slot 0. `effects.triggers.grenade_arc_aux_is_the_target_slot` is the
+check.
+
+**One transcription is deliberately not the creator.**
+`aBlob_CreateFlameStream` opens each ring by reading the three doubles its
+inner loop wrote last and scaling them by `-960`; on the *first* ring the
+inner loop has not run and those slots are the frame's own uninitialised
+locals. Zero stands in, and the argument for it is in
+`blob_creators.FLAME_RING0_DIVERGENCE`: the point-blank arm at `0x00428093`
+zeroes exactly those three doubles, so zero is read out of the routine rather
+than chosen; that stack residue read as an IEEE double is mostly denormal or
+NaN and `_ftol` answers 0 for both is a second and **unmeasured** reason; and
+ring 0's first record in a capture is what would settle it.
+`PROGRAM_DIVERGENT` and `WEAPON_PROGRAMS_DIVERGENT` are the pin.
 
 **Three corrections to this document's own §15.5/§16 material fell out of
 it.**
@@ -1102,6 +1185,133 @@ the marine and descending with the terrain, and **27 kind-50 records** at the
 impact. Reading the pool during the computer's turn needs a *single* batch --
 `hud event 10` followed by `wait`/`blobs` pairs -- because `blobs` is a POST
 and one batch runs at a time.
+
+### 14.5.2 The capture that closed them, and the arms that call twice (2026-09-12, afternoon)
+
+§14.5.1 ended on five creators nothing had ever compared against the engine
+and one deliberate divergence. All six are closed, and the instrument was the
+one §14.5.1 said had answered 0 of 80 that morning: **Wine**.
+
+**The intermittency, measured twice in one day and in both directions.**
+`--probe-startup 3` answered 0 of 3 at the start of the afternoon, on the same
+host with nothing changed but the hour. The capture was started anyway, because
+`docs/91` §1 says the unit of loss is the plan and phases merge: `blob_models`
+reached the anchor on attempt 1, and the eight creators `SWITCH_ARGS` had
+corrected landed in one to six tries each, with one (`0x00428570`) losing all
+ten and landing on a second invocation. **Do not read a probe as a verdict on
+the run.**
+
+**A stale failure entry, which is the direction of error a pin exists to
+prevent.** `NATIVE_FAULTS` reported `models` as unlanded while that plan's own
+answer sat in the same document. Five additive phases -- `models`, `hooks`,
+`units`, `origins`, `symbols` -- recorded a failure and never cleared it on the
+next success, unlike every per-creator phase, which pops its name. Fixed in
+`capture`; all five now pop.
+
+**What the diff found: one real error, in the one creator that had been
+transcribed with a divergence.** `aBlob_CreateFlameStream` `0x00427C80`
+reproduced the engine's twelve records in every field but one. Eleven of the
+twelve disagreed on `aux`, the sprite's half-size, and the differences were
+`0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4` -- `ceil(n / 3)`. The bias on the size
+draw is not `ring / 3`:
+
+```
+0x00427F25  mov byte [esp + 0x30], 2      ; ahead of both loops
+...
+0x004280DC  call 0x4638E0                 ; aRandom2(0, 5)
+0x004280E1  mov ecx, [esp + 0x3c]         ; the counter
+0x004280E5  mov eax, 0x55555556           ; / 3
+0x004280EA  and ecx, 0xff                 ; **a byte**
+0x00428100  fild dword [esp + 0x40]
+0x00428104  faddp st(1)                   ; added before the truncation
+0x00428106  call 0x4AE7B6                 ; _ftol
+...
+0x00428174  mov dl, byte [esp + 0x6c]     ; the same slot, post-frame
+0x00428181  inc dl                        ; once per **record**
+0x00428183  mov byte [esp + 0x30], dl
+```
+
+A byte counter that opens at **two** and steps once per record, so the bias
+steps inside a ring as much as between rings. Read as the ring index it was
+right for the call's first record and wrong for every other one -- a shape that
+fits one sample and no more, which is exactly what a capture is for.
+
+**And ring 0's uninitialised read came back zero.** The transcription's
+stand-in matched the engine field for field, which is a measurement of *the
+anchor's* stack and not of the shipped path's: a plan calls the creator from
+`dbgcall`'s breakpoint and a shot calls it from `aPlayFightAnimation`, and the
+three doubles at `[esp+0x4C]`, `[esp+0x54]` and `[esp+0x5C]` hold whatever each
+caller left. `PROGRAM_DIVERGENT` is empty and
+`blob_creators.FLAME_RING0_DIVERGENCE` now says exactly that -- with one
+correction to its own argument: `_ftol` answers `0x80000000` for a NaN, not 0,
+so the "denormal or NaN, both truncate to zero" half was wrong. The zero rests
+on the point-blank arm at `0x00428093` writing those same three slots, and on
+the residue at that depth being small integers and pointers, which are tiny as
+doubles.
+
+**The rest closed without a correction.** `0x00425400` (weapon 23's spray) and
+the three the model re-take unblocked -- `0x00425CA0`, `0x00426070`,
+`0x00426B70` -- all reproduce the engine's records as transcribed. Twenty-one
+program constants left `CREATOR_CONSTANTS_UNDISCRIMINATED` at once, and not one
+of them to a better instrument: nine were waiting on a model handle and twelve
+on an argument. Arms **31** and **47** moved from `POKED_ARMS` to
+`NATIVE_ARMS`, so kind 32 and kind 49 are now stepped from a creator's own
+records rather than from a donor's.
+
+Every creator either weapon switch routes is now replayed against the engine.
+`WEAPON_PROGRAMS_UNCAPTURED`, `WEAPON_PROGRAMS_STATIC` and
+`WEAPON_PROGRAMS_DIVERGENT` are all empty and stay in the file, because a
+thinner capture has to put a name back rather than quietly compare less.
+
+#### The arms that call their creator more than once
+
+The switch tables say which arm a weapon takes and which creators the arm
+calls. They cannot say **how many times control reaches a call**, and for five
+weapons the answer is not one. `aPlayFightAnimation` runs at `0x0046C186` --
+after `aBuildTargetPattern` marked the cells (`0x0046B6AC`) and after the
+resolver rewrote those marks and killed what it killed -- and nothing between
+the two resets `cell[+0x00]`, so four of these arms simply **walk the control
+map and read the shot's own outcome back**:
+
+| Weapon | Arm | Creator | Band | Unit on the cell? | Per call |
+|---|---|---|---|---|---|
+| 9 muzzle | `0x0040CF65` | `aBlob_EnergyCannon` `0x004264A0` | `0x50`–`0x5E` | required | `k / 3` as the 5th argument |
+| 9 impact | `0x0040D590` | `aBlob_CreatePlasmaExplosion2` `0x0042AF10` | `0x50`–`0x5E` | required | the cell |
+| 11 muzzle | `0x0040D077` | `aBlob_CreateGrenade` `0x00426070` | `0x50`–`0x5E` | required | `k` as the 6th argument -- **the arc** |
+| 41 muzzle | `0x0040D269` | `aBlob_CreateTracerBullet` `0x004247C0` | `0x5A`–`0x5D` | not tested | `(9, 1, "M")` |
+| 44 muzzle | `0x0040D0FD` | `aBlob_CreateGrenade` `0x00426070` | — | — | five rounds, `mov [esp+0x14], 5` |
+
+`k` is the running count of cells the walk has **matched**, in control-map
+order -- `y * width + x`, which is `0x0042F730`'s index and the remake's
+`MapState.index_of`. `aBlob_CreateGrenade` reads that sixth argument as the arc:
+0 to 5 pick one of the six fixed vectors at `0x00426484`, `0xFF` is the
+proximity round that draws its own scatter, and 6 upwards fall through to the
+wider scatter -- so a seventh target is thrown at, not dropped. That is the
+*Multi-target Destroyer* doing what its name says, and the remake fired **one**
+round on the first arc.
+
+The unit test matters and is not decoration, but a `0x5D` cell still passes it.
+`aPlayFightAnimation` runs at `0x0046C186`; the killed-cell removal sweep starts
+only at `0x0046C1CF` and reaches `aRemoveUnitElement` at `0x0046C1F9`. The bomb
+resolver has the same order: animation at `0x004705F5`, removal from
+`0x00470618`. Weapons 9 and 11 therefore fire at every marked cell that held a
+unit, including a killed target; weapon 41 takes the band without the test.
+
+`blob_tables.MULTI_TARGET_ARMS` decodes all five out of the shipped executable
+-- the band from the two `cmp al, imm8`, the unit test from the
+`cmp word [edi+7]`, the walk from the two accessor calls and the `add r32,
+0x17`, the literal count from the `mov`/`dec`/`jne` -- and requires each arm to
+be the one its weapon's switch entry names. The cache carries the result as
+`weapon_multi_target` and `BlobTriggers._fire` walks it, filtering the shot's
+own outcome list by band and unit test. The cell list is `core`'s, out of
+`AttackResult.outcomes`, sorted into control-map order: the picture never
+recomputes a pattern.
+
+**Two things this does not close.** The five weapons are the five arms; nothing
+here has been seen in the running game this pass. And an empty pattern makes
+nothing, which is the engine's answer and also what every caller with no attack
+result behind it now gets -- a set piece that fires weapon 11 would show no
+grenade at all.
 
 ### 14.6 Which music family plays: `Arack`, read out of the import table
 
@@ -2394,7 +2604,14 @@ The second exists because of a trap worth recording: `aGetSymbolObjectPtr` and
 capture's source tile names symbol 139 while the standard object standing
 there is id 0, and symbol 139's `+0x18` is 0 where object 0's is 160. Feeding
 a creator the position service's answer produces a plausible number and the
-wrong z on every record it places. That is `docs/97` §20.5's rule for the
+wrong z on every record it places.
+
+**That gap of 160 then explained something it had nothing to do with**, which
+is the second half of the lesson: §14.5's projectile finding read the two
+creators' own `add eax, 0xA0` as this table difference, because on this one
+capture the two are the same number. A coincidence between two measured
+quantities is not evidence that one causes the other, and the way out was to
+count the instruction rather than to fit the record. That is `docs/97` §20.5's rule for the
 third time: a field copied out of a service is not evidence until the service
 is measured.
 
@@ -4739,24 +4956,24 @@ Fifteen findings over the working tree. Five are worth a paragraph because each
 is a rule read out of the binary or a reading reversed; the rest were one-line
 fixes and are listed after them.
 
-### 39.1 The damage sweep walks the marked list, not the cell array
+### 39.1 The presentation list is rebuilt from the final cell array
 
 `ShotSequence._deaths` and `Main._shot_voice` both model the same engine local
-— `[esp+0x34]`, "the last unit the sweep looked at" — and they disagreed:
-`_deaths` sorted the targets by cell index and `_shot_voice` did not. One had
-to be wrong, and the listing says which. The loop at `0x0040DA83` walks the
-**marked** arrays — the markers at `0x004FBFF8` and the coordinates at
-`0x004FBE54`/`0x004FBE72`, indexed up to the count at `[esp+0x2C]` — which
-`aMarkTargetCells` filled in the weapon's own order. The whole-cell-array sweep
-two dozen instructions above it (`0x0040DA07`) is the **hatch** pass and a
-different loop.
+— `[esp+0x34]`, "the last unit the sweep looked at" — and once disagreed about
+its order. The later loop at `0x0040DA83` does walk the arrays at
+`0x004FBFF8`, `0x004FBE54` and `0x004FBE72`, but those arrays do **not** retain
+`aMarkTargetCells`' write order. `aPlayFightAnimation` has already rebuilt
+them: `0x0040C519` gets the CtrlMap base, `0x0040C549` accepts final markers
+`0x5A..0x5D`, `0x0040C569/72` writes their coordinates, and `0x0040C78B`
+advances by the cell stride `0x17` before looping at `0x0040C79C`.
 
-So the sort was the wrong half, and it is gone. This **reverses** a fix made
-the day before from the other direction: a previous review read `_shot_voice`'s
-"highest cell index" as the bug and it was changed to sweep order, which is
-right; the same reading should have been applied to `_deaths` and was not.
-Both are now the pattern's order, and both comments name the loop that decides
-it — so the next reader has the address rather than an assertion.
+Both consumers therefore use the final **row-major CtrlMap order**, including
+cells introduced by a secondary explosion on a repeat pass. Append order of
+`AttackResult.outcomes` is not sufficient: a repeat can discover a lower-index
+cell after the first pass appended a higher one. `SliceMain._shot_targets`
+sorts once by `y * width + x`, and hands the same list to the voice and death
+switches. `combat_tables.py`'s `presentation.result_sweep` pins the source
+array, marker band, coordinate stores, 23-byte stride and back edge.
 
 ### 39.2 Three unit types are silent
 

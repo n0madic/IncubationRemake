@@ -419,6 +419,249 @@ def check_attack(c: Checker, root: Path, tables: BalanceTables) -> None:
              repeat.to_dict(), result.to_dict())
 
 
+def check_barrel_blast(c: Checker, tables: BalanceTables) -> None:
+    """``docs/22`` section 7.3 -- `special` 12 and its repeat pass."""
+    barrel_type = 30
+    weapon_id = 10
+    c.check("barrel.rows_exist",
+            (tables.units.get(barrel_type) is not None
+             and tables.units[barrel_type].special
+             == combat.SPECIAL_EXPLODES_ON_HIT
+             and tables.weapons.get(weapon_id) is not None),
+            "shipped Barrel 30 and direct-fire weapon 10")
+
+    n = 8 * 5
+    world = combat.CombatWorld(
+        width=8, height=5, cell_height=[0] * n, unit_at=[-1] * n,
+        effect_state=[0] * n, units={}, tables=tables, rng=ARandom(1.0))
+    units = [
+        combat.CombatUnit(slot=0, type_id=0, player=0, x=1, y=2,
+                          hp=100, fp=5, weapon=weapon_id, ammo=255),
+        combat.CombatUnit(slot=1, type_id=barrel_type, player=252, x=3, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=2, type_id=barrel_type, player=252, x=4, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=3, type_id=0, player=255, x=5, y=2,
+                          hp=100),
+        combat.CombatUnit(slot=4, type_id=0, player=255, x=7, y=4,
+                          hp=100),
+    ]
+    for unit in units:
+        world.units[unit.slot] = unit
+        world.unit_at[world.index(unit.x, unit.y)] = unit.slot
+
+    result = combat.attack_unit(world, 1, 2, 3, 2)
+    by_slot = {outcome["slot"]: outcome for outcome in result.outcomes}
+    c.expect("barrel.the_weapon_only_marked_its_target", result.marked,
+             [(3, 2, combat.MARKER_FULL)],
+             "the other outcomes come from special 12, not the gun")
+    c.check("barrel.the_first_blast_reached_the_second",
+            2 in by_slot and not units[2].alive,
+            f"second hp {units[2].hp}; outcomes {result.outcomes}")
+    c.check("barrel.the_second_blast_reached_its_neighbour",
+            3 in by_slot and units[3].hp < 100,
+            f"neighbour hp {units[3].hp}; outcomes {result.outcomes}")
+    c.expect("barrel.the_blast_stays_in_the_eight_neighbours",
+             [4 in by_slot, units[4].hp], [False, 100])
+
+    # `test ebp, ebp` at `0x0046BC39` follows the cell-effect gate, so a
+    # shielded barrel starts no secondary pass.
+    shielded = combat.CombatWorld(
+        width=6, height=4, cell_height=[0] * 24, unit_at=[-1] * 24,
+        effect_state=[0] * 24, units={}, tables=tables, rng=ARandom(1.0))
+    shield_units = [
+        combat.CombatUnit(slot=0, type_id=0, player=0, x=1, y=1,
+                          hp=100, fp=5, weapon=weapon_id, ammo=255),
+        combat.CombatUnit(slot=1, type_id=barrel_type, player=252, x=3, y=1,
+                          hp=1),
+        combat.CombatUnit(slot=2, type_id=0, player=255, x=4, y=1, hp=100),
+    ]
+    for unit in shield_units:
+        shielded.units[unit.slot] = unit
+        shielded.unit_at[shielded.index(unit.x, unit.y)] = unit.slot
+    shielded.effect_state[shielded.index(3, 1)] = 3
+    blocked = combat.attack_unit(shielded, 1, 1, 3, 1)
+    c.expect("barrel.a_shielded_cell_does_not_start_the_blast",
+             [shield_units[1].hp, shield_units[2].hp,
+              len(blocked.outcomes)], [1, 100, 1],
+             "the only outcome is the shielded barrel's 0x5B")
+
+    bombed = combat.CombatWorld(
+        width=8, height=5, cell_height=[0] * 40, unit_at=[-1] * 40,
+        effect_state=[0] * 40, units={}, tables=tables, rng=ARandom(1.0))
+    bomb_units = [
+        combat.CombatUnit(slot=0, type_id=barrel_type, player=252, x=3, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=1, type_id=barrel_type, player=252, x=4, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=2, type_id=0, player=255, x=5, y=2, hp=100),
+    ]
+    for unit in bomb_units:
+        bombed.units[unit.slot] = unit
+        bombed.unit_at[bombed.index(unit.x, unit.y)] = unit.slot
+    bomb = combat.execute_bomb(bombed, 3, 2)
+    bomb_slots = {outcome["slot"] for outcome in bomb.outcomes}
+    c.check("barrel.a_mine_blast_repeats_the_barrel_chain",
+            (1 in bomb_slots and 2 in bomb_slots and not bomb_units[1].alive
+             and bomb_units[2].hp < 100),
+            f"neighbour hp {bomb_units[2].hp}; outcomes {bomb.outcomes}")
+
+    # The resolver is a row-major CtrlMap sweep, not an expanding list of
+    # writes. The victim is resolved before either barrel, and aSetCellState
+    # refuses to replace its 0x5C marker with either later ring.
+    overlap = combat.CombatWorld(
+        width=7, height=5, cell_height=[0] * 35, unit_at=[-1] * 35,
+        effect_state=[0] * 35, units={}, tables=tables, rng=ARandom(1.0))
+    overlap_units = [
+        combat.CombatUnit(slot=0, type_id=barrel_type, player=252,
+                          x=3, y=2, hp=1),
+        combat.CombatUnit(slot=1, type_id=barrel_type, player=252,
+                          x=4, y=2, hp=1),
+        combat.CombatUnit(slot=2, type_id=0, player=255,
+                          x=3, y=1, hp=1000),
+    ]
+    for unit in overlap_units:
+        overlap.units[unit.slot] = unit
+        overlap.unit_at[overlap.index(unit.x, unit.y)] = unit.slot
+    coalesced = combat.execute_bomb(overlap, 3, 2)
+    victim_hits = [outcome for outcome in coalesced.outcomes
+                   if outcome["slot"] == 2]
+    c.expect("barrel.overlapping_rings_coalesce_in_the_ctrlmap",
+             len(victim_hits), 1,
+             f"the shared cell resolved {len(victim_hits)} times: "
+             f"{coalesced.outcomes}")
+
+    # Secondary blasts pass their centre height to aSetCellState. A second
+    # barrel is needed here so the tested victim is outside the mine's initial
+    # 3x3 but inside the chained ring; 0x640 itself is refused, one below passes.
+    for delta, reached in ((combat.MARKER_HEIGHT_WINDOW - 1, True),
+                           (combat.MARKER_HEIGHT_WINDOW, False)):
+        stepped = combat.CombatWorld(
+            width=7, height=5, cell_height=[0] * 35, unit_at=[-1] * 35,
+            effect_state=[0] * 35, units={}, tables=tables,
+            rng=ARandom(1.0))
+        stepped_units = [
+            combat.CombatUnit(slot=0, type_id=barrel_type, player=252,
+                              x=3, y=2, hp=1),
+            combat.CombatUnit(slot=1, type_id=barrel_type, player=252,
+                              x=4, y=2, hp=1),
+            combat.CombatUnit(slot=2, type_id=0, player=255,
+                              x=5, y=2, hp=1000),
+        ]
+        for unit in stepped_units:
+            stepped.units[unit.slot] = unit
+            stepped.unit_at[stepped.index(unit.x, unit.y)] = unit.slot
+        stepped.cell_height[stepped.index(5, 2)] = delta
+        height_result = combat.execute_bomb(stepped, 3, 2)
+        victim_reached = any(outcome["slot"] == 2
+                             for outcome in height_result.outcomes)
+        name = ("barrel.ring_height_below_window_reaches"
+                if reached else "barrel.ring_height_boundary_is_refused")
+        c.expect(name, victim_reached, reached,
+                 f"delta {delta}; outcomes {height_result.outcomes}")
+
+
+def check_beacoo_blast(c: Checker, tables: BalanceTables) -> None:
+    """``docs/22`` section 7.3 -- `special` 16 explodes only on death."""
+    beacoo_type = 66
+    barrel_type = 30
+    weapon_id = 10
+    c.check("beacoo.rows_exist",
+            (tables.units.get(beacoo_type) is not None
+             and tables.units[beacoo_type].special
+             == combat.SPECIAL_EXPLODES_ON_DEATH
+             and tables.units.get(barrel_type) is not None
+             and tables.units[barrel_type].special
+             == combat.SPECIAL_EXPLODES_ON_HIT),
+            "shipped Bea'Coo 66 and Barrel 30")
+
+    world = combat.CombatWorld(
+        width=8, height=5, cell_height=[0] * 40, unit_at=[-1] * 40,
+        effect_state=[0] * 40, units={}, tables=tables, rng=ARandom(1.0))
+    units = [
+        combat.CombatUnit(slot=0, type_id=0, player=0, x=1, y=2,
+                          hp=100, fp=5, weapon=weapon_id, ammo=255),
+        combat.CombatUnit(slot=1, type_id=beacoo_type, player=255, x=3, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=2, type_id=barrel_type, player=252, x=4, y=2,
+                          hp=1),
+        combat.CombatUnit(slot=3, type_id=0, player=255, x=5, y=2,
+                          hp=100),
+        combat.CombatUnit(slot=4, type_id=0, player=255, x=7, y=4,
+                          hp=100),
+    ]
+    for unit in units:
+        world.units[unit.slot] = unit
+        world.unit_at[world.index(unit.x, unit.y)] = unit.slot
+    result = combat.attack_unit(world, 1, 2, 3, 2)
+    by_slot = {outcome["slot"]: outcome for outcome in result.outcomes}
+    c.check("beacoo.death_starts_the_blast",
+            not units[1].alive and 2 in by_slot and not units[2].alive,
+            f"bea'coo hp {units[1].hp}, barrel hp {units[2].hp}; "
+            f"outcomes {result.outcomes}")
+    c.check("beacoo.the_blast_can_enter_a_barrel_chain",
+            3 in by_slot and units[3].hp < 100,
+            f"neighbour hp {units[3].hp}; outcomes {result.outcomes}")
+    c.expect("beacoo.the_chain_stays_in_the_eight_neighbours",
+             [4 in by_slot, units[4].hp], [False, 100])
+
+    survived = combat.CombatWorld(
+        width=6, height=4, cell_height=[0] * 24, unit_at=[-1] * 24,
+        effect_state=[0] * 24, units={}, tables=tables, rng=ARandom(1.0))
+    survivors = [
+        combat.CombatUnit(slot=0, type_id=0, player=0, x=1, y=1,
+                          hp=100, fp=5, weapon=weapon_id, ammo=255),
+        combat.CombatUnit(slot=1, type_id=beacoo_type, player=255, x=3, y=1,
+                          hp=100),
+        combat.CombatUnit(slot=2, type_id=0, player=255, x=4, y=1, hp=100),
+    ]
+    for unit in survivors:
+        survived.units[unit.slot] = unit
+        survived.unit_at[survived.index(unit.x, unit.y)] = unit.slot
+    nonlethal = combat.attack_unit(survived, 1, 1, 3, 1)
+    c.check("beacoo.a_survivor_does_not_start_the_blast",
+            (survivors[1].alive and survivors[1].hp < 100
+             and survivors[2].hp == 100 and len(nonlethal.outcomes) == 1),
+            f"bea'coo hp {survivors[1].hp}, neighbour hp {survivors[2].hp}; "
+            f"outcomes {nonlethal.outcomes}")
+
+    vulnerable = combat.CombatWorld(
+        width=6, height=4, cell_height=[0] * 24, unit_at=[-1] * 24,
+        effect_state=[0] * 24, units={}, tables=tables, rng=ARandom(1.0))
+    heavy_units = [
+        combat.CombatUnit(slot=0, type_id=0, player=0, x=1, y=1,
+                          hp=100, fp=5, weapon=12, ammo=255),
+        combat.CombatUnit(slot=1, type_id=beacoo_type, player=255, x=3, y=1,
+                          hp=50),
+    ]
+    for unit in heavy_units:
+        vulnerable.units[unit.slot] = unit
+        vulnerable.unit_at[vulnerable.index(unit.x, unit.y)] = unit.slot
+    heavy = combat.attack_unit(vulnerable, 1, 1, 3, 1)
+    c.check("beacoo.type_2_uses_the_narrowed_1000_damage",
+            (not heavy_units[1].alive and heavy.outcomes
+             and heavy.outcomes[0]["dealt"] > tables.weapons[12].damage),
+            f"hp {heavy_units[1].hp}; outcomes {heavy.outcomes}")
+
+    mined = combat.CombatWorld(
+        width=7, height=4, cell_height=[0] * 28, unit_at=[-1] * 28,
+        effect_state=[0] * 28, units={}, tables=tables, rng=ARandom(1.0))
+    mine_units = [
+        combat.CombatUnit(slot=0, type_id=beacoo_type, player=255, x=3, y=1,
+                          hp=1),
+        combat.CombatUnit(slot=1, type_id=0, player=255, x=5, y=1, hp=100),
+    ]
+    for unit in mine_units:
+        mined.units[unit.slot] = unit
+        mined.unit_at[mined.index(unit.x, unit.y)] = unit.slot
+    mine = combat.execute_bomb(mined, 3, 1)
+    c.check("beacoo.a_mine_kill_has_no_secondary_gameplay_ring",
+            (not mine_units[0].alive and mine_units[1].hp == 100
+             and len(mine.outcomes) == 1),
+            f"bea'coo hp {mine_units[0].hp}, far hp {mine_units[1].hp}; "
+            f"outcomes {mine.outcomes}")
+
+
 def check_hit_probability(c: Checker, root: Path,
                           tables: BalanceTables) -> None:
     """``docs/22`` §5 on a real map, over a grid of attacker/target pairs."""
@@ -1259,6 +1502,8 @@ def run_check(root: Path) -> int:
     check_overheat(c, tables)
     check_hit_probability(c, root, tables)
     check_attack(c, root, tables)
+    check_barrel_blast(c, tables)
+    check_beacoo_blast(c, tables)
     check_reaction(c, tables)
     check_stun(c, tables)
     check_conversion(c, root, tables)

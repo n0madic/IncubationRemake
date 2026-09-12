@@ -32,7 +32,7 @@ static func run(ctx: AIContext) -> bool:
 		var blast: AttackResult = Interact.execute_bomb(ctx.map, ctx.units,
 			ctx.utab, ctx.wtab, x, y, ctx.turn.ai_level,
 			ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng,
-			ctx.cheats)
+			ctx.cheats, ctx.compat_flags)
 		ctx.emit(AIEvent.make("parabomb", slot, x, y, 0, 0, 0, "",
 			blast.to_dict()))
 		if unit.hp != 0:

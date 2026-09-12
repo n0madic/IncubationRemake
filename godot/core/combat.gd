@@ -46,11 +46,20 @@ const MARKER_50: int = 0x52
 const MARKER_FLAT_100: int = 0x53
 const MARKER_FORCED_HIT: int = 0x54
 const MARKER_STUN: int = 0x55
+## The resolver accepts the whole `0x50..0x59` input band, although target
+## pattern handlers only write the six named values above.
+const MARKER_INPUT_LAST: int = 0x59
 ## docs/22 section 7.3 -- the markers the resolver writes back.
 const MARKER_MISS: int = 0x5A
 const MARKER_RESOLVED: int = 0x5B
 const MARKER_HIT: int = 0x5C
 const MARKER_KILLED: int = 0x5D
+## `aSetCellState` protects the whole scratch band from a second write.
+const MARKER_SCRATCH_LAST: int = 0x5E
+## `aSetCellState` accepts a neighbour only below this absolute height delta;
+## equality is refused. Secondary blasts supply their centre cell's height;
+## geometric weapon-pattern handlers bypass the check with -1.
+const MARKER_HEIGHT_WINDOW: int = 0x640
 
 ## docs/22 section 7.3 -- the roll is `aRandom(0, 100)` and the comparison is
 ## `chance + 10 < roll`, so a weapon at 0 % still connects 11 % of the time.
@@ -79,8 +88,11 @@ const CLOSE_COMBAT_DISTANCE: int = 1
 const CLOSE_COMBAT_HEIGHT_LEVELS: int = 16
 
 ## docs/22 section 7 -- target `special` values that force the hit and the
-## damage.  12 is `Barrel`/`Parabomb`, 13 is `Case`.
-const GUARANTEED_HIT_SPECIALS: Array[int] = [12, 13]
+## damage. 12 is `Barrel`/`Parabomb`, 13 is `Case`. A 12 also stamps its eight
+## neighbours for the secondary pass inside [method attack].
+const SPECIAL_EXPLODES_ON_HIT: int = 12
+const SPECIAL_EXPLODES_ON_DEATH: int = 16
+const GUARANTEED_HIT_SPECIALS: Array[int] = [SPECIAL_EXPLODES_ON_HIT, 13]
 const GUARANTEED_HIT_DAMAGE: int = 255
 
 ## docs/21 section 5 -- `special` 9, the one arm of the effect dispatcher
@@ -106,8 +118,13 @@ const HATCH_WEAPON_TYPES: Array[int] = [1, 2, 4]
 const DAMAGE_SENTINEL: int = 0xFE
 const SENTINEL_DAMAGE_DEALT: int = 2
 const IMMUNE_UNIT_TYPE: int = 0x23
-## docs/22 sections 7.3 and 7.5 -- the one type exempt from spending ammunition.
-const NO_AMMO_UNIT_TYPE: int = 0x42
+## docs/22 sections 7.3 and 7.5 -- Bea'Coo is also the one type exempt from
+## spending ammunition. A type-2 weapon writes literal 1000 into applyDamage's
+## u8 argument, so the damage that arrives is 232.
+const BEACOO_TYPE: int = 0x42
+const BEACOO_WEAPON_TYPE: int = 2
+const BEACOO_DAMAGE: int = 1000 & 0xFF
+const NO_AMMO_UNIT_TYPE: int = BEACOO_TYPE
 ## docs/22 section 7.3 -- a cell whose effect state is 3 takes no damage.
 const EFFECT_SHIELDED: int = 3
 ## docs/22 section 7.3 -- a `Banner` carrier within four fields doubles the
@@ -203,7 +220,7 @@ const AIM_NEIGHBOUR_ORDER: Array[Vector2i] = [
 	Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(0, -1),
 	Vector2i(1, -1), Vector2i(1, 1), Vector2i(1, 0), Vector2i(0, 1)]
 ## `0x0046AA66` (weapon 40) -- a *different* unrolled eight. The two differ in
-## their last four entries, and the order is the order the rolls come out in.
+## their last four entries; `aSetCellState` keeps the first write on overlaps.
 const FLAME_B_NEIGHBOUR_ORDER: Array[Vector2i] = [
 	Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(1, 0),
 	Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, 1), Vector2i(0, -1)]
@@ -212,7 +229,7 @@ const PLAYER_NEUTRAL: int = 0xFC
 ## `0x004308C0`'s direction table (docs/23 section 8), in the order the spores
 ## handler sweeps it with `allowDiagonal` set.  It is neither the facing
 ## encoding nor the `dy`-then-`dx` order [constant AIM_AND_NEIGHBOURS] writes
-## its ring in, and the order is what the damage rolls come out in.
+## its ring in.
 const STEP_DIRECTIONS: Array[Vector2i] = [
 	Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1), Vector2i(1, 0),
 	Vector2i(1, -1), Vector2i(-1, 1), Vector2i(1, 1), Vector2i(-1, -1)]
@@ -223,6 +240,11 @@ const NO_PATTERN: Array[int] = [18, 19, 28, 33, 34, 35, 37, 38, 39]
 
 ## docs/21 section 4 -- `ParaBomb`.  A mine resolves as a shot from this.
 const BOMB_WEAPON: int = 36
+## `aExecuteBomb` does not read weapon 36's damage column: `0x004703CF`
+## installs 30 for an ordinary target, while `0x00470419` installs literal
+## 1000 for `special` 12 and applyDamage narrows that argument to u8.
+const BOMB_DAMAGE: int = 30
+const BOMB_EXPLOSIVE_DAMAGE: int = 1000 & 0xFF
 ## The heading `aExecuteBomb` hands `applyDamage` -- `push 0xFF` at
 ## `0x004704BF`. No octant's arc holds it, so a mine always meets the **front**
 ## armour. The model used to derive a heading from the centre.
@@ -568,10 +590,11 @@ static func apply_damage(defender: UnitState, damage: int,
 
 ## `0x0046AA10(weapon, aimX, aimY, shooterX, shooterY, shooterFacing)`.
 ##
-## Returns `[x, y, marker]` triples in the order the handler writes them --
-## which is the order the damage rolls come out in, so it is not a set. All
-## sixteen handlers are here since the third slice; `unsupported` is kept for
-## the caller's sake and is now only ever filled by a weapon id above 47.
+## Returns `[x, y, marker]` triples in the order the handler writes them. The
+## order decides the final marker on overlaps; resolution later walks CtrlMap
+## row-major. All sixteen handlers are here since the third slice;
+## `unsupported` is kept for the caller's sake and is now only ever filled by
+## a weapon id above 47.
 ##
 ## The dispatcher takes **six** arguments and not three. Its two call sites
 ## settle what they are: the shot resolver at `0x0046B6AC` pushes the shooter's
@@ -663,14 +686,60 @@ static func _has_shooter(context: PatternContext, weapon_id: int,
 	return false
 
 
-## The eight neighbours of a cell, in a handler's own write order.
+## The eight neighbours of a cell, in a handler's own write order. These
+## pattern handlers pass height `-1` to `aSetCellState`, so terrain does not
+## clip the geometric weapon pattern.
 static func _ring(state: MapState, x: int, y: int,
-		order: Array[Vector2i]) -> Array[PackedInt32Array]:
+		order: Array[Vector2i],
+		marker: int = MARKER_70) -> Array[PackedInt32Array]:
 	var out: Array[PackedInt32Array] = []
 	for step: Vector2i in order:
-		if state.in_bounds(x + step.x, y + step.y):
-			out.append(PackedInt32Array([x + step.x, y + step.y, MARKER_70]))
+		var nx: int = x + step.x
+		var ny: int = y + step.y
+		if not state.in_bounds(nx, ny):
+			continue
+		out.append(PackedInt32Array([nx, ny, marker]))
 	return out
+
+
+## Secondary explosions pass the centre cell's actual height to
+## `aSetCellState`; neighbours at a delta of 0x640 or more are refused.
+static func _blast_ring(state: MapState, x: int, y: int,
+		order: Array[Vector2i],
+		marker: int = MARKER_70) -> Array[PackedInt32Array]:
+	if not state.in_bounds(x, y):
+		return []
+	var source_height: int = state.height_at(state.index_of(x, y))
+	var out: Array[PackedInt32Array] = []
+	for cell: PackedInt32Array in _ring(state, x, y, order, marker):
+		if absi(state.height_at(state.index_of(cell[0], cell[1])) \
+				- source_height) < MARKER_HEIGHT_WINDOW:
+			out.append(cell)
+	return out
+
+
+## Put marker writes into the same cell-indexed shape as CtrlMap. The original
+## writer refuses a cell already in `0x50..0x5E`, so the first write wins; this
+## is the crucial distinction from a queue when secondary rings overlap.
+static func _write_markers(state: MapState, markers: PackedByteArray,
+		cells: Array[PackedInt32Array]) -> void:
+	for cell: PackedInt32Array in cells:
+		if cell.size() < 3 or not state.in_bounds(cell[0], cell[1]):
+			continue
+		var index: int = state.index_of(cell[0], cell[1])
+		if markers[index] >= MARKER_FULL \
+				and markers[index] <= MARKER_SCRATCH_LAST:
+			continue
+		markers[index] = cell[2]
+
+
+static func _marker_map(state: MapState,
+		cells: Array[PackedInt32Array]) -> PackedByteArray:
+	var markers: PackedByteArray = PackedByteArray()
+	markers.resize(state.cell_count())
+	markers.fill(0)
+	_write_markers(state, markers, cells)
+	return markers
 
 
 ## `0x0046AD9F` -- eighteen scattered cells, then the aim cell.
@@ -1014,10 +1083,24 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		return result
 
 	var banner: bool = banner_nearby(attacker, units)
-	for cell: PackedInt32Array in result.marked:
-		var cx: int = cell[0]
-		var cy: int = cell[1]
-		var marker: int = cell[2]
+	# `result.marked` remains the weapon's raw target array for inspection.
+	# Resolution is over CtrlMap: first writes win, the map is swept row-major,
+	# and a secondary explosion requests another complete pass. Presentation
+	# reconstructs the final CtrlMap order from `outcomes`.
+	var markers: PackedByteArray = _marker_map(state, result.marked)
+	var repeat_sweep: bool = false
+	var marker_index: int = 0
+	while marker_index < markers.size() or repeat_sweep:
+		if marker_index >= markers.size():
+			marker_index = 0
+			repeat_sweep = false
+		var index: int = marker_index
+		marker_index += 1
+		var marker: int = markers[index]
+		if marker < MARKER_FULL or marker > MARKER_INPUT_LAST:
+			continue
+		var cx: int = index % state.width
+		var cy: int = index / state.width
 		var target: UnitState = _unit_on(state, units, cx, cy)
 		if target == null:
 			continue
@@ -1025,6 +1108,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# its roll, whether the shot then hits or misses.
 		Visibility.set_state(target, Visibility.FULL)
 		if state.obstacle_at(state.index_of(cx, cy)) == EFFECT_SHIELDED:
+			markers[index] = MARKER_RESOLVED
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
 				"marker": MARKER_RESOLVED, "dealt": 0, "chance": 0, "roll": 0})
 			continue
@@ -1036,6 +1120,9 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		if banner:
 			chance *= 2
 		var damage: int = marker_damage(wtab, marker, attacker.weapon)
+		if target.type_id == BEACOO_TYPE \
+				and wtab.type_of(attacker.weapon) == BEACOO_WEAPON_TYPE:
+			damage = BEACOO_DAMAGE
 		# **The roll is drawn before the overrides, not after.**  The native
 		# capture shows two draws against a `Case` whether or not the roll
 		# would have connected, against one for a miss on an ordinary target:
@@ -1047,10 +1134,17 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		elif marker == MARKER_STUN:
 			chance = 1
 			roll = 0
-		if GUARANTEED_HIT_SPECIALS.has(utab.special(target.type_id)):
+		var target_special: int = utab.special(target.type_id)
+		if damage > 0 and GUARANTEED_HIT_SPECIALS.has(target_special):
 			chance = 0
 			roll = 1
 			damage = GUARANTEED_HIT_DAMAGE
+			if target_special == SPECIAL_EXPLODES_ON_HIT:
+				# `0x0046BC59`..`0x0046BCF6`: the same unrolled order as
+				# `aim_and_neighbours`, but marker `0x53` -- flat damage 100.
+				_write_markers(state, markers, _blast_ring(state, cx, cy,
+					AIM_NEIGHBOUR_ORDER, MARKER_FLAT_100))
+				repeat_sweep = true
 		# The same override, for the same reason: the comparison is replaced
 		# and the generator is not, so the roll above has already been drawn.
 		# **A unit the other switch shields is never the one killed**, so the
@@ -1062,6 +1156,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			roll = 1
 
 		if chance + HIT_BONUS < roll:
+			markers[index] = MARKER_MISS
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
 				"marker": MARKER_MISS, "dealt": 0, "chance": chance,
 				"roll": roll})
@@ -1081,6 +1176,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			if not shielded and not spend_absorber(target):
 				target.action_state = STUNNED_ACTION_STATE
 				target.mp = 0
+			markers[index] = MARKER_RESOLVED
 			result.outcomes.append({"slot": target.slot, "x": cx, "y": cy,
 				"marker": MARKER_RESOLVED, "dealt": 0, "chance": chance,
 				"roll": roll, "stunned": stunned})
@@ -1123,6 +1219,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			var _saw: bool = convert_unit(state, units, utab, target,
 				attacker.player, ai_level, human_players, game_mode)
 		var killed: bool = not target.is_alive()
+		if killed and target_special == SPECIAL_EXPLODES_ON_DEATH:
+			# `0x0046BE4F`..`0x0046BF2F`: unlike a barrel this ring is
+			# written only after `applyDamage` left the carrier at zero HP.
+			_write_markers(state, markers, _blast_ring(state, cx, cy,
+				AIM_NEIGHBOUR_ORDER, MARKER_FLAT_100))
+			repeat_sweep = true
 		if killed:
 			# `0x0046BF84`..`0x0046BF93`: the shooter's kill and the victim's
 			# "lost to an enemy", both **only** when the two players differ.
@@ -1142,6 +1244,7 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		var outcome: Dictionary = {"slot": target.slot, "x": cx, "y": cy,
 			"marker": MARKER_KILLED if killed else MARKER_HIT, "dealt": dealt,
 			"chance": chance, "roll": roll}
+		markers[index] = DictRead.as_int(outcome["marker"])
 		if converted:
 			outcome["converted"] = true
 		result.outcomes.append(outcome)

@@ -17,12 +17,18 @@ extends TestSuite
 ## gate will accept.  A weapon whose chance came out zero would make every
 ## reaction check pass by refusing.
 const REACTION_WEAPON: int = 3
+## A direct-fire type-2 weapon for Bea'Coo's separate damage override.
+const BEACOO_WEAPON: int = 0
 const SCENE_SIZE: int = 8
 ## docs/21 section 6 -- the `special` 1 pair, by their shipped ids.
 const CLOSE_COMBAT_GUN: int = 2
 const CLOSE_COMBAT_BAYONET: int = 30
 ## A `size` 1 unit type, for the swap's large-unit subtraction.
 const LARGE_TYPE: int = 40
+## One of the three shipped `Barrel` rows; its `special` 12 is the blast rule.
+const BARREL_TYPE: int = 30
+## The shipped alien whose `special` 16 starts the same blast only on death.
+const BEACOO_TYPE: int = 66
 
 
 ## One built world, with **typed** members.
@@ -46,6 +52,8 @@ func run(h: TestHarness) -> void:
 	_hit_curve(h)
 	_line_of_sight(h)
 	_damage(h)
+	_barrel_blast(h)
+	_beacoo_blast(h)
 	_overheat(h)
 	_visibility(h)
 	_reveals(h)
@@ -73,6 +81,10 @@ static func _weapon_rows() -> Array[Dictionary]:
 	# `test_combat_native.gd` uses, and a spec check that reached for it would
 	# assert the data instead of the rule.
 	return [
+		{"id": BEACOO_WEAPON, "heat": 255, "toggle": BEACOO_WEAPON,
+			"mun": 255, "hit": 100, "damage": 20, "range_min": 1,
+			"range_max": 10, "type": 2, "special": 0, "def_mode": 0,
+			"mun_per_fight": 1},
 		{"id": REACTION_WEAPON, "heat": 4, "toggle": REACTION_WEAPON,
 			"mun": 15, "hit": 20, "damage": 4, "range_min": 1,
 			"range_max": 30, "type": 1, "special": 0, "def_mode": 1,
@@ -122,9 +134,14 @@ static func _types() -> UnitTypeTable:
 		# 20 * 160 = 3200, and a crate of height 10 tops out at 1600 -- so a
 		# short one is walked straight over and blocks nothing.  A "a body does
 		# not hide" check built on one passes on a model that rejects 254.
-		{"id": 30, "mp_max": 0, "fp_max": 255, "hp_max": 10, "special": 0,
+		{"id": BARREL_TYPE, "mp_max": 0, "fp_max": 255, "hp_max": 1,
+			"special": Combat.SPECIAL_EXPLODES_ON_HIT,
 			"size": 0, "species": 2, "height": 40, "model": "",
 			"description": "barrel"},
+		{"id": BEACOO_TYPE, "mp_max": 4, "fp_max": 0, "hp_max": 12,
+			"special": Combat.SPECIAL_EXPLODES_ON_DEATH,
+			"size": 0, "species": 1, "height": 10,
+			"model": "", "description": "bea'coo"},
 		# A large unit, for the swap's own distance: docs/22 section 5.1
 		# takes a field off for each large participant, so one of these
 		# reaches a bayonet from two cells away.
@@ -183,6 +200,277 @@ static func _place(scene: Scene, slot: int, player: int, x: int, y: int,
 	scene.units[slot] = unit
 	scene.state.set_unit(scene.state.index_of(x, y), slot)
 	return unit
+
+
+## docs/22 section 7.3 -- a `special` 12 target forces its own hit and stamps
+## the eight neighbours `0x53`. A second barrel caught there repeats the sweep,
+## which is what makes the blast a chain rather than a visual on the first cell.
+func _barrel_blast(h: TestHarness) -> void:
+	var scene: Scene = _scene(8, 5)
+	var shooter: UnitState = _place(scene, 0, 0, 1, 2, 3)
+	shooter.weapon = REACTION_WEAPON
+	var first: UnitState = _place(scene, 1, TurnState.PLAYER_PROPS,
+		3, 2, 0, BARREL_TYPE)
+	var second: UnitState = _place(scene, 2, TurnState.PLAYER_PROPS,
+		4, 2, 0, BARREL_TYPE)
+	var neighbour: UnitState = _place(scene, 3, UnitState.PLAYER_ALIEN,
+		5, 2, 0)
+	var far: UnitState = _place(scene, 4, UnitState.PLAYER_ALIEN, 7, 4, 0)
+	first.hp = 1
+	second.hp = 1
+	neighbour.hp = 1000
+	far.hp = 1000
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	var shot: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, shooter.x, shooter.y, first.x, first.y,
+		0, 1, 1, _turn(), rng)
+	var by_slot: Dictionary = {}
+	for outcome: Dictionary in shot.outcomes:
+		by_slot[DictRead.as_int(outcome["slot"])] = outcome
+	h.equal("barrel.the_weapon_only_marked_its_target", shot.marked,
+		[PackedInt32Array([first.x, first.y, Combat.MARKER_FULL])],
+		"the other outcomes must come from `special` 12, not the gun")
+	h.check("barrel.the_first_blast_reached_the_second",
+		by_slot.has(second.slot) and second.hp == 0,
+		"second hp %d; outcomes %s" % [second.hp, shot.outcomes])
+	h.check("barrel.the_second_blast_reached_its_neighbour",
+		by_slot.has(neighbour.slot) and neighbour.hp < 1000,
+		"neighbour hp %d; outcomes %s" % [neighbour.hp, shot.outcomes])
+	h.check("barrel.the_blast_stays_in_the_eight_neighbours",
+		not by_slot.has(far.slot) and far.hp == 1000,
+		"far hp %d; outcomes %s" % [far.hp, shot.outcomes])
+
+	# And through the command dispatcher the player actually uses. This keeps
+	# the regression on the production path instead of proving only the helper.
+	var records: Array = [
+		TestFixtures.unit(0, 1, 2, 0, 0, 6, 0, [], REACTION_WEAPON, 15, 3,
+			100),
+		TestFixtures.unit(1, 3, 2, BARREL_TYPE, TurnState.PLAYER_PROPS, 0, 0,
+			[], 0, 0, 0, 1),
+		TestFixtures.unit(2, 4, 2, BARREL_TYPE, TurnState.PLAYER_PROPS, 0, 0,
+			[], 0, 0, 0, 1),
+		TestFixtures.unit(3, 5, 2, 0, UnitState.PLAYER_ALIEN, 0, 0, [], 0, 0,
+			0, 1000),
+	]
+	var balance: Dictionary = TestFixtures.balance([
+		TestFixtures.unit_type(BARREL_TYPE, Combat.SPECIAL_EXPLODES_ON_HIT,
+			0, 0, 255, World.SPECIES_INANIMATE)])
+	balance["weapons"] = _weapon_rows()
+	var world: World = World.create(TestFixtures.map_document(8, 5, records),
+		balance, 1.0)
+	world.turn.current_player = 0
+	var submitted: AttackResult = world.submit_attack(
+		AttackCommand.create(0, 3, 2))
+	h.check("barrel.submit_attack_carries_the_chain",
+		submitted.fired and DictRead.as_int(world.unit_view(2)["hp"]) == 0
+			and DictRead.as_int(world.unit_view(3)["hp"]) < 1000,
+		"production result %s" % submitted.to_dict())
+
+	# `test ebp, ebp` at `0x0046BC39` comes after the cell-effect gate. A
+	# shielded barrel therefore neither takes the forced hit nor starts a blast.
+	var shielded: Scene = _scene(6, 4)
+	var shield_shooter: UnitState = _place(shielded, 0, 0, 1, 1, 3)
+	var safe_barrel: UnitState = _place(shielded, 1, TurnState.PLAYER_PROPS,
+		3, 1, 0, BARREL_TYPE)
+	var safe_neighbour: UnitState = _place(shielded, 2,
+		UnitState.PLAYER_ALIEN, 4, 1, 0)
+	shielded.state.set_obstacle(shielded.state.index_of(3, 1),
+		Combat.EFFECT_SHIELDED)
+	rng.randomize_seed(1.0)
+	var blocked: AttackResult = Combat.attack(shielded.state, shielded.units,
+		shielded.types, shielded.weapons, shield_shooter.x, shield_shooter.y,
+		safe_barrel.x, safe_barrel.y, 0, 1, 1, _turn(), rng)
+	h.equal("barrel.a_shielded_cell_does_not_start_the_blast",
+		[safe_barrel.hp, safe_neighbour.hp, blocked.outcomes.size()],
+		[1000, 1000, 1], "the only outcome is the shielded barrel's 0x5B")
+
+	# `aExecuteBomb` owns a second resolver. It must also repeat after either
+	# barrel writes its ring; the target two cells away is outside weapon 36's
+	# initial centre-and-neighbours pattern.
+	var bombed: Scene = _scene(8, 5)
+	var bomb_barrel: UnitState = _place(bombed, 0, TurnState.PLAYER_PROPS,
+		3, 2, 0, BARREL_TYPE)
+	var bomb_second: UnitState = _place(bombed, 1, TurnState.PLAYER_PROPS,
+		4, 2, 0, BARREL_TYPE)
+	var bomb_neighbour: UnitState = _place(bombed, 2,
+		UnitState.PLAYER_ALIEN, 5, 2, 0)
+	bomb_barrel.hp = 1
+	bomb_second.hp = 1
+	bomb_neighbour.hp = 1000
+	rng.randomize_seed(1.0)
+	var bomb: AttackResult = Interact.execute_bomb(bombed.state, bombed.units,
+		bombed.types, bombed.weapons, 3, 2, 1, 1, 1, _turn(), rng)
+	var bomb_slots: Array[int] = []
+	for outcome: Dictionary in bomb.outcomes:
+		bomb_slots.append(DictRead.as_int(outcome["slot"]))
+	h.check("barrel.a_mine_blast_repeats_the_barrel_chain",
+		bomb_slots.has(bomb_second.slot) and bomb_slots.has(bomb_neighbour.slot)
+			and bomb_second.hp == 0 and bomb_neighbour.hp < 1000,
+		"neighbour hp %d; outcomes %s" % [bomb_neighbour.hp, bomb.outcomes])
+
+	# The resolver walks CtrlMap in row-major order. The victim is resolved
+	# before either barrel, and aSetCellState refuses to replace its 0x5C marker
+	# with either later ring.
+	var overlap: Scene = _scene(7, 5)
+	var overlap_first: UnitState = _place(overlap, 0,
+		TurnState.PLAYER_PROPS, 3, 2, 0, BARREL_TYPE)
+	var overlap_second: UnitState = _place(overlap, 1,
+		TurnState.PLAYER_PROPS, 4, 2, 0, BARREL_TYPE)
+	var overlap_victim: UnitState = _place(overlap, 2,
+		UnitState.PLAYER_ALIEN, 3, 1, 0)
+	overlap_first.hp = 1
+	overlap_second.hp = 1
+	overlap_victim.hp = 1000
+	rng.randomize_seed(1.0)
+	var coalesced: AttackResult = Interact.execute_bomb(overlap.state,
+		overlap.units, overlap.types, overlap.weapons, 3, 2, 1, 1, 1,
+		_turn(), rng)
+	var victim_hits: int = 0
+	for outcome: Dictionary in coalesced.outcomes:
+		if DictRead.as_int(outcome["slot"]) == overlap_victim.slot:
+			victim_hits += 1
+	h.equal("barrel.overlapping_rings_coalesce_in_the_ctrlmap", victim_hits, 1,
+		"outcomes: %s" % [coalesced.outcomes])
+
+	# Secondary blasts pass their centre height to aSetCellState. A second barrel
+	# is needed so the victim is outside the mine's initial 3x3 but inside the
+	# chained ring; 0x640 itself is refused, one unit below passes.
+	for delta: int in [Combat.MARKER_HEIGHT_WINDOW - 1,
+			Combat.MARKER_HEIGHT_WINDOW]:
+		var stepped: Scene = _scene(7, 5)
+		var stepped_first: UnitState = _place(stepped, 0,
+			TurnState.PLAYER_PROPS, 3, 2, 0, BARREL_TYPE)
+		var stepped_second: UnitState = _place(stepped, 1,
+			TurnState.PLAYER_PROPS, 4, 2, 0, BARREL_TYPE)
+		var stepped_victim: UnitState = _place(stepped, 2,
+			UnitState.PLAYER_ALIEN, 5, 2, 0)
+		stepped_first.hp = 1
+		stepped_second.hp = 1
+		stepped_victim.hp = 1000
+		stepped.state.set_height(stepped.state.index_of(5, 2), delta)
+		rng.randomize_seed(1.0)
+		var height_result: AttackResult = Interact.execute_bomb(stepped.state,
+			stepped.units, stepped.types, stepped.weapons, 3, 2, 1, 1, 1,
+			_turn(), rng)
+		var victim_reached: bool = false
+		for outcome: Dictionary in height_result.outcomes:
+			if DictRead.as_int(outcome["slot"]) == stepped_victim.slot:
+				victim_reached = true
+		var below: bool = delta < Combat.MARKER_HEIGHT_WINDOW
+		h.equal("barrel.ring_height_below_window_reaches" if below \
+			else "barrel.ring_height_boundary_is_refused", victim_reached, below,
+			"delta %d; outcomes %s" % [delta, height_result.outcomes])
+
+
+## docs/22 section 7.3 -- `special` 16 writes the same secondary ring, but only
+## after damage killed the carrier. The ring can therefore enter the ordinary
+## `special` 12 chain, while a surviving Bea'Coo must leave its neighbours be.
+func _beacoo_blast(h: TestHarness) -> void:
+	var scene: Scene = _scene(8, 5)
+	var shooter: UnitState = _place(scene, 0, 0, 1, 2, 3)
+	var beacoo: UnitState = _place(scene, 1, UnitState.PLAYER_ALIEN,
+		3, 2, 0, BEACOO_TYPE)
+	var barrel: UnitState = _place(scene, 2, TurnState.PLAYER_PROPS,
+		4, 2, 0, BARREL_TYPE)
+	var neighbour: UnitState = _place(scene, 3, UnitState.PLAYER_ALIEN,
+		5, 2, 0)
+	var far: UnitState = _place(scene, 4, UnitState.PLAYER_ALIEN, 7, 4, 0)
+	beacoo.hp = 1
+	barrel.hp = 1
+	neighbour.hp = 1000
+	far.hp = 1000
+	var rng: IncRandom = IncRandom.new()
+	rng.randomize_seed(1.0)
+	var shot: AttackResult = Combat.attack(scene.state, scene.units,
+		scene.types, scene.weapons, shooter.x, shooter.y, beacoo.x, beacoo.y,
+		0, 1, 1, _turn(), rng)
+	var by_slot: Dictionary = {}
+	for outcome: Dictionary in shot.outcomes:
+		by_slot[DictRead.as_int(outcome["slot"])] = outcome
+	h.check("beacoo.death_starts_the_blast",
+		beacoo.hp == 0 and by_slot.has(barrel.slot) and barrel.hp == 0,
+		"bea'coo hp %d, barrel hp %d; outcomes %s" % [
+			beacoo.hp, barrel.hp, shot.outcomes])
+	h.check("beacoo.the_blast_can_enter_a_barrel_chain",
+		by_slot.has(neighbour.slot) and neighbour.hp < 1000,
+		"neighbour hp %d; outcomes %s" % [neighbour.hp, shot.outcomes])
+	h.check("beacoo.the_chain_stays_in_the_eight_neighbours",
+		not by_slot.has(far.slot) and far.hp == 1000,
+		"far hp %d; outcomes %s" % [far.hp, shot.outcomes])
+
+	var survived: Scene = _scene(6, 4)
+	var surviving_shooter: UnitState = _place(survived, 0, 0, 1, 1, 3)
+	var surviving_beacoo: UnitState = _place(survived, 1,
+		UnitState.PLAYER_ALIEN, 3, 1, 0, BEACOO_TYPE)
+	var safe_neighbour: UnitState = _place(survived, 2,
+		UnitState.PLAYER_ALIEN, 4, 1, 0)
+	rng.randomize_seed(1.0)
+	var nonlethal: AttackResult = Combat.attack(survived.state, survived.units,
+		survived.types, survived.weapons, surviving_shooter.x,
+		surviving_shooter.y, surviving_beacoo.x, surviving_beacoo.y,
+		0, 1, 1, _turn(), rng)
+	h.check("beacoo.a_survivor_does_not_start_the_blast",
+		surviving_beacoo.hp > 0 and surviving_beacoo.hp < 1000
+			and safe_neighbour.hp == 1000 and nonlethal.outcomes.size() == 1,
+		"bea'coo hp %d, neighbour hp %d; outcomes %s" % [
+			surviving_beacoo.hp, safe_neighbour.hp, nonlethal.outcomes])
+
+	# A second Bea'Coo rule precedes the death test: type 66 hit by a type-2
+	# weapon receives literal 1000 narrowed through applyDamage's u8 argument.
+	var vulnerable: Scene = _scene(6, 4)
+	var heavy_shooter: UnitState = _place(vulnerable, 0, 0, 1, 1, 3)
+	heavy_shooter.weapon = BEACOO_WEAPON
+	var vulnerable_beacoo: UnitState = _place(vulnerable, 1,
+		UnitState.PLAYER_ALIEN, 3, 1, 0, BEACOO_TYPE)
+	vulnerable_beacoo.hp = 50
+	rng.randomize_seed(1.0)
+	var heavy: AttackResult = Combat.attack(vulnerable.state, vulnerable.units,
+		vulnerable.types, vulnerable.weapons, heavy_shooter.x, heavy_shooter.y,
+		vulnerable_beacoo.x, vulnerable_beacoo.y, 0, 1, 1, _turn(), rng)
+	h.check("beacoo.type_2_uses_the_narrowed_1000_damage",
+		vulnerable_beacoo.hp == 0 and not heavy.outcomes.is_empty()
+			and DictRead.as_int(heavy.outcomes[0]["dealt"]) > 20,
+		"hp %d; outcomes %s" % [vulnerable_beacoo.hp, heavy.outcomes])
+
+	# Faithful keeps the original omission: a Bea'Coo killed on the edge of a
+	# mine's pattern gets KillFire presentation but writes no gameplay ring.
+	var mined: Scene = _scene(7, 4)
+	var mined_beacoo: UnitState = _place(mined, 0, UnitState.PLAYER_ALIEN,
+		4, 1, 0, BEACOO_TYPE)
+	var mined_far: UnitState = _place(mined, 1, UnitState.PLAYER_ALIEN,
+		5, 1, 0)
+	mined_beacoo.hp = 1
+	mined_far.hp = 1000
+	rng.randomize_seed(1.0)
+	var mine: AttackResult = Interact.execute_bomb(mined.state, mined.units,
+		mined.types, mined.weapons, 3, 1, 1, 1, 1, _turn(), rng)
+	h.check("beacoo.a_mine_kill_has_no_secondary_gameplay_ring",
+		mined_beacoo.hp == 0 and mined_far.hp == 1000
+			and mine.outcomes.size() == 1,
+		"bea'coo hp %d, far hp %d; outcomes %s" % [
+			mined_beacoo.hp, mined_far.hp, mine.outcomes])
+
+	# Corrected mode makes the death trigger source-independent. The target at
+	# x=5 lies outside the mine centred at x=3 and only Bea'Coo's new ring can
+	# reach it, so this cannot pass from the initial bomb pattern alone.
+	var corrected: Scene = _scene(7, 4)
+	var corrected_beacoo: UnitState = _place(corrected, 0,
+		UnitState.PLAYER_ALIEN, 4, 1, 0, BEACOO_TYPE)
+	var corrected_far: UnitState = _place(corrected, 1,
+		UnitState.PLAYER_ALIEN, 5, 1, 0)
+	corrected_beacoo.hp = 1
+	corrected_far.hp = 1000
+	rng.randomize_seed(1.0)
+	var fixed: AttackResult = Interact.execute_bomb(corrected.state,
+		corrected.units, corrected.types, corrected.weapons, 3, 1, 1, 1, 1,
+		_turn(), rng, null,
+		PackedStringArray([Interact.COMPAT_BEACOO_MINE_DEATH_BLAST]))
+	h.check("beacoo.corrected_mine_kill_writes_the_death_ring",
+		corrected_beacoo.hp == 0 and corrected_far.hp < 1000
+			and fixed.outcomes.size() == 2,
+		"bea'coo hp %d, far hp %d; outcomes %s" % [
+			corrected_beacoo.hp, corrected_far.hp, fixed.outcomes])
 
 
 # --- docs/22 section 7.4 -----------------------------------------------------
@@ -1335,6 +1623,28 @@ func _push(h: TestHarness, wtab: WeaponTable, control: GameControl,
 			hole_state.unit_at(hole_state.index_of(3, 5))],
 		["push_into_hole", 0, MapState.NO_UNIT])
 
+	# A pushed object can set off a mine inside the Use command. The result must
+	# carry that shot to game/, or the world changes without a blast, sound or
+	# death stage ever reaching the picture.
+	var blasted: Scene = _scene(10, 10)
+	var blast_state: MapState = blasted.state
+	var blast_pusher: UnitState = _place(blasted, 0, 0, 1, 5, 3)
+	var blast_crate: UnitState = _place(blasted, 1, 252, 2, 5, 0, 30)
+	var blast_neighbour: UnitState = _place(blasted, 2, 0, 3, 6, 0)
+	blast_crate.hp = 1
+	blast_neighbour.hp = 1000
+	h.check("push.a_real_mine_was_placed",
+		CellObjects.place_mine(blast_state, 3, 5) >= 0)
+	var detonated: UseResult = Interact.execute(blast_state, blasted.units,
+		blasted.types, wtab, control, blast_pusher, 1, 1, 1, _turn(), rng)
+	var detonation: Dictionary = DictRead.as_dict(
+		detonated.to_dict().get("blast", {}))
+	h.check("push.the_use_result_carries_the_mine_blast",
+		detonated.kind == "push_onto_mine"
+			and DictRead.as_bool(detonation.get("fired", false))
+			and not DictRead.as_array(detonation.get("outcomes", [])).is_empty(),
+		"use result: %s" % [detonated.to_dict()])
+
 	# Defusing a mine: nothing explodes, and it never reaches the script.
 	var mine: Scene = _scene(10, 10)
 	var mine_state: MapState = mine.state
@@ -2155,9 +2465,9 @@ func _the_hero_counter(h: TestHarness) -> void:
 
 ## The two reveals inside `aAttackUnit` and the one inside `aExecuteBomb`:
 ## the shooter once its weapon is cleared to fire (`0x0046B643`), and every
-## unit on a marked cell before its roll (`0x0046BA22`, `0x004703A9`) --
-## hit or miss, so a hidden shooter is seen firing and a hidden target is
-## seen being shot at.
+## unit on a marked cell before resolution (`0x0046BA22`, `0x004703A9`). The
+## ordinary shot may then hit or miss; the bomb has no hit roll. Either way a
+## hidden target is seen being attacked.
 func _reveals(h: TestHarness) -> void:
 	var scene: Scene = _scene()
 	var shooter: UnitState = _place(scene, 0, 0, 1, 1, 0)
@@ -2294,8 +2604,8 @@ func _conversion_and_absorber(h: TestHarness) -> void:
 		+ "draws as the landed hit, %f against %f"
 			% [carried_rng.seed, stale_rng.seed])
 
-	# The bomb never asks: `aExecuteBomb` reaches `applyDamage` straight from
-	# its roll, with the heading 0xFF no arc holds.
+	# The bomb never asks: its per-cell resolver calls `applyDamage` directly,
+	# with the heading 0xFF no arc holds.
 	var minefield: Scene = _scene()
 	var victim: UnitState = _place(minefield, 0, UnitState.PLAYER_ALIEN, 3, 3, 0)
 	victim.absorber = 5

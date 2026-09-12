@@ -34,6 +34,9 @@ var ctab: CtrlMapTable = null
 var turn: TurnState = null
 var rng: IncRandom = null
 var result: AITurnResult = null
+## The world's stable simulation compatibility choices. A copy keeps this
+## one-turn context from mutating the session contract it is reading.
+var compat_flags: PackedStringArray = PackedStringArray()
 
 ## `0x004FAE40` through `0x0040B370`. Always 1 in a shipped run: an engine
 ## debug global with a setter and a getter and no product option behind it.
@@ -61,7 +64,8 @@ var mission_script: Callable = Callable()
 
 static func create(map_state: MapState, unit_dict: Dictionary,
 		types: UnitTypeTable, weapons: WeaponTable, ctrl: CtrlMapTable,
-		turn_state: TurnState, generator: IncRandom) -> AIContext:
+		turn_state: TurnState, generator: IncRandom,
+		compatibility: PackedStringArray = PackedStringArray()) -> AIContext:
 	var ctx: AIContext = AIContext.new()
 	ctx.map = map_state
 	ctx.units = unit_dict
@@ -70,6 +74,7 @@ static func create(map_state: MapState, unit_dict: Dictionary,
 	ctx.ctab = ctrl
 	ctx.turn = turn_state
 	ctx.rng = generator
+	ctx.compat_flags = compatibility.duplicate()
 	ctx.result = AITurnResult.new()
 	ctx.state.resize(map_state.cell_count())
 	ctx.mp_left.resize(map_state.cell_count())

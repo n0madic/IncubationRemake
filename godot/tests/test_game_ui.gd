@@ -27,6 +27,7 @@ func run(h: TestHarness) -> void:
 	_command_gate(h)
 	_game_font(h)
 	_shots_and_reactions(h)
+	_shot_target_order(h)
 	_rebuild(h)
 	_replay_positions(h)
 	_replay_progress(h)
@@ -34,6 +35,7 @@ func run(h: TestHarness) -> void:
 	_turn_presentation_regressions(h)
 	_unit_animations(h)
 	_walk_epilogue(h)
+	_push_mine_presentation(h)
 	_playback_pacing(h)
 	_presenter_arms(h)
 	_watching_gate(h)
@@ -50,6 +52,30 @@ func run(h: TestHarness) -> void:
 	_blip_volume(h)
 	_no_campaign_state(h)
 	_screens_leave_nothing_behind(h)
+
+
+## A secondary ring discovered on a repeat pass can append a lower-index cell
+## after a higher one. aPlayFightAnimation rebuilds its presentation array by
+## scanning the final CtrlMap, so consumers must not inherit outcomes order.
+func _shot_target_order(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	var result: AttackResult = AttackResult.new()
+	result.outcomes = [
+		{"slot": 1, "x": 4, "y": 2, "marker": Combat.MARKER_HIT,
+			"dealt": 1},
+		{"slot": 0, "x": 2, "y": 2, "marker": Combat.MARKER_HIT,
+			"dealt": 1},
+	]
+	var targets: Array[Dictionary] = main._shot_targets(result)
+	var slots: Array[int] = []
+	for target: Dictionary in targets:
+		slots.append(DictRead.as_int(target["slot"]))
+	h.equal("shot.targets_rebuild_final_ctrlmap_order", slots, [0, 1],
+		"outcomes arrived as [1, 0]")
+	main.free()
 
 
 ## Developer overlays and hidden keys are useful in an editor run, but none of
@@ -483,10 +509,11 @@ func _shots_and_reactions(h: TestHarness) -> void:
 		var view: Dictionary = world.unit_view(slot)
 		if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
 			continue
-		if DictRead.as_int(view["player"]) == 0:
+		var player: int = DictRead.as_int(view["player"])
+		if player == 0:
 			if shooter < 0:
 				shooter = slot
-		elif reactor < 0:
+		elif player == UnitState.PLAYER_ALIEN and reactor < 0:
 			reactor = slot
 	if shooter < 0 or reactor < 0:
 		h.check("shot.units", false, "_C_140 has no live pair to shoot with")
@@ -517,11 +544,11 @@ func _shots_and_reactions(h: TestHarness) -> void:
 	h.check("shot.reactions_drained", not entries.is_empty(),
 		"%d reaction(s) from slot %d" % [entries.size(), reactor])
 	# The shot the reaction took is undone: what is being checked below is the
-	# presentation, and a shooter the setup killed would refuse to fire. The
+	# presentation, and both bodies must survive long enough to draw it. The
 	# reactor goes back on overwatch too, so the player's shot below draws
 	# the same return fire through `World.submit_attack`'s own drain.
 	var _restored: bool = world.apply_unit_record(shooter, {
-		"hp": DictRead.as_int(us["hp"]), "mp": DictRead.as_int(us["mp"]),
+		"hp": 200, "mp": DictRead.as_int(us["mp"]),
 		"ammo": DictRead.as_int(us["ammo"]), "acted": 0, "heat": 0,
 		"action_state": 0})
 	var _rearmed: bool = world.apply_unit_record(reactor, {
@@ -2151,6 +2178,47 @@ func _walk_epilogue(h: TestHarness) -> void:
 	main.free()
 
 
+## A mine reached through Use is still an aExecuteBomb fight animation. The
+## push and the blast share one journal delta, but remain two ordered pictures:
+## first the object slides onto the cell, then weapon 36 impacts there.
+func _push_mine_presentation(h: TestHarness) -> void:
+	var world: World = World.create(TestFixtures.map_document(7, 5, [
+		TestFixtures.unit(0, 1, 2, 0, 0, 6, 0, [], 3, 15, 3, 200),
+		TestFixtures.unit(1, 2, 2, 30, TurnState.PLAYER_PROPS, 0, 0, [],
+			0, 0, 0, 200),
+	]), TestFixtures.balance([TestFixtures.unit_type(30)]), 1.0)
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._strings = Localization.new()
+	main._sequences = SequenceQueue.create(null)
+	var blast: AttackResult = AttackResult.new()
+	blast.fired = true
+	var outcome: Dictionary = {
+		"ok": true, "kind": "push_onto_mine", "reason": "",
+		"cell": [2, 2], "action_point": 0,
+		"fires_script_event": false, "pushed": [[3, 2]],
+		"blast": blast.to_dict(),
+	}
+	var _hold: float = main._present_use(0, outcome, Vector2i(2, 2))
+	var stages: Array[String] = []
+	var guard: int = 0
+	while main._sequences.is_running() and guard < 500:
+		var stage: String = main._sequences.current()
+		if stages.is_empty() or stages[stages.size() - 1] != stage:
+			stages.append(stage)
+		var _advanced: bool = main._sequences.advance(
+			1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		guard += 1
+	h.check("push_mine.the_blast_follows_the_slide",
+		stages.has(PushSequence.STAGE_CELL)
+			and stages.has(ShotSequence.STAGE_IMPACT)
+			and stages.find(PushSequence.STAGE_CELL)
+				< stages.find(ShotSequence.STAGE_IMPACT),
+		"stages: %s" % [stages])
+	main.free()
+
+
 func _campaign_screens(h: TestHarness) -> void:
 	var cache_dir: String = CacheFixture.cache_dir()
 	var manifest: Dictionary = CacheFixture.manifest()
@@ -2863,7 +2931,8 @@ class MuzzleRecorder extends SliceMain.MainShotHost:
 	var shots: Array[Vector2i] = []
 
 	func muzzle(_weapon: int, sx: int, sy: int, _tx: int, _ty: int,
-			_shooter: int = MapState.NO_UNIT) -> void:
+			_shooter: int = MapState.NO_UNIT,
+			_pattern: Array[Dictionary] = []) -> void:
 		shots.append(Vector2i(sx, sy))
 
 

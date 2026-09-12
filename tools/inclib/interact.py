@@ -140,6 +140,8 @@ class UseResult:
     fires_script_event: bool = False
     #: ``(x, y)`` of every cell a push moved an object through.
     pushed: list[tuple[int, int]] = field(default_factory=list)
+    #: The weapon-36 result when a push ended on a mine.
+    blast: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +150,7 @@ class UseResult:
             "action_point": self.action_point,
             "fires_script_event": self.fires_script_event,
             "pushed": [list(p) for p in self.pushed],
+            "blast": dict(self.blast),
         }
 
 
@@ -457,7 +460,8 @@ def push_object(world: CombatWorld, unit: CombatUnit) -> UseResult:
                 cells.effect_object[into] = ctrlmapmod.NO_OBJECT
                 world.effect_state[into] = EFFECT_NONE
                 cells.effect_timer[into] = 0
-                combatmod.execute_bomb(world, at[0], at[1])
+                result.blast = combatmod.execute_bomb(
+                    world, at[0], at[1]).to_dict()
                 result.kind = "push_onto_mine"
                 break
         if world.field_type[into] in (FIELD_TYPE_HOLE, FIELD_TYPE_DEEP_HOLE):

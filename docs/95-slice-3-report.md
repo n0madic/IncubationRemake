@@ -300,11 +300,13 @@ and this stage built one for order 3.
 
 The eight the last battery found, once §8's open items were implemented, were
 one shape again and a different one: **a census that counts *how many* cells a
-pattern stamps is blind to the order they are stamped in**, and the order is
-the order the damage rolls come out in. The two unrolled eight-neighbour rings
-could be permuted, and the scatter could draw its `x` before its `y`, with
-every count unchanged. `pattern.scene_cells` records the sequence and not the
-size; `test_ai.gd` replays the generator itself and compares the offsets.
+pattern stamps is blind to the order they are stamped in**. The order decides
+the first marker retained when cells overlap; `0x0042F7D0` refuses to overwrite
+the attack band, and the resolver itself later walks CtrlMap row-major. The two
+unrolled eight-neighbour rings could be permuted,
+and the scatter could draw its `x` before its `y`, with every count unchanged.
+`pattern.scene_cells` records the sequence and not the size; `test_ai.gd`
+replays the generator itself and compares the offsets.
 Three more needed a scene rather than a check: the radius thresholds are
 pinned by evaluating the table over every range a shipped map can produce, and
 the large-occupant re-centre by **opening the gap it exists for** -- a record

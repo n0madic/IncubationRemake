@@ -1619,6 +1619,54 @@ A creator of any other arity pushes no name and leaves from the body's axis
 at eye height (`0x0047AD30`), which is also the seven's own fallback for a
 shooter that is not animating.
 
+#### 8.1.3 The five arms that call their creator more than once — **[code]**
+
+§8.1's tables say which arm a weapon takes and which creators the arm calls.
+They say nothing about **how many times control reaches a call**, and for five
+weapons the answer is not one. Four of the five walk the whole control map and
+fire once per cell whose state byte is in a band of their own; the fifth loops
+a literal count at the one aim point.
+
+The band is the shot's own outcome. `aBuildTargetPattern` marks the covered
+cells ([`22` §7.2](22-combat-and-visibility.md)) and the resolver rewrites each
+one it judged — `0x5A` miss, `0x5B` resolved, `0x5C` hit, `0x5D` killed
+([`22` §7.3](22-combat-and-visibility.md)). `aAttackUnit` calls
+`aPlayFightAnimation` at `0x0046C186`, after both, and nothing between the two
+resets `cell[+0x00]`. So these arms read back what the shot did.
+
+| Weapon | Arm | Creator | Band | Unit on the cell? | Per iteration |
+|---|---|---|---|---|---|
+| 9 muzzle | `0x0040CF65` | `aBlob_EnergyCannon` `0x004264A0` | `0x50`–`0x5E` | required | `k / 3` as the 5th argument, which the body never reads |
+| 9 impact | `0x0040D590` | `aBlob_CreatePlasmaExplosion2` `0x0042AF10` | `0x50`–`0x5E` | required | the cell's own `(x, y)` |
+| 11 muzzle | `0x0040D077` | `aBlob_CreateGrenade` `0x00426070` | `0x50`–`0x5E` | required | `k` as the 6th argument — **the arc** |
+| 41 muzzle | `0x0040D269` | `aBlob_CreateTracerBullet` `0x004247C0` | `0x5A`–`0x5D` | not tested | `(9, 1, "M")`, §8.1.1's burst |
+| 44 muzzle | `0x0040D0FD` | `aBlob_CreateGrenade` `0x00426070` | — | — | five rounds, `mov dword [esp+0x14], 5` and a `dec`/`jne` |
+
+`k` is the running count of cells the walk has **matched**, in control-map
+order — `y * width + x`, which is `0x0042F730`'s index. `aBlob_CreateGrenade`
+reads its sixth argument as the arc: 0…5 pick one of the six fixed vectors the
+jump table at `0x00426484` holds, `0xFF` is the proximity round that draws its
+own scatter, and 6 upwards fall through to the wider drawn scatter. So the
+*Multi-target Destroyer*'s simultaneous grenades do not fly the same line, and a
+seventh target is thrown at rather than dropped.
+
+The unit test is `cmp word [edi+7], 0xFFFF` and it is not decoration, but a
+`0x5D` cell still passes it. `aPlayFightAnimation` runs at `0x0046C186`; only
+after it returns does the removal sweep start at `0x0046C1CF`, reaching
+`aRemoveUnitElement` at `0x0046C1F9`. Weapons 9 and 11 therefore fire at every
+matched cell that held a unit, including killed targets; weapon 41 takes every
+matched marker without the unit test.
+
+`combat_tables.py`'s `resolver.attack_animation_before_removal` pins the two
+calls and their order; this is not inferred from the surviving cell state.
+
+Decoded from the instructions by `blob_tables.py`'s
+`weapon.multi_target_arms`, which reads the band out of the two `cmp al, imm8`,
+the unit test out of the `cmp word [edi+7]`, the walk out of the two accessor
+calls and the `add r32, 0x17` stride, and the literal count out of the
+`mov`/`dec`/`jne`; each arm is also required to be the one its weapon's switch
+entry names. 5/5.
+
 ### 8.2 `CreateBGB`, the scripted emitter
 
 The LCL command is [`20` §7.3](20-lcl-language.md)'s and its record layout is
@@ -2000,12 +2048,22 @@ store lands on.
    shipped data reaches build `RzRxRy`" but "the other builder is never
    called by anything".
 
-2. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
+2. **What the five repeating arms look like in play.** §8.1.3 decodes them out
+   of the instructions and the remake walks the same cell list, but nothing has
+   watched a *Multi-target Destroyer* throw six grenades on six arcs in the
+   running original or in the remake. The pool can be read frame by frame
+   through the agent (§14.5's closing paragraph in
+   [`97`](97-slice-5-report.md) has the recipe), and the shot to watch is
+   weapon 11 against a cluster, or weapon 41, whose arm takes the resolver's
+   band without a unit test and so should fire at a cell whose occupant it just
+   killed.
+
+3. **Whether the eleven unreachable kinds were ever reachable.** §7.7 shows no
    call site can select them in the shipped build. Whether they are cut effects
    or arms for a debug path is not recoverable: the arms carry no strings and
    nothing else references them.
 
-3. ~~**What the engine hands a seeker as its target — and whether `_seek`'s
+4. ~~**What the engine hands a seeker as its target — and whether `_seek`'s
    arithmetic is right.**~~ **Closed 2026-09-01, and it wanted no new
    capture.** Both halves were answerable from the arms' own instructions
    plus the two phases already taken. The target is the position of the
@@ -2033,7 +2091,7 @@ store lands on.
    its target's column, so the direction service answers `NaN` and the engine's
    own record shows what the conversion returns -- `docs/97` §20.2.
 
-4. ~~**Which music family the GOG release plays.**~~ **Closed** — §6.1. The
+5. ~~**Which music family the GOG release plays.**~~ **Closed** — §6.1. The
    import descriptor settles it without reading the shim: `Incubation.exe`
    imports the nine `winmm` entry points from `audio.dll`, which is the shim
    built with `Arack`, and nothing in the tree imports the `Track` build. Eleven
@@ -2102,4 +2160,3 @@ step:
 The same technique gives §7.3's sprite half-extent: `and eax,0xff; lea
 eax,[eax+eax*4]; shl eax,5` at `0x004040F0` is the `size * 160` this document
 already stated, and only the shift had been pinned.
-

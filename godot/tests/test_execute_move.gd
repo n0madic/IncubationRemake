@@ -446,16 +446,15 @@ func _the_move_unit_event(h: TestHarness) -> void:
 	_the_dead_mover_fires_nothing(h)
 
 
-## [method TestFixtures.tiny_world] with a weapon 36 in the table.
+## [method TestFixtures.tiny_world] with a deliberately useless weapon-36 row.
 ##
-## The shared fixture has none, so `aExecuteBomb` rolled against a hit quote of
-## zero and a damage of zero and could never kill anything. The row is this
-## suite's own so the other suites' counts do not move with it.
+## `aExecuteBomb` uses 36 only to select the aim pattern; its private resolver
+## must ignore both zero columns and still pass 30 to the damage routine.
 static func _bombable_world(rng_seed: float) -> World:
 	var bal: Dictionary = TestFixtures.balance()
 	var weapons: Array = DictRead.as_array(bal["weapons"]).duplicate()
 	weapons.append({"id": Combat.BOMB_WEAPON, "heat": 255, "toggle": 0,
-		"mun": 0, "hit": 100, "damage": 40, "range_min": 1, "range_max": 1,
+		"mun": 0, "hit": 0, "damage": 0, "range_min": 1, "range_max": 1,
 		"type": 1, "special": 0, "def_mode": 0, "mun_per_fight": 0})
 	bal["weapons"] = weapons
 	var units: Array = [TestFixtures.unit(0, 2, 2),
@@ -471,9 +470,9 @@ static func _bombable_world(rng_seed: float) -> World:
 ## mine has just killed therefore fires **no** `MoveUnit`, which is what the
 ## caller has to honour, because the caller is where the remake makes the call.
 func _the_dead_mover_fires_nothing(h: TestHarness) -> void:
-	# The blast is a roll, so the seed that kills is **searched for** rather
-	# than written down: a hard-coded one would be asserting the generator's
-	# arithmetic by accident, and the walk consumes the mine either way.
+	# There is no hit roll, but applyDamage still rolls the amount. Search for a
+	# killing seed rather than asserting the generator's arithmetic by accident;
+	# the walk consumes the mine either way.
 	var calls: Array[int] = []
 	var killed: bool = false
 	var moved: MoveResult = null

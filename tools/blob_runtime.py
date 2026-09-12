@@ -1618,15 +1618,22 @@ def _case_arg(value: Any) -> Any:
 #: against its GDScript twin and not against the engine, and the other fifty
 #: arms are not populated by any creator a weapon switch selects, so nothing
 #: has stepped them at all.  What it does make is a *transitive* claim for
-#: these twenty-four -- engine against Python here, Python against GDScript in
+#: these twenty-seven -- engine against Python here, Python against GDScript in
 #: the suite -- and the fixture carries the list so the suite can say which.
 #: `blob_gold.py` pins that this list is the one its capture produced.
+#:
+#: **Arms 31 and 47 joined on 2026-09-12** and left :data:`POKED_ARMS`, for the
+#: same reason arm 13 did: the spore cannon's spray and the flame stream had
+#: been captured with a tile number where their arms push a round count and a
+#: ring count, so neither kind 32 nor kind 49 had ever been filled by a
+#: creator.  Re-taken with the literals the arms push, both creators fill their
+#: pool and both arms step from a creator's own records.
 NATIVE_ARMS: Tuple[int, ...] = (
-    5, 6, 8, 9, 11, 12, 15, 20, 21, 22, 25, 33, 42, 44, 45, 48, 49, 58, 60,
-    61, 63, 68, 71, 73,
+    5, 6, 8, 9, 11, 12, 13, 15, 20, 21, 22, 25, 31, 33, 42, 44, 45, 47, 48,
+    49, 58, 60, 61, 63, 68, 71, 73,
 )
-#: **The other fifty**, stepped the only way they can be.  No creator a weapon
-#: switch selects fills them, so `blob_gold.py`'s `poked_*` phases borrow a
+#: **The other forty-seven**, stepped the only way they can be.  No creator a
+#: weapon switch selects fills them, so `blob_gold.py`'s `poked_*` phases borrow a
 #: donor pool and rewrite each record's `+0x44` -- the jump-table index -- and
 #: call `aBlob_Update` once per record per round inside the engine.  Every one
 #: reproduces the engine's record field for field.
@@ -1635,9 +1642,17 @@ NATIVE_ARMS: Tuple[int, ...] = (
 #: other: the record an arm is handed is a donor's, so the *arm* is measured
 #: and the arguments a creator would have given it are not.
 #:
-#: Ten of these fifty did not reproduce it until this file was corrected, and
-#: that is what the experiment was for -- `docs/97` §20 lists them.
-POKED_ARMS: Tuple[int, ...] = (0, 1, 2, 3, 4, 7, 10, 13, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72)
+#: Ten of these did not reproduce it until this file was corrected, and that
+#: is what the experiment was for -- `docs/97` §20 lists them.
+#:
+#: **Arm 13 left this list on 2026-09-11** and is in :data:`NATIVE_ARMS` now.
+#: It had been here because the shock wave's capture phase held the
+#: fall-through arm's zero records -- `argument_vector` had handed
+#: `aBlob_CreateShockWave` a tile number where its callers push a type -- so
+#: nothing a weapon selects appeared to fill kind 13.  With the argument
+#: corrected the creator lays its sixty records and the arm is stepped with a
+#: creator's own, which is the stronger of the two claims.
+POKED_ARMS: Tuple[int, ...] = (0, 1, 2, 3, 4, 7, 10, 14, 16, 17, 18, 19, 23, 24, 26, 27, 28, 29, 30, 32, 34, 35, 36, 37, 38, 39, 40, 41, 43, 46, 50, 51, 52, 53, 54, 55, 56, 57, 59, 62, 64, 65, 66, 67, 69, 70, 72)
 #: Stepped and **not** reproduced: none, of all seventy-four.  The two seekers
 #: were here until the reading in :func:`_seek` replaced the invented
 #: normalisation with `0x0046D400`'s own answer.

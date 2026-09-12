@@ -501,6 +501,9 @@ def check_push_and_mines(c: Checker, tables: BalanceTables) -> None:
              ["push_onto_mine", interact.EFFECT_NONE])
     c.check("push.the_detonation_reaches_a_neighbour", victim.hp < 200,
             f"the ParaBomb's neighbour marker took {200 - victim.hp}")
+    c.check("push.the_result_carries_the_blast_for_presentation",
+            bool(result.to_dict().get("blast", {}).get("fired", False)),
+            f"use result: {result.to_dict()}")
 
     # Defusing one instead.
     world = _blank(10, 10, tables)

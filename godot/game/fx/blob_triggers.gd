@@ -189,6 +189,175 @@ const SHOCK_WAVE_CREATOR: String = "0x00422B80"
 const SHOCK_WAVE_TYPE: int = 2
 ## A [method muzzle] or [method impact] whose caller has no tile to give.
 const NO_TILE: Vector2i = Vector2i(-1, -1)
+## A caller that does not separate the **placed object's** own position from
+## the standing unit's height. The two are one argument for every creator
+## built off the constructor table and two for a transcribed one, which reads
+## them differently (docs/97 section 14.5), so a caller that has only the sum
+## passes this and the sum stands in for both.
+const NO_POINT: Vector3i = Vector3i(-0x40000000, -0x40000000, -0x40000000)
+
+## **The part a creator resolves for itself**, where the switch's own call
+## site pushes none.
+##
+## `0x0042C660` writes the world position of a named part of the shooter's
+## Charisma model over the three source coordinates when the shooter's
+## `+0x56` is set (docs/42 section 6's "already animating" byte). The three
+## seven-argument burst creators take that name as an **argument**, which is
+## what `weapon_muzzle_joint` carries; the other ten push it themselves, so
+## the document is empty for them and the effect used to leave the body axis
+## instead of the barrel. Every one of the ten pushes `"M"` (`0x004C10D8`) --
+## read out of the shipped executable by `blob_tables.creator_joints`, which
+## finds all thirteen `call 0x0042C660` sites and the string each one built
+## in front of it.
+const CREATOR_JOINT_M: String = "M"
+const CREATOR_JOINTS: Dictionary[String, String] = {
+	"0x00424D20": CREATOR_JOINT_M, "0x00425400": CREATOR_JOINT_M,
+	"0x00425810": CREATOR_JOINT_M, "0x00425CA0": CREATOR_JOINT_M,
+	"0x004264A0": CREATOR_JOINT_M, "0x00426B70": CREATOR_JOINT_M,
+	"0x00426F90": CREATOR_JOINT_M, "0x00427C80": CREATOR_JOINT_M,
+	"0x00428200": CREATOR_JOINT_M, "0x00428570": CREATOR_JOINT_M,
+}
+
+## **The weapon switches' creators that are transcribed**, and how this class
+## builds each one's argument vector (docs/97 section 14.5).
+##
+## Everything not named here still goes down the constructor-table arm below
+## -- one record per `call`, with a trajectory of the remake's own -- which is
+## what the whole of this switch used to do. An entry is added only once its
+## program is checked against `blob_gold.py`'s capture by
+## `test_blob_native.gd`, so the table is also the list of what is measured.
+##
+## `[shape, arrived, tail...]`: *shape* says where the argument tiles come
+## from, *arrived* is what the creator writes over `0x004FE63C` (or
+## [constant ARRIVED_UNWRITTEN] for the ones that leave it alone), and the
+## tail is the literals the switch's own arm pushes after them.
+## **A tail entry the multi-target walk fills in**, rather than a literal the
+## arm pushes: [constant MULTI_TAIL_INDEX] is the running count of cells the
+## walk has matched so far and [constant MULTI_TAIL_INDEX_THIRD] that count
+## over three, which is what weapon 9's `imul 0x55555556` at `0x0040CF98`
+## computes. Both are zero on a shot with no cell list, which is the single
+## call this class used to make.
+const MULTI_TAIL_INDEX: int = -101
+const MULTI_TAIL_INDEX_THIRD: int = -102
+## **The five arms that call their creator more than once.** `blob_tables`'
+## `MULTI_TARGET_ARMS` decodes them out of the shipped executable and the
+## cache carries the result as `weapon_multi_target`; this is the reader.
+##
+## Four of the five walk the whole control map and fire once per cell whose
+## state byte is in the arm's band -- the band `aBuildTargetPattern` marks and
+## the resolver rewrites, `0x5A` miss, `0x5B` resolved, `0x5C` hit, `0x5D`
+## killed (docs/22 sections 7.2 and 7.3) -- so the *Multi-target Destroyer*
+## really does throw one grenade per target it caught, on a different arc
+## each. The fifth, weapon 44, loops a literal five times at the one aim
+## point.
+##
+## `[low, high, unit test, repeats]`; `repeats` is
+## [constant MULTI_PER_CELL] for a walk.
+const MULTI_PER_CELL: int = -1
+const MULTI_LOW: int = 0
+const MULTI_HIGH: int = 1
+const MULTI_UNIT: int = 2
+const MULTI_REPEATS: int = 3
+## A cell of [method muzzle]'s `pattern`: where it is, what it resolved to and
+## whether a unit is still standing on it. The caller builds these because it
+## is the only side that can turn a tile into a point.
+const PATTERN_TILE: String = "tile"
+const PATTERN_POINT: String = "point"
+const PATTERN_OBJECT: String = "object"
+const PATTERN_UNIT: String = "unit"
+const PATTERN_MARKER: String = "marker"
+## What [constant PATTERN_UNIT] holds for a cell nobody is standing on -- the
+## engine's own `0xFFFF`, which is what `aWriteUnitIdInfoCtrlMap` writes back
+## over every cell a killed unit occupied, before the animation runs.
+const PATTERN_NO_UNIT: int = 0xFFFF
+## The two switch names [method _fire] is called with, so the impact end can
+## move its **own** cell as well as its target cell -- its arms run on the one
+## tile and push it twice.
+const MUZZLE_SWITCH: String = "weapon_muzzle"
+const IMPACT_SWITCH: String = "weapon_impact"
+
+const ARG_LINE: int = 0
+## The switch's own cell -- the **source** for a muzzle and the **target**
+## for an impact, which is what each arm pushes.
+const ARG_TILE: int = 1
+## The point the switch aimed at, for the one creator that takes a position.
+const ARG_POINT: int = 2
+const WEAPON_PROGRAMS: Dictionary[String, Array] = {
+	BlobPrograms.SMOKE_TRAIL: [ARG_LINE, 1, 0, 0],
+	BlobPrograms.MACHINE_GUN: [ARG_LINE, ARRIVED_UNWRITTEN],
+	# `0x004264A0` is one of the three weapon projectiles that clear the flag.
+	BlobPrograms.BLIZZARD_SHOT: [ARG_LINE, 0, MULTI_TAIL_INDEX_THIRD],
+	BlobPrograms.LASER_GREEN: [ARG_LINE, ARRIVED_UNWRITTEN],
+	BlobPrograms.BLUE_LASER: [ARG_LINE, ARRIVED_UNWRITTEN],
+	BlobPrograms.PLASMA_BEAM: [ARG_LINE, ARRIVED_UNWRITTEN],
+	# The impact arms. `0x0040D643` pushes 150 streaks for weapon 13 and
+	# `0x0040D736` a zero delay for the sparks -- read back out of the
+	# shipped executable by `blob_tables.weapon_call_args`.
+	BlobPrograms.LINE_FIRE: [ARG_TILE, ARRIVED_UNWRITTEN, 150, 0],
+	BlobPrograms.BLIZZARD_HIT: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.LANDING_DUST: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.FIRE_EXPLOSION: [ARG_TILE, ARRIVED_UNWRITTEN, 0],
+	BlobPrograms.SPARKS: [ARG_POINT, ARRIVED_UNWRITTEN, 0],
+	BlobPrograms.STINGER_RING: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.SPARKING_PLUG: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.PLASMA_BALL_IMPACT: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.EXPLOSION2: [ARG_TILE, ARRIVED_UNWRITTEN],
+	BlobPrograms.SPIDY_MINES: [ARG_LINE, ARRIVED_UNWRITTEN],
+	# -- 2026-09-12, read out of the instructions rather than replayed ------
+	#
+	# Seven more, and the tails are the arms' own -- see
+	# `blob_gold.SWITCH_ARGS`. Two registers the muzzle dispatcher sets carry
+	# into every arm (`0x0040CC3C` is `xor edi, edi` and `0x0040CC41`
+	# `mov ebx, 1`), so an arm pushing a bare `ebx` pushes **1** and one
+	# pushing `edi` pushes 0; neither was ever a tile number.
+	#
+	# Five of the seven are **measured by nothing**: their phase in the
+	# capture is a fall-through arm's and Wine has not landed the re-take, so
+	# what stands behind them is the shape check in `blob_tables.py`, which
+	# reads each record's class, kind, lifetime, model and sprite parameters
+	# back off the creator's own constructor call sites. The fire wheel and
+	# the mine plume are the two exceptions and are diffed against the engine.
+	BlobPrograms.FIRE_WHEEL: [ARG_TILE, ARRIVED_UNWRITTEN, 0],
+	BlobPrograms.MINE_PLUME: [ARG_TILE, ARRIVED_UNWRITTEN, 0],
+	BlobPrograms.SPRAY: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1, 0],
+	BlobPrograms.GRENADE_ROUND: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
+	BlobPrograms.BEAM_DOTS: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
+	BlobPrograms.LASER_DOTS: [ARG_LINE, ARRIVED_FROM_FLIGHT, 1],
+}
+## The second entry whose tail **differs per weapon**, and the more consequential
+## of the two: `0x00426070`'s sixth argument picks the arc.
+##
+## Weapon 44's arm `0x0040D0FD` pushes the literal 0xFF -- the proximity round,
+## which draws its own scatter and wears kind 27 -- and loops five times at the
+## one aim point. Weapon 11's `0x0040D077` pushes the **running count of cells
+## its walk has matched**, which the creator reads as the arc, so the
+## *Multi-target Destroyer*'s simultaneous grenades fly different lines. Both
+## shapes go through [method multi_target]; the tail entry that carries the
+## count is [constant MULTI_TAIL_INDEX].
+## The third entry whose tail differs per weapon: `0x00427C80`'s fifth argument
+## is its ring count *and* the switch between a straight stream and a sweeping
+## one. Weapon 7's arm `0x0040D00E` pushes four, weapon 40's `0x0040D041` ten.
+const FLAME_STREAM_TYPED: String = BlobPrograms.FLAME_STREAM
+const FLAME_STREAM_TYPES: Dictionary[int, int] = {7: 4, 40: 0xA}
+const GRENADE_ARC_TYPED: String = BlobPrograms.GRENADE_ARC
+const GRENADE_ARC_TYPES: Dictionary[int, int] = {11: MULTI_TAIL_INDEX,
+	44: 0xFF}
+## The one entry whose **type argument differs per weapon**, which is why it
+## is not a row in the table above.
+##
+## It was also the one nothing measured, until `blob_gold.SWITCH_ARGS` was
+## given the literal its arms push and the phase re-taken: the capture had
+## handed the creator a tile coordinate where the switch pushes a type, so
+## the engine took the cascade's fall-through and left nothing. With the
+## argument corrected it lays **twenty-seven** records where the constructor
+## arm here used to make one, and all twenty-seven agree field for field
+## (`test_blob_native.WEAPON_PROGRAMS`).
+const SPORE_EXPLOSION_TYPED: String = BlobPrograms.SPORE_EXPLOSION
+const SPORE_EXPLOSION_TYPES: Dictionary[int, int] = {23: 1, 25: 1, 26: 0}
+## Where `[shape, arrived]` sit in one of those rows.
+const PROGRAM_SHAPE: int = 0
+const PROGRAM_ARRIVED: int = 1
+const PROGRAM_TAIL: int = 2
 
 const SPORE_CREATOR: String = "0x004268B0"
 ## The spore step in world units -- a quarter of a map field -- as the
@@ -241,6 +410,16 @@ const MUZZLE_HEIGHT: int = 1000
 
 ## No burst creator ran, so nothing wrote the flag.
 const ARRIVED_UNWRITTEN: int = -1
+## The row value for a creator that writes the flag from **its own flight
+## length** rather than as a literal: `setle` over the length it just
+## computed, so 0 while there is a round to wait for and 1 at point-blank
+## range. Four of the seven creators added on 2026-09-12 do that
+## (`0x00425400`, `0x00425CA0`, `0x00428200` and, over two branches,
+## `0x00428570`); `0x00426070` writes a literal zero instead.
+##
+## It is the program that knows, so this is filled in **after** the program
+## runs, out of [member BlobPrograms.Pool.clears_arrived].
+const ARRIVED_FROM_FLIGHT: int = -2
 
 var _pool: BlobPool = null
 var _document: Dictionary = {}
@@ -302,12 +481,16 @@ static func _keys_of(from: Dictionary[String, Array]) -> Array[String]:
 ## body-axis fallback the engine takes for a shooter that is not animating.
 func muzzle(weapon_id: int, from: Vector3i, to: Vector3i,
 		joints: Dictionary[String, Vector3i] = {},
-		tile: Vector2i = NO_TILE) -> int:
+		tile: Vector2i = NO_TILE, target_tile: Vector2i = NO_TILE,
+		from_object: Vector3i = NO_POINT,
+		to_object: Vector3i = NO_POINT, target_unit: int = 0,
+		pattern: Array[Dictionary] = []) -> int:
 	_programs.clear()
 	_arrived_write = ARRIVED_UNWRITTEN
 	_made.clear()
 	_recording = true
-	var made: int = _fire("weapon_muzzle", weapon_id, from, to, joints, tile)
+	var made: int = _fire(MUZZLE_SWITCH, weapon_id, from, to, joints, tile,
+		target_tile, from_object, to_object, target_unit, pattern)
 	_recording = false
 	return made
 
@@ -348,10 +531,13 @@ func take_programs() -> Array[Dictionary]:
 ## switch's arms run on the target cell (`0x0040D7AC` pushes the same pair
 ## `aGetCtrlMapElementPtr` was given). It clears the request list for the
 ## same reason [method muzzle] does: whatever it asks for is its own.
-func impact(weapon_id: int, at: Vector3i, tile: Vector2i = NO_TILE) -> int:
+func impact(weapon_id: int, at: Vector3i, tile: Vector2i = NO_TILE,
+		at_object: Vector3i = NO_POINT, target_unit: int = 0,
+		pattern: Array[Dictionary] = []) -> int:
 	_recording = false
 	_programs.clear()
-	return _fire("weapon_impact", weapon_id, at, at, {}, tile)
+	return _fire(IMPACT_SWITCH, weapon_id, at, at, {}, tile, tile,
+		at_object, at_object, target_unit, pattern)
 
 
 ## Whether any record the last [method muzzle] made is still in the pool.
@@ -413,6 +599,40 @@ func bursts(switch_name: String, weapon_id: int) -> Array:
 	return DictRead.as_array(_document.get(switch_name + "_default_burst", []))
 
 
+## One cell of a shot's pattern as `aPlayFightAnimation` sees it.
+##
+## `unit_byte` is the cell's occupant in the pre-removal CtrlMap. A `0x5D`
+## marker does not clear it yet: both attack resolvers call the fight animation
+## first and only then sweep killed cells through `aRemoveUnitElement`. The
+## lagging picture therefore carries exactly the occupant these arms read.
+static func pattern_cell(tile: Vector2i, point: Vector3i, object: Vector3i,
+		marker: int, unit_byte: int) -> Dictionary:
+	return {
+		PATTERN_TILE: tile,
+		PATTERN_POINT: point,
+		PATTERN_OBJECT: object,
+		PATTERN_UNIT: unit_byte & 0xFF,
+		PATTERN_MARKER: marker,
+	}
+
+
+## The repeat shape of one weapon's arm, or `[]` for the forty-three that
+## call their creator once -- see [constant MULTI_PER_CELL].
+func multi_target(switch_name: String, weapon_id: int) -> Array:
+	var all: Dictionary = DictRead.as_dict(
+		_document.get("weapon_multi_target", {}))
+	var switch: Dictionary = DictRead.as_dict(all.get(switch_name, {}))
+	var raw: Array = DictRead.as_array(switch.get(str(weapon_id), []))
+	if raw.size() < 4:
+		return []
+	# **The cache is JSON and holds no integer**, so the narrowing happens
+	# here, once, at the loading boundary -- the rule the typed arrays in
+	# `core` follow for the same reason.
+	return [DictRead.as_int(raw[MULTI_LOW]), DictRead.as_int(raw[MULTI_HIGH]),
+		DictRead.as_bool(raw[MULTI_UNIT]),
+		DictRead.as_int(raw[MULTI_REPEATS])]
+
+
 ## The Charisma part each creator above fires from, in the same order.
 ## `""` is a creator that names none and leaves from the body's axis.
 func joints(switch_name: String, weapon_id: int) -> Array:
@@ -441,12 +661,95 @@ static func burst_at(list: Array, index: int) -> Vector2i:
 		DictRead.as_int(pair[1]))
 
 
+## The arm, run as many times as the arm runs it.
+##
+## Forty-three of the forty-eight weapons reach their creator once and this is
+## one pass. The other five are [method multi_target]'s, and the *cells* they
+## aim at come from the caller: `pattern` is the shot's own outcome per cell
+## and this filters it by the arm's own band and unit test, in control-map
+## order, because that order is what picks weapon 11's arc.
+##
+## An empty `pattern` is the single call this class used to make, which is what
+## every caller without an attack result behind it still gets.
 func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		towards: Vector3i,
 		joint_points: Dictionary[String, Vector3i] = {},
-		tile: Vector2i = NO_TILE) -> int:
+		tile: Vector2i = NO_TILE, target_tile: Vector2i = NO_TILE,
+		at_object: Vector3i = NO_POINT,
+		towards_object: Vector3i = NO_POINT, target_unit: int = 0,
+		pattern: Array[Dictionary] = []) -> int:
+	var arm: Array = multi_target(switch_name, weapon_id)
+	if arm.is_empty():
+		return _fire_once(switch_name, weapon_id, at, towards, joint_points,
+			tile, target_tile, at_object, towards_object, target_unit)
+	var repeats: int = DictRead.as_int(arm[MULTI_REPEATS])
+	if repeats != MULTI_PER_CELL:
+		# Weapon 44: the same aim point, `repeats` times over. Each pass draws
+		# its own scatter, which is why five grenades do not fly as one.
+		var made: int = 0
+		for _round: int in range(repeats):
+			made += _fire_once(switch_name, weapon_id, at, towards,
+				joint_points, tile, target_tile, at_object, towards_object,
+				target_unit)
+		return made
+	var cells: Array[Dictionary] = _multi_cells(arm, pattern)
+	if cells.is_empty():
+		# **Not a skip.** A shot whose caller carries no cell list, and a shot
+		# that caught nothing, both leave the walk with nothing to do -- and
+		# the engine's loop makes nothing either. Firing once at the aim point
+		# instead would be the remake inventing a round.
+		return 0
+	var total: int = 0
+	for index: int in range(cells.size()):
+		var cell: Dictionary = cells[index]
+		var point: Vector3i = DictRead.as_vector3i(cell[PATTERN_POINT])
+		var object: Vector3i = DictRead.as_vector3i(cell[PATTERN_OBJECT])
+		var here: Vector2i = DictRead.as_vector2i(cell[PATTERN_TILE])
+		# **The impact end moves both of its ends.** Its arms run *on* the
+		# cell -- `impact()` hands the same point and the same tile twice --
+		# and the creators there place from `Inputs.source_point()`, so
+		# leaving the source at the aim cell would pile every walked cell's
+		# effect on the first one.
+		var impacts: bool = switch_name == IMPACT_SWITCH
+		total += _fire_once(switch_name, weapon_id,
+			point if impacts else at, point, joint_points,
+			here if impacts else tile, here,
+			object if impacts else at_object, object,
+			DictRead.as_int(cell[PATTERN_UNIT]) & 0xFF, index)
+	return total
+
+
+## Which cells of the shot's pattern one walking arm acts on, in the order it
+## walks them -- ascending `y * width + x`, which is `0x0042F730`'s index and
+## the remake's [method MapState.index_of] alike.
+func _multi_cells(arm: Array, pattern: Array[Dictionary]) -> Array[Dictionary]:
+	var low: int = DictRead.as_int(arm[MULTI_LOW])
+	var high: int = DictRead.as_int(arm[MULTI_HIGH])
+	var wants_unit: bool = DictRead.as_bool(arm[MULTI_UNIT])
+	var out: Array[Dictionary] = []
+	for cell: Dictionary in pattern:
+		var marker: int = DictRead.as_int(cell.get(PATTERN_MARKER, 0))
+		if marker < low or marker > high:
+			continue
+		if wants_unit and DictRead.as_int(
+				cell.get(PATTERN_UNIT, PATTERN_NO_UNIT)) == PATTERN_NO_UNIT:
+			continue
+		out.append(cell)
+	return out
+
+
+func _fire_once(switch_name: String, weapon_id: int, at: Vector3i,
+		towards: Vector3i,
+		joint_points: Dictionary[String, Vector3i] = {},
+		tile: Vector2i = NO_TILE, target_tile: Vector2i = NO_TILE,
+		at_object: Vector3i = NO_POINT,
+		towards_object: Vector3i = NO_POINT, target_unit: int = 0,
+		arc: int = 0) -> int:
 	if _pool == null:
 		return 0
+	var source_object: Vector3i = at if at_object == NO_POINT else at_object
+	var target_object: Vector3i = towards if towards_object == NO_POINT \
+		else towards_object
 	var made: int = 0
 	var list: Array = creators(switch_name, weapon_id)
 	var burst_list: Array = bursts(switch_name, weapon_id)
@@ -461,9 +764,13 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		# in, the casing's origin -- because `0x0042C660` writes over the
 		# three stack slots the rest of the creator goes on to read.
 		var from: Vector3i = at
+		var jointed: bool = false
 		var joint: String = joint_at(joint_list, index)
+		if joint.is_empty():
+			joint = DictRead.as_string(CREATOR_JOINTS.get(key, ""))
 		if not joint.is_empty() and joint_points.has(joint):
 			from = joint_points[joint]
+			jointed = true
 		# **The creator's own round loop** -- see [method bursts]. Every record
 		# a pass makes carries that pass's delay, so the burst leaves one round
 		# at a time.
@@ -482,6 +789,16 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 		# point-blank branch -- says there is nothing to wait for.
 		if burst_creator or spore:
 			_arrived_write = 1 if life <= 0 else 0
+		elif WEAPON_PROGRAMS.has(key) or key == GRENADE_ARC_TYPED \
+				or key == FLAME_STREAM_TYPED:
+			# The transcribed creator's own store, ahead of everything it
+			# makes and behind no branch -- so a creator that then lays
+			# nothing still says what it said.
+			var written: int = DictRead.as_int(
+				_program_row(key, weapon_id, arc)[PROGRAM_ARRIVED])
+			if written != ARRIVED_UNWRITTEN \
+					and written != ARRIVED_FROM_FLIGHT:
+				_arrived_write = written
 		if burst_creator and life <= 0 and key == FLASH_CREATOR:
 			_point_blank_flash(towards, burst.x)
 		for round_index: int in range(burst.x):
@@ -498,6 +815,18 @@ func _fire(switch_name: String, weapon_id: int, at: Vector3i,
 				continue
 			if spore:
 				made += _spore_cannon(from, towards, life, delay)
+				continue
+			# **The transcribed creator, run whole.** Its records go through
+			# [method _place] like everything else here, so [method in_flight]
+			# still answers for them -- which is why this is not the
+			# [method _ask_tile] seam a nested creator uses.
+			if WEAPON_PROGRAMS.has(key) \
+					or key == SPORE_EXPLOSION_TYPED \
+					or key == GRENADE_ARC_TYPED \
+					or key == FLAME_STREAM_TYPED:
+				made += _run_weapon_program(key, weapon_id, source_object,
+					target_object, at, towards, from if jointed else NO_POINT,
+					tile, target_tile, target_unit, arc)
 				continue
 			# **The transcribed creator, by tile.** Counted by the caller
 			# that runs it, as the point-blank requests are: what goes into
@@ -704,6 +1033,124 @@ func _spore_cannon(from: Vector3i, to: Vector3i, life: int, delay: int) -> int:
 	return 1 if _place(fields) >= 0 else 0
 
 
+## One transcribed weapon creator, run against the live pool.
+##
+## The seam is deliberately **not** [method _ask_tile]: a nested creator's
+## records are the caller's business and go in through
+## `SliceMain.spawn_program`, but a muzzle's are what [method in_flight] waits
+## on, so they go through [method _place] like every other record this class
+## makes.
+##
+## The generator is the pool's own -- `aRandom2`, the uncounted twin -- handed
+## over and handed back, so a creator's draws land in the one stream the arms
+## keep drawing from.
+func _run_weapon_program(key: String, weapon_id: int, source_object: Vector3i,
+		target_object: Vector3i, source_point: Vector3i,
+		target_point: Vector3i, joint: Vector3i, tile: Vector2i,
+		target_tile: Vector2i, target_unit: int = 0, arc: int = 0) -> int:
+	var hooks: BlobHooks = _pool.hooks()
+	if hooks == null:
+		return 0
+	var row: Array = _program_row(key, weapon_id, arc)
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	inputs.geometry = hooks.geometry
+	for name: Variant in hooks.model_index:
+		inputs.models[DictRead.as_string(name)] = DictRead.as_int(
+			hooks.model_index[name])
+	# **The object and the height stay apart**, because the programs read them
+	# apart: the span a beam's length is counted in is over the two *objects*
+	# (`0x00425A8A` reads `[edi+0x10]`/`[ecx+0x10]`), three of them open at
+	# the object's own z with no height at all, and only the ones that go
+	# through `source_point()` want the sum. A caller with no object of its
+	# own passed [constant NO_POINT] and the sum stands in for both, which is
+	# what [method _fire] has already resolved.
+	inputs.source = source_object
+	inputs.source_height = source_point.z - source_object.z
+	inputs.target = target_object
+	inputs.target_height = target_point.z - target_object.z
+	# **The slot a seeking arm reads back.** Kind 26 -- arm 25, the seeker of
+	# docs/28 section 7.7.1 -- takes the record's `aux` as a unit-map index, so
+	# a creator that stores it and a caller that leaves it zero make every shot
+	# home on slot 0.
+	inputs.target_unit = target_unit & 0xFF
+	if joint != NO_POINT:
+		inputs.source_joint = joint
+		inputs.has_source_joint = true
+	# **The tiles the two ends stand on**, for a creator that reads a cell
+	# rather than the arguments it was handed ([method BlobPrograms.Inputs.object]).
+	if tile != NO_TILE:
+		inputs.tiles[tile] = {"object": source_object}
+	if target_tile != NO_TILE:
+		inputs.tiles[target_tile] = {"object": target_object}
+	# The point arm's own three coordinates are the creator's **source stack
+	# slots**, which is the joint where one applied.
+	var args: PackedInt32Array = _program_args(key, row,
+		source_point if joint == NO_POINT else joint, tile, target_tile, arc)
+	var pool: BlobPrograms.Pool = BlobPrograms.Pool.create(inputs)
+	var draws: BlobPrograms.Draws = BlobPrograms.Draws.create(
+		hooks.rng.seed if hooks.rng.seed != 0.0 else 1.0)
+	if not BlobPrograms.run(key, pool, draws, args, inputs):
+		return 0
+	# **The flag the creator wrote out of its own flight length**, which only
+	# the program knows -- see [constant ARRIVED_FROM_FLIGHT].
+	if DictRead.as_int(row[PROGRAM_ARRIVED]) == ARRIVED_FROM_FLIGHT:
+		_arrived_write = 0 if pool.clears_arrived else 1
+	hooks.rng.randomize_seed(draws.rng.seed)
+	var made: int = 0
+	for record: Dictionary in pool.records:
+		if _place(record) >= 0:
+			made += 1
+	return made
+
+
+## One creator's row, with the spore explosion's per-weapon type filled in --
+## the one literal in the table that is not the same at every call site.
+func _program_row(key: String, weapon_id: int, arc: int = 0) -> Array:
+	if key == SPORE_EXPLOSION_TYPED:
+		return [ARG_TILE, ARRIVED_UNWRITTEN, 0,
+			DictRead.as_int(SPORE_EXPLOSION_TYPES.get(weapon_id, 0))]
+	if key == FLAME_STREAM_TYPED:
+		return [ARG_LINE, 0,
+			DictRead.as_int(FLAME_STREAM_TYPES.get(weapon_id, 4))]
+	if key == GRENADE_ARC_TYPED:
+		# The fifth argument is the one every arm pushes and the body never
+		# reads; the sixth is the arc.
+		return [ARG_LINE, 0, 0xA,
+			DictRead.as_int(GRENADE_ARC_TYPES.get(weapon_id, 0))]
+	return DictRead.as_array(WEAPON_PROGRAMS[key])
+
+
+## The argument vector one creator's own call site pushes -- see
+## [constant WEAPON_PROGRAMS].
+func _program_args(key: String, row: Array, from: Vector3i, tile: Vector2i,
+		target_tile: Vector2i, arc: int = 0) -> PackedInt32Array:
+	var args: PackedInt32Array = PackedInt32Array()
+	match DictRead.as_int(row[PROGRAM_SHAPE]):
+		ARG_LINE:
+			args.append_array(PackedInt32Array([tile.x, tile.y,
+				target_tile.x, target_tile.y]))
+		ARG_TILE:
+			args.append_array(PackedInt32Array([tile.x, tile.y]))
+		ARG_POINT:
+			args.append_array(PackedInt32Array([from.x, from.y, from.z]))
+	for index: int in range(PROGRAM_TAIL, row.size()):
+		# **The two tail entries a walking arm computes** rather than pushes as
+		# a literal: the running count of matched cells, and that count over
+		# three (`MULTI_TAIL_INDEX`).
+		var value: int = DictRead.as_int(row[index])
+		if value == MULTI_TAIL_INDEX:
+			value = arc
+		elif value == MULTI_TAIL_INDEX_THIRD:
+			value = IncInt.div_trunc(arc, 3)
+		args.append(value)
+	# A creator whose arity is wider than what its arm pushes reads the rest
+	# as the frame left it; the programs here read none of it, so a zero is
+	# the honest filler rather than an invention.
+	while args.size() < BlobPrograms.args_needed(key):
+		args.append(0)
+	return args
+
+
 ## The sprite parameters the extractor recorded for one constructor call.
 func _sprite_of(call: Dictionary) -> Dictionary:
 	return DictRead.as_dict(DictRead.as_dict(_document.get("sprites", {}))
@@ -797,8 +1244,10 @@ func _create(call: Dictionary, at: Vector3i, towards: Vector3i,
 ## Which way a **model** blob points when it is made, as the engine's own
 ## orientation service answers it.
 ##
-## The class comment's caveat applies here and is the reason this exists: the
-## thirty creators a weapon selects are *not* transcribed (docs/97 section 14.5),
+## The class comment's caveat applies here and is the reason this exists: all
+## but one of the thirty creators a weapon selects are *not* transcribed
+## (docs/97 section 14.5; the exceptions are [constant WEAPON_PROGRAMS],
+## which never reach here because they build their records themselves),
 ## so the record this class builds carries the call site's real kind, class,
 ## life and model and a trajectory of the remake's own. The rotation triple was
 ## left at **zero**, and for a class-0 blob that is not a neutral value: the

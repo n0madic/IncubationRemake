@@ -18,7 +18,7 @@ extends RefCounted
 ## | FX volume | cues, voices and cutscene `Track` soundtracks |
 ## | difficulty | [member CampaignState.difficulty], then [member TurnState.ai_level] |
 ## | gore level | [member World.gore_level] |
-## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] |
+## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] and [constant GAMEPLAY_CORRECTION_FLAGS] |
 ## | the interface font | every [Label] and [Button] the game draws |
 ##
 ## **Difficulty is the default for a new campaign, not the live value.** The
@@ -61,6 +61,13 @@ const VOLUME_MAX: int = 0
 ## One slider/key step. One decibel keeps the shipped -6 dB music default on
 ## the scale instead of moving it merely because the options screen opened.
 const VOLUME_STEP: int = 100
+
+## Simulation choices controlled by the same user-facing preset as the audio
+## flags. Unlike presentation-only audio flags, these are stored in
+## [member World.compat_flags] and therefore enter saves and canonical hashes.
+const GAMEPLAY_CORRECTION_FLAGS: Array[String] = [
+	Interact.COMPAT_BEACOO_MINE_DEATH_BLAST,
+]
 
 var path: String = DEFAULT_PATH
 var fx_volume: int = AudioSystem.DEFAULT_FX_VOLUME
@@ -203,6 +210,23 @@ func apply_world(world: World, level: int) -> void:
 		return
 	world.turn.ai_level = clampi(level, DIFFICULTY_MIN, DIFFICULTY_MAX)
 	world.gore_level = clampi(gore_level, GORE_MIN, GORE_MAX)
+	apply_gameplay_compat(world)
+
+
+## Applies the simulation half of the Faithful preset. This is separate from
+## [method apply_world] so an explicit toggle can affect the current mission;
+## loading a save still restores its own named flags after world creation.
+func apply_gameplay_compat(world: World) -> void:
+	if world == null:
+		return
+	var flags: PackedStringArray = world.compat_flags.duplicate()
+	for flag: String in GAMEPLAY_CORRECTION_FLAGS:
+		var at: int = flags.find(flag)
+		if not faithful and at < 0:
+			flags.append(flag)
+		elif faithful and at >= 0:
+			flags.remove_at(at)
+	world.compat_flags = flags
 
 
 func _clamp_volume(hundredths: int) -> int:

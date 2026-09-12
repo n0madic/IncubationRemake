@@ -125,12 +125,13 @@ func sound_playing(_slot: int) -> bool:
 
 ## The muzzle switch and the projectile flag it writes.
 func muzzle(_weapon: int, _sx: int, _sy: int, _tx: int, _ty: int,
-		_shooter: int = -1) -> void:
+		_shooter: int = -1, _pattern: Array[Dictionary] = []) -> void:
 	pass
 
 
 ## The impact switch at the target cell.
-func impact(_weapon: int, _tx: int, _ty: int) -> void:
+func impact(_weapon: int, _tx: int, _ty: int,
+		_pattern: Array[Dictionary] = []) -> void:
 	pass
 
 

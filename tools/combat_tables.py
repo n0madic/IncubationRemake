@@ -66,6 +66,15 @@ AOE_INDEX = 0x0046B420
 AOE_JUMP = 0x0046B3B0
 #: `aGetCtrlMapElementPtr`'s writing sibling; the marker is its 4th argument.
 SET_CELL_STATE = 0x0042F7D0
+#: The two guards inside it: an absolute height delta must be below 0x640
+#: unless the supplied height is -1, and an existing 0x50..0x5E marker wins.
+SET_CELL_STATE_GUARDS = (
+    (0x0042F806,
+     "8b44310103ce8b7424102bc69933c22bc23d400600007c0583feff7510",
+     "absolute height delta below 0x640, or source height -1"),
+    (0x0042F823, "8a013c5072043c5e76068a4424148801",
+     "existing markers 0x50..0x5E refuse the write"),
+)
 
 #: `0x0047B600`: weapon id -> 1 when the shot is traced one field higher.
 ARC_FUNC = 0x0047B600
@@ -225,6 +234,64 @@ EXPECTED_SPECIAL_SITES = {
     0x004703EE,                 # aExecuteBomb: 12
     0x004753A9,                 # the warp-range accessor
 }
+
+#: The two explosive-object resolvers.  ``aAttackUnit`` has Bea'Coo's
+#: type-2 vulnerability; ``aExecuteBomb`` has no hit roll, starts at 30 damage
+#: and gives ``special`` 12 literal 1000 before applyDamage narrows it to u8.
+BEACOO_TYPE_TEST = 0x0046BBD4
+BEACOO_WEAPON_TYPE_TEST = 0x0046BBE5
+BEACOO_DAMAGE_WRITE = 0x0046BBEF
+EXECUTE_BOMB = 0x004702C0
+EXECUTE_BOMB_END = 0x004705E6
+BOMB_BASE_DAMAGE = 0x004703D3
+BOMB_SPECIAL_DAMAGE = 0x0047041D
+RANDOM = 0x00463870
+
+#: The two damage resolvers are cell-array sweeps, not queues of target
+#: records.  These instruction blocks pin the marker band, the 23-byte cell
+#: stride, and the conditional jump back to the head after a complete pass.
+#: That distinction is observable when two explosive rings overlap: the first
+#: CtrlMap byte survives for the shared cell, then a requested repeat sweeps
+#: newly marked earlier cells.
+RESOLVER_SWEEPS = (
+    (0x0046B9B6, "8a013c500f826f0600003c590f8767060000",
+     "aAttackUnit reads cell[0] and accepts only markers 0x50..0x59"),
+    (0x0046C033, "83c717",
+     "aAttackUnit advances one 23-byte CtrlMap cell"),
+    (0x0046C054,
+     "8b4c24308b4424344185c0894c24300f84e1000000e924f9ffff",
+     "aAttackUnit tests the repeat flag and jumps back to the sweep head"),
+    (0x0047033E, "8a033c500f82eb0100003c590f87e3010000",
+     "aExecuteBomb reads cell[0] and accepts only markers 0x50..0x59"),
+    (0x00470537, "83c317",
+     "aExecuteBomb advances one 23-byte CtrlMap cell"),
+    (0x0047054C,
+     "8b4c2418413bfd894c24180f8489000000e9c2fdffff",
+     "aExecuteBomb tests the repeat condition and jumps back to the sweep head"),
+)
+
+#: Killed units still occupy their CtrlMap cells while the fight animation
+#: walks its marker bands.  Each routine has exactly one removal call in this
+#: tail, and it follows the animation call.
+REMOVE_UNIT_ELEMENT = 0x004779C0
+ATTACK_REMOVE_CALL = 0x0046C1F9
+BOMB_FIGHT_ANIMATION_CALL = 0x004705F5
+BOMB_REMOVE_CALL = 0x0047063F
+
+#: `aPlayFightAnimation` rebuilds its result arrays from the completed CtrlMap
+#: before the voice and death switches consume them.  This is why presentation
+#: order is row-major even when an earlier cell was discovered on a repeat.
+PRESENTATION_RESULT_SWEEP = (
+    (0x0040C519, "e8323102008bf8895c2414e837310200",
+     "load the CtrlMap base and its cell count"),
+    (0x0040C549, "8a073c5a0f82340200003c5d0f872c020000",
+     "accept final markers 0x5A..0x5D"),
+    (0x0040C569, "8a5709889054be4f008a4f0a888872be4f00",
+     "append the cell x/y to the presentation arrays"),
+    (0x0040C787,
+     "8b54241483c7174289542414e8c82e0200394424140f8ca7fdffff",
+     "advance by 23 bytes and loop over the whole CtrlMap"),
+)
 
 #: ``docs/22`` §9.4 -- ``aBuildVisibleMap``, and the pair that brackets the
 #: **probes**.  Nineteen call sites, each verified by disassembling it: only
@@ -1204,6 +1271,10 @@ def run_check(root: str) -> int:
                 f"markers written anywhere in .text are "
                 f"{sorted(hex(m) for m in written)}, expected "
                 f"{sorted(hex(m) for m in EXPECTED_WRITTEN_MARKERS)}")
+    for va, want, what in SET_CELL_STATE_GUARDS:
+        got = tables.pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("marker.write_guard", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
 
     # 1b. Game.opt: the file is one .data block, and the rows name themselves
     io = tables.option_io()
@@ -1233,6 +1304,61 @@ def run_check(root: str) -> int:
     stats.check("special.sites", sites == EXPECTED_SPECIAL_SITES,
                 f"unitType[+0x07] is referenced at {sorted(hex(x) for x in sites)}, "
                 f"expected {sorted(hex(x) for x in EXPECTED_SPECIAL_SITES)}")
+    pe = tables.pe
+    stats.check("special.beacoo_type",
+                pe.bytes_at(BEACOO_TYPE_TEST, 3) == b"\x80\xf9\x42",
+                "aAttackUnit does not compare the target type with 0x42")
+    stats.check("special.beacoo_weapon_type",
+                pe.bytes_at(BEACOO_WEAPON_TYPE_TEST, 8)
+                == b"\x80\xbc\x48\xf7\xb2\x51\x00\x02",
+                "Bea'Coo's arm does not compare weapon type with 2")
+    stats.check("special.beacoo_damage",
+                pe.bytes_at(BEACOO_DAMAGE_WRITE, 5)
+                == b"\xbd\xe8\x03\x00\x00",
+                "Bea'Coo's arm does not write literal damage 1000")
+    stats.check("bomb.base_damage", pe.u32(BOMB_BASE_DAMAGE) == 30,
+                f"aExecuteBomb starts from {pe.u32(BOMB_BASE_DAMAGE)}, not 30")
+    stats.check("bomb.special_damage", pe.u32(BOMB_SPECIAL_DAMAGE) == 1000,
+                "aExecuteBomb's special-12 arm does not write literal 1000")
+    bomb_ring = {site for site in tables.calls_to(SET_CELL_STATE)
+                 if EXECUTE_BOMB <= site < EXECUTE_BOMB_END}
+    stats.check("bomb.special_ring", len(bomb_ring) == 8,
+                f"aExecuteBomb's special-12 arm has {len(bomb_ring)} ring writes")
+    bomb_random = {site for site in tables.calls_to(RANDOM)
+                   if EXECUTE_BOMB <= site < EXECUTE_BOMB_END}
+    stats.check("bomb.no_hit_roll", not bomb_random,
+                f"aExecuteBomb unexpectedly calls aRandom at {sorted(bomb_random)}")
+
+    for va, want, what in RESOLVER_SWEEPS:
+        got = pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("resolver.sweep", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    for va, want, what in PRESENTATION_RESULT_SWEEP:
+        got = pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("presentation.result_sweep", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+
+    attack_removals = {site for site in tables.calls_to(REMOVE_UNIT_ELEMENT)
+                       if 0x0046B9B6 <= site <= ATTACK_REMOVE_CALL}
+    stats.check(
+        "resolver.attack_animation_before_removal",
+        FIGHT_ANIMATION_CALL in tables.calls_to(FIGHT_ANIMATION)
+        and attack_removals == {ATTACK_REMOVE_CALL}
+        and FIGHT_ANIMATION_CALL < ATTACK_REMOVE_CALL,
+        f"attack animation/removal sites are {FIGHT_ANIMATION_CALL:#010x} / "
+        f"{sorted(hex(site) for site in attack_removals)}",
+    )
+    bomb_removals = {site for site in tables.calls_to(REMOVE_UNIT_ELEMENT)
+                     if 0x00470326 <= site <= BOMB_REMOVE_CALL}
+    stats.check(
+        "resolver.bomb_animation_before_removal",
+        BOMB_FIGHT_ANIMATION_CALL in tables.calls_to(FIGHT_ANIMATION)
+        and bomb_removals == {BOMB_REMOVE_CALL}
+        and BOMB_FIGHT_ANIMATION_CALL < BOMB_REMOVE_CALL,
+        f"bomb animation/removal sites are "
+        f"{BOMB_FIGHT_ANIMATION_CALL:#010x} / "
+        f"{sorted(hex(site) for site in bomb_removals)}",
+    )
 
     # 1d. the fog: which call sites are permanent and which are probes
     fog_sites = tables.calls_to(BUILD_VISIBLE_MAP)

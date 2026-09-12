@@ -549,7 +549,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	var moved: MoveResult = ExecuteMove.execute(state, _units, _unit_types,
 		_ctrlmap, _weapons, unit, walked, command.x, command.y,
 		fill.mp_left_at(command.x, command.y), turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng, -1, true, _journal, cheats)
+		turn.ai_level, turn, rng, -1, true, _journal, cheats, compat_flags)
 	if moved.steps == 0:
 		return moved
 	# docs/23 section 5.3's tail, in the caller: the native probe shows
@@ -716,7 +716,7 @@ func submit_use(command: UseCommand) -> UseResult:
 	var front_y: int = front[1] if front.size() == 2 else unit.y
 	var result: UseResult = Interact.execute(state, _units, _unit_types,
 		_weapons, game_control, unit, turn.ai_level, turn.human_count(),
-		turn.mode, turn, rng, cheats)
+		turn.mode, turn, rng, cheats, compat_flags)
 	# **A door that opens changes what the rules see, and the rebuild is not
 	# `aExecuteUse`'s.** It belongs to `aDoorOpenSequence` (`0x00410A20`), the
 	# animation the use path drives, which calls `aBuildVisibleMap` twice --
@@ -1076,7 +1076,7 @@ func target_overlay(shooter_slot: int) -> PackedByteArray:
 		return PackedByteArray()
 	var shooter: UnitState = _units[shooter_slot]
 	var ctx: AIContext = AIContext.create(state, _units, _unit_types, _weapons,
-		_ctrlmap, turn, rng)
+		_ctrlmap, turn, rng, compat_flags)
 	var _stamped: bool = AIOverlay.build(ctx, shooter, turn.human_count(),
 		turn.mode)
 	return ctx.state
@@ -1162,7 +1162,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 	var from_y: int = unit.y
 	var done: Dictionary = ExecuteWarp.execute(state, _units, _unit_types,
 		_weapons, unit, command.x, command.y, turn.human_count(), turn.mode,
-		turn.ai_level, turn, rng, _journal, cheats)
+		turn.ai_level, turn, rng, _journal, cheats, compat_flags)
 	if not DictRead.as_bool(done["ok"]):
 		return WarpResult.failed(unit.x, unit.y,
 			DictRead.as_string(done["reason"]))
@@ -1415,7 +1415,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 		# rotation past it.
 		if result.ai_turn:
 			var ctx: AIContext = AIContext.create(state, _units, _unit_types,
-				_weapons, _ctrlmap, turn, rng)
+				_weapons, _ctrlmap, turn, rng, compat_flags)
 			ctx.may_fire = ai_may_fire
 			ctx.cheats = cheats
 			ctx.journal = _journal

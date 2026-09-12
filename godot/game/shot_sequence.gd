@@ -200,6 +200,13 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	var targets: Array[Dictionary] = []
 	for entry: Variant in DictRead.as_array(shot.get("targets", [])):
 		targets.append(DictRead.as_dict(entry))
+	# **The cells the shot caught**, for the five arms that fire once per cell
+	# rather than once (`BlobTriggers.multi_target`). A shot built without one
+	# leaves those arms with nothing to walk, which is what every caller that
+	# has no attack result behind it already got.
+	var pattern: Array[Dictionary] = []
+	for entry: Variant in DictRead.as_array(shot.get("pattern", [])):
+		pattern.append(DictRead.as_dict(entry))
 	var waits: bool = waits_for_projectile(weapon)
 	var total: int = 0
 
@@ -253,7 +260,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 		func(_frame: int, _total: int) -> void:
 			host.play_cues(cues_shot)
 			host.muzzle(weapon, DictRead.as_int(shot["sx"]),
-				DictRead.as_int(shot["sy"]), tx, ty, shooter))
+				DictRead.as_int(shot["sy"]), tx, ty, shooter, pattern))
 	total += 1
 	if waits:
 		queue.enqueue_until(STAGE_FLIGHT, WAIT_FRAMES,
@@ -265,7 +272,7 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 	var cues_barrel: Array[Dictionary] = _cues(shot, "cues_barrel")
 	queue.enqueue(STAGE_IMPACT, 1,
 		func(_frame: int, _total: int) -> void:
-			host.impact(weapon, tx, ty)
+			host.impact(weapon, tx, ty, pattern)
 			host.play_cues(cues_impact)
 			var barrels: int = _deaths(host, shot, targets)
 			if barrels > 0:
@@ -326,7 +333,7 @@ static func _texts(host: ShotHost, shot: Dictionary,
 			DictRead.as_int(target["x"]), DictRead.as_int(target["y"]))
 
 
-## docs/42 section 4.8 -- the death switch, per entry, in cell order.
+## docs/42 section 4.8 -- the death switch, per entry, in row-major cell order.
 ##
 ## Answers how many barrels flew, for the `explosion2.wav` the class-0x0C arm
 ## adds.
@@ -341,14 +348,11 @@ static func _deaths(host: ShotHost, shot: Dictionary,
 	# written by the arms) -- so a multi-target shot sprays every damaged unit
 	# by the last one's player and size.
 	#
-	# **In the pattern's order, not the cell array's.** The loop at
-	# `0x0040DA83` walks the *marked* arrays -- the markers at `0x004FBFF8`
-	# and the coordinates at `0x004FBE54`/`0x004FBE72`, indexed by `edi` up to
-	# the count at `[esp+0x2C]` -- which `aMarkTargetCells` filled in the
-	# weapon's own order. The whole-cell-array sweep two dozen instructions
-	# above it (`0x0040DA07`) is the **hatch** pass and a different loop.
-	# Sorting by cell index here disagreed with [method Main._shot_voice],
-	# which models the same local; the sort was the wrong half.
+	# **In final CtrlMap order, not target-pattern write order.** The loop at
+	# `0x0040C549..0x0040C79C` scans 23-byte cells, collects every 0x5A..0x5D
+	# coordinate into `0x004FBE54/72`, and only then does `0x0040DA83` walk the
+	# arrays. [method SliceMain._shot_targets] supplies that order to both this
+	# switch and the voice selector that reads the same last-unit local.
 	var last: Dictionary = {}
 	var ordered: Array[Dictionary] = targets
 	if not ordered.is_empty():

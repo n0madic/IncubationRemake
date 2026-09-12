@@ -850,7 +850,9 @@ and both dusts are measured; the parabola is read.)*
 A flight to the pusher; **four frames per cell** with a dust puff
 (`0x0042A6E0`: a sprite of row 4, kind 10, life 20, random velocity) each
 frame; a hole swallows the object in 50 steps of `z −= 320`; a mine under it
-detonates (`26` §4).
+detonates (`26` §4), and its own `aPlayFightAnimation` follows the slide before
+the killed-unit removal sweep. The remake keeps that blast in `UseResult`
+rather than letting the push consume it invisibly.
 
 ### 7.3 The selection marker — `0x00422D40`
 

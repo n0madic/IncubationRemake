@@ -312,8 +312,8 @@ func _constants(h: TestHarness) -> void:
 		[11] as Array[int])
 	h.equal("const.family_every_unit", Combat.EVERY_UNIT, [44] as Array[int])
 	h.equal("const.family_scatter", Combat.SCATTER_18, [13] as Array[int])
-	# The two unrolled rings, whose *order* is the order the damage rolls come
-	# out in. A census of how many cells they stamp cannot see this.
+	# The two unrolled rings. Their write order decides the first marker retained
+	# on an overlap; a census of how many cells they stamp cannot see this.
 	h.equal("const.aim_neighbour_order", Combat.AIM_NEIGHBOUR_ORDER,
 		[Vector2i(-1, 0), Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(0, -1),
 			Vector2i(1, -1), Vector2i(1, 1), Vector2i(1, 0),

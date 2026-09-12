@@ -25,7 +25,8 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		wtab: WeaponTable, unit: UnitState, tx: int, ty: int,
 		human_players: int, game_mode: int, ai_level: int, turn: TurnState,
 		rng: IncRandom, journal: EventJournal = null,
-		cheats: Cheats = null) -> Dictionary:
+		cheats: Cheats = null,
+		compat_flags: PackedStringArray = PackedStringArray()) -> Dictionary:
 	var source: int = state.index_of(unit.x, unit.y)
 	if state.unit_at(source) != unit.slot:
 		# "no unit on start path field" -- the routine's own refusal.
@@ -60,7 +61,8 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			var _gone: Dictionary = journal.mark("mine_cleared", unit.slot,
 				tx, ty, tx, ty, 0, "", {})
 		blast = Interact.execute_bomb(state, units, utab, wtab, tx, ty,
-			ai_level, human_players, game_mode, turn, rng, cheats).to_dict()
+			ai_level, human_players, game_mode, turn, rng, cheats,
+			compat_flags).to_dict()
 		if journal != null:
 			var _blown: Dictionary = journal.mark("mine", unit.slot, tx, ty,
 				tx, ty, 0, "", {"blast": blast})

@@ -165,6 +165,226 @@ const PARA_BOMB: String = "0x0042B070"
 ## file from a third place: not a weapon switch (docs/28 section 8.1) and not
 ## a set piece (docs/42), but [method BlobKinds._spawn], which [GameBlobHooks]
 ## runs. All twelve are stepped in a live `Incubation.exe`.
+## The **weapon switches'** own creators, transcribed out of their own
+## instructions and line-diffable against `tools/inclib/blob_creators.py`.
+## `BlobTriggers` runs them where it used to build one record per constructor
+## call site (docs/97 section 14.5); each is checked against
+## `blob_gold.py`'s capture by `test_blob_native.gd`.
+const SMOKE_TRAIL: String = "0x00425810"
+const MACHINE_GUN: String = "0x00424D20"
+const BLIZZARD_SHOT: String = "0x004264A0"
+const LASER_GREEN: String = "0x00426F90"
+const BLUE_LASER: String = "0x00427410"
+const PLASMA_BEAM: String = "0x00427810"
+const LINE_FIRE: String = "0x00429180"
+const BLIZZARD_HIT: String = "0x0042AF10"
+const SPORE_EXPLOSION: String = "0x00429F40"
+const STINGER_RING: String = "0x00420A50"
+const SPARKING_PLUG: String = "0x0042ACF0"
+const PLASMA_BALL_IMPACT: String = "0x004294E0"
+const EXPLOSION2: String = "0x004295D0"
+const SPIDY_MINES: String = "0x00426B70"
+const FIRE_WHEEL: String = "0x004228F0"
+const MINE_PLUME: String = "0x00429C30"
+const SPRAY: String = "0x00425400"
+const GRENADE_ROUND: String = "0x00425CA0"
+const GRENADE_ARC: String = "0x00426070"
+const BEAM_DOTS: String = "0x00428200"
+const LASER_DOTS: String = "0x00428570"
+const FLAME_STREAM: String = "0x00427C80"
+
+## `0x004B1278` / `0x004B12C0` / `0x004B1280` and the two the compiler left as
+## reciprocal multiplies -- `blob_creators.py` carries the same numbers with
+## the sites that hold them. Every one of them is negative and **subtracted**,
+## which is the family's one shared idiom.
+const BEAM_STEP: float = -2400.0
+const BEAM_UNIT: int = 0x960
+const BEAM_BASE: int = 0xC80
+const HEAD_STEP: float = -3200.0
+const HEAD_SPEED: float = 4800.0
+const DOT_SPEED: float = 80.0
+const SHARD_SPEED: float = 1920.0
+const TRAIL_STEP: float = -960.0
+const TRAIL_UNIT: int = 0x3C0
+const TRACER_SPREAD: float = 640.0
+const TRACER_LEAN: int = 200
+const MACHINE_GUN_CASING_SPEED: float = 80.0
+## `0x00420AE2`'s `mov edi, 0xA0` and `mov word [esp+0x24], 0x199`, and the
+## `add eax, 0xC80` / `lea [ebx*4]` beside them: the stinger ring's radius,
+## its accumulating turn, the map field it stands above the object and the
+## four its offset is multiplied by to become a velocity.
+const STINGER_RADIUS: int = 0xA0
+const STINGER_TURN: int = 0x199
+const STINGER_COUNT: int = 30
+const STINGER_LIFT: int = 0xC80
+const STINGER_SPEED: int = 4
+## `aBlob_SparkingPlug` `0x0042ACF0`, all four off its own loop: `mov edi,
+## 0x1E` at `0x0042AD53`, `shl eax, 5` at `0x0042AD6D`, `shl eax, 4` at
+## `0x0042AD82`/`0x0042AD9D`, and `add eax, 0x960` at `0x0042ADAC`.
+const SPARKING_PLUG_COUNT: int = 30
+const SPARKING_PLUG_RISE: int = 32
+const SPARKING_PLUG_DRIFT: int = 16
+const SPARKING_PLUG_LIFT: int = 0x960
+## `aBlob_CreatePlasmaBallImpact` `0x004294E0`: `mov ebp, 0x28` at
+## `0x00429549` and the two draw ranges its loop pushes.
+const PLASMA_IMPACT_COUNT: int = 40
+const PLASMA_IMPACT_RISE_BASE: int = 200
+const PLASMA_IMPACT_RISE_SPAN: int = 300
+const PLASMA_IMPACT_DRIFT_BASE: int = -300
+const PLASMA_IMPACT_DRIFT_SPAN: int = 600
+## `aBlob_CreateExplosion2` `0x004295D0`: `mov ebp, 0xF` at `0x00429639` and
+## its own rise range; the drift is the pair above, shared.
+const EXPLOSION2_COUNT: int = 15
+const EXPLOSION2_RISE_BASE: int = 600
+const EXPLOSION2_RISE_SPAN: int = 700
+## `aBlob_CreateSpidyMines` `0x00426B70` and `aBlob_CreateGrenade`
+## `0x00425CA0`, which are one body with two models: the flight speed
+## `0x004B12C8` holds as a double, the `sar edx, 8` after `imul 0x51EB851F`
+## that divides the span by 800, the `lea esi, [edx+eax-2]` the life ends on,
+## and the `shl 2` / `shl 3` the lob is written as.
+const PROJECTILE_SPEED: float = 800.0
+const PROJECTILE_UNIT: int = 800
+const PROJECTILE_LIFE_BIAS: int = 2
+## `aBlob_CreateFireWheel` `0x004228F0` -- weapon 44's muzzle and impact:
+## thirty sprite puffs off the object, then thirty explosion models thrown
+## outwards along a spoke the creator turns one step at a time.
+const FIRE_WHEEL_COUNT: int = 0x1E
+const FIRE_WHEEL_RISE_BASE: int = 0x190
+const FIRE_WHEEL_RISE_SPAN: int = 0x320
+const FIRE_WHEEL_DRIFT_BASE: int = -0x64
+const FIRE_WHEEL_DRIFT_SPAN: int = 0xC8
+## Thirty steps of 136 is 4080 of the circle's 4096, so the wheel closes.
+const FIRE_WHEEL_RADIUS: int = 0xA0
+const FIRE_WHEEL_TURN: int = 0x88
+const FIRE_WHEEL_SPEED: int = 4
+const FIRE_WHEEL_LIFT: int = 0xC80
+## Every fourth explosion is `A_EXPL04.3DI` and the rest `A_EXPL03.3DI`.
+const FIRE_WHEEL_EXPL04_EVERY: int = 3
+
+## `0x00429C30` -- weapon 13's impact plume, three sprite puffs and no draw.
+const MINE_PLUME_LIFT: int = 0x640
+
+## `aBlob_CreateFlameStream` `0x00427C80` -- weapons 7 and 40's muzzle, and the
+## one creator of the thirty whose first pass reads **uninitialised stack**.
+## See [constant FLAME_RING0_DIVERGENCE].
+##
+## Its fifth argument is the ring count *and* the switch between two shapes:
+## weapon 7's arm pushes four and weapon 40's ten, so twenty records against
+## fifty and only the second sweeps.
+const FLAME_RING_OFFSET: float = -960.0
+const FLAME_STEP: float = 266.66666666666663
+const FLAME_PER_RING: int = 5
+## Half a map field, where both lasers count in whole ones.
+const FLAME_UNIT: int = 1600
+const FLAME_LIFT: int = 0x320
+## The sprite's half-size is a draw **biased** by a third of a counter of its
+## own, added on the FPU before the truncation. Its column is a second draw.
+##
+## **The counter is neither the ring nor the record index.** It is a byte at
+## `[esp+0x30]`, set to two by a literal at `0x00427F25` ahead of both loops
+## and incremented once per record at `0x00428181`, so the bias is
+## `(2 + n) / 3` over the whole call and steps inside a ring as much as between
+## rings. Read as `ring / 3` it was right for the call's first record and one
+## or more short for every other -- eleven of the engine's twelve records
+## disagreed, all of them on `aux` (docs/97 section 14.5.2).
+const FLAME_SIZE_SPAN: int = 5
+const FLAME_SIZE_BASE: int = 2
+const FLAME_SIZE_DIVISOR: int = 3
+const FLAME_COLUMN_SPAN: int = 3
+## Above this type the stream sweeps: the aim is turned about the shooter by an
+## angle that walks and reverses at the limit. The three angles it turns by are
+## `(dz, dz, sweep)` -- the vertical delta twice, which reads as a slip for
+## `(0, 0, sweep)` and is transcribed as it ships.
+const FLAME_SWEEP_TYPE: int = 5
+const FLAME_SWEEP_STEP: int = 0xA
+const FLAME_SWEEP_LIMIT: int = 0x1E
+## **What is still read rather than measured, now that the rest is measured.**
+##
+## `0x00427C80` opens each ring by reading the three doubles its inner loop
+## wrote last (`0x00427F4F` onwards) and scaling them by
+## [constant FLAME_RING_OFFSET]. On the **first** ring the inner loop has not
+## run and those slots are the frame's own uninitialised locals, so the value
+## is the caller's residue and not anything in the routine.
+##
+## Zero stands in for them, and on 2026-09-12 the engine agreed: the creator
+## was called inside the live process and all twelve records it makes came
+## back matching this program field for field, ring 0's five included, so the
+## slots held zero in that frame. Two readings support it -- the point-blank
+## arm at `0x00428093` zeroes exactly those three doubles, so zero is a value
+## the routine itself writes there; and the residue at that depth is small
+## integers and pointers reinterpreted as doubles, which are tiny and truncate
+## to zero. (Not NaN: `_ftol` answers `0x80000000` for a NaN, so the NaN half
+## of the old argument here was wrong.)
+##
+## **What that does not settle** is the frame. A plan calls the creator from
+## `dbgcall`'s anchor, and a shot calls it from `aPlayFightAnimation`; the
+## slots are whatever each caller left. Measuring the shipped path needs a
+## break at `0x0040D014` or `0x0040D047` during a real shot, which no harness
+## here does. `blob_creators.FLAME_RING0_DIVERGENCE` is the same note.
+const FLAME_RING0_DIVERGENCE: String = FLAME_STREAM
+
+## `aBlob_CreateTracerBullet` at `0x00425400` -- the spore cannon's spray.
+## Its speed is [constant SPARK_SPEED]'s own cell.
+const SPRAY_UNIT: int = 1600
+const SPRAY_PAIR: int = 2
+
+## `aBlob_CreateGrenade` at `0x00426070` -- weapon 11's arcs and weapon 44's
+## proximity round.
+const GRENADE_COUNT: int = 6
+const GRENADE_SPEED: float = 1920.0
+const GRENADE_BACK: float = -1920.0
+const GRENADE_KIND: int = 0x1A
+const GRENADE_RANGE: int = 6
+const GRENADE_SCATTER_BASE: int = -0x1F40
+const GRENADE_SCATTER_SPAN: int = 0x3E80
+const GRENADE_SCATTER_RISE: int = 0x3200
+const GRENADE_PROXIMITY_BASE: int = -0x12C0
+const GRENADE_PROXIMITY_SPAN: int = 0x2580
+const GRENADE_PROXIMITY_RISE: int = 0x3E80
+## The type that draws instead of taking an arc, and the one that adds one to
+## the kind: weapon 44's arm pushes it where weapon 11's pushes a target index.
+const GRENADE_PROXIMITY: int = 0xFF
+## Where each of the first six shots is aimed, as an offset from the target
+## object -- one arc per type, out of the six arms of the jump table at
+## `0x00426484`, so six simultaneous shots do not fly the same line.
+const GRENADE_AIM: Array[Vector3i] = [
+	Vector3i(-0x3200, -0x2580, 0x1900),
+	Vector3i(0x1900, 0xC80, 0x3200),
+	Vector3i(-0x1F40, -0x2BC0, 0x12C0),
+	Vector3i(0x1900, 0x12C0, 0x1F40),
+	Vector3i(0xC80, 0xC80, 0x2580),
+	Vector3i(-0x3200, -0x2BC0, 0x3200),
+]
+
+## `aBlob_CreateLaser` at `0x00428200` -- weapon 47's chain of dots.
+const BEAM_DOT_SPEED: float = 320.0
+const BEAM_DOT_UNIT: int = 320
+const BEAM_DOT_STAGGER: int = 5
+const BEAM_DOT_LIFT: int = 0x320
+
+## `aBlob_CreateLaser` at `0x00428570` -- weapon 14's seven dots.
+const LASER_DOT_COUNT: int = 6
+const LASER_DOT_SPEED: float = 3200.0
+const LASER_DOT_STEP: float = 480.0
+const LASER_DOT_UNIT: int = 3200
+const LASER_DOT_LIFT: int = 0x320
+
+const PROJECTILE_LOB_SPREAD: int = 4
+const PROJECTILE_LOB_SCALE: int = 8
+## `0x00425D9A` and `0x00426C6A` -- the `add eax, 0xA0` each of the two
+## projectile creators puts between the unit's height and the object's `z`.
+## Exactly two sites in the whole of `.text` add this to `0x0047AD30`'s
+## answer, and they are these two, so the lift belongs to the creators and not
+## to any object table.
+const PROJECTILE_LIFT: int = 0xA0
+## What [method _projectile] answers where there is no geometry to ask, which
+## is the one case it places nothing.
+const NO_THROW: Vector3i = Vector3i(-0x40000000, -0x40000000, -0x40000000)
+## `0x00426F2C` -- the puff the mine leaves behind, `(row, aux, life)`.
+const SPIDY_BOB_ROW: int = 4
+const SPIDY_BOB_AUX: int = 0x14
+const SPIDY_BOB_LIFE: int = 8
+
 const EMITTER: String = "0x00420950"
 const SPORE_SPARKS: String = "0x00428E30"
 const PLASMA_SPARKS: String = "0x00428ED0"
@@ -256,6 +476,58 @@ class Inputs extends RefCounted:
 	var sizes: Dictionary[int, int] = {}
 	## The engine's table arithmetic, for the rings and the arrows' aim.
 	var geometry: Eng3dGeometry = null
+	## **What a weapon's creator reads instead of a tile** -- the two symbol
+	## objects and the two unit heights of `blob_creators.Inputs`. The thirty
+	## a weapon switch names open on the source and target cells rather than
+	## on one, and they read the two **apart**: some from `object + height`
+	## (see [method source_point]), some from the object alone, and the span a
+	## beam is counted in is over the two objects. A caller that cannot tell
+	## them apart leaves the heights at zero, which keeps the sum right and
+	## the span wrong.
+	var source: Vector3i = Vector3i.ZERO
+	var source_height: int = 0
+	var target: Vector3i = Vector3i.ZERO
+	var target_height: int = 0
+	## The low byte of the target cell's unit id, which `0x004264A0` stores as
+	## its record's `aux` for a seeking arm to read back (docs/28 section
+	## 7.7.1).
+	var target_unit: int = 0
+	## **The barrel**, where the caller knows it. A creator whose call site --
+	## or whose own body, for the ten of `BlobTriggers.CREATOR_JOINTS` --
+	## names a Charisma part calls `0x0042C660`, which writes that part's world
+	## position over the **three source stack slots** the object and the height
+	## were just loaded into (`0x00425810` loads them at `0x00425996` and hands
+	## their addresses over at `0x00425A2E`). Everything the creator reads as
+	## its source after that is the part.
+	##
+	## It is left unset where nothing is animating, which is the engine's own
+	## fallback and is the case every capture was taken in -- so this is
+	## asserted by `test_effects.gd` and confirmed in play, and diffed against
+	## the engine by nothing.
+	var source_joint: Vector3i = Vector3i.ZERO
+	var has_source_joint: bool = false
+	## Where a weapon creator's effect leaves from: the placed object's
+	## position plus the unit's own height, or the barrel that replaced both.
+	func source_point() -> Vector3i:
+		if has_source_joint:
+			return source_joint
+		return Vector3i(source.x, source.y, source.z + source_height)
+
+	## Where a **projectile** creator's round leaves from: the placed object
+	## plus the unit's height plus [constant PROJECTILE_LIFT], or the barrel
+	## that replaced all three.
+	##
+	## Separate from [method source_point] because only `0x00425CA0` and
+	## `0x00426B70` carry that extra lift, in their own instructions.
+	func throw_point() -> Vector3i:
+		if has_source_joint:
+			return source_joint
+		return Vector3i(source.x, source.y,
+			source.z + source_height + PROJECTILE_LIFT)
+
+	## Where it is aimed.
+	func target_point() -> Vector3i:
+		return Vector3i(target.x, target.y, target.z + target_height)
 
 	func large(unit: Dictionary) -> bool:
 		return sizes.get(DictRead.as_int(unit.get("type", -1)), 0) == 1
@@ -362,7 +634,743 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	PLASMA_SPARKS_BURST: 5,
 	SPORES: 4, STING_SPARKS: 5, HITTING_BLOBS: 4, HITTING_BLOBS_2: 4,
 	HITTING_BLOBS_3: 4, SPARKS: 4, ARM_PARA_BOMB: 3, BARREL_DEBRIS: 3,
+	# The weapon switches' own, each arity its call sites' `add esp, K`.
+	SMOKE_TRAIL: 6, MACHINE_GUN: 4, BLIZZARD_SHOT: 5, LASER_GREEN: 4,
+	BLUE_LASER: 4, PLASMA_BEAM: 4, LINE_FIRE: 4, BLIZZARD_HIT: 2,
+	SPORE_EXPLOSION: 4, STINGER_RING: 2,
+	SPARKING_PLUG: 2, PLASMA_BALL_IMPACT: 2, EXPLOSION2: 2, SPIDY_MINES: 4,
+	# Seven more on 2026-09-12. Three read a tail their arm pushes -- the
+	# spray's round count and stagger, the grenade's type -- and four read
+	# only the tiles, the rest of their arity being dead slots the frame
+	# leaves as it found them.
+	FIRE_WHEEL: 3, MINE_PLUME: 3, SPRAY: 6, GRENADE_ROUND: 5, GRENADE_ARC: 6,
+	BEAM_DOTS: 5, LASER_DOTS: 5, FLAME_STREAM: 5,
 }
+
+
+
+# -- the weapon switches' own creators (docs/97 section 14.5) ---------------
+#
+# One block, because they share a prologue: the two symbol objects and the two
+# unit heights, `source_point()` and `target_point()` above. `BlobTriggers`
+# fills those from the shot's two ends with the joint already applied, which
+# is `0x0042C660` writing the shooter's muzzle part over the three source
+# coordinates.
+
+
+## `source - ftol(index * d * scale)` per axis -- the family's one way of
+## walking along the line of fire. Left to right, as the x87 does it.
+static func _step(from: Vector3i, d: PackedFloat64Array, index: int,
+		scale: float) -> Vector3i:
+	return Vector3i(
+		from.x - Eng3dGeometry.ftol(d[0] * float(index) * scale),
+		from.y - Eng3dGeometry.ftol(d[1] * float(index) * scale),
+		from.z - Eng3dGeometry.ftol(d[2] * float(index) * scale))
+
+
+## The wider of the two horizontal spans, over the **symbol objects** rather
+## than over the points the heights moved.
+static func _span(inputs: Inputs) -> int:
+	return maxi(absi(inputs.source.x - inputs.target.x),
+		absi(inputs.source.y - inputs.target.y))
+
+
+## `(max(|dx|, |dy|) - 0xC80) / 0x960`, a signed C divide -- the beam length
+## the two lasers and the plasma beam count their dots in.
+static func _beam_length(inputs: Inputs) -> int:
+	return IncInt.div_trunc(_span(inputs) - BEAM_BASE, BEAM_UNIT)
+
+
+## `aBlob_CreateSmokeTrail` `0x00425810` -- rings of six along the line of
+## fire, the muzzle of weapon 26 (the Pyr'Coo's).
+##
+## Each record draws its three velocity components first and then sits at the
+## ring's point **plus** them, so one set of numbers is both a displacement
+## and a speed. `delay` is the ring index over four, and the creator writes
+## **1** over the *arrived* flag at `0x00425AD6` -- ahead of the loop and
+## behind no branch, so a trail is not something a shot waits on.
+static func smoke_trail(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	var from: Vector3i = inputs.source_point()
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from,
+		inputs.target_point(), 1)
+	var count: int = IncInt.div_trunc(_span(inputs) - BEAM_BASE,
+		TRAIL_UNIT) + 1
+	for ring: int in range(count + 1):
+		var at: Vector3i = _step(from, d, ring, TRAIL_STEP)
+		for _index: int in range(6):
+			var vx: int = draws.draw(-0x140, 0x280)
+			var vy: int = draws.draw(-0x140, 0x280)
+			var vz: int = draws.draw(-0x140, 0x280)
+			pool.spawn(SCRATCH, 2, at.x + vx, at.y + vy, at.z + vz,
+				6, 0, 0, 0x2E, 8, vx, vy, vz, 5,
+				IncInt.div_trunc(ring, 4))
+
+
+## `aBlob_CreateMachineGun` `0x00424D20` -- five bursts of tracer, casing and
+## smoke (weapon 4).
+##
+## Three shapes in one creator. The **delta** is a draw minus the direction
+## scaled by 2400, so each burst leaves along the line with a small scatter.
+## The two tracers are placed **perpendicular** to that line: `x` takes the
+## horizontal ratio scaled by 640 while `y` takes the *other* one, and the
+## second record **exchanges** the two terms rather than negating them
+## (`blob_tables.TRACER_AXIS_TERMS` pins all eight off the stack). The casings
+## fly perpendicular at 80 with only their rise drawn, and each burst ends
+## with `0x00423720`'s single record whose `life` is the burst index -- so
+## burst 0 makes no puff at all, the constructor dropping a record with no
+## life.
+static func machine_gun(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var from: Vector3i = inputs.source_point()
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from,
+		inputs.target_point(), 1)
+	var length: int = maxi(IncInt.div_trunc(_span(inputs), BEAM_UNIT), 0)
+	for burst: int in range(5):
+		var dx: int = draws.draw(-200, 400) - Eng3dGeometry.ftol(d[0] * BEAM_STEP)
+		var dy: int = draws.draw(-200, 400) - Eng3dGeometry.ftol(d[1] * BEAM_STEP)
+		var dz: int = draws.draw(-100, 200) - Eng3dGeometry.ftol(d[2] * BEAM_STEP)
+		var turn: Vector2i = inputs.geometry.orient(from,
+			Vector3i(from.x + dx * 5, from.y + dy * 5, from.z + dz * 5))
+		if length != 0:
+			pool.spawn("A_LINE5.3DI", 0,
+				from.x + Eng3dGeometry.ftol(d[0] * TRACER_SPREAD)
+					- TRACER_LEAN * Eng3dGeometry.ftol(d[1]),
+				from.y + TRACER_LEAN * Eng3dGeometry.ftol(d[0])
+					- Eng3dGeometry.ftol(d[1] * -TRACER_SPREAD),
+				from.z, turn.x, 0, turn.y, 0xF, length, dx, dy, dz, 0, burst)
+			pool.spawn("A_LINE5.3DI", 0,
+				from.x + TRACER_LEAN * Eng3dGeometry.ftol(d[1])
+					- Eng3dGeometry.ftol(d[0] * -TRACER_SPREAD),
+				from.y + Eng3dGeometry.ftol(d[1] * TRACER_SPREAD)
+					- TRACER_LEAN * Eng3dGeometry.ftol(d[0]),
+				from.z, turn.x, 0, turn.y, 0xF, length, dx, dy, dz, 0, burst)
+		for sign: int in [1, -1]:
+			var vz: int = draws.draw(0, 0xA0) + 0x140
+			pool.spawn("A_CASE.3DI", 0, from.x - IncInt.div_trunc(dx, 3),
+				from.y - IncInt.div_trunc(dy, 3), from.z - dz,
+				turn.x, 0, turn.y, 0xB, 0x14,
+				Eng3dGeometry.ftol(d[1] * float(sign) * MACHINE_GUN_CASING_SPEED),
+				Eng3dGeometry.ftol(d[0] * float(-sign) * MACHINE_GUN_CASING_SPEED),
+				vz, 0, burst)
+		pool.spawn(SCRATCH, 2, from.x + IncInt.div_trunc(dx, 5),
+			from.y + IncInt.div_trunc(dy, 5),
+			from.z + IncInt.div_trunc(dz, 5), 0, 0, 0, 0x32, burst,
+			0, 0, 0, 10, 0)
+
+
+## `aBlob_CreateBlizzardShot` `0x004264A0` -- two seeking shards, one behind
+## the other (weapon 9).
+##
+## The **name** is chosen by a draw compared as a float *before* the
+## truncation; the aim's scatter is thrown away when the two tiles are within
+## six fields; the velocity is the direction scaled by 1920 and `delay` is the
+## record index. The `aux` it stores is the target cell's unit id, which the
+## seeking arm reads back as a unit-map slot.
+static func blizzard_shot(pool: Pool, draws: Draws, inputs: Inputs,
+		source_tile: Vector2i, target_tile: Vector2i) -> void:
+	var from: Vector3i = inputs.source_point()
+	var off_x: int = draws.draw(-0xC80, 0xC80)
+	var off_y: int = draws.draw(-0x1F40, 0x1F40)
+	if Eng3dGeometry.distance_2d(target_tile.x - source_tile.x,
+			target_tile.y - source_tile.y) < 6:
+		off_x = 0
+		off_y = 0
+	var aim: Vector3i = Vector3i(inputs.target.x + off_x,
+		inputs.target.y + off_y, inputs.target.z)
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, aim, 1)
+	var name: String = "A_BLIZ03.3DI" if draws.raw() * 10.0 <= 5.0 \
+		else "A_BLIZ02.3DI"
+	for index: int in range(2):
+		pool.spawn(name, 0, from.x, from.y, from.z, 0, 0, 0, 0x3D, 0x64,
+			Eng3dGeometry.ftol(d[0] * SHARD_SPEED),
+			Eng3dGeometry.ftol(d[1] * SHARD_SPEED),
+			Eng3dGeometry.ftol(d[2] * SHARD_SPEED),
+			inputs.target_unit, index)
+
+
+## `aBlob_CreateLaserGreen` `0x00426F90` -- sparks at the target, then a
+## dotted beam (weapon 10).
+##
+## It **calls another creator** before it places anything of its own, so its
+## first two hundred draws are `0x0042A9D0`'s. A zero beam length is written
+## back to -1, which makes the dot loop empty.
+static func laser_green(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var from: Vector3i = inputs.source_point()
+	var aim: Vector3i = inputs.target_point()
+	sparks(pool, draws, Vector3i(aim.x, aim.y, aim.z + 800), 0, inputs)
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, aim, 1)
+	var count: int = _beam_length(inputs)
+	if count == 0:
+		count = -1
+	var turn: Vector2i = inputs.geometry.orient(from,
+		_step(from, d, 1, BEAM_STEP))
+	for index: int in range(count + 1):
+		var at: Vector3i = _step(from, d, index, BEAM_STEP)
+		pool.spawn("A_LASERG.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			1, 4, 0, 0, 0, 0, 0)
+
+
+## `aBlob_CreateBlueLaser` `0x00427410` -- the same beam aimed at a scattered
+## point, its dots carrying the direction scaled by 80 (weapon 45).
+static func blue_laser(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var from: Vector3i = inputs.source_point()
+	var dx: int = draws.draw(-600, 0x4B0)
+	var dy: int = draws.draw(-600, 0x4B0)
+	var dz: int = draws.draw(-600, 0x4B0)
+	var aim: Vector3i = inputs.target_point() + Vector3i(dx, dy, dz)
+	sparks(pool, draws, aim, 0, inputs)
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, aim, 1)
+	var count: int = _beam_length(inputs)
+	var turn: Vector2i = inputs.geometry.orient(from,
+		_step(from, d, 1, BEAM_STEP))
+	for index: int in range(1, count + 2):
+		var at: Vector3i = _step(from, d, index, BEAM_STEP)
+		pool.spawn("A_BLASER.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			0x26, 5, Eng3dGeometry.ftol(d[0] * DOT_SPEED),
+			Eng3dGeometry.ftol(d[1] * DOT_SPEED),
+			Eng3dGeometry.ftol(d[2] * DOT_SPEED), 0, 0)
+
+
+## `aBlob_CreatePlasmaBeam` `0x00427810` -- three plasma heads at one point,
+## then a trail of pairs (weapon 43).
+##
+## Two loops with different laws: the heads differ only in `delay`, the trail
+## spaces itself by the loop counter, and every record's `rot_y` is a draw
+## while the other two are the orientation's -- so the stream advances once
+## per record in one loop and twice in the other.
+static func plasma_beam(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var from: Vector3i = inputs.source_point()
+	var aim: Vector3i = inputs.target_point()
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, aim, 1)
+	var count: int = IncInt.div_trunc(_span(inputs) - BEAM_UNIT, BEAM_UNIT)
+	var turn: Vector2i = inputs.geometry.orient(from,
+		_step(from, d, 1, HEAD_STEP))
+	var head: Vector3i = _step(from, d, 1, BEAM_STEP)
+	for index: int in range(3):
+		var rot_y: int = draws.draw(0, 0x1000)
+		pool.spawn("A_PLSMA1.3DI", 0, head.x, head.y, head.z,
+			turn.x, rot_y, turn.y, 1, (count & 0xFF) >> 1,
+			Eng3dGeometry.ftol(d[0] * HEAD_SPEED),
+			Eng3dGeometry.ftol(d[1] * HEAD_SPEED),
+			Eng3dGeometry.ftol(d[2] * HEAD_SPEED), 0, index * 5)
+	for index: int in range(1, count + 2):
+		var at: Vector3i = _step(from, d, index, BEAM_STEP)
+		for name: String in ["A_BLIZ02.3DI", "A_BLIZ03.3DI"]:
+			var rot_y: int = draws.draw(0, 0x1000)
+			pool.spawn(name, 0, at.x, at.y, at.z, turn.x, rot_y, turn.y,
+				0xC, 10, 0, 0, 0, 0, 0)
+
+
+## `aBlob_CreateLineFire` `0x00429180` -- `count` streaks, each with its own
+## speed (weapon 13's impact, which pushes 150).
+##
+## Its velocity is neither a draw nor a fixed speed: a speed is drawn per axis
+## and multiplied by the direction service's answer.
+static func line_fire(pool: Pool, draws: Draws, inputs: Inputs,
+		count: int) -> void:
+	if inputs.geometry == null:
+		return
+	var at: Vector3i = inputs.source
+	for _i: int in range(count & 0xFF):
+		var aim: Vector3i = Vector3i(at.x + draws.draw(-0xA0, 0x140),
+			at.y + draws.draw(-0xA0, 0x140), at.z + draws.draw(0x280, 0x280))
+		var d: PackedFloat64Array = Eng3dGeometry.direction(at, aim, 1)
+		var turn: Vector2i = inputs.geometry.orient(at, aim)
+		var delay: int = draws.draw(0, 4)
+		var vz: int = Eng3dGeometry.ftol(float(draws.draw(0xA0, 0xA0)) * d[2])
+		var vy: int = Eng3dGeometry.ftol(float(draws.draw(0x1E0, 0x140)) * d[1])
+		var vx: int = Eng3dGeometry.ftol(float(draws.draw(0x1E0, 0x140)) * d[0])
+		pool.spawn("A_LINE6.3DI", 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+			0x48, draws.draw(0xA, 0xF), vx, vy, vz, 0, delay)
+
+
+## `0x00420A50` -- thirty kind-47 sprites thrown off a rising ring
+## (weapon 22's muzzle).
+##
+## Every record sits at the **same** point, the placed object one map field
+## up, and the ring goes into the *velocity* -- the shape
+## `aBlob_CreateShockWave` and the selection marker share. `delay` is the loop
+## counter, so they leave one frame at a time, and nothing is drawn: the whole
+## effect is the engine's own table arithmetic. The turn is an immediate
+## rather than a full circle divided by the count, so thirty records walk the
+## circle three times.
+static func stinger_ring(pool: Pool, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source
+	var ring: Array[Vector3i] = _ring(inputs, STINGER_RADIUS, STINGER_TURN,
+		STINGER_COUNT)
+	for index: int in range(ring.size()):
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z + STINGER_LIFT, 3, 0, 0,
+			0x2F, 0x10, ring[index].x * STINGER_SPEED,
+			ring[index].y * STINGER_SPEED, 0, 10, index)
+
+
+## `aBlob_CreateSporeExplosion` `0x00429F40` -- rings of three climbing
+## `0x3C0` a ring: the impact of weapons 23, 25 and **26**, the Pyr'Coo's.
+##
+## `kind` is the **fourth** argument: weapon 26's arm pushes 0, which is nine
+## rings, and weapons 23 and 25 push 1, which is three; anything else takes
+## the cascade's fall-through and makes nothing. `rot_y` is a flag rather
+## than a draw, off below the fifth ring and 4 from it up; `aux` is a draw
+## with twice the ring index added **inside** the conversion; `delay` is the
+## ring index.
+static func spore_explosion(pool: Pool, draws: Draws, inputs: Inputs,
+		kind: int) -> void:
+	var at: Vector3i = inputs.source
+	var rings: int = 0
+	match kind & 0xFF:
+		0:
+			rings = 9
+		1:
+			rings = 3
+	for ring: int in range(rings):
+		var counter: int = 2 * ring
+		for _i: int in range(3):
+			var dx: int = draws.draw(-0x640, 0xC80)
+			var dy: int = draws.draw(-0x640, 0xC80)
+			var dz: int = draws.draw(0, 0x640)
+			var aux: int = draws.draw_biased(5, 0xF, counter)
+			pool.spawn(SCRATCH, 2, at.x + dx, at.y + dy,
+				at.z + 0x3C0 * ring + dz,
+				3, 0 if counter < 10 else 4, 0,
+				0x32, 8, 0, 0, 0, aux, ring)
+
+
+## `aBlob_SparkingPlug` `0x0042ACF0` -- thirty sparks off the placed object,
+## one map field up (weapon 17's muzzle, weapons 8 and 37's impact).
+##
+## The two zeros the loop opens with -- `push 0 / push 0` at `0x0042AD58` --
+## are pushed **before** the first draw and survive every `add esp, 8` in
+## between, so they are the constructor's `aux` and `delay` rather than
+## scratch. The velocities are draws **shifted**: `shl eax, 5` on the rise
+## and `shl eax, 4` on the two drifts. And the record stands at the object's
+## own z plus `0x960` with no unit height in it, which `0x0042ADAC`'s
+## `add eax, 0x960` is the whole of.
+static func sparking_plug(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source
+	for _index: int in range(SPARKING_PLUG_COUNT):
+		var vz: int = draws.draw(5, 0xA) * SPARKING_PLUG_RISE
+		var vy: int = draws.draw(-0xA, 0x14) * SPARKING_PLUG_DRIFT
+		var vx: int = draws.draw(-0xA, 0x14) * SPARKING_PLUG_DRIFT
+		pool.spawn("A_FUNKE.3DI", 0, at.x, at.y, at.z + SPARKING_PLUG_LIFT,
+			0, 0, 0, 0x14, 0x1E, vx, vy, vz, 0, 0)
+
+
+## `aBlob_CreatePlasmaBallImpact` `0x004294E0` -- forty sparks at the placed
+## object (weapon 43's impact, and nothing else).
+##
+## It stands on the object's own z with **no lift and no unit height** --
+## `0x004295B1` pushes `[esi+0x18]` untouched where its neighbour above adds
+## `0x960`. The three draws reach the constructor out of order: the rise is
+## taken first and lands in `vz`, and the two drifts land in `vx` and `vy`
+## reversed, MSVC evaluating arguments right to left.
+static func plasma_ball_impact(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source
+	for _index: int in range(PLASMA_IMPACT_COUNT):
+		var vz: int = draws.draw(PLASMA_IMPACT_RISE_BASE,
+			PLASMA_IMPACT_RISE_SPAN)
+		var vx: int = draws.draw(PLASMA_IMPACT_DRIFT_BASE,
+			PLASMA_IMPACT_DRIFT_SPAN)
+		var vy: int = draws.draw(PLASMA_IMPACT_DRIFT_BASE,
+			PLASMA_IMPACT_DRIFT_SPAN)
+		pool.spawn("A_FUNKE.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 0x18, 0x3C,
+			vx, vy, vz, 0, 0)
+
+
+## `aBlob_CreateExplosion2` `0x004295D0` -- fifteen tumbling pieces of debris,
+## straight after [method sparking_plug] on the same two arguments.
+##
+## Six draws a round in three ranges, and the order they are **taken** is not
+## the order they arrive: the rise is first and becomes `vz`, the two drifts
+## fill `vx` and `vy` reversed, and the three whole-turn draws fill `rot_z`,
+## `rot_y` and `rot_x` -- reversed again, the shape [method blizzard_hit]
+## names.
+static func explosion2(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source
+	for _index: int in range(EXPLOSION2_COUNT):
+		var vz: int = draws.draw(EXPLOSION2_RISE_BASE, EXPLOSION2_RISE_SPAN)
+		var vx: int = draws.draw(PLASMA_IMPACT_DRIFT_BASE,
+			PLASMA_IMPACT_DRIFT_SPAN)
+		var vy: int = draws.draw(PLASMA_IMPACT_DRIFT_BASE,
+			PLASMA_IMPACT_DRIFT_SPAN)
+		var rot_z: int = draws.draw(0, 0x1000)
+		var rot_y: int = draws.draw(0, 0x1000)
+		var rot_x: int = draws.draw(0, 0x1000)
+		pool.spawn("A_DEBRIS.3DI", 0, at.x, at.y, at.z, rot_x, rot_y, rot_z,
+			5, 0x64, vx, vy, vz, 0, 0)
+
+
+## `aBlob_CreateSpidyMines` `0x00426B70` -- one thrown mine and the puff it
+## leaves (weapons 13 and 46's muzzle, four arguments and no tail).
+##
+## **The shooter is lifted by a literal 160.** Both this and `0x00425CA0` do
+## `call 0x0047AD30 / add eax, 0xA0 / add ecx, eax` over the symbol object's
+## own `z`; both ends are the *symbol* object, and the standard object each
+## reads is only for the joint's part list at `+0x45`. See
+## [constant PROJECTILE_LIFT].
+##
+## The round leaves at `direction * 800` and lives `max(|dx|, |dy|) / 800 - 2`
+## frames, with the *arrived* flag written **0** while that is positive. Its
+## `vz` carries a lob of forty per half-life on top of the direction's own,
+## and its rotation is `0x00403AA0` over the source and the source **plus the
+## direction** -- not plus the lob. It is one of the ten creators that push
+## `"M"` inside their own body (`0x00426CC8`), so an animating shooter throws
+## from the barrel.
+static func spidy_mines(pool: Pool, inputs: Inputs) -> void:
+	var from: Vector3i = _projectile(pool, inputs, "A_MINE2.3DI", 77)
+	if from == NO_THROW:
+		return
+	zoombob(pool, from, SPIDY_BOB_ROW, SPIDY_BOB_AUX, SPIDY_BOB_LIFE)
+
+
+## The body `0x00425CA0` and `0x00426B70` share, answering where the round
+## started so the caller can place its own second record -- or
+## [constant NO_THROW] where there is no geometry to ask.
+static func _projectile(pool: Pool, inputs: Inputs, name: String,
+		kind: int) -> Vector3i:
+	var from: Vector3i = inputs.throw_point()
+	var aim: Vector3i = inputs.target_point()
+	var span: int = maxi(absi(from.x - aim.x), absi(from.y - aim.y))
+	var life: int = IncInt.div_trunc(span, PROJECTILE_UNIT) \
+		- PROJECTILE_LIFE_BIAS
+	# **Ahead of the geometry guard**, because the engine's own `setle` is over
+	# the span alone: a caller with no orientation tables still has to be told
+	# there is a round in flight.
+	pool.clears_arrived = life > 0
+	if inputs.geometry == null:
+		return NO_THROW
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from, aim, 1)
+	var v: Vector3i = Vector3i(
+		Eng3dGeometry.ftol(d[0] * PROJECTILE_SPEED),
+		Eng3dGeometry.ftol(d[1] * PROJECTILE_SPEED),
+		Eng3dGeometry.ftol(d[2] * PROJECTILE_SPEED))
+	var at: Vector3i = from + v
+	var turn: Vector2i = inputs.geometry.orient(from, at)
+	var half: int = absi(life) >> 1
+	var lob: int = absi(-(half * PROJECTILE_LOB_SPREAD) - half) \
+		* PROJECTILE_LOB_SCALE + v.z
+	pool.spawn(name, 0, at.x, at.y, at.z, turn.x, 0, turn.y,
+		kind, life, v.x, v.y, lob, 0, 0)
+	return from
+
+
+## `aBlob_CreateFlameStream` `0x00427C80` -- rings of five, and a sweep above
+## type 5 (weapons 7 and 40's muzzle).
+##
+## A ring begins at the source plus [constant FLAME_RING_OFFSET] along the
+## **last** direction the inner loop took, and lays five records stepping
+## [constant FLAME_STEP] along a direction it takes again at every one of them.
+## Each record's lifetime is the whole flight's, its velocity the direction
+## times [constant SPARK_SPEED], its sprite column a draw and its half-size a
+## draw biased by a per-record counter over three -- added before the
+## truncation.
+##
+## **What the first ring reads is still the caller's stack.** See
+## [constant FLAME_RING0_DIVERGENCE].
+static func flame_stream(pool: Pool, draws: Draws, inputs: Inputs,
+		rings: int) -> void:
+	var source: Vector3i = inputs.source_point()
+	var span: int = maxi(absi(source.x - inputs.target.x),
+		absi(source.y - inputs.target.y))
+	var life: int = IncInt.div_trunc(span, FLAME_UNIT)
+	if life <= 0:
+		life = 1
+	# Unconditional and a literal: `mov [0x4FE63C], ebx` with `ebx` zeroed at
+	# `0x00427E32`, ahead of every branch.
+	pool.clears_arrived = true
+	var aim: Vector3i = inputs.target + Vector3i(0, 0, FLAME_LIFT)
+	var count: int = rings & 0xFF
+	var sweeps: bool = count > FLAME_SWEEP_TYPE
+	var sweep: int = -FLAME_SWEEP_LIMIT
+	var forward: int = 1
+	var d: PackedFloat64Array = PackedFloat64Array([0.0, 0.0, 0.0])
+	# `mov byte [esp+0x30], 2` at `0x00427F25`, ahead of both loops.
+	var counter: int = FLAME_SIZE_BASE
+	for ring: int in range(count):
+		var at: Vector3i = Vector3i(
+			source.x - Eng3dGeometry.ftol(d[0] * FLAME_RING_OFFSET),
+			source.y - Eng3dGeometry.ftol(d[1] * FLAME_RING_OFFSET),
+			source.z - Eng3dGeometry.ftol(d[2] * FLAME_RING_OFFSET))
+		# **Only the sweep wants the tables**, so a caller without them still
+		# gets the stream -- straight, which is what the guard costs and is
+		# said here rather than hidden. Every shipped path has them: the cache
+		# carries `TRIG.IMG` and `ATN.IMG`, and it is the fixture-less suites
+		# that do not. The same contract [member BlobHooks.geometry] states
+		# for [method BlobHooks.orient]'s substitute.
+		if sweeps and inputs.geometry != null:
+			var delta: Vector3i = aim - source
+			# The walk happens **before** the turn and is what the turn reads:
+			# `0x00427FD6` loads the angle, steps it, stores it back and only
+			# then hands the structure over.
+			var angles: Vector3i = Vector3i(delta.z & 0xFFFF,
+				delta.z & 0xFFFF, sweep & 0xFFFF)
+			sweep += FLAME_SWEEP_STEP if forward == 1 else -FLAME_SWEEP_STEP
+			if sweep > FLAME_SWEEP_LIMIT:
+				forward = 2
+			if sweep < -FLAME_SWEEP_LIMIT:
+				forward = 1
+			aim = source + inputs.geometry.rotate(delta, angles)
+		for _step: int in range(FLAME_PER_RING):
+			d = Eng3dGeometry.direction(at, aim, 1)
+			var size: int = draws.draw_biased(0, FLAME_SIZE_SPAN,
+				IncInt.div_trunc(counter & 0xFF, FLAME_SIZE_DIVISOR))
+			counter += 1
+			var column: int = draws.draw(0, FLAME_COLUMN_SPAN) & 0xFF
+			pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 0, column, 0, 0x31, life,
+				Eng3dGeometry.ftol(d[0] * SPARK_SPEED),
+				Eng3dGeometry.ftol(d[1] * SPARK_SPEED),
+				Eng3dGeometry.ftol(d[2] * SPARK_SPEED), size, ring)
+			at += Vector3i(Eng3dGeometry.ftol(d[0] * FLAME_STEP),
+				Eng3dGeometry.ftol(d[1] * FLAME_STEP),
+				Eng3dGeometry.ftol(d[2] * FLAME_STEP))
+
+
+## `aBlob_CreateFireWheel` `0x004228F0` -- thirty puffs, then a closing wheel
+## of fire (weapon 44's muzzle **and** its impact).
+##
+## Two tile coordinates and a third argument the body never reads -- the frame
+## loads `[esp+4]` and `[esp+8]` and nothing else -- which is what makes the
+## phase `blob_gold.py` already holds an oracle for it.
+##
+## Two loops of thirty, and only the first draws. The puffs are class-2
+## sprites at the object's own `z`, staggered by **half** the loop index. The
+## wheel is a spoke of 160 turned through Eng3d's own `0x004039A0` by 136 of
+## 4096 per record, each record made from the **previous** answer with its `z`
+## forced back to zero, so the turn accumulates and the wheel stays flat.
+static func fire_wheel(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	if inputs.geometry == null:
+		return
+	var at: Vector3i = inputs.source
+	for index: int in range(FIRE_WHEEL_COUNT):
+		var vz: int = draws.draw(FIRE_WHEEL_RISE_BASE, FIRE_WHEEL_RISE_SPAN)
+		var vy: int = draws.draw(FIRE_WHEEL_DRIFT_BASE, FIRE_WHEEL_DRIFT_SPAN)
+		var vx: int = draws.draw(FIRE_WHEEL_DRIFT_BASE, FIRE_WHEEL_DRIFT_SPAN)
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 0, 0, 0, 0x2C, 0x10,
+			vx, vy, vz, 0xA, index >> 1)
+	var spoke: Vector3i = Vector3i(FIRE_WHEEL_RADIUS, 0, 0)
+	for index: int in range(FIRE_WHEEL_COUNT):
+		spoke = inputs.geometry.rotate(Vector3i(spoke.x, spoke.y, 0),
+			Vector3i(0, 0, FIRE_WHEEL_TURN))
+		var fourth: bool = index % (FIRE_WHEEL_EXPL04_EVERY + 1) \
+			== FIRE_WHEEL_EXPL04_EVERY
+		pool.spawn("A_EXPL04.3DI" if fourth else "A_EXPL03.3DI", 0,
+			at.x, at.y, at.z + FIRE_WHEEL_LIFT, 0, 0, 0, 0x24, 0xF,
+			spoke.x * FIRE_WHEEL_SPEED, spoke.y * FIRE_WHEEL_SPEED, 0, 0, 0xA)
+
+
+## `0x00429C30` -- weapon 13's impact plume: three sprite puffs, no draw at
+## all, and every one of its nine numbers an immediate at its own call site.
+##
+## Shorter-lived, slower and smaller with each record. Its third argument is
+## dead, the same as [method fire_wheel]'s.
+static func mine_plume(pool: Pool, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source + Vector3i(0, 0, MINE_PLUME_LIFT)
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 0, 0, 0, 0x4B, 0xA,
+		0, 0, 0x280, 0x1E, 0)
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 0, 0, 0, 0x4B, 0x6,
+		0, 0, 0x1E0, 0x19, 0)
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 0, 0, 0, 0x4B, 0x5,
+		0, 0, 0x140, 0x14, 0)
+
+
+## `aBlob_CreateTracerBullet` at `0x00425400` -- the spore cannon's spray
+## (weapon 23's muzzle), and a different routine from the tracer of the same
+## name at `0x004247C0`.
+##
+## A burst -- `rounds` staggered by `stagger` -- but not one of the three of
+## docs/28 section 8.1.1, and it does not share their prologue. Two things are
+## its own. The joint replaces the source for the record's **position** and not
+## for the direction, which reads the object itself at `0x004256A5`. And the
+## span it measures is the *arrived* one -- source plus the velocity against
+## the target -- so a shot inside one spacing writes the flag and places
+## nothing: the `jle` at `0x00425745` skips the loop.
+static func spray(pool: Pool, inputs: Inputs, rounds: int,
+		stagger: int) -> void:
+	var from: Vector3i = Vector3i(inputs.source.x, inputs.source.y,
+		inputs.source.z + inputs.source_height)
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from,
+		inputs.target_point(), 1)
+	var v: Vector3i = Vector3i(
+		Eng3dGeometry.ftol(d[0] * SPARK_SPEED),
+		Eng3dGeometry.ftol(d[1] * SPARK_SPEED),
+		Eng3dGeometry.ftol(d[2] * SPARK_SPEED))
+	var span: int = maxi(absi(from.x + v.x - inputs.target.x),
+		absi(from.y + v.y - inputs.target.y))
+	var life: int = IncInt.div_trunc(span, SPRAY_UNIT)
+	pool.clears_arrived = life > 0
+	if life <= 0:
+		return
+	var at: Vector3i = inputs.source_joint if inputs.has_source_joint else from
+	for index: int in range(rounds & 0xFF):
+		for pair: int in range(SPRAY_PAIR):
+			pool.spawn(SCRATCH, 2, at.x + v.x, at.y + v.y, at.z + v.z,
+				3, 0, 0, 0x20, life, v.x, v.y, v.z, 0x28,
+				(pair + index * stagger) & 0xFF)
+
+
+## `aBlob_CreateGrenade` `0x00425CA0` -- the mine thrower's round and nothing
+## else (weapons 8 and 42's muzzle, fifth argument dead).
+##
+## [method spidy_mines]' whole shape with `A_MINE1.3DI` in place of
+## `A_MINE2.3DI`, and without the puff that one leaves.
+static func grenade_round(pool: Pool, inputs: Inputs) -> void:
+	var _from: Vector3i = _projectile(pool, inputs, "A_MINE1.3DI", 6)
+
+
+## `aBlob_CreateGrenade` at `0x00426070` -- six dots on one of seven arcs.
+##
+## Weapon 11's muzzle calls it **once per cell of its own target pattern that
+## still holds a unit**, and the type it pushes is the running count of the
+## cells matched so far -- in control-map order -- which is the arc. Weapon
+## 44's arm pushes [constant GRENADE_PROXIMITY] and loops five times at the one
+## aim point instead. [method BlobTriggers.multi_target] is the walk; a cell
+## the resolver marked killed is still among them because removal follows the
+## animation. The type reaches three things: the offset
+## added to the target object before the direction is taken, whether the three
+## draws happen at all, and the record's kind -- [constant GRENADE_KIND] and
+## one more for the proximity round, which is `computed_kinds`' `[26, 27]`.
+##
+## Two gates sit in front of it. `0x0044AE10` measures the two tiles in
+## **bytes** and a separation under [constant GRENADE_RANGE] zeroes the whole
+## offset for every type but the proximity one, so a point-blank shot flies
+## straight. And the record's position is the source *minus* the direction
+## times [constant GRENADE_BACK] -- the same magnitude the velocity is built
+## from, negated at the constant rather than at the instruction.
+static func grenade_arc(pool: Pool, draws: Draws, inputs: Inputs,
+		tile: Vector2i, target_tile: Vector2i, type: int) -> void:
+	var kind: int = type & 0xFF
+	var offset: Vector3i = Vector3i.ZERO
+	if kind < GRENADE_AIM.size():
+		offset = GRENADE_AIM[kind]
+	elif kind == GRENADE_PROXIMITY:
+		offset = Vector3i(
+			draws.draw(GRENADE_PROXIMITY_BASE, GRENADE_PROXIMITY_SPAN),
+			draws.draw(GRENADE_PROXIMITY_BASE, GRENADE_PROXIMITY_SPAN),
+			draws.draw(0, GRENADE_PROXIMITY_RISE))
+	else:
+		offset = Vector3i(
+			draws.draw(GRENADE_SCATTER_BASE, GRENADE_SCATTER_SPAN),
+			draws.draw(GRENADE_SCATTER_BASE, GRENADE_SCATTER_SPAN),
+			draws.draw(0, GRENADE_SCATTER_RISE))
+	var near: int = Eng3dGeometry.distance_2d(
+		(tile.x & 0xFF) - (target_tile.x & 0xFF),
+		(tile.y & 0xFF) - (target_tile.y & 0xFF))
+	if near < GRENADE_RANGE and kind != GRENADE_PROXIMITY:
+		offset = Vector3i.ZERO
+	var from: Vector3i = Vector3i(inputs.source.x, inputs.source.y,
+		inputs.source.z + inputs.source_height)
+	var d: PackedFloat64Array = Eng3dGeometry.direction(from,
+		inputs.target + offset, 1)
+	var at: Vector3i = Vector3i(
+		from.x - Eng3dGeometry.ftol(d[0] * GRENADE_BACK),
+		from.y - Eng3dGeometry.ftol(d[1] * GRENADE_BACK),
+		from.z - Eng3dGeometry.ftol(d[2] * GRENADE_BACK))
+	for index: int in range(GRENADE_COUNT):
+		pool.spawn("A_LASER.3DI", 0, at.x, at.y, at.z, 0, 0, 0,
+			GRENADE_KIND + (1 if kind == GRENADE_PROXIMITY else 0), 0x64,
+			Eng3dGeometry.ftol(d[0] * GRENADE_SPEED),
+			Eng3dGeometry.ftol(d[1] * GRENADE_SPEED),
+			Eng3dGeometry.ftol(d[2] * GRENADE_SPEED),
+			inputs.target_unit, index)
+
+
+## `aBlob_CreateLaser` at `0x00428200` -- weapon 47's chain of dots.
+##
+## One dot per frame of the flight, stepped [constant BEAM_DOT_SPEED] along the
+## line to the target object a quarter-cell up, with a delay that advances once
+## every [constant BEAM_DOT_STAGGER] dots, then a terminal dot of kind 71 where
+## the chain ended. The dots carry no velocity of their own: they are a drawn
+## line and not a flight, and the kind-71 tail is the one whose update arm
+## spawns `aBlob_CreateLaserHit2` (docs/97 section 19.2).
+##
+## Its fifth argument is dead, and the slot that held its **fourth** is reused
+## for the flight's length once the tile has been read out of it.
+static func beam_dots(pool: Pool, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source_point()
+	var aim: Vector3i = inputs.target + Vector3i(0, 0, BEAM_DOT_LIFT)
+	var span: int = maxi(absi(at.x - inputs.target.x),
+		absi(at.y - inputs.target.y))
+	var life: int = IncInt.div_trunc(span, BEAM_DOT_UNIT) - 1
+	pool.clears_arrived = life > 0
+	var d: PackedFloat64Array = Eng3dGeometry.direction(at, aim, 1)
+	var index: int = 0
+	while index < life:
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 5, 0, 0, 0x46, 0x14,
+			0, 0, 0, 8, IncInt.div_trunc(index, BEAM_DOT_STAGGER))
+		at += Vector3i(Eng3dGeometry.ftol(d[0] * BEAM_DOT_SPEED),
+			Eng3dGeometry.ftol(d[1] * BEAM_DOT_SPEED),
+			Eng3dGeometry.ftol(d[2] * BEAM_DOT_SPEED))
+		index += 1
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 5, 0, 0, 0x47, 0x14,
+		0, 0, 0, 8, IncInt.div_trunc(index, BEAM_DOT_STAGGER))
+
+
+## `aBlob_CreateLaser` at `0x00428570` -- weapon 14's seven dots.
+##
+## A different routine of the same name and a different shape: **always** seven
+## records, six of kind 63 stepped [constant LASER_DOT_STEP] apart and a
+## seventh of kind 64 where they end, each carrying the flight's whole length
+## as its lifetime and the direction times a whole map field as its velocity.
+##
+## A length of zero is written back as **one** at `0x004287DF` -- with the flag
+## set, so the shot stage still knows there is nothing to wait for -- which is
+## why the direction slots the final record reads are never uninitialised. It
+## opens with the zoom bob at the shooter's own point, the puff at the muzzle.
+static func laser_dots(pool: Pool, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source_point()
+	zoombob(pool, at, 5, 0xA, 8)
+	var span: int = maxi(absi(at.x - inputs.target.x),
+		absi(at.y - inputs.target.y))
+	var life: int = IncInt.div_trunc(span, LASER_DOT_UNIT) - 1
+	pool.clears_arrived = life > 0
+	if life <= 0:
+		life = 1
+	var aim: Vector3i = inputs.target + Vector3i(0, 0, LASER_DOT_LIFT)
+	# **The direction is taken again at every dot**, from wherever the last
+	# step left the point -- `0x0046D400` sits *inside* the loop at
+	# `0x00428883`, where [method beam_dots]' single call sits in front of its
+	# own. So the dots do not share one velocity, and the further along the
+	# chain a dot is the more the rounding of its own step shows in it. Reading
+	# it as one velocity put the third dot's `vz` 4 units out and the fifth's
+	# `z` 2, which is what the capture's diff caught.
+	var d: PackedFloat64Array = PackedFloat64Array([0.0, 0.0, 0.0])
+	for _index: int in range(LASER_DOT_COUNT):
+		d = Eng3dGeometry.direction(at, aim, 1)
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 5, 0, 0, 0x3F, life,
+			Eng3dGeometry.ftol(d[0] * LASER_DOT_SPEED),
+			Eng3dGeometry.ftol(d[1] * LASER_DOT_SPEED),
+			Eng3dGeometry.ftol(d[2] * LASER_DOT_SPEED), 8, 0)
+		at += Vector3i(Eng3dGeometry.ftol(d[0] * LASER_DOT_STEP),
+			Eng3dGeometry.ftol(d[1] * LASER_DOT_STEP),
+			Eng3dGeometry.ftol(d[2] * LASER_DOT_STEP))
+	# The seventh carries the **last** direction, not one of its own.
+	pool.spawn(SCRATCH, 2, at.x, at.y, at.z, 5, 0, 0, 0x40, life,
+		Eng3dGeometry.ftol(d[0] * LASER_DOT_SPEED),
+		Eng3dGeometry.ftol(d[1] * LASER_DOT_SPEED),
+		Eng3dGeometry.ftol(d[2] * LASER_DOT_SPEED), 8, 0)
+
+
+## `aBlob_CreateBlizzardHit` `0x0042AF10` -- a flash and two tumbling shards
+## (weapon 9's impact).
+##
+## The three rotation draws reach the constructor in the **reverse** of the
+## order they were taken, MSVC evaluating arguments right to left.
+static func blizzard_hit(pool: Pool, draws: Draws, inputs: Inputs) -> void:
+	var at: Vector3i = inputs.source_point()
+	pool.spawn("A_PLSMA1.3DI", 0, at.x, at.y, at.z, 0, 0, 0, 8, 0xA,
+		0, 0, 0, 0, 0)
+	for _i: int in range(2):
+		var rot_z: int = draws.draw(0, 0xFFF)
+		var rot_y: int = draws.draw(0, 0xFFF)
+		var rot_x: int = draws.draw(0, 0xFFF)
+		pool.spawn("A_BLIZ01.3DI", 0, at.x, at.y, at.z, rot_x, rot_y, rot_z,
+			8, 0x14, 0, 0, 0, 0, 3)
 
 
 ## How many values a creator needs, or -1 for an address this file does not
@@ -409,6 +1417,52 @@ static func run(creator: String, pool: Pool, draws: Draws,
 			shock_wave(pool, args[0], args[1], args[2], inputs)
 		LANDING_DUST:
 			landing_dust(pool, args[0], args[1], inputs)
+		SMOKE_TRAIL:
+			smoke_trail(pool, draws, inputs)
+		MACHINE_GUN:
+			machine_gun(pool, draws, inputs)
+		BLIZZARD_SHOT:
+			blizzard_shot(pool, draws, inputs, Vector2i(args[0], args[1]),
+				Vector2i(args[2], args[3]))
+		LASER_GREEN:
+			laser_green(pool, draws, inputs)
+		BLUE_LASER:
+			blue_laser(pool, draws, inputs)
+		PLASMA_BEAM:
+			plasma_beam(pool, draws, inputs)
+		LINE_FIRE:
+			line_fire(pool, draws, inputs, args[2])
+		BLIZZARD_HIT:
+			blizzard_hit(pool, draws, inputs)
+		SPORE_EXPLOSION:
+			spore_explosion(pool, draws, inputs, args[3])
+		STINGER_RING:
+			stinger_ring(pool, inputs)
+		SPARKING_PLUG:
+			sparking_plug(pool, draws, inputs)
+		PLASMA_BALL_IMPACT:
+			plasma_ball_impact(pool, draws, inputs)
+		EXPLOSION2:
+			explosion2(pool, draws, inputs)
+		SPIDY_MINES:
+			spidy_mines(pool, inputs)
+		FIRE_WHEEL:
+			fire_wheel(pool, draws, inputs)
+		MINE_PLUME:
+			mine_plume(pool, inputs)
+		SPRAY:
+			spray(pool, inputs, args[4], args[5])
+		GRENADE_ROUND:
+			grenade_round(pool, inputs)
+		GRENADE_ARC:
+			grenade_arc(pool, draws, inputs, Vector2i(args[0], args[1]),
+				Vector2i(args[2], args[3]), args[5])
+		BEAM_DOTS:
+			beam_dots(pool, inputs)
+		LASER_DOTS:
+			laser_dots(pool, inputs)
+		FLAME_STREAM:
+			flame_stream(pool, draws, inputs, args[4])
 		HEAL_FLASH:
 			heal_flash(pool, args[0], args[1], inputs)
 		POISON_FLASH:

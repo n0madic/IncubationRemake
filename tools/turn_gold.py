@@ -3544,14 +3544,13 @@ def _move_checks(c: Checker, payload: dict[str, Any], move: dict[str, Any],
         cells_after = gold.cells_of(bytes.fromhex(move["cells_after"][i]),
                                     width, height)
         if any(e.kind == "mine" for e in model.events):
-            # The other half of the evidence that no ParaBomb fired.  A shot
-            # of 100 damage at 100 hit (docs/21 §4) cannot leave an 11-point
-            # soldier untouched, and a mine that went off would not still be
-            # standing on the cell.
+            # The other half of the evidence that no bomb resolver ran.  Its
+            # hit is guaranteed, its applyDamage call advances the effect RNG,
+            # and a mine that went off would not still stand on the cell.
             mine = next(e for e in model.events if e.kind == "mine")
             c.expect(f"move.{tag}.the_mover_is_unhurt",
                      after[at + gold.UNIT_HP], before[at + gold.UNIT_HP],
-                     "docs/26 §6.1 predicts a 100-damage ParaBomb here")
+                     "docs/26 §6.1 predicts a guaranteed bomb resolution here")
             c.expect(f"move.{tag}.the_mine_is_still_there",
                      cells_after["obstacle"][mine.y * width + mine.x],
                      movemapmod.OBSTACLE_MINE,

@@ -217,13 +217,86 @@ Its `phases` map holds:
   They are kept **out** of `phases`, so a re-run retries them; a creator that
   faults is a result and is not the same thing as one that refuses a tile.
 
-**What one capture held.** All thirty creators, no plan left unlanded: one
-pass took twenty-five and lost five to Wine, a merge pass took the five.
-Twenty-three produced records, 198 in all; seven refused the tile. Fourteen
-drew from the uncounted stream, between 3 and 203 times; sixteen drew nothing.
-Four of the twenty-three scatter rather than placing along the line of fire.
-All five numbers are pinned in `blob_gold.py`, so a thinner capture fails
-rather than reporting less.
+**What the capture holds** (2026-09-11, after the re-takes below). All thirty
+creators, no plan left unlanded. **Twenty-five** produce records, **222** in
+all; five refuse the tile. **Fifteen** draw from the uncounted stream, between
+3 and 203 times; the rest draw nothing. Five of the twenty-five scatter rather
+than placing along the line of fire. All five numbers are pinned in
+`blob_gold.py`, so a thinner capture fails rather than reporting less.
+
+It grew because three lists of "not reached on this host" emptied on
+2026-09-11, Wine having started answering again: the shock wave `0x00422B80`
+was re-taken with `A_EXPL05.3DI` in `CREATOR_MODELS` (60 records, and its arm
+13 moved from `POKED_ARMS` to `NATIVE_ARMS`), all three `burst_*` phases
+landed, and `aBlob_CreateSporeExplosion` `0x00429F40` was re-taken with the
+**type** its weapon switch pushes rather than the tile coordinate the first
+plan passed -- 27 records where the fall-through had left none.
+`NATIVE_FAULTS`, `BURST_UNCAPTURED` and `PROGRAM_ARGS_STALE` were all empty
+after that run.
+
+**2026-09-12: two of the three filled again, and that is a measurement too.**
+Every arm of both weapon switches was disassembled and its pushes read, which
+corrected the tail of **eight** more creators in `SWITCH_ARGS` -- the muzzle
+dispatcher sets `edi` to 0 and `ebx` to 1 four instructions before its jump,
+so an arm pushing either past the four coordinates is pushing a literal and
+not a tile number. `capture` asked for all eight again and Wine reached the
+anchor **0 times in 80 attempts**, which `NATIVE_FAULTS` records: that list is
+about which plans landed and nine of them did not.
+
+**Six of the eight turned out not to need the re-take at all.** A corrected
+tail is only worth a phase if the callee *reads* it, and for six of them the
+slot `argument_vector` had been filling is one the body never loads --
+`0x004228F0` and `0x00429C30` read `[esp+4]` and `[esp+8]` and nothing else,
+`0x00425CA0`, `0x00428200` and `0x00428570` read their fifth argument nowhere,
+and `0x00426070`'s type is its **sixth**. So the phases already in hand are
+the engine's answer to the call those arms make, and four of the six replay
+field for field today; the fire wheel and `0x00429C30` are diffed straight
+against the capture's records, and the two lasers were -- the seven-dot one
+after its per-dot direction was corrected, which the diff caught.
+`PROGRAM_ARGS_STALE` is down to `0x00425400` and `0x00427C80`, the two whose
+tail is genuinely live (a round count and a ring count), and which had no
+records in the capture at all.
+
+The `models` phase is short as well: `A_EXPL03.3DI`, `A_LASER.3DI`,
+`A_MINE1.3DI` and `A_MINE2.3DI` joined `CREATOR_MODELS` and its re-take lost
+its ten attempts too, which `MODEL_NAMES_UNCAPTURED` and
+`PROGRAM_MODELS_UNCAPTURED` name -- the last of which now holds `0x00425CA0`
+and `0x00426070`, whose transcription is complete and whose only obstacle is a
+model handle. `PROGRAM_DIVERGENT` is a fifth pin and a different kind:
+`0x00427C80`'s first ring reads uninitialised stack, so its transcription is
+knowingly not the creator there. Re-run with Wine and all of it but that one
+empties; nothing else has to change.
+
+**2026-09-12, the same afternoon: every one of those five pins is empty.**
+`--probe-startup 3` answered 0 of 3 a few hours after the 0-of-80 above, on
+the same host with nothing changed but the hour, and the capture was started
+anyway because the unit of loss is the plan. `blob_models` reached the anchor
+on attempt 1 and the eight creators landed in one to six tries each, one of
+them needing a second invocation. `NATIVE_FAULTS`, `PROGRAM_ARGS_STALE`,
+`PROGRAM_MODELS_UNCAPTURED`, `MODEL_NAMES_UNCAPTURED` and `PROGRAM_DIVERGENT`
+are all empty and all five stay in the file: a thinner capture has to put a
+name back rather than quietly compare less.
+
+Two things came out of it that reading could not have.
+
+*The diff found a transcription error, in the creator that had been written
+with a divergence.* `0x00427C80` matched the engine in every field but `aux`,
+and in eleven of its twelve records — the sprite's half-size is biased by a
+**byte counter that opens at two and steps once per record** (`0x00427F25`,
+`0x00428181`), not by the ring index over three. A shape that fits one sample
+and no more.
+
+*And the divergence itself came back zero.* Ring 0's three uninitialised
+doubles held zero in the anchor's frame, so the stand-in matched — which is a
+measurement of `dbgcall`'s stack and not of the shipped path's, because a shot
+calls the creator from `aPlayFightAnimation` and the slots hold whatever that
+caller left. `blob_creators.FLAME_RING0_DIVERGENCE` says so, and a break at
+`0x0040D014` during a real shot is what would settle it.
+
+A third pin moved without a phase: `NATIVE_FAULTS` had been reporting `models`
+as unlanded while that plan's answer sat in the same document. Five additive
+phases recorded a failure and never cleared it on the next success; all five
+now pop their name in `capture`.
 
 **A creator with no records is a result, not a gap.** Every one of them opens
 by looking up the cell it was given and its occupant, and refuses through the

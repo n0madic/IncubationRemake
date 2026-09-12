@@ -369,6 +369,9 @@ func _settings_apply(h: TestHarness) -> void:
 	settings.apply_world(world, 2)
 	h.equal("apply.difficulty_reaches_the_turn", world.turn.ai_level, 2)
 	h.equal("apply.gore_reaches_the_world", world.gore_level, 3)
+	h.check("apply.corrected_preset_records_the_beacoo_mine_fix",
+		world.compat_flags.has(Interact.COMPAT_BEACOO_MINE_DEATH_BLAST),
+		"Faithful is off, so mine deaths use the ordinary Bea'Coo death ring")
 	h.check("apply.difficulty_moves_the_hash",
 		world.canonical_hash_hex() != before,
 		"`ai_level` is item 5 of the canonical hash -- which is exactly why "
@@ -380,6 +383,42 @@ func _settings_apply(h: TestHarness) -> void:
 	h.check("apply.difficulty_is_clamped",
 		Allowance.AI_LEVELS.has(world.turn.ai_level),
 		"level %d" % world.turn.ai_level)
+
+	settings.faithful = true
+	var corrected_hash: String = world.canonical_hash_hex()
+	settings.apply_gameplay_compat(world)
+	h.check("apply.faithful_preset_omits_the_beacoo_mine_fix",
+		not world.compat_flags.has(Interact.COMPAT_BEACOO_MINE_DEATH_BLAST),
+		"absence preserves the original and remains compatible with old saves")
+	h.check("apply.beacoo_mine_fix_enters_the_canonical_hash",
+		world.canonical_hash_hex() != corrected_hash,
+		"the gameplay choice must travel with saves and deterministic sessions")
+	settings.faithful = false
+	settings.apply_gameplay_compat(world)
+	h.check("apply.corrected_preset_restores_the_beacoo_mine_fix",
+		world.compat_flags.has(Interact.COMPAT_BEACOO_MINE_DEATH_BLAST))
+
+	# The production option handler updates a mission already in progress, not
+	# only the settings file used to construct the next one.
+	var compat_main: SliceMain = SliceMain.new()
+	compat_main.settings.path = SCRATCH_DIR + "/compat-settings.json"
+	compat_main.settings.faithful = true
+	compat_main.world = TestFixtures.tiny_world()
+	compat_main.settings.apply_gameplay_compat(compat_main.world)
+	compat_main._shown = compat_main.world.clone()
+	compat_main._step_option("faithful")
+	h.check("apply.faithful_toggle_reaches_the_live_world",
+		not compat_main.settings.faithful
+			and compat_main.world.compat_flags.has(
+				Interact.COMPAT_BEACOO_MINE_DEATH_BLAST))
+	h.check("apply.faithful_toggle_keeps_the_picture_mirror_canonical",
+		compat_main._shown.compat_flags.has(
+				Interact.COMPAT_BEACOO_MINE_DEATH_BLAST)
+			and compat_main._shown.canonical_hash_hex()
+				== compat_main.world.canonical_hash_hex()
+			and compat_main._check_mirror() and compat_main._desyncs == 0,
+		"the option is session state, so no event delta can carry it later")
+	compat_main.free()
 
 
 # --- the wheel and the trackpad ----------------------------------------------

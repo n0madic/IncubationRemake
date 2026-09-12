@@ -407,6 +407,13 @@ identical three instructions the walk path uses) or into a `Hole` / `Deep Hole`,
 falls out of the world. Both are ordinary ways to clear a barrel, and both can
 kill the pusher — which is what §1.1's `hp == 0` test is for.
 
+The mine is also part of the push's presentation, not a state-only side
+effect: `aExecuteBomb` calls `aPlayFightAnimation` at `0x004705F5` before its
+removal sweep. The remake therefore carries the bomb result inside
+`UseResult.blast` and queues that shot after the object's slide; discarding the
+return value makes the mine deal damage invisibly. `interact_runtime.py` and
+`test_game_ui.gd` pin the result and the `PushSequence`-then-blast order.
+
 ### 4.1 Defusing a mine — **[code] `0x0046DB80`**
 
 When the cell in front carries a mine (`+0x10 == 2`), Use removes it: the
@@ -608,10 +615,11 @@ Two more things happen while walking, both inside `aExecuteMove`
 the mine it is standing on; a **large** one sets off a mine on any of its eight
 neighbours, through `0x0047A4B0`. Either way the unit's movement points are
 zeroed and the mine resolves as a shot from weapon **36**, `ParaBomb`
-(`aExecuteBomb` `0x004702C0` → `0x0046AA10`) — 100 damage at 100 hit
-([`21` §4](21-info-lcl-schema.md)) — **but only if the cell names a live
-special object**, which is the condition §6.2 sets out and which the probe
-below did not create.
+(`aExecuteBomb` `0x004702C0` → `0x0046AA10`) — but its private resolver does
+not read that weapon's 100 damage or 100 hit: it makes no hit roll and starts
+each marked target at damage 30 ([`22` §7.3](22-combat-and-visibility.md)) —
+**but only if the cell names a live special object**, which is the condition
+§6.2 sets out and which the probe below did not create.
 
 **The first half is measured; the second half did not fire, and §6.2 says
 why.** `tools/turn_gold.py` phase 10 writes `+0x10 = 2` onto the second cell
@@ -631,9 +639,11 @@ calls `aExecuteMove` for real:
 | the mover's hit points | unchanged |
 | `+0x10` on the cell afterwards | still 2 |
 
-A `ParaBomb` is 100 damage at 100 hit, so it cannot leave an 11-point soldier
-untouched, and a mine that had gone off would not still be on the cell. In
-*that* run the walk stops, the movement points go, and nothing fires.
+The separate bomb resolver has no hit roll, but it does call `applyDamage`,
+whose damage roll would advance the effect RNG; a mine that had gone off would
+also no longer be on the cell. The bit-identical seed, untouched soldier and
+still-present mine therefore agree: in *that* run the walk stops, the movement
+points go, and nothing fires.
 
 The second of the two caveats this section used to raise — that the detonation
 might depend on state the probe did not set — turned out to be the whole

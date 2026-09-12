@@ -412,7 +412,12 @@ setting:
   `W_BAY0_0` with a zero and never creates the record it patches
   ([`28` §3.1](28-effects-and-sound.md));
 * unit type 24's footsteps, scaled by a weapon-band volume id and so twice the
-  volume of the identical type's ([`28` §5](28-effects-and-sound.md)).
+  volume of the identical type's ([`28` §5](28-effects-and-sound.md));
+* `aExecuteBomb` omitting `Bea'Coo`'s special-16 death ring, although the
+  ordinary attack resolver runs it ([`22` §7.3](22-combat-and-visibility.md)).
+  Under `Faithful`, the `beacoo_mine_death_blast` correction flag is absent and
+  keeps the omission; with the preset off, every `Bea'Coo` death produces the
+  same ring.
 
 Under the second half, fixed unconditionally and with no setting:
 
@@ -432,9 +437,11 @@ keep.
 One user-facing preset covers the whole first list — `Faithful`, on by default —
 not one setting per defect. Internally, however, every compatibility choice has
 a stable named flag, for example `technical_box_guard_original`,
-`weapon_35_missing_sound` and `unit_24_footstep_volume_original`. Saves, replays
-and fidelity tests record the individual flags rather than only the preset name;
-this lets the preset grow without silently changing an old session.
+`weapon_35_missing_sound` and `unit_24_footstep_volume_original`. Corrections
+whose absence is the original rule use a positive flag instead; the first is
+`beacoo_mine_death_blast`. Saves, replays and fidelity tests record the
+individual flags rather than only the preset name; this lets the preset grow
+without silently changing an old session.
 
 ### 7.2 The grid — the authored map and the live state are two structures
 
@@ -1459,22 +1466,24 @@ programme) and leaves `Load Game` out until a slot holds something. The
 language is shown as a line and not as a selector: the cache carries one
 `text/<language>.json`, so a selector would have a single entry.
 
-**The `Faithful` caption currently promises more than it controls**, and that
-is a gap rather than a decision. §7.1 names three stable flags behind the one
-preset — `weapon_35_missing_sound`, `unit_24_footstep_volume_original` and
-`technical_box_guard_original` — and only the first two exist:
-`AudioEvents.COMPAT_FLAGS` carries them, and the third has no flag in `core`
-at all, so §7.8's `technical` box keeps its bug unconditionally and the toggle
-does not reach it. Turning the preset off therefore changes what is heard and
-not what that box does. Named here so the next person meets it as a known hole
-and not as a surprise. What is
+**The `Faithful` caption still promises one thing it does not control**, and
+that is a gap rather than a decision. §7.1's two audio flags live in
+`AudioEvents.COMPAT_FLAGS`, while the `beacoo_mine_death_blast` correction now
+lives in `World.compat_flags`, reaches a running mission immediately, and is
+stored in saves and canonical hashes. It is added only when `Faithful` is off,
+so a saved world without the newer flag retains the original rule.
+`technical_box_guard_original` is the remaining missing flag: §7.8's
+`technical` box keeps its bug unconditionally, so the toggle still does not
+reach that one rule. Named here so the next person meets it as a known hole and
+not as a surprise. What is
 connected: both volumes, the difficulty, the gore level of `Game.opt`'s dword
 10 — no mission of the 92 writes `unit_draw_path`, so it is a live control and
-not a default something overrides — and the `Faithful` preset over
-`AudioEvents.COMPAT_FLAGS`. Music and FX are sliders over the settings file's
--40..0 dB range in 1 dB steps: their percentage changes beside the thumb, and
-each step is applied and persisted immediately. The enumerated settings keep
-the original's click-to-step fields. Their track is the same composed
+not a default something overrides — and the `Faithful` preset over the audio
+flags plus the `Bea'Coo` mine-death rule. Music and FX are sliders over the
+settings file's -40..0 dB range in 1 dB steps: their percentage changes beside
+the thumb, and each step is applied and persisted immediately. The enumerated
+settings keep the original's click-to-step fields. Their track is the same
+composed
 `buttons.LIB` field as those values, and the grabber is its small green arrow,
 scaled nearest-neighbour to the field's green interior and inset four pixels
 from its end caps, so the direct control does not import Godot's default theme

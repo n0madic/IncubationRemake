@@ -16,6 +16,9 @@ var action_point: int = 0
 var fires_script_event: bool = false
 ## `[x, y]` of every cell a push moved an object through.
 var pushed: Array[PackedInt32Array] = []
+## The weapon-36 result when a push ended on a mine. It stays inside the Use
+## event because the original push blocks on that blast before it returns.
+var blast: Dictionary = {}
 ## What the mission program answered to the LCL `Use` event (docs/26 section
 ## 6), `{}` when the event did not fire or no program is attached. Outside
 ## [method to_dict], as [member MoveResult.script_result] is: the script's own
@@ -43,6 +46,7 @@ static func from_dict(document: Dictionary) -> UseResult:
 		document.get("fires_script_event", false))
 	for step: Variant in DictRead.as_array(document.get("pushed", [])):
 		out.pushed.append(DictRead.to_int32(step))
+	out.blast = DictRead.as_dict(document.get("blast", {})).duplicate(true)
 	return out
 
 
@@ -53,4 +57,5 @@ func to_dict() -> Dictionary:
 	return {"ok": ok, "kind": kind, "reason": reason,
 		"cell": Array(cell) if not cell.is_empty() else [],
 		"action_point": action_point,
-		"fires_script_event": fires_script_event, "pushed": moved}
+		"fires_script_event": fires_script_event, "pushed": moved,
+		"blast": blast.duplicate(true)}

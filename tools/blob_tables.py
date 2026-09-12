@@ -243,6 +243,125 @@ MUZZLE_BURSTS = {
     0x0040D2A3: (0x0040D29D, 0x0040D29B, 0x0040D296, 9, 1, "M"),   # 41
     0x0040D44D: (0x0040D447, None, 0x0040D43A, 5, 1, "M"),         # the default arm
 }
+#: **The five weapon arms that call their creator more than once**, and the
+#: one thing neither `WEAPON_MUZZLE` nor `WEAPON_IMPACT` can say.  Those two
+#: decode which arm a weapon takes and which creators the arm calls; how many
+#: times control reaches a call is a property of the arm's *control flow*, and
+#: four of these five wrap their call in a walk of the whole control map.
+#:
+#: The map is `0x0042F650`'s array of 23-byte cells (`docs/21` §8), and
+#: `+0x00` is the state byte `aBuildTargetPattern` marks and the shot
+#: resolver then rewrites -- `0x5A` miss, `0x5B` resolved, `0x5C` hit,
+#: `0x5D` killed (`docs/22` §7.2-§7.3).  `aPlayFightAnimation` runs at
+#: `0x0046C186`, after both, and nothing between them resets the byte, so
+#: what these arms see is the shot's own outcome per cell.
+#:
+#: weapon -> (switch, arm, creator, low marker, high marker, unit test,
+#:            repeats)
+#:
+#: *unit test* is whether the arm also requires `cell[+0x07] != 0xFFFF`.
+#: A `0x5D` victim still satisfies it: `aPlayFightAnimation` builds these
+#: arrays before the post-animation removal clears the victim's cells.
+#: *repeats* is `MULTI_PER_CELL` for a walk, or the literal count of a plain
+#: loop.
+#:
+#: What each pushes per iteration is the other half and is **not** here: it is
+#: read at the call site like every other argument (`weapon_call_args`).
+#: Weapon 11's sixth argument is the running count of *matched* cells, which
+#: `aBlob_CreateGrenade` reads as the arc index -- 0 to 5 picks one of
+#: `GRENADE_AIM`, 6 and above fall through to the drawn scatter -- so its
+#: simultaneous shots do not fly the same line.  Weapon 9's fifth is that
+#: count divided by three, and `aBlob_EnergyCannon` reads it nowhere.
+MULTI_PER_CELL = -1
+#: `"<switch>/<weapon>"` -> (arm, creator, low, high, unit test, repeats).
+#: The key is a string because the checker renders a dictionary diff by
+#: hexing any key that is not one.
+MULTI_TARGET_ARMS = {
+    "weapon_muzzle/9":  (0x0040CF65, 0x004264A0, 0x50, 0x5E, True,
+                            MULTI_PER_CELL),
+    "weapon_muzzle/11": (0x0040D077, 0x00426070, 0x50, 0x5E, True,
+                            MULTI_PER_CELL),
+    "weapon_muzzle/41": (0x0040D269, 0x004247C0, 0x5A, 0x5D, False,
+                            MULTI_PER_CELL),
+    # The one that is not a walk: five rounds at the one aim point, the count
+    # a literal in `mov dword [esp+0x14], 5` and the loop a `dec`/`jne` round
+    # the call.  Its own arm pushes 0xFF, the proximity round, so the five
+    # scatter differently from each other.
+    "weapon_muzzle/44": (0x0040D0FD, 0x00426070, 0, 0, False, 5),
+    # The impact end of weapon 9, the same walk as its muzzle.
+    "weapon_impact/9":  (0x0040D590, 0x0042AF10, 0x50, 0x5E, True,
+                            MULTI_PER_CELL),
+}
+#: Where the two walks' accessors read the control map from, so the arms above
+#: are pinned to the same array `aGetCtrlMapElementPtr` indexes.  Both are a
+#: two-instruction function: `mov eax, [abs32]` (`A1`) and `ret`.
+CTRL_MAP_BASE_LOAD = 0x0042F650
+CTRL_MAP_COUNT_LOAD = 0x0042F660
+CTRL_MAP_ARRAY = 0x004FEB6C
+CTRL_MAP_LENGTH = 0x004FEB70
+#: The cell stride the walks step by, `add r32, 0x17`.
+CTRL_MAP_STRIDE = 0x17
+#: How far past an arm's entry the decoder looks for the walk's shape.  Every
+#: one of the five is well inside this, and a bound keeps a mis-typed address
+#: from reading a neighbour's instructions.
+MULTI_ARM_WINDOW = 0x90
+
+
+def _abs32_reader(b: "Binary", entry: int, cell: int) -> bool:
+    """`mov eax, [cell] / ret` -- the shape both map accessors have."""
+    return (b.mapped(entry, 6) and b.u8(entry) == 0xA1
+            and b.u32(entry + 1) == cell and b.u8(entry + 5) == 0xC3)
+
+
+def _multi_target_arm(b: "Binary", arm: int, creator: int,
+                      repeats: int) -> tuple:
+    """One arm's repeat shape, read out of its own instructions.
+
+    Returns the same tuple :data:`MULTI_TARGET_ARMS` stores, so a
+    disagreement is a diff rather than a boolean.
+    """
+    window = bytes(b.u8(arm + i) for i in range(MULTI_ARM_WINDOW))
+    if repeats != MULTI_PER_CELL:
+        # `mov dword [esp + disp8], imm32` opening a `dec`/`jne` loop.
+        count = None
+        for i in range(len(window) - 8):
+            if window[i] == 0xC7 and window[i + 1] == 0x44 \
+                    and window[i + 2] == 0x24:
+                count = int.from_bytes(window[i + 4:i + 8], "little")
+                break
+        return (arm, _first_creator(b, arm, window), 0, 0, False, count)
+    # The walk: the two accessors, the marker band, the stride, and -- when
+    # the arm has one -- the unit test.
+    walks = any(b.call_target(arm + i) == CTRL_MAP_BASE_LOAD
+                for i in range(len(window) - 5) if window[i] == 0xE8)
+    counts = any(b.call_target(arm + i) == CTRL_MAP_COUNT_LOAD
+                 for i in range(len(window) - 5) if window[i] == 0xE8)
+    band = [window[i + 1] for i in range(len(window) - 1)
+            if window[i] == 0x3C]
+    strides = any(window[i] == 0x83 and window[i + 1] in (0xC7, 0xC3)
+                  and window[i + 2] == CTRL_MAP_STRIDE
+                  for i in range(len(window) - 2))
+    # `cmp word [edi+7], 0xFFFF` or the same against `bx`, which the impact
+    # arm loads with 0xFFFF first.
+    unit = (b"\x66\x81\x7f\x07\xff\xff" in window
+            or b"\x66\x39\x5f\x07" in window)
+    if not (walks and counts and strides) or len(band) < 2:
+        return (arm, None, None, None, None, None)
+    return (arm, _first_creator(b, arm, window), band[0], band[1], unit,
+            MULTI_PER_CELL)
+
+
+def _first_creator(b: "Binary", arm: int, window: bytes) -> int | None:
+    """The first `call` in the window that is not one of the two accessors."""
+    for i in range(len(window) - 5):
+        if window[i] != 0xE8:
+            continue
+        target = b.call_target(arm + i)
+        if target not in (None, CTRL_MAP_BASE_LOAD, CTRL_MAP_COUNT_LOAD):
+            return target
+    return None
+
+
 #: What a call site that pushes no part name answers -- every creator of an
 #: arity below seven.  The body axis at eye height is the origin then, which
 #: is also the seven's own fallback for a shooter that is not animating.
@@ -397,7 +516,7 @@ BLOB_CREATORS = 81
 BLOB_CTOR_CALLS = 116
 BLOB_FOREIGN_CALLERS = {0x00473942: "aUI.cpp", 0x0046D85F: "aTacTools.cpp"}
 BLOB_MODEL_WORLDS = 9
-BLOB_MODELS_EVERYWHERE = 34
+BLOB_MODELS_EVERYWHERE = 35
 #: The heal flash's four crosses (`aBlob_CreateFlashCircle` `0x00423030`,
 #: docs/42 §7.3) reach the constructor through `mov edi, str` rather than a
 #: `push`, one per quarter of its loop, so :data:`BLOB_CALLS`'s push reader
@@ -409,7 +528,16 @@ BLOB_MODELS_EVERYWHERE = 34
 #: all six are in all nine world sets.
 BLOB_MODEL_MOV_SITES = {0x004231A9: "A_CROSS3.3DI", 0x004231B4: "A_CROSS2.3DI",
                         0x004231BF: "A_CROSS1.3DI", 0x004231CA: "A_CROSS.3DI",
-                        0x00423CE9: "A_EXPL03.3DI", 0x00423CF0: "A_EXPL04.3DI"}
+                        0x00423CE9: "A_EXPL03.3DI", 0x00423CF0: "A_EXPL04.3DI",
+                        # `aBlob_CreateGrenade` `0x00426070`, weapons 11 and
+                        # 44, 2026-09-12.  Like the tube smoke's two above it
+                        # copies the name into a stack buffer before it calls
+                        # the constructor, so its one call site carries no
+                        # model and no cache built from the call sites alone
+                        # carried this one -- while all nine world sets ship
+                        # it.  Every one of the six records a shot makes would
+                        # have been refused in the remake.
+                        0x00426390: "A_LASER.3DI"}
 #: The three models an **update arm** swaps in mid-flight, through the model
 #: setter rather than through a constructor: kind 17's blood ages to
 #: ``A_BLUT5`` at ``life == 5`` and ``A_BLUT6`` at 3, and kind 16's hit mark to
@@ -611,7 +739,7 @@ CASE_MISMATCHED = ('alarm.wav', 'bridge2.wav', 'explosion2.wav', 'firecircle.wav
 VOLUME_IDS_USED = [50, 59, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
                    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
                    89, 94, 95, 96, 97, 98, 99, 100, 101, 102]
-BLOB_MODEL_COUNT = 38
+BLOB_MODEL_COUNT = 39
 
 # -- the pinned tables, generated from the binary -------------------------
 
@@ -3251,6 +3379,28 @@ def run_checks(root: str) -> Checker:
              for site, _t in calls if b.cleanup_dwords(site) == 7}
     ck.equal("weapon.muzzle_burst_sites", seven, set(MUZZLE_BURSTS),
              lambda xs: _hexlist(sorted(xs)))
+    # **The arms that call their creator more than once**, which the switch
+    # tables above cannot show: a weapon's entry names the arm and the call
+    # sites inside it, and says nothing about how many times control reaches
+    # one.  Five do, and four of the five walk the control map.
+    read_multi = {}
+    for key, entry in sorted(MULTI_TARGET_ARMS.items()):
+        read_multi[key] = _multi_target_arm(b, entry[0], entry[1], entry[5])
+    ck.equal("weapon.multi_target_arms", read_multi, MULTI_TARGET_ARMS,
+             Checker.brief)
+    ck.check("weapon.multi_target_map_entries",
+             _abs32_reader(b, CTRL_MAP_BASE_LOAD, CTRL_MAP_ARRAY)
+             and _abs32_reader(b, CTRL_MAP_COUNT_LOAD, CTRL_MAP_LENGTH),
+             "the two accessors the walks call return the cell array and its "
+             "length")
+    # **And the arm each one belongs to is the arm the switch selects**, so a
+    # table above and this one cannot drift apart.
+    ck.check("weapon.multi_target_arms_are_the_switch's",
+             all((WEAPON_MUZZLE if key.startswith("weapon_muzzle")
+                  else WEAPON_IMPACT)[int(key.split("/")[1])][0] == entry[0]
+                 for key, entry in MULTI_TARGET_ARMS.items()),
+             "every multi-target arm is the one its weapon's switch entry "
+             "names")
     ck.equal("weapon.impact", b.weapon_effects(IMPACT_SWITCH, WEAPON_IMPACT),
              WEAPON_IMPACT, Checker.brief)
     ck.equal("weapon.impact_sound", b.weapon_sounds(), WEAPON_IMPACT_SOUND,
@@ -3478,6 +3628,7 @@ def run_checks(root: str) -> Checker:
     _music_shim_checks(ck, c)
     _creator_reach_checks(ck, b)
     _creator_constant_checks(ck, b)
+    _check_creator_shapes(ck, b, root)
     _tracer_axis_checks(ck, b)
     _output_system_checks(ck, b)
     _surface_lock_checks(ck, b)
@@ -3676,6 +3827,40 @@ REACHABLE_CREATORS = 30
 REACHABLE_CALLS = 43
 #: Of those, the ones whose lifetime is a literal at the call site.
 REACHABLE_CALLS_WITH_LIFE = 27
+#: `aBlob_CreateGrenade` `0x00426070`'s type switch: six arms, each an aim
+#: offset, and `0x004261FE`'s `jmp dword [eax*4 + table]` is what reaches them.
+GRENADE_JUMP_TABLE = 0x00426484
+#: How far into an arm to look for its three immediates.  An arm is under
+#: thirty bytes and ends in a `jmp`, which is also a stop condition.
+GRENADE_ARM_WINDOW = 0x20
+
+#: `aGetUnitHeight` -- what a creator adds to the placed object's `z` to
+#: reach the standing unit.  Named from its `axt` callers rather than from a
+#: trace string of its own.
+UNIT_HEIGHT_ENTRY = 0x0047AD30
+#: How far past the `call` to look for the lift.  Both sites put it three
+#: instructions along, and a window wider than one basic block would start
+#: reading unrelated arithmetic.
+UNIT_HEIGHT_LIFT_WINDOW = 0x30
+#: The two that lift, one per projectile creator (`0x00425CA0`, `0x00426B70`).
+UNIT_HEIGHT_LIFT_SITES = ("0x00425D81", "0x00426C51")
+
+
+def _addeax_within(b: "Binary", start: int, span: int) -> int | None:
+    """The immediate of the first ``add eax, imm32`` in *span* bytes, or None.
+
+    `05 id` has its own opcode and no ModRM, so this is a byte search rather
+    than a decode -- which is safe only because the window is short and the
+    caller compares the value it finds.
+    """
+    for va in range(start, start + span):
+        if not b.mapped(va, 5):
+            return None
+        if b.u8(va) == 0x05:
+            return b.i32(va + 1)
+    return None
+
+
 #: creator -> its dword arity, from each caller's `add esp, K`.  `tools/
 #: blob_gold.py` needs this before it can call one, and `--probe` cannot
 #: recover it: the creators are `__cdecl`, so the callee pops nothing.
@@ -3992,6 +4177,117 @@ CREATOR_CONSTANT_SITES: dict[str, tuple[tuple[str, int, object, float], ...]] = 
     "HEAD_STEP":     (("f64", 0x00427810, 0x004B12E0, -3200.0),),
     "HEAD_SPEED":    (("f64", 0x00427810, 0x004B12E8, 4800.0),),
     "TRAIL_STEP":    (("f64", 0x00425810, 0x004B12C0, -960.0),),
+    # `0x00420A50`'s ring, all five inside its own body: the radius and the
+    # accumulating turn it hands `0x004039A0`, the loop bound, the map field
+    # it stands above the placed object and the scale that turns the ring's
+    # offset into a velocity.
+    "STINGER_RADIUS": (("mov", 0x00420A50, 0x00420AE2, 0xA0),),
+    "STINGER_TURN":   (("word", 0x00420A50, 0x00420B10, 0x199),),
+    "STINGER_COUNT":  (("cmp", 0x00420A50, 0x00420B62, 30),),
+    "STINGER_LIFT":   (("addeax", 0x00420A50, 0x00420AD5, 0xC80),),
+    "STINGER_SPEED":  (("index", 0x00420A50, 0x00420B2B, 4),),
+    # 2026-09-12: the four creators added that day.  `aBlob_SparkingPlug`
+    # and its two neighbours are all immediates -- a round count in a
+    # register, two shifts that *are* the velocity scale, a lift added to
+    # `eax`, and the draw ranges the loop pushes -- and the two projectile
+    # creators share one body, so their constants are attributed to
+    # `aBlob_CreateSpidyMines`, the one this repository transcribes.
+    "SPARKING_PLUG_COUNT":   (("mov", 0x0042ACF0, 0x0042AD53, 30),),
+    "SPARKING_PLUG_RISE":    (("shl", 0x0042ACF0, 0x0042AD6D, 32),),
+    "SPARKING_PLUG_DRIFT":   (("shl", 0x0042ACF0, 0x0042AD82, 16),
+                              ("shl", 0x0042ACF0, 0x0042AD9D, 16)),
+    "SPARKING_PLUG_LIFT":    (("addeax", 0x0042ACF0, 0x0042ADAC, 0x960),),
+    "PLASMA_IMPACT_COUNT":       (("mov", 0x004294E0, 0x00429549, 40),),
+    "PLASMA_IMPACT_RISE_BASE":   (("push", 0x004294E0, 0x00429553, 200),),
+    "PLASMA_IMPACT_RISE_SPAN":   (("push", 0x004294E0, 0x0042954E, 300),),
+    # `aBlob_CreateExplosion2` shares the drift range, so its own two sites
+    # are attributed to it rather than left implied by its neighbour's --
+    # this file's rule is one entry per **site**, not per name.
+    "PLASMA_IMPACT_DRIFT_BASE":  (("push", 0x004294E0, 0x0042956A, -300),
+                                  ("push", 0x004294E0, 0x00429583, -300),
+                                  ("push", 0x004295D0, 0x0042965A, -300),
+                                  ("push", 0x004295D0, 0x00429673, -300)),
+    "PLASMA_IMPACT_DRIFT_SPAN":  (("push", 0x004294E0, 0x00429565, 600),
+                                  ("push", 0x004294E0, 0x0042957E, 600),
+                                  ("push", 0x004295D0, 0x00429655, 600),
+                                  ("push", 0x004295D0, 0x0042966E, 600)),
+    "EXPLOSION2_COUNT":      (("mov", 0x004295D0, 0x00429639, 15),),
+    "EXPLOSION2_RISE_BASE":  (("push", 0x004295D0, 0x00429643, 600),),
+    "EXPLOSION2_RISE_SPAN":  (("push", 0x004295D0, 0x0042963E, 700),),
+    "FLAME_RING_OFFSET":     (("f64", 0x00427C80, 0x004B12C0, -960.0),),
+    "FLAME_STEP":            (("f64", 0x00427C80, 0x004B12F0,
+                               266.66666666666663),),
+    "FLAME_PER_RING":        (("cmp", 0x00427C80, 0x004281B5, 5),),
+    "FLAME_UNIT":            (("magic", 0x00427C80, 0x00427EDE, 1600),),
+    "FLAME_SIZE_SPAN":       (("push", 0x00427C80, 0x004280D8, 5),),
+    "FLAME_SIZE_DIVISOR":    (("magic", 0x00427C80, 0x004280E5, 3),),
+    "FLAME_SIZE_BASE":       (("byte", 0x00427C80, 0x00427F25, 2),),
+    "FLAME_COLUMN_SPAN":     (("push", 0x00427C80, 0x00428145, 3),),
+    "FLAME_SWEEP_TYPE":      (("cmp8", 0x00427C80, 0x00427F1B, 5),
+                              ("cmp8", 0x00427C80, 0x00427F93, 5)),
+    "FLAME_SWEEP_STEP":      (("add8", 0x00427C80, 0x00427FE3, 0xA),
+                              ("sub8", 0x00427C80, 0x00427FE8, 0xA)),
+    "FLAME_SWEEP_LIMIT":     (("cmp", 0x00427C80, 0x00427FEB, 0x1E),
+                              ("cmp", 0x00427C80, 0x00427FFC, -0x1E),
+                              ("dword", 0x00427C80, 0x00427F2C, -0x1E)),
+    "FLAME_LIFT":            (("add", 0x00427C80, 0x00427F15, 0x320),),
+    "SPRAY_UNIT":            (("magic", 0x00425400, 0x0042570E, 1600),),
+    "SPRAY_PAIR":            (("cmp", 0x00425400, 0x004257D0, 2),),
+    "GRENADE_COUNT":         (("cmp", 0x00426070, 0x0042646C, 6),),
+    "GRENADE_SPEED":         (("f64", 0x00426070, 0x004B12D0, 1920.0),),
+    "GRENADE_BACK":          (("f64", 0x00426070, 0x004B12D8, -1920.0),),
+    "GRENADE_KIND":          (("add8", 0x00426070, 0x004263CE, 0x1A),),
+    "GRENADE_RANGE":         (("cmp", 0x00426070, 0x0042633B, 6),),
+    "GRENADE_SCATTER_BASE":  (("push", 0x00426070, 0x004262CA, -0x1F40),
+                              ("push", 0x00426070, 0x004262E1, -0x1F40)),
+    "GRENADE_SCATTER_SPAN":  (("push", 0x00426070, 0x004262C5, 0x3E80),
+                              ("push", 0x00426070, 0x004262DC, 0x3E80)),
+    "GRENADE_SCATTER_RISE":  (("push", 0x00426070, 0x004262F7, 0x3200),),
+    "GRENADE_PROXIMITY_BASE": (("push", 0x00426070, 0x00426291, -0x12C0),
+                               ("push", 0x00426070, 0x004262A8, -0x12C0)),
+    "GRENADE_PROXIMITY_SPAN": (("push", 0x00426070, 0x0042628C, 0x2580),
+                               ("push", 0x00426070, 0x004262A3, 0x2580)),
+    "GRENADE_PROXIMITY_RISE": (("push", 0x00426070, 0x004262BE, 0x3E80),),
+    "BEAM_DOT_SPEED":        (("f64", 0x00428200, 0x004B12F8, 320.0),),
+    "BEAM_DOT_UNIT":         (("magic", 0x00428200, 0x00428447, 320),),
+    "BEAM_DOT_STAGGER":      (("magic", 0x00428200, 0x004284A6, 5),
+                              ("magic", 0x00428200, 0x00428517, 5)),
+    "BEAM_DOT_LIFT":         (("add", 0x00428200, 0x00428484, 0x320),),
+    "LASER_DOT_COUNT":       (("dword", 0x00428570, 0x00428858, 6),),
+    "LASER_DOT_SPEED":       (("f64", 0x00428570, 0x004B1300, 3200.0),),
+    "LASER_DOT_STEP":        (("f64", 0x00428570, 0x004B1308, 480.0),),
+    "LASER_DOT_UNIT":        (("magic", 0x00428570, 0x004287B8, 3200),),
+    "LASER_DOT_LIFT":        (("add", 0x00428570, 0x004287F8, 0x320),),
+    "FIRE_WHEEL_COUNT":      (("cmp", 0x004228F0, 0x00422A4D, 0x1E),),
+    "FIRE_WHEEL_RISE_BASE":  (("push", 0x004228F0, 0x004229EA, 0x190),),
+    "FIRE_WHEEL_RISE_SPAN":  (("push", 0x004228F0, 0x004229E5, 0x320),),
+    "FIRE_WHEEL_DRIFT_BASE": (("push", 0x004228F0, 0x00422A02, -0x64),
+                              ("push", 0x004228F0, 0x00422A17, -0x64)),
+    "FIRE_WHEEL_DRIFT_SPAN": (("push", 0x004228F0, 0x004229FD, 0xC8),
+                              ("push", 0x004228F0, 0x00422A12, 0xC8)),
+    "FIRE_WHEEL_RADIUS":     (("mov", 0x004228F0, 0x00422A5A, 0xA0),),
+    "FIRE_WHEEL_TURN":       (("word", 0x004228F0, 0x00422A9A, 0x88),),
+    "FIRE_WHEEL_SPEED":      (("index", 0x004228F0, 0x00422B1F, 4),
+                              ("index", 0x004228F0, 0x00422B26, 4)),
+    "FIRE_WHEEL_LIFT":       (("add", 0x004228F0, 0x00422B40, 0xC80),),
+    "FIRE_WHEEL_EXPL04_EVERY": (("cmp", 0x004228F0, 0x00422975, 3),
+                                ("cmp", 0x004228F0, 0x00422AB1, 3)),
+    "MINE_PLUME_LIFT":       (("addeax", 0x00429C30, 0x00429CAE, 0x640),
+                              ("addeax", 0x00429C30, 0x00429CE5, 0x640),
+                              ("addeax", 0x00429C30, 0x00429D1C, 0x640)),
+    "PROJECTILE_SPEED":      (("f64", 0x00426B70, 0x004B12C8, 800.0),),
+    "PROJECTILE_UNIT":       (("magic", 0x00426B70, 0x00426E43, 800),),
+    "PROJECTILE_LIFE_BIAS":  (("lea8", 0x00426B70, 0x00426E5E, 2),),
+    "PROJECTILE_LOB_SPREAD": (("shl", 0x00426B70, 0x00426EDB, 4),),
+    "PROJECTILE_LOB_SCALE":  (("shl", 0x00426B70, 0x00426EE4, 8),),
+    # The lift both projectile creators put between the unit's height and the
+    # object's `z`.  Two sites, one per creator, and `creator_lift_sites`
+    # below pins that there are no others in `.text`.
+    "PROJECTILE_LIFT":       (("addeax", 0x00426B70, 0x00426C6A, 0xA0),
+                              ("addeax", 0x00425CA0, 0x00425D9A, 0xA0)),
+    "SPIDY_BOB_ROW":         (("push", 0x00426B70, 0x00426F30, 4),),
+    "SPIDY_BOB_AUX":         (("push", 0x00426B70, 0x00426F2E, 0x14),),
+    "SPIDY_BOB_LIFE":        (("push", 0x00426B70, 0x00426F2C, 8),),
     "BEAM_BASE":     (("lea", 0x00426F90, 0x004272A0, -0xC80),
                       ("add", 0x00425810, 0x00425AAC, -0xC80)),
     "BEAM_UNIT":     (("lea", 0x00427810, 0x004279DA, -0x960),
@@ -5315,6 +5611,183 @@ def _creator_reach_checks(ck: "Checker", b: Binary) -> None:
                        "what paces the remake's tracers")
 
 
+#: Synthetic inputs for the shape cross-check below: two tiles far enough
+#: apart that a length computed from the span is positive for every spacing
+#: the creators use, and a height that is not zero so a record that forgets to
+#: add it is visible.
+SHAPE_SOURCE = (0x1000, 0x2000, 0x300)
+SHAPE_TARGET = (0x9000, 0x4000, 0x100)
+SHAPE_HEIGHT = 0x140
+SHAPE_TARGET_HEIGHT = 0x60
+#: The seed a shape run draws from.  Any seed does -- the check reads classes,
+#: kinds, lifetimes, models and sprite parameters, none of which a draw
+#: reaches -- but it is pinned so the run is reproducible.
+SHAPE_SEED = 0.5
+#: Call sites a shape run does **not** reach, and why.  Each would be behind a
+#: branch one set of arguments cannot take at the same time as another.
+#:
+#: **Empty, and that is the measurement.**  It held three entries while the
+#: check compared a subset -- `aBlob_CreateFlash`'s three heads and the double
+#: fire's second barrel -- and every one of them was stale: the heads are
+#: refused for a zero life only when the *span* halves to zero, which the
+#: capture's tiles do and :data:`SHAPE_TARGET`'s do not, and the second barrel
+#: is reached by the same run as the first.  The check compares this for
+#: equality now, so a pin that stops being true fails rather than passing
+#: quietly.
+SHAPE_SITES_UNREACHED: dict[str, str] = {}
+
+
+#: program -> the other creators whose call sites explain a record it places,
+#: because it calls them.  A nested creator's records go into the same pool and
+#: are the caller's to account for (`docs/97` §22).
+SHAPE_NESTED: dict[str, tuple[str, ...]] = {
+    # The zoom bob, whose `(class 2, kind 50, life 8)` shape three creators
+    # have a site for, so the match is to a *set* -- which is the strongest
+    # this check can be about a nested record and is still enough to catch a
+    # transcription that stopped making one.
+    "0x004247C0": ("0x00423720", "0x00429A80", "0x00429D40"),
+    "0x00424D20": ("0x00423720",),
+    "0x00426B70": ("0x00423720", "0x00429A80", "0x00429D40"),
+    "0x00428570": ("0x00423720", "0x00429A80", "0x00429D40"),
+    # `aBlob_CreateLaser`'s hit sparks, `aBlob_CreateLaserHit2` `0x0042A9D0`
+    # and its neighbour sharing the `(class 0, A_SPARK.3DI)` shape.
+    "0x00426F90": ("0x0042A9D0", "0x0042AB40"),
+    "0x00427410": ("0x0042A9D0", "0x0042AB40"),
+}
+
+
+def _shape_records(root: str) -> dict[int, list[dict[str, object]]]:
+    """Every transcribed creator run once, on synthetic inputs.
+
+    The point is to compare the *shape* of what a program builds -- class,
+    kind, lifetime, model and sprite parameters -- against the constructor
+    call sites `Binary.blob_calls` read out of the same creator, which is a
+    second and independent reading of the binary.  It needs no capture and no
+    Wine, so it is the check that stands behind a transcription on a day the
+    debugger cannot start: a fifteen-push argument list reversed one slot out
+    lands a kind where a lifetime belongs, and this is where that shows.
+    """
+    from inclib import blob_creators, eng3d
+
+    tables = eng3d.load(root)
+    names = set(blob_models(Binary(root))) | {blob_creators.SCRATCH}
+    inputs = blob_creators.Inputs(
+        source=SHAPE_SOURCE, source_height=SHAPE_HEIGHT,
+        target=SHAPE_TARGET, target_height=SHAPE_TARGET_HEIGHT,
+        models={name: index for index, name in enumerate(sorted(names))},
+        tables=tables)
+    out: dict[int, list[dict[str, object]]] = {}
+    for address, (arity, program) in sorted(blob_creators.PROGRAMS.items()):
+        pool = blob_creators.Pool(inputs)
+        args = SHAPE_ARGS.get(f"0x{address:08X}") or (0,) * arity
+        program(pool, blob_creators.Draws(SHAPE_SEED), list(args))
+        out[address] = pool.records
+    return out
+
+
+#: What to call each creator with for the shape run.  A creator whose tail is
+#: a round count needs a non-zero one or its loop runs no times; the rest take
+#: the four tile coordinates, which the run replaces with the two objects
+#: above and so does not read.
+SHAPE_ARGS = {
+    "0x00423D80": (0, 0, 0, 0, 3, 1, 0),
+    "0x00424250": (0, 0, 0, 0, 3, 2, 0),
+    "0x004247C0": (0, 0, 0, 0, 3, 1, 0),
+    "0x00422B80": (0, 0, 2),
+    # The spore cannon's spray is a burst: `args[4]` is its round count.
+    "0x00425400": (0, 0, 0, 0, 1, 0),
+    # `aBlob_CreateLineFire`'s third argument is its streak count; a zero
+    # there is the whole creator running no times.
+    "0x00429180": (0, 0, 8, 0),
+    # The flame stream's fifth argument is its ring count; weapon 7's arm
+    # pushes four and weapon 40's ten, and the run takes the sweeping one so
+    # both shapes are exercised.
+    "0x00427C80": (0, 0, 0, 0, 0xA),
+}
+
+
+def _check_creator_shapes(ck: "Checker", b: Binary, root: str) -> None:
+    """Each program's records against the call sites of its own creator."""
+    from inclib import blob_creators
+
+    calls = b.blob_calls()
+    sprites = b.sprite_params()
+    owner = {site: _creator_address(site) for site in calls}
+    handles = {index: name for index, name in
+               enumerate(sorted(set(blob_models(b))
+                                | {blob_creators.SCRATCH}))}
+    unmatched: list[object] = []
+    nested: dict[str, set[str]] = {}
+    reached: set[str] = set()
+    total = 0
+    for address, records in sorted(_shape_records(root).items()):
+        mine = f"0x{address:08X}"
+        for index, record in enumerate(records):
+            total += 1
+            model = handles.get(int(record["model"]), None)
+            fits = [site for site, (m, cl, k, l) in calls.items()
+                    if cl == record["class_id"]
+                    and (k is None or k == record["kind"])
+                    and (l is None or l == record["life"])
+                    and (not isinstance(m, str) or m == model)
+                    and _sprite_fits(sprites.get(site), record)]
+            if not fits:
+                unmatched.append((mine, index, record["class_id"],
+                                  record["kind"], record["life"], model))
+                continue
+            own = [site for site in fits if owner.get(site) == mine]
+            if own:
+                reached.update(f"0x{site:08X}" for site in own)
+            else:
+                # **A record none of the creator's own sites can explain is a
+                # nested creator's**, and which creators a program nests is
+                # itself a claim -- `SHAPE_NESTED` is where it is pinned, so a
+                # record that quietly drifted into matching some unrelated
+                # site elsewhere in the image fails rather than passing.
+                nested.setdefault(mine, set()).update(
+                    o for o in (owner.get(site) for site in fits)
+                    if isinstance(o, str))
+
+    ck.equal("creators.shape_matches_call_sites", unmatched, [],
+             lambda v: f"{total} record(s) the transcriptions build each match "
+                       "a constructor call site -- class, kind, literal life, "
+                       "model and sprite parameters" if not v
+                       else f"{len(v)} record(s) match no call site: {v[:4]}")
+    ck.equal("creators.shape_nested_creators",
+             {k: sorted(v) for k, v in sorted(nested.items())},
+             {k: sorted(v) for k, v in sorted(SHAPE_NESTED.items())},
+             lambda v: f"{len(v)} program(s) place a record only a creator "
+                       "they nest has a call site for")
+
+    wanted = sorted(f"0x{site:08X}" for site, who in owner.items()
+                    if isinstance(who, str)
+                    and int(who, 16) in blob_creators.PROGRAMS)
+    # **Equality, not containment.**  A pinned site that starts being reached
+    # is as much a change as one that stops: with a subset test the pin would
+    # go on claiming a branch is unreachable long after a transcription began
+    # taking it.
+    ck.equal("creators.shape_reaches_call_sites",
+             sorted(set(wanted) - reached), sorted(SHAPE_SITES_UNREACHED),
+             lambda v: f"{len(wanted)} call site(s) in the transcribed "
+                       f"creators, all reached bar the {len(v)} pinned as "
+                       "branch-only")
+
+
+def _sprite_fits(params: object, record: dict[str, object]) -> bool:
+    """Whether a sprite call site's three parameters match a record.
+
+    `Binary.sprite_params` answers `(row, col, size)` with a `None` for any
+    the arm computes; the record carries them as `rot_x`, `rot_y` and `aux`,
+    which is what `blob_tables`' own reading of the stores says those three
+    constructor arguments become for a class-2 blob.
+    """
+    if not isinstance(params, tuple):
+        return True
+    row, col, size = params
+    return ((row is None or row == record["rot_x"])
+            and (col is None or col == record["rot_y"])
+            and (size is None or size == record["aux"]))
+
 def _creator_extents() -> dict[int, tuple[int, int]]:
     """Every creator's half-open byte range, from the creator table itself.
 
@@ -5357,6 +5830,20 @@ def _magic_divisor(b: Binary, va: int) -> int | None:
             return None
         if b.u8(probe) == 0xC1 and b.u8(probe + 1) == 0xFA:
             shift = b.u8(probe + 2)
+            break
+        # `sar edx, 1` has its own opcode, `D1 /7`, with no immediate at all --
+        # which is how a divisor whose shift is one is written and why
+        # `0x00428200`'s division by five read as "not the sequence expected"
+        # until this arm existed.
+        if b.u8(probe) == 0xD1 and b.u8(probe + 1) == 0xFA:
+            shift = 1
+            break
+        # The sign fixup with **no** shift in front of it -- `shr r32, 0x1F`
+        # straight off `edx` -- is a divisor whose magic needed no shift at
+        # all, which is how the compiler writes a division by three.
+        if (b.u8(probe) == 0xC1 and 0xE8 <= b.u8(probe + 1) <= 0xEF
+                and b.u8(probe + 2) == 0x1F):
+            shift = 0
             break
         # `add edx, r32` -- the form whose multiplier does not fit in 32 bits.
         if b.u8(probe) == 0x03 and 0xD0 <= b.u8(probe + 1) <= 0xD7:
@@ -5446,6 +5933,77 @@ def _constant_site_value(b: Binary, kind: str, where: object) -> object:
         if not b.mapped(va, 7) or bytes(b.u8(va + i) for i in range(4)) != b"\x66\xc7\x44\x24":
             return None
         return b.u8(va + 5) | (b.u8(va + 6) << 8)
+    if kind == "byte":
+        # `mov byte [esp + disp8], imm8` is `C6 44 24 dd ib` -- the form the
+        # flame stream initialises its size counter with.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 5) or bytes(b.u8(va + i)
+                                        for i in range(3)) != b"\xc6\x44\x24":
+            return None
+        return b.u8(va + 4)
+    if kind == "cmp8":
+        # `cmp al, imm8` is `3C ib` -- the accumulator form, with no ModRM.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 2) or b.u8(va) != 0x3C:
+            return None
+        return b.u8(va + 1)
+    if kind == "sub8":
+        # `sub r32, imm8` is `83 /5 ib`.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 3) or b.u8(va) != 0x83 or (b.u8(va + 1) >> 3) & 7 != 5:
+            return None
+        v = b.u8(va + 2)
+        return v - 0x100 if v >= 0x80 else v
+    if kind == "dword":
+        # `mov dword [esp + disp8], imm32` is `C7 44 24 dd id` -- the 32-bit
+        # twin of the `word` kind above, and how a count that lives in a stack
+        # slot rather than a register is written.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 8) or bytes(b.u8(va + i) for i in range(3)) != b"\xc7\x44\x24":
+            return None
+        return b.i32(va + 4)
+    if kind == "addeax":
+        # `add eax, imm32` has its own one-byte opcode, `05 id`, rather than
+        # the `81 /0` form the `add` kind above reads.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 5) or b.u8(va) != 0x05:
+            return None
+        return b.i32(va + 1)
+    if kind == "index":
+        # `lea r32, [r32*scale + disp32]` -- the SIB's scale alone, which is
+        # how the compiler writes a multiply by 2, 4 or 8 with **no base**.
+        # `Binary.lea_scale` is the other form, `[b + b*n]`, and refuses this
+        # one because its base field is the disp32 escape rather than a
+        # register.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 7) or b.u8(va) != 0x8D:
+            return None
+        modrm = b.u8(va + 1)
+        if modrm & 0x07 != 0x04 or modrm >> 6 != 0:
+            return None
+        sib = b.u8(va + 2)
+        if sib & 0x07 != 0x05:                  # base = 101, disp32 follows
+            return None
+        return 1 << ((sib >> 6) & 0x03)
+    if kind == "shl":
+        # `shl r32, imm8` is `C1 /4 ib`, and the **value** is the multiply it
+        # stands for rather than the shift count: a creator that writes
+        # `shl eax, 5` is multiplying by 32, and 32 is the number the program
+        # carries.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 3) or b.u8(va) != 0xC1 or (b.u8(va + 1) >> 3) & 7 != 4:
+            return None
+        return 1 << b.u8(va + 2)
+    if kind == "lea8":
+        # `lea r32, [r32 + r32 + disp8]` -- the short displacement form the
+        # `lea` kind above refuses, mod=01 rather than mod=10.  The value is
+        # the displacement **negated**, because every site of it so far is a
+        # bias the program subtracts.
+        va = int(where)                         # type: ignore[arg-type]
+        if not b.mapped(va, 4) or b.u8(va) != 0x8D or b.u8(va + 1) >> 6 != 0b01:
+            return None
+        disp = b.u8(va + 3)
+        return -(disp - 0x100 if disp >= 0x80 else disp)
     if kind == "magic":
         return _magic_divisor(b, int(where))    # type: ignore[arg-type]
     if kind == "scale":
@@ -5507,6 +6065,51 @@ def _creator_constant_checks(ck: "Checker", b: Binary) -> None:
                     continue
             if not all(lo <= va < hi for va in addresses):
                 contained.append(f"{name}@{tag}")
+
+    # **The grenade's six aim arcs, out of the jump table's own arms.**  Each
+    # arm is three immediates -- `mov esi, id`, `mov edi, id` and
+    # `mov dword [esp+0x10], id` -- and the table is decoded from its bytes
+    # rather than from a disassembler's arm labels, which drift.  One arm
+    # writes `mov edi, esi` instead of a second immediate, so a missing third
+    # value repeats the second: that is the arm, not a decode failure.
+    arms = [b.u32(GRENADE_JUMP_TABLE + 4 * i) for i in range(len(
+        blob_creators.GRENADE_AIM))]
+    arm_values: list[tuple[int, ...]] = []
+    for arm in arms:
+        found: list[int] = []
+        for probe in range(arm, arm + GRENADE_ARM_WINDOW):
+            if not b.mapped(probe, 6):
+                break
+            if b.u8(probe) in (0xBE, 0xBF):          # mov esi/edi, imm32
+                found.append(b.i32(probe + 1))
+            elif (b.u8(probe) == 0xC7 and b.u8(probe + 1) == 0x44
+                    and b.u8(probe + 2) == 0x24):    # mov [esp+d8], imm32
+                found.append(b.i32(probe + 4))
+            elif b.u8(probe) == 0xE9:                # the arm's own jmp out
+                break
+        if len(found) == 2:                          # `mov edi, esi`
+            found.insert(1, found[0])
+        arm_values.append(tuple(found))
+    ck.equal("creators.grenade_aim_arms", arm_values,
+             [tuple(row) for row in blob_creators.GRENADE_AIM],
+             lambda v: f"{len(v)} aim offset(s) read out of the arms of the "
+                       f"jump table at 0x{GRENADE_JUMP_TABLE:08X}")
+
+    # **The projectile lift is the creators' own.**  `docs/97` §22.2 read the
+    # 160 as the gap between two object tables, on a capture where the symbol
+    # object's `z` was 0 and the standard object's 160 -- two readings a sum of
+    # 160 cannot tell apart.  The bytes can: exactly two `call 0x0047AD30`
+    # sites in the whole of `.text` are followed by `add eax, 0xA0`, and they
+    # are inside the two projectile creators.  A third one anywhere would mean
+    # the lift is a shared convention after all, so the count is the claim.
+    lift = [va for va in b.calls_to(UNIT_HEIGHT_ENTRY)
+            if _addeax_within(b, va + 5, UNIT_HEIGHT_LIFT_WINDOW)
+            == blob_creators.PROJECTILE_LIFT]
+    ck.equal("creators.lift_sites", [f"0x{va:08X}" for va in sorted(lift)],
+             sorted(UNIT_HEIGHT_LIFT_SITES),
+             lambda v: f"{len(v)} of {len(b.calls_to(UNIT_HEIGHT_ENTRY))} "
+                       f"`call 0x{UNIT_HEIGHT_ENTRY:08X}` site(s) lift the "
+                       "answer by 160, both inside a projectile creator")
 
     ck.equal("creators.constant_values",
              [(n, k, t, v) for n, k, t, v in read],
@@ -7076,6 +7679,16 @@ def blob_document(root: str) -> dict:
         "weapon_impact_sound": {str(k): (w[1].lower() if w else None)
                                 for k, (_a, w) in
                                 sorted(WEAPON_IMPACT_SOUND.items())},
+        # **How many times an arm reaches its creator**, which neither switch
+        # table above can say.  `switch -> weapon -> [low, high, unit test,
+        # repeats]`; `repeats` is `MULTI_PER_CELL` for the four arms that walk
+        # the control map once per marked cell and a literal count for the one
+        # that does not.  See MULTI_TARGET_ARMS.
+        "weapon_multi_target": {
+            switch: {key.split("/")[1]: [e[2], e[3], e[4], e[5]]
+                     for key, e in sorted(MULTI_TARGET_ARMS.items())
+                     if key.startswith(switch)}
+            for switch in ("weapon_muzzle", "weapon_impact")},
         "bgb": {"slots": BGB_SLOTS, "stride": BGB_STRIDE,
                 "register": {str(k): _creator(target) if target else None
                              for k, (_site, target) in sorted(BGB_ARMS.items())},
