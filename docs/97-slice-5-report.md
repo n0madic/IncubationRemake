@@ -4918,8 +4918,12 @@ What is **not**, with the reason:
 * **The skill orbit has no campaign gate.** `0x00410190` opens with
   `0x0043B740 == 1` and this does not test it; the remake is campaign-only
   today, so it is named here rather than added.
-* **Slice G's by-hand pass** has not been run: everything above is checked
-  by the suites and the captures, and nobody has watched it.
+* ~~**Slice G's by-hand pass** has not been run: everything above is checked
+  by the suites and the captures, and nobody has watched it.~~ **Run twice.**
+  Once as slice G itself (§42, 2026-09-03), and again by the project owner
+  on 2026-09-13 as a whole play-through of the shipping build — the campaign
+  end to end, the shell, the touch path and Instant Action — after the nine
+  slices that had landed since; nothing it found is open.
 
 Everything that *is* in is green: the whole always-run block, the four gold
 captures (`presentation_gold` 399, `blob_gold` 259, `ai_gold` 47,
@@ -5993,11 +5997,14 @@ always waited on the same `is_walking`.
 ### 41.9 Where the plan stands now
 
 Slices A through F are in, and every item §36 listed is closed except one:
-**slice G**, the by-hand pass in an exported build, has still not been run.
+~~**slice G**, the by-hand pass in an exported build, has still not been run.~~
+**Run** — §42 on 2026-09-03, and again end to end by the project owner on
+2026-09-13 (§36's own bullet).
 ~~`CrushWall`'s footprint is measured and pinned (§41.7) with its remaining
 half — a converter that projects scene objects onto the control map — named
 and deliberately not started.~~ **The remaining half landed 2026-09-12, §50.**
-Slice G is still the one thing §36 listed that has not been run.
+~~Slice G is still the one thing §36 listed that has not been run.~~ Nothing
+§36 listed is left.
 
 Green after this pass, with the counters that moved: `lcl_runtime` at **58**
 checks (twelve `statue.*` and three `crush_wall.*`, the twins of

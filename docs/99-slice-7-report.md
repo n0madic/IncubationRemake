@@ -471,9 +471,10 @@ Known and not done, so that it is not forgotten:
 * ~~**The two panel fonts (D7) and the block offsets were checked by reading,
   not by eye** — the Wine screenshot could not be taken (§3).~~ **D7 closed
   2026-09-12** by tracing the handles: one font, `font_0`, for the panel, the
-  turn and the caption ([`43` §5.3, D7](43-battle-hud.md)). The block
+  turn and the caption ([`43` §5.3, D7](43-battle-hud.md)). ~~The block
   offsets are still unchecked against a picture ([`43` Open
-  questions](43-battle-hud.md)).
+  questions](43-battle-hud.md)).~~ Closed by decision 2026-09-13, with
+  `43`'s question 1: the offsets stand as read.
 * ~~**The magnifier's page (D4) and the campaign map's band rings (D6)** are
   decisions with the reading named, not implementations.~~ **Both
   implemented** — D4 on 2026-09-08, D6 on 2026-09-12

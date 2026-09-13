@@ -407,13 +407,20 @@ layer down: a check that cannot reach a branch is a check that cannot see it.
 
 ## 9. Open questions this stage leaves
 
-1. **`_C_140` is not *won* by a scripted squad against the live planner.** The
+1. ~~**`_C_140` is not *won* by a scripted squad against the live planner.** The
    run deadlocks: the script's reinforcements from turn 5 plug the corridor to
    the evacuation zone faster than a scripted squad clears it. The mission is
    completable — the same script, the same route, with `ai_may_fire` off, wins
    it — and defeat against the live opponent is reproducible. The suite asserts
    each of the three outcomes for what it is rather than relaxing until one
-   passes. What is missing is a squad tactic, not a rule.
+   passes. What is missing is a squad tactic, not a rule.~~ **Closed as a
+   test-side non-item, 2026-09-13.** `_C_140` is a mission whose enemies are
+   killed only from behind; a fixed route with no flanking cannot win it
+   against the live opponent, and that is the mission, not a defect in the
+   planner or the suite. The project owner has since played every mission of
+   the campaign through on the remake, `_C_140` included. A scripted *win*
+   against the live planner, if a suite ever wants one, belongs on one of the
+   opening missions, where the squad's tactic is a straight walk.
 2. ~~**The large-mover second ring of `0x0040ADC0` disagrees with the engine** on
    **8 of 10** probes. Both listings read `jle` against the model's `>`, so it
    is not the tie-break; the second ring sees something this transcription does

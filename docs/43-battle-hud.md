@@ -1194,10 +1194,15 @@ the verbs kept their names.)
    was not, which is what a body drawn after the overlay — or an overlay
    drawn with depth, which the accelerated output mode of
    [`97` §23.3](97-slice-5-report.md) may do — would produce, and what a
-   plain 2D blit over the finished scene could not. Settles with a frame of
+   plain 2D blit over the finished scene could not. ~~Settles with a frame of
    the original at a hand-over with an untouched unit, in the software and
    the accelerated output modes; D12 keeps the picture on the frames until
-   then.
+   then.~~ **Closed by decision, 2026-09-13.** The overlay routine is
+   measured (23/23) and the remake's picture matches the two frames of real
+   play; whether the original's compositing hides the digit under a body or
+   under depth changes nothing the remake draws. The project owner has ruled
+   the frame not worth taking, so D12 is final and this is not to be
+   returned to.
 
 Two earlier questions were opened and closed on the same day. The first: whether a
 blocking animation reaches the ground overlay through the callback pointer
@@ -1221,8 +1226,11 @@ above with the reading that would settle it named beside it, and all three
 are closed: the campaign map's rings (D6) are implemented, the plate font
 (D7) is `font_0` by the handles `0x00473960` passes into `0x004756D0`, and
 the magnifier's page (D4) has its `Data` bank and §5.2.1 is the reading.
-What has still never been checked against a picture of the original is the
+~~What has still never been checked against a picture of the original is the
 **panel's block offsets** (§5.3) — read off the listing and drawn at those
 numbers, with the eight-unit shift of the trailing blocks the remake's own;
 a frame of the original's panel is what would confirm them, and the same
-Wine session that answers question 1 would take it.
+Wine session that answers question 1 would take it.~~ **Closed by decision,
+2026-09-13**, with question 1: the offsets stand as read off the listing, the
+remake's panel has been played through the whole campaign by the project
+owner, and no frame of the original is going to be taken for it.
