@@ -45,7 +45,7 @@ help:
 		'' \
 		'Default is a debug export. Android release needs local keystore credentials; iOS also needs Xcode.' \
 		'Overrides: GODOT=/path/to/Godot GAME_ROOT=/path/to/retail-install PYTHON=python3 EXPORT_MODE=debug|release' \
-		'           LANGUAGE_PACKS="--language-pack Russian=/path/to/1C ..." (android-cache; empty = base language only)'
+		'           LANGUAGE_PACKS="--language-pack Russian=/path/to/1C ..." (android-cache and build-android alike -- a build-android without it rebuilds the payload base-only)'
 
 check-godot:
 	@test -n "$(GODOT)" && test -x "$(GODOT)" || { \
