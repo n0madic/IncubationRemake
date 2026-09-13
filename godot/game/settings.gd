@@ -6,16 +6,19 @@ extends RefCounted
 ## **Only what is actually connected lives here.** Section 7.1 classes a
 ## control that does nothing as a defect in the remake's own interface rather
 ## than a period detail, so the original's eight option icons are the shape of
-## this screen and not its contents: the speaker position, the speech volume,
-## the cursor and animation levels and the animation resolution have nothing
-## behind them in this remake, so they are absent rather than inert.
+## this screen and not its contents: the speaker position, the cursor and
+## animation levels and the animation resolution have nothing behind them in
+## this remake, so they are absent rather than inert. The speech volume was on
+## that list until the unit speech of docs/99 section 8 shipped; it is a row
+## again since 2026-09-13.
 ##
-## The five that are connected:
+## The six that are connected:
 ##
 ## | Setting | Where it lands |
 ## |---|---|
 ## | music volume | mission, map and front-end `Arack` music |
 ## | FX volume | cues, voices and cutscene `Track` soundtracks |
+## | speech volume | unit speech and nothing else, as `Game.opt +0x14` (docs/20 section 8) |
 ## | difficulty | [member CampaignState.difficulty], then [member TurnState.ai_level] |
 ## | gore level | [member World.gore_level] |
 ## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] and [constant GAMEPLAY_CORRECTION_FLAGS] |
@@ -71,6 +74,7 @@ const GAMEPLAY_CORRECTION_FLAGS: Array[String] = [
 
 var path: String = DEFAULT_PATH
 var fx_volume: int = AudioSystem.DEFAULT_FX_VOLUME
+var speech_volume: int = AudioSystem.DEFAULT_SPEECH_VOLUME
 var music_volume: int = AudioSystem.DEFAULT_MUSIC_VOLUME
 var difficulty: int = DIFFICULTY_DEFAULT
 var gore_level: int = World.GORE_DEFAULT
@@ -133,6 +137,8 @@ func load_from_disk() -> bool:
 	# a level it does not know.
 	fx_volume = _clamp_volume(DictRead.as_int(document.get("fx_volume",
 		fx_volume)))
+	speech_volume = _clamp_volume(DictRead.as_int(document.get("speech_volume",
+		speech_volume)))
 	music_volume = _clamp_volume(DictRead.as_int(document.get("music_volume",
 		music_volume)))
 	difficulty = clampi(DictRead.as_int(document.get("difficulty", difficulty)),
@@ -166,6 +172,7 @@ func view() -> Dictionary:
 		"schema": SCHEMA,
 		"schema_version": SCHEMA_VERSION,
 		"fx_volume": fx_volume,
+		"speech_volume": speech_volume,
 		"music_volume": music_volume,
 		"difficulty": difficulty,
 		"gore_level": gore_level,
@@ -178,7 +185,7 @@ func view() -> Dictionary:
 
 # -- applying ------------------------------------------------------------------
 
-## The two volumes, and the compatibility preset the sound layer holds.
+## The three volumes, and the compatibility preset the sound layer holds.
 ##
 ## `events` is separate from `audio` because docs/92 section 7.11 puts the two
 ## audio flags in the audio layer rather than in `World.compat_flags`: they
@@ -187,6 +194,7 @@ func view() -> Dictionary:
 func apply_audio(audio: AudioSystem, events: AudioEvents = null) -> void:
 	if audio != null:
 		audio.set_fx_volume(fx_volume)
+		audio.set_speech_volume(speech_volume)
 		audio.set_music_volume(music_volume)
 	if events == null:
 		return

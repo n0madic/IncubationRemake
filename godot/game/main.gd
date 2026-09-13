@@ -2366,6 +2366,8 @@ func _set_option_volume(channel: String, hundredths: int) -> void:
 			settings.music_volume = value
 		"fx":
 			settings.fx_volume = value
+		"speech":
+			settings.speech_volume = value
 		_:
 			return
 	settings.apply_audio(_audio, _events)

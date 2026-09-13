@@ -3,19 +3,21 @@ extends CampaignScreen
 
 signal volume_changed(channel: String, hundredths: int)
 
-## The options -- the five that are connected, and not one that is not.
+## The options -- the six that are connected, and not one that is not.
 ##
 ## The original has eight, and `Txtmod_h` 50..58 are their hover hints:
 ## *Toggle Speaker Position*, *Set Music Volume*, *Set FX Volume*, *Set
 ## Difficulty Level*, *Enemy Move on/off*, *Select Cursor and Animation Level*,
-## *Select Animation Resolution*, *Set Speech Volume*. Four of those have
-## nothing behind them in this remake -- there is no speaker layout, no speech
-## track, no cursor level and no animation-resolution switch -- and docs/92
-## section 7.1 classes a control that does nothing as a defect in the remake's
-## own interface rather than as a period detail. So they are **absent**, and
-## the four that remain are joined by two the original had no icon for: the
-## gore level of `Game.opt`'s dword 10, and the `Faithful` preset section 7.1
-## puts in front of the whole first list of reproduced defects.
+## *Select Animation Resolution*, *Set Speech Volume*. Three of those have
+## nothing behind them in this remake -- there is no speaker layout, no cursor
+## level and no animation-resolution switch -- and docs/92 section 7.1 classes
+## a control that does nothing as a defect in the remake's own interface
+## rather than as a period detail. So they are **absent**, and the five that
+## remain are joined by two the original had no icon for: the gore level of
+## `Game.opt`'s dword 10, and the `Faithful` preset section 7.1 puts in front
+## of the whole first list of reproduced defects. Speech was on the absent
+## list while the remake had no unit speech; docs/99 section 8 shipped it,
+## and the row came back on 2026-09-13.
 ##
 ## **Difficulty is where it is writable and nowhere else.** `Txtmod_h` 58 says
 ## it aloud -- *Set Difficulty Level (only in main map during campaign)* -- and
@@ -29,6 +31,7 @@ signal volume_changed(channel: String, hundredths: int)
 ## `Txtmod_h`'s option hints, which are the captions here.
 const ID_MUSIC: int = 51
 const ID_FX: int = 52
+const ID_SPEECH: int = 57
 const ID_DIFFICULTY: int = 53
 ## The one that names the restriction aloud.
 const ID_DIFFICULTY_ON_MAP: int = 58
@@ -108,6 +111,8 @@ func refresh() -> void:
 	_add_volume_row("music", label_for(BANK_SQUAD, ID_MUSIC),
 		settings.music_volume)
 	_add_volume_row("fx", label_for(BANK_SQUAD, ID_FX), settings.fx_volume)
+	_add_volume_row("speech", label_for(BANK_SQUAD, ID_SPEECH),
+		settings.speech_volume)
 	if not in_mission:
 		var on_map: bool = campaign_difficulty != NO_CAMPAIGN
 		var level: int = campaign_difficulty if on_map else settings.difficulty

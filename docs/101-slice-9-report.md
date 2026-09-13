@@ -765,7 +765,12 @@ picture of the map with the squad standing on it.
   the facing to agree to within a cosine of 0.9, which is the one thing a
   screenshot could not have shown: a metre of travel at forty thousand units
   of depth is a pixel, and the first version of that check had the composition
-  wrong and read exactly -1.
+  wrong and read exactly -1. **Accepted as it stands, 2026-09-13.** The
+  frame is not coming: every route on this host is shown closed, and a
+  single still would compare the *look* alone — the pace is the host's,
+  `2 / (0.05 s + frame cost)`, so a position at a time needs the recording
+  machine's frame cost beside it. The direction check is the whole of the
+  evidence, by decision, and this is no longer carried as open anywhere.
 
 
 ## 14. The credits screen has a roll — **[code] `fcn.0044BD90`** *(2026-09-10)*

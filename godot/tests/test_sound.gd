@@ -93,6 +93,14 @@ func _check_cutscene_volume(h: TestHarness, tables: AudioTables) -> void:
 	audio.set_fx_volume(-700)
 	h.equal("volume.fx_change_reaches_cutscene",
 		DictRead.as_int(audio.music_view()["volume"]), -700)
+	# The speech channel is a cue's own key, not its `-1` volume id, which
+	# three FX cues share (docs/20 section 8: `+0x14` has one reader).
+	audio.set_speech_volume(-1300)
+	h.equal("volume.speech_channel_is_the_cue_key",
+		[audio.base_volume({"wave": "x", "volume_id": AudioTables.NO_SCALING}),
+		audio.base_volume({"wave": "x", "volume_id": AudioTables.NO_SCALING,
+			AudioTables.CHANNEL_KEY: AudioTables.CHANNEL_SPEECH})],
+		[-700, -1300])
 
 	var _menu: int = audio.start_program("999", AudioTables.FAMILY_ARACK)
 	h.equal("volume.frontend_music_uses_music",

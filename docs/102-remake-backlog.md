@@ -1,29 +1,9 @@
 ## Stage 5 — decisions and inputs waiting on the project owner
 
-Not work until they are answered, and they are cheap to answer. None is
-verification debt the project could pay itself: each wants a decision or a
-thing only a person outside this host can supply.
-
-* **A frame of the original at an upgrade base**, at a known time after its
-  fly-in, beside the remake's at the same time — the one cross-check on the
-  march's *look* that no measurement can stand in for. Every capture route on
-  this host is **shown**, not asserted, to be closed
-  ([`91` §3.2](91-wine-runtime-probes.md), 2026-09-13): a Wine-side GDI
-  capturer reads the console window but returns all-black of the game's, which
-  composites through DirectDraw/MoltenVK past GDI; `screencapture` is refused;
-  a late breakpoint does not survive the debugger transport; the game's own
-  dumper `fcn.00463F90` is past the one anchor `dbgcall` reaches. So it is a
-  recording for the project owner to make, as the Item List frame of
-  [`101` §13.7](101-slice-9-report.md) was — not a defect and nothing blocks
-  on it.
-* **`beams_until_hand_over`** — offered to the player, or an internal flag for
-  the checks? It is internal today.
-  [`100` Open questions item 2](100-slice-8-report.md).
-* **A speech row in the options screen.** The original scales speech by the
-  options record's own field; the remake rides the FX volume and has no row.
-  [`92` §7.1](92-remake-architecture.md) permits it — that rule is about
-  controls that do nothing, not about settings with no control — so this is a
-  decision, not a defect ([`99` §8](99-slice-7-report.md)).
+**Empty since 2026-09-13.** The three that were here are struck where they
+lived, with the reason beside each: [`99` §8](99-slice-7-report.md),
+[`100`](100-slice-8-report.md) open question 2, and
+[`101` §13.7](101-slice-9-report.md).
 
 ---
 

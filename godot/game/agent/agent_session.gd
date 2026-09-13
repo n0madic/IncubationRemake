@@ -126,7 +126,7 @@ const VERBS: Dictionary[String, String] = {
 	"note": "note TEXT -- one line in the reply's log",
 	"menu": "menu [NAME] -- raise the shell at one of its screens, or toggle it",
 	"slot": "slot N [load|save [NAME...]] -- read or write one numbered slot",
-	"option": "option NAME VALUE -- music|fx|difficulty|gore|faithful|font|controls",
+	"option": "option NAME VALUE -- music|fx|speech|difficulty|gore|faithful|font|controls",
 	"campaign": "campaign N -- begin chain N and load its first mission",
 	"location": "location N -- click a location on the campaign map",
 	"deploy": "deploy SLOT X Y -- put one roster record on a deployment cell",
@@ -828,6 +828,8 @@ func _v_option(parts: PackedStringArray, _line: String) -> void:
 			settings.music_volume = value.to_int()
 		"fx":
 			settings.fx_volume = value.to_int()
+		"speech":
+			settings.speech_volume = value.to_int()
 		"difficulty":
 			settings.difficulty = clampi(value.to_int(),
 				GameSettings.DIFFICULTY_MIN, GameSettings.DIFFICULTY_MAX)

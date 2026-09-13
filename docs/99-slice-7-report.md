@@ -540,11 +540,16 @@ Not done, and deliberate:
   only while a command is armed, which is exactly the window the ring is up
   in. What is *not* played is the pointer pan the four widget clicks carry
   ([`92` §7.22](92-remake-architecture.md) item 2).
-* **Speech rides the FX volume.** The original scales it by the options
+* ~~**Speech rides the FX volume.** The original scales it by the options
   record's own speech field ([`20` §8](20-lcl-language.md)) and by nothing
   else. The options screen still has no speech row, which [`92`
   §7.1](92-remake-architecture.md) permits — that rule is about controls that
-  do nothing, not about settings that have no control.
+  do nothing, not about settings that have no control.~~ **Closed 2026-09-13**
+  — the row is back ([`92` §7.15](92-remake-architecture.md)):
+  `GameSettings.speech_volume`, `Txtmod_h` 57 as its caption, and a
+  `"channel"` key on the speech cue so that unit speech and only unit speech
+  is scaled by it. The view player's cues share speech's `-1` volume id and
+  stay on FX, which is why the channel is a key and not the id.
 
 ## 9. What a second play found (2026-09-06)
 

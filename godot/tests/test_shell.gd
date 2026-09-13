@@ -260,6 +260,7 @@ func _settings_file(h: TestHarness) -> void:
 
 	written.music_volume = -1250
 	written.fx_volume = -500
+	written.speech_volume = -900
 	written.difficulty = 2
 	written.gore_level = 1
 	written.faithful = false
@@ -269,8 +270,8 @@ func _settings_file(h: TestHarness) -> void:
 	read.path = written.path
 	h.check("settings.read_back", read.load_from_disk())
 	h.equal("settings.survive_a_restart",
-		[read.music_volume, read.fx_volume, read.difficulty, read.gore_level,
-		read.faithful], [-1250, -500, 2, 1, false])
+		[read.music_volume, read.fx_volume, read.speech_volume, read.difficulty,
+		read.gore_level, read.faithful], [-1250, -500, -900, 2, 1, false])
 
 	# docs/92 section 7.19 I19. The flag is the one setting the player never
 	# sets: a launch writes it, and it is what decides whether the next launch
@@ -293,15 +294,17 @@ func _settings_file(h: TestHarness) -> void:
 	# **zero movement points** for a level it does not know.
 	var file: FileAccess = FileAccess.open(written.path, FileAccess.WRITE)
 	file.store_string(JSON.stringify({"schema": GameSettings.SCHEMA,
-		"difficulty": 7, "gore_level": 99, "fx_volume": 999999}))
+		"difficulty": 7, "gore_level": 99, "fx_volume": 999999,
+		"speech_volume": -999999}))
 	file.close()
 	var clamped: GameSettings = GameSettings.new()
 	clamped.path = written.path
 	h.check("settings.hand_edited_file_loads", clamped.load_from_disk())
 	h.equal("settings.values_are_clamped",
-		[clamped.difficulty, clamped.gore_level, clamped.fx_volume],
+		[clamped.difficulty, clamped.gore_level, clamped.fx_volume,
+		clamped.speech_volume],
 		[GameSettings.DIFFICULTY_MAX, GameSettings.GORE_MAX,
-		GameSettings.VOLUME_MAX])
+		GameSettings.VOLUME_MAX, GameSettings.VOLUME_MIN])
 
 	# A file this build cannot read is **not** replaced: losing a player's
 	# settings because one byte went wrong is the quiet damage section 7.4 is
@@ -325,6 +328,7 @@ func _settings_file(h: TestHarness) -> void:
 func _settings_apply(h: TestHarness) -> void:
 	var settings: GameSettings = GameSettings.new()
 	settings.fx_volume = -750
+	settings.speech_volume = -1100
 	settings.music_volume = -1500
 	settings.gore_level = 3
 	settings.faithful = false
@@ -346,6 +350,23 @@ func _settings_apply(h: TestHarness) -> void:
 	# field: `scaled_volume` is what a cue is actually loaded at.
 	h.equal("apply.fx_volume_reaches_the_scaler",
 		tables.scaled_volume(settings.fx_volume, AudioTables.NO_SCALING), -750)
+	# docs/20 section 8: `+0x14` is read by the speech routine and by nothing
+	# else, so the row moves a unit's line and leaves every other cue -- the
+	# view player's, which shares speech's `-1` id -- on FX.
+	var speech: SpeechPlayer = SpeechPlayer.new()
+	speech.setup(tables)
+	var line: Dictionary = {}
+	for i: int in range(64):
+		line = speech.line("cycle", {"player": 0, "type_id": 0, "speech": 1,
+			"hp": 9, "fp": 9}, 0)
+		if not line.is_empty():
+			break
+	h.equal("apply.speech_volume_reaches_its_own_channel",
+		[audio.base_volume(line),
+		audio.base_volume(tables.view_player_cue(
+			AudioTables.VIEW_PLAYER_PROGRESS))],
+		[-1100, -750],
+		"the speech row scales unit speech and nothing else")
 	audio.free()
 
 	# The production handler, not only the screen seam: each slider movement
@@ -354,14 +375,16 @@ func _settings_apply(h: TestHarness) -> void:
 	main.settings.path = SCRATCH_DIR + "/slider-settings.json"
 	main._set_option_volume("music", -1200)
 	main._set_option_volume("fx", -800)
+	main._set_option_volume("speech", -300)
 	var persisted: GameSettings = GameSettings.new()
 	persisted.path = main.settings.path
 	h.check("apply.volume_sliders_are_written_immediately",
 		persisted.load_from_disk())
 	h.equal("apply.volume_sliders_survive_a_restart",
 		[main.settings.music_volume, main.settings.fx_volume,
-		persisted.music_volume, persisted.fx_volume],
-		[-1200, -800, -1200, -800])
+		main.settings.speech_volume, persisted.music_volume,
+		persisted.fx_volume, persisted.speech_volume],
+		[-1200, -800, -300, -1200, -800, -300])
 	main.free()
 
 	var world: World = TestFixtures.tiny_world()
@@ -1254,8 +1277,9 @@ func _screens(h: TestHarness) -> void:
 		+ "level, the `Faithful` preset and the interface font; not one of "
 		+ "the four it has and this remake does not")
 	var sliders: Array[HSlider] = _sliders_of(options)
-	h.equal("screens.options_volume_sliders", sliders.size(), 2,
-		"music and FX are direct controls rather than click-to-cycle fields")
+	h.equal("screens.options_volume_sliders", sliders.size(), 3,
+		"music, FX and speech are direct controls rather than click-to-cycle "
+		+ "fields")
 	var slider_shape: Array[Variant] = []
 	for slider: HSlider in sliders:
 		slider_shape.append([slider.name, slider.min_value, slider.max_value,
@@ -1266,7 +1290,10 @@ func _screens(h: TestHarness) -> void:
 			float(settings.music_volume)],
 		[&"fx_volume", float(GameSettings.VOLUME_MIN),
 			float(GameSettings.VOLUME_MAX), float(GameSettings.VOLUME_STEP),
-			float(settings.fx_volume)]],
+			float(settings.fx_volume)],
+		[&"speech_volume", float(GameSettings.VOLUME_MIN),
+			float(GameSettings.VOLUME_MAX), float(GameSettings.VOLUME_STEP),
+			float(settings.speech_volume)]],
 		"the saved attenuation is the thumb position, including the -6 dB default")
 	var styled_sliders: int = 0
 	for slider: HSlider in sliders:
@@ -1287,7 +1314,7 @@ func _screens(h: TestHarness) -> void:
 					== OptionsScreen.VOLUME_FRAME_INSET:
 			styled_sliders += 1
 	h.equal("screens.options_volume_sliders_use_the_game_face",
-		styled_sliders, 2,
+		styled_sliders, 3,
 		"the shipped field and arrow replace Godot's default blue control")
 	var changed: Array[Variant] = []
 	options.volume_changed.connect(func(channel: String, hundredths: int) -> void:

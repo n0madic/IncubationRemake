@@ -29,6 +29,9 @@ extends Node
 ## docs/20 section 8 owns the options record; until the remake has an options
 ## screen this is its default.
 const DEFAULT_FX_VOLUME: int = 0
+## Unit speech's own base, `Game.opt +0x14` (docs/20 section 8). The original
+## defaults it to the FX value, and so does this.
+const DEFAULT_SPEECH_VOLUME: int = DEFAULT_FX_VOLUME
 const DEFAULT_MUSIC_VOLUME: int = -600
 ## How long [method shutdown] lets the audio server run before quitting, in
 ## milliseconds. Fifty was the measured threshold headless; this is twice it,
@@ -57,6 +60,7 @@ var _music_source: String = ""
 ## Which family [member _music]'s numbers index.
 var _music_family: String = AudioTables.FAMILY_ARACK
 var _fx_volume: int = DEFAULT_FX_VOLUME
+var _speech_volume: int = DEFAULT_SPEECH_VOLUME
 var _music_volume: int = DEFAULT_MUSIC_VOLUME
 var _streams: Dictionary[String, AudioStream] = {}
 ## The looping copy of a wave, made once and kept beside the one-shot.
@@ -160,6 +164,22 @@ func set_music_volume(hundredths: int) -> void:
 		_music_player.volume_db = AudioTables.volume_db(_playback_volume())
 
 
+## Unit speech only. `0x0047B660` is the one reader of the options record's
+## speech field; a briefing's voice-over goes through [method play_file] and
+## rides FX, as it does in the original.
+func set_speech_volume(hundredths: int) -> void:
+	_speech_volume = hundredths
+
+
+## The base volume *cue* is scaled from, by the channel it names.
+func base_volume(cue: Dictionary) -> int:
+	var channel: String = DictRead.as_string(
+		cue.get(AudioTables.CHANNEL_KEY, AudioTables.CHANNEL_FX))
+	if channel == AudioTables.CHANNEL_SPEECH:
+		return _speech_volume
+	return _fx_volume
+
+
 # --- playing ----------------------------------------------------------------
 
 ## Play one cue, and answer the slot it took or `-1` when it was dropped.
@@ -172,7 +192,7 @@ func play_cue(cue: Dictionary, tag: String = "") -> int:
 		return -1
 	var wave: String = DictRead.as_string(cue["wave"])
 	var volume_id: int = DictRead.as_int(cue["volume_id"])
-	var volume: int = _tables.scaled_volume(_fx_volume, volume_id)
+	var volume: int = _tables.scaled_volume(base_volume(cue), volume_id)
 	if volume == AudioTables.REFUSED:
 		return -1
 	var loop: bool = DictRead.as_bool(cue.get("loop", false))

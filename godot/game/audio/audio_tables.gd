@@ -34,6 +34,16 @@ const HUNDREDTHS_PER_DB: float = 100.0
 ## The load path refuses such a sound outright (`invalid volume ctrl id`), so
 ## the caller drops it; the value exists so the function stays total.
 const REFUSED: int = -10000
+## Which base volume a cue is scaled from -- the `"channel"` key of a cue.
+## Every cue rides the FX volume unless it says otherwise, and the one that
+## says otherwise is unit speech: `0x0047B660` is the only reader of the
+## options record's speech field (docs/20 section 8). A cue's `volume_id`
+## cannot carry this, because [constant NO_SCALING] is shared with the ground
+## unit's crush, the load screen's clicks and the view player's cues, all of
+## which ride FX.
+const CHANNEL_KEY: String = "channel"
+const CHANNEL_FX: String = "fx"
+const CHANNEL_SPEECH: String = "speech"
 
 var _document: Dictionary = {}
 var _cache_dir: String = ""

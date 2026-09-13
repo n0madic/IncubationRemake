@@ -577,5 +577,10 @@ the manifest taken before them verified byte for byte after each.
 1. ~~Whether the delta's unit diff is worth its cost on the corpus worst case
    (`_C_132`, 264 ms of planning).~~ **Closed 2026-09-07**, §6: 27 ms on a
    237 ms turn.
-2. Whether `beams_until_hand_over` should be offered to the player at all, or
-   stay an internal flag for the checks. It is internal today.
+2. ~~Whether `beams_until_hand_over` should be offered to the player at all, or
+   stay an internal flag for the checks. It is internal today.~~ **Closed
+   2026-09-13 — it stays internal, by decision**
+   ([`92` §7.17](92-remake-architecture.md)): the beam is the case §7.1's
+   first list excludes, and the flag restores the original's timing without
+   its radar asymmetry, so a player-facing setting would promise more than it
+   delivers.

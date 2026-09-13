@@ -74,7 +74,7 @@ func line(event: String, unit: Dictionary, player: int) -> Dictionary:
 	if wave.is_empty():
 		return {}
 	return {"wave": wave, "volume_id": _tables.speech_volume_id(),
-		"loop": false}
+		"loop": false, AudioTables.CHANNEL_KEY: AudioTables.CHANNEL_SPEECH}
 
 
 ## Which of the event's arguments this unit's condition picks.

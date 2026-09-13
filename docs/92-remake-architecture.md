@@ -1460,11 +1460,18 @@ over the **last** mission's view and that world is still in memory, so a
 between-missions save used to carry a finished mission's blob.
 
 **Only connected options exist.** The original has eight option icons and
-`Txtmod_h` 50–58 are their hover hints. Four of them — the speaker position,
-the speech volume, the cursor and animation level, the animation resolution —
-have nothing behind them in this remake, and §7.1 classes a control that does
-nothing as a defect in the remake's own interface rather than a period detail.
-They are **absent**, not disabled. The same rule removes `Network Game` and
+`Txtmod_h` 50–58 are their hover hints. Three of them — the speaker position,
+the cursor and animation level, the animation resolution — have nothing behind
+them in this remake, and §7.1 classes a control that does nothing as a defect
+in the remake's own interface rather than a period detail. They are
+**absent**, not disabled. The speech volume was the fourth until the unit
+speech of [`99` §8](99-slice-7-report.md) shipped; **it is a row again since
+2026-09-13**, scaling unit speech and nothing else, which is exactly
+`Game.opt +0x14`'s reach — `0x0047B660` is its only reader
+([`20` §8](20-lcl-language.md)). A briefing's voice-over stays on FX, as it is
+in the original. The channel is a key on the cue (`AudioTables.CHANNEL_KEY`)
+and not its volume-control id: speech's `-1` is shared with three cues that
+ride FX. The same rule removes `Network Game` and
 `Load PBM Game` from the main menu (§7.9 puts multiplayer outside the
 programme) and leaves `Load Game` out until a slot holds something. The
 language is shown as a line and not as a selector: the cache carries one
@@ -1480,7 +1487,7 @@ so a saved world without the newer flag retains the original rule.
 `technical` box keeps its bug unconditionally, so the toggle still does not
 reach that one rule. Named here so the next person meets it as a known hole and
 not as a surprise. What is
-connected: both volumes, the difficulty, the gore level of `Game.opt`'s dword
+connected: the three volumes, the difficulty, the gore level of `Game.opt`'s dword
 10 — no mission of the 92 writes `unit_draw_path`, so it is a live control and
 not a default something overrides — and the `Faithful` preset over the audio
 flags plus the `Bea'Coo` mine-death rule. Music and FX are sliders over the
@@ -2184,7 +2191,12 @@ period detail, so §7.1's first half does not apply.
 `PictureFog.beams_until_hand_over` restores the original's timing for the
 checks; it is a **picture** flag and not a `World.compat_flags` entry, because
 a compatibility flag that moved the canonical hash would be a worse defect than
-the one it reproduces. The radar and the ground overlay now read the same
+the one it reproduces. **It stays internal — decided 2026-09-13.** Offering it
+would put the beam back into §7.1's first list, and the beam is the case that
+list's rule excludes: a contact that attacks for a whole turn reads as the
+remake's bug, not the period's. And the flag restores only the *timing*: with
+it on, the radar and the overlay still read the same answer as the bodies, so
+a setting built on it would promise the original's fog and deliver half of it. The radar and the ground overlay now read the same
 answer as the bodies, which drops the engine's own stored-byte asymmetry
 ([`99` §205](99-slice-7-report.md)) -- a deliberate deviation, so that an alien
 appears everywhere in one frame.
