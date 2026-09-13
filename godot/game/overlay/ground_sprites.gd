@@ -62,9 +62,13 @@ var _art: Art = null
 ## pointer to stand there -- the finger is either pressing or gone -- so the
 ## caller turns the gate off in that mode and the selection's own cells are
 ## shown for as long as it is selected (docs/43 section 3, a divergence).
+## *deploying* is the caller's word that the place interface is up: the
+## turn counter alone says so for a bare world, but a campaign host also
+## asks for the mission to be the screen ([method SliceMain._deploying]).
 func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 		hover: Vector2i, bands: Dictionary[Vector2i, int],
-		current_player: int, far: bool, hover_gated: bool = true) -> void:
+		current_player: int, far: bool, hover_gated: bool = true,
+		deploying: bool = false) -> void:
 	_art = art
 	for child: Node in get_children():
 		remove_child(child)
@@ -76,8 +80,15 @@ func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 	if art == null or world == null:
 		return
 	var width: int = world.resource.width
+	# The place interface's dots: `markDeploymentCells` runs for the incoming
+	# player while the counter is 0 (docs/29 section 1.2), and every cell of
+	# that player's is in state 70..73 -- the occupied ones too, which is the
+	# affordance for taking a soldier back.
+	var deploying_player: int = current_player \
+		if deploying and current_player >= 0 \
+		and current_player <= HudTables.FAR_PLAYER_MAX else -1
 	var states: Dictionary[Vector2i, int] = cell_states(world, selected, query,
-		bands)
+		bands, deploying_player)
 	var hover_state: int = DictRead.as_int(states.get(hover, HudTables.STATE_PLAIN))
 	var hover_legal: bool = not hover_gated \
 		or HudTables.HOVER_GATED_STATES.has(hover_state)
@@ -144,11 +155,17 @@ func refresh(art: Art, world: World, selected: int, query: MoveMapResult,
 ## **100 is not among them**, and that is the point of the check on it: the
 ## state exists and the table has an element for it, but no walk in the
 ## original ever shows one (docs/43 section 3.1).
+## *deploying_player* >= 0 marks that player's deployment cells with the
+## place interface's state, `0x46 + player` (`0x00431118`).
 static func cell_states(world: World, selected: int, query: MoveMapResult,
-		bands: Dictionary[Vector2i, int]) -> Dictionary[Vector2i, int]:
+		bands: Dictionary[Vector2i, int],
+		deploying_player: int = -1) -> Dictionary[Vector2i, int]:
 	var states: Dictionary[Vector2i, int] = {}
 	if world == null:
 		return states
+	if deploying_player >= 0:
+		for cell: Vector2i in world.deployment_cells(deploying_player):
+			states[cell] = HudTables.STATE_DEPLOY_FIRST + deploying_player
 	if query != null:
 		for y: int in range(query.height):
 			for x: int in range(query.width):

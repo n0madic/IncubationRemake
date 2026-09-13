@@ -348,6 +348,12 @@ var _selected: int = -1
 ## across the whole computer turn (`[0x005162F0]`); this is that global,
 ## carried over the window in which the remake has the interface down.
 var _selection_before_turn: int = -1
+## The place interface's selected pool soldier while the mission is on turn
+## 0 -- `[0x514064]`, docs/43 section 5.5 -- as a **roster slot**, or
+## [constant Roster.NO_SLOT]. Interface state and not the campaign's: the
+## original keeps it beside the pool it indexes and clears it on the
+## hand-over (`0x0041DA20` cmd 2).
+var _deploy_slot: int = Roster.NO_SLOT
 var _cache_dir: String = ""
 ## Which language every language-dependent file is read for (docs/92
 ## section 7.6). Neutral-only readers -- missions, geometry, textures, the
@@ -644,6 +650,8 @@ func _ready() -> void:
 		GameFont.load_from(_paths, MissionHud.SMALL_FONT), _paths, _balance)
 	_hud.event.connect(_on_hud_event)
 	_hud.command.connect(_on_pad_command)
+	_hud.panel_cycled.connect(func(step: int) -> void:
+		var _cycled: bool = cycle_deploy_slot(step))
 	# The two hover ticks (docs/28 section 2.5): `click_1` when the pointer
 	# lands on a lit column slot (`fcn.004518E0`) or pad socket
 	# (`fcn.004723E0`). The third tick, over a legal cell while a command is
@@ -1005,7 +1013,7 @@ func interface_faces() -> Array[FontFile]:
 	return _faces
 
 
-## Redraw after a deployment put a unit on the map.
+## Redraw after a deployment put a unit on the map or took one off it.
 ##
 ## `UnitsView.build` frees every unit node and rebuilds from the world, which
 ## is what a newly placed record needs; the overlay follows because deployment
@@ -1015,19 +1023,16 @@ func _refresh_after_deploy() -> void:
 		return
 	# The terrain overlay is not rebuilt: deployment changes no cell. What it
 	# does change is visibility, and that is `UnitsView.build`'s to redraw.
+	# **The mirror first**: a placement moves the truth with no delta anybody
+	# can replay, and the bodies and the dots below are drawn from the mirror.
 	_resync_shown()
 	_units.build(shown(), _geometry, _textures, _picture_fog())
-	# One free cell fewer, so the dots are re-laid: a marker still standing on
-	# an occupied cell is a control that refuses its own click.
-	#
-	# **Only while the deployment screen is the one up.** This runs after a
-	# load as well as after a placement, and a load enters the mission
-	# outright -- so the dots were laid over a mission in progress and every
-	# free landing cell of turn 1 was drawn on top of it.
-	if campaign != null and campaign.screen == CampaignHost.SCREEN_SELECT:
-		_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
-	else:
-		_show_markers({} as Dictionary[Vector2i, int])
+	# The ground overlay carries the landing dots (docs/29 section 1.2's
+	# states 70..73), on every deployment cell whether or not somebody
+	# stands on it -- a dot under a placed soldier is the click that takes
+	# him back. It reads the mirror's turn, so a load into a mission in
+	# progress draws none.
+	_refresh_overlay()
 	_refresh_status()
 
 
@@ -1161,23 +1166,38 @@ func _resume_loaded_mission() -> void:
 		_rig.apply_state(world.restored_camera())
 
 
-## **A save taken at turn 0 still owes its opening hand-over.** That is what
-## *Undo mission* restores: `_31_.sav` carries the squad placed and the counter
-## at 0 (docs/11 section 5.8), and the engine reads the same thing off it --
-## [method World.load_save] restores the re-entry latch as `turn != 0`, so a
-## loaded turn-0 world is by definition one where `aNextPlayerHandling` has not
-## run. Without this, undoing a mission put the player back into the turn-0
-## opening docs/98 section 12 exists to remove: no `NEXT TURN`, no computer
-## turn and a `0` on the plate.
+## **A save taken at turn 0 loads back into the place interface.** That is
+## what *Undo mission* restores: `_31_.sav` carries the squad still in the
+## pool and the counter at 0 (docs/11 section 5.8), and a load re-enters
+## `aInitBattleGround` (`0x0041DABD` -> `0x0042E811` -> `0x00419D90`), whose
+## two arms are the same two a fresh mission has: with somebody still in the
+## pool the placement interface goes up, and `0x0041A073` sets the counter
+## to 1 outright when nobody is. The first hand-over is then owed the way it
+## is on a fresh entry -- [method World.load_save] restores the re-entry
+## latch as `turn != 0` -- and *Next player* pays it, `NEXT TURN` and all.
+##
+## The silent arm pays it here: [method World.open_mission] is the
+## `handOver(1)` arm that runs no script, exactly what [method _build] does
+## for a fresh map, and the skip must follow it (see [method
+## World.skip_deployment_turn] for why the order is forced). It is reached
+## only by a save the player took on turn 0 after placing everybody -- the
+## mission-start autosave is written with the pool full -- and **that save
+## lands on turn 1 with no `NEXT TURN`**, `0x0041A073`'s own answer
+## (docs/43 section 5.5, open question 4).
 ##
 ## Separate from [method _resume_loaded_mission], and after
 ## [method _refresh_after_deploy], for two reasons: that one is the picture's
-## own work and is called with a half-built host by `test_effects.gd`, and the
-## replay this starts must not be resynchronised out from under itself.
+## own work and is called with a half-built host by `test_effects.gd`, and
+## the deployment this raises reads the mirror that one took.
 func _open_after_load() -> void:
-	if world == null or world.turn.turn != 0:
+	if world == null or not world.deploying():
 		return
-	var _handed: TurnResult = end_turn()
+	if _may_skip_deployment():
+		var _opened: TurnResult = world.open_mission()
+		_skip_deployment_turn()
+		_begin_mission_view()
+		return
+	_enter_deployment()
 
 
 ## The interface's own autosaves (docs/43 section 5): the mission's start
@@ -1284,7 +1304,7 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 		return false
 	_remember_loaded_session()
 	close_campaign_screen()
-	campaign.enter_mission()
+	campaign.enter_mission(world)
 	_resume_loaded_mission()
 	_refresh_after_deploy()
 	_open_after_load()
@@ -1377,24 +1397,16 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			briefing.document = _briefing_document(campaign.current_mission())
 			# Raised over a running mission by `B`, it is a page to read and
 			# close, not a step of the campaign -- see [member
-			# BriefingScreen.over_mission]. **A deployment already begun
-			# counts too**: its own *Continue* re-enters the mission, which
+			# BriefingScreen.over_mission]. A mission still on turn 0 is
+			# running: its own *Continue* would re-enter the mission, which
 			# rebuilds the scene under a squad already standing on it.
-			briefing.over_mission = in_mission() \
-				or (world != null
-					and campaign.screen == CampaignHost.SCREEN_SELECT)
+			briefing.over_mission = in_mission()
 			# `%smb%daif.wav` (`0x004CA8D8`): the mission's voice-over,
 			# played with the page and stopped with it.
 			briefing.voice = _briefing_voice(campaign.current_mission())
 			if not briefing.over_mission:
 				_play_voice(briefing.voice)
 			screen = briefing
-		CampaignHost.SCREEN_SELECT:
-			var select: SelectUnitsScreen = SelectUnitsScreen.new()
-			select.host = campaign
-			select.back_to_hq = campaign.is_instant_action()
-			select.document = _briefing_document(campaign.current_mission())
-			screen = select
 		CampaignHost.SCREEN_HQ:
 			# The Unit Menu, the Item List and the Recruit window are all
 			# `plate_3` with the frame's window left clear -- the plate
@@ -1447,8 +1459,7 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 	_screen = screen
 	_sync_hud()
 	# The dots go on **after** the screen is up, because which ones there are
-	# is the screen's own question: the map's are its open locations and the
-	# deploy screen's the free cells.
+	# is the screen's own question: the map's are its open locations.
 	match name:
 		CampaignHost.SCREEN_MAP:
 			_show_markers(CampaignMapScreen.marks_for(campaign,
@@ -1463,9 +1474,6 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 				_frame_deployment()
 			else:
 				_frame_map()
-		CampaignHost.SCREEN_SELECT:
-			_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
-			_frame_deployment()
 	# The Upgrade Menu opens on whoever the Unit Menu had picked, which is also
 	# where its *Undo* snapshot is taken.
 	var upgrade_screen: UpgradeScreen = screen as UpgradeScreen
@@ -1558,12 +1566,10 @@ func _campaign_library() -> CharismaLibrary:
 	return _campaign_bodies
 
 
-## The deployment cells nobody is standing on yet.
-##
-## [method World.deployment_cells] answers the cells the *map* offers, which
-## is the right question for the rule and the wrong one for the picture: a dot
-## left on an occupied cell is a control whose only answer is a refusal, and
-## section 7.1 counts that as a defect.
+## The deployment cells nobody is standing on yet -- what the agent and the
+## touch run ask for. [method World.deployment_cells] answers the cells the
+## *map* offers, and the overlay dots every one of them, occupied or not:
+## a dot under a placed soldier is the click that takes him back.
 func _free_landings() -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
 	if campaign == null or world == null:
@@ -1575,12 +1581,15 @@ func _free_landings() -> Array[Vector2i]:
 	return out
 
 
-## Put the camera over the cells the squad is about to be put on.
+## Put the camera over the cells the squad is about to be put on -- the
+## counter-0 arm of `aInitBattleGround`: the map view with no placement
+## (`fcn.00452940`) and the eye on the landing zone (`fcn.00452420`, docs/43
+## section 4.5).
 ##
 ## [method _frame_units] cannot: it frames a **unit**, and at this point the
-## player has none on the map -- which is the whole of what the screen is for.
-## So the deployment area is framed instead, on the cell nearest its own
-## middle, because the middle itself is not somewhere anyone can stand.
+## player has none on the map. So the deployment area is framed instead, on
+## the cell nearest its own middle, because the middle itself is not
+## somewhere anyone can stand.
 func _frame_deployment() -> void:
 	_set_deploy_view(CameraRig.View.MAP)
 
@@ -1604,6 +1613,257 @@ func _deployment_centre() -> Vector2i:
 		if Vector2(cell).distance_to(middle) < Vector2(at).distance_to(middle):
 			at = cell
 	return at
+
+
+# --- the place interface, turn 0 (docs/43 section 5.5) -----------------------
+
+## The `deploy.*` lines the interface speaks, by their catalogue suffix
+## ([Localization]); a [World] or [CampaignHost] refusal name is one too.
+const DEPLOY_LINE_PREFIX: String = "deploy.%s"
+const DEPLOY_LINE_HINT: String = "hint"
+const DEPLOY_LINE_NEED_ONE: String = "need_one"
+const DEPLOY_LINE_POOL_EMPTY: String = "pool_empty"
+
+
+## Whether the place interface is up -- `fcn.00463380`'s own gate, the turn
+## counter, and with a campaign the host's ([method CampaignHost.deploying]),
+## which also asks for the mission to be the screen: *Instant Action*'s HQ
+## frames a turn-0 world it is not deploying into yet.
+func _deploying() -> bool:
+	if world == null:
+		return false
+	if campaign != null and campaign.state != null:
+		return campaign.deploying()
+	return world.deploying()
+
+
+## `0x0041A073`'s skip -- `gameMode() == 1 && poolCount == 0 && turn == 0`
+## -- plus the remake's own fourth test, somebody to start with (docs/43
+## section 5.5). *Instant Action* is not a campaign game and takes the place
+## interface even over an empty pool ([method World.skip_deployment_turn]
+## would do nothing there, and a load would land in neither state).
+func _may_skip_deployment() -> bool:
+	return campaign != null and campaign.state != null and world != null \
+		and world.turn.mode == TurnState.MODE_CAMPAIGN \
+		and campaign.nobody_to_deploy() and campaign.may_start()
+
+
+## Whether *Next player* may leave turn 0: somebody of player 0 on the map.
+## The campaign's own test where there is a campaign; a mission entered past
+## it ([method first_friendly_slot]) otherwise.
+func _may_leave_deployment() -> bool:
+	if campaign != null and campaign.state != null:
+		return campaign.may_start()
+	return first_friendly_slot(world) >= 0
+
+
+## The two arms of `aInitBattleGround` once the mission is built and the
+## campaign has entered it: `0x0041A073`'s silent skip to turn 1 when the
+## pool has nobody to place **and** the map already carries a squad, else
+## the place interface.
+##
+## **After `begin_mission`**, which is what put the live roster back: the
+## pool this asks about is the one the panel draws from, and reading it
+## before the restore made a re-entered mission -- the briefing's own
+## *Continue* over a deployment -- take the silent arm on an empty row.
+## Where the pool is empty and the mission has no squad either, the
+## interface still goes up, because then there really is nothing to start
+## and the map with its dots is what says so.
+func _open_deployment_or_start() -> void:
+	if campaign == null or campaign.state == null or world == null:
+		return
+	close_campaign_screen()
+	# [method close_campaign_screen] syncs the HUD only when a screen was
+	# up; the agent's `enter` reaches this with none, and the mission's
+	# view is what the interface is drawn over.
+	_sync_hud()
+	# **Here, before anybody is placed**, which is where the engine writes
+	# it: the retail `_31_.sav` carries turn 0 with the squad still in the
+	# live row beside its entry snapshot (`tests/fixtures/saves`, docs/11
+	# section 5.8). *Undo mission* therefore returns to the place interface
+	# with the whole pool to place again, and its way out is the hand-over
+	# -- `NEXT TURN` and all -- never `0x0041A073`'s silent arm.
+	_autosave_mission_start()
+	if _may_skip_deployment():
+		_skip_deployment_turn()
+		_begin_mission_view()
+		return
+	_enter_deployment()
+
+
+## `aInitPlaceInterface` `0x004632E0`: the pool's first record is selected
+## when there is one (`0x00463355..64`), the camera goes over the landing
+## zone, and the line says what a click does. Nothing is selected on the
+## map -- `fcn.00471E00` refuses before the first hand-over.
+func _enter_deployment() -> void:
+	_deploy_slot = Roster.NO_SLOT
+	if campaign != null and campaign.state != null:
+		var slots: PackedInt32Array = campaign.state.roster.occupied_slots()
+		if not slots.is_empty():
+			_deploy_slot = slots[0]
+	_deselect()
+	_frame_deployment()
+	_say_deploy(DEPLOY_LINE_HINT if _deploy_slot != Roster.NO_SLOT
+		else DEPLOY_LINE_POOL_EMPTY)
+	_refresh_overlay()
+	_refresh_status()
+
+
+## The pool record on the panel while deploying, or `null`. A clone, read and
+## let go: the roster hands out copies.
+func _deploy_record() -> UnitState:
+	if not _deploying() or _deploy_slot == Roster.NO_SLOT \
+			or campaign == null or campaign.state == null:
+		return null
+	return campaign.state.roster.record(_deploy_slot)
+
+
+## One line on the HUD's caption label, `deploy.<name>` -- the interface's
+## hint and every refusal, spoken (docs/92 section 7.4). A name the
+## catalogue has no line for comes back as the marker rather than as a
+## blank, so a new refusal is visible instead of silent.
+func _say_deploy(name: String) -> void:
+	if _hud == null or _strings == null:
+		return
+	_hud.set_line(_strings.text(DEPLOY_LINE_PREFIX % name))
+
+
+## The place interface's click on the world (`fcn.00463380`'s window arm):
+## the cell under the pointer, then [method deploy_cell] with the click's
+## own position for the facing.
+func _deploy_click(screen: Vector2) -> void:
+	if _rig == null or _rig.camera() == null or world == null:
+		return
+	# The whole cell, not the third of it a click on a body wants: the
+	# original's `fcn.0042f730` answers the cell under the pointer.
+	var cell: Vector2i = cell_under(_rig.camera(), world, screen, 1.0)
+	var _done: bool = deploy_cell(cell, screen)
+
+
+## A click on *cell* while deploying, *at* being where on the viewport it
+## landed: a soldier standing there comes back into the pool if he is a pool
+## candidate (`0x00463485`); an empty deployment cell takes the selected
+## pool soldier, facing by the quadrant of the click (`0x00463552..94`);
+## anything else is refused with a line. Public so a suite can place without
+## projecting a cell onto a camera. Answers whether the map changed.
+func deploy_cell(cell: Vector2i, at: Vector2) -> bool:
+	if not _deploying() or campaign == null or campaign.state == null:
+		return false
+	if cell.x < 0 or not world.state.in_bounds(cell.x, cell.y):
+		_say_deploy(World.DEPLOY_NOT_A_CELL)
+		return false
+	# The truth, not the mirror: whether the click is allowed is the one
+	# question the truth answers (docs/100).
+	var view: Dictionary = world.cell_view(cell.x, cell.y)
+	if DictRead.as_int(view["unit"]) != MapState.NO_UNIT:
+		var taken: Dictionary = recall_at(cell.x, cell.y)
+		if DictRead.as_string(taken["result"]) != World.RECALL_OK:
+			return false
+		_play_interface(AudioTables.INTERFACE_DEPLOY_PLACE)
+		return true
+	if _deploy_slot == Roster.NO_SLOT:
+		_say_deploy(DEPLOY_LINE_POOL_EMPTY)
+		return false
+	var placed: Dictionary = place_from_roster(_deploy_slot, cell.x, cell.y,
+		Deployment.facing_for(at, _viewport_size()))
+	if DictRead.as_string(placed["result"]) != World.DEPLOY_OK:
+		return false
+	_play_interface(AudioTables.INTERFACE_DEPLOY_PLACE)
+	return true
+
+
+## A placement with the interface's bookkeeping -- the host's answer, and on
+## success the picture, the selection clamped as `0x004635E3..0x00463605`
+## and the line; a refusal is spoken. The click places the selected record;
+## the agent's `deploy` names any slot, so the clamp is measured from where
+## the *selection* stood and keeps it while it is still in the pool.
+func place_from_roster(slot: int, x: int, y: int, facing: int) -> Dictionary:
+	if campaign == null or campaign.state == null:
+		return {"result": World.DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
+	var position: int = campaign.state.roster.occupied_slots().find(_deploy_slot)
+	var placed: Dictionary = campaign.deploy(slot, x, y, facing)
+	var result: String = DictRead.as_string(placed["result"])
+	if result != World.DEPLOY_OK:
+		_say_deploy(result)
+		return placed
+	_refresh_after_deploy()
+	var slots: PackedInt32Array = campaign.state.roster.occupied_slots()
+	if slot == _deploy_slot or not slots.has(_deploy_slot):
+		_deploy_slot = Deployment.after_placement(slots, position)
+	_say_deploy(DEPLOY_LINE_HINT if _deploy_slot != Roster.NO_SLOT
+		else DEPLOY_LINE_POOL_EMPTY)
+	_refresh_status()
+	return placed
+
+
+## A take-back with the interface's bookkeeping, `0x004634C7..0x004634F8`:
+## the host's answer, and on success the picture, an empty selection made
+## the first record, and the line; a refusal is spoken.
+func recall_at(x: int, y: int) -> Dictionary:
+	if campaign == null or campaign.state == null:
+		return {"result": World.RECALL_NO_UNIT, "slot": Roster.NO_SLOT}
+	var taken: Dictionary = campaign.recall(x, y)
+	var outcome: String = DictRead.as_string(taken["result"])
+	if outcome != World.RECALL_OK:
+		_say_deploy(outcome)
+		return taken
+	_refresh_after_deploy()
+	_deploy_slot = Deployment.after_recall(
+		campaign.state.roster.occupied_slots(), _deploy_slot)
+	_say_deploy(DEPLOY_LINE_HINT)
+	_refresh_status()
+	return taken
+
+
+## The panel band's halves, `fcn.004637c0`: *step* is [constant
+## Deployment.PREV] or [constant Deployment.NEXT]. Nothing happens with no
+## selection -- the original's `je 0x46371d` -- and the click is `click_2`.
+## Answers whether the selection moved.
+func cycle_deploy_slot(step: int) -> bool:
+	if not _deploying() or _deploy_slot == Roster.NO_SLOT \
+			or campaign == null or campaign.state == null:
+		return false
+	var slots: PackedInt32Array = campaign.state.roster.occupied_slots()
+	var next: int = Deployment.cycle(slots, _deploy_slot, step)
+	if next == Roster.NO_SLOT:
+		return false
+	_play_interface(AudioTables.INTERFACE_DEPLOY_CYCLE)
+	_deploy_slot = next
+	_refresh_status()
+	return true
+
+
+## The place interface as the agent reads it (`/state`'s `deployment`).
+func deployment_view() -> Dictionary:
+	var out: Dictionary = {
+		"active": _deploying(),
+		"selected_slot": _deploy_slot,
+		"roster": [],
+		"cells": [],
+		"free_cells": [],
+	}
+	if not _deploying():
+		return out
+	if campaign != null and campaign.state != null:
+		out["roster"] = Array(campaign.state.roster.occupied_slots())
+	var cells: Array = []
+	var cell_list: Array[Vector2i] = campaign.deployment_cells() \
+		if campaign != null else world.deployment_cells(0)
+	for cell: Vector2i in cell_list:
+		cells.append([cell.x, cell.y])
+	out["cells"] = cells
+	var free: Array = []
+	for cell: Vector2i in _free_landings():
+		free.append([cell.x, cell.y])
+	out["free_cells"] = free
+	return out
+
+
+## The viewport's size, or the plate's when there is no tree yet.
+func _viewport_size() -> Vector2:
+	if is_inside_tree():
+		return get_viewport().get_visible_rect().size
+	return Vector2(HudTables.PLATE_SIZE)
 
 
 # --- the shell ---------------------------------------------------------------
@@ -1701,11 +1961,16 @@ func _show_shell_screen() -> CampaignScreen:
 		ShellHost.SCREEN_MENU:
 			var menu: MainMenuScreen = MainMenuScreen.new()
 			menu.paused = in_mission()
-			# **A campaign's mission, not any mission**: *Instant Action* and
-			# `--mission=` clear the campaign state, and there is no map to
-			# go back to.
+			# **A mission with a campaign screen behind it, not any mission**:
+			# `--mission=` clears the campaign state, and there is nothing to
+			# go back to. Instant Action goes back to the HQ its squad was
+			# hired in, under the *Back* caption -- since the deployment
+			# moved into the mission (docs/43 section 5.5) this entry is the
+			# one way off a turn-0 map.
 			menu.may_abandon = in_mission() and campaign != null \
-				and campaign.state != null and not campaign.is_instant_action()
+				and campaign.state != null
+			menu.abandon_to_hq = campaign != null \
+				and campaign.is_instant_action()
 			menu.behind = shell.behind
 			menu.has_any_save = _any_slot_used()
 			menu.has_instant_action = not _instant_action_missions().is_empty()
@@ -1882,9 +2147,9 @@ func _on_shell_choice(action: String) -> void:
 ## Leave a mission without finishing it and put the location map back, with the
 ## campaign standing.
 ##
-## Two buttons mean this and are written once: the deployment screen's *Main
-## Map*, which backs out of a sortie that has not started, and the pause
-## menu's ([constant MainMenuScreen.MAIN_MAP]), which abandons one that has.
+## The pause menu's ([constant MainMenuScreen.MAIN_MAP]), whether the sortie
+## is still on turn 0 or has been played; the deployment screen that used to
+## carry a second button for the first case is gone (docs/43 section 5.5).
 ##
 ## The squad comes back off the map first: the location screen frees the
 ## mission's whole scene, and anyone already deployed had been taken out of
@@ -1896,11 +2161,10 @@ func _leave_mission_for_map() -> void:
 	if campaign == null or campaign.state == null:
 		return
 	# Instant Action has no map: the Upgrade Menu's *Exit* and the pause
-	# menu's way out both land in the HQ. From a deployment the squad has to
+	# menu's way out both land in the HQ. From a mission the squad has to
 	# come off the map first, which is the `hq` action's own arm.
 	if campaign.is_instant_action():
-		if campaign.screen == CampaignHost.SCREEN_SELECT \
-				or campaign.screen == CampaignHost.SCREEN_MISSION:
+		if campaign.screen == CampaignHost.SCREEN_MISSION:
 			_return_to_instant_action_hq()
 		else:
 			var _hq: CampaignScreen = show_campaign_screen(
@@ -2324,11 +2588,10 @@ func _deploy_instant_action() -> void:
 	if world == null:
 		return
 	campaign.begin_mission(world)
-	var _select: CampaignScreen = show_campaign_screen(
-		CampaignHost.SCREEN_SELECT)
+	_open_deployment_or_start()
 
 
-## Back from an Instant Action deployment: the squad returns to the pool and
+## Back from an Instant Action mission: the squad returns to the pool and
 ## the HQ comes up over a mission built afresh, because whoever was already
 ## placed is standing on the old one.
 func _return_to_instant_action_hq() -> void:
@@ -2420,7 +2683,7 @@ func load_slot(slot: int) -> bool:
 	# so another slot can be picked.
 	shell.close()
 	close_campaign_screen()
-	campaign.enter_mission()
+	campaign.enter_mission(world)
 	_resume_loaded_mission()
 	_refresh_after_deploy()
 	_open_after_load()
@@ -2591,14 +2854,6 @@ func close_campaign_screen() -> void:
 	_screen = null
 	if _audio != null:
 		var _voice_stopped: int = _audio.stop_tag(VOICE_TAG)
-	# **The deployment's dots go down with the screen that raised them.** They
-	# hang off the *mission's* scene, which the start of the mission does not
-	# rebuild, so leaving them up put a landing marker on every free cell of
-	# turn 1 -- which is what a player who has just deployed and pressed
-	# *Start* actually sees. The parent guard keeps the campaign map's dots,
-	# which live on the backdrop and belong to a screen that is still there.
-	if _markers != null and _markers.get_parent() == _scene_root:
-		_show_markers({} as Dictionary[Vector2i, int])
 	_sync_hud()
 
 
@@ -2649,8 +2904,10 @@ func _frame_mission_camera() -> void:
 		return
 	var canvas: Vector2 = get_viewport().get_visible_rect().size
 	if _screen != null:
-		CameraRig.frame_projection(_rig.camera(),
-			SelectUnitsScreen.DEPLOY_WINDOW, CampaignScreen.PLATE_SIZE)
+		# A plate over the mission -- the briefing read over a turn-0 map --
+		# keeps the mission's own window, `0x0041A49E`'s 520 x 340.
+		CameraRig.frame_projection(_rig.camera(), Rect2(HudTables.WINDOW),
+			CampaignScreen.PLATE_SIZE)
 		return
 	if _hud != null and not _hud.visible:
 		CameraRig.frame_projection(_rig.camera(), Rect2(Vector2.ZERO, canvas),
@@ -2667,9 +2924,6 @@ func _on_campaign_choice(action: String) -> void:
 		return
 	if action.begins_with("pick:"):
 		var slot: int = action.substr(5).to_int()
-		var deploy: SelectUnitsScreen = _screen as SelectUnitsScreen
-		if deploy != null:
-			deploy.pick(slot)
 		var roster: UnitMenuScreen = _screen as UnitMenuScreen
 		if roster != null:
 			roster.pick(slot)
@@ -2763,89 +3017,14 @@ func _on_campaign_choice(action: String) -> void:
 				var _stopped: int = _audio.stop_tag(ExtroScreen.CONTINUE)
 			var _credits: CampaignScreen = _show_credits()
 		"enter":
-			# `_build` takes the campaign map down: the mission's own view is
-			# what the deploy screen's window shows. The mission is read
+			# `_build` takes the campaign map down. The mission is read
 			# through [method CampaignHost.current_mission] because this arm
 			# is one of the agent's debugging entries and can be reached from
 			# the shell, where there is no campaign state to read.
 			_build(campaign.current_mission())
 			if world != null:
 				campaign.begin_mission(world)
-			# **A deployment with nobody to deploy is not a screen.** A chain
-			# whose pool is empty and whose mission ships its own squad --
-			# campaign 2 on `_C_140`, which is how it starts -- went to a
-			# roster of nobody over a map of dots nobody could stand on, and
-			# read as the campaign being broken. Where the pool is empty and
-			# the mission has no squad either the screen still opens, because
-			# then there really is nothing to start and the screen is what
-			# says so.
-			if campaign.nobody_to_deploy() and campaign.may_start():
-				# **After `begin_mission`**, which is what put the live
-				# roster back: the pool this arm asks about is the one the
-				# deployment screen would draw from, and reading it before
-				# the restore made a re-entered mission -- the briefing's own
-				# *Continue* over a deployment -- take the silent arm on an
-				# empty row and then show the screen anyway, so its *Continue*
-				# found turn 1 and never handed over at all.
-				_skip_deployment_turn()
-				campaign.enter_mission()
-				close_campaign_screen()
-				_begin_mission_view()
-				_autosave_mission_start()
-				return
-			var _select: CampaignScreen = show_campaign_screen(
-				CampaignHost.SCREEN_SELECT)
-		"deployed":
-			_refresh_after_deploy()
-		"start":
-			if campaign.may_start():
-				campaign.enter_mission()
-				close_campaign_screen()
-				_begin_mission_view()
-				# Keep the local session state: CampaignCodec already carries its
-				# mode, mission and roster, so the ordinary save path can persist an
-				# Instant Action battle without changing the core or the format. The
-				# mission-name latch, rather than destroying state, separates its
-				# result from campaign progression.
-				# **Before the hand-over**, which is where the engine writes
-				# it too: `_31_.sav`, the autosave a mission entry leaves,
-				# carries turn 0 and the squad already placed (docs/11
-				# section 5.8). *Undo mission* therefore returns to the
-				# moment the deployment was accepted, not to the turn after
-				# it.
-				_autosave_mission_start()
-				# **Leaving the deployment screen is a hand-over.** It is the
-				# only way a deployed campaign mission reaches turn 1
-				# ([method World.skip_deployment_turn] has the call graph
-				# that forces it), and it is why the ride, the reinforcement
-				# and every other `NEXT TURN` of turn 1 happens before the
-				# player's first command rather than after it -- `_C_106`
-				# opens with the platform carrying the squad down.
-				#
-				# Through [method end_turn] rather than the world directly,
-				# so the events the script leaves are played back the way
-				# the same key plays them.
-				#
-				# **Only out of turn 0**, which is the engine's own state and
-				# not a flag of this screen's: a mission with nobody to
-				# deploy is already on turn 1 by
-				# [method World.skip_deployment_turn], and handing over from
-				# there would spend the player's first turn before they saw
-				# it. The game's own flow never shows this screen for such a
-				# mission -- the `"enter"` arm above skips it -- but the
-				# agent's debugging entry does.
-				if world != null and world.turn.turn == 0:
-					var _handed: TurnResult = end_turn()
-			else:
-				# **Named, not silent.** An empty map refused the button and
-				# said nothing, which is what stopped a campaign being
-				# startable at all by anyone who did not already know the
-				# screen (docs/92 section 7.4).
-				var select_screen: SelectUnitsScreen = _screen \
-					as SelectUnitsScreen
-				if select_screen != null:
-					select_screen.say(select_screen.strings_own(
-						SelectUnitsScreen.OWN_NEED_ONE))
+			_open_deployment_or_start()
 		"debriefing":
 			var _report: Dictionary = campaign.finish_mission(world)
 			var _screen_up: CampaignScreen = show_campaign_screen(
@@ -2876,15 +3055,9 @@ func _on_campaign_choice(action: String) -> void:
 				CampaignHost.SCREEN_MAP)
 		"resume":
 			# The briefing read over a running mission, closed. Nothing else
-			# changes: the mission is still standing behind it -- except over
-			# a deployment, where the screen it was read from has to come
-			# back with it (and with its markers, which
-			# [method _refresh_after_deploy] gates on that screen being up).
-			if campaign.screen == CampaignHost.SCREEN_SELECT:
-				var _back_to_deploy: CampaignScreen = show_campaign_screen(
-					CampaignHost.SCREEN_SELECT)
-			else:
-				close_campaign_screen()
+			# changes: the mission is still standing behind it, on turn 0
+			# or later.
+			close_campaign_screen()
 		"map":
 			_leave_mission_for_map()
 		"deploy":
@@ -2896,10 +3069,9 @@ func _on_campaign_choice(action: String) -> void:
 			var _options: CampaignScreen = open_shell(
 				ShellHost.SCREEN_OPTIONS)
 		"hq":
-			# From an Instant Action deployment, the squad goes back to the
+			# From an Instant Action mission, the squad goes back to the
 			# pool first; from the Upgrade Menu it is a change of screen.
-			if campaign.is_instant_action() \
-					and campaign.screen == CampaignHost.SCREEN_SELECT:
+			if campaign.is_instant_action() and in_mission():
 				_return_to_instant_action_hq()
 			else:
 				var _hq: CampaignScreen = show_campaign_screen(
@@ -3769,6 +3941,12 @@ func _clear_mission() -> void:
 	_ground = null
 	_hover = Vector2i(-1, -1)
 	_bands.clear()
+	# The place interface's selection and its line are the mission's: a
+	# refusal spoken on turn 0 would otherwise stand on the caption of the
+	# next mission loaded, or of a mid-mission save.
+	_deploy_slot = Roster.NO_SLOT
+	if _hud != null:
+		_hud.set_line("")
 	# A save deferred past a sequence belongs to the mission that queued it
 	# ([method _autosave]); the next mission's first idle frame would
 	# otherwise take it.
@@ -3898,7 +4076,7 @@ func _build(mission: String) -> void:
 		opening_script = world.run_init_map()
 	# **The map has loaded; the mission has not started.** This is the view
 	# player's first `aNextPlayerHandling`, and it is here rather than at any
-	# entry site because the fog it leaves is what the deployment screen and
+	# entry site because the fog it leaves is what the deployment and
 	# everything built below this line are drawn from.
 	#
 	# **The other half of the opening is the caller's**, because this one
@@ -3907,9 +4085,8 @@ func _build(mission: String) -> void:
 	# still in its mission-entry snapshot at this point -- `begin_mission`
 	# restores it *after* this returns. So each entry calls
 	# [method World.skip_deployment_turn] for itself once it knows, and a
-	# mission the player deploys into stays on turn 0 until the deployment
-	# screen's *Continue* hands over (the `"start"` arm of
-	# [method _on_campaign_choice]).
+	# mission the player deploys into stays on turn 0 until *Next player*
+	# hands over (the place interface's exit, [method _on_hud_event]).
 	#
 	# **And the order is forced, not a convenience.** The engine's own first
 	# `aNextPlayerHandling` calls `resetGameControl` `0x0043B770`, whose
@@ -4388,7 +4565,7 @@ func _restore_camera_on(slot: int) -> void:
 ## The first frame of a mission the player has just deployed into --
 ## `aInitBattleGround`'s counter-1 arm (docs/43 section 4.5).
 ##
-## The deployment screen is docs/42 section 2.4's **map** view, straight down,
+## The deployment is docs/42 section 2.4's **map** view, straight down,
 ## and it leaves the rig in it: a mission started from it opened on a top-down
 ## picture with nothing selected, so the panel was empty, the pad was dark and
 ## the camera keys answered in the same top-down view -- and the first thing
@@ -4512,6 +4689,11 @@ static func first_friendly_slot(mission_world: World) -> int:
 ## behind it -- and stays off by default.
 func _resume_selection() -> void:
 	if world == null or shown().game_control.mission_ended():
+		return
+	# **Nothing before the first hand-over.** `fcn.00471E00` refuses while
+	# the counter is 0 (docs/43 section 4.5), so a mission opens on turn 0
+	# with nobody selected; the place interface's own pick is the pool's.
+	if world.deploying():
 		return
 	var slot: int = hand_back_slot(shown(), _selected, _selection_before_turn)
 	_selection_before_turn = -1
@@ -5009,7 +5191,7 @@ func _refresh_status(extra: String = "") -> void:
 		_hud.refresh(shown(), _selected, Callable(self, "_event_available"),
 			Callable(self, "_command_available"), axes[0], axes[1], _bands,
 			_magnifier, _watching(shown()),
-			_playback.is_running() or _picture_busy())
+			_playback.is_running() or _picture_busy(), _deploy_record())
 		if _hud.progress_stepped():
 			_play_progress()
 		# **Inside the window, under the top band.** The developer line is a
@@ -5818,20 +6000,6 @@ func _screen_input(event: InputEvent) -> void:
 			rig.rotate_step(-1)
 		elif not on_backdrop and key.keycode == KEY_RIGHT:
 			rig.rotate_step(1)
-		# **The deployment screen's view keys are the interface's own**, read
-		# from [constant HudTables.EVENT_KEYS] rather than written out again:
-		# there is no plate here and so no hint to disagree with, but a key
-		# re-bound for the mission has to move here too or the same three
-		# keys would mean two things.
-		elif not on_backdrop and key.keycode \
-				== HudTables.EVENT_KEYS[HudTables.EVENT_UNIT_VIEW]:
-			_set_deploy_view(CameraRig.View.EYES)
-		elif not on_backdrop and key.keycode \
-				== HudTables.EVENT_KEYS[HudTables.EVENT_USER_VIEW]:
-			_set_deploy_view(CameraRig.View.UNIT)
-		elif not on_backdrop and key.keycode \
-				== HudTables.EVENT_KEYS[HudTables.EVENT_MAP_VIEW]:
-			_set_deploy_view(CameraRig.View.MAP)
 		return
 	var at: Vector2 = Vector2.ZERO
 	var clicked: bool = false
@@ -5904,12 +6072,12 @@ func _screen_input(event: InputEvent) -> void:
 			_markers.ring(_art, cell)
 
 
-## docs/42 section 2.4's three views on the deployment screen.
+## docs/42 section 2.4's three views while the mission is on turn 0.
 ##
-## [method _set_view] cannot be used: it frames a **unit**, and the whole of
-## what this screen is for is that the player has none on the map yet. The
-## deployment area is the subject instead, and the map view is what the
-## screen opens in -- the original deploys from above.
+## [method _set_view] cannot be used: it frames a **unit**, and until the
+## first soldier is placed the player has none on the map. The deployment
+## area is the subject instead, and the map view is what turn 0 opens in --
+## the original deploys from above (docs/43 section 4.5's counter-0 arm).
 func _set_deploy_view(mode: CameraRig.View) -> void:
 	if _rig == null or world == null or _director == null:
 		return
@@ -6199,6 +6367,13 @@ func _show_magnifier_page(slot: int) -> void:
 ## Turns a screen position into a map field, then asks the world about it.
 ## The scene tree is used to find *which* cell was clicked and for nothing else.
 func _pick(screen: Vector2, pass_friendlies: bool) -> void:
+	# **Turn 0 is the place interface's.** The original runs its click
+	# handler after the ordinary one (`0x0041BE0D`, then `0x0041BEC8`), but
+	# the ordinary one selects nothing before the first hand-over and the
+	# magnifier's arm is inside it, so the whole click is `aPI.cpp`'s.
+	if _deploying():
+		_deploy_click(screen)
+		return
 	var camera: Camera3D = _rig.camera()
 	# The ring takes every click while it is up (`0x00471AD0`): the nearest
 	# of its nine records, the X cancelling.
@@ -8186,7 +8361,7 @@ func _refresh_overlay(force: bool = false) -> void:
 	_overlay_stale = false
 	_far_drawn = _far_view()
 	_ground.refresh(_art, shown(), _selected, _last_query, _hover, _bands,
-		turn_player(), _far_drawn, _hover_gates_overlay())
+		turn_player(), _far_drawn, _hover_gates_overlay(), _deploying())
 
 
 ## Whether the ground overlay still waits for the pointer before it draws the
@@ -8323,7 +8498,10 @@ func _event_available(number: int) -> bool:
 			var pages: InfoText = _item_descriptions()
 			return pages != null and pages.has_unit_pages()
 		HudTables.EVENT_NEXT_UNIT:
-			return _may_command_now() and next_friendly_slot(world, _selected) >= 0
+			# Dark on turn 0: `fcn.00471E00` refuses before the first
+			# hand-over (docs/43 section 4.5).
+			return _may_command_now() and not _deploying() \
+				and next_friendly_slot(world, _selected) >= 0
 		HudTables.EVENT_VISIBLE_ENEMY:
 			return _visible_enemy_after(-1) >= 0
 		HudTables.EVENT_GIVE_UP, HudTables.EVENT_NEXT_PLAYER:
@@ -8373,11 +8551,20 @@ func _on_hud_event(number: int) -> void:
 				_rig.set_view_mode(CameraRig.View.SCRIPT)
 			_sync_hud()
 		HudTables.EVENT_UNIT_VIEW:
-			_set_view(CameraRig.View.EYES)
+			if _deploying():
+				_set_deploy_view(CameraRig.View.EYES)
+			else:
+				_set_view(CameraRig.View.EYES)
 		HudTables.EVENT_MAP_VIEW:
-			_set_view(CameraRig.View.MAP)
+			if _deploying():
+				_set_deploy_view(CameraRig.View.MAP)
+			else:
+				_set_view(CameraRig.View.MAP)
 		HudTables.EVENT_USER_VIEW:
-			_set_view(CameraRig.View.UNIT)
+			if _deploying():
+				_set_deploy_view(CameraRig.View.UNIT)
+			else:
+				_set_view(CameraRig.View.UNIT)
 		HudTables.EVENT_LOAD:
 			shell.open(ShellHost.SCREEN_SLOTS, _behind_the_shell())
 			shell.go_slots(ShellHost.MODE_LOAD)
@@ -8410,6 +8597,34 @@ func _on_hud_event(number: int) -> void:
 			_refresh_status(_status_note)
 			_check_mission_end()
 		HudTables.EVENT_NEXT_PLAYER:
+			# **Leaving the place interface is a hand-over.** *Next player*
+			# has no turn-0 gate in the original (`0x0041DA20` cmd 2), and it
+			# is the only way a deployed campaign mission reaches turn 1
+			# ([method World.skip_deployment_turn] has the call graph that
+			# forces it) -- which is why the ride, the reinforcement and
+			# every other `NEXT TURN` of turn 1 happens before the player's
+			# first command rather than after it: `_C_106` opens with the
+			# platform carrying the squad down. The player presses the
+			# button themselves, as the original has them do.
+			if _deploying():
+				# **Named, not silent, and refused.** The original hands over
+				# an empty map and the player loses by wipeout on turn 1;
+				# this remake keeps them on turn 0 and says why (docs/92
+				# section 7.4).
+				if not _may_leave_deployment():
+					_say_deploy(DEPLOY_LINE_NEED_ONE)
+					return
+				# `0x0041DA20` cmd 2 clears the selection word and wipes
+				# the panel before the hand-over runs.
+				_deploy_slot = Roster.NO_SLOT
+				if _hud != null:
+					_hud.set_line("")
+				# The unit view first, so [method _restore_camera_on]
+				# re-applies it rather than the deployment's map view. No
+				# autosave here: slot 31 was written when the interface went
+				# up ([method _open_deployment_or_start]), with the pool
+				# still full, as the retail `_31_.sav` is.
+				_begin_mission_view()
 			var _ended: TurnResult = end_turn()
 		HudTables.EVENT_BRIEFING:
 			var _briefing: CampaignScreen = show_campaign_screen(

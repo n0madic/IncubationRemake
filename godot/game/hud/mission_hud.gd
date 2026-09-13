@@ -26,6 +26,9 @@ signal column_hovered
 signal pad_hovered
 ## The radar's scale changed.
 signal radar_rescaled(fields: int)
+## The panel band's halves were clicked while a pool record was on the
+## panel: [constant Deployment.PREV] or [constant Deployment.NEXT].
+signal panel_cycled(step: int)
 
 ## Below [constant CampaignScreen.SCREEN_LAYER], so a campaign screen or the
 ## shell covers the interface as it covers the mission.
@@ -142,6 +145,10 @@ var _info_auto_hide: bool = true
 var _paths: CachePaths = null
 ## The caption shown for the button under the pointer.
 var _hint_button: String = ""
+## The standing line under it -- the remake's own words on the same label
+## (the place interface's hint and refusals, docs/43 section 5.5), shown
+## whenever no button caption is.
+var _line: String = ""
 var _strings: Localization = null
 var _art: Art = null
 var _font: FontFile = null
@@ -203,6 +210,7 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	panel.name = "Panel"
 	_root.add_child(panel)
 	panel.setup(art, strings, _band_font(), _panel_font())
+	panel.cycled.connect(func(step: int) -> void: panel_cycled.emit(step))
 	# The remake names the shipped inventory pictures with local tooltips; the
 	# catalogue supplies the original game's own equipment names.
 	panel.use_equipment_names(DictRead.as_array(balance.get("equipment", [])))
@@ -397,11 +405,19 @@ func _layout() -> void:
 func refresh(world: World, selected: int, event_available: Callable,
 		command_available: Callable, north: Vector2, east: Vector2,
 		bands: Dictionary[Vector2i, int], magnifier: bool,
-		watching: Dictionary = {}, held: bool = false) -> void:
+		watching: Dictionary = {}, held: bool = false,
+		record: UnitState = null) -> void:
 	var watched: bool = not watching.is_empty()
 	columns.refresh(event_available, magnifier)
 	pad.refresh(command_available)
-	panel.refresh(world, -1 if watched else selected)
+	# A pool record on the panel is the place interface (docs/43 section
+	# 5.5): the panel shows it and its band takes the cycling clicks.
+	var deploying: bool = record != null and not watched
+	if deploying:
+		panel.refresh_record(world, record)
+	else:
+		panel.refresh(world, -1 if watched else selected)
+	panel.set_cycling(deploying)
 	var player: int = world.turn.current_player if world != null else -1
 	radar.refresh(world, selected, north, east, bands, player)
 	columns.visible = not watched
@@ -429,9 +445,22 @@ func set_hint(text: String) -> void:
 	_show_hint()
 
 
+## The standing line on the same label -- what the place interface has to
+## say. A button's caption wins while the pointer is on one; the line comes
+## back when it leaves, which a caption written through [method set_hint]
+## would not, because the columns wipe theirs on exit.
+func set_line(text: String) -> void:
+	_line = text
+	_show_hint()
+
+
+func line_text() -> String:
+	return _line
+
+
 func _show_hint() -> void:
-	_hint.text = _hint_button
-	_hint.visible = _hint_button != ""
+	_hint.text = _hint_button if _hint_button != "" else _line
+	_hint.visible = _hint.text != ""
 
 
 func hint_text() -> String:
@@ -740,6 +769,7 @@ func view() -> Dictionary:
 		"visible": visible,
 		"turn_text": turn_text(),
 		"hint": hint_text(),
+		"line": _line,
 		"report": report_text(),
 		"info": info_text(),
 		"info_title": info_title(),

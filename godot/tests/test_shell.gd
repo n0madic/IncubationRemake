@@ -47,7 +47,7 @@ func run(h: TestHarness) -> void:
 	_slot_round_trip(h)
 	_screens(h)
 	_scrolling(h)
-	_deploy_screen(h)
+	_deployment_mode(h)
 	_map_picture(h)
 	_map_camera_presets(h)
 	_projection(h)
@@ -514,10 +514,6 @@ func _scrolling(h: TestHarness) -> void:
 		not map.take_scroll(_wheel(MOUSE_BUTTON_WHEEL_DOWN)))
 	map.free()
 
-	var deploy: SelectUnitsScreen = SelectUnitsScreen.new()
-	h.check("scroll.the_deployment_keeps_the_zoom", not deploy.scrolls())
-	deploy.free()
-
 	# A list shorter than a page has nothing to turn, and answering the wheel
 	# for it would be an inert control (section 7.1).
 	var short: MissionSelectScreen = MissionSelectScreen.new()
@@ -967,7 +963,24 @@ func _screens(h: TestHarness) -> void:
 		"between the mission's own two and the shell's")
 	h.check("screens.pause_menu_map_caption_is_shipped",
 		_labels_of(abandoning).has(_strings.shipped("Txtmod_b", 140)),
-		"*Main Map*, the deployment screen's own button one screen on")
+		"*Main Map*, the campaign's own caption")
+	# Instant Action has no map: the same entry is captioned *Back* and
+	# asks about the HQ, because since the deployment moved into the mission
+	# (docs/43 section 5.5) this is the one way off a turn-0 map.
+	var to_hq: MainMenuScreen = MainMenuScreen.new()
+	to_hq.paused = true
+	to_hq.may_abandon = true
+	to_hq.abandon_to_hq = true
+	to_hq.setup(_art, _strings, _font)
+	h.check("screens.pause_menu_in_instant_action_offers_the_hq",
+		_actions_of(to_hq).has(MainMenuScreen.MAIN_MAP)
+		and _labels_of(to_hq).has(_strings.shipped("Txtmod_b", 2))
+		and not _labels_of(to_hq).has(_strings.shipped("Txtmod_b", 140)),
+		"*Back*, `Txtmod_b` 2, on the abandon entry")
+	to_hq._on_pressed(MainMenuScreen.MAIN_MAP)
+	h.check("screens.pause_menu_hq_asks_about_the_hq",
+		_labels_of(to_hq).has(_strings.text(MainMenuScreen.OWN_ABANDON_TO_HQ)))
+	to_hq.free()
 	abandoning._on_pressed(MainMenuScreen.MAIN_MAP)
 	var map_asked: PackedStringArray = _labels_of(abandoning)
 	h.check("screens.pause_menu_map_asks_first",
@@ -1266,19 +1279,9 @@ func _screens(h: TestHarness) -> void:
 	_no_missing(h, "recruit", window)
 	window.free()
 	instant_hq.free()
-	var instant_deploy: SelectUnitsScreen = SelectUnitsScreen.new()
-	instant_deploy.host = instant_host
-	instant_deploy.back_to_hq = true
-	instant_deploy.setup(_art, _strings, _font)
-	var instant_deploy_actions: PackedStringArray = _actions_of(instant_deploy)
-	h.check("instant_action.deployment_returns_to_hq",
-		instant_deploy_actions.has("hq")
-		and not instant_deploy_actions.has("map"),
-		"Back from deployment is the HQ the squad was hired in")
-	instant_deploy.free()
 	# The HQ stands over the mission before anybody is deployed, and takes no
-	# entry snapshot until *Deploy units*; Back from deployment restores the
-	# pool and lands in the HQ, not on a map the session does not have.
+	# entry snapshot until *Deploy units*; Back from a turn-0 map restores
+	# the pool and lands in the HQ, not on a map the session does not have.
 	var instant_world: World = World.create(CacheFixture.mission("_C_141"),
 		CacheFixture.balance(), 0.0)
 	var _swept: int = instant_world.load_sweep()
@@ -1296,13 +1299,59 @@ func _screens(h: TestHarness) -> void:
 		landings[0].y if not landings.is_empty() else 0)
 	h.check("instant_action.no_deployment_from_the_hq",
 		DictRead.as_string(early["result"]) == World.DEPLOY_EMPTY_RECORD
-		and instant_state.roster.used_slots() == 1,
-		"deploy() is the deployment screen's alone")
+		and instant_state.roster.used_slots() == 1
+		and not instant_host.deploying(),
+		"deploy() is turn 0's alone, past begin_mission")
+	# The picture agrees with the host: the HQ frames a turn-0 world, but
+	# the place interface -- the dots, `/state.deployment` -- is not up
+	# until the mission is the screen. And a load of a turn-0 *Instant
+	# Action* save takes the interface even over an empty pool: `0x0041A073`'s
+	# skip is a campaign game's (`gameMode() == 1`), and the world's own
+	# `skip_deployment_turn` would do nothing here.
+	var hq_main: SliceMain = SliceMain.new()
+	hq_main.world = instant_world
+	hq_main.campaign = instant_host
+	# What `_build` writes for an *Instant Action* session (`ArenaMode`).
+	instant_world.turn.mode = TurnState.MODE_LOCAL
+	h.check("instant_action.hq_is_not_deploying",
+		instant_world.deploying() and not hq_main._deploying()
+		and not DictRead.as_bool(hq_main.deployment_view()["active"]),
+		"the counter says turn 0; the host says the HQ is the screen")
+	h.check("instant_action.no_silent_arm_for_a_local_game",
+		not hq_main._may_skip_deployment()
+		and instant_world.turn.mode != TurnState.MODE_CAMPAIGN,
+		"0x0041A073 tests gameMode() == 1 first")
+	hq_main.free()
 	instant_host.begin_mission(instant_world)
+	h.check("instant_action.begin_mission_enters_the_mission",
+		instant_host.screen == CampaignHost.SCREEN_MISSION
+		and instant_host.deploying(),
+		"there is no screen between the HQ and the turn-0 map")
 	var placed: String = ""
 	if not landings.is_empty():
 		placed = DictRead.as_string(instant_host.deploy(hired,
 			landings[0].x, landings[0].y)["result"])
+		# And back, through the host: the record returns to the live row.
+		var recalled: Dictionary = instant_host.recall(landings[0].x,
+			landings[0].y)
+		h.check("instant_action.recall_puts_the_soldier_back",
+			DictRead.as_string(recalled["result"]) == World.RECALL_OK
+			and instant_state.roster.used_slots() == 1
+			and instant_state.roster.record(
+				DictRead.as_int(recalled["slot"])) != null,
+			"aTransferUnitFromMapToPool, the pool insertion being the host's")
+		placed = DictRead.as_string(instant_host.deploy(
+			DictRead.as_int(recalled["slot"]),
+			landings[0].x, landings[0].y)["result"])
+		# Past turn 0 the interface is down and the host refuses both.
+		instant_world.turn.turn = TurnState.FIRST_TURN
+		h.check("instant_action.no_deployment_past_turn_zero",
+			DictRead.as_string(instant_host.deploy(hired, landings[0].x,
+				landings[0].y)["result"]) == World.DEPLOY_EMPTY_RECORD
+			and DictRead.as_string(instant_host.recall(landings[0].x,
+				landings[0].y)["result"]) == World.RECALL_NO_UNIT
+			and not instant_host.deploying(),
+			"fcn.00463380 returns at once when the counter is not 0")
 	# A save taken here holds the placed soldier in the snapshot row only;
 	# a load without the battle blob has to put him back before the HQ reads
 	# the live row, or the next *Deploy units* restores the snapshot over
@@ -1661,14 +1710,15 @@ func _screens(h: TestHarness) -> void:
 	blind.free()
 
 
-## The deployment screen -- the one that could not be got past.
+## The place interface -- turn 0 inside the mission, docs/43 section 5.5.
 ##
-## It refused in total silence: a landing cell clicked with no soldier picked
-## did nothing, and *Continue* on an empty map did nothing, so the campaign
-## could not be started by anyone who did not already know that a name has to
-## be clicked before a position. Every refusal is a sentence now, and this is
-## what keeps it one.
-func _deploy_screen(h: TestHarness) -> void:
+## The screen it replaced refused in total silence: a landing cell clicked
+## with no soldier picked did nothing, and *Continue* on an empty map did
+## nothing. Every refusal is a line on the HUD's caption label now, and this
+## is what keeps it one -- and what pins the original's own rules: the pool's
+## first record selected on entry, the facing by the quadrant of the click,
+## the take-back, the band's wraps and the clamp after a placement.
+func _deployment_mode(h: TestHarness) -> void:
 	var host: CampaignHost = _host("deploy")
 	var _state: CampaignState = host.start_new(1)
 	var built: Dictionary = CacheFixture.load_world(host.state.mission)
@@ -1677,21 +1727,15 @@ func _deploy_screen(h: TestHarness) -> void:
 			"the cache has no " + host.state.mission)
 		return
 	var world: World = built["world"]
-	host.begin_mission(world)
-
-	var screen: SelectUnitsScreen = SelectUnitsScreen.new()
-	screen.host = host
-	screen.setup(_art, _strings, _font)
-	var cells: Array[Vector2i] = host.deployment_cells()
-	if cells.is_empty():
-		h.check("deploy.cells_present", false, "no deployment cells")
-		screen.free()
+	var cells: Array[Vector2i] = world.deployment_cells(0)
+	if cells.size() < 2:
+		h.check("deploy.cells_present", false, "fewer than two landing cells")
 		return
 
 	# **Campaign 2 starts with nobody to deploy, and that is the data.**
 	# `aCreateUnitPoolForCampaign(2)` is a bare return and `_C_140` places its
-	# own squad, so the screen would open on a roster of nobody. `SliceMain`
-	# skips it there and only there.
+	# own squad, so the interface would open on a pool of nobody. `SliceMain`
+	# skips turn 0 there and only there.
 	h.check("deploy.chain_1_has_a_squad", not host.nobody_to_deploy(),
 		"%d in the pool" % host.state.roster.occupied_slots().size())
 	var empty_host: CampaignHost = _host("deploy2")
@@ -1699,59 +1743,210 @@ func _deploy_screen(h: TestHarness) -> void:
 	h.check("deploy.chain_2_has_none", empty_host.nobody_to_deploy(),
 		"docs/27 section 3.1 -- the pool creator's arm for campaign 2 returns")
 
-	var hint: String = _joined(screen)
-	h.check("deploy.opens_with_a_hint",
-		hint.contains(_strings.text("deploy.hint")),
-		"the screen says what it wants before anything is clicked")
-	# **Somebody is picked from the start.** The map is the screen now, so the
-	# first thing a player does is click a cell, and a first click that
-	# refused because no name had been selected would be the same silence in
-	# a new place.
-	h.equal("deploy.opens_with_a_soldier_picked", screen.selected,
-		host.state.roster.occupied_slots()[0])
+	var paths: CachePaths = CacheFixture.paths()
+	var hud: MissionHud = MissionHud.new()
+	hud.setup(_art, _strings, GameFont.load_from(paths, "font_2"),
+		GameFont.load_from(paths, MissionHud.TEXT_FONT),
+		GameFont.load_from(paths, MissionHud.SMALL_FONT), paths,
+		CacheFixture.balance())
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main.campaign = host
+	main._strings = _strings
+	main._hud = hud
+	var cycled: Array[int] = []
+	hud.panel_cycled.connect(func(step: int) -> void: cycled.append(step))
+	host.begin_mission(world)
+	h.check("deploy.begin_mission_is_the_mission",
+		host.screen == CampaignHost.SCREEN_MISSION and main._deploying(),
+		"no screen between the briefing and the turn-0 map")
+	main._enter_deployment()
 
-	# A cell with nobody picked -- which is what an empty squad leaves.
-	screen.selected = Roster.NO_SLOT
-	screen.world_click(cells[0])
-	h.check("deploy.a_cell_with_nobody_picked_says_so",
-		_joined(screen).contains(_strings.text("deploy.pick_a_soldier")),
-		"named, not silent (docs/92 section 7.4)")
-	h.equal("deploy.nothing_was_placed", host.state.roster.used_slots(), 3,
-		"the refusal really refused")
+	# `aInitPlaceInterface`: the pool's first record is selected, the line
+	# says what a click does, the panel shows the record and its band takes
+	# clicks.
+	var slots: PackedInt32Array = host.state.roster.occupied_slots()
+	h.equal("deploy.opens_with_the_first_picked", main._deploy_slot, slots[0])
+	h.equal("deploy.opens_with_a_hint", hud.line_text(),
+		_strings.text("deploy.hint"))
+	h.check("deploy.panel_shows_the_record",
+		hud.panel.icon_count() > 0 and hud.panel.cycling(),
+		"fcn.00463730 feeds the pool record to 0x004756D0")
+	var first_name: String = host.state.roster.record(slots[0]).name
+	h.check("deploy.panel_names_the_record",
+		" ".join(hud.panel.texts()).contains(first_name), first_name)
+	h.check("deploy.nothing_selected_on_the_map", main._selected < 0,
+		"fcn.00471E00 refuses before the first hand-over")
+	h.check("deploy.next_unit_is_dark",
+		not main._event_available(HudTables.EVENT_NEXT_UNIT)
+		and main._event_available(HudTables.EVENT_NEXT_PLAYER),
+		"Tab is refused on turn 0; Next player is lit and answers with a line")
 
-	# And *Continue* on an empty map, which is the host's own refusal.
+	# The band: previous wraps to the last, next to the first, and the
+	# panel follows the selection.
+	h.check("deploy.next_cycles", main.cycle_deploy_slot(Deployment.NEXT)
+		and main._deploy_slot == slots[1])
+	h.check("deploy.previous_cycles_back",
+		main.cycle_deploy_slot(Deployment.PREV)
+		and main._deploy_slot == slots[0])
+	h.check("deploy.previous_wraps_to_the_last",
+		main.cycle_deploy_slot(Deployment.PREV)
+		and main._deploy_slot == slots[slots.size() - 1],
+		"0x0046363D: index 0 goes to count - 1")
+	h.check("deploy.next_wraps_to_the_first",
+		main.cycle_deploy_slot(Deployment.NEXT)
+		and main._deploy_slot == slots[0],
+		"0x004636B7: count - 1 goes to 0")
+	var pressed: InputEventMouseButton = InputEventMouseButton.new()
+	pressed.button_index = MOUSE_BUTTON_LEFT
+	pressed.pressed = true
+	hud.panel._cycle_zones[1].gui_input.emit(pressed)
+	h.equal("deploy.the_band_reaches_the_host", cycled, [Deployment.NEXT],
+		"the panel's next half raises panel_cycled")
+	main._deploy_slot = slots[0]
+
+	# *Next player* with nobody on the map: refused, with a line, on turn 0.
 	h.check("deploy.may_not_start_empty", not host.may_start())
-	screen.say(screen.strings_own(SelectUnitsScreen.OWN_NEED_ONE))
+	main._on_hud_event(HudTables.EVENT_NEXT_PLAYER)
 	h.check("deploy.an_empty_map_says_so",
-		_joined(screen).contains(_strings.text("deploy.need_one")))
+		world.turn.turn == 0 and hud.line_text() == _strings.text("deploy.need_one"),
+		"named, not silent (docs/92 section 7.4); the original hands over "
+		+ "and loses by wipeout")
 
-	# The working path still works, and every refusal name has a sentence.
-	var slot: int = host.state.roster.occupied_slots()[0]
-	screen.selected = slot
-	screen.world_click(cells[0])
-	h.equal("deploy.a_picked_soldier_lands",
-		host.state.roster.used_slots(), 2)
-	h.check("deploy.may_start_now", host.may_start())
-	for refusal: String in [World.DEPLOY_NOT_A_CELL, World.DEPLOY_CELL_TAKEN,
-			World.DEPLOY_NO_SLOT, World.DEPLOY_EMPTY_RECORD]:
-		var said: String = screen.strings_own(
-			SelectUnitsScreen.OWN_REFUSAL % refusal)
-		h.check("deploy.refusal_named.%s" % refusal,
-			not said.begins_with(Localization.MISSING_PREFIX), said)
-	_no_missing(h, "select_units", screen)
-	screen.free()
+	# A click off the landing zone, and one on it: the quadrant sets the
+	# facing (left-bottom is 4), the record leaves the live row, the
+	# selection clamps to the same index.
+	main.deploy_cell(Vector2i(-1, -1), Vector2(100.0, 400.0))
+	h.equal("deploy.a_non_cell_says_so", hud.line_text(),
+		_strings.text("deploy.not_a_deployment_cell"))
+	var before: int = host.state.roster.used_slots()
+	var expected_next: int = slots[1]
+	h.check("deploy.a_click_places", main.deploy_cell(cells[0],
+		Vector2(100.0, 400.0)))
+	h.equal("deploy.the_record_left_the_row",
+		host.state.roster.used_slots(), before - 1)
+	var view: Dictionary = world.cell_view(cells[0].x, cells[0].y)
+	var placed_slot: int = DictRead.as_int(view["unit"])
+	h.check("deploy.the_soldier_stands_there", placed_slot != MapState.NO_UNIT)
+	if placed_slot != MapState.NO_UNIT:
+		h.equal("deploy.faces_by_the_quadrant",
+			DictRead.as_int(world.unit_view(placed_slot)["facing"]), 4,
+			"x < 320, y >= 240 -> 4 (0x00463572/75)")
+	h.equal("deploy.selection_clamps_to_the_same_index", main._deploy_slot,
+		expected_next, "0x004635E3..0x00463605")
+	h.check("deploy.may_start_now", host.may_start()
+		and main._may_leave_deployment())
+	var stamped: Dictionary[Vector2i, int] = GroundSprites.cell_states(world,
+		-1, null, {}, 0)
+	h.check("deploy.the_dots_stay_on_an_occupied_cell",
+		stamped.has(cells[0]) and stamped[cells[0]] == HudTables.STATE_DEPLOY_FIRST,
+		"markDeploymentCells marks every cell of the player's, occupied too")
+	# The other quadrants.
+	h.equal("deploy.quadrant_facings", [
+		Deployment.facing_for(Vector2(10.0, 10.0), Vector2(640.0, 480.0)),
+		Deployment.facing_for(Vector2(630.0, 10.0), Vector2(640.0, 480.0)),
+		Deployment.facing_for(Vector2(630.0, 470.0), Vector2(640.0, 480.0)),
+		Deployment.facing_for(Vector2(10.0, 470.0), Vector2(640.0, 480.0))],
+		[6, 5, 7, 4])
+
+	# The take-back: a click on the placed soldier puts him back into the
+	# live row and the cell is free again.
+	h.check("deploy.a_click_on_the_soldier_takes_him_back",
+		main.deploy_cell(cells[0], Vector2(100.0, 400.0)))
+	h.equal("deploy.the_record_is_back", host.state.roster.used_slots(), before)
+	h.equal("deploy.the_cell_is_free_again",
+		DictRead.as_int(world.cell_view(cells[0].x, cells[0].y)["unit"]),
+		MapState.NO_UNIT)
+
+	# Everyone placed: the selection is nobody, the line says so, and a
+	# click on a free cell says so too rather than doing nothing.
+	var placed: int = 0
+	for index: int in range(slots.size()):
+		if index >= cells.size():
+			break
+		if main.deploy_cell(cells[index], Vector2(400.0, 100.0)):
+			placed += 1
+	h.check("deploy.everyone_placed", placed == mini(slots.size(), cells.size()))
+	if placed == slots.size():
+		h.equal("deploy.nobody_left_to_pick", main._deploy_slot, Roster.NO_SLOT,
+			"0x004635EF: an emptied pool selects nobody")
+		h.equal("deploy.an_empty_pool_says_so", hud.line_text(),
+			_strings.text("deploy.pool_empty"))
+		h.check("deploy.the_band_is_inert_with_nobody",
+			not main.cycle_deploy_slot(Deployment.NEXT),
+			"the original's je 0x46371d")
+		if cells.size() > placed:
+			h.check("deploy.a_free_cell_with_nobody_is_refused",
+				not main.deploy_cell(cells[placed], Vector2(400.0, 100.0))
+				and hud.line_text() == _strings.text("deploy.pool_empty"))
+		# And one back, which re-arms the selection (`0x004634EF`).
+		h.check("deploy.a_take_back_re_arms_the_selection",
+			main.deploy_cell(cells[0], Vector2(100.0, 400.0))
+			and main._deploy_slot != Roster.NO_SLOT
+			and hud.panel.cycling())
+
+	# The agent's arms carry the interface's bookkeeping: a placement of a
+	# record other than the selected one keeps the selection, a take-back
+	# with nobody selected re-arms it, and a placement of the selected one
+	# clamps as a click's does.
+	if placed == slots.size() and cells.size() >= 2 and slots.size() >= 2:
+		var kept: int = main._deploy_slot
+		var back: Dictionary = main.recall_at(cells[1].x, cells[1].y)
+		var other: int = DictRead.as_int(back["slot"])
+		h.check("deploy.agent_recall_keeps_the_selection",
+			DictRead.as_string(back["result"]) == World.RECALL_OK
+			and main._deploy_slot == kept and other != kept,
+			"0x004634EF: anyone still selected stays")
+		var elsewhere: Dictionary = main.place_from_roster(other, cells[1].x,
+			cells[1].y, 5)
+		h.check("deploy.agent_places_another_and_keeps_the_selection",
+			DictRead.as_string(elsewhere["result"]) == World.DEPLOY_OK
+			and main._deploy_slot == kept
+			and DictRead.as_int(world.unit_view(
+				DictRead.as_int(elsewhere["slot"]))["facing"]) == 5,
+			"the panel still shows the record the click would place")
+		var _again: Dictionary = main.recall_at(cells[1].x, cells[1].y)
+		var selected: Dictionary = main.place_from_roster(kept, cells[1].x,
+			cells[1].y, World.NO_FACING)
+		h.check("deploy.agent_places_the_selection_and_clamps",
+			DictRead.as_string(selected["result"]) == World.DEPLOY_OK
+			and main._deploy_slot == other,
+			"0x004635E3..0x00463605 from the selection's own index")
+		var _restored: Dictionary = main.recall_at(cells[1].x, cells[1].y)
+		main._deploy_slot = kept
+		main._say_deploy(SliceMain.DEPLOY_LINE_HINT)
+
+	# The agent's view of it.
+	var seen: Dictionary = main.deployment_view()
+	h.check("deploy.state_reports_the_interface",
+		DictRead.as_bool(seen["active"])
+		and DictRead.as_int(seen["selected_slot"]) == main._deploy_slot
+		and DictRead.as_array(seen["cells"]).size() == cells.size(),
+		str(seen))
 
 	# **Backing out puts the squad back.** The map screen frees the mission's
 	# whole scene, and whoever is already standing on it has been taken out of
 	# the pool -- so *Main Map* from here without `aCopyUnitPool(1, 0)` cost
 	# the campaign a soldier per cell already clicked.
-	h.equal("deploy.one_is_on_the_map", host.state.roster.used_slots(), 2)
+	h.check("deploy.some_are_on_the_map",
+		host.state.roster.used_slots() < before)
 	host.abandon_mission()
 	h.equal("deploy.leaving_puts_the_squad_back",
-		host.state.roster.used_slots(), 3,
+		host.state.roster.used_slots(), before,
 		"`aCopyUnitPool(1, 0)`, the same call the debriefing's replay makes")
 	h.equal("deploy.leaving_goes_to_the_map", host.screen,
 		CampaignHost.SCREEN_MAP)
+	# The line and the selection go with the mission: a refusal spoken on
+	# turn 0 does not stand on the caption of whatever is loaded next.
+	main._deploy_slot = slots[0]
+	main._say_deploy(SliceMain.DEPLOY_LINE_NEED_ONE)
+	main._clear_mission()
+	h.check("deploy.clearing_the_mission_clears_the_line",
+		hud.line_text() == "" and main._deploy_slot == Roster.NO_SLOT,
+		"a mid-mission load would otherwise carry `need_one`")
+	main._hud = null
+	hud.free()
+	main.free()
 
 
 ## The location map's picture: its cells, and the camera the original puts on
@@ -1868,7 +2063,7 @@ func _map_turn(h: TestHarness) -> void:
 func _projection(h: TestHarness) -> void:
 	h.equal("projection.focal_lengths",
 		[CameraRig.focal_length(CampaignScreen.PLATE_WINDOW.size.x),
-		CameraRig.focal_length(SelectUnitsScreen.DEPLOY_WINDOW.size.x),
+		CameraRig.focal_length(float(HudTables.WINDOW.size.x)),
 		CameraRig.focal_length(CampaignScreen.PLATE_SIZE.x),
 		CameraRig.focal_length(CampaignScreen.PLATE_SIZE.x, 4)],
 		[398.0, 400.0, 492.0, 160.0],
@@ -1888,7 +2083,7 @@ func _projection(h: TestHarness) -> void:
 	var camera: Camera3D = Camera3D.new()
 	var render: Vector2 = CampaignScreen.PLATE_SIZE
 	for window: Rect2 in [CampaignScreen.PLATE_WINDOW,
-			SelectUnitsScreen.DEPLOY_WINDOW]:
+			Rect2(HudTables.WINDOW)]:
 		CameraRig.frame_projection(camera, window, render)
 		var tag: String = "%dx%d" % [int(window.size.x), int(window.size.y)]
 		h.equal("projection.is_a_frustum.%s" % tag,
@@ -1972,9 +2167,10 @@ func _map_picture(h: TestHarness) -> void:
 	# plate whose picture frame it is.
 	h.equal("map.window_is_the_engines", CampaignScreen.PLATE_WINDOW,
 		Rect2(65.0, 57.0, 518.0, 306.0), "0x0040B670 at 0x00454102")
-	h.equal("map.deploy_window_is_the_missions",
-		SelectUnitsScreen.DEPLOY_WINDOW, Rect2(60.0, 34.0, 520.0, 340.0),
-		"0x0040B670 at 0x0041A4C6")
+	h.equal("map.mission_window_frames_a_page_over_it",
+		Rect2(HudTables.WINDOW), Rect2(60.0, 34.0, 520.0, 340.0),
+		"0x0040B670 at 0x0041A4C6 -- the briefing read over a turn-0 map "
+		+ "keeps the mission's own window")
 	h.equal("map.plate_is_the_framed_one", CampaignMapScreen.PLATE_MAP,
 		"plate_3", "aInitGUI(\"GUI\\plate_3.bmp\") at 0x00454245")
 

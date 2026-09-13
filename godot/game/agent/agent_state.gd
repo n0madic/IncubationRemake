@@ -75,7 +75,7 @@ func build(frame: int) -> Dictionary:
 		# a driven switch is observable (docs/92 section 7.6).
 		"language": _main._paths.language if _main._paths != null else "",
 		# **Above the `world == null` return.** A scenario that fails at the
-		# shell, on the location map or on a deployment screen has to be able
+		# shell, on the location map or on a turn-0 map has to be able
 		# to say whether it was played straight too ([Cheats]).
 		"cheats": Array(_main.cheats.active()),
 		# What the pool holds right now, by wave: the clicks and the voices
@@ -96,6 +96,10 @@ func build(frame: int) -> Dictionary:
 	document["player"] = world.turn.current_player
 	document["selected"] = _main.selected_slot()
 	document["hud"] = _main.hud_view()
+	# The place interface while the mission is on turn 0 (docs/43 section
+	# 5.5): whether it is up, the pool record on the panel, the roster's
+	# slots and the landing cells, with and without somebody on them.
+	document["deployment"] = _main.deployment_view()
 	document["markers"] = markers()
 	document["visible_rect"] = visible_rect()
 	# Whether a body is on its way. The world moves in one call and the

@@ -43,10 +43,13 @@ const MAIN_MENU: String = "main_menu"
 ## mission left through *Main Menu* drops the campaign with it, and the three
 ## reserved autosave slots that still hold it are deliberately off the slot
 ## list ([constant CampaignHost.SLOT_COUNT]), so there is nothing to load it
-## back from. This is the deployment screen's own *Main Map* button
-## ([constant CampaignScreen.ID_MAIN_MAP]) offered from one screen further on:
-## the sortie is abandoned, the squad comes back into the pool and the chain
-## goes on from the map.
+## back from. It wears the campaign's *Main Map* caption
+## ([constant CampaignScreen.ID_MAIN_MAP]): the sortie is abandoned, the
+## squad comes back into the pool and the chain goes on from the map. Since
+## the deployment moved into the mission itself (docs/43 section 5.5) this
+## is the one way out of a turn-0 map, and Instant Action -- which has no
+## location map -- gets the same entry captioned *Back*
+## ([constant CampaignScreen.ID_BACK]), to the HQ its squad was hired in.
 ##
 ## It asks first, because the mission itself is dropped unsaved -- and with
 ## the remake's own question, `Txtmod_d` 60 being the shipped data's only one
@@ -56,6 +59,8 @@ const MAIN_MAP: String = "main_map"
 ## The question [constant MAIN_MAP] asks. See [constant CampaignScreen.OWN_OPTIONS]
 ## for why a key rather than a literal.
 const OWN_ABANDON: String = "shell.abandon_mission"
+## The same question with the HQ as the destination, for Instant Action.
+const OWN_ABANDON_TO_HQ: String = "shell.abandon_to_hq"
 
 ## Where the question and its two answers go. Not in the cascade: that is
 ## `Menu_a.lcl`'s table for a *menu*, and it runs a question's answers
@@ -131,11 +136,13 @@ const TITLE_PLATE: String = "title"
 ## and offers the things only a running mission can mean -- go back to it, and
 ## save it.
 var paused: bool = false
-## Whether that mission is a **campaign's**, which is what [constant MAIN_MAP]
-## needs and [member paused] does not answer: a mission entered past the
-## campaign. Instant Action retains state for saving but has no location map,
-## so offering this action there would still open an invalid destination.
+## Whether that mission has a campaign screen to go back to, which is what
+## [constant MAIN_MAP] needs and [member paused] does not answer: a mission
+## entered past the campaign (`--mission=`) has none.
 var may_abandon: bool = false
+## Whether that screen is the Instant Action HQ rather than a location map:
+## the entry is then captioned *Back* and asks about the headquarters.
+var abandon_to_hq: bool = false
 ## Whether there is anything behind the plate to go back to, which is a wider
 ## question than [member paused]: the campaign map is behind it too.
 var behind: bool = false
@@ -179,7 +186,7 @@ func needs_confirming(action: String) -> bool:
 ## names the main menu, so it is the one *Main Map* cannot borrow.
 func _question() -> String:
 	if pending == MAIN_MAP:
-		return strings_own(OWN_ABANDON)
+		return strings_own(OWN_ABANDON_TO_HQ if abandon_to_hq else OWN_ABANDON)
 	return label_for(BANK_REPORT, ID_CONFIRM)
 
 
@@ -209,8 +216,8 @@ func _show_actions() -> void:
 			# mission and stays in the game, which is where it sits in the
 			# cascade as well.
 			if may_abandon:
-				entries.append([MAIN_MAP,
-					label_for(BANK_MISSION, ID_MAIN_MAP)])
+				entries.append([MAIN_MAP, label_for(BANK_MISSION,
+					ID_BACK if abandon_to_hq else ID_MAIN_MAP)])
 		else:
 			entries.append(["campaign",
 				label_for(BANK_MENU, ID_START_CAMPAIGN)])

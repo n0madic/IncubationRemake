@@ -243,6 +243,46 @@ ROTATE_REFUSE_HIGH = 0x00479334                # cmp al, 63
 ROTATE_FACING_STORE = 0x00479345               # mov byte [esi+0x46], al
 ROTATE_ANGLE_CALL = (0x0047934E, DIRECTION_ANGLE_DISPATCH)
 
+# The place interface, aPI.cpp (docs/43 section 5.5).  interface_tables.py
+# already pins the marker band 70..73, the `+0x4D` candidate test and the two
+# transfer calls under its own `deploy.*` names; these are the rest.
+PLACE_INIT_CALL = (0x0041A663, 0x004632E0)     # aInitBattleGround -> aInitPlaceInterface
+PLACE_INIT_POOL_COUNT = (0x00463355, 0x00478960)
+PLACE_INIT_SELECT_STORE = 0x00463364           # mov [0x514064], eax
+PLACE_SELECT_GLOBAL = 0x00514064
+PLACE_CLICK = 0x00463380
+PLACE_NORMAL_CLICK_CALL = (0x0041BE0D, 0x004714B0)
+PLACE_CLICK_CALL = (0x0041BEC8, PLACE_CLICK)
+PLACE_TURN_GATE = (0x00463382, 0x0043B280)
+PLACE_BAND = 0x004637C0
+PLACE_BAND_Y_HIGH = 0x004637C5                 # cmp eax, 459 ; jae out
+PLACE_BAND_Y_LOW = 0x004637D1                  # cmp eax, 385 ; jbe out
+PLACE_BAND_PREV_X_HIGH = 0x004637DD            # cmp eax, 220 ; jae next
+PLACE_BAND_PREV_X_LOW = 0x004637E9             # cmp eax, 47  ; jbe out
+PLACE_BAND_PREV_RESULT = 0x004637EE            # mov eax, 2
+PLACE_BAND_NEXT_X_LOW = 0x004637F9             # cmp eax, 220 ; jbe out
+PLACE_BAND_NEXT_X_HIGH = 0x00463805            # cmp eax, 394 ; jae out
+PLACE_BAND_NEXT_RESULT = 0x0046380C            # mov eax, 1
+PLACE_BAND_Y = [386, 458]
+PLACE_BAND_PREV_X = [48, 219]
+PLACE_BAND_NEXT_X = [221, 393]
+PLACE_SCREEN_W = (0x00463552, 0x00419A50)
+PLACE_SCREEN_H = (0x00463560, 0x00419A60)
+PLACE_FACING_LEFT = (0x00463572, 0x00463575)   # and edx, 2 ; add edx, 4
+PLACE_FACING_RIGHT = (0x0046358E, 0x00463591)  # and ecx, -2 ; add ecx, 7
+PLACE_FACING_BY_QUADRANT = {"0,1": 4, "0,0": 6, "1,0": 5, "1,1": 7}
+PLACE_FROM_POOL_CALL = (0x004635AB, 0x00478D10)
+PLACE_FROM_POOL_ARGS = 0x004635B0              # add esp, 0x14 -- five arguments
+PLACE_TO_POOL_CALL = (0x004634C7, 0x00478F20)
+PLACE_SELECT_NONE_STORE = 0x004635EF           # mov [0x514064], -1
+PLACE_PREV_ARM = 0x0046363D
+PLACE_NEXT_ARM = 0x004636B7
+PLACE_COUNT_CALLS = (0x0046369C, 0x00463700)   # both arms -> poolCount
+PLACE_SOUND_PLACE = 0x00514068                 # <- [0x4FE340] click_1
+PLACE_SOUND_CYCLE = 0x0051406C                 # <- [0x4FE344] click_2
+PLACE_SOUND_SITES = {0x0046348F: PLACE_SOUND_PLACE, 0x00463526: PLACE_SOUND_PLACE,
+                     0x0046364A: PLACE_SOUND_CYCLE, 0x004636C0: PLACE_SOUND_CYCLE}
+
 PAD_HIT = 0x00473680
 PAD_RECT = {"x": [404, 494], "y": [382, 478], "stride": [30, 48]}
 PAD_X_LOW = 0x004736A0                         # cmp eax, 404
@@ -1893,6 +1933,88 @@ def check_keyboard(ck: Checker, pe: PEFile) -> None:
              "Space centres the selection, toggling eyes <-> on-unit")
 
 
+def je_target(pe: PEFile, va: int) -> int | None:
+    """Target of a near `je rel32` (`0F 84`) at *va*."""
+    if pe.bytes_at(va, 2) != b"\x0F\x84":
+        return None
+    return (va + 6 + pe.i32(va + 2)) & 0xFFFFFFFF
+
+
+def mov_eax_imm32(pe: PEFile, va: int) -> int | None:
+    """Immediate of `mov eax, imm32` at `va`."""
+    return pe.u32(va + 1) if pe.u8(va) == 0xB8 else None
+
+
+def mov_eax_abs32(pe: PEFile, va: int) -> int | None:
+    """Address of `mov eax, [abs32]` / `mov ecx|edx, [abs32]` at `va`."""
+    op = pe.u8(va)
+    if op == 0xA1:
+        return pe.u32(va + 1)
+    if op == 0x8B and pe.u8(va + 1) in (0x0D, 0x15):
+        return pe.u32(va + 2)
+    return None
+
+
+def check_place_interface(ck: Checker, pe: PEFile) -> None:
+    ck.equal("place.init_call", call_target(pe, PLACE_INIT_CALL[0]),
+             PLACE_INIT_CALL[1], "aInitBattleGround raises the place interface")
+    ck.check("place.init_selects_the_first",
+             call_target(pe, PLACE_INIT_POOL_COUNT[0]) == PLACE_INIT_POOL_COUNT[1]
+             and pe.bytes_at(PLACE_INIT_SELECT_STORE, 5)
+             == b"\xA3" + PLACE_SELECT_GLOBAL.to_bytes(4, "little"),
+             "[0x514064] = 0 when the pool has anyone, else -1")
+    ck.equal("place.click_calls",
+             (call_target(pe, PLACE_NORMAL_CLICK_CALL[0]),
+              call_target(pe, PLACE_CLICK_CALL[0])),
+             (PLACE_NORMAL_CLICK_CALL[1], PLACE_CLICK_CALL[1]),
+             "the ordinary click handler first, then the place interface's")
+    ck.equal("place.turn_gate", call_target(pe, PLACE_TURN_GATE[0]),
+             PLACE_TURN_GATE[1], "the counter alone, at the top of the handler")
+    ck.equal("place.band_y",
+             [cmp_imm(pe, PLACE_BAND_Y_LOW) + 1, cmp_imm(pe, PLACE_BAND_Y_HIGH) - 1],
+             PLACE_BAND_Y, "y strictly between 385 and 459")
+    ck.equal("place.band_prev_x",
+             [cmp_imm(pe, PLACE_BAND_PREV_X_LOW) + 1,
+              cmp_imm(pe, PLACE_BAND_PREV_X_HIGH) - 1],
+             PLACE_BAND_PREV_X, "x strictly between 47 and 220")
+    ck.equal("place.band_next_x",
+             [cmp_imm(pe, PLACE_BAND_NEXT_X_LOW) + 1,
+              cmp_imm(pe, PLACE_BAND_NEXT_X_HIGH) - 1],
+             PLACE_BAND_NEXT_X, "x strictly between 220 and 394")
+    ck.equal("place.band_results",
+             (mov_eax_imm32(pe, PLACE_BAND_PREV_RESULT),
+              mov_eax_imm32(pe, PLACE_BAND_NEXT_RESULT)), (2, 1),
+             "2 is the previous soldier, 1 the next")
+    ck.equal("place.band_arms",
+             (je_target(pe, PLACE_CLICK + 0x16), je_target(pe, PLACE_CLICK + 0x1D)),
+             (PLACE_NEXT_ARM, PLACE_PREV_ARM),
+             "dec eax; je next-arm; dec eax; je previous-arm")
+    ck.equal("place.arms_wrap_on_the_pool_count",
+             [call_target(pe, va) for va in PLACE_COUNT_CALLS],
+             [PLACE_INIT_POOL_COUNT[1]] * 2,
+             "previous wraps to count - 1, next to 0")
+    ck.equal("place.facing_screen_halves",
+             (call_target(pe, PLACE_SCREEN_W[0]), call_target(pe, PLACE_SCREEN_H[0])),
+             (PLACE_SCREEN_W[1], PLACE_SCREEN_H[1]),
+             "the screen's width and height, halved -- not the window's")
+    ck.check("place.facing_arithmetic",
+             pe.bytes_at(PLACE_FACING_LEFT[0], 6) == b"\x83\xE2\x02\x83\xC2\x04"
+             and pe.bytes_at(PLACE_FACING_RIGHT[0], 6) == b"\x83\xE1\xFE\x83\xC1\x07",
+             "left: 4 + 2 * (y < half); right: 7 - 2 * (y < half)")
+    ck.check("place.five_arguments",
+             call_target(pe, PLACE_FROM_POOL_CALL[0]) == PLACE_FROM_POOL_CALL[1]
+             and pe.bytes_at(PLACE_FROM_POOL_ARGS, 3) == b"\x83\xC4\x14",
+             "aTransferUnitFromPoolToMap(player, slot, x, y, facing)")
+    ck.check("place.take_back",
+             call_target(pe, PLACE_TO_POOL_CALL[0]) == PLACE_TO_POOL_CALL[1]
+             and mov_store_imm32(pe, PLACE_SELECT_NONE_STORE) == 0xFFFFFFFF,
+             "aTransferUnitFromMapToPool; an emptied pool selects nobody")
+    ck.equal("place.sounds",
+             {hex(va): mov_eax_abs32(pe, va) for va in PLACE_SOUND_SITES},
+             {hex(va): buf for va, buf in PLACE_SOUND_SITES.items()},
+             "click_1 for a placement or a take-back, click_2 for the band")
+
+
 def check_panel(ck: Checker, pe: PEFile) -> None:
     ck.check("panel.origin",
              push_imm(pe, PANEL_ORIGIN_PUSH) == 415
@@ -2182,6 +2304,7 @@ def run_checks(root_name: str) -> Checker:
     check_pad(ck, pe)
     check_keyboard(ck, pe)
     check_panel(ck, pe)
+    check_place_interface(ck, pe)
     check_columns(ck, pe)
     check_radar(ck, pe)
     check_frame(ck, pe)
@@ -2255,6 +2378,23 @@ def emit_cases(root_name: str, out_path: str) -> int:
             "blocks": PANEL_BLOCKS,
             "icons": PANEL_ICONS,
             "status_text": PANEL_STATUS_TEXT,
+        },
+        # docs/43 section 5.5: the place interface, aPI.cpp.  The band of
+        # the panel a click cycles the pool in (inclusive, plate units; x 220
+        # answers nobody), what each half answers, the facing a placement
+        # takes from the screen quadrant of the click, and the marker states
+        # the overlay draws the landing cells in.
+        "place": {
+            "band_y": PLACE_BAND_Y,
+            "prev_x": PLACE_BAND_PREV_X,
+            "next_x": PLACE_BAND_NEXT_X,
+            "prev_result": 2,
+            "next_result": 1,
+            "facing_by_quadrant": PLACE_FACING_BY_QUADRANT,
+            "split": "screen halves",
+            "marker_states": [70, 73],
+            "turn_gated": True,
+            "arguments": 5,
         },
         "columns": {
             "rect": COLUMN_RECT,

@@ -125,6 +125,8 @@ const OWN: Dictionary = {
 	# way out of a mission and the one that drops the campaign too.
 	"shell.abandon_mission": {"English": "Back to the Main Map without saving?",
 		"Russian": "Вернуться на главную карту без сохранения?"},
+	"shell.abandon_to_hq": {"English": "Back to the headquarters without saving?",
+		"Russian": "Вернуться в штаб без сохранения?"},
 	"shell.difficulty.0": {"English": "Easy",
 		"Russian": "Лёгкий"},
 	"shell.difficulty.1": {"English": "Normal",
@@ -174,13 +176,14 @@ const OWN: Dictionary = {
 		"Russian": "выкл"},
 	"shell.no_mission": {"English": "between missions",
 		"Russian": "между заданиями"},
-	# The deployment screen, which used to refuse in total silence -- see
-	# `SelectUnitsScreen`. The original says none of this because its screen
-	# is a picture of the map with the squad on it; a list needs telling.
-	"deploy.hint": {"English": "pick a soldier, then a landing position",
-		"Russian": "выберите бойца, затем точку высадки"},
-	"deploy.pick_a_soldier": {"English": "pick a soldier first, then a landing position",
-		"Russian": "сначала выберите бойца, затем точку высадки"},
+	# The place interface (docs/43 section 5.5), which the original runs in
+	# total silence: its screen is the map with the squad on it, and a click
+	# that does nothing does nothing. The remake speaks each refusal on the
+	# HUD's caption line (docs/92 section 7.4).
+	"deploy.hint": {"English": "a landing dot places the soldier on the panel; its halves pick another; Enter starts",
+		"Russian": "точка высадки ставит бойца с панели; её половины выбирают другого; Enter начинает"},
+	"deploy.pool_empty": {"English": "everyone is on the map -- click a soldier to take them back, Enter starts",
+		"Russian": "все на карте -- щёлкните бойца, чтобы вернуть его; Enter начинает"},
 	"deploy.need_one": {"English": "put at least one soldier on the map before starting",
 		"Russian": "перед началом поставьте на карту хотя бы одного бойца"},
 	"deploy.not_a_deployment_cell": {"English": "not a landing position",
@@ -191,6 +194,14 @@ const OWN: Dictionary = {
 		"Russian": "карта заполнена"},
 	"deploy.empty_roster_record": {"English": "that roster slot is empty",
 		"Russian": "эта ячейка отряда пуста"},
+	"deploy.no_unit_on_field": {"English": "nobody is standing there",
+		"Russian": "здесь никто не стоит"},
+	"deploy.not_your_unit": {"English": "not one of yours",
+		"Russian": "это не ваш боец"},
+	"deploy.not_a_pool_candidate": {"English": "that one belongs to the mission and stays",
+		"Russian": "этот боец принадлежит заданию и остаётся"},
+	"deploy.pool_full": {"English": "the pool is full",
+		"Russian": "отряд заполнен"},
 	# The three windows of docs/27 section 5. Every caption on them is
 	# shipped; these are only the refusals, which the original makes by
 	# greying a button and saying nothing (docs/92 section 7.4).

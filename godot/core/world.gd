@@ -394,6 +394,12 @@ func skip_deployment_turn() -> void:
 		turn.turn = TurnState.FIRST_TURN
 
 
+## Whether the mission is still on turn 0 -- the place interface's gate
+## ([method TurnState.deploying]).
+func deploying() -> bool:
+	return turn.deploying()
+
+
 func ctrlmap() -> CtrlMapTable:
 	return _ctrlmap
 
@@ -1817,6 +1823,14 @@ const DEPLOY_NOT_A_CELL: String = "not_a_deployment_cell"
 const DEPLOY_CELL_TAKEN: String = "cell_occupied"
 const DEPLOY_NO_SLOT: String = "no_free_unit_slot"
 const DEPLOY_EMPTY_RECORD: String = "empty_roster_record"
+## [method deploy_from_pool]'s `facing` when the caller has none to give.
+const NO_FACING: int = -1
+
+## Why [method recall_from_map] refused.
+const RECALL_OK: String = ""
+const RECALL_NO_UNIT: String = "no_unit_on_field"
+const RECALL_NOT_YOURS: String = "not_your_unit"
+const RECALL_NOT_A_CANDIDATE: String = "not_a_pool_candidate"
 
 
 ## The cells *player* may deploy onto, in map order.
@@ -1848,8 +1862,14 @@ func deployment_cells(player: int) -> Array[Vector2i]:
 ## The record is **not** removed from the roster here: the caller owns the
 ## roster, `core` does not, and the engine's own routine takes the slot out of
 ## the pool only after `aUI_SetUnit` succeeds.
+##
+## `facing` is the routine's **fifth** argument, handed straight to
+## `aUI_SetUnit(x, y, record, facing)` at `0x00478D6B`; the place interface
+## computes it from the screen quadrant of the placing click (docs/43 section
+## 5.5). [constant NO_FACING] keeps the record's own, which is what a caller
+## with no click to read has.
 func deploy_from_pool(player: int, record: UnitState, x: int,
-		y: int) -> Dictionary:
+		y: int, facing: int = NO_FACING) -> Dictionary:
 	if record == null or not record.is_placed():
 		return {"result": DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
 	if not state.in_bounds(x, y):
@@ -1875,6 +1895,8 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 	unit.y = y
 	unit.turn_start_x = x
 	unit.turn_start_y = y
+	if facing != NO_FACING:
+		unit.facing = facing
 	_units[slot] = unit
 	UnitState.occupy(state, _unit_types, unit, x, y)
 	# `0x00478DD1`, between `aUI_SetUnit` and the pool removal: the **full**
@@ -1888,6 +1910,42 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 	Visibility.build(state, _units, _unit_types, player, turn.human_count(),
 		turn.mode)
 	return {"result": DEPLOY_OK, "slot": slot}
+
+
+## `aTransferUnitFromMapToPool` `0x00478F20` -- the soldier standing on a cell,
+## back off the map as the record the roster takes. Returns
+## `{"result": String, "record": UnitState}`, the record `null` on a refusal.
+##
+## The engine's routine inserts into the pool itself and *drops* the unit
+## when the pool is full (docs/27 section 3.4). The roster is the campaign's
+## and not this object's, so the insertion is the caller's, and the caller
+## checks the room **before** asking -- a record this routine hands back has
+## already left the map. The place interface's own arm (`0x00463485`) asks
+## only for a pool candidate, `+0x4D >= 1`; the other two refusals here are
+## the routine's own error `no unit on field` and the remake's guard for the
+## agent, which can name any cell.
+##
+## No recompute: only `aTransferAllUnitsFromMapToPool` runs one (`0x00478EA1`),
+## and a record on turn 0 was recomputed on the way in. **UNVERIFIED** whether
+## `aKillUnit` rebuilds visibility; the rebuild here mirrors the placement's,
+## so the map a squad sees is the map it stands on.
+func recall_from_map(player: int, x: int, y: int) -> Dictionary:
+	if not state.in_bounds(x, y):
+		return {"result": RECALL_NO_UNIT, "record": null}
+	var slot: int = state.unit_at(state.index_of(x, y))
+	if slot == MapState.NO_UNIT or not _units.has(slot):
+		return {"result": RECALL_NO_UNIT, "record": null}
+	var unit: UnitState = _units[slot]
+	if unit.player != player:
+		return {"result": RECALL_NOT_YOURS, "record": null}
+	if unit.pool_flag < Roster.POOL_CANDIDATE:
+		return {"result": RECALL_NOT_A_CANDIDATE, "record": null}
+	var record: UnitState = UnitState.from_view(unit.view())
+	UnitState.vacate(state, _unit_types, unit, unit.x, unit.y)
+	_units.erase(slot)
+	Visibility.build(state, _units, _unit_types, player, turn.human_count(),
+		turn.mode)
+	return {"result": RECALL_OK, "record": record}
 
 
 ## `aTransferAllUnitsFromMapToPool` `0x00478E50` -- every live unit of *player*,

@@ -517,7 +517,7 @@ partition (`campaign.json`: upgrades 1..8 and 210..216, dialogues 10..23,
 battles 51..129). The remake now draws `map[7]` on every open location and
 the band's pointer badge over the hovered one; the selected twin is not shown
 because a click enters the location at once. `map[0..3]`, the coloured dots,
-belong to the mission's far view and the deployment screen, not to this map.
+belong to the mission's far view and the place interface ([`43` §5.5](43-battle-hud.md)), not to this map.
 
 ### 2.7 An upgrade base looks where its own script says — **[code] `0x00417510`, `0x00417000`** *(2026-09-08)*
 
@@ -921,13 +921,29 @@ is why the array is `[5][31]` with 30 usable
 Two routines move a record between the roster and the map, and they are not
 symmetric.
 
-**`aTransferUnitFromPoolToMap(player, slot, x, y)` `0x00478D10`** — places the
-record on the map through `aUI_SetUnit` (`0x00472780`, `aUI.cpp`), **runs the
-full derived-stat recompute on the placed record** (`0x004759E0`, called at
-`0x00478DD1` from the pointer `aGetUnitPtr` `0x00477AE0` returns for the id the
-new cell carries), rebuilds visibility, then removes the slot from the pool. It
-refuses `slot > 30`. Its only caller is the deploy screen, `aPI.cpp` — which is
-what identifies that module ([`90` §2](90-binaries-and-source-layout.md)).
+**`aTransferUnitFromPoolToMap(player, slot, x, y, facing)` `0x00478D10`** —
+**five** arguments, not four *(corrected 2026-09-13; the fifth was missed)*:
+the routine cleans twenty bytes at its one call site (`add esp, 0x14` at
+`0x004635B0`) and hands the fifth straight to `aUI_SetUnit(x, y, record,
+facing)` (`0x00472780`, `aUI.cpp`, the call at `0x00478D6B`). It places the
+record on the map through that call, **runs the full derived-stat recompute
+on the placed record** (`0x004759E0`, called at `0x00478DD1` from the pointer
+`aGetUnitPtr` `0x00477AE0` returns for the id the new cell carries), rebuilds
+visibility, then removes the slot from the pool through
+`aRemoveUnitFromUnitPool` at `0x00478DEE` — which **compacts** the row, so the
+place interface's index is a position in the compacted pool. It refuses
+`slot > 30`. Its only caller is the place interface, `aPI.cpp` at
+`0x004635AB` — which is what identifies that module
+([`90` §2](90-binaries-and-source-layout.md)); the facing it passes is
+computed from the screen quadrant of the placing click
+([`43` §5.5](43-battle-hud.md)). The pool record carries no facing of its
+own — `aEnlargeUnitPool` never writes one — so the facing a deployed soldier
+stands with is the click's, and the remake's `PoolRecord` (`inclib/campaign.py`)
+stays without one. The remake keeps its roster's gaps rather than compacting
+and walks the occupied slots in order, a declared divergence with the same
+answer for every index — until a take-back: `aTransferUnitFromMapToPool`
+appends to the end of the compacted row, the remake returns the record to
+its first free slot, so the cycling order after one can differ.
 
 **That recompute is what fills the magazine.** A roster record's `+0x3D` comes
 from nowhere else on the deployment path — `aUI_SetUnit` copies the record

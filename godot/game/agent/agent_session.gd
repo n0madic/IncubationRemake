@@ -119,7 +119,8 @@ const VERBS: Dictionary[String, String] = {
 	"blobs": "blobs -- every live blob: kind, class, model, position, velocity",
 	"watch": "watch N -- blobs on each of the next N drawn frames",
 	"markers": "markers -- every cell the ground overlay drew on (docs/43 section 3)",
-	"hud": "hud event|pad|ring|radar N -- the battle interface's own controls",
+	"hud": "hud event|pad|ring|radar|panel N -- the battle interface's own "
+		+ "controls; panel -1|1 is the place interface's previous|next",
 	"wait": "wait N -- N drawn frames",
 	"idle": "idle [MAX] -- frames until the picture is idle, at most MAX",
 	"shot": "shot NAME -- writes NAME.png under --agent-dir=",
@@ -129,7 +130,10 @@ const VERBS: Dictionary[String, String] = {
 	"option": "option NAME VALUE -- music|fx|speech|difficulty|gore|faithful|font|controls",
 	"campaign": "campaign N -- begin chain N and load its first mission",
 	"location": "location N -- click a location on the campaign map",
-	"deploy": "deploy SLOT X Y -- put one roster record on a deployment cell",
+	"deploy": "deploy SLOT X Y [FACING] -- put one roster record on a "
+		+ "deployment cell, facing 0..7 (turn 0 only)",
+	"recall": "recall X Y -- take the pool candidate on a deployment cell "
+		+ "back into the roster (turn 0 only)",
 	"screen": "screen NAME -- drive the campaign flow past one step",
 	"ui": "ui [NAME] -- put one campaign screen up, or close the one that is",
 	"enter": "enter NAME -- load a mission past the location map",
@@ -209,6 +213,7 @@ func _init(main: SliceMain, root: Window,
 		"campaign": _v_campaign,
 		"location": _v_location,
 		"deploy": _v_deploy,
+		"recall": _v_recall,
 		"screen": _v_screen,
 		"ui": _v_ui,
 		"enter": _v_enter,
@@ -554,7 +559,7 @@ func _v_press(parts: PackedStringArray, line: String) -> void:
 
 
 ## `map_click X Y` -- a click on a map **field** in the window of a screen
-## drawn around one, which is what the location map and the deploy screen take.
+## drawn around one, which is what the location map takes.
 ## The ray is what a mouse goes through; this is the same answer handed
 ## straight to the screen.
 func _v_map_click(parts: PackedStringArray, _line: String) -> void:
@@ -689,7 +694,7 @@ func _v_markers(_parts: PackedStringArray, _line: String) -> void:
 ## are not the window's (docs/43).
 func _v_hud(parts: PackedStringArray, _line: String) -> void:
 	if parts.size() <= 2:
-		_log.append("hud: wants event|pad|ring|radar and a number")
+		_log.append("hud: wants event|pad|ring|radar|panel and a number")
 		return
 	var number: int = parts[2].to_int()
 	match parts[1]:
@@ -704,6 +709,9 @@ func _v_hud(parts: PackedStringArray, _line: String) -> void:
 				"chosen" if _main.choose_ring_record(number) else "no ring"])
 		"radar":
 			_log.append("hud radar scale %d" % _main.step_radar(number))
+		"panel":
+			_log.append("hud panel %d %s" % [number,
+				"cycled" if _main.cycle_deploy_slot(number) else "no pool"])
 		_:
 			_log.append("hud: unknown kind %s" % parts[1])
 	_wait = 1
@@ -912,10 +920,10 @@ func _v_location(parts: PackedStringArray, _line: String) -> void:
 		_main._on_campaign_choice("location:%d:%s" % [id, kind])
 
 
-## `deploy SLOT X Y` -- put one roster record on a deployment cell.
+## `deploy SLOT X Y [FACING]` -- put one roster record on a deployment cell.
 func _v_deploy(parts: PackedStringArray, _line: String) -> void:
 	if parts.size() <= 3:
-		_log.append("deploy: wants SLOT X Y")
+		_log.append("deploy: wants SLOT X Y [FACING]")
 		return
 	if _main.campaign == null:
 		_log.append("deploy: the host is not ready")
@@ -923,7 +931,17 @@ func _v_deploy(parts: PackedStringArray, _line: String) -> void:
 	var slot: int = parts[1].to_int()
 	var x: int = parts[2].to_int()
 	var y: int = parts[3].to_int()
-	var placed: Dictionary = _main.campaign.deploy(slot, x, y)
+	var facing: int = parts[4].to_int() if parts.size() > 4 else World.NO_FACING
+	# The facing goes straight into the record (`aUI_SetUnit`'s fourth
+	# argument) and from there into every direction table and the save, so
+	# a number outside the ring is refused here rather than carried.
+	if facing != World.NO_FACING \
+			and (facing < 0 or facing >= Interact.FACING_DX.size()):
+		_log.append("deploy: FACING is 0..%d" % (Interact.FACING_DX.size() - 1))
+		return
+	# Through the interface's own arm, so the panel's selection follows the
+	# pool the way a click's would.
+	var placed: Dictionary = _main.place_from_roster(slot, x, y, facing)
 	var outcome: String = DictRead.as_string(placed["result"])
 	if outcome != World.DEPLOY_OK:
 		# **Named, not silent** -- docs/92 section 7.4 applies to deployment
@@ -932,7 +950,25 @@ func _v_deploy(parts: PackedStringArray, _line: String) -> void:
 		return
 	_log.append("deploy %d at %d,%d -> unit slot %d"
 		% [slot, x, y, DictRead.as_int(placed["slot"])])
-	_main._refresh_after_deploy()
+
+
+## `recall X Y` -- the place interface's take-back, past the click.
+func _v_recall(parts: PackedStringArray, _line: String) -> void:
+	if parts.size() <= 2:
+		_log.append("recall: wants X Y")
+		return
+	if _main.campaign == null:
+		_log.append("recall: the host is not ready")
+		return
+	var x: int = parts[1].to_int()
+	var y: int = parts[2].to_int()
+	var taken: Dictionary = _main.recall_at(x, y)
+	var outcome: String = DictRead.as_string(taken["result"])
+	if outcome != World.RECALL_OK:
+		_log.append("recall at %d,%d refused: %s" % [x, y, outcome])
+		return
+	_log.append("recall at %d,%d -> roster slot %d"
+		% [x, y, DictRead.as_int(taken["slot"])])
 
 
 ## `screen NAME` -- drive the campaign flow past a screen this slice has no
@@ -1165,7 +1201,9 @@ func _blobs() -> void:
 				blob.life, blob.aux])
 
 
-## Load a mission and take the entry snapshot, as `SelectUnits` does.
+## Load a mission and take the entry snapshot, then open it the way the
+## campaign's own entry does: on turn 0 with the place interface up, or
+## past it where there is nobody to place.
 func _enter(mission: String) -> void:
 	# The shell would otherwise sit over the mission this just built and eat
 	# every key and click after it. `enter` is already a debugging entry past
@@ -1182,8 +1220,9 @@ func _enter(mission: String) -> void:
 	var names: Array = []
 	for cell: Vector2i in cells:
 		names.append([cell.x, cell.y])
-	_log.append("enter %s: %d deployment cell(s) %s"
-		% [mission, cells.size(), str(names)])
+	_main._open_deployment_or_start()
+	_log.append("enter %s: %d deployment cell(s) %s, turn %d"
+		% [mission, cells.size(), str(names), _main.world.turn.turn])
 
 
 func _buttons_in(node: Node) -> Array[Button]:

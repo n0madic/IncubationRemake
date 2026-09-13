@@ -259,7 +259,8 @@ of its own and hands the handles to the two interface modules:
 `aInitUnitInterface` `0x004710E0` keeps its three in `0x00516304`,
 `0x00516308` and `0x0051630C`; `aInitMapInterface` `0x00450A80` keeps its three
 in `0x0050FE74`, `0x0050FE78` and `0x0050FE7C`. So the wave a widget makes is
-**two hops from its call site**, and the ten play sites are:
+**two hops from its call site**, and the fourteen play sites (four of them
+the place interface's, added 2026-09-13) are:
 
 | Action | site | handle | wave |
 |---|---|---|---|
@@ -273,6 +274,10 @@ in `0x0050FE74`, `0x0050FE78` and `0x0050FE7C`. So the wave a widget makes is
 | the hovered **column slot** changed to one with a sprite (`fcn.004518E0`) | `0x00451A40` | `0x0050FE74` | `click_1` |
 | the map-view placer `fcn.00450F60` | `0x00450FB0` | `0x0050FE7C` | `select` |
 | the unit-view placer `fcn.004510A0` | `0x00451102` | `0x0050FE7C` | `select` |
+| the **place interface** taking a soldier back off a landing cell (`aPI.cpp`, [`43` §5.5](43-battle-hud.md)) | `0x0046348F` | `0x00514068` ← `[0x4FE340]` | `click_1` |
+| the place interface placing one | `0x00463526` | `0x00514068` | `click_1` |
+| the place interface's band, the previous soldier | `0x0046364A` | `0x0051406C` ← `[0x4FE344]` | `click_2` |
+| the place interface's band, the next | `0x004636C0` | `0x0051406C` | `click_2` |
 
 *Corrected 2026-09-12.* The four widget rows were labelled the other way
 round — the `aUI.cpp` pair as the columns' and the `aMI.cpp` pair as "a click

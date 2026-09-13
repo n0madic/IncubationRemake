@@ -24,6 +24,11 @@ What it holds, and where each table comes from (`docs/43`):
   command -> `ui.LIB` element, keys.
 * `panel` -- the unit panel's origin (60, 415), its five blocks' offsets and
   the `uicons` elements they draw.
+* `place` -- the place interface (`aPI.cpp`, docs/43 section 5.5): the panel
+  band a click cycles the pool in (y 386..458; x 48..219 previous, 221..393
+  next, x 220 nobody), what each half answers, the facing a placement takes
+  from the screen quadrant of the click, the marker states 70..73 and the
+  five arguments of `aTransferUnitFromPoolToMap`.
 * `columns` -- the two button columns: rectangle, (column, row) -> interface
   event, event -> `mi.LIB` element, event -> `Txtmod_h` caption id, keys.
 * `radar` -- the clip (501, 389, 90, 66), the centre, the scale (default 40,
@@ -37,7 +42,7 @@ What it holds, and where each table comes from (`docs/43`):
   `sm`, `ui`, `mi`, `uicons`, `map`, `mouse`, `inv`, `umun`, `uweapons`.
 * `texts` -- the caption ids the interface asks `Txtmod_h` and `Txtmod_g` for.
 
-`--emit-cases` refuses to write when any of the 122 checks fails, so a fixture
+`--emit-cases` refuses to write when any of the 217 checks fails, so a fixture
 on disk is one the binary agreed with.  The suite fails when the file is
 missing: `run_tests.sh` copies it into `godot/generated/hud/hud.json`.
 

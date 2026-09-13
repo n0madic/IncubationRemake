@@ -1726,7 +1726,8 @@ be clicked before a position could not start a campaign and had no way to find
 out. The original needs no words because its screen is a picture of the map
 with the squad standing on it; a pair of lists does. `World`'s own refusal
 names are turned into sentences one for one, and a name with no line comes back
-as the missing marker rather than as a blank.
+as the missing marker rather than as a blank. *(The screen is gone since
+2026-09-13 — §7.23 — and the sentences moved to the HUD's caption line.)*
 
 **One shipped Charisma part has no name.** `PC_011.cho`'s part 2 is authored
 with an empty name and the mesh `PC_011_`, and Godot refuses an empty node name
@@ -1782,7 +1783,7 @@ carries.
 | the location map | a column of buttons on a full plate | the chain's own `.lev` behind a frame, one dot per open location |
 | the briefing | a 520x300 text box, pictures 30 units off the right edge | docs/24 §7.1's box `84, 77, 280, 276`, pictures at the programme's own `x, y` |
 | the tips | a third button on the same screen | the same screen with `C0` in the `230`-wide box and the tip programme's pictures |
-| deployment | two lists, names against `x, y` pairs | the mission's own view with a dot on every free landing cell |
+| deployment | two lists, names against `x, y` pairs | the mission's own view with a dot on every free landing cell *(since 2026-09-13, §7.23: no screen at all — the battle interface on turn 0)* |
 
 Four decisions behind that, and the first is the one the rest hang off.
 
@@ -1999,7 +2000,9 @@ leaves the picture. The name moved with it, from the bottom band — where it
 shared a line with the purse and a row of button captions — to the top of the
 window, over the sky.
 
-**Deployment is from above.** `aSelectUnits` deploys top-down and so does this:
+**Deployment is from above.** *(The screen this paragraph describes is gone
+since 2026-09-13, §7.23; what survives is the camera.)* `aSelectUnits`
+deploys top-down and so does this:
 the screen opens in docs/42 §2.4's map view over the deployment area, and the
 mission's own view keys work under it — `2` for the eyes, `3` for the map,
 `4` for the ordinary angled view, Left/Right to turn, the wheel to zoom and
@@ -2114,7 +2117,9 @@ plate whole and offers the open locations as a list of rows, which is what the
 screen was before the picture existed. A hole cut for a picture that is not
 there is a black rectangle where the frame should be.
 
-**A deployment with nobody to deploy is not a screen.** Campaign 2 starts with
+**A deployment with nobody to deploy is not a screen** *(and since 2026-09-13
+there is no screen either way — §7.23; the skip below is the same arm, taken
+at the mission's entry)*. Campaign 2 starts with
 an empty pool -- `aCreateUnitPoolForCampaign(2)` is a bare return -- and
 `_C_140` places its own squad, which the debriefing then recovers into the
 pool. The deployment screen still opened: a roster of nobody, a map of dots
@@ -2611,6 +2616,75 @@ handles traced ([`43` D7](43-battle-hud.md)); and the campaign map draws
 `fcn.00418F40`'s own picture — the white ring on every open location and the
 band badge over the pointed-at one — instead of dots coloured by kind
 ([`43` D6](43-battle-hud.md), [`27` §2.6.3](27-campaign.md)).
+
+### 7.23 Deployment is the battle interface on turn 0 (2026-09-13)
+
+Reported by the project owner: *"in the original the units are placed in the
+game itself — the deployment is done in play mode and the game starts from
+the end-turn button; in the remake it is a separate window, and there are
+some nuances with the start of the turn."* The nuance was the remake's own:
+its deployment screen pressed *Next player* **for** the player from its
+*Continue*, so the first `NEXT TURN` — the platform ride `_C_106` opens with
+— fired out of a button that said nothing about a turn.
+
+[`43` §5.5](43-battle-hud.md) reads `aPI.cpp`, and the remake now does what
+it says. A mission opens on turn 0 with the HUD up and the camera over the
+landing zone; the unit panel shows the roster's first record and the left
+and right halves of its band pick the previous and the next; a click on a
+landing dot places the soldier **facing the quadrant of the screen the click
+was in** (left-bottom 4, left-top 6, right-top 5, right-bottom 7 — the fifth
+argument of `aTransferUnitFromPoolToMap`, which [`27` §3.4](27-campaign.md)
+had missed); a click on a placed pool candidate takes him back; and the
+player presses *Next player* — Enter — themselves. The dots are the ground
+overlay's states 70…73, on every landing cell whether or not somebody stands
+on it, exactly as `markDeploymentCells` leaves them. `SelectUnitsScreen` is
+deleted; the pause menu's abandon entry is the way off a turn-0 map, and in
+*Instant Action* it is captioned *Back* and lands in the HQ.
+
+What the remake keeps of its own, each named where it is made:
+
+1. **The refusals stay spoken, on the HUD's caption line** (§7.4). The
+   original's place interface says nothing because a click that does nothing
+   does nothing; the remake writes a standing line into the (60, 22) label
+   — the button captions win while the pointer is on one — with the hint,
+   `pool_empty`, and every refusal name of `World.deploy_from_pool`,
+   `World.recall_from_map` and `CampaignHost.recall`.
+2. ***Next player* over an empty map is refused, not obeyed.** The original
+   hands over and the player loses by wipeout on turn 1 ([`27` §6](27-campaign.md)'s
+   `turnCounter() > 0` gate is what lets the empty map through). The remake
+   keeps the player on turn 0 and says `need_one`. The button stays lit —
+   a dark button would be the silence §7.4 removes.
+3. **The roster keeps its gaps.** The original compacts the pool on every
+   placement (`aRemoveUnitFromUnitPool`, `0x00478DEE`) and indexes the
+   compacted row; the remake's selection is a roster slot and the original's
+   index is its position among the occupied slots, which answers the same
+   for every wrap and clamp `game/deployment.gd` transcribes. A take-back
+   is where the two orders part: the original appends the record to the end
+   of the compacted pool, the remake returns it to the first free slot, so
+   the cycling order after a take-back can differ.
+4. **A turn-0 save loads back into the place interface**, or onto turn 1
+   through `0x0041A073`'s silent arm when the pool is empty and the game is
+   a campaign (`gameMode() == 1`; *Instant Action* takes the interface over
+   an empty pool) — the two arms a load's re-entry into `aInitBattleGround`
+   takes. The old rule, that a
+   loaded turn-0 world "owes its opening hand-over" and gets one at once, is
+   withdrawn: the hand-over is owed, and *Next player* pays it. Slots 31
+   and 33 are written as the interface goes up, with the pool still full —
+   where the retail `_31_.sav` is written (`43` §5.5) — so *Undo mission*
+   deploys again and hands over again, `NEXT TURN` included. The corner
+   this leaves — a manual turn-0 save taken after everybody was placed
+   lands on turn 1 with no `NEXT TURN` — is the reading's own answer and is
+   an open question of `43`.
+
+"Deployment is from above" below stands for the camera alone: the map view
+over the landing zone is `aInitBattleGround`'s counter-0 arm, and the three
+view buttons keep framing the zone, or the first soldier placed, while the
+counter is 0. The paragraphs of §7.15 that describe the deployment *screen*
+— its window, its dots on the free cells only, its *Main Map* button, the
+skip "with nobody to deploy" — are superseded by this section and by
+[`43` §5.5](43-battle-hud.md); the skip itself is unchanged and is
+`0x0041A073`'s arm, now taken at the mission's entry rather than in front
+of a screen.
 
 ## 8. Standing constraints
 

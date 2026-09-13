@@ -747,6 +747,109 @@ reads each slot's header once and lights the three buttons only for a save
 whose mission is the one being played (`main.gd`, `_slot_holds_this_mission`).
 The original's files have the same staleness by construction.
 
+### 5.5 The place interface — `aPI.cpp` (2026-09-13)
+
+Reported as *"in the original the deployment is done in the game itself —
+the squad is placed in play mode and the game starts from the end-turn
+button; in the remake it is a separate window"*. It is, and the remake's
+window is gone: turn 0 is the battle interface of §2 with one handler in
+front of the click, and this section is that handler read instruction by
+instruction. `tools/hud_tables.py` pins every immediate below under
+`place.*`; `interface_tables.py` had already pinned the marker band, the
+`+0x4D` test and the two transfer calls under `deploy.*`.
+
+**It is raised by `aInitBattleGround`, not by a menu.** `0x0041A663` calls
+`aInitPlaceInterface` `0x004632E0` with eleven arguments: the mission's own
+3D window `(60, 34)` by 520x340 out of `0x4FE330..0x4FE33C`, a flag 1, the
+panel-position pair the layout table `0x50DE54`/`0x50DE64` holds for the
+resolution, a sound handle, the window's clip and the two wave buffers
+`[0x4FE340]` and `[0x4FE344]` — `click_1.wav` and `click_2.wav`, the same
+two `aInitGUI` loads for the interface ([`28` §2.5](28-effects-and-sound.md)).
+They go into `0x514040..0x51406C`, and then the selection: `[0x514064]` is
+**0** when `poolCount(currentPlayer)` (`fcn.00478960`) is non-zero and
+**−1** otherwise (`0x00463355..64`). The painter `fcn.00463730` restores the
+panel plate (`0x004758F0` at (60, 415)) and, with a record selected, calls
+**the unit panel's own painter** `0x004756D0` (§5.3) on the pool record —
+`0x51F2A0 + (player · 31 + index) · 90` — with the same `(60, 415, 0)` and
+the same font twice. So the pool soldier is drawn exactly as a placed one
+would be, raw fields and all: a fresh recruit's `+0x3D` is 0 and the panel
+would print `-/-` or *Out of ammo!* over him (open question 3).
+
+**The click handler `fcn.00463380(x, y)`** is called from the mission's
+left-click path at `0x0041BEC8`, *after* the ordinary handler `0x004714B0`
+(`0x0041BE0D`) — which returns at its own entry while the counter is 0
+(`0x004714C1..D3`: `0x0043B280`, `test al, al`, `mov eax, 1`, `ret`), so
+neither its selection (§4.5) nor its magnifier arm (`0x0047156D`) runs on
+turn 0 — and it returns 0 at once unless the turn counter is 0
+(`0x00463382`). The remake's `_pick` returns into `_deploy_click` on the
+same gate, before its own magnifier arm. The counter alone: the
+`gameMode() == 1` test belongs to `0x0041A073`'s skip arm, not here, so an
+*Instant Action* mission deploys through the same clicks. Its three arms:
+
+| arm | where | what |
+|---|---|---|
+| the band | `fcn.004637C0`: y strictly between 385 and 459 (`0x004637D1`, `0x004637C5`); x strictly between 47 and 220 (`0x004637E9`, `0x004637DD`) answers **2**, x strictly between 220 and 394 (`0x004637F9`, `0x00463805`) answers **1** | 2 → `0x0046363D`, the **previous** record, index − 1 wrapping to `count − 1`; 1 → `0x004636B7`, the **next**, index + 1 wrapping to 0 (`0x00463700`). Both play `[0x51406C]` and do nothing at all with no selection (`je 0x46371D`). **x 220 answers nobody**, a dead column between the halves |
+| a unit on a landing cell | inside the window, `fcn.0042F730(x, y)` gives the cell; its state byte must be **70…73** (`0x00463437..43`, `markDeploymentCells`' `0x46 + player`, [`29` §1.2](29-interface-contract.md)) or the click is ignored; `cell[+7] != 0xFFFF` and `unit[+0x4D] >= 1` (`0x00463485`) | `[0x514068]` plays, `aTransferUnitFromMapToPool(player, x, y)` `0x00478F20` (`0x004634C7`); a selection of −1 becomes 0 (`0x004634F8`); redraw and the HUD refresh `0x0041D6A0(1)`. A mission's own soldier (`+0x4D` 0) is simply ignored |
+| an empty landing cell | the same cell test, `[0x514064] != -1` | `[0x514068]` plays; the **facing is the screen quadrant of the click**: `fcn.00419A50/60` (`0x00463552/60`) are the screen's width and height, halved, and the left column is `4 + 2 · (y < half)` (`0x00463572/75`), the right `7 − 2 · (y < half)` (`0x0046358E/91`) — left-bottom 4, left-top 6, right-top 5, right-bottom 7; then `aTransferUnitFromPoolToMap(player, index, x, y, facing)` `0x00478D10` (`0x004635AB`, twenty bytes cleaned at `0x004635B0` — **five** arguments, which corrects [`27` §3.4](27-campaign.md)); the HUD refresh; and the selection clamped — −1 when the pool is now empty (`0x004635EF`), the same index while it exists, else `count − 1` (`0x004635E3..0x00463605`) |
+
+The dots themselves are §3.1's: `markDeploymentCells` runs for the incoming
+player while the counter is 0 and leaves every cell whose action point is
+`player + 1` in state `70 + player`, which the overlay blits as `mp1[18]` —
+occupied cells too, which is what makes the take-back visible.
+
+**Leaving is *Next player*.** `0x0041DA20` cmd 2 has no turn-0 gate: it
+writes `0xFFFF` into the selection word `[0x4FE394]`, wipes the panel
+(`0x004758F0` twice) and runs `aNextPlayerHandling`, and that hand-over is
+the only way out of turn 0 (§4.5, [`25` §3](25-turn-and-round.md)). The
+wipeout test is gated on `turnCounter() > 0` ([`27` §6](27-campaign.md)), so
+the button over an **empty** map hands over anyway and the player loses on
+turn 1.
+
+**A load re-enters the same two arms.** The load command reaches
+`aInitBattleGround` again (`0x0041DABD` → `0x0042E811` → `0x00419D90`), so a
+save carrying turn 0 comes back into the place interface when the pool
+still holds anybody, and onto turn 1 through `0x0041A073`'s silent
+`setTurn(1)` when it does not — and only in a campaign game: the arm's
+first test is `gameMode() == 1`, so an *Instant Action* save on turn 0 with
+the whole squad placed comes back into the place interface over an empty
+pool, selection −1, and *Next player* is its way out (the remake's
+`_may_skip_deployment` carries the same three tests). **`_31_.sav`, *Undo
+mission*, is written before the deployment**, not after it: the retail
+fixture (`tests/fixtures/saves/_31_.sav`, [`11` §5.8](11-save-game-format.md))
+carries turn 0 with its one soldier in the live row *and* in the entry
+snapshot, and `_6_.sav`, the same session one turn on, has him in the
+snapshot alone. So *Undo mission* always lands in the place interface with
+the whole pool to place again, and leaves it through the hand-over —
+`_C_106`'s ride included. The silent arm is reached by a load only through a
+save the player took on turn 0 after placing everybody, and that one runs
+no `NEXT TURN`; verified static, open question 4 holds the runtime half.
+The remake writes slots 31 and 33 as the interface goes up
+(`_open_deployment_or_start`), for the same reason — an earlier draft wrote
+them at the hand-over, with the pool emptied, and *Undo mission* then skipped
+the first turn's script.
+
+**In the remake** (`game/main.gd`, the *place interface* section;
+`game/deployment.gd` the pure rules; `game/hud/unit_panel.gd`
+`refresh_record`; `core/world.gd` `recall_from_map` and the fifth argument of
+`deploy_from_pool`): the mission opens on turn 0 with the HUD up and the
+camera over the landing zone (§4.5's counter-0 arm), the panel shows the
+roster's first record and its band's two halves are invisible `Control`s
+that raise `panel_cycled`, a click on a dot places with the quadrant facing
+and a click on a placed pool candidate takes him back, and *Next player* /
+Enter hands over. Four things are the remake's own, each named where it is
+made: the refusals and the hint are **spoken** on the caption line at
+(60, 22) — a standing line the button captions win over — because a click
+that does nothing is a defect ([`92` §7.4](92-remake-architecture.md));
+*Next player* over an empty map is **refused** with that line rather than
+handed over into a wipeout; the roster keeps its gaps and the original's
+index is the position among the occupied slots ([`27` §3.4](27-campaign.md));
+and the band's halves are anchored with the panel's bottom-left piece on a
+canvas wider than the plate, where the original has no wider canvas. The
+pause menu's abandon entry is the way off a turn-0 map, captioned *Back* and
+routed to the HQ in *Instant Action*. `Menu_a` window 10's *Infos* button
+(`0x0044EEDA`, the multiplayer level options) is not on this path, which is
+why no briefing box is drawn over the deployment ([`24` §7.1](24-briefing-text.md)).
+
 ## 6. The radar — `fcn.00451E50`
 
 Clipped to **`(501, 389)` by 90x66** (`0x00451E72`), the green screen
@@ -977,7 +1080,7 @@ face). The four fonts' rows are the same 13/13/20/10 the cache's
 ## 9. Verification
 
 ```bash
-python3 tools/hud_tables.py --check gog_incubation          # 202 checks
+python3 tools/hud_tables.py --check gog_incubation          # 217 checks
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
 bash godot/run_tests.sh                                       # test_hud.gd
 ```
@@ -989,8 +1092,13 @@ geometry and clamp; the facing-delta and angle dispatch tables; the four
 tick periods; the click handler's states, modes and calls; the ring click's
 calls and the `mp == 0` test; `aChangeUnitViewDirection`'s refusals and its
 `+0x46` write; the pad's rectangle, strides, sprites, gates and draw
-origin; the panel's origin, blocks, offsets and helpers; the columns'
-rectangle, three dispatch tables, caption position and draw; the radar's
+origin; the panel's origin, blocks, offsets and helpers; the place
+interface of §5.5 — its raise from `aInitBattleGround`, the pool count and
+the −1/0 selection store, the two click calls in their order, the counter
+gate, the band's six bounds and two answers, the two arms and their wrap
+calls, the screen-size calls and the facing arithmetic, the five-argument
+transfer, the take-back and the −1 store, and the four sound sites; the
+columns' rectangle, three dispatch tables, caption position and draw; the radar's
 clip, centre, scale, coordinate map, compass table, lamp and zoom click;
 the window's four writes, the strips, the turn text and the par calls; the
 blitter's element arithmetic, its transparency test and which callers read
@@ -1017,7 +1125,7 @@ overlay call and caption row, the four-arm colour switch and its RGB565
 packing, both sound buffers with the alarm's mode-and-turn gate and the bar's
 own play site, and the eleven captions read back out of the shipped banks; and the selection of §4.5 — all five writes to `[0x005162F0]`, that the reset has one caller, that `fcn.004721F0` fills an empty selection before it reads its mode, the two cycle modes, `fcn.00471E00`'s two gates, `aInitBattleGround`'s single mode-1 ask, `fcn.00477CE0`'s two passes with the movement test present in the first and absent from the second, its `0xFFFF`, that neither hand-over routine calls any of them, the reference count of `[0x005162F0]` over the whole `.text`, the four view-mode placers of the select camera with the `(8, 7, 0)` mode 2 opens in, and that the five sites that re-apply the view all reach `fcn.004533D0`. It fails on an empty corpus.
 
-`test_hud.gd` (**329 checks**): every table above against the fixture; the
+`test_hud.gd` (**429 checks**): every table above against the fixture; the
 layout on 640x480, 853x480, 640x512 and 1120x480 — no overlap, fixed pieces
 their own size, the window the remainder, every widget on the canvas, 4:3
 the plate to the pixel; the anchor sign; every library's anchors and sizes
@@ -1031,7 +1139,21 @@ opening, eleven at half the side, all twenty-two at the end, the panel, the
 columns, the pad and the radar's marks gone while it is up and back when the
 seat is; and the interface itself — the turn text with and without a
 par, every caption shipped, the panel naming its unit, the pad's gate at the
-press, the events raised, the report.
+press, the events raised, the report; and the place interface of §5.5 —
+the band, the answers, the facings and the marker states against the
+fixture's `place` block, the band's boundary pixels on two canvases with x
+220 answering nobody, the four quadrants on two screen sizes, the wraps and
+the clamps over a gapped roster, the panel fed a pool record and cleared,
+the band's halves up with a record and down without, the standing line
+against the button caption, and the overlay marking every landing cell at
+0 and none otherwise. `test_shell.gd` drives the whole thing through
+`SliceMain`: the first record picked on entry, the hint, the next-unit
+button dark, both wraps, the band reaching the host, *Next player* refused
+over an empty map with its line, a non-cell refused, a placement with facing
+4 from the left-bottom quadrant and the selection clamped to the same
+index, the dot kept under the placed soldier, the take-back, everyone
+placed leaving nobody selected and the band inert, a take-back re-arming
+the selection, the agent's view and the abandon restoring the row.
 
 `test_game_ui.gd` carries the hand-back of §4.5 on a real `_C_140` — the
 first unit is the lowest-numbered one of the side, a previous selection the
@@ -1045,7 +1167,8 @@ that did not move is never counted, a casualty leaves the divisor unless the
 replay is still holding it, and the side is the replay's rather than the
 world's seat.
 
-The driver gained `markers` and `hud event|pad|ring|radar N`, and reports
+The driver gained `markers`, `hud event|pad|ring|radar|panel N`,
+`deploy SLOT X Y [FACING]` and `recall X Y`, and reports `deployment` beside
 `hud`, `markers` and `visible_rect` in every reply. (Since 2026-09-06 the
 driver is the control server of `docs/92` §7.16, reached by `--agent-port=`;
 the verbs kept their names.)
@@ -1166,6 +1289,13 @@ the verbs kept their names.)
   pins it; `hud_tables.py` keeps pinning the listing's own reads. Reopened
   as an open question below.
 
+* **D13 — deployment is the battle interface on turn 0 (2026-09-13).**
+  §5.5 replaces the remake's deployment screen: the mission opens with the
+  HUD up, the pool record on the panel, the band cycling, the quadrant
+  facing and *Next player* handing over. Two refusals are spoken and one is
+  the remake's own — an empty map does not hand over — recorded in
+  [`92` §7.4](92-remake-architecture.md).
+
 ## Open questions
 
 1. **What keeps §3.2's hit-point digit off the original's screen** (opened
@@ -1234,3 +1364,30 @@ Wine session that answers question 1 would take it.~~ **Closed by decision,
 2026-09-13**, with question 1: the offsets stand as read off the listing, the
 remake's panel has been played through the whole campaign by the project
 owner, and no frame of the original is going to be taken for it.
+
+Three new ones with §5.5 (2026-09-13), all open in principle until a frame
+or a probe of the original is taken:
+
+2. **What the panel prints over a fresh pool record.** `fcn.00463730` feeds
+   the pool record to `0x004756D0` unchanged, and a recruit's `+0x3D` is 0
+   until the placement's recompute fills it ([`27` §3.4](27-campaign.md)),
+   so by the listing the panel shows `0/max` in red and the status word
+   *Out of ammo!* over a soldier who has not been placed. The remake draws
+   what the listing says. Settles with one frame of the original's turn 0
+   over a recruit.
+3. **Whether `aKillUnit` rebuilds visibility on a take-back.**
+   `aTransferUnitFromMapToPool` (`0x00478F20`) calls it after the pool
+   insertion; the remake's `recall_from_map` rebuilds the fog the way the
+   placement does, which is the conservative reading. A `dbgcall` phase that
+   places, recalls and reads `+0x4F` of a unit the recalled soldier alone
+   could see would settle it.
+4. **What a load with an emptied pool does at runtime.** §5.5's reading of
+   `0x0041DABD` → `0x0042E811` → `0x00419D90` is static: `0x0041A073` sets
+   the counter to 1 when the pool is empty, and the re-entry latch the save
+   restores means the first `aNextPlayerHandling` takes the `handOver(1)`
+   arm, so no `NEXT TURN` runs. *Undo mission* does not reach it — `_31_.sav`
+   is written with the pool full (§5.5) — so the case is a manual save
+   taken on turn 0 after everybody was placed, on `_C_106`: whether loading
+   it in the original leaves the platform standing is one Wine run of the
+   retail game away; the remake follows the reading and says so in
+   `_open_after_load`.

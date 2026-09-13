@@ -432,6 +432,14 @@ const INTERFACE_COLUMN_HOVER: String = "column_hover"
 ## (`fcn.00453410`) play nothing.
 const INTERFACE_VIEW_MAP: String = "view_map"
 const INTERFACE_VIEW_UNIT: String = "view_unit"
+## The place interface (`aPI.cpp`, docs/43 section 5.5) plays from the same
+## two buffers: a placement and a take-back from `[0x514068]`, which
+## `aInitBattleGround` fills from `[0x4FE340]` -- `click_1.wav`, the
+## hover-cell buffer -- and the band's cycling from `[0x51406C]`, filled
+## from `[0x4FE344]` -- `click_2.wav`, the column press. Aliases, so a reader
+## of the deployment code finds the join here rather than in docs/28.
+const INTERFACE_DEPLOY_PLACE: String = INTERFACE_HOVER_CELL
+const INTERFACE_DEPLOY_CYCLE: String = INTERFACE_COLUMN_PRESS
 
 ## The cue one interface action makes, or an empty dictionary when the cache
 ## predates docs/28 section 2.5.

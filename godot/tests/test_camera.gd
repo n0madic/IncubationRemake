@@ -168,6 +168,10 @@ func _check_selection_views(h: TestHarness) -> void:
 		h.check("select.cache", false, "no _C_140 in the cache")
 		return
 	var world: World = loaded["world"]
+	# A mission in play: the loader leaves turn 0, which is the place
+	# interface's (docs/43 section 5.5) and where the view buttons frame the
+	# landing zone rather than a selection. `--mission=` skips it too.
+	world.turn.turn = TurnState.FIRST_TURN
 	var slot: int = SliceMain.first_friendly_slot(world)
 	var view: Dictionary = world.unit_view(slot)
 	var rig: CameraRig = _flat_rig(world.resource.width, world.resource.height)
@@ -265,9 +269,9 @@ func _check_selection_views(h: TestHarness) -> void:
 	expected.free()
 
 
-## The deployment plate owns input through `_screen_input`, not the mission's
-## ordinary `_unhandled_input` path. Keep keys 2 and 4 distinct both before
-## the first soldier lands and after there is a unit for the directors to use.
+## On turn 0 the view buttons take the place interface's arm: the camera
+## is placed over the landing zone until the first soldier lands, and over
+## him after. Keep keys 2 and 4 distinct in both cases.
 func _check_deployment_view_keys(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_mission("_C_141")
 	if loaded.is_empty():
@@ -275,6 +279,8 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 		return
 	var world: World = loaded["world"]
 	var _cleared: int = world.clear_units_of(0)
+	# The place interface's own gate: the counter at 0 (docs/43 section 5.5).
+	world.turn.turn = 0
 	var rig: CameraRig = _flat_rig(world.resource.width, world.resource.height)
 	var expected: CameraRig = _flat_rig(world.resource.width, world.resource.height)
 	var main: SliceMain = SliceMain.new()
@@ -283,8 +289,8 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 	main._director = CameraDirector.create(rig)
 	main.campaign = CampaignHost.new()
 	main.campaign._mission_world = world
-	var screen: SelectUnitsScreen = SelectUnitsScreen.new()
-	main._screen = screen
+	h.check("deploy_view.deploying", main._deploying(),
+		"the view buttons take the turn-0 arm while the counter is 0")
 	var at: Vector2i = main._deployment_centre()
 	h.check("deploy_view.has_centre", at.x >= 0, str(at))
 	if at.x >= 0:
@@ -295,7 +301,7 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 		expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
 		var _eyes: int = expected.view_eyes(centre, 0, Vector2i(0, 1))
 		expected.settle()
-		main._screen_input(_key(KEY_2, true))
+		main._on_hud_event(HudTables.EVENT_UNIT_VIEW)
 		h.equal("deploy_view.empty_key_2_is_eyes", rig.state(), expected.state())
 
 		rig.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
@@ -305,7 +311,7 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 		expected.set_view_mode(CameraRig.View.UNIT)
 		expected.set_now(DictRead.as_vector3i(goal["eye"]),
 			DictRead.as_vector3i(goal["target"]))
-		main._screen_input(_key(KEY_4, true))
+		main._on_hud_event(HudTables.EVENT_USER_VIEW)
 		h.equal("deploy_view.empty_key_4_is_unit", rig.state(), expected.state())
 
 		var marine: UnitState = UnitState.new()
@@ -323,7 +329,7 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 			expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
 			var _unit_eyes: float = reference.view_eyes(world, slot)
 			expected.settle()
-			main._screen_input(_key(KEY_2, true))
+			main._on_hud_event(HudTables.EVENT_UNIT_VIEW)
 			h.equal("deploy_view.placed_key_2_is_eyes",
 				rig.state(), expected.state())
 
@@ -331,11 +337,9 @@ func _check_deployment_view_keys(h: TestHarness) -> void:
 			expected.set_now(_v(8000, 8000, 16000), _v(48000, 16000, BODY))
 			var _unit_view: float = reference.view_unit(world, slot)
 			expected.settle()
-			main._screen_input(_key(KEY_4, true))
+			main._on_hud_event(HudTables.EVENT_USER_VIEW)
 			h.equal("deploy_view.placed_key_4_is_unit",
 				rig.state(), expected.state())
-	main._screen = null
-	screen.free()
 	main.free()
 	rig.free()
 	expected.free()

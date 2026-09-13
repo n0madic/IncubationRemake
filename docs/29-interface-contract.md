@@ -192,21 +192,35 @@ placefields.
 
 ### 1.3 Deployment
 
-The Place Interface (`aPI.cpp`) makes roster/map transfer explicit:
+The Place Interface (`aPI.cpp`) is not a screen: it is the battle interface of
+§1.1 while the turn counter is 0, with one click handler in front of the
+ordinary one. [`43` §5.5](43-battle-hud.md) reads it instruction by
+instruction; the contract is:
 
-1. Select a roster slot or a deployed pool candidate.
-2. A deployed unit can return only from a cell whose state marker
-   `cell[+0x00]` is **70…73** (a player-specific deployment marker), and only when
-   `unit[+0x4D] >= 1`; it then calls
-   `aTransferUnitFromMapToPool`.
-3. Placing a roster entry calls `aTransferUnitFromPoolToMap(player, slot, x, y)`.
-   That routine creates the map unit, rebuilds visibility, and removes the
-   roster slot.
+1. `aInitPlaceInterface` (`0x004632E0`, from `aInitBattleGround` at
+   `0x0041A663`) selects pool index 0 when the pool has anybody, else none,
+   and paints the selected pool record with the **unit panel's own painter**
+   (`0x004756D0` at (60, 415)).
+2. A click on the panel band (y 386…458) cycles the selection: x 48…219 the
+   previous record, x 221…393 the next, both wrapping; x 220 answers nobody.
+3. A click inside the 3D window lands on a cell whose state marker
+   `cell[+0x00]` must be **70…73** (the player-specific deployment marker of
+   §1.2) or it is ignored. A unit standing there can return only when
+   `unit[+0x4D] >= 1`; it then calls `aTransferUnitFromMapToPool`. An empty
+   cell with a record selected calls
+   `aTransferUnitFromPoolToMap(player, slot, x, y, facing)`, the facing read
+   from the **screen** quadrant of the click (left-bottom 4, left-top 6,
+   right-top 5, right-bottom 7). That routine creates the map unit, rebuilds
+   visibility, and removes the roster slot.
+4. Leaving is *Next player* (event 10), which has no turn-0 gate: it hands
+   over, and that is the only way out of turn 0 ([`25` §3](25-turn-and-round.md)).
 
 The transfer routines own capacity and survival semantics: a non-candidate or
 full pool silently drops a returning unit ([`27` §3.4](27-campaign.md)). A
 replacement may show a warning, but it must not pretend that the original
-state was retained.
+state was retained. The remake refuses *Next player* over an empty map with a
+line instead of handing over into a wipeout, and speaks every other refusal
+on the caption line ([`92` §7.4](92-remake-architecture.md)).
 
 ### 1.4 Campaign screens
 

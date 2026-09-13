@@ -345,6 +345,32 @@ const PANEL_BLOCK_EXPERIENCE: Vector2i = Vector2i(75, -10)
 const PANEL_BLOCK_WEAPON: Vector2i = Vector2i(145, 0)
 const PANEL_BLOCK_MOVEMENT: Vector2i = Vector2i(235, 15)
 const PANEL_BLOCK_SKILLS: Vector2i = Vector2i(275, -10)
+
+# --- the place interface, `aPI.cpp` (docs/43 section 5.5) -------------------
+
+## The band of the panel a click cycles the pool in, `fcn.004637c0`: the
+## pointer's y strictly between 385 and 459 (`0x004637D1`, `0x004637C5`),
+## its x strictly between 47 and 220 for the *previous* soldier
+## (`0x004637E9`, `0x004637DD`) and strictly between 220 and 394 for the
+## *next* (`0x004637F9`, `0x00463805`). Inclusive ranges in the plate's
+## units; x 220 answers nobody.
+const PANEL_CLICK_Y: Vector2i = Vector2i(386, 458)
+const PANEL_PREV_X: Vector2i = Vector2i(48, 219)
+const PANEL_NEXT_X: Vector2i = Vector2i(221, 393)
+## What the band answers (`0x004637EE`, `0x0046380C`).
+const PANEL_CLICK_PREV: int = 2
+const PANEL_CLICK_NEXT: int = 1
+## The facing a placed soldier gets from the **screen** quadrant of the
+## click -- the screen's halves (`fcn.00419a50/60` at `0x00463552/60`), not
+## the window's. Keyed by `(x >= width / 2, y >= height / 2)`: the left
+## column is `4 + 2 * (y < half)` (`0x00463572/75`), the right one
+## `7 - 2 * (y < half)` (`0x0046358E/91`).
+const DEPLOY_FACING_BY_QUADRANT: Dictionary[Vector2i, int] = {
+	Vector2i(0, 1): 4, Vector2i(0, 0): 6, Vector2i(1, 0): 5, Vector2i(1, 1): 7,
+}
+## `markDeploymentCells` `0x00431118`: a deployment cell of player `p` is
+## in state `0x46 + p` -- 70..73, which the overlay blits as `mp1[18]`.
+const STATE_DEPLOY_FIRST: int = 70
 ## `uicons.LIB` elements the panel draws.
 const LIB_ICONS: String = "uicons"
 const LIB_WEAPONS: String = "uweapons"

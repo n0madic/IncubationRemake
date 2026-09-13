@@ -17,6 +17,11 @@ extends Control
 ## `0x00473960` pushes it twice into the panel (docs/43 D7). The slots stay
 ## apart because the readable fallback sizes below differ.
 
+## The band's two halves were clicked -- the place interface's *previous*
+## ([constant Deployment.PREV]) or *next* ([constant Deployment.NEXT]) pool
+## soldier, `fcn.004637c0` (docs/43 section 5.5).
+signal cycled(step: int)
+
 ## RGB565 colours the panel writes with.
 const COLOUR_TEXT: int = 0xFFFF
 const COLOUR_SHADOW: int = 0x632C
@@ -97,6 +102,11 @@ var _item_hints: Array[HintControl] = []
 ## screen reads. Empty where no cache was handed over, and an empty name is
 ## no hint rather than a caption of the remake's own.
 var _equipment_names: Dictionary = {}
+## The place interface's two click halves of the panel band, up only while a
+## pool record is on the panel. They stop the mouse and sit above the
+## inventory's tooltip carriers, so on turn 0 the pictures under them have
+## no tooltip -- the original's band knows nothing of the pictures either.
+var _cycle_zones: Array[Control] = []
 
 
 func setup(art: Art, strings: Localization, font: FontFile, small: FontFile) -> void:
@@ -107,6 +117,8 @@ func setup(art: Art, strings: Localization, font: FontFile, small: FontFile) -> 
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_ensure_inventory_hints()
+	_ensure_cycle_zones()
+	resized.connect(_layout_cycle_zones)
 
 
 func use_font(font: FontFile, small: FontFile) -> void:
@@ -118,12 +130,7 @@ func use_font(font: FontFile, small: FontFile) -> void:
 
 ## Redraw for *slot*, or clear for a slot the world does not have.
 func refresh(world: World, slot: int) -> void:
-	for item: Control in _items:
-		remove_child(item)
-		item.queue_free()
-	_items.clear()
-	_hover_rects.clear()
-	_hover_ids.clear()
+	_clear()
 	if world == null or slot < 0 or not world.has_unit(slot):
 		_sync_inventory_hints({})
 		return
@@ -131,9 +138,47 @@ func refresh(world: World, slot: int) -> void:
 	if view.is_empty():
 		_sync_inventory_hints({})
 		return
+	_paint(view, world.unit_types(), world.weapons(),
+		world.max_hit_points(slot))
+
+
+## Redraw for a record that is not on the map -- the place interface feeds
+## the pool's selected record to the same painter (`fcn.00463730` ->
+## `0x004756D0`, docs/43 section 5.5). The hit-point cap is the record's own,
+## from the same rule [method World.max_hit_points] applies to a placed one.
+## The record is read and let go: the roster hands out clones.
+func refresh_record(world: World, record: UnitState) -> void:
+	_clear()
+	if world == null or record == null or not record.is_placed():
+		_sync_inventory_hints({})
+		return
 	var utab: UnitTypeTable = world.unit_types()
-	var wtab: WeaponTable = world.weapons()
-	_hp_max = world.max_hit_points(slot)
+	_paint(record.view(), utab, world.weapons(),
+		Interact.max_hit_points(utab, record))
+
+
+## Whether the band's halves take clicks -- on while a pool record is shown.
+func set_cycling(on: bool) -> void:
+	for zone: Control in _cycle_zones:
+		zone.visible = on
+
+
+func cycling() -> bool:
+	return not _cycle_zones.is_empty() and _cycle_zones[0].visible
+
+
+func _clear() -> void:
+	for item: Control in _items:
+		remove_child(item)
+		item.queue_free()
+	_items.clear()
+	_hover_rects.clear()
+	_hover_ids.clear()
+
+
+func _paint(view: Dictionary, utab: UnitTypeTable, wtab: WeaponTable,
+		hp_max: int) -> void:
+	_hp_max = hp_max
 	_origin = PlateLayout.anchored(Vector2(HudTables.PANEL_ORIGIN), size,
 		"bottom_left")
 	var type_id: int = DictRead.as_int(view["type_id"])
@@ -416,6 +461,41 @@ func _ensure_inventory_hints() -> void:
 		area.visible = false
 		add_child(area)
 		_item_hints.append(area)
+
+
+## The two halves of the band, `fcn.004637c0`'s rectangles, built once.
+## Above the tooltip carriers (`z_index` 2 to their 1) and down until
+## [method set_cycling] raises them.
+func _ensure_cycle_zones() -> void:
+	if not _cycle_zones.is_empty():
+		return
+	for step: int in [Deployment.PREV, Deployment.NEXT]:
+		var zone: Control = Control.new()
+		zone.name = "CyclePrev" if step == Deployment.PREV else "CycleNext"
+		zone.mouse_filter = Control.MOUSE_FILTER_STOP
+		zone.z_index = 2
+		zone.visible = false
+		zone.gui_input.connect(_on_zone_input.bind(step))
+		add_child(zone)
+		_cycle_zones.append(zone)
+	_layout_cycle_zones()
+
+
+func _layout_cycle_zones() -> void:
+	if _cycle_zones.is_empty():
+		return
+	var rects: Array[Rect2] = Deployment.band_rects(size)
+	for index: int in range(_cycle_zones.size()):
+		_cycle_zones[index].position = rects[index].position
+		_cycle_zones[index].size = rects[index].size
+
+
+func _on_zone_input(event: InputEvent, step: int) -> void:
+	var click: InputEventMouseButton = event as InputEventMouseButton
+	if click == null or not click.pressed \
+			or click.button_index != MOUSE_BUTTON_LEFT:
+		return
+	cycled.emit(step)
 
 
 func _sync_inventory_hints(wanted: Dictionary) -> void:

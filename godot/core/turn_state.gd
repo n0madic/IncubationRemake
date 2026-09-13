@@ -143,6 +143,15 @@ func skips_empty_players() -> bool:
 	return mode == MODE_LOCAL and human_count() > 1
 
 
+## The place interface answers while the counter is 0 -- `fcn.00463380`'s
+## gate at `0x00463382` reads the counter (`0x0043B280`) and nothing else. The
+## mode test belongs to `0x0041A073`'s *skip* arm ([method World.skip_deployment_turn]),
+## not to the interface: an Instant Action mission deploys through the same
+## clicks as a campaign one (docs/43 section 5.5).
+func deploying() -> bool:
+	return turn == 0
+
+
 ## `0x0043B2A0` -- five instructions, and the wrap is the whole of the fifth.
 func advance_turn() -> int:
 	turn += 1

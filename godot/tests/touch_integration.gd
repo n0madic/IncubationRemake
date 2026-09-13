@@ -241,23 +241,40 @@ func _campaign_flow() -> void:
 	if not (game._screen is BriefingScreen):
 		return
 	await _press("enter")
-	_check("briefing leads to deployment", game._screen is SelectUnitsScreen)
-	if not (game._screen is SelectUnitsScreen):
+	# The deployment is the mission on turn 0 with the HUD up (docs/43
+	# section 5.5): no screen, the place interface's own state.
+	_check("briefing leads to the turn-0 map",
+		game._screen == null and game.in_mission() and game.world != null
+		and game.world.deploying())
+	if game._screen != null or game.world == null:
 		return
+	# *Undo mission* is written as the interface goes up, with the pool
+	# still full -- where the retail `_31_.sav` stands (docs/43 section
+	# 5.5) -- so undoing lands back here, not on a turn 1 with no script.
+	var undo: Dictionary = CampaignCodec.decode(FileAccess.get_file_as_bytes(
+		game.campaign.slot_path(HudTables.SLOT_UNDO_MISSION))) \
+		if game.campaign.has_save(HudTables.SLOT_UNDO_MISSION) else {}
+	var undo_state: CampaignState = undo.get("state", null) \
+		if not undo.is_empty() else null
+	_check("undo mission holds the pool unplaced", undo_state != null
+		and undo_state.roster.used_slots()
+			== game.campaign.state.roster.used_slots()
+		and undo_state.roster.used_slots() > 0)
 	var landings: Array[Vector2i] = game._free_landings()
 	var placed: int = 0
 	for landing: Vector2i in landings:
-		var deploy: SelectUnitsScreen = game._screen as SelectUnitsScreen
-		if deploy.selected == Roster.NO_SLOT:
+		if game._deploy_slot == Roster.NO_SLOT:
 			break
 		_tap(_cell(landing.x, landing.y))
 		placed += 1
 		await _frames()
 	_check("squad deployed with touches", placed > 0)
-	await _press("start")
+	# Next player hands over into turn 1.
+	await _hud_press(HudTables.EVENT_NEXT_PLAYER)
 	await _idle()
-	_check("touch campaign entered mission", game._screen == null and game.in_mission())
-	if game._screen != null:
+	_check("touch campaign entered mission", game._screen == null
+		and game.in_mission() and not game.world.deploying())
+	if game._screen != null or game.world.deploying():
 		return
 	await _move_and_end_turn()
 	_tap(game._touch._menu.get_rect().get_center())

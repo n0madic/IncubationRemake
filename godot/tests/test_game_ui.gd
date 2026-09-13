@@ -2769,11 +2769,22 @@ func _campaign_screens(h: TestHarness) -> void:
 	_no_missing_strings(h, "upgrade", upgrade)
 	upgrade.free()
 
-	var select: SelectUnitsScreen = SelectUnitsScreen.new()
-	select.host = host
-	select.setup(art, strings, font)
-	_no_missing_strings(h, "select", select)
-	select.free()
+	# The place interface has no screen of its own; its lines go to the
+	# HUD's caption label, and every one `SliceMain` can say has to resolve.
+	var deploy_lines: PackedStringArray = PackedStringArray([
+		SliceMain.DEPLOY_LINE_HINT, SliceMain.DEPLOY_LINE_NEED_ONE,
+		SliceMain.DEPLOY_LINE_POOL_EMPTY, World.DEPLOY_NOT_A_CELL,
+		World.DEPLOY_CELL_TAKEN, World.DEPLOY_NO_SLOT,
+		World.DEPLOY_EMPTY_RECORD, World.RECALL_NO_UNIT,
+		World.RECALL_NOT_YOURS, World.RECALL_NOT_A_CANDIDATE,
+		CampaignHost.RECALL_POOL_FULL])
+	var unresolved: PackedStringArray = PackedStringArray()
+	for name: String in deploy_lines:
+		if strings.text(SliceMain.DEPLOY_LINE_PREFIX % name).begins_with(
+				Localization.MISSING_PREFIX):
+			unresolved.append(name)
+	h.check("screens.every_deploy_line_resolves", unresolved.is_empty(),
+		"missing: " + ", ".join(unresolved))
 
 	var briefing: BriefingScreen = BriefingScreen.new()
 	briefing.mission = "_C_100"
@@ -3749,28 +3760,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	var _state: CampaignState = host.start_new(1)
 	var document: Dictionary = CacheLoader.read_json(
 		"%s/text/briefing/%s.json" % [cache_dir, host.state.mission])
-	h.check("deploy.briefing_present", not document.is_empty())
-	# **The deployment screen carries no briefing box, and the absence is
-	# read rather than assumed.** `0x0044EEDA` was attributed to this screen
-	# by one row of docs/24 section 7.1's table; it is `aMenuSystem`'s
-	# dispatcher arm for `Menu_a` window 10, `:Leveloptions;`, gadget 22 --
-	# the multiplayer *Infos* button. `SelectUnits` is a `Menu_b` window and
-	# no `aActivateBriefingInfo` site is in its arm. The check is structural
-	# because there is nothing left to tick: the screen builds a briefing
-	# label at all only if something puts one there.
-	var deploy: SelectUnitsScreen = SelectUnitsScreen.new()
-	deploy.host = host
-	deploy.document = document
-	deploy.setup(art, strings, null)
-	var boxes: int = 0
-	for child: Node in deploy.root().get_children():
-		if child is BriefingText:
-			boxes += 1
-	h.equal("deploy.no_briefing_box_over_the_map", boxes, 0,
-		"0x0044EEDA is Menu_a window 10 gadget 22, the multiplayer Infos "
-		+ "button -- not this screen")
-	deploy.free()
-
+	h.check("briefing.document_present", not document.is_empty())
 	var page: BriefingScreen = BriefingScreen.new()
 	page.mission = host.state.mission
 	page.paths = paths
@@ -4078,11 +4068,10 @@ func _no_campaign_state(h: TestHarness) -> void:
 	h.equal("no_state.mission_reads_empty", main.campaign.current_mission(), "")
 	# Each of these would have thrown on `campaign.state.mission`. Reaching the
 	# next line at all is the check.
-	for name: String in [CampaignHost.SCREEN_MAP, CampaignHost.SCREEN_BRIEFING,
-			CampaignHost.SCREEN_SELECT]:
+	for name: String in [CampaignHost.SCREEN_MAP, CampaignHost.SCREEN_BRIEFING]:
 		var _raised: CampaignScreen = main.show_campaign_screen(name)
 	h.check("no_state.every_screen_survives_it", true,
-		"map, briefing and deployment raised with no campaign state")
+		"map and briefing raised with no campaign state")
 	main.free()
 
 
@@ -4097,7 +4086,7 @@ func _no_campaign_state(h: TestHarness) -> void:
 ## The one it was written for: [method CampaignScreen._draw_plate] built its
 ## missing-art backing *before* asking whether the screen wants a window, and
 ## parented it only in the other arm, so every windowed screen on a cache with
-## no plate -- the deployment screen is one -- left a `ColorRect` and its
+## no plate -- the location map is one -- left a `ColorRect` and its
 ## theme owner behind.
 ##
 ## [constant Performance.OBJECT_ORPHAN_NODE_COUNT] is the count of live nodes
@@ -4115,7 +4104,7 @@ func _no_campaign_state(h: TestHarness) -> void:
 func _screens_leave_nothing_behind(h: TestHarness) -> void:
 	var names: Array[String] = [
 		CampaignHost.SCREEN_MAP, CampaignHost.SCREEN_BRIEFING,
-		CampaignHost.SCREEN_SELECT, CampaignHost.SCREEN_DEBRIEFING,
+		CampaignHost.SCREEN_DEBRIEFING,
 		CampaignHost.SCREEN_HQ, CampaignHost.SCREEN_RECRUIT,
 		CampaignHost.SCREEN_UPGRADE, CampaignHost.SCREEN_ITEMS,
 	]

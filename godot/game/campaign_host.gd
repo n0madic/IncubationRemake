@@ -5,7 +5,7 @@ extends RefCounted
 ## to the transitions this remake implements.
 ##
 ## [codeblock]
-## MainMap -> Briefing -> SelectUnits -> (the mission) -> MissionEnd -> MainMap
+## MainMap -> Briefing -> (the mission, deploying on turn 0) -> MissionEnd -> MainMap
 ## [/codeblock]
 ##
 ## plus `MainMenu` (the HQ roster), `Recruit` and `UpGrade`. It owns the
@@ -50,7 +50,6 @@ var save_dir: String = DEFAULT_SAVE_DIR
 ## The screens, in the order the flow reaches them.
 const SCREEN_MAP: String = "map"
 const SCREEN_BRIEFING: String = "briefing"
-const SCREEN_SELECT: String = "select_units"
 const SCREEN_MISSION: String = "mission"
 const SCREEN_DEBRIEFING: String = "debriefing"
 const SCREEN_HQ: String = "hq"
@@ -433,7 +432,7 @@ func frame_mission(mission_world: World) -> void:
 
 
 ## A loaded Instant Action save with no battle in it, put back where the HQ
-## can use it. A save is allowed from the deployment screen, where whoever
+## can use it. A save is allowed on turn 0, where whoever
 ## was placed has left the live row for the snapshot; the HQ reads the live
 ## row alone, so without this the squad looked hired away and the next
 ## *Deploy units* restored the snapshot over any new hire. The campaign path
@@ -457,7 +456,7 @@ func begin_mission(mission_world: World) -> void:
 	if state == null:
 		return
 	# **Re-entering a mission that was already begun.** The briefing raised
-	# over the deployment screen carries its own *Continue*, and that rebuilds
+	# over a deployment carries its own *Continue*, and that rebuilds
 	# the mission's scene -- so whoever was already standing on the old map
 	# goes with it, and they had been taken out of the live row to get there.
 	# Without putting them back first the snapshot below would freeze the
@@ -467,28 +466,66 @@ func begin_mission(mission_world: World) -> void:
 		state.roster.restore()
 	state.roster.snapshot()
 	_mission_world = mission_world
-	screen = SCREEN_SELECT
+	# The mission is entered here: the original deploys **inside** it, on
+	# turn 0 with the battle interface up (docs/43 section 5.5), and there is
+	# no screen between the briefing and the map.
+	screen = SCREEN_MISSION
+
+
+## Whether a placement or a recall is allowed right now: a begun mission,
+## still on turn 0. [method frame_mission] gives the Instant Action HQ a
+## world to count placefields on, and a placement made from there -- the
+## agent's `deploy` verb reaches this without a screen -- would take a
+## soldier out of the live row before the entry snapshot is taken, so *Back*
+## could never put them back; the `screen` half of the test is what keeps
+## that out. The turn half is the place interface's own gate
+## ([method World.deploying]).
+func deploying() -> bool:
+	return state != null and _mission_world != null \
+		and screen == SCREEN_MISSION and _mission_world.deploying()
 
 
 ## Put one roster slot on the map. Returns [World]'s own result dictionary,
-## with the slot removed from the live row on success.
-func deploy(slot: int, x: int, y: int) -> Dictionary:
-	# **Only from the deployment screen.** [method frame_mission] gives the
-	# HQ a world to count placefields on, and a placement made from there --
-	# the agent's `deploy` verb reaches this without a screen -- would take
-	# a soldier out of the live row before the entry snapshot is taken, so
-	# *Back* could never put them back.
-	if state == null or _mission_world == null or screen != SCREEN_SELECT:
+## with the slot removed from the live row on success. `facing` is
+## `aTransferUnitFromPoolToMap`'s fifth argument (docs/27 section 3.4).
+func deploy(slot: int, x: int, y: int,
+		facing: int = World.NO_FACING) -> Dictionary:
+	if not deploying():
 		return {"result": World.DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
 	var record: UnitState = state.roster.record(slot)
 	if record == null:
 		return {"result": World.DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
-	var placed: Dictionary = _mission_world.deploy_from_pool(0, record, x, y)
+	var placed: Dictionary = _mission_world.deploy_from_pool(0, record, x, y,
+		facing)
 	if DictRead.as_string(placed["result"]) == World.DEPLOY_OK:
 		# `aTransferUnitFromPoolToMap` takes the slot out of the pool only
 		# after the placement succeeds.
 		state.roster.clear(slot)
 	return placed
+
+
+## [method recall]'s own refusal, beside [World]'s three.
+const RECALL_POOL_FULL: String = "pool_full"
+
+## Take the soldier on a deployment cell back into the live row -- the
+## place interface's arm at `0x004634C7`, `aTransferUnitFromMapToPool`.
+## Returns `{"result": String, "slot": int}`, the roster slot the record
+## went to on success.
+##
+## The room is checked **first**: the engine's routine drops a unit the pool
+## has no slot for (docs/27 section 3.4), and a record [method
+## World.recall_from_map] hands back has already left the map.
+func recall(x: int, y: int) -> Dictionary:
+	if not deploying():
+		return {"result": World.RECALL_NO_UNIT, "slot": Roster.NO_SLOT}
+	if state.roster.first_free() == Roster.NO_SLOT:
+		return {"result": RECALL_POOL_FULL, "slot": Roster.NO_SLOT}
+	var taken: Dictionary = _mission_world.recall_from_map(0, x, y)
+	var outcome: String = DictRead.as_string(taken["result"])
+	if outcome != World.RECALL_OK:
+		return {"result": outcome, "slot": Roster.NO_SLOT}
+	var record: UnitState = taken["record"]
+	return {"result": World.RECALL_OK, "slot": state.roster.add(record)}
 
 
 ## The cells a squad may deploy onto, and how many of them there are -- the
@@ -508,16 +545,18 @@ func deployment_cells() -> Array[Vector2i]:
 ## only 31 ship a player-0 squad (docs/98), and those 31 are exactly where
 ## this can be true.
 ##
-## [SliceMain] uses it to skip the deployment screen rather than to refuse
-## anything: a screen offering a roster of nobody, a map of dots nobody can
-## stand on and one button was read as the campaign being broken.
+## [SliceMain] uses it to skip turn 0 rather than to refuse anything: a
+## roster of nobody over a map of dots nobody can stand on was read as the
+## campaign being broken -- and it is `0x0041A073`'s own arm.
 func nobody_to_deploy() -> bool:
 	if state == null:
 		return true
 	return state.roster.occupied_slots().is_empty()
 
 
-## Whether the mission may start: the engine's own screen refuses an empty map.
+## Whether the mission may start: nobody of player 0 on the map is the one
+## refusal *Next player* makes on turn 0 -- the remake's, not the engine's,
+## which hands over and loses by wipeout (docs/43 section 5.5).
 func may_start() -> bool:
 	if _mission_world == null:
 		return false
@@ -528,11 +567,16 @@ func may_start() -> bool:
 	return false
 
 
-func enter_mission() -> void:
+## A mission entered past [method begin_mission] -- a load. The world is
+## taken here because [method load_save] drops the last session's, and
+## without one [method deploy], [method recall] and [method may_start] are
+## dead after a turn-0 load.
+func enter_mission(mission_world: World) -> void:
+	_mission_world = mission_world
 	screen = SCREEN_MISSION
 
 
-## Leaving the deployment screen for the map without starting the sortie.
+## Leaving a deployment for the map without starting the sortie.
 ##
 ## `aCopyUnitPool(1, 0)` again -- the same call the debriefing's *replay*
 ## makes, for the same reason: whoever has already been put on the map has
@@ -540,17 +584,15 @@ func enter_mission() -> void:
 ## then takes the mission's whole scene down. Without this, backing out of a
 ## deployment cost the campaign every soldier already standing on it.
 ##
-## Only from [constant SCREEN_SELECT]: it is the one screen where the squad
-## can be on a map that has not been played.
+## **Whenever a mission is left without finishing it**, on turn 0 or later.
+## The map frees the mission's scene either way, and everyone standing in it
+## had been taken out of the live row to get there -- so a mission abandoned
+## mid-play once left the squad nowhere: the roster came back empty and the
+## next location had nobody to deploy.
 func abandon_mission() -> void:
 	if state == null:
 		return
-	# **Whenever a mission is left without finishing it**, not only from the
-	# deployment screen. The map frees the mission's scene either way, and
-	# everyone standing in it had been taken out of the live row to get there
-	# -- so a mission abandoned from any other screen left the squad nowhere:
-	# the roster came back empty and the next location had nobody to deploy.
-	if screen == SCREEN_SELECT or screen == SCREEN_MISSION:
+	if screen == SCREEN_MISSION:
 		state.roster.restore()
 		state.roster.clear_snapshot()
 		_mission_world = null

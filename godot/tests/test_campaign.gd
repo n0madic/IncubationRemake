@@ -552,8 +552,7 @@ func _banks(h: TestHarness, cases: Dictionary) -> void:
 ## standing on the map -- taken out of the live row to get there -- were gone
 ## for good.
 func _abandon(h: TestHarness, cases: Dictionary) -> void:
-	for screen: String in [CampaignHost.SCREEN_SELECT,
-			CampaignHost.SCREEN_MISSION]:
+	for screen: String in [CampaignHost.SCREEN_MISSION]:
 		var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
 			CacheFixture.read_json(CacheFixture.cache_dir()
 				+ "/tables/balance.json"), null)
@@ -589,7 +588,7 @@ func _abandon(h: TestHarness, cases: Dictionary) -> void:
 	h.equal("begin_mission.re_entry_keeps_the_squad",
 		pool.used_slots(Roster.ROW_LIVE), whole,
 		"a second entry puts the deployed soldiers back first")
-	again.screen = CampaignHost.SCREEN_SELECT
+	again.screen = CampaignHost.SCREEN_MISSION
 	again.abandon_mission()
 	h.equal("begin_mission.re_entry_restores_whole",
 		pool.used_slots(Roster.ROW_LIVE), whole)
@@ -871,6 +870,55 @@ func _deployment(h: TestHarness, cases: Dictionary) -> void:
 		h.equal("deploy.%s.healed" % name, DictRead.as_int(view["hp"]),
 			world.max_hit_points(slot),
 			"the recompute fills the hit points to the ceiling")
+		# The fifth argument, `aUI_SetUnit(x, y, record, facing)` at
+		# `0x00478D6B`: the place interface's quadrant facing lands on the
+		# record; a caller with none to give keeps the record's own.
+		h.equal("deploy.%s.keeps_the_records_facing" % name,
+			DictRead.as_int(view["facing"]), unit.facing)
+		if want.size() >= 2:
+			var faced: Dictionary = world.deploy_from_pool(0, unit,
+				want[1].x, want[1].y, 5)
+			h.equal("deploy.%s.faced_result" % name,
+				DictRead.as_string(faced["result"]), World.DEPLOY_OK)
+			h.equal("deploy.%s.faced" % name, DictRead.as_int(
+				world.unit_view(DictRead.as_int(faced["slot"]))["facing"]), 5)
+			# `aTransferUnitFromMapToPool` `0x00478F20`, minus the pool
+			# insertion: the record comes back and the cell is free again.
+			var taken: Dictionary = world.recall_from_map(0, want[1].x,
+				want[1].y)
+			h.equal("deploy.%s.recalled" % name,
+				DictRead.as_string(taken["result"]), World.RECALL_OK)
+			var back_record: UnitState = taken["record"]
+			h.check("deploy.%s.recalled_record" % name,
+				back_record != null and back_record.name == "Deployed"
+				and back_record.facing == 5,
+				"the record as it stood on the map")
+			h.equal("deploy.%s.recall_freed_the_cell" % name,
+				DictRead.as_int(world.cell_view(want[1].x, want[1].y)["unit"]),
+				MapState.NO_UNIT)
+			h.equal("deploy.%s.recall_nobody" % name,
+				DictRead.as_string(world.recall_from_map(0, want[1].x,
+					want[1].y)["result"]), World.RECALL_NO_UNIT)
+		# `0x00463485`: only a pool candidate comes back; a mission's own
+		# soldier stays where the `.lev` put him.
+		var kept: UnitState = UnitState.new()
+		kept.hp = 9
+		kept.name = "Kept"
+		kept.pool_flag = 0
+		kept.type_id = 0
+		var kept_cell: Vector2i = want[want.size() - 1]
+		var kept_placed: Dictionary = world.deploy_from_pool(0, kept,
+			kept_cell.x, kept_cell.y)
+		if DictRead.as_string(kept_placed["result"]) == World.DEPLOY_OK:
+			h.equal("deploy.%s.recall_refuses_a_non_candidate" % name,
+				DictRead.as_string(world.recall_from_map(0, kept_cell.x,
+					kept_cell.y)["result"]), World.RECALL_NOT_A_CANDIDATE)
+			h.check("deploy.%s.non_candidate_stays" % name,
+				DictRead.as_int(world.cell_view(kept_cell.x,
+					kept_cell.y)["unit"]) != MapState.NO_UNIT)
+			h.equal("deploy.%s.recall_refuses_another_player" % name,
+				DictRead.as_string(world.recall_from_map(1, kept_cell.x,
+					kept_cell.y)["result"]), World.RECALL_NOT_YOURS)
 
 		h.equal("deploy.%s.cell_taken" % name,
 			DictRead.as_string(world.deploy_from_pool(
@@ -1143,12 +1191,15 @@ func _mission_opening(h: TestHarness) -> void:
 	var _first: TurnResult = played.open_mission()
 	h.equal("opening.deployed_stays_at_zero", played.turn.turn, 0,
 		"handOver(1) does not advance the counter")
+	h.check("opening.deploying_at_zero", played.deploying(),
+		"fcn.00463380's gate is the counter alone")
 
 	var handed: TurnResult = played.submit_end_turn(EndTurnCommand.create())
 	h.equal("opening.handed_code", handed.code, TurnResult.OK)
 	h.equal("opening.handed_turn", played.turn.turn, TurnState.FIRST_TURN,
 		"the rotation passes through the computer's seat and comes back")
 	h.equal("opening.handed_player", played.turn.current_player, 0)
+	h.check("opening.not_deploying_at_one", not played.deploying())
 	h.check("opening.handed_ran_turn_script", handed.ran_turn_script,
 		"which is the NEXT TURN the platform rides on")
 	h.check("opening.handed_no_ai", handed.ai_result == null,
@@ -1187,7 +1238,6 @@ func _endings(h: TestHarness) -> void:
 			squad_before_defeat += 1
 	defeated_world.game_control.set_slot(4, 1)
 	host.begin_mission(defeated_world)
-	host.enter_mission()
 	var defeat_report: Dictionary = host.finish_mission(defeated_world)
 	h.equal("endings.defeat_reaches_the_report",
 		DictRead.as_int(defeat_report["result"]), ScoreRecord.RESULT_DEFEAT)
@@ -1209,7 +1259,6 @@ func _endings(h: TestHarness) -> void:
 		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
 	won_world.game_control.set_slot(0, 1)
 	host.begin_mission(won_world)
-	host.enter_mission()
 	var win_report: Dictionary = host.finish_mission(won_world)
 	h.equal("endings.victory_reaches_the_report",
 		DictRead.as_int(win_report["result"]), ScoreRecord.RESULT_WON)
@@ -1230,7 +1279,6 @@ func _endings(h: TestHarness) -> void:
 	var medals_before: int = again.commendations[0]
 	var total_before: int = again.scoreboard[0].total
 	host.begin_mission(paid_world)
-	host.enter_mission()
 	# Two soldiers lost to the enemy: `0x0043B860` pays a commendation for
 	# each at the death, beside the slot-11 medals the debriefing pays.
 	paid_world.turn.mission_lost_to_enemy[0] = 2
@@ -1274,7 +1322,6 @@ func _endings(h: TestHarness) -> void:
 	dropped_world.game_control.set_slot(MissionEnd.SLOT_EQUIPMENT_POINTS, 120)
 	dropped_world.game_control.set_slot(MissionEnd.SLOT_COMMENDATIONS, 2)
 	host.begin_mission(dropped_world)
-	host.enter_mission()
 	dropped_world.turn.mission_lost_to_enemy[0] = 2
 	dropped_world.turn.mission_lost[0] = 2
 	dropped_world.turn.mission_kills[0] = 5

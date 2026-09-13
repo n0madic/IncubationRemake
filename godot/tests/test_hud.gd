@@ -54,6 +54,8 @@ func run(h: TestHarness) -> void:
 	_ray_round_trip(h)
 	_hud_live(h)
 	_progress_arithmetic(h)
+	_place_tables(h)
+	_panel_record(h)
 
 
 # --- the tables against the binary -------------------------------------------
@@ -377,8 +379,6 @@ func _frame_tables(h: TestHarness) -> void:
 	var window: Array = DictRead.as_array(frame["window"])
 	h.equal("frame.window", HudTables.WINDOW, Rect2i(DictRead.as_int(window[0]),
 		DictRead.as_int(window[1]), DictRead.as_int(window[2]), DictRead.as_int(window[3])))
-	h.equal("frame.window_is_the_deploy_screens", Rect2(HudTables.WINDOW),
-		SelectUnitsScreen.DEPLOY_WINDOW)
 	var turn: Array = DictRead.as_array(frame["turn_text"])
 	h.equal("frame.turn_text", HudTables.TURN_TEXT_AT,
 		Vector2i(DictRead.as_int(turn[0]), DictRead.as_int(turn[1])))
@@ -1366,3 +1366,166 @@ func _progress_arithmetic(h: TestHarness) -> void:
 	h.equal("view_player.alarm_wave",
 		DictRead.as_string(screen["alarm_wave"]), "alarm.wav",
 		"copied into the cache, played by nothing")
+
+
+# --- the place interface, docs/43 section 5.5 -------------------------------
+
+## The band, the facings and the marker states against the binary's own
+## immediates, and the pure rules over them.
+func _place_tables(h: TestHarness) -> void:
+	var place: Dictionary = DictRead.as_dict(_cases["place"])
+	var band_y: Array = DictRead.as_array(place["band_y"])
+	var prev_x: Array = DictRead.as_array(place["prev_x"])
+	var next_x: Array = DictRead.as_array(place["next_x"])
+	h.equal("place.band_y", HudTables.PANEL_CLICK_Y,
+		Vector2i(DictRead.as_int(band_y[0]), DictRead.as_int(band_y[1])))
+	h.equal("place.prev_x", HudTables.PANEL_PREV_X,
+		Vector2i(DictRead.as_int(prev_x[0]), DictRead.as_int(prev_x[1])))
+	h.equal("place.next_x", HudTables.PANEL_NEXT_X,
+		Vector2i(DictRead.as_int(next_x[0]), DictRead.as_int(next_x[1])))
+	h.equal("place.results",
+		[HudTables.PANEL_CLICK_PREV, HudTables.PANEL_CLICK_NEXT],
+		[DictRead.as_int(place["prev_result"]),
+			DictRead.as_int(place["next_result"])])
+	var facings: Dictionary = DictRead.as_dict(place["facing_by_quadrant"])
+	var theirs: Dictionary[String, int] = {}
+	for key: String in facings:
+		theirs[key] = DictRead.as_int(facings[key])
+	var mine: Dictionary[String, int] = {}
+	for key: Vector2i in HudTables.DEPLOY_FACING_BY_QUADRANT:
+		mine["%d,%d" % [key.x, key.y]] = HudTables.DEPLOY_FACING_BY_QUADRANT[key]
+	h.equal("place.facing_by_quadrant", mine, theirs)
+	var markers: Array = DictRead.as_array(place["marker_states"])
+	h.equal("place.marker_states",
+		[HudTables.STATE_DEPLOY_FIRST, HudTables.STATE_DEPLOY_LAST],
+		[DictRead.as_int(markers[0]), DictRead.as_int(markers[1])])
+	h.check("place.markers_blit_the_dot",
+		HudTables.STATE_SPRITES.has(HudTables.STATE_DEPLOY_FIRST)
+		and HudTables.STATE_SPRITES[HudTables.STATE_DEPLOY_FIRST] == ["mp1", 18],
+		"70..73 -> mp1[18]")
+
+	# The band over the plate: the six boundary pixels, and x 220 -- the
+	# column neither half claims -- on a 640x480 canvas and a taller one,
+	# where the panel's piece moves down with the bottom edge.
+	for canvas: Vector2 in [Vector2(640, 480), Vector2(853, 600)]:
+		var extra: float = canvas.y - 480.0
+		var tag: String = "%dx%d" % [int(canvas.x), int(canvas.y)]
+		h.equal("place.band_sides.%s" % tag, [
+			Deployment.band_side(Vector2(48, 386 + extra), canvas),
+			Deployment.band_side(Vector2(219, 458 + extra), canvas),
+			Deployment.band_side(Vector2(221, 386 + extra), canvas),
+			Deployment.band_side(Vector2(393, 458 + extra), canvas),
+			Deployment.band_side(Vector2(47, 400 + extra), canvas),
+			Deployment.band_side(Vector2(394, 400 + extra), canvas),
+			Deployment.band_side(Vector2(220, 400 + extra), canvas),
+			Deployment.band_side(Vector2(100, 385 + extra), canvas),
+			Deployment.band_side(Vector2(100, 459 + extra), canvas)],
+			[Deployment.PREV, Deployment.PREV, Deployment.NEXT,
+				Deployment.NEXT, 0, 0, 0, 0, 0])
+		var rects: Array[Rect2] = Deployment.band_rects(canvas)
+		h.check("place.band_rects_agree.%s" % tag,
+			rects.size() == 2
+			and Deployment.band_side(rects[0].position, canvas) == Deployment.PREV
+			and Deployment.band_side(rects[0].end - Vector2.ONE, canvas)
+				== Deployment.PREV
+			and Deployment.band_side(rects[1].position, canvas) == Deployment.NEXT
+			and Deployment.band_side(rects[1].end - Vector2.ONE, canvas)
+				== Deployment.NEXT,
+			"the controls cover exactly the halves")
+	# The facing by the screen's halves, on two screen sizes.
+	for size: Vector2 in [Vector2(640, 480), Vector2(1067, 480)]:
+		var half: Vector2 = size / 2.0
+		h.equal("place.facing.%dx%d" % [int(size.x), int(size.y)], [
+			Deployment.facing_for(Vector2(0, half.y), size),
+			Deployment.facing_for(Vector2(0, half.y - 1), size),
+			Deployment.facing_for(Vector2(half.x, 0), size),
+			Deployment.facing_for(Vector2(half.x, half.y), size),
+			Deployment.facing_for(Vector2(half.x - 1, half.y), size)],
+			[4, 6, 5, 7, 4], "left-bottom 4, left-top 6, right-top 5, right-bottom 7")
+	# The wraps and the clamps over positions in a gapped roster.
+	var slots: PackedInt32Array = PackedInt32Array([2, 5, 9])
+	h.equal("place.cycle", [
+		Deployment.cycle(slots, 2, Deployment.NEXT),
+		Deployment.cycle(slots, 9, Deployment.NEXT),
+		Deployment.cycle(slots, 2, Deployment.PREV),
+		Deployment.cycle(slots, 5, Deployment.PREV),
+		Deployment.cycle(slots, Roster.NO_SLOT, Deployment.NEXT),
+		Deployment.cycle(PackedInt32Array(), 2, Deployment.NEXT)],
+		[5, 2, 9, 2, Roster.NO_SLOT, Roster.NO_SLOT])
+	h.equal("place.after_placement", [
+		Deployment.after_placement(PackedInt32Array([5, 9]), 0),
+		Deployment.after_placement(PackedInt32Array([2, 5]), 2),
+		Deployment.after_placement(PackedInt32Array(), 0)],
+		[5, 5, Roster.NO_SLOT], "the same index, clamped to the last, or nobody")
+	h.equal("place.after_recall", [
+		Deployment.after_recall(slots, Roster.NO_SLOT),
+		Deployment.after_recall(slots, 5),
+		Deployment.after_recall(PackedInt32Array(), Roster.NO_SLOT)],
+		[2, 5, Roster.NO_SLOT])
+
+
+## The panel fed a record that is not on the map, and the deployment states
+## the overlay stamps while the counter is 0.
+func _panel_record(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_141")
+	if loaded.is_empty():
+		h.check("panel_record.cache", false, "no _C_141 in the cache")
+		return
+	var world: World = loaded["world"]
+	var cache: CachePaths = CacheFixture.paths()
+	var strings: Localization = Localization.from_cache(cache)
+	var art: Art = Art.open(cache)
+	var hud: MissionHud = MissionHud.new()
+	hud.setup(art, strings, GameFont.load_from(cache, "font_2"),
+		GameFont.load_from(cache, MissionHud.TEXT_FONT),
+		GameFont.load_from(cache, MissionHud.SMALL_FONT), cache,
+		CacheFixture.balance())
+	var record: UnitState = UnitState.new()
+	record.name = "Pool Record"
+	record.hp = 9
+	record.type_id = 0
+	record.pool_flag = Roster.POOL_CANDIDATE
+	record.weapon = 2
+	hud.panel.refresh_record(world, record)
+	var texts: String = " ".join(hud.panel.texts())
+	h.check("panel_record.names_the_record", texts.contains("Pool Record"), texts)
+	h.check("panel_record.draws_the_blocks", hud.panel.icon_count() > 0)
+	h.check("panel_record.hp_from_the_same_rule", texts.contains("9/%d"
+		% Interact.max_hit_points(world.unit_types(), record)),
+		"hp/max as fcn.00475240 caps it: " + texts)
+	hud.panel.refresh_record(world, null)
+	h.equal("panel_record.null_clears", hud.panel.icon_count(), 0)
+	# Through the HUD's own refresh: the record puts the band's halves up
+	# and a refresh without one takes them down.
+	var all_on: Callable = func(_number: int) -> bool: return true
+	var north: Vector2 = Vector2(0.0, -1.0)
+	var east: Vector2 = Vector2(1.0, 0.0)
+	hud.refresh(world, -1, all_on, all_on, north, east, {}, false, {}, false,
+		record)
+	h.check("panel_record.the_band_is_up", hud.panel.cycling()
+		and hud.panel.icon_count() > 0)
+	hud.refresh(world, -1, all_on, all_on, north, east, {}, false)
+	h.check("panel_record.the_band_goes_down", not hud.panel.cycling()
+		and hud.panel.icon_count() == 0)
+	# The standing line and the button caption on the one label.
+	hud.set_line("a standing line")
+	h.equal("panel_record.line_shows", hud.hint_text(), "a standing line")
+	hud.set_hint("a caption")
+	h.equal("panel_record.caption_wins", hud.hint_text(), "a caption")
+	hud.set_hint("")
+	h.equal("panel_record.line_comes_back", hud.hint_text(), "a standing line")
+	hud.set_line("")
+	h.equal("panel_record.nothing_left", hud.hint_text(), "")
+	hud.free()
+	# The overlay's deployment states: every cell of the player's while the
+	# counter is 0, none otherwise.
+	var cells: Array[Vector2i] = world.deployment_cells(0)
+	var marked: Dictionary[Vector2i, int] = GroundSprites.cell_states(world, -1,
+		null, {}, 0)
+	var all_marked: bool = not cells.is_empty()
+	for cell: Vector2i in cells:
+		all_marked = all_marked and marked.get(cell, 0) == HudTables.STATE_DEPLOY_FIRST
+	h.check("panel_record.overlay_marks_every_landing_cell", all_marked,
+		"%d cells in state 70" % cells.size())
+	h.check("panel_record.overlay_marks_none_otherwise",
+		GroundSprites.cell_states(world, -1, null, {}).is_empty())

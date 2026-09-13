@@ -14,8 +14,8 @@ extends CampaignScreen
 ## **This is the roster, not the deployment map.** The two are easy to conflate
 ## because the window is called `SelectUnits`: the original's placing of
 ## soldiers on the map is `aPI.cpp`, a different module entirely
-## (docs/29 section 1.3), and [SelectUnitsScreen] is the remake's screen for
-## *that*. What this one does is what docs/27 section 3.2 and 3.3 describe --
+## (docs/43 section 5.5), and the remake does *that* inside the mission on
+## turn 0. What this one does is what docs/27 section 3.2 and 3.3 describe --
 ## hire, dismiss, and pick whose equipment the Upgrade screen will change.
 ##
 ## The list is nine rows of 30 at `(130, 70)`, the scroll arrows are
