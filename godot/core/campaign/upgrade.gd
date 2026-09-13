@@ -84,6 +84,8 @@ const BLOCKED_BY_JET_PACK: String = "jet_pack_already_scans"
 ## charges for the privilege, because its caller spends the points before the
 ## call; the remake refuses and puts removal on *Undo* instead.
 const ALREADY_CARRIED: String = "already_carried"
+## The Recruit window's own refusal: thirty usable pool slots, all taken.
+const POOL_FULL: String = "pool_full"
 
 
 ## The shortfall in skill points between what *needs* asks for and what the
@@ -133,6 +135,44 @@ static func weapon_skill_cost(weapon: Dictionary, unit: UnitState) -> int:
 static func equipment_skill_cost(item: Dictionary, unit: UnitState) -> int:
 	return skill_shortfall(skills_of(item), unit.skills,
 		EQUIPMENT_SKILL_ORDER)
+
+
+## `aBuyWeapon` `0x00475680` past its bounds check: the weapon goes on, the
+## skills it asks for are raised, and `+0x18` loses twelve per point of the
+## shortfall. Returns the shortfall in skill points. **No purse here** -- the
+## routine never touches money; its callers do, and the Recruit window's
+## preset builder `0x00476260` calls it on a record that is not even in the
+## pool yet. Writes through *unit*.
+static func apply_weapon(unit: UnitState, weapon: int,
+		weapon_row: Dictionary) -> int:
+	var needs: PackedInt32Array = skills_of(weapon_row)
+	var short: int = skill_shortfall(needs, unit.skills, WEAPON_SKILL_ORDER)
+	unit.weapon = weapon
+	unit.skills = raise_skills(needs, unit.skills, WEAPON_SKILL_ORDER)
+	unit.tp -= short * TP_PER_SKILL_POINT
+	return short
+
+
+## `aBuyEquipment` `0x004755D0` past its bounds check, for an item the soldier
+## does not carry: the group the item belongs to is cleared, the item goes on
+## (and the Jet Pack's scan with it), the skills are raised and `+0x18` pays.
+## Returns the shortfall in skill points. Purse-less, as [method apply_weapon].
+static func apply_equipment(unit: UnitState, item: int,
+		item_row: Dictionary) -> int:
+	var needs: PackedInt32Array = skills_of(item_row)
+	var short: int = skill_shortfall(needs, unit.skills, EQUIPMENT_SKILL_ORDER)
+	var carried: PackedInt32Array = PackedInt32Array()
+	var cleared: PackedInt32Array = cleared_by(item)
+	for held: int in unit.equipment:
+		if not cleared.has(held):
+			carried.append(held)
+	carried.append(item)
+	if item == JET_PACK_ID and not carried.has(JET_PACK_GRANTS):
+		carried.append(JET_PACK_GRANTS)
+	unit.equipment = carried
+	unit.skills = raise_skills(needs, unit.skills, EQUIPMENT_SKILL_ORDER)
+	unit.tp -= short * TP_PER_SKILL_POINT
+	return short
 
 
 ## A balance-table row's `skills` object as a [constant UnitState.SKILL_NAMES]

@@ -46,6 +46,11 @@ const EQUIPMENT_POINT_CAP: int = 10000
 const HERO_UNIT_TYPE: int = 0x17
 const HERO_POOL_FLAG: int = 2
 const MEDIC_EQUIPMENT_ID: int = 15
+## `0x004762AD` -- every Recruit-window preset is unit type 0, whoever hires.
+const PRESET_UNIT_TYPE: int = 0
+## `0x0045BB6D`..`0x0045BBDC` -- the preset's price is spent to the ten below
+## it, and `+0x5A` keeps the tens.
+const PRESET_PRICE_STEP: int = 10
 const SEED_NAMES: Array[String] = ["Bratt", "West", "Maxon"]
 ## `Txtmod_h.lcl` text ids 60..62, which is where the three names really live.
 const SEED_TEXT_BANK: String = "Txtmod_h"
@@ -246,13 +251,82 @@ func recruit(player: int, speech: int, unit_type: int = -1,
 		health, recruit_ammo, Roster.ROW_LIVE, unit_type)
 
 
+## The Recruit window's row -- `0x0045BB3F` around `0x00476260`, the preset
+## builder (docs/27 section 3.2). *preset* is the cache's record: `weapon`,
+## `equipment`, `ep`, `fp`, `markup`; *name* is its `Txtmod_h` caption
+## resolved by the caller; *weapon_row* and *equipment_rows* (id -> row) are
+## the balance table's; *hp_max* is unit type 0's ceiling base.
+##
+## The engine builds a **type 0** record for the current player, buys the
+## weapon and every item on it through the purse-less halves of the two buy
+## routines, writes EP and FP by literal, takes HP from `0x00475240`
+## (`min(15, type + EP/12)`) and sets TP to the **largest** skill-point
+## charge among the purchases -- the tail's `mov [ebp+0x18], bl` overwrites
+## the running subtraction. The price is the items' costs plus the preset's
+## markup, rounded down to a ten (`cost / 10 * 10`, and `+0x5A` keeps
+## `cost / 10`).
+##
+## The purse is checked where the engine checks it: the row painter
+## `0x00455C00` compares the preset's cost against the purse at `0x00455EDF`
+## and leaves an unaffordable row disabled (and red), so the spend after the
+## hire never fails. The refusal here is that gate, spoken (docs/92 section
+## 7.4). Returns `{"result", "slot", "cost"}`.
+func recruit_preset(player: int, speech: int, preset: Dictionary,
+		name: String, weapon_costs: Dictionary, weapon_row: Dictionary,
+		equipment_rows: Dictionary, hp_max: int) -> Dictionary:
+	var weapon: int = DictRead.as_int(preset.get("weapon", 0))
+	var items: PackedInt32Array = DictRead.to_int32(
+		preset.get("equipment", PackedInt32Array()))
+	var cost: int = DictRead.as_int(weapon_costs.get(weapon, 0)) \
+		+ DictRead.as_int(preset.get("markup", 0))
+	for item: int in items:
+		cost += DictRead.as_int(DictRead.as_dict(
+			equipment_rows.get(item, {})).get("cost", 0))
+	var price: int = cost / PRESET_PRICE_STEP * PRESET_PRICE_STEP
+	# `0x00455EDF`: the row is offered only while its **unrounded** cost is
+	# within the purse, so that is the test here too.
+	if points(player) < cost:
+		return {"result": Upgrade.NO_POINTS, "slot": Roster.NO_SLOT,
+			"cost": price}
+	if roster.first_free() == Roster.NO_SLOT:
+		return {"result": Upgrade.POOL_FULL, "slot": Roster.NO_SLOT,
+			"cost": price}
+	var slot: int = roster.enlarge(player, mode, skill_level, speech,
+		hp_max, recruit_ammo, Roster.ROW_LIVE, PRESET_UNIT_TYPE)
+	if slot == Roster.NO_SLOT:
+		return {"result": Upgrade.POOL_FULL, "slot": slot, "cost": price}
+	var unit: UnitState = roster.record(slot)
+	unit.name = name
+	unit.ep = DictRead.as_int(preset.get("ep", 0))
+	unit.fp = DictRead.as_int(preset.get("fp", 0))
+	unit.tp = 0
+	var charge: int = Upgrade.apply_weapon(unit, weapon, weapon_row) \
+		* Upgrade.TP_PER_SKILL_POINT
+	for item: int in items:
+		charge = maxi(charge, Upgrade.apply_equipment(unit, item,
+			DictRead.as_dict(equipment_rows.get(item, {})))
+			* Upgrade.TP_PER_SKILL_POINT)
+	unit.tp = charge
+	unit.hp = mini(Interact.MAX_HIT_POINTS_CAP,
+		hp_max + unit.ep / Interact.EXPERIENCE_PER_HIT_POINT)
+	# `0x0045BB86`: `+0x5A` caches `cost / 10`, so dismissing the preset
+	# refunds its whole price -- until a weapon purchase rewrites it.
+	unit.resale = cost / PRESET_PRICE_STEP
+	roster.put(slot, unit)
+	var _spent: bool = spend_points(player, price)
+	return {"result": Upgrade.OK, "slot": slot, "cost": price}
+
+
 ## The Recruit screen's other button. Returns the points refunded.
 func dismiss(player: int, slot: int, weapon_costs: Dictionary) -> int:
 	var removed: UnitState = roster.dismiss(slot)
 	if removed == null:
 		return 0
-	var refund: int = Roster.refund_for(
-		DictRead.as_int(weapon_costs.get(removed.weapon, 0)))
+	# `rec[+0x5A] * 10`: the cached value where one is stored (a preset's
+	# price), else the one every other hire and purchase would have cached.
+	var refund: int = removed.resale * Roster.RESALE_SCALE \
+		if removed.resale != 0 else Roster.refund_for(
+			DictRead.as_int(weapon_costs.get(removed.weapon, 0)))
 	add_points(player, refund)
 	return refund
 
@@ -273,7 +347,8 @@ func dismiss(player: int, slot: int, weapon_costs: Dictionary) -> int:
 ##
 ## Returns `{"result": String, "cost": int, "skill_points": int}`.
 func buy_weapon(player: int, slot: int, weapon: int,
-		weapon_costs: Dictionary, weapon_row: Dictionary = {}) -> Dictionary:
+		weapon_costs: Dictionary, weapon_row: Dictionary = {},
+		equipment_costs: Dictionary = {}) -> Dictionary:
 	var unit: UnitState = roster.record(slot)
 	if unit == null:
 		return _purchase(Upgrade.NO_UNIT)
@@ -296,10 +371,12 @@ func buy_weapon(player: int, slot: int, weapon: int,
 		# a failed purchase from being a way to print money.
 		spend_points(player, old_cost)
 		return _purchase(Upgrade.NO_POINTS)
-	unit.weapon = weapon
-	unit.skills = Upgrade.raise_skills(needs, unit.skills,
-		Upgrade.WEAPON_SKILL_ORDER)
-	unit.tp -= short * Upgrade.TP_PER_SKILL_POINT
+	var _paid: int = Upgrade.apply_weapon(unit, weapon, weapon_row)
+	# `0x0045ABAB` rewrites `+0x5A` with `0x004776E0`'s value of the whole
+	# kit. *equipment_costs* is optional for the callers that carry no
+	# table; they get the weapon-only value, which is what an unarmoured
+	# soldier's kit is worth anyway.
+	unit.resale = Roster.kit_value(new_cost, unit.equipment, equipment_costs)
 	roster.put(slot, unit)
 	return _purchase(Upgrade.OK, new_cost - old_cost, short)
 
@@ -337,19 +414,7 @@ func buy_equipment(player: int, slot: int, item: int,
 	var cost: int = DictRead.as_int(item_row.get("cost", 0))
 	if not spend_points(player, cost):
 		return _purchase(Upgrade.NO_POINTS)
-	var carried: PackedInt32Array = PackedInt32Array()
-	var cleared: PackedInt32Array = Upgrade.cleared_by(item)
-	for held: int in unit.equipment:
-		if not cleared.has(held):
-			carried.append(held)
-	carried.append(item)
-	if item == Upgrade.JET_PACK_ID \
-			and not carried.has(Upgrade.JET_PACK_GRANTS):
-		carried.append(Upgrade.JET_PACK_GRANTS)
-	unit.equipment = carried
-	unit.skills = Upgrade.raise_skills(needs, unit.skills,
-		Upgrade.EQUIPMENT_SKILL_ORDER)
-	unit.tp -= short * Upgrade.TP_PER_SKILL_POINT
+	var _paid: int = Upgrade.apply_equipment(unit, item, item_row)
 	roster.put(slot, unit)
 	return _purchase(Upgrade.OK, cost, short)
 

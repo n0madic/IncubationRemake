@@ -283,6 +283,20 @@ def check_economy(ck: Checker, ctx: Context) -> None:
               "+0x5A is (cost + 50) / 10, in tens")
     ck.expect("economy.resale_scale_is_tens",
               cam.PoolRecord().raw[cam.OFF_RESALE], 0)
+    # ``0x004776E0`` values the kit: with an item carried the same swap caches
+    # more, and the Jet Pack's granted scan is not charged for.
+    kitted = ctx.begin(2)
+    kitted.set_points(0, 200)
+    kitted.recruit(0, weapon_zero_cost=cost, speech=1)
+    kitted.buy_equipment(0, 0, 3, cost=25)
+    kitted.buy_weapon(0, 0, 5, costs=costs, equipment_costs={3: 25})
+    ck.expect("economy.resale_counts_the_kit",
+              kitted.roster.row(cam.ROW_LIVE)[0].resale, (30 + 25 + 50) // 10)
+    jumper = cam.PoolRecord()
+    jumper.set_equipment(cam.JET_PACK_ID, True)
+    jumper.set_equipment(cam.JET_PACK_GRANTS, True)
+    ck.expect("economy.kit_ignores_the_granted_scan",
+              cam.kit_value(10, jumper, {7: 40, 1: 25}), (10 + 40 + 50) // 10)
     fresh = ctx.begin(2)
     fresh.recruit(0, weapon_zero_cost=cost, speech=1)
     ck.expect("economy.recruit_resale",
@@ -681,6 +695,16 @@ def build_cases(root: Path) -> dict[str, Any]:
     state.set_points(0, 9990)
     state.add_points(0, 100)
     economy.append({"step": "cap", "purse": state.equipment_points[0],
+                    "used": state.roster.used_slots()})
+    # A soldier who carries something and then swaps rifles resells for the
+    # kit (``0x004776E0``), not for the rifle: recruit at 60, an item at 25,
+    # weapon 5 at 30 (refunding 10), then dismiss for (30 + 25 + 50) / 10 * 10.
+    state.set_points(0, 200)
+    state.recruit(0, weapon_zero_cost=cost, speech=1)
+    state.buy_equipment(0, 0, 3, cost=25)
+    state.buy_weapon(0, 0, 5, costs={0: cost, 5: 30}, equipment_costs={3: 25})
+    state.dismiss(0, 0)
+    economy.append({"step": "kit", "purse": state.equipment_points[0],
                     "used": state.roster.used_slots()})
 
     deployment = {name: sorted((c.x, c.y) for c in battle.cells

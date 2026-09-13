@@ -1198,7 +1198,8 @@ func quick_load(slot: int = CampaignHost.QUICK_SLOT) -> bool:
 	var blob: PackedByteArray = DictRead.to_bytes(decoded["mission"])
 	if blob.is_empty():
 		close_campaign_screen()
-		var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+		var _map: CampaignScreen = show_campaign_screen(
+			_screen_between_missions())
 		_refresh_status("loaded")
 		return true
 	_build(campaign.state.mission)
@@ -1323,7 +1324,7 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 		CampaignHost.SCREEN_SELECT:
 			var select: SelectUnitsScreen = SelectUnitsScreen.new()
 			select.host = campaign
-			select.back_to_levels = campaign.is_instant_action()
+			select.back_to_hq = campaign.is_instant_action()
 			select.cache_dir = _cache_dir
 			select.document = CacheLoader.read_json(
 				"%s/text/briefing/%s.json" % [_cache_dir,
@@ -1335,18 +1336,18 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			# `aInitGUI` loads once and none of those windows replaces. So the
 			# chain's own map goes up behind them, exactly as it does behind
 			# the location screen.
-			_raise_map_backdrop()
+			_raise_hq_backdrop()
 			var roster: UnitMenuScreen = UnitMenuScreen.new()
 			roster.host = campaign
 			roster.selected = campaign.upgrade_slot
 			screen = roster
 		CampaignHost.SCREEN_RECRUIT:
-			_raise_map_backdrop()
+			_raise_hq_backdrop()
 			var hire: RecruitScreen = RecruitScreen.new()
 			hire.host = campaign
 			screen = hire
 		CampaignHost.SCREEN_ITEMS:
-			_raise_map_backdrop()
+			_raise_hq_backdrop()
 			var items: ItemListScreen = ItemListScreen.new()
 			items.host = campaign
 			items.kind = campaign.item_kind
@@ -1356,10 +1357,10 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			# `plate_6` is opaque and has no window, so this one needs no
 			# picture behind it -- but it does need the bodies, and those come
 			# from the same world set the chain's map is built from.
-			_raise_map_backdrop()
+			_raise_hq_backdrop()
 			var upgrade: UpgradeScreen = UpgradeScreen.new()
 			upgrade.host = campaign
-			upgrade.library = _campaign_library()
+			upgrade.library = _hq_library()
 			upgrade.descriptions = _item_descriptions()
 			upgrade.cache_dir = _cache_dir
 			upgrade.item_kind = campaign.item_kind
@@ -1393,7 +1394,10 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			# The same window as the map's, and **no dots**: these three are
 			# lists over a picture, not a picture that is clicked.
 			_show_markers({})
-			_frame_map()
+			if campaign.is_instant_action():
+				_frame_deployment()
+			else:
+				_frame_map()
 		CampaignHost.SCREEN_SELECT:
 			_show_markers(SelectUnitsScreen.marks_for(_free_landings()))
 			_frame_deployment()
@@ -1424,6 +1428,25 @@ func _upgrade_target() -> int:
 func _raise_map_backdrop() -> void:
 	_clear_mission()
 	_build_backdrop(_backdrop_for_location())
+
+
+## What stands behind the HQ's four screens. A campaign's is an upgrade
+## base's own map ([method _raise_map_backdrop]); Instant Action has no map
+## and the original frames the mission's own scene, loaded before `aInitGUI`
+## ran -- so the mission [method _start_instant_action] built stays where it
+## is and nothing is raised over it.
+func _raise_hq_backdrop() -> void:
+	if campaign != null and campaign.is_instant_action():
+		return
+	_raise_map_backdrop()
+
+
+## The bodies the Upgrade Menu turns: the chain map's in a campaign, the
+## mission's own in Instant Action, where the mission is the backdrop.
+func _hq_library() -> CharismaLibrary:
+	if campaign != null and campaign.is_instant_action():
+		return _units.library if _units != null else null
+	return _campaign_library()
 
 
 ## What stands behind the four screens an upgrade location opens.
@@ -1802,6 +1825,17 @@ func _on_shell_choice(action: String) -> void:
 ## [method _clear_mission] cancels rather than skips.
 func _leave_mission_for_map() -> void:
 	if campaign == null or campaign.state == null:
+		return
+	# Instant Action has no map: the Upgrade Menu's *Exit* and the pause
+	# menu's way out both land in the HQ. From a deployment the squad has to
+	# come off the map first, which is the `hq` action's own arm.
+	if campaign.is_instant_action():
+		if campaign.screen == CampaignHost.SCREEN_SELECT \
+				or campaign.screen == CampaignHost.SCREEN_MISSION:
+			_return_to_instant_action_hq()
+		else:
+			var _hq: CampaignScreen = show_campaign_screen(
+				CampaignHost.SCREEN_HQ)
 		return
 	campaign.abandon_mission()
 	var _to_map: CampaignScreen = show_campaign_screen(
@@ -2188,12 +2222,46 @@ func _start_instant_action(mission: String) -> void:
 	campaign.start_instant_action(mission, header, settings.difficulty)
 	shell.close()
 	close_campaign_screen()
+	# The `.lev` is loaded before `aInitGUI` runs, and the HQ that opens over
+	# it frames the mission's own scene in `plate_3`'s window -- so the
+	# mission is built first and the HQ goes up over it, with nobody hired
+	# yet. *Deploy units* is what takes the entry snapshot ([method
+	# _deploy_instant_action]).
 	_build(mission)
 	if world != null:
 		_instant_action_mission = mission
-		campaign.begin_mission(world)
-		var _select: CampaignScreen = show_campaign_screen(
-			CampaignHost.SCREEN_SELECT)
+		campaign.frame_mission(world)
+		var _hq: CampaignScreen = show_campaign_screen(
+			CampaignHost.SCREEN_HQ)
+
+
+## The HQ's *Deploy units* in Instant Action -- `Menu_b` window 0's gadget 2,
+## which `0x004579A3` keeps off while the pool is empty. The mission's scene
+## is already standing behind the HQ; what changes hands is the roster.
+func _deploy_instant_action() -> void:
+	if campaign == null or campaign.state == null \
+			or campaign.nobody_to_deploy():
+		return
+	if world == null:
+		_build(campaign.current_mission())
+	if world == null:
+		return
+	campaign.begin_mission(world)
+	var _select: CampaignScreen = show_campaign_screen(
+		CampaignHost.SCREEN_SELECT)
+
+
+## Back from an Instant Action deployment: the squad returns to the pool and
+## the HQ comes up over a mission built afresh, because whoever was already
+## placed is standing on the old one.
+func _return_to_instant_action_hq() -> void:
+	if campaign == null or campaign.state == null:
+		return
+	campaign.abandon_mission()
+	_build(campaign.current_mission())
+	if world != null:
+		campaign.frame_mission(world)
+	var _hq: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_HQ)
 
 
 ## The name the slot screen is holding, or `""` when what is up is not one.
@@ -2248,7 +2316,8 @@ func load_slot(slot: int) -> bool:
 	if blob.is_empty():
 		shell.close()
 		close_campaign_screen()
-		var _map: CampaignScreen = show_campaign_screen(CampaignHost.SCREEN_MAP)
+		var _map: CampaignScreen = show_campaign_screen(
+			_screen_between_missions())
 		_refresh_status("loaded slot %d" % (slot + 1))
 		return true
 	_build(campaign.state.mission)
@@ -2286,6 +2355,21 @@ func load_slot(slot: int) -> bool:
 ## save's deterministic state. `CampaignState.mode` is persisted, so it is the
 ## authority after both quick-load and numbered-slot load; without rebuilding
 ## the latch, a loaded local battle ended through the campaign debriefing path.
+## Where a session with no mission in it stands: a campaign on its map, an
+## Instant Action squad in its HQ. A save with no nested blob is one of these,
+## and Instant Action's HQ needs its mission standing behind it, so the load
+## also arms the result route and builds the map the way the level list does.
+func _screen_between_missions() -> String:
+	_remember_loaded_session()
+	if campaign != null and campaign.is_instant_action():
+		campaign.settle_after_load()
+		_build(campaign.current_mission())
+		if world != null:
+			campaign.frame_mission(world)
+		return CampaignHost.SCREEN_HQ
+	return CampaignHost.SCREEN_MAP
+
+
 func _remember_loaded_session() -> void:
 	if campaign != null and campaign.is_instant_action():
 		_instant_action_mission = campaign.current_mission()
@@ -2531,10 +2615,17 @@ func _on_campaign_choice(action: String) -> void:
 			hiring.choose(action.substr(9).to_int())
 		return
 	if action.begins_with("hire:"):
-		var _hired: int = campaign.recruit(action.substr(5).to_int())
+		var hired: Dictionary = campaign.recruit_preset(
+			action.substr(5).to_int())
 		var window: RecruitScreen = _screen as RecruitScreen
 		if window != null:
 			window.refresh()
+			# The engine's refusal is a red, disabled row (`0x00455EDF`);
+			# the screen does that too, and says why (docs/27 section 3.2).
+			var result: String = DictRead.as_string(hired["result"])
+			if result != Upgrade.OK:
+				window.say(window.strings_own(RecruitScreen.OWN_REFUSAL
+					% result))
 		return
 	if action.begins_with("location:"):
 		var parts: PackedStringArray = action.split(":")
@@ -2701,6 +2792,8 @@ func _on_campaign_choice(action: String) -> void:
 				close_campaign_screen()
 		"map":
 			_leave_mission_for_map()
+		"deploy":
+			_deploy_instant_action()
 		"options":
 			# Into the shell, over the map. Leaving it puts the map back --
 			# see [method close_shell] -- and the difficulty row is the
@@ -2708,8 +2801,14 @@ func _on_campaign_choice(action: String) -> void:
 			var _options: CampaignScreen = open_shell(
 				ShellHost.SCREEN_OPTIONS)
 		"hq":
-			var _hq: CampaignScreen = show_campaign_screen(
-				CampaignHost.SCREEN_HQ)
+			# From an Instant Action deployment, the squad goes back to the
+			# pool first; from the Upgrade Menu it is a change of screen.
+			if campaign.is_instant_action() \
+					and campaign.screen == CampaignHost.SCREEN_SELECT:
+				_return_to_instant_action_hq()
+			else:
+				var _hq: CampaignScreen = show_campaign_screen(
+					CampaignHost.SCREEN_HQ)
 		"recruit":
 			# `0x0045B7F8`: in campaign mode the button hires on the spot and
 			# the Recruit window is never raised.

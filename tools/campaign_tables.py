@@ -212,6 +212,106 @@ RECRUIT_CATEGORY_TYPES = {
     4: (40, 41, 42, 43, 44),
 }
 
+# -- the Recruit window's presets, docs/27 section 3.2 -----------------------
+#: `0x00476260` (`aUnitInfos.cpp`): the 23 numbers the category arms write
+#: are **preset ids**, not `Info.lcl` unit types.  The routine builds a
+#: ready-made soldier from one: unit type 0, the current player's skin, a
+#: name out of `Txtmod_h` 140..163, a weapon and a bag of equipment bought
+#: through `aBuyWeapon`/`aBuyEquipment` on the local record, EP and FP by
+#: literal, HP from the ceiling routine, and a price that is the sum of the
+#: item costs plus a per-preset markup.
+RECRUIT_PRESET_BUILDER = 0x00476260
+RECRUIT_PRESET_TYPE_SITE = 0x004762AD      # `mov byte [ebp+0x4c], 0`
+RECRUIT_PRESET_BANK_SITE = 0x00476269      # `push 3`, imm8 at +1
+RECRUIT_PRESET_SWITCH_SITE = 0x00476359    # `jmp dword [edx*4 + imm32]`
+RECRUIT_PRESET_JUMP_TABLE = 0x00477648
+RECRUIT_PRESET_INDEX_TABLE = 0x004776A8    # 45 bytes, `ja` past 0x2c
+RECRUIT_PRESET_ID_MAX = 0x2C
+RECRUIT_PRESET_ARMS = 23
+#: The two exits every arm takes.  The long one is the shared "rank 12" tail
+#: -- EP 0x90, FP 0xc, the ceiling call, `add esi, 0x78` -- and it falls into
+#: the short one, which adds the recruit markup, stores TP and returns.
+RECRUIT_PRESET_LONG_TAIL = 0x004775E9
+RECRUIT_PRESET_SHORT_TAIL = 0x00477600
+RECRUIT_PRESET_TAIL_EP_SITE = 0x004775EA   # `mov byte [ebp+0x17], 0x90`
+RECRUIT_PRESET_TAIL_FP_SITE = 0x004775EE   # `mov byte [ebp+0x19], 0xc`
+RECRUIT_PRESET_TAIL_HP_CALL = 0x004775F2
+RECRUIT_PRESET_TAIL_ADD_SITE = 0x004775FD  # `add esi, 0x78`
+RECRUIT_PRESET_MARKUP_SITE = 0x00477603    # `add esi, 0x32`
+RECRUIT_PRESET_TP_SITE = 0x00477608        # `mov byte [ebp+0x18], bl`
+RECRUIT_PRESET_COST_STORE = 0x00477635     # `mov [eax], esi`
+HP_CEILING = 0x00475240
+#: The record offsets the arms write by literal.
+UNIT_EP, UNIT_TP, UNIT_FP, UNIT_HP, UNIT_TYPE = 0x17, 0x18, 0x19, 0x16, 0x4C
+#: `Txtmod_h` 140..163 -- the names, read back by the corpus check.
+RECRUIT_PRESET_NAMES = {
+    0: "Squad Leader", 1: "Platoon Leader", 2: "Commander", 3: "Guardian",
+    10: "Fast Light Infantry", 11: "Light Infantry", 12: "Sniper Man",
+    13: "Line Infantry", 14: "Plasma Unit",
+    20: "Front Line Infantry", 21: "Storm Trooper", 22: "Berserk",
+    23: "Special Force",
+    30: "Heavy Support", 31: "Tactical Support", 32: "Flamer", 33: "Laser",
+    35: "Launcher",
+    40: "Light Recon", 41: "Heavy Recon", 42: "Light Medic", 43: "Heavy Medic",
+    44: "Jump Trooper",
+}
+#: The twenty-three arms, decoded and pinned: (name id, weapon, equipment,
+#: EP, FP, markup) -- the table docs/27 section 3.2 prints, so the document
+#: and the decoder are held to one number.
+RECRUIT_PRESETS = {
+    0: (140, 2, (8, 10, 14, 5), 120, 10, 170),
+    1: (141, 4, (8, 11, 14, 5), 132, 11, 180),
+    2: (142, 6, (8, 12, 14, 5), 144, 12, 250),
+    3: (162, 15, (8, 12, 14, 4, 18), 144, 12, 270),
+    10: (143, 1, (3, 14), 60, 5, 0),
+    11: (144, 2, (10,), 96, 8, 50),
+    12: (145, 3, (10,), 96, 8, 80),
+    13: (146, 4, (10,), 108, 9, 90),
+    14: (163, 16, (11,), 96, 8, 60),
+    20: (147, 2, (12, 14), 108, 9, 120),
+    21: (148, 5, (12, 14, 3), 132, 11, 140),
+    22: (149, 6, (12, 4, 14), 144, 12, 170),
+    23: (160, 14, (12, 4, 14), 144, 12, 210),
+    30: (150, 11, (11, 5, 4, 14), 48, 4, 450),
+    31: (151, 8, (11,), 144, 12, 290),
+    32: (152, 7, (13, 6, 14, 3), 120, 10, 160),
+    33: (153, 10, (10, 14, 5), 96, 8, 330),
+    35: (161, 13, (11, 14), 120, 10, 320),
+    40: (155, 2, (0, 10, 9), 120, 10, 110),
+    41: (156, 2, (1, 11), 132, 11, 160),
+    42: (157, 1, (15, 10), 84, 7, 120),
+    43: (158, 1, (16, 11), 84, 7, 120),
+    44: (159, 2, (7, 10, 5, 14), 144, 12, 180),
+}
+#: The test the category arms wrap each write in compares the purse against
+#: a local the prologue zeroed (`0x004561BF`), so it withholds nothing.  The
+#: purse gate is the **row painter's**: `0x00455C00` takes the preset's cost
+#: and compares it at `0x00455EDF` -- above the purse the row is painted in
+#: the alert colours and its gadget is left disabled, else enabled.
+RECRUIT_ROW_TEST_VALUE = 0
+RECRUIT_ROW_PAINTER = 0x00455C00
+RECRUIT_ROW_PAINT_SITE = 0x004565F3       # the epilogue's call per row
+RECRUIT_ROW_BUILD_SITE = 0x004565C4       # ... after building the preset
+RECRUIT_ROW_GATE_SITE = 0x00455EDF        # `cmp ebx, eax` / `jg`
+RECRUIT_ROW_ENABLE_SITE = 0x00455F1D      # affordable: enable gadget
+RECRUIT_ROW_DISABLE_SITE = 0x00455F58     # not: disable gadget
+GADGET_ENABLE = 0x0043AB30
+GADGET_DISABLE = 0x0043AAF0
+#: `0x004776E0` -- what a weapon purchase caches in `+0x5A` (`0x0045ABAB`):
+#: the weapon's cost, every carried item's cost (`+0x21..+0x35` against the
+#: equipment table), less item 1's when the Jet Pack (`+0x28`) carries the
+#: scan it granted, plus 50, in tens.  Not the weapon alone.
+KIT_VALUE = 0x004776E0
+KIT_VALUE_CALL_SITE = 0x0045ABAB
+KIT_VALUE_WEAPON_COST_SITE = 0x004776F4   # `mov dl, [eax + ecx*2 + 0x51B2FE]`
+KIT_VALUE_EQUIP_BASE_SITE = 0x00477700    # `mov eax, 0x517BD0`
+KIT_VALUE_EQUIP_END_SITE = 0x00477714     # `cmp eax, 0x517F42`
+KIT_VALUE_EQUIP_STEP_SITE = 0x00477710    # `add eax, 42`
+KIT_VALUE_JET_PACK_SITE = 0x0047771B      # `cmp byte [edi + 0x28], 1`
+KIT_VALUE_SCAN_COST_SITE = 0x00477723     # `mov al, [0x517BFA]`
+KIT_VALUE_MARKUP_SITE = 0x0047772A        # `lea ecx, [esi + 0x32]`
+KIT_VALUE_POOL_STORE_SITE = 0x0045ABD4    # `mov [... + 0x51F2FA], bl`
+
 # -- the base's own camera, docs/27 section 2.7 ------------------------------
 #: `aPlayLocationAnimation_Upgrade` `0x00417510` builds `upgrade_N` and hands
 #: it to this, which flies the eye down the script's own waypoints.
@@ -962,6 +1062,168 @@ class Binary:
                 va += 1
             out[index] = tuple(v for _, v in sorted(found.items()))
         return out
+
+    def recruit_presets(self) -> dict[int, dict]:
+        """The 23 presets ``0x00476260`` builds, keyed by preset id.
+
+        Each arm is walked by a bounded interpreter over exactly the
+        instruction forms MSVC emitted for them -- an unknown opcode is a
+        hard error, not a skipped byte -- with `esi` modelled symbolically as
+        the price: the item-cost loads it sums (each checked against the
+        weapon or equipment the arm buys) and the literal markups it adds.
+        """
+        out: dict[int, dict] = {}
+        for preset in range(RECRUIT_PRESET_ID_MAX + 1):
+            index = self.u8(RECRUIT_PRESET_INDEX_TABLE + preset)
+            if index >= RECRUIT_PRESET_ARMS:
+                continue
+            arm = self.u32(RECRUIT_PRESET_JUMP_TABLE + 4 * index)
+            out[preset] = self._recruit_preset_arm(arm)
+        return out
+
+    def _recruit_preset_arm(self, va: int) -> dict:
+        regs: dict[str, list | None] = {"eax": None, "ecx": None,
+                                        "edx": None, "esi": None}
+        name = weapon = None
+        equipment: list[int] = []
+        writes: dict[int, int] = {}
+        hp_calls = 0
+        last_push = None
+        long_tail = False
+
+        def item(address: int) -> tuple[str, int]:
+            w = address - WEAPON_TABLE - WEAPON_COST_OFFSET
+            if w >= 0 and w % WEAPON_STRIDE == 0:
+                return ("w", w // WEAPON_STRIDE)
+            e = address - EQUIP_TABLE - EQUIP_COST_OFFSET
+            if e >= 0 and e % EQUIP_STRIDE == 0 and address < WEAPON_TABLE:
+                return ("e", e // EQUIP_STRIDE)
+            raise ValueError(f"{va:#x}: cost load from {address:#x} is "
+                             "neither a weapon nor an equipment record")
+
+        def add(reg: str, terms: list | None) -> None:
+            if regs[reg] is None or terms is None:
+                raise ValueError(f"{va:#x}: arithmetic on an unmodelled "
+                                 f"register ({reg})")
+            regs[reg] = regs[reg] + terms
+
+        REG32 = {0: "eax", 1: "ecx", 2: "edx", 6: "esi"}
+        while True:
+            if va == RECRUIT_PRESET_LONG_TAIL:
+                long_tail = True
+                break
+            if va == RECRUIT_PRESET_SHORT_TAIL:
+                break
+            op = self.u8(va)
+            b1 = self.u8(va + 1)
+            if op == 0x68:                                   # push imm32
+                last_push = self.u32(va + 1); va += 5
+            elif op == 0x6A:                                 # push imm8
+                last_push = self.u8(va + 1); va += 2
+            elif op == 0xE8:                                 # call rel32
+                target = self.call_target(va)
+                if target == TEXT_GET:
+                    name = last_push
+                elif target == BUY_WEAPON:
+                    weapon = last_push
+                elif target == BUY_EQUIPMENT:
+                    equipment.append(last_push)
+                elif target == HP_CEILING:
+                    hp_calls += 1
+                else:
+                    raise ValueError(f"{va:#x}: call to {target:#x}")
+                va += 5
+            elif op == 0xE9:                                 # jmp rel32
+                va = va + 5 + self.i32(va + 1)
+            elif op in (0x50, 0x51, 0x52, 0x55):             # push r32
+                va += 1
+            elif op == 0x33 and b1 in (0xC0, 0xC9, 0xD2):    # xor r, r
+                regs[REG32[(b1 >> 3) & 7]] = []; va += 2
+            elif op == 0xA1:                                 # mov eax, [abs]
+                regs["eax"] = [item(self.u32(va + 1))]; va += 5
+            elif op == 0xA0:                                 # mov al, [abs]
+                add("eax", [item(self.u32(va + 1))]); va += 5
+            elif op == 0x8A and b1 in (0x0D, 0x15):          # mov cl/dl, [abs]
+                add(REG32[(b1 >> 3) & 7], [item(self.u32(va + 2))]); va += 6
+            elif op == 0x8B and b1 in (0x05, 0x0D, 0x15, 0x35):  # mov r, [abs]
+                regs[REG32[(b1 >> 3) & 7]] = [item(self.u32(va + 2))]; va += 6
+            elif op == 0x8B and b1 == 0x44 and self.u8(va + 2) == 0x24:
+                regs["eax"] = None; va += 4                  # mov eax, [esp+d8]
+            elif op == 0x8B and (b1 >> 6) == 3:              # mov r32, r32
+                dst, src = (b1 >> 3) & 7, b1 & 7
+                if dst in REG32:
+                    regs[REG32[dst]] = (list(regs[REG32[src]])
+                                        if src in REG32 and regs[REG32[src]]
+                                        is not None else None)
+                va += 2
+            elif op == 0x03 and b1 in (0xF0, 0xF1, 0xF2):    # add esi, r32
+                add("esi", regs[REG32[b1 & 7]]); va += 2
+            elif op == 0x83 and b1 == 0xC6:                  # add esi, imm8
+                add("esi", [self.i8(va + 2)]); va += 3
+            elif op == 0x81 and b1 == 0xC6:                  # add esi, imm32
+                add("esi", [self.i32(va + 2)]); va += 6
+            elif op == 0x8D and b1 == 0x74 and self.u8(va + 2) in (0x06, 0x0E, 0x16):
+                add("esi", regs[REG32[(self.u8(va + 2) >> 3) & 7]])
+                add("esi", [self.i8(va + 3)]); va += 4      # lea esi, [esi+r+d8]
+            elif op == 0x8D and b1 == 0xB4 and self.u8(va + 2) in (0x06, 0x0E, 0x16):
+                add("esi", regs[REG32[(self.u8(va + 2) >> 3) & 7]])
+                add("esi", [self.i32(va + 3)]); va += 7     # lea esi, [esi+r+d32]
+            elif op == 0x8D and b1 in (0x44, 0x4C, 0x54) and self.u8(va + 2) == 0x24:
+                regs[REG32[(b1 >> 3) & 7]] = None; va += 4  # lea r, [esp+d8]
+            elif op == 0x25:                                 # and eax, imm32
+                va += 5
+            elif op == 0x81 and b1 in (0xE1, 0xE2, 0xE6):    # and r, imm32
+                va += 6
+            elif op == 0x83 and b1 == 0xC4:                  # add esp, imm8
+                va += 3
+            elif op == 0x3B and b1 == 0xD8:                  # cmp ebx, eax
+                va += 2
+            elif op == 0x7D:                                 # jge rel8
+                va += 2
+            elif op == 0xC6 and b1 == 0x45:                  # mov byte [ebp+d8], imm8
+                writes[self.u8(va + 2)] = self.u8(va + 3); va += 4
+            elif op == 0x88 and b1 == 0x45 and self.u8(va + 2) == UNIT_HP:
+                writes[UNIT_HP] = -1; va += 3                # mov [ebp+0x16], al
+            # -- the name copy: strlen + rep movs, which clobbers esi/edi --
+            elif op == 0x83 and b1 == 0xC9 and self.u8(va + 2) == 0xFF:
+                va += 3                                      # or ecx, -1
+            elif op == 0xF2 and b1 == 0xAE:
+                va += 2                                      # repne scasb
+            elif op == 0xF7 and b1 == 0xD1:
+                va += 2                                      # not ecx
+            elif op == 0x2B and b1 == 0xF9:
+                va += 2                                      # sub edi, ecx
+            elif op == 0xC1 and b1 == 0xE9 and self.u8(va + 2) == 2:
+                va += 3                                      # shr ecx, 2
+            elif op == 0xF3 and b1 in (0xA5, 0xA4):
+                va += 2                                      # rep movsd/movsb
+            elif op == 0x83 and b1 == 0xE1 and self.u8(va + 2) == 3:
+                va += 3                                      # and ecx, 3
+            else:
+                raise ValueError(f"{va:#x}: opcode {op:#04x} {b1:#04x} is "
+                                 "not one the preset arms were read with")
+        if long_tail:
+            writes[UNIT_EP] = self.u8(RECRUIT_PRESET_TAIL_EP_SITE + 3)
+            writes[UNIT_FP] = self.u8(RECRUIT_PRESET_TAIL_FP_SITE + 3)
+            hp_calls += 1
+            writes[UNIT_HP] = -1
+            add("esi", [self.i8(RECRUIT_PRESET_TAIL_ADD_SITE + 2)])
+        add("esi", [self.i8(RECRUIT_PRESET_MARKUP_SITE + 2)])
+        terms = regs["esi"] or []
+        items = sorted(t for t in terms if isinstance(t, tuple))
+        bought = sorted([("w", weapon)] + [("e", e) for e in equipment])
+        if items != bought:
+            raise ValueError(f"{va:#x}: the price sums {items} but the arm "
+                             f"buys {bought}")
+        return {
+            "name_id": name,
+            "weapon": weapon,
+            "equipment": list(equipment),
+            "ep": writes.get(UNIT_EP),
+            "fp": writes.get(UNIT_FP),
+            "hp_from_ceiling": hp_calls == 1 and UNIT_HP in writes,
+            "markup": sum(t for t in terms if isinstance(t, int)),
+        }
 
     def _arm_body(self, arm: int) -> int:
         """Where an upgrade arm's body starts, which is **not** always the arm.
@@ -2282,6 +2544,91 @@ def run_checks(root: str) -> Checker:
               b.u8(RECRUIT_RESET_SITE + 2)), (0x33, 0xDB, 0x83), str)
     ck.equal("recruit.jump_table", b.u32(RECRUIT_SWITCH_SITE + 3),
              RECRUIT_JUMP_TABLE, hex)
+    # The row test compares the purse against a local the prologue zeroed,
+    # so every row the arm writes is offered whatever the purse holds.
+    ck.equal("recruit.row_test_is_zero",
+             (b.u8(0x004561BB), b.u8(0x004561BC), b.u8(0x004561BD),
+              b.u8(0x004561BF), b.u8(0x004561C0), b.u8(0x004561C1)),
+             (0x89, 0x5C, 0x24, 0x89, 0x5C, 0x24), str)
+    ck.equal("recruit.row_test_register", b.u8(RECRUIT_RESET_SITE + 1),
+             0xDB, hex)
+
+    ck.equal("recruit.row_paint_builds_the_preset",
+             (b.call_target(RECRUIT_ROW_BUILD_SITE),
+              b.call_target(RECRUIT_ROW_PAINT_SITE)),
+             (RECRUIT_PRESET_BUILDER, RECRUIT_ROW_PAINTER), str)
+    ck.equal("recruit.row_gate",
+             (b.u8(RECRUIT_ROW_GATE_SITE), b.u8(RECRUIT_ROW_GATE_SITE + 1),
+              b.u8(RECRUIT_ROW_GATE_SITE + 8)), (0x3B, 0xD8, 0x7F), str)
+    ck.equal("recruit.row_gate_arms",
+             (b.call_target(RECRUIT_ROW_ENABLE_SITE),
+              b.call_target(RECRUIT_ROW_DISABLE_SITE)),
+             (GADGET_ENABLE, GADGET_DISABLE), str)
+    ck.equal("recruit.row_gate_purse", b.call_target(RECRUIT_ROW_GATE_SITE - 8),
+             MONEY_GET, hex)
+
+    # -- 8c. the kit value a weapon purchase caches (0x004776E0) -------------
+    ck.equal("kit_value.call_site", b.call_target(KIT_VALUE_CALL_SITE),
+             KIT_VALUE, hex)
+    ck.equal("kit_value.weapon_cost",
+             b.u32(KIT_VALUE_WEAPON_COST_SITE + 3),
+             WEAPON_TABLE + WEAPON_COST_OFFSET, hex)
+    ck.equal("kit_value.equipment_walk",
+             (b.u32(KIT_VALUE_EQUIP_BASE_SITE + 1),
+              b.u32(KIT_VALUE_EQUIP_END_SITE + 1),
+              b.u8(KIT_VALUE_EQUIP_STEP_SITE + 2)),
+             (EQUIP_TABLE + EQUIP_COST_OFFSET,
+              EQUIP_TABLE + EQUIP_COST_OFFSET + 21 * EQUIP_STRIDE,
+              EQUIP_STRIDE), str)
+    ck.equal("kit_value.jet_pack_flag",
+             (b.u8(KIT_VALUE_JET_PACK_SITE + 2), b.u8(KIT_VALUE_JET_PACK_SITE + 3)),
+             (EQUIPMENT_BASE + 7, 1), str)
+    ck.equal("kit_value.scan_cost_off", b.u32(KIT_VALUE_SCAN_COST_SITE + 1),
+             EQUIP_TABLE + EQUIP_STRIDE + EQUIP_COST_OFFSET, hex)
+    ck.equal("kit_value.markup", b.u8(KIT_VALUE_MARKUP_SITE + 2), RECRUIT_MARKUP)
+    ck.equal("kit_value.pool_store", b.u32(KIT_VALUE_POOL_STORE_SITE + 3),
+             POOL_BASE + 0x5A, hex)
+
+    # -- 8b. the presets behind the rows (0x00476260) -----------------------
+    ck.equal("preset.switch_table", b.u32(RECRUIT_PRESET_SWITCH_SITE + 3),
+             RECRUIT_PRESET_JUMP_TABLE, hex)
+    ck.equal("preset.type_is_zero",
+             (b.u8(RECRUIT_PRESET_TYPE_SITE), b.u8(RECRUIT_PRESET_TYPE_SITE + 1),
+              b.u8(RECRUIT_PRESET_TYPE_SITE + 2), b.u8(RECRUIT_PRESET_TYPE_SITE + 3)),
+             (0xC6, 0x45, UNIT_TYPE, 0), str)
+    ck.equal("preset.text_bank", b.u8(RECRUIT_PRESET_BANK_SITE + 1), TEXT_BANK)
+    ck.equal("preset.text_bank_call",
+             b.call_target(RECRUIT_PRESET_BANK_SITE + 6), TEXT_SET_BANK, hex)
+    ck.equal("preset.tail_hp_call", b.call_target(RECRUIT_PRESET_TAIL_HP_CALL),
+             HP_CEILING, hex)
+    ck.equal("preset.tail_markup", b.i8(RECRUIT_PRESET_MARKUP_SITE + 2),
+             RECRUIT_MARKUP)
+    ck.equal("preset.tail_tp_store",
+             (b.u8(RECRUIT_PRESET_TP_SITE), b.u8(RECRUIT_PRESET_TP_SITE + 1),
+              b.u8(RECRUIT_PRESET_TP_SITE + 2)), (0x88, 0x5D, UNIT_TP), str)
+    ck.equal("preset.cost_store",
+             (b.u8(RECRUIT_PRESET_COST_STORE), b.u8(RECRUIT_PRESET_COST_STORE + 1)),
+             (0x89, 0x30), str)
+    presets = b.recruit_presets()
+    listed = sorted(t for row in RECRUIT_CATEGORY_TYPES.values() for t in row)
+    ck.equal("preset.ids_are_the_listed_rows", sorted(presets), listed, str)
+    ck.check("preset.every_arm_complete",
+             all(p["name_id"] is not None and p["weapon"] is not None
+                 and p["ep"] is not None and p["fp"] is not None
+                 and p["hp_from_ceiling"] for p in presets.values()),
+             "name, weapon, EP, FP and the ceiling call in every arm")
+    ck.check("preset.ranks_are_whole",
+             all(p["ep"] % RANK_SCALE == 0 for p in presets.values()),
+             "EP is rank * 12 in every arm")
+    ck.equal("preset.table",
+             {k: (p["name_id"], p["weapon"], tuple(p["equipment"]), p["ep"],
+                  p["fp"], p["markup"]) for k, p in presets.items()},
+             RECRUIT_PRESETS, str)
+    ck.check("preset.items_exist",
+             all(p["weapon"] in c.weapons
+                 and all(e in c.equipment for e in p["equipment"])
+                 for p in presets.values()),
+             "every weapon and equipment id a preset buys is an Info.lcl row")
     ck.equal("upgrade.animation_window",
              tuple(b.u8(site + 1) if b.u8(site) == 0x6A else b.u32(site + 1)
                    for site in LOCATION_ANIMATION_WINDOW_SITES),
@@ -2475,6 +2822,9 @@ def run_checks(root: str) -> Checker:
     for index, text_id in enumerate(SQUAD_NAME_IDS):
         ck.equal(f"squad.name{index}", entries.get(text_id),
                  SQUAD_NAMES[index])
+    ck.equal("preset.names",
+             {k: entries.get(p["name_id"]) for k, p in b.recruit_presets().items()},
+             RECRUIT_PRESET_NAMES, str)
     fields = b.squad_fields()
     ck.equal("squad.fields", fields, SQUAD_FIELDS)
     ck.equal("squad.hero_flag", fields.get((0, HERO_FLAG_OFFSET)), HERO_FLAG)
@@ -2925,6 +3275,7 @@ def tables_document(root: str) -> dict:
         "squad_fields": {f"{r}:{o:#04x}": v
                          for (r, o), v in sorted(b.squad_fields().items())},
         "payout_scores": b.payout_scores(),
+        "recruit_presets": {str(k): v for k, v in b.recruit_presets().items()},
     }
 
 

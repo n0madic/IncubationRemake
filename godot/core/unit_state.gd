@@ -110,6 +110,17 @@ var kills: int = 0
 ## (docs/10 section 5.11), so it is campaign state and **zero on every shipped
 ## record** -- which is why [method hash_into] appends it only when it is not.
 var decorations: int = 0
+## `+0x5A`, the cached resale value in tens of equipment points, **or 0 for
+## "as `aEnlargeUnitPool` cached it"** -- `(weapon.cost + 50) / 10`, which
+## [method Roster.resale_of] derives. The engine has two other writers whose
+## value differs from that, and those store a number here: a Recruit-window
+## preset's hire caches its price (`0x0045BB86`), and a weapon purchase
+## rewrites the byte with `0x004776E0`'s value of the whole kit
+## (`0x0045ABAB`). So a campaign recruit who has bought a weapon carries a
+## number too, and it is in the canonical hash and in the save, as the
+## engine's byte is; what stays at 0 is every shipped `.lev` record and every
+## fresh hire, which is what keeps the pinned mission hashes where they are.
+var resale: int = 0
 ## `+0x4D`: 0 none, 1 unit-pool candidate, 2 hero.
 var pool_flag: int = 0
 ## `+0x55`, the voice sample set.
@@ -212,6 +223,7 @@ static func from_view(record: Dictionary) -> UnitState:
 	# existed carries no such key, and a save that still loads is worth more
 	# than one that reports a missing decoration count as corruption.
 	unit.decorations = DictRead.as_int(record.get("decorations", 0))
+	unit.resale = DictRead.as_int(record.get("resale", 0))
 	unit.pool_flag = DictRead.as_int(record["pool_flag"])
 	unit.speech = DictRead.as_int(record["speech"])
 	unit.skills = DictRead.to_int32(record["skills"])
@@ -315,6 +327,7 @@ func view() -> Dictionary:
 		"tp": tp,
 		"kills": kills,
 		"decorations": decorations,
+		"resale": resale,
 		"pool_flag": pool_flag,
 		"speech": speech,
 		"skills": skills.duplicate(),
@@ -344,8 +357,11 @@ func hash_into(ctx: HashingContext) -> void:
 	# The encoding stays injective because `equipment.size()` is already in the
 	# scalars above: the split between this and the payload below is fixed, and
 	# a record with no decoration is four bytes shorter than one with any.
-	if decorations != 0:
-		ctx.update(PackedInt32Array([decorations]).to_byte_array())
+	# `resale` rides with it under the same rule, and the two go **together**
+	# so the encoding stays injective: one optional block of two ints, never
+	# one int that could be either.
+	if decorations != 0 or resale != 0:
+		ctx.update(PackedInt32Array([decorations, resale]).to_byte_array())
 	# HashingContext refuses an empty buffer, and a unit with no equipment is
 	# ordinary, so the count goes in above and the payload only when there is
 	# one.  Without the count two different rosters could collide.

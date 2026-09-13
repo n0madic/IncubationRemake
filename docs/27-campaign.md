@@ -87,6 +87,24 @@ by bright separators at `y` 89/145/188/232/273/314/354. Six, not the five the
 shipped screenshot fills — one per skill of `+0x1A..+0x1F` plus the fitness
 `+0x19`, which is exactly what the hover hints `Txtmod_b` 160..165 name.
 
+#### Which window opens first is the game mode's — **[code] `aInitGUI` `0x00453F80`** *(2026-09-13)*
+
+`0x0045429C` asks `gameMode()` and branches at `0x004542A2`: **mode 1** runs
+mission control's gate `0x00456FC0(-1)` — the intro, an ending, or the map
+(§2) — and **every other mode** calls `0x004578C0`, which writes window
+selector `0` and raises `Menu_b`'s `MainMenu`, the HQ, over the pool as it
+stands. In a local session that pool is **empty**: `aEnlargeUnitPool` has
+exactly three callers — `aCreateUnitPoolForCampaign` (§3.1) and the two hire
+arms of §3.2 — so nothing on the session path seeds a record. The purse, tech
+level and skill level are the `.lev` header's ([`98` §2](98-slice-6-report.md)),
+and the HQ is where they are spent: *deploy units* (gadget 2) is disabled at
+`0x004579A3` while `0x00478960(player)` counts nobody in the pool and
+`0x00477BF0(player)` — the live-unit count of [`25` §3](25-turn-and-round.md) —
+finds nobody of the player's on the map, and *save game* (gadget 3) is enabled
+only for one human outside the multiplayer predicate `0x0043B1F0`. This is why
+an *Instant Action* map's header carries 1500–2000 equipment points: they are
+the squad, not a bonus.
+
 ### 1.2 The text banks
 
 Nine `aInitTextSystem(bank, file)` calls fix which `.lcl` text table each id
@@ -776,17 +794,16 @@ siblings (`0x004788C0` free-slot count, `0x00478960` used-slot count) use
 they stop one short; no shipped path passes that value. And the seeding is the
 **only** game-side reader of the skill level (§5.2).
 
-#### The Recruit window's five categories are written-out lists — **[code] `0x004561C9`** *(2026-09-08)*
+#### The Recruit window's five categories are written-out lists — **[code] `0x004561C9`** *(2026-09-08; corrected 2026-09-13)*
 
 The window `0x00456640` builds offers five category buttons and five candidate
 rows, and the rows are **not** a base plus four. `0x0045615F` clears the five
 slots at `0x00510A14` to −1 and disables the five row gadgets, and
 `0x004561C9`'s jump table (`0x00456624`) then fills the chosen category's, one
-`mov dword [0x510A14 + 4k], imm32` per row, each behind its own affordability
-test — an unaffordable type is left at −1 and its gadget stays off. Reading
-every write in the five arms gives **twenty-three**, not twenty-five:
+`mov dword [0x510A14 + 4k], imm32` per row. Reading every write in the five
+arms gives **twenty-three**, not twenty-five:
 
-| button | `Txtmod_b` | unit types |
+| button | `Txtmod_b` | preset ids |
 |---|---|---|
 | 0 *Light Units* | 181 | 0, 1, 2, 3 |
 | 1 | 182 | 10, 11, 12, 13, 14 |
@@ -795,10 +812,100 @@ every write in the five arms gives **twenty-three**, not twenty-five:
 | 4 *Commanders* | 185 | 40, 41, 42, 43, 44 |
 
 Two of them fill four slots and leave the fifth at −1, and category 3's fifth
-is **35, not 34**. Against `Info.lcl`'s declared 0–3, 20–26, 30–35 and 50–68
-that means *Light Units* offers four, category 3 offers five, *Heavy Units*
-offers four — type 24 is declared and never listed — and categories 1 and 4
-offer nothing at all.
+is **35, not 34**.
+
+**Two corrections.** The test each write sits behind is not an affordability
+test: it compares the purse against a local that `0x004561BB`/`0x004561BF`
+set to `ebx`, which the prologue at `0x0045615F` zeroed, so no listed row is
+ever withheld. And **the numbers are not `Info.lcl` unit types.** Read as
+types they would offer *Human Soldier (2)* and three aliens under *Light Units*
+and nothing at all under two buttons; what the row click at `0x0045BB3F`
+does with the number is hand it to **`0x00476260`** (`aUnitInfos.cpp`), which
+builds a ready-made soldier from it — see below. The remake's Recruit window
+hired a type-1 soldier for player 0 on this misreading, a unit the model
+selector has no body for ([`40` §7.2.1](40-charisma-model-animation.md)).
+
+#### The rows are presets — **[code] `0x00476260`** *(2026-09-13)*
+
+`0x00476260(rec, preset, &cost, &charge)` saves the text bank and selects
+**3** (`Txtmod_h`), zeroes the record's EP/TP/MP/skills/decorations/
+equipment/weapon and sets **`+0x4C` (unit type) to 0** and `+0x45` to the
+current player, then switches on the preset through `0x004776A8`/`0x00477648`
+— 45 index bytes, 23 arms. Each arm:
+
+1. copies `getText(140 + n)` into the name;
+2. calls `aBuyWeapon(rec, W, &charge)` once and `aBuyEquipment(rec, E, &charge)`
+   per item — the same two routines the Upgrade Menu uses (§5.3), on a
+   record that is not yet in the pool, so the purse is untouched and only
+   the skills and `+0x18` move;
+3. sums the price in `esi`: the weapon's cost byte (`0x0051B2C0 + W*67 + 0x3E`)
+   and each item's (`0x00517BB0 + E*42 + 0x20`), plus one or two literal
+   markups;
+4. writes EP `+0x17` and FP `+0x19` by literal and takes `+0x16` from
+   `0x00475240` (`min(15, type + EP/12)`) — six arms share a tail at
+   `0x004775E9` that does this for EP 0x90 / FP 0xC and adds 120.
+
+The shared exit at `0x00477600` adds the recruit markup **50**, stores
+`bl` — the **largest** `charge` any purchase returned, `short * 12` — into
+`+0x18` (so a preset's TP is its dearest purchase's skill charge, not the sum
+the running subtraction left), toggles weapon modes for a weapon under 20
+(`0x0047A8C0`), restores the bank and returns the price. The caller spends
+`cost / 10 * 10` and caches `cost / 10` in `+0x5A`.
+
+| id | `Txtmod_h` | weapon | equipment | EP | FP | markup |
+|---|---|---|---|---|---|---|
+| 0 | 140 Squad Leader | 2 | 8, 10, 14, 5 | 120 | 10 | 170 |
+| 1 | 141 Platoon Leader | 4 | 8, 11, 14, 5 | 132 | 11 | 180 |
+| 2 | 142 Commander | 6 | 8, 12, 14, 5 | 144 | 12 | 250 |
+| 3 | 162 Guardian | 15 | 8, 12, 14, 4, 18 | 144 | 12 | 270 |
+| 10 | 143 Fast Light Infantry | 1 | 3, 14 | 60 | 5 | 0 |
+| 11 | 144 Light Infantry | 2 | 10 | 96 | 8 | 50 |
+| 12 | 145 Sniper Man | 3 | 10 | 96 | 8 | 80 |
+| 13 | 146 Line Infantry | 4 | 10 | 108 | 9 | 90 |
+| 14 | 163 Plasma Unit | 16 | 11 | 96 | 8 | 60 |
+| 20 | 147 Front Line Infantry | 2 | 12, 14 | 108 | 9 | 120 |
+| 21 | 148 Storm Trooper | 5 | 12, 14, 3 | 132 | 11 | 140 |
+| 22 | 149 Berserk | 6 | 12, 4, 14 | 144 | 12 | 170 |
+| 23 | 160 Special Force | 14 | 12, 4, 14 | 144 | 12 | 210 |
+| 30 | 150 Heavy Support | 11 | 11, 5, 4, 14 | 48 | 4 | 450 |
+| 31 | 151 Tactical Support | 8 | 11 | 144 | 12 | 290 |
+| 32 | 152 Flamer | 7 | 13, 6, 14, 3 | 120 | 10 | 160 |
+| 33 | 153 Laser | 10 | 10, 14, 5 | 96 | 8 | 330 |
+| 35 | 161 Launcher | 13 | 11, 14 | 120 | 10 | 320 |
+| 40 | 155 Light Recon | 2 | 0, 10, 9 | 120 | 10 | 110 |
+| 41 | 156 Heavy Recon | 2 | 1, 11 | 132 | 11 | 160 |
+| 42 | 157 Light Medic | 1 | 15, 10 | 84 | 7 | 120 |
+| 43 | 158 Heavy Medic | 1 | 16, 11 | 84 | 7 | 120 |
+| 44 | 159 Jump Trooper | 2 | 7, 10, 5, 14 | 144 | 12 | 180 |
+
+The markup column includes the shared 50; *price = weapon cost + Σ item
+costs + markup*, then to the ten below. `Txtmod_h` 154 *Heavy Energy Unit*
+(id 34) has a name and no arm. `campaign_tables.py`'s `preset.*` checks walk
+every arm with a bounded interpreter — an unknown opcode is an error, and
+each cost load must be the record of an item the arm actually buys — and
+read the 23 names back out of the corpus; `tables/campaign.json` carries the
+table as `recruits`, and the remake hires through it
+([`92` §7.15](92-remake-architecture.md)).
+
+**Where the purse is checked.** Not in the hire: `0x0045BB3F` adds the record
+to the pool and only then spends, and `0x0043B060` would refuse a short purse
+without undoing it. The gate is the **row painter's**: the category arm's
+epilogue (`0x0045657B`) builds each listed preset into a scratch record at
+`0x005107F0 + 91k` and hands it with its cost to `0x00455C00`, which compares
+the cost against the purse at `0x00455EDF` — within it the row is printed in
+the ordinary colours and its gadget **enabled** (`0x00455F1D`), above it the
+row is printed in the alert colours and left disabled (`0x00455F58`). So an
+unaffordable preset cannot be clicked, and the hire's own spend never fails.
+The remake gates the row the same way and speaks the refusal as well
+([`92` §7.4](92-remake-architecture.md)). `recruit.row_*` pins the builder
+call, the compare and both arms.
+
+**What `+0x5A` holds afterwards.** The hire caches `cost / 10`, so dismissing
+a preset refunds its whole price (§3.3) — until a weapon purchase, which
+rewrites the byte with `0x004776E0` (§5.3): the value of the **whole kit**,
+not of the weapon alone. The remake carries the byte as `UnitState.resale`,
+zero meaning "as `aEnlargeUnitPool` would have cached it", so every shipped
+record and the campaign's own hires hash exactly as before.
 
 ### 3.3 Dismissing — **[code] `aRemoveUnitFromUnitPool` `0x00478B70`**
 
@@ -1100,7 +1207,15 @@ record ([`21`](21-info-lcl-schema.md)). The Upgrade screen:
 * **weapon** — **refunds the weapon being replaced** (`0x0045AAC7`, add) and
   then spends the new one (`0x0045AAF0`), so a swap costs the difference;
 * after every weapon purchase it recomputes `+0x5A`, the cached resale value
-  ([`10` §5.11](10-lev-mission-format.md)).
+  ([`10` §5.11](10-lev-mission-format.md)) — with **`0x004776E0`**
+  (`0x0045ABAB`, into the pool row at `0x0051F2FA`), which is not
+  `aEnlargeUnitPool`'s `(weapon.cost + 50) / 10` but the **kit's**: the
+  weapon's cost plus every carried item's (`+0x21..+0x35` against the 21
+  equipment records), less item 1's cost when `+0x28` — the Jet Pack — is set,
+  because the pack granted that scan for nothing, plus 50, in tens. A soldier
+  who bought armour and then swapped rifles therefore resells for the kit.
+  Equipment purchases do not touch the byte. `kit_value.*` pins the walk, the
+  Jet Pack exception, the markup and the store *(2026-09-13)*.
 
 #### The other half of the price is skill points — **[code] `aBuyWeapon` `0x00475680`, `aBuyEquipment` `0x004755D0`**
 

@@ -42,6 +42,10 @@ var _deployment: Dictionary = {}
 var _cut: PackedInt32Array = PackedInt32Array()
 ## `_C_XXX`'s two leftovers, which no arm ever opens.
 var _unreachable: PackedInt32Array = PackedInt32Array()
+## The Recruit window's presets by id (docs/27 section 3.2): `name_id`,
+## `weapon`, `equipment`, `ep`, `fp`, `markup`, narrowed to ints here at the
+## loading boundary so nothing downstream sees the parser's floats.
+var _recruits: Dictionary = {}
 
 
 static func from_document(document: Dictionary) -> CampaignMap:
@@ -80,6 +84,16 @@ static func from_document(document: Dictionary) -> CampaignMap:
 		var entry: Dictionary = row
 		out._cut.append(DictRead.as_int(entry["location"]))
 	out._unreachable = DictRead.to_int32(document["unreachable_locations"])
+	for row: Variant in DictRead.as_array(document.get("recruits", [])):
+		var entry: Dictionary = row
+		out._recruits[DictRead.as_int(entry["id"])] = {
+			"name_id": DictRead.as_int(entry["name_id"]),
+			"weapon": DictRead.as_int(entry["weapon"]),
+			"equipment": DictRead.to_int32(entry["equipment"]),
+			"ep": DictRead.as_int(entry["ep"]),
+			"fp": DictRead.as_int(entry["fp"]),
+			"markup": DictRead.as_int(entry["markup"]),
+		}
 	return out
 
 
@@ -190,3 +204,19 @@ func cut_locations() -> PackedInt32Array:
 ## `_C_XXX`'s *TEST EXTRO* and *<<Invalid Location>>*: cells no arm opens.
 func unreachable_locations() -> PackedInt32Array:
 	return _unreachable.duplicate()
+
+
+# -- the Recruit window -------------------------------------------------------
+
+## One preset's record, or `{}` for an id the window never lists.
+func recruit_preset(id: int) -> Dictionary:
+	return DictRead.as_dict(_recruits.get(id, {})).duplicate(true)
+
+
+## Every preset id the cache carries, ascending.
+func recruit_ids() -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	for key: Variant in _recruits:
+		out.append(DictRead.as_int(key))
+	out.sort()
+	return out

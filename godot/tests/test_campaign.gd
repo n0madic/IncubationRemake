@@ -81,9 +81,131 @@ func run(h: TestHarness) -> void:
 	_deployment(h, cases)
 	_codec(h, cases)
 	_decorations_survive(h, cases)
+	_presets(h)
 	_pinned_hashes(h)
 	_mission_opening(h)
 	_endings(h)
+
+
+## The Recruit window's presets -- `0x00476260` as `tables/campaign.json`
+## carries it (docs/27 section 3.2), hired through [method
+## CampaignHost.recruit_preset]. The binary side is `campaign_tables.py`'s
+## `preset.*` checks; this is the model side, hand-computed from the same
+## balance rows the purchase reads.
+func _presets(h: TestHarness) -> void:
+	var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
+		CacheFixture.balance(), Localization.from_cache(
+			CacheFixture.cache_dir(), CacheFixture.manifest()))
+	var ids: PackedInt32Array = host.tables.recruit_ids()
+	h.equal("preset.count", ids.size(), 23,
+		"the twenty-three arms of 0x00476260")
+	h.check("preset.ids_are_the_listed_rows",
+		ids == PackedInt32Array([0, 1, 2, 3, 10, 11, 12, 13, 14, 20, 21, 22,
+			23, 30, 31, 32, 33, 35, 40, 41, 42, 43, 44]),
+		"every row of RecruitScreen.CATEGORY_TYPES and nothing else")
+	var state: CampaignState = host.start_instant_action("_S_004",
+		{"tech_level": 10, "skill_level": 12, "equip_points": [1500, 0, 0, 0]})
+
+	# Preset 0, *Squad Leader*: weapon 2 and items 8, 10, 14, 5, EP 120,
+	# FP 10, markup 170.
+	var squad_leader: Dictionary = host.preset(0)
+	var expected_cost: int = DictRead.as_int(
+		host.row_for(CampaignHost.KIND_WEAPONS, 2).get("cost", 0)) + 170
+	for item: int in [8, 10, 14, 5]:
+		expected_cost += DictRead.as_int(
+			host.row_for(CampaignHost.KIND_EQUIPMENT, item).get("cost", 0))
+	var price: int = expected_cost / 10 * 10
+	h.equal("preset.price", host.preset_price(0), price,
+		"items' costs plus the markup, to the ten below")
+	var hired: Dictionary = host.recruit_preset(0)
+	h.equal("preset.hired", DictRead.as_string(hired["result"]), Upgrade.OK)
+	h.equal("preset.charged", state.points(0), 1500 - price)
+	var unit: UnitState = state.roster.record(DictRead.as_int(hired["slot"]))
+	h.check("preset.record",
+		unit != null and unit.type_id == CampaignState.PRESET_UNIT_TYPE
+		and unit.weapon == 2 and unit.ep == 120 and unit.fp == 10
+		and unit.player == 0 and unit.pool_flag == Roster.POOL_CANDIDATE,
+		"type 0 for the hiring player, EP and FP by literal")
+	h.check("preset.equipment",
+		unit != null and unit.has_equipment(8) and unit.has_equipment(10)
+		and unit.has_equipment(14) and unit.has_equipment(5),
+		"every item the arm buys is carried")
+	var hp_max: int = DictRead.as_int(host.row_for("units", 0).get("hp_max", 0))
+	h.equal("preset.hit_points", unit.hp if unit != null else -1,
+		mini(Interact.MAX_HIT_POINTS_CAP,
+			hp_max + 120 / Interact.EXPERIENCE_PER_HIT_POINT),
+		"0x00475240's ceiling at the preset's EP")
+	# TP is the **largest** purchase's skill charge, not the sum: the tail's
+	# `mov [ebp+0x18], bl` overwrites the running subtraction.
+	var fresh: UnitState = UnitState.new()
+	var largest: int = Upgrade.weapon_skill_cost(
+		host.row_for(CampaignHost.KIND_WEAPONS, 2), fresh)
+	var _w: int = Upgrade.apply_weapon(fresh, 2,
+		host.row_for(CampaignHost.KIND_WEAPONS, 2))
+	for item: int in [8, 10, 14, 5]:
+		var row: Dictionary = host.row_for(CampaignHost.KIND_EQUIPMENT, item)
+		largest = maxi(largest, Upgrade.equipment_skill_cost(row, fresh))
+		var _e: int = Upgrade.apply_equipment(fresh, item, row)
+	h.equal("preset.skill_points", unit.tp if unit != null else -1,
+		largest * Upgrade.TP_PER_SKILL_POINT)
+	h.check("preset.skills_raised",
+		unit != null and unit.skills == fresh.skills,
+		"the same raises the two buy routines make")
+	h.equal("preset.name", unit.name if unit != null else "",
+		host.preset_name(0))
+	h.check("preset.name_is_the_bank_line",
+		host.preset_name(0) != "0" and host.preset_name(0) != "",
+		"Txtmod_h 140 through the shipped bank: " + host.preset_name(0))
+
+	# Preset 44, *Jump Trooper*, buys the Jet Pack (7), which grants the
+	# scan (1) -- `0x00475601` -- the same way the Upgrade Menu's purchase does.
+	var trooper: Dictionary = host.recruit_preset(44)
+	var jumper: UnitState = state.roster.record(DictRead.as_int(trooper["slot"]))
+	h.check("preset.jet_pack_grants_scan",
+		DictRead.as_string(trooper["result"]) == Upgrade.OK
+		and jumper != null and jumper.has_equipment(Upgrade.JET_PACK_ID)
+		and jumper.has_equipment(Upgrade.JET_PACK_GRANTS))
+
+	# `0x0045BB86`: the hire caches `cost / 10` in `+0x5A`, so dismissing
+	# the preset refunds its price -- and `0x0045ABAB` rewrites the cache
+	# with `0x004776E0`'s value of the whole kit after a weapon purchase, so
+	# a dismissal after that refunds the kit, not the weapon alone.
+	var before: int = state.points(0)
+	h.equal("preset.dismissal_refunds_the_price",
+		state.dismiss(0, DictRead.as_int(trooper["slot"]), host.weapon_costs()),
+		host.preset_price(44))
+	h.equal("preset.refund_lands", state.points(0),
+		before + host.preset_price(44))
+	var costs: Dictionary = host.weapon_costs()
+	var items: Dictionary = host.equipment_costs()
+	var slot: int = DictRead.as_int(hired["slot"])
+	var swapped: Dictionary = state.buy_weapon(0, slot, 1, costs,
+		host.row_for(CampaignHost.KIND_WEAPONS, 1), items)
+	var kit: int = Roster.kit_value(DictRead.as_int(costs.get(1, 0)),
+		state.roster.record(slot).equipment, items)
+	h.check("preset.weapon_purchase_caches_the_kit",
+		DictRead.as_string(swapped["result"]) == Upgrade.OK
+		and state.roster.record(slot).resale == kit
+		and kit != Roster.resale_of(DictRead.as_int(costs.get(1, 0))),
+		"0x004776E0 counts the carried items, not the weapon alone")
+	h.equal("preset.dismissal_after_swap_refunds_the_kit",
+		state.dismiss(0, slot, costs), kit * Roster.RESALE_SCALE)
+	# The Jet Pack's granted scan is not charged for: `+0x28` set takes item
+	# 1's cost back off.
+	h.equal("preset.kit_value_ignores_the_granted_scan",
+		Roster.kit_value(10, PackedInt32Array([7, 1]), {7: 40, 1: 25}),
+		(10 + 40 + 25 - 25 + 50) / 10)
+
+	# The refusals: the row painter's own gate (`0x00455EDF`), spoken, and an
+	# id the window never lists.
+	state.set_points(0, 10)
+	var broke: Dictionary = host.recruit_preset(0)
+	h.equal("preset.refused_when_poor", DictRead.as_string(broke["result"]),
+		Upgrade.NO_POINTS)
+	h.equal("preset.poor_purse_unchanged", state.points(0), 10)
+	h.equal("preset.unlisted_id", DictRead.as_string(
+		host.recruit_preset(34)["result"]), Upgrade.BAD_ID,
+		"34 has a Txtmod_h name and no arm")
 
 
 ## The fixture must have been emitted from **this** corpus and **this** model.
@@ -233,6 +355,15 @@ func _economy(h: TestHarness, cases: Dictionary) -> void:
 			"cap":
 				state.set_points(0, 9990)
 				state.add_points(0, 100)
+			"kit":
+				state.set_points(0, 200)
+				state.recruit(0, 1)
+				var _item: Dictionary = state.buy_equipment(0, 0, 3,
+					{"cost": 25})
+				var _rifle: Dictionary = state.buy_weapon(0, 0, 5,
+					{0: DictRead.as_int(cases["weapon_zero_cost"]), 5: 30},
+					{}, {3: 25})
+				var _gone: int = state.dismiss(0, 0, {})
 		h.equal("economy.%s.purse" % name, state.points(0),
 			DictRead.as_int(step["purse"]))
 		h.equal("economy.%s.used" % name, state.roster.used_slots(),

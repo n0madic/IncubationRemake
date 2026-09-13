@@ -146,7 +146,12 @@ const OWN: Dictionary = {
 	# greying a button and saying nothing (docs/92 section 7.4).
 	"roster.empty": {"English": "nobody in the squad -- recruit somebody"},
 	"catalogue.empty": {"English": "nothing at this tech level"},
-	"recruit.empty": {"English": "no unit type in this category"},
+	"recruit.empty": {"English": "nothing in this category"},
+	"recruit.price": {"English": "%d points -- %s"},
+	"recruit.pool_full": {"English": "the squad is full"},
+	"recruit.not_enough_equipment_points": {
+		"English": "not enough equipment points"},
+	"recruit.bad_id": {"English": "no such soldier"},
 	"upgrade.nobody": {"English": "nobody to equip"},
 	"upgrade.no_unit": {"English": "nobody selected"},
 	"upgrade.bad_id": {"English": "no such item"},

@@ -1137,29 +1137,125 @@ func _screens(h: TestHarness) -> void:
 	}
 	var instant_state: CampaignState = instant_host.start_instant_action(
 		"_S_004", instant_header)
-	var instant_recruit: UnitState = instant_state.roster.record(0)
-	h.check("instant_action.local_pool_is_deployable",
+	# `aInitGUI` `0x004542A1`: outside a campaign the first screen is the HQ
+	# over an **empty** pool, and the map's purse is the player's to spend.
+	h.check("instant_action.starts_in_the_hq_with_an_empty_pool",
 		instant_host.is_instant_action()
 		and instant_state.mode == TurnState.MODE_LOCAL
 		and instant_state.player_count == 1
 		and instant_state.player_kind[0] == TurnState.KIND_HUMAN
-		and instant_state.roster.used_slots() == 4
+		and instant_state.roster.used_slots() == 0
+		and instant_host.nobody_to_deploy()
+		and instant_host.screen == CampaignHost.SCREEN_HQ
 		and instant_state.tech_level == 10
 		and instant_state.skill_level == 12
-		and instant_state.points(0) == 1500
+		and instant_state.points(0) == 1500,
+		"the local session uses the selected map's authored setup")
+	h.equal("instant_action.catalogue_band_is_the_header_tech_level",
+		instant_host.catalogue_band(), Vector2i(CampaignHost.CATALOGUE_LOW, 10),
+		"0x0045BF2A's non-campaign arm: 0..techLevel, no base")
+	h.check("instant_action.hires_through_the_recruit_window",
+		instant_host.recruits_through_a_screen(),
+		"0x0045B7F8 opens 0x00456640 outside mode 1")
+	var instant_hq: UnitMenuScreen = UnitMenuScreen.new()
+	instant_hq.host = instant_host
+	instant_hq.setup(_art, _strings, _font)
+	var instant_hq_actions: PackedStringArray = _actions_of(instant_hq)
+	h.check("instant_action.hq_deploys_and_returns_to_levels",
+		instant_hq_actions.has("deploy")
+		and instant_hq_actions.has("instant_levels")
+		and not instant_hq_actions.has("map"),
+		"a local session has no campaign map for Back to open")
+	h.check("instant_action.hq_deploy_is_off_over_an_empty_pool",
+		instant_hq._deploy != null and instant_hq._deploy.disabled,
+		"0x004579A3 disables gadget 2 while the pool is empty")
+	# The Recruit window's row: preset 11, *Light Infantry* (weapon 2, item
+	# 10, EP 96, markup 50), at its own price rather than the campaign's 60.
+	var hire: Dictionary = instant_host.recruit_preset(11)
+	var hired: int = DictRead.as_int(hire["slot"])
+	var instant_recruit: UnitState = instant_state.roster.record(hired)
+	instant_hq.refresh()
+	h.check("instant_action.a_preset_hire_arms_deploy",
+		DictRead.as_string(hire["result"]) == Upgrade.OK
+		and instant_state.points(0) == 1500 - instant_host.preset_price(11)
 		and instant_recruit != null
-		and instant_recruit.ep == 12 * Roster.EP_PER_RANK,
-		"the local squad uses the selected map's authored setup")
+		and instant_recruit.type_id == CampaignState.PRESET_UNIT_TYPE
+		and instant_recruit.weapon == 2 and instant_recruit.ep == 96
+		and not instant_hq._deploy.disabled,
+		"a type-0 soldier the model selector has a body for")
+	var window: RecruitScreen = RecruitScreen.new()
+	window.host = instant_host
+	window.setup(_art, _strings, _font)
+	h.check("instant_action.recruit_rows_are_presets",
+		window.presets_in(0) == PackedInt32Array([0, 1, 2, 3])
+		and window.presets_in(3) == PackedInt32Array([30, 31, 32, 33, 35])
+		and window.load_out_line(11).begins_with(
+			str(instant_host.preset_price(11))),
+		"the five lists of 0x004561C9, priced per row")
+	_no_missing(h, "recruit", window)
+	window.free()
+	instant_hq.free()
 	var instant_deploy: SelectUnitsScreen = SelectUnitsScreen.new()
 	instant_deploy.host = instant_host
-	instant_deploy.back_to_levels = true
+	instant_deploy.back_to_hq = true
 	instant_deploy.setup(_art, _strings, _font)
 	var instant_deploy_actions: PackedStringArray = _actions_of(instant_deploy)
-	h.check("instant_action.deployment_returns_to_levels",
-		instant_deploy_actions.has("instant_levels")
+	h.check("instant_action.deployment_returns_to_hq",
+		instant_deploy_actions.has("hq")
 		and not instant_deploy_actions.has("map"),
-		"a local session has no campaign map for Back to open")
+		"Back from deployment is the HQ the squad was hired in")
 	instant_deploy.free()
+	# The HQ stands over the mission before anybody is deployed, and takes no
+	# entry snapshot until *Deploy units*; Back from deployment restores the
+	# pool and lands in the HQ, not on a map the session does not have.
+	var instant_world: World = World.create(CacheFixture.mission("_C_141"),
+		CacheFixture.balance(), 0.0)
+	var _swept: int = instant_world.load_sweep()
+	instant_host.frame_mission(instant_world)
+	var landings: Array[Vector2i] = instant_world.deployment_cells(0)
+	h.check("instant_action.hq_counts_the_mission_placefields",
+		not landings.is_empty()
+		and instant_host.deployment_cells().size() == landings.size()
+		and instant_state.roster.used_slots(Roster.ROW_SNAPSHOT) == 0,
+		"frame_mission gives the counter a map and keeps the snapshot empty")
+	# A placement before *Deploy units* -- the agent's `deploy` verb from the
+	# HQ -- is refused: nothing may leave the live row before the snapshot.
+	var early: Dictionary = instant_host.deploy(hired,
+		landings[0].x if not landings.is_empty() else 0,
+		landings[0].y if not landings.is_empty() else 0)
+	h.check("instant_action.no_deployment_from_the_hq",
+		DictRead.as_string(early["result"]) == World.DEPLOY_EMPTY_RECORD
+		and instant_state.roster.used_slots() == 1,
+		"deploy() is the deployment screen's alone")
+	instant_host.begin_mission(instant_world)
+	var placed: String = ""
+	if not landings.is_empty():
+		placed = DictRead.as_string(instant_host.deploy(hired,
+			landings[0].x, landings[0].y)["result"])
+	# A save taken here holds the placed soldier in the snapshot row only;
+	# a load without the battle blob has to put him back before the HQ reads
+	# the live row, or the next *Deploy units* restores the snapshot over
+	# whoever was hired in between.
+	var settled: CampaignState = CampaignCodec.decode(
+		CampaignCodec.encode(instant_state))["state"]
+	var settle_host: CampaignHost = CampaignHost.create(_cache_dir,
+		CacheFixture.balance(), _strings)
+	settle_host.state = settled
+	settle_host.settle_after_load()
+	h.check("instant_action.load_without_battle_settles_the_rows",
+		placed == World.DEPLOY_OK
+		and settled.roster.used_slots() == 1
+		and settled.roster.used_slots(Roster.ROW_SNAPSHOT) == 0
+		and settle_host.screen == CampaignHost.SCREEN_HQ
+		and not settle_host.nobody_to_deploy(),
+		"the deployed soldier is back in the pool the HQ shows")
+	instant_host.abandon_mission()
+	h.check("instant_action.back_from_deployment_returns_to_hq",
+		placed == World.DEPLOY_OK
+		and instant_host.screen == CampaignHost.SCREEN_HQ
+		and instant_state.roster.used_slots() == 1
+		and instant_state.roster.used_slots(Roster.ROW_SNAPSHOT) == 0,
+		"the squad is back in the pool and the screen is the HQ")
 	var loaded_local: SliceMain = SliceMain.new()
 	loaded_local.campaign = instant_host
 	loaded_local._remember_loaded_session()

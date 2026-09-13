@@ -1600,6 +1600,23 @@ def campaign_document(root: Path, tables: dict[str, Any],
         "start_skill_level": cammod.CAMPAIGN_START_SKILL_LEVEL,
         "pool_slots": cammod.POOL_USABLE_SLOTS,
     }
+    # The Recruit window's rows (docs/27 section 3.2): preset ids, each a
+    # ready-made type-0 soldier `0x00476260` builds -- a `Txtmod_h` name, a
+    # weapon, equipment, EP and FP, and the markup its price adds to the
+    # items' costs. Emitted as records because the ids are not contiguous.
+    document["recruits"] = [
+        {
+            "id": int(preset),
+            "name_id": row["name_id"],
+            "weapon": row["weapon"],
+            "equipment": list(row["equipment"]),
+            "ep": row["ep"],
+            "fp": row["fp"],
+            "markup": row["markup"],
+        }
+        for preset, row in sorted(tables.get("recruit_presets", {}).items(),
+                                  key=lambda kv: int(kv[0]))
+    ]
     document["squad_seed"] = [
         {"record": record, "offset": offset, "value": value}
         for (record, offset), value in sorted(

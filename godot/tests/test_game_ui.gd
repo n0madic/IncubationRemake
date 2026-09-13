@@ -2417,13 +2417,14 @@ func _campaign_screens(h: TestHarness) -> void:
 	var hiring: RecruitScreen = RecruitScreen.new()
 	hiring.host = host
 	hiring.setup(art, strings, font)
-	# `Info.lcl` declares unit types 0..3, so *Light Units* offers the four
-	# `Human Soldier` variants and *Commanders* -- base 40 -- offers nothing.
-	h.equal("screens.recruit_light_units", hiring.types_in(0).size(), 4,
-		"types 0..3 are the four `Human Soldier` records")
-	h.equal("screens.recruit_commanders_are_empty",
-		hiring.types_in(4).size(), 0,
-		"the engine lists 40..44 there and `Info.lcl` declares none of them")
+	# The rows are `0x00476260`'s presets, every one of which the cache
+	# carries -- so *Light Units* offers four and *Commanders* five, where a
+	# reading of the ids as unit types offered four soldiers and nothing.
+	h.equal("screens.recruit_light_units", hiring.presets_in(0).size(), 4,
+		"presets 0..3: Squad Leader, Platoon Leader, Commander, Guardian")
+	h.equal("screens.recruit_commanders",
+		hiring.presets_in(4).size(), 5,
+		"presets 40..44: the two recons, the two medics and the Jump Trooper")
 	# **The five categories are lists, not bases.** `0x004561C9`'s arms fill
 	# the five slots of `0x00510A14` one immediate at a time, and reading
 	# every write finds twenty-three, not twenty-five: two categories fill
@@ -2433,8 +2434,8 @@ func _campaign_screens(h: TestHarness) -> void:
 		RecruitScreen.category_types(3)],
 		[PackedInt32Array([0, 1, 2, 3]), PackedInt32Array([20, 21, 22, 23]),
 		PackedInt32Array([30, 31, 32, 33, 35])])
-	h.equal("screens.recruit_heavy_units", hiring.types_in(2).size(), 4,
-		"20..23 -- type 24 is declared but the engine never lists it")
+	h.equal("screens.recruit_heavy_units", hiring.presets_in(2).size(), 4,
+		"20..23 -- 24 is never listed and has no arm")
 	h.check("screens.recruit_is_not_the_campaign_path",
 		not host.recruits_through_a_screen(),
 		"`0x0045B7F8` hires on the spot in game mode 1")
@@ -2446,6 +2447,16 @@ func _campaign_screens(h: TestHarness) -> void:
 	upgrade.host = host
 	upgrade.setup(art, strings, font)
 	upgrade.select(0)
+	# `0x00475240`: the ceiling the panel prints is the type's plus EP / 12,
+	# capped at 15 -- the column alone read `15/5` for a rank-10 recruit.
+	var ranked: UnitState = UnitState.new()
+	ranked.type_id = 0
+	ranked.ep = 120
+	ranked.hp = 15
+	var base_hp: int = DictRead.as_int(host.row_for("units", 0).get("hp_max", 0))
+	h.equal("screens.upgrade_hit_point_ceiling_counts_rank",
+		upgrade._hit_point_ceiling(ranked),
+		mini(Interact.MAX_HIT_POINTS_CAP, base_hp + 10))
 	var weapons: Dictionary = host.catalogue("weapons")
 	var equipment: Dictionary = host.catalogue("equipment")
 	# The measured split at tech 1, which is the tech level a campaign has from

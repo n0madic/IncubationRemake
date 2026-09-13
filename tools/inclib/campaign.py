@@ -89,6 +89,10 @@ SPEECH_BASE, SPEECH_SPAN = 1, 6
 EQUIPMENT_POINT_CAP = 10000
 #: ``0x0045B821`` -- the markup over weapon 0's cost, in both the recruit price
 #: and the resale formula, which is why dismissing a fresh recruit is free.
+#: ``0x004776E0`` -- the Jet Pack (item 7) sets item 1's flag for nothing
+#: (``0x00475601``), and the kit value takes item 1's cost back off for it.
+JET_PACK_ID = 7
+JET_PACK_GRANTS = 1
 RECRUIT_MARKUP = 50
 #: ``+0x5A`` is stored in tens.
 RESALE_SCALE = 10
@@ -158,6 +162,23 @@ SEED_RECORDS = _seed_records()
 
 
 # --- one roster record -------------------------------------------------------
+
+def kit_value(weapon_cost: int, rec: "PoolRecord",
+              equipment_costs: dict[int, int]) -> int:
+    """``0x004776E0`` -- what a weapon purchase caches in ``+0x5A``.
+
+    The weapon's cost, plus every carried item's (``+0x21..+0x35`` walked
+    against the 21 equipment records), less item 1's when ``+0x28`` -- the
+    Jet Pack -- is set, plus the recruit markup, in tens.
+    """
+    total = weapon_cost
+    for item in range(EQUIPMENT_COUNT):
+        if rec.has_equipment(item):
+            total += equipment_costs.get(item, 0)
+    if rec.has_equipment(JET_PACK_ID):
+        total -= equipment_costs.get(JET_PACK_GRANTS, 0)
+    return (total + RECRUIT_MARKUP) // RESALE_SCALE
+
 
 class PoolRecord:
     """One 91-byte roster slot.
@@ -641,12 +662,16 @@ class CampaignState:
         return refund
 
     def buy_weapon(self, player: int, slot: int, weapon: int, *,
-                   costs: dict[int, int]) -> bool:
+                   costs: dict[int, int],
+                   equipment_costs: dict[int, int] | None = None) -> bool:
         """``docs/27`` §5.3 -- refund the old, spend the new, recompute ``+0x5A``.
 
         The order is the engine's: the refund at ``0x0045AAC7`` happens first,
         so a swap costs the difference and an upgrade the player cannot quite
-        afford outright still goes through.
+        afford outright still goes through.  The recompute is ``0x004776E0``'s
+        (:func:`kit_value`), the whole kit and not the weapon alone; a caller
+        with no equipment table gets the weapon-only value, which is what an
+        unequipped soldier's kit is worth.
         """
         rec = self.roster.row(ROW_LIVE)[slot]
         if not rec.occupied:
@@ -660,7 +685,7 @@ class CampaignState:
             self.spend_points(player, costs.get(rec.weapon, 0))
             return False
         rec.weapon = weapon
-        rec.resale = (new_cost + RECRUIT_MARKUP) // RESALE_SCALE
+        rec.resale = kit_value(new_cost, rec, equipment_costs or {})
         return True
 
     def buy_equipment(self, player: int, slot: int, item: int, *,

@@ -727,11 +727,18 @@ func _draw_portrait(unit: UnitState) -> void:
 		PORTRAIT_RANK_AT, ALIGN_LEFT, INK_ROSTER, _panel)
 
 
-## The unit type's `hp_max`, which is what the recompute would restore to.
+## `0x00475240` -- the type's `hp_max` plus `EP / 12`, never above 15, which
+## is what the recompute restores to. It read the type's column alone, so a
+## rank-10 soldier showed `15/5`.
 func _hit_point_ceiling(unit: UnitState) -> int:
 	var row: Dictionary = host.row_for("units", unit.type_id)
-	var ceiling: int = DictRead.as_int(row.get("hp_max", 0))
-	return ceiling if ceiling > 0 else unit.hp
+	var base: int = DictRead.as_int(row.get("hp_max", 0))
+	if base <= 0:
+		return unit.hp
+	if unit.player == UnitState.PLAYER_ALIEN:
+		return base
+	return mini(Interact.MAX_HIT_POINTS_CAP,
+		base + unit.ep / Interact.EXPERIENCE_PER_HIT_POINT)
 
 
 ## The six boxes: an icon, the value, and the hint `Txtmod_b` 160..165 names,

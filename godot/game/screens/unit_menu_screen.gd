@@ -79,6 +79,16 @@ const BACK_AT: Vector2 = Vector2(410.0, 418.0)
 ## the campaign map opens the Unit Menu directly. The caption is the original's
 ## and the corner is the one `Menu_b.lcl` leaves empty on this window.
 const UPGRADE_AT: Vector2 = Vector2(55.0, 418.0)
+## **Instant Action's two ways out of the HQ.** Outside a campaign `aInitGUI`
+## opens `Menu_b` window 0 -- *deploy units* (`Txtmod_b` 13) at `(330, 418)`
+## and no map to go back to -- over the pool this screen edits. The remake's
+## one window carries both: *Deploy units* takes the corner *Main Map* has in
+## a campaign, and the way back to the level list sits between the two rows'
+## corners, four pieces wide so it clears both.
+const ID_DEPLOY: int = 13
+const DEPLOY_AT: Vector2 = BACK_AT
+const LEVELS_AT: Vector2 = Vector2(256.0, 418.0)
+const LEVELS_WIDTH: int = 4
 
 ## The library the roster row's weapon picture comes from -- the small
 ## inventory icons, not the 30-frame turntables the Upgrade screen uses.
@@ -104,6 +114,9 @@ var _saved_points: int = 0
 
 var _rows: Control = null
 var _counters: Control = null
+## Instant Action's *Deploy units*, kept so [method refresh] can gate it on the
+## pool the way `0x004579A3` does: off while nobody has been hired.
+var _deploy: Button = null
 
 
 func plate_name() -> String:
@@ -129,7 +142,12 @@ func build() -> void:
 		DISMISS_AT)
 	var _up_screen: Button = gui_button("upgrade", BANK_MISSION,
 		ID_BUILD_SQUAD, UPGRADE_AT)
-	var _back: Button = gui_button("map", BANK_MISSION, ID_BACK, BACK_AT)
+	if host != null and host.is_instant_action():
+		_deploy = gui_button("deploy", BANK_MISSION, ID_DEPLOY, DEPLOY_AT)
+		var _levels: Button = gui_button("instant_levels", BANK_MISSION,
+			ID_BACK, LEVELS_AT, LEVELS_WIDTH)
+	else:
+		var _back: Button = gui_button("map", BANK_MISSION, ID_BACK, BACK_AT)
 	refresh()
 
 
@@ -138,6 +156,8 @@ func build() -> void:
 func refresh() -> void:
 	if host == null or host.state == null or _rows == null:
 		return
+	if _deploy != null:
+		_deploy.disabled = host.nobody_to_deploy()
 	clear_children(_rows)
 	clear_children(_counters)
 	var slots: PackedInt32Array = host.state.roster.occupied_slots()

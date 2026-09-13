@@ -1387,8 +1387,41 @@ stem as the launch key and as the visible fallback for a custom map whose id
 the shipped bank does not define.
 Starting one retains a local-mode `CampaignState`, populated from the selected
 map's `tech_level`, `skill_level` and player equipment points.  That is not a
-campaign: Back from deployment and the result return to the level catalogue,
-and no campaign score or location is advanced.  Retaining the state is what
+campaign: Back from deployment returns to the HQ, the result to the level
+catalogue, and no campaign score or location is advanced.
+**It opens in the HQ over an empty pool, not on the deployment screen**
+*(2026-09-13)*. `aInitGUI` `0x004542A1` branches on the game mode: a campaign
+enters mission control's gate `0x00456FC0(-1)` -- the map -- and every other
+mode opens `0x004578C0`, `Menu_b` window 0, whose *deploy units* gadget
+`0x004579A3` keeps off while the pool is empty. The map's header is the whole
+economy -- `_S_004` gives 1500 points at tech 10 and skill 12 -- and the HQ is
+where it is spent: the Unit Menu hires through the Recruit window
+(`0x0045B7F8`, outside mode 1), and the Upgrade Menu sells the band
+`0..tech_level` (`0x0045BF2A`'s non-campaign arm, [`27` §5.2](27-campaign.md)).
+The remake used to seed four rank-12 recruits with the light gun and go straight
+to deployment, so *Spaceport*'s ten Pyr'Coo and six Ee'Ther were met with four
+pistols and 1500 unspent points; the four `Human Soldier` records `_S_004.lev`
+carries at zero HP are free slots the engine skips ([`10` §5](10-lev-mission-format.md)),
+not a squad. The mission is built before the HQ goes up, as the `.lev` is
+loaded before `aInitGUI` runs, and the HQ frames the mission's own scene;
+*Deploy units* takes the entry snapshot, and Back from deployment restores the
+pool and rebuilds the mission under the HQ.
+**The Recruit window's rows are presets** *(2026-09-13)*: the 23 numbers the
+category arms list are ids `0x00476260` builds a ready-made type-0 soldier
+from ([`27` §3.2](27-campaign.md)) — name, weapon, equipment, EP, FP and a
+markup — not `Info.lcl` unit types, which is how the window came to hire a
+type-1 soldier that stood on the map as a capsule. The table is decoded from
+the executable by `campaign_tables.py` (`preset.*`), carried in
+`tables/campaign.json` as `recruits` (`CONVERTER_VERSION` 0.42.0), and hired
+through `CampaignState.recruit_preset`, which reuses the purse-less halves of
+the two buy routines (`Upgrade.apply_weapon`/`apply_equipment`). The row is
+priced per preset and gated on the purse where the engine gates it — the row
+painter `0x00455C00`, red and disabled above the purse — with the refusal
+spoken as well. `UnitState.resale` carries `+0x5A` where the engine's cache
+differs from `aEnlargeUnitPool`'s derivation: a preset's whole price, and
+the kit value `0x004776E0` writes after a weapon purchase; zero means derived,
+so no shipped record's hash moves.
+Retaining the state is what
 makes ordinary Save, Save As, quick-save and the two undo slots work without a
 new codec: `CampaignCodec` already persists the mode, mission and roster, while
 the nested `SaveCodec` blob persists the battle.  Loading restores the

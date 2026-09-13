@@ -194,12 +194,20 @@ func start_new(number: int,
 ## use the campaign transfer rule without making a finished skirmish advance a
 ## campaign map.
 ##
-## The four fresh soldiers are deliberately ordinary pool records.  Static
-## analysis proves the front end enters the local game mode and opens the unit
-## pool before deployment, but has not yet recovered the original's selectable
-## load-out defaults.  A useful, deployable squad is preferable to the former
-## false success of loading an empty map; the remaining load-out parity is
-## explicitly isolated at this constructor.
+## **The squad is the player's to hire, and the first screen is the HQ.**
+## `aInitGUI` `0x004542A1` branches on the game mode: a campaign enters
+## mission control's gate `0x00456FC0(-1)` -- the map -- and every other mode
+## opens `0x004578C0`, `Menu_b` window 0, over an **empty** pool. The purse,
+## the tech level and the skill level are the map's own header fields
+## (`_S_004`: 1500 points at tech 10), and the HQ is where they are spent:
+## the Unit Menu hires at `weapon[0].cost + 50` through the Recruit window
+## ([method recruits_through_a_screen]) and the Upgrade Menu sells the band
+## `0..tech_level` ([method catalogue_band], the arm `0x0045BF2A` takes
+## outside a campaign). *Deploy units* stays off until somebody is hired
+## (`0x004579A3`). Seeding four rank-12 recruits with the light gun and going
+## straight to deployment, which this used to do, put 1500 unspent points
+## against ten Pyr'Coo and six Ee'Ther -- the map is not unbalanced, the shop
+## was skipped.
 func start_instant_action(mission: String, header: Dictionary,
 		difficulty: int = GameSettings.DIFFICULTY_DEFAULT) -> CampaignState:
 	state = CampaignState.create()
@@ -222,10 +230,7 @@ func start_instant_action(mission: String, header: Dictionary,
 		header.get("equip_points", PackedInt32Array()))
 	state.equipment_points[0] = purses[0] if not purses.is_empty() \
 		else CampaignState.START_EQUIPMENT_POINTS
-	for speech: int in range(1, 5):
-		state.roster.enlarge(0, state.mode, state.skill_level, speech,
-			_recruit_hit_points(0), _recruit_ammo())
-	screen = SCREEN_SELECT
+	screen = SCREEN_HQ
 	location = 0
 	last_report = {}
 	return state
@@ -387,6 +392,31 @@ func at_an_ending() -> bool:
 
 # -- entering a mission --------------------------------------------------------
 
+## The mission Instant Action's HQ stands over, before anybody is deployed:
+## the `.lev` is loaded before `aInitGUI` runs, so the HQ's *Grid positions on
+## map* counter has a map to count. No snapshot is taken here -- that is
+## [method begin_mission]'s, when *Deploy units* is pressed.
+func frame_mission(mission_world: World) -> void:
+	_mission_world = mission_world
+
+
+## A loaded Instant Action save with no battle in it, put back where the HQ
+## can use it. A save is allowed from the deployment screen, where whoever
+## was placed has left the live row for the snapshot; the HQ reads the live
+## row alone, so without this the squad looked hired away and the next
+## *Deploy units* restored the snapshot over any new hire. The campaign path
+## never needs it: its map always enters a mission through [method
+## begin_mission], which reconciles the rows itself.
+func settle_after_load() -> void:
+	if state == null:
+		return
+	if state.roster.used_slots(Roster.ROW_SNAPSHOT) > 0:
+		state.roster.restore()
+		state.roster.clear_snapshot()
+	_mission_world = null
+	screen = SCREEN_HQ if is_instant_action() else SCREEN_MAP
+
+
 ## `aCopyUnitPool(0, 1)` at `0x0045A914` -- the mission-entry snapshot.
 ##
 ## Taken **before** deployment, which is what makes the debriefing's *replay*
@@ -411,7 +441,12 @@ func begin_mission(mission_world: World) -> void:
 ## Put one roster slot on the map. Returns [World]'s own result dictionary,
 ## with the slot removed from the live row on success.
 func deploy(slot: int, x: int, y: int) -> Dictionary:
-	if state == null or _mission_world == null:
+	# **Only from the deployment screen.** [method frame_mission] gives the
+	# HQ a world to count placefields on, and a placement made from there --
+	# the agent's `deploy` verb reaches this without a screen -- would take
+	# a soldier out of the live row before the entry snapshot is taken, so
+	# *Back* could never put them back.
+	if state == null or _mission_world == null or screen != SCREEN_SELECT:
 		return {"result": World.DEPLOY_EMPTY_RECORD, "slot": MapState.NO_UNIT}
 	var record: UnitState = state.roster.record(slot)
 	if record == null:
@@ -487,7 +522,8 @@ func abandon_mission() -> void:
 		state.roster.restore()
 		state.roster.clear_snapshot()
 		_mission_world = null
-	screen = SCREEN_MAP
+	# Instant Action has no map to go back to; its squad returns to the HQ.
+	screen = SCREEN_HQ if is_instant_action() else SCREEN_MAP
 
 
 # -- the end of a mission ------------------------------------------------------
@@ -615,15 +651,80 @@ func replay() -> String:
 
 # -- the HQ --------------------------------------------------------------------
 
-## The Unit Menu's *Recruit unit*. *unit_type* is the Recruit window's choice
-## and -1 the campaign's own, which is `aEnlargeUnitPool`'s `type = player`.
-func recruit(unit_type: int = -1) -> int:
+## The Unit Menu's *Recruit unit* in a campaign -- `0x0045B81F`, the direct
+## hire: `aEnlargeUnitPool`'s `type = player` at `weapon[0].cost + 50`.
+func recruit() -> int:
 	if state == null:
 		return Roster.NO_SLOT
-	var health: int = 0
-	if unit_type >= 0:
-		health = DictRead.as_int(row_for("units", unit_type).get("hp_max", 0))
-	return state.recruit(0, _draw_speech(), unit_type, health)
+	return state.recruit(0, _draw_speech())
+
+
+## The Recruit window's row -- the preset `0x00476260` builds from *id*
+## (docs/27 section 3.2). Returns [method CampaignState.recruit_preset]'s
+## `{"result", "slot", "cost"}`; an id the cache does not list is
+## [constant Upgrade.BAD_ID].
+func recruit_preset(id: int) -> Dictionary:
+	if state == null or tables == null:
+		return {"result": Upgrade.NO_UNIT, "slot": Roster.NO_SLOT, "cost": 0}
+	var preset: Dictionary = tables.recruit_preset(id)
+	if preset.is_empty():
+		return {"result": Upgrade.BAD_ID, "slot": Roster.NO_SLOT, "cost": 0}
+	var rows: Dictionary = {}
+	for item: int in DictRead.to_int32(preset["equipment"]):
+		rows[item] = row_for(KIND_EQUIPMENT, item)
+	return state.recruit_preset(0, _draw_speech(), preset,
+		preset_name(id), weapon_costs(),
+		row_for(KIND_WEAPONS, DictRead.as_int(preset["weapon"])), rows,
+		_recruit_hit_points(CampaignState.PRESET_UNIT_TYPE))
+
+
+## What `0x00476260` returns for a preset: the items' costs plus the markup.
+## The row painter `0x00455C00` gates the row on **this** number against the
+## purse (`0x00455EDF`: grey and disabled above it); the hire then spends
+## [method preset_price], the ten below it.
+func preset_cost(id: int) -> int:
+	if state == null or tables == null:
+		return 0
+	var preset: Dictionary = tables.recruit_preset(id)
+	if preset.is_empty():
+		return 0
+	var cost: int = DictRead.as_int(weapon_costs().get(
+		DictRead.as_int(preset["weapon"]), 0)) \
+		+ DictRead.as_int(preset["markup"])
+	for item: int in DictRead.to_int32(preset["equipment"]):
+		cost += DictRead.as_int(row_for(KIND_EQUIPMENT, item).get("cost", 0))
+	return cost
+
+
+## What hiring the preset spends -- the same sum
+## [method CampaignState.recruit_preset] charges, for the row to print.
+func preset_price(id: int) -> int:
+	return preset_cost(id) / CampaignState.PRESET_PRICE_STEP \
+		* CampaignState.PRESET_PRICE_STEP
+
+
+## `0x00455EDF` -- whether the row is offered: its cost is within the purse.
+func preset_affordable(id: int) -> bool:
+	return state != null and preset_cost(id) <= state.points(0)
+
+
+## `Txtmod_h` 140..163 through `0x00470FE0` with bank 3 selected -- the
+## preset's caption, or its id when the bank has no such line.
+func preset_name(id: int) -> String:
+	var preset: Dictionary = tables.recruit_preset(id) \
+		if tables != null else {}
+	if preset.is_empty():
+		return str(id)
+	var name: String = ""
+	if _text != null:
+		name = _text.shipped(CampaignState.SEED_TEXT_BANK,
+			DictRead.as_int(preset["name_id"]))
+	return name if name != "" else str(id)
+
+
+## The preset's record for a screen to describe -- `{}` when unlisted.
+func preset(id: int) -> Dictionary:
+	return tables.recruit_preset(id) if tables != null else {}
 
 
 ## Whether the Unit Menu's *Recruit unit* opens the Recruit window or hires on
@@ -646,8 +747,18 @@ func buy(kind: String, slot: int, id: int) -> Dictionary:
 	if row.is_empty():
 		return {"result": Upgrade.BAD_ID, "cost": 0, "skill_points": 0}
 	if kind == KIND_WEAPONS:
-		return state.buy_weapon(0, slot, id, weapon_costs(), row)
+		return state.buy_weapon(0, slot, id, weapon_costs(), row,
+			equipment_costs())
 	return state.buy_equipment(0, slot, id, row)
+
+
+## `id -> cost` for the equipment table, the same way.
+func equipment_costs() -> Dictionary:
+	var out: Dictionary = {}
+	for entry: Variant in DictRead.as_array(_balance.get("equipment", [])):
+		var row: Dictionary = entry
+		out[DictRead.as_int(row["id"])] = DictRead.as_int(row["cost"])
+	return out
 
 
 ## `id -> cost`, from the balance tables. Built once per call rather than

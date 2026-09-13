@@ -39,13 +39,12 @@ const FP_FLOOR: int = 3
 const RECRUIT_NAME_FORMAT: String = "Soldier %d"
 ## `+0x5A` is stored in tens.
 ##
-## **Derived here rather than stored.** The engine caches the resale value in
-## the record and recomputes it at every point that could invalidate it --
-## `aEnlargeUnitPool` writes it and the Upgrade screen rewrites it after every
-## weapon purchase (docs/27 section 5.3) -- so it is a cache of
-## `(weapon[unit.weapon].cost + 50) / 10` and never independently true. Adding
-## it to [UnitState] would put a derived number into the canonical hash and
-## into a save, and `map.json` does not carry the column to load it from.
+## **Derived for a fresh hire, stored otherwise.** `aEnlargeUnitPool` caches
+## `(weapon[0].cost + 50) / 10`, which [method resale_of] gives back without
+## a field; the two writers whose value differs -- a preset's hire and the
+## weapon purchase's [method kit_value] (docs/27 section 5.3) -- write
+## [member UnitState.resale], and [method CampaignState.dismiss] refunds the
+## stored number when there is one.
 const RESALE_SCALE: int = 10
 ## `0x0045B821` -- the markup over weapon 0's cost, in both the recruit price
 ## and the resale formula, which is why dismissing a fresh recruit is free.
@@ -170,8 +169,8 @@ func enlarge(player: int, mode: int, skill_level: int,
 ##
 ## Returns the record that was removed, or `null` when the slot was free, so
 ## the caller can price the refund. The engine reads `+0x5A` off the record
-## before the shift; here the value is derived from the same record, which is
-## the same number (see [constant RESALE_SCALE]).
+## before the shift; the caller reads it off the returned record, stored or
+## derived (see [constant RESALE_SCALE]).
 func dismiss(slot: int, row: int = ROW_LIVE) -> UnitState:
 	if slot < 0 or slot >= USABLE_SLOTS:
 		return null
@@ -280,6 +279,22 @@ static func resale_of(weapon_cost: int) -> int:
 ## What dismissing a soldier carrying a weapon of *weapon_cost* refunds.
 static func refund_for(weapon_cost: int) -> int:
 	return resale_of(weapon_cost) * RESALE_SCALE
+
+
+## `0x004776E0` -- what the Upgrade Menu caches in `+0x5A` after a weapon
+## purchase (`0x0045ABAB`): the weapon's cost plus every carried item's,
+## **less the scan the Jet Pack granted** (`+0x28` set: item 1's cost comes
+## off, because the pack put it there for nothing), plus 50, in tens. Not the
+## weapon alone -- a soldier who bought armour and then swapped rifles resells
+## for the kit.
+static func kit_value(weapon_cost: int, equipment: PackedInt32Array,
+		equipment_costs: Dictionary) -> int:
+	var total: int = weapon_cost
+	for item: int in equipment:
+		total += DictRead.as_int(equipment_costs.get(item, 0))
+	if equipment.has(Upgrade.JET_PACK_ID):
+		total -= DictRead.as_int(equipment_costs.get(Upgrade.JET_PACK_GRANTS, 0))
+	return (total + RECRUIT_MARKUP) / RESALE_SCALE
 
 
 # -- internals ----------------------------------------------------------------
