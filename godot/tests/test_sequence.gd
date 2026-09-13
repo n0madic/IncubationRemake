@@ -258,6 +258,72 @@ func _clock(h: TestHarness) -> void:
 	h.check("clock.destroy_clears_both_flags",
 		not player.active and not player.running)
 	player.free()
+	_head_notes(h)
+
+
+## A `Switch` at frame 0 names the shot's camera **before its first frame**:
+## the installer fires the head notes, so the update that installs a pair
+## already answers with that camera rather than with `Cam1` for one frame.
+## UNVERIFIED against the original's order (docs/41 section 7 item 2).
+func _head_notes(h: TestHarness) -> void:
+	var found_id: int = -1
+	var found_part: int = -1
+	var found_shot: int = -1
+	var found_camera: int = -1
+	for entry: Variant in DictRead.as_array(_manifest["sequences"]):
+		var sequence: Dictionary = DictRead.as_dict(entry)
+		var parts: Array = DictRead.as_array(sequence["parts"])
+		for part_index: int in range(parts.size()):
+			var part: Dictionary = DictRead.as_dict(parts[part_index])
+			var library: SequenceLibrary = SequenceLibrary.open_directory(
+				_cache_dir, DictRead.as_string(part["directory"]))
+			if library == null:
+				continue
+			var clips: PackedStringArray = DictRead.to_strings(
+				part["animations"])
+			for shot_index: int in range(clips.size()):
+				var clip: CharismaClip = library.clip(clips[shot_index])
+				if clip == null:
+					continue
+				for note: Dictionary in clip.notes:
+					if DictRead.as_float(note["time"]) > 0.0:
+						continue
+					var text: String = DictRead.as_string(note["text"]) \
+						.strip_edges()
+					if text.begins_with(SequencePlayer.NOTE_SWITCH + " "):
+						found_camera = SequencePlayer.atoi(
+							text.substr(SequencePlayer.NOTE_SWITCH.length() + 1)
+								.strip_edges())
+				if found_camera > 0 and found_camera != SequencePlayer.DEFAULT_CAMERA:
+					found_id = DictRead.as_int(sequence["id"])
+					found_part = part_index
+					found_shot = shot_index
+					break
+			if found_id >= 0:
+				break
+		if found_id >= 0:
+			break
+	h.check("head_notes.a_frame_0_switch_exists", found_id >= 0,
+		"26 of the cache's 166 notes sit at the head of their clip")
+	if found_id < 0:
+		return
+	var player: SequencePlayer = SequencePlayer.new()
+	var _created: bool = player.create(_cache_dir, _manifest, found_id,
+		Rect2(0.0, 0.0, 640.0, 480.0), Vector2(640.0, 480.0))
+	var _started: bool = player.start()
+	var updates: int = 0
+	while (player.part != found_part or player.shot != found_shot) \
+			and updates < 200000:
+		updates += 1
+		if not player.update(1.0):
+			break
+	h.equal("head_notes.the_pair_is_reached", [player.part, player.shot],
+		[found_part, found_shot], "sequence %d, %d updates" % [found_id, updates])
+	h.equal("head_notes.the_camera_is_named_before_the_first_frame",
+		[player.camera_index, player.frame], [found_camera, 0.0],
+		"the switch fired in the install, not one update later")
+	player.destroy()
+	player.free()
 
 
 ## A part's non-empty program is announced when the part is installed;

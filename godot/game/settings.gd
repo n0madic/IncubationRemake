@@ -137,8 +137,12 @@ func load_from_disk() -> bool:
 	# a level it does not know.
 	fx_volume = _clamp_volume(DictRead.as_int(document.get("fx_volume",
 		fx_volume)))
+	# **A file from before the speech row falls back to the effects volume**,
+	# not to the constant: the unit lines used to play at `fx_volume`, and a
+	# player who had turned that down got them back at full on the update.
+	# The schema did not move for the row, so this is the only migration.
 	speech_volume = _clamp_volume(DictRead.as_int(document.get("speech_volume",
-		speech_volume)))
+		fx_volume)))
 	music_volume = _clamp_volume(DictRead.as_int(document.get("music_volume",
 		music_volume)))
 	difficulty = clampi(DictRead.as_int(document.get("difficulty", difficulty)),

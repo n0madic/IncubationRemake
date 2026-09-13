@@ -467,6 +467,30 @@ func _state_machine(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> 
 	state.rest()
 	h.equal("shot_clip_is_dropped_at_rest", state.fire_clip(), with_break,
 		"the swap lasts one shot in the engine and one shot here")
+	# **And the override survives a rebuild.** A stab whose victim dies frees
+	# every node mid-shot; the fresh state knows only the gun's `F`, so the
+	# override's name has to come back through the lookup and be set as the
+	# override again -- or the stabber is in its bind pose for the frame the
+	# blood appears in, with the resume answering nothing.
+	state.use_shot_clip(without)
+	var _stab: float = state.fire()
+	state.advance(float(state.frames_to_break())
+		/ CharismaState.FRAMES_PER_SECOND)
+	var mid_stab: Dictionary = state.playback()
+	var rebuilt: CharismaState = CharismaState.create(null, with_break,
+		with_break, with_break)
+	h.check("shot_clip_is_lost_without_a_lookup", not rebuilt.resume(mid_stab),
+		"the gun's clip is not the one the save names")
+	rebuilt.clip_lookup = func(name: String) -> CharismaClip:
+		return without if name == without.name else null
+	h.check("shot_clip_resumes_through_the_lookup", rebuilt.resume(mid_stab))
+	h.equal("shot_clip_resumed_as_the_override",
+		[rebuilt._clip, rebuilt.fire_clip(), rebuilt.mode, rebuilt.is_busy()],
+		[without, without, CharismaState.Mode.FIRE, true])
+	rebuilt.rest()
+	h.equal("shot_clip_resumed_still_drops_at_rest", rebuilt.fire_clip(),
+		with_break)
+	state.rest()
 	# A **set** override of nothing is an answer, not a fallback: the selector
 	# names no clip for that weapon, and the shot then has none.
 	state.use_shot_clip(null)

@@ -57,8 +57,11 @@ static func score(state: CampaignState) -> Array[Dictionary]:
 				and result != ScoreRecord.RESULT_DEFEAT:
 			var bonus: int = _slot(state, SLOT_EQUIPMENT_POINTS)
 			if bonus != 0:
-				state.add_points(player, bonus)
-				paid_points = bonus
+				# What **landed**, not what the slot said: `add_points` caps
+				# the purse, and the replay's rollback subtracts this.
+				var purse_before: int = state.equipment_points[player]
+				var _paid: bool = state.add_points(player, bonus)
+				paid_points = state.equipment_points[player] - purse_before
 			var medals: int = _slot(state, SLOT_COMMENDATIONS)
 			if medals != 0:
 				state.commendations[player] = \

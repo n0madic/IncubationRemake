@@ -384,10 +384,20 @@ func _loopback(h: TestHarness) -> void:
 	h.equal("loopback.pending_id", server.pending()[0], id)
 
 	var body: PackedByteArray = _bytes("{\"ok\":true}")
+	h.check("loopback.nothing_to_deliver_before_the_answer",
+		not server.delivering())
 	server.respond(id, 200, "application/json", body)
 	h.equal("loopback.answered", server.pending().size(), 0)
+	# **Queued is not sent.** `respond` writes the bytes into the connection
+	# and `poll` puts them on the wire, so a `quit` that left on the next
+	# frame delivered its reply only by luck -- [AgentBridge] polls until
+	# this goes false.
+	h.check("loopback.the_answer_is_still_to_deliver", server.delivering(),
+		"respond only queues; poll sends")
 
 	var answer: String = _read(server, client).get_string_from_utf8()
+	h.check("loopback.delivered_once_read", not server.delivering(),
+		"the last byte left, and the connection closed with it")
 	h.check("loopback.status_line", answer.begins_with("HTTP/1.1 200 OK"),
 		"got %s" % answer.substr(0, 40))
 	h.check("loopback.length_header",

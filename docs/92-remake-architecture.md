@@ -1262,7 +1262,7 @@ all ten models, since a capture can turn any letter into any player's;
 
 ---
 
-### 7.13 The campaign — twelve decisions (2026-09-04)
+### 7.13 The campaign — thirteen decisions (2026-09-04)
 
 The sixth slice's, and the first place this document has had to decide
 anything about a layer that outlives a mission. [`98`](98-slice-6-report.md)
@@ -1282,6 +1282,7 @@ reports the slice; these are the choices no evidence settles.
 | D10 | The campaign save is a container **over** `SaveCodec`, and the file write lives in `game/` | `SaveCodec` refuses a blob whose map name is not the world's, which is right for a mission and wrong for a campaign; and `core/` never touches the filesystem |
 | D11 | Equipment points, tech level and skill level are **campaign** state; entering a mission does not apply the header | [`27` §4, §5.2](27-campaign.md) as corrected — the header's fields are the single-mission front end's |
 | D12 | `tables/campaign.json` carries **lists of records**, not objects keyed by id | a JSON object's key is a string and the cache must carry integers; `inclib/info.py` set the precedent, and `tables/balance.json`'s `equipment` — which has no id 2, so a position is not an id — is the trap |
+| D13 | *Try Again* undoes the **whole** debriefing: the mission's score comes off the campaign total, and the equipment points and commendations the debriefing paid come out of the purse (what landed, the purse being capped) | the engine's `0x0045E9CB` is `aCopyUnitPool(1, 0)` and nothing else, and the button is offered after a win too — so a replayed win paid its bonus twice. Rolling the roster back and not the payout is the shipped behaviour and a free purse; the remake takes the consistent reading (`CampaignHost.replay`) |
 
 ### 7.14 An arm's spawn request is run in a mission, and the pool ticks before the queue (2026-09-04)
 

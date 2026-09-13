@@ -51,7 +51,14 @@ var _main: SliceMain = null
 var _http: AgentHttpServer = null
 var _session: AgentSession = null
 var _parked: int = -1
+## Frames left to a `quit` once the batch that asked for it has been
+## answered. Zero while nothing is leaving; the countdown starts at
+## [constant QUIT_GRACE_FRAMES] and stops early the frame the reply has left.
 var _quit_in: int = 0
+
+## How long a leaving session waits for its last reply to be delivered before
+## quitting anyway -- a peer that stopped reading must not keep the game up.
+const QUIT_GRACE_FRAMES: int = 30
 
 
 func _init() -> void:
@@ -92,14 +99,21 @@ func _process(_delta: float) -> void:
 	if _http == null or _session == null:
 		return
 	if _quit_in > 0:
+		# **The reply is only queued** when the session says it is leaving:
+		# `respond` writes the bytes into the connection and `poll` is what
+		# puts them on the wire, a chunk a frame. So the server is polled
+		# until it has nothing left to send, or the grace runs out -- and
+		# only then does the quit go through `SliceMain`, which awaits the
+		# audio shutdown first: leaving in the same frame the Ogg stream is
+		# released leaks it (docs/97 section 14). Quitting on the next frame,
+		# as this did, delivered the reply only because that shutdown
+		# happened to take a few frames; with no audio the client read EOF.
+		var _drained: Array[Dictionary] = _http.poll()
 		_quit_in -= 1
-		if _quit_in == 0:
-			# The reply is already on the wire and its socket is closed. The
-			# quit itself goes through `SliceMain`, which awaits the audio
-			# shutdown first: leaving in the same frame the Ogg stream is
-			# released leaks it (docs/97 section 14).
+		if _quit_in == 0 or not _http.delivering():
+			_quit_in = 0
 			_main._quit()
-			return
+		return
 	for request: Dictionary in _http.poll():
 		_serve(request)
 	if not _session.step():
@@ -110,7 +124,7 @@ func _process(_delta: float) -> void:
 			JSON.stringify(reply, "  ").to_utf8_buffer())
 		_parked = -1
 	if _session.is_leaving():
-		_quit_in = 1
+		_quit_in = QUIT_GRACE_FRAMES
 
 
 # --- the routes --------------------------------------------------------------

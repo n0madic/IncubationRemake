@@ -514,8 +514,23 @@ static func max_heat(wtab: WeaponTable, unit: UnitState) -> int:
 ## A roll above 30 lands on the *same* instruction as the 11-20 / 25-29 arm,
 ## which clears `+0x40` -- so it is a clear, not a no-op.  Pinned natively over
 ## eight probes at the cap.
+##
+## The roll of exactly 30 is `0x0046D2D8`: the loss counter `0x0043B8D0`,
+## `aRemoveUnitElement` `0x004779C0` -- the cell, the hero counter and the
+## hit-point byte, so the carrier is **off the map** and not merely at zero
+## hit points -- and, when the carrier's own cell holds a shield (`+0x10 ==
+## 3`), `aDeleteSpecialObject` `0x00406960` on it with the two bytes cleared
+## behind. Writing `hp = 0` alone left the cell naming a dead unit, no loss
+## on the scoreboard and `HeroKilled` never raised.
+##
+## *shielded* is the cheat's answer, decided **before** the removal: a
+## shielded marine may not be killed by its own gun, and a removal cannot be
+## undone by restoring the hit points afterwards. The arm is downgraded to
+## the damaged-weapon one it shares an instruction with rather than skipped,
+## so the draw is where it would have been either way.
 static func check_weapon_damage(wtab: WeaponTable, unit: UnitState,
-		rng: IncRandom) -> String:
+		rng: IncRandom, state: MapState = null, utab: UnitTypeTable = null,
+		turn: TurnState = null, shielded: bool = false) -> String:
 	var cap: int = max_heat(wtab, unit)
 	if cap == HEAT_NONE or unit.heat != cap:
 		return OVERHEAT_NONE
@@ -530,7 +545,24 @@ static func check_weapon_damage(wtab: WeaponTable, unit: UnitState,
 		unit.malfunction = MALFUNCTION_DAMAGED
 		return OVERHEAT_DAMAGE
 	if roll == 30:
-		unit.hp = 0
+		if shielded:
+			unit.malfunction = MALFUNCTION_DAMAGED
+			return OVERHEAT_DAMAGE
+		var here: int = -1
+		if state != null and state.in_bounds(unit.x, unit.y):
+			here = state.index_of(unit.x, unit.y)
+		if state != null and utab != null and turn != null:
+			var _hero: bool = UnitState.remove(state, utab, turn, unit)
+		else:
+			unit.hp = 0
+		# `0x0046D374`: the shield the carrier stood in goes with it -- the
+		# object first, the two cell bytes only on the far side of a delete
+		# that succeeded, as `interact.gd`'s mine arm has it.
+		if here >= 0 and state.obstacle_at(here) == MapState.OBSTACLE_SHIELD:
+			if CellObjects.delete_object(
+					state, state.effect_at(MapState.OBJECT_SLOT, here)):
+				state.set_obstacle(here, MapState.OBSTACLE_NONE)
+				state.set_effect(MapState.TIMER_SLOT, here, 0)
 		return OVERHEAT_DESTROYED
 	unit.malfunction = 0
 	return OVERHEAT_CLEARED
@@ -1075,17 +1107,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# the gun blow up in the tester's hand would be the wrong switch.
 		attacker.malfunction = 0
 	else:
-		var hp_before: int = attacker.hp
-		result.overheat = check_weapon_damage(wtab, attacker, rng)
-		# The roll of exactly 30 kills the shooter outright, and a shielded
-		# marine may not be killed by its own gun. The arm is **downgraded**
-		# to the damaged-weapon one it shares an instruction with rather than
-		# skipped, so the draw is where it would have been either way.
-		if Cheats.shielded(cheats, attacker, turn) and attacker.hp == 0 \
-				and hp_before > 0:
-			attacker.hp = hp_before
-			attacker.malfunction = MALFUNCTION_DAMAGED
-			result.overheat = OVERHEAT_DAMAGE
+		# The roll of exactly 30 takes the shooter off the map, and a
+		# shielded marine may not be killed by its own gun: the cheat is
+		# decided inside the routine, before the removal it would otherwise
+		# have to undo.
+		result.overheat = check_weapon_damage(wtab, attacker, rng, state,
+			utab, turn, Cheats.shielded(cheats, attacker, turn))
 	if attacker.malfunction != 0 or attacker.hp == 0:
 		result.fired = false
 		result.reason = ("the weapon jammed or was destroyed"

@@ -757,8 +757,13 @@ func submit_use(command: UseCommand) -> UseResult:
 			MissionScript.CALL_USE,
 			MissionScript.env(MissionScript.CALL_USE, turn.turn, unit.player,
 				front_x, front_y, 0, written, unit.slot)))
-	if unit.hp != 0 and unit.mp != 0:
-		unit.mp -= 1
+	# `0x004734C0`: a dead unit is neither charged nor marked; a live one is
+	# marked whatever the use did, so *Rest* -- gated on `acted == 0` -- is
+	# not offered to a marine that has just opened a door.
+	if unit.hp != 0:
+		if unit.mp != 0:
+			unit.mp -= 1
+		unit.acted = ACTED_MOVED
 	_refund_mp(unit)
 	return result
 
@@ -1365,7 +1370,11 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 	var result: TurnResult = TurnSequence.hand_over(turn, _units, game_control,
 		_unit_types, _weapons, _script_callable(), banner_in_range,
 		live_unit_count, command.arg, _ground_tick)
-	if result.refreshed:
+	# **`ok()`, not the refreshed list.** The list is empty both when the
+	# hand-over stopped before the refresh and when the refresh found nobody
+	# to touch -- a campaign player with no live unit -- and only the first
+	# is a reason to leave the fog alone.
+	if result.ok():
 		# `aBuildVisibleMap` for whoever now holds the turn. It runs here and
 		# not in [Refresh] for the reason that file states: visibility is a map
 		# walk and the refresh is a unit walk. It runs only when the refresh
@@ -1443,7 +1452,7 @@ func submit_end_turn(command: EndTurnCommand) -> TurnResult:
 		result = TurnSequence.hand_over(turn, _units, game_control,
 			_unit_types, _weapons, _script_callable(), banner_in_range,
 			live_unit_count, EndTurnCommand.create().arg, _ground_tick)
-		if result.refreshed:
+		if result.ok():
 			Visibility.build(state, _units, _unit_types, turn.current_player,
 				turn.human_count(), turn.mode)
 			result.fog_rebuilt = true

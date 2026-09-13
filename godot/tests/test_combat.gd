@@ -818,6 +818,61 @@ func _overheat(h: TestHarness) -> void:
 		Combat.OVERHEAT_SPAN == 40 and wtab.heat(REACTION_WEAPON) != 40,
 		"0x0046D1D6 pushes 0x28; docs/22 section 8 said the cap for years")
 
+	# The roll of exactly 30 is `0x0046D2D8`: the loss counter, then
+	# `aRemoveUnitElement` -- so the carrier is **off the map**, not merely at
+	# zero hit points -- and a shield on its own cell goes with it. The seed
+	# is found rather than known: the first of the 400 above that reached the
+	# arm.
+	var fatal_seed: float = -1.0
+	for i: int in range(400):
+		var probe: UnitState = UnitState.new()
+		probe.hp = 10
+		probe.weapon = REACTION_WEAPON
+		probe.heat = wtab.heat(REACTION_WEAPON)
+		rng.randomize_seed(float(i + 1))
+		if Combat.check_weapon_damage(wtab, probe, rng) \
+				== Combat.OVERHEAT_DESTROYED:
+			fatal_seed = float(i + 1)
+			break
+	h.check("overheat.a_seed_reaches_the_destroy_arm", fatal_seed > 0.0)
+	var blown: Scene = _scene()
+	var carrier: UnitState = _place(blown, 0, 0, 2, 2, 0)
+	carrier.hp = 10
+	carrier.heat = wtab.heat(REACTION_WEAPON)
+	var cell: int = blown.state.index_of(2, 2)
+	var _shield: int = CellObjects.place_shield(blown.state, 2, 2)
+	var turn: TurnState = TurnState.create()
+	turn.turn = 3
+	rng.randomize_seed(fatal_seed)
+	h.equal("overheat.the_destroy_arm_answers",
+		Combat.check_weapon_damage(wtab, carrier, rng, blown.state,
+			blown.types, turn), Combat.OVERHEAT_DESTROYED)
+	h.equal("overheat.the_carrier_is_off_the_map",
+		[carrier.hp, blown.state.unit_at(cell)], [0, MapState.NO_UNIT],
+		"aRemoveUnitElement vacates the cell; `hp = 0` alone left it named")
+	h.equal("overheat.the_loss_is_counted", turn.mission_lost[0], 1,
+		"0x0043B8D0 at 0x0046D33C")
+	h.equal("overheat.the_shield_on_its_cell_goes_with_it",
+		[blown.state.obstacle_at(cell),
+			blown.state.effect_at(MapState.TIMER_SLOT, cell)],
+		[MapState.OBSTACLE_NONE, 0], "0x0046D374..0x0046D3AC")
+
+	# A shielded marine (the cheat) is not killed by its own gun: the arm is
+	# downgraded, inside the routine, to the damaged-weapon one -- and the
+	# draw still happens, so the stream is where it would have been.
+	var spared: Scene = _scene()
+	var lucky: UnitState = _place(spared, 0, 0, 2, 2, 0)
+	lucky.hp = 10
+	lucky.heat = wtab.heat(REACTION_WEAPON)
+	rng.randomize_seed(fatal_seed)
+	var calls_before: int = rng.calls
+	h.equal("overheat.a_shielded_carrier_is_downgraded",
+		[Combat.check_weapon_damage(wtab, lucky, rng, spared.state,
+			spared.types, turn, true), lucky.hp, lucky.malfunction,
+			spared.state.unit_at(spared.state.index_of(2, 2))],
+		[Combat.OVERHEAT_DAMAGE, 10, Combat.MALFUNCTION_DAMAGED, 0])
+	h.equal("overheat.the_downgrade_still_draws", rng.calls - calls_before, 1)
+
 
 # --- docs/22 section 9 -------------------------------------------------------
 
@@ -1834,6 +1889,11 @@ func _world_wiring(h: TestHarness) -> void:
 		"0x004734C0 spends it; aExecuteUse itself takes nothing")
 	h.equal("world.the_bonus_reached_the_game_control_slot",
 		pad.game_control.get_slot(GameControl.SLOT_EQUIPMENT_POINTS), 20)
+	h.equal("world.a_use_marks_the_unit_as_acted",
+		DictRead.as_int(DictRead.as_dict(pad.unit_view(0))["acted"]),
+		World.ACTED_MOVED,
+		"0x004734C0 writes `acted = 3` after the charge, so *Rest* is not "
+		+ "offered to a marine that has just opened a door")
 
 	# **A use that was not offered costs nothing.** docs/26 section 1.1's pad
 	# spends the point whatever `aExecuteUse` returned, but `0x00472570` never

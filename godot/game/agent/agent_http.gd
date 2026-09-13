@@ -141,6 +141,15 @@ func respond(id: int, status: int, content_type: String,
 	_queue(conn, status, content_type, body, extra)
 
 
+## Whether any queued answer still has bytes to send. [method poll] closes a
+## connection once its last byte has left, so this goes false on its own.
+func delivering() -> bool:
+	for conn: Conn in _conns:
+		if conn.answering and conn.answer_at < conn.answer.size():
+			return true
+	return false
+
+
 ## The ids accepted and not yet answered, oldest first.
 func pending() -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()

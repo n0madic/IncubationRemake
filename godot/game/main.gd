@@ -1081,6 +1081,16 @@ func _save_mission_to(slot: int, mission_world: World,
 ## resyncs too, but it runs after this and only the bodies are its to redraw.
 func _resume_loaded_mission() -> void:
 	_resync_shown()
+	# **The selection [method _build] made is the authored map's.** It was
+	# taken before the save replaced the world, so its unit, its move map and
+	# its overlay were a turn-1 squad on a mission the save may be ten turns
+	# into. Dropped and taken again from the loaded world -- before the
+	# camera below, so the saved view wins over the select's own move.
+	# Behind the plate, because `test_effects.gd` drives this with a host
+	# that has a world, a rig and scenery and nothing to select on.
+	if _hud != null:
+		_deselect()
+		_resume_selection()
 	var _redrawn: int = _redraw_terrain_now()
 	if _scenery != null and world != null:
 		var _restored: int = _scenery.restore_poses(world.restored_scenery(),
@@ -1854,8 +1864,7 @@ func _end_campaign() -> void:
 	_drop_sequence()
 	_hold_left = 0.0
 	if campaign != null:
-		campaign.state = null
-		campaign.screen = CampaignHost.SCREEN_MAP
+		campaign.end()
 	_clear_backdrop()
 	_clear_mission()
 	if _audio != null:
@@ -2758,8 +2767,7 @@ func _on_campaign_choice(action: String) -> void:
 			_instant_action_mission = ""
 			if campaign != null:
 				campaign.abandon_mission()
-				campaign.state = null
-				campaign.screen = CampaignHost.SCREEN_MAP
+				campaign.end()
 			_clear_mission()
 			shell.open(ShellHost.SCREEN_MISSION_SELECT, false)
 			var _levels: CampaignScreen = _show_shell_screen()
@@ -3699,7 +3707,15 @@ func _build(mission: String) -> void:
 	var map_document: Dictionary = CacheLoader.read_json(
 		"%s/missions/%s/map.json" % [_cache_dir, mission])
 	if balance.is_empty() or map_document.is_empty():
-		_fail("cache does not contain %s" % mission)
+		# **Not [method _fail].** That one raises the fatal overlay when the
+		# status line is not up -- the release build -- and nothing takes it
+		# down again, so a campaign that reached a mission the cache lacks
+		# carried "Incubation could not start." over its map, its shell and
+		# every mission after. A missing mission stops the campaign where it
+		# stands (docs/92); the callers all test `world == null` and say so.
+		var reason: String = "cache does not contain %s" % mission
+		push_error(reason)
+		_refresh_status(reason)
 		return
 
 	# The world set's placer models come from the geometry document, because
@@ -3991,6 +4007,11 @@ func _build_effects(mission: String, world_set: String,
 	# What a creator an arm calls reads. Built after the model index and the
 	# geometry, because it is made of them.
 	arm_hooks.inputs = _position_inputs()
+	# What a seeker reads its target from (docs/28 section 7.7.1): the
+	# **mirror's** unit map, because the picture is what the effect flies
+	# through, and a unit the truth has already killed is still standing in
+	# the frame the grenade is drawn in.
+	arm_hooks.unit_map = Callable(self, "_seeker_target")
 	# One `aRandom2` stream for the effects, the idle scheduler and the idle
 	# selector's coin, as the engine keeps one (`0x00514070`).
 	if _units != null:
@@ -5434,7 +5455,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# plate up no key reached the game at all and the shell would have been a
 	# room with no door. Only `ESC` is let past; everything else still belongs
 	# to whatever is on screen.
-	if event is InputEventKey and event.is_pressed():
+	if event is InputEventKey and event.is_pressed() and not event.is_echo():
 		var pressed: InputEventKey = event
 		if pressed.keycode == KEY_ESCAPE:
 			_toggle_shell()
@@ -5472,7 +5493,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# the player cut short would leave nothing behind but a snapped body.
 	if _playback.is_running():
 		if event is InputEventKey and event.is_pressed() \
-				and _watching_the_computer():
+				and not event.is_echo() and _watching_the_computer():
 			if _sequences != null:
 				_sequences.skip()
 			if _texts != null:
@@ -5515,7 +5536,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		var pad_command: int = HudTables.command_for_key(key.keycode)
 		var debug_action: int = debug_key_action(key.keycode, _debug_build)
 		var pan_delta: Vector2 = pan_delta_for_key(key.keycode, key.shift_pressed)
-		if hud_event >= 0:
+		# **A held key repeats only the pan.** The OS's key repeat arrives as
+		# echo events, and every screen drops them (`campaign_map_screen.gd`
+		# and the rest) -- here they were commands: ENTER held for a second
+		# ended a turn, skipped the replay through the branch above and
+		# ended the next. Panning is the one thing that *wants* the repeat,
+		# having no polling of its own.
+		if key.is_echo():
+			if not pan_delta.is_zero_approx():
+				_pan_by(pan_delta)
+		elif hud_event >= 0:
 			_on_hud_event(hud_event)
 		elif pad_command >= 0:
 			_on_pad_command(pad_command)
@@ -7330,6 +7360,19 @@ func _unit_byte_of(x: int, y: int) -> int:
 	return shown().state.unit_at(shown().state.index_of(x, y)) & 0xFF
 
 
+## The other end of [method _unit_byte_of]: the seeking arms' unit map
+## ([member GameBlobHooks.unit_map]). The slot's object position, as
+## `aGetStdObjectPosition` answers for the unit's own object -- the placed
+## object's, without the standing height -- or `{}` when the picture has no
+## unit in that slot, which is the null the arm aborts on.
+func _seeker_target(slot: int) -> Dictionary:
+	var view: Dictionary = _unit_record(slot)
+	if view.is_empty():
+		return {}
+	return {"object": _object_of(DictRead.as_int(view["x"]),
+		DictRead.as_int(view["y"]))}
+
+
 func _muzzle_lift(x: int, y: int, slot: int = MapState.NO_UNIT) -> int:
 	if shown() == null or not shown().state.in_bounds(x, y):
 		return BlobTriggers.MUZZLE_HEIGHT
@@ -8209,7 +8252,18 @@ func _on_hud_event(number: int) -> void:
 			# the squad. With the player's own slot still zero, mission_result()
 			# classifies that as defeat and the normal debriefing recovers every
 			# survivor. No turn is handed over and no loss is recorded.
+			#
+			# The truth was written and nothing was marked, so the mirror is
+			# resynchronised rather than advanced -- the `nuke` cheat's own
+			# shape, gate included: a resync under a running playback would
+			# pull the picture out from under it. Without the resync the
+			# plate read the verdict off a mirror that had none, while the
+			# truth refused every command: live buttons over a dead board.
+			if _playback.is_running():
+				return
 			world.game_control.set_slot(GameControl.END_STATE_SLOTS - 1, 1)
+			_resync_shown()
+			_refresh_status(_status_note)
 			_check_mission_end()
 		HudTables.EVENT_NEXT_PLAYER:
 			var _ended: TurnResult = end_turn()

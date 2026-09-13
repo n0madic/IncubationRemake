@@ -277,6 +277,14 @@ func _install_shot(index: int) -> bool:
 	_notes = _clip.notes.duplicate()
 	_notes.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return DictRead.as_float(a["time"]) < DictRead.as_float(b["time"]))
+	# **The notes at frame 0 fire before the first pose.** 26 of the cache's
+	# 166 notes sit at the head of their clip -- a `Switch` naming the shot's
+	# camera -- and firing them from [method update] alone drew the pair's
+	# first frame through `Cam1` at the old focal on every cut. `_fired`
+	# moves with them, so the update does not fire them twice. UNVERIFIED
+	# against the original: whether it renders one frame before the
+	# dispatcher runs is not captured (docs/41 Open questions).
+	_fire_notes()
 	_body = CharismaBody.create(_model, _library)
 	if _body == null:
 		# A scene the cache has no mesh for still runs its clock, so the

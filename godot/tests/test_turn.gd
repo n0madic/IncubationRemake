@@ -339,6 +339,31 @@ func _skip_rule(h: TestHarness) -> void:
 	h.check("turn.local_with_one_human_does_not_skip",
 		not local.skips_empty_players(), "humanCount() is 1")
 
+	# **And the fog is rebuilt for the player who kept an empty turn.** The
+	# world used to gate `aBuildVisibleMap` on the refreshed list being
+	# non-empty, which is empty both when the hand-over stopped and when the
+	# refresh found nobody -- so a campaign human with nothing alive got a
+	# turn with the previous player's `+0x4F` bytes still standing.
+	var bereft: World = TestFixtures.tiny_world()
+	bereft.turn.mode = TurnState.MODE_CAMPAIGN
+	var dead: Dictionary = bereft.units_for_ai()
+	for slot: Variant in dead:
+		var unit: UnitState = dead[slot]
+		if unit.player == 0:
+			unit.hp = 0
+	var handed: TurnResult = bereft.submit_end_turn(EndTurnCommand.create())
+	var returned: TurnResult = handed
+	var rounds: int = 0
+	while returned.player != 0 and returned.ok() and rounds < 8:
+		returned = bereft.submit_end_turn(EndTurnCommand.create())
+		rounds += 1
+	h.equal("turn.an_empty_campaign_player_keeps_its_turn",
+		[returned.ok(), returned.player, returned.refreshed.size()],
+		[true, 0, 0], "code %d after %d further hand-overs"
+			% [returned.code, rounds])
+	h.check("turn.the_fog_is_rebuilt_for_it", returned.fog_rebuilt,
+		"the refresh ran and touched nobody; the map walk still runs")
+
 	_seat_is_human(h)
 
 

@@ -306,6 +306,18 @@ func _settings_file(h: TestHarness) -> void:
 		[GameSettings.DIFFICULTY_MAX, GameSettings.GORE_MAX,
 		GameSettings.VOLUME_MAX, GameSettings.VOLUME_MIN])
 
+	# A file from before the speech row -- same schema, no key -- keeps the
+	# unit lines at the effects volume they used to play at, not at 0 dB.
+	var older: FileAccess = FileAccess.open(written.path, FileAccess.WRITE)
+	older.store_string(JSON.stringify({"schema": GameSettings.SCHEMA,
+		"fx_volume": -2000}))
+	older.close()
+	var migrated: GameSettings = GameSettings.new()
+	migrated.path = written.path
+	h.check("settings.older_file_loads", migrated.load_from_disk())
+	h.equal("settings.speech_falls_back_to_the_effects_volume",
+		migrated.speech_volume, -2000)
+
 	# A file this build cannot read is **not** replaced: losing a player's
 	# settings because one byte went wrong is the quiet damage section 7.4 is
 	# about.
@@ -1154,6 +1166,23 @@ func _screens(h: TestHarness) -> void:
 	h.equal("instant_action.catalogue_band_is_the_header_tech_level",
 		instant_host.catalogue_band(), Vector2i(CampaignHost.CATALOGUE_LOW, 10),
 		"0x0045BF2A's non-campaign arm: 0..techLevel, no base")
+	# ...and still that band when the session is **loaded** into a host that
+	# was standing on a campaign location: `_S_*` is in no location table,
+	# and a load that left the old location standing sold its band.
+	instant_host.save_dir = "%s/instant" % SCRATCH_DIR
+	h.check("instant_action.session_saves", instant_host.save(null, 2))
+	var _campaign: CampaignState = instant_host.start_new(2)
+	var _at_a_base: Dictionary = instant_host.click_location(
+		instant_host.open_locations()[0])
+	h.check("instant_action.a_campaign_location_was_standing",
+		instant_host.location != 0)
+	var back: Dictionary = instant_host.load_save(2)
+	h.equal("instant_action.load_resets_the_location",
+		[CampaignCodec.result_name(DictRead.as_int(back["result"])),
+			instant_host.location, instant_host.catalogue_band()],
+		["OK", 0, Vector2i(CampaignHost.CATALOGUE_LOW, 10)])
+	instant_state = instant_host.start_instant_action("_S_004",
+		instant_header)
 	h.check("instant_action.hires_through_the_recruit_window",
 		instant_host.recruits_through_a_screen(),
 		"0x0045B7F8 opens 0x00456640 outside mode 1")

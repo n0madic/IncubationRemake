@@ -338,6 +338,19 @@ func resume(saved: Dictionary) -> bool:
 		if clip == null and clip_lookup.is_valid():
 			clip = clip_lookup.call(name)
 		_idle = clip
+	elif clip == null or clip.name != name:
+		# **A shot's one-off clip** ([method use_shot_clip]): the bayonet's
+		# `P0_F1_001` is not the weapon's `F0`, and a rebuild mid-stab -- the
+		# victim's death frees every node -- put the stabber back in its
+		# bind pose for the frame the blood appears in, with
+		# [method resume_past_break] then answering 0. Found by name and
+		# set as the override again, so [method fire_clip] and
+		# [method rest] see the same shot they did before the rebuild.
+		clip = null
+		if clip_lookup.is_valid():
+			clip = clip_lookup.call(name)
+		if clip != null:
+			use_shot_clip(clip)
 	if clip == null or clip.name != name:
 		return false
 	var stop: float = clip.break_time() if want == Mode.FIRE else -1.0

@@ -976,7 +976,14 @@ switch (aRandom(0, 40)) {                 /* 0x0046D1D6 pushes 0x28 */
   case 21 ... 24:
         effect "damage.wav"; unit[+0x40] = 5; break;
   case 30:
-        effect "explosion.wav"; the unit is removed from the map; break;
+        effect "explosion.wav";
+        0x0043B8D0(unit);                     /* the loss counter, 0x0046D33C */
+        aRemoveUnitElement(unit->x, unit->y); /* 0x0046D34C -- cell, hero counter, hp = 0 */
+        if (cell[+0x10] == 3) {               /* 0x0046D374: a shield on its own cell */
+            aDeleteSpecialObject(cell[+0x0F]);   /* 0x00406960 */
+            cell[+0x10] = 0xFF; cell[+0x0E] = 0; /* 0x0046D3A8 */
+        }
+        break;
   default:
         unit[+0x40] = 0;                      /* clears a previous jam */
 }

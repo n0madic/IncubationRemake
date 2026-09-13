@@ -1208,6 +1208,50 @@ func _endings(h: TestHarness) -> void:
 		[advanced, won.mission, host.screen],
 		["_C_141", "_C_141", CampaignHost.SCREEN_MAP])
 
+	# *Try Again* after a win undoes the debriefing's payout as well as its
+	# score (docs/92 section 7.13, D13): a replayed win used to be paid twice.
+	var again: CampaignState = host.start_new(2)
+	var paid_world: World = World.create(
+		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
+	paid_world.game_control.set_slot(0, 1)
+	paid_world.game_control.set_slot(MissionEnd.SLOT_EQUIPMENT_POINTS, 120)
+	paid_world.game_control.set_slot(MissionEnd.SLOT_COMMENDATIONS, 2)
+	var purse_before: int = again.equipment_points[0]
+	var medals_before: int = again.commendations[0]
+	var total_before: int = again.scoreboard[0].total
+	host.begin_mission(paid_world)
+	host.enter_mission()
+	var paid_report: Dictionary = host.finish_mission(paid_world)
+	h.equal("endings.the_debriefing_pays",
+		[DictRead.as_int(paid_report["equipment_points"]),
+			again.equipment_points[0] - purse_before,
+			again.commendations[0] - medals_before],
+		[120, 120, 2])
+	var replayed: String = host.replay()
+	h.equal("endings.replay_takes_the_payout_back",
+		[replayed, again.equipment_points[0], again.commendations[0],
+			again.scoreboard[0].total, host.screen],
+		["_C_140", purse_before, medals_before, total_before,
+			CampaignHost.SCREEN_MAP],
+		"the score, the points and the medals all come off; the roster "
+		+ "restore is `aCopyUnitPool(1, 0)`'s")
+	h.equal("endings.no_world_outlives_the_replay",
+		host.deployment_cells().size(), 0)
+	# ...nor an *End game*, nor a new campaign: the HQ printed the last
+	# mission's landing-cell count off a world nobody had dropped.
+	host.begin_mission(paid_world)
+	h.check("endings.a_begun_mission_answers_cells",
+		host.deployment_cells().size() > 0)
+	host.end()
+	h.equal("endings.end_drops_the_world",
+		[host.state == null, host.deployment_cells().size(), host.location],
+		[true, 0, 0])
+	var _fresh: CampaignState = host.start_new(2)
+	host.begin_mission(paid_world)
+	var _next: CampaignState = host.start_new(2)
+	h.equal("endings.a_new_campaign_drops_the_world",
+		host.deployment_cells().size(), 0)
+
 	var state: CampaignState = host.start_new(1)
 	state.mission = "_C_133"
 	host.last_report = {"result": ScoreRecord.RESULT_WON}

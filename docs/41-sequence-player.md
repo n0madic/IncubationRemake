@@ -370,6 +370,17 @@ timing remain outside the verified-static claim.
    (`camera.roll_median_is_zero`, `camera.roll_is_mostly_none`,
    `camera.roll_tail_is_small`), so this needs no Wine capture and never did.
 
+2. **Whether a note at frame 0 fires before the pair's first frame is drawn.**
+   26 of the 166 notes in the cache sit at the head of their clip, most of
+   them a `Switch` naming the shot's camera. `0x004658B0` installs the next
+   pair in the same update that ended the last one, and where the dispatcher
+   runs relative to the first render of that pair has not been captured:
+   one frame through `Cam1` at the previous focal on every cut, or none. The
+   remake fires the frame-0 notes at install (`SequencePlayer._install_shot`),
+   which is the reading that draws no stray frame; a `presentation_gold.py`
+   phase reading the camera index after the install and before the first
+   frame would settle it.
+
 Two things are **closed** that this section used to call decisions:
 ~~"what the camera ids `9..19` select"~~ -- they are CD tracks (§4.1), not
 camera ids; and ~~"presentation and input live outside this module"~~ -- they

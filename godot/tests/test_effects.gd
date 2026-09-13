@@ -561,6 +561,29 @@ func _check_arm_spawns(h: TestHarness) -> void:
 		pool.hooks().rng.seed != before and hooks.executed == 2,
 		"the creator drew from `aRandom2` where the arm called it")
 
+	# **Where a seeker steers.** docs/28 section 7.7.1: the record's `aux` is
+	# a unit-map slot, and a mission answers it from the picture rather than
+	# from the fixture adapter's constant -- which is what every grenade
+	# used to home on. Unset, the base class's constant stands, so the
+	# diff's fixtures are unmoved.
+	var seeker: Blob = Blob.make({"kind": 26, "life": 20, "class_id": 2,
+		"x": 100, "y": 200, "z": 300, "aux": 7})
+	h.equal("seeker.unset_map_is_the_adapters_constant",
+		[hooks.has_target_for(seeker), hooks.target_position(seeker)],
+		[true, BlobHooks.DEFAULT_TARGET])
+	# An `Array`, which a lambda captures by reference; a packed one is copied.
+	var asked: Array[int] = []
+	hooks.unit_map = func(slot: int) -> Dictionary:
+		asked.append(slot)
+		return {"object": Vector3i(7000, 8000, 900)} if slot == 7 else {}
+	h.equal("seeker.the_map_answers_by_slot",
+		[hooks.has_target_for(seeker), hooks.target_position(seeker), asked],
+		[true, Vector3i(7000, 8000, 900), [7, 7] as Array[int]])
+	seeker.aux = 9
+	h.equal("seeker.a_slot_with_nobody_aborts_the_arm",
+		hooks.has_target_for(seeker), false,
+		"`aGetUnitMapElementPtr`'s null, through the trace path")
+
 
 ## The diff itself, on synthetic snapshots -- no cache needed, and every branch
 ## reachable.

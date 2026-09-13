@@ -1012,6 +1012,15 @@ def check_weapon_damage(world: CombatWorld, unit: CombatUnit) -> str:
     A roll above 30 lands on the *same* instruction as the 11-20 / 25-29 arm
     (``0x0046D3B8``), which clears ``+0x40`` -- so it is a clear, not a
     no-op.  Pinned natively over eight probes at the cap.
+
+    The roll of exactly 30 is ``0x0046D2D8``: the loss counter ``0x0043B8D0``
+    (the scoreboard's, which this world does not carry), then
+    :func:`remove_unit_element` -- the cell, the hero counter and the
+    hit-point byte, so the carrier is **off the map** and not merely at zero
+    hit points -- and, when the carrier's own cell holds a shield (``+0x10 ==
+    3``), ``aDeleteSpecialObject`` ``0x00406960`` on it with ``+0x10`` and
+    ``+0x0E`` cleared behind (``0x0046D3A8``).  ``godot/core/combat.gd`` is
+    the same arm, and the two must move together.
     """
     cap = max_heat(world, unit)
     if cap == 0xFF or unit.heat != cap:
@@ -1029,7 +1038,17 @@ def check_weapon_damage(world: CombatWorld, unit: CombatUnit) -> str:
         unit.malfunction = 5
         return OVERHEAT_DAMAGE
     if roll == 30:
-        unit.hp = 0
+        here = world.index(unit.x, unit.y) if world.in_bounds(unit.x, unit.y) \
+            else -1
+        remove_unit_element(world, unit)
+        # ``0x0046D374``: the shield the carrier stood in goes with it -- the
+        # object first, the two cell bytes only on the far side of a delete
+        # that succeeded, as the warp's mine arm has it.
+        if here >= 0 and world.effect_state[here] == ctrlmapmod.OBSTACLE_SHIELD:
+            cells = world.ctrlmap()
+            if ctrlmapmod.delete_object(cells, cells.effect_object[here]):
+                cells.effect_state[here] = ctrlmapmod.OBSTACLE_NONE
+                cells.effect_timer[here] = 0
         return OVERHEAT_DESTROYED
     unit.malfunction = 0
     return OVERHEAT_CLEARED

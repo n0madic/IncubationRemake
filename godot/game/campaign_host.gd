@@ -183,7 +183,22 @@ func start_new(number: int,
 	screen = SCREEN_MAP
 	location = tables.location_of(tables.mission_id(state.mission))
 	last_report = {}
+	_mission_world = null
 	return state
+
+
+## Drop the session: the map's *End game* and the pause menu's *Main Menu*.
+##
+## Everything a session left behind goes with it, and in particular the
+## mission world: [method _end_campaign] used to null [member state] alone,
+## and the next campaign's HQ printed the landing-cell count of the mission
+## the last one walked out of -- off a [World] that lived on for it.
+func end() -> void:
+	state = null
+	screen = SCREEN_MAP
+	location = 0
+	last_report = {}
+	_mission_world = null
 
 
 ## A local *Instant Action* session is a battle setup, not a campaign with a
@@ -233,6 +248,7 @@ func start_instant_action(mission: String, header: Dictionary,
 	screen = SCREEN_HQ
 	location = 0
 	last_report = {}
+	_mission_world = null
 	return state
 
 
@@ -643,6 +659,19 @@ func replay() -> String:
 	board.campaign_losses -= board.losses
 	board.campaign_lost_to_enemy -= board.lost_to_enemy
 	board.total -= board.score
+	# **And the payout.** *Try Again* is offered after a win too, and
+	# [method MissionEnd.score] has already put the mission's equipment
+	# points and commendations into the purse; a replayed win pays them
+	# again. The report carries what actually landed (the purse is capped),
+	# so the subtraction is exact, and the medals wrap the way they were
+	# added. The same remake decision as the score line above: the engine's
+	# `aCopyUnitPool(1, 0)` restores the roster and nothing else
+	# (docs/92 section 7.13, D13).
+	var paid_points: int = DictRead.as_int(
+		last_report.get("equipment_points", 0))
+	state.equipment_points[0] = maxi(0, state.equipment_points[0] - paid_points)
+	var paid_medals: int = DictRead.as_int(last_report.get("commendations", 0))
+	state.commendations[0] = (state.commendations[0] - paid_medals) & 0xFF
 	board.reset_mission()
 	screen = SCREEN_MAP
 	_mission_world = null
@@ -978,8 +1007,14 @@ func load_save(slot: int = QUICK_SLOT) -> Dictionary:
 		return decoded
 	state = decoded["state"]
 	screen = SCREEN_MAP
-	if tables.has_mission(state.mission):
-		location = tables.location_of(tables.mission_id(state.mission))
+	# **Reset either way.** An `_S_*` mission is in no location table, and a
+	# load that left the last campaign's location standing had the Upgrade
+	# Menu selling that location's band to an Instant Action squad rather
+	# than `(0, tech_level)` -- the arm `0x0045BF2A` takes outside a campaign.
+	location = tables.location_of(tables.mission_id(state.mission)) \
+		if tables.has_mission(state.mission) else 0
+	# The mission the last session stood in is not this one's.
+	_mission_world = null
 	return decoded
 
 

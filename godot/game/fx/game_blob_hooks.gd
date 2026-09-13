@@ -69,6 +69,21 @@ static func over(target: BlobPool, with: BlobPrograms.Inputs) -> GameBlobHooks:
 	return hooks
 
 
+## **The unit map a seeker reads**, or nothing set: what answers for a
+## record's `aux` -- docs/28 section 7.7.1's four links, a unit-map slot to a
+## unit record to its object to a position -- with a `Dictionary` back, empty
+## when the slot names nobody. A `Callable` into the host rather than a
+## pointer to it: the host is a `Node` and holds the pool, so a `RefCounted`
+## back-pointer would be the cycle [member _pool] exists to avoid.
+##
+## Left unset, the base class's constant answers, which is what the diff's
+## fixtures want and what a mission got until this went in: every grenade,
+## energy-cannon round and fragment homed on (2000, 3000, 4000) rather than
+## on the unit its creator stored (`0x00426070` and `0x004264A0` write the
+## cell's unit byte into the record for exactly this read).
+var unit_map: Callable = Callable()
+
+
 ## The pool the hooks were installed on, or null once nothing else holds it.
 func pool() -> BlobPool:
 	if _pool == null:
@@ -89,6 +104,30 @@ func spawn(creator: int, args: Array, source: Blob) -> bool:
 	if target == null or inputs == null:
 		return super(creator, args, source)
 	return emit(creator, args)
+
+
+## Step 2 of docs/28 section 7.7.1: `aGetUnitMapElementPtr` on the record's
+## `aux`, a null answer aborting the arm. **UNVERIFIED** which slots the map
+## declines beyond "no record": the engine's dead slots still answered with a
+## stale object, so this reads "the picture has a unit there" and nothing
+## finer.
+func has_target_for(blob: Blob) -> bool:
+	if not unit_map.is_valid():
+		return super(blob)
+	var found: Dictionary = unit_map.call(blob.aux)
+	return not found.is_empty()
+
+
+## Steps 3 and 4: the unit's object and its position, **not** the tile plus
+## the standing height (`aGetStdObjectPosition`, `0x00405100`).
+func target_position(blob: Blob) -> Vector3i:
+	if not unit_map.is_valid():
+		return super(blob)
+	target_calls.append(blob.aux)
+	var found: Dictionary = unit_map.call(blob.aux)
+	if found.is_empty():
+		return DEFAULT_TARGET
+	return DictRead.as_vector3i(found.get("object", Vector3i.ZERO))
 
 
 ## The same request with **no record asking for it**.
