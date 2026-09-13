@@ -392,8 +392,7 @@ schema, `22` combat and visibility, `23` the AI turn, `24` briefing markup,
 formats and `prototyp.bin`, `40` Charisma, `41` the sequence player, `42` the
 mission's presentation layer, `43` the battle interface, `50` VISN, `60`
 sprites and fonts, `70` lookup tables, `90` binaries and research method, `91`
-Wine probes, `92` remake architecture, `93`–`101` the slice reports, `102` the
-remake's staged backlog. Several of
+Wine probes, `92` remake architecture, `93`–`101` the slice reports. Several of
 them (`22`–`29`, `41`, `42`, `43`) specify **behaviour, not file formats** — a
 loader that reads every byte still cannot play a turn; `docs/00` groups them and
 names each one's checker.

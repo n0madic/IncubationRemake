@@ -934,7 +934,7 @@ the dark half of the plate with its headings underlined and passes behind
 
 ## 15. The by-hand pass, nine slices on — *(2026-09-13)*
 
-[`102`](102-remake-backlog.md)'s *verification debt*, the by-hand item: slice G's pass ([`97` §42](97-slice-5-report.md))
+The backlog's *verification debt* (`102`, retired the same day with every item closed), the by-hand item: slice G's pass ([`97` §42](97-slice-5-report.md))
 ran once, on 2026-09-03, and slices F through the ninth, the campaign, the
 shell, Instant Action and the endings landed after it with nobody playing the
 result end to end. This is that session — the shipping export rebuilt from

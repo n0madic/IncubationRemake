@@ -82,10 +82,11 @@ class CRandom:
     wrong.  The recurrence is MSVC's documented one and the C standard's
     initial seed is 1.
 
-    **UNVERIFIED: whether anything seeds it.**  No ``srand`` call has been
-    traced, which would leave every run drawing the same sequence from 1; the
-    native capture is what settles it, and until then a caller that cares must
-    say which seed it is assuming rather than inherit this default silently.
+    **Nothing seeds it** (``docs/94`` section 9 item 3): no shipped module
+    imports ``srand`` or carries its name, so the CRT's per-thread state
+    starts at 1 and every run draws the same sequence from there.  A caller
+    that starts elsewhere -- a save, a test -- must say which seed it is
+    assuming rather than inherit this default silently.
     """
 
     MULTIPLIER = 214013

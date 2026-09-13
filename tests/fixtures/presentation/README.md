@@ -44,7 +44,7 @@ engine's own records**, so the GDScript programs are compared with the pool
 
 ## What the forty-three phases hold
 
-Two phases added on 2026-09-13 for `docs/102` stage 4 need no mission
+Two phases added on 2026-09-13 for the backlog's stage 4 (`docs/102`, since retired) need no mission
 loaded and run at the anchor alone. `jump_scream` reads the uncounted
 Lehmer seed and draws `aRandom2(0, 3)` three hundred times, the seed after
 each -- the draw behind `aPlayJumpAnimaion`'s `S_ALI_0/1/2` ladder at

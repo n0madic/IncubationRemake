@@ -7070,7 +7070,7 @@ the three `_C_129` runs back out of the cache through `MapResource` and
 `crush_wall.the_whole_footprint_becomes_floor` drives them through the
 interpreter.
 
-**What this closes.** [`102` §1.1](102-remake-backlog.md), and §41.9's "named
+**What this closes.** The backlog's §1.1 (`102`, retired 2026-09-13 with every item closed), and §41.9's "named
 and deliberately not started". What it does *not* close is the general
 statement §41.7 reached for: this projects **special objects**, which is what
 `0x00406F20` searches. Nothing here reads a `.3DW` clone or an expanded
@@ -7078,7 +7078,7 @@ prototype, because the engine's own search does not either.
 
 ## 51. 2026-09-12 — the last five creators, and the byte weapon 11 reads
 
-[`102` Stage 2](102-remake-backlog.md) held two items about the picture: five
+The backlog's Stage 2 (`102`, since retired) held two items about the picture: five
 of the thirty weapon creators were not replayed against the capture, and
 weapon 11's arc had never run. Both are closed here, and the second turned out
 to be a reading error in the pattern layer rather than a property of a save.

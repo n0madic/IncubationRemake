@@ -2471,7 +2471,7 @@ overwrite.
 
 ### 7.22 The battle interface — four decisions the backlog's Stage 3 asked for (2026-09-12)
 
-The third stage of [`102`](102-remake-backlog.md) named three things as
+The third stage of the backlog (`102`, retired 2026-09-13) named three things as
 decisions for the project owner. Read against the binary, two of them were
 not decisions at all, and the third is settled here so the backlog can drop
 it. [`43`](43-battle-hud.md) and [`28` §2.5](28-effects-and-sound.md) carry

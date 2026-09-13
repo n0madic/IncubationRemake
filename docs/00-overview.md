@@ -128,10 +128,21 @@ the other way round in [`29` §1.2](29-interface-contract.md); and
 its mode-0 test and its ratchet ([`23` §3.6](23-ai-system.md)) — a mislabelled
 line both executable models had inherited.
 
-What is **left** in the remake — every item still open across `92`–`101` and
-the behaviour specs behind them (`25`–`29`, `40`, `43`), staged in the order it
-is worth doing, with the closed and the not-planned deliberately absent:
-[`102-remake-backlog.md`](102-remake-backlog.md).
+**Nothing the player can feel is left open in the remake.** The staged
+backlog that tracked it (`102`, compiled 2026-09-12) was retired on 2026-09-13
+with every buildable, verifiable and decidable item closed where it lived —
+the last three by the project owner's decision and a play-through of the
+whole campaign ([`101` §15](101-slice-9-report.md), [`43` Open
+questions](43-battle-hud.md), [`95` §9](95-slice-3-report.md)). What is still
+open is open *in principle* and stays in the owning document's own list:
+the 200-slot spawn rule ([`94` §9](94-slice-2-report.md)), what clears the
+entry snapshot ([`98` §11](98-slice-6-report.md)), the root `SkeletonNode`'s
+matrix and the 16× bone-to-mesh scale ([`40` §11](40-charisma-model-animation.md),
+[`96` §11](96-slice-4-report.md)), `_C_156`'s fourth teleporter exit,
+the `technical` box's cap and `Batteries` ([`26` §10](26-interaction.md)), and
+why locations 3 and 6 load each other's upgrade map
+([`27` §10](27-campaign.md)). None blocks anything; each entry records what
+was tried — read it before spending an hour.
 
 ---
 

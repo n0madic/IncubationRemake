@@ -32,7 +32,8 @@ the fixture save loaded, both about the idle scheduler of ``docs/42`` §6:
     nothing by itself, and the first step after it puts every bound part
     back at its bind pose and every channel slot to zero.
 
-Two phases added on 2026-09-13 (``docs/102`` stage 4) load **no save** and
+Two phases added on 2026-09-13 (the backlog's stage 4, ``docs/102``, since
+retired) load **no save** and
 run at the anchor alone, because what they measure is a global and not a
 mission:
 

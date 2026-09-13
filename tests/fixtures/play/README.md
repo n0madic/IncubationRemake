@@ -9,8 +9,8 @@ and records what each pass drove and what it found. The pass itself is
 reported in the slice document named beside it.
 
 A pass is not a suite: it is the cheapest item per defect found
-([`docs/102`](../../../docs/102-remake-backlog.md)'s *verification debt*, as
-it stood on 2026-09-13 — three of the ninth slice's findings were opened by
+(the backlog's *verification debt* — `docs/102`, retired 2026-09-13 — as
+it stood that day — three of the ninth slice's findings were opened by
 play, not by a check), and it answers
 the one question no check does — whether the whole thing plays end to end.
 Every screenshot's numbers come from the same frame as its picture: the

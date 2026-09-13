@@ -317,9 +317,18 @@ offered.
    `_C_115` — whose squad arrives from the campaign — cannot be played.~~
    **Closed** by the sixth slice — [`98`](98-slice-6-report.md); `_C_115` and
    `_C_141` are played from a roster.
-3. **What seeds the C runtime's generator.** No `srand` has been traced, so both
+3. ~~**What seeds the C runtime's generator.** No `srand` has been traced, so both
    implementations start from the standard's 1 and say so. `InsertUnit`'s counts
-   depend on it, and `_C_140` draws it from turn 5.
+   depend on it, and `_C_140` draws it from turn 5.~~ **Closed statically,
+   2026-09-13: nothing seeds it.** The import directories of every shipped
+   module were walked (`inclib.pe`, 22 DLLs plus both executables):
+   `Incubation.exe` and `iDesigner.exe` import `rand` from `MSVCRT.dll`
+   (`0x005255fc`), and **no module imports `srand`**; the string `srand`
+   occurs in no module but `MSVCRT.DLL` itself, so it is not reached through
+   `GetProcAddress` either. `MSVCRT`'s `rand` state is per-thread and starts
+   at 1, and the game never calls the one function that changes it — so
+   every run draws the same sequence from 1, which is what both
+   implementations already do.
 4. ~~**`aExecuteBomb` on the push path**~~ — [`26` §10](26-interaction.md)
    item 7, **closed**: the same guard, read rather than probed. See §5.
 5. ~~**The eight unsimulated target patterns**, listed in §5.~~ **Closed** —
