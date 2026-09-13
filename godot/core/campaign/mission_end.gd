@@ -51,6 +51,17 @@ static func score(state: CampaignState) -> Array[Dictionary]:
 		var value: int = board.kills * multiplier - 2 * board.losses + base
 		board.score = value
 		board.total += value
+		# **A unit lost to an enemy is a commendation.** `0x0043B860` -- the
+		# writer of the scoreboard's `+0x10`/`+0x14` pair -- ends with
+		# `inc byte [0x00509EFC + player]`, the commendation counter, under
+		# the same type and player guard (docs/27 section 6.2). The engine
+		# does it at the death; the remake folds the mission's count in
+		# here, where the pair's campaign half is folded too, and nothing
+		# reads the counter in between. `_5_.sav` shows the rule: three lost
+		# to an enemy, three commendations, no script award.
+		var death_medals: int = board.lost_to_enemy
+		state.commendations[player] = \
+			(state.commendations[player] + death_medals) & 0xFF
 		var paid_points: int = 0
 		var paid_medals: int = 0
 		if state.mode == TurnState.MODE_CAMPAIGN \
@@ -78,6 +89,7 @@ static func score(state: CampaignState) -> Array[Dictionary]:
 			"total": board.total,
 			"equipment_points": paid_points,
 			"commendations": paid_medals,
+			"death_medals": death_medals,
 		})
 	return reports
 

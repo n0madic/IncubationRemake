@@ -135,6 +135,65 @@ node, install its four strings and update again.  Past the list end, call
 GUI exits the sequence screen.  Other renderer return codes keep the current
 part running.
 
+### 3.1 One update of the 3D player, and where a frame-0 note lands
+
+*(2026-09-13; closes §7 item 2, verified-static.)* `0x0047F6A0(surface, dt)`
+is one update of the player, and its body runs in this order:
+
+1. **the ended test** — the pair's `KeyFramedAnimationInterface` (reached by
+   `__RTDynamicCast` at `0x0047F6F3`) is asked whether its clip has ended;
+   if so, or if the ended flag `+0x30` is already up, the update returns `6`
+   **without drawing** — so the pair's last picture is the one the previous
+   update drew at the clamped end time;
+2. **`IWorld::Simulate(dt, 0)`** on the `"Film"` world — vtable slot `0x40`
+   at `0x0047F76B`, the same slot the mission's 3D-view refresh calls at
+   `0x00407112` ([`42` §1.3](42-mission-presentation.md));
+3. the viewport, the **`Cam<n>` lookup** by the index `+0x04` holds *now*
+   (§4.2), and the render — slot `0x38` at `0x0047F82D`.
+
+Simulate is where the notes go off. Installing a pair (`0x0047FD00`) wraps
+two member functions in `PlayerCallback` objects (`0x00480760`) and registers
+them on the world through slot `0x50`: kind 1 is the **note dispatcher
+`0x00480300`** (the `Switch`/`Focus`/`Fade` reader of §4.2–4.3) and kind 0 is
+`0x00480730`, which does nothing but raise the ended flag `+0x30`. The install
+starts the clip through the interface's slot `0x2C` at speed 1.0
+(`0x00480178`); nothing rewinds it because `KeyFramedAnimation::Init`
+(`0x004A0B99`) left the clock at 0. The world is a `StdWorld` (vtable
+`0x004B32A4`; slot `0x40` is `Simulate` `0x00497BA2`, slot `0x50` the
+registrar `0x00497D1A`, which files `{kind, actor, callback}` at `+0x24`),
+and one step of its Simulate is three calls in order: `0x004980C7` asks every
+registered entry's event source for the events inside the step
+(`call [eax+0x28]` at `0x0049817A` — `0x004A1220`, [`40`
+§9](40-charisma-model-animation.md)'s collector, with that entry's kind),
+`0x00497FF1` advances the animations, and `0x004986A7` dispatches each
+collected event through the callback's slot `0x0C` at `0x00498770` —
+`PlayerCallback`'s trampoline `0x004807A0` into the member function. The
+collector's window is
+`(start, end]` **except while the clock reads exactly 0.0**: a note at
+`t <= start` is skipped only when the current time differs from
+`[0x004B31C8]` (`fcomp` at `0x004A16C0`), so at time 0 the window is
+`[0, end]` and a frame-0 note is collected by the first Simulate after the
+install. That Simulate precedes the render in the same update, and the
+render reads the camera index the dispatcher has just written.
+
+So the answer to "does the original draw one frame through `Cam1` before a
+frame-0 `Switch`" is **no**: the note fires inside the pair's first update,
+before that update's picture. The remake's `SequencePlayer._install_shot`
+fires the frame-0 notes at install and then poses, which is the same order.
+`seq_parse.py --check` pins the chain (`notes.simulate_before_render`,
+`notes.simulate_is_the_missions_slot`, `notes.simulate_collects`,
+`notes.start_at_speed_one`, `notes.callbacks`,
+`notes.zero_start_is_inclusive`).
+
+One small thing the same read turned up, recorded rather than chased: the
+epoch `0x005142A0` is rewritten at the **end** of every update
+(`0x00465ACF`), and the second update a pair change makes in the same GUI
+frame (`0x00465A62`) computes its `dt` from that previous epoch. A new pair's
+first Simulate therefore advances by roughly one frame interval, so the
+engine's first drawn pose of a pair sits at about one key unit, not at 0.
+The remake draws frame 0; the difference is one 30 fps frame of pose and no
+note.
+
 Destroy stops the renderer, restores the render bounds, clears `running` and
 `active`, destroys the viewport and actor list, and exits the pure 3D engine.
 Calling it inactive is an error.  Mission control calls it on leaving the
@@ -370,16 +429,15 @@ timing remain outside the verified-static claim.
    (`camera.roll_median_is_zero`, `camera.roll_is_mostly_none`,
    `camera.roll_tail_is_small`), so this needs no Wine capture and never did.
 
-2. **Whether a note at frame 0 fires before the pair's first frame is drawn.**
-   26 of the 166 notes in the cache sit at the head of their clip, most of
-   them a `Switch` naming the shot's camera. `0x004658B0` installs the next
-   pair in the same update that ended the last one, and where the dispatcher
-   runs relative to the first render of that pair has not been captured:
-   one frame through `Cam1` at the previous focal on every cut, or none. The
-   remake fires the frame-0 notes at install (`SequencePlayer._install_shot`),
-   which is the reading that draws no stray frame; a `presentation_gold.py`
-   phase reading the camera index after the install and before the first
-   frame would settle it.
+2. ~~**Whether a note at frame 0 fires before the pair's first frame is
+   drawn.**~~ **Closed** (2026-09-13) — §3.1. It does: one update of
+   `0x0047F6A0` is Simulate, then the `Cam<n>` lookup, then the render, and
+   the note collector keeps a `t <= start` note while the clock reads exactly
+   0, so the frame-0 `Switch` is applied inside the pair's first update and
+   before its picture. No frame is drawn through `Cam1`; the remake's
+   install-time firing is the engine's order. Verified-static, pinned by
+   `seq_parse.py`'s `notes.*` checks; the `presentation_gold.py` phase this
+   entry asked for is not needed.
 
 Two things are **closed** that this section used to call decisions:
 ~~"what the camera ids `9..19` select"~~ -- they are CD tracks (§4.1), not

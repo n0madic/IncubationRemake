@@ -589,6 +589,13 @@ func finish_mission(mission_world: World) -> Dictionary:
 			if not scores.is_empty() else 0,
 		"commendations": scores[0]["commendations"] \
 			if not scores.is_empty() else 0,
+		"death_medals": scores[0]["death_medals"] \
+			if not scores.is_empty() else 0,
+		# The debriefing prints both lines as `%d(+%d)` -- the purse and the
+		# counter after the payout, then what the slot paid (`0x0045E2E3`,
+		# `0x0045E38F`).
+		"purse": state.points(0),
+		"medals": state.commendations[0],
 		"recovered": recovery["recovered"],
 		# **Named, not silent** (docs/92 section 7.4). The engine drops a unit
 		# that is not a pool candidate and one that finds no free slot without
@@ -649,24 +656,27 @@ func replay() -> String:
 		return ""
 	state.roster.restore()
 	state.roster.clear_snapshot()
-	# The same rule, and here it is the one that mattered: *Try Again* used to
-	# call `reset()`, which wiped the campaign score along with the mission's.
-	# A replay undoes the mission, not the campaign -- and the score the
-	# debriefing added has to come back off the total, because the replayed
-	# mission will add its own.
+	# `0x0043BBD0`, the button's second call (docs/27 section 6.6): the
+	# campaign half of each scoreboard pair loses the mission half -- kills,
+	# losses, lost to an enemy and the score -- and the commendation counter
+	# loses the mission's lost-to-an-enemy count, which is what `0x0043B860`
+	# paid into it one death at a time ([method MissionEnd.score] folds that
+	# in for the remake). The engine touches record 0 alone, the campaign's
+	# one human. *Try Again* used to call `reset()` here, which wiped the
+	# campaign score along with the mission's.
 	var board: ScoreRecord = state.scoreboard[0]
 	board.campaign_kills -= board.kills
 	board.campaign_losses -= board.losses
 	board.campaign_lost_to_enemy -= board.lost_to_enemy
 	board.total -= board.score
-	# **And the payout.** *Try Again* is offered after a win too, and
-	# [method MissionEnd.score] has already put the mission's equipment
-	# points and commendations into the purse; a replayed win pays them
-	# again. The report carries what actually landed (the purse is capped),
-	# so the subtraction is exact, and the medals wrap the way they were
-	# added. The same remake decision as the score line above: the engine's
-	# `aCopyUnitPool(1, 0)` restores the roster and nothing else
-	# (docs/92 section 7.13, D13).
+	state.commendations[0] = \
+		(state.commendations[0] - board.lost_to_enemy) & 0xFF
+	# **And the script's payout -- the remake's own line** (docs/92 section
+	# 7.13, D13). The engine leaves what the debriefing paid out of slots 10
+	# and 11 where it landed, and offers the button after a win too, so a
+	# replayed win is paid twice. The report carries what actually landed
+	# (the purse is capped), so the subtraction is exact, and the medals
+	# wrap the way they were added.
 	var paid_points: int = DictRead.as_int(
 		last_report.get("equipment_points", 0))
 	state.equipment_points[0] = maxi(0, state.equipment_points[0] - paid_points)

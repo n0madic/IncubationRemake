@@ -583,6 +583,29 @@ func _check_arm_spawns(h: TestHarness) -> void:
 	h.equal("seeker.a_slot_with_nobody_aborts_the_arm",
 		hooks.has_target_for(seeker), false,
 		"`aGetUnitMapElementPtr`'s null, through the trace path")
+	# The mission's own callback, over a mirror: `0x00477AE0` declines a
+	# slot the map has no record for and one whose hit points are zero
+	# (*"unit is dead"*, `0x00477B41`) -- and a dead unit stays in the mirror
+	# with `hp 0` on its last cell, so the second refusal is the one that
+	# matters. `_6_.sav`'s four declined slots are its four `+0x16 == 0` ones.
+	var seek_world: World = World.create(TestFixtures.map_document(7, 7, [
+		TestFixtures.unit(0, 2, 2), TestFixtures.unit(3, 4, 4)]),
+		TestFixtures.balance(), 1.0)
+	var seek_host: SliceMain = SliceMain.new()
+	seek_host.world = seek_world
+	seek_host._resync_shown()
+	var alive: Dictionary = seek_host._seeker_target(3)
+	var dying: UnitState = seek_world.units_for_ai()[3]
+	var _off: bool = UnitState.take_off_map(seek_world.state,
+		seek_world.unit_types(), seek_world.turn, dying)
+	seek_host._resync_shown()
+	h.equal("seeker.the_mission_answers_a_live_slot",
+		[alive.has("object"), seek_host._seeker_target(1).is_empty()],
+		[true, true], "a placed unit has an object; slot 1 has no record")
+	h.equal("seeker.the_mission_declines_a_dead_slot",
+		[seek_host.shown().has_unit(3), seek_host._seeker_target(3)],
+		[true, {}], "still in the mirror with hp 0, and still declined")
+	seek_host.free()
 
 
 ## The diff itself, on synthetic snapshots -- no cache needed, and every branch

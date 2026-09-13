@@ -92,7 +92,7 @@ the offset column there is the authority, the behaviour column here.
 | `0x0043B600` / `0x0043B5C0` | **player name**, four 20-byte slots | display only |
 | `0x0043B740` / `0x0043B730` | **game mode** | §2 |
 | `0x0043B010` / `0x0043B060` / `0x0043B0A0` | **equipment points**, `u32[4]` | the add clamps at **10000** |
-| `0x0043B0F0` / `0x0043B120` | **commendations**, `u8[4]` | [`20` §7](20-lcl-language.md) slot 11 pays into it |
+| `0x0043B0F0` / `0x0043B120` | **commendations**, `u8[4]` | [`20` §7](20-lcl-language.md) slot 11 pays into it at the debriefing, and `0x0043B860` once per unit lost to an enemy ([`27` §6.2](27-campaign.md)) |
 | `0x0043B1E0` / `0x0043B1D0` | the **solo flag** | see below |
 | `0x0043B160` / `0x0043B180` / `0x0043B1A0` | the twelve **LCL slots** | [`20` §7](20-lcl-language.md) owns these |
 | `0x0043B930` / `0x0043B960` | per-player **end state** | `5` = out of the rotation |

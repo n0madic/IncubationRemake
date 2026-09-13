@@ -724,16 +724,27 @@ func _payouts(h: TestHarness, cases: Dictionary) -> void:
 		var case: Dictionary = entry
 		var state: CampaignState = _state(cases, 2)
 		state.mode = DictRead.as_int(case["mode"])
+		state.equipment_points[0] = DictRead.as_int(case["purse_before"])
 		state.game_control[MissionEnd.SLOT_EQUIPMENT_POINTS] = 250
 		state.game_control[MissionEnd.SLOT_COMMENDATIONS] = 2
 		state.scoreboard[0].result = DictRead.as_int(case["result"])
+		state.scoreboard[0].lost_to_enemy = DictRead.as_int(case["lost_to_enemy"])
+		var medals_before: int = state.commendations[0]
 		var reports: Array[Dictionary] = MissionEnd.score(state)
 		h.equal("payout.%d.points" % index,
 			DictRead.as_int(reports[0]["equipment_points"]),
-			DictRead.as_int(case["equipment_points"]))
+			DictRead.as_int(case["equipment_points"]),
+			"what landed in a capped purse, not what the slot said")
 		h.equal("payout.%d.commendations" % index,
 			DictRead.as_int(reports[0]["commendations"]),
 			DictRead.as_int(case["commendations"]))
+		# `0x0043B860`'s third increment -- a unit lost to an enemy is a
+		# commendation, in every mode and whatever the result.
+		h.equal("payout.%d.death_medals" % index,
+			[DictRead.as_int(reports[0]["death_medals"]),
+				state.commendations[0] - medals_before],
+			[DictRead.as_int(case["death_medals"]),
+				DictRead.as_int(case["medals"])])
 		h.equal("payout.%d.purse" % index, state.points(0),
 			DictRead.as_int(case["purse"]))
 		index += 1
@@ -1221,22 +1232,62 @@ func _endings(h: TestHarness) -> void:
 	var total_before: int = again.scoreboard[0].total
 	host.begin_mission(paid_world)
 	host.enter_mission()
+	# Two soldiers lost to the enemy: `0x0043B860` pays a commendation for
+	# each at the death, beside the slot-11 medals the debriefing pays.
+	paid_world.turn.mission_lost_to_enemy[0] = 2
+	paid_world.turn.mission_lost[0] = 2
 	var paid_report: Dictionary = host.finish_mission(paid_world)
 	h.equal("endings.the_debriefing_pays",
 		[DictRead.as_int(paid_report["equipment_points"]),
+			DictRead.as_int(paid_report["death_medals"]),
 			again.equipment_points[0] - purse_before,
-			again.commendations[0] - medals_before],
-		[120, 120, 2])
+			again.commendations[0] - medals_before,
+			again.scoreboard[0].campaign_lost_to_enemy],
+		[120, 2, 120, 4, 2])
 	var replayed: String = host.replay()
 	h.equal("endings.replay_takes_the_payout_back",
 		[replayed, again.equipment_points[0], again.commendations[0],
-			again.scoreboard[0].total, host.screen],
-		["_C_140", purse_before, medals_before, total_before,
+			again.scoreboard[0].total,
+			again.scoreboard[0].campaign_lost_to_enemy, host.screen],
+		["_C_140", purse_before, medals_before, total_before, 0,
 			CampaignHost.SCREEN_MAP],
-		"the score, the points and the medals all come off; the roster "
-		+ "restore is `aCopyUnitPool(1, 0)`'s")
+		"`0x0043BBD0` takes the score, the pairs and the death medals off; "
+		+ "the remake's D13 takes the payout too; the roster restore is "
+		+ "`aCopyUnitPool(1, 0)`'s")
 	h.equal("endings.no_world_outlives_the_replay",
 		host.deployment_cells().size(), 0)
+	# **Abandoning is the same do-over.** The engine has no way to leave a
+	# mission short of its debriefing (the pause menu's *Main Map* is the
+	# remake's, docs/92 section 7.15), so what its bookkeeping says about a
+	# sortie that does not count is `0x0045E9CB`: the roster back and the
+	# mission's pairs and death medals off. Folding the mission's counters
+	# only at the debriefing gives an abandoned sortie exactly that net --
+	# the campaign state after *Try Again* and after *Main Map* is one state.
+	# (The LCL slots are the one field apart: the debriefing copies the
+	# mission's script slots into the campaign, an abandoned sortie never
+	# gets that far, and neither the scoreboard nor the purse reads them.)
+	var replayed_view: Dictionary = again.view()
+	var _slots: bool = replayed_view.erase("game_control")
+	var dropped: CampaignState = host.start_new(2)
+	var dropped_world: World = World.create(
+		CacheFixture.mission("_C_140"), CacheFixture.balance(), 0.0)
+	dropped_world.game_control.set_slot(0, 1)
+	dropped_world.game_control.set_slot(MissionEnd.SLOT_EQUIPMENT_POINTS, 120)
+	dropped_world.game_control.set_slot(MissionEnd.SLOT_COMMENDATIONS, 2)
+	host.begin_mission(dropped_world)
+	host.enter_mission()
+	dropped_world.turn.mission_lost_to_enemy[0] = 2
+	dropped_world.turn.mission_lost[0] = 2
+	dropped_world.turn.mission_kills[0] = 5
+	host.abandon_mission()
+	var dropped_view: Dictionary = dropped.view()
+	var _dropped_slots: bool = dropped_view.erase("game_control")
+	h.equal("endings.abandon_is_the_replays_net",
+		[dropped_view == replayed_view, dropped.commendations[0],
+			dropped.scoreboard[0].campaign_kills, host.screen],
+		[true, medals_before, 0, CampaignHost.SCREEN_MAP],
+		"no medal, kill or loss of a dropped sortie reaches the campaign, "
+		+ "which is what `0x0043BBD0` leaves after a replay")
 	# ...nor an *End game*, nor a new campaign: the HQ printed the last
 	# mission's landing-cell count off a world nobody had dropped.
 	host.begin_mission(paid_world)

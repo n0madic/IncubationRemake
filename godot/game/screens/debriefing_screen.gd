@@ -62,11 +62,15 @@ func build() -> void:
 	var paid: VBoxContainer = VBoxContainer.new()
 	paid.position = Vector2(8.0, 176.0)
 	body().add_child(paid)
-	paid.add_child(make_label("%s %d" % [
+	# `%d(+%d)` as the engine prints both (`0x0045E2E3`, `0x0045E38F`): the
+	# purse and the counter as they stand after the payout, then the award.
+	paid.add_child(make_label("%s %d(+%d)" % [
 		label_for(BANK_REPORT, ID_EQUIPMENT_POINTS),
+		DictRead.as_int(report.get("purse", 0)),
 		DictRead.as_int(report.get("equipment_points", 0))]))
-	paid.add_child(make_label("%s %d" % [
+	paid.add_child(make_label("%s %d(+%d)" % [
 		label_for(BANK_REPORT, ID_COMMENDATIONS),
+		DictRead.as_int(report.get("medals", 0)),
 		DictRead.as_int(report.get("commendations", 0))]))
 
 	var squad: VBoxContainer = VBoxContainer.new()

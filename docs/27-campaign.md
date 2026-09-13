@@ -993,7 +993,8 @@ the **map**, `aCopyUnitPool(0, 1)` on entry is a snapshot, and
 `aCopyUnitPool(1, 0)` on the debriefing's *back to the map* button restores
 the **pre-mission** roster — which makes that button a replay rather than a
 step forward. `docs/11` §5.7's own reading, "mission-entry snapshot", was the
-right one.
+right one. The roster is not all the button restores: its next call,
+`0x0043BBD0`, takes the mission back off the scoreboard (§6.6).
 
 One thing the saves do not explain: `_5_.sav` is on the map screen with row 1
 **empty**, though neither debriefing button clears it. What clears it is not
@@ -1366,6 +1367,43 @@ if (gameMode() == 1 && missionResult(player) != 5) {
 }
 ```
 
+**A unit lost to an enemy is a commendation, and the scorer is not where it
+is paid.** *(2026-09-13.)* `0x0043B860` — the writer of the scoreboard's
+lost-to-an-enemy pair ([`11` §5.5](11-save-game-format.md)) — does three
+increments under one guard (unit type at most 30 and not 24, player slot
+inside the four), not two:
+
+```c
+record[player].lostToEnemyMission  += 1;    /* +0x10, 0x0043B89D */
+record[player].lostToEnemyCampaign += 1;    /* +0x14, 0x0043B8AA */
+commendations[player]              += 1;    /* 0x00509EFC + player, 0x0043B8B7 */
+```
+
+So every soldier the enemy kills is a medal for their player, at the moment
+of the death, in every game mode and whatever the mission's result — the
+script's slot 11 is the *other* source, paid at the debriefing under the gate
+above. The fixture saves show the rule rather than the code: `_5_.sav` is on
+the map after `_C_140`, whose script never touches slot 11, and reads three
+lost to an enemy beside three commendations (`_2_.sav`, inside that mission
+before any loss, reads zero). The remake folds the mission's count into the
+counter in `MissionEnd.score` / `score_mission`, beside the pair's campaign
+half, since nothing reads the counter between a death and the debriefing.
+Folding at the end is not a divergence for a sortie that is **abandoned**
+either, though an earlier revision of this paragraph said so: the engine has
+no way to leave a mission short of its debriefing (the pause menu's *Main
+Map* is the remake's, [`92` §7.15](92-remake-architecture.md)), and the one
+thing its bookkeeping says about a sortie that does not count is
+`0x0045E9CB` — the roster back, the mission's pairs and its death medals off
+(§6.6). A sortie whose counters never reach the fold has exactly that net,
+so the campaign after *Main Map* and after *Try Again* is one state;
+`test_campaign.gd` compares the two (`endings.abandon_is_the_replays_net`).
+The only place the engine's write-at-the-death shows is a save taken
+mid-mission, whose GameControl already carries the campaign halves; the
+remake's saves carry the world's own counters instead and fold them on the
+way out;
+`campaign_tables.py` pins the three increments (`end.death_medal`) and
+`campaign_runtime.py` the arithmetic.
+
 `0x0043B1F0` is **not** the solo flag, despite reading it first.
 [`25` §3.1](25-turn-and-round.md) decodes it as the gate in front of the
 player-skip rule, and it is true **only in a `net session` or `pbm session`
@@ -1555,8 +1593,31 @@ campaign state:
 /* 0x0045E986 -- go on */                   /* 0x0045E9CB -- back to the map */
 setCurrentPlayer(0);                        setCurrentPlayer(0);
 strcpy(GameControl.mapName,                 aCopyUnitPool(1, 0);
-       levHeader + 0x000);                  …
+       levHeader + 0x000);                  0x0043BBD0();
 ```
+
+**The second call of the *back to the map* arm undoes the mission's
+scoreboard, and only that.** *(2026-09-13; this section used to elide it as
+`…`.)* `0x0043BBD0` has one caller, `0x0045E9FC`, and five subtractions,
+all on record 0 — the campaign's one human:
+
+```c
+record0.scoreCampaign        -= record0.scoreMission;         /* +0x1C -= +0x18 */
+record0.killsCampaign        -= record0.killsMission;         /* +0x04 -= +0x00 */
+record0.lostCampaign         -= record0.lostMission;          /* +0x0C -= +0x08 */
+record0.lostToEnemyCampaign  -= record0.lostToEnemyMission;   /* +0x14 -= +0x10 */
+commendations[0]             -= (u8) record0.lostToEnemyMission;
+```
+
+The last line is the rollback of §6.2's death medals — the count `0x0043B860`
+paid in one death at a time — and it makes the button a consistent *replay*
+of the mission's own bookkeeping. What it does **not** touch is the
+debriefing's payout: the equipment points of slot 10 and the medals of slot 11
+stay where `0x0043BA10` put them, and the button is offered after a win too,
+so a replayed win is paid twice by the shipped game. The remake keeps the
+engine's five lines and adds a rollback of the payout it just reported
+([`92` §7.13 D13](92-remake-architecture.md)). `campaign_tables.py` pins the
+callee, its single caller and the five operand pairs (`end.rollback*`).
 
 `levHeader + 0x000` is the `.lev` header's **next-map name**
 ([`10` §3](10-lev-mission-format.md)) — so the chain is static data, one link
@@ -1767,3 +1828,14 @@ What each group covers:
    **Closed** — §2.3.  The ids select logical sequence 0, the intercepted
    static extro screen, and logical sequence 1; the flag selects full-screen
    versus framed presentation and the background callback.
+9. ~~**What the *back to the map* button restores besides the roster.**~~
+   **Closed** (2026-09-13) — §6.6. The arm's second call, `0x0043BBD0`, was
+   elided as `…` and read as "nothing else"; it takes the mission's four
+   scoreboard halves back off the campaign halves and the mission's
+   lost-to-an-enemy count off the commendation counter. Reading it also
+   turned up the counter's second writer: `0x0043B860` pays one commendation
+   per unit lost to an enemy (§6.2), which the six fixture saves confirm
+   (`campaign_runtime.py --check-saves`, `save.*.death_medals`). What the
+   button does **not** restore — the slot 10 and 11 payout — is now a
+   verified engine fact rather than an assumption, and the remake's rollback
+   of it is recorded as its own decision ([`92` §7.13 D13](92-remake-architecture.md)).

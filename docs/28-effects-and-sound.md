@@ -1338,7 +1338,7 @@ arm's own instructions:
 | Step | What | Where |
 |---|---|---|
 | 1 | the record's `+0x54` byte is a **unit-map slot** | `mov cl, [esi+0x54]`, `0x0041F931` / `0x0041FB8C` / `0x0042030C` |
-| 2 | `aGetUnitMapElementPtr` turns it into a unit record; a null answer aborts the arm through the trace path | `0x00477AE0` |
+| 2 | `aGetUnitMapElementPtr` turns it into a unit record; a null answer aborts the arm through the trace path. It declines exactly three things: id `0xFFFF` (*"invalid unit id found"*, `0x00477AE4` — unreachable from a byte), an id **above 200** (*"unit id out of area"*, `cmp eax, 0xC8` / `jle` at `0x00477B0A`, so 200 itself reads one past the array) and a record whose **hit points `+0x16` are zero** (*"unit is dead"*, `0x00477B41`). `blob_tables.py` pins all three | `0x00477AE0` |
 | 3 | the unit's `+0x4B` byte is an **object id** | `mov cl, [eax+0x4B]` |
 | 4 | `aGetStdObjectPosition` turns that into `(x, y, z)` — the object's, not the tile's | `0x00405100` |
 
@@ -1418,9 +1418,15 @@ be in range: an object id read out of the wrong field would have to land, for
 every live unit at once, on the object standing where that unit stands.
 
 The four dead slots are the other half of the finding. A record the unit map
-declines still holds a `+0x4B`, and what it holds is stale — which is what a
-blob naming one gets, and why `blob_runtime.py`'s `no_target` scenario exists
-rather than being a hypothetical.
+declines still holds a `+0x4B`, and what it holds is stale — but a blob naming
+one never reads it: step 2 answers null and the arm aborts, which is what
+`blob_runtime.py`'s `no_target` scenario runs rather than a hypothetical. *Why*
+those four are declined is the byte test above, and the save says so
+*(2026-09-13)*: `_6_.sav`'s embedded map has exactly four unplaced slots
+(`+0x16 == 0`) — 12, 13, 14 and 15 — and they are exactly the four the `hooks`
+phase's `unit` pointers hold as 0, 18 of 18. The remake's seeker callback
+(`SliceMain._seeker_target`) therefore declines a slot the mirror has no unit
+for and one whose unit reads `hp 0`, and nothing else.
 
 Four arms are the exception to "particle arithmetic": kinds 26, 27 and 61 are
 500–600 bytes of seeking, and kind 42 (`aBlob_CreateComputerLight`) and kind 54

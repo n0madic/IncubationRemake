@@ -274,7 +274,9 @@ func count_unit_lost(type_id: int, player: int) -> void:
 
 
 ## `0x0043B810` (the killer) and `0x0043B860` (the victim), which fire together
-## and only when the two players differ.
+## and only when the two players differ. `0x0043B860`'s third increment --
+## one commendation per unit lost to an enemy -- is campaign state and is
+## folded in by [method MissionEnd.score] (docs/27 section 6.2).
 func count_kill_and_loss(killer: int, victim_type: int,
 		victim_player: int) -> void:
 	if killer == victim_player:

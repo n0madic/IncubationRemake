@@ -1701,6 +1701,15 @@ KIND_EVIDENCE = {
 # The three arms that ask the unit map where a target is.
 KIND_SEEKERS = {26: 0x0041F935, 27: 0x0041FB90, 61: 0x00420310}
 UNIT_MAP_LOOKUP = 0x00477AE0
+#: What `aGetUnitMapElementPtr` declines, and nothing else (docs/28 section
+#: 7.7.1 step 2): `cmp eax, 0xFFFF` / `jne`, `cmp eax, 0xC8` / `jle` (200
+#: passes), and the record's `+0x16` -- `mov cl, [edx+ecx*2+0x16]` /
+#: `test cl, cl` / `jne` -- its hit points.
+UNIT_MAP_GATES = (
+    (0x00477AE4, bytes.fromhex("3dffff0000" "75")),
+    (0x00477B0A, bytes.fromhex("3dc8000000" "7e")),
+    (0x00477B41, bytes.fromhex("8a4c4a16" "84c9" "75")),
+)
 
 # class 2/3 call -> ((row push, row), (col push, col), (size push, size))
 BLOB_SPRITE = {
@@ -3381,6 +3390,9 @@ def run_checks(root: str) -> Checker:
         ck.equal(f"kind.{name}", got, want)
     for kind, site in sorted(KIND_SEEKERS.items()):
         ck.equal(f"kind.seeker_{kind}", b.call_target(site), UNIT_MAP_LOOKUP, hex)
+    for site, want in UNIT_MAP_GATES:
+        ck.equal(f"kind.seeker_gate_{site:08x}",
+                 b.pe.bytes_at(site, len(want)), want, bytes.hex)
     for site, (imm_site, base, produces) in sorted(KIND_COMPUTED.items()):
         decoded = b.add_imm(imm_site)
         ck.equal(f"kind.computed_{site:08x}",

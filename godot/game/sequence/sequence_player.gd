@@ -281,9 +281,12 @@ func _install_shot(index: int) -> bool:
 	# 166 notes sit at the head of their clip -- a `Switch` naming the shot's
 	# camera -- and firing them from [method update] alone drew the pair's
 	# first frame through `Cam1` at the old focal on every cut. `_fired`
-	# moves with them, so the update does not fire them twice. UNVERIFIED
-	# against the original: whether it renders one frame before the
-	# dispatcher runs is not captured (docs/41 Open questions).
+	# moves with them, so the update does not fire them twice. This is the
+	# engine's order (docs/41 section 3.1): one update of `0x0047F6A0` is
+	# `Simulate(dt)` -- where the note collector `0x004A1220` runs, and
+	# keeps a note at `t <= start` while the clock reads exactly 0 -- and
+	# *then* the `Cam<n>` lookup and the render, so a frame-0 `Switch` is
+	# applied before the pair's first picture and never draws one of its own.
 	_fire_notes()
 	_body = CharismaBody.create(_model, _library)
 	if _body == null:

@@ -830,6 +830,28 @@ NEXT_MAP_ARM = 0x0045E986
 NEXT_MAP_HEADER_CALL = 0x0045E990
 POOL_WRITEBACK_ARM = 0x0045E9CB
 MAP_NAME_BUFFER_GETTER = 0x0043B150
+#: The *back to the map* arm's second call: the mission comes back off the
+#: scoreboard (docs/27 section 6.6).  Five subtractions on record 0, each a
+#: `mov r32, [src]` ... `sub` ... `mov [dst], r32` over GameControl
+#: absolutes; the last is a byte, the commendation counter losing the
+#: mission's lost-to-an-enemy count.
+SCOREBOARD_ROLLBACK = 0x0043BBD0
+SCOREBOARD_ROLLBACK_CALL = 0x0045E9FC
+#: (destination, source) -- campaign half -= mission half; then medals.
+SCOREBOARD_ROLLBACK_PAIRS = (
+    (0x00509F64, 0x00509F60),      # score      +0x1C -= +0x18
+    (0x00509F4C, 0x00509F48),      # kills      +0x04 -= +0x00
+    (0x00509F54, 0x00509F50),      # lost       +0x0C -= +0x08
+    (0x00509F5C, 0x00509F58),      # to enemy   +0x14 -= +0x10
+    (0x00509EFC, 0x00509F58),      # medals[0]  -= (u8) +0x10
+)
+#: `0x0043B860`, the lost-to-an-enemy writer, ends with a third increment:
+#: `mov al, [ecx+0x509EFC]` / `inc al` / `mov [ecx+0x509EFC], al` -- one
+#: commendation per unit the enemy kills (docs/27 section 6.2).
+DEATH_MEDAL_SITE = 0x0043B8B7
+DEATH_MEDAL_BYTES = bytes.fromhex("8a81fc9e5000" "fec0" "8881fc9e5000")
+LOST_TO_ENEMY_WRITER = 0x0043B860
+LOST_TO_ENEMY_STORES = (0x0043B8A4, 0x0043B8B1)   # `mov [eax+0x509F58/5C], edx`
 
 # --- the text banks ---------------------------------------------------------
 INIT_TEXT_SYSTEM = 0x00470B50
@@ -3194,6 +3216,43 @@ def run_checks(root: str) -> Checker:
                    for i in range(DEBRIEF_GADGET_COUNT))
              == (0x0045E95F, NEXT_MAP_ARM, POOL_WRITEBACK_ARM, 0x0045EA11),
              f"{DEBRIEF_GADGET_COUNT} buttons")
+    ck.equal("end.rollback_call", b.call_target(SCOREBOARD_ROLLBACK_CALL),
+             SCOREBOARD_ROLLBACK, hex)
+    ck.check("end.rollback_one_caller",
+             b.calls_to(SCOREBOARD_ROLLBACK) == [SCOREBOARD_ROLLBACK_CALL],
+             "only the back-to-the-map arm takes the mission off the scoreboard")
+    body = b.pe.bytes_at(SCOREBOARD_ROLLBACK, 0x5F)
+    ck.check("end.rollback_returns", body.endswith(b"\xc3")
+             and b"\xc3" not in body[:-1], "one basic block, one ret")
+    for n, (dst, src) in enumerate(SCOREBOARD_ROLLBACK_PAIRS):
+        loads = (b"\xa1" + dst.to_bytes(4, "little"),
+                 b"\x8b\x0d" + dst.to_bytes(4, "little"),
+                 b"\x8b\x15" + dst.to_bytes(4, "little"),
+                 b"\xa0" + dst.to_bytes(4, "little"))
+        sources = (b"\xa1" + src.to_bytes(4, "little"),
+                   b"\x8b\x0d" + src.to_bytes(4, "little"),
+                   b"\x8b\x15" + src.to_bytes(4, "little"),
+                   b"\x8a\x0d" + src.to_bytes(4, "little"))
+        stores = (b"\xa3" + dst.to_bytes(4, "little"),
+                  b"\x89\x0d" + dst.to_bytes(4, "little"),
+                  b"\x89\x15" + dst.to_bytes(4, "little"),
+                  b"\xa2" + dst.to_bytes(4, "little"))
+        ck.check(f"end.rollback_pair{n}",
+                 any(x in body for x in loads) and any(x in body for x in sources)
+                 and any(x in body for x in stores),
+                 f"[{dst:#x}] -= [{src:#x}]")
+    ck.check("end.rollback_subtracts",
+             body.count(b"\x2b") == 4 and body.count(b"\x2a\xc1") == 1,
+             "four dword subs and one byte sub")
+    ck.equal("end.death_medal", b.pe.bytes_at(DEATH_MEDAL_SITE, len(DEATH_MEDAL_BYTES)),
+             DEATH_MEDAL_BYTES, bytes.hex)
+    ck.check("end.death_medal_beside_the_pair",
+             all(b.pe.bytes_at(va, 2) == b"\x89\x90"
+                 and b.u32(va + 2) == SCOREBOARD_BASE + off
+                 for va, off in zip(LOST_TO_ENEMY_STORES, (0x10, 0x14)))
+             and LOST_TO_ENEMY_WRITER < LOST_TO_ENEMY_STORES[0]
+             < DEATH_MEDAL_SITE < LOST_TO_ENEMY_WRITER + 0x70,
+             "the medal is the third increment of the lost-to-an-enemy writer")
     ck.equal("end.max_tp_value", b.u8(POOL_MAX_TP_SITE + 2), POOL_MAX_TP_VALUE)
     ck.check("end.sort_key",
              b.u8(POOL_SORT_KEY_SITE) == 0x8A

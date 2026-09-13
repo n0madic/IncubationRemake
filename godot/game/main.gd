@@ -7367,7 +7367,11 @@ func _unit_byte_of(x: int, y: int) -> int:
 ## unit in that slot, which is the null the arm aborts on.
 func _seeker_target(slot: int) -> Dictionary:
 	var view: Dictionary = _unit_record(slot)
-	if view.is_empty():
+	# `aGetUnitMapElementPtr`'s third refusal, *"unit is dead"* (`0x00477B41`:
+	# the record's `+0x16`, its hit points, at zero). A dead unit stays in the
+	# mirror with `hp 0` and its last cell, so this is the gate that keeps a
+	# seeker off a corpse. The other two -- no such slot -- are `_unit_record`.
+	if view.is_empty() or DictRead.as_int(view["hp"]) == 0:
 		return {}
 	return {"object": _object_of(DictRead.as_int(view["x"]),
 		DictRead.as_int(view["y"]))}

@@ -726,12 +726,22 @@ class CampaignState:
             board.campaign_kills += board.kills
             board.campaign_losses += board.losses
             board.campaign_lost_to_enemy += board.lost_to_enemy
+            # ``0x0043B860``'s third increment: every unit lost to an enemy
+            # is one commendation for its player (docs/27 section 6.2).  The
+            # engine counts it at the death; the model folds it here with the
+            # pair's campaign half, which nothing reads in between.
+            death_medals = board.lost_to_enemy
+            self.commendations[player] = (
+                self.commendations[player] + death_medals) & 0xFF
             paid_points = paid_commendations = 0
             if self.mode == MODE_CAMPAIGN and result != RESULT_DEFEAT:
                 bonus = self.game_control[SLOT_EQUIPMENT_POINTS]
                 if bonus:
+                    # What landed, not what the slot said: ``add_points``
+                    # caps the purse, and a replay's rollback subtracts this.
+                    purse_before = self.equipment_points[player]
                     self.add_points(player, bonus)
-                    paid_points = bonus
+                    paid_points = self.equipment_points[player] - purse_before
                 medals = self.game_control[SLOT_COMMENDATIONS]
                 if medals:
                     self.commendations[player] = (
@@ -743,6 +753,7 @@ class CampaignState:
                 "losses": board.losses, "score": score, "total": board.total,
                 "equipment_points": paid_points,
                 "commendations": paid_commendations,
+                "death_medals": death_medals,
             })
         return reports
 
@@ -913,6 +924,11 @@ def count_kill_and_loss(board: list[ScoreRecord], killer: int,
     ``0x0043B810`` carries **no** player guard, so an alien killer -- player
     255 -- makes the engine write 40 * 255 bytes past the array.  That is an
     out-of-bounds write rather than a rule, and it is bounded here.
+
+    ``0x0043B860``'s third increment -- one commendation per unit lost to an
+    enemy -- is not here: the counter is campaign state, and
+    :meth:`CampaignState.score_mission` folds the mission's count into it
+    (docs/27 section 6.2).
     """
     if killer == victim_player:
         return

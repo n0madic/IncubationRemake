@@ -468,6 +468,32 @@ def check_score(ck: Checker, ctx: Context) -> None:
     ck.expect("score.payout_is_campaign_only",
               state.score_mission()[0]["equipment_points"], 0)
 
+    # A payout that would overflow the purse reports what landed, not what
+    # the slot said -- the replay's rollback subtracts the report.
+    state = ctx.begin(2)
+    state.equipment_points[0] = cam.EQUIPMENT_POINT_CAP - 40
+    state.game_control[cam.SLOT_EQUIPMENT_POINTS] = 250
+    state.scoreboard[0].result = 2
+    ck.expect("score.payout_reports_what_landed",
+              (state.score_mission()[0]["equipment_points"],
+               state.equipment_points[0]),
+              (40, cam.EQUIPMENT_POINT_CAP))
+
+    # `0x0043B860`'s third increment: a unit lost to an enemy is a
+    # commendation, in every mode and whatever the result -- `_5_.sav` has
+    # three of each after a mission whose script awards none.
+    for mode, result, lost in ((cam.MODE_CAMPAIGN, 2, 3), (cam.MODE_CAMPAIGN, 5, 1),
+                               (3, 1, 2), (cam.MODE_CAMPAIGN, 2, 0)):
+        state = ctx.begin(2)
+        state.mode = mode
+        state.scoreboard[0].lost_to_enemy = lost
+        state.scoreboard[0].result = result
+        before = state.commendations[0]
+        report = state.score_mission()[0]
+        ck.expect(f"score.death_medals.m{mode}.r{result}.l{lost}",
+                  (report["death_medals"], state.commendations[0] - before),
+                  (lost, lost))
+
     # A slot that is not in the game is not scored at all.
     state = ctx.begin(2)
     ck.expect("score.unused_slots_skipped", len(state.score_mission()), 1)
@@ -654,18 +680,27 @@ def build_cases(root: Path) -> dict[str, Any]:
     payouts = []
     for mode in (cam.MODE_CAMPAIGN, 2):
         for result in (1, 2, 5):
-            state = ctx.begin(2)
-            state.mode = mode
-            state.game_control[cam.SLOT_EQUIPMENT_POINTS] = 250
-            state.game_control[cam.SLOT_COMMENDATIONS] = 2
-            state.scoreboard[0].result = result
-            report = state.score_mission()[0]
-            payouts.append({
-                "mode": mode, "result": result,
-                "equipment_points": report["equipment_points"],
-                "commendations": report["commendations"],
-                "purse": state.equipment_points[0],
-            })
+            for lost, purse in ((0, None), (3, None), (2, cam.EQUIPMENT_POINT_CAP - 40)):
+                state = ctx.begin(2)
+                state.mode = mode
+                if purse is not None:
+                    state.equipment_points[0] = purse
+                state.game_control[cam.SLOT_EQUIPMENT_POINTS] = 250
+                state.game_control[cam.SLOT_COMMENDATIONS] = 2
+                state.scoreboard[0].result = result
+                state.scoreboard[0].lost_to_enemy = lost
+                medals_before = state.commendations[0]
+                purse_before = state.equipment_points[0]
+                report = state.score_mission()[0]
+                payouts.append({
+                    "mode": mode, "result": result, "lost_to_enemy": lost,
+                    "purse_before": purse_before,
+                    "equipment_points": report["equipment_points"],
+                    "commendations": report["commendations"],
+                    "death_medals": report["death_medals"],
+                    "medals": state.commendations[0] - medals_before,
+                    "purse": state.equipment_points[0],
+                })
 
     sorts = []
     for layout in ([(0, 10), (1, 40), (2, 20), (3, 70)],
@@ -859,6 +894,14 @@ def check_saves(ck: Checker, directory: Path) -> None:
             ck.check(f"save.{name}.board{player}.pairs_are_ordered",
                      _dword(data, base + 0x04) >= _dword(data, base + 0x00),
                      "the campaign half of a pair is at least its mission half")
+        # `0x0043B860`'s third increment (docs/27 section 6.2): the campaign's
+        # one human has as many commendations as units lost to an enemy, the
+        # played mission `_C_140` awarding none through slot 11 and no
+        # promotion having spent one.  Slots 1-3 are the multiplayer arm's
+        # residue and say nothing.
+        ck.expect(f"save.{name}.death_medals", _byte(data, 0x00509EFC),
+                  _dword(data, 0x00509F48 + 0x14),
+                  "commendations[0] == campaign lost-to-an-enemy")
 
     # The two rows, which is what settles docs/27 3.5's naming.
     rows = {}

@@ -98,6 +98,59 @@ CAMERA = {
     "focal_ratio_muls": (0x004654C2, 0x0046552D),
     "focal_ratio": 10.0 / 13.0,
 }
+
+# --- where a frame-0 note lands relative to the pair's first picture ---------
+# ``0x0047F6A0`` is one update of the 3D player, in this order: the ended
+# test (return 6), ``IWorld::Simulate(dt)`` -- vtable slot ``0x40`` on the
+# ``"Film"`` world, the same slot the mission's refresh calls at
+# ``0x00407112`` -- then the ``Cam<n>`` lookup and the render (slot ``0x38``).
+# Simulate is where the notes are collected and dispatched: ``0x0047FD00``
+# registers ``0x00480300`` (the note dispatcher) as callback kind 1 and
+# ``0x00480730`` (the ended flag) as kind 0, and starts the clip through the
+# animation interface's slot ``0x2C`` at speed 1.0, which rewinds nothing --
+# ``KeyFramedAnimation::Init`` ``0x004A0B99`` left the clock at 0.  The
+# collector ``0x004A1220`` takes a note at ``t <= start`` only while the
+# clock reads exactly 0.0 (``fcomp dword [0x4B31C8]`` at ``0x004A16C0``), so
+# a frame-0 note fires inside the first Simulate after the install -- before
+# the first render of the pair, and never on a picture of its own.
+NOTE_ORDER = {
+    "simulate_call": 0x0047F76B,     # call [edx+0x40]  (Simulate dt)
+    "simulate_bytes": bytes.fromhex("ff5240"),
+    "render_call": 0x0047F82D,       # call [edx+0x38]  (render), later
+    "render_bytes": bytes.fromhex("ff5238"),
+    "mission_simulate": 0x00407112,  # the same slot in the 3D-view refresh
+    "mission_bytes": bytes.fromhex("ff5040"),
+    "start_call": 0x00480178,        # push 1.0 ; mov ecx, ebx ; call [edi+0x2C]
+    "start_bytes": bytes.fromhex("680000803f" "8bcb" "ff572c"),
+    "note_callback_push": 0x004801A0,   # push 0x00480300
+    "note_callback": 0x00480300,
+    "ended_callback_push": 0x004801D0,  # push 0x00480730
+    "ended_callback": 0x00480730,
+    "zero_compare": 0x004A16C0,      # fcomp dword [0x4B31C8]
+    "zero_va": 0x004B31C8,
+    "switch_push": 0x00480490,       # push "Switch", inside the dispatcher
+    # ``StdWorld``'s vtable (RTTI ``.?AVStdWorld@@``): slot 0x40 is
+    # ``Simulate(dt, flag)`` ``0x00497BA2`` and slot 0x50 the callback
+    # registrar ``0x00497D1A`` (list at ``+0x24`` of {kind, actor, cb}).
+    # One step of Simulate is three calls in this order: ``0x004980C7``
+    # collects -- ``eventSource->slot 0x28`` at ``0x0049817A`` on every
+    # registered entry, i.e. ``0x004A1220`` with that entry's kind --
+    # ``0x00497FF1`` advances the animations, ``0x004986A7`` dispatches
+    # every collected event through ``cb->slot 0x0C`` at ``0x00498770``,
+    # which is ``PlayerCallback``'s trampoline into the member function.
+    "world_vtable": 0x004B32A4,
+    "simulate": 0x00497BA2,
+    "register": 0x00497D1A,
+    "step_calls": ((0x00497C0C, 0x004980C7), (0x00497C2A, 0x00497FF1),
+                   (0x00497C36, 0x004986A7)),
+    "collect_call": 0x0049817A,      # call [eax+0x28]
+    "collect_bytes": bytes.fromhex("ff5028"),
+    "dispatch_call": 0x00498770,     # call [edx+0x0C]
+    "dispatch_bytes": bytes.fromhex("ff520c"),
+    "trampoline": 0x004807A0,        # PlayerCallback slot 0x0C
+    "trampoline_bytes": bytes.fromhex("8b542404" "8bc1" "8b4c2408" "51"
+                                      "8b4804" "52" "ff5008"),
+}
 # ``Focus f`` at ``0x004804BB``: ``_ftol(atof(arg)) - 24`` indexes the byte
 # table below when it is in 0..176 (an unsigned compare, so anything below 24
 # takes the default too); the byte selects one of eight arms through the jump
@@ -762,6 +815,46 @@ def check_camera(pe: PEFile, ck: Checks) -> None:
                  == b"\xdc\x0d" + struct.pack("<I", cam["focal_ratio_va"])
                  for va in cam["focal_ratio_muls"]),
              "aCreateSeqPlayer no longer multiplies the width by 10/13")
+
+
+def check_note_order(pe: PEFile, ck: Checks) -> None:
+    """A frame-0 note fires in the first Simulate, before the pair's first render."""
+    order = NOTE_ORDER
+    ck.check("notes.simulate_before_render",
+             pe.bytes_at(order["simulate_call"], 3) == order["simulate_bytes"]
+             and pe.bytes_at(order["render_call"], 3) == order["render_bytes"]
+             and order["simulate_call"] < order["render_call"],
+             "0x0047F6A0 no longer simulates the film before it renders it")
+    ck.check("notes.simulate_is_the_missions_slot",
+             pe.bytes_at(order["mission_simulate"], 3) == order["mission_bytes"],
+             "0x00407112 no longer calls slot 0x40 on the world")
+    ck.check("notes.start_at_speed_one",
+             pe.bytes_at(order["start_call"], 10) == order["start_bytes"],
+             "the pair installer no longer starts the clip at speed 1.0")
+    ck.check("notes.callbacks",
+             pe.bytes_at(order["note_callback_push"], 5)
+             == b"\x68" + struct.pack("<I", order["note_callback"])
+             and pe.bytes_at(order["ended_callback_push"], 5)
+             == b"\x68" + struct.pack("<I", order["ended_callback"])
+             and order["note_callback"] < order["switch_push"]
+             < order["ended_callback"],
+             "the note dispatcher and the ended flag are no longer the two callbacks")
+    ck.check("notes.simulate_collects",
+             pe.u32(order["world_vtable"] + 0x40) == order["simulate"]
+             and pe.u32(order["world_vtable"] + 0x50) == order["register"]
+             and all(pe.u8(site) == 0xE8
+                     and (site + 5 + pe.i32(site + 1)) & 0xFFFFFFFF == target
+                     for site, target in order["step_calls"])
+             and pe.bytes_at(order["collect_call"], 3) == order["collect_bytes"]
+             and pe.bytes_at(order["dispatch_call"], 3) == order["dispatch_bytes"]
+             and pe.bytes_at(order["trampoline"], 18) == order["trampoline_bytes"],
+             "StdWorld::Simulate no longer collects, advances and dispatches "
+             "through the registered callbacks")
+    ck.check("notes.zero_start_is_inclusive",
+             pe.bytes_at(order["zero_compare"], 6)
+             == b"\xd8\x1d" + struct.pack("<I", order["zero_va"])
+             and struct.unpack("<f", pe.bytes_at(order["zero_va"], 4))[0] == 0.0,
+             "the collector no longer keeps a note at t <= start while the clock is 0")
 
 
 def default_focal(width: int) -> int:
@@ -1497,6 +1590,7 @@ def run_check(root: Path) -> int:
     check_arms(pe, ck)
     check_cd_program(pe, root, ck)
     check_camera(pe, ck)
+    check_note_order(pe, ck)
     check_focus_table(pe, ck)
     check_frontend(pe, ck)
     ck.check("lifecycle.create", pe.bytes_at(0x0046546E, 20).startswith(

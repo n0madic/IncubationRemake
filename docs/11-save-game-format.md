@@ -245,7 +245,7 @@ referenced. The ones whose meaning is established:
 | `+0x01D1` | `u8` | **Campaign number** — `1` selects `Missions/_C_XXX.lev` as the campaign map, `2` selects `_C_YYY.lev` ([`27` §2.1](27-campaign.md)) | `0x0043B760` |
 | `+0x01D2` | `u8` | **version stamp** — see §5.4 | `0x0043BEF0` |
 | `+0x01D4` | `u32[4]` | **equipment points** per player; the add clamps at 10000 | `0x0043B010` |
-| `+0x01E4` | `u8[4]` | **commendations** per player ([`20` §7](20-lcl-language.md) slot 11) | `0x0043B0F0` |
+| `+0x01E4` | `u8[4]` | **commendations** per player — paid by [`20` §7](20-lcl-language.md) slot 11 at the debriefing **and** by `0x0043B860` once per unit lost to an enemy ([`27` §6.2](27-campaign.md)) | `0x0043B0F0` |
 | `+0x01F0` | `u32` | **solo flag** — set when the human count is `<= 1`; it is what puts the computer into the rotation ([`25` §3](25-turn-and-round.md)) | `0x0043B1E0` |
 | `+0x0200` | `u32[12]` | the **LCL game-control slots** ([`20` §7](20-lcl-language.md)) | `0x0043B160` |
 | `+0x0230` | `struct[4]`, stride 40 | **campaign scoreboard** — see §5.5; the field at its `+0x20` is the per-player end state, `5` = out of the rotation | `0x0043BA00`, `0x0043B930` |
@@ -359,7 +359,12 @@ and so writes `40 * 255` bytes past the array when an alien makes the kill.
 
 The seventeen callers of the record accessor `0x0043BA00` are all reads bar
 `aRemoveUnitElement`'s, which is why a sweep of the accessor alone does not
-find the writers: the three address the array directly.
+find the writers: the three address the array directly. So does the one
+routine that writes the record *backwards*: `0x0043BBD0`, called only by the
+debriefing's *back to the map* button, subtracts each mission half from its
+campaign half on record 0 and the mission's `+0x10` from `+0x1E4`
+([`27` §6.6](27-campaign.md)). `0x0043B860` writes `+0x1E4` too — a unit lost
+to an enemy is a commendation ([`27` §6.2](27-campaign.md)).
 
 All six fixture saves agree with the reading: `+0x04 = 25`, `+0x0C = 3`,
 `+0x14 = 3`, `+0x1C = 119` — 25 kills, three units lost, all three of them to

@@ -106,11 +106,13 @@ func spawn(creator: int, args: Array, source: Blob) -> bool:
 	return emit(creator, args)
 
 
-## Step 2 of docs/28 section 7.7.1: `aGetUnitMapElementPtr` on the record's
-## `aux`, a null answer aborting the arm. **UNVERIFIED** which slots the map
-## declines beyond "no record": the engine's dead slots still answered with a
-## stale object, so this reads "the picture has a unit there" and nothing
-## finer.
+## Step 2 of docs/28 section 7.7.1: `aGetUnitMapElementPtr` `0x00477AE0` on
+## the record's `aux`, a null answer aborting the arm. The map declines three
+## things and nothing else: id `0xFFFF` (*"invalid unit id found"*, which a
+## byte cannot be), an id above 200 (*"unit id out of area"*, `0x00477B0A`)
+## and a record whose hit points `+0x16` are zero (*"unit is dead"*,
+## `0x00477B41`). The callback carries all three: a slot the mirror has no
+## unit for, or one whose unit has `hp 0`, answers empty.
 func has_target_for(blob: Blob) -> bool:
 	if not unit_map.is_valid():
 		return super(blob)
