@@ -669,7 +669,12 @@ the direction every movement clip strides in
 ([`40` §7.2](40-charisma-model-animation.md)). At the front end's 20 frames a
 second and one clip unit a frame the clip runs 22.6 seconds and then loops, and
 a flight lasts about half of that, so what the player sees is a squad walking
-away down the pad while the camera comes down behind them.
+away down the pad while the camera comes down behind them. *(The "20 frames a
+second" is the limiter's nominal rate; measured 2026-09-13, its epoch rule
+makes the ceiling **27 ms a frame** on a host that renders in no time —
+[`40` §4.8](40-charisma-model-animation.md), [`101` §13.7](101-slice-9-report.md)
+— so the original's own pace is `2 / (0.05 s + frame cost)` clip units a
+second and machine-dependent; the remake fixes the design rate.)*
 
 Corpus, all fifteen maps:
 

@@ -21,8 +21,8 @@ endif
 
 .PHONY: help check-godot check-formats check-cache fixtures android-cache \
 	android-cache-force _android-cache-key \
-	test-godot test-touch test build build-macos build-windows build-linux \
-	build-android build-ios
+	test-godot test-touch test-export test build build-macos build-windows \
+	build-linux build-android build-ios
 
 help:
 	@printf '%s\n' \
@@ -32,6 +32,7 @@ help:
 		'  make fixtures       Rebuild ignored Godot test fixtures from the retail data.' \
 		'  make test-godot     Run the Godot harness (requires fixtures and Godot 4.7).' \
 		'  make test-touch     Run the viewport-level touch integration test.' \
+		'  make test-export    Export the macOS Tests preset and run the suites inside it (needs a window).' \
 		'  make test           Run format, cache, and Godot checks.' \
 		'  make build          Build the host desktop target (macOS on this host).' \
 		'  make build-macos    Export a macOS .app.' \
@@ -171,6 +172,13 @@ test-godot: check-godot
 
 test-touch: check-godot
 	$(GODOT) --headless --fixed-fps 60 --path $(GODOT_DIR) --script res://tests/touch_integration.gd -- --mission=_C_140
+
+# Out of `make test` like `test-touch`: it needs export templates and a
+# window, and takes three minutes. Always a debug export -- the leak gate it
+# exists for reads diagnostics a release template strips -- so EXPORT_MODE is
+# not passed on.
+test-export: check-godot
+	bash $(GODOT_DIR)/run_export_tests.sh $(GODOT)
 
 test: check-formats check-cache test-godot
 

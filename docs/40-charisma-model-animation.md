@@ -724,7 +724,15 @@ Two caveats a remake should know rather than copy:
 * the limiter does not reset its epoch (`0x00522ee8`) on the branch that waits,
   only on the branch that does not (`0x0047f390`), so the wait is enforced on
   every *other* call. The effective cap is roughly twice the nominal one. This
-  is an engine bug, not a design.
+  is an engine bug, not a design. **Measured 2026-09-13**
+  (`presentation_gold.py`, phase `frame_limiter`): sixty calls of
+  `0x0047F2E0(10, 20)` inside the live executable, the tick, the epoch and the
+  waited flag read after each — the epoch equals the tick after every
+  no-wait call and is untouched after every wait, the waits are exactly
+  thirty and never adjacent, and the sixty calls take **1622 ms** by
+  `GetTickCount` either side, **27 ms a call** against the nominal 50. With
+  nothing rendered between calls that is the ceiling: two frames per
+  `1000 / maxFps` plus the frame's own cost, `2 / (0.05 s + t)` a second.
 
 **3c. A walk is six of those frames per map field.** This is the measurement
 that turns the gameplay rate from a free choice into a constrained one, and it
@@ -1599,8 +1607,9 @@ to act on it rather than merely read it:
    rendered frame, but the *rendered* rate is whatever the 1997 main loop
    achieves under a skip controller whose nominal caps are 20 fps in-game and
    25/30 fps in menus, and whose epoch handling doubles the effective cap
-   (`0x0047f2e0`). There is no single number to recover here — the original had
-   none. A remake must choose one; 30 fps is the consistent choice. This is
+   (`0x0047f2e0`; **measured 2026-09-13**, §4.8: 27 ms a call with nothing
+   rendered between calls, the wait on every other one). There is no single
+   number to recover here — the original had none. A remake must choose one; 30 fps is the consistent choice. This is
    **resolved as far as the shipped artefacts allow**, not open in the sense of
    "not looked at".
 

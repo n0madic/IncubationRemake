@@ -1104,7 +1104,11 @@ What the old pair reproduced is worth recording, because it is why the bodies
 sprinted: 30 fps with a hand-picked 0.16 s per field is, to within rounding,
 the engine's **epoch bug** — the limiter does not reset its epoch on the branch
 that waits, so the cap was enforced every other frame and a field took ~0.15 s.
-Following the bug is not the same as following the original.
+Following the bug is not the same as following the original. *(The bug is
+measured now, 2026-09-13 — [`40` §4.8](40-charisma-model-animation.md):
+sixty limiter calls take 1622 ms inside the live executable, 27 ms a call,
+so six frames of a field are 0.16 s on a host that renders for free; the
+decision above stands.)*
 
 One neighbouring quantity is still a decision, and is named rather than folded
 into an expression:

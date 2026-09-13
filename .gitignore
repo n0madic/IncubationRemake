@@ -21,3 +21,6 @@ tools/wine_visn/*.exe
 # Native captures: derived from Blue Byte data, like tools/out/.
 # The committed README.md beside them records what each one pins.
 tests/fixtures/*/*.json
+# The by-hand pass's screenshots (tests/fixtures/play/README.md): pictures of
+# Blue Byte's art, filed per pass and never committed.
+tests/fixtures/play/*/

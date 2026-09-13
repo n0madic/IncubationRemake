@@ -243,10 +243,13 @@ pool while it is up and releases it on *Back*, read out of `/state`'s
 
 ## 11. Open questions
 
-None. Both of the slice's own — the camera bone's roll and the fly-in's frame
-— closed on 2026-09-09; see §12.
-
----
+**None.** Both of the slice's own — the camera bone's roll and the fly-in's
+frame — closed on 2026-09-09 (§12). The one thing the by-hand pass turned up,
+three fly-ins that read short (§15), is **not** open: the flight is measured at
+10.8 s six times over, the code that could shorten it is a real key or mouse
+press the driver never sends, and the reading does not reproduce — so the code
+is correct and the anomaly is a one-off mis-timing or a stray desktop keypress,
+which changes nothing to act on. It is closed in §15, not carried here.
 
 ## 12. Addendum, 2026-09-09 — three reports and six answers
 
@@ -619,12 +622,26 @@ the eight-screen loop covers it from here on.
 The suites are 40 by **5009**, in the editor and in the `macOS Tests` export,
 with nothing held at exit in either.
 
-**What this leaves.** The script's gate covers the editor run, which is the
+~~**What this leaves.** The script's gate covers the editor run, which is the
 one in the always-run block. The export prints the same lines but is started
 by hand and nothing gates it — today's run was read by eye and was clean. The
 second layer does run inside the export, so what is uncovered is only a leak
 that none of the eight screens makes; closing it properly wants a wrapper
-around the `.app`, which is its own piece of work.
+around the `.app`, which is its own piece of work.~~ **Closed 2026-09-13.**
+`godot/run_export_tests.sh` (`make test-export`) stages the fixtures, exports
+the `macOS Tests` preset, runs the `.app` under a `timeout` and reads its own
+tail through the **same three gates** as the editor run — the error filter,
+the leak lines and the sentinel now live once, in `godot/test_gates.sh`, and
+both runners source it, so a gate added for one is a gate the other gets.
+The first gated run: 41 suites, **5485** checks, nothing held at exit, 25 s
+for the export and the run together. The gates were exercised against
+synthetic tails (a leaked-instance warning, `resources still in use`, a
+runtime error outside `violations/`, a run with no sentinel — each fails; the
+violating fixture's own parse error is still exempt). Exporting this preset
+writes its own `.command` beside the app and leaves the shipping app and
+wrapper alone. The fixture staging moved into the shared file too, because
+the Tests preset's `include_filter` packs `generated/*`: an export made
+before the copies land carries the previous run's fixtures.
 
 
 ### 13.10 Three things the reveal and the splash cost the player *(2026-09-09)*
@@ -719,11 +736,33 @@ picture of the map with the squad standing on it.
   and arriving. So the animation is not stopped when the flight returns. What
   that compares is two pictures rather than the engine's own frame, so the
   *rate* behind the menus is still checked only against the eye.
-* **The march's own pace is read, not compared.** 1.33 m a second follows from
+* ~~**The march's own pace is read, not compared.** 1.33 m a second follows from
   the clip, the speed literal and the 20 fps limiter, each measured; that the
   original looks the same at the same moment is not checked against a frame of
-  it. The *direction* is checked -- `test_game_ui` requires the step and the
-  facing to agree to within a cosine of 0.9, which is the one thing a
+  it.~~ **Narrowed 2026-09-13 — the limiter is measured, and "20 a second"
+  was the design, not the rate.** `presentation_gold.py`'s `frame_limiter`
+  phase calls `0x0047F2E0(10, 20)` sixty times inside the live executable
+  with `GetTickCount` either side and the controller's four globals read after
+  every call ([`40` §4.8](40-charisma-model-animation.md)): the epoch moves
+  **only** on the call that does not wait, so the wait lands on every other
+  call — thirty of sixty, never two in a row — and sixty calls took
+  **1622 ms, 27 ms a call**, against the 3000 ms a real 20 fps would be. One
+  clip unit a rendered frame at that ceiling is **2.5 m a second** for
+  `P0_M2_000`'s 3017.7 units over 452 frames, and 1.33 m only on a machine
+  whose frame costs the whole 50 ms; the original's pace is therefore a
+  property of the host — `2 / (0.05 s + frame cost)` — and not a number the
+  game fixes. The remake's 20 is [`92` §7.10](92-remake-architecture.md)'s
+  decision for the walk, taken for the same reason and applied to the same
+  clock; nothing here changes it. What stays open is only the picture: a
+  frame of the original at an upgrade base, at a known time after the
+  fly-in, which no shell on this host can take — shown at the rendering layer
+  2026-09-13 ([`91` §3.2](91-wine-runtime-probes.md)): a Wine-side GDI
+  capturer reads the console window but returns all-black of the game's,
+  which renders through DirectDraw/MoltenVK past GDI; `screencapture` is
+  refused; a late breakpoint does not survive the debugger transport; and
+  the game's own dumper `fcn.00463F90` is past the one anchor `dbgcall`
+  reaches. The *direction* is checked -- `test_game_ui` requires the step and
+  the facing to agree to within a cosine of 0.9, which is the one thing a
   screenshot could not have shown: a metre of travel at forty thousand units
   of depth is a pixel, and the first version of that check had the composition
   wrong and read exactly -1.
@@ -885,3 +924,70 @@ the mission and `ui map` runs mission control's entry gate — then a key ends
 the animated extro and the 4000 ms hold raises the screen. The roll comes up
 the dark half of the plate with its headings underlined and passes behind
 *Back* and *Exit Game*.
+
+---
+
+## 15. The by-hand pass, nine slices on — *(2026-09-13)*
+
+[`102`](102-remake-backlog.md)'s *verification debt*, the by-hand item: slice G's pass ([`97` §42](97-slice-5-report.md))
+ran once, on 2026-09-03, and slices F through the ninth, the campaign, the
+shell, Instant Action and the endings landed after it with nobody playing the
+result end to end. This is that session — the shipping export rebuilt from
+the tree of the day, launched with `--agent-port=`, and driven from the
+menu to the credits with every screenshot's numbers read out of the same
+frame. What the hand is, and what is synthetic about it, is exactly
+[`97` §42](97-slice-5-report.md)'s: the path is `Viewport.push_input`, the
+choice of pixel and moment is the driver's.
+
+The route, the shots and the numbers are in
+[`tests/fixtures/play/README.md`](../tests/fixtures/play/README.md), one row per
+thing looked at; the pictures are gitignored beside it. In one line: menu →
+options → chain 1 → the intro → the map → the Unit Menu with a hire and its
+undo → base 1's fly-in with the squad marching the pad → the Upgrade Menu and
+the Item List → a dialogue location → the mission's briefing (typing, voice,
+tips, whole) → deployment → a walk, a 55 % shot with its caption and muzzle,
+a save and a load a turn later that answered the **same world hash** → a
+defeat by the mission's own `HeroKilled` → *Try Again* → a victory → the
+debriefing → the next location opened → *End game* → Instant Action's *Bug
+Race* with two computer turns and a door set piece → the animated extro →
+the credits roll → *Back* → quit, with the process printing nothing at exit.
+
+**What it found: no defect.** Four observations are written beside the route
+so nobody files them as one — a click during a hold is dropped by design, the
+in-mission report panel is Instant Action's alone because the campaign's
+debriefing goes up in the frame it would show, the landed camera of an upgrade
+base looks past the marching squad, which is seen from the first waypoint and
+not the last, and a computer walk filed as a frame of wall is
+[`42` §3.2](42-mission-presentation.md)'s mode 2, the mover's own eyes in a
+corridor.
+
+**A fifth reading, chased to a conclusion: three fly-ins that ended early —
+not a defect.** The first session's visits to base 1 had the eye at the
+shuttle within 1.5 s twice and the Upgrade Menu up within 3.5 s once. A second
+session **timed** the same flight by polling `/state` from the click to
+`UpgradeScreen` — by a ring click, by a ring click with three screenshots
+taken during it, and by the `location` verb — and got **10.8 s** all three
+times, which is `fly_advance`'s 217 steps at 20 a second for `upgrade_1`'s
+three waypoints (the law's arithmetic, stepped in Python from the `.lcl`'s
+`CreateCameraPath` lines, gives 217). A third session replayed all three of
+the first session's own preambles — the Unit Menu hire and undo then
+`location 1` in one batch, a played mission ended with *Try Again* then the
+ring, and *Exit* then the ring with eight screenshots in the click's own
+batch — and every one flew for **10.8–10.9 s**: six timed flights, none
+short. The flight cannot be shortened by a long frame — the clock accumulates
+and steps, so a stall batches steps without losing seconds — and the only
+thing in the code that lands it early is a key or a mouse press
+(`FlyInScreen._unhandled_input`, the original's `0x004fcbdc`); none of the
+driver's verbs that ran during a flight pushes one (`wait`, `shot`, `buttons`
+read off the code, `press` emits a signal). The code is correct, the reading
+does not reproduce, and the one thing that would produce it — a real key or
+click on the game's window, which was the desktop's frontmost — is outside the
+code. So it is closed as a one-off mis-timing or a stray desktop keypress, not
+carried as a question: no answer to it changes anything to act on.
+
+**What it did not reach.** The victory was closed with `cheat nuke` after ten
+turns in which `_C_100`'s aliens never left their pocket and no marine had a
+line — the map's stalemate, not a rule's; the ending was reached through the
+debugging entries as [§14](#14-the-credits-screen-has-a-roll--code-fcn0044bd90-2026-09-10)
+did, because a chain is half an hour of play; and the touch path needs a
+touch screen, so `make test-touch` remains its only check.

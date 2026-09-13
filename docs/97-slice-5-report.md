@@ -4612,10 +4612,23 @@ checks (`combat` 160 → 197, `effects` 115 → 173, `camera` 135 → 147,
   need a hook that steps the routine outside the frame loop.
 * `RotatingCamera` is wired in `OrbitSequence` but not yet driven from the
   LCL event; slice F's script cameras take it.
-* The alien's jump scream is drawn from the pool's stream as the engine
+* ~~The alien's jump scream is drawn from the pool's stream as the engine
   draws it, but which of the three waves each draw picks is read off the
   `je` ladder at `0x00411950` (0 → `S_ALI_0`, 1 → `S_ALI_1`, 2 →
-  `S_ALI_2`) and not heard under Wine.
+  `S_ALI_2`) and not heard under Wine.~~ **Closed 2026-09-13** —
+  `presentation_gold.py`'s `jump_scream` phase: the uncounted stream's live
+  seed read at the anchor, three hundred `aRandom2(0, 3)` values as the x87
+  returned them and the seed after each; `inclib.rng.ARandom` reproduces
+  every one from the seed read first, every value lies in `[0, 3)`
+  (0.0072 to 2.9994 in the capture), the truncated draw takes all three
+  arms (86 / 103 / 111) and the `jne` to `0x004117A9` — the join the
+  player's arm reaches after its landing dust, the head of the flight loop,
+  with no wave loaded — is unreachable because the seed is kept below the
+  modulus. The ladder's
+  three targets are decoded from the displacements and each arm's
+  `push <id>` and wave-name push are read back: 59 `S_ALI_0`, 60 `S_ALI_1`,
+  61 `S_ALI_2`. Audio itself is not capturable from this shell; the draw and
+  the ladder are the whole of the claim, and both are measured now.
 
 ## 32. 2026-09-03 — the set pieces get their camera and their effects (D-a)
 

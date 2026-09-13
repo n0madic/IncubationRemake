@@ -170,6 +170,32 @@ establish that this Wine/WOW64 exception transport is unsuitable for the
 runtime evidence gate. Static specifications and deterministic reference tests
 remain the primary oracle; Wine is used for bounded observations.
 
+### 3.2 A rendered frame of the original cannot be captured on this host — **[runtime]** *(2026-09-13)*
+
+`screencapture` is refused to this shell (no Screen Recording permission),
+which was known. What is new is that the **in-Wine** route is closed too, and
+at the rendering layer rather than the permission layer. A small Win32 helper
+built with `i686-w64-mingw32-gcc` and run inside the same `explorer /desktop=`
+session captures the desktop with `GetDC(NULL)` + `BitBlt` and drives input
+with `SendInput`; on the `WineConsoleClass` window `PrintWindow` returns a
+correct 624x400 image, so the instrument works. Against the game's own window
+(`FindWindow` "Incubation", a real 640x480 top-level) both a window-DC `BitBlt`
+(with `CAPTUREBLT`) and `PrintWindow` **succeed and return all-black** — every
+sampled byte zero — in the title screen and after an input. The game composites
+through DirectDraw/MoltenVK into a surface GDI never sees, so no GDI capture,
+screen or window, reads a pixel of it. `SendInput` reaches the window (the
+console capture proves the event path), but there is nothing to read back.
+
+The one path this does not rule out is the game's **own** BMP dumper
+`fcn.00463F90` (`aScrTools.cpp`, the `b`/`n` briefing keys' `0x0041C010`),
+which reads the game's software surface directly rather than through GDI — but
+it needs the game stopped at the frame to dump, and every state past the menu
+(a fly-in included) is beyond the one anchor §3.1 can reach, so `dbgcall`
+cannot call it there. A rendered frame of the original therefore stays
+uncapturable from this host by every route tried; the evidence for a claim
+about the original's *picture* is the decompiled draw code, not a screenshot.
+
+
 ### 3.1 A route that does work — **[runtime]**
 
 The conclusion above is about stopping *late*. There is a way to reach a loaded

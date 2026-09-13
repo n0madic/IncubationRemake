@@ -30,6 +30,7 @@ from the repo root.
 | `make test` | all three of the above |
 | `make fixtures` | rebuild the gitignored Godot test fixtures from the retail data |
 | `make test-touch` | the viewport-level touch integration run (headless) |
+| `make test-export` | the same suites inside the `macOS Tests` export, gated like the editor run (needs a window) |
 | `make build-macos\|windows\|linux\|android\|ios` | export a target; `make build` is the host |
 | `make android-cache[-force]` | the Android payload cache (a build product, ~1 min / 200 MiB) |
 
@@ -225,7 +226,7 @@ directory inside this repository), and each `--check` fails without a capture.
 | `turn_gold.py` | the hand-over, line of sight, hit probability, interaction | imports `run_plan` from `movemap_gold` — same session |
 | `ai_gold.py` | a whole computer turn on `_C_140` | **must not use `--code`** (see below) |
 | `blob_gold.py` | the effect pool's creators and all 74 update arms | one creator per plan; `--probe-startup N` reports reachability |
-| `presentation_gold.py` | the death, idle, unit-animation and set-piece creators | one process per phase |
+| `presentation_gold.py` | the death, idle, unit-animation and set-piece creators; the jump scream's draw and the frame limiter's epoch rule | one process per phase; the last two need no save |
 | `hud_probe.py` | the ground overlay `fcn.00417E70`, blitted into a private surface | the camera must be placed first, or every projection clips out |
 
 Three operational rules that have each cost a re-run:

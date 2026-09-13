@@ -20,7 +20,7 @@ Reproduce with a **copy** of the game outside this repository, with
 ```bash
 python3 tools/presentation_gold.py --game-copy /path/to/copy \
     --dbgcall /path/to/copy/dbgcall.exe
-python3 tools/presentation_gold.py --check gog_incubation      # 399 checks
+python3 tools/presentation_gold.py --check gog_incubation      # 741 checks
 python3 tools/presentation_gold.py --emit-death-cases \
     tests/fixtures/presentation/cases_death.json --root gog_incubation
 ```
@@ -42,7 +42,18 @@ phase, the arguments, the seed, everything the creator read and **the
 engine's own records**, so the GDScript programs are compared with the pool
 `Incubation.exe` left, not with the Python.
 
-## What the forty-one phases hold
+## What the forty-three phases hold
+
+Two phases added on 2026-09-13 for `docs/102` stage 4 need no mission
+loaded and run at the anchor alone. `jump_scream` reads the uncounted
+Lehmer seed and draws `aRandom2(0, 3)` three hundred times, the seed after
+each -- the draw behind `aPlayJumpAnimaion`'s `S_ALI_0/1/2` ladder at
+`0x00411950` (`docs/97` §31.8), which `--check` replays from the read seed
+and decodes out of the executable. `frame_limiter` brackets sixty calls of
+the skip controller `0x0047F2E0(10, 20)` with `GetTickCount` and reads its
+tick, epoch and waited flag after each -- the epoch rule of `docs/40` §4.8,
+measured: 1622 ms for sixty calls, the wait on every other one.
+
 
 The twelve added later on 2026-09-03 for `docs/42` §8 (`docs/97` §32) are
 the set pieces' creators: `death_tube_puffs_marine`,

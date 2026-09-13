@@ -843,7 +843,10 @@ frame) and raises landing dust `0x004227C0` at both ends, with `jump.wav`
 `S_ALI_0/1/2` @59/60/61 instead, and raises no dust at the source
 (`0x004117A1` is on the player's arm). The routine waits for the pool to
 empty. *(Corrected 2026-09-03, [`97` §31](97-slice-5-report.md): the trail
-and both dusts are measured; the parabola is read.)*
+and both dusts are measured; the parabola is read. The scream's draw is
+measured 2026-09-13 — `presentation_gold.py` phase `jump_scream`,
+[`97` §31.8](97-slice-5-report.md): 300 live draws replayed from the read
+seed, all three arms taken, the no-wave arm unreachable.)*
 
 ### 7.2 The push — `0x0046D530`
 

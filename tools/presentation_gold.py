@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure the presentation layer inside a running ``Incubation.exe``.
 
-Two phases, both driven through ``tools/dbgcall`` at ``docs/91``'s anchor with
+The first two phases, both driven through ``tools/dbgcall`` at ``docs/91``'s anchor with
 the fixture save loaded, both about the idle scheduler of ``docs/42`` §6:
 
 ``idle_random``
@@ -31,6 +31,26 @@ the fixture save loaded, both about the idle scheduler of ``docs/42`` §6:
     is held while the finished clip stays attached, the free changes
     nothing by itself, and the first step after it puts every bound part
     back at its bind pose and every channel slot to zero.
+
+Two phases added on 2026-09-13 (``docs/102`` stage 4) load **no save** and
+run at the anchor alone, because what they measure is a global and not a
+mission:
+
+``jump_scream``
+    the uncounted Lehmer stream's live seed, then three hundred
+    ``aRandom2(0, 3)`` draws as the x87 returned them with the seed after
+    each -- the draw behind ``aPlayJumpAnimaion``'s ``S_ALI_0/1/2`` ladder at
+    ``0x00411950`` (``docs/97`` §31.8).  The check replays every draw from the
+    seed read first and decodes the ladder's three targets and their wave
+    and volume pushes out of the executable.
+
+``frame_limiter``
+    sixty calls of the skip controller ``0x0047F2E0(10, 20)`` bracketed by
+    ``GetTickCount``, its tick, epoch and waited flag read after each -- the
+    epoch rule ``docs/40`` §4.8 had read and called "roughly twice".  With
+    nothing rendered between calls this is the ceiling, and the ceiling is
+    what the check pins: the wait on every other call, the epoch moving only
+    on the calls that do not wait, 27 ms a call against the nominal 50.
 
 Usage::
 
@@ -677,7 +697,114 @@ def crush_wall_plan(name: str) -> str:
     ]) + "\n"
 
 
-PLAN_NAMES = ("idle_random", "idle_pose", "deaths_state") + tuple(
+# --------------------------------------------------------------------------
+# The jump scream's draw -- docs/42 §7.1, docs/97 §31.8
+# --------------------------------------------------------------------------
+
+#: `aPlayJumpAnimaion`'s computer arm: `push 3; push 0; call aRandom2; add
+#: esp, 8; call _ftol` at `0x0041193F`, then the ladder at `0x00411950` --
+#: `sub eax, 0; je S_ALI_0; dec eax; je S_ALI_1; dec eax; jne <no scream>`
+#: with the third arm falling through to `S_ALI_2`.  What the phase measures
+#: is the draw itself: the uncounted stream's live seed, three hundred
+#: `aRandom2(0, 3)` values as the x87 returned them, and the seed after each.
+#: The mapping from the truncated draw to the wave is the bytes below, which
+#: the check reads out of the executable; what a player would *hear* is not
+#: capturable from a shell with no audio path, and the draw plus the ladder
+#: is the whole of the claim.
+SCREAM_DRAWS = 300
+SCREAM_DRAW_SITE = 0x0041193F
+SCREAM_DRAW_BYTES = bytes.fromhex("6a036a00e8981f050083c408e866ce0900")
+SCREAM_LADDER = 0x00411950
+SCREAM_LADDER_BYTES = bytes.fromhex("83e8000f8416010000480f848b000000480f8542feffff")
+#: Draw value -> (`push <volume id>` site, wave name, volume id).  The wave
+#: name push sits ten bytes after the id push in all three arms.
+SCREAM_ARMS = {0: (0x00411A6F, "S_ALI_0.wav", 59),
+               1: (0x004119EB, "S_ALI_1.wav", 60),
+               2: (0x00411967, "S_ALI_2.wav", 61)}
+SCREAM_NAME_PUSH_OFFSET = 0x0A
+#: Where a draw of three or more would go: `0x004117A9`, the join the
+#: player's arm reaches after its landing dust (`0x004117A1`) -- the head of
+#: the flight loop (`mov eax, [esp+0x30]; test eax, eax; jle`), with no wave
+#: loaded.  Unreachable, because the seed is kept below the modulus and
+#: `3 * seed / modulus < 3`.
+SCREAM_NO_ARM = 0x004117A9
+#: `dbgcall` prints `st0` to six significant digits; the seed read after
+#: each draw is the exact comparison, the value a rounded one.
+SCREAM_TOLERANCE = 1e-5
+
+SCREAM_DECLARATIONS = """\
+__cdecl void aSetSaveMode(i32)              = Incubation.exe+0x48770
+__cdecl f64  aRandom2(i32,i32)              = Incubation.exe+0x638e0
+"""
+
+
+def jump_scream_plan() -> str:
+    """The live seed, then three hundred draws of `aRandom2(0, 3)`."""
+    lines = [
+        "# jump_scream: the draw behind the alien's jump scream.  No mission",
+        "# is loaded -- the generator is its seed, which `main` set from",
+        "# GetTickCount before the anchor (0x00449919), and nothing else.",
+        SCREAM_DECLARATIONS.rstrip("\n"),
+        f"aSetSaveMode(0) --read 0x{ARANDOM2_SEED:x}:8",
+    ]
+    lines += [f"draw = aRandom2(0,3) --read 0x{ARANDOM2_SEED:x}:8"] * SCREAM_DRAWS
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# The frame limiter -- docs/40 §4.8, docs/101 §13.7
+# --------------------------------------------------------------------------
+
+#: `aWinTools.cpp`'s skip controller `0x0047F2E0(minFps, maxFps)`, which the
+#: gameplay frame routine `0x0040B6F0` calls as `(10, 20)` -- the clock the
+#: upgrade base's march and every in-mission walk run on.  Its four globals:
+#: the two rates, the tick it last read, the epoch it measures from, the
+#: dead skip flag and the waited flag.  What the phase measures is the
+#: epoch rule `docs/40` §4.8 read and called "roughly twice": the epoch is
+#: written only on the branch that does **not** wait, so the wait lands on
+#: every other call and the ceiling is two frames per `1000 / maxFps`
+#: milliseconds plus whatever the frame itself costs.
+LIMITER = 0x0047F2E0
+LIMITER_MIN_FPS = 10
+LIMITER_MAX_FPS = 20
+LIMITER_CALLS = 60
+LIMITER_TICK = 0x00522EE4
+LIMITER_EPOCH = 0x00522EE8
+LIMITER_WAITED = 0x00522EF0
+#: The frame routine's own call site: `push 20; push 10; call 0x0047F2E0`.
+LIMITER_FRAME_SITE = 0x0040B82D
+LIMITER_FRAME_BYTES = bytes.fromhex("6a146a0ae8aa3a0700")
+#: The epoch write is on the no-wait branch alone: `mov [0x522ee8], edi` at
+#: `0x0047F390`, reached by both `jae` and by nothing after the wait loop.
+LIMITER_EPOCH_WRITE = 0x0047F390
+LIMITER_EPOCH_WRITE_BYTES = bytes.fromhex("893de82e5200")
+#: The imported `GetTickCount`, through its IAT slot as `MEMCPY_DECL` does.
+TICK_SLOT = 0x00525588
+
+LIMITER_DECLARATIONS = f"""\
+__stdcall u32 GetTickCount()                = [{TICK_SLOT:#x}]
+__cdecl void aSkipController(i32,i32)       = Incubation.exe+0x{LIMITER - 0x400000:x}
+"""
+
+
+def frame_limiter_plan() -> str:
+    """Sixty limiter calls at the frame routine's rates, the globals after each."""
+    reads = (f" --read 0x{LIMITER_TICK:x}:4 --read 0x{LIMITER_EPOCH:x}:4"
+             f" --read 0x{LIMITER_WAITED:x}:4")
+    lines = [
+        "# frame_limiter: the skip controller's epoch rule.  Between two",
+        "# calls the frame costs only the harness's own round trip, so what",
+        "# is measured is the ceiling, not a rendered frame rate.",
+        LIMITER_DECLARATIONS.rstrip("\n"),
+        "before = GetTickCount()",
+    ]
+    lines += [f"aSkipController({LIMITER_MIN_FPS},{LIMITER_MAX_FPS}){reads}"] * LIMITER_CALLS
+    lines.append("after = GetTickCount()")
+    return "\n".join(lines) + "\n"
+
+
+PLAN_NAMES = ("idle_random", "idle_pose", "jump_scream", "frame_limiter",
+              "deaths_state") + tuple(
     "death_" + name for name, _c, _a, _s in DEATH_CALLS) \
     + tuple(SPECIAL_CALLS) + tuple(SPECIAL_D00_CALLS) \
     + tuple(crush_wall_sites())
@@ -1037,6 +1164,165 @@ def check_random(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
         if clip is not None and first[0] + int(engine_length(clip)) + 2 <= len(rows):
             ck.pin("random.freed_by_the_engine_after_countdown", replay["frees"] >= 1,
                    f"{replay['frees']} frees")
+
+
+def check_scream(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
+    """The jump scream's draw, replayed from the live seed."""
+    ck.pin("scream.rows_all_ok", all(r.get("status") == "ok" for r in rows),
+           str([r for r in rows if r.get("status") != "ok"][:3]))
+    draws = [r for r in rows if r.get("call") == "aRandom2"]
+    ck.pin("scream.draw_count", len(draws) == SCREAM_DRAWS, str(len(draws)))
+    seed = seed_of(rows[0]) if rows else None
+    ck.pin("scream.seed_read", seed is not None, "no seed read")
+    if seed is None or not draws:
+        return
+    # `main` seeds the stream from GetTickCount, so a zero here would be the
+    # generator's fixed point and every draw a faithful zero.
+    ck.pin("scream.seed_nonzero_and_below_modulus",
+           0.0 < seed < ARandom.MODULUS and seed == int(seed), str(seed))
+    model = ARandom(seed)
+    values: list[float] = []
+    mismatched: list[str] = []
+    for row in draws:
+        predicted = model.raw(0, 3)
+        got = row.get("st0")
+        after = seed_of(row)
+        if not isinstance(got, (int, float)) or after is None:
+            mismatched.append(f"{row.get('i')}: no st0 or seed")
+            continue
+        if abs(float(got) - predicted) > SCREAM_TOLERANCE or after != model.seed:
+            mismatched.append(f"{row.get('i')}: {got} vs {predicted}, "
+                              f"seed {after} vs {model.seed}")
+        values.append(float(got))
+    ck.pin("scream.model_reproduces_every_draw", not mismatched, str(mismatched[:3]))
+    truncated = [int(v) for v in values]
+    ck.pin("scream.every_draw_below_3", all(0.0 <= v < 3.0 for v in values),
+           str([v for v in values if not 0.0 <= v < 3.0][:3]))
+    ck.pin("scream.all_three_arms_drawn", set(truncated) == {0, 1, 2},
+           str(sorted(set(truncated))))
+    counts = {k: truncated.count(k) for k in (0, 1, 2)}
+    # Three hundred draws of a uniform third: each arm well clear of zero.
+    ck.pin("scream.arms_roughly_even", all(c >= SCREAM_DRAWS // 6 for c in counts.values()),
+           str(counts))
+    pe = PEFile(str(Path(root) / "Incubation.exe"))
+    ck.pin("scream.draw_site_is_aRandom2_0_3_then_ftol",
+           pe.bytes_at(SCREAM_DRAW_SITE, len(SCREAM_DRAW_BYTES)) == SCREAM_DRAW_BYTES,
+           pe.bytes_at(SCREAM_DRAW_SITE, len(SCREAM_DRAW_BYTES)).hex())
+    ck.pin("scream.ladder_bytes",
+           pe.bytes_at(SCREAM_LADDER, len(SCREAM_LADDER_BYTES)) == SCREAM_LADDER_BYTES,
+           pe.bytes_at(SCREAM_LADDER, len(SCREAM_LADDER_BYTES)).hex())
+    # The ladder's three targets, decoded from the displacements rather than
+    # trusted: `je rel32` at +3, `je rel32` at +10, `jne rel32` at +17.
+    ladder = pe.bytes_at(SCREAM_LADDER, len(SCREAM_LADDER_BYTES))
+    je0 = SCREAM_LADDER + 9 + struct.unpack_from("<i", ladder, 5)[0]
+    je1 = SCREAM_LADDER + 16 + struct.unpack_from("<i", ladder, 12)[0]
+    jne = SCREAM_LADDER + 23 + struct.unpack_from("<i", ladder, 19)[0]
+    fall = SCREAM_LADDER + len(SCREAM_LADDER_BYTES)
+    ck.pin("scream.ladder_targets",
+           (je0, je1, fall, jne) == (SCREAM_ARMS[0][0], SCREAM_ARMS[1][0],
+                                      SCREAM_ARMS[2][0], SCREAM_NO_ARM),
+           f"{je0:#x} {je1:#x} {fall:#x} {jne:#x}")
+    for value, (site, name, volume) in SCREAM_ARMS.items():
+        push = pe.bytes_at(site, 2)
+        ck.pin(f"scream.arm_{value}_volume_id", push == bytes((0x6A, volume)), push.hex())
+        name_push = pe.bytes_at(site + SCREAM_NAME_PUSH_OFFSET, 5)
+        text = pe.cstring(struct.unpack_from("<I", name_push, 1)[0]) \
+            if name_push[0] == 0x68 else None
+        ck.pin(f"scream.arm_{value}_wave", text == name, str(text))
+
+
+def _dword_read(row: dict[str, Any], address: int) -> int | None:
+    raw = _reads(row).get(f"0x{address:x}")
+    return None if raw is None or len(raw) != 4 else struct.unpack("<I", raw)[0]
+
+
+def limiter_trace(rows: list[dict[str, Any]]) -> list[tuple[int, int, int]]:
+    """`(tick, epoch, waited)` after each limiter call, in order."""
+    out: list[tuple[int, int, int]] = []
+    for row in rows:
+        if row.get("call") != "aSkipController":
+            continue
+        tick = _dword_read(row, LIMITER_TICK)
+        epoch = _dword_read(row, LIMITER_EPOCH)
+        waited = _dword_read(row, LIMITER_WAITED)
+        if tick is None or epoch is None or waited is None:
+            continue
+        out.append((tick, epoch, waited))
+    return out
+
+
+def check_limiter(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
+    """The skip controller's epoch rule, measured."""
+    ck.pin("limiter.rows_all_ok", all(r.get("status") == "ok" for r in rows),
+           str([r for r in rows if r.get("status") != "ok"][:3]))
+    trace = limiter_trace(rows)
+    ck.pin("limiter.call_count", len(trace) == LIMITER_CALLS, str(len(trace)))
+    ticks = [int(r.get("eax", "0"), 16) for r in rows if r.get("call") == "GetTickCount"]
+    ck.pin("limiter.bracketed_by_two_tick_reads", len(ticks) == 2, str(ticks))
+    if len(trace) != LIMITER_CALLS or len(ticks) != 2:
+        return
+    period = 1000 // LIMITER_MAX_FPS
+    pe = PEFile(str(Path(root) / "Incubation.exe"))
+    ck.pin("limiter.frame_routine_calls_10_20",
+           pe.bytes_at(LIMITER_FRAME_SITE, len(LIMITER_FRAME_BYTES)) == LIMITER_FRAME_BYTES,
+           pe.bytes_at(LIMITER_FRAME_SITE, len(LIMITER_FRAME_BYTES)).hex())
+    ck.pin("limiter.epoch_written_on_the_no_wait_branch",
+           pe.bytes_at(LIMITER_EPOCH_WRITE, len(LIMITER_EPOCH_WRITE_BYTES))
+           == LIMITER_EPOCH_WRITE_BYTES,
+           pe.bytes_at(LIMITER_EPOCH_WRITE, len(LIMITER_EPOCH_WRITE_BYTES)).hex())
+    # The rule, call by call.  A call that did not wait wrote the epoch as
+    # the tick it read; a call that waited left the epoch alone and read
+    # ticks until the period had passed since it.
+    #
+    # **The first call has no predecessor, and it may wait.**  The front end
+    # runs this same limiter (`0x0044BDB0`), so the epoch global `0x00522EE8`
+    # is warm at the anchor: the first `aSkipController` here can find it
+    # within a period and wait.  `previous_epoch` is therefore only compared
+    # once it exists -- both branches guard it -- so the first call is checked
+    # for the invariants it can carry alone (a no-wait writes the tick; a wait
+    # lasts a period) and not for one about a predecessor it does not have.
+    odd: list[str] = []
+    previous_epoch: int | None = None
+    for index, (tick, epoch, waited) in enumerate(trace):
+        if waited == 0:
+            if epoch != tick:
+                odd.append(f"{index}: no wait but epoch {epoch} != tick {tick}")
+            if previous_epoch is not None and tick - previous_epoch < period:
+                odd.append(f"{index}: no wait after only {tick - previous_epoch} ms")
+        else:
+            if previous_epoch is not None and epoch != previous_epoch:
+                odd.append(f"{index}: waited but epoch moved {previous_epoch} -> {epoch}")
+            if tick - epoch < period:
+                odd.append(f"{index}: left the wait at {tick - epoch} ms")
+        previous_epoch = epoch
+    ck.pin("limiter.epoch_rule_holds_every_call", not odd, str(odd[:4]))
+    waits = [w for _t, _e, w in trace]
+    # The behaviour is pinned by these three, all host-independent: the wait
+    # falls on every other call and never twice running (the epoch bug), and
+    # every waited call above already had to last a whole period.  The two
+    # wall-time checks below are only a loose sanity cross-check, because the
+    # elapsed time is 60 debugger round trips over Wine and its overhead is
+    # the host's, not the engine's.
+    ck.pin("limiter.no_two_consecutive_waits",
+           not any(a and b for a, b in zip(waits, waits[1:])), str(waits))
+    ck.pin("limiter.waits_on_about_every_other_call",
+           LIMITER_CALLS * 2 // 5 <= sum(waits) <= LIMITER_CALLS // 2 + 1, str(sum(waits)))
+    # The floor is the engine's own wall-clock waits and is host-independent:
+    # each of the `sum(waits)` waited calls held a full period (checked above),
+    # so the run cannot be shorter than that.  The ceiling is only a sanity
+    # cap: the debugger's overhead adds to the floor and is the host's, so the
+    # bound is generous -- a run that hits it wants a re-run, not a verdict.
+    elapsed = ticks[1] - ticks[0]
+    per_call = elapsed / LIMITER_CALLS
+    wait_floor = sum(waits) * period
+    ck.pin("limiter.elapsed_at_least_the_waits",
+           elapsed >= wait_floor - period,
+           f"{elapsed} ms against {sum(waits)} waits x {period} ms")
+    ck.pin("limiter.elapsed_not_every_call_waited",
+           per_call < period, f"{per_call:.1f} ms a call over {elapsed} ms")
+    ck.pin("limiter.elapsed_within_a_sane_ceiling",
+           elapsed < LIMITER_CALLS * period,
+           f"{elapsed} ms, ceiling {LIMITER_CALLS * period} ms (else re-run)")
 
 
 def check_pose(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
@@ -2025,7 +2311,8 @@ def check(path: Path, root: str) -> int:
         return 1
     phases = document.get("phases") or {}
     ck = Checker()
-    for name, fn in (("idle_random", check_random), ("idle_pose", check_pose)):
+    for name, fn in (("idle_random", check_random), ("idle_pose", check_pose),
+                     ("jump_scream", check_scream), ("frame_limiter", check_limiter)):
         rows = (phases.get(name) or {}).get("rows")
         ck.pin(f"{name}.captured", bool(rows), "phase missing -- re-take it")
         if rows:
@@ -2086,6 +2373,10 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int,
             plan = idle_random_plan()
         elif name == "idle_pose":
             plan = idle_pose_plan(pose_movements(str(game_copy), phases))
+        elif name == "jump_scream":
+            plan = jump_scream_plan()
+        elif name == "frame_limiter":
+            plan = frame_limiter_plan()
         elif name == "deaths_state":
             plan = deaths_state_plan()
         elif name in crush_wall_sites():

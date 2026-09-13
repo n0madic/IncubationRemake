@@ -1,59 +1,21 @@
----
+## Stage 5 — decisions and inputs waiting on the project owner
 
-## Stage 4 — verification debt
+Not work until they are answered, and they are cheap to answer. None is
+verification debt the project could pay itself: each wants a decision or a
+thing only a person outside this host can supply.
 
-Nothing here is known to be broken. Each is a claim that rests on reading
-where the project's own rules prefer a measurement.
-
-### 4.1 The exported build's leak gate is ungated
-
-**Owner:** [`101` §13.9](101-slice-9-report.md). `run_tests.sh` fails the run on
-every leak line, and `test_game_ui`'s `a_screen_owns_everything_it_builds` names
-the culprit inside the export too — but the **export itself** is started by
-hand and nothing gates it; the 2026-09-09 run was read by eye. What is
-uncovered is a leak none of the eight campaign screens makes.
-
-**What closes it:** a wrapper around the `.app` that runs the suites and reads
-its own tail, which §13.9 names as its own piece of work.
-
-*(**Not here, and why: the Ogg music path's four objects.** They are closed —
-[`97` §14.4](97-slice-5-report.md): the holder is the audio server, it lets go
-on its next mix, and the fix is
-`auto_accept_quit = false` plus `AudioSystem.shutdown()` and a wall-clock wait
-before `quit()`.)*
-
-### 4.2 The by-hand pass has not been re-run in nine slices
-
-**Owner:** [`97` §36 / §42](97-slice-5-report.md). Slice G ran once, on
-2026-09-03. Slices F through the ninth, the campaign, the shell, the touch
-path and the Instant Action mode have landed since, each verified by suites
-and captures. Nobody has played the result end to end.
-
-**What closes it:** a session through the agent server on a shipping build,
-with the screenshots filed. It is the cheapest item in this file per defect
-found — [`99` §8](99-slice-7-report.md), [`101` §12](101-slice-9-report.md) and
-[`101` §13.10](101-slice-9-report.md) were all opened by *play*, not by a suite.
-
-### 4.3 The march's pace is read, not compared
-
-**Owner:** [`101` §13.7](101-slice-9-report.md). 1.33 m a second follows from
-the clip, the speed literal and the 20 fps limiter, each measured; that the
-original looks the same at the same moment is not checked against a frame of
-it. The *direction* is checked.
-
-
-### 4.4 The alien's jump scream picks a wave by reading, not by hearing
-
-**Owner:** [`97` §31.8](97-slice-5-report.md). Which of `S_ALI_0/1/2` each draw
-takes is read off the `je` ladder at `0x00411950` and not heard under Wine.
-Cheap, and it is here only so it is not forgotten.
-
----
-
-## Stage 5 — decisions waiting on the project owner
-
-Not work until they are answered, and they are cheap to answer.
-
+* **A frame of the original at an upgrade base**, at a known time after its
+  fly-in, beside the remake's at the same time — the one cross-check on the
+  march's *look* that no measurement can stand in for. Every capture route on
+  this host is **shown**, not asserted, to be closed
+  ([`91` §3.2](91-wine-runtime-probes.md), 2026-09-13): a Wine-side GDI
+  capturer reads the console window but returns all-black of the game's, which
+  composites through DirectDraw/MoltenVK past GDI; `screencapture` is refused;
+  a late breakpoint does not survive the debugger transport; the game's own
+  dumper `fcn.00463F90` is past the one anchor `dbgcall` reaches. So it is a
+  recording for the project owner to make, as the Item List frame of
+  [`101` §13.7](101-slice-9-report.md) was — not a defect and nothing blocks
+  on it.
 * **`beams_until_hand_over`** — offered to the player, or an internal flag for
   the checks? It is internal today.
   [`100` Open questions item 2](100-slice-8-report.md).
