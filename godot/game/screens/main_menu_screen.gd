@@ -110,6 +110,18 @@ const LEFT_SHIFT: float = BUTTON_SIZE.x / 4.0
 ## lands the last row on exactly that coordinate, [constant LAST_AT].
 const GROUP_GAP: float = STEP.y / 2.0
 
+## What the **boot** menu's whole cascade is moved down by over the title
+## plate -- half a step, the remake's own, like [constant LEFT_SHIFT].
+##
+## Taking the bottom of the block's six rows clears the GOG title art
+## (*Time is running out* ends at 99 units) by one row's lead, but a
+## localised title is not the GOG one: the 1C release's `Graphics/Title.bmp`
+## carries a two-line title whose second line reaches 115 units, and the
+## first button at the block's 120 sat across its foot (docs/92 section 7.6).
+## The pause menu is drawn over the framed plate, with no title behind it,
+## and keeps the block's own coordinates.
+const TITLE_DROP: float = STEP.y / 2.0
+
 ## `Graphics/Title.bmp`, baked since converter 0.17.0. A cache from an older
 ## one has no such plate and [method CampaignScreen.plate_name]'s caller falls
 ## back to the frame, which is why this is a name rather than an assumption.
@@ -250,6 +262,8 @@ func _cascade_at(lead: int, index: int, apart: int) -> Vector2:
 		- Vector2(LEFT_SHIFT, 0.0)
 	if apart >= 0 and index >= apart:
 		at.y += GROUP_GAP
+	if not paused:
+		at.y += TITLE_DROP
 	return at
 
 

@@ -94,8 +94,7 @@ func run(h: TestHarness) -> void:
 ## balance rows the purchase reads.
 func _presets(h: TestHarness) -> void:
 	var host: CampaignHost = CampaignHost.create(CacheFixture.cache_dir(),
-		CacheFixture.balance(), Localization.from_cache(
-			CacheFixture.cache_dir(), CacheFixture.manifest()))
+		CacheFixture.balance(), Localization.from_cache(CacheFixture.paths()))
 	var ids: PackedInt32Array = host.tables.recruit_ids()
 	h.equal("preset.count", ids.size(), 23,
 		"the twenty-three arms of 0x00476260")

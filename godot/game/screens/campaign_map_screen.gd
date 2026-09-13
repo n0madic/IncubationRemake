@@ -78,10 +78,10 @@ const SHORT_SIZE: Vector2 = Vector2(200.0, 300.0)
 const SHORT_KEY: Key = KEY_B
 
 var host: CampaignHost = null
-## Where the briefing documents live, and the one this map's mission has.
-## Empty leaves the key doing nothing, which is what a cache with no briefing
-## text gets.
-var cache_dir: String = ""
+## Where the shipped faces are read from, and the briefing document this
+## map's mission has. An empty document leaves the key doing nothing, which
+## is what a cache with no briefing text gets.
+var paths: CachePaths = null
 var document: Dictionary = {}
 
 ## Whether [SliceMain] has a picture to put behind the frame. False when the
@@ -161,7 +161,7 @@ func toggle_short_briefing() -> void:
 		return
 	var box: Rect2 = Rect2(SHORT_AT, SHORT_SIZE)
 	_short_shade = shade(box)
-	_short = BriefingText.create(cache_dir, font != null)
+	_short = BriefingText.create(paths, font != null)
 	place_on_plate(_short, box.position, box.size)
 	root().add_child(_short)
 	_short.start_typewriter()

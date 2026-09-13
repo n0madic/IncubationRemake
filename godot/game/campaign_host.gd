@@ -20,6 +20,8 @@ extends RefCounted
 ## live player's game, so the directory is injectable and the suites point it
 ## at a scratch one (docs/92 section 7.15).
 const DEFAULT_SAVE_DIR: String = "user://saves"
+## The [Localization] key of the recruit name format ("Soldier %d").
+const RECRUIT_NAME_KEY: String = "roster.recruit_name"
 ## The numbered slots the shell shows.
 ##
 ## **Twenty-four, paged twelve at a time.** It was eight, which is what
@@ -151,6 +153,18 @@ static func create(cache_dir: String, balance: Dictionary,
 	return host
 
 
+## The recruit name format is the shell's language, not `core`'s: the roster
+## keeps the engine's literal until the host hands it the catalogue's
+## (`roster.recruit_name`). Set wherever a [CampaignState] comes to exist --
+## a new campaign, an Instant Action session, a decoded save -- so the next
+## hire is named in the language being played, while every name already
+## given stays as it was made (docs/92 section 7.6).
+func _name_recruits_in_language() -> void:
+	if state == null or state.roster == null or _text == null:
+		return
+	state.roster.recruit_name_format = _text.text(RECRUIT_NAME_KEY)
+
+
 # -- starting ------------------------------------------------------------------
 
 ## A new campaign in either chain (D1).
@@ -174,6 +188,7 @@ func start_new(number: int,
 		speech.append(_draw_speech())
 	state = CampaignState.begin(number, _weapon_zero_cost(),
 		_recruit_hit_points(), _recruit_ammo(), names, speech)
+	_name_recruits_in_language()
 	state.difficulty = clampi(difficulty, GameSettings.DIFFICULTY_MIN,
 		GameSettings.DIFFICULTY_MAX)
 	# `0x00450997`: the new-campaign start arms the intro on its campaign-1
@@ -226,6 +241,7 @@ func end() -> void:
 func start_instant_action(mission: String, header: Dictionary,
 		difficulty: int = GameSettings.DIFFICULTY_DEFAULT) -> CampaignState:
 	state = CampaignState.create()
+	_name_recruits_in_language()
 	state.campaign = 0
 	state.mission = mission
 	state.mode = TurnState.MODE_LOCAL
@@ -1016,6 +1032,7 @@ func load_save(slot: int = QUICK_SLOT) -> Dictionary:
 	if DictRead.as_int(decoded["result"]) != CampaignCodec.Result.OK:
 		return decoded
 	state = decoded["state"]
+	_name_recruits_in_language()
 	screen = SCREEN_MAP
 	# **Reset either way.** An `_S_*` mission is in no location table, and a
 	# load that left the last campaign's location standing had the Upgrade

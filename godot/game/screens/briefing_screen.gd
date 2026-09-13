@@ -43,7 +43,9 @@ const CAPTION_FONT_SIZE: int = 10
 
 var mission: String = ""
 var document: Dictionary = {}
-var cache_dir: String = ""
+## Where the shipped faces are read from, per language. `null` leaves the
+## page in the readable face, which is what a screen built in a suite gets.
+var paths: CachePaths = null
 ## Which block is up -- `A0` or `C0`.
 var block: String = "A0"
 ## Whether this screen was raised **over a running mission** -- interface
@@ -81,7 +83,7 @@ func build() -> void:
 	# `font` is the interface's, and `null` there means the readable face was
 	# chosen -- so the body follows the same decision the headings did instead
 	# of always being the shipped 8 px bitmap.
-	_text = BriefingText.create(cache_dir, font != null)
+	_text = BriefingText.create(paths, font != null)
 	place_on_plate(_text, BOX_AT, BOX_SIZE_BRIEFING)
 	root().add_child(_text)
 	_text.blip.connect(_on_blip)

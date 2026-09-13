@@ -12,6 +12,8 @@ Usage::
     python3 tools/remake_convert.py --check-cache
     python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
     python3 tools/remake_convert.py gog_incubation --instant-action-maps -o CACHES
+    python3 tools/remake_convert.py gog_incubation --campaign-maps \
+        --language-pack Russian=/path/to/1C -o CACHES
 
 ``--check`` runs the whole pipeline twice into two staging directories and
 requires the inventories to be **byte-identical**, then diffs the emitted map
@@ -64,6 +66,7 @@ from inclib.check import Checker  # noqa: E402
 from inclib import charisma as chamod  # noqa: E402
 from inclib import charisma_tables as chatables  # noqa: E402
 from inclib import convert as convertmod  # noqa: E402
+from inclib import language as langmod  # noqa: E402
 from inclib.convert import (ConvertError, animation_path,  # noqa: E402
                             convert, mission_path)
 from inclib import sound as soundmod  # noqa: E402
@@ -116,15 +119,31 @@ def _reader(root: Path) -> cachemod.SourceReader:
     return reader
 
 
+#: `--language-pack NAME=PATH`, parsed: pack name -> its root.
+Packs = dict[str, Path]
+#: `--plate NAME:PLATE=PATH`, parsed: pack name -> plate name -> file.
+Plates = dict[str, dict[str, Path]]
+
+
 def run_conversion(root: Path, missions: list[str], caches_root: Path,
-                   language: str,
-                   music: bool = True) -> tuple[cachemod.Staging,
-                                                dict[str, Any], Any]:
-    """Convert into a fresh staging directory and build its manifest."""
+                   language: str, music: bool = True,
+                   packs: Packs | None = None,
+                   plates: Plates | None = None) -> tuple[cachemod.Staging,
+                                                          dict[str, Any], Any]:
+    """Convert into a fresh staging directory and build its manifest.
+
+    *packs* are the localisations laid over the base under ``lang/<Name>/``
+    (docs/92 §7.6); each is converted after the base, against the base's own
+    file lists, and refused if its balance table is not the base's.
+    """
     reader = _reader(root)
     staging = cachemod.Staging.create(caches_root)
     try:
         result = convert(root, missions, staging, reader, language, music=music)
+        for name, pack_root in sorted((packs or {}).items()):
+            convertmod.convert_language_pack(
+                root, pack_root, name, staging, result, missions=missions,
+                plates=(plates or {}).get(name))
     except Exception:
         staging.discard()
         raise
@@ -138,8 +157,57 @@ def run_conversion(root: Path, missions: list[str], caches_root: Path,
          # Recorded in the manifest because the same input converts to two
          # different caches with and without it, and the cache id would
          # otherwise be the only place that difference showed.
-         "music": music})
+         "music": music,
+         # The base first, then every pack: what the options screen offers,
+         # and the code page each one's fonts and text were read through.
+         "languages": [language] + sorted(result.packs),
+         "code_pages": {language: langmod.spec(language).code_page,
+                        **{n: p["code_page"] for n, p in result.packs.items()}},
+         "packs": {n: {k: v for k, v in p.items() if k != "language"}
+                   for n, p in result.packs.items()}})
     return staging, manifest, result
+
+
+def parse_pack_args(values: list[str] | None) -> Packs:
+    """``NAME=PATH`` pairs; the name must be a row of the language table."""
+    packs: Packs = {}
+    for value in values or []:
+        name, sep, path = value.partition("=")
+        if not sep or not name or not path:
+            raise cachemod.CacheError(
+                f"--language-pack wants NAME=PATH, got {value!r}")
+        try:
+            langmod.spec(name)
+        except langmod.LanguageError as exc:
+            raise cachemod.CacheError(str(exc)) from exc
+        root = Path(path)
+        if not (root / "DATA").is_dir():
+            raise cachemod.CacheError(
+                f"--language-pack {name}: {root} has no DATA/; not a game tree")
+        packs[name] = root
+    return packs
+
+
+def parse_plate_args(values: list[str] | None, packs: Packs) -> Plates:
+    """``NAME:PLATE=PATH`` -- a title picture for a pack tree that lacks it."""
+    plates: Plates = {}
+    for value in values or []:
+        head, sep, path = value.partition("=")
+        name, colon, plate = head.partition(":")
+        if not sep or not colon or not name or not plate or not path:
+            raise cachemod.CacheError(
+                f"--plate wants NAME:PLATE=PATH, got {value!r}")
+        if name not in packs:
+            raise cachemod.CacheError(
+                f"--plate {name}: no --language-pack of that name")
+        if plate not in (convertmod.PLATE_TITLE, convertmod.PLATE_WILDERNESS):
+            raise cachemod.CacheError(
+                f"--plate {name}:{plate}: one of {convertmod.PLATE_TITLE}, "
+                f"{convertmod.PLATE_WILDERNESS}")
+        if not Path(path).is_file():
+            raise cachemod.CacheError(f"--plate {value}: no such file")
+        plates.setdefault(name, {})[plate] = Path(path)
+    return plates
 
 
 @contextmanager
@@ -229,8 +297,12 @@ def refuse_game_output(root: Path, out: Path) -> None:
 
 
 def convert_and_publish(root: Path, missions: list[str], out: Path,
-                        language: str, music: bool = True) -> int:
+                        language: str, music: bool = True,
+                        packs: Packs | None = None,
+                        plates: Plates | None = None) -> int:
     refuse_unsafe_output(root, out)
+    for pack_root in (packs or {}).values():
+        refuse_game_output(pack_root, out)
     caches_root = out
     started = time.perf_counter()
     # Collection removes abandoned staging directories, so the same lock must
@@ -238,7 +310,7 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
     # collect converter A's still-active staging tree while A was converting.
     with cachemod.publish_lock(caches_root):
         staging, manifest, result = run_conversion(
-            root, missions, caches_root, language, music)
+            root, missions, caches_root, language, music, packs, plates)
         try:
             target, created = cachemod.publish(staging, caches_root, manifest)
             cachemod.set_active(caches_root, manifest["cache_id"])
@@ -254,6 +326,10 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
     LOG.info("missions %s, %d prototypes, %d textures, %d waves, %d track(s)",
              ", ".join(result.missions), result.prototypes, result.textures,
              result.waves, result.tracks)
+    for name, pack in sorted(result.packs.items()):
+        LOG.info("%s pack: %d file(s), %d identical to the base dropped, "
+                 "%d missing", name, pack["files"], pack["identical_dropped"],
+                 pack["missing"])
     for warning in manifest["warnings"]:
         LOG.warning("%s", warning)
     if removed:
@@ -262,7 +338,9 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
 
 
 def dev_fixtures(root: Path, missions: list[str], out: Path,
-                 language: str, music: bool = True) -> int:
+                 language: str, music: bool = True,
+                 packs: Packs | None = None,
+                 plates: Plates | None = None) -> int:
     """Materialise the same bytes into a gitignored ``res://generated/`` tree.
 
     ``docs/92`` §10.1 item 4 wants the development fixtures to describe the same
@@ -272,6 +350,8 @@ def dev_fixtures(root: Path, missions: list[str], out: Path,
     there is no incidental serialisation to diff around.
     """
     refuse_game_output(root, out)
+    for pack_root in (packs or {}).values():
+        refuse_game_output(pack_root, out)
     # **Before** the conversion, not after it.  Both directories this replaces
     # are checked up front, so a mistyped `--dev-fixtures` costs a message
     # rather than several seconds of work followed by a message -- and, more
@@ -282,7 +362,7 @@ def dev_fixtures(root: Path, missions: list[str], out: Path,
     _refuse_unowned(out / EYE_DIR, _is_eye_dir,
                     f"it carries no {EYE_MARKER} marker")
     staging, manifest, _result = run_conversion(root, missions, out, language,
-                                                music)
+                                                music, packs, plates)
     out.mkdir(parents=True, exist_ok=True)
     target = out / "cache"
     # The same rule `collect` follows, and for the same reason: this removes a
@@ -678,37 +758,52 @@ def check_bodies(c: Checker, root: Path, cache_dir: Path,
 FONT_DESCENTS: dict[str, list[int]] = {
     "font_0": [2, 3], "font_1": [2], "font_2": [2, 3], "font_3": [2],
 }
-#: ``docs/60`` §5 -- 224 elements, one per cp1252 code point from 32 to 255.
+#: ``docs/60`` §5 -- 224 elements, one per byte from 32 to 255.
 FONT_GLYPHS = 224
 
 
-def check_fonts(c: Checker, cache_dir: Path) -> None:
+def check_fonts(c: Checker, cache_dir: Path, code_page: str = "cp1252",
+                index_rel: str = convertmod.FONT_INDEX,
+                prefix: str = "fonts") -> None:
     """The game's own bitmap fonts, against what ``docs/60`` §5 measured."""
-    index = json.loads((cache_dir / "fonts" / "index.json").read_text())
+    index = json.loads((cache_dir / index_rel).read_text())
     fonts = {f["name"]: f for f in index["fonts"]}
-    c.expect("fonts.present", sorted(fonts), sorted(FONT_DESCENTS))
+    c.expect(f"{prefix}.present", sorted(fonts), sorted(FONT_DESCENTS))
+    c.expect(f"{prefix}.code_page", index.get("code_page"), code_page)
     for name in sorted(fonts):
         font = fonts[name]
-        c.expect(f"fonts.{name}.glyphs", len(font["glyphs"]), FONT_GLYPHS,
-                 "one per cp1252 code point from 32 to 255")
+        c.expect(f"{prefix}.{name}.glyphs", len(font["glyphs"]), FONT_GLYPHS,
+                 "one per byte from 32 to 255")
         # The descent is a property of the font, not of a glyph, and a font
         # whose glyphs disagreed about it would show up as an extra value
         # rather than as a baseline nobody noticed.
-        c.expect(f"fonts.{name}.descents", font["descents"],
+        c.expect(f"{prefix}.{name}.descents", font["descents"],
                  FONT_DESCENTS[name])
-        c.expect(f"fonts.{name}.codepoints",
-                 [font["glyphs"][0]["codepoint"], font["glyphs"][-1]["codepoint"]],
+        c.expect(f"{prefix}.{name}.bytes",
+                 [font["glyphs"][0]["byte"], font["glyphs"][-1]["byte"]],
                  [32, 255])
+        # The code point is the byte read through the release's page, and
+        # the one rule the text decoders share (`inclib.language.codepoint`).
+        c.expect(f"{prefix}.{name}.codepoints",
+                 [g["codepoint"] for g in font["glyphs"]],
+                 [langmod.codepoint(g["byte"], code_page)
+                  for g in font["glyphs"]],
+                 f"every glyph registered under its {code_page} code point")
         # Every glyph must lie inside the atlas it indexes into.
-        overflow = [g["codepoint"] for g in font["glyphs"]
+        overflow = [g["byte"] for g in font["glyphs"]
                     if g["x"] + g["width"] > font["atlas_width"]
                     or g["height"] > font["atlas_height"]]
-        c.expect(f"fonts.{name}.inside_atlas", overflow, [],
+        c.expect(f"{prefix}.{name}.inside_atlas", overflow, [],
                  f"{font['atlas_width']}x{font['atlas_height']}")
-        c.check(f"fonts.{name}.png",
-                (cache_dir / "fonts" / str(font["file"])).is_file(),
+        # A pack's atlas identical to the neutral one is dropped by the
+        # dedup and resolves to the neutral copy, which is the second path.
+        c.check(f"{prefix}.{name}.png",
+                (cache_dir / index_rel).parent.joinpath(
+                    str(font["file"])).is_file()
+                or (cache_dir / convertmod.FONT_INDEX).parent.joinpath(
+                    str(font["file"])).is_file(),
                 str(font["file"]))
-    c.expect("fonts.no_floats", _float_paths(index), [])
+    c.expect(f"{prefix}.no_floats", _float_paths(index), [])
 
 
 #: The cache's size, in KiB, with music and without it.  Named as two numbers
@@ -1298,8 +1393,8 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
             first, manifest_a, result = run_conversion(
                 root, missions, caches_root, language)
         elapsed = time.perf_counter() - started
-        second, manifest_b, _ = run_conversion(root, missions, caches_root,
-                                               language)
+        second, manifest_b, result_b = run_conversion(root, missions,
+                                                      caches_root, language)
 
         c.expect("determinism.inventory", _inventory_map(manifest_a),
                  _inventory_map(manifest_b),
@@ -1344,6 +1439,10 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
         published, created = cachemod.publish(first, caches_root, manifest_a)
         c.check("publish.created", created, published.name)
         c.expect("publish.verifies", cachemod.verify_cache(published), [])
+        # On the second staging, which is discarded: the pack check writes
+        # under `lang/` and the published cache above must stay exactly what
+        # its manifest declares.
+        check_language_pack(c, root, second, result_b, missions)
         second.discard()
         c.check("publish.no_staging_left",
                 not any(p.name.startswith(cachemod.STAGING_PREFIX)
@@ -1393,6 +1492,207 @@ def run_checks(root: Path, missions: list[str], language: str) -> int:
                  "the manifest says which of the two caches it is")
         silent.discard()
     return c.report()
+
+
+#: The pack the guard check builds out of the base tree.  German rather than
+#: Russian so that the `DATA/TXT/<directory>` mapping is exercised too: the
+#: engine's own languages live under their own name, the 1C release under
+#: `English`.
+SYNTHETIC_PACK = "German"
+
+
+def _synthetic_pack(root: Path, out: Path, mission: str,
+                    *, flip_balance: bool = False) -> Path:
+    """A second game tree made of the base's language-dependent files.
+
+    Copies, not symlinks: the pack reader resolves every path to record its
+    on-disk spelling, and a link out of the tree resolves out of the tree.
+    The GUI bank `Txtmod_a.lcl` loses its last id, `Info.lcl` renames the
+    first unit type (and, with *flip_balance*, changes one number), and the
+    named mission has one unit renamed, one unit's non-name byte flipped and
+    one cell byte flipped.  `Waves/` and `Briefing/` are left out, which is
+    the "thinner than the base" case: every one of their files is reported
+    missing and the neutral copy serves.
+    """
+    from inclib import lcl as lclmod
+    from inclib import lev as levmod
+    spec = langmod.spec(SYNTHETIC_PACK)
+    out.mkdir(parents=True)
+    (out / "DATA").mkdir()
+    (out / "Missions").mkdir()
+    text_root = out / "DATA" / "TXT" / spec.directory
+    text_root.mkdir(parents=True)
+    base_text = convertmod._find(root, "DATA", "TXT", langmod.DEFAULT_LANGUAGE)
+    for sub in ("Briefing", "Info"):
+        shutil.copytree(convertmod._find(base_text, sub), text_root / sub)
+    gui = text_root / "GUI"
+    gui.mkdir()
+    for path in convertmod._find(base_text, "GUI").iterdir():
+        if path.stem.lower() == "txtmod_a":
+            program = lclmod.decode(path.read_bytes())
+            lines = program.split(b"\r\n")
+            # Drop the last text entry (the credits' "END"), which is the
+            # shape the 1C bank has: a shorter tail, ids missing at the end.
+            last = max(i for i, line in enumerate(lines)
+                       if line.startswith(b"%:"))
+            del lines[last]
+            path_out = gui / path.name
+            path_out.write_bytes(lclmod.encode(b"\r\n".join(lines)))
+        else:
+            shutil.copy(path, gui / path.name)
+    for name in ("Libs", "Graphics", "Install"):
+        shutil.copytree(convertmod._find(root, name), out / name)
+    # One briefing picture short of the base: the pack's art index has to
+    # keep the neutral entry, or that language loses the picture rather than
+    # reading the neutral one.
+    pictures = sorted(p for p in (out / "Graphics" / "Briefing").iterdir()
+                      if p.suffix.lower() == ".bmp")
+    pictures[0].unlink()
+    info = convertmod._find(root, "DATA", "Info.lcl").read_bytes()
+    text = lclmod.decode(info)
+    text = text.replace(b'"Human Soldier (1)"', b'"Mensch Soldat (1)"', 1)
+    if flip_balance:
+        # The first `SetUnitInfo` row's `mp_max` -- the fourth field, after
+        # the id and the two strings (docs/21 section 5).
+        at = text.index(b"SetUnitInfo")
+        comma = at
+        for _ in range(3):
+            comma = text.index(b",", comma + 1)
+        comma += 1
+        end = text.index(b",", comma)
+        value = int(text[comma:end].strip()) + 1
+        text = text[:comma] + str(value).encode() + text[end:]
+    (out / "DATA" / "Info.lcl").write_bytes(lclmod.encode(text))
+    lev = bytearray(convertmod.mission_path(root, mission).read_bytes())
+    spans = levmod.unit_name_spans(bytes(lev))
+    named = [slot for slot, (start, _end) in enumerate(spans)
+             if lev[start] != 0]
+    renamed, flipped = named[0], named[1]
+    start = spans[renamed][0]
+    lev[start:start + levmod.UNIT_NAME_SIZE] = b"Umbenannt".ljust(
+        levmod.UNIT_NAME_SIZE, b"\0")
+    # `+0x16` is the record's hit points: authored, not scratch.
+    lev[spans[flipped][0] + 0x16] ^= 0x01
+    # One cell byte, outside every unit record.
+    lev[levmod.HEADER_SIZE] ^= 0x01
+    (out / "Missions" / f"{mission}.lev").write_bytes(bytes(lev))
+    return out
+
+
+def check_language_pack(c: Checker, root: Path, staging: cachemod.Staging,
+                        result: Any, missions: list[str]) -> None:
+    """The guard, the per-id text fallback's warning, the dedup and the
+    mirror, on a pack built out of the base tree (:func:`_synthetic_pack`)."""
+    mission = missions[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        pack_root = _synthetic_pack(root, Path(tmp) / "pack", mission)
+        before = set(staging.files)
+        warnings_before = len(result.warnings)
+        stats = convertmod.convert_language_pack(
+            root, pack_root, SYNTHETIC_PACK, staging, result,
+            missions=missions)
+        new_warnings = result.warnings[warnings_before:]
+        prefix = f"{convertmod.LANG_DIR}/{SYNTHETIC_PACK}/"
+        added = sorted(set(staging.files) - before)
+        c.check("pack.mirrors_neutral_paths",
+                added and all(a.startswith(prefix) for a in added),
+                f"{len(added)} file(s) under {prefix}")
+        # Every pack file byte-identical to its neutral twin is gone, and
+        # every kept one differs from it or has no twin.
+        twins = [(a, a[len(prefix):]) for a in added
+                 if a[len(prefix):] in staging.files]
+        same = [a for a, rel in twins
+                if (staging.root / a).read_bytes()
+                == (staging.root / rel).read_bytes()]
+        c.expect("pack.dedup_drops_identical", same, [],
+                 f"{stats['identical_dropped']} dropped, {len(twins)} kept "
+                 "beside a differing twin")
+        c.check("pack.dedup_dropped_many", stats["identical_dropped"] > 100,
+                f"{stats['identical_dropped']} symlinked files dropped")
+        stale = [a for a in added if not (staging.root / a).is_file()]
+        c.expect("pack.entries_exist", stale, [])
+        inventory = cachemod.build_inventory(staging)
+        c.check("pack.inventory_covers_lang",
+                sum(1 for e in inventory if e["path"].startswith(prefix))
+                == len(added), f"{len(added)} entries")
+        names = json.loads((staging.root / prefix / "names.json").read_text())
+        c.expect("pack.names.balance",
+                 names["balance"]["units"], {"0": "Mensch Soldat (1)"},
+                 "one renamed unit type, nothing else")
+        overlay = names["missions"].get(mission, {})
+        c.expect("pack.names.renamed_slot", list(overlay.values()),
+                 ["Umbenannt"], "the renamed slot and only it")
+        c.check("pack.names.flipped_slot_skipped",
+                any("kept the base's" in w and mission in w
+                    for w in new_warnings),
+                "a record that differs beyond its name lends no name")
+        c.check("pack.guard.cell_byte_counted",
+                any(f"{mission}.lev: 2 byte(s) differ" in w
+                    for w in new_warnings),
+                "the unit byte and the cell byte are both counted")
+        c.check("pack.text.short_bank_warned",
+                any("Txtmod_a: 1 id(s)" in w for w in new_warnings),
+                "; ".join(w for w in new_warnings if "bank" in w)[:120])
+        c.check("pack.missing_is_a_warning",
+                stats["missing"] > 100
+                and any("the pack lacks" in w for w in new_warnings),
+                f"{stats['missing']} wave(s) absent from the pack, one warning")
+        gui = json.loads((staging.root / prefix / "text/gui.json").read_text())
+        c.expect("pack.text.language", gui["language"], SYNTHETIC_PACK)
+        c.expect("pack.text.code_page", gui["code_page"], "cp1252")
+        c.check("pack.reader_prefixed",
+                all(k.startswith(prefix) for k in stats["sources"]),
+                f"{len(stats['sources'])} pack sources fingerprinted under "
+                f"{prefix}")
+        c.check("pack.never_reads_gameplay",
+                not any(k[len(prefix):].split("/")[0] in
+                        ("WorldSet", "CHData", "Video", "music")
+                        or k.endswith(".lcl") and "/Missions/" in k
+                        or k.endswith(".exe")
+                        for k in stats["sources"]),
+                "no script, geometry, body, cutscene, music or executable")
+        check_fonts(c, staging.root, "cp1252", prefix + "fonts/index.json",
+                    "pack.fonts")
+        # The art index is completed with the neutral entries the pack
+        # lacks, and the missing picture's file resolves to the neutral one.
+        neutral_art = json.loads((staging.root / "art/index.json").read_text())
+        pack_art = json.loads((staging.root / prefix / "art/index.json").read_text())
+        c.expect("pack.art.index_complete",
+                 {t: sorted(e["name"] for e in pack_art[t])
+                  for t in convertmod.ART_INDEX_TABLES},
+                 {t: sorted(e["name"] for e in neutral_art[t])
+                  for t in convertmod.ART_INDEX_TABLES},
+                 "every neutral plate, picture and library is listed")
+        dropped_picture = sorted(set(e["name"] for e in neutral_art["briefing"])
+                                 - set(p[len(prefix) + len("art/briefing/"):-4]
+                                       for p in added
+                                       if p.startswith(prefix + "art/briefing/")))
+        c.check("pack.art.missing_picture_resolves_neutral",
+                bool(dropped_picture) and all(
+                    (staging.root / f"art/briefing/{n}.png").is_file()
+                    for n in dropped_picture),
+                f"{len(dropped_picture)} picture(s) served by the neutral tree")
+
+        # The guard: a changed number in `Info.lcl` refuses the pack whole.
+        shutil.rmtree(pack_root)
+        _synthetic_pack(root, pack_root, mission, flip_balance=True)
+        try:
+            convertmod.convert_language_pack(
+                root, pack_root, SYNTHETIC_PACK, staging, result,
+                missions=missions)
+            refused = ""
+        except ConvertError as exc:
+            refused = str(exc)
+        c.check("pack.guard.balance_refused",
+                "units[0]" in refused and "names only" in refused, refused)
+        # And the same root as the base is not a pack.
+        try:
+            convertmod.convert_language_pack(
+                root, root, SYNTHETIC_PACK, staging, result, missions=missions)
+            same_root = ""
+        except ConvertError as exc:
+            same_root = str(exc)
+        c.check("pack.refuses_base_root", "base root" in same_root, same_root)
 
 
 #: The whole campaign set: 75 missions, the two campaign maps and the 15
@@ -1525,7 +1825,8 @@ def _cache_race_worker(out: str, entered: Any, release: Any,
     global run_conversion
 
     def tiny_conversion(root: Path, _missions: list[str], caches_root: Path,
-                        language: str, _music: bool = True) \
+                        language: str, _music: bool = True,
+                        _packs: Any = None, _plates: Any = None) \
             -> tuple[cachemod.Staging, dict[str, Any], Any]:
         staging = cachemod.Staging.create(caches_root)
         staging.write_json("tables/race.json", {"complete": True})
@@ -1537,7 +1838,7 @@ def _cache_race_worker(out: str, entered: Any, release: Any,
         manifest = cachemod.build_manifest(
             reader, cachemod.build_inventory(staging), language, [])
         result = SimpleNamespace(missions=[], prototypes=0, textures=0,
-                                 waves=0, tracks=0, warnings=[])
+                                 waves=0, tracks=0, warnings=[], packs={})
         return staging, manifest, result
 
     run_conversion = tiny_conversion
@@ -1549,10 +1850,124 @@ def _cache_race_worker(out: str, entered: Any, release: Any,
         finished.put(("error", str(exc)))
 
 
+def check_pack_primitives(c: Checker, tmp: Path) -> None:
+    """The language-pack rules that need no game root (docs/92 §7.6): the
+    prefixed reader, the two name guards, the dedup merge and the manifest's
+    language list."""
+    from inclib import lev as levmod
+    # The prefixed reader spells its keys under `lang/<Name>/`.
+    pack_root = tmp / "pack-root"
+    (pack_root / "DATA").mkdir(parents=True)
+    (pack_root / "DATA" / "Info.lcl").write_bytes(b"[LCL]\r\n[END]")
+    reader = cachemod.SourceReader(root=pack_root, prefix="lang/Klingon/")
+    reader.record(pack_root / "data" / "info.lcl")
+    c.expect("pack.reader.prefix", sorted(reader.fingerprint()),
+             ["lang/Klingon/DATA/Info.lcl"],
+             "recorded under the prefix, in the on-disk spelling")
+    c.expect("pack.reader.rel", reader.rel(pack_root / "DATA" / "Info.lcl"),
+             "lang/Klingon/DATA/Info.lcl")
+
+    # `lev_name_overlay` on a 1x1 map: a name lends itself only from a record
+    # that is otherwise identical, `+0x56` excepted.
+    size = levmod.HEADER_SIZE + levmod.CELL_SIZE + levmod.TAIL_SIZE
+    base = bytearray(size)
+    struct.pack_into("<II", base, levmod.OFF_HEIGHT, 1, 1)
+    unit_base = levmod.HEADER_SIZE + levmod.CELL_SIZE
+    for slot, name in ((0, b"Alpha"), (1, b"Bravo"), (2, b"Charlie")):
+        start = unit_base + slot * levmod.UNIT_SIZE
+        base[start:start + len(name)] = name
+        base[start + 0x16] = 10
+    pack = bytearray(base)
+    for slot, name in ((0, b"Alef"), (1, b"Bet"), (2, b"Gimel")):
+        start = unit_base + slot * levmod.UNIT_SIZE
+        pack[start:start + levmod.UNIT_NAME_SIZE] = bytes(levmod.UNIT_NAME_SIZE)
+        pack[start:start + len(name)] = name
+    pack[unit_base + 1 * levmod.UNIT_SIZE + 0x16] = 11     # authored: skipped
+    pack[unit_base + 2 * levmod.UNIT_SIZE + 0x56] = 5      # scratch: ignored
+    pack[levmod.HEADER_SIZE] = 7                           # a cell byte
+    c.expect("pack.lev.synthetic_parses",
+             levmod.parse_lev(bytes(base)).units[0].name, "Alpha",
+             "the 1x1 buffer is a well-formed map")
+    names, skipped, differing = convertmod.lev_name_overlay(
+        bytes(base), bytes(pack), "cp1252")
+    c.expect("pack.lev.names", names, {"0": "Alef", "2": "Gimel"},
+             "the identical record and the scratch-only one lend a name")
+    c.expect("pack.lev.skipped", skipped, [1], "the changed hit points")
+    c.expect("pack.lev.differing", differing, 2,
+             "the hit-point byte and the cell byte")
+    c.expect("pack.lev.other_size",
+             convertmod.lev_name_overlay(bytes(base), bytes(base[:-1]),
+                                         "cp1252"),
+             ({}, [], -1), "a file of another size lends nothing")
+
+    # `balance_name_overlay`: a name may change, a number may not.
+    rows = {"units": [{"id": 0, "description": "Soldier", "mp_max": 3,
+                       "key": "#"}],
+            "weapons": [{"id": 0, "name": "Gun", "damage": 4, "key": "A"}],
+            "equipment": [], "ctrlmap": [{"index": 0, "name": "Floor",
+                                          "delay": 1}]}
+    renamed = json.loads(json.dumps(rows))
+    renamed["units"][0]["description"] = "Soldat"
+    renamed["ctrlmap"][0]["name"] = "Boden"
+    c.expect("pack.balance.names",
+             convertmod.balance_name_overlay(rows, renamed, "Info.lcl"),
+             {"units": {"0": "Soldat"}, "weapons": {}, "equipment": {},
+              "ctrlmap": {"0": "Boden"}})
+    changed = json.loads(json.dumps(rows))
+    changed["weapons"][0]["damage"] = 5
+    try:
+        convertmod.balance_name_overlay(rows, changed, "Info.lcl")
+        refused = ""
+    except ConvertError as exc:
+        refused = str(exc)
+    c.check("pack.balance.number_refused",
+            "weapons[0].damage" in refused, refused)
+    relettered = json.loads(json.dumps(rows))
+    relettered["weapons"][0]["key"] = "B"
+    try:
+        convertmod.balance_name_overlay(rows, relettered, "Info.lcl")
+        refused = ""
+    except ConvertError as exc:
+        refused = str(exc)
+    c.check("pack.balance.key_is_not_a_name",
+            "weapons[0].key" in refused,
+            "the `Data.txt` page letter is not a string column")
+
+    # `_merge_pack`: the identical file and its entry both go; the differing
+    # one lands under the prefix; the emptied directory goes too.
+    caches_root = tmp / "merge"
+    staging = cachemod.Staging.create(caches_root)
+    staging.write_bytes("ui/a.png", b"same")
+    staging.write_bytes("ui/b.png", b"base")
+    sub = cachemod.Staging(root=staging.root / "lang" / "Klingon")
+    sub.root.mkdir(parents=True)
+    sub.write_bytes("ui/a.png", b"same")
+    sub.write_bytes("ui/b.png", b"pack")
+    sub.write_bytes("names.json", b"{}")
+    kept, dropped = convertmod._merge_pack(staging, sub, "lang/Klingon/")
+    c.expect("pack.merge.counts", (kept, dropped), (2, 1))
+    c.expect("pack.merge.files", sorted(staging.files),
+             ["lang/Klingon/names.json", "lang/Klingon/ui/b.png",
+              "ui/a.png", "ui/b.png"])
+    c.check("pack.merge.identical_gone",
+            not (staging.root / "lang/Klingon/ui/a.png").exists(),
+            "file and entry both dropped")
+    inventory = cachemod.build_inventory(staging)
+    c.expect("pack.merge.inventory", [e["path"] for e in inventory],
+             sorted(staging.files), "the inventory walks `lang/` too")
+    manifest = cachemod.build_manifest(
+        cachemod.SourceReader(root=tmp), inventory, "English", [],
+        {"languages": ["English", "Klingon"]})
+    c.expect("pack.manifest.languages", manifest["languages"],
+             ["English", "Klingon"])
+    staging.discard()
+
+
 def run_cache_checks() -> int:
     """The two cache properties of docs/92 §10.4, on a temporary directory."""
     c = Checker()
     with tempfile.TemporaryDirectory() as tmp:
+        check_pack_primitives(c, Path(tmp))
         caches_root = Path(tmp) / "caches"
         staging = cachemod.Staging.create(caches_root)
         staging.write_json("tables/balance.json", {"schema": "test", "rows": []})
@@ -1826,7 +2241,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--instant-action-maps", action="store_true",
                     help="also convert the ten local single-player `_S_*` maps")
     ap.add_argument("--language", default=cachemod.DEFAULT_LANGUAGE,
-                    help="source language; part of the cache id (docs/92 §7.6)")
+                    help="the base root's language; part of the cache id "
+                         "(docs/92 §7.6)")
+    ap.add_argument("--language-pack", action="append", metavar="NAME=PATH",
+                    help="a localised installation laid over the base under "
+                         "lang/NAME/; repeatable (e.g. Russian=/path/to/1C)")
+    ap.add_argument("--plate", action="append", metavar="NAME:PLATE=PATH",
+                    help="a pack's title picture where its tree lacks one: "
+                         "PLATE is title or wilderness_title")
     ap.add_argument("--dev-fixtures", type=Path,
                     help="also materialise res://generated/ fixtures here")
     ap.add_argument("--check", action="store_true",
@@ -1853,6 +2275,8 @@ def main(argv: list[str] | None = None) -> int:
                                   args.instant_action_maps, args.missions)
 
     try:
+        packs = parse_pack_args(args.language_pack)
+        plates = parse_plate_args(args.plate, packs)
         if args.check_cache:
             return run_cache_checks()
         if args.check_campaign:
@@ -1868,11 +2292,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.dev_fixtures:
             return dev_fixtures(args.root, missions, args.dev_fixtures,
-                                args.language, args.music)
+                                args.language, args.music, packs, plates)
         if args.out is None:
             ap.error("give -o, the caches directory to publish into")
         return convert_and_publish(args.root, missions, args.out, args.language,
-                                   args.music)
+                                   args.music, packs, plates)
     except (ConvertError, cachemod.CacheError) as exc:
         LOG.error("%s", exc)
         return 1

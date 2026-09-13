@@ -54,7 +54,7 @@ CACHE_SCHEMA_VERSION = 1
 #: Bumped by hand when the converter's output changes for unchanged input.
 #: Never a timestamp and never a git hash: it has to be reproducible from the
 #: source tree alone.
-CONVERTER_VERSION = "0.42.0"
+CONVERTER_VERSION = "0.43.0"
 
 #: The only language the GOG release ships.  It is part of the cache id from
 #: the first day so that the localisation seam of docs/92 §7.6 exists rather
@@ -125,10 +125,19 @@ class SourceReader:
     read, and a read outside the declared set cannot happen silently.
 
     The installation is opened read-only and never written (docs/92 §8).
+
+    *prefix* is prepended to every recorded key and every :meth:`rel` answer.
+    A language pack is read out of a **second** root (docs/92 §7.6), and the
+    documents it produces embed source paths that would otherwise be
+    indistinguishable from the base's -- ``DATA/TXT/English/Briefing/x.txt``
+    is a path in both trees -- so the pack's reader spells them
+    ``lang/<Name>/DATA/TXT/...`` and its fingerprint cannot collide with the
+    base fingerprint's keys.
     """
 
     root: Path
     seen: dict[str, str] = field(default_factory=dict)
+    prefix: str = ""
 
     def path(self, *parts: str) -> Path:
         return self.root.joinpath(*parts)
@@ -158,15 +167,29 @@ class SourceReader:
         return current
 
     def rel(self, path: Path) -> str:
-        return self._actual_path(path).relative_to(self.root.resolve()).as_posix()
+        return self.prefix + self._actual_path(path).relative_to(
+            self.root.resolve()).as_posix()
 
     def record(self, path: Path) -> Path:
         """Note that `path` was read, hashing it once."""
         actual = self._actual_path(path)
-        key = actual.relative_to(self.root.resolve()).as_posix()
+        key = self.prefix + actual.relative_to(self.root.resolve()).as_posix()
         if key not in self.seen:
             self.seen[key] = sha256_file(actual)
         return actual
+
+    def record_external(self, path: Path, key: str) -> Path:
+        """Record a file **outside** the root under an explicit *key*.
+
+        The one use is a language pack's `--plate` override: a title picture
+        the pack tree lacks, supplied from elsewhere.  It still has to be in
+        the fingerprint -- the cache is a function of what was read -- and
+        the key says where it came from in the command line's terms rather
+        than pretending it lived under the root.
+        """
+        if self.prefix + key not in self.seen:
+            self.seen[self.prefix + key] = sha256_file(path)
+        return path
 
     def read_bytes(self, path: Path) -> bytes:
         return self.record(path).read_bytes()

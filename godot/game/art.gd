@@ -57,17 +57,19 @@ const BUTTON_BASE_LIST_FIRST: int = 12
 const BUTTON_BASE_LIST_MIDDLE: int = 18
 const BUTTON_BASE_LIST_LAST: int = 24
 
-var _cache_dir: String = ""
+var _paths: CachePaths = null
 var _index: Dictionary = {}
 var _textures: Dictionary = {}
 ## library name -> its `sprites` array out of the index.
 var _libraries: Dictionary = {}
 
 
-static func open(cache_dir: String) -> Art:
+## *paths* decides, per file, whether a plate or a sprite comes from the
+## chosen language's pack or from the neutral art (docs/92 section 7.6).
+static func open(paths: CachePaths) -> Art:
 	var art: Art = Art.new()
-	art._cache_dir = cache_dir
-	art._index = CacheLoader.read_json(cache_dir + "/" + INDEX_PATH)
+	art._paths = paths
+	art._index = CacheLoader.read_json(paths.path(INDEX_PATH))
 	for entry: Variant in DictRead.as_array(art._index.get("libraries", [])):
 		var row: Dictionary = entry
 		art._libraries[DictRead.as_string(row["name"])] = \
@@ -174,7 +176,7 @@ func _sprite_image(index: int) -> Image:
 func _texture(relative: String) -> Texture2D:
 	if _textures.has(relative):
 		return _textures[relative]
-	var path: String = _cache_dir + "/" + relative
+	var path: String = _paths.path(relative)
 	if not FileAccess.file_exists(path):
 		_textures[relative] = null
 		return null

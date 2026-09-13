@@ -431,14 +431,17 @@ def load_info(root: str) -> BalanceTables:
     return load_info_file(path)
 
 
-def load_info_file(path: str) -> BalanceTables:
+def load_info_file(path: str,
+                   encoding: str = lcl.SOURCE_ENCODING) -> BalanceTables:
+    """*encoding* is the release's code page; it reaches only the name
+    columns, since every other column is a number or an ASCII key."""
     try:
         with open(path, "rb") as handle:
             data = handle.read()
     except OSError as exc:
         raise InfoError(f"{path}: {exc}") from exc
     try:
-        program = lcl.parse_bytes(data, path)
+        program = lcl.parse_bytes(data, path, encoding)
     except lcl.LclSyntaxError as exc:
         raise InfoError(f"{path}: {exc}") from exc
     return parse_program(program, path)

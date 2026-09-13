@@ -67,6 +67,14 @@ static func manifest() -> Dictionary:
 	return read_json(cache_dir() + "/manifest.json")
 
 
+## The fixture cache's resolver for its **base** language: what every loader
+## in `game/` takes instead of a bare directory (docs/92 section 7.6). A
+## suite that wants a pack builds a [CachePaths] of its own from a hand-made
+## manifest; the fixture is converted without one.
+static func paths(language: String = "") -> CachePaths:
+	return CachePaths.create(cache_dir(), manifest(), language)
+
+
 static func balance() -> Dictionary:
 	return read_json(cache_dir() + "/tables/balance.json")
 

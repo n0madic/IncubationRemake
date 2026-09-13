@@ -104,6 +104,12 @@ var game_font: bool = false
 var seen_splash: bool = false
 enum ControlMode { AUTO, TOUCH, MOUSE }
 var control_mode: ControlMode = ControlMode.AUTO
+## Which of the cache's languages to read -- docs/92 section 7.6. **Empty
+## means the cache's base language**, so a settings file written before the
+## row existed, or one carried to a cache without the pack it names, reads
+## exactly as it did: [CachePaths] falls back to the base by name. No schema
+## bump, on the `speech_volume` precedent.
+var language: String = ""
 
 
 ## Read the file, or keep the defaults when there is none.
@@ -155,6 +161,7 @@ func load_from_disk() -> bool:
 	var mode: int = DictRead.as_int(document.get("control_mode", ControlMode.AUTO))
 	control_mode = mode as ControlMode if mode >= ControlMode.AUTO \
 		and mode <= ControlMode.MOUSE else ControlMode.AUTO
+	language = DictRead.as_string(document.get("language", language))
 	return true
 
 
@@ -184,6 +191,7 @@ func view() -> Dictionary:
 		"game_font": game_font,
 		"seen_splash": seen_splash,
 		"control_mode": int(control_mode),
+		"language": language,
 	}
 
 

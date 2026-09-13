@@ -713,6 +713,7 @@ class Parser:
         open_block: Conditional | None = None
 
         in_else = False
+        saw_end = False
 
         def sink() -> list[Any]:
             if open_block is None:
@@ -732,6 +733,7 @@ class Parser:
                     # Not gated by the flag: an [END] reached inside a false
                     # region still stops the program (docs/20 section 2).
                     self.flat.append(Instr("end", line))
+                    saw_end = True
                     if open_block is not None:
                         open_block.closed = False
                         self.note("warning",
@@ -894,6 +896,18 @@ class Parser:
                     sink().append(statement)
                 continue
 
+            rest = self.text[self.pos:]
+            if saw_end and all(ord(ch) <= 0x20 for ch in rest):
+                # docs/20 section 3: `[END]` ends the invocation, not the
+                # file, so bytes after the final one are never reached by
+                # the interpreter.  The 1C release's `Txtmod_a.lcl` closes
+                # with a DOS end-of-file mark (0x1A) *inside* the obfuscated
+                # stream; it is unreachable, not a syntax error, and the
+                # codec must not strip it (`decode(encode(x)) == x`).
+                self.note("warning",
+                          f"{len(rest)} unreachable byte(s) after the final "
+                          "[END]", line, column)
+                break
             raise LclSyntaxError(self.path, f"unexpected character {char!r}",
                                  line, column)
 
@@ -983,16 +997,22 @@ def parse_text(text: str, path: str = "<memory>") -> Program:
     return Parser(text, path).parse()
 
 
-def parse_bytes(data: bytes, path: str = "<memory>") -> Program:
-    """Decode (if needed) and parse a raw ``.lcl`` byte buffer."""
-    text = decode(data).decode(SOURCE_ENCODING, errors="replace")
+def parse_bytes(data: bytes, path: str = "<memory>",
+                encoding: str = SOURCE_ENCODING) -> Program:
+    """Decode (if needed) and parse a raw ``.lcl`` byte buffer.
+
+    *encoding* is the release's single-byte code page (``inclib.language``);
+    the shipped GOG files are cp1252 and every CLI keeps that default.  The
+    tokens are ASCII either way -- only string literals carry high bytes.
+    """
+    text = decode(data).decode(encoding, errors="replace")
     return parse_text(text, path)
 
 
-def parse_file(path: str) -> Program:
+def parse_file(path: str, encoding: str = SOURCE_ENCODING) -> Program:
     """Read, decode and parse a ``.lcl`` file from disk."""
     with open(path, "rb") as handle:
-        return parse_bytes(handle.read(), path)
+        return parse_bytes(handle.read(), path, encoding)
 
 
 def is_script(path: str) -> bool:

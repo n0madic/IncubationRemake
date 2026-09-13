@@ -90,7 +90,7 @@ func _run() -> void:
 	game.close_shell()
 	await _frames()
 	game._notification(Node.NOTIFICATION_WM_GO_BACK_REQUEST)
-	_check("system Back opens menu without quitting", game.shell.is_up() and not game._quitting and not quit_on_go_back)
+	_check("system Back opens menu without quitting", game.shell.is_up() and not game._leaving and not quit_on_go_back)
 	# Back inside the shell is the shell's own Back button. It used to be
 	# `_toggle_shell`, which refuses whenever the shell is up with nothing
 	# behind it -- so every screen the boot menu leads to answered nothing.
@@ -99,11 +99,11 @@ func _run() -> void:
 	game._notification(Node.NOTIFICATION_WM_GO_BACK_REQUEST)
 	await _frames()
 	_check("system Back leaves a shell screen",
-		game.shell.screen == ShellHost.SCREEN_MENU and not game._quitting)
+		game.shell.screen == ShellHost.SCREEN_MENU and not game._leaving)
 	game._notification(Node.NOTIFICATION_WM_GO_BACK_REQUEST)
 	await _frames()
 	_check("system Back leaves the shell over a mission",
-		not game.shell.is_up() and not game._quitting)
+		not game.shell.is_up() and not game._leaving)
 	game.close_shell()
 	await _frames()
 	# Select a real friendly unit through a touch ray, not a direct callback.

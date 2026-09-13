@@ -139,7 +139,7 @@ var _info_height: float = InfoText.BOX_SIZE.y
 ## Whether the open box takes itself down on its own. A page the player asked
 ## for does not -- see [method show_info].
 var _info_auto_hide: bool = true
-var _cache_dir: String = ""
+var _paths: CachePaths = null
 ## The caption shown for the button under the pointer.
 var _hint_button: String = ""
 var _strings: Localization = null
@@ -151,12 +151,14 @@ var _small_font: FontFile = null
 
 ## Build the interface. *font* is the interface font setting (the 17 px face
 ## or null for the readable one); *text_font* and *small_font* the two plate
-## faces, which a cache without fonts leaves null.
+## faces, which a cache without fonts leaves null. *paths* is where the info
+## box's faces come from, and *balance* the table the panel names equipment
+## from -- already overlaid with the chosen language's names by the caller.
 func setup(art: Art, strings: Localization, font: FontFile,
 		text_font: FontFile, small_font: FontFile,
-		cache_dir: String = "") -> void:
+		paths: CachePaths = null, balance: Dictionary = {}) -> void:
 	_art = art
-	_cache_dir = cache_dir
+	_paths = paths
 	_strings = strings
 	_font = font
 	_text_font = text_font
@@ -203,11 +205,7 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	panel.setup(art, strings, _band_font(), _panel_font())
 	# The remake names the shipped inventory pictures with local tooltips; the
 	# catalogue supplies the original game's own equipment names.
-	var catalogue: Array = []
-	if _cache_dir != "":
-		catalogue = DictRead.as_array(CacheLoader.read_json(
-			_cache_dir + "/tables/balance.json").get("equipment", []))
-	panel.use_equipment_names(catalogue)
+	panel.use_equipment_names(DictRead.as_array(balance.get("equipment", [])))
 
 	radar = Radar.new()
 	radar.name = "Radar"
@@ -262,12 +260,12 @@ func setup(art: Art, strings: Localization, font: FontFile,
 	_info.name = "Info"
 	_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_info.add_theme_stylebox_override("panel", _info_style())
-	_info_text = BriefingText.create(cache_dir, font != null)
+	_info_text = BriefingText.create(paths, font != null)
 	_info_text.fit_content = true
 	_info_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_info_text.scroll_active = false
 	_info_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_info_title_text = BriefingText.create(cache_dir, font != null)
+	_info_title_text = BriefingText.create(paths, font != null)
 	_info_title_text.fit_content = true
 	_info_title_text.scroll_active = false
 	_info_title_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -310,9 +308,9 @@ func use_font(font: FontFile) -> void:
 		# The box follows the same setting the rest of the interface does: a
 		# readable interface with an 8 px bitmap message in the middle of it
 		# is the mismatch docs/24's own note about the briefing describes.
-		_info_text.use_game_font(_cache_dir, font != null, INFO_READABLE_SIZE)
+		_info_text.use_game_font(_paths, font != null, INFO_READABLE_SIZE)
 	if _info_title_text != null:
-		_info_title_text.use_game_font(_cache_dir, font != null,
+		_info_title_text.use_game_font(_paths, font != null,
 			INFO_READABLE_SIZE)
 	if panel != null:
 		panel.use_font(_band_font(), _panel_font())

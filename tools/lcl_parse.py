@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from inclib.lcl import (Conditional, Diagnostic, LclSyntaxError, Program,  # noqa: E402
                         Statement, TextEntry, is_script, iter_inputs,
-                        parse_file)
+                        parse_bytes, parse_file)
 
 LOG = logging.getLogger("lcl.parse")
 
@@ -108,6 +108,24 @@ def run_check(roots: list[str], show_stats: bool = False) -> int:
         print(f"no LCL script found under {roots!r} -- nothing was checked, "
               f"which is a failure, not a pass")
         return 1
+    # The one shape no GOG file has and the 1C release's `Txtmod_a.lcl` does:
+    # a DOS end-of-file mark after the final `[END]`, inside the obfuscated
+    # stream (docs/20 section 6).  It has to parse to one warning, no error
+    # and no `abort` in the linear pass, or the Russian pack cannot be read.
+    # The DOS end-of-file mark alone, and with the blank an editor may leave
+    # after it: both are unreachable, neither is a syntax error.
+    for tail_bytes in (b"\x1a", b"\x1a \r\n"):
+        tail = parse_bytes(b'[LCL]\r\n%:1 "x";;\r\n[END]' + tail_bytes,
+                           "<synthetic>")
+        tail_ok = ([d.severity for d in tail.diagnostics] == ["warning"]
+                   and "unreachable" in tail.diagnostics[0].message
+                   and [i.kind for i in tail.flat] == ["text", "end"])
+        if not tail_ok:
+            failed.append((f"<synthetic [END]{tail_bytes!r}>",
+                           f"{[str(d) for d in tail.diagnostics]} "
+                           f"{[i.kind for i in tail.flat]}"))
+        else:
+            print(f"synthetic [END]{tail_bytes!r} tail: one warning, no abort")
     print(f"parsed {total - len(failed)}/{total} file(s)")
     for path in not_scripts:
         print(f"skipped {os.path.basename(path)}: no '[LCL]' header, "

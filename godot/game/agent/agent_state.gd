@@ -71,6 +71,9 @@ func build(frame: int) -> Dictionary:
 		"sequence": _main.sequence_view(),
 		"holding": _main.holding(),
 		"settings": _main.settings.view(),
+		# The language every language-dependent file is being read for, so
+		# a driven switch is observable (docs/92 section 7.6).
+		"language": _main._paths.language if _main._paths != null else "",
 		# **Above the `world == null` return.** A scenario that fails at the
 		# shell, on the location map or on a deployment screen has to be able
 		# to say whether it was played straight too ([Cheats]).

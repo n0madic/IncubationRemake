@@ -55,10 +55,10 @@ var _pickups: Dictionary[int, Dictionary] = {}
 ## The document, or an empty reader when the cache has none -- a cache made
 ## before the converter grew this document still loads, and the box is then
 ## the one thing missing rather than the mission.
-static func load_from(cache_dir: String,
+static func load_from(paths: CachePaths,
 		document: String = DOCUMENT) -> InfoText:
 	var out: InfoText = InfoText.new()
-	out.read(CacheLoader.read_json("%s/%s" % [cache_dir, document]))
+	out.read(CacheLoader.read_json(paths.path(document)))
 	return out
 
 

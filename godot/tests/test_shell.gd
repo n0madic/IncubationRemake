@@ -26,14 +26,16 @@ var _art: Art = null
 var _strings: Localization = null
 var _font: FontFile = null
 var _cache_dir: String = ""
+var _paths: CachePaths = null
 
 
 func run(h: TestHarness) -> void:
 	h.begin("shell", TestHarness.ORACLE_SPEC)
 	_cache_dir = CacheFixture.cache_dir()
-	_strings = Localization.from_cache(_cache_dir, CacheFixture.manifest())
-	_art = Art.open(_cache_dir)
-	_font = GameFont.load_from(_cache_dir, "font_2")
+	_paths = CacheFixture.paths()
+	_strings = Localization.from_cache(_paths)
+	_art = Art.open(_paths)
+	_font = GameFont.load_from(_paths, "font_2")
 	_clean_scratch()
 
 	_boot_paths(h)
@@ -106,6 +108,18 @@ func _boot_paths(h: TestHarness) -> void:
 		DictRead.as_string(no_chain["kind"]), SliceMain.BOOT_SHELL)
 	h.equal("boot.unknown_campaign_warns",
 		DictRead.to_strings(no_chain["warnings"]).size(), 1)
+
+	# `--language=` is read the same way -- statically, the last one wins,
+	# and its absence is an empty answer that lets the settings file decide
+	# (docs/92 section 7.6).
+	h.equal("boot.language_from_args",
+		SliceMain.language_from_args(PackedStringArray(
+			["--mission=_C_115", "--language=Russian"])), "Russian")
+	h.equal("boot.language_last_wins",
+		SliceMain.language_from_args(PackedStringArray(
+			["--language=Russian", "--language=English"])), "English")
+	h.equal("boot.language_absent_is_empty",
+		SliceMain.language_from_args(PackedStringArray(["--campaign=1"])), "")
 
 	# `--mission=` wins when both are given: it is the older, narrower entry
 	# and the one every screenshot script passes.
@@ -264,6 +278,7 @@ func _settings_file(h: TestHarness) -> void:
 	written.difficulty = 2
 	written.gore_level = 1
 	written.faithful = false
+	written.language = "Russian"
 	h.check("settings.written", written.save_to_disk(), SCRATCH_DIR)
 
 	var read: GameSettings = GameSettings.new()
@@ -271,7 +286,10 @@ func _settings_file(h: TestHarness) -> void:
 	h.check("settings.read_back", read.load_from_disk())
 	h.equal("settings.survive_a_restart",
 		[read.music_volume, read.fx_volume, read.speech_volume, read.difficulty,
-		read.gore_level, read.faithful], [-1250, -500, -900, 2, 1, false])
+		read.gore_level, read.faithful, read.language],
+		[-1250, -500, -900, 2, 1, false, "Russian"])
+	h.equal("settings.language_defaults_to_the_base", GameSettings.new().language,
+		"", "empty means the cache's base language (docs/92 section 7.6)")
 
 	# docs/92 section 7.19 I19. The flag is the one setting the player never
 	# sets: a launch writes it, and it is what decides whether the next launch
@@ -345,7 +363,7 @@ func _settings_apply(h: TestHarness) -> void:
 	settings.gore_level = 3
 	settings.faithful = false
 
-	var tables: AudioTables = AudioTables.open(_cache_dir)
+	var tables: AudioTables = AudioTables.open(_paths)
 	var events: AudioEvents = AudioEvents.open(tables,
 		CacheFixture.read_json(_cache_dir + "/tables/blobs.json"))
 	h.check("apply.events_start_faithful", events.is_faithful())
@@ -904,6 +922,30 @@ func _screens(h: TestHarness) -> void:
 		is_equal_approx(six[six.size() - 1].position.y,
 			MainMenuScreen.LAST_AT.y),
 		"%f" % six[six.size() - 1].position.y)
+	# The boot menu is drawn over the title plate and its cascade is moved
+	# down by [constant MainMenuScreen.TITLE_DROP]: the 1C release's title
+	# art is two lines and the block's own first row sat across it.
+	var title_menu: MainMenuScreen = MainMenuScreen.new()
+	title_menu.setup(_art, _strings, _font)
+	var boot_rows: Array[Rect2] = _rows_of(title_menu)
+	var six_first: float = six[0].position.y
+	h.check("screens.boot_menu_cascade_clears_the_title",
+		boot_rows[0].position.y >= 120.0 + MainMenuScreen.TITLE_DROP,
+		"first row at %.0f; the localised title art reaches 115"
+			% boot_rows[0].position.y)
+	h.check("screens.boot_menu_ends_on_the_plate",
+		boot_rows[boot_rows.size() - 1].end.y <= 480.0 - 60.0,
+		"last row ends at %.0f" % boot_rows[boot_rows.size() - 1].end.y)
+	h.check("screens.pause_menu_keeps_the_block",
+		is_zero_approx(fmod(six_first - MainMenuScreen.FIRST_AT.y,
+			MainMenuScreen.STEP.y)),
+		"the pause menu has no title behind it and sits on the block's own "
+		+ "rows; %.0f" % six_first)
+	h.check("screens.boot_menu_is_the_block_dropped",
+		is_zero_approx(fmod(boot_rows[0].position.y - MainMenuScreen.FIRST_AT.y
+			- MainMenuScreen.TITLE_DROP, MainMenuScreen.STEP.y)),
+		"%.0f is a block row plus the drop" % boot_rows[0].position.y)
+	title_menu.free()
 	h.check("screens.pause_menu_outside_a_campaign_has_no_map",
 		not _actions_of(paused).has(MainMenuScreen.MAIN_MAP),
 		"*Instant Action* and `--mission=` have no map to go back to, and "
@@ -1400,7 +1442,31 @@ func _screens(h: TestHarness) -> void:
 		"option:font", "option:gore"]),
 		"the four the original has and this remake connects, plus the gore "
 		+ "level, the `Faithful` preset and the interface font; not one of "
-		+ "the four it has and this remake does not")
+		+ "the four it has and this remake does not -- and no language row "
+		+ "for a cache with one language")
+	# The language becomes a row when the cache offers a second one, and
+	# only out of a mission: a switch reloads the scene (docs/92 section 7.6).
+	var bilingual: OptionsScreen = OptionsScreen.new()
+	bilingual.settings = settings
+	bilingual.language = "English"
+	bilingual.languages = PackedStringArray(["English", "Russian"])
+	bilingual.setup(_art, _strings, _font)
+	h.check("screens.options_language_row_with_two_languages",
+		_actions_of(bilingual).has("option:language"),
+		"a selector with two entries is a control")
+	_no_missing(h, "options_bilingual", bilingual)
+	bilingual.free()
+	var paused_bilingual: OptionsScreen = OptionsScreen.new()
+	paused_bilingual.settings = settings
+	paused_bilingual.in_mission = true
+	paused_bilingual.language = "English"
+	paused_bilingual.languages = PackedStringArray(["English", "Russian"])
+	paused_bilingual.setup(_art, _strings, _font)
+	h.check("screens.no_language_row_in_a_mission",
+		not _actions_of(paused_bilingual).has("option:language"),
+		"the reload would drop an unsaved mission; the line stays a line")
+	paused_bilingual.free()
+	_language_switch(h, settings)
 	var sliders: Array[HSlider] = _sliders_of(options)
 	h.equal("screens.options_volume_sliders", sliders.size(), 3,
 		"music, FX and speech are direct controls rather than click-to-cycle "
@@ -1521,7 +1587,7 @@ func _screens(h: TestHarness) -> void:
 	# edge of the frame it is drawn on.
 	var wide: BriefingScreen = BriefingScreen.new()
 	wide.mission = "_C_100"
-	wide.cache_dir = _cache_dir
+	wide.paths = _paths
 	wide.document = CacheFixture.read_json(
 		"%s/text/briefing/_C_100.json" % _cache_dir)
 	wide.setup(_art, _strings, _font)
@@ -2345,6 +2411,73 @@ func _sliders_of(node: Node) -> Array[HSlider]:
 			out.append(slider)
 		out.append_array(_sliders_of(child))
 	return out
+
+
+## `option:language` writes the setting, parks the choice and reloads once --
+## through [member SliceMain.reload_hook], so the suite counts the call
+## instead of reloading the tree under itself. The real reload is gated by a
+## driven session, not by this (docs/92 section 7.6).
+func _language_switch(h: TestHarness, settings: GameSettings) -> void:
+	var main: SliceMain = SliceMain.new()
+	main.settings = settings
+	settings.path = SCRATCH_DIR + "/switch-settings.json"
+	settings.language = ""
+	main._paths = CachePaths.create(_cache_dir, {"language": "English",
+		"languages": ["English", "Russian"], "inventory": []})
+	var reloads: Array[int] = []
+	main.reload_hook = func() -> void: reloads.append(1)
+	main._step_option("language")
+	h.equal("switch.setting_written", settings.language, "Russian",
+		"the next of the cache's languages")
+	var read: GameSettings = GameSettings.new()
+	read.path = settings.path
+	h.check("switch.setting_on_disk", read.load_from_disk()
+		and read.language == "Russian", "written before the reload")
+	h.equal("switch.language_parked", main.restart_language, "Russian")
+	h.equal("switch.reloads_once", reloads.size(), 1)
+	h.check("switch.leaving_gate", main._leaving,
+		"no option, choice or key is acted on until the scene is gone")
+	main._step_option("gore")
+	h.equal("switch.second_step_ignored", reloads.size(), 1,
+		"the gate holds")
+	# A close asked for while the restart is leaving is parked, not
+	# dropped: the restart quits in its place once its frames are up.
+	main._quit()
+	h.check("switch.quit_during_restart_parked", main._quit_pending,
+		"the close outlives the restart's window")
+	main.free()
+
+	# Wrapping round: from the last language back to the base, which is
+	# written as the empty string so an older cache reads it as before.
+	var back: SliceMain = SliceMain.new()
+	var back_settings: GameSettings = GameSettings.new()
+	back_settings.path = SCRATCH_DIR + "/switch-back.json"
+	back_settings.language = "Russian"
+	back.settings = back_settings
+	back._paths = CachePaths.create(_cache_dir, {"language": "English",
+		"languages": ["English", "Russian"], "inventory": []}, "Russian")
+	var back_reloads: Array[int] = []
+	back.reload_hook = func() -> void: back_reloads.append(1)
+	back._step_option("language")
+	h.equal("switch.back_to_base_is_empty", back_settings.language, "")
+	h.equal("switch.back_parks_the_base", back.restart_language, "English")
+	h.equal("switch.back_reloads_once", back_reloads.size(), 1)
+	back.free()
+
+	# One language: the arm does nothing, and nothing is written.
+	var single: SliceMain = SliceMain.new()
+	var single_settings: GameSettings = GameSettings.new()
+	single_settings.path = SCRATCH_DIR + "/switch-single.json"
+	single.settings = single_settings
+	single._paths = CachePaths.create(_cache_dir, {"language": "English",
+		"inventory": []})
+	var single_reloads: Array[int] = []
+	single.reload_hook = func() -> void: single_reloads.append(1)
+	single._step_option("language")
+	h.check("switch.one_language_is_inert",
+		single_reloads.is_empty() and not single._leaving
+		and not FileAccess.file_exists(single_settings.path))
+	single.free()
 
 
 func _clean_scratch() -> void:

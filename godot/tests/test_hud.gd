@@ -569,7 +569,7 @@ func _anchor_sign(h: TestHarness) -> void:
 
 ## The interface libraries the fixture measured are what the cache carries.
 func _libraries(h: TestHarness) -> void:
-	var art: Art = Art.open(CacheFixture.cache_dir())
+	var art: Art = Art.open(CacheFixture.paths())
 	var libs: Dictionary = DictRead.as_dict(_cases["libs"])
 	for name: String in libs:
 		var elements: Array = DictRead.as_array(libs[name])
@@ -646,7 +646,7 @@ func _overlay_live(h: TestHarness) -> void:
 		h.check("overlay.cache", false, "no _C_140 in the cache")
 		return
 	var world: World = loaded["world"]
-	var art: Art = Art.open(CacheFixture.cache_dir())
+	var art: Art = Art.open(CacheFixture.paths())
 	var slot: int = _first_of_player(world, 0)
 	var query: MoveMapResult = world.submit_move_query(MoveQueryCommand.create(slot))
 	var ground: GroundSprites = GroundSprites.new()
@@ -747,7 +747,7 @@ func _ring_geometry(h: TestHarness) -> void:
 		h.check("ring.cache", false, "no _C_140 in the cache")
 		return
 	var world: World = loaded["world"]
-	var art: Art = Art.open(CacheFixture.cache_dir())
+	var art: Art = Art.open(CacheFixture.paths())
 	var ring: DirectionRing = DirectionRing.new()
 	var slot: int = _first_of_player(world, 0)
 	var view: Dictionary = world.unit_view(slot)
@@ -910,13 +910,14 @@ func _hud_live(h: TestHarness) -> void:
 		h.check("hud.cache", false, "no _C_140 in the cache")
 		return
 	var world: World = loaded["world"]
-	var cache: String = CacheFixture.cache_dir()
-	var strings: Localization = Localization.from_cache(cache, CacheFixture.manifest())
+	var cache: CachePaths = CacheFixture.paths()
+	var strings: Localization = Localization.from_cache(cache)
 	var art: Art = Art.open(cache)
 	var hud: MissionHud = MissionHud.new()
 	hud.setup(art, strings, GameFont.load_from(cache, "font_2"),
 		GameFont.load_from(cache, MissionHud.TEXT_FONT),
-		GameFont.load_from(cache, MissionHud.SMALL_FONT), cache)
+		GameFont.load_from(cache, MissionHud.SMALL_FONT), cache,
+		CacheFixture.balance())
 	var all_on: Callable = func(_number: int) -> bool: return true
 	var none_on: Callable = func(_number: int) -> bool: return false
 	var north: Vector2 = Vector2(0.0, -1.0)

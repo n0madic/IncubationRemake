@@ -34,6 +34,7 @@ data".
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,7 @@ from . import charisma_cache as chacache
 from . import charisma_tables as chatables
 from . import eng3d
 from . import footprint as footprintmod
+from . import language
 from . import lev as levmod
 from . import liblib
 from . import prototyp as protomod
@@ -116,11 +118,14 @@ GAME_EXE = "Incubation.exe"
 UNIT_GEOMETRY_SOURCE_SET = "A00"
 
 #: ``docs/60`` §5 -- the game's four proportional bitmap fonts.  Each holds 224
-#: elements, one per cp1252 code point from 32 to 255, so the element index is
-#: ``codepoint - FONT_FIRST_CODEPOINT``.
+#: elements, one per **byte** from 32 to 255 of the release's code page, so
+#: the element index is ``byte - FONT_FIRST_BYTE``.  The cache writes both the
+#: byte and the Unicode code point it stands for (``inclib.language``), so a
+#: Cyrillic release's glyphs register under Cyrillic code points.
 FONT_NAMES = ("font_0", "font_1", "font_2", "font_3")
-FONT_FIRST_CODEPOINT = 32
+FONT_FIRST_BYTE = 32
 FONT_SCHEMA = "incubation.fonts/1"
+FONT_INDEX = "fonts/index.json"
 #: One transparent column between glyphs in the atlas, so that a renderer
 #: sampling with any filtering cannot bleed a neighbour in.
 FONT_ATLAS_GAP = 1
@@ -167,6 +172,12 @@ class Conversion:
     sequence_tracks: int = 0
     voice_overs: int = 0
     warnings: list[str] = field(default_factory=list)
+    #: The documents a language pack is converted against -- ``gui``,
+    #: ``sound``, ``frontend`` -- kept so the pack never re-derives a file
+    #: list of its own (docs/92 §7.6).
+    documents: dict[str, Any] = field(default_factory=dict)
+    #: Per pack name: what :func:`convert_language_pack` wrote and dropped.
+    packs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +220,10 @@ def animation_path(root: Path, name: str) -> Path:
     return _find(root, "CHData", "Animations", f"{name}.cha")
 
 
-def gui_text_paths(root: Path, language: str) -> list[Path]:
-    """The interface-string programs of one language, in a stable order."""
-    base = _find(root, "DATA", "TXT", language, GUI_TEXT_DIR)
+def gui_text_paths(root: Path, directory: str) -> list[Path]:
+    """The interface-string programs under ``DATA/TXT/<directory>/GUI``, in
+    a stable order."""
+    base = _find(root, "DATA", "TXT", directory, GUI_TEXT_DIR)
     return sorted(p for p in base.iterdir() if p.is_file())
 
 
@@ -655,9 +667,15 @@ def convert_textures(reader: SourceReader, staging: Staging, world_set: str,
 # Fonts
 # ---------------------------------------------------------------------------
 
-def convert_fonts(root: Path, reader: SourceReader,
-                  staging: Staging) -> dict[str, Any]:
+def convert_fonts(root: Path, reader: SourceReader, staging: Staging,
+                  code_page: str | None = "cp1252",
+                  index_rel: str = FONT_INDEX) -> dict[str, Any]:
     """The four bitmap fonts as one atlas each, plus their metrics.
+
+    *code_page* is the release's (``inclib.language``): it decides which
+    Unicode code point each of the 224 byte slots is registered under.
+    *index_rel* is where the index lands, so a language pack can write its
+    fonts beside the neutral ones under its own prefix.
 
     ``docs/60`` §5: a glyph's ``delta_y`` is its **ascent** -- its top row sits
     at ``baseline - delta_y`` -- and ``height - delta_y`` is a constant per
@@ -696,8 +714,10 @@ def convert_fonts(root: Path, reader: SourceReader,
                         pixels[at] = value
                         pixels[at + 1] = value
                         pixels[at + 2] = value
+            byte = FONT_FIRST_BYTE + index
             glyphs.append({
-                "codepoint": FONT_FIRST_CODEPOINT + index,
+                "byte": byte,
+                "codepoint": language.codepoint(byte, code_page),
                 "x": x,
                 "width": element.width,
                 "height": element.height,
@@ -707,7 +727,7 @@ def convert_fonts(root: Path, reader: SourceReader,
                 "bearing": element.delta_x,
             })
             x += element.width + FONT_ATLAS_GAP
-        rel = f"fonts/{name}.png"
+        rel = f"{Path(index_rel).parent.as_posix()}/{name}.png"
         target = staging.root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         write_rgb_png(str(target), max(width, 1), max(height, 1), bytes(pixels))
@@ -717,7 +737,7 @@ def convert_fonts(root: Path, reader: SourceReader,
             "file": f"{name}.png",
             "atlas_width": max(width, 1),
             "atlas_height": max(height, 1),
-            "first_codepoint": FONT_FIRST_CODEPOINT,
+            "first_byte": FONT_FIRST_BYTE,
             "glyphs": glyphs,
             # Stated, not assumed: a font whose glyphs disagreed about it would
             # show up here as more than one value rather than as a wrong
@@ -725,8 +745,9 @@ def convert_fonts(root: Path, reader: SourceReader,
             "descents": sorted(descents),
             "source": reader.rel(path),
         })
-    document: dict[str, Any] = {"schema": FONT_SCHEMA, "fonts": fonts}
-    staging.write_json("fonts/index.json", document)
+    document: dict[str, Any] = {"schema": FONT_SCHEMA,
+                                "code_page": code_page, "fonts": fonts}
+    staging.write_json(index_rel, document)
     return document
 
 
@@ -1243,9 +1264,13 @@ def convert_frontend(root: Path, reader: SourceReader, staging: Staging,
 
 
 def convert(root: Path, missions: list[str], staging: Staging,
-            reader: SourceReader, language: str,
+            reader: SourceReader, language_name: str,
             *, music: bool = True) -> Conversion:
-    """Convert every named mission and everything it reaches into `staging`."""
+    """Convert every named mission and everything it reaches into `staging`.
+
+    *language_name* is the base tree's language (``inclib.language``); the
+    packs laid over it are :func:`convert_language_pack`'s.
+    """
     result = Conversion()
     info_path = reader.record(_find(root, "DATA", "Info.lcl"))
     tables = load_info_file(str(info_path))
@@ -1376,19 +1401,16 @@ def convert(root: Path, missions: list[str], staging: Staging,
         result.textures += len(index["textures"])
         result.world_sets.append(world_set)
 
-    convert_fonts(root, reader, staging)
-    convert_audio(root, reader, staging, scripts, result, music=music)
+    try:
+        spec = language.spec(language_name)
+    except language.LanguageError as exc:
+        raise ConvertError(str(exc)) from exc
+    convert_fonts(root, reader, staging, spec.code_page)
+    result.documents["sound"] = convert_audio(root, reader, staging, scripts,
+                                              result, music=music)
 
-    gui_paths = gui_text_paths(root, language)
-    programs = {}
-    text_source: dict[str, Any] = {}
-    for gui_path in gui_paths:
-        reader.record(gui_path)
-        stem = gui_path.stem
-        programs[stem] = load_script(gui_path)
-        text_source[stem] = reader.rel(gui_path)
-    catalogue = text_catalogue(programs, language, {"files": text_source})
-    staging.write_json(f"text/{language}.json", catalogue)
+    catalogue = convert_gui_text(root, reader, staging, spec)
+    result.documents["gui"] = catalogue
     result.text_entries = sum(len(v) for v in catalogue["gui"].values())
 
     # The campaign layer.  It is not per-mission: the location graph, the
@@ -1397,20 +1419,71 @@ def convert(root: Path, missions: list[str], staging: Staging,
     # and the campaign screens work in both.
     result.campaign_missions = convert_campaign(
         root, reader, staging, campaign_tables_document(root))
-    result.briefings = convert_briefings(root, reader, staging, language, result)
-    result.info_labels = convert_info_events(root, reader, staging, language,
-                                             result)
-    result.info_labels += convert_info_data(root, reader, staging, language,
-                                            result)
+    result.briefings = convert_briefings(root, reader, staging, spec.directory,
+                                         result, code_page=spec.code_page)
+    result.documents["events"] = convert_info_events(
+        root, reader, staging, spec.directory, result, code_page=spec.code_page)
+    result.info_labels = len(result.documents["events"]["blocks"])
+    result.info_labels += convert_info_data(root, reader, staging,
+                                            spec.directory, result,
+                                            code_page=spec.code_page)
     art = convert_art(root, reader, staging, result)
     # The cutscenes and the screens between them: not per-mission either.
     convert_sequences(root, reader, staging, result)
-    convert_frontend(root, reader, staging, result, music=music)
+    result.documents["frontend"] = convert_frontend(root, reader, staging,
+                                                    result, music=music)
     result.plates = art["plates"]
     result.briefing_pictures = art["briefing"]
     result.ui_libraries = art["libraries"]
     result.ui_sprites = art["sprites"]
     return result
+
+
+#: The neutral interface-string catalogue.  It was ``text/<language>.json``
+#: while the cache held one language; a pack mirrors the neutral paths under
+#: ``lang/<Name>/`` and a path that carried the language twice would resolve
+#: to nothing, so the file is named for what it is.
+GUI_TEXT_DOCUMENT = "text/gui.json"
+
+
+def convert_gui_text(root: Path, reader: SourceReader, staging: Staging,
+                     spec: language.LanguageSpec,
+                     stems: list[str] | None = None,
+                     missing: list[str] | None = None) -> dict[str, Any]:
+    """``text/gui.json`` -- the ``DATA/TXT/<dir>/GUI`` programs' text entries.
+
+    *stems* overrides the directory listing with the **base** tree's stems, so
+    a pack's catalogue has the base's banks and no others; a stem the tree
+    lacks goes into *missing* rather than raising.
+    """
+    # Each bank is keyed by the **base's** stem when one is given: the pack
+    # file's own spelling may differ in case, and `Localization` asks for the
+    # bank by the neutral catalogue's name.
+    if stems is None:
+        paths = [(gui_path.stem, gui_path)
+                 for gui_path in gui_text_paths(root, spec.directory)]
+    else:
+        paths = []
+        for stem in stems:
+            try:
+                paths.append((stem, _find(root, "DATA", "TXT", spec.directory,
+                                          GUI_TEXT_DIR, f"{stem}.lcl")))
+            except ConvertError:
+                if missing is None:
+                    raise
+                missing.append(f"DATA/TXT/{spec.directory}/{GUI_TEXT_DIR}/"
+                               f"{stem}.lcl")
+    programs = {}
+    text_source: dict[str, Any] = {}
+    encoding = spec.code_page or "latin-1"
+    for stem, gui_path in paths:
+        reader.record(gui_path)
+        programs[stem] = load_script(gui_path, encoding)
+        text_source[stem] = reader.rel(gui_path)
+    catalogue = text_catalogue(programs, spec.name, {"files": text_source})
+    catalogue["code_page"] = spec.code_page
+    staging.write_json(GUI_TEXT_DOCUMENT, catalogue)
+    return catalogue
 
 
 def interaction_tables_document(exe: Path) -> dict[str, Any]:
@@ -1672,27 +1745,52 @@ def convert_campaign(root: Path, reader: SourceReader, staging: Staging,
     return len(missions)
 
 
+def _decode_text(data: bytes, code_page: str | None) -> str:
+    """A ``DATA/TXT`` file's bytes as text: de-obfuscated, then every byte
+    through :func:`language.codepoint` -- the one byte-to-glyph rule the
+    fonts use, so a briefing byte and the glyph it is drawn with cannot
+    disagree.  The markup itself is ASCII plus ``§`` (0xA7), which both
+    shipped code pages place at the same code point."""
+    from .lcl import decode
+    return language.decode_bytes(decode(data), code_page)
+
+
+def briefing_files(root: Path, directory: str) -> list[tuple[str, Path]]:
+    """``(stem, path)`` of every briefing text under ``DATA/TXT/<directory>``.
+
+    `glob("*.txt")` is case-sensitive on macOS and Linux, and five shipped
+    files are `.TXT` -- the same trap `liblib._existing` exists for.
+    """
+    base = _find(root, "DATA", "TXT", directory, BRIEFING_DIR)
+    return [(p.stem, p) for p in sorted(base.iterdir())
+            if p.suffix.lower() == ".txt"]
+
+
 def convert_briefings(root: Path, reader: SourceReader, staging: Staging,
-                      language: str, result: Conversion) -> int:
+                      directory: str, result: Conversion, *,
+                      code_page: str | None = "cp1252",
+                      files: list[tuple[str, Path]] | None = None) -> int:
     """``text/briefing/<mission>.json`` -- ``docs/24``'s three blocks.
 
     The markup is written as **structure** (``docs/92`` §3.2): a block is a
     list of spans carrying their font and colour ramp, so the consumer renders
     rather than re-parses.  The picture programme rides along, because a
     briefing screen shows text and pictures from the same file.
+
+    *directory* is the ``DATA/TXT`` component and *code_page* the release's
+    (``inclib.language``).  *files* overrides the directory listing with
+    ``(stem, path)`` pairs -- a language pack is written under the **base**
+    tree's stems so that one resolver serves both.
     """
     from . import brieftext as briefmod
-    from .lcl import decode
 
-    base = _find(root, "DATA", "TXT", language, BRIEFING_DIR)
+    if files is None:
+        files = briefing_files(root, directory)
     written = 0
-    # `glob("*.txt")` is case-sensitive on macOS and Linux, and five shipped
-    # files are `.TXT` -- the same trap `liblib._existing` exists for.
-    for path in sorted(p for p in base.iterdir()
-                       if p.suffix.lower() == ".txt"):
+    for stem, path in files:
         recorded = reader.record(path)
         try:
-            text = decode(recorded.read_bytes()).decode("latin-1")
+            text = _decode_text(recorded.read_bytes(), code_page)
         except Exception as exc:                       # noqa: BLE001
             result.warnings.append(f"{path.name}: unreadable briefing ({exc})")
             continue
@@ -1720,9 +1818,10 @@ def convert_briefings(root: Path, reader: SourceReader, staging: Staging,
              "descriptions": list(entry.descriptions)}
             for entry in briefmod.program(text, briefmod.TIP_BASE_ROW)
         ]
-        staging.write_json(f"text/briefing/{path.stem}.json", {
+        staging.write_json(f"text/briefing/{stem}.json", {
             "schema": BRIEFING_SCHEMA,
-            "mission": path.stem,
+            "mission": stem,
+            "code_page": code_page,
             "source": {"txt": reader.rel(recorded),
                        "sha256": reader.seen[reader.rel(recorded)]},
             "blocks": blocks,
@@ -1734,7 +1833,9 @@ def convert_briefings(root: Path, reader: SourceReader, staging: Staging,
 
 
 def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
-                        language: str, result: Conversion) -> int:
+                        directory: str, result: Conversion, *,
+                        code_page: str | None = "cp1252",
+                        tables: dict[str, Any] | None = None) -> dict[str, Any]:
     """``text/info/events.json`` -- what a pickup says (docs/26 section 3).
 
     ``aExecuteUse``'s thirteen pickup arms hand a two-character label to the
@@ -1749,19 +1850,28 @@ def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
     (``docs/92`` section 3.2), and the action-point-to-label map rides along
     from :func:`interaction_tables_document` so that the game side has no
     table of its own to disagree with.
+
+    *tables* is that map when the caller already has it -- a language pack
+    reuses the base's rather than opening an executable its own tree does
+    not carry; ``None`` reads it out of ``Incubation.exe`` under *root*.
     """
     from . import brieftext as briefmod
-    from .lcl import decode
 
-    base = _find(root, "DATA", "TXT", language, INFO_DIR)
+    base = _find(root, "DATA", "TXT", directory, INFO_DIR)
     path = _find(base, f"{INFO_EVENTS}.txt")
     recorded = reader.record(path)
-    exe = reader.record(_find(root, GAME_EXE))
+    source: dict[str, Any] = {"txt": reader.rel(recorded),
+                              "sha256": reader.seen[reader.rel(recorded)]}
+    if tables is None:
+        exe = reader.record(_find(root, GAME_EXE))
+        source["exe"] = reader.rel(exe)
+        source["exe_sha256"] = reader.seen[reader.rel(exe)]
+        tables = interaction_tables_document(exe)
     try:
-        text = decode(recorded.read_bytes()).decode("latin-1")
+        text = _decode_text(recorded.read_bytes(), code_page)
     except Exception as exc:                           # noqa: BLE001
         result.warnings.append(f"{path.name}: unreadable info text ({exc})")
-        return 0
+        return {"blocks": {}}
     blocks: dict[str, Any] = {}
     for label in briefmod.labels(text):
         # The first definition of a label wins, which is `aFindGUITextBoxTag`'s
@@ -1775,21 +1885,26 @@ def convert_info_events(root: Path, reader: SourceReader, staging: Staging,
     document: dict[str, Any] = {
         "schema": INFO_SCHEMA,
         "name": INFO_EVENTS,
-        "source": {"txt": reader.rel(recorded),
-                   "sha256": reader.seen[reader.rel(recorded)],
-                   "exe": reader.rel(exe),
-                   "exe_sha256": reader.seen[reader.rel(exe)]},
+        "code_page": code_page,
+        "source": source,
         "blocks": blocks,
     }
     # Which action point shows which of those blocks, and which one speaks --
     # decoded out of the switch rather than listed here or in the consumer.
-    document.update(interaction_tables_document(exe))
+    document.update(tables)
     staging.write_json(f"text/info/{INFO_EVENTS.lower()}.json", document)
-    return len(blocks)
+    return document
+
+
+#: The keys :func:`convert_info_events` writes itself; everything else in its
+#: document is :func:`interaction_tables_document`'s, which a language pack
+#: copies from the base document rather than re-reading the executable.
+INFO_EVENTS_OWN_KEYS = ("schema", "name", "code_page", "source", "blocks")
 
 
 def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
-                      language: str, result: Conversion) -> int:
+                      directory: str, result: Conversion, *,
+                      code_page: str | None = "cp1252") -> int:
     """``text/info/data.json`` -- what the Upgrade Menu's *i* shows, and the
     magnifying glass with it.
 
@@ -1812,13 +1927,12 @@ def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
     two item paths, makes no test for `#` at all.
     """
     from . import brieftext as briefmod
-    from .lcl import decode
 
-    base = _find(root, "DATA", "TXT", language, INFO_DIR)
+    base = _find(root, "DATA", "TXT", directory, INFO_DIR)
     path = _find(base, f"{INFO_DATA}.txt")
     recorded = reader.record(path)
     try:
-        text = decode(recorded.read_bytes()).decode("latin-1")
+        text = _decode_text(recorded.read_bytes(), code_page)
     except Exception as exc:                           # noqa: BLE001
         result.warnings.append(f"{path.name}: unreadable info text ({exc})")
         return 0
@@ -1833,6 +1947,7 @@ def convert_info_data(root: Path, reader: SourceReader, staging: Staging,
     document: dict[str, Any] = {
         "schema": INFO_SCHEMA,
         "name": INFO_DATA,
+        "code_page": code_page,
         "source": {"txt": reader.rel(recorded),
                    "sha256": reader.seen[reader.rel(recorded)]},
         # `0x00432B20`, `0x00432B70`, `0x00432BD0` -- the digit each family
@@ -1890,20 +2005,79 @@ def _write_sprites(reader: SourceReader, staging: Staging, root: Path,
     }
 
 
+#: The cache names of the two title pictures a `--plate` override may supply.
+PLATE_TITLE = "title"
+PLATE_WILDERNESS = "wilderness_title"
+
+
+def art_listing(root: Path) -> dict[str, list[str]]:
+    """What :func:`convert_art` bakes out of *root*, by name.
+
+    Listed once and handed to every tree the art is read from: a language
+    pack is converted against the **base** tree's listing, so a pack file the
+    base does not have is never baked and a case-drifted pack filename still
+    lands under the base's cache name.
+    """
+    plate_dir = _find(root, *PLATE_DIR)
+    picture_dir = _find(root, *BRIEFING_ART_DIR)
+    lib_dir = _find(root, UI_LIB_DIR)
+    libraries = [p.name for p in sorted(lib_dir.iterdir())
+                 if p.suffix.lower() == ".lib"
+                 and not p.stem.lower().startswith("font_")
+                 and p.stem.lower() not in liblib.UNREFERENCED_LIBRARIES]
+    item_dir = lib_dir / UI_ITEM_DIR
+    if item_dir.is_dir():
+        libraries += [f"{UI_ITEM_DIR}/{p.name}" for p in sorted(item_dir.iterdir())
+                      if p.suffix.lower() == ".lib"]
+    return {
+        "plates": [p.name for p in sorted(plate_dir.iterdir())
+                   if p.suffix.lower() == ".bmp"],
+        "briefing": [p.name for p in sorted(picture_dir.iterdir())
+                     if p.suffix.lower() == ".bmp"],
+        "libraries": libraries,
+    }
+
+
 def convert_art(root: Path, reader: SourceReader, staging: Staging,
-                result: Conversion) -> dict[str, int]:
+                result: Conversion, *,
+                plates: dict[str, Path] | None = None,
+                listing: dict[str, list[str]] | None = None,
+                missing: list[str] | None = None) -> dict[str, int]:
     """The screen plates, the briefing pictures and the interface sprites.
 
     The plates and pictures are 8-bit BMPs (``inclib/bmp.py``); the interface
     is shape libraries drawn with the palette ``liblib.find_palette`` resolves.
+
+    *plates* overrides where a named title picture is read from
+    (:data:`PLATE_TITLE`, :data:`PLATE_WILDERNESS`) for a tree that lacks it
+    -- the 1C release has no ``Install/Title.bmp``.  *listing* is
+    :func:`art_listing`'s answer for the tree the names come from, and
+    *missing*, when given, turns a file that listing names and *root* lacks
+    from an error into an entry in that list: a language pack is allowed to
+    be thinner than the base, the base is not.
     """
     from . import bmp as bmpmod
 
     counts = {"plates": 0, "briefing": 0, "libraries": 0, "sprites": 0}
+    if listing is None:
+        listing = art_listing(root)
+    overrides = plates or {}
 
-    def write_bmp(path: Path, rel: str,
-                  name: str | None = None) -> dict[str, Any] | None:
-        recorded = reader.record(path)
+    def locate(*parts: str) -> Path | None:
+        try:
+            return _find(root, *parts)
+        except ConvertError:
+            if missing is None:
+                raise
+            missing.append("/".join(parts))
+            return None
+
+    def write_bmp(path: Path, rel: str, name: str | None = None,
+                  override: str | None = None) -> dict[str, Any] | None:
+        # An overriding plate may live outside the tree; it is fingerprinted
+        # under the command-line name that supplied it.
+        recorded = reader.record(path) if override is None \
+            else reader.record_external(path, f"--plate/{override}")
         try:
             image = bmpmod.parse(recorded.read_bytes())
         except bmpmod.BmpError as exc:
@@ -1914,62 +2088,62 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
         # A plate is opaque: unlike a sprite, index 0 is an ordinary colour.
         image.write_png(str(target), None)
         staging.files[rel] = "written"
-        return {"name": name or path.stem.lower(), "file": Path(rel).name,
+        return {"name": name or Path(rel).stem, "file": Path(rel).name,
                 "width": image.width, "height": image.height}
 
-    plates = []
-    plate_dir = _find(root, *PLATE_DIR)
-    for path in sorted(plate_dir.iterdir()):
-        if path.suffix.lower() != ".bmp":
+    plate_entries = []
+    for name in listing["plates"]:
+        path = locate(*PLATE_DIR, name)
+        if path is None:
             continue
-        entry = write_bmp(path, f"art/plates/{path.stem.lower()}.png")
+        entry = write_bmp(path, f"art/plates/{Path(name).stem.lower()}.png")
         if entry is not None:
-            plates.append(entry)
+            plate_entries.append(entry)
             counts["plates"] += 1
 
     # The five that live one level up.  Named rather than globbed: the
     # directory also holds `GUI/` and `Briefing/`, and a glob that grew a sixth
     # file would bake it without anyone deciding to.
-    root_plate_dir = _find(root, *ROOT_PLATE_DIR)
     for stem in ROOT_PLATES:
-        path = _find(root_plate_dir, f"{stem}.bmp")
-        entry = write_bmp(path, f"art/plates/{stem.lower()}.png")
+        override = overrides.get(stem.lower())
+        path = override or locate(*ROOT_PLATE_DIR, f"{stem}.bmp")
+        if path is None:
+            continue
+        entry = write_bmp(path, f"art/plates/{stem.lower()}.png",
+                          override=stem.lower() if override else None)
         if entry is not None:
-            plates.append(entry)
+            plate_entries.append(entry)
             counts["plates"] += 1
 
     # The expansion title has the same basename as the base game's title, so
     # its cache name is explicit.  Reading it through ``SourceReader`` also
     # makes it part of the source fingerprint: an installation without the
     # expansion cannot silently publish a campaign card with no picture.
-    wilderness = _find(root, *WILDERNESS_TITLE)
-    entry = write_bmp(wilderness, "art/plates/wilderness_title.png",
-                      "wilderness_title")
-    if entry is not None:
-        plates.append(entry)
-        counts["plates"] += 1
+    override = overrides.get(PLATE_WILDERNESS)
+    wilderness = override or locate(*WILDERNESS_TITLE)
+    if wilderness is not None:
+        entry = write_bmp(wilderness, f"art/plates/{PLATE_WILDERNESS}.png",
+                          PLATE_WILDERNESS,
+                          override=PLATE_WILDERNESS if override else None)
+        if entry is not None:
+            plate_entries.append(entry)
+            counts["plates"] += 1
 
     pictures = []
-    picture_dir = _find(root, *BRIEFING_ART_DIR)
-    for path in sorted(picture_dir.iterdir()):
-        if path.suffix.lower() != ".bmp":
+    for name in listing["briefing"]:
+        path = locate(*BRIEFING_ART_DIR, name)
+        if path is None:
             continue
-        entry = write_bmp(path, f"art/briefing/{path.stem.lower()}.png")
+        entry = write_bmp(path, f"art/briefing/{Path(name).stem.lower()}.png")
         if entry is not None:
             pictures.append(entry)
             counts["briefing"] += 1
 
     libraries = []
-    lib_dir = _find(root, UI_LIB_DIR)
-    candidates = [p for p in sorted(lib_dir.iterdir())
-                  if p.suffix.lower() == ".lib"
-                  and not p.stem.lower().startswith("font_")
-                  and p.stem.lower() not in liblib.UNREFERENCED_LIBRARIES]
-    item_dir = lib_dir / UI_ITEM_DIR
-    if item_dir.is_dir():
-        candidates += [p for p in sorted(item_dir.iterdir())
-                       if p.suffix.lower() == ".lib"]
-    for path in candidates:
+    for name in listing["libraries"]:
+        path = locate(UI_LIB_DIR, *name.split("/"))
+        if path is None:
+            continue
         entry = _write_sprites(reader, staging, root, path, "ui", result)
         if entry is None:
             continue
@@ -1979,8 +2153,364 @@ def convert_art(root: Path, reader: SourceReader, staging: Staging,
 
     staging.write_json("art/index.json", {
         "schema": ART_SCHEMA,
-        "plates": plates,
+        "plates": plate_entries,
         "briefing": pictures,
         "libraries": libraries,
     })
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Language packs
+# ---------------------------------------------------------------------------
+
+NAMES_SCHEMA = "incubation.names/1"
+#: Where a pack's files land, mirroring the neutral relative paths beneath.
+LANG_DIR = "lang"
+#: `docs/10` -- the unit record's one runtime-scratch byte the guard ignores:
+#: `+0x56` is a stale Charisma animation handle (177 shipped records carry
+#: one), and two releases of the same map differ in it without differing in
+#: the map.  Every other non-name byte has to match.
+UNIT_SCRATCH_OFFSETS = (0x56,)
+#: The `Info.lcl` columns that are text in the release's language; every other
+#: column of :meth:`BalanceTables.to_dict` has to match the base's.  `key` is
+#: **not** one of them: the 1C release keeps the base's `Data.txt` page
+#: letters, checked by hand on 2026-09-13.
+BALANCE_NAME_COLUMNS = {"ctrlmap": "name", "equipment": "name",
+                        "units": "description", "weapons": "name"}
+
+
+def _pack_find(root: Path, missing: list[str], *parts: str) -> Path | None:
+    """:func:`_find`, with an absent file recorded rather than raised."""
+    try:
+        return _find(root, *parts)
+    except ConvertError:
+        missing.append("/".join(parts))
+        return None
+
+
+def lev_name_overlay(base: bytes, pack: bytes, encoding: str,
+                     ) -> tuple[dict[str, str], list[int], int]:
+    """The unit names a pack's ``.lev`` may lend the base's.
+
+    Returns ``(names by slot, skipped slots, differing bytes)``.  **The name
+    is overlaid only onto a record that is otherwise byte-identical**: the
+    two files' unit records are compared with the name field and
+    :data:`UNIT_SCRATCH_OFFSETS` zeroed, and a slot whose record differs
+    keeps the base's name.  The 1C release ships eight maps in an older
+    authored state than the GOG patches (`_C_140`, `_C_142`, `_C_144`,
+    `_C_149`, `_C_159`, `_C_166`, `_C_167`, `_M_019`); this is what keeps
+    their cells, objects and stats out while their names still come through,
+    and it is why the pack's ``.lev`` is never read for anything but names.
+    A pack file of another size is no counterpart at all: nothing is overlaid.
+    """
+    if len(base) != len(pack):
+        return {}, [], -1
+    spans = levmod.unit_name_spans(base)
+    names: dict[str, str] = {}
+    skipped: list[int] = []
+    differing = 0
+    for slot, (start, _end) in enumerate(spans):
+        a = bytearray(base[start:start + levmod.UNIT_SIZE])
+        b = bytearray(pack[start:start + levmod.UNIT_SIZE])
+        name_a = bytes(a[:levmod.UNIT_NAME_SIZE]).split(b"\0", 1)[0]
+        name_b = bytes(b[:levmod.UNIT_NAME_SIZE]).split(b"\0", 1)[0]
+        for record in (a, b):
+            record[:levmod.UNIT_NAME_SIZE] = bytes(levmod.UNIT_NAME_SIZE)
+            for offset in UNIT_SCRATCH_OFFSETS:
+                record[offset] = 0
+        if a != b:
+            differing += sum(1 for x, y in zip(a, b) if x != y)
+            if name_a or name_b:
+                skipped.append(slot)
+            continue
+        if name_b and name_b != name_a:
+            names[str(slot)] = name_b.decode(encoding, errors="replace")
+    # Bytes outside the unit block -- cells, objects, header -- count too, so
+    # the warning says how far the two files are apart even when every
+    # record matched.
+    unit_start = spans[0][0]
+    unit_end = spans[-1][0] + levmod.UNIT_SIZE
+    differing += sum(1 for i in range(len(base))
+                     if not unit_start <= i < unit_end and base[i] != pack[i])
+    return names, skipped, differing
+
+
+def balance_name_overlay(base: dict[str, Any], pack: dict[str, Any],
+                         file_name: str) -> dict[str, dict[str, str]]:
+    """The names a pack's ``Info.lcl`` lends the base's, after the guard.
+
+    Both are :meth:`BalanceTables.to_dict`.  Every column but the four in
+    :data:`BALANCE_NAME_COLUMNS` has to be equal row for row, or the pack is
+    refused with the file and the first differing field named: a balance
+    table is gameplay, and a localisation that changed one is not a
+    localisation (docs/92 §7.6).
+    """
+    out: dict[str, dict[str, str]] = {}
+    for table, column in BALANCE_NAME_COLUMNS.items():
+        rows_a = base.get(table, [])
+        rows_b = pack.get(table, [])
+        if len(rows_a) != len(rows_b):
+            raise ConvertError(
+                f"{file_name}: {table} has {len(rows_b)} rows, the base "
+                f"{len(rows_a)}; a language pack may change names only")
+        names: dict[str, str] = {}
+        for row_a, row_b in zip(rows_a, rows_b):
+            for field_name in row_a:
+                if field_name == column:
+                    continue
+                if row_a[field_name] != row_b.get(field_name):
+                    key = row_a.get("id", row_a.get("index"))
+                    raise ConvertError(
+                        f"{file_name}: {table}[{key}].{field_name} is "
+                        f"{row_b.get(field_name)!r}, the base "
+                        f"{row_a[field_name]!r}; a language pack may change "
+                        "names only")
+            if row_b[column] != row_a[column]:
+                names[str(row_a.get("id", row_a.get("index")))] = row_b[column]
+        out[table] = names
+    return out
+
+
+#: The three tables of ``art/index.json`` and the key each is looked up by.
+ART_INDEX_TABLES = ("plates", "briefing", "libraries")
+
+
+def _complete_art_index(parent: Staging, sub: Staging) -> None:
+    """Fill a pack's ``art/index.json`` with the neutral entries it lacks.
+
+    The art is **index-driven**: `Art` reads one index and asks for a plate,
+    a picture or a library by name out of it, so a pack index that listed
+    only what the pack tree had would lose -- not fall back on -- every plate
+    or library the pack lacks.  The neutral entry names the same cache-relative
+    file, which the resolver then serves from the neutral tree, exactly as it
+    does for every other per-file miss.  Appended in the neutral order, so a
+    pack that lacks nothing is written byte for byte as before.
+    """
+    rel = "art/index.json"
+    neutral = json.loads((parent.root / rel).read_text(encoding="utf-8"))
+    document = json.loads((sub.root / rel).read_text(encoding="utf-8"))
+    for table in ART_INDEX_TABLES:
+        have = {entry["name"] for entry in document.get(table, [])}
+        for entry in neutral.get(table, []):
+            if entry["name"] not in have:
+                document.setdefault(table, []).append(entry)
+    sub.write_json(rel, document)
+
+
+def _merge_pack(parent: Staging, sub: Staging, prefix: str) -> tuple[int, int]:
+    """Move a pack staging's entries under *prefix* in the parent's `files`,
+    dropping every file whose bytes equal the neutral one -- an unchanged
+    library or wave costs nothing and resolves to the neutral copy anyway.
+    Returns ``(kept, dropped)``."""
+    kept = dropped = 0
+    for rel in sorted(sub.files):
+        path = sub.root / rel
+        neutral = parent.root / rel
+        if rel in parent.files and neutral.is_file() \
+                and neutral.read_bytes() == path.read_bytes():
+            path.unlink()
+            dropped += 1
+            continue
+        parent.files[prefix + rel] = sub.files[rel]
+        kept += 1
+    # Directories a dedup emptied.
+    for directory in sorted((p for p in sub.root.rglob("*") if p.is_dir()),
+                            key=lambda p: len(p.parts), reverse=True):
+        if not any(directory.iterdir()):
+            directory.rmdir()
+    if sub.root.is_dir() and not any(sub.root.iterdir()):
+        sub.root.rmdir()
+    return kept, dropped
+
+
+def convert_language_pack(base_root: Path, pack_root: Path, name: str,
+                          staging: Staging, result: Conversion, *,
+                          missions: list[str],
+                          plates: dict[str, Path] | None = None,
+                          ) -> dict[str, Any]:
+    """Lay one localisation over the neutral cache under ``lang/<Name>/``.
+
+    **The base root is the only source of gameplay data** (docs/92 §7.6).  A
+    pack contributes the language-dependent subset and nothing else: the GUI
+    banks, the briefings and info pages, the four fonts, the plates and
+    interface libraries, the briefing voice-overs and the waves, and the unit,
+    weapon, equipment and cell-type *names* out of its ``Info.lcl`` and
+    ``.lev`` files -- after :func:`balance_name_overlay` and
+    :func:`lev_name_overlay` have compared everything that is not a name with
+    the base.  It never opens a mission script, a world set, ``CHData``, a
+    texture library, an executable or the music.
+
+    **Every file list is the base's.**  The stems, plate names, library names
+    and wave names come from what the base conversion wrote; the pack tree is
+    only asked for a counterpart of each, and one it lacks is a warning.  So
+    a pack file the base does not have is never baked, and a case-drifted
+    pack filename still lands under the neutral cache name, which is what
+    lets one resolver serve every language.
+
+    Every pack file byte-identical to its neutral twin is dropped again
+    (:func:`_merge_pack`).  Returns the manifest's entry for the pack.
+    """
+    spec = language.spec(name)
+    if pack_root.resolve() == base_root.resolve():
+        raise ConvertError(
+            f"language pack {name}: its root is the base root; a pack is a "
+            "second tree laid over the base, not the base again")
+    if spec.code_page is None:
+        raise ConvertError(
+            f"language pack {name}: no single-byte code page; the two-byte "
+            "text path is not implemented (docs/24 section 4.4)")
+    encoding = spec.code_page
+    prefix = f"{LANG_DIR}/{name}/"
+    reader = SourceReader(root=pack_root, prefix=prefix)
+    sub = Staging(root=staging.root / LANG_DIR / name)
+    sub.root.mkdir(parents=True, exist_ok=True)
+    missing: list[str] = []
+    stats: dict[str, Any] = {"language": name, "code_page": encoding}
+
+    def warn(message: str) -> None:
+        result.warnings.append(f"{name} pack: {message}")
+
+    # --- the guard runs first: a pack whose balance table is not the base's
+    # is refused before anything of it is written.
+    base_balance = load_info_file(str(_find(base_root, "DATA", "Info.lcl")))
+    info_path = _pack_find(pack_root, missing, "DATA", "Info.lcl")
+    balance_names: dict[str, dict[str, str]] = {}
+    if info_path is not None:
+        pack_balance = load_info_file(str(reader.record(info_path)), encoding)
+        balance_names = balance_name_overlay(base_balance.to_dict(),
+                                             pack_balance.to_dict(),
+                                             f"{name} pack Info.lcl")
+
+    mission_names: dict[str, dict[str, str]] = {}
+    lev_notes: list[str] = []
+    for mission in missions:
+        base_lev = mission_path(base_root, mission)
+        pack_lev = _pack_find(pack_root, missing, "Missions", f"{mission}.lev")
+        if pack_lev is None:
+            continue
+        names, skipped, differing = lev_name_overlay(
+            base_lev.read_bytes(), reader.read_bytes(pack_lev), encoding)
+        if differing < 0:
+            lev_notes.append(f"{mission}.lev: another size, no names taken")
+            continue
+        if differing:
+            lev_notes.append(
+                f"{mission}.lev: {differing} byte(s) differ beyond unit "
+                f"names; {len(names)} name(s) overlaid, slots "
+                f"{skipped} kept the base's")
+        if names:
+            mission_names[mission] = names
+    if lev_notes:
+        warn("maps in another authored state than the base (the pack's "
+             "cells, objects and stats are never read): "
+             + "; ".join(lev_notes))
+    sub.write_json("names.json", {
+        "schema": NAMES_SCHEMA,
+        "language": name,
+        "code_page": encoding,
+        "balance": balance_names,
+        "missions": mission_names,
+    })
+
+    # --- text: the GUI banks, the briefings, the two info pages.
+    base_gui = result.documents["gui"]
+    catalogue = convert_gui_text(pack_root, reader, sub, spec,
+                                 stems=sorted(base_gui["gui"]), missing=missing)
+    short: list[str] = []
+    for bank, entries in sorted(base_gui["gui"].items()):
+        theirs = catalogue["gui"].get(bank, {})
+        gone = sorted((int(k) for k in entries if k not in theirs))
+        if gone:
+            short.append(f"{bank}: {len(gone)} id(s) "
+                         f"{gone[0]}..{gone[-1]}")
+    if short:
+        warn("bank ids the base has and the pack lacks (the game falls back "
+             "to the base's text per id): " + "; ".join(short))
+    stats["text_entries"] = sum(len(v) for v in catalogue["gui"].values())
+
+    base_briefings = briefing_files(base_root, language.spec(
+        result.documents["gui"]["language"]).directory)
+    files: list[tuple[str, Path]] = []
+    for stem, _path in base_briefings:
+        counterpart = _pack_find(pack_root, missing, "DATA", "TXT",
+                                 spec.directory, BRIEFING_DIR, f"{stem}.txt")
+        if counterpart is not None:
+            files.append((stem, counterpart))
+    stats["briefings"] = convert_briefings(pack_root, reader, sub,
+                                           spec.directory, result,
+                                           code_page=encoding, files=files)
+    base_events = result.documents.get("events", {})
+    tables = {k: v for k, v in base_events.items()
+              if k not in INFO_EVENTS_OWN_KEYS}
+    for label, converter in ((INFO_EVENTS, convert_info_events),
+                             (INFO_DATA, convert_info_data)):
+        if _pack_find(pack_root, missing, "DATA", "TXT", spec.directory,
+                      INFO_DIR, f"{label}.txt") is None:
+            continue
+        if converter is convert_info_events:
+            stats["info_events"] = len(convert_info_events(
+                pack_root, reader, sub, spec.directory, result,
+                code_page=encoding, tables=tables)["blocks"])
+        else:
+            stats["info_data"] = convert_info_data(
+                pack_root, reader, sub, spec.directory, result,
+                code_page=encoding)
+
+    # --- the fonts, and the art.
+    if all(_pack_find(pack_root, missing, "Libs", f"{font}.LIB") is not None
+           for font in FONT_NAMES):
+        convert_fonts(pack_root, reader, sub, encoding)
+    art = convert_art(pack_root, reader, sub, result, plates=plates,
+                      listing=art_listing(base_root), missing=missing)
+    _complete_art_index(staging, sub)
+    stats.update({"plates": art["plates"], "briefing_pictures": art["briefing"],
+                  "ui_libraries": art["libraries"]})
+
+    # --- the speech: briefing voice-overs and the tables' waves, by the
+    # names the base documents list.
+    voices = 0
+    frontend = result.documents.get("frontend", {})
+    for mission in frontend.get("voice_overs", []):
+        digits = mission[len("_c_"):]
+        path = _pack_find(pack_root, missing, BRIEFING_WAVE_DIR,
+                          f"{VOICE_OVER_PREFIX}{digits}{VOICE_OVER_SUFFIX}")
+        if path is None:
+            continue
+        sub.write_bytes(f"audio/briefing/{mission}.wav", reader.read_bytes(path))
+        voices += 1
+    extro = _pack_find(pack_root, missing, BRIEFING_WAVE_DIR, EXTRO_WAVE)
+    if extro is not None:
+        sub.write_bytes(f"audio/briefing/{EXTRO_WAVE}", reader.read_bytes(extro))
+    stats["voice_overs"] = voices
+    sound = result.documents.get("sound", {})
+    waves = 0
+    for lower, shipped in sorted(sound.get("waves", {}).items()):
+        path = _pack_find(pack_root, missing, WAVES_DIR, shipped)
+        if path is None:
+            continue
+        sub.write_bytes(f"audio/waves/{lower}", reader.read_bytes(path))
+        waves += 1
+    for lower, shipped in sorted(sound.get("speech", {}).get("files", {}).items()):
+        path = _pack_find(pack_root, missing, WAVES_DIR,
+                          soundmod.SPEECH_DIRECTORY, *shipped.split("/"))
+        if path is None:
+            continue
+        sub.write_bytes(f"audio/waves/speech/{lower}", reader.read_bytes(path))
+        waves += 1
+    stats["waves"] = waves
+
+    if missing:
+        warn(f"{len(missing)} file(s) the base has and the pack lacks (the "
+             "neutral copy serves): " + ", ".join(missing[:12])
+             + (" ..." if len(missing) > 12 else ""))
+    kept, dropped = _merge_pack(staging, sub, prefix)
+    stats.update({
+        "files": kept,
+        "identical_dropped": dropped,
+        "missing": len(missing),
+        "source_root_digest": reader.digest(),
+        "sources": reader.fingerprint(),
+    })
+    result.packs[name] = stats
+    return stats

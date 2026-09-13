@@ -117,7 +117,7 @@ var _shaded: bool = false
 ## *faces* is [method game_faces]' answer kept by the caller: a screen that
 ## rebuilds its whole tree on every click would otherwise walk the atlas four
 ## times a redraw.
-static func create(cache_dir: String, game_font: bool = true,
+static func create(paths: CachePaths, game_font: bool = true,
 		size: int = READABLE_SIZE,
 		faces: Array[FontFile] = []) -> BriefingText:
 	var label: BriefingText = BriefingText.new()
@@ -125,7 +125,7 @@ static func create(cache_dir: String, game_font: bool = true,
 	label.scroll_active = true
 	label.fit_content = false
 	label.mouse_filter = Control.MOUSE_FILTER_PASS
-	label.use_game_font(cache_dir, game_font, size, faces)
+	label.use_game_font(paths, game_font, size, faces)
 	return label
 
 
@@ -133,13 +133,14 @@ static func create(cache_dir: String, game_font: bool = true,
 ##
 ## `font_0` and `font_1`, each at the default shade and at the body ramp's --
 ## see [method use_game_font] for why a face carries its own.
-static func game_faces(cache_dir: String) -> Array[FontFile]:
+static func game_faces(paths: CachePaths) -> Array[FontFile]:
 	var out: Array[FontFile] = []
+	if paths == null:
+		return out
 	for name: String in FONT_NAMES:
-		out.append(GameFont.load_from(cache_dir, name,
-			GameFont.SHADE_COVERAGE))
+		out.append(GameFont.load_from(paths, name, GameFont.SHADE_COVERAGE))
 	for name: String in FONT_NAMES:
-		out.append(GameFont.load_from(cache_dir, name, GameFont.SHADE_BODY))
+		out.append(GameFont.load_from(paths, name, GameFont.SHADE_BODY))
 	return out
 
 
@@ -149,7 +150,7 @@ static func game_faces(cache_dir: String) -> Array[FontFile]:
 ## *size* overrides [constant READABLE_SIZE] for the readable face; the box the
 ## pickup message is drawn in is narrower than a briefing's and reads better a
 ## point larger.
-func use_game_font(cache_dir: String, game_font: bool,
+func use_game_font(paths: CachePaths, game_font: bool,
 		size: int = READABLE_SIZE, faces: Array[FontFile] = []) -> void:
 	_fonts.clear()
 	_shaded = false
@@ -172,7 +173,7 @@ func use_game_font(cache_dir: String, game_font: bool,
 	if faces.size() == FONT_SLOTS.size():
 		_fonts.assign(faces)
 	else:
-		_fonts.assign(game_faces(cache_dir))
+		_fonts.assign(game_faces(paths))
 	for index: int in range(FONT_SLOTS.size()):
 		if index < _fonts.size() and _fonts[index] != null:
 			add_theme_font_override(FONT_SLOTS[index], _fonts[index])

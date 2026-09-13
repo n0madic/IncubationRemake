@@ -46,6 +46,11 @@ went through on a retry, so **every phase that runs a plan must retry**, and a
 phase capped at fewer attempts than the rest lost a probe it had already
 taken once.
 
+Every invocation here passes `-english`. It is a **no-op on the GOG build**:
+the language code defaults to 1, which *is* `English`, and GOG's own
+`Launcher.exe` passes the same switch ([`24` §1](24-briefing-text.md)). It is
+kept so the command line says what it assumes.
+
 ### 1.1 The rate, measured — and what it does to a grouped capture
 
 The intermittency has a number now. `python3 tools/blob_gold.py --game-copy

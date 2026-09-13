@@ -363,7 +363,14 @@ The annotation says `Credits`, the jump goes to `Campaign` (line 36 carries
 
 Every one of the 176 files contains exactly one `[LCL]`, and 1122 `[END]`
 tokens in total. `[END]` ends the *invocation*, not the file; text after the
-last `[END]` is simply never reached.
+last `[END]` is simply never reached. No GOG file carries anything after its
+final `[END]`; the 1C Russian release's `Txtmod_a.lcl` (verified by hand
+2026-09-13, no automated check) ends `[END]\x1a` — a DOS end-of-file mark
+*inside* the obfuscated stream. The parser reports bytes after the final
+`[END]` that are all whitespace or C0 controls as one warning
+("N unreachable byte(s) after the final [END]") rather than a syntax error,
+and does **not** strip them in the codec, so `decode(encode(x)) == x` holds;
+`lcl_parse.py --check` carries the synthetic case.
 
 ### 3.6 Literals
 
@@ -591,7 +598,10 @@ skipper eats it.
 868 entries in total (724 + 132 + 12, which now adds up — the previous
 revision's `,` count included 31 commented-out lines), across `Campaign.lcl`
 (110), `Mission.lcl` (57), `Txtmod_a` (321), `_b` (145), `_d` (32), `_f` (42),
-`_g` (9), `_h` (152).
+`_g` (9), `_h` (152). The 1C Russian release's banks carry the same id sets
+except `Txtmod_a`, whose last id is 298 (the credits' `END`) against GOG's
+339 — the remake's per-id fallback to the base text exists for it
+([`92` §7.6](92-remake-architecture.md)).
 
 The store, `0x00470e60(index, text)`:
 

@@ -46,6 +46,8 @@ LOG = logging.getLogger(__name__)
 HEADER_SIZE = 864
 CELL_SIZE = 23
 UNIT_SIZE = 91
+#: docs/10 section 5 -- the NUL-terminated name field at +0x00.
+UNIT_NAME_SIZE = 20
 UNIT_SLOTS = 200
 UNIT_BLOCK_SIZE = UNIT_SIZE * UNIT_SLOTS          # 18200
 OBJ_HEADER_SIZE = 724                             # aSave3DObjects block 1
@@ -537,11 +539,18 @@ class BattleMap:
                       key=lambda c: c.start_index)
 
 
-def _cstring(data: bytes, offset: int, limit: int = 64) -> str:
+#: The shipped files are Windows-1252; a localised release's unit names are
+#: in its own code page (``inclib.language``).  Only the unit name column is
+#: text in any language -- the header's map, scene and set names are ASCII.
+SOURCE_ENCODING = "cp1252"
+
+
+def _cstring(data: bytes, offset: int, limit: int = 64,
+             encoding: str = SOURCE_ENCODING) -> str:
     end = data.find(b"\x00", offset, offset + limit)
     if end < 0:
         end = offset + limit
-    return data[offset:end].decode("cp1252", errors="replace")
+    return data[offset:end].decode(encoding, errors="replace")
 
 
 def _parse_cell(raw: bytes, expected_index: int, width: int) -> Cell:
@@ -570,10 +579,11 @@ def _parse_cell(raw: bytes, expected_index: int, width: int) -> Cell:
     )
 
 
-def _parse_unit(raw: bytes, slot: int) -> Unit:
+def _parse_unit(raw: bytes, slot: int,
+                encoding: str = SOURCE_ENCODING) -> Unit:
     return Unit(
         slot=slot,
-        name=_cstring(raw, 0, 20),
+        name=_cstring(raw, 0, UNIT_NAME_SIZE, encoding),
         x=raw[0x42], y=raw[0x43],
         unit_id=raw[0x44],
         type_id=raw[0x4C],
@@ -675,7 +685,8 @@ def _parse_marker(block: bytes) -> Object3D:
                     joints=_obj_joints(raw))
 
 
-def parse_lev(data: bytes, path: str = "<memory>") -> BattleMap:
+def parse_lev(data: bytes, path: str = "<memory>",
+              encoding: str = SOURCE_ENCODING) -> BattleMap:
     """Parse a .lev buffer into a BattleMap."""
     if len(data) < HEADER_SIZE + TAIL_SIZE:
         raise LevError(f"file too short: {len(data)} bytes")
@@ -694,7 +705,7 @@ def parse_lev(data: bytes, path: str = "<memory>") -> BattleMap:
 
     unit_base = HEADER_SIZE + CELL_SIZE * width * height
     units = [_parse_unit(data[unit_base + s * UNIT_SIZE:
-                              unit_base + (s + 1) * UNIT_SIZE], s)
+                              unit_base + (s + 1) * UNIT_SIZE], s, encoding)
              for s in range(UNIT_SLOTS)]
 
     obj_base = unit_base + UNIT_BLOCK_SIZE
@@ -741,6 +752,20 @@ def parse_lev(data: bytes, path: str = "<memory>") -> BattleMap:
     )
 
 
-def load_lev(path: str) -> BattleMap:
+def load_lev(path: str, encoding: str = SOURCE_ENCODING) -> BattleMap:
     with open(path, "rb") as fh:
-        return parse_lev(fh.read(), path)
+        return parse_lev(fh.read(), path, encoding)
+
+
+def unit_name_spans(data: bytes) -> list[tuple[int, int]]:
+    """``(start, end)`` of every unit slot's name field in a ``.lev`` buffer.
+
+    The one column of the file that is text in the release's language.  A
+    localisation guard zeroes these spans in both files and requires the
+    rest to be byte-identical (``docs/92`` section 7.6).
+    """
+    height = struct.unpack_from("<I", data, OFF_HEIGHT)[0]
+    width = struct.unpack_from("<I", data, OFF_WIDTH)[0]
+    unit_base = HEADER_SIZE + CELL_SIZE * width * height
+    return [(unit_base + s * UNIT_SIZE, unit_base + s * UNIT_SIZE + UNIT_NAME_SIZE)
+            for s in range(UNIT_SLOTS)]

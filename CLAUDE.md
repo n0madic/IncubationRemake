@@ -87,7 +87,11 @@ python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
 `--campaign-maps` and `--instant-action-maps` **belong together**: the first
 replaces `--missions` with all 92 campaign maps (a mission the cache lacks stops
 the campaign where it stands), the second adds the ten `_S_*` maps *Instant
-Action* lists. Two heavier checks stay out of `make test` because they are slow
+Action* lists. `--language-pack Russian=<root>` (plus `--plate
+Russian:title=…` / `Russian:wilderness_title=…` for the two title pictures
+the 1C tree lacks) lays a localised installation over the cache under
+`lang/Russian/`; the GOG root stays the only source of gameplay data
+([`docs/92` §7.6](docs/92-remake-architecture.md)). Two heavier checks stay out of `make test` because they are slow
 or need gitignored inputs: `remake_convert.py gog_incubation --check-campaign`
 and `campaign_runtime.py --check-saves tests/fixtures/saves`.
 

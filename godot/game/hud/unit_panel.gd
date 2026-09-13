@@ -138,7 +138,7 @@ func refresh(world: World, slot: int) -> void:
 		"bottom_left")
 	var type_id: int = DictRead.as_int(view["type_id"])
 	var species: int = utab.species(type_id)
-	_name_line(view, wtab)
+	_name_line(view, wtab, species)
 	_hp_block(view, utab, species)
 	_experience_block(view)
 	if species != SPECIES_ALIEN:
@@ -147,15 +147,49 @@ func refresh(world: World, slot: int) -> void:
 	_inventory(view)
 
 
-func _name_line(view: Dictionary, wtab: WeaponTable) -> void:
+## The name at the engine's (60, 397) -- which is **over the class icon's
+## helmet**: the icon is anchored 37 rows up from (+28, +13) and its top is
+## 391, six above the name's baseline. In `font_0` that is a thin 8 px
+## line across the top of a small picture and reads as the original does.
+## The readable face is half again as tall and wide, and a Cyrillic name
+## with descenders covered the figure -- so with that face the line starts
+## **to the right of the icon** instead ([constant NAME_CLEAR]), where
+## nothing else is drawn until the weapon block fifteen rows lower. The
+## shipped face keeps the shipped coordinate.
+func _name_line(view: Dictionary, wtab: WeaponTable, species: int) -> void:
 	var text: String = DictRead.as_string(view["name"])
 	var status: int = _status_text(view, wtab)
 	if status > 0 and _strings != null:
 		text += " " + _strings.shipped(HudTables.BANK_INTERFACE, status)
 	var at: Vector2 = Vector2(_origin.x, _origin.y
 		- float(HudTables.PANEL_ORIGIN.y - HudTables.PANEL_NAME_Y))
+	if _font == null:
+		at.x = maxf(at.x, _class_icon_right(species) + NAME_CLEAR)
 	_text(text, at, _font, COLOUR_TEXT, COLOUR_SHADOW, false,
 		FALLBACK_NAME_SIZE)
+
+
+## The gap between the class icon's right edge and a readable-face name.
+const NAME_CLEAR: float = 4.0
+
+
+## The panel-space x the class icon ends at: `(+28, +13)` less its anchor
+## plus its width, out of the art's own index -- the same numbers
+## [method _hp_block] places it by.
+func _class_icon_right(species: int) -> float:
+	var class_icon: int = HudTables.ICON_CLASS_MARINE
+	if species == SPECIES_ALIEN:
+		class_icon = HudTables.ICON_CLASS_ALIEN
+	elif species == SPECIES_MACHINE:
+		class_icon = HudTables.ICON_CLASS_ROBOT
+	if _art == null:
+		return _origin.x
+	var texture: Texture2D = _art.sprite(HudTables.LIB_ICONS, class_icon)
+	if texture == null:
+		return _origin.x
+	var left: float = _origin.x + float(HudTables.PANEL_BLOCK_HP.x) + 28.0 \
+		- float(_art.sprite_offset(HudTables.LIB_ICONS, class_icon).x)
+	return left + texture.get_width()
 
 
 ## `0x00474C40` -- the word after the name: panic at no fitness, light panic

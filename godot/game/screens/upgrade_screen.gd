@@ -263,9 +263,9 @@ var _description_faces: Array[FontFile] = []
 var descriptions: InfoText = null
 
 ## Where the shipped faces are read from, for the description page. Set by
-## [SliceMain]; empty leaves the page in the readable face, which is what a
+## [SliceMain]; `null` leaves the page in the readable face, which is what a
 ## screen built with no cache in a suite gets.
-var cache_dir: String = ""
+var paths: CachePaths = null
 
 ## The bodies, when the cache carries them. Set by [SliceMain] before
 ## [method setup]; without it the model window stays empty and the rest of the
@@ -883,8 +883,8 @@ func _draw_description(row: Dictionary) -> void:
 	# like any other block, so the face pairing, the ramps and the shade all
 	# belong in one place rather than being set up a second time here.
 	if _description_faces.is_empty() and font != null:
-		_description_faces = BriefingText.game_faces(cache_dir)
-	var page: BriefingText = BriefingText.create(cache_dir, font != null,
+		_description_faces = BriefingText.game_faces(paths)
+	var page: BriefingText = BriefingText.create(paths, font != null,
 		readable_size(FNT_LABEL), _description_faces)
 	page.scroll_active = false
 	page.mouse_filter = Control.MOUSE_FILTER_IGNORE

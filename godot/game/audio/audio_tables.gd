@@ -46,7 +46,7 @@ const CHANNEL_FX: String = "fx"
 const CHANNEL_SPEECH: String = "speech"
 
 var _document: Dictionary = {}
-var _cache_dir: String = ""
+var _paths: CachePaths = null
 ## The `Track` family's tracks the cache carries -- `audio/music/track/`, the
 ## cutscenes' 9..19 (docs/92 section 7.19). Empty after `--no-music`.
 var _track_family: PackedInt32Array = PackedInt32Array()
@@ -63,12 +63,16 @@ var _play_slots: int = 20
 
 
 ## Open the sound document a published cache carries.
-static func open(cache_dir: String) -> AudioTables:
+##
+## The two tables are neutral; *paths* decides per wave whether the chosen
+## language's pack supplies it -- the 1C release dubbed 227 of the 332 waves
+## and every briefing voice-over -- while the music stays the base's.
+static func open(paths: CachePaths) -> AudioTables:
 	var tables: AudioTables = from_document(
-		CacheLoader.read_json(cache_dir + "/tables/sound.json"), cache_dir)
+		CacheLoader.read_json(paths.neutral_path("tables/sound.json")), paths)
 	# The cutscene tracks are the front end's document's, not the missions'.
 	var frontend: Dictionary = CacheLoader.read_json(
-		cache_dir + "/tables/frontend.json")
+		paths.neutral_path("tables/frontend.json"))
 	tables._track_family = DictRead.to_int32(
 		frontend.get("track_family_tracks", []))
 	return tables
@@ -76,10 +80,10 @@ static func open(cache_dir: String) -> AudioTables:
 
 ## The same, from a document already in memory -- what the suite replays.
 static func from_document(document: Dictionary,
-		cache_dir: String = "") -> AudioTables:
+		paths: CachePaths = null) -> AudioTables:
 	var tables: AudioTables = AudioTables.new()
 	tables._document = document
-	tables._cache_dir = cache_dir
+	tables._paths = paths
 	for key: Variant in DictRead.as_dict(document.get("volumes", {})):
 		var id_text: String = DictRead.as_string(key)
 		tables._volumes[id_text.to_int()] = DictRead.as_int(
@@ -107,7 +111,7 @@ func is_loaded() -> bool:
 
 
 func cache_dir() -> String:
-	return _cache_dir
+	return _paths.cache_dir if _paths != null else ""
 
 
 func play_slots() -> int:
@@ -304,7 +308,9 @@ func voices() -> Dictionary:
 
 ## Where a named wave is, in the cache. The name is already the file name.
 func wave_path(wave: String) -> String:
-	return "%s/audio/waves/%s" % [_cache_dir, wave]
+	if _paths == null:
+		return "/audio/waves/%s" % wave
+	return _paths.path("audio/waves/%s" % wave)
 
 
 ## The `Arack` family the shipped build plays for the missions and the front
@@ -315,8 +321,8 @@ const FAMILY_TRACK: String = "track"
 
 func music_path(track: int, family: String = FAMILY_ARACK) -> String:
 	if family == FAMILY_TRACK:
-		return "%s/audio/music/track/%d.ogg" % [_cache_dir, track]
-	return "%s/audio/music/%d.ogg" % [_cache_dir, track]
+		return "%s/audio/music/track/%d.ogg" % [cache_dir(), track]
+	return "%s/audio/music/%d.ogg" % [cache_dir(), track]
 
 
 ## The tracks one family carries.
@@ -329,7 +335,9 @@ func tracks_of(family: String) -> PackedInt32Array:
 ## A file the cache carries under `audio/`, by its cache-relative path -- the
 ## briefing voice-overs and the static extro's wave, which no table names.
 func audio_path(relative: String) -> String:
-	return "%s/%s" % [_cache_dir, relative]
+	if _paths == null:
+		return "/%s" % relative
+	return _paths.path(relative)
 
 
 ## The playlist a mission's `CDTrackProgram` names, as track numbers in order.

@@ -267,11 +267,20 @@ A remake can write `0xFF` / `2` unconditionally and ignore both on read.
 ## 5. Fonts — solved
 
 `Libs/font_0.LIB` … `font_3.LIB` are proportional bitmap fonts. Each holds
-exactly **224 elements**, one per cp1252 code point from 32 to 255:
+exactly **224 elements**, one per **byte** from 32 to 255 of the release's
+code page — cp1252 for the GOG release, cp1251 for the 1C Russian one, whose
+four fonts have the same 224-element shape with Cyrillic glyphs in the upper
+half (verified by hand 2026-09-13, no automated check):
 
 ```
-element_index = codepoint - 32
+element_index = byte - 32
 ```
+
+The remake's cache writes both `byte` (the element's byte) and `codepoint`
+(the Unicode code point that byte stands for under the release's page,
+`inclib.language.codepoint`; an undefined byte maps to its own value), and
+`GameFont` registers glyphs by the code point
+([`92` §7.6](92-remake-architecture.md)).
 
 `delta_y` is the glyph's **ascent**: the top pixel row sits at
 `baseline - delta_y`. Within a font, `height - delta_y` is a constant — the

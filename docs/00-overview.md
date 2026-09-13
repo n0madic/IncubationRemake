@@ -228,6 +228,7 @@ The game-logic research programme is complete at its documented
 | G | sequence player | [41](41-sequence-player.md) | `seq_parse.py` | compiled manifest, lifecycle, 30 fps timing, triggers |
 | H | mission presentation | [42](42-mission-presentation.md) | `presentation_tables.py`, `presentation_gold.py` | the camera, the animation drivers and their speeds, the shot's nine stages, the idle scheduler, set-piece staging, the scenery state byte |
 | I | battle interface | [43](43-battle-hud.md) | `hud_tables.py`, `hud_probe.py` | the plate's layout and its pieces, the ground overlay's state table, the direction ring, the pad's gates, the columns' events, the panel's blocks, the radar — pixel layout, which F left out |
+| L | localisation and the Russian pack | [24 §1](24-briefing-text.md), [92 §7.6](92-remake-architecture.md) | `language_tables.py`; `remake_convert.py --check` (synthetic pack), `--check-cache` | the switch chain in the binary and the census of `DATA/TXT`; the language-pack model — the base's file lists, the balance and per-record `.lev` guards, the dedup. The Russian release's own facts (cp1251, the `0x1A` tail, `Incubation.dll`, ids 0..298, the in-place file list, the eight older maps and seven older scripts) are verified by hand only |
 
 Multiplayer and play-by-mail are deliberately outside this programme; the
 preserved boundary and rationale are in [`92` §7.9](92-remake-architecture.md).

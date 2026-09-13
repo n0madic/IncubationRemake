@@ -101,17 +101,19 @@ def script_document(program: lcl.Program,
     }
 
 
-def load_script(path: Path) -> lcl.Program:
+def load_script(path: Path,
+                encoding: str = lcl.SOURCE_ENCODING) -> lcl.Program:
     """Parse one ``.lcl``, refusing a file that is not a script at all.
 
     ``DATA/Version.gcl`` shares the extension and holds a bare version string;
     a mission whose script is missing its ``[LCL]`` header is a broken
     installation, not something to convert into an empty program.
+    *encoding* is the release's code page (``inclib.language``).
     """
     if not lcl.is_script(str(path)):
         raise ScriptError(f"{path}: no '[LCL]' header, not a script")
     try:
-        return lcl.parse_file(str(path))
+        return lcl.parse_file(str(path), encoding)
     except lcl.LclSyntaxError as exc:
         raise ScriptError(str(exc)) from exc
 

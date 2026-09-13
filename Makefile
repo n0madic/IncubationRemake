@@ -44,7 +44,8 @@ help:
 		'  make build-ios      Export an iOS Xcode project; configure a real Apple Team ID first.' \
 		'' \
 		'Default is a debug export. Android release needs local keystore credentials; iOS also needs Xcode.' \
-		'Overrides: GODOT=/path/to/Godot GAME_ROOT=/path/to/retail-install PYTHON=python3 EXPORT_MODE=debug|release'
+		'Overrides: GODOT=/path/to/Godot GAME_ROOT=/path/to/retail-install PYTHON=python3 EXPORT_MODE=debug|release' \
+		'           LANGUAGE_PACKS="--language-pack Russian=/path/to/1C ..." (android-cache; empty = base language only)'
 
 check-godot:
 	@test -n "$(GODOT)" && test -x "$(GODOT)" || { \
@@ -83,6 +84,7 @@ check-formats:
 	$(PYTHON) tools/presentation_tables.py --check $(GAME_ROOT)
 	$(PYTHON) tools/seq_parse.py $(GAME_ROOT) --check
 	$(PYTHON) tools/hud_tables.py --check $(GAME_ROOT)
+	$(PYTHON) tools/language_tables.py --check $(GAME_ROOT)
 	$(PYTHON) tools/charisma_selftest.py
 	$(PYTHON) tools/dbgcall_patches.py $(GAME_ROOT) --selftest
 	$(PYTHON) tools/info_parse.py --check $(GAME_ROOT)
@@ -135,7 +137,13 @@ ANDROID_PAYLOAD := $(GODOT_DIR)/android_payload
 ANDROID_CACHE_MANIFEST := $(ANDROID_PAYLOAD)/cache/manifest.json
 ANDROID_CACHE_STAMP := $(ANDROID_PAYLOAD)/.cache-stamp
 ANDROID_CACHE_KEY := $(ANDROID_PAYLOAD)/.cache-build-key
-ANDROID_CACHE_ARGS := $(GAME_ROOT) --campaign-maps --instant-action-maps
+# `LANGUAGE_PACKS` is the converter's own switches for the localisations the
+# payload carries -- e.g. `--language-pack Russian=/path/to/1C --plate
+# Russian:title=/path/Title.bmp` -- and is part of the key, so a payload
+# converted without a pack is stale once one is asked for.  Empty by default:
+# an APK built without it ships the base language only.
+LANGUAGE_PACKS ?=
+ANDROID_CACHE_ARGS := $(GAME_ROOT) --campaign-maps --instant-action-maps $(LANGUAGE_PACKS)
 CONVERTER_SOURCES := $(wildcard tools/*.py tools/inclib/*.py)
 
 android-cache:

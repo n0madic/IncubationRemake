@@ -332,7 +332,7 @@ func _check_map_fires(h: TestHarness) -> void:
 		h.equal("bgb.map_asks_for_a_cd_track.%s" % name, program, "5.3.4.2")
 		var playlist: PackedInt32Array = AudioTables.parse_playlist(program)
 		h.equal("bgb.map_playlist.%s" % name, Array(playlist), [5, 3, 4, 2])
-		var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+		var tables: AudioTables = AudioTables.open(CacheFixture.paths())
 		var player: MusicPlayer = MusicPlayer.from_program(program,
 			tables.tracks())
 		h.check("bgb.map_track_is_in_the_cache.%s" % name,
@@ -3571,7 +3571,7 @@ func _check_demo_missions(h: TestHarness) -> void:
 
 	# The playlists the missions name, and the tracks the cache carries for
 	# them -- criterion 11's own numbers.
-	var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+	var tables: AudioTables = AudioTables.open(CacheFixture.paths())
 	if not tables.is_loaded():
 		h.check("demo.audio", false, "tables/sound.json")
 		return
@@ -4895,7 +4895,7 @@ func _check_move_script_seam(h: TestHarness) -> void:
 	# stream -- so that the cue count the presenter answers can be checked
 	# against the table's own; [method _check_warp_script_seam] is the run
 	# with no sound layer at all, where the queue alone has to answer.
-	var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+	var tables: AudioTables = AudioTables.open(CacheFixture.paths())
 	if not tables.is_loaded():
 		h.check("move_script.audio", false, "tables/sound.json")
 		units.free()

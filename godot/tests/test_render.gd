@@ -200,7 +200,7 @@ func _check_overlay(h: TestHarness, world: World) -> void:
 	# one per marked cell while the pointer is on a legal one, none depth
 	# tested.
 	var ground: GroundSprites = GroundSprites.new()
-	var art: Art = Art.open(CacheFixture.cache_dir())
+	var art: Art = Art.open(CacheFixture.paths())
 	var result: MoveMapResult = world.submit_move_query(
 		MoveQueryCommand.create(world.unit_slots()[0], false))
 	var view: Dictionary = world.unit_view(world.unit_slots()[0])

@@ -4,8 +4,10 @@ extends RefCounted
 ## The game's own bitmap fonts, as a Godot [FontFile].
 ##
 ## docs/60 section 5: `Libs/font_0.LIB` … `font_3.LIB` are proportional bitmap
-## fonts of 224 glyphs each, one per cp1252 code point from 32 to 255, so a
-## glyph's element index is `codepoint - 32`.
+## fonts of 224 glyphs each, one per **byte** from 32 to 255 of the release's
+## code page, so a glyph's element index is `byte - 32`. The cache writes the
+## byte and the Unicode code point it stands for; this registers by the code
+## point, which is what a [String] indexes glyphs by.
 ##
 ## Two properties of the format decide how this is built:
 ##
@@ -31,25 +33,32 @@ const VARIATION: int = 0
 const TRACKING: int = 1
 
 
+const INDEX_PATH: String = "fonts/index.json"
+
+
 ## Build one font from the cache, or null when the cache has no fonts.
-static func load_from(cache_dir: String, font_name: String,
+##
+## A language pack's fonts are the same four `.LIB`s with the release's own
+## glyphs in the 224 byte slots, registered under the code points the
+## release's code page gives them (`inclib.language`): *paths* picks the
+## pack's index when the chosen language carries one.
+static func load_from(paths: CachePaths, font_name: String,
 		shade: float = SHADE_COVERAGE) -> FontFile:
-	var index: Dictionary = CacheLoader.read_json(
-		cache_dir + "/fonts/index.json")
+	var index: Dictionary = CacheLoader.read_json(paths.path(INDEX_PATH))
 	if index.is_empty():
 		return null
 	for entry: Variant in DictRead.as_array(index.get("fonts", [])):
 		var document: Dictionary = DictRead.as_dict(entry)
 		if DictRead.as_string(document["name"]) != font_name:
 			continue
-		return _build(cache_dir, document, shade)
+		return _build(paths, document, shade)
 	return null
 
 
-static func _build(cache_dir: String, document: Dictionary,
+static func _build(paths: CachePaths, document: Dictionary,
 		shade: float = SHADE_COVERAGE) -> FontFile:
-	var path: String = "%s/fonts/%s" % [cache_dir,
-		DictRead.as_string(document["file"])]
+	var path: String = paths.path("fonts/%s"
+		% DictRead.as_string(document["file"]))
 	if not FileAccess.file_exists(path):
 		return null
 	var image: Image = Image.new()

@@ -56,7 +56,6 @@ var host: CampaignHost = null
 ## `0x0044EEDA`, `animate = 0` (docs/24 section 7.1). Empty for a mission the
 ## cache has no briefing for, and then no box is drawn.
 var document: Dictionary = {}
-var cache_dir: String = ""
 ## The roster slot the player picked, or [constant Roster.NO_SLOT].
 var selected: int = Roster.NO_SLOT
 ## Instant Action has no location map. Its second action returns to the HQ

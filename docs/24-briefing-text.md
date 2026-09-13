@@ -42,9 +42,31 @@ the constants in `Incubation.exe`.
 
 Both path templates are built with `wsprintfA` — **[code]** `0x004C4000`
 `"%sTXT\%s\Briefing\%s.txt"` and `0x004C4688` `"%s%s\Info\%s.txt"` — with the
-language name coming from `aGetLanguage` (`0x00453DF0`). Only `English` ships
-in the GOG release; localised releases exist and put their files under the same
-template.
+language name coming from `aGetLanguage` (`0x00453DF0`); `0x004CC914`
+`"TXT\%s\GUI\%s"` is the third and last template that takes it. **The
+language is chosen on the command line and is nothing but that directory
+component.** `aMain.cpp`'s parser (`0x004494C0`) compares each argument
+against `-english` (`0x4C6098`), `-german` (`0x4C6090`), `-french`
+(`0x4C6088`), `-spanish` (`0x4C607C`), `-italian` (`0x4C6070`) and
+`-japanese` (`0x4C6064`) and stores a 1-based code into `[0x50DC1C]` — 1, 2,
+3, 8, 9, 7 respectively, default 1 (`0x449583`). The jump table at
+`0x44A4D8` (`lea eax,[ecx-1]; cmp eax,8; ja unknown`) turns the code into a
+name literal — `English` `0x4C605C`, `German` `0x4C5E88`, `French`
+`0x4C5E80`, `Japanese` `0x4C4144`, `Spanish` `0x4C5E78`, `Italian`
+`0x4C5E70`; codes 4–6 take the `unknown` arm (`0x44A46F`, literal
+`0x4C5E68`) — and each arm pushes it to the setter `0x453DC0`, which stores
+it in `0x510780`; `aGetLanguage` is `mov eax, 0x510780; ret`. `-debugx`
+(`0x4C60C0`) pushes `English` unconditionally (`0x449864`). GOG's
+`Launcher.exe` passes `-english -directx`, the default, so the switch is a
+no-op there. Every byte of this is pinned by `tools/language_tables.py
+--check`, and the table it pins is `tools/inclib/language.py`.
+
+Only `English` ships in the GOG release (`DATA/TXT/` holds exactly that one
+directory — the same check counts it). The licensed **Russian release**
+(1C/Snowball, verified by hand 2026-09-13, no automated check) is not an
+engine language: it overwrote `DATA/TXT/English/` and every in-place file
+with cp1251 data and ships no `Incubation.exe`. The remake therefore treats
+it as a language pack over the GOG base ([`92` §7.6](92-remake-architecture.md)).
 The mission name is the `.lev`/`.lcl` stem, so `Missions/_C_105.lev`,
 `Missions/_C_105.lcl` and `DATA/TXT/English/Briefing/_C_105.txt` are one
 mission's three files.
@@ -608,3 +630,16 @@ Two are dead:
   the GUI dispatcher discards; and
 * `Errors.txt` and `Campaign.txt` themselves (§7.2) — shipped, placeholder
   data that no code in `Incubation.exe` can name.
+
+Two are open about the second release rather than the format (2026-09-13):
+
+* **`brieftext.FontMetrics.width` is cp1252-only.** It measures a string
+  through the shipped English fonts; the converter does not call it (the
+  cache holds spans and the remake wraps at render time), so a Russian
+  briefing is never measured by it. A measure through the pack's fonts and
+  code page would be needed only if the Python line breaker were ever run on
+  the Russian text.
+* **The Russian release's `Video/Seq_4/Textures/*` differ from the base's**
+  (a localised title card, presumably); the pack model never reads `Video/`,
+  so the cutscene stays the base language's. Identity of
+  `Graphics/Incubation.bmp` (4 bpp) in the Russian tree is unknown.

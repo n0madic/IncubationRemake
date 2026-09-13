@@ -59,9 +59,14 @@ const NO_CAMPAIGN: int = -1
 var campaign_difficulty: int = NO_CAMPAIGN
 ## True in the pause shell, where the difficulty row is left out altogether.
 var in_mission: bool = false
-## The language the cache was built for. A **line, not a control**: the cache
-## carries one `text/<language>.json`, so a selector would have one entry.
+## The language in use, and every language the cache offers (the base
+## first). **A row when there are two or more and the player is out of a
+## mission, a line otherwise**: a selector with one entry is an inert
+## control, and a switch reloads the whole scene, which would drop an
+## unsaved mission -- so in the pause shell the line stays a line, gated the
+## way the difficulty row is (docs/92 section 7.6).
 var language: String = Localization.FALLBACK_LANGUAGE
+var languages: PackedStringArray = PackedStringArray()
 
 ## `Menu_a.lcl`'s *Leveloptions* writes a setting as two gadgets: a
 ## right-aligned caption (`GUI_SetText ... 2_Format`) and, beside it, the
@@ -138,8 +143,10 @@ func refresh() -> void:
 			else OWN_FONT_READABLE))
 	_add_row("controls", strings_own("touch.controls"),
 		strings_own("touch.mode.%d" % settings.control_mode), strings_own("touch.help"))
-	# The language is a line and not a row: there is exactly one catalogue in
-	# the cache, and a selector with one entry is an inert control.
+	if languages.size() > 1 and not in_mission:
+		_add_row("language", strings_own(OWN_LANGUAGE), language)
+		return
+	# One catalogue in the cache, or a mission behind the shell: a line.
 	var _language: Label = gui_text("%s: %s" % [strings_own(OWN_LANGUAGE),
 		language], ROW_AT + Vector2(0.0, ROW_STEP * float(_row_index)
 			+ CAPTION_DROP), ALIGN_LEFT, INK_LABEL, _rows)

@@ -37,6 +37,12 @@ const EP_PER_RANK: int = 12
 const FP_FLOOR: int = 3
 ## `0x00478A47`.
 const RECRUIT_NAME_FORMAT: String = "Soldier %d"
+## What a fresh hire is called, `%d` the 1-based slot. The engine's literal
+## by default; the host sets the localised one (`Incubation.dll` of the 1C
+## release carries "Солдат %d"), so the name a recruit is made with is the
+## language the player is playing in. **Not serialised**: a name, once given,
+## is data, and a save keeps the names it was made with.
+var recruit_name_format: String = RECRUIT_NAME_FORMAT
 ## `+0x5A` is stored in tens.
 ##
 ## **Derived for a fresh hire, stored otherwise.** `aEnlargeUnitPool` caches
@@ -146,7 +152,7 @@ func enlarge(player: int, mode: int, skill_level: int,
 	var rank: int = 0 if mode == TurnState.MODE_CAMPAIGN else skill_level
 	var unit: UnitState = UnitState.new()
 	unit.slot = slot
-	unit.name = RECRUIT_NAME_FORMAT % (slot + 1)
+	unit.name = recruit_name_format % (slot + 1)
 	# docs/27 section 3.2: `unitType = player` is deliberate. `Info.lcl` names
 	# types 0..3 `Human Soldier (1)` .. `(4)`, one per player slot, so a
 	# recruit gets the soldier model of the side that hired them.

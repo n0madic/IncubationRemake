@@ -36,6 +36,13 @@ const CHEATS_ARG: String = "--cheats="
 ## debugging commands and a twenty-five second wait. *Back* leaves for the
 ## menu, exactly as it does after an ending.
 const CREDITS_ARG: String = "--credits"
+## `--language=Russian` -- which of the cache's languages to read, over the
+## settings file and under the restart's own choice (docs/92 section 7.6).
+const LANGUAGE_ARG: String = "--language="
+## Where a language switch parks the choice across the scene reload, on the
+## root [Window]'s metadata: it is the one node that survives
+## `reload_current_scene`. Read once at boot and cleared.
+const LANGUAGE_META: StringName = &"incubation_language"
 ## What [method shell_entry] answers.
 const SHELL_SPLASH: String = "splash"
 const SHELL_MENU: String = "menu"
@@ -342,6 +349,13 @@ var _selected: int = -1
 ## carried over the window in which the remake has the interface down.
 var _selection_before_turn: int = -1
 var _cache_dir: String = ""
+## Which language every language-dependent file is read for (docs/92
+## section 7.6). Neutral-only readers -- missions, geometry, textures, the
+## tables -- keep reading [member _cache_dir] directly.
+var _paths: CachePaths = null
+## `tables/balance.json` with the chosen language's names overlaid, read once
+## and handed to every world and screen that names a unit or an item.
+var _balance: Dictionary = {}
 var _geometry: Dictionary = {}
 var _textures: Dictionary = {}
 ## The computer's turn, played back one event at a time. `core` decided the
@@ -396,9 +410,20 @@ var _drawn_terrain: Dictionary = {}
 ## every `_C_131` jump, and the count is what tells a computer turn's
 ## hooks apart from the player's own when both answer `ran` and nothing.
 var _last_script: Dictionary = {}
-## True once the close request has been accepted, so a second one is ignored
-## while the audio server is being given its frames.
-var _quitting: bool = false
+## True once a close or a restart has been accepted, so a second one is
+## ignored while the audio server is being given its frames -- and so no
+## option, shell choice or key is acted on in that window.
+var _leaving: bool = false
+## A close asked for while a restart is already leaving: the restart quits
+## instead of reloading, so a window close is never turned into a reload.
+var _quit_pending: bool = false
+## What [method _restart] calls once the audio is down and the agent's reply
+## has left: `reload_current_scene` by default, a seam so a suite can count
+## the call without reloading the tree under itself.
+var reload_hook: Callable = Callable()
+## The language [method _restart] was asked for, kept so a suite can read it
+## back where no root [Window] exists to park it on.
+var restart_language: String = ""
 ## Slot -> the walk cue that slot's type set up, kept for as long as the walk
 ## lasts so every step of one walk sounds the same.
 var _footstep_cues: Dictionary[int, Dictionary] = {}
@@ -578,17 +603,25 @@ func _ready() -> void:
 	if _missions.is_empty():
 		_fail("the cache at %s contains no missions" % _cache_dir)
 		return
+	# **Before the first thing that reads one.** `interface_font()` is a
+	# setting, and reading it below while the file was still unread gave the
+	# HUD the default face and every plate built afterwards the chosen one --
+	# the exact inconsistency `interface_font()` exists to prevent. The
+	# language is a setting too, and every loader from here on reads through
+	# it, so the file comes first of all.
+	var _had_settings: bool = settings.load_from_disk()
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	var wanted_language: String = _language_choice(args, settings.language)
+	_paths = CachePaths.create(_cache_dir, manifest, wanted_language)
+	if _paths.fallback:
+		push_warning("the cache has no language %s; reading %s"
+			% [wanted_language, _paths.language])
 	# The strings come before anything that says one. docs/92 section 7.6: a
 	# localization seam retrofitted later means finding every literal.
-	_strings = Localization.from_cache(_cache_dir, manifest)
-	# **Before the first thing that reads one.** `interface_font()` is a
-	# setting, and reading it two lines below this while the file was still
-	# unread gave the HUD the default face and every plate built afterwards
-	# the chosen one -- the exact inconsistency `interface_font()` exists to
-	# prevent. The volumes and the difficulty were never affected, being
-	# applied later still, but the ordering is now unconditional rather than
-	# true by luck.
-	var _had_settings: bool = settings.load_from_disk()
+	_strings = Localization.from_cache(_paths)
+	_balance = _paths.apply_balance_names(
+		CacheLoader.read_json(_cache_dir + "/tables/balance.json"))
 	# docs/60 -- the game's own bitmap font, the 17 px one. A cache built by an
 	# older converter has no fonts and the HUD stays on Godot's default.
 	var font: FontFile = interface_font()
@@ -599,16 +632,16 @@ func _ready() -> void:
 	# The campaign layer. `--mission=` still enters a mission directly, past
 	# the campaign, which is what it has always been for; the host is what the
 	# campaign flow drives, and the agent server reaches it by name.
-	_art = Art.open(_cache_dir)
-	_info = InfoText.load_from(_cache_dir)
+	_art = Art.open(_paths)
+	_info = InfoText.load_from(_paths)
 	# The battle interface (docs/43): the plate, the columns, the pad, the
 	# panel and the radar, drawn on the shipped art and captioned from
 	# `Txtmod_h`. Its one plate face is the `font_0` bitmap font (docs/43 D7).
 	_hud = MissionHud.new()
 	_hud.name = "MissionHud"
 	_hud.setup(_art, _strings, font,
-		GameFont.load_from(_cache_dir, MissionHud.TEXT_FONT),
-		GameFont.load_from(_cache_dir, MissionHud.SMALL_FONT), _cache_dir)
+		GameFont.load_from(_paths, MissionHud.TEXT_FONT),
+		GameFont.load_from(_paths, MissionHud.SMALL_FONT), _paths, _balance)
 	_hud.event.connect(_on_hud_event)
 	_hud.command.connect(_on_pad_command)
 	# The two hover ticks (docs/28 section 2.5): `click_1` when the pointer
@@ -627,8 +660,7 @@ func _ready() -> void:
 	_touch.host = self
 	add_child(_touch)
 	get_viewport().size_changed.connect(_on_canvas_resized)
-	campaign = CampaignHost.create(_cache_dir, CacheLoader.read_json(
-		_cache_dir + "/tables/balance.json"), _strings)
+	campaign = CampaignHost.create(_cache_dir, _balance, _strings)
 	_frontend = CacheLoader.read_json(_cache_dir + "/tables/frontend.json")
 	_sequence_manifest = CacheLoader.read_json(
 		_cache_dir + "/tables/sequences.json")
@@ -828,6 +860,36 @@ static func boot_choice(args: PackedStringArray, missions: PackedStringArray,
 		"warnings": warnings}
 
 
+## `--language=NAME` on the command line, or `""` when absent. The last one
+## wins, as every other flag here does.
+##
+## **Static and pure, like [method boot_choice]**: a launch flag that quietly
+## stopped working is exactly the kind of thing that is verified once by hand
+## and then broken.
+static func language_from_args(args: PackedStringArray) -> String:
+	var chosen: String = ""
+	for arg: String in args:
+		if arg.begins_with(LANGUAGE_ARG):
+			chosen = arg.substr(LANGUAGE_ARG.length())
+	return chosen
+
+
+## Which language to open in, by precedence: the restart's own choice parked
+## on the root [Window] (consumed here), then `--language=`, then the settings
+## file, then the cache's base language (an empty answer).
+func _language_choice(args: PackedStringArray, from_settings: String) -> String:
+	var root: Window = get_tree().root if is_inside_tree() else null
+	if root != null and root.has_meta(LANGUAGE_META):
+		var parked: String = DictRead.as_string(root.get_meta(LANGUAGE_META))
+		root.remove_meta(LANGUAGE_META)
+		if parked != "":
+			return parked
+	var from_args: String = language_from_args(args)
+	if from_args != "":
+		return from_args
+	return from_settings
+
+
 ## `--cheats=god,ammo` -- turn the named switches on in *into*, and answer the
 ## warnings a caller should print.
 ##
@@ -924,9 +986,9 @@ func difficulty_now() -> int:
 ## vector face. See [member GameSettings.game_font] for why the default is the
 ## readable one.
 func interface_font() -> FontFile:
-	if not settings.game_font:
+	if not settings.game_font or _paths == null:
 		return null
-	return GameFont.load_from(_cache_dir, GAME_FONT)
+	return GameFont.load_from(_paths, GAME_FONT)
 
 
 ## The four shipped faces, indexed by `Menu_b.lcl`'s `fntID` column.
@@ -937,9 +999,9 @@ func interface_font() -> FontFile:
 func interface_faces() -> Array[FontFile]:
 	if not settings.game_font:
 		return []
-	if _faces.is_empty():
+	if _faces.is_empty() and _paths != null:
 		for index: int in range(GAME_FACES.size()):
-			_faces.append(GameFont.load_from(_cache_dir, GAME_FACES[index]))
+			_faces.append(GameFont.load_from(_paths, GAME_FACES[index]))
 	return _faces
 
 
@@ -1297,10 +1359,8 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			map.location_cells = _location_cells
 			# `B` on the map is the mission's own `B0` block
 			# ([method CampaignMapScreen.toggle_short_briefing]).
-			map.cache_dir = _cache_dir
-			map.document = CacheLoader.read_json(
-				"%s/text/briefing/%s.json" % [_cache_dir,
-				campaign.current_mission()])
+			map.paths = _paths
+			map.document = _briefing_document(campaign.current_mission())
 			# A cache the chain's map is not in leaves the plate whole and
 			# the screen a list; the frame is drawn around a hole only when
 			# there is something behind it.
@@ -1313,10 +1373,8 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 		CampaignHost.SCREEN_BRIEFING:
 			var briefing: BriefingScreen = BriefingScreen.new()
 			briefing.mission = campaign.current_mission()
-			briefing.cache_dir = _cache_dir
-			briefing.document = CacheLoader.read_json(
-				"%s/text/briefing/%s.json" % [_cache_dir,
-				campaign.current_mission()])
+			briefing.paths = _paths
+			briefing.document = _briefing_document(campaign.current_mission())
 			# Raised over a running mission by `B`, it is a page to read and
 			# close, not a step of the campaign -- see [member
 			# BriefingScreen.over_mission]. **A deployment already begun
@@ -1335,10 +1393,7 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			var select: SelectUnitsScreen = SelectUnitsScreen.new()
 			select.host = campaign
 			select.back_to_hq = campaign.is_instant_action()
-			select.cache_dir = _cache_dir
-			select.document = CacheLoader.read_json(
-				"%s/text/briefing/%s.json" % [_cache_dir,
-				campaign.current_mission()])
+			select.document = _briefing_document(campaign.current_mission())
 			screen = select
 		CampaignHost.SCREEN_HQ:
 			# The Unit Menu, the Item List and the Recruit window are all
@@ -1372,7 +1427,7 @@ func show_campaign_screen(name: String) -> CampaignScreen:
 			upgrade.host = campaign
 			upgrade.library = _hq_library()
 			upgrade.descriptions = _item_descriptions()
-			upgrade.cache_dir = _cache_dir
+			upgrade.paths = _paths
 			upgrade.item_kind = campaign.item_kind
 			upgrade.item_id = campaign.item_id
 			screen = upgrade
@@ -1678,6 +1733,8 @@ func _show_shell_screen() -> CampaignScreen:
 				options.campaign_difficulty = campaign.state.difficulty
 			options.language = _strings.language if _strings != null \
 				else Localization.FALLBACK_LANGUAGE
+			if _paths != null:
+				options.languages = _paths.languages()
 			options.volume_changed.connect(_set_option_volume)
 			screen = options
 	if screen == null:
@@ -1740,6 +1797,8 @@ func _instant_action_missions() -> PackedStringArray:
 ## What a shell button means. The host owns the transitions; this turns one
 ## into a call, exactly as [method _on_campaign_choice] does for the campaign.
 func _on_shell_choice(action: String) -> void:
+	if _leaving:
+		return
 	if action.begins_with("slot:"):
 		_use_slot(action.substr(5).to_int())
 		return
@@ -1875,13 +1934,22 @@ func _end_campaign() -> void:
 
 # --- the briefing around a mission -- docs/24 section 7.1 -------------------
 
+## `text/briefing/<mission>.json` for the chosen language, or `{}`.
+func _briefing_document(mission: String) -> Dictionary:
+	if _paths == null or mission.is_empty():
+		return {}
+	return CacheLoader.read_json(_paths.path("text/briefing/%s.json" % mission))
+
+
 ## `audio/briefing/<mission>.wav`, lower-cased as the converter writes it, or
-## `""` when the cache has no voice for the mission.
+## `""` when the cache has no voice for the mission. The chosen language's
+## dub when its pack carries one -- resolved by [CachePaths], as every wave
+## is ([method AudioTables.audio_path]).
 func _briefing_voice(mission: String) -> String:
-	if _cache_dir.is_empty() or mission.is_empty():
+	if _paths == null or mission.is_empty():
 		return ""
 	var relative: String = "audio/briefing/%s.wav" % mission.to_lower()
-	if not FileAccess.file_exists("%s/%s" % [_cache_dir, relative]):
+	if not FileAccess.file_exists(_paths.path(relative)):
 		return ""
 	return relative
 
@@ -2393,7 +2461,26 @@ func _remember_loaded_session() -> void:
 ## a settings file that only appeared on a clean exit would lose the choice of
 ## anyone who closed the window.
 func _step_option(name: String) -> void:
+	if _leaving:
+		return
 	match name:
+		"language":
+			# The next of the cache's languages, written and then **loaded**:
+			# every font, catalogue, plate and wave was read for the old one,
+			# so the scene is rebuilt from the top rather than patched. The
+			# row is offered only out of a mission ([OptionsScreen]), so
+			# nothing unsaved is dropped by the reload.
+			if _paths == null:
+				return
+			var offered: PackedStringArray = _paths.languages()
+			if offered.size() < 2:
+				return
+			var at: int = offered.find(_paths.language)
+			var next: String = offered[(at + 1) % offered.size()]
+			settings.language = "" if next == _paths.base_language() else next
+			var _saved: bool = settings.save_to_disk()
+			_restart(next)
+			return
 		"controls":
 			settings.control_mode = ((int(settings.control_mode) + 1) % 3) as GameSettings.ControlMode
 			if _touch != null:
@@ -2976,12 +3063,53 @@ func _go_back() -> void:
 
 
 func _quit() -> void:
-	if _quitting:
+	if _leaving:
+		# A restart is on its way out over its own frames; it quits instead
+		# of reloading once its audio and reply have been seen off.
+		_quit_pending = true
 		return
-	_quitting = true
+	_leaving = true
 	if _audio != null:
 		var _frames: int = await _audio.shutdown()
 	get_tree().quit()
+
+
+## Reload the whole scene in *language* -- the language switch's second half.
+##
+## [method _quit]'s recipe, with a reload where the quit is: the audio is
+## shut down over its own frames first, or the Ogg stream it holds leaks
+## (docs/97 section 14). **The agent's reply lands first.** `AgentBridge` is
+## a child of this node and the reload frees it, which stops the server with
+## the `press option:language` reply still parked -- so the bridge is given
+## the same grace a `quit` gets ([method AgentBridge.wait_delivered]) before
+## the tree goes. The choice rides on the root [Window]'s metadata, which the
+## next `_ready` consumes first of all ([method _language_choice]).
+func _restart(language: String) -> void:
+	if _leaving:
+		return
+	_leaving = true
+	restart_language = language
+	if is_inside_tree():
+		get_tree().root.set_meta(LANGUAGE_META, language)
+	if _audio != null:
+		var _frames: int = await _audio.shutdown()
+	var bridge: AgentBridge = null
+	var child: Node = get_node_or_null("AgentBridge")
+	if child is AgentBridge:
+		bridge = child
+	if bridge != null:
+		var _left: bool = await bridge.wait_delivered()
+	if _quit_pending:
+		get_tree().quit()
+		return
+	if reload_hook.is_valid():
+		reload_hook.call()
+		return
+	if not is_inside_tree():
+		return
+	var reloaded: Error = get_tree().reload_current_scene()
+	if reloaded != OK:
+		push_error("language switch: reload_current_scene failed (%d)" % reloaded)
 
 
 ## The runner this build carries, or `null` when it carries none.
@@ -3080,14 +3208,24 @@ static func location_cells_of(map: World) -> Dictionary[int, Vector2i]:
 ## draws them unchanged -- but their `.lcl` is the original front end's and is
 ## deliberately not run, and nothing here is played, so none of `_build`'s
 ## simulation half applies.
+## `missions/<mission>/map.json` with the chosen language's unit names
+## written over the base's -- the one helper both [method World.create] sites
+## go through, so a backdrop's marines and a mission's squad are named alike.
+## Names enter no hash, so the overlay moves nothing a save pins.
+func _map_document(mission: String) -> Dictionary:
+	var document: Dictionary = CacheLoader.read_json(
+		"%s/missions/%s/map.json" % [_cache_dir, mission])
+	if _paths == null or document.is_empty():
+		return document
+	return _paths.apply_unit_names(mission, document)
+
+
 func _build_backdrop(mission: String) -> void:
 	if _backdrop_root != null and _backdrop_mission == mission:
 		return
 	_clear_backdrop()
-	var balance: Dictionary = CacheLoader.read_json(
-		_cache_dir + "/tables/balance.json")
-	var map_document: Dictionary = CacheLoader.read_json(
-		"%s/missions/%s/map.json" % [_cache_dir, mission])
+	var balance: Dictionary = _balance
+	var map_document: Dictionary = _map_document(mission)
 	if balance.is_empty() or map_document.is_empty():
 		# A cache published with the six default missions carries no campaign
 		# map. The screen still opens -- the frame, the buttons and the
@@ -3702,10 +3840,8 @@ func _build(mission: String) -> void:
 	_clear_mission()
 	_mission = mission
 
-	var balance: Dictionary = CacheLoader.read_json(
-		_cache_dir + "/tables/balance.json")
-	var map_document: Dictionary = CacheLoader.read_json(
-		"%s/missions/%s/map.json" % [_cache_dir, mission])
+	var balance: Dictionary = _balance
+	var map_document: Dictionary = _map_document(mission)
 	if balance.is_empty() or map_document.is_empty():
 		# **Not [method _fail].** That one raises the fatal overlay when the
 		# status line is not up -- the release build -- and nothing takes it
@@ -3894,8 +4030,8 @@ var _item_texts: InfoText = null
 
 
 func _item_descriptions() -> InfoText:
-	if _item_texts == null and not _cache_dir.is_empty():
-		_item_texts = InfoText.load_from(_cache_dir, InfoText.DATA_DOCUMENT)
+	if _item_texts == null and _paths != null:
+		_item_texts = InfoText.load_from(_paths, InfoText.DATA_DOCUMENT)
 	return _item_texts
 
 
@@ -3915,7 +4051,7 @@ func interface_audio() -> AudioSystem:
 
 
 func _open_audio(quiet: bool) -> AudioSystem:
-	var tables: AudioTables = AudioTables.open(_cache_dir)
+	var tables: AudioTables = AudioTables.open(_paths)
 	_blob_tables = CacheLoader.read_json(_cache_dir + "/tables/blobs.json")
 	_events = AudioEvents.open(tables, _blob_tables)
 	if _audio == null:
@@ -5429,6 +5565,10 @@ func _on_ai_step(event: Dictionary) -> float:
 	return hold
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Nothing is acted on while the audio is being given its frames before a
+	# quit or a language restart: the scene under this key is on its way out.
+	if _leaving:
+		return
 	# **The hidden code line goes before `ESC`**, because while it is open it
 	# owns the keyboard: `ESC` has to cancel the entry rather than raise the
 	# shell over a half-typed code.

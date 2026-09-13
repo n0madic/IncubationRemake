@@ -87,6 +87,28 @@ func port() -> int:
 	return _http.port() if _http != null else 0
 
 
+## Whether a batch is still running or its reply still on its way out.
+func delivering() -> bool:
+	if _http == null or _session == null:
+		return false
+	return _parked >= 0 or _session.is_running() or _http.delivering()
+
+
+## Await until the running batch has been answered and its reply has left
+## the socket, or [constant QUIT_GRACE_FRAMES] have passed. The language
+## restart's counterpart of the `quit` grace in [method _process]: the
+## reload frees this node, and a reply that had not left by then is lost.
+## Answers whether it left in time.
+func wait_delivered() -> bool:
+	var left: int = QUIT_GRACE_FRAMES
+	while left > 0 and _http != null:
+		if not delivering():
+			return true
+		await get_tree().process_frame
+		left -= 1
+	return _http == null or not delivering()
+
+
 func _exit_tree() -> void:
 	if _http != null:
 		_http.stop()

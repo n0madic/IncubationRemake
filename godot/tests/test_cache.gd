@@ -125,6 +125,109 @@ func run(h: TestHarness) -> void:
 	# runtime error in four suites rather than as one failing check.
 	_check_columns(h, CacheFixture.cache_dir())
 	_check_frontend_documents(h, CacheFixture.cache_dir())
+	_check_cache_paths(h)
+
+
+## [CachePaths] -- the per-file language resolver of docs/92 section 7.6, on
+## a hand-built manifest: the fixture is converted without a pack, and the
+## rules are the resolver's, not the Russian release's.
+static func _check_cache_paths(h: TestHarness) -> void:
+	var manifest: Dictionary = {
+		"language": "English",
+		"languages": ["English", "Russian"],
+		"inventory": [
+			{"path": "text/gui.json"},
+			{"path": "fonts/index.json"},
+			{"path": "lang/Russian/text/gui.json"},
+			{"path": "lang/Russian/names.json"},
+			{"path": "missions/_C_100/map.json"},
+		],
+	}
+	var base: CachePaths = CachePaths.create("/c", manifest)
+	h.equal("paths.base_language", base.language, "English")
+	h.check("paths.base_has_no_pack", not base.has_pack())
+	h.equal("paths.base_neutral", base.path("text/gui.json"), "/c/text/gui.json")
+
+	var pack: CachePaths = CachePaths.create("/c", manifest, "Russian")
+	h.equal("paths.pack_language", pack.language, "Russian")
+	h.check("paths.pack_has_pack", pack.has_pack() and not pack.fallback)
+	h.equal("paths.pack_hit", pack.path("text/gui.json"),
+		"/c/lang/Russian/text/gui.json", "the pack carries this file")
+	h.equal("paths.pack_neutral_fallback", pack.path("fonts/index.json"),
+		"/c/fonts/index.json", "the pack does not, so the neutral one serves")
+	h.equal("paths.pack_neutral_only", pack.path("missions/_C_100/map.json"),
+		"/c/missions/_C_100/map.json")
+	h.equal("paths.neutral_path_ignores_pack",
+		pack.neutral_path("text/gui.json"), "/c/text/gui.json")
+	h.check("paths.is_pack_file", pack.is_pack_file("text/gui.json")
+		and not pack.is_pack_file("fonts/index.json"))
+
+	var unknown: CachePaths = CachePaths.create("/c", manifest, "Klingon")
+	h.equal("paths.unknown_falls_back", unknown.language, "English")
+	h.check("paths.unknown_says_so", unknown.fallback and not unknown.has_pack())
+
+	# `languages()` answers a copy, like every `Packed*Array` accessor here.
+	var offered: PackedStringArray = pack.languages()
+	offered.append("Klingon")
+	h.equal("paths.languages_duplicated", pack.languages(),
+		PackedStringArray(["English", "Russian"]),
+		"appending to the answer does not reach the resolver")
+
+	# A manifest from before the pack model lists no `languages`: the base
+	# language is the whole list.
+	var old: CachePaths = CachePaths.create("/c", {"language": "English",
+		"inventory": []})
+	h.equal("paths.old_manifest_one_language", old.languages(),
+		PackedStringArray(["English"]))
+
+	# The names overlay, on hand-built tables: four name columns and nothing
+	# else move, by id; a slot the pack did not vouch for keeps its name.
+	var named: CachePaths = CachePaths.create("/c", manifest, "Russian")
+	named._names = {
+		"balance": {"units": {"1": "Боец"}, "weapons": {"0": "Пушка"},
+			"equipment": {}, "ctrlmap": {"2": "Пол"}},
+		"missions": {"_C_100": {"3": "Лягушонок"}},
+	}
+	named._names_read = true
+	var balance: Dictionary = {
+		"units": [{"id": 0, "description": "Soldier", "mp_max": 3},
+			{"id": 1, "description": "Marine", "mp_max": 4}],
+		"weapons": [{"id": 0, "name": "Gun", "damage": 5}],
+		"equipment": [{"id": 0, "name": "Kit"}],
+		"ctrlmap": [{"index": 2, "name": "Floor", "delay": 1}],
+	}
+	var overlaid: Dictionary = named.apply_balance_names(balance)
+	h.equal("names.unit_renamed",
+		DictRead.as_dict(DictRead.as_array(overlaid["units"])[1])["description"],
+		"Боец")
+	h.equal("names.unit_kept",
+		DictRead.as_dict(DictRead.as_array(overlaid["units"])[0])["description"],
+		"Soldier", "no overlay for id 0")
+	h.equal("names.weapon_renamed",
+		DictRead.as_dict(DictRead.as_array(overlaid["weapons"])[0])["name"],
+		"Пушка")
+	h.equal("names.ctrlmap_renamed",
+		DictRead.as_dict(DictRead.as_array(overlaid["ctrlmap"])[0])["name"],
+		"Пол")
+	h.equal("names.numbers_untouched",
+		DictRead.as_dict(DictRead.as_array(overlaid["weapons"])[0])["damage"],
+		5)
+	h.equal("names.input_untouched",
+		DictRead.as_dict(DictRead.as_array(balance["units"])[1])["description"],
+		"Marine", "the overlay is a copy, not an edit in place")
+	var map: Dictionary = {"units": [{"slot": 3, "name": "Frog"},
+		{"slot": 4, "name": "Toad"}]}
+	var renamed: Dictionary = named.apply_unit_names("_C_100", map)
+	h.equal("names.slot_renamed",
+		DictRead.as_dict(DictRead.as_array(renamed["units"])[0])["name"],
+		"Лягушонок")
+	h.equal("names.slot_kept",
+		DictRead.as_dict(DictRead.as_array(renamed["units"])[1])["name"],
+		"Toad", "a slot the pack did not vouch for keeps the base's name")
+	h.equal("names.other_mission_untouched",
+		named.apply_unit_names("_C_101", map), map)
+	h.equal("names.base_is_identity", base.apply_balance_names(balance),
+		balance, "the base language overlays nothing")
 
 
 ## Columns [UnitTypeTable] reads, and the [AIFire] recompute among them.

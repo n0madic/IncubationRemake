@@ -191,6 +191,7 @@ Two consequences:
 | `.lcl` mission programs ([`20`](20-lcl-language.md)) | versioned AST data | the AST, not the source text |
 | `DATA/TXT` briefings ([`24`](24-briefing-text.md)) | versioned localised data | labels resolved, markup kept as structure |
 | `.wav`, `.ogg` | copied unchanged | already standard formats |
+| a localised installation (§7.6) | `lang/<Name>/…` mirroring the neutral paths | the language-dependent subset only, byte-identical files dropped; names as an overlay in `lang/<Name>/names.json` |
 
 The portable containers were deliberately left to the first vertical slice, and
 the slice has chosen them. **Decided: JSON plus PNG, with no float anywhere in
@@ -677,63 +678,156 @@ box clamp — [`42` §2.3](42-mission-presentation.md). The 8 m was a remake
 number chosen against a roof drawn from above; what the engine does near a
 map edge is in `97` §28.)*
 
-### 7.6 Localisation — the seam stays, and Russian is planned
+### 7.6 Localisation — the GOG base and language packs laid over it
 
-Only `English` ships in the GOG release, but **a licensed Russian release is
-intended as a second data set**, so the language seam is not hypothetical: it
-has a known first user.
+Only `English` ships in the GOG release, and the engine's whole notion of a
+language is **a directory name**: a command-line switch (`-english`,
+`-german`, `-french`, `-japanese`, `-spanish`, `-italian`; parser `0x004494C0`
+in `aMain.cpp`) becomes a 1-based code in `[0x50DC1C]` (default 1), the jump
+table at `0x44A4D8` turns the code into a name literal (`English` 1, `German`
+2, `French` 3, `Japanese` 7, `Spanish` 8, `Italian` 9; codes 4–6 fall to
+`"unknown"`), the setter `0x453DC0` stores it and `aGetLanguage` `0x453DF0`
+returns it — only ever to fill the `%s` of three `wsprintf` templates
+(`%sTXT\%s\Briefing\%s.txt`, `%s%s\Info\%s.txt`, `TXT\%s\GUI\%s`). Fonts,
+`Info.lcl`, `Menu_*.lcl`, the interface `.LIB`s, the speech and the `.lev`
+unit names are loaded by literal name, so a localised release **replaced them
+in place**. `-debugx` forces `English`. GOG launches `Launcher.exe -english
+-directx`, so the repository's `-english` is a no-op. All of it is pinned
+byte by byte by `tools/language_tables.py --check` (`make check-formats`);
+the table is `inclib/language.py` ([`24` §1](24-briefing-text.md)).
 
-The decision: the converter takes a language and writes a per-language cache,
-and **no user-facing string is a literal in GDScript**. A single
-`LocalizationService`, preferably backed by Godot's standard `Translation`
-system, resolves both imported original-game strings from `Txtmod_*.lcl`
-([`20` §6](20-lcl-language.md)) / `DATA/TXT` ([`24` §1](24-briefing-text.md))
-and a separate catalogue of remake-only UI strings such as converter errors,
-settings and new warnings. Both use stable keys and an explicit fallback
-language. Retrofitting that seam later means finding every literal in the
-codebase, which is the expensive kind of change.
+**The second release is in hand.** The licensed Russian release (1C/Snowball,
+the *Wilderness* edition "Второй десант", `Version.gcl` 1.50e) was diffed
+file by file against the GOG tree on 2026-09-13, by hand and with no automated
+check behind the following:
 
-**Built in the second slice** (`godot/game/localization.gd`,
-[`94` §5](94-slice-2-report.md)), before the first string existed, and with one
-addition the decision above did not name: **a miss renders as a visible
-marker**, not as an empty string. An empty string looks like a layout bug and
-`??hud.end_turn` looks like what it is, which is what lets a check assert that
-nothing on screen is missing. The shipped catalogue is keyed by module and
-numeric id because that is how `DATA/TXT` is keyed; naming 723 strings would be
-a translation of its own.
+* **Localised, at the same paths, in cp1251**: `DATA/TXT/English/{GUI,
+  Briefing,Info}` (116 briefings, 9 banks, 4 info files; id sets identical
+  except `Txtmod_a` ends at 298 — the credits' `END` — where GOG runs to
+  339), `DATA/Info.lcl` (names only), `Libs/font_0..3.LIB` (224 Cyrillic
+  glyphs), `Libs/{buttons,options,uicons,sm,dir}.LIB` (same element counts),
+  `Graphics/Title.bmp` (**the Wilderness title**; there is no
+  `Install/Title.bmp`), 9 `Graphics/Briefing/*.bmp`, every `Briefing/*.wav`,
+  227 of 332 `Waves/`, `Video/Seq_4/Textures/*`, and every `Missions/*.lev`
+  (unit names; **eight maps also in an older authored state**: `_C_140`,
+  `_C_142`, `_C_144`, `_C_149`, `_C_159`, `_C_166`, `_C_167`, `_M_019` differ
+  in cells, objects or record stats beyond the names).
+* **Not localisation**: seven `Missions/_C_1xx.lcl` differ in *logic*
+  (`_C_154` rewritten, `_C_153` unit counts, `_C_142/156/157` variables) —
+  GOG carries the patches. The code is in **`Incubation.dll`, another
+  build**, so the "same build?" question below is answered: no. It carries
+  "Солдат %d" for `0x00478A47`'s "Soldier %d". No `music/`.
+* `Txtmod_a.lcl` ends with a DOS end-of-file mark (`0x1A`) *inside* the
+  obfuscated stream after `[END]`; the parser now treats bytes after the
+  final `[END]` as one unreachable-tail warning ([`20` §6](20-lcl-language.md)).
+* The GOG English text holds no byte in 0x80–0x9F (only `§` 0xA7), so
+  decoding it through a code page changes no English string.
 
-Three consequences that are cheap now and awkward later:
+**The decision: the GOG root is the only source of gameplay data; a
+localisation is a language pack.** `remake_convert.py --language-pack
+Russian=<root>` converts the language-dependent subset out of a second tree
+and lays it over the cache under `lang/<Name>/`, **mirroring the neutral
+relative paths** (`lang/Russian/text/gui.json`, `lang/Russian/fonts/…`,
+`lang/Russian/art/…`, `lang/Russian/audio/…`, `lang/Russian/names.json`).
+One cache holds every language; switching needs no second cache; exports
+bundle the packs. Consequences:
 
-* **The code page is per language, never hardcoded.** A font is 224 elements
-  indexed `codepoint - 32`, one per code point 32…255
-  ([`60` §5](60-lib-sprites.md)). The *format* does not change for Russian —
-  only which characters the upper half holds. So the converter carries a code
-  page per language (cp1252 for English, cp1251 for Russian) and decodes to
-  UTF-8 **at conversion time**, so nothing downstream ever sees a byte whose
-  meaning depends on a locale.
-* **Fonts and sprites are per-language assets, not shared ones.** The glyphs
-  themselves live in `Libs/font_*.LIB`, so a localised release ships different
-  font libraries — and possibly different UI libraries wherever a button
-  carries baked-in text. The converter's cache is keyed by language for those
-  too, not only for text.
-* **The Japanese path stays unimplemented.** The measure and print passes
-  branch on the language name and read big-endian two-byte characters when it
-  is `Japanese` ([`24` §4.4](24-briefing-text.md)). Russian is single-byte, so
-  nothing here needs that branch; it is recorded, not built.
+* **Every file list is the base's.** The pack tree is asked for a
+  counterpart of each base briefing, bank, font, plate, library and wave; a
+  missing one is a warning and the neutral copy serves -- for the art,
+  which is looked up by name out of `art/index.json` rather than by path,
+  the pack's index is completed with the neutral entries it lacks
+  (`_complete_art_index`; `pack.art.index_complete` pins it on a synthetic
+  pack one briefing picture short). A pack file the base
+  does not have is never baked, and a case-drifted pack filename lands under
+  the base's cache name. Every pack file byte-identical to its neutral twin
+  is dropped (1 539 of the Russian pack's 1 941; 402 stay).
+* **The pack reader never opens** a mission script, `WorldSet/`, `CHData/`,
+  `Video/`, an executable or the music. `Seq_4`'s localised textures are a
+  documented limitation: the cutscene's title card stays the base language's.
+* **The guard.** `Info.lcl` is compared as `BalanceTables.to_dict()` with the
+  four name columns blanked; any other field differing refuses the pack with
+  the file and field named (`key`, the `Data.txt` page letter, is *not* a
+  name column — the 1C release keeps the base's letters). A `.lev` lends a
+  unit name **only to a record that is otherwise byte-identical** (`+0x56`,
+  the stale animation handle, excepted); a slot whose record differs keeps
+  the base's name and the file is named in one warning with its byte count.
+  That is what lets the eight older Russian maps contribute their names
+  while their cells, objects and stats stay out. The plan had a whole-file
+  refusal here; the eight maps made it a per-record rule, and the rule was
+  confirmed as the decision on 2026-09-13 (six slots keep the base's names:
+  `_C_142` 3 and 4, `_C_166` 8, 13 and 15, `_M_019` 0).
+* **Names are an overlay, and enter no hash.** `lang/<N>/names.json` carries
+  the pack's unit, weapon, equipment and cell-type names by id and its unit
+  names by mission and slot. `CachePaths.apply_balance_names` writes them
+  over `tables/balance.json` once, in `SliceMain._ready`, before any
+  `World.create` — `UnitState.generate` fills spawned names from
+  `types.description` — and `apply_unit_names` over each `map.json` at both
+  `World.create` sites. `UnitState.hash_into` and the campaign digest skip
+  `name`, so a switch moves no canonical hash and orphans no save; a save
+  keeps the names it was made with ("Солдат 1" under English), exactly as
+  the original's `.sav` would.
+* **The code page is per language and reaches the fonts.** A font is 224
+  elements indexed `byte - 32`; the cache now writes both `byte` and the
+  Unicode `codepoint` it stands for under the release's page
+  (`inclib.language.codepoint`; undefined bytes decode to their own value),
+  and `GameFont` registers by code point. Text is decoded through the same
+  rule, so a briefing byte and its glyph cannot disagree. cp1252 for German,
+  French, Spanish and Italian is **UNVERIFIED** — table rows only; the
+  Japanese two-byte path stays unimplemented ([`24` §4.4](24-briefing-text.md)).
+* **Per-id text fallback.** `Localization` loads the pack catalogue *and*
+  the neutral one; an id the pack's bank lacks reads the neutral entry before
+  the `??` marker. The Russian `Txtmod_a` 299..339 therefore never renders
+  and the credits stop at `END`; the rule is general.
+* **Briefings need no layout work**: the cache holds spans, `BriefingText`
+  wraps at render time with the loaded faces, so Cyrillic wraps by
+  construction.
+* **Remake-own strings get a column**: `Localization.LANGUAGES` is
+  `["English", "Russian"]` and a suite pins every `OWN` key in every column.
+  The recruit name format left `core`: `Roster.recruit_name_format` defaults
+  to the engine's literal and `CampaignHost` sets it from
+  `roster.recruit_name` wherever a `CampaignState` comes to exist.
 
-One thing to establish before a second release is treated as evidence rather
-than as content: **whether its `Incubation.exe` is the build these specs are
-pinned to.** Every address in `combat_tables.py`, `ai_tables.py`,
-`turn_tables.py`, `interaction_tables.py`, `campaign_tables.py`,
-`blob_tables.py`, `sav_tables.py` and `trace_names.py` is a virtual address in
-the GOG executable. If the localised disc carries the same binary, all of it
-transfers and only the data differs; if it carries a different build, that is a
-second binary and a separate piece of work — valuable, because a finding
-confirmed across two builds is stronger than one, but not free. The corpus
-checks have the mirror-image problem: they pin census numbers that are facts
-about *this* release (155 `.lev`, 723 textures, 99 waves, 224 glyphs per font),
-not about the format, so pointing them at a second release means separating the
-structural invariants from the census first.
+**Choosing and switching.** `CachePaths` (`game/cache_paths.gd`) is built from
+the manifest's inventory — no filesystem probe — and answers, per file, the
+pack path or the neutral one; every loader in `game/` takes it instead of a
+bare directory. Precedence at boot: the restart's own choice parked on the
+root `Window`'s metadata (consumed once) → `--language=` → `settings.language`
+(empty means the base; no schema bump) → the base. A language the cache lacks
+falls back to the base with a warning. The options screen's language line
+becomes a row when the manifest names more than one language and the player
+is out of a mission; stepping it writes the setting and **reloads the scene**
+(`SliceMain._restart`: audio shut down over its frames, the agent's parked
+reply drained, then `reload_current_scene` through `reload_hook`). Mid-mission
+the line stays a line, gated like the difficulty, because the reload would
+drop the unsaved mission. `/state` gains `language`. `FIRST_RUN_HINT` and the
+fatal-error overlay stay English: they render before a catalogue exists.
+
+**The recipe** (outside `make test`, like `--check-campaign`):
+
+```
+unshield -O -d <scratch>/iwm_ru x ".../iso_ru/IWM_files/data1.cab"
+python3 tools/remake_convert.py gog_incubation --campaign-maps --instant-action-maps \
+    --language-pack Russian=<scratch>/iwm_ru/ProgramFiles \
+    --plate Russian:wilderness_title=<scratch>/iwm_ru/ProgramFiles/Graphics/Title.bmp \
+    --plate Russian:title=".../iso_ru/Incubation_files/Incubation/Graphics/Title.bmp" \
+    -o "<caches>"
+godot --path godot -- --language=Russian --agent-port=8787
+```
+
+`make android-cache LANGUAGE_PACKS="--language-pack Russian=… --plate …"`
+folds the packs into the payload key; without it the APK ships the base
+language only.
+
+**What is checked where.** `language_tables.py --check`: the switch chain.
+`remake_convert.py --check`: a synthetic German pack built out of the base
+tree — the mirror, the dedup, the per-id bank warning, the per-record `.lev`
+guard, the `Info.lcl` refusal, the same-root refusal, the fonts' code points.
+`--check-cache`: the prefixed reader, both guards on hand-built data, the
+merge. `test_cache.gd`: `CachePaths` and both overlays; `test_game_ui.gd`:
+every `OWN` key in every column, Russian without markers, the per-id
+fallback; `test_shell.gd`: the row with 1 vs 2 languages, the switch through
+`reload_hook`, `--language=`.
 
 ### 7.7 A ladder step follows the move map's rule
 
@@ -1508,8 +1602,10 @@ and not its volume-control id: speech's `-1` is shared with three cues that
 ride FX. The same rule removes `Network Game` and
 `Load PBM Game` from the main menu (§7.9 puts multiplayer outside the
 programme) and leaves `Load Game` out until a slot holds something. The
-language is shown as a line and not as a selector: the cache carries one
-`text/<language>.json`, so a selector would have a single entry.
+language is shown as a line while the cache carries one language, and as a
+selector when the manifest names more than one (§7.6) — a selector with a
+single entry would be an inert control; mid-mission it stays a line, because
+the switch reloads the scene.
 
 **The `Faithful` caption still promises one thing it does not control**, and
 that is a gap rather than a decision. §7.1's two audio flags live in
@@ -2644,6 +2740,30 @@ The exact Python packaging technology is deferred. The architectural part is
 not: the converter must have a diagnosable first-run flow, never write into the
 original installation, reject an unsupported source, produce its cache
 transactionally and leave the previous valid cache usable after failure.
+
+Open about localisation (§7.6, 2026-09-13):
+
+* **The readable vector font's Cyrillic coverage** is verified by screenshot
+  of the Russian shell, not by a suite; a glyph the default face lacks would
+  show as a box.
+* **`Graphics/Incubation.bmp`** (4 bpp) in the Russian tree — identity
+  unknown; nothing reads it.
+* **`brieftext.FontMetrics.width`** is cp1252-only and unused by the
+  converter ([`24`](24-briefing-text.md) open questions).
+* **`Video/Seq_4/Textures`** of the Russian release differ from the base's
+  and are not carried: the cutscene's title card stays the base language's.
+* **cp1252 for German, French, Spanish and Italian** is a table row with no
+  data behind it (`inclib/language.py`, `UNVERIFIED`).
+* **The Russian cutscene soundtracks are dubbed and not carried.** A
+  cutscene's speech is in its CD track ([`28` §6.1](28-effects-and-sound.md)),
+  and the 1C discs re-recorded tracks 09..19: the envelope of each against the
+  GOG `music/Track*.ogg` correlates at 0.2–0.4 where the music-only `Track03`
+  correlates at 0.97 (measured 2026-09-13 on the `.iso` images' audio tail).
+  That tail holds the first 2048 of every 2352 bytes of each audio sector —
+  13 % of the samples are gone — so it is evidence, not a source. Carrying
+  them needs a raw (`.bin/.cue`) rip of the discs and a `lang/<N>/music/`
+  arm in the pack converter, which today reads the music from the base only
+  by design. Deferred by the user, 2026-09-13.
 
 ---
 

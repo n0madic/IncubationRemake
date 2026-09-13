@@ -355,7 +355,7 @@ func _silent_opening_mirror(h: TestHarness) -> void:
 ## it on this side**, so what is checked here is that the reader is faithful
 ## to the document and that the document is whole.
 func _pickup_message(h: TestHarness) -> void:
-	var info: InfoText = InfoText.load_from(CacheFixture.cache_dir())
+	var info: InfoText = InfoText.load_from(CacheFixture.paths())
 	var points: PackedInt32Array = info.action_points()
 	h.equal("info.table_size", points.size(), 13,
 		"the thirteen arms of aExecuteUse that show something")
@@ -494,7 +494,7 @@ func _pickup_message(h: TestHarness) -> void:
 
 	# The sound: all thirteen reach `0x00410780`, whose own cue is `box.wav`.
 	var events: AudioEvents = AudioEvents.open(
-		AudioTables.open(CacheFixture.cache_dir()),
+		AudioTables.open(CacheFixture.paths()),
 		CacheFixture.read_json(CacheFixture.cache_dir() + "/tables/blobs.json"))
 	var opened: UseResult = UseResult.new()
 	opened.ok = true
@@ -1834,10 +1834,11 @@ func _command_gate(h: TestHarness) -> void:
 
 func _localization(h: TestHarness) -> void:
 	var manifest: Dictionary = CacheFixture.manifest()
-	var strings: Localization = Localization.from_cache(
-		CacheFixture.cache_dir(), manifest)
+	var strings: Localization = Localization.from_cache(CacheFixture.paths())
 	h.check("text.cache_carries_the_catalogue", strings.has_shipped_text(),
-		"text/%s.json" % strings.language)
+		"%s for %s" % [Localization.GUI_DOCUMENT, strings.language])
+	# The manifest's base language unless one was chosen -- and the fixture
+	# is converted without a pack, so nothing can be.
 	h.equal("text.language_comes_from_the_manifest", strings.language,
 		DictRead.as_string(manifest.get("language",
 			Localization.FALLBACK_LANGUAGE)))
@@ -1892,6 +1893,48 @@ func _localization(h: TestHarness) -> void:
 		foreign.text("hud.no_selection"),
 		DictRead.as_string(DictRead.as_dict(
 			Localization.OWN["hud.no_selection"])[Localization.FALLBACK_LANGUAGE]))
+
+	# **Every own key has every column [constant Localization.LANGUAGES]
+	# claims, and none is empty** -- so a pack cannot ship with a marker or
+	# a blank in the middle of its options screen (docs/92 section 7.6).
+	var holes: Array[String] = []
+	for key: Variant in Localization.OWN:
+		var by_language: Dictionary = DictRead.as_dict(Localization.OWN[key])
+		for column: String in Localization.LANGUAGES:
+			if not by_language.has(column) \
+					or DictRead.as_string(by_language[column]).is_empty():
+				holes.append("%s/%s" % [DictRead.as_string(key), column])
+	h.check("text.every_own_key_in_every_language", holes.is_empty(),
+		", ".join(holes.slice(0, REPORT_LIMIT)))
+	var russian: Localization = Localization.new()
+	russian.language = "Russian"
+	var marked: Array[String] = []
+	for key: Variant in Localization.OWN:
+		var name: String = DictRead.as_string(key)
+		if russian.text(name).begins_with(Localization.MISSING_PREFIX):
+			marked.append(name)
+	h.check("text.russian_resolves_without_markers", marked.is_empty(),
+		", ".join(marked.slice(0, REPORT_LIMIT)))
+	h.equal("text.russian_recruit_name",
+		russian.text(CampaignHost.RECRUIT_NAME_KEY) % 1, "Солдат 1",
+		"the literal the 1C release's Incubation.dll carries")
+
+	# **The shipped fallback is per id.** A pack bank shorter than the
+	# neutral one -- the 1C `Txtmod_a` ends at 298 where GOG's runs to 339 --
+	# answers the neutral entry for an id it lacks and the marker only for an
+	# id neither has; an id both have is the pack's.
+	var neutral: Dictionary = {"gui": {"Txtmod_a": {"1": "one", "2": "two"},
+		"Txtmod_g": {"11": "Mission"}}}
+	var chosen: Dictionary = {"gui": {"Txtmod_a": {"1": "один"}}}
+	var mixed: Localization = Localization.from_documents(chosen, neutral,
+		"Russian")
+	h.equal("text.fallback.pack_wins", mixed.shipped("Txtmod_a", 1), "один")
+	h.equal("text.fallback.neutral_per_id", mixed.shipped("Txtmod_a", 2), "two")
+	h.equal("text.fallback.neutral_per_bank", mixed.shipped("Txtmod_g", 11),
+		"Mission", "a whole bank the pack lacks")
+	h.check("text.fallback.neither_is_a_marker",
+		mixed.shipped("Txtmod_a", 3).begins_with(Localization.MISSING_PREFIX))
+	h.equal("text.fallback.language_is_the_chosen", mixed.language, "Russian")
 
 
 ## docs/22 section 9.1 -- three states, and the middle one is the interesting
@@ -1952,8 +1995,7 @@ func _hud(h: TestHarness) -> void:
 		h.check("hud.cache", false, "no _C_140 in the cache")
 		return
 	var world: World = loaded["world"]
-	var strings: Localization = Localization.from_cache(
-		CacheFixture.cache_dir(), CacheFixture.manifest())
+	var strings: Localization = Localization.from_cache(CacheFixture.paths())
 	var hud: MissionHud = MissionHud.new()
 	hud.setup(null, strings, null, null, null)
 	var yes: Callable = func(_number: int) -> bool: return true
@@ -2079,8 +2121,7 @@ func _give_up(h: TestHarness) -> void:
 ## fully opaque. Metrics are checked too, because a font that measured zero
 ## would lay every glyph on top of the last.
 func _game_font(h: TestHarness) -> void:
-	var dir: String = CacheFixture.cache_dir()
-	var font: FontFile = GameFont.load_from(dir, "font_2")
+	var font: FontFile = GameFont.load_from(CacheFixture.paths(), "font_2")
 	if font == null:
 		h.check("font.built", false,
 			"no fonts/index.json -- republish the cache")
@@ -2249,10 +2290,10 @@ func _push_mine_presentation(h: TestHarness) -> void:
 
 func _campaign_screens(h: TestHarness) -> void:
 	var cache_dir: String = CacheFixture.cache_dir()
-	var manifest: Dictionary = CacheFixture.manifest()
-	var strings: Localization = Localization.from_cache(cache_dir, manifest)
-	var art: Art = Art.open(cache_dir)
-	var font: FontFile = GameFont.load_from(cache_dir, "font_2")
+	var paths: CachePaths = CacheFixture.paths()
+	var strings: Localization = Localization.from_cache(paths)
+	var art: Art = Art.open(paths)
+	var font: FontFile = GameFont.load_from(paths, "font_2")
 	h.check("screens.art_present", art.has_art(),
 		"art/index.json is in the cache")
 
@@ -2736,7 +2777,7 @@ func _campaign_screens(h: TestHarness) -> void:
 
 	var briefing: BriefingScreen = BriefingScreen.new()
 	briefing.mission = "_C_100"
-	briefing.cache_dir = cache_dir
+	briefing.paths = paths
 	briefing.document = CacheFixture.read_json(
 		"%s/text/briefing/_C_100.json" % cache_dir)
 	briefing.setup(art, strings, font)
@@ -2756,7 +2797,7 @@ func _campaign_screens(h: TestHarness) -> void:
 	# briefing asked for in the shipped font came out with `font_0` body text
 	# under headings in Godot's vector default, which is what the two faces
 	# looked like side by side.
-	var body_text: BriefingText = BriefingText.create(cache_dir, true)
+	var body_text: BriefingText = BriefingText.create(paths, true)
 	var body_face: Font = body_text.get_theme_font("normal_font")
 	var head_face: Font = body_text.get_theme_font("bold_font")
 	var head_height: int = _fixed_size(head_face)
@@ -3508,7 +3549,7 @@ func _setpiece_state(h: TestHarness) -> void:
 ## checked here is the pair of byte tests `0x00432AB0` makes, the label
 ## `0x00432B20` composes, and `0x0043E850`'s retry with `{:**}`.
 func _magnifier(h: TestHarness) -> void:
-	var texts: InfoText = InfoText.load_from(CacheFixture.cache_dir(),
+	var texts: InfoText = InfoText.load_from(CacheFixture.paths(),
 		InfoText.DATA_DOCUMENT)
 	h.equal("magnifier.family_digit", texts.family_digit("units"), "0",
 		"0x00432B27 pushes '0' for a unit")
@@ -3560,6 +3601,7 @@ func _magnifier(h: TestHarness) -> void:
 	main.world = world
 	main._shown = world.clone()
 	main._cache_dir = CacheFixture.cache_dir()
+	main._paths = CacheFixture.paths()
 	h.check("magnifier.the_button_is_offered",
 		main._event_available(HudTables.EVENT_MAGNIFIER),
 		"D4 had it dark because the cache carried no Data bank")
@@ -3635,7 +3677,7 @@ func _magnifier(h: TestHarness) -> void:
 		"_C_140")
 	# The heading is the unit's own name, `0x0043E850`'s eighth argument.
 	var hud: MissionHud = MissionHud.new()
-	hud.setup(null, null, null, null, null, CacheFixture.cache_dir())
+	hud.setup(null, null, null, null, null, CacheFixture.paths())
 	var named: String = DictRead.as_string(
 		main.shown().unit_view(aliens[0])["name"])
 	h.check("magnifier.a_unit_is_named", named != "",
@@ -3673,7 +3715,8 @@ func _magnifier(h: TestHarness) -> void:
 ## `0x0041B629` puts it, and an upgrade base's waypoints are read in order.
 func _briefing_around_a_mission(h: TestHarness) -> void:
 	var cache_dir: String = CacheFixture.cache_dir()
-	var label: BriefingText = BriefingText.create(cache_dir, false)
+	var paths: CachePaths = CacheFixture.paths()
+	var label: BriefingText = BriefingText.create(paths, false)
 	var blips: Array[int] = []
 	label.blip.connect(func() -> void: blips.append(1))
 	label.start_typewriter()
@@ -3699,9 +3742,8 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 		"0x0043E3C1 -> 0x00436EF0, the third buffer aInitGUI loads")
 	label.free()
 
-	var manifest: Dictionary = CacheFixture.manifest()
-	var strings: Localization = Localization.from_cache(cache_dir, manifest)
-	var art: Art = Art.open(cache_dir)
+	var strings: Localization = Localization.from_cache(paths)
+	var art: Art = Art.open(paths)
 	var host: CampaignHost = CampaignHost.create(cache_dir,
 		CacheFixture.balance(), strings)
 	var _state: CampaignState = host.start_new(1)
@@ -3718,7 +3760,6 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	# label at all only if something puts one there.
 	var deploy: SelectUnitsScreen = SelectUnitsScreen.new()
 	deploy.host = host
-	deploy.cache_dir = cache_dir
 	deploy.document = document
 	deploy.setup(art, strings, null)
 	var boxes: int = 0
@@ -3732,7 +3773,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 
 	var page: BriefingScreen = BriefingScreen.new()
 	page.mission = host.state.mission
-	page.cache_dir = cache_dir
+	page.paths = paths
 	page.document = document
 	page.setup(art, strings, null)
 	h.check("briefing.screen_types", page.typing(),
@@ -3740,7 +3781,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	page.free()
 	var recall: BriefingScreen = BriefingScreen.new()
 	recall.mission = host.state.mission
-	recall.cache_dir = cache_dir
+	recall.paths = paths
 	recall.document = document
 	recall.over_mission = true
 	recall.setup(art, strings, null)
@@ -3754,7 +3795,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	# handler is two lines over this method and not the method itself.
 	var skipped: BriefingScreen = BriefingScreen.new()
 	skipped.mission = host.state.mission
-	skipped.cache_dir = cache_dir
+	skipped.paths = paths
 	skipped.document = document
 	skipped.setup(art, strings, null)
 	skipped.tick(2.0 / BriefingText.TYPEWRITER_FPS)
@@ -3770,7 +3811,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	skipped.free()
 	var tips: BriefingScreen = BriefingScreen.new()
 	tips.mission = host.state.mission
-	tips.cache_dir = cache_dir
+	tips.paths = paths
 	tips.document = document
 	tips.setup(art, strings, null)
 	var has_tips: bool = not DictRead.as_array(DictRead.as_dict(
@@ -3794,7 +3835,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	# its interface and nothing else, and the briefing is the screen the
 	# player came through.
 	var opener: MissionHud = MissionHud.new()
-	opener.setup(art, strings, null, null, null, cache_dir)
+	opener.setup(art, strings, null, null, null, paths)
 	h.check("start_briefing.a_campaign_mission_opens_on_no_box",
 		not opener.info_visible(),
 		"0x0041B629 is the multiplayer arm; docs/24 section 7.1")
@@ -3827,7 +3868,7 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 			int(CampaignMapScreen.SHORT_SIZE.y)])])
 	var chart: CampaignMapScreen = CampaignMapScreen.new()
 	chart.host = host
-	chart.cache_dir = cache_dir
+	chart.paths = paths
 	chart.document = document
 	chart.setup(art, strings, null)
 	h.check("map_short.starts_down", not chart.typing(),
@@ -4015,7 +4056,7 @@ func _blip_volume(h: TestHarness) -> void:
 		"%s" % [sited])
 	# The table the cue is measured against: `NO_SCALING` is refused by
 	# nothing, which is the property the literal `0` did not have.
-	var tables: AudioTables = AudioTables.open(CacheFixture.cache_dir())
+	var tables: AudioTables = AudioTables.open(CacheFixture.paths())
 	h.check("blip.no_scaling_is_never_refused",
 		tables.scaled_volume(0, AudioTables.NO_SCALING) != AudioTables.REFUSED,
 		"the GUI volume passes the scaler at every setting")
