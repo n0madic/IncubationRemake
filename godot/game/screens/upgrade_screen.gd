@@ -279,6 +279,11 @@ var _item_frame: float = 0.0
 var _viewport: SubViewport = null
 var _pivot: Node3D = null
 var _figure: CharismaBody = null
+## The weapon the window's body was last built for -- `-1` before the first
+## build. A purchase that changes the record's weapon changes which body the
+## model selector names, so *Buy Item* compares against this and rebuilds
+## only then; an equipment purchase or a refusal keeps the body it has.
+var _figure_weapon: int = -1
 var _spin: float = 0.0
 
 
@@ -464,6 +469,9 @@ func buy() -> void:
 		say(strings_own(OWN_REFUSED % result))
 	else:
 		say("")
+		var unit: UnitState = _unit()
+		if unit != null and unit.weapon != _figure_weapon:
+			_rebuild_body()
 	refresh()
 
 
@@ -964,6 +972,7 @@ func _rebuild_body() -> void:
 		_figure.queue_free()
 		_figure = null
 	var unit: UnitState = _unit()
+	_figure_weapon = unit.weapon if unit != null else -1
 	if unit == null or library == null or not library.is_ready():
 		return
 	var model_name: String = library.name_for(CharismaLibrary.SELECTOR_MODEL,

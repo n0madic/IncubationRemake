@@ -30,14 +30,13 @@ const RAMP_DEFAULT_INDEX: int = 0
 ## **Ten, not twelve, because the box is not the whole plate.** The briefing
 ## programme puts its pictures at their own `x, y` inside the same 640x480
 ## (docs/24 section 8), and on `_C_106`'s `C0` two of them start at `y` 240 --
-## inside a text box that runs from 77 to 353. The original can overlap them
-## because its body is the 8 px `font_0` and the block ends well above; at 12
-## the readable face ran a line and a half further down and the last tip was
-## drawn underneath a picture. Eleven clears that block by a couple of units,
-## which is not clearance at all -- a mission whose tips run one line longer
-## is back under the picture -- so this is [constant
-## CampaignScreen.READABLE_SIZE]'s own `font_0` entry instead, the cap-height
-## match for the face the body is actually written in.
+## inside a text box that runs from 77 to 353. At 12 the readable face ran a
+## line and a half further down than the 8 px `font_0` does, so this is
+## [constant CampaignScreen.READABLE_SIZE]'s own `font_0` entry, the
+## cap-height match for the face the body is actually written in. The size
+## is not what keeps the two apart, though -- `_C_151`'s pictures sit under
+## its block in the shipped face too -- [method BriefingScreen.settle_pictures]
+## is.
 const READABLE_SIZE: int = 10
 
 ## `COLOUR_RAMPS` at `0x0043E445`, as RGB565 converted to sRGB: ramp 0 is the

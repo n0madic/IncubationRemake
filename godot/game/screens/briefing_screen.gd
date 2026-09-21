@@ -18,6 +18,16 @@ extends CampaignScreen
 ## out of the shipped data rather than invented -- the pictures used to be
 ## placed at a fixed column that was 30 units off the right edge of the plate,
 ## where nothing could see them.
+##
+## **The text is drawn over the pictures, and a picture the text reaches is
+## moved from under it.** The original's GUI frame (`0x0043C650`) runs the
+## window's callback -- the picture programme, `0x00456950`, registered at
+## `0x00456CF6` -- and prints the text boxes after it (`0x0043DFB0`), so where
+## the two meet the glyphs are on top. They do meet: `_C_151` puts its two
+## pictures at `y` 170 under an `A0` that runs to 233 in the shipped face, and
+## the readable face runs further. The order is kept, and on top of it
+## [method settle_pictures] drops a row the text reaches beneath the block --
+## see there.
 
 ## `Txtmod_b` -- 'Briefing' is both the screen's name and the button back to it.
 const ID_BRIEFING: int = 30
@@ -37,6 +47,17 @@ const BOX_SIZE_TIPS: Vector2 = Vector2(230.0, 276.0)
 const CAPTION_GAP: float = 3.0
 const CAPTION_HEIGHT: float = 36.0
 const CAPTION_SPREAD: float = 168.0
+## The room left between the block's last line and a picture moved beneath
+## it, and between the action row and a caption above it.
+const PICTURE_GAP: float = 6.0
+## How small a moved picture may be drawn, as a fraction of its own size. A
+## row that cannot be drawn at least this large beneath the block **stays
+## where the programme put it**, under the text, which is what the original
+## draws: shrunk further it is a smudge, and pushed on regardless it lands on
+## the action row. One shipped page reaches this: `_C_119`'s `A0` runs 19
+## lines in the readable face, fills the box, and leaves its 170-tall picture
+## at `x` 310 thirty units of room.
+const PICTURE_MIN_SCALE: float = 0.4
 ## The caption's size when the readable face is in use. The original draws
 ## these in `font_0`, the 8 px bitmap, under a picture 50 to 180 units wide.
 const CAPTION_FONT_SIZE: int = 10
@@ -75,10 +96,30 @@ var voice: String = ""
 var _text: BriefingText = null
 var _pictures: Control = null
 var _toggle: Button = null
+## The programme's rows as built: each the picture's own rectangle in plate
+## units, its view and its caption, so [method _settle_pictures] can lay them
+## out again from the programme's coordinates rather than from wherever the
+## last pass left them.
+var _placed: Array[Placement] = []
+
+
+## One picture of the programme on the plate.
+class Placement:
+	extends RefCounted
+	## The programme's `x, y` and the bitmap's own size, in plate units.
+	var natural: Rect2 = Rect2()
+	var view: TextureRect = null
+	var caption: Label = null
 
 
 func build() -> void:
 	var _title: Label = place_title(label_for(BANK_MISSION, ID_BRIEFING))
+
+	# The pictures first and the text over them -- the frame's own order.
+	_pictures = Control.new()
+	_pictures.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pictures.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root().add_child(_pictures)
 
 	# `font` is the interface's, and `null` there means the readable face was
 	# chosen -- so the body follows the same decision the headings did instead
@@ -87,13 +128,13 @@ func build() -> void:
 	place_on_plate(_text, BOX_AT, BOX_SIZE_BRIEFING)
 	root().add_child(_text)
 	_text.blip.connect(_on_blip)
+	# The block is measured in the label's own pixels, which it has only once
+	# the tree has sized it and the label has laid its lines out again --
+	# `finished`, not `resized`: at the resize the line cache is still the
+	# old width's, and it answered 15 lines for a block of 12.
+	_text.finished.connect(_settle_pictures)
 	if animate and not over_mission:
 		_text.start_typewriter()
-
-	_pictures = Control.new()
-	_pictures.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_pictures.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root().add_child(_pictures)
 
 	# **Back to where it was opened from.** `B` raises this screen over a
 	# running mission (docs/43 section 5.2's event 11, `0x0043B150`), and the
@@ -149,6 +190,7 @@ func _show_pictures(key: String) -> void:
 	if _pictures == null:
 		return
 	clear_children(_pictures)
+	_placed.clear()
 	for entry: Variant in DictRead.as_array(document.get(key, [])):
 		var row: Dictionary = entry
 		var name: String = DictRead.as_string(row["picture"])
@@ -170,6 +212,10 @@ func _show_pictures(key: String) -> void:
 		view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		place_on_plate(view, at, size)
 		_pictures.add_child(view)
+		var placement: Placement = Placement.new()
+		placement.natural = Rect2(at, size)
+		placement.view = view
+		_placed.append(placement)
 
 		var lines: PackedStringArray = DictRead.to_strings(
 			row.get("descriptions", []))
@@ -186,11 +232,80 @@ func _show_pictures(key: String) -> void:
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		place_on_plate(caption,
-			Vector2(at.x + size.x * 0.5 - CAPTION_SPREAD * 0.5,
-				at.y + size.y + CAPTION_GAP),
-			Vector2(CAPTION_SPREAD, CAPTION_HEIGHT))
 		_pictures.add_child(caption)
+		placement.caption = caption
+	_settle_pictures()
+
+
+## Where the programme's pictures go once the block has been measured.
+##
+## *pictures* are the programme's rectangles -- its `x, y` and the bitmap's
+## size -- and *text* is the rectangle the block actually covers: the box's
+## corner, the widest line and the lines' height, clipped to the box. A
+## picture the text reaches drops beneath it, and **every picture on the same
+## programme row goes with it** so a pair stays a pair; a dropped picture
+## that then does not clear *floor* (the action row less the caption's room)
+## is shrunk about its own centre to fit, and one that would have to shrink
+## past [constant PICTURE_MIN_SCALE] is left where the programme put it.
+##
+## The width matters as much as the height: nineteen programme rows (six
+## `A0`, thirteen `C0`) put a 260-wide picture at `x` 310, inside the box,
+## and in eighteen of them the block's widest line stops short of it at 226
+## units or less -- the authors hand-wrapped those at about forty characters.
+## Tested against the box they would all move; tested against the lines they
+## stay where the authors put them. (`_C_119`'s `A0` is the nineteenth: one
+## line auto-wraps to 270 and the original draws it across the picture.)
+static func settle_pictures(pictures: Array[Rect2], text: Rect2,
+		floor_y: float) -> Array[Rect2]:
+	var dropped_rows: PackedFloat32Array = PackedFloat32Array()
+	for picture: Rect2 in pictures:
+		if picture.intersects(text) and not dropped_rows.has(picture.position.y):
+			dropped_rows.append(picture.position.y)
+	var out: Array[Rect2] = []
+	for picture: Rect2 in pictures:
+		var top: float = text.end.y + PICTURE_GAP
+		var room: float = floor_y - top
+		if not dropped_rows.has(picture.position.y) \
+				or room < picture.size.y * PICTURE_MIN_SCALE:
+			out.append(picture)
+			continue
+		var scale: float = minf(room / picture.size.y, 1.0)
+		var size: Vector2 = picture.size * scale
+		out.append(Rect2(Vector2(picture.position.x
+			+ (picture.size.x - size.x) * 0.5, top), size))
+	return out
+
+
+## Lay the programme's pictures out again against the block as it is drawn.
+##
+## Off the tree the label has no size and nothing to measure, and the
+## pictures keep the programme's coordinates until the first resize.
+func _settle_pictures() -> void:
+	if _text == null or _placed.is_empty():
+		return
+	var pixels: Vector2 = _text.size
+	var naturals: Array[Rect2] = []
+	for placement: Placement in _placed:
+		naturals.append(placement.natural)
+	var rects: Array[Rect2] = naturals
+	if pixels.x > 0.0 and pixels.y > 0.0:
+		var box: Vector2 = BOX_SIZE_TIPS if block == "C0" else BOX_SIZE_BRIEFING
+		# The label's pixels to plate units, per axis: the plate is stretched
+		# to the window and the two axes need not agree.
+		var content: Vector2 = Vector2(float(_text.get_content_width()),
+			float(_text.get_content_height())) * box / pixels
+		rects = settle_pictures(naturals,
+			Rect2(BOX_AT, Vector2(minf(content.x, box.x), minf(content.y, box.y))),
+			BUTTON_ROW_TOP - BUTTON_ROW_GAP - CAPTION_HEIGHT - CAPTION_GAP)
+	for index: int in range(_placed.size()):
+		var placement: Placement = _placed[index]
+		var at: Rect2 = rects[index]
+		place_on_plate(placement.view, at.position, at.size)
+		if placement.caption != null:
+			place_on_plate(placement.caption,
+				Vector2(at.position.x + at.size.x * 0.5 - CAPTION_SPREAD * 0.5,
+					at.end.y + CAPTION_GAP),
+				Vector2(CAPTION_SPREAD, CAPTION_HEIGHT))
 
 
 func _has_block(key: String) -> bool:
@@ -273,3 +388,4 @@ func scrolls() -> bool:
 
 func step_rows(rows: int) -> void:
 	scroll(float(rows))
+

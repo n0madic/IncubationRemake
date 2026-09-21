@@ -549,6 +549,21 @@ the rules above rather than from any guess:
   `{:23}`. Because the first match wins (§3), row 2 shows row 1's text
   *"...and after."* and the intended *"Kill all Scay'Ger."* is unreachable.
 
+**The pictures go under the text.** The window builder registers the routine
+as the window's callback (`push 0x456950; call 0x0043E5D0` at `0x00456CF6`),
+and the GUI frame `0x0043C650` calls that callback (`0x0043C65E`) *before* it
+prints the text boxes (`0x0043DFB0`, every active box through
+`aPrintGUITextBox`) -- so where a programme row and a block meet, the glyphs
+are on top. They do meet: `_C_151` places both objective pictures at `y` 170
+under an `A0` that lays out to 13 lines, ending at 233, and `_C_140`'s `Bratt`
+at `y` 250 under a block ending at 269. Nineteen programme rows (six `A0`,
+thirteen `C0`) put a 260-wide picture at `x` 310, inside the box, and in
+eighteen of them the block's widest laid-out line stops at 226 units or less
+-- hand breaks at about forty characters keep the text clear of it; `_C_119`'s
+`A0` is the nineteenth, with one line auto-wrapped to 270 that the original
+draws across the picture. (Both counts from a sweep of all 145 programmes and
+198 rows against `layout` with the shipped fonts, 2026-09-21.)
+
 The last thing the routine does is read the label `OC` into a scratch buffer
 (`0x00456CC7`) and return whether it was found. No file defines `{:OC}`, so the
 call always fails — and the GUI dispatcher discards the return value

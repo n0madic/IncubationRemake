@@ -1781,7 +1781,7 @@ carries.
 | Screen | Was | Is |
 |---|---|---|
 | the location map | a column of buttons on a full plate | the chain's own `.lev` behind a frame, one dot per open location |
-| the briefing | a 520x300 text box, pictures 30 units off the right edge | docs/24 §7.1's box `84, 77, 280, 276`, pictures at the programme's own `x, y` |
+| the briefing | a 520x300 text box, pictures 30 units off the right edge | docs/24 §7.1's box `84, 77, 280, 276`, pictures at the programme's own `x, y` under the text, as the frame draws them; a programme row the block reaches drops beneath it and shrinks to clear the action row (`BriefingScreen.settle_pictures`, 2026-09-21) |
 | the tips | a third button on the same screen | the same screen with `C0` in the `230`-wide box and the tip programme's pictures |
 | deployment | two lists, names against `x, y` pairs | the mission's own view with a dot on every free landing cell *(since 2026-09-13, §7.23: no screen at all — the battle interface on turn 0)* |
 

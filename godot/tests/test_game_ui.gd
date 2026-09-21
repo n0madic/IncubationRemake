@@ -2639,6 +2639,12 @@ func _campaign_screens(h: TestHarness) -> void:
 		[purse_before - 10, 1])
 	h.check("screens.upgrade_buy_changed_something", upgrade.is_dirty(),
 		"which is what *Undo* would put back")
+	# The model window shows the soldier **with** the weapon: the selector
+	# names a body per weapon, so the purchase rebuilds it on the spot rather
+	# than on the next visit.
+	h.equal("screens.upgrade_buy_rebuilds_the_body_for_the_weapon",
+		upgrade._figure_weapon, 1,
+		"the body in the window is the one the new weapon selects")
 	# **The two share a position per catalogue row, not per visit.** The item
 	# window's refresh re-gates gadget 0 on the row that is up: the weapon
 	# just bought is carried now (`0x00458037`), so the position keeps the
@@ -3778,6 +3784,50 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 	h.check("briefing.recall_does_not_type", not recall.typing(),
 		"the page raised by B over a mission shows what was already read")
 	recall.free()
+
+	# The pictures give way to the text, by programme row. `_C_151` puts
+	# `br_151_0` (133x180) at (150, 170) and `Ruther` (135x180) at (410, 170)
+	# under an `A0` whose readable face runs to about 257: the reached one
+	# drops beneath the block, its row-mate goes with it, and both shrink
+	# about their centres to clear the action row. `Bratt` on a row of its
+	# own, clear of the text, stays put.
+	var floor_y: float = CampaignScreen.BUTTON_ROW_TOP \
+		- CampaignScreen.BUTTON_ROW_GAP - BriefingScreen.CAPTION_HEIGHT \
+		- BriefingScreen.CAPTION_GAP
+	var reached: Rect2 = Rect2(84.0, 77.0, 272.0, 180.0)
+	var settled: Array[Rect2] = BriefingScreen.settle_pictures([
+		Rect2(150.0, 170.0, 133.0, 180.0), Rect2(410.0, 170.0, 135.0, 180.0),
+		Rect2(415.0, 300.0, 50.0, 79.0)], reached, floor_y)
+	var top: float = reached.end.y + BriefingScreen.PICTURE_GAP
+	var room: float = floor_y - top
+	h.equal("briefing.reached_row_drops_beneath_the_text",
+		[settled[0].position.y, settled[1].position.y, settled[2]],
+		[top, top, Rect2(415.0, 300.0, 50.0, 79.0)],
+		"the row-mate at the same y goes too; another row stays")
+	h.check("briefing.dropped_picture_shrinks_to_the_action_row",
+		is_equal_approx(settled[0].size.y, room)
+		and is_equal_approx(settled[0].size.x, 133.0 * room / 180.0)
+		and is_equal_approx(settled[0].get_center().x, 150.0 + 133.0 * 0.5),
+		"uniformly, about its own centre")
+	# `_C_102` hand-wraps its lines at forty characters to keep clear of the
+	# 260-wide picture at `x` 310 -- inside the 280-wide box. The block's own
+	# width is what is tested, so the authors' layout stands; the same picture
+	# under lines that run the box's width moves.
+	var wide: Rect2 = Rect2(310.0, 70.0, 260.0, 170.0)
+	h.equal("briefing.hand_wrapped_lines_leave_the_picture",
+		BriefingScreen.settle_pictures([wide],
+			Rect2(84.0, 77.0, 220.0, 216.0), floor_y)[0], wide)
+	h.check("briefing.full_width_lines_move_the_picture",
+		BriefingScreen.settle_pictures([wide],
+			Rect2(84.0, 77.0, 272.0, 216.0), floor_y)[0].position.y > wide.position.y)
+	# `_C_119`'s `A0` fills the box in the readable face and leaves its
+	# picture thirty units: rather than a smudge on the action row, the
+	# picture stays where the programme put it, under the text, as the
+	# original draws it.
+	var full: Rect2 = Rect2(84.0, 77.0, 272.0, 276.0)
+	h.equal("briefing.a_picture_with_no_room_stays_under_the_text",
+		BriefingScreen.settle_pictures([wide], full, floor_y)[0], wide,
+		"shrunk past PICTURE_MIN_SCALE it would be a smudge on the buttons")
 
 	# docs/92 section 7.19 I21: a click or a key finishes the reveal. The check
 	# calls the seam rather than pushing an event, because a screen built off
