@@ -1805,13 +1805,27 @@ func _deployment_mode(h: TestHarness) -> void:
 		"the panel's next half raises panel_cycled")
 	main._deploy_slot = slots[0]
 
-	# *Next player* with nobody on the map: refused, with a line, on turn 0.
+	# *Next player* with nobody on the map: refused, with a line, on turn 0
+	# -- and refused **before** the press is heard. The refusal is the
+	# remake's own, and a `click_2` in front of it read as a press that
+	# then thought better of itself.
+	var ears: ClickRecorder = ClickRecorder.new()
+	ears._tables = AudioTables.open(_paths)
+	main._audio = ears
+	main._play_interface(AudioTables.INTERFACE_COLUMN_PRESS)
+	h.equal("deploy.the_recorder_hears_a_press", ears.plays.size(), 1,
+		"the double answers the cue table, so a silence below is a result")
+	ears.plays.clear()
 	h.check("deploy.may_not_start_empty", not host.may_start())
 	main._on_hud_event(HudTables.EVENT_NEXT_PLAYER)
 	h.check("deploy.an_empty_map_says_so",
 		world.turn.turn == 0 and hud.line_text() == _strings.text("deploy.need_one"),
 		"named, not silent (docs/92 section 7.4); the original hands over "
 		+ "and loses by wipeout")
+	h.equal("deploy.the_refusal_is_not_a_press", ears.plays.size(), 0,
+		"no click_2 in front of the line")
+	main._audio = null
+	ears.free()
 
 	# A click off the landing zone, and one on it: the quadrant sets the
 	# facing (left-bottom is 4), the record leaves the live row, the
@@ -1945,6 +1959,40 @@ func _deployment_mode(h: TestHarness) -> void:
 		hud.line_text() == "" and main._deploy_slot == Roster.NO_SLOT,
 		"a mid-mission load would otherwise carry `need_one`")
 	main._hud = null
+
+	# **Past the campaign there is no pool.** The agent's `enter` from the
+	# shell and the `"enter"` result reach [method
+	# SliceMain._open_deployment_or_start] with a host that has no state;
+	# that used to return without a word and leave a turn-0 map whose every
+	# click the place interface took and refused in silence. A click there
+	# now says the pool is empty, and the opening takes `--mission=`'s own
+	# silent arm to turn 1, past the interface.
+	var loose_built: Dictionary = CacheFixture.load_world(host.state.mission)
+	var loose: SliceMain = SliceMain.new()
+	loose.world = loose_built["world"]
+	loose._shown = loose.world.clone()
+	loose.campaign = _host("deploy3")
+	loose._strings = _strings
+	loose._hud = hud
+	h.check("deploy.no_campaign_is_still_turn_0",
+		loose.campaign.state == null and loose._deploying(),
+		"the counter's own gate, with no host to ask")
+	var _loose_click: bool = loose.deploy_cell(cells[0], Vector2(100.0, 400.0))
+	h.equal("deploy.no_campaign_says_the_pool_is_empty", hud.line_text(),
+		_strings.text("deploy.pool_empty"),
+		"nothing to place and nowhere to take anybody back to")
+	h.equal("deploy.no_campaign_state_still_names_the_cells",
+		DictRead.as_array(loose.deployment_view()["cells"]).size(), cells.size(),
+		"the world's own cells, the same the overlay dots")
+	loose._open_deployment_or_start()
+	h.check("deploy.no_campaign_takes_the_silent_arm",
+		loose.world.turn.turn == TurnState.FIRST_TURN
+		and loose._shown.turn.turn == TurnState.FIRST_TURN
+		and not loose._deploying()
+		and not DictRead.as_bool(loose.deployment_view()["active"]),
+		"0x0041A073's arm, as --mission= takes it: turn %d" % loose.world.turn.turn)
+	loose._hud = null
+	loose.free()
 	hud.free()
 	main.free()
 
@@ -2725,3 +2773,15 @@ func _container(document: Dictionary) -> PackedByteArray:
 	ctx.update(body)
 	out.append_array(ctx.finish())
 	return out
+
+
+## An [AudioSystem] that opens no stream and keeps the waves it was asked
+## to play: whether a press was heard is a count rather than an impression.
+## `_tables` is set by the check, so [method AudioSystem.tables] answers the
+## cue table [method SliceMain._play_interface] reads.
+class ClickRecorder extends AudioSystem:
+	var plays: PackedStringArray = PackedStringArray()
+
+	func play_cue(cue: Dictionary, _tag: String = "") -> int:
+		plays.append(DictRead.as_string(cue["wave"]))
+		return plays.size() - 1

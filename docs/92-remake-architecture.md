@@ -2653,7 +2653,9 @@ What the remake keeps of its own, each named where it is made:
    hands over and the player loses by wipeout on turn 1 ([`27` §6](27-campaign.md)'s
    `turnCounter() > 0` gate is what lets the empty map through). The remake
    keeps the player on turn 0 and says `need_one`. The button stays lit —
-   a dark button would be the silence §7.4 removes.
+   a dark button would be the silence §7.4 removes — but the press is not
+   heard: the refusal is made before `click_2`, which is the sound of a
+   press the interface obeyed.
 3. **The roster keeps its gaps.** The original compacts the pool on every
    placement (`aRemoveUnitFromUnitPool`, `0x00478DEE`) and indexes the
    compacted row; the remake's selection is a roster slot and the original's

@@ -710,8 +710,15 @@ func _v_hud(parts: PackedStringArray, _line: String) -> void:
 		"radar":
 			_log.append("hud radar scale %d" % _main.step_radar(number))
 		"panel":
-			_log.append("hud panel %d %s" % [number,
-				"cycled" if _main.cycle_deploy_slot(number) else "no pool"])
+			# The band has two halves; a step outside them would land
+			# wherever [method Deployment.cycle]'s modulo put it and be
+			# logged as a cycle, so it is refused here rather than carried.
+			if number != Deployment.PREV and number != Deployment.NEXT:
+				_log.append("hud panel: N is %d|%d"
+					% [Deployment.PREV, Deployment.NEXT])
+			else:
+				_log.append("hud panel %d %s" % [number,
+					"cycled" if _main.cycle_deploy_slot(number) else "no pool"])
 		_:
 			_log.append("hud: unknown kind %s" % parts[1])
 	_wait = 1
@@ -1203,7 +1210,9 @@ func _blobs() -> void:
 
 ## Load a mission and take the entry snapshot, then open it the way the
 ## campaign's own entry does: on turn 0 with the place interface up, or
-## past it where there is nobody to place.
+## past it where there is nobody to place -- which, from the shell with no
+## campaign started, is always: there is no pool, and the mission takes
+## `--mission=`'s silent arm to turn 1.
 func _enter(mission: String) -> void:
 	# The shell would otherwise sit over the mission this just built and eat
 	# every key and click after it. `enter` is already a debugging entry past
@@ -1216,7 +1225,7 @@ func _enter(mission: String) -> void:
 		_log.append("enter %s: the cache does not carry it" % mission)
 		return
 	_main.campaign.begin_mission(_main.world)
-	var cells: Array[Vector2i] = _main.campaign.deployment_cells()
+	var cells: Array[Vector2i] = _main._landing_cells()
 	var names: Array = []
 	for cell: Vector2i in cells:
 		names.append([cell.x, cell.y])

@@ -1572,13 +1572,26 @@ func _campaign_library() -> CharismaLibrary:
 ## a dot under a placed soldier is the click that takes him back.
 func _free_landings() -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
-	if campaign == null or world == null:
+	if world == null:
 		return out
-	for cell: Vector2i in campaign.deployment_cells():
+	for cell: Vector2i in _landing_cells():
 		var view: Dictionary = world.cell_view(cell.x, cell.y)
 		if DictRead.as_int(view["unit"]) == MapState.NO_UNIT:
 			out.append(cell)
 	return out
+
+
+## The cells the map offers player 0, read from the same side of the fence
+## [method _deploying] reads: the host's with a campaign begun, the world's
+## own for a turn-0 world without one. One source for the centre, the free
+## list and `/state`, so the dots the overlay draws and the cells the agent
+## is told can never disagree.
+func _landing_cells() -> Array[Vector2i]:
+	if world == null:
+		return []
+	if campaign != null and campaign.state != null:
+		return campaign.deployment_cells()
+	return world.deployment_cells(0)
 
 
 ## Put the camera over the cells the squad is about to be put on -- the
@@ -1599,9 +1612,7 @@ func _frame_deployment() -> void:
 ## The middle itself is not where anybody can stand, and the original's own
 ## camera routines all take a cell.
 func _deployment_centre() -> Vector2i:
-	if campaign == null:
-		return Vector2i(-1, -1)
-	var cells: Array[Vector2i] = campaign.deployment_cells()
+	var cells: Array[Vector2i] = _landing_cells()
 	if cells.is_empty():
 		return Vector2i(-1, -1)
 	var sum: Vector2i = Vector2i.ZERO
@@ -1669,14 +1680,24 @@ func _may_leave_deployment() -> bool:
 ## Where the pool is empty and the mission has no squad either, the
 ## interface still goes up, because then there really is nothing to start
 ## and the map with its dots is what says so.
+##
+## **Without a campaign there is no pool at all**, and the mission takes
+## the silent arm the way `--mission=` does: the agent's `enter` and the
+## `"enter"` result both reach this from the shell, and leaving the world
+## on turn 0 there gave a map whose every click [method _pick] routed to
+## the place interface and whose every arm refused without a word.
 func _open_deployment_or_start() -> void:
-	if campaign == null or campaign.state == null or world == null:
+	if world == null:
 		return
 	close_campaign_screen()
 	# [method close_campaign_screen] syncs the HUD only when a screen was
 	# up; the agent's `enter` reaches this with none, and the mission's
 	# view is what the interface is drawn over.
 	_sync_hud()
+	if campaign == null or campaign.state == null:
+		_skip_deployment_turn()
+		_begin_mission_view()
+		return
 	# **Here, before anybody is placed**, which is where the engine writes
 	# it: the retail `_31_.sav` carries turn 0 with the squad still in the
 	# live row beside its entry snapshot (`tests/fixtures/saves`, docs/11
@@ -1747,10 +1768,16 @@ func _deploy_click(screen: Vector2) -> void:
 ## anything else is refused with a line. Public so a suite can place without
 ## projecting a cell onto a camera. Answers whether the map changed.
 func deploy_cell(cell: Vector2i, at: Vector2) -> bool:
-	if not _deploying() or campaign == null or campaign.state == null:
+	if not _deploying():
 		return false
 	if cell.x < 0 or not world.state.in_bounds(cell.x, cell.y):
 		_say_deploy(World.DEPLOY_NOT_A_CELL)
+		return false
+	# A turn-0 world without a campaign has no pool: nothing to place and
+	# nowhere to take anybody back to. Said, not swallowed (docs/92
+	# section 7.4).
+	if campaign == null or campaign.state == null:
+		_say_deploy(DEPLOY_LINE_POOL_EMPTY)
 		return false
 	# The truth, not the mirror: whether the click is allowed is the one
 	# question the truth answers (docs/100).
@@ -1847,9 +1874,7 @@ func deployment_view() -> Dictionary:
 	if campaign != null and campaign.state != null:
 		out["roster"] = Array(campaign.state.roster.occupied_slots())
 	var cells: Array = []
-	var cell_list: Array[Vector2i] = campaign.deployment_cells() \
-		if campaign != null else world.deployment_cells(0)
-	for cell: Vector2i in cell_list:
+	for cell: Vector2i in _landing_cells():
 		cells.append([cell.x, cell.y])
 	out["cells"] = cells
 	var free: Array = []
@@ -8535,6 +8560,17 @@ func _command_available(number: int) -> bool:
 func _on_hud_event(number: int) -> void:
 	if not _event_available(number):
 		return
+	# **Leaving the place interface with nobody on the map is refused, and
+	# refused before the click.** The button stays lit -- *Next player* has
+	# no turn-0 gate in the original (`0x0041DA20` cmd 2), which hands over
+	# an empty map and loses by wipeout on turn 1 -- but this remake keeps
+	# the player on turn 0 and says why (docs/92 section 7.4). The refusal
+	# is the remake's own, so it takes the sound of a refusal, not of a
+	# press: the line, and nothing heard.
+	if number == HudTables.EVENT_NEXT_PLAYER and _deploying() \
+			and not _may_leave_deployment():
+		_say_deploy(DEPLOY_LINE_NEED_ONE)
+		return
 	# `fcn.00450D70` plays `click_2` on a column slot with an event behind it,
 	# past the availability gate and not in front of it -- an unavailable
 	# button is silent as well as inert (docs/28 section 2.5).
@@ -8605,15 +8641,9 @@ func _on_hud_event(number: int) -> void:
 			# every other `NEXT TURN` of turn 1 happens before the player's
 			# first command rather than after it: `_C_106` opens with the
 			# platform carrying the squad down. The player presses the
-			# button themselves, as the original has them do.
+			# button themselves, as the original has them do. The one
+			# refusal, nobody on the map, was made above the click.
 			if _deploying():
-				# **Named, not silent, and refused.** The original hands over
-				# an empty map and the player loses by wipeout on turn 1;
-				# this remake keeps them on turn 0 and says why (docs/92
-				# section 7.4).
-				if not _may_leave_deployment():
-					_say_deploy(DEPLOY_LINE_NEED_ONE)
-					return
 				# `0x0041DA20` cmd 2 clears the selection word and wipes
 				# the panel before the hand-over runs.
 				_deploy_slot = Roster.NO_SLOT

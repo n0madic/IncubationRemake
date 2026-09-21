@@ -282,6 +282,17 @@ func _verbs(h: TestHarness) -> void:
 	h.check("verbs.unknown.named",
 		log_lines.size() == 1 and log_lines[0].begins_with(AgentSession.UNKNOWN),
 		"got %s" % (log_lines[0] if not log_lines.is_empty() else "nothing"))
+	# `hud panel N` has two halves and no third: a step the band does not
+	# have is named and refused before the host is asked, rather than landing
+	# wherever the cycle's modulo puts it and being logged as a cycle.
+	session.run_line("hud panel 0")
+	log_lines = session.log_lines()
+	var last: String = log_lines[log_lines.size() - 1] \
+		if not log_lines.is_empty() else ""
+	h.check("verbs.hud_panel.refuses_a_step_the_band_lacks",
+		last.begins_with("hud panel:") and last.contains("%d|%d"
+			% [Deployment.PREV, Deployment.NEXT]),
+		"got %s" % last)
 	# A session with no game answers `/state` with an empty document rather
 	# than taking the process down: `/state` is served from the first frame.
 	h.equal("verbs.state_without_a_game", session.state().size(), 0)
