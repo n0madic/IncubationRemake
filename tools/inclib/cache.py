@@ -104,6 +104,35 @@ def dumps(payload: Any) -> str:
     return json.dumps(payload, **JSON_ARGS) + "\n"
 
 
+def is_within(target: Path, forbidden: Path) -> bool:
+    """Whether *target* is *forbidden* or lies anywhere beneath it.
+
+    ``Path.resolve()`` follows symlinks but keeps the spelling it was given,
+    and the host's filesystem folds case, so a textual comparison lets
+    ``-o GOG_INCUBATION/x`` past a guard written for ``gog_incubation``.  The
+    comparison is therefore made by identity (:meth:`Path.samefile`, inode
+    and device) from the nearest ancestor of *target* that exists -- the
+    output root usually does not exist yet, its parent always does.  A
+    *forbidden* root that does not exist itself cannot be identified and
+    falls back to the textual test, which is all that was possible before.
+    """
+    target = target.resolve()
+    forbidden = forbidden.resolve()
+    if target == forbidden or forbidden in target.parents:
+        return True
+    if not forbidden.exists():
+        return False
+    # The root always exists, so the search terminates.
+    nearest = next(p for p in (target, *target.parents) if p.exists())
+    for ancestor in (nearest, *nearest.parents):
+        try:
+            if ancestor.samefile(forbidden):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 

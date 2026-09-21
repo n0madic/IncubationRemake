@@ -1706,7 +1706,7 @@ def check_view_player(ck: Checker, pe: PEFile, root: Path) -> None:
         path = root / TEXT_DIR / bank
         try:
             program = lcl.parse_bytes(path.read_bytes(), str(path))
-        except (OSError, lcl.ParseError) as exc:
+        except (OSError, lcl.LclSyntaxError) as exc:
             ck.check(f"view_player.captions.{bank}", False, str(exc))
             return
         banks[bank] = {n.index: n.text for r in program.routines
@@ -2244,7 +2244,7 @@ def check_texts(ck: Checker, root: Path) -> None:
         path = root / TEXT_DIR / bank
         try:
             program = lcl.parse_bytes(path.read_bytes(), str(path))
-        except (OSError, lcl.ParseError) as exc:
+        except (OSError, lcl.LclSyntaxError) as exc:
             ck.check(f"text.{bank}", False, str(exc))
             continue
         present = {n.index for r in program.routines for n in r.body

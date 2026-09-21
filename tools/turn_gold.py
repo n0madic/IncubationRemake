@@ -50,6 +50,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import movemap_gold as gold                                        # noqa: E402
+from inclib.cache import is_within                                 # noqa: E402
 from inclib import combat as combatmod                             # noqa: E402
 from inclib import footprint as footprintmod                       # noqa: E402
 from inclib import interact as interactmod                         # noqa: E402
@@ -1487,8 +1488,7 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
     into whatever is already on disk.
     """
     repo = Path(__file__).resolve().parent.parent
-    resolved = game_copy.resolve()
-    if repo == resolved or repo in resolved.parents:
+    if is_within(game_copy, repo):
         raise GoldError(
             f"{game_copy} is inside this repository; the capture must run "
             f"from a copy of the game, never from gog_incubation/")

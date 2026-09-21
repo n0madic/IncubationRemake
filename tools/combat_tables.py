@@ -1055,27 +1055,36 @@ class Stats:
             print(f"  {flag} {name.ljust(width)}  {passed}/{total}")
 
 
-def corpus_height_range(root: str) -> tuple[int, int, int]:
-    """``(min, max, files)`` of cell heights over every ``.lev`` under *root*."""
+def corpus_height_range(root: str) -> tuple[int, int, int, list[str]]:
+    """``(min, max, files, failures)`` of cell heights over every ``.lev``
+    under *root*.
+
+    A file that does not parse is named in *failures* rather than skipped:
+    the range is a claim about the whole corpus, and one file left out makes
+    it a claim about less than that.
+    """
     lo, hi, files = None, None, 0
+    failures: list[str] = []
     for dirpath, _dirs, names in os.walk(root):
         for fname in names:
             if not fname.lower().endswith(".lev"):
                 continue
+            path = os.path.join(dirpath, fname)
             try:
-                battle = load_lev(os.path.join(dirpath, fname))
-            except LevError:
+                battle = load_lev(path)
+            except (OSError, LevError) as exc:
+                failures.append(f"{path}: {exc}")
                 continue
             files += 1
             for cell in battle.cells:
                 h = cell.height
                 lo = h if lo is None or h < lo else lo
                 hi = h if hi is None or h > hi else hi
-    return (0 if lo is None else lo, 0 if hi is None else hi, files)
+    return (0 if lo is None else lo, 0 if hi is None else hi, files, failures)
 
 
-def corpus_weapon_ids(root: str) -> tuple[set[int], int, int]:
-    """``(ids, placed units, files)`` over every ``.lev`` under *root*.
+def corpus_weapon_ids(root: str) -> tuple[set[int], int, int, list[str]]:
+    """``(ids, placed units, files, failures)`` over every ``.lev`` under *root*.
 
     The upper half of the weapon table is reachable only through the campaign
     armoury, which no ``.lev`` carries, so this is what says whether an arm
@@ -1083,13 +1092,16 @@ def corpus_weapon_ids(root: str) -> tuple[set[int], int, int]:
     """
     ids: set[int] = set()
     placed = files = 0
+    failures: list[str] = []
     for dirpath, _dirs, names in os.walk(root):
         for fname in names:
             if not fname.lower().endswith(".lev"):
                 continue
+            path = os.path.join(dirpath, fname)
             try:
-                battle = load_lev(os.path.join(dirpath, fname))
-            except LevError:
+                battle = load_lev(path)
+            except (OSError, LevError) as exc:
+                failures.append(f"{path}: {exc}")
                 continue
             files += 1
             for unit in battle.units:
@@ -1097,11 +1109,12 @@ def corpus_weapon_ids(root: str) -> tuple[set[int], int, int]:
                     continue
                 placed += 1
                 ids.add(unit.weapon)
-    return ids, placed, files
+    return ids, placed, files, failures
 
 
-def corpus_actpt_family(root: str) -> tuple[dict[str, list], int]:
-    """``(command -> [(file, numeric args), ...], scripts)`` over every script.
+def corpus_actpt_family(root: str) -> tuple[dict[str, list], int, list[str]]:
+    """``(command -> [(file, numeric args), ...], scripts, failures)`` over
+    every script.
 
     ``docs/22`` §9.4.3's claim is about which *authored* data can reach the
     spore hatch, so it is answered by parsing the shipped scripts rather than
@@ -1111,6 +1124,7 @@ def corpus_actpt_family(root: str) -> tuple[dict[str, list], int]:
     wanted = ("Spores",) + SPORES_CORPUS_UNUSED
     out: dict[str, list] = {name: [] for name in wanted}
     scripts = 0
+    failures: list[str] = []
     for dirpath, _dirs, names in os.walk(root):
         for fname in sorted(names):
             path = os.path.join(dirpath, fname)
@@ -1120,7 +1134,9 @@ def corpus_actpt_family(root: str) -> tuple[dict[str, list], int]:
                 if not lcl.is_script(path):
                     continue
                 program = lcl.parse_file(path)
-            except (OSError, lcl.LclSyntaxError):
+            except (OSError, lcl.LclSyntaxError) as exc:
+                # Both name the file themselves.
+                failures.append(str(exc))
                 continue
             scripts += 1
             for stmt in program.statements():
@@ -1132,7 +1148,7 @@ def corpus_actpt_family(root: str) -> tuple[dict[str, list], int]:
                 out[stmt.name].append(
                     (fname, tuple(a.value if a.kind == "number" else a.raw
                                   for a in stmt.args)))
-    return out, scripts
+    return out, scripts, failures
 
 
 def corpus_unit_names(root: str) -> dict[int, str]:
@@ -1518,13 +1534,24 @@ def run_check(root: str) -> int:
         stats.check("const.bias", got == value, f"bias halves decode to {got}, not {value}")
 
     # 5. the magic division, over the height range the corpus actually contains
-    lo, hi, nlev = corpus_height_range(root)
-    stats.check("lev.corpus", nlev > 0, f"no .lev parsed under {root!r}")
+    # A corpus loop that skipped a file has answered for less than the corpus,
+    # so every one of the three names what it could not parse and the check
+    # fails on that list, not only on an empty corpus.
+    def corpus_detail(failures: list[str], empty: str) -> str:
+        if failures:
+            return f"{len(failures)} file(s) did not parse: {failures}"
+        return empty
+
+    lo, hi, nlev, lev_failures = corpus_height_range(root)
+    stats.check("lev.corpus", nlev > 0 and not lev_failures,
+                corpus_detail(lev_failures, f"no .lev parsed under {root!r}"))
 
     # 5a. the Spidy arm cannot fire from authored data
-    weapon_ids, placed, wfiles = corpus_weapon_ids(root)
-    stats.check("spidy.corpus", wfiles > 0 and placed > 0,
-                f"no placed unit found under {root!r}")
+    weapon_ids, placed, wfiles, weapon_failures = corpus_weapon_ids(root)
+    stats.check("spidy.corpus",
+                wfiles > 0 and placed > 0 and not weapon_failures,
+                corpus_detail(weapon_failures,
+                              f"no placed unit found under {root!r}"))
     stats.check("spidy.unreachable", SPIDY_WEAPON not in weapon_ids,
                 f"weapon {SPIDY_WEAPON} is carried by a placed unit after all")
     stats.check("spidy.armoury_half",
@@ -1533,9 +1560,10 @@ def run_check(root: str) -> int:
                 f"upper half of the table was thought to be the campaign "
                 f"armoury's")
     # 5b. docs/22 §9.4.3 -- what authored data can actually reach the hatch
-    family, nscripts = corpus_actpt_family(root)
-    stats.check("spore.corpus", nscripts > 0,
-                f"no LCL script parsed under {root!r}")
+    family, nscripts, script_failures = corpus_actpt_family(root)
+    stats.check("spore.corpus", nscripts > 0 and not script_failures,
+                corpus_detail(script_failures,
+                              f"no LCL script parsed under {root!r}"))
     got = tuple((f, a) for f, a in family["Spores"])
     stats.check("spore.corpus_spores", got == SPORES_CORPUS_CALLS,
                 f"the shipped Spores calls are {got}, expected "

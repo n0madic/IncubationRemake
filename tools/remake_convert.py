@@ -279,21 +279,19 @@ def refuse_unsafe_output(root: Path, out: Path) -> None:
     wrong path costs a stray subdirectory and nothing more.
     """
     refuse_game_output(root, out)
-    target = out.resolve()
     repo = Path(__file__).resolve().parent.parent
-    for forbidden, why in ((repo, "converted assets are never committed"),):
-        if target == forbidden or forbidden in target.parents:
-            raise cachemod.CacheError(
-                f"refusing to write the cache into {target}: {why}")
+    if cachemod.is_within(out, repo):
+        raise cachemod.CacheError(
+            f"refusing to write the cache into {out.resolve()}: "
+            f"converted assets are never committed")
 
 
 def refuse_game_output(root: Path, out: Path) -> None:
     """Keep both production caches and development fixtures out of the game."""
-    target = out.resolve()
-    game = root.resolve()
-    if target == game or game in target.parents:
+    if cachemod.is_within(out, root):
         raise cachemod.CacheError(
-            f"refusing to write into {target}: the game installation is read-only")
+            f"refusing to write into {out.resolve()}: "
+            f"the game installation is read-only")
 
 
 def convert_and_publish(root: Path, missions: list[str], out: Path,
@@ -2162,6 +2160,36 @@ def run_cache_checks() -> int:
             except cachemod.CacheError:
                 refused = True
             c.check("cache.refuses_%s" % destination.name, refused, why)
+
+        # The refusal is by identity, not by spelling: a destination that does
+        # not exist yet under the game root, and the same roots spelled in the
+        # other case, which the host's case-folding filesystem resolves to the
+        # same directory.  The case tests apply only where the filesystem does
+        # fold case -- elsewhere the respelt path is a different directory,
+        # and the check says so rather than silently dropping out of the count.
+        def refuses(destination: Path) -> bool:
+            try:
+                refuse_unsafe_output(Path("gog_incubation"), destination)
+            except cachemod.CacheError:
+                return True
+            return False
+        c.check("cache.refuses_unborn_game_subdir",
+                refuses(Path("gog_incubation") / "NEW" / "deep"),
+                "a not-yet-existing directory under the game root")
+        repo = Path(__file__).resolve().parent.parent
+        for respelt, label in ((Path("gog_incubation".upper()) / "x", "game"),
+                               (repo.with_name(repo.name.swapcase()) / "tools",
+                                "repository")):
+            if respelt.parent.exists():
+                c.check(f"cache.refuses_respelt_{label}", refuses(respelt),
+                        f"the {label} root spelt as {respelt}")
+            else:
+                c.check(f"cache.refuses_respelt_{label}", True,
+                        "not applicable: the filesystem is case-sensitive, "
+                        f"so {respelt} is another directory")
+        c.check("cache.allows_legal_output",
+                not refuses(Path(tmp) / "legal"),
+                "a destination outside both roots is not refused")
 
         game = Path(tmp) / "game"
         (game / "cache").mkdir(parents=True)
