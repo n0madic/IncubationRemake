@@ -2788,12 +2788,40 @@ terrain overlay). It is inert under Compatibility; under Mobile the overlay
 washed out without it, and with it the flat colour means the same thing
 under any renderer.
 
-**One pre-existing deviation the probe found in the shipped renderer.** An
-opaque texel of value 11 renders as 5 under Compatibility, 16 as 11, 21 as
-17, 31 as 29, exact from 74 up; a flat `albedo_color` or the background
-colour renders exactly. The mechanism is UNVERIFIED (it is not the
-simplified linear-to-sRGB the documentation quotes, which round-trips 11 to
-11); it is listed in §9.
+**One pre-existing deviation the probe found in the shipped renderer, and
+its correction.** An opaque texel of value 11 rendered as 5 under
+Compatibility, 16 as 11, 21 as 17, 31 as 29, exact from 62 up — through
+`albedo_texture`, `albedo_color`, a raw `ALBEDO` in a custom shader, a
+`Sprite3D` and a `SubViewport` alike, while the 2D canvas and the clear
+colour draw the byte as it is. The mechanism, pinned to within one level on all 256 values: the
+GLES3 scene shader converts the fragment's colour with its polynomial
+`srgb_to_linear` (`c·(c·(c·0.305306011 + 0.682171111) + 0.012522878)`) and
+the output is encoded with the simplified `linear_to_srgb`
+(`max(1.055·c^(1/2.4) − 0.055, 0)`), and the two are not inverses of one
+another below about a quarter grey. The RGB565 expansions the converter
+writes (`0, 8, 16, 24, 33, 41, …`, six-bit greens) were reaching the frame
+as `0, 1, 11, 21, 31, 39, …` — every dark surface in every mission a few
+levels too dark, since Slice 1.
+
+`game/palette_curve.gd` undoes it at the loading boundary: a 256-entry
+table, the byte whose round trip lands nearest the wanted value, applied to
+every texture of a bank in `MeshBuilder.load_textures` (before the colour
+key, which the table's `0 → 0` keeps exact) and to a flat face's vertex
+colour in `_surface`. Against the measured table the round trip is exact on
+234 of 256 values and one level off on the rest (`41 → 40`, `57 → 56` among
+the red/blue expansions), below the quantisation the original's own 16-bit
+framebuffer imposed; the mission views now read `8, 16, 24, 33, 40, 49, 56,
+66, 74` where they read `1, 11, 21, 31, 39, 48, 56, 66, 74`. The pass costs
+168 ms on `World_A00`'s 45 textures (2.9 M texels) on this host, the same
+order as the colour-key pass beside it. It is inert under any other
+renderer, where the byte already arrives unchanged. `test_mesh.gd` pins the
+measured head of the table, the model's agreement with it and the round
+trip; `tests/probes/palette_curve_probe.gd` is the windowed oracle that
+re-measures both — **the constants are Godot 4.7.2's shader source**, and an
+engine upgrade re-runs the probe before trusting the table. Not covered: the
+`Sprite3D` marks of the ground overlay and the campaign map, whose textures
+are the `Art` bank the 2D interface shares, so a remap there would put the
+2D screens off by the same amount the other way.
 
 ---
 
@@ -2952,13 +2980,11 @@ Open about localisation (§7.6, 2026-09-13):
 
 Open about the picture (§7.25, 2026-09-22):
 
-* **Compatibility darkens a texel below 31.** The probe of §7.25 reads 11 as
-  5, 16 as 11, 21 as 17 through an unshaded `albedo_texture`, while the same
-  values through `albedo_color` or the background come back exact. The
-  original writes the palette byte as it is, so the darkest texels of every
-  mission are a few levels too dark. Not a Mobile finding — it is the shipped
-  path. Mechanism UNVERIFIED; the candidates are the texture's sRGB decode
-  and the output encode not being inverses of one another at that end.
+* ~~**Compatibility darkens a texel below 31.**~~ **Closed the same day**:
+  the GLES3 polynomial decode against the simplified encode, corrected by
+  `game/palette_curve.gd` (§7.25). Still open under it: the `Sprite3D` marks
+  drawn from the shared `Art` bank are not corrected, and the correction's
+  constants are the engine version's.
 * **Mobile was exercised on Metal only.** Vulkan on Windows, Linux and
   Android and Metal on iOS were not run; §7.25's tables are from one host.
 

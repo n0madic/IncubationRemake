@@ -38,6 +38,10 @@ static func as_int32_array(value: Variant) -> PackedInt32Array:
 	return value
 
 
+static func as_byte_array(value: Variant) -> PackedByteArray:
+	return value
+
+
 static func as_vector2i(value: Variant) -> Vector2i:
 	if value is Vector2i:
 		return value

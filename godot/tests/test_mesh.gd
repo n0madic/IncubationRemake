@@ -47,6 +47,7 @@ func run(h: TestHarness) -> void:
 	_check_colour_key(h)
 	_check_corpus_kinds(h)
 	_check_overdraw(h)
+	_check_palette_curve(h)
 
 
 func _check_triangulation(h: TestHarness) -> void:
@@ -408,3 +409,89 @@ func _check_overdraw(h: TestHarness) -> void:
 	h.equal("overdraw.a00.deepest", deepest, A00_OVERDRAW_DEEPEST)
 	sample.sort()
 	h.equal("overdraw.a00.level01a_004", str(sample), str(LEVEL01A_004_OVERDRAW))
+
+
+## What Godot 4.7.2's Compatibility renderer drew for an unshaded texel of
+## 0..63 on 2026-09-22 (identity from 62 up), measured through the windowed
+## probe docs/92 section 7.25 names.  The model in [PaletteCurve] has to
+## reproduce it to within a level, and its table has to undo it.
+const GL_OUTPUT_HEAD: PackedInt32Array = [
+	0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 4, 5, 6, 8, 9, 10,
+	11, 12, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 29,
+	30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42, 43, 44, 45, 46,
+	47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 62, 63,
+]
+const GL_OUTPUT_IDENTITY_FROM: int = 62
+## The RGB565 expansions the converter writes for red and blue.
+const RGB565_FIVE_BIT: PackedInt32Array = [0, 8, 16, 24, 33, 41, 49, 57, 66,
+	74, 82, 90, 99, 107, 115, 123, 132, 140, 148, 156, 165, 173, 181, 189, 198,
+	206, 214, 222, 231, 239, 247, 255]
+
+
+func _measured(v: int) -> int:
+	return GL_OUTPUT_HEAD[v] if v < GL_OUTPUT_HEAD.size() else v
+
+
+func _check_palette_curve(h: TestHarness) -> void:
+	var worst_model: int = 0
+	for v: int in range(256):
+		var drawn: int = roundi(PaletteCurve.forward(float(v) / 255.0) * 255.0)
+		worst_model = maxi(worst_model, absi(drawn - _measured(v)))
+	h.check("curve.model_matches_measured_within_one", worst_model <= 1,
+		"worst |model - measured| = %d" % worst_model)
+	var identity_from: int = 0
+	for v: int in range(GL_OUTPUT_HEAD.size()):
+		if GL_OUTPUT_HEAD[v] != v:
+			identity_from = v + 1
+	h.equal("curve.measured_identity_from", identity_from, GL_OUTPUT_IDENTITY_FROM)
+	var curve: PackedByteArray = PaletteCurve.table()
+	h.equal("curve.table_size", curve.size(), 256)
+	h.equal("curve.black_stays_black", curve[0], 0,
+		"the colour key reads exactly zero")
+	h.equal("curve.white_stays_white", curve[255], 255)
+	var worst_round_trip: int = 0
+	var exact: int = 0
+	var monotonic: bool = true
+	for v: int in range(256):
+		var err: int = absi(_measured(curve[v]) - v)
+		worst_round_trip = maxi(worst_round_trip, err)
+		if err == 0:
+			exact += 1
+		if v > 0 and curve[v] < curve[v - 1]:
+			monotonic = false
+	h.equal("curve.round_trip_worst", worst_round_trip, 1,
+		"one level, below the original's RGB565 quantisation")
+	# 234 on the measuring host; the last few sit on near-ties of `pow`, which
+	# another libm may round the other way.
+	h.check("curve.round_trip_mostly_exact", exact >= 230,
+		"%d of 256 exact" % exact)
+	h.check("curve.monotonic", monotonic)
+	var off: int = 0
+	for v: int in RGB565_FIVE_BIT:
+		if _measured(curve[v]) != v:
+			off += 1
+	h.check("curve.rgb565_red_blue_nearly_all_exact", off <= 3,
+		"%d of %d expansions one level off (41 and 57 on the measuring host)"
+		% [off, RGB565_FIVE_BIT.size()])
+	h.check("curve.dark_texel_lifted", curve[11] >= 15 and curve[11] <= 16,
+		"11 drew as 5 and 16 drew as 11; the model's boundary may pick 15 (got %d)"
+		% curve[11])
+	var image: Image = Image.create_empty(2, 1, false, Image.FORMAT_RGBA8)
+	image.set_pixel(0, 0, Color8(0, 0, 0, 0))
+	image.set_pixel(1, 0, Color8(11, 21, 200, 255))
+	var remapped: Image = PaletteCurve.remap(image, curve)
+	h.equal("curve.remap_keeps_hole", remapped.get_pixel(0, 0).a8, 0)
+	h.equal("curve.remap_keeps_black", remapped.get_pixel(0, 0).r8, 0)
+	h.equal("curve.remap_channels", str([remapped.get_pixel(1, 0).r8,
+		remapped.get_pixel(1, 0).g8, remapped.get_pixel(1, 0).b8,
+		remapped.get_pixel(1, 0).a8]),
+		str([curve[11], curve[21], curve[200], 255]))
+	var rgb: Image = Image.create_empty(1, 1, false, Image.FORMAT_RGB8)
+	rgb.set_pixel(0, 0, Color8(16, 16, 16))
+	h.equal("curve.remap_rgb8_format",
+		PaletteCurve.remap(rgb, curve).get_format(), Image.FORMAT_RGB8,
+		"a three-byte image stays three bytes")
+	h.equal("curve.colour", PaletteCurve.colour(Color8(11, 0, 255, 128), curve),
+		Color8(curve[11], 0, 255, 128))
+	h.equal("curve.active_follows_the_rendering_method", PaletteCurve.is_active(),
+		RenderingServer.get_current_rendering_method() == "gl_compatibility")

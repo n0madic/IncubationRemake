@@ -94,6 +94,10 @@ const KEYED: String = "keyed"
 ## `{name: id}` for the world set in use, added by [method load_textures] so a
 ## face can name its texture instead of numbering it.
 const BY_NAME: String = "by_name"
+## [PaletteCurve]'s table for the running renderer, or an empty array where
+## the renderer draws a byte as it is.  The bank's textures already carry it;
+## a flat face's colour goes through it in [method _surface].
+const CURVE: String = "curve"
 
 ## The key a face of the **shared unit geometry** carries instead of `texture`.
 ##
@@ -309,6 +313,8 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 	var tool: SurfaceTool = SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var emitted: int = 0
+	var curve: PackedByteArray = DictRead.as_byte_array(
+		textures.get(CURVE, PackedByteArray()))
 	for entry: Variant in faces:
 		var face: Dictionary = DictRead.as_dict(entry)
 		var indices: Array = DictRead.as_array(face["indices"])
@@ -324,6 +330,8 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 				DictRead.as_int(rgb[1]), DictRead.as_int(rgb[2]))
 		if kind == KIND_FLAT_BLEND:
 			colour.a = BLEND_ALPHA
+		if FLAT_KINDS.has(kind) and not curve.is_empty():
+			colour = PaletteCurve.colour(colour, curve)
 		var points: PackedVector3Array = _points_of(vertices, indices)
 		if points.size() != indices.size():
 			continue
@@ -555,6 +563,11 @@ static func load_textures(cache_dir: String, world_set: String,
 	var plain: Dictionary = {}
 	var keyed: Dictionary = {}
 	var by_name: Dictionary = {}
+	# The renderer's curve is applied here, once per bank, so every consumer
+	# of the bank -- scenery, bodies, the effect atlas, the cutscenes -- draws
+	# the palette byte the texel holds (docs/92 section 7.25).
+	var curve: PackedByteArray = PaletteCurve.table() \
+		if PaletteCurve.is_active() else PackedByteArray()
 	var entries: Array = DictRead.as_array(index.get("textures", []))
 	for entry: Variant in entries:
 		var record: Dictionary = DictRead.as_dict(entry)
@@ -572,10 +585,14 @@ static func load_textures(cache_dir: String, world_set: String,
 		if loaded != OK:
 			continue
 		var id: int = DictRead.as_int(record["id"])
+		if not curve.is_empty():
+			# Before the key: the table maps black to black, so the hole a
+			# masked face reads is the same texel it was.
+			image = PaletteCurve.remap(image, curve)
 		plain[id] = ImageTexture.create_from_image(image)
 		keyed[id] = ImageTexture.create_from_image(colour_key(image))
 		by_name[DictRead.as_string(record["name"])] = id
-	return {PLAIN: plain, KEYED: keyed, BY_NAME: by_name}
+	return {PLAIN: plain, KEYED: keyed, BY_NAME: by_name, CURVE: curve}
 
 
 ## A copy of `image` with alpha 0 wherever the texel is exactly black.
