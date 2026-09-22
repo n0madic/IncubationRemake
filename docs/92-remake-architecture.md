@@ -2688,6 +2688,57 @@ skip "with nobody to deploy" — are superseded by this section and by
 `0x0041A073`'s arm, now taken at the mission's entry rather than in front
 of a screen.
 
+### 7.24 Coplanar faces recede — by observation where there is one, by the reading where there is none (2026-09-21)
+
+The iris on `_C_154`'s landing platform flickered: `LEVEL09A.005` paints it
+as five blade faces and a square backing on **one** plane, and Godot's depth
+buffer let a different set of blades win every frame. The original has no
+depth buffer, and [`31` §4.7](31-prototyp-geometry.md) reads its span
+buffer as "the first face drawn wins", which for the iris means two blades
+over a dark disc — and the retail game, watched, shows **all five** over
+the backing. The reading is missing a mechanism ([`31` §9 item
+8](31-prototyp-geometry.md)); the picture is the picture.
+
+Three decisions carry that into the remake.
+
+**The fact is the converter's, the rule is the mesh builder's.** The tree
+that fixes the order never reaches Godot — the cache flattens it — so
+`tools/inclib/overdraw.py` derives, per face, how many layers of coplanar
+faces lie over it, and the converter writes it as the face field `overdraw`
+(absent when zero; 218 faces of 236 861 carry one). A face wholly inside an
+earlier coplanar face is on top of it, as observed; two faces that overlap
+only in part are layered by the walk order, first in front, as read and
+not yet observed either way. Overlap is polygon intersection in the plane
+above 64 square units, so wall tiles that share an edge are not touched,
+and only the opaque kinds take part: the deferred kinds insert no span and
+draw here with the depth write off, where two coplanar additive flames add
+in either order. `prototyp_parse.py --check` pins the census (361 same-leaf
+pairs, 14 across leaves on their own plane, 47 across leaves on another, 6
+with one face inside the other) and the face count. `CONVERTER_VERSION`
+0.44.0.
+
+**A losing layer recedes sixteen world units along its face normal.**
+`MeshBuilder.receded` moves a marked face `overdraw × 16` units (1 cm per
+layer) along the stored winding's Newell normal, which is the side the
+material's back-face cull hides. The winner stays exactly where the data
+put it; the losers sit behind it. The step is sized for the depth buffer
+the project renders with — `gl_compatibility`, 24 bits, not reversed, near
+plane 0.05 m — which resolves about 5 mm at the far corner of a 40 × 40
+map; four units held at the deployment camera and would have fought again
+from across the map. One centimetre is still far too close to read as a
+step.
+`render_priority` was not an option — Godot 4 applies it to transparent
+surfaces only — and neither was a shader offset, which would move every
+face. `test_mesh.gd` pins the direction, the step, a two-face build and the
+depth of the cached `World_A00`'s marks.
+
+**The camera-dependent pairs are left as listed.** The 47 pairs whose order
+the walk decides per camera side get the tree's own order; they are part of
+[`31` §9 item 8](31-prototyp-geometry.md), and none has been seen
+flickering yet.
+
+---
+
 ## 8. Standing constraints
 
 These follow from the repository's own rules and apply to the remake as well:

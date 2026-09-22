@@ -35,6 +35,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from inclib import overdraw as overdrawmod  # noqa: E402
 from inclib.binio import ParseError  # noqa: E402
 from inclib.prototyp import (  # noqa: E402
     LATTICE_PROTOTYPE,
@@ -116,6 +117,35 @@ EXPECTED_PLANE_D_WORST_MISS_WORLD = 60
 #: which fixes the sign of the whole side test without a renderer.
 LATTICE_NORMAL = (0, 0, 16383)
 LATTICE_PLANE_D = -80
+#: The premise of the face-tree walk, docs/31 section 4.1: the far child of
+#: an interior node holds the front side of its plane, so the walker -- which
+#: takes the far child first with the camera in front -- goes front to back.
+#: Over the part-less prototypes' interior nodes, by the mean signed distance
+#: of each child's vertices; the ties and the four exceptions are all in the
+#: sequence models.  The builder split no polygon: on the fourth count a
+#: near-side vertex lies past a far-side one.
+EXPECTED_WALK_FAR_FRONT = 22111
+EXPECTED_WALK_FAR_BACK = 4
+EXPECTED_WALK_TIE = 11
+EXPECTED_WALK_STRADDLING = 4954
+#: Coplanar faces of one prototype that overlap in area (``inclib.overdraw``),
+#: opaque kinds only.  Read off ``Eng3d.dll``, the span buffer skips the
+#: depth test between spans of one ``draw_faces`` program (``0x40DAF0``,
+#: ``je 0x40dc43`` on the tag ``[0x44FBBC]``) and the face drawn first wins;
+#: watched, the original draws a face that lies wholly inside an earlier one
+#: **on top** of it (the iris of ``LEVEL09A.005``, docs/31 section 4.7), and
+#: the derivation follows the observation there and the reading elsewhere.
+#: The counts are where the pairs sit: in one leaf, in two leaves whose lowest
+#: common ancestor splits on their own plane (a static order either way), and
+#: in two leaves split by some other plane, where the walk order follows the
+#: camera and the remake's static order is an approximation; then how many
+#: pairs are one face inside another, and how many faces the converter marks
+#: with a non-zero ``overdraw``.
+EXPECTED_OVERDRAW_SAME_LEAF = 361
+EXPECTED_OVERDRAW_CROSS_LEAF_ON_PLANE = 14
+EXPECTED_OVERDRAW_CROSS_LEAF_OTHER = 47
+EXPECTED_OVERDRAW_CONTAINED = 6
+EXPECTED_OVERDRAW_FACES = 218
 
 
 def _resolve_container(path: str) -> Container:
@@ -237,6 +267,9 @@ def cmd_check(root: str) -> int:
     plane_normal_too_long: list[str] = []
     lattice_faces = 0
     lattice_bad: list[str] = []
+    overdraw_census = overdrawmod.Census()
+    overdraw_faces = 0
+    walk = overdrawmod.WalkCensus()
 
     for din, binp in containers:
         container = load_container(din, binp)
@@ -258,6 +291,11 @@ def cmd_check(root: str) -> int:
                     f"{rel}[{i}] {proto.name}: {proto.uncovered_bytes} bytes")
             if proto.overlapped_bytes:
                 overlap += 1
+            if proto.tree is not None:
+                walk = walk + overdrawmod.walk_census(proto)
+                overdraw_census = overdraw_census + overdrawmod.census(proto)
+                overdraw_faces += sum(
+                    1 for r in overdrawmod.overdraw_ranks(proto) if r)
 
             for cmd in proto.render_cmds:
                 opcode_hist["render:" + cmd.name] += 1
@@ -470,6 +508,14 @@ def cmd_check(root: str) -> int:
     print(f"ground lattice {LATTICE_PROTOTYPE}: {lattice_faces} faces, "
           f"normal {LATTICE_NORMAL} and plane_d {LATTICE_PLANE_D} on "
           f"{lattice_faces - len(lattice_bad)}")
+    print(f"face tree walk: far child on the plane's front side at "
+          f"{walk.far_front} nodes, back at {walk.far_back}, tie {walk.tie}; "
+          f"{walk.straddling} nodes hold an unsplit straddling face")
+    print(f"overlapping coplanar face pairs: {overdraw_census.same_leaf} in one "
+          f"leaf, {overdraw_census.cross_leaf_on_lca_plane} across leaves on "
+          f"their own split plane, {overdraw_census.cross_leaf_other} across "
+          f"leaves on another plane, {overdraw_census.contained} with one face "
+          f"inside the other; {overdraw_faces} faces get a non-zero overdraw")
     print("face vertex counts: "
           + ", ".join(f"{k}:{v}" for k, v in sorted(face_sizes.items())))
     print(f"totals: {vert_total} vertices, {face_total} faces, "
@@ -543,7 +589,20 @@ def cmd_check(root: str) -> int:
           == EXPECTED_PLANE_D_WORST_MISS_WORLD
           and dict(plane_normal_magnitudes) == EXPECTED_PLANE_NORMAL_MAGNITUDES
           and not plane_normal_too_long
-          and lattice_faces > 0 and not lattice_bad)
+          and lattice_faces > 0 and not lattice_bad
+          # The coplanar overdraw derivation the cache carries, pinned so a
+          # change to the walk order or the overlap test shows as a count.
+          and walk.far_front == EXPECTED_WALK_FAR_FRONT
+          and walk.far_back == EXPECTED_WALK_FAR_BACK
+          and walk.tie == EXPECTED_WALK_TIE
+          and walk.straddling == EXPECTED_WALK_STRADDLING
+          and overdraw_census.same_leaf == EXPECTED_OVERDRAW_SAME_LEAF
+          and overdraw_census.cross_leaf_on_lca_plane
+          == EXPECTED_OVERDRAW_CROSS_LEAF_ON_PLANE
+          and overdraw_census.cross_leaf_other
+          == EXPECTED_OVERDRAW_CROSS_LEAF_OTHER
+          and overdraw_census.contained == EXPECTED_OVERDRAW_CONTAINED
+          and overdraw_faces == EXPECTED_OVERDRAW_FACES)
     print("\n" + ("all checks passed" if ok else "SOME CHECKS FAILED"))
     return 0 if ok else 1
 

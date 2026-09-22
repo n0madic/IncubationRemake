@@ -12,6 +12,13 @@ extends TestSuite
 ## same quad covers a different region of the plane, which is why the naive
 ## version was silent rather than obviously wrong.
 ##
+## **Coplanar overdraw.**  Two coplanar faces of one prototype z-fight in a
+## depth buffer; the original shows one of them (`tools/inclib/overdraw.py`
+## says which, from the tree and from what the retail game was seen to draw).
+## The checks below require that a face the converter marks with `overdraw`
+## is built one step behind its winner, along the direction the face is *not*
+## seen from, and pin the marks the cached `World_A00` carries.
+##
 ## **`draw_kind`.**  The eleven rasteriser kinds are recovered in docs/31 but
 ## the slice drew everything opaque.  The checks state the "consequences for a
 ## remake" table as properties of the material each kind produces, and pin
@@ -39,6 +46,7 @@ func run(h: TestHarness) -> void:
 	_check_draw_kinds(h)
 	_check_colour_key(h)
 	_check_corpus_kinds(h)
+	_check_overdraw(h)
 
 
 func _check_triangulation(h: TestHarness) -> void:
@@ -305,3 +313,98 @@ func _area(points: PackedVector3Array, indices: PackedInt32Array) -> float:
 		total += absf((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x))
 		i += 3
 	return total * 0.5
+
+
+## The A00 cache's overdraw marks: `prototyp_parse.py --check`'s corpus line
+## gives the whole world set 41 faces over 15 prototypes, none deeper than two
+## layers.  A published cache carries the prototypes its missions name, so
+## the face count differs between the campaign cache and the development one
+## and only the depth is pinned.
+const A00_OVERDRAW_DEEPEST: int = 2
+## `LEVEL01A.004`: two faces one layer down and one two layers down.
+const LEVEL01A_004_OVERDRAW: Array = [1, 1, 2]
+
+
+func _check_overdraw(h: TestHarness) -> void:
+	# A square wall in the engine's XZ plane.  Which side it is seen from is
+	# not the point; that the recession runs along its Newell normal -- the
+	# direction the material's back-face cull hides -- is.
+	var square: Array = [[0, 0, 0], [1600, 0, 0], [1600, 0, 1600], [0, 0, 1600]]
+	var points: PackedVector3Array = PackedVector3Array()
+	for corner: Variant in square:
+		var c: Array = DictRead.as_array(corner)
+		points.append(WorldSpace.to_godot(DictRead.as_int(c[0]),
+			DictRead.as_int(c[1]), DictRead.as_int(c[2])))
+	var normal: Vector3 = MeshBuilder.newell(points)
+	var one: PackedVector3Array = MeshBuilder.receded(points, 1)
+	var two: PackedVector3Array = MeshBuilder.receded(points, 2)
+	h.equal("overdraw.count_kept", one.size(), points.size())
+	h.check("overdraw.step_is_sixteen_units",
+		is_equal_approx(MeshBuilder.OVERDRAW_STEP, 16.0 / 1600.0),
+		"1 cm per layer: over the 24-bit depth resolution at 64 m")
+	var moved: Vector3 = one[0] - points[0]
+	h.check("overdraw.along_the_newell_normal",
+		moved.normalized().is_equal_approx(normal.normalized())
+			and is_equal_approx(moved.length(), MeshBuilder.OVERDRAW_STEP),
+		"moved %s, Newell %s" % [str(moved), str(normal.normalized())])
+	h.check("overdraw.linear_in_layers",
+		(two[2] - points[2]).is_equal_approx(moved * 2.0))
+	h.equal("overdraw.zero_area_untouched", str(MeshBuilder.receded(
+		PackedVector3Array([Vector3.ZERO, Vector3.ONE, Vector3.ONE * 2.0]), 1)),
+		str(PackedVector3Array([Vector3.ZERO, Vector3.ONE, Vector3.ONE * 2.0])),
+		"a face with no normal has no side to recede from")
+
+	# Through the builder: the same square twice, the second marked, comes
+	# out as two quads whose vertices differ by exactly one step.
+	var textures: Dictionary = {MeshBuilder.PLAIN: {}, MeshBuilder.KEYED: {}}
+	var proto: Dictionary = {
+		"vertices": square,
+		"faces": [
+			{"draw_kind": MeshBuilder.KIND_FLAT, "texture": -1,
+				"rgb": [255, 255, 255], "indices": [0, 1, 2, 3], "uvs": []},
+			{"draw_kind": MeshBuilder.KIND_FLAT, "texture": -1,
+				"rgb": [255, 255, 255], "indices": [0, 1, 2, 3], "uvs": [],
+				MeshBuilder.OVERDRAW: 1},
+		],
+	}
+	var mesh: ArrayMesh = MeshBuilder.build(proto, textures)
+	h.equal("overdraw.one_surface", mesh.get_surface_count(), 1)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var built: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	h.equal("overdraw.corner_count", built.size(), 12, "two quads, six corners each")
+	var receded: int = 0
+	var in_place: int = 0
+	for corner: Vector3 in built:
+		var d: float = (corner - points[0]).dot(normal.normalized())
+		if is_zero_approx(d):
+			in_place += 1
+		elif is_equal_approx(d, MeshBuilder.OVERDRAW_STEP):
+			receded += 1
+	h.equal("overdraw.first_in_place", in_place, 6, "the winner stays put")
+	h.equal("overdraw.second_one_step_back", receded, 6)
+
+	# The fixture: the marks the converter wrote for World_A00.
+	var geometry: Dictionary = CacheFixture.geometry("A00")
+	if geometry.is_empty():
+		return
+	var prototypes: Dictionary = DictRead.as_dict(geometry["prototypes"])
+	var marked: int = 0
+	var deepest: int = 0
+	var sample: Array = []
+	for name: Variant in prototypes:
+		var faces: Array = DictRead.as_array(
+			DictRead.as_dict(prototypes[name])["faces"])
+		for entry: Variant in faces:
+			var face: Dictionary = DictRead.as_dict(entry)
+			var layers: int = DictRead.as_int(face.get(MeshBuilder.OVERDRAW, 0))
+			if layers <= 0:
+				continue
+			marked += 1
+			deepest = maxi(deepest, layers)
+			if DictRead.as_string(name) == "LEVEL01A.004":
+				sample.append(layers)
+	h.check("overdraw.a00.marked_faces", marked > 0,
+		"%d faces marked in the cached World_A00" % marked)
+	h.equal("overdraw.a00.deepest", deepest, A00_OVERDRAW_DEEPEST)
+	sample.sort()
+	h.equal("overdraw.a00.level01a_004", str(sample), str(LEVEL01A_004_OVERDRAW))

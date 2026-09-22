@@ -518,9 +518,23 @@ else          leaf(p, count = tag)      ; FUN_004051fc @ 0x4051fc
 | `0x08` | —     | the *near* child, inline                                          |
 
 Both children are recursed through the same tag dispatch. The engine swaps near
-and far when `plane_value - plane_d < 0` (`0x4051eb`), i.e. it is a
-back-to-front painter's-order walk, which is exactly what a software renderer
-without a z-buffer needs.
+and far when `plane_value - plane_d < 0` (`0x4051eb`) -- the same test §4.2
+pins as "the camera is on the side the normal points to". Which order that
+is follows from where the children's geometry lies, and the corpus answers:
+over the 22 126 interior nodes of the root-scope prototypes, the *far* child's
+vertices sit on the plane's **front** side and the inline child's on its
+**back** in 22 111 (11 ties, 4 the other way, all four in sequence models;
+`tools/inclib/overdraw.py`'s census, pinned by `prototyp_parse.py --check`,
+2026-09-21). So with the camera in
+front the front-side child is drawn first, and with it behind the back-side
+child is: the walk is **front to back**, and the span buffer of §4.5 --
+whose stored spans hide what comes later -- is what makes that a correct
+hidden-surface method. *(Until 2026-09-21 this paragraph called it a
+back-to-front painter's walk; §9 item 3's reading of `0x40DAF0` had already
+said otherwise and the two were never reconciled. The consequence for a
+remake is §4.7.)* The builder does not split polygons: a face straddling a
+node's plane sits whole in one child (4 954 nodes have a near-side vertex
+past a far-side one), and a face lying *on* the plane may sit in either.
 
 **Leaf**: `tag` face records back to back.
 
@@ -849,6 +863,77 @@ skies above cityscapes, and legible left-to-right text.
 bottom, so `tools/prototyp_parse.py --obj` writing `u / 32768` and
 `1 - v / 32768` is **correct** and was left unchanged.
 
+### 4.7 Coplanar faces of one prototype — what the code says and what the screen shows
+
+Two faces of one prototype can share a plane exactly and overlap in area:
+`LEVEL09A.005` in `World_I00` paints an iris on a wall with five blade faces
+(12, 13, 17, 18, 19) and a square backing (14) that contains all five, all
+ten of the leaf's faces on plane 2 at `plane_d 2512`, listed 11..20, every
+vertex at local `x = 2512`, one draw kind, one texture, one winding. A depth
+buffer has no answer for that -- the blades z-fight the backing -- so what
+the engine shows has to be read off the rasteriser, and then checked against
+the screen.
+
+**What the code says.** `0x40DAF0`, the span routine the opaque kinds fill
+through (§4.5), keeps one linked list per scanline of `0x1C`-byte nodes
+`{x0 @+0, x1 @+4, z0 @+8, z1 @+0xC, next @+0x10, prev @+0x14, tag @+0x18}`;
+the initialiser `0x40DA20` links a head sentinel at `0x44FBC0 + 0x1C·y` to a
+tail at `0x454FC0 + 0x1C·y` and seeds the per-line cursor at `0x43FC78 + 4·y`.
+`tag` is `[0x44FBBC]`, which `draw_faces` increments once per program
+(`0x405199`), so it names the object -- or the `part_push` scope -- being
+drawn. The global has eleven references in the DLL: that increment, nine
+reads in the three span routines, and one more increment at `0x410BCD`, at
+the head of the routine that flushes the deferred queue (`0x410BAC`, walking
+the 36-byte entries from `[0x4683E8]`) -- once per pass, so the deferred
+kinds share a tag among themselves and never the opaque faces' own. On an
+overlap the routine first compares the incoming span's tag with the stored
+node's (`0x40DC20`..`0x40DC29`): **equal tags skip the depth test**
+(`je 0x40dc43`) and fall into the coverage arms, where the stored span keeps
+every pixel it has and the new one is trimmed to what is left (`0x40DC43`..
+`0x40DC6B`: fully inside, the run list stays empty and the filler's `je`
+after the call skips the line; overhanging, the covered pixels go out as a
+positive "skip" run and only the rest is inserted). Only spans of
+*different* tags reach the depth compare at `0x40DC2B`..`0x40DC3D`, which is
+on the nearest end of the incoming span less a magnitude-dependent slack
+(`[0x45A3CC]` table), so even there a coplanar newcomer is behind. The leaf
+walker draws its faces as listed (`0x405232`..`0x405254`, `edx += size`).
+Combined with the front-to-back walk of §4.1, the reading is: **of two
+overlapping coplanar faces of one prototype, the one the walk reaches first
+is the one seen** -- for the iris, blades 12 and 13, then the backing, and
+17..19 never.
+
+**What the screen shows** (2026-09-21, the retail game, the same wall from
+two camera quadrants): **all five blades, over the backing's black texels.**
+No sequential order under any first-wins or last-wins rule produces that,
+because the backing sits fourth of ten in the list; the reading above
+therefore misses something, and what it misses is §9 item 8. The Glide
+build settles nothing here: it sets `grDepthBufferMode(WBUFFER)`,
+`grDepthBufferFunction(LESS)` and never calls `grDepthBiasLevel` (the thunk
+at `0x40270C` has no caller), so its own answer for an exact tie is the
+hardware's.
+
+**What the remake does** ([`92` §7.24](92-remake-architecture.md)): a face
+wholly inside an earlier coplanar face is drawn over it, as observed; two
+faces that overlap only in part are layered by the walk order, as read,
+which no observation has yet confirmed or refuted.
+
+Counted over the corpus, on polygon intersection with an area above 64
+square units, opaque kinds only (`tools/inclib/overdraw.py`, pinned by
+`prototyp_parse.py --check`): **361 overlapping pairs in one leaf**, 14
+across leaves on their own plane, 47 across leaves on another plane, **6
+with one face inside the other** -- the iris's five and one in
+`MODEL_D07_SHEEDEL` -- giving **218 faces** that lie under at least one
+other. The deferred kinds are left out: they insert no span, and 867 of the
+1 291 pairs the same count finds with them in are the sequence models'
+additive flame quads, which add in either order. Coplanarity here is the
+exact key `(plane_index, plane_d)`; 25 further overlapping pairs whose
+`plane_d` differ by 1..8 units are all in the sequence models, where the
+plane was rounded at a five-million-unit radius.
+
+The remake carries the derivation as a face field, `overdraw` -- how many
+layers of coplanar faces cover this one -- and its mesh builder recedes each
+layer by sixteen world units along the face normal.
+
 ---
 
 ## 5. Sub-objects (`part_push` / `part_pop`)
@@ -1168,7 +1253,32 @@ What remains is either outside this container or unreachable from shipped data.
    thing still open (item 4) is a question about Voodoo silicon that no
    software-build harness could answer. The pixel path is specified from two
    independently compiled renderers that agree; a harness would confirm rather
-   than decide.
+   than decide. *(Item 8, added 2026-09-21, is the first question here that
+   a frame read out of the live process would decide.)*
+
+8. **Why the iris shows five blades.** §4.7 reads `0x40DAF0` as "same
+   tag, no depth test, the stored span wins" and the leaf walker as
+   in-order, which for `LEVEL09A.005` predicts two blades over the backing;
+   the retail game shows five. Everything on the static path has been
+   re-read against that: the leaf order (`0x405232`), the run-list signs
+   (negative draws, positive skips, empty skips the line -- `0x40890B`..
+   `0x40894D`), the tag's eleven references, the per-polygon texture hook
+   `0x40ED90`, the frame-start initialiser `0x404AA9`, the two draw lists
+   and the sort `0x404FC0` between them, the face records byte for byte.
+   None of it reorders faces inside a leaf or exempts a span from the
+   same-tag arm. The mechanism is therefore on a path not read here -- the
+   2-D/3-D clip table variants (§4.5 (a)), which a 52-metre chunk almost
+   always draws through, are the first candidates. The way to settle it is
+   a frame read out of the live process under `tools/dbgcall`: the software
+   back buffer is `[Eng3d.dll+0x14FAC]`, `[Eng3d.dll+0x14FBC]` bytes per row,
+   and a save on `_C_154` with the camera on the wall would show which faces
+   the engine painted, in what order, by poking one face's texture id at a
+   time. Until then the remake follows the observation for a face inside
+   another and the reading for a partial overlap (§4.7), and the 47 pairs
+   whose lowest common ancestor splits on some other plane -- whose walk
+   order follows the camera -- take the tree's own order: `L060EA00`,
+   `LEVEL01D.002` and `MAP2.006` in `World_A00`, `L072E*` in `E00`/`F00`,
+   `L013EH00` in `H00`, and eighteen sequence models.
 
 ---
 

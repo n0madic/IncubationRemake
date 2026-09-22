@@ -48,6 +48,7 @@ from . import footprint as footprintmod
 from . import language
 from . import lev as levmod
 from . import liblib
+from . import overdraw as overdrawmod
 from . import prototyp as protomod
 from . import sound as soundmod
 from . import visn as visnmod
@@ -469,8 +470,8 @@ def _lattice_prototype(_bm: levmod.BattleMap) -> str:
 # Geometry
 # ---------------------------------------------------------------------------
 
-def _face_document(face: protomod.Face) -> dict[str, Any]:
-    return {
+def _face_document(face: protomod.Face, overdraw: int = 0) -> dict[str, Any]:
+    document: dict[str, Any] = {
         "draw_kind": face.draw_kind,
         "draw_name": face.draw_name,
         "texture": -1 if face.texture is None else face.texture,
@@ -480,6 +481,12 @@ def _face_document(face: protomod.Face) -> dict[str, Any]:
         # The raw 8.7 fixed point the record carries, 0..32767, not a ratio.
         "uvs": [] if face.uvs is None else [list(uv) for uv in face.uvs],
     }
+    if overdraw:
+        # How many layers of earlier-drawn coplanar faces the engine's span
+        # buffer paints over this one (`inclib.overdraw`).  Since 0.44.0;
+        # absent on the 236 643 faces nothing overlaps.
+        document["overdraw"] = overdraw
+    return document
 
 
 def _iter_faces(node: Any) -> Iterable[protomod.Face]:
@@ -501,6 +508,8 @@ def prototype_document(proto: protomod.Prototype) -> dict[str, Any]:
     the runtime object, which is outside the slice.
     """
     bbox = proto.vertex_bbox
+    overdraw = {id(f): rank
+                for f, rank in zip(proto.faces, overdrawmod.overdraw_ranks(proto))}
     document: dict[str, Any] = {
         "vertices": [list(v) for v in proto.placed_vertices],
         "bbox": {
@@ -512,7 +521,8 @@ def prototype_document(proto: protomod.Prototype) -> dict[str, Any]:
         "height": proto.height,
         "cull_radius": proto.cull_radius,
         "collision_radius": proto.collision_radius,
-        "faces": [_face_document(f) for f in _iter_faces(proto.tree)],
+        "faces": [_face_document(f, overdraw.get(id(f), 0))
+                  for f in _iter_faces(proto.tree)],
     }
     parts = _part_documents(proto)
     if parts:

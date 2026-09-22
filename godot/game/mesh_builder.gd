@@ -62,6 +62,27 @@ const KEY_CUTOFF: float = 0.5
 
 const NO_TEXTURE: int = -1
 
+## The face key the converter sets on a face the engine draws **under** other
+## coplanar faces of the same prototype (`tools/inclib/overdraw.py`): how many
+## layers of earlier-drawn overlapping faces lie over it.
+const OVERDRAW: String = "overdraw"
+## How far one overdraw layer recedes, in world units.  The software renderer
+## has no depth buffer: its span buffer (`Eng3d.dll` `0x40DAF0`) skips the
+## depth test between spans of one `draw_faces` program and lets the span
+## already stored hide the new one, so of two exactly coplanar faces the one
+## the front-to-back tree walk reaches first wins.  A depth buffer has no such
+## rule and z-fights instead -- the iris on `_C_154`'s landing platform
+## (`LEVEL09A.005`, faces 12..19) showed a different set of blades every
+## frame.  Pushing each losing layer back sixteen units (1 cm) along its face
+## normal reproduces the engine's answer: the winner stays where it was and
+## the losers sit behind it.  The step is sized for the depth buffer this
+## project renders with -- `gl_compatibility`, 24 bits, not reversed, near
+## plane 0.05 m -- whose resolution is about z^2 / (near * 2^24): 0.5 mm at
+## 20 m, 3 mm at 50 m, 5 mm at 64 m, the far corner of a 40 x 40 map.  Four
+## units (2.5 mm) held the iris at the deployment camera and would have let
+## it fight again from across the map.
+const OVERDRAW_STEP: float = 16.0 / WorldSpace.WORLD_UNITS_PER_METRE
+
 ## [method build_scope]'s "everything the parts do not own".
 const ROOT_SCOPE: int = -1
 
@@ -306,6 +327,9 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 		var points: PackedVector3Array = _points_of(vertices, indices)
 		if points.size() != indices.size():
 			continue
+		var overdraw: int = DictRead.as_int(face.get(OVERDRAW, 0))
+		if overdraw > 0:
+			points = receded(points, overdraw)
 		for corner: int in triangulate(points):
 			tool.set_color(colour)
 			if corner < uvs.size():
@@ -336,6 +360,21 @@ static func _points_of(vertices: Array, indices: Array) -> PackedVector3Array:
 			DictRead.as_int(position[1]),
 			DictRead.as_int(position[2])))
 	return points
+
+
+## The same polygon moved `layers` overdraw steps away from the side it is
+## seen from.  The stored winding's Newell normal points **away** from the
+## visible side (see [method material_for]), so the move is along it.  A face
+## with no area has no normal and stays where it is.
+static func receded(points: PackedVector3Array, layers: int) -> PackedVector3Array:
+	var normal: Vector3 = newell(points)
+	if normal.is_zero_approx():
+		return points
+	var offset: Vector3 = normal.normalized() * (OVERDRAW_STEP * float(layers))
+	var out: PackedVector3Array = PackedVector3Array()
+	for point: Vector3 in points:
+		out.append(point + offset)
+	return out
 
 
 ## Corner indices, three per triangle, covering the polygon.
