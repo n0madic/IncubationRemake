@@ -1130,10 +1130,18 @@ func _screens(h: TestHarness) -> void:
 	defeat.report = {"result": ScoreRecord.RESULT_DEFEAT}
 	defeat.board = ScoreRecord.new()
 	defeat.setup(_art, _strings, _font)
-	h.equal("screens.defeat_only_offers_a_retry", _actions_of(defeat),
-		PackedStringArray(["replay"]),
-		"there is no control that can present a lost mission as completed")
+	h.equal("screens.defeat_offers_a_retry_and_a_load", _actions_of(defeat),
+		PackedStringArray(["replay", DebriefingScreen.ACTION_LOAD]),
+		"no control can present a lost mission as completed; the remake's "
+		+ "own way back is a save (docs/92 section 7.27)")
+	var load_caption: PackedStringArray = _button_labels_of(defeat)
+	h.equal("screens.defeat_load_wears_the_menus_caption",
+		load_caption[load_caption.size() - 1],
+		defeat.label_for(CampaignScreen.BANK_MENU, MainMenuScreen.ID_MENU_LOAD_GAME),
+		"`Txtmod_a` 104, the main menu's own *Load Game*")
 	defeat.free()
+	# The win keeps the engine's two: a save is not the way past a mission
+	# that has been passed.
 
 	var instant_defeat: DebriefingScreen = DebriefingScreen.new()
 	instant_defeat.instant_action = true

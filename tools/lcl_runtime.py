@@ -515,6 +515,61 @@ def _open_door_checks(c: Checker) -> None:
              [31, 2, 3193, []], "0x004420C0 returns before the sequence")
 
 
+def _barrier_checks(c: Checker) -> None:
+    """``Barrier`` -- ``0x004423d0``'s toggle and ``aPlayLaserBarrier``'s
+    victim list (``docs/42`` §8), the mirror of ``test_lcl.gd``'s ``_barrier``.
+
+    The beam walks from the emitter along ``dir`` to the first wall and the
+    event carries every unit it killed as ``slot, x, y`` in beam order, read
+    **before** the kill takes the record off the map, because the routine
+    flies to the middle one (``0x00413926``).  The off arm carries nothing.
+    """
+    def command(name: str, *values: int) -> dict[str, Any]:
+        return {"kind": "command", "line": 1, "name": name,
+                "args": [{"kind": "number", "value": v} for v in values]}
+
+    def world() -> runtime.LclWorld:
+        w = runtime.LclWorld(_FlatMap(9, 9), _TABLES, seed=1.0)
+        w.ctrl_type[w.index(7, 4)] = 2
+        for slot, (x, y) in enumerate([(3, 4), (5, 4), (6, 4), (8, 4), (4, 5)]):
+            w.units[slot] = runtime.RuntimeUnit(slot=slot, player=0, type_id=0,
+                                                x=x, y=y, hit_points=10)
+            w.unit_at[w.index(x, y)] = slot
+        return w
+
+    def barrier(seed: int) -> tuple[runtime.LclWorld, Any]:
+        w = world()
+        return w, runtime.run({"instructions": [
+            command("Barrier", 2, 4, 3, 90, 91, seed), {"kind": "end", "line": 9}],
+            "labels": {}}, w)
+
+    w, out = barrier(90)
+    c.expect("barrier.seeded_on_goes_off",
+             [w.actpt[w.index(2, 4)], [v for n, v in out.events if n == "barrier_off"],
+              [v for n, v in out.events if n == "barrier_on"],
+              [u.hit_points for u in w.units.values()]],
+             [91, [[2, 4]], [], [10, 10, 10, 10, 10]],
+             "the seed equals `on`, so the toggle answers off and nobody dies")
+    w, out = barrier(91)
+    c.expect("barrier.the_beam_kills_to_the_wall",
+             [[w.units[slot].hit_points, w.unit_at[w.index(*at)]]
+              for slot, at in enumerate([(3, 4), (5, 4), (6, 4), (8, 4), (4, 5)])],
+             [[0, -1], [0, -1], [0, -1], [10, 3], [10, 4]],
+             "three on the line die and leave their cells; behind the wall "
+             "and off the line live")
+    c.expect("barrier.the_event_carries_the_victims_in_beam_order",
+             [v for n, v in out.events if n == "barrier_on"],
+             [[2, 4, 3, 3, 0, 3, 4, 1, 5, 4, 2, 6, 4]],
+             "x, y, dir, count, then slot, x, y each as the walk found them")
+    w = runtime.LclWorld(_FlatMap(9, 9), _TABLES, seed=1.0)
+    w.ctrl_type[w.index(7, 4)] = 2
+    out = runtime.run({"instructions": [
+        command("Barrier", 2, 4, 3, 90, 91, 91), {"kind": "end", "line": 9}],
+        "labels": {}}, w)
+    c.expect("barrier.an_empty_beam_carries_a_zero",
+             [v for n, v in out.events if n == "barrier_on"], [[2, 4, 3, 0]])
+
+
 def _synthetic_checks(c: Checker) -> None:
     """The mechanics of ``docs/20`` §2 that the corpus does not exercise.
 
@@ -942,6 +997,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     _foot_bridge_checks(c)
     _crush_wall_checks(c)
     _open_door_checks(c)
+    _barrier_checks(c)
 
     if show_stats:
         print("\ncommand usage (corpus / implemented):")

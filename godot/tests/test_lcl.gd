@@ -785,6 +785,7 @@ func _synthetic(h: TestHarness) -> void:
 		"maxCount 0 returns 1 before the divide is reached")
 
 	_statues(h)
+	_barrier(h)
 	_foot_bridges(h)
 	_crush_wall(h)
 	_open_door(h)
@@ -923,6 +924,76 @@ func _statues(h: TestHarness) -> void:
 	h.equal("statue2.runs_every_matched_cell",
 		[_alive(swept, 0), _alive(swept, 1)], [false, false],
 		"40 toggles to 41 and walks x; 41 toggles to 40 and walks y")
+
+
+## `Barrier` -- `0x004423D0`'s toggle, and `aPlayLaserBarrier`'s victim
+## list (docs/42 section 8): the beam walks from the emitter along `dir` to
+## the first wall, kills everyone on it, and the event carries each victim as
+## `slot, x, y` in beam order, because the routine flies to the middle one
+## (`0x00413926`) and the picture cannot re-derive that from a map they have
+## already left. The off arm carries nothing and runs no beam.
+func _barrier(h: TestHarness) -> void:
+	var wide: int = 9
+	var walls: Array = []
+	for _i: int in range(wide * wide):
+		walls.append(0)
+	# The wall at (7, 4) ends the beam of an emitter at (2, 4) firing +x
+	# (direction 3); the unit behind it is out of reach.
+	walls[4 * wide + 7] = 2
+	var points: Array = walls.duplicate()
+	var roster: Array = [
+		{"slot": 0, "player": 0, "x": 3, "y": 4},
+		{"slot": 1, "player": 0, "x": 5, "y": 4},
+		{"slot": 2, "player": 0, "x": 6, "y": 4},
+		{"slot": 3, "player": 0, "x": 8, "y": 4},
+		{"slot": 4, "player": 0, "x": 4, "y": 5},
+	]
+	# Seeded with the on value: the first call switches it off.
+	var off: Dictionary = _run_synthetic(_program([
+		_instr("command", "Barrier", [_num(2), _num(4), _num(3), _num(90),
+			_num(91), _num(90)]),
+		_mark(),
+		_instr("close", "", []),
+	]), roster, wide, wide, {"field_type": walls, "action_point": points})
+	var off_state: MapState = off["state"]
+	h.equal("barrier.seeded_on_goes_off",
+		[off_state.action_point_at(off_state.index_of(2, 4)),
+		_events_named(off, "barrier_off"), _events_named(off, "barrier_on"),
+		_alive(off, 0)],
+		[91, [[2, 4]], [], true],
+		"the seed equals `on`, so the toggle answers off and nobody dies")
+	# Seeded with the off value: the first call fires the beam.
+	var on: Dictionary = _run_synthetic(_program([
+		_instr("command", "Barrier", [_num(2), _num(4), _num(3), _num(90),
+			_num(91), _num(91)]),
+		_mark(),
+		_instr("close", "", []),
+	]), roster, wide, wide, {"field_type": walls, "action_point": points})
+	var on_state: MapState = on["state"]
+	h.equal("barrier.the_beam_kills_to_the_wall",
+		[_alive(on, 0), _alive(on, 1), _alive(on, 2), _alive(on, 3),
+		_alive(on, 4)],
+		[false, false, false, true, true],
+		"three on the line die; behind the wall and off the line live")
+	h.equal("barrier.the_event_carries_the_victims_in_beam_order",
+		_events_named(on, "barrier_on"),
+		[[2, 4, 3, 3, 0, 3, 4, 1, 5, 4, 2, 6, 4]],
+		"x, y, dir, count, then slot, x, y each as the walk found them")
+	h.equal("barrier.the_victims_leave_the_map",
+		[on_state.unit_at(on_state.index_of(3, 4)),
+		on_state.unit_at(on_state.index_of(5, 4)),
+		on_state.action_point_at(on_state.index_of(2, 4))],
+		[MapState.NO_UNIT, MapState.NO_UNIT, 90])
+	# Nobody on the line: the count is zero and the list is empty.
+	var clear: Dictionary = _run_synthetic(_program([
+		_instr("command", "Barrier", [_num(2), _num(4), _num(3), _num(90),
+			_num(91), _num(91)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 4, "y": 5}], wide, wide,
+		{"field_type": walls, "action_point": points})
+	h.equal("barrier.an_empty_beam_carries_a_zero",
+		_events_named(clear, "barrier_on"), [[2, 4, 3, 0]])
 
 
 ## Every `name` event's values, in the order the run recorded them.

@@ -583,6 +583,15 @@ func _check_catalogue(h: TestHarness, tables: AudioTables,
 	h.check("aliases_resolve", unresolved.is_empty(),
 		"%d of core's own event names reach a cue: %s"
 			% [AudioEvents.EVENT_ALIASES.size(), ", ".join(unresolved)])
+	# Both arms of the barrier enter `aPlayLaserBarrier`, but the off arm
+	# returns at `0x00413668`, before `lbarrier.wav` is made at
+	# `0x0041379F`: `barrier_off` must reach no cue, or the lever that
+	# toggles a barrier off and on again plays the beam's sound twice --
+	# once with nothing to see -- which is how `_C_158` sounded.
+	h.equal("barrier_off_is_silent",
+		[events.for_event_kind("barrier_off").size(),
+		events.for_event_kind("barrier_on").size()], [0, 1],
+		"the play site is on the on arm only")
 	# One command, **two routines**: `ParaBombs` `0x00470790` runs the
 	# fly-past and then the bomb run, so an alias could name only the first
 	# and `crush.wav` @89 was never played. Every phase must reach a cue of

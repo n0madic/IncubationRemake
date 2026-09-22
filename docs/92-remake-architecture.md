@@ -2823,6 +2823,76 @@ engine upgrade re-runs the probe before trusting the table. Not covered: the
 are the `Art` bank the 2D interface shares, so a remap there would put the
 2D screens off by the same amount the other way.
 
+### 7.26 The laser barrier, re-read from its listing (2026-09-22)
+
+Reported on `_C_158`: the lever at `(9, 16)` toggles the barrier on `(17,
+19)` off and on again in one script run, and the beam came a second or two
+after its sound. A `/state` timeline of the pull showed the shape: `lever.wav`,
+then `lbarrier.wav` the instant the script returned, then the `MovePosition`
+flight, then the beam — spawned one frame before the flight *to* it and dead
+(kind 1, life 9; kind 51, life 16) before that flight landed — then a second
+`lbarrier.wav` over an empty forty-frame stage. Three defects, one root: the
+`barrier_on` arm had been transcribed from a misreading of
+`aPlayLaserBarrier` `0x00413560` ([`42` §8](42-mission-presentation.md),
+corrected in place):
+
+* The off arm writes the emitter's joint and returns at `0x00413668`, before
+  the `lbarrier.wav` site at `0x0041379F`. `barrier_off` was aliased to the
+  same cue and is now silent; `test_sound.gd` pins it.
+* The on arm creates the beam and its sound with no tick between, runs the
+  per-victim effects, and then flies **once** — `test ebp, ebp` at
+  `0x004137FE`: to the emitter's marker with nobody in the beam, else to the
+  middle victim's, `victims[n / 2]` at `0x00413926` — and holds on the pool
+  loop. There is no forty-frame stage: the `mov ecx, 0x28` is the `rep stosd`
+  clearing the forty-slot victim array at `[esp+0x44]`. `SetpieceCamera`'s
+  arm now has that shape (lead with beam, kills and sound; one flight; the
+  pool), `SetpieceDriver` gives it `POOL_ONLY_FRAMES` beside the crush wall
+  and the ground fire, and `BARRIER_FRAMES` is gone.
+* The victims were never on the event — `game` re-walked the beam and found
+  nobody, since `core` had already removed them — so no `BloodFlood`, no
+  `FlyingDebris`, no flight to the middle one. Both interpreters now carry
+  them as `slot, x, y` in beam order behind the leading `x, y, dir, count`,
+  the statue's pattern (`docs/97` §41.1); `test_lcl.gd` runs a beam through
+  three units and a wall.
+
+`SequenceQueue` learned one rule for it: a cue-less stage marked
+`holds_sound` passes a held sound on instead of ending it, so the barrier's
+flight — a stage inside the routine, between the beam that starts the sound
+and the pool wait the routine returns from — no longer cuts `lbarrier.wav`
+off. `_check_routine_sounds` in `test_effects.gd` is the check that would
+have caught the cut.
+
+The emitter's own turn moved with it: it was written the moment the script
+returned, before the `MoveCamera` flight the same script had queued ahead of
+it; it is now a one-frame step on the same queue, so the camera arrives and
+then the emitter turns, as the routine order has it.
+
+The **stutter** reported with it is the beam's first frame, and it is a
+first-use cost, not a per-beam one: the same lever pulled three times in one
+session (`/state` polled at 4 ms) hitched on the first pull's spawn frame —
+30–90 ms from run to run, against the 8 ms frames around it, before and
+after the fix alike — and on neither of the two that followed, where the
+worst frame anywhere in the window was the ordinary 13–15 ms. The first pull is the first use of
+`A_LASERG.3DI` in the mission: `BlobModels` builds the mesh into its cache
+and the driver compiles the material's shader on the first draw. Left as it
+is (§9): a warm-up would have to draw, not merely build, and the cost is one
+frame once per mission.
+
+### 7.27 The defeat offers *Load Game* (2026-09-22)
+
+The engine's debriefing after a lost mission has one button, *Try Again*,
+which puts the mission back to its briefing (D13). A player who would rather
+return to a save made a few turns in had to retry, open the pause menu and
+load from there. The remake's defeat screen adds *Load Game* beside *Try
+Again* — the main menu's own caption (`Txtmod_a` 104), the shell's own slot
+list in load mode raised over the debriefing the way the map's *Save* raises
+it, *Back* returning to the debriefing and a loaded slot replacing the
+campaign as it does from the pause menu. **The defeat only**: a won mission
+keeps the engine's two buttons, and *Instant Action*'s report keeps its two,
+since a save is not the way past a mission that has been passed and Instant
+Action has no campaign to come back to. `test_shell.gd` pins the three
+screens' rows; the route was driven on `_C_100` through `gamecontrol 4 1`.
+
 ---
 
 ## 8. Standing constraints
@@ -2987,6 +3057,12 @@ Open about the picture (§7.25, 2026-09-22):
   constants are the engine version's.
 * **Mobile was exercised on Metal only.** Vulkan on Windows, Linux and
   Android and Metal on iOS were not run; §7.25's tables are from one host.
+* **A model blob's first draw hitches once per mission.** The laser barrier's
+  first beam cost a ~30–90 ms frame on this host and its repeats none
+  (§7.26): `BlobModels` builds the `.3DI` mesh into its cache and the
+  Compatibility driver compiles the material's shader at the first draw. A
+  warm-up at mission load would have to draw every model the world set
+  carries, not merely assemble it; not done, the cost being one frame once.
 
 ---
 

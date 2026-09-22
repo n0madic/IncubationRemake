@@ -62,9 +62,6 @@ const GROUND_UNIT_FRAMES: int = 8 + 6
 const STATUE_TURN_FRAMES: int = 13 + 1
 const STATUE_TURN_STEP: int = 0x50
 const STATUE_SETTLE: int = 0x400
-## `mov ecx, 0x28` in `aPlayLaserBarrier` -- the beam's own count, which is
-## also how long the routine holds before its second flight.
-const BARRIER_FRAMES: int = 40
 ## `mov esi, 0xA` after `FireCircle`'s ring.
 const FIRE_CIRCLE_FRAMES: int = 10
 ## `mov esi, 0x46` -- the teleporter counts down from seventy.
@@ -119,7 +116,8 @@ const BRIDGE_STEP: int = 12
 ## `aPlayLaserBarrier`: the emitter's `+0x2A` is `0x800` -- half a turn
 ## about z -- when the barrier goes **off** (`0x00413653`) and `bx`, which
 ## the prologue's `xor ebx, ebx` made zero, when it comes on
-## (`0x00413670`). Instant, before the beam.
+## (`0x00413670`). Instant, before the beam; and going off it is the whole
+## of the routine, which returns at `0x00413668` before its sound site.
 const BARRIER_EMITTER_PART: int = 6
 const BARRIER_EMITTER_OFF: int = 0x800
 ## `aPlayCrushWallAnimation`: `mov ebx, 0x66` on the wall's own `+0x20`
@@ -218,14 +216,15 @@ static func frames_for(event: Dictionary) -> int:
 			return GROUND_UNIT_FRAMES
 		"statue":
 			return STATUE_TURN_FRAMES
-		"barrier_on":
-			return BARRIER_FRAMES
 		"fire_circle":
 			return FIRE_CIRCLE_FRAMES
-		"crush_wall", "ground_fire":
+		"crush_wall", "ground_fire", "barrier_on":
 			# `aPlayGroundFireAnimation` has no frame count either: it holds
 			# on `0x0042B4A0` until the pool it filled has drained
-			# (docs/42 section 9.1).
+			# (docs/42 section 9.1). Nor has `aPlayLaserBarrier`: its
+			# `mov ecx, 0x28` is the `rep stosd` that clears the forty-slot
+			# victim array, and after its one flight it holds on the same
+			# pool loop (`0x0041382E`, `0x0041396F`).
 			return POOL_ONLY_FRAMES
 		"para_bombs":
 			# The strike's own length rather than a flat bound: the last

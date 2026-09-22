@@ -38,9 +38,11 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 	# `FixedStatue`'s routine is `0x00414000`, which docs/28 lists separately
 	# from the rotating statue's.
 	"fixed_statue_kill": "fixed_statue",
-	# The barrier toggles; both directions run `aPlayLaserBarrier`.
+	# The barrier toggles and both directions enter `aPlayLaserBarrier`, but
+	# only one reaches its play site: the off arm turns the emitter's part
+	# and returns at `0x00413668`, before `lbarrier.wav` is made at
+	# `0x0041379F`. `barrier_off` is silent on purpose.
 	"barrier_on": "barrier",
-	"barrier_off": "barrier",
 	# `ParaBombs` is **not** here: one command owns two routines, which is
 	# [constant EVENT_PHASES], not a rename. Neither is the computer's own
 	# `parabomb`, for the opposite reason -- its fuse `0x0040B2D0` plays no

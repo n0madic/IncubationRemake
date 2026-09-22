@@ -769,7 +769,12 @@ func _barrier(instr: Dictionary) -> void:
 		return
 	_context.state.set_action_point(cell, on & 0xFF)
 	var direction: int = _n(instr, 2)
-	var killed: int = 0
+	# The victims ride on the event as `slot, x, y` each, in beam order:
+	# `aPlayLaserBarrier` collects them into a forty-slot array as it walks
+	# (`0x0041371B`) and flies to the middle one, `victims[n / 2]`
+	# (`0x00413926`), and the picture cannot re-derive that from a map the
+	# victims have already left (docs/42 section 8).
+	var victims: Array = []
 	if direction >= 0 and direction < DIR_BARRIER_DX.size():
 		var bx: int = x + DIR_BARRIER_DX[direction]
 		var by: int = y + DIR_BARRIER_DY[direction]
@@ -777,11 +782,13 @@ func _barrier(instr: Dictionary) -> void:
 				_context.index(bx, by)) != CTRL_TYPE_WALL:
 			var victim: UnitState = _context.unit_on(bx, by)
 			if victim != null:
+				victims.append_array([victim.slot, victim.x, victim.y])
 				_context.kill(victim)
-				killed += 1
 			bx += DIR_BARRIER_DX[direction]
 			by += DIR_BARRIER_DY[direction]
-	_event("barrier_on", [x, y, direction, killed])
+	var values: Array = [x, y, direction, victims.size() / 3]
+	values.append_array(victims)
+	_event("barrier_on", values)
 
 
 ## `0x00413A40`, `aPlayRotateStatueSequence` -- the rule half of the statue.

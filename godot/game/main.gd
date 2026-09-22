@@ -535,6 +535,9 @@ const TEST_RUNNER: String = "res://tests/runner.gd"
 ## What the interpreter calls a `CreateBGB` line
 ## (`core/lcl/lcl_interpreter.gd`).
 const CREATE_BGB: String = "create_bgb"
+## The barrier's emitter turn, one frame on the sequence queue in the place
+## the script reached the command.
+const STAGE_BARRIER_EMITTER: String = "barrier.emitter"
 ## docs/20 section 7.3 -- the other command `INIT MAP` carries.
 const CD_TRACK_PROGRAM: String = "cd_track_program"
 ## `CreateCameraPath`, which is the whole of an upgrade base's `INIT MAP`
@@ -3078,6 +3081,13 @@ func _on_campaign_choice(action: String) -> void:
 			var _again: String = campaign.replay()
 			var _back: CampaignScreen = show_campaign_screen(
 				CampaignHost.SCREEN_MAP)
+		DebriefingScreen.ACTION_LOAD:
+			# The defeat's *Load Game*: into the shell's slot list, over the
+			# debriefing, the way the map's *Save* goes; *Back* puts the
+			# debriefing back ([method close_shell]) and a loaded slot
+			# replaces the campaign the way it does from the pause menu.
+			shell.go_slots(ShellHost.MODE_LOAD)
+			var _loading: CampaignScreen = open_shell(ShellHost.SCREEN_SLOTS)
 		"resume":
 			# The briefing read over a running mission, closed. Nothing else
 			# changes: the mission is still standing behind it, on turn 0
@@ -7119,9 +7129,20 @@ func _present_script(outcome: Dictionary) -> int:
 			continue
 		# `aPlayLaserBarrier` turns the emitter's part before anything else
 		# it does, on both arms -- half a turn about z going off, back to
-		# zero coming on -- and `barrier_off` is otherwise instant.
+		# zero coming on -- and going off that is the whole routine: it
+		# returns before its sound site, so `barrier_off` is instant and
+		# silent. Instant **in its turn**: the routine runs when the script
+		# reaches it, after the `MoveCamera` flight queued above has landed,
+		# so the turn is a one-frame step on the same queue rather than a
+		# write made here, before that flight has started.
 		if script_kind == "barrier_on" or script_kind == "barrier_off":
-			var _emitter: int = _paint_barrier(event, script_kind == "barrier_off")
+			var off: bool = script_kind == "barrier_off"
+			if _sequences != null:
+				_sequences.enqueue(STAGE_BARRIER_EMITTER, 1,
+					func(_frame: int, _total: int) -> void:
+						var _emitter: int = _paint_barrier(event, off))
+			else:
+				var _emitter: int = _paint_barrier(event, off)
 		var frames: int = SetpieceDriver.frames_for(event)
 		if frames > 0 and _sequences != null:
 			# An animated set piece: the picture is interpolated over the
@@ -7400,11 +7421,12 @@ func _drop_riders(riders: PackedInt32Array, frame: int, frames: int) -> void:
 ## beam's path, the cells a wall lost, the tiles a stick of bombs fell on.
 ##
 ## The paths are **re-walked here from the terrain**, not carried on the
-## event: `core` records that the statue fired and who died, and the cells
-## the beam crossed are a fact about the map, which `game` may read. The
-## para bombs' tiles are the exception -- they are drawn from the mission's
-## generator, so the interpreter puts them on the event (docs/97 section 33)
-## rather than have the picture draw them a second time.
+## event: the cells a beam crossed are a fact about the map, which `game`
+## may read. What the map no longer holds is carried: the para bombs' tiles
+## are drawn from the mission's generator (docs/97 section 33), and the
+## statue's and the barrier's victims have already been taken off the map by
+## the time the picture runs, so the interpreter puts each on its event
+## rather than have the picture draw or find them a second time.
 func _setpiece_extra(name: String, cell: Vector2i,
 		event: Dictionary) -> Dictionary:
 	var values: PackedInt32Array = SetpieceDriver._numbers(event)
@@ -7481,7 +7503,18 @@ func _setpiece_extra(name: String, cell: Vector2i,
 					cells += 1
 					at += step
 			out["cells"] = maxi(1, cells)
-			out["killed"] = []
+			# `[x, y, dir, n, (slot, x, y) * n]` -- carried, not re-derived,
+			# for the same reason as the statue's: the victims are already
+			# off the map, and the routine flies to the middle one of them.
+			var victims: Array = []
+			var count: int = _at_or(values, 3, 0)
+			for i: int in range(count):
+				var at: int = 4 + i * 3
+				if at + 2 >= values.size():
+					break
+				victims.append({"slot": values[at], "x": values[at + 1],
+					"y": values[at + 2]})
+			out["killed"] = victims
 		"crush_wall":
 			# `core` carries the cells it changed -- the whole footprint the
 			# converter projected (docs/42 section 8.2), or the command's own

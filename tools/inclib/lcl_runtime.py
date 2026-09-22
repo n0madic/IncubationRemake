@@ -1148,16 +1148,21 @@ def _c_barrier(it: Interpreter, p: Params) -> str | None:
         return None
     w.actpt[cell] = on & 0xFF
     step = DIR_BARRIER.get(direction)
-    killed = 0
+    # The victims ride on the event as ``slot, x, y`` each, in beam order:
+    # ``aPlayLaserBarrier`` collects them into a forty-slot array as it walks
+    # (``0x0041371B``) and flies to the middle one, ``victims[n / 2]``
+    # (``0x00413926``), and the picture cannot re-derive that from a map the
+    # victims have already left (docs/42 section 8).
+    victims: list[int] = []
     if step is not None:
         bx, by = x + step[0], y + step[1]
         while w.in_bounds(bx, by) and w.ctrl_type[w.index(bx, by)] != CTRL_TYPE_WALL:
             unit = w.unit_on(bx, by)
             if unit is not None:
+                victims += [unit.slot, unit.x, unit.y]
                 w.kill(unit)
-                killed += 1
             bx, by = bx + step[0], by + step[1]
-    it.event("barrier_on", x, y, direction, killed)
+    it.event("barrier_on", x, y, direction, len(victims) // 3, *victims)
     return None
 
 

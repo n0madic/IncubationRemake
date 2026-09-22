@@ -22,6 +22,9 @@ const ID_IN_CAMPAIGN: int = 31
 const ID_EQUIPMENT_POINTS: int = 45
 const ID_CONTINUE_BUTTON: int = 2
 const ID_TRY_AGAIN: int = 3
+## The action the defeat's *Load Game* button carries -- the shell's own
+## name for it, so the one slot list serves both ways in.
+const ACTION_LOAD: String = "load"
 ## `Txtmod_d` 14..19, by mission result.
 const ID_RESULT_TEXT: Array[int] = [19, 15, 16, 17, 14]
 ## What the two refusals say. The original says neither, so both are the
@@ -114,6 +117,16 @@ func build() -> void:
 		add_button("advance", BANK_REPORT, ID_CONTINUE_BUTTON, button_index)
 		button_index += 1
 	add_button("replay", BANK_REPORT, ID_TRY_AGAIN, button_index)
+	button_index += 1
+	# **The remake's own button** (docs/92 section 7.27). The engine's
+	# defeat offers *Try Again* alone, which restarts the mission from its
+	# briefing; a player who would rather go back to a save made a few turns
+	# earlier had to retry, open the pause menu and load from there. The
+	# caption is the main menu's *Load Game* (`Txtmod_a` 104), the list is
+	# the shell's, and *Back* from it returns here.
+	if outcome == ScoreRecord.RESULT_DEFEAT:
+		add_button(ACTION_LOAD, BANK_MENU, MainMenuScreen.ID_MENU_LOAD_GAME,
+			button_index)
 
 
 ## The words a refusal is written in, or "" for one that has none yet.

@@ -59,7 +59,9 @@ class Step extends RefCounted:
 	## than the routine has: the crush wall's one debris frame and then the
 	## pool it spins on, the statue's turn and then its beam, the ground
 	## unit's rise and then its carry. A step that holds its sound hands it
-	## to whatever step ends next, which is the routine's last.
+	## to whatever step ends next that does not hold in turn, which is the
+	## routine's last; a cue-less step that holds is a stage inside the
+	## routine, and passes on what it was handed.
 	var holds_sound: bool = false
 
 	func seconds() -> float:
@@ -216,14 +218,19 @@ func _step_once() -> bool:
 ## and the ground fire, whose cue stage is **one frame**: `crushwall.wav` got
 ## 0.05 s of its 1.79 and the wall came down in silence.
 ## [member Step.holds_sound] is what carries a sound to the end of the stage
-## the routine actually returns from.
+## the routine actually returns from: a stage that holds is not the routine's
+## return, whether it started the sound or merely stands between the stage
+## that did and the one the routine ends on -- the barrier's flight runs
+## between its beam, which starts `lbarrier.wav`, and the pool wait it
+## returns from.
 func _end_step(step: Step) -> void:
 	if step.on_end.is_valid():
 		step.on_end.call()
 	if _audio == null:
 		return
-	if not step.cues.is_empty() and step.holds_sound:
-		_sound_held = true
+	if step.holds_sound:
+		if not step.cues.is_empty():
+			_sound_held = true
 		return
 	if step.cues.is_empty() and not _sound_held:
 		return

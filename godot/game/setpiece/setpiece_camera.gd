@@ -509,41 +509,55 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1
 		"barrier_on":
-			# docs/42 section 8: the beam `0x00428990` along the barrier's
-			# direction, a flight to it, forty frames, `0x0042AB40` and
-			# `0x0042A9D0` on every unit it killed, a flight to the middle
-			# victim, and the pool.
+			# `aPlayLaserBarrier` `0x00413560`'s on arm (docs/42 section 8):
+			# the beam `0x00428990` along the barrier's direction and, in the
+			# same breath, `lbarrier.wav` (`0x0041379F`, before any tick);
+			# then **one** flight, chosen at `0x004137FE` on the victim count
+			# -- to the emitter's marker when the beam found nobody, or, after
+			# `0x0042AB40` and `0x0042A9D0` and the removal on every victim,
+			# to the middle victim's marker, `victims[n / 2]` at
+			# `0x00413926`; then the pool-drain loop the routine returns
+			# from. There is no frame count: the `mov ecx, 0x28` the first
+			# transcription took for forty frames is the `rep stosd` that
+			# clears the forty-slot victim array at `[esp+0x44]`.
+			var victims: Array = DictRead.as_array(extra.get("killed", []))
+			var no_cues: Array[Dictionary] = []
 			queue.enqueue(STAGE_LEAD, 1,
 				func(_frame: int, _total: int) -> void:
 					host.spawn_program(BlobPrograms.LASER_BARRIER,
 						PackedInt32Array([cell.x, cell.y,
 							DictRead.as_int(extra.get("direction", 0)),
-							DictRead.as_int(extra.get("cells", 1))])))
-			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
-				func() -> bool: return not host.camera_flying(),
-				func(frame: int, _total: int) -> void:
-					if frame == 1:
-						var _f: int = host.fly(host.camera_eye(), centre))
-			# The beam and the pool below are the same routine's, so the
-			# motion stage holds its sound rather than ending it
-			# (docs/28 section 1.4).
-			queue.enqueue(kind, frames, paint, cues, true)
-			queue.enqueue(STAGE_BEAM, 1,
-				func(_frame: int, _total: int) -> void:
-					for entry: Variant in DictRead.as_array(extra.get("killed", [])):
+							DictRead.as_int(extra.get("cells", 1))]))
+					for entry: Variant in victims:
 						var victim: Dictionary = DictRead.as_dict(entry)
 						var vx: int = DictRead.as_int(victim["x"])
 						var vy: int = DictRead.as_int(victim["y"])
 						var slot: int = DictRead.as_int(victim.get("slot", -1))
-						if slot >= 0:
-							host.hide_unit(slot)
 						host.spawn_program(BlobPrograms.BLOOD_FLOOD,
 							PackedInt32Array([vx, vy, vx, vy, 0]))
 						host.spawn_program(BlobPrograms.FLYING_DEBRIS,
-							PackedInt32Array([vx, vy])))
-			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
-				func() -> bool: return host.pool_live() == 0)
-			return frames + 2
+							PackedInt32Array([vx, vy]))
+						if slot >= 0:
+							host.hide_unit(slot),
+				cues, true)
+			# The flight is a stage inside the routine, so it holds the
+			# sound on to the pool wait rather than ending it.
+			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame != 1:
+						return
+					var at: Vector3i = centre
+					if not victims.is_empty():
+						var middle: Dictionary = DictRead.as_dict(
+							victims[victims.size() / 2])
+						at = host.cell_object(DictRead.as_int(middle["x"]),
+							DictRead.as_int(middle["y"]))
+					var _f: int = host.fly(host.camera_eye(), at),
+				no_cues, Callable(), true)
+			queue.enqueue_until(STAGE_POOL, frames,
+				func() -> bool: return host.pool_live() == 0, paint, no_cues)
+			return 1
 		"fire_circle":
 			# docs/42 section 8: `KillFire` with delay 20 on the eight
 			# neighbours, a flight, the ring `0x00422F00`, ten frames, the

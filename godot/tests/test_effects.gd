@@ -98,6 +98,7 @@ func run(h: TestHarness) -> void:
 	_check_move_script_seam(h)
 	_check_ai_move_script_seam(h)
 	_check_warp_script_seam(h)
+	_check_barrier_script_order(h)
 	_check_platform_ride(h)
 	_check_triggers(h)
 	_check_setpieces(h)
@@ -443,7 +444,7 @@ func _check_routine_sounds(h: TestHarness) -> void:
 			"extra": {"killed": []}, "wave": "gfire.wav"},
 		{"kind": "statue", "frames": SetpieceDriver.STATUE_TURN_FRAMES,
 			"extra": {"killed": [], "beams": []}, "wave": "stone.wav"},
-		{"kind": "barrier_on", "frames": SetpieceDriver.BARRIER_FRAMES,
+		{"kind": "barrier_on", "frames": SetpieceDriver.POOL_ONLY_FRAMES,
 			"extra": {"direction": 0, "cells": 3, "killed": []},
 			"wave": "lbarrier.wav"},
 		{"kind": "fire_circle", "frames": SetpieceDriver.FIRE_CIRCLE_FRAMES,
@@ -2631,14 +2632,18 @@ func _check_setpieces(h: TestHarness) -> void:
 		{"name": "ground_unit", "values": [3, 3, 4, 4]}),
 		SetpieceDriver.GROUND_UNIT_FRAMES)
 	# The rest of docs/42 section 8 joined them the same day (docs/97
-	# section 33): the statue's fourteen turning frames, the barrier's
-	# forty, the fire circle's ten, the teleporter's seventy.
+	# section 33): the statue's fourteen turning frames, the fire circle's
+	# ten, the teleporter's seventy. The barrier has none: the
+	# `mov ecx, 0x28` its first cut read as forty frames is the `rep stosd`
+	# clearing its forty-slot victim array, and after its one flight
+	# `aPlayLaserBarrier` holds on the pool loop like the crush wall.
 	h.equal("setpiece.statue", SetpieceDriver.frames_for(
 		{"name": "statue", "values": [3, 3]}),
 		SetpieceDriver.STATUE_TURN_FRAMES, "`mov edi, 0xD` and one settle")
 	h.equal("setpiece.barrier", SetpieceDriver.frames_for(
 		{"name": "barrier_on", "values": [3, 3, 0, 1]}),
-		SetpieceDriver.BARRIER_FRAMES)
+		SetpieceDriver.POOL_ONLY_FRAMES,
+		"no counter: the pool loop at 0x0041382E / 0x0041396F")
 	h.equal("setpiece.fire_circle", SetpieceDriver.frames_for(
 		{"name": "fire_circle", "values": [3, 3]}),
 		SetpieceDriver.FIRE_CIRCLE_FRAMES)
@@ -4462,22 +4467,69 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 	h.equal("camera.statue.hides_the_victim", statue.hidden,
 		PackedInt32Array([4]))
 
-	# The barrier: the beam first, then the flight, forty frames, the kills.
+	# The barrier, off `0x00413560`'s listing: the beam and the kills in the
+	# same frame as the sound, then **one** flight -- to the emitter with
+	# nobody in the beam, to the middle victim `victims[n / 2]` otherwise
+	# -- then the pool. No forty-frame stage: `mov ecx, 0x28` is the
+	# `rep stosd` over the victim array.
 	var barrier: RecordingHost = RecordingHost.new()
 	barrier.live = 2
 	var barrier_queue: SequenceQueue = SequenceQueue.create(null)
 	var barrier_frames: int = SetpieceCamera.enqueue(barrier_queue, barrier,
-		"barrier_on", SetpieceDriver.BARRIER_FRAMES, Vector2i(1, 1), 0, 0, -1,
-		{"direction": 0, "cells": 4, "killed": [{"slot": 2, "x": 1, "y": 4}]},
+		"barrier_on", SetpieceDriver.POOL_ONLY_FRAMES, Vector2i(1, 1), 0, 0, -1,
+		{"direction": 0, "cells": 4, "killed": [{"slot": 2, "x": 1, "y": 2},
+			{"slot": 5, "x": 1, "y": 4}, {"slot": 7, "x": 1, "y": 5}]},
 		paint, no_cues)
-	h.equal("camera.barrier.frames", barrier_frames,
-		SetpieceDriver.BARRIER_FRAMES + 2)
-	var _barrier_ran: Dictionary = _run_queue(barrier_queue)
+	h.equal("camera.barrier.frames", barrier_frames, 1,
+		"one frame of its own; the flight and the pool are open-ended")
+	var barrier_ran: Dictionary = _run_queue(barrier_queue)
+	h.equal("camera.barrier.stages", DictRead.as_array(barrier_ran["order"]),
+		[SetpieceCamera.STAGE_LEAD, SetpieceCamera.STAGE_FLIGHT,
+		SetpieceCamera.STAGE_POOL],
+		"beam, one flight, pool -- no counted stage between them")
 	h.equal("camera.barrier.programs", barrier.programs, [
 		"%s:1,1,0,4" % BlobPrograms.LASER_BARRIER,
+		"%s:1,2,1,2,0" % BlobPrograms.BLOOD_FLOOD,
+		"%s:1,2" % BlobPrograms.FLYING_DEBRIS,
 		"%s:1,4,1,4,0" % BlobPrograms.BLOOD_FLOOD,
-		"%s:1,4" % BlobPrograms.FLYING_DEBRIS])
+		"%s:1,4" % BlobPrograms.FLYING_DEBRIS,
+		"%s:1,5,1,5,0" % BlobPrograms.BLOOD_FLOOD,
+		"%s:1,5" % BlobPrograms.FLYING_DEBRIS],
+		"the beam, then 0x0042AB40 and 0x0042A9D0 per victim, before the flight")
+	h.equal("camera.barrier.hides_the_victims", barrier.hidden,
+		PackedInt32Array([2, 5, 7]))
 	h.equal("camera.barrier.one_flight", barrier.flights.size(), 1)
+	h.equal("camera.barrier.flies_to_the_middle_victim",
+		barrier.flights[0][1], barrier.cell_object(1, 4),
+		"`victims[n / 2]` at 0x00413926: the second of three")
+	# An even count is what tells `victims[n / 2]` from `victims[(n - 1) / 2]`:
+	# of four, the routine flies to the third.
+	var even: RecordingHost = RecordingHost.new()
+	even.live = 2
+	var even_queue: SequenceQueue = SequenceQueue.create(null)
+	var _even_frames: int = SetpieceCamera.enqueue(even_queue, even,
+		"barrier_on", SetpieceDriver.POOL_ONLY_FRAMES, Vector2i(1, 1), 0, 0, -1,
+		{"direction": 0, "cells": 5, "killed": [{"slot": 2, "x": 1, "y": 2},
+			{"slot": 3, "x": 1, "y": 3}, {"slot": 4, "x": 1, "y": 4},
+			{"slot": 5, "x": 1, "y": 5}]}, paint, no_cues)
+	var _even_ran: Dictionary = _run_queue(even_queue)
+	h.equal("camera.barrier.even_count_rounds_down_to_the_upper_middle",
+		even.flights[0][1] if not even.flights.is_empty() else Vector3i.ZERO,
+		even.cell_object(1, 4), "`sar eax, 1` of four is two: the third victim")
+	# With nobody in the beam the flight goes to the emitter's own marker.
+	var empty: RecordingHost = RecordingHost.new()
+	empty.live = 2
+	var empty_queue: SequenceQueue = SequenceQueue.create(null)
+	var _empty_frames: int = SetpieceCamera.enqueue(empty_queue, empty,
+		"barrier_on", SetpieceDriver.POOL_ONLY_FRAMES, Vector2i(1, 1), 1600, 1600,
+		-1, {"direction": 0, "cells": 4, "killed": []}, paint, no_cues)
+	var _empty_ran: Dictionary = _run_queue(empty_queue)
+	h.equal("camera.barrier.flies_to_the_emitter",
+		[empty.flights.size(), empty.flights[0][1] if not empty.flights.is_empty()
+			else Vector3i.ZERO, empty.programs.size()],
+		[1, Vector3i(WorldSpace.WORLD_UNITS_PER_FIELD,
+			WorldSpace.WORLD_UNITS_PER_FIELD, 1600), 1],
+		"`test ebp, ebp` at 0x004137FE: the emitter's marker at its height")
 
 	# The fire circle: eight `KillFire` at delay 20, then the ring.
 	var fire: RecordingHost = RecordingHost.new()
@@ -5089,6 +5141,39 @@ func _check_warp_script_seam(h: TestHarness) -> void:
 			"count": 1}),
 		"`picture.script`, the driven session's view of a hook")
 	units.free()
+	main._rig.free()
+	main.free()
+
+
+## A script that moves the camera and then toggles a barrier off and on --
+## `_C_158`'s lever block, `MovePosition` + `Barrier` + `Barrier` on one cell
+## -- reaches the picture in the script's own order: the flight lands, then
+## the emitter turns (a one-frame step, not a write made before the flight
+## has started), then the beam. Off and on both turn the emitter, and only
+## the on arm has a sequence of its own behind it.
+func _check_barrier_script_order(h: TestHarness) -> void:
+	var world: World = TestFixtures.tiny_world()
+	var main: SliceMain = SliceMain.new()
+	main.world = world
+	main._shown = world.clone()
+	main._sequences = SequenceQueue.create(null)
+	main._rig = CameraRig.new()
+	main._rig.set_now(SAVED_EYE, SAVED_TARGET)
+	var outcome: Dictionary = {"ran": true, "events": [
+		["move_position", [3, 3, 7]],
+		["barrier_off", [1, 1]],
+		["barrier_on", [1, 1, 3, 0]]]}
+	var _cues: int = main._present_script(outcome)
+	var ran: Dictionary = _run_queue(main._sequences)
+	h.equal("barrier_script.the_queue_runs_in_script_order",
+		DictRead.as_array(ran["order"]),
+		[ScriptCamera.STAGE, SliceMain.STAGE_BARRIER_EMITTER,
+		SetpieceCamera.STAGE_LEAD, SetpieceCamera.STAGE_FLIGHT,
+		SetpieceCamera.STAGE_POOL],
+		"the flight, both emitter turns, then the beam's own stages")
+	h.equal("barrier_script.the_snapshot_names_all_three",
+		DictRead.as_array(main.last_script()["events"]),
+		["move_position", "barrier_off", "barrier_on"])
 	main._rig.free()
 	main.free()
 
