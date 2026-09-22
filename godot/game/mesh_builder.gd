@@ -499,6 +499,13 @@ static func material_for(kind: int, texture: int,
 	# every textured surface -- 0.48x in `World_A00`, 0.29x in `World_D00` --
 	# or blacks it out entirely where the field is zero.
 	material.vertex_color_use_as_albedo = texture == NO_TEXTURE
+	# The palette entry is an sRGB value.  Forward+ and Mobile read a vertex
+	# colour as linear unless told otherwise; the flag is inert under
+	# gl_compatibility, which the project renders with, and is set so the
+	# face colour means the same thing under any renderer (docs/92 section
+	# 7.25 -- the terrain overlay, which takes the same path, washed out
+	# under Mobile before it was set).
+	material.vertex_color_is_srgb = true
 
 	var keyed: bool = kind == KIND_TEXTURE_MASKED
 	var bank: Dictionary = DictRead.as_dict(

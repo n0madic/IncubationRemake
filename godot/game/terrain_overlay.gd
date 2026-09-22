@@ -97,6 +97,10 @@ func build(snapshot: Dictionary) -> void:
 	var material: StandardMaterial3D = StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.vertex_color_use_as_albedo = true
+	# The ramp is `Color8`, an sRGB value; without this Mobile reads it as
+	# linear and the overlay washes out -- observed on 2026-09-22 (docs/92
+	# section 7.25).  Inert under gl_compatibility.
+	material.vertex_color_is_srgb = true
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.albedo_color = Color(1.0, 1.0, 1.0, 0.40)
 	_mesh.surface_set_material(0, material)

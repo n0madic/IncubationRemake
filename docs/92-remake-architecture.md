@@ -2737,6 +2737,64 @@ the walk decides per camera side get the tree's own order; they are part of
 [`31` §9 item 8](31-prototyp-geometry.md), and none has been seen
 flickering yet.
 
+### 7.25 The renderer stays `gl_compatibility` — measured against Mobile (2026-09-22)
+
+`project.godot` has named `gl_compatibility` since Slice 1 with no reason
+written down. The Mobile renderer (Metal on Apple, Vulkan elsewhere) was tried
+on this date: one line changed, the same five scenes captured under both
+(`_C_154` at the deployment camera and two quadrant turns, `_C_115` with and
+without the field-type overlay and the lattice, `_C_129` on turn 0, the
+shell, the campaign map, the upgrade and credits screens, and an *Instant
+Action* computer turn on `_S_004` for an additive muzzle glow), and a probe
+scene that renders known `Color8` values through an unshaded material and
+reads the frame back. Only Metal was exercised; the Vulkan targets were not.
+
+**What is the same.** Opaque geometry is pixel-identical at a 5 % fuzz on
+every mission view — the `_C_154` iris §7.24 was tuned on holds under both
+depth buffers — and so are the 2D screens and both `SubViewport`s (the
+upgrade screen's turning soldier with `own_world_3d`, the credits roll).
+
+**What Mobile changes, and why it is not taken.** The original blends in
+place on the framebuffer's own RGB565 values: the additive kind is a
+saturating per-channel add of the texel, the subtractive kind the same
+subtract, the translucent flat fill an exact half-and-half
+([`31` §4.4](31-prototyp-geometry.md), kinds `0x1c`, `0x20`, `0x0c`), and
+the Glide build sets `grAlphaBlendFunction(ONE, ONE, ...)` on the same
+gamma-encoded surface. Compatibility stores
+sRGB and blends in that space, which is the same arithmetic; Mobile blends
+in linear light and no material flag reaches the framebuffer. The probe,
+red channel, a texel of value *v* over a background of 40:
+
+| *v* | add, GL | add, Mobile | 40 % alpha, GL | 40 % alpha, Mobile |
+|---|---|---|---|---|
+| 74 | 114 | 85 | 53 | 57 |
+| 128 | 168 | 134 | 75 | 89 |
+| 200 | 240 | 203 | 104 | 136 |
+| 255 | 255 | 255 | 126 | 172 |
+
+GL is `40 + v` and `0.4 v + 0.6 × 40` exactly; Mobile is up to 46 levels
+off in either direction, and the muzzle glow on `_S_004` read as a tighter,
+dimmer halo. The second deviation is at the dark end: Mobile keeps its
+colour buffer in linear light with the tonemap white pinned at 2.0, so a
+sRGB value below about 31 lands on a ladder — 0, 6, 13, 18, 22, 31 for
+inputs 1, 4, 11, 16, 21, 31 — and the whole picture's blacks come up. The
+`hdr_2d` viewport setting was tried and is not the knob: it changes what
+`Viewport.get_texture()` reads back (the `/shot` route would hand out linear
+data) and nothing else here.
+
+**What was kept.** `vertex_color_is_srgb` is now set on the two materials
+that read a vertex colour as albedo (`MeshBuilder`'s flat kinds and the
+terrain overlay). It is inert under Compatibility; under Mobile the overlay
+washed out without it, and with it the flat colour means the same thing
+under any renderer.
+
+**One pre-existing deviation the probe found in the shipped renderer.** An
+opaque texel of value 11 renders as 5 under Compatibility, 16 as 11, 21 as
+17, 31 as 29, exact from 74 up; a flat `albedo_color` or the background
+colour renders exactly. The mechanism is UNVERIFIED (it is not the
+simplified linear-to-sRGB the documentation quotes, which round-trips 11 to
+11); it is listed in §9.
+
 ---
 
 ## 8. Standing constraints
@@ -2891,6 +2949,18 @@ Open about localisation (§7.6, 2026-09-13):
   them needs a raw (`.bin/.cue`) rip of the discs and a `lang/<N>/music/`
   arm in the pack converter, which today reads the music from the base only
   by design. Deferred by the user, 2026-09-13.
+
+Open about the picture (§7.25, 2026-09-22):
+
+* **Compatibility darkens a texel below 31.** The probe of §7.25 reads 11 as
+  5, 16 as 11, 21 as 17 through an unshaded `albedo_texture`, while the same
+  values through `albedo_color` or the background come back exact. The
+  original writes the palette byte as it is, so the darkest texels of every
+  mission are a few levels too dark. Not a Mobile finding — it is the shipped
+  path. Mechanism UNVERIFIED; the candidates are the texture's sRGB decode
+  and the output encode not being inverses of one another at that end.
+* **Mobile was exercised on Metal only.** Vulkan on Windows, Linux and
+  Android and Metal on iOS were not run; §7.25's tables are from one host.
 
 ---
 
