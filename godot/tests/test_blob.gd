@@ -316,6 +316,26 @@ func _check_pool(h: TestHarness) -> void:
 		"the engine's arm leaves all three standing; the mission's pool "
 			+ "removes them")
 
+	# A seeker is born with a zero rotation and turned by its arm, so it is
+	# not drawn until the arm has run: not when it is created, not on the
+	# tick its delay runs out, and from the tick after that on. Any other
+	# model is drawn from the start.
+	var seen: Array[bool] = []
+	var turning: BlobPool = BlobPool.create(1.0, 4)
+	var slot: int = turning.create_blob({"kind": 26, "life": 100,
+		"class_id": 0, "model_name": BlobHooks.MODELS[0], "delay": 1,
+		"x": 100, "y": -200, "z": 5000, "vx": 300, "aux": 4})
+	var round: Blob = turning.at(slot)
+	seen.append(BlobModels.unturned_seeker(round))
+	for _tick: int in range(2):
+		var _ticked: Array[BlobKinds.TickResult] = turning.tick_all()
+		seen.append(BlobModels.unturned_seeker(round))
+	var spark: Blob = Blob.make({"kind": 7, "life": 9, "class_id": 0})
+	seen.append(BlobModels.unturned_seeker(spark))
+	h.equal("models_hide_an_unturned_seeker", seen,
+		[true, true, false, false],
+		"created, delay run out, turned; a non-seeker is never held back")
+
 
 func _ticked_pool(seed_value: float = 1.0) -> BlobPool:
 	var pool: BlobPool = BlobPool.create(seed_value, 32)

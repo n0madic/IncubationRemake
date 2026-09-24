@@ -54,6 +54,11 @@ var arrived: bool = true
 ## per-tick diff against `tools/blob_runtime.py` still steps the engine's
 ## arm; the mission's pool turns it on.
 var drops_orphaned_seekers: bool = false
+## The three seeking kinds of docs/28 section 7.7.1. Their creators --
+## `aBlob_CreateGrenade` `0x00426070` for 26 and 27, `aBlob_EnergyCannon`
+## `0x004264A0` for 61 -- push a zero rotation and leave the heading to the
+## arm, which turns the record along its step on every tick.
+const SEEKER_KINDS: Array[int] = [26, 27, 61]
 
 
 static func create(seed_value: float = 1.0, slots: int = SLOTS) -> BlobPool:
@@ -176,6 +181,8 @@ func tick_all() -> Array[BlobKinds.TickResult]:
 		if blob == null or not blob.alive:
 			continue
 		var result: BlobKinds.TickResult = BlobKinds.tick(blob, _hooks)
+		if result.dispatched:
+			blob.dispatched = true
 		# The two writes, in the order the arms make them: a clear first
 		# would be undone by a set later in the same sweep and a set first
 		# by a later clear, exactly as the engine's global is.

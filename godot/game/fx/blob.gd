@@ -68,6 +68,10 @@ var model: int = -1
 var slot_tag: int = 0
 ## False once the pool has taken the slot back.
 var alive: bool = true
+## Whether the update arm has run on this record at least once -- the
+## remake's own bookkeeping, not a field of the 88 bytes, written by
+## [method BlobPool.tick_all] and read by [BlobModels] (docs/92 section 7.11).
+var dispatched: bool = false
 
 
 static func make(fields: Dictionary) -> Blob:

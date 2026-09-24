@@ -1227,7 +1227,7 @@ What is **not** a choice, and is measured, is the bone-to-mesh scale of 16
 ([`40` §5.3](40-charisma-model-animation.md)) and the `BREAK` note that stops a
 combat animation ([`40` §9](40-charisma-model-animation.md)).
 
-### 7.11 Effects and sound — eight decisions, one since retracted
+### 7.11 Effects and sound — nine decisions, one since retracted
 
 Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
 a choice the remake is committed to and not a finding.
@@ -1315,6 +1315,22 @@ deletes such a record on the tick its arm reports the missing target. It is
 off by default, so `test_blob.gd`'s per-tick diff still steps the engine's
 arm; only the mission's pool turns it on. Not a `compat_flags` option: the
 frozen round is output no player would choose.
+
+**Nor is a seeker drawn before its arm has turned it** *(2026-09-24, a
+deliberate divergence)*. The creators of kinds 26, 27 and 61
+(`aBlob_CreateGrenade` `0x00426070`, `aBlob_EnergyCannon` `0x004264A0`) push a
+**zero** rotation; the arm points the record along its step on every tick. The
+engine's sweep draws a record before it updates it — `0x0041E43D` (the draw,
+gated on `delay == 0` and class 0/1) ahead of `0x0041E44B` (`aBlob_Update`) —
+so every round's first drawn frame, and the frame each of weapon 11's delayed
+rounds comes due, shows the rod at the muzzle along engine +Y whatever the
+line of fire: across it for a target east or west, backwards for one south.
+That was one frame at the original's rate and is a twentieth of a second per
+round at the remake's twenty ticks, six times an arc. `BlobModels` holds a
+seeker back until `Blob.dispatched`, which `BlobPool.tick_all` sets the first
+time the arm runs. Measured live on `_C_168` (weapon 11 against the aliens
+at (2..4, 6..7)): in flight every record's `rot_z` tracks its step, and only
+the rounds still at the spawn point carry `(0, 0, 0)`.
 
 ### 7.12 The environment's objects — three decisions and one correction (2026-09-03)
 

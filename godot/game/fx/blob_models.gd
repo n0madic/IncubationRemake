@@ -94,7 +94,8 @@ func rebuild(pool: BlobPool) -> int:
 	for slot: int in range(pool.capacity()):
 		var blob: Blob = pool.at(slot)
 		var draws: bool = blob != null and blob.alive and blob.delay == 0 \
-			and not blob.is_sprite() and blob.model >= 0
+			and not blob.is_sprite() and blob.model >= 0 \
+			and not unturned_seeker(blob)
 		if not draws:
 			if _nodes.has(slot):
 				_nodes[slot].visible = false
@@ -102,6 +103,22 @@ func rebuild(pool: BlobPool) -> int:
 		if _place(slot, blob):
 			_drawn += 1
 	return _drawn
+
+
+## **A seeker is not drawn before its arm has turned it** -- the remake's own,
+## and a deliberate divergence (docs/92 section 7.11).
+##
+## The creators of all three seeking kinds push a zero rotation, and the arm
+## is what points the record along its path. The engine's sweep draws a record
+## *before* it updates it (`0x0041E43D` ahead of `0x0041E44B`), so the first
+## frame of every round -- and of each of weapon 11's five delayed ones, the
+## frame its delay runs out -- shows the rod at the muzzle along engine +Y,
+## whichever way the shot goes: across the line of fire for a target east or
+## west, backwards for one south. At the original's frame rate that was one
+## frame; at the remake's twenty ticks a second it is a twentieth of a second
+## per round, six times an arc.
+static func unturned_seeker(blob: Blob) -> bool:
+	return not blob.dispatched and BlobPool.SEEKER_KINDS.has(blob.kind)
 
 
 func _place(slot: int, blob: Blob) -> bool:
