@@ -36,6 +36,7 @@ extends RefCounted
 const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 	"roof_unit", "bridge", "foot_bridge", "foot_bridge2", "open_tube",
 	"open_plant_tube", "open_front_door", "ground_unit", "statue",
+	"fixed_statue",
 	"barrier_on", "fire_circle", "ground_fire", "crush_wall", "teleporter",
 	"para_bombs",
 	"lever", "pickup"]
@@ -48,7 +49,8 @@ const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 ## command's range, so the animation belongs to the `statue` events `core`
 ## emits inside it (docs/97 section 41.1) and the `statue2` marker itself has
 ## nothing to draw. `statue_kill` is the same: the beam's stage already hides
-## the victim and fires its `FireDeath`.
+## the victim and fires its `FireDeath`, and so is `fixed_statue_kill`, whose
+## beam is the `fixed_statue` event's.
 const INSTANT: Array[String] = ["fixed_statue_kill", "statue_kill", "statue2",
 	"barrier_off",
 	"falling_spores", "set_ground_fire", "growing_land",
@@ -216,6 +218,10 @@ static func frames_for(event: Dictionary) -> int:
 			return GROUND_UNIT_FRAMES
 		"statue":
 			return STATUE_TURN_FRAMES
+		"fixed_statue":
+			# `aPlayStatueSequence` `0x00414000` has no turn: the flight,
+			# then the beam in one frame and the pool it filled.
+			return 1
 		"fire_circle":
 			return FIRE_CIRCLE_FRAMES
 		"crush_wall", "ground_fire", "barrier_on":

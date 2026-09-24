@@ -7473,6 +7473,15 @@ func _setpiece_extra(name: String, cell: Vector2i,
 						"y": _at_or(values, 11 + arm * 3, cell.y)})
 			out["beams"] = beams
 			out["killed"] = killed
+		"fixed_statue":
+			# `x, y, dir`, the one arm's endpoint and step count, and its
+			# victim as `slot, x, y` -- the statue's layout with one arm.
+			var cells: int = _at_or(values, 5, 0)
+			out["beams"] = [] if cells <= 0 else [{"x": _at_or(values, 3, cell.x),
+				"y": _at_or(values, 4, cell.y), "cells": cells}]
+			var slot: int = _at_or(values, 6, -1)
+			out["killed"] = [] if slot < 0 else [{"slot": slot,
+				"x": _at_or(values, 7, cell.x), "y": _at_or(values, 8, cell.y)}]
 		"ground_fire":
 			# `[x, y, n, (slot, x, y) * n]` -- the tiles `core` took before
 			# `UnitState.remove` cleared the cells.

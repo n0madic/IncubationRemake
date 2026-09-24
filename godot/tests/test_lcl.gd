@@ -785,6 +785,7 @@ func _synthetic(h: TestHarness) -> void:
 		"maxCount 0 returns 1 before the divide is reached")
 
 	_statues(h)
+	_fixed_statues(h)
 	_barrier(h)
 	_foot_bridges(h)
 	_crush_wall(h)
@@ -803,6 +804,58 @@ static func _alive(run: Dictionary, slot: int) -> bool:
 	var roster: Dictionary = run["units"]
 	var unit: UnitState = roster[slot]
 	return unit.is_alive()
+
+
+## `FixedStatue` -- `aPlayStatueSequence` `0x00414000`: one arm of ten, and an
+## event that carries the walk for the picture, found victim or not.
+func _fixed_statues(h: TestHarness) -> void:
+	var wide: int = 12
+	var free: Array = []
+	for _i: int in range(wide * wide):
+		free.append(0)
+	# Direction 0 is south (+y). The statue on (2, 0) reaches (2, 10); the
+	# tenth cell is in reach.
+	var tenth: Dictionary = _run_synthetic(_program([
+		_instr("command", "FixedStatue", [_num(2), _num(0), _num(0)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 2, "y": 10}], wide, wide,
+		{"field_type": free})
+	h.equal("fixed_statue.the_tenth_cell_is_in_reach",
+		_alive(tenth, 0), false, "`cmp eax, 0xa` at `0x00414164`")
+	h.equal("fixed_statue.the_event_carries_the_walk_and_the_victim",
+		_events_named(tenth, "fixed_statue"),
+		[[2, 0, 0, 2, 10, 10, 0, 2, 10]],
+		"x, y, dir, the endpoint, ten steps, the victim's slot and cell")
+	h.equal("fixed_statue.the_kill_follows",
+		_events_named(tenth, "fixed_statue_kill"), [[2, 10]])
+	var eleventh: Dictionary = _run_synthetic(_program([
+		_instr("command", "FixedStatue", [_num(2), _num(0), _num(0)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 2, "y": 11}], wide, wide,
+		{"field_type": free})
+	h.equal("fixed_statue.the_eleventh_is_not",
+		_alive(eleventh, 0), true)
+	# **The beam is drawn with nobody on it** (`0x00414266`): the event
+	# is emitted, and no kill follows.
+	h.equal("fixed_statue.an_empty_walk_still_shows",
+		[_events_named(eleventh, "fixed_statue"),
+		_events_named(eleventh, "fixed_statue_kill")],
+		[[[2, 0, 0, 2, 10, 10, -1, -1, -1]], []])
+	# A wall stops the walk on its own cell, uncounted, before the unit.
+	var walled: Array = free.duplicate()
+	walled[4 * wide + 2] = 2
+	var blocked: Dictionary = _run_synthetic(_program([
+		_instr("command", "FixedStatue", [_num(2), _num(0), _num(0)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [{"slot": 0, "player": 0, "x": 2, "y": 6}], wide, wide,
+		{"field_type": walled})
+	h.equal("fixed_statue.a_wall_stops_the_beam",
+		[_alive(blocked, 0), _events_named(blocked, "fixed_statue")],
+		[true, [[2, 0, 0, 2, 4, 3, -1, -1, -1]]],
+		"`cmp byte [esi+0xd], 2` at `0x00414196`")
 
 
 ## `Statue` / `Statue2` -- `aPlayRotateStatueSequence` `0x00413A40`, the beam

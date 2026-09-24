@@ -93,6 +93,8 @@ CTRL_TYPE_FREE_PLACE = 1
 # ``Statue`` reaches at most this far, each way -- ``0x00413c97``,
 # ``cmp dword [esp+0x3c], 6``.
 STATUE_BEAM_REACH = 6
+#: ``FixedStatue``'s one arm -- ``0x00414164``, ``cmp eax, 0xa``.
+FIXED_STATUE_REACH = 10
 CTRL_TYPE_DEEP_HOLE = 4
 
 #: ``docs/20`` §7.4 -- ``GetHeight``/``SetHeight`` speak in units of 160 world
@@ -1167,24 +1169,28 @@ def _c_barrier(it: Interpreter, p: Params) -> str | None:
 
 
 def _c_fixed_statue(it: Interpreter, p: Params) -> str | None:
-    """``0x00442370`` -- up to ten cells along ``dir``; the first unit dies."""
+    """``0x00442370`` -- up to ten cells along ``dir``; the first unit dies.
+
+    The walk is :func:`_statue_walk`'s, one arm with a reach of ten
+    (``0x00414164``, ``cmp eax, 0xa``).  ``aPlayStatueSequence``
+    ``0x00414000`` draws its beam whether or not the walk found anyone, so
+    the event carries the walk -- ``x, y, dir``, the endpoint and step count,
+    the victim as ``slot, x, y`` or ``-1, -1, -1`` -- and
+    ``fixed_statue_kill`` follows for the kill itself.
+    """
     w = it.world
-    x, y = p.n(0), p.n(1)
-    step = DIR_BARRIER.get(p.n(2))
+    x, y, direction = p.n(0), p.n(1), p.n(2)
+    step = DIR_BARRIER.get(direction)
     if step is None:
         return None
-    cx, cy = x, y
-    for _ in range(10):
-        cx, cy = cx + step[0], cy + step[1]
-        if not w.in_bounds(cx, cy):
-            break
-        if w.ctrl_type[w.index(cx, cy)] == CTRL_TYPE_WALL:
-            break
-        unit = w.unit_on(cx, cy)
-        if unit is not None:
-            w.kill(unit)
-            it.event("fixed_statue_kill", cx, cy)
-            break
+    ex, ey, stepped, victim = _statue_walk(w, x, y, step[0], step[1],
+                                           FIXED_STATUE_REACH)
+    who = (-1, -1, -1) if victim is None else (victim.slot, victim.x, victim.y)
+    it.event("fixed_statue", x, y, direction, ex, ey, stepped, *who)
+    if victim is not None:
+        vx, vy = victim.x, victim.y
+        w.kill(victim)
+        it.event("fixed_statue_kill", vx, vy)
     return None
 
 
@@ -1255,10 +1261,11 @@ def _c_foot_bridge2(it: Interpreter, p: Params) -> str | None:
     return None
 
 
-def _statue_walk(w: LclWorld, x: int, y: int, dx: int, dy: int):
+def _statue_walk(w: LclWorld, x: int, y: int, dx: int, dy: int,
+                 reach: int = STATUE_BEAM_REACH):
     """One arm of :func:`_statue`: ``(end x, end y, cells stepped, victim)``."""
     cx, cy, stepped = x, y, 0
-    while stepped < STATUE_BEAM_REACH:
+    while stepped < reach:
         nx, ny = cx + dx, cy + dy
         if not w.in_bounds(nx, ny):
             break

@@ -36,8 +36,9 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 	"move_fire_circles": "fire_circle",
 	"move_spores": "move_spores",
 	# `FixedStatue`'s routine is `0x00414000`, which docs/28 lists separately
-	# from the rotating statue's.
-	"fixed_statue_kill": "fixed_statue",
+	# from the rotating statue's. Its `fixed_statue` event names that routine
+	# itself and plays whether or not the beam found anyone; the kill that
+	# may follow is silent, as `statue_kill` is.
 	# The barrier toggles and both directions enter `aPlayLaserBarrier`, but
 	# only one reaches its play site: the off arm turns the emitter's part
 	# and returns at `0x00413668`, before `lbarrier.wav` is made at

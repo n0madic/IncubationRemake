@@ -849,11 +849,12 @@ func _statue(x: int, y: int) -> void:
 ## number of cells stepped, and writes the one unit it found -- if it found
 ## one -- into `victims[arm]`.
 func _statue_walk(x: int, y: int, dx: int, dy: int,
-		victims: Array[UnitState], arm: int) -> Vector3i:
+		victims: Array[UnitState], arm: int,
+		reach: int = STATUE_BEAM_REACH) -> Vector3i:
 	var cx: int = x
 	var cy: int = y
 	var stepped: int = 0
-	while stepped < STATUE_BEAM_REACH:
+	while stepped < reach:
 		var nx: int = cx + dx
 		var ny: int = cy + dy
 		if not _context.in_bounds(nx, ny):
@@ -941,26 +942,41 @@ func _crush_wall(x: int, y: int) -> void:
 				at / _context.state.width])
 	_event("crush_wall", values)
 
-## `0x00442370` -- up to ten cells along `dir`; the first unit dies.
+## `0x00442370` -> `aPlayStatueSequence` `0x00414000` -- up to ten cells
+## along `dir`; the first unit dies.
+##
+## The walk is [method _statue_walk]'s, one arm and a reach of ten
+## (`0x00414164`, `cmp eax, 0xA`): a wall stops it on the wall's cell, the map
+## edge on the last cell reached, and the victim's cell is counted. The
+## routine flies the camera, hides the victim under a `FireDeath`, draws the
+## beam `0x00428BF0` from the statue's cell to where the walk stopped
+## **whether or not it found anyone** (`0x00414266`), plays `stonefire.wav`
+## and only then removes the unit (`0x004142EC`) -- so the picture needs the
+## walk, and the event carries it: `x, y, dir`, the endpoint and step count,
+## and the victim as `slot, x, y` or `-1, -1, -1`. `fixed_statue_kill` follows
+## for the kill itself, as `statue_kill` does.
 func _fixed_statue(instr: Dictionary) -> void:
 	var direction: int = _n(instr, 2)
 	if direction < 0 or direction >= DIR_BARRIER_DX.size():
 		return
-	var cx: int = _n(instr, 0)
-	var cy: int = _n(instr, 1)
-	for _i: int in range(STATUE_REACH):
-		cx += DIR_BARRIER_DX[direction]
-		cy += DIR_BARRIER_DY[direction]
-		if not _context.in_bounds(cx, cy):
-			return
-		if _context.state.field_type_at(_context.index(cx, cy)) \
-				== CTRL_TYPE_WALL:
-			return
-		var victim: UnitState = _context.unit_on(cx, cy)
-		if victim != null:
-			_context.kill(victim)
-			_event("fixed_statue_kill", [cx, cy])
-			return
+	var x: int = _n(instr, 0)
+	var y: int = _n(instr, 1)
+	var victims: Array[UnitState] = [null]
+	var end: Vector3i = _statue_walk(x, y, DIR_BARRIER_DX[direction],
+		DIR_BARRIER_DY[direction], victims, 0, STATUE_REACH)
+	var victim: UnitState = victims[0]
+	var values: Array[int] = [x, y, direction, end.x, end.y, end.z]
+	if victim == null:
+		values.append_array([-1, -1, -1])
+	else:
+		values.append_array([victim.slot, victim.x, victim.y])
+	_event("fixed_statue", values)
+	if victim == null:
+		return
+	var vx: int = victim.x
+	var vy: int = victim.y
+	_context.kill(victim)
+	_event("fixed_statue_kill", [vx, vy])
 
 
 ## `0x00442650` -- collapses only when **more than** `minUnits` stand on it.

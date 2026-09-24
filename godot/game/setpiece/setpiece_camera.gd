@@ -207,6 +207,26 @@ static func crump(host: ShotHost, cues: Array[Dictionary],
 	st["crump"] = (at + 1) % BOMB_BUFFERS
 
 
+## Both statues' beam pass: every victim hidden under its `FireDeath`, then
+## `0x00428BF0` from the statue's cell to each arm's endpoint.
+static func _statue_beam(host: ShotHost, cell: Vector2i,
+		extra: Dictionary) -> void:
+	for entry: Variant in DictRead.as_array(extra.get("killed", [])):
+		var victim: Dictionary = DictRead.as_dict(entry)
+		var slot: int = DictRead.as_int(victim.get("slot", -1))
+		if slot >= 0:
+			host.hide_unit(slot)
+		host.spawn_program(BlobPrograms.FIRE_DEATH,
+			PackedInt32Array([DictRead.as_int(victim["x"]),
+				DictRead.as_int(victim["y"])]))
+	for entry: Variant in DictRead.as_array(extra.get("beams", [])):
+		var beam: Dictionary = DictRead.as_dict(entry)
+		host.spawn_program(BlobPrograms.STATUE_BEAM,
+			PackedInt32Array([cell.x, cell.y,
+				DictRead.as_int(beam["x"]), DictRead.as_int(beam["y"]),
+				DictRead.as_int(beam["cells"])]))
+
+
 static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 		frames: int, cell: Vector2i, from_h: int, to_h: int, unit: int,
 		extra: Dictionary, paint: Callable, cues: Array[Dictionary],
@@ -491,23 +511,32 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 			queue.enqueue(kind, frames, paint, cues, true)
 			queue.enqueue(STAGE_BEAM, 1,
 				func(_frame: int, _total: int) -> void:
-					for entry: Variant in DictRead.as_array(extra.get("killed", [])):
-						var victim: Dictionary = DictRead.as_dict(entry)
-						var slot: int = DictRead.as_int(victim.get("slot", -1))
-						if slot >= 0:
-							host.hide_unit(slot)
-						host.spawn_program(BlobPrograms.FIRE_DEATH,
-							PackedInt32Array([DictRead.as_int(victim["x"]),
-								DictRead.as_int(victim["y"])]))
-					for entry: Variant in DictRead.as_array(extra.get("beams", [])):
-						var beam: Dictionary = DictRead.as_dict(entry)
-						host.spawn_program(BlobPrograms.STATUE_BEAM,
-							PackedInt32Array([cell.x, cell.y,
-								DictRead.as_int(beam["x"]), DictRead.as_int(beam["y"]),
-								DictRead.as_int(beam["cells"])])))
+					_statue_beam(host, cell, extra))
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1
+		"fixed_statue":
+			# `aPlayStatueSequence` `0x00414000`: the rotating statue's
+			# routine without the turn. The flight to 32000 above
+			# (`0x0041410C`), then in one pass the victim hidden under its
+			# `FireDeath` (`0x004141D9`, `0x00414208`), the beam `0x00428BF0`
+			# from the statue to where the walk stopped -- drawn with nobody
+			# on it too -- and `stonefire.wav` (`0x00414275`), then the pool.
+			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame == 1:
+						var eye: Vector3i = host.camera_eye()
+						var _f: int = host.fly(
+							Vector3i(eye.x, eye.y, STATUE_HEIGHT), centre))
+			queue.enqueue(STAGE_BEAM, frames,
+				func(frame: int, _total: int) -> void:
+					if frame != 1:
+						return
+					_statue_beam(host, cell, extra), cues, true)
+			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
+				func() -> bool: return host.pool_live() == 0)
+			return frames
 		"barrier_on":
 			# `aPlayLaserBarrier` `0x00413560`'s on arm (docs/42 section 8):
 			# the beam `0x00428990` along the barrier's direction and, in the
