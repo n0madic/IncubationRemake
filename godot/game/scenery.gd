@@ -126,6 +126,14 @@ var _home: Dictionary[Node3D, int] = {}
 ## They are part of the original's mutable special-object table, so unlike
 ## authored objects they must be named explicitly in the picture save record.
 var _inserted: Dictionary[Node3D, String] = {}
+## [MapState]'s special-object table id -> the node standing for that record.
+## The `.lev`'s own objects are ids `0..n-1` in the order [method build]
+## places them, which is the order the table starts in; a record inserted
+## later is registered the first time [method sync_land] meets it.
+var _land_ids: Dictionary[int, Node3D] = {}
+## Table ids whose model this world set cannot build, so a sync does not try
+## again every time it runs.
+var _land_unbuildable: Dictionary[int, bool] = {}
 var _prototypes: Dictionary = {}
 var _textures: Dictionary = {}
 var _width: int = 0
@@ -162,6 +170,8 @@ func build(map_document: Dictionary, geometry: Dictionary,
 	_authored_height.clear()
 	_home.clear()
 	_inserted.clear()
+	_land_ids.clear()
+	_land_unbuildable.clear()
 	_lattice = Node3D.new()
 	_lattice.name = "Lattice"
 	# The editor's cell markers are an inspection aid, not scenery: off until
@@ -179,12 +189,17 @@ func build(map_document: Dictionary, geometry: Dictionary,
 			null, true)
 
 	var specials: Array = DictRead.as_array(map_document["special_objects"])
-	for entry: Variant in specials:
-		var obj: Dictionary = DictRead.as_dict(entry)
-		_place(prototypes, textures, DictRead.as_string(obj["prototype"]),
+	for index: int in range(specials.size()):
+		var obj: Dictionary = DictRead.as_dict(specials[index])
+		var placed: Node3D = _place(prototypes, textures,
+			DictRead.as_string(obj["prototype"]),
 			DictRead.as_int(obj["x"]), DictRead.as_int(obj["y"]),
 			DictRead.as_int(obj["z"]), DictRead.as_int(obj["yaw"]),
 			DictRead.as_array(obj.get("joints", [])))
+		if placed != null:
+			_land_ids[index] = placed
+		else:
+			_land_unbuildable[index] = true
 
 	var land: Dictionary = DictRead.as_dict(map_document["land"])
 	var name: String = DictRead.as_string(land["prototype"])
@@ -314,12 +329,90 @@ func insert_object(name: String, at: Vector3i, yaw: int = 0) -> bool:
 				and _origin.get(existing, Vector3i.ZERO) == at \
 				and _yaw.get(existing, 0) == yaw:
 			return false
+	return _insert(name, at, yaw) != null
+
+
+func _insert(name: String, at: Vector3i, yaw: int) -> Node3D:
 	var node: Node3D = _place(_prototypes, _textures, name,
 		at.x, at.y, at.z, yaw, [])
-	if node == null:
-		return false
-	_inserted[node] = name
-	return true
+	if node != null:
+		_inserted[node] = name
+	return node
+
+
+## Bring the special objects in line with the table the picture's mirror
+## holds ([method MapState.land_objects]): free the node of every record the
+## table no longer has, and stand up a node for every record it has that the
+## picture never drew.
+##
+## Events draw these objects as they happen -- a spore falling, a patch
+## growing, a hole opening -- but an event the player skipped is landed
+## without being drawn ([method EventPlayback.skip]), and cells and heights
+## are redrawn from the state while objects were not: `_C_176`'s growth,
+## skipped, stood in the table as walls nobody could see. A node an event
+## already inserted, or [method restore_poses] brought back, is **adopted**
+## by model and position, so its heading survives; only a record with no node
+## at all is inserted fresh, unturned. Answers how many nodes changed.
+func sync_land(records: Array[Dictionary]) -> int:
+	var changed: int = 0
+	for id: int in _land_ids.keys():
+		if not is_instance_valid(_land_ids[id]):
+			var _dropped: bool = _land_ids.erase(id)
+	var wanted: Dictionary[int, Dictionary] = {}
+	for record: Dictionary in records:
+		wanted[DictRead.as_int(record["id"])] = record
+	for id: int in _land_ids.keys():
+		if wanted.has(id):
+			continue
+		changed += _free_node(_land_ids[id])
+		var _gone: bool = _land_ids.erase(id)
+	var claimed: Dictionary[Node3D, bool] = {}
+	for node: Node3D in _land_ids.values():
+		claimed[node] = true
+	for id: int in wanted:
+		if _land_ids.has(id) or _land_unbuildable.has(id):
+			continue
+		var record: Dictionary = wanted[id]
+		var model: String = DictRead.as_string(record["model"])
+		var at: Vector3i = Vector3i(DictRead.as_int(record["x"]),
+			DictRead.as_int(record["y"]), DictRead.as_int(record["z"]))
+		var found: Node3D = null
+		for key: Variant in _inserted:
+			var node: Node3D = key
+			if is_instance_valid(node) and not claimed.has(node) \
+					and _inserted[node] == model \
+					and _origin.get(node, Vector3i.ZERO) == at:
+				found = node
+				break
+		if found == null:
+			found = _insert(model, at, 0)
+			if found == null:
+				_land_unbuildable[id] = true
+				continue
+			changed += 1
+		_land_ids[id] = found
+		claimed[found] = true
+	return changed
+
+
+## Free one placed object and forget it everywhere.
+func _free_node(instance: Node3D) -> int:
+	if not is_instance_valid(instance):
+		return 0
+	for key: int in _by_cell:
+		_by_cell[key].erase(instance)
+	_authored.erase(instance)
+	_origin.erase(instance)
+	_pivots.erase(instance)
+	_joints.erase(instance)
+	_authored_joints.erase(instance)
+	_yaw.erase(instance)
+	_home.erase(instance)
+	_inserted.erase(instance)
+	instance.get_parent().remove_child(instance)
+	instance.free()
+	_removed += 1
+	return 1
 
 
 ## Draw an inserted object `height` world units above where it was inserted,

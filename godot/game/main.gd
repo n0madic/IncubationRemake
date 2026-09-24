@@ -451,6 +451,8 @@ var _overlay_stale: bool = false
 ## model and its tint on the cell until some later delta happened to ask for
 ## another repaint.
 var _terrain_stale: bool = false
+## The special objects' sync a running set piece put off ([method _sync_land]).
+var _land_stale: bool = false
 ## Whether the playback on the go is the computer's turn, which is what
 ## [method end_turn] started, as against a player's own command. The two
 ## finish differently: only the turn hands the selection back.
@@ -1168,6 +1170,7 @@ func _resume_loaded_mission() -> void:
 	if _scenery != null and world != null:
 		var _restored: int = _scenery.restore_poses(world.restored_scenery(),
 			world.terrain_snapshot())
+		var _synced: int = _scenery.sync_land(world.state.land_objects())
 	if _rig != null and world != null:
 		_rig.apply_state(world.restored_camera())
 
@@ -8366,7 +8369,22 @@ func _flush_picture(force: bool = false) -> void:
 	# forced flush inside a sequence has already cleared [member _picture_stale]
 	# and would never come back here.
 	var _cells: int = _redraw_terrain()
+	_sync_land()
 	_refresh_overlay(force)
+
+
+## The special objects in line with the mirror's table ([method
+## Scenery.sync_land]) -- only once no set piece is running, since a set piece
+## draws its own objects in on its own frames: a spore that had to be standing
+## before it fell would land on itself.
+func _sync_land() -> void:
+	if _scenery == null or world == null:
+		return
+	if _sequences != null and _sequences.is_running():
+		_land_stale = true
+		return
+	_land_stale = false
+	var _synced: int = _scenery.sync_land(shown().state.land_objects())
 
 
 ## What a set piece deferred, paid the frame its queue empties.
@@ -8385,6 +8403,8 @@ func _drain_deferred_repaints() -> void:
 		return
 	if _terrain_stale:
 		var _repainted: int = _redraw_terrain()
+	if _land_stale:
+		_sync_land()
 	if _overlay_stale:
 		_refresh_overlay()
 

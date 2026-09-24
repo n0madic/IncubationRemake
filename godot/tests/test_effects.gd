@@ -92,6 +92,7 @@ func run(h: TestHarness) -> void:
 	_check_clone_cells(h)
 	_check_pose_record(h)
 	_check_ground_hole(h)
+	_check_land_sync(h)
 	_check_resume_after_load(h)
 	_check_rider_fall(h)
 	_check_rider_fall_in_place(h)
@@ -1236,6 +1237,48 @@ func _check_pose_record(h: TestHarness) -> void:
 	resumed.free()
 
 
+## The special objects follow the mirror's table ([method Scenery.sync_land]):
+## a record the picture never drew -- a skipped growth -- is stood up, a record
+## the table lost is freed, and a node an event already inserted is adopted
+## rather than doubled.
+func _check_land_sync(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_world(GROUND_MISSION)
+	if loaded.is_empty():
+		h.check("land_sync.fixture", false,
+			"run tools/remake_convert.py --dev-fixtures godot/generated")
+		return
+	var world: World = loaded["world"]
+	var document: Dictionary = DictRead.as_dict(loaded["document"])
+	var geometry: Dictionary = CacheFixture.geometry(DictRead.as_string(
+		DictRead.as_dict(document["header"])["world_set"]))
+	var model: String = SetpieceCamera.GROUND_HOLE_MODEL
+	if not DictRead.as_dict(geometry.get("prototypes", {})).has(model):
+		h.check("land_sync.prototype", false, model)
+		return
+	var scenery: Scenery = Scenery.new()
+	scenery.build(document, geometry, {})
+	var state: MapState = world.state.clone()
+	var before: int = scenery.object_count()
+	h.equal("land_sync.the_lev_is_already_in_line",
+		scenery.sync_land(state.land_objects()), 0,
+		"ids 0..n-1 are the objects build placed, in the same order")
+	var _grown: int = state.insert_land_object(model, 3200, 3200, 0)
+	h.equal("land_sync.an_undrawn_record_is_stood_up",
+		[scenery.sync_land(state.land_objects()), scenery.object_count()],
+		[1, before + 1])
+	h.equal("land_sync.twice_is_once", scenery.sync_land(state.land_objects()), 0)
+	var _drawn: bool = scenery.insert_object(model, Vector3i(6400, 3200, 0), 77)
+	var _dropped: int = state.insert_land_object(model, 6400, 3200, 0)
+	h.equal("land_sync.an_event_drawn_node_is_adopted",
+		[scenery.sync_land(state.land_objects()), scenery.object_count()],
+		[0, before + 2], "the drop's own node, heading and all")
+	var _gone: bool = state.delete_land_object(0)
+	h.equal("land_sync.a_lost_record_is_freed",
+		[scenery.sync_land(state.land_objects()), scenery.object_count()],
+		[1, before + 1])
+	scenery.free()
+
+
 ## `GroundUnit` leaves the flat level object the original inserts at
 ## `0x00411FB0`, and that runtime-only object survives a picture save.
 func _check_ground_hole(h: TestHarness) -> void:
@@ -1621,6 +1664,17 @@ func _check_resume_after_load(h: TestHarness) -> void:
 		SetpieceDriver.TUBE_STEP * SetpieceDriver.TUBE_FRAMES, 0, 0)
 	var _hatch: int = played.paint_joint(tube, SetpieceDriver.PART_FIRST, open)
 	var _gone: int = played.remove_objects(wall)
+	# A crushed wall is gone from the state as well as from the picture:
+	# `aDeleteLand` takes it out of the special-object table, and the table is
+	# what the loaded picture is brought in line with ([method
+	# Scenery.sync_land]).
+	for record: Dictionary in world.state.land_objects():
+		var at: int = world.state.index_of(
+			DictRead.as_int(record["x"]) / WorldSpace.WORLD_UNITS_PER_FIELD,
+			DictRead.as_int(record["y"]) / WorldSpace.WORLD_UNITS_PER_FIELD)
+		if at == wall:
+			var _freed: bool = world.state.delete_land_object(
+				DictRead.as_int(record["id"]))
 
 	var rig: CameraRig = CameraRig.new()
 	rig.set_now(SAVED_EYE, SAVED_TARGET)
