@@ -2582,6 +2582,7 @@ func _campaign_screens(h: TestHarness) -> void:
 					past.append("%s/%d" % [kind, DictRead.as_int(row["id"])])
 	h.equal("screens.catalogue_stops_at_the_bound", past,
 		PackedStringArray(), "weapons below 20, equipment below 21")
+	_armoury(h, host)
 	# The composed faces, which is `aPrintGadget`'s own arithmetic
 	# (`0x0043a4ab` normal, `0x0043a2ab` lit) rather than a measurement off a
 	# screenshot: left, then `Width - 2` fills, then right, edge to edge.
@@ -4174,3 +4175,72 @@ func _screens_leave_nothing_behind(h: TestHarness) -> void:
 	h.check("no_state.a_screen_owns_everything_it_builds", left.is_empty(),
 		", ".join(left) if not left.is_empty()
 		else "%d screens built and freed, no node left over" % names.size())
+
+
+## The `ammo` cheat's armoury ([method Cheats.armoury]): every weapon on sale
+## at any base, and none asking for skill points -- while the purse, the
+## equipment half and the id and name filters stay what they were.
+func _armoury(h: TestHarness, host: CampaignHost) -> void:
+	var stood_at: int = host.location
+	var held: Cheats = host.cheats
+	host.location = 5
+	var switches: Cheats = Cheats.new()
+	host.cheats = switches
+	var weapons_shut: int = DictRead.as_array(
+		host.catalogue(CampaignHost.KIND_WEAPONS)["available"]).size()
+	var equipment_shut: int = DictRead.as_array(
+		host.catalogue(CampaignHost.KIND_EQUIPMENT)["available"]).size()
+	switches.ammo = true
+	var weapons: Dictionary = host.catalogue(CampaignHost.KIND_WEAPONS)
+	h.equal("cheats.armoury_sells_every_weapon",
+		[weapons_shut, DictRead.as_array(weapons["available"]).size(),
+		DictRead.as_array(weapons["locked"]).size()], [1, 18, 0],
+		"base 5 stocks one weapon; the armoury the 18 the two halves hold")
+	h.equal("cheats.armoury_leaves_equipment_alone",
+		DictRead.as_array(
+			host.catalogue(CampaignHost.KIND_EQUIPMENT)["available"]).size(),
+		equipment_shut)
+	# The dearest weapon in skill terms, against a soldier with no TP at all.
+	var recruit: UnitState = UnitState.new()
+	recruit.hp = 10
+	var hardest: int = -1
+	var hardest_cost: int = 0
+	for entry: Variant in DictRead.as_array(weapons["available"]):
+		var row: Dictionary = entry
+		var short: int = Upgrade.weapon_skill_cost(row, recruit)
+		if short > hardest_cost:
+			hardest_cost = short
+			hardest = DictRead.as_int(row["id"])
+	var row_skills: PackedInt32Array = PackedInt32Array()
+	for row: Dictionary in host.catalogue_rows(CampaignHost.KIND_WEAPONS,
+			recruit):
+		row_skills.append(DictRead.as_int(row["skills"]))
+	h.check("cheats.armoury_lists_no_skill_cost",
+		hardest >= 0 and not row_skills.is_empty()
+		and row_skills.count(0) == row_skills.size(),
+		"the Item List prints and charges 0 for every weapon")
+	# The purchase itself, on a throwaway campaign so the host's is untouched.
+	var state: CampaignState = CampaignState.begin(1, 0, 10, 10)
+	var slot: int = state.roster.add(recruit)
+	state.set_points(0, CampaignState.EQUIPMENT_POINT_CAP)
+	var row_for: Dictionary = host.row_for(CampaignHost.KIND_WEAPONS, hardest)
+	var refused: Dictionary = state.buy_weapon(0, slot, hardest,
+		host.weapon_costs(), row_for, host.equipment_costs())
+	h.equal("cheats.armoury_off_still_asks_for_skills",
+		DictRead.as_string(refused["result"]), Upgrade.NO_SKILL)
+	var bought: Dictionary = state.buy_weapon(0, slot, hardest,
+		host.weapon_costs(), row_for, host.equipment_costs(), true)
+	var armed: UnitState = state.roster.record(slot)
+	h.check("cheats.armoury_buys_regardless_of_experience",
+		DictRead.as_string(bought["result"]) == Upgrade.OK
+		and DictRead.as_int(bought["skill_points"]) == 0
+		and armed.weapon == hardest and armed.tp == 0
+		and Upgrade.weapon_skill_cost(row_for, armed) == 0,
+		"weapon %d: no TP spent, skills still raised to its requirement"
+			% hardest)
+	h.equal("cheats.armoury_still_charges_the_price",
+		DictRead.as_int(bought["cost"]),
+		DictRead.as_int(host.weapon_costs().get(hardest, 0))
+			- DictRead.as_int(host.weapon_costs().get(0, 0)))
+	host.cheats = held
+	host.location = stood_at

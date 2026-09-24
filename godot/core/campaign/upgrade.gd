@@ -143,10 +143,16 @@ static func equipment_skill_cost(item: Dictionary, unit: UnitState) -> int:
 ## routine never touches money; its callers do, and the Recruit window's
 ## preset builder `0x00476260` calls it on a record that is not even in the
 ## pool yet. Writes through *unit*.
+##
+## *charge_skills* false is the `ammo` cheat's armoury ([method
+## Cheats.armoury]): the skills are raised all the same, so a carried weapon
+## still never outranks its bearer, but `+0x18` is left alone and the return
+## is zero.
 static func apply_weapon(unit: UnitState, weapon: int,
-		weapon_row: Dictionary) -> int:
+		weapon_row: Dictionary, charge_skills: bool = true) -> int:
 	var needs: PackedInt32Array = skills_of(weapon_row)
-	var short: int = skill_shortfall(needs, unit.skills, WEAPON_SKILL_ORDER)
+	var short: int = skill_shortfall(needs, unit.skills, WEAPON_SKILL_ORDER) \
+		if charge_skills else 0
 	unit.weapon = weapon
 	unit.skills = raise_skills(needs, unit.skills, WEAPON_SKILL_ORDER)
 	unit.tp -= short * TP_PER_SKILL_POINT

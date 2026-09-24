@@ -43,7 +43,9 @@ const ACTION_NUKE: String = "nuke"
 ## player controls.
 var god: bool = false
 ## No ammunition spent, no heat gained, no overheat roll and no jam, for a shot
-## fired by a unit a human player controls.
+## fired by a unit a human player controls. In the base it also opens the
+## armoury: every weapon is on sale whatever the base's tech band, and none
+## asks for skill points ([method armoury]).
 var ammo: bool = false
 ## A shot by a unit a human player controls always connects and always kills.
 var kill: bool = false
@@ -175,6 +177,14 @@ static func shielded(cheats: Cheats, unit: UnitState, turn: TurnState) -> bool:
 ## *unit*'s weapon spends nothing and cannot jam.
 static func armed(cheats: Cheats, unit: UnitState, turn: TurnState) -> bool:
 	return cheats != null and cheats.ammo and controlled(unit, turn)
+
+
+## The Upgrade screen sells every weapon and waives its skill requirement --
+## the soldier is still charged the price, and is still trained up to what the
+## weapon asks for, just without spending `+0x18` on it. No [TurnState] here:
+## the roster the shop equips is the human player's by construction.
+static func armoury(cheats: Cheats) -> bool:
+	return cheats != null and cheats.ammo
 
 
 ## *unit*'s shot connects and kills.

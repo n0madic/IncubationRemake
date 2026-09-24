@@ -345,18 +345,22 @@ func dismiss(player: int, slot: int, weapon_costs: Dictionary) -> int:
 ## half needs only the cost map, and a caller that has no table is charged the
 ## points alone rather than being refused.
 ##
+## *waive_skills* is the `ammo` cheat's armoury ([method Cheats.armoury]):
+## no skill check and no skill points charged; the purse is unchanged.
+##
 ## Returns `{"result": String, "cost": int, "skill_points": int}`.
 func buy_weapon(player: int, slot: int, weapon: int,
 		weapon_costs: Dictionary, weapon_row: Dictionary = {},
-		equipment_costs: Dictionary = {}) -> Dictionary:
+		equipment_costs: Dictionary = {},
+		waive_skills: bool = false) -> Dictionary:
 	var unit: UnitState = roster.record(slot)
 	if unit == null:
 		return _purchase(Upgrade.NO_UNIT)
 	if weapon < 0 or weapon > Upgrade.WEAPON_ID_MAX:
 		return _purchase(Upgrade.BAD_ID)
 	var needs: PackedInt32Array = Upgrade.skills_of(weapon_row)
-	var short: int = Upgrade.skill_shortfall(needs, unit.skills,
-		Upgrade.WEAPON_SKILL_ORDER)
+	var short: int = 0 if waive_skills else Upgrade.skill_shortfall(needs,
+		unit.skills, Upgrade.WEAPON_SKILL_ORDER)
 	# **The skill check comes before the purse**, because the purse's own is
 	# destructive: `add` then `spend` has already moved money by the time a
 	# refusal could be raised.
@@ -371,7 +375,8 @@ func buy_weapon(player: int, slot: int, weapon: int,
 		# a failed purchase from being a way to print money.
 		spend_points(player, old_cost)
 		return _purchase(Upgrade.NO_POINTS)
-	var _paid: int = Upgrade.apply_weapon(unit, weapon, weapon_row)
+	var _paid: int = Upgrade.apply_weapon(unit, weapon, weapon_row,
+		not waive_skills)
 	# `0x0045ABAB` rewrites `+0x5A` with `0x004776E0`'s value of the whole
 	# kit. *equipment_costs* is optional for the callers that carry no
 	# table; they get the weapon-only value, which is what an unarmoured

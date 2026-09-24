@@ -672,6 +672,7 @@ func _ready() -> void:
 	add_child(_touch)
 	get_viewport().size_changed.connect(_on_canvas_resized)
 	campaign = CampaignHost.create(_cache_dir, _balance, _strings)
+	campaign.cheats = cheats
 	_frontend = CacheLoader.read_json(_cache_dir + "/tables/frontend.json")
 	_sequence_manifest = CacheLoader.read_json(
 		_cache_dir + "/tables/sequences.json")
@@ -4321,6 +4322,7 @@ func _build_effects(mission: String, world_set: String,
 	# item 5 of the canonical hash and must not learn about the frame rate.
 	_footstep_cues.clear()
 	_fx = BlobPool.create(float(hash(mission) % 1000000 + 1))
+	_fx.drops_orphaned_seekers = true
 	# An arm's spawn request is **run** in a mission rather than written down
 	# ([GameBlobHooks]); the diff's own hooks keep recording it, which is what
 	# `tests/test_blob.gd` compares. The pool's seeded stream is carried over

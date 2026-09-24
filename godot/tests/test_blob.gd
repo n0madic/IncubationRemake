@@ -297,6 +297,25 @@ func _check_pool(h: TestHarness) -> void:
 		other.trace_digest() != first.trace_digest(),
 		"and a different seed does not")
 
+	# A seeker whose target stopped answering: the engine's arm aborts and
+	# the record hangs where it is until its life runs out, and the mission's
+	# pool removes it instead (docs/92 section 7.11). Both halves, so the
+	# default is still the engine's.
+	var hangs: Array[int] = []
+	for drops: bool in [false, true]:
+		var orphans: BlobPool = BlobPool.create(1.0, 4)
+		orphans.drops_orphaned_seekers = drops
+		orphans.hooks().has_target = false
+		for kind: int in [26, 27, 61]:
+			var _slot: int = orphans.create_blob({"kind": kind, "life": 100,
+				"class_id": 0, "model_name": BlobHooks.MODELS[0],
+				"x": 100, "y": -200, "z": 5000, "vx": 300, "aux": 4})
+		var _tick: Array[BlobKinds.TickResult] = orphans.tick_all()
+		hangs.append(orphans.in_use())
+	h.equal("pool_orphaned_seekers", hangs, [3, 0],
+		"the engine's arm leaves all three standing; the mission's pool "
+			+ "removes them")
+
 
 func _ticked_pool(seed_value: float = 1.0) -> BlobPool:
 	var pool: BlobPool = BlobPool.create(seed_value, 32)

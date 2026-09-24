@@ -40,6 +40,20 @@ var _drops: int = 0
 ## it for up to 100 frames. [method tick_all] applies the arms' writes in slot
 ## order, which is the order the sweep makes them.
 var arrived: bool = true
+## **The remake's own, and a deliberate divergence** (docs/92 section 7.11):
+## a seeker -- kinds 26, 27 and 61 -- whose target no longer answers is
+## removed instead of left where it stopped.
+##
+## The engine's arm aborts on `aGetUnitMapElementPtr`'s null (docs/28 section
+## 7.7.1) *after* the wrapper has taken a tick of `life`, so a round whose unit
+## died hangs motionless in the air until its life runs out -- a hundred ticks
+## for weapon 11's arcs, five seconds at the queue's twenty a second. Weapon
+## 11 makes that the ordinary case rather than a corner: its first arrival
+## raises the flag, the death stage lands every casualty on the mirror, and
+## the other arcs' rounds are all left standing. Off by default, so the
+## per-tick diff against `tools/blob_runtime.py` still steps the engine's
+## arm; the mission's pool turns it on.
+var drops_orphaned_seekers: bool = false
 
 
 static func create(seed_value: float = 1.0, slots: int = SLOTS) -> BlobPool:
@@ -169,6 +183,10 @@ func tick_all() -> Array[BlobKinds.TickResult]:
 			arrived = true
 		if result.global_signal_clear:
 			arrived = false
+		if drops_orphaned_seekers and result.target_missing:
+			blob.in_use = false
+			blob.alive = false
+			result.deleted = true
 		results.append(result)
 		if not blob.alive:
 			_blobs[slot] = null

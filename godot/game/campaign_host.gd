@@ -124,6 +124,10 @@ var upgrade_slot: int = Roster.NO_SLOT
 var item_kind: String = KIND_WEAPONS
 var item_id: int = -1
 var tables: CampaignMap = null
+## The session's switches, the same object [member SliceMain.cheats] holds so a
+## toggle reaches the shop at once. `ammo` opens the armoury ([method
+## Cheats.armoury]); `null` is a host with no cheats at all.
+var cheats: Cheats = null
 
 ## Filled by [method finish_mission]: what the debriefing has to say.
 var last_report: Dictionary = {}
@@ -845,7 +849,7 @@ func buy(kind: String, slot: int, id: int) -> Dictionary:
 		return {"result": Upgrade.BAD_ID, "cost": 0, "skill_points": 0}
 	if kind == KIND_WEAPONS:
 		return state.buy_weapon(0, slot, id, weapon_costs(), row,
-			equipment_costs())
+			equipment_costs(), Cheats.armoury(cheats))
 	return state.buy_equipment(0, slot, id, row)
 
 
@@ -900,9 +904,7 @@ func catalogue_rows(kind: String, unit: UnitState) -> Array[Dictionary]:
 		var row: Dictionary = entry
 		var id: int = DictRead.as_int(row["id"])
 		var cost: int = DictRead.as_int(row["cost"])
-		var skills: int = Upgrade.weapon_skill_cost(row, probe) \
-			if kind == KIND_WEAPONS \
-			else Upgrade.equipment_skill_cost(row, probe)
+		var skills: int = skill_cost(kind, row, probe)
 		var carried: bool = probe.weapon == id if kind == KIND_WEAPONS \
 			else probe.has_equipment(id)
 		out.append({
@@ -918,6 +920,16 @@ func catalogue_rows(kind: String, unit: UnitState) -> Array[Dictionary]:
 				and skills * Upgrade.TP_PER_SKILL_POINT <= probe.tp,
 		})
 	return out
+
+
+## What *row* costs *unit* in skill points -- the shortfall the purchase
+## charges, which the `ammo` cheat's armoury waives for a weapon.
+func skill_cost(kind: String, row: Dictionary, unit: UnitState) -> int:
+	if kind != KIND_WEAPONS:
+		return Upgrade.equipment_skill_cost(row, unit)
+	if Cheats.armoury(cheats):
+		return 0
+	return Upgrade.weapon_skill_cost(row, unit)
 
 
 ## docs/27 section 5.2 -- the catalogue the tech level gates, and what is
@@ -962,6 +974,9 @@ func catalogue(kind: String) -> Dictionary:
 	var available: Array[Dictionary] = []
 	var locked: Array[Dictionary] = []
 	var band: Vector2i = catalogue_band()
+	# The `ammo` cheat's armoury stocks every weapon the shop can list at all:
+	# the tech band is lifted, the name and id-bound filters are not.
+	var open_all: bool = kind == KIND_WEAPONS and Cheats.armoury(cheats)
 	for entry: Variant in DictRead.as_array(_balance.get(kind, [])):
 		var row: Dictionary = entry
 		if DictRead.as_string(row.get("name", "")) == "":
@@ -970,7 +985,7 @@ func catalogue(kind: String) -> Dictionary:
 				CATALOGUE_ID_MAX.get(kind, 0)):
 			continue
 		var needs: int = DictRead.as_int(row.get("tech", 0))
-		if needs >= band.x and needs <= band.y:
+		if open_all or (needs >= band.x and needs <= band.y):
 			available.append(row)
 		else:
 			locked.append(row)

@@ -838,9 +838,7 @@ func _draw_item(unit: UnitState) -> void:
 		return
 	var _name: Label = gui_text(DictRead.as_string(row["name"]), ITEM_NAME_AT,
 		ALIGN_CENTRE, INK_VALUE, _panel, FNT_VALUE)
-	var skills: int = Upgrade.weapon_skill_cost(row, unit) \
-		if item_kind == CampaignHost.KIND_WEAPONS \
-		else Upgrade.equipment_skill_cost(row, unit)
+	var skills: int = host.skill_cost(item_kind, row, unit)
 	_pair(ID_ITEM_COST, str(DictRead.as_int(row["cost"])), ITEM_COST_AT,
 		ITEM_COST_VALUE_X)
 	_pair(ID_SKILL_COST, str(skills), ITEM_SKILL_AT)

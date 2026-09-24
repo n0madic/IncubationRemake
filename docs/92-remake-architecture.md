@@ -1227,7 +1227,7 @@ What is **not** a choice, and is measured, is the bone-to-mesh scale of 16
 ([`40` §5.3](40-charisma-model-animation.md)) and the `BREAK` note that stops a
 combat animation ([`40` §9](40-charisma-model-animation.md)).
 
-### 7.11 Effects and sound — seven decisions, one since retracted
+### 7.11 Effects and sound — eight decisions, one since retracted
 
 Recorded here rather than only in [`97`](97-slice-5-report.md), because each is
 a choice the remake is committed to and not a finding.
@@ -1301,6 +1301,20 @@ reproduced, and it is also the mode a retail `Incubation.exe` runs at under
 Wine, which is where every arm in this layer was measured. Behaving like mode
 3 instead is a `compat_flags`-shaped option — one visible extra effect on one
 kind — and would want the flag rather than a changed default.
+
+**A seeker whose target is gone is removed, not left standing** *(2026-09-24,
+a deliberate divergence)*. Kinds 26, 27 and 61 find their target through
+`aGetUnitMapElementPtr`, whose null for a dead unit aborts the arm
+([`28` §7.7.1](28-effects-and-sound.md)) — but only after the wrapper has
+taken the tick's `life`, so the round freezes where it is and hangs in the air
+until its life runs out, a hundred ticks for weapon 11's arcs. Weapon 11 makes
+it the ordinary case: the first round to arrive raises the flag, the death
+stage lands every casualty on the mirror (§7.17), and the other arcs' rounds
+are left standing for five seconds as motionless rods. `BlobPool.drops_orphaned_seekers`
+deletes such a record on the tick its arm reports the missing target. It is
+off by default, so `test_blob.gd`'s per-tick diff still steps the engine's
+arm; only the mission's pool turns it on. Not a `compat_flags` option: the
+frozen round is output no player would choose.
 
 ### 7.12 The environment's objects — three decisions and one correction (2026-09-03)
 
@@ -2349,7 +2363,7 @@ verification.
 | | Decision |
 |---|---|
 | C1 | **`Cheats` is a rule modifier, not simulation state.** It follows `World.ai_may_fire` ([`23` §1](23-ai-system.md)'s engine debug global) literally: outside `CanonicalHash`, outside `SaveCodec`, and carried by `World.clone()` **as the same object** -- one `Cheats` exists per session, `SliceMain` hands it to every world it builds, and a snapshot in the clone would freeze at clone time and diverge from the truth on the next toggle. Two worlds differing only in which switches are on are the same state, so a save taken with one on restores to a world whose hash matches -- and a save can neither carry a switch into a session that did not ask for it nor clear one the session did. |
-| C2 | **Four switches and one action.** `god` (no damage from a weapon or an explosion, and no stun), `ammo` (no ammunition, no heat, no overheat roll, no jam), `kill` (the shot connects and kills), `moves` (the movement points come back after a move, a shot, a use **or** a warp -- `aExecuteWarp`'s call site zeroes them outright, so it is the fourth charge and not an exception), and `nuke` -- a one-off that kills every unit no human seat controls. `nuke` is deliberately not a switch: it has no state to be in. |
+| C2 | **Four switches and one action.** `god` (no damage from a weapon or an explosion, and no stun), `ammo` (no ammunition, no heat, no overheat roll, no jam -- and, in the base, an open armoury: the Upgrade screen lists every weapon whatever the base's tech band and waives the skill requirement, raising the soldier's skills to it without spending TP; the price is still paid and the equipment half is untouched), `kill` (the shot connects and kills), `moves` (the movement points come back after a move, a shot, a use **or** a warp -- `aExecuteWarp`'s call site zeroes them outright, so it is the fourth charge and not an exception), and `nuke` -- a one-off that kills every unit no human seat controls. `nuke` is deliberately not a switch: it has no state to be in. |
 | C3 | **"Mine" is `turn.player_kind[unit.player] == KIND_HUMAN`**, so the aliens' player 255 is outside the array and can never be protected, and the switches hold in a two-human session as well as in the campaign. `Cheats.controlled` is the single test; the four questions the rules ask (`shielded`, `armed`, `lethal`, `tireless`) are static and null-tolerant, which is what lets every seam default its argument to `null` and change no existing caller. |
 | C4 | **The shield borrows the Damage Absorber's own mechanism.** `applyDamage` is still called with the damage argument **zeroed** rather than skipped ([`22` §7.5](22-combat-and-visibility.md)), so the generator lands exactly where it would have and a cheated world's picture and truth stay in step. Both weapons and mines go through it; `Combat.apply_damage` itself is untouched. |
 | C5 | **The one-shot kill is written after the roll, not as damage 255.** `applyDamage` subtracts armour from any damage and refuses `IMMUNE_UNIT_TYPE 0x23` outright, so a large number is not a kill. The hit is forced with the `GUARANTEED_HIT_SPECIALS` idiom and the remaining health taken off after the call -- and never off a unit `god` protects, so the two switches held together do not make friendly fire lethal. |
