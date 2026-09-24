@@ -53,8 +53,16 @@ const MAGIC: String = "INCS"
 ## authored again on a load. Presentation, beside the camera and outside the
 ## canonical hash like it. An older save is
 ## refused **by name** rather than misread, which is the whole point of the
-## field.
-const SCHEMA_VERSION: int = 11
+## field. **12** added the special-object table `[0x004FA80C]` (docs/42
+## section 8.2): `GrowingLand`, `FallingSpores` and `Spores` read and write it,
+## so it is simulation, hashed and saved. A schema-11 save is the one older
+## schema still **read**: its table is rebuilt from the `.lev` and the
+## scenery record beside it ([method _migrate_land_objects]), because what a
+## save of that schema could have done to the table -- a crushed wall, a
+## fallen footbridge, a `GroundUnit`'s hole -- is exactly what that record
+## kept.
+const SCHEMA_VERSION: int = 12
+const SCHEMA_MIGRATED: int = 11
 const HEADER_SIZE: int = 76
 const DIGEST_SIZE: int = 32
 
@@ -109,6 +117,8 @@ static func encode(res: MapResource, state: MapState, units: Dictionary,
 		"camera": camera,
 		"scenery": scenery,
 		"units": unit_records,
+		"land_objects": {"records": state.land_objects(),
+			"next": state.next_land_id()},
 	}
 	var header_bytes: PackedByteArray = JSON.stringify(header).to_utf8_buffer()
 	var body: PackedByteArray = PackedByteArray()
@@ -137,7 +147,7 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 	if data.slice(0, 4).get_string_from_ascii() != MAGIC:
 		return {"result": Result.BAD_SCHEMA}
 	var version: int = data.slice(4, 8).to_int32_array()[0]
-	if version != SCHEMA_VERSION:
+	if version != SCHEMA_VERSION and version != SCHEMA_MIGRATED:
 		return {"result": Result.BAD_SCHEMA}
 	var stored: PackedByteArray = data.slice(8, 8 + DIGEST_SIZE)
 	var length: int = data.slice(40, 44).to_int32_array()[0]
@@ -166,6 +176,12 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 	var state: MapState = MapState.from_resource(res)
 	if not state.load_bytes(body.slice(at)):
 		return {"result": Result.TRUNCATED}
+	if version == SCHEMA_MIGRATED:
+		_migrate_land_objects(state, DictRead.as_dict(header["scenery"]))
+	else:
+		var land: Dictionary = DictRead.as_dict(header["land_objects"])
+		state.set_land_objects(DictRead.as_array(land["records"]),
+			DictRead.as_int(land["next"]))
 
 	var units: Dictionary = {}
 	var records: Array = DictRead.as_array(header["units"])
@@ -194,6 +210,29 @@ static func decode(data: PackedByteArray, res: MapResource) -> Dictionary:
 		"scenery": DictRead.as_dict(header["scenery"]),
 		"compat_flags": flags,
 	}
+
+
+## A schema-11 save's special-object table: the `.lev`'s, less every record on
+## a cell the scenery record lists as emptied, plus every object it lists as
+## inserted. The cell of a record is its position divided by the field, as
+## [method Scenery.remove_objects] keyed it when it emptied the cell.
+static func _migrate_land_objects(state: MapState, scenery: Dictionary) -> void:
+	var emptied: Dictionary[int, bool] = {}
+	for entry: Variant in DictRead.as_array(scenery.get("removed", [])):
+		emptied[DictRead.as_int(entry)] = true
+	for record: Dictionary in state.land_objects():
+		var cell: int = DictRead.as_int(record["y"]) / MapResource.WORLD_UNITS_PER_FIELD * state.width \
+			+ DictRead.as_int(record["x"]) / MapResource.WORLD_UNITS_PER_FIELD
+		if emptied.has(cell):
+			var _gone: bool = state.delete_land_object(
+				DictRead.as_int(record["id"]))
+	for entry: Variant in DictRead.as_array(scenery.get("inserted", [])):
+		var row: Array = DictRead.as_array(entry)
+		if row.size() < 5:
+			continue
+		var _id: int = state.insert_land_object(DictRead.as_string(row[1]),
+			DictRead.as_int(row[2]), DictRead.as_int(row[3]),
+			DictRead.as_int(row[4]))
 
 
 ## Every field of [TurnState] the header carries, narrowed at the boundary.

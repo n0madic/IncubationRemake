@@ -165,6 +165,11 @@ func delta_now() -> Dictionary:
 	}
 	if DictRead.as_bool(dirty["objects"]):
 		delta["objects"] = _state.objects()
+	# The special-object table, whole: at most a hundred and fifty records,
+	# and a move is rare -- a growth, a drop, a hatch, a crushed wall.
+	if DictRead.as_bool(dirty["land"]):
+		delta["land_objects"] = {"records": _state.land_objects(),
+			"next": _state.next_land_id()}
 	return delta
 
 
@@ -228,7 +233,7 @@ func _is_empty_delta(delta: Dictionary) -> bool:
 		return false
 	if not DictRead.as_dict(delta["units"]).is_empty():
 		return false
-	if delta.has("objects"):
+	if delta.has("objects") or delta.has("land_objects"):
 		return false
 	var last: Dictionary = _baseline
 	if not _events.is_empty():
@@ -269,3 +274,5 @@ static func _fold(event: Dictionary, residue: Dictionary) -> void:
 	delta["crand"] = residue["crand"]
 	if residue.has("objects"):
 		delta["objects"] = residue["objects"]
+	if residue.has("land_objects"):
+		delta["land_objects"] = residue["land_objects"]

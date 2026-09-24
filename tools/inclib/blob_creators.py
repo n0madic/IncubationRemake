@@ -2096,6 +2096,25 @@ def _c00423AD0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs
         pool.spawn(SCRATCH, 2, px, py, z, 0, 0, 0, 0xA, 0x14, vx, vy, vz, 0x14, delay)
 
 
+@death_program(0x0042B3B0, 3)
+def _c0042B3B0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
+    """`0x0042B3B0(x, y, z)`, the spore hatch's splash (`0x004149F6`, from
+    `0x004147D0`): thirty class-2 records, kind 68, life 40, sprite row 6,
+    800 above the point -- the hatch passes the cell marker's own
+    `+0x10/+0x14/+0x18`.  Five draws a record: velocity x and y
+    `aRandom2(-600, 1200)`, z `aRandom2(500, 1500)`, then the delay
+    `aRandom2(0, 6)` and `aux` `aRandom2(5, 10)` -- drawn in that order and
+    pushed the other way round."""
+    x, y, z = args
+    for _ in range(30):
+        vx = draw(-0x258, 0x4B0)
+        vy = draw(-0x258, 0x4B0)
+        vz = draw(0x1F4, 0x5DC)
+        delay = draw(0, 6)
+        aux = draw(5, 10)
+        pool.spawn(SCRATCH, 2, x, y, z + 0x320, 6, 0, 0, 0x44, 0x28, vx, vy, vz, aux, delay)
+
+
 @death_program(0x0042B1D0, 2)
 def _c0042B1D0(pool: Pool, draw: Draws, args: Sequence[int], inputs: DeathInputs) -> None:
     """`aBlob_CreateFireDeath(x, y)`: a column of twenty class-2 records,

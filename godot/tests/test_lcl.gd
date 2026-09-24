@@ -424,7 +424,7 @@ static func _program(body: Array, labels: Dictionary = {}) -> LclProgram:
 static func _run_synthetic(program: LclProgram, units: Array,
 		width: int = 4, height: int = 4,
 		cells: Dictionary = {}, ai_level: int = -1,
-		objects: Array = []) -> Dictionary:
+		objects: Array = [], seed: float = 0.0) -> Dictionary:
 	var zeros: Array = []
 	var links: Array = []
 	# The idle value of the three object slots and the obstacle byte.
@@ -480,8 +480,12 @@ static func _run_synthetic(program: LclProgram, units: Array,
 	if ai_level >= 0:
 		turn.ai_level = ai_level
 	var control: GameControl = GameControl.create()
+	# An unseeded generator answers `base` every time -- the retail globals'
+	# own zero -- so a rule that draws needs a seed to be seen drawing.
+	var random: IncRandom = IncRandom.new()
+	random.randomize_seed(seed)
 	var context: LclContext = LclContext.create(state, roster, types, turn,
-		control, IncRandom.new(), CRandom.create(), 0, "")
+		control, random, CRandom.create(), 0, "")
 	# The one thing `World` hands a context that `create` does not take:
 	# the converter's footprints (docs/42 section 8.2).
 	context.object_cells = res.object_cells()
@@ -786,6 +790,10 @@ func _synthetic(h: TestHarness) -> void:
 
 	_statues(h)
 	_fixed_statues(h)
+	_land_table(h)
+	_growing_land(h)
+	_falling_spores(h)
+	_spores(h)
 	_barrier(h)
 	_foot_bridges(h)
 	_crush_wall(h)
@@ -804,6 +812,212 @@ static func _alive(run: Dictionary, slot: int) -> bool:
 	var roster: Dictionary = run["units"]
 	var unit: UnitState = roster[slot]
 	return unit.is_alive()
+
+
+## A special object for a synthetic map document: `model` at a world point.
+static func _special(model: String, x: int, y: int, z: int) -> Dictionary:
+	return {"prototype": model, "x": x, "y": y, "z": z}
+
+
+## A synthetic map with nothing on it, `side` by `side`, and `extra` arrays.
+static func _blank(side: int, extra: Dictionary = {}) -> Dictionary:
+	var cells: Dictionary = {}
+	for key: String in ["field_type", "action_point", "height"]:
+		var zeros: Array = []
+		for _i: int in range(side * side):
+			zeros.append(0)
+		cells[key] = zeros
+	for key: Variant in extra:
+		cells[key] = extra[key]
+	return cells
+
+
+## One command, then the marker, on a synthetic map.
+static func _one(command: String, args: Array, units: Array, side: int,
+		cells: Dictionary, objects: Array = [], seed: float = 0.0) -> Dictionary:
+	return _run_synthetic(_program([
+		_instr("command", command, args), _mark(),
+		_instr("close", "", [])]), units, side, side, cells, -1, objects, seed)
+
+
+## The seed the rules that draw are run with, and a generator in the same
+## state to predict them.
+const DRAW_SEED: float = 1.0
+
+
+static func _seeded() -> IncRandom:
+	var random: IncRandom = IncRandom.new()
+	random.randomize_seed(DRAW_SEED)
+	return random
+
+
+## The special-object table `[0x004FA80C]` (docs/42 section 8.2): it starts
+## as the `.lev`'s records, and `0x00406F20` answers the nearest strictly
+## inside the box.
+func _land_table(h: TestHarness) -> void:
+	var run: Dictionary = _one("SetGameControl", [_num(1), _num(1)], [], 4,
+		_blank(4), [_special("A.3DI", 6400, 6400, 0),
+		_special("B.3DI", 6400 + 4999, 6400, 0),
+		_special("C.3DI", 6400 - 10, 6400, 0),
+		_special("D.3DI", 6400 + 10, 6400, 0)])
+	var state: MapState = run["state"]
+	h.equal("land_table.starts_as_the_lev", state.land_object_count(), 4)
+	var box: Vector3i = Vector3i(5000, 5000, 9600)
+	h.equal("land_table.finds_the_nearest",
+		state.land_object(state.find_land_object(Vector3i(6400, 6400, 0), box))
+			.get("model"), "A.3DI")
+	h.equal("land_table.the_box_is_strict",
+		state.land_object(state.find_land_object(
+			Vector3i(6400 + 5000, 6400, 0), box)).get("model"), "B.3DI",
+		"A stands exactly 5000 off and `|d| < half` refuses it")
+	var gone: int = state.find_land_object(Vector3i(6400, 6400, 0), box)
+	var deleted: bool = state.delete_land_object(gone)
+	var tied: String = DictRead.as_string(state.land_object(
+		state.find_land_object(Vector3i(6400, 6400, 0), box)).get("model", ""))
+	h.equal("land_table.delete_keeps_the_order", [deleted, tied],
+		[true, "C.3DI"], "C and D tie at 10; C is first in the table")
+
+
+## `GrowingLand` `0x0046FF20`: one of four neighbours per try, drawn
+## `ARandom(0, 4)`; a grown cell never grows in the same call; the object
+## goes in at the old marker and the cell rises to 1600 as a tagged wall.
+func _growing_land(h: TestHarness) -> void:
+	var side: int = 5
+	var cells: Dictionary = _blank(side)
+	cells["action_point"][2 * side + 2] = 100
+	cells["field_type"][2 * side + 2] = 2
+	var run: Dictionary = _one("GrowingLand", [_num(100), _name("S.3DI")], [],
+		side, cells, [], DRAW_SEED)
+	var step: Vector2i = LclInterpreter.GROWTH_STEPS[_seeded().draw(0, 4)]
+	var at: Vector2i = Vector2i(2, 2) + step
+	var state: MapState = run["state"]
+	var cell: int = state.index_of(at.x, at.y)
+	h.equal("growing_land.the_first_draw_picks_the_neighbour",
+		[state.field_type_at(cell), state.action_point_at(cell),
+		state.height_at(cell)], [2, 100, LclInterpreter.GROWTH_HEIGHT],
+		"a tagged wall at 1600, in the direction `ARandom(0, 4)` chose")
+	h.equal("growing_land.one_growth_per_call", state.land_object_count(), 1,
+		"the new cell carries the tag but the 0xFF mark keeps it from growing")
+	h.equal("growing_land.the_event_carries_the_growth",
+		_events_named(run, "growing_land"),
+		[[100, "S.3DI", 1, at.x, at.y, 0, 0]])
+	# A fire on the neighbour is freed, not grown around.
+	var burning: Dictionary = _blank(side)
+	burning["action_point"][2 * side + 2] = 100
+	var obstacle: Array = []
+	for _i: int in range(side * side):
+		obstacle.append(MapState.OBSTACLE_FIRE)
+	burning["effect2"] = obstacle
+	var fired: Dictionary = _one("GrowingLand", [_num(100), _name("S.3DI")], [],
+		side, burning, [], DRAW_SEED)
+	var hot: MapState = fired["state"]
+	h.equal("growing_land.a_fire_is_freed",
+		hot.obstacle_at(hot.index_of(at.x, at.y)), MapState.OBSTACLE_NONE,
+		"`+0x10 = 0xFF` at `0x00470023`")
+	# The cap: more than 140 records refuses the whole call.
+	var crowd: Array = []
+	for i: int in range(MapState.LAND_OBJECTS_GROWTH_MAX + 1):
+		crowd.append(_special("X.3DI", 0, 0, -100000 - i))
+	var full: Dictionary = _one("GrowingLand", [_num(100), _name("S.3DI")], [],
+		side, cells, crowd)
+	var capped: MapState = full["state"]
+	h.equal("growing_land.refused_above_140", capped.land_object_count(),
+		MapState.LAND_OBJECTS_GROWTH_MAX + 1, "`cmp eax, 0x8C` / `jg`")
+	crowd.pop_back()
+	var room: Dictionary = _one("GrowingLand", [_num(100), _name("S.3DI")], [],
+		side, cells, crowd)
+	var roomy: MapState = room["state"]
+	h.equal("growing_land.140_still_grows", roomy.land_object_count(),
+		MapState.LAND_OBJECTS_GROWTH_MAX + 1)
+
+
+## `FallingSpores` `0x00441F60`: the row is drawn **before** the column, the
+## drop lands on the marker's old height and the cell becomes a tagged wall
+## at `height << 4`; an occupied cell takes no drop.
+func _falling_spores(h: TestHarness) -> void:
+	var side: int = 6
+	var run: Dictionary = _one("FallingSpores", [_num(1), _num(1), _num(4),
+		_num(4), _num(1), _num(120), _name("L016EH00.3DI"), _num(40)], [], side,
+		_blank(side), [], DRAW_SEED)
+	var rng: IncRandom = _seeded()
+	var ty: int = rng.draw(1, 4)
+	var tx: int = rng.draw(1, 4)
+	var state: MapState = run["state"]
+	var cell: int = state.index_of(tx, ty)
+	h.equal("falling_spores.y_before_x",
+		[state.field_type_at(cell), state.action_point_at(cell),
+		state.height_at(cell)], [2, 120, 40 << 4],
+		"`0x00441F98` draws y, `0x00441FB9` x")
+	h.equal("falling_spores.the_event_carries_the_drop",
+		_events_named(run, "falling_spores"),
+		[[1, 1, 4, 4, 1, 120, "L016EH00.3DI", 1, tx, ty, 0, 0]])
+	var held: Dictionary = _one("FallingSpores", [_num(2), _num(2), _num(1),
+		_num(1), _num(1), _num(120), _name("L016EH00.3DI"), _num(40)],
+		[{"slot": 0, "player": 0, "x": 2, "y": 2}], side, _blank(side))
+	var busy: MapState = held["state"]
+	h.equal("falling_spores.an_occupied_cell_takes_none",
+		[busy.land_object_count(), busy.field_type_at(busy.index_of(2, 2))],
+		[0, 0], "`0x00479C60` wants `+0x07 == 0xFFFF`")
+
+
+## `Spores` `0x0046FC30` -> `0x004147D0`: every tagged cell draws
+## `ARandom(0, 15)` and only 0..2 hatch; a hatch needs a spore object in the
+## box, frees it, clears the cell and puts the unit there.
+func _spores(h: TestHarness) -> void:
+	# Spores four fields apart, and a tagged cell with none of its own halfway
+	# between -- 6400 from either, past the box's 5000 -- where the search
+	# finds nothing.
+	var side: int = 12
+	var cells: Dictionary = _blank(side)
+	var objects: Array = []
+	var tagged: Array[Vector2i] = []
+	var spored: Dictionary[Vector2i, bool] = {}
+	for y: int in range(0, side, 4):
+		for x: int in range(side):
+			var cell: int = y * side + x
+			var own: bool = x % 4 == 0
+			if not own and x % 4 != 2:
+				continue
+			cells["action_point"][cell] = 120
+			cells["field_type"][cell] = 2
+			cells["height"][cell] = 3200
+			tagged.append(Vector2i(x, y))
+			if own:
+				spored[Vector2i(x, y)] = true
+				objects.append(_special("L016EH00.3DI", x * 3200, y * 3200, 3200))
+	var run: Dictionary = _one("Spores", [_num(120), _num(120), _num(0)], [],
+		side, cells, objects, DRAW_SEED)
+	var rng: IncRandom = _seeded()
+	var want: Array = []
+	var bare: int = 0
+	for at: Vector2i in tagged:
+		if rng.draw(0, LclInterpreter.SPORE_ODDS) > LclInterpreter.SPORE_HATCH_MAX:
+			continue
+		if spored.has(at):
+			want.append(at)
+		else:
+			bare += 1
+	var state: MapState = run["state"]
+	var got: Array = []
+	for event: Array in _events_named(run, "spores"):
+		got.append(Vector2i(DictRead.as_int(event[0]), DictRead.as_int(event[1])))
+	h.equal("spores.three_in_fifteen_with_a_spore_hatch", got, want,
+		"`cmp eax, 2` / `jg` after `ARandom(0, 15)`, and `0x00406F20` must find one")
+	h.check("spores.some_hatched_some_did_not", not want.is_empty()
+		and want.size() < objects.size(), "%d of %d" % [want.size(), objects.size()])
+	h.check("spores.a_low_draw_with_no_spore_hatches_nothing", bare > 0,
+		"%d bare cells drew 0..2 and are not in the hatch list" % bare)
+	var cleared: bool = true
+	for at: Vector2i in want:
+		var cell: int = state.index_of(at.x, at.y)
+		if state.action_point_at(cell) != 0 or state.height_at(cell) != 0 \
+				or state.field_type_at(cell) != 1 \
+				or state.unit_at(cell) == MapState.NO_UNIT:
+			cleared = false
+	h.check("spores.a_hatched_cell_is_free_floor_with_the_unit", cleared,
+		"actpt 0, height 0, field type 1 and the new unit on it")
+	h.equal("spores.each_hatch_frees_its_spore", state.land_object_count(),
+		objects.size() - want.size())
 
 
 ## `FixedStatue` -- `aPlayStatueSequence` `0x00414000`: one arm of ten, and an
@@ -1219,6 +1433,7 @@ func _crush_wall(h: TestHarness) -> void:
 	# cell to show that the run is found by the cell rather than by the
 	# record's own position -- `0x00406F20` searches a box around the cell.
 	var footprint: Array = [{"prototype": "L041EA00.3DI",
+		"x": 3 * 3200, "y": 3 * 3200, "z": 3280,
 		"cells": [3 * 8 + 2, 3 * 8 + 3, 3 * 8 + 4]}]
 	var wide_walls: Array = []
 	var wide_heights: Array = []
@@ -1243,6 +1458,9 @@ func _crush_wall(h: TestHarness) -> void:
 	h.equal("crush_wall.the_whole_footprint_becomes_floor", crushed,
 		[[0, 0], [1, 0], [1, 0], [1, 0], [0, 0]],
 		"the three cells of the run, and neither neighbour")
+	h.equal("crush_wall.frees_the_object_it_found",
+		wide_state.land_object_count(), 0,
+		"`aDeleteLand` `0x00415E07` takes it out of the special-object table")
 	var wide_outcome: LclOutcome = wide["outcome"]
 	var wide_carried: Array = []
 	for entry: Variant in wide_outcome.events:

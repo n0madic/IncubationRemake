@@ -172,6 +172,7 @@ const STAGE_BACK: String = "setpiece.back"
 const STAGE_LEAD: String = "setpiece.lead"
 const STAGE_LAND: String = "setpiece.land"
 const STAGE_POOL: String = "setpiece.pool"
+const STAGE_DROP: String = "setpiece.drop"
 
 
 ## Queue the set piece `kind` of `frames` frames on `cell`, whose height
@@ -225,6 +226,64 @@ static func _statue_beam(host: ShotHost, cell: Vector2i,
 			PackedInt32Array([cell.x, cell.y,
 				DictRead.as_int(beam["x"]), DictRead.as_int(beam["y"]),
 				DictRead.as_int(beam["cells"])]))
+
+
+## Whether a routine that turns the camera only for a far object would turn
+## it: the camera's target more than [constant SetpieceDriver.TURN_RANGE]
+## from the object on x or on y (`cmp eax, 0x3840` twice).
+static func _far(target: Vector3i, at: Vector3i) -> bool:
+	return absi(target.x - at.x) > SetpieceDriver.TURN_RANGE \
+		or absi(target.y - at.y) > SetpieceDriver.TURN_RANGE
+
+
+## One of `FallingSpores`' drops, `0x00414550`: the camera turned to look
+## [constant SetpieceDriver.DROP_LOOK_UP] above the object when it is far
+## off (`0x0041469F`, the eye kept), the model inserted at 32000 under a
+## heading drawn from the effect stream (`aRandom2(0, 0xFFF)`, `0x004146B3`)
+## and lowered frame by frame onto the marker, then the landing dust
+## `0x004227C0` and `drop.wav`, killed three frames in (`0x00414785`).
+## Answers the frames it queued, the flight's aside.
+static func _enqueue_drop(queue: SequenceQueue, host: ShotHost, model: String,
+		drop: Dictionary, cues: Array[Dictionary]) -> int:
+	var tile: Vector2i = Vector2i(DictRead.as_int(drop["x"]),
+		DictRead.as_int(drop["y"]))
+	var at: Vector3i = Vector3i(tile.x * WorldSpace.WORLD_UNITS_PER_FIELD,
+		tile.y * WorldSpace.WORLD_UNITS_PER_FIELD, DictRead.as_int(drop["z"]))
+	var heights: PackedInt32Array = SetpieceDriver.drop_heights(at.z)
+	var st: Dictionary = {}
+	queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+		func() -> bool: return not host.camera_flying(),
+		func(_frame: int, _total: int) -> void:
+			if st.has("turned"):
+				return
+			st["turned"] = true
+			if _far(host.camera_target(), at):
+				var _f: int = host.fly(host.camera_eye(),
+					at + Vector3i(0, 0, SetpieceDriver.DROP_LOOK_UP)))
+	var falling: int = maxi(heights.size(), 1)
+	queue.enqueue(STAGE_DROP, falling,
+		func(frame: int, _total: int) -> void:
+			if not st.has("inserted"):
+				st["inserted"] = true
+				var _made: bool = host.insert_object(model, at,
+					host.draw2(0, SetpieceDriver.DROP_HEADING_SPAN))
+			var index: int = clampi(frame, 1, heights.size()) - 1
+			var z: int = heights[index] if not heights.is_empty() else at.z
+			var _lifted: bool = host.lift_object(model, at, maxi(z - at.z, 0)))
+	queue.enqueue(STAGE_LAND, SetpieceDriver.DROP_SOUND_FRAMES,
+		func(frame: int, _total: int) -> void:
+			if frame != 1 or st.has("landed"):
+				return
+			st["landed"] = true
+			if not st.has("inserted"):
+				st["inserted"] = true
+				var _made: bool = host.insert_object(model, at,
+					host.draw2(0, SetpieceDriver.DROP_HEADING_SPAN))
+			var _lifted: bool = host.lift_object(model, at, 0)
+			host.spawn_program(BlobPrograms.LANDING_DUST,
+				PackedInt32Array([tile.x, tile.y])),
+		cues)
+	return falling + SetpieceDriver.DROP_SOUND_FRAMES
 
 
 static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
@@ -534,6 +593,50 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 					if frame != 1:
 						return
 					_statue_beam(host, cell, extra), cues, true)
+			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
+				func() -> bool: return host.pool_live() == 0)
+			return frames
+		"falling_spores":
+			# `0x00441F60` runs `0x00414550` once per drop, each to its end,
+			# then holds on the pool (`0x00441FD4`..`0x00441FE0`).
+			var model: String = DictRead.as_string(extra.get("model", ""))
+			var total: int = 0
+			for entry: Variant in DictRead.as_array(extra.get("drops", [])):
+				total += _enqueue_drop(queue, host, model, DictRead.as_dict(entry),
+					cues)
+			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
+				func() -> bool: return host.pool_live() == 0)
+			return total
+		"spores":
+			# The hatch `0x004147D0`, one event per cell that hatched: the
+			# camera turned to the cell's marker when it is far off
+			# (`0x0041493C`), then in one pass the spore freed
+			# (`aDeleteLand`), the unit put on the map, the splash
+			# `0x0042B3B0` from the marker and `msqueether.wav`, held until
+			# the pool drains (`0x00414A28`).
+			var slot: int = DictRead.as_int(extra.get("slot", -1))
+			var gone: Vector2i = DictRead.as_vector2i(extra.get("object_cell",
+				Vector2i(cell.x, cell.y)))
+			var splash_z: int = DictRead.as_int(extra.get("splash_z", to_h))
+			var mark: Vector3i = Vector3i(centre.x, centre.y, from_h)
+			queue.enqueue_until(STAGE_FLIGHT, ShotSequence.SAFETY_FRAMES,
+				func() -> bool: return not host.camera_flying(),
+				func(frame: int, _total: int) -> void:
+					if frame != 1 or st.has("turned"):
+						return
+					st["turned"] = true
+					if _far(host.camera_target(), mark):
+						var _f: int = host.fly(host.camera_eye(), mark))
+			queue.enqueue(STAGE_LEAD, frames,
+				func(frame: int, _total: int) -> void:
+					if frame != 1:
+						return
+					var _freed: int = host.remove_cell_objects(gone.x, gone.y)
+					if slot >= 0:
+						host.show_unit(slot)
+					host.spawn_at(BlobPrograms.SPORE_HATCH,
+						Vector3i(centre.x, centre.y, splash_z)),
+				cues, true)
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames

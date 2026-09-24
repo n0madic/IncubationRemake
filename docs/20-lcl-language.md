@@ -1285,12 +1285,12 @@ address a *set* of tiles that the level designer tagged in the editor.
 
 | Command | Handler → routine | Effect on each matching cell |
 | --- | --- | --- |
-| `Spores (actPtMin, actPtMax, unitType)` | `0x00441ff0` → `0x0046fc30` → `0x004147d0` | clears the ActPt and spawns one neutral-player unit of type `unitType` there — the type is the script's third argument, passed straight through to `aGenerateUnitElement`'s second ([`22` §9.4.3](22-combat-and-visibility.md)) — then rebuilds the fog |
+| `Spores (actPtMin, actPtMax, unitType)` | `0x00441ff0` → `0x0046fc30` → `0x004147d0` | **hatches three cells in fifteen**: `ARandom(0, 15)` and `cmp eax, 2` / `jg`, drawn for every matching cell in map order. A hatch needs a special object inside `5000 × 5000 × 9600` of the cell's marker (`0x00406F20`) and does nothing without one; with one, the object's footprint becomes free floor at height 0 (`0x0042F410(obj, 1, 0, 1)`), the object is freed (`aDeleteLand`), the cell loses its ActPt and height, a computer unit of type `unitType` is generated there — the script's third argument, passed straight through to `aGenerateUnitElement`'s second ([`22` §9.4.3](22-combat-and-visibility.md)) — the fog is rebuilt for player 0, and the splash `0x0042B3B0` (30 sprites, kind 68, life 40) and `msqueether.wav` play (corrected 2026-09-24 from the listing; it was read as "every cell hatches") |
 | `Statue2 (actPtMin, actPtMax)` | `0x004424b0` → `0x00413500` | runs the `Statue` sequence |
 | `FootBridge2 (actPt, frames, turn)` | `0x004426d0` → `0x00415110` | collapses it (exact match, not a range) |
 | `MoveObjects (actPtMin, actPtMax)` | `0x00442530` → `0x0046fc90(…,0)` | moves the object one tile in a random direction |
 | `MoveFireCircles (…)` / `MoveSpores (…)` | `0x00442550` / `0x00442570` | the same routine with kind 1 / 2. Kind 1 then runs `0x004131c0`, the same fire-circle sequence `FireCircle` itself calls; kind 2 runs `0x004147d0` with the **constant** unit type 50, `Ray'Ther` (`push 0x32` at `0x0046fe14`) |
-| `GrowingLand (actPt, "model.3DI")` | `0x00442010` → `0x0046ff20` | grows a new land tile into a random free neighbour, tags it with the same ActPt, gives it the named model and control-map type 2 (`Wall`) |
+| `GrowingLand (actPt, "model.3DI")` | `0x00442010` → `0x0046ff20` | every matching cell tries up to **eight** times (`cmp ecx, 8`) to grow into one of its **four** neighbours, `ARandom(0, 4)` through the jump table at `0x00470140` (0 up, 1 left, 2 down, 3 right). The neighbour must carry no unit, be enterable (`0x0042F6B0`), carry no victory-point marker (`+0x14`) and no ActPt; a fire, mine or shield on it is freed. It is marked `0xFF`, tagged, given the model at its marker (`aInsertLandObject`) and raised with its marker to 1600; the mark keeps it from growing again in the same call, and only after the sweep do the marked cells become type 2 (`Wall`) (corrected 2026-09-24; it was read as "a random free neighbour of eight") |
 
 The three shipped `Spores` calls are `Spores(100,102,66)`, `Spores(120,121,66)`
 and `Spores(120,121,65)`, all in `_C_174.lcl`; unit types 65 and 66 are
@@ -1298,18 +1298,38 @@ and `Spores(120,121,65)`, all in `_C_174.lcl`; unit types 65 and 66 are
 The routine they share, `0x004147d0`, plays `msqueether.wav` and ends on a
 permanent fog rebuild for a literal player 0 — it is the site
 [`22` §9.4.3](22-combat-and-visibility.md) works through, and the reason that
-document's own reading of it as `FixedStatue`'s was wrong. `GrowingLand` is called with
-ActPt 100/101/102 and the model `L022EH00.3DI`, and refuses to run at all once
-the scene holds 141 objects (`0x00407410`).
+document's own reading of it as `FixedStatue`'s was wrong. The 100..102 cells
+`Spores(100,102,66)` harvests are the `.lev`'s own: thirteen `L016EH00` spores
+stand on them from the start. `GrowingLand` is called with ActPt 100/101/102
+and the model `L022EH00.3DI` in `_C_176`, `_O_053` and `_S_073` -- not in
+`_C_174` -- and refuses to run at all once the special-object table holds
+**more than 140** records (`0x00407410`, `cmp eax, 0x8C` / `jg`). That is a
+real bound: `_O_053` and `_S_073` start with 125 and 129 records, and
+`_C_176`'s growth doubles every turn.
+
+The table is `[0x004FA80C]`, counted by `[0x004FA7B4]`. `aLoadFile` reads the
+`.lev`'s special-object records and their count straight into it
+(`0x00407C94`); `aInsertLandObject` `0x00404E30` appends (`GroundUnit`,
+`FallingSpores`, `GrowingLand`) and `aDeleteLand` `0x00406C30` removes
+(`Spores`, `CrushWall`, `FootBridge`, `FootBridge2`) -- nothing else writes the
+count. The remake keeps it in `MapState`, hashed and saved (save schema 12,
+[`92` §7.3](92-remake-architecture.md)).
 
 **`FallingSpores (x, y, w, h, count, actPt, "model.3DI", height)`** —
 **[code] `0x00441f60` → `0x00414550`**. Note the argument order: the string
 sits *between* the sixth and seventh numeric arguments, and because the two
 kinds are stored in separate arrays (§3.2) that is exactly `num[0..6]` plus
 `str[0]`. `count` drops of `model.3DI` land on random tiles with
-`x' ∈ [x, x+w)`, `y' ∈ [y, y+h)`; each landing sets the cell's control-map type
-to 2 (`Wall`) and its ActPt to `actPt`, at a height of `height · 16`. The
-routine then blocks until the animation queue is empty. One shipped call,
+`x' ∈ [x, x+w)`, `y' ∈ [y, y+h)` -- the row drawn **before** the column
+(`0x00441F98`, `0x00441FB9`). A drop is skipped once the special-object table
+holds more than 140 records, and on a cell `0x00479C60` refuses (off the map,
+a unit, not enterable, a fire or a mine). Otherwise the model is inserted at
+32 000 under a heading from the effect stream (`aRandom2(0, 0xFFF)`) and falls
+onto the marker, 1 600 on the first frame and 480 more on each after; the
+landing dust `0x004227C0` and `drop.wav` follow, the sound killed three frames
+in. The cell becomes type 2 (`Wall`) with ActPt `actPt`, and the cell and its
+marker take the height `height · 16`. The routine then blocks until the
+animation queue is empty. One shipped call,
 `_C_174.lcl:87`:
 
 ```
@@ -1976,6 +1996,19 @@ carry the field through without inventing a meaning.
     it is `0` at all 413 shipped call sites means no *mission script* exercises
     it — the flag is set from the editor instead — not that the behaviour is
     unverified.
+12. **The special-object table beyond its count** *(opened 2026-09-24)*. The
+    remake models `[0x004FA80C]` as `{model, x, y, z}` records (§7.4's
+    `Spores` / `GrowingLand` notes). Four readings are **UNVERIFIED**:
+    (a) the load's count equals the `.lev`'s special-object count -- read off
+    `aLoadFile`'s destination `0x004FA528`, whose tail holds `[0x004FA7B4]`,
+    and not read back from a live process; (b) an object `Platform` or
+    `MoveWorld` carries keeps its authored position in the table -- the engine
+    moves the record, the remake moves only the picture; (c) the footprint of
+    an object inserted at run time (a spore, a hole) is taken to be its own
+    cell, since the converter projects footprints for `.lev` records only; and
+    (d) `FootBridge`'s search is anchored on the command cell's marker. None
+    changes a shipped mission's outcome that we know of; each is a place a
+    live read with `dbgcall` would settle it.
 
 ### Settled since the previous edition
 

@@ -1035,7 +1035,13 @@ def _c_ground_unit(it: Interpreter, p: Params) -> str | None:
 
 
 def _c_spores(it: Interpreter, p: Params) -> str | None:
-    """``0x00441ff0`` -- hatch one computer unit on every tile in the ActPt range."""
+    """``0x00441ff0`` -- hatch one computer unit on every tile in the ActPt range.
+
+    **Superseded, not maintained** (2026-09-24). The rule needs the
+    special-object table `[0x004FA80C]`, which this frozen model does not
+    carry; the faithful rule is `godot/core/lcl/lcl_interpreter.gd` and
+    `docs/20` section 7.4. No emitted case reaches this command.
+    TODO: port it only if a case fixture ever needs it."""
     w = it.world
     for cell in w.cells_with_actpt(p.n(0), p.n(1)):
         w.actpt[cell] = 0
@@ -1355,7 +1361,12 @@ def _c_growing_land(it: Interpreter, p: Params) -> str | None:
     The new tile inherits the ActPt and becomes a wall.  ``0x00407410`` refuses
     once the scene holds 141 objects; the scene object count is outside this
     model, so the refusal is recorded as a deviation rather than guessed at.
-    """
+
+    **Superseded, not maintained** (2026-09-24). The rule needs the
+    special-object table `[0x004FA80C]`, which this frozen model does not
+    carry; the faithful rule is `godot/core/lcl/lcl_interpreter.gd` and
+    `docs/20` section 7.4. No emitted case reaches this command.
+    TODO: port it only if a case fixture ever needs it."""
     w = it.world
     actpt, model = p.n(0), p.s(0)
     grown = 0
@@ -1376,7 +1387,13 @@ def _c_growing_land(it: Interpreter, p: Params) -> str | None:
 
 
 def _c_falling_spores(it: Interpreter, p: Params) -> str | None:
-    """``0x00441f60`` -- ``count`` drops on random tiles of the ``w x h`` block."""
+    """``0x00441f60`` -- ``count`` drops on random tiles of the ``w x h`` block.
+
+    **Superseded, not maintained** (2026-09-24). The rule needs the
+    special-object table `[0x004FA80C]`, which this frozen model does not
+    carry; the faithful rule is `godot/core/lcl/lcl_interpreter.gd` and
+    `docs/20` section 7.4. No emitted case reaches this command.
+    TODO: port it only if a case fixture ever needs it."""
     w = it.world
     x, y, bw, bh, count, actpt = (p.n(0), p.n(1), p.n(2), p.n(3), p.n(4),
                                   p.n(5))

@@ -203,6 +203,18 @@ func insert_object(_model: String, _at: Vector3i, _yaw: int = 0) -> bool:
 	return false
 
 
+## Draw an object [method insert_object] placed `height` above where it
+## stands -- the falling spore.
+func lift_object(_model: String, _at: Vector3i, _height: int) -> bool:
+	return false
+
+
+## Free the special objects on one map cell, the way `aDeleteLand` frees the
+## one its search found.
+func remove_cell_objects(_x: int, _y: int) -> int:
+	return 0
+
+
 ## Run a death or damage creator (docs/42 section 4.8) with tile arguments.
 func spawn_program(_creator: String, _args: PackedInt32Array) -> void:
 	pass

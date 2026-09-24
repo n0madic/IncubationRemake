@@ -3026,6 +3026,17 @@ class RecordingHost extends ShotHost:
 		calls.append("show")
 		shown.append(slot)
 
+	var lifted: Array[int] = []
+	var freed_cells: Array[Vector2i] = []
+
+	func lift_object(_model: String, _at: Vector3i, height: int) -> bool:
+		lifted.append(height)
+		return true
+
+	func remove_cell_objects(x: int, y: int) -> int:
+		freed_cells.append(Vector2i(x, y))
+		return 1
+
 	func insert_object(model: String, at: Vector3i, yaw: int = 0) -> bool:
 		inserted.append("%s:%d,%d,%d,%d" % [model, at.x, at.y, at.z, yaw])
 		return true
@@ -4466,6 +4477,60 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		"%s:3,3,3,0,3" % BlobPrograms.STATUE_BEAM])
 	h.equal("camera.statue.hides_the_victim", statue.hidden,
 		PackedInt32Array([4]))
+
+	# `FallingSpores`' drop `0x00414550`: inserted high under a heading from
+	# the effect stream, lowered 1600 then 480 more a frame onto the marker,
+	# then the dust and the sound for three frames; the pool after the last.
+	var heights: PackedInt32Array = SetpieceDriver.drop_heights(0)
+	h.equal("drop.heights_accelerate",
+		[heights[0], heights[1], heights[2], heights[heights.size() - 1] <= 0,
+		heights[heights.size() - 2] > 0],
+		[0x7D00 - 0x640, 0x7D00 - 0x640 - 0x820, 0x7D00 - 0x640 - 0x820 - 0xA00,
+		true, true], "`sub edi, ebx` then `add ebx, 0x1E0` until past the marker")
+	var dropper: RecordingHost = RecordingHost.new()
+	dropper.live = 1
+	dropper.target = Vector3i(99 * 3200, 0, 0)
+	dropper.draw_answer = 77
+	var drop_queue: SequenceQueue = SequenceQueue.create(null)
+	var drop_frames: int = SetpieceCamera.enqueue(drop_queue, dropper,
+		"falling_spores", 1, Vector2i(1, 1), 0, 0, -1,
+		{"model": "L016EH00.3DI", "drops": [{"x": 2, "y": 3, "id": 5, "z": 160}]},
+		paint, no_cues)
+	h.equal("camera.drop.frames", drop_frames,
+		SetpieceDriver.drop_frames(160) + SetpieceDriver.DROP_SOUND_FRAMES)
+	var drop_ran: Dictionary = _run_queue(drop_queue)
+	h.equal("camera.drop.stages", DictRead.as_array(drop_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, SetpieceCamera.STAGE_DROP,
+		SetpieceCamera.STAGE_LAND, SetpieceCamera.STAGE_POOL])
+	h.equal("camera.drop.inserted_under_a_drawn_heading", dropper.inserted,
+		["L016EH00.3DI:6400,9600,160,77"])
+	h.equal("camera.drop.turns_to_a_far_drop", dropper.flights.size() == 1
+		and dropper.flights[0][1] == Vector3i(6400, 9600, 160 + 0x12C0), true,
+		"the eye kept, the target 4800 over the object")
+	h.equal("camera.drop.lands_on_the_marker",
+		[dropper.lifted[0], dropper.lifted[dropper.lifted.size() - 1]],
+		[0x7D00 - 0x640 - 160, 0])
+	h.equal("camera.drop.dust", dropper.programs,
+		["%s:2,3" % BlobPrograms.LANDING_DUST])
+
+	# The hatch `0x004147D0`: the spore freed off its own cell, the alien
+	# shown, the splash from the marker, and the pool.
+	var hatch: RecordingHost = RecordingHost.new()
+	hatch.live = 1
+	var hatch_queue: SequenceQueue = SequenceQueue.create(null)
+	var hatch_frames: int = SetpieceCamera.enqueue(hatch_queue, hatch, "spores",
+		1, Vector2i(4, 2), 3200, 0, -1,
+		{"slot": 9, "object_cell": Vector2i(4, 2), "splash_z": 0},
+		paint, no_cues)
+	h.equal("camera.hatch.frames", hatch_frames, 1)
+	var hatch_ran: Dictionary = _run_queue(hatch_queue)
+	h.equal("camera.hatch.stages", DictRead.as_array(hatch_ran["order"]),
+		[SetpieceCamera.STAGE_FLIGHT, SetpieceCamera.STAGE_LEAD,
+		SetpieceCamera.STAGE_POOL])
+	h.equal("camera.hatch.frees_shows_splashes",
+		[hatch.freed_cells, hatch.shown, hatch.spawned_at],
+		[[Vector2i(4, 2)], PackedInt32Array([9]),
+		["%s@%s" % [BlobPrograms.SPORE_HATCH, str(Vector3i(12800, 6400, 0))]]])
 
 	# The barrier, off `0x00413560`'s listing: the beam and the kills in the
 	# same frame as the sound, then **one** flight -- to the emitter with

@@ -822,6 +822,10 @@ func _run_mission_script(call_type: int,
 	# `CrushWall`'s footprint -- authored geometry the converter projected, so
 	# it rides in from the resource rather than being recomputed (docs/42 §8.2).
 	context.object_cells = resource.object_cells()
+	context.ctrlmap = _ctrlmap
+	var specials: Array[Dictionary] = resource.special_objects()
+	for id: int in range(specials.size()):
+		context.footprints[id] = DictRead.as_int32_array(specials[id]["cells"])
 	var outcome: LclOutcome = LclInterpreter.run(script_program, context,
 		MissionScript.to_slots(environment))
 	next_map = context.next_map
@@ -1667,6 +1671,10 @@ func apply_delta(delta: Dictionary) -> void:
 			DictRead.as_dict(cells[key]))
 	if delta.has("objects"):
 		state.set_objects(DictRead.to_bytes(delta["objects"]))
+	if delta.has("land_objects"):
+		var land: Dictionary = DictRead.as_dict(delta["land_objects"])
+		state.set_land_objects(DictRead.as_array(land["records"]),
+			DictRead.as_int(land["next"]))
 	var units: Dictionary = DictRead.as_dict(delta["units"])
 	for key: Variant in units:
 		var slot: int = DictRead.as_int(key)

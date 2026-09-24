@@ -1339,10 +1339,12 @@ command itself calls, so the kinds and the names agree.
 
 **What the corpus can actually hatch.** Three `Spores` calls ship, all in
 `_C_174.lcl`: line 77 `Spores(100,102,66)`, line 93 `Spores(120,121,66)` and
-line 99 `Spores(120,121,65)` — `Bea'Coo` twice and `Bea'Ther` once. The tags
-they harvest are laid down by the same script: 100..102 by its `GrowingLand`
-calls, and 120 by the `FallingSpores` on line 87 ([`20`
-§7.4](20-lcl-language.md)). `MoveObjects`,
+line 99 `Spores(120,121,65)` — `Bea'Coo` twice and `Bea'Ther` once. The
+100..102 tags are the `.lev`'s own -- thirteen cells, each under an `L016EH00`
+spore from the start -- and 120 is laid by the `FallingSpores` on line 87
+([`20` §7.4](20-lcl-language.md)). *(Corrected 2026-09-24: this said
+`_C_174`'s `GrowingLand` calls laid 100..102; `_C_174` has none.)* Only three
+cells in fifteen hatch per call, and only where the box search finds a spore. `MoveObjects`,
 `MoveFireCircles` and `MoveSpores` are used **0 times** in the 177 shipped
 scripts, so the constant-50 path is reachable only from a script nobody wrote,
 and `Ray'Ther` is a possibility rather than an observation.

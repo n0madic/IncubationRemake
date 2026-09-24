@@ -75,6 +75,8 @@ const POISON_FLASH: String = "0x004232E0"
 const ZOOMBOB: String = "0x00423720"
 const TRAIL: String = "0x00423670"
 const PUSH_DUST: String = "0x0042A6E0"
+## `0x0042B3B0` -- the spore hatch's splash (docs/42 section 8, `Spores`).
+const SPORE_HATCH: String = "0x0042B3B0"
 ## `0x0042A660` -- `aBlob_CreateMainMapFire`, the one creator a **script**
 ## reaches: `CreateBGB` type 7 calls it once a tick (docs/28 section 8.2), and
 ## the campaign maps' own `InitMap` is where the shipped data uses it.
@@ -737,7 +739,7 @@ const ARGS_NEEDED: Dictionary[String, int] = {
 	BARREL_BURST: 2, FIRE_EXPLOSION: 2, TELEPORT_STREAM: 4, PUSH_DUST: 3,
 	MAIN_MAP_FIRE: 3, BGB_WARNING_LIGHT: 3, BGB_FIRE3: 3, BGB_LAMP: 3,
 	BGB_SPOT: 3, BGB_SMOKE: 3, BGB_COMPUTER_LIGHT: 4,
-	BOMBER: 6, PARA_BOMB: 3, FIRE_DEATH: 2,
+	BOMBER: 6, PARA_BOMB: 3, FIRE_DEATH: 2, SPORE_HATCH: 3,
 	EMITTER: 15, SPORE_SPARKS: 5, PLASMA_SPARKS: 5,
 	# `0x00428F70` is called with five dwords and reads four: the fifth is
 	# the sibling sparks' `life` and this one draws its own.
@@ -1803,6 +1805,8 @@ static func run(creator: String, pool: Pool, draws: Draws,
 		ZOOMBOB:
 			zoombob(pool, Vector3i(args[0], args[1], args[2]), args[3], args[4],
 				args[5])
+		SPORE_HATCH:
+			spore_hatch(pool, draws, Vector3i(args[0], args[1], args[2]))
 		TRAIL:
 			trail(pool, draws, Vector3i(args[0], args[1], args[2]))
 		PUSH_DUST:
@@ -2232,6 +2236,21 @@ static func fire_death(pool: Pool, draws: Draws, x: int, y: int,
 		var aux: int = draws.draw(5, 0x14)
 		pool.spawn(SCRATCH, 2, at.x, at.y, at.z + i * 20, 4, 0, 0, 0x3C, 8, vx,
 			vy, vz, aux, i)
+
+
+## `0x0042B3B0(x, y, z)` -- the spore hatch's splash: thirty class-2
+## records, kind 68, life 40, sprite row 6, 800 above the point the hatch
+## passes (the cell marker's own `+0x10/+0x14/+0x18`). Five draws a record --
+## velocity x, y and z, then the delay and `aux` -- pushed the other way round.
+static func spore_hatch(pool: Pool, draws: Draws, at: Vector3i) -> void:
+	for _i: int in range(30):
+		var vx: int = draws.draw(-0x258, 0x4B0)
+		var vy: int = draws.draw(-0x258, 0x4B0)
+		var vz: int = draws.draw(0x1F4, 0x5DC)
+		var delay: int = draws.draw(0, 6)
+		var aux: int = draws.draw(5, 10)
+		pool.spawn(SCRATCH, 2, at.x, at.y, at.z + 0x320, 6, 0, 0, 0x44, 0x28,
+			vx, vy, vz, aux, delay)
 
 
 ## `aBlob_CreateFlyingUnit(x, y, delay)` -- one class-0 record whose model is

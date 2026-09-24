@@ -584,6 +584,20 @@ save and **out** of the canonical hash, so D7 holds. The reason for 9 is
 recovered from the commit that made it (`Slice 6: the campaign scoreboard has
 no unknown fields`) and not reconstructed from the number.
 
+10 and 11 are in `save_codec.gd`'s own note (the derived-stat recompute's
+`recruit_ammo`, then the scenery's poses beside the camera). **12**
+(2026-09-24) put the special-object table `[0x004FA80C]` into `MapState`:
+`GrowingLand`, `FallingSpores` and `Spores` refuse above 140 records and search
+it, and `CrushWall`, both footbridges and `GroundUnit` change it, so it is
+simulation -- hashed, saved, carried by the journal's deltas -- and the loader
+pins in `test_campaign.gd` moved with it, once and on purpose. **A schema-11
+save is still read**, the one exception to "refused by name": its table is
+rebuilt from the `.lev`, less the objects on the cells the scenery record lists
+as emptied and plus the objects it lists as inserted, because those two lists
+are everything a schema-11 run could have done to the table. What that cannot
+recover, it does not guess: a platform deck's move is not a table change the
+remake models ([`20` §10 item 12](20-lcl-language.md)).
+
 `CampaignCodec.SCHEMA_VERSION` is a different field with its own history, and
 the shell slice raised it 1 → **2**: the container document gained the stamp a
 slot row shows, and the campaign state moved under its own key so a header read
@@ -1079,7 +1093,7 @@ reclassification, and six are recorded with the reason each is not:
 | `0x004781C6` | `refreshCurrentPlayer` | **reclassified**: `0x004781C0` is a four-instruction forwarder — `push ebp; call aBuildVisibleMap` — with one caller. It *is* `Visibility.build`, not a mechanic beside it |
 | `0x0040D6BD` | weapon 46's impact arm | **recorded**: it spawns a `Spider` for the firing player ([`22` §9.4.2](22-combat-and-visibility.md)), and no placed unit in the 155-mission corpus carries a weapon above 29. Reachable only through the campaign armoury, which this remake does not have |
 | `0x004130E6` | `aPlayPlatformSequence` | **recorded**: it rebuilds for the unit the *interface* has selected (`0x00471F70`), and `core` owns no selection — that is `game`'s. Guessing the rider instead would be a different rule, not the engine's |
-| `0x004149C7` | the **spore hatch** `0x004147D0` — *not* `FixedStatue`, which was a wrong routine boundary ([`22` §9.4.3](22-combat-and-visibility.md)) | **recorded**: the site is not a bare rebuild. It follows `aDeleteLand` and an `aGenerateUnitElement` that spawns a unit of the type the LCL command supplies — `Spores`' third argument, or the constant 50 from `MoveSpores`. Only two commands reach it, neither is implemented here, and `Spores` is used by one shipped mission (`_C_174`) that this remake does not convert |
+| `0x004149C7` | the **spore hatch** `0x004147D0` — *not* `FixedStatue`, which was a wrong routine boundary ([`22` §9.4.3](22-combat-and-visibility.md)) | **recorded**: the site is not a bare rebuild. It follows `aDeleteLand` and an `aGenerateUnitElement` that spawns a unit of the type the LCL command supplies — `Spores`' third argument, or the constant 50 from `MoveSpores`. Only two commands reach it. `Spores` -- one shipped mission, `_C_174`, which the cache carries -- is implemented since 2026-09-24 with its three-in-fifteen draw, its box search and its fog rebuild for player 0 ([`20` §7.4](20-lcl-language.md)); `MoveSpores` has no shipped call |
 | `0x0046F144` | `aExecuteWarp` | **recorded**: `MoveMap` computes the warp overlay and nothing consumes `STATE_WARP` — there is no execute path to hang it on yet |
 | `0x00457926` | `aMissionControl`'s GUI build | **recorded**: four interface-driven call sites. `game` redraws its HUD without asking `core`, and folding this in would make a draw mutate the rules |
 | `0x00478DE4` | `aTransferUnitFromPoolToMap` | **recorded**: the unit pool is the campaign layer's ([`27`](27-campaign.md)), which this remake does not have |

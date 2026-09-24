@@ -29,10 +29,15 @@ const SCHEMA: String = "incubation.campaign-cases/1"
 ## right after [method World.create], and this pins what the loader alone
 ## produces. Keeping the pins on the loader is what lets a converter change and
 ## a sweep change stay apart: one moves these, the other does not.
+##
+## **Moved once, deliberately** (2026-09-24, save schema 12): the special-object
+## table `[0x004FA80C]` joined [MapState] and the digest, because
+## `GrowingLand`, `FallingSpores` and `Spores` read and write it (docs/42
+## section 8.2). The loader's grid is unchanged; the table is the difference.
 const PINNED_HASHES: Dictionary = {
-	"_C_140": "d1ad0f008ed34b9c44bf883e42c5b681d3d1f32181cd0295f6f8affca475b802",
-	"_C_141": "ec28d7c8a45db29dedf8332b63cbe0f659e8be469ffc3cec976d75a7c51f1062",
-	"_C_115": "aaca942b823c6e13090db54ceac414e45752d2bfd457aa8721854ecccc7b9974",
+	"_C_140": "586251e3ab0036924a2137cd9aa4e25b0717b674f984b3dd8f9b30bfb0ed0396",
+	"_C_141": "72554f1d3a2f9b4361dca1acf294f08e460e43db0e0c150ad5ce1f6836911982",
+	"_C_115": "a3ea0d8d619be4bf9e43b667b243db335502c12be12c024dd7d5361a98de664c",
 }
 
 

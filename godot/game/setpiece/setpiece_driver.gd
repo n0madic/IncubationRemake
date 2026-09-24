@@ -36,7 +36,7 @@ extends RefCounted
 const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 	"roof_unit", "bridge", "foot_bridge", "foot_bridge2", "open_tube",
 	"open_plant_tube", "open_front_door", "ground_unit", "statue",
-	"fixed_statue",
+	"fixed_statue", "falling_spores", "spores",
 	"barrier_on", "fire_circle", "ground_fire", "crush_wall", "teleporter",
 	"para_bombs",
 	"lever", "pickup"]
@@ -53,8 +53,23 @@ const ANIMATED: Array[String] = ["open_door", "elevator", "platform",
 ## beam is the `fixed_statue` event's.
 const INSTANT: Array[String] = ["fixed_statue_kill", "statue_kill", "statue2",
 	"barrier_off",
-	"falling_spores", "set_ground_fire", "growing_land",
+	"set_ground_fire", "growing_land",
 	"move_objects", "move_fire_circles", "move_spores"]
+## `FallingSpores`' drop `0x00414550`: inserted at 32000 (`mov edi, 0x7D00`),
+## lowered 1600 on the first frame and 480 more on every frame after
+## (`0x0041471E`..`0x00414733`) until it passes the marker, and its
+## `drop.wav` killed three frames after it starts (`mov esi, 3`).
+const DROP_START_Z: int = 0x7D00
+const DROP_FIRST_STEP: int = 0x640
+const DROP_STEP_GROWTH: int = 0x1E0
+const DROP_SOUND_FRAMES: int = 3
+## Both `FallingSpores` and `Spores` turn the camera only when the target is
+## further than this from the object on x or y (`cmp eax, 0x3840`).
+const TURN_RANGE: int = 0x3840
+## The drop's camera looks this far above the object (`add edx, 0x12C0`).
+const DROP_LOOK_UP: int = 0x12C0
+## `push 0xFFF` / `push 0` before `aRandom2` at `0x004146A7`.
+const DROP_HEADING_SPAN: int = 0xFFF
 ## The three tubes' own `cmp esi, 0x13` (docs/42 section 8).
 const TUBE_FRAMES: int = 19
 ## `GroundUnit`'s eight frames of rise and six of carry (docs/42 section 8.1).
@@ -221,6 +236,16 @@ static func frames_for(event: Dictionary) -> int:
 		"fixed_statue":
 			# `aPlayStatueSequence` `0x00414000` has no turn: the flight,
 			# then the beam in one frame and the pool it filled.
+			return 1
+		"falling_spores":
+			# Every drop's own fall, one after another (`0x00441F60` calls
+			# `0x00414550` once per drop and each runs its loop to the end).
+			var total: int = 0
+			for drop: Dictionary in placed_of(event):
+				total += drop_frames(DictRead.as_int(drop["z"])) + DROP_SOUND_FRAMES
+			return mini(maxi(total, 1), MAX_FRAMES)
+		"spores":
+			# The hatch draws nothing over time: one frame, then its pool.
 			return 1
 		"fire_circle":
 			return FIRE_CIRCLE_FRAMES
@@ -492,6 +517,60 @@ static func progress(frame: int, frames: int) -> float:
 ## type error from inside `core`'s own narrowing helper. Non-numeric entries
 ## are skipped rather than coerced: an event whose arguments are text is not an
 ## event this driver has a frame count for.
+## The frames one drop falls onto a marker at `ground`: the loop runs while
+## the object is above it, each frame lowering by one more step.
+static func drop_frames(ground: int) -> int:
+	var z: int = DROP_START_Z
+	var step: int = DROP_FIRST_STEP
+	var frames: int = 0
+	while z > ground:
+		z -= step
+		step += DROP_STEP_GROWTH
+		frames += 1
+	return frames
+
+
+## The heights a drop is drawn at over its fall, frame by frame -- what
+## `mov [ebp+0x18], edi` writes before each `0x0040B6F0`.
+static func drop_heights(ground: int) -> PackedInt32Array:
+	var out: PackedInt32Array = PackedInt32Array()
+	var z: int = DROP_START_Z
+	var step: int = DROP_FIRST_STEP
+	while z > ground:
+		z -= step
+		step += DROP_STEP_GROWTH
+		out.append(z)
+	return out
+
+
+## The objects a `growing_land` or `falling_spores` event placed, in order:
+## `{"x", "y", "id", "z"}` each -- the event's own tail after its count.
+static func placed_of(event: Dictionary) -> Array[Dictionary]:
+	var values: PackedInt32Array = _numbers(event)
+	var kind: String = AudioEvents.name_of(event)
+	# The count's index among the **numbers** (the model string is skipped).
+	var at: int = 1 if kind == "growing_land" else 6
+	var out: Array[Dictionary] = []
+	if at >= values.size():
+		return out
+	var count: int = values[at]
+	for i: int in range(count):
+		var base: int = at + 1 + i * 4
+		if base + 3 >= values.size():
+			break
+		out.append({"x": values[base], "y": values[base + 1],
+			"id": values[base + 2], "z": values[base + 3]})
+	return out
+
+
+## The model a `growing_land` or `falling_spores` event names.
+static func model_of(event: Dictionary) -> String:
+	for value: Variant in DictRead.as_array(event.get("values", [])):
+		if typeof(value) == TYPE_STRING:
+			return DictRead.as_string(value)
+	return ""
+
+
 static func _numbers(event: Dictionary) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()
 	for value: Variant in DictRead.as_array(event.get("values", [])):

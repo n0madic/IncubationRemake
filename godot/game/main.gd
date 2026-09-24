@@ -538,6 +538,8 @@ const CREATE_BGB: String = "create_bgb"
 ## The barrier's emitter turn, one frame on the sequence queue in the place
 ## the script reached the command.
 const STAGE_BARRIER_EMITTER: String = "barrier.emitter"
+## `GrowingLand`'s objects going in, one step in the script's own order.
+const STAGE_GROWTH: String = "setpiece.growth"
 ## docs/20 section 7.3 -- the other command `INIT MAP` carries.
 const CD_TRACK_PROGRAM: String = "cd_track_program"
 ## `CreateCameraPath`, which is the whole of an upgrade base's `INIT MAP`
@@ -7137,6 +7139,19 @@ func _present_script(outcome: Dictionary) -> int:
 		# reaches it, after the `MoveCamera` flight queued above has landed,
 		# so the turn is a one-frame step on the same queue rather than a
 		# write made here, before that flight has started.
+		# `GrowingLand` `0x0046FF20` draws nothing over time: the objects are
+		# there when the routine returns. In its turn, after any flight the
+		# script queued before it.
+		if script_kind == "growing_land":
+			var grown: Array[Dictionary] = SetpieceDriver.placed_of(event)
+			var model: String = SetpieceDriver.model_of(event)
+			if _sequences != null:
+				_sequences.enqueue(STAGE_GROWTH, 1,
+					func(_frame: int, _total: int) -> void:
+						var _made: int = _grow_objects(model, grown))
+			else:
+				var _made: int = _grow_objects(model, grown)
+			continue
 		if script_kind == "barrier_on" or script_kind == "barrier_off":
 			var off: bool = script_kind == "barrier_off"
 			if _sequences != null:
@@ -7158,6 +7173,21 @@ func _present_script(outcome: Dictionary) -> int:
 		var slots: PackedInt32Array = _audio.play_cues(cues, "script")
 		played += slots.size()
 	return played
+
+
+## `GrowingLand`'s objects, each where its cell's marker stood when it grew
+## (`aInsertLandObject` `0x00470064`, no rotation). Answers how many went in.
+func _grow_objects(model: String, grown: Array[Dictionary]) -> int:
+	if _scenery == null:
+		return 0
+	var made: int = 0
+	for entry: Dictionary in grown:
+		if _scenery.insert_object(model, Vector3i(
+				DictRead.as_int(entry["x"]) * WorldSpace.WORLD_UNITS_PER_FIELD,
+				DictRead.as_int(entry["y"]) * WorldSpace.WORLD_UNITS_PER_FIELD,
+				DictRead.as_int(entry["z"]))):
+			made += 1
+	return made
 
 
 ## The barrier's emitter, turned the way `0x00413653` / `0x00413670` write
@@ -7212,6 +7242,12 @@ func _queue_setpiece(event: Dictionary, frames: int,
 		var arriving: int = shown().state.unit_at(index)
 		if arriving != MapState.NO_UNIT:
 			_units.suppress(arriving)
+	# A hatched alien stands on the map from the moment `core` ran the
+	# command; it appears when its spore bursts, not before.
+	if name == "spores" and _units != null:
+		var hatched: int = _at_or(SetpieceDriver._numbers(event), 3, -1)
+		if hatched >= 0:
+			_units.suppress(hatched)
 	# Anyone standing on the cell rides it. `core` has already moved them to
 	# the destination height, so the passenger is captured **now**, at the
 	# start, and carried by the same offset the cell's objects are: without
@@ -7482,6 +7518,25 @@ func _setpiece_extra(name: String, cell: Vector2i,
 			var slot: int = _at_or(values, 6, -1)
 			out["killed"] = [] if slot < 0 else [{"slot": slot,
 				"x": _at_or(values, 7, cell.x), "y": _at_or(values, 8, cell.y)}]
+		"falling_spores":
+			out["model"] = SetpieceDriver.model_of(event)
+			out["drops"] = SetpieceDriver.placed_of(event)
+		"spores":
+			# `x, y, type, slot, id, object x, object y`, then the footprint
+			# as `x, y` pairs. The splash starts from the marker's z after
+			# `0x0042F410` zeroed it -- 0 when the hatch's own cell is under
+			# the footprint, which is every shipped spore.
+			out["slot"] = _at_or(values, 3, -1)
+			out["object_cell"] = Vector2i(_at_or(values, 5, cell.x),
+				_at_or(values, 6, cell.y))
+			var under: bool = false
+			var at: int = 7
+			while at + 1 < values.size():
+				if values[at] == cell.x and values[at + 1] == cell.y:
+					under = true
+				at += 2
+			out["splash_z"] = 0 if under else shown().state.height_at(
+				shown().state.index_of(cell.x, cell.y))
 		"ground_fire":
 			# `[x, y, n, (slot, x, y) * n]` -- the tiles `core` took before
 			# `UnitState.remove` cleared the cells.
@@ -9081,6 +9136,16 @@ class MainShotHost extends ShotHost:
 
 	func insert_object(model: String, at: Vector3i, yaw: int = 0) -> bool:
 		return main._scenery != null and main._scenery.insert_object(model, at, yaw)
+
+	func lift_object(model: String, at: Vector3i, height: int) -> bool:
+		return main._scenery != null \
+			and main._scenery.lift_inserted(model, at, height)
+
+	func remove_cell_objects(x: int, y: int) -> int:
+		if main._scenery == null or main.world == null \
+				or not main.shown().state.in_bounds(x, y):
+			return 0
+		return main._scenery.remove_objects(main.shown().state.index_of(x, y))
 
 	func spawn_program(creator: String, args: PackedInt32Array) -> void:
 		if main._fx == null or main.world == null:

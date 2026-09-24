@@ -35,6 +35,9 @@ const EVENT_ALIASES: Dictionary[String, String] = {
 	# calls; `MoveSpores` runs `0x004147d0`, the one `Spores` calls.
 	"move_fire_circles": "fire_circle",
 	"move_spores": "move_spores",
+	# `Spores` reaches the same hatch `0x004147D0` through `0x0046FC30`, and
+	# its event is one hatch.
+	"spores": "move_spores",
 	# `FixedStatue`'s routine is `0x00414000`, which docs/28 lists separately
 	# from the rotating statue's. Its `fixed_statue` event names that routine
 	# itself and plays whether or not the beam found anyone; the kill that

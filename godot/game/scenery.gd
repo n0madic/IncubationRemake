@@ -322,6 +322,24 @@ func insert_object(name: String, at: Vector3i, yaw: int = 0) -> bool:
 	return true
 
 
+## Draw an inserted object `height` world units above where it was inserted,
+## its recorded position untouched -- `FallingSpores`' drop, whose record is
+## inserted high and lowered frame by frame onto the marker (`0x00414720`).
+## The object is found by its model and position, as [method insert_object]
+## keys it. Answers whether one was moved.
+func lift_inserted(name: String, at: Vector3i, height: int) -> bool:
+	for key: Variant in _inserted:
+		var node: Node3D = key
+		if not is_instance_valid(node) or _inserted[node] != name \
+				or _origin.get(node, Vector3i.ZERO) != at:
+			continue
+		var authored: Transform3D = _authored[node]
+		node.transform = Transform3D(authored.basis,
+			authored.origin + WorldSpace.to_godot(0, 0, height))
+		return true
+	return false
+
+
 ## The authored joint triple a `joint_place` offset names: `joints[0]` for
 ## offset 6, `joints[1]` for 12, nothing for either when the record carries
 ## none or the offset is neither.

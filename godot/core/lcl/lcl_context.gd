@@ -34,6 +34,14 @@ var next_map: String = ""
 ## so it comes straight off [MapResource]; empty for a hand-built context, and
 ## then every reader falls back to the cell it was given.
 var object_cells: Dictionary[int, PackedInt32Array] = {}
+## Each `.lev` special object's own footprint, by its table id -- the cells
+## `0x0042F410` marks for **that** object, which is what `Spores` clears
+## around the one it found. Objects inserted at run time have none here.
+var footprints: Dictionary[int, PackedInt32Array] = {}
+## `SetCtrlMapInfo`'s table, for the "may this field be entered" test
+## `0x0042F6B0` makes. Null for a hand-built context, and then only a wall
+## refuses ([method enterable]).
+var ctrlmap: CtrlMapTable = null
 
 
 static func create(map_state: MapState, unit_map: Dictionary,
@@ -59,6 +67,36 @@ func cells_of_object_at(index: int) -> PackedInt32Array:
 	if object_cells.has(index):
 		return object_cells[index].duplicate()
 	return PackedInt32Array([index])
+
+
+## `0x0042F6B0(cell) != 0xFF` -- the field type's delay is not impassable.
+func enterable(index: int) -> bool:
+	var field: int = state.field_type_at(index)
+	if ctrlmap == null:
+		return field != Interact.FIELD_TYPE_WALL
+	return ctrlmap.is_enterable(field)
+
+
+## `aGetSymbolObjectPtr` of a cell: its land marker, at the cell's origin and
+## its current height (docs/10 section 4.6 -- `land.z == cell[+0x01]` on every
+## shipped cell).
+func marker(x: int, y: int) -> Vector3i:
+	return Vector3i(x * MapResource.WORLD_UNITS_PER_FIELD,
+		y * MapResource.WORLD_UNITS_PER_FIELD,
+		state.height_at(state.index_of(x, y)))
+
+
+## The cells a table object covers: its authored footprint, or the one cell
+## its position falls in.
+func footprint_of(record: Dictionary) -> PackedInt32Array:
+	var id: int = DictRead.as_int(record["id"])
+	if footprints.has(id) and not footprints[id].is_empty():
+		return footprints[id].duplicate()
+	var x: int = DictRead.as_int(record["x"]) / MapResource.WORLD_UNITS_PER_FIELD
+	var y: int = DictRead.as_int(record["y"]) / MapResource.WORLD_UNITS_PER_FIELD
+	if not state.in_bounds(x, y):
+		return PackedInt32Array()
+	return PackedInt32Array([state.index_of(x, y)])
 
 
 func in_bounds(x: int, y: int) -> bool:

@@ -50,6 +50,34 @@ const ELEVATOR_STEP: int = 800
 const PARA_BOMB_TRIES: int = 60
 ## `FixedStatue` reaches at most this far -- `0x00414164`, `cmp eax, 0xa`.
 const STATUE_REACH: int = 10
+## `GrowingLand` `0x0046FF20`: the field type a grown cell carries until the
+## sweep ends, the tries per source cell (`cmp ecx, 8`), the four steps the
+## jump table at `0x00470140` takes for `ARandom(0, 4)` -- 0 up, 1 left,
+## 2 down, 3 right -- and the height the cell and its marker are raised to.
+const GROWTH_MARK: int = 0xFF
+const GROWTH_TRIES: int = 8
+const GROWTH_STEPS: Array[Vector2i] = [Vector2i(0, -1), Vector2i(-1, 0),
+	Vector2i(0, 1), Vector2i(1, 0)]
+const GROWTH_HEIGHT: int = 0x640
+## `FallingSpores`' wrapper passes `height << 4` (`shl eax, 4`, `0x00441F7D`).
+const DROP_HEIGHT_SHIFT: int = 4
+## The hatch `0x004147D0`: `ARandom(0, 15)` and `cmp eax, 2` / `jg`, the box
+## it searches for the spore (`push 0x2580`, `push 0x1388` twice), and the
+## literal player its fog rebuild names.
+const SPORE_ODDS: int = 15
+const SPORE_HATCH_MAX: int = 2
+const SPORE_BOX: Vector3i = Vector3i(0x1388, 0x1388, 0x2580)
+const SPORE_FOG_PLAYER: int = 0
+## `aPlayCrushWallAnimation` `0x00415C70` searches the same box.
+const CRUSH_BOX: Vector3i = Vector3i(0x1388, 0x1388, 0x2580)
+## `aPlayFootBridgeSequence` `0x00414A70`: `push 0x1388` three times.
+const FOOT_BRIDGE_BOX: Vector3i = Vector3i(0x1388, 0x1388, 0x1388)
+## `FootBridge2` `0x00415110`: `500 x 500 x 0x3200` around the group cell's
+## marker moved `+0xA0` in x and y and `-0x12C0` in z.
+const FOOT_BRIDGE2_BOX: Vector3i = Vector3i(0x1F4, 0x1F4, 0x3200)
+const FOOT_BRIDGE2_OFFSET: Vector3i = Vector3i(0xA0, 0xA0, -0x12C0)
+## `GroundUnit` `0x00411FB0` inserts this at the hole (`0x0041237D`).
+const GROUND_HOLE_MODEL: String = "L110EX00.3DI"
 ## `Statue` reaches at most this far, each way -- `0x00413C97`,
 ## `cmp dword [esp+0x3c], 6`.
 const STATUE_BEAM_REACH: int = 6
@@ -440,12 +468,7 @@ func _command(instr: Dictionary) -> String:
 		"GroundUnit":
 			return _ground_unit(instr)
 		"Spores":
-			# `0x00441FF0` -- hatch one computer unit on every tile in range.
-			for cell: int in _context.cells_with_actpt(_n(instr, 0),
-					_n(instr, 1)):
-				_context.state.set_action_point(cell, 0)
-				_context.spawn(PLAYER_COMPUTER, _n(instr, 2), "", 0, 0,
-					cell % _context.state.width, cell / _context.state.width)
+			_spores(_n(instr, 0), _n(instr, 1), _n(instr, 2))
 		# --- game control and mission flow --------------------------------
 		"SetGameControl":
 			_context.control.set_slot(_n(instr, 0), _n(instr, 1))
@@ -548,6 +571,9 @@ func _ground_unit(instr: Dictionary) -> String:
 	if not (_context.free_cell(x1, y1) and _context.free_cell(x2, y2)):
 		return ""
 	_context.spawn(PLAYER_COMPUTER, _n(instr, 4), "", 0, 0, x2, y2)
+	var hole: Vector3i = _context.marker(x1, y1)
+	var _id: int = _context.state.insert_land_object(GROUND_HOLE_MODEL,
+		hole.x, hole.y, hole.z)
 	_context.state.set_field_type(_context.index(x1, y1), CTRL_TYPE_DEEP_HOLE)
 	_event("ground_unit", [x1, y1, x2, y2, _n(instr, 4)])
 	return ""
@@ -935,6 +961,12 @@ func _open_door(x: int, y: int) -> void:
 func _crush_wall(x: int, y: int) -> void:
 	var values: Array[int] = [x, y]
 	if _context.in_bounds(x, y):
+		# The search runs before the footprint is cleared, against the marker
+		# as it stands; the object it found is freed at the end.
+		var found: int = _context.state.find_land_object(
+			_context.marker(x, y), CRUSH_BOX)
+		if found != MapState.NO_LAND_OBJECT:
+			var _gone: bool = _context.state.delete_land_object(found)
 		for at: int in _context.cells_of_object_at(_context.index(x, y)):
 			_context.state.set_height(at, 0)
 			_context.state.set_field_type(at, CTRL_TYPE_FREE_PLACE)
@@ -1003,6 +1035,11 @@ func _foot_bridge(instr: Dictionary) -> void:
 				riders.append(rider)
 	if riders.size() <= _n(instr, 3):
 		return
+	if _context.in_bounds(x, y):
+		var found: int = _context.state.find_land_object(
+			_context.marker(x, y), FOOT_BRIDGE_BOX)
+		if found != MapState.NO_LAND_OBJECT:
+			var _gone: bool = _context.state.delete_land_object(found)
 	for cell: int in block:
 		_context.state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
 	var values: Array = [x, y, _n(instr, 2), riders.size()]
@@ -1028,6 +1065,16 @@ func _foot_bridge2(instr: Dictionary) -> void:
 		_n(instr, 0))
 	var riders: Array[UnitState] = []
 	var values: Array = [_n(instr, 0), _n(instr, 1), cells.size()]
+	# The block: searched beside the first matched cell's marker, then the
+	# second's (`0x0041532A`, `0x00415369`), and freed at the end.
+	for cell: int in cells:
+		var found: int = _context.state.find_land_object(
+			_context.marker(cell % _context.state.width,
+				cell / _context.state.width) + FOOT_BRIDGE2_OFFSET,
+			FOOT_BRIDGE2_BOX)
+		if found != MapState.NO_LAND_OBJECT:
+			var _gone: bool = _context.state.delete_land_object(found)
+			break
 	for cell: int in cells:
 		_context.state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
 		_context.state.set_action_point(cell, 0)
@@ -1045,46 +1092,164 @@ func _foot_bridge2(instr: Dictionary) -> void:
 		_context.kill(rider)
 
 
-## `0x00442010` -- grow into a random free neighbour of each tagged tile.
+## `GrowingLand (actPt, "model")` -- `0x00442010` -> `0x0046FF20`.
 ##
-## The new tile inherits the ActPt and becomes a wall. `0x00407410` refuses once
-## the scene holds 141 objects; the scene object count is outside this model, so
-## the refusal is a recorded deviation rather than a guess.
+## Refused outright once the special-object table holds more than 140 records
+## (`0x00407410`, `cmp eax, 0x8C` / `jg`). Otherwise every cell, in map order,
+## whose action point is `actPt` and whose field type is not the routine's own
+## `0xFF` mark tries up to **eight** times (`cmp ecx, 8`) to grow into a
+## neighbour: `ARandom(0, 4)` picks up (`y - 1`), left, down or right, and the
+## neighbour must exist, carry no unit (`+0x07 == 0xFFFF`), be enterable
+## (`0x0042F6B0`), carry no victory-point marker (`+0x14 == 0xFF`) and no
+## action point. A fire, mine or shield on it is freed (`0x00406960`, then
+## `+0x0F = 0`, `+0x10 = 0xFF`, `+0x0E = 0`). The grown cell is marked `0xFF`
+## and tagged, the model is inserted at its land marker (`aInsertLandObject`
+## `0x00470064`) and the cell and the marker rise to 1600. The mark is what
+## stops a cell grown this call from growing again in it; only after the
+## sweep does every marked cell become a wall.
+##
+## The event is `actPt, model, n`, then `x, y, id, z` per growth -- `z` the
+## marker's height the object was placed at, which the cell no longer has.
 func _growing_land(instr: Dictionary) -> void:
 	var actpt: int = _n(instr, 0)
-	var grown: int = 0
-	for cell: int in _context.cells_with_actpt(actpt, actpt):
-		var cx: int = cell % _context.state.width
-		var cy: int = cell / _context.state.width
-		var free: PackedInt32Array = PackedInt32Array()
-		for dy: int in [-1, 0, 1]:
-			for dx: int in [-1, 0, 1]:
-				if dx == 0 and dy == 0:
-					continue
-				if _context.free_cell(cx + dx, cy + dy):
-					free.append(_context.index(cx + dx, cy + dy))
-		if free.is_empty():
+	var model: String = _s(instr, 0)
+	var grown: Array = []
+	var state: MapState = _context.state
+	if state.land_object_count() > MapState.LAND_OBJECTS_GROWTH_MAX:
+		_event("growing_land", [actpt, model, 0])
+		return
+	var freed: bool = false
+	for cell: int in range(state.cell_count()):
+		if state.action_point_at(cell) != (actpt & 0xFF) \
+				or state.field_type_at(cell) == GROWTH_MARK:
 			continue
-		var target: int = free[_context.rng.draw(0, free.size())]
-		_context.state.set_action_point(target, actpt & 0xFF)
-		_context.state.set_field_type(target, CTRL_TYPE_WALL)
-		grown += 1
-	_event("growing_land", [actpt, _s(instr, 0), grown])
+		var cx: int = cell % state.width
+		var cy: int = cell / state.width
+		for _try: int in range(GROWTH_TRIES):
+			var step: Vector2i = GROWTH_STEPS[_context.rng.draw(0,
+				GROWTH_STEPS.size())]
+			var tx: int = cx + step.x
+			var ty: int = cy + step.y
+			if not _context.in_bounds(tx, ty):
+				continue
+			var target: int = _context.index(tx, ty)
+			if state.unit_at(target) != MapState.NO_UNIT \
+					or not _context.enterable(target) \
+					or state.marker_slot_at(target) != MapState.NO_OBJECT \
+					or state.action_point_at(target) != 0:
+				continue
+			if state.obstacle_at(target) != MapState.OBSTACLE_NONE:
+				state.set_effect(MapState.OBJECT_SLOT, target, 0)
+				state.set_obstacle(target, MapState.OBSTACLE_NONE)
+				state.set_effect(MapState.TIMER_SLOT, target, 0)
+				freed = true
+			var at: Vector3i = _context.marker(tx, ty)
+			state.set_field_type(target, GROWTH_MARK)
+			state.set_action_point(target, actpt & 0xFF)
+			var id: int = state.insert_land_object(model, at.x, at.y, at.z)
+			state.set_height(target, GROWTH_HEIGHT)
+			grown.append_array([tx, ty, id, at.z])
+			break
+	for cell: int in range(state.cell_count()):
+		if state.field_type_at(cell) == GROWTH_MARK:
+			state.set_field_type(cell, CTRL_TYPE_WALL)
+	if freed:
+		state.rebuild_objects()
+	var values: Array = [actpt, model, grown.size() / 4]
+	values.append_array(grown)
+	_event("growing_land", values)
 
 
-## `0x00441F60` -- `count` drops on random tiles of the `w x h` block.
+## `FallingSpores (x, y, w, h, count, actPt, "model", height)` --
+## `0x00441F60` -> `0x00414550` once per drop.
+##
+## The wrapper draws the row **before** the column (`0x00441F98` for `y`,
+## `0x00441FB9` for `x`, both `ARandom`) and passes `height << 4`. A drop is
+## skipped once the table holds more than 140 records, and on a cell
+## `0x00479C60` refuses: off the map, a unit on it, not enterable, or a fire
+## or a mine (`+0x10` 1 or 2). Otherwise the model is inserted at the cell's
+## marker, the cell becomes a tagged wall and the cell and its marker take the
+## new height (`0x00414755`, `0x00414758`); the object itself lands on the
+## marker's **old** height. The heading the drop is inserted with is drawn from
+## the effect stream (`0x004638E0`) and is the picture's.
+##
+## The event is the command's own seven arguments, then `n` and `x, y, id, z`
+## per drop, `z` where the object landed.
 func _falling_spores(instr: Dictionary) -> void:
 	var actpt: int = _n(instr, 5)
+	var model: String = _s(instr, 0)
+	var level: int = _n(instr, 6) << DROP_HEIGHT_SHIFT
+	var state: MapState = _context.state
+	var dropped: Array = []
 	for _i: int in range(maxi(_n(instr, 4), 0)):
-		var tx: int = _context.rng.draw(_n(instr, 0), _n(instr, 2))
 		var ty: int = _context.rng.draw(_n(instr, 1), _n(instr, 3))
+		var tx: int = _context.rng.draw(_n(instr, 0), _n(instr, 2))
+		if state.land_object_count() > MapState.LAND_OBJECTS_GROWTH_MAX:
+			continue
 		if not _context.in_bounds(tx, ty):
 			continue
 		var cell: int = _context.index(tx, ty)
-		_context.state.set_field_type(cell, CTRL_TYPE_WALL)
-		_context.state.set_action_point(cell, actpt & 0xFF)
-	_event("falling_spores", [_n(instr, 0), _n(instr, 1), _n(instr, 2),
-		_n(instr, 3), _n(instr, 4), actpt, _s(instr, 0)])
+		if state.unit_at(cell) != MapState.NO_UNIT \
+				or not _context.enterable(cell) \
+				or state.obstacle_at(cell) == MapState.OBSTACLE_FIRE \
+				or state.obstacle_at(cell) == MapState.OBSTACLE_MINE:
+			continue
+		var at: Vector3i = _context.marker(tx, ty)
+		var id: int = state.insert_land_object(model, at.x, at.y, at.z)
+		state.set_field_type(cell, CTRL_TYPE_WALL)
+		state.set_action_point(cell, actpt & 0xFF)
+		state.set_height(cell, level)
+		dropped.append_array([tx, ty, id, at.z])
+	var values: Array = [_n(instr, 0), _n(instr, 1), _n(instr, 2),
+		_n(instr, 3), _n(instr, 4), actpt, model, dropped.size() / 4]
+	values.append_array(dropped)
+	_event("falling_spores", values)
+
+
+## `Spores (actPtMin, actPtMax, type)` -- `0x00441FF0` -> `0x0046FC30`, which
+## calls the hatch `0x004147D0` for every cell, in map order, whose action
+## point is in the range.
+##
+## The hatch first draws `ARandom(0, 15)` and gives up above 2 -- three cells
+## in fifteen hatch. It then needs a special object inside
+## `5000 x 5000 x 9600` of the cell's marker (`0x00406F20`); with none it does
+## nothing more. With one: the object's footprint is cleared to free floor at
+## height 0 (`0x0042F410(object, 1, 0, 1)`), the object is freed
+## (`aDeleteLand`), the cell loses its action point and its height, a unit of
+## `type` is generated for the computer on it (`aGenerateUnitElement` with
+## `exact` 0) and the fog is rebuilt for player **0** (`push 0` at
+## `0x004149C5`, docs/22 section 9.4.3).
+##
+## One event per hatch: `x, y, type, slot, id`, the cell the freed object
+## stood on as `x, y`, then the footprint's cells as `x, y` pairs.
+func _spores(low: int, high: int, type_id: int) -> void:
+	var state: MapState = _context.state
+	for cell: int in _context.cells_with_actpt(low, high):
+		if _context.rng.draw(0, SPORE_ODDS) > SPORE_HATCH_MAX:
+			continue
+		var x: int = cell % state.width
+		var y: int = cell / state.width
+		var id: int = state.find_land_object(_context.marker(x, y), SPORE_BOX)
+		if id == MapState.NO_LAND_OBJECT:
+			continue
+		var record: Dictionary = state.land_object(id)
+		var footprint: PackedInt32Array = _context.footprint_of(record)
+		for at: int in footprint:
+			state.set_height(at, 0)
+			state.set_field_type(at, CTRL_TYPE_FREE_PLACE)
+		var _gone: bool = state.delete_land_object(id)
+		state.set_action_point(cell, 0)
+		state.set_height(cell, 0)
+		var hatched: UnitState = _context.spawn(PLAYER_COMPUTER, type_id, "",
+			0, 0, x, y)
+		var values: Array = [x, y, type_id,
+			hatched.slot if hatched != null else -1, id,
+			DictRead.as_int(record["x"]) / MapResource.WORLD_UNITS_PER_FIELD,
+			DictRead.as_int(record["y"]) / MapResource.WORLD_UNITS_PER_FIELD]
+		for at: int in footprint:
+			values.append_array([at % state.width, at / state.width])
+		_event("spores", values)
+		_event("build_visible_map", [SPORE_FOG_PLAYER])
 
 
 ## `0x00442730` -- `tries` attempts at a tile of the right type and height.

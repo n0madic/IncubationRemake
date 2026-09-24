@@ -55,6 +55,12 @@ const VICTORY_MARKER_MODELS: Array[String] = ["A_MK_0A.3DI", "A_MK_1A.3DI",
 	"A_MK_2A.3DI", "A_MK_3A.3DI", "A_MK_4A.3DI", "A_MK_0B.3DI", "A_MK_1B.3DI",
 	"A_MK_2B.3DI", "A_MK_3B.3DI", "A_MK_4B.3DI"]
 const NO_UNIT: int = -1
+## `cmp eax, 0x8C` / `jg` after `0x00407410` at the top of `GrowingLand`
+## `0x0046FF20` and `FallingSpores`' drop `0x00414550`: neither inserts once
+## the special-object table holds **more** than this many records.
+const LAND_OBJECTS_GROWTH_MAX: int = 140
+## No record in [method find_land_object]'s answer.
+const NO_LAND_OBJECT: int = -1
 const EFFECT_SLOTS: int = 6
 ## Which effect slot is which byte.  `+0x0E` is a countdown, `+0x0F` and
 ## `+0x11` are slot indices into the 80-entry special-object array, `+0x10` is
@@ -83,6 +89,18 @@ var _objects: PackedByteArray = PackedByteArray()
 ## routine and is neither read, hashed nor saved.
 var _marker_slot: PackedByteArray = PackedByteArray()
 var _special_models: PackedStringArray = PackedStringArray()
+## The special-object table `[0x004FA80C]`, counted by `[0x004FA7B4]` --
+## docs/42 section 8.2. `aLoadFile` reads the `.lev`'s records and their count
+## straight into it (`0x00407C94`); `aInsertLandObject` `0x00404E30` appends
+## and `aDeleteLand` `0x00406C30` removes. Rules read it -- the search
+## `0x00406F20` and the growth cap -- so unlike [member _objects] it is state:
+## hashed, saved and carried by the journal.
+##
+## One record per object, in table order: `{"id", "model", "x", "y", "z"}`.
+## `id` is the remake's own, a serial the picture keys its node by; the table
+## itself carries no identity beyond the position.
+var _land_objects: Array[Dictionary] = []
+var _next_land_id: int = 0
 
 ## Write tracking for `EventJournal`, off by default.
 ##
@@ -95,6 +113,7 @@ var _dirty: Dictionary[int, bool] = {}
 ## A whole-map write ([method load_bytes]); cheaper to flag than to enumerate.
 var _dirty_all: bool = false
 var _objects_dirty: bool = false
+var _land_dirty: bool = false
 
 
 static func from_resource(res: MapResource) -> MapState:
@@ -109,6 +128,11 @@ static func from_resource(res: MapResource) -> MapState:
 	for slot: int in range(EFFECT_SLOTS):
 		state._effect.append(res.effects(slot))
 	state.rebuild_objects()
+	for record: Dictionary in res.special_objects():
+		var _id: int = state.insert_land_object(
+			DictRead.as_string(record["model"]), DictRead.as_int(record["x"]),
+			DictRead.as_int(record["y"]), DictRead.as_int(record["z"]))
+	state._land_dirty = false
 	return state
 
 
@@ -212,6 +236,82 @@ func set_special_models(names: PackedStringArray) -> void:
 	_special_models = names.duplicate()
 
 
+## The special-object table, in table order, as independent copies.
+func land_objects() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for record: Dictionary in _land_objects:
+		out.append(record.duplicate())
+	return out
+
+
+## `[0x004FA7B4]`, the count `0x00407410` answers.
+func land_object_count() -> int:
+	return _land_objects.size()
+
+
+## The record with this id, a copy, or `{}`.
+func land_object(id: int) -> Dictionary:
+	for record: Dictionary in _land_objects:
+		if DictRead.as_int(record["id"]) == id:
+			return record.duplicate()
+	return {}
+
+
+## `aInsertLandObject` `0x00404E30`: append one record. Answers its id.
+func insert_land_object(model: String, x: int, y: int, z: int) -> int:
+	var id: int = _next_land_id
+	_next_land_id += 1
+	_land_objects.append({"id": id, "model": model, "x": x, "y": y, "z": z})
+	_land_dirty = true
+	return id
+
+
+## `aDeleteLand` `0x00406C30`: take one record out, keeping the others' order.
+func delete_land_object(id: int) -> bool:
+	for i: int in range(_land_objects.size()):
+		if DictRead.as_int(_land_objects[i]["id"]) == id:
+			_land_objects.remove_at(i)
+			_land_dirty = true
+			return true
+	return false
+
+
+## `0x00406F20`: the record inside the box `half` around `at` -- strictly,
+## `|d| < half` on each axis -- with the smallest `|dx| + |dy| + |dz|`, the
+## first in table order on a tie. Answers its id or [constant NO_LAND_OBJECT].
+func find_land_object(at: Vector3i, half: Vector3i) -> int:
+	var best: int = NO_LAND_OBJECT
+	var best_sum: int = 0
+	for record: Dictionary in _land_objects:
+		var dx: int = absi(DictRead.as_int(record["x"]) - at.x)
+		var dy: int = absi(DictRead.as_int(record["y"]) - at.y)
+		var dz: int = absi(DictRead.as_int(record["z"]) - at.z)
+		if dx >= half.x or dy >= half.y or dz >= half.z:
+			continue
+		var sum: int = dx + dy + dz
+		if best == NO_LAND_OBJECT or sum < best_sum:
+			best = DictRead.as_int(record["id"])
+			best_sum = sum
+	return best
+
+
+## Replace the table wholesale -- a load, a delta, a migrated save.
+func set_land_objects(records: Array, next_id: int) -> void:
+	_land_objects = []
+	for entry: Variant in records:
+		var record: Dictionary = DictRead.as_dict(entry)
+		_land_objects.append({"id": DictRead.as_int(record["id"]),
+			"model": DictRead.as_string(record["model"]),
+			"x": DictRead.as_int(record["x"]), "y": DictRead.as_int(record["y"]),
+			"z": DictRead.as_int(record["z"])})
+	_next_land_id = next_id
+	_land_dirty = true
+
+
+func next_land_id() -> int:
+	return _next_land_id
+
+
 ## Start or stop recording which cells are written.  `EventJournal` owns this;
 ## a world with no journal pays one boolean test per setter.
 func track_writes(on: bool) -> void:
@@ -219,6 +319,7 @@ func track_writes(on: bool) -> void:
 	_dirty.clear()
 	_dirty_all = false
 	_objects_dirty = false
+	_land_dirty = false
 
 
 ## The cells written since the last call, and whether the object array moved.
@@ -234,10 +335,12 @@ func take_dirty() -> Dictionary:
 			cells.append(index)
 		cells.sort()
 	var moved: bool = _objects_dirty
+	var land: bool = _land_dirty
 	_dirty.clear()
 	_dirty_all = false
 	_objects_dirty = false
-	return {"cells": cells, "objects": moved}
+	_land_dirty = false
+	return {"cells": cells, "objects": moved, "land": land}
 
 
 ## Every documented byte of one cell, for a delta row.
@@ -292,6 +395,9 @@ func clone() -> MapState:
 	out._objects = _objects.duplicate()
 	out._marker_slot = _marker_slot.duplicate()
 	out._special_models = _special_models.duplicate()
+	for record: Dictionary in _land_objects:
+		out._land_objects.append(record.duplicate())
+	out._next_land_id = _next_land_id
 	return out
 
 
@@ -407,6 +513,16 @@ func hash_into(ctx: HashingContext) -> void:
 	ctx.update(_unit.to_byte_array())
 	for slot: PackedByteArray in _effect:
 		ctx.update(slot)
+	var land: PackedInt32Array = PackedInt32Array([_next_land_id,
+		_land_objects.size()])
+	for record: Dictionary in _land_objects:
+		land.append_array(PackedInt32Array([DictRead.as_int(record["id"]),
+			DictRead.as_int(record["x"]), DictRead.as_int(record["y"]),
+			DictRead.as_int(record["z"])]))
+	ctx.update(land.to_byte_array())
+	for record: Dictionary in _land_objects:
+		ctx.update(DictRead.as_string(record["model"]).to_utf8_buffer())
+		ctx.update(PackedByteArray([0]))
 
 
 func to_bytes() -> PackedByteArray:

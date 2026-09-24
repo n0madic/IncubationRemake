@@ -38,6 +38,11 @@ var _effect: Array[PackedByteArray] = []
 ## lives here and not in [MapState]; **outside** [method authored_hash], which
 ## digests the grid the save has to agree with and not what stands on it.
 var _object_cells: Dictionary[int, PackedInt32Array] = {}
+## The `.lev`'s special-object records in table order, `{"model", "x", "y",
+## "z", "cells"}` -- what [MapState]'s special-object table starts from.
+## `cells` is the converter's footprint of that one object (docs/42 section
+## 8.2), empty where the document carries none.
+var _special: Array[Dictionary] = []
 
 
 static func from_document(document: Dictionary) -> MapResource:
@@ -81,6 +86,12 @@ func _read_object_cells(document: Dictionary) -> void:
 	if document.has("special_objects"):
 		for entry: Variant in DictRead.as_array(document["special_objects"]):
 			var record: Dictionary = DictRead.as_dict(entry)
+			_special.append({
+				"model": DictRead.as_string(record.get("prototype", "")),
+				"x": DictRead.as_int(record.get("x", 0)),
+				"y": DictRead.as_int(record.get("y", 0)),
+				"z": DictRead.as_int(record.get("z", 0)),
+				"cells": _ints(record.get("cells", []))})
 			if not record.has("cells"):
 				continue
 			var run: PackedInt32Array = _ints(record["cells"])
@@ -170,6 +181,14 @@ func effects(slot: int) -> PackedByteArray:
 ## The fallback is what the remake did everywhere before the footprints were
 ## emitted (docs/97 section 41.7): the command's own cell, which is always part
 ## of the run when there is one.
+## The `.lev`'s special objects in table order, as copies.
+func special_objects() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for record: Dictionary in _special:
+		out.append(record.duplicate(true))
+	return out
+
+
 func object_cells_at(index: int) -> PackedInt32Array:
 	if _object_cells.has(index):
 		return _object_cells[index].duplicate()

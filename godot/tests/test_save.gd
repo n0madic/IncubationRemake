@@ -22,6 +22,10 @@ func run(h: TestHarness) -> void:
 	world.rng.randomize_seed(1.0)
 	var _drawn: int = world.rng.draw(0, 100)
 	world.compat_flags = PackedStringArray(["technical_box_bug"])
+	# The special-object table is simulation since schema 12: an object the
+	# run inserted must come back, and the hash below covers it.
+	var grown: int = world.state.insert_land_object("L022EH00.3DI", 3200, 6400,
+		160)
 
 	# `cell[+0x10]` is effect slot 2 and nothing else.  It used to be modelled
 	# twice -- a synthesised `_obstacle` array and `_effect[2]` -- so writing a
@@ -49,6 +53,13 @@ func run(h: TestHarness) -> void:
 	var reloaded: World = TestFixtures.tiny_world()
 	h.equal("decode.ok", SaveCodec.result_name(reloaded.load_save(blob)), "OK")
 	h.equal("round_trip.hash", reloaded.canonical_hash_hex(), before)
+	h.equal("round_trip.land_objects",
+		[reloaded.state.land_objects(), reloaded.state.next_land_id()],
+		[world.state.land_objects(), world.state.next_land_id()],
+		"the table and its next id, record for record")
+	h.equal("round_trip.inserted_object", DictRead.as_string(
+		reloaded.state.land_object(grown).get("model", "")), "L022EH00.3DI")
+	_migration(h)
 
 	# The camera is stored beside the simulation and excluded from its hash.
 	var other_camera: Dictionary = {"yaw": 270, "zoom": 4.0, "pivot": [0, 0]}
@@ -239,3 +250,44 @@ func _reschemad(state: CampaignState, version: int) -> PackedByteArray:
 	out.append_array(body)
 	out.append_array(ctx.finish())
 	return out
+
+
+## A schema-11 save carried no table: it is rebuilt from the `.lev`, less what
+## the scenery record says was freed and plus what it says was inserted --
+## the only ways a schema-11 run could have changed it.
+func _migration(h: TestHarness) -> void:
+	var res: MapResource = MapResource.from_document({
+		"width": 3, "height": 3,
+		"header": {"name": "migrated", "next_map": "", "map_type": 0,
+			"mission_id": 0, "world_set": "", "world_scene": "",
+			"camera_height": 0, "equip_points": [0, 0, 0, 0],
+			"skill_level": 0, "tech_level": 0},
+		"cells": _cells(9),
+		"special_objects": [
+			{"prototype": "WALL.3DI", "x": 3200, "y": 3200, "z": 0},
+			{"prototype": "KEEP.3DI", "x": 6400, "y": 0, "z": 0}],
+	})
+	var state: MapState = MapState.from_resource(res)
+	SaveCodec._migrate_land_objects(state, {"removed": [4],
+		"inserted": [[0, "L110EX00.3DI", 0, 0, 160, 0]]})
+	var models: Array = []
+	for record: Dictionary in state.land_objects():
+		models.append(DictRead.as_string(record["model"]))
+	h.equal("migration.rebuilds_the_table", models,
+		["KEEP.3DI", "L110EX00.3DI"],
+		"the wall on the emptied cell 4 goes, the hole comes in at the end")
+
+
+static func _cells(count: int) -> Dictionary:
+	var zeros: Array = []
+	var links: Array = []
+	var idle: Array = []
+	for _i: int in range(count):
+		zeros.append(0)
+		links.append(-1)
+		idle.append(255)
+	return {"height": zeros, "field_type": zeros, "action_point": zeros,
+		"unit": links, "effect0": zeros, "effect1": idle, "effect2": idle,
+		"effect3": idle, "effect4": zeros, "effect5": idle, "land": zeros,
+		"start_index": links}
+
