@@ -82,6 +82,15 @@ const FALLBACK_TEXT_SIZE: int = 8
 const FALLBACK_NAME_SIZE: int = 13
 ## How far short of the movement disc the ammunition row has to stop.
 const AMMO_DISC_GAP: float = 3.0
+## How far short of the inventory the weapon's name has to stop. The name
+## starts at the frame's right edge and the inventory's first column is at
+## `+275`, which leaves the shipped bitmap face room for every weapon name but
+## not a readable one: `Mine Thrower Enhanced` ran across the first picture
+## while the whole width over the frame stood empty. So the name moves **left**
+## by its overrun, over the frame, the same correction the ammunition row gets.
+## The bound is the pictures **as drawn**, not the column: each is placed by
+## its own sprite offset, which puts some of them left of `+275`.
+const NAME_INVENTORY_GAP: float = 3.0
 
 var _art: Art = null
 var _strings: Localization = null
@@ -90,6 +99,9 @@ var _small: FontFile = null
 var _items: Array[Control] = []
 var _origin: Vector2 = Vector2.ZERO
 var _hp_max: int = 0
+## The weapon's name as the last refresh drew it, until the inventory is
+## down and [method _clear_weapon_name] can see what it has to stop short of.
+var _weapon_name: Label = null
 ## The inventory's tooltip targets: one rectangle and one equipment id per
 ## drawn picture, in the panel's own coordinates.
 var _hover_rects: Array[Rect2] = []
@@ -190,6 +202,7 @@ func _paint(view: Dictionary, utab: UnitTypeTable, wtab: WeaponTable,
 		_weapon_block(view, wtab)
 	_movement_block(view)
 	_inventory(view)
+	_clear_weapon_name()
 
 
 ## The name at the engine's (60, 397) -- which is **over the class icon's
@@ -357,8 +370,8 @@ func _weapon_block(view: Dictionary, wtab: WeaponTable) -> void:
 		+ TRAILING_BLOCK_SHIFT
 	var frame: Texture2D = _icon(HudTables.LIB_ICONS, HudTables.ICON_WEAPON_FRAME, base)
 	var frame_width: float = frame.get_width() if frame != null else 0.0
-	_text(wtab.name_of(weapon), base + Vector2(frame_width, -3), _small,
-		COLOUR_TEXT, COLOUR_NAME_SHADOW)
+	_weapon_name = _text(wtab.name_of(weapon), base + Vector2(frame_width, -3),
+		_small, COLOUR_TEXT, COLOUR_NAME_SHADOW)
 	_icon(HudTables.LIB_WEAPONS, wtab.icon(weapon), base + Vector2(33, 7), true)
 	_icon(HudTables.LIB_MUNITION, wtab.type_of(weapon), base + Vector2(23, 27), true)
 	var ammo: int = DictRead.as_int(view["ammo"])
@@ -390,6 +403,32 @@ func _weapon_block(view: Dictionary, wtab: WeaponTable) -> void:
 		var state: int = mini(malfunction, 3) - 1
 		_icon(HudTables.LIB_ICONS, HudTables.ICON_MALFUNCTION_FIRST + state,
 			base + Vector2(26, 24))
+
+
+## Move the weapon's name and its shadow left until the pair ends
+## [constant NAME_INVENTORY_GAP] short of every inventory picture on its row,
+## or of the inventory's first column when the unit carries nothing. Only the
+## readable face: the shipped bitmap already fits (see [method _text]).
+func _clear_weapon_name() -> void:
+	var over: Label = _weapon_name
+	_weapon_name = null
+	if over == null or _small != null:
+		return
+	var width: float = over.get_minimum_size().x
+	var row: Rect2 = Rect2(over.position, Vector2(width, over.get_minimum_size().y))
+	var limit: float = _origin.x + float(HudTables.PANEL_BLOCK_SKILLS.x) \
+		+ TRAILING_BLOCK_SHIFT.x
+	for rect: Rect2 in _hover_rects:
+		if rect.position.y < row.end.y and rect.end.y > row.position.y:
+			limit = minf(limit, rect.position.x)
+	var overrun: float = over.position.x + width - (limit - NAME_INVENTORY_GAP)
+	if overrun <= 0.0:
+		return
+	var index: int = _items.find(over)
+	over.position.x -= overrun
+	# [method _text] adds the shadow immediately before the text.
+	if index > 0:
+		_items[index - 1].position.x -= overrun
 
 
 ## The heat wedge: `heat * 30 / limit` columns growing from one pixel to
@@ -626,6 +665,11 @@ func texts() -> PackedStringArray:
 		if label != null and not out.has(label.text):
 			out.append(label.text)
 	return out
+
+
+## Where the last refresh drew the inventory pictures, in panel coordinates.
+func inventory_rects() -> Array[Rect2]:
+	return _hover_rects.duplicate()
 
 
 ## How many sprites the last refresh drew.

@@ -1507,6 +1507,38 @@ func _panel_record(h: TestHarness) -> void:
 	hud.refresh(world, -1, all_on, all_on, north, east, {}, false)
 	h.check("panel_record.the_band_goes_down", not hud.panel.cycling()
 		and hud.panel.icon_count() == 0)
+	# The readable face: every human weapon's name stops short of the
+	# inventory pictures as they are drawn -- each by its own sprite offset,
+	# which puts some of them left of the column the block starts at.
+	hud.panel.use_font(null, null)
+	record.equipment = PackedInt32Array(UnitPanel.INVENTORY_ELEMENTS.keys())
+	var wtab: WeaponTable = world.weapons()
+	var overruns: PackedStringArray = PackedStringArray()
+	var checked: int = 0
+	for weapon: int in range(wtab.size()):
+		if not wtab.has(weapon) or (weapon >= UnitPanel.WEAPON_ALIEN_LOW
+				and weapon <= UnitPanel.WEAPON_ALIEN_HIGH):
+			continue
+		var title: String = wtab.name_of(weapon)
+		if title.is_empty():
+			continue
+		record.weapon = weapon
+		hud.panel.refresh_record(world, record)
+		var pictures: Array[Rect2] = hud.panel.inventory_rects()
+		for child: Node in hud.panel.get_children():
+			var label: Label = child as Label
+			if label == null or label.text != title or label.is_queued_for_deletion():
+				continue
+			checked += 1
+			var drawn: Rect2 = Rect2(label.position, label.get_minimum_size())
+			for picture: Rect2 in pictures:
+				if drawn.intersects(picture):
+					overruns.append(title)
+	h.check("panel_record.weapon_name_clears_the_inventory",
+		checked > 0 and overruns.is_empty(),
+		"%d labels; over the inventory: %s" % [checked, ", ".join(overruns)])
+	record.equipment = PackedInt32Array()
+	hud.panel.refresh_record(world, null)
 	# The standing line and the button caption on the one label.
 	hud.set_line("a standing line")
 	h.equal("panel_record.line_shows", hud.hint_text(), "a standing line")
